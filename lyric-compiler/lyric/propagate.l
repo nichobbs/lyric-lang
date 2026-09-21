@@ -101,10 +101,55 @@ record PropState {
   // so return types written through an alias of Result/Option classify
   // correctly instead of tripping a false F0020 (#1814).
   aliases: Map[String, TypeExpr]
+  // #7170: name and `isAsync`-ness of the function currently being rewritten,
+  // plus whether the rewrite point is lexically inside one of its try/
+  // catch/finally regions.  See `implicitAwaitScrutinee`'s doc for why this
+  // pass — not the mode checker's V0012 — has to be the one to guard against
+  // an implicit `await` landing inside an async function's protected region.
+  curFnName: String
+  curFnAsync: Bool
+  inTry: Bool
 }
 
 func newPropState(diags: in List[Diagnostic], aliases: in Map[String, TypeExpr]): PropState {
-  PropState(counter = newList(), diagnostics = diags, aliases = aliases)
+  PropState(
+    counter = newList(),
+    diagnostics = diags,
+    aliases = aliases,
+    curFnName = "",
+    curFnAsync = false,
+    inTry = false
+  )
+}
+
+// Re-scope `st` to a newly-entered function body: fresh async/try context,
+// same threaded `counter`/`diagnostics`/`aliases` (all reference types, so
+// mutations through the clone stay visible to the caller — the same idiom
+// `st.counter`/`st.diagnostics` already rely on).
+func stateForFn(st: in PropState, name: in String, isAsync: Bool): PropState {
+  PropState(
+    counter = st.counter,
+    diagnostics = st.diagnostics,
+    aliases = st.aliases,
+    curFnName = name,
+    curFnAsync = isAsync,
+    inTry = false
+  )
+}
+
+// Re-scope `st` to mark the rewrite point as lexically inside a try/catch/
+// finally region of the current function — mirrors `modechecker_check.l`'s
+// `AwaitTryCtx` (V0012) at the point in the pipeline where `st.inTry` is
+// consulted (`implicitAwaitScrutinee`).
+func stateInTry(st: in PropState): PropState {
+  PropState(
+    counter = st.counter,
+    diagnostics = st.diagnostics,
+    aliases = st.aliases,
+    curFnName = st.curFnName,
+    curFnAsync = st.curFnAsync,
+    inTry = true
+  )
 }
 
 func freshSuffix(st: in PropState): String {
@@ -176,8 +221,45 @@ func singleStmtBlock(s: in Statement, sp: in Span): Block {
 // `Result`/`Option` value (the overwhelmingly common case, e.g. `x?` on a
 // local `val x: Result[Int, String]`) costs nothing: zero extra
 // instructions are ever emitted for it.
-func implicitAwaitScrutinee(inner: in Expr): Expr {
+//
+// #7170 (review finding on #6920's fix): the mode checker's V0012 rejects
+// `await` inside a try/catch/finally in an async function, because the CLR
+// verifier rejects `AwaitUnsafeOnCompleted` inside a protected region — a
+// suspend/resume sequence physically inside a `try`.  V0012 is a purely
+// syntactic walk over literal `EAwait` nodes that runs during mode checking
+// (`pipeCheckAndMono`'s `checkFile`), which happens BEFORE this pass
+// (`lowerPropagateFile`) synthesizes the implicit `EAwait` above — so V0012
+// can never see it.  Left unguarded, `try { val x = asyncCall()?; ... }
+// catch ... { ... }` inside an `async func` would silently regress from a
+// safe (if confusing) T0115 compile failure pre-#6920 to invalid IL that
+// builds successfully and crashes at JIT/runtime.
+//
+// Fix it here instead: this pass already knows, at the exact moment it is
+// about to synthesize the implicit `EAwait`, whether the enclosing function
+// is async (`st.curFnAsync`) and whether the rewrite point is lexically
+// inside one of its try/catch/finally regions (`st.inTry`, threaded by
+// `stateForFn`/`stateInTry` — see `PropState`'s doc).  When both hold, reject
+// with a clear diagnostic instead of emitting the hazardous implicit await.
+// A caller who wrote the `await` explicitly is UNCHANGED — V0012 already
+// catches that spelling correctly, at the correct pipeline stage, with its
+// own diagnostic; this guard only covers the implicit-rewrite case V0012
+// structurally cannot reach.  Extending V0012 itself to see the implicit
+// await (or to reason about async-ness across package boundaries) is a
+// larger, separately-tracked follow-up — see docs/decisions/D-progress-0941.
+func implicitAwaitScrutinee(inner: in Expr, sp: in Span, st: in PropState): Expr {
   if isAlreadyAwaitedExpr(inner) {
+    inner
+  } else if st.curFnAsync and st.inTry {
+    st.diagnostics.add(
+      errorDiagnostic(
+        "F0045",
+        "the `?` operator's implicit `await` of this direct async call inside a try/catch/finally in async function '" +
+          st.curFnName +
+          "' would emit invalid IL (the CLR verifier rejects a suspend/resume sequence inside a " +
+          "protected region — see V0012); await the call explicitly before or after the try block instead",
+        sp
+      )
+    )
     inner
   } else {
     mkExpr(EAwait(inner = inner), inner.span)
@@ -210,7 +292,7 @@ func buildResultMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
   val arms: List[MatchArm] = newList()
   arms.add(okArm)
   arms.add(errArm)
-  mkExpr(EMatch(scrutinee = implicitAwaitScrutinee(inner), arms = arms), sp)
+  mkExpr(EMatch(scrutinee = implicitAwaitScrutinee(inner, sp, st), arms = arms), sp)
 }
 
 // `match (await inner) { case Some(v) -> v; case None -> { return None } }`
@@ -232,7 +314,7 @@ func buildOptionMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
   val arms: List[MatchArm] = newList()
   arms.add(someArm)
   arms.add(noneArm)
-  mkExpr(EMatch(scrutinee = implicitAwaitScrutinee(inner), arms = arms), sp)
+  mkExpr(EMatch(scrutinee = implicitAwaitScrutinee(inner, sp, st), arms = arms), sp)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -594,17 +676,21 @@ func rewriteStmt(s: in Statement, kind: in PropKind, st: in PropState): Statemen
     case SContinue(_) -> s
     case SThrow(ex) -> mkStmt(SThrow(expr = rewriteExpr(ex, kind, st)), s.span)
     case STry(body, catches, finallyOpt) -> {
+      // #7170: the body, every catch handler, and the finally block are all
+      // inside the try's protected region for V0012's purposes — mirror
+      // `modechecker_check.l`'s `walkStmtForAwaitInTry` STry case exactly.
+      val tryChildSt = stateInTry(st)
       val newCatches: List[CatchClause] = newList()
       var i = 0
       while i < catches.count {
-        newCatches.add(rewriteCatch(catches[i], kind, st))
+        newCatches.add(rewriteCatch(catches[i], kind, tryChildSt))
         i = i + 1
       }
       val newFinally: Option[Block] = match finallyOpt {
-        case Some(fb) -> Some(value = rewriteBlock(fb, kind, st))
+        case Some(fb) -> Some(value = rewriteBlock(fb, kind, tryChildSt))
         case None -> None
       }
-      mkStmt(STry(body = rewriteBlock(body, kind, st), catches = newCatches, finally_ = newFinally), s.span)
+      mkStmt(STry(body = rewriteBlock(body, kind, tryChildSt), catches = newCatches, finally_ = newFinally), s.span)
     }
     case SDefer(body) -> mkStmt(SDefer(body = rewriteBlock(body, kind, st)), s.span)
     case SScope(binding, body) -> mkStmt(SScope(binding = binding, body = rewriteBlock(body, kind, st)), s.span)
@@ -659,6 +745,13 @@ func rewriteFunction(fn: in FunctionDecl, st: in PropState): FunctionDecl {
     case None -> fn
     case Some(body) -> {
       val kind = monadOfRet(fn.ret, st.aliases)
+      // #7170: (re-)enter a fresh async/try context for this function, so
+      // `implicitAwaitScrutinee` sees THIS function's own `isAsync` — not
+      // an enclosing one's — and starts outside any try region regardless
+      // of where this function is itself nested (a statement-level `SItem`
+      // function declared inside an outer try body runs in its own frame,
+      // not the outer function's protected region).
+      val fnSt = stateForFn(st, fn.name, fn.isAsync)
       FunctionDecl(
         docComments = fn.docComments,
         annotations = fn.annotations,
@@ -670,7 +763,7 @@ func rewriteFunction(fn: in FunctionDecl, st: in PropState): FunctionDecl {
         ret = fn.ret,
         whereClause = fn.whereClause,
         contracts = fn.contracts,
-        body = Some(value = rewriteFunctionBody(body, kind, st)),
+        body = Some(value = rewriteFunctionBody(body, kind, fnSt)),
         span = fn.span
       )
     }
@@ -679,6 +772,9 @@ func rewriteFunction(fn: in FunctionDecl, st: in PropState): FunctionDecl {
 
 func rewriteEntry(ed: in EntryDecl, st: in PropState): EntryDecl {
   val kind = monadOfRet(ed.ret, st.aliases)
+  // Entry points cannot be declared `async` (no `isAsync` field on
+  // `EntryDecl`), so this always starts a non-async context.
+  val fnSt = stateForFn(st, ed.name, false)
   EntryDecl(
     docComments = ed.docComments,
     annotations = ed.annotations,
@@ -687,7 +783,7 @@ func rewriteEntry(ed: in EntryDecl, st: in PropState): EntryDecl {
     params = ed.params,
     ret = ed.ret,
     contracts = ed.contracts,
-    body = rewriteFunctionBody(ed.body, kind, st),
+    body = rewriteFunctionBody(ed.body, kind, fnSt),
     span = ed.span
   )
 }

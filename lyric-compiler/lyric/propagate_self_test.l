@@ -300,6 +300,82 @@ test "F0020: ? inside a lambda nested in a non-Result function also emits" {
   assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? inside lambda in Unit function")
 }
 
+// ── F0045: implicit-await ? inside try/catch/finally in an async func
+//    (#7170, review finding on #6920's fix) ──────────────────────────────────
+// V0012 (`modechecker_check.l`) rejects a literal `await` inside a
+// try/catch/finally in an async function, because it runs during mode
+// checking — BEFORE this pass synthesizes the #6920 implicit `EAwait` for a
+// bare `mayFail(n)?` — so it can never see the implicit form.  Left
+// unguarded, that combination would regress from a safe (if confusing)
+// pre-#6920 T0115 compile failure to invalid IL that builds and crashes at
+// JIT/runtime.  `implicitAwaitScrutinee` now rejects it here instead, with a
+// dedicated F0045 diagnostic.
+val asyncMayFailSrc = "async func mayFail(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n"
+
+test "F0045: implicit-await ? in a try body in an async function emits diagnostic" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = mayFail(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(propHasDiag(result.diagnostics, "F0045"), "F0045 emitted for implicit-await ? in a try body")
+  assertFalse(propHasDiag(result.diagnostics, "F0020"), "not the unrelated F0020 diagnostic")
+}
+
+test "F0045: implicit-await ? in a catch handler in an async function emits diagnostic" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    Ok(0)\n  } catch Bug as b {\n    val x = mayFail(n)?\n    Ok(x)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(propHasDiag(result.diagnostics, "F0045"), "F0045 emitted for implicit-await ? in a catch handler")
+}
+
+test "F0045: implicit-await ? in a finally block in an async function emits diagnostic" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    Ok(0)\n  } finally {\n    val x = mayFail(n)?\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(propHasDiag(result.diagnostics, "F0045"), "F0045 emitted for implicit-await ? in a finally block")
+}
+
+test "F0045: does not fire for an explicit (await ...)? in a try body — that spelling is V0012's job" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = (await mayFail(n))?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertFalse(
+    propHasDiag(result.diagnostics, "F0045"),
+    "explicit await is untouched by this guard (isAlreadyAwaitedExpr short-circuits before it)"
+  )
+}
+
+test "F0045: does not fire for implicit-await ? outside any try in an async function (#6920's own fix)" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  val x = mayFail(n)?\n  Ok(x)\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertFalse(
+    propHasDiag(result.diagnostics, "F0045"),
+    "#6920's own fix is unaffected when there is no try around the ?"
+  )
+}
+
+test "F0045: does not fire for implicit-await ? in a try body when the enclosing function is NOT async" {
+  // A plain (non-async) function's implicit await lowers to a blocking
+  // `GetAwaiter().GetResult()` shim, not a suspend/resume state machine —
+  // no CLR protected-region hazard, so the guard must only fire for
+  // `st.curFnAsync`.
+  val src = "package P\n" + asyncMayFailSrc +
+    "func f(n: in Int): Result[Int, String] {\n  try {\n    val x = mayFail(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertFalse(propHasDiag(result.diagnostics, "F0045"), "sync enclosing function never hits the async/try guard")
+}
+
+test "F0045: a nested async func declared inside an outer try starts its own fresh (non-try) context" {
+  // `inner`'s own `?` is not textually inside any try/catch/finally OF
+  // `inner`'s OWN body — only inside the outer function's try, which does
+  // not apply to a separately-framed nested function (stateForFn resets
+  // inTry=false on every function entry, matching V0012's ELambda reset).
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func outer(n: in Int): Result[Int, String] {\n  try {\n    async func inner(m: in Int): Result[Int, String] {\n      val y = mayFail(m)?\n      Ok(y)\n    }\n    Ok(n)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertFalse(propHasDiag(result.diagnostics, "F0045"), "nested function's own ? is outside its own try region")
+}
+
 // ── Same-file alias return types (#1814) ─────────────────────────────────────
 // `monadOfRet` unfolds same-file `alias` declarations before the Result/Option
 // classification, so a return type written through an alias no longer trips a

@@ -52,23 +52,38 @@ not actually Task-shaped (`isTaskTypeMsil` false), so the wrap costs zero
 extra instructions there.
 
 **Scope note — `?` on an implicit async call inside a `try`/`catch` in an
-async function.** V0012 rejects a *literal* `await` inside a
-try/catch/finally region of an async function (the CLR verifier rejects
-`AwaitUnsafeOnCompleted` inside a protected region) but is a purely
-syntactic AST walk that runs during mode checking, before `Lyric.Propagate`
-ever executes — it has no way to see an `EAwait` this pass synthesizes
-afterward. A `?` applied to a genuine async call placed directly inside such
-a try/catch/finally region (independent of this fix — that shape already
-failed to compile with T0115, unconditionally, before today) would, after
-this fix, generate the same class of invalid-IL suspension V0012 already
-guards against for the explicit spelling, instead of a clean diagnostic.
-This combination is outside #6920's reported repro (no `try`/`catch`
-involved) and was not exercised by any existing test; extending V0012 (or
-an equivalent propagate.l-local check) to cover it is tracked as a
-follow-up rather than bundled into this fix, per the "ship the slice you
-can finish properly" standard — a reliable version needs `Lyric.Propagate`
-(or the mode checker) to know which functions are declared `async`,
-including across package boundaries, which the current pass does not carry.
+async function, and its resolution (#7170).** V0012 rejects a *literal*
+`await` inside a try/catch/finally region of an async function (the CLR
+verifier rejects `AwaitUnsafeOnCompleted` inside a protected region) but is
+a purely syntactic AST walk that runs during mode checking, before
+`Lyric.Propagate` ever executes — it has no way to see an `EAwait` this pass
+synthesizes afterward. A `?` applied to a genuine async call placed directly
+inside such a try/catch/finally region (independent of the fix above — that
+shape already failed to compile with T0115, unconditionally, before this
+entry) would, after the fix above and before this paragraph's follow-up,
+generate the same class of invalid-IL suspension V0012 already guards
+against for the explicit spelling, instead of a clean diagnostic. This was
+flagged as a REQUIRED review finding on the PR that shipped the fix above
+(#7170) and closed in the same PR, before merge: `implicitAwaitScrutinee`
+now carries its own defensive check — `PropState` threads `curFnName` /
+`curFnAsync` / `inTry` through the rewrite walk (`stateForFn` re-scopes on
+every function entry — mirroring V0012's `ELambda` reset for a nested
+function; `stateInTry` re-scopes for a `try` body, every `catch`, and any
+`finally`, mirroring V0012's own `walkStmtForAwaitInTry` `STry` case
+exactly), and when a rewrite point that would otherwise synthesize the
+implicit `EAwait` has both `curFnAsync` and `inTry` set, it emits a new
+`F0045` diagnostic instead — a clean, actionable compile-time failure
+matching the pre-#6920 safety property for this one shape (mentioning
+V0012 by name in the message so the two diagnostics read as one story). An
+explicit `(await ...)?` in the same position is untouched — V0012 already
+catches that spelling at the correct pipeline stage, and
+`isAlreadyAwaitedExpr` short-circuits before the new check runs. The
+broader fix (extending V0012 itself, or otherwise making `Lyric.Propagate`
+/ the mode checker aware of `async`-ness across package boundaries) is
+still a separate, larger follow-up, deliberately not attempted here per the
+"ship the slice you can finish properly" standard — this fix only turns the
+silent-bad-IL risk back into a safe compile-time failure for the in-package
+case `Lyric.Propagate` can see.
 
 **JVM.** Unaffected — verified via a JVM equivalent of the repro
 (`--target jvm` compiles and runs it correctly, both before and after this
@@ -86,6 +101,18 @@ regression check), a mixed sync/async `?` chain (proving the implicit
 `EAwait` wrap is a no-op for the non-async operand), and an `Option`-flavored
 (`Some`/`None`) analog. All run via native `lyric test --target dotnet`
 against the self-hosted `Msil.Bridge`.
+
+The #7170 follow-up added an "F0045: implicit-await ? inside try/catch/
+finally in an async func" section covering the diagnostic (source-string
+unit tests against `lowerPropagateFile` directly, matching the existing
+F0020 error-path tests' style): fires for the implicit-await scrutinee in a
+`try` body, in a `catch` handler, and in a `finally` block; does not fire
+for an explicit `(await ...)?` in the same position, for an implicit-await
+`?` outside any try in an async function (#6920's own case, unaffected),
+for a `try`/`catch` inside a non-async function (blocking-shim codegen has
+no protected-region hazard), or for a nested `async func`'s own `?` that is
+declared lexically inside an outer function's `try` but is not itself
+inside any try of its own.
 
 **Files.** `lyric-compiler/lyric/propagate.l`,
 `lyric-compiler/lyric/propagate_self_test.l`.
