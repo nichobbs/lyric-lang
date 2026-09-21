@@ -842,14 +842,18 @@ already resolved by separate, earlier work. A full dotnet-vs-native
 function-diff across `file_host.l`/`environment_host.l`/`time_host.l`/
 `process_capture_host.l` found and shipped three more small seams
 (`hostReadAllBytes`, `hostRuntimeDirectory` → `""`, `hostRuntimeIdentifier`
-→ `""`) and precisely scoped what remains: `hostExit` needs a compiler fix
-(`Never`-typed `extern func`, filed as issue #6901), `hostAppBaseDirectory`
-needs new `lyric-rt` C surface (deferred, not blocked, filed as issue
-#6937), and `Std.File.stat`/`fileStatIsNewer`/`readTextOrPanic` are
-blocked by the same `try/catch`-on-native root cause issue #6887 tracks
-for `Std.Process`'s piped API — but scoped separately as issue #6961,
-since #6887's own scope and suggested fix are specific to that facade.
-See D-progress-910 for the full account.
+→ `""`) and precisely scoped what remained: `hostExit` needs a compiler fix
+(`Never`-typed `extern func`, filed as issue #6901, still open).
+`hostAppBaseDirectory` (issue #6937) and `Std.File.readTextOrPanic`'s
+`try/catch`-on-native block (issue #6961, the `Std.File` sibling of
+#6887's `Std.Process` piped-API gap) have both since shipped —
+`hostAppBaseDirectory` via a new `lyric-rt` `readlink("/proc/self/exe")`
+seam, `readTextOrPanic` by mirroring `hostReadAllBytes`'s
+panic-in-the-kernel pattern exactly — see D-progress-941.
+`Std.File.stat`/`fileStatIsNewer` remain blocked: they additionally need an
+opaque timestamp twin before a native kernel seam is even meaningful, a
+separate, larger prerequisite `try/catch` removal alone doesn't unblock.
+See D-progress-910 and D-progress-941 for the full account.
 
 ---
 
