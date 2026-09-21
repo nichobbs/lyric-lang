@@ -463,7 +463,16 @@ pub func compileToNativeWithFlags(
         case Some(f) -> {
           // Contracts in bundled packages lower to runtime asserts the
           // same way the user file's do.
-          toBundle.add(elaborateFile(f))
+          val stdElaborated = elaborateFile(f)
+          // `?`-propagation (#6954): a bundled Std.* package's own body can
+          // use `?` just like the user file's, and `Lyric.LlvmCodegen`
+          // cannot lower an un-rewritten `EPropagate` node — mirrors
+          // `pipeCheckAndMono`'s propagate step for the entry file.
+          val stdProp = lowerPropagateFile(stdElaborated)
+          if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {
+            return false
+          }
+          toBundle.add(stdProp.file)
           var fi = 0
           while fi < f.imports.count {
             worklist.add(dottedPath(f.imports[fi].path))
@@ -825,7 +834,15 @@ pub func compileProjectToNativeWithFlags(
       seen.add(pkg, true)
       match mapGet(stdlibByPkg, pkg) {
         case Some(f) -> {
-          toBundle.add(elaborateFile(f))
+          // `?`-propagation (#6954): see the matching comment in
+          // `compileToNativeWithFlags` — bundled Std.* packages need the
+          // same desugar pass the own-project packages above already get.
+          val stdElaborated = elaborateFile(f)
+          val stdProp = lowerPropagateFile(stdElaborated)
+          if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {
+            return false
+          }
+          toBundle.add(stdProp.file)
           var fi = 0
           while fi < f.imports.count {
             worklist.add(dottedPath(f.imports[fi].path))
