@@ -65,7 +65,16 @@ Ship "v2 slice 1" only:
   addition could overflow-panic for an extreme `--seed` on a multi-property
   file; XOR is always in-range and equally injective in `idx`), so an
   explicit `--seed` never collides two properties in the same file onto the
-  same sample sequence.
+  same sample sequence. XOR agrees with `+` only while there's no carry into
+  a differing bit, so a file with many properties (roughly the 9th onward,
+  where `idx` first sets a bit `cfg.seed` also has set) samples a different
+  sequence than the pre-fix `+` would have produced — even at the unchanged
+  default seed 1000. This is harmless (no output is pinned to a specific
+  sample sequence) but worth knowing if a future reader is surprised by a
+  shifted sample sequence in a large property file.
+- `--seed <N>` accepts any `Int`, including negative values — intentional,
+  not an oversight: any `Int` is a valid RNG seed for `Std.Random.makeRandom`,
+  so there is nothing to reject the way `--property-trials < 1` is rejected.
 
 ## Explicitly deferred (separate follow-up issues, not silently dropped)
 
