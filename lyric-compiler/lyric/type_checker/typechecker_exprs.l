@@ -3135,7 +3135,7 @@ func resolveExprPath(
           // A bare constructor reference like `Some` without call args infers as the
           // parent union with TyError type-args (uninferable without arguments).
           // The enclosing ECall arm re-infers with actual arg types and wins.
-          return inferUnionCaseConstruction(tbl, diag, sym, newList(), span)
+          return inferUnionCaseConstruction(tbl, diag, sym, newList(), newList(), span, false)
         }
         case DKConst(cd) -> {
           val ctx = newGenericContext()
@@ -4622,18 +4622,63 @@ func inferGenericArgs(genericNames: in List[String], fieldTypes: in List[Type], 
   result
 }
 
+// #7119: named-field constructor fields of a union case, for the shared
+// `reportMissingCtorFields` missing-required-field check (mirrors
+// `collectCtorFieldsFromRecord`/`collectCtorFieldsFromOpaque`). A union case
+// field never has a default value, so `hasDefault` is always false. A
+// positional (`UFPos`) field can't be supplied by name at all, so it's
+// excluded here — `reportMissingCtorFields` already skips the whole check
+// once any positional arg is present, and a purely-positional case called
+// with all-named args (which can't actually name any real field) falls
+// through its `hasUnknownName` guard instead of falsely reporting every
+// positional field as "missing". `ty` is `TyError`: the check only reads
+// `.name`/`.hasDefault`, so there's no need to resolve real field types
+// (and no need for a `Diagnostic` scratch list / generic context) just to
+// build this list.
+func collectUnionCaseFields(uc: in UnionCase, acc: in List[CtorField]): Unit {
+  var i = 0
+  while i < uc.fields.count {
+    match uc.fields[i] {
+      case UFNamed(nm, _, _) -> acc.add(CtorField(name = nm, ty = TyError, hasDefault = false))
+      case UFPos(_, _) -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
 // The parent union type for a union-case symbol, instantiated with the type args
 // inferred from `argTypes` (empty for a bare-name reference like `None`).
+// #7119: also checks for a missing required named field, mirroring
+// `inferConstruction`'s `reportMissingCtorFields` call for records/opaques —
+// a union-case construction omitting a required named field from an
+// all-named-args call used to reach codegen silently, the same invalid-IL
+// hazard #6739 fixed for records. `checkMissingFields` must be `false` for
+// the bare-callee-reference call site (a `ECall`'s callee expression is
+// inferred standalone, with no args, purely as a placeholder the enclosing
+// `ECall` arm then re-infers with the real args and wins per the comment
+// below) — otherwise every field-having case would falsely report all of
+// its fields "missing" at that zero-arg placeholder step, before the real
+// call-site check ever runs.
 func inferUnionCaseConstruction(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
   caseSym: in Symbol,
+  args: in List[CallArg],
   argTypes: in List[Type],
   span: in Span,
+  checkMissingFields: in Bool,
 ): Type {
   match caseSym.kind {
     case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) {
       case Some(decl) -> {
+        if checkMissingFields {
+          val prelimFields: List[CtorField] = newList()
+          collectUnionCaseFields(uc, prelimFields)
+          if reportMissingCtorFields(prelimFields, args, caseSym, span, diag) {
+            return TyError
+          }
+        }
         val gnames = unionDeclGenericNames(decl)
         val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames, caseSym.originPackage)
         val targs = inferGenericArgs(gnames, ftypes, argTypes)
@@ -5754,7 +5799,7 @@ func inferExprCore(
           instantiateReturnType(sig, argTypes)
         }
         case None -> match unionCaseSymbolOf(tbl, fn) {
-          case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, argTypes, e.span)
+          case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
           case None -> match constructorSymbolOf(tbl, fn) {
             case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
             // #6838: the callee names a union/enum TYPE itself, not one of its
@@ -6336,7 +6381,7 @@ pub func inferExprExpected(
               cargTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(cargs[ci2])))
               ci2 = ci2 + 1
             }
-            inferUnionCaseConstruction(tbl, diag, caseSym, cargTypes, e.span)
+            inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, e.span, true)
           }
           case None -> if diag.count > diagCountBefore { TyError } else { inferExpr(sc, tbl, sigs, diag, e) }
         }
