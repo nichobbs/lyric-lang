@@ -2372,3 +2372,81 @@ test "config field's trailing annotation stays on the field's own line instead o
     "config field trailing annotation: stays inline on the field's own line"
   )
 }
+
+// #6869: a paren-arrow expression-bodied lambda literal (`(v) -> v`, no
+// `{ }`) parses to the exact same `ELambda` AST as the brace form
+// `{ v -> v }` (`parseArrowLambdaTail` wraps the bare expression in a
+// synthetic one-statement `Block`). Before this fix, `lambdaInlineStr`
+// always rendered every `ELambda` in brace form, so `(v) -> v` came back
+// as `{ v -> v }` — a different code-token sequence — and
+// `formatSourceChecked`'s losslessness check refused the ENTIRE file
+// with `FmtStructureChanged`, not just a warning on that one lambda.
+test "paren-arrow expression-bodied lambda round-trips instead of being refused (#6869)" {
+  val src = "package P\n\nval f = (v) -> v\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "arrow lambda: round-trips, not refused")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "arrow lambda: idempotent")
+  assertTrue(Str.contains(once, "(v) -> v"), "arrow lambda: keeps its paren-arrow spelling, not brace-wrapped")
+}
+
+test "paren-arrow lambda with multiple params round-trips" {
+  val src = "package P\n\nval add = (x, y) -> x + y\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "multi-param arrow lambda: round-trips")
+  assertTrue(
+    Str.contains(format(parse(src)), "(x, y) -> x + y"),
+    "multi-param arrow lambda: keeps its paren-arrow spelling"
+  )
+}
+
+test "zero-param paren-arrow lambda round-trips" {
+  val src = "package P\n\nval always1 = () -> 1\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "zero-param arrow lambda: round-trips")
+  assertTrue(Str.contains(format(parse(src)), "() -> 1"), "zero-param arrow lambda: keeps its paren-arrow spelling")
+}
+
+test "brace-form lambda with a single bare-expression statement still round-trips in brace form" {
+  // The AST-identical counterpart of the previous cases: `{ v -> v }`
+  // must keep its OWN spelling too, since `lambdaBodyIsBareExpr` only
+  // matches the synthetic (no-brace) `Block` a paren-arrow lambda
+  // produces, never a real `parseBlock` result.
+  val src = "package P\n\nval f = { v -> v }\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "brace-form single-statement lambda: round-trips")
+  assertTrue(
+    Str.contains(format(parse(src)), "{ v -> v }"),
+    "brace-form single-statement lambda: keeps its brace spelling, not converted to arrow-only"
+  )
+}
+
+test "width driven long paren-arrow lambda body breaks after the arrow without adding braces" {
+  // Mirrors "width driven long lambda body" above, but for the
+  // paren-arrow spelling: the multi-line layout must still never
+  // introduce a `{`/`}` pair (that would reproduce #6869's token-loss
+  // refusal), so the body wraps under a bare `(params) ->` opener.
+  val src = "package P\n" + "func go(): Int {\n" +
+    "  val cb = (x, y, z) -> aLongHelperFunction(x) + bLongHelperFunction(y) + cLongHelperFunction(z) + dLongHelperFunction(x) + eLongHelperFunction(y)\n" +
+    "  cb(1, 2, 3)\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "long arrow lambda: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "(x, y, z) ->\n"),
+    "long arrow lambda: breaks after `->` with no closing brace on that line"
+  )
+  assertFalse(Str.contains(acc, "{ x, y, z ->"), "long arrow lambda: must not be rewritten into brace form")
+}
+
+test "paren-arrow lambda as a bare statement still separates correctly from the previous statement" {
+  // `exprStartsWithBracket` must recognise that a paren-arrow lambda
+  // starts with `(`, the same hazard `EParen`/`ETuple` already guard
+  // against: otherwise the previous statement's trailing expression
+  // could be re-parsed as calling into this lambda's parameter list.
+  val src = "package P\n\nfunc go(): Unit {\n  bar\n  (v) -> v\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "arrow lambda as statement: round-trips losslessly")
+}

@@ -1297,6 +1297,34 @@ func exprParenMulti(col: in Int, ctx: inout FmtCtx, inner: in Expr): List[String
   acc
 }
 
+/// Detects the paren-arrow expression-bodied lambda spelling
+/// (`(params) -> expr`, no `{ }`).  `parseArrowLambdaTail` wraps a bare
+/// expression body in a synthetic single-statement `Block` whose span is
+/// exactly the expression's own span (no surrounding braces); a real
+/// `{ … }` block body is always produced by `parseBlock`, whose span
+/// starts at the `{` token and therefore strictly precedes its first
+/// statement. That span equality reliably distinguishes the two
+/// AST-identical spellings without adding a field to `ELambda` (which
+/// would ripple through every one of its ~40 match sites across both
+/// backends).  Rendering a paren-arrow lambda back in brace form changes
+/// its code-token sequence (`(`/`)` vs `{`/`}`), which
+/// `formatSourceChecked`'s loss-check correctly refuses — see #6869.
+func lambdaBodyIsBareExpr(body: in Block): Option[Expr] {
+  if body.statements.count != 1 {
+    return None
+  }
+  match body.statements[0].kind {
+    case SExpr(e) -> {
+      if e.span.startPos.offset == body.span.startPos.offset and e.span.endPos.offset == body.span.endPos.offset {
+        Some(value = e)
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
 /// `ELambda` multi-line layout:
 ///
 ///     { param1, param2 ->
@@ -1311,7 +1339,16 @@ func exprParenMulti(col: in Int, ctx: inout FmtCtx, inner: in Expr): List[String
 ///     { ->
 ///       stmt
 ///     }
+///
+/// A paren-arrow expression-bodied lambda (`(params) -> expr`, see
+/// `lambdaBodyIsBareExpr`) has no brace pair to break onto its own line,
+/// so it gets its own layout in `exprArrowLambdaMulti` instead.
 func exprLambdaMulti(col: in Int, ctx: inout FmtCtx, ps: in List[LambdaParam], body: in Block): List[String] {
+  match lambdaBodyIsBareExpr(body) {
+    case Some(e) -> return exprArrowLambdaMulti(col, ctx, ps, e)
+    case None -> {
+    }
+  }
   val opener = if ps.count == 0 { "{ ->" } else { "{ " + lambdaParamsStr(ps) + " ->" }
   val acc: List[String] = newList()
   acc.add(opener)
@@ -1322,6 +1359,25 @@ func exprLambdaMulti(col: in Int, ctx: inout FmtCtx, ps: in List[LambdaParam], b
     i = i + 1
   }
   acc.add("}")
+  acc
+}
+
+/// Multi-line layout for a paren-arrow expression-bodied lambda
+/// (`(params) -> expr`) whose inline form overflows the width budget:
+/// the `(params) ->` opener stays on its own line and the body
+/// expression is indented beneath it, mirroring `exprQuantMulti`'s
+/// where-guard/body split. Never introduces a brace pair — see
+/// `lambdaBodyIsBareExpr` for why that would be lossy.
+func exprArrowLambdaMulti(col: in Int, ctx: inout FmtCtx, ps: in List[LambdaParam], body: in Expr): List[String] {
+  val opener = "(" + lambdaParamsStr(ps) + ") ->"
+  val acc: List[String] = newList()
+  acc.add(opener)
+  val bd = indentDoc(2, exprAtCol(col + 2, ctx, body))
+  var i = 0
+  while i < bd.count {
+    acc.add(bd[i])
+    i = i + 1
+  }
   acc
 }
 
@@ -1479,6 +1535,11 @@ func quantifierStr(kw: in String, bs: in List[PropertyBinder], w: in Option[Expr
 }
 
 func lambdaInlineStr(ps: in List[LambdaParam], body: in Block): String {
+  match lambdaBodyIsBareExpr(body) {
+    case Some(e) -> return "(" + lambdaParamsStr(ps) + ") -> " + exprInline(0, e)
+    case None -> {
+    }
+  }
   if ps.count == 0 {
     "{ -> " + blockInline(body) + " }"
   } else {
@@ -1829,6 +1890,10 @@ func exprStartsWithBracket(e: in Expr): Bool {
     case EMember(r, _) -> exprStartsWithBracket(r)
     case EPropagate(inner) -> exprStartsWithBracket(inner)
     case EBinop(_, lhs, _) -> exprStartsWithBracket(lhs)
+    // A paren-arrow lambda (`(params) -> expr`, see `lambdaBodyIsBareExpr`)
+    // starts with `(` just like `EParen`/`ETuple`; a brace-form lambda
+    // starts with `{` and is not part of this hazard.
+    case ELambda(_, body) -> match lambdaBodyIsBareExpr(body) { case Some(_) -> true; case None -> false }
     case _ -> false
   }
 }
