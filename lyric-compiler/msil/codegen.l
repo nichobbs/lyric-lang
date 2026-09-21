@@ -32325,6 +32325,28 @@ func collectBareFuncValueRefsStmt(s: in Statement, acc: in List[String]): Unit {
   }
 }
 
+// Shared by `IRecord` and `IExposedRec` (identical `RecordDecl` shape,
+// D-progress-942): collect bare value-position names referenced from a
+// record's body methods and field default-value initializers.
+func collectRecordBareRefsMsil(decl: in RecordDecl, acc: in List[String]): Unit {
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case RMFunc(fn) -> collectRefNamesFuncBodyMsil(fn.body, acc)
+      case RMField(field) -> {
+        match field.dflt {
+          case Some(dfltExpr) -> collectBareFuncValueRefsExpr(dfltExpr, acc)
+          case None -> {
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    mi = mi + 1
+  }
+}
+
 // Run the value-position-only walk above over every top-level item body in
 // the file, accumulating every bare single-segment name referenced as a
 // VALUE anywhere.  Still over-approximates in one narrow way (deliberately,
@@ -32341,24 +32363,12 @@ func allReferencedNamesMsil(file: in SourceFile): List[String] {
       case IFunc(decl) -> collectRefNamesFuncBodyMsil(decl.body, acc)
       case IVal(decl) -> collectBareFuncValueRefsExpr(decl.init, acc)
       case IConst(decl) -> collectBareFuncValueRefsExpr(decl.init, acc)
-      case IRecord(decl) -> {
-        var mi = 0
-        while mi < decl.members.count {
-          match decl.members[mi] {
-            case RMFunc(fn) -> collectRefNamesFuncBodyMsil(fn.body, acc)
-            case RMField(field) -> {
-              match field.dflt {
-                case Some(dfltExpr) -> collectBareFuncValueRefsExpr(dfltExpr, acc)
-                case None -> {
-                }
-              }
-            }
-            case _ -> {
-            }
-          }
-          mi = mi + 1
-        }
-      }
+      case IRecord(decl) -> collectRecordBareRefsMsil(decl, acc)
+      // An `exposed record` wraps the identical `RecordDecl` shape as a plain
+      // `IRecord` (D-progress-942) — its body methods and default-value bare-
+      // name references need the same collection so a synthesized thunk isn't
+      // silently skipped for an exposed record (#6533 follow-up audit).
+      case IExposedRec(decl) -> collectRecordBareRefsMsil(decl, acc)
       case IImpl(decl) -> {
         var mi = 0
         while mi < decl.members.count {
@@ -32521,6 +32531,46 @@ pub func synthesizeBareFuncRefThunksMsil(file: in SourceFile): SourceFile {
   )
 }
 
+// Shared by `IRecord` and `IExposedRec` (identical `RecordDecl` shape,
+// D-progress-942): BFS-collect direct lambdas from a record's member
+// method bodies (D037: methods-in-types implicit self). Used by
+// `liftLambdasMsil` below.
+func collectRecordLambdasBfsMsil(
+  decl: in RecordDecl,
+  ticker: in List[Int],
+  synths: in List[Item],
+  deferred: in List[Block],
+): Unit {
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case RMFunc(fn) -> {
+        match fn.body {
+          case Some(body) -> {
+            match body {
+              case FBBlock(block) -> {
+                var si = 0
+                while si < block.statements.count {
+                  collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                  si = si + 1
+                }
+              }
+              case FBExpr(e) -> {
+                collectLambdasBfsExpr(e, ticker, synths, deferred)
+              }
+            }
+          }
+          case None -> {
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    mi = mi + 1
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
 // items in breadth-first order so lambda indices match the codegen traversal.
@@ -32560,37 +32610,12 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
       case IConst(decl) -> {
         collectLambdasBfsExpr(decl.init, ticker, synths, deferred)
       }
-      case IRecord(decl) -> {
-        // Walk record member methods (D037: methods-in-types implicit self).
-        var mi = 0
-        while mi < decl.members.count {
-          match decl.members[mi] {
-            case RMFunc(fn) -> {
-              match fn.body {
-                case Some(body) -> {
-                  match body {
-                    case FBBlock(block) -> {
-                      var si = 0
-                      while si < block.statements.count {
-                        collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
-                        si = si + 1
-                      }
-                    }
-                    case FBExpr(e) -> {
-                      collectLambdasBfsExpr(e, ticker, synths, deferred)
-                    }
-                  }
-                }
-                case None -> {
-                }
-              }
-            }
-            case _ -> {
-            }
-          }
-          mi = mi + 1
-        }
-      }
+      case IRecord(decl) -> collectRecordLambdasBfsMsil(decl, ticker, synths, deferred)
+      // An `exposed record` wraps the identical `RecordDecl` shape as a plain
+      // `IRecord` (D-progress-942) — its body methods need the same BFS
+      // lambda collection so a lambda literal inside one isn't silently left
+      // with no lifted token (#6533 follow-up audit).
+      case IExposedRec(decl) -> collectRecordLambdasBfsMsil(decl, ticker, synths, deferred)
       case IImpl(decl) -> {
         // Walk impl-block method bodies (#6119: `impl` methods were never
         // scanned, so a lambda literal inside one had no lifted token,

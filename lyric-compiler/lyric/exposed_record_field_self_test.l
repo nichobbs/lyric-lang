@@ -68,3 +68,39 @@ test "exposed record Byte field compound assignment wraps unsigned" {
   h.value += 100.toByte()
   assertEqualInt(h.value.toInt(), 44, "h.value += 100 on 200 wraps unsigned to 44, not 300")
 }
+
+// #6533 follow-up audit (MSIL only): `Msil.Codegen.liftLambdasMsil`'s
+// `IRecord` match arm (which BFS-collects lambda literals from a record's
+// body methods so each gets a lifted synthetic IFunc token) had no
+// `IExposedRec` sibling, even though `exposed record` wraps the identical
+// `RecordDecl` shape. A lambda literal inside an `exposed record` body
+// method compiled clean but panicked at codegen time ("lambda token
+// missing ... liftLambdasMsil pre-pass was not run").
+exposed record Adder {
+  base: Int
+
+  func addOne(self: in Adder): Int {
+    val inc = { x: Int -> x + 1 }
+    inc(self.base)
+  }
+}
+
+test "exposed record body method containing a lambda literal lowers correctly (#6533 follow-up)" {
+  val a = Adder(base = 10)
+  assertEqualInt(a.addOne(), 11, "lambda literal inside an exposed-record body method executes correctly")
+}
+
+// #6533 follow-up audit (MSIL only): `Msil.Codegen.allReferencedNamesMsil`'s
+// `IRecord` match arm (which collects bare module-level names referenced
+// from a record's field default-value initializers, so each gets a
+// synthesized value thunk) had the same missing `IExposedRec` sibling.
+val exposedDefaultBase: Int = 42
+
+exposed record WithDefault {
+  count: Int = exposedDefaultBase
+}
+
+test "exposed record field default referencing a bare module-level val resolves correctly (#6533 follow-up)" {
+  val w = WithDefault()
+  assertEqualInt(w.count, 42, "default-value bare-name reference resolves to the module-level val")
+}
