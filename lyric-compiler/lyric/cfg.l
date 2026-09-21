@@ -120,6 +120,21 @@ record ClassifyOut {
   // ── Public entry point ─────────────────────────────────────────────────────
 }
 
+/// True iff `applyCfgErasure` would erase the WHOLE file — i.e. every
+/// `@cfg` annotation on `fileAnnotations` evaluates to a false predicate
+/// against `active`/`declared`. Exposed so a caller that must decide
+/// something BEFORE running erasure (e.g. `lyric test` deciding whether a
+/// `@test_module`'s synthesized entry point is even worth emitting — see
+/// #6868) doesn't have to reimplement `classifyAnnotations`.  Malformed
+/// `@cfg` predicates are treated as kept (not gated out), matching
+/// `classifyAnnotations`'s own "surface F0012, don't silently erase"
+/// policy.
+pub func isFileCfgGatedOut(
+  active: in List[String], declared: in List[String], fileAnnotations: in List[Annotation]
+): Bool {
+  not classifyAnnotations(active, declared, fileAnnotations).keep
+}
+
 /// A copy of `active` with the target pseudo-feature `target.<name>`
 /// appended (D-N-013).  Each backend bridge threads its own target name
 /// (`dotnet` / `jvm` / `native`) so `@cfg(target = "X")` items erase

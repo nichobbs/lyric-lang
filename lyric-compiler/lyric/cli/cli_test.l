@@ -565,12 +565,42 @@ func cmdTest(argv: in slice[String]): Int {
   val outExt = if targetJvm { ".jar" } else if targetNative { "" } else { ".dll" }
   val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-test"), stem + outExt)
 
-  val synthResult = if targetNative {
-    TestSynth.synthesizeNative(source, filterArg)
-  } else if runProperties {
-    TestSynth.synthesizeWithProperties(source, filterArg)
+  // #6868: resolve the same active/declared feature set the eventual
+  // compile will use, so the file-level `@cfg` gating check inside
+  // `synthesizeFor` agrees with what `Cfg.applyCfgErasure` sees downstream.
+  // Native has no manifest-driven features at all — `emitTestNative` never
+  // resolves a manifest, and `Lyric.LlvmBridge` always erases against
+  // `Cfg.withTargetFeature(<empty>, "native")` — so it always gates against
+  // an empty set. `--manifest` was already routed to `cmdTestManifest`
+  // above, so any manifest here is auto-discovered (`None` override),
+  // matching `emitSingleFileOrProject`'s own resolution for this file.
+  val cfgEmptyActive: List[String] = newList()
+  val cfgEmptyDeclared: List[String] = newList()
+  val cfgNoManifestOverride: Option[String] = None
+  val cfgTestTarget: CompileTarget = if targetJvm { Jvm } else if targetNative { Native } else { Dotnet }
+  val (cfgActive, cfgDeclared) = if targetNative {
+    (cfgEmptyActive, cfgEmptyDeclared)
   } else {
-    TestSynth.synthesize(source, filterArg)
+    match loadManifestForSingleFileBuild(sourcePath, cfgNoManifestOverride) {
+      case Ok(Some(lm)) -> resolveManifestFeatures(
+        lm.mfText,
+        lm.mfPath,
+        cliFeatures,
+        noDefaultFeatures,
+        allFeatures,
+        cfgTestTarget
+      )
+      case Ok(None) -> (cfgEmptyActive, cfgEmptyDeclared)
+      case Err(_) -> (cfgEmptyActive, cfgEmptyDeclared)
+    }
+  }
+
+  val synthResult = if targetNative {
+    TestSynth.synthesizeFor(source, filterArg, true, false, cfgActive, cfgDeclared)
+  } else if runProperties {
+    TestSynth.synthesizeFor(source, filterArg, false, true, cfgActive, cfgDeclared)
+  } else {
+    TestSynth.synthesizeFor(source, filterArg, false, false, cfgActive, cfgDeclared)
   }
   match synthResult {
     case NoTestModule(span) -> {
@@ -586,6 +616,10 @@ func cmdTest(argv: in slice[String]): Int {
         printDiag(d)
       }
       return 1
+    }
+    case Gated(_) -> {
+      Console.println("0 test(s), module gated by inactive @cfg")
+      return 0
     }
     case Synthesised(rewritten, testCnt, skipCnt) -> {
       Console.println(toString(testCnt) + " test(s), " + toString(skipCnt) + " skipped")
@@ -1604,10 +1638,16 @@ func cmdTestManifest(
 
     var synthFailed = false
     var rewritten = ""
+    // #6868: pass the already-resolved manifest `activeFeatures`/`mfDeclared`
+    // (line ~1023) through to the gating check inside `synthesizeFor`, so a
+    // file-level `@cfg` on this test package is judged against the SAME
+    // feature set `EmitProjectRequest` below will actually compile with —
+    // not an empty set that could disagree with a manifest that activates
+    // the gating feature.
     val testSynthResult = if runProperties {
-      TestSynth.synthesizeWithProperties(testSource, filterArg)
+      TestSynth.synthesizeFor(testSource, filterArg, false, true, activeFeatures, mfDeclared)
     } else {
-      TestSynth.synthesize(testSource, filterArg)
+      TestSynth.synthesizeFor(testSource, filterArg, false, false, activeFeatures, mfDeclared)
     }
     match testSynthResult {
       case Synthesised(rw, _, _) -> {
@@ -1628,6 +1668,10 @@ func cmdTestManifest(
           printDiag(d)
         }
         totalFailed += 1
+        synthFailed = true
+      }
+      case Gated(_) -> {
+        Console.println("0 test(s), module gated by inactive @cfg")
         synthFailed = true
       }
     }
