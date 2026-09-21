@@ -61,7 +61,7 @@
 //!
 //! Public surface:
 //!
-//!   pub func lowerPropagateFile(file: in SourceFile): PropagateResult
+//!   pub func lowerPropagateFile(file: in SourceFile, awaitInTryIsHazard: Bool): PropagateResult
 //!
 //!     Returns a new SourceFile with every `?` desugared, plus any F0020
 //!     diagnostics.  The input is not mutated.
