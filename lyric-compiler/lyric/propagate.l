@@ -147,7 +147,52 @@ func singleStmtBlock(s: in Statement, sp: in Span): Block {
   Block(statements = stmts, span = sp)
 }
 
-// `match inner { case Ok(v) -> v; case Err(x) -> { return Err(x) } }`
+// #6920: `expr?` used to desugar straight to `match expr { ... }`, using
+// whatever `expr` evaluates to as the scrutinee verbatim.  When `expr` is a
+// direct call to an `async func` (implicit-await propagation — no literal
+// `await` in the source, e.g. `mayFail(3)?`), that scrutinee is the async
+// kickoff's raw `Task<Result[T,E]>` (MSIL: `cctx.funcRetTypes` records the
+// Task-wrapped kickoff return for every async func, in-bundle or restored —
+// see `msil/codegen.l`'s `seedAsyncFuncRetTypePlaceholderMsil` /
+// `registerRestoredFunc`), never the awaited `Result[T,E]` itself — the
+// unwrap ONLY happens through the dedicated `EAwait` AST node's codegen.
+// Testing a Task value against `Ok(v)`/`Err(x)` (or `Some`/`None`) patterns
+// silently fails to bind `v`/the payload (the match codegen has no case
+// shape for a Task-typed scrutinee), which only surfaces later as a T0115
+// "cannot resolve name" panic at the first read of the synthesized
+// `__lyric_prop_v<n>` — a confusing, far-from-the-cause diagnostic for what
+// is really a missing implicit await.
+//
+// Wrapping the scrutinee in an explicit `EAwait` here — unless the caller
+// already wrote one (`(await mayFail(3))?`) — makes `expr?` match the
+// language reference's "a direct call to an async function awaits in place
+// with or without the `await` keyword" rule (docs/01 §7.1) and reuses
+// EXACTLY the already-verified-correct codegen path the explicit-`await`
+// spelling goes through (Phase B suspend/resume inside an async function,
+// a blocking `GetAwaiter().GetResult()` shim otherwise).  It is safe for
+// every OTHER scrutinee shape too: `EAwait`'s own codegen is a no-op
+// pass-through whenever the awaited value is not actually Task-shaped
+// (`isTaskTypeMsil` false) — so wrapping a plain synchronous
+// `Result`/`Option` value (the overwhelmingly common case, e.g. `x?` on a
+// local `val x: Result[Int, String]`) costs nothing: zero extra
+// instructions are ever emitted for it.
+func implicitAwaitScrutinee(inner: in Expr): Expr {
+  if isAlreadyAwaitedExpr(inner) {
+    inner
+  } else {
+    mkExpr(EAwait(inner = inner), inner.span)
+  }
+}
+
+func isAlreadyAwaitedExpr(e: in Expr): Bool {
+  match e.kind {
+    case EParen(paren) -> isAlreadyAwaitedExpr(paren)
+    case EAwait(_) -> true
+    case _ -> false
+  }
+}
+
+// `match (await inner) { case Ok(v) -> v; case Err(x) -> { return Err(x) } }`
 func buildResultMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
   val vName = "__lyric_prop_v" + freshSuffix(st)
   val eName = "__lyric_prop_e" + freshSuffix(st)
@@ -165,10 +210,10 @@ func buildResultMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
   val arms: List[MatchArm] = newList()
   arms.add(okArm)
   arms.add(errArm)
-  mkExpr(EMatch(scrutinee = inner, arms = arms), sp)
+  mkExpr(EMatch(scrutinee = implicitAwaitScrutinee(inner), arms = arms), sp)
 }
 
-// `match inner { case Some(v) -> v; case None -> { return None } }`
+// `match (await inner) { case Some(v) -> v; case None -> { return None } }`
 func buildOptionMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
   val vName = "__lyric_prop_v" + freshSuffix(st)
 
@@ -187,7 +232,7 @@ func buildOptionMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
   val arms: List[MatchArm] = newList()
   arms.add(someArm)
   arms.add(noneArm)
-  mkExpr(EMatch(scrutinee = inner, arms = arms), sp)
+  mkExpr(EMatch(scrutinee = implicitAwaitScrutinee(inner), arms = arms), sp)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

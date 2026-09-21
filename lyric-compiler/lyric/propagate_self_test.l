@@ -163,6 +163,100 @@ test "Result `?` inside a while-loop body early-returns mid-iteration" {
 // blocked it was #1784 (a value-type *parameter* on an interface/impl method
 // faulted the JIT, unrelated to `?`), fixed separately.  End-to-end coverage of
 // `?` in an impl method lives in `impl_method_self_test.l`.
+// ── Async implicit-await propagation (#6920) ──────────────────────────────────
+// `expr?` where `expr` is DIRECTLY a call to an `async func` — no literal
+// `await` — used to desugar `?` straight to `match expr { ... }`, leaving the
+// async kickoff's raw `Task<Result[T,E]>` as the scrutinee instead of the
+// awaited `Result[T,E]`: the pattern-bound `Ok`/`Err` payload name was never
+// resolved against it, surfacing (only later, at its first read) as a
+// confusing T0115 "cannot resolve name" panic when the enclosing function
+// was ALSO async (its body then Phase-B-synthesizes a MoveNext method).
+// `buildResultMatch`/`buildOptionMatch` now wrap the scrutinee in an
+// implicit `EAwait` — unless one is already there — matching the language
+// reference's "a direct call to an async function awaits in place with or
+// without the `await` keyword" rule (docs/01 §7.1).
+async func asyncMayFailProp(n: in Int): Result[Int, String] {
+  if n < 0 {
+    return Err("negative")
+  }
+  Ok(n * 2)
+}
+
+// The exact #6920 repro shape: `?` applied directly to a call to an async
+// function, inside another async function's body, with no literal `await`.
+async func asyncChainImplicit(): Result[Int, String] {
+  val a = asyncMayFailProp(3)?
+  val b = asyncMayFailProp(4)?
+  Ok(a + b)
+}
+
+async func asyncChainImplicitErr(): Result[Int, String] {
+  val a = asyncMayFailProp(-1)?
+  val b = asyncMayFailProp(4)?
+  Ok(a + b)
+}
+
+// The #6920-reported workaround — `?` applied to an explicit `(await ...)` —
+// must keep compiling and computing the identical result: `isAlreadyAwaitedExpr`
+// must recognise the existing `EAwait` and skip the implicit wrap rather than
+// double-awaiting it.
+async func asyncChainExplicit(): Result[Int, String] {
+  val a = (await asyncMayFailProp(3))?
+  val b = (await asyncMayFailProp(4))?
+  Ok(a + b)
+}
+
+test "async Result `?`: implicit-await propagation on a direct async call (#6920)" {
+  val result = await asyncChainImplicit()
+  assertEqualInt(resultValue(result), 14, "3*2 + 4*2 = 14")
+  assertEqual(resultLabel(result), "ok", "no early return")
+}
+
+test "async Result `?`: implicit-await propagation short-circuits on Err (#6920)" {
+  val result = await asyncChainImplicitErr()
+  assertEqual(resultLabel(result), "negative", "negative input ? -> Err, second call never evaluated")
+}
+
+test "async Result `?`: explicit (await ...)? still compiles and matches the implicit form (#6920)" {
+  val result = await asyncChainExplicit()
+  assertEqualInt(resultValue(result), 14, "explicit-await workaround computes the same value")
+}
+
+// The implicit-await wrap must be a safe no-op for a `?` whose operand is
+// NOT an async call (the overwhelmingly common case) — a plain synchronous
+// `Result`-returning call inside an async function's body.
+async func asyncChainMixed(a: in Int, b: in Int): Result[Int, String] {
+  val x = okIf(a > 0, a, "a")?
+  val y = asyncMayFailProp(b)?
+  Ok(x + y)
+}
+
+test "async Result `?`: implicit await is a no-op for a non-async operand mixed with an async one (#6920)" {
+  val result = await asyncChainMixed(5, 3)
+  assertEqualInt(resultValue(result), 11, "5 + 3*2 = 11")
+  assertEqual(resultLabel(await asyncChainMixed(-1, 3)), "a", "sync ? still short-circuits first")
+}
+
+async func asyncOptDiv(n: in Int, d: in Int): Option[Int] {
+  if d == 0 {
+    None
+  } else {
+    Some(n / d)
+  }
+}
+
+// Option-flavored async chain — implicit-await propagation on `Some`/`None`.
+async func asyncOptChainImplicit(n: in Int, d1: in Int, d2: in Int): Option[Int] {
+  val a = asyncOptDiv(n, d1)?
+  val b = asyncOptDiv(a, d2)?
+  Some(b)
+}
+
+test "async Option `?`: implicit-await propagation on a direct async call (#6920)" {
+  assertEqualInt(optTag(await asyncOptChainImplicit(20, 2, 5)), 2, "20/2/5 = 2")
+  assertEqualInt(optTag(await asyncOptChainImplicit(20, 0, 5)), -1, "divide-by-zero ? -> None")
+}
+
 // ── F0020 error-path tests (#1781, #1801) ─────────────────────────────────────
 // These exercise `lowerPropagateFile` directly against source strings that
 // contain invalid `?` usage.  The diagnostic path was previously untested;
