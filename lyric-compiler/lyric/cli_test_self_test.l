@@ -499,6 +499,29 @@ test "lyric test --seed: two properties in one file each still pass under an exp
   assertEqualInt(rc, 0, "both properties pass under the same explicit --seed")
 }
 
+// Regression test for the fix that replaced `cfg.seed + idx` with
+// `cfg.seed.xor(idx)` in `tryBuildPropertyDriver` (test_synth.l): `Int` is
+// 32-bit, so an addition-based offset overflows (and panics, since overflow
+// checks are unconditional pending #6263) the moment a second property's
+// index is added to a `--seed` near `Int32.MaxValue`. XOR is always
+// in-range. Pins this down against a future accidental revert to `+`.
+test "lyric test --seed 2147483647: a two-property file does not overflow-panic (XOR offset, not addition)" {
+  val root = freshTempDir("prop-seed-overflow")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "prop_test.l")
+  writeFileOrPanic(
+    testFile,
+    propFixtureSource(
+      "property \"first identity\" forall(x: Int) {\n  Std.Testing.assertTrue(x == x, \"first identity\")\n}\n\n" +
+        "property \"second identity\" forall(y: Int) {\n  Std.Testing.assertTrue(y == y, \"second identity\")\n}\n"
+    )
+  )
+  val rc = mainWithExtra(testFile, listOf3("--properties", "--seed", "2147483647"))
+  assertEqualInt(rc, 0, "an extreme --seed near Int32.MaxValue does not overflow-panic on a multi-property file")
+}
+
 // #6659: `cmdTest`'s argv-parsing loop's `--coverage` branch was missing its
 // own `i += 1`, so ANY invocation with `--coverage` in argv spun forever
 // re-processing the same index instead of advancing — a busy-loop that

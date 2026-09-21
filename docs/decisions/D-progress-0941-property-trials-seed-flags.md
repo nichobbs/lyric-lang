@@ -81,12 +81,14 @@ Ship "v2 slice 1" only:
 
 ## Verification
 
-- `lyric-compiler/lyric/cli_test_self_test.l` — 8 new cases: both flags
+- `lyric-compiler/lyric/cli_test_self_test.l` — 9 new cases: both flags
   rejected without `--properties`; `--property-trials 0`, `--property-trials
   abc`, and `--seed abc` all rejected; an always-failing property still fails
   at `--property-trials 1`; an always-true property still passes at
   `--property-trials 500 --seed 42`; two properties in one file both pass
-  under one explicit shared `--seed` (distinct per-property offset).
+  under one explicit shared `--seed` (distinct per-property offset); a
+  two-property file under `--seed 2147483647` (near `Int32.MaxValue`) does
+  not overflow-panic, pinning down the `cfg.seed.xor(idx)` fix.
 - `lyric-compiler/lyric/test_synth_self_test.l` — unchanged existing cases
   continue to pass (`synthesize`/`synthesizeWithProperties`'s old signatures
   and behaviour are untouched).
