@@ -480,7 +480,7 @@ test "lyric test --property-trials 500 --seed 42: an always-true property still 
 
 // #6907: two properties in the same file must not collide on the same RNG
 // seed — `tryBuildPropertyDriver` offsets each property's seed by its own
-// index (`cfg.seed + idx`), so an explicit `--seed` still gives every
+// index (`cfg.seed.xor(idx)`), so an explicit `--seed` still gives every
 // property in the file a distinct starting seed, not the literal same one.
 test "lyric test --seed: two properties in one file each still pass under an explicit shared seed" {
   val root = freshTempDir("prop-seed-multi")
