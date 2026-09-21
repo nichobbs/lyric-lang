@@ -424,6 +424,20 @@ test "lyric test --property-trials: rejects a non-integer value" {
   assertEqualInt(rc, 1, "--property-trials abc is rejected (not an integer)")
 }
 
+test "lyric test --seed: rejects a non-integer value" {
+  val root = freshTempDir("prop-seed-notint")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "prop_test.l")
+  writeFileOrPanic(
+    testFile,
+    propFixtureSource("property \"whatever\" forall(x: Int) {\n  Std.Testing.assertTrue(true, \"n/a\")\n}\n")
+  )
+  val rc = mainWithExtra(testFile, listOf3("--properties", "--seed", "abc"))
+  assertEqualInt(rc, 1, "--seed abc is rejected (not an integer)")
+}
+
 test "lyric test --property-trials 1: an always-failing property still fails with a single trial" {
   val root = freshTempDir("prop-trials-one-fail")
   defer {

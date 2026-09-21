@@ -34848,10 +34848,12 @@ piece: `pub record PropertyRunConfig { trials: Int = 100; seed: Int =
 100/1000 defaults unchanged) and `Lyric.Cli`'s `cmdTest`/`cmdTestManifest`
 as `lyric test --properties --property-trials <N> --seed <N>`. Both flags
 require `--properties` (loud CLI error otherwise, not a silent no-op);
-each property in a file keeps its own seed offset (`cfg.seed + idx`) so
-an explicit `--seed` never collides two properties in the same file onto
-one sample sequence; a property failure's panic message now reports the
-exact `[seed=…, trials=…]` used, so a CI failure is reproducible by
+each property in a file keeps its own seed offset (`cfg.seed.xor(idx)` —
+XOR, not `+`, since `Int` is 32-bit and addition can overflow-panic on an
+extreme `--seed`) so an explicit `--seed` never collides two properties in
+the same file onto one sample sequence; a property failure's panic message
+now reports the exact `[seed=…, trials=…]` used, so a CI failure is
+reproducible by
 re-running with the same flags. Composable generators, opaque-type
 generation, and `ensures:`-derived properties remain unimplemented and
 are tracked as separate follow-up issues (see `docs/24-test-runner-plan.md`

@@ -61,8 +61,11 @@ Ship "v2 slice 1" only:
   seed and trial count used (`[seed=N, trials=N]`), so a CI failure is
   reproducible by re-running with the same flags.
 - Each property in a file still gets its own distinct seed
-  (`cfg.seed + idx`), so an explicit `--seed` never collides two properties
-  in the same file onto the same sample sequence.
+  (`cfg.seed.xor(idx)` — XOR rather than `+`, since `Int` is 32-bit and an
+  addition could overflow-panic for an extreme `--seed` on a multi-property
+  file; XOR is always in-range and equally injective in `idx`), so an
+  explicit `--seed` never collides two properties in the same file onto the
+  same sample sequence.
 
 ## Explicitly deferred (separate follow-up issues, not silently dropped)
 
@@ -79,11 +82,11 @@ Ship "v2 slice 1" only:
 ## Verification
 
 - `lyric-compiler/lyric/cli_test_self_test.l` — 8 new cases: both flags
-  rejected without `--properties`; `--property-trials 0` and a non-integer
-  value rejected; an always-failing property still fails at `--property-trials
-  1`; an always-true property still passes at `--property-trials 500 --seed
-  42`; two properties in one file both pass under one explicit shared
-  `--seed` (distinct per-property offset).
+  rejected without `--properties`; `--property-trials 0`, `--property-trials
+  abc`, and `--seed abc` all rejected; an always-failing property still fails
+  at `--property-trials 1`; an always-true property still passes at
+  `--property-trials 500 --seed 42`; two properties in one file both pass
+  under one explicit shared `--seed` (distinct per-property offset).
 - `lyric-compiler/lyric/test_synth_self_test.l` — unchanged existing cases
   continue to pass (`synthesize`/`synthesizeWithProperties`'s old signatures
   and behaviour are untouched).

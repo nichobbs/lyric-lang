@@ -395,7 +395,11 @@ func hasImportOfPath(imports: in List[ImportDecl], dottedPath: in String): Bool 
 // caller reports that as a `# skip` line, exactly like v1's unconditional
 // skip.
 func tryBuildPropertyDriver(
-  source: in String, p: in PropertyDecl, idx: in Int, annText: in String, cfg: in PropertyRunConfig
+  source: in String,
+  p: in PropertyDecl,
+  idx: in Int,
+  annText: in String,
+  cfg: in PropertyRunConfig,
 ): Result[String, String] {
   val binders: List[PropBinderInfo] = newList()
   var bi = 0
@@ -450,7 +454,13 @@ func tryBuildPropertyDriver(
     return Ok(value = sb)
   }
 
-  val seedUsed = cfg.seed + idx
+  // XOR (not `+`) combines the per-run seed with the property's index: `Int`
+  // is 32-bit (docs/01-language-reference.md §2.1), so an addition can
+  // overflow — and panic, since overflow checks are unconditional pending
+  // #6263 — for an extreme `--seed` value in a multi-property file. XOR is
+  // always in-range and still gives every property in the file its own
+  // distinct starting seed (injective in `idx` for a fixed `cfg.seed`).
+  val seedUsed = cfg.seed.xor(idx)
   sb = sb + "  val __lyric_rng = Std.Random.makeRandom(" + toString(seedUsed) + ")\n"
   sb = sb + "  val __lyric_n = " + toString(cfg.trials) + "\n"
   sb = sb + "  var __lyric_iter = 0\n"
@@ -640,12 +650,17 @@ pub func synthesizeWithProperties(source: in String, filter: in Option[String]):
 // trial count and RNG seed caller-controlled via `cfg`, so a failing
 // property's reported `[seed=N, trials=N]` can be replayed exactly, and CI
 // can widen sampling for a suspect property without editing source.
-pub func synthesizeWithPropertiesConfig(source: in String, filter: in Option[String], cfg: in PropertyRunConfig): Outcome {
+pub func synthesizeWithPropertiesConfig(
+  source: in String, filter: in Option[String], cfg: in PropertyRunConfig
+): Outcome {
   synthesizeFor(source, filter, false, true, cfg)
 }
 
 func synthesizeFor(
-  source: in String, filter: in Option[String], nativeMode: in Bool, runProperties: in Bool,
+  source: in String,
+  filter: in Option[String],
+  nativeMode: in Bool,
+  runProperties: in Bool,
   cfg: in PropertyRunConfig,
 ): Outcome {
   val pf = parse(source)
