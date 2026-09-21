@@ -117,6 +117,22 @@ record PropState {
   // one (async) overload as safe purely because a DIFFERENT (sync) overload
   // shares the name.
   syncFuncNames: Map[String, Bool]
+  // #7197: same-file SIBLING method (name, arity) pairs of the record/impl/
+  // interface whose member body is currently being rewritten — empty
+  // outside any such body.  `msil/codegen.l`'s bare-call resolution
+  // (`fctx.className + "/" + funcName` lookup, #6489) makes a bare call
+  // resolve to a sibling method of the ENCLOSING type whenever one exists
+  // by that name, UNCONDITIONALLY shadowing a same-named top-level
+  // function — so `isRiskyTryCallScrutinee` must consult these sibling maps
+  // FIRST and never fall through to `syncFuncNames` once a same-named
+  // sibling exists, or a same-named top-level sync function would
+  // incorrectly "prove" a call actually bound to an async sibling method
+  // safe. `siblingAnyName` records every sibling method name (regardless of
+  // arity, mirroring the codegen shadowing check itself being arity-
+  // agnostic); `siblingSyncArity` records the `(name, arity)` pairs proven
+  // non-async, exactly like `syncFuncNames` but scoped to the container.
+  siblingAnyName: Map[String, Bool]
+  siblingSyncArity: Map[String, Bool]
   // #7170: name and `isAsync`-ness of the function currently being rewritten,
   // plus whether the rewrite point is lexically inside one of its try/
   // catch/finally regions.  See `implicitAwaitScrutinee`'s doc for why this
@@ -130,11 +146,15 @@ record PropState {
 func newPropState(
   diags: in List[Diagnostic], aliases: in Map[String, TypeExpr], syncFuncNames: in Map[String, Bool]
 ): PropState {
+  val noSiblings: Map[String, Bool] = newMap()
+  val noSyncSiblings: Map[String, Bool] = newMap()
   PropState(
     counter = newList(),
     diagnostics = diags,
     aliases = aliases,
     syncFuncNames = syncFuncNames,
+    siblingAnyName = noSiblings,
+    siblingSyncArity = noSyncSiblings,
     curFnName = "",
     curFnAsync = false,
     inTry = false
@@ -142,18 +162,45 @@ func newPropState(
 }
 
 // Re-scope `st` to a newly-entered function body: fresh async/try context,
-// same threaded `counter`/`diagnostics`/`aliases`/`syncFuncNames` (all
-// reference types, so mutations through the clone stay visible to the
-// caller — the same idiom `st.counter`/`st.diagnostics` already rely on).
+// same threaded `counter`/`diagnostics`/`aliases`/`syncFuncNames`/sibling
+// maps (all reference types, so mutations through the clone stay visible
+// to the caller — the same idiom `st.counter`/`st.diagnostics` already
+// rely on).
 func stateForFn(st: in PropState, name: in String, isAsync: Bool): PropState {
   PropState(
     counter = st.counter,
     diagnostics = st.diagnostics,
     aliases = st.aliases,
     syncFuncNames = st.syncFuncNames,
+    siblingAnyName = st.siblingAnyName,
+    siblingSyncArity = st.siblingSyncArity,
     curFnName = name,
     curFnAsync = isAsync,
     inTry = false
+  )
+}
+
+// Re-scope `st` for the duration of rewriting one record/impl/interface's
+// own member bodies: fresh sibling-method maps built from THAT container's
+// members (#7197), everything else threaded through unchanged. Call once
+// per container, before rewriting its members; a nested container (there
+// is none today, but this keeps the invariant precise) would correctly
+// shadow the outer one's siblings for its own body.
+func stateForContainerMembers(
+  st: in PropState,
+  siblingAnyName: in Map[String, Bool],
+  siblingSyncArity: in Map[String, Bool],
+): PropState {
+  PropState(
+    counter = st.counter,
+    diagnostics = st.diagnostics,
+    aliases = st.aliases,
+    syncFuncNames = st.syncFuncNames,
+    siblingAnyName = siblingAnyName,
+    siblingSyncArity = siblingSyncArity,
+    curFnName = st.curFnName,
+    curFnAsync = st.curFnAsync,
+    inTry = st.inTry
   )
 }
 
@@ -167,6 +214,8 @@ func stateInTry(st: in PropState): PropState {
     diagnostics = st.diagnostics,
     aliases = st.aliases,
     syncFuncNames = st.syncFuncNames,
+    siblingAnyName = st.siblingAnyName,
+    siblingSyncArity = st.siblingSyncArity,
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
     inTry = true
@@ -195,6 +244,8 @@ func stateForLambda(st: in PropState): PropState {
     diagnostics = st.diagnostics,
     aliases = st.aliases,
     syncFuncNames = st.syncFuncNames,
+    siblingAnyName = st.siblingAnyName,
+    siblingSyncArity = st.siblingSyncArity,
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
     inTry = false
@@ -403,8 +454,19 @@ func isRiskyTryCallScrutinee(inner: in Expr, st: in PropState): Bool {
         case EPath(path) -> {
           if path.segments.count == 1 {
             val name = path.segments[0]
-            val key = syncFuncArityKey(name, args.count)
-            not (st.syncFuncNames.containsKey(key) or isBuiltinMonadCtorName(name))
+            // #7197: a same-named sibling method of the enclosing record/
+            // impl/interface — if one exists — ALWAYS wins bare-call
+            // resolution over a same-named top-level function (mirroring
+            // `msil/codegen.l`'s `fctx.className + "/" + funcName`
+            // shadowing, #6489). Once a sibling of this name exists, the
+            // top-level `syncFuncNames` allow-list must never be consulted
+            // for it — only the sibling's own (proven) sync-ness does.
+            if st.siblingAnyName.containsKey(name) {
+              not st.siblingSyncArity.containsKey(syncFuncArityKey(name, args.count))
+            } else {
+              val key = syncFuncArityKey(name, args.count)
+              not (st.syncFuncNames.containsKey(key) or isBuiltinMonadCtorName(name))
+            }
           } else {
             true
           }
@@ -948,11 +1010,27 @@ func rewriteItem(it: in Item, st: in PropState): Item {
     case IFunc(fn) -> IFunc(decl = rewriteFunction(fn, st))
 
     case IImpl(decl) -> {
+      // #7197: build this impl's own sibling map before rewriting its
+      // members, mirroring `rewriteRecordDecl` — a bare call inside one
+      // impl method can resolve to a sibling impl method the same way it
+      // resolves to a sibling record method.
+      val siblingAnyName: Map[String, Bool] = newMap()
+      val siblingSyncArity: Map[String, Bool] = newMap()
+      var si = 0
+      while si < decl.members.count {
+        match decl.members[si] {
+          case IMplFunc(fn) -> addSiblingFn(siblingAnyName, siblingSyncArity, fn)
+          case _ -> ()
+        }
+        si = si + 1
+      }
+      val memberSt = stateForContainerMembers(st, siblingAnyName, siblingSyncArity)
+
       val newMembers: List[ImplMember] = newList()
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
-          case IMplFunc(fn) -> newMembers.add(IMplFunc(fn = rewriteFunction(fn, st)))
+          case IMplFunc(fn) -> newMembers.add(IMplFunc(fn = rewriteFunction(fn, memberSt)))
           case IMplAssoc(asc) -> newMembers.add(IMplAssoc(assoc = asc))
         }
         i = i + 1
@@ -970,11 +1048,26 @@ func rewriteItem(it: in Item, st: in PropState): Item {
     }
 
     case IInterface(decl) -> {
+      // #7197: same sibling-map treatment for an interface's own default
+      // methods (a bare call inside one DIM body can resolve to a sibling
+      // default method).
+      val siblingAnyName: Map[String, Bool] = newMap()
+      val siblingSyncArity: Map[String, Bool] = newMap()
+      var si = 0
+      while si < decl.members.count {
+        match decl.members[si] {
+          case IMFunc(fn) -> addSiblingFn(siblingAnyName, siblingSyncArity, fn)
+          case _ -> ()
+        }
+        si = si + 1
+      }
+      val memberSt = stateForContainerMembers(st, siblingAnyName, siblingSyncArity)
+
       val newMembers: List[InterfaceMember] = newList()
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
-          case IMFunc(fn) -> newMembers.add(IMFunc(fn = rewriteFunction(fn, st)))
+          case IMFunc(fn) -> newMembers.add(IMFunc(fn = rewriteFunction(fn, memberSt)))
           case IMSig(sig) -> newMembers.add(IMSig(sig = sig))
           case IMAssoc(a) -> newMembers.add(IMAssoc(assoc = a))
         }
@@ -1033,12 +1126,55 @@ func rewriteItem(it: in Item, st: in PropState): Item {
   )
 }
 
+// #7197: records a member function's `(name, arity)` into both sibling
+// maps — `anyName` unconditionally (bare-call shadowing is arity-agnostic,
+// mirroring `msil/codegen.l`'s `fctx.className + "/" + funcName` check),
+// `syncArity` only when the member is not itself `async`.
+// A bare call site never spells out `self` (`helper(n)`, not
+// `helper(self, n)`), but `parseRecordMembers`'s `injectSelfIfNeeded`
+// unconditionally prepends a synthetic `self: TSelf` param to every record
+// method (`RMFunc`) — impl (`IMplFunc`) and interface (`IMFunc`) methods
+// are NOT injected (see `injectSelfIfNeeded`'s own call sites and
+// `parseImplMemberOpt`'s doc comment on why not). The injected param is
+// always literally named `"self"` (`injectSelfIfNeeded` also short-circuits
+// when the user already wrote one), so it is reliably detectable and must
+// be excluded from the arity used to key a bare call's argument count.
+func declaredArity(fn: in FunctionDecl): Int {
+  if fn.params.count > 0 and fn.params[0].name == "self" {
+    fn.params.count - 1
+  } else {
+    fn.params.count
+  }
+}
+
+func addSiblingFn(anyName: in Map[String, Bool], syncArity: in Map[String, Bool], fn: in FunctionDecl): Unit {
+  if not anyName.containsKey(fn.name) {
+    anyName.add(fn.name, true)
+  }
+  val arityKey = syncFuncArityKey(fn.name, declaredArity(fn))
+  if not fn.isAsync and not syncArity.containsKey(arityKey) {
+    syncArity.add(arityKey, true)
+  }
+}
+
 func rewriteRecordDecl(decl: in RecordDecl, st: in PropState): RecordDecl {
+  val siblingAnyName: Map[String, Bool] = newMap()
+  val siblingSyncArity: Map[String, Bool] = newMap()
+  var si = 0
+  while si < decl.members.count {
+    match decl.members[si] {
+      case RMFunc(fn) -> addSiblingFn(siblingAnyName, siblingSyncArity, fn)
+      case _ -> ()
+    }
+    si = si + 1
+  }
+  val memberSt = stateForContainerMembers(st, siblingAnyName, siblingSyncArity)
+
   val newMembers: List[RecordMember] = newList()
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
-      case RMFunc(fn) -> newMembers.add(RMFunc(fn = rewriteFunction(fn, st)))
+      case RMFunc(fn) -> newMembers.add(RMFunc(fn = rewriteFunction(fn, memberSt)))
       case RMField(f) -> newMembers.add(RMField(field = f))
       case RMInvariant(inv) -> newMembers.add(RMInvariant(inv = inv))
     }

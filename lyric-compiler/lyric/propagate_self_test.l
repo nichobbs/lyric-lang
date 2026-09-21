@@ -556,6 +556,36 @@ test "F0045 (#7192): fires for ? on an unsafe-block scrutinee in a try body" {
   )
 }
 
+// #7197: review finding — a bare call inside a record/impl/interface
+// method body can resolve to a SIBLING method of the enclosing type
+// (`msil/codegen.l`'s `fctx.className + "/" + funcName` bare-call
+// shadowing, #6489), which ALWAYS wins over a same-named top-level
+// function.  `syncFuncNames` only ever tracked top-level functions, so a
+// same-named-and-arity sibling method's own (possibly async) nature was
+// never consulted — a same-named top-level sync function could incorrectly
+// "prove" a call actually bound to an async sibling method safe.
+test "F0045 (#7197): fires for ? on a bare call shadowed by an async sibling method, even though a same-named top-level function is sync" {
+  val src = "package P\n" +
+    "func helper(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
+    "record Box {\n  v: Int\n  async func helper(n: in Int): Result[Int, String] {\n    if n < 0 {\n      Err(\"neg\")\n    } else {\n      Ok(n + 1)\n    }\n  }\n  async func f(n: in Int): Result[Int, String] {\n    try {\n      val x = helper(n)?\n      Ok(x)\n    } catch Bug as b {\n      Err(b.message)\n    }\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "the call resolves to Box's own async sibling method (method wins), not the sync top-level function, so it is flagged"
+  )
+}
+
+test "F0045 (#7197): does not fire for ? on a bare call resolved by a sync sibling method, even though a same-named top-level function is async" {
+  val src = "package P\n" +
+    "async func helper(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
+    "record Box2 {\n  v: Int\n  func helper(n: in Int): Result[Int, String] {\n    if n < 0 {\n      Err(\"neg\")\n    } else {\n      Ok(n + 1)\n    }\n  }\n  async func f(n: in Int): Result[Int, String] {\n    try {\n      val x = helper(n)?\n      Ok(x)\n    } catch Bug as b {\n      Err(b.message)\n    }\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertFalse(
+    propHasDiag(result.diagnostics, "F0045"),
+    "the call resolves to Box2's own sync sibling method (method wins), proven non-async, so it stays unflagged"
+  )
+}
+
 // ── Same-file alias return types (#1814) ─────────────────────────────────────
 // `monadOfRet` unfolds same-file `alias` declarations before the Result/Option
 // classification, so a return type written through an alias no longer trips a
