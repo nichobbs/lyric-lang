@@ -34797,3 +34797,33 @@ full-support follow-up), D-progress-877 (the independent re-verification),
 #5809 (pre-existing value-type-generic-member limitation, untouched),
 #5800 (the newly-surfaced, separately-tracked delegate-erasure bug),
 `docs/42-extern-metadata-resolution.md` §5 Phase 6.
+
+### MSIL: same-named module-level `val`/`const` in two packages of one project no longer crashes codegen (#7097)
+
+Two packages in one `lyric.toml` project each declaring a same-named,
+non-`pub`, module-level `val` (or `const`) with a non-literal initializer
+crashed MSIL codegen with a contained `error[T0120]: An item with the same
+key has already been added`. `addPackageTokens` registered each such
+item's bare (package-unqualified) name into `cctx.staticValTokens` via an
+unguarded `Map.add`, which throws on a duplicate key the moment a second
+package declares a same-named `val`/`const` — a private module-level
+binding is package-scoped per the language reference, so two packages
+should be free to pick the same name. Fixed by guarding the bare-name
+registration with `containsKey` (first-wins, mirroring the native
+backend's `#6224` fix for the identical bare-name-keyed `moduleVals` map
+in `llvm_codegen.l`) and, on the read side, checking the reading
+package's own qualified key (`pkg.name`) before falling back to the bare
+key — so a package always reads its OWN `val`/`const`, never another
+package's same-named one silently shadowing it through the first-wins
+fallback. New regression test in `msil_project_bridge_self_test.l`
+(two packages, same-named private `val label: String`, asserts each
+package's accessor returns its own value). Landed in PR #7100 alongside
+two unrelated fixes (#7098, #7099); this doc-sync note and the
+decision-log entry were added as a follow-up per CLAUDE.md's
+doc-sync requirement, with no further codegen change needed — the fix
+was already correct and complete.
+
+**Related:** `docs/decisions/D-progress-0940` (full doc-sync account),
+#7097, PR #7100 (the fix), #6224 (the native-backend precedent this
+mirrors), #6849/#6850 (the analogous bundle-wide bare-name-collision fix
+for functions, whose qualified-key-first-on-read shape this fix follows).
