@@ -646,3 +646,30 @@ test "same-package bare call to a package-private function still resolves (JVM, 
     "bare_call_same_package_private: same-package bare call to a package-private function still resolves"
   )
 }
+
+// Review follow-up (#7147): #6853's fix must never let the new package-scoped
+// key hijack an explicitly-QUALIFIED call. `XScoped.App` both declares its
+// OWN `helper` (returning -999) AND makes a fully-qualified call to
+// `XScoped.Other.helper` (returning its argument). Before the fix, the
+// unconditional scoped-key pre-check ran ahead of the qualified-path branch
+// in `resolveGeneralFuncSig` (`04_calls.l`) and silently redirected the
+// qualified call to the caller's own same-named local function.
+test "qualified call to another package's function is not hijacked by the caller's own same-named local (JVM, #7147)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add("package XScoped.Other\n" + "\n" + "pub func helper(x: in Int): Int {\n" + "  x\n" + "}\n")
+  pkgSrcs.add(
+    "package XScoped.App\n" + "\n" + "import XScoped.Other\n" + "\n" +
+      "func helper(x: in Int): Int {\n" + "  0 - 999\n" + "}\n" + "\n" +
+      "func main(): Int {\n" +
+      "  println(XScoped.Other.helper(x = 42))\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("qualified-call-not-hijacked-7147", pkgSrcs, "XScoped.App")
+  assertEqualInt(result.exitCode, 0, "qualified_call_not_hijacked: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "qualified_call_not_hijacked: resolves the qualified XScoped.Other.helper, not the caller's own local -999"
+  )
+}
