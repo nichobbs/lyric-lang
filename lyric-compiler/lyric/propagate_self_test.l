@@ -511,6 +511,51 @@ test "F0045 (#7185): fires for ? on a value-position try-expression scrutinee in
   )
 }
 
+// #7192: review finding — `syncFuncNames` was keyed by name only, not
+// `(name, arity)`.  Lyric allows arity-based overloading of top-level
+// functions (`funcArityExists`/T0001 only rejects a SAME-arity redeclaration
+// of the same name), so a same-named sync and async overload can coexist in
+// one file; a name-only allow-list marked ANY call to that bare name safe
+// purely because ONE overload happened to be sync, regardless of which
+// overload the call's own argument count actually resolves to.
+test "F0045 (#7192): fires for ? on a call resolving to the async overload of an overloaded name" {
+  val src = "package P\n" +
+    "func over(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
+    "async func over(n: in Int, extra: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n + extra)\n  }\n}\n" +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = over(n, 1)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a 2-arg call resolves to the async overload, which cannot be proven non-async by arity, so it is flagged"
+  )
+}
+
+test "F0045 (#7192): still does not fire for a call resolving to the sync overload of an overloaded name" {
+  val src = "package P\n" +
+    "func over(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
+    "async func over(n: in Int, extra: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n + extra)\n  }\n}\n" +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = over(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertFalse(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a 1-arg call resolves to the sync overload, proven non-async by matching (name, arity), so it stays unflagged"
+  )
+}
+
+// #7192 SUGGESTION: a value-position `unsafe { … }` block can also
+// tail-yield an ordinary call — `unsafe` only widens what's allowed inside
+// the block, it doesn't restrict it to FFI-only expressions — so it gets
+// the same conservative treatment as `EIf`/`EMatch`.
+test "F0045 (#7192): fires for ? on an unsafe-block scrutinee in a try body" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = (unsafe {\n      mayFail(n)\n    })?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "an unsafe-block scrutinee cannot be proven non-async, so it is flagged"
+  )
+}
+
 // ── Same-file alias return types (#1814) ─────────────────────────────────────
 // `monadOfRet` unfolds same-file `alias` declarations before the Result/Option
 // classification, so a return type written through an alias no longer trips a

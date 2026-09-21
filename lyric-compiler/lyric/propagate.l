@@ -101,15 +101,21 @@ record PropState {
   // so return types written through an alias of Result/Option classify
   // correctly instead of tripping a false F0020 (#1814).
   aliases: Map[String, TypeExpr]
-  // #7178: same-file top-level, non-async `func` names (mirrors `aliases`'
-  // same-file-declaration approach).  `implicitAwaitScrutinee` uses this as
-  // an allow-list: a bare same-file call is only PROVEN safe when its name
-  // is in this set.  Everything else that isn't provably safe (a call to a
-  // same-file `async func`, a cross-package/qualified call, a method call,
-  // or a call to a name this pass cannot resolve at all — e.g. an imported
-  // function or a locally-nested `func` statement) is treated as
-  // potentially hazardous rather than silently assumed safe — see
-  // `isRiskyTryCallScrutinee`'s doc.
+  // #7178: same-file top-level, non-async `func` (name, arity) pairs
+  // (mirrors `aliases`' same-file-declaration approach).
+  // `implicitAwaitScrutinee` uses this as an allow-list: a bare same-file
+  // call is only PROVEN safe when its `name#argCount` key is in this set.
+  // Everything else that isn't provably safe (a call to a same-file `async
+  // func`, a cross-package/qualified call, a method call, or a call to a
+  // name/arity this pass cannot resolve at all — e.g. an imported function
+  // or a locally-nested `func` statement) is treated as potentially
+  // hazardous rather than silently assumed safe — see
+  // `isRiskyTryCallScrutinee`'s doc.  #7192: keyed by `(name, arity)`, not
+  // just `name` — Lyric permits arity-based overloading of top-level
+  // functions (`funcArityExists`/T0001 only rejects a same-name SAME-arity
+  // redeclaration), so a name-only allow-list would misclassify a call to
+  // one (async) overload as safe purely because a DIFFERENT (sync) overload
+  // shares the name.
   syncFuncNames: Map[String, Bool]
   // #7170: name and `isAsync`-ness of the function currently being rewritten,
   // plus whether the rewrite point is lexically inside one of its try/
@@ -326,6 +332,15 @@ func isBuiltinMonadCtorName(name: in String): Bool {
   name == "Ok" or name == "Err" or name == "Some" or name == "None"
 }
 
+// #7192: `syncFuncNames` is keyed by `(name, arity)`, not just `name` — see
+// `PropState.syncFuncNames`'s doc for why (arity-based overloading means a
+// same-named sync and async top-level function can coexist in the same
+// file). Both the build site (`lowerPropagateFile`) and the lookup site
+// (`isRiskyTryCallScrutinee`) must format this key identically.
+func syncFuncArityKey(name: in String, arity: in Int): String {
+  name + "#" + toString(arity)
+}
+
 // #7174/#7178: F0045 (above) must fire for exactly the scrutinee shapes that
 // CANNOT be proven safe, not just the one shape #7170 originally targeted
 // (a direct call to a same-file `async func`).  Two classes exist:
@@ -383,12 +398,13 @@ func blockEndsInTry(blk: in Block): Bool {
 func isRiskyTryCallScrutinee(inner: in Expr, st: in PropState): Bool {
   match inner.kind {
     case EParen(paren) -> isRiskyTryCallScrutinee(paren, st)
-    case ECall(fn, _) -> {
+    case ECall(fn, args) -> {
       match fn.kind {
         case EPath(path) -> {
           if path.segments.count == 1 {
             val name = path.segments[0]
-            not (st.syncFuncNames.containsKey(name) or isBuiltinMonadCtorName(name))
+            val key = syncFuncArityKey(name, args.count)
+            not (st.syncFuncNames.containsKey(key) or isBuiltinMonadCtorName(name))
           } else {
             true
           }
@@ -399,6 +415,12 @@ func isRiskyTryCallScrutinee(inner: in Expr, st: in PropState): Bool {
     case EIf(_, _, _, _) -> true
     case EMatch(_, _) -> true
     case EBlock(blk) -> blockEndsInTry(blk)
+    // A value-position `unsafe { … }` block (`@unsafe_ffi`/`NativePtr` work
+    // per docs/01) can still tail-yield an ordinary call — nothing about
+    // `unsafe` restricts what's INSIDE the block to FFI-only expressions,
+    // it only widens what's ALLOWED there. Same composite-scrutinee hazard
+    // as `EIf`/`EMatch`, flagged the same conservative way.
+    case EUnsafe(_) -> true
     // `ETry` is match-exhaustiveness only — the parser never constructs it
     // (see the doc above); it can never actually be observed here.
     case ETry(_) -> false
@@ -1054,8 +1076,9 @@ pub func lowerPropagateFile(file: in SourceFile): PropagateResult {
         }
       }
       case IFunc(decl) -> {
-        if not decl.isAsync and not syncFuncNames.containsKey(decl.name) {
-          syncFuncNames.add(decl.name, true)
+        val arityKey = syncFuncArityKey(decl.name, decl.params.count)
+        if not decl.isAsync and not syncFuncNames.containsKey(arityKey) {
+          syncFuncNames.add(arityKey, true)
         }
       }
       case _ -> ()
