@@ -566,12 +566,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: ilverify self-hosted emitter IL (required gate, #3943)
         working-directory: ${{ github.workspace }}
         run: |
@@ -613,12 +608,7 @@ jobs:
         shell: bash
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Install dotnet-ildasm tool
         run: dotnet tool install --tool-path .tools dotnet-ildasm || true
       - name: Measure MSIL BOX instructions (epic #1877 Stage 2+ zero-overhead gate)
@@ -664,12 +654,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Measure JVM boxing calls (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
         run: |
@@ -715,12 +700,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Assert JVM LineNumberTable correctness (docs/63 band B2)
         working-directory: ${{ github.workspace }}
         run: |
@@ -809,12 +789,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
         run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
 
@@ -2263,12 +2238,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
       # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
@@ -2502,12 +2472,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # source_path_diagnostics_self_test.l and jvm_sourcefile_attr_self_test.l
       # (below) spawn `./bin/lyric` as a subprocess, resolved relative to CWD
@@ -3118,12 +3083,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # ILCompiler package cache — keyed on the .NET SDK version so the
       # ~200 MB compiler package is not re-downloaded on every run.
@@ -3324,12 +3284,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       # Stage-2 binary: needed only by the handful of steps below that
       # exercise a compiler-internal `@externTarget` signature-encoding fix
       # (System.Single `bufMsilType`, D125 follow-up) — such a fix only takes
@@ -5844,12 +5799,7 @@ jobs:
           (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Run numbered ${{ matrix.set }} self-tests (shard ${{ matrix.shard }})
         if: |
           (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
@@ -5979,12 +5929,7 @@ jobs:
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           echo "LYRIC_CLI_PATH=$lyric_bin" >> "$GITHUB_ENV"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       - name: Stage stdlib DLLs + local-dep resolver setup
         run: bash scripts/ci/stage-stdlib-dlls-localdep-resolver.sh
@@ -6241,12 +6186,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # Full self-hosted stdlib bundle (#2592, stage-2 milestone) — builds
       # the entire public Std.* surface through the self-hosted MSIL backend
@@ -6763,12 +6703,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # See compiler-self-tests-dotnet-a's "Parallel step execution" comment above
       # for how `background: true` / `wait-all: true` work.
@@ -7366,12 +7301,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # clang and zlib1g-dev are required by the ILCompiler linker pass used by
       # `lyric build --release --aot` (the trampoline-elimination pipeline, #4139).
