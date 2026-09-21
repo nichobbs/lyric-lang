@@ -1,4 +1,4 @@
-# D-progress-939 — `?` implicitly awaits a direct async-call operand (#6920)
+# D-progress-941 — `?` implicitly awaits a direct async-call operand (#6920)
 
 **Status:** shipped
 
