@@ -9,6 +9,7 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
+import Std.Parse
 import Std.ProcessCapture as ProcessCapture
 import Lyric.Manifest as Mf
 import Lyric.Lexer
@@ -332,6 +333,22 @@ func generateJvmCoverageReport(
   true
 }
 
+// Builds a `TestSynth.PropertyRunConfig` from the parsed `--property-trials`/
+// `--seed` flags, falling back to `PropertyRunConfig()`'s own declared
+// defaults (100 trials, seed 1000) for whichever flag was not given.
+func buildPropertyRunConfig(trialsArg: in Option[Int], seedArg: in Option[Int]): PropertyRunConfig {
+  var cfg = PropertyRunConfig()
+  match trialsArg {
+    case Some(n) -> cfg = cfg.copy(trials = n)
+    case None -> ()
+  }
+  match seedArg {
+    case Some(n) -> cfg = cfg.copy(seed = n)
+    case None -> ()
+  }
+  cfg
+}
+
 func cmdTest(argv: in slice[String]): Int {
   var filterArg: Option[String] = None
   var manifestArg: Option[String] = None
@@ -340,6 +357,8 @@ func cmdTest(argv: in slice[String]): Int {
   var targetNative = false
   var failFast = false
   var runProperties = false
+  var propTrialsArg: Option[Int] = None
+  var propSeedArg: Option[Int] = None
   var coverage = false
   var updateSnapshots = false
   var noDefaultFeatures = false
@@ -419,6 +438,42 @@ func cmdTest(argv: in slice[String]): Int {
     } else if arg == "--properties" {
       runProperties = true
       i += 1
+    } else if arg == "--property-trials" {
+      if i + 1 < argv.length {
+        match parseOptInt(argv[i + 1]) {
+          case Some(n) -> {
+            if n < 1 {
+              printErr("test: --property-trials must be >= 1")
+              return 1
+            }
+            propTrialsArg = Some(value = n)
+            i += 2
+          }
+          case None -> {
+            printErr("test: --property-trials requires an integer")
+            return 1
+          }
+        }
+      } else {
+        printErr("test: --property-trials requires a value")
+        return 1
+      }
+    } else if arg == "--seed" {
+      if i + 1 < argv.length {
+        match parseOptInt(argv[i + 1]) {
+          case Some(n) -> {
+            propSeedArg = Some(value = n)
+            i += 2
+          }
+          case None -> {
+            printErr("test: --seed requires an integer")
+            return 1
+          }
+        }
+      } else {
+        printErr("test: --seed requires a value")
+        return 1
+      }
     } else if arg == "--coverage" {
       coverage = true
       i += 1
@@ -430,6 +485,16 @@ func cmdTest(argv: in slice[String]): Int {
       i += 1
     }
   }
+
+  // `--property-trials`/`--seed` (v2 slice 1, #6907) tune the property harness
+  // `--properties` synthesises — requiring `--properties` is a loud error, not
+  // a silent no-op, so a typo'd invocation (e.g. forgetting `--properties`)
+  // never quietly runs with the flags ignored.
+  if (isSome(propTrialsArg) or isSome(propSeedArg)) and not runProperties {
+    printErr("test: --property-trials/--seed require --properties")
+    return 1
+  }
+  val propCfg = buildPropertyRunConfig(propTrialsArg, propSeedArg)
 
   // `--coverage` (JVM-target JaCoCo instrumentation, docs/03-decision-log.md)
   // is scoped to a single explicit test file for its first slice — manifest
@@ -512,7 +577,7 @@ func cmdTest(argv: in slice[String]): Int {
   }
 
   match manifestArg {
-    case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, runProperties, cliFeatures, noDefaultFeatures, allFeatures)
+    case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, runProperties, propCfg, cliFeatures, noDefaultFeatures, allFeatures)
     case None -> ()
   }
 
@@ -523,7 +588,7 @@ func cmdTest(argv: in slice[String]): Int {
       return 1
     }
     match resolveTestAutoDiscovery(Environment.currentDirectory()) {
-      case TestShouldRunManifest(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, runProperties, cliFeatures, noDefaultFeatures, allFeatures)
+      case TestShouldRunManifest(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, runProperties, propCfg, cliFeatures, noDefaultFeatures, allFeatures)
       case TestReported(outcome) -> return outcome.exitCode
     }
   }
@@ -568,7 +633,7 @@ func cmdTest(argv: in slice[String]): Int {
   val synthResult = if targetNative {
     TestSynth.synthesizeNative(source, filterArg)
   } else if runProperties {
-    TestSynth.synthesizeWithProperties(source, filterArg)
+    TestSynth.synthesizeWithPropertiesConfig(source, filterArg, propCfg)
   } else {
     TestSynth.synthesize(source, filterArg)
   }
@@ -881,6 +946,7 @@ func cmdTestManifest(
   targetJvm: in Bool,
   failFast: in Bool,
   runProperties: in Bool,
+  propCfg: in PropertyRunConfig,
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
@@ -991,6 +1057,10 @@ func cmdTestManifest(
       }
       if runProperties {
         testArgv.add("--properties")
+        testArgv.add("--property-trials")
+        testArgv.add(toString(propCfg.trials))
+        testArgv.add("--seed")
+        testArgv.add(toString(propCfg.seed))
       }
       val rc = cmdTest(testArgv.toArray())
       if rc != 0 {
@@ -1605,7 +1675,7 @@ func cmdTestManifest(
     var synthFailed = false
     var rewritten = ""
     val testSynthResult = if runProperties {
-      TestSynth.synthesizeWithProperties(testSource, filterArg)
+      TestSynth.synthesizeWithPropertiesConfig(testSource, filterArg, propCfg)
     } else {
       TestSynth.synthesize(testSource, filterArg)
     }

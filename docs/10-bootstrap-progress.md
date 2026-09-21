@@ -34827,3 +34827,48 @@ was already correct and complete.
 #7097, PR #7100 (the fix), #6224 (the native-backend precedent this
 mirrors), #6849/#6850 (the analogous bundle-wide bare-name-collision fix
 for functions, whose qualified-key-first-on-read shape this fix follows).
+
+### `lyric test --properties` gains `--property-trials <N>` / `--seed <N>` (property-testing v2 slice 1, #6907)
+
+A scoping investigation into #6907's "property testing v2" ask (a
+composable `Generator[T]` combinator library, custom/opaque-type
+generators headlined by a `SortedSet[Int]` worked example,
+`--property-trials`/`--seed`, and `ensures:`-derived properties) found
+that `Lyric.TestSynth` is a pure source-text rewriter running before
+type-checking with no symbol table — ruling out a general opaque/record/
+union generator at this layer without a much larger architectural change
+— and that the headlined `SortedSet[Int]` example is separately blocked
+by **T0100** (cross-package opaque-type construction), which has no
+smart-constructor discovery/rejection-sampling design yet. Per CLAUDE.md's
+no-bootstrap-grade-slices standard, rather than land a half-implemented
+generator layer, this ships only the tractable, independently useful
+piece: `pub record PropertyRunConfig { trials: Int = 100; seed: Int =
+1000 }` threaded through `Lyric.TestSynth.synthesizeWithPropertiesConfig`
+(additive; `synthesizeWithProperties` keeps its old signature and
+100/1000 defaults unchanged) and `Lyric.Cli`'s `cmdTest`/`cmdTestManifest`
+as `lyric test --properties --property-trials <N> --seed <N>`. Both flags
+require `--properties` (loud CLI error otherwise, not a silent no-op);
+each property in a file keeps its own seed offset (`cfg.seed + idx`) so
+an explicit `--seed` never collides two properties in the same file onto
+one sample sequence; a property failure's panic message now reports the
+exact `[seed=…, trials=…]` used, so a CI failure is reproducible by
+re-running with the same flags. Composable generators, opaque-type
+generation, and `ensures:`-derived properties remain unimplemented and
+are tracked as separate follow-up issues (see `docs/24-test-runner-plan.md`
+§5 Stage 3). Fixed in passing: `book/chapters/15-testing.md` §15.5 and
+`docs/02-worked-examples.md` Example 3 both had a `property "title" {
+forall (...) { ... } }` worked example that does not parse — the grammar
+(`docs/grammar.ebnf` `PropertyDecl`) puts `forall(...)` directly after the
+title, not nested inside the block; both examples are corrected to
+`property "title" forall(...) [where …] { … }`.
+
+New regression coverage: 8 cases in `lyric-compiler/lyric/cli_test_self_test.l`
+covering flag validation (rejected without `--properties`, `--property-trials
+0`/non-integer rejected) and functional threading (a single-trial run still
+catches an always-failing property; a larger trial count with an explicit
+seed still passes an always-true property; two properties in one file both
+pass under one shared explicit `--seed`).
+
+**Related:** `docs/decisions/D-progress-0941` (full account), #6907,
+#677/D-progress-784 (the v1.x property-execution baseline this extends),
+`docs/24-test-runner-plan.md` §5 Stage 3/4.

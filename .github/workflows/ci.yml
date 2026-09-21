@@ -2915,6 +2915,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_project_bridge_self_test.l
 
+      # CLI test-command end-to-end regression suite (#5341/#677/#6659/#6907)
+      # — drives `Lyric.Cli`'s `cmdTest`/`cmdTestManifest` for real via
+      # `Cli.main([...])`, including several cases that build small temp
+      # `lyric.toml` projects and spawn real dependency builds. Heavier than
+      # the other CLI self-tests above (real subprocess builds, not a single
+      # in-process compile), so it runs here rather than as a concurrent
+      # `background: true` step, alongside the other heavy project self-tests.
+      - name: CLI test-command self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cli_test_self_test.l
+
       # Enum case-name collision self-test (#5995, plus #6638/#6639/#6640
       # follow-ups and the #6650 real-stdlib-enum coverage) — compiles small
       # multi-package fixtures through BOTH `Msil.Bridge.compileProjectToMsil`

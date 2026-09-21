@@ -335,6 +335,156 @@ test "lyric test --properties: rejected on --target native" {
   assertEqualInt(realRc, 1, "--properties is rejected outright on --target native")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// v2 slice 1 (#6907): `--property-trials <N>` / `--seed <N>` tune the
+// `--properties` sampling-and-shrinking harness (`PropertyRunConfig`,
+// `test_synth.l`).  Both flags require `--properties` itself — a loud error,
+// not a silent no-op.
+// ─────────────────────────────────────────────────────────────────────────────
+func mainWithExtra(testFile: in String, extra: in List[String]): Int {
+  val args: List[String] = newList()
+  args.add("test")
+  args.add(testFile)
+  var i = 0
+  while i < extra.count {
+    args.add(extra[i])
+    i = i + 1
+  }
+  mainWithArgs(args)
+}
+
+func listOf2(a: in String, b: in String): List[String] {
+  val l: List[String] = newList()
+  l.add(a)
+  l.add(b)
+  l
+}
+
+func listOf3(a: in String, b: in String, c: in String): List[String] {
+  val l: List[String] = newList()
+  l.add(a)
+  l.add(b)
+  l.add(c)
+  l
+}
+
+test "lyric test --property-trials: rejected without --properties" {
+  val root = freshTempDir("prop-trials-noflag")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "prop_test.l")
+  writeFileOrPanic(
+    testFile,
+    propFixtureSource("property \"whatever\" forall(x: Int) {\n  Std.Testing.assertTrue(true, \"n/a\")\n}\n")
+  )
+  val rc = mainWithExtra(testFile, listOf2("--property-trials", "10"))
+  assertEqualInt(rc, 1, "--property-trials without --properties is a loud error, not a silent no-op")
+}
+
+test "lyric test --seed: rejected without --properties" {
+  val root = freshTempDir("prop-seed-noflag")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "prop_test.l")
+  writeFileOrPanic(
+    testFile,
+    propFixtureSource("property \"whatever\" forall(x: Int) {\n  Std.Testing.assertTrue(true, \"n/a\")\n}\n")
+  )
+  val rc = mainWithExtra(testFile, listOf2("--seed", "5"))
+  assertEqualInt(rc, 1, "--seed without --properties is a loud error, not a silent no-op")
+}
+
+test "lyric test --property-trials: rejects a count below 1" {
+  val root = freshTempDir("prop-trials-zero")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "prop_test.l")
+  writeFileOrPanic(
+    testFile,
+    propFixtureSource("property \"whatever\" forall(x: Int) {\n  Std.Testing.assertTrue(true, \"n/a\")\n}\n")
+  )
+  val rc = mainWithExtra(testFile, listOf3("--properties", "--property-trials", "0"))
+  assertEqualInt(rc, 1, "--property-trials 0 is rejected (must be >= 1)")
+}
+
+test "lyric test --property-trials: rejects a non-integer value" {
+  val root = freshTempDir("prop-trials-notint")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "prop_test.l")
+  writeFileOrPanic(
+    testFile,
+    propFixtureSource("property \"whatever\" forall(x: Int) {\n  Std.Testing.assertTrue(true, \"n/a\")\n}\n")
+  )
+  val rc = mainWithExtra(testFile, listOf3("--properties", "--property-trials", "abc"))
+  assertEqualInt(rc, 1, "--property-trials abc is rejected (not an integer)")
+}
+
+test "lyric test --property-trials 1: an always-failing property still fails with a single trial" {
+  val root = freshTempDir("prop-trials-one-fail")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "prop_test.l")
+  writeFileOrPanic(
+    testFile,
+    propFixtureSource(
+      "property \"always fails\" forall(x: Int) {\n  Std.Testing.assertTrue(false, \"always fails\")\n}\n"
+    )
+  )
+  val rc = mainWithExtra(testFile, listOf3("--properties", "--property-trials", "1"))
+  assertEqualInt(rc, 1, "an always-failing property still fails the run even sampled just once")
+}
+
+test "lyric test --property-trials 500 --seed 42: an always-true property still passes with a larger sample and an explicit seed" {
+  val root = freshTempDir("prop-trials-many-pass")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "prop_test.l")
+  writeFileOrPanic(
+    testFile,
+    propFixtureSource(
+      "property \"identity always holds\" forall(x: Int) {\n  Std.Testing.assertTrue(x == x, \"identity always holds\")\n}\n"
+    )
+  )
+  val args: List[String] = newList()
+  args.add("test")
+  args.add(testFile)
+  args.add("--properties")
+  args.add("--property-trials")
+  args.add("500")
+  args.add("--seed")
+  args.add("42")
+  val rc = mainWithArgs(args)
+  assertEqualInt(rc, 0, "a property that holds for every sample passes under a larger trial count and an explicit seed")
+}
+
+// #6907: two properties in the same file must not collide on the same RNG
+// seed — `tryBuildPropertyDriver` offsets each property's seed by its own
+// index (`cfg.seed + idx`), so an explicit `--seed` still gives every
+// property in the file a distinct starting seed, not the literal same one.
+test "lyric test --seed: two properties in one file each still pass under an explicit shared seed" {
+  val root = freshTempDir("prop-seed-multi")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "prop_test.l")
+  writeFileOrPanic(
+    testFile,
+    propFixtureSource(
+      "property \"first identity\" forall(x: Int) {\n  Std.Testing.assertTrue(x == x, \"first identity\")\n}\n\n" +
+        "property \"second identity\" forall(y: Int) {\n  Std.Testing.assertTrue(y == y, \"second identity\")\n}\n"
+    )
+  )
+  val rc = mainWithExtra(testFile, listOf3("--properties", "--seed", "7"))
+  assertEqualInt(rc, 0, "both properties pass under the same explicit --seed")
+}
+
 // #6659: `cmdTest`'s argv-parsing loop's `--coverage` branch was missing its
 // own `i += 1`, so ANY invocation with `--coverage` in argv spun forever
 // re-processing the same index instead of advancing — a busy-loop that

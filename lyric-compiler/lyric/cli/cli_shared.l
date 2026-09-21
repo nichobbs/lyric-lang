@@ -288,10 +288,12 @@ func usageText(): String {
     "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--watch] [-- <args>...]\n" +
     "                (no source: builds and runs the discovered project;\n" +
     "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
-    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--properties] [--target dotnet|jvm]\n" +
+    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--properties] [--property-trials N] [--seed N] [--target dotnet|jvm]\n" +
     "                (no source: runs all [project.tests]; falls back to scanning [project.packages] for @test_module;\n" +
     "                 --fail-fast stops after the first file with failing tests;\n" +
-    "                 --properties runs `property` declarations too (Int/Bool/Double foralls only; not on --target native)\n" +
+    "                 --properties runs `property` declarations too (Int/Bool/Double foralls only; not on --target native);\n" +
+    "                 --property-trials N sets the sample count per property (default 100; requires --properties);\n" +
+    "                 --seed N sets the RNG seed the first property's driver starts from (default 1000; requires --properties)\n" +
     "  lyric bench   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--runs N] [--warmup N] [--filter <prefix>]\n" +
     "                (no source: benchmarks all @bench_module files in the discovered project)\n" +
     "  lyric repl\n" +

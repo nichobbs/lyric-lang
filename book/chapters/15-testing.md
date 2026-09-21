@@ -211,7 +211,7 @@ Snapshot files live in a `snapshots/` directory relative to the test source file
 A property test states an invariant that should hold for all inputs of a given type, then lets the runtime search for a counterexample. Where a unit test checks the cases you thought of, a property test searches the space you didn't.
 
 ::: note
-**Current implementation status (v1.x, #677).** `lyric test --properties` runs a property for real only when every `forall` binder is `Int`, `Bool`, or `Double` — those get an auto-derived generator (100 samples, seeded per property for reproducible runs) and real shrinking toward the simplest failing value on the first counterexample. A `where` guard is evaluated before each sample; a sample that fails the guard is skipped rather than counted as pass or fail. A property whose binders include any other type — `SortedSet[Int]` in the worked example below, or any record/union/opaque type — still parses but reports `# skip` naming the unsupported type, exactly as it does without `--properties`. The generator catalogue below (records generated field-by-field, unions picking a random case, invariant-respecting opaque-type generation, range-subtype generation), the `--property-trials` flag, and the `ensures:`-clause-to-property auto-derivation described in the sidebar are the intended v2 design and are **not implemented yet** — treat the rest of this section as the target shape property testing is heading toward, not the current CLI surface. `--properties` is rejected outright on `--target native` (no exception unwinding to isolate a failing sample). See `docs/24-test-runner-plan.md` §5.
+**Current implementation status (v1.x, #677; `--property-trials`/`--seed` shipped in v2 slice 1, D-progress-941).** `lyric test --properties` runs a property for real only when every `forall` binder is `Int`, `Bool`, or `Double` — those get an auto-derived generator (100 samples by default, seeded per property for reproducible runs) and real shrinking toward the simplest failing value on the first counterexample. A `where` guard is evaluated before each sample; a sample that fails the guard is skipped rather than counted as pass or fail. `--property-trials <N>` overrides the sample count and `--seed <N>` overrides the starting RNG seed (both require `--properties`); a failure's panic message reports the exact `[seed=…, trials=…]` used, so it can be replayed exactly. A property whose binders include any other type — `SortedSet[Int]` in the worked example below, or any record/union/opaque type — still parses but reports `# skip` naming the unsupported type, exactly as it does without `--properties`. The generator catalogue below (records generated field-by-field, unions picking a random case, invariant-respecting opaque-type generation, range-subtype generation) and the `ensures:`-clause-to-property auto-derivation described in the sidebar are the intended v2 design and are **not implemented yet** — treat the rest of this section as the target shape property testing is heading toward, not the current CLI surface. `--properties` is rejected outright on `--target native` (no exception unwinding to isolate a failing sample). See `docs/24-test-runner-plan.md` §5.
 :::
 
 ```lyric
@@ -221,29 +221,23 @@ package SortedSet
 import Std.Testing
 import SortedSet.{SortedSet, insert, contains, remove, empty}
 
-property "insert then contains" {
-  forall (s: SortedSet[Int], x: Int) {
-    val updated = insert(s, x)
-    expect(contains(updated, x))
-  }
+property "insert then contains" forall(s: SortedSet[Int], x: Int) {
+  val updated = insert(s, x)
+  expect(contains(updated, x))
 }
 
-property "insert is idempotent" {
-  forall (s: SortedSet[Int], x: Int) {
-    val once = insert(s, x)
-    val twice = insert(once, x)
-    expect(once == twice)
-  }
+property "insert is idempotent" forall(s: SortedSet[Int], x: Int) {
+  val once = insert(s, x)
+  val twice = insert(once, x)
+  expect(once == twice)
 }
 
-property "remove undoes insert when not previously present" {
-  forall (initial: SortedSet[Int], x: Int)
-    where not contains(initial, x)
-  {
-    val inserted = insert(initial, x)
-    val removed = remove(inserted, x)
-    expect(removed == initial)
-  }
+property "remove undoes insert when not previously present" forall(initial: SortedSet[Int], x: Int)
+  where not contains(initial, x)
+{
+  val inserted = insert(initial, x)
+  val removed = remove(inserted, x)
+  expect(removed == initial)
 }
 ```
 
@@ -285,7 +279,7 @@ Property tests are not included in the default `lyric test` run because they are
 lyric test --properties
 ```
 
-In CI, run `lyric test --properties` separately, perhaps on a longer schedule or only on certain branches. (There is no `--property-trials` flag yet — the sample count is fixed at 100 per property; see the status note above.)
+In CI, run `lyric test --properties` separately, perhaps on a longer schedule or only on certain branches. Use `--property-trials <N>` to widen sampling for a suspect property and `--seed <N>` to pin the RNG seed for a reproducible re-run (see the status note above).
 
 ## §15.6 Doctests
 
