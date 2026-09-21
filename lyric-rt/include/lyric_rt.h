@@ -489,6 +489,15 @@ LyricString* lyric_env_cwd(void);
  * success; -1 on failure with *out untouched. */
 int32_t lyric_env_cwd_ok(LyricString** out);
 
+/* Directory containing the running executable (issue #6937), matching
+ * .NET's AppContext.BaseDirectory contract: readlink("/proc/self/exe")
+ * on Linux, trailing directory separator included. *out set and 0
+ * returned on success; -1 on failure (unsupported platform, or the
+ * readlink/getcwd calls themselves failing) with *out untouched --
+ * callers fall back to "" per Std.Environment's documented
+ * empty-means-unavailable convention for this probe. */
+int32_t lyric_env_app_base_directory_ok(LyricString** out);
+
 /* ── Process arguments ─────────────────────────────────────────────── */
 
 /* Capture argc/argv at process entry (the synthesised C main calls

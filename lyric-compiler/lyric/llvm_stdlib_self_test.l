@@ -153,8 +153,8 @@ test "Std.File seams: round-trip, classification, idempotent delete (ASan)" {
 
 // #4752 residual-seam audit (D-progress-910): readBytesOrPanic has no
 // try/catch on any target, so hostReadAllBytes was implementable on
-// native by panicking directly on failure -- unlike readTextOrPanic
-// (whose OWN try/catch wrapper remains blocked, tracked separately).
+// native by panicking directly on failure. readTextOrPanic below
+// (issue #6961) follows the identical pattern.
 test "Std.File readBytesOrPanic: round-trip, panics on a missing path (ASan)" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "func main(): Int {\n" + "  val path = \"" +
     tempBase() +
@@ -185,6 +185,42 @@ test "Std.File readBytesOrPanic: round-trip, panics on a missing path (ASan)" {
     "}\n"
   val panicResult = compileAndRunNative(panicSrc)
   assertTrue(panicResult.exitCode != 42 and panicResult.exitCode != 0, "a non-panicking readBytesOrPanic would exit 42")
+}
+
+// Issue #6961 (D-N-003 follow-up): readTextOrPanic's own try/catch
+// wrapper was rejected by --target native's codegen; removed in favor
+// of hostReadAllText panicking directly in the native kernel, the same
+// fix readBytesOrPanic already has above.
+test "Std.File readTextOrPanic: round-trip, panics on a missing path (ASan) (#6961)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "func main(): Int {\n" + "  val path = \"" +
+    tempBase() +
+    "/lyric-n59-readtextorpanic.txt\"\n" +
+    "  match writeText(path, \"panic-seam-text\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "  val text = readTextOrPanic(path)\n" +
+    "  if text != \"panic-seam-text\" {\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val _ = deleteFile(path)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "readTextOrPanic round-trip")
+
+  // A missing path panics -- the harness's non-zero-exit-on-crash
+  // convention means "did not exit 42" is the pass signal here, same as
+  // readBytesOrPanic's own panic case above.
+  val panicSrc = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "func main(): Int {\n" +
+    "  val _ = readTextOrPanic(\"/nonexistent-lyric-n59-readtextorpanic\")\n" +
+    "  42\n" +
+    "}\n"
+  val panicResult = compileAndRunNative(panicSrc)
+  assertTrue(panicResult.exitCode != 42 and panicResult.exitCode != 0, "a non-panicking readTextOrPanic would exit 42")
 }
 
 // #4752 residual-seam audit (D-progress-910): both return "" on native,
@@ -252,6 +288,27 @@ test "Std.Environment seams: set/get, missing key, cwd (ASan)" {
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "environment seams")
+}
+
+test "Std.Environment appBaseDirectory: the returned directory actually contains the running binary (ASan) (#6937)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "import Std.Path\n" +
+    "import Std.Environment\n" + "func main(): Int {\n" +
+    "  val base = appBaseDirectory()\n" +
+    "  if base.length == 0 {\n" +
+    "    return 1\n" +
+    "  }\n" +
+    "  val argv = args()\n" +
+    "  if argv.length == 0 {\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val exe = basename(argv[0])\n" +
+    "  if not fileExists(base + exe) {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "appBaseDirectory directory actually contains the running binary")
 }
 
 test "Std.Process capture: argv passthrough, exec failure, stdin round-trip (ASan)" {
