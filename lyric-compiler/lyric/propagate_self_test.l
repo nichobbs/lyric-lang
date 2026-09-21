@@ -476,6 +476,41 @@ test "F0045 (#7178): still does not fire for a bare same-file non-async call or 
   )
 }
 
+// #7185: review finding — `isRiskyTryCallScrutinee` only inspected
+// `ECall`/`EParen` scrutinees, so a composite `if`/`match`/`try`-as-
+// -expression whose branches are direct async calls fell through the
+// default `case _ -> false` (silently assumed safe) even though its value
+// can genuinely be Task-shaped, exactly like a bare direct call.
+test "F0045 (#7185): fires for ? on an if-expression scrutinee in a try body" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = (if n > 0 { mayFail(n) } else { mayFail(0) })?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "an if-expression scrutinee cannot be proven non-async, so it is flagged"
+  )
+}
+
+test "F0045 (#7185): fires for ? on a match-expression scrutinee in a try body" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = (match n {\n      case 0 -> mayFail(0)\n      case _ -> mayFail(n)\n    })?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a match-expression scrutinee cannot be proven non-async, so it is flagged"
+  )
+}
+
+test "F0045 (#7185): fires for ? on a value-position try-expression scrutinee in a try body" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = (try {\n      mayFail(n)\n    } catch Bug as b {\n      mayFail(0)\n    })?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a value-position try-expression scrutinee (EBlock ending in STry) cannot be proven non-async, so it is flagged"
+  )
+}
+
 // ── Same-file alias return types (#1814) ─────────────────────────────────────
 // `monadOfRet` unfolds same-file `alias` declarations before the Result/Option
 // classification, so a return type written through an alias no longer trips a

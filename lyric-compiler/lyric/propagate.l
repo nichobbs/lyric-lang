@@ -354,6 +354,32 @@ func isBuiltinMonadCtorName(name: in String): Bool {
 //     diagnostic exists to close). This mirrors the pre-#6920 baseline,
 //     where every one of these shapes already failed to compile (a safe,
 //     if confusing, `T0115`) rather than building invalid IL.
+//
+//   * #7185: a composite `if`/`match`/`try`-as-expression scrutinee (e.g.
+//     `(if cond { asyncCall1() } else { asyncCall2() })?`) is ALSO risky —
+//     `msil/codegen.l`'s own Phase-B pre-scan (`inferCallReturnTypePB`) has
+//     dedicated `EIf`/`EMatch` cases specifically because these really can
+//     thread a Task-shaped value up from a branch's tail expression, exactly
+//     like a bare direct call. This pass does not (and, without real type
+//     information, cannot cheaply) inspect individual branches to rule that
+//     out, so `EIf`/`EMatch` scrutinees are flagged unconditionally rather
+//     than risking the same silent-regress-to-invalid-IL class #7178 closed
+//     for `ECall`. A value-position `try { … } catch … { … }` scrutinee is
+//     the same hazard, but the parser never produces the `ETry` AST case for
+//     it — it desugars to `EBlock([STry(...)])` instead (see
+//     `hoist_engine.l`'s own "`ETry` … is dead" note); `blockEndsInTry`
+//     below recognizes that actual shape.
+func blockEndsInTry(blk: in Block): Bool {
+  if blk.statements.count == 0 {
+    false
+  } else {
+    match blk.statements[blk.statements.count - 1].kind {
+      case STry(_, _, _) -> true
+      case _ -> false
+    }
+  }
+}
+
 func isRiskyTryCallScrutinee(inner: in Expr, st: in PropState): Bool {
   match inner.kind {
     case EParen(paren) -> isRiskyTryCallScrutinee(paren, st)
@@ -370,6 +396,12 @@ func isRiskyTryCallScrutinee(inner: in Expr, st: in PropState): Bool {
         case _ -> true
       }
     }
+    case EIf(_, _, _, _) -> true
+    case EMatch(_, _) -> true
+    case EBlock(blk) -> blockEndsInTry(blk)
+    // `ETry` is match-exhaustiveness only — the parser never constructs it
+    // (see the doc above); it can never actually be observed here.
+    case ETry(_) -> false
     case _ -> false
   }
 }
