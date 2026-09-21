@@ -594,7 +594,24 @@ func cmdTest(argv: in slice[String]): Int {
       case Err(_) -> (cfgEmptyActive, cfgEmptyDeclared)
     }
   }
-
+  // KNOWN GAP (PR #7182 review): whether the real compile below ends up on
+  // `emitTestLinked` (which ALWAYS uses empty active/declared, regardless of
+  // any manifest — see that function's own doc comment) instead of the
+  // `cfgActive`/`cfgDeclared` resolved just above is only decided further
+  // down, from `Emitter.compilerClosureDllPaths(rewritten, ...)` — which
+  // needs the REWRITTEN source `synthesizeFor` is about to produce, so it
+  // cannot be known here without either duplicating that resolution's
+  // filesystem-dependent logic or restructuring synthesis to run twice.
+  // `emitTestLinked` is only ever chosen for `@test_module` files that
+  // import `Lyric.*` compiler-internal packages (i.e. the compiler's own
+  // self-tests) and reference something needing the linked closure; no such
+  // file anywhere in this repo combines that with a manifest-driven
+  // file-level `@cfg`, so this gap is currently unreachable, not merely
+  // untested. If a future test hits it, this pre-check would use manifest
+  // features while the real compile uses empty ones, reintroducing the
+  // #6868 crash for that one case — resolve by moving `compilerClosureDllPaths`
+  // ahead of this block (on `source`, not `rewritten` — it only needs the
+  // import list) rather than adding another heuristic here.
   val synthResult = if targetNative {
     TestSynth.synthesizeFor(source, filterArg, true, false, cfgActive, cfgDeclared)
   } else if runProperties {
