@@ -76,6 +76,35 @@ Ship "v2 slice 1" only:
   not an oversight: any `Int` is a valid RNG seed for `Std.Random.makeRandom`,
   so there is nothing to reject the way `--property-trials < 1` is rejected.
 
+## Incidental compiler findings (fixed or routed around, not deferred)
+
+- **Seed-parser/self-hosted-parser divergence.** `Lyric.Cli` is compiled by
+  the pinned bootstrap **seed** compiler as part of `make lyric`'s CLI-bundle
+  precompile step, not by the current self-hosted parser — and the seed
+  parser's grammar is stricter in at least one respect: an assignment
+  expression (`x = y`) is not accepted as a match arm's inline (non-block)
+  body, even though the current self-hosted parser (and therefore `lyric fmt`
+  and `stage1-fast`, which don't exercise the CLI-bundle build) accepts it.
+  `case Some(n) -> cfg = cfg.copy(trials = n)` failed with
+  `P0201`/`P0075`/`P0202` under the seed compiler; wrapping the arm in a
+  block (`case Some(n) -> { cfg = cfg.copy(trials = n) }`) fixed it. Caught
+  only because this PR validated with a full `make lyric` rather than
+  stopping at the faster `stage1-fast` loop, which never exercises the CLI
+  bundle at all.
+- **Cross-package `.copy()` on a compiler-package record.** A helper that
+  called `.copy(field = value)` on `PropertyRunConfig` (defined in
+  `Lyric.TestSynth`) from `Lyric.Cli` intermittently threw
+  `unsupported method 'copy' on the receiver type` at runtime across
+  otherwise byte-identical full `make lyric` rebuilds, with no change to the
+  affected function between a working build and a failing one — it was the
+  only cross-package `.copy()` call site anywhere in the self-hosted
+  compiler tree. Routed around (not root-caused) by moving the config
+  construction into `Lyric.TestSynth` itself as
+  `propertyRunConfigFromOverrides`, keeping every construction of the record
+  same-package. Tracked as its own compiler-correctness issue at **#7203**
+  rather than folded into #6907 (a feature-scoping issue, not a compiler
+  bug tracker).
+
 ## Explicitly deferred (separate follow-up issues, not silently dropped)
 
 1. **Composable `Generator[T]` combinators + custom/imported-type

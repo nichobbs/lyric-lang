@@ -78,9 +78,10 @@ pub record PropertyRunConfig {
 // CLI flags, falling back to the record's own declared defaults for
 // whichever flag was not given. Lives beside `PropertyRunConfig` itself
 // (rather than in `Lyric.Cli`, the caller) so every construction of this
-// record stays same-package — cross-package `.copy()`/named-arg
-// construction on a compiler-package record proved unreliable under the
-// per-package bundle build (#6907 follow-up).
+// record stays same-package — cross-package `.copy()` on a compiler-package
+// record proved unreliable under the per-package bundle build; tracked as a
+// self-hosted-compiler bug in its own right, separate from this feature, at
+// #7203.
 pub func propertyRunConfigFromOverrides(trialsArg: in Option[Int], seedArg: in Option[Int]): PropertyRunConfig {
   val t = match trialsArg { case Some(n) -> n; case None -> 100 }
   val s = match seedArg { case Some(n) -> n; case None -> 1000 }
