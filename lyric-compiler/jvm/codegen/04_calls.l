@@ -3417,21 +3417,6 @@ pub func resolveGeneralFuncSig(
   ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
 ): Option[JvmFuncSig] {
   val argcSuffix = "@" + toString(argc)
-  // Package-scoped keys (`owner::name[@arity]`, `06_items.l`) are registered
-  // unconditionally regardless of visibility, since same-package access to a
-  // package-private function is always legal. Consulted first so #6853's
-  // visibility gate on the bundle-wide bare keys below never breaks a
-  // same-package bare call to a package-private function.
-  val scopedKey = ctx.pkgName + "::" + funcName
-  match mapGet(ctx.funcSigs, scopedKey + argcSuffix) {
-    case Some(sig) -> return Some(value = sig)
-    case None -> {
-      match mapGet(ctx.funcSigs, scopedKey) {
-        case Some(sig) -> return Some(value = sig)
-        case None -> ()
-      }
-    }
-  }
   if path.segments.count > 1 {
     val ownerSegs: List[String] = newList()
     var si = 0
@@ -3455,6 +3440,26 @@ pub func resolveGeneralFuncSig(
       }
     }
   } else {
+    // Package-scoped keys (`owner::name[@arity]`, `06_items.l`) are registered
+    // unconditionally regardless of visibility, since same-package access to
+    // a package-private function is always legal. Consulted first, BARE
+    // CALLS ONLY (#7147 review follow-up: this must never run for a
+    // qualified call — `path.segments.count > 1` above already resolves
+    // those through the real owner, and letting this scoped check fire there
+    // too could silently redirect `Other.Pkg.helper(x)` to the caller's own
+    // same-named local `helper` instead of `Other.Pkg.helper`), so #6853's
+    // visibility gate on the bundle-wide bare keys below never breaks a
+    // same-package bare call to a package-private function.
+    val scopedKey = ctx.pkgName + "::" + funcName
+    match mapGet(ctx.funcSigs, scopedKey + argcSuffix) {
+      case Some(sig) -> return Some(value = sig)
+      case None -> {
+        match mapGet(ctx.funcSigs, scopedKey) {
+          case Some(sig) -> return Some(value = sig)
+          case None -> ()
+        }
+      }
+    }
     match mapGet(ctx.funcSigs, funcName + argcSuffix) {
       case Some(sig) -> Some(value = sig)
       case None -> mapGet(ctx.funcSigs, funcName)
