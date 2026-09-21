@@ -278,7 +278,7 @@ test "F0020: ? in non-Result/Option function emits diagnostic" {
   // The enclosing function returns `Int`, not `Result` or `Option`.
   // `lowerPropagateFile` must emit F0020 rather than silently pass through.
   val src = "package P\nfunc f(x: in Int): Int {\n  val r: Result[Int, String] = Ok(1)\n  r?\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? in Int function")
 }
 
@@ -288,7 +288,7 @@ test "F0020: ? inside a lambda body emits lambda-specific diagnostic" {
   // message fires regardless of whether the enclosing function returns Result.
   // (#1801)
   val src = "package P\nfunc f(): Result[Int, String] {\n  val fn = \\() -> {\n    val r: Result[Int, String] = Ok(1)\n    r?\n  }\n  Ok(1)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? inside lambda in Result function")
 }
 
@@ -296,7 +296,7 @@ test "F0020: ? inside a lambda nested in a non-Result function also emits" {
   // PropInLambda fires even when the outer function's return type is neither
   // Result nor Option — the lambda wrapper is detected first. (#1801)
   val src = "package P\nfunc f(): Unit {\n  val fn = \\() -> {\n    val r: Result[Int, String] = Ok(1)\n    r?\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 emitted for ? inside lambda in Unit function")
 }
 
@@ -315,7 +315,7 @@ val asyncMayFailSrc = "async func mayFail(n: in Int): Result[Int, String] {\n  i
 test "F0045: implicit-await ? in a try body in an async function emits diagnostic" {
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = mayFail(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(propHasDiag(result.diagnostics, "F0045"), "F0045 emitted for implicit-await ? in a try body")
   assertFalse(propHasDiag(result.diagnostics, "F0020"), "not the unrelated F0020 diagnostic")
 }
@@ -323,21 +323,21 @@ test "F0045: implicit-await ? in a try body in an async function emits diagnosti
 test "F0045: implicit-await ? in a catch handler in an async function emits diagnostic" {
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    Ok(0)\n  } catch Bug as b {\n    val x = mayFail(n)?\n    Ok(x)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(propHasDiag(result.diagnostics, "F0045"), "F0045 emitted for implicit-await ? in a catch handler")
 }
 
 test "F0045: implicit-await ? in a finally block in an async function emits diagnostic" {
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    Ok(0)\n  } finally {\n    val x = mayFail(n)?\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(propHasDiag(result.diagnostics, "F0045"), "F0045 emitted for implicit-await ? in a finally block")
 }
 
 test "F0045: does not fire for an explicit (await ...)? in a try body — that spelling is V0012's job" {
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = (await mayFail(n))?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertFalse(
     propHasDiag(result.diagnostics, "F0045"),
     "explicit await is untouched by this guard (isAlreadyAwaitedExpr short-circuits before it)"
@@ -347,7 +347,7 @@ test "F0045: does not fire for an explicit (await ...)? in a try body — that s
 test "F0045: does not fire for implicit-await ? outside any try in an async function (#6920's own fix)" {
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  val x = mayFail(n)?\n  Ok(x)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertFalse(
     propHasDiag(result.diagnostics, "F0045"),
     "#6920's own fix is unaffected when there is no try around the ?"
@@ -361,7 +361,7 @@ test "F0045: does not fire for implicit-await ? in a try body when the enclosing
   // `st.curFnAsync`.
   val src = "package P\n" + asyncMayFailSrc +
     "func f(n: in Int): Result[Int, String] {\n  try {\n    val x = mayFail(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertFalse(propHasDiag(result.diagnostics, "F0045"), "sync enclosing function never hits the async/try guard")
 }
 
@@ -372,7 +372,7 @@ test "F0045: a nested async func declared inside an outer try starts its own fre
   // inTry=false on every function entry, matching V0012's ELambda reset).
   val src = "package P\n" + asyncMayFailSrc +
     "async func outer(n: in Int): Result[Int, String] {\n  try {\n    async func inner(m: in Int): Result[Int, String] {\n      val y = mayFail(m)?\n      Ok(y)\n    }\n    Ok(n)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertFalse(propHasDiag(result.diagnostics, "F0045"), "nested function's own ? is outside its own try region")
 }
 
@@ -389,7 +389,7 @@ test "F0045: a nested async func declared inside an outer try starts its own fre
 test "F0045/F0020 (#7179): a lambda body nested in a try region gets F0020 for its own ?, never F0045" {
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val g = \\() -> {\n      val x = mayFail(n)?\n      x\n    }\n    Ok(0)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertFalse(
     propHasDiag(result.diagnostics, "F0045"),
     "a lambda body is never inside the enclosing function's own try region"
@@ -411,13 +411,13 @@ val syncValidateSrc = "func validate(n: in Int): Result[Int, String] {\n  if n <
 test "F0045 (#7174): does not fire for ? on a call to a non-async function in a try body" {
   val src = "package P\n" + syncValidateSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = validate(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertFalse(propHasDiag(result.diagnostics, "F0045"), "a call to a non-async function is never Task-shaped")
 }
 
 test "F0045 (#7174): does not fire for ? on a bare local variable in a try body" {
   val src = "package P\nasync func f(n: in Int): Result[Int, String] {\n  try {\n    val r: Result[Int, String] = Ok(n)\n    val x = r?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertFalse(propHasDiag(result.diagnostics, "F0045"), "a bare local variable is never Task-shaped")
 }
 
@@ -426,7 +426,7 @@ test "F0045 (#7174): still fires for implicit-await ? on a same-file async call 
   // #7170 case it was meant to keep catching.
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = mayFail(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(
     propHasDiag(result.diagnostics, "F0045"),
     "a direct call to a known same-file async function is still flagged"
@@ -444,19 +444,19 @@ test "F0045 (#7174): still fires for implicit-await ? on a same-file async call 
 // anything it cannot PROVE safe rather than assume safety by default.
 test "F0045 (#7178): fires for ? on a cross-package/qualified call in a try body" {
   val src = "package P\nasync func f(n: in Int): Result[Int, String] {\n  try {\n    val x = OtherPkg.mayFail(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(propHasDiag(result.diagnostics, "F0045"), "a qualified call cannot be proven non-async, so it is flagged")
 }
 
 test "F0045 (#7178): fires for ? on a method-call scrutinee in a try body" {
   val src = "package P\nrecord Box { r: Result[Int, String] }\nasync func f(box: in Box): Result[Int, String] {\n  try {\n    val x = box.fetch()?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(propHasDiag(result.diagnostics, "F0045"), "a method call cannot be proven non-async, so it is flagged")
 }
 
 test "F0045 (#7178): fires for ? on a call to a locally-nested async func in the same try body" {
   val src = "package P\nasync func f(n: in Int): Result[Int, String] {\n  try {\n    async func helper(m: in Int): Result[Int, String] {\n      Ok(m)\n    }\n    val x = helper(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(
     propHasDiag(result.diagnostics, "F0045"),
     "a call to a locally-nested async func is never in the same-file top-level name set, so it is flagged"
@@ -469,7 +469,7 @@ test "F0045 (#7178): still does not fire for a bare same-file non-async call or 
   // risky unless proven otherwise".
   val src = "package P\n" + syncValidateSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = validate(n)?\n    val y = Ok(x)?\n    Ok(y)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertFalse(
     propHasDiag(result.diagnostics, "F0045"),
     "a proven-non-async call and a builtin ctor call stay unflagged"
@@ -484,7 +484,7 @@ test "F0045 (#7178): still does not fire for a bare same-file non-async call or 
 test "F0045 (#7185): fires for ? on an if-expression scrutinee in a try body" {
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = (if n > 0 { mayFail(n) } else { mayFail(0) })?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(
     propHasDiag(result.diagnostics, "F0045"),
     "an if-expression scrutinee cannot be proven non-async, so it is flagged"
@@ -494,7 +494,7 @@ test "F0045 (#7185): fires for ? on an if-expression scrutinee in a try body" {
 test "F0045 (#7185): fires for ? on a match-expression scrutinee in a try body" {
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = (match n {\n      case 0 -> mayFail(0)\n      case _ -> mayFail(n)\n    })?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(
     propHasDiag(result.diagnostics, "F0045"),
     "a match-expression scrutinee cannot be proven non-async, so it is flagged"
@@ -504,7 +504,7 @@ test "F0045 (#7185): fires for ? on a match-expression scrutinee in a try body" 
 test "F0045 (#7185): fires for ? on a value-position try-expression scrutinee in a try body" {
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = (try {\n      mayFail(n)\n    } catch Bug as b {\n      mayFail(0)\n    })?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(
     propHasDiag(result.diagnostics, "F0045"),
     "a value-position try-expression scrutinee (EBlock ending in STry) cannot be proven non-async, so it is flagged"
@@ -523,7 +523,7 @@ test "F0045 (#7192): fires for ? on a call resolving to the async overload of an
     "func over(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
     "async func over(n: in Int, extra: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n + extra)\n  }\n}\n" +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = over(n, 1)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(
     propHasDiag(result.diagnostics, "F0045"),
     "a 2-arg call resolves to the async overload, which cannot be proven non-async by arity, so it is flagged"
@@ -535,7 +535,7 @@ test "F0045 (#7192): still does not fire for a call resolving to the sync overlo
     "func over(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
     "async func over(n: in Int, extra: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n + extra)\n  }\n}\n" +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = over(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertFalse(
     propHasDiag(result.diagnostics, "F0045"),
     "a 1-arg call resolves to the sync overload, proven non-async by matching (name, arity), so it stays unflagged"
@@ -549,7 +549,7 @@ test "F0045 (#7192): still does not fire for a call resolving to the sync overlo
 test "F0045 (#7192): fires for ? on an unsafe-block scrutinee in a try body" {
   val src = "package P\n" + asyncMayFailSrc +
     "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = (unsafe {\n      mayFail(n)\n    })?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(
     propHasDiag(result.diagnostics, "F0045"),
     "an unsafe-block scrutinee cannot be proven non-async, so it is flagged"
@@ -568,7 +568,7 @@ test "F0045 (#7197): fires for ? on a bare call shadowed by an async sibling met
   val src = "package P\n" +
     "func helper(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
     "record Box {\n  v: Int\n  async func helper(n: in Int): Result[Int, String] {\n    if n < 0 {\n      Err(\"neg\")\n    } else {\n      Ok(n + 1)\n    }\n  }\n  async func f(n: in Int): Result[Int, String] {\n    try {\n      val x = helper(n)?\n      Ok(x)\n    } catch Bug as b {\n      Err(b.message)\n    }\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(
     propHasDiag(result.diagnostics, "F0045"),
     "the call resolves to Box's own async sibling method (method wins), not the sync top-level function, so it is flagged"
@@ -579,10 +579,33 @@ test "F0045 (#7197): does not fire for ? on a bare call resolved by a sync sibli
   val src = "package P\n" +
     "async func helper(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
     "record Box2 {\n  v: Int\n  func helper(n: in Int): Result[Int, String] {\n    if n < 0 {\n      Err(\"neg\")\n    } else {\n      Ok(n + 1)\n    }\n  }\n  async func f(n: in Int): Result[Int, String] {\n    try {\n      val x = helper(n)?\n      Ok(x)\n    } catch Bug as b {\n      Err(b.message)\n    }\n  }\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertFalse(
     propHasDiag(result.diagnostics, "F0045"),
     "the call resolves to Box2's own sync sibling method (method wins), proven non-async, so it stays unflagged"
+  )
+}
+
+// #7198: review finding — `awaitInTryIsHazard = false` (the value
+// `jvm/bridge.l` passes) must suppress F0045 entirely, even for a
+// scrutinee shape that would fire it under `true` (the `msil/bridge.l`/
+// `llvm_bridge.l` value). JVM's `async func` lowering is a synchronous
+// stub with no suspend point at all, so the CLR-verifier hazard F0045
+// exists to prevent does not apply there; firing it anyway would be a
+// spurious platform-parity build failure for code that already compiled
+// and ran correctly on `--target jvm`.
+test "F0045 (#7198): does not fire at all when awaitInTryIsHazard is false, for the exact shape that fires when true" {
+  val src = "package P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = mayFail(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val hazardTrue = lowerPropagateFile(parse(src).file, true)
+  assertTrue(
+    propHasDiag(hazardTrue.diagnostics, "F0045"),
+    "sanity: this exact shape does fire F0045 when the hazard is true"
+  )
+  val hazardFalse = lowerPropagateFile(parse(src).file, false)
+  assertFalse(
+    propHasDiag(hazardFalse.diagnostics, "F0045"),
+    "the identical shape must not fire F0045 when the target has no suspend-in-protected-region hazard"
   )
 }
 
@@ -592,37 +615,37 @@ test "F0045 (#7197): does not fire for ? on a bare call resolved by a sync sibli
 // false F0020.
 test "alias of Result: ? classifies as PropResult, no F0020 (#1814)" {
   val src = "package P\nalias ParseResult[T] = Result[T, String]\nfunc f(): ParseResult[Int] {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  Ok(v)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind a Result alias")
 }
 
 test "alias of Option: ? classifies as PropOption, no F0020 (#1814)" {
   val src = "package P\nalias Maybe[T] = Option[T]\nfunc g(): Maybe[Int] {\n  val o: Option[Int] = Some(1)\n  val v = o?\n  Some(v)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind an Option alias")
 }
 
 test "non-generic alias of Result: TRef return type also unfolds (#1814)" {
   val src = "package P\nalias IntResult = Result[Int, String]\nfunc f(): IntResult {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  Ok(v)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind a non-generic Result alias")
 }
 
 test "chained alias of Result unfolds through both hops (#1814)" {
   val src = "package P\nalias Inner[T] = Result[T, String]\nalias Outer[T] = Inner[T]\nfunc f(): Outer[Int] {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  Ok(v)\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertEqualInt(result.diagnostics.count, 0, "no diagnostics for ? behind a chained alias")
 }
 
 test "non-monadic alias still fires F0020 (#1814)" {
   val src = "package P\nalias Ints = List[Int]\nfunc f(): Ints {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  newList()\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(propHasDiag(result.diagnostics, "F0020"), "F0020 still fires when the alias is not Result/Option")
 }
 
 test "cyclic alias classifies as PropOther without looping (#1814)" {
   val src = "package P\nalias A = B\nalias B = A\nfunc f(): A {\n  val r: Result[Int, String] = Ok(1)\n  val v = r?\n  v\n}\n"
-  val result = lowerPropagateFile(parse(src).file)
+  val result = lowerPropagateFile(parse(src).file, true)
   assertTrue(propHasDiag(result.diagnostics, "F0020"), "cyclic alias hits the depth bound and fires F0020")
 }
 

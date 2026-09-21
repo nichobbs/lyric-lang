@@ -270,11 +270,14 @@ pub func compileToMsilWithVersion(
   val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
   val noDeriveImports: List[Item] = newList()
   val noSingleFileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  // #7198: MSIL's async lowering genuinely suspends (Phase B state
+  // machine), so F0045's protected-region hazard applies on this target.
   val singleFileOpts = MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
     pkgLabel = path,
-    lineOrigins = noSingleFileOrigins
+    lineOrigins = noSingleFileOrigins,
+    awaitInTryIsHazard = true
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
     case Some(f) -> f
@@ -1023,7 +1026,14 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // (e.g. an unknown-name reference) names the real file exactly like a
     // parse-phase diagnostic for the same single-file project package
     // does, instead of falling back to the bare package name.
-    val projOpts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = pp.label, lineOrigins = pp.origins)
+    // #7198: see the other `MiddleEndOptions` construction site in this file.
+    val projOpts = MiddleEndOptions(
+      tcFatal = true,
+      tcReport = false,
+      pkgLabel = pp.label,
+      lineOrigins = pp.origins,
+      awaitInTryIsHazard = true
+    )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, flattenImportedItems(importedPkgs), allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f
       case None -> return false

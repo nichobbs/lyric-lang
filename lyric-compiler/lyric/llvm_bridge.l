@@ -437,7 +437,17 @@ pub func compileToNativeWithFlags(
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, CollectedTemplate] = newMap()
   val noSingleFileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val opts = MiddleEndOptions(tcFatal = false, tcReport = true, pkgLabel = path, lineOrigins = noSingleFileOrigins)
+  // #7198: native's `async func` lowering is a real LLVM coroutine with a
+  // genuine suspend point (docs/01 §"native" section), so F0045's guard
+  // stays conservatively enabled here, same as MSIL, pending a dedicated
+  // audit of native's own try/catch protected-region model.
+  val opts = MiddleEndOptions(
+    tcFatal = false,
+    tcReport = true,
+    pkgLabel = path,
+    lineOrigins = noSingleFileOrigins,
+    awaitInTryIsHazard = true
+  )
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts) {
     case Some(f) -> f
     case None -> return false
@@ -790,11 +800,13 @@ pub func compileProjectToNativeWithFlags(
     // native bridge folds all of them into `pipeMiddleEnd` (docs/63 §9.6:
     // native has no separate weave phase the way `Msil.Bridge`/`Jvm.Bridge`
     // do).  Previously always `pkgLabel = ""` with no line translation.
+    // #7198: see the other `MiddleEndOptions` construction site in this file.
     val opts = MiddleEndOptions(
       tcFatal = false,
       tcReport = true,
       pkgLabel = nativePkgLabelAt(packages, mei),
-      lineOrigins = nativePkgOriginsAt(originsByPkg, mei)
+      lineOrigins = nativePkgOriginsAt(originsByPkg, mei),
+      awaitInTryIsHazard = true
     )
     val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts) {
       case Some(f) -> f

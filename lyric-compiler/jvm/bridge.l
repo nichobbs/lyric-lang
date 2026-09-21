@@ -345,7 +345,16 @@ pub func compileToJar(
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, CollectedTemplate] = newMap()
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val opts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = "", lineOrigins = noOrigins)
+  // #7198: JVM's `async func` lowering is a synchronous stub with no
+  // suspend point — F0045's CLR-verifier-suspend-in-protected-region
+  // hazard does not apply here, so it must never fire on this target.
+  val opts = MiddleEndOptions(
+    tcFatal = true,
+    tcReport = false,
+    pkgLabel = "",
+    lineOrigins = noOrigins,
+    awaitInTryIsHazard = false
+  )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts) {
     case Some(f) -> f
     case None -> return false
@@ -475,11 +484,13 @@ func runMiddleEnd(
   lineOrigins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
+  // #7198: see the other `MiddleEndOptions` construction site in this file.
   val opts = MiddleEndOptions(
     tcFatal = tcFatalUserPkg,
     tcReport = false,
     pkgLabel = pkgLabel,
-    lineOrigins = lineOrigins
+    lineOrigins = lineOrigins,
+    awaitInTryIsHazard = false
   )
   pipeMiddleEnd(
     file0,

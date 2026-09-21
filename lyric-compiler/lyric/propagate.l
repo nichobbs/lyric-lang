@@ -141,10 +141,17 @@ record PropState {
   curFnName: String
   curFnAsync: Bool
   inTry: Bool
+  // #7198: whether F0045 should fire at all on this target — see
+  // `lowerPropagateFile`'s doc. Constant for the whole file's rewrite, so
+  // every state-scoping helper below just threads it through unchanged.
+  awaitInTryIsHazard: Bool
 }
 
 func newPropState(
-  diags: in List[Diagnostic], aliases: in Map[String, TypeExpr], syncFuncNames: in Map[String, Bool]
+  diags: in List[Diagnostic],
+  aliases: in Map[String, TypeExpr],
+  syncFuncNames: in Map[String, Bool],
+  awaitInTryIsHazard: Bool,
 ): PropState {
   val noSiblings: Map[String, Bool] = newMap()
   val noSyncSiblings: Map[String, Bool] = newMap()
@@ -157,7 +164,8 @@ func newPropState(
     siblingSyncArity = noSyncSiblings,
     curFnName = "",
     curFnAsync = false,
-    inTry = false
+    inTry = false,
+    awaitInTryIsHazard = awaitInTryIsHazard
   )
 }
 
@@ -176,7 +184,8 @@ func stateForFn(st: in PropState, name: in String, isAsync: Bool): PropState {
     siblingSyncArity = st.siblingSyncArity,
     curFnName = name,
     curFnAsync = isAsync,
-    inTry = false
+    inTry = false,
+    awaitInTryIsHazard = st.awaitInTryIsHazard
   )
 }
 
@@ -200,7 +209,8 @@ func stateForContainerMembers(
     siblingSyncArity = siblingSyncArity,
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
-    inTry = st.inTry
+    inTry = st.inTry,
+    awaitInTryIsHazard = st.awaitInTryIsHazard
   )
 }
 
@@ -218,7 +228,8 @@ func stateInTry(st: in PropState): PropState {
     siblingSyncArity = st.siblingSyncArity,
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
-    inTry = true
+    inTry = true,
+    awaitInTryIsHazard = st.awaitInTryIsHazard
   )
 }
 
@@ -248,7 +259,8 @@ func stateForLambda(st: in PropState): PropState {
     siblingSyncArity = st.siblingSyncArity,
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
-    inTry = false
+    inTry = false,
+    awaitInTryIsHazard = st.awaitInTryIsHazard
   )
 }
 
@@ -349,14 +361,15 @@ func singleStmtBlock(s: in Statement, sp: in Span): Block {
 func implicitAwaitScrutinee(inner: in Expr, sp: in Span, st: in PropState): Expr {
   if isAlreadyAwaitedExpr(inner) {
     inner
-  } else if st.curFnAsync and st.inTry and isRiskyTryCallScrutinee(inner, st) {
+  } else if st.awaitInTryIsHazard and st.curFnAsync and st.inTry and isRiskyTryCallScrutinee(inner, st) {
     st.diagnostics.add(
       errorDiagnostic(
         "F0045",
         "the `?` operator's implicit `await` of this call inside a try/catch/finally in async function '" + st.curFnName +
-          "' cannot be proven safe here (only a direct call to a same-file, non-async function is) and, if the " +
-          "call is actually async, would emit invalid IL (the CLR verifier rejects a suspend/resume sequence " +
-          "inside a protected region — see V0012); await the call explicitly before or after the try block instead",
+          "' cannot be proven safe here (only a direct call to a same-file non-async function or sibling method, " +
+          "or a builtin Ok/Err/Some/None constructor, is) and, if the call is actually async, would emit invalid " +
+          "IL (the CLR verifier rejects a suspend/resume sequence inside a protected region — see V0012); await " +
+          "the call explicitly before or after the try block instead",
         sp
       )
     )
@@ -1192,7 +1205,15 @@ func rewriteRecordDecl(decl: in RecordDecl, st: in PropState): RecordDecl {
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Public entry point.
 // ─────────────────────────────────────────────────────────────────────────────
-pub func lowerPropagateFile(file: in SourceFile): PropagateResult {
+// #7198: `awaitInTryIsHazard` — whether F0045's guard should fire at all on
+// this target.  See `docs/decisions/D-progress-0941-...md`'s scope note and
+// `Lyric.Pipeline.MiddleEndOptions.awaitInTryIsHazard`'s doc: the hazard
+// (a suspend/resume sequence physically inside a try/catch/finally
+// protected region) is MSIL/.NET-specific — JVM's `async func` lowering is
+// a synchronous stub with no suspend point, so firing F0045 there would be
+// a spurious, target-incorrect build failure for code that already
+// compiled and ran correctly on `--target jvm`.
+pub func lowerPropagateFile(file: in SourceFile, awaitInTryIsHazard: Bool): PropagateResult {
   // #6448: hoist every qualifying `?` (operand-position, stacked-context)
   // into fresh `val` bindings FIRST, before the `?` -> match rewrite below —
   // see §2b's module doc.  Every hoisted `?` lands as a statement-level
@@ -1221,7 +1242,7 @@ pub func lowerPropagateFile(file: in SourceFile): PropagateResult {
     }
     ai = ai + 1
   }
-  val st = newPropState(diags, aliases, syncFuncNames)
+  val st = newPropState(diags, aliases, syncFuncNames, awaitInTryIsHazard)
   val newItems: List[Item] = newList()
   var i = 0
   while i < hoisted.items.count {
