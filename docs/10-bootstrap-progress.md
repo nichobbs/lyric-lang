@@ -34874,6 +34874,6 @@ pass under one shared explicit `--seed`; a two-property file under
 `--seed 2147483647` does not overflow-panic, pinning down the
 `cfg.seed.xor(idx)` fix over addition).
 
-**Related:** `docs/decisions/D-progress-0941` (full account), #6907,
+**Related:** `docs/decisions/D-progress-0942` (full account), #6907,
 #677/D-progress-784 (the v1.x property-execution baseline this extends),
 `docs/24-test-runner-plan.md` §5 Stage 3/4.

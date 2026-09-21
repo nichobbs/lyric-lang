@@ -522,7 +522,7 @@ test "lyric test --seed 2147483647: a two-property file does not overflow-panic 
   assertEqualInt(rc, 0, "an extreme --seed near Int32.MaxValue does not overflow-panic on a multi-property file")
 }
 
-// D-progress-0941 documents that a negative --seed is intentionally
+// D-progress-0942 documents that a negative --seed is intentionally
 // accepted (any Int is a valid RNG seed for Std.Random.makeRandom, unlike
 // --property-trials, which is validated >= 1) rather than merely
 // unrejected by omission. Pins that down against a future accidental

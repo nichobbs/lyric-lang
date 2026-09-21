@@ -203,7 +203,7 @@ driven discovery story.
   local-path dep resolution.  Cross-package non-pub access (§3.2) and retiring
   the F# Expecto bridge for the stdlib test suite are follow-up items.
 * **Stage 3** — property execution. **Partially shipped (#677,
-  D-progress-784; v2 slice 1 in D-progress-941):** `lyric test
+  D-progress-784; v2 slice 1 in D-progress-942):** `lyric test
   --properties` synthesises a real sampling-and-shrinking harness
   (seeded samples, `where`-guard evaluation, greedy per-binder
   shrinking on the first counterexample) for any `property` whose

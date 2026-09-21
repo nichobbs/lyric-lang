@@ -1,4 +1,4 @@
-# D-progress-941 — `lyric test --property-trials`/`--seed` (property-testing v2 slice 1, #6907)
+# D-progress-942 — `lyric test --property-trials`/`--seed` (property-testing v2 slice 1, #6907)
 
 **Status:** shipped
 
