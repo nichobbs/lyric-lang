@@ -4746,3 +4746,37 @@ test "nullary union case bare reference is still clean" {
   val src = "package P\nunion DbError {\n  case ConnLost\n  case ExecFailed(sql: String, message: String)\n}\nfunc f(): DbError { ConnLost }\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "nullary case bare reference: no errors")
 }
+
+// #7099: a nonexistent `String` method (a typo, or a BCL method the language
+// never implemented) used to type-check clean and only fail once the
+// compiled program actually ran (a silently emitted throw-stub). Now caught
+// at the call site with a spanned T0113 diagnostic naming both the method
+// and the receiver type.
+test "unknown method call on a String receiver emits T0113 (#7099)" {
+  val src = "package P\nfunc f(): String {\n  val s = \"Hello\"\n  s.toLowerInvariant()\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0113"), "unknown String method: T0113")
+  val msg = diagMessageFor(cr, "T0113")
+  assertTrue(
+    Str.contains(msg, "no method 'toLowerInvariant'"),
+    "unknown String method: message names the method (got: " + msg + ")"
+  )
+  assertTrue(
+    Str.contains(msg, "on type 'String'"),
+    "unknown String method: message names the receiver type (got: " + msg + ")"
+  )
+}
+
+// Every backend-intrinsic `String` method (`lowerMethodCallMsil`'s hardcoded
+// dispatch, mirrored in the JVM codegen table) must stay clean even when the
+// file never imports `Std.String` — these are resolved by the backends
+// unconditionally, independent of the `Std.String` wrapper functions'
+// visibility (#7099 false-positive regression guard).
+test "known backend-intrinsic String methods stay clean without importing Std.String" {
+  val src = "package P\nfunc f(): Unit {\n  val s = \"  Hello World  \"\n  println(s.contains(\"World\"))\n  println(s.substring(0, 1))\n  println(s.replace(\"a\", \"b\"))\n  println(s.isNormalized())\n  println(s.normalize())\n  println(s.trim())\n  println(s.trimStart())\n  println(s.trimEnd())\n  println(s.indexOf(\"o\"))\n  println(s.lastIndexOf(\"o\"))\n  println(s.startsWith(\"H\"))\n  println(s.endsWith(\"d\"))\n  println(s.split(\" \").count)\n  println(s.toLower())\n  println(s.toUpper())\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    not hasDiagCode(cr, "T0113"),
+    "known intrinsic String methods: no T0113 (diag count=" + diagCount(cr).toString() + ")"
+  )
+}

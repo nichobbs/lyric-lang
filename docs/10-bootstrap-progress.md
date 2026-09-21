@@ -35732,3 +35732,57 @@ ran. `docs/01-language-reference.md` and
 **Related:** D-progress-939 (full account, `docs/decisions/`), #7119,
 #6739/D-progress-912 (the record/opaque precedent this generalizes), PR
 #7117 (where the gap was flagged).
+
+## Unknown `String` method call now caught at type-check time (T0113), plus `isNormalized`/`normalize` JVM parity (#7099)
+
+`maybeUnknownMemberDiag`'s "unknown member" T0113 check previously only had
+an arm for `TyUser` receivers — `String` is `TyPrim(PtString)`, so a call to
+a nonexistent `String` method (a typo, or a BCL method the language never
+implemented, e.g. `.toLowerInvariant()`) type-checked clean and only failed
+once the compiled program actually ran (the MSIL/JVM backends' `String`
+intrinsic dispatch tables both fall back to either a build-time panic
+(MSIL) or a runtime-throw stub for an unrecognised name). New
+`TyPrim(PtString)` arm exempts universal method names, `builtinMember`
+field-style accessors (`length`/`isEmpty`), an explicit
+`isBackendIntrinsicStringMethodName` allowlist of the 15 backend-intrinsic
+method names (kept in sync with both backends' hardcoded dispatch tables —
+needed because those resolve unconditionally, independent of whether
+`Std.String` is imported), and ordinary bare-name functions in `sigs`;
+anything else emits `T0113 no method '<name>' on type 'String'` at the call
+site. Fixing this surfaced a genuine pre-existing gap: `isNormalized`/
+`normalize` had no `Std.String` wrapper and no JVM codegen intrinsic at
+all (MSIL-only) — added both, with the JVM intrinsic routing through
+`java.text.Normalizer`'s **static** methods (`LGetstatic(Normalizer$Form.NFC)`
++ `LInvokestatic`) since Java has no instance-method equivalent. Two
+pre-existing `msil_project_bridge_self_test.l` tests were updated to match
+the new (earlier, better) failure layer — the type checker now catches the
+unknown-method case before codegen, so `compileProjectToMsil` returns
+`false` instead of throwing. `typechecker_self_test.l`: 432/432 (2 new
+cases). `docs/01-language-reference.md` and
+`book/chapters/appendix-b-quick-reference.md` updated.
+
+**Related:** D-progress-940 (full account, `docs/decisions/`), #7099.
+
+## `internal` cross-package bare-name/zero-arg free-function calls confirmed fixed, `lyric-lambda` workaround reverted (#6886)
+
+Filed independently of #6580 but the same root cause: a bare (or qualified)
+cross-package call to an `internal` free function failed with `error[T0020]
+unknown name`, contradicting `docs/01-language-reference.md` §3.1's
+documented project-wide `internal` visibility. #6580's
+`pipeIsCrossPackageItemProject` generalisation (D-progress-923, merged via
+PR #7117 shortly after #6886 was filed) already fixed the underlying
+`pipeIsCrossPackageItem` pub-only filter this bug shared. Re-verified with
+the exact reported shape (a bare, zero-argument call to an `internal`
+free function from a dotted sub-package sharing the declaring package's
+name as a prefix — the real `Lambda`/`Lambda.Kernel.WebBridge` shape) via a
+new `msil_project_bridge_self_test.l` regression test and an end-to-end
+`lyric build --manifest lyric-lambda/lyric.toml --features web,local`
+rebuild: no diagnostic, build succeeds. `lyric-lambda/src/lambda.l`'s
+`newLambdaRouter()` — `pub` only as the documented workaround for this bug
+— reverted to `internal` (its originally-intended visibility); the
+`Lambda.Kernel.WebBridge` webbridge tests (manually run per
+`tests/lambda_webbridge_tests.l`'s own header recipe, `--features web`)
+pass unchanged (3/3).
+
+**Related:** D-progress-923 (the #6580 fix this issue shared a root cause
+with), #6886, #6580.

@@ -914,7 +914,18 @@ D037 dot-named functions), validates arity and argument types (**T0042** /
 method name that does not exist on a locally-declared record, exposed
 record, or interface is a compile error (**T0113**) naming the receiver
 type; types imported from other packages are currently checked leniently
-(their contract metadata does not yet carry method signatures).
+(their contract metadata does not yet carry method signatures). `String`'s
+member surface is fully known to the checker (unlike a general imported
+type), so it is checked the same way regardless of import state: a call to
+a name that is neither a universal method (`toString`/`equals`/`hash`/
+`show`/`compare`/`toJson`), a field-style accessor (`length`/`isEmpty`), one
+of the backend-implemented intrinsic methods (`contains`, `substring`,
+`replace`, `isNormalized`, `normalize`, `trim`, `trimStart`, `trimEnd`,
+`indexOf`, `lastIndexOf`, `startsWith`, `endsWith`, `split`, `toLower`,
+`toUpper`), nor an ordinary function reachable by bare name, is also
+**T0113**, naming the method and `'String'` — this catches a typo or an
+unimplemented BCL method (e.g. `.toLowerInvariant()`) at the call site
+instead of compiling clean and failing only once the program runs.
 
 Field-style access `x.name` (no call parens) to a name that exists **only**
 as a D037 dot-named (UFCS) function — never as a real record/union field — is

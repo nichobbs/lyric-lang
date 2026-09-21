@@ -1981,13 +1981,17 @@ test "unresolvable extern static member access panics with the spanned T0119 cod
 // #7099: a nonexistent String method (a typo, or a BCL method the language
 // never implemented — `toLowerInvariant` has no `Std.String` counterpart and
 // no MSIL codegen intrinsic entry) used to compile clean, degrading to a
-// runtime-throw stub, and only failed once the program actually ran. Every
-// String method name `lowerMethodCallMsil` actually implements is handled
-// earlier in the same cascading dispatch, so a String receiver reaching the
-// final "unrecognised method" fallback names a method that can never
-// resolve — `compileProjectToMsil` must now panic at build time instead of
-// silently emitting the stub, mirroring the coded-refusal tests above.
-test "unknown method call on a String receiver panics at build time, not silently (#7099)" {
+// runtime-throw stub, and only failed once the program actually ran. The
+// type checker's `maybeUnknownMemberDiag` now catches this at the call site
+// with a spanned T0113 diagnostic (`typechecker_exprs.l`), so the build now
+// fails at the type-check gate before codegen is ever reached — earlier and
+// with a better diagnostic than the codegen-level panic this test used to
+// pin. Message-content coverage for the T0113 text lives in
+// `typechecker_self_test.l` (which can inspect the diagnostic list
+// directly); this test only pins that the bridge-level `Bool` build result
+// reflects the failure, matching the established `compileProjectToMsil`
+// failure idiom (see `llvm_project_self_test.l`'s `assertFalse(ok, ...)`).
+test "unknown method call on a String receiver fails the build, not silently (#7099)" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(
     mkPkg(
@@ -2000,24 +2004,9 @@ test "unknown method call on a String receiver panics at build time, not silentl
   val dir = freshTempDir("unknown_string_method")
   val dllPath = Path.join(dir, "UnknownStringMethod.dll")
   val stdlibSources: List[String] = newList()
-  var panicked = false
-  var panicMsg = ""
-  try {
-    compileProjectToMsil(packages, "UnknownStringMethod", dllPath, stdlibSources)
-  } catch Bug as b {
-    panicked = true
-    panicMsg = b.message
-  }
+  val ok = compileProjectToMsil(packages, "UnknownStringMethod", dllPath, stdlibSources)
   cleanup(dir)
-  assertTrue(panicked, "unknown String method: compileProjectToMsil panics instead of returning (#7099)")
-  assertTrue(
-    Str.contains(panicMsg, "no method 'toLowerInvariant'"),
-    "unknown String method: panic names the unresolved method (got: " + panicMsg + ")"
-  )
-  assertTrue(
-    Str.contains(panicMsg, "on type 'String'"),
-    "unknown String method: panic names the receiver type (got: " + panicMsg + ")"
-  )
+  assertFalse(ok, "unknown String method: compileProjectToMsil returns false instead of succeeding (#7099)")
 }
 
 // A real String method (handled by one of `lowerMethodCallMsil`'s
@@ -2615,6 +2604,51 @@ test "qualified call to an internal cross-package function resolves (#6580)" {
     "7",
     "qualified call to an internal cross-package function returns the right value"
   )
+}
+
+// #6886: the lyric-lambda `newLambdaRouter` shape — package A is a single
+// segment ("Lambda"), package B is a dotted package whose FIRST segment
+// equals A's whole name ("Lambda.Kernel.WebBridge"), B imports A and calls
+// A's `internal` zero-arg free function BARE (no qualifier at all). This
+// used to fail with `error[T0020] unknown name` (docs/01 §3.1 documents
+// `internal` as visible to sibling packages within the same project) —
+// already fixed by #6580's `pipeIsCrossPackageItemProject` generalisation
+// (D-progress-923); this pins the exact bare-zero-arg-call shape #6886
+// reported as a permanent regression guard.
+test "internal bare zero-arg call from a dotted sub-package sharing A's prefix resolves (#6886)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Lambda6886",
+      "package Lambda6886\n" + "pub opaque type Thing {\n" + "  x: Int\n" + "}\n" +
+        "internal func makeThing(): Thing {\n" +
+        "  Thing(x = 1)\n" +
+        "}\n" +
+        "pub func unwrap(t: in Thing): Int {\n" +
+        "  t.x\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Lambda6886.Kernel.WebBridge",
+      "package Lambda6886.Kernel.WebBridge\n" + "import Lambda6886\n" + "pub func makeAndUnwrap(): Int {\n" +
+        "  val t = makeThing()\n" +
+        "  unwrap(t)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Lambda6886App",
+      "package Lambda6886App\n" + "import Lambda6886.Kernel.WebBridge\n" + "func main(): Unit {\n" +
+        "  println(Lambda6886.Kernel.WebBridge.makeAndUnwrap())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("internal-bare-dotted-prefix-6886", packages, "InternalBareDottedPrefix6886")
+  assertEqualInt(result.exitCode, 0, "internal_bare_dotted_prefix_6886: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1", "internal bare call from dotted sub-package returns the right value")
 }
 
 // #6537 residual site 1: `resolveFfiClassTypeRef` (used by `bufFfiType` to
