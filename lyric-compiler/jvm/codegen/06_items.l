@@ -3408,6 +3408,18 @@ pub func collectFileSigsSeeded(
         if not into.containsKey(qkey) {
           into.add(qkey, sig)
         }
+        // Arity-suffixed qualified key (`Std/Testing/assertEqualInt@2`) is
+        // ALSO namespaced by `owner`, exactly like `qkey` above — never
+        // visibility-gated (#7154 review follow-up): a same-name-different-
+        // arity overload's qualified self-call (or cross-package call to a
+        // legally-visible overload) must still land on the exact descriptor,
+        // not silently fall back to whichever overload's plain `qkey` won
+        // first-wins registration (`Std.String.substring`'s VerifyError
+        // class, see the bare-key comment below).
+        val akey = qkey + "@" + toString(decl.params.count)
+        if not into.containsKey(akey) {
+          into.add(akey, sig)
+        }
         // Package-scoped bare keys (`owner::name`, `owner::name@arity`) are
         // registered UNCONDITIONALLY — same-package bare calls to a
         // package-private function are always legal, and `resolveGeneralFuncSig`
@@ -3437,17 +3449,13 @@ pub func collectFileSigsSeeded(
           if not into.containsKey(decl.name) {
             into.add(decl.name, sig)
           }
-          // Arity-suffixed keys so same-name OVERLOADS in one package resolve
-          // to the right descriptor: with name-only keys, first-wins collision
-          // made a 3-arg call link against the 2-arg overload's descriptor —
-          // VerifyError at class load (`Std.String.substring`'s two overloads,
-          // hit by lyric-storage's `basenameOf`).  Call sites try the exact
-          // arity first and fall back to the name key (which also covers calls
-          // that rely on parameter defaults).
-          val akey = qkey + "@" + toString(decl.params.count)
-          if not into.containsKey(akey) {
-            into.add(akey, sig)
-          }
+          // Bare arity-suffixed key so same-name OVERLOADS in one package
+          // resolve to the right descriptor: with name-only keys, first-wins
+          // collision made a 3-arg call link against the 2-arg overload's
+          // descriptor — VerifyError at class load (`Std.String.substring`'s
+          // two overloads, hit by lyric-storage's `basenameOf`). Call sites
+          // try the exact arity first and fall back to the name key (which
+          // also covers calls that rely on parameter defaults).
           val bkey = decl.name + "@" + toString(decl.params.count)
           if not into.containsKey(bkey) {
             into.add(bkey, sig)
