@@ -193,6 +193,19 @@ int32_t lyric_sock_listen(const char* ip, int32_t port, int32_t backlog) {
                 last_errno ? strerror(last_errno) : "no usable address");
         return -1;
     }
+    /* O_NONBLOCK on the listening fd (issue #6962): lyric_sock_accept_interruptible
+     * only polls the fd before calling accept(), so this changes nothing about
+     * the fast path -- but it makes the EAGAIN/EWOULDBLOCK "spurious wakeup"
+     * branch there actually reachable and correct instead of blocking a losing
+     * thread's accept() call (and its wake-pipe poll) when two threads accept
+     * concurrently on the same Listener. */
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        last_errno = errno;
+        close(fd);
+        set_err("listen %s:%d: fcntl(O_NONBLOCK): %s", ip, (int)port, strerror(last_errno));
+        return -1;
+    }
     return (int32_t)fd;
 }
 
@@ -214,10 +227,26 @@ int32_t lyric_sock_local_port(int32_t fd) {
 }
 
 int32_t lyric_sock_accept(int32_t listen_fd) {
+    /* listen_fd is O_NONBLOCK (lyric_sock_listen, issue #6962), but this
+     * function's contract is a blocking accept -- wait via poll(2) whenever
+     * accept() would otherwise return EAGAIN/EWOULDBLOCK so callers still
+     * see the original blocks-until-a-connection-arrives behavior. */
     int fd;
-    do {
+    for (;;) {
         fd = accept(listen_fd, NULL, NULL);
-    } while (fd < 0 && errno == EINTR);
+        if (fd >= 0 || (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            break;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            struct pollfd pfd;
+            pfd.fd = listen_fd;
+            pfd.events = POLLIN;
+            int rc;
+            do {
+                rc = poll(&pfd, 1, -1);
+            } while (rc < 0 && errno == EINTR);
+        }
+    }
     if (fd < 0) {
         g_sock_accept_errno = errno;
         set_err("accept: %s", strerror(errno));
@@ -356,15 +385,11 @@ int32_t lyric_sock_accept_interruptible(int32_t listen_fd, int32_t wake_read_fd)
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     /* Spurious wakeup (another thread on this same
                      * listening socket already accepted the pending
-                     * connection) -- poll again. NOTE (issue #6962): this
-                     * assumes listen_fd is O_NONBLOCK, which it is not
-                     * today -- on the current blocking socket, a losing
-                     * thread's accept() call here blocks instead of
-                     * returning EAGAIN, and while blocked stops polling
-                     * the wake pipe. Not reachable via any caller in this
-                     * codebase (exactly one accept-loop thread per
-                     * Listener always), so left as a documented follow-up
-                     * rather than fixed here. */
+                     * connection) -- poll again. listen_fd is O_NONBLOCK
+                     * (lyric_sock_listen, issue #6962), so this is the
+                     * real EAGAIN/EWOULDBLOCK path rather than a blocking
+                     * accept() stalling a losing thread past the wake
+                     * pipe. */
                     continue;
                 }
                 g_sock_accept_errno = errno;
