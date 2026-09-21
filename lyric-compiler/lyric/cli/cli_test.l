@@ -333,22 +333,6 @@ func generateJvmCoverageReport(
   true
 }
 
-// Builds a `TestSynth.PropertyRunConfig` from the parsed `--property-trials`/
-// `--seed` flags, falling back to `PropertyRunConfig()`'s own declared
-// defaults (100 trials, seed 1000) for whichever flag was not given.
-func buildPropertyRunConfig(trialsArg: in Option[Int], seedArg: in Option[Int]): PropertyRunConfig {
-  var cfg = PropertyRunConfig()
-  match trialsArg {
-    case Some(n) -> { cfg = cfg.copy(trials = n) }
-    case None -> ()
-  }
-  match seedArg {
-    case Some(n) -> { cfg = cfg.copy(seed = n) }
-    case None -> ()
-  }
-  cfg
-}
-
 func cmdTest(argv: in slice[String]): Int {
   var filterArg: Option[String] = None
   var manifestArg: Option[String] = None
@@ -494,7 +478,7 @@ func cmdTest(argv: in slice[String]): Int {
     printErr("test: --property-trials/--seed require --properties")
     return 1
   }
-  val propCfg = buildPropertyRunConfig(propTrialsArg, propSeedArg)
+  val propCfg = TestSynth.propertyRunConfigFromOverrides(propTrialsArg, propSeedArg)
 
   // `--coverage` (JVM-target JaCoCo instrumentation, docs/03-decision-log.md)
   // is scoped to a single explicit test file for its first slice — manifest
@@ -577,7 +561,17 @@ func cmdTest(argv: in slice[String]): Int {
   }
 
   match manifestArg {
-    case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, runProperties, propCfg, cliFeatures, noDefaultFeatures, allFeatures)
+    case Some(p) -> return cmdTestManifest(
+      p,
+      filterArg,
+      targetJvm,
+      failFast,
+      runProperties,
+      propCfg,
+      cliFeatures,
+      noDefaultFeatures,
+      allFeatures
+    )
     case None -> ()
   }
 
@@ -588,7 +582,17 @@ func cmdTest(argv: in slice[String]): Int {
       return 1
     }
     match resolveTestAutoDiscovery(Environment.currentDirectory()) {
-      case TestShouldRunManifest(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, runProperties, propCfg, cliFeatures, noDefaultFeatures, allFeatures)
+      case TestShouldRunManifest(p) -> return cmdTestManifest(
+        p,
+        filterArg,
+        targetJvm,
+        failFast,
+        runProperties,
+        propCfg,
+        cliFeatures,
+        noDefaultFeatures,
+        allFeatures
+      )
       case TestReported(outcome) -> return outcome.exitCode
     }
   }
