@@ -37272,6 +37272,16 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): 
         registerRestoredRecordFields(cctx, art.packageName, decl)
         registerRestoredRecordBodyMethods(cctx, art.packageName, decl)
       }
+      // An `exposed record` restored from a dependency's contract metadata
+      // (#6533) wraps the same `RecordDecl` shape `IRecord` does — the
+      // producer-side `exposed`-ness only affects reflection-visibility in
+      // the PRODUCER's own compiled assembly, not how a consumer constructs
+      // or reads it — so registration is identical to the plain-record arm.
+      case IExposedRec(decl) -> {
+        registerRestoredRecordCtor(cctx, art.packageName, decl)
+        registerRestoredRecordFields(cctx, art.packageName, decl)
+        registerRestoredRecordBodyMethods(cctx, art.packageName, decl)
+      }
       case IFunc(decl) -> {
         registerRestoredFunc(cctx, art.packageName, decl, taskFuncs)
       }

@@ -305,3 +305,48 @@ test "Self-returning inherent method on a generic record narrows to the closed i
     "restored_self_generic: chained Self narrows to Acc[Int], member access works"
   )
 }
+
+// #6533: a restored `exposed record` (plain or generic) was entirely
+// unusable by a downstream consumer — `Lyric.ContractMeta.buildContractFromFile`
+// never matched `IExposedRec` at all (only `IRecord`), so the item was
+// silently dropped from the producer's contract metadata and a consumer's
+// reference to it failed T0020 "unknown name" before codegen ever ran. Fixed
+// by threading an `isExposed` flag through `reprForRecord` (baking the
+// `exposed` keyword into the repr's own re-parseable head) and adding the
+// matching `IExposedRec` arm to `Msil.Codegen.registerRestoredMembers`.
+val exposedLibSource: String = "package RestoredExposedLib\n" + "\n" + "pub exposed record Point {\n" + "  x: Int\n" + "  y: Int\n" + "}\n"
+
+test "restored plain exposed record constructs and reads fields (#6533)" {
+  val art = buildRestoredArtifact("exposed-plain", exposedLibSource, "RestoredExposedLib")
+  val consumerSrc = "package RestoredExposedApp\n" + "\n" + "import RestoredExposedLib\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  val p = Point(x = 3, y = 4)\n" +
+    "  println(p.x)\n" +
+    "  println(p.y)\n" +
+    "}\n"
+  val result = compileAndRunAgainstRestored("exposed-plain", consumerSrc, "RestoredExposedApp", art)
+  assertEqualInt(result.exitCode, 0, "restored_exposed_plain: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "3\n4",
+    "restored_exposed_plain: fields round-trip through the restored exposed record"
+  )
+}
+
+val exposedGenericLibSource: String = "package RestoredExposedGenericLib\n" + "\n" + "pub exposed record Box[T] {\n" + "  value: T\n" + "}\n"
+
+test "restored generic exposed record constructs and reads its field (#6533)" {
+  val art = buildRestoredArtifact("exposed-generic", exposedGenericLibSource, "RestoredExposedGenericLib")
+  val consumerSrc = "package RestoredExposedGenericApp\n" + "\n" + "import RestoredExposedGenericLib\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  val b = Box(value = 7)\n" +
+    "  println(b.value)\n" +
+    "}\n"
+  val result = compileAndRunAgainstRestored("exposed-generic", consumerSrc, "RestoredExposedGenericApp", art)
+  assertEqualInt(result.exitCode, 0, "restored_exposed_generic: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "7",
+    "restored_exposed_generic: value round-trips through the restored generic exposed record"
+  )
+}

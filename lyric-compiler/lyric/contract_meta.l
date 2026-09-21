@@ -981,7 +981,18 @@ func reprForRecordMethod(fn: in FunctionDecl): String {
 // to it failed at runtime with "unsupported method" regardless of return
 // type (#6440).  Omitted when there are no methods so the no-method repr
 // stays byte-identical to the pre-fix form.
-func reprForRecord(decl: in RecordDecl): String {
+//
+// `isExposed` bakes the `exposed` keyword into the repr's own head
+// (`docs/grammar.ebnf` §3.4 accepts `pub exposed record Name { ... }` as a
+// real, re-parseable item declaration) so a restored `exposed record`
+// round-trips through the exact same `kind = "record"` contract-decl shape
+// an ordinary record uses — no new JSON kind discriminator or boolean flag
+// needed, since the repr text itself already carries the distinction
+// (#6533; before this, `IExposedRec` items were never even reached by
+// `buildContractFromFile`'s item match, so a downstream consumer's
+// reference to the type failed T0020 "unknown name" before codegen ever
+// ran).
+func reprForRecord(decl: in RecordDecl, isExposed: in Bool): String {
   var fields = ""
   var i = 0
   var emittedAny = false
@@ -1010,7 +1021,8 @@ func reprForRecord(decl: in RecordDecl): String {
     }
     mi = mi + 1
   }
-  val head = "pub record " + decl.name + renderGenerics(decl.generics) + " { " + fields
+  val exposedPrefix = if isExposed { "exposed " } else { "" }
+  val head = "pub " + exposedPrefix + "record " + decl.name + renderGenerics(decl.generics) + " { " + fields
   if methods == "" {
     head + " }"
   } else {
@@ -1531,7 +1543,13 @@ func reprForInlinableVal(decl: in ValDecl): Option[String] {
     return None
   }
   match decl.pattern.kind {
-    case PBinding(name, _) -> match decl.ty { case Some(te) -> Some(value = "pub val " + name + ": " + renderTypeExpr(te) + " = " + renderConstExpr(decl.init)); case None -> None }
+    case PBinding(name, _) -> match decl.ty {
+      case Some(te) -> Some(
+        value = "pub val " + name + ": " + renderTypeExpr(te) + " = " +
+          renderConstExpr(decl.init)
+      )
+      case None -> None
+    }
     case _ -> None
   }
 }
@@ -1633,6 +1651,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     if isPubVis(pit.visibility) {
       match pit.kind {
         case IRecord(r) -> pubTypeNames.add(r.name)
+        case IExposedRec(r) -> pubTypeNames.add(r.name)
         case IUnion(u) -> pubTypeNames.add(u.name)
         case IEnum(e) -> pubTypeNames.add(e.name)
         case IInterface(ix) -> pubTypeNames.add(ix.name)
@@ -1651,7 +1670,8 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     val it = file.items[i]
     if isPubVis(it.visibility) {
       match it.kind {
-        case IRecord(r) -> decls.add(basicDecl("record", r.name, reprForRecord(r), it.visibility))
+        case IRecord(r) -> decls.add(basicDecl("record", r.name, reprForRecord(r, isExposed = false), it.visibility))
+        case IExposedRec(r) -> decls.add(basicDecl("record", r.name, reprForRecord(r, isExposed = true), it.visibility))
         case IFunc(f) -> decls.add(funcDecl(f, it.visibility))
         case IUnion(u) -> decls.add(basicDecl("union", u.name, reprForUnion(u), it.visibility))
         case IEnum(e) -> decls.add(basicDecl("enum", e.name, reprForEnum(e), it.visibility))
@@ -1664,7 +1684,10 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         // consumer compiled separately (per-package emit) needs the value
         // from the producer's contract; carry it here.
         case IConst(c) -> decls.add(basicDecl("const", c.name, reprForConst(c), it.visibility))
-        case IVal(v) -> match reprForInlinableVal(v) { case Some(repr) -> decls.add(basicDecl("val", bindingName(v.pattern), repr, it.visibility)); case None -> () }
+        case IVal(v) -> match reprForInlinableVal(v) {
+          case Some(repr) -> decls.add(basicDecl("val", bindingName(v.pattern), repr, it.visibility))
+          case None -> ()
+        }
         // Every `pub aspect` that carries an `around` body (i.e. a
         // library template, not a bare `matches:`-only consumer instance)
         // carries its advice into the contract, tagged C-mode
