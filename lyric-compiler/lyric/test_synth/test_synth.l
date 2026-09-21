@@ -83,8 +83,9 @@ pub record PropertyRunConfig {
 // self-hosted-compiler bug in its own right, separate from this feature, at
 // #7203.
 pub func propertyRunConfigFromOverrides(trialsArg: in Option[Int], seedArg: in Option[Int]): PropertyRunConfig {
-  val t = match trialsArg { case Some(n) -> n; case None -> 100 }
-  val s = match seedArg { case Some(n) -> n; case None -> 1000 }
+  val defaults = PropertyRunConfig()
+  val t = match trialsArg { case Some(n) -> n; case None -> defaults.trials }
+  val s = match seedArg { case Some(n) -> n; case None -> defaults.seed }
   PropertyRunConfig(trials = t, seed = s)
 }
 
