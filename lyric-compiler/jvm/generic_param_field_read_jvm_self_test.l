@@ -27,14 +27,26 @@
 //!
 //! Scoped strictly to PARAMETER bindings (free-function and instance-method).
 //! A DISTINCT, separate manifestation of the same underlying erasure —
-//! `self.<genericRecordField>.<field>` on a record whose OWN FIELD (not a
-//! parameter or an indexed container element) is declared as a generic-record
-//! instantiation — was found while developing this test and is NOT fixed
-//! here; it needs the field-DECLARATION-typing path (`collectFileCasesExtern`
-//! /`lowerRecord`'s own field-type computation), a different call site than
-//! `setupStaticParamSlotsAndHolders`/`setupInstanceParamSlotsAndHolders`.
-//! Tracked as a follow-up rather than folded into this fix's scope — see
-//! #6959.
+//! `self.<genericRecordField>.<field>` (or `<recordParam>.<genericRecordField>
+//! .<field>`) on a record whose OWN FIELD (not a parameter or an indexed
+//! container element) is declared as a generic-record instantiation — was
+//! found while developing this test and was NOT fixed here (tracked
+//! separately as #6959): it needs the field-DECLARATION-typing path
+//! (`collectFileCasesExtern`/`lowerRecord`'s own field-type computation), a
+//! different call site than `setupStaticParamSlotsAndHolders`/
+//! `setupInstanceParamSlotsAndHolders`.
+//!
+//! #6959 turned out to already be fixed as a side effect of #4870/#6882
+//! (`Jvm.Codegen.typeExprToJvmErasedExternL`, landed after this file and
+//! #6959 were filed): `collectFileCasesExtern` and `lowerRecord` both resolve
+//! a same-file bare `TGenericApp` field type (e.g. `box: Box[Int]` on
+//! `Holder`) to its raw erased class via the shared `localTypeNames` table,
+//! not the blanket `Object` erasure — so the field DESCRIPTOR and the case-
+//! field REGISTRY agree on `Holder.box`'s real class, and a chained read
+//! (`self.box.value`) resolves directly against `Box`'s own field registry
+//! instead of falling through the erased-receiver bundle-wide `field:<name>`
+//! fallback. The `Holder`/`readHolderBoxValue`/`HolderMethod` declarations
+//! and their tests below lock this in.
 //!
 //! Run in CI via native `lyric test --target jvm` (compiles this module
 //! in-process through the self-hosted `Jvm.Bridge` `compileToJarBundled` and
@@ -114,4 +126,30 @@ test "a same-field-name non-generic record parameter is unaffected" {
 test "a record method's OWN generic-record parameter resolves against its class (#6691, instance method)" {
   val u = BoxUnwrapper(offset = 10)
   assertEqualInt(u.unwrapPlusOffset(Box(value = 5)), 15, "10 + 5 == 15")
+}
+
+// #6959: `Holder`'s OWN field (not a parameter) is a generic-record
+// instantiation (`Box[Int]`). A chained read through it — `h.box.value` from
+// a free function, `self.box.value` from an instance method — must resolve
+// against `Box`'s real class, not the erased-`Object` bundle-wide fallback
+// (which would land on `OtherRec.value` above, a `String`, if it fired).
+record Holder {
+  box: Box[Int]
+  func selfBoxValue(self: in Holder): Int {
+    self.box.value
+  }
+}
+
+pub func readHolderBoxValue(h: in Holder): Int {
+  h.box.value
+}
+
+test "a record's OWN generic-record field resolves via field access from a free function (#6959)" {
+  val h = Holder(box = Box(value = 7))
+  assertEqualInt(readHolderBoxValue(h), 7, "readHolderBoxValue(Holder(Box(7))) == 7")
+}
+
+test "a record's OWN generic-record field resolves via self-access from an instance method (#6959)" {
+  val h = Holder(box = Box(value = 13))
+  assertEqualInt(h.selfBoxValue(), 13, "Holder(Box(13)).selfBoxValue() == 13")
 }
