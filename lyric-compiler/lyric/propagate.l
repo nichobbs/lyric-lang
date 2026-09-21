@@ -133,6 +133,24 @@ record PropState {
   // non-async, exactly like `syncFuncNames` but scoped to the container.
   siblingAnyName: Map[String, Bool]
   siblingSyncArity: Map[String, Bool]
+  // #7199: every local name (parameter, or `val`/`let`/`var` binding) bound
+  // ANYWHERE in the CURRENT function — reset fresh per function entry
+  // (`stateForFn`, seeded from `fn.params`) and grown in place as
+  // `rewriteStmt`'s `SLocal` case walks each binding, mirroring
+  // `st.diagnostics`'/`st.counter`'s "mutable reference-type cell threaded
+  // through the walk" idiom. Lyric's own name resolution prefers a local
+  // binding over a same-named top-level function (`resolveExprPath`'s
+  // `scopeTryFind`-first order) — a bare call whose name is in this set is
+  // therefore NEVER provably safe via `syncFuncNames`/sibling maps, no
+  // matter what a same-named top-level function or sibling method's own
+  // async-ness is, because the call may not even resolve to either of
+  // them. Over-conservative rather than imprecise: once a name enters this
+  // set it stays flagged for the REST of the function's rewrite, even past
+  // that particular local's true lexical scope (a block-precise scope
+  // stack would be exact but is not needed — see `isRiskyTryCallScrutinee`'s
+  // doc for why the excess conservatism here is an acceptable, always-
+  // fixable-with-an-explicit-`await` cost, not a soundness gap).
+  localNames: Map[String, Bool]
   // #7170: name and `isAsync`-ness of the function currently being rewritten,
   // plus whether the rewrite point is lexically inside one of its try/
   // catch/finally regions.  See `implicitAwaitScrutinee`'s doc for why this
@@ -155,6 +173,7 @@ func newPropState(
 ): PropState {
   val noSiblings: Map[String, Bool] = newMap()
   val noSyncSiblings: Map[String, Bool] = newMap()
+  val noLocals: Map[String, Bool] = newMap()
   PropState(
     counter = newList(),
     diagnostics = diags,
@@ -162,6 +181,7 @@ func newPropState(
     syncFuncNames = syncFuncNames,
     siblingAnyName = noSiblings,
     siblingSyncArity = noSyncSiblings,
+    localNames = noLocals,
     curFnName = "",
     curFnAsync = false,
     inTry = false,
@@ -169,12 +189,30 @@ func newPropState(
   )
 }
 
-// Re-scope `st` to a newly-entered function body: fresh async/try context,
+// #7199: seeds a newly-entered function's `localNames` with its own
+// parameter names — they are in scope for the entire body, unlike a
+// `val`/`let`/`var`, which `rewriteStmt`'s `SLocal` case adds as the walk
+// reaches it.
+func localNamesFromParams(params: in List[Param]): Map[String, Bool] {
+  val m: Map[String, Bool] = newMap()
+  var i = 0
+  while i < params.count {
+    if not m.containsKey(params[i].name) {
+      m.add(params[i].name, true)
+    }
+    i = i + 1
+  }
+  m
+}
+
+// Re-scope `st` to a newly-entered function body: fresh async/try context
+// and a fresh `localNames` set seeded from `params` (#7199 — a function's
+// own locals must never leak into a sibling function's risk analysis),
 // same threaded `counter`/`diagnostics`/`aliases`/`syncFuncNames`/sibling
 // maps (all reference types, so mutations through the clone stay visible
 // to the caller — the same idiom `st.counter`/`st.diagnostics` already
 // rely on).
-func stateForFn(st: in PropState, name: in String, isAsync: Bool): PropState {
+func stateForFn(st: in PropState, name: in String, isAsync: Bool, params: in List[Param]): PropState {
   PropState(
     counter = st.counter,
     diagnostics = st.diagnostics,
@@ -182,6 +220,7 @@ func stateForFn(st: in PropState, name: in String, isAsync: Bool): PropState {
     syncFuncNames = st.syncFuncNames,
     siblingAnyName = st.siblingAnyName,
     siblingSyncArity = st.siblingSyncArity,
+    localNames = localNamesFromParams(params),
     curFnName = name,
     curFnAsync = isAsync,
     inTry = false,
@@ -207,6 +246,7 @@ func stateForContainerMembers(
     syncFuncNames = st.syncFuncNames,
     siblingAnyName = siblingAnyName,
     siblingSyncArity = siblingSyncArity,
+    localNames = st.localNames,
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
     inTry = st.inTry,
@@ -226,6 +266,7 @@ func stateInTry(st: in PropState): PropState {
     syncFuncNames = st.syncFuncNames,
     siblingAnyName = st.siblingAnyName,
     siblingSyncArity = st.siblingSyncArity,
+    localNames = st.localNames,
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
     inTry = true,
@@ -257,6 +298,7 @@ func stateForLambda(st: in PropState): PropState {
     syncFuncNames = st.syncFuncNames,
     siblingAnyName = st.siblingAnyName,
     siblingSyncArity = st.siblingSyncArity,
+    localNames = st.localNames,
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
     inTry = false,
@@ -467,14 +509,24 @@ func isRiskyTryCallScrutinee(inner: in Expr, st: in PropState): Bool {
         case EPath(path) -> {
           if path.segments.count == 1 {
             val name = path.segments[0]
-            // #7197: a same-named sibling method of the enclosing record/
-            // impl/interface — if one exists — ALWAYS wins bare-call
-            // resolution over a same-named top-level function (mirroring
-            // `msil/codegen.l`'s `fctx.className + "/" + funcName`
-            // shadowing, #6489). Once a sibling of this name exists, the
-            // top-level `syncFuncNames` allow-list must never be consulted
-            // for it — only the sibling's own (proven) sync-ness does.
-            if st.siblingAnyName.containsKey(name) {
+            // #7199: a local (parameter, or `val`/`let`/`var`/`for`-pattern/
+            // `catch`-bind) shadowing this bare name ALWAYS wins name
+            // resolution over both a sibling method and a top-level
+            // function (Lyric's own `resolveExprPath` tries local scope
+            // first). Once such a local exists, this pass has no static
+            // type information to prove what it's bound to (a value, an
+            // async function reference, a lambda...), so the call can never
+            // be classified safe via either allow-list below.
+            if st.localNames.containsKey(name) {
+              true
+            } else if st.siblingAnyName.containsKey(name) {
+              // #7197: a same-named sibling method of the enclosing record/
+              // impl/interface — if one exists — ALWAYS wins bare-call
+              // resolution over a same-named top-level function (mirroring
+              // `msil/codegen.l`'s `fctx.className + "/" + funcName`
+              // shadowing, #6489). Once a sibling of this name exists, the
+              // top-level `syncFuncNames` allow-list must never be consulted
+              // for it — only the sibling's own (proven) sync-ness does.
               not st.siblingSyncArity.containsKey(syncFuncArityKey(name, args.count))
             } else {
               val key = syncFuncArityKey(name, args.count)
@@ -869,14 +921,93 @@ func rewriteRangeBound(b: in RangeBound, kind: in PropKind, st: in PropState): R
   }
 }
 
+// #7199: adds every name a pattern binds into `acc` — covers destructuring
+// `val` bindings (`val (a, b) = pair`, `val Some(x) = opt`, `val Point { x,
+// y } = p`, an `@`-style `PBinding(name, inner)` nested pattern, etc.), not
+// just the common single-bare-name case.
+func collectPatternBoundNames(pat: in Pattern, acc: in Map[String, Bool]): Unit {
+  match pat.kind {
+    case PBinding(name, inner) -> {
+      if not acc.containsKey(name) {
+        acc.add(name, true)
+      }
+      match inner {
+        case Some(p) -> collectPatternBoundNames(p, acc)
+        case None -> {
+        }
+      }
+    }
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count {
+        collectPatternBoundNames(args[i], acc)
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, p, _) -> collectPatternBoundNames(p, acc)
+          case RPFShort(name, _) -> {
+            if not acc.containsKey(name) {
+              acc.add(name, true)
+            }
+          }
+        }
+        i = i + 1
+      }
+    }
+    case PTuple(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        collectPatternBoundNames(patterns[i], acc)
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> collectPatternBoundNames(inner, acc)
+    case PTypeTest(inner, _) -> collectPatternBoundNames(inner, acc)
+    case POr(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        collectPatternBoundNames(patterns[i], acc)
+        i = i + 1
+      }
+    }
+    case PWildcard -> {
+    }
+    case PLiteral(_) -> {
+    }
+    case PRange(_, _, _, _) -> {
+    }
+    case PConstRef(_) -> {
+    }
+    case PError -> {
+    }
+  }
+}
+
 func rewriteBinding(b: in LocalBinding, kind: in PropKind, st: in PropState): LocalBinding {
   match b {
-    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = rewriteExpr(init, kind, st))
-    case LBLet(name, ty, init) -> LBLet(name = name, ty = ty, init = rewriteExpr(init, kind, st))
+    case LBVal(pat, ty, init) -> {
+      val newInit = rewriteExpr(init, kind, st)
+      collectPatternBoundNames(pat, st.localNames)
+      LBVal(pat = pat, ty = ty, init = newInit)
+    }
+    case LBLet(name, ty, init) -> {
+      val newInit = rewriteExpr(init, kind, st)
+      if not st.localNames.containsKey(name) {
+        st.localNames.add(name, true)
+      }
+      LBLet(name = name, ty = ty, init = newInit)
+    }
     case LBVar(name, ty, initOpt) -> {
       val newInit: Option[Expr] = match initOpt {
         case Some(e) -> Some(value = rewriteExpr(e, kind, st))
         case None -> None
+      }
+      if not st.localNames.containsKey(name) {
+        st.localNames.add(name, true)
       }
       LBVar(name = name, ty = ty, init = newInit)
     }
@@ -884,6 +1015,18 @@ func rewriteBinding(b: in LocalBinding, kind: in PropKind, st: in PropState): Lo
 }
 
 func rewriteCatch(c: in CatchClause, kind: in PropKind, st: in PropState): CatchClause {
+  // #7199: a `catch T as name` bind name is in scope for the catch body —
+  // over-conservative to include (it's never itself callable), but keeps
+  // `st.localNames` a precise superset of every binding form.
+  match c.bindName {
+    case Some(name) -> {
+      if not st.localNames.containsKey(name) {
+        st.localNames.add(name, true)
+      }
+    }
+    case None -> {
+    }
+  }
   CatchClause(typeName = c.typeName, bindName = c.bindName, body = rewriteBlock(c.body, kind, st), span = c.span)
 }
 
@@ -924,15 +1067,12 @@ func rewriteStmt(s: in Statement, kind: in PropKind, st: in PropState): Statemen
     }
     case SDefer(body) -> mkStmt(SDefer(body = rewriteBlock(body, kind, st)), s.span)
     case SScope(binding, body) -> mkStmt(SScope(binding = binding, body = rewriteBlock(body, kind, st)), s.span)
-    case SFor(label, pat, iter, body) -> mkStmt(
-      SFor(
-        label = label,
-        pat = pat,
-        iter = rewriteExpr(iter, kind, st),
-        body = rewriteBlock(body, kind, st)
-      ),
-      s.span
-    )
+    case SFor(label, pat, iter, body) -> {
+      // #7199: the loop pattern's bound name(s) are in scope for `body`.
+      val newIter = rewriteExpr(iter, kind, st)
+      collectPatternBoundNames(pat, st.localNames)
+      mkStmt(SFor(label = label, pat = pat, iter = newIter, body = rewriteBlock(body, kind, st)), s.span)
+    }
     case SWhile(label, cond, body) -> mkStmt(
       SWhile(
         label = label,
@@ -981,7 +1121,7 @@ func rewriteFunction(fn: in FunctionDecl, st: in PropState): FunctionDecl {
       // of where this function is itself nested (a statement-level `SItem`
       // function declared inside an outer try body runs in its own frame,
       // not the outer function's protected region).
-      val fnSt = stateForFn(st, fn.name, fn.isAsync)
+      val fnSt = stateForFn(st, fn.name, fn.isAsync, fn.params)
       FunctionDecl(
         docComments = fn.docComments,
         annotations = fn.annotations,
@@ -1004,7 +1144,7 @@ func rewriteEntry(ed: in EntryDecl, st: in PropState): EntryDecl {
   val kind = monadOfRet(ed.ret, st.aliases)
   // Entry points cannot be declared `async` (no `isAsync` field on
   // `EntryDecl`), so this always starts a non-async context.
-  val fnSt = stateForFn(st, ed.name, false)
+  val fnSt = stateForFn(st, ed.name, false, ed.params)
   EntryDecl(
     docComments = ed.docComments,
     annotations = ed.annotations,

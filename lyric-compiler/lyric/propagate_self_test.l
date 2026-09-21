@@ -609,6 +609,45 @@ test "F0045 (#7198): does not fire at all when awaitInTryIsHazard is false, for 
   )
 }
 
+// #7199: review finding — a local (`val`/`let`/`var`, a `for`-pattern, or a
+// parameter) shadowing a same-named top-level sync function must never let
+// `syncFuncNames` "prove" a bare call safe: Lyric's own name resolution
+// prefers the local over the top-level function, so this pass has no way
+// to know what the shadowed name is actually bound to.
+test "F0045 (#7199): fires for ? on a bare call shadowed by a val-bound local, even though a same-named top-level function is sync" {
+  val src = "package P\n" +
+    "func helper(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
+    "async func f(n: in Int): Result[Int, String] {\n  val helper = 0\n  try {\n    val x = helper(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file, true)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a local named 'helper' shadows the top-level sync function, so the call can no longer be proven safe"
+  )
+}
+
+test "F0045 (#7199): fires for ? on a bare call shadowed by a same-named parameter, even though a same-named top-level function is sync" {
+  val src = "package P\n" +
+    "func helper(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
+    "async func f(n: in Int, helper: in Int): Result[Int, String] {\n  try {\n    val x = helper(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file, true)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a parameter named 'helper' shadows the top-level sync function, so the call can no longer be proven safe"
+  )
+}
+
+test "F0045 (#7199): still does not fire when no local shadows the same-file sync call in a try body" {
+  // Regression guard: a local bound under a DIFFERENT name must not
+  // spuriously suppress the still-provably-safe classification.
+  val src = "package P\n" + syncValidateSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  val other = 0\n  try {\n    val x = validate(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file, true)
+  assertFalse(
+    propHasDiag(result.diagnostics, "F0045"),
+    "an unrelated local name must not affect the risk classification of a differently-named call"
+  )
+}
+
 // ── Same-file alias return types (#1814) ─────────────────────────────────────
 // `monadOfRet` unfolds same-file `alias` declarations before the Result/Option
 // classification, so a return type written through an alias no longer trips a
