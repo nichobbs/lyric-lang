@@ -102,6 +102,37 @@
 //! silently guessing, per the fail-loudly principle — see
 //! `reconcileCmpOperands`'s `isFullyErasedObjectJvm` guard and the matching
 //! `BAdd` guard in `lyric-compiler/jvm/codegen/02_exprs.l`.
+//!
+//! #6947 (fixed): an explicit `return <value>` statement inside ANY
+//! lambda-literal body crashed `--target dotnet` at runtime with
+//! `System.NullReferenceException`, independent of the #6932/#6690
+//! return-type-registration gap above (verified to reproduce identically on
+//! `main` well before #6690/#6897 existed). Root cause: `SReturn`'s
+//! EXPLICIT-return lowering (`msil/codegen.l`'s `lowerStmtMsil`) never
+//! coerced the returned expression's actual on-stack type to the function's
+//! declared return type — unlike the IMPLICIT tail-expression / fall-off
+//! path (`lowerFuncMsil`), which always runs the value through
+//! `coerceTrailingToRetMsil` before `ret`. For an ordinary top-level
+//! function this gap is invisible (the type checker guarantees the
+//! returned expression's static type already structurally matches the
+//! declared return type), but a lifted `__lambda_N` body's declared return
+//! type is unconditionally `object` (the Uniform Func ABI, #1877) while an
+//! inner expression like `x + 1` still computes as a genuinely unboxed
+//! `Int32` on the IL stack. Explicit `return x + 1` stashed that raw Int32
+//! where `ret`/the epilogue `__retval` slot expected an object reference:
+//! invalid IL that the non-verifying JIT silently accepted as a garbage
+//! object reference, faulting as `NullReferenceException` the moment the
+//! caller dereferenced the "returned" value. Fixed by calling the same
+//! `coerceTrailingToRetMsil` helper from both `SReturn` branches (the
+//! ordinary `ret` path and the protected-region `leave`-to-epilogue path),
+//! mirroring the tail-expression path exactly; a no-op for every ordinary
+//! function, since `coerceTrailingToRetMsil` only acts when the physical
+//! return type is `object` and the value is a value type, or the value is
+//! `Never`-erased-to-void against a non-void return. JVM's `SReturn`
+//! lowering (`lyric-compiler/jvm/codegen/05_stmts.l`) already ran every
+//! explicit return through `coerceValueTo` — this defect class was
+//! MSIL-only; the JVM cases below are included as an explicit parity check,
+//! not because a JVM-side code change was needed.
 @test_module
 package Lyric.FuncValLocalRetTypeSelfTest
 
@@ -485,4 +516,98 @@ test "un-annotated lambda-literal local, a captured local shadowing a module-lev
     "captured, not the module val",
     "the captured String local is read correctly, not misread as the module val's Int type"
   )
+}
+
+// #6947: the issue's own exact repro — a lambda literal passed DIRECTLY to a
+// typed higher-order-function parameter, whose body's only statement is an
+// explicit `return <value>`. Never touches `val` binding / registerFieldFuncValTypesMsil`
+// at all, so this pins the bug independent of any return-type-registration
+// machinery above.
+func apply1_6947(g: (Int) -> Int): Int {
+  g(5)
+}
+
+test "return inside a lambda passed directly to a typed HOF parameter (#6947 exact repro)" {
+  assertEqualInt(apply1_6947({ x: Int -> return x + 1 }), 6, "direct HOF arg, explicit return, Int (boxed on MSIL)")
+}
+
+// A `val`-bound lambda with an explicit `return`, invoked in the enclosing
+// function's own tail position (an implicit outer return) — the other
+// consuming shape #6947 named as reproducing the crash.
+func tailReturn_6947(): Int {
+  val f = { x: Int -> return x + 1 }
+  f(5)
+}
+
+test "return inside a val-bound lambda, invoked in the enclosing function's tail position (#6947)" {
+  assertEqualInt(tailReturn_6947(), 6, "val-bound lambda, explicit return, tail-position invocation")
+}
+
+// Same shape, but the enclosing function ALSO returns explicitly — exercises
+// two nested `SReturn` lowerings (lambda body, then the outer function body)
+// in the same call.
+func outerReturn_6947(): Int {
+  val f = { x: Int -> return x + 1 }
+  return f(5)
+}
+
+test "return inside a val-bound lambda, enclosing function also returns explicitly (#6947)" {
+  assertEqualInt(outerReturn_6947(), 6, "explicit return both inside and outside the lambda")
+}
+
+// A reference-typed (`String`) lambda return: `coerceTrailingToRetMsil`'s
+// `MString` arm is a documented no-box no-op, so this exercises the branch
+// that must NOT box (a String is already object-compatible).
+func apply1Str_6947(g: (String) -> String): String {
+  g("hi")
+}
+
+test "return inside a lambda body with a String (reference-typed) return (#6947)" {
+  assertEqual(apply1Str_6947({ s: String -> return s + "!" }), "hi!", "String return needs no box but must not crash")
+}
+
+// A `Double` lambda return: a DIFFERENT value-type box than the Int case
+// above (`conv.r8`/box shape), proving the fix isn't Int-specific.
+func apply1Dbl_6947(g: (Double) -> Double): Double {
+  g(2.5)
+}
+
+test "return inside a lambda body with a boxed Double return (#6947)" {
+  val result = apply1Dbl_6947({ x: Double -> return x + 1.5 })
+  assertTrue(result == 4.0, "1.5 + 2.5 boxed correctly as Double, not corrupted/misread")
+}
+
+// A `return` NESTED inside an `if`/`else` (not the lambda body's sole
+// top-level statement) was ALSO attempted here to prove the codegen fix
+// applies uniformly to every `SReturn` site inside a lifted lambda body, not
+// just one lexically at the top — but that shape uncovered a SEPARATE,
+// pre-existing type-checker bug (not a codegen bug, and not #6947): a
+// `return` nested inside `if`/`else` control flow within a lambda body is
+// checked against the ENCLOSING function's declared return type instead of
+// the lambda's own inferred return type, whenever the two differ (masked
+// silently when they happen to coincide). Since every `test { … }` body is
+// synthesized as a `Unit`-returning function (`Lyric.TestSynth`), any such
+// nested-return lambda used inside a `test` block fails to compile here with
+// `error[T0065]: returned value of type Int does not match declared return
+// type Unit`, regardless of `--target`. Confirmed independent of test
+// synthesis: an ordinary `func doIt(): Unit { val r = apply1({ x: Int -> if
+// x > 0 { return x * 2 } else { return 0 } }) }` reproduces the identical
+// error via a plain `lyric build`. Filed separately as #7152 (out of scope
+// for #6947, a materially different bug in `typechecker_stmts.l`'s
+// return-type scoping rather than `msil/codegen.l`'s `SReturn` lowering) —
+// no test for this specific nested-if/else shape is added here; every OTHER
+// shape below (a lambda body's return as its sole top-level statement,
+// regardless of how deeply the CALL is nested as an argument) type-checks
+// and passes.
+// A bare `return` (no value) inside a `Unit`-returning lambda body — the
+// `retIsVoid`/`None` arms of `SReturn` must remain unaffected by the fix
+// (no coercion should ever be attempted against a `Unit`/`Void` declared
+// return type).
+func apply1Unit_6947(g: () -> Unit): Unit {
+  g()
+}
+
+test "bare return (no value) inside a Unit-returning lambda body is unaffected by the fix (#6947)" {
+  apply1Unit_6947({ -> return })
+  assertTrue(true, "bare return inside a Unit-returning lambda does not crash")
 }
