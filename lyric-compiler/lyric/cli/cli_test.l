@@ -17,6 +17,7 @@ import Lyric.TestSynth as TestSynth
 import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
 import Lyric.CfgGate as CfgGate
+import Lyric.Cfg as Cfg
 import Lyric.Workspace as Ws
 import Lyric.JacocoCobertura as Jc
 
@@ -594,6 +595,15 @@ func cmdTest(argv: in slice[String]): Int {
       case Err(_) -> (cfgEmptyActive, cfgEmptyDeclared)
     }
   }
+  // #7189: every real backend bridge calls `pipeParseAndErase(source,
+  // targetName, activeFeatures, ...)`, which always injects the
+  // `"target." + targetName` pseudo-feature via `Cfg.withTargetFeature`
+  // before evaluating `@cfg(target = "X")` predicates — so the pre-check
+  // must inject it too, or a file-level `@cfg(target = "X")` module is
+  // unconditionally reported as gated regardless of the actual `--target`
+  // (this was reachable: `lyric-mcp/tests/mcp_stdio_process_tests.l` uses
+  // exactly this pattern and is run in CI via `lyric test --manifest`).
+  val cfgActiveWithTarget = Cfg.withTargetFeature(cfgActive, targetFeatureName(cfgTestTarget))
   // KNOWN GAP (PR #7182 review): whether the real compile below ends up on
   // `emitTestLinked` (which ALWAYS uses empty active/declared, regardless of
   // any manifest — see that function's own doc comment) instead of the
@@ -613,11 +623,11 @@ func cmdTest(argv: in slice[String]): Int {
   // ahead of this block (on `source`, not `rewritten` — it only needs the
   // import list) rather than adding another heuristic here.
   val synthResult = if targetNative {
-    TestSynth.synthesizeFor(source, filterArg, true, false, cfgActive, cfgDeclared)
+    TestSynth.synthesizeFor(source, filterArg, true, false, cfgActiveWithTarget, cfgDeclared)
   } else if runProperties {
-    TestSynth.synthesizeFor(source, filterArg, false, true, cfgActive, cfgDeclared)
+    TestSynth.synthesizeFor(source, filterArg, false, true, cfgActiveWithTarget, cfgDeclared)
   } else {
-    TestSynth.synthesizeFor(source, filterArg, false, false, cfgActive, cfgDeclared)
+    TestSynth.synthesizeFor(source, filterArg, false, false, cfgActiveWithTarget, cfgDeclared)
   }
   match synthResult {
     case NoTestModule(span) -> {
@@ -1079,6 +1089,14 @@ func cmdTestManifest(
     allFeatures,
     testTarget
   )
+  // #7189: `activeFeatures` alone (no target pseudo-feature) is correct for
+  // `EmitProjectRequest.activeFeatures` below — `pipeParseAndErase` adds
+  // `"target." + targetName` internally via `Cfg.withTargetFeature` before
+  // erasure. But the pre-emission `synthesizeFor` gating check below runs
+  // OUTSIDE that pipeline, so it needs its own copy with the same pseudo-
+  // feature already added, or a file-level `@cfg(target = "X")` module is
+  // unconditionally reported as gated regardless of the actual `--target`.
+  val cfgActiveWithTarget = Cfg.withTargetFeature(activeFeatures, targetFeatureName(testTarget))
 
   // Build ProjectPackage entries from [project.packages], matching buildProject.
   val libPkgs: List[ProjectPackage] = newList()
@@ -1662,9 +1680,9 @@ func cmdTestManifest(
     // not an empty set that could disagree with a manifest that activates
     // the gating feature.
     val testSynthResult = if runProperties {
-      TestSynth.synthesizeFor(testSource, filterArg, false, true, activeFeatures, mfDeclared)
+      TestSynth.synthesizeFor(testSource, filterArg, false, true, cfgActiveWithTarget, mfDeclared)
     } else {
-      TestSynth.synthesizeFor(testSource, filterArg, false, false, activeFeatures, mfDeclared)
+      TestSynth.synthesizeFor(testSource, filterArg, false, false, cfgActiveWithTarget, mfDeclared)
     }
     match testSynthResult {
       case Synthesised(rw, _, _) -> {
@@ -1687,8 +1705,8 @@ func cmdTestManifest(
         totalFailed += 1
         synthFailed = true
       }
-      case Gated(_) -> {
-        Console.println("0 test(s), module gated by inactive @cfg")
+      case Gated(span) -> {
+        Console.println(abs + ":" + toString(span.startPos.line) + ": 0 test(s), module gated by inactive @cfg")
         synthFailed = true
       }
     }

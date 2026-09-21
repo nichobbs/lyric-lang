@@ -91,6 +91,36 @@ func testFileLevelCfgSynthesisesWhenActive(): Unit {
   }
 }
 
+// #7189: `@cfg(target = "X")` resolves to the pseudo-feature `"target." + X`
+// (cfg.l), not a plain feature name — a caller (`cli_test.l`) that resolves
+// `active` from manifest features alone, without also injecting
+// `"target." + <the real --target>` the way every backend bridge's
+// `pipeParseAndErase` does via `Cfg.withTargetFeature`, would report this
+// gated regardless of the actual target. `synthesizeFor` itself doesn't
+// inject the target pseudo-feature (that's the CALLER's job, since only the
+// caller knows which target is being compiled for) — these tests exercise
+// exactly that contract at the `synthesizeFor` boundary.
+func fileLevelTargetCfgTestSource(): String {
+  "@cfg(target = \"dotnet\")\n@test_module\npackage P\n\nimport Std.Testing\n\ntest \"a\" { assertTrue(true, \"x\") }\n"
+}
+
+func testFileLevelTargetCfgGatesWhenTargetMismatched(): Unit {
+  match synthesizeFor(fileLevelTargetCfgTestSource(), None, false, false, emptyFeatureList(), emptyFeatureList()) {
+    case Gated(_) -> ()
+    case _ -> panic("expected Gated outcome when the active set carries no \"target.*\" pseudo-feature at all")
+  }
+}
+
+func testFileLevelTargetCfgSynthesisesWhenTargetMatches(): Unit {
+  match synthesizeFor(fileLevelTargetCfgTestSource(), None, false, false, singletonFeatureList("target.dotnet"), emptyFeatureList()) {
+    case Synthesised(_, n, sk) -> {
+      assertEqualInt(n, 1, "the one test synthesised once \"target.dotnet\" is in the active set")
+      assertEqualInt(sk, 0, "no skips")
+    }
+    case _ -> panic("expected Synthesised outcome when the active set carries the matching \"target.*\" pseudo-feature")
+  }
+}
+
 func testSynthesisesAnnotatedCfgTest(): Unit {
   match synthesize(annotatedCfgTestSource(), Some(value = "")) {
     case Synthesised(rewritten, n, sk) -> {
@@ -385,6 +415,14 @@ test "file-level @cfg gates the whole module when inactive (#6868)" {
 
 test "file-level @cfg synthesises normally when active (#6868)" {
   testFileLevelCfgSynthesisesWhenActive()
+}
+
+test "file-level @cfg(target = ...) gates when the target pseudo-feature is absent (#7189)" {
+  testFileLevelTargetCfgGatesWhenTargetMismatched()
+}
+
+test "file-level @cfg(target = ...) synthesises normally when the target pseudo-feature matches (#7189)" {
+  testFileLevelTargetCfgSynthesisesWhenTargetMatches()
 }
 
 test "listEntries enumerates entries" {
