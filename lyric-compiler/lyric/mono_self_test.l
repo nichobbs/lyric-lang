@@ -2603,12 +2603,8 @@ test "a nullary union case argument binds a type parameter as a value, not a fun
 // its specialised name, leaving a dangling reference to a generic Phase 2
 // erases.
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "generic call site inside a range bound is rewritten (#6968)" {
-  val src = "package P\n" +
-    "func id[T](x: in T): T { x }\n" +
-    "func caller(): Int {\n" +
-    "  var total = 0\n" +
+  val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func caller(): Int {\n" + "  var total = 0\n" +
     "  for i in 0 .. id(5) {\n" +
     "    total = total + i\n" +
     "  }\n" +
@@ -2631,9 +2627,7 @@ test "generic call site inside a range bound is rewritten (#6968)" {
 // pipeline order, so this is the actually-reachable shape rather than a
 // synthetic one.
 test "generic call site inside a requires: forall(...) where clause is rewritten (#6968)" {
-  val src = "package P\n" +
-    "func id[T](x: in T): T { x }\n" +
-    "func caller(n: in Int): Int\n" +
+  val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func caller(n: in Int): Int\n" +
     "  requires: forall(i: Int) where i < id(10) implies i >= 0\n" +
     "{ n }\n"
   val pr = parse(src)
@@ -2644,9 +2638,7 @@ test "generic call site inside a requires: forall(...) where clause is rewritten
 }
 
 test "generic call site inside an ensures: exists(...) body is rewritten (#6968)" {
-  val src = "package P\n" +
-    "func id[T](x: in T): T { x }\n" +
-    "func caller(n: in Int): Int\n" +
+  val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func caller(n: in Int): Int\n" +
     "  ensures: exists(i: Int) id(n) > 0\n" +
     "{ n }\n"
   val pr = parse(src)
@@ -2665,10 +2657,8 @@ test "generic call site inside an ensures: exists(...) body is rewritten (#6968)
 // through as an unresolvable index expression, leaving a dangling reference
 // to a generic Phase 2 erases with no diagnostic ever raised.
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "generic call with an explicit extern-type type argument monomorphises (#6891)" {
-  val src = "package P\n" +
-    "extern type JMap[K, V] = \"java.util.HashMap\"\n" +
+  val src = "package P\n" + "extern type JMap[K, V] = \"java.util.HashMap\"\n" +
     "@externTarget(\"java.util.HashMap.<init>\")\n" +
     "func newJMap[K, V](): JMap[K, V] = ()\n" +
     "extern type JClient = \"com.example.Client\"\n" +

@@ -5502,7 +5502,13 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       kind = EForall(
         binders = binders,
         whereExpr = match whereExpr {
-          case Some(e) -> Some(value = rewriteExpr(state, env, e))
+          case Some(e) -> Some(
+            value = rewriteExpr(
+              state,
+              env,
+              e
+            )
+          )
           case None -> None
         },
         body = rewriteExpr(state, env, body)
@@ -5514,7 +5520,13 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       kind = EExists(
         binders = binders,
         whereExpr = match whereExpr {
-          case Some(e) -> Some(value = rewriteExpr(state, env, e))
+          case Some(e) -> Some(
+            value = rewriteExpr(
+              state,
+              env,
+              e
+            )
+          )
           case None -> None
         },
         body = rewriteExpr(state, env, body)
