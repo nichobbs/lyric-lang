@@ -1,4 +1,4 @@
-# D-progress-890 — Port: native codegen destructor/closure/trampoline/vtable function-pointer bitcasts over-wrapped in an extra `NPtr` (#7030)
+# D-progress-939 — Port: native codegen destructor/closure/trampoline/vtable function-pointer bitcasts over-wrapped in an extra `NPtr` (#7030)
 
 **Status:** disclosure — ported from unmerged PR #7048, not an independent fix.
 
