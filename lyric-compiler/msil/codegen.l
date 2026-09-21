@@ -21535,6 +21535,261 @@ func emitGenericMethodExternCall(
   true
 }
 
+// Replace every `MMethodTypeVar` inside `t` with `MObject`, mirroring the
+// `Object` witness `emitGenericMethodExternCall`'s MethodSpec instantiates
+// each of the BCL method's own generic parameters with. Used to compute the
+// CLOSED (post-MethodSpec) shape of a signature type that was built from the
+// OPEN generic-method `SigType` (e.g. the `Task`1<!!0>` return of
+// `Task.FromResult<TResult>`) so downstream codegen (the Task-unwrap
+// sequence in `emitGenericAsyncMethodExternCall` below) can build a TypeSpec
+// against the type the CLR actually instantiated (`Task`1<Object>`), not the
+// open `!!0` — a TypeSpec blob may only reference `!!n` from inside the
+// OWNING generic method's own body, never from the (non-generic) Lyric
+// wrapper calling it.
+func eraseMethodTypeVarsToObjectMsil(t: in MsilType): MsilType {
+  match t {
+    case MMethodTypeVar(_) -> MObject
+    case MArray(elem) -> MArray(elemTy = eraseMethodTypeVarsToObjectMsil(elem))
+    case MByRef(inner) -> MByRef(inner = eraseMethodTypeVarsToObjectMsil(inner))
+    case MGenericInst(trc, fqn, tas) -> MGenericInst(
+      typeRefCode = trc,
+      headFqn = fqn,
+      typeArgs = eraseMethodTypeVarListToObjectMsil(tas)
+    )
+    case MValueTypeGenericInst(trc, fqn, tas) -> MValueTypeGenericInst(
+      typeRefCode = trc,
+      headFqn = fqn,
+      typeArgs = eraseMethodTypeVarListToObjectMsil(tas)
+    )
+    case MGenericInstByName(fqn, tas) -> MGenericInstByName(
+      headFqn = fqn,
+      typeArgs = eraseMethodTypeVarListToObjectMsil(tas)
+    )
+    case _ -> t
+  }
+}
+
+func eraseMethodTypeVarListToObjectMsil(tys: in List[MsilType]): List[MsilType] {
+  val result: List[MsilType] = newList()
+  var i = 0
+  while i < tys.count {
+    result.add(eraseMethodTypeVarsToObjectMsil(tys[i]))
+    i = i + 1
+  }
+  result
+}
+
+// Emit a call to a BCL method that is BOTH (a) declared with its own
+// method-level generics (the shape `emitGenericMethodExternCall` above
+// handles, needing a MethodSpec-instantiated OPEN MemberRef) AND (b)
+// wrapped by an `async func` @externTarget (needing the Task<T>-unwrap
+// machinery the plain, non-generic `decl.isAsync` branch of
+// `emitExternTargetBody` below relies on). Neither path alone is correct
+// for this shape (#7023): `emitGenericMethodExternCall` has no Task-unwrap
+// logic at all (it always emits a synchronous `ret` straight off the
+// MethodSpec call), and the plain `decl.isAsync` branch has no MethodSpec
+// logic (it would build a plain, non-instantiated MemberRef for a
+// method-own-generic BCL member — syntactically valid but UNINSTANTIATED,
+// which the #7022 investigation found compiles clean and then faults with a
+// confusing `MissingMethodException` at RUNTIME instead of a build-time
+// diagnostic).
+//
+// `msig.returnType` for a generic async wrapper's real BCL member (e.g.
+// `Task.FromResult<TResult>(TResult): Task<TResult>`) decodes via
+// `resolvedSigToMsil` to `Task`1<!!0>` (an `MGenericInst` whose sole type
+// argument is the method's own `MMethodTypeVar`) with no extra decoding
+// needed here — `resolvedSigToMsil`'s `STNamedGenericInst` arm already
+// recurses through `sigMVarIndex` for each nested type argument. The OPEN
+// MemberRef built below therefore correctly encodes a return of
+// `Task`1<!!0>`; the MethodSpec then witnesses `!!0` with `Object` (the
+// same erasure convention `emitGenericMethodExternCall` already applies to
+// every method-own-generic position), so the type the CLR actually
+// instantiates is `Task`1<Object>`. `eraseMethodTypeVarsToObjectMsil`
+// computes that same substitution at the MsilType level so the unwrap
+// TypeSpec below is built against the type the CLR produced, not the open
+// `!!0`.
+//
+// Scope: only a bare `Task` (void async) or `Task`1<T>` (value-returning
+// async) BCL return is supported — matching the plain (non-generic)
+// `decl.isAsync` branch's own EXISTING scope, which is ALSO hardcoded to
+// `Task`/`Task`1<T>` (see `emitExternTargetBody`'s `bclRetTy` construction)
+// and has never supported a `ValueTask`/`ValueTask`1<T>`-returning BCL
+// method. A `ValueTask`1<T>` return here would additionally need the call's
+// result (a STRUCT, not a reference) staged through a scratch local +
+// `ldloca` + a non-virtual `call` to invoke `get_Result()` on it — related
+// to, but distinct from, the value-type-RECEIVER handling #5809 already
+// covers (`isValueTypeReceiverMsil` below declines a value-type RECEIVER,
+// a different signature position from a value-type RETURN). Declining this
+// shape here and filing a scoped follow-up (rather than attempting it in
+// this change) keeps this fix bounded to the shape the issue's own
+// simplest repro (`Task.FromResult<T>`) needs; see #7023's follow-up issue
+// for `ValueTask<T>`.
+//
+// Returns `false` — having emitted nothing — for every shape outside this
+// scope (param/return conversion failure, arity mismatch, a value-type
+// receiver, or a BCL return that isn't `Task`/`Task`1<T>`), matching
+// `emitGenericMethodExternCall`'s "decline, don't panic" contract; the
+// caller (`emitExternTargetBody`) turns a `false` here into the same clear
+// build-time panic the unimplemented combination used to raise
+// unconditionally before this change.
+func emitGenericAsyncMethodExternCall(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  decl: in FunctionDecl,
+  r: in FfiResolved,
+  parentRow: in Int,
+  emitMember: in String,
+  paramTypes: in List[MsilType],
+  lyricRetTy: in MsilType,
+  msig: in Mdr.DecodedMethodSig,
+): Bool {
+  val mParams: List[MsilType] = newList()
+  var convOk = true
+  var mk = 0
+  while mk < msig.paramTypes.count {
+    match resolvedSigToMsil(cctx, msig.paramTypes[mk]) {
+      case Some(m) -> mParams.add(m)
+      case None -> {
+        convOk = false
+      }
+    }
+    mk = mk + 1
+  }
+  val mRet = match resolvedSigToMsil(cctx, msig.returnType) {
+    case Some(m) -> m
+    case None -> {
+      convOk = false
+      MVoid
+    }
+  }
+  if not convOk {
+    return false
+  }
+  val isInstance = msig.hasThis and not r.isCtor
+  val expectedDeclParams = if isInstance { mParams.count + 1 } else { mParams.count }
+  if expectedDeclParams != decl.params.count {
+    return false
+  }
+  if isInstance and paramTypes.count > 0 and isValueTypeReceiverMsil(paramTypes[0]) {
+    return false
+  }
+  // Only a `Task` (void) or `Task`1<T>` (value) BCL return is supported —
+  // see the scope note above; `ValueTask`/`ValueTask`1<T>` (and anything
+  // else) decline here so the caller raises a clear build-time diagnostic.
+  var isVoidTask = false
+  var taskInnerOpen: Option[MsilType] = None
+  match mRet {
+    case MClassRef(_, fqn) -> {
+      if fqn == "System.Threading.Tasks.Task" {
+        isVoidTask = true
+      } else {
+        return false
+      }
+    }
+    case MGenericInst(_, headFqn, typeArgs) -> {
+      if headFqn == "System.Threading.Tasks.Task`1" and typeArgs.count == 1 {
+        taskInnerOpen = Some(value = typeArgs[0])
+      } else {
+        return false
+      }
+    }
+    case _ -> return false
+  }
+  val openSig = buildOpenGenericMethodSigCtx(cctx, mParams, mRet, isInstance, msig.genParamCount)
+  var openParamKey = ""
+  var opki = 0
+  while opki < mParams.count {
+    openParamKey = openParamKey + "_" + msilTypeKeyStr(mParams[opki])
+    opki = opki + 1
+  }
+  val hasThisKey = if isInstance { "inst" } else { "static" }
+  // "openma_" (open-method-async) keeps this MemberRef/MethodSpec pair's
+  // intern key distinct from `emitGenericMethodExternCall`'s "openm_" key
+  // for the same declaring type / member name / arity, matching this
+  // function's own `hasThisKey`-folding precedent (#7016/#6987 — two
+  // methods sharing every other key component but differing in calling
+  // convention or (here) async-ness must never alias the same blob).
+  val openKey = "openma_" + toString(parentRow) + "_" + emitMember + "_" + hasThisKey + "_" +
+    toString(msig.genParamCount) +
+    "_" +
+    toString(mParams.count) +
+    openParamKey +
+    "_ret_" +
+    msilTypeKeyStr(mRet)
+  val mrRow = ctxAddMemberRef(cctx.lctx, parentRow, emitMember, openKey, openSig)
+  val specArgs: List[MsilType] = newList()
+  var wi = 0
+  while wi < msig.genParamCount {
+    specArgs.add(MObject)
+    wi = wi + 1
+  }
+  val specBlob = buildMethodSpecBlob(specArgs)
+  val specRow = ctxAddMethodSpec(cctx.lctx, mdorMemberRef(mrRow), openKey + "_spec", specBlob)
+  val tok = 0x2B000000 + specRow
+  var li = 0
+  while li < decl.params.count {
+    insns.add(MLdarg(slot = li))
+    val mpIdx = if isInstance { li - 1 } else { li }
+    if mpIdx >= 0 and mpIdx < mParams.count {
+      val isMethodVarPos = match mParams[mpIdx] { case MMethodTypeVar(_) -> true; case _ -> false }
+      if isMethodVarPos and isValueType(paramTypes[li]) {
+        boxIfNeededMsil(cctx, insns, paramTypes[li])
+      }
+    }
+    li = li + 1
+  }
+  if isInstance {
+    insns.add(MCallvirt(methodToken = tok))
+  } else {
+    insns.add(MCall(methodToken = tok))
+  }
+  // Task/Task<T>-unwrap, mirroring `emitExternTargetBody`'s plain-extern
+  // async unwrap (the non-generic `decl.isAsync` branch below) — appended
+  // here rather than left to the caller because the CLOSED (post-witness)
+  // inner type is only knowable here, where the OPEN `msig` and its
+  // Object-witnessing are in scope.
+  if isVoidTask {
+    insns.add(MCallvirt(methodToken = cctx.tokTaskWait))
+  } else {
+    val openInner = match taskInnerOpen { case Some(v) -> v; case None -> MObject }
+    val innerWasMethodVar = match openInner { case MMethodTypeVar(_) -> true; case _ -> false }
+    val closedInner = eraseMethodTypeVarsToObjectMsil(openInner)
+    val tsArgs: List[MsilType] = newList()
+    tsArgs.add(closedInner)
+    val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs)
+    val tsKey = "ts_task1_result_" + msilTypeKeyStr(closedInner)
+    val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+    val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
+    val getResultRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
+    insns.add(MCallvirt(methodToken = 0x0A000000 + getResultRow))
+    // Mirror of `emitGenericMethodExternCall`'s own return-unboxing dance
+    // (#2972): only relevant when the Task's inner type WAS the method's
+    // own generic parameter (erased to Object by the MethodSpec witness
+    // above) AND the Lyric wrapper declares a genuine (non-Object) type at
+    // that position — an already-concrete Task inner type (e.g. a method
+    // generic only in its params, returning a fixed `Task<string>`) needs
+    // no further conversion; `get_Result()` already yielded the exact
+    // declared type.
+    if innerWasMethodVar and isValueType(lyricRetTy) {
+      val haveLabel = freshLabelMsil(fctx)
+      val endLabel = freshLabelMsil(fctx)
+      insns.add(MDup)
+      insns.add(MBrTrue(label = haveLabel))
+      insns.add(MPop)
+      pushDefaultValueMsil(cctx, fctx, insns, lyricRetTy)
+      insns.add(MBr(label = endLabel))
+      insns.add(MLabel(id = haveLabel))
+      insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, lyricRetTy)))
+      insns.add(MLabel(id = endLabel))
+    } else if innerWasMethodVar {
+      castObjectToMsil(cctx, insns, lyricRetTy)
+    }
+  }
+  insns.add(MRet)
+  true
+}
+
 func emitExternTargetBody(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -21915,38 +22170,45 @@ func emitExternTargetBody(
                 } else if msig.isGeneric and decl.isAsync {
                   // An `async`-declared @externTarget wrapper over a BCL
                   // method that is ALSO generic in its own right (e.g.
+                  // `Task.FromResult<TResult>`, or the heavier real-world
                   // `HttpContentJsonExtensions.ReadFromJsonAsync<T>`) needs
                   // BOTH the MethodSpec instantiation `emitGenericMethodExternCall`
-                  // builds AND the Task<T>/ValueTask<T>-unwrap machinery the
-                  // plain (non-generic) `decl.isAsync` branch below relies on
-                  // (`bclRetTy` kept as the real Task-shaped return, unwrap
-                  // callvirt appended later in `emitExternTargetBody`) —
-                  // neither path alone is correct here.
-                  // `emitGenericMethodExternCall` has no Task-unwrap logic at
-                  // all (always emits a synchronous ret), and simply leaving
+                  // builds AND the Task<T>-unwrap machinery the plain
+                  // (non-generic) `decl.isAsync` branch below relies on —
+                  // neither path alone is correct here, and simply leaving
                   // resolvedMethodParams/resolvedMethodRet unset does NOT
-                  // decline cleanly here the way it does for other unscored
-                  // shapes: falling through lets the plain-method branch
-                  // below build a syntactically valid but UNINSTANTIATED
-                  // MemberRef for the generic method (no MethodSpec witness)
-                  // — the build succeeds, but the CLR can't resolve the real
-                  // method at that signature, faulting with a confusing
-                  // `MissingMethodException` at RUNTIME instead of a clear
-                  // build-time diagnostic (confirmed empirically: a
-                  // `Task.FromResult<T>`-wrapping async extern compiles and
-                  // then throws exactly this at execution). Decline LOUDLY
-                  // instead — mirroring the `#5809`/`#6995` precedent of a
-                  // clear build-time panic (contained by `Lyric.Emitter`'s
-                  // `msilBridgePanicDiagnostic` boundary into a structured
-                  // diagnostic, never thrown to the caller) over a silent
-                  // fallback to a shape that compiles clean and faults later
-                  // — until real Task/ValueTask-unwrap support for a
-                  // method-own-generic BCL call is implemented (#7023).
+                  // decline cleanly the way it does for other unscored
+                  // shapes: falling through would let the plain-method
+                  // branch below build a syntactically valid but
+                  // UNINSTANTIATED MemberRef for the generic method (no
+                  // MethodSpec witness) — the build succeeds, but the CLR
+                  // can't resolve the real method at that signature,
+                  // faulting with a confusing `MissingMethodException` at
+                  // RUNTIME instead of a clear build-time diagnostic
+                  // (confirmed empirically pre-fix: a `Task.FromResult<T>`-
+                  // wrapping async extern compiled and then threw exactly
+                  // this at execution). `emitGenericAsyncMethodExternCall`
+                  // (above) builds the correct MethodSpec-instantiated OPEN
+                  // call plus the Task/Task`1<T>`-unwrap sequence for the
+                  // shape this scope covers (#7023); it returns `false` —
+                  // having emitted nothing — for anything outside that scope
+                  // (most notably a `ValueTask`1<T>`-returning BCL method,
+                  // filed as a tracked follow-up rather than attempted here,
+                  // see the function's own doc comment), and a `false` here
+                  // still raises the same clear build-time panic the whole
+                  // combination used to raise unconditionally — mirroring
+                  // the `#5809`/`#6995` "decline loudly, never silently
+                  // fall back to a shape that compiles clean and faults
+                  // later" precedent for whatever remains out of scope.
+                  if emitGenericAsyncMethodExternCall(cctx, fctx, insns, decl, r, memberParentRow, emitMember, paramTypes, retTy, msig) {
+                    return true
+                  }
                   panic(
                     "Msil.Codegen: @externTarget '" + target + "' on '" + decl.name +
-                      "' is an async wrapper over a BCL method that is itself declared with its own generics — " +
-                      "unsupported (no Task<T>/ValueTask<T>-unwrap path exists for a MethodSpec-instantiated call yet). " +
-                      "Only a synchronous (non-async) wrapper is currently supported for this shape; see #7023."
+                      "' is an async wrapper over a BCL method that is itself declared with its own generics, but this " +
+                      "specific shape is unsupported (e.g. a ValueTask<T>-returning generic async BCL method, a " +
+                      "value-type receiver, or a param/return shape the metadata-direct signature encoder cannot " +
+                      "express) — see #7023."
                   )
                 } else {
                   val mParams: List[MsilType] = newList()
