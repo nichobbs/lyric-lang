@@ -5860,8 +5860,10 @@ jobs:
       # cross-package collision self-test above. Pins: a field read on a
       # local bound to a cross-package generic function's call result
       # resolves against the real record class instead of erasing to
-      # Object, covering both the direct (unspecialised) and
-      # mono-specialised (literal-argument) registration paths.
+      # Object. Both cases use literal call arguments, so both exercise
+      # the mono-specialised registration path (collectMonoSpecializedSigs)
+      # only — the direct/unspecialised collectFileSigsSeeded path is not
+      # separately isolated here (review follow-up, #7194).
       - name: Cross-package generic call result self-test (native lyric test)
         if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
