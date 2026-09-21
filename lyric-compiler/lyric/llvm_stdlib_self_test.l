@@ -291,8 +291,13 @@ test "Std.Environment seams: set/get, missing key, cwd (ASan)" {
 }
 
 test "Std.Environment appBaseDirectory: the returned directory actually contains the running binary (ASan) (#6937)" {
-  val src = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "import Std.Path\n" +
-    "import Std.Environment\n" + "func main(): Int {\n" +
+  // Extracted manually via the raw .lastIndexOf/.substring intrinsic
+  // methods (Int -1-sentinel form, not Std.String's Option-returning
+  // wrapper) rather than Std.Path.basename -- Std.Path has no
+  // _kernel_native twin at all (a separate, pre-existing gap, not this
+  // issue's scope).
+  val src = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "import Std.Environment\n" +
+    "func main(): Int {\n" +
     "  val base = appBaseDirectory()\n" +
     "  if base.length == 0 {\n" +
     "    return 1\n" +
@@ -301,7 +306,12 @@ test "Std.Environment appBaseDirectory: the returned directory actually contains
     "  if argv.length == 0 {\n" +
     "    return 2\n" +
     "  }\n" +
-    "  val exe = basename(argv[0])\n" +
+    "  val argv0 = argv[0]\n" +
+    "  val slashIdx = argv0.lastIndexOf(\"/\")\n" +
+    "  var exe = argv0\n" +
+    "  if slashIdx >= 0 {\n" +
+    "    exe = argv0.substring(slashIdx + 1, argv0.length - slashIdx - 1)\n" +
+    "  }\n" +
     "  if not fileExists(base + exe) {\n" +
     "    return 3\n" +
     "  }\n" +
