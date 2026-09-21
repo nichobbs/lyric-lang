@@ -477,6 +477,44 @@ test "async func main returning Unit: process exits 0 after the task completes" 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// `?` on a direct async-call operand (#6920), and its F0045 try/catch
+// safety-net guard (#7170 ff.), on `--target native`.  `Lyric.Propagate`'s
+// implicit-`EAwait` rewrite and `F0045` are target-agnostic pipeline code
+// shared by every backend; native genuinely lowers `async func` to a real
+// LLVM coroutine (a suspend point), so it keeps `awaitInTryIsHazard = true`
+// the same as MSIL (`llvm_bridge.l`'s `MiddleEndOptions` construction).
+// These two cases are the native counterpart of the manual verification
+// done for `--target dotnet`/`--target jvm` on this same PR: proving the
+// base fix genuinely works end-to-end here too, not just compiling.
+// ─────────────────────────────────────────────────────────────────────────────
+test "?(#6920) on a direct async call outside any try compiles and runs correctly on native" {
+  val src = "package T\n" + "import Std.Core\n" +
+    "async func mayFail(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n * 2)\n  }\n}\n" +
+    "async func f(n: in Int): Result[Int, String] {\n  val x = mayFail(n)?\n  Ok(x)\n}\n" +
+    "func main(): Int {\n  match await f(3) {\n    case Ok(v) -> v\n    case Err(_) -> -1\n  }\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 6, "the implicit-await ? propagation fix (#6920) works end-to-end on native (3*2 = 6)")
+}
+
+test "F0045 (#7198): a direct async call's ? inside try/catch of an async func is rejected on native, same as dotnet" {
+  val src = "package T\n" + "import Std.Core\n" +
+    "async func mayFail(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n * 2)\n  }\n}\n" +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n    val x = mayFail(n)?\n    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n" +
+    "func main(): Int {\n  match await f(3) {\n    case Ok(v) -> v\n    case Err(_) -> -1\n  }\n}\n"
+  val stdlib = findStdlibSourcesNative()
+  if stdlib.count == 0 {
+    panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
+  }
+  val dir = Path.join(tempBase(), "lyric-llvm-async-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val noFlags: List[String] = newList()
+  val noDefines: List[String] = newList()
+  val ok = compileToNativeWithFlags(src, stem, stdlib, "", "0", noFlags, noDefines, "")
+  assertFalse(ok, "F0045 correctly rejects the same protected-region hazard on native as it does on dotnet")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The async process leaf (D-N-023): `Std.Process.runCapture` inside a
 // coroutine redirects to the kernel's nonblocking capture op and parks
 // only the calling task between pumps.

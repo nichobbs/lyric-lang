@@ -648,6 +648,23 @@ test "F0045 (#7199): still does not fire when no local shadows the same-file syn
   )
 }
 
+// #7200: review finding — a match-arm pattern binding (`case Some(name) ->
+// ...`) shadowing a same-named top-level sync function was never added to
+// `localNames` (only `val`/`let`/`var`/`for`-pattern/parameter/catch-bind
+// were), so a bare call to the arm-bound name inside a try/catch/finally
+// of an async function was incorrectly "proven" safe via the unrelated
+// top-level function.
+test "F0045 (#7200): fires for ? on a bare call shadowed by a match-arm-bound name, even though a same-named top-level function is sync" {
+  val src = "package P\n" +
+    "func helper(n: in Int): Result[Int, String] {\n  if n < 0 {\n    Err(\"neg\")\n  } else {\n    Ok(n)\n  }\n}\n" +
+    "async func f(opt: in Option[Int]): Result[Int, String] {\n  try {\n    match opt {\n      case Some(helper) -> {\n        val x = helper(1)?\n        Ok(x)\n      }\n      case None -> Ok(0)\n    }\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file, true)
+  assertTrue(
+    propHasDiag(result.diagnostics, "F0045"),
+    "a match-arm-bound 'helper' shadows the top-level sync function, so the call can no longer be proven safe"
+  )
+}
+
 // ── Same-file alias return types (#1814) ─────────────────────────────────────
 // `monadOfRet` unfolds same-file `alias` declarations before the Result/Option
 // classification, so a return type written through an alias no longer trips a

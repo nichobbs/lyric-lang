@@ -799,10 +799,15 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
     }
 
     case EMatch(scrutinee, arms) -> {
+      val newScrutinee = rewriteExpr(scrutinee, kind, st)
       val newArms: List[MatchArm] = newList()
       var i = 0
       while i < arms.count {
         val arm = arms[i]
+        // #7200: an arm's pattern binds names in scope for BOTH its guard
+        // and its body — must be registered before either is rewritten,
+        // same as `SFor`'s loop pattern and `LBVal`'s destructuring.
+        collectPatternBoundNames(arm.pattern, st.localNames)
         val newGuard: Option[Expr] = match arm.guard {
           case Some(g) -> Some(value = rewriteExpr(g, kind, st))
           case None -> None
@@ -810,7 +815,7 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
         newArms.add(MatchArm(pattern = arm.pattern, guard = newGuard, body = rewriteEob(arm.body, kind, st), span = arm.span))
         i = i + 1
       }
-      mkExpr(EMatch(scrutinee = rewriteExpr(scrutinee, kind, st), arms = newArms), e.span)
+      mkExpr(EMatch(scrutinee = newScrutinee, arms = newArms), e.span)
     }
 
     case EAwait(inner) -> mkExpr(EAwait(inner = rewriteExpr(inner, kind, st)), e.span)

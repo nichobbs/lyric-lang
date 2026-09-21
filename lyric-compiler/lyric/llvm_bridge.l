@@ -440,7 +440,7 @@ pub func compileToNativeWithFlags(
   // #7198: native's `async func` lowering is a real LLVM coroutine with a
   // genuine suspend point (docs/01 §"native" section), so F0045's guard
   // stays conservatively enabled here, same as MSIL, pending a dedicated
-  // audit of native's own try/catch protected-region model.
+  // audit of native's own try/catch protected-region model (#7201).
   val opts = MiddleEndOptions(
     tcFatal = false,
     tcReport = true,
