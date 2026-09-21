@@ -1409,6 +1409,14 @@ func collectMonoSpecializedSigs(
   file: in SourceFile,
   into: in Map[String, JvmFuncSig],
   externSeed: in Map[String, String],
+  // #6929: bundle-wide ctor registry (see `collectFileSigsSeeded`'s matching
+  // parameter) — a mono-specialised copy of a cross-package generic
+  // function keeps its ORIGINAL declared return type (type args substituted
+  // away, sometimes down to a bare `TRef` — `Lyric.Mono` gives the
+  // specialisation no generic params of its own to re-apply them to), so
+  // resolving it needs the same bundle-wide lookup the original
+  // (unspecialised) registration uses.
+  ctorReg: in Map[String, String],
 ): Unit {
   val owner = pkgJvmOwner(file.packageDecl.path)
   val externTypes = ownAwareExternTypes(file, externSeed)
@@ -1450,12 +1458,15 @@ func collectMonoSpecializedSigs(
             isIface = false,
             retGenericArgs = returnTypeGenericArgs(decl.ret),
             closureRetTy = closureRetTypeOf(decl.ret, owner, newList(), externTypes),
-            // Same "no local-record scan available here" rationale as the
-            // woven-sig path above (#6399): a mono-specialised function
-            // returning a generic record keeps the pre-fix Object-erased
-            // call-result type rather than risk resolving against the wrong
-            // file's record set.
-            recordRetClass = None,
+            // #6929: no same-FILE record scan is available here (unlike
+            // `collectFileSigsSeeded`'s `localRecordNames` pre-scan), but the
+            // bundle-wide `ctorReg` fallback resolves a cross-package record
+            // return the same way the specialisation's UN-specialised
+            // original does — a mono-specialised function's own return type
+            // is exactly as concrete as its declared type expr says (no
+            // generic params left to erase), so the same
+            // `recordRetClassOfBundle` lookup applies unchanged.
+            recordRetClass = recordRetClassOfBundle(decl.ret, owner, ctorReg),
             // Mono-specialised functions are free functions (monomorphized
             // from a generic `func`), never impl/record methods — no `Self`
             // return possible.
@@ -2070,10 +2081,31 @@ pub func compileProjectToJarBundledWithRestored(
     rpi0 = rpi0 + 1
   }
 
+  // #6929: collect every file's CONSTRUCTOR registrations first, across the
+  // whole bundle (user + stdlib + restored), before any `collectFileSigsSeeded`
+  // call — so `recordRetClassOfBundle`'s fallback (a function's return type
+  // is a generic record declared in a DIFFERENT file) always sees a fully
+  // populated `ctorReg`, never a partial one from files visited earlier in a
+  // single interleaved pass. `collectFileCtors` has no dependency on the
+  // signature registry, so hoisting it here is a pure reordering, not a
+  // behavior change for anything but the new fallback.
+  val ctorReg: Map[String, String] = newMap()
+  collectFileCtors(userFile, ctorReg)
+  var ctorRi = 0
+  while ctorRi < stdlibFiles.count {
+    collectFileCtors(stdlibFiles[ctorRi], ctorReg)
+    ctorRi = ctorRi + 1
+  }
+  var ctorRai = 0
+  while ctorRai < restoredArtifacts.count {
+    collectFileCtors(restoredArtifacts[ctorRai].source, ctorReg)
+    ctorRai = ctorRai + 1
+  }
+
   // Build the cross-package call registry across the user file and *every*
   // stdlib file (resolution is cheap and harmless for packages we don't bundle).
   val registry: Map[String, JvmFuncSig] = newMap()
-  collectFileSigsSeeded(userFile, registry, externSeedForFile(userFile, extPkgNames, extPkgMaps))
+  collectFileSigsSeeded(userFile, registry, externSeedForFile(userFile, extPkgNames, extPkgMaps), ctorReg)
   val caseReg: Map[String, List[JvmCaseField]] = newMap()
   // Field types resolve through own + imported extern types so a field like
   // `FileStat.modifiedAt: FileTime` registers the real JVM class.
@@ -2082,8 +2114,6 @@ pub func compileProjectToJarBundledWithRestored(
     caseReg,
     ownAwareExternTypes(userFile, externSeedForFile(userFile, extPkgNames, extPkgMaps))
   )
-  val ctorReg: Map[String, String] = newMap()
-  collectFileCtors(userFile, ctorReg)
   // #3044: complete @projectable pre-scan across the whole compilation, so
   // nested-view substitution / tryInto() eligibility see every projectable
   // regardless of declaration or package order (JVM counterpart of the MSIL
@@ -2092,13 +2122,12 @@ pub func compileProjectToJarBundledWithRestored(
   collectFileProjectables(userFile, allProjFqns)
   var ri = 0
   while ri < stdlibFiles.count {
-    collectFileSigsSeeded(stdlibFiles[ri], registry, externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps))
+    collectFileSigsSeeded(stdlibFiles[ri], registry, externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps), ctorReg)
     collectFileCasesExtern(
       stdlibFiles[ri],
       caseReg,
       ownAwareExternTypes(stdlibFiles[ri], externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps))
     )
-    collectFileCtors(stdlibFiles[ri], ctorReg)
     collectFileProjectables(stdlibFiles[ri], allProjFqns)
     ri = ri + 1
   }
@@ -2125,9 +2154,8 @@ pub func compileProjectToJarBundledWithRestored(
     // and every stdlib file use — an empty seed here left the restored
     // file's OWN signatures unable to resolve types from sibling restored
     // packages, extern kernels, or stdlib.
-    collectFileSigsSeeded(rf, registry, externSeedForFile(rf, extPkgNames, extPkgMaps))
+    collectFileSigsSeeded(rf, registry, externSeedForFile(rf, extPkgNames, extPkgMaps), ctorReg)
     collectFileCasesExtern(rf, caseReg, ownAwareExternTypes(rf, externSeedForFile(rf, extPkgNames, extPkgMaps)))
-    collectFileCtors(rf, ctorReg)
     collectFileProjectables(rf, allProjFqns)
     val rPkgItems: List[Item] = newList()
     var rii = 0
@@ -2489,7 +2517,7 @@ pub func compileProjectToJarBundledWithRestored(
       // Register monomorphizer-specialised copies (`mapKeys__String__Int`, …)
       // from the post-mono file so their call sites resolve to the real
       // descriptor (#3229; the #3676 map-iteration symptom).
-      collectMonoSpecializedSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps))
+      collectMonoSpecializedSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps), ctorReg)
       // Register weaver-synthesised record fields (`__LyricBModeCallContext`,
       // `__LyricBModeCfg_*`, `__LyricBModeArgs_*`, docs/55/56) from the
       // post-weave file: `caseReg` above was built from the pre-weave
@@ -2585,7 +2613,7 @@ pub func compileProjectToJarBundledWithRestored(
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
           collectBModeWovenSigs(ff, registry)
-          collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps))
+          collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps), ctorReg)
           collectFileCasesExtern(ff, caseReg, externSeedForFile(ff, extPkgNames, extPkgMaps))
           collectFileCtors(ff, ctorReg)
           // #4994: only the project's OWN packages get a contract resource —
