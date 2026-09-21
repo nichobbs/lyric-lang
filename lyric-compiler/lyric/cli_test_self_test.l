@@ -522,6 +522,27 @@ test "lyric test --seed 2147483647: a two-property file does not overflow-panic 
   assertEqualInt(rc, 0, "an extreme --seed near Int32.MaxValue does not overflow-panic on a multi-property file")
 }
 
+// D-progress-0941 documents that a negative --seed is intentionally
+// accepted (any Int is a valid RNG seed for Std.Random.makeRandom, unlike
+// --property-trials, which is validated >= 1) rather than merely
+// unrejected by omission. Pins that down against a future accidental
+// tightening of the validation.
+test "lyric test --seed -1: a negative seed is accepted, not rejected" {
+  val root = freshTempDir("prop-seed-negative")
+  defer {
+    cleanup(root)
+  }
+  val testFile = Path.join(root, "prop_test.l")
+  writeFileOrPanic(
+    testFile,
+    propFixtureSource(
+      "property \"identity always holds\" forall(x: Int) {\n  Std.Testing.assertTrue(x == x, \"identity always holds\")\n}\n"
+    )
+  )
+  val rc = mainWithExtra(testFile, listOf3("--properties", "--seed", "-1"))
+  assertEqualInt(rc, 0, "a negative --seed is accepted (any Int is a valid RNG seed), not rejected")
+}
+
 // #6659: `cmdTest`'s argv-parsing loop's `--coverage` branch was missing its
 // own `i += 1`, so ANY invocation with `--coverage` in argv spun forever
 // re-processing the same index instead of advancing — a busy-loop that

@@ -34864,14 +34864,15 @@ forall (...) { ... } }` worked example that does not parse — the grammar
 title, not nested inside the block; both examples are corrected to
 `property "title" forall(...) [where …] { … }`.
 
-New regression coverage: 9 cases in `lyric-compiler/lyric/cli_test_self_test.l`
+New regression coverage: 10 cases in `lyric-compiler/lyric/cli_test_self_test.l`
 covering flag validation (rejected without `--properties`, `--property-trials
-0`/non-integer, `--seed` non-integer all rejected) and functional threading
-(a single-trial run still catches an always-failing property; a larger trial
-count with an explicit seed still passes an always-true property; two
-properties in one file both pass under one shared explicit `--seed`; a
-two-property file under `--seed 2147483647` does not overflow-panic,
-pinning down the `cfg.seed.xor(idx)` fix over addition).
+0`/non-integer, `--seed` non-integer all rejected; a negative `--seed` is
+accepted, not rejected) and functional threading (a single-trial run still
+catches an always-failing property; a larger trial count with an explicit
+seed still passes an always-true property; two properties in one file both
+pass under one shared explicit `--seed`; a two-property file under
+`--seed 2147483647` does not overflow-panic, pinning down the
+`cfg.seed.xor(idx)` fix over addition).
 
 **Related:** `docs/decisions/D-progress-0941` (full account), #6907,
 #677/D-progress-784 (the v1.x property-execution baseline this extends),
