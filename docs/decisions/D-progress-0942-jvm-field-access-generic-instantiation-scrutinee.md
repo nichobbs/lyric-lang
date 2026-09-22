@@ -41,7 +41,10 @@ java.util.ArrayList cannot be cast to class [Ljava.lang.Object;`.
    applicable) `TypeExpr` through `returnTypeGenericArgs`; the
    synthesised `@projectable` view-field site passes `newList()` since no
    source `TypeExpr` is available there (the view field's type is
-   recovered from an already-erased `JvmType`).
+   recovered from an already-erased `JvmType`). All 9 sites are inline
+   `match` arms inside `collectFileCasesExtern` (plus one in
+   `registerProjectableViews`) — there are no separate `lowerRecord`/
+   `lowerUnion` functions in `06_items.l`.
 2. `scrutineeGenericArgs` (`03_match.l`) gained a top-level `EMember` arm
    (distinct from the existing nested `EMember` arm inside the `ECall`
    case, which resolves a METHOD-CALL receiver's return type, not a plain
