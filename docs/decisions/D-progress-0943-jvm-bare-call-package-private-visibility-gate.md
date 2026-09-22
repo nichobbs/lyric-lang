@@ -1,4 +1,4 @@
-# D-progress-941 — JVM codegen: the bundle-wide bare-call fallback could resolve to a package-private function in an unrelated package (#6853)
+# D-progress-943 — JVM codegen: the bundle-wide bare-call fallback could resolve to a package-private function in an unrelated package (#6853)
 
 **Status:** shipped
 
