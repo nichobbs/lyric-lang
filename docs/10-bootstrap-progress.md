@@ -34864,8 +34864,10 @@ forall (...) { ... } }` worked example that does not parse — the grammar
 title, not nested inside the block; both examples are corrected to
 `property "title" forall(...) [where …] { … }`.
 
-New regression coverage: 10 cases in `lyric-compiler/lyric/cli_test_self_test.l`
-covering flag validation (rejected without `--properties`, `--property-trials
+New regression coverage: 10 cases in
+`lyric-compiler/lyric/cli_test_property_trials_self_test.l` (split out of
+`cli_test_self_test.l` as a CI follow-up — see that file's own header for
+why) covering flag validation (rejected without `--properties`, `--property-trials
 0`/non-integer, `--seed` non-integer all rejected; a negative `--seed` is
 accepted, not rejected) and functional threading (a single-trial run still
 catches an always-failing property; a larger trial count with an explicit
