@@ -1981,17 +1981,13 @@ test "unresolvable extern static member access panics with the spanned T0119 cod
 // #7099: a nonexistent String method (a typo, or a BCL method the language
 // never implemented — `toLowerInvariant` has no `Std.String` counterpart and
 // no MSIL codegen intrinsic entry) used to compile clean, degrading to a
-// runtime-throw stub, and only failed once the program actually ran. The
-// type checker's `maybeUnknownMemberDiag` now catches this at the call site
-// with a spanned T0113 diagnostic (`typechecker_exprs.l`), so the build now
-// fails at the type-check gate before codegen is ever reached — earlier and
-// with a better diagnostic than the codegen-level panic this test used to
-// pin. Message-content coverage for the T0113 text lives in
-// `typechecker_self_test.l` (which can inspect the diagnostic list
-// directly); this test only pins that the bridge-level `Bool` build result
-// reflects the failure, matching the established `compileProjectToMsil`
-// failure idiom (see `llvm_project_self_test.l`'s `assertFalse(ok, ...)`).
-test "unknown method call on a String receiver fails the build, not silently (#7099)" {
+// runtime-throw stub, and only failed once the program actually ran. Every
+// String method name `lowerMethodCallMsil` actually implements is handled
+// earlier in the same cascading dispatch, so a String receiver reaching the
+// final "unrecognised method" fallback names a method that can never
+// resolve — `compileProjectToMsil` must now panic at build time instead of
+// silently emitting the stub, mirroring the coded-refusal tests above.
+test "unknown method call on a String receiver panics at build time, not silently (#7099)" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(
     mkPkg(
@@ -2004,9 +2000,24 @@ test "unknown method call on a String receiver fails the build, not silently (#7
   val dir = freshTempDir("unknown_string_method")
   val dllPath = Path.join(dir, "UnknownStringMethod.dll")
   val stdlibSources: List[String] = newList()
-  val ok = compileProjectToMsil(packages, "UnknownStringMethod", dllPath, stdlibSources)
+  var panicked = false
+  var panicMsg = ""
+  try {
+    compileProjectToMsil(packages, "UnknownStringMethod", dllPath, stdlibSources)
+  } catch Bug as b {
+    panicked = true
+    panicMsg = b.message
+  }
   cleanup(dir)
-  assertFalse(ok, "unknown String method: compileProjectToMsil returns false instead of succeeding (#7099)")
+  assertTrue(panicked, "unknown String method: compileProjectToMsil panics instead of returning (#7099)")
+  assertTrue(
+    Str.contains(panicMsg, "no method 'toLowerInvariant'"),
+    "unknown String method: panic names the unresolved method (got: " + panicMsg + ")"
+  )
+  assertTrue(
+    Str.contains(panicMsg, "on type 'String'"),
+    "unknown String method: panic names the receiver type (got: " + panicMsg + ")"
+  )
 }
 
 // A real String method (handled by one of `lowerMethodCallMsil`'s

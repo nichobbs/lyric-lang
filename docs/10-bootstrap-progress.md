@@ -35733,35 +35733,47 @@ ran. `docs/01-language-reference.md` and
 #6739/D-progress-912 (the record/opaque precedent this generalizes), PR
 #7117 (where the gap was flagged).
 
-## Unknown `String` method call now caught at type-check time (T0113), plus `isNormalized`/`normalize` JVM parity (#7099)
+## `isNormalized`/`normalize` MSIL↔JVM parity fix; #7099's type-check-time approach reverted after a real JVM regression
 
-`maybeUnknownMemberDiag`'s "unknown member" T0113 check previously only had
-an arm for `TyUser` receivers — `String` is `TyPrim(PtString)`, so a call to
-a nonexistent `String` method (a typo, or a BCL method the language never
-implemented, e.g. `.toLowerInvariant()`) type-checked clean and only failed
-once the compiled program actually ran (the MSIL/JVM backends' `String`
-intrinsic dispatch tables both fall back to either a build-time panic
-(MSIL) or a runtime-throw stub for an unrecognised name). New
-`TyPrim(PtString)` arm exempts universal method names, `builtinMember`
-field-style accessors (`length`/`isEmpty`), an explicit
-`isBackendIntrinsicStringMethodName` allowlist of the 15 backend-intrinsic
-method names (kept in sync with both backends' hardcoded dispatch tables —
-needed because those resolve unconditionally, independent of whether
-`Std.String` is imported), and ordinary bare-name functions in `sigs`;
-anything else emits `T0113 no method '<name>' on type 'String'` at the call
-site. Fixing this surfaced a genuine pre-existing gap: `isNormalized`/
-`normalize` had no `Std.String` wrapper and no JVM codegen intrinsic at
-all (MSIL-only) — added both, with the JVM intrinsic routing through
-`java.text.Normalizer`'s **static** methods (`LGetstatic(Normalizer$Form.NFC)`
-+ `LInvokestatic`) since Java has no instance-method equivalent. Two
-pre-existing `msil_project_bridge_self_test.l` tests were updated to match
-the new (earlier, better) failure layer — the type checker now catches the
-unknown-method case before codegen, so `compileProjectToMsil` returns
-`false` instead of throwing. `typechecker_self_test.l`: 432/432 (2 new
-cases). `docs/01-language-reference.md` and
-`book/chapters/appendix-b-quick-reference.md` updated.
+While investigating #7099 (an unknown `String` method type-checks clean and
+only fails at runtime), an attempt to add a `TyPrim(PtString)` arm to
+`maybeUnknownMemberDiag` (a new `T0113` diagnostic gated on an explicit
+allowlist of backend-intrinsic `String` method names) surfaced and fixed a
+genuine pre-existing gap: `isNormalized`/`normalize` had no `Std.String`
+wrapper and no JVM codegen intrinsic at all (MSIL-only). Both are now
+fixed — `lyric-stdlib/std/string.l` gained the two wrapper functions, and
+`lyric-compiler/jvm/codegen/04_calls.l` gained the JVM intrinsic, routing
+through `java.text.Normalizer`'s **static** methods
+(`LGetstatic(Normalizer$Form.NFC)` + `LInvokestatic`) since Java has no
+instance-method equivalent. Verified end-to-end (build **and** run) on
+both targets.
 
-**Related:** D-progress-941 (full account, `docs/decisions/`), #7099.
+The T0113-for-`String` diagnostic itself was **reverted** before merge: CI
+caught it false-positiving on legitimate JVM-only code
+(`lyric-compiler/lyric/hash_jvm_self_test.l`,
+`lyric-compiler/jvm/try_catch_expr_jvm_self_test.l`, both calling
+`s.getBytes()`). The type checker is shared, target-agnostic code — but
+the actual reachable `String`-method surface is NOT the same on both
+targets: MSIL's `String` handling is a closed, hardcoded cascade (anything
+outside it panics at codegen time, unconditionally, on every target — this
+part is genuinely fully known), while the JVM backend additionally falls
+through to a generic auto-FFI instance-method resolver
+(`lowerAutoFfiInstanceCall` in `04_calls.l`) that resolves *any* real
+`java.lang.String` method directly against JDK metadata when the name
+isn't one of JVM's own hardcoded intrinsics. A static allowlist checked at
+type-check time cannot represent that open, metadata-resolved surface, so
+it necessarily either under-covers (missing real JDK methods like
+`getBytes`) or requires duplicating JDK metadata resolution inside the
+shared type checker — a much larger, properly-scoped change than this
+attempt, needing either target-awareness threaded through the checker or
+the check moved into a target-specific pre-codegen pass. Filed as a
+follow-up with this design note rather than re-attempting a quick fix.
+`isNormalized`/`normalize` are unaffected by the revert — they're real
+intrinsic wrapper functions on both backends, not part of the reverted
+diagnostic.
+
+**Related:** #7099 (still open), #7204 (the design-note follow-up filed
+after the JVM regression found in CI and the revert).
 
 ## `internal` cross-package bare-name/zero-arg free-function calls confirmed fixed, `lyric-lambda` workaround reverted (#6886)
 

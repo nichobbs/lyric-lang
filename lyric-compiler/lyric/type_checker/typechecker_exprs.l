@@ -1890,31 +1890,6 @@ func isUniversalMethodName(name: in String): Bool {
   name == "toString" or name == "equals" or name == "hash" or name == "show" or name == "compare" or name == "toJson"
 }
 
-// The MSIL/JVM backends' `String` method intrinsic dispatch (`lowerMethodCallMsil`
-// in `lyric-compiler/msil/codegen.l`, the mirrored table in
-// `lyric-compiler/jvm/codegen/04_calls.l`) resolves these names via a
-// hardcoded `memberName ==` cascade, independent of whether `Std.String` is
-// imported or a same-named `sigs` entry is otherwise visible (#7099). Keep
-// this list in sync with both backends' intrinsic tables. One exception:
-// MSIL's `split` cascades to the pure-Lyric `Std.String.split` free function
-// rather than a direct BCL call, so it still throws at RUNTIME (not this
-// check) in the narrow case where `Std.String` never got linked into the
-// compiled bundle — a pre-existing gap (`lowerMethodCallMsil`'s `split` arm),
-// not one this allowlist can close without a codegen change.
-func isBackendIntrinsicStringMethodName(name: in String): Bool {
-  name == "contains" or name == "substring" or name == "replace" or name == "isNormalized" or name == "normalize" or
-    name == "trim" or
-    name == "trimStart" or
-    name == "trimEnd" or
-    name == "indexOf" or
-    name == "lastIndexOf" or
-    name == "startsWith" or
-    name == "endsWith" or
-    name == "split" or
-    name == "toLower" or
-    name == "toUpper"
-}
-
 // Substitute the receiver into a stored method signature: `Self` becomes the
 // receiver type, and the owner's generic params are replaced by the
 // receiver's type args when the arities line up (a raw/under-instantiated
@@ -2395,45 +2370,6 @@ func maybeUnknownMemberDiag(
       }
       val what = if isCall { "no method '" } else { "no member '" }
       diag.add(errorDiagnostic("T0113", what + name + "' on type '" + tname + "'", span))
-    }
-    // #7099: `String`'s member surface (unlike a general `extern type`, whose
-    // member names are never compile-checked) is fully known — every real
-    // `String` method is either a `builtinMember` field-style accessor
-    // (`length`/`isEmpty`) or an ordinary UFCS-callable function reachable
-    // by bare name (`toLower`, `contains`, …). An unknown name used to fall
-    // through to codegen silently, compiling clean and only failing when the
-    // call actually executed. `sigs.containsKey(name)` is a bare-name-only
-    // existence check (not param-type-aware): a name that exists as SOME
-    // function elsewhere but doesn't actually accept a `String` receiver is
-    // left lenient here (mirroring the `TyUser` arm's own "exists anywhere"
-    // leniency above) rather than risk a false positive — that combination
-    // would already be its own T0042/T0043 at the call site if the call is
-    // otherwise reachable, so nothing goes unchecked.
-    case TyPrim(pt) -> {
-      match pt {
-        case PtString -> {
-          if isUniversalMethodName(name) {
-            return
-          }
-          match builtinMember(recv, name) {
-            case Some(_) -> {
-              return
-            }
-            case None -> {
-            }
-          }
-          if isBackendIntrinsicStringMethodName(name) {
-            return
-          }
-          if sigs.containsKey(name) {
-            return
-          }
-          val what = if isCall { "no method '" } else { "no member '" }
-          diag.add(errorDiagnostic("T0113", what + name + "' on type 'String'", span))
-        }
-        case _ -> {
-        }
-      }
     }
     case _ -> {
     }
