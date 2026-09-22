@@ -432,9 +432,11 @@ see `lyric-aws-secrets/README.md`'s platform-parity table for the current,
 per-feature status of `init()`, `getSecret()`, `getSecretField()`,
 `getParameter()`, and `getParameterRaw()` (the last four take the
 secret/parameter name as an explicit runtime argument and need no
-annotation reflection, so they work normally on `jvm` wherever the
-underlying client binding is real — `aws`/.NET is tracked separately in
-#6864).
+annotation reflection, so they work normally on both `jvm` and `aws` —
+the `aws`/.NET client binding shipped in #6864, resolving the
+async-`Task<T>`-API-shape question that previously blocked it via the
+compiler's existing blocking-`await`-in-a-plain-function mechanism, the
+same one `Std.HttpHost` uses).
 
 ### 7.3 Env var override
 

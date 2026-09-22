@@ -34827,3 +34827,32 @@ was already correct and complete.
 #7097, PR #7100 (the fix), #6224 (the native-backend precedent this
 mirrors), #6849/#6850 (the analogous bundle-wide bare-name-collision fix
 for functions, whose qualified-key-first-on-read shape this fix follows).
+
+## lyric-aws-secrets: real AWS SDK for .NET v3 bindings ship; public API stays synchronous (#6864)
+
+`lyric-aws-secrets/src/_kernel/secrets_kernel_aws.l` (`aws` feature) is no
+longer a documented `NOT_IMPLEMENTED` stub: it binds real
+`AmazonSecretsManagerClient`/`AmazonSimpleSystemsManagementClient` calls
+against the actual AWS SDK for .NET v3 3.7.400 assemblies (verified via
+.NET reflection, not assumed from memory), with `Std.Json`-backed JSON-key
+extraction for `getSecretField` and a process-global TTL cache — the same
+shape `secrets_kernel_jvm.l` already shipped in #5411. `AwsSecrets`'s
+public API (`init()`/`getSecret()`/`getSecretField()`/`getParameter()`/
+`getParameterRaw()`) is unchanged: binding the SDK's `Task<T>`-returning
+`GetSecretValueAsync`/`GetParameterAsync` did not require making it
+`async`, since the self-hosted MSIL emitter already lowers `await` inside
+a plain (non-`async`) function to a blocking `GetAwaiter().GetResult()`
+shim — the same mechanism `Std.HttpHost`'s `HttpClient.SendAsync` binding
+uses, verified directly against a real BCL `Task<T>` call before writing
+the AWS SDK binding. `initFromAnnotations()` (`@secretsManager`/
+`@parameterStore` config-block scanning) stays `NOT_IMPLEMENTED` on every
+feature except `local` — unaffected by this fix, a separate genuine
+compiler gap (issue #6866). `lyric-aws-secrets/README.md`'s support
+matrix is corrected: all three features (`local`/`jvm`/`aws`) are now
+production-ready for the explicit fetch API. See D-progress-941
+(`docs/decisions/`) for the full investigation, including a genuine
+.NET-specific `ConcurrentDictionary` object-erasure workaround found and
+fixed along the way (the jvm kernel's #6891 non-generic-cache workaround
+doesn't port to .NET as-is; fixed by naming the bracketed generic
+instantiation directly in the `extern type` target string, which the MSIL
+emitter erases wholesale to `object`).

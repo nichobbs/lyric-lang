@@ -6067,13 +6067,23 @@ jobs:
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-aws-secrets/lyric.toml --features local
 
-      # --features aws: the .NET AWS SDK backend is a documented
-      # NOT_IMPLEMENTED contract (blocked on the async API-shape decision
-      # in #6864), not a live-credentials integration path — this pins
-      # every call honestly returning Err rather than a silent Ok (#7033).
+      # --features aws: real AWSSDK.SecretsManager/AWSSDK.SimpleSystemsManagement
+      # bindings (#6864) — restore first, since (unlike the prior
+      # NOT_IMPLEMENTED stub) this now genuinely references AWS SDK for
+      # .NET types at compile time. Not a live-credentials integration
+      # path: this CI runner has no AWS region/credentials configured, so
+      # the assertions pin the honest failure contract (getSecret/
+      # getParameter never panic uncaught, always a typed Err) rather than
+      # a successful round-trip against a real Secrets Manager/SSM
+      # endpoint.
       - name: Run tests (aws-secrets, aws feature)
         if: matrix.id == 'aws-secrets'
         run: |
+          set -euo pipefail
+          if ! "$LYRIC_CLI_PATH" restore --manifest lyric-aws-secrets/lyric.toml; then
+            echo "::error::failed to restore lyric-aws-secrets NuGet dependencies"
+            exit 1
+          fi
           "$LYRIC_CLI_PATH" test --manifest lyric-aws-secrets/lyric.toml --no-default-features --features aws
 
       - name: Run tests (feature-flags)

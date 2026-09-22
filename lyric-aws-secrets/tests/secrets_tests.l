@@ -13,13 +13,14 @@
 //! — a bare `test` block with its own `@cfg` has been observed to compile
 //! into an invalid MSIL program (see that file's header note).
 //!
-//! The AWS SDK (.NET) backend's live fetch behaviour stays NOT_IMPLEMENTED
-//! (see `secrets_kernel_aws.l`'s header) and is not exercised here; the
-//! JVM backend's real `SecretsManagerClient`/`SsmClient` network calls are
-//! not exercised here either — no live or mocked AWS endpoint is set up in
-//! this suite (see `secrets_kernel_jvm.l`'s header for the real bindings
-//! this compiles against). Only the jvm kernel's pure-Lyric error
-//! classification is covered.
+//! Both the AWS SDK (.NET) and JVM backends now bind real
+//! `AmazonSecretsManagerClient`/`SecretsManagerClient` (and SSM equivalent)
+//! calls (issue #6864, `secrets_kernel_aws.l`/`secrets_kernel_jvm.l`'s
+//! headers) — no live or mocked AWS endpoint is set up in this suite, so
+//! `getSecret`/`getParameter` are only checked to fail as a typed `Err`
+//! (never a silent `Ok`, never an unhandled exception) rather than
+//! succeed. Both kernels' pure-Lyric error classification, JSON-field
+//! extraction, and cache-key logic are covered directly.
 @test_module
 package AwsSecrets.SecretsTests
 
@@ -383,54 +384,385 @@ test "jvm kernel: classifyParameterError maps known AWS error messages to typed 
 }
 
 // ─── AWS (.NET) kernel (feature = "aws") ───────────────────────────────────────
-// `secrets_kernel_aws.l` stays NOT_IMPLEMENTED — see that file's header for
-// precisely why (a public-API-shape decision, not a missing compiler
-// capability; the Task<T>-returning async SDK calls themselves ARE
-// bindable, per the real `Std.HttpHost` precedent). These tests assert the
-// honest failure contract: every call returns a real Err with a message
-// naming the reason, never a silent Ok or an unhandled exception.
+// `secrets_kernel_aws.l` binds real `AmazonSecretsManagerClient`/
+// `AmazonSimpleSystemsManagementClient` calls (issue #6864) — covered here
+// is the part reachable without a live AWS endpoint/credentials:
+// `init()`'s `initFromAnnotations()` stays NOT_IMPLEMENTED (a separate,
+// genuine compiler gap, #6866, unrelated to #6864's async-API-shape
+// question this file otherwise resolves), and `getSecret()`/
+// `getParameter()` now genuinely attempt a real SDK call and correctly
+// surface a non-NOT_IMPLEMENTED, typed error when no region/credentials
+// are configured (this sandbox's environment) rather than the old
+// unconditional NOT_IMPLEMENTED stub. The real client/request/response
+// wiring is exercised by compiling and running this whole suite under
+// `--target dotnet --no-default-features --features aws` (a genuine
+// AWSSDK.SecretsManager/AWSSDK.SimpleSystemsManagement metadata
+// resolution — this fails loudly if any binding is wrong); the pure
+// classification/extraction/cache-key logic below covers what's testable
+// without a live/mocked AWS endpoint, mirroring the jvm kernel's own test
+// sections exactly.
 @cfg(feature = "aws")
-func awsNotImplementedScenario(): String {
-  val initResult = AwsSecrets.init()
-  val secretResult = AwsSecrets.getSecret("my-service/prod")
-  val paramResult = AwsSecrets.getParameter("/my-service/signing-key")
-  match initResult {
-    case Ok(_) -> return "init() must not silently succeed on the aws feature while NOT_IMPLEMENTED"
-    case Err(_) -> ()
-  }
-  match secretResult {
-    case Ok(_) -> return "getSecret() must not silently succeed on the aws feature while NOT_IMPLEMENTED"
-    case Err(e) -> if AwsSecrets.errorMessage(e).contains("NOT_IMPLEMENTED") {
-      ()
-    } else {
-      return "getSecret()'s error must say NOT_IMPLEMENTED, got: " + AwsSecrets.errorMessage(e)
-    }
-  }
-  match paramResult {
-    case Ok(_) -> "getParameter() must not silently succeed on the aws feature while NOT_IMPLEMENTED"
-    case Err(e) -> if AwsSecrets.errorMessage(e).contains("NOT_IMPLEMENTED") {
+func awsInitStillNotImplementedScenario(): String {
+  match AwsSecrets.init() {
+    case Ok(_) -> "init() must not silently succeed on the aws feature: initFromAnnotations() stays NOT_IMPLEMENTED (issue #6866)"
+    case Err(e) -> if AwsSecrets.errorMessage(e).contains("is not implemented") {
       "OK"
     } else {
-      "getParameter()'s error must say NOT_IMPLEMENTED, got: " + AwsSecrets.errorMessage(e)
+      "init()'s error must say it is not implemented, got: " + AwsSecrets.errorMessage(e)
     }
   }
 }
 
 @cfg(feature = "local")
-func awsNotImplementedScenario(): String {
+func awsInitStillNotImplementedScenario(): String {
   "OK"
 }
 
 @cfg(feature = "jvm")
-func awsNotImplementedScenario(): String {
+func awsInitStillNotImplementedScenario(): String {
   "OK"
 }
 
-test "aws kernel: init/getSecret/getParameter honestly return NOT_IMPLEMENTED, never a silent Ok" {
+test "aws kernel: init() still returns NOT_IMPLEMENTED (initFromAnnotations, issue #6866, unaffected by #6864)" {
   assertEqual(
-    awsNotImplementedScenario(),
+    awsInitStillNotImplementedScenario(),
     "OK",
-    "the aws feature's kernel must fail every call with a documented NOT_IMPLEMENTED error"
+    "initFromAnnotations() must stay NOT_IMPLEMENTED regardless of #6864's fetchSecret/fetchParameter fix"
+  )
+}
+
+// getSecret()/getParameter() now make a real SDK call. Without a live AWS
+// endpoint or credentials, the client construction or the call itself
+// fails, but MUST come back as a typed Err (never a silent Ok, never an
+// unhandled exception reaching the caller) — the exact failure this
+// sandbox surfaces is "No RegionEndpoint or ServiceURL configured",
+// correctly falling back to NetworkError via classifySecretsError's
+// documented best-effort classification.
+@cfg(feature = "aws")
+func awsRealCallNeverPanicsScenario(): String {
+  match AwsSecrets.getSecret("my-service/prod") {
+    case Ok(_) -> return "getSecret() unexpectedly succeeded with no AWS credentials/region configured"
+    case Err(_) -> ()
+  }
+  match AwsSecrets.getParameter("/my-service/signing-key") {
+    case Ok(_) -> "getParameter() unexpectedly succeeded with no AWS credentials/region configured"
+    case Err(_) -> "OK"
+  }
+}
+
+@cfg(feature = "local")
+func awsRealCallNeverPanicsScenario(): String {
+  "OK"
+}
+
+@cfg(feature = "jvm")
+func awsRealCallNeverPanicsScenario(): String {
+  "OK"
+}
+
+test "aws kernel: getSecret/getParameter never panic uncaught without AWS credentials, always a typed Err" {
+  assertEqual(
+    awsRealCallNeverPanicsScenario(),
+    "OK",
+    "a real SDK call failure (client construction or the network call itself) must always surface as a typed SecretsError"
+  )
+}
+
+// ─── classifySecretsError / classifyParameterError (aws kernel) ───────────────
+// Pure message-substring classification, independent of any network/client
+// call — identical structure to the jvm kernel's own coverage above.
+@cfg(feature = "aws")
+func netClassifySecretsErrorScenario(): String {
+  val notFound = SecretsKernel.classifySecretsError("my-secret", "Secrets Manager can't find the specified secret.")
+  val accessDenied = SecretsKernel.classifySecretsError(
+    "my-secret",
+    "User is not authorized to perform: secretsmanager:GetSecretValue"
+  )
+  val decryption = SecretsKernel.classifySecretsError(
+    "my-secret",
+    "DecryptionFailureException: Secrets Manager can't decrypt the protected secret text"
+  )
+  val unknown = SecretsKernel.classifySecretsError("my-secret", "Connection refused")
+  match notFound {
+    case NotFound(n) -> if n != "my-secret" { return "NotFound carried the wrong name: " + n } else { () }
+    case _ -> return "expected NotFound classification for 'can't find the specified secret'"
+  }
+  match accessDenied {
+    case AccessDenied(n, _) -> if n != "my-secret" { return "AccessDenied carried the wrong name: " + n } else { () }
+    case _ -> return "expected AccessDenied classification for 'not authorized'"
+  }
+  match decryption {
+    case DecryptionError(n, _) -> if n != "my-secret" {
+      return "DecryptionError carried the wrong name: " + n
+    } else {
+      ()
+    }
+    case _ -> return "expected DecryptionError classification for 'DecryptionFailureException'"
+  }
+  match unknown {
+    case NetworkError(n, m) -> if n == "my-secret" and m == "Connection refused" {
+      "OK"
+    } else {
+      "NetworkError carried the wrong fields"
+    }
+    case _ -> "expected NetworkError fallback classification for an unrecognised message"
+  }
+}
+
+@cfg(feature = "local")
+func netClassifySecretsErrorScenario(): String {
+  "OK"
+}
+
+@cfg(feature = "jvm")
+func netClassifySecretsErrorScenario(): String {
+  "OK"
+}
+
+test "aws kernel: classifySecretsError maps known AWS error messages to typed SecretsError variants" {
+  assertEqual(
+    netClassifySecretsErrorScenario(),
+    "OK",
+    "classifySecretsError must classify NotFound/AccessDenied/DecryptionError and fall back to NetworkError"
+  )
+}
+
+@cfg(feature = "aws")
+func netClassifyParameterErrorScenario(): String {
+  val notFound = SecretsKernel.classifyParameterError("/my/param", "ParameterNotFound: /my/param")
+  val accessDenied = SecretsKernel.classifyParameterError(
+    "/my/param",
+    "User is not authorized to perform: ssm:GetParameter"
+  )
+  val decryption = SecretsKernel.classifyParameterError("/my/param", "InvalidKeyId: the KMS key is disabled")
+  val unknown = SecretsKernel.classifyParameterError("/my/param", "Request timed out")
+  match notFound {
+    case NotFound(n) -> if n != "/my/param" { return "NotFound carried the wrong name: " + n } else { () }
+    case _ -> return "expected NotFound classification for 'ParameterNotFound'"
+  }
+  match accessDenied {
+    case AccessDenied(n, _) -> if n != "/my/param" { return "AccessDenied carried the wrong name: " + n } else { () }
+    case _ -> return "expected AccessDenied classification for 'not authorized'"
+  }
+  match decryption {
+    case DecryptionError(n, _) -> if n != "/my/param" {
+      return "DecryptionError carried the wrong name: " + n
+    } else {
+      ()
+    }
+    case _ -> return "expected DecryptionError classification for 'InvalidKeyId'"
+  }
+  match unknown {
+    case NetworkError(n, m) -> if n == "/my/param" and m == "Request timed out" {
+      "OK"
+    } else {
+      "NetworkError carried the wrong fields"
+    }
+    case _ -> "expected NetworkError fallback classification for an unrecognised message"
+  }
+}
+
+@cfg(feature = "local")
+func netClassifyParameterErrorScenario(): String {
+  "OK"
+}
+
+@cfg(feature = "jvm")
+func netClassifyParameterErrorScenario(): String {
+  "OK"
+}
+
+test "aws kernel: classifyParameterError maps known AWS error messages to typed SecretsError variants" {
+  assertEqual(
+    netClassifyParameterErrorScenario(),
+    "OK",
+    "classifyParameterError must classify NotFound/AccessDenied/DecryptionError and fall back to NetworkError"
+  )
+}
+
+// ─── extractSecretField / extractSecretValue (aws kernel) ─────────────────────
+// Pure JSON-field-extraction and binary-vs-string dispatch logic,
+// independent of any network/client call — identical structure to the jvm
+// kernel's own coverage above (both kernels carry their own copy of this
+// logic, matching the established per-feature-kernel duplication idiom).
+@cfg(feature = "aws")
+func netExtractSecretFieldScenario(): String {
+  val noKey = SecretsKernel.extractSecretField("my-secret", None, "raw-string-value")
+  match noKey {
+    case Ok(v) -> if v != "raw-string-value" {
+      return "key=None must return the raw secret string unchanged"
+    } else {
+      ()
+    }
+    case Err(_) -> return "key=None must never fail"
+  }
+
+  val stringField = SecretsKernel.extractSecretField(
+    "my-secret",
+    Some("dbPassword"),
+    "{\"dbPassword\": \"hunter2\", \"dbPort\": 5432}"
+  )
+  match stringField {
+    case Ok(v) -> if v != "hunter2" { return "expected the dbPassword field's value, got: " + v } else { () }
+    case Err(e) -> return "expected Ok for a string field, got Err: " + AwsSecrets.errorMessage(e)
+  }
+
+  val nonStringField = SecretsKernel.extractSecretField(
+    "my-secret",
+    Some("dbPort"),
+    "{\"dbPassword\": \"hunter2\", \"dbPort\": 5432}"
+  )
+  match nonStringField {
+    case Ok(v) -> return "expected ParseError for a non-string field, got Ok: " + v
+    case Err(ParseError(n, k, _)) -> if n != "my-secret" or k != "dbPort" {
+      return "ParseError carried the wrong name/key"
+    } else {
+      ()
+    }
+    case Err(e) -> return "expected ParseError for a non-string field, got a different error: " + AwsSecrets.errorMessage(e)
+  }
+
+  val malformedJson = SecretsKernel.extractSecretField("my-secret", Some("dbPassword"), "{not valid json")
+  match malformedJson {
+    case Ok(v) -> return "expected ParseError for malformed JSON, got Ok: " + v
+    case Err(ParseError(n, k, _)) -> if n != "my-secret" or k != "dbPassword" {
+      return "ParseError carried the wrong name/key for malformed JSON"
+    } else {
+      ()
+    }
+    case Err(e) -> return "expected ParseError for malformed JSON, got a different error: " + AwsSecrets.errorMessage(e)
+  }
+
+  val missingField = SecretsKernel.extractSecretField("my-secret", Some("missing"), "{\"dbPassword\": \"hunter2\"}")
+  match missingField {
+    case Ok(v) -> "expected ParseError for a missing field, got Ok: " + v
+    case Err(ParseError(_, _, _)) -> "OK"
+    case Err(e) -> "expected ParseError for a missing field, got a different error: " + AwsSecrets.errorMessage(e)
+  }
+}
+
+@cfg(feature = "local")
+func netExtractSecretFieldScenario(): String {
+  "OK"
+}
+
+@cfg(feature = "jvm")
+func netExtractSecretFieldScenario(): String {
+  "OK"
+}
+
+test "aws kernel: extractSecretField returns ParseError (never panics) for a non-string or missing JSON field" {
+  assertEqual(
+    netExtractSecretFieldScenario(),
+    "OK",
+    "extractSecretField must convert a Std.Json.getString panic on a non-string field into a typed ParseError"
+  )
+}
+
+@cfg(feature = "aws")
+func netExtractSecretValueScenario(): String {
+  val noneKeyBinary = SecretsKernel.extractSecretValue("my-binary-secret", None, None)
+  match noneKeyBinary {
+    case Ok(v) -> return "expected BinaryValueUnsupported for a binary secret, got Ok: " + v
+    case Err(BinaryValueUnsupported(n)) -> if n != "my-binary-secret" {
+      return "BinaryValueUnsupported carried the wrong name: " + n
+    } else {
+      ()
+    }
+    case Err(e) -> return "expected BinaryValueUnsupported, got a different error: " + AwsSecrets.errorMessage(e)
+  }
+
+  val someKeyBinary = SecretsKernel.extractSecretValue("my-binary-secret", Some("field"), None)
+  match someKeyBinary {
+    case Ok(v) -> return "expected BinaryValueUnsupported for a binary secret with a key, got Ok: " + v
+    case Err(BinaryValueUnsupported(_)) -> ()
+    case Err(e) -> return "expected BinaryValueUnsupported, got a different error: " + AwsSecrets.errorMessage(e)
+  }
+
+  val stringSecret = SecretsKernel.extractSecretValue("my-secret", None, Some("plain-value"))
+  match stringSecret {
+    case Ok(v) -> if v != "plain-value" { "expected the raw secret string, got: " + v } else { "OK" }
+    case Err(e) -> "expected Ok for a string secret, got Err: " + AwsSecrets.errorMessage(e)
+  }
+}
+
+@cfg(feature = "local")
+func netExtractSecretValueScenario(): String {
+  "OK"
+}
+
+@cfg(feature = "jvm")
+func netExtractSecretValueScenario(): String {
+  "OK"
+}
+
+test "aws kernel: extractSecretValue converts a binary (null SecretString) secret into BinaryValueUnsupported, never Ok(null)" {
+  assertEqual(
+    netExtractSecretValueScenario(),
+    "OK",
+    "extractSecretValue must convert a null .NET SecretString into a typed BinaryValueUnsupported"
+  )
+}
+
+// ─── secretCacheKeyFor / parameterCacheKeyFor (aws kernel) ────────────────────
+// Pure cache-key-construction logic, independent of any network/client
+// call — identical collision-safety coverage to the jvm kernel's own
+// #7046 regression above.
+@cfg(feature = "aws")
+func netCacheKeyCollisionScenario(): String {
+  val noneKey = SecretsKernel.secretCacheKeyFor("foo bar", None)
+  val someKey = SecretsKernel.secretCacheKeyFor("foo", Some("bar"))
+  if noneKey == someKey {
+    return "getSecret(\"foo bar\") and getSecretField(\"foo\", \"bar\") must not share a cache key, both produced: " +
+      noneKey
+  }
+
+  val split1 = SecretsKernel.secretCacheKeyFor("ab", Some("cd"))
+  val split2 = SecretsKernel.secretCacheKeyFor("abc", Some("d"))
+  if split1 == split2 {
+    return "differently-split (name, key) pairs must not share a cache key, both produced: " + split1
+  }
+
+  if SecretsKernel.secretCacheKeyFor("my-secret", Some("field")) != SecretsKernel.secretCacheKeyFor("my-secret", Some("field")) {
+    return "identical (name, key) pairs must produce identical cache keys"
+  }
+  if SecretsKernel.secretCacheKeyFor("my-secret", None) != SecretsKernel.secretCacheKeyFor("my-secret", None) {
+    return "identical (name, None) pairs must produce identical cache keys"
+  }
+
+  val plainSecret = SecretsKernel.secretCacheKeyFor("my-secret", None)
+  val fieldOfSameName = SecretsKernel.secretCacheKeyFor("my-secret", Some(""))
+  if plainSecret == fieldOfSameName {
+    return "a None-keyed and a Some-keyed cache entry must never collide, both produced: " + plainSecret
+  }
+
+  val paramKey1 = SecretsKernel.parameterCacheKeyFor("my-param", true)
+  val paramKey2 = SecretsKernel.parameterCacheKeyFor("my-param", false)
+  if paramKey1 == paramKey2 {
+    return "different decrypt flags must not share a parameter cache key, both produced: " + paramKey1
+  }
+  if SecretsKernel.parameterCacheKeyFor("/app/db/password", true) != SecretsKernel.parameterCacheKeyFor("/app/db/password", true) {
+    return "identical (path, decrypt) pairs must produce identical parameter cache keys"
+  }
+
+  "OK"
+}
+
+@cfg(feature = "local")
+func netCacheKeyCollisionScenario(): String {
+  "OK"
+}
+
+@cfg(feature = "jvm")
+func netCacheKeyCollisionScenario(): String {
+  "OK"
+}
+
+test "aws kernel: secretCacheKeyFor/parameterCacheKeyFor never collide across differently-split inputs" {
+  assertEqual(
+    netCacheKeyCollisionScenario(),
+    "OK",
+    "a wrong-secret-returned cache-key collision must be impossible regardless of what characters name/key/path contain"
   )
 }
 
