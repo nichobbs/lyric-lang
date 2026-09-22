@@ -35060,7 +35060,7 @@ asserting the returned directory actually contains the running binary) —
 accept fix). `lyric-stdlib/tests/file_tests.l` (dotnet) — 11/11 pass, no
 regression from the shared `std/file.l` change.
 
-**Related:** `docs/decisions/D-progress-0941-native-appbasedirectory-readtextorpanic-6962-accept-race.md`
+**Related:** `docs/decisions/D-progress-0942-native-appbasedirectory-readtextorpanic-6962-accept-race.md`
 (full account), D-progress-910 (`#4752`'s residual-seam audit, corrected
 inline above), #6806 (the original accept-interrupt fix), #6887 (the
 `Std.Process` sibling of #6961's D-N-003 root cause), #6937/#6961/#6962

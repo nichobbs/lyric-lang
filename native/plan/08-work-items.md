@@ -849,11 +849,11 @@ function-diff across `file_host.l`/`environment_host.l`/`time_host.l`/
 #6887's `Std.Process` piped-API gap) have both since shipped —
 `hostAppBaseDirectory` via a new `lyric-rt` `readlink("/proc/self/exe")`
 seam, `readTextOrPanic` by mirroring `hostReadAllBytes`'s
-panic-in-the-kernel pattern exactly — see D-progress-941.
+panic-in-the-kernel pattern exactly — see D-progress-942.
 `Std.File.stat`/`fileStatIsNewer` remain blocked: they additionally need an
 opaque timestamp twin before a native kernel seam is even meaningful, a
 separate, larger prerequisite `try/catch` removal alone doesn't unblock.
-See D-progress-910 and D-progress-941 for the full account.
+See D-progress-910 and D-progress-942 for the full account.
 
 ---
 
