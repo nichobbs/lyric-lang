@@ -31,6 +31,11 @@
 //!      `Class-Path:` attribute so `java -jar consumer.jar` can load the
 //!      producer's classes at runtime.
 //!
+//! Also covers a JVM-parity check for #6877 (MSIL-only: a val-bound closure
+//! passed by name mis-instantiates a generic union's type parameter — see
+//! `Lyric.CrossPackageGenericsSelfTest`): full erasure of generic unions on
+//! `jvm` means the bug's class never arises here, verified empirically.
+//!
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1 (required
 //! because the test imports `Lyric.Emitter`, a compiler package):
 //!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/jvm/cross_package_generics_jvm_self_test.l
@@ -352,4 +357,37 @@ test "cross-package non-generic restored type in a consumer function signature (
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_sig_owner_jvm: exit 0 (stderr=" + captured.stderr + ")")
   assertEqual(Str.trim(captured.stdout), "5", "cpgen_sig_owner_jvm: stdout = 5")
+}
+
+// #6877 JVM-parity check: the MSIL-only bug (a closure bound to a `val`
+// first, then passed BY NAME, mis-instantiates a generic union's type
+// parameter — see `Lyric.CrossPackageGenericsSelfTest`'s
+// `cpgen_valbound_result` test and `Msil.Codegen`'s
+// `registerLocalLambdaLiteralFnTypesMsil`) does not reproduce on `jvm`:
+// `Jvm.Lowering` fully erases `Result`/`Ok`/`Err` (and any user-defined
+// generic union) to plain non-generic classes with `Object`-typed payload
+// fields, so there is no per-type-parameter instantiation for a val-bound
+// closure's declared return type to ever go missing from. Verified
+// empirically (not assumed) rather than left untested — in-process (not
+// via `buildJar`/`java -jar`, which hits an unrelated, pre-existing JVM
+// bundling gap: a `func main()` program constructing a stdlib generic case
+// class — `Result`'s `Ok`/`Err` — inside ANY closure body, val-bound or a
+// direct literal alike, hits `NoClassDefFoundError: Std/Core/Result$Ok` at
+// `java -jar` runtime, tracked separately and unrelated to #6877).
+func jvmValBoundMatchClosure(f: () -> Result[Int, String]): Int {
+  match f() {
+    case Ok(v) -> v
+    case Err(_) -> -1
+  }
+}
+
+test "val-bound closure passed by name preserves Result's type params (jvm, #6877)" {
+  val g: () -> Result[Int, String] = { -> Ok(7) }
+  assertEqualInt(jvmValBoundMatchClosure(g), 7, "cpgen_valbound_result_jvm: val-bound Ok(7) dispatches to the Ok arm")
+  val h: () -> Result[Int, String] = { -> Err("boom") }
+  assertEqualInt(
+    jvmValBoundMatchClosure(h),
+    -1,
+    "cpgen_valbound_result_jvm: val-bound Err(\"boom\") dispatches to the Err arm"
+  )
 }

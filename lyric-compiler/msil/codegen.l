@@ -18429,6 +18429,63 @@ func registerFieldFuncValTypesMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: 
   }
 }
 
+// #6877: a lambda literal bound to a local (`val g: () -> Result[Int, String]
+// = { -> Ok(7) }`) and later passed BY NAME to a higher-order call
+// (`matchClosure(g)`) never went through the #1939/#6511 call-site
+// propagation above — that logic only fires when the call ARGUMENT
+// expression is itself a literal `ELambda` node, and `g` at the call site is
+// an `EPath`, not the lambda.  Without a `lambdaRetTypes` entry the lifted
+// lambda body falls back to the Uniform Func ABI's `declaredRetTy = Object`,
+// so a bare union-case construction inside it (`Ok(v)`) erases its
+// unconstrained type parameter (`E` in `Result[T, E]`) to `object` — a
+// runtime type the caller's concretely-typed `match`/cast can't accept
+// (`InvalidCastException`).  Fix: predict the lambda's own ticker value (the
+// same "next `__lambda_<idx>` is this local's initializer" prediction the
+// call-site code above makes) from the LOCAL BINDING's own declared
+// `() -> T` annotation, and seed `lambdaParamTypes`/`lambdaRetTypes` from it
+// before the initializer is lowered — independent of how the closure is
+// later invoked (by literal, by name, or not at all in this function).
+func registerLocalLambdaLiteralFnTypesMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  tyOpt: in Option[TypeExpr],
+  init: in Expr,
+): Unit {
+  match unwrapParenExpr(init).kind {
+    case ELambda(_, _) -> {
+      match tyOpt {
+        case Some(te) -> {
+          match resolveFuncTypeExprMsil(cctx, te) {
+            case Some(funcTe) -> {
+              match funcTe.kind {
+                case TFunction(paramTes, retTe) -> {
+                  val predName = fctx.pkgName + ".__lambda_" + toString(cctx.lambdaTicker.count)
+                  if paramTes.count > 0 and not cctx.lambdaParamTypes.containsKey(predName) {
+                    val inner: List[MsilType] = newList()
+                    var pi = 0
+                    while pi < paramTes.count {
+                      inner.add(typeExprToMsilBodyCtx(cctx, fctx, paramTes[pi]))
+                      pi = pi + 1
+                    }
+                    cctx.lambdaParamTypes.add(predName, inner)
+                  }
+                  if not cctx.lambdaRetTypes.containsKey(predName) {
+                    cctx.lambdaRetTypes.add(predName, typeExprToMsilBodyCtx(cctx, fctx, retTe))
+                  }
+                }
+                case _ -> ()
+              }
+            }
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
 pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], stmt: in Statement): Unit {
   match stmt.kind {
 
@@ -18437,6 +18494,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       match binding {
         case LBVal(pat, tyOpt, init) -> {
           val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+          // #6877: seed lambdaParamTypes/lambdaRetTypes from this local's own
+          // `() -> T` annotation before `init` (a lambda literal) is lowered.
+          registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, tyOpt, init)
           // #5995: this binding's declared enum type (if any), so a bare-case
           // init (`val v: HttpVersion = Http11`) resolves against it instead
           // of colliding with another in-bundle enum's same-named case.
@@ -18504,6 +18564,8 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         }
         case LBLet(name, tyOpt, init) -> {
           val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+          // #6877: see the matching LBVal comment above.
+          registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, tyOpt, init)
           // #5995: see the matching LBVal comment above.
           val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
           // Fresh hint scope from the annotation (see LBVal above).
@@ -18612,6 +18674,8 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           match initOpt {
             case Some(init) -> {
               val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+              // #6877: see the matching LBVal comment above.
+              registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, tyOpt, init)
               // Stage 4: Prepare to create typed cell if hoisted.
               if isHoisted {
                 match arrayElemTokenOpt(cctx, annoTy) {
