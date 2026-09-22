@@ -3,7 +3,7 @@
 **Status:** shipped
 
 **Context.** `reportMissingCtorFields` (`lyric-compiler/lyric/type_checker/typechecker_exprs.l`),
-the shared missing-required-field check added in #6889 (D-progress-912) for
+the shared missing-required-field check added in #6889 (D-progress-924) for
 records/opaque types, was only wired into `inferConstruction`'s
 record/opaque paths. `inferUnionCaseConstruction` never called it: a
 union-case construction that omitted a required named field from an
@@ -83,6 +83,6 @@ positional-arg construction (under-applied) does NOT spuriously fire T0105
 case that has nothing to miss — stays clean. Full `typechecker_self_test.l`:
 430/430 (was 426/426; 4 new cases), no regressions.
 
-**Related:** #7119 (this fix), #6739/D-progress-912 (the record/opaque
+**Related:** #7119 (this fix), #6739/D-progress-924 (the record/opaque
 precedent this generalizes), PR #7117 (where the gap was originally
 flagged).

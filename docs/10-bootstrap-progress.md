@@ -35706,7 +35706,7 @@ F-13) and a browser end-to-end test.
 
 ## T0105 missing-required-field check now covers named-field union-case construction (#7119)
 
-`reportMissingCtorFields` (#6739, D-progress-912), the shared missing-
+`reportMissingCtorFields` (#6739, D-progress-924), the shared missing-
 required-field check, was only wired into `inferConstruction`'s
 record/opaque paths — `inferUnionCaseConstruction` never called it, so a
 union-case construction omitting a required named field from an
@@ -35730,7 +35730,7 @@ ran. `docs/01-language-reference.md` and
 430/430 (4 new cases).
 
 **Related:** D-progress-942 (full account, `docs/decisions/`), #7119,
-#6739/D-progress-912 (the record/opaque precedent this generalizes), PR
+#6739/D-progress-924 (the record/opaque precedent this generalizes), PR
 #7117 (where the gap was flagged).
 
 ## `isNormalized`/`normalize` MSIL↔JVM parity fix; #7099's type-check-time approach reverted after a real JVM regression
