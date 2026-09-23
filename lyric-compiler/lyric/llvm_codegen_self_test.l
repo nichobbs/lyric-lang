@@ -899,6 +899,48 @@ test "varIsChar does not leak across a match-arm shadow of a Char-typed name (#7
   )
 }
 
+test "varEnumTypes does not leak across a block shadow of an enum-typed name, mirroring MSIL's #6595 fix (#6994, ASan)" {
+  // Before the fix, `registerVarEnumType` had no scope-undo: the inner
+  // `if` block's `val a: Int = 5` overwrites ctx.varEnumTypes["a"] with
+  // the "positively not an enum" sentinel and that mapping survives past
+  // the block's own exit. The outer `match a` then loses its Color hint,
+  // so `scrutineeHasCase` treats a bare `case Red ->` as an unconditional
+  // catch-all bind rather than an enum-case equality test (#6969) — the
+  // first arm always "matches", so a Blue value would wrongly report 1
+  // instead of 2. Fixed, the inner shadow is undone on block exit and the
+  // outer match resolves against the restored Color hint correctly.
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "enum Color {\n" +
+    "  case Red\n" +
+    "  case Blue\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a: Color = Blue\n" +
+    "  if true {\n" +
+    "    val a: Int = 5\n" +
+    "    println(\"inner: \" + a.toString())\n" +
+    "  }\n" +
+    "  val n = match a {\n" +
+    "    case Red -> 1\n" +
+    "    case Blue -> 2\n" +
+    "  }\n" +
+    "  println(\"outer: \" + n.toString())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunAsan(shim)
+  assertEqualInt(r.exitCode, 0, "block shadow exit")
+  assertEqual(
+    r.stdout,
+    "inner: 5\nouter: 2\n",
+    "the outer match must resolve `a`'s Color hint (restored on the inner block's exit), not the inner Int shadow's leaked non-enum hint"
+  )
+}
+
 test "string trim().toLower() under repeated allocation (ASan)" {
   val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
     "func main(): Int {\n" +

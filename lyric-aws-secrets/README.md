@@ -2,33 +2,33 @@
 
 AWS Secrets Manager and Parameter Store integration for [Lyric](https://github.com/nichobbs/lyric-lang). Fetches secrets at application startup and injects them into config blocks, with TTL-based caching and local development support.
 
-> **Status**: `local` and `jvm` are production-ready. `aws` (.NET) is
-> **NOT_IMPLEMENTED** — see "Platform parity" below.
+> **Status**: `local`, `jvm`, and `aws` are all production-ready for
+> `getSecret`/`getSecretField`/`getParameter`/`getParameterRaw`.
+> `initFromAnnotations()` (the config-block annotation scanning path) is
+> **NOT_IMPLEMENTED** on every feature except `local` — see below.
 
 ## Platform parity
 
 | Feature flag | Backend | Status |
 |---|---|---|
-| `aws` | AWS SDK for .NET v3 | **NOT_IMPLEMENTED** — every call returns a typed `NetworkError` explaining why (see below) |
+| `aws` | AWS SDK for .NET v3 | Available — real `AmazonSecretsManagerClient`/`AmazonSimpleSystemsManagementClient` calls (`initFromAnnotations` config-block path is NOT_IMPLEMENTED, see below) |
 | `local` | Local stub (no-op) | Available — no AWS SDK calls; env var overrides only |
-| `jvm` | AWS SDK for Java v2 | Available — real `SecretsManagerClient`/`SsmClient` calls (`getSecretField`/`getParameterRaw`'s `initFromAnnotations` config-block path is also NOT_IMPLEMENTED, see below) |
+| `jvm` | AWS SDK for Java v2 | Available — real `SecretsManagerClient`/`SsmClient` calls (`initFromAnnotations` config-block path is also NOT_IMPLEMENTED, see below) |
 
 `initFromAnnotations()` (the `@secretsManager`/`@parameterStore` config-block
 scanning `AwsSecrets.init()` calls) is **NOT_IMPLEMENTED on every feature
 except `local`**: the compiler has no capability to read custom annotations
 off a compiled config-block field at runtime (tracked in issue #6866).
 `getSecret`/`getSecretField`/`getParameter`/`getParameterRaw`
-are unaffected by this and work normally on `jvm`.
+are unaffected by this and work normally on both `jvm` and `aws`.
 
-The `aws` (.NET) feature is blocked on a different, larger decision: the
-AWS .NET SDK's client methods (`GetSecretValueAsync`/`GetParameterAsync`)
-return `Task<T>` and the ONLY way to bind them is to make `AwsSecrets`'s
-own public API `async` (the async-`Task<T>`-FFI mechanism itself is real
-and already shipped — see `Std.HttpHost`'s `HttpClient.SendAsync`
-binding — this is not a missing compiler capability). That is a
-deliberate API-shape decision affecting every caller
-(`lyric-lambda`'s handlers are all synchronous today), tracked in issue
-#6864 rather than forced through here.
+The `aws` (.NET) feature's `GetSecretValueAsync`/`GetParameterAsync` calls
+return `Task<T>`, but binding them did not require making `AwsSecrets`'s
+public API `async` (issue #6864): the self-hosted MSIL emitter already
+supports `await` inside a plain (non-`async`) function, lowering it to a
+blocking `GetAwaiter().GetResult()` shim — the same mechanism
+`Std.HttpHost`'s `HttpClient.SendAsync` binding uses. `AwsSecrets`'s
+public surface stays exactly as synchronous as `local`/`jvm`'s.
 
 ## Packages
 
@@ -243,15 +243,16 @@ union SecretsError {
 | `AccessDenied` | IAM role lacks permission | Grant `secretsmanager:GetSecretValue` or `ssm:GetParameter` |
 | `DecryptionError` | KMS decryption of a SecureString/secret failed | Verify KMS permissions |
 | `ParseError` | Secret is JSON but the requested key is absent or the value is not valid JSON | Check the secret's JSON shape and key name |
-| `NetworkError` | A transient network/service error, or (on `jvm`) any AWS error the best-effort message classifier didn't recognise, or (on any feature) a NOT_IMPLEMENTED call | Retry, or read `errorMessage` for detail |
-| `BinaryValueUnsupported` | (`jvm` only) The secret is stored as raw binary (Secrets Manager's `SecretBinary`) rather than a string (`SecretString`) — this API only supports string-valued secrets | Store the value as a `SecretString` instead, or base64-encode it as one |
+| `NetworkError` | A transient network/service error, or (on `jvm`/`aws`) any AWS error the best-effort message classifier didn't recognise, or `initFromAnnotations()`'s NOT_IMPLEMENTED call | Retry, or read `errorMessage` for detail |
+| `BinaryValueUnsupported` | (`jvm`/`aws`) The secret is stored as raw binary (Secrets Manager's `SecretBinary`) rather than a string (`SecretString`) — this API only supports string-valued secrets | Store the value as a `SecretString` instead, or base64-encode it as one |
 
-On the `jvm` feature, classification into `NotFound`/`AccessDenied`/
-`DecryptionError` is **best-effort substring matching** on the AWS SDK's
-own exception messages — Lyric's `catch Bug` boundary only exposes a
-flattened message string, not the exception's real type, so an
+On both the `jvm` and `aws` features, classification into `NotFound`/
+`AccessDenied`/`DecryptionError` is **best-effort substring matching** on
+the AWS SDK's own exception messages — Lyric's `catch Bug` boundary only
+exposes a flattened message string, not the exception's real type, so an
 unrecognised message always falls back to `NetworkError` rather than
-misclassifying. See `secrets_kernel_jvm.l`'s header for the full rationale.
+misclassifying. See `secrets_kernel_jvm.l`/`secrets_kernel_aws.l`'s
+headers for the full rationale.
 
 ### `errorMessage(err)`
 
@@ -377,7 +378,7 @@ lyric-aws-secrets/
   src/
     secrets.l                 AwsSecrets  (annotations, init, fetch API)
     _kernel/
-      secrets_kernel_aws.l    AwsSecrets.Kernel.Net @cfg(feature="aws")   — NOT_IMPLEMENTED
+      secrets_kernel_aws.l    AwsSecrets.Kernel.Net @cfg(feature="aws")
       secrets_kernel_local.l  AwsSecrets.Kernel.Net @cfg(feature="local")
       secrets_kernel_jvm.l    AwsSecrets.Kernel.Net @cfg(feature="jvm")
   tests/

@@ -400,7 +400,7 @@ wire ProductionApp {
 
 Bitwise ops are methods: `.and()` `.or()` `.xor()` `.shl()` `.shr()`. No `?:` ternary; use `if … then … else …`.
 
-Numeric / character conversions are explicit methods (no implicit widening): `.toByte()` `.toInt()` `.toLong()` `.toChar()` `.toDouble()` on `Byte`/`Int`/`Long`/`Double`/`Char`. Widening is lossless; narrowing truncates toward zero; `.toByte()` reduces modulo 256 (`Byte` is unsigned 0..255). Mix widths via `acc + b.toInt()`, never `acc + b`. (Conversion methods on unsigned `UInt`/`ULong`/`Nat` are not yet implemented — both targets have a real erased representation for `UInt`/`ULong` now, so this is a remaining method-surface gap, tracked under #6913. `.toFloat()` is separately reserved pending backend support for `Float`. `.toX()` on `String`/`Bool`/`Unit` is a `T0103` error.)
+Numeric / character conversions are explicit methods (no implicit widening): `.toByte()` `.toInt()` `.toLong()` `.toChar()` `.toDouble()` on `Byte`/`Int`/`Long`/`Double`/`Char`. Widening is lossless; narrowing truncates toward zero; `.toByte()` reduces modulo 256 (`Byte` is unsigned 0..255). Mix widths via `acc + b.toInt()`, never `acc + b`. (Conversion methods on unsigned `UInt`/`ULong`/`Nat` are not yet implemented — both targets have a real erased representation for `UInt`/`ULong` and unsigned-aware comparison/division/stringification for a bare scalar of either type (#6748/#6754 on `--target jvm`, #6913 on `--target dotnet`) now, so this is a remaining method-surface gap rather than a missing backend representation or unsigned-aware codegen. `.toFloat()` is separately reserved pending backend support for `Float`. `.toX()` on `String`/`Bool`/`Unit` is a `T0103` error.)
 
 ### Pattern matching
 
@@ -1102,6 +1102,10 @@ lyric test --all-features              # activate every declared feature
                                        # e.g. run a suite against the jvm-gated kernel:
                                        #   lyric test --manifest m.toml --target jvm \
                                        #     --no-default-features --features jvm
+lyric test <file.l>                    # a @test_module gated out entirely by an inactive
+                                       # file-level @cfg(feature = "X") prints "0 test(s),
+                                       # module gated by inactive @cfg" and exits 0, instead
+                                       # of compiling/running an erased module (#6868)
 
 # Stale-stdlib-bundle warning (dev tree only, --target dotnet)
 #   `lyric run` / `lyric test` link the PRECOMPILED Lyric.Stdlib.dll for

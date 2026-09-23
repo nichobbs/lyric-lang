@@ -238,6 +238,33 @@ record NOwnedTemp {
   ty: NType
 }
 
+/// A `Ctx.varEnumTypes` rebind recorded BEFORE `registerVarEnumType`
+/// overwrites `name`'s mapping, so the enclosing scope's mapping can be
+/// restored on scope exit (#6994, mirroring MSIL's `ScopeUndoMsil`
+/// "enumty" kind / #6595 fix). `priorHint` is `None` when `name` had no
+/// mapping before this scope's binding (restore = clear).
+record NEnumTypeUndo {
+  name: String
+  priorHint: Option[String]
+}
+
+/// A `Ctx.varSlots`/`Ctx.varTypes` rebind recorded BEFORE `bindLocal`
+/// overwrites `name`'s mapping, so an enclosing scope's binding can be
+/// restored on scope exit — the general native shadowing gap `varEnumTypes`
+/// (above) inherited: `bindLocal` always allocates a fresh slot for a
+/// rebind (never reuses an enclosing scope's slot the way MSIL's
+/// `allocSlotMsil` does), but never restored the enclosing name->slot/type
+/// mapping either, so a nested block's same-named shadow permanently
+/// leaked its slot past the block's own exit (mirrors MSIL's D-progress-602
+/// / #5191 fix — native never got the equivalent). `priorSlot`/`priorType`
+/// are `None` when `name` had no mapping before this scope's binding
+/// (restore = clear).
+record NBindingUndo {
+  name: String
+  priorSlot: Option[String]
+  priorType: Option[NType]
+}
+
 /// Per-module mutable codegen state, threaded through all lowering.
 /// Tickers use the singleton-list idiom (`.count` is the next index)
 /// shared with `Jvm.Codegen.FuncCtx`.
@@ -360,6 +387,21 @@ record Ctx {
   loopTempDepth: List[Int]
   // `defer` (P2.D1): pending deferred `Block`s per lexical scope, mirroring `scopeRefs` — see D-N-020.
   deferStack: List[List[Block]]
+  // `varEnumTypes` scope-undo log, one list per open lexical scope, mirroring
+  // `scopeRefs`/`deferStack` (#6994, MSIL analog: `FuncCtx.scopeUndoMsil`'s
+  // "enumty" entries / #6595). `registerVarEnumType` pushes an undo entry
+  // onto the innermost open scope before it rebinds a name; `popVarScope`
+  // replays that scope's entries (innermost binding first) to restore
+  // whatever mapping the block's own bindings shadowed.
+  enumTypeUndo: List[List[NEnumTypeUndo]]
+  // `varSlots`/`varTypes` scope-undo log (general shadowing fix, mirroring
+  // MSIL's D-progress-602/#5191, ported to native alongside #6994's
+  // `enumTypeUndo` above since the two bugs are otherwise inseparable: a
+  // same-named shadow rebinds both maps together, so restoring only the
+  // enum hint while the slot/type mapping still leaks left the outer
+  // binding reading the inner shadow's storage). Same push/pop shape as
+  // `enumTypeUndo`.
+  bindingUndo: List[List[NBindingUndo]]
   // Async coroutines (stage B2).  `taskElems` maps `__task<...>` struct
   // names to their element NType (mirrors `listElems`); `curAsyncTask` is
   // a per-function cell holding the SSA name of the current coroutine's
@@ -799,14 +841,24 @@ func enumNameOfTypeExpr(ctx: in Ctx, te: in TypeExpr): String {
   }
 }
 
-/// Record (or clear) `name`'s scrutinee hint in `ctx.varEnumTypes`
-/// (an enum's bare name, `nonEnumScrutHint`, or no entry for "unknown")
-/// — remove-then-add so a rebind of an already-tracked name never
-/// throws `Map.add`'s duplicate-key error, mirroring `bindLocal`'s
-/// `varTypes` bookkeeping exactly (same flat, last-write-wins lifetime
-/// — no scope-undo in this backend for `varTypes` either, so this
-/// introduces no new shadowing behavior).
+/// Record (or clear) `name`'s scrutinee hint in `ctx.varEnumTypes` (an
+/// enum's bare name, `nonEnumScrutHint`, or no entry for "unknown") —
+/// remove-then-add so a rebind of an already-tracked name never throws
+/// `Map.add`'s duplicate-key error. Scope-undo-logged (#6994, mirroring
+/// MSIL's `registerVarEnumTypeMsil`/#6595 fix): when an open lexical
+/// scope exists (`enumTypeUndo` non-empty), the mapping this call is
+/// about to overwrite is recorded on that scope's undo log first, so
+/// `popVarScope` can restore it — an inner block's same-named
+/// enum-typed shadow no longer permanently clobbers an outer scope's
+/// mapping past the inner block's exit. A call before any scope is
+/// pushed (function-parameter registration) has nothing to restore to
+/// and is left unlogged, exactly like `varTypes`/`varSlots`' pre-existing,
+/// separately-tracked "no scope-undo" gap (out of scope here).
 func registerVarEnumType(ctx: in Ctx, name: in String, scrutHint: in String): Unit {
+  if ctx.enumTypeUndo.count > 0 {
+    val priorHint: Option[String] = mapGet(ctx.varEnumTypes, name)
+    ctx.enumTypeUndo[ctx.enumTypeUndo.count - 1].add(NEnumTypeUndo(name = name, priorHint = priorHint))
+  }
   if ctx.varEnumTypes.containsKey(name) {
     ctx.varEnumTypes.remove(name)
   }
@@ -1099,6 +1151,57 @@ func pushVarScope(ctx: in Ctx): Unit {
   ctx.scopeRefs.add(fresh)
   val freshDefers: List[Block] = newList()
   ctx.deferStack.add(freshDefers)
+  val freshEnumUndo: List[NEnumTypeUndo] = newList()
+  ctx.enumTypeUndo.add(freshEnumUndo)
+  val freshBindingUndo: List[NBindingUndo] = newList()
+  ctx.bindingUndo.add(freshBindingUndo)
+}
+
+/// Restore the mappings this scope's `registerVarEnumType` calls
+/// shadowed (innermost binding first), then drop the scope's undo log.
+func restoreEnumTypeScopeAt(ctx: in Ctx, idx: in Int): Unit {
+  val undo = ctx.enumTypeUndo[idx]
+  var i = undo.count - 1
+  while i >= 0 {
+    val name = undo[i].name
+    if ctx.varEnumTypes.containsKey(name) {
+      ctx.varEnumTypes.remove(name)
+    }
+    match undo[i].priorHint {
+      case Some(h) -> ctx.varEnumTypes.add(name, h)
+      case None -> {
+      }
+    }
+    i = i - 1
+  }
+}
+
+/// Restore the `varSlots`/`varTypes` mappings this scope's `bindLocal`
+/// calls shadowed (innermost binding first), then drop the scope's undo
+/// log.
+func restoreBindingScopeAt(ctx: in Ctx, idx: in Int): Unit {
+  val undo = ctx.bindingUndo[idx]
+  var i = undo.count - 1
+  while i >= 0 {
+    val name = undo[i].name
+    if ctx.varSlots.containsKey(name) {
+      ctx.varSlots.remove(name)
+    }
+    match undo[i].priorSlot {
+      case Some(s) -> ctx.varSlots.add(name, s)
+      case None -> {
+      }
+    }
+    if ctx.varTypes.containsKey(name) {
+      ctx.varTypes.remove(name)
+    }
+    match undo[i].priorType {
+      case Some(t) -> ctx.varTypes.add(name, t)
+      case None -> {
+      }
+    }
+    i = i - 1
+  }
 }
 
 /// Run scope `idx`'s pending `defer` blocks in reverse declaration order, before that scope's ARC releases (D-N-020).
@@ -1118,6 +1221,10 @@ func popVarScope(ctx: in Ctx, insns: in List[NInsn]): Unit {
   releaseVarScopeAt(ctx, insns, ctx.scopeRefs.count - 1)
   ctx.scopeRefs.removeAt(ctx.scopeRefs.count - 1)
   ctx.deferStack.removeAt(ctx.deferStack.count - 1)
+  restoreEnumTypeScopeAt(ctx, ctx.enumTypeUndo.count - 1)
+  ctx.enumTypeUndo.removeAt(ctx.enumTypeUndo.count - 1)
+  restoreBindingScopeAt(ctx, ctx.bindingUndo.count - 1)
+  ctx.bindingUndo.removeAt(ctx.bindingUndo.count - 1)
 }
 
 func releaseVarScopeAt(ctx: in Ctx, insns: in List[NInsn], idx: in Int): Unit {
@@ -1463,8 +1570,24 @@ func intToLong(v: in Int): Long {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Locals.
 // ─────────────────────────────────────────────────────────────────────────────
+/// Record `name`'s current `varSlots`/`varTypes` mapping on the innermost
+/// open scope's undo log (if any scope is open) BEFORE `bindLocal`
+/// overwrites it, so `popVarScope` can restore whatever an inner block's
+/// same-named binding shadowed (general native shadowing gap, mirroring
+/// MSIL's D-progress-602/#5191 — see `NBindingUndo`'s header comment).
+func recordBindingUndo(ctx: in Ctx, name: in String): Unit {
+  if ctx.bindingUndo.count > 0 {
+    val priorSlot: Option[String] = mapGet(ctx.varSlots, name)
+    val priorType: Option[NType] = mapGet(ctx.varTypes, name)
+    ctx.bindingUndo[ctx.bindingUndo.count - 1].add(
+      NBindingUndo(name = name, priorSlot = priorSlot, priorType = priorType)
+    )
+  }
+}
+
 /// Create a hoisted alloca slot for `name` and store `v` into it.
 func bindLocal(ctx: in Ctx, insns: in List[NInsn], name: in String, v: in NVal): Unit {
+  recordBindingUndo(ctx, name)
   match v.ty {
     case NVoid -> {
       // A Unit binding owns no storage; record the type so reads of the
@@ -9191,6 +9314,8 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     loopVarDepth = newList(),
     loopTempDepth = newList(),
     deferStack = newList(),
+    enumTypeUndo = newList(),
+    bindingUndo = newList(),
     taskElems = mod.taskElems,
     curAsyncTask = newList(),
     usesAsync = mod.usesAsync
@@ -10081,6 +10206,8 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     loopVarDepth = newList(),
     loopTempDepth = newList(),
     deferStack = newList(),
+    enumTypeUndo = newList(),
+    bindingUndo = newList(),
     taskElems = newMap(),
     curAsyncTask = newList(),
     usesAsync = newList()

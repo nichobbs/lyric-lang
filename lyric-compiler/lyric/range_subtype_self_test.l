@@ -3,7 +3,11 @@
 //! (#1501, JVM parity in #5956). `UInt`/`ULong`-backed cases (#6756, moved
 //! here from the formerly JVM-only `range_subtype_unsigned_jvm_self_test.l`
 //! once MSIL gained a real `UInt`/`ULong` representation) run on both
-//! targets — see the `Population`/`BigId` section below.
+//! targets — see the `Population`/`BigId` section below. The final section
+//! (#6913) extends this UInt/ULong test home to BARE (not range-/distinct-
+//! type-wrapped) `UInt`/`ULong` scalar comparison/division/stringification —
+//! the general `fctx.unsignedSlots` side-channel #6756 deliberately left out
+//! of scope (see that section's own header comment).
 //!
 //! Why this lives here and not in `lyric-stdlib/tests/*_tests.l`: those
 //! `_tests.l` files are compiled and run by the **F# stage-0** emitter, which
@@ -394,4 +398,221 @@ test "ULong-backed range subtype: construction and bounds (#6756)" {
   assertTrue(bigIdIsOk(BigId.tryFrom(123456789012345u64)), "a large in-range value")
   assertTrue(bigIdIsOk(BigId.tryFrom(9000000000000000000u64)), "9000000000000000000 upper bound inclusive")
   assertEqualLong(BigId.from(42u64).toLong(), 42i64, "from(42).toLong() round-trips")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6913 — a BARE (not range-/distinct-type-wrapped) `UInt`/`ULong` scalar's
+// comparison (`<`/`>`/`<=`/`>=`), division/remainder (`/`/`%`), and
+// stringification (`.toString()`/`toString(x)`/interpolation/concatenation)
+// at/above the sign-bit boundary (2^31 for `UInt`, 2^63 for `ULong`).
+//
+// #6756 (above) gave MSIL a real `UInt`/`ULong` REPRESENTATION and fixed the
+// crash class, but only `MDistinctType.isUnsigned`-gated range-subtype bounds
+// checking consulted it for unsigned-aware codegen — a bare scalar's own
+// comparison/division/stringification still used plain SIGNED IL
+// (`clt`/`cgt`/`div`/`rem`/`Int32.ToString()`), silently misrendering any
+// value with the sign bit set. Fixed via a new `fctx.unsignedSlots`
+// side-channel (`Msil.Codegen`, keyed by SLOT INDEX rather than name — see
+// its own doc comment for why that avoids the JVM backend's separate
+// `unsignedUndo` scope-restore log) populated at every param/`val`/`var`/
+// `let` binding site whose declared type is `UInt`/`ULong`, consulted by
+// `isUnsignedExprMsil` from the `BLt`/`BGt`/`BLte`/`BGte`/`BDiv`/`BMod` binop
+// arms and every stringification call site (`println`, `print`, `toString`,
+// string interpolation, `+` string concatenation). Runs on BOTH targets:
+// JVM already got the equivalent fix in #6748/#6754 (`ctx.unsignedVars`/
+// `isUnsignedExpr`, `jvm/codegen/01_types.l`), so this section is a genuine
+// cross-target parity check, not just an MSIL-only regression pin.
+//
+// Scoped to the shape #6913's fix sketch actually asks for — a bare name
+// previously marked at a binding site, or a `u32`/`u64`-suffixed literal —
+// NOT a function call's declared return type or a container-element read
+// (the JVM backend's own LATER #6754/#6759 follow-on widenings past its
+// original `unsignedVars`/`isUnsignedExpr` shape); an expression of either
+// of those two shapes still conservatively compiles/runs correctly for
+// every value that fits the signed range either way, understating
+// "unsigned" only for a sign-bit-set value reached that way — a narrower,
+// tracked gap, not silently dropped (see `isUnsignedExprMsil`'s own doc
+// comment in `msil/codegen.l`).
+// ─────────────────────────────────────────────────────────────────────────────
+// ── UInt: comparison ─────────────────────────────────────────────────────────
+//
+// `3_000_000_000` and `1_000_000_000` are both valid `UInt` values (range
+// `0 ..= 4_294_967_295`), but `3_000_000_000` carries the sign bit as a
+// signed 32-bit int (`3_000_000_000 - 2^32 = -1_294_967_296`), so a plain
+// signed `clt`/`cgt` would report `a < b` as TRUE and `a > b` as FALSE —
+// backwards.
+test "bare UInt relational comparison is unsigned across the sign bit (#6913)" {
+  val a: UInt = 3000000000u32
+  val b: UInt = 1000000000u32
+  assertTrue(a > b, "3_000_000_000 > 1_000_000_000 (unsigned)")
+  assertFalse(a < b, "3_000_000_000 < 1_000_000_000 must be false (unsigned)")
+  assertTrue(a >= b, "a >= b")
+  assertFalse(a <= b, "a <= b must be false")
+  assertTrue(b < a, "1_000_000_000 < 3_000_000_000 (unsigned)")
+  assertFalse(b > a, "b > a must be false")
+}
+
+test "bare UInt equality is unaffected by the unsigned fix (sanity check) (#6913)" {
+  val a: UInt = 3000000000u32
+  val c: UInt = 3000000000u32
+  assertTrue(a == c, "equal UInt values compare equal")
+  assertFalse(a != c, "equal UInt values are not unequal")
+}
+
+// A `UInt` PARAMETER (not just a local) must get the same treatment —
+// exercises `registerParamsMsil`'s / `lowerFuncMsil`'s `markUnsignedSlotMsil`
+// call.
+func uintGreaterMsil(x: in UInt, y: in UInt): Bool {
+  x > y
+}
+
+test "bare UInt comparison inside a function parameter (#6913)" {
+  assertTrue(uintGreaterMsil(3000000000u32, 1000000000u32), "param-typed UInt comparison is unsigned")
+  assertFalse(uintGreaterMsil(1000000000u32, 3000000000u32), "reversed args correctly false")
+}
+
+// ── UInt: division / remainder ───────────────────────────────────────────────
+//
+// Signed `div`/`rem` on the same sign-bit-set bit pattern computes the WRONG
+// quotient/remainder (a two's-complement negative-value truncating divide).
+test "bare UInt division and remainder are unsigned across the sign bit (#6913)" {
+  val a: UInt = 3000000000u32
+  val two: UInt = 2u32
+  val seven: UInt = 7u32
+  assertTrue((a / two) == 1500000000u32, "3_000_000_000 / 2 == 1_500_000_000 (unsigned)")
+  assertTrue((a % seven) == 4u32, "3_000_000_000 % 7 == 4 (unsigned)")
+}
+
+// ── UInt: toString / interpolation / concatenation ───────────────────────────
+//
+// `Int32.ToString()` on the signed bit pattern of `3_000_000_000` prints
+// "-1294967296" — the exact silent miscompile #6913 describes.
+test "bare UInt toString renders the unsigned decimal value (#6913)" {
+  val a: UInt = 3000000000u32
+  assertEqual(a.toString(), "3000000000", "member .toString() is unsigned")
+  assertEqual(toString(a), "3000000000", "free toString(x) is unsigned")
+}
+
+test "bare UInt string interpolation renders the unsigned decimal value (#6913)" {
+  val a: UInt = 3000000000u32
+  assertEqual("value=${a}", "value=3000000000", "interpolation is unsigned")
+}
+
+test "bare UInt string concatenation renders the unsigned decimal value (#6913)" {
+  val a: UInt = 3000000000u32
+  assertEqual("value=" + a.toString(), "value=3000000000", "+ concatenation is unsigned")
+}
+
+// `println` cannot be byte-captured safely here: this file is a
+// `@test_module`, whose synthesised `main()` prints EVERY test's own TAP
+// result line via `println` after each test runs — redirecting
+// `System.Console.Out` process-globally (the only capture mechanism .NET
+// offers, mirroring the JVM backend's own `unsigned_int_ops_jvm_self_test.l`
+// `System.setOut`-based capture) and leaving it redirected if THIS test's own
+// `assertTrue`/`assertEqual` panics would silently swallow every later test's
+// TAP output too, masking unrelated failures. Instead this pins that
+// `println` on a sign-bit-set `UInt`/`ULong` reaches the new unsigned
+// `Console.WriteLine(uint32)`/`Console.WriteLine(uint64)` MemberRef tokens
+// (`Msil.Codegen.tokWriteLineUInt`/`tokWriteLineULong`) and RUNS without a
+// `MissingMethodException`/`InvalidProgramException` — the concrete NEW
+// failure mode this fix's hand-built signature blob could introduce beyond
+// the boxing path the `toString`/interpolation/concatenation cases above
+// already exercise byte-for-byte. Manually verified end-to-end (actual
+// captured stdout bytes, both `UInt` and `ULong`) against a from-source
+// build — see this fix's decision-log entry / PR description.
+test "bare UInt println does not crash for a sign-bit-set value (#6913)" {
+  val a: UInt = 3000000000u32
+  println(a)
+  assertTrue(true, "println(UInt) above 2^31 ran without throwing")
+}
+
+// ── UInt: block-scope shadow does not leak unsigned-ness either direction ────
+//
+// Mirrors the JVM backend's #6754 finding-2 regression (name-keyed
+// `unsignedVars` needing its own scope-undo log) — MSIL's `unsignedSlots` is
+// keyed by SLOT INDEX instead (see its doc comment), so a shadowing bind
+// already gets a FRESH slot via the pre-existing #5191 general-shadowing fix
+// and this correctness property falls out "for free," but it's worth an
+// explicit A/B-verified regression pin rather than an unverified claim.
+test "bare UInt: nested Int shadow is signed, outer UInt survives the block (#6913)" {
+  val x: UInt = 3000000000u32
+  val threshold: UInt = 1000000000u32
+  val enterShadow = x > threshold
+  if enterShadow {
+    val x: Int = -1
+    assertTrue(x < 0, "the INNER shadow x is a plain signed Int (must not inherit the outer UInt tracking)")
+  }
+  assertTrue(x > threshold, "the OUTER x is still UInt after the shadowing block exits (unsigned compare)")
+  assertFalse(x < threshold, "the OUTER x < threshold must be false (unsigned) after the block exits")
+  assertEqual(x.toString(), "3000000000", "the OUTER x's toString is still unsigned after the block exits")
+}
+
+// ── ULong: comparison ─────────────────────────────────────────────────────────
+//
+// A `ULong` literal is folded through the lexer's signed `Int64` field, so no
+// LITERAL can directly express a value at or above `2^63` (the same
+// limitation `BigId` above documents) — `a` is built via `ULong` ADDITION
+// instead (`add` wraps identically for signed and unsigned two's-complement,
+// so this is a faithful way to reach a sign-bit-set `ULong` value at
+// runtime): `Long.MaxValue + 4 == 2^63 + 3`, which reads as a large NEGATIVE
+// number under a signed 64-bit interpretation, so the same class of bug
+// applies to `clt`/`cgt`/`div`/`rem`.
+test "bare ULong relational comparison is unsigned across the sign bit (#6913)" {
+  val base: ULong = 9223372036854775807u64
+  val a: ULong = base + 4u64
+  val b: ULong = 1000000000000000000u64
+  assertTrue(a > b, "2^63+3 > 1e18 (unsigned) — a signed read of a is deeply negative")
+  assertFalse(a < b, "2^63+3 < 1e18 must be false (unsigned)")
+  assertTrue(a >= b, "a >= b")
+  assertFalse(a <= b, "a <= b must be false")
+}
+
+// A `ULong` `var` (not just `val`/param) must get the same treatment —
+// exercises the `LBVar` binding-site `markUnsignedSlotMsil` call.
+test "bare ULong var comparison is unsigned across the sign bit (#6913)" {
+  val base: ULong = 9223372036854775807u64
+  var a: ULong = base + 4u64
+  val b: ULong = 1000000000000000000u64
+  assertTrue(a > b, "var-bound a > b (unsigned)")
+  a = base + 5u64
+  assertTrue(a > b, "reassigned var-bound a is still unsigned-compared")
+}
+
+// ── ULong: division / remainder ───────────────────────────────────────────────
+test "bare ULong division and remainder are unsigned across the sign bit (#6913)" {
+  val base: ULong = 9223372036854775807u64
+  val a: ULong = base + 4u64
+  val two: ULong = 2u64
+  val three: ULong = 3u64
+  assertTrue((a / two) == 4611686018427387905u64, "(2^63+3) / 2 (unsigned)")
+  assertTrue((a % two) == 1u64, "(2^63+3) % 2 == 1 (unsigned)")
+  assertTrue((a / three) == 3074457345618258603u64, "(2^63+3) / 3 (unsigned)")
+  assertTrue((a % three) == 2u64, "(2^63+3) % 3 == 2 (unsigned)")
+}
+
+// ── ULong: toString / interpolation / concatenation ───────────────────────────
+test "bare ULong toString renders the unsigned decimal value (#6913)" {
+  val base: ULong = 9223372036854775807u64
+  val a: ULong = base + 4u64
+  assertEqual(a.toString(), "9223372036854775811", "member .toString() is unsigned")
+  assertEqual(toString(a), "9223372036854775811", "free toString(x) is unsigned")
+}
+
+test "bare ULong string interpolation renders the unsigned decimal value (#6913)" {
+  val base: ULong = 9223372036854775807u64
+  val a: ULong = base + 4u64
+  assertEqual("value=${a}", "value=9223372036854775811", "interpolation is unsigned")
+}
+
+test "bare ULong string concatenation renders the unsigned decimal value (#6913)" {
+  val base: ULong = 9223372036854775807u64
+  val a: ULong = base + 4u64
+  assertEqual("value=" + a.toString(), "value=9223372036854775811", "+ concatenation is unsigned")
+}
+
+test "bare ULong println does not crash for a sign-bit-set value (#6913)" {
+  val base: ULong = 9223372036854775807u64
+  val a: ULong = base + 4u64
+  println(a)
+  assertTrue(true, "println(ULong) above 2^63 ran without throwing")
 }

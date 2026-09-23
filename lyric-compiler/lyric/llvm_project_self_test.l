@@ -536,3 +536,67 @@ test "project build with no packages fails loudly rather than compiling an empty
   )
   assertFalse(ok, "an empty package list must fail rather than silently produce an empty binary")
 }
+
+test "native project build: `?` used inside a bundled STDLIB-CLOSURE package (not the entry file's own package) desugars correctly across a package boundary (#6954)" {
+  // Before the fix, `compileProjectToNativeWithFlags`'s (and
+  // `compileToNativeWithFlags`'s) transitive stdlib-closure bundling loop
+  // only ran `elaborateFile` on each bundled package pulled in via
+  // `stdlibByPkg` — never `Lyric.Propagate.lowerPropagateFile` — so a `?`
+  // inside a package the entry file merely IMPORTS (as opposed to the
+  // entry file's own package, which DOES go through `pipeMiddleEnd`'s full
+  // propagate step) reached `Lyric.LlvmCodegen` as an un-rewritten
+  // `EPropagate` node and panicked ("this expression form (EPropagate) is
+  // not yet supported for --target native"). `Fake.Native6954` stands in
+  // for a real `Std.*` kernel package (the actual repro shape, #6954's
+  // D-progress-823/878 occurrences) — appended to the REAL stdlib source
+  // set so it bundles through the exact same `stdlibByPkg` path production
+  // `Std.*` packages do, without touching real stdlib files.
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj6954.App",
+      path = "",
+      source = "package Proj6954.App\n" + "import Std.Core\n" + "import Fake.Native6954\n" + "func main(): Int {\n" +
+        "  match Fake.Native6954.outer(true) {\n" +
+        "    case Ok(v) -> v\n" +
+        "    case Err(_) -> -1\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  val stdlib = findStdlibSourcesNative()
+  if stdlib.count == 0 {
+    panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
+  }
+  stdlib.add(
+    "package Fake.Native6954\n" + "import Std.Core\n" + "func inner(ok: Bool): Result[Int, String] {\n" + "  if ok {\n" +
+      "    Ok(value = 7)\n" +
+      "  } else {\n" +
+      "    Err(error = \"nope\")\n" +
+      "  }\n" +
+      "}\n" +
+      "pub func outer(ok: Bool): Result[Int, String] {\n" +
+      "  val v = inner(ok)?\n" +
+      "  Ok(value = v + 1)\n" +
+      "}\n"
+  )
+  val dir = Path.join(tempBase(), "lyric-llvm-project-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val flags: List[String] = newList()
+  flags.add("-fsanitize=address")
+  val noFeatures: List[String] = newList()
+  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
+  if not compileProjectToNativeWithFlags(pkgs, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", noOriginsByPkg) {
+    panic("native project compilation failed")
+  }
+  val noArgs: List[String] = newList()
+  match Process.runCapture(stem, noArgs, 60000) {
+    case Ok(res) -> assertEqualInt(
+      res.exitCode,
+      8,
+      "`?` inside the bundled Fake.Native6954 stdlib-closure package unwraps inner(true)'s Ok(7) to 7, then outer adds 1"
+    )
+    case Err(e) -> panic("binary could not be started: " + e)
+  }
+}

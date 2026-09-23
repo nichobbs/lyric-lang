@@ -32513,6 +32513,68 @@ value still uses plain signed IL — a separate, scoped follow-up (#6913).
 **Related:** `docs/decisions/D-progress-0890-msil-uint-ulong-representation.md` (full account),
 #6756, #6782, #6913.
 
+### MSIL: bare-scalar `UInt`/`ULong` comparison, division, and stringification gain unsigned-aware codegen (#6913)
+
+Follow-up to the entry directly above. `#6756` gave MSIL a real `UInt`/`ULong`
+representation and fixed the crash class, but only
+`MDistinctType.isUnsigned`-gated range-subtype bounds checking consulted
+"unsigned-ness" — a BARE `UInt`/`ULong` scalar's own relational comparison
+(`<`/`>`/`<=`/`>=`), division/remainder (`/`/`%`), and stringification
+(`println`, `.toString()`/`toString(x)`, string interpolation, `+`
+concatenation) still emitted plain SIGNED IL (`clt`/`cgt`/`div`/`rem`/boxed
+`Int32`/`Int64.ToString()`), silently misrendering/miscomparing/misdividing
+any value with the sign bit set (`UInt` >= 2^31, `ULong` >= 2^63) — e.g.
+`println(2500000000u32)` printed `-1794967296`. Fixed by mirroring the JVM
+backend's `ctx.unsignedVars`/`isUnsignedExpr` mechanism (#6748/#6754): a new
+`FuncCtx.unsignedSlots: Map[Int, Bool]` (`Msil.Codegen`), populated at every
+param/`val`/`var`/`let` binding site whose declared type is `UInt`/`ULong`
+(via `markUnsignedSlotMsil`), consulted by a new `isUnsignedExprMsil` helper
+from the `BLt`/`BGt`/`BLte`/`BGte` binop arms (new `MClt_Un`/`MCgt_Un`
+`MInsn` cases, wired to the ALREADY-EXISTING `emitClt_Un`/`emitCgt_Un`
+opcode emitters #6756 added for the narrower bounds-check path but never
+wired into the general `MInsn` union), the `BDiv`/`BMod` arms (extending the
+existing `MDivUn`/`MRemUn` selection — previously `MByte`-only — to
+`MInt`/`MLong` when unsigned-flavored), and every stringification call site
+(`println` gets two new `Console.WriteLine(uint32)`/`Console.WriteLine(uint64)`
+MemberRef tokens — hand-built signature blobs, since `MsilType` has no
+distinct unsigned-int variant to feed `buildStaticMethodSig`; `toString`/
+`print`/string interpolation/string concatenation route through a new
+`boxIfNeededUnsignedMsil` that boxes as `System.UInt32`/`System.UInt64`
+instead of the signed `System.Int32`/`System.Int64` so `Object.ToString()`'s
+virtual dispatch reaches the unsigned override).
+
+Unlike the JVM mechanism, `unsignedSlots` is keyed by SLOT INDEX rather than
+binding NAME: MSIL's pre-existing `#5191` general-shadowing fix already
+guarantees a shadowing bind gets a FRESH slot number whenever it doesn't fall
+in the current block's lexical scope, so slot-keying gets shadowing-safety
+"for free" without JVM's separate `unsignedUndo` scope-restore log (mirrors
+how `FuncCtx.byteSlots` already tracks Byte-declared locals the same
+slot-keyed way).
+
+Scoped to the shape the issue's fix sketch asks for — a bare name previously
+marked at a binding site, or a `u32`/`u64`-suffixed literal — not a function
+call's declared return type or a container-element read (the JVM backend's
+own LATER `#6754`/`#6759` follow-on widenings past its original
+`unsignedVars`/`isUnsignedExpr` shape); that narrower scope still compiles
+and runs correctly for every value that fits the signed range either way.
+
+Coverage: extended the dual-target `range_subtype_self_test.l` (the
+established `UInt`/`ULong` test home) with a new bare-scalar section —
+comparison (including a param-typed and a `var`-typed case), division/
+remainder, `toString`/interpolation/concatenation, a block-shadow isolation
+case, and an in-`@test_module` println smoke test — covering both `UInt` and
+`ULong` at/above the sign-bit boundary on BOTH targets (JVM already correct
+via #6748/#6754, so this is a genuine cross-target parity check). Also added
+the file's previously-missing dotnet-target CI leg (only `--target jvm` was
+wired) and a dedicated `lyric run`-based CI step that asserts `println`'s
+ACTUAL captured stdout bytes for both `UInt` and `ULong` — a plain standalone
+program rather than `@test_module`-based capture, since redirecting
+`System.Console.Out` process-globally from inside a test risks silently
+swallowing every LATER test's own TAP-result `println` line if that test's
+assertion panics before restoring it.
+
+**Related:** #6756, #6782, #6748, #6754 (the JVM backend's mirrored fix).
+
 ### MSIL: confirmed hoisted Byte closure cells wrap on overflow for an ESCAPING closure pair too; added the missing regression coverage (#6524)
 
 #6524 (a #5520 follow-up) tracked whether a `Byte` cell shared by two closures
@@ -34827,6 +34889,35 @@ was already correct and complete.
 #7097, PR #7100 (the fix), #6224 (the native-backend precedent this
 mirrors), #6849/#6850 (the analogous bundle-wide bare-name-collision fix
 for functions, whose qualified-key-first-on-read shape this fix follows).
+
+## lyric-aws-secrets: real AWS SDK for .NET v3 bindings ship; public API stays synchronous (#6864)
+
+`lyric-aws-secrets/src/_kernel/secrets_kernel_aws.l` (`aws` feature) is no
+longer a documented `NOT_IMPLEMENTED` stub: it binds real
+`AmazonSecretsManagerClient`/`AmazonSimpleSystemsManagementClient` calls
+against the actual AWS SDK for .NET v3 3.7.400 assemblies (verified via
+.NET reflection, not assumed from memory), with `Std.Json`-backed JSON-key
+extraction for `getSecretField` and a process-global TTL cache — the same
+shape `secrets_kernel_jvm.l` already shipped in #5411. `AwsSecrets`'s
+public API (`init()`/`getSecret()`/`getSecretField()`/`getParameter()`/
+`getParameterRaw()`) is unchanged: binding the SDK's `Task<T>`-returning
+`GetSecretValueAsync`/`GetParameterAsync` did not require making it
+`async`, since the self-hosted MSIL emitter already lowers `await` inside
+a plain (non-`async`) function to a blocking `GetAwaiter().GetResult()`
+shim — the same mechanism `Std.HttpHost`'s `HttpClient.SendAsync` binding
+uses, verified directly against a real BCL `Task<T>` call before writing
+the AWS SDK binding. `initFromAnnotations()` (`@secretsManager`/
+`@parameterStore` config-block scanning) stays `NOT_IMPLEMENTED` on every
+feature except `local` — unaffected by this fix, a separate genuine
+compiler gap (issue #6866). `lyric-aws-secrets/README.md`'s support
+matrix is corrected: all three features (`local`/`jvm`/`aws`) are now
+production-ready for the explicit fetch API. See D-progress-941
+(`docs/decisions/`) for the full investigation, including a genuine
+.NET-specific `ConcurrentDictionary` object-erasure workaround found and
+fixed along the way (the jvm kernel's #6891 non-generic-cache workaround
+doesn't port to .NET as-is; fixed by naming the bracketed generic
+instantiation directly in the `extern type` target string, which the MSIL
+emitter erases wholesale to `object`).
 
 ### `lyric test --properties` gains `--property-trials <N>` / `--seed <N>` (property-testing v2 slice 1, #6907)
 

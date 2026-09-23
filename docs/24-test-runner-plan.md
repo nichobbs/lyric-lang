@@ -109,6 +109,19 @@ lyric test --manifest <lyric.toml> [--filter <substring>] [--list]
 * `--filter <substring>` runs only tests whose title contains
   `<substring>` (case-sensitive). Skipped tests are reported as
   `# skip` lines.
+* A `@test_module` file gated out entirely by an inactive file-level
+  `@cfg(feature = "X")` (or `@cfg(target = "X")`) predicate is treated
+  as absent, the same clean treatment an ordinary non-test `@cfg`-gated
+  file gets: `lyric test` prints `0 test(s), module gated by inactive
+  @cfg` and exits `0`, without attempting to compile or run anything.
+  Before this (#6868), the synthesized entry point was spliced into the
+  file before the gating check ran, so `Cfg.applyCfgErasure`'s
+  file-level erasure (correctly, since it can't distinguish the
+  synthesized `main()` from user items) dropped the entry point along
+  with everything else, and the resulting zero-item assembly crashed at
+  run time instead. Item-level `@cfg` on an individual `test { }` is
+  unaffected either way — the annotation is preserved onto the
+  synthesized function, so only that one test is erased.
 
 #### 2.2 Output
 
@@ -128,9 +141,16 @@ ok 3 - withdraw decreases balance
 # fail  1
 ```
 
+A module entirely gated out by `@cfg` (§2.1) reports `0 test(s),
+module gated by inactive @cfg` instead of the `N test(s), M skipped`
+line above, and exits `0` — distinct from `--list`'s "print titles
+only" output and from an ordinary zero-tests-matched `--filter` run,
+but sharing their exit code.
+
 Exit codes:
 
-* `0` — every selected test passed (or all were skipped/filtered out).
+* `0` — every selected test passed (or all were skipped/filtered out,
+  or the whole module was `@cfg`-gated out).
 * `1` — at least one test failed.
 * `2` — compilation error (no tests were run).
 * `64` — usage error (bad CLI flags, missing `@test_module`, etc.).
