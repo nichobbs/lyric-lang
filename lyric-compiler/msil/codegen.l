@@ -37274,6 +37274,18 @@ func registerRestoredUnion(
 // every record ctor, every public free function, and every union
 // case's ctor.  Skips items whose TypeRef wasn't allocated and
 // private funcs (no public surface).
+// Shared by `IRecord` and `IExposedRec` in `registerRestoredMembers` below
+// (identical `RecordDecl` shape, D-progress-942 — the producer-side
+// `exposed`-ness only affects reflection-visibility in the producer's own
+// compiled assembly, not how a consumer constructs or reads it). Mirrors
+// the naming/shape of `registerStdlibRecordLikeType`, the same-purpose
+// helper for stdlib (rather than restored-dependency) record-like types.
+func registerRestoredRecordLikeType(cctx: in CodegenCtx, packageName: in String, decl: in RecordDecl): Unit {
+  registerRestoredRecordCtor(cctx, packageName, decl)
+  registerRestoredRecordFields(cctx, packageName, decl)
+  registerRestoredRecordBodyMethods(cctx, packageName, decl)
+}
+
 func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): Unit {
   // Hoist the DLL read outside the items loop — one parse per artifact, not
   // one per IUnion item.  Returns hasInstances=false on any read/parse failure
@@ -37292,21 +37304,11 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): 
   var i = 0
   while i < items.count {
     match items[i].kind {
-      case IRecord(decl) -> {
-        registerRestoredRecordCtor(cctx, art.packageName, decl)
-        registerRestoredRecordFields(cctx, art.packageName, decl)
-        registerRestoredRecordBodyMethods(cctx, art.packageName, decl)
-      }
+      case IRecord(decl) -> registerRestoredRecordLikeType(cctx, art.packageName, decl)
       // An `exposed record` restored from a dependency's contract metadata
-      // (#6533) wraps the same `RecordDecl` shape `IRecord` does — the
-      // producer-side `exposed`-ness only affects reflection-visibility in
-      // the PRODUCER's own compiled assembly, not how a consumer constructs
-      // or reads it — so registration is identical to the plain-record arm.
-      case IExposedRec(decl) -> {
-        registerRestoredRecordCtor(cctx, art.packageName, decl)
-        registerRestoredRecordFields(cctx, art.packageName, decl)
-        registerRestoredRecordBodyMethods(cctx, art.packageName, decl)
-      }
+      // (#6533) wraps the same `RecordDecl` shape `IRecord` does, so
+      // registration is identical to the plain-record arm.
+      case IExposedRec(decl) -> registerRestoredRecordLikeType(cctx, art.packageName, decl)
       case IFunc(decl) -> {
         registerRestoredFunc(cctx, art.packageName, decl, taskFuncs)
       }
