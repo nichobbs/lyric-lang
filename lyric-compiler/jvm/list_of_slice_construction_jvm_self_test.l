@@ -39,9 +39,25 @@
 //! all — it "successfully" resolves the wrong runtime representation), and
 //! Bug 2 is a pure compile-time scoring gap unrelated to Bug 1's coercion.
 //!
+//! A THIRD bug in this same shape — but on `--target dotnet`, unrelated to
+//! Bugs 1/2 above (MSIL's `List[T].add()` never goes through auto-FFI at
+//! all) — surfaced via this file's own "empty slice element" case: an empty
+//! slice literal (`[]`) has no elements for `EList`'s no-context-hint arm to
+//! infer an element type from, so it fell back to a legacy `List<object>`
+//! instead of a real array, and `collBoxIfNeeded` (a no-op for a
+//! concrete-collection receiver) let that mistyped value reach the closed
+//! `List<int32[]>` unconverted — `ArrayTypeMismatchException: Attempted to
+//! access an element as a type incompatible with the array.` on any later
+//! array-shaped access.  Tracked as #6945, fixed in `Msil.Codegen`'s
+//! `.add()` handling by pushing the receiver's element type onto
+//! `collExpect` before lowering a single-value `.add()` argument.  This file
+//! runs on both targets in CI (`compiler-self-tests-jvm` for
+//! `--target jvm`, `compiler-self-tests-dotnet-a` for `--target dotnet`).
+//!
 //! Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed. Run via
-//! native `lyric test --target jvm`:
+//! native `lyric test`:
 //!   lyric test --target jvm lyric-compiler/jvm/list_of_slice_construction_jvm_self_test.l
+//!   lyric test lyric-compiler/jvm/list_of_slice_construction_jvm_self_test.l
 @test_module
 package Lyric.ListOfSliceConstructionJvmSelfTest
 
@@ -82,10 +98,11 @@ test "Bug 2: an explicitly slice[Int]-typed argument compiles and round-trips" {
   assertEqualInt(xs[0][1], 5, "nested index xs[0][1] reads the real array")
 }
 
-// JVM-only: on `--target dotnet` this same case throws "Attempted to
-// access an element as a type incompatible with the array" — a
-// pre-existing, unrelated MSIL bug in empty-slice-literal element-type
-// inference for `List[slice[T]].add()`, tracked separately in #6945.
+// Until #6945 was fixed, this case threw on `--target dotnet` with
+// "Attempted to access an element as a type incompatible with the array" —
+// a pre-existing, unrelated MSIL bug in empty-slice-literal element-type
+// inference for `List[slice[T]].add()` (see this file's header comment).
+// Now passes on both targets.
 test "an empty slice element added to a List[slice[Int]] does not crash" {
   val xs: List[slice[Int]] = newList()
   xs.add([])

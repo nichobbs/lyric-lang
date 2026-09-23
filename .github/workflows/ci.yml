@@ -1487,6 +1487,27 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/list_literal_index_self_test.l
 
+      # List[slice[T]] construction self-test on dotnet (#6945) — the MSIL
+      # counterpart of the JVM-only run of this same file below (#6546,
+      # compiler-self-tests-jvm).  `xs.add(row)` on a `List[slice[Elem]]`
+      # receiver pushed no element-type hint onto `collExpect` before
+      # lowering the argument, so an EMPTY slice literal (`[]`, which has no
+      # elements to infer a type from) fell through `EList`'s no-hint arm to
+      # the legacy `List<object>` fallback — a REAL `List<object>` instance,
+      # not an array.  `collBoxIfNeeded` is a no-op for a concrete-collection
+      # receiver, so that `List<object>` was stored unconverted into the
+      # closed `List<int32[]>`, and any later array-shaped access
+      # (`row.length`, `for v in row`) threw `ArrayTypeMismatchException:
+      # Attempted to access an element as a type incompatible with the
+      # array.`  Fixed in `Msil.Codegen`'s `.add()` handling by pushing the
+      # receiver's own element type before lowering a single-value `.add()`
+      # argument, so `[]` now builds a genuine zero-length array like every
+      # other element.  Imports only `Std.*`.
+      - name: List[slice[T]] construction self-test on dotnet (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/jvm/list_of_slice_construction_jvm_self_test.l
+
       # Double-stringification fixed/scientific-notation boundary self-test
       # (#5660 follow-up, review finding #6749 against PR #6631). Pins the
       # exp=16/exp=17 threshold in `emitNormalizeDoubleString`
@@ -3771,7 +3792,9 @@ jobs:
       # `ClassCastException`), and routing the same value through a
       # `slice[Int]`-typed helper failed EARLIER at compile time (JVM
       # auto-FFI scored no matching `ArrayList.add` overload for an
-      # array-typed argument). JVM-only per the tracking issue's own scope.
+      # array-typed argument). This file's own JVM half; the dotnet half
+      # (#6945, a separate MSIL-only bug the JVM fix's own test surfaced)
+      # runs in compiler-self-tests-dotnet-a.
       - name: List[slice[T]] construction self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
