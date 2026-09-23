@@ -35137,5 +35137,5 @@ promote F0027 to a build-gating error, nor add the negative/SDK-less-
 harness test coverage #5704 additionally asks for — both remain open
 follow-up work on #5704.
 
-**Related:** #5704 (partially addressed), D-progress-941 (full account),
+**Related:** #5704 (partially addressed), D-progress-943 (full account),
 D-progress-667 (the original F0027 warning).

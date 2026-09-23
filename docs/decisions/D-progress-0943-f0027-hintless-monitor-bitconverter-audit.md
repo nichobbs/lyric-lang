@@ -1,4 +1,4 @@
-# D-progress-941 — ecosystem-wide F0027 hint-less-extern audit clears; surfaces a real proto3 float encoding bug (#5704)
+# D-progress-943 — ecosystem-wide F0027 hint-less-extern audit clears; surfaces a real proto3 float encoding bug (#5704)
 
 **Status:** shipped (partial — see "Still open")
 
