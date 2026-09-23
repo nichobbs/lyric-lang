@@ -38407,6 +38407,14 @@ func registerStdlibTypeItemRefs(cctx: in CodegenCtx, packageName: in String, it:
   }
   val typeArity = match it.kind {
     case IRecord(decl) -> genericNamesOf(decl.generics).count
+    // `exposed record` wraps the identical `RecordDecl` shape as `IRecord`
+    // (D-progress-942) — without this arm a generic `exposed record`
+    // shipped by the stdlib would register its TypeRef without the CLR
+    // arity suffix (`Box` instead of `Box`1`), breaking cross-package
+    // resolution (#6533 follow-up audit; no stdlib module currently
+    // declares a generic exposed record, so this was unreachable dead code
+    // rather than an active bug).
+    case IExposedRec(decl) -> genericNamesOf(decl.generics).count
     case IUnion(decl) -> genericNamesOf(decl.generics).count
     case _ -> 0
   }
