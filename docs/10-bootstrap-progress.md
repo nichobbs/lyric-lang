@@ -32490,6 +32490,37 @@ and filed separately as #6947.
 **Related:** `docs/decisions/D-progress-0887-lambda-literal-local-rettype.md` (full account), #6690,
 #6933, #6947.
 
+### MSIL + JVM: `return` inside ANY lifted lambda body no longer crashes at runtime (#6947)
+
+The pre-existing, entirely separate crash flagged (and deliberately left
+unfixed) by the #6690 entry immediately above. `Msil.Codegen`'s `SReturn`
+explicit-return lowering never ran the returned expression through
+`coerceTrailingToRetMsil` the way the implicit tail-expression/fall-off path
+already did, so a lifted `__lambda_N` body's `object`-declared return type
+(the Uniform Func ABI, #1877) never got a box around a genuinely unboxed
+primitive result (e.g. `Int` from `x + 1`) before `ret` — invalid IL that a
+non-verifying JIT silently accepted as a garbage object reference, faulting
+as `NullReferenceException` the moment the caller dereferenced it. Invisible
+for ordinary top-level functions (the type checker already guarantees a
+structural match there), reachable for ANY lambda literal with an explicit
+`return <value>`, regardless of consuming position (direct HOF argument,
+`val` binding, nested inside `if`/`match`). Fixed by calling the same
+`coerceTrailingToRetMsil` helper from both `SReturn` branches. A second,
+narrower instance of the same defect class covered a BARE `return` (no
+value) inside a `Unit`-returning lambda body on both targets — MSIL left an
+empty stack where the `object`-declared physical return type needed `null`;
+JVM's `SReturn` `None` arm unconditionally emitted the void `return` opcode
+regardless of the enclosing lifted lambda's real (`Object`-returning)
+descriptor. Both fixed by pushing the coerced default value
+(`coerceTrailingToRetMsil(…, MVoid, …)` on MSIL,
+`pushDefaultValueJvm`/`emitReturn` — reusing the existing
+`emitNeverTailReturn` pair — on JVM) before the return, guarded so genuinely
+`Unit`-returning ordinary functions are unaffected. JVM's `Some(e)` arm
+already coerced correctly (`coerceValueTo`) before this fix — verified with
+an explicit `--target jvm` run of the regression suite, not assumed.
+
+**Related:** `docs/decisions/D-progress-0941-explicit-return-lambda-boxing-6947.md` (full account, incl. two out-of-scope findings filed separately as #7152 and #7166), #6947.
+
 ### MSIL: `UInt`/`ULong` gain a real representation, closing the CLR-loader crash and a downstream list-literal miscompile (#6756, #6782)
 
 MSIL had no representation for `UInt`/`ULong` at all — `typeExprToMsilCtx`
