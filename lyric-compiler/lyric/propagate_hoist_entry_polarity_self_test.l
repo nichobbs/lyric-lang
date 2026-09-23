@@ -88,7 +88,7 @@ test "protected-type entry: ? in a stacked method-call arg gets hoisted (AST pin
     "}\n"
   val pr = parse(src)
   assertEqualInt(pr.diagnostics.count, 0, "the pinned source parses with no diagnostics")
-  val result = lowerPropagateFile(pr.file)
+  val result = lowerPropagateFile(pr.file, true)
   val firstItem = result.file.items[0]
   match firstItem.kind {
     case IProtected(decl) -> {
@@ -203,7 +203,7 @@ test "bare-name callee: ? in a hazardous call argument hoists the mutable callee
     "}\n"
   val pr = parse(src)
   assertEqualInt(pr.diagnostics.count, 0, "the pinned source parses with no diagnostics")
-  val result = lowerPropagateFile(pr.file)
+  val result = lowerPropagateFile(pr.file, true)
   val fnItem = result.file.items[1]
   match fnItem.kind {
     case IFunc(decl) -> {

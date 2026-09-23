@@ -351,10 +351,13 @@ note would be a lie.
 
 ## 7. Diagnostics
 
-New codes in the `F` family. `F0040`+ is free: a sweep of quoted `"F00NN`
-literals across `lyric-compiler/` finds `F0002`, `F0012`–`F0013`,
-`F0015`, `F0020`–`F0027`, `F0030`–`F0032`, and `F0034` in use, and
-nothing above `F0034`.
+New codes in the `F` family. As of D-progress-941/#7170, a sweep of quoted
+`"F00NN` literals across `lyric-compiler/` finds `F0002`, `F0012`–`F0013`,
+`F0015`, `F0020`–`F0027`, `F0030`–`F0032`, `F0034`, `F0040`–`F0045` in use
+(`F0040`–`F0044` are this section's own build-profile codes, shipped in
+D132; `F0045` is `propagate.l`'s, added in D-progress-941's #7170
+follow-up). `F0033` is reserved (docs/60 §7) but not yet emitted by any
+code. `F0046`+ is free.
 
 The family is worth looking at before extending it, because it is not one
 family:
@@ -372,6 +375,7 @@ family:
 | `F0027` | warning: hint-less `@externTarget` | `msil/codegen.l:28704` |
 | `F0030`–`F0032` | build defines: non-`String` `val`, non-module-level `val`, malformed define (docs/60) | `build_defines.l:486`, `:516`, `:479` |
 | `F0034` | FFI "not an interface" — `impl` target resolves through `extern type`/`import extern` but isn't a .NET interface (renumbered off `F0020` by #6648 to resolve the collision above) | `msil/codegen.l:32902` |
+| `F0045` | `?`'s implicit `await` (of a direct async-call scrutinee, #6920) would land inside a try/catch/finally in an async function — the same invalid-IL hazard V0012 guards against for a literal `await`, but at a pipeline stage V0012 cannot see (#7170) | `propagate.l` (`implicitAwaitScrutinee`) |
 
 Two observations that bear on where the new codes should go. First,
 `F0021` is **still double-assigned** to two unrelated diagnostics — a

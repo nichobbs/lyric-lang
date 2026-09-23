@@ -75,11 +75,20 @@ import Lyric.DiagnosticUtil as DiagUtil
 /// (#6282) resolves a multi-file package's merged-blob line numbers back to
 /// their real on-disk file and line at every gate below; empty for every
 /// single-file build and for a project package whose provenance is unknown.
+/// `awaitInTryIsHazard` (#7198) — whether this target's async lowering has
+/// the CLR-verifier-style hazard `Lyric.Propagate`'s `F0045` diagnostic
+/// exists to prevent (a suspend/resume sequence physically inside a
+/// try/catch/finally protected region): true for MSIL and native, whose
+/// async lowering genuinely suspends; false for JVM, whose `async func`
+/// lowering is a synchronous stub with no suspend point at all (docs/44),
+/// so the same diagnostic would be a spurious platform-parity regression
+/// there — see `lowerPropagateFile`'s doc.
 pub record MiddleEndOptions {
   tcFatal: Bool
   tcReport: Bool
   pkgLabel: String
   lineOrigins: List[DiagUtil.MergedLineOrigin]
+  awaitInTryIsHazard: Bool
 }
 
 // Report `diags` (package-labelled when `pkgLabel` is non-empty, further
@@ -255,7 +264,7 @@ pub func pipeCheckAndMono(
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).
   // Runs after the elaborator so a propagated Err/None short-circuit is not
   // forced through the success-shaped `ensures:` rewrite.
-  val propRes = lowerPropagateFile(elaborated)
+  val propRes = lowerPropagateFile(elaborated, opts.awaitInTryIsHazard)
   if gate(opts.pkgLabel, opts.lineOrigins, propRes.diagnostics) {
     return None
   }
