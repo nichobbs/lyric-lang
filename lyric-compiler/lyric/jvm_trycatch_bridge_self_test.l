@@ -177,6 +177,18 @@ test "generic fn: try/catch where every arm yields the type param still compiles
 // panic FAMILY #6347/#6357 report against a real generic-collection-element
 // read; the underlying non-List/slice generic-payload gap stays open
 // (untouched by this file).
+//
+// Replaced a THIRD time (#6957): `scrutineeGenericArgs` gained a top-level
+// `EMember` arm (`fieldGenericArgsOf`, `jvm/codegen/03_match.l`) that
+// resolves a plain field read's own declared generic instantiation when
+// the field's RECEIVER is itself a bare local/parameter/`self`
+// (`receiverClassOf`'s only resolvable shapes) — exactly `h.box`'s shape,
+// so it stopped panicking too (mirrors the identical fix applied to
+// `emitter_project_self_test.l`'s sibling #6422 test). Nested one level
+// deeper — `h.wrap.box`, where the field's own receiver (`h.wrap`) is
+// itself an `EMember`, not a bare `EPath` — so `receiverClassOf` returns
+// `None` for it and the repro stays genuinely unresolvable (verified
+// directly against `./bin/lyric build --target jvm` on this exact source).
 test "erased-receiver member access aborts codegen under error[J007] with a package-qualified span (#6422/#6426)" {
   val dir = freshTempDir("erased-receiver-j007")
   val outPath = Path.join(dir, "ErasedRecv.jar")
@@ -186,19 +198,23 @@ test "erased-receiver member access aborts codegen under error[J007] with a pack
     "  case Empty\n" +
     "}\n" +
     "\n" +
-    "record Holder {\n" +
+    "record Wrap {\n" +
     "  box: Box[Widget]\n" +
     "}\n" +
     "\n" +
+    "record Holder {\n" +
+    "  wrap: Wrap\n" +
+    "}\n" +
+    "\n" +
     "func unwrap(h: Holder): Int {\n" +
-    "  match h.box {\n" +
+    "  match h.wrap.box {\n" +
     "    case Full(w) -> w.n\n" +
     "    case Empty -> 0\n" +
     "  }\n" +
     "}\n" +
     "\n" +
     "func main(): Unit {\n" +
-    "  println(unwrap(Holder(box = Full(value = Widget(n = 40)))))\n" +
+    "  println(unwrap(Holder(wrap = Wrap(box = Full(value = Widget(n = 40))))))\n" +
     "}\n"
   val noStdlib: List[String] = newList()
   var panicked = false
