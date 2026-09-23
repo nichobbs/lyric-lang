@@ -34915,4 +34915,4 @@ return-narrowing dance reused here), D-progress-937/#7137 (the
 instance-path coverage this entry's instance handling piggybacks on),
 #5809/#6995 (the decline-loudly precedent for what remains out of
 scope), #7148 (the filed `ValueTask<T>` follow-up),
-`docs/decisions/D-progress-0941-async-generic-methodspec-task-unwrap-7023.md`.
+`docs/decisions/D-progress-0942-async-generic-methodspec-task-unwrap-7023.md`.
