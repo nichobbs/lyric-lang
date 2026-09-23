@@ -1090,6 +1090,10 @@ lyric test --all-features              # activate every declared feature
                                        # e.g. run a suite against the jvm-gated kernel:
                                        #   lyric test --manifest m.toml --target jvm \
                                        #     --no-default-features --features jvm
+lyric test <file.l>                    # a @test_module gated out entirely by an inactive
+                                       # file-level @cfg(feature = "X") prints "0 test(s),
+                                       # module gated by inactive @cfg" and exits 0, instead
+                                       # of compiling/running an erased module (#6868)
 
 # Stale-stdlib-bundle warning (dev tree only, --target dotnet)
 #   `lyric run` / `lyric test` link the PRECOMPILED Lyric.Stdlib.dll for

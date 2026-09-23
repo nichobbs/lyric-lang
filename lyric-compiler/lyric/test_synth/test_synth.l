@@ -38,6 +38,7 @@ import Std.Collections
 import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Cfg
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public surface.
@@ -47,6 +48,12 @@ pub union Outcome {
   case NoTestModule(span: Span)
   case UserMainExists(span: Span)
   case ParseFailures(diagnostics: List[Diagnostic])
+  // #6868: the file itself is erased by an inactive file-level `@cfg` —
+  // synthesizing a `main()` into it would produce a zero-item compiled
+  // artifact with no entry point once `applyCfgErasure` runs downstream.
+  // Reported the same way an ordinary (non-test) `@cfg`-gated file is:
+  // treated as absent, not as a build/run failure.
+  case Gated(span: Span)
 }
 
 pub union ListEntry {
@@ -589,9 +596,24 @@ func parseErrors(diags: in List[Diagnostic]): List[Diagnostic] {
   acc
 }
 
+// `synthesize`/`synthesizeNative`/`synthesizeWithProperties` check file-level
+// `@cfg` gating against an EMPTY active/declared feature set (#6868) — the
+// same set `lyric test` uses downstream whenever a manifest contributes no
+// features for this file's compile (the common no-manifest case, and the
+// compiler-package-linked test path, which always compiles with empty
+// active/declared regardless of any nearby manifest).  A caller that has
+// real manifest-resolved features in hand (the manifest-driven single-file
+// and project test paths in `cli_test.l`) should call `synthesizeFor`
+// directly with them instead, so the pre-emission gating check agrees with
+// what `Cfg.applyCfgErasure` will actually see once `Emitter.emitProject`
+// runs.
+func noFeatures(): List[String] {
+  newList()
+}
+
 @stable(since = "0.1")
 pub func synthesize(source: in String, filter: in Option[String]): Outcome {
-  synthesizeFor(source, filter, false, false)
+  synthesizeFor(source, filter, false, false, noFeatures(), noFeatures())
 }
 
 // Native variant (N7.2): synthesises straight-through test calls instead of
@@ -599,7 +621,7 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
 // `@stable` — `synthesize` is the stable dotnet/jvm entry point; this is a
 // separate, additive entry point rather than a breaking signature change.
 pub func synthesizeNative(source: in String, filter: in Option[String]): Outcome {
-  synthesizeFor(source, filter, true, false)
+  synthesizeFor(source, filter, true, false, noFeatures(), noFeatures())
 }
 
 // `lyric test --properties` variant (#677): `property` declarations whose
@@ -611,10 +633,24 @@ pub func synthesizeNative(source: in String, filter: in Option[String]): Outcome
 // which keeps skipping every property unconditionally (byte-for-byte
 // unchanged) for callers that don't pass `--properties`.
 pub func synthesizeWithProperties(source: in String, filter: in Option[String]): Outcome {
-  synthesizeFor(source, filter, false, true)
+  synthesizeFor(source, filter, false, true, noFeatures(), noFeatures())
 }
 
-func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in Bool, runProperties: in Bool): Outcome {
+// `active`/`declared` are the feature set the eventual compile will use
+// (D045 `[features]`, #6868) — pass whatever `Cfg.applyCfgErasure` will
+// actually be called with downstream, not the raw manifest defaults, so a
+// file-level `@cfg` is gated here iff it would be gated during real
+// erasure.  Exposed (not `pub` before #6868) so `cli_test.l` can thread
+// manifest-resolved features through instead of going via one of the
+// fixed-feature wrappers above.
+pub func synthesizeFor(
+  source: in String,
+  filter: in Option[String],
+  nativeMode: in Bool,
+  runProperties: in Bool,
+  active: in List[String],
+  declared: in List[String],
+): Outcome {
   val pf = parse(source)
   val errs = parseErrors(pf.diagnostics)
   if errs.count > 0 {
@@ -627,6 +663,19 @@ func synthesizeFor(source: in String, filter: in Option[String], nativeMode: in 
     case Some(sp) -> return UserMainExists(span = sp)
     case None -> {
     }
+  }
+  // #6868: check file-level `@cfg` gating BEFORE splicing a synthesized
+  // `main()` into the rewrite. Previously this pass had no notion of `@cfg`
+  // at all, so a `@test_module` file gated out by an inactive file-level
+  // `@cfg(feature = "X")` still got an unconditional `main()` appended;
+  // `Cfg.applyCfgErasure` downstream then dropped EVERY item in the file
+  // (main included, indistinguishably from user items — file-level erasure
+  // is all-or-nothing), producing a compiled artifact with zero items and
+  // no entry point. That failed at `dotnet exec`/`java -jar` run time with
+  // an opaque missing-entry-point error instead of the clean "module
+  // gated" treatment an ordinary (non-test) `@cfg`-gated file gets.
+  if isFileCfgGatedOut(active, declared, pf.file.fileAnnotations) {
+    return Gated(span = pf.file.span)
   }
   // #6642: slicing just `packageDecl.span` drops everything the parser
   // hoisted ahead of it into separate `SourceFile` fields — the module-level

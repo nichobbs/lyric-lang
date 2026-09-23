@@ -56,6 +56,71 @@ func annotatedCfgTestSource(): String {
   "@test_module\npackage P\n\nimport Std.Testing\n\n@cfg(feature = \"exp\")\ntest \"a\" { assertTrue(nonexistentSymbol, \"x\") }\ntest \"b\" { assertTrue(true, \"y\") }\n"
 }
 
+// #6868: a file-level `@cfg(...)` (above `package`, alongside `@test_module`)
+// must gate the WHOLE module cleanly instead of letting `synthesizeFor`
+// splice an unconditional `main()` into a file that downstream
+// `Cfg.applyCfgErasure` will erase entirely.
+func fileLevelCfgTestSource(): String {
+  "@cfg(feature = \"exp\")\n@test_module\npackage P\n\nimport Std.Testing\n\ntest \"a\" { assertTrue(true, \"x\") }\n"
+}
+
+func emptyFeatureList(): List[String] {
+  newList()
+}
+
+func singletonFeatureList(s: in String): List[String] {
+  val xs: List[String] = newList()
+  xs.add(s)
+  xs
+}
+
+func testFileLevelCfgGatesWhenInactive(): Unit {
+  match synthesizeFor(fileLevelCfgTestSource(), None, false, false, emptyFeatureList(), emptyFeatureList()) {
+    case Gated(_) -> ()
+    case _ -> panic("expected Gated outcome when the file-level @cfg feature is inactive")
+  }
+}
+
+func testFileLevelCfgSynthesisesWhenActive(): Unit {
+  match synthesizeFor(fileLevelCfgTestSource(), None, false, false, singletonFeatureList("exp"), emptyFeatureList()) {
+    case Synthesised(_, n, sk) -> {
+      assertEqualInt(n, 1, "the one test synthesised once the gating feature is active")
+      assertEqualInt(sk, 0, "no skips")
+    }
+    case _ -> panic("expected Synthesised outcome when the file-level @cfg feature is active")
+  }
+}
+
+// #7189: `@cfg(target = "X")` resolves to the pseudo-feature `"target." + X`
+// (cfg.l), not a plain feature name — a caller (`cli_test.l`) that resolves
+// `active` from manifest features alone, without also injecting
+// `"target." + <the real --target>` the way every backend bridge's
+// `pipeParseAndErase` does via `Cfg.withTargetFeature`, would report this
+// gated regardless of the actual target. `synthesizeFor` itself doesn't
+// inject the target pseudo-feature (that's the CALLER's job, since only the
+// caller knows which target is being compiled for) — these tests exercise
+// exactly that contract at the `synthesizeFor` boundary.
+func fileLevelTargetCfgTestSource(): String {
+  "@cfg(target = \"dotnet\")\n@test_module\npackage P\n\nimport Std.Testing\n\ntest \"a\" { assertTrue(true, \"x\") }\n"
+}
+
+func testFileLevelTargetCfgGatesWhenTargetMismatched(): Unit {
+  match synthesizeFor(fileLevelTargetCfgTestSource(), None, false, false, emptyFeatureList(), emptyFeatureList()) {
+    case Gated(_) -> ()
+    case _ -> panic("expected Gated outcome when the active set carries no \"target.*\" pseudo-feature at all")
+  }
+}
+
+func testFileLevelTargetCfgSynthesisesWhenTargetMatches(): Unit {
+  match synthesizeFor(fileLevelTargetCfgTestSource(), None, false, false, singletonFeatureList("target.dotnet"), emptyFeatureList()) {
+    case Synthesised(_, n, sk) -> {
+      assertEqualInt(n, 1, "the one test synthesised once \"target.dotnet\" is in the active set")
+      assertEqualInt(sk, 0, "no skips")
+    }
+    case _ -> panic("expected Synthesised outcome when the active set carries the matching \"target.*\" pseudo-feature")
+  }
+}
+
 func testSynthesisesAnnotatedCfgTest(): Unit {
   match synthesize(annotatedCfgTestSource(), Some(value = "")) {
     case Synthesised(rewritten, n, sk) -> {
@@ -342,6 +407,22 @@ test "property reported as skip" {
 
 test "filter skips non-matching tests" {
   testFilterSkipsNonMatching()
+}
+
+test "file-level @cfg gates the whole module when inactive (#6868)" {
+  testFileLevelCfgGatesWhenInactive()
+}
+
+test "file-level @cfg synthesises normally when active (#6868)" {
+  testFileLevelCfgSynthesisesWhenActive()
+}
+
+test "file-level @cfg(target = ...) gates when the target pseudo-feature is absent (#7189)" {
+  testFileLevelTargetCfgGatesWhenTargetMismatched()
+}
+
+test "file-level @cfg(target = ...) synthesises normally when the target pseudo-feature matches (#7189)" {
+  testFileLevelTargetCfgSynthesisesWhenTargetMatches()
 }
 
 test "listEntries enumerates entries" {
