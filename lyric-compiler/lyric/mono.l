@@ -236,6 +236,12 @@ record MonoState {
   /// Declared return type of each enclosing function/lambda being
   /// rewritten, innermost last (`None` for an unannotated lambda).
   returnTEs: List[Option[TypeExpr]]
+  /// Validated record `.copy(...)` sites from the type checker, keyed by
+  /// `recordCopySiteKey`; `rewriteExpr` desugars each into a constructor
+  /// call (`desugarRecordCopyMono`).
+  copySites: Map[String, RecordCopySite]
+  /// Counter for the fresh locals a copy desugar binds (length = next id).
+  copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
   allSpecs: List[SpecRequest]
   diags: List[Diagnostic]
@@ -253,6 +259,7 @@ func newMonoState(
   ambiguousFuncOverloads: in Map[String, List[FunctionDecl]],
   ctorCandidates: in Map[String, List[FunctionDecl]],
   qualifiedGenNames: in Map[String, String],
+  copySites: in Map[String, RecordCopySite],
 ): MonoState {
   MonoState(
     moduleValTypes = moduleValTypes,
@@ -268,6 +275,8 @@ func newMonoState(
     qualifiedGenNames = qualifiedGenNames,
     expectedAt = newMap(),
     returnTEs = newList(),
+    copySites = copySites,
+    copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
     diags = newList()
@@ -3554,6 +3563,66 @@ func isPrimitiveName(name: in String): Bool {
 }
 
 
+// ─── Record copy (docs/01 §2.4) ─────────────────────────────────────────────
+// `recv.copy(b = eb, a = ea)` for `record R { a; b; c }` becomes
+//
+//   {
+//     val __lyric_copy_<n> = recv
+//     val __lyric_copy_<n>_b = eb      // arguments in source order
+//     val __lyric_copy_<n>_a = ea
+//     R(a = __lyric_copy_<n>_a, b = __lyric_copy_<n>_b, c = __lyric_copy_<n>.c)
+//   }
+//
+// so the receiver and each argument are evaluated exactly once, left to
+// right, as written.
+func desugarRecordCopyMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  recv: in Expr,
+  args: in List[CallArg],
+  site: in RecordCopySite,
+  sp: in Span,
+): Expr {
+  val id = state.copyTicker.count
+  state.copyTicker.add(0)
+  val base = "__lyric_copy_" + toString(id)
+  val stmts: List[Statement] = newList()
+  stmts.add(copyValStmtMono(base, rewriteExpr(state, env, recv), sp))
+  val given: Map[String, String] = newMap()
+  var ai = 0
+  while ai < args.count {
+    match args[ai] {
+      case CANamed(nm, v, _) -> {
+        val tmp = base + "_" + nm
+        stmts.add(copyValStmtMono(tmp, rewriteExpr(state, env, v), sp))
+        given.add(nm, tmp)
+      }
+      case CAPositional(_) -> ()
+    }
+    ai = ai + 1
+  }
+  val ctorArgs: List[CallArg] = newList()
+  var fi = 0
+  while fi < site.fields.count {
+    val fname = site.fields[fi]
+    val value = match mapGet(given, fname) {
+      case Some(tmp) -> singleSegPathExpr(tmp, sp)
+      case None -> Expr(kind = EMember(receiver = singleSegPathExpr(base, sp), memberName = fname), span = sp)
+    }
+    ctorArgs.add(CANamed(name = fname, value = value, span = sp))
+    fi = fi + 1
+  }
+  val ctor = Expr(kind = ECall(fn = singleSegPathExpr(site.recordName, sp), args = ctorArgs), span = sp)
+  stmts.add(Statement(kind = SExpr(expr = ctor), span = sp))
+  Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+}
+
+func copyValStmtMono(name: in String, init: in Expr, sp: in Span): Statement {
+  val pat = Pattern(kind = PBinding(name = name, inner = None), span = sp)
+  val noTy: Option[TypeExpr] = None
+  Statement(kind = SLocal(binding = LBVal(pat = pat, ty = noTy, init = init)), span = sp)
+}
+
 // ─── Expected types (docs/65 §15 F-2) ───────────────────────────────────────
 func spanKeyMono(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
@@ -3645,9 +3714,9 @@ func rewriteFuncBodyWithRet(
     case None -> ()
   }
   state.returnTEs.add(useful)
-  val out = rewriteFuncBody(state, env, body)
+  val rewritten = rewriteFuncBody(state, env, body)
   state.returnTEs.removeAt(state.returnTEs.count - 1)
-  out
+  rewritten
 }
 
 // Mark each argument of a call to `callee` with its declared parameter type
@@ -4353,6 +4422,15 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     //     where the user already wrote the type arguments inline (#349
     //     called out that `ETypeApp` was pass-through before).
     case ECall(fn, args) -> {
+      match fn.kind {
+        case EMember(copyRecv, copyName) -> if copyName == "copy" {
+          match mapGet(state.copySites, recordCopySiteKey(s)) {
+            case Some(site) -> return desugarRecordCopyMono(state, env, copyRecv, args, site, s)
+            case None -> ()
+          }
+        }
+        case _ -> ()
+      }
       // Arguments to a parameter of known type expect that type (F-2):
       // mark them before `rewriteCallArgs` rewrites them.
       match fn.kind {
@@ -5651,6 +5729,20 @@ pub func monoFileWithImportsAndTypeDecls(
   importedIfaceDecls: in List[InterfaceDecl],
   importedRecordDecls: in List[RecordDecl],
 ): MonoResult {
+  val noCopies: Map[String, RecordCopySite] = newMap()
+  monoFileWithCopies(file, importedGenDecls, importedIfaceDecls, importedRecordDecls, noCopies)
+}
+
+/// As `monoFileWithImportsAndTypeDecls`, also desugaring the record
+/// `.copy(...)` sites the type checker validated (`copySites`, from
+/// `SymbolTable.recordCopySites`) into full constructor calls.
+pub func monoFileWithCopies(
+  file: in SourceFile,
+  importedGenDecls: in List[FunctionDecl],
+  importedIfaceDecls: in List[InterfaceDecl],
+  importedRecordDecls: in List[RecordDecl],
+  copySites: in Map[String, RecordCopySite],
+): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   // #349: also collect every IFunc (generic + non-generic) and every
   // record decl so `inferExprTE` can resolve call returns and field
@@ -5917,8 +6009,8 @@ pub func monoFileWithImportsAndTypeDecls(
 
   val qualifiedGenNames = buildQualifiedGenNames(file, importedGenDecls, genDecls, funcDecls, localFuncNames)
 
-  // If nothing to monomorphise, return early.
-  if genDecls.count == 0 {
+  // If nothing to monomorphise or desugar, return early.
+  if genDecls.count == 0 and copySites.count == 0 {
     val emptyRewrites: Map[String, String] = newMap()
     val emptyDiags: List[Diagnostic] = newList()
     return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags)
@@ -5935,7 +6027,8 @@ pub func monoFileWithImportsAndTypeDecls(
     droppedLocalGenerics,
     ambiguousFuncOverloads,
     ctorCandidates,
-    qualifiedGenNames
+    qualifiedGenNames,
+    copySites
   )
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────

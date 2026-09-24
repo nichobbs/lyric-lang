@@ -1020,3 +1020,17 @@ pub func originPkgOf(anns: in List[Annotation]): String {
   }
   ""
 }
+
+/// A validated record `.copy(...)` call site, recorded by the type checker
+/// (`SymbolTable.recordCopySites`) and desugared by `Lyric.Mono` into a full
+/// constructor call (docs/01 §2.4): the record's name and its field names in
+/// declaration order.
+pub record RecordCopySite {
+  recordName: String
+  fields: List[String]
+}
+
+/// The key of a record-copy call site: its span's start and end offsets.
+pub func recordCopySiteKey(sp: in Span): String {
+  toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
+}

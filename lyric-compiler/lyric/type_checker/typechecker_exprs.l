@@ -2104,6 +2104,139 @@ func resolveMethodCallPick(
   }
 }
 
+// The record type a `.copy(...)` call on `recvTy` copies: a record or
+// exposed record (generic or not) that declares no `copy` method or
+// type-associated `copy` function of its own.
+func recordCopyTarget(tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], recvTy: in Type): Option[TypeId] {
+  match unrefine(recvTy) {
+    case TyUser(tid, tname, _) -> {
+      if not typeIdIsRecord(tbl, tid) {
+        return None
+      }
+      if symTableMethodSigs(tbl, tid, "copy").count > 0 or sigs.containsKey(tname + ".copy") {
+        return None
+      }
+      Some(value = tid)
+    }
+    case _ -> None
+  }
+}
+
+func typeIdIsRecord(tbl: in SymbolTable, tid: in TypeId): Bool {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKRecord(did, _) -> if typeIdEq(did, tid) {
+        return true
+      }
+      case DKExposedRec(did, _) -> if typeIdEq(did, tid) {
+        return true
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Check `recv.copy(name = value, ...)` against the record's fields: every
+// argument must be named (T0127), name a field (T0101) at most once (T0127),
+// and be assignable to that field's type at the receiver's instantiation
+// (T0043).  A valid call is recorded in `tbl.recordCopySites` and has the
+// receiver's type.
+func checkRecordCopy(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  tid: in TypeId,
+  recvTy: in Type,
+  args: in List[CallArg],
+): Type {
+  val recv = unrefine(recvTy)
+  val targs: List[Type] = match recv {
+    case TyUser(_, _, a) -> a
+    case _ -> newList()
+  }
+  val tname = match recv {
+    case TyUser(_, n, _) -> n
+    case _ -> ""
+  }
+  val fields = if targs.count > 0 { fieldsOfRecordInstantiated(tbl, tid, targs) } else { fieldsOfRecord(tbl, tid) }
+  val seen: List[String] = newList()
+  var ok = true
+  var ai = 0
+  while ai < args.count {
+    match args[ai] {
+      case CANamed(nm, valE, argSpan) -> {
+        if stringListContains(seen, nm) {
+          diag.add(errorDiagnostic("T0127", "field '" + nm + "' is given more than once in '" + tname + ".copy'", argSpan))
+          ok = false
+        }
+        seen.add(nm)
+        var found = false
+        var fi = 0
+        while fi < fields.count {
+          if fields[fi].name == nm {
+            found = true
+            val want = fields[fi].ty
+            val got = inferExprExpected(sc, tbl, sigs, diag, valE, want)
+            if not typeAssignable(tbl, want, got) {
+              diag.add(
+                errorDiagnostic(
+                  "T0043",
+                  "field '" + nm + "' of '" + tname + "' has type " + renderType(want) + " but the copy supplies " + renderType(got),
+                  valE.span
+                )
+              )
+              ok = false
+            }
+          }
+          fi = fi + 1
+        }
+        if not found {
+          val _ = inferExpr(sc, tbl, sigs, diag, valE)
+          diag.add(errorDiagnostic("T0101", "record '" + tname + "' has no field '" + nm + "'", argSpan))
+          ok = false
+        }
+      }
+      case CAPositional(pe) -> {
+        val _ = inferExpr(sc, tbl, sigs, diag, pe)
+        diag.add(
+          errorDiagnostic("T0127", "'" + tname + ".copy' takes named field arguments, e.g. `r.copy(field = value)`", pe.span)
+        )
+        ok = false
+      }
+    }
+    ai = ai + 1
+  }
+  if ok {
+    val names: List[String] = newList()
+    var ni = 0
+    while ni < fields.count {
+      names.add(fields[ni].name)
+      ni = ni + 1
+    }
+    val key = recordCopySiteKey(e.span)
+    if not tbl.recordCopySites.containsKey(key) {
+      tbl.recordCopySites.add(key, RecordCopySite(recordName = tname, fields = names))
+    }
+  }
+  recvTy
+}
+
+func stringListContains(xs: in List[String], x: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == x {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // A5 (docs/59 §5.1): report an unknown member/method on a receiver whose
 // member surface is fully known — a record, exposed record, or interface
 // DECLARED IN THE FILE BEING CHECKED (`symTableIsMemberComplete`; imported
@@ -4768,6 +4901,24 @@ pub func inferExpr(
         }
         case _ -> {
         }
+      }
+      // Record `.copy(field = value, ...)` (docs/01 §2.4): a
+      // non-destructive update of a record value, checked here and rewritten
+      // into a full constructor call by `Lyric.Mono`.
+      match fn.kind {
+        case EMember(copyRecv, copyName) -> if copyName == "copy" {
+          val copyRecvTy = match cachedRecvType {
+            case Some(t) -> t
+            case None -> inferExpr(sc, tbl, sigs, diag, copyRecv)
+          }
+          match recordCopyTarget(tbl, sigs, copyRecvTy) {
+            case Some(copyTid) -> return checkRecordCopy(sc, tbl, sigs, diag, e, copyTid, copyRecvTy, args)
+            case None -> {
+              cachedRecvType = Some(value = copyRecvTy)
+            }
+          }
+        }
+        case _ -> ()
       }
       // A4 (docs/59 §5.1): for a member callee, infer the receiver ONCE (with
       // the same module-alias leniency as the plain `EMember` arm, and reusing

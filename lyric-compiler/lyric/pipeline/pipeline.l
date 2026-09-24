@@ -271,7 +271,7 @@ pub func pipeCheckAndMono(
 
   val derived = deriveFileWithImports(propRes.file, deriveImports)
 
-  val monoRes = monoFileWithImportsAndTypeDecls(derived, monoGenFuncs, monoIfaceDecls, monoRecordDecls)
+  val monoRes = monoFileWithCopies(derived, monoGenFuncs, monoIfaceDecls, monoRecordDecls, tcRes.symbols.recordCopySites)
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
