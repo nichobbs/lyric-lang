@@ -64,12 +64,14 @@ jobs:
       - name: Set up Maven (JVM target dependency resolution)
         if: inputs.skip_jvm == false
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
           sudo apt-get update
           sudo apt-get install -y maven
 
       - name: Install Z3 (Phase 4 verifier)
         if: inputs.skip_prove == false
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
           sudo apt-get update
           sudo apt-get install -y z3
 

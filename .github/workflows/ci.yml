@@ -566,12 +566,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: ilverify self-hosted emitter IL (required gate, #3943)
         working-directory: ${{ github.workspace }}
         run: |
@@ -613,12 +608,7 @@ jobs:
         shell: bash
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Install dotnet-ildasm tool
         run: dotnet tool install --tool-path .tools dotnet-ildasm || true
       - name: Measure MSIL BOX instructions (epic #1877 Stage 2+ zero-overhead gate)
@@ -664,12 +654,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Measure JVM boxing calls (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
         run: |
@@ -715,12 +700,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Assert JVM LineNumberTable correctness (docs/63 band B2)
         working-directory: ${{ github.workspace }}
         run: |
@@ -809,12 +789,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
         run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
 
@@ -876,6 +851,7 @@ jobs:
       # split it again rather than reverting to fully sequential steps or
       # widening the cap back toward 14.
       - name: Weaver self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/weaver_self_test.l
@@ -886,6 +862,7 @@ jobs:
       # shadowing, and passthrough cases. Resolves Lyric.* imports via the
       # stage-1 bundle DLLs like the weaver step above.
       - name: TypeAliasResolve self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/type_alias_resolve_self_test.l
@@ -897,6 +874,7 @@ jobs:
       # recompile-from-source `LYRIC_LOAD_COMPILER=1`.  Run as one step so a
       # missing-stage-1 / missing-binary guard is shared.
       - name: Compiler self-tests (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/compiler-self-tests-batch.sh
@@ -906,6 +884,7 @@ jobs:
       # (comment-aware @cfg detection) and #1124 (single stub for all-gated
       # directory packages).
       - name: CfgGate self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cfg_gate_self_test.l
@@ -918,6 +897,7 @@ jobs:
       # `LYRIC_LOAD_COMPILER=1`).  9 cases against a byte-for-byte real
       # JaCoCo 0.8.12 report captured from an actual instrumented run.
       - name: JaCoCo/Cobertura converter self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jacoco_cobertura_self_test.l
@@ -932,6 +912,7 @@ jobs:
       # MSIL half of issue #1611 with no new F#.  No `LYRIC_LOAD_COMPILER=1`
       # here: this module imports only `Std.*`, not the compiler packages.
       - name: Bitwise self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/bitwise_self_test.l
@@ -947,6 +928,7 @@ jobs:
       # IndexOutOfRange/Overflow under load and was mis-filed as an Npgsql
       # connection-pool defect (#6359).
       - name: Interface slice-arg self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/iface_slice_arg_self_test.l
@@ -960,6 +942,7 @@ jobs:
       # silently reorders operands (not just miscomputes one) is caught too.
       # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` here either.
       - name: Await-hoist self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/await_hoist_self_test.l
@@ -969,6 +952,7 @@ jobs:
       # assignment values, while conditions — with per-shape evaluation-order
       # log assertions.  Imports only `Std.*`.
       - name: Propagate-hoist self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/propagate_hoist_self_test.l
@@ -981,6 +965,7 @@ jobs:
       # dotnet half of the MSIL/JVM agreement check; the JVM half runs
       # alongside `bitwise_self_test.l` (see the JVM self-tests job below).
       - name: Bool stringification self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/bool_tostring_self_test.l
@@ -1005,6 +990,7 @@ jobs:
       # `lyric test`). Imports only `Std.*`. The JVM twin runs in the JVM
       # self-tests job below.
       - name: BuildInfo self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/buildinfo_self_test.l
@@ -1025,6 +1011,7 @@ jobs:
       # Std.Core` injection is needed. The `--define git_hash` forces the `Some`
       # branch into the synthesized body, exercising exactly that resolution.
       - name: BuildInfo --define runtime path (native lyric build --define)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -1097,6 +1084,7 @@ jobs:
       # "True" on dotnet where JVM's `PrintStream.println(boolean)` already
       # renders lowercase "true".
       - name: println(Bool) lowercase parity self-test (dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -1175,6 +1163,7 @@ jobs:
       # The MSIL half of the MSIL/JVM agreement check — the JVM half runs in
       # the compiler-self-tests-jvm job.
       - name: Byte-arithmetic self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/byte_arithmetic_self_test.l
@@ -1184,6 +1173,7 @@ jobs:
       # worked before #6526's fix, JVM's half runs in the
       # compiler-self-tests-jvm job.
       - name: Exposed-record field self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/exposed_record_field_self_test.l
@@ -1194,6 +1184,7 @@ jobs:
       # fieldVarIndices/fieldSigBytes); JVM never had this bug (its #6526/#6528
       # gaps were separate, already-fixed registration sites).
       - name: Exposed-record generic constructor self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/exposed_record_generic_ctor_self_test.l
@@ -1202,6 +1193,7 @@ jobs:
       # dotnet-only — the feature is MSIL-specific (SocketsHttpHandler is a
       # BCL type; the fix lives entirely in Msil.Codegen), no JVM analog.
       - name: Typed FFI delegate self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/typed_ffi_delegate_self_test.l
@@ -1220,6 +1212,7 @@ jobs:
       # pre-existing, #3228), and the wire-DI suite on dotnet (the #5021
       # fix's direct regression test; JVM half already runs in the JVM job).
       - name: docs/58 wire/config-template self-tests (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -1249,6 +1242,7 @@ jobs:
       # harness sets them; the JVM subprocess inherits them).  JVM half runs
       # in the JVM self-tests job.
       - name: config-block self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         env:
@@ -1267,6 +1261,7 @@ jobs:
       # positional TypeDef-row list every closure class registered after
       # it in the same package relied on; see config_closure_self_test.l).
       - name: config-block + closure self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"config-closure self-test ran: config_closure_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/config_closure_self_test.l"
@@ -1276,6 +1271,7 @@ jobs:
       # generic type argument instead of reading the enclosing binding's
       # per-element expected type; see tuple_none_typearg_self_test.l).
       - name: tuple None type-arg self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"tuple-none-typearg self-test ran: tuple_none_typearg_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/tuple_none_typearg_self_test.l"
@@ -1287,6 +1283,7 @@ jobs:
       # + async coverage previously existed; see
       # multi_impl_iface_result_self_test.l and D-progress-808).
       - name: multi-impl-block interface self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"multi-impl-iface-result self-test ran: multi_impl_iface_result_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/multi_impl_iface_result_self_test.l"
@@ -1302,6 +1299,7 @@ jobs:
       # `.slice` sub-ranges, and composed chained calls.  Imports only
       # `Std.*`.
       - name: Slice-ops self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_ops_self_test.l
@@ -1312,6 +1310,7 @@ jobs:
       # clobber the enclosing slot or leak its name past the block.  Run via
       # native `lyric test` (imports only `Std.*`), asserting every runtime value.
       - name: Block-shadow self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/block_shadow_self_test.l
@@ -1322,6 +1321,7 @@ jobs:
       # (`Lyric.Mono.bindPatternEnvMono`/`rewriteMatchArms`).  Run via native
       # `lyric test` (imports only `Std.*`), asserting every runtime value.
       - name: Match-bound pattern type self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/match_bound_pattern_type_self_test.l
@@ -1332,6 +1332,7 @@ jobs:
       # here; the actual bug is JVM-only, see the JVM self-tests job below).
       # Run via native `lyric test` (imports only `Std.*`).
       - name: Nested-slice for-loop self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/nested_slice_for_jvm_self_test.l
@@ -1349,6 +1350,7 @@ jobs:
       # file in the bundle imported `Std.String`.  Run via native `lyric
       # test` (imports only `Std.*`), asserting every runtime value.
       - name: JVM-trio self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_trio_self_test.l
@@ -1361,6 +1363,7 @@ jobs:
       # via native `lyric test` (imports only `Std.*`), asserting every
       # runtime value on both targets.
       - name: Try/finally early-exit self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/try_finally_early_exit_self_test.l
@@ -1373,6 +1376,7 @@ jobs:
       # 15bf300 / PR #5846) landed. Run via native `lyric test` (imports only
       # `Std.*`), asserting every runtime value.
       - name: Lambda-Bool-if-condition self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/lambda_bool_if_cond_self_test.l
@@ -1399,6 +1403,7 @@ jobs:
       # running it on both targets is the cross-target parity guard that
       # would have caught #5854 pre-emptively.
       - name: Control-flow self-test on dotnet (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/jvm/control_flow_jvm_self_test.l
@@ -1410,11 +1415,13 @@ jobs:
       # `.cctor`'s LocalVarSig.  Both targets; the JVM half runs in
       # compiler-self-tests-jvm (JVM was never affected, run for parity).
       - name: Module-val-deps self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/module_val_deps_self_test.l
 
       - name: Never-tail self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/never_tail_self_test.l
@@ -1428,6 +1435,7 @@ jobs:
       # for parity, but until this step existed the MSIL-specific regressions
       # this file exists to catch had no CI coverage at all.
       - name: Func-val local rettype self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/func_val_local_rettype_self_test.l
@@ -1438,6 +1446,7 @@ jobs:
       # the value-typed slot (silent garbage values).  Both targets; the JVM
       # half runs in `compiler-self-tests-jvm`.  Imports only `Std.*`.
       - name: Annotated-binding unbox self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/annotated_binding_unbox_self_test.l
@@ -1451,6 +1460,7 @@ jobs:
       # stringification.  Both targets; the JVM half runs in
       # `compiler-self-tests-jvm`.  Imports only `Std.*`.
       - name: Compound-assign String self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/compound_string_assign_self_test.l
@@ -1461,6 +1471,7 @@ jobs:
       # Object.  Both targets; the JVM half runs in `compiler-self-tests-jvm`.
       # Imports only `Std.*`.
       - name: UFCS self-field self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/ufcs_self_field_self_test.l
@@ -1472,6 +1483,7 @@ jobs:
       # JVM backend has a separate, tracked gap for the same shape.  Imports
       # only `Std.*`.
       - name: Opaque Option-field self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/opaque_option_field_self_test.l
@@ -1483,6 +1495,7 @@ jobs:
       # half of the now-dual-target test; the JVM half (#5686 parity fix) runs
       # in compiler-self-tests-jvm.  Imports only `Std.*`.
       - name: List-literal index self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/list_literal_index_self_test.l
@@ -1516,6 +1529,7 @@ jobs:
       # cases all sat well clear of it. dotnet half is the real .NET output;
       # the JVM half (below) must match it exactly. Imports only `Std.*`.
       - name: Double-stringification boundary self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/double_stringify_boundary_self_test.l
@@ -1538,6 +1552,7 @@ jobs:
       # ArrayList-backed local on write-back.  Both targets; the JVM half
       # runs in compiler-self-tests-jvm.  Imports only Std.*.
       - name: Inout-slice self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/inout_slice_self_test.l
@@ -1552,6 +1567,7 @@ jobs:
       # is the parity control, the JVM half (below) is load-bearing.
       # Imports only `Std.*`.
       - name: Slice compound-assign eval-order self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/slice_compound_assign_eval_order_self_test.l
@@ -1562,6 +1578,7 @@ jobs:
       # RHS lowers or its internal branch desyncs the StackMapTable (JVM
       # VerifyError).  JVM is load-bearing; this is the dotnet parity control.
       - name: Inout-field self-reassign self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/inout_field_self_reassign_self_test.l
@@ -1575,6 +1592,7 @@ jobs:
       # tracked separately. Run via native `lyric test` (imports only
       # `Std.*`), asserting every runtime value.
       - name: Enum/closure/pattern-bind self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/enum_closure_pattern_bind_self_test.l
@@ -1589,6 +1607,7 @@ jobs:
       # in the `compiler-self-tests-jvm` job below (which has JDK 21).  Imports
       # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Aspect-weave self-test (native lyric test, --target dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"aspect-weave self-test ran: aspect_weave_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/aspect_weave_self_test.l"
@@ -1602,6 +1621,7 @@ jobs:
       # the `--target jvm` half runs in the `compiler-self-tests-jvm` job
       # below. Imports only `Std.*`.
       - name: Result/Option accessor self-test (native lyric test, --target dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"result/option accessor self-test ran: result_ensures_accessor_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/result_ensures_accessor_self_test.l"
@@ -1619,6 +1639,7 @@ jobs:
       # accessor.sh's header for the shared-fixture rationale (extracted
       # to keep this workflow file under its size ceiling, #6387).
       - name: Foreign Result/Option accessor fails loud, not a miscompile (native lyric build --target dotnet, #6630)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/check-foreign-result-accessor.sh dotnet
@@ -1630,6 +1651,7 @@ jobs:
       # single-file MSIL weave-template collection fix (a same-package
       # `from`-instance now resolves); the JVM half runs in the JVM job.
       - name: B'-mode runtime self-test (native lyric test, --target dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"B'-mode runtime self-test ran: bmode_runtime_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/bmode_runtime_self_test.l"
@@ -1646,6 +1668,7 @@ jobs:
       # this `dotnet` half exercises the degenerate-synchronous MSIL path plus
       # the async-SM spawn-in-scope pre-scan fix.  Imports only `Std.*`.
       - name: Async spawn/scope/await self-test (native lyric test, --target dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"async-spawn self-test ran: async_spawn_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/async_spawn_self_test.l"
@@ -1659,6 +1682,7 @@ jobs:
       # null even though T1 implements Thing, causing the match-exhaustiveness
       # guard to panic.  Run via native `lyric test`; imports only `Std.*`.
       - name: stdlib-generic-iface self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"stdlib-generic-iface self-test ran: stdlib_generic_iface_self_test.l\" lyric-compiler/lyric/stdlib_generic_iface_self_test.l"
@@ -1671,6 +1695,7 @@ jobs:
       # MSIL-only: the JVM target has no equivalent for `dictGetKeys`/`dictGetValues`
       # (DictKeyCollection is a .NET BCL nested type) — JVM parity tracked in #3676.
       - name: Map-enhancements self-test (native lyric test, --target dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"map-enhancements self-test ran: map_enhancements_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/map_enhancements_self_test.l"
@@ -1685,6 +1710,7 @@ jobs:
       # `--target jvm` sibling run (#6586) lives in `compiler-self-tests-jvm`
       # below, alongside the other JVM-target self-tests.
       - name: Slice array-ABI self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_array_abi_self_test.l
@@ -1704,6 +1730,7 @@ jobs:
       # F#-built, array-based stdlib (`Std.Core.sumInts`/`maxInt`,
       # `Std.String.join`).  Run via native `lyric test`; imports only `Std.*`.
       - name: toArray array-ABI self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/toarray_array_abi_self_test.l
@@ -1716,6 +1743,7 @@ jobs:
       # exercises the self-hosted production of the per-package stdlib layout,
       # including `Std.Sort` — which the F# stage-0 emitter cannot compile.
       - name: Slice/String self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_string_self_test.l
@@ -1731,6 +1759,7 @@ jobs:
       # Run via native `lyric test`, which compiles the @test_module in-process
       # through the self-hosted `Msil.Bridge`.  Imports only `Std.*`.
       - name: Generic-slice self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/generic_slice_self_test.l
@@ -1739,6 +1768,7 @@ jobs:
       # works correctly when `xs` is a slice[T] parameter derived from List.toArray().
       # Compiles the @test_module in-process through the self-hosted `Msil.Bridge`.
       - name: For-loop slice self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/for_loop_slice_self_test.l
@@ -1762,6 +1792,7 @@ jobs:
       # `compiler-self-tests-jvm` job (which configures Java 21 — this job does not,
       # so a JVM-class-version-21 run would `UnsupportedClassVersionError` here).
       - name: Range-for self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/jvm/range_for_jvm_self_test.l
@@ -1773,6 +1804,7 @@ jobs:
       # restores.  The `--target jvm` run lives in the `compiler-self-tests-jvm`
       # job (Java 21).  Imports only `Std.*`.
       - name: Erased-generic-arith self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/jvm/erased_generic_arith_jvm_self_test.l
@@ -1786,6 +1818,7 @@ jobs:
       # by the JVM kernel's F# host shim) is staged into .bootstrap/stage1 by
       # bootstrap.sh and referenced by the AOT csproj.
       - name: Conversion-method self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/conv_methods_self_test.l
@@ -1799,11 +1832,13 @@ jobs:
         wait-all: true
 
       - name: Pattern-lowering self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/pattern_lowering_self_test.l
 
       - name: Auto-FFI metadata self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
@@ -1811,16 +1846,19 @@ jobs:
       # .NET-only: `[Flags]` enums are a C#/BCL idiom with no JVM equivalent,
       # so there is no JVM counterpart to run (see the file's own header).
       - name: Extern enum flags bitwise-composition self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/extern_enum_flags_self_test.l
 
       - name: Extern Option[T] null-coercion self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/extern_option_self_test.l
 
       - name: FFI interface impl self-test (D105, native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/ffi_iface_impl_self_test.l
@@ -1829,6 +1867,7 @@ jobs:
         wait-all: true
 
       - name: Import extern self-test (D116, native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/import_extern_self_test.l
@@ -1841,6 +1880,7 @@ jobs:
       # @externTarget declares an arity that matches no System.Math.Max
       # overload and asserts the build fails with F0015.
       - name: Auto-FFI F0015 signature-mismatch negative test
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/ffi-f0015-negative-test.sh
@@ -1854,6 +1894,7 @@ jobs:
       # F0034, not F0020 — renumbered (#6648) to avoid colliding with
       # propagate.l's pre-existing F0020 (`?` in a non-Result/Option function).
       - name: FFI iface impl F0021–F0023, F0034 + generic-iface negative tests
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/ffi-iface-impl-negative-tests.sh
@@ -1881,6 +1922,7 @@ jobs:
       #            (lowerMethodCallMsil MClass arm now tries funcTokens on miss).
       # Compiled in-process through the self-hosted `Msil.Bridge`; imports only `Std.*`.
       - name: Synthesized-method-resolution self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/synthesized_method_self_test.l
@@ -1893,6 +1935,7 @@ jobs:
       # in-process through the self-hosted `Msil.Bridge`; imports only `Std.*`,
       # so no `LYRIC_LOAD_COMPILER=1`.  The JVM twin runs in the JVM job below.
       - name: Projectable opaque-twin self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/msil/msil_self_test_m87.l
@@ -1908,6 +1951,7 @@ jobs:
       # of the original root cause. Imports only `Std.*`, so no
       # `LYRIC_LOAD_COMPILER=1` is needed.
       - name: Nested if/match outer-var mutation self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/msil/msil_self_test_m89.l
@@ -1921,6 +1965,7 @@ jobs:
       # no-new-F# rule).  Compiled in-process through the self-hosted
       # `Msil.Bridge`; imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Class-typed package val .cctor self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/msil/msil_self_test_m86.l
@@ -1937,6 +1982,7 @@ jobs:
       # corrupts multi-field records — both caught here.  Compiled in-process
       # through the self-hosted `Msil.Bridge`; imports only `Std.*`.
       - name: In-bundle generics self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/inbundle_generics_self_test.l
@@ -1950,6 +1996,7 @@ jobs:
       # caught immediately.  Compiled in-process through the self-hosted
       # `Msil.Bridge`; imports only `Std.*`.
       - name: Generic closure-over-container self-test (native lyric test, #6569)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/generic_closure_container_self_test.l
@@ -1974,6 +2021,7 @@ jobs:
       # Maybe[Int] Just, Maybe[Int] Nothing, Maybe[String] Just.  Uses
       # `Lyric.Emitter` so LYRIC_LOAD_COMPILER=1 is needed.
       - name: Cross-package generics self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cross_package_generics_self_test.l
@@ -1992,6 +2040,7 @@ jobs:
       # as a restored dep and runs it.  Uses `Lyric.Emitter`, so
       # LYRIC_LOAD_COMPILER=1 is needed.
       - name: Cross-package Nat self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/nat_cross_package_self_test.l
@@ -2006,6 +2055,7 @@ jobs:
       # shim (plain main) and the Phase-B state-machine paths.  Uses
       # `Lyric.Emitter`, so LYRIC_LOAD_COMPILER=1 is needed.
       - name: Restored async funcs self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/restored_async_self_test.l
@@ -2020,6 +2070,7 @@ jobs:
       # async self-test above.  Uses `Lyric.Emitter`, so LYRIC_LOAD_COMPILER=1
       # is needed.
       - name: Restored-dependency qualified pub val self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_restored_qualified_val_self_test.l
@@ -2036,6 +2087,7 @@ jobs:
       # self-test above.  Uses `Lyric.Emitter`, so LYRIC_LOAD_COMPILER=1 is
       # needed.
       - name: Restored dependency List[slice[Byte]] return self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/restored_slice_list_return_self_test.l
@@ -2049,6 +2101,7 @@ jobs:
       # synthesis) is Phase B and tracked in epic #2070.  Imports only Std.*, so
       # no LYRIC_LOAD_COMPILER=1 needed.
       - name: Async extern unwrapping self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/async_extern_self_test.l
@@ -2059,6 +2112,7 @@ jobs:
       # local val), sequential calls, and explicit-return paths (#2256).
       # MSIL target only (JVM async is Phase B.1+).  Imports only `Std.*`.
       - name: Async SM synthesis self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/async_sm_self_test.l
@@ -2082,6 +2136,7 @@ jobs:
         wait-all: true
 
       - name: Match/compound self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/match_compound_self_test.l
@@ -2094,6 +2149,7 @@ jobs:
       # methods instead of the false/no-op stubs.  MSIL target only; JVM parity
       # under #1470's JVM-deferral note.  Imports only `Std.*`.
       - name: Loop-EH/collection self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/loop_eh_collection_self_test.l
@@ -2105,6 +2161,7 @@ jobs:
       # InvalidProgramException). MSIL target only; JVM parity under #1470's
       # JVM-deferral note. Imports only `Std.*`.
       - name: Return-in-try self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/return_in_try_self_test.l
@@ -2117,6 +2174,7 @@ jobs:
       # MSIL target only; JVM parity under #1470's JVM-deferral note. Imports
       # only `Std.*`.
       - name: Defer self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/defer_self_test.l
@@ -2132,6 +2190,7 @@ jobs:
       # unblocks the `assertPanics` try/catch shape on the self-hosted backend.
       # MSIL target only; JVM parity under #1470's JVM-deferral note.
       - name: Try-catch-expr self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/try_catch_expr_self_test.l
@@ -2142,6 +2201,7 @@ jobs:
       # A holding invariant doesn't interfere; a violated one panics (observed
       # via a try/catch expression). MSIL target only.
       - name: Loop-invariant self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/loop_invariant_self_test.l
@@ -2151,6 +2211,7 @@ jobs:
       # value/string/void HOFs must run and print the correct results, and a
       # parameter-USING lambda must fail loud (#1939, until arg unboxing lands).
       - name: Function-value invocation (#1877)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/function-value-invocation-self-test.sh
@@ -2160,6 +2221,7 @@ jobs:
       # so reassignments are observable across the closure boundary in both
       # directions (v2).  Both must run and produce correct results.
       - name: Capturing closures (#1479 v1+v2)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/capturing-closures-self-test.sh
@@ -2179,8 +2241,25 @@ jobs:
       # `wait-all`-reported failure — a concurrency ceiling in the group, not
       # a defect in this test or the other two. See PR #4810.
       - name: MSIL await-expr-forms self-test (#4276, native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/msil/msil_await_expr_forms_self_test.l
+
+      # Explicit terminal gate (#7135): every step above from "Weaver
+      # self-test" onward carries `if: ${{ !cancelled() }}`, mirroring
+      # compiler-self-tests-jvm's own gate (#6788) so a failure in one batch
+      # no longer silently skips the rest of this job. A step failing still
+      # marks the job `failure` on its own; this is a belt-and-braces
+      # summary gate, re-checking `job.status` so the job's overall
+      # conclusion is never accidentally masked by whatever the very last
+      # guarded step's own exit code happens to be.
+      - name: Fail job if any batch failed
+        if: ${{ !cancelled() }}
+        run: |
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "::error::compiler-self-tests-dotnet-a: one or more self-test batches failed above (see the failing step for details)"
+            exit 1
+          fi
 
   # Native (LLVM) backend self-tests — N7.1 (docs/10 D-progress-540/545).
   # Split out into its own job (previously a `background: true` step inside
@@ -2345,12 +2424,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
       # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
@@ -2584,12 +2658,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # source_path_diagnostics_self_test.l and jvm_sourcefile_attr_self_test.l
       # (below) spawn `./bin/lyric` as a subprocess, resolved relative to CWD
@@ -2599,6 +2668,7 @@ jobs:
       # (bootstrap/src/Lyric.Cli.Aot/bin/...), never runs `make lyric`, and has
       # no other step creating bin/lyric, so recreate the same symlink here.
       - name: Create ./bin/lyric symlink for subprocess-spawning self-tests
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p bin
           ln -sf "../bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric" bin/lyric
@@ -2630,6 +2700,7 @@ jobs:
       # write is a race with no failure signal (silently flaky, not a
       # deterministic error).
       - name: MSIL backend self-tests M2a-M2d (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -2665,6 +2736,7 @@ jobs:
       # pointer so a callee's write reaches the caller.  MSIL target only; JVM
       # parity (holder-array lowering) is tracked in #1763.
       - name: Out/inout-parameter self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"out/inout-parameter self-test ran: outparam_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/outparam_self_test.l"
@@ -2672,6 +2744,7 @@ jobs:
       # Named-arg/default-param self-test — pins call-site named-arg reorder and
       # default-param fill (#1503).  JVM analog step is below.
       - name: Named-arg/default-param self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"named-arg/default-param self-test ran: func_default_args_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/func_default_args_self_test.l"
@@ -2680,6 +2753,7 @@ jobs:
       # parity is gated on the union case-factory gap, tracked in #1707 (so this
       # step is `--target dotnet` only, unlike the bitwise self-test above).
       - name: Nested-generic self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/nested_generic_self_test.l
@@ -2690,6 +2764,7 @@ jobs:
       # MSIL target only (the construction-context fix lives in the MSIL
       # codegen); the inference half is target-agnostic.
       - name: Union-ctor return-context self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/union_ctor_return_context_self_test.l
@@ -2699,6 +2774,7 @@ jobs:
       # backend, returning null/the argument instead of the call result.
       # MSIL target only; JVM-target parity is tracked in #1722.
       - name: Self-method-call self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/self_method_call_self_test.l
@@ -2712,6 +2788,7 @@ jobs:
       # AccessViolationException (raw int32 flowing into an Option match's
       # isinst).  The dotnet leg pins it.
       - name: JVM-trio positive-path self-test on dotnet (native lyric test --target dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/jvm_trio_positive_self_test.l
@@ -2721,6 +2798,7 @@ jobs:
       # compiler-self-tests-jvm), and pins indexOfRaw/lastIndexOfRaw's raw
       # -1-sentinel semantics.
       - name: Aliased-import indexOf routing self-test on dotnet (native lyric test --target dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/indexof_aliased_bcl_self_test.l
@@ -2730,12 +2808,14 @@ jobs:
       # union-case construction inference.  The impl-method indirection is the
       # exact NativeQueue::consume shape that produced invalid IL.
       - name: Funcval return materialization self-test on dotnet (native lyric test --target dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/funcval_ret_materialize_self_test.l
       # The same shapes are target-portable and meaningful MSIL coverage
       # (#6494 review) — run them on dotnet too.
       - name: Expression-branch stackmap self-test on dotnet (native lyric test --target dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/jvm/stackmap_expr_branch_jvm_self_test.l
@@ -2762,6 +2842,7 @@ jobs:
       # found`).  This is the first --target dotnet self-test to exercise an
       # in-body method, so it is the regression guard for that class of bug.
       - name: Implicit-self record-method self-test (native lyric test, #4947)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/implicit_self_msil_self_test.l
@@ -2770,6 +2851,7 @@ jobs:
       # named arguments out of declaration order stored values into the wrong
       # field slots (invalid IL / cross-typed fields).  MSIL target only.
       - name: Named-arg-order self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/named_arg_order_self_test.l
@@ -2779,6 +2861,7 @@ jobs:
       # field's type argument so a later `match` on the field finds the arm.
       # MSIL target only; JVM-target parity is tracked in #1740.
       - name: Record-option-field self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/record_option_field_self_test.l
@@ -2794,6 +2877,7 @@ jobs:
       # MSIL target only; JVM-target parity for same-package generic
       # specialization is tracked in #1707.
       - name: Generic-specialization self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/generic_specialization_self_test.l
@@ -2805,6 +2889,7 @@ jobs:
       # specialise into a concrete copy.  MSIL target only; JVM parity tracked
       # in #1707.
       - name: Stdlib-generic-mono self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/stdlib_generic_mono_self_test.l
@@ -2820,6 +2905,7 @@ jobs:
       # local before `new; dup`.  JVM half runs in `compiler-self-tests-jvm`
       # (needs JDK 21, unlike this dotnet-only job).
       - name: Map-option self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/map_option_self_test.l
@@ -2837,6 +2923,7 @@ jobs:
       # through the self-hosted `Msil.Bridge`, so the lowering under test is
       # the one that runs.  MSIL target only (epic #1470 defers JVM).
       - name: Propagate self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/propagate_self_test.l
@@ -2846,6 +2933,7 @@ jobs:
       # because the boxed `List<object>` slot wasn't unboxed back to the value
       # type.  Run via native `lyric test` (in-process through Msil.Bridge).
       - name: List-value-compare self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/list_value_compare_self_test.l
@@ -2856,6 +2944,7 @@ jobs:
       # compared by reference.  Run via native `lyric test` (in-process through
       # Msil.Bridge).
       - name: Equality self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/equality_self_test.l
@@ -2867,6 +2956,7 @@ jobs:
       # BCL `Map`/`java.util.HashMap` key on both targets.  Run via native
       # `lyric test` (in-process through Msil.Bridge / Jvm.Bridge).
       - name: Map-key self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/map_key_self_test.l
@@ -2876,6 +2966,7 @@ jobs:
       # is tracked + unboxed instead of erasing to `Option<object>`.  Run via
       # native `lyric test` (in-process through Msil.Bridge).
       - name: Map-value self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/map_value_self_test.l
@@ -2891,6 +2982,7 @@ jobs:
       # their bodies — dispatch correctly (value-type args are no longer boxed
       # against the value-type param signature).  Run via native `lyric test`.
       - name: Impl-method self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/impl_method_self_test.l
@@ -2903,6 +2995,7 @@ jobs:
       # native `lyric test` (in-process through Msil.Bridge).  Imports only
       # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Alias-rewriter self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/alias_rewriter_self_test.l
@@ -2915,6 +3008,7 @@ jobs:
       # entry body gained the hoisted val.  dotnet-only — see the file's
       # module doc for why a runtime test (and a JVM twin) aren't possible.
       - name: Propagate-hoist entry-polarity self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/propagate_hoist_entry_polarity_self_test.l
@@ -2926,6 +3020,7 @@ jobs:
       # pinned).  Run via native `lyric test` (in-process through Msil.Bridge).
       # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Ensures self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/ensures_self_test.l
@@ -2941,6 +3036,7 @@ jobs:
       # native `lyric test` (in-process through Msil.Bridge, which seeds the
       # monomorphizer with the stdlib generics as imports).  Imports only `Std.*`.
       - name: Mono-shadow self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/mono_shadow_self_test.l
@@ -2958,11 +3054,13 @@ jobs:
       # Pure logic (Std.Core/Collections only), so it runs cleanly through the
       # in-process bundle.  Part of the ecosystem-DX epic #1968 (#1976/#1988).
       - name: CLI-suggest self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cli_suggest_self_test.l
 
       - name: CLI-upgrade self-test (native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cli_upgrade_self_test.l
 
@@ -2975,6 +3073,7 @@ jobs:
       # stdlib (Std.File) at runtime (#2001), so we drive the behaviour
       # end-to-end via the compiled CLI instead.
       - name: Release self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/release_self_test.l
@@ -2994,6 +3093,7 @@ jobs:
       # so the Msil.Bridge transitive closure does not overflow the F# bootstrap
       # emitter; stage-1 DLLs provide the compiler-package imports (#2888).
       - name: MSIL project bridge self-test (native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_project_bridge_self_test.l
 
@@ -3018,6 +3118,7 @@ jobs:
       # compiled stdlib (`Emitter.findStdlibSources()`), needing the same
       # `dotnet`/Java 21 toolchain this job already sets up.
       - name: Enum case-name collision self-test (native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/enum_case_collision_self_test.l
 
@@ -3028,6 +3129,7 @@ jobs:
       # instead of an escaped panic().  Same in-process Msil.Bridge surface as
       # msil_project_bridge_self_test.l above.
       - name: MSIL codegen diagnostics self-test (native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_codegen_diag_self_test.l
 
@@ -3036,6 +3138,7 @@ jobs:
       # imports, per-package isolation, @cfg erasure via emitProject, restored-dep
       # wiring, and subprocess-fallback routing (#2888).
       - name: Emitter project self-test (native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/emitter_project_self_test.l
 
@@ -3048,6 +3151,7 @@ jobs:
       # record-body method dispatch (plain and chained `Self`-returning,
       # with a field-name collision present) end to end.
       - name: MSIL restored bridge self-test (native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_restored_bridge_self_test.l
 
@@ -3058,6 +3162,7 @@ jobs:
       # entry point) — kept as its own file since it asserts a build-time PANIC
       # (assertPanicsWith) rather than a successful compile+run.
       - name: Generic extern value-type instance self-test (native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/generic_extern_valuetype_instance_self_test.l
 
@@ -3080,6 +3185,7 @@ jobs:
       # NESTED fixture at both `Emitter.Dotnet` and `Emitter.Jvm`, covering
       # both targets' exit(78) behavior from this one run.
       - name: Config-block required-field-missing self-test (native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/config_block_missing_required_self_test.l
 
@@ -3091,6 +3197,7 @@ jobs:
       # so it needs the same exclusive, non-background placement as the
       # config-block step above.
       - name: Source-path diagnostics self-test (native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/source_path_diagnostics_self_test.l
 
@@ -3100,15 +3207,18 @@ jobs:
       # shape. Shells out to unzip/javap (already a hard CI dependency for
       # every JVM self-test that runs its JAR under `java`).
       - name: JVM SourceFile attribute self-test (native lyric test)
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_sourcefile_attr_self_test.l
 
       - name: Init self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/init_self_test.l
 
       - name: Union-in-list match self-test (native lyric test, #2126)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/union_list_match_self_test.l
@@ -3118,6 +3228,7 @@ jobs:
       # Covers both the inline ldc.i4 path (literal Int/Bool) and the ldsfld path
       # (String, binary-op results).  Imports only Std.*; no LYRIC_LOAD_COMPILER.
       - name: Module-val self-test (native lyric test)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/module_val_self_test.l
@@ -3132,6 +3243,7 @@ jobs:
       # in-process through the self-hosted Msil.Bridge.  Imports only Std.*;
       # no LYRIC_LOAD_COMPILER=1 needed.
       - name: Stubbable + StubCounter self-test (native lyric test, #1776)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/stubbable_self_test.l
@@ -3143,6 +3255,7 @@ jobs:
       # in-process through the self-hosted `Msil.Bridge`.  Imports only
       # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: DateTime-toString self-test (native lyric test, #2184)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/datetime_tostring_self_test.l
@@ -3156,6 +3269,7 @@ jobs:
       # real stdin input rather than reporting EOF on every call.  A plain
       # program because TAP tests have no stdin.
       - name: Std.Console round-trip on dotnet (lyric build --target dotnet)
+        if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -3184,6 +3298,22 @@ jobs:
 
       - name: Wait for all parallel tests
         wait-all: true
+
+      # Explicit terminal gate (#7135): every step above from the job's
+      # first `background: true` step onward carries `if: ${{ !cancelled() }}`,
+      # mirroring compiler-self-tests-jvm's own gate (#6788) so a failure in
+      # one batch no longer silently skips the rest of this job. A step
+      # failing still marks the job `failure` on its own; this is a
+      # belt-and-braces summary gate, re-checking `job.status` so the job's
+      # overall conclusion is never accidentally masked by whatever the
+      # very last guarded step's own exit code happens to be.
+      - name: Fail job if any batch failed
+        if: ${{ !cancelled() }}
+        run: |
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "::error::compiler-self-tests-dotnet-b: one or more self-test batches failed above (see the failing step for details)"
+            exit 1
+          fi
   aot-smoke:
     runs-on: ubuntu-latest
     needs: [build]
@@ -3208,12 +3338,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # ILCompiler package cache — keyed on the .NET SDK version so the
       # ~200 MB compiler package is not re-downloaded on every run.
@@ -3414,12 +3539,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       # Stage-2 binary: needed only by the handful of steps below that
       # exercise a compiler-internal `@externTarget` signature-encoding fix
       # (System.Single `bufMsilType`, D125 follow-up) — such a fix only takes
@@ -5877,6 +5997,23 @@ jobs:
   # (~60 CPU-min) in 2 shards, jvm is 132 files (~120 CPU-min) in 4 shards.
   numbered-backend-self-tests:
     runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    # Fast-fail mitigation for #7087: the self-hosted lyric-labeled runner
+    # pool has repeatedly left jobs queued for the full 24h GitHub job-
+    # duration ceiling with zero runner pickup, burning a full day per
+    # occurrence before the job is auto-cancelled and the PR learns
+    # anything. `timeout-minutes` bounds only a job's EXECUTION wall-clock
+    # once a runner has picked it up -- it has no effect on time spent
+    # queued waiting for a runner assignment, which GitHub's own separate
+    # 24h queued-job ceiling governs and this key cannot shorten. So this
+    # does NOT mitigate the "queued, zero pickup" symptom #7087 is actually
+    # about -- only reprovisioning or right-sizing the runner pool does
+    # (see #7087) -- but it does fail fast on the OTHER failure shape (a
+    # shard that starts, then hangs mid-run) instead of silently occupying
+    # a runner for up to 24h. 60 min (not native-backend-self-tests' 45):
+    # this job's own recent green-run durations ranged ~20-36 min across
+    # its six matrix shards, so 45 min left too little margin against
+    # normal variance.
+    timeout-minutes: 60
     needs: [build]
     permissions:
       contents: read
@@ -5936,12 +6073,7 @@ jobs:
           (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Run numbered ${{ matrix.set }} self-tests (shard ${{ matrix.shard }})
         if: |
           (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
@@ -6071,12 +6203,7 @@ jobs:
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           echo "LYRIC_CLI_PATH=$lyric_bin" >> "$GITHUB_ENV"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       - name: Stage stdlib DLLs + local-dep resolver setup
         run: bash scripts/ci/stage-stdlib-dlls-localdep-resolver.sh
@@ -6321,6 +6448,15 @@ jobs:
   # Stdlib and ecosystem-library builds — runs in parallel with ecosystem-tests.
   stdlib-builds:
     runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    # Fast-fail mitigation for #7087 (see numbered-backend-self-tests'
+    # identical comment above -- and same caveat: this bounds only
+    # EXECUTION time once a runner picks the job up, not time spent queued
+    # with zero pickup, which is the actual #7087 symptom and needs
+    # runner-pool capacity work, not a repo change). Helps the "starts then
+    # hangs mid-run" shape instead. This job's own recent green-run
+    # durations were ~33-34 min, so 60 min leaves comfortable margin
+    # without being anywhere near the 24h ceiling.
+    timeout-minutes: 60
     needs: [build]
     permissions:
       contents: read
@@ -6343,12 +6479,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # Full self-hosted stdlib bundle (#2592, stage-2 milestone) — builds
       # the entire public Std.* surface through the self-hosted MSIL backend
@@ -6865,12 +6996,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # See compiler-self-tests-dotnet-a's "Parallel step execution" comment above
       # for how `background: true` / `wait-all: true` work.
@@ -7468,12 +7594,7 @@ jobs:
         # runner-pools comment near the top of this file for why.
         run: |
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          cat > "$lyric_bin" <<'WRAPPER'
-          #!/usr/bin/env bash
-          self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-          exec dotnet "$(dirname "$self")/lyric.dll" "$@"
-          WRAPPER
-          chmod +x "$lyric_bin"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
 
       # clang and zlib1g-dev are required by the ILCompiler linker pass used by
       # `lyric build --release --aot` (the trampoline-elimination pipeline, #4139).
