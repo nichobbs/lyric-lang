@@ -1,4 +1,4 @@
-# D-progress-942 — T0105 missing-required-field check now covers named-field union-case construction (#7119)
+# D-progress-945 — T0105 missing-required-field check now covers named-field union-case construction (#7119)
 
 **Status:** shipped
 
