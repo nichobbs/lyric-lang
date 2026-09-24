@@ -4503,7 +4503,7 @@ test "constructing an enum by its type name is a T0125 error (#6838)" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Record `.copy(field = value)` (docs/01 §2.4): named field arguments only
 // (T0127), each a real field (T0101) given at most once (T0127), with a value
-// assignable to the field (T0043).  A valid copy has the receiver's type.
+// assignable to the field (T0104, as for a constructor argument).  A valid copy has the receiver's type.
 // ─────────────────────────────────────────────────────────────────────────────
 test "record copy type-checks and has the receiver's type" {
   val src = "package P\nrecord Pt { x: Int; y: Int }\nfunc f(p: in Pt): Pt { p.copy(x = 1) }\n"
@@ -4526,9 +4526,9 @@ test "record copy rejects a repeated field with T0127" {
   assertTrue(hasDiagCode(parseCheck(src), "T0127"), "repeated copy field: T0127")
 }
 
-test "record copy rejects a mistyped value with T0043" {
+test "record copy rejects a mistyped value with T0104" {
   val src = "package P\nrecord Pt { x: Int; y: Int }\nfunc f(p: in Pt): Pt { p.copy(x = \"one\") }\n"
-  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "mistyped copy value: T0043")
+  assertTrue(hasDiagCode(parseCheck(src), "T0104"), "mistyped copy value: T0104")
 }
 
 test "a user-declared copy method takes precedence over record copy" {

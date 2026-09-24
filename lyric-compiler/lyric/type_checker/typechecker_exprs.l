@@ -2142,7 +2142,7 @@ func typeIdIsRecord(tbl: in SymbolTable, tid: in TypeId): Bool {
 // Check `recv.copy(name = value, ...)` against the record's fields: every
 // argument must be named (T0127), name a field (T0101) at most once (T0127),
 // and be assignable to that field's type at the receiver's instantiation
-// (T0043).  A valid call is recorded in `tbl.recordCopySites` and has the
+// (T0104).  A valid call is recorded in `tbl.recordCopySites` and has the
 // receiver's type.
 func checkRecordCopy(
   sc: in Scope,
@@ -2182,11 +2182,11 @@ func checkRecordCopy(
             found = true
             val want = fields[fi].ty
             val got = inferExprExpected(sc, tbl, sigs, diag, valE, want)
-            if not typeAssignable(tbl, want, got) {
+            if not argSatisfiesParam(tbl, want, got) {
               diag.add(
                 errorDiagnostic(
-                  "T0043",
-                  "field '" + nm + "' of '" + tname + "' has type " + renderType(want) + " but the copy supplies " + renderType(got),
+                  "T0104",
+                  "argument for field '" + nm + "' has type " + renderType(got) + " but field expects " + renderType(want),
                   valE.span
                 )
               )

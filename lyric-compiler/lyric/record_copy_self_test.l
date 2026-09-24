@@ -3,7 +3,7 @@
 //! new record with the named fields replaced and every other field copied.
 //!
 //! The type checker validates each call (named arguments only, real fields,
-//! assignable values; T0127/T0101/T0043) and `Lyric.Mono` rewrites it into a
+//! assignable values; T0127/T0101/T0104) and `Lyric.Mono` rewrites it into a
 //! full constructor call that evaluates the receiver and each argument once,
 //! left to right.  Runs on both targets:
 //!   lyric test lyric-compiler/lyric/record_copy_self_test.l
