@@ -34,6 +34,11 @@ Three related gaps surfaced when a generic library passed functions around
    parameter type or its result is unsafe (a bare unpinned parameter or
    result stays safe: the delegate itself is erased), so such a default now
    raises M0004 instead of compiling to a crash.
+   A bare union case name is never a function reference, even when
+   nullary: `Go` of a non-generic union `Msg` types as `Msg`
+   (`nullaryCaseTEMono`), so `clickHandlers(Go)` binds its type parameter
+   to `Msg` without needing an annotated binding. A nullary case of a
+   generic union, or a case name several unions share, stays untyped.
 3. A generic record's function-typed field registers any parameter or result
    type that mentions the record's own type parameters as `object`
    (`recordFieldFuncTypeMsil`); the call result then takes the erased-value
@@ -41,8 +46,8 @@ Three related gaps surfaced when a generic library passed functions around
 
 ## Verification
 
-`mono_self_test.l` covers inference from a function reference and M0004 for
-an unsafe function-typed default. `emitter_project_self_test.l` matches a
+`mono_self_test.l` covers inference from a function reference and from a
+bare nullary case, and M0004 for an unsafe function-typed default. `emitter_project_self_test.l` matches a
 generic union returned through a generic record's function field and
 through a function passed by name, inside an imported generic, on MSIL and
 the JVM.

@@ -1205,6 +1205,25 @@ func typeHeadsMatchMono(a: in List[String], b: in List[String]): Bool {
   true
 }
 
+// The type of a bare nullary union case used as a value (`Go`): its union,
+// when exactly one non-generic union in scope declares that case.  A
+// generic union's nullary case (`Miss` of `Found[T]`) does not pin its type
+// arguments, and a case name several unions share is left to the type
+// checker's resolution, so both give `None`.
+func nullaryCaseTEMono(state: in MonoState, name: in String): Option[TypeExpr] {
+  match mapGet(state.ctorCandidates, name) {
+    case Some(cands) -> if cands.count == 1 and cands[0].params.count == 0 {
+      match cands[0].generics {
+        case Some(_) -> None
+        case None -> cands[0].ret
+      }
+    } else {
+      None
+    }
+    case None -> None
+  }
+}
+
 // The function type of a bare reference to a known, non-generic,
 // unambiguous function `name`: `(P1, ..., Pn) -> R`, `R` being `Unit` when
 // the function declares no return type.
@@ -1595,7 +1614,10 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
             // value (`describeFn(toUi, xs)`) has that function's type, so a
             // generic callee's `(E) -> Option[U[Msg]]` parameter binds its
             // type parameters from it instead of defaulting them to Object.
-            case None -> funcRefTEMono(state, path.segments[0], expr.span)
+            case None -> match nullaryCaseTEMono(state, path.segments[0]) {
+              case Some(cte) -> Some(value = cte)
+              case None -> funcRefTEMono(state, path.segments[0], expr.span)
+            }
           }
         }
       } else {

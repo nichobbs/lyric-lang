@@ -2581,6 +2581,15 @@ test "a nullary union case argument binds a type parameter as a value, not a fun
   val callerSrc = "package Caller\n" + "union Msg { case Go\n case Stop }\n" +
     "func caller(): Unit { val r = wrap(Go) }\n"
   val libSrc = "package Lib\n" + "pub func wrap[M](m: in M): List[M] { newList() }\n"
-  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  val callerFile = parse(callerSrc).file
+  // The bridges feed every bundle package's case constructors, the caller's own included.
+  val feed = genericsAndUnionCtors(parse(libSrc).file)
+  val own = unionCtorInferenceDecls(callerFile.items)
+  var i = 0
+  while i < own.count {
+    feed.add(own[i])
+    i = i + 1
+  }
+  val res = monoFileWithImports(callerFile, feed)
   assertTrue(hasFunc(res.file, "wrap__Msg"), "M bound to Msg")
 }

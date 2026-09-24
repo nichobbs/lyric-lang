@@ -1998,7 +1998,7 @@ func ownOverloadPkgs(): List[Emitter.ProjectPackage] {
         "    }\n" +
         "    case Miss -> \"none\"\n" +
         "  }\n" +
-        "  println(hit + \"; \" + findAll(\"a\", \"b\")[0])\n" +
+        "  println(hit + \"; \" + EPOv.Other.findAll(\"a\", \"b\")[0])\n" +
         "}\n"
     )
   )
