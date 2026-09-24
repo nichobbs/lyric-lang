@@ -26,6 +26,21 @@ func accessCodeOf(n: in Int): AccessCode {
   }
 }
 
+union Reply {
+  case Said(text: String)
+  case Silent
+}
+
+union Responder[M] {
+  case OnInput(toMsg: (String) -> M)
+}
+
+func describeResponder(r: in Responder[Reply]): String {
+  return match r {
+    case OnInput(f) -> match f("abc") { case Reply.Said(t) -> "said " + t; case Reply.Silent -> "silent" }
+  }
+}
+
 record Handler {
   apply: (Int) -> Int
 }
@@ -94,4 +109,11 @@ test "an enum case named like another package's union case matches as the enum" 
     case _ -> "other"
   }
   assertEqual(label, "denied", "enum case matched")
+}
+
+// A qualified case pattern (`Reply.Said(t)`) on the erased result of a
+// function held in a generic union binds through the case class.
+test "a qualified case pattern binds a field of an erased function result" {
+  val r: Responder[Reply] = OnInput(toMsg = { s: String -> Said(text = s) })
+  assertEqual(describeResponder(r), "said abc", "qualified pattern bound")
 }

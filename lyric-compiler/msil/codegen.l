@@ -14264,7 +14264,7 @@ func lastDottedSegmentMsil(fqn: in String): String {
   if dotIdx < 0 {
     fqn
   } else {
-    fqn.substring(dotIdx + 1, fqn.length)
+    fqn.substring(dotIdx + 1)
   }
 }
 
