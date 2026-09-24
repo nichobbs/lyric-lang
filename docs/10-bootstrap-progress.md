@@ -35162,3 +35162,13 @@ left to right. Generic bodies exported through contract metadata carry the
 lowered form, and a `.copy` inside a generic from a sibling package or the
 stdlib is lowered from the specialised receiver type (M0006 when that type is
 unknown). See D-progress-948.
+
+## Calls through a record's function field; generic function arguments
+
+`r.f(args)` on a function-typed record field now invokes the function on
+both targets (it previously failed at run time on MSIL and with
+`NoSuchMethodError` on the JVM). A named function passed to a generic binds
+its type parameters, function-typed parameters take part in the #5970
+erasure-safety check, and a generic record's instantiation-dependent
+function-field types no longer produce bogus closed generics on MSIL. See
+D-progress-951 and D-progress-952.

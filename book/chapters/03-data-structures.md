@@ -43,6 +43,8 @@ val inactive = c.copy(isActive = false)
 
 Arguments to `.copy` must be named, each naming a real field at most once, with a value the field accepts. The receiver and the arguments are evaluated once, left to right, and the copy is shallow: a `List` field in the copy is the same list as in the original. `c.copy()` with no arguments is a plain shallow copy.
 
+**Function-typed fields.** A record can hold functions, and calling one looks like a method call: given `record Handler { apply: (Int) -> Int }`, `h.apply(2)` runs the function stored in `apply`. This is a convenient way to describe a program as data (an `update` and a `view` function, say) and pass it around as one value.
+
 **Structural equality.** A record compiled to a `readonly struct` (all-primitive fields, like `Point` above) gets structural equality for free from the CLR's own default value-type equality: `Point(x = 1.0, y = 2.0) == Point(x = 1.0, y = 2.0)` is always `true`, with no annotation needed. A record compiled to a `record class` (like `Customer`, which holds reference-typed fields) does **not** get this for free — it needs an explicit `@derive(Equals)` annotation to get real field-by-field `==`/`!=` (this also synthesizes a consistent `hashCode`):
 
 ```lyric
