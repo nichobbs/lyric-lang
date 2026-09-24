@@ -168,3 +168,44 @@ test "chained field read on a cross-package generic function's call result resol
   assertEqual(lines[0], "id-1", "e.key reads the real String field")
   assertEqual(lines[1], "7", "e.value reads the real Int field")
 }
+
+// #7195 (review follow-up): `recordRetClassOfBundle`'s bare-name fallback
+// must never fire for a function whose return type is a same-file
+// `extern type`, even when an UNRELATED package declares its own record
+// sharing that exact bare name. Before this fix, the bundle-wide `ctorReg`
+// bare-key lookup found the unrelated record and wrongly narrowed the
+// extern-typed function's return class to it, producing a bogus
+// `checkcast` and a real ClassCastException at every call site — this is
+// the shape (not #6929's own three-package generic-record shape) that
+// actually caused a mid-PR CI regression in `emitter_project_self_test.l`.
+test "extern-typed function return does not collide with an unrelated package's same-named record (#7195)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(
+    "package XDictHelper\n" + "\n" + "extern type JDict[K, V] = \"java.util.concurrent.ConcurrentHashMap\"\n" + "\n" +
+      "@externTarget(\"java.util.concurrent.ConcurrentHashMap.<init>\")\n" +
+      "func newJDict(): JDict[String, String] = ()\n" +
+      "\n" +
+      "pub func makeDict(): JDict[String, String] {\n" +
+      "  val d = newJDict()\n" +
+      "  d.put(\"a\", \"1\")\n" +
+      "  d\n" +
+      "}\n"
+  )
+  // Unrelated package, own record, SAME bare name as the extern type above.
+  pkgSrcs.add("package XDictOwner\n" + "\n" + "pub record JDict {\n" + "  tag: String\n" + "}\n")
+  pkgSrcs.add(
+    "package App3\n" + "\n" + "import XDictHelper\n" + "import XDictOwner\n" + "\n" + "func main(): Int {\n" +
+      "  val d = XDictHelper.makeDict()\n" +
+      "  val local = XDictOwner.JDict(tag = \"local-value\")\n" +
+      "  println(d.size())\n" +
+      "  println(local.tag)\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("genret-extern-collision", pkgSrcs, "App3")
+  assertEqualInt(result.exitCode, 0, "run must succeed, not throw ClassCastException (stderr=" + result.stderr + ")")
+  val lines = Std.String.split(Std.String.trim(result.stdout), "\n")
+  assertEqualInt(lines.length, 2, "expected 2 output lines (stdout=" + result.stdout + ")")
+  assertEqual(lines[0], "1", "real ConcurrentHashMap size, not a bogus checkcast to the unrelated record")
+  assertEqual(lines[1], "local-value", "the unrelated package's own record still constructs and reads correctly")
+}
