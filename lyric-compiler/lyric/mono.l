@@ -383,7 +383,7 @@ func synSpan(): Span {
   Span(startPos = synPos(), endPos = synPos())
 }
 
-/// `decl` tagged with its origin package (`originAnnotationName`).  An empty
+/// `decl` tagged with its origin package (`originAnnotationName()`).  An empty
 /// `pkgName`, or a decl already tagged, is returned unchanged.
 pub func withOriginPkgMono(decl: in FunctionDecl, pkgName: in String): FunctionDecl {
   if pkgName.length == 0 or originPkgOf(decl.annotations).length > 0 {
@@ -396,7 +396,7 @@ pub func withOriginPkgMono(decl: in FunctionDecl, pkgName: in String): FunctionD
     ai = ai + 1
   }
   val segs: List[String] = newList()
-  segs.add(originAnnotationName)
+  segs.add(originAnnotationName())
   val args: List[AnnotationArg] = newList()
   args.add(ALiteral(value = AVString(value = pkgName, span = decl.span), span = decl.span))
   anns.add(Annotation(name = ModulePath(segments = segs, span = decl.span), args = args, span = decl.span))
@@ -3403,9 +3403,9 @@ func specializeFunc(
   var ai = 0
   while ai < decl.annotations.count {
     val segs = decl.annotations[ai].name.segments
-    // `originAnnotationName` too: codegen resolves the specialised body's
+    // `originAnnotationName()` too: codegen resolves the specialised body's
     // unqualified names against the declaring package (docs/65 §15 F-4).
-    if segs.count == 1 and (segs[0] == "externTarget" or segs[0] == "externStatic" or segs[0] == "externInstance" or segs[0] == originAnnotationName) {
+    if segs.count == 1 and (segs[0] == "externTarget" or segs[0] == "externStatic" or segs[0] == "externInstance" or segs[0] == originAnnotationName()) {
       keptAnns.add(decl.annotations[ai])
     }
     ai = ai + 1

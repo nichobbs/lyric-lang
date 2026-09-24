@@ -1000,14 +1000,16 @@ pub func someAspectAround(a: in AspectAround): Option[AspectAround] {
 /// it to resolve the unqualified names inside a specialised copy against the
 /// declaring package's scope rather than the calling package's (docs/65 §15
 /// F-3/F-4).
-pub val originAnnotationName: String = "__lyric_origin"
+pub func originAnnotationName(): String {
+  "__lyric_origin"
+}
 
 /// The origin package recorded by `Lyric.Mono.withOriginPkgMono`, or "".
 pub func originPkgOf(anns: in List[Annotation]): String {
   var i = 0
   while i < anns.count {
     val segs = anns[i].name.segments
-    if segs.count == 1 and segs[0] == originAnnotationName and anns[i].args.count == 1 {
+    if segs.count == 1 and segs[0] == originAnnotationName() and anns[i].args.count == 1 {
       match anns[i].args[0] {
         case ALiteral(v, _) -> match v {
           case AVString(s, _) -> return s
