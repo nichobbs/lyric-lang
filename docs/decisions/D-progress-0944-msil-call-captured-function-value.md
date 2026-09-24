@@ -1,4 +1,4 @@
-# D-progress-942 — MSIL: calling a captured function value inside a lambda
+# D-progress-944 — MSIL: calling a captured function value inside a lambda
 
 **Status:** shipped
 
