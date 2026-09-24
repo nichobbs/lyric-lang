@@ -35139,3 +35139,26 @@ follow-up work on #5704.
 
 **Related:** #5704 (partially addressed), D-progress-945 (full account),
 D-progress-667 (the original F0027 warning).
+## Imported generics: qualified calls, origin-scoped bodies, expected-type inference
+
+A generic-heavy library consumed from another package now builds. Qualified
+calls to imported generics (`Pkg.f(...)`, `Pkg.f[T](...)`) take the full
+specialisation path; a specialised copy resolves the names in its body against
+the declaring package and its imports (contract metadata now records each
+package's imports); a qualifier matches a package by its trailing segment(s),
+so `Widgets.field(...)` can no longer bind to another package's `field`; and
+`Lyric.Mono` infers a type parameter that appears only in the return type from
+the type the call's position expects (a binding annotation, the enclosing
+return type, a parameter type, a `List` element type), including when the
+consumer spells the generic's type with a qualifier. See D-progress-946 and
+D-progress-947 (`docs/decisions/`).
+
+## Record `.copy(field = value)` ships
+
+`r.copy(f = v, ...)` (docs/01 §2.4) is implemented on both targets: checked
+like constructor arguments (T0127/T0101/T0104), lowered to a constructor call
+right after type checking, with the receiver and arguments evaluated once,
+left to right. Generic bodies exported through contract metadata carry the
+lowered form, and a `.copy` inside a generic from a sibling package or the
+stdlib is lowered from the specialised receiver type (M0006 when that type is
+unknown). See D-progress-948.
