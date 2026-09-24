@@ -1,4 +1,4 @@
-# D-progress-942 — restored `exposed record` round-trips through contract metadata (#6533)
+# D-progress-944 — restored `exposed record` round-trips through contract metadata (#6533)
 
 **Status:** shipped
 

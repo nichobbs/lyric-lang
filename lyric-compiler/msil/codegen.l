@@ -32326,7 +32326,7 @@ func collectBareFuncValueRefsStmt(s: in Statement, acc: in List[String]): Unit {
 }
 
 // Shared by `IRecord` and `IExposedRec` (identical `RecordDecl` shape,
-// D-progress-942): collect bare value-position names referenced from a
+// D-progress-944): collect bare value-position names referenced from a
 // record's body methods and field default-value initializers.
 func collectRecordBareRefsMsil(decl: in RecordDecl, acc: in List[String]): Unit {
   var mi = 0
@@ -32365,7 +32365,7 @@ func allReferencedNamesMsil(file: in SourceFile): List[String] {
       case IConst(decl) -> collectBareFuncValueRefsExpr(decl.init, acc)
       case IRecord(decl) -> collectRecordBareRefsMsil(decl, acc)
       // An `exposed record` wraps the identical `RecordDecl` shape as a plain
-      // `IRecord` (D-progress-942) — its body methods and default-value bare-
+      // `IRecord` (D-progress-944) — its body methods and default-value bare-
       // name references need the same collection so a synthesized thunk isn't
       // silently skipped for an exposed record (#6533 follow-up audit).
       case IExposedRec(decl) -> collectRecordBareRefsMsil(decl, acc)
@@ -32532,7 +32532,7 @@ pub func synthesizeBareFuncRefThunksMsil(file: in SourceFile): SourceFile {
 }
 
 // Shared by `IRecord` and `IExposedRec` (identical `RecordDecl` shape,
-// D-progress-942): BFS-collect direct lambdas from a record's member
+// D-progress-944): BFS-collect direct lambdas from a record's member
 // method bodies (D037: methods-in-types implicit self). Used by
 // `liftLambdasMsil` below.
 func collectRecordLambdasBfsMsil(
@@ -32612,7 +32612,7 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
       }
       case IRecord(decl) -> collectRecordLambdasBfsMsil(decl, ticker, synths, deferred)
       // An `exposed record` wraps the identical `RecordDecl` shape as a plain
-      // `IRecord` (D-progress-942) — its body methods need the same BFS
+      // `IRecord` (D-progress-944) — its body methods need the same BFS
       // lambda collection so a lambda literal inside one isn't silently left
       // with no lifted token (#6533 follow-up audit).
       case IExposedRec(decl) -> collectRecordLambdasBfsMsil(decl, ticker, synths, deferred)
@@ -37275,7 +37275,7 @@ func registerRestoredUnion(
 // case's ctor.  Skips items whose TypeRef wasn't allocated and
 // private funcs (no public surface).
 // Shared by `IRecord` and `IExposedRec` in `registerRestoredMembers` below
-// (identical `RecordDecl` shape, D-progress-942 — the producer-side
+// (identical `RecordDecl` shape, D-progress-944 — the producer-side
 // `exposed`-ness only affects reflection-visibility in the producer's own
 // compiled assembly, not how a consumer constructs or reads it). Mirrors
 // the naming/shape of `registerStdlibRecordLikeType`, the same-purpose
@@ -38410,7 +38410,7 @@ func registerStdlibTypeItemRefs(cctx: in CodegenCtx, packageName: in String, it:
   val typeArity = match it.kind {
     case IRecord(decl) -> genericNamesOf(decl.generics).count
     // `exposed record` wraps the identical `RecordDecl` shape as `IRecord`
-    // (D-progress-942) — without this arm a generic `exposed record`
+    // (D-progress-944) — without this arm a generic `exposed record`
     // shipped by the stdlib would register its TypeRef without the CLR
     // arity suffix (`Box` instead of `Box`1`), breaking cross-package
     // resolution (#6533 follow-up audit; no stdlib module currently
