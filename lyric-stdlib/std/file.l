@@ -184,11 +184,7 @@ pub func readTextOrPanic(path: in String): String {
   if path.length == 0 {
     panic("Std.File.readTextOrPanic: path must not be empty")
   }
-  try {
-    hostReadAllText(path)
-  } catch Bug as b {
-    panic("Std.File.readTextOrPanic: " + b.message)
-  }
+  hostReadAllText(path)
 }
 
 /// Write raw bytes to `path` (creating or replacing).

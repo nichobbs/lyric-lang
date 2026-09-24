@@ -34624,11 +34624,21 @@ issue #6961.
 Linux CI (`--target native`, real `clang`) — 20/20 cases pass, no
 regressions.
 
+**Correction (2026-09-21, group:native-stdlib-runtime-kernels):** both
+deferrals above are now resolved. `hostAppBaseDirectory` ships via a new
+`lyric_env_app_base_directory_ok` `lyric-rt` seam (`readlink(
+"/proc/self/exe")`); `Std.File.readTextOrPanic`'s `try`/`catch` wrapper is
+removed in favor of the native kernel panicking directly, mirroring
+`hostReadAllBytes` above — see the "Native N5: appBaseDirectory and
+readTextOrPanic ship" entry below. `stat`/`fileStatIsNewer` remain
+blocked (still need the opaque timestamp twin prerequisite, out of that
+entry's scope).
+
 **Related:** `docs/decisions/D-progress-0910-n5-slice-b-closure.md`
 (full account), #4752 (audited and recommended for closing by this entry),
-#6901 (new, the `Never`-typed-extern-func gap), #6937 (new,
-`hostAppBaseDirectory`'s tracking issue), #6961 (new, the `Std.File`
-try/catch-on-native gaps), `native/plan/08-work-items.md` N5.7.
+#6901 (new, the `Never`-typed-extern-func gap), #6937 (closed below,
+`hostAppBaseDirectory`'s tracking issue), #6961 (closed below, the
+`Std.File` try/catch-on-native gaps), `native/plan/08-work-items.md` N5.7.
 
 ## #6268 closed: manifest-declared `[build] shape` on `--target native` raises `F0043` instead of silent override
 
@@ -35009,3 +35019,49 @@ instance-path coverage this entry's instance handling piggybacks on),
 #5809/#6995 (the decline-loudly precedent for what remains out of
 scope), #7148 (the filed `ValueTask<T>` follow-up),
 `docs/decisions/D-progress-0942-async-generic-methodspec-task-unwrap-7023.md`.
+
+## Native N5: `appBaseDirectory` and `readTextOrPanic` ship, plus the `accept()` spurious-wakeup race fix
+
+Three more small, independent `--target native` gaps from the `#4752`
+residual-seam audit lineage, each closing its own precisely-scoped issue.
+
+`Std.Environment.appBaseDirectory` (#6937) — the last of the four
+runtime-identity probes still missing from the native kernel — ships via a
+new `lyric_env_app_base_directory_ok` `lyric-rt` seam (`readlink(
+"/proc/self/exe")`, Linux only), wired through `_kernel_native/
+environment_host.l`.
+
+`Std.File.readTextOrPanic`'s own `try`/`catch` wrapper (#6961) hit
+`Lyric.LlvmCodegen`'s unconditional `STry` rejection on native (D-N-003) —
+the same root cause #6887 tracks for `Std.Process`'s piped API, scoped
+separately since #6887's fix is specific to that facade. Mirrors
+`readBytesOrPanic`'s already-shipped fix exactly: the pure-layer body drops
+`try`/`catch`, and `_kernel_native/file_host.l`'s own `hostReadAllText`
+panics on failure in the kernel (reusing the existing `hostReadTextResult`
+seam) since native has no exceptions to propagate. `dotnet`/`jvm` kernels
+are unchanged. `stat`/`fileStatIsNewer` remain blocked pending the opaque
+timestamp twin prerequisite.
+
+`lyric_sock_accept_interruptible`'s `EAGAIN`/`EWOULDBLOCK` spurious-wakeup
+retry (#6962, a #6806 follow-up) assumed the listening socket was
+non-blocking, but `lyric_sock_listen` never set `O_NONBLOCK` — on the real
+blocking socket, a losing thread's `accept()` call in that branch blocked
+instead of returning `EAGAIN`, reintroducing the un-killable-accept hang
+#6806 fixed, but only when two threads accept concurrently on the same
+`Listener` (not reachable via any caller in this codebase today). Fixed by
+setting `O_NONBLOCK` on the listening fd; `lyric_sock_accept` (the plain
+blocking wrapper, used only by the `lyric-rt` C test harness) now
+polls-and-retries on `EAGAIN` to preserve its blocking contract.
+
+**Verification.** `llvm_stdlib_self_test.l` gained two new cases
+(`readTextOrPanic` round-trip + missing-path panic; `appBaseDirectory`
+asserting the returned directory actually contains the running binary) —
+26/26 cases pass. `make -C lyric-rt test` passes (validates the C-level
+accept fix). `lyric-stdlib/tests/file_tests.l` (dotnet) — 11/11 pass, no
+regression from the shared `std/file.l` change.
+
+**Related:** `docs/decisions/D-progress-0942-native-appbasedirectory-readtextorpanic-6962-accept-race.md`
+(full account), D-progress-910 (`#4752`'s residual-seam audit, corrected
+inline above), #6806 (the original accept-interrupt fix), #6887 (the
+`Std.Process` sibling of #6961's D-N-003 root cause), #6937/#6961/#6962
+(closed by this entry), `native/plan/08-work-items.md` N5.7.

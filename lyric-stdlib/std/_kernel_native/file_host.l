@@ -11,12 +11,14 @@
 //! directory enumeration (D-N-015: slices share the RC'd list repr, so
 //! the byte and path collections ride the ordinary list kernels).
 //!
-//! `hostReadAllBytes` (D-progress-910, #4752's residual-seam audit)
-//! backs `Std.File.readBytesOrPanic`, whose pure-layer body has NO
-//! `try`/`catch` around it on any target — its "panic on failure"
-//! contract is naturally satisfied here by panicking directly (native
-//! has no exceptions to propagate in the first place, D-N-003), reusing
-//! `hostReadBytesResult`'s own seam rather than a second extern call.
+//! `hostReadAllBytes` and `hostReadAllText` (D-progress-910 /
+//! issue #6961, #4752's residual-seam audit) back
+//! `Std.File.readBytesOrPanic`/`readTextOrPanic`, whose pure-layer
+//! bodies have NO `try`/`catch` around them on any target — their
+//! "panic on failure" contract is naturally satisfied here by panicking
+//! directly (native has no exceptions to propagate in the first place,
+//! D-N-003), reusing `hostReadBytesResult`/`hostReadTextResult`'s own
+//! seams rather than a second extern call each.
 //!
 //! Still unavailable natively: file `stat`/`fileStatIsNewer` (needs an
 //! opaque timestamp twin AND `Std.File.stat`'s own `try`/`catch`
@@ -24,10 +26,8 @@
 //! `--target native` per D-N-003 — the same root cause issue #6887
 //! tracks for `Std.Process`'s piped API, but scoped separately here as
 //! issue #6961 since #6887's own scope and suggested fix are specific
-//! to that facade) and `Std.File.readTextOrPanic` (its own `try`/`catch`
-//! wrapper hits the identical D-N-003 rejection, also #6961, unlike
-//! `readBytesOrPanic` above, which has none). Neither is fixable from
-//! this kernel file alone.
+//! to that facade). Not fixable from this kernel file alone — needs the
+//! opaque timestamp twin first.
 @axiom("POSIX file-system calls via lyric-rt conform to their documented contracts")
 package Std.FileHost
 
@@ -114,6 +114,21 @@ pub func hostReadTextResult(path: in String): Result[String, IOError] {
     Err(error = FileNotFound(path = path))
   } else {
     Err(error = IoError(path = path, message = "the file could not be read"))
+  }
+}
+
+// Issue #6961 (D-N-003 follow-up): `Std.File.readTextOrPanic` calls this
+// directly with NO `try`/`catch` around it on any target -- its "panic on
+// failure" contract is satisfied on native by panicking IN THE KERNEL
+// itself rather than throwing an exception for the pure layer to let
+// propagate uncaught, since native has no exceptions to propagate in the
+// first place (D-N-003).  Mirrors `hostReadAllBytes` below exactly, reusing
+// `hostReadTextResult`'s own seam rather than a second `rtReadAllOk` call.
+@unsafe_ffi
+pub func hostReadAllText(path: in String): String {
+  match hostReadTextResult(path) {
+    case Ok(text) -> text
+    case Err(_) -> panic("Std.File.readTextOrPanic: the file could not be read: " + path)
   }
 }
 
