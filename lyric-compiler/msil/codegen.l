@@ -17356,9 +17356,55 @@ func lowerMethodCallMsil(
       }
       case _ -> false
     }
+    // `xs.add(row)` on a `List[slice[Elem]]` receiver (#6945): a bare slice
+    // literal argument (`xs.add([1, 2, 3])`) is lowered by `EList`'s own
+    // no-surrounding-hint arm, which — for a NON-EMPTY homogeneous-simple
+    // literal — infers the element type from the literals themselves
+    // (`inferHomogeneousListElemTypeMsil`) and builds a genuine `Int32[]` via
+    // `newarr`.  An EMPTY literal (`[]`) has no elements to infer from, so
+    // that inference always returns `None` and the literal falls through to
+    // the legacy `List<object>` fallback — a REAL `List<object>` instance,
+    // not an array at all.  `collBoxIfNeeded` below is then a no-op for a
+    // concrete-collection receiver (it only boxes for the legacy erased
+    // path), so that `List<object>` is stored, unconverted, into the closed
+    // `List<int32[]>` via `List`1<T>::Add(!0)` — no cast, no runtime check.
+    // A later element (e.g. `xs.add([9])`, a real `int32[]`) coexists in the
+    // same CLR-typed list as the mistyped `List<object>` row, and any
+    // subsequent array-shaped access (`row.length`, `for v in row`, …)
+    // throws `ArrayTypeMismatchException: Attempted to access an element as
+    // a type incompatible with the array.` the moment it reaches the
+    // `List<object>` row.
+    //
+    // Fix by pushing the receiver's own element type onto `collExpect`
+    // before lowering a single-argument `.add()`'s argument — the same
+    // `MArray(e)`-hinted `EList` arm a normal `slice[Elem]`-parameter call
+    // site already uses (mirrors the concrete-collection-parameter fix
+    // above this function, and JVM's analogous #6546 fix in
+    // `04_calls.l`).  This makes `[]` build a genuine zero-length `Int32[]`
+    // (`newarr int32; ldc.i4 0`) instead of a `List<object>`, so every row
+    // in the list — empty or not — carries the same real array
+    // representation.  Only applies to the single-value list-add shape
+    // (`args.count == 1`); a two-arg `Dict.add(key, value)` call already has
+    // its own key/value generic-arg hint above and is left untouched.
+    val addElemTy = if args.count == 1 {
+      match recvTy {
+        case MConcreteList(e) -> Some(value = e)
+        case _ -> None
+      }
+    } else {
+      None
+    }
     var i = 0
     while i < args.count {
+      match addElemTy {
+        case Some(e) -> pushCollExpect(fctx, e)
+        case None -> ()
+      }
       val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+      match addElemTy {
+        case Some(_) -> popCollExpect(fctx)
+        case None -> ()
+      }
       // A concrete `List<int32>` / `Dictionary<…>` stores arguments unboxed via
       // the closed generic `!0` MemberRef; only the legacy `List<object>` boxes.
       collBoxIfNeeded(cctx, insns, aTy, recvTy)
@@ -19136,6 +19182,22 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 case _ -> insns.add(MPop)
               }
             } else {
+              // #6947: an explicit `return <expr>` must coerce the expression's
+              // ACTUAL on-stack type to the function's declared return type
+              // before it is stashed, exactly like the implicit tail-expression
+              // path does via `coerceTrailingToRetMsil` (lowerFuncMsil, below).
+              // The gap is invisible for ordinary functions (the type checker
+              // guarantees `retExprTy1` structurally matches `declaredRetTy`
+              // there), but a lifted `__lambda_*` body's LOGICAL declared
+              // return type is `object` (the Uniform Func ABI, #1877) while an
+              // inner expression like `x + 1` still computes as an unboxed
+              // `Int32` — without this box, the value stashed into the
+              // Object-typed `__retval` slot is a raw Int32 in an object
+              // reference slot: invalid IL that a non-verifying JIT silently
+              // accepts and treats as a garbage object reference, faulting as
+              // `NullReferenceException` the first time the caller dereferences
+              // the "returned" delegate result.
+              coerceTrailingToRetMsil(cctx, fctx, insns, retExprTy1, fctx.declaredRetTy)
               if fctx.retvalSlot < 0 {
                 fctx.retvalSlot = allocSlotMsil(fctx, "__retval", fctx.declaredRetTy)
               }
@@ -19143,6 +19205,23 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
           }
           case None -> {
+            // #6947: a BARE `return` (no value) has the identical gap as the
+            // `Some(e)` arm above when the declared return type is `object`
+            // (a lifted lambda's Uniform Func ABI physical/logical return,
+            // #1877) — the epilogue's `__retval` slot still needs a value
+            // (`null`) stashed into it, or the later epilogue load reads an
+            // uninitialized/mismatched slot. `coerceTrailingToRetMsil`'s
+            // `MVoid` source arm against an `MObject` target pushes `ldnull`
+            // for exactly this case; every other declared return type is a
+            // no-op here (a bare `return` is only legal against `Unit`/`Void`
+            // or `object` in the lifted-lambda case).
+            if fctx.declaredRetTy != MVoid {
+              coerceTrailingToRetMsil(cctx, fctx, insns, MVoid, fctx.declaredRetTy)
+              if fctx.retvalSlot < 0 {
+                fctx.retvalSlot = allocSlotMsil(fctx, "__retval", fctx.declaredRetTy)
+              }
+              emitStoreSlot(insns, fctx.retvalSlot, fctx.paramCount)
+            }
           }
         }
         fctx.epilogueUsed.add(0)
@@ -19168,10 +19247,31 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 case MVoid -> ()
                 case _ -> insns.add(MPop)
               }
+            } else {
+              // #6947: see the matching comment on the protected-region arm
+              // above — an explicit `return <expr>` must box a primitive
+              // result the same way the implicit tail-expression path does,
+              // or a lifted lambda's `ret object` signature receives a raw
+              // unboxed primitive on the stack (invalid IL, surfaces at
+              // runtime as a NullReferenceException on the caller's side).
+              coerceTrailingToRetMsil(cctx, fctx, insns, retExprTy2, fctx.declaredRetTy)
             }
             insns.add(MRet)
           }
           case None -> {
+            // #6947: a BARE `return` (no value) needs the same treatment as
+            // the `Some(e)` arm above — when the declared return type is
+            // `object` (a lifted lambda's Uniform Func ABI physical/logical
+            // return, #1877), a bare `ret` leaves the stack EMPTY where the
+            // method signature requires an object reference: invalid IL
+            // (`ret` with an empty stack against a non-void return). Push
+            // `null` first via the same `coerceTrailingToRetMsil` helper (its
+            // `MVoid` source arm against an `MObject` target); a no-op for
+            // every genuinely `Unit`/`Void`-returning function, the only
+            // other case where a bare `return` is legal.
+            if fctx.declaredRetTy != MVoid {
+              coerceTrailingToRetMsil(cctx, fctx, insns, MVoid, fctx.declaredRetTy)
+            }
             insns.add(MRet)
           }
         }

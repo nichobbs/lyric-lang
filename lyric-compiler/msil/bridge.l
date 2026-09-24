@@ -24,6 +24,7 @@ import Lyric.TypeAliasResolve as TAR2
 import Lyric.Derives
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
+import Lyric.AnnotationMetaEmit as AnnotationMeta
 import Std.Encoding as Encoding
 import Lyric.Weaver as Weaver
 import Lyric.WireExpand as WireExpand
@@ -270,11 +271,14 @@ pub func compileToMsilWithVersion(
   val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
   val noDeriveImports: List[Item] = newList()
   val noSingleFileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  // #7198: MSIL's async lowering genuinely suspends (Phase B state
+  // machine), so F0045's protected-region hazard applies on this target.
   val singleFileOpts = MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
     pkgLabel = path,
-    lineOrigins = noSingleFileOrigins
+    lineOrigins = noSingleFileOrigins,
+    awaitInTryIsHazard = true
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
     case Some(f) -> f
@@ -419,6 +423,10 @@ pub func compileToMsilWithVersion(
   // included (#6363, #6364, #6365).
   val resourceVersion = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
   embedLyricContract(cctx.lctx, withGenericFuncsForContract(file0, liftedFile), "Lyric.Contract", resourceVersion)
+  // #6866, D-progress-941: embed this package's `config { }` field
+  // annotations alongside its contract, so a runtime reader (PR 2) can
+  // recover them without linking the self-hosted lexer/parser.
+  embedLyricAnnotationMeta(cctx.lctx, file0, "Lyric.AnnotationMeta")
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
   val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
@@ -1023,7 +1031,14 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // (e.g. an unknown-name reference) names the real file exactly like a
     // parse-phase diagnostic for the same single-file project package
     // does, instead of falling back to the bare package name.
-    val projOpts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = pp.label, lineOrigins = pp.origins)
+    // #7198: see the other `MiddleEndOptions` construction site in this file.
+    val projOpts = MiddleEndOptions(
+      tcFatal = true,
+      tcReport = false,
+      pkgLabel = pp.label,
+      lineOrigins = pp.origins,
+      awaitInTryIsHazard = true
+    )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, flattenImportedItems(importedPkgs), allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f
       case None -> return false
@@ -1268,6 +1283,9 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       "Lyric.Contract." + perPkgNames[li],
       bundleVer
     )
+    // #6866, D-progress-941: per-package annotation metadata, matching the
+    // per-package `Lyric.Contract.<Pkg>` embedding above.
+    embedLyricAnnotationMeta(cctx.lctx, parsedPkgs[li].file, "Lyric.AnnotationMeta." + perPkgNames[li])
     liftedFiles.add(lifted)
     li = li + 1
   }
@@ -2089,6 +2107,41 @@ func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName:
     )
   )
   // embedded
+}
+
+// Build a `Lyric.AnnotationMeta`[.`<Pkg>`] resource for `file` and seed
+// the lowering ctx + metadata tables so the assembler emits it into the
+// PE, exactly mirroring `embedLyricContract` above (#6866, D-progress-941).
+// `file`'s `config { }` field annotations are collected and serialized
+// unconditionally, even when empty, so the resource is always present —
+// a runtime reader never has to distinguish "no resource" from "no
+// annotated fields". `resourceName` follows the same convention as
+// `embedLyricContract`: `"Lyric.AnnotationMeta"` for a single-package
+// assembly, `"Lyric.AnnotationMeta.<Pkg>"` for a project-as-DLL bundle.
+func embedLyricAnnotationMeta(lctx: in LoweringCtx, file: in SourceFile, resourceName: in String): Unit {
+  val fields = AnnotationMeta.collectAnnotatedFields(file)
+  val json = AnnotationMeta.emitAnnotationMetaJson(fields)
+  val jsonBytes = Encoding.encodeUtf8(json)
+  val jsonLen = jsonBytes.length
+
+  val offset = lctx.resourceData.count
+
+  lctx.resourceData.add(jsonLen % 256)
+  lctx.resourceData.add((jsonLen / 256) % 256)
+  lctx.resourceData.add((jsonLen / 65536) % 256)
+  lctx.resourceData.add((jsonLen / 16777216) % 256)
+
+  var i = 0
+  while i < jsonLen {
+    lctx.resourceData.add(jsonBytes[i])
+    i = i + 1
+  }
+
+  val sName = internString(lctx.strings, resourceName)
+  val _row = addManifestResource(
+    lctx.tables,
+    ManifestResourceRow(offset = offset, flags = 1, name = sName, implementation = 0)
+  )
 }
 
 // Resolve the bundle-wide entry-point MethodDef token.  Returns 0

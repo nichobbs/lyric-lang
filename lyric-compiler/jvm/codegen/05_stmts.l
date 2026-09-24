@@ -135,7 +135,11 @@ pub func emitNeverTailReturn(insns: in List[LInsn], retTy: in JvmType): Unit {
 // opaque field instead (#5937). A plain record's fields carry no such
 // restriction and keep the direct `putfield`.
 func emitFieldStoreOpaqueAware(
-  ctx: in FuncCtx, insns: in List[LInsn], cls: in String, fieldName: in String, fty: in JvmType
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  cls: in String,
+  fieldName: in String,
+  fty: in JvmType,
 ): Unit {
   if ctx.opaqueTypes.containsKey(cls) {
     val setPs: List[JvmType] = newList()
@@ -152,7 +156,11 @@ func emitFieldStoreOpaqueAware(
 // getfield->accessor routing `lowerExpr`'s plain field-read path already
 // applies (02_exprs.l).
 func emitFieldLoadOpaqueAware(
-  ctx: in FuncCtx, insns: in List[LInsn], cls: in String, fieldName: in String, fty: in JvmType
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  cls: in String,
+  fieldName: in String,
+  fty: in JvmType,
 ): Unit {
   if ctx.opaqueTypes.containsKey(cls) {
     val getPs: List[JvmType] = newList()
@@ -1350,7 +1358,20 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
         }
         case None -> {
           replayDefers(ctx, insns, 0)
-          insns.add(LReturn)
+          // #6947: a bare `return` (no value) must match the METHOD'S
+          // DECLARED descriptor return type, not unconditionally emit a void
+          // `return` — a lifted lambda's `invoke` descriptor is
+          // `Ljava/lang/Object;` (the Uniform Func ABI, #1877) even for a
+          // logically `Unit`-returning lambda body, so a bare `return` there
+          // leaves the operand stack with no value where the descriptor
+          // requires one: "Method expects a return value" at class-verify
+          // time. Reuses `pushDefaultValueJvm`/`emitReturn` — the same pair
+          // `emitNeverTailReturn` above already uses for the analogous
+          // Never-erased-to-void tail-expression case — which is a no-op
+          // difference from the previous unconditional `LReturn` only when
+          // `ctx.retTy` is non-void.
+          pushDefaultValueJvm(insns, ctx.retTy)
+          emitReturn(insns, ctx.retTy)
         }
       }
     }

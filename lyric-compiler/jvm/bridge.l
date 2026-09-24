@@ -13,6 +13,7 @@ import Std.Encoding as Encoding
 import Std.Path as Path
 import Lyric.BuildDefines as BD
 import Lyric.ContractMeta as Meta
+import Lyric.AnnotationMetaEmit as AnnotationMeta
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
@@ -212,6 +213,20 @@ func contractZipEntry(
   ("Lyric.Contract." + pkgName, utf8SliceToByteList(Encoding.encodeUtf8(json)))
 }
 
+// Build this package's `Lyric.AnnotationMeta.<Pkg>` JAR resource entry
+// (#6866, D-progress-941): mirrors `contractZipEntry` above, except the
+// payload is `config { }` field annotations rather than the public-API
+// contract. `preMono` (not `postMono`) is used — like `Msil.Bridge`'s
+// `embedLyricAnnotationMeta` — because `config` blocks and their field
+// annotations are untouched by `Lyric.Mono`, so either file would do, but
+// `preMono` keeps this consistent with `contractZipEntry`'s own
+// pre-mono-for-completeness reasoning above.
+func annotationMetaZipEntry(preMono: in SourceFile, pkgName: in String): (String, List[Byte]) {
+  val fields = AnnotationMeta.collectAnnotatedFields(preMono)
+  val json = AnnotationMeta.emitAnnotationMetaJson(fields);
+  ("Lyric.AnnotationMeta." + pkgName, utf8SliceToByteList(Encoding.encodeUtf8(json)))
+}
+
 /// Compile `source` to a JAR at `outputPath`.
 ///
 /// Returns true on success; false if the source contains parse errors or the
@@ -345,7 +360,16 @@ pub func compileToJar(
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, CollectedTemplate] = newMap()
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val opts = MiddleEndOptions(tcFatal = true, tcReport = false, pkgLabel = "", lineOrigins = noOrigins)
+  // #7198: JVM's `async func` lowering is a synchronous stub with no
+  // suspend point — F0045's CLR-verifier-suspend-in-protected-region
+  // hazard does not apply here, so it must never fire on this target.
+  val opts = MiddleEndOptions(
+    tcFatal = true,
+    tcReport = false,
+    pkgLabel = "",
+    lineOrigins = noOrigins,
+    awaitInTryIsHazard = false
+  )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts) {
     case Some(f) -> f
     case None -> return false
@@ -475,11 +499,13 @@ func runMiddleEnd(
   lineOrigins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
+  // #7198: see the other `MiddleEndOptions` construction site in this file.
   val opts = MiddleEndOptions(
     tcFatal = tcFatalUserPkg,
     tcReport = false,
     pkgLabel = pkgLabel,
-    lineOrigins = lineOrigins
+    lineOrigins = lineOrigins,
+    awaitInTryIsHazard = false
   )
   pipeMiddleEnd(
     file0,
@@ -2433,6 +2459,11 @@ pub func compileProjectToJarBundledWithRestored(
       val (fContractName, fContractData) = contractZipEntry(userFile, f, dottedPath(f.packageDecl.path), jarVersion)
       contractEntryNames.add(fContractName)
       contractEntryDatas.add(fContractData)
+      // #6866, D-progress-941: this package's config-block annotation
+      // metadata, alongside its contract.
+      val (fAnnoName, fAnnoData) = annotationMetaZipEntry(userFile, dottedPath(f.packageDecl.path))
+      contractEntryNames.add(fAnnoName)
+      contractEntryDatas.add(fAnnoData)
       val userFileName = match mapGet(pkgPathByName, dottedPath(f.packageDecl.path)) { case Some(p) -> p; case None -> "" }
       codegenPackageInto(
         f,
@@ -2514,6 +2545,11 @@ pub func compileProjectToJarBundledWithRestored(
             val (ffContractName, ffContractData) = contractZipEntry(f, ff, pkgName, jarVersion)
             contractEntryNames.add(ffContractName)
             contractEntryDatas.add(ffContractData)
+            // #6866, D-progress-941: matches the per-package
+            // `Lyric.Contract.<Pkg>` embedding above.
+            val (ffAnnoName, ffAnnoData) = annotationMetaZipEntry(f, pkgName)
+            contractEntryNames.add(ffAnnoName)
+            contractEntryDatas.add(ffAnnoData)
           }
           val bundledFileName = match mapGet(pkgPathByName, pkgName) { case Some(p) -> p; case None -> "" }
           codegenPackageInto(
