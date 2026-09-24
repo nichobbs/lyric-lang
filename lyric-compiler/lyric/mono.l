@@ -214,7 +214,7 @@ record MonoState {
   /// `"<qualifier>.<name>"` (every qualifier the file's imports make valid
   /// for the declaring package: its full path, its `as` alias, and its last
   /// segment), mapped to the bare name the generic is registered under in
-  /// `genDecls` (docs/65 §15 F-3).  The bare name is the generic's own name
+  /// `genDecls` (D-progress-943).  The bare name is the generic's own name
   /// when that name resolves to the same declaration, otherwise a synthetic
   /// `<name>__in__<Pkg_Path>` alias registered alongside it, so two packages'
   /// same-named generics never collide.  `rewriteExpr` routes a qualified
@@ -222,7 +222,7 @@ record MonoState {
   /// inference and specialisation path.
   qualifiedGenNames: Map[String, String]
   /// The type each call expression's POSITION expects, keyed by
-  /// `spanKeyMono` of the call's span (docs/65 §15 F-2): an annotated
+  /// `spanKeyMono` of the call's span (D-progress-944): an annotated
   /// binding's initializer, a `return` value or trailing expression (the
   /// enclosing function's declared return type), an assignment to a typed
   /// variable, or an argument to a parameter of known type.  Recorded
@@ -3426,7 +3426,7 @@ func specializeFunc(
   while ai < decl.annotations.count {
     val segs = decl.annotations[ai].name.segments
     // `originAnnotationName()` too: codegen resolves the specialised body's
-    // unqualified names against the declaring package (docs/65 §15 F-4).
+    // unqualified names against the declaring package (D-progress-943).
     if segs.count == 1 and (segs[0] == "externTarget" or segs[0] == "externStatic" or segs[0] == "externInstance" or segs[0] == originAnnotationName()) {
       keptAnns.add(decl.annotations[ai])
     }
@@ -3645,7 +3645,7 @@ func copyValStmtMono(name: in String, init: in Expr, sp: in Span): Statement {
   Statement(kind = SLocal(binding = LBVal(pat = pat, ty = noTy, init = init)), span = sp)
 }
 
-// ─── Expected types (docs/65 §15 F-2) ───────────────────────────────────────
+// ─── Expected types (D-progress-944) ───────────────────────────────────────
 func spanKeyMono(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
 }
@@ -3773,7 +3773,7 @@ func listElemTEMono(te: in TypeExpr): Option[TypeExpr] {
   }
 }
 
-// ─── Qualified calls to imported generics (docs/65 §15 F-3) ─────────────────
+// ─── Qualified calls to imported generics (D-progress-943) ─────────────────
 // Every qualifier `file`'s imports make valid for package `pkg`: the full
 // dotted path, the `as` alias, and the last path segment.
 func qualifiersForPkgMono(file: in SourceFile, pkg: in String): List[String] {
@@ -4453,7 +4453,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
         }
         case _ -> ()
       }
-      // Arguments to a parameter of known type expect that type (F-2):
+      // Arguments to a parameter of known type expect that type (D-progress-944):
       // mark them before `rewriteCallArgs` rewrites them.
       match fn.kind {
         case EPath(cpath) -> if cpath.segments.count == 1 and not env.containsKey(cpath.segments[0]) {
@@ -4670,7 +4670,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                     // argument against an unsafe shape, refuse the default and
                     // raise `M0004` instead of emitting a specialisation that
                     // compiles clean and crashes later.
-                    // Context (F-2): a type parameter the arguments leave
+                    // Context (D-progress-944): a type parameter the arguments leave
                     // unbound — typically one that appears only in the return
                     // type — is inferred by unifying the declared return type
                     // with the type this call's position expects.
@@ -4759,7 +4759,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
             // the generic's declaring package takes the full bare-name path
             // above (lambda / constructor evidence, the imported-generic
             // fallback, M0002/M0004), under the name `qualifiedGenNames`
-            // registered for it (docs/65 §15 F-3).
+            // registered for it (D-progress-943).
             val qTarget = qualifiedGenTargetMono(state, path)
             if qTarget.length > 0 {
               return rewriteExpr(state, env, Expr(kind = ECall(fn = singleSegPathExpr(qTarget, fn.span), args = args), span = s))

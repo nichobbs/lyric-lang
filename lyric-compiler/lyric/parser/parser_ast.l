@@ -998,8 +998,8 @@ pub func someAspectAround(a: in AspectAround): Option[AspectAround] {
 /// `Lyric.Mono` uses the origin to resolve QUALIFIED call sites
 /// (`Pkg.f(...)`, `Pkg.f[T](...)`) to the right declaration, and codegen uses
 /// it to resolve the unqualified names inside a specialised copy against the
-/// declaring package's scope rather than the calling package's (docs/65 §15
-/// F-3/F-4).
+/// declaring package's scope rather than the calling package's
+/// (D-progress-943).
 pub func originAnnotationName(): String {
   "__lyric_origin"
 }
