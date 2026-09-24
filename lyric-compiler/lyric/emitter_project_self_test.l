@@ -1641,3 +1641,82 @@ test "multi-file merge strips header lines only and keeps line origins" {
   assertEqual(merged.origins[funcBLine].path, "b.l", "second body origin file")
   assertEqualInt(merged.origins[funcBLine].originalLine, 4, "second body origin line")
 }
+
+// Imported generics end to end, on both targets (D-progress-946/947/948/949):
+// a qualified call through an `as` alias, a return-only type parameter
+// inferred from a `List` element type, `.copy` inside an imported generic
+// body and on an imported record, and a specialised body calling its own
+// package's import (`twice`), which the consumer does not import.
+func importedGenericsPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPGen.Util",
+      "package EPGen.Util\n" + "\n" + "pub func twice(n: in Int): Int {\n" + "  return n * 2\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPGen.Core",
+      "package EPGen.Core\n" + "\n" + "import EPGen.Util.{twice}\n" + "\n" + "pub union Node[M] {\n" +
+        "  case Leaf(label: String)\n" +
+        "  case Act(label: String, msg: M)\n" +
+        "}\n" +
+        "\n" +
+        "pub record Box[M] {\n" +
+        "  items: List[Node[M]]\n" +
+        "  count: Int\n" +
+        "}\n" +
+        "\n" +
+        "pub func leaf[M](label: in String): Node[M] {\n" +
+        "  return Leaf(label = label)\n" +
+        "}\n" +
+        "\n" +
+        "pub func labelOf[M](n: in Node[M]): String {\n" +
+        "  return match n {\n" +
+        "    case Leaf(l) -> l\n" +
+        "    case Act(l, _) -> l\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "pub func boxOf[M](xs: in List[Node[M]]): Box[M] {\n" +
+        "  return Box(items = xs, count = xs.count)\n" +
+        "}\n" +
+        "\n" +
+        "pub func recount[M](b: in Box[M], n: in Int): Box[M] {\n" +
+        "  return b.copy(count = n)\n" +
+        "}\n" +
+        "\n" +
+        "pub func doubled[M](b: in Box[M]): Int {\n" +
+        "  return twice(b.count)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPGen.App",
+      "package EPGen.App\n" + "\n" + "import EPGen.Core as C\n" + "\n" + "union Msg {\n" + "  case Go\n" + "}\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  val xs: List[C.Node[Msg]] = newList()\n" +
+        "  xs.add(C.leaf(\"a\"))\n" +
+        "  val b: C.Box[Msg] = C.boxOf(xs)\n" +
+        "  val r: C.Box[Msg] = C.recount(b, 5)\n" +
+        "  val c: C.Box[Msg] = b.copy(count = 7)\n" +
+        "  println(C.labelOf(xs[0]) + \" \" + b.count.toString() + \" \" + r.count.toString() + \" \" + c.count.toString() + \" \" + C.doubled(b).toString())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject imported generics: qualified calls, expected types, record copy (MSIL)" {
+  val result = runEmitProject("emitproj-impgen", importedGenericsPkgs(), "EPGen")
+  assertEqualInt(result.exitCode, 0, "imported generics MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "a 1 5 7 2", "imported generics MSIL: output")
+}
+
+test "emitProject imported generics: qualified calls, expected types, record copy (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-impgen-jvm", importedGenericsPkgs(), "EPGen")
+  assertEqualInt(result.exitCode, 0, "imported generics JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "a 1 5 7 2", "imported generics JVM: output")
+}
