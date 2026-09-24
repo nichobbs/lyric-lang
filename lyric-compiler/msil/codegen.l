@@ -403,6 +403,12 @@ pub record CodegenCtx {
   // itself, so the lifted body reads/writes it via `get_Item(0)`/`set_Item(0)`
   // (#1479 v2).  Captures absent from this list are by-value boxed copies.
   lambdaCaptureCells: Map[String, List[String]]
+  // Declared return types of the function-typed captures of each lambda
+  // (keyed like lambdaCaptureNames; inner key = capture name), copied from
+  // the enclosing function's `funcValRetTypes` at the capture site so a call
+  // THROUGH a captured function value inside the lifted body materialises its
+  // result exactly like a call through a local/param slot does.
+  lambdaCaptureFuncRetTypes: Map[String, Map[String, MsilType]]
   // Stage 1 (#1877): synthesized closure classes for lambda capture.
   // Key = lambda name (e.g. "__lambda_0"); value = corresponding MRecord closure class.
   lambdaClosureClasses: Map[String, MRecord]
@@ -2070,6 +2076,7 @@ pub func newCodegenCtx(
     lambdaGenerics = newMap(),
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
+    lambdaCaptureFuncRetTypes = newMap(),
     lambdaClosureClasses = newMap(),
     lambdaClosureRecordList = newList(),
     lambdaClosureEmittedCount = newList(),
@@ -10594,6 +10601,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         cctx.lambdaCaptureNames.add(lambdaKey, caps)
         cctx.lambdaCaptureTypes.add(lambdaKey, capTypes)
         cctx.lambdaCaptureCells.add(lambdaKey, capCells)
+        val capRetTys: Map[String, MsilType] = newMap()
+        var cri = 0
+        while cri < caps.count {
+          match mapGet(fctx.funcValRetTypes, caps[cri]) {
+            case Some(rt) -> capRetTys.add(caps[cri], rt)
+            case None -> ()
+          }
+          cri = cri + 1
+        }
+        cctx.lambdaCaptureFuncRetTypes.add(lambdaKey, capRetTys)
         // Synthesize closure class (#1877 Phase 1): emit a __Closure_<i> record with
         // typed fields for captures instead of object[] array. Store in context for
         // emission to the module's TypeDef table and use in delegate instantiation.
@@ -14804,6 +14821,45 @@ func lowerFuncValueInvokeMsil(
   }
 }
 
+// Invoke a function value already pushed on the stack whose static MSIL
+// type is `valueTy`. A real `System.Action`/`System.Action`N` value (the
+// shape `typeExprToMsilCtx` builds for every `(T1,...,TN) -> Unit`-typed
+// slot, #5329 follow-up / D-progress-886) needs a direct typed invoke — see
+// `buildActionNInvokeTok`'s doc comment — and every other function value
+// goes through the uniform boxed `Func` ABI (`lowerFuncValueInvokeMsil`).
+// Shared by calls through a local/param slot and through a lambda capture
+// or hoisted cell.
+func invokeLoadedFuncValueMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  args: in List[CallArg],
+  valueTy: in MsilType,
+  retType: in Option[MsilType],
+): MsilType {
+  val realActionArity = match valueTy {
+    case MClass(cn) -> if cn == "System.Action" { 0 } else { -1 }
+    case MGenericInstByName(headFqn, tyArgs) -> if headFqn.startsWith("System.Action`") {
+      tyArgs.count
+    } else {
+      -1
+    }
+    case _ -> -1
+  }
+  if realActionArity >= 0 and args.count == realActionArity {
+    var argI = 0
+    while argI < args.count {
+      val argTy = lowerCallArgMsil(cctx, fctx, insns, args[argI])
+      boxIfNeededMsil(cctx, insns, argTy)
+      argI = argI + 1
+    }
+    val invokeTok = if realActionArity == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, realActionArity) }
+    insns.add(MCallvirt(methodToken = invokeTok))
+    return MVoid
+  }
+  lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType)
+}
+
 pub func lowerCallMsil(
   cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], fn: in Expr, args: in List[CallArg]
 ): MsilType {
@@ -15807,33 +15863,20 @@ func lowerBuiltinOrStaticCallMsil(
             // untracked return type leaves the boxed `object` placeholder.
             emitLoadSlot(insns, slot, fctx.paramCount)
             val slotTy = match mapGet(fctx.types, funcName) { case Some(t) -> t; case None -> MObject }
-            // #5329 follow-up (D-progress-886): a real `Action`/`Action`N`
-            // value (never the uniform boxed `Func`(N+1)` ABI) needs a direct
-            // typed invoke — see `buildActionNInvokeTok`'s doc comment for why.
-            val realActionArity = match slotTy {
-              case MClass(cn) -> if cn == "System.Action" { 0 } else { -1 }
-              case MGenericInstByName(headFqn, tyArgs) -> if headFqn.startsWith("System.Action`") {
-                tyArgs.count
-              } else {
-                -1
-              }
-              case _ -> -1
-            }
-            if realActionArity >= 0 and args.count == realActionArity {
-              var argI = 0
-              while argI < args.count {
-                val argTy = lowerCallArgMsil(cctx, fctx, insns, args[argI])
-                boxIfNeededMsil(cctx, insns, argTy)
-                argI = argI + 1
-              }
-              val invokeTok = if realActionArity == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, realActionArity) }
-              insns.add(MCallvirt(methodToken = invokeTok))
-              MVoid
-            } else {
-              lowerFuncValueInvokeMsil(cctx, fctx, insns, args, mapGet(fctx.funcValRetTypes, funcName))
-            }
+            invokeLoadedFuncValueMsil(cctx, fctx, insns, args, slotTy, mapGet(fctx.funcValRetTypes, funcName))
           }
-          case None -> {
+          case None -> if path.segments.count == 1 and (fctx.captureNameToIndex.containsKey(funcName) or fctx.hoistedCellSlot.containsKey(funcName)) {
+            // A function value that is not a slot of THIS function: a
+            // capture of the enclosing function inside a lifted lambda body,
+            // or an enclosing `var` hoisted into a by-reference cell. Load it
+            // through the ordinary value-read path (which knows both
+            // representations) and invoke it like the slot arm above.
+            // Previously this fell through to static resolution and failed
+            // with T0123 for any lambda that called a captured function
+            // value.
+            val valueTy = lowerExprMsil(cctx, fctx, insns, Expr(kind = EPath(path = path), span = path.span))
+            invokeLoadedFuncValueMsil(cctx, fctx, insns, args, valueTy, mapGet(fctx.funcValRetTypes, funcName))
+          } else {
             // Static call resolution.  Functions are registered FQN-keyed
             // by `addPackageTokens` (#1183 Phase 2), so a call site that
             // arrived here with `funcName` = the last path segment needs
@@ -27559,6 +27602,20 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
         fctx.captureCellNames.add(lambdaCaps[cni])
       }
       cni = cni + 1
+    }
+    match mapGet(cctx.lambdaCaptureFuncRetTypes, qualifiedLambdaName) {
+      case Some(capRetTys) -> {
+        val capRetNames = mapKeys(capRetTys)
+        var crn = 0
+        while crn < capRetNames.count {
+          match mapGet(capRetTys, capRetNames[crn]) {
+            case Some(rt) -> fctx.funcValRetTypes.add(capRetNames[crn], rt)
+            case None -> ()
+          }
+          crn = crn + 1
+        }
+      }
+      case None -> ()
     }
   }
   // Parameter types propagated from a higher-order-function call site (#1939),

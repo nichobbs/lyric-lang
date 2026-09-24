@@ -27,44 +27,27 @@ import Std.Core
 import Std.Testing
 
 // ─── #1479 multi-level closure capture ──────────────────────────────────────
-
 test "two-level immutable capture" {
   val x = 42
-  val outer = { ->
-    val inner = { -> x }
-    inner()
-  }
+  val outer = { -> val inner = { -> x }; inner() }
   assertEqualInt(outer(), 42, "two-level immutable capture")
 }
 
 test "three-level immutable capture" {
   val y = 100
-  val f1 = { ->
-    val f2 = { ->
-      val f3 = { -> y }
-      f3()
-    }
-    f2()
-  }
+  val f1 = { -> val f2 = { -> val f3 = { -> y }; f3() }; f2() }
   assertEqualInt(f1(), 100, "three-level immutable capture")
 }
 
 test "inner closure uses outer closure captured name twice" {
   val base = 7
-  val adder = { ->
-    val doubler = { -> base + base }
-    doubler()
-  }
+  val adder = { -> val doubler = { -> base + base }; doubler() }
   assertEqualInt(adder(), 14, "captured name used twice in inner body")
 }
 
 test "nested closure captures mutable (cell) from outer scope" {
   var counter = 0
-  val inc = { ->
-    val check = { -> counter }
-    counter = counter + 1
-    check()
-  }
+  val inc = { -> val check = { -> counter }; counter = counter + 1; check() }
   val afterFirst = inc()
   val _ = inc()
   assertEqualInt(afterFirst, 1, "mutable cell: value after first increment")
@@ -74,15 +57,11 @@ test "nested closure captures mutable (cell) from outer scope" {
 test "multiple distinct captured values at two levels" {
   val a = 3
   val b = 5
-  val outer = { ->
-    val inner = { -> a + b }
-    inner()
-  }
+  val outer = { -> val inner = { -> a + b }; inner() }
   assertEqualInt(outer(), 8, "two distinct captured values")
 }
 
 // ─── #1854 lambdas in @test_module (#1877 uniform ABI) ──────────────────────
-
 test "assertPanics compiles and runs in test_module" {
   assertPanics("explicit panic", { -> panic("expected") })
 }
@@ -99,4 +78,58 @@ test "assertPanics fails when fn does not panic" {
     true
   }
   assertTrue(didFail, "assertPanics should itself panic when fn is normal")
+}
+
+// ─── Calling a captured function value inside a lambda ──────────────────────
+// On --target dotnet a call THROUGH a function value that the lambda body
+// captured (rather than a local/param slot of the body itself) fell through
+// to static function resolution and failed the build with T0123
+// "unresolved call to 'g'".  JVM always handled it.
+func composeCaptured(outer: in (Int) -> Int, inner: in (String) -> Int): (String) -> Int {
+  return { s: String -> outer(inner(s)) }
+}
+
+func applyTwiceCaptured(f: in (Int) -> Int): (Int) -> Int {
+  val once: (Int) -> Int = { x: Int -> f(x) }
+  return { x: Int -> once(once(x)) }
+}
+
+func composeGeneric[A](outer: in (A) -> Int, inner: in (String) -> A): (String) -> Int {
+  return { s: String -> outer(inner(s)) }
+}
+
+func forEachCaptured(xs: in List[Int], sink: in (Int) -> Unit): () -> Unit {
+  return { -> for x in xs { sink(x) } }
+}
+
+test "lambda calls a captured function parameter" {
+  val h = composeCaptured({ x: Int -> x * 10 }, { s: String -> s.length })
+  assertEqualInt(h("abcd"), 40, "outer(inner(s))")
+}
+
+test "lambda calls a captured function-valued local" {
+  val g = applyTwiceCaptured({ x: Int -> x + 3 })
+  assertEqualInt(g(1), 7, "once(once(x))")
+}
+
+test "generic function's lambda calls a captured function parameter" {
+  val h = composeGeneric({ n: Int -> n + 1 }, { s: String -> s.length })
+  assertEqualInt(h("abc"), 4, "generic outer(inner(s))")
+}
+
+test "lambda calls a captured Unit-returning function parameter" {
+  val seen: List[Int] = newList()
+  val xs: List[Int] = newList()
+  xs.add(2)
+  xs.add(5)
+  val run = forEachCaptured(xs, { x: Int -> seen.add(x) })
+  run()
+  assertEqualInt(seen.count, 2, "sink called for each element")
+  assertEqualInt(seen[1], 5, "second element")
+}
+
+test "nested lambda calls a function captured two levels up" {
+  val double: (Int) -> Int = { x: Int -> x * 2 }
+  val outer = { -> val inner = { y: Int -> double(y) + 1 }; inner(20) }
+  assertEqualInt(outer(), 41, "double(y) + 1 through two capture levels")
 }
