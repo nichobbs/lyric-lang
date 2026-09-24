@@ -1011,10 +1011,7 @@ pub func originPkgOf(anns: in List[Annotation]): String {
     val segs = anns[i].name.segments
     if segs.count == 1 and segs[0] == originAnnotationName() and anns[i].args.count == 1 {
       match anns[i].args[0] {
-        case ALiteral(v, _) -> match v {
-          case AVString(s, _) -> return s
-          case _ -> ()
-        }
+        case ALiteral(v, _) -> match v { case AVString(s, _) -> return s; case _ -> () }
         case _ -> ()
       }
     }
@@ -1024,12 +1021,18 @@ pub func originPkgOf(anns: in List[Annotation]): String {
 }
 
 /// A validated record `.copy(...)` call site, recorded by the type checker
-/// (`SymbolTable.recordCopySites`) and desugared by `Lyric.Mono` into a full
-/// constructor call (docs/01 §2.4): the record's name and its field names in
-/// declaration order.
+/// (`SymbolTable.recordCopySites`) and desugared into a full constructor call
+/// by `Lyric.Mono.desugarRecordCopiesFile` (docs/01 §2.4): the record's
+/// constructor path (dotted; package-qualified when the record is imported),
+/// its field names in declaration order, and the call's start offset.
+/// `conflicting` marks a key two different validated sites shared (only
+/// possible for synthesized, span-less code); such a site is reported, never
+/// desugared by guesswork.
 pub record RecordCopySite {
   recordName: String
   fields: List[String]
+  startOffset: Int
+  conflicting: Bool
 }
 
 /// The key of a record-copy call site: its span's start and end offsets.

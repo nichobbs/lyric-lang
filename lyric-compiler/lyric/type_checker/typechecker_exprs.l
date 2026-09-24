@@ -2123,20 +2123,37 @@ func recordCopyTarget(tbl: in SymbolTable, sigs: in Map[String, ResolvedSignatur
 }
 
 func typeIdIsRecord(tbl: in SymbolTable, tid: in TypeId): Bool {
+  match recordSymbolOfTid(tbl, tid) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func recordSymbolOfTid(tbl: in SymbolTable, tid: in TypeId): Option[Symbol] {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
-      case DKRecord(did, _) -> if typeIdEq(did, tid) {
-        return true
-      }
-      case DKExposedRec(did, _) -> if typeIdEq(did, tid) {
-        return true
-      }
+      case DKRecord(did, _) -> if typeIdEq(did, tid) { return Some(value = tbl.symbols[i]) }
+      case DKExposedRec(did, _) -> if typeIdEq(did, tid) { return Some(value = tbl.symbols[i]) }
       case _ -> ()
     }
     i = i + 1
   }
-  false
+  None
+}
+
+func sameStringLists(a: in List[String], b: in List[String]): Bool {
+  if a.count != b.count {
+    return false
+  }
+  var i = 0
+  while i < a.count {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 // Check `recv.copy(name = value, ...)` against the record's fields: every
@@ -2155,14 +2172,8 @@ func checkRecordCopy(
   args: in List[CallArg],
 ): Type {
   val recv = unrefine(recvTy)
-  val targs: List[Type] = match recv {
-    case TyUser(_, _, a) -> a
-    case _ -> newList()
-  }
-  val tname = match recv {
-    case TyUser(_, n, _) -> n
-    case _ -> ""
-  }
+  val targs: List[Type] = match recv { case TyUser(_, _, a) -> a; case _ -> newList() }
+  val tname = match recv { case TyUser(_, n, _) -> n; case _ -> "" }
   val fields = if targs.count > 0 { fieldsOfRecordInstantiated(tbl, tid, targs) } else { fieldsOfRecord(tbl, tid) }
   val seen: List[String] = newList()
   var ok = true
@@ -2218,9 +2229,30 @@ func checkRecordCopy(
       names.add(fields[ni].name)
       ni = ni + 1
     }
+    val ctorPath = match recordSymbolOfTid(tbl, tid) {
+      case Some(rs) -> if rs.isImported and rs.originPackage.length > 0 {
+        rs.originPackage + "." + rs.name
+      } else {
+        rs.name
+      }
+      case None -> tname
+    }
+    val site = RecordCopySite(
+      recordName = ctorPath,
+      fields = names,
+      startOffset = e.span.startPos.offset,
+      conflicting = false
+    )
     val key = recordCopySiteKey(e.span)
-    if not tbl.recordCopySites.containsKey(key) {
-      tbl.recordCopySites.add(key, RecordCopySite(recordName = tname, fields = names))
+    match mapGet(tbl.recordCopySites, key) {
+      case None -> tbl.recordCopySites.add(key, site)
+      case Some(prev) -> if prev.recordName != ctorPath or not sameStringLists(prev.fields, names) {
+        tbl.recordCopySites.remove(key)
+        tbl.recordCopySites.add(
+          key,
+          RecordCopySite(recordName = ctorPath, fields = names, startOffset = e.span.startPos.offset, conflicting = true)
+        )
+      }
     }
   }
   recvTy
@@ -4907,10 +4939,7 @@ pub func inferExpr(
       // into a full constructor call by `Lyric.Mono`.
       match fn.kind {
         case EMember(copyRecv, copyName) -> if copyName == "copy" {
-          val copyRecvTy = match cachedRecvType {
-            case Some(t) -> t
-            case None -> inferExpr(sc, tbl, sigs, diag, copyRecv)
-          }
+          val copyRecvTy = match cachedRecvType { case Some(t) -> t; case None -> inferExpr(sc, tbl, sigs, diag, copyRecv) }
           match recordCopyTarget(tbl, sigs, copyRecvTy) {
             case Some(copyTid) -> return checkRecordCopy(sc, tbl, sigs, diag, e, copyTid, copyRecvTy, args)
             case None -> {

@@ -441,12 +441,14 @@ pub func compileToNativeWithFlags(
   // genuine suspend point (docs/01 §"native" section), so F0045's guard
   // stays conservatively enabled here, same as MSIL, pending a dedicated
   // audit of native's own try/catch protected-region model (#7201).
+  val optsCheckedOut: List[SourceFile] = newList()
   val opts = MiddleEndOptions(
     tcFatal = false,
     tcReport = true,
     pkgLabel = path,
     lineOrigins = noSingleFileOrigins,
-    awaitInTryIsHazard = true
+    awaitInTryIsHazard = true,
+    checkedSourceOut = optsCheckedOut
   )
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts) {
     case Some(f) -> f
@@ -810,12 +812,14 @@ pub func compileProjectToNativeWithFlags(
     // native has no separate weave phase the way `Msil.Bridge`/`Jvm.Bridge`
     // do).  Previously always `pkgLabel = ""` with no line translation.
     // #7198: see the other `MiddleEndOptions` construction site in this file.
+    val optsCheckedOut: List[SourceFile] = newList()
     val opts = MiddleEndOptions(
       tcFatal = false,
       tcReport = true,
       pkgLabel = nativePkgLabelAt(packages, mei),
       lineOrigins = nativePkgOriginsAt(originsByPkg, mei),
-      awaitInTryIsHazard = true
+      awaitInTryIsHazard = true,
+      checkedSourceOut = optsCheckedOut
     )
     val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts) {
       case Some(f) -> f

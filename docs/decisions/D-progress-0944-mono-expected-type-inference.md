@@ -39,6 +39,11 @@ took their type arguments from the expected type.
   - an assignment to a variable whose type is known;
   - an argument to a non-generic callee's parameter of known type;
   - the argument of `list.add(x)` when `list`'s element type is known.
+- **Keys.** A position is keyed by the origin package of the body being
+  rewritten plus the call's span offsets. The origin matters because a
+  specialised copy of an imported generic carries spans from that package's
+  source, which can equal offsets in this file. A synthesized, zero-width
+  span is never keyed, since it does not identify one call.
 - **Use.** When argument inference leaves a type parameter unbound, the
   generic's declared return type is unified with the call's expected type
   before the imported-generic `Object` fallback and the M0002/M0004

@@ -89,6 +89,13 @@ pub record MiddleEndOptions {
   pkgLabel: String
   lineOrigins: List[DiagUtil.MergedLineOrigin]
   awaitInTryIsHazard: Bool
+  /// Receives the file as type-checked with its record `.copy(...)` calls
+  /// desugared (`Lyric.Mono.desugarRecordCopiesFile`).  Contract metadata
+  /// must take generic function bodies from this file, not the parsed one,
+  /// so a generic exported to another package carries no `.copy` its
+  /// consumer could not lower.  Pass an empty list; the pipeline appends one
+  /// file per `pipeCheckAndMono` call.
+  checkedSourceOut: List[SourceFile]
 }
 
 // Report `diags` (package-labelled when `pkgLabel` is non-empty, further
@@ -254,12 +261,21 @@ pub func pipeCheckAndMono(
     }
   }
 
-  val mcRes = checkFile(file0)
+  // Record `.copy(...)` → constructor call, while the type checker's span
+  // keys still identify exactly one call each (D-progress-944).
+  val copyRes = desugarRecordCopiesFile(file0, tcRes.symbols.recordCopySites)
+  if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
+    return None
+  }
+  val checked = copyRes.file
+  opts.checkedSourceOut.add(checked)
+
+  val mcRes = checkFile(checked)
   if gate(opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {
     return None
   }
 
-  val elaborated = elaborateFile(file0)
+  val elaborated = elaborateFile(checked)
 
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).
   // Runs after the elaborator so a propagated Err/None short-circuit is not
@@ -271,7 +287,7 @@ pub func pipeCheckAndMono(
 
   val derived = deriveFileWithImports(propRes.file, deriveImports)
 
-  val monoRes = monoFileWithCopies(derived, monoGenFuncs, monoIfaceDecls, monoRecordDecls, tcRes.symbols.recordCopySites)
+  val monoRes = monoFileWithImportsAndTypeDecls(derived, monoGenFuncs, monoIfaceDecls, monoRecordDecls)
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }

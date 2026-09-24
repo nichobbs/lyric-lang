@@ -273,12 +273,14 @@ pub func compileToMsilWithVersion(
   val noSingleFileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   // #7198: MSIL's async lowering genuinely suspends (Phase B state
   // machine), so F0045's protected-region hazard applies on this target.
+  val singleFileOptsCheckedOut: List[SourceFile] = newList()
   val singleFileOpts = MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
     pkgLabel = path,
     lineOrigins = noSingleFileOrigins,
-    awaitInTryIsHazard = true
+    awaitInTryIsHazard = true,
+    checkedSourceOut = singleFileOptsCheckedOut
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
     case Some(f) -> f
@@ -422,7 +424,13 @@ pub func compileToMsilWithVersion(
   // `liftedFile` unconditionally) so the contract carries them, body
   // included (#6363, #6364, #6365).
   val resourceVersion = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
-  embedLyricContract(cctx.lctx, withGenericFuncsForContract(file0, liftedFile), "Lyric.Contract", resourceVersion)
+  val contractSource = if singleFileOptsCheckedOut.count > 0 { singleFileOptsCheckedOut[0] } else { file0 }
+  embedLyricContract(
+    cctx.lctx,
+    withGenericFuncsForContract(contractSource, liftedFile),
+    "Lyric.Contract",
+    resourceVersion
+  )
   // #6866, D-progress-941: embed this package's `config { }` field
   // annotations alongside its contract, so a runtime reader (PR 2) can
   // recover them without linking the self-hosted lexer/parser.
@@ -1010,6 +1018,9 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     areck = areck + 1
   }
   val perPkgFiles: List[SourceFile] = newList()
+  // The type-checked, `.copy`-desugared file per package: contract metadata
+  // takes generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
+  val perPkgChecked: List[SourceFile] = newList()
   val perPkgNames: List[String] = newList()
   var ti = 0
   while ti < parsedPkgs.count {
@@ -1032,12 +1043,14 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // parse-phase diagnostic for the same single-file project package
     // does, instead of falling back to the bare package name.
     // #7198: see the other `MiddleEndOptions` construction site in this file.
+    val projOptsCheckedOut: List[SourceFile] = newList()
     val projOpts = MiddleEndOptions(
       tcFatal = true,
       tcReport = false,
       pkgLabel = pp.label,
       lineOrigins = pp.origins,
-      awaitInTryIsHazard = true
+      awaitInTryIsHazard = true,
+      checkedSourceOut = projOptsCheckedOut
     )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, flattenImportedItems(importedPkgs), allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f
@@ -1045,6 +1058,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     }
 
     perPkgFiles.add(monoFile)
+    perPkgChecked.add(if projOptsCheckedOut.count > 0 { projOptsCheckedOut[0] } else { pp.file })
     perPkgNames.add(pp.name)
 
     ti = ti + 1
@@ -1271,15 +1285,15 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // surface them per-package (matching the F# bundled-DLL layout).
     // `packageVersion` carries the manifest's `[package].version` for
     // the bundle; per-package versioning is out of scope for #1364 and
-    // tracked separately.  `parsedPkgs[li].file` is this package's
-    // PRE-mono file — `withGenericFuncsForContract` re-attaches its pub
+    // tracked separately.  `perPkgChecked[li]` is this package's
+    // PRE-mono file (type-checked, `.copy` desugared) — `withGenericFuncsForContract` re-attaches its pub
     // generic `IFunc` items (mono strips them from `lifted`
     // unconditionally) so the contract carries them, body included
     // (#6363, #6364, #6365).
     val bundleVer = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
     embedLyricContract(
       cctx.lctx,
-      withGenericFuncsForContract(parsedPkgs[li].file, lifted),
+      withGenericFuncsForContract(perPkgChecked[li], lifted),
       "Lyric.Contract." + perPkgNames[li],
       bundleVer
     )
@@ -1940,7 +1954,13 @@ func collectRestoredGenericFuncs(artifacts: in List[SynthesisedArtifact]): List[
   val genFuncs: List[FunctionDecl] = newList()
   var ai = 0
   while ai < artifacts.count {
-    pipeAddGenericFuncs(artifacts[ai].source.items, segmentsToString(artifacts[ai].source.packageDecl.path.segments), true, false, genFuncs)
+    pipeAddGenericFuncs(
+      artifacts[ai].source.items,
+      segmentsToString(artifacts[ai].source.packageDecl.path.segments),
+      true,
+      false,
+      genFuncs
+    )
     ai = ai + 1
   }
   genFuncs

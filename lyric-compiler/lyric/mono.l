@@ -236,6 +236,12 @@ record MonoState {
   /// Declared return type of each enclosing function/lambda being
   /// rewritten, innermost last (`None` for an unannotated lambda).
   returnTEs: List[Option[TypeExpr]]
+  /// Origin package of the body being rewritten, innermost last: "" for the
+  /// file's own items and local generics, the declaring package for a
+  /// specialised copy of an imported generic.  `spanKeyMono` prefixes it,
+  /// because an imported body's spans are offsets into ANOTHER package's
+  /// source and can equal offsets in this file.
+  originScope: List[String]
   /// Validated record `.copy(...)` sites from the type checker, keyed by
   /// `recordCopySiteKey`; `rewriteExpr` desugars each into a constructor
   /// call (`desugarRecordCopyMono`).
@@ -275,6 +281,7 @@ func newMonoState(
     qualifiedGenNames = qualifiedGenNames,
     expectedAt = newMap(),
     returnTEs = newList(),
+    originScope = singletonStrMono(""),
     copySites = copySites,
     copyTicker = newList(),
     seenSpecs = newMap(),
@@ -3584,8 +3591,165 @@ func isPrimitiveName(name: in String): Bool {
   isNumericPrimitiveName(name) or name == "Bool" or name == "Char" or name == "String" or name == "Unit"
 }
 
-
 // ─── Record copy (docs/01 §2.4) ─────────────────────────────────────────────
+/// Desugar every record `.copy(...)` call the type checker validated
+/// (`sites`, from `SymbolTable.recordCopySites`) into a full constructor
+/// call.  Runs directly after type checking, on exactly the file the checker
+/// saw, so each site's span key identifies one call: every later pass,
+/// contract metadata included, sees the constructor form, and a generic
+/// body exported to another package never carries a `.copy` its consumer
+/// could not lower.  Only items containing a site are rewritten, and no
+/// generic is registered, so nothing is specialised here.
+pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, RecordCopySite]): MonoResult {
+  val noRewrites: Map[String, String] = newMap()
+  if sites.count == 0 {
+    val noDiags: List[Diagnostic] = newList()
+    return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags)
+  }
+  val offsets: List[Int] = newList()
+  val siteKeys = mapKeys(sites)
+  var ki = 0
+  while ki < siteKeys.count {
+    match mapGet(sites, siteKeys[ki]) {
+      case Some(site) -> offsets.add(site.startOffset)
+      case None -> ()
+    }
+    ki = ki + 1
+  }
+  val state = newMonoState(
+    newMap(),
+    newMap(),
+    newMap(),
+    newMap(),
+    newMap(),
+    newMap(),
+    newMap(),
+    newMap(),
+    newMap(),
+    newMap(),
+    newMap(),
+    sites
+  )
+  val items: List[Item] = newList()
+  var i = 0
+  while i < file.items.count {
+    val item = file.items[i]
+    if spanContainsAnyOffset(item.span, offsets) {
+      items.add(
+        Item(
+          docComments = item.docComments,
+          annotations = item.annotations,
+          visibility = item.visibility,
+          kind = desugarCopiesInItemKind(state, item.kind),
+          span = item.span
+        )
+      )
+    } else {
+      items.add(item)
+    }
+    i = i + 1
+  }
+  val desugared = SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
+  MonoResult(file = desugared, rewrites = noRewrites, diagnostics = state.diags)
+}
+
+func spanContainsAnyOffset(sp: in Span, offsets: in List[Int]): Bool {
+  var i = 0
+  while i < offsets.count {
+    if offsets[i] >= sp.startPos.offset and offsets[i] < sp.endPos.offset {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func desugarCopiesInFunc(state: in MonoState, env: in Map[String, TypeExpr], fn: in FunctionDecl): FunctionDecl {
+  FunctionDecl(
+    docComments = fn.docComments,
+    annotations = fn.annotations,
+    visibility = fn.visibility,
+    isAsync = fn.isAsync,
+    name = fn.name,
+    generics = fn.generics,
+    params = fn.params,
+    ret = fn.ret,
+    whereClause = fn.whereClause,
+    contracts = fn.contracts,
+    body = rewriteFuncBodyWithRet(state, env, fn.body, fn.ret),
+    span = fn.span
+  )
+}
+
+func desugarCopiesInItemKind(state: in MonoState, kind: in ItemKind): ItemKind {
+  match kind {
+    case IFunc(decl) -> IFunc(decl = desugarCopiesInFunc(state, seedEnvFromParams(decl.params), decl))
+    case IImpl(decl) -> {
+      val members: List[ImplMember] = newList()
+      var mi = 0
+      while mi < decl.members.count {
+        match decl.members[mi] {
+          case IMplFunc(fn) -> {
+            val env = seedEnvFromParams(fn.params)
+            if env.containsKey("self") {
+              env.remove("self")
+            }
+            env.add("self", decl.target)
+            members.add(IMplFunc(fn = desugarCopiesInFunc(state, env, fn)))
+          }
+          case IMplAssoc(a) -> members.add(IMplAssoc(assoc = a))
+        }
+        mi = mi + 1
+      }
+      IImpl(
+        decl = ImplDecl(
+          generics = decl.generics,
+          iface = decl.iface,
+          target = decl.target,
+          whereClause = decl.whereClause,
+          members = members,
+          span = decl.span
+        )
+      )
+    }
+    case IInterface(decl) -> {
+      val members: List[InterfaceMember] = newList()
+      var mi = 0
+      while mi < decl.members.count {
+        match decl.members[mi] {
+          case IMFunc(fn) -> members.add(IMFunc(fn = desugarCopiesInFunc(state, seedEnvFromParams(fn.params), fn)))
+          case IMSig(sig) -> members.add(IMSig(sig = sig))
+          case IMAssoc(a) -> members.add(IMAssoc(assoc = a))
+        }
+        mi = mi + 1
+      }
+      IInterface(
+        decl = InterfaceDecl(
+          name = decl.name,
+          generics = decl.generics,
+          whereClause = decl.whereClause,
+          members = members,
+          span = decl.span
+        )
+      )
+    }
+    case IVal(decl) -> {
+      val env: Map[String, TypeExpr] = newMap()
+      IVal(
+        decl = ValDecl(pattern = decl.pattern, ty = decl.ty, init = rewriteExpr(state, env, decl.init), span = decl.span)
+      )
+    }
+    case _ -> kind
+  }
+}
+
 // `recv.copy(b = eb, a = ea)` for `record R { a; b; c }` becomes
 //
 //   {
@@ -3634,7 +3798,15 @@ func desugarRecordCopyMono(
     ctorArgs.add(CANamed(name = fname, value = value, span = sp))
     fi = fi + 1
   }
-  val ctor = Expr(kind = ECall(fn = singleSegPathExpr(site.recordName, sp), args = ctorArgs), span = sp)
+  val nameParts = Str.split(site.recordName, ".")
+  val ctorSegs: List[String] = newList()
+  var npi = 0
+  while npi < nameParts.length {
+    ctorSegs.add(nameParts[npi])
+    npi = npi + 1
+  }
+  val ctorPath = ModulePath(segments = ctorSegs, span = sp)
+  val ctor = Expr(kind = ECall(fn = Expr(kind = EPath(path = ctorPath), span = sp), args = ctorArgs), span = sp)
   stmts.add(Statement(kind = SExpr(expr = ctor), span = sp))
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
 }
@@ -3646,8 +3818,19 @@ func copyValStmtMono(name: in String, init: in Expr, sp: in Span): Statement {
 }
 
 // ─── Expected types (D-progress-944) ───────────────────────────────────────
-func spanKeyMono(sp: in Span): String {
-  toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
+// Key for `MonoState.expectedAt`: the origin scope plus the span's offsets,
+// or "" for a synthesized (zero-width) span, which never identifies one call.
+func spanKeyMono(state: in MonoState, sp: in Span): String {
+  if sp.endPos.offset <= sp.startPos.offset {
+    return ""
+  }
+  state.originScope[state.originScope.count - 1] + "@" + toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
+}
+
+func singletonStrMono(v: in String): List[String] {
+  val xs: List[String] = newList()
+  xs.add(v)
+  xs
 }
 
 // Record `te` as the expected type of every call in a tail position of `e`
@@ -3656,8 +3839,8 @@ func spanKeyMono(sp: in Span): String {
 func markExpectedMono(state: in MonoState, e: in Expr, te: in TypeExpr): Unit {
   match e.kind {
     case ECall(_, _) -> {
-      val k = spanKeyMono(e.span)
-      if not state.expectedAt.containsKey(k) {
+      val k = spanKeyMono(state, e.span)
+      if k.length > 0 and not state.expectedAt.containsKey(k) {
         state.expectedAt.add(k, te)
       }
     }
@@ -3825,10 +4008,11 @@ func buildQualifiedGenNames(
     if isGeneric and origin.length > 0 and not annsInferenceOnlyMono(idecl.annotations) {
       val quals = qualifiersForPkgMono(file, origin)
       if quals.count > 0 {
-        val bareIsThis = (not localFuncNames.containsKey(idecl.name)) and match mapGet(genDecls, idecl.name) {
-          case Some(d) -> originPkgOf(d.annotations) == origin
-          case None -> false
-        }
+        val bareIsThis = (not localFuncNames.containsKey(idecl.name)) and
+          match mapGet(genDecls, idecl.name) {
+            case Some(d) -> originPkgOf(d.annotations) == origin
+            case None -> false
+          }
         val target = if bareIsThis { idecl.name } else { idecl.name + "__in__" + Str.replace(origin, ".", "_") }
         if not bareIsThis and not genDecls.containsKey(target) {
           val renamed = FunctionDecl(
@@ -4447,7 +4631,17 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       match fn.kind {
         case EMember(copyRecv, copyName) -> if copyName == "copy" {
           match mapGet(state.copySites, recordCopySiteKey(s)) {
-            case Some(site) -> return desugarRecordCopyMono(state, env, copyRecv, args, site, s)
+            case Some(site) -> if site.conflicting {
+              state.diags.add(
+                errorDiagnostic(
+                  "M0005",
+                  "cannot lower this record `.copy(...)`: another `.copy` call validated for a different record shares its source position (synthesized code); write the constructor call explicitly",
+                  s
+                )
+              )
+            } else {
+              return desugarRecordCopyMono(state, env, copyRecv, args, site, s)
+            }
             case None -> ()
           }
         }
@@ -4675,7 +4869,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                     // type — is inferred by unifying the declared return type
                     // with the type this call's position expects.
                     if not substIsComplete(typeParams, subst) {
-                      match mapGet(state.expectedAt, spanKeyMono(s)) {
+                      match mapGet(state.expectedAt, spanKeyMono(state, s)) {
                         case Some(expTe) -> match baseDecl.ret {
                           case Some(retTe) -> unifyTE(typeParams, retTe, expTe, subst)
                           case None -> ()
@@ -5107,11 +5301,7 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
         case _ -> ()
       }
       Statement(
-        kind = SAssign(
-          target = rewriteExpr(state, env, target),
-          op = op,
-          value = rewriteExpr(state, env, value)
-        ),
+        kind = SAssign(target = rewriteExpr(state, env, target), op = op, value = rewriteExpr(state, env, value)),
         span = s
       )
     }
@@ -5751,20 +5941,6 @@ pub func monoFileWithImportsAndTypeDecls(
   importedIfaceDecls: in List[InterfaceDecl],
   importedRecordDecls: in List[RecordDecl],
 ): MonoResult {
-  val noCopies: Map[String, RecordCopySite] = newMap()
-  monoFileWithCopies(file, importedGenDecls, importedIfaceDecls, importedRecordDecls, noCopies)
-}
-
-/// As `monoFileWithImportsAndTypeDecls`, also desugaring the record
-/// `.copy(...)` sites the type checker validated (`copySites`, from
-/// `SymbolTable.recordCopySites`) into full constructor calls.
-pub func monoFileWithCopies(
-  file: in SourceFile,
-  importedGenDecls: in List[FunctionDecl],
-  importedIfaceDecls: in List[InterfaceDecl],
-  importedRecordDecls: in List[RecordDecl],
-  copySites: in Map[String, RecordCopySite],
-): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   // #349: also collect every IFunc (generic + non-generic) and every
   // record decl so `inferExprTE` can resolve call returns and field
@@ -6032,7 +6208,7 @@ pub func monoFileWithCopies(
   val qualifiedGenNames = buildQualifiedGenNames(file, importedGenDecls, genDecls, funcDecls, localFuncNames)
 
   // If nothing to monomorphise or desugar, return early.
-  if genDecls.count == 0 and copySites.count == 0 {
+  if genDecls.count == 0 {
     val emptyRewrites: Map[String, String] = newMap()
     val emptyDiags: List[Diagnostic] = newList()
     return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags)
@@ -6050,7 +6226,7 @@ pub func monoFileWithCopies(
     ambiguousFuncOverloads,
     ctorCandidates,
     qualifiedGenNames,
-    copySites
+    newMap()
   )
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
@@ -6263,7 +6439,9 @@ pub func monoFileWithCopies(
     // for nested generic calls.
     val substitutedBody = substValueInBody(req.valueSubst, req.baseDecl.body)
     val env = seedEnvFromParams(req.baseDecl.params)
+    state.originScope.add(originPkgOf(req.baseDecl.annotations))
     val newBody = rewriteFuncBodyWithRet(state, env, substitutedBody, req.baseDecl.ret)
+    state.originScope.removeAt(state.originScope.count - 1)
     val finalDecl = FunctionDecl(
       docComments = req.baseDecl.docComments,
       annotations = req.baseDecl.annotations,

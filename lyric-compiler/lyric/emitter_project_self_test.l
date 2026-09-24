@@ -1588,3 +1588,56 @@ test "compilerClosureDllPaths: a bundle that covers the whole closure is used, n
     "complete bundle: the single entry points at the bundle DLL"
   )
 }
+
+// Merging a multi-file package strips only each file's header `package` /
+// `import` / `//!` lines; item bodies are carried over verbatim, so a body
+// line that merely starts with `import ` (here inside a multi-line string)
+// survives, and every merged body line still maps back to its file and line.
+test "multi-file merge strips header lines only and keeps line origins" {
+  val srcA = "//! doc\n@runtime_checked\npackage P\nimport Std.Core\n\n// note\nfunc a(): String {\n  \"\"\"\nimport not.a.decl\n\"\"\"\n}\n"
+  val srcB = "package P\nimport Std.Core\nimport Std.String as Str\nfunc b(): Int { 1 }\n"
+  val sources: List[String] = newList()
+  sources.add(srcA)
+  sources.add(srcB)
+  val paths: List[String] = newList()
+  paths.add("a.l")
+  paths.add("b.l")
+  val none: List[String] = newList()
+  val merged = Emitter.mergePackageSourcesWithOrigins("P", sources, paths, none, none)
+  val lines = Str.split(merged.source, "\n")
+  var coreImports = 0
+  var aliasImports = 0
+  var bodyImportLine = -1
+  var funcBLine = -1
+  var docLines = 0
+  var li = 0
+  while li < lines.length {
+    val line = lines[li]
+    if line == "import Std.Core" {
+      coreImports = coreImports + 1
+    }
+    if line == "import Std.String as Str" {
+      aliasImports = aliasImports + 1
+    }
+    if line == "import not.a.decl" {
+      bodyImportLine = li
+    }
+    if line == "func b(): Int { 1 }" {
+      funcBLine = li
+    }
+    if Str.startsWith(line, "//!") {
+      docLines = docLines + 1
+    }
+    li = li + 1
+  }
+  assertEqualInt(coreImports, 1, "duplicate header imports collapse into one")
+  assertEqualInt(aliasImports, 1, "the aliased import is kept")
+  assertEqualInt(docLines, 0, "module-doc lines are dropped")
+  assertTrue(bodyImportLine >= 0, "an import-like line inside a body string is kept verbatim")
+  assertTrue(funcBLine >= 0, "the second file's body is present")
+  assertEqualInt(merged.origins.count, lines.length, "one origin per merged line")
+  assertEqual(merged.origins[bodyImportLine].path, "a.l", "string line origin file")
+  assertEqualInt(merged.origins[bodyImportLine].originalLine, 9, "string line origin line")
+  assertEqual(merged.origins[funcBLine].path, "b.l", "second body origin file")
+  assertEqualInt(merged.origins[funcBLine].originalLine, 4, "second body origin line")
+}

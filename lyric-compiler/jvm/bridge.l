@@ -379,12 +379,14 @@ pub func compileToJar(
   // #7198: JVM's `async func` lowering is a synchronous stub with no
   // suspend point — F0045's CLR-verifier-suspend-in-protected-region
   // hazard does not apply here, so it must never fire on this target.
+  val optsCheckedOut: List[SourceFile] = newList()
   val opts = MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
     pkgLabel = "",
     lineOrigins = noOrigins,
-    awaitInTryIsHazard = false
+    awaitInTryIsHazard = false,
+    checkedSourceOut = optsCheckedOut
   )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts) {
     case Some(f) -> f
@@ -513,6 +515,7 @@ func runMiddleEnd(
   tcFatalUserPkg: in Bool,
   pkgLabel: in String,
   lineOrigins: in List[DiagUtil.MergedLineOrigin],
+  checkedOut: in List[SourceFile],
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   // #7198: see the other `MiddleEndOptions` construction site in this file.
@@ -521,7 +524,8 @@ func runMiddleEnd(
     tcReport = false,
     pkgLabel = pkgLabel,
     lineOrigins = lineOrigins,
-    awaitInTryIsHazard = false
+    awaitInTryIsHazard = false,
+    checkedSourceOut = checkedOut
   )
   pipeMiddleEnd(
     file0,
@@ -2466,7 +2470,10 @@ pub func compileProjectToJarBundledWithRestored(
     case Some(o) -> o
     case None -> newList()
   }
-  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins) {
+  // The type-checked, `.copy`-desugared user file: contract metadata takes
+  // generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
+  val userChecked: List[SourceFile] = newList()
+  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -2506,7 +2513,12 @@ pub func compileProjectToJarBundledWithRestored(
       // call site, producing a NoSuchMethodError for a phantom static method
       // (#4600).  `collectFileCtors` first-wins-guards the same way.
       collectFileCtors(f, ctorReg)
-      val (fContractName, fContractData) = contractZipEntry(userFile, f, dottedPath(f.packageDecl.path), jarVersion)
+      val (fContractName, fContractData) = contractZipEntry(
+        if userChecked.count > 0 { userChecked[0] } else { userFile },
+        f,
+        dottedPath(f.packageDecl.path),
+        jarVersion
+      )
       contractEntryNames.add(fContractName)
       contractEntryDatas.add(fContractData)
       // #6866, D-progress-941: this package's config-block annotation
@@ -2581,7 +2593,8 @@ pub func compileProjectToJarBundledWithRestored(
       case None -> newList()
     }
     val ok = try {
-      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins) {
+      val siblingChecked: List[SourceFile] = newList()
+      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
           collectBModeWovenSigs(ff, registry)
@@ -2592,7 +2605,12 @@ pub func compileProjectToJarBundledWithRestored(
           // a merely-referenced stdlib package (isProjectPkg == false) never
           // does, matching `Msil.Bridge`'s `embedLyricContract` scope.
           if isProjectPkg {
-            val (ffContractName, ffContractData) = contractZipEntry(f, ff, pkgName, jarVersion)
+            val (ffContractName, ffContractData) = contractZipEntry(
+              if siblingChecked.count > 0 { siblingChecked[0] } else { f },
+              ff,
+              pkgName,
+              jarVersion
+            )
             contractEntryNames.add(ffContractName)
             contractEntryDatas.add(ffContractData)
             // #6866, D-progress-941: matches the per-package
