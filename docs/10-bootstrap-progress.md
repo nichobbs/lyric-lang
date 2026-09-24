@@ -34949,3 +34949,63 @@ fixed along the way (the jvm kernel's #6891 non-generic-cache workaround
 doesn't port to .NET as-is; fixed by naming the bracketed generic
 instantiation directly in the `extern type` target string, which the MSIL
 emitter erases wholesale to `object`).
+
+## MSIL: `emitGenericAsyncMethodExternCall` — MethodSpec + Task<T>-unwrap for a generic async BCL extern (#7023)
+
+D-progress-935's loud decline for an `async`-declared `@externTarget`
+wrapper over a BCL method that is ALSO generic in its own right (e.g.
+`Task.FromResult<TResult>(TResult): Task<TResult>`) is replaced with the
+real codegen path. New sibling function
+`Msil.Codegen.emitGenericAsyncMethodExternCall` combines what
+`emitGenericMethodExternCall` (D-progress-929, #6581 Gap 2) and the plain
+`decl.isAsync` branch each had only half of: it resolves the BCL method's
+params/return exactly as before (`resolvedSigToMsil`'s existing
+`STNamedGenericInst`/`STMVar` arms already decode `Task.FromResult`'s
+return to `Task`1<!!0>` with no new decoding needed), builds the OPEN
+generic-method MemberRef + a MethodSpec witnessing the method's own
+generic parameters with `Object` (the same erasure convention Gap 2
+already uses), then appends the Task/Task`1<T>`-unwrap sequence against
+the CLOSED (post-witness) shape — computed by a new helper,
+`eraseMethodTypeVarsToObjectMsil`, which substitutes every
+`MMethodTypeVar` with `MObject` at the `MsilType` level (mirroring the
+existing `substituteTypeVarsMsil` shape for the type-generic axis),
+because a TypeSpec blob may only reference `!!n` from inside the owning
+generic method's own body, never from the calling wrapper's. The same
+null-guarded `unbox.any`/`castclass` return-narrowing dance
+`emitGenericMethodExternCall` and D-progress-936 already apply for a
+directly-erased generic return is reused here for the unwrapped `Task`
+inner value. `emitExternTargetBody`'s `msig.isGeneric and decl.isAsync`
+branch calls the new function first and only panics (updated message)
+when it declines, preserving the "decline, don't panic" contract at the
+leaf.
+
+Scoped OUT: a `ValueTask`1<T>`-returning BCL method (a struct return,
+needing a scratch local + `ldloca` + non-virtual `call` to invoke
+`get_Result()`, unlike the plain reference-typed `Task<T>` case this PR
+handles) — matching the PRE-EXISTING scope of the plain non-generic
+`decl.isAsync` branch, which has also never supported `ValueTask`. Filed
+#7148 to track it, including a companion audit of the plain branch's
+same gap.
+
+Verified end-to-end, not just "does it build": the regression test in
+`generic_extern_valuetype_instance_self_test.l` for this shape now
+builds the `Task.FromResult<T>`-wrapping `fromResultAsync` fixture,
+asserts the build SUCCEEDS, then actually executes the produced DLL via
+`dotnet exec` and asserts its stdout is `42`. Full clean rebuild (`rm -rf
+.bootstrap/stage1 bootstrap/src/Lyric.Cli.Aot/bin
+bootstrap/src/Lyric.Cli.Aot/obj && make lyric`) plus a full regression
+sweep, all green: `generic_extern_valuetype_instance_self_test.l` (3/3),
+`generic_extern_methodspec_self_test.l` (7/7), `generic_extern_self_test.l`
+(7/7), `nested_generic_self_test.l` (8/8), `auto_ffi_self_test.l` (23/23),
+`async_spawn_self_test.l` (26/26), `cross_package_generics_self_test.l`
+(11/11), `msil_restored_bridge_self_test.l` (6/6),
+`msil_project_bridge_self_test.l` (65/65), `mono_self_test.l` (87/87).
+
+**Related:** #7023 (fixed by this entry), D-progress-935/#7022 (the
+interim decline this entry replaces), D-progress-929/#6581 Gap 2 (the
+MethodSpec-only path this entry extends), D-progress-936 (the
+return-narrowing dance reused here), D-progress-937/#7137 (the
+instance-path coverage this entry's instance handling piggybacks on),
+#5809/#6995 (the decline-loudly precedent for what remains out of
+scope), #7148 (the filed `ValueTask<T>` follow-up),
+`docs/decisions/D-progress-0942-async-generic-methodspec-task-unwrap-7023.md`.
