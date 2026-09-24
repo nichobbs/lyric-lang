@@ -12,6 +12,20 @@ package RecordFunctionFieldSelfTest
 import Std.Core
 import Std.Testing
 
+enum AccessCode {
+  case Granted
+  case PermissionDenied
+  case Other
+}
+
+func accessCodeOf(n: in Int): AccessCode {
+  match n {
+    case 0 -> AccessCode.Granted
+    case 7 -> AccessCode.PermissionDenied
+    case _ -> AccessCode.Other
+  }
+}
+
 record Handler {
   apply: (Int) -> Int
 }
@@ -68,4 +82,16 @@ test "a method is still called as a method next to function fields" {
   val n = Named(label = "hey", shout = { s: String -> s + "?" })
   assertEqual(n.shoutLabel(), "hey!", "method")
   assertEqual(n.shout("x"), "x?", "field function")
+}
+
+// An enum case sharing its name with a union case elsewhere in the bundle
+// (`Std.Errors`' `PermissionDenied(path)`) matches as the enum: the pattern
+// binds nothing and must not be cast to the union's case class.
+test "an enum case named like another package's union case matches as the enum" {
+  val label = match accessCodeOf(7) {
+    case AccessCode.PermissionDenied -> "denied"
+    case AccessCode.Granted -> "granted"
+    case _ -> "other"
+  }
+  assertEqual(label, "denied", "enum case matched")
 }

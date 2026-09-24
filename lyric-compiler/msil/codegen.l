@@ -14258,7 +14258,16 @@ func bindPositionalFieldMsil(
   }
 }
 
-// Bind pattern variables after a successful match.
+// The text after the last `.` of a dotted name (`Std.Errors.IOError` -> `IOError`).
+func lastDottedSegmentMsil(fqn: in String): String {
+  val dotIdx = String.lastIndexOfRaw(fqn, ".")
+  if dotIdx < 0 {
+    fqn
+  } else {
+    fqn.substring(dotIdx + 1, fqn.length)
+  }
+}
+
 // The parent union of the NON-generic union case named `caseName` (resolved
 // in scope like the erased-scrutinee test phase does), or None when the name
 // is unknown or names a generic case.
@@ -14277,6 +14286,7 @@ func nonGenericCaseParentMsil(cctx: in CodegenCtx, fctx: in FuncCtx, caseName: i
   }
 }
 
+// Bind pattern variables after a successful match.
 func lowerPatternBindMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -14457,8 +14467,18 @@ func lowerPatternBindMsil(
         // Binding the scrutinee itself (the erased-`Option` sentinel shape
         // below) silently gave `s` the whole case object (D-progress-952
         // follow-up).  Generic cases keep the fallback (#2233).
-        match nonGenericCaseParentMsil(cctx, fctx, lastSegmentMsil(head)) {
-          case Some(parentFqn) -> {
+        // Only a field-binding pattern over a reference-typed scrutinee takes
+        // this path: an enum-case pattern (`case Code.PermissionDenied`) on an
+        // `int32` scrutinee binds nothing, and must never be resolved by its
+        // bare name to a same-named union case elsewhere (`Std.Errors`'
+        // `PermissionDenied(path)`), nor through a qualifier naming another type.
+        val rebindParent: Option[String] = if fields.count > 0 and not isValueType(scrutTy) {
+          nonGenericCaseParentMsil(cctx, fctx, lastSegmentMsil(head))
+        } else {
+          None
+        }
+        match rebindParent {
+          case Some(parentFqn) -> if head.segments.count < 2 or lastDottedSegmentMsil(parentFqn) == head.segments[head.segments.count - 2] {
             lowerPatternBindMsil(cctx, fctx, insns, pat, scrutSlot, MClass(className = parentFqn))
             return
           }
