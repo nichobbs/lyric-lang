@@ -1393,9 +1393,11 @@ func recordRetClassOfTe(te: in TypeExpr, owner: in String, localRecordNames: in 
 // resolving a bare constructor name across packages (real object
 // construction has relied on it since before this fix), so reusing it here
 // introduces no new collision risk beyond what a `RecordName(...)`
-// constructor call already accepts. Bounded to a BARE single-segment head:
-// a package-qualified head (`Other.Box[Int]`) is left erased to `Object`
-// (`None`) — `ctorClassFor` itself only ever takes a bare short name.
+// constructor call already accepts. A package-qualified head
+// (`Other.Box[Int]`, the form `Lyric.AliasRewriter` gives `import Other as O`
+// + `O.Box[Int]`) resolves only through the registry's dotted
+// package-qualified key (`collectFileCtors`' `<dotted owner>.<name>`), never
+// the bare-name fallback, since it names its owning package explicitly.
 pub func recordParamClassOf(ty: in TypeExpr, ctx: in FuncCtx): Option[String] {
   match ty.kind {
     case TParen(inner) -> recordParamClassOf(inner, ctx)
@@ -1403,11 +1405,24 @@ pub func recordParamClassOf(ty: in TypeExpr, ctx: in FuncCtx): Option[String] {
       if head.segments.count == 1 {
         ctorClassFor(ctx, head.segments[0])
       } else {
-        None
+        mapGet(ctx.ctors, joinSegsDotted(head.segments))
       }
     }
     case _ -> None
   }
+}
+
+func joinSegsDotted(segs: in List[String]): String {
+  var acc = ""
+  var i = 0
+  while i < segs.count {
+    if i > 0 {
+      acc = acc + "."
+    }
+    acc = acc + segs[i]
+    i = i + 1
+  }
+  acc
 }
 
 // Drop a CLR-convention arity suffix (`` `N ``) from a host type name: the
