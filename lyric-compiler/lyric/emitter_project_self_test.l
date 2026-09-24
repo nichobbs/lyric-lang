@@ -1781,3 +1781,117 @@ test "emitProject member read on an imported generic call result, consumer first
   assertEqualInt(result.exitCode, 0, "generic result JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "2 3 3 9", "generic result JVM: output")
 }
+
+// A match on a generic union returned through a function, inside an
+// imported generic specialised into the consumer, with the consumer listed
+// first: once through a generic record's function-typed field, once through a
+// function passed by name. The record's field type depends on the
+// record's own type parameters, so MSIL must not register it as a closed
+// instantiation (it named `Msg` as a class of the record's package and the
+// match emitted an isinst against a nonexistent non-generic case class,
+// T0120), and `Lyric.Mono` must bind `Msg` from the function reference
+// instead of defaulting it to `Object` (an invalid cast at run time).
+func genericFieldFnPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPFx.App",
+      "package EPFx.App\n" + "\n" + "import EPFx.Core.{Effect, Go, Stay, Program, describe, describeFn}\n" + "\n" +
+        "union Msg {\n" +
+        "  case Ok\n" +
+        "}\n" +
+        "\n" +
+        "union Ev {\n" +
+        "  case Ui(fx: Effect[Msg])\n" +
+        "  case Save\n" +
+        "}\n" +
+        "\n" +
+        "func toFx(e: in Ev): Option[Effect[Msg]] {\n" +
+        "  return match e {\n" +
+        "    case Ui(fx) -> Some(value = fx)\n" +
+        "    case Save -> None\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val xs: List[Ev] = newList()\n" +
+        "  xs.add(Ui(fx = Go(url = \"/a\")))\n" +
+        "  xs.add(Save)\n" +
+        "  xs.add(Ui(fx = Stay))\n" +
+        "  val p: Program[Ev, Msg] = Program(classify = toFx)\n" +
+        "  println(describe(p, xs) + \" \" + describeFn(toFx, xs))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPFx.Core",
+      "package EPFx.Core\n" + "\n" + "pub union Effect[Msg] {\n" + "  case Go(url: String)\n" + "  case Stay\n" +
+        "  case Ask(q: String, yes: Msg)\n" +
+        "}\n" +
+        "\n" +
+        "pub record Program[E, Msg] {\n" +
+        "  classify: (E) -> Option[Effect[Msg]]\n" +
+        "}\n" +
+        "\n" +
+        "pub func describe[E, Msg](p: in Program[E, Msg], xs: in List[E]): String {\n" +
+        "  var acc = \"\"\n" +
+        "  for e in xs {\n" +
+        "    match p.classify(e) {\n" +
+        "      case None -> {\n" +
+        "        acc = acc + \"app;\"\n" +
+        "      }\n" +
+        "      case Some(fx) -> match fx {\n" +
+        "        case Go(url) -> {\n" +
+        "          acc = acc + \"go \" + url + \";\"\n" +
+        "        }\n" +
+        "        case Stay -> {\n" +
+        "          acc = acc + \"stay;\"\n" +
+        "        }\n" +
+        "        case Ask(q, _) -> {\n" +
+        "          acc = acc + \"ask \" + q + \";\"\n" +
+        "        }\n" +
+        "      }\n" +
+        "    }\n" +
+        "  }\n" +
+        "  return acc\n" +
+        "}\n" +
+        "\n" +
+        "pub func describeFn[E, Msg](f: (E) -> Option[Effect[Msg]], xs: in List[E]): String {\n" +
+        "  var acc = \"\"\n" +
+        "  for e in xs {\n" +
+        "    match f(e) {\n" +
+        "      case None -> {\n" +
+        "        acc = acc + \"app;\"\n" +
+        "      }\n" +
+        "      case Some(fx) -> match fx {\n" +
+        "        case Go(url) -> {\n" +
+        "          acc = acc + \"go \" + url + \";\"\n" +
+        "        }\n" +
+        "        case Stay -> {\n" +
+        "          acc = acc + \"stay;\"\n" +
+        "        }\n" +
+        "        case Ask(q, _) -> {\n" +
+        "          acc = acc + \"ask \" + q + \";\"\n" +
+        "        }\n" +
+        "      }\n" +
+        "    }\n" +
+        "  }\n" +
+        "  return acc\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject generic union through a function inside an imported generic (MSIL)" {
+  val result = runEmitProject("emitproj-genfx", genericFieldFnPkgs(), "EPFx")
+  assertEqualInt(result.exitCode, 0, "generic fn result MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "go /a;app;stay; go /a;app;stay;", "generic fn result MSIL: output")
+}
+
+test "emitProject generic union through a function inside an imported generic (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-genfx-jvm", genericFieldFnPkgs(), "EPFx")
+  assertEqualInt(result.exitCode, 0, "generic fn result JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "go /a;app;stay; go /a;app;stay;", "generic fn result JVM: output")
+}

@@ -3081,6 +3081,69 @@ func preRegisterGenericTypeName(cctx: in CodegenCtx, name: in String, pkgName: i
   }
 }
 
+// The call-site type of a generic record's function-typed field's parameter
+// or result.  A type that mentions one of the record's own type parameters
+// depends on the instantiation (`Program[E, Msg]`'s `(E) ->
+// Option[UiEffect[Msg]]`), which is not known where the record is
+// registered; resolving it here would name the type parameter as a class in
+// the record's package and give the call result a closed generic type that
+// no real instance has.  Such a type is registered as `object`, so the call
+// result takes the erased-value paths that test the runtime type.
+func recordFieldFuncTypeMsil(
+  cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, recGenerics: in List[String]
+): MsilType {
+  if recGenerics.count > 0 and typeExprMentionsNamesMsil(te, recGenerics) {
+    MObject
+  } else {
+    typeExprToMsilCtx(cctx, te, pkgName)
+  }
+}
+
+func typeExprMentionsNamesMsil(te: in TypeExpr, names: in List[String]): Bool {
+  match te.kind {
+    case TRef(path) -> path.segments.count == 1 and names.contains(path.segments[0])
+    case TGenericApp(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(inner) -> if typeExprMentionsNamesMsil(inner, names) { return true }
+          case TAValue(_) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TFunction(ps, r) -> {
+      if typeExprMentionsNamesMsil(r, names) {
+        return true
+      }
+      var i = 0
+      while i < ps.count {
+        if typeExprMentionsNamesMsil(ps[i], names) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TTuple(ts) -> {
+      var i = 0
+      while i < ts.count {
+        if typeExprMentionsNamesMsil(ts[i], names) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TSlice(elem) -> typeExprMentionsNamesMsil(elem, names)
+    case TArray(_, elem) -> typeExprMentionsNamesMsil(elem, names)
+    case TNullable(inner) -> typeExprMentionsNamesMsil(inner, names)
+    case TParen(inner) -> typeExprMentionsNamesMsil(inner, names)
+    case _ -> false
+  }
+}
+
 pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
@@ -3387,11 +3450,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   match funcTe.kind {
                     case TFunction(fParamTes, fRetTe) -> {
                       if not cctx.fieldFuncRetTypes.containsKey(className + "/" + f.name) {
-                        cctx.fieldFuncRetTypes.add(className + "/" + f.name, typeExprToMsilCtx(cctx, fRetTe, pkgName))
+                        cctx.fieldFuncRetTypes.add(className + "/" + f.name, recordFieldFuncTypeMsil(cctx, fRetTe, pkgName, recGenerics))
                         val fParamMsilTys: List[MsilType] = newList()
                         var ffpi = 0
                         while ffpi < fParamTes.count {
-                          fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[ffpi], pkgName))
+                          fParamMsilTys.add(recordFieldFuncTypeMsil(cctx, fParamTes[ffpi], pkgName, recGenerics))
                           ffpi = ffpi + 1
                         }
                         cctx.fieldFuncParamTypes.add(className + "/" + f.name, fParamMsilTys)
@@ -3569,11 +3632,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   match funcTe.kind {
                     case TFunction(fParamTes, fRetTe) -> {
                       if not cctx.fieldFuncRetTypes.containsKey(className + "/" + f.name) {
-                        cctx.fieldFuncRetTypes.add(className + "/" + f.name, typeExprToMsilCtx(cctx, fRetTe, pkgName))
+                        cctx.fieldFuncRetTypes.add(className + "/" + f.name, recordFieldFuncTypeMsil(cctx, fRetTe, pkgName, recGenerics))
                         val fParamMsilTys: List[MsilType] = newList()
                         var ffpi = 0
                         while ffpi < fParamTes.count {
-                          fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[ffpi], pkgName))
+                          fParamMsilTys.add(recordFieldFuncTypeMsil(cctx, fParamTes[ffpi], pkgName, recGenerics))
                           ffpi = ffpi + 1
                         }
                         cctx.fieldFuncParamTypes.add(className + "/" + f.name, fParamMsilTys)

@@ -2553,10 +2553,27 @@ test "a return-only type parameter is inferred from a binding annotation" {
 }
 
 test "a qualified generic head unifies with the declaring package's bare spelling" {
-  val callerSrc = "package Caller\n" + "import Lib\n" +
-    "func caller(xs: in List[Lib.Node[Int]]): Int { count(xs) }\n"
+  val callerSrc = "package Caller\n" + "import Lib\n" + "func caller(xs: in List[Lib.Node[Int]]): Int { count(xs) }\n"
   val libSrc = "package Lib\n" + "pub union Node[T] { case Leaf(v: T) }\n" +
     "pub func count[T](xs: in List[Node[T]]): Int { xs.count }\n"
   val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
   assertTrue(hasFunc(res.file, "count__Int"), "Lib.Node[Int] binds T = Int against Node[T]")
+}
+
+test "a function reference argument binds a generic's type parameters (D-progress-951)" {
+  val callerSrc = "package Caller\n" + "func pick(x: in Int): String { \"s\" }\n" +
+    "func caller(xs: in List[Int]): Unit { val r = apply(pick, xs) }\n"
+  val libSrc = "package Lib\n" + "pub func apply[A, B](f: (A) -> B, xs: in List[A]): List[B] { newList() }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertTrue(hasFunc(res.file, "apply__Int__String"), "A and B bound from the function reference")
+}
+
+test "an Object default under a function-typed generic result raises M0004 (D-progress-951)" {
+  val callerSrc = "package Caller\n" +
+    "func caller(xs: in List[Int]): Unit { val r = firstOk(mystery(), xs) }\n"
+  val libSrc = "package Lib\n" + "pub union ResLike[T] { case Yes(v: T)\n case No }\n" +
+    "pub func firstOk[A, T](f: (A) -> ResLike[T], xs: in List[A]): Bool { true }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertFalse(hasFunc(res.file, "firstOk__Int__Object"), "no Object-defaulted specialisation")
+  assertTrue(diagCountCode(res.diagnostics, "M0004") > 0, "M0004 for the unsafe function-typed shape")
 }

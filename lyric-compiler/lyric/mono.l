@@ -1205,6 +1205,35 @@ func typeHeadsMatchMono(a: in List[String], b: in List[String]): Bool {
   true
 }
 
+// The function type of a bare reference to a known, non-generic,
+// unambiguous function `name`: `(P1, ..., Pn) -> R`, `R` being `Unit` when
+// the function declares no return type.
+func funcRefTEMono(state: in MonoState, name: in String, sp: in Span): Option[TypeExpr] {
+  if state.ambiguousFuncOverloads.containsKey(name) {
+    return None
+  }
+  match mapGet(state.funcDecls, name) {
+    case Some(decl) -> {
+      match decl.generics {
+        case Some(_) -> return None
+        case None -> ()
+      }
+      val ps: List[TypeExpr] = newList()
+      var i = 0
+      while i < decl.params.count {
+        ps.add(decl.params[i].ty)
+        i = i + 1
+      }
+      val ret = match decl.ret {
+        case Some(r) -> r
+        case None -> TypeExpr(kind = TRef(path = singleSegPath("Unit")), span = sp)
+      }
+      Some(value = TypeExpr(kind = TFunction(parameters = ps, retTy = ret), span = sp))
+    }
+    case None -> None
+  }
+}
+
 func listContainsStr(xs: in List[String], s: in String): Bool {
   var i = 0
   while i < xs.count {
@@ -1276,6 +1305,22 @@ func typeExprUnsafeUnderErasure(te: in TypeExpr, unpinned: in List[String]): Boo
     case TArray(_, elem) -> typeExprNestedUnsafe(elem, unpinned)
     case TNullable(inner) -> typeExprUnsafeUnderErasure(inner, unpinned)
     case TParen(inner) -> typeExprUnsafeUnderErasure(inner, unpinned)
+    // A function-typed parameter (`f: (E) -> Option[U[Msg]]`): the delegate
+    // itself is erased, so a BARE unpinned parameter or result is safe, but
+    // the specialised body casts what the function returns (and what it is
+    // given) to the defaulted instantiation, so an unsafe shape in any
+    // parameter or the result is unsafe for the whole parameter.
+    case TFunction(ps, r) -> {
+      var found = typeExprUnsafeUnderErasure(r, unpinned)
+      var i = 0
+      while i < ps.count {
+        if typeExprUnsafeUnderErasure(ps[i], unpinned) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    }
     case _ -> false
   }
 }
@@ -1542,7 +1587,14 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
           // A param/local shadows a module-level `val` of the same name,
           // so `env` (params/locals) is consulted first; only fall back to
           // `moduleValTypes` when no local binding exists (#6594).
-          case None -> mapGet(state.moduleValTypes, path.segments[0])
+          case None -> match mapGet(state.moduleValTypes, path.segments[0]) {
+            case Some(vte) -> Some(value = vte)
+            // A bare reference to a known non-generic function passed as a
+            // value (`describeFn(toUi, xs)`) has that function's type, so a
+            // generic callee's `(E) -> Option[U[Msg]]` parameter binds its
+            // type parameters from it instead of defaulting them to Object.
+            case None -> funcRefTEMono(state, path.segments[0], expr.span)
+          }
         }
       } else {
         None
