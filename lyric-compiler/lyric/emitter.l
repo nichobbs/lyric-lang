@@ -465,6 +465,21 @@ pub func findStdlibSources(): List[String] {
   findStdlibSourcesForTarget(false)
 }
 
+// JVM-target counterpart of `findStdlibSources` (#6957): loads the same
+// dev-tree/`LYRIC_STD_PATH` stdlib source `findStdlibSourcesForTarget`
+// already resolves for `emitJvmInProcess`, but with the JVM-specific
+// `_kernel_jvm/` host files preferred over `_kernel/` (see
+// `findStdlibSourcesForTarget`'s own doc comment). Exposed so a JVM
+// self-test needing to compile a `List`/`Map`-using program in-process
+// (via `Jvm.Bridge.compileToJarBundled`) can supply real stdlib source
+// the same way `emitJvmInProcess` does, instead of either an empty
+// stdlib (leaves every `Std.*` symbol unresolved) or the WRONG
+// (`.NET`-kernel) source `findStdlibSources()` returns, which fails JVM
+// codegen on any kernel extern the two targets don't share verbatim.
+pub func findStdlibSourcesJvm(): List[String] {
+  findStdlibSourcesForTarget(true)
+}
+
 // Target-aware stdlib source loader (J6 M-10).
 //
 // `.NET` (forJvm == false): load `_kernel/` (the .NET host boundary),

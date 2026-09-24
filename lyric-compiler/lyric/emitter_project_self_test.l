@@ -1045,6 +1045,21 @@ test "emitProject cross-package impl of an imported interface (qualified)" {
 // through its final `case _ -> newList()` arm and stays boxed `Object`, so
 // `w.n` inside the match arm still hits the J007 refusal (verified directly
 // against `./bin/lyric build --target jvm` on this exact source).
+//
+// Replaced a THIRD time (#6957): `scrutineeGenericArgs` gained a top-level
+// `EMember` arm (`fieldGenericArgsOf`) that resolves a plain field read's
+// own declared generic instantiation — but only when the field's RECEIVER
+// is itself a bare local/parameter/`self` (`receiverClassOf`'s only
+// resolvable shapes). `h.box` is exactly that shape, so it stopped
+// panicking too (confirmed: reverting #6957's `EMember` arm locally
+// reproduces this test's failure with the two-level repro below unchanged
+// to one level, restoring it passes). The repro now nests one level
+// deeper — `h.wrap.box`, where the field's own receiver (`h.wrap`) is
+// itself an `EMember`, not a bare `EPath` — so `receiverClassOf` returns
+// `None` for it and `fieldGenericArgsOf` falls through to its safe
+// `newList()` default, keeping `w.n` erased and the J007 refusal reachable
+// (verified directly against `./bin/lyric build --target jvm` on this
+// exact source).
 test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure, not a thrown exception (#6422)" {
   val dir = freshTempDir("jvm-contain-j007")
   val source = "package ContainJ007.App\n" + "\n" + "record Widget {\n" + "  n: Int\n" + "}\n" + "\n" +
@@ -1053,19 +1068,23 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     "  case Empty\n" +
     "}\n" +
     "\n" +
-    "record Holder {\n" +
+    "record Wrap {\n" +
     "  box: Box[Widget]\n" +
     "}\n" +
     "\n" +
+    "record Holder {\n" +
+    "  wrap: Wrap\n" +
+    "}\n" +
+    "\n" +
     "func unwrap(h: Holder): Int {\n" +
-    "  match h.box {\n" +
+    "  match h.wrap.box {\n" +
     "    case Full(w) -> w.n\n" +
     "    case Empty -> 0\n" +
     "  }\n" +
     "}\n" +
     "\n" +
     "func main(): Unit {\n" +
-    "  println(unwrap(Holder(box = Full(value = Widget(n = 40)))))\n" +
+    "  println(unwrap(Holder(wrap = Wrap(box = Full(value = Widget(n = 40))))))\n" +
     "}\n"
   val noDefines: List[String] = newList()
   val req = Emitter.EmitRequest(
@@ -1108,7 +1127,7 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     "the contained refusal carries its J007 code in EmitResult.diagnostics (got: " + diagText + ")"
   )
   // #6464: the diagnostic's span carries the REAL `line:col` the panic
-  // message embeds (`ContainJ007.App:18:21` — the `w` receiver of `w.n` in
+  // message embeds (`ContainJ007.App:22:21` — the `w` receiver of `w.n` in
   // `case Full(w) -> w.n`), not the synthetic file-start point span every
   // contained panic used to get.
   var j007Idx = -1
@@ -1124,7 +1143,7 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     val sp = result.diagnostics[j007Idx].span
     assertEqualInt(
       sp.startPos.line,
-      18,
+      22,
       "J007 span points at the real source line (got: " + toString(sp.startPos.line) + ")"
     )
     assertEqualInt(
