@@ -78,6 +78,11 @@ fix, where such helpers stay private at the source level but are emitted as
 ABI-visible and listed in contract metadata (the `@usableFromInline` model),
 is tracked separately.
 
+Qualifier matching does not change how two bare imports that share a last
+segment are handled (`import Std.Core` plus `import Xp.Core`): `Core.f` still
+resolves to the first such import in source order, as documented for #3250.
+An `as` alias on one of the imports disambiguates.
+
 ## Verification
 
 A cross-package repro project (a library of generic helpers plus a

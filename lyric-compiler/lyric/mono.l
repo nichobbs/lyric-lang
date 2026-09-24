@@ -1108,7 +1108,7 @@ func unifyTE(
     case TGenericApp(h1, a1) -> {
       match argTE.kind {
         case TGenericApp(h2, a2) -> {
-          if pathSegsKey(h1.segments) == pathSegsKey(h2.segments) and a1.count == a2.count {
+          if typeHeadsMatchMono(h1.segments, h2.segments) and a1.count == a2.count {
             var i = 0
             while i < a1.count {
               match a1[i] {
@@ -1174,6 +1174,28 @@ func unifyTE(
     }
     case _ -> ()
   }
+}
+
+// Whether two generic-application heads name the same type.  A declaring
+// package spells its own type bare (`Node`) while a consumer may qualify it
+// (`Pkg.Node`, or the full path once `Lyric.AliasRewriter` has expanded an
+// alias), so a head matches when the shorter one is a segment-wise suffix of
+// the longer.  Unification only runs on calls the type checker has accepted,
+// so two heads that agree on their trailing segments already denote the same
+// type here.
+func typeHeadsMatchMono(a: in List[String], b: in List[String]): Bool {
+  if a.count == 0 or b.count == 0 {
+    return false
+  }
+  val n = if a.count < b.count { a.count } else { b.count }
+  var i = 1
+  while i <= n {
+    if a[a.count - i] != b[b.count - i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 func listContainsStr(xs: in List[String], s: in String): Bool {

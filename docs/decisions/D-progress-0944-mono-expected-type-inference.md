@@ -47,6 +47,14 @@ took their type arguments from the expected type.
   copy is registered in `funcDecls`, and an unannotated `val` whose
   initialiser was just rewritten is typed from the rewritten call, so
   `val v = f(...)` gives `v` a concrete type for later generic calls.
+- **Qualified type heads unify.** A declaring package spells its own type
+  bare (`Node[M]`) while a consumer may qualify it (`Pkg.Node[Msg]`, or the
+  full path once an alias is expanded). `unifyTE` used to require identical
+  head paths, so such a call bound nothing and fell back to `Object`,
+  producing a specialised copy over `Node<object>` and an invalid cast at
+  run time. Heads now match when the shorter path is a segment-wise suffix of
+  the longer (`typeHeadsMatchMono`); unification only sees calls the type
+  checker has accepted, so matching trailing segments name the same type.
 - **Record constructors (type checker).** `inferConstructionExpected` fills
   a generic record constructor's unbound type parameters from an expected
   instantiation of the same record; `inferExprExpected` routes an annotated
