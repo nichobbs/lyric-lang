@@ -1973,3 +1973,86 @@ test "emitProject generic union cases stored in a typed list inside an imported 
   assertEqualInt(result.exitCode, 0, "generic handlers JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "click go; input abc", "generic handlers JVM: output")
 }
+
+// A bare call inside an imported generic whose name another imported package
+// also declares, at the same arity: the body was type-checked in its own
+// package, where that package's declaration shadows the import, so its
+// specialisation must call the same one (D-progress-954).  Before the fix the
+// call bound the other package's `findAll` (invalid IL on MSIL) or stayed
+// unresolved (T0123).
+func ownOverloadPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPOv.App",
+      "package EPOv.App\n" + "\n" + "import EPOv.Core.{Box, Full, Empty, Hit, Miss, findFirst}\n" +
+        "import EPOv.Other\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val kids: List[Box[Int]] = newList()\n" +
+        "  val b: Box[Int] = Full(value = 7, children = kids)\n" +
+        "  val hit = match findFirst(b) {\n" +
+        "    case Hit(x) -> match x {\n" +
+        "      case Full(v, _) -> \"found \" + toString(v)\n" +
+        "      case Empty -> \"found empty\"\n" +
+        "    }\n" +
+        "    case Miss -> \"none\"\n" +
+        "  }\n" +
+        "  println(hit + \"; \" + findAll(\"a\", \"b\")[0])\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPOv.Core",
+      "package EPOv.Core\n" + "\n" + "pub enum Kind {\n" + "  case A\n" + "  case B\n" + "}\n" + "\n" +
+        "pub union Box[T] {\n" +
+        "  case Full(value: T, children: List[Box[T]])\n" +
+        "  case Empty\n" +
+        "}\n" +
+        "\n" +
+        "pub union Found[T] {\n" +
+        "  case Hit(v: T)\n" +
+        "  case Miss\n" +
+        "}\n" +
+        "\n" +
+        "pub func findAll[T](b: in Box[T], k: in Kind): List[Box[T]] {\n" +
+        "  val acc: List[Box[T]] = newList()\n" +
+        "  acc.add(b)\n" +
+        "  return acc\n" +
+        "}\n" +
+        "\n" +
+        "pub func findFirst[T](b: in Box[T]): Found[Box[T]] {\n" +
+        "  val all: List[Box[T]] = findAll(b, Kind.A)\n" +
+        "  for x in all {\n" +
+        "    val bx: Box[T] = x\n" +
+        "    return Hit(v = bx)\n" +
+        "  }\n" +
+        "  return Miss\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPOv.Other",
+      "package EPOv.Other\n" + "\n" + "pub func findAll(node: in String, tag: in String): List[String] {\n" +
+        "  val acc: List[String] = newList()\n" +
+        "  acc.add(node + tag)\n" +
+        "  return acc\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject bare call in an imported generic prefers its own package's overload (MSIL)" {
+  val result = runEmitProject("emitproj-ownov", ownOverloadPkgs(), "EPOv")
+  assertEqualInt(result.exitCode, 0, "own overload MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "found 7; ab", "own overload MSIL: output")
+}
+
+test "emitProject bare call in an imported generic prefers its own package's overload (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-ownov-jvm", ownOverloadPkgs(), "EPOv")
+  assertEqualInt(result.exitCode, 0, "own overload JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "found 7; ab", "own overload JVM: output")
+}

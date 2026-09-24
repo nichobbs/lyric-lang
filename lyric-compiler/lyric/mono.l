@@ -2518,10 +2518,26 @@ func resolveAmbiguousOverload(
         }
         i = i + 1
       }
+      val bodyOrigin = state.originScope[state.originScope.count - 1]
+      val ownPkg: List[FunctionDecl] = newList()
+      if bodyOrigin.length > 0 {
+        var k = 0
+        while k < arityMatched.count {
+          if originPkgOf(arityMatched[k].annotations) == bodyOrigin {
+            ownPkg.add(arityMatched[k])
+          }
+          k = k + 1
+        }
+      }
       if arityMatched.count == 0 {
         None
       } else if arityMatched.count == 1 {
         Some(value = arityMatched[0])
+      } else if ownPkg.count == 1 {
+        // A generic body specialised from package P was type-checked in P's
+        // scope, where P's own declaration shadows every imported one of the
+        // same name (D-progress-954).
+        Some(value = ownPkg[0])
       } else {
         val compatible: List[FunctionDecl] = newList()
         var j = 0
