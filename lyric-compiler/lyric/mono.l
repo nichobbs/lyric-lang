@@ -1892,9 +1892,11 @@ func inferMethodReturnTE(
   match inferExprTE(state, env, recv) {
     case None -> None
     case Some(recvTy) -> {
+      // A consumer may spell an imported type qualified (`Pkg.Box[Int]`,
+      // alias-expanded); declarations are keyed by their simple name.
       val typeName = match recvTy.kind {
-        case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
-        case TGenericApp(head, _) -> if head.segments.count == 1 { head.segments[0] } else { "" }
+        case TRef(path) -> path.segments[path.segments.count - 1]
+        case TGenericApp(head, _) -> head.segments[head.segments.count - 1]
         case _ -> ""
       }
       if typeName.length == 0 {
@@ -1974,7 +1976,35 @@ func lookupRecordMethodRetTE(
     }
     i = i + 1
   }
+  // No method of that name: `r.f(args)` calls the function held in a
+  // function-typed FIELD `f` (D-progress-952); its result type is the
+  // field's, substituted for the record's type parameters.
+  var fi = 0
+  while fi < rdecl.members.count {
+    match rdecl.members[fi] {
+      case RMField(f) -> if f.name == methodName {
+        match fieldFuncRetTEMono(f.ty) {
+          case Some(r) -> {
+            val noParams: List[Param] = newList()
+            val noArgs: List[CallArg] = newList()
+            return substMethodRetTE(state, env, typeParams, recvArgs, None, noParams, Some(value = r), noArgs)
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    fi = fi + 1
+  }
   None
+}
+
+func fieldFuncRetTEMono(te: in TypeExpr): Option[TypeExpr] {
+  match te.kind {
+    case TFunction(_, r) -> Some(value = r)
+    case TParen(inner) -> fieldFuncRetTEMono(inner)
+    case _ -> None
+  }
 }
 
 // Build the substitution for a method's return type: the declaring type's

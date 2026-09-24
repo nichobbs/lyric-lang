@@ -16950,6 +16950,64 @@ func narrowSelfCallResultMsil(cctx: in CodegenCtx, key: in String, cls: in Strin
 // token in `cctx.methodTokens` and emit `callvirt` so virtual / interface
 // dispatch happens at the call site.  Falls back to the BCL-name dispatch
 // below for `MObject` receivers (e.g. List/Dict).
+// `recv.f(args)` where `f` is a function-typed field of the receiver's
+// record rather than a method: the receiver is already on the stack, so read
+// the field (a delegate) and invoke it (D-progress-952).  None, emitting
+// nothing, when the receiver is not a record with such a field or the record
+// also declares a method named `f` (a method wins, as in the type checker).
+func recordFuncFieldCallMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  recvTy: in MsilType,
+  memberName: in String,
+  args: in List[CallArg],
+): Option[MsilType] {
+  match recvTy {
+    case MClass(cls) -> {
+      val key = cls + "/" + memberName
+      if not cctx.fieldFuncRetTypes.containsKey(key) or recordHasMethodMsil(cctx, cls, memberName, args.count) {
+        return None
+      }
+      match mapGet(cctx.fieldTokens, key) {
+        case Some(tok) -> {
+          insns.add(MCastclassByName(className = cls))
+          insns.add(MLdfld(fieldToken = tok))
+          val fty = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
+          Some(value = invokeLoadedFuncValueMsil(cctx, fctx, insns, args, fty, mapGet(cctx.fieldFuncRetTypes, key)))
+        }
+        case None -> None
+      }
+    }
+    case MGenericInstByName(fqn, typeArgs) -> {
+      val base = stripGenericArity(fqn)
+      val key = base + "/" + memberName
+      if not cctx.fieldFuncRetTypes.containsKey(key) or recordHasMethodMsil(cctx, base, memberName, args.count) or not cctx.fieldSigBytes.containsKey(key) {
+        return None
+      }
+      val fOpen = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
+      insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
+      insns.add(MLdfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fOpen))
+      Some(
+        value = invokeLoadedFuncValueMsil(
+          cctx,
+          fctx,
+          insns,
+          args,
+          substituteTypeVarsMsil(fOpen, typeArgs),
+          mapGet(cctx.fieldFuncRetTypes, key)
+        )
+      )
+    }
+    case _ -> None
+  }
+}
+
+func recordHasMethodMsil(cctx: in CodegenCtx, cls: in String, memberName: in String, arity: in Int): Bool {
+  cctx.methodTokens.containsKey(cls + "/" + memberName) or
+    cctx.methodTokens.containsKey(cls + "/" + memberName + "/" + toString(arity))
+}
+
 func lowerMethodCallMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -17289,6 +17347,12 @@ func lowerMethodCallMsil(
     }
     case _ -> {
     }
+  }
+  // `r.f(args)` where `f` is a function-typed FIELD of `r`'s record (no
+  // method of that name): read the field and invoke the function it holds.
+  match recordFuncFieldCallMsil(cctx, fctx, insns, recvTy, memberName, args) {
+    case Some(fieldCallTy) -> return fieldCallTy
+    case None -> ()
   }
   // User-defined instance / interface dispatch path (#878).
   match recvTy {

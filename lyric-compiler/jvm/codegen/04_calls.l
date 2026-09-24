@@ -4737,6 +4737,22 @@ func lowerMethodCall(
     case _ -> ()
   }
 
+  // `r.f(args)` where `f` is a FIELD of `r`'s record, not a method: every
+  // method, extension and FFI resolution above has missed and the type
+  // checker accepted the call, so the field holds a function.  Read it and
+  // invoke it through the lambda interface (D-progress-952) instead of the
+  // `invokevirtual r.f` guess below, which has no such method at run time.
+  match recvTy {
+    case JRef(fcls) -> match recordFieldType(ctx, fcls, memberName) {
+      case Some(fty) -> if not ctx.opaqueTypes.containsKey(fcls) {
+        insns.add(LCheckcast(className = fcls))
+        insns.add(LGetfield(owner = fcls, name = memberName, t = fty))
+        return lowerLambdaInvokeTail(ctx, insns, args, None)
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
   val paramTys: List[JvmType] = newList()
   var i = 0
   while i < args.count {
