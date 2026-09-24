@@ -3254,6 +3254,61 @@ pub func ownAwareExternTypes(file: in SourceFile, externSeed: in Map[String, Str
 // `extern type` in `Std.TimeHost`) must resolve to the real JVM class in both
 // the registered sig and the emitted descriptor, or the method links against a
 // nonexistent `<pkg>/<Alias>` class at runtime.
+// A function-typed record field (`f: (A) -> R`) is called like a method,
+// `r.f(args)` (D-progress-952): register its RESULT under
+// `fnfield:<class>.<field>` so the call site can unbox/narrow the invoked
+// function's boxed result exactly as a declared function's call would.
+func registerFnFieldSig(
+  into: in Map[String, JvmFuncSig],
+  recClass: in String,
+  fieldName: in String,
+  fieldTy: in TypeExpr,
+  owner: in String,
+  recTps: in List[String],
+  externTypes: in Map[String, String],
+): Unit {
+  val key = "fnfield:" + recClass + "." + fieldName
+  if into.containsKey(key) {
+    return
+  }
+  match fnFieldRetTe(fieldTy) {
+    case Some(r) -> {
+      val noPs: List[JvmType] = newList()
+      into.add(
+        key,
+        JvmFuncSig(
+          owner = recClass,
+          params = noPs,
+          ret = typeExprToJvmErasedExtern(r, owner, recTps, externTypes),
+          paramNames = newList(),
+          paramDefaults = newList(),
+          paramModes = newList(),
+          isIface = false,
+          retGenericArgs = eagerlyResolveGenericArgs(
+            returnTypeGenericArgsFiltered(Some(value = r), recTps),
+            owner,
+            externTypes
+          ),
+          closureRetTy = None,
+          recordRetClass = None,
+          retIsSelf = false,
+          retIsUnsigned = isUnsignedTypeExpr(r),
+          recordRetHead = recordRetHeadOf(Some(value = r))
+        )
+      )
+    }
+    case None -> ()
+  }
+}
+
+func fnFieldRetTe(te: in TypeExpr): Option[TypeExpr] {
+  match te.kind {
+    case TFunction(_, r) -> Some(value = r)
+    case TParen(inner) -> fnFieldRetTe(inner)
+    case _ -> None
+  }
+}
+
 pub func collectFileSigsSeeded(
   file: in SourceFile, into: in Map[String, JvmFuncSig], externSeed: in Map[String, String]
 ): Unit {
@@ -3519,6 +3574,7 @@ pub func collectFileSigsSeeded(
             }
             case RMField(f) -> {
               registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
+              registerFnFieldSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
             }
             case _ -> ()
           }
@@ -3541,6 +3597,7 @@ pub func collectFileSigsSeeded(
             }
             case RMField(f) -> {
               registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
+              registerFnFieldSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
             }
             case _ -> ()
           }

@@ -261,6 +261,13 @@ pub record CodegenCtx {
   // manifestation specifically).
   fieldFuncRetTypes: Map[String, MsilType]
   fieldFuncParamTypes: Map[String, List[MsilType]]
+  // The OPEN result type of a generic record's function-typed field, in
+  // terms of the record's own type parameters (`MTypeVar`), keyed like
+  // `fieldFuncRetTypes`.  `recordFuncFieldCallMsil` substitutes the
+  // receiver's type arguments into it (D-progress-952); `fieldFuncRetTypes`
+  // itself keeps the instantiation-independent `object` form for consumers
+  // that have no receiver instantiation (D-progress-951).
+  fieldFuncRetTypesOpen: Map[String, MsilType]
   // Declaring arity (`decl.params.count`) of whichever same-name overload's
   // registration first claimed a bare "func:<fqn>" key in fieldFuncRetTypes
   // (#5795): a mixed-arity overload set only has ONE arity-qualified key per
@@ -2050,6 +2057,7 @@ pub func newCodegenCtx(
     byteFields = newMap(),
     fieldFuncRetTypes = newMap(),
     fieldFuncParamTypes = newMap(),
+    fieldFuncRetTypesOpen = newMap(),
     fieldFuncBareKeyArity = newMap(),
     funcTokens = funcToks,
     bundleFuncFqns = newMap(),
@@ -3451,6 +3459,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                     case TFunction(fParamTes, fRetTe) -> {
                       if not cctx.fieldFuncRetTypes.containsKey(className + "/" + f.name) {
                         cctx.fieldFuncRetTypes.add(className + "/" + f.name, recordFieldFuncTypeMsil(cctx, fRetTe, pkgName, recGenerics))
+                        if recGenerics.count > 0 and not cctx.fieldFuncRetTypesOpen.containsKey(className + "/" + f.name) {
+                          cctx.fieldFuncRetTypesOpen.add(className + "/" + f.name, typeExprToMsilG(cctx, fRetTe, pkgName, recGenerics))
+                        }
                         val fParamMsilTys: List[MsilType] = newList()
                         var ffpi = 0
                         while ffpi < fParamTes.count {
@@ -3633,6 +3644,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                     case TFunction(fParamTes, fRetTe) -> {
                       if not cctx.fieldFuncRetTypes.containsKey(className + "/" + f.name) {
                         cctx.fieldFuncRetTypes.add(className + "/" + f.name, recordFieldFuncTypeMsil(cctx, fRetTe, pkgName, recGenerics))
+                        if recGenerics.count > 0 and not cctx.fieldFuncRetTypesOpen.containsKey(className + "/" + f.name) {
+                          cctx.fieldFuncRetTypesOpen.add(className + "/" + f.name, typeExprToMsilG(cctx, fRetTe, pkgName, recGenerics))
+                        }
                         val fParamMsilTys: List[MsilType] = newList()
                         var ffpi = 0
                         while ffpi < fParamTes.count {
@@ -16995,7 +17009,10 @@ func recordFuncFieldCallMsil(
           insns,
           args,
           substituteTypeVarsMsil(fOpen, typeArgs),
-          mapGet(cctx.fieldFuncRetTypes, key)
+          match mapGet(cctx.fieldFuncRetTypesOpen, key) {
+            case Some(openRet) -> Some(value = substituteTypeVarsMsil(openRet, typeArgs))
+            case None -> mapGet(cctx.fieldFuncRetTypes, key)
+          }
         )
       )
     }

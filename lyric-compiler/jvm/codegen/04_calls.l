@@ -4747,7 +4747,16 @@ func lowerMethodCall(
       case Some(fty) -> if not ctx.opaqueTypes.containsKey(fcls) {
         insns.add(LCheckcast(className = fcls))
         insns.add(LGetfield(owner = fcls, name = memberName, t = fty))
-        return lowerLambdaInvokeTail(ctx, insns, args, None)
+        match mapGet(ctx.funcSigs, "fnfield:" + fcls + "." + memberName) {
+          case Some(fsig) -> {
+            val invoked = lowerLambdaInvokeTail(ctx, insns, args, Some(value = fsig.ret))
+            return match invoked {
+              case JRef(cn) -> if cn == "java/lang/Object" { narrowStaticCallResult(ctx, insns, fsig) } else { invoked }
+              case _ -> invoked
+            }
+          }
+          case None -> return lowerLambdaInvokeTail(ctx, insns, args, None)
+        }
       }
       case None -> ()
     }
