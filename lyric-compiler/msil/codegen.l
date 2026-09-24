@@ -14259,6 +14259,24 @@ func bindPositionalFieldMsil(
 }
 
 // Bind pattern variables after a successful match.
+// The parent union of the NON-generic union case named `caseName` (resolved
+// in scope like the erased-scrutinee test phase does), or None when the name
+// is unknown or names a generic case.
+func nonGenericCaseParentMsil(cctx: in CodegenCtx, fctx: in FuncCtx, caseName: in String): Option[String] {
+  match mapGet(cctx.unionCaseCtorByName, caseName) {
+    case Some(cands) -> {
+      val caseFqn = pickCaseFqnByScope(cctx, fctx, cands)
+      val nGen = match mapGet(cctx.caseTypeParamCount, caseFqn) { case Some(n) -> n; case None -> 0 }
+      if nGen > 0 {
+        None
+      } else {
+        mapGet(cctx.caseParentUnion, caseFqn)
+      }
+    }
+    case None -> None
+  }
+}
+
 func lowerPatternBindMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -14431,6 +14449,21 @@ func lowerPatternBindMsil(
           fi = fi + 1
         }
       } else {
+        // An erased scrutinee whose pattern names a NON-generic union case
+        // (`case Typed(s)` on the `object` result of invoking a function
+        // value): the test phase has already `isinst`-checked the real case
+        // class (resolved by name, #2126), so bind through that class exactly
+        // as for a statically-typed scrutinee — cast and load each field.
+        // Binding the scrutinee itself (the erased-`Option` sentinel shape
+        // below) silently gave `s` the whole case object (D-progress-952
+        // follow-up).  Generic cases keep the fallback (#2233).
+        match nonGenericCaseParentMsil(cctx, fctx, lastSegmentMsil(head)) {
+          case Some(parentFqn) -> {
+            lowerPatternBindMsil(cctx, fctx, insns, pat, scrutSlot, MClass(className = parentFqn))
+            return
+          }
+          case None -> ()
+        }
         // Erased scrutinee (e.g. from mapGet, or a raw-value-encoded case such
         // as `.indexOf`/`.lastIndexOf`'s sentinel-int `Option[Int]`): bind each
         // named field directly to the scrutinee slot.  In the bootstrap
