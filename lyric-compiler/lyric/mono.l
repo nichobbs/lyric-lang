@@ -3833,7 +3833,10 @@ func desugarRecordCopyMono(
   state.copyTicker.add(0)
   val base = "__lyric_copy_" + toString(id)
   val stmts: List[Statement] = newList()
-  stmts.add(copyValStmtMono(base, rewriteExpr(state, env, recv), sp))
+  // Type the receiver temp when its type is known: a backend that erases
+  // an unannotated local (the JVM) cannot read the unchanged fields back
+  // off an `Object`.
+  stmts.add(copyTypedValStmtMono(base, inferExprTE(state, env, recv), rewriteExpr(state, env, recv), sp))
   val given: Map[String, String] = newMap()
   var ai = 0
   while ai < args.count {
@@ -3869,6 +3872,11 @@ func desugarRecordCopyMono(
   val ctor = Expr(kind = ECall(fn = Expr(kind = EPath(path = ctorPath), span = sp), args = ctorArgs), span = sp)
   stmts.add(Statement(kind = SExpr(expr = ctor), span = sp))
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+}
+
+func copyTypedValStmtMono(name: in String, ty: in Option[TypeExpr], init: in Expr, sp: in Span): Statement {
+  val pat = Pattern(kind = PBinding(name = name, inner = None), span = sp)
+  Statement(kind = SLocal(binding = LBVal(pat = pat, ty = ty, init = init)), span = sp)
 }
 
 func copyValStmtMono(name: in String, init: in Expr, sp: in Span): Statement {
