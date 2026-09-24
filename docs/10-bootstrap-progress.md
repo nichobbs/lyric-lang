@@ -35172,3 +35172,14 @@ its type parameters, function-typed parameters take part in the #5970
 erasure-safety check, and a generic record's instantiation-dependent
 function-field types no longer produce bogus closed generics on MSIL. See
 D-progress-951 and D-progress-952.
+
+## Consuming a prebuilt generic library
+
+A restored Lyric package whose generic functions use stdlib or imported names
+in their bodies now loads: the consumer-side surface check type-checks the
+bodyless contract, while the stored source keeps the generic bodies for
+specialisation (D-progress-953). A bare call inside an imported generic now
+binds the declaring package's own function when the consumer also imports a
+same-named, same-arity function from elsewhere (previously T0123 or invalid
+IL), and a bare nullary union case (`Go`) binds a generic's type parameter
+by itself (D-progress-954, D-progress-951).
