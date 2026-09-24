@@ -3660,6 +3660,66 @@ pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, Reco
   MonoResult(file = desugared, rewrites = noRewrites, diagnostics = state.diags)
 }
 
+// The `.copy` site for a call inside a specialised generic from another
+// package: the receiver's type, as inferred in the specialised body, names a
+// record this file knows that declares no `copy` method of its own.
+func foreignCopySiteMono(
+  state: in MonoState, env: in Map[String, TypeExpr], recv: in Expr, sp: in Span
+): Option[RecordCopySite] {
+  match inferExprTE(state, env, recv) {
+    case Some(te) -> {
+      val head = typeHeadSegsMono(te)
+      if head.count == 0 {
+        return None
+      }
+      match mapGet(state.recordDecls, head[head.count - 1]) {
+        case Some(rd) -> {
+          val fields: List[String] = newList()
+          var mi = 0
+          while mi < rd.members.count {
+            match rd.members[mi] {
+              case RMField(f) -> fields.add(f.name)
+              case RMFunc(fn) -> if fn.name == "copy" { return None }
+              case _ -> ()
+            }
+            mi = mi + 1
+          }
+          Some(
+            value = RecordCopySite(
+              recordName = Str.joinList(".", head),
+              fields = fields,
+              startOffset = sp.startPos.offset,
+              conflicting = false
+            )
+          )
+        }
+        case None -> None
+      }
+    }
+    case None -> None
+  }
+}
+
+// Whether `recv`'s inferred type is known and is not a record, so a `.copy`
+// on it is some other type's method rather than a record copy.
+func receiverIsKnownNonRecordMono(state: in MonoState, env: in Map[String, TypeExpr], recv: in Expr): Bool {
+  match inferExprTE(state, env, recv) {
+    case Some(te) -> {
+      val head = typeHeadSegsMono(te)
+      head.count > 0 and not state.recordDecls.containsKey(head[head.count - 1])
+    }
+    case None -> false
+  }
+}
+
+func typeHeadSegsMono(te: in TypeExpr): List[String] {
+  match te.kind {
+    case TRef(path) -> path.segments
+    case TGenericApp(head, _) -> head.segments
+    case _ -> newList()
+  }
+}
+
 func spanContainsAnyOffset(sp: in Span, offsets: in List[Int]): Bool {
   var i = 0
   while i < offsets.count {
@@ -4642,7 +4702,28 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
             } else {
               return desugarRecordCopyMono(state, env, copyRecv, args, site, s)
             }
-            case None -> ()
+            case None -> {
+              // A generic body from another package reaches this file
+              // unchecked (its package's type checker validated the call),
+              // so its `.copy` has no site here: lower it from the
+              // receiver's type in the specialised body instead.
+              val bodyOrigin = state.originScope[state.originScope.count - 1]
+              if bodyOrigin.length > 0 {
+                match foreignCopySiteMono(state, env, copyRecv, s) {
+                  case Some(site) -> return desugarRecordCopyMono(state, env, copyRecv, args, site, s)
+                  case None -> if not state.funcDecls.containsKey("copy") and not receiverIsKnownNonRecordMono(state, env, copyRecv) {
+                    state.diags.add(
+                      errorDiagnostic(
+                        "M0006",
+                        "cannot lower record `.copy(...)` in a generic from package '" + bodyOrigin +
+                          "': the receiver's record type is not known after specialisation; give the receiver an explicit record type in that generic",
+                        s
+                      )
+                    )
+                  }
+                }
+              }
+            }
           }
         }
         case _ -> ()

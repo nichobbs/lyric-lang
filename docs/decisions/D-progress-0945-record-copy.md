@@ -36,6 +36,15 @@ full constructor out by hand, repeating every unchanged field.
   package carries a constructor call rather than a `.copy` its consumer
   could not lower. Two different sites sharing one key (only possible in
   synthesized, span-less code) are reported as M0005 rather than guessed.
+- **Generic bodies from other packages.** Within one build (a sibling
+  project package, or the stdlib), a generic's body reaches its consumer
+  from source rather than from contract metadata, so its `.copy` has no
+  site there. `Lyric.Mono` lowers such a call from the receiver's type as
+  inferred in the specialised body, which names a record it knows (the
+  declaring package's type checker has already validated the call). When
+  that type cannot be inferred, it reports M0006 and asks for an explicit
+  record type on the receiver, rather than leaving an unresolvable method
+  call for the backend.
 
 ## Verification
 
