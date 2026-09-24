@@ -76,8 +76,15 @@ pub func errorMessage(e: in RestoredLoadError): String {
   match e {
     case DllMissing(p) -> "restored DLL not found: " + p
     case NoContractResource(p) -> "restored DLL has no Lyric.Contract resource (not a Lyric assembly?): " + p
-    case MalformedContract(p, k) -> "restored DLL " + p + ": Lyric.Contract" + (if Str.isEmpty(k) { "" } else { "." + k }) + " resource is not valid JSON"
-    case SynthesisDiagnostics(p, ds) -> "restored DLL " + p + ": synthesised contract source did not type-check (" + Str.fromInt(ds.count) + " diagnostic" + (if ds.count == 1 { "" } else { "s" }) + ")" + (if ds.count > 0 { "; first: " + ds[0].message } else { "" })
+    case MalformedContract(p, k) -> "restored DLL " + p + ": Lyric.Contract" +
+      (if Str.isEmpty(k) { "" } else { "." + k }) +
+      " resource is not valid JSON"
+    case SynthesisDiagnostics(p, ds) -> "restored DLL " + p + ": synthesised contract source did not type-check (" +
+      Str.fromInt(ds.count) +
+      " diagnostic" +
+      (if ds.count == 1 { "" } else { "s" }) +
+      ")" +
+      (if ds.count > 0 { "; first: " + ds[0].message } else { "" })
   }
 }
 
@@ -197,10 +204,10 @@ pub func loadRestoredPackageJvm(jarPath: in String): Result[List[RestoredArtifac
 // either writer today).  An explicit `hasBody: Bool` field on `ContractDecl`
 // would be more robust if a future repr extension puts braces in the
 // head — tracked alongside other contract-metadata refactors.
-func renderDecl(d: in Meta.ContractDecl): String {
+func renderDecl(d: in Meta.ContractDecl, withBodies: in Bool): String {
   if d.kind == "interface" and Str.indexOfRaw(d.repr, "{") < 0 {
     d.repr + " {}\n"
-  } else if d.kind == "func" {
+  } else if d.kind == "func" and withBodies {
     // A GENERIC function's `repr` is a bodyless head (see
     // `Lyric.ContractMeta.reprForFunc`); splice its real body back in
     // when the contract carries one (`Lyric.ContractMeta.funcDecl`) so
@@ -241,7 +248,7 @@ func renderPreambleDecl(d: in Meta.ContractDecl): String {
     }
     return d.repr + " {}\n"
   }
-  renderDecl(d)
+  renderDecl(d, false)
 }
 
 /// Synthesise a Lyric source file from a `Contract` + optional
@@ -252,6 +259,17 @@ func renderPreambleDecl(d: in Meta.ContractDecl): String {
 /// `Repr` strings.
 @stable(since = "0.1")
 pub func synthesiseSource(contract: in Meta.Contract, preamble: in List[Meta.ContractDecl]): String {
+  synthesiseSourceWith(contract, preamble, true)
+}
+
+// As `synthesiseSource`; `withBodies = false` renders every function as its
+// bodyless signature.  The standalone re-typecheck in `synthesiseArtifact`
+// validates the package's SURFACE with no imports in scope, so a generic
+// body carried for consumer-side specialisation (#6363) would fail there on
+// every stdlib or imported name it uses (`None`, `newList`, a sibling
+// package's case), although its own package type-checked it with its real
+// imports (D-progress-953).  The stored source keeps the bodies.
+func synthesiseSourceWith(contract: in Meta.Contract, preamble: in List[Meta.ContractDecl], withBodies: in Bool): String {
   var sb = "package " + contract.packageName + "\n\n"
   // Preamble decls first — typically extern types / opaques from
   // sibling packages whose names appear in this package's signatures.
@@ -268,7 +286,7 @@ pub func synthesiseSource(contract: in Meta.Contract, preamble: in List[Meta.Con
   // Then the contract's own decls.
   var di = 0
   while di < contract.decls.count {
-    sb = sb + renderDecl(contract.decls[di])
+    sb = sb + renderDecl(contract.decls[di], withBodies)
     di = di + 1
   }
   sb
@@ -465,7 +483,7 @@ pub func synthesiseArtifact(
   // standalone re-typecheck resolves cross-package references in this
   // package's signatures (e.g. `originX(p: Point)` where `Point` is
   // declared by a sibling restored DLL).
-  val src = synthesiseSource(art.contract, preamble)
+  val src = synthesiseSourceWith(art.contract, preamble, false)
   val pr = parse(src)
 
   // Parse errors are always real — contract Repr should be valid
