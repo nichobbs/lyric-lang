@@ -74,7 +74,7 @@ mirroring `pipeWeave`'s identical #6702 threading into `AwaitHoist.hoistAwaitsFi
 just below it.
 
 **Verification.** Full `make lyric` build succeeded; `mono_self_test.l`
-91/91 (4 new cases for #6968/#6891), `propagate_self_test.l` 17/17 (no
+91/91 (4 new cases for #6968/#6891), `propagate_self_test.l` 50/50 (no
 regression from the entry-point split), `propagate_hoist_self_test.l` 42/42
 (no regression), `propagate_hoist_entry_polarity_self_test.l` 6/6 (1 new
 case for #6967, mirroring that file's own #6702 test — negative control
