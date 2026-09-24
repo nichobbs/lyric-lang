@@ -78,6 +78,35 @@ func instanceMethodRetGenericArgs(ctx: in FuncCtx, recv: in Expr, memberName: in
   }
 }
 
+// Look up a record/case field's OWN declared generic instantiation args
+// (#6957): resolves `recv`'s class the same way `receiverClassOf` already
+// does for a method-call receiver (bare local/parameter or `self`), then
+// looks `fieldName` up in `ctx.caseFields` for its recorded
+// `JvmCaseField.genericArgs`. A receiver `receiverClassOf` can't resolve
+// (anything but a bare local/parameter/`self`) or a field `caseFields` has
+// no entry for yields `newList()` — the safe, pre-existing "no recorded
+// args" fallback.
+func fieldGenericArgsOf(ctx: in FuncCtx, recv: in Expr, fieldName: in String): List[TypeExpr] {
+  match receiverClassOf(ctx, recv) {
+    case Some(cls) -> {
+      match mapGet(ctx.caseFields, cls) {
+        case Some(flds) -> {
+          var i = 0
+          while i < flds.count {
+            if flds[i].name == fieldName {
+              return flds[i].genericArgs
+            }
+            i = i + 1
+          }
+          newList()
+        }
+        case None -> newList()
+      }
+    }
+    case None -> newList()
+  }
+}
+
 // Recover the scrutinee's generic instantiation arguments so a constructor
 // destructure can unbox an erased type-parameter payload to its concrete
 // primitive (#4877).  Handles:
@@ -205,6 +234,17 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
         newList()
       }
     }
+    // A plain field-access scrutinee (`c.rows`, `self.rows`, #6957): recover
+    // the field's OWN declared generic instantiation the same way a bare
+    // local/parameter binding already does via `ctx.varGenericArgs`, so a
+    // receiver like `c.rows` (a `List[slice[Int]]`-typed field) is
+    // recognized by `.add()`'s `List[slice[Elem]]` interception
+    // (04_calls.l) and `applyIndexedElemOverrideNormalizingSlice`
+    // (02_exprs.l) exactly as a bare local of the same declared type
+    // already is. Distinct from the nested `EMember` arm inside the
+    // `ECall` case above, which resolves a METHOD-CALL receiver's return
+    // type, not a plain field read.
+    case EMember(recv, memberName) -> fieldGenericArgsOf(ctx, recv, memberName)
     case _ -> newList()
   }
 }

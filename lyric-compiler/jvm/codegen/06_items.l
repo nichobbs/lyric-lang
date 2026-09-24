@@ -1886,7 +1886,11 @@ func lowerImplMethod(
   // return to the real array type (#5931) — see its doc comment.
   val retTy = match fn.ret {
     case Some(te) -> {
-      if isExternIface { implTypeExprToJvm(te, pkgName, externTypes) } else { typeExprToJvmExtern(te, pkgName, externTypes) }
+      if isExternIface {
+        implTypeExprToJvm(te, pkgName, externTypes)
+      } else {
+        typeExprToJvmExtern(te, pkgName, externTypes)
+      }
     }
     case None -> JVoid
   }
@@ -4109,10 +4113,7 @@ func registerInstanceSigImplExtern(
 ): Unit {
   val filteredParams = stripLeadingSelfParam(params)
   val ps = implParamTypesToJvm(filteredParams, owner, externTypes)
-  val ret = match retOpt {
-    case Some(te) -> implTypeExprToJvm(te, owner, externTypes)
-    case None -> JVoid
-  }
+  val ret = match retOpt { case Some(te) -> implTypeExprToJvm(te, owner, externTypes); case None -> JVoid }
   val paramNames: List[String] = newList()
   val paramDefs: List[Option[Expr]] = newList()
   val modes: List[ParamMode] = newList()
@@ -4137,7 +4138,11 @@ func registerInstanceSigImplExtern(
         paramDefaults = paramDefs,
         paramModes = modes,
         isIface = false,
-        retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, noTypeParams), owner, externTypes),
+        retGenericArgs = eagerlyResolveGenericArgs(
+          returnTypeGenericArgsFiltered(retOpt, noTypeParams),
+          owner,
+          externTypes
+        ),
         closureRetTy = closureRetTypeOf(retOpt, owner, noTypeParams, externTypes),
         recordRetClass = None,
         retIsSelf = retIsSelf,
@@ -4426,7 +4431,23 @@ pub func collectFileCasesExtern(
                       localTypeNames
                     ),
                     paramIdx = typeParamIndexOf(ty, tps),
-                    dflt = None
+                    dflt = None,
+                    // #7176: FILTERED against the union's own generic type
+                    // params (`tps`), never the unfiltered form — a bare
+                    // reference to the union's own type param (e.g.
+                    // `Branch(items: List[T])` inside `union Tree[T]`) is not
+                    // a resolved type, and feeding it through unfiltered
+                    // would let `EMember`'s `scrutineeGenericArgs` field-
+                    // access arm (#6957) pass a bogus `T` down to
+                    // `resolveConcreteTypeExpr`'s `checkcast <pkg>/T`
+                    // against a nonexistent class — see
+                    // `returnTypeGenericArgsFiltered`'s own doc comment.
+                    genericArgs = returnTypeGenericArgsFiltered(
+                      Some(
+                        value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty)
+                      ),
+                      tps
+                    )
                   )
                 )
                 case UFPos(ty, _) -> flds.add(
@@ -4440,7 +4461,12 @@ pub func collectFileCasesExtern(
                       localTypeNames
                     ),
                     paramIdx = typeParamIndexOf(ty, tps),
-                    dflt = None
+                    dflt = None,
+                    // #7176: see the UFNamed arm's comment above.
+                    genericArgs = returnTypeGenericArgsFiltered(
+                      Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty)),
+                      tps
+                    )
                   )
                 )
               }
@@ -4470,7 +4496,13 @@ pub func collectFileCasesExtern(
                     localTypeNames
                   ),
                   paramIdx = typeParamIndexOf(f.ty, tps),
-                  dflt = f.dflt
+                  dflt = f.dflt,
+                  // #7176: see the union arms' comment above — filtered
+                  // against the record's own generic type params.
+                  genericArgs = returnTypeGenericArgsFiltered(
+                    Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty)),
+                    tps
+                  )
                 )
               )
               case _ -> {
@@ -4506,7 +4538,13 @@ pub func collectFileCasesExtern(
                     localTypeNames
                   ),
                   paramIdx = typeParamIndexOf(f.ty, tps),
-                  dflt = f.dflt
+                  dflt = f.dflt,
+                  // #7176: see the union arms' comment above — filtered
+                  // against the exposed record's own generic type params.
+                  genericArgs = returnTypeGenericArgsFiltered(
+                    Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty)),
+                    tps
+                  )
                 )
               )
               case _ -> {
@@ -4523,6 +4561,12 @@ pub func collectFileCasesExtern(
         // otherwise `TokenBucket(...)` construction and bare field reads inside
         // entries can't resolve the field descriptors.
         val protClass = owner + "/" + decl.name
+        // #7176: same own-type-param filter as records/unions above, in case
+        // a protected type is ever declared generic (`ProtectedTypeDecl.
+        // generics`) — `ty`'s own erasure above doesn't erase a bare type
+        // param at all yet (a pre-existing gap, out of scope here), but
+        // `genericArgs` must not leak an unresolved param name regardless.
+        val protTps = genericParamNames(decl.generics)
         if not into.containsKey(protClass) {
           val flds: List[JvmCaseField] = newList()
           var mi = 0
@@ -4535,7 +4579,8 @@ pub func collectFileCasesExtern(
                       name = name,
                       ty = typeExprToJvmExtern(ty, owner, externTypes),
                       paramIdx = -1,
-                      dflt = init
+                      dflt = init,
+                      genericArgs = returnTypeGenericArgsFiltered(Some(value = ty), protTps)
                     )
                   )
                   case PFLet(name, ty, init, _, _, _) -> flds.add(
@@ -4543,7 +4588,8 @@ pub func collectFileCasesExtern(
                       name = name,
                       ty = typeExprToJvmExtern(ty, owner, externTypes),
                       paramIdx = -1,
-                      dflt = init
+                      dflt = init,
+                      genericArgs = returnTypeGenericArgsFiltered(Some(value = ty), protTps)
                     )
                   )
                   case PFImmutable(f) -> flds.add(
@@ -4551,7 +4597,8 @@ pub func collectFileCasesExtern(
                       name = f.name,
                       ty = typeExprToJvmExtern(f.ty, owner, externTypes),
                       paramIdx = -1,
-                      dflt = f.dflt
+                      dflt = f.dflt,
+                      genericArgs = returnTypeGenericArgsFiltered(Some(value = f.ty), protTps)
                     )
                   )
                 }
@@ -4585,7 +4632,14 @@ pub func collectFileCasesExtern(
                     name = f.name,
                     ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes),
                     paramIdx = -1,
-                    dflt = f.dflt
+                    dflt = f.dflt,
+                    // #7176: see the union/record arms' comment above —
+                    // filtered against the opaque type's own generic type
+                    // params.
+                    genericArgs = returnTypeGenericArgsFiltered(
+                      Some(value = f.ty),
+                      genericParamNames(decl.generics)
+                    )
                   )
                 )
                 case OMInvariant(_) -> ()
@@ -5270,7 +5324,15 @@ pub func registerProjectableViews(
             var fi = 0
             while fi < infos.count {
               if not infos[fi].hidden {
-                vflds.add(JvmCaseField(name = infos[fi].name, ty = projViewFieldType(infos[fi]), paramIdx = -1, dflt = None))
+                vflds.add(
+                  JvmCaseField(
+                    name = infos[fi].name,
+                    ty = projViewFieldType(infos[fi]),
+                    paramIdx = -1,
+                    dflt = None,
+                    genericArgs = newList()
+                  )
+                )
               }
               fi = fi + 1
             }

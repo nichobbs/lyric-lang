@@ -422,6 +422,55 @@ int32_t lyric_env_cwd_ok(LyricString** out) {
     *out = s;
     return 0;
 }
+
+/* Directory containing the running executable (issue #6937). Linux only
+ * (this project's only CI target, matching lyric_sock_wake_pipe_new's
+ * disclosure precedent for POSIX portability gaps) -- resolves
+ * /proc/self/exe, then strips the trailing basename, keeping a trailing
+ * '/' to match .NET's AppContext.BaseDirectory contract exactly. */
+int32_t lyric_env_app_base_directory_ok(LyricString** out) {
+#if defined(__linux__)
+    size_t cap = 256;
+    char* buf = (char*)malloc(cap);
+    if (!buf) return -1;
+    ssize_t n;
+    for (;;) {
+        n = readlink("/proc/self/exe", buf, cap);
+        if (n < 0) {
+            free(buf);
+            return -1;
+        }
+        if ((size_t)n < cap) break; /* not truncated */
+        if (cap > SIZE_MAX / 2) {
+            free(buf);
+            return -1;
+        }
+        cap *= 2;
+        char* nb = (char*)realloc(buf, cap);
+        if (!nb) {
+            free(buf);
+            return -1;
+        }
+        buf = nb;
+    }
+    buf[n] = '\0';
+    /* Strip the executable's own basename, keeping the trailing '/'. */
+    char* slash = strrchr(buf, '/');
+    if (!slash) {
+        free(buf);
+        return -1;
+    }
+    size_t dir_len = (size_t)(slash - buf) + 1; /* include the '/' itself */
+    LyricString* s = lyric_string_from_literal((const uint8_t*)buf, (int64_t)dir_len);
+    free(buf);
+    *out = s;
+    return 0;
+#else
+    (void)out;
+    return -1;
+#endif
+}
+
 /* ── Process arguments (D-N-015 slice work) ────────────────────────── */
 
 static int          g_lyric_argc = 0;

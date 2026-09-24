@@ -5884,6 +5884,18 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_cross_package_collision_self_test.l
 
+      # Field-access List[slice[Elem]].add() self-test (#6957) — exercises
+      # `Jvm.Bridge.compileToJarBundled` in-process, same outer-runs-on-dotnet
+      # shape as the cross-package collision self-test above. Pins:
+      # `scrutineeGenericArgs`'s field-access `EMember` arm resolving a
+      # `List[slice[Elem]]`-typed field receiver (`c.rows.add(...)`,
+      # `self.rows.add(...)`), and the #7176 follow-up fix filtering a
+      # generic record's OWN type parameter out of `JvmCaseField.genericArgs`.
+      - name: Field-access slice-add self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/field_access_list_of_slice_add_jvm_self_test.l
+
       # Same-manifest package-cycle self-test (#6024) — exercises
       # `Jvm.Bridge.compileProjectToJarBundledWithFeatures` in-process AND
       # `Lyric.Cli.buildProject` (the `--manifest ... --target jvm` path the

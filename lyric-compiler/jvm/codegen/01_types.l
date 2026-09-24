@@ -160,6 +160,23 @@ pub record JvmCaseField {
   // (#5908) — passed explicitly at every construction site, same reason as
   // `paramIdx` above.
   dflt: Option[Expr]
+  // This field's OWN declared-type generic instantiation arguments (#6957),
+  // via the SAME `returnTypeGenericArgs` helper a function's declared return
+  // type already uses (`rows: List[slice[Int]]` records `[slice[Int]]` here
+  // exactly as a function returning `List[slice[Int]]` would). Lets
+  // `Jvm.Codegen.scrutineeGenericArgs`'s field-access arm (03_match.l)
+  // recover a field-typed receiver's instantiation (`c.rows.add(...)`,
+  // `self.rows.add(...)`) the same way a bare local/parameter binding
+  // already does via `ctx.varGenericArgs` — without this, a field-access
+  // receiver fell through to `newList()` (no recorded args), so `.add()`'s
+  // `List[slice[Elem]]` interception (04_calls.l) and
+  // `applyIndexedElemOverrideNormalizingSlice` (02_exprs.l) never fired for
+  // it. Empty when the field's declared type is not itself a generic
+  // instantiation, or when no source `TypeExpr` is available at the
+  // construction site (the synthesised `@projectable` view-field site).
+  // No default per the JVM-codegen no-defaulted-field rule (see `paramIdx`
+  // above) — passed explicitly at every construction site.
+  genericArgs: List[TypeExpr]
 }
 
 // If `ty` is a bare reference to one of `tps` (a generic type parameter), return

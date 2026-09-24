@@ -8,19 +8,21 @@
 //!
 //! Scope: variable get/set, the current working directory, the
 //! command-line arguments (`slice[String]` rides the shared list repr,
-//! D-N-015), and the two runtime-identity probes (below). Still
-//! missing (issue #4752's residual-seam audit, D-progress-910):
-//! `hostExit` (`extern func` with a `Never` return type has no native
-//! codegen lowering at all — `Lyric.LlvmCodegen: this type form is not
-//! yet supported for --target native (Phase N1)`, confirmed by direct
-//! repro; a compiler gap this kernel cannot work around, filed as
-//! issue #6901) and `hostAppBaseDirectory` (feasible via
-//! `readlink("/proc/self/exe")` on Linux, but genuinely new `lyric-rt`
-//! C surface, deliberately deferred rather than bundled into this
-//! kernel-focused audit pass — `Std.Environment.appBaseDirectory`'s own
-//! `@stable(since = "0.1")` marks it the oldest, least-used probe of
-//! the four — tracked as issue #6937, since #4752 itself closes with
-//! this PR).
+//! D-N-015), the app base directory, and the two runtime-identity
+//! probes (below). Still missing (issue #4752's residual-seam audit,
+//! D-progress-910): `hostExit` (`extern func` with a `Never` return
+//! type has no native codegen lowering at all —
+//! `Lyric.LlvmCodegen: this type form is not yet supported for
+//! --target native (Phase N1)`, confirmed by direct repro; a compiler
+//! gap this kernel cannot work around, filed as issue #6901).
+//!
+//! `hostAppBaseDirectory` (issue #6937) resolves `/proc/self/exe` via
+//! `lyric_env_app_base_directory_ok` — Linux only (this project's only
+//! CI target); the BSD/macOS equivalent
+//! (`_NSGetExecutablePath`/`sysctl KERN_PROC_PATHNAME`) is unverified
+//! and falls back to `""`, matching the empty-means-unavailable
+//! convention `hostRuntimeDirectory`/`hostRuntimeIdentifier` already
+//! use below.
 //!
 //! `hostRuntimeDirectory`/`hostRuntimeIdentifier` both return `""`
 //! unconditionally: `Std.Environment`'s own public doc comments already
@@ -45,6 +47,8 @@ extern func rtEnvGetOk(name: NativePtr[Byte], outp: NativePtr[String]): Int = "l
 extern func rtEnvSet(name: NativePtr[Byte], value: NativePtr[Byte]): Int = "lyric_env_set"
 
 extern func rtEnvCwdOk(outp: NativePtr[String]): Int = "lyric_env_cwd_ok"
+
+extern func rtEnvAppBaseDirectoryOk(outp: NativePtr[String]): Int = "lyric_env_app_base_directory_ok"
 
 // Fresh owned list of the argv strings captured by the synthesised C
 // main (lyric_args_set); the shared list repr IS the slice repr on
@@ -92,6 +96,21 @@ pub func hostCurrentDirectory(): String {
 
 pub func hostGetCommandLineArgs(): slice[String] {
   rtArgsGet()
+}
+
+/// Directory containing the running executable (issue #6937), matching
+/// .NET's `System.AppContext.BaseDirectory` contract — see the module
+/// header for the Linux-only scope and the `""` fallback on other
+/// platforms or readlink/basename failure.
+@unsafe_ffi
+pub func hostAppBaseDirectory(): String {
+  var dir: String = ""
+  val rc = rtEnvAppBaseDirectoryOk(nativeAddrOf(dir))
+  if rc == 0 {
+    dir
+  } else {
+    ""
+  }
 }
 
 /// See the module header: native has no .NET shared-framework concept,
