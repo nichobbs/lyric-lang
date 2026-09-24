@@ -1796,7 +1796,9 @@ func genericFieldFnPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPFx.App",
-      "package EPFx.App\n" + "\n" + "import EPFx.Core.{Effect, Go, Stay, Program, describe, describeFn}\n" + "\n" +
+      "package EPFx.App\n" + "\n" +
+        "import EPFx.Core.{Effect, Go, Stay, Found, Hit, Miss, Program, describe, describeFn}\n" +
+        "\n" +
         "union Msg {\n" +
         "  case Ok\n" +
         "}\n" +
@@ -1806,10 +1808,10 @@ func genericFieldFnPkgs(): List[Emitter.ProjectPackage] {
         "  case Save\n" +
         "}\n" +
         "\n" +
-        "func toFx(e: in Ev): Option[Effect[Msg]] {\n" +
+        "func toFx(e: in Ev): Found[Effect[Msg]] {\n" +
         "  return match e {\n" +
-        "    case Ui(fx) -> Some(value = fx)\n" +
-        "    case Save -> None\n" +
+        "    case Ui(fx) -> Hit(v = fx)\n" +
+        "    case Save -> Miss\n" +
         "  }\n" +
         "}\n" +
         "\n" +
@@ -1826,22 +1828,25 @@ func genericFieldFnPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPFx.Core",
-      "package EPFx.Core\n" + "\n" + "pub union Effect[Msg] {\n" + "  case Go(url: String)\n" + "  case Stay\n" +
+      "package EPFx.Core\n" + "\n" + "pub union Found[T] {\n" + "  case Hit(v: T)\n" + "  case Miss\n" + "}\n" + "\n" +
+        "pub union Effect[Msg] {\n" +
+        "  case Go(url: String)\n" +
+        "  case Stay\n" +
         "  case Ask(q: String, yes: Msg)\n" +
         "}\n" +
         "\n" +
         "pub record Program[E, Msg] {\n" +
-        "  classify: (E) -> Option[Effect[Msg]]\n" +
+        "  classify: (E) -> Found[Effect[Msg]]\n" +
         "}\n" +
         "\n" +
         "pub func describe[E, Msg](p: in Program[E, Msg], xs: in List[E]): String {\n" +
         "  var acc = \"\"\n" +
         "  for e in xs {\n" +
         "    match p.classify(e) {\n" +
-        "      case None -> {\n" +
+        "      case Miss -> {\n" +
         "        acc = acc + \"app;\"\n" +
         "      }\n" +
-        "      case Some(fx) -> match fx {\n" +
+        "      case Hit(fx) -> match fx {\n" +
         "        case Go(url) -> {\n" +
         "          acc = acc + \"go \" + url + \";\"\n" +
         "        }\n" +
@@ -1857,14 +1862,14 @@ func genericFieldFnPkgs(): List[Emitter.ProjectPackage] {
         "  return acc\n" +
         "}\n" +
         "\n" +
-        "pub func describeFn[E, Msg](f: (E) -> Option[Effect[Msg]], xs: in List[E]): String {\n" +
+        "pub func describeFn[E, Msg](f: (E) -> Found[Effect[Msg]], xs: in List[E]): String {\n" +
         "  var acc = \"\"\n" +
         "  for e in xs {\n" +
         "    match f(e) {\n" +
-        "      case None -> {\n" +
+        "      case Miss -> {\n" +
         "        acc = acc + \"app;\"\n" +
         "      }\n" +
-        "      case Some(fx) -> match fx {\n" +
+        "      case Hit(fx) -> match fx {\n" +
         "        case Go(url) -> {\n" +
         "          acc = acc + \"go \" + url + \";\"\n" +
         "        }\n" +
