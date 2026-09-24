@@ -2534,7 +2534,7 @@ test "opaque argument to an imported generic with a Result[slice[T], String]-sha
   )
 }
 
-// D-progress-944: a type parameter that argument inference leaves unbound is
+// D-progress-947: a type parameter that argument inference leaves unbound is
 // taken from the type the call's position expects.  The two tests above keep
 // their calls in an unannotated `val` so nothing is expected there.
 test "an unbound type parameter is inferred from the enclosing return type" {

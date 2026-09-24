@@ -368,7 +368,7 @@ pub record Contract {
   /// excluded), in declaration order.  A consumer that specialises one of
   /// this package's generic function bodies resolves the body's unqualified
   /// callees through them, since the body was written against this package's
-  /// scope, not the consumer's (D-progress-943).  Optional in the JSON form
+  /// scope, not the consumer's (D-progress-946).  Optional in the JSON form
   /// (absent means empty), so older contracts still parse.
   imports: List[String]
   /// SHA256 hash of this contract's JSON (format v3+; absent in v1-v2).

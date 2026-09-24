@@ -262,7 +262,7 @@ pub func pipeCheckAndMono(
   }
 
   // Record `.copy(...)` → constructor call, while the type checker's span
-  // keys still identify exactly one call each (D-progress-944).
+  // keys still identify exactly one call each (D-progress-947).
   val copyRes = desugarRecordCopiesFile(file0, tcRes.symbols.recordCopySites)
   if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
     return None

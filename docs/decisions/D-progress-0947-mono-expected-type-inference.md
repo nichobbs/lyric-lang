@@ -1,4 +1,4 @@
-# D-progress-944 — Monomorphizer: infer type arguments from the expected type
+# D-progress-947 — Monomorphizer: infer type arguments from the expected type
 
 **Status:** shipped
 

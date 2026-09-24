@@ -3308,7 +3308,7 @@ func inferConstruction(
 // initializers leave unbound — `Box(left = xs, right = None)` for
 // `Box[A, B]` — takes its argument from an expected instantiation of the
 // same type (`val b: Box[Int, String] = ...`), matching how union-case
-// constructors already use the expected type (D-progress-944).
+// constructors already use the expected type (D-progress-947).
 func inferConstructionExpected(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -6028,7 +6028,7 @@ func findDirectSig(
         // candidate comes from the named package the call binds to that
         // package: an argument mismatch is reported against ITS signature
         // rather than silently re-resolving to another package's same-named
-        // function (D-progress-943: `Widgets.field(...)` resolved to
+        // function (D-progress-946: `Widgets.field(...)` resolved to
         // `Forms.field`).
         var qualFirst: Option[ResolvedSignature] = None
         var haveQualFirst = false

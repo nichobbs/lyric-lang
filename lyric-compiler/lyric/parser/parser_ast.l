@@ -999,7 +999,7 @@ pub func someAspectAround(a: in AspectAround): Option[AspectAround] {
 /// (`Pkg.f(...)`, `Pkg.f[T](...)`) to the right declaration, and codegen uses
 /// it to resolve the unqualified names inside a specialised copy against the
 /// declaring package's scope rather than the calling package's
-/// (D-progress-943).
+/// (D-progress-946).
 pub func originAnnotationName(): String {
   "__lyric_origin"
 }

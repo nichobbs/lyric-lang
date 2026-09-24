@@ -1,4 +1,4 @@
-# D-progress-943 — Imported generics: qualified calls, origin-scoped bodies, and qualifier resolution
+# D-progress-946 — Imported generics: qualified calls, origin-scoped bodies, and qualifier resolution
 
 **Status:** shipped
 

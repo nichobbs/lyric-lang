@@ -5505,7 +5505,7 @@ pub record FuncCtx {
   // (`Lyric.Parser.originPkgOf` of its `__lyric_origin` annotation), or "".
   // The copy is compiled into the calling package, but its body was written
   // against the declaring package's scope, so static call resolution tries
-  // that package (and its imports) for unqualified callees (D-progress-943).
+  // that package (and its imports) for unqualified callees (D-progress-946).
   var originPkg: String
 }
 
@@ -14840,7 +14840,7 @@ func lowerFuncValueInvokeMsil(
 // declaring package's own function, else one it imports.  "" when the
 // function is not such a copy, the call is qualified, or neither scope has
 // the callee — the caller then falls through to the calling package's own
-// resolution tiers (D-progress-943).
+// resolution tiers (D-progress-946).
 func originScopedFqnMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -15972,7 +15972,7 @@ func lowerBuiltinOrStaticCallMsil(
             // A qualified call searches only the imports its qualifier names
             // (full path, or trailing segment(s) of an `import A.B`), never
             // every import by bare name — that silently bound
-            // `Widgets.field(...)` to another package's `field` (D-progress-943).
+            // `Widgets.field(...)` to another package's `field` (D-progress-946).
             val importedFqn = match mapGet(cctx.pkgImports, fctx.pkgName) {
               case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
                 findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
@@ -15983,7 +15983,7 @@ func lowerBuiltinOrStaticCallMsil(
             }
             // A monomorphized copy of an imported generic resolves its bare
             // callees in the DECLARING package's scope first: its own
-            // functions, then its imports (D-progress-943).
+            // functions, then its imports (D-progress-946).
             val originFqn = originScopedFqnMsil(cctx, fctx, path, funcName, args.count, importRetHint)
             // Bundle-wide fallback (#6849): a bare call to a `pub func`
             // reachable only TRANSITIVELY through a facade package's own
@@ -38055,7 +38055,7 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
     // The restored package's own imports, so a monomorphized copy of one of
     // its generic functions resolves bare callees in the package's scope
-    // (`originScopedFqnMsil`, D-progress-943).
+    // (`originScopedFqnMsil`, D-progress-946).
     if not cctx.pkgImports.containsKey(art.packageName) {
       cctx.pkgImports.add(art.packageName, art.contract.imports)
     }
