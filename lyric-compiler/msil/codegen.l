@@ -17618,6 +17618,27 @@ func lowerMethodCallMsil(
         }
         true
       }
+      // An in-bundle generic element (`List[Handler[Msg]]` where `Handler`
+      // is declared in this bundle): a case whose arguments do not pin its
+      // type arguments (`OnInput(toMsg = f)`, a delegate field) otherwise
+      // builds `Handler<object>`, which the list's typed array rejects at
+      // the store (D-progress-952 follow-up).
+      case MListOf(MGenericInstByName(_, elemArgs)) -> {
+        var ai = 0
+        while ai < elemArgs.count {
+          fctx.contextHintTyArgs.add(elemArgs[ai])
+          ai = ai + 1
+        }
+        true
+      }
+      case MConcreteList(MGenericInstByName(_, elemArgs)) -> {
+        var ai = 0
+        while ai < elemArgs.count {
+          fctx.contextHintTyArgs.add(elemArgs[ai])
+          ai = ai + 1
+        }
+        true
+      }
       case MMapOf(MGenericInst(_, _, keyArgs), MGenericInst(_, _, valArgs)) -> {
         var ki = 0
         while ki < keyArgs.count {

@@ -2569,11 +2569,18 @@ test "a function reference argument binds a generic's type parameters (D-progres
 }
 
 test "an Object default under a function-typed generic result raises M0004 (D-progress-951)" {
-  val callerSrc = "package Caller\n" +
-    "func caller(xs: in List[Int]): Unit { val r = firstOk(mystery(), xs) }\n"
+  val callerSrc = "package Caller\n" + "func caller(xs: in List[Int]): Unit { val r = firstOk(mystery(), xs) }\n"
   val libSrc = "package Lib\n" + "pub union ResLike[T] { case Yes(v: T)\n case No }\n" +
     "pub func firstOk[A, T](f: (A) -> ResLike[T], xs: in List[A]): Bool { true }\n"
   val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
   assertFalse(hasFunc(res.file, "firstOk__Int__Object"), "no Object-defaulted specialisation")
   assertTrue(diagCountCode(res.diagnostics, "M0004") > 0, "M0004 for the unsafe function-typed shape")
+}
+
+test "a nullary union case argument binds a type parameter as a value, not a function reference" {
+  val callerSrc = "package Caller\n" + "union Msg { case Go\n case Stop }\n" +
+    "func caller(): Unit { val r = wrap(Go) }\n"
+  val libSrc = "package Lib\n" + "pub func wrap[M](m: in M): List[M] { newList() }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertTrue(hasFunc(res.file, "wrap__Msg"), "M bound to Msg")
 }

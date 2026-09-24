@@ -1209,7 +1209,9 @@ func typeHeadsMatchMono(a: in List[String], b: in List[String]): Bool {
 // unambiguous function `name`: `(P1, ..., Pn) -> R`, `R` being `Unit` when
 // the function declares no return type.
 func funcRefTEMono(state: in MonoState, name: in String, sp: in Span): Option[TypeExpr] {
-  if state.ambiguousFuncOverloads.containsKey(name) {
+  // A union case name (`Go`) is a VALUE even when nullary; its synthesised
+  // constructor sits in `funcDecls` but is never a function reference.
+  if state.ambiguousFuncOverloads.containsKey(name) or state.ctorCandidates.containsKey(name) {
     return None
   }
   match mapGet(state.funcDecls, name) {

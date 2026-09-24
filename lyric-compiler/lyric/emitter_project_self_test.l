@@ -1895,3 +1895,76 @@ test "emitProject generic union through a function inside an imported generic (J
   assertEqualInt(result.exitCode, 0, "generic fn result JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "go /a;app;stay; go /a;app;stay;", "generic fn result JVM: output")
 }
+
+// Generic union cases built inside an imported generic and stored in a typed
+// list, consumer first, on both targets: a nullary case argument (`Go`) must
+// bind `Msg` as a value of `Msg`, never as a zero-argument function
+// reference (D-progress-951), and a case whose arguments do not pin its type
+// arguments (`OnInput(toMsg = f)`) must be built at the list's element type,
+// not `Handler<object>`, or the list's typed array rejects the store.
+func genericHandlerPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPHd.App",
+      "package EPHd.App\n" + "\n" + "import EPHd.Core.{Handler, OnClick, OnInput, inputHandlers, clickHandlers}\n" +
+        "\n" +
+        "union Msg {\n" +
+        "  case Typed(s: String)\n" +
+        "  case Go\n" +
+        "}\n" +
+        "\n" +
+        "func describe(h: in Handler[Msg]): String {\n" +
+        "  return match h {\n" +
+        "    case OnClick(m) -> match m {\n" +
+        "      case Go -> \"click go\"\n" +
+        "      case Typed(s) -> \"click \" + s\n" +
+        "    }\n" +
+        "    case OnInput(f) -> match f(\"abc\") {\n" +
+        "      case Typed(s) -> \"input \" + s\n" +
+        "      case Go -> \"input go\"\n" +
+        "    }\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val cs: List[Handler[Msg]] = clickHandlers(Go)\n" +
+        "  val ins: List[Handler[Msg]] = inputHandlers({ s: String -> Typed(s = s) })\n" +
+        "  println(describe(cs[0]) + \"; \" + describe(ins[0]))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPHd.Core",
+      "package EPHd.Core\n" + "\n" + "pub union Handler[Msg] {\n" + "  case OnClick(msg: Msg)\n" +
+        "  case OnInput(toMsg: (String) -> Msg)\n" +
+        "}\n" +
+        "\n" +
+        "pub func inputHandlers[Msg](onInput: in (String) -> Msg): List[Handler[Msg]] {\n" +
+        "  val hs: List[Handler[Msg]] = newList()\n" +
+        "  hs.add(OnInput(toMsg = onInput))\n" +
+        "  return hs\n" +
+        "}\n" +
+        "\n" +
+        "pub func clickHandlers[Msg](m: in Msg): List[Handler[Msg]] {\n" +
+        "  val hs: List[Handler[Msg]] = newList()\n" +
+        "  hs.add(OnClick(msg = m))\n" +
+        "  return hs\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject generic union cases stored in a typed list inside an imported generic (MSIL)" {
+  val result = runEmitProject("emitproj-genhd", genericHandlerPkgs(), "EPHd")
+  assertEqualInt(result.exitCode, 0, "generic handlers MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "click go; input abc", "generic handlers MSIL: output")
+}
+
+test "emitProject generic union cases stored in a typed list inside an imported generic (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-genhd-jvm", genericHandlerPkgs(), "EPHd")
+  assertEqualInt(result.exitCode, 0, "generic handlers JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "click go; input abc", "generic handlers JVM: output")
+}
