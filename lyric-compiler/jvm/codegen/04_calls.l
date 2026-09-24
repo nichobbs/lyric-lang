@@ -787,12 +787,26 @@ func closureInvokeRetType(ctx: in FuncCtx, fn: in Expr): Option[JvmType] {
           if p.segments.count == 1 {
             val name = p.segments[0]
             val arityKey = name + "@" + toString(callArgs.count)
-            match mapGet(ctx.funcSigs, arityKey) {
+            // Package-scoped key first (#6853): a same-package bare call to a
+            // package-private function is no longer in the bundle-wide bare
+            // keys `arityKey`/`name` fall back to below.
+            val scopedArityKey = ctx.pkgName + "::" + arityKey
+            match mapGet(ctx.funcSigs, scopedArityKey) {
               case Some(sig) -> sig.closureRetTy
               case None -> {
-                match mapGet(ctx.funcSigs, name) {
-                  case Some(sig2) -> sig2.closureRetTy
-                  case None -> None
+                match mapGet(ctx.funcSigs, ctx.pkgName + "::" + name) {
+                  case Some(sig1b) -> sig1b.closureRetTy
+                  case None -> {
+                    match mapGet(ctx.funcSigs, arityKey) {
+                      case Some(sig) -> sig.closureRetTy
+                      case None -> {
+                        match mapGet(ctx.funcSigs, name) {
+                          case Some(sig2) -> sig2.closureRetTy
+                          case None -> None
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -3426,6 +3440,26 @@ pub func resolveGeneralFuncSig(
       }
     }
   } else {
+    // Package-scoped keys (`owner::name[@arity]`, `06_items.l`) are registered
+    // unconditionally regardless of visibility, since same-package access to
+    // a package-private function is always legal. Consulted first, BARE
+    // CALLS ONLY (#7147 review follow-up: this must never run for a
+    // qualified call — `path.segments.count > 1` above already resolves
+    // those through the real owner, and letting this scoped check fire there
+    // too could silently redirect `Other.Pkg.helper(x)` to the caller's own
+    // same-named local `helper` instead of `Other.Pkg.helper`), so #6853's
+    // visibility gate on the bundle-wide bare keys below never breaks a
+    // same-package bare call to a package-private function.
+    val scopedKey = ctx.pkgName + "::" + funcName
+    match mapGet(ctx.funcSigs, scopedKey + argcSuffix) {
+      case Some(sig) -> return Some(value = sig)
+      case None -> {
+        match mapGet(ctx.funcSigs, scopedKey) {
+          case Some(sig) -> return Some(value = sig)
+          case None -> ()
+        }
+      }
+    }
     match mapGet(ctx.funcSigs, funcName + argcSuffix) {
       case Some(sig) -> Some(value = sig)
       case None -> mapGet(ctx.funcSigs, funcName)

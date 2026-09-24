@@ -44,6 +44,15 @@
 //! `Lyric.Mono`'s monomorphization (`vtResult[T]` specializing to a
 //! concrete `vtResult__Int` copy) before codegen ever sees it. Keep both —
 //! they are not redundant.
+//!
+//! Also covers #7023 (`Msil.Codegen.emitGenericAsyncMethodExternCall`): an
+//! `async`-declared `@externTarget` wrapper over a BCL method that is ALSO
+//! generic in its own right (`Task.FromResult<T>`). Unlike the two decline
+//! tests above, this shape now compiles AND runs successfully, so that test
+//! builds the fixture, then actually EXECUTES the produced DLL via `dotnet
+//! exec` (`Std.ProcessCapture`) and asserts its stdout — proving the
+//! MethodSpec-instantiated call and the `Task`1<T>`-unwrap sequence produce
+//! the right runtime value, not just a clean build.
 @test_module
 package Lyric.GenericExternValueTypeInstanceSelfTest
 
@@ -55,10 +64,31 @@ import Std.String as Str
 import Std.Testing
 import Std.Uuid
 import Std.Environment as Env
+import Std.ProcessCapture as Capture
 import Lyric.Emitter as Emitter
 
 func tempBase(): String {
   Env.getVarOrDefault("TMPDIR", Env.getVarOrDefault("TEMP", Env.getVarOrDefault("TMP", "/tmp")))
+}
+
+func runtimeConfigJson(): String {
+  "{\n" + "  \"runtimeOptions\": {\n" + "    \"tfm\": \"net10.0\",\n" + "    \"framework\": {\n" +
+    "      \"name\": \"Microsoft.NETCore.App\",\n" +
+    "      \"version\": \"10.0.0\"\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
+}
+
+func writeRuntimeConfig(dllPath: in String): Unit {
+  val dir = Path.dirname(dllPath)
+  val base = Path.basename(dllPath)
+  val stem = if base.endsWith(".dll") { base.substring(0, base.length - 4) } else { base }
+  val cfgPath = Path.join(dir, stem + ".runtimeconfig.json")
+  match File.writeText(cfgPath, runtimeConfigJson()) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
 }
 
 func freshTempDir(label: in String): String {
@@ -168,12 +198,15 @@ test "instance-method extern on a value-type generic-declaring type fails the bu
 // `emitGenericMethodExternCall` builds AND the Task-unwrap machinery the
 // plain (non-generic) async path relies on — neither alone is correct.
 // Silently declining (leaving metadata resolution as if it found nothing)
-// was tried first and found NOT to fail cleanly: the plain-method fallback
-// path still builds a syntactically valid but uninstantiated MemberRef for
-// the generic method, so the build succeeds and the call then throws a
-// confusing `MissingMethodException` at RUNTIME instead of a clear
-// build-time diagnostic. Declined LOUDLY instead, mirroring the #5809
-// precedent this file already covers.
+// was tried first (#7022, D-progress-935) and found NOT to fail cleanly:
+// the plain-method fallback path still builds a syntactically valid but
+// uninstantiated MemberRef for the generic method, so the build succeeds
+// and the call then throws a confusing `MissingMethodException` at RUNTIME
+// instead of a clear build-time diagnostic. #7023 implements the real fix
+// (`Msil.Codegen.emitGenericAsyncMethodExternCall`): a MethodSpec-
+// instantiated OPEN call plus the Task`1<T>`-unwrap sequence, so this now
+// compiles AND runs, asserted end-to-end (not just "does it build") by
+// actually executing the produced DLL and checking its stdout.
 func asyncGenericMethodExternSource(): String {
   "package AsyncGenericMethodFixture\n\n" + "@externTarget(\"System.Threading.Tasks.Task.FromResult\")\n" +
     "@externStatic\n" +
@@ -184,7 +217,7 @@ func asyncGenericMethodExternSource(): String {
     "}\n"
 }
 
-test "async extern wrapper over a BCL method with its own generics fails the build cleanly, no thrown Bug (#7022)" {
+test "async extern wrapper over a generic BCL method (Task.FromResult<T>) compiles and runs end-to-end (#7023)" {
   val dir = freshTempDir("async-generic-method")
   defer {
     cleanup(dir)
@@ -209,36 +242,31 @@ test "async extern wrapper over a BCL method with its own generics fails the bui
     nugetAssemblyPaths = newList(),
     defines = newList()
   )
-  var threw = false
-  var produced = false
+  val res = Emitter.emitProject(req)
   var diagText = ""
-  try {
-    val res = Emitter.emitProject(req)
-    match res.outputPath {
-      case Some(_) -> {
-        produced = true
-      }
-      case None -> ()
-    }
-    var di = 0
-    while di < res.diagnostics.count {
-      diagText = diagText + res.diagnostics[di].code + ": " + res.diagnostics[di].message + "\n"
-      di = di + 1
-    }
-  } catch Bug as b {
-    threw = true
+  var di = 0
+  while di < res.diagnostics.count {
+    diagText = diagText + res.diagnostics[di].code + ": " + res.diagnostics[di].message + "\n"
+    di = di + 1
   }
-  assertFalse(
-    threw,
-    "async generic-method extern: the codegen refusal must be contained inside emitProject, never thrown to the caller"
+  match res.outputPath {
+    case None -> panic("async generic-method extern: build failed unexpectedly (diagnostics: " + diagText + ")")
+    case Some(_) -> ()
+  }
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  assertEqualInt(
+    captured.exitCode,
+    0,
+    "async generic-method extern: fromResultAsync(42) runs to completion (stderr=" + captured.stderr + ")"
   )
-  assertFalse(
-    produced,
-    "async generic-method extern: emitProject reports build failure (no output artifact), not success"
-  )
-  assertTrue(
-    Str.contains(diagText, "async wrapper over a BCL method that is itself declared with its own generics"),
-    "async generic-method extern: the diagnostic names the unsupported shape (got: " + diagText + ")"
+  assertEqual(
+    Str.trim(captured.stdout),
+    "42",
+    "async generic-method extern: Task.FromResult<Int>(42) unwrapped back to 42 (stdout=" + captured.stdout + ")"
   )
 }
 

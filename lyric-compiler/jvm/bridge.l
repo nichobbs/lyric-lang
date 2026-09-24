@@ -356,6 +356,22 @@ pub func compileToJar(
     allMonoFuncs.add(stdlibNonGenFuncs[amfi])
     amfi = amfi + 1
   }
+  // Inference-only union-case ctor decls and the `mapGet` intrinsic stub,
+  // appended AFTER real functions so a real function always wins the
+  // monomorphizer's first-wins name merge — matching
+  // `Msil.Bridge.collectStdlibGenericFuncs`'s exact ordering (#7123).
+  val stdlibUnionCtors = collectStdlibUnionCtorDeclsJvm(stdlibFiles)
+  var amuci = 0
+  while amuci < stdlibUnionCtors.count {
+    allMonoFuncs.add(stdlibUnionCtors[amuci])
+    amuci = amuci + 1
+  }
+  val stdlibInferenceOnlyFuncs = collectStdlibInferenceOnlyGenericFuncsJvm(stdlibFiles)
+  var amif = 0
+  while amif < stdlibInferenceOnlyFuncs.count {
+    allMonoFuncs.add(stdlibInferenceOnlyFuncs[amif])
+    amif = amif + 1
+  }
   val importedItems = flattenImportedItems(importedPkgs)
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, CollectedTemplate] = newMap()
@@ -582,34 +598,52 @@ func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl
     pipeAddGenericFuncs(f.items, dottedPath(f.packageDecl.path), false, true, genFuncs)
     fi = fi + 1
   }
-  // Inference-only union-case ctor decls (`Lyric.Mono.unionCtorInferenceDecls`),
-  // appended AFTER every real generic function so a real function always wins
-  // the monomorphizer's first-wins name merge (mirrors
-  // `Msil.Bridge.collectStdlibUnionCtorDecls`'s ordering, #5604) but BEFORE
-  // the inference-only `mapGet` intrinsic stub below, which must stay last.
+  genFuncs
+}
+
+// Inference-only union-case ctor decls (`Lyric.Mono.unionCtorInferenceDecls`) for
+// every union declared in `files` — mirrors `Msil.Bridge.collectStdlibUnionCtorDecls`
+// (#5970 CI follow-up; see `collectStdlibGenericFuncsJvm`'s doc comment above for the
+// full rationale). Split out from `collectStdlibGenericFuncsJvm` (#7123) so both call
+// sites can append it in the SAME relative position `Msil.Bridge` uses — AFTER the real
+// non-generic stdlib funcs, not folded into the generic-funcs list ahead of them: the
+// two bridges previously built this shared, first-wins-on-name-collision list in
+// different orders at this nested level (real-generic, union-ctor-synth, mapGet-stub,
+// real-non-generic on JVM vs. real-generic, real-non-generic, union-ctor-synth,
+// mapGet-stub on MSIL), a latent cross-target divergence for any future stdlib
+// non-generic function sharing a bare name with a union case constructor.
+func collectStdlibUnionCtorDeclsJvm(files: in List[SourceFile]): List[FunctionDecl] {
+  val ctorDecls: List[FunctionDecl] = newList()
   var uci = 0
   while uci < files.count {
     val uf = files[uci]
     val synths = unionCtorInferenceDecls(uf.items)
     var si = 0
     while si < synths.count {
-      genFuncs.add(synths[si])
+      ctorDecls.add(synths[si])
       si = si + 1
     }
     uci = uci + 1
   }
-  // `mapGet`'s inference-only stub (`Lyric.Pipeline.pipeAddInferenceOnlyIntrinsicFuncs`),
-  // appended LAST.  This JVM path has no separate in-bundle collector of
-  // `Std.Collections`'s real `mapGet` to lose the first-wins merge to
-  // (unlike the MSIL bridge's stdlib self-build, #6377), so ordering here is
-  // purely for consistency with `Msil.Bridge.collectStdlibGenericFuncs`.
+  ctorDecls
+}
+
+// `mapGet`'s inference-only stub (`Lyric.Pipeline.pipeAddInferenceOnlyIntrinsicFuncs`) for
+// every file in `files`. Split out from `collectStdlibGenericFuncsJvm` (#7123) so callers
+// can append it LAST, after `collectStdlibUnionCtorDeclsJvm`, matching
+// `Msil.Bridge.collectStdlibGenericFuncs`'s ordering exactly. This JVM path has no separate
+// in-bundle collector of `Std.Collections`'s real `mapGet` to lose the first-wins merge to
+// (unlike the MSIL bridge's stdlib self-build, #6377), so ordering here is purely for
+// cross-target consistency.
+func collectStdlibInferenceOnlyGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl] {
+  val stubFuncs: List[FunctionDecl] = newList()
   var sfi = 0
   while sfi < files.count {
     val sf = files[sfi]
-    pipeAddInferenceOnlyIntrinsicFuncs(sf.items, dottedPath(sf.packageDecl.path), genFuncs)
+    pipeAddInferenceOnlyIntrinsicFuncs(sf.items, dottedPath(sf.packageDecl.path), stubFuncs)
     sfi = sfi + 1
   }
-  genFuncs
+  stubFuncs
 }
 
 // Counterpart of `collectStdlibGenericFuncsJvm` for non-generic stdlib
@@ -2370,6 +2404,22 @@ pub func compileProjectToJarBundledWithRestored(
   while sgfi < stdlibNonGenFuncs.count {
     allMonoFuncs.add(stdlibNonGenFuncs[sgfi])
     sgfi = sgfi + 1
+  }
+  // Inference-only union-case ctor decls and the `mapGet` intrinsic stub,
+  // appended AFTER real functions so a real function always wins the
+  // monomorphizer's first-wins name merge — matching
+  // `Msil.Bridge.collectStdlibGenericFuncs`'s exact ordering (#7123).
+  val stdlibUnionCtors = collectStdlibUnionCtorDeclsJvm(stdlibFiles)
+  var sguc = 0
+  while sguc < stdlibUnionCtors.count {
+    allMonoFuncs.add(stdlibUnionCtors[sguc])
+    sguc = sguc + 1
+  }
+  val stdlibInferenceOnlyFuncs = collectStdlibInferenceOnlyGenericFuncsJvm(stdlibFiles)
+  var sgif = 0
+  while sgif < stdlibInferenceOnlyFuncs.count {
+    allMonoFuncs.add(stdlibInferenceOnlyFuncs[sgif])
+    sgif = sgif + 1
   }
 
   // Collect cross-package aspect templates from every file in the bundle before
