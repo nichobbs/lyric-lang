@@ -1466,7 +1466,7 @@ func collectMonoSpecializedSigs(
             // is exactly as concrete as its declared type expr says (no
             // generic params left to erase), so the same
             // `recordRetClassOfBundle` lookup applies unchanged.
-            recordRetClass = recordRetClassOfBundle(decl.ret, owner, ctorReg),
+            recordRetClass = recordRetClassOfBundle(decl.ret, owner, ctorReg, externTypes),
             // Mono-specialised functions are free functions (monomorphized
             // from a generic `func`), never impl/record methods — no `Self`
             // return possible.

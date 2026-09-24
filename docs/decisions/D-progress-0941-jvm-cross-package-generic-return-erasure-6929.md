@@ -141,3 +141,53 @@ of), #3229 / #3676 (`collectMonoSpecializedSigs`'s original introduction,
 for the map-iteration mono-specialization symptom), `docs/44-jvm-production-readiness-plan.md`
 (the JVM production-readiness remediation plan this fix's finding
 belongs to).
+
+**Follow-up: extern-type bare-name collision regression (#7195).** The
+initial review round flagged, as a hypothetical, non-blocking risk
+(#7195), that `recordRetClassOfBundle`'s bare-name fallback extends the
+already-accepted `recordParamClassOf`/#6691/#6708 cross-package
+collision risk to return-type resolution. CI on this PR's own head
+turned that hypothetical into a real, reproducible regression: a
+pre-existing test, `emitProject alias-qualified GENERIC extern type
+signature collision (JVM, TGenericApp)` (`emitter_project_self_test.l`),
+started failing with a runtime `ClassCastException`.
+
+Root cause: the test's `Helper` package declares `extern type JDict[K, V]
+= "java.util.concurrent.ConcurrentHashMap"` and a same-file function
+`newJDict(): JDict[String, String]`. The unrelated `App` package
+declares its own `record JDict { tag: String }`. Before this fix,
+`newJDict`'s return type resolved via `recordRetClassOf`'s same-file
+scan — a miss, since `JDict` is an extern type, not a local record — so
+`sigRecordRetClass` stayed `None` (safe erasure). After this fix, the
+same miss now falls through to `recordRetClassOfBundle`, whose bare-name
+lookup (`ctorClassForBundle`) has no way to know `JDict` is an extern
+type in `Helper`'s own scope: it finds the bundle-wide bare key `JDict`
+registered by `App`'s unrelated record and wrongly resolves
+`newJDict`'s `sigRecordRetClass` to `Alias6338Generic/App/JDict`. Every
+call to `newJDict()` then got a bogus `checkcast` to that record's
+class, producing `ClassCastException: class ConcurrentHashMap cannot be
+cast to class Alias6338Generic.App.JDict` at runtime — the #7195 risk
+materializing in practice, and strictly worse than the accepted
+`recordParamClassOf` precedent: that precedent risks resolving to the
+WRONG record; this one could fire for a type that is not a record at
+all.
+
+**Fix.** `recordRetClassOfBundle` (and its `recordRetClassOfBundleTe`
+helper) now take the caller's own file-scoped `externTypes` map
+(`ownAwareExternTypes(file, externSeed)`, already in scope at both call
+sites — `collectFileSigsSeeded` in `06_items.l` and
+`collectMonoSpecializedSigs` in `bridge.l`) and check it BEFORE
+consulting `ctorReg` for a bare single-segment `TGenericApp`/`TRef`
+head: a name that already resolves as a same-file/imported `extern
+type` is never a Lyric record, so the bundle-wide fallback returns
+`None` (the pre-existing safe-erasure behavior) instead of risking a
+bare-name collision. Qualified/dotted heads are unaffected (they were
+never subject to the bare-key collision risk in the first place).
+
+**Verification.** `emitter_project_self_test.l` (38/38, including the
+previously-failing test 7) and the full original regression sweep
+(`jvm_generic_call_result_cross_package_self_test.l` 2/2,
+`jvm_cross_package_collision_self_test.l` 10/10,
+`cross_package_generics_self_test.l` 14/14,
+`generic_specialization_self_test.l` 8/8) all pass with the guard in
+place. Closes #7195.

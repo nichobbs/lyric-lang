@@ -1384,26 +1384,68 @@ func recordRetClassOfTe(te: in TypeExpr, owner: in String, localRecordNames: in 
 // run all `collectFileCtors` calls first, then all `collectFileSigsSeeded`
 // calls, specifically so this fallback never sees a partially-built
 // registry and silently misses a record declared in a file visited later.
+//
+// `externTypes` (the caller's own file-scoped extern-type alias table, e.g.
+// `ownAwareExternTypes(file, externSeed)`) gates the bare-name lookup: a
+// bare single-segment head that already resolves as a same-file/imported
+// `extern type` is NEVER a Lyric record, so `ctorReg` is never consulted for
+// it — otherwise an unrelated, differently-packaged record sharing that
+// exact bare name (e.g. `extern type JDict[K, V] = "java.util.concurrent.
+// ConcurrentHashMap"` in one package colliding with an unrelated `record
+// JDict` in another) would win the bare-key lookup and the extern-typed
+// function would get a bogus `checkcast` to that record's class — a real
+// regression caught by `emitProject alias-qualified GENERIC extern type
+// signature collision (JVM, TGenericApp)`, fixed alongside the original
+// #6929 fix.
 pub func recordRetClassOfBundle(
-  retOpt: in Option[TypeExpr], owner: in String, ctorReg: in Map[String, String]
+  retOpt: in Option[TypeExpr],
+  owner: in String,
+  ctorReg: in Map[String, String],
+  externTypes: in Map[String, String],
 ): Option[String] {
   match retOpt {
-    case Some(te) -> recordRetClassOfBundleTe(te, owner, ctorReg)
+    case Some(te) -> recordRetClassOfBundleTe(te, owner, ctorReg, externTypes)
     case None -> None
   }
 }
 
-func recordRetClassOfBundleTe(te: in TypeExpr, owner: in String, ctorReg: in Map[String, String]): Option[String] {
+func recordRetClassOfBundleTe(
+  te: in TypeExpr,
+  owner: in String,
+  ctorReg: in Map[String, String],
+  externTypes: in Map[String, String],
+): Option[String] {
   match te.kind {
-    case TParen(inner) -> recordRetClassOfBundleTe(inner, owner, ctorReg)
-    case TGenericApp(head, _) -> recordRetClassOfBundleHead(head, owner, ctorReg)
+    case TParen(inner) -> recordRetClassOfBundleTe(inner, owner, ctorReg, externTypes)
+    // A bare single-segment head naming a same-file/imported `extern type`
+    // (e.g. `JDict[K, V] = "java.util.concurrent.ConcurrentHashMap"`) is
+    // NEVER a Lyric record, regardless of what `ctorReg`'s bundle-wide bare
+    // key happens to hold — checked BEFORE consulting `ctorReg` at all, or
+    // an unrelated, differently-packaged record sharing the same bare name
+    // (e.g. an unrelated `record JDict`) silently wins the bare-key lookup
+    // and the extern-typed function gets a bogus `checkcast` to that
+    // record's class, producing a `ClassCastException` at runtime — a real
+    // regression this exact fix closes (see the decision log).
+    case TGenericApp(head, _) -> {
+      if head.segments.count == 1 and externTypes.containsKey(head.segments[0]) {
+        None
+      } else {
+        recordRetClassOfBundleHead(head, owner, ctorReg)
+      }
+    }
     // `Lyric.Mono`'s monomorphizer can rewrite a specialised function's
     // return type to a BARE `TRef` (type args substituted away entirely,
     // since a specialisation has no generic params of its own left to
     // apply them to) rather than keeping the `TGenericApp` shape — handle
     // both so a mono-specialised copy of a cross-package generic function
     // (#6929) resolves the same way its unspecialised original does.
-    case TRef(path) -> recordRetClassOfBundleHead(path, owner, ctorReg)
+    case TRef(path) -> {
+      if path.segments.count == 1 and externTypes.containsKey(path.segments[0]) {
+        None
+      } else {
+        recordRetClassOfBundleHead(path, owner, ctorReg)
+      }
+    }
     case _ -> None
   }
 }

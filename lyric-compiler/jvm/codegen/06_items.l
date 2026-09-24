@@ -3384,7 +3384,7 @@ pub func collectFileSigsSeeded(
         } else {
           match recordRetClassOf(decl.ret, owner, localRecordNames) {
             case Some(cls) -> Some(value = cls)
-            case None -> recordRetClassOfBundle(decl.ret, owner, ctorReg)
+            case None -> recordRetClassOfBundle(decl.ret, owner, ctorReg, externTypes)
           }
         }
         // #6754 (finding 1.2a): same async-generator exclusion as
