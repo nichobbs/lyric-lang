@@ -83,6 +83,7 @@ func mkContract(name: in String, decls: in List[Meta.ContractDecl]): Meta.Contra
     formatVersion = 2,
     decls = decls,
     dependencies = newList(),
+    imports = newList(),
     contractHash = ""
   )
 }

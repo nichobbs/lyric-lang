@@ -179,6 +179,13 @@ func emitContractJson(contract: in Meta.Contract, contractHash: in String): Stri
   fields.add(("formatVersion", jsonNumber(contract.formatVersion)))
   fields.add(("contractHash", jsonString(contractHash)))
   fields.add(("dependencies", emitDependencies(contract.dependencies)))
+  if contract.imports.count > 0 {
+    val importItems: List[String] = newList()
+    for imp in contract.imports.toArray() {
+      importItems.add(jsonString(imp))
+    }
+    fields.add(("imports", jsonArray(importItems)))
+  }
   fields.add(("decls", emitDecls(contract.decls)))
   jsonObject(fields)
 }

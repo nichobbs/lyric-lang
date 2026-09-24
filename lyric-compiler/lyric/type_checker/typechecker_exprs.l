@@ -3135,6 +3135,24 @@ func inferConstruction(
   argTypes: in List[Type],
   span: in Span,
 ): Type {
+  inferConstructionExpected(tbl, diag, sym, args, argTypes, span, TyError)
+}
+
+// As `inferConstruction`, with the type the construction's position expects
+// (`TyError` for none).  A generic record's type parameter that its field
+// initializers leave unbound — `Box(left = xs, right = None)` for
+// `Box[A, B]` — takes its argument from an expected instantiation of the
+// same type (`val b: Box[Int, String] = ...`), matching how union-case
+// constructors already use the expected type (docs/65 §15 F-2).
+func inferConstructionExpected(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sym: in Symbol,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  span: in Span,
+  expected: in Type,
+): Type {
   // For generic constructors, attempt to infer type arguments from the supplied
   // field initializer types before falling back to T0110.  T0110 fires only when
   // one or more type parameters remain unresolved after inference.
@@ -3156,6 +3174,22 @@ func inferConstruction(
     val fieldTypes = ctorFieldTypes(tbl, sym, gnames)
     val orderedArgTypes = argTypesInFieldOrder(args, argTypes, fieldNames)
     val targs = inferGenericArgs(gnames, fieldTypes, orderedArgTypes)
+    match unrefine(expected) {
+      case TyUser(eid, _, eargs) -> match symbolTypeIdOpt(sym) {
+        case Some(tid) -> if typeIdEq(eid, tid) and eargs.count == gnames.count {
+          var ei = 0
+          while ei < gnames.count {
+            val unbound = match targs[ei] { case TyError -> true; case _ -> false }
+            if unbound {
+              targs[ei] = eargs[ei]
+            }
+            ei = ei + 1
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
     // Collect names of parameters that could not be inferred.
     val unresolved: List[String] = newList()
     var gi = 0
@@ -5336,6 +5370,29 @@ func argIsAmbiguousUnionCaseCtor(tbl: in SymbolTable, e: in Expr): Bool {
   }
 }
 
+// True when `fn` names a generic record constructor (not a union case) and
+// `expected` is an instantiation of that same record type.
+func expectsGenericRecordCtor(tbl: in SymbolTable, fn: in Expr, expected: in Type): Bool {
+  match unionCaseSymbolOf(tbl, fn) {
+    case Some(_) -> return false
+    case None -> ()
+  }
+  match constructorSymbolOf(tbl, fn) {
+    case Some(ctorSym) -> if not ctorIsGeneric(ctorSym) {
+      false
+    } else {
+      match unrefine(expected) {
+        case TyUser(eid, _, _) -> match symbolTypeIdOpt(ctorSym) {
+          case Some(tid) -> typeIdEq(eid, tid)
+          case None -> false
+        }
+        case _ -> false
+      }
+    }
+    case None -> false
+  }
+}
+
 // A2: infer `e` under a contextual expected type.  Only lambda literals
 // consume the expectation (their unannotated params adopt the expected
 // function type's parameter types); every other expression shape — and any
@@ -5376,7 +5433,18 @@ pub func inferExprExpected(
     // callee) and raises T0123 there — checked via `diag.count` so this
     // arm never re-raises it a second time by falling into `inferExpr`.
     case ECall(fn, cargs) -> match fn.kind {
-      case EPath(p) -> if p.segments.count == 1 {
+      case EPath(p) -> if expectsGenericRecordCtor(tbl, fn, expected) {
+        val cargTypes: List[Type] = newList()
+        var cri = 0
+        while cri < cargs.count {
+          cargTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(cargs[cri])))
+          cri = cri + 1
+        }
+        match constructorSymbolOf(tbl, fn) {
+          case Some(ctorSym) -> inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
+          case None -> inferExpr(sc, tbl, sigs, diag, e)
+        }
+      } else if p.segments.count == 1 {
         val diagCountBefore = diag.count
         match unionCaseSymbolForScrutinee(tbl, diag, fn, expected) {
           case Some(caseSym) -> {
@@ -5714,6 +5782,13 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
   }
 }
 
+// True when `qualifier` (the dotted prefix of a qualified call) names
+// package `pkg`: the full path, or its trailing segment(s) as an
+// `import A.B` in scope allows (`B.f(...)`).
+func pkgMatchesQualifier(pkg: in String, qualifier: in String): Bool {
+  pkg.length > 0 and (pkg == qualifier or pkg.endsWith("." + qualifier))
+}
+
 func findDirectSig(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -5768,13 +5843,40 @@ func findDirectSig(
         }
         val wantPkg = modulePathJoin(prefix)
         val qcands = gatherOverloadCandidates(sigs, arityKey)
+        // A qualifier names a package by its full path or, for an
+        // `import A.B` in scope, by its last segment (`B.f(...)`).  Once any
+        // candidate comes from the named package the call binds to that
+        // package: an argument mismatch is reported against ITS signature
+        // rather than silently re-resolving to another package's same-named
+        // function (docs/65 §15 F-8: `Widgets.field(...)` resolved to
+        // `Forms.field`).
+        var qualFirst: Option[ResolvedSignature] = None
+        var haveQualFirst = false
         var qi = 0
         while qi < qcands.count {
           val qc = qcands[qi]
-          if qc.originPackage == wantPkg and paramsMatchArgs(tbl, qc.params, argTypes) {
-            return Some(value = qc)
+          if pkgMatchesQualifier(qc.originPackage, wantPkg) {
+            if paramsMatchArgs(tbl, qc.params, argTypes) {
+              return Some(value = qc)
+            }
+            if not haveQualFirst {
+              qualFirst = Some(value = qc)
+              haveQualFirst = true
+            }
           }
           qi = qi + 1
+        }
+        match mapGet(sigs, arityKey) {
+          case Some(ps) -> if pkgMatchesQualifier(ps.originPackage, wantPkg) {
+            if paramsMatchArgs(tbl, ps.params, argTypes) or not haveQualFirst {
+              return Some(value = ps)
+            }
+          }
+          case None -> ()
+        }
+        match qualFirst {
+          case Some(qf) -> return Some(value = qf)
+          case None -> ()
         }
       }
       // The arity-key "primary" is the historical lookup: a user definition

@@ -364,6 +364,13 @@ pub record Contract {
   decls: List[ContractDecl]
   /// Direct dependencies' contract metadata (format v3+; absent in v1-v2).
   dependencies: List[ContractDependency]
+  /// The package's own imports (dotted package paths, `import extern`
+  /// excluded), in declaration order.  A consumer that specialises one of
+  /// this package's generic function bodies resolves the body's unqualified
+  /// callees through them, since the body was written against this package's
+  /// scope, not the consumer's (docs/65 §15 F-4).  Optional in the JSON form
+  /// (absent means empty), so older contracts still parse.
+  imports: List[String]
   /// SHA256 hash of this contract's JSON (format v3+; absent in v1-v2).
   contractHash: String
   // JsonValueKind ordinals (matches `System.Text.Json.JsonValueKind`):
@@ -549,6 +556,7 @@ func parseFromRoot(root: in JsonElement): Option[Contract] {
       formatVersion = getInt(root, "formatVersion", 1),
       decls = decls,
       dependencies = getDependencies(root),
+      imports = getStrArray(root, "imports"),
       contractHash = getStr(root, "contractHash", "")
     )
   )
@@ -748,6 +756,10 @@ pub func contractToJson(c: in Contract): String {
   if c.formatVersion >= 3 {
     sb = sb + "  \"contractHash\": \"" + escapeJson(c.contractHash) + "\",\n"
     sb = sb + "  \"dependencies\": " + renderDependencies(c.dependencies) + ",\n"
+  }
+
+  if c.imports.count > 0 {
+    sb = sb + "  \"imports\": " + renderStringArray(c.imports) + ",\n"
   }
 
   sb = sb + "  \"decls\": [\n"
@@ -1749,6 +1761,21 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     formatVersion = 2,
     decls = decls,
     dependencies = newList(),
+    imports = contractImportsOf(file),
     contractHash = ""
   )
+}
+
+// The dotted paths of `file`'s package imports (`import extern` excluded).
+func contractImportsOf(file: in SourceFile): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < file.imports.count {
+    val imp = file.imports[i]
+    if not imp.isExtern {
+      acc.add(joinDots(imp.path.segments))
+    }
+    i = i + 1
+  }
+  acc
 }

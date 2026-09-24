@@ -35,6 +35,7 @@ func unwrapOrFail(opt: in Option[Contract], label: in String): Contract {
         formatVersion = 0,
         decls = newList(),
         dependencies = newList(),
+        imports = newList(),
         contractHash = ""
       )
     }
@@ -458,6 +459,7 @@ func testContractToJsonRoundTrip(): Unit {
     formatVersion = 2,
     decls = decls,
     dependencies = newList(),
+    imports = newList(),
     contractHash = ""
   )
 
@@ -522,6 +524,7 @@ func testContractToJsonOmitsDefaults(): Unit {
     formatVersion = 2,
     decls = decls,
     dependencies = newList(),
+    imports = newList(),
     contractHash = ""
   )
   val json = contractToJson(c)

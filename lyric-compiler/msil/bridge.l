@@ -1940,7 +1940,7 @@ func collectRestoredGenericFuncs(artifacts: in List[SynthesisedArtifact]): List[
   val genFuncs: List[FunctionDecl] = newList()
   var ai = 0
   while ai < artifacts.count {
-    pipeAddGenericFuncs(artifacts[ai].source.items, "", true, false, genFuncs)
+    pipeAddGenericFuncs(artifacts[ai].source.items, segmentsToString(artifacts[ai].source.packageDecl.path.segments), true, false, genFuncs)
     ai = ai + 1
   }
   genFuncs

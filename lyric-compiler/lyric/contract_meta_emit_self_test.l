@@ -38,6 +38,7 @@ func testEmitSimpleContract(): Unit {
     formatVersion = 3,
     decls = [decl],
     dependencies = [],
+    imports = [],
     contractHash = ""
   )
 
@@ -76,6 +77,7 @@ func testHashConsistency(): Unit {
     formatVersion = 3,
     decls = [decl],
     dependencies = [],
+    imports = [],
     contractHash = ""
   )
 
@@ -86,6 +88,7 @@ func testHashConsistency(): Unit {
     formatVersion = 3,
     decls = [decl],
     dependencies = [],
+    imports = [],
     contractHash = ""
   )
 

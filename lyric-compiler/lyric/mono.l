@@ -210,6 +210,32 @@ record MonoState {
   /// qualifier), and only binds fields when exactly one candidate survives
   /// — never guessing among an unresolved tie. See `addCtorCandidateMono`.
   ctorCandidates: Map[String, List[FunctionDecl]]
+  /// Qualified call spellings of imported generics, keyed
+  /// `"<qualifier>.<name>"` (every qualifier the file's imports make valid
+  /// for the declaring package: its full path, its `as` alias, and its last
+  /// segment), mapped to the bare name the generic is registered under in
+  /// `genDecls` (docs/65 §15 F-3).  The bare name is the generic's own name
+  /// when that name resolves to the same declaration, otherwise a synthetic
+  /// `<name>__in__<Pkg_Path>` alias registered alongside it, so two packages'
+  /// same-named generics never collide.  `rewriteExpr` routes a qualified
+  /// call through this table and then through the ordinary bare-name
+  /// inference and specialisation path.
+  qualifiedGenNames: Map[String, String]
+  /// The type each call expression's POSITION expects, keyed by
+  /// `spanKeyMono` of the call's span (docs/65 §15 F-2): an annotated
+  /// binding's initializer, a `return` value or trailing expression (the
+  /// enclosing function's declared return type), an assignment to a typed
+  /// variable, or an argument to a parameter of known type.  Recorded
+  /// through parentheses, `if`/`match` arms and block tails by
+  /// `markExpectedMono` before the position is rewritten, and consulted when
+  /// a generic call's arguments leave some type parameter unbound: the
+  /// generic's declared return type is unified with the expected type, so a
+  /// type parameter that appears only in the return type (`stay[M, E](m)`,
+  /// `heading[Msg](...)`) is inferred from context.
+  expectedAt: Map[String, TypeExpr]
+  /// Declared return type of each enclosing function/lambda being
+  /// rewritten, innermost last (`None` for an unannotated lambda).
+  returnTEs: List[Option[TypeExpr]]
   seenSpecs: Map[String, Bool]
   allSpecs: List[SpecRequest]
   diags: List[Diagnostic]
@@ -226,6 +252,7 @@ func newMonoState(
   droppedLocalGenerics: in Map[String, Bool],
   ambiguousFuncOverloads: in Map[String, List[FunctionDecl]],
   ctorCandidates: in Map[String, List[FunctionDecl]],
+  qualifiedGenNames: in Map[String, String],
 ): MonoState {
   MonoState(
     moduleValTypes = moduleValTypes,
@@ -238,6 +265,9 @@ func newMonoState(
     droppedLocalGenerics = droppedLocalGenerics,
     ambiguousFuncOverloads = ambiguousFuncOverloads,
     ctorCandidates = ctorCandidates,
+    qualifiedGenNames = qualifiedGenNames,
+    expectedAt = newMap(),
+    returnTEs = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
     diags = newList()
@@ -342,6 +372,39 @@ func synPos(): Position {
 
 func synSpan(): Span {
   Span(startPos = synPos(), endPos = synPos())
+}
+
+/// `decl` tagged with its origin package (`originAnnotationName`).  An empty
+/// `pkgName`, or a decl already tagged, is returned unchanged.
+pub func withOriginPkgMono(decl: in FunctionDecl, pkgName: in String): FunctionDecl {
+  if pkgName.length == 0 or originPkgOf(decl.annotations).length > 0 {
+    return decl
+  }
+  val anns: List[Annotation] = newList()
+  var ai = 0
+  while ai < decl.annotations.count {
+    anns.add(decl.annotations[ai])
+    ai = ai + 1
+  }
+  val segs: List[String] = newList()
+  segs.add(originAnnotationName)
+  val args: List[AnnotationArg] = newList()
+  args.add(ALiteral(value = AVString(value = pkgName, span = decl.span), span = decl.span))
+  anns.add(Annotation(name = ModulePath(segments = segs, span = decl.span), args = args, span = decl.span))
+  FunctionDecl(
+    docComments = decl.docComments,
+    annotations = anns,
+    visibility = decl.visibility,
+    isAsync = decl.isAsync,
+    name = decl.name,
+    generics = decl.generics,
+    params = decl.params,
+    ret = decl.ret,
+    whereClause = decl.whereClause,
+    contracts = decl.contracts,
+    body = decl.body,
+    span = decl.span
+  )
 }
 
 func singleSegPath(name: in String): ModulePath {
@@ -3331,7 +3394,9 @@ func specializeFunc(
   var ai = 0
   while ai < decl.annotations.count {
     val segs = decl.annotations[ai].name.segments
-    if segs.count == 1 and (segs[0] == "externTarget" or segs[0] == "externStatic" or segs[0] == "externInstance") {
+    // `originAnnotationName` too: codegen resolves the specialised body's
+    // unqualified names against the declaring package (docs/65 §15 F-4).
+    if segs.count == 1 and (segs[0] == "externTarget" or segs[0] == "externStatic" or segs[0] == "externInstance" or segs[0] == originAnnotationName) {
       keptAnns.add(decl.annotations[ai])
     }
     ai = ai + 1
@@ -3486,6 +3551,239 @@ func isNumericPrimitiveName(name: in String): Bool {
 
 func isPrimitiveName(name: in String): Bool {
   isNumericPrimitiveName(name) or name == "Bool" or name == "Char" or name == "String" or name == "Unit"
+}
+
+
+// ─── Expected types (docs/65 §15 F-2) ───────────────────────────────────────
+func spanKeyMono(sp: in Span): String {
+  toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
+}
+
+// Record `te` as the expected type of every call in a tail position of `e`
+// (see `MonoState.expectedAt`).  First mark wins, so an inner, more specific
+// position recorded earlier is never overwritten.
+func markExpectedMono(state: in MonoState, e: in Expr, te: in TypeExpr): Unit {
+  match e.kind {
+    case ECall(_, _) -> {
+      val k = spanKeyMono(e.span)
+      if not state.expectedAt.containsKey(k) {
+        state.expectedAt.add(k, te)
+      }
+    }
+    case EParen(inner) -> markExpectedMono(state, inner, te)
+    case EIf(_, thenB, elseB, _) -> {
+      markExpectedEobMono(state, thenB, te)
+      match elseB {
+        case Some(eb) -> markExpectedEobMono(state, eb, te)
+        case None -> ()
+      }
+    }
+    case EMatch(_, arms) -> {
+      var i = 0
+      while i < arms.count {
+        markExpectedEobMono(state, arms[i].body, te)
+        i = i + 1
+      }
+    }
+    case EBlock(b) -> markExpectedBlockTailMono(state, b, te)
+    case _ -> ()
+  }
+}
+
+func markExpectedEobMono(state: in MonoState, eob: in ExprOrBlock, te: in TypeExpr): Unit {
+  match eob {
+    case EOBExpr(e) -> markExpectedMono(state, e, te)
+    case EOBBlock(b) -> markExpectedBlockTailMono(state, b, te)
+  }
+}
+
+func markExpectedBlockTailMono(state: in MonoState, b: in Block, te: in TypeExpr): Unit {
+  if b.statements.count > 0 {
+    match b.statements[b.statements.count - 1].kind {
+      case SExpr(e) -> markExpectedMono(state, e, te)
+      case _ -> ()
+    }
+  }
+}
+
+// A `Unit` return type expects nothing useful.
+func isUnitTEMono(te: in TypeExpr): Bool {
+  match te.kind {
+    case TUnit -> true
+    case TRef(p) -> p.segments.count == 1 and p.segments[0] == "Unit"
+    case _ -> false
+  }
+}
+
+func currentReturnTEMono(state: in MonoState): Option[TypeExpr] {
+  if state.returnTEs.count == 0 {
+    return None
+  }
+  state.returnTEs[state.returnTEs.count - 1]
+}
+
+// Rewrite a function body with `ret` as the enclosing return type: marks
+// the trailing expression, and `return` statements consult it.
+func rewriteFuncBodyWithRet(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  body: in Option[FunctionBody],
+  ret: in Option[TypeExpr],
+): Option[FunctionBody] {
+  val useful: Option[TypeExpr] = match ret {
+    case Some(te) -> if isUnitTEMono(te) { None } else { Some(value = te) }
+    case None -> None
+  }
+  match useful {
+    case Some(te) -> match body {
+      case Some(fb) -> match fb {
+        case FBExpr(e) -> markExpectedMono(state, e, te)
+        case FBBlock(blk) -> markExpectedBlockTailMono(state, blk, te)
+      }
+      case None -> ()
+    }
+    case None -> ()
+  }
+  state.returnTEs.add(useful)
+  val out = rewriteFuncBody(state, env, body)
+  state.returnTEs.removeAt(state.returnTEs.count - 1)
+  out
+}
+
+// Mark each argument of a call to `callee` with its declared parameter type
+// when the callee is non-generic (a generic parameter type mentions type
+// variables the call site has not resolved yet).
+func markArgsExpectedMono(state: in MonoState, callee: in FunctionDecl, args: in List[CallArg]): Unit {
+  val isGeneric = match callee.generics { case Some(_) -> true; case None -> false }
+  if isGeneric {
+    return
+  }
+  var i = 0
+  while i < args.count and i < callee.params.count {
+    markExpectedMono(state, callArgExpr(args[i]), callee.params[i].ty)
+    i = i + 1
+  }
+}
+
+// The element type of a `List[T]` TypeExpr.
+func listElemTEMono(te: in TypeExpr): Option[TypeExpr] {
+  match te.kind {
+    case TGenericApp(head, targs) -> {
+      if head.segments.count >= 1 and head.segments[head.segments.count - 1] == "List" and targs.count == 1 {
+        match targs[0] {
+          case TAType(t) -> Some(value = t)
+          case _ -> None
+        }
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// ─── Qualified calls to imported generics (docs/65 §15 F-3) ─────────────────
+// Every qualifier `file`'s imports make valid for package `pkg`: the full
+// dotted path, the `as` alias, and the last path segment.
+func qualifiersForPkgMono(file: in SourceFile, pkg: in String): List[String] {
+  val quals: List[String] = newList()
+  var i = 0
+  while i < file.imports.count {
+    val imp = file.imports[i]
+    if Str.joinList(".", imp.path.segments) == pkg {
+      addUniqueMono(quals, pkg)
+      match imp.asAlias {
+        case Some(a) -> addUniqueMono(quals, a)
+        case None -> ()
+      }
+      addUniqueMono(quals, imp.path.segments[imp.path.segments.count - 1])
+    }
+    i = i + 1
+  }
+  quals
+}
+
+func addUniqueMono(xs: in List[String], x: in String): Unit {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == x {
+      return
+    }
+    i = i + 1
+  }
+  xs.add(x)
+}
+
+// Builds `MonoState.qualifiedGenNames` (see its doc comment), registering a
+// synthetic `<name>__in__<Pkg_Path>` alias in `genDecls`/`funcDecls` for an
+// imported generic whose bare name resolves to a different declaration (a
+// same-package local, or another package's same-named generic).
+func buildQualifiedGenNames(
+  file: in SourceFile,
+  importedGenDecls: in List[FunctionDecl],
+  genDecls: in Map[String, FunctionDecl],
+  funcDecls: in Map[String, FunctionDecl],
+  localFuncNames: in Map[String, Bool],
+): Map[String, String] {
+  val acc: Map[String, String] = newMap()
+  var i = 0
+  while i < importedGenDecls.count {
+    val idecl = importedGenDecls[i]
+    val isGeneric = match idecl.generics { case Some(_) -> true; case None -> false }
+    val origin = originPkgOf(idecl.annotations)
+    if isGeneric and origin.length > 0 and not annsInferenceOnlyMono(idecl.annotations) {
+      val quals = qualifiersForPkgMono(file, origin)
+      if quals.count > 0 {
+        val bareIsThis = (not localFuncNames.containsKey(idecl.name)) and match mapGet(genDecls, idecl.name) {
+          case Some(d) -> originPkgOf(d.annotations) == origin
+          case None -> false
+        }
+        val target = if bareIsThis { idecl.name } else { idecl.name + "__in__" + Str.replace(origin, ".", "_") }
+        if not bareIsThis and not genDecls.containsKey(target) {
+          val renamed = FunctionDecl(
+            docComments = idecl.docComments,
+            annotations = idecl.annotations,
+            visibility = idecl.visibility,
+            isAsync = idecl.isAsync,
+            name = target,
+            generics = idecl.generics,
+            params = idecl.params,
+            ret = idecl.ret,
+            whereClause = idecl.whereClause,
+            contracts = idecl.contracts,
+            body = idecl.body,
+            span = idecl.span
+          )
+          genDecls.add(target, renamed)
+          if not funcDecls.containsKey(target) {
+            funcDecls.add(target, renamed)
+          }
+        }
+        var q = 0
+        while q < quals.count {
+          val key = quals[q] + "." + idecl.name
+          if not acc.containsKey(key) {
+            acc.add(key, target)
+          }
+          q = q + 1
+        }
+      }
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// The bare generic name a qualified call path targets, or "" when `path` is
+// not a qualified call to an imported generic.
+func qualifiedGenTargetMono(state: in MonoState, path: in ModulePath): String {
+  if path.segments.count < 2 {
+    return ""
+  }
+  match mapGet(state.qualifiedGenNames, Str.joinList(".", path.segments)) {
+    case Some(t) -> t
+    case None -> ""
+  }
 }
 
 // Emit `M0002` when a call site targeting a same-package generic function
@@ -4055,6 +4353,28 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     //     where the user already wrote the type arguments inline (#349
     //     called out that `ETypeApp` was pass-through before).
     case ECall(fn, args) -> {
+      // Arguments to a parameter of known type expect that type (F-2):
+      // mark them before `rewriteCallArgs` rewrites them.
+      match fn.kind {
+        case EPath(cpath) -> if cpath.segments.count == 1 and not env.containsKey(cpath.segments[0]) {
+          match mapGet(state.funcDecls, cpath.segments[0]) {
+            case Some(calleeDecl) -> if not state.ambiguousFuncOverloads.containsKey(cpath.segments[0]) {
+              markArgsExpectedMono(state, calleeDecl, args)
+            }
+            case None -> ()
+          }
+        }
+        case EMember(mrecv, mname) -> if mname == "add" and args.count == 1 {
+          match inferExprTE(state, env, mrecv) {
+            case Some(rte) -> match listElemTEMono(rte) {
+              case Some(elemTe) -> markExpectedMono(state, callArgExpr(args[0]), elemTe)
+              case None -> ()
+            }
+            case None -> ()
+          }
+        }
+        case _ -> ()
+      }
       val newArgs = rewriteCallArgs(state, env, args)
       match fn.kind {
         case ETypeApp(innerFn, targs) -> {
@@ -4100,6 +4420,11 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                             state.allSpecs.add(
                               SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = valueSubst, callSpan = fn.span)
                             )
+                            // A specialised copy's concrete signature joins the inference
+                            // surface, so `val v = f(...)` types `v` once `f` is rewritten.
+                            if not state.funcDecls.containsKey(name) {
+                              state.funcDecls.add(name, specDecl)
+                            }
                           }
                           val newFn = singleSegPathExpr(name, fn.span)
                           return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
@@ -4245,6 +4570,19 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                     // argument against an unsafe shape, refuse the default and
                     // raise `M0004` instead of emitting a specialisation that
                     // compiles clean and crashes later.
+                    // Context (F-2): a type parameter the arguments leave
+                    // unbound — typically one that appears only in the return
+                    // type — is inferred by unifying the declared return type
+                    // with the type this call's position expects.
+                    if not substIsComplete(typeParams, subst) {
+                      match mapGet(state.expectedAt, spanKeyMono(s)) {
+                        case Some(expTe) -> match baseDecl.ret {
+                          case Some(retTe) -> unifyTE(typeParams, retTe, expTe, subst)
+                          case None -> ()
+                        }
+                        case None -> ()
+                      }
+                    }
                     var unsafeImportedFallback = false
                     if not substIsComplete(typeParams, subst) {
                       if not state.droppedLocalGenerics.containsKey(fname) and not annsHaveAxiomMono(baseDecl.annotations) {
@@ -4273,6 +4611,11 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                         state.allSpecs.add(
                           SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = emptyValueSubst, callSpan = fn.span)
                         )
+                        // A specialised copy's concrete signature joins the inference
+                        // surface, so `val v = f(...)` types `v` once `f` is rewritten.
+                        if not state.funcDecls.containsKey(name) {
+                          state.funcDecls.add(name, specDecl)
+                        }
                       }
                       val newFn = singleSegPathExpr(name, fn.span)
                       return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
@@ -4312,10 +4655,19 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
               case None -> Expr(kind = ECall(fn = fn, args = newArgs), span = s)
             }
           } else {
-            // Multi-segment qualified call: try the last segment as a generic
-            // so `Validation.toResult(42,[])` specialises when `toResult[T]` is
-            // in genDecls (imported from the `Validation` in-bundle package).
-            // Same inference path as the single-segment case above (#2932).
+            // A qualified call whose qualifier the file's imports resolve to
+            // the generic's declaring package takes the full bare-name path
+            // above (lambda / constructor evidence, the imported-generic
+            // fallback, M0002/M0004), under the name `qualifiedGenNames`
+            // registered for it (docs/65 §15 F-3).
+            val qTarget = qualifiedGenTargetMono(state, path)
+            if qTarget.length > 0 {
+              return rewriteExpr(state, env, Expr(kind = ECall(fn = singleSegPathExpr(qTarget, fn.span), args = args), span = s))
+            }
+            // Otherwise (a generic with no recorded origin): try the last
+            // segment as a generic so `Validation.toResult(42,[])` specialises
+            // when `toResult[T]` is in genDecls (imported from the
+            // `Validation` in-bundle package) (#2932).
             val qfname = path.segments[path.segments.count - 1]
             match mapGet(state.genDecls, qfname) {
               case Some(qBaseDecl) -> {
@@ -4351,6 +4703,11 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                       state.allSpecs.add(
                         SpecRequest(specName = qName, baseDecl = qSpecDecl, subst = qSubst, valueSubst = qEmptyVS, callSpan = fn.span)
                       )
+                      // A specialised copy's concrete signature joins the inference
+                      // surface, so `val v = f(...)` types `v` once `f` is rewritten.
+                      if not state.funcDecls.containsKey(qName) {
+                        state.funcDecls.add(qName, qSpecDecl)
+                      }
                     }
                     val qNewFn = singleSegPathExpr(qName, fn.span)
                     return Expr(kind = ECall(fn = qNewFn, args = newArgs), span = s)
@@ -4375,6 +4732,14 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
           // unresolvable name) falls through unchanged, exactly as before.
           match idxRecv.kind {
             case EPath(ipath) -> {
+              // `Pkg.f[T](args)`: resolve the qualifier as for a plain
+              // qualified call, then take the bare explicit-application path.
+              val qiTarget = qualifiedGenTargetMono(state, ipath)
+              if qiTarget.length > 0 {
+                val bareRecv = singleSegPathExpr(qiTarget, idxRecv.span)
+                val bareCallee = Expr(kind = EIndex(receiver = bareRecv, indices = idxExprs), span = fn.span)
+                return rewriteExpr(state, env, Expr(kind = ECall(fn = bareCallee, args = args), span = s))
+              }
               if ipath.segments.count == 1 and state.genDecls.containsKey(ipath.segments[0]) and idxExprs.count > 0 {
                 val targsConv: List[TypeArg] = newList()
                 var convOk = true
@@ -4588,7 +4953,12 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
         }
         pi = pi + 1
       }
+      // A lambda's `return`s return from the lambda, whose result type this
+      // stage does not know: mask the enclosing function's return type.
+      val noRet: Option[TypeExpr] = None
+      state.returnTEs.add(noRet)
       val newBody = rewriteBlock(state, env, body)
+      state.returnTEs.removeAt(state.returnTEs.count - 1)
       restoreEnv(env, snap)
       Expr(kind = ELambda(lambdaParams = lparams, body = newBody), span = s)
     }
@@ -4626,14 +4996,25 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
   match stmt.kind {
     case SLocal(binding) -> Statement(kind = SLocal(binding = rewriteBinding(state, env, binding)), span = s)
 
-    case SAssign(target, op, value) -> Statement(
-      kind = SAssign(
-        target = rewriteExpr(state, env, target),
-        op = op,
-        value = rewriteExpr(state, env, value)
-      ),
-      span = s
-    )
+    case SAssign(target, op, value) -> {
+      match target.kind {
+        case EPath(tp) -> if tp.segments.count == 1 {
+          match mapGet(env, tp.segments[0]) {
+            case Some(tte) -> markExpectedMono(state, value, tte)
+            case None -> ()
+          }
+        }
+        case _ -> ()
+      }
+      Statement(
+        kind = SAssign(
+          target = rewriteExpr(state, env, target),
+          op = op,
+          value = rewriteExpr(state, env, value)
+        ),
+        span = s
+      )
+    }
 
     case SReturn(opt) -> {
       // Typed `var` + assignment, not a two-arm `None`/`Some` match — see the
@@ -4644,6 +5025,10 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
         case None -> {
         }
         case Some(e) -> {
+          match currentReturnTEMono(state) {
+            case Some(rte) -> markExpectedMono(state, e, rte)
+            case None -> ()
+          }
           newOpt = Some(value = rewriteExpr(state, env, e))
         }
       }
@@ -4933,6 +5318,10 @@ func bindingEnvTE(state: in MonoState, env: in Map[String, TypeExpr], annoTe: in
 func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding: in LocalBinding): LocalBinding {
   match binding {
     case LBVal(pat, tyOpt, init) -> {
+      match tyOpt {
+        case Some(te) -> markExpectedMono(state, init, te)
+        case None -> ()
+      }
       val newInit = rewriteExpr(state, env, init)
       // #6772: route through `bindPatternEnvMono` rather than
       // `trackPatternEnv` directly. `trackPatternEnv`'s catch-all
@@ -4948,7 +5337,13 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
       // plain `val` destructuring.
       match tyOpt {
         case Some(te) -> bindPatternEnvMono(state, env, pat, Some(value = bindingEnvTE(state, env, te, init)))
-        case None -> bindPatternEnvMono(state, env, pat, inferExprTE(state, env, init))
+        case None -> {
+          val inferred = match inferExprTE(state, env, init) {
+            case Some(t) -> Some(value = t)
+            case None -> inferExprTE(state, env, newInit)
+          }
+          bindPatternEnvMono(state, env, pat, inferred)
+        }
       }
       LBVal(pat = pat, ty = tyOpt, init = newInit)
     }
@@ -4960,6 +5355,10 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
         case None -> {
         }
         case Some(e) -> {
+          match tyOpt {
+            case Some(te) -> markExpectedMono(state, e, te)
+            case None -> ()
+          }
           newInit = Some(value = rewriteExpr(state, env, e))
         }
       }
@@ -4991,6 +5390,10 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
       LBVar(name = name, ty = tyOpt, init = newInit)
     }
     case LBLet(name, tyOpt, init) -> {
+      match tyOpt {
+        case Some(te) -> markExpectedMono(state, init, te)
+        case None -> ()
+      }
       val newInit = rewriteExpr(state, env, init)
       match tyOpt {
         case Some(te) -> {
@@ -5147,7 +5550,7 @@ func rewriteFuncBody(
 // `IImpl` / `IInterface` arms so impl and interface default-method bodies get
 // the same generic-call rewriting as free functions (#1727).
 func rewriteMethodDecl(state: in MonoState, env: in Map[String, TypeExpr], fn: in FunctionDecl): FunctionDecl {
-  val newBody = rewriteFuncBody(state, env, fn.body)
+  val newBody = rewriteFuncBodyWithRet(state, env, fn.body, fn.ret)
   FunctionDecl(
     docComments = fn.docComments,
     annotations = fn.annotations,
@@ -5512,6 +5915,8 @@ pub func monoFileWithImportsAndTypeDecls(
     lu = lu + 1
   }
 
+  val qualifiedGenNames = buildQualifiedGenNames(file, importedGenDecls, genDecls, funcDecls, localFuncNames)
+
   // If nothing to monomorphise, return early.
   if genDecls.count == 0 {
     val emptyRewrites: Map[String, String] = newMap()
@@ -5529,7 +5934,8 @@ pub func monoFileWithImportsAndTypeDecls(
     unionDecls,
     droppedLocalGenerics,
     ambiguousFuncOverloads,
-    ctorCandidates
+    ctorCandidates,
+    qualifiedGenNames
   )
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
@@ -5563,7 +5969,7 @@ pub func monoFileWithImportsAndTypeDecls(
           // Wildcard (not `case None`): a `@derive`-synthesised `None` lowers to a bare null that `isinst` misses — see #1796.
           case _ -> {
             val env = seedEnvFromParams(decl.params)
-            val newBody = rewriteFuncBody(state, env, decl.body)
+            val newBody = rewriteFuncBodyWithRet(state, env, decl.body, decl.ret)
             val newDecl = FunctionDecl(
               docComments = decl.docComments,
               annotations = decl.annotations,
@@ -5742,7 +6148,7 @@ pub func monoFileWithImportsAndTypeDecls(
     // for nested generic calls.
     val substitutedBody = substValueInBody(req.valueSubst, req.baseDecl.body)
     val env = seedEnvFromParams(req.baseDecl.params)
-    val newBody = rewriteFuncBody(state, env, substitutedBody)
+    val newBody = rewriteFuncBodyWithRet(state, env, substitutedBody, req.baseDecl.ret)
     val finalDecl = FunctionDecl(
       docComments = req.baseDecl.docComments,
       annotations = req.baseDecl.annotations,

@@ -5501,6 +5501,12 @@ pub record FuncCtx {
   // `enumHint` around each `return <expr>` so a bare-case return
   // (`return Http11`) resolves against the function's own declared enum type.
   var declaredRetEnumTy: String
+  // The package a monomorphized copy of an imported generic was DECLARED in
+  // (`Lyric.Parser.originPkgOf` of its `__lyric_origin` annotation), or "".
+  // The copy is compiled into the calling package, but its body was written
+  // against the declaring package's scope, so static call resolution tries
+  // that package (and its imports) for unqualified callees (docs/65 §15 F-4).
+  var originPkg: String
 }
 
 // A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
@@ -14829,6 +14835,59 @@ func lowerFuncValueInvokeMsil(
 // goes through the uniform boxed `Func` ABI (`lowerFuncValueInvokeMsil`).
 // Shared by calls through a local/param slot and through a lambda capture
 // or hoisted cell.
+// The FQN a bare call inside a monomorphized copy of an imported generic
+// resolves to in its declaring package's scope (`fctx.originPkg`): the
+// declaring package's own function, else one it imports.  "" when the
+// function is not such a copy, the call is qualified, or neither scope has
+// the callee — the caller then falls through to the calling package's own
+// resolution tiers (docs/65 §15 F-4).
+func originScopedFqnMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  path: in ModulePath,
+  funcName: in String,
+  arity: in Int,
+  retHint: in MsilType,
+): String {
+  if fctx.originPkg.length == 0 or fctx.originPkg == fctx.pkgName or path.segments.count != 1 {
+    return ""
+  }
+  val own = fctx.originPkg + "." + funcName
+  if cctx.funcTokens.containsKey(own) {
+    return own
+  }
+  match mapGet(cctx.pkgImports, fctx.originPkg) {
+    case Some(imps) -> findImportedFqnWithHint(cctx, imps, funcName, arity, retHint)
+    case None -> ""
+  }
+}
+
+// The imports whose dotted path a qualified callee's qualifier names: the
+// full path, or its trailing segment(s) (`Widgets.f` for `import
+// Ui.Widgets`).
+func importsMatchingQualifierMsil(imps: in List[String], path: in ModulePath): List[String] {
+  val qual = joinSegsMsil(prefixSegsMsil(path.segments), ".")
+  val acc: List[String] = newList()
+  var i = 0
+  while i < imps.count {
+    if imps[i] == qual or imps[i].endsWith("." + qual) {
+      acc.add(imps[i])
+    }
+    i = i + 1
+  }
+  acc
+}
+
+func prefixSegsMsil(segs: in List[String]): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < segs.count - 1 {
+    acc.add(segs[i])
+    i = i + 1
+  }
+  acc
+}
+
 func invokeLoadedFuncValueMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -15910,10 +15969,23 @@ func lowerBuiltinOrStaticCallMsil(
             // match the call-site's required type (yaml.l import-shadowing
             // regression, #3943).
             val importRetHint = if fctx.collExpect.count > 0 { fctx.collExpect[fctx.collExpect.count - 1] } else { MObject }
+            // A qualified call searches only the imports its qualifier names
+            // (full path, or trailing segment(s) of an `import A.B`), never
+            // every import by bare name — that silently bound
+            // `Widgets.field(...)` to another package's `field` (docs/65 §15
+            // F-8).
             val importedFqn = match mapGet(cctx.pkgImports, fctx.pkgName) {
-              case Some(imps) -> findImportedFqnWithHint(cctx, imps, funcName, args.count, importRetHint)
+              case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
+                findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
+              } else {
+                findImportedFqnWithHint(cctx, imps, funcName, args.count, importRetHint)
+              }
               case None -> ""
             }
+            // A monomorphized copy of an imported generic resolves its bare
+            // callees in the DECLARING package's scope first: its own
+            // functions, then its imports (docs/65 §15 F-4).
+            val originFqn = originScopedFqnMsil(cctx, fctx, path, funcName, args.count, importRetHint)
             // Bundle-wide fallback (#6849): a bare call to a `pub func`
             // reachable only TRANSITIVELY through a facade package's own
             // imports — no DIRECT import of the declaring package from
@@ -15955,6 +16027,8 @@ func lowerBuiltinOrStaticCallMsil(
               ""
             } else if qualifiedFqn.length > 0 and cctx.funcTokens.containsKey(qualifiedFqn) {
               qualifiedFqn
+            } else if originFqn.length > 0 {
+              originFqn
             } else if cctx.funcTokens.containsKey(localFqn) {
               localFqn
             } else if importedFqn.length > 0 {
@@ -16345,6 +16419,20 @@ func lowerBuiltinOrStaticCallMsil(
               // (mono not specializing a generic call, cfg-erasure removing
               // a call's only definition, etc.), never something codegen can
               // paper over safely. Fail loudly at compile time instead.
+              if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+                // A monomorphized copy of an imported generic: its body was
+                // written against `originPkg`'s scope, and only that
+                // package's `pub` functions (and those of the packages it
+                // imports) are callable from the calling package's assembly.
+                panic(
+                  "error[T0123] " + toString(path.span.startPos.line) + ":" + toString(path.span.startPos.column) +
+                    ": unresolved call to '" + funcName + "' inside generic function '" + fctx.funcName +
+                    "' (declared in package '" + fctx.originPkg + "', specialised into package '" + fctx.pkgName +
+                    "'). A generic function's body is compiled into each package that calls it, so every function " +
+                    "it calls must be `pub` in '" + fctx.originPkg + "' or in a package '" + fctx.originPkg +
+                    "' imports; make '" + funcName + "' `pub`."
+                )
+              }
               panic(
                 "error[T0123] " + toString(path.span.startPos.line) + ":" + toString(path.span.startPos.column) +
                   ": unresolved call to '" +
@@ -19912,7 +20000,8 @@ func makeFuncCtxMsil(
     generics = newList(),
     varEnumTypes = newMap(),
     enumHint = newList(),
-    declaredRetEnumTy = ""
+    declaredRetEnumTy = "",
+    originPkg = ""
   )
 }
 
@@ -27561,6 +27650,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // whichever same-named enum `resolveEnumCaseOrdinalByScope` prefers by
   // CALLER scope instead of the function's own declared return type.
   fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
+  fctx.originPkg = originPkgOf(decl.annotations)
   val insns: List[MInsn] = newList()
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
@@ -28065,6 +28155,7 @@ pub func lowerImplMethodMsil(
   fctx.slotTicker.add(0)  // slot 0 = this, no name binding
   // #5995: see the matching comment in lowerFuncMsil.
   fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
+  fctx.originPkg = originPkgOf(decl.annotations)
 
   val insns: List[MInsn] = newList()
 
@@ -28232,6 +28323,7 @@ pub func lowerRecordMethodMsil(
   fctx.slotTicker.add(0)  // slot 0 = self ("this"), no name binding — ESelf reads ldarg.0 directly
   // #5995: see the matching comment in lowerFuncMsil.
   fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
+  fctx.originPkg = originPkgOf(decl.annotations)
 
   if generics.count > 0 {
     // Bind `self`'s type to the OPEN self-instantiation (`Box`1<!0>`) rather
@@ -37962,6 +38054,12 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
       continue
     }
     val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
+    // The restored package's own imports, so a monomorphized copy of one of
+    // its generic functions resolves bare callees in the package's scope
+    // (`originScopedFqnMsil`, docs/65 §15 F-4).
+    if not cctx.pkgImports.containsKey(art.packageName) {
+      cctx.pkgImports.add(art.packageName, art.contract.imports)
+    }
     var di = 0
     while di < art.contract.decls.count {
       val decl = art.contract.decls[di]

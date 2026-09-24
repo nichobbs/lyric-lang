@@ -518,7 +518,7 @@ pub func pipeAddGenericFuncs(
         val hasBody = match decl.body { case Some(_) -> true; case None -> false }
         val isIntrinsic = excludeIntrinsics and decl.name == "mapGet" and pkgName == "Std.Collections"
         if not isIntrinsic and pubOk and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
-          dest.add(decl)
+          dest.add(withOriginPkgMono(decl, pkgName))
         }
       }
       case _ -> ()
