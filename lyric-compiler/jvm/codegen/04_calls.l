@@ -2780,13 +2780,29 @@ func orderCtorArgsPadded(fields: in List[JvmCaseField], args: in List[CallArg]):
 // downstream consumer — here, a direct field read — to fall through the
 // erased-Object fallback's bundle-wide `field:<name>` lookup, which can
 // silently collide with an unrelated type's same-named field.
-func narrowStaticCallResult(insns: in List[LInsn], sig: in JvmFuncSig): JvmType {
+func narrowStaticCallResult(ctx: in FuncCtx, insns: in List[LInsn], sig: in JvmFuncSig): JvmType {
   match sig.recordRetClass {
     case Some(cls) -> {
       insns.add(LCheckcast(className = cls))
       JRef(className = cls)
     }
-    case None -> sig.ret
+    case None -> {
+      if sig.recordRetHead.count == 0 {
+        return sig.ret
+      }
+      val cls = if sig.recordRetHead.count == 1 {
+        ctorClassFor(ctx, sig.recordRetHead[0])
+      } else {
+        mapGet(ctx.ctors, joinSegsDotted(sig.recordRetHead))
+      }
+      match cls {
+        case Some(c) -> {
+          insns.add(LCheckcast(className = c))
+          JRef(className = c)
+        }
+        case None -> sig.ret
+      }
+    }
   }
 }
 
@@ -3255,7 +3271,7 @@ func lowerStaticCallWithHolders(
     writeBackHolderArg(ctx, insns, hTempSlot[ri], hElemTy[ri], hBackName[ri], hRecvSlot[ri], hRecvCls[ri])
     ri = ri + 1
   }
-  narrowStaticCallResult(insns, sig)
+  narrowStaticCallResult(ctx, insns, sig)
 }
 
 // True when any declared parameter is a reference array — the erased Lyric
@@ -3658,7 +3674,7 @@ func lowerGeneralStaticCall(
           li = li + 1
         }
         insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
-        return narrowStaticCallResult(insns, sig)
+        return narrowStaticCallResult(ctx, insns, sig)
       }
       var ai = 0
       while ai < callArgs.count {
@@ -3679,7 +3695,7 @@ func lowerGeneralStaticCall(
         ai = ai + 1
       }
       insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
-      return narrowStaticCallResult(insns, sig)
+      return narrowStaticCallResult(ctx, insns, sig)
     }
     case None -> ()
   }

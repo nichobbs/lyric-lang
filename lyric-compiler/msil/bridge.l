@@ -1227,6 +1227,14 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     dti = dti + 1
   }
 
+  // Every package's type names and generic arities, in bundle order, before
+  // any package is tokenised (see `preRegisterPackageTypeNames`).
+  var pri = 0
+  while pri < perPkgFiles.count {
+    preRegisterPackageTypeNames(cctx, perPkgFiles[pri], segmentsToString(perPkgFiles[pri].packageDecl.path.segments))
+    pri = pri + 1
+  }
+
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
   while li < perPkgFiles.count {

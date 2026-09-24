@@ -3044,6 +3044,43 @@ func registerWireStaticMsil(
   }
 }
 
+/// Register `file`'s type names (`typeFqnByName` / `typeFqnCandidates`) and
+/// its generic record/union arities (`genericTypeArity`) ahead of the
+/// per-package `addPackageTokens` pass, exactly as that pass would for the
+/// same items.  A multi-package bundle calls this for every package, in
+/// bundle order, before tokenising any of them: `addPackageTokens` resolves a
+/// function's declared return type as it registers the function, so a
+/// package tokenised BEFORE the package declaring a generic type it returns
+/// (a `lyric test` bundle puts the test package first, #2885) saw an
+/// unregistered head and erased that return to `object` (D-progress-950).
+/// Registering the same names in the same order keeps every first-wins
+/// resolution identical; `addPackageTokens` re-registers them idempotently.
+pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
+      case IExposedRec(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
+      case IUnion(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
+      case IInterface(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
+      case IOpaque(decl) -> if decl.hasBody and hasAnnotationMsil(decl.annotations, "projectable") {
+        registerTypeFqnCandidate(cctx, decl.name + "View", pkgName + "." + decl.name + "View")
+      }
+      case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+func preRegisterGenericTypeName(cctx: in CodegenCtx, name: in String, pkgName: in String, arity: in Int): Unit {
+  val fqn = pkgName + "." + name
+  registerTypeFqnCandidate(cctx, name, fqn)
+  if arity > 0 and not cctx.genericTypeArity.containsKey(fqn) {
+    cctx.genericTypeArity.add(fqn, arity)
+  }
+}
+
 pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
@@ -16425,11 +16462,22 @@ func lowerBuiltinOrStaticCallMsil(
                 // imports) are callable from the calling package's assembly.
                 panic(
                   "error[T0123] " + toString(path.span.startPos.line) + ":" + toString(path.span.startPos.column) +
-                    ": unresolved call to '" + funcName + "' inside generic function '" + fctx.funcName +
-                    "' (declared in package '" + fctx.originPkg + "', specialised into package '" + fctx.pkgName +
+                    ": unresolved call to '" +
+                    funcName +
+                    "' inside generic function '" +
+                    fctx.funcName +
+                    "' (declared in package '" +
+                    fctx.originPkg +
+                    "', specialised into package '" +
+                    fctx.pkgName +
                     "'). A generic function's body is compiled into each package that calls it, so every function " +
-                    "it calls must be `pub` in '" + fctx.originPkg + "' or in a package '" + fctx.originPkg +
-                    "' imports; make '" + funcName + "' `pub`."
+                    "it calls must be `pub` in '" +
+                    fctx.originPkg +
+                    "' or in a package '" +
+                    fctx.originPkg +
+                    "' imports; make '" +
+                    funcName +
+                    "' `pub`."
                 )
               }
               panic(

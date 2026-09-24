@@ -127,6 +127,15 @@ pub record JvmFuncSig {
   // (never consulted) rather than merely unused. No default per the
   // JVM-codegen no-defaulted-field rule (see `isIface`/`retIsSelf` above).
   retIsUnsigned: Bool
+  // The head path of the DECLARED return type when it is a generic
+  // instantiation (`Box[Int]` -> `["Box"]`, `Pkg.Box[Int]` ->
+  // `["Pkg", "Box"]`), set only where `recordRetClass` cannot be decided at
+  // registration: a mono-specialised copy of an IMPORTED generic, whose
+  // record belongs to another package that may not be registered yet.
+  // `narrowStaticCallResult` resolves it at the call site through the
+  // complete `ctx.ctors` registry (`recordParamClassOf`'s lookup). Empty
+  // everywhere else. No default, same rule as the fields above.
+  recordRetHead: List[String]
 }
 
 // One field of a union case class, in declaration order.  A match binding
@@ -1329,6 +1338,19 @@ func closureRetTypeOfTe(
 // per-file pass does not have, and guessing wrong would silently corrupt an
 // otherwise-working cross-package call. `None` is the safe pre-existing
 // erasure-to-`Object` fallback (#3044) for every such case.
+// The head path of a generic-instantiation return type (see
+// `JvmFuncSig.recordRetHead`); empty for any other shape.
+pub func recordRetHeadOf(retOpt: in Option[TypeExpr]): List[String] {
+  match retOpt {
+    case Some(te) -> match te.kind {
+      case TGenericApp(head, _) -> head.segments
+      case TParen(inner) -> recordRetHeadOf(Some(value = inner))
+      case _ -> newList()
+    }
+    case None -> newList()
+  }
+}
+
 pub func recordRetClassOf(
   retOpt: in Option[TypeExpr], owner: in String, localRecordNames: in Map[String, Bool]
 ): Option[String] {
@@ -2310,7 +2332,8 @@ pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFun
                 retIsSelf = false,
                 // A module-val read is `EMember`, never `ECall` — never
                 // consulted by `isUnsignedExpr`'s `ECall` arm.
-                retIsUnsigned = false
+                retIsUnsigned = false,
+                recordRetHead = newList()
               )
             )
           }

@@ -1255,7 +1255,8 @@ func collectDeriveFreeSigs(
             // registered under the qualified key only, so unreachable from a
             // bare single-segment `ECall(EPath, …)` in practice, but cheap
             // and correct to compute here regardless.
-            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false }
+            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
+            recordRetHead = newList()
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1327,7 +1328,8 @@ func collectWovenSigsMatching(
             // …)`), so this one matters — computed from the woven/specialised
             // function's own declared return, which keeps the original
             // function's type (the weaver/mono renaming never changes it).
-            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false }
+            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
+            recordRetHead = newList()
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1467,7 +1469,11 @@ func collectMonoSpecializedSigs(
             // #6754 (finding 1.2a): a bare key IS registered below
             // (specialised copies are called by bare name) — computed from
             // the specialised function's own declared return.
-            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false }
+            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
+            // The specialised copy of an imported generic returns the declaring
+            // package's generic record; the call site resolves its class through
+            // the complete constructor registry (`narrowStaticCallResult`).
+            recordRetHead = recordRetHeadOf(decl.ret)
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {

@@ -1720,3 +1720,64 @@ test "emitProject imported generics: qualified calls, expected types, record cop
   assertEqualInt(result.exitCode, 0, "imported generics JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "a 1 5 7 2", "imported generics JVM: output")
 }
+
+// A field read directly on an imported generic's call result, with the
+// consuming package listed FIRST (the order `lyric test` bundles a test
+// package in, #2885), on both targets (D-progress-950). The consumer's
+// specialised copies used to be tokenised before the library's generic
+// records were registered, so the call result erased to `object`: `.n`
+// failed (T0121/J007), `.count` read the record as a collection, and an
+// unannotated local resolved `n` by bare name against the unrelated
+// same-named `LocalPair.n`.
+func genericResultPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPRes.App",
+      "package EPRes.App\n" + "\n" + "import EPRes.Lib.{tally, pairOf}\n" + "\n" + "record LocalPair[T] {\n" +
+        "  first: T\n" +
+        "  n: Int\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val xs: List[String] = newList()\n" +
+        "  xs.add(\"a\")\n" +
+        "  xs.add(\"b\")\n" +
+        "  val p = pairOf(\"x\")\n" +
+        "  val local = LocalPair(first = \"y\", n = 9)\n" +
+        "  println(tally(xs).count.toString() + \" \" + pairOf(1).n.toString() + \" \" + p.n.toString() + \" \" + local.n.toString())\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPRes.Lib",
+      "package EPRes.Lib\n" + "\n" + "pub record Tally[T] {\n" + "  items: List[T]\n" + "  count: Int\n" + "}\n" + "\n" +
+        "pub record Pair[T] {\n" +
+        "  first: T\n" +
+        "  n: Int\n" +
+        "}\n" +
+        "\n" +
+        "pub func tally[T](xs: in List[T]): Tally[T] {\n" +
+        "  return Tally(items = xs, count = xs.count)\n" +
+        "}\n" +
+        "\n" +
+        "pub func pairOf[T](v: in T): Pair[T] {\n" +
+        "  return Pair(first = v, n = 3)\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject member read on an imported generic call result, consumer first (MSIL)" {
+  val result = runEmitProject("emitproj-genres", genericResultPkgs(), "EPRes")
+  assertEqualInt(result.exitCode, 0, "generic result MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2 3 3 9", "generic result MSIL: output")
+}
+
+test "emitProject member read on an imported generic call result, consumer first (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-genres-jvm", genericResultPkgs(), "EPRes")
+  assertEqualInt(result.exitCode, 0, "generic result JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2 3 3 9", "generic result JVM: output")
+}
