@@ -478,7 +478,7 @@ pub func compileToNativeWithFlags(
           // use `?` just like the user file's, and `Lyric.LlvmCodegen`
           // cannot lower an un-rewritten `EPropagate` node — mirrors
           // `pipeCheckAndMono`'s propagate step for the entry file.
-          val stdProp = lowerPropagateFile(stdElaborated)
+          val stdProp = lowerPropagateFile(stdElaborated, opts.awaitInTryIsHazard)
           if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {
             return false
           }
@@ -849,8 +849,10 @@ pub func compileProjectToNativeWithFlags(
           // `?`-propagation (#6954): see the matching comment in
           // `compileToNativeWithFlags` — bundled Std.* packages need the
           // same desugar pass the own-project packages above already get.
+          // `awaitInTryIsHazard = true`: native, like MSIL, keeps F0045's
+          // guard enabled (#7198; see the `MiddleEndOptions` sites above).
           val stdElaborated = elaborateFile(f)
-          val stdProp = lowerPropagateFile(stdElaborated)
+          val stdProp = lowerPropagateFile(stdElaborated, true)
           if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {
             return false
           }
