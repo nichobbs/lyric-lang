@@ -478,7 +478,10 @@ pub func compileToNativeWithFlags(
           // use `?` just like the user file's, and `Lyric.LlvmCodegen`
           // cannot lower an un-rewritten `EPropagate` node — mirrors
           // `pipeCheckAndMono`'s propagate step for the entry file.
-          val stdProp = lowerPropagateFile(stdElaborated)
+          // #7198: native's async lowering genuinely suspends, so this
+          // direct call needs the same `awaitInTryIsHazard = true` as the
+          // `MiddleEndOptions` construction above (see #7198).
+          val stdProp = lowerPropagateFile(stdElaborated, true)
           if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {
             return false
           }
@@ -850,7 +853,10 @@ pub func compileProjectToNativeWithFlags(
           // `compileToNativeWithFlags` — bundled Std.* packages need the
           // same desugar pass the own-project packages above already get.
           val stdElaborated = elaborateFile(f)
-          val stdProp = lowerPropagateFile(stdElaborated)
+          // #7198: same `awaitInTryIsHazard = true` as the other direct
+          // call site above and the `MiddleEndOptions` constructions in
+          // this file (native's async lowering genuinely suspends).
+          val stdProp = lowerPropagateFile(stdElaborated, true)
           if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {
             return false
           }
