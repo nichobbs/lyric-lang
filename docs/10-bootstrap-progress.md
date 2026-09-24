@@ -35187,7 +35187,7 @@ by itself (D-progress-954, D-progress-951).
 ## Compiler middle-end: mono.l ERange/EForall/EExists/EOld leaf gap, extern-type type arguments, and propagate ?-hoist cross-package threading (#6968, #6891, #6967)
 
 `Lyric.Mono`'s call-site monomorphizer (`mono.l`'s `rewriteExpr`) had the
-same `ERange`/`EForall`/`EExists` leaf gap D-progress-887 fixed for the
+same `ERange`/`EForall`/`EExists` leaf gap D-progress-904 fixed for the
 weaver's own `rewriteExpr` — a generic call site inside a range bound or a
 `forall(...)`/`exists(...)` binder's `where`/body never got rewritten to
 its specialised name. Fixed with the identical pattern (new
@@ -35212,4 +35212,4 @@ A fourth issue in the same batch, #7079, was found to already be fixed
 a stale duplicate rather than re-fixed.
 
 **Related:** `docs/decisions/D-progress-0944-middleend-ast-rewrite-leaf-gaps-and-hoist-threading.md`
-(full account), #6968, #6891, #6967, #7079, D-progress-887, #6774, #6702.
+(full account), #6968, #6891, #6967, #7079, D-progress-904, #6774, #6702.

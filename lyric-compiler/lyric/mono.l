@@ -5484,7 +5484,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     case ETypeApp(fn, targs) -> Expr(kind = ETypeApp(fn = rewriteExpr(state, env, fn), args = targs), span = s)
 
     // #6968: `ERange`/`EForall`/`EExists` were leaves here too, same gap
-    // D-progress-887 fixed for the weaver's own `rewriteExpr` (#6833/#6863)
+    // D-progress-904 fixed for the weaver's own `rewriteExpr` (#6833/#6863)
     // — a generic call site inside a range bound or a `forall(...)`/
     // `exists(...)` binder's `whereExpr`/`body` never got rewritten to its
     // specialised name. `EOld` is included for the same reason the weaver's

@@ -82,7 +82,7 @@ with no `extraRecords` stays at 2 statements, positive control with
 `extraRecords` supplied grows to 3, matching the predicted shape exactly).
 `lyric fmt --write` applied to all changed files.
 
-**Related:** #6968, #6891, #6967, #7079 (closed as duplicate of #7093), D-progress-887
+**Related:** #6968, #6891, #6967, #7079 (closed as duplicate of #7093), D-progress-904
 (the weaver's own `ERange`/`EForall`/`EExists` fix this mirrors, #6833/#6863),
 #6774 (the `unionDecls` precedent #6891's fix mirrors), #6702 (the
 `AwaitHoist` fix #6967's fix mirrors).

@@ -2597,7 +2597,7 @@ test "a nullary union case argument binds a type parameter as a value, not a fun
 
 // ─────────────────────────────────────────────────────────────────────────────
 // #6968: `rewriteExpr`'s call-site walk treated `ERange`/`EForall`/`EExists`
-// as leaves, the same gap D-progress-887 fixed for the weaver's own
+// as leaves, the same gap D-progress-904 fixed for the weaver's own
 // `rewriteExpr` (#6833/#6863) — a generic call site inside a range bound or
 // a `forall(...)`/`exists(...)` binder's `where`/body never got rewritten to
 // its specialised name, leaving a dangling reference to a generic Phase 2
