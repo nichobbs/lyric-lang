@@ -271,9 +271,8 @@ test "slice literal coerces to a slice[T] parameter" {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 8. forall in a @runtime_checked contract compiles and passes (#3227).
-//    EForall/EExists previously panicked the JVM codegen; they now lower to
-//    `true` (sound overapproximation, matching MSIL #1506) with a W0002
-//    warning at compile time.
+//    The contract elaborator drops the conjunct containing the quantifier
+//    (W0002 at compile time, #7228), so it never reaches codegen.
 // ─────────────────────────────────────────────────────────────────────────────
 func quantified(x: in Int): Int
   ensures: forall (j: Int) { j * 0 == 0 }
@@ -281,7 +280,7 @@ func quantified(x: in Int): Int
   x + 1
 }
 
-test "forall in a runtime-checked contract lowers to true instead of panicking" {
+test "forall in a runtime-checked contract is skipped, not evaluated" {
   assertEqualInt(quantified(41), 42, "function with a forall ensures clause runs")
 }
 

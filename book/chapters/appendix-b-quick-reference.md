@@ -1343,6 +1343,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 
 | Code | Severity | Meaning |
 |---|---|---|
+| `W0002` | warning | A `forall`/`exists` in a contract of a runtime-checked package: its domain is a type, so it cannot be evaluated. The top-level `and`-conjunct containing it is skipped at runtime; the clause's other conjuncts are still checked. Put the property in a `@proof_required` package to have it proved. |
 | `W0006` | warning | A `pub` function exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature. Nested types are host implementation details meant to stay behind the `_kernel/` FFI boundary. A kernel file that declares the extern type locally is exempt. Fix: wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`) instead of exposing it directly. Top-level domain extern types are not flagged. |
 
 ### Emitter (E-series)

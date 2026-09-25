@@ -3213,6 +3213,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/mixed_width_unsigned_self_test.l
+      - name: Contract quantifier self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/contract_quantifier_self_test.l
 
       - name: Wait for parallel tests (dotnet-b batch 4 split, #4975)
         wait-all: true
@@ -5439,6 +5444,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/mixed_width_unsigned_self_test.l
+      - name: Contract quantifier self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/contract_quantifier_self_test.l
       # NaN-comparison self-test on JVM (#2772) — pins IEEE 754 §5.11 ordered
       # comparisons for Float/Double: `lowerCmp`/`lowerCmpFail` must select the
       # `fcmpg`/`dcmpg` ("g") variant for `<`/`<=` (NaN -> +1 -> branch not taken

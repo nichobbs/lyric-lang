@@ -801,7 +801,10 @@ func isContractKeyword(k: in Keyword): Bool {
 // mirroring `suppressArrowLambda`'s scoped on/off discipline.
 func parseContractClauseExpr(st: inout ParseState): Expr {
   st.inContractClauseExpr = true
+  val prevQuant = st.quantifierAllowed
+  st.quantifierAllowed = true
   val e = parseExpr(st)
+  st.quantifierAllowed = prevQuant
   st.inContractClauseExpr = false
   e
 }

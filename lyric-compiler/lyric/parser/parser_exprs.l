@@ -299,7 +299,10 @@ pub func parseInvariantClause(st: inout ParseState): InvariantClause {
       emitErr(st, "P0095", "expected ':' after 'invariant'", peekSpan(st))
     }
   }
+  val prevQuant = st.quantifierAllowed
+  st.quantifierAllowed = true
   val expr = parseExpr(st)
+  st.quantifierAllowed = prevQuant
   InvariantClause(expr = expr, span = joinSpans(startTok.span, expr.span))
 }
 
@@ -1800,6 +1803,15 @@ func parseQuantifierBinder(st: inout ParseState): PropertyBinder {
 
 func parseQuantifierExpr(st: inout ParseState, isForall: in Bool): Expr {
   val startTok = advance(st)  // 'forall' or 'exists'
+  if not st.quantifierAllowed {
+    emitErr(
+      st,
+      "P0344",
+      "`" + (if isForall { "forall" } else { "exists" }) +
+        "` may only appear in a contract clause (requires:, ensures:, invariant:); it cannot be evaluated as an ordinary expression",
+      startTok.span
+    )
+  }
   match tryEatPunct(st, LParen) {
     case Some(_) -> {
     }
