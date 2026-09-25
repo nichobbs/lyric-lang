@@ -4687,3 +4687,27 @@ test "overloaded function value is T0123, bare and qualified" {
     "qualified overloaded function value: T0123"
   )
 }
+
+// The forwarding lambda names a parameter type by its bare name only when
+// that name denotes the same type at the use site (#7371). An extern type
+// (codegen resolves it by bare name) whose name the consumer reuses has no
+// faithful spelling: T0128. Without the clash the bare name is used.
+test "a function value over an extern type whose name the use site reuses is T0128" {
+  val host = parse("package Std.UuidHost\nextern type Uuid = \"System.Guid\"\n")
+  val lib = parse("package Lib\nimport Std.UuidHost\npub func show(u: in Uuid): String { \"\" }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Std.UuidHost", items = host.file.items, imports = collectImportNames(host.file.imports))
+  )
+  packages.add(ImportedPackage(name = "Lib", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  val clash = "package App\nimport Lib\nrecord Uuid {\n  n: Int\n}\nfunc g(): Unit {\n  val f = Lib.show\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(clash).file), packages), "T0128"),
+    "extern parameter type shadowed at the use site: T0128"
+  )
+  val plain = "package App\nimport Lib\nfunc g(): Unit {\n  val f = Lib.show\n}\n"
+  assertTrue(
+    not hasDiagCode(checkWithImportedPackages(rewriteFile(parse(plain).file), packages), "T0128"),
+    "no clash: the bare extern name is used"
+  )
+}

@@ -31,7 +31,12 @@ be a same-named function from a package that is not even imported
   T0123, bare or qualified, since a value cannot pick an overload. A
   function the forwarding lambda cannot stand for (generic, `async`, a
   non-`in` parameter, or a parameter type not nameable at the use site) is
-  T0128 rather than a bare path left for the backend.
+  T0128 rather than a bare path left for the backend. The lambda's parameter
+  and result types use a type's bare name only when that name denotes the
+  same type at the use site; otherwise they are qualified by the type's
+  package. An extern type (codegen resolves it by its bare name) or a type
+  with no package cannot be qualified, so when its bare name means something
+  else at the use site the function is unrepresentable (T0128) (#7371).
 - **Lowering.** The type checker records each reference to another
   package's function that is not a call callee (`FuncRefSite`: the
   function's package path and name, and its parameter types rendered as

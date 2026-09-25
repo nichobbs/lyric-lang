@@ -1187,6 +1187,58 @@ func widerNumericTEMono(prev: in TypeExpr, cand: in TypeExpr): Bool {
   false
 }
 
+// Unify one call argument with its parameter, merging the bindings into
+// `subst` by the checker's rule (`inferOneGenericArg`, D-progress-968): a
+// later binding of a type parameter replaces an earlier one only when it is
+// the wider numeric type and every earlier binding came from a bare `T`
+// parameter. `bareBound` records, per bound name, whether its binding is
+// still bare-only.
+func unifyArgMono(
+  typeParams: in List[String],
+  paramTE: in TypeExpr,
+  argTE: in TypeExpr,
+  subst: in Map[String, TypeExpr],
+  bareBound: in Map[String, Bool],
+): Unit {
+  val fresh: Map[String, TypeExpr] = newMap()
+  unifyTE(typeParams, paramTE, argTE, fresh)
+  val bareName = match paramTE.kind {
+    case TRef(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+    case _ -> ""
+  }
+  for name in mapKeys(fresh) {
+    match mapGet(fresh, name) {
+      case Some(te) -> {
+        val bare = name == bareName
+        match mapGet(subst, name) {
+          case None -> {
+            subst.add(name, te)
+            if bareBound.containsKey(name) {
+              bareBound.remove(name)
+            }
+            bareBound.add(name, bare)
+          }
+          case Some(prev) -> {
+            val prevBare = match mapGet(bareBound, name) { case Some(b) -> b; case None -> false }
+            if widerNumericTEMono(prev, te) and prevBare {
+              subst.remove(name)
+              subst.add(name, te)
+              bareBound.remove(name)
+              bareBound.add(name, bare)
+            } else if not widerNumericTEMono(te, prev) and not widerNumericTEMono(prev, te) {
+              if bareBound.containsKey(name) {
+                bareBound.remove(name)
+              }
+              bareBound.add(name, prevBare and bare)
+            }
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+}
+
 func unifyTE(
   typeParams: in List[String], paramTE: in TypeExpr, argTE: in TypeExpr, subst: in Map[String, TypeExpr]
 ): Unit {
@@ -1197,14 +1249,6 @@ func unifyTE(
         if listContainsStr(typeParams, name) {
           if not subst.containsKey(name) {
             subst.add(name, argTE)
-          } else {
-            // Two numeric bindings of one type parameter: the checker binds
-            // the wider (or rejects the call), whichever parameter came first
-            // (D-progress-968), so the specialisation does too.
-            match mapGet(subst, name) {
-              case Some(prev) -> if widerNumericTEMono(prev, argTE) { subst.remove(name); subst.add(name, argTE) }
-              case None -> ()
-            }
           }
         }
       }
@@ -2165,6 +2209,7 @@ func substMethodRetTE(
     case None -> None
     case Some(r) -> {
       val subst: Map[String, TypeExpr] = newMap()
+      val bareBound: Map[String, Bool] = newMap()
       val valueSubst: Map[String, Expr] = newMap()
       // Bind the declaring type's params to the receiver's concrete args.
       if typeParams.count == recvArgs.count {
@@ -2183,7 +2228,7 @@ func substMethodRetTE(
         var ai = 0
         while ai < args.count and ai < params.count {
           match inferExprTE(state, env, callArgExpr(args[ai])) {
-            case Some(argTE) -> unifyTE(methodParams, params[ai].ty, argTE, subst)
+            case Some(argTE) -> unifyArgMono(methodParams, params[ai].ty, argTE, subst, bareBound)
             case None -> ()
           }
           ai = ai + 1
@@ -2856,6 +2901,7 @@ func inferReturnFromName(
     } else {
       val typeParams = extractTypeParamNames(decl.generics)
       val subst: Map[String, TypeExpr] = newMap()
+      val bareBound: Map[String, Bool] = newMap()
       val valueSubst: Map[String, Expr] = newMap()
       // Tracks, per processed argument index, whether that argument gave
       // inference NO evidence at all (`lambdaShapeOfArg`/`ctorSynthOfArg`
@@ -2916,7 +2962,7 @@ func inferReturnFromName(
                   } else {
                     match inferExprTE(state, env, callArgExpr(args[i])) {
                       case Some(argTE) -> {
-                        unifyTE(typeParams, decl.params[i].ty, argTE, subst)
+                        unifyArgMono(typeParams, decl.params[i].ty, argTE, subst, bareBound)
                         evidenced = true
                       }
                       case None -> ()
@@ -5290,6 +5336,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                     // Pure type-generic call site: existing inference path
                     // (value generics require explicit `f[N]` type apps).
                     val subst: Map[String, TypeExpr] = newMap()
+                    val bareBound: Map[String, Bool] = newMap()
                     // Tracks, per processed argument index, whether that
                     // argument gave inference NO evidence at all — see the
                     // matching comment in `inferReturnFromName` (#5970).
@@ -5326,7 +5373,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                           } else {
                             match inferExprTE(state, env, callArgExpr(args[i])) {
                               case Some(argTE) -> {
-                                unifyTE(typeParams, baseDecl.params[i].ty, argTE, subst)
+                                unifyArgMono(typeParams, baseDecl.params[i].ty, argTE, subst, bareBound)
                                 evidenced = true
                               }
                               case None -> ()
@@ -5489,10 +5536,11 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
                 // for a qualified call too.
                 if qTypeParams.count > 0 and qValueParams.count == 0 and args.count <= qBaseDecl.params.count and genDeclResolvesForCallSite(state, env, qfname, args, qBaseDecl) {
                   val qSubst: Map[String, TypeExpr] = newMap()
+                  val qBareBound: Map[String, Bool] = newMap()
                   var qi = 0
                   while qi < args.count and qi < qBaseDecl.params.count {
                     match inferExprTE(state, env, callArgExpr(args[qi])) {
-                      case Some(qArgTE) -> unifyTE(qTypeParams, qBaseDecl.params[qi].ty, qArgTE, qSubst)
+                      case Some(qArgTE) -> unifyArgMono(qTypeParams, qBaseDecl.params[qi].ty, qArgTE, qSubst, qBareBound)
                       case None -> ()
                     }
                     qi = qi + 1

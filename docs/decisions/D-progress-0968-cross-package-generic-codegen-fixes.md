@@ -78,10 +78,12 @@ independent:
    callee names the specialisation actually chosen (#5604's rationale: the
    value's instantiation is decided by the callee's specialisation).
 
-`Lyric.Mono`'s call-site unifier (`unifyTE`) applies the same rule: when a
-type parameter is bound twice to primitive types of one numeric widening
-family, the wider binding wins whichever parameter comes first, so the
-specialisation matches the checker's type (#7366).
+`Lyric.Mono` applies the same rule at call sites (`unifyArgMono`): each
+argument's bindings are computed separately and merged, and a later binding
+of a type parameter replaces an earlier one only when it is the wider type of
+the same numeric widening family and every earlier binding came from a bare
+`T` parameter, whichever parameter comes first. Two container-pinned bindings
+keep the first, as the checker would reject them (#7366, #7370).
 
 ## Verification
 

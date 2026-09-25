@@ -2632,7 +2632,22 @@ func typeExprForRef(tbl: in SymbolTable, t: in Type, sp: in Span): Option[TypeEx
       case Some(sym) -> {
         val segs: List[String] = newList()
         val origin = sym.originPackage
-        if origin.length > 0 and not origin.startsWith("Std.") and origin != symTableScopePkg(tbl) {
+        // The bare name is used only when it denotes this same type at the use
+        // site; otherwise the type is qualified by its package. An extern type
+        // (resolved by its bare name in codegen) or a type with no package has
+        // no other spelling, so it has none here (#7371).
+        val bareOk = match symTableTryFindOne(tbl, sym.name) {
+          case Some(found) -> match symbolTypeIdOpt(found) {
+            case Some(fid) -> typeIdEq(fid, tid)
+            case None -> false
+          }
+          case None -> false
+        }
+        val isExtern = match sym.kind { case DKExternType(_, _) -> true; case _ -> false }
+        if not bareOk and (origin.length == 0 or isExtern) {
+          return None
+        }
+        if not bareOk and origin != symTableScopePkg(tbl) {
           val pkgSegs = dottedSegsTc(origin)
           var k = 0
           while k < pkgSegs.count {
