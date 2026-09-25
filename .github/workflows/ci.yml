@@ -4517,6 +4517,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/file_tests.l
 
+      # Std.Path.joinWithin confinement and the shared Std.ProcessArgs argv
+      # encoder/decoder (#7246, #7234).
+      - name: Std.Path / Std.ProcessArgs test coverage on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/path_tests.l
+          bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/process_args_tests.l
+
       # Real HTTP round-trip proving HttpVersion.negotiatedVersion() against
       # a live plaintext Std.HttpServer listener on JVM (docs/61 §5.1, D128
       # decision 4; #5879), in-process via scope/spawn (genuinely concurrent
@@ -6844,6 +6854,14 @@ jobs:
       - name: Std.File test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/file_tests.l
+
+      # Std.Path.joinWithin confinement and the shared Std.ProcessArgs argv
+      # encoder/decoder (#7246, #7234).
+      - name: Std.Path / Std.ProcessArgs test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/path_tests.l
+          bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/process_args_tests.l
 
       - name: Std.Directory test coverage (native lyric test)
         working-directory: ${{ github.workspace }}

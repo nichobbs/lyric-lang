@@ -1307,6 +1307,8 @@ A `Bug` raised in:
 - An `async` task: propagates to the task's awaiter; if not awaited, the runtime logs and surfaces it via the structured scope.
 - A protected entry: aborts the current entry call without committing state changes. The protected type's invariant is verified to still hold (if not, the program terminates — invariant violation in a protected type is unrecoverable).
 
+A caught `Bug` exposes `b.message` and `b.typeName`, both `String`s and never null. When the host exception carries no message (many JDK exceptions, e.g. `java.net.ConnectException`, have a null `getMessage()`), `--target jvm` falls back to the exception's `toString()`, the analogue of .NET's never-null `Exception.Message`.
+
 `try`/`catch` exists for catching `Bug`s when absolutely needed (top-level handlers, test runners, robustness boundaries). Catching `Bug`s in normal application code is a smell; the compiler emits a warning.
 
 In value position, `try { ... } catch ... { ... }` is an expression: every
