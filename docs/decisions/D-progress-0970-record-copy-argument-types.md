@@ -1,4 +1,4 @@
-# D-progress-970 — A record `.copy` argument is built at its field's type
+# D-progress-970 — A record `.copy` argument is built at its field's type (#7373)
 
 **Status:** shipped
 

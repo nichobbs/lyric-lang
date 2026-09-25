@@ -35689,7 +35689,7 @@ awaiter TypeSpecs over in-bundle types are re-encoded once TypeDef rows are
 known; and an annotated local in a specialised generic keeps its annotation
 when the initializer's original generic call infers less.
 
-## UI library: `lyric-forms`, `lyric-ui` and the `ui-customers` example
+## UI library: `lyric-forms`, `lyric-ui` and the `ui-customers` example (#7373)
 
 The first slice of the UI library (docs/65, D137) ships Phases U1 and U2 on
 MSIL. `lyric-forms` (`Forms.*`) holds field errors, form schemas and parsers
