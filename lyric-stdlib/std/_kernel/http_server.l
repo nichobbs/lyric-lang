@@ -1192,7 +1192,7 @@ func sendH2Response(state: in H2ConnState, exchange: in H2Exchange, work: in Lis
   val streamId = exchange.streamId
   val headers: List[HeaderField] = newList()
   headers.add(HeaderField(name = ":status", value = toString(exchange.status)))
-  if exchange.contentType.length > 0 and responseHeaderSafe(exchange.contentType) {
+  if exchange.contentType.length > 0 and H2.isH2ResponseFieldSafe("content-type", exchange.contentType) {
     headers.add(HeaderField(name = "content-type", value = exchange.contentType))
   }
   headers.add(HeaderField(name = "content-length", value = toString(exchange.bodyLength)))
@@ -1234,10 +1234,13 @@ func appendH2ExtraHeaders(headers: in List[HeaderField], extra: in Map[String, S
   while i < names.length {
     val name = names[i]
     val lower = asciiLower(name)
-    if lower.length > 0 and not isH2SkippedResponseHeader(lower) and responseHeaderSafe(lower) {
+    if lower.length > 0 and not isH2SkippedResponseHeader(lower) {
       match mapGet(extra, name) {
         case Some(value) -> {
-          if responseHeaderSafe(value) {
+          // Drop, rather than send, any field `encodeResponseHeaders`'
+          // precondition would refuse (#7251): a hostile reflected header must
+          // not take the connection down.
+          if responseHeaderSafe(value) and H2.isH2ResponseFieldSafe(lower, value) {
             headers.add(HeaderField(name = lower, value = value))
           }
         }
@@ -1761,11 +1764,12 @@ func responseHeaderSafe(s: in String): Bool {
   true
 }
 
-// Keep only response-safe header fields (see `responseHeaderSafe`). Filtering
-// rather than panicking keeps one hostile reflected header value from crashing
-// the request loop.
+// Keep only response-safe header fields: a token name (`isFieldNameToken`) and
+// a `responseHeaderSafe` value, exactly what `serializeResponseHead` requires.
+// Filtering rather than panicking keeps one hostile reflected header from
+// crashing the request loop.
 func appendSafeHeader(headers: in List[HeaderField], name: in String, value: in String): Unit {
-  if name.length > 0 and responseHeaderSafe(name) and responseHeaderSafe(value) {
+  if isFieldNameToken(name) and responseHeaderSafe(value) {
     headers.add(HeaderField(name = name, value = value))
   }
 }
@@ -1804,6 +1808,17 @@ func signalDone(c: in HttpContext): Unit {
   val _ = semRelease(c.done)
 }
 
+// A response status must be a three-digit code. Checked here, on the handler's
+// thread and before either protocol path, so misuse panics where it happened:
+// on HTTP/2 the status is only serialized later, on the connection task, where
+// a failed `encodeResponseHeaders` precondition would take down every stream
+// on the connection (#7251).
+func checkResponseStatus(status: in Int): Unit {
+  if status < 100 or status > 999 {
+    panic("HTTP response status must be a three-digit code (100..999), got " + toString(status))
+  }
+}
+
 func respondBytesWith(
   c: in HttpContext,
   status: in Int,
@@ -1811,6 +1826,7 @@ func respondBytesWith(
   body: in slice[Byte],
   extra: in Map[String, String],
 ): Unit {
+  checkResponseStatus(status)
   match c.h2 {
     case Some(exchange) -> {
       // HTTP/2: deliver the response into the stream's mailbox and hand off to
@@ -1879,6 +1895,7 @@ pub func respondBytesWithHeaders(
 pub func beginChunkedResponse(
   c: in HttpContext, status: in Int, contentType: in String, headers: in Map[String, String]
 ): HttpChunkedStream {
+  checkResponseStatus(status)
   match c.h2 {
     case Some(exchange) -> {
       // HTTP/2 has no chunked transfer-encoding; the response is a HEADERS

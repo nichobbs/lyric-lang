@@ -1707,10 +1707,14 @@ func allHeadersResponseSafe(headers: in List[HeaderField]): Bool {
   true
 }
 
-// A non-empty RFC 9110 field-name: `tchar`s only.  A name with `:` or a
-// space would forge a different header (`Location: http://evil` as a name
-// serializes as a `Location` header), so CR/LF/NUL-freedom is not enough.
-func isFieldNameToken(name: in String): Bool {
+/// A non-empty RFC 9110 field-name: `tchar`s only.  A name with `:` or a
+/// space would forge a different header (`Location: http://evil` as a name
+/// serializes as a `Location` header), so CR/LF/NUL-freedom is not enough.
+/// `serializeResponseHead` requires it of every header name; filter
+/// untrusted names through it first.
+@pure
+@experimental
+pub func isFieldNameToken(name: in String): Bool {
   val bytes = encodeUtf8(name)
   if bytes.length == 0 {
     return false
