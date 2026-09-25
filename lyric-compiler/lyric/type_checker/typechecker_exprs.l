@@ -2584,19 +2584,6 @@ func refTypePath(segs: in List[String], sp: in Span): ModulePath {
   ModulePath(segments = segs, span = sp)
 }
 
-// The declaring symbol of the user type `tid`.
-func typeSymbolOfTid(tbl: in SymbolTable, tid: in TypeId): Option[Symbol] {
-  var i = 0
-  while i < tbl.symbols.count {
-    match symbolTypeIdOpt(tbl.symbols[i]) {
-      case Some(sid) -> if typeIdEq(sid, tid) { return Some(value = tbl.symbols[i]) }
-      case None -> ()
-    }
-    i = i + 1
-  }
-  None
-}
-
 // `t` spelled as source for the synthesized lambda's parameter annotation.  A
 // user type from another non-stdlib package is qualified by that package, so
 // the annotation names the same type in the calling package; `None` for a
@@ -2641,7 +2628,7 @@ func typeExprForRef(tbl: in SymbolTable, t: in Type, sp: in Span): Option[TypeEx
         case None -> None
       }
     }
-    case TyUser(tid, nm, args) -> match typeSymbolOfTid(tbl, tid) {
+    case TyUser(tid, nm, args) -> match symTableTypeSymbolOf(tbl, tid) {
       case Some(sym) -> {
         val segs: List[String] = newList()
         val origin = sym.originPackage
@@ -5454,13 +5441,12 @@ func recordCallResultType(tbl: in SymbolTable, fn: in Expr, t: in Type, sp: in S
   if not qualified {
     return
   }
+  val key = recordCopySiteKey(sp)
+  if tbl.callResultTypes.containsKey(key) {
+    return
+  }
   match typeExprForRef(tbl, t, sp) {
-    case Some(te) -> {
-      val key = recordCopySiteKey(sp)
-      if not tbl.callResultTypes.containsKey(key) {
-        tbl.callResultTypes.add(key, te)
-      }
-    }
+    case Some(te) -> tbl.callResultTypes.add(key, te)
     case None -> ()
   }
 }

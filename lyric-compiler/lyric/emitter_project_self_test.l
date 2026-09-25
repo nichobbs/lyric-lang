@@ -2168,6 +2168,10 @@ func emitProjectFails(label: in String, pkgs: in List[Emitter.ProjectPackage], a
   failed
 }
 
+// End to end, the project build is refused. `emitProject` reports only the
+// B0001 wrapper (the type checker's diagnostics go to stderr), so the T0123
+// code itself is asserted by typechecker_self_test.l's "overloaded function
+// value" case.
 test "emitProject refuses an overloaded function as a value (T0123)" {
   assertTrue(
     emitProjectFails("emitproj-fnval-ovl-bare", overloadedValuePkgs(true), "EPOl"),

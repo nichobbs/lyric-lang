@@ -4663,3 +4663,27 @@ test "a function value naming an unrepresentable cross-package function is T0128
     "mismatched annotation on a qualified function value is reported"
   )
 }
+
+// A function value naming an overloaded package function cannot pick an
+// overload: T0123, bare and qualified (D-progress-962). The declaration order
+// puts the two-parameter overload first so a silent pick of either overload
+// would not type-check the annotation by accident.
+test "overloaded function value is T0123, bare and qualified" {
+  val other = parse(
+    "package Ovl.Other\npub func pad(s: in String, n: in Int): String { s }\npub func pad(s: in String): String { s }\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Ovl.Other", items = other.file.items, imports = collectImportNames(other.file.imports))
+  )
+  val bareSrc = "package Ovl.App\nimport Ovl.Other.{pad}\nfunc g(): Unit {\n  val f: (String) -> String = pad\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(bareSrc).file), packages), "T0123"),
+    "bare overloaded function value: T0123"
+  )
+  val qualSrc = "package Ovl.App\nimport Ovl.Other\nfunc g(): Unit {\n  val f: (String) -> String = Other.pad\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(qualSrc).file), packages), "T0123"),
+    "qualified overloaded function value: T0123"
+  )
+}
