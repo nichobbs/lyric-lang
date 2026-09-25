@@ -1,4 +1,4 @@
-# D-progress-972 — Inline range refinements are checked at runtime
+# D-progress-980 — Inline range refinements are checked at runtime
 
 **Status:** shipped
 
@@ -30,7 +30,7 @@ above.
 - **Messages.** A failure reads
   `RangeViolated: <owner> <parameter x | result | x> must be in <type>`.
   NaN satisfies no range, since the comparisons are the IEEE ordered ones
-  fixed in D-progress-963.
+  fixed in D-progress-972.
 
 `elaborateFunctionBody` now takes the function's parameters and return type.
 Functions and protected entries with a refinement no longer take the
