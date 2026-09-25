@@ -1,4 +1,4 @@
-# D-progress-962 — Another package's function used as a value (#7250)
+# D-progress-963 — Another package's function used as a value (#7250)
 
 **Status:** shipped
 

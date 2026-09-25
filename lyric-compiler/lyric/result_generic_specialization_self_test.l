@@ -56,7 +56,7 @@ test "isOk with nested generic Result[List[String], StorageError]" {
 
 // A generic whose `T` is bound by a `Result[Long, E]` argument and by an
 // `Int` literal at a bare `T` parameter specialises at `Long`, the wider
-// type, and the literal is widened (D-progress-968). Before, the conflict
+// type, and the literal is widened (D-progress-969). Before, the conflict
 // typed the call as an error and the specialisation took the literal's `Int`.
 func pickOr[T](r: in Result[T, String], fallback: in T): T {
   match r {
@@ -73,7 +73,7 @@ func bigLong(ok: in Bool): Result[Long, String] {
   }
 }
 
-test "a widening literal specialises a generic at the wider type (D-progress-968)" {
+test "a widening literal specialises a generic at the wider type (D-progress-969)" {
   val big: Long = pickOr(bigLong(true), 0)
   assertTrue(big == 5000000000i64, "the Ok payload above Int.MAX survives as a Long")
   val fallback: Long = pickOr(bigLong(false), 7)

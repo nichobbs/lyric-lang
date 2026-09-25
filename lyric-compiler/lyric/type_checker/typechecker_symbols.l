@@ -257,7 +257,7 @@ pub record SymbolTable {
   argConversionSites: Map[String, ArgConversionSite]
   /// Result types of qualified and method calls, keyed like
   /// `recordCopySites`: evidence for `Lyric.Mono`, which cannot see the
-  /// signatures of other packages' non-generic functions (D-progress-968).
+  /// signatures of other packages' non-generic functions (D-progress-969).
   callResultTypes: Map[String, TypeExpr]
   /// The first symbol declaring each type id, keyed by the id, filled lazily
   /// by `symTableTypeSymbolOf` as symbols are appended.

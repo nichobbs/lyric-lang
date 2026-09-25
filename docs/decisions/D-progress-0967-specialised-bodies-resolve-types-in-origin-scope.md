@@ -1,4 +1,4 @@
-# D-progress-966 — A specialised generic resolves its type names in its own package (#7250)
+# D-progress-967 — A specialised generic resolves its type names in its own package (#7250)
 
 **Status:** shipped
 

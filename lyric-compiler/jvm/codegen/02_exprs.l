@@ -3232,7 +3232,7 @@ func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmT
   match ty {
     case JRef(c) -> {
       // A distinct or range-subtype value renders as its underlying value,
-      // not its wrapper class's identity (D-progress-967).
+      // not its wrapper class's identity (D-progress-968).
       match mapGet(ctx.funcSigs, c + "#$value") {
         case Some(vsig) -> {
           insns.add(LInvokevirtual(owner = c, name = "$value", params = newList(), ret = vsig.ret))

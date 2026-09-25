@@ -259,17 +259,17 @@ record MonoState {
   copySites: Map[String, RecordCopySite]
   /// Cross-package function values from the type checker, keyed like
   /// `copySites`; `rewriteExpr` replaces each with its forwarding lambda
-  /// (D-progress-962).
+  /// (D-progress-963).
   funcRefSites: Map[String, FuncRefSite]
   /// Widened function-value call arguments from the type checker; each is
-  /// rewritten to `arg.<method>()` once (D-progress-963).
+  /// rewritten to `arg.<method>()` once (D-progress-964).
   argConversionSites: Map[String, ArgConversionSite]
   /// The function type of each lambda that stands for another package's
-  /// function (D-progress-962), keyed by `recordCopySiteKey` of the lambda's
+  /// function (D-progress-963), keyed by `recordCopySiteKey` of the lambda's
   /// span, so a generic call or record taking one infers from it.
   lambdaTypes: Map[String, TypeExpr]
   /// The checked result type of each qualified or method call
-  /// (D-progress-968), keyed by `recordCopySiteKey` of the call's span: the
+  /// (D-progress-969), keyed by `recordCopySiteKey` of the call's span: the
   /// fallback when `inferCallReturnTE` cannot see the callee's signature
   /// (another package's non-generic function).
   callResultTypes: Map[String, TypeExpr]
@@ -1188,7 +1188,7 @@ func widerNumericTEMono(prev: in TypeExpr, cand: in TypeExpr): Bool {
 }
 
 // Unify one call argument with its parameter, merging the bindings into
-// `subst` by the checker's rule (`inferOneGenericArg`, D-progress-968): a
+// `subst` by the checker's rule (`inferOneGenericArg`, D-progress-969): a
 // later binding of a type parameter replaces an earlier one only when it is
 // the wider numeric type and every earlier binding came from a bare `T`
 // parameter. `bareBound` records, per bound name, whether its binding is
@@ -1824,7 +1824,7 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       }
     }
     // A lambda standing for another package's function carries the type the
-    // checker resolved for it (D-progress-962).  Only this file's own spans
+    // checker resolved for it (D-progress-963).  Only this file's own spans
     // are keyed; a specialised body from another package never matches.
     case ELambda(_, _) -> if state.lambdaTypes.count > 0 and state.originScope[state.originScope.count - 1] == "" {
       mapGet(state.lambdaTypes, recordCopySiteKey(expr.span))
@@ -2266,7 +2266,7 @@ func inferTypeAppValueTE(
 // A generic record constructed without type arguments from at least one
 // lambda (`Program(update = f)`, a desugared function value) is
 // `Program[A, B]` when unifying each field's declared type with its
-// argument's inferred type binds every type parameter (D-progress-962).
+// argument's inferred type binds every type parameter (D-progress-963).
 // Limited to lambda arguments, the one case codegen cannot type itself: the
 // binding is then annotated with this type (`rewriteBinding`), so mono's
 // specialisations and codegen's construction agree.
@@ -3971,7 +3971,7 @@ func isPrimitiveName(name: in String): Bool {
 }
 
 // `{ __fnref_p0: T0, ... -> Pkg.f(__fnref_p0, ...) }` for a cross-package
-// function value (D-progress-962): a lambda every backend lowers, whose body
+// function value (D-progress-963): a lambda every backend lowers, whose body
 // is an ordinary qualified call.
 func funcRefLambdaMono(site: in FuncRefSite, sp: in Span): Expr {
   val lparams: List[LambdaParam] = newList()
@@ -4005,8 +4005,8 @@ pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, Reco
 }
 
 /// The post-type-check desugars: record `.copy(...)` calls (D-progress-948),
-/// cross-package function values (D-progress-962) and widened function-value
-/// call arguments (D-progress-963), each keyed by the type checker's span key.
+/// cross-package function values (D-progress-963) and widened function-value
+/// call arguments (D-progress-964), each keyed by the type checker's span key.
 pub func desugarCheckedFile(
   file: in SourceFile,
   sites: in Map[String, RecordCopySite],
@@ -6257,7 +6257,7 @@ func genericRecordCtorWithLambdaArgMono(state: in MonoState, init: in Expr): Boo
 // shadowed name silently specialised against the WRONG (inner, not-yet-
 // bound) type.  An annotated binding's `bindingEnvTE` is handed the
 // REWRITTEN `init`, so a specialised generic call in it reports its
-// specialisation's return type rather than the generic one (D-progress-968);
+// specialisation's return type rather than the generic one (D-progress-969);
 // an unannotated binding infers from the original `init` first and falls back
 // to the rewritten one.
 func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding: in LocalBinding): LocalBinding {
@@ -6285,7 +6285,7 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
         // got (`textInput__Msg`), so its type is the value's real
         // instantiation; the original generic call may infer less (a lambda
         // argument's return type is unknown in a foreign body), and must not
-        // override the annotation with `View[Object]` (D-progress-968).
+        // override the annotation with `View[Object]` (D-progress-969).
         case Some(te) -> bindPatternEnvMono(state, env, pat, Some(value = bindingEnvTE(state, env, te, newInit)))
         case None -> {
           val inferred = match inferExprTE(state, env, init) {
@@ -6296,7 +6296,7 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
           // A generic record built from function values (`val p =
           // Program(update = Logic.update)`) takes its type arguments from
           // the binding: codegen cannot recover them from a lambda argument
-          // and would build `Program<object, object>` (D-progress-962).
+          // and would build `Program<object, object>` (D-progress-963).
           match inferred {
             case Some(ite) -> if genericRecordCtorWithLambdaArgMono(state, init) {
               match ite.kind {
@@ -6637,7 +6637,7 @@ pub func monoFileWithImportsAndTypeDecls(
 }
 
 /// `monoFileWithImportsAndTypeDecls`, with the function type of each
-/// desugared function-value lambda in this file (D-progress-962), keyed by
+/// desugared function-value lambda in this file (D-progress-963), keyed by
 /// `recordCopySiteKey` of its span.
 pub func monoFileWithLambdaTypes(
   file: in SourceFile,
@@ -7101,7 +7101,7 @@ pub func monoFileWithLambdaTypes(
       }
       // Protected-type `entry`/`func` bodies specialise their generic calls
       // like any method body, with the protected fields in scope
-      // (`mapValues(rows)` in a `func values()`) (D-progress-964).  A generic
+      // (`mapValues(rows)` in a `func values()`) (D-progress-965).  A generic
       // protected type's members mention its type parameters and are left
       // as they are.
       case IProtected(decl) -> {

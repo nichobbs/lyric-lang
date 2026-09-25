@@ -176,7 +176,7 @@ func shadeName(s: in Shade): String {
 
 // A list literal iterated by a `for` inside a function returning
 // `List[String]` inherited that return type's construction expectation on
-// MSIL and built a `List<string>` of enum values (invalid IL, D-progress-968).
+// MSIL and built a `List<string>` of enum values (invalid IL, D-progress-969).
 func shadeNames(): List[String] {
   val acc: List[String] = newList()
   for s in [Shade.Light, Shade.Dark] {
@@ -185,7 +185,7 @@ func shadeNames(): List[String] {
   return acc
 }
 
-test "a for-loop list literal ignores the enclosing return type (D-progress-968)" {
+test "a for-loop list literal ignores the enclosing return type (D-progress-969)" {
   val names = shadeNames()
   assertEqualInt(names.count, 2, "two names")
   assertEqual(names[0], "light", "first")

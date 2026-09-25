@@ -215,7 +215,7 @@ pub record CodegenCtx {
   unsignedDistincts: Map[String, Bool]
   // Every distinct/range-subtype class the codegen can see, in-bundle and
   // restored: its `value` field is in `fieldTokens`/`fieldMsilTypes`, so a
-  // value of the class stringifies as its underlying value (D-progress-967).
+  // value of the class stringifies as its underlying value (D-progress-968).
   distinctClasses: Map[String, Bool]
   fieldTokens: Map[String, Int]  // "ClassName/fieldName" → FieldDef token
   // #6596: field NAMES (not "ClassName/fieldName" — see
@@ -674,7 +674,7 @@ pub record CodegenCtx {
   /// While the signature or body of a specialised copy of another package's
   /// generic is being lowered, its declaring package (else ""), innermost
   /// last: `resolveTypeFqn` resolves a bare type name in that package's scope
-  /// first, the scope the body was written in (D-progress-966).
+  /// first, the scope the body was written in (D-progress-967).
   typeScopeOrigin: List[String]
   // Generic stdlib union case type-param count. Key = FQN ctor key of the
   // case class (e.g. "Std.Core.Option_Some"). Value = number of type params
@@ -3149,7 +3149,7 @@ func preRegisterGenericTypeName(cctx: in CodegenCtx, name: in String, pkgName: i
 // result takes the erased-value paths that test the runtime type.
 // A function-typed union case field's return type, keyed like its
 // `fieldMsilTypes` entry, so a pattern binding the field records it for the
-// bound name (`bindCaseFieldFuncRetMsil`, D-progress-968).
+// bound name (`bindCaseFieldFuncRetMsil`, D-progress-969).
 func registerCaseFieldFuncRetMsil(
   cctx: in CodegenCtx,
   key: in String,
@@ -3175,7 +3175,7 @@ func registerCaseFieldFuncRetMsil(
 
 // Record the return type of the function-typed case field `key` for `name`,
 // bound by a constructor pattern over `castTy`: a call through `name` then
-// yields that type instead of `object` (D-progress-968).
+// yields that type instead of `object` (D-progress-969).
 func bindCaseFieldFuncRetMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -4598,7 +4598,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     match file.items[j].kind {
       case IFunc(decl) -> {
         // A specialised copy of another package's generic declares its
-        // signature in that package's type scope (D-progress-966).
+        // signature in that package's type scope (D-progress-967).
         enterTypeScopeOriginMsil(cctx, decl, pkgName)
         // FQN-keyed for #1183 Phase 2 — cross-package call sites resolve via
         // `<pkg>.<func>` so multiple packages can co-exist in one cctx without
@@ -8088,7 +8088,7 @@ func distinctUnderlyingMsil(cctx: in CodegenCtx, ty: in MsilType): Option[MsilTy
 // A distinct or range-subtype value about to be stringified: load its
 // `value` field so every stringify site formats it exactly as its underlying
 // type (lowercase `Bool`, invariant `Double`, unsigned `UInt`), and return
-// that type; any other type is returned unchanged (D-progress-967).
+// that type; any other type is returned unchanged (D-progress-968).
 func unwrapDistinctForStringMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): MsilType {
   match distinctUnderlyingMsil(cctx, ty) {
     case Some(under) -> {
@@ -15589,7 +15589,7 @@ func isFuncDelegateHeadMsil(head: in String): Bool {
 
 // A function value held as `object` (an unannotated `val g = { ... }`, or an
 // erased generic's result) flowing into a function-typed parameter or field:
-// narrow it to that `Func` type (D-progress-968).  `Action` targets are left
+// narrow it to that `Func` type (D-progress-969).  `Action` targets are left
 // alone: a Unit-returning lambda is built as a `Func<..., object>` (every
 // invoke casts to `Func`), so the value in an `Action`-typed slot is not an
 // `Action` and a cast would throw.
@@ -33726,7 +33726,7 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
       }
     }
     // A lambda lifted out of a specialised copy of another package's generic
-    // keeps that package's type scope (D-progress-966).
+    // keeps that package's type scope (D-progress-967).
     val itemOrigin = match file.items[i].kind { case IFunc(fd) -> originPkgOf(fd.annotations); case _ -> "" }
     tagLiftedLambdaOriginsMsil(synthOrigins, synths.count, itemOrigin)
     i = i + 1
@@ -37803,7 +37803,7 @@ func registerRestoredRecordCtor(cctx: in CodegenCtx, packageName: in String, rec
 // Register cross-assembly FieldRef MemberRefs for a restored record; sig mirrors lowerMRecord's buildFieldSigWithCtx (concrete reference types, not degraded to OBJECT — mismatch faults with Field not found #2359). fieldMsilTypes carries semantic type for EIndex element-type tracking.
 // A restored distinct/range-subtype type's `value` field, so a consumer
 // stringifies its values by value as it does an in-bundle one's
-// (D-progress-967).
+// (D-progress-968).
 func registerRestoredDistinct(cctx: in CodegenCtx, packageName: in String, decl: in DistinctTypeDecl): Unit {
   val className = packageName + "." + decl.name
   val typeRefRow = lookupRestoredTypeRefRow(cctx, packageName, decl.name)
@@ -37864,7 +37864,7 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
         }
         // A function-typed field registers its parameter and result types, as
         // an in-bundle record's does (#5511), so `r.f(args)` on a restored
-        // record invokes the field (D-progress-965).
+        // record invokes the field (D-progress-966).
         match resolveFuncTypeExprMsil(cctx, f.ty) {
           case Some(funcTe) -> match funcTe.kind {
             case TFunction(fParamTes, fRetTe) -> if not cctx.fieldFuncRetTypes.containsKey(key) {

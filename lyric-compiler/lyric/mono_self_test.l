@@ -2675,7 +2675,7 @@ test "generic call with an explicit extern-type type argument monomorphises (#68
   )
 }
 
-test "a generic call inside a protected member specialises with the protected fields in scope (D-progress-964)" {
+test "a generic call inside a protected member specialises with the protected fields in scope (D-progress-965)" {
   val callerSrc = "package Caller\n" + "protected type Table {\n" + "  var rows: List[Int] = newList()\n" +
     "  func firstRow(): Int {\n" +
     "    return firstLike(rows)\n" +
@@ -2687,7 +2687,7 @@ test "a generic call inside a protected member specialises with the protected fi
 }
 
 // Mono binds a type parameter to the wider numeric type only as the checker
-// does (D-progress-968): when the narrower binding came from a bare `T`
+// does (D-progress-969): when the narrower binding came from a bare `T`
 // parameter, in either parameter order. Two container-pinned bindings keep
 // the first (#7366, #7370).
 test "widened type parameter binding follows the checker's bare-T rule" {

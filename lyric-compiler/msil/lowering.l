@@ -1245,7 +1245,7 @@ pub record LoweringCtx {
   // GENERICINST TypeSpecs registered during codegen, before this bundle's
   // TypeDef rows are known: an in-bundle type argument then encodes as
   // `object`.  `discoverTypeDefRowsInto` re-encodes each once the rows are
-  // known (D-progress-968).
+  // known (D-progress-969).
   deferredTypeSpecs: List[DeferredTypeSpec]
   // MemberRef row cache keyed by the `sigKey` passed to
   // `ctxAddMemberRefForTypeSpec`.  Makes that function idempotent so that
@@ -1686,7 +1686,7 @@ func genericInstBlobWithCtx(
 /// A GENERICINST TypeSpec over `typeDefOrRef`, registered from codegen: its
 /// blob is re-encoded once the bundle's TypeDef rows are known, so an
 /// in-bundle type argument (`Option<Msg>`) is not degraded to `object`
-/// (D-progress-968).
+/// (D-progress-969).
 pub func ctxAddGenericInstTypeSpec(
   ctx: in LoweringCtx,
   sigKey: in String,

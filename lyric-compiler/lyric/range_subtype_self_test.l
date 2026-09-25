@@ -623,8 +623,8 @@ record Priced {
 
 // A range subtype over `Long` built from an `Int` literal widens the argument
 // (`from`/`tryFrom` took an `int32` where `int64` was declared, invalid IL),
-// and renders as its value, not its wrapper type's name (D-progress-967).
-test "a Long range subtype from an Int literal renders as its value (D-progress-967)" {
+// and renders as its value, not its wrapper type's name (D-progress-968).
+test "a Long range subtype from an Int literal renders as its value (D-progress-968)" {
   val c = Cents.from(5000)
   assertEqual(c.toString(), "5000", "toString")
   assertEqual("price: ${c}", "price: 5000", "interpolation")
@@ -640,8 +640,8 @@ test "a Long range subtype from an Int literal renders as its value (D-progress-
 type Quota = UInt range 0u32 ..= 4294967295u32
 
 // A `UInt`-backed range erases to the signed representation on both targets;
-// stringifying it must still use the unsigned formatter (D-progress-967).
-test "a UInt range subtype renders its value unsigned (D-progress-967)" {
+// stringifying it must still use the unsigned formatter (D-progress-968).
+test "a UInt range subtype renders its value unsigned (D-progress-968)" {
   val q = Quota.from(4000000000u32)
   assertEqual(q.toString(), "4000000000", "toString")
   assertEqual("quota: ${q}", "quota: 4000000000", "interpolation")
@@ -654,8 +654,8 @@ type Enabled = Bool
 
 // A `Double`- or `Bool`-backed distinct value stringifies exactly as its
 // underlying type: invariant-culture decimal and lowercase `true`/`false`,
-// not the boxed wrapper's `Object.ToString()` (D-progress-967).
-test "a Double range subtype renders its value like a Double (D-progress-967)" {
+// not the boxed wrapper's `Object.ToString()` (D-progress-968).
+test "a Double range subtype renders its value like a Double (D-progress-968)" {
   val r = Ratio.from(0.5)
   assertEqual(r.toString(), "0.5", "toString")
   assertEqual(toString(r), "0.5", "free toString")
@@ -663,7 +663,7 @@ test "a Double range subtype renders its value like a Double (D-progress-967)" {
   assertEqual("r=" + r.toString(), "r=0.5", "concatenation")
 }
 
-test "a Bool distinct type renders lowercase like a Bool (D-progress-967)" {
+test "a Bool distinct type renders lowercase like a Bool (D-progress-968)" {
   val e = Enabled.from(true)
   assertEqual(e.toString(), "true", "toString")
   assertEqual(toString(e), "true", "free toString")
@@ -674,8 +674,8 @@ test "a Bool distinct type renders lowercase like a Bool (D-progress-967)" {
 
 // `println`/`print` of a distinct value print its underlying value. On the
 // JVM they used to hand the wrapper to `PrintStream.println(String)`, a
-// VerifyError that failed this whole module at class load (D-progress-967).
-test "println and print of range and distinct values run on both targets (D-progress-967)" {
+// VerifyError that failed this whole module at class load (D-progress-968).
+test "println and print of range and distinct values run on both targets (D-progress-968)" {
   println(Cents.from(5000))
   print(Ratio.from(0.5))
   println("")

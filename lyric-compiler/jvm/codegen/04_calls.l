@@ -4309,7 +4309,7 @@ func lowerMethodCall(
     return JRef(className = "java/lang/String")
   }
   // A distinct or range-subtype receiver renders as its underlying value
-  // (D-progress-967); the wrapper class inherits `Object.toString()`.
+  // (D-progress-968); the wrapper class inherits `Object.toString()`.
   if memberName == "toString" and args.count == 0 {
     match recvTy {
       case JRef(dc) -> {
@@ -4871,7 +4871,7 @@ func lowerMethodCall(
 // distinct or range-subtype value is stringified through its underlying value
 // (`coerceToStringForConcat` unwraps `$value`), exactly as interpolation
 // renders it; `PrintStream.println(Object)` would print the wrapper instead
-// (D-progress-967). Any other argument passes through unchanged.
+// (D-progress-968). Any other argument passes through unchanged.
 func normalizeDistinctPrintArg(ctx: in FuncCtx, insns: in List[LInsn], rawTy: in JvmType, isUnsigned: in Bool): JvmType {
   match rawTy {
     case JRef(c) -> match mapGet(ctx.funcSigs, c + "#$value") {

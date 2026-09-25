@@ -395,8 +395,8 @@ test "val-bound closure passed by name preserves Result's type params (jvm, #687
 // A range subtype restored from a dependency names its own wrapper class in
 // a consumer signature (it previously resolved to `<consumerPkg>/Cents`,
 // `NoClassDefFoundError`) and stringifies as its underlying value
-// (jvm, D-progress-967).
-test "a restored range subtype in a consumer signature renders as its value (jvm, D-progress-967)" {
+// (jvm, D-progress-968).
+test "a restored range subtype in a consumer signature renders as its value (jvm, D-progress-968)" {
   val tmpDir = freshTempDir("cprange-restored-jvm")
   val producerSrc = "package CpRangeJvm.Money\n" + "\n" + "pub type Cents = Long range 0 ..= 1000000\n" + "\n" +
     "pub func cents(n: in Long): Cents { Cents.from(n) }\n"

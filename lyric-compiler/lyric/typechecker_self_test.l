@@ -209,7 +209,7 @@ test "int literal adopts context" {
   assertEqualInt(diagCount(parseCheck(branch)), 0, "int-lit: if-branch Long/0 widens to Long")
 }
 
-// D-progress-968: a negated literal adopts the other operand's type like the
+// D-progress-969: a negated literal adopts the other operand's type like the
 // literal itself, and a generic's type parameter takes the wider numeric type
 // when a literal argument widens at a bare `T` parameter.
 test "negated literal and widening generic argument" {
@@ -4567,7 +4567,7 @@ test "generic record constructor infers a type parameter from the binding annota
 
 // A qualified function value whose qualifier matches several packages
 // (`Lib.Bar`, `Other.Bar`) binds the imported one rather than reporting an
-// overload ambiguity (D-progress-962).
+// overload ambiguity (D-progress-963).
 test "qualified function value prefers the imported package among same-suffix packages" {
   val libBar = parse("package Lib.Bar\npub func parse(s: in String): Int { 1 }\n")
   val otherBar = parse("package Other.Bar\npub func parse(s: in String): Int { 2 }\n")
@@ -4597,7 +4597,7 @@ test "qualified function value prefers the imported package among same-suffix pa
 
 // A call through a function value converts only the widenings it has a
 // conversion for; `Byte` to `UInt` has none (#2050), so it is rejected rather
-// than passed boxed as a `Byte` (D-progress-963).
+// than passed boxed as a `Byte` (D-progress-964).
 test "function-value call rejects a Byte argument for a UInt parameter" {
   val bad = "package P\npub func g(f: (UInt) -> UInt, b: in Byte): UInt {\n  f(b)\n}\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0043"), "Byte into a (UInt) -> UInt value is T0043")
@@ -4611,7 +4611,7 @@ test "function-value call rejects a Byte argument for a UInt parameter" {
 
 // A function value can stand only for another package's non-generic,
 // synchronous function whose parameters are all `in`; anything else is T0128
-// instead of reaching the backend as a bare path (D-progress-962).
+// instead of reaching the backend as a bare path (D-progress-963).
 test "a function value naming an unrepresentable cross-package function is T0128" {
   val lib = parse(
     "package Lib\npub func bump(n: inout Int): Unit { n = n + 1 }\npub async func fetch(s: in String): Int { 1 }\npub func ident[T](x: in T): T { x }\npub func plain(s: in String): Int { 2 }\n"
@@ -4665,7 +4665,7 @@ test "a function value naming an unrepresentable cross-package function is T0128
 }
 
 // A function value naming an overloaded package function cannot pick an
-// overload: T0123, bare and qualified (D-progress-962). The declaration order
+// overload: T0123, bare and qualified (D-progress-963). The declaration order
 // puts the two-parameter overload first so a silent pick of either overload
 // would not type-check the annotation by accident.
 test "overloaded function value is T0123, bare and qualified" {

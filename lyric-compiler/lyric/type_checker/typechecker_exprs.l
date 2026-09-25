@@ -724,7 +724,7 @@ func isUnsuffixedIntLit(e: in Expr): Bool {
       case _ -> false
     }
     // A negated literal (`-1`) adopts the other operand's integer type like
-    // the literal itself (D-progress-968).
+    // the literal itself (D-progress-969).
     case EPrefix(op, operand) -> match op { case PreNeg -> isUnsuffixedIntLit(operand); case _ -> false }
     case EParen(inner) -> isUnsuffixedIntLit(inner)
     case _ -> false
@@ -2558,7 +2558,7 @@ func symTablePackageHasMember(tbl: in SymbolTable, pkg: in String, name: in Stri
   tbl.symbolPackageMembers.containsKey(pkg + "|" + name)
 }
 
-// ─── Cross-package function values (D-progress-962) ─────────────────────────
+// ─── Cross-package function values (D-progress-963) ─────────────────────────
 // A reference to another package's function used as a value (`f = Pkg.fn`,
 // or a bare imported `fn`) is recorded as a `FuncRefSite` and rewritten by
 // `Lyric.Mono.desugarRecordCopiesFile` into the typed forwarding lambda
@@ -2699,7 +2699,7 @@ func typeExprsForRef(tbl: in SymbolTable, ts: in List[Type], sp: in Span): Optio
 // `desugarCheckedFile` lowers it to a typed forwarding lambda. A function the
 // lambda cannot stand for (generic, async, a non-`in` parameter, or a type
 // not nameable here) is T0128 and returns false: left as a bare path it would
-// reach the backend with no diagnostic (D-progress-962).
+// reach the backend with no diagnostic (D-progress-963).
 func recordFuncRefSite(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -2758,7 +2758,7 @@ func recordFuncRefSite(
 }
 
 // The conversion method that widens a numeric argument to `paramTy`, when
-// the widening needs one (D-progress-963).
+// the widening needs one (D-progress-964).
 func wideningMethod(paramTy: in Type, argTy: in Type): Option[String] {
   if typeEquiv(paramTy, argTy) {
     return None
@@ -2823,7 +2823,7 @@ func recordArgConversion(tbl: in SymbolTable, arg: in CallArg, paramTy: in Type,
 }
 
 // Record the widened arguments of a direct call to another package's
-// function (D-progress-968). Codegen converts a widened argument only when it
+// function (D-progress-969). Codegen converts a widened argument only when it
 // knows the callee's parameter types; a restored package's signature reaches
 // the MSIL call site but not its argument lowering, so an `Int` literal was
 // passed as `int32` to a `Long` parameter.
@@ -2855,7 +2855,7 @@ func recordSigArgConversions(
 }
 
 /// Every recorded cross-package function value that is not a call callee
-/// (D-progress-962), for `Lyric.Mono.desugarRecordCopiesFile`.
+/// (D-progress-963), for `Lyric.Mono.desugarRecordCopiesFile`.
 pub func funcValueSites(tbl: in SymbolTable): Map[String, FuncRefSite] {
   val valueSites: Map[String, FuncRefSite] = newMap()
   val keys = mapKeys(tbl.funcRefSites)
@@ -3060,7 +3060,7 @@ func resolveExprPath(
           checkImportedVisibility(sym, span, diag)
           // `sigs` keeps the first-registered function of this name from ANY
           // loaded package; the value is the one in scope here, the same one
-          // a call would bind (D-progress-962).
+          // a call would bind (D-progress-963).
           val scopePkg = symTableScopePkg(tbl)
           val inScope = sym.originPackage == scopePkg or symTableScopeAllows(tbl, sym.originPackage)
           val isCallee = tbl.funcRefCallees.containsKey(recordCopySiteKey(span))
@@ -4782,7 +4782,7 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
           haveBinding = true
           boundBare = bare
         } else if not typeEquiv(bound, v) {
-          // Numeric widening (D-progress-968): `collect(r, 0)` with `r:
+          // Numeric widening (D-progress-969): `collect(r, 0)` with `r:
           // Result[Long, E]` binds `T` to `Long`, the `Int` literal widening
           // at its bare `fallback: T` parameter.
           match widenArithmetic(bound, v) {
@@ -5448,7 +5448,7 @@ pub func inferExpr(
 }
 
 // Record a qualified or method call's result type for `Lyric.Mono`
-// (D-progress-968). A bare call's callee is either local (Mono sees its
+// (D-progress-969). A bare call's callee is either local (Mono sees its
 // declaration) or imported generic (Mono specialises it), so only the other
 // callee shapes are recorded.
 func recordCallResultType(tbl: in SymbolTable, fn: in Expr, t: in Type, sp: in Span): Unit {

@@ -1441,7 +1441,7 @@ func collectMonoSpecializedSigs(
       case IFunc(decl) -> {
         if isMonoSpecializedName(decl.name) {
           // A specialisation of another package's generic names its types as
-          // that package does (D-progress-966).
+          // that package does (D-progress-967).
           val fnExternTypes = originScopedExternTypes(decl, dottedPath(file.packageDecl.path), externTypes)
           // Mono specialisations are fully concrete post-monomorphization
           // (no type params of their own remain to erase), but an `out`/
@@ -2222,7 +2222,7 @@ pub func compileProjectToJarBundledWithRestored(
   // classes ride in the JAR as well, so the packages it imports are bundled
   // even when the user never imports them. Without both, a consumer of such
   // a library failed at run time with NoClassDefFoundError: Std/Core/Result
-  // (D-progress-967).
+  // (D-progress-968).
   if dottedPath(userFile.packageDecl.path) != "Std.Core" {
     worklist.add("Std.Core")
   }
