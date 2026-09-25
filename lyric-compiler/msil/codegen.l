@@ -15863,6 +15863,35 @@ func hasQualifiedFuncOverrideMsil(cctx: in CodegenCtx, path: in ModulePath, argc
   }
 }
 
+// The `when:` barrier intrinsics the contract elaborator inserts into
+// protected entries (#7363).  They run inside the entry's Monitor(this)
+// region: `Monitor.Wait(this)` releases the lock until pulsed, and
+// `Monitor.PulseAll(this)` wakes every waiter to re-test its barrier.
+func lowerProtectedIntrinsicMsil(cctx: in CodegenCtx, insns: in List[MInsn], name: in String): MsilType {
+  val arThreading = ctxAddAssemblyRef(cctx.lctx, "System.Threading", 10, 0)
+  val trMonitor = ctxAddTypeRef(cctx.lctx, "System.Threading", "Monitor", arThreading)
+  val ps: List[MsilType] = newList()
+  ps.add(MObject)
+  insns.add(MLdarg(slot = 0))
+  if name == "__lyric_protected_wait" {
+    val tokWait = 0x0A000000 +
+      ctxAddMemberRef(cctx.lctx, trMonitor, "Wait", "monitor_wait", buildStaticMethodSig(ps, MBool))
+    insns.add(MCall(methodToken = tokWait))
+    insns.add(MPop)
+  } else {
+    val tokPulse = 0x0A000000 +
+      ctxAddMemberRef(
+        cctx.lctx,
+        trMonitor,
+        "PulseAll",
+        "monitor_pulseall",
+        buildStaticMethodSig(ps, MVoid)
+      )
+    insns.add(MCall(methodToken = tokPulse))
+  }
+  MVoid
+}
+
 // Lower a builtin or intra-package static call.
 func lowerBuiltinOrStaticCallMsil(
   cctx: in CodegenCtx,
@@ -15873,6 +15902,9 @@ func lowerBuiltinOrStaticCallMsil(
   args: in List[CallArg],
 ): MsilType {
   val hasQualifiedOverride = hasQualifiedFuncOverrideMsil(cctx, path, args.count)
+  if funcName == "__lyric_protected_wait" or funcName == "__lyric_protected_notify" {
+    return lowerProtectedIntrinsicMsil(cctx, insns, funcName)
+  }
   if (not hasQualifiedOverride) and funcName == "println" {
     if args.count > 0 {
       val printlnRaw = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -31280,6 +31312,45 @@ func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
 // a try block, and releases Monitor(this) in the finally handler.
 // Using `this` as the lock object avoids an extra field: every CLR object has a
 // built-in sync-block, and `lock (this)` is the canonical per-instance pattern.
+func lockedProtectedMembers(members: in List[ProtectedMember]): List[ProtectedMember] {
+  val lowered: List[ProtectedMember] = newList()
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case PMFunc(fn) -> {
+        val plain = match fn.generics { case None -> not fn.isAsync; case Some(_) -> false }
+        match fn.body {
+          case Some(b) -> {
+            if plain {
+              lowered.add(
+                PMEntry(
+                  entryDecl = EntryDecl(
+                    docComments = fn.docComments,
+                    annotations = fn.annotations,
+                    visibility = fn.visibility,
+                    name = fn.name,
+                    params = fn.params,
+                    ret = fn.ret,
+                    contracts = fn.contracts,
+                    body = b,
+                    span = fn.span
+                  )
+                )
+              )
+            } else {
+              lowered.add(members[i])
+            }
+          }
+          case None -> lowered.add(members[i])
+        }
+      }
+      case other -> lowered.add(other)
+    }
+    i = i + 1
+  }
+  lowered
+}
+
 func lowerProtectedMsil(
   cctx: in CodegenCtx,
   decl: in ProtectedTypeDecl,
@@ -31311,9 +31382,13 @@ func lowerProtectedMsil(
   // references in entry/func bodies to EMember(ESelf, name).
   val fieldNames = makeProtectedFieldNames(decl)
 
+  // §7.5: a `func` member is exclusive too, so a plain (non-generic,
+  // non-async) func is lowered through the same Monitor-guarded path as an
+  // entry (#7363).  Before this only entries took the lock.
+  val members = lockedProtectedMembers(decl.members)
   var mi = 0
-  while mi < decl.members.count {
-    match decl.members[mi] {
+  while mi < members.count {
+    match members[mi] {
       case PMField(pf) -> {
         match pf {
           case PFVar(name, ty, _, _, _, _) -> {

@@ -239,6 +239,7 @@ deferred to Phase 3 by design.
 | Unsuffixed integer literals range-checked (a literal above `Int` is a `Long`, T0015 for out-of-range bindings, `-2147483648` folded) (#7346); mixed-width arithmetic (`Int op Long`, `UInt op ULong`, `Float op Double`) widened on MSIL, JVM and native (#7350) | **Shipped** | D-progress-969 |
 | Contract quantifiers skipped soundly at runtime (the conjunct containing a `forall`/`exists` is dropped with a located W0002; `not exists` no longer fails every call), and a quantifier outside a contract is P0344 (#7228) | **Shipped** | D-progress-970 |
 | Inline range refinements (`Int range 0 ..= 9` on parameters, return types, bindings and `var` assignments) checked at runtime with `RangeViolated` (#7226 part 1) | **Shipped** | D-progress-971 |
+| Protected types mutually exclusive on the JVM (`synchronized` members) and for MSIL `func` members; `when:` barriers implemented on dotnet and JVM (wait/notify on the entry lock), rejected on native (#7363) | **Shipped** | D-progress-972 |
 
 ### Phase 2 — type system completion (complete)
 
