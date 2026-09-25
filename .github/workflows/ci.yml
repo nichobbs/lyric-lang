@@ -3160,6 +3160,47 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/msil_project_bridge_self_test.l
 
+      # CLI test-command end-to-end regression suite (#5341/#6659/#678)
+      # — drives `Lyric.Cli`'s `cmdTest`/`cmdTestManifest` for real via
+      # `Cli.main([...])`, including several cases that build small temp
+      # `lyric.toml` projects and spawn real dependency builds. Heavier than
+      # the other CLI self-tests above (real subprocess builds, not a single
+      # in-process compile), so it runs here rather than as a concurrent
+      # `background: true` step, alongside the other heavy project self-tests.
+      - name: CLI test-command self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cli_test_self_test.l
+
+      # CLI `--properties` regression suite (#677) — split out of
+      # `cli_test_self_test.l` (#7202 CI follow-up: run 35669328920 hit the
+      # single-file `lyric test` 600s subprocess watchdog with the
+      # `--properties`/`--property-trials`/`--seed` cases folded into the
+      # same compiled test binary as every other cli_test_self_test.l case;
+      # not a hang in any individual property — see the file's own header
+      # comment for the analysis — just too many real `dotnet exec` round
+      # trips sharing one 600s budget on a loaded runner, confirmed by a
+      # local repro where even a *non*-property six-case slice of the
+      # original file alone approached the same 600s ceiling under
+      # contention). Each `test { }` case here does its own real subprocess
+      # round trip, same heavy shape as the suite above, so it stays
+      # non-background for the same reason and runs right after it rather
+      # than concurrently with the lighter `background: true` steps in this
+      # job. The `--property-trials`/`--seed` cases (#6907) are further
+      # split into their own sibling step below rather than bundled in here.
+      - name: CLI --properties self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cli_test_properties_self_test.l
+
+      # CLI `--property-trials`/`--seed` regression suite (property-testing
+      # v2 slice 1, #6907) — split out of `cli_test_properties_self_test.l`
+      # (#7202 CI follow-up, second pass) for the same 600s-subprocess-
+      # watchdog reason as the step above; see that step's comment and this
+      # file's own header comment for the full analysis. Same heavy
+      # non-background shape, so it runs immediately after its sibling.
+      - name: CLI --property-trials/--seed self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cli_test_property_trials_self_test.l
+
       # Lyric.AnnotationMeta resource embedding self-test (#6866 PR 1,
       # D-progress-941) — compiles a config-block fixture through both
       # Msil.Bridge and Jvm.Bridge and reads the embedded resource back,

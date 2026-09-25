@@ -14,6 +14,9 @@
 //!     `--properties` (`synthesizeWithProperties`, #677), a `property`
 //!     whose `forall` binders are all Int/Bool/Double gets a real
 //!     sampling-and-shrinking harness instead — see §3a below.
+//!     `synthesizeWithPropertiesConfig` (v2 slice 1, #6907) additionally
+//!     takes a `PropertyRunConfig` to override the trial count / RNG seed
+//!     (`--property-trials`/`--seed`) instead of the fixed 100/1000 default.
 //!   * Fixtures are rewritten to module-level `val` declarations
 //!     (D-progress-474).
 //!
@@ -65,6 +68,32 @@ pub union ListEntry {
   // inlined here so the test-runner library doesn't pull in `Lyric.Fmt` just
   // for one tiny helper.
   // ─────────────────────────────────────────────────────────────────────────────
+}
+
+// Per-run tuning for the property-testing harness (`lyric test --properties`,
+// v2 slice 1): how many trials each property samples and the RNG seed the
+// first property's driver starts from (each subsequent property in the same
+// file offsets by its own index, so distinct properties never share a seed).
+// Both fields default so `PropertyRunConfig()` reproduces v1's fixed
+// 100-trial / seed-1000 behaviour unchanged.
+pub record PropertyRunConfig {
+  trials: Int = 100
+  seed: Int = 1000
+}
+
+// Builds a `PropertyRunConfig` from the parsed `--property-trials`/`--seed`
+// CLI flags, falling back to the record's own declared defaults for
+// whichever flag was not given. Lives beside `PropertyRunConfig` itself
+// (rather than in `Lyric.Cli`, the caller) so every construction of this
+// record stays same-package — cross-package `.copy()` on a compiler-package
+// record proved unreliable under the per-package bundle build; tracked as a
+// self-hosted-compiler bug in its own right, separate from this feature, at
+// #7203.
+pub func propertyRunConfigFromOverrides(trialsArg: in Option[Int], seedArg: in Option[Int]): PropertyRunConfig {
+  val defaults = PropertyRunConfig()
+  val t = match trialsArg { case Some(n) -> n; case None -> defaults.trials }
+  val s = match seedArg { case Some(n) -> n; case None -> defaults.seed }
+  PropertyRunConfig(trials = t, seed = s)
 }
 
 func escapeForLiteral(s: in String): String {
@@ -293,9 +322,13 @@ func propShrinkPhase(idx: in Int, binders: in List[PropBinderInfo], j: in Int, g
   sb
 }
 
-// The `panic("property failed: \"<title>\" forall(x = ..., y = ...)")`
-// expression reporting every binder's final shrunk value.
-func propFailureMessageExpr(titleEsc: in String, binders: in List[PropBinderInfo]): String {
+// The `panic("property failed: \"<title>\" forall(x = ..., y = ...) [seed=N,
+// trials=N]")` expression reporting every binder's final shrunk value plus
+// the exact seed/trial count the run used, so a failure is reproducible by
+// re-running with `--seed <N> --property-trials <N>`.
+func propFailureMessageExpr(
+  titleEsc: in String, binders: in List[PropBinderInfo], seedUsed: in Int, trials: in Int
+): String {
   var expr = "\"property failed: \\\"" + titleEsc + "\\\" forall(\""
   var i = 0
   while i < binders.count {
@@ -306,7 +339,7 @@ func propFailureMessageExpr(titleEsc: in String, binders: in List[PropBinderInfo
     expr = expr + " + \"" + b.name + " = \" + toString(__lyric_fail_" + b.name + ")"
     i = i + 1
   }
-  expr = expr + " + \")\""
+  expr = expr + " + \") [seed=" + toString(seedUsed) + ", trials=" + toString(trials) + "]\""
   expr
 }
 
@@ -384,7 +417,11 @@ func hasImportOfPath(imports: in List[ImportDecl], dottedPath: in String): Bool 
 // caller reports that as a `# skip` line, exactly like v1's unconditional
 // skip.
 func tryBuildPropertyDriver(
-  source: in String, p: in PropertyDecl, idx: in Int, annText: in String
+  source: in String,
+  p: in PropertyDecl,
+  idx: in Int,
+  annText: in String,
+  cfg: in PropertyRunConfig,
 ): Result[String, String] {
   val binders: List[PropBinderInfo] = newList()
   var bi = 0
@@ -439,8 +476,15 @@ func tryBuildPropertyDriver(
     return Ok(value = sb)
   }
 
-  sb = sb + "  val __lyric_rng = Std.Random.makeRandom(" + toString(1000 + idx) + ")\n"
-  sb = sb + "  val __lyric_n = 100\n"
+  // XOR (not `+`) combines the per-run seed with the property's index: `Int`
+  // is 32-bit (docs/01-language-reference.md §2.1), so an addition can
+  // overflow — and panic, since overflow checks are unconditional pending
+  // #6263 — for an extreme `--seed` value in a multi-property file. XOR is
+  // always in-range and still gives every property in the file its own
+  // distinct starting seed (injective in `idx` for a fixed `cfg.seed`).
+  val seedUsed = cfg.seed.xor(idx)
+  sb = sb + "  val __lyric_rng = Std.Random.makeRandom(" + toString(seedUsed) + ")\n"
+  sb = sb + "  val __lyric_n = " + toString(cfg.trials) + "\n"
   sb = sb + "  var __lyric_iter = 0\n"
   sb = sb + "  var __lyric_failed = false\n"
   var fi = 0
@@ -482,7 +526,7 @@ func tryBuildPropertyDriver(
     sb = sb + propShrinkPhase(idx, binders, shi, guardText)
     shi = shi + 1
   }
-  sb = sb + "    panic(" + propFailureMessageExpr(titleEsc, binders) + ")\n"
+  sb = sb + "    panic(" + propFailureMessageExpr(titleEsc, binders, seedUsed, cfg.trials) + ")\n"
   sb = sb + "  }\n"
   sb = sb + "}\n"
   Ok(value = sb)
@@ -613,7 +657,7 @@ func noFeatures(): List[String] {
 
 @stable(since = "0.1")
 pub func synthesize(source: in String, filter: in Option[String]): Outcome {
-  synthesizeFor(source, filter, false, false, noFeatures(), noFeatures())
+  synthesizeFor(source, filter, false, false, PropertyRunConfig(), noFeatures(), noFeatures())
 }
 
 // Native variant (N7.2): synthesises straight-through test calls instead of
@@ -621,7 +665,7 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
 // `@stable` — `synthesize` is the stable dotnet/jvm entry point; this is a
 // separate, additive entry point rather than a breaking signature change.
 pub func synthesizeNative(source: in String, filter: in Option[String]): Outcome {
-  synthesizeFor(source, filter, true, false, noFeatures(), noFeatures())
+  synthesizeFor(source, filter, true, false, PropertyRunConfig(), noFeatures(), noFeatures())
 }
 
 // `lyric test --properties` variant (#677): `property` declarations whose
@@ -631,9 +675,28 @@ pub func synthesizeNative(source: in String, filter: in Option[String]): Outcome
 // with any other binder type still reports `# skip` with a reason naming
 // the unsupported type.  Not `@stable` — additive alongside `synthesize`,
 // which keeps skipping every property unconditionally (byte-for-byte
-// unchanged) for callers that don't pass `--properties`.
+// unchanged) for callers that don't pass `--properties`.  Uses the default
+// `PropertyRunConfig` (100 trials, seed 1000) — see `synthesizeWithPropertiesConfig`
+// for the `--property-trials`/`--seed`-driven variant (v2 slice 1, #6907).
 pub func synthesizeWithProperties(source: in String, filter: in Option[String]): Outcome {
-  synthesizeFor(source, filter, false, true, noFeatures(), noFeatures())
+  synthesizeFor(source, filter, false, true, PropertyRunConfig(), noFeatures(), noFeatures())
+}
+
+// `lyric test --properties [--property-trials N] [--seed N]` variant (v2
+// slice 1, #6907): identical to `synthesizeWithProperties` but with the
+// trial count and RNG seed caller-controlled via `cfg`, so a failing
+// property's reported `[seed=N, trials=N]` can be replayed exactly, and CI
+// can widen sampling for a suspect property without editing source. `active`/
+// `declared` are the feature set the eventual compile will use — see
+// `synthesizeFor`'s own doc comment.
+pub func synthesizeWithPropertiesConfig(
+  source: in String,
+  filter: in Option[String],
+  cfg: in PropertyRunConfig,
+  active: in List[String],
+  declared: in List[String],
+): Outcome {
+  synthesizeFor(source, filter, false, true, cfg, active, declared)
 }
 
 // `active`/`declared` are the feature set the eventual compile will use
@@ -648,6 +711,7 @@ pub func synthesizeFor(
   filter: in Option[String],
   nativeMode: in Bool,
   runProperties: in Bool,
+  cfg: in PropertyRunConfig,
   active: in List[String],
   declared: in List[String],
 ): Outcome {
@@ -796,7 +860,7 @@ pub func synthesizeFor(
           val propStart = p.span.startPos.offset
           val annLen = propStart - s
           val annText = if annLen > 0 { source.substring(s, annLen) } else { "" }
-          match tryBuildPropertyDriver(source, p, propIdx, annText) {
+          match tryBuildPropertyDriver(source, p, propIdx, annText, cfg) {
             case Ok(driverCode) -> {
               val fname = "__lyric_prop_" + toString(propIdx)
               sb = sb + "\n" + driverCode

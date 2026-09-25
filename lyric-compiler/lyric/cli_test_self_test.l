@@ -10,11 +10,17 @@
 //!     `lyric run` (D123) — a loose test file next to a manifest with a
 //!     real path dependency can now import it; an unbuilt dependency fails
 //!     the test run loudly rather than silently compiling without it.
-//!   - #677: `lyric test --properties` actually executes `property`
-//!     declarations whose `forall` binders are all Int/Bool/Double,
-//!     instead of unconditionally skipping them; an unsupported binder
-//!     type still skips even under `--properties`; `--properties` is
-//!     rejected on `--target native`.
+//!   - #6659: `cmdTest`'s argv-parsing loop advances past `--coverage`
+//!     instead of spinning on the same index forever.
+//!   - #678: `lyric test --update-snapshots` rewrites a stale snapshot
+//!     instead of failing the run.
+//!
+//! `lyric test --properties` / `--property-trials` / `--seed` coverage
+//! (#677, #6907) lives in the sibling file
+//! `cli_test_properties_self_test.l` — split out (#7202 CI follow-up) so
+//! that file's real `dotnet exec` subprocess round trips get their own
+//! independent 600s single-file `lyric test` subprocess-watchdog budget
+//! instead of sharing one with every case here.
 //!
 //! Run in CI via:
 //!
@@ -193,146 +199,6 @@ test "lyric test <file.l>: a loose file with no nearby manifest still works unch
   )
   val rc = mainWith("test", testFile)
   assertEqualInt(rc, 0, "a standalone test file with no manifest anywhere compiles and passes as before")
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// #677: `lyric test --properties`.
-// ─────────────────────────────────────────────────────────────────────────────
-func propFixtureSource(propBody: in String): String {
-  "@test_module\npackage PropFixture\n\nimport Std.Testing\n\ntest \"sanity\" {\n  Std.Testing.assertTrue(1 + 1 == 2, \"arithmetic works\")\n}\n\n" +
-    propBody
-}
-
-test "lyric test --properties: an always-failing Int property is caught and fails the run" {
-  val root = freshTempDir("prop-fail")
-  defer {
-    cleanup(root)
-  }
-  val testFile = Path.join(root, "prop_test.l")
-  writeFileOrPanic(
-    testFile,
-    propFixtureSource(
-      "property \"always fails\" forall(x: Int) {\n  Std.Testing.assertTrue(false, \"always fails\")\n}\n"
-    )
-  )
-
-  // Without --properties, the property is skipped (v1 behaviour, unchanged)
-  // and the file passes on its one real test.
-  val skipRc = mainWith("test", testFile)
-  assertEqualInt(skipRc, 0, "without --properties the failing property is skipped, not run")
-
-  // With --properties, the sampling-and-shrinking harness actually runs the
-  // property and it genuinely fails.
-  val runRc = mainWith3("test", testFile, "--properties")
-  assertEqualInt(runRc, 1, "with --properties an always-failing property fails the test run")
-}
-
-test "lyric test --properties: an always-true Int property passes" {
-  val root = freshTempDir("prop-pass")
-  defer {
-    cleanup(root)
-  }
-  val testFile = Path.join(root, "prop_test.l")
-  writeFileOrPanic(
-    testFile,
-    propFixtureSource(
-      "property \"identity always holds\" forall(x: Int) {\n  Std.Testing.assertTrue(x == x, \"identity always holds\")\n}\n"
-    )
-  )
-
-  val runRc = mainWith3("test", testFile, "--properties")
-  assertEqualInt(runRc, 0, "with --properties a property that holds for every sample passes")
-}
-
-test "lyric test --properties: a Bool/Double forall also executes for real" {
-  val root = freshTempDir("prop-booldouble")
-  defer {
-    cleanup(root)
-  }
-  val testFile = Path.join(root, "prop_test.l")
-  writeFileOrPanic(
-    testFile,
-    propFixtureSource(
-      "property \"bool and double identities hold\" forall(b: Bool, d: Double) {\n  Std.Testing.assertTrue(b == b, \"bool identity\")\n  Std.Testing.assertTrue(d == d, \"double identity\")\n}\n"
-    )
-  )
-
-  val runRc = mainWith3("test", testFile, "--properties")
-  assertEqualInt(runRc, 0, "a multi-binder Bool/Double property samples and passes")
-}
-
-test "lyric test --properties: a where guard is honoured (a guard that is always false never fails the run)" {
-  val root = freshTempDir("prop-guard")
-  defer {
-    cleanup(root)
-  }
-  val testFile = Path.join(root, "prop_test.l")
-  writeFileOrPanic(
-    testFile,
-    propFixtureSource(
-      "property \"vacuous under an always-false guard\" forall(x: Int)\n  where false\n{\n  Std.Testing.assertTrue(false, \"never reached\")\n}\n"
-    )
-  )
-
-  val runRc = mainWith3("test", testFile, "--properties")
-  assertEqualInt(runRc, 0, "a guard that never holds means the body never runs, so the property never fails")
-}
-
-test "lyric test --properties: a property with no forall binders still runs its guarded body once" {
-  val root = freshTempDir("prop-noforall")
-  defer {
-    cleanup(root)
-  }
-  val testFile = Path.join(root, "prop_test.l")
-  writeFileOrPanic(
-    testFile,
-    propFixtureSource(
-      "property \"binder-less property fails\" {\n  Std.Testing.assertTrue(false, \"binder-less property always fails\")\n}\n"
-    )
-  )
-
-  val runRc = mainWith3("test", testFile, "--properties")
-  assertEqualInt(runRc, 1, "a property with no forall binders still executes its body under --properties")
-}
-
-test "lyric test --properties: an unsupported forall binder type still skips (no crash, no false failure)" {
-  val root = freshTempDir("prop-unsupported")
-  defer {
-    cleanup(root)
-  }
-  val testFile = Path.join(root, "prop_test.l")
-  writeFileOrPanic(
-    testFile,
-    propFixtureSource(
-      "property \"unsupported binder type\" forall(x: String) {\n  Std.Testing.assertTrue(true, \"never actually runs\")\n}\n"
-    )
-  )
-
-  val runRc = mainWith3("test", testFile, "--properties")
-  assertEqualInt(runRc, 0, "an unsupported binder type is skipped even under --properties, not a compile/runtime error")
-}
-
-test "lyric test --properties: rejected on --target native" {
-  val root = freshTempDir("prop-native")
-  defer {
-    cleanup(root)
-  }
-  val testFile = Path.join(root, "prop_test.l")
-  writeFileOrPanic(
-    testFile,
-    propFixtureSource("property \"whatever\" forall(x: Int) {\n  Std.Testing.assertTrue(true, \"n/a\")\n}\n")
-  )
-
-  // `--properties --target native` needs 5 argv slots; build it by hand
-  // rather than adding another `mainWithN` helper for one call site.
-  val args: List[String] = newList()
-  args.add("test")
-  args.add(testFile)
-  args.add("--properties")
-  args.add("--target")
-  args.add("native")
-  val realRc = Cli.main(argv(args))
-  assertEqualInt(realRc, 1, "--properties is rejected outright on --target native")
 }
 
 // #6659: `cmdTest`'s argv-parsing loop's `--coverage` branch was missing its

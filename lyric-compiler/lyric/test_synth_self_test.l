@@ -75,14 +75,14 @@ func singletonFeatureList(s: in String): List[String] {
 }
 
 func testFileLevelCfgGatesWhenInactive(): Unit {
-  match synthesizeFor(fileLevelCfgTestSource(), None, false, false, emptyFeatureList(), emptyFeatureList()) {
+  match synthesizeFor(fileLevelCfgTestSource(), None, false, false, propertyRunConfigFromOverrides(None, None), emptyFeatureList(), emptyFeatureList()) {
     case Gated(_) -> ()
     case _ -> panic("expected Gated outcome when the file-level @cfg feature is inactive")
   }
 }
 
 func testFileLevelCfgSynthesisesWhenActive(): Unit {
-  match synthesizeFor(fileLevelCfgTestSource(), None, false, false, singletonFeatureList("exp"), emptyFeatureList()) {
+  match synthesizeFor(fileLevelCfgTestSource(), None, false, false, propertyRunConfigFromOverrides(None, None), singletonFeatureList("exp"), emptyFeatureList()) {
     case Synthesised(_, n, sk) -> {
       assertEqualInt(n, 1, "the one test synthesised once the gating feature is active")
       assertEqualInt(sk, 0, "no skips")
@@ -105,14 +105,14 @@ func fileLevelTargetCfgTestSource(): String {
 }
 
 func testFileLevelTargetCfgGatesWhenTargetMismatched(): Unit {
-  match synthesizeFor(fileLevelTargetCfgTestSource(), None, false, false, emptyFeatureList(), emptyFeatureList()) {
+  match synthesizeFor(fileLevelTargetCfgTestSource(), None, false, false, propertyRunConfigFromOverrides(None, None), emptyFeatureList(), emptyFeatureList()) {
     case Gated(_) -> ()
     case _ -> panic("expected Gated outcome when the active set carries no \"target.*\" pseudo-feature at all")
   }
 }
 
 func testFileLevelTargetCfgSynthesisesWhenTargetMatches(): Unit {
-  match synthesizeFor(fileLevelTargetCfgTestSource(), None, false, false, singletonFeatureList("target.dotnet"), emptyFeatureList()) {
+  match synthesizeFor(fileLevelTargetCfgTestSource(), None, false, false, propertyRunConfigFromOverrides(None, None), singletonFeatureList("target.dotnet"), emptyFeatureList()) {
     case Synthesised(_, n, sk) -> {
       assertEqualInt(n, 1, "the one test synthesised once \"target.dotnet\" is in the active set")
       assertEqualInt(sk, 0, "no skips")

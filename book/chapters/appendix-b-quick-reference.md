@@ -1060,6 +1060,15 @@ lyric test <file.l> --properties       # also run `property` declarations (#677)
                                        # sampling + shrinking for Int/Bool/Double forall binders;
                                        # any other binder type still reports `# skip`. Rejected
                                        # on --target native (no unwinding to isolate a sample).
+lyric test <file.l> --properties \
+  --property-trials <N>                # (v2 slice 1, #6907) override the per-property sample
+                                       # count (default 100, must be >= 1); requires --properties
+lyric test <file.l> --properties \
+  --seed <N>                           # (v2 slice 1, #6907) override the starting RNG seed
+                                       # (default 1000; each property in the file still gets its
+                                       # own distinct offset seed); requires --properties. A
+                                       # failure's panic message reports the exact seed/trials
+                                       # used, so it can be replayed exactly.
 lyric test <file.l>                    # a loose test file next to a lyric.toml also resolves
                                        # that manifest's dependencies (D123/#5341), exactly like
                                        # `lyric build`/`lyric run` — an unbuilt dependency fails
@@ -1079,6 +1088,9 @@ lyric test                             # project mode: run every [project.tests]
 lyric test --fail-fast                 # project mode: stop after first failing test entry
 lyric test --properties                # project mode: also run `property` declarations in
                                        # every test entry (composes with --fail-fast/--filter)
+lyric test --properties \
+  --property-trials <N> --seed <N>     # project mode: same trial-count/seed override, applied
+                                       # to every [project.tests] entry that runs properties
 lyric test --update-snapshots          # project mode: rewrite snapshot baselines across every
                                        # [project.tests] entry
 lyric test --manifest <lyric.toml>     # project mode: override manifest discovery

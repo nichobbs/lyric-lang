@@ -467,29 +467,23 @@ test "empty contains nothing" {
   expect(not contains(s, 42))
 }
 
-property "insert then contains" {
-  forall (initial: SortedSet[Int], x: Int) {
-    val updated = insert(initial, x)
-    expect(contains(updated, x))
-  }
+property "insert then contains" forall(initial: SortedSet[Int], x: Int) {
+  val updated = insert(initial, x)
+  expect(contains(updated, x))
 }
 
-property "insert is idempotent" {
-  forall (initial: SortedSet[Int], x: Int) {
-    val once = insert(initial, x)
-    val twice = insert(once, x)
-    expect(once == twice)
-  }
+property "insert is idempotent" forall(initial: SortedSet[Int], x: Int) {
+  val once = insert(initial, x)
+  val twice = insert(once, x)
+  expect(once == twice)
 }
 
-property "remove undoes insert when not previously present" {
-  forall (initial: SortedSet[Int], x: Int)
-    where not contains(initial, x)
-  {
-    val inserted = insert(initial, x)
-    val removed = remove(inserted, x)
-    expect(removed == initial)
-  }
+property "remove undoes insert when not previously present" forall(initial: SortedSet[Int], x: Int)
+  where not contains(initial, x)
+{
+  val inserted = insert(initial, x)
+  val removed = remove(inserted, x)
+  expect(removed == initial)
 }
 ```
 

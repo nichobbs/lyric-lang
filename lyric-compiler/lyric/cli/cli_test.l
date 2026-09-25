@@ -9,6 +9,7 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
+import Std.Parse
 import Std.ProcessCapture as ProcessCapture
 import Lyric.Manifest as Mf
 import Lyric.Lexer
@@ -341,6 +342,8 @@ func cmdTest(argv: in slice[String]): Int {
   var targetNative = false
   var failFast = false
   var runProperties = false
+  var propTrialsArg: Option[Int] = None
+  var propSeedArg: Option[Int] = None
   var coverage = false
   var updateSnapshots = false
   var noDefaultFeatures = false
@@ -420,6 +423,42 @@ func cmdTest(argv: in slice[String]): Int {
     } else if arg == "--properties" {
       runProperties = true
       i += 1
+    } else if arg == "--property-trials" {
+      if i + 1 < argv.length {
+        match parseOptInt(argv[i + 1]) {
+          case Some(n) -> {
+            if n < 1 {
+              printErr("test: --property-trials must be >= 1")
+              return 1
+            }
+            propTrialsArg = Some(value = n)
+            i += 2
+          }
+          case None -> {
+            printErr("test: --property-trials requires an integer")
+            return 1
+          }
+        }
+      } else {
+        printErr("test: --property-trials requires a value")
+        return 1
+      }
+    } else if arg == "--seed" {
+      if i + 1 < argv.length {
+        match parseOptInt(argv[i + 1]) {
+          case Some(n) -> {
+            propSeedArg = Some(value = n)
+            i += 2
+          }
+          case None -> {
+            printErr("test: --seed requires an integer")
+            return 1
+          }
+        }
+      } else {
+        printErr("test: --seed requires a value")
+        return 1
+      }
     } else if arg == "--coverage" {
       coverage = true
       i += 1
@@ -431,6 +470,16 @@ func cmdTest(argv: in slice[String]): Int {
       i += 1
     }
   }
+
+  // `--property-trials`/`--seed` (v2 slice 1, #6907) tune the property harness
+  // `--properties` synthesises — requiring `--properties` is a loud error, not
+  // a silent no-op, so a typo'd invocation (e.g. forgetting `--properties`)
+  // never quietly runs with the flags ignored.
+  if (isSome(propTrialsArg) or isSome(propSeedArg)) and not runProperties {
+    printErr("test: --property-trials/--seed require --properties")
+    return 1
+  }
+  val propCfg = TestSynth.propertyRunConfigFromOverrides(propTrialsArg, propSeedArg)
 
   // `--coverage` (JVM-target JaCoCo instrumentation, docs/03-decision-log.md)
   // is scoped to a single explicit test file for its first slice — manifest
@@ -513,7 +562,17 @@ func cmdTest(argv: in slice[String]): Int {
   }
 
   match manifestArg {
-    case Some(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, runProperties, cliFeatures, noDefaultFeatures, allFeatures)
+    case Some(p) -> return cmdTestManifest(
+      p,
+      filterArg,
+      targetJvm,
+      failFast,
+      runProperties,
+      propCfg,
+      cliFeatures,
+      noDefaultFeatures,
+      allFeatures
+    )
     case None -> ()
   }
 
@@ -524,7 +583,17 @@ func cmdTest(argv: in slice[String]): Int {
       return 1
     }
     match resolveTestAutoDiscovery(Environment.currentDirectory()) {
-      case TestShouldRunManifest(p) -> return cmdTestManifest(p, filterArg, targetJvm, failFast, runProperties, cliFeatures, noDefaultFeatures, allFeatures)
+      case TestShouldRunManifest(p) -> return cmdTestManifest(
+        p,
+        filterArg,
+        targetJvm,
+        failFast,
+        runProperties,
+        propCfg,
+        cliFeatures,
+        noDefaultFeatures,
+        allFeatures
+      )
       case TestReported(outcome) -> return outcome.exitCode
     }
   }
@@ -622,12 +691,16 @@ func cmdTest(argv: in slice[String]): Int {
   // #6868 crash for that one case — resolve by moving `compilerClosureDllPaths`
   // ahead of this block (on `source`, not `rewritten` — it only needs the
   // import list) rather than adding another heuristic here.
+  // `propCfg` (computed above from `--property-trials`/`--seed`, always via
+  // the same-package `propertyRunConfigFromOverrides` per #7203) is unused
+  // by `synthesizeFor` whenever `runProperties` is false, but is still a
+  // valid value to pass in every branch below.
   val synthResult = if targetNative {
-    TestSynth.synthesizeFor(source, filterArg, true, false, cfgActiveWithTarget, cfgDeclared)
+    TestSynth.synthesizeFor(source, filterArg, true, false, propCfg, cfgActiveWithTarget, cfgDeclared)
   } else if runProperties {
-    TestSynth.synthesizeFor(source, filterArg, false, true, cfgActiveWithTarget, cfgDeclared)
+    TestSynth.synthesizeFor(source, filterArg, false, true, propCfg, cfgActiveWithTarget, cfgDeclared)
   } else {
-    TestSynth.synthesizeFor(source, filterArg, false, false, cfgActiveWithTarget, cfgDeclared)
+    TestSynth.synthesizeFor(source, filterArg, false, false, propCfg, cfgActiveWithTarget, cfgDeclared)
   }
   match synthResult {
     case NoTestModule(span) -> {
@@ -942,6 +1015,7 @@ func cmdTestManifest(
   targetJvm: in Bool,
   failFast: in Bool,
   runProperties: in Bool,
+  propCfg: in PropertyRunConfig,
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
@@ -1052,6 +1126,10 @@ func cmdTestManifest(
       }
       if runProperties {
         testArgv.add("--properties")
+        testArgv.add("--property-trials")
+        testArgv.add(toString(propCfg.trials))
+        testArgv.add("--seed")
+        testArgv.add(toString(propCfg.seed))
       }
       val rc = cmdTest(testArgv.toArray())
       if rc != 0 {
@@ -1680,9 +1758,9 @@ func cmdTestManifest(
     // not an empty set that could disagree with a manifest that activates
     // the gating feature.
     val testSynthResult = if runProperties {
-      TestSynth.synthesizeFor(testSource, filterArg, false, true, cfgActiveWithTarget, mfDeclared)
+      TestSynth.synthesizeFor(testSource, filterArg, false, true, propCfg, cfgActiveWithTarget, mfDeclared)
     } else {
-      TestSynth.synthesizeFor(testSource, filterArg, false, false, cfgActiveWithTarget, mfDeclared)
+      TestSynth.synthesizeFor(testSource, filterArg, false, false, propCfg, cfgActiveWithTarget, mfDeclared)
     }
     match testSynthResult {
       case Synthesised(rw, _, _) -> {

@@ -288,10 +288,12 @@ func usageText(): String {
     "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--watch] [-- <args>...]\n" +
     "                (no source: builds and runs the discovered project;\n" +
     "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
-    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--properties] [--target dotnet|jvm]\n" +
+    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--properties] [--property-trials N] [--seed N] [--target dotnet|jvm]\n" +
     "                (no source: runs all [project.tests]; falls back to scanning [project.packages] for @test_module;\n" +
     "                 --fail-fast stops after the first file with failing tests;\n" +
-    "                 --properties runs `property` declarations too (Int/Bool/Double foralls only; not on --target native)\n" +
+    "                 --properties runs `property` declarations too (Int/Bool/Double foralls only; not on --target native);\n" +
+    "                 --property-trials N sets the sample count per property (default 100; requires --properties);\n" +
+    "                 --seed N sets the RNG seed each property's driver starts from, XOR'd with its declared index so no two properties in a file sample the same sequence (default 1000; requires --properties)\n" +
     "  lyric bench   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--runs N] [--warmup N] [--filter <prefix>]\n" +
     "                (no source: benchmarks all @bench_module files in the discovered project)\n" +
     "  lyric repl\n" +
@@ -631,7 +633,15 @@ pub func shapeFlagConflictError(shapeArg: in String, sawAot: in Bool, sawStandal
 /// `standalone` are meaningless there rather than merely unimplemented.
 pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
   match target {
-    case Emitter.Native -> match shape { case SAot -> None; case _ -> { val msg = "error[F0043]: --target native does not support --shape " + shapeName(shape) + "; a native build is ahead-of-time compiled and needs no managed runtime, so `aot` is " + "its only shape (omit --shape, or pass --shape aot explicitly)"; Some(value = msg) } }
+    case Emitter.Native -> match shape {
+      case SAot -> None
+      case _ -> {
+        val msg = "error[F0043]: --target native does not support --shape " + shapeName(shape) +
+          "; a native build is ahead-of-time compiled and needs no managed runtime, so `aot` is " +
+          "its only shape (omit --shape, or pass --shape aot explicitly)"
+        Some(value = msg)
+      }
+    }
     case _ -> None
   }
 }

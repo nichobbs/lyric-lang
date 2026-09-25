@@ -223,19 +223,29 @@ driven discovery story.
   local-path dep resolution.  Cross-package non-pub access (§3.2) and retiring
   the F# Expecto bridge for the stdlib test suite are follow-up items.
 * **Stage 3** — property execution. **Partially shipped (#677,
-  D-progress-784):** `lyric test --properties` synthesises a real
-  sampling-and-shrinking harness (100 seeded samples, `where`-guard
-  evaluation, greedy per-binder shrinking on the first counterexample)
-  for any `property` whose `forall` binders are all `Int`/`Bool`/`Double`
-  — see `Lyric.TestSynth.synthesizeWithProperties` /
-  `tryBuildPropertyDriver`. Auto-derived generators for opaque/record/
-  union types (the `SortedSet[Int]`-style worked example in
-  `docs/02-worked-examples.md` §3 and `book/chapters/15-testing.md`
-  §15.5), `--property-trials`, `--seed`, and contract (`ensures:`)-
-  derived properties remain unimplemented; a property with any other
-  binder type still reports `# skip` (naming the unsupported type)
-  under `--properties`, exactly as it does without the flag. Doctest
-  harness for ` ```lyric ` blocks is unstarted (tracked under #678).
+  D-progress-784; v2 slice 1 in D-progress-942):** `lyric test
+  --properties` synthesises a real sampling-and-shrinking harness
+  (seeded samples, `where`-guard evaluation, greedy per-binder
+  shrinking on the first counterexample) for any `property` whose
+  `forall` binders are all `Int`/`Bool`/`Double` — see
+  `Lyric.TestSynth.synthesizeWithPropertiesConfig` /
+  `tryBuildPropertyDriver`. `--property-trials <N>` (sample count,
+  default 100) and `--seed <N>` (starting RNG seed, default 1000,
+  offset per property by index) are shipped and thread through both
+  the single-file and `--manifest` paths via `TestSynth.PropertyRunConfig`;
+  both flags require `--properties` (loud error otherwise). Auto-derived
+  generators for opaque/record/union types (the `SortedSet[Int]`-style
+  worked example in `docs/02-worked-examples.md` §3 and
+  `book/chapters/15-testing.md` §15.5) and contract (`ensures:`)-derived
+  properties remain unimplemented — the former is architecturally blocked
+  on cross-package opaque-type construction (**T0100**) without a
+  smart-constructor discovery + rejection-sampling design, and the
+  latter needs semantics decided against the existing contract
+  elaborator first; both are tracked as separate follow-up issues. A
+  property with any other binder type still reports `# skip` (naming
+  the unsupported type) under `--properties`, exactly as it does
+  without the flag. Doctest harness for ` ```lyric ` blocks is
+  unstarted (tracked under #678).
 * **`--update-snapshots`** _(shipped, #678)_ — `lyric test --update-snapshots`
   sets the `LYRIC_UPDATE_SNAPSHOTS=1` env var (a real OS-level var, inherited
   by whichever process the compiled test binary runs as on any target) before
@@ -247,8 +257,8 @@ driven discovery story.
   multi-file discovery (shipped) already runs every `[project.tests]` entry
   against the same env var, so `--update-snapshots` regenerates baselines
   project-wide with no extra wiring.
-* **Stage 4** — fixture lifetimes, parallel runs, JUnit XML output,
-  `--seed` for reproducible property runs.
+* **Stage 4** — fixture lifetimes, parallel runs, JUnit XML output.
+  (`--seed` for reproducible property runs shipped in Stage 3, v2 slice 1.)
 
 Each stage is independently shippable. Stage 1 is the v1 cut; later
 stages can land without breaking the surface or the CLI flag set

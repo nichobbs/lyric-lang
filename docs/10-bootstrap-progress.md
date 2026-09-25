@@ -34960,6 +34960,58 @@ doesn't port to .NET as-is; fixed by naming the bracketed generic
 instantiation directly in the `extern type` target string, which the MSIL
 emitter erases wholesale to `object`).
 
+### `lyric test --properties` gains `--property-trials <N>` / `--seed <N>` (property-testing v2 slice 1, #6907)
+
+A scoping investigation into #6907's "property testing v2" ask (a
+composable `Generator[T]` combinator library, custom/opaque-type
+generators headlined by a `SortedSet[Int]` worked example,
+`--property-trials`/`--seed`, and `ensures:`-derived properties) found
+that `Lyric.TestSynth` is a pure source-text rewriter running before
+type-checking with no symbol table — ruling out a general opaque/record/
+union generator at this layer without a much larger architectural change
+— and that the headlined `SortedSet[Int]` example is separately blocked
+by **T0100** (cross-package opaque-type construction), which has no
+smart-constructor discovery/rejection-sampling design yet. Per CLAUDE.md's
+no-bootstrap-grade-slices standard, rather than land a half-implemented
+generator layer, this ships only the tractable, independently useful
+piece: `pub record PropertyRunConfig { trials: Int = 100; seed: Int =
+1000 }` threaded through `Lyric.TestSynth.synthesizeWithPropertiesConfig`
+(additive; `synthesizeWithProperties` keeps its old signature and
+100/1000 defaults unchanged) and `Lyric.Cli`'s `cmdTest`/`cmdTestManifest`
+as `lyric test --properties --property-trials <N> --seed <N>`. Both flags
+require `--properties` (loud CLI error otherwise, not a silent no-op);
+each property in a file keeps its own seed offset (`cfg.seed.xor(idx)` —
+XOR, not `+`, since `Int` is 32-bit and addition can overflow-panic on an
+extreme `--seed`) so an explicit `--seed` never collides two properties in
+the same file onto one sample sequence; a property failure's panic message
+now reports the exact `[seed=…, trials=…]` used, so a CI failure is
+reproducible by
+re-running with the same flags. Composable generators, opaque-type
+generation, and `ensures:`-derived properties remain unimplemented and
+are tracked as separate follow-up issues (see `docs/24-test-runner-plan.md`
+§5 Stage 3). Fixed in passing: `book/chapters/15-testing.md` §15.5 and
+`docs/02-worked-examples.md` Example 3 both had a `property "title" {
+forall (...) { ... } }` worked example that does not parse — the grammar
+(`docs/grammar.ebnf` `PropertyDecl`) puts `forall(...)` directly after the
+title, not nested inside the block; both examples are corrected to
+`property "title" forall(...) [where …] { … }`.
+
+New regression coverage: 10 cases in
+`lyric-compiler/lyric/cli_test_property_trials_self_test.l` (split out of
+`cli_test_self_test.l` as a CI follow-up — see that file's own header for
+why) covering flag validation (rejected without `--properties`, `--property-trials
+0`/non-integer, `--seed` non-integer all rejected; a negative `--seed` is
+accepted, not rejected) and functional threading (a single-trial run still
+catches an always-failing property; a larger trial count with an explicit
+seed still passes an always-true property; two properties in one file both
+pass under one shared explicit `--seed`; a two-property file under
+`--seed 2147483647` does not overflow-panic, pinning down the
+`cfg.seed.xor(idx)` fix over addition).
+
+**Related:** `docs/decisions/D-progress-0942` (full account), #6907,
+#677/D-progress-784 (the v1.x property-execution baseline this extends),
+`docs/24-test-runner-plan.md` §5 Stage 3/4.
+
 ## MSIL: `emitGenericAsyncMethodExternCall` — MethodSpec + Task<T>-unwrap for a generic async BCL extern (#7023)
 
 D-progress-935's loud decline for an `async`-declared `@externTarget`
