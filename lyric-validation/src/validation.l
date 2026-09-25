@@ -40,6 +40,7 @@ package Validation
 
 import Std.Core
 import Std.Char
+import Std.String
 import Std.Collections as Collections
 import Std.Regex as Regex
 
@@ -134,22 +135,36 @@ pub func notBlank(value: in String, field: in String): slice[ValidationError] {
 /// Fail when `value` does not match the regular expression `pattern`.
 ///
 /// `patternDesc` is the human-readable description used in the error message
-/// (e.g. "E.164 phone number").  When `pattern` is empty, all values pass.
-///
-/// **Important:** `pattern` must be a syntactically valid .NET regular expression.
-/// An invalid pattern causes `Std.Regex.compile` to throw, propagating as an
-/// unhandled exception rather than returning a `[ValidationError]`.  Always
-/// pass a compile-time constant or a pre-validated pattern string.
+/// (e.g. "E.164 phone number").  `pattern` must be non-empty (an empty pattern
+/// used to pass every value) and a valid regular expression: it is the
+/// program's own constant, so an invalid one is a bug, raised when the
+/// validator runs.  The match runs with `Std.Regex`'s 1-second timeout, and a
+/// value that times out (catastrophic backtracking on hostile input) fails
+/// validation instead of crashing the request.  To avoid recompiling on every
+/// call, compile once and use `matchesRegex`.
 @stable(since = "0.1")
-pub func matches(value: in String, field: in String, pattern: in String, patternDesc: in String): slice[ValidationError] {
-  if pattern.length == 0 {
-    return []
+pub func matches(value: in String, field: in String, pattern: in String, patternDesc: in String): slice[ValidationError]
+  requires: pattern.length > 0
+{
+  val r = match Regex.tryCompile(pattern) {
+    case Ok(compiled) -> compiled
+    case Err(e) -> panic("Validation.matches: " + Regex.errorMessage(e))
   }
-  val r = Regex.compile(pattern)
-  if not Regex.isMatch(r, value) {
-    return err(field, "pattern", field + " must match " + patternDesc)
+  return matchesRegex(value, field, r, patternDesc)
+}
+
+/// `matches` with a regex compiled once by the caller, typically with
+/// `Std.Regex.compile` or `compileWithTimeout` into a module-level value.
+/// A match that times out fails validation (code `pattern`).
+@stable(since = "0.2")
+pub func matchesRegex(
+  value: in String, field: in String, regex: in Regex.CompiledRegex, patternDesc: in String
+): slice[ValidationError] {
+  match Regex.tryIsMatch(regex, value) {
+    case Ok(true) -> []
+    case Ok(false) -> err(field, "pattern", field + " must match " + patternDesc)
+    case Err(_) -> err(field, "pattern", field + " could not be checked against " + patternDesc)
   }
-  return []
 }
 
 /// Fail when `value` is not present in the `allowed` list.
@@ -272,10 +287,7 @@ pub func email(value: in String, field: in String): slice[ValidationError] {
     return badEmail
   }
   // TLD: must be at least 2 characters.
-  val lastDot = value.lastIndexOf(".")
-  if lastDot < 0 {
-    return badEmail
-  }
+  val lastDot = match value.lastIndexOf(".") { case Some(ix) -> ix; case None -> return badEmail }
   val tldLen = value.length - lastDot - 1
   if tldLen < 2 {
     return badEmail
@@ -283,18 +295,102 @@ pub func email(value: in String, field: in String): slice[ValidationError] {
   return []
 }
 
-/// Fail when `value` does not start with "http://" or "https://".
+/// Fail unless `value` is an absolute `http://` or `https://` URL with a host.
+///
+/// Checked beyond the scheme, because a prefix check accepted `https://`,
+/// `https://@evil.example` and values with spaces or line breaks, which is an
+/// open-redirect or SSRF hazard when the result gates a redirect or an
+/// outbound request (#7253):
+/// - no whitespace or control characters anywhere;
+/// - a non-empty host of letters, digits, `-` and `.`, or a bracketed IPv6
+///   literal;
+/// - no user info (`user@`), which hides the real host from a reader;
+/// - an optional port of 1 to 65535.
 @stable(since = "0.1")
 pub func url(value: in String, field: in String): slice[ValidationError] {
-  if value.length == 0 {
-    return err(field, "url", field + " must be a valid URL (http:// or https://)")
+  if isHttpUrl(value) {
+    return []
   }
-  val startsHttp = value.length >= 7 and value.substring(0, 7) == "http://"
-  val startsHttps = value.length >= 8 and value.substring(0, 8) == "https://"
-  if not startsHttp and not startsHttps {
-    return err(field, "url", field + " must be a valid URL (http:// or https://)")
+  return err(field, "url", field + " must be a valid URL (http:// or https:// with a host)")
+}
+
+/// True for an absolute `http`/`https` URL with a host, as `url` checks it.
+@pure
+@stable(since = "0.2")
+pub func isHttpUrl(value: in String): Bool {
+  var i = 0
+  while i < value.length {
+    val c = value[i]
+    if c <= ' ' or c == '\u{007f}' {
+      return false
+    }
+    i = i + 1
   }
-  return []
+  val lower = value.toLower()
+  val rest = if lower.startsWith("https://") {
+    value.substring(8)
+  } else if lower.startsWith("http://") {
+    value.substring(7)
+  } else {
+    return false
+  }
+  var authorityEnd = 0
+  while authorityEnd < rest.length and rest[authorityEnd] != '/' and rest[authorityEnd] != '?' and rest[authorityEnd] != '#' {
+    authorityEnd = authorityEnd + 1
+  }
+  val authority = rest.substring(0, authorityEnd)
+  if authority.length == 0 or authority.contains("@") {
+    return false
+  }
+  if authority.startsWith("[") {
+    match authority.indexOf("]") {
+      case None -> return false
+      case Some(close) -> {
+        val afterBracket = authority.substring(close + 1)
+        return close > 1 and
+          (afterBracket.length == 0 or (afterBracket.startsWith(":") and isValidPort(afterBracket.substring(1))))
+      }
+    }
+  }
+  val host = match authority.indexOf(":") {
+    case Some(colon) -> {
+      if not isValidPort(authority.substring(colon + 1)) {
+        return false
+      }
+      authority.substring(0, colon)
+    }
+    case None -> authority
+  }
+  if host.length == 0 or host.startsWith(".") or host.startsWith("-") {
+    return false
+  }
+  var j = 0
+  while j < host.length {
+    val c = host[j]
+    val ok = Char.isLetterOrDigit(c) or c == '-' or c == '.'
+    if not ok {
+      return false
+    }
+    j = j + 1
+  }
+  true
+}
+
+func isValidPort(text: in String): Bool {
+  if text.length == 0 or text.length > 5 {
+    return false
+  }
+  var n = 0
+  var i = 0
+  while i < text.length {
+    val c = text[i]
+    if c < '0' or c > '9' {
+      return false
+    }
+    n = n * 10 + (c.toInt() - 48)
+    i = i + 1
+  }
+  n >= 1 and n <= 65535
 }
 
 // ─── Numeric validators ───────────────────────────────────────────────────────

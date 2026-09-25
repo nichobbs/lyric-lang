@@ -52,7 +52,9 @@ Validation.maxLength(n, message)       // String length <= n
 Validation.exactLength(n, message)     // String length == n
 Validation.notBlank(message)           // Rejects whitespace-only strings
 Validation.email(message)              // Email format (RFC 5322 subset)
-Validation.url(message)                // URL format validation
+Validation.url(message)                // http(s) URL with a real host: no userinfo, spaces or control characters
+Validation.matches(pattern, message)   // Regex match; an invalid pattern is a validation error
+Validation.matchesRegex(regex, msg)    // Pre-compiled regex (build it with a timeout for untrusted input)
 Validation.oneOf(choices, message)     // String in allowed set
 Validation.minValue(n, message)        // Numeric >= n
 Validation.maxValue(n, message)        // Numeric <= n

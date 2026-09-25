@@ -350,8 +350,8 @@ pub func initFromAnnotations(ttlSeconds: in Int): Result[Unit, AwsSecrets.Secret
   requires: ttlSeconds >= 0
 {
   return Err(
-    error = NetworkError(
-      name = "initFromAnnotations",
+    error = NotImplemented(
+      feature = "initFromAnnotations",
       message = "config-block annotation scanning (@secretsManager/@parameterStore) is not implemented on the aws feature: the compiler has no runtime metadata-reading capability for custom annotations (issue #6866). Use getSecret/getSecretField/getParameter/getParameterRaw directly, or set the field's env var override for local development."
     )
   )

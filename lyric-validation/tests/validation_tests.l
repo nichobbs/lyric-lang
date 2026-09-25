@@ -6,6 +6,7 @@ package Validation.ValidationTests
 
 import Std.Core
 import Std.Testing
+import Std.Regex as Regex
 import Validation
 
 // ─── required ────────────────────────────────────────────────────────────────
@@ -467,4 +468,55 @@ test "toResult: multiple errors are all present in Err" {
     case Ok(_) -> assertTrue(false, "expected Err")
     case Err(es) -> assertTrue(es.length == 2, "both errors must be in Err")
   }
+}
+
+// ─── url: authority checks (#7253) ────────────────────────────────────────────
+test "url: rejects values a prefix check used to accept" {
+  val bad = [
+    "https://",
+    "https://@evil.example",
+    "https://user:pw@example.com",
+    "https://exa mple.com",
+    "https://example.com/\r\nX: 1",
+    "https://:8080",
+    "https://example.com:0",
+    "https://example.com:99999",
+    "https://.example.com",
+    "http://[::1",
+    "javascript:alert(1)"
+  ]
+  for v in bad {
+    assertTrue(not Validation.isValid(Validation.url(v, "website")), "must fail: " + v)
+  }
+}
+
+test "url: accepts hosts, ports, IPv6 literals and any path" {
+  val good = [
+    "https://example.com",
+    "HTTPS://Example.com/a/b?c=d#e",
+    "http://127.0.0.1:8080/health",
+    "http://[::1]:3000/",
+    "https://sub-domain.example.co.uk"
+  ]
+  for v in good {
+    assertTrue(Validation.isValid(Validation.url(v, "website")), "must pass: " + v)
+  }
+}
+
+// ─── matches: fail closed (#7253) ─────────────────────────────────────────────
+test "matches: an empty pattern is a precondition failure, not a pass-everything rule" {
+  assertPanics("empty pattern", { -> val _ = Validation.matches("anything", "f", "", "nothing") })
+}
+
+test "matchesRegex: a match that times out fails validation instead of crashing" {
+  val r = Regex.compileWithTimeout("^(a+)+$", 0.05)
+  var input = ""
+  var i = 0
+  while i < 40 {
+    input = input + "a"
+    i = i + 1
+  }
+  val errs = Validation.matchesRegex(input + "!", "f", r, "letters")
+  assertTrue(not Validation.isValid(errs), "a timed-out match is a validation failure")
+  assertTrue(Validation.isValid(Validation.matchesRegex("aaa", "f", r, "letters")), "a normal match still passes")
 }

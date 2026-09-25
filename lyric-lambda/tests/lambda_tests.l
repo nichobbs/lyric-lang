@@ -384,6 +384,17 @@ test "deny: returns AuthorizerResponse with Deny effect" {
   }
 }
 
+test "denyAnonymous: denies with the anonymous principal" {
+  val arn = "arn:aws:execute-api:us-east-1:123:abc/prod/GET/users"
+  val resp = Lambda.Authorizer.denyAnonymous(arn)
+  assertEqual(resp.principalId, Lambda.Authorizer.anonymousPrincipalId(), "anonymous principal")
+  match resp.policyDocument.statement[0].effect {
+    case IamEffect.Deny -> ()
+    case _ -> assertTrue(false, "effect must be Deny")
+  }
+  assertEqual(resp.policyDocument.statement[0].resource[0], arn, "resource ARN")
+}
+
 test "allowAll: resource is exact api/stage wildcard ARN" {
   val methodArn = "arn:aws:execute-api:us-east-1:123:abc123/prod/GET/users"
   val resp = Lambda.Authorizer.allowAll("user-42", methodArn)

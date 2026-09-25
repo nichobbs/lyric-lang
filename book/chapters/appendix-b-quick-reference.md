@@ -1337,6 +1337,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0126` | A `for` loop iterates over a Lyric-native single-type-parameter generic that isn't `List[T]`/`Map[K, V]`'s key/value collections or a single-type-parameter `extern type` (the phantom-type-param idiom for a foreign collection) — `Option[T]` is the concrete case. Used to silently type the loop element and fail at runtime instead (#6720). Other non-iterable shapes (non-generic types, zero/multi-arity generics) are not yet covered by this diagnostic. |
 | `T0127` | A record `.copy(...)` call is malformed: it passes a positional argument (copy takes named field arguments, `r.copy(field = value)`) or names the same field more than once. |
 | `T0128` | Another package's function is used as a value, but it is generic, `async`, has a non-`in` parameter, or has a parameter type that cannot be named at the use site, so no forwarding lambda can stand for it. Wrap the call in a lambda instead: `{ x: Int -> Pkg.f(x) }`. |
+| `T0128` | A union- or enum-case pattern is matched against a value of a different type: `case Some(i)` on an `Int`, or `case Ok(v)` on an `Option`. The pattern can never match; it used to type-check and then take the wrong arm on dotnet or fail JVM verification. Fix the scrutinee or the pattern. A bare nullary case (`case None`) is checked the same way. Not checked when the scrutinee's type is unknown or open (a type variable, `Self`, a nullable). |
 
 ### Type checker warnings (W-series)
 

@@ -87,18 +87,21 @@ pub aspect EventLogging {
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled     Bool — master switch (default: true)
-///   thresholdMs Long — bail-out threshold in milliseconds (default: 500)
+///   thresholdMs Long — bail-out threshold in milliseconds, >= 0 (default: 500)
 @stable(since = "0.1")
 pub aspect DeadlineGuard {
   config {
     enabled: Bool = true
     thresholdMs: Long = 500
   }
-  requires: args.ctx != null
   // handler must declare ctx: Lambda.LambdaContext
   around(call) -> ret where TArgs has { ctx: Lambda.LambdaContext } {
     if not enabled {
       ret = call.proceed()
+    } else if thresholdMs < 0i64 {
+      // A configuration bug, usually an env value: raised before the handler
+      // runs rather than silently disabling the guard (#7253).
+      panic("Lambda.Aspects.DeadlineGuard: thresholdMs must be >= 0, got " + thresholdMs.toString())
     } else {
       if args.ctx.remainingTimeMs <= thresholdMs {
         ret = Err(Lambda.LambdaError.TimeoutError(remainingMs = args.ctx.remainingTimeMs))

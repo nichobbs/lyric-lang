@@ -704,7 +704,7 @@ Patterns:
 - Literal patterns: `42`, `"hello"`, `true`
 - Variable binding: `x`
 - Wildcard: `_`
-- Constructor patterns: `Circle(r)`, `Some(x)`
+- Constructor patterns: `Circle(r)`, `Some(x)`. The case must belong to the scrutinee's own union or enum: `case Some(i)` against an `Int`, or `case Ok(v)` against an `Option`, can never match and is a compile error (**T0128**). A bare nullary case (`case None`) is checked the same way.
 - Tuple patterns: `(a, b)`
 - Record patterns: `Point { x, y }`, `Point { x = 0.0, y }` (destructure with literal match on `x`)
 - Range patterns: `0 ..= 9`

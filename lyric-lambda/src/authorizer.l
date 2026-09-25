@@ -195,8 +195,18 @@ pub record AuthorizerResponse {
   usageIdentifierKey: Option[String]
 }
 
+/// Principal id `denyAnonymous` reports; it never names a real caller.
+@stable(since = "0.1")
+pub func anonymousPrincipalId(): String = "anonymous"
+
 /// Allow the caller to invoke the specific method ARN.
 /// Grants execute-api:Invoke on exactly the requested resource.
+///
+/// `principalId` must be non-empty.  It usually comes from a claim in an
+/// untrusted token, so validate the token and check the claim is present
+/// first; when it is missing, answer with `denyAnonymous(methodArn)`
+/// instead of calling this (the precondition would turn a bad token into
+/// a 500 rather than a 403).
 @stable(since = "0.1")
 pub func allow(principalId: in String, methodArn: in String): AuthorizerResponse
   requires: principalId.length > 0
@@ -258,6 +268,8 @@ pub func allowAll(principalId: in String, methodArn: in String): AuthorizerRespo
 }
 
 /// Deny the caller access to the specific method ARN.
+/// Like `allow`, `principalId` must be non-empty; use `denyAnonymous` when
+/// the caller has no verified identity.
 @stable(since = "0.1")
 pub func deny(principalId: in String, methodArn: in String): AuthorizerResponse
   requires: principalId.length > 0
@@ -278,6 +290,17 @@ pub func deny(principalId: in String, methodArn: in String): AuthorizerResponse
     context = newMap(),
     usageIdentifierKey = None
   )
+}
+
+/// Deny a caller with no verified identity (missing or invalid token, or
+/// a token without the principal claim) access to the method ARN.
+/// Reports `anonymousPrincipalId()` as the principal.
+@stable(since = "0.1")
+pub func denyAnonymous(methodArn: in String): AuthorizerResponse
+  requires: methodArn.length > 0
+  ensures: result.principalId == "anonymous"
+{
+  return deny("anonymous", methodArn)
 }
 
 /// Attach a context map to an authorizer response.

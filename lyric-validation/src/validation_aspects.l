@@ -50,8 +50,8 @@ import Validation
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled Bool   — master switch (default: true)
 ///   field   String — field name used in error messages (default: "input")
-///   minLen  Int    — minimum allowed length, inclusive (default: 0)
-///   maxLen  Int    — maximum allowed length, inclusive (default: 65536)
+///   minLen  Int    — minimum allowed length, inclusive, >= 0 (default: 0)
+///   maxLen  Int    — maximum allowed length, inclusive, >= minLen (default: 65536)
 @stable(since = "0.1")
 pub aspect ValidateInput {
   config {
@@ -72,6 +72,14 @@ pub aspect ValidateInput {
   around(call) -> ret where TArgs has { input: String } {
     if not enabled {
       ret = call.proceed()
+    } else if minLen < 0 or maxLen < minLen {
+      // A configuration bug, usually an env value: raised before the handler
+      // runs instead of rejecting every request or tripping minLength's
+      // precondition per call (#7253).
+      panic(
+        "Validation.Aspects.ValidateInput: need 0 <= minLen <= maxLen, got minLen=" + minLen.toString() + " maxLen=" +
+          maxLen.toString()
+      )
     } else {
       val errors = Validation.all(
         [Validation.minLength(args.input, field, minLen), Validation.maxLength(args.input, field, maxLen)]

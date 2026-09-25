@@ -1707,7 +1707,9 @@ pub func handleOneLocalRequest(httpCtx: in HttpContext, app: in LambdaApp): Unit
 /// raw event JSON, matching `sam local invoke` / `aws lambda invoke
 /// --endpoint-url http://localhost:{localPort}`.
 @stable(since = "0.1")
-pub func runLocalServer(app: in LambdaApp, localPort: in Int): Unit {
+pub func runLocalServer(app: in LambdaApp, localPort: in Int): Unit
+  requires: localPort >= 1 and localPort <= 65535
+{
   val prefix = "http://localhost:" + localPort.toString() + "/"
   val listener = startListener(prefix)
   Console.println(

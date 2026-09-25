@@ -125,6 +125,7 @@ output_assembly = "Lambda.dll"
 [project.tests]
 "Lambda.LambdaTests" = "tests/lambda_tests.l"
 "Lambda.DispatchTests" = "tests/lambda_dispatch_tests.l"
+"Lambda.AspectWeavingTests" = "tests/lambda_aspect_weaving_tests.l"
 # tests/lambda_webbridge_tests.l (needs --features web) and
 # tests/lambda_runtime_loop_tests.l (needs --target jvm --features jvm)
 # are real, complete, manually-verified tests deliberately NOT registered

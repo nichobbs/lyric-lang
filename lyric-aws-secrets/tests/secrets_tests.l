@@ -405,11 +405,12 @@ test "jvm kernel: classifyParameterError maps known AWS error messages to typed 
 func awsInitStillNotImplementedScenario(): String {
   match AwsSecrets.init() {
     case Ok(_) -> "init() must not silently succeed on the aws feature: initFromAnnotations() stays NOT_IMPLEMENTED (issue #6866)"
-    case Err(e) -> if AwsSecrets.errorMessage(e).contains("is not implemented") {
+    case Err(NotImplemented(feature, _)) -> if feature == "initFromAnnotations" {
       "OK"
     } else {
-      "init()'s error must say it is not implemented, got: " + AwsSecrets.errorMessage(e)
+      "init()'s NotImplemented must name initFromAnnotations, got: " + feature
     }
+    case Err(e) -> "init() must fail with NotImplemented, got: " + AwsSecrets.errorMessage(e)
   }
 }
 
@@ -994,4 +995,36 @@ test "jvm kernel: extractSecretValue converts a binary (null SecretString) secre
     "OK",
     "a binary secret must always come back as a typed BinaryValueUnsupported error, never a silent Ok(null)"
   )
+}
+
+// ─── Cache TTL bounds (#7253) ─────────────────────────────────────────────────
+test "checkCacheTtl: accepts 0, the default and the one-day maximum" {
+  assertTrue(isValidCacheTtl(0), "0 disables caching")
+  assertTrue(isValidCacheTtl(300), "default TTL")
+  assertTrue(isValidCacheTtl(maxCacheTtlSeconds()), "maximum TTL")
+  match checkCacheTtl(300) {
+    case Ok(t) -> assertTrue(t == 300, "Ok carries the TTL")
+    case Err(e) -> assertTrue(false, "300 must be accepted: " + errorMessage(e))
+  }
+}
+
+test "checkCacheTtl: rejects negative and over-long TTLs with InvalidConfig" {
+  assertTrue(not isValidCacheTtl(-1), "negative TTL")
+  assertTrue(not isValidCacheTtl(maxCacheTtlSeconds() + 1), "TTL past one day")
+  match checkCacheTtl(-5) {
+    case Err(InvalidConfig(field, _)) -> assertEqual(field, "SecretCache.ttlSeconds", "names the field")
+    case _ -> assertTrue(false, "negative TTL must be InvalidConfig")
+  }
+  match checkCacheTtl(1000000) {
+    case Err(InvalidConfig(_, msg)) -> assertTrue(msg.contains("1000000"), "message carries the value")
+    case _ -> assertTrue(false, "huge TTL must be InvalidConfig")
+  }
+}
+
+test "SecretsError.NotImplemented and InvalidConfig: errorMessage names the feature or field" {
+  assertTrue(
+    errorMessage(NotImplemented(feature = "x", message = "m")).contains("Not implemented: x"),
+    "NotImplemented message"
+  )
+  assertTrue(errorMessage(InvalidConfig(field = "f", message = "m")).contains("f"), "InvalidConfig message")
 }
