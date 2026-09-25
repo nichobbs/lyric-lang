@@ -35582,3 +35582,13 @@ seams on native, where `slice[Byte]` shares the `LyricList` representation
 (D-N-015). The MSIL metadata reader (15 reference-assembly reads), the CLI's
 runtime-DLL copies, `Std.Tls` certificate loading and `lyric-web` static files
 now use them (#7284, epic #7256).
+
+## Std.Hash.sha512OfFile streams the file
+
+`sha512OfFile` read the whole file into memory before hashing it, which for
+`lyric restore`'s package archives meant holding each `.nupkg` in full. The
+kernels now stream the file through the digest: `SHA512.HashData(Stream)` over
+`File.OpenRead` on .NET, and `MessageDigest.update` over 64 KiB
+`FileInputStream.readNBytes` chunks on the JVM, closing the stream on failure
+too. `hash_tests.l` checks multi-chunk, exact-chunk and empty files against
+`sha512OfBytes` (#7284, epic #7256).

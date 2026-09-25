@@ -16,12 +16,14 @@
 //! `Convert.ToHexString` output the public `Std.Hash` API documents.
 //!
 //! Internal: only `Std.Hash` should import this.
-@axiom("java.security.MessageDigest.getInstance(\"SHA-1\") and getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-1/SHA-256/SHA-512 semantics and are pure functions of their input bytes")
+@axiom("java.security.MessageDigest.getInstance(\"SHA-1\") and getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-1/SHA-256/SHA-512 semantics and are pure functions of their input bytes; update() over java.io.FileInputStream.readNBytes chunks digests the file's current contents")
 package Std.HashHost
 
 extern type JMessageDigest = "java.security.MessageDigest"
 
 extern type JHexFormat = "java.util.HexFormat"
+
+extern type JFileInput = "java.io.FileInputStream"
 
 /// Compute the SHA-1 digest of `bytes` and return the raw 20-byte digest.
 /// The `getInstance(...).digest(...)` call is chained inline so the JVM
@@ -54,6 +56,27 @@ pub func hostSha256Bytes(bytes: in slice[Byte]): slice[Byte] {
 @stable(since = "1.0")
 pub func hostSha512Bytes(bytes: in slice[Byte]): slice[Byte] {
   JMessageDigest.getInstance("SHA-512").digest(bytes)
+}
+
+/// Stream the file at `path` through SHA-512 in 64 KiB chunks and return the
+/// raw 64-byte digest, so hashing a large file never holds it in memory
+/// (#7284). Throws when the file cannot be opened or read; the stream is
+/// closed on both paths.
+pub func hostSha512File(path: in String): slice[Byte] {
+  val md = JMessageDigest.getInstance("SHA-512")
+  val fis = JFileInput.new(path)
+  try {
+    var chunk = fis.readNBytes(65536)
+    while chunk.length > 0 {
+      md.update(chunk)
+      chunk = fis.readNBytes(65536)
+    }
+    fis.close()
+    md.digest()
+  } catch Bug as b {
+    fis.close()
+    panic(b.message)
+  }
 }
 
 /// Convert a byte slice to an uppercase hexadecimal string (one `[0-9A-F]`

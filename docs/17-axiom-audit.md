@@ -581,21 +581,26 @@ values from the OS CSPRNG on every call.
 ### `Std.HashHost` — `lyric-stdlib/std/_kernel/hash_host.l`
 
 ```
-@axiom("System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; all are pure functions")
+@axiom("System.Security.Cryptography.SHA1.HashData + System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics and are pure functions of their input; SHA512.HashData(Stream) over System.IO.File.OpenRead digests the file's current contents")
 ```
 
-**BCL surface**: `System.Security.Cryptography.SHA256.HashData`,
-`System.Security.Cryptography.SHA512.HashData`, and `System.Convert.ToHexString`.
-Composed by `Std.Hash.sha256OfBytes` and `sha512OfBytes` into public helpers.
+**BCL surface**: `System.Security.Cryptography.SHA1.HashData`,
+`SHA256.HashData`, `SHA512.HashData` (the `byte[]` and `Stream` overloads),
+`System.IO.File.OpenRead`, and `System.Convert.ToHexString`. Composed by
+`Std.Hash.sha1OfBytes`, `sha256OfBytes`, `sha512OfBytes` and `sha512OfFile`
+into public helpers. The JVM twin (`_kernel_jvm/hash_host.l`) uses
+`java.security.MessageDigest`, streaming files through `update` over
+`FileInputStream.readNBytes` chunks.
 
-**Gap**: SHA-256 and SHA-512 are deterministic cryptographic hashes whose
-output is keyed on the entire input; the prover cannot model the underlying
-algorithms, but all three BCL primitives are documented as pure (no observable
-side effects, no hidden state).
+**Gap**: SHA-1, SHA-256 and SHA-512 are deterministic cryptographic hashes
+whose output is keyed on the entire input; the prover cannot model the
+underlying algorithms, but the byte-array primitives are documented as pure
+(no observable side effects, no hidden state). The file digest reads the
+file system and is not pure: it reflects the file's contents at read time
+and throws when the file cannot be opened or read.
 
-**Caller obligation**: None.  All functions are total on their inputs;
-both `HashData` functions accept any byte sequence and `ToHexString` accepts
-any byte slice.
+**Caller obligation**: None for the byte-array helpers, which are total on
+their inputs. `Std.Hash.sha512OfFile` converts a read failure into `Err`.
 
 **Review**: Stable.
 
@@ -946,7 +951,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier conforms to its documented .NET contract |
 | `dotnet` | `Std.FileHost` | `file_host.l` | System.IO.File / Directory operations conform to their documented .NET contracts |
 | `dotnet` | `Std.FormatHost` | `format_host.l` | System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts |
-| `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA1.HashData + System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; all are pure functions |
+| `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA1.HashData + System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics and are pure functions of their input; SHA512.HashData(Stream) over System.IO.File.OpenRead digests the file's current contents |
 | `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http and System.Net.Security TLS configuration operations conform to their documented .NET contracts |
 | `dotnet` | `Std.HttpServer` | `http_server.l` | System.Threading.Tasks.Task.Run, System.Collections.Concurrent.ConcurrentQueue, and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts |
 | `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |
@@ -974,7 +979,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.EnvironmentHost` | `environment_host.l` | java.lang.System operations conform to their documented JVM contracts |
 | `jvm` | `Std.FileHost` | `file_host.l` | java.io.File / FileInputStream / FileOutputStream conform to their documented JVM contracts |
 | `jvm` | `Std.FormatHost` | `format_host.l` | java.math.BigDecimal, java.lang.Integer, and java.util.Locale conform to their documented JVM contracts |
-| `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-1\") and getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-1/SHA-256/SHA-512 semantics and are pure functions of their input bytes |
+| `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-1\") and getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-1/SHA-256/SHA-512 semantics and are pure functions of their input bytes; update() over java.io.FileInputStream.readNBytes chunks digests the file's current contents |
 | `jvm` | `Std.HttpHost` | `http_host.l` | java.net.http.HttpClient and javax.net.ssl / java.security TLS configuration operations conform to their documented JVM contracts |
 | `jvm` | `Std.HttpServer` | `http_server.l` | com.sun.net.httpserver.HttpServer / javax.net.ssl / java.security / java.lang.reflect operations conform to their documented JVM contracts |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
