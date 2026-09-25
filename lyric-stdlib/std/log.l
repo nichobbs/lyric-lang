@@ -6,6 +6,7 @@
 @runtime_checked
 package Std.Log
 
+import Std.Char
 import Std.LogHost as HostLog
 import Std.String
 
@@ -21,6 +22,7 @@ pub enum LogLevel {
 pub record LogField {
   key: String
   value: String
+  invariant: key.length > 0
 }
 
 @stable(since = "1.0")
@@ -39,7 +41,8 @@ func levelName(level: in LogLevel): String {
 }
 
 // Escape special characters in a log field key or value to prevent log injection.
-// Replaces \, newlines, carriage returns, = and " with safe escape sequences.
+// Replaces \, line breaks, other control characters, = and " with escape
+// sequences, so a field can neither start a new log line nor forge a field.
 // Runs of characters that need no escaping are appended as single substrings,
 // so the common case copies each field once.
 func appendEscapedLogValue(sb: in StringBuilder, s: in String): Unit {
@@ -49,10 +52,8 @@ func appendEscapedLogValue(sb: in StringBuilder, s: in String): Unit {
     val ch: Char = s[i]
     val esc = if ch == '\\' {
       "\\\\"
-    } else if ch == '\n' {
-      "\\n"
-    } else if ch == '\r' {
-      "\\r"
+    } else if isLineBreakOrControl(ch) {
+      controlEscape(ch)
     } else if ch == '=' {
       "\\="
     } else if ch == '"' {
@@ -88,10 +89,82 @@ func formatFields(fields: in slice[LogField]): String {
   sb.toString()
 }
 
-/// Emit a best-effort log message through the host diagnostics sink.
+// Escape a log message: line breaks and other control characters become
+// visible escapes so a message (often built from request data) cannot start
+// a new, forged log line (CWE-117, #7245).  Unlike field values, `=` and `"`
+// are left alone: the message is free text, and a record ends at the line
+// break, which can no longer occur.
+func appendEscapedLogMessage(sb: in StringBuilder, s: in String): Unit {
+  var runStart = 0
+  var i = 0
+  while i < s.length {
+    val ch: Char = s[i]
+    val esc = if ch == '\\' {
+      "\\\\"
+    } else if isLineBreakOrControl(ch) {
+      controlEscape(ch)
+    } else {
+      ""
+    }
+    if esc.length > 0 {
+      sb.append(s.substring(runStart, i - runStart))
+      sb.append(esc)
+      runStart = i + 1
+    }
+    i = i + 1
+  }
+  sb.append(s.substring(runStart, s.length - runStart))
+}
+
+// C0 controls other than tab, DEL, C1 controls (including NEL, U+0085), and
+// the Unicode line and paragraph separators — everything a log viewer may
+// treat as a line break or that corrupts a single-line record.
+func isLineBreakOrControl(ch: in Char): Bool {
+  val c = toInt(ch);
+  (c < 32 and c != 9) or (c >= 127 and c <= 159) or c == 0x2028 or c == 0x2029
+}
+
+func controlEscape(ch: in Char): String {
+  val c = toInt(ch)
+  if c == 10 {
+    "\\n"
+  } else if c == 13 {
+    "\\r"
+  } else {
+    "\\u" + hex4(c)
+  }
+}
+
+func hex4(n: in Int): String {
+  val digits = "0123456789abcdef"
+  var acc = ""
+  var v = n
+  var i = 0
+  while i < 4 {
+    acc = digits.substring(v % 16, 1) + acc
+    v = v / 16
+    i = i + 1
+  }
+  acc
+}
+
+/// Emit a best-effort log message through the host diagnostics sink.  Line
+/// breaks and control characters in `msg` and in field keys and values are
+/// escaped, so one call always produces exactly one log line.
 @stable(since = "1.0")
 pub func log(level: in LogLevel, msg: in String, fields: in slice[LogField]): Unit {
-  HostLog.write(levelName(level), msg + formatFields(fields))
+  HostLog.write(levelName(level), renderLogLine(msg, fields))
+}
+
+/// The text `log` hands to the host sink for `msg` and `fields`: the
+/// escaped message followed by ` key=value` per field.  Never contains a
+/// line break, whatever the inputs.
+@stable(since = "1.2")
+pub func renderLogLine(msg: in String, fields: in slice[LogField]): String {
+  val sb = StringBuilder.new()
+  appendEscapedLogMessage(sb, msg)
+  sb.append(formatFields(fields))
+  sb.toString()
 }
 
 /// Log at debug level.

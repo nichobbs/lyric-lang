@@ -62,3 +62,30 @@ test "field carries key and value through the record" {
   assertEqual(f.key, "sessionId", "field key round-trips")
   assertEqual(f.value, "abc-123", "field value round-trips")
 }
+
+// #7245: the message itself was written raw, so CR/LF in a message (often
+// built from request data) forged extra log lines.
+test "renderLogLine escapes line breaks and control characters in the message" {
+  assertEqual(
+    renderLogLine("user bob\nlevel=error admin login", []),
+    "user bob\\nlevel=error admin login",
+    "LF is escaped"
+  )
+  assertEqual(renderLogLine("a\rb", []), "a\\rb", "CR is escaped")
+  assertEqual(renderLogLine("nul\u{0000}bell\u{0007}", []), "nul\\u0000bell\\u0007", "other C0 controls are escaped")
+  assertEqual(renderLogLine("sep x", []), "sep\\u2028x", "Unicode line separator is escaped")
+  assertEqual(
+    renderLogLine("tab\tkept = \"as is\"", []),
+    "tab\tkept = \"as is\"",
+    "tab, = and quotes stay in the message"
+  )
+}
+
+test "renderLogLine keeps every field on the same line" {
+  val line = renderLogLine("m", [field("k", "v1\nv2")])
+  assertEqual(line, "m k=v1\\nv2", "field value line break is escaped")
+}
+
+test "a LogField with an empty key violates its invariant" {
+  assertPanics("empty key", { -> val _ = LogField(key = "", value = "v") })
+}
