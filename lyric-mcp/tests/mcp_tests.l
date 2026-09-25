@@ -189,7 +189,10 @@ func assertResultField(v: in JsonValue, label: in String): JsonValue {
 func assertErrorCode(v: in JsonValue, expectedCode: in Long, label: in String): Unit {
   match getField(v, "error") {
     case None -> assertTrue(false, label + ": expected an 'error' field, got " + writeValue(v))
-    case Some(errv) -> match getInt(errv, "code") { case Some(code) -> assertTrue(code == expectedCode, label + " (code=" + code.toString() + ")"); case None -> assertTrue(false, label + ": error has no 'code'") }
+    case Some(errv) -> match getInt(errv, "code") {
+      case Some(code) -> assertTrue(code == expectedCode, label + " (code=" + code.toString() + ")")
+      case None -> assertTrue(false, label + ": error has no 'code'")
+    }
   }
 }
 
@@ -201,7 +204,10 @@ impl McpToolHandler for EchoToolHandler {
   func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
     match args {
       case None -> Ok(value = toolTextResult(""))
-      case Some(a) -> match getString(a, "text") { case Some(t) -> Ok(value = toolTextResult(t)); case None -> Ok(value = toolTextResult("")) }
+      case Some(a) -> match getString(a, "text") {
+        case Some(t) -> Ok(value = toolTextResult(t))
+        case None -> Ok(value = toolTextResult(""))
+      }
     }
   }
 }
@@ -490,11 +496,18 @@ test "server/discover: returns serverInfo and derived capabilities, answerable i
   val result = assertResultField(popResponse(box, "server/discover"), "server/discover")
   match getField(result, "serverInfo") {
     case None -> assertTrue(false, "expected a serverInfo object")
-    case Some(si) -> assertEqual(match getString(si, "name") { case Some(n) -> n; case None -> "" }, "test-server", "serverInfo.name")
+    case Some(si) -> assertEqual(
+      match getString(si, "name") { case Some(n) -> n; case None -> "" },
+      "test-server",
+      "serverInfo.name"
+    )
   }
   match getField(result, "capabilities") {
     case None -> assertTrue(false, "expected a capabilities object")
-    case Some(caps) -> match getField(caps, "tools") { case None -> assertTrue(false, "expected tools capability"); case Some(_) -> () }
+    case Some(caps) -> match getField(caps, "tools") {
+      case None -> assertTrue(false, "expected tools capability")
+      case Some(_) -> ()
+    }
   }
   match getField(result, "protocolVersion") {
     case None -> ()
@@ -528,35 +541,59 @@ test "tools/call: a successful call returns content with isError: false" {
   }
 }
 
-// #6341 — a live McpServer, not just the pure encodeAllToolDefsList encoder,
-// must dispatch a name registered via both addTool and addResumableTool to
-// the resumable handler, matching the tools/list dedup precedence.
-test "tools/call: a name registered via both addTool and addResumableTool dispatches to the resumable handler" {
-  val box = newMailbox()
+// #6341 made a name registered via both addTool and addResumableTool resolve
+// to the resumable handler.  #7246 makes that double registration a
+// precondition violation instead: a second registration under a name the
+// server already has is a programming error, not a silent shadowing.
+test "addTool/addResumableTool: registering a tool name twice violates the precondition" {
   val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
   val server = newServer(McpImplementation(name = "collision-server", version = "1.0.0"))
   addTool(
     server,
     McpToolDef(name = "collide", description = "plain", inputSchema = schema, handler = CollisionPlainHandler())
   )
-  addResumableTool(
-    server,
-    McpResumableToolDef(
-      name = "collide",
-      description = "resumable",
-      inputSchema = schema,
-      handler = CollisionResumableHandler()
-    )
+  assertTrue(hasToolNamed(server, "collide"), "the first registration is recorded")
+  assertPanics(
+    "same name via addResumableTool",
+    { ->
+      addResumableTool(
+        server,
+        McpResumableToolDef(
+          name = "collide",
+          description = "resumable",
+          inputSchema = schema,
+          handler = CollisionResumableHandler()
+        )
+      )
+    }
   )
-  var serverPeer = newPeer(ServerSideTransport(box = box), server)
-  val callParams = JObject(fields = [JsonField(name = "name", value = JString(value = "collide"))])
-  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
-  val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
-  val toolResult = decodeToolResult(result)
-  match toolResult.content[0] {
-    case TextContent(t) -> assertEqual(t, "resumable", "collision resolves to the resumable handler's answer, not the plain one")
-    case _ -> assertTrue(false, "expected TextContent")
-  }
+  assertPanics(
+    "same name via addTool",
+    { ->
+      addTool(
+        server,
+        McpToolDef(name = "collide", description = "again", inputSchema = schema, handler = CollisionPlainHandler())
+      )
+    }
+  )
+}
+
+test "addTool: a tool name must be 1-128 characters of [A-Za-z0-9_.-]" {
+  assertTrue(isValidToolName("get_weather.v2-beta"), "letters, digits, _ . -")
+  assertTrue(not isValidToolName(""), "empty")
+  assertTrue(not isValidToolName("has space"), "space")
+  assertTrue(not isValidToolName("slash/name"), "slash")
+  val schema = JObject(fields = [JsonField(name = "type", value = JString(value = "object"))])
+  val server = newServer(McpImplementation(name = "names", version = "1.0.0"))
+  assertPanics(
+    "invalid name",
+    { ->
+      addTool(
+        server,
+        McpToolDef(name = "bad name", description = "x", inputSchema = schema, handler = CollisionPlainHandler())
+      )
+    }
+  )
 }
 
 test "tools/call: a handler Err becomes a result with isError: true, not a protocol error" {
@@ -586,7 +623,10 @@ test "tools/call: a handler panic also becomes an isError result, never kills th
   val resp = popResponse(box, "tools/call")
   match getField(resp, "error") {
     case Some(_) -> assertTrue(false, "expected a successful (isError-true) result, not a protocol error")
-    case None -> assertTrue(decodeToolResult(assertResultField(resp, "tools/call")).isError, "panic surfaces as isError, not a crash")
+    case None -> assertTrue(
+      decodeToolResult(assertResultField(resp, "tools/call")).isError,
+      "panic surfaces as isError, not a crash"
+    )
   }
   // The connection must still be usable afterward.
   stage(serverPeer, box, reqText(2i64, "tools/list", None))
@@ -662,7 +702,11 @@ test "tools/call against a resumable tool answers with input_required, not a fin
   stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
   val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
   match decodeToolCallOutcome(result) {
-    case InputRequired(ir) -> assertEqual(ir.requestState, "delete:/tmp/x", "requestState carries the original call's context")
+    case InputRequired(ir) -> assertEqual(
+      ir.requestState,
+      "delete:/tmp/x",
+      "requestState carries the original call's context"
+    )
     case ToolResult(_) -> assertTrue(false, "expected InputRequired on the first call")
   }
 }
@@ -866,7 +910,10 @@ test "a real McpClient drives the full input_required resume loop against a real
             stage(serverPeer, box, reqText(2i64, "tools/call", Some(value = resumeWireParams)))
             match resumeToolCall(client, "confirm_delete", ir.requestState, inputResponses) {
               case Err(e) -> assertTrue(false, "resumeToolCall failed: " + e)
-              case Ok(resumed) -> match resumed { case ToolResult(r) -> assertFalse(r.isError, "resumed call finished successfully"); case InputRequired(_) -> assertTrue(false, "expected a finished ToolResult after resume") }
+              case Ok(resumed) -> match resumed {
+                case ToolResult(r) -> assertFalse(r.isError, "resumed call finished successfully")
+                case InputRequired(_) -> assertTrue(false, "expected a finished ToolResult after resume")
+              }
             }
           }
           case ToolResult(_) -> assertTrue(false, "expected InputRequired on the first call")
@@ -977,7 +1024,12 @@ test "callTool against a resumable tool's input_required answer returns Err, not
       stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callWireParams)))
       match callTool(client, "confirm_delete", Some(value = args)) {
         case Err(e) -> assertTrue(e.contains("input_required"), "callTool's Err should reference input_required, got: " + e)
-        case Ok(result) -> assertTrue(false, "expected an Err — callTool instead returned Ok(McpToolResult(content.count = " + result.content.count.toString() + ")), a false-success (#6334 regression)")
+        case Ok(result) -> assertTrue(
+          false,
+          "expected an Err — callTool instead returned Ok(McpToolResult(content.count = " +
+            result.content.count.toString() +
+            ")), a false-success (#6334 regression)"
+        )
       }
     }
   }

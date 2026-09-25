@@ -24,6 +24,7 @@ package Mcp.Server
 
 import Std.Core
 import Std.Collections
+import Std.Char as Ch
 import JsonRpc.Json
 import JsonRpc
 import JsonRpc.Stdio
@@ -73,25 +74,28 @@ pub func newServer(info: in McpImplementation): McpServer {
 }
 
 /// Register a tool, reachable via `tools/list` / `tools/call` once the
-/// server starts serving. A tool name registers with `addTool` or
-/// `addResumableTool`, not both — there is no registration-time diagnostic
-/// against double-registering a name, and both `handleToolsCall` dispatch
-/// and `tools/list` (`Mcp.encodeAllToolDefsList`) resolve a same-named
-/// double-registration to the resumable definition alone, never a
-/// duplicate `tools/list` entry.
+/// server starts serving. The name must be a valid MCP tool name
+/// (`isValidToolName`) not already registered by `addTool` or
+/// `addResumableTool`; registering a name twice is a programming error, so
+/// it is a precondition rather than a silent shadowing (#7246).
 @stable(since = "0.1")
-pub func addTool(server: in McpServer, tool: in McpToolDef): Unit {
+pub func addTool(server: in McpServer, tool: in McpToolDef): Unit
+  requires: isValidToolName(tool.name)
+  requires: not hasToolNamed(server, tool.name)
+{
   server.tools.add(tool)
 }
 
 /// Register a resumable tool — one that may answer `tools/call` with an
 /// `input_required` result instead of finishing in one round trip (docs/64
 /// §3.1/§3.2). Additive: registering a resumable tool never requires
-/// changing any plain `addTool` registration elsewhere. Takes precedence
-/// over a same-named plain `addTool` registration — see `addTool`'s doc
-/// comment.
+/// changing any plain `addTool` registration elsewhere. The same naming and
+/// uniqueness rules as `addTool` apply, across both kinds of tool.
 @stable(since = "0.2")
-pub func addResumableTool(server: in McpServer, tool: in McpResumableToolDef): Unit {
+pub func addResumableTool(server: in McpServer, tool: in McpResumableToolDef): Unit
+  requires: isValidToolName(tool.name)
+  requires: not hasToolNamed(server, tool.name)
+{
   server.resumableTools.add(tool)
 }
 
@@ -101,10 +105,66 @@ pub func addResource(server: in McpServer, resource: in McpResourceDef): Unit {
   server.resources.add(resource)
 }
 
-/// Register a prompt, reachable via `prompts/list` / `prompts/get`.
+/// Register a prompt, reachable via `prompts/list` / `prompts/get`.  Prompt
+/// names follow the tool-name rules and must be unique.
 @stable(since = "0.1")
-pub func addPrompt(server: in McpServer, prompt: in McpPromptDef): Unit {
+pub func addPrompt(server: in McpServer, prompt: in McpPromptDef): Unit
+  requires: isValidToolName(prompt.name)
+  requires: not hasPromptNamed(server, prompt.name)
+{
   server.prompts.add(prompt)
+}
+
+/// True when `name` is a valid MCP tool (or prompt) name: 1 to 128
+/// characters, each an ASCII letter, digit, `_`, `-` or `.`.
+@pure
+pub func isValidToolName(name: in String): Bool {
+  if name.length == 0 or name.length > 128 {
+    return false
+  }
+  var i = 0
+  while i < name.length {
+    val c = Ch.toInt(name[i])
+    val ok = (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or (c >= 48 and c <= 57) or c == 95 or c == 45 or c == 46
+    if not ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// True when `server` already has a plain or resumable tool named `name`.
+@pure
+pub func hasToolNamed(server: in McpServer, name: in String): Bool {
+  var i = 0
+  while i < server.tools.count {
+    if server.tools[i].name == name {
+      return true
+    }
+    i = i + 1
+  }
+  var j = 0
+  while j < server.resumableTools.count {
+    if server.resumableTools[j].name == name {
+      return true
+    }
+    j = j + 1
+  }
+  false
+}
+
+/// True when `server` already has a prompt named `name`.
+@pure
+pub func hasPromptNamed(server: in McpServer, name: in String): Bool {
+  var i = 0
+  while i < server.prompts.count {
+    if server.prompts[i].name == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
 }
 
 // ── Lookup helpers (explicit, non-generic — see lyric-jsonrpc/README.md
@@ -168,7 +228,13 @@ func hasAnyTools(server: in McpServer): Bool {
 // which no longer has a readiness check at all.
 func handleInitialize(server: in McpServer, paramsOpt: in Option[JsonValue]): Result[JsonValue, RpcError] {
   match decodeInitializeParams(paramsOpt) {
-    case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'initialize' requires a string 'protocolVersion'", data = None))
+    case None -> Err(
+      error = RpcError(
+        code = invalidParamsCode(),
+        message = "invalid params: 'initialize' requires a string 'protocolVersion'",
+        data = None
+      )
+    )
     case Some(initParams) -> {
       val negotiated = negotiateProtocolVersion(initParams.protocolVersion)
       Ok(
@@ -222,7 +288,13 @@ func dispatchResumableTool(
   match getField(p, "requestState") {
     case Some(_) -> {
       match getString(p, "requestState") {
-        case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'requestState' must be a string", data = None))
+        case None -> Err(
+          error = RpcError(
+            code = invalidParamsCode(),
+            message = "invalid params: 'requestState' must be a string",
+            data = None
+          )
+        )
         case Some(state) -> {
           val inputResponses = match getField(p, "inputResponses") {
             case Some(v) -> v
@@ -256,22 +328,47 @@ func dispatchResumableTool(
 
 func handleToolsCall(server: in McpServer, paramsOpt: in Option[JsonValue]): Result[JsonValue, RpcError] {
   match paramsOpt {
-    case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'tools/call' requires {name}", data = None))
+    case None -> Err(
+      error = RpcError(
+        code = invalidParamsCode(),
+        message = "invalid params: 'tools/call' requires {name}",
+        data = None
+      )
+    )
     case Some(p) -> match getString(p, "name") {
-      case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'tools/call' requires a string 'name'", data = None))
+      case None -> Err(
+        error = RpcError(
+          code = invalidParamsCode(),
+          message = "invalid params: 'tools/call' requires a string 'name'",
+          data = None
+        )
+      )
       case Some(toolName) -> {
         val argsOpt = getField(p, "arguments")
         match findResumableTool(server.resumableTools, toolName) {
           case Some(def) -> dispatchResumableTool(def, toolName, p, argsOpt)
           case None -> match findTool(server.tools, toolName) {
-            case None -> Err(error = RpcError(code = invalidParamsCode(), message = "unknown tool: '" + toolName + "'", data = None))
+            case None -> Err(
+              error = RpcError(
+                code = invalidParamsCode(),
+                message = "unknown tool: '" + toolName + "'",
+                data = None
+              )
+            )
             case Some(def) -> match getField(p, "requestState") {
               // `requestState` is only meaningful against a tool registered
               // via `addResumableTool` — a peer attempting to "resume" a
               // plain tool would otherwise silently fall through to an
               // ordinary `call()`, ignoring `requestState` entirely and
               // returning a misleadingly plain success.
-              case Some(_) -> Err(error = RpcError(code = invalidParamsCode(), message = "tool '" + toolName + "' is not resumable — 'requestState' is only valid against a tool registered with addResumableTool", data = None))
+              case Some(_) -> Err(
+                error = RpcError(
+                  code = invalidParamsCode(),
+                  message = "tool '" + toolName +
+                    "' is not resumable — 'requestState' is only valid against a tool registered with addResumableTool",
+                  data = None
+                )
+              )
               case None -> {
                 // Per docs/62 §5.1: a tool-execution failure — whether returned
                 // as `Err` or raised as a panic — is reported as a successful
@@ -301,11 +398,29 @@ func handleResourcesList(server: in McpServer): Result[JsonValue, RpcError] {
 
 func handleResourcesRead(server: in McpServer, paramsOpt: in Option[JsonValue]): Result[JsonValue, RpcError] {
   match paramsOpt {
-    case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'resources/read' requires {uri}", data = None))
+    case None -> Err(
+      error = RpcError(
+        code = invalidParamsCode(),
+        message = "invalid params: 'resources/read' requires {uri}",
+        data = None
+      )
+    )
     case Some(p) -> match getString(p, "uri") {
-      case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'resources/read' requires a string 'uri'", data = None))
+      case None -> Err(
+        error = RpcError(
+          code = invalidParamsCode(),
+          message = "invalid params: 'resources/read' requires a string 'uri'",
+          data = None
+        )
+      )
       case Some(uri) -> match findResource(server.resources, uri) {
-        case None -> Err(error = RpcError(code = invalidParamsCode(), message = "unknown resource: '" + uri + "'", data = None))
+        case None -> Err(
+          error = RpcError(
+            code = invalidParamsCode(),
+            message = "unknown resource: '" + uri + "'",
+            data = None
+          )
+        )
         case Some(def) -> {
           // Unlike tools, a resource-read failure IS a protocol error —
           // there is no `isError` result shape for resources in the spec.
@@ -315,7 +430,16 @@ func handleResourcesRead(server: in McpServer, paramsOpt: in Option[JsonValue]):
             Err(error = "resource '" + uri + "' handler panicked: " + b.message)
           }
           match outcome {
-            case Ok(content) -> Ok(value = JObject(fields = [JsonField(name = "contents", value = JArray(items = [encodeResourceContent(content)]))]))
+            case Ok(content) -> Ok(
+              value = JObject(
+                fields = [
+                  JsonField(
+                    name = "contents",
+                    value = JArray(items = [encodeResourceContent(content)])
+                  )
+                ]
+              )
+            )
             case Err(msg) -> Err(error = RpcError(code = invalidParamsCode(), message = msg, data = None))
           }
         }
@@ -330,13 +454,27 @@ func handlePromptsList(server: in McpServer): Result[JsonValue, RpcError] {
 
 func handlePromptsGet(server: in McpServer, paramsOpt: in Option[JsonValue]): Result[JsonValue, RpcError] {
   match paramsOpt {
-    case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'prompts/get' requires {name}", data = None))
+    case None -> Err(
+      error = RpcError(
+        code = invalidParamsCode(),
+        message = "invalid params: 'prompts/get' requires {name}",
+        data = None
+      )
+    )
     case Some(p) -> match getString(p, "name") {
-      case None -> Err(error = RpcError(code = invalidParamsCode(), message = "invalid params: 'prompts/get' requires a string 'name'", data = None))
+      case None -> Err(
+        error = RpcError(
+          code = invalidParamsCode(),
+          message = "invalid params: 'prompts/get' requires a string 'name'",
+          data = None
+        )
+      )
       case Some(name) -> {
         val argsOpt = getField(p, "arguments")
         match findPrompt(server.prompts, name) {
-          case None -> Err(error = RpcError(code = invalidParamsCode(), message = "unknown prompt: '" + name + "'", data = None))
+          case None -> Err(
+            error = RpcError(code = invalidParamsCode(), message = "unknown prompt: '" + name + "'", data = None)
+          )
           case Some(def) -> {
             // Like resources: `Err` is a protocol error, not an isError result.
             val outcome: Result[McpPromptResult, String] = try {
