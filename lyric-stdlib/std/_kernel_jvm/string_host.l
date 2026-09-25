@@ -7,7 +7,7 @@
 //! already ordinal on the JVM (#7257, #7258).
 //!
 //! Internal: only Std.String should import this.
-@axiom("java.lang.StringBuilder and String.indexOf(String, int) conform to their documented JVM contracts")
+@axiom("java.lang.StringBuilder, String.indexOf(String, int) and String.compareTo(String) conform to their documented JVM contracts")
 package Std.StringHost
 
 extern type HostStringBuilder = "java.lang.StringBuilder"
@@ -75,4 +75,10 @@ pub func hostAsciiCaseCompare(a: in String, b: in String): Int {
   } else {
     0
   }
+}
+
+// Ordinal (UTF-16 code unit) comparison in one pass: negative, zero or
+// positive as `a` sorts before, equal to or after `b` (#7284).
+pub func hostCompareOrdinal(a: in String, b: in String): Int {
+  a.compareTo(b)
 }

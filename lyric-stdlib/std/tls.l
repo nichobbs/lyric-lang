@@ -42,6 +42,7 @@
 package Std.Tls
 
 import Std.Core
+import Std.String as Str
 import Std.File
 import Std.Encoding
 import Std.TlsHost as Host
@@ -139,34 +140,11 @@ func readBytesOrTls(path: in String): Result[slice[Byte], TlsError] {
   }
 }
 
-// `String.contains` (the built-in method `checkKeyPemSupported` used to
-// call directly, `pem.contains("...")`) has no native codegen support:
-// `Lyric.LlvmCodegen.lowerScalarMethodCall`'s String-receiver arm only
-// recognises `.toString()` and `.substring(start, count)` (confirmed via
-// direct repro — issue #6240, the same class of gap as #6237's
-// `s[i]`/`String + Char` findings). `.substring(start, count)` and `==`
-// (via `lyric_string_eq`) ARE both supported identically on every target,
-// so this reimplements "does `haystack` contain `needle`" as a pure-Lyric
-// sliding-window scan built from those two primitives — a cross-target-safe
-// replacement, not a native-only workaround, with identical boolean results
-// to the built-in method it replaces.
+// `String.contains` has no native codegen support (#6240), so the search
+// goes through `Std.String`'s ordinal from-index kernel, which every target
+// implements without allocating (#7284).
 func containsMarker(haystack: in String, needle: in String): Bool {
-  val hLen = haystack.length
-  val nLen = needle.length
-  if nLen == 0 {
-    return true
-  }
-  if nLen > hLen {
-    return false
-  }
-  var i = 0
-  while i <= hLen - nLen {
-    if haystack.substring(i, nLen) == needle {
-      return true
-    }
-    i += 1
-  }
-  false
+  Str.indexOfFromRaw(haystack, needle, 0) >= 0
 }
 
 // Recognizes a private-key PEM format this module does not support (module

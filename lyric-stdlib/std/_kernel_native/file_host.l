@@ -62,7 +62,7 @@ extern func rtWriteAll(path: NativePtr[Byte], data: String, append: Int): Int = 
 
 extern func rtDelete(path: NativePtr[Byte]): Int = "lyric_file_delete"
 
-extern func rtDirCreate(path: NativePtr[Byte]): Int = "lyric_dir_create"
+extern func rtDirCreateAll(path: NativePtr[Byte]): Int = "lyric_dir_create_all"
 
 // Return-plus-ok-flag kernels (a ref-container out-param would leak
 // its initialiser; these always return a fresh owned list, empty on
@@ -183,37 +183,15 @@ pub func hostWriteTextResult(path: in String, text: in String): Result[Unit, IOE
   }
 }
 
-// Single-level create; mkdir(2)'s EEXIST counts as success for a
-// create-if-missing seam.
 @unsafe_ffi
-func createDirOne(path: in String): Bool {
-  val c = toC(path)
-  val rc = rtDirCreate(c)
-  if rc == 0 {
-    freeC(c)
-    return true
-  }
-  val probe = rtDirExists(c)
-  freeC(c)
-  probe == 1
-}
-
 pub func hostCreateDirResult(path: in String): Result[Unit, IOError] {
-  // lyric_dir_create is single-level mkdir(2); create each parent
-  // prefix first so this seam keeps the managed twin's
-  // create-with-parents semantics.  Index 0 is skipped so an absolute
-  // path never asks for mkdir("").
-  var i = 1
-  val n = path.length
-  while i < n {
-    if path.substring(i, 1) == "/" {
-      if not createDirOne(path.substring(0, i)) {
-        return Err(error = IoError(path = path, message = "the directory could not be created"))
-      }
-    }
-    i = i + 1
-  }
-  if createDirOne(path) {
+  // `mkdir -p` in the runtime: one mkdir(2) when the parent exists, and
+  // parents created only on ENOENT, keeping the managed twin's
+  // create-with-parents semantics (#7284).
+  val c = toC(path)
+  val rc = rtDirCreateAll(c)
+  freeC(c)
+  if rc == 0 {
     Ok(value = ())
   } else {
     Err(error = IoError(path = path, message = "the directory could not be created"))

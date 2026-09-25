@@ -334,13 +334,14 @@ pub func StringBuilder.toString(sb: in StringBuilder): String {
 @pure
 @stable(since = "1.0")
 pub func compare(s1: in String, s2: in String): Int {
-  if s1 < s2 {
-    return -1
+  val c = SH.hostCompareOrdinal(s1, s2)
+  if c < 0 {
+    -1
+  } else if c > 0 {
+    1
+  } else {
+    0
   }
-  if s1 > s2 {
-    return 1
-  }
-  return 0
 }
 
 // Check equality (same as == but as a function for generic contexts).

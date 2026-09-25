@@ -7010,7 +7010,8 @@ jobs:
             process_capture_tests process_tests format_tests json_tests \
             collections_tests char_tests math_tests hash_tests path_tests \
             errors_tests environment_tests string_tests string_methods_tests \
-            regex_tests yaml_tests testing_tests mocking_tests xml_tests \
+            regex_tests yaml_tests testing_tests testing_property_tests \
+            mocking_tests xml_tests \
             set_tests sort_tests collections_persistent_tests \
             collections_persistent_map_tests \
             book_ch01_tests book_ch02_tests book_ch03_tests book_ch04_tests \

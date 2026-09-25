@@ -9,7 +9,7 @@
 //! scan never has to re-slice the remainder (#7257, #7258).
 //!
 //! Internal: only Std.String should import this.
-@axiom("System.Text.StringBuilder and String.IndexOf(string, int, StringComparison) conform to their documented .NET contracts")
+@axiom("System.Text.StringBuilder, String.IndexOf(string, int, StringComparison) and String.CompareOrdinal(string, string) conform to their documented .NET contracts")
 package Std.StringHost
 
 extern type HostStringBuilder = "System.Text.StringBuilder"
@@ -18,6 +18,9 @@ extern type StringComparison = "System.StringComparison"
 
 @externTarget("System.StringComparison.Ordinal")
 func ordinalComparison(): StringComparison = ()
+
+@externTarget("System.String.CompareOrdinal")
+func netCompareOrdinal(a: in String, b: in String): Int = ()
 
 @externInstance
 @externTarget("System.String.IndexOf")
@@ -84,4 +87,10 @@ pub func hostAsciiCaseCompare(a: in String, b: in String): Int {
   } else {
     0
   }
+}
+
+// Ordinal (UTF-16 code unit) comparison in one pass: negative, zero or
+// positive as `a` sorts before, equal to or after `b` (#7284).
+pub func hostCompareOrdinal(a: in String, b: in String): Int {
+  netCompareOrdinal(a, b)
 }

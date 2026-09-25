@@ -27,6 +27,7 @@
 package Std.Regex
 
 import Std.Core
+import Std.String as Str
 import Std.RegexHost as RxHost
 
 // ─── Error type ──────────────────────────────────────────────────────────────
@@ -153,26 +154,5 @@ func classifyBug(msg: in String): RegexError {
 //
 // Public so the compatibility shim Std.RegexSafe can reuse it (#1108).
 pub func isTimeout(msg: in String): Bool {
-  val needle = "time-out"
-  val nLen = needle.length
-  val mLen = msg.length
-  if mLen < nLen {
-    return false
-  }
-  var i = 0
-  while i <= mLen - nLen {
-    var j = 0
-    var ok = true
-    while ok and j < nLen {
-      if msg[i + j] != needle[j] {
-        ok = false
-      }
-      j = j + 1
-    }
-    if ok {
-      return true
-    }
-    i = i + 1
-  }
-  false
+  Str.indexOfFromRaw(msg, "time-out", 0) >= 0
 }

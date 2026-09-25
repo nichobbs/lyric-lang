@@ -10,7 +10,7 @@
 //! `.length`/`.substring` model (D-N-006, #7258).
 //!
 //! Internal: only Std.String should import this.
-@axiom("lyric_string_concat_list and lyric_string_index_of_from conform to their lyric_rt.h contracts")
+@axiom("lyric_string_concat_list, lyric_string_index_of_from and lyric_string_cmp conform to their lyric_rt.h contracts")
 package Std.StringHost
 
 import Std.Collections
@@ -20,6 +20,8 @@ extern func rtConcatList(parts: List[String]): String = "lyric_string_concat_lis
 extern func rtIndexOfFrom(s: String, value: String, from: Long): Long = "lyric_string_index_of_from"
 
 extern func rtAsciiCaseCompare(a: String, b: String): Int = "lyric_string_ascii_case_compare"
+
+extern func rtCompare(a: String, b: String): Int = "lyric_string_cmp"
 
 // `String + Char` and `Char.toString()` have no native lowering (#6237),
 // so a Char is appended through its code point.
@@ -56,4 +58,11 @@ pub func hostIndexOfFrom(s: in String, value: in String, from: in Int): Int {
 // non-ASCII byte (the caller then compares full lowercase forms).
 pub func hostAsciiCaseCompare(a: in String, b: in String): Int {
   rtAsciiCaseCompare(a, b)
+}
+
+// Byte-wise comparison, the order `<`/`>` use on this target (UTF-8 byte
+// order equals code-point order): negative, zero or positive as `a` sorts
+// before, equal to or after `b` (#7284).
+pub func hostCompareOrdinal(a: in String, b: in String): Int {
+  rtCompare(a, b)
 }
