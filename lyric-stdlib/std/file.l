@@ -237,11 +237,15 @@ pub func listDirs(dir: in String): Result[List[String], IOError] {
 /// the 1601-01-01 sentinel and the JDK's `File.lastModified()` returns
 /// 0 — without the probe a missing path produced `Ok` with a garbage
 /// timestamp.  A path deleted between the probe and the read (TOCTOU)
-/// reports `IoError` rather than `FileNotFound` for that racing case
-/// only — `hostGetLastWriteTimeUtcResult` (every kernel twin, issue
-/// #6961) has no reason to re-derive a host-specific missing-path
-/// signal a moment after this function's own probe already ruled it
-/// out.
+/// is unaffected by this probe on dotnet/JVM: neither host call throws
+/// there either, so that race still yields `Ok` with a garbage sentinel
+/// timestamp, exactly as before this function had a `hostGetLastWriteTimeUtcResult`
+/// seam to call.  Only native's `stat(2)`-backed seam can actually observe
+/// the race (a missing path is a real syscall failure there), reporting
+/// `Err(IoError)` rather than `FileNotFound` for that racing case —
+/// `hostGetLastWriteTimeUtcResult` has no reason to re-derive a
+/// host-specific missing-path signal a moment after this function's own
+/// probe already ruled out the ordinary case.
 ///
 /// No `try`/`catch` here — unlike the other `Std.File` functions, this
 /// one calls straight into an exception-free `Result` seam on every

@@ -51,13 +51,19 @@ on this target the same way it already does on the other two.
   unwinding on native) and calls `hostGetLastWriteTimeUtcResult`
   directly via `match`. The pre-probe (`hostFileExists(path) or
   hostDirectoryExists(path)`) still runs first and still reports
-  `FileNotFound`, unchanged; a failure from the Result seam itself
-  (now only reachable via a TOCTOU race between the probe and the
-  call, or a genuine host error) reports `IoError` uniformly on every
-  target — the old dotnet-only message-text classification
-  (`"Could not find file"` / `FileNotFoundException` /
+  `FileNotFound`, unchanged; the old dotnet-only message-text
+  classification (`"Could not find file"` / `FileNotFoundException` /
   `DirectoryNotFoundException`) is gone because the pre-probe already
-  ruled out the ordinary not-found case; the race window's exact
+  rules out the ordinary not-found case on every target, and a
+  post-probe TOCTOU race is *not* uniformly observable: on dotnet/JVM,
+  neither `File.GetLastWriteTimeUtc` nor `File.lastModified()` throws
+  for a since-deleted path, so a path removed between the probe and
+  the call still silently yields `Ok` with a garbage sentinel
+  timestamp — identical to this function's pre-existing behavior on
+  those two targets, unchanged by this PR. Only native's `stat(2)`-backed
+  seam can actually observe that race (a missing path is a real syscall
+  failure there), reporting `Err(IoError)` rather than `FileNotFound`
+  for that racing case specifically — the race window's exact
   classification was never load-bearing either way.
 
 **Verification.** `lyric-rt/test/lyric_rt_test.c` gained
