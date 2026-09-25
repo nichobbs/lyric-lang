@@ -3763,6 +3763,7 @@ pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, Reco
     newMap(),
     newMap(),
     newMap(),
+    newMap(),
     sites
   )
   val items: List[Item] = newList()
