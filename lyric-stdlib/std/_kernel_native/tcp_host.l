@@ -303,6 +303,8 @@ extern func rtTlsServerNew(certPem: NativePtr[Byte], keyPem: NativePtr[Byte], mi
 
 extern func rtTlsServerAccept(serverCtx: Long, fd: Int): Long = "lyric_tls_server_accept"
 
+extern func rtSockSetTimeouts(fd: Int, timeoutMs: Int): Int = "lyric_sock_set_timeouts"
+
 extern func rtTlsCtxFree(ctx: Long): Unit = "lyric_tls_ctx_free"
 
 extern func rtTlsShutdown(conn: Long): Unit = "lyric_tls_shutdown"
@@ -540,11 +542,10 @@ func tlsVersionNumber(v: in Tls.TlsVersion): Int {
   }
 }
 
-// Build a fresh server TLS context from `cfg` (identity, minimum version,
-// mTLS, ALPN preference). The context is single-use: `hostUpgradeServerTls`
-// frees it immediately after the one `lyric_tls_server_accept` call that
-// consumes it (module header — no OpenSSL object needs to persist beyond
-// a single accept, unlike the returned `conn` handle).
+// Build a server TLS context from `cfg` (identity, minimum version, mTLS,
+// ALPN preference). It is owned by the `ServerTls` that
+// `hostPrepareServerTls` wraps it in, shared read-only by every handshake
+// upgraded with it, and freed by `hostReleaseServerTls`.
 @unsafe_ffi
 func buildServerCtx(cfg: in Tls.TlsServerConfig): Result[Long, TcpError] {
   // Explicit static-call form (`Tls.Identity.rawHandle(cfg.identity)`), NOT the
@@ -581,7 +582,7 @@ func buildServerCtx(cfg: in Tls.TlsServerConfig): Result[Long, TcpError] {
   if ctx != 0i64 {
     Ok(value = ctx)
   } else {
-    Err(error = TlsHandshakeFailed(message = rtLastErrorString()))
+    Err(error = TlsConfigInvalid(message = rtLastErrorString()))
   }
 }
 
@@ -602,33 +603,95 @@ pub func hostAcceptTls(l: in Listener, cfg: in Tls.TlsServerConfig): Result[Conn
   }
 }
 
-/// Terminate TLS on an already-accepted plain connection (the
-/// accept/upgrade split so a future driver can inspect the peer address
-/// before deciding to speak TLS). Same handshake-failure discipline as
-/// `hostAcceptTls`.
-pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
+/// A server TLS configuration validated and compiled once, for reuse across
+/// every connection a listener accepts (#7268). `ctx` is the seam's server
+/// `SSL_CTX` wrapper (as a `Long`, module header); OpenSSL allows concurrent
+/// `SSL_new` calls against one context, so handshakes on different threads
+/// share it. The owner must call `hostReleaseServerTls` exactly once after
+/// the last upgrade that uses it has returned.
+pub record ServerTls {
+  ctx: Long
+}
+
+/// Validate `cfg` and build its reusable server TLS context. A mutual-TLS
+/// misconfiguration (`requireClientCert` with no `clientCa`, #6042) or an
+/// identity OpenSSL rejects is `Err(TlsConfigInvalid(...))`.
+pub func hostPrepareServerTls(cfg: in Tls.TlsServerConfig): Result[ServerTls, TcpError] {
   match validateServerConfig(cfg) {
-    case Some(e) -> {
-      val _ = rtSockClose(conn.fd)
-      return Err(error = e)
+    case Some(e) -> Err(error = e)
+    case None -> match buildServerCtx(cfg) {
+      case Ok(ctx) -> Ok(value = ServerTls(ctx = ctx))
+      case Err(e) -> Err(error = e)
     }
-    case None -> ()
   }
-  match buildServerCtx(cfg) {
+}
+
+/// Free the TLS context a `ServerTls` owns. Must run exactly once, after
+/// every upgrade that uses it has returned.
+pub func hostReleaseServerTls(t: in ServerTls): Unit {
+  rtTlsCtxFree(t.ctx)
+}
+
+/// Bound every subsequent blocking read and write on `conn` to `timeoutMs`
+/// milliseconds of inactivity (`0` = no limit). A read or write that times
+/// out returns `Err(TransportFailed(...))`. Best-effort: a socket that is
+/// already closed ignores the call (its next read or write fails anyway).
+pub func hostSetIoTimeout(conn: in Conn, timeoutMs: in Int): Unit
+  requires: timeoutMs >= 0
+{
+  val _ = rtSockSetTimeouts(conn.fd, timeoutMs)
+}
+
+/// Terminate TLS on an already-accepted plain connection (the accept/upgrade
+/// split so a driver can run the handshake off its accept loop, #7268).
+/// `handshakeTimeoutMs` (`0` = no limit) bounds each blocking socket operation
+/// of the handshake, so a peer that connects and never finishes its
+/// ClientHello fails instead of holding the connection open forever; the
+/// timeout is cleared again on success. On `Err` the plain `conn` is left for
+/// the caller to `hostClose`, so a caller that tracks live connections can
+/// deregister it before its socket is released.
+pub func hostUpgradeServerTlsPrepared(
+  conn: in Conn, tls: in ServerTls, handshakeTimeoutMs: in Int
+): Result[Conn, TcpError]
+  requires: handshakeTimeoutMs >= 0
+{
+  if handshakeTimeoutMs > 0 {
+    val _ = rtSockSetTimeouts(conn.fd, handshakeTimeoutMs)
+  }
+  val tlsConn = rtTlsServerAccept(tls.ctx, conn.fd)
+  if tlsConn == 0i64 {
+    Err(error = TlsHandshakeFailed(message = rtLastErrorString()))
+  } else {
+    if handshakeTimeoutMs > 0 {
+      val _ = rtSockSetTimeouts(conn.fd, 0)
+    }
+    val alpn = rtTlsAlpnString(tlsConn)
+    Ok(value = Conn(fd = conn.fd, tlsConnHandle = tlsConn, alpn = alpn))
+  }
+}
+
+/// Terminate TLS on an already-accepted plain connection using `cfg`, with no
+/// handshake timeout. On failure the socket is closed before returning, so a
+/// rejected peer never leaks a connection. Builds (and frees) a TLS context
+/// for this one
+/// connection; a driver upgrading many connections should call
+/// `hostPrepareServerTls` once and `hostUpgradeServerTlsPrepared` per
+/// connection instead.
+pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
+  match hostPrepareServerTls(cfg) {
     case Err(e) -> {
       val _ = rtSockClose(conn.fd)
       Err(error = e)
     }
-    case Ok(ctx) -> {
-      val tlsConn = rtTlsServerAccept(ctx, conn.fd)
-      rtTlsCtxFree(ctx)
-      if tlsConn == 0i64 {
-        val msg = rtLastErrorString()
-        val _ = rtSockClose(conn.fd)
-        Err(error = TlsHandshakeFailed(message = msg))
-      } else {
-        val alpn = rtTlsAlpnString(tlsConn)
-        Ok(value = Conn(fd = conn.fd, tlsConnHandle = tlsConn, alpn = alpn))
+    case Ok(tls) -> {
+      val result = hostUpgradeServerTlsPrepared(conn, tls, 0)
+      hostReleaseServerTls(tls)
+      match result {
+        case Ok(upgraded) -> Ok(value = upgraded)
+        case Err(e) -> {
+          val _ = rtSockClose(conn.fd)
+          Err(error = e)
+        }
       }
     }
   }

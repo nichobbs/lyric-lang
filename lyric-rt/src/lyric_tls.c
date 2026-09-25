@@ -50,6 +50,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 /* ── Thread-local last-error diagnostics ──────────────────────────────── */
@@ -418,6 +419,26 @@ int32_t lyric_sock_accept_interruptible(int32_t listen_fd, int32_t wake_read_fd)
     }
 }
 
+int32_t lyric_sock_set_timeouts(int32_t fd, int32_t timeout_ms) {
+    if (timeout_ms < 0) {
+        set_err("socket timeout must be >= 0, got %d", (int)timeout_ms);
+        return -1;
+    }
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0 ||
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) != 0) {
+        set_err("setsockopt timeout: %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static int is_timeout_errno(int e) {
+    return e == EAGAIN || e == EWOULDBLOCK;
+}
+
 int64_t lyric_sock_read(int32_t fd, uint8_t* buf, int64_t n) {
     if (n <= 0) return 0;
     ssize_t got;
@@ -425,6 +446,10 @@ int64_t lyric_sock_read(int32_t fd, uint8_t* buf, int64_t n) {
         got = read(fd, buf, (size_t)n);
     } while (got < 0 && errno == EINTR);
     if (got < 0) {
+        if (is_timeout_errno(errno)) {
+            set_err("read: timed out");
+            return -1;
+        }
         set_err("read: %s", strerror(errno));
         return -1;
     }
@@ -437,6 +462,10 @@ int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n) {
         ssize_t w = write(fd, buf + off, (size_t)(n - off));
         if (w < 0) {
             if (errno == EINTR) continue;
+            if (is_timeout_errno(errno)) {
+                set_err("write: timed out");
+                return -1;
+            }
             set_err("write: %s", strerror(errno));
             return -1;
         }
@@ -1200,8 +1229,15 @@ void* lyric_tls_server_accept(void* server_ctx, int32_t fd) {
         O.SSL_free(ssl);
         return NULL;
     }
+    errno = 0;
     if (O.SSL_accept(ssl) != 1) {
-        set_ossl_err("TLS handshake");
+        /* A socket timeout (lyric_sock_set_timeouts) surfaces from OpenSSL
+         * as WANT_READ/WANT_WRITE on this blocking fd with errno EAGAIN. */
+        if (is_timeout_errno(errno)) {
+            set_err("TLS handshake: timed out");
+        } else {
+            set_ossl_err("TLS handshake");
+        }
         O.SSL_free(ssl);
         return NULL;
     }
@@ -1215,11 +1251,21 @@ int64_t lyric_tls_read(void* conn, uint8_t* buf, int64_t n) {
     ossl_ssl* ssl = (ossl_ssl*)conn;
     int want = (n > 0x7fffffff) ? 0x7fffffff : (int)n;
     for (;;) {
+        errno = 0;
         int r = O.SSL_read(ssl, buf, want);
         if (r > 0) return (int64_t)r;
+        int saved_errno = errno;
         int err = O.SSL_get_error(ssl, r);
         if (err == OSSL_SSL_ERROR_ZERO_RETURN) return 0; /* clean close_notify */
-        if (err == OSSL_SSL_ERROR_WANT_READ || err == OSSL_SSL_ERROR_WANT_WRITE) continue;
+        if (err == OSSL_SSL_ERROR_WANT_READ || err == OSSL_SSL_ERROR_WANT_WRITE) {
+            /* On a blocking fd a WANT_* with EAGAIN is a socket timeout, not
+             * a retryable condition: retrying would wait forever. */
+            if (is_timeout_errno(saved_errno)) {
+                set_err("TLS read: timed out");
+                return -1;
+            }
+            continue;
+        }
         set_ossl_err("TLS read");
         return -1;
     }
@@ -1233,13 +1279,21 @@ int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n) {
     while (off < n) {
         int64_t remaining = n - off;
         int chunk = (remaining > 0x7fffffff) ? 0x7fffffff : (int)remaining;
+        errno = 0;
         int w = O.SSL_write(ssl, buf + off, chunk);
         if (w > 0) {
             off += w;
             continue;
         }
+        int saved_errno = errno;
         int err = O.SSL_get_error(ssl, w);
-        if (err == OSSL_SSL_ERROR_WANT_READ || err == OSSL_SSL_ERROR_WANT_WRITE) continue;
+        if (err == OSSL_SSL_ERROR_WANT_READ || err == OSSL_SSL_ERROR_WANT_WRITE) {
+            if (is_timeout_errno(saved_errno)) {
+                set_err("TLS write: timed out");
+                return -1;
+            }
+            continue;
+        }
         set_ossl_err("TLS write");
         return -1;
     }

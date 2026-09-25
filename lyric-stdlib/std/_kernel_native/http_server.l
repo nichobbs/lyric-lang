@@ -23,13 +23,13 @@
 //! this native twin implements ONLY the HTTP/1.1 half of `Std.HttpEngine` —
 //! matching this issue's own text ("driving the sans-IO Std.HttpEngine's
 //! FSM"; no h2 codepath is mentioned) and the JVM twin's precedent (which
-//! also lacks h2 today). `_kernel_native/tcp_host.l`'s `hostAcceptTls`
+//! also lacks h2 today). `_kernel_native/tcp_host.l`'s server TLS context
 //! unconditionally advertises `"h2,http/1.1"` as its ALPN preference (that
 //! constant, `alpnPreference`, is shared with `Std.HttpHost`'s client kernel
 //! and the TLS self-tests — narrowing it here would be a cross-cutting
 //! change out of this item's scope), so a real HTTP/2-capable TLS client
 //! that offers `h2` WOULD negotiate it even though this server cannot speak
-//! it. `onAccepted` below guards against this explicitly: any connection
+//! it. `serveTlsConnection` below guards against this explicitly: any connection
 //! whose negotiated ALPN is `"h2"` is closed immediately rather than fed to
 //! the HTTP/1.1 parser (which would otherwise silently misinterpret h2's
 //! binary frame format as HTTP/1.1 text and either hang or emit garbage) —
@@ -88,15 +88,16 @@
 //! mutex/semaphore buffers on native (and, worse, risks a use-after-free if
 //! a still-running connection thread later touched a queue whose backing
 //! buffer this function had already freed). `stopListener` here instead: (1)
-//! closes the transport, unblocking the accept thread's `hostAccept`/
-//! `hostAcceptTls` call with an error so its own loop ends; (2) `pthread_join`s
+//! closes the transport, unblocking the accept thread's `hostAccept` call
+//! with an error so its own loop ends; (2) `pthread_join`s
 //! the accept thread (a POSIX thread's own termination synchronizes-with its
 //! joiner, so by the time this returns, every `ServerQueue.workerTids.add`/
 //! `activeConns.add` call the accept thread's own connection-spawning path
 //! could ever make has already happened and is visible here with no extra
 //! locking needed); (3) `hostShutdown`s every still-registered connection
 //! (see below); (4) `pthread_join`s every handler thread the accept thread
-//! ever spawned; only then (5) frees the queue's mutex/semaphore. This makes
+//! ever spawned; only then (5) frees the listener's shared TLS context and the
+//! queue's mutex/semaphore. This makes
 //! `stopListener` BLOCK until every accepted connection has genuinely
 //! finished (a real behavioural difference from the dotnet/JVM twins, and
 //! stronger than either — a caller wanting a non-blocking stop can spawn its
@@ -294,6 +295,7 @@ import Std.HttpEngine
 import Std.TcpHost
 import Std.Time
 import Std.String
+import Std.Environment as Env
 
 // =====================================================================
 // Extern seam bindings.
@@ -627,6 +629,11 @@ pub record HttpListener {
   // queue's already-freed buffers (a double-free) -- both loud invariant
   // violations, not silently tolerated.
   var stopped: Bool
+  // The listener's shared server TLS context (#7268): built once by
+  // `startListenerTls`, freed by `stopListener` only after every connection
+  // thread that could still be handshaking against it has been joined.
+  // `ctx = 0i64` for a plain listener (freeing it is then a no-op).
+  serverTls: ServerTls
 }
 
 /// One fully-parsed request plus the machinery to respond to it. `conn` is
@@ -971,14 +978,16 @@ func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLi
 }
 
 // Spawn one `pthread_create`d thread per accepted connection (module
-// header). A spawn failure closes the connection rather than leaking it.
+// header) running `body`, which owns `conn` from then on and must end by
+// `unregisterConn` + `hostClose` on it. A spawn failure closes the
+// connection rather than leaking it.
 @unsafe_ffi
-func spawnHandler(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits): Unit {
+func spawnConnectionThread(conn: in Conn, queue: in ServerQueue, body: () -> Unit): Unit {
   // Register BEFORE spawning (#6792, `registerConn`'s doc comment) -- never
   // the other way around.
   registerConn(queue, conn)
   var tid: Long = 0
-  val worker: () -> NativePtr[Byte] = { -> processConnection(conn, queue, limits); nativeNullPtr() }
+  val worker: () -> NativePtr[Byte] = { -> body(); nativeNullPtr() }
   // Retain BEFORE pthreadCreate, matching the ARC contract for a callback
   // the C API holds beyond the initiating call (#6797, extern-decl comment
   // above): this function returns immediately without joining, so nothing
@@ -989,16 +998,137 @@ func spawnHandler(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits)
   if rc == 0 {
     registerTid(queue, tid, workerHandle)
   } else {
-    // The thread never started, so processConnection's own
-    // unregisterConn/hostClose will never run for this connection --
-    // undo the registration and close it here instead, or it would leak
-    // into activeConns forever with no thread ever coming to remove it.
-    // The retain above is likewise undone immediately: no thread will
-    // ever release it.
+    // The thread never started, so `body`'s own unregisterConn/hostClose
+    // will never run for this connection -- undo the registration and
+    // close it here instead, or it would leak into activeConns forever with
+    // no thread ever coming to remove it. The retain above is likewise
+    // undone immediately: no thread will ever release it.
     rtRelease(worker)
     unregisterConn(queue, conn)
     hostClose(conn)
   }
+}
+
+func spawnHandler(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits): Unit {
+  spawnConnectionThread(conn, queue, { -> processConnection(conn, queue, limits) })
+}
+
+// The TLS connection thread body (#7268): run the handshake here, on the
+// connection's own thread, so a slow or silent peer never blocks the accept
+// thread. `plain` stays registered throughout (the upgraded connection keeps
+// its fd, which is what the registry matches on), so `stopListener`'s
+// shutdown interrupts a handshake in progress exactly like a blocked read. A
+// negotiated-h2 connection is dropped rather than parsed as HTTP/1.1
+// (module header).
+func serveTlsConnection(
+  plain: in Conn,
+  queue: in ServerQueue,
+  tls: in ServerTls,
+  limits: in EngineLimits,
+  handshakeTimeoutMs: in Int,
+  idleTimeoutMs: in Int,
+): Unit {
+  match hostUpgradeServerTlsPrepared(plain, tls, handshakeTimeoutMs) {
+    case Err(_) -> {
+      unregisterConn(queue, plain)
+      hostClose(plain)
+    }
+    case Ok(conn) -> {
+      if hostAlpn(conn) == "h2" {
+        unregisterConn(queue, conn)
+        hostClose(conn)
+      } else {
+        hostSetIoTimeout(conn, idleTimeoutMs)
+        processConnection(conn, queue, limits)
+      }
+    }
+  }
+}
+
+func spawnTlsHandler(
+  plain: in Conn,
+  queue: in ServerQueue,
+  tls: in ServerTls,
+  limits: in EngineLimits,
+  handshakeTimeoutMs: in Int,
+  idleTimeoutMs: in Int,
+): Unit {
+  spawnConnectionThread(
+    plain,
+    queue,
+    { -> serveTlsConnection(plain, queue, tls, limits, handshakeTimeoutMs, idleTimeoutMs) }
+  )
+}
+
+// Connection timeouts (#7268), identical to the dotnet twin's. A TLS
+// handshake runs on the connection's own thread, never the accept thread,
+// and each of its blocking socket operations is bounded by
+// `tlsHandshakeTimeoutMsDefault`, so a peer that connects and never sends a
+// ClientHello is dropped. Once a connection is established, every blocking
+// read and write is bounded by `connectionIdleTimeoutMsDefault` of
+// inactivity, which closes idle keep-alive connections and peers that stop
+// reading or sending mid-request; a slow handler is unaffected (the
+// connection thread waits on the handler, not the socket, while a request is
+// in flight). Both are per-deployment overridable through
+// `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` / `LYRIC_HTTP_IDLE_TIMEOUT_MS`.
+val tlsHandshakeTimeoutMsDefault: Int = 10000
+
+val connectionIdleTimeoutMsDefault: Int = 120000
+
+// A positive integer from `name`, otherwise `fallback` (a zero or negative
+// timeout would silently disable the protection it exists for). Parsed
+// here as plain ASCII decimal because `Std.Parse` has no native kernel; a
+// value above one day is rejected rather than risking Int overflow.
+func positiveIntFromEnv(name: in String, fallback: in Int): Int {
+  match Env.getVar(name) {
+    case Ok(raw) -> {
+      val parsed = parsePositiveDecimal(raw)
+      if parsed >= 1 {
+        parsed
+      } else {
+        fallback
+      }
+    }
+    case Err(_) -> fallback
+  }
+}
+
+// `raw` as a decimal in 1..86400000, or -1 when it is empty, has a
+// non-digit, or is out of range.
+func parsePositiveDecimal(raw: in String): Int {
+  val maxValue = 86400000
+  if raw.length == 0 {
+    return 0 - 1
+  }
+  var n = 0
+  var i = 0
+  while i < raw.length {
+    val cp = charCodeAt(raw, i)
+    if not isDigitCp(cp) {
+      return 0 - 1
+    }
+    n = n * 10 + (cp - 48)
+    if n > maxValue {
+      return 0 - 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+/// The TLS handshake timeout in milliseconds a listener applies: the
+/// `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` environment variable when it is a
+/// positive integer, otherwise 10000. Read once per listener at start.
+pub func resolveTlsHandshakeTimeoutMs(): Int {
+  positiveIntFromEnv("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", tlsHandshakeTimeoutMsDefault)
+}
+
+/// The connection inactivity timeout in milliseconds a listener applies to
+/// every blocking read and write: the `LYRIC_HTTP_IDLE_TIMEOUT_MS`
+/// environment variable when it is a positive integer, otherwise 120000.
+/// Read once per listener at start.
+pub func resolveConnectionIdleTimeoutMs(): Int {
+  positiveIntFromEnv("LYRIC_HTTP_IDLE_TIMEOUT_MS", connectionIdleTimeoutMsDefault)
 }
 
 // How long to back off before retrying accept() after an EMFILE/ENFILE
@@ -1008,9 +1138,8 @@ func spawnHandler(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits)
 // else closes a descriptor.
 val acceptOverloadBackoffMs: Int = 5
 
-// Handle one accept result: on success, reject a negotiated-h2 connection
-// (module header's "Scope: v1 is HTTP/1.1 only" section) or spawn a
-// per-connection thread and keep looping; on a genuinely dead listener
+// Handle one plain accept result: on success, apply the idle timeout and
+// spawn a per-connection thread and keep looping; on a genuinely dead listener
 // (`AcceptFatal`/`BindFailed` -- the intentional `stopListener` shutdown
 // path, or a real socket-level fault) end the loop; on a transient or
 // resource-exhaustion accept() failure (issue #6805's `AcceptFailureKind`,
@@ -1020,49 +1149,62 @@ val acceptOverloadBackoffMs: Int = 5
 // failure silently and permanently ended the loop, so the listener looked
 // alive from the outside while it had actually stopped accepting new
 // connections for good, with nothing logged; any other per-connection
-// failure (e.g. a TLS handshake that failed for one client) is likewise
-// skipped so one bad peer never takes the listener down.
-func onAccepted(accepted: in Result[Conn, TcpError], queue: in ServerQueue, limits: in EngineLimits): Bool {
+// failure is likewise skipped so one bad peer never takes the listener down.
+func onAccepted(
+  accepted: in Result[Conn, TcpError],
+  queue: in ServerQueue,
+  limits: in EngineLimits,
+  idleTimeoutMs: in Int,
+): Bool {
   match accepted {
     case Ok(conn) -> {
-      if hostAlpn(conn) == "h2" {
-        hostClose(conn)
-        true
-      } else {
-        spawnHandler(conn, queue, limits)
+      hostSetIoTimeout(conn, idleTimeoutMs)
+      spawnHandler(conn, queue, limits)
+      true
+    }
+    case Err(e) -> acceptLoopContinues(e)
+  }
+}
+
+// Whether an accept failure leaves the loop running (see `onAccepted`).
+func acceptLoopContinues(e: in TcpError): Bool {
+  match e {
+    case AcceptFailed(_, _, kind) -> match kind {
+      case AcceptFatal -> false
+      case AcceptTransient -> true
+      case AcceptOverloaded -> {
+        sleepMillis(acceptOverloadBackoffMs)
         true
       }
     }
-    case Err(e) -> match e {
-      case AcceptFailed(_, _, kind) -> match kind {
-        case AcceptFatal -> false
-        case AcceptTransient -> true
-        case AcceptOverloaded -> {
-          sleepMillis(acceptOverloadBackoffMs)
-          true
-        }
-      }
-      case BindFailed(_) -> false
-      case _ -> true
-    }
+    case BindFailed(_) -> false
+    case _ -> true
   }
 }
 
 func plainAcceptLoop(transport: in Listener, queue: in ServerQueue, limits: in EngineLimits): Unit {
+  val idleTimeoutMs = resolveConnectionIdleTimeoutMs()
   var running = true
   while running {
     val accepted = hostAccept(transport)
-    running = onAccepted(accepted, queue, limits)
+    running = onAccepted(accepted, queue, limits, idleTimeoutMs)
   }
 }
 
-func tlsAcceptLoop(
-  transport: in Listener, queue: in ServerQueue, tls: in TlsServerConfig, limits: in EngineLimits
-): Unit {
+// TLS accept loop. It only accepts the raw socket; the handshake runs on the
+// connection's own thread (`serveTlsConnection`, #7268) against the
+// listener's shared `ServerTls` context.
+func tlsAcceptLoop(transport: in Listener, queue: in ServerQueue, tls: in ServerTls, limits: in EngineLimits): Unit {
+  val handshakeTimeoutMs = resolveTlsHandshakeTimeoutMs()
+  val idleTimeoutMs = resolveConnectionIdleTimeoutMs()
   var running = true
   while running {
-    val accepted = hostAcceptTls(transport, tls)
-    running = onAccepted(accepted, queue, limits)
+    match hostAccept(transport) {
+      case Ok(plain) -> spawnTlsHandler(plain, queue, tls, limits, handshakeTimeoutMs, idleTimeoutMs)
+      case Err(e) -> {
+        running = acceptLoopContinues(e)
+      }
+    }
   }
 }
 
@@ -1098,7 +1240,8 @@ pub func startListener(prefix: in String): HttpListener {
         acceptTid = tid,
         queue = queue,
         acceptWorkerHandle = workerHandle,
-        stopped = false
+        stopped = false,
+        serverTls = ServerTls(ctx = 0i64)
       )
     }
     case Err(e) -> panic("Std.HttpServer.startListener: bind failed: " + TcpError.message(e))
@@ -1110,9 +1253,12 @@ pub func startListener(prefix: in String): HttpListener {
 /// every connection using `tls` (server identity, `minVersion`, mTLS). `host`
 /// is an IP literal, `"*"`/`"+"` (wildcard), or `"localhost"`. Returns
 /// `Err(InvalidConfig(...))` for a mutual-TLS misconfiguration
-/// (`requireClientCert` with no `clientCa`) caught before binding, or a
-/// bind/thread-spawn failure; per-connection handshake failures are handled
-/// inside the accept loop, never fatal to the listener. A negotiated-h2
+/// (`requireClientCert` with no `clientCa`) or an unusable identity caught
+/// before binding, or a bind/thread-spawn failure. The TLS context is built
+/// once for the listener, and each handshake runs on its connection's own
+/// thread under the `resolveTlsHandshakeTimeoutMs` timeout; a failed or
+/// timed-out handshake drops that connection and is never fatal to the
+/// listener. A negotiated-h2
 /// connection is dropped rather than parsed as HTTP/1.1 (module header).
 @unsafe_ffi
 pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): Result[HttpListener, TlsListenError] {
@@ -1125,12 +1271,19 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
       )
     )
   }
+  // Build the TLS context once for the listener's lifetime (#7268) rather
+  // than per connection; an identity OpenSSL rejects fails here, before
+  // binding, instead of on every handshake.
+  val serverTls = match hostPrepareServerTls(tls) {
+    case Ok(t) -> t
+    case Err(e) -> return Err(error = InvalidConfig(message = TcpError.message(e)))
+  }
   match hostListen(resolveBindHost(host), port) {
     case Ok(transport) -> {
       val queue = newServerQueue()
       val limits = EngineLimits.defaults()
       var tid: Long = 0
-      val worker: () -> NativePtr[Byte] = { -> tlsAcceptLoop(transport, queue, tls, limits); nativeNullPtr() }
+      val worker: () -> NativePtr[Byte] = { -> tlsAcceptLoop(transport, queue, serverTls, limits); nativeNullPtr() }
       // Retained before `pthreadCreate` (#6797, extern-decl comment above).
       rtRetain(worker)
       val workerHandle = rtPtrToLong(worker)
@@ -1156,6 +1309,7 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
         rtFree(queue.mutex)
         rtSemDestroy(queue.available)
         rtFree(queue.available)
+        hostReleaseServerTls(serverTls)
         return Err(error = InvalidConfig(message = "failed to spawn the accept thread"))
       }
       Ok(
@@ -1164,11 +1318,15 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
           acceptTid = tid,
           queue = queue,
           acceptWorkerHandle = workerHandle,
-          stopped = false
+          stopped = false,
+          serverTls = serverTls
         )
       )
     }
-    case Err(e) -> Err(error = InvalidConfig(message = "bind failed: " + TcpError.message(e)))
+    case Err(e) -> {
+      hostReleaseServerTls(serverTls)
+      Err(error = InvalidConfig(message = "bind failed: " + TcpError.message(e)))
+    }
   }
 }
 
@@ -1206,9 +1364,9 @@ pub func stopListener(l: in HttpListener): Unit {
   rtMutexUnlock(l.queue.mutex)
   hostStopListener(l.transport)
   // Join the accept thread FIRST, before touching `activeConns`: its own
-  // loop only ends once `hostAccept`/`hostAcceptTls` observes the wake-pipe
+  // loop only ends once `hostAccept` observes the wake-pipe
   // interrupt `hostStopListener` just signaled, and every connection it
-  // accepts along the way is registered synchronously (spawnHandler ->
+  // accepts along the way is registered synchronously (spawnConnectionThread ->
   // registerWorker) before the loop's next iteration. Joining it first
   // therefore guarantees the `activeConns` snapshot taken below is the
   // COMPLETE, final set -- no connection accepted "too late" can be
@@ -1319,12 +1477,15 @@ pub func stopListener(l: in HttpListener): Unit {
     val _ = pthreadJoin(tids[i], nativeAddrOf(outp))
     // `tids`/`workerHandles` are appended in lockstep by `registerTid`
     // under one lock, so index `i` always names the SAME connection's
-    // thread and closure -- release the retain `spawnHandler` took now
+    // thread and closure -- release the retain `spawnConnectionThread` took now
     // that this join proves the thread is done using it (#6797).
     val workerPtr = rtLongToPtr(workerHandles[i])
     rtRelease(workerPtr)
     i = i + 1
   }
+  // Every connection thread is joined, so no handshake can still be using
+  // the shared TLS context (#7268).
+  hostReleaseServerTls(l.serverTls)
   // A CALLER-owned puller thread -- one blocked inside `nextContext` ->
   // `dequeueContext` -> `rtSemWait(q.available)` -- may still be genuinely
   // parked right now (#6802). Unlike every thread joined just above, this

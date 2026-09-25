@@ -309,6 +309,22 @@ connection, each pumping transport bytes through its own engine instance.
 This fixes the concurrency deficiency in the same stroke as TLS —
 `async_spawn_self_test.l` already exercises the primitives on both targets.
 
+**Handshake placement and timeouts (#7268).** On dotnet and native the
+accept loop only accepts the raw socket; the TLS handshake runs on the
+connection's own task/thread, so a peer that connects and never sends a
+ClientHello cannot stall other connections. The listener builds its TLS
+state once at `startListenerTls` (`Std.TcpHost.hostPrepareServerTls`: the
+`SslServerAuthenticationOptions` with a cached `SslStreamCertificateContext`
+on dotnet, one shared `SSL_CTX` on native, freed by `stopListener` after
+every connection thread is joined), and each connection is upgraded with
+`hostUpgradeServerTlsPrepared` under a handshake timeout
+(`LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS`, default 10000). Established connections
+get a per-operation inactivity timeout on reads and writes
+(`LYRIC_HTTP_IDLE_TIMEOUT_MS`, default 120000) via `hostSetIoTimeout`. The
+JVM server (`com.sun.net.httpserver.HttpsServer`) already handshakes off its
+dispatcher thread with one `SSLContext` per listener and applies the JDK's
+own idle limit (`sun.net.httpserver.idleInterval`).
+
 ### 6.3 Public surface
 
 ```lyric

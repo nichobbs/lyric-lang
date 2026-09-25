@@ -977,6 +977,133 @@ static void test_tls_bytes_roundtrip(void) {
     lyric_tls_ctx_free(client);
 }
 
+/* ── Socket timeouts (#7268) ──────────────────────────────────────────── */
+
+static int64_t mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static int last_error_contains(const char* needle) {
+    char err[256];
+    lyric_tls_last_error(err, sizeof(err));
+    return strstr(err, needle) != NULL;
+}
+
+/* A connected loopback pair: `*server_fd` is the accepted end. */
+static void loopback_pair(int* listen_fd, int* client_fd, int* server_fd) {
+    *listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(*listen_fd >= 0);
+    int port = lyric_sock_local_port(*listen_fd);
+    *client_fd = lyric_sock_connect("127.0.0.1", port);
+    CHECK(*client_fd >= 0);
+    *server_fd = lyric_sock_accept(*listen_fd);
+    CHECK(*server_fd >= 0);
+}
+
+/* A plain read on a silent peer fails once the timeout expires instead of
+ * blocking forever, and reports it as a timeout. */
+static void test_sock_read_timeout(void) {
+    CHECK(lyric_sock_set_timeouts(0, -1) == -1);
+    int listen_fd, client_fd, server_fd;
+    loopback_pair(&listen_fd, &client_fd, &server_fd);
+    CHECK(lyric_sock_set_timeouts(server_fd, 200) == 0);
+    uint8_t buf[16];
+    int64_t start = mono_ms();
+    CHECK(lyric_sock_read(server_fd, buf, sizeof(buf)) == -1);
+    int64_t elapsed = mono_ms() - start;
+    CHECK(elapsed >= 150 && elapsed < 3000);
+    CHECK(last_error_contains("timed out"));
+    /* 0 removes the limit again: data that is already queued still reads. */
+    CHECK(lyric_sock_set_timeouts(server_fd, 0) == 0);
+    CHECK(lyric_sock_write(client_fd, (const uint8_t*)"x", 1) == 1);
+    CHECK(lyric_sock_read(server_fd, buf, sizeof(buf)) == 1);
+    lyric_sock_close(server_fd);
+    lyric_sock_close(client_fd);
+    lyric_sock_close(listen_fd);
+}
+
+/* A client that connects and never sends a ClientHello: the server
+ * handshake fails at the timeout rather than blocking its thread forever. */
+static void test_tls_handshake_timeout(void) {
+    void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
+    CHECK(server != NULL);
+    int listen_fd, client_fd, server_fd;
+    loopback_pair(&listen_fd, &client_fd, &server_fd);
+    CHECK(lyric_sock_set_timeouts(server_fd, 200) == 0);
+    int64_t start = mono_ms();
+    void* conn = lyric_tls_server_accept(server, server_fd);
+    int64_t elapsed = mono_ms() - start;
+    CHECK(conn == NULL);
+    CHECK(elapsed >= 150 && elapsed < 3000);
+    CHECK(last_error_contains("timed out"));
+    lyric_sock_close(server_fd);
+    lyric_sock_close(client_fd);
+    lyric_sock_close(listen_fd);
+    lyric_tls_ctx_free(server);
+}
+
+typedef struct {
+    int listen_fd;
+    void* server_ctx;
+    int64_t read_result;
+    int64_t elapsed_ms;
+    int timed_out;
+} tls_timeout_arg;
+
+static void* tls_idle_server(void* p) {
+    tls_timeout_arg* a = (tls_timeout_arg*)p;
+    int fd = lyric_sock_accept(a->listen_fd);
+    if (fd < 0) return NULL;
+    set_timeout(fd);
+    void* conn = lyric_tls_server_accept(a->server_ctx, fd);
+    if (!conn) {
+        lyric_sock_close(fd);
+        return NULL;
+    }
+    lyric_sock_set_timeouts(fd, 200);
+    uint8_t buf[64];
+    int64_t start = mono_ms();
+    a->read_result = lyric_tls_read(conn, buf, sizeof(buf));
+    a->elapsed_ms = mono_ms() - start;
+    a->timed_out = last_error_contains("timed out");
+    lyric_tls_free(conn);
+    lyric_sock_close(fd);
+    return NULL;
+}
+
+/* After a completed handshake, a TLS read on an idle peer fails at the
+ * timeout.  Before #7268 the WANT_READ retry loop turned the socket
+ * timeout into another blocking read, so it never returned. */
+static void test_tls_read_timeout(void) {
+    void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
+    CHECK(server != NULL && client != NULL);
+    tls_timeout_arg a;
+    memset(&a, 0, sizeof(a));
+    a.listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(a.listen_fd >= 0);
+    a.server_ctx = server;
+    int port = lyric_sock_local_port(a.listen_fd);
+    pthread_t th;
+    pthread_create(&th, NULL, tls_idle_server, &a);
+    int fd = lyric_sock_connect("127.0.0.1", port);
+    CHECK(fd >= 0);
+    set_timeout(fd);
+    void* conn = lyric_tls_client_connect(client, fd, "localhost", "http/1.1");
+    CHECK(conn != NULL);
+    pthread_join(th, NULL);
+    CHECK(a.read_result == -1);
+    CHECK(a.elapsed_ms >= 150 && a.elapsed_ms < 3000);
+    CHECK(a.timed_out == 1);
+    if (conn) lyric_tls_free(conn);
+    lyric_sock_close(fd);
+    lyric_sock_close(a.listen_fd);
+    lyric_tls_ctx_free(server);
+    lyric_tls_ctx_free(client);
+}
+
 int main(void) {
     test_plain_roundtrip();
     test_alpn_string_null_conn();
@@ -986,6 +1113,7 @@ int main(void) {
     test_accept_interruptible_wakeup();
     test_accept_interruptible_presignaled();
     test_accept_interruptible_double_signal();
+    test_sock_read_timeout();
 
     if (!lyric_tls_available()) {
         char err[256];
@@ -1016,6 +1144,8 @@ int main(void) {
     test_last_error_string();
     test_alpn_string();
     test_tls_bytes_roundtrip();
+    test_tls_handshake_timeout();
+    test_tls_read_timeout();
 
     if (failures == 0) {
         printf("lyric_tls_test: all tests passed\n");
