@@ -272,3 +272,59 @@ test "newNdjsonTransport / newContentLengthTransport construct without error" {
   val c = newContentLengthTransport()
   assertTrue(true, "both constructors returned")
 }
+
+// ── Framing limits (#7246) ──────────────────────────────────────────────────
+// Every byte these readers consume comes from the peer, so an oversized or
+// ambiguous frame must be a framing error, never an unbounded read.
+func expectFramingError(text: in String, label: in String): Unit {
+  val src = CharSource(text = text, pos = 0)
+  match clReceiveVia(src) {
+    case Ok(_) -> assertTrue(false, label + ": expected a framing error")
+    case Err(_) -> ()
+  }
+}
+
+test "Content-Length: a declared length above the 16 MiB limit is rejected before reading the body" {
+  expectFramingError("Content-Length: 16777217\r\n\r\n{}", "oversized Content-Length")
+}
+
+test "Content-Length: a duplicate Content-Length header is rejected" {
+  expectFramingError("Content-Length: 2\r\nContent-Length: 5\r\n\r\n{}", "duplicate Content-Length")
+}
+
+test "Content-Length: a malformed Content-Length value is rejected" {
+  expectFramingError("Content-Length: 12abc\r\n\r\n{}", "malformed Content-Length")
+}
+
+test "Content-Length: a header line longer than 8192 characters is rejected" {
+  var long = "X-Pad: "
+  var i = 0
+  while i < 8200 {
+    long = long + "a"
+    i = i + 1
+  }
+  expectFramingError(long + "\r\nContent-Length: 2\r\n\r\n{}", "over-long header line")
+}
+
+test "Content-Length: more than 64 header lines is rejected" {
+  var headers = ""
+  var i = 0
+  while i < 70 {
+    headers = headers + "X-H" + i.toString() + ": v\r\n"
+    i = i + 1
+  }
+  expectFramingError(headers + "Content-Length: 2\r\n\r\n{}", "too many header lines")
+}
+
+test "NDJSON: a line above the 16 MiB limit is rejected" {
+  var chunk = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  while chunk.length <= 16777216 {
+    chunk = chunk + chunk
+  }
+  val lines: List[String] = newList()
+  lines.add(chunk)
+  match ndjsonReceiveVia(LineSource(lines = lines, pos = 0)) {
+    case Ok(_) -> assertTrue(false, "expected a framing error for an oversized NDJSON line")
+    case Err(_) -> ()
+  }
+}

@@ -111,13 +111,28 @@ impl LineWriter for HostLineWriter {
   }
 }
 
+// ── Framing limits ──────────────────────────────────────────────────────────
+// A peer controls every byte these readers consume, so each framing enforces
+// a hard ceiling and reports a violation as a framing `Err` (#7246): a single
+// message may not exceed `MAX_MESSAGE_BYTES` (16 MiB, UTF-8), a Content-Length
+// header line `MAX_HEADER_LINE_CHARS`, and a header block `MAX_HEADER_LINES`.
+val MAX_MESSAGE_BYTES: Int = 16777216
+
+val MAX_HEADER_LINE_CHARS: Int = 8192
+
+val MAX_HEADER_LINES: Int = 64
+
 // ── NDJSON framing (sans-IO core) ───────────────────────────────────────────
 /// Read one NDJSON-framed message via `reader`. `EndOfInput` maps to clean
 /// `Ok(None)`; every other `IOError` maps to `Err`.
 @stable(since = "0.1")
 pub func ndjsonReceiveVia(reader: in LineReader): Result[Option[String], String] {
   match reader.nextLine() {
-    case Ok(line) -> Ok(value = Some(value = line))
+    case Ok(line) -> if line.length > MAX_MESSAGE_BYTES or encodeUtf8(line).length > MAX_MESSAGE_BYTES {
+      Err(error = "NDJSON framing: message exceeds the " + MAX_MESSAGE_BYTES.toString() + "-byte limit")
+    } else {
+      Ok(value = Some(value = line))
+    }
     case Err(e) -> match e { case EndOfInput(_) -> Ok(value = None); case _ -> Err(error = IOError.message(e)) }
   }
 }
@@ -166,6 +181,7 @@ pub func newNdjsonTransport(): NdjsonTransport {
 //                    already read (a truncated header block)
 func clReadHeaderLine(reader: in CharReader): Result[Option[String], String] {
   var line = ""
+  var chars = 0
   var any = false
   var result: Result[Option[String], String] = Err(error = "unreachable")
   var done = false
@@ -183,8 +199,14 @@ func clReadHeaderLine(reader: in CharReader): Result[Option[String], String] {
       done = true
     } else if c == 13 {
       any = true
+    } else if chars >= MAX_HEADER_LINE_CHARS {
+      result = Err(
+        error = "Content-Length framing: header line exceeds " + MAX_HEADER_LINE_CHARS.toString() + " characters"
+      )
+      done = true
     } else {
       any = true
+      chars = chars + 1
       line = line + ("" + fromInt(c))
     }
   }
@@ -200,6 +222,7 @@ func clReadHeaderLine(reader: in CharReader): Result[Option[String], String] {
 func clReadHeaders(reader: in CharReader): Result[Option[Int], String] {
   var contentLength = 0 - 1
   var sawAny = false
+  var lines = 0
   var outcome: Result[Option[Int], String] = Err(error = "unreachable")
   var done = false
   while not done {
@@ -214,10 +237,88 @@ func clReadHeaders(reader: in CharReader): Result[Option[Int], String] {
         outcome = Err(error = e)
         done = true
       }
-      case Ok(lineOpt) -> match lineOpt { case None -> { if sawAny { outcome = Err(error = "Content-Length framing: unexpected end of stream inside the header block") } else { outcome = Ok(value = None) }; done = true }; case Some(lineIn) -> { val line: String = lineIn; sawAny = true; if line.length == 0 { if contentLength < 0 { outcome = Err(error = "Content-Length framing: header block ended without a Content-Length header") } else { outcome = Ok(value = Some(value = contentLength)) }; done = true } else { val colon = line.indexOf(":"); if colon > 0 { val key = line.substring(0, colon).trim(); val value = line.substring(colon + 1, line.length - colon - 1).trim(); if key.toLower() == "content-length" { match parseOptInt(value) { case Some(n) -> { contentLength = n }; case None -> () } } } } } }
+      case Ok(lineOpt) -> match lineOpt {
+        case None -> {
+          if sawAny {
+            outcome = Err(error = "Content-Length framing: unexpected end of stream inside the header block")
+          } else {
+            outcome = Ok(value = None)
+          }
+          done = true
+        }
+        case Some(lineIn) -> {
+          val line: String = lineIn
+          sawAny = true
+          lines = lines + 1
+          if line.length == 0 {
+            if contentLength < 0 {
+              outcome = Err(error = "Content-Length framing: header block ended without a Content-Length header")
+            } else {
+              outcome = Ok(value = Some(value = contentLength))
+            }
+            done = true
+          } else if lines > MAX_HEADER_LINES {
+            outcome = Err(error = "Content-Length framing: header block exceeds " + MAX_HEADER_LINES.toString() + " lines")
+            done = true
+          } else {
+            val headerErr = clApplyHeaderLine(line, contentLength)
+            if headerErr.length > 0 {
+              outcome = Err(error = headerErr)
+              done = true
+            } else {
+              contentLength = clContentLengthOf(line, contentLength)
+            }
+          }
+        }
+      }
     }
   }
   outcome
+}
+
+// The framing error for one header line given the Content-Length seen so far
+// (`current`, negative when none yet), or "" when the line is acceptable.  A
+// second Content-Length is rejected rather than silently overriding the first,
+// and the value must be a non-negative integer within `MAX_MESSAGE_BYTES`.
+func clApplyHeaderLine(line: in String, current: in Int): String {
+  val colon = line.indexOf(":")
+  if colon <= 0 {
+    return ""
+  }
+  val key = line.substring(0, colon).trim()
+  if key.toLower() != "content-length" {
+    return ""
+  }
+  if current >= 0 {
+    return "Content-Length framing: duplicate Content-Length header"
+  }
+  val value = line.substring(colon + 1, line.length - colon - 1).trim()
+  match parseOptInt(value) {
+    case None -> "Content-Length framing: malformed Content-Length header value"
+    case Some(n) -> if n < 0 {
+      "Content-Length framing: negative Content-Length header value"
+    } else if n > MAX_MESSAGE_BYTES {
+      "Content-Length framing: Content-Length " + n.toString() + " exceeds the " + MAX_MESSAGE_BYTES.toString() +
+        "-byte limit"
+    } else {
+      ""
+    }
+  }
+}
+
+// The Content-Length after `line` (already accepted by `clApplyHeaderLine`).
+func clContentLengthOf(line: in String, current: in Int): Int {
+  val colon = line.indexOf(":")
+  if colon <= 0 {
+    return current
+  }
+  if line.substring(0, colon).trim().toLower() != "content-length" {
+    return current
+  }
+  match parseOptInt(line.substring(colon + 1, line.length - colon - 1).trim()) {
+    case Some(n) -> n
+    case None -> current
+  }
 }
 
 // Reads exactly `contentLength` UTF-8 bytes' worth of body, one UTF-16 code
@@ -228,7 +329,9 @@ func clReadHeaders(reader: in CharReader): Result[Option[Int], String] {
 // UTF-8 encoder never splits a surrogate pair across the declared byte
 // count.
 func clReadBodyBytes(contentLength: in Int, reader: in CharReader): Result[String, String] {
-  var result = ""
+  // Pieces are collected and joined once: repeated `+` on a growing string
+  // is quadratic in the body size.
+  val parts: List[String] = newList()
   var bytesRead = 0
   var pendingHigh = 0 - 1
   var ok = true
@@ -243,7 +346,7 @@ func clReadBodyBytes(contentLength: in Int, reader: in CharReader): Result[Strin
     } else if pendingHigh >= 0 {
       if c >= 0xDC00 and c <= 0xDFFF {
         val piece = "" + fromInt(pendingHigh) + "" + fromInt(c)
-        result = result + piece
+        parts.add(piece)
         bytesRead = bytesRead + encodeUtf8(piece).length
         pendingHigh = 0 - 1
       } else {
@@ -251,14 +354,14 @@ func clReadBodyBytes(contentLength: in Int, reader: in CharReader): Result[Strin
         // surrogate — flush it standalone and reprocess `c` fresh rather
         // than failing the whole frame outright on this malformed shape.
         val hiChar = "" + fromInt(pendingHigh)
-        result = result + hiChar
+        parts.add(hiChar)
         bytesRead = bytesRead + encodeUtf8(hiChar).length
         pendingHigh = 0 - 1
         if c >= 0xD800 and c <= 0xDBFF {
           pendingHigh = c
         } else {
           val ch = "" + fromInt(c)
-          result = result + ch
+          parts.add(ch)
           bytesRead = bytesRead + encodeUtf8(ch).length
         }
       }
@@ -266,7 +369,7 @@ func clReadBodyBytes(contentLength: in Int, reader: in CharReader): Result[Strin
       pendingHigh = c
     } else {
       val ch = "" + fromInt(c)
-      result = result + ch
+      parts.add(ch)
       bytesRead = bytesRead + encodeUtf8(ch).length
     }
   }
@@ -275,7 +378,31 @@ func clReadBodyBytes(contentLength: in Int, reader: in CharReader): Result[Strin
   } else if pendingHigh >= 0 {
     Err(error = "Content-Length framing: message body ended mid-surrogate-pair")
   } else {
-    Ok(value = result)
+    Ok(value = concatAll(parts))
+  }
+}
+
+// Concatenate `parts` by pairwise merging: O(n log n) in the total length,
+// where a left-to-right `+` fold is quadratic.
+func concatAll(parts: in List[String]): String {
+  var level: List[String] = parts
+  while level.count > 1 {
+    val next: List[String] = newList()
+    var i = 0
+    while i < level.count {
+      if i + 1 < level.count {
+        next.add(level[i] + level[i + 1])
+      } else {
+        next.add(level[i])
+      }
+      i = i + 2
+    }
+    level = next
+  }
+  if level.count == 0 {
+    ""
+  } else {
+    level[0]
   }
 }
 
