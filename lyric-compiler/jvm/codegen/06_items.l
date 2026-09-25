@@ -3173,7 +3173,8 @@ func fileImportsStdString(file: in SourceFile): Bool {
 // callee's owner + descriptor.  See JvmFuncSig.
 pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
   val emptySeed: Map[String, String] = newMap()
-  collectFileSigsSeeded(file, into, emptySeed)
+  val emptyCtorReg: Map[String, String] = newMap()
+  collectFileSigsSeeded(file, into, emptySeed, emptyCtorReg)
 }
 
 // Union of a file's own `extern type` declarations and `seed` (the extern
@@ -3310,7 +3311,19 @@ func fnFieldRetTe(te: in TypeExpr): Option[TypeExpr] {
 }
 
 pub func collectFileSigsSeeded(
-  file: in SourceFile, into: in Map[String, JvmFuncSig], externSeed: in Map[String, String]
+  file: in SourceFile,
+  into: in Map[String, JvmFuncSig],
+  externSeed: in Map[String, String],
+  // #6929: bundle-wide ctor registry, fully populated across every file in
+  // the bundle by the time ANY call to this function runs (`Jvm.Bridge`
+  // now sequences all `collectFileCtors` calls before any
+  // `collectFileSigsSeeded` call) — consulted as a fallback when
+  // `recordRetClassOf`'s same-file-only pre-scan misses a function's
+  // return-type record declared in a DIFFERENT file. Empty for a caller
+  // with no bundle-wide ctor concept (e.g. `collectFileSigs`'s single-file
+  // convenience wrapper) — `recordRetClassOfBundle` degrades to the
+  // pre-existing same-file-only behavior when given an empty map.
+  ctorReg: in Map[String, String],
 ): Unit {
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
   // Resolve `extern type` parameter/return descriptors to the real JVM class
@@ -3424,7 +3437,10 @@ pub func collectFileSigsSeeded(
         val sigRecordRetClass: Option[String] = if decl.isAsync and funcBodyContainsYield(decl) {
           None
         } else {
-          recordRetClassOf(decl.ret, owner, localRecordNames)
+          match recordRetClassOf(decl.ret, owner, localRecordNames) {
+            case Some(cls) -> Some(value = cls)
+            case None -> recordRetClassOfBundle(decl.ret, owner, ctorReg, externTypes)
+          }
         }
         // #6754 (finding 1.2a): same async-generator exclusion as
         // `sigClosureRetTy`/`sigRecordRetClass` above — the synthesised

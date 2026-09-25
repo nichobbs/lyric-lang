@@ -1379,6 +1379,124 @@ func recordRetClassOfTe(te: in TypeExpr, owner: in String, localRecordNames: in 
   }
 }
 
+// Bundle-wide generic-record return-class recovery (#6929): as
+// `recordRetClassOf`, but consulting the FULLY-POPULATED bundle-wide ctor
+// registry (`Jvm.Bridge.compileProjectToJarBundledWithRestored`'s `ctorReg`
+// — the same registry `ctorClassFor`'s `ctx.ctors` is, just not yet wrapped
+// in a `FuncCtx` at signature-collection time) instead of a same-file-only
+// pre-scan, so a function whose return type is a generic record declared in
+// a DIFFERENT file — its own package, or a cross-package callee's package —
+// still resolves. `collectFileSigsSeeded`'s own `recordRetClassOf` call is
+// tried FIRST (same-file is always correct when it hits, and cheaper); this
+// is the fallback for when that same-file scan misses.
+//
+// `owner` is the FUNCTION's OWN declaring package (`collectFileSigsSeeded`'s
+// local `owner`, not a caller's): `ctorClassForBundle` checks a `<owner>::
+// <name>` scoped key first — the overwhelmingly common case where a
+// function returns a record declared in its OWN package — before the bare
+// bundle-global key. The bare fallback carries the same accepted risk
+// `recordParamClassOf`'s doc comment already documents for #6691/#6708
+// (two same-named generic records in different packages could resolve to
+// the wrong one) — no worse than the risk a plain `RecordName(...)`
+// construction call already carries via the identical registry.
+//
+// Requires the CALLER to have fully populated `ctorReg` across every file
+// in the bundle (user + stdlib + restored) BEFORE calling
+// `collectFileSigsSeeded` for ANY file — `Jvm.Bridge`'s registration passes
+// run all `collectFileCtors` calls first, then all `collectFileSigsSeeded`
+// calls, specifically so this fallback never sees a partially-built
+// registry and silently misses a record declared in a file visited later.
+//
+// `externTypes` (the caller's own file-scoped extern-type alias table, e.g.
+// `ownAwareExternTypes(file, externSeed)`) gates the bare-name lookup: a
+// bare single-segment head that already resolves as a same-file/imported
+// `extern type` is NEVER a Lyric record, so `ctorReg` is never consulted for
+// it — otherwise an unrelated, differently-packaged record sharing that
+// exact bare name (e.g. `extern type JDict[K, V] = "java.util.concurrent.
+// ConcurrentHashMap"` in one package colliding with an unrelated `record
+// JDict` in another) would win the bare-key lookup and the extern-typed
+// function would get a bogus `checkcast` to that record's class — a real
+// regression caught by `emitProject alias-qualified GENERIC extern type
+// signature collision (JVM, TGenericApp)`, fixed alongside the original
+// #6929 fix.
+pub func recordRetClassOfBundle(
+  retOpt: in Option[TypeExpr],
+  owner: in String,
+  ctorReg: in Map[String, String],
+  externTypes: in Map[String, String],
+): Option[String] {
+  match retOpt {
+    case Some(te) -> recordRetClassOfBundleTe(te, owner, ctorReg, externTypes)
+    case None -> None
+  }
+}
+
+func recordRetClassOfBundleTe(
+  te: in TypeExpr,
+  owner: in String,
+  ctorReg: in Map[String, String],
+  externTypes: in Map[String, String],
+): Option[String] {
+  match te.kind {
+    case TParen(inner) -> recordRetClassOfBundleTe(inner, owner, ctorReg, externTypes)
+    // A bare single-segment head naming a same-file/imported `extern type`
+    // (e.g. `JDict[K, V] = "java.util.concurrent.ConcurrentHashMap"`) is
+    // NEVER a Lyric record, regardless of what `ctorReg`'s bundle-wide bare
+    // key happens to hold — checked BEFORE consulting `ctorReg` at all, or
+    // an unrelated, differently-packaged record sharing the same bare name
+    // (e.g. an unrelated `record JDict`) silently wins the bare-key lookup
+    // and the extern-typed function gets a bogus `checkcast` to that
+    // record's class, producing a `ClassCastException` at runtime — a real
+    // regression this exact fix closes (see the decision log).
+    case TGenericApp(head, _) -> {
+      if head.segments.count == 1 and externTypes.containsKey(head.segments[0]) {
+        None
+      } else {
+        recordRetClassOfBundleHead(head, owner, ctorReg)
+      }
+    }
+    // `Lyric.Mono`'s monomorphizer can rewrite a specialised function's
+    // return type to a BARE `TRef` (type args substituted away entirely,
+    // since a specialisation has no generic params of its own left to
+    // apply them to) rather than keeping the `TGenericApp` shape — handle
+    // both so a mono-specialised copy of a cross-package generic function
+    // (#6929) resolves the same way its unspecialised original does.
+    case TRef(path) -> {
+      if path.segments.count == 1 and externTypes.containsKey(path.segments[0]) {
+        None
+      } else {
+        recordRetClassOfBundleHead(path, owner, ctorReg)
+      }
+    }
+    case _ -> None
+  }
+}
+
+// Shared by `recordRetClassOfBundleTe`'s `TGenericApp`/`TRef` arms: resolve
+// a type reference's `ModulePath` head to its constructible class, either a
+// bare single-segment name (via the owner-scoped-first `ctorClassForBundle`
+// fallback) or a package-QUALIFIED name (`EntryPkg.Entry`, the idiomatic
+// cross-package spelling) via the same DOTTED-qualified key `addCtorKeys`
+// (`06_items.l`) already registers for every constructible type.
+func recordRetClassOfBundleHead(head: in ModulePath, owner: in String, ctorReg: in Map[String, String]): Option[String] {
+  if head.segments.count == 1 {
+    ctorClassForBundle(ctorReg, owner, head.segments[0])
+  } else {
+    mapGet(ctorReg, joinSegments(head.segments, "."))
+  }
+}
+
+// As `ctorClassFor(ctx, name)`, but taking the raw ctor registry + owner
+// package directly instead of a `FuncCtx` — used at signature-collection
+// time (#6929), before a `FuncCtx` exists for the function being
+// registered.
+func ctorClassForBundle(ctorReg: in Map[String, String], owner: in String, name: in String): Option[String] {
+  match mapGet(ctorReg, owner + "::" + name) {
+    case Some(cls) -> Some(value = cls)
+    case None -> mapGet(ctorReg, name)
+  }
+}
+
 // Generic-record class recovery (#6691, #6708): resolve `ty` to
 // `Some("<owner>/<RecordName>")` when it is a bare `TGenericApp` naming a
 // CONSTRUCTIBLE record — via `ctorClassFor`, the SAME `ctx.ctors` registry
