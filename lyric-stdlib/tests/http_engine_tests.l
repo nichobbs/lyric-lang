@@ -141,7 +141,10 @@ func kindEquals(a: in ProtocolErrorKind, b: in ProtocolErrorKind): Bool {
     case HeadersTooLarge -> match b { case HeadersTooLarge -> true; case _ -> false }
     case ConflictingContentLength -> match b { case ConflictingContentLength -> true; case _ -> false }
     case InvalidContentLength -> match b { case InvalidContentLength -> true; case _ -> false }
-    case ContentLengthWithTransferEncoding -> match b { case ContentLengthWithTransferEncoding -> true; case _ -> false }
+    case ContentLengthWithTransferEncoding -> match b {
+      case ContentLengthWithTransferEncoding -> true
+      case _ -> false
+    }
     case InvalidTransferEncoding -> match b { case InvalidTransferEncoding -> true; case _ -> false }
     case NonFinalChunkedEncoding -> match b { case NonFinalChunkedEncoding -> true; case _ -> false }
     case UnsupportedTransferCoding -> match b { case UnsupportedTransferCoding -> true; case _ -> false }
@@ -832,4 +835,41 @@ test "EngineLimits.defaults() returns sane production values" {
 test "httpVersionToken renders the wire tokens" {
   assertEqual(httpVersionToken(Http1_1), "HTTP/1.1", "HTTP/1.1 token")
   assertEqual(httpVersionToken(Http1_0), "HTTP/1.0", "HTTP/1.0 token")
+}
+
+// ---------------------------------------------------------------------------
+// Read cursor (#7263): parse steps advance a cursor instead of re-slicing the
+// remaining buffer, and a partially scanned line resumes where it stopped.
+// ---------------------------------------------------------------------------
+func manyOneByteChunks(n: in Int): String {
+  val sb = StringBuilder.new()
+  sb.append("POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+  var i = 0
+  while i < n {
+    sb.append("1\r\nX\r\n")
+    i = i + 1
+  }
+  sb.append("0\r\n\r\n")
+  sb.toString()
+}
+
+test "a body of many one-byte chunks in a single feed is reassembled in order" {
+  val events = dropNeedMore(feedWhole(EngineLimits.defaults(), bytesOf(manyOneByteChunks(2000))))
+  assertRequestHead(events[0], "POST", "/c", "head")
+  assertEqualInt(reconstructBody(events).length, 2000, "every chunk delivered")
+  assertRequestComplete(events[events.count - 1], "complete")
+}
+
+test "a chunked body fed one byte at a time parses identically" {
+  val events = dropNeedMore(feedByteByByte(EngineLimits.defaults(), bytesOf(manyOneByteChunks(20))))
+  assertRequestHead(events[0], "POST", "/c", "head")
+  assertEqual(reconstructBody(events), repeat("X", 20), "body")
+  assertRequestComplete(events[events.count - 1], "complete")
+}
+
+test "a bare LF after a partially scanned line is still rejected" {
+  val events = dropNeedMore(
+    feedSplitAt(EngineLimits.defaults(), bytesOf("GET / HTTP/1.1\r\nHost: exam\nple\r\n\r\n"), 22)
+  )
+  assertProtocolError(events[events.count - 1], BareLf, "bare LF after resume")
 }

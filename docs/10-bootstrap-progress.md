@@ -35334,3 +35334,57 @@ locale no longer maps 'I' to dotless 'ı'. Covered by
 `string_case_locale_self_test.l` (run under tr-TR in CI)
 (D-progress-959, #7260, #7261, epic #7256).
 
+## Quadratic stdlib string builders rebuilt on StringBuilder
+
+Stdlib functions that built their result with `acc = acc + piece` now use
+`Std.String.StringBuilder` and append escape- and entity-free runs as single
+substrings, so they are linear in their output:
+
+- `Std.Encoding`: `tryDecodeUtf8`, `encodeHex`, `encodeBase64` (#7270, #7271).
+- `Std.String.repeat`, and `Std.Format.padLeft`/`padRight` (#7272).
+- `Std.Xml`: text/attribute collection and `textContent`, with non-allocating
+  lookahead (#7273).
+- `Std.Yaml`/JSON: quoted strings, with non-allocating lookahead and hashed
+  duplicate-key detection (#7274).
+- The JVM `Std.JsonHost` encoder and writer (#7275), and `Std.Log` field
+  escaping (#7276).
+- `urlDecode` in all three HTTP server kernels (#7267), HPACK
+  `octetsToString` (#7266), and the .NET kernel's `asciiLower`.
+- `Std.ProcessCapture.quoteArg`/`buildArgString` (#7278).
+
+`Std.Console.readAll` became linear through the new `joinList`. Covered by
+`stdlib_builders_self_test.l` on dotnet and JVM (epic #7256).
+
+## HTTP servers survive repeated request headers; HTTP/2 bounds the decoded header list
+
+`Std.HttpServer.requestHeaders` in the .NET and native kernels merged a
+repeated header name with `Map.add` on the existing key, which throws on .NET
+(`Dictionary.Add`), so any request that repeated a header name crashed the
+handler; it now groups values per name and joins each group once (the
+cross-target `Map.add` divergence itself is #7301). HPACK gains
+`decodeHeaderBlockLimited` and a `HeaderListTooLarge` error, and the HTTP/2
+connection now enforces `SETTINGS_MAX_HEADER_LIST_SIZE` against the DECODED
+list (RFC 7541 section 4.1 sizing), failing the connection with
+`ENHANCE_YOUR_CALM`: indexed references could previously expand a small
+compressed block into tens of thousands of fields (#7265, epic #7256).
+
+## runCapture with a large stdin no longer deadlocks on .NET and the JVM
+
+The .NET and JVM `Std.ProcessCaptureHost` kernels wrote all of stdin before
+they started draining the child's output, so a child that filled its stdout
+pipe before reading the rest of its input (`cat` on 256 KiB, formatters,
+`jq`) blocked forever and the timeout never fired. .NET now starts both
+drains first and writes stdin with `WriteAsync` inside the same timeout
+budget; the JVM feeds stdin from its own virtual thread. A child that never
+reads its input now times out instead of hanging. Covered by
+`process_stdin_self_test.l` on both targets (#7262, epic #7256).
+
+## HTTP parsers advance a read cursor instead of re-slicing their buffer
+
+`Std.HttpEngine` (HTTP/1.1) and `Std.HttpEngine.H2Frame` copied the whole
+remaining buffer after every parse step, so one 64 KiB read of tiny chunks or
+empty frames cost on the order of a gigabyte of copying. Both now keep a read
+cursor into the buffer and compact once per `feed`, and the HTTP/1.1 engine
+remembers how far a partial line has been scanned so a slowly delivered line
+is not rescanned from its start (#7263, #7264, epic #7256).
+

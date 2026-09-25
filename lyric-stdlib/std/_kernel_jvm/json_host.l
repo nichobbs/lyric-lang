@@ -39,6 +39,7 @@ import Std.Core
 import Std.Collections
 import Std.Char
 import Std.Yaml
+import Std.String
 
 // ── Handle types ──────────────────────────────────────────────────────────────
 // Plain records over the parsed tree; the names and shapes mirror the
@@ -80,7 +81,8 @@ pub func hostParseJson(s: in String): JsonDoc {
 func jsonParseErrMessage(e: in YamlError): String {
   match e {
     case UnexpectedChar(pos, expected) -> "unexpected character at position " + toString(pos) + "; expected " + expected
-    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + toString(pos) + "; expected " + expected
+    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + toString(pos) + "; expected " +
+      expected
     case InvalidNumber(pos, raw) -> "invalid number at position " + toString(pos) + ": '" + raw + "'"
     case DuplicateKey(pos, key) -> "duplicate key at position " + toString(pos) + ": '" + key + "'"
     case UnsupportedFeature(pos, feature) -> "unsupported YAML feature at position " + toString(pos) + ": " + feature
@@ -327,30 +329,45 @@ pub func hostPropertyValue(prop: in JsonProperty): JsonElement {
 // .NET's JsonEncodedText.Encode with the quotes added, matching the .NET
 // kernel's documented contract.
 pub func hostEncodeString(s: in String): String {
-  var result = "\""
+  val sb = StringBuilder.new()
+  appendEncodedString(sb, s)
+  sb.toString()
+}
+
+// Escape-free runs are copied as one substring each; per-character
+// concatenation made encoding quadratic in the string length (#7275).
+func appendEncodedString(sb: in StringBuilder, s: in String): Unit {
+  sb.appendChar('"')
+  var runStart = 0
   var i = 0
   while i < s.length {
     val c = s[i]
-    if c == '"' {
-      result = result + "\\\""
+    val esc = if c == '"' {
+      "\\\""
     } else if c == '\\' {
-      result = result + "\\\\"
+      "\\\\"
     } else if c == '\n' {
-      result = result + "\\n"
+      "\\n"
     } else if c == '\r' {
-      result = result + "\\r"
+      "\\r"
     } else if c == '\t' {
-      result = result + "\\t"
+      "\\t"
     } else if c < ' ' {
       // Remaining control characters (U+0000..U+001F) as \u00XX.
       val cp = toInt(c)
-      result = result + "\\u00" + jsonHexDigit(cp / 16) + jsonHexDigit(cp % 16)
+      "\\u00" + jsonHexDigit(cp / 16) + jsonHexDigit(cp % 16)
     } else {
-      result = result + "" + c
+      ""
+    }
+    if esc.length > 0 {
+      sb.append(s.substring(runStart, i - runStart))
+      sb.append(esc)
+      runStart = i + 1
     }
     i = i + 1
   }
-  result + "\""
+  sb.append(s.substring(runStart, s.length - runStart))
+  sb.appendChar('"')
 }
 
 func jsonHexDigit(n: in Int): String {
@@ -373,43 +390,47 @@ func jsonHexDigit(n: in Int): String {
 
 // Canonical-JSON writer for hostGetRawText.
 func writeJsonValue(v: in YamlValue): String {
+  val sb = StringBuilder.new()
+  writeJsonValueTo(sb, v)
+  sb.toString()
+}
+
+// One builder is threaded through the recursion so nested containers are
+// written once instead of being re-copied at every level (#7275).
+func writeJsonValueTo(sb: in StringBuilder, v: in YamlValue): Unit {
   match v {
-    case YNull -> "null"
-    case YBool(b) -> {
-      if b {
-        "true"
-      } else {
-        "false"
-      }
-    }
-    case YInt(n) -> toString(n)
-    case YFloat(f) -> toString(f)
-    case YString(s) -> hostEncodeString(s)
+    case YNull -> sb.append("null")
+    case YBool(b) -> sb.append(if b { "true" } else { "false" })
+    case YInt(n) -> sb.append(toString(n))
+    case YFloat(f) -> sb.append(toString(f))
+    case YString(str) -> appendEncodedString(sb, str)
     case YSequence(items) -> {
-      var out2 = "["
+      sb.appendChar('[')
       var i = 0
       while i < items.count {
         if i > 0 {
-          out2 = out2 + ","
+          sb.appendChar(',')
         }
         val el: YamlValue = items[i]
-        out2 = out2 + writeJsonValue(el)
+        writeJsonValueTo(sb, el)
         i = i + 1
       }
-      out2 + "]"
+      sb.appendChar(']')
     }
     case YMapping(pairs) -> {
-      var out3 = "{"
+      sb.appendChar('{')
       var j = 0
       while j < pairs.count {
         if j > 0 {
-          out3 = out3 + ","
+          sb.appendChar(',')
         }
         val pj: YamlPair = pairs[j]
-        out3 = out3 + hostEncodeString(pj.key) + ":" + writeJsonValue(pj.value)
+        appendEncodedString(sb, pj.key)
+        sb.appendChar(':')
+        writeJsonValueTo(sb, pj.value)
         j = j + 1
       }
-      out3 + "}"
+      sb.appendChar('}')
     }
   }
 }

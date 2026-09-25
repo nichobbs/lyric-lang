@@ -372,6 +372,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/result_ensures_accessor_self_test.l \
 	lyric-compiler/lyric/result_generic_specialization_self_test.l \
 	lyric-compiler/lyric/return_in_try_self_test.l \
+	lyric-compiler/lyric/process_stdin_self_test.l \
 	lyric-compiler/lyric/self_method_call_self_test.l \
 	lyric-compiler/lyric/slice_append_widening_self_test.l \
 	lyric-compiler/lyric/slice_array_abi_self_test.l \
@@ -379,6 +380,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/slice_string_self_test.l \
 	lyric-compiler/lyric/source_path_diagnostics_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_iface_self_test.l \
+	lyric-compiler/lyric/stdlib_builders_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_mono_self_test.l \
 	lyric-compiler/lyric/string_bounds_self_test.l \
 	lyric-compiler/lyric/string_builder_self_test.l \

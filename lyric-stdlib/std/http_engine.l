@@ -413,6 +413,13 @@ pub record Connection {
   limits: EngineLimits
   var phase: ConnPhase
   var buf: slice[Byte]
+  // Read cursor into `buf`: bytes before `pos` are consumed. Advancing a
+  // cursor instead of re-slicing the remainder keeps every parse step O(1)
+  // in the buffered size; `feed` compacts once per call (#7263).
+  var pos: Int
+  // Bytes from `pos` already scanned without finding CR or LF, so a line
+  // that arrives in many small reads is not rescanned from its start.
+  var scanned: Int
   var keepAlive: Bool
   var fatal: Bool
 }
@@ -423,7 +430,15 @@ pub record Connection {
 @experimental
 pub func newConnection(limits: in EngineLimits): Connection {
   val emptyBuf: slice[Byte] = []
-  Connection(limits = limits, phase = PhRequestLine, buf = emptyBuf, keepAlive = true, fatal = false)
+  Connection(
+    limits = limits,
+    phase = PhRequestLine,
+    buf = emptyBuf,
+    pos = 0,
+    scanned = 0,
+    keepAlive = true,
+    fatal = false
+  )
 }
 
 /// True once a `ProtocolError` has been emitted for this connection; the
@@ -619,30 +634,33 @@ func asciiBytesToString(bytes: in slice[Byte]): String {
 /// and each chunk-size line — all three share one grammar shape: a run of
 /// bytes terminated by a strict CRLF, capped at a caller-supplied length).
 union LineScan {
-  case LsNeedMore
+  case LsNeedMore(scanned: Int)
   case LsTooLong
   case LsBareCr
   case LsBareLf
   case LsFound(contentEnd: Int, consumed: Int)
 }
 
-func scanCrlfLine(buf: in slice[Byte], limit: in Int): LineScan {
-  val n = buf.length
+// Scans `buf` from `start`, resuming at `from` (bytes `[start, start + from)`
+// are already known to hold no CR or LF). Every offset in the result is
+// relative to `start`.
+func scanCrlfLine(buf: in slice[Byte], start: in Int, from: in Int, limit: in Int): LineScan {
+  val n = buf.length - start
   val cap = if limit < n { limit } else { n }
-  var i = 0
+  var i = from
   while i < cap {
-    val b = buf[i]
+    val b = buf[start + i]
     if isLf(b) {
       // A preceding CR is always consumed by the isCr branch below on the
-      // prior iteration (it returns LsFound before advancing past it), so a
-      // CR immediately before this LF can never be observed here — every LF
+      // prior iteration (it returns LsFound before advancing past it, and a
+      // CR at the end of the buffer stops the scan before it), so every LF
       // reached with `isLf(b)` true is a bare LF.
       return LsBareLf
     } else if isCr(b) {
       if i + 1 >= n {
-        return LsNeedMore
+        return LsNeedMore(scanned = i)
       }
-      if isLf(buf[i + 1]) {
+      if isLf(buf[start + i + 1]) {
         return LsFound(contentEnd = i, consumed = i + 2)
       }
       return LsBareCr
@@ -650,7 +668,7 @@ func scanCrlfLine(buf: in slice[Byte], limit: in Int): LineScan {
     i = i + 1
   }
   if n < limit {
-    LsNeedMore
+    LsNeedMore(scanned = i)
   } else {
     LsTooLong
   }
@@ -831,15 +849,15 @@ func splitHeaderLine(line: in slice[Byte]): Result[HeaderPair, ProtoErr] {
 }
 
 union HeaderLineResult {
-  case HlrNeedMore
+  case HlrNeedMore(scanned: Int)
   case HlrBlank(consumed: Int)
   case HlrField(name: String, value: String, consumed: Int)
   case HlrErr(kind: ProtocolErrorKind, message: String)
 }
 
-func scanHeaderLine(buf: in slice[Byte], limit: in Int): HeaderLineResult {
-  match scanCrlfLine(buf, limit) {
-    case LsNeedMore -> HlrNeedMore
+func scanHeaderLine(buf: in slice[Byte], start: in Int, from: in Int, limit: in Int): HeaderLineResult {
+  match scanCrlfLine(buf, start, from, limit) {
+    case LsNeedMore(scanned) -> HlrNeedMore(scanned = scanned)
     case LsTooLong -> HlrErr(kind = HeaderLineTooLong, message = "header line exceeds configured limit")
     case LsBareCr -> HlrErr(kind = BareCr, message = "bare CR in header section")
     case LsBareLf -> HlrErr(kind = BareLf, message = "bare LF in header section")
@@ -847,7 +865,7 @@ func scanHeaderLine(buf: in slice[Byte], limit: in Int): HeaderLineResult {
       if lineEnd == 0 {
         HlrBlank(consumed = consumed)
       } else {
-        val line = buf.slice(0, lineEnd)
+        val line = buf.slice(start, start + lineEnd)
         if isSp(line[0]) or isHtab(line[0]) {
           HlrErr(kind = ObsoleteLineFolding, message = "obs-fold header continuation line is rejected (RFC 9112 section 5.2)")
         } else {
@@ -902,7 +920,12 @@ func parseDigitsToInt(raw: in String): Option[Int] {
 func validateContentLength(values: in List[String]): Result[Int, ProtoErr] {
   val first = trim(values[0])
   match parseDigitsToInt(first) {
-    case None -> Err(error = ProtoErr(kind = InvalidContentLength, message = "Content-Length is not a valid non-negative integer"))
+    case None -> Err(
+      error = ProtoErr(
+        kind = InvalidContentLength,
+        message = "Content-Length is not a valid non-negative integer"
+      )
+    )
     case Some(n) -> {
       var i = 1
       while i < values.count {
@@ -1227,6 +1250,26 @@ func enterFixedBodyPhase(state: in Connection, events: in List[HttpEvent], lengt
   }
 }
 
+// Consume `n` bytes at the cursor. A fresh line starts unscanned.
+func advanced(state: in Connection, n: in Int): Connection {
+  val newPos = state.pos + n
+  var newState = state
+  newState.pos = newPos
+  newState.scanned = 0
+  newState
+}
+
+// Remember how far the pending line has been scanned (see `Connection.scanned`).
+func withScanned(state: in Connection, scanned: in Int): Connection {
+  var newState = state
+  newState.scanned = scanned
+  newState
+}
+
+func availableBytes(state: in Connection): Int {
+  state.buf.length - state.pos
+}
+
 func enterHeaderPhase(state: in Connection, parsed: in ParsedRequestLine): Connection {
   var newState = state
   newState.phase = PhHeaders(
@@ -1240,20 +1283,8 @@ func enterHeaderPhase(state: in Connection, parsed: in ParsedRequestLine): Conne
 }
 
 func finishRequestLine(state: in Connection, events: in List[HttpEvent], lineEnd: in Int, consumed: in Int): Connection {
-  val line = state.buf.slice(0, lineEnd)
-  // Binding the slice result to `remaining` before assigning it to
-  // `newState.buf` is load-bearing, not decoration: writing
-  // `newState.buf = newState.buf.slice(...)` directly (self-referential
-  // field reassignment via a call on the field's own value), followed by
-  // more code in the same function, emits invalid JVM bytecode
-  // (`VerifyError: Inconsistent stackmap frames`) — a compiler bug filed as
-  // #5936 with a minimal standalone repro. Every `.buf = ....slice(...)`/
-  // `.concat(...)` site in this file computes the new value from a
-  // differently-named local first for the same reason; do not "simplify"
-  // any of them back.
-  val remaining = state.buf.slice(consumed, state.buf.length)
-  var newState = state
-  newState.buf = remaining
+  val line = state.buf.slice(state.pos, state.pos + lineEnd)
+  val newState = advanced(state, consumed)
   val parseResult = parseRequestLine(line)
   match parseResult {
     case Err(e) -> failWith(newState, events, e.kind, e.message)
@@ -1262,12 +1293,18 @@ func finishRequestLine(state: in Connection, events: in List[HttpEvent], lineEnd
 }
 
 func stepRequestLine(state: in Connection, events: in List[HttpEvent]): StepOutcome {
-  match scanCrlfLine(state.buf, state.limits.maxRequestLineLength) {
-    case LsNeedMore -> StepOutcome(conn = state, progress = false)
-    case LsTooLong -> StepOutcome(conn = failWith(state, events, RequestLineTooLong, "request line exceeds configured limit"), progress = true)
+  match scanCrlfLine(state.buf, state.pos, state.scanned, state.limits.maxRequestLineLength) {
+    case LsNeedMore(scanned) -> StepOutcome(conn = withScanned(state, scanned), progress = false)
+    case LsTooLong -> StepOutcome(
+      conn = failWith(state, events, RequestLineTooLong, "request line exceeds configured limit"),
+      progress = true
+    )
     case LsBareCr -> StepOutcome(conn = failWith(state, events, BareCr, "bare CR in request line"), progress = true)
     case LsBareLf -> StepOutcome(conn = failWith(state, events, BareLf, "bare LF in request line"), progress = true)
-    case LsFound(lineEnd, consumed) -> StepOutcome(conn = finishRequestLine(state, events, lineEnd, consumed), progress = true)
+    case LsFound(lineEnd, consumed) -> StepOutcome(
+      conn = finishRequestLine(state, events, lineEnd, consumed),
+      progress = true
+    )
   }
 }
 
@@ -1288,10 +1325,7 @@ func onHeaderBlank(
   headersSoFar: in List[HeaderField],
   consumed: in Int,
 ): Connection {
-  val remaining = state.buf.slice(consumed, state.buf.length)
-  var newState = state
-  newState.buf = remaining
-  finishHeaders(newState, events, method, target, version, headersSoFar)
+  finishHeaders(advanced(state, consumed), events, method, target, version, headersSoFar)
 }
 
 func onHeaderField(
@@ -1306,9 +1340,7 @@ func onHeaderField(
   value: in String,
   consumed: in Int,
 ): Connection {
-  val remaining = state.buf.slice(consumed, state.buf.length)
-  var newState = state
-  newState.buf = remaining
+  var newState = advanced(state, consumed)
   val newCount = headersSoFar.count + 1
   val newBytes = headerBytes + consumed
   if newCount > state.limits.maxHeaderCount {
@@ -1337,11 +1369,28 @@ func stepHeaders(
   headersSoFar: in List[HeaderField],
   headerBytes: in Int,
 ): StepOutcome {
-  match scanHeaderLine(state.buf, state.limits.maxHeaderLineLength) {
-    case HlrNeedMore -> StepOutcome(conn = state, progress = false)
+  match scanHeaderLine(state.buf, state.pos, state.scanned, state.limits.maxHeaderLineLength) {
+    case HlrNeedMore(scanned) -> StepOutcome(conn = withScanned(state, scanned), progress = false)
     case HlrErr(kind, message) -> StepOutcome(conn = failWith(state, events, kind, message), progress = true)
-    case HlrBlank(consumed) -> StepOutcome(conn = onHeaderBlank(state, events, method, target, version, headersSoFar, consumed), progress = true)
-    case HlrField(name, value, consumed) -> StepOutcome(conn = onHeaderField(state, events, method, target, version, headersSoFar, headerBytes, name, value, consumed), progress = true)
+    case HlrBlank(consumed) -> StepOutcome(
+      conn = onHeaderBlank(state, events, method, target, version, headersSoFar, consumed),
+      progress = true
+    )
+    case HlrField(name, value, consumed) -> StepOutcome(
+      conn = onHeaderField(
+        state,
+        events,
+        method,
+        target,
+        version,
+        headersSoFar,
+        headerBytes,
+        name,
+        value,
+        consumed
+      ),
+      progress = true
+    )
   }
 }
 
@@ -1351,14 +1400,13 @@ func stepFixedBody(state: in Connection, events: in List[HttpEvent], remaining: 
     var newState = state
     newState.phase = PhRequestLine
     StepOutcome(conn = newState, progress = true)
-  } else if state.buf.length == 0 {
+  } else if availableBytes(state) == 0 {
     StepOutcome(conn = state, progress = false)
   } else {
-    val take = if state.buf.length < remaining { state.buf.length } else { remaining }
-    val chunk = state.buf.slice(0, take)
-    val remainingBuf = state.buf.slice(take, state.buf.length)
-    var newState = state
-    newState.buf = remainingBuf
+    val avail = availableBytes(state)
+    val take = if avail < remaining { avail } else { remaining }
+    val chunk = state.buf.slice(state.pos, state.pos + take)
+    var newState = advanced(state, take)
     events.add(BodyChunk(bytes = chunk))
     newState.phase = PhFixedBody(remaining = remaining - take)
     StepOutcome(conn = newState, progress = true)
@@ -1366,12 +1414,18 @@ func stepFixedBody(state: in Connection, events: in List[HttpEvent], remaining: 
 }
 
 func stepChunkSize(state: in Connection, events: in List[HttpEvent], bodyBytesSoFar: in Int): StepOutcome {
-  match scanCrlfLine(state.buf, state.limits.maxHeaderLineLength) {
-    case LsNeedMore -> StepOutcome(conn = state, progress = false)
-    case LsTooLong -> StepOutcome(conn = failWith(state, events, MalformedChunkSize, "chunk-size line exceeds configured limit"), progress = true)
+  match scanCrlfLine(state.buf, state.pos, state.scanned, state.limits.maxHeaderLineLength) {
+    case LsNeedMore(scanned) -> StepOutcome(conn = withScanned(state, scanned), progress = false)
+    case LsTooLong -> StepOutcome(
+      conn = failWith(state, events, MalformedChunkSize, "chunk-size line exceeds configured limit"),
+      progress = true
+    )
     case LsBareCr -> StepOutcome(conn = failWith(state, events, BareCr, "bare CR in chunk-size line"), progress = true)
     case LsBareLf -> StepOutcome(conn = failWith(state, events, BareLf, "bare LF in chunk-size line"), progress = true)
-    case LsFound(lineEnd, consumed) -> StepOutcome(conn = onChunkSizeLine(state, events, lineEnd, consumed, bodyBytesSoFar), progress = true)
+    case LsFound(lineEnd, consumed) -> StepOutcome(
+      conn = onChunkSizeLine(state, events, lineEnd, consumed, bodyBytesSoFar),
+      progress = true
+    )
   }
 }
 
@@ -1382,10 +1436,8 @@ func onChunkSizeLine(
   consumed: in Int,
   bodyBytesSoFar: in Int,
 ): Connection {
-  val line = state.buf.slice(0, lineEnd)
-  val remaining = state.buf.slice(consumed, state.buf.length)
-  var newState = state
-  newState.buf = remaining
+  val line = state.buf.slice(state.pos, state.pos + lineEnd)
+  val newState = advanced(state, consumed)
   match parseChunkSizeLine(line) {
     case Err(e) -> failWith(newState, events, e.kind, e.message)
     case Ok(size) -> enterChunkFromSize(newState, events, size, bodyBytesSoFar)
@@ -1423,14 +1475,13 @@ func stepChunkData(
     var newState = state
     newState.phase = PhChunkCrlf(bodyBytesSoFar = bodyBytesSoFar)
     StepOutcome(conn = newState, progress = true)
-  } else if state.buf.length == 0 {
+  } else if availableBytes(state) == 0 {
     StepOutcome(conn = state, progress = false)
   } else {
-    val take = if state.buf.length < remaining { state.buf.length } else { remaining }
-    val chunk = state.buf.slice(0, take)
-    val remainingBuf = state.buf.slice(take, state.buf.length)
-    var newState = state
-    newState.buf = remainingBuf
+    val avail = availableBytes(state)
+    val take = if avail < remaining { avail } else { remaining }
+    val chunk = state.buf.slice(state.pos, state.pos + take)
+    var newState = advanced(state, take)
     events.add(BodyChunk(bytes = chunk))
     newState.phase = PhChunkData(remaining = remaining - take, bodyBytesSoFar = bodyBytesSoFar)
     StepOutcome(conn = newState, progress = true)
@@ -1438,12 +1489,10 @@ func stepChunkData(
 }
 
 func stepChunkCrlf(state: in Connection, events: in List[HttpEvent], bodyBytesSoFar: in Int): StepOutcome {
-  if state.buf.length < 2 {
+  if availableBytes(state) < 2 {
     StepOutcome(conn = state, progress = false)
-  } else if isCr(state.buf[0]) and isLf(state.buf[1]) {
-    val remaining = state.buf.slice(2, state.buf.length)
-    var newState = state
-    newState.buf = remaining
+  } else if isCr(state.buf[state.pos]) and isLf(state.buf[state.pos + 1]) {
+    var newState = advanced(state, 2)
     newState.phase = PhChunkSize(bodyBytesSoFar = bodyBytesSoFar)
     StepOutcome(conn = newState, progress = true)
   } else {
@@ -1452,21 +1501,17 @@ func stepChunkCrlf(state: in Connection, events: in List[HttpEvent], bodyBytesSo
 }
 
 func stepTrailer(state: in Connection, events: in List[HttpEvent], count: in Int, bytes: in Int): StepOutcome {
-  match scanHeaderLine(state.buf, state.limits.maxHeaderLineLength) {
-    case HlrNeedMore -> StepOutcome(conn = state, progress = false)
+  match scanHeaderLine(state.buf, state.pos, state.scanned, state.limits.maxHeaderLineLength) {
+    case HlrNeedMore(scanned) -> StepOutcome(conn = withScanned(state, scanned), progress = false)
     case HlrErr(kind, message) -> StepOutcome(conn = failWith(state, events, kind, message), progress = true)
     case HlrBlank(consumed) -> {
-      val remaining = state.buf.slice(consumed, state.buf.length)
-      var newState = state
-      newState.buf = remaining
+      var newState = advanced(state, consumed)
       events.add(RequestComplete)
       newState.phase = PhRequestLine
       StepOutcome(conn = newState, progress = true)
     }
     case HlrField(_, _, consumed) -> {
-      val remaining = state.buf.slice(consumed, state.buf.length)
-      var newState = state
-      newState.buf = remaining
+      var newState = advanced(state, consumed)
       val newCount = count + 1
       val newBytes = bytes + consumed
       if newCount > state.limits.maxHeaderCount {
@@ -1488,9 +1533,19 @@ func stepTrailer(state: in Connection, events: in List[HttpEvent], count: in Int
 }
 
 func driveFeed(state: in Connection, bytes: in slice[Byte]): FeedResult {
-  val combined = state.buf.concat(bytes)
+  // Compact once per feed: only the unconsumed tail is carried over, and
+  // `scanned` stays valid because it is relative to the cursor.
+  val leftover = availableBytes(state)
+  val combined = if leftover == 0 {
+    bytes
+  } else if state.pos == 0 {
+    state.buf.concat(bytes)
+  } else {
+    state.buf.slice(state.pos, state.buf.length).concat(bytes)
+  }
   var current = state
   current.buf = combined
+  current.pos = 0
   val events: List[HttpEvent] = newList()
   var progress = true
   while progress {
@@ -1569,7 +1624,13 @@ pub func feed(conn: in Connection, bytes: in slice[Byte]): FeedResult
 func cloneHeaderPhaseIfNeeded(phase: in ConnPhase): ConnPhase {
   match phase {
     case PhRequestLine -> phase
-    case PhHeaders(method, target, version, headers, headerBytes) -> clonedHeaderPhase(method, target, version, headers, headerBytes)
+    case PhHeaders(method, target, version, headers, headerBytes) -> clonedHeaderPhase(
+      method,
+      target,
+      version,
+      headers,
+      headerBytes
+    )
     case PhFixedBody(_) -> phase
     case PhChunkSize(_) -> phase
     case PhChunkData(_, _) -> phase

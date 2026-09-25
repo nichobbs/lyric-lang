@@ -122,13 +122,20 @@ func ySkipWs(st: inout YamlState): Unit {
   }
 }
 
+// Compares in place: `yCheckUnsupported` probes several prefixes for every
+// value, so this must not allocate.
 func yStartsWith(st: in YamlState, s: in String): Bool {
-  val remaining = st.src.length - st.pos
-  if remaining < s.length {
-    false
-  } else {
-    st.src.substring(st.pos, s.length) == s
+  if st.src.length - st.pos < s.length {
+    return false
   }
+  var k = 0
+  while k < s.length {
+    if st.src[st.pos + k] != s[k] {
+      return false
+    }
+    k += 1
+  }
+  true
 }
 
 func yEatStr(st: inout YamlState, s: in String): Bool {
@@ -217,16 +224,21 @@ func yParseUnicode4(st: inout YamlState): Result[Char, YamlError] {
 
 // Parse a JSON/YAML double-quoted string (starting just after the opening '"').
 func yParseDoubleQuoted(st: inout YamlState): Result[String, YamlError] {
-  var result = ""
+  // Escape-free runs are copied as one substring each; per-character
+  // concatenation made long string values quadratic (#7274).
+  val sb = StringBuilder.new()
+  var runStart = st.pos
   var ok = true
   var err: YamlError = InvalidDocument(message = "")
   var done = false
   while ok and not done and not yAtEnd(st) {
     val c = st.src[st.pos]
     if c == '"' {
+      sb.append(st.src.substring(runStart, st.pos - runStart))
       st.pos = st.pos + 1
       done = true
     } else if c == '\\' {
+      sb.append(st.src.substring(runStart, st.pos - runStart))
       st.pos = st.pos + 1
       if yAtEnd(st) {
         ok = false
@@ -235,38 +247,36 @@ func yParseDoubleQuoted(st: inout YamlState): Result[String, YamlError] {
         val esc = st.src[st.pos]
         st.pos = st.pos + 1
         if esc == '"' {
-          result = result + "\""
+          sb.append("\"")
         } else if esc == '\\' {
-          result = result + "\\"
+          sb.append("\\")
         } else if esc == '/' {
-          result = result + "/"
+          sb.append("/")
         } else if esc == 'n' {
-          result = result + "\n"
+          sb.append("\n")
         } else if esc == 'r' {
-          result = result + "\r"
+          sb.append("\r")
         } else if esc == 't' {
-          result = result + "\t"
+          sb.append("\t")
         } else if esc == 'b' {
-          result = result + "\u{0008}"
+          sb.append("\u{0008}")
         } else if esc == 'f' {
-          result = result + "\u{000c}"
+          sb.append("\u{000c}")
         } else if esc == 'u' {
           match yParseUnicode4(st) {
             case Err(e) -> {
               ok = false
               err = e
             }
-            case Ok(ch) -> {
-              result = result + "" + ch
-            }
+            case Ok(ch) -> sb.appendChar(ch)
           }
         } else {
           ok = false
           err = UnexpectedChar(pos = st.pos - 1, expected = "valid escape character")
         }
+        runStart = st.pos
       }
     } else {
-      result = result + "" + c
       st.pos = st.pos + 1
     }
   }
@@ -275,7 +285,7 @@ func yParseDoubleQuoted(st: inout YamlState): Result[String, YamlError] {
     err = UnexpectedEof(pos = st.pos, expected = "'\"' to close string")
   }
   if ok {
-    Ok(value = result)
+    Ok(value = sb.toString())
   } else {
     Err(error = err)
   }
@@ -284,25 +294,26 @@ func yParseDoubleQuoted(st: inout YamlState): Result[String, YamlError] {
 // Parse a YAML single-quoted string (starting just after the opening "'").
 // No escape sequences except '' → '.
 func yParseSingleQuoted(st: inout YamlState): Result[String, YamlError] {
-  var result = ""
+  val sb = StringBuilder.new()
+  var runStart = st.pos
   var done = false
   while not done and not yAtEnd(st) {
-    val c = st.src[st.pos]
-    if c == '\'' {
+    if st.src[st.pos] == '\'' {
+      sb.append(st.src.substring(runStart, st.pos - runStart))
       st.pos = st.pos + 1
       if st.pos < st.src.length and st.src[st.pos] == '\'' {
-        result = result + "'"
+        sb.append("'")
         st.pos = st.pos + 1
+        runStart = st.pos
       } else {
         done = true
       }
     } else {
-      result = result + "" + c
       st.pos = st.pos + 1
     }
   }
   if done {
-    Ok(value = result)
+    Ok(value = sb.toString())
   } else {
     Err(error = UnexpectedEof(pos = st.pos, expected = "' to close single-quoted string"))
   }
@@ -449,8 +460,9 @@ func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErr
   }
   // Called after consuming '{'
   val pairs: List[YamlPair] = newList()
-  // O(N²) for N keys: List.contains is O(N). Replace with Set when available.
-  val seenKeys: List[String] = newList()
+  // Hashed so duplicate-key detection stays linear in the key count (#7274).
+  // A Map rather than a Set: native has no Set lowering.
+  val seenKeys: Map[String, Bool] = newMap()
   ySkipWs(st)
   if yEat(st, '}') {
     return Ok(value = YMapping(pairs = pairs))
@@ -513,11 +525,11 @@ func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErr
                 err = e
               }
               case Ok(v) -> {
-                if seenKeys.contains(key) {
+                if seenKeys.containsKey(key) {
                   ok = false
                   err = DuplicateKey(pos = keyStartPos, key = key)
                 } else {
-                  seenKeys.add(key)
+                  seenKeys.add(key, true)
                   pairs.add(YamlPair(key = key, value = v))
                   ySkipWs(st)
                   if yEat(st, '}') {
@@ -678,8 +690,9 @@ func yParseBlockMapping(st: inout YamlState, mapIndent: in Int, depth: in Int): 
     return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
   }
   val pairs: List[YamlPair] = newList()
-  // O(N²) for N keys: List.contains is O(N). Replace with Set when available.
-  val seenKeys: List[String] = newList()
+  // Hashed so duplicate-key detection stays linear in the key count (#7274).
+  // A Map rather than a Set: native has no Set lowering.
+  val seenKeys: Map[String, Bool] = newMap()
   var ok = true
   var err: YamlError = InvalidDocument(message = "")
   var done = false
@@ -711,11 +724,11 @@ func yParseBlockMapping(st: inout YamlState, mapIndent: in Int, depth: in Int): 
           done = true
         } else {
           val rawKey = st.src.substring(keyStart, st.pos - keyStart).trim()
-          if seenKeys.contains(rawKey) {
+          if seenKeys.containsKey(rawKey) {
             ok = false
             err = DuplicateKey(pos = st.pos, key = rawKey)
           } else {
-            seenKeys.add(rawKey)
+            seenKeys.add(rawKey, true)
             st.pos = st.pos + 1  // consume ':'
             ySkipSpaces(st)
             if st.pos < st.src.length and st.src[st.pos] == '\n' {

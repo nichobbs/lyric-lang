@@ -1373,6 +1373,19 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/string_builder_self_test.l
+      # runCaptureWithInput with stdin larger than a pipe buffer (#7262).
+      - name: Process stdin self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/process_stdin_self_test.l
+      # Stdlib functions rebuilt on StringBuilder (#7270-#7278); the JVM job
+      # runs the same file.
+      - name: Stdlib builders self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/stdlib_builders_self_test.l
       - name: String bounds self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true
@@ -4051,6 +4064,16 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/string_builder_self_test.l
+      - name: Process stdin self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/process_stdin_self_test.l
+      - name: Stdlib builders self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/stdlib_builders_self_test.l
       - name: String bounds self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true

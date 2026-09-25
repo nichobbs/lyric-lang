@@ -93,6 +93,9 @@ pub union HpackError {
   case TableSizeUpdateTooLarge(requested: Int, maxAllowed: Int)
   case SizeUpdateAfterHeader
   case NonOctetValue(codepoint: Int)
+  // The decoded header list outgrew the caller's limit, measured as RFC 7541
+  // section 4.1 counts it (name + value octets + 32 per field).
+  case HeaderListTooLarge(size: Int, maxSize: Int)
 }
 
 // =============================================================================
@@ -397,13 +400,13 @@ pub func decodeStringLiteralAt(bytes: in slice[Byte], offset: in Int): Result[St
 @pure
 @experimental
 pub func octetsToString(octets: in slice[Byte]): String {
-  var acc = ""
+  val sb = StringBuilder.new()
   var i = 0
   while i < octets.length {
-    acc = acc + codepointToString(octets[i].toInt())
+    sb.append(codepointToString(octets[i].toInt()))
     i = i + 1
   }
-  acc
+  sb.toString()
 }
 
 /// Convert a `String` to its Latin-1 octets, rejecting any code point above
@@ -761,7 +764,24 @@ pub func decoderDynamicTable(decoder: in HpackDecoder): DynamicTable {
 /// decoder poisoned for the connection (the caller must not continue on error).
 @experimental
 pub func decodeHeaderBlock(decoder: inout HpackDecoder, block: in slice[Byte]): Result[List[HeaderField], HpackError] {
+  decodeHeaderBlockLimited(decoder, block, 2147483647)
+}
+
+/// `decodeHeaderBlock` with a bound on the decoded header list, measured as
+/// RFC 7541 section 4.1 counts it (name + value octets + 32 per field).
+/// Indexed references expand a small block into a large list (one dynamic
+/// table entry referenced by thousands of one-byte fields), so the compressed
+/// size alone does not bound the decoded size (#7265). Decoding stops with
+/// `HeaderListTooLarge` as soon as the running size exceeds `maxListSize`;
+/// the decoder's dynamic table is then out of step with the peer, so the
+/// caller must fail the connection.
+@experimental
+pub func decodeHeaderBlockLimited(
+  decoder: inout HpackDecoder, block: in slice[Byte], maxListSize: in Int
+): Result[List[HeaderField], HpackError] {
   val outList: List[HeaderField] = newList()
+  var listSize = 0
+  var counted = 0
   var offset = 0
   var sawHeader = false
   while offset < block.length {
@@ -797,6 +817,14 @@ pub func decodeHeaderBlock(decoder: inout HpackDecoder, block: in slice[Byte]): 
         case Err(e) -> return Err(error = e)
       }
       sawHeader = true
+    }
+    while counted < outList.count {
+      val f = outList[counted]
+      listSize = listSize + f.name.length + f.value.length + 32
+      counted = counted + 1
+    }
+    if listSize > maxListSize {
+      return Err(error = HeaderListTooLarge(size = listSize, maxSize = maxListSize))
     }
   }
   Ok(value = outList)

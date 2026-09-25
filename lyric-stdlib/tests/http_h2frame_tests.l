@@ -900,7 +900,10 @@ test "a preface-expecting decoder consumes the preface then the initial SETTINGS
     case _ -> panic("expected PrefaceReceived first")
   }
   match events[1] {
-    case FrameDecoded(frame) -> match frame { case SettingsFrame(_, _) -> assertTrue(true, "SETTINGS follows preface"); case _ -> panic("expected a SETTINGS frame after the preface") }
+    case FrameDecoded(frame) -> match frame {
+      case SettingsFrame(_, _) -> assertTrue(true, "SETTINGS follows preface")
+      case _ -> panic("expected a SETTINGS frame after the preface")
+    }
     case _ -> panic("expected FrameDecoded after preface")
   }
 }
@@ -1028,11 +1031,17 @@ test "several frames buffered together decode in order" {
   val events = dropNeedMore(decodeWhole(false, stream))
   assertEqualInt(events.count, 3, "three frames")
   match events[0] {
-    case FrameDecoded(f) -> match f { case PingFrame(_, _) -> assertTrue(true, "ping"); case _ -> panic("expected ping") }
+    case FrameDecoded(f) -> match f {
+      case PingFrame(_, _) -> assertTrue(true, "ping")
+      case _ -> panic("expected ping")
+    }
     case _ -> panic("expected decode")
   }
   match events[2] {
-    case FrameDecoded(f) -> match f { case DataFrame(_, _, _, _) -> assertTrue(true, "data"); case _ -> panic("expected data") }
+    case FrameDecoded(f) -> match f {
+      case DataFrame(_, _, _, _) -> assertTrue(true, "data")
+      case _ -> panic("expected data")
+    }
     case _ -> panic("expected decode")
   }
 }
@@ -1047,11 +1056,17 @@ test "boundary-split torture: every 2-way split of a multi-frame stream decodes 
     val label = "split at " + toString(splitAt)
     assertEqualInt(events.count, 2, label + ": two frames")
     match events[0] {
-      case FrameDecoded(f) -> match f { case PingFrame(_, ack) -> assertTrue(ack, label + ": ping ack"); case _ -> panic(label + ": expected ping") }
+      case FrameDecoded(f) -> match f {
+        case PingFrame(_, ack) -> assertTrue(ack, label + ": ping ack")
+        case _ -> panic(label + ": expected ping")
+      }
       case _ -> panic(label + ": expected decode 0")
     }
     match events[1] {
-      case FrameDecoded(f) -> match f { case RstStreamFrame(sid, _) -> assertEqualInt(sid, 3, label + ": rst stream id"); case _ -> panic(label + ": expected rst_stream") }
+      case FrameDecoded(f) -> match f {
+        case RstStreamFrame(sid, _) -> assertEqualInt(sid, 3, label + ": rst stream id")
+        case _ -> panic(label + ": expected rst_stream")
+      }
       case _ -> panic(label + ": expected decode 1")
     }
     splitAt = splitAt + 1
@@ -1065,7 +1080,13 @@ test "byte-at-a-time feeding decodes a multi-frame stream identically" {
   val events = dropNeedMore(decodeByteByByte(false, stream))
   assertEqualInt(events.count, 2, "two frames byte-fed")
   match events[1] {
-    case FrameDecoded(f) -> match f { case WindowUpdateFrame(sid, inc) -> { assertEqualInt(sid, 0, "connection-level window update"); assertEqualInt(inc, 32768, "increment") }; case _ -> panic("expected window update") }
+    case FrameDecoded(f) -> match f {
+      case WindowUpdateFrame(sid, inc) -> {
+        assertEqualInt(sid, 0, "connection-level window update")
+        assertEqualInt(inc, 32768, "increment")
+      }
+      case _ -> panic("expected window update")
+    }
     case _ -> panic("expected decode")
   }
 }
@@ -1084,7 +1105,10 @@ test "a stream-level frame error does not poison the decoder; the next frame sti
     case _ -> panic("expected FrameFailed first")
   }
   match events[1] {
-    case FrameDecoded(f) -> match f { case PingFrame(_, _) -> assertTrue(true, "ping decoded after stream error"); case _ -> panic("expected ping") }
+    case FrameDecoded(f) -> match f {
+      case PingFrame(_, _) -> assertTrue(true, "ping decoded after stream error")
+      case _ -> panic("expected ping")
+    }
     case _ -> panic("expected FrameDecoded second")
   }
 }
@@ -1097,4 +1121,37 @@ test "an idle feed returns exactly FrameNeedMore" {
     case FrameNeedMore -> assertTrue(true, "idle -> need more")
     case _ -> panic("expected FrameNeedMore")
   }
+}
+
+// Read cursor (#7264): many small frames in one feed decode in order without
+// re-slicing the remaining buffer per frame.
+test "a burst of empty DATA frames in one feed decodes every frame" {
+  val burst: List[Byte] = newList()
+  var i = 0
+  while i < 3000 {
+    // 9-byte header: length 0, type DATA (0), flags 0, stream 1.
+    burst.add(0u8)
+    burst.add(0u8)
+    burst.add(0u8)
+    burst.add(0u8)
+    burst.add(0u8)
+    burst.add(0u8)
+    burst.add(0u8)
+    burst.add(0u8)
+    burst.add(1u8)
+    i = i + 1
+  }
+  val result = feedFrames(newFrameDecoder(false), burst.toArray())
+  var decoded = 0
+  var j = 0
+  while j < result.events.count {
+    match result.events[j] {
+      case FrameDecoded(_) -> {
+        decoded = decoded + 1
+      }
+      case _ -> ()
+    }
+    j = j + 1
+  }
+  assertEqualInt(decoded, 3000, "every frame decoded")
 }

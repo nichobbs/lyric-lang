@@ -19,6 +19,7 @@
 package Std.Format
 
 import Std.FormatHost as Host
+import Std.String
 
 // =====================================================================
 // Integer hex formatting.
@@ -68,14 +69,15 @@ pub func padLeft(s: in String, width: in Int, ch: in Char): String {
   if len >= width {
     return s
   }
-  var pad = ""
+  val sb = StringBuilder.new()
   var i = 0
   val n = width - len
   while i < n {
-    pad = pad + ("" + ch)
+    sb.appendChar(ch)
     i += 1
   }
-  pad + s
+  sb.append(s)
+  sb.toString()
 }
 
 /// Pad `s` on the right with `ch` until its length reaches `width`.
@@ -88,14 +90,15 @@ pub func padRight(s: in String, width: in Int, ch: in Char): String {
   if len >= width {
     return s
   }
-  var pad = ""
+  val sb = StringBuilder.new()
+  sb.append(s)
   var i = 0
   val n = width - len
   while i < n {
-    pad = pad + ("" + ch)
+    sb.appendChar(ch)
     i += 1
   }
-  s + pad
+  sb.toString()
 }
 
 // =====================================================================

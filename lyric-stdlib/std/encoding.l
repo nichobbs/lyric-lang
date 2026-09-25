@@ -34,6 +34,7 @@ package Std.Encoding
 import Std.Core
 import Std.Collections
 import Std.EncodingHost
+import Std.String
 
 // =====================================================================
 // Hexadecimal.
@@ -49,14 +50,15 @@ import Std.EncodingHost
 @stable(since = "1.0")
 pub func encodeHex(bytes: in slice[Byte]): String {
   val digits = "0123456789ABCDEF"
-  var result = ""
+  val sb = StringBuilder.new()
   var i = 0
   while i < bytes.length {
     val b = bytes[i]
-    result = result + digits.substring((b / 16u8).toInt(), 1) + digits.substring((b % 16u8).toInt(), 1)
+    sb.append(digits.substring((b / 16u8).toInt(), 1))
+    sb.append(digits.substring((b % 16u8).toInt(), 1))
     i += 1
   }
-  result
+  sb.toString()
 }
 
 /// Decode a hexadecimal string (upper or lower case, no prefix required).
@@ -154,34 +156,34 @@ func base64CodeUnitValue(cp: in Int): Int {
 @stable(since = "1.0")
 pub func encodeBase64(bytes: in slice[Byte]): String {
   val BASE64_ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-  var result = ""
+  val sb = StringBuilder.new()
   val len = bytes.length
   var i = 0
   while i + 3 <= len {
     val b0 = bytes[i]
     val b1 = bytes[i + 1]
     val b2 = bytes[i + 2]
-    result = result + BASE64_ALPHA.substring((b0 / 4u8).toInt(), 1) +
-      BASE64_ALPHA.substring(((b0 % 4u8) * 16u8 + b1 / 16u8).toInt(), 1) +
-      BASE64_ALPHA.substring(((b1 % 16u8) * 4u8 + b2 / 64u8).toInt(), 1) +
-      BASE64_ALPHA.substring((b2 % 64u8).toInt(), 1)
+    sb.append(BASE64_ALPHA.substring((b0 / 4u8).toInt(), 1))
+    sb.append(BASE64_ALPHA.substring(((b0 % 4u8) * 16u8 + b1 / 16u8).toInt(), 1))
+    sb.append(BASE64_ALPHA.substring(((b1 % 16u8) * 4u8 + b2 / 64u8).toInt(), 1))
+    sb.append(BASE64_ALPHA.substring((b2 % 64u8).toInt(), 1))
     i += 3
   }
   val rem = len - i
   if rem == 1 {
     val b0 = bytes[i]
-    result = result + BASE64_ALPHA.substring((b0 / 4u8).toInt(), 1) +
-      BASE64_ALPHA.substring(((b0 % 4u8) * 16u8).toInt(), 1) +
-      "=="
+    sb.append(BASE64_ALPHA.substring((b0 / 4u8).toInt(), 1))
+    sb.append(BASE64_ALPHA.substring(((b0 % 4u8) * 16u8).toInt(), 1))
+    sb.append("==")
   } else if rem == 2 {
     val b0 = bytes[i]
     val b1 = bytes[i + 1]
-    result = result + BASE64_ALPHA.substring((b0 / 4u8).toInt(), 1) +
-      BASE64_ALPHA.substring(((b0 % 4u8) * 16u8 + b1 / 16u8).toInt(), 1) +
-      BASE64_ALPHA.substring(((b1 % 16u8) * 4u8).toInt(), 1) +
-      "="
+    sb.append(BASE64_ALPHA.substring((b0 / 4u8).toInt(), 1))
+    sb.append(BASE64_ALPHA.substring(((b0 % 4u8) * 16u8 + b1 / 16u8).toInt(), 1))
+    sb.append(BASE64_ALPHA.substring(((b1 % 16u8) * 4u8).toInt(), 1))
+    sb.append("=")
   }
-  result
+  sb.toString()
 }
 
 /// Decode a Base64 string (RFC 4648 §4).
@@ -300,14 +302,14 @@ pub func codepointToString(cp: in Int): String {
 /// alternative there.
 @stable(since = "1.0")
 pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
-  var result = ""
+  val sb = StringBuilder.new()
   val len = bytes.length
   var i = 0
   while i < len {
     val b0: Byte = bytes[i]
     if b0 < 128u8 {
       // 1-byte sequence: U+0000..U+007F
-      result = result + hostStringFromCodepoint(b0.toInt())
+      sb.append(hostStringFromCodepoint(b0.toInt()))
       i += 1
     } else if b0 / 32u8 == 6u8 {
       // 2-byte sequence: 110xxxxx 10xxxxxx → U+0080..U+07FF
@@ -324,7 +326,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
         return None
       }
       // overlong
-      result = result + hostStringFromCodepoint(cp)
+      sb.append(hostStringFromCodepoint(cp))
       i += 2
     } else if b0 / 16u8 == 14u8 {
       // 3-byte sequence: 1110xxxx 10xxxxxx 10xxxxxx → U+0800..U+FFFF
@@ -345,7 +347,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
         return None
       }
       // surrogates invalid in UTF-8
-      result = result + hostStringFromCodepoint(cp)
+      sb.append(hostStringFromCodepoint(cp))
       i += 3
     } else if b0 / 8u8 == 30u8 {
       // 4-byte sequence: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx → U+10000..U+10FFFF
@@ -371,12 +373,12 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
       // constructs whatever the target's String representation needs (a
       // surrogate pair on .NET/JVM, a 4-byte UTF-8 sequence on native) —
       // no surrogate-pair math needed here.
-      result = result + hostStringFromCodepoint(cp)
+      sb.append(hostStringFromCodepoint(cp))
       i += 4
     } else {
       return None
       // invalid leading byte (continuation byte or 0xFF/0xFE)
     }
   }
-  Some(value = result)
+  Some(value = sb.toString())
 }

@@ -112,6 +112,7 @@ func errName(e: in HpackError): String {
     case HuffmanEosSymbol -> "HuffmanEosSymbol"
     case TableSizeUpdateTooLarge(_, _) -> "TableSizeUpdateTooLarge"
     case SizeUpdateAfterHeader -> "SizeUpdateAfterHeader"
+    case HeaderListTooLarge(_, _) -> "HeaderListTooLarge"
     case NonOctetValue(_) -> "NonOctetValue"
   }
 }
@@ -760,5 +761,28 @@ test "stringToOctets rejects a code point above 255" {
   match stringToOctets(s) {
     case Ok(_) -> panic("expected NonOctetValue")
     case Err(e) -> assertEqual(errName(e), "NonOctetValue", "non-octet code point")
+  }
+}
+
+test "decodeHeaderBlockLimited bounds the decoded list, not the compressed block (#7265)" {
+  // 0x82 is the one-byte indexed field for static entry 2 (":method: GET"),
+  // 7 + 3 + 32 = 42 octets each by RFC 7541 section 4.1.
+  var ok = newDecoder(4096)
+  match decodeHeaderBlockLimited(ok, hx("8282"), 84) {
+    case Ok(hs) -> assertEqualInt(hs.count, 2, "two fields fit exactly")
+    case Err(e) -> panic("unexpected decode error " + errName(e))
+  }
+  var over = newDecoder(4096)
+  match decodeHeaderBlockLimited(over, hx("828282"), 100) {
+    case Ok(_) -> panic("expected HeaderListTooLarge")
+    case Err(e) -> assertEqual(errName(e), "HeaderListTooLarge", "third field exceeds the limit")
+  }
+}
+
+test "a table size update does not count toward the decoded list size" {
+  var d = newDecoder(4096)
+  match decodeHeaderBlockLimited(d, hx("3f618282"), 84) {
+    case Ok(hs) -> assertEqualInt(hs.count, 2, "size update then two fields")
+    case Err(e) -> panic("unexpected decode error " + errName(e))
   }
 }

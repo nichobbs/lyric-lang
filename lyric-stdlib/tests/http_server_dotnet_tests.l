@@ -303,6 +303,16 @@ func serveChunked(l: in HttpListener): Unit {
   endChunkedResponse(ctx, s)
 }
 
+// Puller that echoes the merged value `requestHeaders` reports for `X-Dup`.
+func serveDupHeaders(l: in HttpListener): Unit {
+  val ctx = nextContext(l)
+  val merged = match mapGet(requestHeaders(ctx), "X-Dup") {
+    case Some(v) -> v
+    case None -> "<none>"
+  }
+  respondText(ctx, 200, "x-dup=" + merged + ";")
+}
+
 func joined(parts: in List[String]): String {
   var s = ""
   var i = 0
@@ -420,6 +430,21 @@ test "POST body reaches the handler" {
   stopListener(listener)
   assertTrue(postResp.contains("m=POST"), "method POST observed: " + postResp)
   assertTrue(postResp.contains("body=hello world"), "request body delivered: " + postResp)
+}
+
+test "repeated request headers are comma-joined by requestHeaders (#7265)" {
+  val listener = startListener("http://127.0.0.1:19460/")
+  val server = taskRun({ -> serveDupHeaders(listener) })
+  threadSleep(100)
+  val resp = rawRequest(
+    "127.0.0.1",
+    19460,
+    "GET /dup HTTP/1.1\r\nHost: x\r\nX-Dup: a\r\nX-Dup: b\r\nX-Dup: c\r\nConnection: close\r\n\r\n",
+    "x-dup="
+  )
+  taskWait(server)
+  stopListener(listener)
+  assertTrue(resp.contains("x-dup=a,b,c;"), "duplicates joined in order: " + resp)
 }
 
 test "keep-alive reuses one connection for two requests" {

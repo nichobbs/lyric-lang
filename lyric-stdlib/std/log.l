@@ -7,6 +7,7 @@
 package Std.Log
 
 import Std.LogHost as HostLog
+import Std.String
 
 @stable(since = "1.0")
 pub enum LogLevel {
@@ -39,27 +40,34 @@ func levelName(level: in LogLevel): String {
 
 // Escape special characters in a log field key or value to prevent log injection.
 // Replaces \, newlines, carriage returns, = and " with safe escape sequences.
-func escapeLogValue(s: in String): String {
-  var buf = ""
+// Runs of characters that need no escaping are appended as single substrings,
+// so the common case copies each field once.
+func appendEscapedLogValue(sb: in StringBuilder, s: in String): Unit {
+  var runStart = 0
   var i = 0
   while i < s.length {
     val ch: Char = s[i]
-    if ch == '\\' {
-      buf = buf + "\\\\"
+    val esc = if ch == '\\' {
+      "\\\\"
     } else if ch == '\n' {
-      buf = buf + "\\n"
+      "\\n"
     } else if ch == '\r' {
-      buf = buf + "\\r"
+      "\\r"
     } else if ch == '=' {
-      buf = buf + "\\="
+      "\\="
     } else if ch == '"' {
-      buf = buf + "\\\""
+      "\\\""
     } else {
-      buf = buf + s.substring(i, 1)
+      ""
+    }
+    if esc.length > 0 {
+      sb.append(s.substring(runStart, i - runStart))
+      sb.append(esc)
+      runStart = i + 1
     }
     i = i + 1
   }
-  return buf
+  sb.append(s.substring(runStart, s.length - runStart))
 }
 
 @pure
@@ -67,20 +75,17 @@ func formatFields(fields: in slice[LogField]): String {
   if fields.length == 0 {
     return ""
   }
-
-  var text = ""
+  val sb = StringBuilder.new()
   var i = 0
   while i < fields.length {
     val f = fields[i]
-    val escaped = escapeLogValue(f.key) + "=" + escapeLogValue(f.value)
-    if i == 0 {
-      text = " " + escaped
-    } else {
-      text = text + " " + escaped
-    }
+    sb.appendChar(' ')
+    appendEscapedLogValue(sb, f.key)
+    sb.appendChar('=')
+    appendEscapedLogValue(sb, f.value)
     i += 1
   }
-  return text
+  sb.toString()
 }
 
 /// Emit a best-effort log message through the host diagnostics sink.
