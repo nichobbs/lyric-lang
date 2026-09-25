@@ -240,6 +240,7 @@ deferred to Phase 3 by design.
 | Contract quantifiers skipped soundly at runtime (the conjunct containing a `forall`/`exists` is dropped with a located W0002; `not exists` no longer fails every call), and a quantifier outside a contract is P0344 (#7228) | **Shipped** | D-progress-970 |
 | Inline range refinements (`Int range 0 ..= 9` on parameters, return types, bindings and `var` assignments) checked at runtime with `RangeViolated` (#7226 part 1) | **Shipped** | D-progress-971 |
 | Protected types mutually exclusive on the JVM (`synchronized` members) and for MSIL `func` members; `when:` barriers implemented on dotnet and JVM (wait/notify on the entry lock), rejected on native (#7363) | **Shipped** | D-progress-972 |
+| PR #7307 review fixes: MSIL module-level `val`s holding collections (annotated `newMap()` initializers, `.cctor` bodies skipped in TypeDef discovery); `Std.Path` root/confinement hardening, logfmt-quoted log values; auth aspects report short secrets up front; lyric-mq atomic `Idempotent` claims, 0-based `DeadLetter`, panic-free message decoding; search `suggest` size, jobs `Retryable` config, web JVM GET body cap, circuit-breaker config checks, storage key rules, mock list parity (#7315–#7333) | **Shipped** | D-progress-967 |
 
 ### Phase 2 — type system completion (complete)
 

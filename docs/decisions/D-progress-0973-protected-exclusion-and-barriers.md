@@ -1,4 +1,4 @@
-# D-progress-972 — Protected types are mutually exclusive on the JVM; `when:` barriers work
+# D-progress-973 — Protected types are mutually exclusive on the JVM; `when:` barriers work
 
 **Status:** shipped
 
