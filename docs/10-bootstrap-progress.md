@@ -35510,3 +35510,17 @@ reaches `nextContext`. Covered by the new `http_server_jvm_tests.l`. The
 native HTTP client's `findSubstring` allocated a substring at every position it
 tested; it now calls `Std.String.indexOfFromRaw`, which searches in place
 through the native `lyric_string_index_of_from` kernel (#7269, epic #7256).
+
+## HTTP/2 responses are framed without re-copying the body
+
+The dotnet HTTP/2 server copied every response body byte into a `List[Byte]`,
+copied it back out into one array, then copied each frame's slice of it again
+while assembling DATA frames. `H2Exchange` now keeps the slices the handler
+wrote and frames each one directly (`respondBytesWith` takes one bulk copy so
+the connection task never aliases a buffer the handler may reuse).
+`assembleFrame` builds only the 9-octet frame header byte by byte and joins the
+payload with one `Array.Copy`, a HEADERS frame without a priority block uses its
+header-block fragment as the payload directly, and a header block that fits one
+frame is no longer routed through an intermediate byte list. Responses are
+still sent after the handler completes; incremental DATA streaming remains
+#6107 (#7269, epic #7256).
