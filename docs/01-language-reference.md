@@ -1018,7 +1018,8 @@ func divide(n: in Int, d: in Int): Int
 ```
 
 - `requires`: precondition. Boolean expression evaluated on entry. Failure raises `PreconditionViolated` (a `Bug`).
-- `ensures`: postcondition. Boolean expression evaluated on return. Has access to `result` (the return value) and `old(expr)` (value of `expr` at entry).
+- `ensures`: postcondition. Boolean expression evaluated on return. Has access to `result` (the return value) and `old(expr)` (value of `expr` at entry). Failure raises `PostconditionViolated`.
+- The failure message names the violation kind, the owning function qualified by its package, and the clause as written: `PreconditionViolated: Division.divide requires d != 0`, `PostconditionViolated: Division.divide ensures result >= 0`. Methods are named `Pkg.Type.method`; protected-type invariants report `InvariantViolated: Pkg.Type.entry invariant ...` and loop invariants `LoopInvariantViolated: invariant ...`. The message is identical on every target.
 - `requires` and `ensures` clauses may be repeated for clarity:
 
 ```
@@ -1030,6 +1031,14 @@ func transfer(...): Result
   // ...
 }
 ```
+
+#### 6.1.1 Methods and interfaces
+
+Contract clauses apply to every function form: top-level functions, dot-named functions (`func Box.scaled(...)`), methods declared inside a `record { }` body, and methods in an `impl` block.
+
+A method signature in an `interface` may carry `requires:` and `ensures:` clauses. Every implementation of that method is checked against the interface's clauses **and** its own, the same additive composition aspects use (§ Aspects): an implementation may add preconditions and postconditions but cannot remove the interface's. Interface clauses refer to the interface method's parameter names; they are matched to the implementing method's parameters by position, so an implementation may rename a parameter freely. The check runs inside the implementation, so it applies whether the method is called on the concrete type or through an interface-typed value. Interface default methods inherited by an `impl` (§ interfaces) carry their clauses with them.
+
+Because an interface clause binds every implementation, it must describe programmer obligations, not untrusted input. A method whose arguments routinely come from outside the program (a storage key from an upload, a header value from a request) validates them in its body and returns an error value instead of declaring a precondition.
 
 ### 6.2 Type invariants
 
@@ -1075,7 +1084,7 @@ Each package declares a verification level:
 package Account
 ```
 
-- `@runtime_checked` (default): contracts are runtime asserts. Enabled in debug, configurable in release.
+- `@runtime_checked` (default): contracts are runtime asserts, checked in every build profile (`--release` does not remove them).
 - `@proof_required`: SMT solver must discharge every contract obligation at compile time. Modules at this level may only call other `@proof_required` modules, primitives, or modules behind explicit `@axiom` boundaries.
 - `@proof_required(unsafe_blocks_allowed)`: as above, with `unsafe { ... }` escape hatches that the prover treats as opaque.
 

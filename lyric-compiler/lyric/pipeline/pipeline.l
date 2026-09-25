@@ -275,7 +275,7 @@ pub func pipeCheckAndMono(
     return None
   }
 
-  val elaborated = elaborateFile(checked)
+  val elaborated = elaborateFileWithInterfaces(checked, monoIfaceDecls)
 
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).
   // Runs after the elaborator so a propagated Err/None short-circuit is not

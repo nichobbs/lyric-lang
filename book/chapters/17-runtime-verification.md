@@ -1,6 +1,6 @@
 # Contracts at Runtime
 
-Most Lyric programs spend their lives in `@runtime_checked` mode. This is not a fallback — it is a genuinely useful setting that turns contracts into live assertions, catches violations immediately, and produces counterexample values that make debugging fast. For the vast majority of application code, runtime checking gives you most of the benefit of formal verification at a small fraction of the cost: you write a `requires:` clause once, and every caller that passes bad arguments gets an immediate, precise error instead of a corrupted database row three transactions later.
+Most Lyric programs spend their lives in `@runtime_checked` mode. This is not a fallback — it is a genuinely useful setting that turns contracts into live assertions, catches violations immediately, and names the exact function and clause that failed. For the vast majority of application code, runtime checking gives you most of the benefit of formal verification at a small fraction of the cost: you write a `requires:` clause once, and every caller that passes bad arguments gets an immediate, precise error instead of a corrupted database row three transactions later.
 
 This chapter covers what `@runtime_checked` mode actually does, what a violation looks like when it fires, the rules around debug and release builds, and how to use contracts as a development tool — writing the contract first, stubbing the body, and letting violations guide you to a correct implementation. It also draws the line between `requires:` and `assert`, which serve different purposes even though they both check Boolean conditions.
 
@@ -17,8 +17,8 @@ What this annotation enables:
 
 - **`requires:` clauses** are evaluated on entry to the function, in source order. The first clause that evaluates to `false` raises a `PreconditionViolated` bug immediately, before the function body runs.
 - **`ensures:` clauses** are evaluated just before the function returns, after the body has produced a value. The first clause that evaluates to `false` raises a `PostconditionViolated` bug.
-- **`invariant:` clauses** on record and opaque types are checked at every public boundary: when a value of the type is passed as an argument to a `pub` function outside the type's own package, and when such a value is returned from a `pub` function.
-- **`forall` and `exists`** quantifiers iterate at runtime over the collection they range over. A `forall (x: Int) where xs.contains(x) implies result.contains(x)` walks the slice.
+- **`invariant:` clauses** on protected types are checked when each `entry` returns. Record and opaque-type invariants are specified to be checked at every public boundary (language reference §6.2), but the compiler does not enforce them yet (#7222); write the check as a `requires:` on the constructor function until it does.
+- **`forall` and `exists`** quantifiers are not evaluated at runtime: they compile to `true` with warning W0002, so a quantified clause documents intent and feeds `lyric prove` but catches nothing at runtime (#7228).
 
 The annotation has no effect on which code you can call. A `@runtime_checked` package can call `@proof_required` packages, `@axiom` boundaries, or any other package without restriction. The restriction runs the other way: `@proof_required` packages are constrained in what they may call (Chapter 18).
 
@@ -43,35 +43,27 @@ func main(): Unit {
 }
 ```
 
-When you run this, the runtime evaluates `d != 0` on entry to `divide`. It is false. Execution stops and the runtime produces:
+When you run this, the runtime evaluates `d != 0` on entry to `divide`. It is false. Execution stops and the runtime produces (on `--target jvm`):
 
 ```
-division.l:4:3: bug PreconditionViolated: divide — d != 0
-  at Division.main (division.l:9)
-counterexample values at violation:
-  n = 10
-  d = 0
+Exception in thread "main" java.lang.RuntimeException: PreconditionViolated: Division.divide requires d != 0
+	at Division.divide(division.l:5)
+	at Division.main(division.l:12)
 ```
 
 The error message tells you:
-- **The file and line** where the contract clause was written — not just where the call happened.
 - **The bug tag** — `PreconditionViolated` tells you this is a caller mistake, not a bug inside `divide`.
-- **The function name and the violated clause** verbatim.
-- **The call chain** — even in this trivial case, you see `main` called `divide`. In a deeper stack you see every frame.
-- **The counterexample values** — the exact arguments that caused the failure. You do not have to reproduce the call; the runtime captures the values for you.
+- **The function** — `Division.divide`, qualified by its package.
+- **The violated clause** — `requires d != 0`, rendered from the source.
+- **The call chain** — even in this trivial case, you see `main` called `divide`. On `--target jvm` each frame carries the source line (line 5 is the `requires:` clause itself); on `--target dotnet` the frames name the methods.
 
-If instead the body had a bug and the `ensures:` fired:
+If instead the body had a bug and the `ensures:` fired, the message would read:
 
 ```
-division.l:5:3: bug PostconditionViolated: divide — result * d + (n % d) == n
-  at Division.main (division.l:9)
-counterexample values at violation:
-  n = 10
-  d = 3
-  result = 2
+PostconditionViolated: Division.divide ensures result * d + n % d == n
 ```
 
-The counterexample now includes `result` — the value the function actually returned — alongside the arguments. You can see immediately that `2 * 3 + (10 % 3) == 7`, not `10`, so something in the body produced the wrong quotient.
+The runtime does not capture argument or `result` values; the clause and the stack tell you where to look, and a failing unit test with the same inputs reproduces it.
 
 ## §17.3 Violation semantics
 
@@ -170,16 +162,11 @@ pub func debit(a: in Account, amount: in Cents): Result[Account, AccountError]
 Running the test now gives:
 
 ```
-account.l:4:3: bug PostconditionViolated: debit
-  — result.isOk implies result.value.balance == a.balance - amount
-  at AccountTest.testDebit (accountTest.l:12)
-counterexample values at violation:
-  a.balance = 100
-  amount    = 30
-  result.value.balance = 100
+not ok 1 - debit subtracts the amount
+  PostconditionViolated: Account.debit ensures result.isOk implies result.value.balance == a.balance - amount
 ```
 
-The counterexample tells you exactly what is wrong: `result.value.balance` is `100` when it should be `70`. The fix is obvious.
+The message names the clause that failed: the balance after a successful debit is not the old balance minus the amount. The test's inputs (a balance of 100, an amount of 30) reproduce it, and the fix is obvious.
 
 **Step 3: Implement correctly.**
 
@@ -228,12 +215,12 @@ A third option — returning an `Err` — is appropriate when the condition repr
 
 ## Exercises
 
-1. Write a function `func divide(n: in Int, d: in Int): Int requires: d != 0` and a function `func badDivide(n: in Int, d: in Int): Int ensures: result == n / d + 1`. Call `divide` with `d = 0` and observe the `PreconditionViolated` message. Then implement `badDivide` correctly but observe the `PostconditionViolated` message. Compare the bug tags, messages, and which values appear in the counterexample.
+1. Write a function `func divide(n: in Int, d: in Int): Int requires: d != 0` and a function `func badDivide(n: in Int, d: in Int): Int ensures: result == n / d + 1`. Call `divide` with `d = 0` and observe the `PreconditionViolated` message. Then implement `badDivide` correctly but observe the `PostconditionViolated` message. Compare the bug tags and messages.
 
 2. Write an `opaque type Counter` with `invariant: value >= 0`. Write an `increment` function that works correctly and a `decrement` function that allows the value to go negative internally before correcting it. Call `decrement` from a test and observe that the invariant does not fire for internal intermediate states, but does fire if you expose the broken value through a `pub` function that returns the `Counter`.
 
 3. Write the same condition as both a `requires:` clause and an `assert(...)` call inside a function body. Trigger each. Compare the error messages: which names the violated clause verbatim, which shows your custom message, and which bug tag does each produce?
 
-4. Write a function with a `forall` in its `ensures:` clause — for example, `func nonNegativeAll(xs: in slice[Int]): slice[Int] ensures: forall (x: Int) where result.contains(x) implies x >= 0`. Implement it correctly, then implement a version that includes a negative value. Observe that the runtime iterates the slice to find the violating element and includes it in the counterexample.
+4. Write a function with a `forall` in its `ensures:` clause — for example, `func nonNegativeAll(xs: in slice[Int]): slice[Int] ensures: forall (x: Int) where result.contains(x) implies x >= 0`. Implement it correctly, then implement a version that includes a negative value. Observe warning W0002: the quantifier compiles to `true`, so the incorrect version is not caught at runtime. Then run `lyric prove` on a `@proof_required` copy of the function and read the counterexample the solver produces.
 
 5. Write a tight loop that calls a function with a non-trivial `ensures:` clause one million times. Build in debug mode and release mode (`lyric build --release`). Use a timer to measure the difference. Then add `--release-contracts` and measure again. What is the overhead of postcondition checking in your case?

@@ -55,12 +55,14 @@ import Storage.Kernel.Jvm
 
 // ─── Key safety primitives (defense-in-depth against path traversal) ─────────
 //
-// These helpers are exposed at the interface boundary so every
-// `StorageBucket` method can require `isSafeKey(key)` as a contract.
-// `Storage.Aspects.ValidateKey` adds a structured-error aspect-mode
-// wrapper for callers who want a `Result[T, StorageError]` rather than a
-// contract panic; the helpers in this file are the primary line of
-// defense (CWE-22).
+// Storage keys usually originate from untrusted input (upload names, URL
+// paths), so they are validated as data, never as a contract: every
+// `StorageBucket` implementation checks `isSafeKey(key)` itself and returns
+// `Err(StorageError(code = "INVALID_KEY"))` for a rejected key.  The
+// interface deliberately carries no `requires: isSafeKey(key)` — interface
+// contracts are enforced on every implementation (#7223), and a contract
+// failure is a crash, not a recoverable error.  These helpers are the
+// primary line of defense (CWE-22).
 // Build a normalised inspection form: expand percent-encodings of `.`,
 // `/`, `\` only, then fold `\` → `/`.  The returned string is for
 // inspection only — the original key still reaches the backend.
@@ -116,8 +118,7 @@ pub func storageKeyHasDotDot(s: in String): Bool {
 //     and incorrect `list` results (#1911).  This rejection is
 //     applied uniformly across `put`/`get`/`exists`/`list` so the
 //     contract is: no `.meta.json`-suffixed keys ever.
-// Used as a `requires:` precondition on every `StorageBucket` method
-// that accepts a key.
+// Checked by every `StorageBucket` implementation on every key it accepts.
 pub func isSafeKey(key: in String): Bool {
   if key.length == 0 {
     return false
@@ -219,16 +220,13 @@ pub interface StorageBucket {
   /// Upload `dataBase64` (base64-encoded) under `key` with the given content
   /// type and optional user-defined metadata.
   func put(key: in String, dataBase64: in String, contentType: in String, userMeta: in Map[String, String]): Result[StorageMetadata, StorageError]
-    requires: isSafeKey(key)
     requires: contentType.length > 0
 
   /// Download the object stored under `key`.
   func get(key: in String): Result[StorageObject, StorageError]
-    requires: isSafeKey(key)
 
   /// Delete the object stored under `key`.
   func delete(key: in String): Result[Unit, StorageError]
-    requires: isSafeKey(key)
 
   /// List objects whose keys begin with `prefix`.  Pass an empty string to
   /// list all objects.  Use `continuationToken` and `maxKeys` for paging.
@@ -237,27 +235,26 @@ pub interface StorageBucket {
   /// reject `maxKeys > 1000` at the interface contract before reaching
   /// the per-backend implementation (#1456).
   ///
-  /// Key restriction: keys whose basename ends in `.meta.json` are
-  /// rejected by `isSafeKey` and therefore cannot be stored or retrieved
-  /// via any method on this interface (#1911).  The `.meta.json` suffix
+  /// Key restriction: every method returns `Err(INVALID_KEY)` for a key
+  /// (or, for `list`, a non-empty prefix) that `isSafeKey` rejects.  Keys
+  /// whose basename ends in `.meta.json` are rejected by `isSafeKey` and
+  /// therefore cannot be stored or retrieved via any method on this
+  /// interface (#1911).  The `.meta.json` suffix
   /// is reserved for local-fs sidecar metadata files and is not visible
   /// in `list` results.
   func list(prefix: in String, continuationToken: in String, maxKeys: in Int): Result[ListResult, StorageError]
     requires: maxKeys >= 1
     requires: maxKeys <= 1000
-    requires: isSafePrefix(prefix)
 
   /// Generate a pre-signed URL granting temporary access to `key`.
   /// `expiresInSeconds` is capped at 604800 (7 days) to match the AWS S3
   /// maximum and prevent permanent unrevocable access grants.
   func presignedUrl(key: in String, expiresInSeconds: in Int): Result[String, StorageError]
-    requires: isSafeKey(key)
     requires: expiresInSeconds >= 1
     requires: expiresInSeconds <= 604800
 
   /// Return true if an object with the given `key` exists.
   func exists(key: in String): Result[Bool, StorageError]
-    requires: isSafeKey(key)
 }
 
 // ─── Local-filesystem bucket ─────────────────────────────────────────────────
@@ -562,6 +559,9 @@ impl StorageBucket for LocalBucket {
     if maxKeys < 1 or maxKeys > 1000 {
       return Err(StorageError(message = "maxKeys must be in [1, 1000]", code = "INVALID_ARGUMENT"))
     }
+    if not isSafePrefix(prefix) {
+      return Err(StorageError(message = "invalid key prefix '" + prefix + "'", code = "INVALID_KEY"))
+    }
     if not hostDirectoryExists(self.bucketDir) {
       return Ok(ListResult(entries = [], nextContinuationToken = None, isTruncated = false))
     }
@@ -622,7 +622,12 @@ impl StorageBucket for LocalBucket {
     // key resolves cleanly before refusing.
     match resolveLocalPath(self, key) {
       case Err(e) -> return Err(e)
-      case Ok(_) -> Err(StorageError(message = "presigned URLs are not supported on the local-fs storage backend", code = "NOT_SUPPORTED"))
+      case Ok(_) -> Err(
+        StorageError(
+          message = "presigned URLs are not supported on the local-fs storage backend",
+          code = "NOT_SUPPORTED"
+        )
+      )
     }
   }
 

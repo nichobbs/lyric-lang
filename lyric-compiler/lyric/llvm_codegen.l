@@ -3282,7 +3282,7 @@ func lowerCallEx(
           val failL = freshLabel(ctx, "assert.fail")
           insns.add(NCondBr(cond = cond.value, thenLabel = okL, elseLabel = failL))
           insns.add(NLabel(name = failL))
-          emitPanicRaw(ctx, insns, "assertion failed", line)
+          emitPanicRaw(ctx, insns, assertMessageOf(args), line)
           insns.add(NBr(label = okL))
           insns.add(NLabel(name = okL))
           return NVal(ty = NVoid, value = NUndef(ty = NVoid))
@@ -10555,6 +10555,22 @@ func selfTypeRef(recordName: in String, span: in Span): TypeExpr {
   val segs: List[String] = newList()
   segs.add(recordName)
   TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = span)), span = span)
+}
+
+// The static failure message of an `assert(cond, "message")` call: the
+// literal second argument when present (the contract elaborator always
+// supplies one, #7225), else the generic text.
+func assertMessageOf(args: in List[CallArg]): String {
+  if args.count > 1 {
+    match args[1] {
+      case CAPositional(e) -> match e.kind {
+        case ELiteral(lit) -> match lit { case LString(t) -> return t; case _ -> () }
+        case _ -> ()
+      }
+      case CANamed(_, _, _) -> ()
+    }
+  }
+  "assertion failed"
 }
 
 func substSelfInType(te: in TypeExpr, recordName: in String): TypeExpr {
