@@ -7,11 +7,17 @@
 package Std.Path
 
 import Std.PathHost
+import Std.Errors
 
-/// Join two path components into a normalized host path.
+/// Join two path components with the host separator.
 ///
 /// Empty components preserve the non-empty side. This is string/path
-/// syntax work only; it does not check whether either component exists.
+/// syntax work only; it does not check whether either component exists,
+/// and it does NOT normalize or confine the result: `..` segments are kept,
+/// and an absolute `relative` replaces `base` entirely
+/// (`join("/srv/www", "/etc/passwd")` is `"/etc/passwd"`).  To build a path
+/// from an untrusted component that must stay under `base`, use
+/// `joinWithin`.
 ///
 /// # Example
 /// ```
@@ -28,6 +34,74 @@ pub func join(base: in String, relative: in String): String {
     return base
   }
   return hostPathCombine(base, relative)
+}
+
+/// Join `relative` under `base`, refusing any `relative` that could leave it.
+///
+/// For a component that comes from outside the program (a URL path, an
+/// upload name).  Returns `Err(InvalidPath)` when `relative` is rooted (a
+/// leading `/` or `\`, a drive letter, or anything `isAbsolute` accepts),
+/// contains a `..` segment (with either separator), or contains a NUL.
+/// Otherwise returns `join(base, relative)`.  The check is syntactic: it does
+/// not resolve symbolic links, so a symlink inside `base` can still point
+/// elsewhere.
+@stable(since = "1.2")
+pub func joinWithin(base: in String, relative: in String): Result[String, IOError] {
+  if relative.contains("\u{0000}") {
+    return Err(error = InvalidPath(path = relative, reason = "contains a NUL character"))
+  }
+  if isAbsolute(relative) or relative.startsWith("/") or relative.startsWith("\\") or hasDriveLetter(relative) {
+    return Err(error = InvalidPath(path = relative, reason = "must be a relative path"))
+  }
+  if hasDotDotSegment(relative) {
+    return Err(error = InvalidPath(path = relative, reason = "must not contain '..' segments"))
+  }
+  Ok(value = join(base, relative))
+}
+
+func hasDriveLetter(p: in String): Bool {
+  p.length >= 2 and p.substring(1, 1) == ":"
+}
+
+// True when `p`, split on either `/` or `\`, has a segment that is exactly `..`.
+func hasDotDotSegment(p: in String): Bool {
+  var segStart = 0
+  var i = 0
+  while i <= p.length {
+    val atEnd = i == p.length
+    val isSep = if atEnd { false } else { p.substring(i, 1) == "/" or p.substring(i, 1) == "\\" }
+    if atEnd or isSep {
+      if i - segStart == 2 and p.substring(segStart, 2) == ".." {
+        return true
+      }
+      segStart = i + 1
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// True when `path` names a filesystem root: only separators (`/`, `\\`),
+/// a drive root (`C:`, `C:\\`, `C:/`), or a UNC share root with nothing
+/// below it.  Recursive deletes refuse such paths, so a configuration value
+/// that comes out empty after a join cannot wipe a volume.
+@pure
+@stable(since = "1.2")
+pub func isFilesystemRoot(path: in String): Bool {
+  var p = path
+  // Strip one drive prefix (`C:`), then look at what is left.
+  if hasDriveLetter(p) {
+    p = p.substring(2, p.length - 2)
+  }
+  var i = 0
+  while i < p.length {
+    val c = p.substring(i, 1)
+    if c != "/" and c != "\\" {
+      return false
+    }
+    i = i + 1
+  }
+  path.length > 0
 }
 
 /// Extract the final extension, including the leading dot when present.

@@ -353,6 +353,14 @@ pub func hostWriteByteSliceResult(path: in String, bytes: in slice[Byte]): Resul
   }
 }
 
+/// True when `path` is a symbolic link to a directory.  Recursive listings
+/// skip such links so a link back to an ancestor cannot repeat the tree
+/// (#7247).
+pub func hostIsDirSymlink(path: in String): Bool {
+  val f = JFile.new(path)
+  f.isDirectory() and isSymlinkJvm(f)
+}
+
 pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
   try {
     val raw = hostEnumerateFiles(dir)

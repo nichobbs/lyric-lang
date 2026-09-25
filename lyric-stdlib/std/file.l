@@ -16,6 +16,7 @@ package Std.File
 import Std.Core
 import Std.Collections
 import Std.Errors
+import Std.Path
 import Std.FileHost
 
 /// File metadata: last write time, stored as the kernel's opaque
@@ -113,6 +114,9 @@ pub func createDir(path: in String): Result[Unit, IOError] {
 pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  if isFilesystemRoot(path) {
+    return Err(error = InvalidPath(path = path, reason = "refusing to recursively delete a filesystem root"))
   }
   hostDeleteDirRecursiveResult(path)
 }
@@ -294,14 +298,33 @@ pub func stat(path: in String): Result[FileStat, IOError] {
 
 // Helper: collect all files recursively starting from `dir` into `acc`.
 // Errors stop the traversal and propagate up.
-func collectFilesRecursive(dir: in String, acc: in List[String]): Result[Unit, IOError] {
+// Directory nesting deeper than this is refused rather than recursed into:
+// defence in depth for link types `hostIsDirSymlink` cannot see (such as a
+// Windows junction), which could otherwise recurse without bound (#7247).
+val MAX_LIST_DEPTH: Int = 256
+
+func collectFilesRecursive(dir: in String, acc: in List[String], depth: in Int): Result[Unit, IOError] {
+  if depth > MAX_LIST_DEPTH {
+    return Err(
+      error = IoError(
+        path = dir,
+        message = "directory nesting exceeds " + MAX_LIST_DEPTH.toString() +
+          " levels (symbolic link cycle?)"
+      )
+    )
+  }
   val files = match listFiles(dir) { case Ok(fs) -> fs; case Err(e) -> { return Err(error = e) } }
   for f in files.toArray() {
     acc.add(f)
   }
   val subdirs = match listDirs(dir) { case Ok(ds) -> ds; case Err(e) -> { return Err(error = e) } }
   for sub in subdirs.toArray() {
-    match collectFilesRecursive(sub, acc) {
+    // A directory link is not descended into: it may point back at an
+    // ancestor (a cycle) or outside the tree being listed (#7247).
+    if hostIsDirSymlink(sub) {
+      continue
+    }
+    match collectFilesRecursive(sub, acc, depth + 1) {
       case Ok(_) -> ()
       case Err(e) -> {
         return Err(error = e)
@@ -315,13 +338,17 @@ func collectFilesRecursive(dir: in String, acc: in List[String]): Result[Unit, I
 ///
 /// Returns `Ok(files)` with one absolute path per file.  Traversal
 /// errors (missing intermediate dir, permission) surface as `Err(IoError)`.
+/// Symbolic links to directories are not descended into (their target may
+/// be an ancestor or lie outside `dir`); files reached through ordinary
+/// directories are listed once each.  Nesting deeper than 256 levels is
+/// reported as `Err(IoError)` rather than recursing without bound.
 @stable(since = "1.0")
 pub func listFilesRecursive(dir: in String): Result[List[String], IOError] {
   if dir.length == 0 {
     return Err(error = InvalidPath(path = dir, reason = "path must not be empty"))
   }
   val acc: List[String] = newList()
-  match collectFilesRecursive(dir, acc) {
+  match collectFilesRecursive(dir, acc, 0) {
     case Ok(_) -> Ok(value = acc)
     case Err(e) -> Err(error = e)
   }

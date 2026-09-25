@@ -8,6 +8,7 @@ package Std.Path.Tests
 
 import Std.Core
 import Std.Path
+import Std.Errors
 import Std.Testing
 
 func testJoinBothNonEmpty(): Unit {
@@ -53,7 +54,45 @@ func testIsRelative(): Unit {
   assertTrue(isRelative(""), "empty path is relative")
 }
 
+// #7247: join does not confine; joinWithin refuses untrusted components that
+// could escape `base`.
+func testJoinDoesNotConfine(): Unit {
+  assertTrue(join("/srv/www", "/etc/passwd") == "/etc/passwd", "an absolute component replaces base")
+}
+
+func rejected(r: in Result[String, IOError]): Bool {
+  match r {
+    case Ok(_) -> false
+    case Err(_) -> true
+  }
+}
+
+func testJoinWithin(): Unit {
+  match joinWithin("/srv/www", "css/site.css") {
+    case Ok(p) -> assertTrue(p.contains("css") and p.contains("srv"), "a plain relative path joins")
+    case Err(_) -> assertTrue(false, "a plain relative path must be accepted")
+  }
+  assertTrue(rejected(joinWithin("/srv/www", "../etc/passwd")), "leading ..")
+  assertTrue(rejected(joinWithin("/srv/www", "a/../../b")), "embedded ..")
+  assertTrue(rejected(joinWithin("/srv/www", "a\\..\\..\\b")), "backslash-separated ..")
+  assertTrue(rejected(joinWithin("/srv/www", "/etc/passwd")), "rooted")
+  assertTrue(rejected(joinWithin("/srv/www", "C:\\Windows")), "drive letter")
+  assertTrue(not rejected(joinWithin("/srv/www", "a..b/c")), "dots inside a segment are fine")
+}
+
+func testIsFilesystemRoot(): Unit {
+  assertTrue(isFilesystemRoot("/"), "/")
+  assertTrue(isFilesystemRoot("//"), "//")
+  assertTrue(isFilesystemRoot("C:\\"), "C:\\")
+  assertTrue(isFilesystemRoot("C:"), "C:")
+  assertTrue(not isFilesystemRoot("/tmp"), "/tmp")
+  assertTrue(not isFilesystemRoot(""), "empty")
+}
+
 func main(): Unit {
+  testJoinDoesNotConfine()
+  testJoinWithin()
+  testIsFilesystemRoot()
   testJoinBothNonEmpty()
   testJoinEmptyBase()
   testJoinEmptyRelative()
