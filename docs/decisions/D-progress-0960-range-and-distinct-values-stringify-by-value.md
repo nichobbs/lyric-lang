@@ -46,7 +46,11 @@ restored TypeRef) and marks it in `CodegenCtx.distinctClasses`, the set
 On the JVM, `collectFileDeclaredTypeFqns` now registers distinct types with
 the other declared types, so a consumer's parameter of a dependency's
 distinct type names the producer's wrapper class (it previously named
-`<consumerPkg>/Cents` and failed with `NoClassDefFoundError`).
+`<consumerPkg>/Cents` and failed with `NoClassDefFoundError`). The JVM bundle's
+import walk now also starts from `Std.Core` (the implicit prelude that
+`Option`/`Result` and a range type's synthesised `tryFrom` rely on) and from
+every restored dependency's imports, so a consumer of such a library no
+longer fails with `NoClassDefFoundError: Std/Core/Result`.
 
 ## Verification
 

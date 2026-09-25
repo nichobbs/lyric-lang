@@ -2216,6 +2216,26 @@ pub func compileProjectToJarBundledWithRestored(
     worklist.add(dottedPath(userFile.imports[ui].path))
     ui = ui + 1
   }
+  // `Std.Core` (`Option`/`Result`) is an implicit prelude: code refers to it
+  // without importing it (#6703), and compiler-synthesised code does too (a
+  // range type's `tryFrom` builds a `Result`). A restored dependency's
+  // classes ride in the JAR as well, so the packages it imports are bundled
+  // even when the user never imports them. Without both, a consumer of such
+  // a library failed at run time with NoClassDefFoundError: Std/Core/Result
+  // (D-progress-960).
+  if dottedPath(userFile.packageDecl.path) != "Std.Core" {
+    worklist.add("Std.Core")
+  }
+  var rwi = 0
+  while rwi < restoredArtifacts.count {
+    val raImports = restoredArtifacts[rwi].source.imports
+    var rwj = 0
+    while rwj < raImports.count {
+      worklist.add(dottedPath(raImports[rwj].path))
+      rwj = rwj + 1
+    }
+    rwi = rwi + 1
+  }
   var wi = 0
   while wi < worklist.count {
     val pkg = worklist[wi]
