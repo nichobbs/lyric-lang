@@ -2122,6 +2122,63 @@ test "emitProject another package's functions used as values (JVM)" {
   assertEqual(Str.trim(result.stdout), "ab 42 <t> cd 42", "function values JVM: output")
 }
 
+// An overloaded name cannot be a function value, bare or qualified: the
+// checker refuses it (T0123) instead of picking one overload (D-progress-962).
+func overloadedValuePkgs(useBare: in Bool): List[Emitter.ProjectPackage] {
+  val ref = if useBare { "pad" } else { "EPOl.Other.pad" }
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPOl.App",
+      "package EPOl.App\n" + "\n" + "import EPOl.Other\n" + "import EPOl.Other.{pad}\n" + "\n" + "func main(): Unit {\n" +
+        "  val f: (String) -> String = " +
+        ref +
+        "\n" +
+        "  println(f(\"x\"))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPOl.Other",
+      "package EPOl.Other\n" + "\n" + "pub func pad(s: in String, n: in Int): String { s + n.toString() }\n" + "\n" +
+        "pub func pad(s: in String): String { s + \" \" }\n"
+    )
+  )
+  pkgs
+}
+
+func emitProjectFails(label: in String, pkgs: in List[Emitter.ProjectPackage], asm: in String): Bool {
+  val dir = freshTempDir(label)
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = asm,
+    outputPath = Path.join(dir, asm + ".dll"),
+    target = Emitter.Dotnet,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  val failed = match Emitter.emitProject(req).outputPath { case None -> true; case Some(_) -> false }
+  cleanup(dir)
+  failed
+}
+
+test "emitProject refuses an overloaded function as a value (T0123)" {
+  assertTrue(
+    emitProjectFails("emitproj-fnval-ovl-bare", overloadedValuePkgs(true), "EPOl"),
+    "bare overloaded name refused"
+  )
+  assertTrue(
+    emitProjectFails("emitproj-fnval-ovl-qual", overloadedValuePkgs(false), "EPOl"),
+    "qualified overloaded name refused"
+  )
+}
+
 // An unannotated generic record built from another package's function
 // (`val p = Program(update = Logic.update)`) is constructed at the type mono
 // infers for it, and a generic taking it specialises and runs; before, MSIL

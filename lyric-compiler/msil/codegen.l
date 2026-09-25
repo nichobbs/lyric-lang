@@ -6468,7 +6468,9 @@ func emitCompoundCombineMsil(
     case _ -> false
   }
   if isStringConcat {
-    val rTy = lowerExprMsil(cctx, fctx, insns, value)
+    val rTyRaw = lowerExprMsil(cctx, fctx, insns, value)
+    val rDistinctUnsigned = distinctUnsignedMsil(cctx, rTyRaw)
+    val rTy = unwrapDistinctForStringMsil(cctx, insns, rTyRaw)
     match rTy {
       case MString -> {
       }
@@ -6480,11 +6482,11 @@ func emitCompoundCombineMsil(
         emitBoolToStringMsil(cctx, fctx, insns)
       }
       case _ -> {
-        if stringifiesByValueMsil(cctx, rTy) {
+        if isValueType(rTy) {
           // #6913: an unsigned-flagged box target for a bare `UInt`/
           // `ULong` compound-assignment rhs (`s += x`) — see
           // `isUnsignedExprMsil`.
-          boxIfNeededUnsignedMsil(cctx, insns, rTy, isUnsignedExprMsil(fctx, value))
+          boxIfNeededUnsignedMsil(cctx, insns, rTy, isUnsignedExprMsil(fctx, value) or rDistinctUnsigned)
         }
         insns.add(MCallvirt(methodToken = cctx.tokObjToString))
       }
@@ -6547,19 +6549,21 @@ func emitCompoundCombineSlotMsil(
   }
   emitLoadSlot(insns, rSlot, fctx.paramCount)
   if isStringConcat {
-    match rTy {
+    val rUnsigned = isUnsignedRhs or distinctUnsignedMsil(cctx, rTy)
+    val rValTy = unwrapDistinctForStringMsil(cctx, insns, rTy)
+    match rValTy {
       case MString -> {
       }
       case MBool -> emitBoolToStringMsil(cctx, fctx, insns)
       case _ -> {
-        if stringifiesByValueMsil(cctx, rTy) {
+        if isValueType(rTy) {
           // #6913: an unsigned-flagged box target for a bare `UInt`/
           // `ULong` indexed compound-assignment rhs (`xs[i] += x`) — the
           // rhs is pre-evaluated into `rSlot` by the caller (see this
           // function's own header comment), so its unsigned-ness is
           // computed from the source `Expr` at the call site and threaded
           // through as `isUnsignedRhs` rather than re-derived here.
-          boxIfNeededUnsignedMsil(cctx, insns, rTy, isUnsignedRhs)
+          boxIfNeededUnsignedMsil(cctx, insns, rValTy, rUnsigned)
         }
         insns.add(MCallvirt(methodToken = cctx.tokObjToString))
       }
@@ -8062,30 +8066,6 @@ func boxTypeRefUnsignedMsil(cctx: in CodegenCtx, ty: in MsilType): Int {
 // `boxIfNeededMsil` directly so a `UInt`/`ULong`-flagged value renders
 // unsigned (#6913) — see `isUnsignedExprMsil`.
 func boxIfNeededUnsignedMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType, isUnsigned: in Bool): Unit {
-  // A distinct or range-subtype value renders as its underlying value, not
-  // its wrapper class's name (D-progress-967).
-  match distinctUnderlyingMsil(cctx, ty) {
-    case Some(under) -> {
-      val underUnsigned = match ty {
-        case MClass(cls) -> {
-          // `distinctUnderlyingMsil` answered from `fieldMsilTypes`, and
-          // every registration path adds the field's token with its type.
-          match mapGet(cctx.fieldTokens, cls + "/value") {
-            case Some(vtok) -> insns.add(MLdfld(fieldToken = vtok))
-            case None -> panic("Msil.Codegen ICE: distinct class '" + cls + "' has a value type but no value field token")
-          }
-          cctx.unsignedDistincts.containsKey(cls)
-        }
-        case _ -> false
-      }
-      if isValueType(under) {
-        val utok = if isUnsigned or underUnsigned { boxTypeRefUnsignedMsil(cctx, under) } else { boxTypeRef(cctx, under) }
-        insns.add(MBox(typeToken = utok))
-      }
-      return
-    }
-    case None -> ()
-  }
   if isValueType(ty) {
     val tok = if isUnsigned { boxTypeRefUnsignedMsil(cctx, ty) } else { boxTypeRef(cctx, ty) }
     insns.add(MBox(typeToken = tok))
@@ -8105,10 +8085,35 @@ func distinctUnderlyingMsil(cctx: in CodegenCtx, ty: in MsilType): Option[MsilTy
   }
 }
 
-// True when stringifying a `ty` value goes through `boxIfNeededUnsignedMsil`
-// (a primitive, or a distinct type rendered as its underlying value).
-func stringifiesByValueMsil(cctx: in CodegenCtx, ty: in MsilType): Bool {
-  isValueType(ty) or match distinctUnderlyingMsil(cctx, ty) { case Some(_) -> true; case None -> false }
+// A distinct or range-subtype value about to be stringified: load its
+// `value` field so every stringify site formats it exactly as its underlying
+// type (lowercase `Bool`, invariant `Double`, unsigned `UInt`), and return
+// that type; any other type is returned unchanged (D-progress-967).
+func unwrapDistinctForStringMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): MsilType {
+  match distinctUnderlyingMsil(cctx, ty) {
+    case Some(under) -> {
+      match ty {
+        case MClass(cls) -> match mapGet(cctx.fieldTokens, cls + "/value") {
+          case Some(vtok) -> insns.add(MLdfld(fieldToken = vtok))
+          case None -> panic(
+            "Msil.Codegen ICE: distinct class '" + cls +
+              "' has a value type but no value field token"
+          )
+        }
+        case _ -> ()
+      }
+      under
+    }
+    case None -> ty
+  }
+}
+
+// True when `ty` is a distinct/range-subtype class over `UInt`/`ULong`.
+func distinctUnsignedMsil(cctx: in CodegenCtx, ty: in MsilType): Bool {
+  match ty {
+    case MClass(cls) -> cctx.unsignedDistincts.containsKey(cls)
+    case _ -> false
+  }
 }
 
 // Box a union case field for `Object.Equals(object,object)` / virtual
@@ -11685,7 +11690,9 @@ func lowerBinopMsil(
           if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
             phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, saddName, MString, saddLhsLocalIdx)
           }
-          val saddRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+          val saddRhsRaw = lowerExprMsil(cctx, fctx, insns, rhs)
+          val saddRhsDistinctUnsigned = distinctUnsignedMsil(cctx, saddRhsRaw)
+          val saddRhsTy = unwrapDistinctForStringMsil(cctx, insns, saddRhsRaw)
           match saddRhsTy {
             case MString -> {
             }
@@ -11697,8 +11704,8 @@ func lowerBinopMsil(
               // Convert non-string rhs to string: box value types, then call
               // ToString(). #6913: an unsigned-flagged box target for a bare
               // `UInt`/`ULong` rhs — see `isUnsignedExprMsil`.
-              if stringifiesByValueMsil(cctx, saddRhsTy) {
-                boxIfNeededUnsignedMsil(cctx, insns, saddRhsTy, isUnsignedExprMsil(fctx, rhs))
+              if isValueType(saddRhsTy) {
+                boxIfNeededUnsignedMsil(cctx, insns, saddRhsTy, isUnsignedExprMsil(fctx, rhs) or saddRhsDistinctUnsigned)
               }
               insns.add(MCallvirt(methodToken = cctx.tokObjToString))
             }
@@ -15105,7 +15112,9 @@ func lowerInterpolatedMsil(
         insns.add(MLdStr(token = tok))
       }
       case ISExpr(e) -> {
-        val eTy = lowerExprMsil(cctx, fctx, insns, e)
+        val eTyRaw = lowerExprMsil(cctx, fctx, insns, e)
+        val eDistinctUnsigned = distinctUnsignedMsil(cctx, eTyRaw)
+        val eTy = unwrapDistinctForStringMsil(cctx, insns, eTyRaw)
         // Convert to string.
         match eTy {
           case MBool -> {
@@ -15113,10 +15122,10 @@ func lowerInterpolatedMsil(
             emitBoolToStringMsil(cctx, fctx, insns)
           }
           case _ -> {
-            if stringifiesByValueMsil(cctx, eTy) {
+            if isValueType(eTy) {
               // #6913: an unsigned-flagged box target for a bare `UInt`/
               // `ULong` interpolated segment — see `isUnsignedExprMsil`.
-              boxIfNeededUnsignedMsil(cctx, insns, eTy, isUnsignedExprMsil(fctx, e))
+              boxIfNeededUnsignedMsil(cctx, insns, eTy, isUnsignedExprMsil(fctx, e) or eDistinctUnsigned)
               insns.add(MCallvirt(methodToken = cctx.tokObjToString))
             } else {
               match eTy {
@@ -15706,11 +15715,12 @@ func lowerBuiltinOrStaticCallMsil(
   val hasQualifiedOverride = hasQualifiedFuncOverrideMsil(cctx, path, args.count)
   if (not hasQualifiedOverride) and funcName == "println" {
     if args.count > 0 {
-      val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val printlnRaw = lowerCallArgMsil(cctx, fctx, insns, args[0])
       // #6913: a bare `UInt`/`ULong` argument needs the unsigned
       // `Console.WriteLine` overload, not the signed one — see
       // `isUnsignedExprMsil`.
-      val printlnIsUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[0]))
+      val printlnIsUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[0])) or distinctUnsignedMsil(cctx, printlnRaw)
+      val argTy = unwrapDistinctForStringMsil(cctx, insns, printlnRaw)
       match argTy {
         case MInt -> {
           if printlnIsUnsigned {
@@ -15755,7 +15765,9 @@ func lowerBuiltinOrStaticCallMsil(
     MVoid
   } else if (not hasQualifiedOverride) and funcName == "print" {
     if args.count > 0 {
-      val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val printRaw = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val printIsUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[0])) or distinctUnsignedMsil(cctx, printRaw)
+      val argTy = unwrapDistinctForStringMsil(cctx, insns, printRaw)
       match argTy {
         case MString -> insns.add(MCall(methodToken = cctx.tokWriteStr))
         case MVoid -> {
@@ -15778,7 +15790,7 @@ func lowerBuiltinOrStaticCallMsil(
           // Box value type and call ToString, then Write(string). #6913:
           // an unsigned-flagged box target for a bare `UInt`/`ULong`
           // operand — see `isUnsignedExprMsil`.
-          boxIfNeededUnsignedMsil(cctx, insns, argTy, isUnsignedExprMsil(fctx, callArgExpr(args[0])))
+          boxIfNeededUnsignedMsil(cctx, insns, argTy, printIsUnsigned)
           insns.add(MCallvirt(methodToken = cctx.tokObjToString))
           insns.add(MCall(methodToken = cctx.tokWriteStr))
         }
@@ -15824,7 +15836,9 @@ func lowerBuiltinOrStaticCallMsil(
     MInt
   } else if (not hasQualifiedOverride) and funcName == "toString" {
     if args.count > 0 {
-      val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val tsRaw = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val tsIsUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[0])) or distinctUnsignedMsil(cctx, tsRaw)
+      val argTy = unwrapDistinctForStringMsil(cctx, insns, tsRaw)
       match argTy {
         case MString -> {
         }
@@ -15862,7 +15876,7 @@ func lowerBuiltinOrStaticCallMsil(
           } else {
             // #6913: an unsigned-flagged box target for a bare `UInt`/
             // `ULong` operand — see `isUnsignedExprMsil`.
-            boxIfNeededUnsignedMsil(cctx, insns, argTy, isUnsignedExprMsil(fctx, callArgExpr(args[0])))
+            boxIfNeededUnsignedMsil(cctx, insns, argTy, tsIsUnsigned)
             insns.add(MCallvirt(methodToken = cctx.tokObjToString))
           }
         }
@@ -16210,11 +16224,13 @@ func lowerBuiltinOrStaticCallMsil(
   } else if (not hasQualifiedOverride) and funcName == "format1" {
     if args.count >= 2 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
-      val a1Ty = lowerCallArgMsil(cctx, fctx, insns, args[1])
+      val a1TyRaw = lowerCallArgMsil(cctx, fctx, insns, args[1])
+      val a1TyUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[1])) or distinctUnsignedMsil(cctx, a1TyRaw)
+      val a1Ty = unwrapDistinctForStringMsil(cctx, insns, a1TyRaw)
       // #6913: `String.Format`'s `{0}` placeholder calls `.ToString()` on the
       // boxed arg internally — an unsigned-flagged box target for a bare
       // `UInt`/`ULong` arg — see `isUnsignedExprMsil`.
-      boxIfNeededUnsignedMsil(cctx, insns, a1Ty, isUnsignedExprMsil(fctx, callArgExpr(args[1])))
+      boxIfNeededUnsignedMsil(cctx, insns, a1Ty, a1TyUnsigned)
       insns.add(MCall(methodToken = cctx.tokStringFormat1))
     } else if args.count == 1 {
       val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -16226,10 +16242,14 @@ func lowerBuiltinOrStaticCallMsil(
   } else if (not hasQualifiedOverride) and funcName == "format2" {
     if args.count >= 3 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
-      val a1Ty2 = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      boxIfNeededUnsignedMsil(cctx, insns, a1Ty2, isUnsignedExprMsil(fctx, callArgExpr(args[1])))
-      val a2Ty2 = lowerCallArgMsil(cctx, fctx, insns, args[2])
-      boxIfNeededUnsignedMsil(cctx, insns, a2Ty2, isUnsignedExprMsil(fctx, callArgExpr(args[2])))
+      val a1Ty2Raw = lowerCallArgMsil(cctx, fctx, insns, args[1])
+      val a1Ty2Unsigned = isUnsignedExprMsil(fctx, callArgExpr(args[1])) or distinctUnsignedMsil(cctx, a1Ty2Raw)
+      val a1Ty2 = unwrapDistinctForStringMsil(cctx, insns, a1Ty2Raw)
+      boxIfNeededUnsignedMsil(cctx, insns, a1Ty2, a1Ty2Unsigned)
+      val a2Ty2Raw = lowerCallArgMsil(cctx, fctx, insns, args[2])
+      val a2Ty2Unsigned = isUnsignedExprMsil(fctx, callArgExpr(args[2])) or distinctUnsignedMsil(cctx, a2Ty2Raw)
+      val a2Ty2 = unwrapDistinctForStringMsil(cctx, insns, a2Ty2Raw)
+      boxIfNeededUnsignedMsil(cctx, insns, a2Ty2, a2Ty2Unsigned)
       insns.add(MCall(methodToken = cctx.tokStringFormat2))
     } else if args.count >= 1 {
       val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -16241,12 +16261,18 @@ func lowerBuiltinOrStaticCallMsil(
   } else if (not hasQualifiedOverride) and funcName == "format3" {
     if args.count >= 4 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
-      val a1Ty3 = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      boxIfNeededUnsignedMsil(cctx, insns, a1Ty3, isUnsignedExprMsil(fctx, callArgExpr(args[1])))
-      val a2Ty3 = lowerCallArgMsil(cctx, fctx, insns, args[2])
-      boxIfNeededUnsignedMsil(cctx, insns, a2Ty3, isUnsignedExprMsil(fctx, callArgExpr(args[2])))
-      val a3Ty3 = lowerCallArgMsil(cctx, fctx, insns, args[3])
-      boxIfNeededUnsignedMsil(cctx, insns, a3Ty3, isUnsignedExprMsil(fctx, callArgExpr(args[3])))
+      val a1Ty3Raw = lowerCallArgMsil(cctx, fctx, insns, args[1])
+      val a1Ty3Unsigned = isUnsignedExprMsil(fctx, callArgExpr(args[1])) or distinctUnsignedMsil(cctx, a1Ty3Raw)
+      val a1Ty3 = unwrapDistinctForStringMsil(cctx, insns, a1Ty3Raw)
+      boxIfNeededUnsignedMsil(cctx, insns, a1Ty3, a1Ty3Unsigned)
+      val a2Ty3Raw = lowerCallArgMsil(cctx, fctx, insns, args[2])
+      val a2Ty3Unsigned = isUnsignedExprMsil(fctx, callArgExpr(args[2])) or distinctUnsignedMsil(cctx, a2Ty3Raw)
+      val a2Ty3 = unwrapDistinctForStringMsil(cctx, insns, a2Ty3Raw)
+      boxIfNeededUnsignedMsil(cctx, insns, a2Ty3, a2Ty3Unsigned)
+      val a3Ty3Raw = lowerCallArgMsil(cctx, fctx, insns, args[3])
+      val a3Ty3Unsigned = isUnsignedExprMsil(fctx, callArgExpr(args[3])) or distinctUnsignedMsil(cctx, a3Ty3Raw)
+      val a3Ty3 = unwrapDistinctForStringMsil(cctx, insns, a3Ty3Raw)
+      boxIfNeededUnsignedMsil(cctx, insns, a3Ty3, a3Ty3Unsigned)
       insns.add(MCall(methodToken = cctx.tokStringFormat3))
     } else if args.count >= 1 {
       val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -18480,7 +18506,9 @@ func lowerMethodCallMsil(
       case _ -> recvTy
     }
   } else if memberName == "toString" {
-    match recvTy {
+    val tsRecvUnsigned = isUnsignedExprMsil(fctx, recv) or distinctUnsignedMsil(cctx, recvTy)
+    val tsRecvTy = unwrapDistinctForStringMsil(cctx, insns, recvTy)
+    match tsRecvTy {
       case MBool -> {
         // Lowercase "true"/"false", not BCL Boolean.ToString()'s "True"/"False" (#5552).
         emitBoolToStringMsil(cctx, fctx, insns)
@@ -18495,7 +18523,7 @@ func lowerMethodCallMsil(
         // is a SEPARATE codegen arm from the free `toString(x)` builtin
         // (`lowerBuiltinOrStaticCallMsil`'s `funcName == "toString"` arm) —
         // both need the fix independently.
-        boxIfNeededUnsignedMsil(cctx, insns, recvTy, isUnsignedExprMsil(fctx, recv))
+        boxIfNeededUnsignedMsil(cctx, insns, tsRecvTy, tsRecvUnsigned)
         insns.add(MCallvirt(methodToken = cctx.tokObjToString))
       }
     }

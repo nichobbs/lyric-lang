@@ -23,13 +23,18 @@ A range or distinct value stringifies as its underlying value in every
 stringification position, on both targets. A `UInt`/`ULong`-backed type, which
 both targets erase to the signed representation, formats unsigned.
 
-- **MSIL.** `stringifiesByValueMsil` treats a distinct class (one with a
-  `<cls>/value` entry in `fieldMsilTypes`) like a primitive at the
-  `.toString()`, interpolation and concatenation sites;
-  `boxIfNeededUnsignedMsil` loads `value` and boxes the underlying type, with
-  the unsigned box target for a class in `CodegenCtx.unsignedDistincts`
-  (filled from the declared underlying `TypeExpr` at registration). The `from`/`tryFrom` arms
-  coerce their argument to the underlying type with `coerceCallArgMsil`.
+- **MSIL.** Every stringification site (`println`, `print`, free `toString`,
+  member `.toString()`, interpolation, concatenation, compound `+=` and
+  `format1`/`2`/`3`) calls `unwrapDistinctForStringMsil` on the lowered
+  operand first: for a distinct class (one in `CodegenCtx.distinctClasses`)
+  it loads the `value` field and returns the underlying type, so the site's
+  existing per-type handling applies unchanged (lowercase `Bool`,
+  invariant-culture `Double`, unsigned `UInt`/`ULong`). The unsigned flag is
+  `distinctUnsignedMsil`, true for a class in `CodegenCtx.unsignedDistincts`
+  (filled from the declared underlying `TypeExpr` at registration).
+  `boxIfNeededUnsignedMsil` itself stays a plain value-type box. The
+  `from`/`tryFrom` arms coerce their argument to the underlying type with
+  `coerceCallArgMsil`.
 - **JVM.** Each distinct class registers its `$value` accessor in `funcSigs`;
   `registerInstanceSigErased` now fills `retIsUnsigned` from the declared
   return type (only bare-key lookups read it elsewhere, so instance sigs were
@@ -57,7 +62,9 @@ longer fails with `NoClassDefFoundError: Std/Core/Result`.
 `range_subtype_self_test.l` ("a Long range subtype from an Int literal renders
 as its value") covers `.toString()`, interpolation, free `toString`, a record
 field of the range type and `tryFrom`; "a UInt range subtype renders its value
-unsigned" covers a value above `Int.MAX`. Both run on MSIL and the JVM.
+unsigned" covers a value above `Int.MAX`; the `Double`-range and `Bool`
+distinct cases check the underlying type's formatting survives the unwrap. All
+run on MSIL and the JVM.
 `cross_package_generics_self_test.l` and
 `cross_package_generics_jvm_self_test.l` ("a restored range subtype ... renders
 as its value") cover a range type consumed from a restored dependency on each

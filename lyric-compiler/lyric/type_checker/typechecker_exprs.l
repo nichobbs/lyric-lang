@@ -2825,6 +2825,21 @@ func funcValueType(sig: in ResolvedSignature): Type {
 // the caller against a known package): its type, or `None` when that package
 // declares no function `name`.  Several same-named functions in the package
 // are T0123, since a value reference cannot pick an overload.
+// How many functions named `name` package `pkg` declares.
+func pkgFuncCount(tbl: in SymbolTable, pkg: in String, name: in String): Int {
+  val all = symTableTryFindAll(tbl, name)
+  var n = 0
+  var i = 0
+  while i < all.count {
+    match all[i].kind {
+      case DKFunc(_) -> if all[i].originPackage == pkg { n = n + 1 }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  n
+}
+
 func resolveQualifiedFuncValue(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -2956,6 +2971,19 @@ func resolveExprPath(
           val isCallee = tbl.funcRefCallees.containsKey(recordCopySiteKey(span))
           match sym.kind {
             case DKFunc(fd) -> if not isCallee and inScope and sym.originPackage.length > 0 and sym.originPackage != scopePkg {
+              // An overloaded name leaves the value ambiguous, as for a
+              // qualified reference (`resolveQualifiedFuncValue`).
+              if pkgFuncCount(tbl, sym.originPackage, name) > 1 {
+                diag.add(
+                  errorDiagnostic(
+                    "T0123",
+                    "'" + name +
+                      "' names several functions; a function value cannot pick an overload, so wrap the call in a lambda with typed parameters",
+                    span
+                  )
+                )
+                return TyError
+              }
               match pkgFuncSig(sigs, sym.originPackage, name, fd.params.count) {
                 case Some(scopedSig) -> {
                   recordFuncRefSite(tbl, scopedSig, name, span)

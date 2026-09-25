@@ -647,3 +647,27 @@ test "a UInt range subtype renders its value unsigned (D-progress-967)" {
   assertEqual("quota: ${q}", "quota: 4000000000", "interpolation")
   assertEqual("q=" + toString(q), "q=4000000000", "free toString")
 }
+
+type Ratio = Double range 0.0 ..= 1.0
+
+type Enabled = Bool
+
+// A `Double`- or `Bool`-backed distinct value stringifies exactly as its
+// underlying type: invariant-culture decimal and lowercase `true`/`false`,
+// not the boxed wrapper's `Object.ToString()` (D-progress-967).
+test "a Double range subtype renders its value like a Double (D-progress-967)" {
+  val r = Ratio.from(0.5)
+  assertEqual(r.toString(), "0.5", "toString")
+  assertEqual(toString(r), "0.5", "free toString")
+  assertEqual("ratio: ${r}", "ratio: 0.5", "interpolation")
+  assertEqual("r=" + r.toString(), "r=0.5", "concatenation")
+}
+
+test "a Bool distinct type renders lowercase like a Bool (D-progress-967)" {
+  val e = Enabled.from(true)
+  assertEqual(e.toString(), "true", "toString")
+  assertEqual(toString(e), "true", "free toString")
+  assertEqual("enabled: ${e}", "enabled: true", "interpolation")
+  val off = Enabled.from(false)
+  assertEqual("${off}", "false", "interpolation of false")
+}
