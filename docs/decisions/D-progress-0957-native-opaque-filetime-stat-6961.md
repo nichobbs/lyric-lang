@@ -1,4 +1,4 @@
-# D-progress-955 — Native: `FileTime` opaque timestamp twin unblocks `Std.File.stat`/`fileStatIsNewer` (#6961)
+# D-progress-956 — Native: `FileTime` opaque timestamp twin unblocks `Std.File.stat`/`fileStatIsNewer` (#6961)
 
 **Status:** shipped
 

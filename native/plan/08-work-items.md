@@ -858,8 +858,8 @@ representation `Std.Time`'s native `Instant` already uses (D-N-027),
 backed by a new `lyric_file_mtime_epoch_nanos_ok` `lyric-rt` seam
 (`stat(2)`'s `st_mtim`). `Std.File.stat`'s pure-layer body drops its
 `try`/`catch` entirely (D-N-003) in favour of a `hostGetLastWriteTimeUtcResult`
-Result seam every kernel twin now implements — see D-progress-955.
-See D-progress-910, D-progress-942, and D-progress-955 for the full account.
+Result seam every kernel twin now implements — see D-progress-956.
+See D-progress-910, D-progress-942, and D-progress-956 for the full account.
 
 ---
 
