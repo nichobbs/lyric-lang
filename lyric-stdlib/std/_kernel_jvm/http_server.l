@@ -40,6 +40,10 @@
 //!   - `requestBody` decodes as UTF-8 unconditionally; the .NET twin
 //!     honours the request's declared content encoding.  UTF-8 is the
 //!     interoperable default for every consumer this kernel has.
+//!   - The request body is read, capped at 10 MiB (the dotnet server's
+//!     default `EngineLimits.maxBodyBytes`), before the exchange is queued;
+//!     a larger body is answered `413` and never reaches `nextContext`
+//!     (#7269).
 //!   - `https://` prefixes on `startListener` are still rejected loudly:
 //!     that function's single-string-prefix shape has no room for a TLS
 //!     config, so it always builds a plaintext `HttpServer`.  Real TLS
@@ -587,7 +591,7 @@ pub func startListener(prefix: in String): HttpListener {
   // The handler only parks the exchange for `nextContext`; responding (and
   // closing) happens on the puller's thread — the JDK keeps an exchange
   // open after `handle()` returns until it is explicitly closed.
-  server.createContext(parsed.path, { ex: HttpContext -> queue.put(ex); () })
+  server.createContext(parsed.path, { ex: HttpContext -> admitExchange(ex, queue) })
   server.setExecutor(JExecutors.newVirtualThreadPerTaskExecutor())
   server.start()
   HttpListener(server = server, queue = queue)
@@ -642,7 +646,7 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
   httpsServer.setHttpsConfigurator(JHttpsConfigurator.new(ctx))
   val server: JHttpServer = httpsServer
   val queue = JQueue.new()
-  server.createContext("/", { ex: HttpContext -> queue.put(ex); () })
+  server.createContext("/", { ex: HttpContext -> admitExchange(ex, queue) })
   server.setExecutor(JExecutors.newVirtualThreadPerTaskExecutor())
   server.start()
   Ok(value = HttpListener(server = server, queue = queue))
@@ -680,15 +684,67 @@ pub func requestPath(c: in HttpContext): String {
 }
 
 /// Read the request body as a UTF-8 string (or `""` on transport error /
-/// empty body).  The stream is not closed here: `HttpExchange.close()`
-/// (called by every respond helper) drains and closes both directions.
+/// empty body). The body was read, bounded, before the request was queued
+/// (`admitExchange`); this returns that stored text.
 pub func requestBody(c: in HttpContext): String {
   return try {
-    val ins: JInputStream = c.getRequestBody()
-    val bytes = ins.readAllBytes()
-    JString.new(bytes, "UTF-8")
+    storedBody(c)
   } catch Bug as _ {
     ""
+  }
+}
+
+// Request bodies larger than this are answered `413` and never reach
+// `nextContext`, the same cap the dotnet server applies by default
+// (`EngineLimits.defaults().maxBodyBytes`, 10 MiB). Before #7269 the body was
+// read on demand with an unbounded `readAllBytes`, so one request could
+// allocate as much memory as its sender chose to send.
+val maxRequestBodyBytes: Int = 10485760
+
+// The `HttpExchange` attribute the admitted body is stored under.
+val bodyAttribute: String = "lyric.requestBody"
+
+// `HttpExchange.getAttribute` returns `Object`; `String.valueOf` turns the
+// stored `String` back into one (and an absent attribute into "null", which
+// `admitExchange` guarantees never happens for a queued exchange).
+func storedBody(c: in HttpContext): String {
+  JString.valueOf(c.getAttribute(bodyAttribute))
+}
+
+// Tail-position call: a discarded auto-FFI instance call on a parameter
+// receiver is not emitted on the JVM (#5379).
+func storeBody(c: in HttpContext, body: in String): Unit {
+  c.setAttribute(bodyAttribute, body)
+}
+
+// Read the request body, bounded: `Some(text)` when it fits in
+// `maxRequestBodyBytes`, `None` when it is larger (at most `max + 1` bytes
+// are ever read: one byte past the cap is proof enough). A transport failure
+// reads as an empty body, as `requestBody` always has.
+func readBoundedBody(c: in HttpContext): Option[String] {
+  return try {
+    val ins: JInputStream = c.getRequestBody()
+    val bytes = ins.readNBytes(maxRequestBodyBytes)
+    if ins.read() >= 0 {
+      None
+    } else {
+      Some(value = JString.new(bytes, "UTF-8"))
+    }
+  } catch Bug as _ {
+    Some(value = "")
+  }
+}
+
+// The `HttpHandler` body: read the request body (bounded), then either park
+// the exchange for `nextContext` or answer `413` for an over-limit body
+// without ever queuing it, as the dotnet server does.
+func admitExchange(ex: in HttpContext, queue: in JQueue): Unit {
+  match readBoundedBody(ex) {
+    case Some(text) -> {
+      storeBody(ex, text)
+      queue.put(ex)
+    }
+    case None -> respondText(ex, 413, "request body exceeds " + toString(maxRequestBodyBytes) + " bytes")
   }
 }
 

@@ -4538,6 +4538,12 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.HttpServer TLS test ran: tls_server_jvm_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/tls_server_jvm_tests.l"
+      # Bounded request-body admission on the JVM server (#7269).
+      - name: Std.HttpServer request-body test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"Std.HttpServer request-body test ran: http_server_jvm_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_server_jvm_tests.l"
 
       # Extra barrier (JVM batch 1a-split-2, #7021): this sub-batch had
       # drifted to 15 concurrent steps (one of #7005/#7021's own fixes

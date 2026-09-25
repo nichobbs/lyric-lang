@@ -84,6 +84,9 @@
 //!    `copyRange`) is therefore hand-rolled from `.substring(start,
 //!    count)`, `.length`, indexing, and `+`/`==` alone — the exact
 //!    primitive set verified to have native codegen support (and no more).
+//!    The one exception is `findSubstring`, which calls
+//!    `Std.String.indexOfFromRaw`: that function is a plain call into the
+//!    `Std.StringHost` native kernel, not a String-receiver method (#7269).
 //! 5. **`*WithCancel*` accept a `CancellationToken` but never consult it.**
 //!    `Std.Task` (which owns `CancellationToken`) has no
 //!    `_kernel_native/task.l` twin — a separate, pre-existing gap, not
@@ -217,6 +220,7 @@ package Std.HttpHost
 import Std.Core
 import Std.Collections
 import Std.Encoding
+import Std.String as Str
 import Std.Task
 import Std.Tls as Tls
 import Std.TcpHost as Tcp
@@ -268,21 +272,11 @@ pub record HttpResponseMessage {
 // String/byte scanning primitives (module header item 4).
 // =====================================================================
 /// The index of the first occurrence of `needle` in `s` at or after
-/// `from`, or -1. Built from `.substring`/`.length`/`==` alone — see
-/// module header item 4 for why `.indexOf` cannot be used here.
+/// `from`, or -1. `Std.String.indexOfFromRaw` searches in place through the
+/// native `lyric_string_index_of_from` kernel (#7258); the earlier
+/// hand-rolled scan allocated a substring at every position (#7269).
 func findSubstring(s: in String, needle: in String, from: in Int): Int {
-  val nLen = needle.length
-  if nLen == 0 {
-    return from
-  }
-  var i = from
-  while i + nLen <= s.length {
-    if s.substring(i, nLen) == needle {
-      return i
-    }
-    i = i + 1
-  }
-  -1
+  Str.indexOfFromRaw(s, needle, from)
 }
 
 /// Split `s` on every occurrence of `sep`, keeping empty parts (matches
