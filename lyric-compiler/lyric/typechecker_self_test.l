@@ -215,6 +215,13 @@ test "int literal adopts context" {
 test "negated literal and widening generic argument" {
   val neg = "package P\npub func f(x: in Long): Bool {\n  x == -1\n}\n"
   assertEqualInt(diagCount(parseCheck(neg)), 0, "int-lit: Long == -1 type-checks")
+  // A negated literal never adopts a type with no negative values.
+  val negU = "package P\npub func f(x: in UInt): Bool {\n  x == -1\n}\n"
+  assertTrue(diagCount(parseCheck(negU)) > 0, "int-lit: UInt == -1 is rejected")
+  val negN = "package P\npub func f(x: in Nat): Bool {\n  x == -1\n}\n"
+  assertTrue(diagCount(parseCheck(negN)) > 0, "int-lit: Nat == -1 is rejected")
+  val posU = "package P\npub func f(x: in UInt): Bool {\n  x == 1\n}\n"
+  assertEqualInt(diagCount(parseCheck(posU)), 0, "int-lit: UInt == 1 type-checks")
   val gen = "package P\nunion R[T] {\n  case Good(v: T)\n  case Bad\n}\npub func pick[T](r: in R[T], d: in T): T {\n  match r {\n    case Good(v) -> v\n    case Bad -> d\n  }\n}\npub func big(): R[Long] {\n  Good(v = 5000000000i64)\n}\npub func useLong(): Long {\n  pick(big(), 0)\n}\n"
   assertEqualInt(diagCount(parseCheck(gen)), 0, "generic: T binds Long, the Int literal widens")
   val wrong = "package P\nunion R[T] {\n  case Good(v: T)\n  case Bad\n}\npub func pick[T](r: in R[T], d: in T): T {\n  match r {\n    case Good(v) -> v\n    case Bad -> d\n  }\n}\npub func big(): R[Long] {\n  Good(v = 5000000000i64)\n}\npub func useString(): String {\n  val s: String = pick(big(), 0)\n  s\n}\n"
@@ -4556,4 +4563,39 @@ test "a user-declared copy method takes precedence over record copy" {
 test "generic record constructor infers a type parameter from the binding annotation" {
   val src = "package P\nrecord Box[A, B] { left: List[A]; right: Option[B] }\nfunc f(xs: in List[Int]): Unit { val _b: Box[Int, String] = Box(left = xs, right = None) }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0110"), "expected type fills B: no T0110")
+}
+
+// A qualified function value whose qualifier matches several packages
+// (`Lib.Bar`, `Other.Bar`) binds the imported one rather than reporting an
+// overload ambiguity (D-progress-962).
+test "qualified function value prefers the imported package among same-suffix packages" {
+  val libBar = parse("package Lib.Bar\npub func parse(s: in String): Int { 1 }\n")
+  val otherBar = parse("package Other.Bar\npub func parse(s: in String): Int { 2 }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Lib.Bar", items = libBar.file.items, imports = collectImportNames(libBar.file.imports))
+  )
+  packages.add(
+    ImportedPackage(
+      name = "Other.Bar",
+      items = otherBar.file.items,
+      imports = collectImportNames(otherBar.file.imports)
+    )
+  )
+  val src = "package App\nimport Lib.Bar\nfunc g(): Int {\n  val f: (String) -> Int = Bar.parse\n  f(\"x\")\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    0,
+    "Bar.parse binds Lib.Bar.parse, the imported package"
+  )
+}
+
+// A call through a function value converts only the widenings it has a
+// conversion for; `Byte` to `UInt` has none (#2050), so it is rejected rather
+// than passed boxed as a `Byte` (D-progress-963).
+test "function-value call rejects a Byte argument for a UInt parameter" {
+  val bad = "package P\npub func g(f: (UInt) -> UInt, b: in Byte): UInt {\n  f(b)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0043"), "Byte into a (UInt) -> UInt value is T0043")
+  val ok = "package P\npub func g(f: (Long) -> Long, i: in Int): Long {\n  f(i)\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "Int into a (Long) -> Long value still widens")
 }

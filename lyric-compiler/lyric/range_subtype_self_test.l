@@ -671,3 +671,15 @@ test "a Bool distinct type renders lowercase like a Bool (D-progress-967)" {
   val off = Enabled.from(false)
   assertEqual("${off}", "false", "interpolation of false")
 }
+
+// `println`/`print` of a distinct value print its underlying value. On the
+// JVM they used to hand the wrapper to `PrintStream.println(String)`, a
+// VerifyError that failed this whole module at class load (D-progress-967).
+test "println and print of range and distinct values run on both targets (D-progress-967)" {
+  println(Cents.from(5000))
+  print(Ratio.from(0.5))
+  println("")
+  println(Enabled.from(true))
+  println(Quota.from(4000000000u32))
+  assertTrue(true, "println/print of distinct values ran without a verify error")
+}

@@ -58,7 +58,8 @@ independent:
    widens at the call), `T` binds to the wider type. Any other disagreement
    is still unresolved. A negated literal (`-1`) now adopts the other
    operand's integer type the way `1` already did (#2514), so
-   `someLong == -1` type-checks.
+   `someLong == -1` type-checks. It never adopts a type with no negative
+   values (`Byte`, `UInt`, `ULong`, `Nat`): `someUInt == -1` stays an error.
 4. Union case fields register their function return types like record
    fields, in-bundle and restored; a constructor pattern binding such a field
    records the return type (substituted with the scrutinee's type arguments)

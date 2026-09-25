@@ -762,8 +762,32 @@ func isPlainInt(t: in Type): Bool {
 // integer type (e.g. `Long` from `someLong <= 0`, a return type, a binding
 // annotation, or a parameter type).  Returns the adjusted type, or `actual`
 // unchanged when no coercion applies.
+// True when `e` is a negated literal (`-1`, `(-1)`).
+func isNegatedLit(e: in Expr): Bool {
+  match e.kind {
+    case EPrefix(op, _) -> match op { case PreNeg -> true; case _ -> false }
+    case EParen(inner) -> isNegatedLit(inner)
+    case _ -> false
+  }
+}
+
+// True when `t` (after stripping range refinements) is an integer primitive
+// with no negative values, which a negated literal must never adopt.
+func isNonNegativeIntType(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt {
+      case PtByte -> true
+      case PtUInt -> true
+      case PtULong -> true
+      case PtNat -> true
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
 func adoptIntLiteralType(e: in Expr, actual: in Type, expected: in Type): Type {
-  if isUnsuffixedIntLit(e) and isPlainInt(actual) and isConcreteIntType(expected) {
+  if isUnsuffixedIntLit(e) and isPlainInt(actual) and isConcreteIntType(expected) and not (isNegatedLit(e) and isNonNegativeIntType(expected)) {
     return expected
   }
   actual
@@ -2725,6 +2749,27 @@ func wideningMethod(paramTy: in Type, argTy: in Type): Option[String] {
   }
 }
 
+// True when `argTy` satisfies `paramTy` only by a numeric widening that a call
+// through a function value cannot convert (`Byte` to `UInt`/`ULong`: there is
+// no `toUInt`/`toULong`, #2050). The erased call would pass the argument boxed
+// at its own type, so such a call is rejected rather than failing at run time.
+func unconvertibleWidening(paramTy: in Type, argTy: in Type): Bool {
+  if typeEquiv(paramTy, argTy) {
+    return false
+  }
+  match widenArithmetic(paramTy, argTy) {
+    case Some(wt) -> if typeEquiv(wt, paramTy) and not typeEquiv(unrefine(paramTy), unrefine(argTy)) {
+      match wideningMethod(paramTy, argTy) {
+        case Some(_) -> false
+        case None -> true
+      }
+    } else {
+      false
+    }
+    case None -> false
+  }
+}
+
 // Record a widened argument of a call through a function value: the call is
 // erased, so the argument reaches the function boxed at its own type unless
 // the widening is made explicit.
@@ -2865,7 +2910,21 @@ func resolveQualifiedFuncValue(
   if funcs.count == 0 {
     return None
   }
-  if funcs.count > 1 {
+  // Several packages can end in the qualifier (`Lib.Bar`, `Other.Bar`); the
+  // ones the current package imports win, as they would for the call. With
+  // none imported, every match stays, matching unimported-name resolution
+  // elsewhere (#6703).
+  val scopePkg = symTableScopePkg(tbl)
+  val inScope: List[Symbol] = newList()
+  var k = 0
+  while k < funcs.count {
+    if funcs[k].originPackage == scopePkg or symTableScopeAllows(tbl, funcs[k].originPackage) {
+      inScope.add(funcs[k])
+    }
+    k = k + 1
+  }
+  val chosen = if inScope.count > 0 { inScope } else { funcs }
+  if chosen.count > 1 {
     diag.add(
       errorDiagnostic(
         "T0123",
@@ -2876,7 +2935,7 @@ func resolveQualifiedFuncValue(
     )
     return Some(value = TyError)
   }
-  val sym = funcs[0]
+  val sym = chosen[0]
   checkImportedVisibility(sym, sp, diag)
   val arity = match sym.kind { case DKFunc(fd) -> fd.params.count; case _ -> 0 }
   match pkgFuncSig(sigs, sym.originPackage, name, arity) {
@@ -5706,6 +5765,17 @@ func inferExprCore(
                               errorDiagnostic(
                                 "T0043",
                                 "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]),
+                                e.span
+                              )
+                            )
+                          } else if unconvertibleWidening(paramTypes[k], argTypes[k]) {
+                            diag.add(
+                              errorDiagnostic(
+                                "T0043",
+                                "argument type " + renderType(argTypes[k]) + " cannot be widened to " + renderType(paramTypes[k]) +
+                                  " through a function value; pass a " +
+                                  renderType(paramTypes[k]) +
+                                  " value",
                                 e.span
                               )
                             )

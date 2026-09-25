@@ -42,7 +42,10 @@ both targets erase to the signed representation, formats unsigned.
   concatenation) unwraps through `$value` and recurses on the underlying type
   with that flag; the free `toString(x)` form routes a reference argument
   through the same helper, and so does the member `.toString()` form unless
-  the class registers its own `toString` method.
+  the class registers its own `toString` method. `println`/`print` stringify
+  a distinct argument through the same helper (`normalizeDistinctPrintArg`)
+  before choosing the `PrintStream` overload; passing the wrapper to
+  `println(String)` failed verification.
 
 A distinct type restored from a dependency behaves the same. On MSIL,
 `registerRestoredMembers` registers its `value` field (a MemberRef on the

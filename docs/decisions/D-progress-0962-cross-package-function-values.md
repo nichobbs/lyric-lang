@@ -24,9 +24,11 @@ be a same-named function from a package that is not even imported
 - **Resolution.** A bare function value resolves through the scope-aware
   symbol table: the function the name denotes here, the one a call would
   bind. A qualified value (`Pkg.f`, or a full path written as a member chain
-  whose root is not a local) resolves against the named package. Several
-  same-named functions in that package are T0123, since a value cannot pick
-  an overload.
+  whose root is not a local) resolves against the named package. When
+  several packages end in the qualifier (`Lib.Bar`, `Other.Bar`), the ones
+  in scope win; with none in scope every match stays, as unimported names
+  resolve elsewhere (#6703). Several same-named functions left after that are
+  T0123, bare or qualified, since a value cannot pick an overload.
 - **Lowering.** The type checker records each reference to another
   package's function that is not a call callee (`FuncRefSite`: the
   function's package path and name, and its parameter types rendered as

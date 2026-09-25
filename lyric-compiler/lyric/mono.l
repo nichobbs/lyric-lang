@@ -6102,20 +6102,6 @@ func bindingEnvTE(state: in MonoState, env: in Map[String, TypeExpr], annoTe: in
   }
 }
 
-// #6698: every arm below rewrites `init`/`initOpt` against `env` BEFORE
-// this binding's own name is added to (or re-added to, for a shadowing
-// same-named binding) `env` — never after.  A shadowing binding whose
-// initializer expression references the OUTER same-named binding (`val x:
-// Int = 5; { val x: String = someGenericCall(x) }`) must resolve that `x`
-// inside `someGenericCall(x)` against the outer `Int` entry, not the
-// not-yet-visible-to-its-own-initializer inner `String` one.  Mutating
-// `env` first (the pre-fix order) made the inner binding visible to its
-// OWN initializer, so a generic call inside `init` that referenced the
-// shadowed name silently specialised against the WRONG (inner, not-yet-
-// bound) type.  The inference helpers (`bindingEnvTE`/`inferExprTE`) below
-// are still handed the ORIGINAL (unrewritten) `init`/`ie` for their
-// structural analysis, matching pre-fix behaviour — only the ORDER
-// relative to the `env` mutation changed, not what they're passed.
 // True when `init` constructs a generic record with at least one lambda
 // argument (`Program(update = { ... })`).
 func genericRecordCtorWithLambdaArgMono(state: in MonoState, init: in Expr): Bool {
@@ -6147,6 +6133,21 @@ func genericRecordCtorWithLambdaArgMono(state: in MonoState, init: in Expr): Boo
   }
 }
 
+// #6698: every arm below rewrites `init`/`initOpt` against `env` BEFORE
+// this binding's own name is added to (or re-added to, for a shadowing
+// same-named binding) `env` — never after.  A shadowing binding whose
+// initializer expression references the OUTER same-named binding (`val x:
+// Int = 5; { val x: String = someGenericCall(x) }`) must resolve that `x`
+// inside `someGenericCall(x)` against the outer `Int` entry, not the
+// not-yet-visible-to-its-own-initializer inner `String` one.  Mutating
+// `env` first (the pre-fix order) made the inner binding visible to its
+// OWN initializer, so a generic call inside `init` that referenced the
+// shadowed name silently specialised against the WRONG (inner, not-yet-
+// bound) type.  An annotated binding's `bindingEnvTE` is handed the
+// REWRITTEN `init`, so a specialised generic call in it reports its
+// specialisation's return type rather than the generic one (D-progress-968);
+// an unannotated binding infers from the original `init` first and falls back
+// to the rewritten one.
 func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding: in LocalBinding): LocalBinding {
   match binding {
     case LBVal(pat, tyOpt, init) -> {
