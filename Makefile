@@ -380,7 +380,10 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/source_path_diagnostics_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_iface_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_mono_self_test.l \
+	lyric-compiler/lyric/string_bounds_self_test.l \
 	lyric-compiler/lyric/string_builder_self_test.l \
+	lyric-compiler/lyric/string_case_locale_self_test.l \
+	lyric-compiler/lyric/string_ordinal_self_test.l \
 	lyric-compiler/lyric/stubbable_self_test.l \
 	lyric-compiler/lyric/synthesized_method_self_test.l \
 	lyric-compiler/lyric/test_synth_self_test.l \

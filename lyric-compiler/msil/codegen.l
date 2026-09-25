@@ -130,10 +130,10 @@ pub record CodegenCtx {
   tokStringTrim: Int  // String.Trim(): string
   tokStringTrimStart: Int  // String.TrimStart(): string
   tokStringTrimEnd: Int  // String.TrimEnd(): string
-  tokStringIndexOf: Int  // String.IndexOf(string): int32  (-1 if absent)
-  tokStringLastIndexOf: Int  // String.LastIndexOf(string): int32  (-1 if absent)
-  tokStringStartsWith: Int  // String.StartsWith(string): bool
-  tokStringEndsWith: Int  // String.EndsWith(string): bool
+  tokStringIndexOf: Int  // String.IndexOf(string, StringComparison): int32  (-1 if absent)
+  tokStringLastIndexOf: Int  // String.LastIndexOf(string, StringComparison): int32  (-1 if absent)
+  tokStringStartsWith: Int  // String.StartsWith(string, StringComparison): bool
+  tokStringEndsWith: Int  // String.EndsWith(string, StringComparison): bool
   tokStringContains: Int  // String.Contains(string): bool
   tokStringToLower: Int  // String.ToLowerInvariant(): string
   tokStringToUpper: Int  // String.ToUpperInvariant(): string
@@ -823,6 +823,10 @@ pub record ImplEntryMsil {
   // See `Msil.Bridge` entry points for the version threading wiring (#1364).
 }
 
+// `System.StringComparison.Ordinal`, passed to the ordinal string-search
+// overloads bound in `newCodegenCtx` (#7260).
+val stringComparisonOrdinal: Int = 4
+
 pub func newCodegenCtx(
   packageName: in String,
   restoredArtifacts: in List[SynthesisedArtifact],
@@ -859,6 +863,9 @@ pub func newCodegenCtx(
   // TypeRef rows 2..8
   val trConsole = ctxAddTypeRef(lctx, "System", "Console", arConsole)
   val trString = ctxAddTypeRef(lctx, "System", "String", lctx.arRuntime)
+  // `System.StringComparison` for the ordinal `IndexOf`/`LastIndexOf`/
+  // `StartsWith`/`EndsWith` overloads below (#7260).
+  val trStringComparison = ctxAddTypeRef(lctx, "System", "StringComparison", lctx.arRuntime)
   val trInt32 = ctxAddTypeRef(lctx, "System", "Int32", lctx.arRuntime)
   val trInt64 = ctxAddTypeRef(lctx, "System", "Int64", lctx.arRuntime)
   val trDouble = ctxAddTypeRef(lctx, "System", "Double", lctx.arRuntime)
@@ -1588,8 +1595,17 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(strTrimEndPs, MString)
     )
 
+  // The single-argument `(string)` overloads of these four compare with the
+  // current culture (ICU on Linux), so results diverged from the JVM and from
+  // `Contains` and were far slower. Every call site pushes
+  // `StringComparison.Ordinal` (4) after the needle (#7260).
+  val stringComparisonTy = MValueTypeRef(
+    typeRefCode = tdrTypeRef(trStringComparison),
+    clrFqn = "System.StringComparison"
+  )
   val strIndexOfPs: List[MsilType] = newList()
   strIndexOfPs.add(MString)
+  strIndexOfPs.add(stringComparisonTy)
   val tokStringIndexOf = 0x0A000000 +
     ctxAddMemberRef(
       lctx,
@@ -1601,6 +1617,7 @@ pub func newCodegenCtx(
 
   val strLastIndexOfPs: List[MsilType] = newList()
   strLastIndexOfPs.add(MString)
+  strLastIndexOfPs.add(stringComparisonTy)
   val tokStringLastIndexOf = 0x0A000000 +
     ctxAddMemberRef(
       lctx,
@@ -1612,6 +1629,7 @@ pub func newCodegenCtx(
 
   val strStartsWithPs: List[MsilType] = newList()
   strStartsWithPs.add(MString)
+  strStartsWithPs.add(stringComparisonTy)
   val tokStringStartsWith = 0x0A000000 +
     ctxAddMemberRef(
       lctx,
@@ -1623,6 +1641,7 @@ pub func newCodegenCtx(
 
   val strEndsWithPs: List[MsilType] = newList()
   strEndsWithPs.add(MString)
+  strEndsWithPs.add(stringComparisonTy)
   val tokStringEndsWith = 0x0A000000 +
     ctxAddMemberRef(
       lctx,
@@ -18136,6 +18155,7 @@ func lowerMethodCallMsil(
       MObject
     } else {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
+      insns.add(MLdcI4(v = stringComparisonOrdinal))
       insns.add(
         MCallvirt(methodToken = if memberName == "indexOf" { cctx.tokStringIndexOf } else { cctx.tokStringLastIndexOf })
       )
@@ -18143,10 +18163,12 @@ func lowerMethodCallMsil(
     }
   } else if memberName == "startsWith" and args.count == 1 {
     lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MLdcI4(v = stringComparisonOrdinal))
     insns.add(MCallvirt(methodToken = cctx.tokStringStartsWith))
     MBool
   } else if memberName == "endsWith" and args.count == 1 {
     lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MLdcI4(v = stringComparisonOrdinal))
     insns.add(MCallvirt(methodToken = cctx.tokStringEndsWith))
     MBool
   } else if memberName == "split" and args.count == 1 {

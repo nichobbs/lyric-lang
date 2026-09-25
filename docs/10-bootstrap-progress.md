@@ -35319,3 +35319,18 @@ missing-path classification through `Lyric.LlvmBridge
 precedent this entry follows), D-N-027 (`Std.Time`'s native `Instant`
 epoch-nanoseconds representation), #6961 (closed by this entry),
 `native/plan/08-work-items.md` N5.7.
+
+## String search and case conversion no longer depend on the process locale
+
+MSIL bound the culture-sensitive single-argument `String.IndexOf`,
+`LastIndexOf`, `StartsWith` and `EndsWith` overloads, so under ICU an
+ignorable code point such as U+00AD matched as empty and results differed
+from the JVM and native targets; it now binds the
+`(string, StringComparison.Ordinal)` overloads. JVM `s.toLower()`/
+`s.toUpper()` now pass `Locale.ROOT`, and the .NET `Std.Char.toUpper`/
+`toLower` kernel binds the invariant `Char` methods, so a Turkish default
+locale no longer maps 'I' to dotless 'ı'. Covered by
+`string_ordinal_self_test.l` (all three targets) and
+`string_case_locale_self_test.l` (run under tr-TR in CI)
+(D-progress-957, #7260, #7261, epic #7256).
+
