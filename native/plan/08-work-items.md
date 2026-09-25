@@ -850,10 +850,16 @@ function-diff across `file_host.l`/`environment_host.l`/`time_host.l`/
 `hostAppBaseDirectory` via a new `lyric-rt` `readlink("/proc/self/exe")`
 seam, `readTextOrPanic` by mirroring `hostReadAllBytes`'s
 panic-in-the-kernel pattern exactly — see D-progress-942.
-`Std.File.stat`/`fileStatIsNewer` remain blocked: they additionally need an
-opaque timestamp twin before a native kernel seam is even meaningful, a
-separate, larger prerequisite `try/catch` removal alone doesn't unblock.
-See D-progress-910 and D-progress-942 for the full account.
+`Std.File.stat`/`fileStatIsNewer` (the rest of #6961) have since shipped
+too: the opaque timestamp twin is `FileTime`, a native-only `record
+{ epochNanos: Long }` mirroring the dotnet/JVM kernels' `extern type
+FileTime` (`System.DateTime` / boxed `java.lang.Long`) with the same
+representation `Std.Time`'s native `Instant` already uses (D-N-027),
+backed by a new `lyric_file_mtime_epoch_nanos_ok` `lyric-rt` seam
+(`stat(2)`'s `st_mtim`). `Std.File.stat`'s pure-layer body drops its
+`try`/`catch` entirely (D-N-003) in favour of a `hostGetLastWriteTimeUtcResult`
+Result seam every kernel twin now implements — see D-progress-955.
+See D-progress-910, D-progress-942, and D-progress-955 for the full account.
 
 ---
 

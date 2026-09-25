@@ -90,6 +90,21 @@ pub func hostDateTimeGreaterThan(a: in FileTime, b: in FileTime): Bool {
   a.longValue() > b.longValue()
 }
 
+// Issue #6961: the exception-free Result seam every kernel twin now
+// implements, so `Std.File.stat`'s pure-layer body needs no
+// `try`/`catch` on any target (native has none to offer — D-N-003).
+// `File.lastModified()` itself never throws (0L on a missing path,
+// already ruled out by stat()'s pre-probe), but this still routes
+// through `try`/`catch` for parity with the other two kernels and in
+// case a future JVM SecurityManager-style restriction throws here.
+pub func hostGetLastWriteTimeUtcResult(path: in String): Result[FileTime, IOError] {
+  try {
+    Ok(value = hostGetLastWriteTimeUtc(path))
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
 // ── Directory creation ────────────────────────────────────────────────────────
 /// Creates `path` and any missing parents.  `mkdirs()` returns false when the
 /// directory already exists — Std.File treats creation as idempotent, so the
