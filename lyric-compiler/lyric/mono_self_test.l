@@ -2626,25 +2626,30 @@ test "generic call site inside a range bound is rewritten (#6968)" {
 // `elaborateFile` before `monoFile`, mirroring `pipeCheckAndMono`'s real
 // pipeline order, so this is the actually-reachable shape rather than a
 // synthetic one.
-test "generic call site inside a requires: forall(...) where clause is rewritten (#6968)" {
+// #6968 made mono follow generic calls into a quantifier's `where` clause
+// and body, because the elaborated assert used to carry the quantifier to
+// codegen.  Since #7228 the elaborator drops every `and`-conjunct that
+// contains a quantifier (it cannot be evaluated at runtime), so nothing is
+// left to specialise and no unspecialised generic call can reach codegen.
+test "a generic call inside a requires: forall(...) where clause leaves nothing to specialise (#6968, #7228)" {
   val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func caller(n: in Int): Int\n" +
     "  requires: forall(i: Int) where i < id(10) implies i >= 0\n" +
     "{ n }\n"
   val pr = parse(src)
   val elaborated = elaborateFile(pr.file)
   val res = monoFile(elaborated)
-  assertTrue(hasFunc(res.file, "id__Int"), "id__Int specialisation emitted for a forall-where call site")
+  assertTrue(not hasFunc(res.file, "id__Int"), "the quantified conjunct is dropped before mono")
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
 }
 
-test "generic call site inside an ensures: exists(...) body is rewritten (#6968)" {
+test "a generic call next to an ensures: exists(...) conjunct is still specialised (#6968, #7228)" {
   val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func caller(n: in Int): Int\n" +
-    "  ensures: exists(i: Int) id(n) > 0\n" +
+    "  ensures: id(n) == n and exists(i: Int) id(n) > 0\n" +
     "{ n }\n"
   val pr = parse(src)
   val elaborated = elaborateFile(pr.file)
   val res = monoFile(elaborated)
-  assertTrue(hasFunc(res.file, "id__Int"), "id__Int specialisation emitted for an exists-body call site")
+  assertTrue(hasFunc(res.file, "id__Int"), "id__Int specialisation emitted for the kept conjunct")
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
 }
 
