@@ -1,4 +1,4 @@
-# D-progress-963 — lyric-ws Origin check; lyric-session ids; refilling rate limiters; lyric-web contracts; JVM `catch Exception`; lambda formatting
+# D-progress-964 — lyric-ws Origin check; lyric-session ids; refilling rate limiters; lyric-web contracts; JVM `catch Exception`; lambda formatting
 
 **Status:** shipped
 
