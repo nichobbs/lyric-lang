@@ -56,6 +56,15 @@ test "index write falls back to IList" {
   assertEqual(xs[0], "a", "neighbour untouched")
 }
 
+test "compound assignment falls back to IList (#7343)" {
+  var xs = listBacked()
+  xs[1] += "!"
+  xs[2] += 7
+  assertEqual(xs[1], "b!", "String += String")
+  assertEqual(xs[2], "c7", "String += Int")
+  assertEqual(xs[0], "a", "neighbour untouched")
+}
+
 test "for iteration falls back to IList" {
   var acc = ""
   for s in listBacked() {
