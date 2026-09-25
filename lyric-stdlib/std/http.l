@@ -58,7 +58,7 @@ pub enum HttpVersion {
 @stable(since = "1.0")
 pub opaque type Url {
   value: String
-  invariant: value.length > 0
+  invariant: isHttpUrlShape(value)
 }
 
 /// Alias for callers that prefer URI terminology.
@@ -813,21 +813,55 @@ func methodName(method: in HttpMethod): String {
 // ---------------------------------------------------------------------------
 /// Parse and validate an HTTP(S) URL.
 ///
-/// # Preconditions as data
-/// - `raw` must be non-empty.
-/// - `raw` must start with `http://` or `https://`.
-///
 /// # Errors
-/// - `InvalidUrl`: empty or unsupported URL syntax.
+/// - `InvalidUrl`: `raw` is not `isHttpUrlShape`: not `http://` or
+///   `https://`, no host, or a space or control character anywhere.
 @stable(since = "1.0")
 pub func Url.tryFrom(raw: in String): Result[Url, HttpError] {
-  if raw.length == 0 {
-    return Err(error = InvalidUrl(url = raw))
-  }
-  if raw.startsWith("http://") or raw.startsWith("https://") {
+  if isHttpUrlShape(raw) {
     return Ok(value = Url(value = raw))
   }
   return Err(error = InvalidUrl(url = raw))
+}
+
+/// True when `raw` has the shape `Url` accepts: an `http://` or `https://`
+/// prefix, a non-empty host (the authority before any `/`, `?` or `#`, less
+/// any `user@` part), and no space or control character anywhere. Before
+/// #7251 only the prefix was checked, so `http://` and a URL carrying CR/LF
+/// were accepted and failed later, inside the host HTTP client.
+@pure
+@stable(since = "1.2")
+pub func isHttpUrlShape(raw: in String): Bool {
+  var i = 0
+  while i < raw.length {
+    val c = raw[i]
+    if c <= ' ' or c == '\u{007f}' {
+      return false
+    }
+    i = i + 1
+  }
+  var start = 0
+  if raw.startsWith("https://") {
+    start = 8
+  } else if raw.startsWith("http://") {
+    start = 7
+  } else {
+    return false
+  }
+  var authorityEnd = start
+  while authorityEnd < raw.length and raw[authorityEnd] != '/' and raw[authorityEnd] != '?' and raw[authorityEnd] != '#' {
+    authorityEnd = authorityEnd + 1
+  }
+  // The host follows the last `@` of the authority, if any.
+  var hostStart = start
+  var k = start
+  while k < authorityEnd {
+    if raw[k] == '@' {
+      hostStart = k + 1
+    }
+    k = k + 1
+  }
+  hostStart < authorityEnd and raw[hostStart] != ':'
 }
 
 /// Return the original string value for a validated URL.
@@ -900,7 +934,8 @@ func isHeaderNameToken(name: in String): Bool {
   var i = 0
   while i < name.length {
     val c = name[i]
-    val ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '!' or c == '#' or c == '$' or
+    val ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '!' or c == '#' or
+      c == '$' or
       c == '%' or
       c == '&' or
       c == '\'' or

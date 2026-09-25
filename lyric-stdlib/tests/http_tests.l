@@ -47,6 +47,48 @@ test "Url.tryFrom rejects URLs without an http(s) scheme" {
   }
 }
 
+test "Url.tryFrom rejects a missing host, spaces and control characters" {
+  val bad = [
+    "http://",
+    "https://",
+    "http:///path",
+    "https://user@/x",
+    "http://:8080/",
+    "http://exa mple.com",
+    "http://example.com/a\r\nX-Injected: 1",
+    "http://example.com/\t"
+  ]
+  var i = 0
+  while i < bad.count {
+    match Url.tryFrom(bad[i]) {
+      case Ok(_) -> panic("expected InvalidUrl for: " + bad[i])
+      case Err(InvalidUrl(_)) -> ()
+      case Err(other) -> panic("expected InvalidUrl, got: " + HttpError.message(other))
+    }
+    i = i + 1
+  }
+}
+
+test "Url.tryFrom accepts userinfo, ports, queries and fragments" {
+  val good = [
+    "http://user@host/path",
+    "https://u:p@example.com:8443/a?b=c#d",
+    "http://localhost:8080",
+    "https://example.com?q",
+    "http://[::1]:80/"
+  ]
+  var i = 0
+  while i < good.count {
+    match Url.tryFrom(good[i]) {
+      case Ok(url) -> assertEqual(Url.toString(url), good[i], "URL round-trips")
+      case Err(e) -> panic("expected Ok for " + good[i] + ", got: " + HttpError.message(e))
+    }
+    i = i + 1
+  }
+  assertTrue(isHttpUrlShape("http://a"), "single-letter host is a shape")
+  assertFalse(isHttpUrlShape("HTTP://a"), "the scheme prefix is matched case-sensitively, as Url.tryFrom always has")
+}
+
 test "request/withHeader/withJsonBody/withTextBody construct without a live connection" {
   val url = match Url.tryFrom("https://example.com") {
     case Ok(u) -> u
