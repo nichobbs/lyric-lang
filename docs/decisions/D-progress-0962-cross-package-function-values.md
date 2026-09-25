@@ -28,7 +28,10 @@ be a same-named function from a package that is not even imported
   several packages end in the qualifier (`Lib.Bar`, `Other.Bar`), the ones
   in scope win; with none in scope every match stays, as unimported names
   resolve elsewhere (#6703). Several same-named functions left after that are
-  T0123, bare or qualified, since a value cannot pick an overload.
+  T0123, bare or qualified, since a value cannot pick an overload. A
+  function the forwarding lambda cannot stand for (generic, `async`, a
+  non-`in` parameter, or a parameter type not nameable at the use site) is
+  T0128 rather than a bare path left for the backend.
 - **Lowering.** The type checker records each reference to another
   package's function that is not a call callee (`FuncRefSite`: the
   function's package path and name, and its parameter types rendered as

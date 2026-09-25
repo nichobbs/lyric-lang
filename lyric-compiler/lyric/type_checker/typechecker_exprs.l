@@ -2693,20 +2693,35 @@ func typeExprsForRef(tbl: in SymbolTable, ts: in List[Type], sp: in Span): Optio
 // Record `sig` (the function `name` of another package) referenced as a value
 // at `sp`.  Only a function a forwarding lambda can stand for is recorded:
 // non-generic, synchronous, every parameter `in`.
-func recordFuncRefSite(tbl: in SymbolTable, sig: in ResolvedSignature, name: in String, sp: in Span): Unit {
-  if sig.isAsync or sig.generics.count > 0 or sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl) {
-    return
+// Record a reference to another package's function used as a value, so
+// `desugarCheckedFile` lowers it to a typed forwarding lambda. A function the
+// lambda cannot stand for (generic, async, a non-`in` parameter, or a type
+// not nameable here) is T0128 and returns false: left as a bare path it would
+// reach the backend with no diagnostic (D-progress-962).
+func recordFuncRefSite(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sig: in ResolvedSignature,
+  name: in String,
+  sp: in Span,
+): Bool {
+  if sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl) {
+    return true
   }
   val ptys: List[Type] = newList()
+  var why = if sig.isAsync { "it is async" } else if sig.generics.count > 0 { "it is generic" } else { "" }
   var i = 0
-  while i < sig.params.count {
+  while i < sig.params.count and why.length == 0 {
     match sig.params[i].mode {
       case PMIn -> ptys.add(sig.params[i].ty)
-      case _ -> return
+      case _ -> {
+        why = "parameter '" + sig.params[i].name + "' is not an `in` parameter"
+      }
     }
     i = i + 1
   }
-  match typeExprsForRef(tbl, ptys, sp) {
+  val ptesOpt = if why.length == 0 { typeExprsForRef(tbl, ptys, sp) } else { None }
+  match ptesOpt {
     case Some(ptes) -> {
       val segs = dottedSegsTc(sig.originPackage)
       segs.add(name)
@@ -2723,8 +2738,20 @@ func recordFuncRefSite(tbl: in SymbolTable, sig: in ResolvedSignature, name: in 
           startOffset = sp.startPos.offset
         )
       )
+      true
     }
-    case None -> ()
+    case None -> {
+      val reason = if why.length > 0 { why } else { "a parameter type cannot be named here" }
+      diag.add(
+        errorDiagnostic(
+          "T0128",
+          "'" + sig.originPackage + "." + name + "' cannot be used as a function value because " + reason +
+            "; wrap the call in a lambda instead",
+          sp
+        )
+      )
+      false
+    }
   }
 }
 
@@ -2738,6 +2765,11 @@ func wideningMethod(paramTy: in Type, argTy: in Type): Option[String] {
     case Some(wt) -> if not typeEquiv(wt, paramTy) { return None }
     case None -> return None
   }
+  // The conversion methods exist only on these receivers (not `Float`, `UInt`,
+  // `ULong`, `Nat`: #2050); any other widening is left unconvertible.
+  if not isNumericOrCharType(argTy) {
+    return None
+  }
   match unrefine(paramTy) {
     case TyPrim(pt) -> match pt {
       case PtLong -> Some(value = "toLong")
@@ -2750,8 +2782,9 @@ func wideningMethod(paramTy: in Type, argTy: in Type): Option[String] {
 }
 
 // True when `argTy` satisfies `paramTy` only by a numeric widening that a call
-// through a function value cannot convert (`Byte` to `UInt`/`ULong`: there is
-// no `toUInt`/`toULong`, #2050). The erased call would pass the argument boxed
+// through a function value cannot convert (`Byte` to `UInt`/`ULong`, or a
+// `Float` argument: those conversions do not exist yet, #2050). The erased
+// call would pass the argument boxed
 // at its own type, so such a call is rejected rather than failing at run time.
 func unconvertibleWidening(paramTy: in Type, argTy: in Type): Bool {
   if typeEquiv(paramTy, argTy) {
@@ -2939,9 +2972,10 @@ func resolveQualifiedFuncValue(
   checkImportedVisibility(sym, sp, diag)
   val arity = match sym.kind { case DKFunc(fd) -> fd.params.count; case _ -> 0 }
   match pkgFuncSig(sigs, sym.originPackage, name, arity) {
-    case Some(sig) -> {
-      recordFuncRefSite(tbl, sig, name, sp)
+    case Some(sig) -> if recordFuncRefSite(tbl, diag, sig, name, sp) {
       Some(value = funcValueType(sig))
+    } else {
+      Some(value = TyError)
     }
     case None -> None
   }
@@ -3045,7 +3079,9 @@ func resolveExprPath(
               }
               match pkgFuncSig(sigs, sym.originPackage, name, fd.params.count) {
                 case Some(scopedSig) -> {
-                  recordFuncRefSite(tbl, scopedSig, name, span)
+                  if not recordFuncRefSite(tbl, diag, scopedSig, name, span) {
+                    return TyError
+                  }
                   return funcValueType(scopedSig)
                 }
                 case None -> ()

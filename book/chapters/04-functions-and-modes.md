@@ -239,7 +239,7 @@ val c = Formatter(apply = Text.Format.pad)      // full package path
 
 Each reference means the same function a call to that name would reach. A function from another package can be referenced this way when it is non-generic, not `async`, and takes only `in` parameters; for anything else, write the lambda yourself (`{ s: String, n: Int -> pad(s, n) }`). If the package overloads the name, the compiler asks you to write the lambda, since a bare reference can't say which overload you mean.
 
-Calling a function value checks its arguments just like a direct call, numeric widening included: passing an `Int` where the function takes a `Long` works, and the function receives a `Long`. A widening the call cannot perform, such as a `Byte` passed where the function takes a `UInt`, is an error; pass a value of the parameter type instead.
+Calling a function value checks its arguments just like a direct call, numeric widening included: passing an `Int` where the function takes a `Long` works, and the function receives a `Long`. A widening the call cannot perform, such as a `Byte` passed where the function takes a `UInt` or a `Float` where it takes a `Double`, is an error; pass a value of the parameter type instead.
 
 ### Capture semantics
 

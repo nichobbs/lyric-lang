@@ -25,8 +25,9 @@ conversion method for the parameter type: `toLong`, `toDouble` or `toInt`).
 `Lyric.Mono.desugarCheckedFile` rewrites that argument to `arg.<method>()`,
 so the function receives a value of its declared parameter type. Direct
 calls are unaffected: their lowering already converts to the parameter type.
-A widening with no conversion method (`Byte` to `UInt`/`ULong`: there is no
-`toUInt`/`toULong`, #2050) is rejected at the function-value call with T0043
+A widening with no conversion method (`Byte` to `UInt`/`ULong`, or a `Float`
+argument: the conversion methods exist only on `Byte`, `Int`, `Long`,
+`Double` and `Char`, #2050) is rejected at the function-value call with T0043
 rather than passed unconverted.
 
 On the JVM, a local (`val`/`let`/`var`) or parameter annotated with a function
@@ -40,4 +41,5 @@ keeps the existing handling.
 literal and with an `Int` local, and a record function field with literals,
 and a function-typed parameter compared against a literal, all into `Long`
 parameters, on MSIL and the JVM. `typechecker_self_test.l` checks that a
-`Byte` argument to a `(UInt) -> UInt` value is T0043.
+`Byte` argument to a `(UInt) -> UInt` or `(ULong) -> ULong` value, and a
+`Float` argument to a `(Double) -> Double` value, are T0043.

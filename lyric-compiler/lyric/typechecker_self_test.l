@@ -4584,9 +4584,14 @@ test "qualified function value prefers the imported package among same-suffix pa
   )
   val src = "package App\nimport Lib.Bar\nfunc g(): Int {\n  val f: (String) -> Int = Bar.parse\n  f(\"x\")\n}\n"
   assertEqualInt(
-    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    diagCount(checkWithImportedPackages(rewriteFile(parse(src).file), packages)),
     0,
     "Bar.parse binds Lib.Bar.parse, the imported package"
+  )
+  val bad = "package App\nimport Lib.Bar\nfunc g(): Unit {\n  val f: String = Bar.parse\n}\n"
+  assertTrue(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(bad).file), packages)) > 0,
+    "the qualified value is resolved: a mismatched annotation is reported"
   )
 }
 
@@ -4596,6 +4601,54 @@ test "qualified function value prefers the imported package among same-suffix pa
 test "function-value call rejects a Byte argument for a UInt parameter" {
   val bad = "package P\npub func g(f: (UInt) -> UInt, b: in Byte): UInt {\n  f(b)\n}\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0043"), "Byte into a (UInt) -> UInt value is T0043")
+  val badL = "package P\npub func g(f: (ULong) -> ULong, b: in Byte): ULong {\n  f(b)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(badL), "T0043"), "Byte into a (ULong) -> ULong value is T0043")
+  val badF = "package P\npub func g(f: (Double) -> Double, x: in Float): Double {\n  f(x)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(badF), "T0043"), "Float into a (Double) -> Double value is T0043")
   val ok = "package P\npub func g(f: (Long) -> Long, i: in Int): Long {\n  f(i)\n}\n"
   assertEqualInt(diagCount(parseCheck(ok)), 0, "Int into a (Long) -> Long value still widens")
+}
+
+// A function value can stand only for another package's non-generic,
+// synchronous function whose parameters are all `in`; anything else is T0128
+// instead of reaching the backend as a bare path (D-progress-962).
+test "a function value naming an unrepresentable cross-package function is T0128" {
+  val lib = parse(
+    "package Lib\npub func bump(n: inout Int): Unit { n = n + 1 }\npub async func fetch(s: in String): Int { 1 }\npub func ident[T](x: in T): T { x }\npub func plain(s: in String): Int { 2 }\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "Lib", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  val inoutSrc = "package App\nimport Lib\nfunc g(): Unit {\n  val f = Lib.bump\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(inoutSrc).file), packages), "T0128"),
+    "inout parameter: T0128"
+  )
+  val asyncSrc = "package App\nimport Lib\nfunc g(): Unit {\n  val f = Lib.fetch\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(asyncSrc).file), packages), "T0128"),
+    "async function: T0128"
+  )
+  val genSrc = "package App\nimport Lib\nfunc g(): Unit {\n  val f = Lib.ident\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(genSrc).file), packages), "T0128"),
+    "generic function: T0128"
+  )
+  val bareSrc = "package App\nimport Lib.{bump}\nfunc g(): Unit {\n  val f = bump\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(bareSrc).file), packages), "T0128"),
+    "bare inout reference: T0128"
+  )
+  val okSrc = "package App\nimport Lib\nfunc g(): Int {\n  val f: (String) -> Int = Lib.plain\n  f(\"x\")\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(okSrc).file), packages)),
+    0,
+    "plain function value: no diagnostic"
+  )
+  // Control: the qualified path is really resolved, so a mismatched
+  // annotation is reported and the zero-diagnostic case is not vacuous.
+  val badSrc = "package App\nimport Lib\nfunc g(): Unit {\n  val f: String = Lib.plain\n}\n"
+  assertTrue(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(badSrc).file), packages)) > 0,
+    "mismatched annotation on a qualified function value is reported"
+  )
 }

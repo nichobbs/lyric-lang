@@ -84,7 +84,9 @@ independent:
   `record_function_field_self_test.l` (union function field, including an
   `Int` instantiation, both targets), `cross_package_generics_self_test.l`
   (qualified widening and restored-result inference; annotated local in a
-  three-package specialised generic).
+  three-package specialised generic), `result_generic_specialization_self_test.l`
+  (a same-package generic specialised at `Long` from a widening `Int`
+  literal, both targets).
 - `examples/ui-customers`: 14/14 tests. `ilverify` is clean on `lyric-forms`;
   on `lyric-ui` and the example its only findings are the #7219 `Action`
   stores in `Ui.Host.instance` and its specialisation.
