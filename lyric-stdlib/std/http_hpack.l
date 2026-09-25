@@ -134,7 +134,10 @@ pub record IntResult {
 /// Encode `value` with an `prefixBits`-bit prefix and no high flag bits set
 /// (the standalone form shown in RFC 7541 §5.1 / Appendix C.1).
 @experimental
-pub func encodeInteger(value: in Int, prefixBits: in Int): slice[Byte] {
+pub func encodeInteger(value: in Int, prefixBits: in Int): slice[Byte]
+  requires: value >= 0
+  requires: prefixBits >= 1 and prefixBits <= 8
+{
   val acc: List[Byte] = newList()
   encodeIntegerInto(acc, value, prefixBits, 0)
   acc.toArray()
@@ -562,12 +565,16 @@ pub record DynamicTable {
   entries: List[DynEntry]
   size: Int
   maxSize: Int
+  // Eviction keeps the table within its maximum (RFC 7541 §4.4).
+  invariant: maxSize >= 0 and size >= 0 and size <= maxSize
 }
 
 /// An empty dynamic table with the given maximum size (octets).
 @pure
 @experimental
-pub func newDynamicTable(maxSize: in Int): DynamicTable {
+pub func newDynamicTable(maxSize: in Int): DynamicTable
+  requires: maxSize >= 0
+{
   val entries: List[DynEntry] = newList()
   DynamicTable(entries = entries, size = 0, maxSize = maxSize)
 }
@@ -615,7 +622,9 @@ pub func dynamicTableInsert(table: in DynamicTable, name: in String, value: in S
 /// Set a new maximum size, evicting the oldest entries until the table fits
 /// (RFC 7541 §4.3).
 @experimental
-pub func dynamicTableResize(table: in DynamicTable, newMax: in Int): DynamicTable {
+pub func dynamicTableResize(table: in DynamicTable, newMax: in Int): DynamicTable
+  requires: newMax >= 0
+{
   val kept = keptPrefix(table.entries, table.size, newMax)
   val outList: List[DynEntry] = newList()
   var i = 0
@@ -683,7 +692,9 @@ pub func resolveIndex(table: in DynamicTable, index: in Int): Result[HeaderField
 // =============================================================================
 /// An Indexed Header Field (§6.1): the whole field is one table index.
 @experimental
-pub func encodeIndexedField(index: in Int): slice[Byte] {
+pub func encodeIndexedField(index: in Int): slice[Byte]
+  requires: index >= 1
+{
   val acc: List[Byte] = newList()
   encodeIntegerInto(acc, index, 7, 128)
   acc.toArray()
@@ -747,7 +758,9 @@ func encodeLiteralWith(
 
 /// A Dynamic Table Size Update (§6.3).
 @experimental
-pub func encodeDynamicTableSizeUpdate(newSize: in Int): slice[Byte] {
+pub func encodeDynamicTableSizeUpdate(newSize: in Int): slice[Byte]
+  requires: newSize >= 0
+{
   val acc: List[Byte] = newList()
   encodeIntegerInto(acc, newSize, 5, 32)
   acc.toArray()
@@ -773,7 +786,9 @@ pub record HpackDecoder {
 /// A decoder whose dynamic table starts empty at `maxProtocolSize` octets.
 @pure
 @experimental
-pub func newDecoder(maxProtocolSize: in Int): HpackDecoder {
+pub func newDecoder(maxProtocolSize: in Int): HpackDecoder
+  requires: maxProtocolSize >= 0
+{
   val trie = buildHuffTrie()
   HpackDecoder(
     table = newDynamicTable(maxProtocolSize),
@@ -934,7 +949,9 @@ pub record HpackEncoder {
 /// header's "Encoder policy" section).
 @pure
 @experimental
-pub func newEncoder(maxDynamicTableSize: in Int, huffman: in Bool): HpackEncoder {
+pub func newEncoder(maxDynamicTableSize: in Int, huffman: in Bool): HpackEncoder
+  requires: maxDynamicTableSize >= 0
+{
   val names: Map[String, Int] = newMap()
   val exact: Map[String, Int] = newMap()
   var i = 61
@@ -977,7 +994,9 @@ pub func encoderDynamicTable(encoder: in HpackEncoder): DynamicTable {
 /// Table Size Update that the next `encodeHeaderList` must emit first. Rejects
 /// a size above the peer's advertised ceiling.
 @experimental
-pub func encoderSetMaxTableSize(encoder: inout HpackEncoder, newSize: in Int): Result[Unit, HpackError] {
+pub func encoderSetMaxTableSize(encoder: inout HpackEncoder, newSize: in Int): Result[Unit, HpackError]
+  requires: newSize >= 0
+{
   if newSize > encoder.maxProtocolSize {
     return Err(error = TableSizeUpdateTooLarge(requested = newSize, maxAllowed = encoder.maxProtocolSize))
   }

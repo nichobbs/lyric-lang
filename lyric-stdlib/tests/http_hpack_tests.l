@@ -825,3 +825,12 @@ test "decodeHeaderBlockLimited accepts a list within the budget" {
     case Err(e) -> panic("unexpected " + errName(e))
   }
 }
+
+test "HPACK encoders reject out-of-range programmer inputs (#7251)" {
+  assertPanics("negative integer", { -> val _ = encodeInteger(-1, 5) })
+  assertPanics("prefix of 0 bits", { -> val _ = encodeInteger(1, 0) })
+  assertPanics("prefix of 9 bits", { -> val _ = encodeInteger(1, 9) })
+  assertPanics("index 0", { -> val _ = encodeIndexedField(0) })
+  assertPanics("negative table size", { -> val _ = newDynamicTable(-1) })
+  assertPanics("negative size update", { -> val _ = encodeDynamicTableSizeUpdate(-1) })
+}
