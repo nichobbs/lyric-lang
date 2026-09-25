@@ -51,12 +51,13 @@ guarantee.
   (`\n`, `\r`, `\t`, `\uXXXX`), and `LogField` has the invariant
   `key.length > 0`.
 - **HTTP/2 (#7231).**
-  - The header-list limit was checked against the compressed block, so a
-    small HPACK block could expand without bound. `decodeHeaderBlockLimited`
-    enforces it on the decoded size (`HeaderListTooLarge`).
   - Decoded request headers and trailers are validated per RFC 9113 §8.2:
     field-name and field-value syntax, pseudo-header placement, and
     connection-specific fields.
+  - The HPACK-bomb fix (the header-list limit enforced on the decoded size)
+    landed on `main` independently in #7265. This branch adds a regression
+    test that expands a 5 KB block to about 4 MB and checks it stops at the
+    budget.
 - **`Std.Http.retry` (#7237).**
   - A host request message can only be sent once, so every attempt after
     the first failed with "already sent" and `backoffMs` was ignored.
