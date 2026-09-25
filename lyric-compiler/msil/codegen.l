@@ -464,11 +464,10 @@ pub record CodegenCtx {
   // its .cctor MethodDef row; predicting "literal, no .cctor" there shifts
   // every later MethodDef token by one (the entry token then points at the
   // wrong method).
-  // This is a SET: only containsKey is ever consulted and every stored value
-  // is `true` — Map[String, Bool] with always-true values is the compiler's
-  // pervasive set idiom (see e.g. Jvm.Lowering.collectBranchTargets); no
-  // compiler package uses Std.Set (#3254).
-  constBareClaimed: Map[String, Bool]
+  // The value is the claiming package, so emission can tell whether this
+  // package owns the bare slot even though the pre-pass has already filled
+  // it (see `registerLiteralConstMsil`).
+  constBareClaimed: Map[String, String]
   // Lyric enums lower to ordinal Int values (mirroring the F# emitter's
   // EnumCaseLookup): type positions encode I4, a case reference emits
   // `ldc.i4 <ordinal>`, and a `case X` pattern compares ordinals.  A
@@ -3381,7 +3380,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // Claim with the RAW literal check — the emission side registers an
         // IConst's bare `constValues` name only in its raw-literal branch.
         if isLiteralI4ExprMsil(decl.init) and not cctx.constBareClaimed.containsKey(decl.name) {
-          cctx.constBareClaimed.add(decl.name, true)
+          cctx.constBareClaimed.add(decl.name, pkgName)
         }
         constEnv.add(decl.name, isLit)
         if not valTypeEnv.containsKey(decl.name) {
@@ -3409,7 +3408,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               if cctx.constBareClaimed.containsKey(valName) {
                 hasValCctor = true
               } else {
-                cctx.constBareClaimed.add(valName, true)
+                cctx.constBareClaimed.add(valName, pkgName)
               }
             }
             constEnv.add(valName, isLit)
@@ -4567,6 +4566,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     match file.items[pv].kind {
       case IConst(decl) -> {
         val isLit = isLiteralI4ExprMsilWithEnv(decl.init, constEnv)
+        if isLiteralI4ExprMsil(decl.init) {
+          registerLiteralConstMsil(cctx, pkgName, decl.name, decl.init)
+        }
         if not isLit {
           val fieldTok = 0x04000000 + fieldDefRow
           val constTy = typeExprToMsilCtx(cctx, decl.ty, pkgName)
@@ -4602,6 +4604,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // reasoning as the first pre-scan above — see isAsyncLocal0 comment).
         val isAsyncLocalPv = hasAnnotationMsil(file.items[pv].annotations, "asyncLocal")
         val isLit = if isAsyncLocalPv { false } else { isLiteralI4ExprMsilWithEnv(decl.init, constEnv) }
+        if isLit {
+          registerLiteralConstMsil(cctx, pkgName, valName, decl.init)
+        }
         if not isLit {
           val fieldTok = 0x04000000 + fieldDefRow
           val valTy = match decl.ty {
@@ -5111,6 +5116,45 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
 
 // True when an IVal's init expression will produce a single MLdcI4 instruction
 // (so no .cctor is needed after the literal-inlining fix).
+// Register a literal `const`/`val`'s inlined value in `constValues` during
+// the `addPackageTokens` pre-pass, as a non-literal val's field token is.
+// Emission used to be the only registration point, so a package lowered
+// before the declaring one (a test package listed ahead of the library it
+// imports, say) could not see the constant at all and failed with T0115.
+// The bare key goes in only when this package claimed it (first-wins, same
+// as emission).
+func registerLiteralConstMsil(cctx: in CodegenCtx, pkgName: in String, name: in String, init: in Expr): Unit {
+  val fctx = makeFuncCtxMsil(pkgName, pkgName, "__const_prescan", 0, MVoid)
+  val insns: List[MInsn] = newList()
+  lowerExprMsil(cctx, fctx, insns, init)
+  if insns.count != 1 {
+    return
+  }
+  match insns[0] {
+    case MLdcI4(v) -> {
+      val slashKey = pkgName + "/" + name
+      if not cctx.constValues.containsKey(slashKey) {
+        cctx.constValues.add(slashKey, v)
+      }
+      val dotKey = pkgName + "." + name
+      if not cctx.constValues.containsKey(dotKey) {
+        cctx.constValues.add(dotKey, v)
+      }
+      if ownsBareConstMsil(cctx, pkgName, name) and not cctx.constValues.containsKey(name) {
+        cctx.constValues.add(name, v)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func ownsBareConstMsil(cctx: in CodegenCtx, pkgName: in String, name: in String): Bool {
+  match mapGet(cctx.constBareClaimed, name) {
+    case Some(owner) -> owner == pkgName
+    case None -> false
+  }
+}
+
 func isLiteralI4ExprMsil(e: in Expr): Bool {
   val empty: Map[String, Bool] = newMap()
   isLiteralI4ExprMsilWithEnv(e, empty)
@@ -37499,8 +37543,10 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               if not cctx.constValues.containsKey(qualValKey) {
                 cctx.constValues.add(qualValKey, v)
               }
-              if not cctx.constValues.containsKey(fieldName) {
-                cctx.constValues.add(fieldName, v)
+              if ownsBareConstMsil(cctx, pkgName, fieldName) {
+                if not cctx.constValues.containsKey(fieldName) {
+                  cctx.constValues.add(fieldName, v)
+                }
                 sfInitInsns = newList()
               }
               // Dot-qualified key (`Pkg.name`) — see the matching IConst
@@ -39272,6 +39318,21 @@ func mkDistinctTypeIR(
 // take the leading `ldc.i4`.  Used to register a restored package's
 // compile-time constants for cross-package inlining.
 func foldConstInitToInt(cctx: in CodegenCtx, pkgName: in String, init: in Expr): Int {
+  // The synthesised source re-parses a negative constant as `-N`, which
+  // lowers to `ldc N; neg`; fold it here rather than read only the `ldc`.
+  match init.kind {
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind {
+        case ELiteral(lit) -> match lit {
+          case LInt(v, _, _) -> return longToInt(0i64 - v)
+          case _ -> ()
+        }
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
   val fctx = makeFuncCtxMsil(pkgName, pkgName, "__const_fold", 0, MVoid)
   val insns: List[MInsn] = newList()
   lowerExprMsil(cctx, fctx, insns, init)

@@ -869,6 +869,7 @@ func renderConstExpr(e: in Expr): String {
         case _ -> "0"
       }
     }
+    case EPrefix(op, operand) -> match op { case PreNeg -> "-" + renderConstExpr(operand); case _ -> "0" }
     case _ -> "0"
   }
 }
@@ -1522,9 +1523,22 @@ func basicDecl(kind: in String, name: in String, repr: in String, vis: in Option
 // (codegen `addPackageTokens` IConst/IVal).  Cross-package inlining of a
 // module-level constant only carries this form; non-literal initializers
 // are not compile-time foldable and fall outside the inlinable surface.
+// A negated literal counts: the pipeline folds `-N` into one literal after
+// mono (#7346), so the producer inlines it either way and the contract must
+// carry it.
 func isIntLiteralExpr(e: in Expr): Bool {
   match e.kind {
     case ELiteral(lit) -> match lit { case LInt(_, _, _) -> true; case _ -> false }
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind {
+        case ELiteral(lit) -> match lit {
+          case LInt(_, _, _) -> true
+          case _ -> false
+        }
+        case _ -> false
+      }
+      case _ -> false
+    }
     case _ -> false
   }
 }

@@ -248,6 +248,7 @@ deferred to Phase 3 by design.
 | Inline range refinements (`Int range 0 ..= 9` on parameters, return types, bindings and `var` assignments) checked at runtime with `RangeViolated` (#7226 part 1) | **Shipped** | D-progress-972 |
 | Protected types mutually exclusive on the JVM (`synchronized` members) and for MSIL `func` members; `when:` barriers implemented on dotnet and JVM (wait/notify on the entry lock), rejected on native (#7363) | **Shipped** | D-progress-973 |
 | Labelled loops (`label: for|while|do`, `break label` / `continue label`) parsed and lowered on MSIL, JVM and native, replaying the `defer`s of every loop left; T0130 (jump outside a loop or to an unknown label) and T0131 (nested label reuse); native gains `do` loops and range `for` (#7349) | **Shipped** | D-progress-974 |
+| A literal module-level `val` read from a package codegen'd before its own resolves on MSIL (constants registered in the token pre-pass, not only at emission); negative integer constants round-trip through contract metadata | **Shipped** | D-progress-975 |
 
 ### Phase 2 — type system completion (complete)
 
