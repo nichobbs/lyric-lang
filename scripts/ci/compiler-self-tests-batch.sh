@@ -13,6 +13,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --shard)
       shard="${2:?--shard needs K/N}"
+      if [[ "$shard" != */* ]]; then
+        echo "::error::invalid --shard ${shard}; expected K/N with 1 <= K <= N" >&2
+        exit 2
+      fi
       SHARD_K="${shard%/*}"
       SHARD_N="${shard#*/}"
       shift 2

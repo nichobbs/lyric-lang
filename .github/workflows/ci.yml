@@ -958,6 +958,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/bitwise_self_test.l
 
+      # Std.String.split semantics (ordinal, non-overlapping, .NET placement
+      # rules); the JVM run is in compiler-self-tests-jvm and the native run
+      # in scripts/ci/native-target-smoke-test.sh.
+      - name: Split self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/split_self_test.l
+
       - name: Wait for parallel tests (dotnet-a batch 1 split, #4975)
         wait-all: true
 
@@ -4076,6 +4085,11 @@ jobs:
       # under the cap.
       - name: Wait for parallel tests (JVM batch 0-split)
         wait-all: true
+
+      # Foreground, between barriers, so it adds no background concurrency.
+      - name: Split self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/split_self_test.l
 
       # Nested-constructor-pattern self-test on JVM (#4623) — the JVM half of
       # the dotnet-job step of the same name.  Pins `patternIsRefutableJvm`/
