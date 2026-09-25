@@ -3351,6 +3351,9 @@ func lowerCallEx(
             case CANamed(_, _, _) -> panic("Lyric.LlvmCodegen: nativeAddrOf takes a positional local variable")
           }
         }
+        if n == "__lyric_protected_wait" or n == "__lyric_protected_notify" {
+          panic("Lyric.LlvmCodegen: protected-type `when:` barriers are not yet supported for --target native (D-N-017)")
+        }
         if n == "assert" and args.count >= 1 {
           val cond = lowerPositionalArg(ctx, insns, args, 0)
           val okL = freshLabel(ctx, "assert.ok")

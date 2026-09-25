@@ -2631,6 +2631,109 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
   )
 }
 
+// `when:` barriers on protected entries (§7.5, #7363).  An entry whose
+// barrier is false blocks until another operation makes it true:
+//
+//   entry take(): T  when: count > 0 { body }
+//     ->  while not (count > 0) { __lyric_protected_wait() }
+//         defer { __lyric_protected_notify() }
+//         body
+//
+// Every entry of a type that has any barrier notifies on exit (normal or
+// exceptional), because any state change may enable a waiting caller.  The
+// two intrinsics are lowered by each backend onto the entry's own lock
+// (`Monitor.Wait`/`PulseAll` on MSIL, `Object.wait`/`notifyAll` on the JVM);
+// waiting releases the lock.  Several barriers on one entry are conjoined.
+func protectedHasBarrier(members: in List[ProtectedMember]): Bool {
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case PMEntry(ed) -> {
+        if entryBarrier(ed.contracts).count > 0 {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+func entryBarrier(contracts: in List[ContractClause]): List[Expr] {
+  val xs: List[Expr] = newList()
+  var i = 0
+  while i < contracts.count {
+    match contracts[i] {
+      case CCWhen(e, _) -> xs.add(e)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  xs
+}
+
+func intrinsicCallStmt(name: in String, sp: in Span): Statement {
+  val args: List[CallArg] = newList()
+  mkStmt(SExpr(expr = mkExpr(ECall(fn = mkPath(name, sp), args = args), sp)), sp)
+}
+
+func applyBarrierProtocol(m: in ProtectedMember, anyBarrier: in Bool): ProtectedMember {
+  if not anyBarrier {
+    return m
+  }
+  match m {
+    case PMEntry(ed) -> {
+      val sp = ed.span
+      val prelude: List[Statement] = newList()
+      val barriers = entryBarrier(ed.contracts)
+      if barriers.count > 0 {
+        var cond = barriers[0]
+        var bi = 1
+        while bi < barriers.count {
+          cond = mkExpr(EBinop(op = BAnd, lhs = cond, rhs = barriers[bi]), sp)
+          bi = bi + 1
+        }
+        val waitBody: List[Statement] = newList()
+        waitBody.add(intrinsicCallStmt("__lyric_protected_wait", sp))
+        prelude.add(
+          mkStmt(
+            SWhile(
+              label = None,
+              cond = mkExpr(EPrefix(op = PreNot, operand = mkExpr(EParen(inner = cond), sp)), sp),
+              body = Block(statements = waitBody, span = sp)
+            ),
+            sp
+          )
+        )
+      }
+      val notifyBody: List[Statement] = newList()
+      notifyBody.add(intrinsicCallStmt("__lyric_protected_notify", sp))
+      prelude.add(mkStmt(SDefer(body = Block(statements = notifyBody, span = sp)), sp))
+      val blk = match ed.body { case FBBlock(b) -> b; case FBExpr(e) -> wrapExprBody(e) }
+      var si = 0
+      while si < blk.statements.count {
+        prelude.add(blk.statements[si])
+        si = si + 1
+      }
+      PMEntry(
+        entryDecl = EntryDecl(
+          docComments = ed.docComments,
+          annotations = ed.annotations,
+          visibility = ed.visibility,
+          name = ed.name,
+          params = ed.params,
+          ret = ed.ret,
+          contracts = ed.contracts,
+          body = FBBlock(block = Block(statements = prelude, span = blk.span)),
+          span = ed.span
+        )
+      )
+    }
+    case other -> other
+  }
+}
+
 func elaborateProtectedMember(
   m: in ProtectedMember, invariants: in List[InvariantClause], typeName: in String
 ): ProtectedMember {
@@ -2940,10 +3043,12 @@ func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in S
         }
         mi = mi + 1
       }
+      val anyBarrier = protectedHasBarrier(decl.members)
       val newMembers: List[ProtectedMember] = newList()
       mi = 0
       while mi < decl.members.count {
-        newMembers.add(elaborateProtectedMember(decl.members[mi], invariants, qualify(pkg, decl.name)))
+        val withBarriers = applyBarrierProtocol(decl.members[mi], anyBarrier)
+        newMembers.add(elaborateProtectedMember(withBarriers, invariants, qualify(pkg, decl.name)))
         mi = mi + 1
       }
       Item(
