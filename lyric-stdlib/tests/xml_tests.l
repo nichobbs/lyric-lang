@@ -112,6 +112,20 @@ func testAstralNumericEntities(): Unit {
     case Err(_) -> assertTrue(true, "overflowing entity rejected")
     case Ok(_) -> assertTrue(false, "overflowing entity should be rejected")
   }
+  // #7251: a reference must name an XML 1.0 Char.
+  val illegal = ["&#0;", "&#x0;", "&#1;", "&#x1F;", "&#xD800;", "&#xFFFE;", "&#xFFFF;"]
+  var i = 0
+  while i < illegal.count {
+    match parseXml("<e>" + illegal[i] + "</e>") {
+      case Err(_) -> assertTrue(true, "non-Char entity rejected")
+      case Ok(_) -> assertTrue(false, "non-Char entity should be rejected: " + illegal[i])
+    }
+    i = i + 1
+  }
+  match parseXml("<e>&#9;&#xA;&#13;&#x20;&#xFFFD;</e>") {
+    case Err(e) -> assertTrue(false, "TAB/LF/CR/space/U+FFFD entities: " + XmlError.message(e))
+    case Ok(doc) -> assertTrue(textContent(documentRoot(doc)).length == 5, "the five allowed references decode")
+  }
 }
 
 func testEntityInAttr(): Unit {
