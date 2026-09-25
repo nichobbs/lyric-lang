@@ -220,6 +220,27 @@ val result = addFive(3)    // 8
 
 The type `{Int -> Int}` is the type of a closure that takes an `Int` and returns an `Int`. For a closure taking two parameters: `{Int, Int -> Bool}`.
 
+### Named functions as values
+
+A named function can be used anywhere a function value is expected, without wrapping it in a lambda. That includes functions from other packages, however you spell the name:
+
+```lyric
+import Text.Format
+import Text.Format.{pad}
+
+record Formatter {
+  apply: (String, Int) -> String
+}
+
+val a = Formatter(apply = pad)                  // bare, selectively imported
+val b = Formatter(apply = Format.pad)           // through the package's last segment
+val c = Formatter(apply = Text.Format.pad)      // full package path
+```
+
+Each reference means the same function a call to that name would reach. A function from another package can be referenced this way when it is non-generic, not `async`, and takes only `in` parameters; for anything else, write the lambda yourself (`{ s: String, n: Int -> pad(s, n) }`). If the package overloads the name, the compiler asks you to write the lambda, since a bare reference can't say which overload you mean.
+
+Calling a function value checks its arguments just like a direct call, numeric widening included: passing an `Int` where the function takes a `Long` works, and the function receives a `Long`. A widening the call cannot perform, such as a `Byte` passed where the function takes a `UInt` or a `Float` where it takes a `Double`, is an error; pass a value of the parameter type instead.
+
 ### Capture semantics
 
 Closures capture from their enclosing scope. The rule is:

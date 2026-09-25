@@ -1041,7 +1041,12 @@ func lowerBuiltinOrStaticCall(
     // the frames disagree and the class fails verification.  Stash the
     // lowered argument to a temp, then push the receiver and reload.
     if args.count > 0 {
-      val rawTy = lowerCallArg(ctx, insns, args[0])
+      val rawTy = normalizeDistinctPrintArg(
+        ctx,
+        insns,
+        lowerCallArg(ctx, insns, args[0]),
+        isUnsignedExpr(ctx, callArgExpr(args[0]))
+      )
       // #6754 (finding 1.1): a `UInt`/`ULong` argument, stringified via
       // `Integer`/`Long.toUnsignedString` BEFORE the double-normalization
       // below — `PrintStream.println(int)`/`(long)` always renders the
@@ -1070,7 +1075,12 @@ func lowerBuiltinOrStaticCall(
   } else if funcName == "print" {
     // Same receiver-after-argument discipline as println above.
     if args.count > 0 {
-      val rawTy = lowerCallArg(ctx, insns, args[0])
+      val rawTy = normalizeDistinctPrintArg(
+        ctx,
+        insns,
+        lowerCallArg(ctx, insns, args[0]),
+        isUnsignedExpr(ctx, callArgExpr(args[0]))
+      )
       // #6754 (finding 1.1): same unsigned normalization as println above.
       val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(ctx, callArgExpr(args[0])))
       // #4688: same Double normalization as println above.
@@ -1115,17 +1125,7 @@ func lowerBuiltinOrStaticCall(
         )
       } else {
         match argTy {
-          case JRef(_) -> {
-            val tsPs: List[JvmType] = newList()
-            insns.add(
-              LInvokevirtual(
-                owner = "java/lang/Object",
-                name = "toString",
-                params = tsPs,
-                ret = JRef(className = "java/lang/String")
-              )
-            )
-          }
+          case JRef(_) -> coerceToStringForConcat(ctx, insns, argTy, false)
           case _ -> {
             boxIfNeeded(insns, argTy)
             val tsPs2: List[JvmType] = newList()
@@ -4308,6 +4308,21 @@ func lowerMethodCall(
     }
     return JRef(className = "java/lang/String")
   }
+  // A distinct or range-subtype receiver renders as its underlying value
+  // (D-progress-968); the wrapper class inherits `Object.toString()`.
+  if memberName == "toString" and args.count == 0 {
+    match recvTy {
+      case JRef(dc) -> {
+        val isDistinct = match mapGet(ctx.funcSigs, dc + "#$value") { case Some(_) -> true; case None -> false }
+        val hasOwnToString = match mapGet(ctx.funcSigs, dc + "#toString") { case Some(_) -> true; case None -> false }
+        if isDistinct and not hasOwnToString {
+          coerceToStringForConcat(ctx, insns, recvTy, false)
+          return JRef(className = "java/lang/String")
+        }
+      }
+      case _ -> ()
+    }
+  }
   // String predicate methods return `boolean` (Z), not Object.  Emitting them
   // through the generic path below (ret = Object) makes a following `ifeq`/`ifne`
   // pop an Object and fail verification ("Bad type on operand stack").  Pin the
@@ -4852,6 +4867,24 @@ func lowerMethodCall(
 // normalizations ever fires. Non-unsigned/non-Int/Long args pass through
 // unchanged. Shared by both `println` and `print` in
 // `lowerBuiltinOrStaticCall` above.
+// `println`/`print`'s already-lowered argument, on the stack as `rawTy`. A
+// distinct or range-subtype value is stringified through its underlying value
+// (`coerceToStringForConcat` unwraps `$value`), exactly as interpolation
+// renders it; `PrintStream.println(Object)` would print the wrapper instead
+// (D-progress-968). Any other argument passes through unchanged.
+func normalizeDistinctPrintArg(ctx: in FuncCtx, insns: in List[LInsn], rawTy: in JvmType, isUnsigned: in Bool): JvmType {
+  match rawTy {
+    case JRef(c) -> match mapGet(ctx.funcSigs, c + "#$value") {
+      case Some(_) -> {
+        coerceToStringForConcat(ctx, insns, rawTy, isUnsigned)
+        JRef(className = "java/lang/String")
+      }
+      case None -> rawTy
+    }
+    case _ -> rawTy
+  }
+}
+
 func normalizeUnsignedPrintArg(insns: in List[LInsn], rawTy: in JvmType, isUnsigned: in Bool): JvmType {
   val isUnsignedIntOrLong = isUnsigned and (match rawTy { case JInt -> true; case JLong -> true; case _ -> false })
   if isUnsignedIntOrLong {

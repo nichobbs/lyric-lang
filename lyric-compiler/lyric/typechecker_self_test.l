@@ -209,6 +209,25 @@ test "int literal adopts context" {
   assertEqualInt(diagCount(parseCheck(branch)), 0, "int-lit: if-branch Long/0 widens to Long")
 }
 
+// D-progress-969: a negated literal adopts the other operand's type like the
+// literal itself, and a generic's type parameter takes the wider numeric type
+// when a literal argument widens at a bare `T` parameter.
+test "negated literal and widening generic argument" {
+  val neg = "package P\npub func f(x: in Long): Bool {\n  x == -1\n}\n"
+  assertEqualInt(diagCount(parseCheck(neg)), 0, "int-lit: Long == -1 type-checks")
+  // A negated literal never adopts a type with no negative values.
+  val negU = "package P\npub func f(x: in UInt): Bool {\n  x == -1\n}\n"
+  assertTrue(diagCount(parseCheck(negU)) > 0, "int-lit: UInt == -1 is rejected")
+  val negN = "package P\npub func f(x: in Nat): Bool {\n  x == -1\n}\n"
+  assertTrue(diagCount(parseCheck(negN)) > 0, "int-lit: Nat == -1 is rejected")
+  val posU = "package P\npub func f(x: in UInt): Bool {\n  x == 1\n}\n"
+  assertEqualInt(diagCount(parseCheck(posU)), 0, "int-lit: UInt == 1 type-checks")
+  val gen = "package P\nunion R[T] {\n  case Good(v: T)\n  case Bad\n}\npub func pick[T](r: in R[T], d: in T): T {\n  match r {\n    case Good(v) -> v\n    case Bad -> d\n  }\n}\npub func big(): R[Long] {\n  Good(v = 5000000000i64)\n}\npub func useLong(): Long {\n  pick(big(), 0)\n}\n"
+  assertEqualInt(diagCount(parseCheck(gen)), 0, "generic: T binds Long, the Int literal widens")
+  val wrong = "package P\nunion R[T] {\n  case Good(v: T)\n  case Bad\n}\npub func pick[T](r: in R[T], d: in T): T {\n  match r {\n    case Good(v) -> v\n    case Bad -> d\n  }\n}\npub func big(): R[Long] {\n  Good(v = 5000000000i64)\n}\npub func useString(): String {\n  val s: String = pick(big(), 0)\n  s\n}\n"
+  assertTrue(hasDiagCode(parseCheck(wrong), "T0060"), "generic: a Long result assigned to String is T0060")
+}
+
 // Guard branch widening against over-reach: a genuinely incompatible pair
 // (String vs Int) must still raise T0067, not silently unify.
 test "branch widen still rejects mismatch" {
@@ -4544,4 +4563,151 @@ test "a user-declared copy method takes precedence over record copy" {
 test "generic record constructor infers a type parameter from the binding annotation" {
   val src = "package P\nrecord Box[A, B] { left: List[A]; right: Option[B] }\nfunc f(xs: in List[Int]): Unit { val _b: Box[Int, String] = Box(left = xs, right = None) }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0110"), "expected type fills B: no T0110")
+}
+
+// A qualified function value whose qualifier matches several packages
+// (`Lib.Bar`, `Other.Bar`) binds the imported one rather than reporting an
+// overload ambiguity (D-progress-963).
+test "qualified function value prefers the imported package among same-suffix packages" {
+  val libBar = parse("package Lib.Bar\npub func parse(s: in String): Int { 1 }\n")
+  val otherBar = parse("package Other.Bar\npub func parse(s: in String): Int { 2 }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Lib.Bar", items = libBar.file.items, imports = collectImportNames(libBar.file.imports))
+  )
+  packages.add(
+    ImportedPackage(
+      name = "Other.Bar",
+      items = otherBar.file.items,
+      imports = collectImportNames(otherBar.file.imports)
+    )
+  )
+  val src = "package App\nimport Lib.Bar\nfunc g(): Int {\n  val f: (String) -> Int = Bar.parse\n  f(\"x\")\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(src).file), packages)),
+    0,
+    "Bar.parse binds Lib.Bar.parse, the imported package"
+  )
+  val bad = "package App\nimport Lib.Bar\nfunc g(): Unit {\n  val f: String = Bar.parse\n}\n"
+  assertTrue(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(bad).file), packages)) > 0,
+    "the qualified value is resolved: a mismatched annotation is reported"
+  )
+}
+
+// A call through a function value converts only the widenings it has a
+// conversion for; `Byte` to `UInt` has none (#2050), so it is rejected rather
+// than passed boxed as a `Byte` (D-progress-964).
+test "function-value call rejects a Byte argument for a UInt parameter" {
+  val bad = "package P\npub func g(f: (UInt) -> UInt, b: in Byte): UInt {\n  f(b)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0043"), "Byte into a (UInt) -> UInt value is T0043")
+  val badL = "package P\npub func g(f: (ULong) -> ULong, b: in Byte): ULong {\n  f(b)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(badL), "T0043"), "Byte into a (ULong) -> ULong value is T0043")
+  val badF = "package P\npub func g(f: (Double) -> Double, x: in Float): Double {\n  f(x)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(badF), "T0043"), "Float into a (Double) -> Double value is T0043")
+  val ok = "package P\npub func g(f: (Long) -> Long, i: in Int): Long {\n  f(i)\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "Int into a (Long) -> Long value still widens")
+}
+
+// A function value can stand only for another package's non-generic,
+// synchronous function whose parameters are all `in`; anything else is T0128
+// instead of reaching the backend as a bare path (D-progress-963).
+test "a function value naming an unrepresentable cross-package function is T0128" {
+  val lib = parse(
+    "package Lib\npub func bump(n: inout Int): Unit { n = n + 1 }\npub async func fetch(s: in String): Int { 1 }\npub func ident[T](x: in T): T { x }\npub func plain(s: in String): Int { 2 }\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "Lib", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  val inoutSrc = "package App\nimport Lib\nfunc g(): Unit {\n  val f = Lib.bump\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(inoutSrc).file), packages), "T0128"),
+    "inout parameter: T0128"
+  )
+  val asyncSrc = "package App\nimport Lib\nfunc g(): Unit {\n  val f = Lib.fetch\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(asyncSrc).file), packages), "T0128"),
+    "async function: T0128"
+  )
+  val genSrc = "package App\nimport Lib\nfunc g(): Unit {\n  val f = Lib.ident\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(genSrc).file), packages), "T0128"),
+    "generic function: T0128"
+  )
+  val bareSrc = "package App\nimport Lib.{bump}\nfunc g(): Unit {\n  val f = bump\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(bareSrc).file), packages), "T0128"),
+    "bare inout reference: T0128"
+  )
+  val okSrc = "package App\nimport Lib\nfunc g(): Int {\n  val f: (String) -> Int = Lib.plain\n  f(\"x\")\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(okSrc).file), packages)),
+    0,
+    "plain function value: no diagnostic"
+  )
+  // A call with explicit type arguments is a call, not a function value.
+  val tyAppSrc = "package App\nimport Lib\nfunc g(): Int {\n  Lib.ident[Int](3)\n}\n"
+  assertTrue(
+    not hasDiagCode(checkWithImportedPackages(rewriteFile(parse(tyAppSrc).file), packages), "T0128"),
+    "qualified generic call with type arguments: no T0128"
+  )
+  val bareTyAppSrc = "package App\nimport Lib.{ident}\nfunc g(): Int {\n  ident[Int](3)\n}\n"
+  assertTrue(
+    not hasDiagCode(checkWithImportedPackages(rewriteFile(parse(bareTyAppSrc).file), packages), "T0128"),
+    "bare generic call with type arguments: no T0128"
+  )
+  // Control: the qualified path is really resolved, so a mismatched
+  // annotation is reported and the zero-diagnostic case is not vacuous.
+  val badSrc = "package App\nimport Lib\nfunc g(): Unit {\n  val f: String = Lib.plain\n}\n"
+  assertTrue(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(badSrc).file), packages)) > 0,
+    "mismatched annotation on a qualified function value is reported"
+  )
+}
+
+// A function value naming an overloaded package function cannot pick an
+// overload: T0123, bare and qualified (D-progress-963). The declaration order
+// puts the two-parameter overload first so a silent pick of either overload
+// would not type-check the annotation by accident.
+test "overloaded function value is T0123, bare and qualified" {
+  val other = parse(
+    "package Ovl.Other\npub func pad(s: in String, n: in Int): String { s }\npub func pad(s: in String): String { s }\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Ovl.Other", items = other.file.items, imports = collectImportNames(other.file.imports))
+  )
+  val bareSrc = "package Ovl.App\nimport Ovl.Other.{pad}\nfunc g(): Unit {\n  val f: (String) -> String = pad\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(bareSrc).file), packages), "T0123"),
+    "bare overloaded function value: T0123"
+  )
+  val qualSrc = "package Ovl.App\nimport Ovl.Other\nfunc g(): Unit {\n  val f: (String) -> String = Other.pad\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(qualSrc).file), packages), "T0123"),
+    "qualified overloaded function value: T0123"
+  )
+}
+
+// The forwarding lambda names a parameter type by its bare name only when
+// that name denotes the same type at the use site (#7371). An extern type
+// (codegen resolves it by bare name) whose name the consumer reuses has no
+// faithful spelling: T0128. Without the clash the bare name is used.
+test "a function value over an extern type whose name the use site reuses is T0128" {
+  val host = parse("package Std.UuidHost\nextern type Uuid = \"System.Guid\"\n")
+  val lib = parse("package Lib\nimport Std.UuidHost\npub func show(u: in Uuid): String { \"\" }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Std.UuidHost", items = host.file.items, imports = collectImportNames(host.file.imports))
+  )
+  packages.add(ImportedPackage(name = "Lib", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  val clash = "package App\nimport Lib\nrecord Uuid {\n  n: Int\n}\nfunc g(): Unit {\n  val f = Lib.show\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(clash).file), packages), "T0128"),
+    "extern parameter type shadowed at the use site: T0128"
+  )
+  val plain = "package App\nimport Lib\nfunc g(): Unit {\n  val f = Lib.show\n}\n"
+  assertTrue(
+    not hasDiagCode(checkWithImportedPackages(rewriteFile(parse(plain).file), packages), "T0128"),
+    "no clash: the bare extern name is used"
+  )
 }

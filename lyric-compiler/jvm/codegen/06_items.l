@@ -600,6 +600,7 @@ pub func setupStaticParamSlotsAndHolders(
       rawSlots.add(slot)
       rawTypes.add(elemTy)
       narrowCls.add(recordParamClassOf(p.ty, ctx))
+      recordAnnotatedFuncValRetType(ctx, p.name, Some(value = p.ty))
     }
     pi = pi + 1
   }
@@ -700,6 +701,7 @@ pub func setupInstanceParamSlotsAndHolders(
       rawSlots.add(slot)
       rawTypes.add(elemTy)
       narrowCls.add(recordParamClassOf(p.ty, ctx))
+      recordAnnotatedFuncValRetType(ctx, p.name, Some(value = p.ty))
     }
     pi = pi + 1
   }
@@ -950,6 +952,42 @@ pub func lowerFunc(
   // #6393: same-file `alias X = ...` table — see `Lyric.BareFuncRef`'s
   // module doc §2 and `codegenPackageWithSigsSeeded`'s `aliasTargets`.
   // #6413 audit: kept for the stdlib-bundled-file gap, D-progress-752.
+  aliasTargets: in Map[String, TypeExpr],
+): LFunc {
+  lowerFuncScoped(
+    decl,
+    pkgName,
+    className,
+    funcSigs,
+    caseFields,
+    ctors,
+    originScopedExternTypes(decl, pkgName, externTypes),
+    autoFfi,
+    moduleVals,
+    configFieldTypes,
+    opaqueTypes,
+    closureAcc,
+    usesLyricCount,
+    importsStdString,
+    aliasTargets
+  )
+}
+
+func lowerFuncScoped(
+  decl: in FunctionDecl,
+  pkgName: in String,
+  className: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  configFieldTypes: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  usesLyricCount: in List[Bool],
+  importsStdString: in Bool,
   aliasTargets: in Map[String, TypeExpr],
 ): LFunc {
   val resolvedRet = match decl.ret {
@@ -3370,6 +3408,9 @@ pub func collectFileSigsSeeded(
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(decl) -> {
+        // A specialised copy of another package's generic resolves its type
+        // names in that package's scope (D-progress-967).
+        val fnExternTypes = originScopedExternTypes(decl, dottedPathOfSegments(file.packageDecl.path.segments), externTypes)
         // An `out`/`inout` parameter is declared as a holder array in the JVM
         // descriptor (#1763), so the registry records the array type and the
         // declared mode; call sites read the modes to wrap holder arguments.
@@ -3382,7 +3423,7 @@ pub func collectFileSigsSeeded(
         // #6393: resolve each param's declared type through a function-type
         // alias before erasure — see the `aliasTargets` comment above.
         val resolvedParams = resolveParamsFuncAlias(aliasTargets, decl.params)
-        val params = holderAwareParamTypes(resolvedParams, owner, false, sigTps, externTypes)
+        val params = holderAwareParamTypes(resolvedParams, owner, false, sigTps, fnExternTypes)
         val paramNames: List[String] = newList()
         val paramDefaults: List[Option[Expr]] = newList()
         val paramModes: List[ParamMode] = newList()
@@ -3413,7 +3454,7 @@ pub func collectFileSigsSeeded(
           JRef(className = "java/lang/Object")
         } else {
           match resolvedRet {
-            case Some(te) -> typeExprToJvmErasedExtern(te, owner, sigTps, externTypes)
+            case Some(te) -> typeExprToJvmErasedExtern(te, owner, sigTps, fnExternTypes)
             case None -> JVoid
           }
         }
@@ -3429,7 +3470,7 @@ pub func collectFileSigsSeeded(
         val sigClosureRetTy: Option[JvmType] = if decl.isAsync and funcBodyContainsYield(decl) {
           None
         } else {
-          closureRetTypeOf(resolvedRet, owner, sigTps, externTypes)
+          closureRetTypeOf(resolvedRet, owner, sigTps, fnExternTypes)
         }
         // Same generator exclusion as `sigClosureRetTy` above: the actual
         // runtime return is the synthesised generator object, not `decl.ret`,
@@ -3465,7 +3506,7 @@ pub func collectFileSigsSeeded(
           retGenericArgs = eagerlyResolveGenericArgs(
             returnTypeGenericArgsFiltered(decl.ret, sigTps),
             owner,
-            externTypes
+            fnExternTypes
           ),
           closureRetTy = sigClosureRetTy,
           recordRetClass = sigRecordRetClass,
@@ -3631,6 +3672,18 @@ pub func collectFileSigsSeeded(
       case IDistinctType(decl) -> {
         val distClass = owner + "/" + decl.name
         val inner = typeExprToJvm(decl.underlying, owner)
+        // The `$value` accessor, so a distinct value renders as its
+        // underlying value when stringified (D-progress-968).
+        registerInstanceSigErased(
+          into,
+          distClass,
+          "$value",
+          newList(),
+          Some(value = decl.underlying),
+          owner,
+          newList(),
+          externTypes
+        )
         val convName = jvmDistinctConvName(inner)
         if convName.length > 0 {
           val noParams: List[Param] = newList()
@@ -4164,10 +4217,11 @@ func registerInstanceSigErased(
         closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
         recordRetClass = None,
         retIsSelf = retIsSelf,
-        // Keyed `<class>#<method>` — an instance-method call is
-        // `ECall(EMember(…), …)`, never matches `isUnsignedExpr`'s
-        // `ECall(EPath, …)`-only arm.
-        retIsUnsigned = false,
+        // Keyed `<class>#<method>`, so `isUnsignedExpr`'s bare-key `ECall`
+        // arm never reads it; a distinct type's `$value` accessor carries it
+        // so stringification formats a `UInt`/`ULong` underlying value
+        // unsigned (D-progress-968).
+        retIsUnsigned = match retOpt { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
         recordRetHead = newList()
       )
     )
@@ -4755,8 +4809,99 @@ pub func collectFileCasesExtern(
 // NoClassDefFoundError at first use).  Generic declarations are skipped: a
 // bare reference to one erases to Object, and seeding e.g. `Option` would
 // re-type every erased generic field.
+// Reserved keys recording, per package, what a specialised copy of one of its
+// generics needs to resolve its bare type names in the package's own scope
+// (D-progress-967): `~generic~<Name>` for each generic type it declares, and
+// `~import~<Pkg>` for each package it imports.  `externSeedForFile` seeds
+// them bundle-wide as `<Pkg>.~generic~<Name>` / `<Pkg>.~import~<Imported>`
+// like any package-qualified key; no type is ever named this way, so the
+// bare keys are inert.  See `originScopedExternTypes`.
+func collectOriginScopeMarkers(file: in SourceFile, into: in Map[String, String]): Unit {
+  val pkgDotted = dottedPathOfSegments(file.packageDecl.path.segments)
+  var i = 0
+  while i < file.items.count {
+    val genName = match file.items[i].kind {
+      case IUnion(decl) -> match decl.generics { case Some(_) -> decl.name; case None -> "" }
+      case IRecord(decl) -> match decl.generics { case Some(_) -> decl.name; case None -> "" }
+      case IExposedRec(decl) -> match decl.generics { case Some(_) -> decl.name; case None -> "" }
+      case IInterface(decl) -> match decl.generics { case Some(_) -> decl.name; case None -> "" }
+      case _ -> ""
+    }
+    if genName.length > 0 and not into.containsKey("~generic~" + genName) {
+      into.add("~generic~" + genName, pkgDotted + "." + genName)
+    }
+    i = i + 1
+  }
+  var ii = 0
+  while ii < file.imports.count {
+    if not file.imports[ii].isExtern {
+      val dn = dottedPathOfSegments(file.imports[ii].path.segments)
+      if not into.containsKey("~import~" + dn) {
+        into.add("~import~" + dn, dn)
+      }
+    }
+    ii = ii + 1
+  }
+}
+
+// `externTypes` as seen from inside a specialised copy of another package's
+// generic (its `__lyric_origin`, when that differs from `pkgName`): each bare
+// type name resolves as it did where the generic was written, to the types of
+// the packages it imports and, winning over those, its own (D-progress-967).
+// A generic type there drops a same-named bare entry, so it erases like any
+// generic type instead of naming an unrelated class.
+pub func originScopedExternTypes(
+  decl: in FunctionDecl, pkgName: in String, externTypes: in Map[String, String]
+): Map[String, String] {
+  val origin = originPkgOf(decl.annotations)
+  if origin.length == 0 or origin == pkgName {
+    return externTypes
+  }
+  val view: Map[String, String] = newMap()
+  for k in mapKeys(externTypes) {
+    match mapGet(externTypes, k) {
+      case Some(v) -> view.add(k, v)
+      case None -> ()
+    }
+  }
+  val importPrefix = origin + ".~import~"
+  for ik in mapKeys(externTypes) {
+    if ik.startsWith(importPrefix) {
+      overlayPackageTypesJvm(view, externTypes, ik.substring(importPrefix.length))
+    }
+  }
+  overlayPackageTypesJvm(view, externTypes, origin)
+  view
+}
+
+func overlayPackageTypesJvm(view: in Map[String, String], externTypes: in Map[String, String], pkg: in String): Unit {
+  val prefix = pkg + "."
+  for k in mapKeys(externTypes) {
+    if k.startsWith(prefix) {
+      val rest = k.substring(prefix.length)
+      if rest.startsWith("~generic~") {
+        val gname = rest.substring(9)
+        if view.containsKey(gname) {
+          view.remove(gname)
+        }
+      } else if not rest.startsWith("~") and String.indexOfRaw(rest, ".") < 0 {
+        match mapGet(externTypes, k) {
+          case Some(v) -> {
+            if view.containsKey(rest) {
+              view.remove(rest)
+            }
+            view.add(rest, v)
+          }
+          case None -> ()
+        }
+      }
+    }
+  }
+}
+
 pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, String]): Unit {
   val pkgDotted = dottedPathOfSegments(file.packageDecl.path.segments)
+  collectOriginScopeMarkers(file, into)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -4816,6 +4961,21 @@ pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, S
         // Interfaces are emitted as real JVM interfaces; a consumer's
         // interface-typed binding (`bucket: StorageBucket` in a test module)
         // otherwise carries the in-package guess.
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
+          }
+          case Some(_) -> ()
+        }
+      }
+      // A distinct/range-subtype type is emitted as its own wrapper class
+      // (`LPDistinctType`); without this a consumer's parameter or binding of
+      // a dependency's distinct type named the in-package guess
+      // (`<consumerPkg>/Cents`) and failed with NoClassDefFoundError
+      // (D-progress-968).
+      case IDistinctType(decl) -> {
         match decl.generics {
           case None -> {
             if not into.containsKey(decl.name) {

@@ -210,6 +210,13 @@ pub record CodegenCtx {
   distinctFromTokens: Map[String, Int]
   distinctTryFromTokens: Map[String, Int]
   distinctTryFromRetTypes: Map[String, MsilType]
+  // Distinct/range-subtype classes over `UInt`/`ULong` (erased to the signed
+  // representation): stringified with the unsigned formatter.
+  unsignedDistincts: Map[String, Bool]
+  // Every distinct/range-subtype class the codegen can see, in-bundle and
+  // restored: its `value` field is in `fieldTokens`/`fieldMsilTypes`, so a
+  // value of the class stringifies as its underlying value (D-progress-968).
+  distinctClasses: Map[String, Bool]
   fieldTokens: Map[String, Int]  // "ClassName/fieldName" → FieldDef token
   // #6596: field NAMES (not "ClassName/fieldName" — see
   // `Lyric.ModeChecker.computeFieldLockSafetyForBuild`'s doc comment for why
@@ -664,6 +671,11 @@ pub record CodegenCtx {
   // declaration the type checker bound, not to whichever package
   // happened to register first.
   typeFqnCandidates: Map[String, List[String]]
+  /// While the signature or body of a specialised copy of another package's
+  /// generic is being lowered, its declaring package (else ""), innermost
+  /// last: `resolveTypeFqn` resolves a bare type name in that package's scope
+  /// first, the scope the body was written in (D-progress-967).
+  typeScopeOrigin: List[String]
   // Generic stdlib union case type-param count. Key = FQN ctor key of the
   // case class (e.g. "Std.Core.Option_Some"). Value = number of type params
   // on the parent union (e.g. 1 for Option[T], 2 for Result[T,E]). Used at
@@ -2082,6 +2094,8 @@ pub func newCodegenCtx(
     distinctFromTokens = newMap(),
     distinctTryFromTokens = newMap(),
     distinctTryFromRetTypes = newMap(),
+    unsignedDistincts = newMap(),
+    distinctClasses = newMap(),
     fieldTokens = fieldToks,
     unsafeFieldLockNames = newMap(),
     fieldSigBytes = newMap(),
@@ -2186,6 +2200,7 @@ pub func newCodegenCtx(
     caseParentUnion = newMap(),
     typeFqnByName = newMap(),
     typeFqnCandidates = newMap(),
+    typeScopeOrigin = newList(),
     caseTypeParamCount = newMap(),
     genericTypeArity = newMap(),
     genericCtorParams = newMap(),
@@ -3132,6 +3147,65 @@ func preRegisterGenericTypeName(cctx: in CodegenCtx, name: in String, pkgName: i
 // the record's package and give the call result a closed generic type that
 // no real instance has.  Such a type is registered as `object`, so the call
 // result takes the erased-value paths that test the runtime type.
+// A function-typed union case field's return type, keyed like its
+// `fieldMsilTypes` entry, so a pattern binding the field records it for the
+// bound name (`bindCaseFieldFuncRetMsil`, D-progress-969).
+func registerCaseFieldFuncRetMsil(
+  cctx: in CodegenCtx,
+  key: in String,
+  fieldTe: in TypeExpr,
+  pkgName: in String,
+  uGenerics: in List[String],
+): Unit {
+  match resolveFuncTypeExprMsil(cctx, fieldTe) {
+    case Some(funcTe) -> match funcTe.kind {
+      case TFunction(_, fRetTe) -> {
+        if not cctx.fieldFuncRetTypes.containsKey(key) {
+          cctx.fieldFuncRetTypes.add(key, recordFieldFuncTypeMsil(cctx, fRetTe, pkgName, uGenerics))
+        }
+        if uGenerics.count > 0 and not cctx.fieldFuncRetTypesOpen.containsKey(key) {
+          cctx.fieldFuncRetTypesOpen.add(key, typeExprToMsilG(cctx, fRetTe, pkgName, uGenerics))
+        }
+      }
+      case _ -> ()
+    }
+    case None -> ()
+  }
+}
+
+// Record the return type of the function-typed case field `key` for `name`,
+// bound by a constructor pattern over `castTy`: a call through `name` then
+// yields that type instead of `object` (D-progress-969).
+func bindCaseFieldFuncRetMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  name: in String,
+  key: in String,
+  castTy: in MsilType,
+): Unit {
+  val retOpt = match castTy {
+    case MGenericInstByName(_, typeArgs) -> match mapGet(cctx.fieldFuncRetTypesOpen, key) {
+      case Some(openRet) -> Some(
+        value = substituteTypeVarsMsil(
+          openRet,
+          typeArgs
+        )
+      )
+      case None -> mapGet(cctx.fieldFuncRetTypes, key)
+    }
+    case _ -> mapGet(cctx.fieldFuncRetTypes, key)
+  }
+  match retOpt {
+    case Some(rt) -> {
+      if fctx.funcValRetTypes.containsKey(name) {
+        fctx.funcValRetTypes.remove(name)
+      }
+      fctx.funcValRetTypes.add(name, rt)
+    }
+    case None -> ()
+  }
+}
+
 func recordFieldFuncTypeMsil(
   cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, recGenerics: in List[String]
 ): MsilType {
@@ -3845,6 +3919,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), ufTyMsil)
                 }
+                registerCaseFieldFuncRetMsil(cctx, caseName + "/" + name, ufTy, pkgName, uGenerics)
+                registerCaseFieldFuncRetMsil(cctx, caseName + "/field" + toString(fi), ufTy, pkgName, uGenerics)
                 if uArity > 0 {
                   // FIELD VAR(n) for a type-parameter field, the concrete FIELD sig
                   // otherwise; consumed by the generic pattern-match field reads.
@@ -3870,6 +3946,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), ufPosTyMsil)
                 }
+                registerCaseFieldFuncRetMsil(cctx, caseName + "/field" + toString(fi), ufPosTy, pkgName, uGenerics)
                 if uArity > 0 {
                   val fSigP = if gIdxP >= 0 { buildGenericParamFieldSig(gIdxP) } else { buildFieldSig(ufPosTyMsil) }
                   cctx.fieldVarIndices.add(caseName + "/field" + toString(fi), gIdxP)
@@ -4296,6 +4373,12 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if not cctx.fieldMsilTypes.containsKey(className + "/value") {
           cctx.fieldMsilTypes.add(className + "/value", innerTy)
         }
+        if isUnsignedTypeExprMsil(decl.underlying) and not cctx.unsignedDistincts.containsKey(className) {
+          cctx.unsignedDistincts.add(className, true)
+        }
+        if not cctx.distinctClasses.containsKey(className) {
+          cctx.distinctClasses.add(className, true)
+        }
         fieldDefRow = fieldDefRow + 1
         // Method 0: .ctor
         if not cctx.recordCtorTokens.containsKey(className) {
@@ -4514,6 +4597,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   while j < file.items.count {
     match file.items[j].kind {
       case IFunc(decl) -> {
+        // A specialised copy of another package's generic declares its
+        // signature in that package's type scope (D-progress-967).
+        enterTypeScopeOriginMsil(cctx, decl, pkgName)
         // FQN-keyed for #1183 Phase 2 — cross-package call sites resolve via
         // `<pkg>.<func>` so multiple packages can co-exist in one cctx without
         // colliding on simple names.  Single-package call sites that use a
@@ -4890,6 +4976,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if not cctx.funcParamModes.containsKey(fqn) {
           cctx.funcParamModes.add(fqn, paramModes)
         }
+        exitTypeScopeOriginMsil(cctx)
         methodDefRow = methodDefRow + 1
       }
       // IWire emits `<Wire>_bootstrap` plus one `<Wire>_<name>` accessor per
@@ -6352,9 +6439,8 @@ func pushDefaultValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
       emitLoadSlot(insns, slot, fctx.paramCount)
     }
     case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
-      val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
       val tsKey = "never_default_vtgi_" + msilTypeKeyStr(retTy)
-      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, typeRefCode, typeArgs, true)
       val slot = allocSlotMsil(fctx, "__never_default_" + toString(fctx.slotTicker.count), retTy)
       insns.add(MLdloca(slot = slot - fctx.paramCount))
       insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
@@ -6382,7 +6468,9 @@ func emitCompoundCombineMsil(
     case _ -> false
   }
   if isStringConcat {
-    val rTy = lowerExprMsil(cctx, fctx, insns, value)
+    val rTyRaw = lowerExprMsil(cctx, fctx, insns, value)
+    val rDistinctUnsigned = distinctUnsignedMsil(cctx, rTyRaw)
+    val rTy = unwrapDistinctForStringMsil(cctx, insns, rTyRaw)
     match rTy {
       case MString -> {
       }
@@ -6398,7 +6486,7 @@ func emitCompoundCombineMsil(
           // #6913: an unsigned-flagged box target for a bare `UInt`/
           // `ULong` compound-assignment rhs (`s += x`) — see
           // `isUnsignedExprMsil`.
-          boxIfNeededUnsignedMsil(cctx, insns, rTy, isUnsignedExprMsil(fctx, value))
+          boxIfNeededUnsignedMsil(cctx, insns, rTy, isUnsignedExprMsil(fctx, value) or rDistinctUnsigned)
         }
         insns.add(MCallvirt(methodToken = cctx.tokObjToString))
       }
@@ -6461,7 +6549,9 @@ func emitCompoundCombineSlotMsil(
   }
   emitLoadSlot(insns, rSlot, fctx.paramCount)
   if isStringConcat {
-    match rTy {
+    val rUnsigned = isUnsignedRhs or distinctUnsignedMsil(cctx, rTy)
+    val rValTy = unwrapDistinctForStringMsil(cctx, insns, rTy)
+    match rValTy {
       case MString -> {
       }
       case MBool -> emitBoolToStringMsil(cctx, fctx, insns)
@@ -6473,7 +6563,7 @@ func emitCompoundCombineSlotMsil(
           // function's own header comment), so its unsigned-ness is
           // computed from the source `Expr` at the call site and threaded
           // through as `isUnsignedRhs` rather than re-derived here.
-          boxIfNeededUnsignedMsil(cctx, insns, rTy, isUnsignedRhs)
+          boxIfNeededUnsignedMsil(cctx, insns, rValTy, rUnsigned)
         }
         insns.add(MCallvirt(methodToken = cctx.tokObjToString))
       }
@@ -7095,6 +7185,52 @@ func resolveTypeFqnQualified(cctx: in CodegenCtx, pkgName: in String, path: in M
   resolveTypeFqn(cctx, pkgName, seg)
 }
 
+// Enter / leave the type scope of `decl`'s declaring package (see
+// `CodegenCtx.typeScopeOrigin`).
+func enterTypeScopeOriginMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): Unit {
+  val origin = originPkgOf(decl.annotations)
+  cctx.typeScopeOrigin.add(if origin.length > 0 and origin != pkgName { origin } else { "" })
+}
+
+func exitTypeScopeOriginMsil(cctx: in CodegenCtx): Unit {
+  if cctx.typeScopeOrigin.count > 0 {
+    cctx.typeScopeOrigin.removeAt(cctx.typeScopeOrigin.count - 1)
+  }
+}
+
+// The candidate for `seg` in the scope of the declaring package being lowered
+// (its own declaration, then the newest one it imports), or "".
+func originScopedTypeFqnMsil(cctx: in CodegenCtx, pkgName: in String, seg: in String, cands: in List[String]): String {
+  if cctx.typeScopeOrigin.count == 0 {
+    return ""
+  }
+  val origin = cctx.typeScopeOrigin[cctx.typeScopeOrigin.count - 1]
+  if origin.length == 0 or origin == pkgName {
+    return ""
+  }
+  val ownFqn = origin + "." + seg
+  if cands.contains(ownFqn) {
+    return ownFqn
+  }
+  match mapGet(cctx.pkgImports, origin) {
+    case Some(imports) -> {
+      var i = cands.count - 1
+      while i >= 0 {
+        val fqn = cands[i]
+        if fqn.length > seg.length + 1 {
+          val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
+          if imports.contains(pkgPart) {
+            return fqn
+          }
+        }
+        i = i - 1
+      }
+    }
+    case None -> ()
+  }
+  ""
+}
+
 func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): String {
   // Scope-tier resolution over every registered candidate, mirroring the
   // type checker's `symTableTryFindOne` (#3085): (1) the referencing
@@ -7110,6 +7246,10 @@ func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): St
   // current-pkg form (the pre-#1183 behaviour).
   match mapGet(cctx.typeFqnCandidates, seg) {
     case Some(cands) -> {
+      val originFqn = originScopedTypeFqnMsil(cctx, pkgName, seg, cands)
+      if originFqn.length > 0 {
+        return originFqn
+      }
       val ownFqn = pkgName + "." + seg
       if cands.contains(ownFqn) {
         return ownFqn
@@ -7155,6 +7295,9 @@ func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): St
 func hasLyricTypeCandidateInScope(cctx: in CodegenCtx, pkgName: in String, seg: in String): Bool {
   match mapGet(cctx.typeFqnCandidates, seg) {
     case Some(cands) -> {
+      if originScopedTypeFqnMsil(cctx, pkgName, seg, cands).length > 0 {
+        return true
+      }
       val ownFqn = pkgName + "." + seg
       if cands.contains(ownFqn) {
         return true
@@ -7881,9 +8024,8 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
     case MByte -> 0x01000000 + cctx.trByte
     case MValueTypeRef(code, _) -> 0x01000000 + (code - 1) / 4
     case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
-      val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
       val tsKey = "box_vtgi_" + msilTypeKeyStr(ty)
-      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, typeRefCode, typeArgs, true)
       0x1B000000 + tsRow
     }
     case _ -> 0x01000000 + cctx.lctx.trObject
@@ -7927,6 +8069,50 @@ func boxIfNeededUnsignedMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in 
   if isValueType(ty) {
     val tok = if isUnsigned { boxTypeRefUnsignedMsil(cctx, ty) } else { boxTypeRef(cctx, ty) }
     insns.add(MBox(typeToken = tok))
+  }
+}
+
+// The representation type of a distinct / range-subtype class `ty` (its
+// `value` field's type), or None for any other type.
+func distinctUnderlyingMsil(cctx: in CodegenCtx, ty: in MsilType): Option[MsilType] {
+  match ty {
+    case MClass(cls) -> if cctx.distinctClasses.containsKey(cls) {
+      mapGet(cctx.fieldMsilTypes, cls + "/value")
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+// A distinct or range-subtype value about to be stringified: load its
+// `value` field so every stringify site formats it exactly as its underlying
+// type (lowercase `Bool`, invariant `Double`, unsigned `UInt`), and return
+// that type; any other type is returned unchanged (D-progress-968).
+func unwrapDistinctForStringMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): MsilType {
+  match distinctUnderlyingMsil(cctx, ty) {
+    case Some(under) -> {
+      match ty {
+        case MClass(cls) -> match mapGet(cctx.fieldTokens, cls + "/value") {
+          case Some(vtok) -> insns.add(MLdfld(fieldToken = vtok))
+          case None -> panic(
+            "Msil.Codegen ICE: distinct class '" + cls +
+              "' has a value type but no value field token"
+          )
+        }
+        case _ -> ()
+      }
+      under
+    }
+    case None -> ty
+  }
+}
+
+// True when `ty` is a distinct/range-subtype class over `UInt`/`ULong`.
+func distinctUnsignedMsil(cctx: in CodegenCtx, ty: in MsilType): Bool {
+  match ty {
+    case MClass(cls) -> cctx.unsignedDistincts.containsKey(cls)
+    case _ -> false
   }
 }
 
@@ -11504,7 +11690,9 @@ func lowerBinopMsil(
           if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
             phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, saddName, MString, saddLhsLocalIdx)
           }
-          val saddRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+          val saddRhsRaw = lowerExprMsil(cctx, fctx, insns, rhs)
+          val saddRhsDistinctUnsigned = distinctUnsignedMsil(cctx, saddRhsRaw)
+          val saddRhsTy = unwrapDistinctForStringMsil(cctx, insns, saddRhsRaw)
           match saddRhsTy {
             case MString -> {
             }
@@ -11517,7 +11705,7 @@ func lowerBinopMsil(
               // ToString(). #6913: an unsigned-flagged box target for a bare
               // `UInt`/`ULong` rhs — see `isUnsignedExprMsil`.
               if isValueType(saddRhsTy) {
-                boxIfNeededUnsignedMsil(cctx, insns, saddRhsTy, isUnsignedExprMsil(fctx, rhs))
+                boxIfNeededUnsignedMsil(cctx, insns, saddRhsTy, isUnsignedExprMsil(fctx, rhs) or saddRhsDistinctUnsigned)
               }
               insns.add(MCallvirt(methodToken = cctx.tokObjToString))
             }
@@ -12050,12 +12238,17 @@ func lowerStmtsExprFromMsil(
     // stops it leaking into an intermediate `x = Some(v)` / `f(None)` and
     // building a wrong-typed generic value (e.g. `Option_Some<LockFile>` for a
     // `curName = Some(s)` inside a function returning `Result[LockFile, …]`).
+    // The collection-construction expectation (`collExpect`) is cleared the
+    // same way: a `for t in [A, B]` iterable inside a function returning
+    // `List[String]` otherwise built a `List<string>` of enum values.
     val savedBlockHint = pushAnnoHintTyArgs(fctx, MObject)
+    pushCollExpect(fctx, MObject)
     var i = start
     while i < n - 1 {
       lowerStmtMsil(cctx, fctx, insns, stmts[i])
       i = i + 1
     }
+    popCollExpect(fctx)
     restoreHintTyArgs(fctx, savedBlockHint)
     val last = stmts[n - 1]
     return match last.kind {
@@ -12065,7 +12258,9 @@ func lowerStmtsExprFromMsil(
       // (which left a non-void function with no return value → invalid IL, #1823).
       case STry(tbody, tcatches, tfinally) -> lowerTryCatchExprMsil(cctx, fctx, insns, tbody, tcatches, tfinally)
       case _ -> {
+        pushCollExpect(fctx, MObject)
         lowerStmtMsil(cctx, fctx, insns, last)
+        popCollExpect(fctx)
         MVoid
       }
     }
@@ -12075,11 +12270,13 @@ func lowerStmtsExprFromMsil(
   // across these intermediate statements (see the non-defer path above); the
   // recursive call for the value-producing tail re-applies it to its own trailing.
   val savedDeferHint = pushAnnoHintTyArgs(fctx, MObject)
+  pushCollExpect(fctx, MObject)
   var k = start
   while k < deferIdx {
     lowerStmtMsil(cctx, fctx, insns, stmts[k])
     k = k + 1
   }
+  popCollExpect(fctx)
   restoreHintTyArgs(fctx, savedDeferHint)
   val deferBody = match stmts[deferIdx].kind {
     case SDefer(b) -> b
@@ -14643,17 +14840,10 @@ func lowerPatternBindMsil(
         var fi = 0
         while fi < fields.count {
           match fields[fi].kind {
-            case PBinding(_, _) -> bindNamedFieldMsil(
-              cctx,
-              fctx,
-              insns,
-              castTy,
-              castSlot,
-              caseClass,
-              caseClassBt,
-              fi,
-              fields[fi]
-            )
+            case PBinding(bindName, _) -> {
+              bindNamedFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, fi, fields[fi])
+              bindCaseFieldFuncRetMsil(cctx, fctx, bindName, caseClass + "/field" + toString(fi), castTy)
+            }
             case PTuple(_) -> bindPositionalFieldMsil(
               cctx,
               fctx,
@@ -14922,7 +15112,9 @@ func lowerInterpolatedMsil(
         insns.add(MLdStr(token = tok))
       }
       case ISExpr(e) -> {
-        val eTy = lowerExprMsil(cctx, fctx, insns, e)
+        val eTyRaw = lowerExprMsil(cctx, fctx, insns, e)
+        val eDistinctUnsigned = distinctUnsignedMsil(cctx, eTyRaw)
+        val eTy = unwrapDistinctForStringMsil(cctx, insns, eTyRaw)
         // Convert to string.
         match eTy {
           case MBool -> {
@@ -14933,7 +15125,7 @@ func lowerInterpolatedMsil(
             if isValueType(eTy) {
               // #6913: an unsigned-flagged box target for a bare `UInt`/
               // `ULong` interpolated segment — see `isUnsignedExprMsil`.
-              boxIfNeededUnsignedMsil(cctx, insns, eTy, isUnsignedExprMsil(fctx, e))
+              boxIfNeededUnsignedMsil(cctx, insns, eTy, isUnsignedExprMsil(fctx, e) or eDistinctUnsigned)
               insns.add(MCallvirt(methodToken = cctx.tokObjToString))
             } else {
               match eTy {
@@ -15391,6 +15583,32 @@ pub func lowerCallMsil(
 //     StackUnexpected: found value 'Guid', expected ref 'object').
 //   - neither side `object`: integer-width / concrete-collection coercions
 //     (unchanged from before this function grew the `object` directions).
+func isFuncDelegateHeadMsil(head: in String): Bool {
+  head.startsWith("System.Func`")
+}
+
+// A function value held as `object` (an unannotated `val g = { ... }`, or an
+// erased generic's result) flowing into a function-typed parameter or field:
+// narrow it to that `Func` type (D-progress-969).  `Action` targets are left
+// alone: a Unit-returning lambda is built as a `Func<..., object>` (every
+// invoke casts to `Func`), so the value in an `Action`-typed slot is not an
+// `Action` and a cast would throw.
+func castObjectToDelegateMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
+  match fromTy {
+    case MObject -> match toTy {
+      case MGenericInstByName(head, targs) -> if isFuncDelegateHeadMsil(head) {
+        insns.add(MCastclassGeneric(className = head, typeArgs = targs))
+      }
+      case MGenericInst(trc, head, targs) -> if isFuncDelegateHeadMsil(head) {
+        val dtsRow = ctxAddGenericInstTypeSpec(cctx.lctx, "delegate_cast_ts_" + msilTypeKey(toTy), trc, targs, false)
+        insns.add(MCastclass(typeToken = 0x1B000000 + dtsRow))
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
 func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
   val fromObj = match fromTy { case MObject -> true; case _ -> false }
   val toObj = match toTy { case MObject -> true; case _ -> false }
@@ -15409,7 +15627,7 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       // generic instantiations), so no 0x01000000 tag is added here.
       case MValueTypeRef(_, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
       case MValueTypeGenericInst(_, _, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
-      case _ -> ()
+      case _ -> castObjectToDelegateMsil(cctx, insns, fromTy, toTy)
     }
   } else {
     // NOTE: deliberately NO `toObj` box direction here. The standard
@@ -15497,11 +15715,12 @@ func lowerBuiltinOrStaticCallMsil(
   val hasQualifiedOverride = hasQualifiedFuncOverrideMsil(cctx, path, args.count)
   if (not hasQualifiedOverride) and funcName == "println" {
     if args.count > 0 {
-      val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val printlnRaw = lowerCallArgMsil(cctx, fctx, insns, args[0])
       // #6913: a bare `UInt`/`ULong` argument needs the unsigned
       // `Console.WriteLine` overload, not the signed one — see
       // `isUnsignedExprMsil`.
-      val printlnIsUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[0]))
+      val printlnIsUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[0])) or distinctUnsignedMsil(cctx, printlnRaw)
+      val argTy = unwrapDistinctForStringMsil(cctx, insns, printlnRaw)
       match argTy {
         case MInt -> {
           if printlnIsUnsigned {
@@ -15546,7 +15765,9 @@ func lowerBuiltinOrStaticCallMsil(
     MVoid
   } else if (not hasQualifiedOverride) and funcName == "print" {
     if args.count > 0 {
-      val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val printRaw = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val printIsUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[0])) or distinctUnsignedMsil(cctx, printRaw)
+      val argTy = unwrapDistinctForStringMsil(cctx, insns, printRaw)
       match argTy {
         case MString -> insns.add(MCall(methodToken = cctx.tokWriteStr))
         case MVoid -> {
@@ -15569,7 +15790,7 @@ func lowerBuiltinOrStaticCallMsil(
           // Box value type and call ToString, then Write(string). #6913:
           // an unsigned-flagged box target for a bare `UInt`/`ULong`
           // operand — see `isUnsignedExprMsil`.
-          boxIfNeededUnsignedMsil(cctx, insns, argTy, isUnsignedExprMsil(fctx, callArgExpr(args[0])))
+          boxIfNeededUnsignedMsil(cctx, insns, argTy, printIsUnsigned)
           insns.add(MCallvirt(methodToken = cctx.tokObjToString))
           insns.add(MCall(methodToken = cctx.tokWriteStr))
         }
@@ -15615,7 +15836,9 @@ func lowerBuiltinOrStaticCallMsil(
     MInt
   } else if (not hasQualifiedOverride) and funcName == "toString" {
     if args.count > 0 {
-      val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val tsRaw = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val tsIsUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[0])) or distinctUnsignedMsil(cctx, tsRaw)
+      val argTy = unwrapDistinctForStringMsil(cctx, insns, tsRaw)
       match argTy {
         case MString -> {
         }
@@ -15653,7 +15876,7 @@ func lowerBuiltinOrStaticCallMsil(
           } else {
             // #6913: an unsigned-flagged box target for a bare `UInt`/
             // `ULong` operand — see `isUnsignedExprMsil`.
-            boxIfNeededUnsignedMsil(cctx, insns, argTy, isUnsignedExprMsil(fctx, callArgExpr(args[0])))
+            boxIfNeededUnsignedMsil(cctx, insns, argTy, tsIsUnsigned)
             insns.add(MCallvirt(methodToken = cctx.tokObjToString))
           }
         }
@@ -15740,9 +15963,8 @@ func lowerBuiltinOrStaticCallMsil(
       // TypeRef, or the CLR rejects it — mirrors the fix in
       // `emitExternOptionalDefault`.
       case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
-        val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
         val tsKey = "default_vtgi_" + msilTypeKeyStr(defWant)
-        val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+        val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, typeRefCode, typeArgs, true)
         val dvSlot = allocSlotMsil(fctx, "__default_vt_" + toString(fctx.slotTicker.count), defWant)
         insns.add(MLdloca(slot = dvSlot - fctx.paramCount))
         insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
@@ -16002,11 +16224,13 @@ func lowerBuiltinOrStaticCallMsil(
   } else if (not hasQualifiedOverride) and funcName == "format1" {
     if args.count >= 2 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
-      val a1Ty = lowerCallArgMsil(cctx, fctx, insns, args[1])
+      val a1TyRaw = lowerCallArgMsil(cctx, fctx, insns, args[1])
+      val a1TyUnsigned = isUnsignedExprMsil(fctx, callArgExpr(args[1])) or distinctUnsignedMsil(cctx, a1TyRaw)
+      val a1Ty = unwrapDistinctForStringMsil(cctx, insns, a1TyRaw)
       // #6913: `String.Format`'s `{0}` placeholder calls `.ToString()` on the
       // boxed arg internally — an unsigned-flagged box target for a bare
       // `UInt`/`ULong` arg — see `isUnsignedExprMsil`.
-      boxIfNeededUnsignedMsil(cctx, insns, a1Ty, isUnsignedExprMsil(fctx, callArgExpr(args[1])))
+      boxIfNeededUnsignedMsil(cctx, insns, a1Ty, a1TyUnsigned)
       insns.add(MCall(methodToken = cctx.tokStringFormat1))
     } else if args.count == 1 {
       val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -16018,10 +16242,14 @@ func lowerBuiltinOrStaticCallMsil(
   } else if (not hasQualifiedOverride) and funcName == "format2" {
     if args.count >= 3 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
-      val a1Ty2 = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      boxIfNeededUnsignedMsil(cctx, insns, a1Ty2, isUnsignedExprMsil(fctx, callArgExpr(args[1])))
-      val a2Ty2 = lowerCallArgMsil(cctx, fctx, insns, args[2])
-      boxIfNeededUnsignedMsil(cctx, insns, a2Ty2, isUnsignedExprMsil(fctx, callArgExpr(args[2])))
+      val a1Ty2Raw = lowerCallArgMsil(cctx, fctx, insns, args[1])
+      val a1Ty2Unsigned = isUnsignedExprMsil(fctx, callArgExpr(args[1])) or distinctUnsignedMsil(cctx, a1Ty2Raw)
+      val a1Ty2 = unwrapDistinctForStringMsil(cctx, insns, a1Ty2Raw)
+      boxIfNeededUnsignedMsil(cctx, insns, a1Ty2, a1Ty2Unsigned)
+      val a2Ty2Raw = lowerCallArgMsil(cctx, fctx, insns, args[2])
+      val a2Ty2Unsigned = isUnsignedExprMsil(fctx, callArgExpr(args[2])) or distinctUnsignedMsil(cctx, a2Ty2Raw)
+      val a2Ty2 = unwrapDistinctForStringMsil(cctx, insns, a2Ty2Raw)
+      boxIfNeededUnsignedMsil(cctx, insns, a2Ty2, a2Ty2Unsigned)
       insns.add(MCall(methodToken = cctx.tokStringFormat2))
     } else if args.count >= 1 {
       val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -16033,12 +16261,18 @@ func lowerBuiltinOrStaticCallMsil(
   } else if (not hasQualifiedOverride) and funcName == "format3" {
     if args.count >= 4 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
-      val a1Ty3 = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      boxIfNeededUnsignedMsil(cctx, insns, a1Ty3, isUnsignedExprMsil(fctx, callArgExpr(args[1])))
-      val a2Ty3 = lowerCallArgMsil(cctx, fctx, insns, args[2])
-      boxIfNeededUnsignedMsil(cctx, insns, a2Ty3, isUnsignedExprMsil(fctx, callArgExpr(args[2])))
-      val a3Ty3 = lowerCallArgMsil(cctx, fctx, insns, args[3])
-      boxIfNeededUnsignedMsil(cctx, insns, a3Ty3, isUnsignedExprMsil(fctx, callArgExpr(args[3])))
+      val a1Ty3Raw = lowerCallArgMsil(cctx, fctx, insns, args[1])
+      val a1Ty3Unsigned = isUnsignedExprMsil(fctx, callArgExpr(args[1])) or distinctUnsignedMsil(cctx, a1Ty3Raw)
+      val a1Ty3 = unwrapDistinctForStringMsil(cctx, insns, a1Ty3Raw)
+      boxIfNeededUnsignedMsil(cctx, insns, a1Ty3, a1Ty3Unsigned)
+      val a2Ty3Raw = lowerCallArgMsil(cctx, fctx, insns, args[2])
+      val a2Ty3Unsigned = isUnsignedExprMsil(fctx, callArgExpr(args[2])) or distinctUnsignedMsil(cctx, a2Ty3Raw)
+      val a2Ty3 = unwrapDistinctForStringMsil(cctx, insns, a2Ty3Raw)
+      boxIfNeededUnsignedMsil(cctx, insns, a2Ty3, a2Ty3Unsigned)
+      val a3Ty3Raw = lowerCallArgMsil(cctx, fctx, insns, args[3])
+      val a3Ty3Unsigned = isUnsignedExprMsil(fctx, callArgExpr(args[3])) or distinctUnsignedMsil(cctx, a3Ty3Raw)
+      val a3Ty3 = unwrapDistinctForStringMsil(cctx, insns, a3Ty3Raw)
+      boxIfNeededUnsignedMsil(cctx, insns, a3Ty3, a3Ty3Unsigned)
       insns.add(MCall(methodToken = cctx.tokStringFormat3))
     } else if args.count >= 1 {
       val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -16224,6 +16458,7 @@ func lowerBuiltinOrStaticCallMsil(
               ihi = ihi + 1
             }
             val lowered = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
+            castObjectToDelegateMsil(cctx, insns, lowered, innerHint)
             while fctx.contextHintTyArgs.count > 0 {
               fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
             }
@@ -16240,6 +16475,7 @@ func lowerBuiltinOrStaticCallMsil(
             pushCollExpect(fctx, innerHint)
             val loweredC = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
             popCollExpect(fctx)
+            castObjectToDelegateMsil(cctx, insns, loweredC, innerHint)
             loweredC
           }
           argTypes.add(at)
@@ -16641,7 +16877,8 @@ func lowerBuiltinOrStaticCallMsil(
                             ph = ph + 1
                           }
                           pushCollExpect(fctx, pTy)
-                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          val genArgTy = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          coerceCallArgMsil(cctx, insns, genArgTy, pTy)
                           popCollExpect(fctx)
                           while fctx.contextHintTyArgs.count > 0 {
                             fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
@@ -16688,7 +16925,8 @@ func lowerBuiltinOrStaticCallMsil(
                             ph = ph + 1
                           }
                           pushCollExpect(fctx, pTy)
-                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          val genArgTy = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          coerceCallArgMsil(cctx, insns, genArgTy, pTy)
                           popCollExpect(fctx)
                           while fctx.contextHintTyArgs.count > 0 {
                             fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
@@ -17391,7 +17629,13 @@ func lowerMethodCallMsil(
               match mapGet(cctx.distinctFromTokens, distFqn) {
                 case Some(tok) -> {
                   if args.count > 0 {
-                    val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
+                    // Widen to the underlying type (`CustomerId.from(7)` over
+                    // `Long`): the literal lowers as `int32`.
+                    val fromArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+                    match mapGet(cctx.fieldMsilTypes, distFqn + "/value") {
+                      case Some(underTy) -> coerceCallArgMsil(cctx, insns, fromArgTy, underTy)
+                      case None -> ()
+                    }
                   }
                   insns.add(MCall(methodToken = tok))
                   return MClass(className = distFqn)
@@ -17403,7 +17647,11 @@ func lowerMethodCallMsil(
               match mapGet(cctx.distinctTryFromTokens, distFqn) {
                 case Some(tok) -> {
                   if args.count > 0 {
-                    val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
+                    val tryArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+                    match mapGet(cctx.fieldMsilTypes, distFqn + "/value") {
+                      case Some(underTy) -> coerceCallArgMsil(cctx, insns, tryArgTy, underTy)
+                      case None -> ()
+                    }
                   }
                   insns.add(MCall(methodToken = tok))
                   return match mapGet(cctx.distinctTryFromRetTypes, distFqn) { case Some(rt) -> rt; case None -> MObject }
@@ -18258,7 +18506,9 @@ func lowerMethodCallMsil(
       case _ -> recvTy
     }
   } else if memberName == "toString" {
-    match recvTy {
+    val tsRecvUnsigned = isUnsignedExprMsil(fctx, recv) or distinctUnsignedMsil(cctx, recvTy)
+    val tsRecvTy = unwrapDistinctForStringMsil(cctx, insns, recvTy)
+    match tsRecvTy {
       case MBool -> {
         // Lowercase "true"/"false", not BCL Boolean.ToString()'s "True"/"False" (#5552).
         emitBoolToStringMsil(cctx, fctx, insns)
@@ -18273,7 +18523,7 @@ func lowerMethodCallMsil(
         // is a SEPARATE codegen arm from the free `toString(x)` builtin
         // (`lowerBuiltinOrStaticCallMsil`'s `funcName == "toString"` arm) —
         // both need the fix independently.
-        boxIfNeededUnsignedMsil(cctx, insns, recvTy, isUnsignedExprMsil(fctx, recv))
+        boxIfNeededUnsignedMsil(cctx, insns, tsRecvTy, tsRecvUnsigned)
         insns.add(MCallvirt(methodToken = cctx.tokObjToString))
       }
     }
@@ -18824,8 +19074,7 @@ func emitCollectionForMsil(
 
       val vtBoolArgs2: List[MsilType] = newList()
       vtBoolArgs2.add(MBool)
-      val vtBoolBlob2 = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trValueTask1), vtBoolArgs2)
-      val tsVtBoolRow2 = ctxAddTypeSpec(lctx, "ts_vt_bool", vtBoolBlob2)
+      val tsVtBoolRow2 = ctxAddGenericInstTypeSpec(lctx, "ts_vt_bool", tdrTypeRef(cctx.trValueTask1), vtBoolArgs2, true)
 
       // MemberRef: IAsyncEnumerable<obj>::GetAsyncEnumerator(CancToken) → IAET<!0>
       // Return type uses MTypeVar(0) (= !0), the open form required by ECMA-335 for
@@ -22332,9 +22581,8 @@ func emitExternOptionalDefault(
     // rejects.  Build a TypeSpec for the closed instantiation and initobj
     // against that — the same idiom used for `TaskAwaiter<T>` above.
     case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
-      val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
       val tsKey = "extopt_vtgi_" + msilTypeKeyStr(ty)
-      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, typeRefCode, typeArgs, true)
       val slot = allocSlotMsil(fctx, "__opt_default_" + toString(fctx.slotTicker.count), ty)
       insns.add(MLdloca(slot = slot - fctx.paramCount))
       insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
@@ -22870,9 +23118,8 @@ func emitGenericAsyncMethodExternCall(
     val closedInner = eraseMethodTypeVarsToObjectMsil(openInner)
     val tsArgs: List[MsilType] = newList()
     tsArgs.add(closedInner)
-    val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs)
     val tsKey = "ts_task1_result_" + msilTypeKeyStr(closedInner)
-    val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+    val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, tdrTypeRef(cctx.trTask1), tsArgs, false)
     val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
     val getResultRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
     insns.add(MCallvirt(methodToken = 0x0A000000 + getResultRow))
@@ -23543,9 +23790,8 @@ func emitExternTargetBody(
           // BCL method returned Task<T>. Call Task<T>.get_Result() to unwrap to T.
           val tsArgs: List[MsilType] = newList()
           tsArgs.add(retTy)
-          val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs)
           val tsKey = "ts_task1_result_" + msilTypeKeyStr(retTy)
-          val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+          val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, tdrTypeRef(cctx.trTask1), tsArgs, false)
           val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
           val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
           insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
@@ -24197,8 +24443,7 @@ func emitGetAwaiterCallPB(cctx: in CodegenCtx, insns: in List[MInsn], taskTy: in
     // Task<T>.GetAwaiter() → TaskAwaiter<T>  (generic, TypeSpec parent)
     val tsArgs: List[MsilType] = newList()
     tsArgs.add(resT)
-    val tsBlob = buildGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTask1), tsArgs)
-    val tsRow = ctxAddTypeSpec(lctx, "task1_ts_" + tyKey, tsBlob)
+    val tsRow = ctxAddGenericInstTypeSpec(lctx, "task1_ts_" + tyKey, tdrTypeRef(cctx.trTask1), tsArgs, false)
     // Return sig uses VAR 0 (class type param of Task`1)
     val awVarArgs: List[MsilType] = newList()
     awVarArgs.add(MTypeVar(index = 0))
@@ -24233,8 +24478,7 @@ func emitGetIsCompletedCallPB(cctx: in CodegenCtx, insns: in List[MInsn], awTy: 
       if tArgs.count > 0 {
         awTsArgs.add(tArgs[0])
       }
-      val awTsBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs)
-      val awTsRow = ctxAddTypeSpec(lctx, "taskaw1_ts_" + awKey, awTsBlob)
+      val awTsRow = ctxAddGenericInstTypeSpec(lctx, "taskaw1_ts_" + awKey, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs, true)
       val icMrRow1 = ctxAddMemberRefForTypeSpec(lctx, awTsRow, "get_IsCompleted", "taskaw1_iscomp_" + awKey, icSig)
       insns.add(MCall(methodToken = 0x0A000000 + icMrRow1))
     }
@@ -24262,8 +24506,7 @@ func emitGetResultCallPB(cctx: in CodegenCtx, insns: in List[MInsn], awTy: in Ms
       val awKey = msilTypeKey(resT)
       val awTsArgs: List[MsilType] = newList()
       awTsArgs.add(resT)
-      val awTsBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs)
-      val awTsRow = ctxAddTypeSpec(lctx, "taskaw1_ts_" + awKey, awTsBlob)
+      val awTsRow = ctxAddGenericInstTypeSpec(lctx, "taskaw1_ts_" + awKey, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs, true)
       val grArgs1: List[MsilType] = newList()
       val grSig1 = buildInstanceMethodSig(grArgs1, MTypeVar(index = 0))
       val grMrRow1 = ctxAddMemberRefForTypeSpec(lctx, awTsRow, "GetResult", "taskaw1_getresult_" + awKey, grSig1)
@@ -26307,9 +26550,8 @@ func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn
   } else {
     val awTsArgs: List[MsilType] = newList()
     awTsArgs.add(resT)
-    val awTsBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs)
     val awTsKey = "taskaw1_ts_" + tyKey
-    val awTsRow = ctxAddTypeSpec(lctx, awTsKey, awTsBlob)
+    val awTsRow = ctxAddGenericInstTypeSpec(lctx, awTsKey, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs, true)
     0x1B000000 + awTsRow
   }
   insns.add(MInitobj(typeToken = initobjTok))
@@ -26505,10 +26747,9 @@ func synthesizeAsyncSmMsil(
             // Signature uses VAR 0 per ECMA-335 §II.23.2.1.
             val tsArgs: List[MsilType] = newList()
             tsArgs.add(retTy)
-            val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs)
             var taKey = msilTypeKey(retTy)
             val tsKey = "atmb1_ts_" + taKey
-            val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+            val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, tdrTypeRef(cctx.trAtmb1), tsArgs, true)
             val srArgs: List[MsilType] = newList()
             srArgs.add(MTypeVar(index = 0))  // VAR 0, not the concrete retTy — see FBBlock note above
             val srSig = buildInstanceMethodSig(srArgs, MVoid)
@@ -26555,10 +26796,9 @@ func synthesizeAsyncSmMsil(
             mnInsns.add(MLdloc(slot = rSlot2 - 1))
             val tsArgs2: List[MsilType] = newList()
             tsArgs2.add(retTy)
-            val tsBlob2 = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs2)
             val taKey2 = msilTypeKey(retTy)
             val tsKey2 = "atmb1_ts_" + taKey2
-            val tsRow2 = ctxAddTypeSpec(cctx.lctx, tsKey2, tsBlob2)
+            val tsRow2 = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey2, tdrTypeRef(cctx.trAtmb1), tsArgs2, true)
             val srArgs2: List[MsilType] = newList()
             srArgs2.add(MTypeVar(index = 0))  // VAR 0, not the concrete retTy — see FBBlock note above
             val srSig2 = buildInstanceMethodSig(srArgs2, MVoid)
@@ -26702,9 +26942,8 @@ func synthesizeAsyncSmMsil(
   } else {
     val tsArgsS: List[MsilType] = newList()
     tsArgsS.add(retTy)
-    val tsBlobS = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgsS)
     val tsKeyS = "atmb1_ts_" + msilTypeKey(retTy)
-    val tsRowS = ctxAddTypeSpec(cctx.lctx, tsKeyS, tsBlobS)
+    val tsRowS = ctxAddGenericInstTypeSpec(cctx.lctx, tsKeyS, tdrTypeRef(cctx.trAtmb1), tsArgsS, true)
     val startOpenSig = buildAtmbStartOpenSig()
     val startMrKey = "atmb1_start_mr_" + msilTypeKey(retTy)
     ctxAddMemberRefForTypeSpec(cctx.lctx, tsRowS, "Start", startMrKey, startOpenSig)
@@ -26726,9 +26965,8 @@ func synthesizeAsyncSmMsil(
     kfInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
     val tsArgs4: List[MsilType] = newList()
     tsArgs4.add(retTy)
-    val tsBlob4 = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs4)
     val tsKey4 = "atmb1_ts_" + taKey4
-    val tsRow4 = ctxAddTypeSpec(cctx.lctx, tsKey4, tsBlob4)
+    val tsRow4 = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey4, tdrTypeRef(cctx.trAtmb1), tsArgs4, true)
     // Method signature must use VAR 0, not the concrete retTy — the TypeSpec parent
     // already captures the concrete type arg; see ECMA-335 II.23.2.1.
     val taskVarArgs: List[MsilType] = newList()
@@ -26924,13 +27162,12 @@ func synthesizeAsyncSmPhaseBMsil(
   } else {
     val awTsArgs: List[MsilType] = newList()
     awTsArgs.add(retTy)
-    val awTsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), awTsArgs)
     val awTaKey = msilTypeKey(retTy)
     // Use the canonical "atmb1_ts_" prefix so ctxAddTypeSpec deduplicates against
     // the same key used by SetResult / SetException / Start / get_Task; a distinct
     // "await_"-prefixed key produced a redundant TypeSpec row for the same type.
     val awTsKey = "atmb1_ts_" + awTaKey
-    val awTsRow = ctxAddTypeSpec(cctx.lctx, awTsKey, awTsBlob)
+    val awTsRow = ctxAddGenericInstTypeSpec(cctx.lctx, awTsKey, tdrTypeRef(cctx.trAtmb1), awTsArgs, true)
     val awSig = buildAwaitUnsafeOnCompletedOpenSig()
     val awMrKey = "atmb1_await_unsafe_mr_" + awTaKey
     ctxAddMemberRefForTypeSpec(cctx.lctx, awTsRow, "AwaitUnsafeOnCompleted", awMrKey, awSig)
@@ -27076,9 +27313,8 @@ func synthesizeAsyncSmPhaseBMsil(
     val taKey = msilTypeKey(retTy)
     val tsArgsB: List[MsilType] = newList()
     tsArgsB.add(retTy)
-    val tsBlobB = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgsB)
     val tsKeyB = "atmb1_ts_" + taKey
-    val tsRowB = ctxAddTypeSpec(lctx, tsKeyB, tsBlobB)
+    val tsRowB = ctxAddGenericInstTypeSpec(lctx, tsKeyB, tdrTypeRef(cctx.trAtmb1), tsArgsB, true)
     val srArgsB: List[MsilType] = newList()
     srArgsB.add(MTypeVar(index = 0))
     val srSigB = buildInstanceMethodSig(srArgsB, MVoid)
@@ -27121,9 +27357,8 @@ func synthesizeAsyncSmPhaseBMsil(
     val taKeyEx = msilTypeKey(retTy)
     val tsArgsEx: List[MsilType] = newList()
     tsArgsEx.add(retTy)
-    val tsBlobEx = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgsEx)
     val tsKeyEx = "atmb1_ts_" + taKeyEx
-    val tsRowEx = ctxAddTypeSpec(lctx, tsKeyEx, tsBlobEx)
+    val tsRowEx = ctxAddGenericInstTypeSpec(lctx, tsKeyEx, tdrTypeRef(cctx.trAtmb1), tsArgsEx, true)
     val seMrRowEx = ctxAddMemberRefForTypeSpec(lctx, tsRowEx, "SetException", "atmb1_setexception_b1_" + taKeyEx, seSig)
     mnInsns.add(MCall(methodToken = 0x0A000000 + seMrRowEx))
   }
@@ -27242,9 +27477,8 @@ func synthesizeAsyncSmPhaseBMsil(
   } else {
     val tsArgsS2: List[MsilType] = newList()
     tsArgsS2.add(retTy)
-    val tsBlobS2 = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgsS2)
     val tsKeyS2 = "atmb1_ts_" + msilTypeKey(retTy)
-    val tsRowS2 = ctxAddTypeSpec(lctx, tsKeyS2, tsBlobS2)
+    val tsRowS2 = ctxAddGenericInstTypeSpec(lctx, tsKeyS2, tdrTypeRef(cctx.trAtmb1), tsArgsS2, true)
     val startOpenSig2 = buildAtmbStartOpenSig()
     val startMrKey2 = "atmb1_start_mr_" + msilTypeKey(retTy)
     ctxAddMemberRefForTypeSpec(lctx, tsRowS2, "Start", startMrKey2, startOpenSig2)
@@ -27262,9 +27496,8 @@ func synthesizeAsyncSmPhaseBMsil(
     kfInsns2.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
     val tsArgs5: List[MsilType] = newList()
     tsArgs5.add(retTy)
-    val tsBlob5 = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgs5)
     val tsKey5 = "atmb1_ts_" + taKey5
-    val tsRow5 = ctxAddTypeSpec(lctx, tsKey5, tsBlob5)
+    val tsRow5 = ctxAddGenericInstTypeSpec(lctx, tsKey5, tdrTypeRef(cctx.trAtmb1), tsArgs5, true)
     val taskVarArgs5: List[MsilType] = newList()
     taskVarArgs5.add(MTypeVar(index = 0))
     val taskRetTy5: MsilType = MGenericInst(
@@ -27396,14 +27629,12 @@ func synthesizeGeneratorMsil(
   // ValueTask<bool> TypeSpec (value type)
   val vtBoolArgs: List[MsilType] = newList()
   vtBoolArgs.add(MBool)
-  val vtBoolBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trValueTask1), vtBoolArgs)
-  val tsVtBoolRow = ctxAddTypeSpec(lctx, "ts_vt_bool", vtBoolBlob)
+  val tsVtBoolRow = ctxAddGenericInstTypeSpec(lctx, "ts_vt_bool", tdrTypeRef(cctx.trValueTask1), vtBoolArgs, true)
 
   // TaskCompletionSource<bool> TypeSpec (reference type, CLASS encoding)
   val tcsBoolArgs: List[MsilType] = newList()
   tcsBoolArgs.add(MBool)
-  val tcsBoolBlob = buildGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTcs1), tcsBoolArgs)
-  val tsTcsBoolRow = ctxAddTypeSpec(lctx, "ts_tcs_bool", tcsBoolBlob)
+  val tsTcsBoolRow = ctxAddGenericInstTypeSpec(lctx, "ts_tcs_bool", tdrTypeRef(cctx.trTcs1), tcsBoolArgs, false)
 
   // ── MemberRefs for interface dispatch ─────────────────────────────────────
 
@@ -28105,6 +28336,13 @@ func emitEpilogueMsil(fctx: in FuncCtx, insns: in List[MInsn]): Unit {
 }
 
 pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): MFunc {
+  enterTypeScopeOriginMsil(cctx, decl, pkgName)
+  val lowered = lowerFuncMsilScoped(cctx, decl, pkgName)
+  exitTypeScopeOriginMsil(cctx)
+  lowered
+}
+
+func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): MFunc {
   val className = pkgName
   // Generic-function type parameters (#2557).  When non-empty, a `slice[T]` /
   // bare-`T` parameter, return, and local must use the erased List-backed
@@ -33290,10 +33528,61 @@ func collectRecordLambdasBfsMsil(
 // ─────────────────────────────────────────────────────────────────────────────
 // BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
 // items in breadth-first order so lambda indices match the codegen traversal.
+// Record `origin` for every lambda lifted since the last call.
+func tagLiftedLambdaOriginsMsil(origins: in List[String], liftedCount: in Int, origin: in String): Unit {
+  while origins.count < liftedCount {
+    origins.add(origin)
+  }
+}
+
+// `item` (a lifted lambda) annotated with the declaring package it was
+// lifted from (`Lyric.Parser.originAnnotationName()`).
+func withLiftedLambdaOriginMsil(item: in Item, origin: in String): Item {
+  match item.kind {
+    case IFunc(fd) -> {
+      val anns: List[Annotation] = newList()
+      var ai = 0
+      while ai < fd.annotations.count {
+        anns.add(fd.annotations[ai])
+        ai = ai + 1
+      }
+      val segs: List[String] = newList()
+      segs.add(originAnnotationName())
+      val args: List[AnnotationArg] = newList()
+      args.add(ALiteral(value = AVString(value = origin, span = fd.span), span = fd.span))
+      anns.add(Annotation(name = ModulePath(segments = segs, span = fd.span), args = args, span = fd.span))
+      Item(
+        docComments = item.docComments,
+        annotations = item.annotations,
+        visibility = item.visibility,
+        kind = IFunc(
+          decl = FunctionDecl(
+            docComments = fd.docComments,
+            annotations = anns,
+            visibility = fd.visibility,
+            isAsync = fd.isAsync,
+            name = fd.name,
+            generics = fd.generics,
+            params = fd.params,
+            ret = fd.ret,
+            whereClause = fd.whereClause,
+            contracts = fd.contracts,
+            body = fd.body,
+            span = fd.span
+          )
+        ),
+        span = item.span
+      )
+    }
+    case _ -> item
+  }
+}
+
 pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   val ticker: List[Int] = newList()
   val synths: List[Item] = newList()
   val deferred: List[Block] = newList()
+  val synthOrigins: List[String] = newList()
 
   // Walk every top-level item's body, collecting direct lambdas.
   // Each ELambda body is pushed to `deferred` rather than recursed into.
@@ -33436,6 +33725,10 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
       case _ -> {
       }
     }
+    // A lambda lifted out of a specialised copy of another package's generic
+    // keeps that package's type scope (D-progress-967).
+    val itemOrigin = match file.items[i].kind { case IFunc(fd) -> originPkgOf(fd.annotations); case _ -> "" }
+    tagLiftedLambdaOriginsMsil(synthOrigins, synths.count, itemOrigin)
     i = i + 1
   }
 
@@ -33451,6 +33744,7 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
       collectLambdasBfsStmt(blk.statements[si], ticker, synths, deferred)
       si = si + 1
     }
+    tagLiftedLambdaOriginsMsil(synthOrigins, synths.count, if di < synthOrigins.count { synthOrigins[di] } else { "" })
     di = di + 1
   }
 
@@ -33468,7 +33762,8 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
 
   var k = 0
   while k < synths.count {
-    newItems.add(synths[k])
+    val origin = if k < synthOrigins.count { synthOrigins[k] } else { "" }
+    newItems.add(if origin.length > 0 { withLiftedLambdaOriginMsil(synths[k], origin) } else { synths[k] })
     k = k + 1
   }
 
@@ -34229,9 +34524,8 @@ func unwrapAutoFfiTaskMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List
         val resT = typeArgs[0]
         val tsArgs: List[MsilType] = newList()
         tsArgs.add(resT)
-        val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs)
         val tsKey = "ts_task1_result_" + msilTypeKeyStr(resT)
-        val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+        val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, tdrTypeRef(cctx.trTask1), tsArgs, false)
         val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
         val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
         insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
@@ -34346,9 +34640,8 @@ func emitAutoFfiDefaultLoad(
       }
       case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> match fctxOpt {
         case Some(fctx) -> {
-          val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
           val tsKey = "ffidef_vtgi_" + msilTypeKeyStr(pm)
-          val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+          val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, typeRefCode, typeArgs, true)
           val slot = allocSlotMsil(fctx, "__ffi_default_" + toString(fctx.slotTicker.count), pm)
           insns.add(MLdloca(slot = slot - fctx.paramCount))
           insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
@@ -36824,9 +37117,8 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           val alTrRow = internFfiTypeRef(cctx, alAsmName, "System.Threading", "AsyncLocal`1")
           val alObjArgs: List[MsilType] = newList()
           alObjArgs.add(MObject)
-          val alTsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(alTrRow), alObjArgs)
           val alTsKey = "asynclocal_cctor_ts_" + pkgName + "_" + fieldName
-          val alTsRow = ctxAddTypeSpec(cctx.lctx, alTsKey, alTsBlob)
+          val alTsRow = ctxAddGenericInstTypeSpec(cctx.lctx, alTsKey, tdrTypeRef(alTrRow), alObjArgs, false)
           val alCtorParams: List[MsilType] = newList()
           val alCtorSig = buildInstanceMethodSig(alCtorParams, MVoid)
           val alMrKey = "asynclocal_cctor_mr_" + pkgName + "_" + fieldName
@@ -37509,6 +37801,31 @@ func registerRestoredRecordCtor(cctx: in CodegenCtx, packageName: in String, rec
 }
 
 // Register cross-assembly FieldRef MemberRefs for a restored record; sig mirrors lowerMRecord's buildFieldSigWithCtx (concrete reference types, not degraded to OBJECT — mismatch faults with Field not found #2359). fieldMsilTypes carries semantic type for EIndex element-type tracking.
+// A restored distinct/range-subtype type's `value` field, so a consumer
+// stringifies its values by value as it does an in-bundle one's
+// (D-progress-968).
+func registerRestoredDistinct(cctx: in CodegenCtx, packageName: in String, decl: in DistinctTypeDecl): Unit {
+  val className = packageName + "." + decl.name
+  val typeRefRow = lookupRestoredTypeRefRow(cctx, packageName, decl.name)
+  if typeRefRow == 0 {
+    return
+  }
+  val key = className + "/value"
+  if not cctx.fieldTokens.containsKey(key) {
+    val innerTy = typeExprToMsilCtx(cctx, decl.underlying, packageName)
+    val fSig = buildFieldSigWithCtx(innerTy, cctx.lctx)
+    val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "value", "restored_field_" + key, fSig)
+    cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
+    cctx.fieldMsilTypes.add(key, innerTy)
+  }
+  if isUnsignedTypeExprMsil(decl.underlying) and not cctx.unsignedDistincts.containsKey(className) {
+    cctx.unsignedDistincts.add(className, true)
+  }
+  if not cctx.distinctClasses.containsKey(className) {
+    cctx.distinctClasses.add(className, true)
+  }
+}
+
 func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, rec: in RecordDecl): Unit {
   val className = packageName + "." + rec.name
   val typeRefRow = lookupRestoredTypeRefRow(cctx, packageName, rec.name)
@@ -37544,6 +37861,30 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
           if not cctx.fieldVarIndices.containsKey(key) {
             cctx.fieldVarIndices.add(key, gIdx)
           }
+        }
+        // A function-typed field registers its parameter and result types, as
+        // an in-bundle record's does (#5511), so `r.f(args)` on a restored
+        // record invokes the field (D-progress-966).
+        match resolveFuncTypeExprMsil(cctx, f.ty) {
+          case Some(funcTe) -> match funcTe.kind {
+            case TFunction(fParamTes, fRetTe) -> if not cctx.fieldFuncRetTypes.containsKey(key) {
+              cctx.fieldFuncRetTypes.add(key, recordFieldFuncTypeMsil(cctx, fRetTe, packageName, recGenerics))
+              if recGenerics.count > 0 and not cctx.fieldFuncRetTypesOpen.containsKey(key) {
+                cctx.fieldFuncRetTypesOpen.add(key, typeExprToMsilG(cctx, fRetTe, packageName, recGenerics))
+              }
+              val fParamMsilTys: List[MsilType] = newList()
+              var ffpi = 0
+              while ffpi < fParamTes.count {
+                fParamMsilTys.add(recordFieldFuncTypeMsil(cctx, fParamTes[ffpi], packageName, recGenerics))
+                ffpi = ffpi + 1
+              }
+              if not cctx.fieldFuncParamTypes.containsKey(key) {
+                cctx.fieldFuncParamTypes.add(key, fParamMsilTys)
+              }
+            }
+            case _ -> ()
+          }
+          case None -> ()
         }
         // Positional name map: mirrors in-bundle record registration so construction sites resolve concrete field types (avoids List<object> + InvalidCastException — #1730/#2592).
         val byPosKey = className + "/field" + toString(fpos)
@@ -37847,6 +38188,7 @@ func registerRestoredUnionCase(
     val gIdx = match fty { case MTypeVar(idx) -> idx; case _ -> -1 }
     val fSig = if gIdx >= 0 { buildGenericParamFieldSig(gIdx) } else { buildFieldSigWithCtx(fty, cctx.lctx) }
     ctorParams.add(fty)
+    registerCaseFieldFuncRetMsil(cctx, caseFqn + "/field" + toString(fi), rawTy, packageName, uGenerics)
     // Register field MemberRef under declared name + positional alias; seeds fieldSigBytes/fieldVarIndices for MLdfldGeneric Phase 5 path (#3099).
     match uf {
       case UFNamed(fname, _, _) -> {
@@ -38060,6 +38402,7 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact, s
       case IInterface(decl) -> {
         registerRestoredInterface(cctx, art.packageName, decl)
       }
+      case IDistinctType(decl) -> registerRestoredDistinct(cctx, art.packageName, decl)
       case IEnum(decl) -> {
         // Restored enums use the same ordinal-int model as in-bundle ones
         // (#3196): the type name maps signature positions to I4 and each

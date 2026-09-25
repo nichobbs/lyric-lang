@@ -2674,3 +2674,38 @@ test "generic call with an explicit extern-type type argument monomorphises (#68
     "no dangling-reference M0002 for a call site whose type argument names an extern type"
   )
 }
+
+test "a generic call inside a protected member specialises with the protected fields in scope (D-progress-965)" {
+  val callerSrc = "package Caller\n" + "protected type Table {\n" + "  var rows: List[Int] = newList()\n" +
+    "  func firstRow(): Int {\n" +
+    "    return firstLike(rows)\n" +
+    "  }\n" +
+    "}\n"
+  val libSrc = "package Lib\n" + "pub func firstLike[T](xs: in List[T]): T { xs[0] }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertTrue(hasFunc(res.file, "firstLike__Int"), "T bound from the protected field's type")
+}
+
+// Mono binds a type parameter to the wider numeric type only as the checker
+// does (D-progress-969): when the narrower binding came from a bare `T`
+// parameter, in either parameter order. Two container-pinned bindings keep
+// the first (#7366, #7370).
+test "widened type parameter binding follows the checker's bare-T rule" {
+  val bareFirst = "package P\n" + "func pick[T](d: in T, r: in Option[T]): T { d }\n" +
+    "func big(): Option[Long] { None }\n" +
+    "func caller(): Long { pick(0, big()) }\n"
+  val r1 = runMono(bareFirst)
+  assertTrue(hasFunc(r1.file, "pick__Long"), "bare T first: specialised at Long")
+  assertTrue(not hasFunc(r1.file, "pick__Int"), "bare T first: no Int specialisation")
+  val bareLast = "package P\n" + "func pick[T](r: in Option[T], d: in T): T { d }\n" +
+    "func big(): Option[Long] { None }\n" +
+    "func caller(): Long { pick(big(), 0) }\n"
+  assertTrue(hasFunc(runMono(bareLast).file, "pick__Long"), "bare T last: specialised at Long")
+  val bothPinned = "package P\n" + "func both[T](a: in Option[T], b: in Option[T]): Int { 0 }\n" +
+    "func small(): Option[Int] { None }\n" +
+    "func big(): Option[Long] { None }\n" +
+    "func caller(): Int { both(small(), big()) }\n"
+  val r3 = runMono(bothPinned)
+  assertTrue(hasFunc(r3.file, "both__Int"), "two container bindings: the first is kept")
+  assertTrue(not hasFunc(r3.file, "both__Long"), "two container bindings: no widening")
+}

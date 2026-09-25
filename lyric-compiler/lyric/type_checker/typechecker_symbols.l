@@ -246,6 +246,25 @@ pub record SymbolTable {
   /// the type's synthesized construction checker (#7222).  Consumed by
   /// `Lyric.ContractElaborator.wrapInvariantConstructions`.
   invariantCtorSites: Map[String, String]
+  /// Every cross-package function reference used as a value, keyed like
+  /// `recordCopySites` (see `Lyric.Parser.FuncRefSite`).
+  funcRefSites: Map[String, FuncRefSite]
+  /// Span keys of call callees, whose function reference is a call rather
+  /// than a value and is never desugared.
+  funcRefCallees: Map[String, Bool]
+  /// Widened arguments of function-value calls, keyed like
+  /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`).
+  argConversionSites: Map[String, ArgConversionSite]
+  /// Result types of qualified and method calls, keyed like
+  /// `recordCopySites`: evidence for `Lyric.Mono`, which cannot see the
+  /// signatures of other packages' non-generic functions (D-progress-969).
+  callResultTypes: Map[String, TypeExpr]
+  /// The first symbol declaring each type id, keyed by the id, filled lazily
+  /// by `symTableTypeSymbolOf` as symbols are appended.
+  typeSymbolsById: Map[String, Symbol]
+  /// One entry per symbol already folded into `typeSymbolsById` (its count is
+  /// the index cursor, the `TypeIdCounter` idiom).
+  typeSymbolsIndexed: List[Int]
 }
 
 pub record ImplPair {
@@ -288,8 +307,34 @@ pub func newSymbolTable(): SymbolTable {
     symbolPackageMembers = newMap(),
     packageImports = newMap(),
     recordCopySites = newMap(),
-    invariantCtorSites = newMap()
+    invariantCtorSites = newMap(),
+    funcRefSites = newMap(),
+    funcRefCallees = newMap(),
+    argConversionSites = newMap(),
+    callResultTypes = newMap(),
+    typeSymbolsById = newMap(),
+    typeSymbolsIndexed = newList()
   )
+}
+
+/// The first symbol that declares the type with id `tid`. Symbols appended
+/// since the last lookup are indexed first, so a lookup costs amortised
+/// constant time rather than a scan of the whole table.
+pub func symTableTypeSymbolOf(tbl: in SymbolTable, tid: in TypeId): Option[Symbol] {
+  while tbl.typeSymbolsIndexed.count < tbl.symbols.count {
+    val sym = tbl.symbols[tbl.typeSymbolsIndexed.count]
+    match symbolTypeIdOpt(sym) {
+      case Some(sid) -> {
+        val key = toString(sid.id)
+        if not tbl.typeSymbolsById.containsKey(key) {
+          tbl.typeSymbolsById.add(key, sym)
+        }
+      }
+      case None -> ()
+    }
+    tbl.typeSymbolsIndexed.add(0)
+  }
+  mapGet(tbl.typeSymbolsById, toString(tid.id))
 }
 
 // #6689: record `pkg`'s own declared import list, so a later cross-package

@@ -728,3 +728,243 @@ test "in-bundle var-bound closure passed by name preserves Result's type params 
   assertEqualInt(captured.exitCode, 0, "cpgen_varbound_result: exit 0 (stderr=" + captured.stderr + ")")
   assertEqual(Str.trim(captured.stdout), "21", "cpgen_varbound_result: var-bound Ok(21) dispatches to the Ok arm")
 }
+
+// A producer assembly holding several packages.
+func buildDllPkgs(tmpDir: in String, pkgs: in List[Emitter.ProjectPackage], asmName: in String): String {
+  val dllPath = Path.join(tmpDir, asmName + ".dll")
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = asmName,
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  match Emitter.emitProject(req).outputPath {
+    case None -> panic("buildDllPkgs(" + asmName + "): compilation failed")
+    case Some(_) -> ()
+  }
+  dllPath
+}
+
+// A restored generic whose body calls a SIBLING package's function through
+// its package name (`CpSess.Session.start(m)`, inside a closure) specialises
+// in the consumer (D-progress-966).  The stored body is alias-rewritten
+// source; re-parsed, the qualified call is a member chain and codegen read
+// `CpSess.Session` as a value (T0115) until the package's recorded imports
+// were brought back into scope.
+test "cross-package generic calling a sibling package by name inside a closure (D-progress-966)" {
+  val tmpDir = freshTempDir("cpgen-sibling-qualified")
+  val sessionSrc = "package CpSess.Session\n" + "\n" + "pub record Session[M] {\n" + "  model: M\n" + "}\n" + "\n" +
+    "pub record Output[M] {\n" +
+    "  session: Session[M]\n" +
+    "  count: Int\n" +
+    "}\n" +
+    "\n" +
+    "pub func start[M](m: in M): Output[M] {\n" +
+    "  return Output(session = Session(model = m), count = 1)\n" +
+    "}\n"
+  val hostSrc = "package CpSess.Host\n" + "\n" + "import CpSess.Session\n" + "import CpSess.Session.{Session, Output}\n" +
+    "\n" +
+    "pub record Instance {\n" +
+    "  run: () -> Int\n" +
+    "}\n" +
+    "\n" +
+    "pub func instance[M](m: in M): Instance {\n" +
+    "  return Instance(run = { ->\n" +
+    "    val o: Output[M] = Session.start(m)\n" +
+    "    val s: Session[M] = o.session\n" +
+    "    o.count\n" +
+    "  })\n" +
+    "}\n"
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkPkg("CpSess.Session", sessionSrc))
+  pkgs.add(mkPkg("CpSess.Host", hostSrc))
+  val producerDll = buildDllPkgs(tmpDir, pkgs, "CpSess.Lib")
+  val consumerSrc = "package CpSess.App\n" + "\n" + "import CpSess.Host.{instance}\n" + "\n" + "func main(): Unit {\n" +
+    "  val i = instance(5)\n" +
+    "  println(i.run())\n" +
+    "}\n"
+  val dllPath = Path.join(tmpDir, "CpSess.App.dll")
+  val cpkgs: List[Emitter.ProjectPackage] = newList()
+  cpkgs.add(mkPkg("CpSess.App", consumerSrc))
+  val restored: List[String] = newList()
+  restored.add("CpSess.Session\t" + producerDll)
+  restored.add("CpSess.Host\t" + producerDll)
+  val req = Emitter.EmitProjectRequest(
+    packages = cpkgs,
+    assemblyName = "CpSess.App",
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = restored,
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  match Emitter.emitProject(req).outputPath {
+    case None -> panic("cpgen_sibling_qualified: consumer compilation failed")
+    case Some(_) -> ()
+  }
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_sibling_qualified: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "1", "cpgen_sibling_qualified: output")
+}
+
+// Qualified calls into a restored package (D-progress-969): an `Int` literal
+// passed to a `Long` parameter is widened, and a generic whose type parameter
+// is fixed only by another restored call's `Result[Long, String]` specialises
+// at `Long` rather than at the `Int` of its literal fallback.
+test "qualified restored calls widen Int arguments and type generics from their results (D-progress-969)" {
+  val tmpDir = freshTempDir("cplong-qualified")
+  val producerSrc = "package CpLong.Parse\n" + "\n" + "pub func span(lo: in Long, hi: in Long): Long { hi - lo }\n" +
+    "\n" +
+    "pub func longOr(raw: in String): Result[Long, String] {\n" +
+    "  if raw == \"big\" { Ok(value = 5000000000i64) } else { Err(error = \"bad\") }\n" +
+    "}\n" +
+    "\n" +
+    "pub func collect[T](errs: in List[String], r: in Result[T, String], fallback: in T): T {\n" +
+    "  match r {\n" +
+    "    case Ok(v) -> v\n" +
+    "    case Err(e) -> {\n" +
+    "      errs.add(e)\n" +
+    "      fallback\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
+  val producerDll = buildDll(tmpDir, "CpLong.Parse", producerSrc, "CpLong.Parse")
+  val consumerSrc = "package CpLong.App\n" + "\n" + "import CpLong.Parse\n" + "\n" + "func main(): Unit {\n" +
+    "  val errs: List[String] = newList()\n" +
+    "  val big = Parse.collect(errs, Parse.longOr(\"big\"), 0)\n" +
+    "  val dflt = Parse.collect(errs, Parse.longOr(\"x\"), 7)\n" +
+    "  println(Parse.span(-5, 1_000_000).toString() + \" \" + big.toString() + \" \" + dflt.toString() + \" \" + errs.length.toString())\n" +
+    "}\n"
+  val captured = buildAndRunConsumerWithStdlib(
+    tmpDir,
+    "CpLong.App",
+    consumerSrc,
+    "CpLong.App",
+    "CpLong.Parse",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cplong_qualified: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "1000005 5000000000 7 1", "cplong_qualified: widened span and Long collect")
+}
+
+// A generic from one restored package binds an annotated local from calls to
+// another package's generics that take a lambda local, then passes it on
+// (`field(..., input)`): the local keeps its annotated `View[Msg]`, so the
+// inner generic specialises at `Msg`, not `Object` (D-progress-969).
+test "an annotated local in a specialised generic keeps its type across packages (D-progress-969)" {
+  val tmpDir = freshTempDir("cpgen-annotated-local")
+  val coreSrc = "package CpView.Core\n" + "\n" + "pub union View[Msg] {\n" +
+    "  case Wrap(label: String, inner: View[Msg])\n" +
+    "  case Click(msg: Msg)\n" +
+    "}\n"
+  val widgetsSrc = "package CpView.Widgets\n" + "\n" + "import CpView.Core.{View, Wrap, Click}\n" + "\n" +
+    "pub func field[Msg](label: in String, errors: in List[String], inner: in View[Msg]): View[Msg] {\n" +
+    "  Wrap(label = label, inner = inner)\n" +
+    "}\n" +
+    "\n" +
+    "pub func textInput[Msg](v: in String, f: in (String) -> Msg): View[Msg] { Click(msg = f(v)) }\n"
+  val formsSrc = "package CpView.Forms\n" + "\n" + "import CpView.Core.{View}\n" +
+    "import CpView.Widgets.{field, textInput}\n" +
+    "\n" +
+    "pub func fieldView[Msg](flag: in Bool, v: in String, onEdit: in (String, String) -> Msg): View[Msg] {\n" +
+    "  val name = \"n\"\n" +
+    "  val onInput = { s: String -> onEdit(name, s) }\n" +
+    "  val input: View[Msg] = if flag { textInput(v, onInput) } else { textInput(v + \"!\", onInput) }\n" +
+    "  val msgs: List[String] = newList()\n" +
+    "  return field(\"lbl\", msgs, input)\n" +
+    "}\n"
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkPkg("CpView.Core", coreSrc))
+  pkgs.add(mkPkg("CpView.Widgets", widgetsSrc))
+  pkgs.add(mkPkg("CpView.Forms", formsSrc))
+  val producerDll = buildDllPkgs(tmpDir, pkgs, "CpView.Lib")
+  val consumerSrc = "package CpView.App\n" + "\n" + "import CpView.Core.{View, Wrap, Click}\n" +
+    "import CpView.Forms.{fieldView}\n" +
+    "\n" +
+    "union Msg {\n" +
+    "  case Edited(n: String, s: String)\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  match fieldView(true, \"x\", { n: String, s: String -> Edited(n = n, s = s) }) {\n" +
+    "    case Wrap(l, Click(Edited(n, s))) -> println(l + \" \" + n + \" \" + s)\n" +
+    "    case _ -> println(\"other\")\n" +
+    "  }\n" +
+    "}\n"
+  val dllPath = Path.join(tmpDir, "CpView.App.dll")
+  val cpkgs: List[Emitter.ProjectPackage] = newList()
+  cpkgs.add(mkPkg("CpView.App", consumerSrc))
+  val restored: List[String] = newList()
+  restored.add("CpView.Core\t" + producerDll)
+  restored.add("CpView.Widgets\t" + producerDll)
+  restored.add("CpView.Forms\t" + producerDll)
+  val req = Emitter.EmitProjectRequest(
+    packages = cpkgs,
+    assemblyName = "CpView.App",
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = restored,
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  match Emitter.emitProject(req).outputPath {
+    case None -> panic("cpgen_annotated_local: consumer compilation failed")
+    case Some(_) -> ()
+  }
+  Emitter.copyStdlibDllsBeside(dllPath, Emitter.findCompiledStdlibDir())
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_annotated_local: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "lbl n x", "cpgen_annotated_local: inner generic specialised at Msg")
+}
+
+// A range subtype restored from a dependency stringifies as its underlying
+// value, like an in-bundle one (D-progress-968).
+test "a restored range subtype renders as its value (D-progress-968)" {
+  val tmpDir = freshTempDir("cprange-restored")
+  val producerSrc = "package CpRange.Money\n" + "\n" + "pub type Cents = Long range 0 ..= 1000000\n" + "\n" +
+    "pub func cents(n: in Long): Cents { Cents.from(n) }\n"
+  val producerDll = buildDll(tmpDir, "CpRange.Money", producerSrc, "CpRange.Money")
+  val consumerSrc = "package CpRange.App\n" + "\n" + "import CpRange.Money\n" + "import CpRange.Money.{Cents}\n" + "\n" +
+    "func show(c: in Cents): String { c.toString() + \" \${c} \" + toString(c) }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(show(Money.cents(5000)))\n" +
+    "}\n"
+  val captured = buildAndRunConsumerWithStdlib(
+    tmpDir,
+    "CpRange.App",
+    consumerSrc,
+    "CpRange.App",
+    "CpRange.Money",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cprange_restored: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "5000 5000 5000", "cprange_restored: restored range renders by value")
+}

@@ -35653,3 +35653,38 @@ matching the JDK's decimal grammar, so no exception is built for them.
   result once and `memcpy` the slots (retaining reference elements), instead
   of pushing and regrowing element by element. `lyric_file_read_bytes` builds
   its list with the same one-shot sizing (#7271, #7282, epic #7256).
+
+## Functions from other packages as values; widened function-value arguments
+
+Another package's function can be used as a value (`Holder(f = Pkg.fn)`,
+bare after `import Pkg.{fn}`, or through `Other.fn`), resolved to the
+function a call would bind and lowered as a typed forwarding lambda on both
+targets (D-progress-963). A call through a function value now converts an
+argument accepted by numeric widening (`Int` for `Long`) instead of passing
+it boxed at its own type (D-progress-964).
+A generic call inside a protected type's `entry` or `func` (`mapValues(rows)`
+over a protected field) is now specialised like any method body's, fixing
+MSIL builds of such members (D-progress-965).
+A restored generic whose body calls a sibling package by name
+(`Session.start(m)` in `Ui.Host`) now specialises in a consumer of the
+prebuilt library on MSIL (D-progress-966).
+A specialised imported generic resolves its bare type names in its declaring
+package's scope on both targets, so an unrelated same-named type visible to
+the caller (`Web.Handler` beside `Ui.Core.Handler`) no longer captures them
+(D-progress-967).
+A range or distinct value renders as its underlying value in `.toString()`,
+`toString(x)`, interpolation and concatenation on both targets (previously the
+wrapper type's name), and `from`/`tryFrom` widen their argument to the
+underlying type on MSIL (an `Int` literal into a `Long` range)
+(D-progress-968).
+Seven generic-inference and MSIL fixes found by the `ui-customers` example
+(D-progress-969): a `for` literal no longer takes the enclosing return type's
+collection shape; qualified calls into another package widen `Int` arguments
+and feed their result types to `Lyric.Mono`; generic inference binds `T` to
+the wider numeric type when a literal argument widens (a conflict previously
+typed the result as an error and accepted any use of it); calls through
+function-typed union case fields return the declared type; `object` function
+values are cast to delegate parameters and fields; async builder, task and
+awaiter TypeSpecs over in-bundle types are re-encoded once TypeDef rows are
+known; and an annotated local in a specialised generic keeps its annotation
+when the initializer's original generic call infers less.

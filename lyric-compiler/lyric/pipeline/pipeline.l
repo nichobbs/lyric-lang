@@ -265,9 +265,12 @@ pub func pipeCheckAndMono(
     }
   }
 
-  // Record `.copy(...)` → constructor call, while the type checker's span
-  // keys still identify exactly one call each (D-progress-947).
-  val copyRes = desugarRecordCopiesFile(file0, tcRes.symbols.recordCopySites)
+  // Record `.copy(...)` → constructor call, a cross-package function value →
+  // its forwarding lambda, and a widened function-value call argument →
+  // its explicit conversion, while the type checker's span keys still
+  // identify exactly one expression each (D-progress-948, 962, 963).
+  val valueSites = funcValueSites(tcRes.symbols)
+  val copyRes = desugarCheckedFile(file0, tcRes.symbols.recordCopySites, valueSites, tcRes.symbols.argConversionSites)
   if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
     return None
   }
@@ -299,7 +302,14 @@ pub func pipeCheckAndMono(
 
   val derived = deriveFileWithImports(propRes.file, deriveImports)
 
-  val monoRes = monoFileWithImportsAndTypeDecls(derived, monoGenFuncs, monoIfaceDecls, monoRecordDecls)
+  val monoRes = monoFileWithLambdaTypes(
+    derived,
+    monoGenFuncs,
+    monoIfaceDecls,
+    monoRecordDecls,
+    funcValueLambdaTypes(valueSites),
+    tcRes.symbols.callResultTypes
+  )
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
@@ -499,6 +509,82 @@ pub func pipeAnnsBlockSpecialization(anns: in List[Annotation]): Bool {
     i = i + 1
   }
   false
+}
+
+// The function type of each desugared function-value lambda, keyed like its
+// site, for mono's inference (D-progress-963).  A site whose result type has
+// no source spelling is left out.
+func funcValueLambdaTypes(sites: in Map[String, FuncRefSite]): Map[String, TypeExpr] {
+  val types: Map[String, TypeExpr] = newMap()
+  val keys = mapKeys(sites)
+  var i = 0
+  while i < keys.count {
+    match mapGet(sites, keys[i]) {
+      case Some(site) -> match site.retType {
+        case Some(rt) -> types.add(
+          keys[i],
+          TypeExpr(
+            kind = TFunction(parameters = site.paramTypes, retTy = rt),
+            span = rt.span
+          )
+        )
+        case None -> ()
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  types
+}
+
+/// A restored package's items with qualified calls in their bodies resolved
+/// as in the package's own build (D-progress-966).  Generic bodies are stored
+/// as source after alias rewriting, so a call to a sibling package reads
+/// `Ui.Session.start(...)`; re-parsed, that is a member chain on a value.
+/// Re-running the alias rewriter with the package's recorded `imports` in
+/// scope collapses it back into the qualified call it was.
+pub func pipeRestoredItemsWithImports(source: in SourceFile, imports: in List[String]): List[Item] {
+  if imports.count == 0 {
+    return source.items
+  }
+  val decls: List[ImportDecl] = newList()
+  var i = 0
+  while i < imports.count {
+    val segs: List[String] = newList()
+    var start = 0
+    var j = 0
+    val imp = imports[i]
+    while j < imp.length {
+      if imp.substring(j, 1) == "." {
+        segs.add(imp.substring(start, j - start))
+        start = j + 1
+      }
+      j = j + 1
+    }
+    if start < imp.length {
+      segs.add(imp.substring(start))
+    }
+    decls.add(
+      ImportDecl(
+        path = ModulePath(segments = segs, span = source.span),
+        selector = None,
+        asAlias = None,
+        isPubUse = false,
+        isExtern = false,
+        span = source.span
+      )
+    )
+    i = i + 1
+  }
+  val withImports = SourceFile(
+    moduleDoc = source.moduleDoc,
+    fileAnnotations = source.fileAnnotations,
+    packageDecl = source.packageDecl,
+    imports = decls,
+    items = source.items,
+    span = source.span
+  )
+  Aliases.rewriteFile(withImports).items
 }
 
 /// Append every generic block-or-expr-bodied func in `items` that is
