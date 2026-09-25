@@ -100,13 +100,20 @@ func procExitCode(p: in Proc): Int {
   p.ExitCode
 }
 
-// ── Stdin write ────────────────────────────────────────────────────────────
-func writerWrite(w: in ProcWriter, s: in String): Unit {
-  w.Write(s)
-}
+// Monotonic milliseconds, for spending one timeout budget across the stdin
+// write and the wait for exit.
+@externTarget("System.Environment.get_TickCount64")
+func tickCountMs(): Long = ()
 
+// ── Stdin write ────────────────────────────────────────────────────────────
 func writerClose(w: in ProcWriter): Unit {
   w.Close()
+}
+
+// Start writing `s` without blocking the caller; the returned Task completes
+// once the child has taken all of it (or faults if the pipe breaks).
+func writerWriteAsync(w: in ProcWriter, s: in String): Task {
+  w.WriteAsync(s)
 }
 
 // ── Async pipe drain (MemoryStream-based) ─────────────────────────────────
@@ -226,24 +233,42 @@ func runImpl(exe: in String, args: in String, stdinContent: in String, timeoutMs
   psiUseShell(psi, false)
   psiNoWindow(psi, true)
 
+  val startMs = tickCountMs()
   val proc = procStart(psi)
 
-  // Write all stdin then close it so the child's reader sees EOF.
-  val w = procStdinWriter(proc)
-  writerWrite(w, stdinContent)
-  writerClose(w)
-
-  // Launch concurrent async drains BEFORE blocking on WaitForExit.
-  // Both tasks start immediately on the thread pool, preventing the
-  // deadlock where a child that writes > 64 KB to one pipe blocks
-  // waiting for the reader while the parent is blocked on WaitForExit.
+  // Launch concurrent async drains BEFORE anything can block: a child that
+  // writes more than a pipe buffer (~64 KB) to stdout or stderr blocks until
+  // someone reads it.
   val stdoutBuf = newMemStream()
   val stderrBuf = newMemStream()
   val stdoutTask = streamCopyTo(readerBaseStream(procStdoutReader(proc)), stdoutBuf)
   val stderrTask = streamCopyTo(readerBaseStream(procStderrReader(proc)), stderrBuf)
 
-  // Wait for the child to finish (or for the timeout to expire).
-  val exited = procWaitMs(proc, timeoutMs)
+  // Only then feed stdin, asynchronously and within the same timeout budget.
+  // Writing it synchronously before the drains started deadlocked (#7262):
+  // a child that fills its stdout pipe before reading the rest of its input
+  // blocks on write while this thread blocks on the stdin write, and the
+  // timeout below is never reached. A child that never reads its input at
+  // all now simply times out. A write that faults because the child already
+  // exited leaves nothing to deliver.
+  val w = procStdinWriter(proc)
+  val stdinDelivered = try {
+    drainWaitMs(writerWriteAsync(w, stdinContent), timeoutMs)
+  } catch Bug as _ {
+    true
+  }
+  if stdinDelivered {
+    try {
+      writerClose(w)
+    } catch Bug as _ {
+      ()
+    }
+  }
+
+  // Wait for the child to finish with whatever is left of the timeout.
+  val elapsedMs = (tickCountMs() - startMs).toInt()
+  val remainingMs = if elapsedMs >= timeoutMs { 0 } else { timeoutMs - elapsedMs }
+  val exited = stdinDelivered and procWaitMs(proc, remainingMs)
   val timedOut = not exited
   if timedOut {
     try {

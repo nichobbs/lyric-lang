@@ -186,6 +186,16 @@ func drainAvailable(stream: in JInputStream, buf: in JBAOS): Unit {
   }
 }
 
+// Tail-position forms: a discarded auto-FFI instance call on a parameter
+// receiver emits no invoke on this backend (#5379).
+func writeAllBytes(stream: in JOutputStream, bytes: in slice[Byte]): Unit {
+  stream.write(bytes)
+}
+
+func closeOutput(stream: in JOutputStream): Unit {
+  stream.close()
+}
+
 // ── Core implementation ───────────────────────────────────────────────────────
 func runImpl(
   executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
@@ -194,11 +204,29 @@ func runImpl(
   val pb = JProcessBuilder.new(cmdList)
   val proc = pb.start()
 
-  // Write stdin as UTF-8 bytes then close the pipe so the child sees EOF.
+  // Feed stdin from its own virtual thread while this thread drains the
+  // output pipes. Writing it all up front deadlocked (#7262): a child that
+  // fills its stdout pipe before reading the rest of its input blocks on
+  // write while this thread blocks on the stdin write, and the timeout
+  // below is never reached. A write that fails because the child exited or
+  // was killed ends the writer thread; nothing is left to deliver.
   val stdinStream = proc.getOutputStream()
   val stdinBytes = stringToUtf8Bytes(stdinContent)
-  stdinStream.write(stdinBytes)
-  stdinStream.close()
+  val stdinWriter = JThread.startVirtualThread(
+    { ->
+      try {
+        writeAllBytes(stdinStream, stdinBytes)
+      } catch Bug as _ {
+        ()
+      }
+      try {
+        closeOutput(stdinStream)
+      } catch Bug as _ {
+        ()
+      };
+      ()
+    }
+  )
 
   val stdoutStream = proc.getInputStream()
   val stderrStream = proc.getErrorStream()
@@ -224,6 +252,10 @@ func runImpl(
   // Final drain after the child exits (last bytes may arrive after isAlive → false).
   drainAvailable(stdoutStream, stdoutBuf)
   drainAvailable(stderrStream, stderrBuf)
+  // The child has exited (or been killed), so its stdin pipe is closed and
+  // the writer thread finishes promptly; the bound only guards a stalled
+  // scheduler.
+  stdinWriter.join(intToLong(5000))
 
   val exitCode = if timedOut { -2 } else { try { proc.exitValue() } catch Bug as _ { -1 } }
 

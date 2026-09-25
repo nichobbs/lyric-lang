@@ -35368,3 +35368,14 @@ list (RFC 7541 section 4.1 sizing), failing the connection with
 `ENHANCE_YOUR_CALM`: indexed references could previously expand a small
 compressed block into tens of thousands of fields (#7265, epic #7256).
 
+## runCapture with a large stdin no longer deadlocks on .NET and the JVM
+
+The .NET and JVM `Std.ProcessCaptureHost` kernels wrote all of stdin before
+they started draining the child's output, so a child that filled its stdout
+pipe before reading the rest of its input (`cat` on 256 KiB, formatters,
+`jq`) blocked forever and the timeout never fired. .NET now starts both
+drains first and writes stdin with `WriteAsync` inside the same timeout
+budget; the JVM feeds stdin from its own virtual thread. A child that never
+reads its input now times out instead of hanging. Covered by
+`process_stdin_self_test.l` on both targets (#7262, epic #7256).
+
