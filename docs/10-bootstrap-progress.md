@@ -35524,3 +35524,17 @@ header-block fragment as the payload directly, and a header block that fits one
 frame is no longer routed through an intermediate byte list. Responses are
 still sent after the handler completes; incremental DATA streaming remains
 #6107 (#7269, epic #7256).
+
+## HPACK coding without per-field table rebuilds
+
+`Std.HttpEngine.Hpack` rebuilt its whole Huffman code table, and on decode its
+whole decoding trie, for every string literal it coded, and the encoder found
+static-table matches by scanning all 61 entries for each header field. The
+encoder and decoder now build those tables once when they are created:
+`HpackEncoder` carries the Huffman codes and two static-table maps (exact
+name/value match and name-only match, both resolving to the lowest index), and
+`HpackDecoder` carries the flattened trie. Huffman bits are extracted with
+shifts instead of `pow2` division, a literal field with incremental indexing
+is written straight into the output buffer, and dynamic-table insert and resize
+copy the surviving entries once instead of twice. Wire output is unchanged
+(#7266, epic #7256).
