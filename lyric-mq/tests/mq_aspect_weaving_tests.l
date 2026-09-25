@@ -85,11 +85,9 @@ test "Idempotent: a repeated non-empty id is deduplicated (only the first call r
 // tests exercise the real woven `around(call)` advice directly.
 //
 // A test QueueConsumer that records how many times `nack` is called, so the
-// dead-letter path (which nacks the broker) is observable. `nack` keeps the
-// interface's `requires: messageId.length > 0` contract, so the empty-id cases
-// below must stay on a path that never nacks (Ok, or a failure below the
-// delivery threshold) — an empty id reaching `nack` is a consumer-contract
-// violation, not the aspect DoS under test.
+// dead-letter path (which nacks the broker) is observable. Like `NativeQueue`,
+// it answers an empty id with `Err(EMPTY_MESSAGE_ID)` rather than a
+// precondition violation, since message ids come from the broker (#7239).
 record ConsumerCalls {
   var nacks: Int
 }
@@ -107,16 +105,15 @@ impl Mq.QueueConsumer for TestConsumer {
     return Ok(())
   }
 
-  func ack(messageId: in String): Result[Unit, String]
-    requires: messageId.length > 0
-  {
-    return Ok(())
+  func ack(messageId: in String): Result[Unit, String] {
+    return if messageId.length == 0 { Err(EMPTY_MESSAGE_ID) } else { Ok(()) }
   }
 
-  func nack(messageId: in String, requeue: in Bool): Result[Unit, String]
-    requires: messageId.length > 0
-  {
+  func nack(messageId: in String, requeue: in Bool): Result[Unit, String] {
     consumerCalls.nacks = consumerCalls.nacks + 1
+    if messageId.length == 0 {
+      return Err(EMPTY_MESSAGE_ID)
+    }
     return Ok(())
   }
 
@@ -172,8 +169,7 @@ test "DeadLetter: an empty-id failure below the delivery threshold does not cras
   consumerCalls.nacks = 0
   val consumer = TestConsumer(tag = 0)
   // deliveryCount 0 -> attempts 1 <= maxDeliveries 3, so the Err path runs but
-  // does not nack — the empty id therefore never reaches the consumer's
-  // `requires: messageId.length > 0` contract.
+  // does not nack.
   match handleOrderFail(mkMsg(""), consumer) {
     case Ok(_) -> assertTrue(false, "the failing handler must surface its Err")
     case Err(_) -> assertTrue(true, "the failure is returned without crashing on the empty id")
@@ -195,4 +191,41 @@ test "DeadLetter: a failure past maxDeliveries dead-letters and nacks the consum
   }
   assertEqualInt(dlCalls.count, 1, "the woven handler ran")
   assertEqualInt(consumerCalls.nacks, 1, "past the threshold the consumer is nacked exactly once")
+}
+
+test "DeadLetter: an empty-id poison message is dead-lettered without crashing the consumer (#7239)" {
+  dlCalls.count = 0
+  consumerCalls.nacks = 0
+  val consumer = TestConsumer(tag = 0)
+  // Past the threshold the advice nacks `args.message.id`; with an empty id
+  // that used to trip `nack`'s `requires: messageId.length > 0` and panic the
+  // consumer on every redelivery.
+  match handleOrderFail(mkMsgN("", 3), consumer) {
+    case Ok(_) -> assertTrue(false, "the failing handler must surface its Err")
+    case Err(e) -> assertEqual(e, "processing failed", "the handler's own error is returned")
+  }
+  assertEqualInt(consumerCalls.nacks, 1, "the nack is attempted and answered with Err, not a panic")
+}
+
+// A negative TTL is a configuration bug; it must surface before the handler
+// runs, never after a successful handler (which would redeliver the message
+// and process it twice, #7239).
+aspect IdemBadTtl from Mq.Aspects.Idempotent {
+  matches: name like "idemBadTtl*"
+  config {
+    ttlSeconds: Int = -1
+  }
+}
+
+val badTtlCalls: CallCounter = CallCounter(count = 0)
+
+pub func idemBadTtlHandler(message: in Message): Result[Unit, String] {
+  badTtlCalls.count = badTtlCalls.count + 1
+  return Ok(())
+}
+
+test "Idempotent: a negative ttlSeconds fails before the handler runs (#7239)" {
+  badTtlCalls.count = 0
+  assertPanicsWith("negative ttl", "ttlSeconds must be >= 0", { -> val _ = idemBadTtlHandler(mkMsg("m-1")) })
+  assertEqualInt(badTtlCalls.count, 0, "the handler never ran")
 }

@@ -151,3 +151,112 @@ test "consume on an empty queue reports timeout (#6511)" {
     }
   }
 }
+
+// ─── Broker-supplied input is never a precondition (#7239) ───────────────────
+@cfg(target = "dotnet")
+func withQueue(name: in String, body: (NativeQueue) -> Unit): Unit {
+  match Mq.connectTo("inmemory://local", name) {
+    case Err(e) -> assertTrue(false, "connectTo failed: " + e)
+    case Ok(queue) -> {
+      body(queue)
+      queue.close()
+    }
+  }
+}
+
+@cfg(target = "dotnet")
+test "control characters in a body round-trip instead of breaking the wire JSON (#7239)" {
+  withQueue(
+    "ctrl-q",
+    { queue ->
+      val body = "a\u{0001}b\u{001f}c\u{0008}d\u{000c}e\u{0000}f"
+      val h = Mq.MessageHeader(key = "k\u{0002}", value = "v\u{001b}")
+      match Mq.publish(queue, Mq.Message(id = "ctrl-1", body = body, headers = [h], deliveryCount = 0)) {
+        case Err(e) -> assertTrue(false, "publish failed: " + e)
+        case Ok(_) -> ()
+      }
+      var got = ""
+      var gotKey = ""
+      match Mq.consume(queue, 0, { m -> got = m.body; gotKey = m.headers[0].key; Ok(()) }) {
+        case Err(e) -> assertTrue(false, "consume failed: " + e)
+        case Ok(_) -> ()
+      }
+      assertEqual(got, body, "body with control characters survives")
+      assertEqual(gotKey, "k\u{0002}", "header key with a control character survives")
+    }
+  )
+}
+
+@cfg(target = "dotnet")
+test "deliveryCount is 0 on first delivery and counts redeliveries (#7239)" {
+  withQueue(
+    "count-q",
+    { queue ->
+      match Mq.publish(queue, Mq.Message(id = "cnt-1", body = "b", headers = [], deliveryCount = 0)) {
+        case Err(e) -> assertTrue(false, "publish failed: " + e)
+        case Ok(_) -> ()
+      }
+      var first = -1
+      val _ = Mq.consume(queue, 0, { m -> first = m.deliveryCount; Ok(()) })
+      assertEqualInt(first, 0, "first delivery")
+      match Mq.nack(queue, "cnt-1", true) {
+        case Err(e) -> assertTrue(false, "nack failed: " + e)
+        case Ok(_) -> ()
+      }
+      var second = -1
+      val _ = Mq.consume(queue, 0, { m -> second = m.deliveryCount; Ok(()) })
+      assertEqualInt(second, 1, "one earlier delivery")
+    }
+  )
+}
+
+@cfg(target = "dotnet")
+test "ack and nack answer an empty message id with Err (#7239)" {
+  withQueue(
+    "empty-id-q",
+    { queue ->
+      match Mq.ack(queue, "") {
+        case Ok(_) -> assertTrue(false, "ack of an empty id must fail")
+        case Err(e) -> assertEqual(e, EMPTY_MESSAGE_ID, "ack")
+      }
+      match Mq.nack(queue, "", false) {
+        case Ok(_) -> assertTrue(false, "nack of an empty id must fail")
+        case Err(e) -> assertEqual(e, EMPTY_MESSAGE_ID, "nack")
+      }
+    }
+  )
+}
+
+@cfg(target = "dotnet")
+test "publishBatch refuses a batch with an empty id before publishing any (#7239)" {
+  withQueue(
+    "batch-q",
+    { queue ->
+      val ok = Mq.Message(id = "b-1", body = "b", headers = [], deliveryCount = 0)
+      val bad = Mq.Message(id = "", body = "b", headers = [], deliveryCount = 0)
+      assertPanics("empty id in a batch", { -> val _ = Mq.publishBatch(queue, [ok, bad]) })
+      match Mq.consume(queue, 0, { m -> Ok(()) }) {
+        case Ok(_) -> assertTrue(false, "nothing may be published from a rejected batch")
+        case Err(e) -> assertEqual(e, "timeout", "the queue is still empty")
+      }
+    }
+  )
+}
+
+test "connectTo with no queue name is an Err, not a panic (#7239)" {
+  match Mq.connectTo("inmemory://local", "") {
+    case Ok(_) -> assertTrue(false, "an empty queue name must not connect")
+    case Err(e) -> assertTrue(e.contains("queue name"), "names the missing setting: " + e)
+  }
+}
+
+test "InProcessDeadLetterStore requires a capacity of at least 1 (#7239)" {
+  assertPanics("capacity 0", { -> val _ = InProcessDeadLetterStore(entries = [], maxEntries = 0) })
+  assertEqualInt(Mq.inProcessDeadLetterStore(1).maxEntries, 1, "capacity 1 is valid")
+}
+
+test "allHaveIds" {
+  val m = Mq.Message(id = "x", body = "", headers = [], deliveryCount = 0)
+  assertTrue(allHaveIds([m, m]), "all ids present")
+  assertFalse(allHaveIds([m, m.copy(id = "")]), "one empty id")
+}

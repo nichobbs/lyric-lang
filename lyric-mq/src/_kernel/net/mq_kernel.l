@@ -32,6 +32,7 @@ package Mq.Kernel.Net
 import Std.Core
 import Std.Time
 import Std.Char
+import Std.Json
 
 // ─── ConcurrentDictionary externs ────────────────────────────────────────────
 extern type ConcurrentDict[K, V] = "System.Collections.Concurrent.ConcurrentDictionary`2"
@@ -92,33 +93,10 @@ val mqHandleCounter: MqHandleCounter = MqHandleCounter()
 
 val queueRegistry: ConcurrentDict[Int, InMemoryQueue] = newConcurrentDict()
 
-// Minimal JSON string escaper for message rendering.
-func mqJsonStr(s: in String): String {
-  var r = "\""
-  var i = 0
-  while i < s.length {
-    val code = toInt(s[i])
-    if code == 34 {
-      r = r + "\\\""
-    } else if code == 92 {
-      r = r + "\\\\"
-    } else if code == 10 {
-      r = r + "\\n"
-    } else if code == 13 {
-      r = r + "\\r"
-    } else if code == 9 {
-      r = r + "\\t"
-    } else {
-      r = r + s[i].toString()
-    }
-    i = i + 1
-  }
-  r + "\""
-}
-
 func renderMessage(m: in Message): String {
   val headers = if m.headersJson.length == 0 { "[]" } else { m.headersJson }
-  "{\"id\":" + mqJsonStr(m.id) + ",\"body\":" + mqJsonStr(m.body) + ",\"headers\":" + headers + ",\"deliveryCount\":" +
+  "{\"id\":" + encodeString(m.id) + ",\"body\":" + encodeString(m.body) + ",\"headers\":" + headers +
+    ",\"deliveryCount\":" +
     m.deliveryCount.toString() +
     "}"
 }
@@ -126,7 +104,6 @@ func renderMessage(m: in Message): String {
 // ─── In-memory backend (Phase 5 functional path) ─────────────────────────────
 @cfg(feature = "inmemory")
 pub func connect(url: in String, queueName: in String): Result[Int, String]
-  requires: url.length >= 0
   requires: queueName.length > 0
 {
   monitorEnter(mqHandleCounter)
@@ -182,9 +159,12 @@ pub func consume(queueId: in Int, timeoutMs: in Int): Result[String, String]
     }
   }
   if found {
+    // `Message.deliveryCount` counts earlier deliveries (0 the first time),
+    // so render before counting this one.
+    val rendered = renderMessage(msg)
     msg.deliveryCount = msg.deliveryCount + 1
     val _ = cdTryAdd(q.inFlight, msg.id, msg)
-    Ok(renderMessage(msg))
+    Ok(rendered)
   } else {
     Ok("")
   }

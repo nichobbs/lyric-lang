@@ -135,6 +135,23 @@ Mq.nack(consumer: in QueueConsumer, messageId: in String, requeue: in Bool)
   -> Result[Unit, String]
 ```
 
+### Untrusted input
+
+Message ids, bodies and headers come from producers the consumer does not
+control, so none of them can trip a precondition:
+
+- `ack`/`nack` answer an empty id with `Err(EMPTY_MESSAGE_ID)`.
+- Bodies and headers carrying any control character round-trip intact;
+  the wire JSON escapes every U+0000-U+001F.
+- A malformed message from the broker makes `consume` return `Err` instead
+  of panicking the consumer.
+- `Message.deliveryCount` is 0 on first delivery and counts redeliveries.
+
+`publish` and `publishBatch` still require non-empty ids, since those are
+the producer's own values. `publishBatch` checks the whole batch before
+publishing any message (`allHaveIds`). `connectTo` returns `Err` when no
+queue name is configured.
+
 ## Runtime configuration
 
 `Mq.connect()` reads broker-specific config from environment variables:

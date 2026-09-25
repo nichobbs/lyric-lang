@@ -62,7 +62,8 @@ import Mq
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled        Bool   — master switch (default: true)
 ///   cacheKeyPrefix String — prepended to every message ID (default: "mq:idem:")
-///   ttlSeconds     Int    — how long to remember processed IDs (default: 3600)
+///   ttlSeconds     Int    — how long to remember processed IDs, >= 0; 0 never
+///                           expires (default: 3600)
 @stable(since = "0.1")
 pub aspect Idempotent {
   config {
@@ -80,6 +81,10 @@ pub aspect Idempotent {
   around(call) -> ret where TArgs has { message: Message } {
     if not enabled {
       ret = call.proceed()
+    } else if ttlSeconds < 0 {
+      // A configuration bug, raised before the handler runs: failing after
+      // it had succeeded would redeliver and process the message twice.
+      panic("Mq.Aspects.Idempotent: ttlSeconds must be >= 0 (0 = never expire), got " + ttlSeconds.toString())
     } else if args.message.id == "" {
       ret = call.proceed()
     } else {
@@ -140,7 +145,8 @@ pub aspect DeadLetter {
   // / external producers, so a `requires:` clause (D118 elaborates it into a
   // runtime precondition assert) would let a single empty-id message crash the
   // consumer — a DoS.  The body only uses the id to nack after max deliveries,
-  // which tolerates an empty id, so no early rejection is needed.
+  // and `nack` answers an empty id with `Err` rather than a precondition
+  // violation, so no early rejection is needed.
   // handler must declare a message: Message parameter
   // handler must declare a consumer: QueueConsumer parameter (shape checked by A0047)
   around(call) -> ret where TArgs has { message: Message, consumer: QueueConsumer } {
