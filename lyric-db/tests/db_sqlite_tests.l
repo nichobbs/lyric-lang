@@ -60,7 +60,7 @@ test "SQLite: create table, parameterised insert, and typed value extraction" {
   }
 }
 
-test "SQLite: getInt narrows an INTEGER value that overflows Int32 (#5597)" {
+test "SQLite: getInt never wraps an INTEGER value that overflows Int32 (#5597, #7241)" {
   // Microsoft.Data.Sqlite picks the reader's CLR type per stored value, not
   // per declared column type: an INTEGER value that overflows Int32 range
   // reports as `System.Int64` (this library's `DbValue.DbLong`), not
@@ -83,9 +83,15 @@ test "SQLite: getInt narrows an INTEGER value that overflows Int32 (#5597)" {
               case DbValue.DbLong(v) -> assertEqualLong(v, 5000000000i64, "n column surfaces as DbLong")
               case _ -> assertTrue(false, "expected DbLong for an INTEGER value beyond Int32 range")
             }
-            // `.toInt()` truncates toward zero (docs/01 §4, numeric
-            // conversions); 5,000,000,000 mod 2^32 = 705,032,704.
-            assertEqualInt(Db.getInt(row, "n"), 705032704, "getInt narrows the DbLong instead of returning 0")
+            // Narrowing would wrap 5,000,000,000 to 705,032,704, a plausible
+            // but wrong value; an out-of-range value is 0 / None instead,
+            // and `getLong` reads it in full.
+            assertEqualInt(Db.getInt(row, "n"), 0, "getInt does not wrap an out-of-range DbLong")
+            match Db.getIntOpt(row, "n") {
+              case Some(_) -> assertTrue(false, "getIntOpt reports an out-of-range value as None")
+              case None -> ()
+            }
+            assertEqualLong(Db.getLong(row, "n"), 5000000000i64, "getLong reads the full value")
           }
         }
       }

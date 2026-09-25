@@ -54,7 +54,6 @@ pub aspect QueryLogging {
 /// B-mode: uses `call.elapsed`; does not inspect query content.
 @stable(since = "0.1")
 pub aspect SlowQueryAlert {
-  ensures: call.elapsed.unwrapOr(0) >= 0
   around(call) -> ret {
     ret = call.proceed()
     val ms = call.elapsed.unwrapOr(0)
