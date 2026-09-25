@@ -56,14 +56,17 @@
 //! ## `startListenerTls` on dotnet (real, phase 3.3)
 //!
 //! `startListenerTls` now terminates TLS for real on `--target dotnet` via
-//! `Std.TcpHost.hostAcceptTls` (server identity + `minVersion` + ALPN
-//! `http/1.1` + callback-free mTLS). The former phase-2 typed
+//! `Std.TcpHost.hostPrepareServerTls` / `hostUpgradeServerTlsPrepared`
+//! (server identity + `minVersion` + ALPN + callback-free mTLS). The TLS
+//! state is built once per listener, and each handshake runs on its
+//! connection's own task under a handshake timeout, never on the accept loop
+//! (#7268). The former phase-2 typed
 //! `NotSupportedOnTarget` stub is gone. A mutual-TLS misconfiguration
 //! (`requireClientCert` with no `clientCa`) is rejected up front with
 //! `Err(InvalidConfig(...))` — the same security guard `Std.TcpHost`
 //! enforces per-accept (#6042) — rather than binding a listener that would
 //! reject every connection. Per-connection TLS handshake failures are handled
-//! inside the accept loop (the connection is dropped; the server keeps
+//! on the connection's task (the connection is dropped; the server keeps
 //! serving), never fatal to the listener.
 //!
 //! ## h2/ALPN end-to-end (phase 4.4, issue #5889)
@@ -238,6 +241,46 @@ pub func resolveMaxConcurrentConnections(): Int {
     }
     case Err(_) -> maxConcurrentConnectionsDefault
   }
+}
+
+// Connection timeouts (#7268). A TLS handshake runs on the connection's own
+// task, never the accept loop, and each of its blocking socket operations is
+// bounded by `tlsHandshakeTimeoutMsDefault` (the same 10 s default Kestrel
+// uses), so a peer that connects and never sends a ClientHello is dropped
+// instead of pinning a connection permit. Once a connection is established,
+// every blocking read and write is bounded by `connectionIdleTimeoutMsDefault`
+// of inactivity, which closes idle keep-alive connections and peers that stop
+// reading or sending mid-request. A handler that takes longer than this to
+// respond is unaffected: the connection task waits on the handler, not on the
+// socket, while a request is in flight. Both are per-deployment overridable
+// through `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` / `LYRIC_HTTP_IDLE_TIMEOUT_MS`.
+val tlsHandshakeTimeoutMsDefault: Int = 10000
+
+val connectionIdleTimeoutMsDefault: Int = 120000
+
+// A positive integer from `name`, otherwise `fallback`. A missing,
+// non-numeric, or < 1 value falls back: a zero or negative timeout would
+// silently disable the protection this setting exists for.
+func positiveIntFromEnv(name: in String, fallback: in Int): Int {
+  match Env.getVar(name) {
+    case Ok(raw) -> match tryParseInt(raw) { case Ok(n) -> if n >= 1 { n } else { fallback }; case Err(_) -> fallback }
+    case Err(_) -> fallback
+  }
+}
+
+/// The TLS handshake timeout in milliseconds a listener applies: the
+/// `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` environment variable when it is a
+/// positive integer, otherwise 10000. Read once per listener at start.
+pub func resolveTlsHandshakeTimeoutMs(): Int {
+  positiveIntFromEnv("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", tlsHandshakeTimeoutMsDefault)
+}
+
+/// The connection inactivity timeout in milliseconds a listener applies to
+/// every blocking read and write: the `LYRIC_HTTP_IDLE_TIMEOUT_MS`
+/// environment variable when it is a positive integer, otherwise 120000.
+/// Read once per listener at start.
+pub func resolveConnectionIdleTimeoutMs(): Int {
+  positiveIntFromEnv("LYRIC_HTTP_IDLE_TIMEOUT_MS", connectionIdleTimeoutMsDefault)
 }
 
 // =====================================================================
@@ -696,20 +739,21 @@ func processConnection(
   ()
 }
 
-// Handle one accept result: on success spawn a per-connection task and keep
-// the loop running; on a stopped listener (`AcceptFailed`/`BindFailed`) end the
-// loop; a per-connection TLS handshake failure (`hostAcceptTls` already closed
-// that socket) is skipped so one bad client never takes the server down.
-// Returns whether the accept loop should keep running.
+// Handle one plain accept result: on success apply the idle timeout, spawn a
+// per-connection task and keep the loop running; on a stopped listener
+// (`AcceptFailed`/`BindFailed`) end the loop. Returns whether the accept loop
+// should keep running.
 func onAccepted(
   accepted: in Result[Conn, TcpError],
   queue: in ConcurrentQueue[HttpContext],
   available: in Semaphore,
   limits: in EngineLimits,
   connLimit: in Semaphore,
+  idleTimeoutMs: in Int,
 ): Bool {
   match accepted {
     case Ok(conn) -> {
+      hostSetIoTimeout(conn, idleTimeoutMs)
       // Bound the number of connections served concurrently (#6071): acquire
       // a permit before spawning the connection task, so the accept loop
       // itself blocks (backpressure) once the resolved cap
@@ -728,7 +772,44 @@ func onAccepted(
       }
       true
     }
-    case Err(e) -> match e { case AcceptFailed(_) -> false; case BindFailed(_) -> false; case _ -> true }
+    case Err(e) -> acceptLoopContinues(e)
+  }
+}
+
+// Whether an accept failure leaves the loop running: a stopped listener
+// (`AcceptFailed`/`BindFailed`) ends it; anything else is per-connection.
+func acceptLoopContinues(e: in TcpError): Bool {
+  match e { case AcceptFailed(_) -> false; case BindFailed(_) -> false; case _ -> true }
+}
+
+// The TLS connection task body (#7268): run the handshake here, on the
+// connection's own task, so a slow or silent peer never blocks the accept
+// loop, then serve the connection on this same task with the protocol its
+// ALPN selected. A failed handshake closes the socket and releases the
+// connection permit the accept loop took.
+func serveTlsConnection(
+  plain: in Conn,
+  tls: in ServerTls,
+  queue: in ConcurrentQueue[HttpContext],
+  available: in Semaphore,
+  limits: in EngineLimits,
+  connLimit: in Semaphore,
+  handshakeTimeoutMs: in Int,
+  idleTimeoutMs: in Int,
+): Unit {
+  match hostUpgradeServerTlsPrepared(plain, tls, handshakeTimeoutMs) {
+    case Err(_) -> {
+      hostClose(plain)
+      val _ = semRelease(connLimit)
+    }
+    case Ok(conn) -> {
+      hostSetIoTimeout(conn, idleTimeoutMs)
+      if hostAlpn(conn) == "h2" {
+        processH2Connection(conn, queue, available, limits, connLimit)
+      } else {
+        processConnection(conn, queue, available, limits, connLimit)
+      }
+    }
   }
 }
 
@@ -746,26 +827,39 @@ func plainAcceptLoop(
   limits: in EngineLimits,
   connLimit: in Semaphore,
 ): Unit {
+  val idleTimeoutMs = resolveConnectionIdleTimeoutMs()
   var running = true
   while running {
     val accepted = hostAccept(transport)
-    running = onAccepted(accepted, queue, available, limits, connLimit)
+    running = onAccepted(accepted, queue, available, limits, connLimit, idleTimeoutMs)
   }
 }
 
-// TLS accept loop — terminates TLS on each accepted connection using `cfg`.
+// TLS accept loop. It only accepts the raw socket and takes a connection
+// permit; the handshake itself runs on the connection's task
+// (`serveTlsConnection`, #7268) against the `ServerTls` state the listener
+// built once at start.
 func tlsAcceptLoop(
   transport: in Listener,
   queue: in ConcurrentQueue[HttpContext],
   available: in Semaphore,
-  cfg: in TlsServerConfig,
+  tls: in ServerTls,
   limits: in EngineLimits,
   connLimit: in Semaphore,
 ): Unit {
+  val handshakeTimeoutMs = resolveTlsHandshakeTimeoutMs()
+  val idleTimeoutMs = resolveConnectionIdleTimeoutMs()
   var running = true
   while running {
-    val accepted = hostAcceptTls(transport, cfg)
-    running = onAccepted(accepted, queue, available, limits, connLimit)
+    match hostAccept(transport) {
+      case Ok(plain) -> {
+        semWait(connLimit)
+        val _ = taskRun({ -> serveTlsConnection(plain, tls, queue, available, limits, connLimit, handshakeTimeoutMs, idleTimeoutMs) })
+      }
+      case Err(e) -> {
+        running = acceptLoopContinues(e)
+      }
+    }
   }
 }
 
@@ -1413,10 +1507,12 @@ pub func startListenerWithLimits(prefix: in String, limits: in EngineLimits): Ht
 /// connection using `tls` (server identity, `minVersion`, ALPN `http/1.1`, and
 /// callback-free mTLS). `host` is an IP literal, `"*"`/`"+"` (wildcard), or
 /// `"localhost"`. Returns `Err(InvalidConfig(...))` for a mutual-TLS
-/// misconfiguration (`requireClientCert` with no `clientCa`) caught before
-/// binding; per-connection handshake failures are handled inside the accept
-/// loop, never fatal to the listener. Use `startListenerTlsWithLimits` to raise
-/// the request-size caps.
+/// misconfiguration (`requireClientCert` with no `clientCa`) or an identity the
+/// platform cannot use, caught before binding. Each handshake runs on its
+/// connection's own task under the `resolveTlsHandshakeTimeoutMs` timeout; a
+/// failed or timed-out handshake drops that connection and is never fatal to
+/// the listener. Use `startListenerTlsWithLimits` to raise the request-size
+/// caps.
 pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): Result[HttpListener, TlsListenError] {
   startListenerTlsWithLimits(host, port, tls, EngineLimits.defaults())
 }
@@ -1436,13 +1532,20 @@ pub func startListenerTlsWithLimits(
       )
     )
   }
+  // Build the TLS state once for the listener's lifetime (#7268) rather than
+  // per connection; an identity the platform cannot use fails here, before
+  // binding, instead of on every handshake.
+  val serverTls = match hostPrepareServerTls(tls) {
+    case Ok(t) -> t
+    case Err(e) -> return Err(error = InvalidConfig(message = TcpError.message(e)))
+  }
   ensureServerThreadCapacity()
   match hostListen(resolveBindHost(host), port) {
     case Ok(transport) -> {
       val queue: ConcurrentQueue[HttpContext] = newConcurrentQueue()
       val available = newSemaphore(0)
       val connLimit = newSemaphore(resolveMaxConcurrentConnections())
-      val task = taskRun({ -> tlsAcceptLoop(transport, queue, available, tls, limits, connLimit) })
+      val task = taskRun({ -> tlsAcceptLoop(transport, queue, available, serverTls, limits, connLimit) })
       Ok(value = HttpListener(transport = transport, queue = queue, available = available, acceptTask = task))
     }
     case Err(e) -> Err(error = InvalidConfig(message = "bind failed: " + TcpError.message(e)))

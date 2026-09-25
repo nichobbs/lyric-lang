@@ -5,7 +5,7 @@
 //! native`) and run, mirroring `llvm_tls_self_test.l`'s and
 //! `llvm_http_client_self_test.l`'s harness shape.
 //!
-//! Ten cases:
+//! Twelve cases:
 //!   - item A: a plaintext HTTP/1.1 round trip. A real client
 //!     (`Std.TcpHost.hostConnect`, plain TCP) on the SAME thread as the
 //!     server's own pull loop — a bare TCP `connect` completes into the
@@ -168,6 +168,19 @@
 //!     `poll()` call, whenever it happens) make this safe by construction,
 //!     not merely likely, so ten iterations exists to prove that in
 //!     practice, not to work around nondeterminism.
+//!   - item K: the regression case for #7268 — the TLS handshake ran on
+//!     the accept thread, so a peer that connected and never sent a
+//!     ClientHello blocked every later connection. A silent plain-TCP
+//!     client connects first; a real TLS client on a second thread must
+//!     still complete a round trip (before the fix `nextContext` never
+//!     returned and the harness timeout failed the case). The handshake
+//!     timeout is lowered to 300 ms, and the silent client must then read
+//!     EOF: the server closed it at the timeout, not the client's own
+//!     much longer read timeout.
+//!   - item L: the idle-timeout half of #7268 — with the idle timeout
+//!     lowered to 300 ms, a keep-alive connection that goes quiet after
+//!     one answered request must be closed by the server (the client
+//!     reads EOF before its own longer read timeout).
 //!
 //! Every scenario compiles with `-fsanitize=address`, so a leaked
 //! `malloc`'d mutex/semaphore buffer, a leaked fd, a double-release, or a
@@ -183,7 +196,7 @@
 //! choice safe rather than a leak.
 //!
 //! Every connection-oriented case binds a FIXED port (19720/19721/19722/
-//! 19723/19724/19725/19726/19727/19728/19729 — item J binds a port too,
+//! 19723/19724/19725/19726/19727/19728/19729/19730/19731 — item J binds a port too,
 //! even though it never accepts a connection on it),
 //! matching `lyric-stdlib/tests/http_server_dotnet_tests.l`'s own
 //! established convention for testing this exact API — `Std.HttpServer`'s
@@ -1063,4 +1076,183 @@ test "native Std.HttpServer stopListener wakes an accept loop that never receive
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native portable accept-interrupt regression (item J, #6806)")
+}
+
+test "native Std.HttpServer runs the TLS handshake off the accept thread with a handshake timeout (item K, #7268 regression)" {
+  val src = "package K\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.Tls\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    "import Std.Environment as Env\n" +
+    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "extern func cStrcmp(a: NativePtr[Byte], b: NativePtr[Byte]): Int = \"strcmp\"\n" +
+    "@unsafe_ffi\n" +
+    "func clientRoundtrip(certPem: in String): NativePtr[Byte] {\n" +
+    "  val conn = match hostConnectTls(\"127.0.0.1\", 19730, TlsTrustExclusive(caPem = certPem), None, TlsVersion.Tls12, \"http/1.1\") {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return toC(\"FAIL:handshake\")\n" +
+    "  }\n" +
+    "  val reqText = \"GET /after-silent HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "  match hostWrite(conn, encodeUtf8(reqText)) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> {\n" +
+    "      hostClose(conn)\n" +
+    "      return toC(\"FAIL:write\")\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var acc = \"\"\n" +
+    "  var tries = 0\n" +
+    "  var done = false\n" +
+    "  while tries < 400 and not done {\n" +
+    "    match hostRead(conn, 4096) {\n" +
+    "      case Ok(b) -> {\n" +
+    "        if b.length == 0 {\n" +
+    "          done = true\n" +
+    "        }\n" +
+    "        match tryDecodeUtf8(b) {\n" +
+    "          case Some(s) -> {\n" +
+    "            acc = acc + s\n" +
+    "          }\n" +
+    "          case None -> ()\n" +
+    "        }\n" +
+    "      }\n" +
+    "      case Err(_) -> {\n" +
+    "        done = true\n" +
+    "      }\n" +
+    "    }\n" +
+    "    if acc.contains(\"served\") {\n" +
+    "      done = true\n" +
+    "    }\n" +
+    "    tries = tries + 1\n" +
+    "  }\n" +
+    "  hostClose(conn)\n" +
+    "  if acc.startsWith(\"HTTP/1.1 200\") and acc.contains(\"served\") {\n" +
+    "    toC(\"PASS\")\n" +
+    "  } else {\n" +
+    "    toC(\"FAIL:body\")\n" +
+    "  }\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val certPem = \"" +
+    luQuote(certPemLines) +
+    "\"\n" +
+    "  val keyPem = \"" +
+    luQuote(keyPemLines) +
+    "\"\n" +
+    "  val identity = match Identity.fromPem(certPem, keyPem) {\n" +
+    "    case Ok(id) -> id\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  Env.setVar(\"LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS\", \"300\")\n" +
+    "  val cfg = TlsServerConfig(identity = identity, minVersion = TlsVersion.Tls12)\n" +
+    "  val listener = match startListenerTls(\"127.0.0.1\", 19730, cfg) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 2\n" +
+    "  }\n" +
+    "  val silent = match hostConnect(\"127.0.0.1\", 19730) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> {\n" +
+    "      stopListener(listener)\n" +
+    "      return 3\n" +
+    "    }\n" +
+    "  }\n" +
+    "  hostSetIoTimeout(silent, 10000)\n" +
+    "  var tid: Long = 0\n" +
+    "  val worker: () -> NativePtr[Byte] = { -> clientRoundtrip(certPem) }\n" +
+    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostClose(silent)\n" +
+    "    stopListener(listener)\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  val ctx = nextContext(listener)\n" +
+    "  respondText(ctx, 200, \"served\")\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var silentClosed = false\n" +
+    "  match hostRead(silent, 64) {\n" +
+    "    case Ok(b) -> {\n" +
+    "      silentClosed = b.length == 0\n" +
+    "    }\n" +
+    "    case Err(_) -> ()\n" +
+    "  }\n" +
+    "  hostClose(silent)\n" +
+    "  stopListener(listener)\n" +
+    "  if rj != 0 {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  val passC = toC(\"PASS\")\n" +
+    "  val clientOk = cStrcmp(outp, passC) == 0\n" +
+    "  freeC(passC)\n" +
+    "  freeC(outp)\n" +
+    "  if not clientOk {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  if not silentClosed {\n" +
+    "    return 7\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native off-accept-thread TLS handshake with timeout (item K, #7268)")
+}
+
+test "native Std.HttpServer closes an idle keep-alive connection at the idle timeout (item L, #7268 regression)" {
+  val src = "package L\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    "import Std.Environment as Env\n" +
+    "func main(): Int {\n" +
+    "  Env.setVar(\"LYRIC_HTTP_IDLE_TIMEOUT_MS\", \"300\")\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19731/\")\n" +
+    "  val conn = match hostConnect(\"127.0.0.1\", 19731) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> {\n" +
+    "      stopListener(listener)\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "  hostSetIoTimeout(conn, 10000)\n" +
+    "  val _ = hostWrite(conn, encodeUtf8(\"GET /idle HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n\"))\n" +
+    "  val ctx = nextContext(listener)\n" +
+    "  respondText(ctx, 200, \"served\")\n" +
+    "  var acc = \"\"\n" +
+    "  var tries = 0\n" +
+    "  while tries < 400 and not acc.contains(\"served\") {\n" +
+    "    match hostRead(conn, 4096) {\n" +
+    "      case Ok(b) -> match tryDecodeUtf8(b) {\n" +
+    "        case Some(s) -> {\n" +
+    "          acc = acc + s\n" +
+    "        }\n" +
+    "        case None -> ()\n" +
+    "      }\n" +
+    "      case Err(_) -> {\n" +
+    "        tries = 400\n" +
+    "      }\n" +
+    "    }\n" +
+    "    tries = tries + 1\n" +
+    "  }\n" +
+    "  var closed = false\n" +
+    "  match hostRead(conn, 64) {\n" +
+    "    case Ok(b) -> {\n" +
+    "      closed = b.length == 0\n" +
+    "    }\n" +
+    "    case Err(_) -> ()\n" +
+    "  }\n" +
+    "  hostClose(conn)\n" +
+    "  stopListener(listener)\n" +
+    "  if not acc.contains(\"served\") {\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  if not closed {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native idle keep-alive timeout (item L, #7268)")
 }

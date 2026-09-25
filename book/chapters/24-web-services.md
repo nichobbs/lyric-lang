@@ -193,6 +193,8 @@ Runtime config (all read once at startup, fail-fast if invalid):
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS` | `Content-Type,Authorization,Accept` | Comma-separated headers |
 | `LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS` | `86400` | Preflight cache duration |
 | `LYRIC_HTTP_MAX_CONNECTIONS` | `1000` | Max connections served concurrently (backpressure cap) |
+| `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` | `10000` | Max time for each blocking step of a TLS handshake |
+| `LYRIC_HTTP_IDLE_TIMEOUT_MS` | `120000` | Max inactivity on an established connection's reads and writes |
 
 `LYRIC_HTTP_MAX_CONNECTIONS` bounds how many connections the dotnet server
 handles at once: the accept loop blocks (new connections queue in the OS
@@ -203,6 +205,21 @@ value falls back to the `1000` default (an unbounded cap would defeat the
 backpressure guarantee). Unlike the `LYRIC_CONFIG_WEB_*` knobs, this one is
 read by the lower-level `Std.HttpServer` transport, so it applies to any
 server built on it.
+
+The two timeouts protect the dotnet and native servers from peers that
+connect and then go quiet. Each TLS handshake runs on its connection's own
+task or thread, never on the accept loop, so a client that never sends a
+ClientHello cannot stop other clients from connecting; it is dropped once
+the handshake stalls for `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS`. After that,
+a connection whose reads or writes make no progress for
+`LYRIC_HTTP_IDLE_TIMEOUT_MS` is closed, which ends idle keep-alive
+connections and stalled uploads. A slow handler is not affected: the
+connection waits on the handler, not the socket, while a request is in
+flight. Both follow the same rule as the connection cap: a missing,
+non-numeric or `< 1` value falls back to the default. On `--target jvm`
+the JDK's own HTTP server runs handshakes off its dispatcher thread and
+applies its own idle limit (`-Dsun.net.httpserver.idleInterval`, in
+seconds, default 30).
 
 ## Background workers
 

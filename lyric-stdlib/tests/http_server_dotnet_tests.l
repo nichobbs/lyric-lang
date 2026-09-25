@@ -920,3 +920,97 @@ test "resolveMaxConcurrentConnections honours LYRIC_HTTP_MAX_CONNECTIONS with sa
   Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "1000")
   assertEqualInt(resolveMaxConcurrentConnections(), 1000, "explicit default value resolves unchanged")
 }
+
+// #7268: the TLS handshake runs on the connection's task, not the accept loop.
+// A peer that connects and never sends a ClientHello used to stall the accept
+// loop inside `AuthenticateAsServer`, so no later client was ever accepted.
+// The handshake timeout is raised well past the test's duration so the silent
+// connection is still mid-handshake when the real client arrives.
+test "a silent TLS peer does not block other clients' handshakes (#7268)" {
+  Env.setVar("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", "30000")
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19418, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveN(listener, 1) })
+  threadSleep(100)
+  val silent = dial("127.0.0.1", 19418)
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val result = await client.get("https://localhost:19418/after-silent")
+  taskWait(server)
+  hostClose(silent)
+  stopListener(listener)
+  Env.setVar("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", "10000")
+  match result {
+    case Ok(r) -> assertEqualInt(r.statusCode(), 200, "client behind a silent peer is served")
+    case Err(e) -> panic("HTTPS GET behind a silent peer failed: " + HttpError.message(e))
+  }
+}
+
+// #7268: a peer that never completes its handshake is closed by the server at
+// the handshake timeout. The client's own read timeout is far longer, so an
+// EOF (not an Err) proves the server closed the socket.
+test "a silent TLS peer is closed at the handshake timeout (#7268)" {
+  Env.setVar("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", "300")
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19419, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  threadSleep(100)
+  val silent = dial("127.0.0.1", 19419)
+  hostSetIoTimeout(silent, 10000)
+  val read = hostRead(silent, 64)
+  hostClose(silent)
+  stopListener(listener)
+  Env.setVar("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", "10000")
+  match read {
+    case Ok(b) -> assertEqualInt(b.length, 0, "server closed the silent connection")
+    case Err(e) -> panic("expected the server to close the silent peer, got " + TcpError.message(e))
+  }
+}
+
+// #7268: an established connection that goes quiet is closed once it has been
+// inactive for the idle timeout, here after one keep-alive request.
+test "an idle keep-alive connection is closed at the idle timeout (#7268)" {
+  Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "300")
+  val listener = startListener("http://127.0.0.1:19420/")
+  val server = taskRun({ -> serveN(listener, 1) })
+  threadSleep(100)
+  val conn = dial("127.0.0.1", 19420)
+  hostSetIoTimeout(conn, 10000)
+  val _ = hostWrite(conn, encodeUtf8("GET /idle HTTP/1.1\r\nHost: x\r\n\r\n"))
+  val acc: List[String] = newList()
+  val gotResponse = readInto(conn, acc, "path=/idle")
+  taskWait(server)
+  val after = hostRead(conn, 64)
+  hostClose(conn)
+  stopListener(listener)
+  Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "120000")
+  assertTrue(gotResponse, "keep-alive request served: " + joined(acc))
+  match after {
+    case Ok(b) -> assertEqualInt(b.length, 0, "server closed the idle connection")
+    case Err(e) -> panic("expected the server to close the idle connection, got " + TcpError.message(e))
+  }
+}
+
+test "timeout resolvers honour their environment overrides with safe fallback (#7268)" {
+  Env.setVar("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", "2500")
+  assertEqualInt(resolveTlsHandshakeTimeoutMs(), 2500, "handshake override honoured")
+  Env.setVar("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", "0")
+  assertEqualInt(resolveTlsHandshakeTimeoutMs(), 10000, "zero handshake timeout falls back")
+  Env.setVar("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", "soon")
+  assertEqualInt(resolveTlsHandshakeTimeoutMs(), 10000, "non-numeric handshake timeout falls back")
+  Env.setVar("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", "10000")
+
+  Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "45000")
+  assertEqualInt(resolveConnectionIdleTimeoutMs(), 45000, "idle override honoured")
+  Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "-1")
+  assertEqualInt(resolveConnectionIdleTimeoutMs(), 120000, "negative idle timeout falls back")
+  Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "120000")
+  assertEqualInt(resolveConnectionIdleTimeoutMs(), 120000, "explicit default resolves unchanged")
+}

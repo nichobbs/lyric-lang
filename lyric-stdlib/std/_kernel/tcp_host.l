@@ -184,6 +184,18 @@ func clientStream(c: in TcpClient): Stream = ()
 @externTarget("System.Net.Sockets.TcpClient.Close")
 func clientClose(c: in TcpClient): Unit = ()
 
+// Per-operation socket timeouts in milliseconds (0 = wait forever). A
+// synchronous `NetworkStream` read/write, and an `SslStream` handshake or
+// record read/write layered over it, fails with an `IOException` once one
+// blocking socket call exceeds the timeout.
+@externInstance
+@externTarget("System.Net.Sockets.TcpClient.set_ReceiveTimeout")
+func clientSetReceiveTimeout(c: in TcpClient, ms: in Int): Unit = ()
+
+@externInstance
+@externTarget("System.Net.Sockets.TcpClient.set_SendTimeout")
+func clientSetSendTimeout(c: in TcpClient, ms: in Int): Unit = ()
+
 // `TcpClient.Client` (the underlying `Socket`) and `Socket.RemoteEndPoint`
 // back `hostRemoteAddress` (used by `lyric-ws`'s dotnet WebSocket kernel to
 // populate `onOpen`'s `remoteAddress` callback argument — docs/62 §6). The
@@ -250,9 +262,23 @@ func newServerSslStream(inner: in Stream, leaveInnerStreamOpen: in Bool): Stream
 @externTarget("System.Net.Security.SslServerAuthenticationOptions..ctor")
 func newServerOptions(): SslServerAuthOptions = ()
 
+// The server identity as a prebuilt `SslStreamCertificateContext` (the
+// documented way to share one certificate across many handshakes: the chain
+// is built once here instead of once per connection). `offline = true`
+// builds the chain from the certificate and the local stores only, never
+// fetching missing intermediates over the network from inside a listener's
+// startup path.
+extern type SslCertContext = "System.Net.Security.SslStreamCertificateContext"
+
+@externTarget("System.Security.Cryptography.X509Certificates.X509Certificate2Collection..ctor")
+func newCertCollection(): X509Certificate2Collection = ()
+
+@externTarget("System.Net.Security.SslStreamCertificateContext.Create")
+func newCertContext(target: in TlsHost.CertHandle, additional: in X509Certificate2Collection, offline: in Bool): SslCertContext = ()
+
 @externInstance
-@externTarget("System.Net.Security.SslServerAuthenticationOptions.set_ServerCertificate")
-func optionsSetServerCertificate(o: in SslServerAuthOptions, cert: in TlsHost.CertHandle): Unit = ()
+@externTarget("System.Net.Security.SslServerAuthenticationOptions.set_ServerCertificateContext")
+func optionsSetServerCertificateContext(o: in SslServerAuthOptions, c: in SslCertContext): Unit = ()
 
 @externInstance
 @externTarget("System.Net.Security.SslServerAuthenticationOptions.set_ClientCertificateRequired")
@@ -515,7 +541,7 @@ pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
 // chain policy described in the module header.
 func buildServerOptions(cfg: in Tls.TlsServerConfig): SslServerAuthOptions {
   val opts = newServerOptions()
-  optionsSetServerCertificate(opts, cfg.identity.rawHandle())
+  optionsSetServerCertificateContext(opts, newCertContext(cfg.identity.rawHandle(), newCertCollection(), true))
   match cfg.minVersion {
     case Tls13 -> optionsSetEnabledSslProtocols(opts, sslProtocolsTls13())
     case Tls12 -> ()
@@ -587,43 +613,113 @@ pub func hostAcceptTls(l: in Listener, cfg: in Tls.TlsServerConfig): Result[Conn
   }
 }
 
-/// Terminate TLS on an already-accepted plain connection (the accept/upgrade
-/// split so a future driver can inspect the peer address before deciding to
-/// speak TLS). Same handshake-failure discipline as `hostAcceptTls`.
-pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
+/// A server TLS configuration validated and compiled once, for reuse across
+/// every connection a listener accepts (#7268): the `SslServerAuthenticationOptions`,
+/// its `SslStreamCertificateContext` (certificate chain), ALPN list and mTLS
+/// chain policy are built by `hostPrepareServerTls` and only read afterwards,
+/// so concurrent handshakes share them safely.
+pub opaque type ServerTls {
+  options: SslServerAuthOptions
+}
+
+/// Validate `cfg` and build its reusable server TLS state. A mutual-TLS
+/// misconfiguration (`requireClientCert` with no `clientCa`, #6042) or an
+/// identity the platform cannot use is `Err(TlsConfigInvalid(...))`.
+pub func hostPrepareServerTls(cfg: in Tls.TlsServerConfig): Result[ServerTls, TcpError] {
   match validateServerConfig(cfg) {
-    case Some(e) -> {
-      // Reject the misconfiguration (#6042) and release the already-accepted
-      // socket rather than upgrading it.
-      clientClose(conn.client)
-      return Err(error = e)
-    }
+    case Some(e) -> return Err(error = e)
     case None -> ()
   }
-  // The `SslStream` ctor itself is wrapped in its own try (#6058): if it were
-  // to throw, `conn.client` must still be closed rather than leaking, and the
-  // failure must map to `TlsHandshakeFailed` like every other fallible BCL
-  // call in this file, not escape as a raw host exception. No SslStream
-  // exists yet on this path, so `conn.stream` (the plain NetworkStream) is
-  // disposed directly rather than through `ssl`.
+  try {
+    Ok(value = ServerTls(options = buildServerOptions(cfg)))
+  } catch Bug as b {
+    Err(error = TlsConfigInvalid(message = b.message))
+  }
+}
+
+/// Release a `ServerTls` once no connection will be upgraded with it again.
+/// Nothing to free on this target (the options are garbage-collected); the
+/// native twin frees its OpenSSL context here.
+pub func hostReleaseServerTls(t: in ServerTls): Unit {
+  ()
+}
+
+/// Bound every subsequent blocking read and write on `conn` to `timeoutMs`
+/// milliseconds of inactivity (`0` = no limit). A read or write that times
+/// out returns `Err(TransportFailed(...))`. Best-effort: a socket that is
+/// already closed ignores the call (its next read or write fails anyway).
+pub func hostSetIoTimeout(conn: in Conn, timeoutMs: in Int): Unit
+  requires: timeoutMs >= 0
+{
+  try {
+    clientSetReceiveTimeout(conn.client, timeoutMs)
+    clientSetSendTimeout(conn.client, timeoutMs)
+  } catch Bug as _ {
+    ()
+  }
+}
+
+/// Terminate TLS on an already-accepted plain connection (the accept/upgrade
+/// split so a driver can run the handshake off its accept loop, #7268).
+/// `handshakeTimeoutMs` (`0` = no limit) bounds each blocking socket operation
+/// of the handshake, so a peer that connects and never finishes its
+/// ClientHello fails instead of holding the connection open forever; the
+/// timeout is cleared again on success. On `Err` the plain `conn` is left for
+/// the caller to `hostClose`, so a caller that tracks live connections can
+/// deregister it before its socket is released.
+pub func hostUpgradeServerTlsPrepared(conn: in Conn, tls: in ServerTls, handshakeTimeoutMs: in Int): Result[Conn, TcpError]
+  requires: handshakeTimeoutMs >= 0
+{
+  // The `SslStream` ctor itself is wrapped in its own try (#6058) so a throw
+  // maps to `TlsHandshakeFailed` like every other fallible BCL call in this
+  // file instead of escaping as a raw host exception.
   val ssl = try {
     newServerSslStream(conn.stream, false)
   } catch Bug as b {
-    disposeQuietly(conn.stream)
-    clientClose(conn.client)
     return Err(error = TlsHandshakeFailed(message = b.message))
   }
   try {
-    sslAuthenticateAsServer(ssl, buildServerOptions(cfg))
+    if handshakeTimeoutMs > 0 {
+      clientSetReceiveTimeout(conn.client, handshakeTimeoutMs)
+      clientSetSendTimeout(conn.client, handshakeTimeoutMs)
+    }
+    sslAuthenticateAsServer(ssl, tls.options)
+    if handshakeTimeoutMs > 0 {
+      clientSetReceiveTimeout(conn.client, 0)
+      clientSetSendTimeout(conn.client, 0)
+    }
     Ok(value = Conn(client = conn.client, stream = ssl, alpn = computeAlpn(ssl)))
   } catch Bug as b {
     // Dispose the SslStream (which, via leaveInnerStreamOpen = false, also
-    // disposes the wrapped NetworkStream) before closing the socket, so a
-    // rejected handshake leaks neither the SslStream's own state nor the
-    // socket (#6031).
+    // disposes the wrapped NetworkStream) so a rejected handshake does not
+    // leak its state (#6031); the caller's `hostClose(conn)` releases the
+    // socket.
     disposeQuietly(ssl)
-    clientClose(conn.client)
     Err(error = TlsHandshakeFailed(message = b.message))
+  }
+}
+
+/// Terminate TLS on an already-accepted plain connection using `cfg`, with no
+/// handshake timeout. On failure the socket is closed before returning, so a
+/// rejected peer never leaks a connection. Builds the server TLS state for
+/// this one connection; a
+/// driver upgrading many connections should call `hostPrepareServerTls` once
+/// and `hostUpgradeServerTlsPrepared` per connection instead.
+pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
+  match hostPrepareServerTls(cfg) {
+    case Err(e) -> {
+      // Reject the misconfiguration (#6042) and release the already-accepted
+      // socket rather than upgrading it.
+      clientClose(conn.client)
+      Err(error = e)
+    }
+    case Ok(tls) -> match hostUpgradeServerTlsPrepared(conn, tls, 0) {
+      case Ok(upgraded) -> Ok(value = upgraded)
+      case Err(e) -> {
+        hostClose(conn)
+        Err(error = e)
+      }
+    }
   }
 }
 

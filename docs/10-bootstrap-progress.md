@@ -35435,3 +35435,20 @@ fills a `ByteBuffer`'s backing array in place. Also on the JVM:
 through `OffsetDateTime`, and `log2` no longer recomputes `ln(2)` per call
 (#7283, epic #7256). Covered by `secure_random_self_test.l` on dotnet and JVM.
 
+
+## HTTPS handshakes run off the accept loop, with handshake and idle timeouts
+
+On dotnet and native the TLS server ran each handshake on its single accept
+loop with no timeout, so one client that connected and never sent a
+ClientHello stopped every later connection, and the server TLS context was
+rebuilt for every connection. The accept loop now only accepts the socket;
+the handshake runs on the connection's own task (dotnet) or thread (native)
+against TLS state built once per listener (`Std.TcpHost.hostPrepareServerTls`:
+a cached `SslStreamCertificateContext` on dotnet, one shared `SSL_CTX` on
+native), bounded by `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` (default 10000).
+Established connections close after `LYRIC_HTTP_IDLE_TIMEOUT_MS` (default
+120000) without read or write progress. The native TLS read/write loops
+previously retried a socket timeout forever; they now report it. Covered by
+four new cases in `http_server_dotnet_tests.l`, items K and L of
+`llvm_http_server_self_test.l`, and `lyric-rt`'s C tests (D-progress-960,
+#7268, epic #7256).

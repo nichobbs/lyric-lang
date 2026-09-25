@@ -787,6 +787,13 @@ int32_t lyric_sock_wake_pipe_signal(int32_t write_fd);
  * Retries internally on EINTR, exactly like `lyric_sock_accept`. */
 int32_t lyric_sock_accept_interruptible(int32_t listen_fd, int32_t wake_read_fd);
 
+/* Bound every later blocking read and write on `fd` to `timeout_ms`
+ * milliseconds (SO_RCVTIMEO + SO_SNDTIMEO); 0 removes the limit.  A read or
+ * write that times out fails with -1 ("timed out" in last_error), including
+ * the TLS handshake and record I/O layered over the fd.  Returns 0, or -1
+ * (last_error set) when `timeout_ms` is negative or setsockopt fails. */
+int32_t lyric_sock_set_timeouts(int32_t fd, int32_t timeout_ms);
+
 /* Read up to `n` bytes into `buf`, blocking until at least one arrives.
  * Returns the count read, 0 on a clean peer close (EOF), or -1 on error.
  * Retries on EINTR. */
@@ -883,7 +890,8 @@ void* lyric_tls_server_new(const char* cert_pem, const char* key_pem,
 void* lyric_tls_server_accept(void* server_ctx, int32_t fd);
 
 /* Read up to `n` decrypted bytes.  Returns the count, 0 on a clean TLS
- * close (close_notify / EOF), or -1 on error.  Transparently drives any
+ * close (close_notify / EOF), or -1 on error, including a socket timeout
+ * set with `lyric_sock_set_timeouts`.  Transparently drives any
  * renegotiation / WANT_READ retry loop. */
 int64_t lyric_tls_read(void* conn, uint8_t* buf, int64_t n);
 
