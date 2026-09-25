@@ -206,6 +206,26 @@ pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Uni
   }
 }
 
+// `slice[Byte]` twins of the two seams above (#7284): the host already
+// reads and writes a byte array, so these skip the per-byte `List[Byte]`
+// copy.
+pub func hostReadByteSliceResult(path: in String): Result[slice[Byte], IOError] {
+  try {
+    Ok(value = hostReadAllBytes(path))
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
+pub func hostWriteByteSliceResult(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
+  try {
+    hostWriteAllBytes(path, bytes)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
 pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
   try {
     val raw = hostEnumerateFiles(dir)

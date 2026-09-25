@@ -61,6 +61,53 @@ test "writeBytes/readBytes round-trips raw bytes" {
   val _ = deleteDirRecursive(dir)
 }
 
+test "writeByteSlice/readByteSlice round-trips raw bytes" {
+  val dir = scratchDir("byte_slice_roundtrip")
+  val _ = createDir(dir)
+  val path = dir + "/data.bin"
+  val src: List[Byte] = newList()
+  src.add(0)
+  src.add(1)
+  src.add(255)
+  match writeByteSlice(path, src.toArray()) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("writeByteSlice failed: " + IOError.message(e))
+  }
+  match readByteSlice(path) {
+    case Ok(readBack) -> {
+      assertEqualInt(readBack.length, 3, "byte count round-trips")
+      assertEqualInt(readBack[0], 0, "byte 0 round-trips")
+      assertEqualInt(readBack[1], 1, "byte 1 round-trips")
+      assertEqualInt(readBack[2], 255, "byte 2 round-trips")
+    }
+    case Err(e) -> panic("readByteSlice failed: " + IOError.message(e))
+  }
+  // Interoperates with the List[Byte] API in both directions.
+  match readBytes(path) {
+    case Ok(asList) -> assertEqualInt(asList.count, 3, "readBytes sees what writeByteSlice wrote")
+    case Err(e) -> panic("readBytes failed: " + IOError.message(e))
+  }
+  val _ = deleteDirRecursive(dir)
+}
+
+test "readByteSlice/writeByteSlice report InvalidPath and missing files" {
+  match readByteSlice("") {
+    case Ok(_) -> panic("expected InvalidPath, got Ok")
+    case Err(InvalidPath(_, _)) -> ()
+    case Err(other) -> panic("expected InvalidPath, got: " + IOError.message(other))
+  }
+  val empty: List[Byte] = newList()
+  match writeByteSlice("", empty.toArray()) {
+    case Ok(_) -> panic("expected InvalidPath, got Ok")
+    case Err(InvalidPath(_, _)) -> ()
+    case Err(other) -> panic("expected InvalidPath, got: " + IOError.message(other))
+  }
+  match readByteSlice(scratchDir("byte_slice_missing") + "/absent.bin") {
+    case Ok(_) -> panic("expected an error for a missing file, got Ok")
+    case Err(_) -> ()
+  }
+}
+
 test "fileExists reflects presence and absence" {
   val dir = scratchDir("exists")
   val _ = createDir(dir)

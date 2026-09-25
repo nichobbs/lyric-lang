@@ -164,8 +164,12 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
 2. **File operations**
    - `File.readText(path: in String): Result[String, IOError]`
    - `File.writeText(path: in String, text: in String): Result[Unit, IOError]`
-   - `File.readBytes(path: in String): Result[slice[Byte], IOError]`
-   - `File.writeBytes(path: in String, bytes: in slice[Byte]): Result[Unit, IOError]`
+   - `File.readBytes(path: in String): Result[List[Byte], IOError]`
+   - `File.writeBytes(path: in String, bytes: in List[Byte]): Result[Unit, IOError]`
+   - `File.readByteSlice(path: in String): Result[slice[Byte], IOError]` and
+     `File.writeByteSlice(path: in String, bytes: in slice[Byte]): Result[Unit, IOError]`
+     (`@experimental`, #7284): the same contracts over the host's byte array,
+     without a per-byte `List[Byte]` copy
    - `File.exists(path: in String): Bool`
 
 3. **Path operations**

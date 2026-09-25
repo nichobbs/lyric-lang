@@ -187,6 +187,47 @@ test "Std.File readBytesOrPanic: round-trip, panics on a missing path (ASan)" {
   assertTrue(panicResult.exitCode != 42 and panicResult.exitCode != 0, "a non-panicking readBytesOrPanic would exit 42")
 }
 
+test "Std.File readByteSlice/writeByteSlice: zero-copy round-trip, missing path (ASan) (#7284)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.File\n" +
+    "func main(): Int {\n" +
+    "  val path = \"" +
+    tempBase() +
+    "/lyric-byteslice.bin\"\n" +
+    "  val src: List[Byte] = newList()\n" +
+    "  src.add(0)\n" +
+    "  src.add(1)\n" +
+    "  src.add(255)\n" +
+    "  match writeByteSlice(path, src.toArray()) {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match readByteSlice(path) {\n" +
+    "    case Ok(b) -> {\n" +
+    "      if b.length != 3 or b[2] != 255 {\n" +
+    "        return 2\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 3\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match readByteSlice(path + \".missing\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "      return 4\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  val _ = deleteFile(path)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "readByteSlice/writeByteSlice round-trip")
+}
+
 // Issue #6961 (D-N-003 follow-up): readTextOrPanic's own try/catch
 // wrapper was rejected by --target native's codegen; removed in favor
 // of hostReadAllText panicking directly in the native kernel, the same

@@ -35568,3 +35568,17 @@ Several stdlib helpers did far more work than their results needed:
   only on `ENOENT`.
 
 (#7284, epic #7256)
+
+## Std.File reads and writes `slice[Byte]` without a per-byte copy
+
+`Std.File.readBytes` returns `List[Byte]`, which each kernel filled one byte at
+a time from the host's byte array (boxing every byte on the JVM), and most
+callers immediately copied it back out with `.toArray()`. The new
+`@experimental` `readByteSlice`/`writeByteSlice` keep the same `Result`
+contracts but hand the host's array through directly: `File.ReadAllBytes` /
+`WriteAllBytes` on .NET, `FileInputStream.readAllBytes` / `FileOutputStream`
+on the JVM, and the existing `lyric_file_read_bytes`/`lyric_file_write_bytes`
+seams on native, where `slice[Byte]` shares the `LyricList` representation
+(D-N-015). The MSIL metadata reader (15 reference-assembly reads), the CLI's
+runtime-DLL copies, `Std.Tls` certificate loading and `lyric-web` static files
+now use them (#7284, epic #7256).

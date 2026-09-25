@@ -760,10 +760,9 @@ impl Middleware for StaticFileMiddleware {
     match resolveStaticFile(self.cfg, relative) {
       case Some(resolvedMatch) -> {
         val resolved: String = resolvedMatch
-        match readBytes(resolved) {
+        match readByteSlice(resolved) {
           case Ok(fileBytes) -> {
-            val bytes: List[Byte] = fileBytes
-            val resp = bytesResponse(200, contentTypeForPath(resolved), bytes.toArray())
+            val resp = bytesResponse(200, contentTypeForPath(resolved), fileBytes)
             return withResponseHeader(resp, "Cache-Control", "public, max-age=" + self.cfg.cacheControlSeconds.toString())
           }
           case Err(_) -> return h.handle(req)

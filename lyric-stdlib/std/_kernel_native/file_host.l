@@ -83,6 +83,12 @@ extern func rtDirListTyped(path: NativePtr[Byte], okOut: NativePtr[Int]): List[S
 
 extern func rtWriteBytes(path: NativePtr[Byte], data: List[Byte], append: Int): Int = "lyric_file_write_bytes"
 
+// The same two lyric-rt seams typed as `slice[Byte]`, which shares the
+// `LyricList` representation on this target (D-N-015), so no copy is made.
+extern func rtReadByteSlice(path: NativePtr[Byte], okOut: NativePtr[Int]): slice[Byte] = "lyric_file_read_bytes"
+
+extern func rtWriteByteSlice(path: NativePtr[Byte], data: slice[Byte], append: Int): Int = "lyric_file_write_bytes"
+
 extern func rtDirRemove(path: NativePtr[Byte]): Int = "lyric_dir_remove"
 
 // lstat-based: a symlink-to-directory is NOT a directory here, so the
@@ -258,6 +264,31 @@ pub func hostReadAllBytes(path: in String): slice[Byte] {
 pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
   val c = toC(path)
   val rc = rtWriteBytes(c, bytes, 0)
+  freeC(c)
+  if rc == 0 {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = path, message = "the file could not be written"))
+  }
+}
+
+@unsafe_ffi
+pub func hostReadByteSliceResult(path: in String): Result[slice[Byte], IOError] {
+  var ok: Int = 0
+  val c = toC(path)
+  val bytes = rtReadByteSlice(c, nativeAddrOf(ok))
+  freeC(c)
+  if ok == 1 {
+    Ok(value = bytes)
+  } else {
+    Err(error = IoError(path = path, message = "the file could not be read"))
+  }
+}
+
+@unsafe_ffi
+pub func hostWriteByteSliceResult(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
+  val c = toC(path)
+  val rc = rtWriteByteSlice(c, bytes, 0)
   freeC(c)
   if rc == 0 {
     Ok(value = ())

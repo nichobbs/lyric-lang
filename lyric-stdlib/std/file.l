@@ -200,6 +200,33 @@ pub func writeBytes(path: in String, bytes: in List[Byte]): Result[Unit, IOError
   hostWriteBytesResult(path, bytes)
 }
 
+/// Read the file at `path` as a `slice[Byte]`.
+///
+/// The same contract as `readBytes`, but the bytes arrive in the fixed-size
+/// buffer form parsers and `writeByteSlice` consume, without a per-byte
+/// copy into a `List[Byte]`. Prefer it whenever the caller does not need to
+/// grow the result.
+@experimental
+pub func readByteSlice(path: in String): Result[slice[Byte], IOError] {
+  if path.length == 0 {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  hostReadByteSliceResult(path)
+}
+
+/// Write `bytes` to `path` (creating or replacing).
+///
+/// The same contract as `writeBytes`, taking a `slice[Byte]` so a buffer
+/// read by `readByteSlice` or built by an encoder is written without first
+/// being copied into a `List[Byte]`.
+@experimental
+pub func writeByteSlice(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
+  if path.length == 0 {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  hostWriteByteSliceResult(path, bytes)
+}
+
 /// List the names of all files directly inside `dir` (non-recursive).
 ///
 /// Returns `Ok(files)` where each element is an absolute path to a file.
