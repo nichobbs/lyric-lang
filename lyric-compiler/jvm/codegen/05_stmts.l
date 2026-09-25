@@ -42,6 +42,19 @@ func isDefaultCall(e: in Expr): Bool {
   }
 }
 
+// Lower an assignment's right-hand side against the target's JVM type. A
+// bare `default()` assigned into a primitive slot pushes that primitive's
+// zero instead of the erased `aconst_null`, which the coercion would unbox
+// into a NullPointerException (`value = default()` on an `out Int`
+// parameter, hit by Std.Json's field readers, #7251). Any other value is
+// lowered normally.
+func lowerAssignValue(ctx: in FuncCtx, insns: in List[LInsn], value: in Expr, targetTy: in JvmType): JvmType {
+  if isDefaultCall(value) and pushPrimitiveZero(insns, targetTy) {
+    return targetTy
+  }
+  lowerExpr(ctx, insns, value)
+}
+
 // Push the zero value of primitive `ty`; returns false for non-primitives
 // (caller lowers the expression normally).
 func pushPrimitiveZero(insns: in List[LInsn], ty: in JvmType): Bool {
@@ -195,7 +208,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   // not match the cell's element type (an erased-Object match
                   // payload assigned into a primitive-typed var, and vice
                   // versa).
-                  val cvTy = lowerExpr(ctx, insns, value)
+                  val cvTy = lowerAssignValue(ctx, insns, value, cellElemTy)
                   coerceValueTo(ctx, insns, cvTy, cellElemTy)
                   val hvSlot = allocSlot(ctx, "__cellv_" + freshLabel(ctx), cellElemTy)
                   emitStore(insns, hvSlot, cellElemTy)
@@ -228,7 +241,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               // Normal (non-hoisted) local var assignment
               match op {
                 case AssEq -> {
-                  val vTy = lowerExpr(ctx, insns, value)
+                  val vTy = lowerAssignValue(ctx, insns, value, ty)
                   // The value's static type may not match the slot's declared
                   // type: an erased-Object match payload (`case Some(n) ->
                   // contentLength = n` on Option[Long]) assigned into a
@@ -282,7 +295,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               // `VerifyError: Inconsistent stackmap frames` (#6168).
               match op {
                 case AssEq -> {
-                  val vTy = lowerExpr(ctx, insns, value)
+                  val vTy = lowerAssignValue(ctx, insns, value, fty)
                   val vSlot = allocSlot(ctx, "__sfassign_v_" + freshLabel(ctx), vTy)
                   emitStore(insns, vSlot, vTy)
                   insns.add(LAload(slot = 0))
@@ -364,7 +377,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           }
           match op {
             case AssEq -> {
-              val vTy = lowerExpr(ctx, insns, value)
+              val vTy = lowerAssignValue(ctx, insns, value, fty)
               val vSlot = allocSlot(ctx, "__fassign_v_" + freshLabel(ctx), vTy)
               emitStore(insns, vSlot, vTy)
               emitLoad(insns, recvSlot, recvTy)
