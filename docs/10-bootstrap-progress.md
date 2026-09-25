@@ -35332,5 +35332,5 @@ from the JVM and native targets; it now binds the
 locale no longer maps 'I' to dotless 'ı'. Covered by
 `string_ordinal_self_test.l` (all three targets) and
 `string_case_locale_self_test.l` (run under tr-TR in CI)
-(D-progress-957, #7260, #7261, epic #7256).
+(D-progress-959, #7260, #7261, epic #7256).
 

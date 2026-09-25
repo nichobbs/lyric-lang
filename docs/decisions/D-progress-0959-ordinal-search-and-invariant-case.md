@@ -1,4 +1,4 @@
-# D-progress-957 — Ordinal string search on MSIL and locale-neutral case conversion (#7260, #7261)
+# D-progress-959 — Ordinal string search on MSIL and locale-neutral case conversion (#7260, #7261)
 
 **Status:** shipped
 

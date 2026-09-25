@@ -19,6 +19,7 @@
 package Lyric.StringOrdinalSelfTest
 
 import Std.Core
+import Std.Encoding
 import Std.Testing
 
 test "indexOf finds a lone LF inside a CR LF pair" {
@@ -31,7 +32,8 @@ test "lastIndexOf finds a lone LF inside a CR LF pair" {
 }
 
 test "an ignorable code point does not match as empty" {
-  val shy = "­"
+  // Built from its code point so the test source carries no invisible character.
+  val shy = codepointToString(173)
   assertEqualInt("abc".indexOf(shy), -1, "indexOf soft hyphen")
   assertEqualInt("abc".lastIndexOf(shy), -1, "lastIndexOf soft hyphen")
   assertFalse("abc".startsWith(shy), "startsWith soft hyphen")
