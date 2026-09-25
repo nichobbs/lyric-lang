@@ -1360,6 +1360,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_fastpath_self_test.l
+      - name: Slice fast-path List-backed fallback self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_fastpath_listbacked_dotnet_self_test.l
 
       # Block-shadow self-test (#5191 / D-progress-603).  Runtime regression test
       # for general nested-block variable shadowing on the self-hosted backends:

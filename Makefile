@@ -377,6 +377,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/self_method_call_self_test.l \
 	lyric-compiler/lyric/slice_append_widening_self_test.l \
 	lyric-compiler/lyric/slice_array_abi_self_test.l \
+	lyric-compiler/lyric/slice_fastpath_listbacked_dotnet_self_test.l \
 	lyric-compiler/lyric/slice_fastpath_self_test.l \
 	lyric-compiler/lyric/slice_ops_self_test.l \
 	lyric-compiler/lyric/slice_string_self_test.l \
