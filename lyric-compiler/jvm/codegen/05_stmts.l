@@ -1075,6 +1075,44 @@ func emitCountingForJvm(
 // reported a descriptor `emitFfiCoerce` doesn't recognize as SAM-bridgeable,
 // silently skipping the adapter wrap the identical closure gets when it is
 // instead passed as a literal directly at the call site (#6552).
+// The declared return type of a function-typed annotation, so a call through
+// the binding narrows the erased `invoke` result to it instead of leaving an
+// `Object` its consumer guesses at (`f(2, 40) == 42` unboxed a `Long` as an
+// `Integer`).  None for a `Unit` result or a non-function type.
+func annotatedFuncValRetType(ctx: in FuncCtx, te: in TypeExpr): Option[JvmType] {
+  val resolved = BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te)
+  match resolved.kind {
+    case TFunction(_, ret) -> match ret.kind {
+      case TUnit -> None
+      case TRef(rp) -> if rp.segments.count == 1 and rp.segments[0] == "Unit" {
+        None
+      } else {
+        Some(value = localAnnotatedJvmType(ctx, ret))
+      }
+      case _ -> Some(value = localAnnotatedJvmType(ctx, ret))
+    }
+    case _ -> None
+  }
+}
+
+// Record a function-typed binding's declared return type (see
+// `annotatedFuncValRetType`); it takes precedence over the type inferred from
+// the initializer.
+pub func recordAnnotatedFuncValRetType(ctx: in FuncCtx, name: in String, tyOpt: in Option[TypeExpr]): Unit {
+  match tyOpt {
+    case Some(te) -> match annotatedFuncValRetType(ctx, te) {
+      case Some(rt) -> {
+        if ctx.funcValRetTypes.containsKey(name) {
+          ctx.funcValRetTypes.remove(name)
+        }
+        ctx.funcValRetTypes.add(name, rt)
+      }
+      case None -> ()
+    }
+    case None -> ()
+  }
+}
+
 func localAnnotatedJvmType(ctx: in FuncCtx, te: in TypeExpr): JvmType {
   val resolved = BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te)
   match resolved.kind {
@@ -1154,6 +1192,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             case PBinding(nm, _) -> {
               recordVarGenericArgs(ctx, nm, init, tyOpt)
               recordFuncValRetType(ctx, nm, init)
+              recordAnnotatedFuncValRetType(ctx, nm, tyOpt)
               recordSpawnResultType(ctx, nm, init)
               match tyOpt {
                 case Some(te) -> recordDeclaredElemType(ctx, nm, te, newList())
@@ -1186,6 +1225,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             emitStore(insns, slot, ty)
             recordVarGenericArgs(ctx, name, init, tyOpt)
             recordFuncValRetType(ctx, name, init)
+            recordAnnotatedFuncValRetType(ctx, name, tyOpt)
             recordSpawnResultType(ctx, name, init)
             match tyOpt {
               case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
@@ -1249,6 +1289,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // with the declared element type (docs/59 §4.3 #5439 class).
               recordVarGenericArgs(ctx, name, init, tyOpt)
               recordFuncValRetType(ctx, name, init)
+              recordAnnotatedFuncValRetType(ctx, name, tyOpt)
               recordSpawnResultType(ctx, name, init)
               match tyOpt {
                 case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())

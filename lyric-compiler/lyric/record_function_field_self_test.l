@@ -117,3 +117,25 @@ test "a qualified case pattern binds a field of an erased function result" {
   val r: Responder[Reply] = OnInput(toMsg = { s: String -> Said(text = s) })
   assertEqual(describeResponder(r), "said abc", "qualified pattern bound")
 }
+
+record Summer {
+  add: (Int, Long) -> Long
+}
+
+func sumsToFortyTwo(f: in (Int, Long) -> Long): Bool {
+  return f(2, 40) == 42
+}
+
+// A function value's call is erased, so an argument the checker accepts by
+// widening (`Int` for a `Long` parameter) is converted explicitly
+// (D-progress-956).  Covers a literal, an `Int` local, a local function
+// value, a function-typed parameter and a record function field.
+test "an Int argument widens to a function value's Long parameter" {
+  val f: (Int, Long) -> Long = { x: Int, y: Long -> x.toLong() + y }
+  val small: Int = 5
+  assertTrue(f(2, 40) == 42, "literal widened")
+  assertTrue(f(2, small) == 7, "Int local widened")
+  val s = Summer(add = { x: Int, y: Long -> x.toLong() * y })
+  assertTrue(s.add(3, 4) == 12, "field call widened")
+  assertTrue(sumsToFortyTwo(f), "parameter call widened")
+}

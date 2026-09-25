@@ -1035,6 +1035,30 @@ pub record RecordCopySite {
   conflicting: Bool
 }
 
+/// A reference to another package's function used as a VALUE (not called),
+/// recorded by the type checker (`SymbolTable.funcRefSites`, keyed by
+/// `recordCopySiteKey` of the reference's span) and desugared by
+/// `Lyric.Mono.desugarRecordCopiesFile` into the typed forwarding lambda
+/// `{ p0: T0, ... -> Pkg.f(p0, ...) }`: `calleeSegs` is the function's
+/// package path plus its name, `paramTypes` its parameter types rendered
+/// fully qualified.
+pub record FuncRefSite {
+  calleeSegs: List[String]
+  paramTypes: List[TypeExpr]
+  /// The function's result type rendered the same way, when it has one.
+  retType: Option[TypeExpr]
+  startOffset: Int
+}
+
+/// An argument of a call through a function VALUE that the type checker
+/// accepted by numeric widening (`Int` for a `Long` parameter): a function
+/// value's call is erased, so `Lyric.Mono.desugarCheckedFile` makes the
+/// widening explicit as `arg.<method>()` (D-progress-956).
+pub record ArgConversionSite {
+  method: String
+  startOffset: Int
+}
+
 /// The key of a record-copy call site: its span's start and end offsets.
 pub func recordCopySiteKey(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)

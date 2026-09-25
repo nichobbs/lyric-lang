@@ -53,6 +53,7 @@ package Lyric.SynthesizedMethodSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Protected-type entry dispatch (#1499)
@@ -303,4 +304,25 @@ test "protected member bare call shadowed by a sibling member resolves the membe
 test "protected member bare call with no same-named sibling resolves the free function (#6491)" {
   val c = ShadowedCounter(total = 0)
   assertEqualInt(c.viaFree(), 41, "free-function resolution unaffected when no sibling shadows it")
+}
+
+// A generic stdlib call inside a protected member, over a protected field,
+// is specialised like any method body's (D-progress-957); before, it stayed
+// generic and MSIL codegen could not resolve it.
+protected type NameTable {
+  var names: Map[Long, String] = newMap()
+  entry put(k: in Long, v: in String): Unit {
+    names.add(k, v)
+  }
+  func all(): List[String] {
+    return mapValues(names)
+  }
+}
+
+test "a generic call over a protected field specialises (D-progress-957)" {
+  val t = NameTable()
+  t.put(1, "a")
+  t.put(2, "b")
+  val vs = t.all()
+  assertEqualInt(vs.count, 2, "both values returned")
 }

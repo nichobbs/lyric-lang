@@ -728,3 +728,97 @@ test "in-bundle var-bound closure passed by name preserves Result's type params 
   assertEqualInt(captured.exitCode, 0, "cpgen_varbound_result: exit 0 (stderr=" + captured.stderr + ")")
   assertEqual(Str.trim(captured.stdout), "21", "cpgen_varbound_result: var-bound Ok(21) dispatches to the Ok arm")
 }
+
+// A producer assembly holding several packages.
+func buildDllPkgs(tmpDir: in String, pkgs: in List[Emitter.ProjectPackage], asmName: in String): String {
+  val dllPath = Path.join(tmpDir, asmName + ".dll")
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = asmName,
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  match Emitter.emitProject(req).outputPath {
+    case None -> panic("buildDllPkgs(" + asmName + "): compilation failed")
+    case Some(_) -> ()
+  }
+  dllPath
+}
+
+// A restored generic whose body calls a SIBLING package's function through
+// its package name (`CpSess.Session.start(m)`, inside a closure) specialises
+// in the consumer (D-progress-958).  The stored body is alias-rewritten
+// source; re-parsed, the qualified call is a member chain and codegen read
+// `CpSess.Session` as a value (T0115) until the package's recorded imports
+// were brought back into scope.
+test "cross-package generic calling a sibling package by name inside a closure (D-progress-958)" {
+  val tmpDir = freshTempDir("cpgen-sibling-qualified")
+  val sessionSrc = "package CpSess.Session\n" + "\n" + "pub record Session[M] {\n" + "  model: M\n" + "}\n" + "\n" +
+    "pub record Output[M] {\n" +
+    "  session: Session[M]\n" +
+    "  count: Int\n" +
+    "}\n" +
+    "\n" +
+    "pub func start[M](m: in M): Output[M] {\n" +
+    "  return Output(session = Session(model = m), count = 1)\n" +
+    "}\n"
+  val hostSrc = "package CpSess.Host\n" + "\n" + "import CpSess.Session\n" + "import CpSess.Session.{Session, Output}\n" +
+    "\n" +
+    "pub record Instance {\n" +
+    "  run: () -> Int\n" +
+    "}\n" +
+    "\n" +
+    "pub func instance[M](m: in M): Instance {\n" +
+    "  return Instance(run = { ->\n" +
+    "    val o: Output[M] = Session.start(m)\n" +
+    "    val s: Session[M] = o.session\n" +
+    "    o.count\n" +
+    "  })\n" +
+    "}\n"
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkPkg("CpSess.Session", sessionSrc))
+  pkgs.add(mkPkg("CpSess.Host", hostSrc))
+  val producerDll = buildDllPkgs(tmpDir, pkgs, "CpSess.Lib")
+  val consumerSrc = "package CpSess.App\n" + "\n" + "import CpSess.Host.{instance}\n" + "\n" + "func main(): Unit {\n" +
+    "  val i = instance(5)\n" +
+    "  println(i.run())\n" +
+    "}\n"
+  val dllPath = Path.join(tmpDir, "CpSess.App.dll")
+  val cpkgs: List[Emitter.ProjectPackage] = newList()
+  cpkgs.add(mkPkg("CpSess.App", consumerSrc))
+  val restored: List[String] = newList()
+  restored.add("CpSess.Session\t" + producerDll)
+  restored.add("CpSess.Host\t" + producerDll)
+  val req = Emitter.EmitProjectRequest(
+    packages = cpkgs,
+    assemblyName = "CpSess.App",
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = restored,
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  match Emitter.emitProject(req).outputPath {
+    case None -> panic("cpgen_sibling_qualified: consumer compilation failed")
+    case Some(_) -> ()
+  }
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_sibling_qualified: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "1", "cpgen_sibling_qualified: output")
+}

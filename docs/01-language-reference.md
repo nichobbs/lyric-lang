@@ -1002,6 +1002,10 @@ val sums = pairs.map((a, b) -> a + b)
 
 `(a, b) -> a + b` and `{ a, b -> a + b }` are the same lambda; the bare form is sugar for the common case of a lambda passed as an ordinary (non-trailing) call argument. A parenthesised group that isn't immediately followed by `->`, or whose elements aren't all bare identifiers, is parsed as a tuple or parenthesised expression as usual (#4748).
 
+**Named functions as values.** A top-level function can be used as a value wherever a function type is expected: `apply(double, 21)`, `Holder(f = joinPair)`. This includes a function imported from another package, whether it is named bare (`import Pkg.{joinPair}`), through an alias or trailing segment (`Other.joinPair`), or by its full package path (`Pkg.Other.joinPair`). The reference resolves to the function the name denotes in the current scope, the same one a call would bind. A reference to another package's function stands for the forwarding lambda `{ p0: T0, ... -> Pkg.f(p0, ...) }`, so it is valid for a non-generic, synchronous function whose parameters are all `in`. When the package declares several functions of that name, a reference cannot pick an overload (**T0123**); write the lambda with typed parameters instead.
+
+**Arguments to a function value.** A call through a function value checks its arguments against the function type exactly as a direct call does, including numeric widening: an `Int` argument satisfies a `Long` or `Double` parameter. The widening is carried out at the call, so the function receives a value of its declared parameter type.
+
 ## 6. Contracts
 
 ### 6.1 Contract clauses

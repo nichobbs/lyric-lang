@@ -257,6 +257,17 @@ record MonoState {
   /// `recordCopySiteKey`; `rewriteExpr` desugars each into a constructor
   /// call (`desugarRecordCopyMono`).
   copySites: Map[String, RecordCopySite]
+  /// Cross-package function values from the type checker, keyed like
+  /// `copySites`; `rewriteExpr` replaces each with its forwarding lambda
+  /// (D-progress-955).
+  funcRefSites: Map[String, FuncRefSite]
+  /// Widened function-value call arguments from the type checker; each is
+  /// rewritten to `arg.<method>()` once (D-progress-956).
+  argConversionSites: Map[String, ArgConversionSite]
+  /// The function type of each lambda that stands for another package's
+  /// function (D-progress-955), keyed by `recordCopySiteKey` of the lambda's
+  /// span, so a generic call or record taking one infers from it.
+  lambdaTypes: Map[String, TypeExpr]
   /// Counter for the fresh locals a copy desugar binds (length = next id).
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
@@ -296,6 +307,9 @@ func newMonoState(
     returnTEs = newList(),
     originScope = singletonStrMono(""),
     copySites = copySites,
+    funcRefSites = newMap(),
+    argConversionSites = newMap(),
+    lambdaTypes = newMap(),
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
@@ -1688,6 +1702,14 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
         }
       }
     }
+    // A lambda standing for another package's function carries the type the
+    // checker resolved for it (D-progress-955).  Only this file's own spans
+    // are keyed; a specialised body from another package never matches.
+    case ELambda(_, _) -> if state.lambdaTypes.count > 0 and state.originScope[state.originScope.count - 1] == "" {
+      mapGet(state.lambdaTypes, recordCopySiteKey(expr.span))
+    } else {
+      None
+    }
     case _ -> None
   }
 }
@@ -1811,6 +1833,10 @@ func inferCallReturnTE(
     case EPath(path) -> {
       if path.segments.count == 1 {
         val name = path.segments[0]
+        match inferGenericRecordCtorArgsTE(state, env, name, args, fn.span) {
+          case Some(gte) -> return Some(value = gte)
+          case None -> ()
+        }
         match inferRecordCtorTE(state, name, None, fn.span) {
           case Some(te) -> Some(value = te)
           case None -> inferReturnFromName(state, env, name, args, None)
@@ -2115,6 +2141,101 @@ func inferTypeAppValueTE(
 
 // If `name` is a same-package record, return its TypeExpr (with
 // `targs` supplied for the generic params).  Otherwise None.
+// A generic record constructed without type arguments from at least one
+// lambda (`Program(update = f)`, a desugared function value) is
+// `Program[A, B]` when unifying each field's declared type with its
+// argument's inferred type binds every type parameter (D-progress-955).
+// Limited to lambda arguments, the one case codegen cannot type itself: the
+// binding is then annotated with this type (`rewriteBinding`), so mono's
+// specialisations and codegen's construction agree.
+func inferGenericRecordCtorArgsTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  name: in String,
+  args: in List[CallArg],
+  span: in Span,
+): Option[TypeExpr] {
+  val recOpt: Option[RecordDecl] = mapGet(state.recordDecls, name)
+  match recOpt {
+    case None -> None
+    case Some(rd) -> {
+      val tps = extractTypeParamNames(rd.generics)
+      if tps.count == 0 {
+        return None
+      }
+      var anyLambda = false
+      var li = 0
+      while li < args.count {
+        val lae = match args[li] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
+        match lae.kind {
+          case ELambda(_, _) -> {
+            anyLambda = true
+          }
+          case _ -> ()
+        }
+        li = li + 1
+      }
+      if not anyLambda {
+        return None
+      }
+      val fields: List[FieldDecl] = newList()
+      var mi = 0
+      while mi < rd.members.count {
+        match rd.members[mi] {
+          case RMField(f) -> fields.add(f)
+          case _ -> ()
+        }
+        mi = mi + 1
+      }
+      val subst: Map[String, TypeExpr] = newMap()
+      var ai = 0
+      while ai < args.count {
+        var fieldTe: Option[TypeExpr] = None
+        var argExpr: Option[Expr] = None
+        match args[ai] {
+          case CANamed(an, ae, _) -> {
+            argExpr = Some(value = ae)
+            var fi = 0
+            while fi < fields.count {
+              if fields[fi].name == an {
+                fieldTe = Some(value = fields[fi].ty)
+              }
+              fi = fi + 1
+            }
+          }
+          case CAPositional(ae) -> {
+            argExpr = Some(value = ae)
+            if ai < fields.count {
+              fieldTe = Some(value = fields[ai].ty)
+            }
+          }
+        }
+        match fieldTe {
+          case Some(fte) -> match argExpr {
+            case Some(ae) -> match inferExprTE(state, env, ae) {
+              case Some(ate) -> unifyTE(tps, fte, ate, subst)
+              case None -> ()
+            }
+            case None -> ()
+          }
+          case None -> ()
+        }
+        ai = ai + 1
+      }
+      val targs: List[TypeArg] = newList()
+      var ti = 0
+      while ti < tps.count {
+        match mapGet(subst, tps[ti]) {
+          case Some(bound) -> targs.add(TAType(ty = bound))
+          case None -> return None
+        }
+        ti = ti + 1
+      }
+      Some(value = TypeExpr(kind = TGenericApp(head = singleSegPath(name), args = targs), span = span))
+    }
+  }
+}
+
 func inferRecordCtorTE(
   state: in MonoState, name: in String, targs: in Option[List[TypeArg]], span: in Span
 ): Option[TypeExpr] {
@@ -3726,6 +3847,27 @@ func isPrimitiveName(name: in String): Bool {
   isNumericPrimitiveName(name) or name == "Bool" or name == "Char" or name == "String" or name == "Unit"
 }
 
+// `{ __fnref_p0: T0, ... -> Pkg.f(__fnref_p0, ...) }` for a cross-package
+// function value (D-progress-955): a lambda every backend lowers, whose body
+// is an ordinary qualified call.
+func funcRefLambdaMono(site: in FuncRefSite, sp: in Span): Expr {
+  val lparams: List[LambdaParam] = newList()
+  val args: List[CallArg] = newList()
+  var i = 0
+  while i < site.paramTypes.count {
+    val pname = "__fnref_p" + toString(i)
+    lparams.add(LambdaParam(name = pname, ty = Some(value = site.paramTypes[i]), span = sp))
+    val pseg: List[String] = newList()
+    pseg.add(pname)
+    args.add(CAPositional(expr = Expr(kind = EPath(path = ModulePath(segments = pseg, span = sp)), span = sp)))
+    i = i + 1
+  }
+  val callee = Expr(kind = EPath(path = ModulePath(segments = site.calleeSegs, span = sp)), span = sp)
+  val stmts: List[Statement] = newList()
+  stmts.add(Statement(kind = SExpr(expr = Expr(kind = ECall(fn = callee, args = args), span = sp)), span = sp))
+  Expr(kind = ELambda(lambdaParams = lparams, body = Block(statements = stmts, span = sp)), span = sp)
+}
+
 // ─── Record copy (docs/01 §2.4) ─────────────────────────────────────────────
 /// Desugar every record `.copy(...)` call the type checker validated
 /// (`sites`, from `SymbolTable.recordCopySites`) into a full constructor
@@ -3736,8 +3878,20 @@ func isPrimitiveName(name: in String): Bool {
 /// could not lower.  Only items containing a site are rewritten, and no
 /// generic is registered, so nothing is specialised here.
 pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, RecordCopySite]): MonoResult {
+  desugarCheckedFile(file, sites, newMap(), newMap())
+}
+
+/// The post-type-check desugars: record `.copy(...)` calls (D-progress-948),
+/// cross-package function values (D-progress-955) and widened function-value
+/// call arguments (D-progress-956), each keyed by the type checker's span key.
+pub func desugarCheckedFile(
+  file: in SourceFile,
+  sites: in Map[String, RecordCopySite],
+  funcRefSites: in Map[String, FuncRefSite],
+  argConversionSites: in Map[String, ArgConversionSite],
+): MonoResult {
   val noRewrites: Map[String, String] = newMap()
-  if sites.count == 0 {
+  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
     return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags)
   }
@@ -3750,6 +3904,24 @@ pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, Reco
       case None -> ()
     }
     ki = ki + 1
+  }
+  val refKeys = mapKeys(funcRefSites)
+  var ri = 0
+  while ri < refKeys.count {
+    match mapGet(funcRefSites, refKeys[ri]) {
+      case Some(site) -> offsets.add(site.startOffset)
+      case None -> ()
+    }
+    ri = ri + 1
+  }
+  val convKeys = mapKeys(argConversionSites)
+  var ci = 0
+  while ci < convKeys.count {
+    match mapGet(argConversionSites, convKeys[ci]) {
+      case Some(site) -> offsets.add(site.startOffset)
+      case None -> ()
+    }
+    ci = ci + 1
   }
   val state = newMonoState(
     newMap(),
@@ -3766,6 +3938,22 @@ pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, Reco
     newMap(),
     sites
   )
+  var fi = 0
+  while fi < refKeys.count {
+    match mapGet(funcRefSites, refKeys[fi]) {
+      case Some(site) -> state.funcRefSites.add(refKeys[fi], site)
+      case None -> ()
+    }
+    fi = fi + 1
+  }
+  var cj = 0
+  while cj < convKeys.count {
+    match mapGet(argConversionSites, convKeys[cj]) {
+      case Some(site) -> state.argConversionSites.add(convKeys[cj], site)
+      case None -> ()
+    }
+    cj = cj + 1
+  }
   val items: List[Item] = newList()
   var i = 0
   while i < file.items.count {
@@ -4814,6 +5002,27 @@ func genDeclResolvesForCallSite(
 
 func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
   val s = expr.span
+  if state.funcRefSites.count > 0 {
+    match mapGet(state.funcRefSites, recordCopySiteKey(s)) {
+      case Some(site) -> return funcRefLambdaMono(site, s)
+      case None -> ()
+    }
+  }
+  if state.argConversionSites.count > 0 {
+    val convKey = recordCopySiteKey(s)
+    match mapGet(state.argConversionSites, convKey) {
+      case Some(conv) -> {
+        state.argConversionSites.remove(convKey)
+        val inner = rewriteExpr(state, env, expr)
+        val noArgs: List[CallArg] = newList()
+        return Expr(
+          kind = ECall(fn = Expr(kind = EMember(receiver = inner, memberName = conv.method), span = s), args = noArgs),
+          span = s
+        )
+      }
+      case None -> ()
+    }
+  }
   match expr.kind {
 
     // ── Generic call sites ────────────────────────────────────────────────
@@ -5894,6 +6103,37 @@ func bindingEnvTE(state: in MonoState, env: in Map[String, TypeExpr], annoTe: in
 // are still handed the ORIGINAL (unrewritten) `init`/`ie` for their
 // structural analysis, matching pre-fix behaviour — only the ORDER
 // relative to the `env` mutation changed, not what they're passed.
+// True when `init` constructs a generic record with at least one lambda
+// argument (`Program(update = { ... })`).
+func genericRecordCtorWithLambdaArgMono(state: in MonoState, init: in Expr): Bool {
+  match init.kind {
+    case ECall(fn, args) -> {
+      val recName = match fn.kind {
+        case EPath(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }
+        case _ -> ""
+      }
+      val isGenericRecord = match mapGet(state.recordDecls, recName) {
+        case Some(rd) -> match rd.generics { case Some(_) -> true; case None -> false }
+        case None -> false
+      }
+      if not isGenericRecord {
+        return false
+      }
+      var i = 0
+      while i < args.count {
+        val ae = match args[i] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
+        match ae.kind {
+          case ELambda(_, _) -> return true
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
 func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding: in LocalBinding): LocalBinding {
   match binding {
     case LBVal(pat, tyOpt, init) -> {
@@ -5922,6 +6162,19 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
             case None -> inferExprTE(state, env, newInit)
           }
           bindPatternEnvMono(state, env, pat, inferred)
+          // A generic record built from function values (`val p =
+          // Program(update = Logic.update)`) takes its type arguments from
+          // the binding: codegen cannot recover them from a lambda argument
+          // and would build `Program<object, object>` (D-progress-955).
+          match inferred {
+            case Some(ite) -> if genericRecordCtorWithLambdaArgMono(state, init) {
+              match ite.kind {
+                case TGenericApp(_, _) -> return LBVal(pat = pat, ty = Some(value = ite), init = newInit)
+                case _ -> ()
+              }
+            }
+            case None -> ()
+          }
         }
       }
       LBVal(pat = pat, ty = tyOpt, init = newInit)
@@ -6128,6 +6381,25 @@ func rewriteFuncBody(
 // sites specialised), preserving every other field.  Shared by the Phase-2
 // `IImpl` / `IInterface` arms so impl and interface default-method bodies get
 // the same generic-call rewriting as free functions (#1727).
+// A protected member's scope: its parameters, then every protected field a
+// parameter does not shadow.
+func protectedMemberEnvMono(decl: in ProtectedTypeDecl, params: in List[Param]): Map[String, TypeExpr] {
+  val env = seedEnvFromParams(params)
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case PMField(pf) -> match pf {
+        case PFVar(nm, ty, _, _, _, _) -> if not env.containsKey(nm) { env.add(nm, ty) }
+        case PFLet(nm, ty, _, _, _, _) -> if not env.containsKey(nm) { env.add(nm, ty) }
+        case PFImmutable(fd) -> if not env.containsKey(fd.name) { env.add(fd.name, fd.ty) }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  env
+}
+
 func rewriteMethodDecl(state: in MonoState, env: in Map[String, TypeExpr], fn: in FunctionDecl): FunctionDecl {
   val newBody = rewriteFuncBodyWithRet(state, env, fn.body, fn.ret)
   FunctionDecl(
@@ -6229,6 +6501,19 @@ pub func monoFileWithImportsAndTypeDecls(
   importedGenDecls: in List[FunctionDecl],
   importedIfaceDecls: in List[InterfaceDecl],
   importedRecordDecls: in List[RecordDecl],
+): MonoResult {
+  monoFileWithLambdaTypes(file, importedGenDecls, importedIfaceDecls, importedRecordDecls, newMap())
+}
+
+/// `monoFileWithImportsAndTypeDecls`, with the function type of each
+/// desugared function-value lambda in this file (D-progress-955), keyed by
+/// `recordCopySiteKey` of its span.
+pub func monoFileWithLambdaTypes(
+  file: in SourceFile,
+  importedGenDecls: in List[FunctionDecl],
+  importedIfaceDecls: in List[InterfaceDecl],
+  importedRecordDecls: in List[RecordDecl],
+  lambdaTypes: in Map[String, TypeExpr],
 ): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   // #349: also collect every IFunc (generic + non-generic) and every
@@ -6527,6 +6812,15 @@ pub func monoFileWithImportsAndTypeDecls(
     qualifiedGenNames,
     newMap()
   )
+  val ltKeys = mapKeys(lambdaTypes)
+  var lti = 0
+  while lti < ltKeys.count {
+    match mapGet(lambdaTypes, ltKeys[lti]) {
+      case Some(lt) -> state.lambdaTypes.add(ltKeys[lti], lt)
+      case None -> ()
+    }
+    lti = lti + 1
+  }
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
   val rewrittenItems: List[Item] = newList()
@@ -6663,6 +6957,68 @@ pub func monoFileWithImportsAndTypeDecls(
             span = item.span
           )
         )
+      }
+      // Protected-type `entry`/`func` bodies specialise their generic calls
+      // like any method body, with the protected fields in scope
+      // (`mapValues(rows)` in a `func values()`) (D-progress-957).  A generic
+      // protected type's members mention its type parameters and are left
+      // as they are.
+      case IProtected(decl) -> {
+        val isGenericPt = match decl.generics { case Some(_) -> true; case None -> false }
+        if isGenericPt {
+          rewrittenItems.add(item)
+        } else {
+          val newMembers: List[ProtectedMember] = newList()
+          var mi = 0
+          while mi < decl.members.count {
+            match decl.members[mi] {
+              case PMEntry(ed) -> {
+                val env = protectedMemberEnvMono(decl, ed.params)
+                val newBody = match rewriteFuncBodyWithRet(state, env, Some(value = ed.body), ed.ret) {
+                  case Some(b) -> b
+                  case None -> ed.body
+                }
+                newMembers.add(
+                  PMEntry(
+                    entryDecl = EntryDecl(
+                      docComments = ed.docComments,
+                      annotations = ed.annotations,
+                      visibility = ed.visibility,
+                      name = ed.name,
+                      params = ed.params,
+                      ret = ed.ret,
+                      contracts = ed.contracts,
+                      body = newBody,
+                      span = ed.span
+                    )
+                  )
+                )
+              }
+              case PMFunc(fn) -> newMembers.add(
+                PMFunc(fn = rewriteMethodDecl(state, protectedMemberEnvMono(decl, fn.params), fn))
+              )
+              case _ -> newMembers.add(decl.members[mi])
+            }
+            mi = mi + 1
+          }
+          rewrittenItems.add(
+            Item(
+              docComments = item.docComments,
+              annotations = item.annotations,
+              visibility = item.visibility,
+              kind = IProtected(
+                decl = ProtectedTypeDecl(
+                  name = decl.name,
+                  generics = decl.generics,
+                  whereClause = decl.whereClause,
+                  members = newMembers,
+                  span = decl.span
+                )
+              ),
+              span = item.span
+            )
+          )
+        }
       }
       // Module-level `val` initializers are function-free bodies too: a
       // generic call in one (`val m: Dict[String, Entry] = newDict[String,

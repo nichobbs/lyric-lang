@@ -664,6 +664,11 @@ pub record CodegenCtx {
   // declaration the type checker bound, not to whichever package
   // happened to register first.
   typeFqnCandidates: Map[String, List[String]]
+  /// While the signature or body of a specialised copy of another package's
+  /// generic is being lowered, its declaring package (else ""), innermost
+  /// last: `resolveTypeFqn` resolves a bare type name in that package's scope
+  /// first, the scope the body was written in (D-progress-959).
+  typeScopeOrigin: List[String]
   // Generic stdlib union case type-param count. Key = FQN ctor key of the
   // case class (e.g. "Std.Core.Option_Some"). Value = number of type params
   // on the parent union (e.g. 1 for Option[T], 2 for Result[T,E]). Used at
@@ -2186,6 +2191,7 @@ pub func newCodegenCtx(
     caseParentUnion = newMap(),
     typeFqnByName = newMap(),
     typeFqnCandidates = newMap(),
+    typeScopeOrigin = newList(),
     caseTypeParamCount = newMap(),
     genericTypeArity = newMap(),
     genericCtorParams = newMap(),
@@ -4514,6 +4520,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   while j < file.items.count {
     match file.items[j].kind {
       case IFunc(decl) -> {
+        // A specialised copy of another package's generic declares its
+        // signature in that package's type scope (D-progress-959).
+        enterTypeScopeOriginMsil(cctx, decl, pkgName)
         // FQN-keyed for #1183 Phase 2 — cross-package call sites resolve via
         // `<pkg>.<func>` so multiple packages can co-exist in one cctx without
         // colliding on simple names.  Single-package call sites that use a
@@ -4890,6 +4899,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if not cctx.funcParamModes.containsKey(fqn) {
           cctx.funcParamModes.add(fqn, paramModes)
         }
+        exitTypeScopeOriginMsil(cctx)
         methodDefRow = methodDefRow + 1
       }
       // IWire emits `<Wire>_bootstrap` plus one `<Wire>_<name>` accessor per
@@ -7095,6 +7105,52 @@ func resolveTypeFqnQualified(cctx: in CodegenCtx, pkgName: in String, path: in M
   resolveTypeFqn(cctx, pkgName, seg)
 }
 
+// Enter / leave the type scope of `decl`'s declaring package (see
+// `CodegenCtx.typeScopeOrigin`).
+func enterTypeScopeOriginMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): Unit {
+  val origin = originPkgOf(decl.annotations)
+  cctx.typeScopeOrigin.add(if origin.length > 0 and origin != pkgName { origin } else { "" })
+}
+
+func exitTypeScopeOriginMsil(cctx: in CodegenCtx): Unit {
+  if cctx.typeScopeOrigin.count > 0 {
+    cctx.typeScopeOrigin.removeAt(cctx.typeScopeOrigin.count - 1)
+  }
+}
+
+// The candidate for `seg` in the scope of the declaring package being lowered
+// (its own declaration, then the newest one it imports), or "".
+func originScopedTypeFqnMsil(cctx: in CodegenCtx, pkgName: in String, seg: in String, cands: in List[String]): String {
+  if cctx.typeScopeOrigin.count == 0 {
+    return ""
+  }
+  val origin = cctx.typeScopeOrigin[cctx.typeScopeOrigin.count - 1]
+  if origin.length == 0 or origin == pkgName {
+    return ""
+  }
+  val ownFqn = origin + "." + seg
+  if cands.contains(ownFqn) {
+    return ownFqn
+  }
+  match mapGet(cctx.pkgImports, origin) {
+    case Some(imports) -> {
+      var i = cands.count - 1
+      while i >= 0 {
+        val fqn = cands[i]
+        if fqn.length > seg.length + 1 {
+          val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
+          if imports.contains(pkgPart) {
+            return fqn
+          }
+        }
+        i = i - 1
+      }
+    }
+    case None -> ()
+  }
+  ""
+}
+
 func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): String {
   // Scope-tier resolution over every registered candidate, mirroring the
   // type checker's `symTableTryFindOne` (#3085): (1) the referencing
@@ -7110,6 +7166,10 @@ func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): St
   // current-pkg form (the pre-#1183 behaviour).
   match mapGet(cctx.typeFqnCandidates, seg) {
     case Some(cands) -> {
+      val originFqn = originScopedTypeFqnMsil(cctx, pkgName, seg, cands)
+      if originFqn.length > 0 {
+        return originFqn
+      }
       val ownFqn = pkgName + "." + seg
       if cands.contains(ownFqn) {
         return ownFqn
@@ -7155,6 +7215,9 @@ func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): St
 func hasLyricTypeCandidateInScope(cctx: in CodegenCtx, pkgName: in String, seg: in String): Bool {
   match mapGet(cctx.typeFqnCandidates, seg) {
     case Some(cands) -> {
+      if originScopedTypeFqnMsil(cctx, pkgName, seg, cands).length > 0 {
+        return true
+      }
       val ownFqn = pkgName + "." + seg
       if cands.contains(ownFqn) {
         return true
@@ -28105,6 +28168,13 @@ func emitEpilogueMsil(fctx: in FuncCtx, insns: in List[MInsn]): Unit {
 }
 
 pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): MFunc {
+  enterTypeScopeOriginMsil(cctx, decl, pkgName)
+  val lowered = lowerFuncMsilScoped(cctx, decl, pkgName)
+  exitTypeScopeOriginMsil(cctx)
+  lowered
+}
+
+func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): MFunc {
   val className = pkgName
   // Generic-function type parameters (#2557).  When non-empty, a `slice[T]` /
   // bare-`T` parameter, return, and local must use the erased List-backed
@@ -33290,10 +33360,61 @@ func collectRecordLambdasBfsMsil(
 // ─────────────────────────────────────────────────────────────────────────────
 // BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
 // items in breadth-first order so lambda indices match the codegen traversal.
+// Record `origin` for every lambda lifted since the last call.
+func tagLiftedLambdaOriginsMsil(origins: in List[String], liftedCount: in Int, origin: in String): Unit {
+  while origins.count < liftedCount {
+    origins.add(origin)
+  }
+}
+
+// `item` (a lifted lambda) annotated with the declaring package it was
+// lifted from (`Lyric.Parser.originAnnotationName()`).
+func withLiftedLambdaOriginMsil(item: in Item, origin: in String): Item {
+  match item.kind {
+    case IFunc(fd) -> {
+      val anns: List[Annotation] = newList()
+      var ai = 0
+      while ai < fd.annotations.count {
+        anns.add(fd.annotations[ai])
+        ai = ai + 1
+      }
+      val segs: List[String] = newList()
+      segs.add(originAnnotationName())
+      val args: List[AnnotationArg] = newList()
+      args.add(ALiteral(value = AVString(value = origin, span = fd.span), span = fd.span))
+      anns.add(Annotation(name = ModulePath(segments = segs, span = fd.span), args = args, span = fd.span))
+      Item(
+        docComments = item.docComments,
+        annotations = item.annotations,
+        visibility = item.visibility,
+        kind = IFunc(
+          decl = FunctionDecl(
+            docComments = fd.docComments,
+            annotations = anns,
+            visibility = fd.visibility,
+            isAsync = fd.isAsync,
+            name = fd.name,
+            generics = fd.generics,
+            params = fd.params,
+            ret = fd.ret,
+            whereClause = fd.whereClause,
+            contracts = fd.contracts,
+            body = fd.body,
+            span = fd.span
+          )
+        ),
+        span = item.span
+      )
+    }
+    case _ -> item
+  }
+}
+
 pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   val ticker: List[Int] = newList()
   val synths: List[Item] = newList()
   val deferred: List[Block] = newList()
+  val synthOrigins: List[String] = newList()
 
   // Walk every top-level item's body, collecting direct lambdas.
   // Each ELambda body is pushed to `deferred` rather than recursed into.
@@ -33436,6 +33557,10 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
       case _ -> {
       }
     }
+    // A lambda lifted out of a specialised copy of another package's generic
+    // keeps that package's type scope (D-progress-959).
+    val itemOrigin = match file.items[i].kind { case IFunc(fd) -> originPkgOf(fd.annotations); case _ -> "" }
+    tagLiftedLambdaOriginsMsil(synthOrigins, synths.count, itemOrigin)
     i = i + 1
   }
 
@@ -33451,6 +33576,7 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
       collectLambdasBfsStmt(blk.statements[si], ticker, synths, deferred)
       si = si + 1
     }
+    tagLiftedLambdaOriginsMsil(synthOrigins, synths.count, if di < synthOrigins.count { synthOrigins[di] } else { "" })
     di = di + 1
   }
 
@@ -33468,7 +33594,8 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
 
   var k = 0
   while k < synths.count {
-    newItems.add(synths[k])
+    val origin = if k < synthOrigins.count { synthOrigins[k] } else { "" }
+    newItems.add(if origin.length > 0 { withLiftedLambdaOriginMsil(synths[k], origin) } else { synths[k] })
     k = k + 1
   }
 
@@ -37544,6 +37671,30 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
           if not cctx.fieldVarIndices.containsKey(key) {
             cctx.fieldVarIndices.add(key, gIdx)
           }
+        }
+        // A function-typed field registers its parameter and result types, as
+        // an in-bundle record's does (#5511), so `r.f(args)` on a restored
+        // record invokes the field (D-progress-958).
+        match resolveFuncTypeExprMsil(cctx, f.ty) {
+          case Some(funcTe) -> match funcTe.kind {
+            case TFunction(fParamTes, fRetTe) -> if not cctx.fieldFuncRetTypes.containsKey(key) {
+              cctx.fieldFuncRetTypes.add(key, recordFieldFuncTypeMsil(cctx, fRetTe, packageName, recGenerics))
+              if recGenerics.count > 0 and not cctx.fieldFuncRetTypesOpen.containsKey(key) {
+                cctx.fieldFuncRetTypesOpen.add(key, typeExprToMsilG(cctx, fRetTe, packageName, recGenerics))
+              }
+              val fParamMsilTys: List[MsilType] = newList()
+              var ffpi = 0
+              while ffpi < fParamTes.count {
+                fParamMsilTys.add(recordFieldFuncTypeMsil(cctx, fParamTes[ffpi], packageName, recGenerics))
+                ffpi = ffpi + 1
+              }
+              if not cctx.fieldFuncParamTypes.containsKey(key) {
+                cctx.fieldFuncParamTypes.add(key, fParamMsilTys)
+              }
+            }
+            case _ -> ()
+          }
+          case None -> ()
         }
         // Positional name map: mirrors in-bundle record registration so construction sites resolve concrete field types (avoids List<object> + InvalidCastException — #1730/#2592).
         val byPosKey = className + "/field" + toString(fpos)

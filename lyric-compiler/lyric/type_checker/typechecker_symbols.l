@@ -246,6 +246,15 @@ pub record SymbolTable {
   /// the type's synthesized construction checker (#7222).  Consumed by
   /// `Lyric.ContractElaborator.wrapInvariantConstructions`.
   invariantCtorSites: Map[String, String]
+  /// Every cross-package function reference used as a value, keyed like
+  /// `recordCopySites` (see `Lyric.Parser.FuncRefSite`).
+  funcRefSites: Map[String, FuncRefSite]
+  /// Span keys of call callees, whose function reference is a call rather
+  /// than a value and is never desugared.
+  funcRefCallees: Map[String, Bool]
+  /// Widened arguments of function-value calls, keyed like
+  /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`).
+  argConversionSites: Map[String, ArgConversionSite]
 }
 
 pub record ImplPair {
@@ -288,7 +297,10 @@ pub func newSymbolTable(): SymbolTable {
     symbolPackageMembers = newMap(),
     packageImports = newMap(),
     recordCopySites = newMap(),
-    invariantCtorSites = newMap()
+    invariantCtorSites = newMap(),
+    funcRefSites = newMap(),
+    funcRefCallees = newMap(),
+    argConversionSites = newMap()
   )
 }
 

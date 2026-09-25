@@ -2530,6 +2530,313 @@ func symTablePackageHasMember(tbl: in SymbolTable, pkg: in String, name: in Stri
   tbl.symbolPackageMembers.containsKey(pkg + "|" + name)
 }
 
+// ─── Cross-package function values (D-progress-955) ─────────────────────────
+// A reference to another package's function used as a value (`f = Pkg.fn`,
+// or a bare imported `fn`) is recorded as a `FuncRefSite` and rewritten by
+// `Lyric.Mono.desugarRecordCopiesFile` into the typed forwarding lambda
+// `{ p0: T0, ... -> Pkg.fn(p0, ...) }`, which every backend already lowers.
+func dottedSegsTc(s: in String): List[String] {
+  val acc: List[String] = newList()
+  var start = 0
+  var i = 0
+  while i < s.length {
+    if s.substring(i, 1) == "." {
+      acc.add(s.substring(start, i - start))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if start < s.length {
+    acc.add(s.substring(start))
+  }
+  acc
+}
+
+func refTypePath(segs: in List[String], sp: in Span): ModulePath {
+  ModulePath(segments = segs, span = sp)
+}
+
+// The declaring symbol of the user type `tid`.
+func typeSymbolOfTid(tbl: in SymbolTable, tid: in TypeId): Option[Symbol] {
+  var i = 0
+  while i < tbl.symbols.count {
+    match symbolTypeIdOpt(tbl.symbols[i]) {
+      case Some(sid) -> if typeIdEq(sid, tid) { return Some(value = tbl.symbols[i]) }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+// `t` spelled as source for the synthesized lambda's parameter annotation.  A
+// user type from another non-stdlib package is qualified by that package, so
+// the annotation names the same type in the calling package; `None` for a
+// type with no source spelling here (a type variable, `Self`, an error).
+func typeExprForRef(tbl: in SymbolTable, t: in Type, sp: in Span): Option[TypeExpr] {
+  match t {
+    case TyPrim(pt) -> match pt {
+      case PtUnit -> Some(value = TypeExpr(kind = TUnit, span = sp))
+      case PtNever -> Some(value = TypeExpr(kind = TNever, span = sp))
+      case _ -> {
+        val segs: List[String] = newList()
+        segs.add(primName(pt))
+        Some(value = TypeExpr(kind = TRef(path = refTypePath(segs, sp)), span = sp))
+      }
+    }
+    case TyRefined(u, _, _, _) -> typeExprForRef(tbl, u, sp)
+    case TyNullable(inner) -> match typeExprForRef(tbl, inner, sp) {
+      case Some(te) -> Some(value = TypeExpr(kind = TNullable(inner = te), span = sp))
+      case None -> None
+    }
+    case TySlice(e) -> match typeExprForRef(tbl, e, sp) {
+      case Some(te) -> Some(value = TypeExpr(kind = TSlice(element = te), span = sp))
+      case None -> None
+    }
+    case TyTuple(elems) -> match typeExprsForRef(tbl, elems, sp) {
+      case Some(tes) -> Some(value = TypeExpr(kind = TTuple(types = tes), span = sp))
+      case None -> None
+    }
+    case TyFunction(ps, r, isAsync) -> if isAsync {
+      None
+    } else {
+      match typeExprsForRef(tbl, ps, sp) {
+        case Some(ptes) -> match typeExprForRef(tbl, r, sp) {
+          case Some(rte) -> Some(
+            value = TypeExpr(
+              kind = TFunction(parameters = ptes, retTy = rte),
+              span = sp
+            )
+          )
+          case None -> None
+        }
+        case None -> None
+      }
+    }
+    case TyUser(tid, nm, args) -> match typeSymbolOfTid(tbl, tid) {
+      case Some(sym) -> {
+        val segs: List[String] = newList()
+        val origin = sym.originPackage
+        if origin.length > 0 and not origin.startsWith("Std.") and origin != symTableScopePkg(tbl) {
+          val pkgSegs = dottedSegsTc(origin)
+          var k = 0
+          while k < pkgSegs.count {
+            segs.add(pkgSegs[k])
+            k = k + 1
+          }
+        }
+        segs.add(sym.name)
+        if args.count == 0 {
+          Some(value = TypeExpr(kind = TRef(path = refTypePath(segs, sp)), span = sp))
+        } else {
+          match typeExprsForRef(tbl, args, sp) {
+            case Some(ates) -> {
+              val targs: List[TypeArg] = newList()
+              var ai = 0
+              while ai < ates.count {
+                targs.add(TAType(ty = ates[ai]))
+                ai = ai + 1
+              }
+              Some(value = TypeExpr(kind = TGenericApp(head = refTypePath(segs, sp), args = targs), span = sp))
+            }
+            case None -> None
+          }
+        }
+      }
+      case None -> None
+    }
+    case _ -> None
+  }
+}
+
+func typeExprsForRef(tbl: in SymbolTable, ts: in List[Type], sp: in Span): Option[List[TypeExpr]] {
+  val acc: List[TypeExpr] = newList()
+  var i = 0
+  while i < ts.count {
+    match typeExprForRef(tbl, ts[i], sp) {
+      case Some(te) -> acc.add(te)
+      case None -> return None
+    }
+    i = i + 1
+  }
+  Some(value = acc)
+}
+
+// Record `sig` (the function `name` of another package) referenced as a value
+// at `sp`.  Only a function a forwarding lambda can stand for is recorded:
+// non-generic, synchronous, every parameter `in`.
+func recordFuncRefSite(tbl: in SymbolTable, sig: in ResolvedSignature, name: in String, sp: in Span): Unit {
+  if sig.isAsync or sig.generics.count > 0 or sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl) {
+    return
+  }
+  val ptys: List[Type] = newList()
+  var i = 0
+  while i < sig.params.count {
+    match sig.params[i].mode {
+      case PMIn -> ptys.add(sig.params[i].ty)
+      case _ -> return
+    }
+    i = i + 1
+  }
+  match typeExprsForRef(tbl, ptys, sp) {
+    case Some(ptes) -> {
+      val segs = dottedSegsTc(sig.originPackage)
+      segs.add(name)
+      val key = recordCopySiteKey(sp)
+      if tbl.funcRefSites.containsKey(key) {
+        tbl.funcRefSites.remove(key)
+      }
+      tbl.funcRefSites.add(
+        key,
+        FuncRefSite(
+          calleeSegs = segs,
+          paramTypes = ptes,
+          retType = typeExprForRef(tbl, sig.returnTy, sp),
+          startOffset = sp.startPos.offset
+        )
+      )
+    }
+    case None -> ()
+  }
+}
+
+// The conversion method that widens a numeric argument to `paramTy`, when
+// the widening needs one (D-progress-956).
+func wideningMethod(paramTy: in Type, argTy: in Type): Option[String] {
+  if typeEquiv(paramTy, argTy) {
+    return None
+  }
+  match widenArithmetic(paramTy, argTy) {
+    case Some(wt) -> if not typeEquiv(wt, paramTy) { return None }
+    case None -> return None
+  }
+  match unrefine(paramTy) {
+    case TyPrim(pt) -> match pt {
+      case PtLong -> Some(value = "toLong")
+      case PtDouble -> Some(value = "toDouble")
+      case PtInt -> Some(value = "toInt")
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+// Record a widened argument of a call through a function value: the call is
+// erased, so the argument reaches the function boxed at its own type unless
+// the widening is made explicit.
+func recordArgConversion(tbl: in SymbolTable, arg: in CallArg, paramTy: in Type, argTy: in Type): Unit {
+  val argExpr = match arg { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
+  match wideningMethod(paramTy, argTy) {
+    case Some(m) -> {
+      val key = recordCopySiteKey(argExpr.span)
+      if tbl.argConversionSites.containsKey(key) {
+        tbl.argConversionSites.remove(key)
+      }
+      tbl.argConversionSites.add(key, ArgConversionSite(method = m, startOffset = argExpr.span.startPos.offset))
+    }
+    case None -> ()
+  }
+}
+
+/// Every recorded cross-package function value that is not a call callee
+/// (D-progress-955), for `Lyric.Mono.desugarRecordCopiesFile`.
+pub func funcValueSites(tbl: in SymbolTable): Map[String, FuncRefSite] {
+  val valueSites: Map[String, FuncRefSite] = newMap()
+  val keys = mapKeys(tbl.funcRefSites)
+  var i = 0
+  while i < keys.count {
+    if not tbl.funcRefCallees.containsKey(keys[i]) {
+      match mapGet(tbl.funcRefSites, keys[i]) {
+        case Some(site) -> valueSites.add(keys[i], site)
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  valueSites
+}
+
+// The signature of package `pkg`'s function `name` with `arity` parameters.
+func pkgFuncSig(
+  sigs: in Map[String, ResolvedSignature], pkg: in String, name: in String, arity: in Int
+): Option[ResolvedSignature] {
+  val arityKey = name + "/" + toString(arity)
+  val cands = gatherOverloadCandidates(sigs, arityKey)
+  var i = 0
+  while i < cands.count {
+    if cands[i].originPackage == pkg {
+      return Some(value = cands[i])
+    }
+    i = i + 1
+  }
+  match mapGet(sigs, arityKey) {
+    case Some(s) -> if s.originPackage == pkg { Some(value = s) } else { None }
+    case None -> None
+  }
+}
+
+func funcValueType(sig: in ResolvedSignature): Type {
+  val pts: List[Type] = newList()
+  var i = 0
+  while i < sig.params.count {
+    pts.add(sig.params[i].ty)
+    i = i + 1
+  }
+  TyFunction(params = pts, ret = sig.returnTy, isAsync = sig.isAsync)
+}
+
+// A qualified function value `Pkg.fn` (qualifier `pkg`, already matched by
+// the caller against a known package): its type, or `None` when that package
+// declares no function `name`.  Several same-named functions in the package
+// are T0123, since a value reference cannot pick an overload.
+func resolveQualifiedFuncValue(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  pkg: in String,
+  name: in String,
+  sp: in Span,
+): Option[Type] {
+  // A call's callee is resolved by the call, with its arguments.
+  if tbl.funcRefCallees.containsKey(recordCopySiteKey(sp)) {
+    return None
+  }
+  val all = symTableTryFindAll(tbl, name)
+  val funcs: List[Symbol] = newList()
+  var i = 0
+  while i < all.count {
+    match all[i].kind {
+      case DKFunc(_) -> if pkgMatchesQualifier(all[i].originPackage, pkg) { funcs.add(all[i]) }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  if funcs.count == 0 {
+    return None
+  }
+  if funcs.count > 1 {
+    diag.add(
+      errorDiagnostic(
+        "T0123",
+        "'" + pkg + "." + name +
+          "' names several functions; a function value cannot pick an overload, so wrap the call in a lambda with typed parameters",
+        sp
+      )
+    )
+    return Some(value = TyError)
+  }
+  val sym = funcs[0]
+  checkImportedVisibility(sym, sp, diag)
+  val arity = match sym.kind { case DKFunc(fd) -> fd.params.count; case _ -> 0 }
+  match pkgFuncSig(sigs, sym.originPackage, name, arity) {
+    case Some(sig) -> {
+      recordFuncRefSite(tbl, sig, name, sp)
+      Some(value = funcValueType(sig))
+    }
+    case None -> None
+  }
+}
+
 func resolveExprPath(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -2568,6 +2875,10 @@ func resolveExprPath(
     // that was never resolved at all — checking
     // `symTablePackageHasAnyExternBlockMember` too closes that gap without
     // reopening #6361 for this package shape.
+    match resolveQualifiedFuncValue(tbl, sigs, diag, pkg, name, span) {
+      case Some(ft) -> return ft
+      case None -> ()
+    }
     val pkgKnown = symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)
     if pkgKnown and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) {
       diag.add(errorDiagnostic("T0020", "unknown name '" + pkg + "." + name + "'", span))
@@ -2599,7 +2910,27 @@ func resolveExprPath(
       // #1484: a function resolves via `sigs` (no visibility there) — consult
       // the symbol table for the same name to enforce cross-package visibility.
       match symTableTryFindOne(tbl, name) {
-        case Some(sym) -> checkImportedVisibility(sym, span, diag)
+        case Some(sym) -> {
+          checkImportedVisibility(sym, span, diag)
+          // `sigs` keeps the first-registered function of this name from ANY
+          // loaded package; the value is the one in scope here, the same one
+          // a call would bind (D-progress-955).
+          val scopePkg = symTableScopePkg(tbl)
+          val inScope = sym.originPackage == scopePkg or symTableScopeAllows(tbl, sym.originPackage)
+          val isCallee = tbl.funcRefCallees.containsKey(recordCopySiteKey(span))
+          match sym.kind {
+            case DKFunc(fd) -> if not isCallee and inScope and sym.originPackage.length > 0 and sym.originPackage != scopePkg {
+              match pkgFuncSig(sigs, sym.originPackage, name, fd.params.count) {
+                case Some(scopedSig) -> {
+                  recordFuncRefSite(tbl, scopedSig, name, span)
+                  return funcValueType(scopedSig)
+                }
+                case None -> ()
+              }
+            }
+            case _ -> ()
+          }
+        }
         case None -> {
         }
       }
@@ -4979,6 +5310,11 @@ pub func inferExpr(
     }
 
     case ECall(fn, args) -> {
+      // The callee's function reference is a call, never a value to desugar.
+      val calleeKey = recordCopySiteKey(fn.span)
+      if not tbl.funcRefCallees.containsKey(calleeKey) {
+        tbl.funcRefCallees.add(calleeKey, true)
+      }
       // Numeric / character conversion-method intrinsics (#1901): `x.toInt()`,
       // `b.toLong()`, etc.  Recognised only on a numeric/char receiver so a
       // user-defined method of the same name on some other type still falls
@@ -5244,6 +5580,8 @@ pub func inferExpr(
                                 e.span
                               )
                             )
+                          } else if k < args.count {
+                            recordArgConversion(tbl, args[k], paramTypes[k], argTypes[k])
                           }
                           k = k + 1
                         }
@@ -5297,6 +5635,30 @@ pub func inferExpr(
           }
         }
         case _ -> {
+        }
+      }
+      // A full package path used as a function value (`Pkg.Sub.fn`, not
+      // collapsed by the alias rewriter since it is not a call callee).  A
+      // root bound as a local is a field chain, never a package.
+      val chainSegs: List[String] = newList()
+      if flattenCalleePathSegs(e, chainSegs) and chainSegs.count >= 3 {
+        match scopeTryFind(sc, chainSegs[0]) {
+          case Some(_) -> ()
+          case None -> {
+            val qualSegs: List[String] = newList()
+            var qi = 0
+            while qi < chainSegs.count - 1 {
+              qualSegs.add(chainSegs[qi])
+              qi = qi + 1
+            }
+            val qualPkg = modulePathJoin(qualSegs)
+            if symTablePackageHasAnySymbol(tbl, qualPkg) {
+              match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span) {
+                case Some(ft) -> return ft
+                case None -> ()
+              }
+            }
+          }
         }
       }
       // A bare single-segment receiver whose name follows the **module/type

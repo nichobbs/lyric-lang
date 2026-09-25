@@ -1963,7 +1963,7 @@ func collectRestoredGenericFuncs(artifacts: in List[SynthesisedArtifact]): List[
   var ai = 0
   while ai < artifacts.count {
     pipeAddGenericFuncs(
-      artifacts[ai].source.items,
+      pipeRestoredItemsWithImports(artifacts[ai].source, artifacts[ai].contract.imports),
       segmentsToString(artifacts[ai].source.packageDecl.path.segments),
       true,
       false,

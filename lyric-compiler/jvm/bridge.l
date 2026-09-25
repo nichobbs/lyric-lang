@@ -1440,6 +1440,9 @@ func collectMonoSpecializedSigs(
     match file.items[i].kind {
       case IFunc(decl) -> {
         if isMonoSpecializedName(decl.name) {
+          // A specialisation of another package's generic names its types as
+          // that package does (D-progress-959).
+          val fnExternTypes = originScopedExternTypes(decl, dottedPath(file.packageDecl.path), externTypes)
           // Mono specialisations are fully concrete post-monomorphization
           // (no type params of their own remain to erase), but an `out`/
           // `inout` parameter still needs the holder-array descriptor
@@ -1453,7 +1456,7 @@ func collectMonoSpecializedSigs(
           // argument, producing a MemberRef with the wrong (non-array)
           // descriptor — `NoSuchMethodError` at runtime against the real,
           // correctly holder-typed specialised method (#3432).
-          val params: List[JvmType] = holderAwareParamTypes(decl.params, owner, false, newList(), externTypes)
+          val params: List[JvmType] = holderAwareParamTypes(decl.params, owner, false, newList(), fnExternTypes)
           val paramNames: List[String] = newList()
           val paramModes: List[ParamMode] = newList()
           var pi = 0
@@ -1462,7 +1465,7 @@ func collectMonoSpecializedSigs(
             paramModes.add(decl.params[pi].mode)
             pi = pi + 1
           }
-          val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
+          val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, fnExternTypes); case None -> JVoid }
           val sig = JvmFuncSig(
             owner = owner,
             params = params,
@@ -1472,7 +1475,7 @@ func collectMonoSpecializedSigs(
             paramModes = paramModes,
             isIface = false,
             retGenericArgs = returnTypeGenericArgs(decl.ret),
-            closureRetTy = closureRetTypeOf(decl.ret, owner, newList(), externTypes),
+            closureRetTy = closureRetTypeOf(decl.ret, owner, newList(), fnExternTypes),
             // #6929: no same-FILE record scan is available here (unlike
             // `collectFileSigsSeeded`'s `localRecordNames` pre-scan), but the
             // bundle-wide `ctorReg` fallback resolves a cross-package record
@@ -1481,7 +1484,7 @@ func collectMonoSpecializedSigs(
             // is exactly as concrete as its declared type expr says (no
             // generic params left to erase), so the same
             // `recordRetClassOfBundle` lookup applies unchanged.
-            recordRetClass = recordRetClassOfBundle(decl.ret, owner, ctorReg, externTypes),
+            recordRetClass = recordRetClassOfBundle(decl.ret, owner, ctorReg, fnExternTypes),
             // Mono-specialised functions are free functions (monomorphized
             // from a generic `func`), never impl/record methods — no `Self`
             // return possible.

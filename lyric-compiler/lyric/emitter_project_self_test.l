@@ -2056,3 +2056,233 @@ test "emitProject bare call in an imported generic prefers its own package's ove
   assertEqualInt(result.exitCode, 0, "own overload JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "found 7; ab", "own overload JVM: output")
 }
+
+// Another package's function used as a value (D-progress-955): a bare
+// selective import, the alias-rewritten `Other.f` spelling and the full
+// package path, with value-type parameters and a parameter of a type declared
+// in the function's own package.  Each becomes a typed forwarding lambda, so
+// it runs on both targets.
+func funcValuePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPFv.App",
+      "package EPFv.App\n" + "\n" + "import EPFv.Other\n" + "import EPFv.Other.{joinPair, Tag}\n" + "\n" +
+        "record Holder {\n" +
+        "  f: (String, String) -> String\n" +
+        "  g: (Int, Long) -> Long\n" +
+        "  h: (Tag) -> String\n" +
+        "}\n" +
+        "\n" +
+        "record Pipe[T] {\n" +
+        "  step: (T) -> T\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val a = Holder(f = joinPair, g = Other.addN, h = EPFv.Other.tagName)\n" +
+        "  val k: (String, String) -> String = EPFv.Other.joinPair\n" +
+        "  val pp = Pipe(step = EPFv.Other.inc)\n" +
+        "  println(a.f(\"a\", \"b\") + \" \" + toString(a.g(2, 40)) + \" \" + a.h(Tag(label = \"t\")) + \" \" + k(\"c\", \"d\") + \" \" + toString(pp.step(41)))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPFv.Other",
+      "package EPFv.Other\n" + "\n" + "pub record Tag {\n" + "  label: String\n" + "}\n" + "\n" +
+        "pub func joinPair(x: in String, y: in String): String {\n" +
+        "  return x + y\n" +
+        "}\n" +
+        "\n" +
+        "pub func addN(a: in Int, b: in Long): Long {\n" +
+        "  return a.toLong() + b\n" +
+        "}\n" +
+        "\n" +
+        "pub func tagName(t: in Tag): String {\n" +
+        "  return \"<\" + t.label + \">\"\n" +
+        "}\n" +
+        "\n" +
+        "pub func inc(x: in Int): Int {\n" +
+        "  return x + 1\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject another package's functions used as values (MSIL)" {
+  val result = runEmitProject("emitproj-fnval", funcValuePkgs(), "EPFv")
+  assertEqualInt(result.exitCode, 0, "function values MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "ab 42 <t> cd 42", "function values MSIL: output")
+}
+
+test "emitProject another package's functions used as values (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-fnval-jvm", funcValuePkgs(), "EPFv")
+  assertEqualInt(result.exitCode, 0, "function values JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "ab 42 <t> cd 42", "function values JVM: output")
+}
+
+// An unannotated generic record built from another package's function
+// (`val p = Program(update = Logic.update)`) is constructed at the type mono
+// infers for it, and a generic taking it specialises and runs; before, MSIL
+// built `Program<object, object>` and the specialised call's cast failed
+// (D-progress-955).
+func funcValueRecordPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPCh.App",
+      "package EPCh.App\n" + "\n" + "import EPCh.Session\n" + "import EPCh.Session.{Program, handle, click}\n" +
+        "import EPCh.Logic\n" +
+        "import EPCh.Logic.{Inc}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val p = Program(update = Logic.update)\n" +
+        "  println(toString(handle(p, 41, click(Inc))))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPCh.Core",
+      "package EPCh.Core\n" + "\n" + "pub union Handler[Msg] {\n" + "  case OnClick(msg: Msg)\n" +
+        "  case OnInput(toMsg: (String) -> Msg)\n" +
+        "}\n" +
+        "\n" +
+        "pub func fire[Msg](h: in Handler[Msg], data: in String): Msg {\n" +
+        "  return match h {\n" +
+        "    case OnClick(m) -> m\n" +
+        "    case OnInput(f) -> f(data)\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPCh.Session",
+      "package EPCh.Session\n" + "\n" + "import EPCh.Core.{Handler, OnClick, fire}\n" + "\n" +
+        "pub union SessionMsg[Msg] {\n" +
+        "  case App(msg: Msg)\n" +
+        "  case Answer(yes: Bool)\n" +
+        "}\n" +
+        "\n" +
+        "pub record Program[M, Msg] {\n" +
+        "  update: (M, Msg) -> M\n" +
+        "}\n" +
+        "\n" +
+        "pub func handle[M, Msg](p: in Program[M, Msg], model: in M, h: in Handler[SessionMsg[Msg]]): M {\n" +
+        "  val fired: SessionMsg[Msg] = fire(h, \"x\")\n" +
+        "  return match fired {\n" +
+        "    case App(m) -> p.update(model, m)\n" +
+        "    case Answer(_) -> model\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "pub func click[Msg](m: in Msg): Handler[SessionMsg[Msg]] {\n" +
+        "  return OnClick(msg = App(msg = m))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPCh.Logic",
+      "package EPCh.Logic\n" + "\n" + "pub union Msg {\n" + "  case Inc\n" + "  case Dec\n" + "}\n" + "\n" +
+        "pub func update(model: in Int, msg: in Msg): Int {\n" +
+        "  return match msg {\n" +
+        "    case Inc -> model + 1\n" +
+        "    case Dec -> model - 1\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a generic record built from another package's function (MSIL)" {
+  val result = runEmitProject("emitproj-fnrec", funcValueRecordPkgs(), "EPCh")
+  assertEqualInt(result.exitCode, 0, "function-value record MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "function-value record MSIL: output")
+}
+
+test "emitProject a generic record built from another package's function (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-fnrec-jvm", funcValueRecordPkgs(), "EPCh")
+  assertEqualInt(result.exitCode, 0, "function-value record JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "function-value record JVM: output")
+}
+
+// A specialised copy of another package's generic resolves its bare type
+// names in that package's scope (D-progress-959).  `EPHs.Core.fire` matches on
+// its own `Handler` union, specialised into a consumer that imports an
+// unrelated `EPHs.Web.Handler` interface; resolved in the consumer's scope,
+// the pattern bound nothing (T0115 on `m`).
+func typeScopePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPHs.App",
+      "package EPHs.App\n" + "\n" + "import EPHs.Web.{Handler}\n" + "import EPHs.Session.{handle, click}\n" + "\n" +
+        "record Greeter {\n" +
+        "  n: Int\n" +
+        "}\n" +
+        "\n" +
+        "impl Handler for Greeter {\n" +
+        "  func respond(): Int {\n" +
+        "    return self.n\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val g = Greeter(n = 1)\n" +
+        "  println(toString(handle(41, click(g.respond()))))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPHs.Core",
+      "package EPHs.Core\n" + "\n" + "pub union Handler[Msg] {\n" + "  case OnClick(msg: Msg)\n" +
+        "  case OnInput(toMsg: (String) -> Msg)\n" +
+        "}\n" +
+        "\n" +
+        "pub func fire[Msg](h: in Handler[Msg], data: in String): Msg {\n" +
+        "  return match h {\n" +
+        "    case OnClick(m) -> m\n" +
+        "    case OnInput(f) -> f(data)\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPHs.Session",
+      "package EPHs.Session\n" + "\n" + "import EPHs.Core.{Handler, OnClick, fire}\n" + "\n" +
+        "pub func handle[Msg](base: in Int, h: in Handler[Msg]): Int {\n" +
+        "  val fired: Msg = fire(h, \"x\")\n" +
+        "  return base + 1\n" +
+        "}\n" +
+        "\n" +
+        "pub func click[Msg](m: in Msg): Handler[Msg] {\n" +
+        "  return OnClick(msg = m)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPHs.Web",
+      "package EPHs.Web\n" + "\n" + "pub interface Handler {\n" + "  func respond(): Int\n" + "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject an imported generic resolves its type names in its own package (MSIL)" {
+  val result = runEmitProject("emitproj-tyscope", typeScopePkgs(), "EPHs")
+  assertEqualInt(result.exitCode, 0, "type scope MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "type scope MSIL: output")
+}
+
+test "emitProject an imported generic resolves its type names in its own package (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-tyscope-jvm", typeScopePkgs(), "EPHs")
+  assertEqualInt(result.exitCode, 0, "type scope JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "type scope JVM: output")
+}

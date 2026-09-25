@@ -2673,4 +2673,14 @@ test "generic call with an explicit extern-type type argument monomorphises (#68
     0,
     "no dangling-reference M0002 for a call site whose type argument names an extern type"
   )
+
+test "a generic call inside a protected member specialises with the protected fields in scope (D-progress-957)" {
+  val callerSrc = "package Caller\n" + "protected type Table {\n" + "  var rows: List[Int] = newList()\n" +
+    "  func firstRow(): Int {\n" +
+    "    return firstLike(rows)\n" +
+    "  }\n" +
+    "}\n"
+  val libSrc = "package Lib\n" + "pub func firstLike[T](xs: in List[T]): T { xs[0] }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertTrue(hasFunc(res.file, "firstLike__Int"), "T bound from the protected field's type")
 }
