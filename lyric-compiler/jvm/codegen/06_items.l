@@ -3672,6 +3672,18 @@ pub func collectFileSigsSeeded(
       case IDistinctType(decl) -> {
         val distClass = owner + "/" + decl.name
         val inner = typeExprToJvm(decl.underlying, owner)
+        // The `$value` accessor, so a distinct value renders as its
+        // underlying value when stringified (D-progress-960).
+        registerInstanceSigErased(
+          into,
+          distClass,
+          "$value",
+          newList(),
+          Some(value = decl.underlying),
+          owner,
+          newList(),
+          externTypes
+        )
         val convName = jvmDistinctConvName(inner)
         if convName.length > 0 {
           val noParams: List[Param] = newList()
@@ -4205,10 +4217,11 @@ func registerInstanceSigErased(
         closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
         recordRetClass = None,
         retIsSelf = retIsSelf,
-        // Keyed `<class>#<method>` — an instance-method call is
-        // `ECall(EMember(…), …)`, never matches `isUnsignedExpr`'s
-        // `ECall(EPath, …)`-only arm.
-        retIsUnsigned = false,
+        // Keyed `<class>#<method>`, so `isUnsignedExpr`'s bare-key `ECall`
+        // arm never reads it; a distinct type's `$value` accessor carries it
+        // so stringification formats a `UInt`/`ULong` underlying value
+        // unsigned (D-progress-960).
+        retIsUnsigned = match retOpt { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
         recordRetHead = newList()
       )
     )

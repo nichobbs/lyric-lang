@@ -3231,6 +3231,16 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
 func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmType, isUnsigned: in Bool): Unit {
   match ty {
     case JRef(c) -> {
+      // A distinct or range-subtype value renders as its underlying value,
+      // not its wrapper class's identity (D-progress-960).
+      match mapGet(ctx.funcSigs, c + "#$value") {
+        case Some(vsig) -> {
+          insns.add(LInvokevirtual(owner = c, name = "$value", params = newList(), ret = vsig.ret))
+          coerceToStringForConcat(ctx, insns, vsig.ret, isUnsigned or vsig.retIsUnsigned)
+          return
+        }
+        case None -> ()
+      }
       if not (c == "java/lang/String") {
         val tsPs: List[JvmType] = newList()
         insns.add(

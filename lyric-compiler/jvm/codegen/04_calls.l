@@ -1115,17 +1115,7 @@ func lowerBuiltinOrStaticCall(
         )
       } else {
         match argTy {
-          case JRef(_) -> {
-            val tsPs: List[JvmType] = newList()
-            insns.add(
-              LInvokevirtual(
-                owner = "java/lang/Object",
-                name = "toString",
-                params = tsPs,
-                ret = JRef(className = "java/lang/String")
-              )
-            )
-          }
+          case JRef(_) -> coerceToStringForConcat(ctx, insns, argTy, false)
           case _ -> {
             boxIfNeeded(insns, argTy)
             val tsPs2: List[JvmType] = newList()
@@ -4307,6 +4297,21 @@ func lowerMethodCall(
       case _ -> ()
     }
     return JRef(className = "java/lang/String")
+  }
+  // A distinct or range-subtype receiver renders as its underlying value
+  // (D-progress-960); the wrapper class inherits `Object.toString()`.
+  if memberName == "toString" and args.count == 0 {
+    match recvTy {
+      case JRef(dc) -> {
+        val isDistinct = match mapGet(ctx.funcSigs, dc + "#$value") { case Some(_) -> true; case None -> false }
+        val hasOwnToString = match mapGet(ctx.funcSigs, dc + "#toString") { case Some(_) -> true; case None -> false }
+        if isDistinct and not hasOwnToString {
+          coerceToStringForConcat(ctx, insns, recvTy, false)
+          return JRef(className = "java/lang/String")
+        }
+      }
+      case _ -> ()
+    }
   }
   // String predicate methods return `boolean` (Z), not Object.  Emitting them
   // through the generic path below (ret = Object) makes a following `ifeq`/`ifne`

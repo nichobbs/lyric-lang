@@ -210,6 +210,9 @@ pub record CodegenCtx {
   distinctFromTokens: Map[String, Int]
   distinctTryFromTokens: Map[String, Int]
   distinctTryFromRetTypes: Map[String, MsilType]
+  // Distinct/range-subtype classes over `UInt`/`ULong` (erased to the signed
+  // representation): stringified with the unsigned formatter.
+  unsignedDistincts: Map[String, Bool]
   fieldTokens: Map[String, Int]  // "ClassName/fieldName" → FieldDef token
   // #6596: field NAMES (not "ClassName/fieldName" — see
   // `Lyric.ModeChecker.computeFieldLockSafetyForBuild`'s doc comment for why
@@ -2087,6 +2090,7 @@ pub func newCodegenCtx(
     distinctFromTokens = newMap(),
     distinctTryFromTokens = newMap(),
     distinctTryFromRetTypes = newMap(),
+    unsignedDistincts = newMap(),
     fieldTokens = fieldToks,
     unsafeFieldLockNames = newMap(),
     fieldSigBytes = newMap(),
@@ -4302,6 +4306,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if not cctx.fieldMsilTypes.containsKey(className + "/value") {
           cctx.fieldMsilTypes.add(className + "/value", innerTy)
         }
+        if isUnsignedTypeExprMsil(decl.underlying) and not cctx.unsignedDistincts.containsKey(className) {
+          cctx.unsignedDistincts.add(className, true)
+        }
         fieldDefRow = fieldDefRow + 1
         // Method 0: .ctor
         if not cctx.recordCtorTokens.containsKey(className) {
@@ -6404,7 +6411,7 @@ func emitCompoundCombineMsil(
         emitBoolToStringMsil(cctx, fctx, insns)
       }
       case _ -> {
-        if isValueType(rTy) {
+        if stringifiesByValueMsil(cctx, rTy) {
           // #6913: an unsigned-flagged box target for a bare `UInt`/
           // `ULong` compound-assignment rhs (`s += x`) — see
           // `isUnsignedExprMsil`.
@@ -6476,7 +6483,7 @@ func emitCompoundCombineSlotMsil(
       }
       case MBool -> emitBoolToStringMsil(cctx, fctx, insns)
       case _ -> {
-        if isValueType(rTy) {
+        if stringifiesByValueMsil(cctx, rTy) {
           // #6913: an unsigned-flagged box target for a bare `UInt`/
           // `ULong` indexed compound-assignment rhs (`xs[i] += x`) — the
           // rhs is pre-evaluated into `rSlot` by the caller (see this
@@ -7987,10 +7994,51 @@ func boxTypeRefUnsignedMsil(cctx: in CodegenCtx, ty: in MsilType): Int {
 // `boxIfNeededMsil` directly so a `UInt`/`ULong`-flagged value renders
 // unsigned (#6913) — see `isUnsignedExprMsil`.
 func boxIfNeededUnsignedMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType, isUnsigned: in Bool): Unit {
+  // A distinct or range-subtype value renders as its underlying value, not
+  // its wrapper class's name (D-progress-960).
+  match distinctUnderlyingMsil(cctx, ty) {
+    case Some(under) -> {
+      val underUnsigned = match ty {
+        case MClass(cls) -> {
+          match mapGet(cctx.fieldTokens, cls + "/value") {
+            case Some(vtok) -> insns.add(MLdfld(fieldToken = vtok))
+            case None -> ()
+          }
+          cctx.unsignedDistincts.containsKey(cls)
+        }
+        case _ -> false
+      }
+      if isValueType(under) {
+        val utok = if isUnsigned or underUnsigned { boxTypeRefUnsignedMsil(cctx, under) } else { boxTypeRef(cctx, under) }
+        insns.add(MBox(typeToken = utok))
+      }
+      return
+    }
+    case None -> ()
+  }
   if isValueType(ty) {
     val tok = if isUnsigned { boxTypeRefUnsignedMsil(cctx, ty) } else { boxTypeRef(cctx, ty) }
     insns.add(MBox(typeToken = tok))
   }
+}
+
+// The representation type of a distinct / range-subtype class `ty` (its
+// `value` field's type), or None for any other type.
+func distinctUnderlyingMsil(cctx: in CodegenCtx, ty: in MsilType): Option[MsilType] {
+  match ty {
+    case MClass(cls) -> if cctx.distinctFromTokens.containsKey(cls) {
+      mapGet(cctx.fieldMsilTypes, cls + "/value")
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+// True when stringifying a `ty` value goes through `boxIfNeededUnsignedMsil`
+// (a primitive, or a distinct type rendered as its underlying value).
+func stringifiesByValueMsil(cctx: in CodegenCtx, ty: in MsilType): Bool {
+  isValueType(ty) or match distinctUnderlyingMsil(cctx, ty) { case Some(_) -> true; case None -> false }
 }
 
 // Box a union case field for `Object.Equals(object,object)` / virtual
@@ -11579,7 +11627,7 @@ func lowerBinopMsil(
               // Convert non-string rhs to string: box value types, then call
               // ToString(). #6913: an unsigned-flagged box target for a bare
               // `UInt`/`ULong` rhs — see `isUnsignedExprMsil`.
-              if isValueType(saddRhsTy) {
+              if stringifiesByValueMsil(cctx, saddRhsTy) {
                 boxIfNeededUnsignedMsil(cctx, insns, saddRhsTy, isUnsignedExprMsil(fctx, rhs))
               }
               insns.add(MCallvirt(methodToken = cctx.tokObjToString))
@@ -14993,7 +15041,7 @@ func lowerInterpolatedMsil(
             emitBoolToStringMsil(cctx, fctx, insns)
           }
           case _ -> {
-            if isValueType(eTy) {
+            if stringifiesByValueMsil(cctx, eTy) {
               // #6913: an unsigned-flagged box target for a bare `UInt`/
               // `ULong` interpolated segment — see `isUnsignedExprMsil`.
               boxIfNeededUnsignedMsil(cctx, insns, eTy, isUnsignedExprMsil(fctx, e))
@@ -17454,7 +17502,13 @@ func lowerMethodCallMsil(
               match mapGet(cctx.distinctFromTokens, distFqn) {
                 case Some(tok) -> {
                   if args.count > 0 {
-                    val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
+                    // Widen to the underlying type (`CustomerId.from(7)` over
+                    // `Long`): the literal lowers as `int32`.
+                    val fromArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+                    match mapGet(cctx.fieldMsilTypes, distFqn + "/value") {
+                      case Some(underTy) -> coerceCallArgMsil(cctx, insns, fromArgTy, underTy)
+                      case None -> ()
+                    }
                   }
                   insns.add(MCall(methodToken = tok))
                   return MClass(className = distFqn)
@@ -17466,7 +17520,11 @@ func lowerMethodCallMsil(
               match mapGet(cctx.distinctTryFromTokens, distFqn) {
                 case Some(tok) -> {
                   if args.count > 0 {
-                    val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
+                    val tryArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+                    match mapGet(cctx.fieldMsilTypes, distFqn + "/value") {
+                      case Some(underTy) -> coerceCallArgMsil(cctx, insns, tryArgTy, underTy)
+                      case None -> ()
+                    }
                   }
                   insns.add(MCall(methodToken = tok))
                   return match mapGet(cctx.distinctTryFromRetTypes, distFqn) { case Some(rt) -> rt; case None -> MObject }

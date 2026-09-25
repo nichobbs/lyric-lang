@@ -35672,3 +35672,8 @@ A specialised imported generic resolves its bare type names in its declaring
 package's scope on both targets, so an unrelated same-named type visible to
 the caller (`Web.Handler` beside `Ui.Core.Handler`) no longer captures them
 (D-progress-959).
+A range or distinct value renders as its underlying value in `.toString()`,
+`toString(x)`, interpolation and concatenation on both targets (previously the
+wrapper type's name), and `from`/`tryFrom` widen their argument to the
+underlying type on MSIL (an `Int` literal into a `Long` range)
+(D-progress-960).

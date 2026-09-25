@@ -616,3 +616,34 @@ test "bare ULong println does not crash for a sign-bit-set value (#6913)" {
   println(a)
   assertTrue(true, "println(ULong) above 2^63 ran without throwing")
 }
+
+record Priced {
+  cents: Cents
+}
+
+// A range subtype over `Long` built from an `Int` literal widens the argument
+// (`from`/`tryFrom` took an `int32` where `int64` was declared, invalid IL),
+// and renders as its value, not its wrapper type's name (D-progress-960).
+test "a Long range subtype from an Int literal renders as its value (D-progress-960)" {
+  val c = Cents.from(5000)
+  assertEqual(c.toString(), "5000", "toString")
+  assertEqual("price: ${c}", "price: 5000", "interpolation")
+  assertEqual(toString(c), "5000", "free toString")
+  val p = Priced(cents = Cents.from(7))
+  assertEqual(p.cents.toString(), "7", "field toString")
+  match Cents.tryFrom(12) {
+    case Ok(v) -> assertEqual(v.toString(), "12", "tryFrom value")
+    case Err(e) -> assertTrue(false, "tryFrom failed: " + e)
+  }
+}
+
+type Quota = UInt range 0u32 ..= 4294967295u32
+
+// A `UInt`-backed range erases to the signed representation on both targets;
+// stringifying it must still use the unsigned formatter (D-progress-960).
+test "a UInt range subtype renders its value unsigned (D-progress-960)" {
+  val q = Quota.from(4000000000u32)
+  assertEqual(q.toString(), "4000000000", "toString")
+  assertEqual("quota: ${q}", "quota: 4000000000", "interpolation")
+  assertEqual("q=" + toString(q), "q=4000000000", "free toString")
+}
