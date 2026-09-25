@@ -35355,3 +35355,16 @@ substrings, so they are linear in their output:
 `Std.Console.readAll` became linear through the new `joinList`. Covered by
 `stdlib_builders_self_test.l` on dotnet and JVM (epic #7256).
 
+## HTTP servers survive repeated request headers; HTTP/2 bounds the decoded header list
+
+`Std.HttpServer.requestHeaders` in the .NET and native kernels merged a
+repeated header name with `Map.add` on the existing key, which throws on .NET
+(`Dictionary.Add`), so any request that repeated a header name crashed the
+handler; it now groups values per name and joins each group once (the
+cross-target `Map.add` divergence itself is #7301). HPACK gains
+`decodeHeaderBlockLimited` and a `HeaderListTooLarge` error, and the HTTP/2
+connection now enforces `SETTINGS_MAX_HEADER_LIST_SIZE` against the DECODED
+list (RFC 7541 section 4.1 sizing), failing the connection with
+`ENHANCE_YOUR_CALM`: indexed references could previously expand a small
+compressed block into tens of thousands of fields (#7265, epic #7256).
+

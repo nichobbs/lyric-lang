@@ -1524,15 +1524,33 @@ pub func requestBody(c: in HttpContext): String {
 /// Names carry the case the client supplied; consumers (e.g. lyric-web's
 /// `normalizeHeaders`) fold case before lookup.
 pub func requestHeaders(c: in HttpContext): Map[String, String] {
-  val result: Map[String, String] = newMap()
+  // Group first and join once per name: re-adding an existing key threw on
+  // .NET (`Dictionary.Add`), so any request repeating a header name crashed
+  // the handler, and joining on every repeat was quadratic (#7265).
+  val grouped: Map[String, List[String]] = newMap()
+  val names: List[String] = newList()
   var i = 0
   while i < c.headers.count {
     val h = c.headers[i]
-    match mapGet(result, h.name) {
-      case Some(existing) -> result.add(h.name, existing + "," + h.value)
-      case None -> result.add(h.name, h.value)
+    match mapGet(grouped, h.name) {
+      case Some(values) -> values.add(h.value)
+      case None -> {
+        val values: List[String] = newList()
+        values.add(h.value)
+        grouped.add(h.name, values)
+        names.add(h.name)
+      }
     }
     i = i + 1
+  }
+  val result: Map[String, String] = newMap()
+  var j = 0
+  while j < names.count {
+    match mapGet(grouped, names[j]) {
+      case Some(values) -> result.add(names[j], joinList(",", values))
+      case None -> ()
+    }
+    j = j + 1
   }
   result
 }

@@ -1457,7 +1457,18 @@ func finalizeHeaders(
   endStream: in Bool,
   accepted: in Bool,
 ): Unit {
-  match decodeHeaderBlock(state.hpackDec, buffer.toArray()) {
+  match decodeHeaderBlockLimited(state.hpackDec, buffer.toArray(), state.localSettings.maxHeaderListSize) {
+    // The compressed-size check above does not bound the DECODED list: one
+    // dynamic-table entry referenced by thousands of one-byte fields expands
+    // a small block into a huge list (#7265). Decoding stopped part-way, so
+    // the compression context is out of sync and the connection must fail.
+    case Err(HeaderListTooLarge(_, _)) -> connFail(
+      state,
+      events,
+      outb,
+      H2EnhanceYourCalm,
+      "decoded header list exceeds SETTINGS_MAX_HEADER_LIST_SIZE (RFC 9113 section 6.5.2)"
+    )
     case Err(_) -> connFail(state, events, outb, H2CompressionError, "HPACK decoding failed (RFC 9113 section 4.3)")
     case Ok(headers) -> {
       if accepted {
