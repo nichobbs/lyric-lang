@@ -93,7 +93,7 @@ pub func find[T](xs: in slice[T], pred: in (T) -> Bool): Option[T] {
 /// slice.  `mapTo([1, 2, 3], { n: Int -> n * 2 }) == [2, 4, 6]`.
 @stable(since = "1.0")
 pub func map[T, U](xs: in slice[T], f: in (T) -> U): slice[U] {
-  val acc: List[U] = newList()
+  val acc: List[U] = newListWithCapacity(xs.length)
   for x in xs {
     acc.add(f(x))
   }
@@ -117,12 +117,11 @@ pub func filter[T](xs: in slice[T], pred: in (T) -> Bool): slice[T] {
 /// negative threshold).
 @stable(since = "1.0")
 pub func take[T](xs: in slice[T], n: in Int): slice[T] {
-  val acc: List[T] = newList()
+  val count = if n <= 0 { 0 } else if n < xs.length { n } else { xs.length }
+  val acc: List[T] = newListWithCapacity(count)
   var i = 0
-  for x in xs {
-    if i < n {
-      acc.add(x)
-    }
+  while i < count {
+    acc.add(xs[i])
     i = i + 1
   }
   return acc.toArray()
@@ -132,22 +131,22 @@ pub func take[T](xs: in slice[T], n: in Int): slice[T] {
 /// whole slice.
 @stable(since = "1.0")
 pub func drop[T](xs: in slice[T], n: in Int): slice[T] {
-  val acc: List[T] = newList()
-  var i = 0
-  for x in xs {
-    if i >= n {
-      acc.add(x)
-    }
+  val start = if n <= 0 { 0 } else if n < xs.length { n } else { xs.length }
+  val acc: List[T] = newListWithCapacity(xs.length - start)
+  var i = start
+  while i < xs.length {
+    acc.add(xs[i])
     i = i + 1
   }
   return acc.toArray()
 }
 
-/// Concatenate two slices, allocating a fresh result.  Use repeatedly
-/// for variable-arity concat — `concat(concat(a, b), c)` etc.
+/// Concatenate two slices into a fresh slice. Copies both inputs, so do not
+/// call it in a loop to append one element at a time: that is quadratic.
+/// Accumulate into a `List[T]` with `add` and call `toArray()` once instead.
 @stable(since = "1.0")
 pub func concat[T](a: in slice[T], b: in slice[T]): slice[T] {
-  val acc: List[T] = newList()
+  val acc: List[T] = newListWithCapacity(a.length + b.length)
   for x in a {
     acc.add(x)
   }
@@ -255,7 +254,7 @@ pub func maxLong(xs: in slice[Long]): Option[Long] {
 /// Reverse a `slice[T]` into a fresh slice; the original is unchanged.
 @stable(since = "1.0")
 pub func reverse[T](xs: in slice[T]): slice[T] {
-  val acc: List[T] = newList()
+  val acc: List[T] = newListWithCapacity(xs.length)
   val n: Int = xs.length
   var i: Int = 0
   while i < n {

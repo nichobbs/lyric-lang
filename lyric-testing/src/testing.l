@@ -226,7 +226,7 @@ impl Storage.StorageBucket for MockStorageBucket {
     continuationToken: in String,
     maxKeys: in Int,
   ): Result[Storage.ListResult, Storage.StorageError] {
-    var entries: slice[Storage.ListEntry] = []
+    val entriesAcc: List[Storage.ListEntry] = newList()
     for k in self.orderedKeys {
       val obj = self.objects[k]
       val matches = if prefix.length == 0 {
@@ -238,10 +238,10 @@ impl Storage.StorageBucket for MockStorageBucket {
       }
       if matches {
         val listItem = Storage.ListEntry(key = k, contentLength = 0, lastModified = "", etag = "mock-etag")
-        entries = concat(entries, [listItem])
+        entriesAcc.add(listItem)
       }
     }
-    val result = Storage.ListResult(entries = entries, nextContinuationToken = None, isTruncated = false)
+    val result = Storage.ListResult(entries = entriesAcc.toArray(), nextContinuationToken = None, isTruncated = false)
     return Ok(result)
   }
   func presignedUrl(
@@ -294,11 +294,11 @@ impl Mq.MessageQueue for MockMessageQueue {
 }
 
 func toTestHeaders(headers: in slice[Mq.MessageHeader]): slice[TestMessageHeader] {
-  var result: slice[TestMessageHeader] = []
+  val resultAcc: List[TestMessageHeader] = newList()
   for h in headers {
-    result = concat(result, [TestMessageHeader(key = h.key, value = h.value)])
+    resultAcc.add(TestMessageHeader(key = h.key, value = h.value))
   }
-  return result
+  return resultAcc.toArray()
 }
 
 /// Return the most recently published message, or None if none have been published.

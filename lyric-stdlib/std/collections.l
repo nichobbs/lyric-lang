@@ -64,7 +64,7 @@ pub record MapEntry[K, V] {
 pub func mapKeys[K, V](m: in Map[K, V]): List[K] {
   // Snapshot into a List (like `mapEntries`) so the public signature exposes
   // no BCL nested collection type; the host key view stays kernel-private.
-  val result: List[K] = newList()
+  val result: List[K] = newListWithCapacity(m.count)
   for k in dictGetKeys(m) {
     result.add(k)
   }
@@ -76,7 +76,7 @@ pub func mapKeys[K, V](m: in Map[K, V]): List[K] {
 pub func mapValues[K, V](m: in Map[K, V]): List[V] {
   // Snapshot into a List (like `mapEntries`) so the public signature exposes
   // no BCL nested collection type; the host value view stays kernel-private.
-  val result: List[V] = newList()
+  val result: List[V] = newListWithCapacity(m.count)
   for v in dictGetValues(m) {
     result.add(v)
   }
@@ -100,8 +100,7 @@ pub func mapPutAll[K, V](dst: in Map[K, V], src: in Map[K, V]): Unit {
   for k in dictGetKeys(src) {
     match mapGet(src, k) {
       case Some(v) -> {
-        dst.remove(k)
-        dst.add(k, v)
+        dst[k] = v
       }
       case None -> ()
     }
@@ -111,7 +110,7 @@ pub func mapPutAll[K, V](dst: in Map[K, V], src: in Map[K, V]): Unit {
 /// Return all entries of `m` as a list of `MapEntry[K, V]` records.
 @stable(since = "1.0")
 pub func mapEntries[K, V](m: in Map[K, V]): List[MapEntry[K, V]] {
-  val result: List[MapEntry[K, V]] = newList()
+  val result: List[MapEntry[K, V]] = newListWithCapacity(m.count)
   for k in dictGetKeys(m) {
     match mapGet(m, k) {
       case Some(v) -> result.add(MapEntry(key = k, value = v))

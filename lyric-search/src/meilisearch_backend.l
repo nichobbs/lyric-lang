@@ -238,7 +238,7 @@ func msParseHit(elem: in JsonElement, index: in String): SearchHit {
   var id: String = ""
   var score: Double = 0.0
   var source: Map[String, String] = newMap()
-  var highlights: slice[Highlight] = []
+  val highlightsAcc: List[Highlight] = newList()
   var en = enumerateObject(elem)
   while objectMoveNext(en) {
     val prop = objectCurrent(en)
@@ -262,19 +262,19 @@ func msParseHit(elem: in JsonElement, index: in String): SearchHit {
         val hfield = propertyName(fprop)
         val hvalue = propertyValue(fprop)
         if valueKind(hvalue) == 3 {
-          highlights = concat(highlights, [Highlight(field = hfield, fragments = [getString(hvalue)])])
+          highlightsAcc.add(Highlight(field = hfield, fragments = [getString(hvalue)]))
         }
       }
     }
     case None -> ()
   }
-  return SearchHit(id = id, index = index, score = score, highlights = highlights, source = source)
+  return SearchHit(id = id, index = index, score = score, highlights = highlightsAcc.toArray(), source = source)
 }
 
 pub func msParseSearchResponse(root: in JsonElement, index: in String): SearchResult {
   var total: Long = 0i64
   var tookMs: Int = 0
-  var hits: slice[SearchHit] = []
+  val hitsAcc: List[SearchHit] = newList()
   match tryGetProperty(root, "processingTimeMs") {
     case Some(v) -> match tryGetInt(v) { case Some(n) -> { tookMs = n }; case None -> () }
     case None -> ()
@@ -293,12 +293,12 @@ pub func msParseSearchResponse(root: in JsonElement, index: in String): SearchRe
     case Some(arr) -> {
       var en = enumerateArray(arr)
       while arrayMoveNext(en) {
-        hits = concat(hits, [msParseHit(arrayCurrent(en), index)])
+        hitsAcc.add(msParseHit(arrayCurrent(en), index))
       }
     }
     case None -> ()
   }
-  return SearchResult(total = total, hits = hits, tookMs = tookMs, scrollId = None)
+  return SearchResult(total = total, hits = hitsAcc.toArray(), tookMs = tookMs, scrollId = None)
 }
 
 func msTaskUid(root: in JsonElement): Int {
@@ -342,7 +342,12 @@ async func msAwaitTask(cfg: in HttpConfig, taskUid: in Int, code: in String): Re
             if status == "failed" {
               var reason = "Meilisearch task " + taskUid.toString() + " failed"
               match tryGetProperty(root, "error") {
-                case Some(errObj) -> match tryGetProperty(errObj, "message") { case Some(mv) -> { reason = getString(mv) }; case None -> () }
+                case Some(errObj) -> match tryGetProperty(errObj, "message") {
+                  case Some(mv) -> {
+                    reason = getString(mv)
+                  }
+                  case None -> ()
+                }
                 case None -> ()
               }
               return Err(error = SearchError(message = reason, code = code, statusCode = 0))
@@ -431,11 +436,11 @@ pub async func backendIndexBatch(
             case Err(e) -> return Err(error = e)
             case Ok(status) -> {
               val resultStatus = if status == "succeeded" { "created" } else { "enqueued" }
-              var results: slice[IndexResult] = []
+              val resultsAcc: List[IndexResult] = newList()
               for d in docs {
-                results = concat(results, [IndexResult(id = d.id, version = taskUid.toLong(), status = resultStatus)])
+                resultsAcc.add(IndexResult(id = d.id, version = taskUid.toLong(), status = resultStatus))
               }
-              return Ok(value = results)
+              return Ok(value = resultsAcc.toArray())
             }
           }
         }
@@ -481,7 +486,7 @@ pub async func backendSuggest(
             disposeJson(jdoc)
           }
           var tookMs: Int = 0
-          var suggestions: slice[String] = []
+          val suggestionsAcc: List[String] = newList()
           val root = rootElement(jdoc)
           match tryGetProperty(root, "processingTimeMs") {
             case Some(v) -> match tryGetInt(v) { case Some(n) -> { tookMs = n }; case None -> () }
@@ -494,7 +499,7 @@ pub async func backendSuggest(
                 val hitElem = arrayCurrent(en)
                 match tryGetProperty(hitElem, field) {
                   case Some(v) -> {
-                    suggestions = concat(suggestions, [jsonScalarToString(v)])
+                    suggestionsAcc.add(jsonScalarToString(v))
                   }
                   case None -> ()
                 }
@@ -502,7 +507,7 @@ pub async func backendSuggest(
             }
             case None -> ()
           }
-          return Ok(value = SuggestResult(suggestions = suggestions, tookMs = tookMs))
+          return Ok(value = SuggestResult(suggestions = suggestionsAcc.toArray(), tookMs = tookMs))
         }
       }
     }

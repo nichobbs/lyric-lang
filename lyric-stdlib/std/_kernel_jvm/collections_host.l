@@ -20,6 +20,8 @@ extern type List[T] = "java.util.ArrayList"
 
 extern type Map[K, V] = "java.util.HashMap"
 
+extern type JObjects = "java.util.Objects"
+
 // java.util.ArrayList no-arg constructor.
 @externTarget("java.util.ArrayList.<init>")
 pub func newList[T](): List[T] = ()
@@ -35,12 +37,15 @@ pub func newMap[K, V](): Map[K, V] = ()
 /// Adapts HashMap.get(key): V? to the out-parameter + Bool pattern.
 /// The out slot is written on both paths: `get()` returns null on a miss,
 /// matching the .NET twin's `default(V)`-on-miss semantics for the erased
-/// reference representation (#4683).  `containsKey` (not the null sentinel)
-/// decides the result, so a present-but-null value is still distinguished
-/// from an absent key.
+/// reference representation (#4683).  A null result falls back to
+/// `containsKey`, so a present-but-null value (possible only from host code)
+/// is still distinguished from an absent key.
 pub func tryGetValue[K, V](m: in Map[K, V], key: in K, value: out V): Bool {
   value = m.get(key)
-  m.containsKey(key)
+  // A Lyric value is never null, so a non-null result is a hit and needs no
+  // second hash lookup; only a null result has to ask whether the key is
+  // present (#7282).
+  JObjects.nonNull(value) or m.containsKey(key)
 }
 
 // =====================================================================

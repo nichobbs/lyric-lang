@@ -35388,3 +35388,15 @@ cursor into the buffer and compact once per `feed`, and the HTTP/1.1 engine
 remembers how far a partial line has been scanned so a slowly delivered line
 is not rescanned from its start (#7263, #7264, epic #7256).
 
+## Std.Iter and Std.Collections size their results; concat is no longer used to append in loops
+
+`Std.Iter.map`, `concat`, `reverse`, `take` and `drop` allocate their result
+at its final size, and `take`/`drop` index directly instead of walking the
+whole input. `mapKeys`, `mapValues` and `mapEntries` pre-size from the map's
+count, `mapPutAll` uses indexed assignment instead of remove-then-add, and
+the JVM `tryGetValue` does one hash lookup on a hit instead of two.
+`lyric-jobs`, `lyric-search`, `lyric-mq` and `lyric-testing` built slices
+with `x = concat(x, [e])` in loops (quadratic); they now accumulate into a
+`List` and call `toArray()` once, and `concat`'s doc comment no longer
+recommends repeated use (#7279, #7282, epic #7256).
+
