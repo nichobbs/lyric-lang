@@ -268,7 +268,7 @@ pub func pipeCheckAndMono(
   // Record `.copy(...)` → constructor call, a cross-package function value →
   // its forwarding lambda, and a widened function-value call argument →
   // its explicit conversion, while the type checker's span keys still
-  // identify exactly one expression each (D-progress-948, 955, 956).
+  // identify exactly one expression each (D-progress-948, 962, 963).
   val valueSites = funcValueSites(tcRes.symbols)
   val copyRes = desugarCheckedFile(file0, tcRes.symbols.recordCopySites, valueSites, tcRes.symbols.argConversionSites)
   if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
@@ -512,7 +512,7 @@ pub func pipeAnnsBlockSpecialization(anns: in List[Annotation]): Bool {
 }
 
 // The function type of each desugared function-value lambda, keyed like its
-// site, for mono's inference (D-progress-955).  A site whose result type has
+// site, for mono's inference (D-progress-962).  A site whose result type has
 // no source spelling is left out.
 func funcValueLambdaTypes(sites: in Map[String, FuncRefSite]): Map[String, TypeExpr] {
   val types: Map[String, TypeExpr] = newMap()
@@ -538,7 +538,7 @@ func funcValueLambdaTypes(sites: in Map[String, FuncRefSite]): Map[String, TypeE
 }
 
 /// A restored package's items with qualified calls in their bodies resolved
-/// as in the package's own build (D-progress-958).  Generic bodies are stored
+/// as in the package's own build (D-progress-965).  Generic bodies are stored
 /// as source after alias rewriting, so a call to a sibling package reads
 /// `Ui.Session.start(...)`; re-parsed, that is a member chain on a value.
 /// Re-running the alias rewriter with the package's recorded `imports` in

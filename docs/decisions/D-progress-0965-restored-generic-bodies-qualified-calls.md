@@ -1,4 +1,4 @@
-# D-progress-958 — Qualified calls in restored generic bodies; restored function fields
+# D-progress-965 — Qualified calls in restored generic bodies; restored function fields
 
 **Status:** shipped
 

@@ -4299,7 +4299,7 @@ func lowerMethodCall(
     return JRef(className = "java/lang/String")
   }
   // A distinct or range-subtype receiver renders as its underlying value
-  // (D-progress-960); the wrapper class inherits `Object.toString()`.
+  // (D-progress-967); the wrapper class inherits `Object.toString()`.
   if memberName == "toString" and args.count == 0 {
     match recvTy {
       case JRef(dc) -> {

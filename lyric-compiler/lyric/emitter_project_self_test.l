@@ -2057,7 +2057,7 @@ test "emitProject bare call in an imported generic prefers its own package's ove
   assertEqual(Str.trim(result.stdout), "found 7; ab", "own overload JVM: output")
 }
 
-// Another package's function used as a value (D-progress-955): a bare
+// Another package's function used as a value (D-progress-962): a bare
 // selective import, the alias-rewritten `Other.f` spelling and the full
 // package path, with value-type parameters and a parameter of a type declared
 // in the function's own package.  Each becomes a typed forwarding lambda, so
@@ -2126,7 +2126,7 @@ test "emitProject another package's functions used as values (JVM)" {
 // (`val p = Program(update = Logic.update)`) is constructed at the type mono
 // infers for it, and a generic taking it specialises and runs; before, MSIL
 // built `Program<object, object>` and the specialised call's cast failed
-// (D-progress-955).
+// (D-progress-962).
 func funcValueRecordPkgs(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(
@@ -2211,7 +2211,7 @@ test "emitProject a generic record built from another package's function (JVM)" 
 }
 
 // A specialised copy of another package's generic resolves its bare type
-// names in that package's scope (D-progress-959).  `EPHs.Core.fire` matches on
+// names in that package's scope (D-progress-966).  `EPHs.Core.fire` matches on
 // its own `Handler` union, specialised into a consumer that imports an
 // unrelated `EPHs.Web.Handler` interface; resolved in the consumer's scope,
 // the pattern bound nothing (T0115 on `m`).

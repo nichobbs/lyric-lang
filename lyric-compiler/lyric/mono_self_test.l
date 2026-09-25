@@ -2675,7 +2675,7 @@ test "generic call with an explicit extern-type type argument monomorphises (#68
   )
 }
 
-test "a generic call inside a protected member specialises with the protected fields in scope (D-progress-957)" {
+test "a generic call inside a protected member specialises with the protected fields in scope (D-progress-964)" {
   val callerSrc = "package Caller\n" + "protected type Table {\n" + "  var rows: List[Int] = newList()\n" +
     "  func firstRow(): Int {\n" +
     "    return firstLike(rows)\n" +

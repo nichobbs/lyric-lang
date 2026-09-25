@@ -1053,7 +1053,7 @@ pub record FuncRefSite {
 /// An argument of a call through a function VALUE that the type checker
 /// accepted by numeric widening (`Int` for a `Long` parameter): a function
 /// value's call is erased, so `Lyric.Mono.desugarCheckedFile` makes the
-/// widening explicit as `arg.<method>()` (D-progress-956).
+/// widening explicit as `arg.<method>()` (D-progress-963).
 pub record ArgConversionSite {
   method: String
   startOffset: Int

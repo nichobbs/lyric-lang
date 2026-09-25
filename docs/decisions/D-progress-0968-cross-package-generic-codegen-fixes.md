@@ -1,4 +1,4 @@
-# D-progress-961 — Generic inference and MSIL fixes found by a cross-package UI example
+# D-progress-968 — Generic inference and MSIL fixes found by a cross-package UI example
 
 **Status:** shipped
 
@@ -50,7 +50,7 @@ independent:
    hint.
 2. The checker records (a) the widened arguments of a direct call to another
    package's function in `argConversionSites`, lowered by the existing
-   D-progress-956 desugar on every target, and (b) the result type of every
+   D-progress-963 desugar on every target, and (b) the result type of every
    qualified and method call in `SymbolTable.callResultTypes`, which
    `Lyric.Mono` consults only when its own inference finds nothing.
 3. `inferOneGenericArg` accepts numeric widening: when two bindings of `T`

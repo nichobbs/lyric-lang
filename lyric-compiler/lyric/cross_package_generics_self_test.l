@@ -754,11 +754,11 @@ func buildDllPkgs(tmpDir: in String, pkgs: in List[Emitter.ProjectPackage], asmN
 
 // A restored generic whose body calls a SIBLING package's function through
 // its package name (`CpSess.Session.start(m)`, inside a closure) specialises
-// in the consumer (D-progress-958).  The stored body is alias-rewritten
+// in the consumer (D-progress-965).  The stored body is alias-rewritten
 // source; re-parsed, the qualified call is a member chain and codegen read
 // `CpSess.Session` as a value (T0115) until the package's recorded imports
 // were brought back into scope.
-test "cross-package generic calling a sibling package by name inside a closure (D-progress-958)" {
+test "cross-package generic calling a sibling package by name inside a closure (D-progress-965)" {
   val tmpDir = freshTempDir("cpgen-sibling-qualified")
   val sessionSrc = "package CpSess.Session\n" + "\n" + "pub record Session[M] {\n" + "  model: M\n" + "}\n" + "\n" +
     "pub record Output[M] {\n" +
@@ -823,11 +823,11 @@ test "cross-package generic calling a sibling package by name inside a closure (
   assertEqual(Str.trim(captured.stdout), "1", "cpgen_sibling_qualified: output")
 }
 
-// Qualified calls into a restored package (D-progress-961): an `Int` literal
+// Qualified calls into a restored package (D-progress-968): an `Int` literal
 // passed to a `Long` parameter is widened, and a generic whose type parameter
 // is fixed only by another restored call's `Result[Long, String]` specialises
 // at `Long` rather than at the `Int` of its literal fallback.
-test "qualified restored calls widen Int arguments and type generics from their results (D-progress-961)" {
+test "qualified restored calls widen Int arguments and type generics from their results (D-progress-968)" {
   val tmpDir = freshTempDir("cplong-qualified")
   val producerSrc = "package CpLong.Parse\n" + "\n" + "pub func span(lo: in Long, hi: in Long): Long { hi - lo }\n" +
     "\n" +
@@ -867,8 +867,8 @@ test "qualified restored calls widen Int arguments and type generics from their 
 // A generic from one restored package binds an annotated local from calls to
 // another package's generics that take a lambda local, then passes it on
 // (`field(..., input)`): the local keeps its annotated `View[Msg]`, so the
-// inner generic specialises at `Msg`, not `Object` (D-progress-961).
-test "an annotated local in a specialised generic keeps its type across packages (D-progress-961)" {
+// inner generic specialises at `Msg`, not `Object` (D-progress-968).
+test "an annotated local in a specialised generic keeps its type across packages (D-progress-968)" {
   val tmpDir = freshTempDir("cpgen-annotated-local")
   val coreSrc = "package CpView.Core\n" + "\n" + "pub union View[Msg] {\n" +
     "  case Wrap(label: String, inner: View[Msg])\n" +
@@ -944,8 +944,8 @@ test "an annotated local in a specialised generic keeps its type across packages
 }
 
 // A range subtype restored from a dependency stringifies as its underlying
-// value, like an in-bundle one (D-progress-960).
-test "a restored range subtype renders as its value (D-progress-960)" {
+// value, like an in-bundle one (D-progress-967).
+test "a restored range subtype renders as its value (D-progress-967)" {
   val tmpDir = freshTempDir("cprange-restored")
   val producerSrc = "package CpRange.Money\n" + "\n" + "pub type Cents = Long range 0 ..= 1000000\n" + "\n" +
     "pub func cents(n: in Long): Cents { Cents.from(n) }\n"

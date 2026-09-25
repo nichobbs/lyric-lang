@@ -128,7 +128,7 @@ func sumsToFortyTwo(f: in (Int, Long) -> Long): Bool {
 
 // A function value's call is erased, so an argument the checker accepts by
 // widening (`Int` for a `Long` parameter) is converted explicitly
-// (D-progress-956).  Covers a literal, an `Int` local, a local function
+// (D-progress-963).  Covers a literal, an `Int` local, a local function
 // value, a function-typed parameter and a record function field.
 test "an Int argument widens to a function value's Long parameter" {
   val f: (Int, Long) -> Long = { x: Int, y: Long -> x.toLong() + y }
@@ -151,7 +151,7 @@ func fireTrigger[M](t: in Trigger[M], data: in String): M {
 
 // A call through a function-typed union case field bound by a pattern yields
 // the field's return type, not `object`, so it joins a `Msg`-typed match
-// (D-progress-961).
+// (D-progress-968).
 test "a pattern-bound union function field returns its declared type" {
   val t: Trigger[Reply] = FromText(toMsg = { s: String -> Said(text = s) })
   val fixed: Trigger[Reply] = Fixed(msg = Silent)

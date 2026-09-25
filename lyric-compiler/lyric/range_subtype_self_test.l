@@ -623,8 +623,8 @@ record Priced {
 
 // A range subtype over `Long` built from an `Int` literal widens the argument
 // (`from`/`tryFrom` took an `int32` where `int64` was declared, invalid IL),
-// and renders as its value, not its wrapper type's name (D-progress-960).
-test "a Long range subtype from an Int literal renders as its value (D-progress-960)" {
+// and renders as its value, not its wrapper type's name (D-progress-967).
+test "a Long range subtype from an Int literal renders as its value (D-progress-967)" {
   val c = Cents.from(5000)
   assertEqual(c.toString(), "5000", "toString")
   assertEqual("price: ${c}", "price: 5000", "interpolation")
@@ -640,8 +640,8 @@ test "a Long range subtype from an Int literal renders as its value (D-progress-
 type Quota = UInt range 0u32 ..= 4294967295u32
 
 // A `UInt`-backed range erases to the signed representation on both targets;
-// stringifying it must still use the unsigned formatter (D-progress-960).
-test "a UInt range subtype renders its value unsigned (D-progress-960)" {
+// stringifying it must still use the unsigned formatter (D-progress-967).
+test "a UInt range subtype renders its value unsigned (D-progress-967)" {
   val q = Quota.from(4000000000u32)
   assertEqual(q.toString(), "4000000000", "toString")
   assertEqual("quota: ${q}", "quota: 4000000000", "interpolation")

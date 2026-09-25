@@ -307,7 +307,7 @@ test "protected member bare call with no same-named sibling resolves the free fu
 }
 
 // A generic stdlib call inside a protected member, over a protected field,
-// is specialised like any method body's (D-progress-957); before, it stayed
+// is specialised like any method body's (D-progress-964); before, it stayed
 // generic and MSIL codegen could not resolve it.
 protected type NameTable {
   var names: Map[Long, String] = newMap()
@@ -319,7 +319,7 @@ protected type NameTable {
   }
 }
 
-test "a generic call over a protected field specialises (D-progress-957)" {
+test "a generic call over a protected field specialises (D-progress-964)" {
   val t = NameTable()
   t.put(1, "a")
   t.put(2, "b")

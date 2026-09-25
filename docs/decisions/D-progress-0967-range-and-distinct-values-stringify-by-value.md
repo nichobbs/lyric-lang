@@ -1,4 +1,4 @@
-# D-progress-960 — Range and distinct values stringify as their underlying value
+# D-progress-967 — Range and distinct values stringify as their underlying value
 
 **Status:** shipped
 

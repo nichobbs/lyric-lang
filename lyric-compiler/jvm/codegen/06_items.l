@@ -3409,7 +3409,7 @@ pub func collectFileSigsSeeded(
     match file.items[i].kind {
       case IFunc(decl) -> {
         // A specialised copy of another package's generic resolves its type
-        // names in that package's scope (D-progress-959).
+        // names in that package's scope (D-progress-966).
         val fnExternTypes = originScopedExternTypes(decl, dottedPathOfSegments(file.packageDecl.path.segments), externTypes)
         // An `out`/`inout` parameter is declared as a holder array in the JVM
         // descriptor (#1763), so the registry records the array type and the
@@ -3673,7 +3673,7 @@ pub func collectFileSigsSeeded(
         val distClass = owner + "/" + decl.name
         val inner = typeExprToJvm(decl.underlying, owner)
         // The `$value` accessor, so a distinct value renders as its
-        // underlying value when stringified (D-progress-960).
+        // underlying value when stringified (D-progress-967).
         registerInstanceSigErased(
           into,
           distClass,
@@ -4220,7 +4220,7 @@ func registerInstanceSigErased(
         // Keyed `<class>#<method>`, so `isUnsignedExpr`'s bare-key `ECall`
         // arm never reads it; a distinct type's `$value` accessor carries it
         // so stringification formats a `UInt`/`ULong` underlying value
-        // unsigned (D-progress-960).
+        // unsigned (D-progress-967).
         retIsUnsigned = match retOpt { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
         recordRetHead = newList()
       )
@@ -4811,7 +4811,7 @@ pub func collectFileCasesExtern(
 // re-type every erased generic field.
 // Reserved keys recording, per package, what a specialised copy of one of its
 // generics needs to resolve its bare type names in the package's own scope
-// (D-progress-959): `~generic~<Name>` for each generic type it declares, and
+// (D-progress-966): `~generic~<Name>` for each generic type it declares, and
 // `~import~<Pkg>` for each package it imports.  `externSeedForFile` seeds
 // them bundle-wide as `<Pkg>.~generic~<Name>` / `<Pkg>.~import~<Imported>`
 // like any package-qualified key; no type is ever named this way, so the
@@ -4847,7 +4847,7 @@ func collectOriginScopeMarkers(file: in SourceFile, into: in Map[String, String]
 // `externTypes` as seen from inside a specialised copy of another package's
 // generic (its `__lyric_origin`, when that differs from `pkgName`): each bare
 // type name resolves as it did where the generic was written, to the types of
-// the packages it imports and, winning over those, its own (D-progress-959).
+// the packages it imports and, winning over those, its own (D-progress-966).
 // A generic type there drops a same-named bare entry, so it erases like any
 // generic type instead of naming an unrelated class.
 pub func originScopedExternTypes(
@@ -4974,7 +4974,7 @@ pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, S
       // (`LPDistinctType`); without this a consumer's parameter or binding of
       // a dependency's distinct type named the in-package guess
       // (`<consumerPkg>/Cents`) and failed with NoClassDefFoundError
-      // (D-progress-960).
+      // (D-progress-967).
       case IDistinctType(decl) -> {
         match decl.generics {
           case None -> {

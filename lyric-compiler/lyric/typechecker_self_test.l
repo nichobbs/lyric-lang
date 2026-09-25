@@ -209,7 +209,7 @@ test "int literal adopts context" {
   assertEqualInt(diagCount(parseCheck(branch)), 0, "int-lit: if-branch Long/0 widens to Long")
 }
 
-// D-progress-961: a negated literal adopts the other operand's type like the
+// D-progress-968: a negated literal adopts the other operand's type like the
 // literal itself, and a generic's type parameter takes the wider numeric type
 // when a literal argument widens at a bare `T` parameter.
 test "negated literal and widening generic argument" {
