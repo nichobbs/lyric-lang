@@ -37700,20 +37700,42 @@ func registerRestoredRecordLikeType(cctx: in CodegenCtx, packageName: in String,
   registerRestoredRecordBodyMethods(cctx, packageName, decl)
 }
 
-func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact): Unit {
-  // Hoist the DLL read outside the items loop — one parse per artifact, not
-  // one per IUnion item.  Returns hasInstances=false on any read/parse failure
-  // (safe default: no Instance MemberRefs emitted, no resolution error).
-  // isClassTyped distinguishes F#-era DLLs (CLASS-typed Instance fields,
-  // element type 0x12) from self-hosted DLLs (OBJECT-typed, 0x1c) so that the
-  // MemberRef signature byte-matches the FieldDef the CLR will resolve.
-  val instKind = Mdr.dllNullaryInstanceInfo(art.dllPath)
-  // Hoisted like `instKind`: one metadata scan per artifact yields the set of
-  // host-class methods whose real return is Task / Task`1<T> (async kickoffs),
-  // consumed by `registerRestoredFunc` to Task-wrap the MemberRef return
-  // (#5561).  Unreadable DLL or absent host class yields an empty map (safe
-  // default: no wrapping, the pre-fix encoding).
-  val taskFuncs = Mdr.dllTaskReturningFuncs(art.dllPath, art.packageName)
+// One restored DLL's parsed image plus its per-DLL nullary-Instance scan,
+// shared by every artifact (package) the DLL hosts.  The restored compiler
+// bundle `Lyric.Compiler.dll` carries ~80 packages; scanning it per package
+// re-read and re-parsed the 5 MB file ~160 times per compile.
+record RestoredDllScan {
+  dllPath: String
+  image: Option[Mdr.ResourceImage]
+  instKind: Mdr.InstanceFieldKind
+}
+
+func scanRestoredDll(dllPath: in String): RestoredDllScan {
+  val image = Mdr.openResourceImage(dllPath)
+  // Returns hasInstances=false on any read/parse failure (safe default: no
+  // Instance MemberRefs emitted, no resolution error).  isClassTyped
+  // distinguishes F#-era DLLs (CLASS-typed Instance fields, element type
+  // 0x12) from self-hosted DLLs (OBJECT-typed, 0x1c) so that the MemberRef
+  // signature byte-matches the FieldDef the CLR will resolve.
+  val instKind = match image {
+    case Some(ri) -> Mdr.imageNullaryInstanceInfo(ri)
+    case None -> Mdr.InstanceFieldKind(hasInstances = false, isClassTyped = false)
+  }
+  RestoredDllScan(dllPath = dllPath, image = image, instKind = instKind)
+}
+
+func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact, scan: in RestoredDllScan): Unit {
+  val instKind = scan.instKind
+  // One metadata scan per artifact yields the set of host-class methods whose
+  // real return is Task / Task`1<T> (async kickoffs), consumed by
+  // `registerRestoredFunc` to Task-wrap the MemberRef return (#5561).
+  // Unreadable DLL or absent host class yields an empty map (safe default: no
+  // wrapping, the pre-fix encoding).
+  val noTaskFuncs: Map[String, Bool] = newMap()
+  val taskFuncs = match scan.image {
+    case Some(ri) -> Mdr.imageTaskReturningFuncs(ri, art.packageName)
+    case None -> noTaskFuncs
+  }
   val items = art.source.items
   var i = 0
   while i < items.count {
@@ -38340,6 +38362,7 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
   // union cases, impl methods) now that every type's TypeRef exists.
   // Walks the parsed source instead of the contract decls so we get
   // structured field types for signature encoding.
+  val dllScans: List[RestoredDllScan] = newList()
   var aj = 0
   while aj < cctx.restoredArtifacts.count {
     val art = cctx.restoredArtifacts[aj]
@@ -38347,7 +38370,14 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
       aj = aj + 1
       continue
     }
-    registerRestoredMembers(cctx, art)
+    var si = 0
+    while si < dllScans.count and dllScans[si].dllPath != art.dllPath {
+      si = si + 1
+    }
+    if si == dllScans.count {
+      dllScans.add(scanRestoredDll(art.dllPath))
+    }
+    registerRestoredMembers(cctx, art, dllScans[si])
     aj = aj + 1
   }
   // Pass 3: cross-package compile-time constant inlining.  A module-level
