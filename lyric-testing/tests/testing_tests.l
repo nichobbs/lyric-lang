@@ -258,6 +258,47 @@ test "MockStorageBucket: list with empty prefix returns all keys" {
   }
 }
 
+test "MockStorageBucket: rejects the keys every real backend rejects (#7242)" {
+  val ctx = Testing.newTestContext()
+  match Storage.put(ctx.storage, "../escape", "data", "text/plain") {
+    case Ok(_) -> Testing.assertTrue(false, "a traversal key must be rejected")
+    case Err(e) -> Testing.assertEq(e.code, "INVALID_KEY", "put rejects '..'")
+  }
+  match Storage.get(ctx.storage, "a//b") {
+    case Ok(_) -> Testing.assertTrue(false, "an empty segment must be rejected")
+    case Err(e) -> Testing.assertEq(e.code, "INVALID_KEY", "get rejects an empty segment")
+  }
+  match Storage.list(ctx.storage, "../") {
+    case Ok(_) -> Testing.assertTrue(false, "a traversal prefix must be rejected")
+    case Err(e) -> Testing.assertEq(e.code, "INVALID_KEY", "list rejects a traversal prefix")
+  }
+}
+
+test "MockStorageBucket: list pages by maxKeys (#7242)" {
+  val ctx = Testing.newTestContext()
+  Storage.put(ctx.storage, "p/1", "d", "text/plain")
+  Storage.put(ctx.storage, "p/2", "d", "text/plain")
+  Storage.put(ctx.storage, "p/3", "d", "text/plain")
+  match ctx.storage.list("p/", "", 2) {
+    case Err(e) -> Testing.assertTrue(false, "list() must succeed: " + e.message)
+    case Ok(first) -> {
+      assertEqualInt(first.entries.length, 2, "first page holds maxKeys entries")
+      Testing.assertTrue(first.isTruncated, "first page is truncated")
+      match first.nextContinuationToken {
+        case None -> Testing.assertTrue(false, "a truncated page carries a continuation token")
+        case Some(token) -> match ctx.storage.list("p/", token, 2) {
+          case Err(e) -> Testing.assertTrue(false, "second page must succeed: " + e.message)
+          case Ok(second) -> {
+            assertEqualInt(second.entries.length, 1, "second page holds the rest")
+            Testing.assertEq(second.entries[0].key, "p/3", "continues after the token")
+            Testing.assertFalse(second.isTruncated, "last page is not truncated")
+          }
+        }
+      }
+    }
+  }
+}
+
 // ─── MockMessageQueue ─────────────────────────────────────────────────────────
 test "MockMessageQueue: publish returns Ok and increments count" {
   val ctx = Testing.newTestContext()

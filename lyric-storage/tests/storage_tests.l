@@ -87,6 +87,28 @@ test "isSafePrefix rejects traversal" {
   assertTrue(not isSafePrefix("%252e%252e/etc"), "double-encoded")
 }
 
+test "isSafeKey rejects control characters, '.' and empty segments (#7242)" {
+  assertTrue(isSafeKey("uploads/photo.jpg"), "ordinary key")
+  assertTrue(isSafeKey("a/b.c/d"), "dots inside a segment are fine")
+  assertTrue(not isSafeKey("a\u{0001}b"), "C0 control character")
+  assertTrue(not isSafeKey("a\nb"), "line feed")
+  assertTrue(not isSafeKey("ab"), "DEL")
+  assertTrue(not isSafeKey("a/./b"), "'.' segment")
+  assertTrue(not isSafeKey("a/%2e/b"), "encoded '.' segment")
+  assertTrue(not isSafeKey("a//b"), "empty segment aliases a/b on local-fs")
+  assertTrue(not isSafeKey("dir/"), "trailing '/' is an empty segment")
+  assertTrue(isSafePrefix("dir/"), "a directory-style prefix may end in '/'")
+  assertTrue(not isSafePrefix("dir//"), "but not with an empty segment")
+}
+
+test "auditLog accepts every level spelling without failing" {
+  auditLog("Storage.put", "info", "")
+  auditLog("Storage.put", "WARN", "detail with a\nline break")
+  auditLog("Storage.put", "Debug", "")
+  auditLog("Storage.put", "unknown", "")
+  assertTrue(true, "audit logging never fails the caller")
+}
+
 // ─── connectLocal Result-only checks ─────────────────────────────────────────
 //
 // These tests confirm the connectLocal factory's input-validation
