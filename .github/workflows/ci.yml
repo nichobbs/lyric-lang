@@ -6465,6 +6465,10 @@ jobs:
             deps: "auth resilience"
           - id: ws
             deps: "auth"
+          - id: forms
+            deps: ""
+          - id: ui
+            deps: "forms jsonrpc auth resilience web ws"
           - id: testing
             deps: "cache mail storage feature-flags mq session"
     # NOTE (#6165 follow-up): the original per-library gate
@@ -6745,6 +6749,30 @@ jobs:
         if: matrix.id == 'ws'
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-ws/lyric.toml
+
+      - name: Run tests (forms)
+        if: matrix.id == 'forms'
+        run: |
+          "$LYRIC_CLI_PATH" test --manifest lyric-forms/lyric.toml
+
+      # lyric-ui (docs/65, D137): the TypeScript host runtime is type-checked,
+      # its mirror-tree patch semantics tested under node, and the embedded
+      # copy in src/host_assets.l verified up to date before the Lyric suites
+      # (library + examples/ui-customers) run.
+      - name: Run tests (ui)
+        if: matrix.id == 'ui'
+        run: |
+          set -euo pipefail
+          (
+            cd lyric-ui/runtime
+            npm install --no-save --no-package-lock typescript@6.0.2
+            npx tsc -p tsconfig.json
+            node --test test/*.test.mjs
+            node embed.mjs --check
+          )
+          "$LYRIC_CLI_PATH" build --manifest lyric-ui/lyric.toml
+          "$LYRIC_CLI_PATH" test --manifest lyric-ui/lyric.toml
+          "$LYRIC_CLI_PATH" test --manifest examples/ui-customers/lyric.toml
 
       - name: Run tests (testing)
         if: matrix.id == 'testing'
