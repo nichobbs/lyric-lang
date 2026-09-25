@@ -57,6 +57,17 @@ func cleanup(dir: in String): Unit {
   }
 }
 
+// Run the built `lyric` with a generous timeout.  `runCaptureWithDiagnostics`'
+// default 10s cap is too short for a project build under CI CPU contention
+// (parallel self-test steps): a killed build still exits non-zero but leaves
+// stderr empty, which failed the multi-file case's path assertion with no
+// diagnostic to show.  A timeout is reported as such instead.
+func runLyric(args: in List[String]): Capture.CaptureResult {
+  val result = Capture.runCaptureWithDiagnosticsTimeout(lyricBinPath(), args, "", 300000)
+  assertTrue(not result.timedOut, "lyric " + args[0] + " timed out before producing a diagnostic")
+  result
+}
+
 func lyricBinPath(): String {
   Path.join(Environment.currentDirectory(), "bin/lyric")
 }
@@ -86,7 +97,7 @@ test "single-file dotnet build: a parse error names the real source path" {
   args.add("dotnet")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
   // A bare `Str.contains(result.stderr, srcPath)` is NOT discriminating here:
   // `cli_build.l` always appends a trailing "<srcPath>: build failed" summary
@@ -123,7 +134,7 @@ test "single-file jvm build: a parse error names the real source path" {
   args.add("jvm")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
   // See the dotnet test above (#6654): anchor on the diagnostic's own label
   // prefix, not the catch-all "build failed" summary line, which would pass
@@ -174,7 +185,7 @@ test "single-file jvm build: a type error names the real source path" {
   args.add("jvm")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "an unknown-name reference must fail the build")
   assertTrue(
     Str.contains(result.stderr, "T0020"),
@@ -215,7 +226,7 @@ test "single-file native build: a parse error names the real source path" {
   args.add("native")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
   // See the dotnet test above (#6654): anchor on the diagnostic's own label
   // prefix, not the catch-all "build failed" summary line, which would pass
@@ -269,7 +280,7 @@ test "single-file native build: a middle-end (mode-check) error names the real s
   args.add("native")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "conflicting verification-level annotations must fail the build")
   assertTrue(
     Str.contains(result.stderr, "V0010"),
@@ -324,7 +335,7 @@ test "single-file dotnet build routed through the project path (nearby [features
   // Deliberately no `--manifest` flag: the manifest must be auto-discovered
   // from `srcPath`'s own directory, matching the real-world "entry file
   // next to a lyric.toml" shape.
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
   // See the plain single-file dotnet test above (#6654): a bare
   // `Str.contains(result.stderr, srcPath)` is NOT discriminating — the
@@ -383,7 +394,7 @@ test "single-file dotnet build routed through the project path (nearby [features
   args.add(outPath)
   // Deliberately no `--manifest` flag: the manifest must be auto-discovered
   // from `srcPath`'s own directory, matching #6610's routing shape.
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "an unknown-name reference must fail the build")
   assertTrue(
     Str.contains(result.stderr, "T0020"),
@@ -475,7 +486,7 @@ test "multi-file project package: a parse error in the second file names that fi
   args.add("dotnet")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
   assertTrue(
     Str.contains(result.stderr, bPath + ": error[P0050]"),
@@ -553,7 +564,7 @@ test "multi-file project package: a type error in the second file names that fil
   args.add("dotnet")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a trailing-expression type mismatch must fail the build")
   assertTrue(
     Str.contains(result.stderr, "T0070"),
@@ -616,7 +627,7 @@ test "single-file project package (one entry in [project.packages]): a parse err
   args.add("dotnet")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
   assertTrue(
     Str.contains(result.stderr, aPath + ": error[P0050]"),
@@ -764,7 +775,7 @@ test "multi-file project package (dotnet): a weave-time error (A0044) in the sec
   args.add("dotnet")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a config field with no default referenced by a matched aspect must fail the build")
   assertTrue(
     Str.contains(result.stderr, "A0044"),
@@ -842,7 +853,7 @@ test "multi-file project package (native): a parse error in the second file name
   args.add("native")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a broken source file must fail the build")
   assertTrue(
     Str.contains(result.stderr, bPath + ": error[P0050]"),
@@ -928,7 +939,7 @@ test "multi-file project package (dotnet): a codegen-phase error (F0025) in the 
   args.add("dotnet")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a try-catch expression with mismatched branch types must fail the build")
   assertTrue(
     Str.contains(result.stderr, "F0025"),
@@ -1014,7 +1025,7 @@ test "single-file project package (one entry in [project.packages]): a codegen-p
   args.add("dotnet")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a try-catch expression with mismatched branch types must fail the build")
   assertTrue(
     Str.contains(result.stderr, aPath + ": error[F0025]"),
@@ -1095,7 +1106,7 @@ test "multi-file project package (dotnet): an impl-default diamond conflict (T01
   args.add("dotnet")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "an unresolved diamond default-method conflict must fail the build")
   assertTrue(
     Str.contains(result.stderr, "T0117"),
@@ -1179,7 +1190,7 @@ test "multi-file project package (native): an impl-default diamond conflict (T01
   args.add("native")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "an unresolved diamond default-method conflict must fail the build")
   assertTrue(
     Str.contains(result.stderr, "T0117"),
@@ -1263,7 +1274,7 @@ test "multi-file project package (jvm): a weave-time error (A0044) in the second
   args.add("jvm")
   args.add("-o")
   args.add(outPath)
-  val result = Capture.runCaptureWithDiagnostics(lyricBinPath(), args, "")
+  val result = runLyric(args)
   assertTrue(result.exitCode != 0, "a config field with no default referenced by a matched aspect must fail the build")
   assertTrue(
     Str.contains(result.stderr, "A0044"),
