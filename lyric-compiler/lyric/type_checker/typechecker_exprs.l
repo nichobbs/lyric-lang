@@ -1980,7 +1980,8 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
     isHot = entry.sig.isHot,
     isGenerator = entry.sig.isGenerator,
     originPackage = entry.sig.originPackage,
-    span = entry.sig.span
+    span = entry.sig.span,
+    isPure = entry.sig.isPure
   )
 }
 
@@ -2089,7 +2090,8 @@ func dropReceiverParam(full: in ResolvedSignature): ResolvedSignature {
     isHot = full.isHot,
     isGenerator = full.isGenerator,
     originPackage = full.originPackage,
-    span = full.span
+    span = full.span,
+    isPure = full.isPure
   )
 }
 
@@ -6007,6 +6009,7 @@ func inferExprCore(
       }
       match directSig {
         case Some(sig) -> {
+          checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
             recordSigArgConversions(tbl, sig, args, argTypes)
@@ -6043,6 +6046,7 @@ func inferExprCore(
               }
               case None -> match methodPick {
                 case Some(mp) -> {
+                  checkContractCallPure(sc, diag, mp.sig, fn, e.span)
                   checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
                   checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
                   match mp.fullSig {
@@ -6630,6 +6634,35 @@ pub func inferExprExpected(
 // T0085).  Shared by the direct-signature path and the A4 method-call path
 // (whose signatures are receiver-dropped, so `sig.params` aligns 1:1 with
 // `args` in both).
+// T0133 (#7228, language reference §6.3): a contract clause or loop
+// invariant may call only `@pure` functions.  Only calls that resolve to a
+// declared Lyric function reach here; operators, field reads and built-in
+// collection/string members are not function calls.
+func checkContractCallPure(
+  sc: in Scope,
+  diag: in List[Diagnostic],
+  sig: in ResolvedSignature,
+  fn: in Expr,
+  span: in Span,
+): Unit {
+  if sc.contractDepth.count == 0 or sig.isPure {
+    return
+  }
+  val name = match fn.kind {
+    case EPath(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "?" }
+    case EMember(_, m) -> m
+    case _ -> "?"
+  }
+  diag.add(
+    errorDiagnostic(
+      "T0133",
+      "a contract clause may call only @pure functions; '" + name +
+        "' is not @pure (mark it @pure if it has no side effects, or move the check into the body)",
+      span
+    )
+  )
+}
+
 func checkCallArgsAgainstSig(
   sc: in Scope,
   tbl: in SymbolTable,

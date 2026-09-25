@@ -4842,3 +4842,67 @@ test "sibling loops may share a label" {
   assertTrue(not hasDiagCode(cr, "T0131"), "siblings: no T0131")
   assertTrue(not hasDiagCode(cr, "T0130"), "siblings: no T0130")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Contract clauses are type-checked (#7228): a requires/ensures/when clause
+// and a loop invariant must be Bool (T0132),
+// and names inside a clause resolve like the function body's.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a non-Bool requires clause is T0132" {
+  val src = "package P\nfunc f(x: in Int): Int\n  requires: x + 1\n{\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0132"), "Int-typed requires")
+}
+
+test "an ensures clause is checked with result as the return type" {
+  val ok = "package P\nfunc f(x: in Int): Int\n  ensures: result >= x\n{\n  x\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0132"), "result >= x is Bool")
+  val bad = "package P\nfunc f(x: in Int): String\n  ensures: result\n{\n  \"a\"\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0132"), "String-typed ensures")
+}
+
+test "an unknown name in a clause is reported by the type checker" {
+  val src = "package P\nfunc f(x: in Int): Int\n  requires: x > nope\n{\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0020"), "nope is unknown")
+}
+
+test "a mismatched comparison in a clause is reported" {
+  val src = "package P\nfunc f(x: in Int): Int\n  requires: x == \"a\"\n{\n  x\n}\n"
+  assertTrue(diagCount(parseCheck(src)) > 0, "Int == String")
+}
+
+test "a non-Bool loop invariant is T0132" {
+  val src = "package P\nfunc f(n: in Int): Int {\n  var i = 0\n  while i < n\n    invariant: i\n  {\n    i = i + 1\n  }\n  i\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0132"), "Int-typed invariant")
+}
+
+test "old() and quantifiers in clauses type-check" {
+  val src = "package P\nfunc f(xs: inout List[Int]): Unit\n  ensures: xs.count == old(xs.count) + 1\n  ensures: forall (i: Int) where i >= 0 and i < xs.count { xs[i] >= 0 }\n{\n  xs.add(0)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0132"), "well-typed old/forall clauses")
+}
+
+// A contract clause or loop invariant may call only @pure functions (T0133,
+// #7228, language reference §6.3).
+test "a clause calling a non-@pure function is T0133" {
+  val src = "package P\nfunc check(x: in Int): Bool { x > 0 }\nfunc f(x: in Int): Int\n  requires: check(x)\n{\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0133"), "check is not @pure")
+}
+
+test "a clause calling a @pure function is accepted" {
+  val src = "package P\n@pure\nfunc check(x: in Int): Bool { x > 0 }\nfunc f(x: in Int): Int\n  requires: check(x)\n  ensures: check(result)\n{\n  x\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "check is @pure")
+}
+
+test "a non-@pure call in the body is not T0133" {
+  val src = "package P\nfunc check(x: in Int): Bool { x > 0 }\nfunc f(x: in Int): Bool\n  requires: x > 0\n{\n  check(x)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "body calls are unrestricted")
+}
+
+test "a loop invariant calling a non-@pure function is T0133" {
+  val src = "package P\nfunc ok(i: in Int): Bool { i >= 0 }\nfunc f(n: in Int): Int {\n  var i = 0\n  while i < n\n    invariant: ok(i)\n  {\n    i = i + 1\n  }\n  i\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0133"), "invariant calls ok")
+}
+
+test "built-in members in a clause are not calls to check" {
+  val src = "package P\nfunc f(xs: in List[Int], s: in String): Int\n  requires: xs.count > 0 and s.length > 0\n{\n  xs[0]\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "count/length")
+}

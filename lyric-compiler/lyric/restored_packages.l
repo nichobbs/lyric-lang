@@ -205,6 +205,15 @@ pub func loadRestoredPackageJvm(jarPath: in String): Result[List[RestoredArtifac
 // would be more robust if a future repr extension puts braces in the
 // head — tracked alongside other contract-metadata refactors.
 func renderDecl(d: in Meta.ContractDecl, withBodies: in Bool): String {
+  // `@pure` rides on the contract (not the repr) so a consumer's contract
+  // clauses may call a restored function that declares it (#7228).
+  if d.kind == "func" and d.isPure {
+    return "@pure\n" + renderDeclBody(d, withBodies)
+  }
+  renderDeclBody(d, withBodies)
+}
+
+func renderDeclBody(d: in Meta.ContractDecl, withBodies: in Bool): String {
   if d.kind == "interface" and Str.indexOfRaw(d.repr, "{") < 0 {
     d.repr + " {}\n"
   } else if d.kind == "func" and withBodies {

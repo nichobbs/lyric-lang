@@ -590,6 +590,7 @@ test "record-body method ?: operand-position hoist applies inside the method too
 // but never hoisted — the same crash class in one narrow shape. checkLimit
 // returns Result so the ? is real; the invariant compares against the
 // unwrapped value each iteration.
+@pure
 func checkLimit(cap: in Int): Result[Int, String] {
   Ok(cap)
 }

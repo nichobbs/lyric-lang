@@ -135,6 +135,10 @@ record Tally {
 
 val evaluations: Tally = Tally(n = 0)
 
+// Deliberately impure: it counts how many times the clause below is
+// evaluated.  `@pure` is a declaration the compiler trusts, not a property
+// it verifies, so the clause may call it (T0133, #7228).
+@pure
 func counted(ok: in Bool): Bool {
   evaluations.n = evaluations.n + 1
   ok

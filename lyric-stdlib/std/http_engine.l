@@ -1683,6 +1683,7 @@ func isResponseSafeByte(cp: in Int): Bool {
 // 0x80, outside `isResponseSafeByte`'s `[32, 126]`/HTAB range, so scanning
 // bytes instead of decoded characters still rejects non-ASCII input exactly
 // as before.
+@pure
 func isResponseSafeString(s: in String): Bool {
   val bytes = encodeUtf8(s)
   var i = 0
@@ -1695,6 +1696,7 @@ func isResponseSafeString(s: in String): Bool {
   true
 }
 
+@pure
 func allHeadersResponseSafe(headers: in List[HeaderField]): Bool {
   var i = 0
   while i < headers.count {

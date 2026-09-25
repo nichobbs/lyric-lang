@@ -376,9 +376,7 @@ pub func checkStatement(
     case SContinue(_) -> {
     }
 
-    case SInvariant(e) -> {
-      val _ = inferExpr(sc, tbl, sigs, diag, e)
-    }
+    case SInvariant(e) -> checkBoolClause(sc, tbl, sigs, diag, e, "loop invariant", stmt.span)
 
     case SExpr(e) -> {
       match e.kind {
@@ -1268,6 +1266,56 @@ func checkOutDefiniteAssignment(diag: in List[Diagnostic], fn: in FunctionDecl, 
   }
 }
 
+// Contract clauses are type-checked against the function's own scope
+// (parameters, and `result` as the declared return type through `EResult`),
+// before elaboration turns them into asserts (#7228).  Before this an
+// ill-typed clause type-checked silently and failed, or miscompiled, in
+// codegen.
+func checkContractClauses(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  contracts: in List[ContractClause],
+): Unit {
+  var i = 0
+  while i < contracts.count {
+    match contracts[i] {
+      case CCRequires(e, sp) -> checkBoolClause(sc, tbl, sigs, diag, e, "requires", sp)
+      case CCEnsures(e, sp) -> checkBoolClause(sc, tbl, sigs, diag, e, "ensures", sp)
+      case CCWhen(e, sp) -> checkBoolClause(sc, tbl, sigs, diag, e, "when", sp)
+      case CCDecreases(e, sp) -> {
+        sc.contractDepth.add(0)
+        val t = inferExpr(sc, tbl, sigs, diag, e)
+        sc.contractDepth.removeAt(sc.contractDepth.count - 1)
+        val lenient = match t { case TyError -> true; case _ -> false }
+        if not isConcreteIntType(t) and not lenient {
+          diag.add(errorDiagnostic("T0132", "a decreases: measure must be an integer (got " + renderType(t) + ")", sp))
+        }
+      }
+      case CCRaises(_, _) -> ()
+    }
+    i = i + 1
+  }
+}
+
+func checkBoolClause(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  kind: in String,
+  sp: in Span,
+): Unit {
+  sc.contractDepth.add(0)
+  val t = inferExpr(sc, tbl, sigs, diag, e)
+  sc.contractDepth.removeAt(sc.contractDepth.count - 1)
+  if not typeEquiv(t, TyPrim(pt = PtBool)) {
+    diag.add(errorDiagnostic("T0132", "a " + kind + ": clause must be Bool (got " + renderType(t) + ")", sp))
+  }
+}
+
 pub func checkFunctionBody(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -1378,6 +1426,7 @@ pub func checkFunctionBody(
   }
 
   checkLoopLabels(diag, fn)
+  checkContractClauses(sc, tbl, sigs, diag, fn.contracts)
 
   match fn.body {
     case None -> {

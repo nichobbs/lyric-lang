@@ -1131,6 +1131,18 @@ func hasExternTargetAnnotation(anns: in List[Annotation]): Bool {
   false
 }
 
+func hasPureAnnotation(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == "pure" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Build the `ContractDecl` for a `func` item.  A GENERIC function also
 // carries its real body (`funcBodyText`) so a restored consumer's
 // `Lyric.Mono.monoFileWithImports` can specialise a call site into a
@@ -1152,7 +1164,7 @@ func funcDecl(fn: in FunctionDecl, vis: in Option[Visibility]): ContractDecl {
     name = fn.name,
     repr = reprForFunc(fn),
     visibility = visibilityStr(vis),
-    isPure = false,
+    isPure = hasPureAnnotation(fn.annotations),
     stability = "",
     requiresClauses = newList(),
     ensuresClauses = newList(),
