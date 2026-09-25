@@ -1773,45 +1773,42 @@ pub func activeStreamCount(conn: in H2Connection): Int {
 // §12. Server send / flow-control-replenish surface.
 // =============================================================================
 func headerBlockToFrames(streamId: in Int, block: in slice[Byte], endStream: in Bool, maxFrameSize: in Int): slice[Byte] {
-  val outb: List[Byte] = newList()
   if block.length <= maxFrameSize {
-    appendBytes(
-      outb,
-      serializeFrame(
-        HeadersFrame(
-          streamId = streamId,
-          headerBlockFragment = block,
-          endStream = endStream,
-          endHeaders = true,
-          priority = noPriority()
-        )
+    // The common case, one HEADERS frame: returned as serialized, with no
+    // pass through a byte list and back (#7269).
+    return serializeFrame(
+      HeadersFrame(
+        streamId = streamId,
+        headerBlockFragment = block,
+        endStream = endStream,
+        endHeaders = true,
+        priority = noPriority()
       )
     )
-  } else {
-    val first = block.slice(0, maxFrameSize)
-    appendBytes(
-      outb,
-      serializeFrame(
-        HeadersFrame(
-          streamId = streamId,
-          headerBlockFragment = first,
-          endStream = endStream,
-          endHeaders = false,
-          priority = noPriority()
-        )
+  }
+  val outb: List[Byte] = newList()
+  appendBytes(
+    outb,
+    serializeFrame(
+      HeadersFrame(
+        streamId = streamId,
+        headerBlockFragment = block.slice(0, maxFrameSize),
+        endStream = endStream,
+        endHeaders = false,
+        priority = noPriority()
       )
     )
-    var off = maxFrameSize
-    while off < block.length {
-      val stop = minInt(off + maxFrameSize, block.length)
-      val chunk = block.slice(off, stop)
-      val isLast = stop == block.length
-      appendBytes(
-        outb,
-        serializeFrame(ContinuationFrame(streamId = streamId, headerBlockFragment = chunk, endHeaders = isLast))
-      )
-      off = stop
-    }
+  )
+  var off = maxFrameSize
+  while off < block.length {
+    val stop = minInt(off + maxFrameSize, block.length)
+    val chunk = block.slice(off, stop)
+    val isLast = stop == block.length
+    appendBytes(
+      outb,
+      serializeFrame(ContinuationFrame(streamId = streamId, headerBlockFragment = chunk, endHeaders = isLast))
+    )
+    off = stop
   }
   outb.toArray()
 }
