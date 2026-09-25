@@ -4538,7 +4538,7 @@ func unionCaseSymbolForScrutinee(
 // without this check `case Some(i)` against an `Int` scrutinee (or
 // `case Ok(v)` against an `Option`) type-checked and then silently
 // miscompiled: MSIL treated the Int as the case object, JVM failed
-// verification.  Returns false (after reporting T0128) on a mismatch.
+// verification.  Returns false (after reporting T0129) on a mismatch.
 // Scrutinees whose type is unknown or open (`TyError`, `TyVar`, `TySelf`,
 // nullable, exception) are left alone: those are either already
 // diagnosed or resolved later.
@@ -4562,7 +4562,7 @@ func checkCasePatternScrutinee(
       if mismatched {
         diag.add(
           errorDiagnostic(
-            "T0128",
+            "T0129",
             "pattern '" + caseSym.name + "' is a case of a different type and can never match a value of type '" + shown + "'",
             span
           )
@@ -4601,7 +4601,7 @@ func checkBareCasePatternScrutinee(
   if cands.count > 0 {
     diag.add(
       errorDiagnostic(
-        "T0128",
+        "T0129",
         "pattern '" + name + "' is a case of a different type and can never match a value of type '" +
           renderType(scrutineeTy) +
           "'",

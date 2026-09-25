@@ -1,8 +1,8 @@
-# D-progress-966 — T0128 case patterns must match the scrutinee's type; JVM imported-union case construction; lyric-validation, lyric-aws-secrets and lyric-lambda contracts
+# D-progress-974 — T0129 case patterns must match the scrutinee's type; JVM imported-union case construction; lyric-validation, lyric-aws-secrets and lyric-lambda contracts
 
 **Status:** shipped
 
-## T0128: a case pattern must belong to the scrutinee's type
+## T0129: a case pattern must belong to the scrutinee's type
 
 The type checker accepted a union-case pattern against a scrutinee of any
 type. `case Some(i)` against an `Int` type-checked. On MSIL it then treated
@@ -12,7 +12,7 @@ verification. A case of one union matched against another union
 
 `unionCaseSymbolForScrutinee` falls back to a name-based lookup when the
 scrutinee's own type has no such case. `bindPatternTyped` now checks the
-resolved case against the scrutinee and reports **T0128** when:
+resolved case against the scrutinee and reports **T0129** when:
 
 - the scrutinee is a primitive, tuple, function, array or slice; or
 - the scrutinee is a union other than the one declaring the case.
@@ -29,7 +29,7 @@ which matched `indexOf` results as `Option` in a file that did not import
 `Std.String`, so `indexOf` returned the raw `Int` sentinel.
 
 Host `String` methods other than `indexOf`/`lastIndexOf` still type as
-`TyError`, which hides T0128 (and every other check) downstream of calls
+`TyError`, which hides T0129 (and every other check) downstream of calls
 like `s.substring(...)`. That gap is tracked in #7335.
 
 Coverage: four `typechecker_self_test.l` cases (primitive scrutinee with a
