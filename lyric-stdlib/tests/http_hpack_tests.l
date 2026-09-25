@@ -53,7 +53,10 @@ func hx(s: in String): slice[Byte] {
   while i + 1 < s.length {
     match charAt(s, i) {
       case None -> ()
-      case Some(hi) -> match charAt(s, i + 1) { case None -> (); case Some(lo) -> acc.add((hexNibble(hi) * 16 + hexNibble(lo)).toByte()) }
+      case Some(hi) -> match charAt(s, i + 1) {
+        case None -> ()
+        case Some(lo) -> acc.add((hexNibble(hi) * 16 + hexNibble(lo)).toByte())
+      }
     }
     i = i + 2
   }
@@ -784,5 +787,41 @@ test "a table size update does not count toward the decoded list size" {
   match decodeHeaderBlockLimited(d, hx("3f618282"), 84) {
     case Ok(hs) -> assertEqualInt(hs.count, 2, "size update then two fields")
     case Err(e) -> panic("unexpected decode error " + errName(e))
+  }
+}
+
+// ── #7231: HPACK bomb ─────────────────────────────────────────────────────────
+// One ~4 KB dynamic-table entry followed by 1000 one-byte indexed references
+// to it: a 5 KB block that decodes to ~4 MB.  The decoded-size budget must
+// stop it long before the whole list is materialised.
+func bombBlock(): slice[Byte] {
+  var h = "40" + "01" + "78" + "7fa11e"
+  var i = 0
+  while i < 4000 {
+    h = h + "61"
+    i = i + 1
+  }
+  var j = 0
+  while j < 1000 {
+    h = h + "be"
+    j = j + 1
+  }
+  hx(h)
+}
+
+test "decodeHeaderBlockLimited stops an indexed-reference expansion at the decoded budget" {
+  var decoder = newDecoder(4096)
+  match decodeHeaderBlockLimited(decoder, bombBlock(), 16384) {
+    case Ok(hs) -> panic("expected HeaderListTooLarge, decoded " + hs.count.toString() + " fields")
+    case Err(e) -> assertEqual(errName(e), "HeaderListTooLarge", "decoded size, not compressed size, is bounded")
+  }
+}
+
+test "decodeHeaderBlockLimited accepts a list within the budget" {
+  var decoder = newDecoder(4096)
+  // :method GET (index 2), :path / (index 4).
+  match decodeHeaderBlockLimited(decoder, hx("8284"), 100) {
+    case Ok(hs) -> assertEqualInt(hs.count, 2, "two fields, 2 * (name + value + 32) <= 100")
+    case Err(e) -> panic("unexpected " + errName(e))
   }
 }

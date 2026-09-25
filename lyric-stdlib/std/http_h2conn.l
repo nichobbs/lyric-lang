@@ -155,6 +155,7 @@ package Std.HttpEngine.H2Conn
 
 import Std.Core
 import Std.Collections
+import Std.Char as Ch
 import Std.HttpEngine
 import Std.HttpEngine.H2Frame
 import Std.HttpEngine.Hpack
@@ -333,6 +334,9 @@ record ContinuationState {
   buffer: List[Byte]
   endStream: Bool
   accepted: Bool
+  // A trailer block (HEADERS after the request's first header block) is
+  // validated as trailers: no pseudo-header fields (RFC 9113 section 8.1).
+  isTrailer: Bool = false
   var contFrames: Int
 }
 
@@ -1273,7 +1277,7 @@ func beginNewStreamHeaders(
     appendBytes(outb, serializeFrame(RstStreamFrame(streamId = streamId, errorCode = H2RefusedStream)))
     events.add(H2StreamErr(streamId = streamId, errorCode = H2RefusedStream, message = refuseMsg))
   }
-  beginAssembly(state, events, outb, streamId, fragment, endStream, endHeaders, accepted)
+  beginAssembly(state, events, outb, streamId, fragment, endStream, endHeaders, accepted, false)
 }
 
 func beginTrailerHeaders(
@@ -1321,7 +1325,7 @@ func beginTrailerHeaders(
           H2StreamClosed,
           "HEADERS on a half-closed (remote) stream (RFC 9113 section 5.1)"
         )
-        beginAssembly(state, events, outb, sid, fragment, endStream, endHeaders, false)
+        beginAssembly(state, events, outb, sid, fragment, endStream, endHeaders, false, true)
       }
       case _ -> {
         // `H2SClosed` (both directions done — via clean END_STREAM or a
@@ -1359,7 +1363,7 @@ func beginTrailerHeaders(
     connFail(state, events, outb, H2ProtocolError, "trailer HEADERS must carry END_STREAM (RFC 9113 section 8.1)")
     return
   }
-  beginAssembly(state, events, outb, st.id, fragment, endStream, endHeaders, true)
+  beginAssembly(state, events, outb, st.id, fragment, endStream, endHeaders, true, true)
 }
 
 func beginAssembly(
@@ -1371,6 +1375,7 @@ func beginAssembly(
   endStream: in Bool,
   endHeaders: in Bool,
   accepted: in Bool,
+  isTrailer: in Bool,
 ): Unit {
   val buffer: List[Byte] = newList()
   appendBytes(buffer, fragment)
@@ -1385,7 +1390,7 @@ func beginAssembly(
     return
   }
   if endHeaders {
-    finalizeHeaders(state, events, outb, streamId, buffer, endStream, accepted)
+    finalizeHeaders(state, events, outb, streamId, buffer, endStream, accepted, isTrailer)
   } else {
     state.cont = Some(
       value = ContinuationState(
@@ -1393,6 +1398,7 @@ func beginAssembly(
         buffer = buffer,
         endStream = endStream,
         accepted = accepted,
+        isTrailer = isTrailer,
         contFrames = 0
       )
     )
@@ -1452,8 +1458,9 @@ func handleContinuation(
         val es = cs.endStream
         val acc = cs.accepted
         val buf = cs.buffer
+        val trailer = cs.isTrailer
         state.cont = noContinuation()
-        finalizeHeaders(state, events, outb, sid, buf, es, acc)
+        finalizeHeaders(state, events, outb, sid, buf, es, acc, trailer)
       }
     }
   }
@@ -1471,6 +1478,7 @@ func finalizeHeaders(
   buffer: in List[Byte],
   endStream: in Bool,
   accepted: in Bool,
+  isTrailer: in Bool,
 ): Unit {
   match decodeHeaderBlockLimited(state.hpackDec, buffer.toArray(), state.localSettings.maxHeaderListSize) {
     // The compressed-size check above does not bound the DECODED list: one
@@ -1487,13 +1495,181 @@ func finalizeHeaders(
     case Err(_) -> connFail(state, events, outb, H2CompressionError, "HPACK decoding failed (RFC 9113 section 4.3)")
     case Ok(headers) -> {
       if accepted {
-        events.add(H2RequestHeaders(streamId = streamId, headers = headers, endStream = endStream))
-        if endStream {
-          markEndStreamReceived(state, streamId)
+        val problem = if isTrailer { malformedTrailerReason(headers) } else { malformedRequestReason(headers) }
+        match problem {
+          case Some(reason) -> streamFail(state, events, outb, streamId, H2ProtocolError, reason)
+          case None -> {
+            events.add(H2RequestHeaders(streamId = streamId, headers = headers, endStream = endStream))
+            if endStream {
+              markEndStreamReceived(state, streamId)
+            }
+          }
         }
       }
     }
   }
+}
+
+/// Why a decoded request header list is malformed under RFC 9113 sections
+/// 8.2 and 8.3.1, or `None` when it is well-formed.  A malformed request is
+/// a stream error `PROTOCOL_ERROR` (section 8.1.1), never delivered to the
+/// application: header values reaching an HTTP/1 intermediary with CR/LF,
+/// or a request missing its method or path, are request-smuggling vectors
+/// (#7231).
+pub func malformedRequestReason(headers: in List[HeaderField]): Option[String] {
+  var sawRegular = false
+  var method = ""
+  var sawMethod = false
+  var sawScheme = false
+  var sawPath = false
+  var sawAuthority = false
+  var sawProtocol = false
+  var i = 0
+  while i < headers.count {
+    val h = headers[i]
+    val name = h.name
+    if name.length == 0 {
+      return Some(value = "empty header field name")
+    }
+    if not isValidH2FieldValue(h.value) {
+      return Some(value = "header field '" + name + "' has an invalid value (CR, LF, NUL or surrounding whitespace)")
+    }
+    if name.substring(0, 1) == ":" {
+      if sawRegular {
+        return Some(value = "pseudo-header '" + name + "' after a regular header field")
+      }
+      if name == ":method" {
+        if sawMethod {
+          return Some(value = "duplicate :method")
+        }
+        sawMethod = true
+        method = h.value
+      } else if name == ":scheme" {
+        if sawScheme {
+          return Some(value = "duplicate :scheme")
+        }
+        sawScheme = true
+      } else if name == ":path" {
+        if sawPath {
+          return Some(value = "duplicate :path")
+        }
+        if h.value.length == 0 {
+          return Some(value = "empty :path")
+        }
+        sawPath = true
+      } else if name == ":authority" {
+        if sawAuthority {
+          return Some(value = "duplicate :authority")
+        }
+        sawAuthority = true
+      } else if name == ":protocol" {
+        if sawProtocol {
+          return Some(value = "duplicate :protocol")
+        }
+        sawProtocol = true
+      } else {
+        return Some(value = "unknown or response pseudo-header '" + name + "'")
+      }
+    } else {
+      sawRegular = true
+      if not isValidH2FieldName(name) {
+        return Some(value = "header field name '" + name + "' is not a lowercase token")
+      }
+      if isConnectionSpecificField(name) {
+        return Some(value = "connection-specific header field '" + name + "'")
+      }
+      if name == "te" and h.value != "trailers" {
+        return Some(value = "te header field other than 'trailers'")
+      }
+    }
+    i = i + 1
+  }
+  if not sawMethod {
+    return Some(value = "missing :method")
+  }
+  if method != "CONNECT" and not (sawScheme and sawPath) {
+    return Some(value = "missing :scheme or :path")
+  }
+  None
+}
+
+/// Why a decoded trailer block is malformed (RFC 9113 sections 8.1 and
+/// 8.2), or `None`: trailers carry no pseudo-header fields, and every field
+/// follows the same name and value rules as request headers.
+pub func malformedTrailerReason(headers: in List[HeaderField]): Option[String] {
+  var i = 0
+  while i < headers.count {
+    val h = headers[i]
+    if h.name.length > 0 and h.name.substring(0, 1) == ":" {
+      return Some(value = "pseudo-header '" + h.name + "' in a trailer block")
+    }
+    if not isValidH2FieldName(h.name) {
+      return Some(value = "header field name '" + h.name + "' is not a lowercase token")
+    }
+    if not isValidH2FieldValue(h.value) {
+      return Some(value = "header field '" + h.name + "' has an invalid value (CR, LF, NUL or surrounding whitespace)")
+    }
+    if isConnectionSpecificField(h.name) {
+      return Some(value = "connection-specific header field '" + h.name + "'")
+    }
+    i = i + 1
+  }
+  None
+}
+
+// A regular field name: one or more lowercase tchar characters (RFC 9110
+// section 5.6.2; RFC 9113 section 8.2.1 forbids uppercase).
+func isValidH2FieldName(name: in String): Bool {
+  var i = 0
+  while i < name.length {
+    val c = charCodeAt(name, i)
+    val ok = (c >= 97 and c <= 122) or (c >= 48 and c <= 57) or c == 33 or c == 35 or c == 36 or c == 37 or c == 38 or
+      c == 39 or
+      c == 42 or
+      c == 43 or
+      c == 45 or
+      c == 46 or
+      c == 94 or
+      c == 95 or
+      c == 96 or
+      c == 124 or
+      c == 126
+    if not ok {
+      return false
+    }
+    i = i + 1
+  }
+  name.length > 0
+}
+
+// No NUL, CR or LF anywhere, and no leading or trailing SP/HTAB
+// (RFC 9113 section 8.2.1).
+func isValidH2FieldValue(v: in String): Bool {
+  var i = 0
+  while i < v.length {
+    val c = charCodeAt(v, i)
+    if c == 0 or c == 10 or c == 13 {
+      return false
+    }
+    i = i + 1
+  }
+  if v.length == 0 {
+    return true
+  }
+  val first = charCodeAt(v, 0)
+  val last = charCodeAt(v, v.length - 1)
+  not (first == 32 or first == 9 or last == 32 or last == 9)
+}
+
+func isConnectionSpecificField(name: in String): Bool {
+  name == "connection" or name == "proxy-connection" or name == "keep-alive" or name == "transfer-encoding" or
+    name == "upgrade"
+}
+
+// Header strings are Latin-1 octets (Std.HttpEngine.Hpack), so each char's
+// code is the octet value.
+func charCodeAt(s: in String, i: in Int): Int {
+  Ch.toInt(s[i])
 }
 
 func handlePushPromise(state: inout H2Connection, events: in List[H2Event], outb: in List[Byte]): Unit {
