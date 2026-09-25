@@ -187,9 +187,24 @@ func xParseHexDigit(c: in Char): Int {
 // range or in the surrogate range are rejected with an XmlError so the parser
 // stays total — routing them through `Char.fromInt` would trip its
 // `requires: n <= 65535` contract (`Std.Char` is @runtime_checked) and panic.
+// XML 1.0 `Char` (§2.2): TAB, LF, CR, and U+0020..U+D7FF, U+E000..U+FFFD,
+// U+10000..U+10FFFF. A character reference must name one (well-formedness
+// constraint "Legal Character", §4.1), so `&#0;`, the other C0 controls,
+// surrogates and U+FFFE/U+FFFF are rejected rather than smuggled into text
+// that later consumers assume is NUL- and control-free (#7251).
+func xIsXmlChar(cp: in Int): Bool {
+  cp == 9 or cp == 10 or cp == 13 or (cp >= 32 and cp <= 55295) or (cp >= 57344 and cp <= 65533) or
+    (cp >= 65536 and cp <= 1114111)
+}
+
 func xEmitCodePoint(cp: in Int, pos: in Int): Result[String, XmlError] {
-  if cp < 0 or cp > 1114111 or (cp >= 55296 and cp <= 57343) {
-    return Err(error = UnexpectedChar(pos = pos, expected = "valid Unicode code point in numeric entity"))
+  if not xIsXmlChar(cp) {
+    return Err(
+      error = UnexpectedChar(
+        pos = pos,
+        expected = "numeric entity naming an XML Char (no NUL, C0 control, surrogate, U+FFFE or U+FFFF)"
+      )
+    )
   }
   if cp <= 65535 {
     // Fully-qualified `Std.Char.fromInt`, not bare `fromInt`: this file imports
