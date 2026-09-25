@@ -18,6 +18,10 @@ found while fixing them.
   TypeRefs; it now skips them, as it already skipped method bodies.
 - `module_val_collections_self_test.l` covers all of these on both targets
   (the JVM backend was already correct).
+- **Native:** a method call on a module-level `val` (`MAX_LIST_DEPTH.toString()`
+  in `Std.File`) was lowered as a qualified call to a function named
+  `MAX_LIST_DEPTH.toString` and failed to compile. A module-level `val` head
+  is now treated as a value receiver (`llvm_codegen_self_test.l`).
 
 ## Stdlib
 

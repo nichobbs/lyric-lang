@@ -200,6 +200,13 @@ test "module-level val with inferred type" {
   assertEqualInt(r.exitCode, 2, "untyped module val inlined, .length = 2")
 }
 
+test "method call on a module-level val" {
+  // `N.toString()` is a method call on the value, not a qualified call to a
+  // function named `N.toString` (Std.File's MAX_LIST_DEPTH.toString()).
+  val r = compileAndRun("package T\nval N: Int = 256\nfunc main(): Int {\n  N.toString().length\n}\n")
+  assertEqualInt(r.exitCode, 3, "\"256\".length = 3")
+}
+
 test "module-level val referenced multiple times" {
   val r = compileAndRun("package T\nval K: Int = 5\nfunc main(): Int {\n  K + K + K\n}\n")
   assertEqualInt(r.exitCode, 15, "module val inlined per use")
