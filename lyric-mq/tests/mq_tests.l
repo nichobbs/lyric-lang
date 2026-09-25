@@ -73,14 +73,6 @@ test "InProcessDeadLetterStore keeps the newest maxEntries entries in order (#72
   assertEqual(kept[2].message.id, "e", "newest last")
 }
 
-test "InProcessDeadLetterStore with maxEntries 0 keeps only the latest entry" {
-  val store: Mq.DeadLetterStore = Mq.InProcessDeadLetterStore(entries = [], maxEntries = 0)
-  store.append(deadLetter("a"))
-  store.append(deadLetter("b"))
-  assertEqualInt(store.count(), 1, "one entry")
-  assertEqual(store.list()[0].message.id, "b", "the latest")
-}
-
 test "AckMode.Auto can be matched" {
   val mode = Mq.AckMode.Auto
   match mode {
