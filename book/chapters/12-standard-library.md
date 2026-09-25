@@ -116,6 +116,8 @@ val ends    = endsWith("hello", "lo")       // true
 
 `Std.String` also exports `toLower`, `contains`, `replace`, and `padLeft`/`padRight`. The full API is in `stdlib/std/string.l`.
 
+Searching (`indexOf`, `lastIndexOf`, `indexOfFrom`, `contains`, `startsWith`, `endsWith`) compares characters exactly, the same on every target and regardless of the machine's locale. Case conversion (`toUpper`, `toLower`, and the `Std.Char` equivalents) is locale-neutral too: `"I".toLower()` is `"i"` even on a machine set to Turkish.
+
 Concatenating with `+` copies both strings, so building a result piece by piece in a loop gets quadratically slower as the result grows. Use a `StringBuilder` instead, and `indexOfFrom` to scan forward without re-slicing:
 
 ```lyric
