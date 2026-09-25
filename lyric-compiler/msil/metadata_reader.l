@@ -4395,46 +4395,41 @@ pub record InstanceFieldKind {
   isClassTyped: Bool
 }
 
-// Helper: scan a parsed CLI image for nullary-case Instance fields and return
-// their element-type convention.  Extracted from `dllNullaryInstanceInfo` so
-// the multi-line loop body stays readable — `lyric fmt` collapses a nested-match
-// `Ok(raw) ->` arm onto a single line regardless of length.
-func imageNullaryInstanceInfo(bytes: in slice[Byte]): InstanceFieldKind {
-  match parseAssemblyImage(bytes) {
-    case None -> InstanceFieldKind(hasInstances = false, isClassTyped = false)
-    case Some(ri) -> {
-      val b = ri.img.bytes
-      val typeDefCount = rowCountOf(ri.th, 0x02)
-      var row = 1
-      var found = false
-      var classTyped = false
-      while row <= typeDefCount and not found {
-        val td = readTypeDef(ri.img, ri.layout, row)
-        if Str.contains(td.name, "_") {
-          val fr = fieldRange(ri.img, ri.layout, ri.th, row)
-          var frow = fr.start
-          while frow <= fr.endRow and not found {
-            val o = ri.layout.dataStart[0x04] + (frow - 1) * ri.layout.rowSize[0x04]
-            val flags = rdU16(b, o)
-            val nameI = rdIdx(b, o + 2, ri.layout.stringIdx)
-            val nm = stringAt(ri.img, ri.layout, nameI)
-            // Bit 4 of FieldAttributes is Static (0x0010); (flags / 16) % 2 == 1 tests it.
-            if nm == "Instance" and (flags / 16) % 2 == 1 {
-              found = true
-              val sigI = rdIdx(b, o + 2 + ri.layout.stringIdx, ri.layout.blobIdx)
-              val sig = blobAt(ri.img, ri.layout, sigI)
-              // Byte 1 of the FieldSig blob is the element type:
-              // 0x12 = ELEMENT_TYPE_CLASS (F#-era); 0x1c = ELEMENT_TYPE_OBJECT (self-hosted).
-              classTyped = sig.length >= 2 and rdU8(sig, 1) == 0x12
-            }
-            frow = frow + 1
-          }
+// Scan an already-parsed CLI image for nullary-case Instance fields and return
+// their element-type convention.  Taking the parsed image (rather than a path)
+// lets a caller that queries the same DLL for several packages — the restored
+// compiler bundle carries ~80 — read and parse it once.
+pub func imageNullaryInstanceInfo(ri: in ResourceImage): InstanceFieldKind {
+  val b = ri.img.bytes
+  val typeDefCount = rowCountOf(ri.th, 0x02)
+  var row = 1
+  var found = false
+  var classTyped = false
+  while row <= typeDefCount and not found {
+    val td = readTypeDef(ri.img, ri.layout, row)
+    if Str.contains(td.name, "_") {
+      val fr = fieldRange(ri.img, ri.layout, ri.th, row)
+      var frow = fr.start
+      while frow <= fr.endRow and not found {
+        val o = ri.layout.dataStart[0x04] + (frow - 1) * ri.layout.rowSize[0x04]
+        val flags = rdU16(b, o)
+        val nameI = rdIdx(b, o + 2, ri.layout.stringIdx)
+        val nm = stringAt(ri.img, ri.layout, nameI)
+        // Bit 4 of FieldAttributes is Static (0x0010); (flags / 16) % 2 == 1 tests it.
+        if nm == "Instance" and (flags / 16) % 2 == 1 {
+          found = true
+          val sigI = rdIdx(b, o + 2 + ri.layout.stringIdx, ri.layout.blobIdx)
+          val sig = blobAt(ri.img, ri.layout, sigI)
+          // Byte 1 of the FieldSig blob is the element type:
+          // 0x12 = ELEMENT_TYPE_CLASS (F#-era); 0x1c = ELEMENT_TYPE_OBJECT (self-hosted).
+          classTyped = sig.length >= 2 and rdU8(sig, 1) == 0x12
         }
-        row = row + 1
+        frow = frow + 1
       }
-      InstanceFieldKind(hasInstances = found, isClassTyped = classTyped)
     }
+    row = row + 1
   }
+  InstanceFieldKind(hasInstances = found, isClassTyped = classTyped)
 }
 
 // Scan `dllPath` once and return how its nullary-case Instance fields are typed.
@@ -4442,9 +4437,9 @@ func imageNullaryInstanceInfo(bytes: in slice[Byte]): InstanceFieldKind {
 // or contains no Instance field on a "_"-named TypeDef — safe default (no
 // MemberRefs emitted, no resolution error).
 pub func dllNullaryInstanceInfo(dllPath: in String): InstanceFieldKind {
-  match File.readBytes(dllPath) {
-    case Err(_) -> InstanceFieldKind(hasInstances = false, isClassTyped = false)
-    case Ok(raw) -> imageNullaryInstanceInfo(raw.toArray())
+  match openResourceImage(dllPath) {
+    case None -> InstanceFieldKind(hasInstances = false, isClassTyped = false)
+    case Some(ri) -> imageNullaryInstanceInfo(ri)
   }
 }
 
@@ -4461,46 +4456,46 @@ pub func dllNullaryInstanceInfo(dllPath: in String): InstanceFieldKind {
 // (#5561).  A missing/unreadable DLL or an absent `Program` TypeDef yields an
 // empty map (safe default: no Task wrapping at the registration site).
 pub func dllTaskReturningFuncs(dllPath: in String, pkgNamespace: in String): Map[String, Bool] {
+  val noTaskFuncs: Map[String, Bool] = newMap()
+  match openResourceImage(dllPath) {
+    case None -> noTaskFuncs
+    case Some(ri) -> imageTaskReturningFuncs(ri, pkgNamespace)
+  }
+}
+
+// `dllTaskReturningFuncs` over an already-parsed image, so a DLL that hosts
+// several packages (the restored compiler bundle) is read and parsed once.
+pub func imageTaskReturningFuncs(ri: in ResourceImage, pkgNamespace: in String): Map[String, Bool] {
   val found: Map[String, Bool] = newMap()
-  match File.readBytes(dllPath) {
-    case Err(_) -> return found
-    case Ok(raw) -> {
-      match parseAssemblyImage(raw.toArray()) {
-        case None -> return found
-        case Some(ri) -> {
-          val typeRow = findTypeDefByFqn(ri.img, ri.layout, ri.th, pkgNamespace + ".Program")
-          if typeRow < 0 {
-            return found
+  val typeRow = findTypeDefByFqn(ri.img, ri.layout, ri.th, pkgNamespace + ".Program")
+  if typeRow < 0 {
+    return found
+  }
+  val mr = methodRange(ri.img, ri.layout, ri.th, typeRow)
+  var mi = mr.start
+  while mi <= mr.endRow {
+    val md = readMethodDef(ri.img, ri.layout, mi)
+    match decodeMethodSig(blobAt(ri.img, ri.layout, md.sigBlob)) {
+      case Err(_) -> {
+      }
+      case Ok(sig) -> {
+        val ret = resolveSigTypeFqn(ri.img, ri.layout, ri.th, sig.returnType)
+        val isTask = match ret { case STNamed(fqn, _) -> fqn == "System.Threading.Tasks.Task"; case _ -> false }
+        val isTask1 = match ret {
+          case STNamedGenericInst(fqn, _, _) -> fqn == "System.Threading.Tasks.Task`1"
+          case _ -> false
+        }
+        if isTask or isTask1 {
+          val key = md.name + "/" + toString(sig.paramTypes.count)
+          if not found.containsKey(key) {
+            found.add(key, isTask1)
           }
-          val mr = methodRange(ri.img, ri.layout, ri.th, typeRow)
-          var mi = mr.start
-          while mi <= mr.endRow {
-            val md = readMethodDef(ri.img, ri.layout, mi)
-            match decodeMethodSig(blobAt(ri.img, ri.layout, md.sigBlob)) {
-              case Err(_) -> {
-              }
-              case Ok(sig) -> {
-                val ret = resolveSigTypeFqn(ri.img, ri.layout, ri.th, sig.returnType)
-                val isTask = match ret { case STNamed(fqn, _) -> fqn == "System.Threading.Tasks.Task"; case _ -> false }
-                val isTask1 = match ret {
-                  case STNamedGenericInst(fqn, _, _) -> fqn == "System.Threading.Tasks.Task`1"
-                  case _ -> false
-                }
-                if isTask or isTask1 {
-                  val key = md.name + "/" + toString(sig.paramTypes.count)
-                  if not found.containsKey(key) {
-                    found.add(key, isTask1)
-                  }
-                }
-              }
-            }
-            mi = mi + 1
-          }
-          found
         }
       }
     }
+    mi = mi + 1
   }
+  found
 }
 
 // A simple container for Assembly version components.
