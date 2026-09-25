@@ -35772,7 +35772,7 @@ follow-up with this design note rather than re-attempting a quick fix.
 intrinsic wrapper functions on both backends, not part of the reverted
 diagnostic.
 
-**Related:** D-progress-959 (full account, `docs/decisions/`), #7099
+**Related:** D-progress-962 (full account, `docs/decisions/`), #7099
 (still open), #7204 (the design-note follow-up filed after the JVM
 regression found in CI and the revert).
 
