@@ -35729,7 +35729,7 @@ ran. `docs/01-language-reference.md` and
 `book/chapters/appendix-b-quick-reference.md` updated. `typechecker_self_test.l`:
 430/430 (4 new cases).
 
-**Related:** D-progress-963 (full account, `docs/decisions/`), #7119,
+**Related:** D-progress-972 (full account, `docs/decisions/`), #7119,
 #6739/D-progress-924 (the record/opaque precedent this generalizes), PR
 #7117 (where the gap was flagged).
 
@@ -35772,7 +35772,7 @@ follow-up with this design note rather than re-attempting a quick fix.
 intrinsic wrapper functions on both backends, not part of the reverted
 diagnostic.
 
-**Related:** D-progress-962 (full account, `docs/decisions/`), #7099
+**Related:** D-progress-971 (full account, `docs/decisions/`), #7099
 (still open), #7204 (the design-note follow-up filed after the JVM
 regression found in CI and the revert).
 
@@ -35827,5 +35827,5 @@ naming the method; unrelated native String methods unaffected).
 66/66 (unaffected — native-only codegen fix). Full clean `make lyric`
 succeeds.
 
-**Related:** `docs/decisions/D-progress-0964-native-isnormalized-normalize-self-recursion-7304.md`
+**Related:** `docs/decisions/D-progress-0973-native-isnormalized-normalize-self-recursion-7304.md`
 (full account), #7304 (this fix), #6752 (the precedent this mirrors).
