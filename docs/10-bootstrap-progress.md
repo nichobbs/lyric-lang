@@ -24745,7 +24745,7 @@ The `PRange` double-bound and `LFloat` literal-equality match paths in
 `03_match.l` were audited and are already NaN-correct (the lower-bound
 `dcmpl`+`iflt` routes NaN to the fail label), so they were left unchanged.
 
-Verified by `lyric-compiler/jvm/nan_compare_jvm_self_test.l` (7 cases, both
+Verified by `lyric-compiler/lyric/nan_compare_self_test.l` (7 cases, both
 lowering paths, Float and Double, plus a non-NaN ordering regression),
 compiled in-process through the self-hosted `Jvm.Bridge` and run under `java`;
 wired into CI beside the other native `--target jvm` self-tests.
@@ -33505,7 +33505,7 @@ separate arithmetic-overflow fix was needed to construct the test fixture.
 `generic_uint_erasure_jvm_self_test.l` (5/5) re-verified unaffected;
 `silent_miscompile_guard_jvm_self_test.l` (38/38, heavy `Double`
 stringification/compound-assignment coverage), `bitwise_self_test.l`
-(10/10), `range_subtype_self_test.l` (15/15), `nan_compare_jvm_self_test.l`
+(10/10), `range_subtype_self_test.l` (15/15), `nan_compare_self_test.l`
 (6/6), `control_flow_jvm_self_test.l` (17/17),
 `erased_generic_arith_jvm_self_test.l` (23/23), `block_shadow_self_test.l`
 (20/20), `closure_jvm_self_test.l` (14/14), and `async_spawn_self_test.l`

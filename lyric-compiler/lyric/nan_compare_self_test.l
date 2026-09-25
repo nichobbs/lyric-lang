@@ -1,28 +1,27 @@
-//! nan_compare_jvm_self_test.l — CI gate for NaN-correct Float/Double ordered
-//! comparisons on the JVM backend (#2772, docs/44 finding under §4 review row).
+//! nan_compare_self_test.l — CI gate for NaN-correct Float/Double ordered
+//! comparisons on both backends.  IEEE 754 §5.11: every ordered comparison
+//! involving NaN is false (`!=` is the one true comparison).
 //!
-//! Before the fix, `lowerCmp` / `lowerCmpFail` (jvm/codegen/02_exprs.l) emitted
-//! `fcmpl`/`dcmpl` for *all six* comparison operators.  Pairing the "l" variant
-//! (which pushes -1 when an operand is NaN) with `iflt`/`ifle` made NaN compare
-//! as *less than everything* for `<` and `<=`, violating IEEE 754 §5.11 (every
-//! NaN comparison is false, except `!=`, which is true).  The fix selects the
-//! "g" variant (`fcmpg`/`dcmpg`, NaN → +1) for `<` and `<=` so the branch is
-//! not taken when an operand is NaN.
+//! JVM (#2772, docs/44 §4): `lowerCmp` / `lowerCmpFail`
+//! (jvm/codegen/02_exprs.l) once emitted `fcmpl`/`dcmpl` for all six
+//! operators, and pairing the "l" variant (NaN → -1) with `iflt`/`ifle` made
+//! NaN less than everything.  The fix selects `fcmpg`/`dcmpg` for `<` and `<=`.
 //!
-//! Run via the native test runner on the JVM target:
+//! MSIL (#7240): `a <= b` lowered as `!(a > b)` via `cgt` and `a >= b` as
+//! `!(a < b)` via `clt`, both true for NaN; range patterns (`case 0.0 ..= 1.0`)
+//! and `Double range` subtypes admitted NaN the same way.  On doubles the
+//! fix uses `cgt.un`/`clt.un` ("or unordered") so the negation is false.
 //!
-//!   lyric test --target jvm lyric-compiler/jvm/nan_compare_jvm_self_test.l
+//! Run via the native test runner on both targets:
 //!
-//! `lyric test` synthesises a runnable program from the `test` blocks and
-//! compiles it IN-PROCESS through the self-hosted `Jvm.Bridge`, then runs it
-//! under `java` and asserts every embedded assertion held.  Imports only
-//! `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
+//!   lyric test --target dotnet lyric-compiler/lyric/nan_compare_self_test.l
+//!   lyric test --target jvm    lyric-compiler/lyric/nan_compare_self_test.l
 //!
-//! Both lowering paths are exercised:
-//!   - value position (`val r = nan < x`) → `lowerCmpExpr` → `lowerCmp`;
-//!   - condition position (`if nan < x { … }`) → `lowerBoolCond` → `lowerCmpFail`.
+//! Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.  Both
+//! lowering paths are exercised: value position (`val r = nan < x`) and
+//! condition position (`if nan < x { … }`).
 @test_module
-package Lyric.NanCompareJvmSelfTest
+package Lyric.NanCompareSelfTest
 
 import Std.Core
 import Std.Testing
@@ -159,4 +158,42 @@ test "ordinary Float/Double ordering still correct after the cmpg/cmpl split" {
   assertTrue(twoD > oneD, "2.0 > 1.0")
   assertTrue(twoD >= twoD, "2.0 >= 2.0")
   assertFalse(twoD < oneD, "2.0 < 1.0 is false")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Range patterns and range subtypes admit no NaN (#7240).
+// ─────────────────────────────────────────────────────────────────────────────
+func unitBucket(x: in Double): String {
+  match x {
+    case 0.0 ..= 1.0 -> "unit"
+    case _ -> "other"
+  }
+}
+
+func halfOpenBucket(x: in Double): String {
+  match x {
+    case 0.0 ..< 1.0 -> "unit"
+    case _ -> "other"
+  }
+}
+
+type Fraction = Double range 0.0 ..= 1.0
+
+test "a NaN scrutinee matches no range pattern" {
+  assertEqual(unitBucket(0.5), "unit", "0.5 is in 0.0 ..= 1.0")
+  assertEqual(unitBucket(1.0), "unit", "the closed bound is included")
+  assertEqual(unitBucket(1.5), "other", "1.5 is outside")
+  assertEqual(unitBucket(nanD(0.0)), "other", "NaN is in no closed range")
+  assertEqual(halfOpenBucket(nanD(0.0)), "other", "NaN is in no half-open range")
+}
+
+test "a Double range subtype rejects NaN" {
+  match Fraction.tryFrom(0.25) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "0.25 is a Fraction")
+  }
+  match Fraction.tryFrom(nanD(0.0)) {
+    case Ok(_) -> assertTrue(false, "NaN must not be a Fraction")
+    case Err(_) -> ()
+  }
 }

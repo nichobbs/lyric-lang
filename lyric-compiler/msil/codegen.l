@@ -11611,9 +11611,12 @@ func lowerBinopMsil(
           insns.add(MCgt)
         }
         // #6913: `!(a >_un b)` for a bare `UInt`/`ULong` operand — see
-        // `isUnsignedExprMsil`.
+        // `isUnsignedExprMsil`.  On floating-point operands `cgt.un` is
+        // "greater than or unordered", so `!(a >_un b)` is false when either
+        // side is NaN, as IEEE 754 requires; plain `cgt` made `NaN <= x`
+        // true (#7240).
         case _ -> {
-          if isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs) {
+          if isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs) or blteLhsTy == MDouble or blteRhsTy == MDouble {
             insns.add(MCgt_Un)
           } else {
             insns.add(MCgt)
@@ -11661,9 +11664,11 @@ func lowerBinopMsil(
           insns.add(MClt)
         }
         // #6913: `!(a <_un b)` for a bare `UInt`/`ULong` operand — see
-        // `isUnsignedExprMsil`.
+        // `isUnsignedExprMsil`.  On floating-point operands `clt.un` is
+        // "less than or unordered", so `!(a <_un b)` is false when either
+        // side is NaN (see `BLte`, #7240).
         case _ -> {
-          if isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs) {
+          if isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs) or bgteLhsTy == MDouble or bgteRhsTy == MDouble {
             insns.add(MClt_Un)
           } else {
             insns.add(MClt)
@@ -14183,8 +14188,11 @@ func lowerPatternTestMsil(
         case MObject -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, rangeNumTy)))
         case _ -> ()
       }
+      // A NaN scrutinee lies in no range: on doubles the `.un` compares are
+      // "or unordered", so NaN takes both fail branches (#7240).
+      val rangeIsDouble = rangeNumTy == MDouble
       lowerExprMsil(cctx, fctx, insns, lo)
-      insns.add(MClt)
+      insns.add(if rangeIsDouble { MClt_Un } else { MClt })
       insns.add(MBrTrue(label = failLabel))   // scrut < lo
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
       match scrutTy {
@@ -14193,7 +14201,7 @@ func lowerPatternTestMsil(
       }
       lowerExprMsil(cctx, fctx, insns, hi)
       if inclusive {
-        insns.add(MCgt)
+        insns.add(if rangeIsDouble { MCgt_Un } else { MCgt })
         insns.add(MBrTrue(label = failLabel))  // scrut > hi
       } else {
         insns.add(MClt)

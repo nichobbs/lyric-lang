@@ -3172,6 +3172,13 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/invariant_self_test.l
+      # NaN-correct Float/Double comparisons, range patterns and range
+      # subtypes (#7240, #2772); the same file runs on --target jvm below.
+      - name: NaN-comparison self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/nan_compare_self_test.l
 
       - name: Wait for parallel tests (dotnet-b batch 4 split, #4975)
         wait-all: true
@@ -5375,7 +5382,7 @@ jobs:
             exit 1
           fi
           export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
-          .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/jvm/nan_compare_jvm_self_test.l
+          .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/lyric/nan_compare_self_test.l
       # Extern-handle-across-a-loop self-test (#3307) — pins StackMapTable
       # local-variable typing for `JRef`/extern locals at basic-block
       # boundaries: an `extern type` value driven through a `while`/`if` (loop

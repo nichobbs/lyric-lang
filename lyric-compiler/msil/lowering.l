@@ -3632,14 +3632,17 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
       case _ -> emitLdc_I8(mb, d.minI)
     }
   }
-  if d.isUnsigned {
+  // A float range admits no NaN: on doubles `clt.un` is "less than or
+  // unordered", so NaN fails here (#7240).
+  if d.isUnsigned or d.rangeIsFloat {
     emitClt_Un(mb)
   } else {
     emitClt(mb)
   }
   emitBrtrue(mb, failLabel)
   // max check: closed (`..=`) fails if value > max; half-open (`..<`) fails if
-  // value >= max ⟺ not(value < max).
+  // value >= max ⟺ not(value < max).  The half-open form already rejects NaN
+  // (`clt` is false for it); the closed form needs `cgt.un` on doubles.
   emitLdarg_0(mb)
   if d.rangeIsFloat {
     emitLdc_R8(mb, d.maxF)
@@ -3661,7 +3664,7 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
     }
     emitBrfalse(mb, failLabel)
   } else {
-    if d.isUnsigned {
+    if d.isUnsigned or d.rangeIsFloat {
       emitCgt_Un(mb)
     } else {
       emitCgt(mb)
