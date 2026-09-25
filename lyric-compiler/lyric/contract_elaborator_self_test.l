@@ -485,7 +485,17 @@ func bodyContainsAssertCall(file: in SourceFile, name: in String): Bool {
   var i = 0
   while i < blk.statements.count {
     match blk.statements[i].kind {
-      case SExpr(e) -> match e.kind { case ECall(callee, _) -> match callee.kind { case EPath(p) -> if p.segments.count == 1 and p.segments[0] == "assert" { return true }; case _ -> {  } }; case _ -> {  } }
+      case SExpr(e) -> match e.kind {
+        case ECall(callee, _) -> match callee.kind {
+          case EPath(p) -> if p.segments.count == 1 and p.segments[0] == "assert" {
+            return true
+          }
+          case _ -> {
+          }
+        }
+        case _ -> {
+        }
+      }
       case _ -> {
       }
     }
@@ -597,6 +607,69 @@ test "for invariant lowered" {
   assertTrue(found, "for-invariant: SFor node found in body")
 }
 
+// #7224: the invariant is also asserted after the loop.  With no `break`, the
+// assert follows the loop directly; a `break` gets a flag set before it and
+// the post-loop assert is guarded by `if not <flag>`.
+test "while invariant asserted after the loop" {
+  val src = "package P\n" + "func f(): Unit {\n" + "  var i = 0\n" + "  while i < 10\n" + "    invariant: i >= 0\n" +
+    "  {\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  var loopAt = -1
+  var i = 0
+  while i < blk.statements.count {
+    match blk.statements[i].kind {
+      case SWhile(_, _, _) -> {
+        loopAt = i
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  assertTrue(loopAt >= 0, "exit-check: SWhile found")
+  assertTrue(
+    loopAt + 1 < blk.statements.count and isAssertCall(blk.statements[loopAt + 1]),
+    "exit-check: assert follows the loop"
+  )
+}
+
+test "while invariant exit check is skipped on break" {
+  val src = "package P\n" + "func f(): Unit {\n" + "  var i = 0\n" + "  while i < 10\n" + "    invariant: i >= 0\n" +
+    "  {\n" +
+    "    if i == 3 {\n" +
+    "      break\n" +
+    "    }\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  var sawFlag = false
+  var sawGuard = false
+  var i = 0
+  while i < blk.statements.count {
+    match blk.statements[i].kind {
+      case SLocal(b) -> match b {
+        case LBVar(name, _, _) -> {
+          if name.startsWith("__lyric_loop_broke_") {
+            sawFlag = true
+          }
+        }
+        case _ -> {
+        }
+      }
+      case SExpr(e) -> match e.kind { case EIf(_, _, _, _) -> { sawGuard = true }; case _ -> {  } }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  assertTrue(sawFlag, "break-exit: a __lyric_loop_broke_ flag is declared")
+  assertTrue(sawGuard, "break-exit: the post-loop check is guarded")
+}
+
 // #826 regression: a while-loop invariant nested inside an if-block must be
 // lowered to a runtime assert.  The function has no requires:/ensures: clauses,
 // so the early-return path in elaborateFunction must still detect the nested
@@ -618,7 +691,29 @@ test "if nested while invariant lowered" {
   // Drill: body has [SExpr(EIf(_, EOBBlock([..., SWhile(...)])))].
   while i < blk.statements.count {
     match blk.statements[i].kind {
-      case SExpr(e) -> match e.kind { case EIf(_, thenBranch, _, _) -> match thenBranch { case EOBBlock(thenBlk) -> { var j = 0; while j < thenBlk.statements.count { match thenBlk.statements[j].kind { case SWhile(_, _, whileBody) -> { assertTrue(whileBody.statements.count >= 2, "if-nested while-invariant: body has assert + at least one user stmt"); assertTrue(isAssertCall(whileBody.statements[0]), "if-nested while-invariant: body[0] is assert(...)"); found = true }; case _ -> {  } }; j = j + 1 } }; case _ -> {  } }; case _ -> {  } }
+      case SExpr(e) -> match e.kind {
+        case EIf(_, thenBranch, _, _) -> match thenBranch {
+          case EOBBlock(thenBlk) -> {
+            var j = 0
+            while j < thenBlk.statements.count {
+              match thenBlk.statements[j].kind {
+                case SWhile(_, _, whileBody) -> {
+                  assertTrue(whileBody.statements.count >= 2, "if-nested while-invariant: body has assert + at least one user stmt")
+                  assertTrue(isAssertCall(whileBody.statements[0]), "if-nested while-invariant: body[0] is assert(...)")
+                  found = true
+                }
+                case _ -> {
+                }
+              }
+              j = j + 1
+            }
+          }
+          case _ -> {
+          }
+        }
+        case _ -> {
+        }
+      }
       case _ -> {
       }
     }
@@ -831,7 +926,8 @@ func retIsThreeSegmentStdCoreUnit(fn: in FunctionDecl): Bool {
   match fn.ret {
     case Some(te) -> {
       match te.kind {
-        case TRef(path) -> path.segments.count == 3 and path.segments[0] == "Std" and path.segments[1] == "Core" and path.segments[2] == "Unit"
+        case TRef(path) -> path.segments.count == 3 and path.segments[0] == "Std" and path.segments[1] == "Core" and
+          path.segments[2] == "Unit"
         case _ -> false
       }
     }
