@@ -12523,6 +12523,11 @@ func lowerAssignExprMsil(
                     val idxSlot = allocSlotMsil(fctx, "__sliceset_i_" + toString(fctx.slotTicker.count), MInt)
                     emitStoreSlot(insns, idxSlot, fctx.paramCount)
                     val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                    // M6 numeric widening (`xs[i] = 4` on a `slice[Long]`,
+                    // #5254): convert to the element width before the value
+                    // is stored in its element-typed temporary, so both paths
+                    // below store a correctly-sized element.
+                    coerceCallArgMsil(cctx, insns, vTy, elem)
                     val valSlot = allocSlotMsil(fctx, "__sliceset_v_" + toString(fctx.slotTicker.count), elem)
                     emitStoreSlot(insns, valSlot, fctx.paramCount)
                     val arrSlot = allocSlotMsil(fctx, "__sliceset_arr_" + toString(fctx.slotTicker.count), MArray(elemTy = elem))
@@ -12546,7 +12551,7 @@ func lowerAssignExprMsil(
                     emitListCastRecv(cctx, insns, recvTy)
                     emitLoadSlot(insns, idxSlot, fctx.paramCount)
                     emitLoadSlot(insns, valSlot, fctx.paramCount)
-                    collBoxIfNeeded(cctx, insns, vTy, recvTy)
+                    collBoxIfNeeded(cctx, insns, elem, recvTy)
                     emitListSetItem(cctx, insns, recvTy)
                     insns.add(MLabel(id = doneL))
                   }
