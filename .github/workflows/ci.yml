@@ -1373,6 +1373,28 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/string_builder_self_test.l
+      - name: String bounds self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/string_bounds_self_test.l
+
+      # Ordinal string search (#7260) and locale-neutral case conversion
+      # (#7261).  The case test runs under a Turkish culture, where the old
+      # culture-sensitive bindings mapped 'I' to dotless 'ı'.
+      - name: String ordinal self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/string_ordinal_self_test.l
+      - name: String case-locale self-test under tr-TR (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        env:
+          LANG: tr_TR.UTF-8
+          LC_ALL: tr_TR.UTF-8
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/string_case_locale_self_test.l
 
       # Record `.copy(field = value)` (D-progress-948) and calls through a
       # record's function-typed field, `r.f(args)` (D-progress-952).  Native
@@ -4029,6 +4051,25 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/string_builder_self_test.l
+      - name: String bounds self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/string_bounds_self_test.l
+
+      # JVM halves of the ordinal-search (#7260) and case-locale (#7261) tests.
+      - name: String ordinal self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/string_ordinal_self_test.l
+      - name: String case-locale self-test on JVM under tr-TR (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        env:
+          JAVA_TOOL_OPTIONS: -Duser.language=tr -Duser.country=TR
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/string_case_locale_self_test.l
 
       # JVM counterparts of the record copy / function-field steps in the
       # dotnet job (D-progress-948, D-progress-952).

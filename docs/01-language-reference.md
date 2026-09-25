@@ -1928,13 +1928,17 @@ form with the import in scope call the explicit
 | `s.trimStart()` | `String` | leading whitespace removed |
 | `s.trimEnd()` | `String` | trailing whitespace removed |
 | `s.replace(old, new)` | `String` | all occurrences |
-| `s.indexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | first index; `None` / `-1` if absent |
-| `s.lastIndexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | last index; `None` / `-1` if absent |
+| `s.indexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | first index; `None` / `-1` if absent; ordinal |
+| `s.lastIndexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | last index; `None` / `-1` if absent; ordinal |
 | `s.contains(sub)` | `Bool` | |
-| `s.startsWith(prefix)` | `Bool` | |
-| `s.endsWith(suffix)` | `Bool` | |
-| `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET) |
-| `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET) |
+| `s.startsWith(prefix)` | `Bool` | ordinal |
+| `s.endsWith(suffix)` | `Bool` | ordinal |
+| `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET, `toLowerCase(Locale.ROOT)` on the JVM) |
+| `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET, `toUpperCase(Locale.ROOT)` on the JVM) |
+
+Search and prefix/suffix tests compare code units exactly (ordinal) on every
+target; the process culture never affects them, and case conversion never
+applies locale tailoring such as Turkish dotless I (#7260, #7261).
 
 String `==` / `!=` compare by value (not reference identity). An empty-string
 check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a

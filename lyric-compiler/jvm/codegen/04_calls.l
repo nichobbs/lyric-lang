@@ -4334,8 +4334,8 @@ func lowerMethodCall(
   //   trim → strip()  (Unicode-aware; Java 11+, JDK 21 baseline)
   //   trimStart → stripLeading()  (Java 11+)
   //   trimEnd  → stripTrailing()  (Java 11+)
-  //   toUpper  → toUpperCase()
-  //   toLower  → toLowerCase()
+  //   toUpper  → toUpperCase(Locale.ROOT)
+  //   toLower  → toLowerCase(Locale.ROOT)
   //   length   → length()  (returns int)
   //   indexOf / lastIndexOf(String) → indexOf / lastIndexOf(String) → int
   //   replace(old, new) → replace(CharSequence, CharSequence) → String
@@ -4355,6 +4355,17 @@ func lowerMethodCall(
       "length"
     }
     val retT: JvmType = if memberName == "length" { JInt } else { JRef(className = "java/lang/String") }
+    if memberName == "toUpper" or memberName == "toLower" {
+      // The no-argument overloads use the JVM default locale, so under tr-TR
+      // "I".toLowerCase() is dotless "ı". Pass Locale.ROOT to match MSIL's
+      // ToUpperInvariant/ToLowerInvariant (#7261).
+      val localeT = JRef(className = "java/util/Locale")
+      insns.add(LGetstatic(owner = "java/util/Locale", name = "ROOT", t = localeT))
+      val localePs: List[JvmType] = newList()
+      localePs.add(localeT)
+      insns.add(LInvokevirtual(owner = "java/lang/String", name = javaName, params = localePs, ret = retT))
+      return retT
+    }
     insns.add(LInvokevirtual(owner = "java/lang/String", name = javaName, params = noPs, ret = retT))
     return retT
   }

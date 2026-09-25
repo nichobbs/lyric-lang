@@ -57,18 +57,17 @@ pub func hostIsControl(c: in Char): Bool {
 }
 
 // =====================================================================
-// Case conversion.  NOTE: `Char.ToUpper(char)`/`ToLower(char)` use the
-// CURRENT culture (the invariant variants are `To*Invariant`), while the
-// JVM twin's `Character.to*Case` is locale-independent — a documented
-// cross-target casing-parity gap for culture-sensitive code points
-// (e.g. Turkish dotless I), tracked in #5557.
+// Case conversion.  Binds the culture-invariant `Char.ToUpperInvariant`/
+// `ToLowerInvariant`, never the culture-sensitive `ToUpper`/`ToLower` (under
+// tr-TR those map 'I' to dotless 'ı'), matching the locale-independent JVM
+// twin's `Character.to*Case(char)` (#5557, #7261).
 // =====================================================================
 pub func hostToUpper(c: in Char): Char {
-  NetChar.ToUpper(c)
+  NetChar.ToUpperInvariant(c)
 }
 
 pub func hostToLower(c: in Char): Char {
-  NetChar.ToLower(c)
+  NetChar.ToLowerInvariant(c)
 }
 
 // =====================================================================

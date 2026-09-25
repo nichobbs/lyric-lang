@@ -443,6 +443,7 @@ int64_t lyric_string_index_of_from(LyricString* haystack, LyricString* needle, i
         lyric_panic_msg("indexOfFrom requires 0 <= from <= length", "lyric_string.c", __LINE__);
     }
     if (nlen == 0) return from;
+    if (hlen - from < nlen) return -1;
     const uint8_t* hay = LYRIC_STRING_DATA(haystack) + from;
     int64_t r = find_substring(hay, hlen - from, LYRIC_STRING_DATA(needle), nlen);
     return r < 0 ? -1 : r + from;
