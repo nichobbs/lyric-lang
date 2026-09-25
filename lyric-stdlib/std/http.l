@@ -858,6 +858,10 @@ pub func request(method: in HttpMethod, url: in Url): HttpRequest {
 /// - `key` must be non-empty. Empty header names are caller bugs.
 ///
 /// # Errors
+/// - `InvalidHeader`: `key` is not an RFC 9110 token (a `:`, space or other
+///   separator could forge a different header), or `value` contains CR, LF
+///   or NUL (#7251). Before, .NET dropped such a header silently and the JVM
+///   failed only when sending.
 /// - `ReservedHeader`: `key` (case-insensitively) names a framing header
 ///   this library sets automatically — `Host`, `Connection`,
 ///   `Content-Type`, or `Content-Length`. Setting one of these directly
@@ -869,6 +873,9 @@ pub func request(method: in HttpMethod, url: in Url): HttpRequest {
 pub func withHeader(request: in HttpRequest, key: in String, value: in String): Result[HttpRequest, HttpError]
   requires: key.length > 0
 {
+  if not isHeaderNameToken(key) or not isHeaderValueSafe(value) {
+    return Err(error = InvalidHeader(url = request.url, name = key))
+  }
   match HostHttp.hostWithHeader(request.handle, key, value) {
     case Err(name) -> return Err(error = ReservedHeader(url = request.url, name = name))
     case Ok(handle) -> return Ok(
@@ -883,6 +890,40 @@ pub func withHeader(request: in HttpRequest, key: in String, value: in String): 
       )
     )
   }
+}
+
+// RFC 9110 `token`: the characters legal in a header field-name.
+func isHeaderNameToken(name: in String): Bool {
+  if name.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < name.length {
+    val c = name[i]
+    val ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '!' or c == '#' or c == '$' or
+      c == '%' or
+      c == '&' or
+      c == '\'' or
+      c == '*' or
+      c == '+' or
+      c == '-' or
+      c == '.' or
+      c == '^' or
+      c == '_' or
+      c == '`' or
+      c == '|' or
+      c == '~'
+    if not ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// A header value must not carry CR, LF or NUL, which would end the line.
+func isHeaderValueSafe(value: in String): Bool {
+  not value.contains("\r") and not value.contains("\n") and not value.contains("\u{0000}")
 }
 
 /// Attach a JSON string body and set the request content type.

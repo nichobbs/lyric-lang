@@ -46,6 +46,7 @@ package Std.Rest.Tests
 import Std.Core
 import Std.Errors
 import Std.Json
+import Std.Rest
 import Std.Testing
 
 // ─── HttpError.message formatting (transport-error contract) ─────────────────
@@ -142,7 +143,29 @@ func testEmptyJsonThrowsBug(): Unit {
   }
 }
 
+// #7251: a request path that could leave the base URL is refused before
+// any request is built.
+func escapeCode(client: in RestClient, path: in String): String {
+  match await RestClient.get(client, path) {
+    case Ok(_) -> "OK"
+    case Err(Http(InvalidUrl(_))) -> "InvalidUrl"
+    case Err(e) -> RestError.message(e)
+  }
+}
+
+func testPathCannotLeaveBase(): Unit {
+  val client = RestClient.create("http://127.0.0.1:1/api")
+  assertTrue(escapeCode(client, "../admin") == "InvalidUrl", "leading ..")
+  assertTrue(escapeCode(client, "users/../../admin") == "InvalidUrl", "embedded ..")
+  assertTrue(escapeCode(client, "%2e%2e/admin") == "InvalidUrl", "percent-encoded ..")
+  assertTrue(escapeCode(client, "//evil.example/x") == "InvalidUrl", "network-path reference")
+  assertTrue(escapeCode(client, "http://evil.example/x") == "InvalidUrl", "absolute URL")
+  assertTrue(escapeCode(client, "users\r\nX-Injected: 1") == "InvalidUrl", "CR/LF")
+  assertTrue(escapeCode(RestClient.create(""), "users") == "InvalidUrl", "empty base")
+}
+
 func main(): Int {
+  testPathCannotLeaveBase()
   testTransportMessageEmbedsUrl()
   testInvalidUrlMessageEmbedsUrl()
   testBadStatusMessageEmbedsCode()
