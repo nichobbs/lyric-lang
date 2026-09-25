@@ -35472,3 +35472,30 @@ The #7338 review follow-ups ride along: a native TLS upgrade whose handshake
 timeout cannot be armed now fails instead of running unbounded, and both
 targets accept timeout overrides up to one day (native item M covers the
 override parsing).
+
+## HTTP server constant factors: header lookup, h2 window credit, stream table, reads
+
+- `Std.String.equalsCaseInsensitive` (and so `Std.HttpEngine.headerValue`/
+  `headerValues`, called several times per request) compares ASCII text in
+  place through a new `Std.StringHost.hostAsciiCaseCompare` kernel on all
+  three targets, and only lowercases whole strings when either side has a
+  non-ASCII character. Before, every comparison allocated two lowered copies.
+- The dotnet HTTP/2 server returned receive-window credit with two separately
+  written `WINDOW_UPDATE` frames for every DATA frame. It now tops a window
+  back up to its initial size once it has fallen to half, with both frames in
+  one write; the FSM's own windows stay the source of truth, so the credit
+  still matches the debit including padding.
+- `H2Connection` keeps an id-keyed index of its streams, so the per-frame
+  stream lookup is O(1), and `pruneClosedStreams` rebuilds the stream list
+  only when a closed record has actually aged out, instead of on every `feed`
+  once 200 streams had been opened.
+- `serializeResponseHead` builds the head with a `StringBuilder`.
+- The dotnet `Std.TcpHost.hostRead` reuses one 16 KiB buffer per connection
+  instead of allocating a zeroed buffer of `maxBytes` (64 KiB for the server)
+  on every read.
+
+Covered by the existing HTTP engine, HPACK, HTTP/2 frame and connection suites
+on dotnet and JVM, a new 500 KB HTTP/2 upload case in
+`http_server_dotnet_tests.l`, new `equalsCaseInsensitive` cases in
+`string_case_locale_self_test.l` (dotnet, JVM, native) and `lyric-rt`'s C
+tests (#7269, epic #7256).

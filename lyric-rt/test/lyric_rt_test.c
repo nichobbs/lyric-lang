@@ -2560,7 +2560,24 @@ static void test_async_deadlock_aborts(void) {
     CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 }
 
+static LyricString* rt_str(const char* s) {
+    return lyric_string_from_literal((const uint8_t*)s, (int64_t)strlen(s));
+}
+
+static void test_string_ascii_case_compare(void) {
+    CHECK(lyric_string_ascii_case_compare(rt_str("Content-Length"), rt_str("content-length")) == 1);
+    CHECK(lyric_string_ascii_case_compare(rt_str("Host"), rt_str("host")) == 1);
+    CHECK(lyric_string_ascii_case_compare(rt_str(""), rt_str("")) == 1);
+    CHECK(lyric_string_ascii_case_compare(rt_str("Host"), rt_str("Hosts")) == 0);
+    CHECK(lyric_string_ascii_case_compare(rt_str("abc"), rt_str("abd")) == 0);
+    CHECK(lyric_string_ascii_case_compare(rt_str("[a]"), rt_str("{A}")) == 0);
+    CHECK(lyric_string_ascii_case_compare(rt_str("caf\xc3\xa9"), rt_str("CAF\xc3\x89")) == -1);
+    CHECK(lyric_string_ascii_case_compare(rt_str("abc"), rt_str("ab\xc3\xa9")) == -1);
+    CHECK(lyric_string_ascii_case_compare(rt_str("ab"), rt_str("abc\xc3\xa9")) == -1);
+}
+
 int main(void) {
+    test_string_ascii_case_compare();
     test_alloc_retain_release();
     test_free();
     test_strings();

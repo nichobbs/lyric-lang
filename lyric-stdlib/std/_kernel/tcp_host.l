@@ -144,6 +144,10 @@ pub opaque type Conn {
   client: TcpClient
   stream: Stream
   alpn: String
+  // Reused by every `hostRead` on this connection (#7269), so a read costs one
+  // allocation the size of the bytes actually received instead of a fresh
+  // zeroed buffer of `maxBytes`. A connection is read from one thread at a time.
+  readBuf: slice[Byte]
 }
 
 // =====================================================================
@@ -246,6 +250,10 @@ func memGetBuffer(m: in MemStream): slice[Byte] = ()
 func allocBuffer(n: in Int): slice[Byte] {
   memGetBuffer(newMemStreamCap(n))
 }
+
+// The per-connection read buffer size: one TLS record's maximum plaintext
+// (RFC 8446 section 5.1), which is also the most an `SslStream` read returns.
+val readBufferSize: Int = 16384
 
 // --- TLS server externs ---------------------------------------------------
 // The ctor's declared return type is the base `Stream` (not `SslStream`),
@@ -501,7 +509,7 @@ pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
       clientClose(client)
       return Err(error = TransportFailed(message = b.message))
     }
-    Ok(value = Conn(client = client, stream = stream, alpn = ""))
+    Ok(value = Conn(client = client, stream = stream, alpn = "", readBuf = allocBuffer(readBufferSize)))
   } catch Bug as b {
     Err(error = TransportFailed(message = b.message))
   }
@@ -531,7 +539,7 @@ pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
       clientClose(client)
       return Err(error = AcceptFailed(message = b.message))
     }
-    Ok(value = Conn(client = client, stream = stream, alpn = ""))
+    Ok(value = Conn(client = client, stream = stream, alpn = "", readBuf = allocBuffer(readBufferSize)))
   } catch Bug as b {
     Err(error = AcceptFailed(message = b.message))
   }
@@ -700,7 +708,7 @@ pub func hostUpgradeServerTlsPrepared(
       clientSetReceiveTimeout(conn.client, 0)
       clientSetSendTimeout(conn.client, 0)
     }
-    Ok(value = Conn(client = conn.client, stream = ssl, alpn = computeAlpn(ssl)))
+    Ok(value = Conn(client = conn.client, stream = ssl, alpn = computeAlpn(ssl), readBuf = conn.readBuf))
   } catch Bug as b {
     // Dispose the SslStream (which, via leaveInnerStreamOpen = false, also
     // disposes the wrapped NetworkStream) so a rejected handshake does not
@@ -754,14 +762,15 @@ pub func hostAlpn(c: in Conn): String {
 /// Read up to `maxBytes` bytes from the connection, blocking until at least
 /// one byte arrives. Returns the bytes actually read; an empty slice means
 /// the peer closed its half of the connection (EOF). A socket error is
-/// `Err(TransportFailed(...))`.
+/// `Err(TransportFailed(...))`. Reads on one connection must not run
+/// concurrently: they share the connection's read buffer.
 pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
   requires: maxBytes > 0
 {
   try {
-    val buf = allocBuffer(maxBytes)
-    val n = streamReadInto(c.stream, buf, 0, maxBytes)
-    Ok(value = buf.slice(0, n))
+    val want = if maxBytes < c.readBuf.length { maxBytes } else { c.readBuf.length }
+    val n = streamReadInto(c.stream, c.readBuf, 0, want)
+    Ok(value = c.readBuf.slice(0, n))
   } catch Bug as b {
     Err(error = TransportFailed(message = b.message))
   }

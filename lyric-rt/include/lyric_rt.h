@@ -156,6 +156,11 @@ int64_t      lyric_string_last_index_of(LyricString* haystack, LyricString* need
  * An empty needle matches at `from`.  Panics unless 0 <= from <= length;
  * the Lyric wrapper states the same bound as a `requires:`. */
 int64_t      lyric_string_index_of_from(LyricString* haystack, LyricString* needle, int64_t from);
+/* ASCII case-insensitive comparison (Std.String.equalsCaseInsensitive,
+ * #7269): 1 when equal after folding A-Z to a-z, 0 when both strings are
+ * pure ASCII and differ, -1 when either contains a byte >= 0x80 (the caller
+ * then compares full lowercase forms).  Never allocates. */
+int32_t      lyric_string_ascii_case_compare(LyricString* a, LyricString* b);
 int32_t      lyric_string_starts_with(LyricString* s, LyricString* prefix);
 int32_t      lyric_string_contains(LyricString* haystack, LyricString* needle);
 int32_t      lyric_string_ends_with(LyricString* s, LyricString* suffix);

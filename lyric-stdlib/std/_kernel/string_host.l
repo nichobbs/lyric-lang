@@ -44,3 +44,44 @@ pub func hostBuilderToString(sb: in HostStringBuilder): String {
 pub func hostIndexOfFrom(s: in String, value: in String, from: in Int): Int {
   netIndexOfFrom(s, value, from, ordinalComparison())
 }
+
+// ASCII case-insensitive comparison without allocating (#7269): 1 when the
+// strings are equal after folding A-Z to a-z, 0 when both are pure ASCII
+// and differ, and -1 when either contains a non-ASCII character, in which
+// case the caller decides with a full lowercase comparison (lowercasing a
+// non-ASCII character can change the string's length, so no ASCII-only
+// verdict is sound).
+pub func hostAsciiCaseCompare(a: in String, b: in String): Int {
+  var same = a.length == b.length
+  var i = 0
+  while i < a.length {
+    val ca = a[i].toInt()
+    if ca > 127 {
+      return 0 - 1
+    }
+    if same {
+      val cb = b[i].toInt()
+      if cb > 127 {
+        return 0 - 1
+      }
+      val la = if ca >= 65 and ca <= 90 { ca + 32 } else { ca }
+      val lb = if cb >= 65 and cb <= 90 { cb + 32 } else { cb }
+      if la != lb {
+        same = false
+      }
+    }
+    i = i + 1
+  }
+  var j = 0
+  while j < b.length {
+    if b[j].toInt() > 127 {
+      return 0 - 1
+    }
+    j = j + 1
+  }
+  if same {
+    1
+  } else {
+    0
+  }
+}

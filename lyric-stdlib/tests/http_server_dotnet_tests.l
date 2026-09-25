@@ -1021,3 +1021,38 @@ test "timeout resolvers honour their environment overrides with safe fallback (#
   Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "120000")
   assertEqualInt(resolveConnectionIdleTimeoutMs(), 120000, "explicit default resolves unchanged")
 }
+
+// Puller that answers with the length of the request body it received.
+func serveBodyLength(l: in HttpListener): Unit {
+  val ctx = nextContext(l)
+  respondText(ctx, 200, "len=" + toString(requestBody(ctx).length))
+}
+
+// #7269: receive-window credit is returned in half-window top-ups rather than
+// per DATA frame. A request body several times the 64 KiB initial stream and
+// connection windows only completes if both windows keep being replenished.
+test "HTTP/2 request body far larger than the initial window arrives intact" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTlsWithLimits("127.0.0.1", 19421, cfg, smallBodyLimits(1048576)) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTlsWithLimits failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveBodyLength(listener) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val payload = Std.String.repeat("0123456789", 50000)
+  val resp = match await client.post("https://localhost:19421/big", payload) {
+    case Ok(r) -> r
+    case Err(e) -> panic("large h2 POST failed: " + HttpError.message(e))
+  }
+  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  match HttpResponse.negotiatedVersion(resp) {
+    case Http2 -> assertTrue(true, "negotiated HTTP/2")
+    case _ -> panic("expected HTTP/2 negotiation; body=" + body)
+  }
+  assertEqual(body, "len=500000", "every byte of a 500 KB body delivered")
+}

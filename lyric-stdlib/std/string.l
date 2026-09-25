@@ -354,7 +354,14 @@ pub func equals(s1: in String, s2: in String): Bool {
 @pure
 @stable(since = "1.0")
 pub func equalsCaseInsensitive(s1: in String, s2: in String): Bool {
-  s1.toLower() == s2.toLower()
+  // ASCII input, the common case (HTTP header names, identifiers), is
+  // compared in place; only text with a non-ASCII character pays for the
+  // two lowercase copies (#7269).
+  match SH.hostAsciiCaseCompare(s1, s2) {
+    case 1 -> true
+    case 0 -> false
+    case _ -> s1.toLower() == s2.toLower()
+  }
 }
 
 // ---------------------------------------------------------------------------
