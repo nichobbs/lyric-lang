@@ -1,4 +1,4 @@
-# D-progress-961 — lyric-ws Origin check; JVM `catch Exception`; parenthesised lambda formatting
+# D-progress-962 — lyric-ws Origin check; JVM `catch Exception`; parenthesised lambda formatting
 
 **Status:** shipped
 
