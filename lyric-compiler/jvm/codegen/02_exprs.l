@@ -1417,7 +1417,12 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               JRef(className = "java/lang/String")
             }
             case JLong -> {
-              lowerExpr(ctx, insns, rhs)
+              val rTy = lowerExpr(ctx, insns, rhs)
+              if isIntLikeJvm(rTy) {
+                val _ = reconcileArithOperands(ctx, insns, lhsTy, rTy, lhs, rhs)
+              } else {
+                coerceArgTo(insns, rTy, JLong)
+              }
               insns.add(LLadd)
               JLong
             }
@@ -1429,26 +1434,40 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             }
             case JFloat -> {
               val rTy = lowerExpr(ctx, insns, rhs)
-              coerceArgTo(insns, rTy, JFloat)
-              insns.add(LFadd)
-              JFloat
+              // `Float + Double` is a `Double` (#7350): widen the float below.
+              if isDoubleJvm(rTy) {
+                val _ = reconcileArithOperands(ctx, insns, lhsTy, rTy, lhs, rhs)
+                insns.add(LDadd)
+                JDouble
+              } else {
+                coerceArgTo(insns, rTy, JFloat)
+                insns.add(LFadd)
+                JFloat
+              }
             }
             case _ -> {
               // Coerce like the JDouble/JFloat arms: the rhs may be an
               // erased-Object value (a lambda invoke's boxed return —
               // `result + f(1)` in closure_zero_overhead_self_test) and
-              // `iadd` rejects a reference operand at verification.
+              // `iadd` rejects a reference operand at verification.  An
+              // int-like lhs with a long rhs widens to `ladd` (#7350).
               val rTy = lowerExpr(ctx, insns, rhs)
-              coerceArgTo(insns, rTy, JInt)
-              insns.add(LIadd)
-              JInt
+              if isIntLikeJvm(lhsTy) and isLongJvm(rTy) {
+                val _ = reconcileArithOperands(ctx, insns, lhsTy, rTy, lhs, rhs)
+                insns.add(LLadd)
+                JLong
+              } else {
+                coerceArgTo(insns, rTy, JInt)
+                insns.add(LIadd)
+                JInt
+              }
             }
           }
         }
         case BSub -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          val lhsTy = reconcileArithOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs)
           match lhsTy {
             case JLong -> {
               insns.add(LLsub)
@@ -1471,7 +1490,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BMul -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          val lhsTy = reconcileArithOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs)
           match lhsTy {
             case JLong -> {
               insns.add(LLmul)
@@ -1494,7 +1513,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BDiv -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          val lhsTy = reconcileArithOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs)
           // #6748: `UInt`/`ULong` erase to the JVM's signed `int`/`long`, so
           // `idiv`/`ldiv` compute the WRONG quotient whenever either operand
           // has its sign bit set — dispatch to `Integer`/`Long.divideUnsigned`
@@ -1547,7 +1566,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BMod -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          val lhsTy = reconcileArithOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs)
           // #6748: see the matching `BDiv` note above.
           val isUnsignedMod = isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs)
           match lhsTy {
@@ -2561,6 +2580,16 @@ func reconcileCmpOperands(
     insns.add(LI2l)
     emitLoad(insns, rhsSlotL, JLong)
     JLong
+  } else if isDoubleJvm(lhsTy) and isFloatJvm(rhsTy) {
+    // Float widens to Double (the checker's `Float < Double`, #7350).
+    insns.add(LF2d)
+    JDouble
+  } else if isFloatJvm(lhsTy) and isDoubleJvm(rhsTy) {
+    val rhsSlotD = allocSlot(ctx, "__cmp_rhs_" + freshLabel(ctx), JDouble)
+    emitStore(insns, rhsSlotD, JDouble)
+    insns.add(LF2d)
+    emitLoad(insns, rhsSlotD, JDouble)
+    JDouble
   } else {
     // Both operands have the same primitive type, or the same concretely-
     // known reference type (e.g. two `String`s — the caller's own
@@ -2570,6 +2599,49 @@ func reconcileCmpOperands(
     // reached (#2862/#6398).
     lhsTy
   }
+}
+
+func isDoubleJvm(ty: in JvmType): Bool {
+  match ty {
+    case JDouble -> true
+    case _ -> false
+  }
+}
+
+func isFloatJvm(ty: in JvmType): Bool {
+  match ty {
+    case JFloat -> true
+    case _ -> false
+  }
+}
+
+// Reconcile arithmetic operands (`lhs` below `rhs` on the stack) to the type
+// the checker gives the result (#7350).  A `UInt` operand beside a `Long`/
+// `ULong` zero-extends via `Integer.toUnsignedLong` rather than `i2l`, which
+// would sign-extend a value with its top bit set; everything else goes
+// through `reconcileCmpOperands`.
+func reconcileArithOperands(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  lhsTy: in JvmType,
+  rhsTy: in JvmType,
+  lhs: in Expr,
+  rhs: in Expr,
+): JvmType {
+  val ps: List[JvmType] = newList()
+  ps.add(JInt)
+  if isLongJvm(lhsTy) and isIntLikeJvm(rhsTy) and isUnsignedExpr(ctx, rhs) {
+    insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toUnsignedLong", params = ps, ret = JLong))
+    return JLong
+  }
+  if isIntLikeJvm(lhsTy) and isUnsignedExpr(ctx, lhs) and isLongJvm(rhsTy) {
+    val rhsSlot = allocSlot(ctx, "__arith_rhs_" + freshLabel(ctx), JLong)
+    emitStore(insns, rhsSlot, JLong)
+    insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toUnsignedLong", params = ps, ret = JLong))
+    emitLoad(insns, rhsSlot, JLong)
+    return JLong
+  }
+  reconcileCmpOperands(ctx, insns, lhsTy, rhsTy, true)
 }
 
 func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in Expr, rhs: in Expr): JvmType {

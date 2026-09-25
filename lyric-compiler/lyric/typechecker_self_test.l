@@ -1212,6 +1212,27 @@ test "inline refined half open excludes hi" {
   assertTrue(hasDiagCode(cr, "T0015"), "inline-range half-open excludes hi: T0015")
 }
 
+// #7346: an unsuffixed literal outside Int's range is not an Int.
+test "int literal out of range for Int is T0015" {
+  val cr = parseCheck("package P\nfunc f(): Unit {\n  val x: Int = 2147483648\n}\n")
+  assertTrue(hasDiagCode(cr, "T0015"), "2147483648 into Int: T0015")
+  assertTrue(not hasDiagCode(cr, "T0060"), "2147483648 into Int: no duplicate T0060")
+  val cr2 = parseCheck("package P\nfunc f(): Unit {\n  var y: Int = -2147483649\n}\n")
+  assertTrue(hasDiagCode(cr2, "T0015"), "-2147483649 into Int: T0015")
+}
+
+test "int literal boundaries and Long defaults" {
+  val src = "package P\nfunc f(): Unit {\n  val a: Int = 2147483647\n  val b: Int = -2147483648\n" +
+    "  val c: Long = 3000000000\n  val d = 3000000000\n  val e: Long = d\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Int bounds and Long-valued literals are clean")
+}
+
+test "an out-of-range literal argument is a type error" {
+  val cr = parseCheck("package P\nfunc g(x: in Int): Int = x\nfunc f(): Int = g(2147483648)\n")
+  assertTrue(diagCount(cr) > 0, "a Long-valued literal is not an Int argument")
+}
+
 test "inline refined half open in bounds" {
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 .. 10 = 9\n}\n"
   val cr = parseCheck(src)

@@ -167,6 +167,29 @@ func checkRefinedLiteralBound(declT: in Type, init: in Expr, diag: in List[Diagn
   }
 }
 
+// An unsuffixed integer literal whose value does not fit the plain integer
+// type it initialises (`val x: Int = 3000000000`) is reported as T0015 and
+// the caller skips its generic type-mismatch diagnostic (#7346).  Before
+// this the literal typed as `Int` whatever its value and wrapped silently
+// on dotnet.  Refined types are `checkRefinedLiteralBound`'s job.
+func reportIntLiteralOutOfRange(declT: in Type, init: in Expr, diag: in List[Diagnostic]): Bool {
+  match declT {
+    case TyPrim(_) -> match unsuffixedIntLiteralValue(init) {
+      case Some(v) -> {
+        if isConcreteIntType(declT) and not intValueFitsType(v, declT) {
+          diag.add(
+            errorDiagnostic("T0015", "literal " + toString(v) + " is out of range for type " + renderType(declT), init.span)
+          )
+          return true
+        }
+        false
+      }
+      case None -> false
+    }
+    case _ -> false
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Statement checking.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,7 +221,9 @@ pub func checkStatement(
           gctxPush(ctx, genericNames)
           val declT = resolveType(tbl, ctx, diag, te)
           val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
-          if not argSatisfiesParam(tbl, declT, initType) {
+
+          val literalOutOfRange = reportIntLiteralOutOfRange(declT, init, diag)
+          if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
             diag.add(
               errorDiagnostic(
                 "T0060",
@@ -223,7 +248,9 @@ pub func checkStatement(
           match initOpt {
             case Some(initE) -> {
               val initType = inferExprExpected(sc, tbl, sigs, diag, initE, declT)
-              if not argSatisfiesParam(tbl, declT, initType) {
+
+              val literalOutOfRange = reportIntLiteralOutOfRange(declT, initE, diag)
+              if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
                 diag.add(
                   errorDiagnostic(
                     "T0061",
@@ -260,7 +287,9 @@ pub func checkStatement(
           gctxPush(ctx, genericNames)
           val declT = resolveType(tbl, ctx, diag, te)
           val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
-          if not argSatisfiesParam(tbl, declT, initType) {
+
+          val literalOutOfRange = reportIntLiteralOutOfRange(declT, init, diag)
+          if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
             diag.add(
               errorDiagnostic(
                 "T0062",

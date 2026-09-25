@@ -38,8 +38,11 @@ pub func isStringPlusVarAssign(target: in Expr, op: in AssignOp, targetType: in 
 // ─────────────────────────────────────────────────────────────────────────────
 pub func typeOfLiteral(lit: in Literal): Type {
   match lit {
-    case LInt(_, sfx, _) -> match sfx {
-      case NoIntSuffix -> TyPrim(pt = PtInt)
+    case LInt(v, sfx, _) -> match sfx {
+      // An unsuffixed literal defaults to `Int` only when its value fits;
+      // a larger one is a `Long` (never a wrapped `Int`, #7346).  The one
+      // exception, `-2147483648`, is handled by `inferExpr`'s negation arm.
+      case NoIntSuffix -> if longFitsInt(v) { TyPrim(pt = PtInt) } else { TyPrim(pt = PtLong) }
       case I8 -> TyPrim(pt = PtByte)
       case I16 -> TyPrim(pt = PtInt)
       case I32 -> TyPrim(pt = PtInt)
@@ -748,6 +751,62 @@ func isConcreteIntType(t: in Type): Bool {
   }
 }
 
+func longFitsInt(v: in Long): Bool {
+  v >= 0i64 - 2147483648i64 and v <= 2147483647i64
+}
+
+// True when the integer value `v` is representable in the integer type `t`
+// (after stripping range refinements; the refinement's own bounds are T0015's
+// job).  `ULong`'s upper half cannot arise: a literal's value is a `Long`.
+pub func intValueFitsType(v: in Long, t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt {
+      case PtByte -> v >= 0i64 and v <= 255i64
+      case PtInt -> longFitsInt(v)
+      case PtLong -> true
+      case PtUInt -> v >= 0i64 and v <= 4294967295i64
+      case PtULong -> v >= 0i64
+      case PtNat -> v >= 0i64
+      case _ -> true
+    }
+    case _ -> true
+  }
+}
+
+// The value of an integer literal written without a suffix, seen through
+// parentheses and one unary minus (`-2147483648` parses as a negated
+// `2147483648`).  `None` for anything else.
+pub func unsuffixedIntLiteralValue(e: in Expr): Option[Long] {
+  match e.kind {
+    case EParen(inner) -> unsuffixedIntLiteralValue(inner)
+    case ELiteral(lit) -> match lit {
+      case LInt(v, sfx, _) -> match sfx { case NoIntSuffix -> Some(value = v); case _ -> None }
+      case _ -> None
+    }
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind {
+        case ELiteral(lit) -> match lit {
+          case LInt(v, sfx, _) -> match sfx {
+            case NoIntSuffix -> Some(
+              value = 0i64 -
+                v
+            )
+            case _ -> None
+          }
+          case _ -> None
+        }
+        case EParen(_) -> match unsuffixedIntLiteralValue(operand) {
+          case Some(v) -> Some(value = 0i64 - v)
+          case None -> None
+        }
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
 // True when `t` is exactly the default literal type `Int` (the type an
 // unsuffixed integer literal infers to before context adjustment).
 func isPlainInt(t: in Type): Bool {
@@ -762,35 +821,30 @@ func isPlainInt(t: in Type): Bool {
 // integer type (e.g. `Long` from `someLong <= 0`, a return type, a binding
 // annotation, or a parameter type).  Returns the adjusted type, or `actual`
 // unchanged when no coercion applies.
-// True when `e` is a negated literal (`-1`, `(-1)`).
-func isNegatedLit(e: in Expr): Bool {
-  match e.kind {
-    case EPrefix(op, _) -> match op { case PreNeg -> true; case _ -> false }
-    case EParen(inner) -> isNegatedLit(inner)
-    case _ -> false
-  }
-}
-
-// True when `t` (after stripping range refinements) is an integer primitive
-// with no negative values, which a negated literal must never adopt.
-func isNonNegativeIntType(t: in Type): Bool {
-  match unrefine(t) {
-    case TyPrim(pt) -> match pt {
-      case PtByte -> true
-      case PtUInt -> true
-      case PtULong -> true
-      case PtNat -> true
-      case _ -> false
-    }
-    case _ -> false
-  }
-}
-
+//
+// The literal's value must fit `expected` (#7346): `b == 300` with `b: Byte`
+// keeps the literal an `Int` rather than adopting a `Byte` it cannot be.  A
+// literal already typed `Long` because it is too large for `Int` may still
+// adopt `ULong`/`UInt` when it fits.
 func adoptIntLiteralType(e: in Expr, actual: in Type, expected: in Type): Type {
-  if isUnsuffixedIntLit(e) and isPlainInt(actual) and isConcreteIntType(expected) and not (isNegatedLit(e) and isNonNegativeIntType(expected)) {
-    return expected
+  if isUnsuffixedIntLit(e) and (isPlainInt(actual) or isPlainLong(actual)) and isConcreteIntType(expected) {
+    match unsuffixedIntLiteralValue(e) {
+      case Some(v) -> {
+        if intValueFitsType(v, expected) {
+          return expected
+        }
+      }
+      case None -> ()
+    }
   }
   actual
+}
+
+func isPlainLong(t: in Type): Bool {
+  match t {
+    case TyPrim(pt) -> match pt { case PtLong -> true; case _ -> false }
+    case _ -> false
+  }
 }
 
 func inferBinop(
@@ -5726,6 +5780,16 @@ func inferExprCore(
 
     case EPrefix(op, inner) -> {
       val it = inferExpr(sc, tbl, sigs, diag, inner)
+      // `-2147483648` is `Int.MinValue`: its operand alone is too large for
+      // `Int` (so it typed `Long`), but the negated value fits (#7346).
+      match unsuffixedIntLiteralValue(e) {
+        case Some(v) -> {
+          if v == 0i64 - 2147483648i64 {
+            return TyPrim(pt = PtInt)
+          }
+        }
+        case None -> ()
+      }
       inferPrefix(diag, op, it, e.span)
     }
 

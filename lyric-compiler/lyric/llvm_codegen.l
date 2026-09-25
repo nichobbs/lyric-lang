@@ -1707,35 +1707,81 @@ func isIntNType(t: in NType): Bool {
   }
 }
 
-/// Unify the operand types of a binary op: identical types pass; a
-/// literal adapts to the other side's width.  Anything else is a
-/// codegen error (the type checker rejects it upstream).
-func unifyOperands(a: in NVal, b: in NVal): NType {
-  val sameKind = nTypeToIrString(a.ty) == nTypeToIrString(b.ty)
-  if sameKind {
-    return a.ty
+/// Both operands of a binary op at the type the checker gives it.
+record WidenedOperands {
+  a: NVal
+  b: NVal
+  ty: NType
+}
+
+func intNTypeRank(t: in NType): Int {
+  match t {
+    case NI8 -> 1
+    case NI32 -> 2
+    case NI64 -> 3
+    case _ -> 0
+  }
+}
+
+func litFitsNType(v: in Long, t: in NType): Bool {
+  match t {
+    case NI8 -> v >= 0i64 and v <= 255i64
+    case NI32 -> v >= 0i64 - 2147483648i64 and v <= 2147483647i64
+    case NI64 -> true
+    case _ -> false
+  }
+}
+
+// Extend an integer operand to `toTy`: `Byte` (i8) is unsigned and
+// zero-extends; `Int` sign-extends.
+func extendIntOperand(ctx: in Ctx, insns: in List[NInsn], v: in NVal, toTy: in NType): NVal {
+  val dest = freshTmp(ctx)
+  match v.ty {
+    case NI8 -> insns.add(NZExt(dest = dest, fromTy = v.ty, value = v.value, toTy = toTy))
+    case _ -> insns.add(NSExt(dest = dest, fromTy = v.ty, value = v.value, toTy = toTy))
+  }
+  NVal(ty = toTy, value = NLocal(name = dest))
+}
+
+/// Bring a binary op's operands to one type, as the type checker's
+/// `widenArithmetic` does (#7350): identical types pass; an integer literal
+/// takes the other side's width when its value fits there; otherwise the
+/// narrower integer operand is extended to the wider one (`Byte < Int <
+/// Long`).  `Float` and `Double` are both `double` here.  Anything else is
+/// a codegen error (the type checker rejects it upstream).
+func widenOperands(ctx: in Ctx, insns: in List[NInsn], a: in NVal, b: in NVal): WidenedOperands {
+  if nTypeToIrString(a.ty) == nTypeToIrString(b.ty) {
+    return WidenedOperands(a = a, b = b, ty = a.ty)
   }
   match a.value {
-    case NLitInt(_, _) -> {
-      if isIntNType(b.ty) {
-        return b.ty
+    case NLitInt(v, _) -> {
+      if litFitsNType(v, b.ty) {
+        return WidenedOperands(a = NVal(ty = b.ty, value = a.value), b = b, ty = b.ty)
       }
     }
     case _ -> {
     }
   }
   match b.value {
-    case NLitInt(_, _) -> {
-      if isIntNType(a.ty) {
-        return a.ty
+    case NLitInt(v, _) -> {
+      if litFitsNType(v, a.ty) {
+        return WidenedOperands(a = a, b = NVal(ty = a.ty, value = b.value), ty = a.ty)
       }
     }
     case _ -> {
     }
   }
+  val ra = intNTypeRank(a.ty)
+  val rb = intNTypeRank(b.ty)
+  if ra > 0 and rb > 0 {
+    if ra > rb {
+      return WidenedOperands(a = a, b = extendIntOperand(ctx, insns, b, a.ty), ty = a.ty)
+    }
+    return WidenedOperands(a = extendIntOperand(ctx, insns, a, b.ty), b = b, ty = b.ty)
+  }
   panic(
     "Lyric.LlvmCodegen: mixed operand types '" + nTypeToIrString(a.ty) + "' and '" + nTypeToIrString(b.ty) +
-      "' (insert an explicit conversion such as .toLong()/.toFloat())"
+      "' reached codegen; the type checker admits no such pair"
   )
 }
 
@@ -2265,38 +2311,38 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
     }
     return lowerStringBinop(ctx, insns, op, a2, b2)
   }
+  val w = widenOperands(ctx, insns, a, b)
   if isComparisonOp(op) {
-    match unifyOperands(a, b) {
+    match w.ty {
       case NDouble -> {
         val dest = freshTmp(ctx)
-        insns.add(NFCmp(dest = dest, pred = fcmpPredFor(op), a = a.value, b = b.value))
+        insns.add(NFCmp(dest = dest, pred = fcmpPredFor(op), a = w.a.value, b = w.b.value))
         return NVal(ty = NI1, value = NLocal(name = dest))
       }
       case NI8 -> {
         val dest = freshTmp(ctx)
-        insns.add(NICmp(dest = dest, pred = icmpPredForUnsigned(op), ty = NI8, a = a.value, b = b.value))
+        insns.add(NICmp(dest = dest, pred = icmpPredForUnsigned(op), ty = NI8, a = w.a.value, b = w.b.value))
         return NVal(ty = NI1, value = NLocal(name = dest))
       }
       case ty -> {
         val dest = freshTmp(ctx)
-        insns.add(NICmp(dest = dest, pred = icmpPredFor(op), ty = ty, a = a.value, b = b.value))
+        insns.add(NICmp(dest = dest, pred = icmpPredFor(op), ty = ty, a = w.a.value, b = w.b.value))
         return NVal(ty = NI1, value = NLocal(name = dest))
       }
     }
   }
   match op {
     case BXor -> {
-      val ty = unifyOperands(a, b)
       val dest = freshTmp(ctx)
-      insns.add(NXor(dest = dest, ty = ty, a = a.value, b = b.value))
-      return NVal(ty = ty, value = NLocal(name = dest))
+      insns.add(NXor(dest = dest, ty = w.ty, a = w.a.value, b = w.b.value))
+      return NVal(ty = w.ty, value = NLocal(name = dest))
     }
     case _ -> {
     }
   }
-  match unifyOperands(a, b) {
-    case NDouble -> binFloatOp(ctx, insns, op, a.value, b.value)
-    case ty -> binIntOp(ctx, insns, op, ty, a.value, b.value, line)
+  match w.ty {
+    case NDouble -> binFloatOp(ctx, insns, op, w.a.value, w.b.value)
+    case ty -> binIntOp(ctx, insns, op, ty, w.a.value, w.b.value, line)
   }
 }
 
