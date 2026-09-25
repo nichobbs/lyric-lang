@@ -55,11 +55,11 @@ func byteSum(xs: in slice[Byte]): Int {
 }
 
 func joinFor(xs: in slice[String]): String {
-  var out = ""
+  var acc = ""
   for s in xs {
-    out = out + s + ";"
+    acc = acc + s + ";"
   }
-  out
+  acc
 }
 
 func intList(n: in Int): List[Int] {
@@ -131,8 +131,8 @@ test "String reads agree for a BCL array, a literal and a copy" {
 test "Char, Bool, Long and Double slices read and write through both paths" {
   var cs: slice[Char] = ['a', 'b', 'c']
   cs[1] = 'z'
-  assertEqual(cs[1].toString(), "z", "char write")
-  assertEqual(cs.slice(1, 3)[1].toString(), "c", "char sub-slice read")
+  assertTrue(cs[1] == 'z', "char write")
+  assertTrue(cs.slice(1, 3)[1] == 'c', "char sub-slice read")
   var bs: slice[Bool] = [false, false]
   bs[1] = true
   assertTrue(bs[1] and not bs[0], "bool write")
