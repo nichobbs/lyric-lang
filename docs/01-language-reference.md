@@ -1059,6 +1059,15 @@ Invariants must hold:
 
 Internal mutations may temporarily violate the invariant; the invariant is checked when control returns to a public boundary.
 
+**Current enforcement (all targets).** Every construction of a record or opaque type that declares invariants is checked: a constructor call anywhere (including in another package of the same build, and inside generic functions), and every `.copy(...)`. A violation raises `InvariantViolated: <Pkg.Type> invariant <clause>`, one clause at a time in declaration order. The check is a compiler-synthesized function `__lyric_checked_<Type>` in the declaring package, with the type's own visibility. Invariant clauses are evaluated in the declaring package, so they may call that package's private helpers. Not yet enforced (#7222):
+
+- re-checking after in-place mutation of a `var` field or an `inout` parameter;
+- the public-boundary checks listed above;
+- construction inside a generic function body that another package specialises;
+- construction in a restored package built before invariant checking;
+- construction in code synthesized after type checking (derived `@generate` deserializers);
+- the `@projectable` `tryInto` check.
+
 ### 6.3 Contract expression sublanguage
 
 Contract expressions are pure: no side effects, no I/O, no mutation. They may use:

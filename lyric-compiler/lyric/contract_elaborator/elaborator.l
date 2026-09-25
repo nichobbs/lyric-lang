@@ -74,6 +74,7 @@ package Lyric.ContractElaborator
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Fmt as Fmt
@@ -536,7 +537,18 @@ func renamePath(e: in Expr, p: in ModulePath, renames: in Map[String, String]): 
     return e
   }
   match mapGet(renames, p.segments[0]) {
-    case Some(target) -> mkPath(target, e.span)
+    // A dotted target (`__lyric_value.f`, used by the invariant checkers) becomes a
+    // member-access chain, not a single path segment.
+    case Some(target) -> {
+      val parts = Str.split(target, ".")
+      var acc = mkPath(parts[0], e.span)
+      var i = 1
+      while i < parts.length {
+        acc = mkExpr(EMember(receiver = acc, memberName = parts[i]), e.span)
+        i = i + 1
+      }
+      acc
+    }
     case None -> e
   }
 }

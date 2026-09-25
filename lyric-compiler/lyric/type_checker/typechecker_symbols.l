@@ -240,6 +240,12 @@ pub record SymbolTable {
   /// Every validated record `.copy(...)` call, keyed by `recordCopySiteKey`
   /// of the call expression's span (see `Lyric.Parser.RecordCopySite`).
   recordCopySites: Map[String, RecordCopySite]
+  /// Every construction (constructor call or `.copy(...)`) of a record or
+  /// opaque type that declares `invariant:` clauses, keyed by
+  /// `recordCopySiteKey` of the call's span, mapped to the dotted path of
+  /// the type's synthesized construction checker (#7222).  Consumed by
+  /// `Lyric.ContractElaborator.wrapInvariantConstructions`.
+  invariantCtorSites: Map[String, String]
 }
 
 pub record ImplPair {
@@ -281,7 +287,8 @@ pub func newSymbolTable(): SymbolTable {
     symbolPackages = newMap(),
     symbolPackageMembers = newMap(),
     packageImports = newMap(),
-    recordCopySites = newMap()
+    recordCopySites = newMap(),
+    invariantCtorSites = newMap()
   )
 }
 

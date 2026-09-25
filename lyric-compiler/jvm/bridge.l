@@ -1388,12 +1388,21 @@ func collectBModeWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]
 
 // Detect a monomorphizer-specialised function name.  `Lyric.Mono` mangles a
 // specialised copy as `<base>__<T1>__<T2>` (`specFuncName`), so the name
-// carries a `__` infix.  Aspect-weave names (`__aspect_` infix) and
-// test-synth names (`__lyric_` prefix) also contain `__` but are handled by
-// their own collectors / the pre-middle-end registry pass; exclude them so
-// this stays the mono-only patch.
+// carries a `__` infix.  Aspect-weave names (`__aspect_` infix), B'-mode
+// names and other compiler-synthesized `__lyric_` functions also contain
+// `__` but are handled by their own collectors / the pre-middle-end
+// registry pass; exclude them so this stays the mono-only patch.  A
+// synthesized generic function (an invariant checker
+// `__lyric_checked_Box`, #7222) is itself specialised by mono, so a
+// `__lyric_` name with a further `__` infix after the prefix is a mono copy.
 func isMonoSpecializedName(name: in String): Bool {
-  Str.contains(name, "__") and not Str.contains(name, "__aspect_") and not Str.startsWith(name, "__lyric_")
+  if Str.contains(name, "__aspect_") or isBModeSpecializedName(name) {
+    return false
+  }
+  if Str.startsWith(name, "__lyric_") {
+    return Str.contains(Str.substring(name, 8), "__")
+  }
+  Str.contains(name, "__")
 }
 
 // Register the sigs of monomorphizer-specialised functions (`mapKeys__String__Int`,

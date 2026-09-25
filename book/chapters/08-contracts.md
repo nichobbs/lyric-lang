@@ -123,7 +123,7 @@ opaque type Account {
 }
 ```
 
-The invariant fires at every public boundary: after every public function in the type's package returns, on every parameter of the type passed into a function, and on every return value of the type. Internal mutations can temporarily violate the invariant — partial updates inside a function body are permitted — but the check fires when control returns to a public boundary.
+The invariant is checked every time a value of the type is built: each constructor call, wherever it is written, and each `.copy(...)`. `Account(balance = -5)` stops with `InvariantViolated: Bank.Account invariant balance >= 0 and balance <= 1_000_000_000_00`. The language reference (§6.2) also specifies re-checks at public boundaries after in-place mutation of `var` fields; the compiler does not perform those yet (#7222), so keep invariant-bearing types immutable, or re-validate after mutating them.
 
 What this buys you: once you hold an `Account` value, you can assume `balance >= 0` without checking. The type carries its own proof of validity. A function that receives an `Account` does not need to re-validate it; the compiler and runtime ensure it was valid when it entered the package.
 

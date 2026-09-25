@@ -17,7 +17,7 @@ What this annotation enables:
 
 - **`requires:` clauses** are evaluated on entry to the function, in source order. The first clause that evaluates to `false` raises a `PreconditionViolated` bug immediately, before the function body runs.
 - **`ensures:` clauses** are evaluated just before the function returns, after the body has produced a value. The first clause that evaluates to `false` raises a `PostconditionViolated` bug.
-- **`invariant:` clauses** on protected types are checked when each `entry` returns. Record and opaque-type invariants are specified to be checked at every public boundary (language reference §6.2), but the compiler does not enforce them yet (#7222); write the check as a `requires:` on the constructor function until it does.
+- **`invariant:` clauses** on protected types are checked when each `entry` returns. On records and opaque types they are checked at every construction and `.copy(...)`; re-checking after in-place mutation at public boundaries is not implemented yet (#7222).
 - **`forall` and `exists`** quantifiers are not evaluated at runtime: they compile to `true` with warning W0002, so a quantified clause documents intent and feeds `lyric prove` but catches nothing at runtime (#7228).
 
 The annotation has no effect on which code you can call. A `@runtime_checked` package can call `@proof_required` packages, `@axiom` boundaries, or any other package without restriction. The restriction runs the other way: `@proof_required` packages are constrained in what they may call (Chapter 18).
