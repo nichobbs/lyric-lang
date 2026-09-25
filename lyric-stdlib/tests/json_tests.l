@@ -190,6 +190,44 @@ func testTryParseJson(): Unit {
   }
 }
 
+// #7251: the throwing getters are guarded by checked preconditions, and the
+// @generate(Json) field readers fail closed on untrusted bodies.
+func testGetterPreconditions(): Unit {
+  val doc = parseJson("{\"n\": 3000000000, \"s\": \"x\", \"b\": true}")
+  val root = rootElement(doc)
+  assertTrue(hasProperty(root, "s"), "hasProperty finds s")
+  assertTrue(not hasProperty(root, "missing"), "hasProperty misses")
+  assertTrue(not hasProperty(getProperty(root, "s"), "s"), "hasProperty on a non-object is false, not a throw")
+  assertTrue(isJsonInt64(getProperty(root, "n")), "3e9 fits a Long")
+  assertTrue(not isJsonInt32(getProperty(root, "n")), "3e9 does not fit an Int")
+  assertTrue(isJsonBool(getProperty(root, "b")), "true is a Bool")
+  assertPanics("getProperty on a missing name", { -> val _ = getProperty(root, "missing") })
+  assertPanics("getInt32 on an out-of-range number", { -> val _ = getInt32(getProperty(root, "n")) })
+  assertPanics("getString on a number", { -> val _ = getString(getProperty(root, "n")) })
+  assertPanics("getBoolean on a string", { -> val _ = getBoolean(getProperty(root, "s")) })
+  disposeJson(doc)
+}
+
+func testFieldReadersFailClosed(): Unit {
+  var i = 0
+  assertTrue(lyricJsonGetInt("{\"a\": 7}", "a", i) and i == 7, "reads an Int field")
+  assertTrue(not lyricJsonGetInt("not json", "a", i) and i == 0, "malformed body")
+  assertTrue(not lyricJsonGetInt("[1, 2]", "a", i), "non-object root")
+  assertTrue(not lyricJsonGetInt("{\"a\": \"7\"}", "a", i), "string where an Int is expected")
+  assertTrue(not lyricJsonGetInt("{\"a\": 3000000000}", "a", i), "Int out of range")
+  var l = 0i64
+  assertTrue(lyricJsonGetLong("{\"a\": 3000000000}", "a", l) and l == 3000000000i64, "reads a Long field")
+  assertTrue(not lyricJsonGetLong("{\"a\": true}", "a", l), "Bool where a Long is expected")
+  var d = 0.0
+  assertTrue(not lyricJsonGetDouble("{\"a\": null}", "a", d), "null where a Double is expected")
+  var b = false
+  assertTrue(not lyricJsonGetBool("\"x\"", "a", b), "string root")
+  var str = ""
+  assertTrue(not lyricJsonGetString("{\"a\": 1}", "a", str), "number where a String is expected")
+  var sub = ""
+  assertTrue(not lyricJsonGetSubObject("{", "a", sub) and sub == "{}", "truncated body")
+}
+
 func main(): Unit {
   testParseString()
   testParseInt()
@@ -204,6 +242,7 @@ func main(): Unit {
   testTryGetInt()
   testTryGetLong()
   testTryParseJson()
+  testGetterPreconditions()
+  testFieldReadersFailClosed()
   println("json_tests: ok")
 }
-
