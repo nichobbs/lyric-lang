@@ -655,8 +655,10 @@ pub func hostUpgradeServerTlsPrepared(
 ): Result[Conn, TcpError]
   requires: handshakeTimeoutMs >= 0
 {
-  if handshakeTimeoutMs > 0 {
-    val _ = rtSockSetTimeouts(conn.fd, handshakeTimeoutMs)
+  // An unarmed timeout would leave this handshake unbounded, the exact
+  // hazard the parameter exists for, so failing to set it fails the upgrade.
+  if handshakeTimeoutMs > 0 and rtSockSetTimeouts(conn.fd, handshakeTimeoutMs) != 0 {
+    return Err(error = TransportFailed(message = rtLastErrorString()))
   }
   val tlsConn = rtTlsServerAccept(tls.ctx, conn.fd)
   if tlsConn == 0i64 {

@@ -118,6 +118,10 @@ pub record CodegenCtx {
   tokIListClear: Int  // IList.Clear(): void  callvirt
   tokIListGetItem: Int  // IList.get_Item(int32): object  callvirt
   tokIListSetItem: Int  // IList.set_Item(int32, object): void  callvirt
+  // System.Array.Copy(Array, int32, Array, int32, int32): void — bulk copy
+  // between two genuine CLI arrays, used by the `slice[T]` copy fast path
+  // (`emitSliceCopyLoopMsil`, #7259).
+  tokArrayCopy: Int
   tokICollGetCount: Int  // ICollection.get_Count(): int32  callvirt
   // String intrinsic members (instance HASTHIS)
   tokStringGetChars: Int  // String.get_Chars(int32): char
@@ -1184,6 +1188,17 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(ilistSetPs, MVoid)
     )
   val tokIListCast = 0x01000000 + trIList
+  // System.Array.Copy(Array, int32, Array, int32, int32): void (#7259).
+  val trArray = ctxAddTypeRef(lctx, "System", "Array", lctx.arRuntime)
+  val arrayRefTy = MClassRef(typeRefCode = tdrTypeRef(trArray), clrFqn = "System.Array")
+  val arrayCopyPs: List[MsilType] = newList()
+  arrayCopyPs.add(arrayRefTy)
+  arrayCopyPs.add(MInt)
+  arrayCopyPs.add(arrayRefTy)
+  arrayCopyPs.add(MInt)
+  arrayCopyPs.add(MInt)
+  val tokArrayCopy = 0x0A000000 +
+    ctxAddMemberRef(lctx, trArray, "Copy", "array_copy", buildStaticMethodSig(arrayCopyPs, MVoid))
   // Non-generic IList::Clear(): void — clears a list regardless of element type,
   // so `xs.clear()` works whether `xs` is a concrete `List<Foo>` or an erased
   // `List<object>` (mirrors the `.count` path through non-generic ICollection).
@@ -2048,6 +2063,7 @@ pub func newCodegenCtx(
     tokIListClear = tokIListClear,
     tokIListGetItem = tokIListGetItem,
     tokIListSetItem = tokIListSetItem,
+    tokArrayCopy = tokArrayCopy,
     tokICollGetCount = tokICollGetCount,
     tokDictObjCtor = tokDictObjCtor,
     tokDictObjAdd = tokDictObjAdd,
@@ -7909,6 +7925,43 @@ func arrayElemTokenOpt(cctx: in CodegenCtx, e: in MsilType): Option[Int] {
   }
 }
 
+// The `isinst`/`castclass` TypeSpec token for a genuine CLI array `e[]`, for
+// the element types whose `slice[e]` values take the typed fast paths below
+// (#7259). A `slice[T]` value is either a real array or a `List`-backed slice
+// (#2539), so each fast path tests the runtime representation once and falls
+// back to the `IList` path for the `List` case.
+func sliceArraySpecTokenOpt(cctx: in CodegenCtx, e: in MsilType): Option[Int] {
+  val name = match e {
+    case MInt -> "i4"
+    case MLong -> "i8"
+    case MDouble -> "r8"
+    case MBool -> "bool"
+    case MChar -> "char"
+    case MByte -> "u1"
+    case MString -> "str"
+    case _ -> ""
+  }
+  if name == "" {
+    return None
+  }
+  val w = bufNew()
+  bufMsilType(w, MArray(elemTy = e))
+  Some(value = 0x1B000000 + ctxAddTypeSpec(cctx.lctx, "ts_szarray_" + name, bufToList(w)))
+}
+
+// `ldelem.<e>` for an element type `sliceArraySpecTokenOpt` accepts.
+func emitTypedLdelemMsil(insns: in List[MInsn], e: in MsilType): Unit {
+  match e {
+    case MInt -> insns.add(MLdelemI4)
+    case MLong -> insns.add(MLdelemI8)
+    case MDouble -> insns.add(MLdelemR8)
+    case MBool -> insns.add(MLdelemU1)
+    case MChar -> insns.add(MLdelemU2)
+    case MByte -> insns.add(MLdelemU1)
+    case _ -> insns.add(MLdelemRef)
+  }
+}
+
 // Helper: Check if a type can be loaded from a typed array using available ldelem instructions.
 func canUseTypedArrayLoad(ty: in MsilType): Bool {
   match ty {
@@ -10481,6 +10534,43 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // indexing routes through `IList.get_Item(int32)` (returns `object`),
             // then unboxes / narrows to the element type — correct for either
             // representation.
+            match sliceArraySpecTokenOpt(cctx, elem) {
+              case Some(specTok) -> if indices.count > 0 {
+                // #7259: a genuine `elem[]` is read with `ldelem` (no box, no
+                // interface call); only a `List`-backed slice takes the
+                // `IList.get_Item` path below.
+                val recvSlot = allocSlotMsil(fctx, "__sliceidx_recv_" + toString(fctx.slotTicker.count), MObject)
+                emitStoreSlot(insns, recvSlot, fctx.paramCount)
+                lowerExprMsil(cctx, fctx, insns, indices[0])
+                val idxSlot = allocSlotMsil(fctx, "__sliceidx_i_" + toString(fctx.slotTicker.count), MInt)
+                emitStoreSlot(insns, idxSlot, fctx.paramCount)
+                val arrSlot = allocSlotMsil(fctx, "__sliceidx_arr_" + toString(fctx.slotTicker.count), MArray(elemTy = elem))
+                val slowL = freshLabelMsil(fctx)
+                val doneL = freshLabelMsil(fctx)
+                emitLoadSlot(insns, recvSlot, fctx.paramCount)
+                insns.add(MIsinst(typeToken = specTok))
+                emitStoreSlot(insns, arrSlot, fctx.paramCount)
+                emitLoadSlot(insns, arrSlot, fctx.paramCount)
+                insns.add(MBrFalse(label = slowL))
+                emitLoadSlot(insns, arrSlot, fctx.paramCount)
+                emitLoadSlot(insns, idxSlot, fctx.paramCount)
+                emitTypedLdelemMsil(insns, elem)
+                insns.add(MBr(label = doneL))
+                insns.add(MLabel(id = slowL))
+                emitLoadSlot(insns, recvSlot, fctx.paramCount)
+                insns.add(MCastclass(typeToken = cctx.tokIListCast))
+                emitLoadSlot(insns, idxSlot, fctx.paramCount)
+                insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+                if elem == MString {
+                  insns.add(MCastclassByName(className = "System.String"))
+                } else {
+                  castObjectToMsil(cctx, insns, elem)
+                }
+                insns.add(MLabel(id = doneL))
+                return elem
+              }
+              case None -> ()
+            }
             insns.add(MCastclass(typeToken = cctx.tokIListCast))
             if indices.count > 0 {
               lowerExprMsil(cctx, fctx, insns, indices[0])
@@ -12422,11 +12512,57 @@ func lowerAssignExprMsil(
                 // `IList`, implemented by both a real array and a
                 // `List`-backed slice (mirrors the read-side EIndex `MArray`
                 // arm and `emitListCastRecv`/`emitListSetItem`).  #5842.
-                emitListCastRecv(cctx, insns, recvTy)
-                lowerExprMsil(cctx, fctx, insns, indices[0])
-                val vTy = lowerExprMsil(cctx, fctx, insns, value)
-                collBoxIfNeeded(cctx, insns, vTy, recvTy)
-                emitListSetItem(cctx, insns, recvTy)
+                val elem = match recvTy { case MArray(e) -> e; case _ -> MObject }
+                match sliceArraySpecTokenOpt(cctx, elem) {
+                  case Some(specTok) -> {
+                    // #7259: store into a genuine `elem[]` with `stelem`, no
+                    // box; a `List`-backed slice keeps the `IList` path.
+                    val recvSlot = allocSlotMsil(fctx, "__sliceset_recv_" + toString(fctx.slotTicker.count), MObject)
+                    emitStoreSlot(insns, recvSlot, fctx.paramCount)
+                    lowerExprMsil(cctx, fctx, insns, indices[0])
+                    val idxSlot = allocSlotMsil(fctx, "__sliceset_i_" + toString(fctx.slotTicker.count), MInt)
+                    emitStoreSlot(insns, idxSlot, fctx.paramCount)
+                    val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                    // M6 numeric widening (`xs[i] = 4` on a `slice[Long]`,
+                    // #5254): convert to the element width before the value
+                    // is stored in its element-typed temporary, so both paths
+                    // below store a correctly-sized element.
+                    coerceCallArgMsil(cctx, insns, vTy, elem)
+                    val valSlot = allocSlotMsil(fctx, "__sliceset_v_" + toString(fctx.slotTicker.count), elem)
+                    emitStoreSlot(insns, valSlot, fctx.paramCount)
+                    val arrSlot = allocSlotMsil(fctx, "__sliceset_arr_" + toString(fctx.slotTicker.count), MArray(elemTy = elem))
+                    val slowL = freshLabelMsil(fctx)
+                    val doneL = freshLabelMsil(fctx)
+                    emitLoadSlot(insns, recvSlot, fctx.paramCount)
+                    insns.add(MIsinst(typeToken = specTok))
+                    emitStoreSlot(insns, arrSlot, fctx.paramCount)
+                    emitLoadSlot(insns, arrSlot, fctx.paramCount)
+                    insns.add(MBrFalse(label = slowL))
+                    emitLoadSlot(insns, arrSlot, fctx.paramCount)
+                    emitLoadSlot(insns, idxSlot, fctx.paramCount)
+                    emitLoadSlot(insns, valSlot, fctx.paramCount)
+                    match arrayElemTokenOpt(cctx, elem) {
+                      case Some(tok) -> if elem == MChar { insns.add(MStelemI2) } else { insns.add(MStelem(typeToken = tok)) }
+                      case None -> panic("Msil.Codegen: slice store fast path has no element token (invariant violation)")
+                    }
+                    insns.add(MBr(label = doneL))
+                    insns.add(MLabel(id = slowL))
+                    emitLoadSlot(insns, recvSlot, fctx.paramCount)
+                    emitListCastRecv(cctx, insns, recvTy)
+                    emitLoadSlot(insns, idxSlot, fctx.paramCount)
+                    emitLoadSlot(insns, valSlot, fctx.paramCount)
+                    collBoxIfNeeded(cctx, insns, elem, recvTy)
+                    emitListSetItem(cctx, insns, recvTy)
+                    insns.add(MLabel(id = doneL))
+                  }
+                  case None -> {
+                    emitListCastRecv(cctx, insns, recvTy)
+                    lowerExprMsil(cctx, fctx, insns, indices[0])
+                    val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                    collBoxIfNeeded(cctx, insns, vTy, recvTy)
+                    emitListSetItem(cctx, insns, recvTy)
+                  }
+                }
               }
               case _ -> {
                 // Stack for callvirt set_Item: this(List<object>), int32 index, !0 value.
@@ -16682,10 +16818,37 @@ func emitSliceCopyLoopMsil(
   dstStartSlot: in Int,
 ): Unit {
   val iSlot = allocSlotMsil(fctx, "__slicecp_i_" + toString(fctx.slotTicker.count), MInt)
-  insns.add(MLdcI4(v = 0))
-  emitStoreSlot(insns, iSlot, fctx.paramCount)
   val loopL = freshLabelMsil(fctx)
   val afterL = freshLabelMsil(fctx)
+  val slowL = freshLabelMsil(fctx)
+  // #7259: when both sides are genuine `e[]` arrays, one `Array.Copy` replaces
+  // the per-element `IList.get_Item` + unbox + `stelem` loop below.
+  val srcElem = match srcTy { case MArray(e) -> e; case _ -> MObject }
+  val fastSpec = match dstElemTokOpt {
+    case Some(_) -> if srcElem == dstElem { sliceArraySpecTokenOpt(cctx, dstElem) } else { None }
+    case None -> None
+  }
+  match fastSpec {
+    case Some(specTok) -> {
+      val srcArrSlot = allocSlotMsil(fctx, "__slicecp_arr_" + toString(fctx.slotTicker.count), MArray(elemTy = dstElem))
+      emitLoadSlot(insns, srcSlot, fctx.paramCount)
+      insns.add(MIsinst(typeToken = specTok))
+      emitStoreSlot(insns, srcArrSlot, fctx.paramCount)
+      emitLoadSlot(insns, srcArrSlot, fctx.paramCount)
+      insns.add(MBrFalse(label = slowL))
+      emitLoadSlot(insns, srcArrSlot, fctx.paramCount)
+      emitLoadSlot(insns, srcStartSlot, fctx.paramCount)
+      emitLoadSlot(insns, dstSlot, fctx.paramCount)
+      emitLoadSlot(insns, dstStartSlot, fctx.paramCount)
+      emitLoadSlot(insns, countSlot, fctx.paramCount)
+      insns.add(MCall(methodToken = cctx.tokArrayCopy))
+      insns.add(MBr(label = afterL))
+    }
+    case None -> ()
+  }
+  insns.add(MLabel(id = slowL))
+  insns.add(MLdcI4(v = 0))
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
   insns.add(MLabel(id = loopL))
   emitLoadSlot(insns, iSlot, fctx.paramCount)
   emitLoadSlot(insns, countSlot, fctx.paramCount)
@@ -18776,6 +18939,20 @@ func emitCollectionForMsil(
       emitListCastRecv(cctx, insns, iterTy)
       emitListGetCount(cctx, insns, iterTy)
       emitStoreSlot(insns, cntSlot, fctx.paramCount)
+      // #7259: test the slice's runtime representation once, before the loop; a
+      // genuine `e[]` is then read with `ldelem` on every iteration instead of a
+      // boxing `IList.get_Item`.
+      val fastSpec = match iterTy { case MArray(e) -> sliceArraySpecTokenOpt(cctx, e); case _ -> None }
+      val arrSlot = match fastSpec {
+        case Some(specTok) -> {
+          val slot = allocSlotMsil(fctx, "__for_arr_" + toString(fctx.slotTicker.count), MArray(elemTy = forElemTy))
+          emitLoadSlot(insns, listSlot, fctx.paramCount)
+          insns.add(MIsinst(typeToken = specTok))
+          emitStoreSlot(insns, slot, fctx.paramCount)
+          slot
+        }
+        case None -> 0 - 1
+      }
 
       val loopL = freshLabelMsil(fctx)
       val contL = freshLabelMsil(fctx)
@@ -18786,6 +18963,19 @@ func emitCollectionForMsil(
       emitLoadSlot(insns, cntSlot, fctx.paramCount)
       insns.add(MClt)
       insns.add(MBrFalse(label = afterL))
+      val elemSlot = allocSlotMsil(fctx, "__for_elem_" + toString(fctx.slotTicker.count), forElemTy)
+      val readSlowL = freshLabelMsil(fctx)
+      val readDoneL = freshLabelMsil(fctx)
+      if arrSlot >= 0 {
+        emitLoadSlot(insns, arrSlot, fctx.paramCount)
+        insns.add(MBrFalse(label = readSlowL))
+        emitLoadSlot(insns, arrSlot, fctx.paramCount)
+        emitLoadSlot(insns, iSlot, fctx.paramCount)
+        emitTypedLdelemMsil(insns, forElemTy)
+        emitStoreSlot(insns, elemSlot, fctx.paramCount)
+        insns.add(MBr(label = readDoneL))
+      }
+      insns.add(MLabel(id = readSlowL))
       // elem := list[i]
       emitLoadSlot(insns, listSlot, fctx.paramCount)
       emitListCastRecv(cctx, insns, iterTy)
@@ -18798,8 +18988,8 @@ func emitCollectionForMsil(
         case MConcreteList(_) -> ()
         case _ -> if forElemTy != MObject { castObjectToMsil(cctx, insns, forElemTy) }
       }
-      val elemSlot = allocSlotMsil(fctx, "__for_elem_" + toString(fctx.slotTicker.count), forElemTy)
       emitStoreSlot(insns, elemSlot, fctx.paramCount)
+      insns.add(MLabel(id = readDoneL))
       // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
       // (#5191 follow-up).
       val listLoopScope = enterBlockScopeMsil(fctx)

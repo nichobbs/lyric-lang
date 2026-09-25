@@ -1231,8 +1231,9 @@ void* lyric_tls_server_accept(void* server_ctx, int32_t fd) {
     }
     errno = 0;
     if (O.SSL_accept(ssl) != 1) {
-        /* A socket timeout (lyric_sock_set_timeouts) surfaces from OpenSSL
-         * as WANT_READ/WANT_WRITE on this blocking fd with errno EAGAIN. */
+        /* A socket timeout (lyric_sock_set_timeouts) makes the underlying
+         * recv/send fail with EAGAIN, which is still in errno here (it was
+         * cleared just before SSL_accept). */
         if (is_timeout_errno(errno)) {
             set_err("TLS handshake: timed out");
         } else {

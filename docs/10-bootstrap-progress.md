@@ -35452,3 +35452,23 @@ previously retried a socket timeout forever; they now report it. Covered by
 four new cases in `http_server_dotnet_tests.l`, items K and L of
 `llvm_http_server_self_test.l`, and `lyric-rt`'s C tests (D-progress-960,
 #7268, epic #7256).
+
+## MSIL slice element access and copies no longer box
+
+Every `slice[T]` index read, index write, `for`-loop element read and
+`.slice`/`.concat`/`.append` copy on MSIL went through the non-generic
+`IList.get_Item`/`set_Item`, so each primitive element was boxed, because a
+slice value may be either a genuine CLI `T[]` or a `List`-backed slice
+(#2539). Each site now tests the representation once with `isinst T[]` and
+uses `ldelem`/`stelem`/`Array.Copy` for a real array (Int, Long, Double,
+Bool, Char, Byte and String elements), keeping the `IList` path for a
+`List`-backed slice. A loop that indexes 10 KB of bytes and copies a 9 KB
+sub-slice 2000 times drops from 455 ms to 25 ms. This speeds up every
+byte-level stdlib path (HTTP/1.1 and HTTP/2 parsing, HPACK, encoding, TCP
+I/O). Covered by `slice_fastpath_self_test.l` on all three targets
+(D-progress-961, #7259, epic #7256).
+
+The #7338 review follow-ups ride along: a native TLS upgrade whose handshake
+timeout cannot be armed now fails instead of running unbounded, and both
+targets accept timeout overrides up to one day (native item M covers the
+override parsing).

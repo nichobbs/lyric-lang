@@ -1012,6 +1012,10 @@ test "timeout resolvers honour their environment overrides with safe fallback (#
 
   Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "45000")
   assertEqualInt(resolveConnectionIdleTimeoutMs(), 45000, "idle override honoured")
+  Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "86400000")
+  assertEqualInt(resolveConnectionIdleTimeoutMs(), 86400000, "one day is the largest accepted value")
+  Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "86400001")
+  assertEqualInt(resolveConnectionIdleTimeoutMs(), 120000, "above one day falls back")
   Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "-1")
   assertEqualInt(resolveConnectionIdleTimeoutMs(), 120000, "negative idle timeout falls back")
   Env.setVar("LYRIC_HTTP_IDLE_TIMEOUT_MS", "120000")

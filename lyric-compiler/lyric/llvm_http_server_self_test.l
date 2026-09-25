@@ -5,7 +5,7 @@
 //! native`) and run, mirroring `llvm_tls_self_test.l`'s and
 //! `llvm_http_client_self_test.l`'s harness shape.
 //!
-//! Twelve cases:
+//! Thirteen cases:
 //!   - item A: a plaintext HTTP/1.1 round trip. A real client
 //!     (`Std.TcpHost.hostConnect`, plain TCP) on the SAME thread as the
 //!     server's own pull loop — a bare TCP `connect` completes into the
@@ -181,6 +181,10 @@
 //!     lowered to 300 ms, a keep-alive connection that goes quiet after
 //!     one answered request must be closed by the server (the client
 //!     reads EOF before its own longer read timeout).
+//!   - item M: the native kernel's own decimal parsing of the two timeout
+//!     overrides (native has no `Std.Parse` kernel): valid values, the
+//!     one-day ceiling, and empty/non-digit/signed/zero/over-range input
+//!     falling back to the defaults, matching the dotnet resolver.
 //!
 //! Every scenario compiles with `-fsanitize=address`, so a leaked
 //! `malloc`'d mutex/semaphore buffer, a leaked fd, a double-release, or a
@@ -1255,4 +1259,31 @@ test "native Std.HttpServer closes an idle keep-alive connection at the idle tim
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native idle keep-alive timeout (item L, #7268)")
+}
+
+test "native Std.HttpServer timeout overrides parse with the same fallback rules as dotnet (item M, #7268)" {
+  val src = "package M\n" + "import Std.Core\n" + "import Std.HttpServer\n" + "import Std.Environment as Env\n" +
+    "func handshakeFor(raw: in String): Int {\n" +
+    "  Env.setVar(\"LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS\", raw)\n" +
+    "  resolveTlsHandshakeTimeoutMs()\n" +
+    "}\n" +
+    "func idleFor(raw: in String): Int {\n" +
+    "  Env.setVar(\"LYRIC_HTTP_IDLE_TIMEOUT_MS\", raw)\n" +
+    "  resolveConnectionIdleTimeoutMs()\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  if handshakeFor(\"2500\") != 2500 { return 1 }\n" +
+    "  if handshakeFor(\"86400000\") != 86400000 { return 2 }\n" +
+    "  if handshakeFor(\"86400001\") != 10000 { return 3 }\n" +
+    "  if handshakeFor(\"\") != 10000 { return 4 }\n" +
+    "  if handshakeFor(\"12ab\") != 10000 { return 5 }\n" +
+    "  if handshakeFor(\"-5\") != 10000 { return 6 }\n" +
+    "  if handshakeFor(\"0\") != 10000 { return 7 }\n" +
+    "  if handshakeFor(\"99999999999999999999\") != 10000 { return 8 }\n" +
+    "  if idleFor(\"45000\") != 45000 { return 9 }\n" +
+    "  if idleFor(\"soon\") != 120000 { return 10 }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native timeout override parsing (item M, #7268)")
 }

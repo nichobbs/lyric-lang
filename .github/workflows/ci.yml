@@ -1353,6 +1353,18 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_ops_self_test.l
+      # MSIL slice fast paths (#7259): element access and copies over both
+      # slice representations (genuine arrays and List-backed slices).
+      - name: Slice fast-path self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_fastpath_self_test.l
+      - name: Slice fast-path List-backed fallback self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_fastpath_listbacked_dotnet_self_test.l
 
       # Block-shadow self-test (#5191 / D-progress-603).  Runtime regression test
       # for general nested-block variable shadowing on the self-hosted backends:
@@ -4060,6 +4072,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_ops_self_test.l
+      - name: Slice fast-path self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/slice_fastpath_self_test.l
 
       # Block-shadow self-test on JVM (#5191 / D-progress-603) — the JVM half of
       # the dotnet-job step of the same name.  Pins the general nested-block

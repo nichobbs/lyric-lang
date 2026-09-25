@@ -320,7 +320,9 @@ every connection thread is joined), and each connection is upgraded with
 `hostUpgradeServerTlsPrepared` under a handshake timeout
 (`LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS`, default 10000). Established connections
 get a per-operation inactivity timeout on reads and writes
-(`LYRIC_HTTP_IDLE_TIMEOUT_MS`, default 120000) via `hostSetIoTimeout`. The
+(`LYRIC_HTTP_IDLE_TIMEOUT_MS`, default 120000) via `hostSetIoTimeout`. Both
+overrides accept 1 to 86400000 ms (one day) on both targets; anything else
+falls back to the default. The
 JVM server (`com.sun.net.httpserver.HttpsServer`) already handshakes off its
 dispatcher thread with one `SSLContext` per listener and applies the JDK's
 own idle limit (`sun.net.httpserver.idleInterval`).
