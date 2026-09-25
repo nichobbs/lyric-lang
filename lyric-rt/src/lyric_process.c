@@ -749,7 +749,9 @@ typedef struct LyricPipedProc {
     pid_t pid;
     int stdin_wr;  /* -1 once closed */
     int stdout_rd; /* -1 once EOF/closed */
-    ProcBuf linebuf; /* buffered, not-yet-returned stdout bytes */
+    ProcBuf linebuf; /* buffered stdout bytes; [line_head, len) not yet returned */
+    int64_t line_head;    /* start of the unreturned bytes in linebuf */
+    int64_t line_scanned; /* bytes from line_head known to hold no '\n' */
     int reaped;
     int32_t exit_code;
     int closed; /* set by lyric_process_piped_close (issue #6975) */
@@ -786,24 +788,47 @@ void* lyric_process_piped_spawn(const char* path, LyricList* args) {
 int32_t lyric_process_piped_read_line(void* raw, LyricString** out_line) {
     LyricPipedProc* p = (LyricPipedProc*)raw;
     for (;;) {
-        for (int64_t i = 0; i < p->linebuf.len; i++) {
-            if (p->linebuf.data[i] == '\n') {
-                int64_t end = i;
-                if (end > 0 && p->linebuf.data[end - 1] == '\r') end--;
-                *out_line = lyric_string_from_literal(p->linebuf.data, end);
-                int64_t rest = p->linebuf.len - (i + 1);
-                memmove(p->linebuf.data, p->linebuf.data + i + 1, (size_t)rest);
-                p->linebuf.len = rest;
-                return 1;
-            }
+        /* Resume the newline search where the previous call stopped, and
+         * return lines by advancing line_head instead of memmoving the tail
+         * after every line (#7277): a burst of K lines costs one pass. */
+        int64_t head = p->line_head;
+        int64_t from = head + p->line_scanned;
+        const uint8_t* nl = NULL;
+        if (from < p->linebuf.len) {
+            nl = (const uint8_t*)memchr(p->linebuf.data + from, '\n', (size_t)(p->linebuf.len - from));
         }
-        if (p->stdout_rd < 0) {
-            if (p->linebuf.len > 0) {
-                *out_line = lyric_string_from_literal(p->linebuf.data, p->linebuf.len);
+        if (nl) {
+            int64_t i = (int64_t)(nl - p->linebuf.data);
+            int64_t end = i;
+            if (end > head && p->linebuf.data[end - 1] == '\r') end--;
+            *out_line = lyric_string_from_literal(p->linebuf.data + head, end - head);
+            p->line_head = i + 1;
+            p->line_scanned = 0;
+            if (p->line_head == p->linebuf.len) {
                 p->linebuf.len = 0;
+                p->line_head = 0;
+            }
+            return 1;
+        }
+        p->line_scanned = p->linebuf.len - head;
+        if (p->stdout_rd < 0) {
+            int64_t rest = p->linebuf.len - head;
+            p->linebuf.len = 0;
+            p->line_head = 0;
+            p->line_scanned = 0;
+            if (rest > 0) {
+                *out_line = lyric_string_from_literal(p->linebuf.data + head, rest);
                 return 1;
             }
             return 0;
+        }
+        /* Compact before growing, so the buffer never holds more than the
+         * one unterminated line plus the next chunk. */
+        if (head > 0) {
+            int64_t rest = p->linebuf.len - head;
+            memmove(p->linebuf.data, p->linebuf.data + head, (size_t)rest);
+            p->linebuf.len = rest;
+            p->line_head = 0;
         }
         uint8_t chunk[4096];
         ssize_t n;
@@ -994,5 +1019,7 @@ void lyric_process_piped_close(void* raw) {
     p->linebuf.data = NULL;
     p->linebuf.len = 0;
     p->linebuf.cap = 0;
+    p->line_head = 0;
+    p->line_scanned = 0;
     lyric_lsan_ignore_leak(p);
 }

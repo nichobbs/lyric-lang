@@ -35410,3 +35410,16 @@ recursion. Still stable and O(n log n); extra space drops to O(n). Covered by
 `sort_self_test.l` (sizes around the run and merge widths, reversed and
 duplicate-heavy input, stability) (#7281, epic #7256).
 
+## Piped process readLine is linear in the output on the JVM and native
+
+The JVM `hostPipedReadLineOpt` copied the whole buffered output
+(`toByteArray`), rescanned it from the start and rebuilt the remaining tail
+byte by byte through a boxed list for every line, and copied the buffer twice
+more per idle poll. It now splits every complete line out of a burst in one
+pass into a pending queue, remembers how far the unterminated tail has been
+scanned, and uses `size()` for growth checks; a 5000-line `seq` burst reads in
+a seventh of the time. The native `lyric_process_piped_read_line` now resumes
+its `memchr` scan where it stopped and returns lines by advancing an offset,
+compacting only before the next read. Covered by a new burst case in
+`piped_process_jvm_main.l` and `lyric-rt`'s C tests (#7277, epic #7256).
+
