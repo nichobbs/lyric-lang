@@ -1722,3 +1722,14 @@ test "malformed request header lists are rejected" {
     "te other than trailers"
   )
 }
+
+test "newServerConnection rejects settings a server may not advertise (#7251)" {
+  assertTrue(H2.isValidLocalSettings(H2.h2DefaultServerSettings()), "the defaults are valid")
+  val push = H2.h2DefaultServerSettings()
+  push.enablePush = 1
+  assertTrue(not H2.isValidLocalSettings(push), "a server never enables push")
+  val small = H2.h2DefaultServerSettings()
+  small.maxFrameSize = 1024
+  assertTrue(not H2.isValidLocalSettings(small), "frame size below 16384")
+  assertPanics("invalid local settings", { -> val _ = H2.newServerConnection(small) })
+}

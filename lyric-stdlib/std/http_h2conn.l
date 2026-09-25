@@ -177,6 +177,21 @@ pub record H2Settings {
   var maxHeaderListSize: Int
 }
 
+/// True when `settings` is something this server may advertise (RFC 9113
+/// §6.5.2): a frame size in 16384..16777215, an initial window in
+/// 0..2^31-1, push disabled (a server never enables it), and non-negative
+/// table, stream and header-list limits. Peer settings are validated as
+/// data when a SETTINGS frame arrives; this guards the local configuration.
+@pure
+@experimental
+pub func isValidLocalSettings(settings: in H2Settings): Bool {
+  settings.maxFrameSize >= 16384 and settings.maxFrameSize <= 16777215 and settings.initialWindowSize >= 0 and
+    settings.enablePush == 0 and
+    settings.headerTableSize >= 0 and
+    settings.maxConcurrentStreams >= 0 and
+    settings.maxHeaderListSize >= 0
+}
+
 /// The default settings a server advertises: RFC-default header table (4096)
 /// and initial window (65535) and frame size (16384), server push disabled
 /// (`enablePush = 0`), a concurrent-streams ceiling of 128, and a 32 KiB
@@ -492,7 +507,9 @@ func longToIntClamped(v: in Long): Int {
 /// to the peer before feeding any bytes.
 @pure
 @experimental
-pub func newServerConnection(localSettings: in H2Settings): H2Connection {
+pub func newServerConnection(localSettings: in H2Settings): H2Connection
+  requires: isValidLocalSettings(localSettings)
+{
   H2Connection(
     dec = newFrameDecoderWithMaxSize(true, localSettings.maxFrameSize),
     hpackDec = newDecoder(localSettings.headerTableSize),

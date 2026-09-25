@@ -1112,21 +1112,28 @@ pub func newFrameDecoder(expectPreface: in Bool): FrameDecoder {
   )
 }
 
-/// A decoder with an explicit frame-size ceiling — used once the peer's
-/// `SETTINGS_MAX_FRAME_SIZE` has been received (the FSM, #5888, drives this).
+/// A decoder with an explicit frame-size ceiling. A receiver enforces the
+/// `SETTINGS_MAX_FRAME_SIZE` it advertised itself (RFC 9113 §4.2), so this is
+/// the local setting, not the peer's. It must lie in the RFC's
+/// 16384..16777215 range.
 @pure
 @experimental
-pub func newFrameDecoderWithMaxSize(expectPreface: in Bool, maxFrameSize: in Int): FrameDecoder {
+pub func newFrameDecoderWithMaxSize(expectPreface: in Bool, maxFrameSize: in Int): FrameDecoder
+  requires: maxFrameSize >= 16384 and maxFrameSize <= 16777215
+{
   val emptyBuf: slice[Byte] = []
   FrameDecoder(buf = emptyBuf, pos = 0, maxFrameSize = maxFrameSize, awaitingPreface = expectPreface, fatal = false)
 }
 
-/// Return a copy of `decoder` with a new frame-size ceiling. The FSM calls
-/// this after applying a peer `SETTINGS` frame; the codec only enforces the
-/// value, it never decides it.
+/// Return a copy of `decoder` with a new frame-size ceiling: the receiver's
+/// own advertised `SETTINGS_MAX_FRAME_SIZE` (RFC 9113 §4.2), in the RFC's
+/// 16384..16777215 range. The codec only enforces the value, it never
+/// decides it.
 @pure
 @experimental
-pub func withMaxFrameSize(decoder: in FrameDecoder, maxFrameSize: in Int): FrameDecoder {
+pub func withMaxFrameSize(decoder: in FrameDecoder, maxFrameSize: in Int): FrameDecoder
+  requires: maxFrameSize >= 16384 and maxFrameSize <= 16777215
+{
   FrameDecoder(
     buf = decoder.buf,
     pos = decoder.pos,
