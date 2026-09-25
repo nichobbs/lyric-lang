@@ -1031,6 +1031,11 @@ pub func originPkgOf(anns: in List[Annotation]): String {
 pub record RecordCopySite {
   recordName: String
   fields: List[String]
+  /// Each field's type at the receiver's instantiation, when it has a source
+  /// spelling at the use site; the desugar annotates the argument's temporary
+  /// with it so a bare `None` or `newList()` argument is built at the field's
+  /// type.
+  fieldTypes: List[Option[TypeExpr]]
   startOffset: Int
   conflicting: Bool
 }

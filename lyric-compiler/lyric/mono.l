@@ -4122,10 +4122,17 @@ func foreignCopySiteMono(
       match mapGet(state.recordDecls, head[head.count - 1]) {
         case Some(rd) -> {
           val fields: List[String] = newList()
+          val fieldTes: List[Option[TypeExpr]] = newList()
+          val isGenericRecord = match rd.generics { case Some(_) -> true; case None -> false }
           var mi = 0
           while mi < rd.members.count {
             match rd.members[mi] {
-              case RMField(f) -> fields.add(f.name)
+              case RMField(f) -> {
+                fields.add(f.name)
+                // A generic record's field types name its type parameters,
+                // which have no meaning at the use site.
+                fieldTes.add(if isGenericRecord { None } else { Some(value = f.ty) })
+              }
               case RMFunc(fn) -> if fn.name == "copy" { return None }
               case _ -> ()
             }
@@ -4135,6 +4142,7 @@ func foreignCopySiteMono(
             value = RecordCopySite(
               recordName = Str.joinList(".", head),
               fields = fields,
+              fieldTypes = fieldTes,
               startOffset = sp.startPos.offset,
               conflicting = false
             )
@@ -4290,7 +4298,9 @@ func desugarRecordCopyMono(
     match args[ai] {
       case CANamed(nm, v, _) -> {
         val tmp = base + "_" + nm
-        stmts.add(copyValStmtMono(tmp, rewriteExpr(state, env, v), sp))
+        // Typed with the field's type, so a bare `None` / `newList()`
+        // argument is built at that type rather than erased.
+        stmts.add(copyTypedValStmtMono(tmp, copyFieldTypeMono(site, nm), rewriteExpr(state, env, v), sp))
         given.add(nm, tmp)
       }
       case CAPositional(_) -> ()
@@ -4321,15 +4331,21 @@ func desugarRecordCopyMono(
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
 }
 
+// The type of field `name` recorded on a copy site, when it has one.
+func copyFieldTypeMono(site: in RecordCopySite, name: in String): Option[TypeExpr] {
+  var i = 0
+  while i < site.fields.count and i < site.fieldTypes.count {
+    if site.fields[i] == name {
+      return site.fieldTypes[i]
+    }
+    i = i + 1
+  }
+  None
+}
+
 func copyTypedValStmtMono(name: in String, ty: in Option[TypeExpr], init: in Expr, sp: in Span): Statement {
   val pat = Pattern(kind = PBinding(name = name, inner = None), span = sp)
   Statement(kind = SLocal(binding = LBVal(pat = pat, ty = ty, init = init)), span = sp)
-}
-
-func copyValStmtMono(name: in String, init: in Expr, sp: in Span): Statement {
-  val pat = Pattern(kind = PBinding(name = name, inner = None), span = sp)
-  val noTy: Option[TypeExpr] = None
-  Statement(kind = SLocal(binding = LBVal(pat = pat, ty = noTy, init = init)), span = sp)
 }
 
 // ─── Expected types (D-progress-947) ───────────────────────────────────────

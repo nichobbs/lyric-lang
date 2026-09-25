@@ -99,3 +99,25 @@ test "copy chains" {
   val p = Point(x = 1, y = 1).copy(x = 2).copy(y = 3)
   assertEqualInt(p.x + p.y, 5, "chained copies")
 }
+
+func noteText(c: in Customer): String {
+  match c.note {
+    case Some(s) -> "note " + s
+    case None -> "no note"
+  }
+}
+
+// A bare `None` or `newList()` argument is built at the field's type: the
+// argument's temporary is annotated with it. On MSIL an unannotated `None`
+// was `Option<object>`, so a later `match` on the field was not exhaustive.
+test "copy with a bare None or empty list argument keeps the field's type" {
+  val tags: List[String] = newList()
+  tags.add("vip")
+  val c = Customer(name = "Ada", limit = 10i64, tags = tags, note = Some(value = "x"))
+  val cleared = c.copy(note = None, tags = newList())
+  assertEqual(noteText(cleared), "no note", "copy(note = None) matches the None arm")
+  assertEqualInt(cleared.tags.count, 0, "copy(tags = newList()) is an empty list")
+  cleared.tags.add("new")
+  assertEqual(cleared.tags[0], "new", "the copied empty list holds strings")
+  assertEqual(noteText(cleared.copy(note = Some(value = "y"))), "note y", "copy(note = Some(..)) matches the Some arm")
+}

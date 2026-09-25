@@ -2255,9 +2255,11 @@ func checkRecordCopy(
   }
   if ok {
     val names: List[String] = newList()
+    val fieldTes: List[Option[TypeExpr]] = newList()
     var ni = 0
     while ni < fields.count {
       names.add(fields[ni].name)
+      fieldTes.add(typeExprForRef(tbl, fields[ni].ty, e.span))
       ni = ni + 1
     }
     val ctorPath = match recordSymbolOfTid(tbl, tid) {
@@ -2275,6 +2277,7 @@ func checkRecordCopy(
     val site = RecordCopySite(
       recordName = ctorPath,
       fields = names,
+      fieldTypes = fieldTes,
       startOffset = e.span.startPos.offset,
       conflicting = false
     )
@@ -2285,7 +2288,13 @@ func checkRecordCopy(
         tbl.recordCopySites.remove(key)
         tbl.recordCopySites.add(
           key,
-          RecordCopySite(recordName = ctorPath, fields = names, startOffset = e.span.startPos.offset, conflicting = true)
+          RecordCopySite(
+            recordName = ctorPath,
+            fields = names,
+            fieldTypes = newList(),
+            startOffset = e.span.startPos.offset,
+            conflicting = true
+          )
         )
       }
     }
