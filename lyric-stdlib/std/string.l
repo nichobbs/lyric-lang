@@ -7,6 +7,7 @@ package Std.String
 
 import Std.Core
 import Std.Collections
+import Std.StringHost as SH
 
 // ---------------------------------------------------------------------------
 // String inspection and basic operations.
@@ -118,6 +119,34 @@ pub func lastIndexOfRaw(s: in String, substring: in String): Int {
   s.lastIndexOf(substring)
 }
 
+// Find the index of a substring at or after `from`, or None if not found.
+// Ordinal comparison on every target. An empty substring matches at
+// `from`. Scanning forward with this instead of re-slicing the remainder
+// keeps repeated searches linear in the input (#7258).
+@pure
+@stable(since = "1.0")
+pub func indexOfFrom(s: in String, substring: in String, from: in Int): Option[Int]
+  requires: from >= 0
+  requires: from <= s.length
+{
+  val i = SH.hostIndexOfFrom(s, substring, from)
+  if i < 0 {
+    return None
+  }
+  return Some(value = i)
+}
+
+// Find the index of a substring at or after `from`, or -1 if not found.
+// The sentinel-int form of `indexOfFrom`, for index arithmetic.
+@pure
+@stable(since = "1.0")
+pub func indexOfFromRaw(s: in String, substring: in String, from: in Int): Int
+  requires: from >= 0
+  requires: from <= s.length
+{
+  SH.hostIndexOfFrom(s, substring, from)
+}
+
 // Return the suffix beginning at start.
 @pure
 @stable(since = "1.0")
@@ -180,13 +209,12 @@ pub func replace(s: in String, oldValue: in String, newValue: in String): String
 }
 
 // Split a string on a separator, returning a slice of the parts.
-// Pure-Lyric implementation; avoids per-backend BCL String.Split intrinsics so
-// the self-hosted compiler emits identical code on MSIL and JVM.  Matches .NET
-// semantics: an empty separator yields the whole string unchanged; adjacent
-// separators produce empty parts; matching is ordinal, left to right and
-// non-overlapping.
+// Matches .NET semantics: an empty separator yields the whole string
+// unchanged; adjacent separators produce empty parts; matching is ordinal,
+// left to right and non-overlapping.
 //
-// Single forward scan: each part is copied exactly once. Re-slicing the
+// Single forward scan with the host's ordinal from-index search: each part is
+// copied exactly once and no candidate position allocates. Re-slicing the
 // remainder after every match made this quadratic in the input length, which
 // dominated compile time for callers that split whole source files by line.
 @pure
@@ -198,54 +226,102 @@ pub func split(s: in String, separator: in String): slice[String] {
     parts.add(s)
     return parts.toArray()
   }
-  val sepHead = separator[0]
-  val n = s.length
   var partStart = 0
-  var i = 0
-  while i + sepLen <= n {
-    if s[i] == sepHead and (sepLen == 1 or s.substring(i, sepLen) == separator) {
-      parts.add(s.substring(partStart, i - partStart))
-      i = i + sepLen
-      partStart = i
+  var more = true
+  while more {
+    val i = SH.hostIndexOfFrom(s, separator, partStart)
+    if i < 0 {
+      more = false
     } else {
-      i = i + 1
+      parts.add(s.substring(partStart, i - partStart))
+      partStart = i + sepLen
     }
   }
-  parts.add(s.substring(partStart, n - partStart))
+  parts.add(s.substring(partStart, s.length - partStart))
   parts.toArray()
 }
 
-// Join a slice of strings with a separator.
-// Pure-Lyric implementation using slice indexing; avoids BCL static-method dispatch.
+// Join a slice of strings with a separator. Linear in the total length.
 @pure
 @stable(since = "1.0")
 pub func join(separator: in String, parts: in slice[String]): String {
-  var result = ""
+  val sb = StringBuilder.new()
   var i = 0
   while i < parts.length {
     if i > 0 {
-      result = result + separator
+      sb.append(separator)
     }
-    result = result + parts[i]
+    sb.append(parts[i])
     i += 1
   }
-  return result
+  sb.toString()
 }
 
-// Join a list of strings with a separator.
+// Join a list of strings with a separator. Linear in the total length.
 @pure
 @stable(since = "1.0")
 pub func joinList(sep: in String, xs: in List[String]): String {
-  if xs.count == 0 {
-    return ""
-  }
-  var result = xs[0]
-  var i = 1
+  val sb = StringBuilder.new()
+  var i = 0
   while i < xs.count {
-    result = result + sep + xs[i]
+    if i > 0 {
+      sb.append(sep)
+    }
+    sb.append(xs[i])
     i += 1
   }
-  return result
+  sb.toString()
+}
+
+// ---------------------------------------------------------------------------
+// StringBuilder.
+// ---------------------------------------------------------------------------
+/// A mutable string accumulator with amortised O(1) append.
+///
+/// `a + b` copies both operands, so building a string with `acc = acc + x`
+/// in a loop is quadratic in the result length. Append the pieces to a
+/// `StringBuilder` and call `toString()` once instead:
+///
+/// ```lyric
+/// val sb = StringBuilder.new()
+/// for part in parts {
+///   sb.append(part)
+///   sb.appendChar(',')
+/// }
+/// val csv = sb.toString()
+/// ```
+///
+/// Backed by `System.Text.StringBuilder` on .NET, `java.lang.StringBuilder`
+/// on the JVM, and a part list materialised with a single allocation on
+/// native.
+@stable(since = "1.0")
+pub opaque type StringBuilder {
+  host: SH.HostStringBuilder
+}
+
+/// Create an empty builder.
+@stable(since = "1.0")
+pub func StringBuilder.new(): StringBuilder {
+  StringBuilder(host = SH.hostNewBuilder())
+}
+
+/// Append a string.
+@stable(since = "1.0")
+pub func StringBuilder.append(sb: in StringBuilder, s: in String): Unit {
+  SH.hostAppend(sb.host, s)
+}
+
+/// Append a single character.
+@stable(since = "1.0")
+pub func StringBuilder.appendChar(sb: in StringBuilder, c: in Char): Unit {
+  SH.hostAppendChar(sb.host, c)
+}
+
+/// Return the accumulated string. The builder stays usable; later appends
+/// do not affect strings already returned.
+@stable(since = "1.0")
+pub func StringBuilder.toString(sb: in StringBuilder): String {
+  SH.hostBuilderToString(sb.host)
 }
 
 // ---------------------------------------------------------------------------

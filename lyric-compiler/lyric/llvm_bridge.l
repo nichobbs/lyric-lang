@@ -124,7 +124,7 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
           // edge — over-inclusive (any same-named/arity method anywhere in
           // the bundle also matches) but never under-inclusive, mirroring
           // `Lyric.LlvmCodegen.lowerUfcsCall`'s own bare-name fallback.
-          if key.length == 0 {
+          if key.length == 0 or isLocalLikeReceiver(recv) {
             acc.add(memberName + "/" + (args.count + 1).toString())
           }
         }
@@ -160,6 +160,25 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
     case EUnsafe(block) -> collectBlockKeys(block, acc)
     case _ -> {
     }
+  }
+}
+
+/// A bare lower-case identifier receiver (`sb.append(x)`) is almost always a
+/// local or parameter, but `callKeyOf` cannot tell it apart from a
+/// `pkg.func(args)` static call and keys it as "sb.append/1", which names
+/// nothing. Such a call also gets the bare member-name key so the method it
+/// actually dispatches to is traced (#7257). Type and package heads are
+/// capitalised by convention and keep the exact static-call key only.
+func isLocalLikeReceiver(recv: in Expr): Bool {
+  match recv.kind {
+    case EPath(p) -> {
+      if p.segments.count != 1 {
+        return false
+      }
+      val head = p.segments[0]
+      head.length > 0 and head[0] >= 'a' and head[0] <= 'z'
+    }
+    case _ -> false
   }
 }
 

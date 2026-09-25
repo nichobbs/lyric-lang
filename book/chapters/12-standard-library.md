@@ -16,7 +16,7 @@ Here is the full module inventory:
 |--------|----------|
 | `Std.Core` | `Result`, `Option`, built-in ops — always implicitly available for `println` etc. |
 | `Std.Core.Proof` | Proof-only lemmas and quantifier helpers for `@proof_required` modules |
-| `Std.String` | `trim`, `split`, `join`, case conversion, `substring`, `startsWith`, `endsWith` |
+| `Std.String` | `trim`, `split`, `join`, case conversion, `substring`, `startsWith`, `endsWith`, `indexOfFrom`, `StringBuilder` |
 | `Std.Parse` | `tryParseInt`, `tryParseLong`, `tryParseDouble`, `tryParseBool` |
 | `Std.Format` | `toHexString`, `formatFixed`, `zeroPad`, `padLeft`, `padRight` |
 | `Std.Char` | `isLetter`, `isDigit`, `isWhiteSpace`, `toUpper`, `toLower`, `digitValue` |
@@ -115,6 +115,32 @@ val ends    = endsWith("hello", "lo")       // true
 `split` and `join` are counterparts: `split` takes a string and a separator, `join` takes a separator and a `slice[String]`. `substring(s, start, end)` follows the half-open convention (`start` inclusive, `end` exclusive) — the same convention slices use everywhere in Lyric. Indices out of range produce a `Bug`, not a silently truncated result, so validate before calling if the inputs are not known at compile time.
 
 `Std.String` also exports `toLower`, `contains`, `replace`, and `padLeft`/`padRight`. The full API is in `stdlib/std/string.l`.
+
+Concatenating with `+` copies both strings, so building a result piece by piece in a loop gets quadratically slower as the result grows. Use a `StringBuilder` instead, and `indexOfFrom` to scan forward without re-slicing:
+
+```lyric
+import Std.String
+
+val sb = StringBuilder.new()
+var pos = 0
+var more = true
+while more {
+  match indexOfFrom(csv, ",", pos) {
+    case Some(i) -> {
+      sb.append(csv.substring(pos, i - pos))
+      sb.appendChar(';')
+      pos = i + 1
+    }
+    case None -> {
+      sb.append(csv.substring(pos, csv.length - pos))
+      more = false
+    }
+  }
+}
+val semis = sb.toString()                  // "a;b;c" for csv = "a,b,c"
+```
+
+`join` and `joinList` are built on the same builder, so they are linear in the total length.
 
 ## §12.4 `Std.Collections`
 

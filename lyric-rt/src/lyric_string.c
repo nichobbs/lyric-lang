@@ -415,8 +415,15 @@ static int64_t find_substring(const uint8_t* hay, int64_t hlen, const uint8_t* n
     if (nlen == 0) return 0;
     if (nlen > hlen) return -1;
     int64_t last = hlen - nlen;
-    for (int64_t i = 0; i <= last; i++) {
-        if (memcmp(hay + i, needle, (size_t)nlen) == 0) return i;
+    int64_t i = 0;
+    while (i <= last) {
+        /* memchr skips to the next candidate first byte in bulk, so a scan
+         * only pays memcmp at positions that can actually match. */
+        const uint8_t* hit = (const uint8_t*)memchr(hay + i, needle[0], (size_t)(last - i + 1));
+        if (!hit) return -1;
+        i = (int64_t)(hit - hay);
+        if (memcmp(hit, needle, (size_t)nlen) == 0) return i;
+        i++;
     }
     return -1;
 }
@@ -427,6 +434,38 @@ int64_t lyric_string_index_of(LyricString* haystack, LyricString* needle) {
     const uint8_t* hay = hlen > 0 ? LYRIC_STRING_DATA(haystack) : NULL;
     const uint8_t* nee = nlen > 0 ? LYRIC_STRING_DATA(needle) : NULL;
     return find_substring(hay, hlen, nee, nlen);
+}
+
+int64_t lyric_string_index_of_from(LyricString* haystack, LyricString* needle, int64_t from) {
+    int64_t hlen = haystack ? haystack->len : 0;
+    int64_t nlen = needle ? needle->len : 0;
+    if (from < 0 || from > hlen) {
+        lyric_panic_msg("indexOfFrom requires 0 <= from <= length", "lyric_string.c", __LINE__);
+    }
+    if (nlen == 0) return from;
+    const uint8_t* hay = LYRIC_STRING_DATA(haystack) + from;
+    int64_t r = find_substring(hay, hlen - from, LYRIC_STRING_DATA(needle), nlen);
+    return r < 0 ? -1 : r + from;
+}
+
+LyricString* lyric_string_concat_list(LyricList* parts) {
+    int64_t n = parts ? parts->len : 0;
+    int64_t total = 0;
+    for (int64_t i = 0; i < n; i++) {
+        LyricString* p = (LyricString*)(intptr_t)parts->data[i];
+        total += p ? p->len : 0;
+    }
+    LyricString* s = string_alloc(total);
+    uint8_t* out = LYRIC_STRING_DATA(s);
+    for (int64_t i = 0; i < n; i++) {
+        LyricString* p = (LyricString*)(intptr_t)parts->data[i];
+        int64_t plen = p ? p->len : 0;
+        if (plen > 0) {
+            memcpy(out, LYRIC_STRING_DATA(p), (size_t)plen);
+            out += plen;
+        }
+    }
+    return s;
 }
 
 int32_t lyric_string_contains(LyricString* haystack, LyricString* needle) {

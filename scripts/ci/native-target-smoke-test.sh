@@ -60,3 +60,5 @@ echo "Native lyric test --target native smoke test passed"
 echo "Native indexof_native_self_test.l (--target native) passed"
 "$lyric_bin" test lyric-compiler/lyric/split_self_test.l --target native
 echo "Native split_self_test.l (--target native) passed"
+"$lyric_bin" test lyric-compiler/lyric/string_builder_self_test.l --target native
+echo "Native string_builder_self_test.l (--target native) passed"

@@ -35265,3 +35265,16 @@ a stale duplicate rather than re-fixed.
 
 **Related:** `docs/decisions/D-progress-0955-middleend-ast-rewrite-leaf-gaps-and-hoist-threading.md`
 (full account), #6968, #6891, #6967, #7079, D-progress-904, #6774, #6702.
+
+## Linear-time string building and from-index search
+
+`Std.String` gains `StringBuilder` (`new`/`append`/`appendChar`/`toString`)
+and ordinal `indexOfFrom`/`indexOfFromRaw`, backed by a new `Std.StringHost`
+kernel on all three targets (`System.Text.StringBuilder`,
+`java.lang.StringBuilder`, and `lyric_string_concat_list` /
+`lyric_string_index_of_from` in `lyric-rt`). `join` and `joinList`, which
+were quadratic, now build through it. Native codegen now honours a
+user-defined `T.toString` method on a non-scalar receiver, and the native
+reachability walk traces method calls on a local receiver (`sb.append(x)`).
+Covered by `string_builder_self_test.l` on dotnet, JVM and native
+(D-progress-956, #7257, #7258, epic #7256).
