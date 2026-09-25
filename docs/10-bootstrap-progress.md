@@ -35799,3 +35799,33 @@ pass unchanged (3/3).
 
 **Related:** D-progress-923 (the #6580 fix this issue shared a root cause
 with), #6886, #6580.
+
+## `--target native`: `Std.String.isNormalized`/`normalize` infinite self-recursion fixed (#7304)
+
+`isNormalized`/`normalize`'s pure-layer bodies call the same-named method
+via UFCS, exactly like every other `Std.String` wrapper (`trim`,
+`toLower`, ...) — safe on MSIL/JVM only because both backends recognize
+the name as a hardcoded intrinsic. Native had no such intrinsic and no
+guard: the call fell through to the generic UFCS resolver, which
+resolves `<currentPackage>.<name>/<arity>` — while lowering
+`Std.String.isNormalized`'s own body, that key matches the very function
+being compiled, causing silent infinite self-recursion (a runtime stack
+overflow) instead of the clean compile-time "not yet supported for
+--target native" panic every other un-ported String method gives. Caught
+as a REQUIRED `claude-review` finding before merge. Fixed by an explicit
+named panic in `Lyric.LlvmCodegen.lowerScalarMethodCall`, mirroring the
+`indexOf`/`lastIndexOf` self-package recursion guard (#6752) that already
+covers the identical hazard class. A real native NFC implementation
+(Unicode normalization tables in `lyric-rt`) remains a tracked follow-up;
+the panic message says so.
+
+**Verification.** New `native_string_normalize_panic_self_test.l`
+(`LYRIC_LOAD_COMPILER=1`, no `clang`/`lyric-rt` build needed — codegen-time
+panic only): 3/3 pass (`isNormalized`/`normalize` panic with a message
+naming the method; unrelated native String methods unaffected).
+`typechecker_self_test.l` 437/437, `msil_project_bridge_self_test.l`
+66/66 (unaffected — native-only codegen fix). Full clean `make lyric`
+succeeds.
+
+**Related:** `docs/decisions/D-progress-0961-native-isnormalized-normalize-self-recursion-7304.md`
+(full account), #7304 (this fix), #6752 (the precedent this mirrors).
