@@ -2422,6 +2422,23 @@ test "brace-form lambda with a single bare-expression statement still round-trip
   )
 }
 
+test "brace lambda with a parenthesised typed parameter list round-trips" {
+  // `{ (a: T, b: U) -> … }` and `{ a: T, b: U -> … }` parse to the same
+  // parameters; the formatter used to drop the parentheses, which its own
+  // loss-check then refused, so no file using the parenthesised spelling
+  // could be formatted.
+  val src = "package P\n\nfunc f(): Unit {\n  val g = { (a: String, b: Int) ->\n    println(a)\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "parenthesised typed params: round-trips, not refused")
+  val once = format(parse(src))
+  assertEqual(once, format(parse(once)), "parenthesised typed params: idempotent")
+  assertTrue(Str.contains(once, "{ (a: String, b: Int) ->"), "keeps the parenthesised spelling")
+  val inline = "package P\n\nval g = { (k, v) -> k }\n"
+  assertTrue(fmtCheckIsOk(formatSourceChecked(inline)), "parenthesised untyped params inline: round-trips")
+  val bare = "package P\n\nval g = { a: String, b: Int -> a }\n"
+  assertTrue(Str.contains(format(parse(bare)), "{ a: String, b: Int -> a }"), "the bare spelling stays bare")
+}
+
 test "width driven long paren-arrow lambda body breaks after the arrow without adding braces" {
   // Mirrors "width driven long lambda body" above, but for the
   // paren-arrow spelling: the multi-line layout must still never

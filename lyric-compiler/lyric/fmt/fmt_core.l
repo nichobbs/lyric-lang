@@ -1349,7 +1349,7 @@ func exprLambdaMulti(col: in Int, ctx: inout FmtCtx, ps: in List[LambdaParam], b
     case None -> {
     }
   }
-  val opener = if ps.count == 0 { "{ ->" } else { "{ " + lambdaParamsStr(ps) + " ->" }
+  val opener = if ps.count == 0 { "{ ->" } else { "{ " + braceLambdaHead(ps) + " ->" }
   val acc: List[String] = newList()
   acc.add(opener)
   val bd = indentDoc(2, blockLines(body, ctx))
@@ -1379,6 +1379,18 @@ func exprArrowLambdaMulti(col: in Int, ctx: inout FmtCtx, ps: in List[LambdaPara
     i = i + 1
   }
   acc
+}
+
+/// A brace lambda's parameter list as it was spelled: parenthesised
+/// (`(a: T, b: U)`) or bare (`a: T, b: U`).  Rewriting one spelling as the
+/// other changes the code-token sequence, which the loss-check refuses.
+@pure
+func braceLambdaHead(ps: in List[LambdaParam]): String {
+  if ps.count > 0 and ps[0].parenthesized {
+    "(" + lambdaParamsStr(ps) + ")"
+  } else {
+    lambdaParamsStr(ps)
+  }
 }
 
 @pure
@@ -1543,17 +1555,7 @@ func lambdaInlineStr(ps: in List[LambdaParam], body: in Block): String {
   if ps.count == 0 {
     "{ -> " + blockInline(body) + " }"
   } else {
-    val parts: List[String] = newList()
-    var i = 0
-    while i < ps.count {
-      val lp = ps[i]
-      match lp.ty {
-        case Some(t) -> parts.add(lp.name + ": " + typeStr(t))
-        case None -> parts.add(lp.name)
-      }
-      i = i + 1
-    }
-    "{ " + joinStrings(parts, ", ") + " -> " + blockInline(body) + " }"
+    "{ " + braceLambdaHead(ps) + " -> " + blockInline(body) + " }"
   }
 }
 
