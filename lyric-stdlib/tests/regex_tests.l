@@ -89,10 +89,9 @@ func testErrorMessageInvalidPattern(): Unit {
 //          runtimes the BCL message won't contain "time-out", so the classifier
 //          falls back to InvalidPattern (#1100 — locale-stable classifier
 //          is a follow-up).
-//   JVM  — Err(TimedOut) as of #1103's daemon-thread shim
-//          (std/_kernel_jvm/regex_host.l): the calling thread is unblocked
-//          within the deadline even though java.util.regex isn't
-//          interruptible.  Ok(false) remains a logged-but-accepted outcome
+//   JVM  — Err(TimedOut) from the kernel's inline deadline
+//          (std/_kernel_jvm/regex_host.l, #1103/#7283): the match's own
+//          input reads stop it once the deadline passes.  Ok(false) remains a logged-but-accepted outcome
 //          here (a benign fast-path termination shouldn't fail this
 //          cross-platform smoke test); the strict JVM-only acceptance test
 //          that requires Err(TimedOut) lives in `lyric-compiler/jvm/
@@ -124,7 +123,7 @@ func testReDoSTimeoutFires(): Unit {
   }
 }
 
-// The strict JVM-only acceptance test for #1103's daemon-thread shim (must
+// The strict JVM-only acceptance test for the JVM regex deadline (must
 // return Err(TimedOut), not just "returns at all") lives in
 // `lyric-compiler/jvm/regex_redos_jvm_main.l` as a standalone `lyric build
 // --target jvm` + `java -jar` program, not a `@cfg(feature = "jvm")`-gated

@@ -10,12 +10,11 @@
 //!
 //! Asserts a catastrophic-backtracking pattern against adversarial input
 //! returns `Err(TimedOut)` — not `Ok`, and not a hang — within the
-//! compiled-in timeout, proving `std/_kernel_jvm/regex_host.l`'s
-//! daemon-thread-race shim actually enforces the deadline it accepts.
-//! Prints "ok" and exits 0 on success; prints a diagnostic and exits 1 on
-//! any other outcome (including "the process is still running past a
-//! generous wall-clock budget", which would mean the shim regressed to
-//! blocking forever rather than merely leaking a background thread).
+//! compiled-in timeout, proving `std/_kernel_jvm/regex_host.l`'s inline
+//! deadline (#7283) actually enforces the deadline it accepts. Prints "ok"
+//! and exits 0 on success; prints a diagnostic and exits 1 on any other
+//! outcome (including "the process is still running past a generous
+//! wall-clock budget", which would mean the deadline stopped firing).
 package Main
 
 import Std.Core

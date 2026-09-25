@@ -35621,3 +35621,19 @@ then `ldelem`/`stelem` with no boxing, falling back to `IList` with the real
 element type for a `List`-backed slice. Covered by `slice_fastpath_self_test.l`
 (dotnet, JVM, native) and `slice_fastpath_listbacked_dotnet_self_test.l`
 (#7343).
+
+## JVM regex enforces its timeout inline; JVM `parseDouble` rejects by syntax
+
+The JVM regex kernel started a virtual thread per match operation and raced it
+with `Thread.join(timeoutMs)`, about 43 us per benign match, and could only
+abandon a timed-out match, capped at 64 or more outstanding. Matches now run on
+the calling thread over a `CharSequence` whose reads check the deadline, so a
+runaway match is stopped by its own reads and a benign match costs about
+0.7 us. See D-progress-962, which supersedes D-progress-817's regex design.
+`regex_jvm_deadline_self_test.l` replaces the semaphore permit-leak test.
+
+The JVM `Std.Parse.parseOptDouble` kernel caught `NumberFormatException` to
+report invalid input. It now rejects malformed strings by their syntax first,
+matching the JDK's decimal grammar, so no exception is built for them.
+`parse_tests.l` gains edge-case forms and now runs on dotnet as well as the JVM
+(#7283, epic #7256).

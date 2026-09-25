@@ -6009,21 +6009,21 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/check-env-args-ordering.sh
 
-      # Std.Regex ReDoS-timeout enforcement on JVM (#330/#1103, throughput/
-      # cap follow-up #6576) — see scripts/ci/check-regex-redos.sh's header.
+      # Std.Regex ReDoS-timeout enforcement on JVM (#330/#1103, inline
+      # deadline #7283) — see scripts/ci/check-regex-redos.sh's header.
       - name: Std.Regex ReDoS-timeout check on JVM (lyric build --target jvm)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/check-regex-redos.sh
 
-      # matchSemaphore fault-path permit-release regression on JVM (#6711)
-      # — see regex_jvm_semaphore_leak_self_test.l's header.
-      - name: Regex JVM semaphore leak self-test (native lyric test --target jvm)
+      # JVM regex inline-deadline guarantees (#7283) — see
+      # regex_jvm_deadline_self_test.l's header.
+      - name: Regex JVM deadline self-test (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/regex_jvm_semaphore_leak_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/regex_jvm_deadline_self_test.l
 
       # Std.Process.spawnPiped/pipedReadLine real-child-process round trip on
       # JVM (#6135) — builds a program that spawns a real `cat` subprocess
@@ -7006,7 +7006,7 @@ jobs:
             exit 1
           fi
           for suite in \
-            core_tests iter_tests encoding_tests regex_safe_tests rest_tests \
+            core_tests iter_tests encoding_tests regex_safe_tests rest_tests parse_tests \
             process_capture_tests process_tests format_tests json_tests \
             collections_tests char_tests math_tests hash_tests path_tests \
             errors_tests environment_tests string_tests string_methods_tests \
