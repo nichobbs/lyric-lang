@@ -78,10 +78,10 @@ pub opaque type RestClient {
 
 /// Construct a RestClient with a base URL and no auth.
 ///
-/// # Preconditions
-/// - `baseUrl` must be a valid HTTP(S) URL (validated by `Url.tryFrom`
-///   at call time, not here — eagerly-constructed clients avoid
-///   redundant validation on each request).
+/// `baseUrl` is validated on each request, not here: an empty or invalid
+/// base makes every call return `Http(InvalidUrl)`.  So does a request
+/// `path` that could leave the base (`..`/`.` segments, an absolute
+/// `//host` or `scheme://` path, CR/LF/NUL).
 @stable(since = "1.0")
 pub func RestClient.create(baseUrl: in String): RestClient {
   return RestClient(baseUrl = baseUrl, auth = None_, defaultHeaders = "")
@@ -117,27 +117,77 @@ func applyAuth(req: in HttpRequest, auth: in RestAuth): Result[HttpRequest, Rest
   }
 }
 
-func fullUrl(client: in RestClient, path: in String): String {
+// `baseUrl` joined with the caller's `path`, or `Err(InvalidUrl)` when the
+// join could leave the base: an empty base, a `path` that is itself absolute
+// (`//host`, `scheme://`), one with a `.`/`..` segment before any `?`/`#`
+// (also percent-encoded), or one carrying CR, LF or NUL.  `path` is often
+// built from request data, so these are errors, not preconditions (#7251).
+func fullUrl(client: in RestClient, path: in String): Result[String, RestError] {
   val base = client.baseUrl
-  if path.length == 0 {
-    return base
+  if base.length == 0 {
+    return Err(error = Http(error = InvalidUrl(url = path)))
   }
-  val lastBase = base.length - 1
-  val baseEndsSlash = base[lastBase] == '/'
+  if path.length == 0 {
+    return Ok(value = base)
+  }
+  if not isSafeRelativePath(path) {
+    return Err(error = Http(error = InvalidUrl(url = base + path)))
+  }
+  val baseEndsSlash = base[base.length - 1] == '/'
   val pathStartsSlash = path[0] == '/'
   if baseEndsSlash and pathStartsSlash {
-    return base + path.substring(1, path.length)
+    return Ok(value = base + path.substring(1, path.length - 1))
   }
   if baseEndsSlash or pathStartsSlash {
-    return base + path
+    return Ok(value = base + path)
   }
-  return base + "/" + path
+  Ok(value = base + "/" + path)
+}
+
+func isSafeRelativePath(path: in String): Bool {
+  if path.contains("\r") or path.contains("\n") or path.contains("\u{0000}") {
+    return false
+  }
+  if path.startsWith("//") or path.contains("://") {
+    return false
+  }
+  // Only the path part: a `..` in a query string is data.
+  var pathEnd = path.length
+  var i = 0
+  while i < path.length {
+    if path[i] == '?' or path[i] == '#' {
+      pathEnd = i
+      i = path.length
+    } else {
+      i = i + 1
+    }
+  }
+  var segStart = 0
+  var j = 0
+  while j <= pathEnd {
+    if j == pathEnd or path[j] == '/' or path[j] == '\\' {
+      if isDotSegment(path.substring(segStart, j - segStart)) {
+        return false
+      }
+      segStart = j + 1
+    }
+    j = j + 1
+  }
+  true
+}
+
+func isDotSegment(seg: in String): Bool {
+  val lower = seg.toLower()
+  lower == "." or lower == ".." or lower == "%2e" or lower == "%2e%2e" or lower == ".%2e" or lower == "%2e."
 }
 
 async func sendRequest(
   client: in RestClient, method: in HttpMethod, path: in String, body: in Option[String]
 ): Result[HttpResponse, RestError] {
-  val url = fullUrl(client, path)
+  val url = match fullUrl(client, path) {
+    case Ok(u) -> u
+    case Err(e) -> return Err(error = e)
+  }
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = Http(error = e))
     case Ok(parsed) -> {

@@ -768,6 +768,21 @@ test "serializeResponseHead panics on NUL in a header value (response-splitting 
   assertPanics("NUL in header value", { -> val ignored = serializeResponseHead(Http1_1, 200, "OK", headers) })
 }
 
+test "serializeResponseHead panics on a header name that is not a token (#7251)" {
+  val forged: List[HeaderField] = newList()
+  forged.add(HeaderField(name = "Location: http://evil", value = "x"))
+  assertPanics("colon and space in a name", { -> val ignored = serializeResponseHead(Http1_1, 200, "OK", forged) })
+  val empty: List[HeaderField] = newList()
+  empty.add(HeaderField(name = "", value = "x"))
+  assertPanics("empty name", { -> val ignored = serializeResponseHead(Http1_1, 200, "OK", empty) })
+}
+
+test "serializeResponseHead panics on a status outside 100..999 (#7251)" {
+  val headers: List[HeaderField] = newList()
+  assertPanics("status 99", { -> val ignored = serializeResponseHead(Http1_1, 99, "X", headers) })
+  assertPanics("status 1000", { -> val ignored = serializeResponseHead(Http1_1, 1000, "X", headers) })
+}
+
 test "serializeResponseHead panics on CR in the reason-phrase (response-splitting guard)" {
   val headers: List[HeaderField] = newList()
   assertPanics("CR in reason-phrase", { -> val ignored = serializeResponseHead(Http1_1, 200, "OK\rInjected", headers) })
@@ -872,4 +887,25 @@ test "a bare LF after a partially scanned line is still rejected" {
     feedSplitAt(EngineLimits.defaults(), bytesOf("GET / HTTP/1.1\r\nHost: exam\nple\r\n\r\n"), 22)
   )
   assertProtocolError(events[events.count - 1], BareLf, "bare LF after resume")
+}
+
+test "EngineLimits rejects a non-positive limit (#7251)" {
+  assertPanics("zero header count", { ->
+    val ignored = EngineLimits(
+      maxRequestLineLength = 8192,
+      maxHeaderCount = 0,
+      maxHeaderLineLength = 8192,
+      maxTotalHeaderBytes = 65536,
+      maxBodyBytes = 10
+    )
+  })
+  assertPanics("negative body cap", { ->
+    val ignored = EngineLimits(
+      maxRequestLineLength = 8192,
+      maxHeaderCount = 10,
+      maxHeaderLineLength = 8192,
+      maxTotalHeaderBytes = 65536,
+      maxBodyBytes = -1
+    )
+  })
 }
