@@ -126,16 +126,54 @@ test "cookieHeader strips a forged `;` attribute from the sessionId" {
   )
 }
 
-test "cookieHeader sanitizes an injected cookieName and sameSite too" {
-  val cfg = Session.SessionConfig(
-    cookieName = "NAME\r\ninjected",
-    secure = false,
-    httpOnly = false,
-    sameSite = "Lax\r\nX-Evil: 1",
-    ttlSeconds = 3600
+test "SessionConfig refuses an injected cookieName or sameSite (#7248)" {
+  // These used to be accepted and silently rewritten by the header builder.
+  assertPanics(
+    "CRLF in cookieName",
+    { ->
+      val _ = Session.SessionConfig(
+        cookieName = "NAME\r\ninjected",
+        secure = true,
+        httpOnly = true,
+        sameSite = "Lax",
+        ttlSeconds = 3600
+      )
+    }
   )
-  val header = Session.cookieHeader("sid", cfg)
-  assertFalse(header.contains("\r"), "CR stripped from cookieName and sameSite")
-  assertFalse(header.contains("\n"), "LF stripped from cookieName and sameSite")
-  assertEqual(header, "NAMEinjected=sid; Path=/; SameSite=LaxX-Evil: 1", "both fields sanitized")
+  assertPanics(
+    "unknown sameSite",
+    { ->
+      val _ = Session.SessionConfig(
+        cookieName = "s",
+        secure = true,
+        httpOnly = true,
+        sameSite = "Lax\r\nX-Evil: 1",
+        ttlSeconds = 3600
+      )
+    }
+  )
+  assertPanics(
+    "lower-case none, which dodged the forced Secure",
+    { ->
+      val _ = Session.SessionConfig(cookieName = "s", secure = false, httpOnly = true, sameSite = "none", ttlSeconds = 3600)
+    }
+  )
+  assertPanics(
+    "non-positive TTL",
+    { ->
+      val _ = Session.SessionConfig(cookieName = "s", secure = true, httpOnly = true, sameSite = "Lax", ttlSeconds = 0)
+    }
+  )
+}
+
+test "isCookieToken and canonicalSameSite" {
+  assertTrue(Session.isCookieToken("LYRIC_SESSION"), "ordinary name")
+  assertTrue(Session.isCookieToken("__Host-sid"), "prefixed name")
+  assertFalse(Session.isCookieToken(""), "empty")
+  assertFalse(Session.isCookieToken("a b"), "space")
+  assertFalse(Session.isCookieToken("a=b"), "separator")
+  assertFalse(Session.isCookieToken("a"), "DEL")
+  assertEqual(Session.canonicalSameSite("none"), "None", "none is canonicalised, so it gets the forced Secure")
+  assertEqual(Session.canonicalSameSite("STRICT"), "Strict", "case-insensitive")
+  assertEqual(Session.canonicalSameSite("bogus"), "Lax", "unknown falls back to Lax")
 }
