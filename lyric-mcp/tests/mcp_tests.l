@@ -542,7 +542,7 @@ test "tools/call: a successful call returns content with isError: false" {
 }
 
 // #6341 made a name registered via both addTool and addResumableTool resolve
-// to the resumable handler.  #7246 makes that double registration a
+// to the resumable handler.  #7245 makes that double registration a
 // precondition violation instead: a second registration under a name the
 // server already has is a programming error, not a silent shadowing.
 test "addTool/addResumableTool: registering a tool name twice violates the precondition" {

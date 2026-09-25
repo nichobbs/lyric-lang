@@ -54,7 +54,7 @@ func testIsRelative(): Unit {
   assertTrue(isRelative(""), "empty path is relative")
 }
 
-// #7247: join does not confine; joinWithin refuses untrusted components that
+// #7246: join does not confine; joinWithin refuses untrusted components that
 // could escape `base`.
 func testJoinDoesNotConfine(): Unit {
   assertTrue(join("/srv/www", "/etc/passwd") == "/etc/passwd", "an absolute component replaces base")

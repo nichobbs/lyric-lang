@@ -273,7 +273,7 @@ test "newNdjsonTransport / newContentLengthTransport construct without error" {
   assertTrue(true, "both constructors returned")
 }
 
-// ── Framing limits (#7246) ──────────────────────────────────────────────────
+// ── Framing limits (#7245) ──────────────────────────────────────────────────
 // Every byte these readers consume comes from the peer, so an oversized or
 // ambiguous frame must be a framing error, never an unbounded read.
 func expectFramingError(text: in String, label: in String): Unit {

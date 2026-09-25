@@ -113,7 +113,7 @@ impl LineWriter for HostLineWriter {
 
 // ── Framing limits ──────────────────────────────────────────────────────────
 // A peer controls every byte these readers consume, so each framing enforces
-// a hard ceiling and reports a violation as a framing `Err` (#7246): a single
+// a hard ceiling and reports a violation as a framing `Err` (#7245): a single
 // message may not exceed `MAX_MESSAGE_BYTES` (16 MiB, UTF-8), a Content-Length
 // header line `MAX_HEADER_LINE_CHARS`, and a header block `MAX_HEADER_LINES`.
 val MAX_MESSAGE_BYTES: Int = 16777216

@@ -63,7 +63,7 @@ test "field carries key and value through the record" {
   assertEqual(f.value, "abc-123", "field value round-trips")
 }
 
-// #7245: the message itself was written raw, so CR/LF in a message (often
+// #7244: the message itself was written raw, so CR/LF in a message (often
 // built from request data) forged extra log lines.
 test "renderLogLine escapes line breaks and control characters in the message" {
   assertEqual(

@@ -300,7 +300,7 @@ pub func stat(path: in String): Result[FileStat, IOError] {
 // Errors stop the traversal and propagate up.
 // Directory nesting deeper than this is refused rather than recursed into:
 // defence in depth for link types `hostIsDirSymlink` cannot see (such as a
-// Windows junction), which could otherwise recurse without bound (#7247).
+// Windows junction), which could otherwise recurse without bound (#7246).
 val MAX_LIST_DEPTH: Int = 256
 
 func collectFilesRecursive(dir: in String, acc: in List[String], depth: in Int): Result[Unit, IOError] {
@@ -320,7 +320,7 @@ func collectFilesRecursive(dir: in String, acc: in List[String], depth: in Int):
   val subdirs = match listDirs(dir) { case Ok(ds) -> ds; case Err(e) -> { return Err(error = e) } }
   for sub in subdirs.toArray() {
     // A directory link is not descended into: it may point back at an
-    // ancestor (a cycle) or outside the tree being listed (#7247).
+    // ancestor (a cycle) or outside the tree being listed (#7246).
     if hostIsDirSymlink(sub) {
       continue
     }

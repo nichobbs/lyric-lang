@@ -91,7 +91,7 @@ func formatFields(fields: in slice[LogField]): String {
 
 // Escape a log message: line breaks and other control characters become
 // visible escapes so a message (often built from request data) cannot start
-// a new, forged log line (CWE-117, #7245).  Unlike field values, `=` and `"`
+// a new, forged log line (CWE-117, #7244).  Unlike field values, `=` and `"`
 // are left alone: the message is free text, and a record ends at the line
 // break, which can no longer occur.
 func appendEscapedLogMessage(sb: in StringBuilder, s: in String): Unit {

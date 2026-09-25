@@ -265,7 +265,7 @@ test "deleteDirRecursive removes a populated directory tree" {
   }
 }
 
-// #7247: a symbolic link to a directory is not descended into, so a link
+// #7246: a symbolic link to a directory is not descended into, so a link
 // back to an ancestor neither repeats the tree nor recurses without bound.
 test "listFilesRecursive does not follow a symbolic link back to an ancestor" {
   val dir = scratchDir("symlink_cycle")

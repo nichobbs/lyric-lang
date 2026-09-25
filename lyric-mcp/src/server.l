@@ -77,7 +77,7 @@ pub func newServer(info: in McpImplementation): McpServer {
 /// server starts serving. The name must be a valid MCP tool name
 /// (`isValidToolName`) not already registered by `addTool` or
 /// `addResumableTool`; registering a name twice is a programming error, so
-/// it is a precondition rather than a silent shadowing (#7246).
+/// it is a precondition rather than a silent shadowing (#7245).
 @stable(since = "0.1")
 pub func addTool(server: in McpServer, tool: in McpToolDef): Unit
   requires: isValidToolName(tool.name)

@@ -344,7 +344,7 @@ func listEntriesByKind(dir: in String, wantKindDigit: String): Result[List[Strin
 /// True when `path` is a symbolic link to a directory: `stat` (following)
 /// sees a directory where `lstat` (not following) does not.  Recursive
 /// listings skip such links so a link back to an ancestor cannot repeat the
-/// tree (#7247).
+/// tree (#7246).
 @unsafe_ffi
 pub func hostIsDirSymlink(path: in String): Bool {
   val c = toC(path)

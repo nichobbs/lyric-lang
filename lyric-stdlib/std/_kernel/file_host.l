@@ -229,7 +229,7 @@ pub func hostWriteByteSliceResult(path: in String, bytes: in slice[Byte]): Resul
 /// True when `path` is a symbolic link (or other reparse point) to a
 /// directory: `DirectoryInfo.LinkTarget` is non-null only for links.
 /// Recursive listings skip such links so a link back to an ancestor cannot
-/// repeat the tree (#7247).
+/// repeat the tree (#7246).
 pub func hostIsDirSymlink(path: in String): Bool {
   if not hostDirectoryExists(path) {
     return false
