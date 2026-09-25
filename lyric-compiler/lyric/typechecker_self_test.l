@@ -4792,3 +4792,53 @@ test "nullary union case bare reference is still clean" {
   val src = "package P\nunion DbError {\n  case ConnLost\n  case ExecFailed(sql: String, message: String)\n}\nfunc f(): DbError { ConnLost }\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "nullary case bare reference: no errors")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Loop labels (#7349): `break`/`continue` must sit in a loop and a label must
+// name an enclosing one (T0130); a nested loop may not reuse an enclosing
+// loop's label (T0131).  Lambdas and `defer` bodies start with no loops.
+// ─────────────────────────────────────────────────────────────────────────────
+test "labelled loops parse and resolve" {
+  val src = "package P\nfunc f(xs: in List[Int]): Int {\n  var n = 0\n  outer: for x in xs {\n    inner: while n < x {\n      n = n + 1\n      if n > 5 { break outer }\n      if n > 3 { continue inner }\n    }\n    do { break }\n  }\n  n\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "P0050"), "label prefix parses")
+  assertTrue(not hasDiagCode(cr, "T0130"), "labels resolve: no T0130")
+  assertTrue(not hasDiagCode(cr, "T0131"), "distinct labels: no T0131")
+}
+
+test "a break naming no enclosing loop is T0130" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  outer: for x in xs { }\n  for y in xs { break outer }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0130"), "outer is a sibling, not an enclosing loop")
+}
+
+test "a continue with an unknown label is T0130" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  for y in xs { continue nope }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0130"), "unknown label")
+}
+
+test "a break outside any loop is T0130" {
+  val src = "package P\nfunc f(n: in Int): Unit {\n  if n > 0 { break }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0130"), "break outside a loop")
+}
+
+test "a break in a lambda cannot target the enclosing loop" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  outer: for x in xs {\n    val g = { () -> break outer }\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0130"), "lambda body starts with no loops")
+}
+
+test "a break in a defer body cannot target the enclosing loop" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  for x in xs {\n    defer { break }\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0130"), "defer body starts with no loops")
+}
+
+test "a nested loop reusing an enclosing label is T0131" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  outer: for x in xs {\n    outer: for y in xs { break outer }\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0131"), "shadowed label")
+}
+
+test "sibling loops may share a label" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  scan: for x in xs { break scan }\n  scan: for y in xs { continue scan }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0131"), "siblings: no T0131")
+  assertTrue(not hasDiagCode(cr, "T0130"), "siblings: no T0130")
+}

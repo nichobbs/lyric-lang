@@ -1377,6 +1377,8 @@ pub func checkFunctionBody(
     }
   }
 
+  checkLoopLabels(diag, fn)
+
   match fn.body {
     case None -> {
     }

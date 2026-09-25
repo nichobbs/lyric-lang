@@ -5600,6 +5600,9 @@ pub record FuncCtx {
   // out of one or more CLR protected regions and must emit `leave`, not `br`
   // (a `br` across a protected-region boundary is unverifiable IL).  #1481.
   loopTryDepth: List[Int]
+  // Labelled loops currently being lowered (#7349): label -> the loop's index
+  // in loopBreak/loopCont/loopTryDepth.
+  loopLabelIndex: Map[String, Int]
   // Try/catch nesting depth counter (values unused; only `.count` matters).  Pushed around each `try` body and each `catch` handler in lowerTryCatchMsil.
   tryRegionStack: List[Int]
   // Return-through-protected-region support.  A `return` lowered while inside
@@ -20453,16 +20456,18 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     }
 
     // ── While loop ────────────────────────────────────────────────────────────
-    case SWhile(_, cond, body) -> {
+    case SWhile(label, cond, body) -> {
       val loopL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
       insns.add(MLabel(id = loopL))
       lowerBoolOperandMsil(cctx, fctx, insns, cond)
       insns.add(MBrFalse(label = afterL))
+      enterLoopLabelMsil(fctx, label)
       fctx.loopBreak.add(afterL)
       fctx.loopCont.add(loopL)
       fctx.loopTryDepth.add(fctx.tryRegionStack.count)
       lowerBlockMsil(cctx, fctx, insns, body)
+      exitLoopLabelMsil(fctx, label)
       fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
@@ -20471,19 +20476,23 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     }
 
     // ── For loop (range fast-path + collection iteration, #1478) ──────────────
-    case SFor(_, pat, iter, body) -> {
+    case SFor(label, pat, iter, body) -> {
+      enterLoopLabelMsil(fctx, label)
       lowerForMsil(cctx, fctx, insns, pat, iter, body)
+      exitLoopLabelMsil(fctx, label)
     }
 
     // ── Loop (unconditional) ──────────────────────────────────────────────────
-    case SLoop(_, body) -> {
+    case SLoop(label, body) -> {
       val loopL2 = freshLabelMsil(fctx)
       val afterL2 = freshLabelMsil(fctx)
       insns.add(MLabel(id = loopL2))
+      enterLoopLabelMsil(fctx, label)
       fctx.loopBreak.add(afterL2)
       fctx.loopCont.add(loopL2)
       fctx.loopTryDepth.add(fctx.tryRegionStack.count)
       lowerBlockMsil(cctx, fctx, insns, body)
+      exitLoopLabelMsil(fctx, label)
       fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
@@ -20507,11 +20516,13 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // protected region(s) jumps across a CLR try/catch boundary and must use
     // `leave` rather than `br` (a `br` out of a protected region is
     // unverifiable IL).  #1481.
-    case SBreak(_) -> {
-      emitLoopJumpMsil(fctx, insns, fctx.loopBreak[fctx.loopBreak.count - 1])
+    case SBreak(label) -> {
+      val li = loopIndexForLabelMsil(fctx, label)
+      emitLoopJumpMsil(fctx, insns, fctx.loopBreak[li], fctx.loopTryDepth[li])
     }
-    case SContinue(_) -> {
-      emitLoopJumpMsil(fctx, insns, fctx.loopCont[fctx.loopCont.count - 1])
+    case SContinue(label) -> {
+      val li = loopIndexForLabelMsil(fctx, label)
+      emitLoopJumpMsil(fctx, insns, fctx.loopCont[li], fctx.loopTryDepth[li])
     }
 
     // ── Scope block ───────────────────────────────────────────────────────────
@@ -20639,8 +20650,46 @@ func lowerLocalPatBindMsil(
 // entered at a shallower protected-region (try/catch) depth than the current
 // one — i.e. the jump escapes one or more open `try`/`catch` regions — the CLR
 // requires `leave`; otherwise a plain `br` suffices.  #1481 (H17).
-func emitLoopJumpMsil(fctx: in FuncCtx, insns: in List[MInsn], target: in Int): Unit {
-  val loopDepth = if fctx.loopTryDepth.count > 0 { fctx.loopTryDepth[fctx.loopTryDepth.count - 1] } else { 0 }
+// Each loop pushes exactly one entry onto loopBreak/loopCont/loopTryDepth, so
+// a labelled loop's entry is at the stack depth in effect just before it is
+// lowered.
+func enterLoopLabelMsil(fctx: in FuncCtx, label: in Option[String]): Unit {
+  match label {
+    case Some(l) -> {
+      fctx.loopLabelIndex[l] = fctx.loopBreak.count
+    }
+    case None -> ()
+  }
+}
+
+func exitLoopLabelMsil(fctx: in FuncCtx, label: in Option[String]): Unit {
+  match label {
+    case Some(l) -> fctx.loopLabelIndex.remove(l)
+    case None -> ()
+  }
+}
+
+// The type checker (T0130) guarantees a `break`/`continue` sits in a loop and
+// that its label names an enclosing one.
+func loopIndexForLabelMsil(fctx: in FuncCtx, label: in Option[String]): Int {
+  match label {
+    case None -> {
+      if fctx.loopBreak.count == 0 {
+        panic("Msil.Codegen: 'break'/'continue' outside a loop (compiler bug: T0130 should have rejected it)")
+      }
+      fctx.loopBreak.count - 1
+    }
+    case Some(l) -> match mapGet(fctx.loopLabelIndex, l) {
+      case Some(i) -> i
+      case None -> panic(
+        "Msil.Codegen: no enclosing loop labelled '" + l +
+          "' (compiler bug: T0130 should have rejected it)"
+      )
+    }
+  }
+}
+
+func emitLoopJumpMsil(fctx: in FuncCtx, insns: in List[MInsn], target: in Int, loopDepth: in Int): Unit {
   if fctx.tryRegionStack.count > loopDepth {
     insns.add(MLeave(label = target))
   } else {
@@ -20975,6 +21024,7 @@ func makeFuncCtxMsil(
   val loopBreak: List[Int] = newList()
   val loopCont: List[Int] = newList()
   val loopTryDepth: List[Int] = newList()
+  val loopLabelIndex: Map[String, Int] = newMap()
   val tryRegionStack: List[Int] = newList()
   val epilogueUsed: List[Int] = newList()
   val yieldSlots: List[Int] = newList()
@@ -21004,6 +21054,7 @@ func makeFuncCtxMsil(
     loopBreak = loopBreak,
     loopCont = loopCont,
     loopTryDepth = loopTryDepth,
+    loopLabelIndex = loopLabelIndex,
     tryRegionStack = tryRegionStack,
     epilogueLabel = -1,
     retvalSlot = -1,
