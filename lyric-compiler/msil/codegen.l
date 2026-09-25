@@ -6480,6 +6480,10 @@ func emitCompoundCombineSlotMsil(
     }
     insns.add(MCall(methodToken = cctx.tokConcat2))
   } else {
+    // M6 numeric widening: `xs[i] += 3` on a `List[Long]` / `slice[Long]`
+    // type-checks with an `Int` rhs, so widen it to the element width
+    // before the arithmetic (#7343).
+    coerceCallArgMsil(cctx, insns, rTy, elemTy)
     match assignOpArithInsnMsil(op) {
       case Some(arith) -> {
         val concreteArith = match arith {
@@ -6497,6 +6501,76 @@ func emitCompoundCombineSlotMsil(
       case None -> panic("Msil.Codegen: unhandled compound-assignment op in emitCompoundCombineSlotMsil")
     }
   }
+}
+
+// `xs[i] op= v` on a `slice[elem]` whose element has a typed-array spec
+// (#7343, the compound counterpart of #7259's plain-store fast path).  A
+// genuine `elem[]` receiver reads and writes the element with `ldelem` /
+// `stelem`, no boxing; a `List`-backed slice falls back to the `IList`
+// get_Item / set_Item pair.  The receiver, index and rhs are each evaluated
+// once, in source order.  The receiver is already on the stack.
+func emitSliceCompoundAssignMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  op: in AssignOp,
+  recvTy: in MsilType,
+  elem: in MsilType,
+  specTok: in Int,
+  index: in Expr,
+  value: in Expr,
+): Unit {
+  val tick = toString(fctx.slotTicker.count)
+  val recvSlot = allocSlotMsil(fctx, "__slicecas_recv_" + tick, MObject)
+  emitStoreSlot(insns, recvSlot, fctx.paramCount)
+  lowerExprMsil(cctx, fctx, insns, index)
+  val idxSlot = allocSlotMsil(fctx, "__slicecas_i_" + tick, MInt)
+  emitStoreSlot(insns, idxSlot, fctx.paramCount)
+  val rTy = lowerExprMsil(cctx, fctx, insns, value)
+  val rSlot = allocSlotMsil(fctx, "__slicecas_r_" + tick, rTy)
+  emitStoreSlot(insns, rSlot, fctx.paramCount)
+  val unsignedRhs = isUnsignedExprMsil(fctx, value)
+  val elemTok = match arrayElemTokenOpt(cctx, elem) {
+    case Some(t) -> t
+    case None -> panic(
+      "Msil.Codegen: slice compound fast path has no element token (invariant violation)"
+    )
+  }
+  val arrSlot = allocSlotMsil(fctx, "__slicecas_arr_" + tick, MArray(elemTy = elem))
+  val slowL = freshLabelMsil(fctx)
+  val doneL = freshLabelMsil(fctx)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  insns.add(MIsinst(typeToken = specTok))
+  emitStoreSlot(insns, arrSlot, fctx.paramCount)
+  emitLoadSlot(insns, arrSlot, fctx.paramCount)
+  insns.add(MBrFalse(label = slowL))
+  // arr[i] = arr[i] op v
+  emitLoadSlot(insns, arrSlot, fctx.paramCount)
+  emitLoadSlot(insns, idxSlot, fctx.paramCount)
+  emitLoadSlot(insns, arrSlot, fctx.paramCount)
+  emitLoadSlot(insns, idxSlot, fctx.paramCount)
+  emitTypedLdelemMsil(insns, elem)
+  emitCompoundCombineSlotMsil(cctx, fctx, insns, op, elem, rTy, rSlot, unsignedRhs)
+  if elem == MChar {
+    insns.add(MStelemI2)
+  } else {
+    insns.add(MStelem(typeToken = elemTok))
+  }
+  insns.add(MBr(label = doneL))
+  // List-backed slice: IList get_Item / set_Item on boxed elements.
+  insns.add(MLabel(id = slowL))
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  emitListCastRecv(cctx, insns, recvTy)
+  emitLoadSlot(insns, idxSlot, fctx.paramCount)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  emitListCastRecv(cctx, insns, recvTy)
+  emitLoadSlot(insns, idxSlot, fctx.paramCount)
+  emitListGetItem(cctx, insns, recvTy)
+  materializeBoxedElemMsil(cctx, insns, elem)
+  emitCompoundCombineSlotMsil(cctx, fctx, insns, op, elem, rTy, rSlot, unsignedRhs)
+  collBoxIfNeeded(cctx, insns, elem, recvTy)
+  emitListSetItem(cctx, insns, recvTy)
+  insns.add(MLabel(id = doneL))
 }
 
 // The declared parameter modes, index-aligned with `params`.
@@ -12485,22 +12559,28 @@ func lowerAssignExprMsil(
                 boxIfNeededMsil(cctx, insns, vTy)
                 insns.add(MCallvirt(methodToken = cctx.tokDictObjSetItem))
               }
-              case MConcreteMap(_, _) -> {
+              case MConcreteMap(mk, mv) -> {
                 // Concrete Dictionary store: key/value stored unboxed
-                // (the `!0`/`!1` MemberRef binds to the concrete K/V).
+                // (the `!0`/`!1` MemberRef binds to the concrete K/V).  M6
+                // numeric widening (`m[k] = 4` on a `Map[String, Long]`) is
+                // applied first so the unboxed value matches `!1` (#7343).
                 emitDictCastRecv(cctx, insns, recvTy)
                 val kTy = lowerExprMsil(cctx, fctx, insns, indices[0])
+                coerceCallArgMsil(cctx, insns, kTy, mk)
                 collBoxIfNeeded(cctx, insns, kTy, recvTy)
                 val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                coerceCallArgMsil(cctx, insns, vTy, mv)
                 collBoxIfNeeded(cctx, insns, vTy, recvTy)
                 emitDictSetItem(cctx, insns, recvTy)
               }
-              case MConcreteList(_) -> {
+              case MConcreteList(le) -> {
                 // Concrete List store: set_Item(int32, !0); value stored
-                // unboxed.
+                // unboxed, widened to the element width first (`xs[i] = 4`
+                // on a `List[Long]`, #7343).
                 emitListCastRecv(cctx, insns, recvTy)
                 lowerExprMsil(cctx, fctx, insns, indices[0])
                 val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                coerceCallArgMsil(cctx, insns, vTy, le)
                 collBoxIfNeeded(cctx, insns, vTy, recvTy)
                 emitListSetItem(cctx, insns, recvTy)
               }
@@ -12595,6 +12675,16 @@ func lowerAssignExprMsil(
             // rhs's own type can now legitimately differ and only the real
             // container type is sound to unbox/re-box against.
             val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+            match recvTy {
+              case MArray(se) -> match sliceArraySpecTokenOpt(cctx, se) {
+                case Some(specTok) -> {
+                  emitSliceCompoundAssignMsil(cctx, fctx, insns, op, recvTy, se, specTok, indices[0], value)
+                  return MVoid
+                }
+                case None -> ()
+              }
+              case _ -> ()
+            }
             val isMap = match recvTy { case MMapOf(_, _) -> true; case MConcreteMap(_, _) -> true; case _ -> false }
             // The container ref is stashed in an `object`-typed temp, so the
             // static List/Dictionary type is re-asserted with `castclass` after

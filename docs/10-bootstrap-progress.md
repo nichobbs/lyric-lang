@@ -35582,3 +35582,42 @@ seams on native, where `slice[Byte]` shares the `LyricList` representation
 (D-N-015). The MSIL metadata reader (15 reference-assembly reads), the CLI's
 runtime-DLL copies, `Std.Tls` certificate loading and `lyric-web` static files
 now use them (#7284, epic #7256).
+
+## Std.Hash.sha512OfFile streams the file
+
+`sha512OfFile` read the whole file into memory before hashing it, which for
+`lyric restore`'s package archives meant holding each `.nupkg` in full. The
+kernels now stream the file through the digest: `SHA512.HashData(Stream)` over
+`File.OpenRead` on .NET, and `MessageDigest.update` over 64 KiB
+`FileInputStream.readNBytes` chunks on the JVM, closing the stream on failure
+too. `hash_tests.l` checks multi-chunk, exact-chunk and empty files against
+`sha512OfBytes` (#7284, epic #7256).
+
+## Native `println` is one system call
+
+The native console kernel wrote a line's text and its newline with two
+`write(2)` calls. The new lyric-rt `lyric_console_write_line` sends both in one
+`writev(2)`, falling back to the write loop on a partial write, so `println`
+and `Std.Console.error` cost one system call and concurrent printers no longer
+split a line from its newline. Output stays unbuffered, matching the managed
+targets' autoflushing console, so a line is visible as soon as it is printed,
+including to a harness reading a long-running program through a pipe (#7284,
+epic #7256).
+
+## MSIL: widening on collection stores; slice compound assignment without boxing
+
+Three sibling paths of #7341's slice-store widening fix still emitted an `Int`
+where the element type was `Long`. They are the concrete `List[Long]` index
+store, the concrete `Map[K, Long]` value store, and the right-hand side of an
+indexed compound assignment (`xs[i] += 3`). The x64 JIT tolerated the invalid
+IL, but ilverify rejected it. All three now widen with `conv.i8` before the
+store or the arithmetic.
+
+`xs[i] op= v` on a `slice[T]` read and wrote through the boxing `IList`
+`get_Item`/`set_Item` even for a genuine array, and took the element type from
+the right-hand side, so `xs[i] += 7` on a `slice[String]` threw
+`InvalidCastException`. It now gets #7259's treatment: an `isinst T[]` test,
+then `ldelem`/`stelem` with no boxing, falling back to `IList` with the real
+element type for a `List`-backed slice. Covered by `slice_fastpath_self_test.l`
+(dotnet, JVM, native) and `slice_fastpath_listbacked_dotnet_self_test.l`
+(#7343).

@@ -11,7 +11,6 @@ package Std.Hash
 
 import Std.Core
 import Std.HashHost
-import Std.FileHost
 
 /// Compute the SHA-1 of `bytes` and return the digest as an uppercase
 /// 40-character hex string.
@@ -44,12 +43,12 @@ pub func sha512OfBytes(bytes: in slice[Byte]): String {
 
 /// Compute the SHA-512 of the file at `path`.  Returns `Err(message)`
 /// when the file cannot be read (missing, permission denied, etc.) —
-/// the caller decides whether that's fatal.
+/// the caller decides whether that's fatal.  The file is streamed through
+/// the digest rather than read into memory.
 @stable(since = "1.0")
 pub func sha512OfFile(path: in String): Result[String, String] {
   try {
-    val bytes = hostReadAllBytes(path)
-    Ok(value = sha512OfBytes(bytes))
+    Ok(value = hostBytesToHex(hostSha512File(path)))
   } catch Bug as b {
     Err(error = b.message)
   }

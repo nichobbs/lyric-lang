@@ -2,6 +2,7 @@
 package Std.Hash.Tests
 
 import Std.Core
+import Std.Collections
 import Std.Encoding
 import Std.File
 import Std.Hash
@@ -61,7 +62,11 @@ func testSha1SupportsRfc6455HandshakeExample(): Unit {
   val guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
   val digestHex = sha1OfBytes(encodeUtf8(key + guid))
   match tryDecodeHex(digestHex) {
-    case Some(bytes) -> assertEqual(encodeBase64(bytes), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "RFC 6455 1.3 Sec-WebSocket-Accept example")
+    case Some(bytes) -> assertEqual(
+      encodeBase64(bytes),
+      "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+      "RFC 6455 1.3 Sec-WebSocket-Accept example"
+    )
     case None -> assertTrue(false, "sha1OfBytes returned malformed hex")
   }
 }
@@ -119,6 +124,40 @@ func testSha512OfFileKnownVector(): Unit {
   }
 }
 
+// The file digest streams in 64 KiB chunks (#7284): a file spanning several
+// chunks, with a partial last one, and an empty file must digest exactly as
+// the in-memory bytes do.
+func assertFileDigestMatchesBytes(size: in Int, label: in String): Unit {
+  val bytes: List[Byte] = newListWithCapacity(size)
+  var i = 0
+  while i < size {
+    bytes.add((i * 31 + 7) % 256)
+    i = i + 1
+  }
+  val path = "/tmp/lyric-hash-test-stream-" + Uuid.uuidToString(Uuid.newUuid()) + ".bin"
+  match writeBytes(path, bytes) {
+    case Ok(_) -> ()
+    case Err(_) -> {
+      assertTrue(false, "could not write temp file for " + label)
+      return
+    }
+  }
+  match sha512OfFile(path) {
+    case Ok(hex) -> assertEqual(hex, sha512OfBytes(bytes.toArray()), "sha512OfFile matches sha512OfBytes: " + label)
+    case Err(e) -> assertTrue(false, "expected Ok for " + label + ", got: " + e)
+  }
+  match deleteFile(path) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}
+
+func testSha512OfFileStreamsChunks(): Unit {
+  assertFileDigestMatchesBytes(200000, "three full 64 KiB chunks plus a partial one")
+  assertFileDigestMatchesBytes(65536, "exactly one chunk")
+  assertFileDigestMatchesBytes(0, "empty file")
+}
+
 func main(): Int {
   testSha1OfBytesKnownVector()
   testSha1OfBytesEmpty()
@@ -129,6 +168,7 @@ func main(): Int {
   testSha512OfBytesEmpty()
   testSha512OfFileNotFound()
   testSha512OfFileKnownVector()
+  testSha512OfFileStreamsChunks()
   println("hash tests: ok")
   return 0
 }

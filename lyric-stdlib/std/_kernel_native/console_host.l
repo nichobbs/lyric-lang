@@ -4,8 +4,8 @@
 //! the native source loader the same way `_kernel_jvm/` twins override
 //! their `_kernel/` counterparts by basename (docs/44 J6 M-10).  Output
 //! goes through the audited lyric-rt helpers (`lyric_console_write*`),
-//! which loop on EINTR/partial writes; console output stays a
-//! best-effort effect per Std.Console's contract.
+//! which loop on EINTR/partial writes (`println` is one `writev`);
+//! console output stays a best-effort effect per Std.Console's contract.
 //!
 //! Console INPUT (`hostConsoleRead` / `hostConsoleReadLine` / `hostReadLineOpt`,
 //! #4816) is not yet available on the native target: `String?` nullable
@@ -17,15 +17,17 @@ package Std.ConsoleHost
 
 extern func consoleWriteFd(fd: Int, s: String): Unit = "lyric_console_write"
 
-extern func consoleNewlineFd(fd: Int): Unit = "lyric_console_write_newline"
+extern func consoleWriteLineFd(fd: Int, s: String): Unit = "lyric_console_write_line"
 
 pub func hostConsoleWrite(text: in String): Unit {
   consoleWriteFd(1, text)
 }
 
+// One writev(2) per line (#7284). Output stays unbuffered, matching the
+// managed targets' autoflushing console: a line is visible as soon as it is
+// written, including to a harness reading a long-running program's pipe.
 pub func hostConsoleWriteLine(text: in String): Unit {
-  consoleWriteFd(1, text)
-  consoleNewlineFd(1)
+  consoleWriteLineFd(1, text)
 }
 
 pub func hostConsoleErrorWrite(text: in String): Unit {
@@ -33,6 +35,5 @@ pub func hostConsoleErrorWrite(text: in String): Unit {
 }
 
 pub func hostConsoleErrorWriteLine(text: in String): Unit {
-  consoleWriteFd(2, text)
-  consoleNewlineFd(2)
+  consoleWriteLineFd(2, text)
 }

@@ -53,5 +53,5 @@ func main(): Unit {
   testForAllShrinksIteratively()
   testForAllIntShrinksToBoundary()
   testForAllIntPairShrinks()
-  println("ok")
+  println("testing_property: ok")
 }
