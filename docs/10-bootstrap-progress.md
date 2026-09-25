@@ -35637,3 +35637,19 @@ report invalid input. It now rejects malformed strings by their syntax first,
 matching the JDK's decimal grammar, so no exception is built for them.
 `parse_tests.l` gains edge-case forms and now runs on dotnet as well as the JVM
 (#7283, epic #7256).
+
+## Encoding and native list kernels without per-byte work
+
+- `Std.Encoding.tryDecodeHex` allocated an `Option` for every nibble. Its
+  digit classifier now returns -1 for a non-hex code unit, and the result list
+  is sized up front.
+- The JVM `encodeUtf8` kernel boxed every output byte into a `List`. A string
+  without a lone surrogate now goes through `String.getBytes("UTF-8")`, which
+  gives identical bytes. A lone surrogate keeps the documented WTF-8 loop.
+- The native kernel, whose strings are already UTF-8, copied its bytes one
+  runtime call at a time. It now takes one sized copy
+  (`lyric_string_utf8_bytes`).
+- In lyric-rt, `lyric_list_copy`, `slice`, `concat` and `append` size their
+  result once and `memcpy` the slots (retaining reference elements), instead
+  of pushing and regrowing element by element. `lyric_file_read_bytes` builds
+  its list with the same one-shot sizing (#7271, #7282, epic #7256).

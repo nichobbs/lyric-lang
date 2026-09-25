@@ -231,6 +231,11 @@ typedef struct {
 } LyricList;
 
 LyricList* lyric_list_new(int32_t elems_are_refs);
+/* A fresh scalar list holding `len` bytes from `data`, sized once. */
+LyricList* lyric_list_from_bytes(const uint8_t* data, int64_t len);
+/* The UTF-8 bytes of `s` as a fresh scalar list (`Std.Encoding.encodeUtf8`
+ * on native, whose strings are already UTF-8); NULL gives an empty list. */
+LyricList* lyric_string_utf8_bytes(LyricString* s);
 void       lyric_list_push(LyricList* list, int64_t val);
 int64_t    lyric_list_get(LyricList* list, int64_t idx);   /* panics OOB; does NOT retain */
 void       lyric_list_set(LyricList* list, int64_t idx, int64_t val);

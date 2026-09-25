@@ -5,12 +5,13 @@
 //! mismatch), so pure-Lyric accumulator paths are safe and preferred.
 //!
 //! hostGetUtf8Enc returns a sentinel String (unused by the accumulator).
-//! hostEncodeUtf8 ignores its first argument and encodes the string in pure Lyric.
+//! hostEncodeUtf8 ignores its first argument; it encodes through the JDK's
+//! UTF-8 encoder unless the string holds a lone surrogate (see there).
 //! hostFromBase64 assumes the caller (Std.Encoding.tryDecodeBase64) has already
 //! validated the input; it only decodes without re-validating.
 //!
 //! Internal: only Std.Encoding should import this.
-@axiom("JVM List[Byte].toArray() produces a properly typed byte array; pure-Lyric accumulators are safe on JVM")
+@axiom("JVM List[Byte].toArray() produces a properly typed byte array and java.lang.String.getBytes(\"UTF-8\") conforms to its documented JVM contract; pure-Lyric accumulators are safe on JVM")
 package Std.EncodingHost
 
 import Std.Core
@@ -49,7 +50,15 @@ pub func hostStringFromCodepoint(cp: in Int): String {
 // Mirrors the original encoding.l accumulator path.  Surrogate pairs are
 // encoded as the corresponding 4-byte supplementary-plane sequence.
 pub func hostEncodeUtf8(enc: in String, s: in String): slice[Byte] {
-  val result: List[Byte] = newList()
+  // A string with no lone surrogate encodes identically through the JDK's
+  // own UTF-8 encoder, which fills a byte[] directly instead of boxing each
+  // byte into a List (#7271). The JDK would replace a lone surrogate with
+  // '?', so those strings keep the WTF-8 loop below (the documented JVM
+  // behaviour, std/encoding.l).
+  if not hasLoneSurrogate(s) {
+    return s.getBytes("UTF-8")
+  }
+  val result: List[Byte] = newListWithCapacity(s.length * 3)
   val len = s.length
   var i = 0
   while i < len {
@@ -86,6 +95,31 @@ pub func hostEncodeUtf8(enc: in String, s: in String): slice[Byte] {
   result.toArray()
 }
 
+// True when `s` has a high surrogate not followed by a low one, or a low
+// surrogate not preceded by a high one.
+func hasLoneSurrogate(s: in String): Bool {
+  val len = s.length
+  var i = 0
+  while i < len {
+    val cu = toInt(s[i])
+    if cu >= 55296 and cu <= 56319 {
+      if i + 1 >= len {
+        return true
+      }
+      val cu2 = toInt(s[i + 1])
+      if cu2 < 56320 or cu2 > 57343 {
+        return true
+      }
+      i += 2
+    } else if cu >= 56320 and cu <= 57343 {
+      return true
+    } else {
+      i += 1
+    }
+  }
+  false
+}
+
 // Pure-Lyric Base64 decoder (JVM path).
 // Assumes the caller has already validated the input (via tryDecodeBase64).
 pub func hostFromBase64(s: in String): slice[Byte] {
@@ -93,7 +127,7 @@ pub func hostFromBase64(s: in String): slice[Byte] {
   if len == 0 {
     return []
   }
-  val result: List[Byte] = newList()
+  val result: List[Byte] = newListWithCapacity(len / 4 * 3)
   var i = 0
   while i < len {
     val c0 = b64v(s[i])

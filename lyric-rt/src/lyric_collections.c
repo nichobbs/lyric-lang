@@ -70,6 +70,27 @@ static void list_grow(LyricList* l, int64_t need) {
     l->cap = cap;
 }
 
+/* Append `n` slots from `src` in one grow and one memcpy, retaining each
+ * element first when the list owns references (#7282). */
+static void list_push_range(LyricList* list, const int64_t* src, int64_t n) {
+    if (n <= 0) return;
+    list_grow(list, list->len + n);
+    if (list->elems_are_refs) {
+        for (int64_t i = 0; i < n; i++) elem_retain(list->elems_are_refs, src[i]);
+    }
+    memcpy(&list->data[list->len], src, (size_t)n * sizeof(int64_t));
+    list->len += n;
+}
+
+LyricList* lyric_list_from_bytes(const uint8_t* data, int64_t len) {
+    LyricList* out = lyric_list_new(0);
+    if (len <= 0) return out;
+    list_grow(out, len);
+    for (int64_t i = 0; i < len; i++) out->data[i] = (int64_t)data[i];
+    out->len = len;
+    return out;
+}
+
 void lyric_list_push(LyricList* list, int64_t val) {
     list_grow(list, list->len + 1);
     elem_retain(list->elems_are_refs, val);
@@ -125,9 +146,7 @@ LyricList* lyric_list_copy(LyricList* src) {
      * instead of a crash (#4851). */
     if (!src) return lyric_list_new(0);
     LyricList* out = lyric_list_new(src->elems_are_refs);
-    for (int64_t i = 0; i < src->len; i++) {
-        lyric_list_push(out, src->data[i]); /* push retains ref elements */
-    }
+    list_push_range(out, src->data, src->len); /* retains ref elements */
     return out;
 }
 
@@ -140,9 +159,7 @@ LyricList* lyric_list_slice(LyricList* src, int64_t start, int64_t stop) {
         lyric_panic_msg("slice(start, end) requires 0 <= start <= end <= length", "lyric_collections.c", __LINE__);
     }
     LyricList* out = lyric_list_new(src->elems_are_refs);
-    for (int64_t i = start; i < stop; i++) {
-        lyric_list_push(out, src->data[i]);
-    }
+    list_push_range(out, src->data + start, stop - start);
     return out;
 }
 
@@ -151,19 +168,23 @@ LyricList* lyric_list_slice(LyricList* src, int64_t start, int64_t stop) {
  * Never mutates either input. */
 LyricList* lyric_list_concat(LyricList* a, LyricList* b) {
     LyricList* out = lyric_list_new(a->elems_are_refs);
-    for (int64_t i = 0; i < a->len; i++) {
-        lyric_list_push(out, a->data[i]);
-    }
-    for (int64_t i = 0; i < b->len; i++) {
-        lyric_list_push(out, b->data[i]);
-    }
+    list_grow(out, a->len + b->len);
+    list_push_range(out, a->data, a->len);
+    list_push_range(out, b->data, b->len);
     return out;
 }
 
 /* `List[T].append(x)` / `slice[T].append(x)` (#6104): a fresh copy of
  * `src` with `val` appended. Never mutates `src` (unlike `.add`/`.push`). */
 LyricList* lyric_list_append(LyricList* src, int64_t val) {
-    LyricList* out = lyric_list_copy(src);
+    if (!src) {
+        LyricList* empty = lyric_list_new(0);
+        lyric_list_push(empty, val);
+        return empty;
+    }
+    LyricList* out = lyric_list_new(src->elems_are_refs);
+    list_grow(out, src->len + 1);
+    list_push_range(out, src->data, src->len);
     lyric_list_push(out, val);
     return out;
 }

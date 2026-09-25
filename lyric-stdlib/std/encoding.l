@@ -77,22 +77,15 @@ pub func tryDecodeHex(s: in String): Option[slice[Byte]] {
   if len == 0 {
     return Some(value = [])
   }
-  val result: List[Byte] = newList()
+  val result: List[Byte] = newListWithCapacity(len / 2)
   var i = 0
   while i < len {
-    // Two nested single-value matches rather than a `(hi, lo)` tuple match:
-    // `--target native` only supports bindings/wildcards inside tuple
-    // patterns, not nested constructor patterns like `(Some(h), Some(l))`
-    // (confirmed via direct repro, issue #6237).
-    match hexCodeUnitValue(hostCharCodeAt(s, i)) {
-      case Some(h) -> {
-        match hexCodeUnitValue(hostCharCodeAt(s, i + 1)) {
-          case Some(l) -> result.add((h * 16 + l).toByte())
-          case None -> return None
-        }
-      }
-      case None -> return None
+    val h = hexCodeUnitValue(hostCharCodeAt(s, i))
+    val l = hexCodeUnitValue(hostCharCodeAt(s, i + 1))
+    if h < 0 or l < 0 {
+      return None
     }
+    result.add((h * 16 + l).toByte())
     i += 2
   }
   Some(value = result.toArray())
@@ -100,21 +93,18 @@ pub func tryDecodeHex(s: in String): Option[slice[Byte]] {
 
 // Same table as Std.Char.hexDigitValue, but over a raw UTF-16/UTF-8
 // code-unit Int (see hostCharCodeAt) instead of a Char, so tryDecodeHex
-// never needs `s[i]`.
-func hexCodeUnitValue(cp: in Int): Option[Int] {
+// never needs `s[i]`. Returns -1 for a non-hex code unit rather than an
+// `Option`, so decoding allocates nothing per nibble (#7271).
+func hexCodeUnitValue(cp: in Int): Int {
   if cp >= 48 and cp <= 57 {
-    return Some(value = cp - 48)
+    cp - 48
+  } else if cp >= 97 and cp <= 102 {
+    cp - 87
+  } else if cp >= 65 and cp <= 70 {
+    cp - 55
+  } else {
+    0 - 1
   }
-  // '0'-'9'
-  if cp >= 97 and cp <= 102 {
-    return Some(value = cp - 97 + 10)
-  }
-  // 'a'-'f'
-  if cp >= 65 and cp <= 70 {
-    return Some(value = cp - 65 + 10)
-  }
-  // 'A'-'F'
-  None
 }
 
 // =====================================================================

@@ -718,6 +718,49 @@ static void test_list_copy(void) {
     lyric_release(empty);
 }
 
+static void test_list_bulk_builders(void) {
+    /* lyric_list_from_bytes / lyric_string_utf8_bytes (#7282, #7271). */
+    const uint8_t raw[] = {0, 1, 200, 255};
+    LyricList* bytes = lyric_list_from_bytes(raw, 4);
+    CHECK(lyric_list_len(bytes) == 4);
+    CHECK(lyric_list_get(bytes, 2) == 200);
+    CHECK(lyric_list_get(bytes, 3) == 255);
+    lyric_list_push(bytes, 9); /* still growable */
+    CHECK(lyric_list_len(bytes) == 5);
+    lyric_release(bytes);
+    LyricString* s = lyric_string_from_literal((const uint8_t*)"h\xc3\xa9", 3);
+    LyricList* utf8 = lyric_string_utf8_bytes(s);
+    CHECK(lyric_list_len(utf8) == 3);
+    CHECK(lyric_list_get(utf8, 1) == 0xC3 && lyric_list_get(utf8, 2) == 0xA9);
+    lyric_release(utf8);
+    lyric_release(s);
+    LyricList* none = lyric_string_utf8_bytes(NULL);
+    CHECK(lyric_list_len(none) == 0);
+    lyric_release(none);
+
+    /* A ref-element concat across several growth steps retains every
+     * element exactly once. */
+    LyricString* e = lyric_string_from_literal((const uint8_t*)"x", 1);
+    LyricList* a = lyric_list_new(1);
+    LyricList* b = lyric_list_new(1);
+    for (int i = 0; i < 20; i++) lyric_list_push(a, (int64_t)(intptr_t)e);
+    for (int i = 0; i < 13; i++) lyric_list_push(b, (int64_t)(intptr_t)e);
+    LyricList* ab = lyric_list_concat(a, b);
+    CHECK(lyric_list_len(ab) == 33);
+    CHECK(atomic_load(&e->rc) == 1 + 33 + 33);
+    LyricList* mid = lyric_list_slice(ab, 5, 30);
+    CHECK(lyric_list_len(mid) == 25);
+    LyricList* more = lyric_list_append(mid, (int64_t)(intptr_t)e);
+    CHECK(lyric_list_len(more) == 26);
+    lyric_release(a);
+    lyric_release(b);
+    lyric_release(ab);
+    lyric_release(mid);
+    lyric_release(more);
+    CHECK(atomic_load(&e->rc) == 1);
+    lyric_release(e);
+}
+
 static void test_list_slice_concat_append(void) {
     /* `.slice(start, stop)`: a fresh half-open sub-copy. Ref elements are
      * retained by the new list; the source is untouched. */
@@ -2632,6 +2675,7 @@ int main(void) {
     test_map_string_keys();
     test_list_copy();
     test_list_slice_concat_append();
+    test_list_bulk_builders();
     test_list_slice_oob_aborts();
     test_string_char_at_oob_aborts();
     test_read_bytes();

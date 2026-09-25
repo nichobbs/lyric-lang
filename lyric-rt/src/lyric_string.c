@@ -600,3 +600,8 @@ const char* lyric_string_to_cstring(LyricString* s) {
 void lyric_cstring_free(const char* p) {
     free((void*)p);
 }
+
+LyricList* lyric_string_utf8_bytes(LyricString* s) {
+    if (!s || s->len == 0) return lyric_list_new(0);
+    return lyric_list_from_bytes(LYRIC_STRING_DATA(s), s->len);
+}
