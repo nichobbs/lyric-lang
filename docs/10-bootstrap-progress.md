@@ -35592,3 +35592,14 @@ kernels now stream the file through the digest: `SHA512.HashData(Stream)` over
 `FileInputStream.readNBytes` chunks on the JVM, closing the stream on failure
 too. `hash_tests.l` checks multi-chunk, exact-chunk and empty files against
 `sha512OfBytes` (#7284, epic #7256).
+
+## Native `println` is one system call
+
+The native console kernel wrote a line's text and its newline with two
+`write(2)` calls. The new lyric-rt `lyric_console_write_line` sends both in one
+`writev(2)`, falling back to the write loop on a partial write, so `println`
+and `Std.Console.error` cost one system call and concurrent printers no longer
+split a line from its newline. Output stays unbuffered, matching the managed
+targets' autoflushing console, so a line is visible as soon as it is printed,
+including to a harness reading a long-running program through a pipe (#7284,
+epic #7256).

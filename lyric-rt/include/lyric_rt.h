@@ -295,6 +295,10 @@ void      lyric_map_dtor(void* obj);
  * effect in Lyric — see Std.Console). */
 void lyric_console_write(int32_t fd, LyricString* s);
 void lyric_console_write_newline(int32_t fd);
+/* `s` followed by '\n' in one writev(2) (falling back to write loops on a
+ * partial write), so `println` costs one syscall. Best-effort like the two
+ * above; NULL or empty `s` writes just the newline. */
+void lyric_console_write_line(int32_t fd, LyricString* s);
 
 /* ── Platform helpers (lyric_posix.c) ──────────────────────────────── */
 

@@ -1463,6 +1463,26 @@ static void test_directories(void) {
     CHECK(!lyric_dir_exists(dir));
 }
 
+static void test_console_write_line(void) {
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    LyricString* s = lyric_string_from_literal((const uint8_t*)"hello", 5);
+    LyricString* empty = lyric_string_from_literal((const uint8_t*)"", 0);
+    lyric_console_write_line(fds[1], s);
+    lyric_console_write_line(fds[1], empty);
+    lyric_console_write_line(fds[1], NULL);
+    close(fds[1]);
+    char buf[32];
+    ssize_t total = 0;
+    ssize_t n;
+    while ((n = read(fds[0], buf + total, sizeof buf - (size_t)total)) > 0) total += n;
+    close(fds[0]);
+    CHECK(total == 8);
+    CHECK(memcmp(buf, "hello\n\n\n", 8) == 0);
+    lyric_release(s);
+    lyric_release(empty);
+}
+
 static void test_environment(void) {
     static const char* name = "LYRIC_RT_TEST_ENV_VAR_UNIQUE";
     CHECK(lyric_env_get(name) == NULL);
@@ -2628,6 +2648,7 @@ int main(void) {
     test_file_io();
     test_file_mtime();
     test_directories();
+    test_console_write_line();
     test_environment();
     test_process();
     test_process_closed_stdio();

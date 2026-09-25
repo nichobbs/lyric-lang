@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -45,6 +46,35 @@ void lyric_console_write(int32_t fd, LyricString* s) {
 void lyric_console_write_newline(int32_t fd) {
     static const uint8_t nl = '\n';
     write_all(fd, &nl, 1);
+}
+
+void lyric_console_write_line(int32_t fd, LyricString* s) {
+    static const uint8_t nl = '\n';
+    int64_t len = s ? s->len : 0;
+    if (len == 0) {
+        write_all(fd, &nl, 1);
+        return;
+    }
+    /* One writev(2) for the text and its newline: half the syscalls of two
+     * writes, and a whole line per call, so concurrent printers don't
+     * split a line from its newline. A partial write falls back to
+     * write_all for whatever remains. */
+    struct iovec iov[2];
+    iov[0].iov_base = (void*)LYRIC_STRING_DATA(s);
+    iov[0].iov_len = (size_t)len;
+    iov[1].iov_base = (void*)&nl;
+    iov[1].iov_len = 1;
+    ssize_t n;
+    do {
+        n = writev(fd, iov, 2);
+    } while (n < 0 && errno == EINTR);
+    if (n < 0) return; /* best-effort: console output never panics */
+    if (n < len) {
+        write_all(fd, LYRIC_STRING_DATA(s) + n, len - n);
+        write_all(fd, &nl, 1);
+    } else if (n == len) {
+        write_all(fd, &nl, 1);
+    }
 }
 
 int32_t lyric_o_rdonly(void) { return O_RDONLY; }
