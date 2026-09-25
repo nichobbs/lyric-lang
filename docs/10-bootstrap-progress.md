@@ -35400,3 +35400,13 @@ with `x = concat(x, [e])` in loops (quadratic); they now accumulate into a
 `List` and call `toArray()` once, and `concat`'s doc comment no longer
 recommends repeated use (#7279, #7282, epic #7256).
 
+## Std.Sort allocates two buffers instead of copying at every level
+
+`Std.Sort.sort` was a top-down merge sort that copied every element into
+fresh sub-slices at each recursion level and recursed down to single
+elements. It is now a bottom-up merge sort: runs of 16 are insertion-sorted
+in place, then merged pairwise between two buffers allocated once, with no
+recursion. Still stable and O(n log n); extra space drops to O(n). Covered by
+`sort_self_test.l` (sizes around the run and merge widths, reversed and
+duplicate-heavy input, stability) (#7281, epic #7256).
+

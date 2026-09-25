@@ -1,18 +1,19 @@
 //! std/sort.l - Stable merge sort over slices.
 //!
 //! `sort[T]` accepts an explicit comparator so it works for any element
-//! type without a built-in ordering constraint.  Two convenience wrappers
-//! (`sortInts`, `sortStrings`) bake in the natural orderings.
+//! type without a built-in ordering constraint.  Convenience wrappers
+//! (`sortInts`, `sortLongs`, `sortStrings`) bake in the natural orderings.
 //!
-//! Algorithm: top-down merge sort.  O(n log n) comparisons; O(n log n)
-//! allocation because each recursive level materialises left/right sub-
-//! slices through `Std.Collections.List[T]`.  A future Phase 2 revision
-//! can reduce that to O(n) by passing index ranges and a single scratch
-//! buffer once mutable slice views are available.
+//! Algorithm: bottom-up merge sort.  Runs of 16 elements are
+//! insertion-sorted in place, then merged pairwise, doubling the run width
+//! each pass and alternating between two buffers that are each allocated
+//! once.  O(n log n) comparisons, O(n) extra space, no recursion.  The
+//! earlier top-down version copied every element into fresh sub-slices at
+//! each recursion level (#7281).
 //!
-//! Stability guarantee: `mergeSorted` appends from the left sub-slice
-//! when `cmp(left[i], right[j]) <= 0`, so equal elements from the left
-//! half always precede equal elements from the right half.
+//! Stability guarantee: insertion sort only moves an element past a
+//! strictly greater one, and `mergeRuns` takes from the left run when
+//! `cmp(left, right) <= 0`, so equal elements keep their original order.
 package Std.Sort
 
 import Std.Collections
@@ -34,10 +35,40 @@ pub func sort[T](xs: in slice[T], cmp: in (T, T) -> Int): slice[T] {
   if n <= 1 {
     return xs
   }
-  val mid = n / 2
-  val left = sliceCopy(xs, 0, mid)
-  val right = sliceCopy(xs, mid, n)
-  return mergeSorted(sort(left, cmp), sort(right, cmp), cmp)
+  // Runs this short are insertion-sorted: fewer comparisons and no buffer
+  // traffic for the small ranges merge sort handles poorly. A local rather
+  // than a module val because generic bodies are specialised into the
+  // caller's package, where this package's private vals do not resolve.
+  val insertionRun = 16
+  val a: List[T] = newListWithCapacity(n)
+  val b: List[T] = newListWithCapacity(n)
+  for x in xs {
+    a.add(x)
+    b.add(x)
+  }
+  var lo = 0
+  while lo < n {
+    val hi = if lo + insertionRun < n { lo + insertionRun } else { n }
+    insertionSortRange(a, lo, hi, cmp)
+    lo = hi
+  }
+  var src = a
+  var dst = b
+  var width = insertionRun
+  while width < n {
+    var left = 0
+    while left < n {
+      val mid = if left + width < n { left + width } else { n }
+      val right = if left + 2 * width < n { left + 2 * width } else { n }
+      mergeRuns(src, dst, left, mid, right, cmp)
+      left = right
+    }
+    val swap = src
+    src = dst
+    dst = swap
+    width = width * 2
+  }
+  src.toArray()
 }
 
 /// Sort an `Int` slice into ascending order.
@@ -75,36 +106,44 @@ pub func isSorted[T](xs: in slice[T], cmp: in (T, T) -> Int): Bool {
 // =====================================================================
 // Private helpers.
 // =====================================================================
-func sliceCopy[T](xs: in slice[T], lo: in Int, hi: in Int): slice[T] {
-  val acc: List[T] = newList()
-  var i = lo
+// Stable insertion sort of `xs[lo, hi)` in place.
+func insertionSortRange[T](xs: in List[T], lo: in Int, hi: in Int, cmp: in (T, T) -> Int): Unit {
+  var i = lo + 1
   while i < hi {
-    acc.add(xs[i])
+    val key = xs[i]
+    var j = i - 1
+    while j >= lo and cmp(xs[j], key) > 0 {
+      xs[j + 1] = xs[j]
+      j = j - 1
+    }
+    xs[j + 1] = key
     i = i + 1
   }
-  return acc.toArray()
 }
 
-func mergeSorted[T](left: in slice[T], right: in slice[T], cmp: in (T, T) -> Int): slice[T] {
-  val acc: List[T] = newList()
-  var i = 0
-  var j = 0
-  while i < left.length and j < right.length {
-    if cmp(left[i], right[j]) <= 0 {
-      acc.add(left[i])
+// Merge the sorted runs `src[lo, mid)` and `src[mid, hi)` into `dst[lo, hi)`.
+func mergeRuns[T](src: in List[T], dst: in List[T], lo: in Int, mid: in Int, hi: in Int, cmp: in (T, T) -> Int): Unit {
+  var i = lo
+  var j = mid
+  var k = lo
+  while i < mid and j < hi {
+    if cmp(src[i], src[j]) <= 0 {
+      dst[k] = src[i]
       i = i + 1
     } else {
-      acc.add(right[j])
+      dst[k] = src[j]
       j = j + 1
     }
+    k = k + 1
   }
-  while i < left.length {
-    acc.add(left[i])
+  while i < mid {
+    dst[k] = src[i]
     i = i + 1
+    k = k + 1
   }
-  while j < right.length {
-    acc.add(right[j])
+  while j < hi {
+    dst[k] = src[j]
     j = j + 1
+    k = k + 1
   }
-  return acc.toArray()
 }
