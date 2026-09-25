@@ -757,6 +757,8 @@ jobs:
   # background step inside compiler-self-tests-dotnet-a that took ~59 min of
   # that job's ~88 min wall time; sharded here so the files run in parallel
   # jobs (interleaved selection, see compiler-self-tests-batch.sh --shard).
+  # After the closure-scan speedup the 55 files take ~20-55 s each (~28 min
+  # sequential on a 4-vCPU machine), so two shards land near 15 min apiece.
   compiler-self-tests-core:
     runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
@@ -767,7 +769,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1/4, 2/4, 3/4, 4/4]
+        shard: [1/2, 2/2]
     name: compiler-self-tests-core (${{ matrix.shard }})
     steps:
       - name: Redirect temporary directory (#4975)
@@ -6068,11 +6070,12 @@ jobs:
   # (they exercise the Msil.*/Jvm.* emission libraries on the dotnet host), run
   # via `LYRIC_LOAD_COMPILER=1 lyric run` by scripts/run-numbered-self-tests.sh;
   # a file passes when it exits 0 and prints no `<label>=false` check line.
-  # Each file recompiles its compiler-package closure from source (~50-110 s
-  # measured at 4-way parallelism), so the sets are sharded across parallel
-  # matrix jobs to keep every job's wall time in the 10-20 min band of the
-  # other self-test jobs on the 4-vCPU standard runners: msil is 83 files
-  # (~60 CPU-min) in 2 shards, jvm is 132 files (~120 CPU-min) in 4 shards.
+  # Each file recompiles its compiler-package closure from source. That took
+  # ~50-110 s per file until the closure scan stopped re-splitting the whole
+  # compiler tree quadratically; measured at 4-way parallelism on a 4-vCPU
+  # machine it is now ~4-5 s for msil files and ~5-60 s for jvm files (msil:
+  # 83 files in ~1m40s wall, jvm: 131 files in ~5m wall), so each set runs
+  # as a single job. `--shard` stays available if a set outgrows that.
   numbered-backend-self-tests:
     # A shard whose set has no relevant changes skips every step at step level
     # (below) but still needs a runner. Send those no-op shards to
@@ -6111,12 +6114,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { set: msil, shard: 1/2 }
-          - { set: msil, shard: 2/2 }
-          - { set: jvm, shard: 1/4 }
-          - { set: jvm, shard: 2/4 }
-          - { set: jvm, shard: 3/4 }
-          - { set: jvm, shard: 4/4 }
+          - { set: msil, shard: 1/1 }
+          - { set: jvm, shard: 1/1 }
     name: numbered-self-tests (${{ matrix.set }} ${{ matrix.shard }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
