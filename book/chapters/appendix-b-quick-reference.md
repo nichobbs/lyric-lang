@@ -730,7 +730,7 @@ output_assembly = "myapp.dll"
 |---|---|---|
 | `Std.Core` | `Result`, `Option`, built-in ops | `Ok`, `Err`, `Some`, `None`, `println`, `panic`, `assert`, `expect`, `toString`, `default`, `mapResult`, `mapResultErr`, `mapOption`, `andThenResult`, `unwrapResultOr`, `unwrapErrOr`, `unwrapResult`, `unwrapOption`, `unwrapOr`, `isOk`, `isErr`, `isSome`, `isNone` |
 | `Std.Core.Proof` | Proof-required witness functions | `identity`, `pickFirst`, `pickSecond`, `trueLit`, `falseLit`, `tag`, `assertEq`, `wrappedIdentity` (all `@pure @stable(since="1.0")`) |
-| `Std.String` | String manipulation | `trim`, `split`, `join`, `contains`, `startsWith`, `toUpper`, `substring` |
+| `Std.String` | String manipulation | `trim`, `split`, `join`, `contains`, `startsWith`, `toUpper`, `substring`, `indexOfFrom`, `StringBuilder` (`new`/`append`/`appendChar`/`toString`) |
 | `Std.Parse` | Numeric parsing | `tryParseInt`, `tryParseLong`, `tryParseDouble`, `tryParseBool` |
 | `Std.Errors` | Standard error types | `ParseError`, `IOError`, `HttpError` |
 | `Std.File` | File system | `readText`, `writeText`, `fileExists`, `createDir` |

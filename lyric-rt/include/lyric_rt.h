@@ -151,6 +151,11 @@ LyricString* lyric_string_to_lower(LyricString* s);
 LyricString* lyric_string_to_upper(LyricString* s);
 int64_t      lyric_string_index_of(LyricString* haystack, LyricString* needle);
 int64_t      lyric_string_last_index_of(LyricString* haystack, LyricString* needle);
+/* Forward search starting at byte offset `from` (Std.String.indexOfFrom,
+ * #7258): the byte offset of the first match at or after `from`, or -1.
+ * An empty needle matches at `from`.  Panics unless 0 <= from <= length;
+ * the Lyric wrapper states the same bound as a `requires:`. */
+int64_t      lyric_string_index_of_from(LyricString* haystack, LyricString* needle, int64_t from);
 int32_t      lyric_string_starts_with(LyricString* s, LyricString* prefix);
 int32_t      lyric_string_contains(LyricString* haystack, LyricString* needle);
 int32_t      lyric_string_ends_with(LyricString* s, LyricString* suffix);
@@ -244,6 +249,11 @@ LyricList* lyric_list_concat(LyricList* a, LyricList* b);
  * end; never mutates `src` (unlike `.add`/`lyric_list_push`). */
 LyricList* lyric_list_append(LyricList* src, int64_t val);
 void       lyric_list_dtor(void* obj);
+
+/* Concatenate every element of a List[String] into one fresh rc=1 string,
+ * allocated once from the summed lengths — the native backing for
+ * Std.String.StringBuilder (#7257).  Borrows `parts` (ARC Rule 5). */
+LyricString* lyric_string_concat_list(LyricList* parts);
 
 /* Map: open-addressing hash map.  Keys are either LyricString* (hashed
  * with SipHash-2-4 over the UTF-8 data) or 64-bit scalars (Fibonacci

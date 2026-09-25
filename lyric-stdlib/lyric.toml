@@ -28,6 +28,8 @@ output_assembly = "Lyric.Stdlib.dll"
 # Tier 0 — base layer; no intra-stdlib imports beyond Std.Core.
 "Std.Core"             = "std/core.l"
 "Std.Errors"           = "std/errors.l"
+# Kernel boundary for Std.String's StringBuilder and indexOfFrom (#7257).
+"Std.StringHost"       = "std/_kernel/string_host.l"
 "Std.String"           = "std/string.l"
 "Std.Core.Proof"       = "std/core_proof.l"
 # Kernel boundary for process execution — only Std.Core dependency.

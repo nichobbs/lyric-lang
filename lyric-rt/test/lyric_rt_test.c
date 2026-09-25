@@ -476,6 +476,58 @@ static void test_string_trim_case_search(void) {
     lyric_release(helloNeedle);
 }
 
+static void test_string_index_of_from_concat_list(void) {
+    /* indexOfFrom (#7258): matches at/after `from`, -1 when absent after it,
+     * empty needle matches at `from` (including from == length), and a
+     * match that starts exactly at `from`. */
+    LyricString* h = lyric_string_from_literal((const uint8_t*)"a,b,,c", 6);
+    LyricString* comma = lyric_string_from_literal((const uint8_t*)",", 1);
+    LyricString* empty = lyric_string_from_literal((const uint8_t*)"", 0);
+    LyricString* bc = lyric_string_from_literal((const uint8_t*)"b,", 2);
+    CHECK(lyric_string_index_of_from(h, comma, 0) == 1);
+    CHECK(lyric_string_index_of_from(h, comma, 1) == 1);
+    CHECK(lyric_string_index_of_from(h, comma, 2) == 3);
+    CHECK(lyric_string_index_of_from(h, comma, 4) == 4);
+    CHECK(lyric_string_index_of_from(h, comma, 5) == -1);
+    CHECK(lyric_string_index_of_from(h, comma, 6) == -1);
+    CHECK(lyric_string_index_of_from(h, empty, 3) == 3);
+    CHECK(lyric_string_index_of_from(h, empty, 6) == 6);
+    CHECK(lyric_string_index_of_from(h, bc, 0) == 2);
+    CHECK(lyric_string_index_of_from(h, bc, 3) == -1);
+    /* A partial-prefix candidate before the real match exercises the
+     * memchr-skip loop's retry path. */
+    LyricString* aab = lyric_string_from_literal((const uint8_t*)"aaab", 4);
+    LyricString* ab = lyric_string_from_literal((const uint8_t*)"ab", 2);
+    CHECK(lyric_string_index_of(aab, ab) == 2);
+    CHECK(lyric_string_index_of_from(aab, ab, 1) == 2);
+    CHECK(lyric_string_index_of_from(aab, ab, 3) == -1);
+
+    /* concat_list (#7257): empty list, single element, empty elements, and
+     * multi-byte UTF-8 content copied verbatim. */
+    LyricList* parts = lyric_list_new(1);
+    LyricString* none = lyric_string_concat_list(parts);
+    CHECK(lyric_string_len(none) == 0);
+    lyric_list_push(parts, (int64_t)(intptr_t)h);
+    lyric_list_push(parts, (int64_t)(intptr_t)empty);
+    LyricString* utf8 = lyric_string_from_literal((const uint8_t*)"\xC3\xA9!", 3);
+    lyric_list_push(parts, (int64_t)(intptr_t)utf8);
+    LyricString* joined = lyric_string_concat_list(parts);
+    CHECK(lyric_string_len(joined) == 9);
+    CHECK(memcmp(LYRIC_STRING_DATA(joined), "a,b,,c\xC3\xA9!", 9) == 0);
+    CHECK(LYRIC_STRING_DATA(joined)[9] == 0);
+
+    lyric_release(joined);
+    lyric_release(none);
+    lyric_release(parts);
+    lyric_release(utf8);
+    lyric_release(ab);
+    lyric_release(aab);
+    lyric_release(bc);
+    lyric_release(empty);
+    lyric_release(comma);
+    lyric_release(h);
+}
+
 static void test_weak(void) {
     LyricObjectHeader* h = (LyricObjectHeader*)lyric_alloc(sizeof(LyricObjectHeader));
     atomic_store(&h->rc, 1);
@@ -2418,6 +2470,7 @@ int main(void) {
     test_free();
     test_strings();
     test_string_trim_case_search();
+    test_string_index_of_from_concat_list();
     test_weak();
     test_weak_uaf();
     test_weak_liveness();

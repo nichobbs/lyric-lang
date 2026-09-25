@@ -1965,6 +1965,33 @@ concatenation and `Char.toString()` are also implemented for
 scalar operation and `s[i]` documented in this section is now implemented
 on `--target native`.
 
+### 12.2 Building and scanning strings
+
+`a + b` on `String` allocates a new string and copies both operands, so
+accumulating a result with `acc = acc + piece` in a loop costs time
+quadratic in the result length on every target. `Std.String` provides
+linear-time alternatives (#7257, #7258):
+
+| Form | Result | Notes |
+|---|---|---|
+| `StringBuilder.new()` | `StringBuilder` | empty accumulator |
+| `sb.append(s)` | `Unit` | amortised O(1) |
+| `sb.appendChar(c)` | `Unit` | amortised O(1) |
+| `sb.toString()` | `String` | the accumulated text; the builder stays usable |
+| `join(sep, parts)` / `joinList(sep, xs)` | `String` | linear in the total length |
+| `indexOfFrom(s, sub, from)` | `Option[Int]` | first match at or after `from` |
+| `indexOfFromRaw(s, sub, from)` | `Int` | as above, `-1` when absent |
+
+`StringBuilder` is backed by `System.Text.StringBuilder` on .NET and
+`java.lang.StringBuilder` on the JVM; on `--target native` it collects the
+appended pieces and `toString()` materialises them with a single allocation
+(`lyric_string_concat_list`). `indexOfFrom` compares ordinally on every
+target, requires `0 <= from <= s.length` (a `requires:` clause), and an
+empty `sub` matches at `from`. Offsets are code units on .NET/JVM and byte
+offsets on native, matching `.substring` on each target. A forward scan
+that advances `from` past each match is linear in the input; re-slicing
+the remainder with `.substring` after each match is not.
+
 ## 13. Tooling
 
 ### 13.1 Compiler

@@ -1844,6 +1844,21 @@ func emitToString(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
   }
 }
 
+/// True for the scalar receivers `emitToString` converts. Any other
+/// receiver (a record, opaque type, union, ...) falls through to UFCS
+/// resolution, so a user-defined `T.toString(x: in T)` method is honoured
+/// instead of the built-in conversion (#7257).
+func isScalarNType(t: in NType): Bool {
+  match t {
+    case NI32 -> true
+    case NI64 -> true
+    case NI8 -> true
+    case NI1 -> true
+    case NDouble -> true
+    case _ -> false
+  }
+}
+
 func widenBoolToI32(ctx: in Ctx, insns: in List[NInsn], v: in NValue): NValue {
   val dest = freshTmp(ctx)
   insns.add(NZExt(dest = dest, fromTy = NI1, value = v, toTy = NI32))
@@ -2628,7 +2643,7 @@ func lowerScalarMethodCall(
     }
     return None
   }
-  if name == "toString" and args.count == 0 {
+  if name == "toString" and args.count == 0 and isScalarNType(v.ty) {
     // `Char.toString()` (#6237): `Char` and `Int` both erase to `NI32`
     // (`v.ty` alone can't tell them apart — see `Ctx.varIsChar`'s header
     // comment), so `emitToString`'s `NI32` case would otherwise call
@@ -3557,20 +3572,16 @@ func lowerConstructCall(
         case CAPositional(ex) -> Some(value = ex)
         case CANamed(_, value, _) -> Some(value = value)
       }
-      // `lowerScalarMethodCall`'s `None` arm is unreachable here: the type
-      // checker only admits the prelude `toString(x)` call for a type that
-      // supports string conversion, and every such type (String passthrough,
-      // every scalar) is already handled by `lowerScalarMethodCall`'s
-      // `.toString()` path.  If a future scalar-like type widens that set
-      // without a matching `lowerScalarMethodCall` arm, the fallthrough below
-      // would resolve `tv`'s already-lowered instructions against unrelated
-      // construct forms (record/union/distinct) instead of surfacing a clear
-      // "no toString for this type" diagnostic — worth revisiting if that
-      // widening ever happens (#4984).
+      // `lowerScalarMethodCall` returns `None` for a non-scalar receiver so
+      // a user-defined `T.toString` method wins on the `.toString()` path
+      // (#7257). The prelude spelling has no such method to fall back to,
+      // so a non-scalar argument is reported here rather than being
+      // resolved against unrelated construct forms below (#4984).
       match lowerScalarMethodCall(ctx, insns, tv, "toString", noMethodArgs, line, argExpr) {
         case Some(result) -> return result
-        case None -> {
-        }
+        case None -> panic(
+          "Lyric.LlvmCodegen: toString(x) on this type is not yet supported for --target native (Phase N1)"
+        )
       }
     }
     if name == "NativeWeak" and args.count == 1 {

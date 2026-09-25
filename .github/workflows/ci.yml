@@ -1365,6 +1365,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Std.String StringBuilder / join / indexOfFrom (#7257, #7258).  Each is
+      # backed by a different kernel per target; the JVM job and the native
+      # smoke test run the same file.
+      - name: String-builder self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/string_builder_self_test.l
+
       # Record `.copy(field = value)` (D-progress-948) and calls through a
       # record's function-typed field, `r.f(args)` (D-progress-952).  Native
       # `lyric test`, imports only `Std.*`; the JVM job runs both too.
@@ -3996,6 +4005,13 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # JVM half of the String-builder self-test (#7257, #7258).
+      - name: String-builder self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/string_builder_self_test.l
 
       # JVM counterparts of the record copy / function-field steps in the
       # dotnet job (D-progress-948, D-progress-952).
