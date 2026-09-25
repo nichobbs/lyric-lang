@@ -223,6 +223,10 @@ pub func pipeExpandAndRewrite(
     return None
   }
   f = idRes.file
+  // Record/opaque `invariant:` construction checkers (#7222): synthesized
+  // before type checking so they are checked, and exported, like any
+  // function of the declaring package.
+  f = synthesizeInvariantCheckers(f)
   if injectWeave {
     f = Weaver.injectWeaveImports(f)
   }
@@ -267,15 +271,19 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
     return None
   }
-  val checked = copyRes.file
-  opts.checkedSourceOut.add(checked)
+  opts.checkedSourceOut.add(copyRes.file)
+  // Route every construction of an invariant-bearing type through its
+  // checker (#7222).  After `.copy` desugaring, so a copy's constructor call
+  // is covered too; after `checkedSourceOut` is captured, so generic bodies
+  // exported for another package's specialisation stay checker-free.
+  val checked = wrapInvariantConstructions(copyRes.file, tcRes.symbols.invariantCtorSites)
 
   val mcRes = checkFile(checked)
   if gate(opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {
     return None
   }
 
-  val elaborated = elaborateFile(checked)
+  val elaborated = elaborateFileWithInterfaces(checked, monoIfaceDecls)
 
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).
   // Runs after the elaborator so a propagated Err/None short-circuit is not

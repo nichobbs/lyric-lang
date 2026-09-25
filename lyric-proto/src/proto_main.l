@@ -74,12 +74,17 @@ pub func floatToInt32Bits(v: in Float): Int {
 pub func doubleToInt64Bits(v: in Double): Long = ()
 
 /// Read a single byte from `data[offset]` as an unsigned Int (0-255).
-pub func byteAt(data: in slice[Byte], offset: in Int): Int {
+pub func byteAt(data: in slice[Byte], offset: in Int): Int
+  requires: offset >= 0 and offset < data.length
+  ensures: result >= 0 and result <= 255
+{
   data[offset].toInt()
 }
 
 /// Read four bytes from data[offset..offset+4) as a little-endian Int32.
-pub func int32LE(data: in slice[Byte], offset: in Int): Int {
+pub func int32LE(data: in slice[Byte], offset: in Int): Int
+  requires: offset >= 0 and offset <= data.length - 4
+{
   val b0 = byteAt(data, offset)
   val b1 = byteAt(data, offset + 1)
   val b2 = byteAt(data, offset + 2)
@@ -88,7 +93,9 @@ pub func int32LE(data: in slice[Byte], offset: in Int): Int {
 }
 
 /// Read eight bytes from data[offset..offset+8) as a little-endian Int64.
-pub func int64LE(data: in slice[Byte], offset: in Int): Long {
+pub func int64LE(data: in slice[Byte], offset: in Int): Long
+  requires: offset >= 0 and offset <= data.length - 8
+{
   var result = 0i64
   var i = 0
   while i < 8 {
@@ -100,7 +107,10 @@ pub func int64LE(data: in slice[Byte], offset: in Int): Long {
 }
 
 /// Copy data[offset..offset+length) into a fresh slice[Byte].
-pub func sliceCopy(data: in slice[Byte], offset: in Int, length: in Int): slice[Byte] {
+pub func sliceCopy(data: in slice[Byte], offset: in Int, length: in Int): slice[Byte]
+  requires: offset >= 0 and length >= 0 and length <= data.length - offset
+  ensures: result.length == length
+{
   var acc: List[Byte] = newList()
   var i = 0
   while i < length {
@@ -182,6 +192,17 @@ val WIRE_LENGTH_DELIMITED: Int = 2
 
 val WIRE_FIXED32: Int = 5
 
+/// Largest legal protobuf field number (2^29 - 1).
+val MAX_FIELD_NUMBER: Int = 536870911
+
+/// True when `n` is a field number a message may use: 1 to 2^29 - 1,
+/// excluding 19000-19999, which the protobuf specification reserves for its
+/// own implementation.
+@pure
+pub func isValidFieldNumber(n: in Int): Bool {
+  n >= 1 and n <= MAX_FIELD_NUMBER and (n < 19000 or n > 19999)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Field values for encoding ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -230,10 +251,13 @@ pub func zigzag64(n: Long): Long {
   xorLong(shlLong(n, 1), shrLong(n, 63))
 }
 
-/// ZigZag-decode a sint32 value.
+/// ZigZag-decode a sint32 value.  Only the low 32 bits of the varint are
+/// significant (protobuf truncates an oversized sint32 varint the same way),
+/// so a decoded value from untrusted bytes can never overflow `Int`.
 pub func unzigzag32(n: Long): Int {
-  val shifted = shrLong(n, 1)
-  val mask = -(bitandLong(n, 1i64))
+  val low = bitandLong(n, 0xFFFFFFFFi64)
+  val shifted = shrLong(low, 1)
+  val mask = -(bitandLong(low, 1i64))
   longAsInt(xorLong(shifted, mask))
 }
 
@@ -262,7 +286,11 @@ func writeVarint(buf: ProtoBuffer, v: Long): Unit {
 }
 
 // ─── Field tag encoding ───────────────────────────────────────────────────────
-func writeTag(buf: ProtoBuffer, fieldNumber: Int, wireTypeId: Int): Unit {
+func writeTag(buf: ProtoBuffer, fieldNumber: Int, wireTypeId: Int): Unit
+  requires: isValidFieldNumber(fieldNumber)
+  requires: wireTypeId == WIRE_VARINT or wireTypeId == WIRE_FIXED64 or wireTypeId == WIRE_LENGTH_DELIMITED or
+    wireTypeId == WIRE_FIXED32
+{
   val fnL = intAsLong(fieldNumber)
   val wtL = intAsLong(wireTypeId)
   val tag = bitorLong(shlLong(fnL, 3), wtL)
@@ -327,42 +355,58 @@ pub func encodeMessage(fields: List[ProtoField]): slice[Byte] {
 
 // ─── Convenience constructors ─────────────────────────────────────────────────
 @stable(since = "0.1")
-pub func floatField(number: Int, v: Float): ProtoField {
+pub func floatField(number: Int, v: Float): ProtoField
+  requires: isValidFieldNumber(number)
+{
   Fix32Field(number, floatToInt32Bits(v))
 }
 
 @stable(since = "0.1")
-pub func doubleField(number: Int, v: Double): ProtoField {
+pub func doubleField(number: Int, v: Double): ProtoField
+  requires: isValidFieldNumber(number)
+{
   Fix64Field(number, doubleToInt64Bits(v))
 }
 
 @stable(since = "0.1")
-pub func boolField(number: Int, v: Bool): ProtoField {
+pub func boolField(number: Int, v: Bool): ProtoField
+  requires: isValidFieldNumber(number)
+{
   VarField(number, if v { 1i64 } else { 0i64 })
 }
 
 @stable(since = "0.1")
-pub func enumField(number: Int, ordinal: Int): ProtoField {
+pub func enumField(number: Int, ordinal: Int): ProtoField
+  requires: isValidFieldNumber(number)
+{
   VarField(number, intAsLong(ordinal))
 }
 
 @stable(since = "0.1")
-pub func stringField(number: Int, utf8: slice[Byte]): ProtoField {
+pub func stringField(number: Int, utf8: slice[Byte]): ProtoField
+  requires: isValidFieldNumber(number)
+{
   BytesField(number, utf8)
 }
 
 @stable(since = "0.1")
-pub func embeddedField(number: Int, inner: slice[Byte]): ProtoField {
+pub func embeddedField(number: Int, inner: slice[Byte]): ProtoField
+  requires: isValidFieldNumber(number)
+{
   BytesField(number, inner)
 }
 
 @stable(since = "0.1")
-pub func sint32Field(number: Int, v: Int): ProtoField {
+pub func sint32Field(number: Int, v: Int): ProtoField
+  requires: isValidFieldNumber(number)
+{
   VarField(number, zigzag32(v))
 }
 
 @stable(since = "0.1")
-pub func sint64Field(number: Int, v: Long): ProtoField {
+pub func sint64Field(number: Int, v: Long): ProtoField
+  requires: isValidFieldNumber(number)
+{
   VarField(number, zigzag64(v))
 }
 
@@ -376,6 +420,11 @@ func readVarint(data: in slice[Byte], offset: Int): Result[VarintResult, String]
   while pos < data.length {
     val b = byteAt(data, pos)
     pos = pos + 1
+    // The tenth byte carries only bit 63; anything more does not fit in 64
+    // bits and would otherwise be dropped silently.
+    if shift == 63 and bitandInt(b, 127) > 1 {
+      return Err(error = "varint overflow: value exceeds 64 bits at offset " + offset.toString())
+    }
     val lo7 = intAsLong(bitandInt(b, 127))
     acc = bitorLong(acc, shlLong(lo7, shift))
     shift = shift + 7
@@ -402,7 +451,14 @@ pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, Strin
     case Err(e) -> Err(error = "tag read failed: " + e)
     case Ok(tagResult) -> {
       val tag = tagResult.value
-      val fieldNum = longAsInt(shrLong(tag, 3))
+      // Validate before narrowing: a tag above 2^34 (or with the sign bit
+      // set) would otherwise throw from the Int conversion, and field
+      // number 0 is not a field.
+      val fieldNumL = shrLong(tag, 3)
+      if tag < 0i64 or fieldNumL < 1i64 or fieldNumL > intAsLong(MAX_FIELD_NUMBER) {
+        return Err(error = "invalid field number in tag at offset " + offset.toString())
+      }
+      val fieldNum = longAsInt(fieldNumL)
       val wireTypeId = longAsInt(bitandLong(tag, 7i64))
       val afterTag = tagResult.nextOffset
       // Const patterns (docs/46): the wire-type arms reference the named
@@ -430,18 +486,21 @@ pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, Strin
             error = "length prefix at field " + fieldNum.toString() + ": " + e
           )
           case Ok(lenResult) -> {
-            val length = longAsInt(lenResult.value)
             val dataStart = lenResult.nextOffset
-            if dataStart + length > data.length {
-              Err(error = "truncated bytes field " + fieldNum.toString())
-            } else {
-              Ok(
-                value = DecodeStep(
-                  field = DecodedBytes(fieldNum, sliceCopy(data, dataStart, length)),
-                  nextOffset = dataStart + length
-                )
-              )
+            // The length is untrusted: range-check it as a Long before
+            // narrowing, so a negative or oversized prefix is a decode error
+            // rather than a host exception or a backwards `nextOffset`.
+            val lengthL = lenResult.value
+            if lengthL < 0i64 or lengthL > intAsLong(data.length - dataStart) {
+              return Err(error = "truncated bytes field " + fieldNum.toString())
             }
+            val length = longAsInt(lengthL)
+            Ok(
+              value = DecodeStep(
+                field = DecodedBytes(fieldNum, sliceCopy(data, dataStart, length)),
+                nextOffset = dataStart + length
+              )
+            )
           }
         }
         case @WIRE_FIXED32 -> {
@@ -466,6 +525,10 @@ pub func decodeMessage(data: in slice[Byte]): Result[List[DecodedField], String]
     match decodeStep(data, offset) {
       case Err(e) -> return Err(error = e)
       case Ok(step) -> {
+        // Defence in depth: a step that fails to advance would loop forever.
+        if step.nextOffset <= offset {
+          return Err(error = "decoder made no progress at offset " + offset.toString())
+        }
         fields.add(step.field)
         offset = step.nextOffset
       }

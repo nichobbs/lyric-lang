@@ -163,8 +163,12 @@ pub protected type SpanBuffer {
   // `OTel.Otlp.flushOtlpAsync`, #5588) snapshot here, encode/POST, and only
   // call `removeExported` on success — never `drain`, which would drop the
   // batch unconditionally before the export result is known.
+  // Returns a copy taken under the buffer's lock: the live list keeps
+  // growing while an export is in flight, so handing it out would make the
+  // exported count (and the encoder's view) include spans pushed after the
+  // snapshot, which `removeExported` would then drop unsent (#7235).
   func snapshot(): List[Span] {
-    return spans
+    return copySpans(spans)
   }
   // Remove the first `n` spans (the ones a caller already exported
   // successfully, per `snapshot`'s FIFO order) rather than clearing
@@ -189,6 +193,16 @@ pub protected type SpanBuffer {
   func count(): Int {
     return spans.length
   }
+}
+
+func copySpans(xs: in List[Span]): List[Span] {
+  val acc: List[Span] = newList()
+  var i = 0
+  while i < xs.count {
+    acc.add(xs[i])
+    i = i + 1
+  }
+  acc
 }
 
 func newSpanBuffer(): SpanBuffer {
@@ -258,11 +272,25 @@ pub protected type MetricsBuffer {
       histograms.add(HistogramPoint(name = name, unit = unit, count = 1i64, sum = value))
     }
   }
+  // Copies under the lock, like `SpanBuffer.snapshot`, so a concurrent
+  // record cannot mutate the list while the exporter encodes it.
   func snapshotCounters(): List[CounterPoint] {
-    return counters
+    val acc: List[CounterPoint] = newList()
+    var i = 0
+    while i < counters.length {
+      acc.add(counters[i])
+      i = i + 1
+    }
+    return acc
   }
   func snapshotHistograms(): List[HistogramPoint] {
-    return histograms
+    val acc: List[HistogramPoint] = newList()
+    var i = 0
+    while i < histograms.length {
+      acc.add(histograms[i])
+      i = i + 1
+    }
+    return acc
   }
 }
 

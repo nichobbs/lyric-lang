@@ -42,6 +42,7 @@ import Grpc.Kernel.Jvm
 import Std.Core
 import Std.Collections
 import Std.Iter
+import Std.Char as Ch
 
 // ─── Client: default options ──────────────────────────────────────────────────
 /// Default call options: no deadline, no metadata.
@@ -50,14 +51,78 @@ pub func defaultOptions(): GrpcCallOptions {
 }
 
 /// Return options with a specific deadline (milliseconds from now).
-pub func withTimeout(opts: in GrpcCallOptions, ms: in Int): GrpcCallOptions {
+pub func withTimeout(opts: in GrpcCallOptions, ms: in Int): GrpcCallOptions
+  requires: ms > 0
+{
   GrpcCallOptions(timeoutMs = Some(value = ms), metadata = opts.metadata)
 }
 
 /// Return options with an extra metadata entry added.
-pub func withMetadata(opts: in GrpcCallOptions, metaKey: in String, metaValue: in String): GrpcCallOptions {
+///
+/// `metaKey` must be a valid gRPC metadata key and `metaValue` a valid value
+/// for it (`isValidMetadataKey` / `isValidMetadataValue`): a CR or LF in a
+/// value would otherwise reach the HTTP/2 header block.  For a value that
+/// comes from outside the program (a forwarded token, a request field), use
+/// `tryWithMetadata`, which reports an invalid entry as `Err` instead.
+pub func withMetadata(opts: in GrpcCallOptions, metaKey: in String, metaValue: in String): GrpcCallOptions
+  requires: isValidMetadataKey(metaKey)
+  requires: isValidMetadataValue(metaKey, metaValue)
+{
   val metaEntry = GrpcMetadataEntry(key = metaKey, value = metaValue)
   GrpcCallOptions(timeoutMs = opts.timeoutMs, metadata = concat(opts.metadata, [metaEntry]))
+}
+
+/// `withMetadata` for untrusted input: `Err` with a reason when the key or
+/// value is not valid gRPC metadata.
+pub func tryWithMetadata(
+  opts: in GrpcCallOptions, metaKey: in String, metaValue: in String
+): Result[GrpcCallOptions, String] {
+  if not isValidMetadataKey(metaKey) {
+    return Err(error = "invalid gRPC metadata key '" + metaKey + "'")
+  }
+  if not isValidMetadataValue(metaKey, metaValue) {
+    return Err(error = "invalid value for gRPC metadata key '" + metaKey + "'")
+  }
+  Std.Core.Ok(value = withMetadata(opts, metaKey, metaValue))
+}
+
+/// True when `k` is a gRPC metadata key a caller may set: non-empty, only
+/// lowercase ASCII letters, digits, `_`, `-` and `.`, and not in the
+/// `grpc-` namespace the protocol reserves.
+@pure
+pub func isValidMetadataKey(k: in String): Bool {
+  if k.length == 0 or k.startsWith("grpc-") {
+    return false
+  }
+  var i = 0
+  while i < k.length {
+    val c = Ch.toInt(k[i])
+    val ok = (c >= 97 and c <= 122) or (c >= 48 and c <= 57) or c == 95 or c == 45 or c == 46
+    if not ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// True when `v` is a valid value for metadata key `k`.  A `-bin` key carries
+/// arbitrary bytes, which the transport base64-encodes; any other key's value
+/// must be printable ASCII (0x20-0x7E), so it can never carry CR, LF or NUL.
+@pure
+pub func isValidMetadataValue(k: in String, v: in String): Bool {
+  if k.endsWith("-bin") {
+    return true
+  }
+  var i = 0
+  while i < v.length {
+    val c = Ch.toInt(v[i])
+    if c < 32 or c > 126 {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 func percentEncodeMetadata(s: in String): String {
@@ -246,9 +311,13 @@ pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize:
 }
 
 // ─── Server: GrpcMetadata helper ─────────────────────────────────────────────
-/// Read a metadata key.  Returns None if the key is absent.
+/// Read a metadata key.  Returns None if the key is absent.  Keys are
+/// lowercase on the wire, so `metaKey` must be too: a lookup for
+/// `"Authorization"` would otherwise miss `authorization` silently.
 @stable(since = "0.1")
-pub func metadataGet(entries: in slice[GrpcMetadataEntry], metaKey: in String): Option[String] {
+pub func metadataGet(entries: in slice[GrpcMetadataEntry], metaKey: in String): Option[String]
+  requires: isValidMetadataKey(metaKey) or metaKey.startsWith("grpc-")
+{
   for meta in entries {
     if meta.key == metaKey {
       return Some(value = meta.value)

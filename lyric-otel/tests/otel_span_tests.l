@@ -121,6 +121,23 @@ test "globalSpanBuffer.removeExported only removes the snapshotted prefix" {
   assertEqual(spanName(remaining[0]), "removeExported.second", "the late-arriving span survives")
 }
 
+// #7235: `flushOtlpAsync` holds the snapshot across the export `await` and
+// only then removes `snapshot.length` spans.  The snapshot must be a copy: a
+// live alias grows with every span pushed during the POST, which would then
+// be removed without ever being exported.
+test "globalSpanBuffer.snapshot is a copy that later pushes do not change" {
+  val _ = globalSpanBuffer.drain()
+  val first = startSpan("snapshotCopy.first", 0)
+  endSpan(first)
+  val held = globalSpanBuffer.snapshot()
+  val second = startSpan("snapshotCopy.second", 0)
+  endSpan(second)
+  assertEqualInt(held.length, 1, "the held snapshot still has one span")
+  globalSpanBuffer.removeExported(held.length)
+  assertEqualInt(globalSpanBuffer.count(), 1, "the span pushed during the export survives")
+  assertEqual(spanName(globalSpanBuffer.snapshot()[0]), "snapshotCopy.second", "and it is the late one")
+}
+
 // ─── Counters ─────────────────────────────────────────────────────────────────
 test "incrementCounter accumulates across calls with the same name" {
   incrementCounter("otel_span_tests.counter.a", 3, "requests")

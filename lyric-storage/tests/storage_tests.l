@@ -233,6 +233,13 @@ test "list returns Ok after multiple puts" {
   assertTrue(isOk[ListResult, StorageError](list(bucket, "list/")), "list with prefix must succeed after puts")
 }
 
+test "list rejects unsafe prefix with path traversal" {
+  val bRes = freshBucket()
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isErr[ListResult, StorageError](list(bucket, "../")), "list must reject a `..` prefix at the safety gate")
+}
+
 // Pagination cursor smoke test (#1460 / #1012) — exercises the
 // `bucket.list(prefix, token, maxKeys)` interface directly with a
 // small page size and asserts both pages succeed.  The first page
@@ -290,9 +297,8 @@ test "get rejects unsafe key with absolute path" {
 //
 // Keys whose basename ends in `.meta.json` are reserved for the local-fs
 // sidecar metadata files and must be uniformly rejected across all
-// operations.  `isSafeKey` is the single source of truth; the four
-// data-plane methods all carry `requires: isSafeKey(key)` so the rejection
-// surfaces as a contract violation.
+// operations.  `isSafeKey` is the single source of truth; every
+// `StorageBucket` method returns `Err(INVALID_KEY)` for a rejected key.
 test "isSafeKey rejects .meta.json-suffixed key" {
   assertTrue(not isSafeKey("archive.meta.json"), "bare .meta.json key must be rejected")
   assertTrue(not isSafeKey("uploads/photo.meta.json"), "nested .meta.json key must be rejected")

@@ -1018,7 +1018,8 @@ func divide(n: in Int, d: in Int): Int
 ```
 
 - `requires`: precondition. Boolean expression evaluated on entry. Failure raises `PreconditionViolated` (a `Bug`).
-- `ensures`: postcondition. Boolean expression evaluated on return. Has access to `result` (the return value) and `old(expr)` (value of `expr` at entry).
+- `ensures`: postcondition. Boolean expression evaluated on return. Has access to `result` (the return value) and `old(expr)` (value of `expr` at entry). Failure raises `PostconditionViolated`. Every `return` is checked, wherever it appears: at the top level of the body, in `if`/`match`/loop/`try`/`scope` bodies, inside a `val`/`var` initializer or an assignment's right-hand side, and in an expression-bodied match arm, as well as the trailing fall-off value. The one exception is the early exit synthesized by `?` (§ error propagation): it returns the callee's `Err`/`None` unchanged and does not evaluate the postcondition, so write postconditions of `Result`/`Option`-returning functions in the `result.isOk implies ...` form.
+- The failure message names the violation kind, the owning function qualified by its package, and the clause as written: `PreconditionViolated: Division.divide requires d != 0`, `PostconditionViolated: Division.divide ensures result >= 0`. Methods are named `Pkg.Type.method`; protected-type invariants report `InvariantViolated: Pkg.Type.entry invariant ...` and loop invariants `LoopInvariantViolated: invariant ...`. The message is identical on every target.
 - `requires` and `ensures` clauses may be repeated for clarity:
 
 ```
@@ -1030,6 +1031,14 @@ func transfer(...): Result
   // ...
 }
 ```
+
+#### 6.1.1 Methods and interfaces
+
+Contract clauses apply to every function form: top-level functions, dot-named functions (`func Box.scaled(...)`), methods declared inside a `record { }` body, and methods in an `impl` block.
+
+A method signature in an `interface` may carry `requires:` and `ensures:` clauses. Every implementation of that method is checked against the interface's clauses **and** its own, the same additive composition aspects use (§ Aspects): an implementation may add preconditions and postconditions but cannot remove the interface's. Interface clauses refer to the interface method's parameter names; they are matched to the implementing method's parameters by position, so an implementation may rename a parameter freely. The check runs inside the implementation, so it applies whether the method is called on the concrete type or through an interface-typed value. Interface default methods inherited by an `impl` (§ interfaces) carry their clauses with them.
+
+Because an interface clause binds every implementation, it must describe programmer obligations, not untrusted input. A method whose arguments routinely come from outside the program (a storage key from an upload, a header value from a request) validates them in its body and returns an error value instead of declaring a precondition.
 
 ### 6.2 Type invariants
 
@@ -1049,6 +1058,15 @@ Invariants must hold:
 - On every return value of the type
 
 Internal mutations may temporarily violate the invariant; the invariant is checked when control returns to a public boundary.
+
+**Current enforcement (all targets).** Every construction of a record or opaque type that declares invariants is checked: a constructor call anywhere (including in another package of the same build, and inside generic functions), and every `.copy(...)`. A violation raises `InvariantViolated: <Pkg.Type> invariant <clause>`, one clause at a time in declaration order. The check is a compiler-synthesized function `__lyric_checked_<Type>` in the declaring package, with the type's own visibility. Invariant clauses are evaluated in the declaring package, so they may call that package's private helpers. Not yet enforced (#7222):
+
+- re-checking after in-place mutation of a `var` field or an `inout` parameter;
+- the public-boundary checks listed above;
+- construction inside a generic function body that another package specialises;
+- construction in a restored package built before invariant checking;
+- construction in code synthesized after type checking (derived `@generate` deserializers);
+- the `@projectable` `tryInto` check.
 
 ### 6.3 Contract expression sublanguage
 
@@ -1075,7 +1093,7 @@ Each package declares a verification level:
 package Account
 ```
 
-- `@runtime_checked` (default): contracts are runtime asserts. Enabled in debug, configurable in release.
+- `@runtime_checked` (default): contracts are runtime asserts, checked in every build profile (`--release` does not remove them).
 - `@proof_required`: SMT solver must discharge every contract obligation at compile time. Modules at this level may only call other `@proof_required` modules, primitives, or modules behind explicit `@axiom` boundaries.
 - `@proof_required(unsafe_blocks_allowed)`: as above, with `unsafe { ... }` escape hatches that the prover treats as opaque.
 

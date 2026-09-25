@@ -3097,6 +3097,23 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/ensures_self_test.l
 
+      # Contracts on record-body methods, impl methods and interface methods
+      # (#7223): runtime-asserted on the implementation, interface clauses
+      # inherited positionally.  Imports only `Std.*`.
+      - name: Method contracts self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/method_contracts_self_test.l
+
+      # Record / opaque-type invariants checked at every construction and
+      # `.copy` (#7222).  Imports only `Std.*`.
+      - name: Invariant self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/invariant_self_test.l
+
       - name: Wait for parallel tests (dotnet-b batch 4 split, #4975)
         wait-all: true
 
@@ -4597,6 +4614,20 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"ensures self-test ran: ensures_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/ensures_self_test.l"
+
+      # JVM half of the dotnet-job method-contracts step (#7223).
+      - name: Method contracts self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"method contracts self-test ran: method_contracts_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/method_contracts_self_test.l"
+
+      # JVM half of the dotnet-job invariant step (#7222).
+      - name: Invariant self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"invariant self-test ran: invariant_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/invariant_self_test.l"
 
       # pconstructor typed-binding self-test on JVM (#3284) — the JVM half of
       # the dotnet-job `pconstructor_typed_binding_self_test.l` run.  Pins JVM

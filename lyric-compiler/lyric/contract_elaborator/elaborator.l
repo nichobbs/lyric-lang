@@ -74,8 +74,10 @@ package Lyric.ContractElaborator
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Fmt as Fmt
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Annotation predicates.
@@ -132,6 +134,9 @@ pub record RenameCounter {
 record SpannedExpr {
   expr: Expr
   span: Span
+  // The failure message the synthesized assert raises, naming the violation
+  // kind, the owning function and the clause as written (#7225).
+  message: String
 }
 
 pub func newRenameCounter(): RenameCounter {
@@ -338,10 +343,11 @@ func mkPath(name: in String, sp: in Span): Expr {
   mkExpr(EPath(path = ModulePath(segments = segs, span = sp)), sp)
 }
 
-func mkAssertCall(cond: in Expr, sp: in Span): Statement {
+func mkAssertCall(cond: in Expr, message: in String, sp: in Span): Statement {
   val callee = mkPath("assert", sp)
   val args: List[CallArg] = newList()
   args.add(CAPositional(expr = cond))
+  args.add(CAPositional(expr = mkExpr(ELiteral(lit = LString(text = message)), sp)))
   val call = mkExpr(ECall(fn = callee, args = args), sp)
   mkStmt(SExpr(expr = call), sp)
 }
@@ -369,19 +375,19 @@ func mkLetBinding(name: in String, init: in Expr, sp: in Span): Statement {
 //     for the rest of the tree (we still allocate fresh records, but
 //     each leaf retains its original `Span`).
 // ─────────────────────────────────────────────────────────────────────────────
-func substResult(e: in Expr, name: in String): Expr {
+func substResult(e: in Expr, name: in String, renames: in Map[String, String]): Expr {
   match e.kind {
-    case EResult -> mkPath(name, e.span)
+    case EResult -> if name == "" { e } else { mkPath(name, e.span) }
     case ELiteral(_) -> e
-    case EPath(_) -> e
+    case EPath(p) -> renamePath(e, p, renames)
     case ESelf -> e
     case EError -> e
-    case EParen(inner) -> mkExpr(EParen(inner = substResult(inner, name)), e.span)
+    case EParen(inner) -> mkExpr(EParen(inner = substResult(inner, name, renames)), e.span)
     case ETuple(exprs) -> {
       val outs: List[Expr] = newList()
       var i = 0
       while i < exprs.count {
-        outs.add(substResult(exprs[i], name))
+        outs.add(substResult(exprs[i], name, renames))
         i = i + 1
       }
       mkExpr(ETuple(exprs = outs), e.span)
@@ -390,20 +396,20 @@ func substResult(e: in Expr, name: in String): Expr {
       val outs: List[Expr] = newList()
       var i = 0
       while i < exprs.count {
-        outs.add(substResult(exprs[i], name))
+        outs.add(substResult(exprs[i], name, renames))
         i = i + 1
       }
       mkExpr(EList(exprs = outs), e.span)
     }
     case EIf(cond, thenBranch, elseOpt, thenForm) -> {
       val newElse: Option[ExprOrBlock] = match elseOpt {
-        case Some(eb) -> Some(value = substResultEob(eb, name))
+        case Some(eb) -> Some(value = substResultEob(eb, name, renames))
         case None -> None
       }
       mkExpr(
         EIf(
-          cond = substResult(cond, name),
-          thenBranch = substResultEob(thenBranch, name),
+          cond = substResult(cond, name, renames),
+          thenBranch = substResultEob(thenBranch, name, renames),
           elseBranch = newElse,
           thenForm = thenForm
         ),
@@ -415,66 +421,105 @@ func substResult(e: in Expr, name: in String): Expr {
       var i = 0
       while i < arms.count {
         val arm = arms[i]
-        val newGuard: Option[Expr] = match arm.guard { case Some(g) -> Some(value = substResult(g, name)); case None -> None }
-        newArms.add(MatchArm(pattern = arm.pattern, guard = newGuard, body = substResultEob(arm.body, name), span = arm.span))
+        val armRenames = withoutNames(renames, patternBoundNames(arm.pattern))
+        val newGuard: Option[Expr] = match arm.guard {
+          case Some(g) -> Some(value = substResult(g, name, armRenames))
+          case None -> None
+        }
+        newArms.add(
+          MatchArm(
+            pattern = arm.pattern,
+            guard = newGuard,
+            body = substResultEob(arm.body, name, armRenames),
+            span = arm.span
+          )
+        )
         i = i + 1
       }
-      mkExpr(EMatch(scrutinee = substResult(scrutinee, name), arms = newArms), e.span)
+      mkExpr(EMatch(scrutinee = substResult(scrutinee, name, renames), arms = newArms), e.span)
     }
-    case EAwait(inner) -> mkExpr(EAwait(inner = substResult(inner, name)), e.span)
-    case EYield(inner) -> mkExpr(EYield(inner = substResult(inner, name)), e.span)
-    case ESpawn(inner) -> mkExpr(ESpawn(inner = substResult(inner, name)), e.span)
-    case ETry(inner) -> mkExpr(ETry(inner = substResult(inner, name)), e.span)
-    case EOld(inner) -> mkExpr(EOld(inner = substResult(inner, name)), e.span)
+    case EAwait(inner) -> mkExpr(EAwait(inner = substResult(inner, name, renames)), e.span)
+    case EYield(inner) -> mkExpr(EYield(inner = substResult(inner, name, renames)), e.span)
+    case ESpawn(inner) -> mkExpr(ESpawn(inner = substResult(inner, name, renames)), e.span)
+    case ETry(inner) -> mkExpr(ETry(inner = substResult(inner, name, renames)), e.span)
+    case EOld(inner) -> mkExpr(EOld(inner = substResult(inner, name, renames)), e.span)
     case EForall(binders, whereOpt, body) -> {
-      val newWhere: Option[Expr] = match whereOpt { case Some(w) -> Some(value = substResult(w, name)); case None -> None }
-      mkExpr(EForall(binders = binders, whereExpr = newWhere, body = substResult(body, name)), e.span)
+      val qRenames = withoutNames(renames, propertyBinderNames(binders))
+      val newWhere: Option[Expr] = match whereOpt {
+        case Some(w) -> Some(value = substResult(w, name, qRenames))
+        case None -> None
+      }
+      mkExpr(EForall(binders = binders, whereExpr = newWhere, body = substResult(body, name, qRenames)), e.span)
     }
     case EExists(binders, whereOpt, body) -> {
-      val newWhere: Option[Expr] = match whereOpt { case Some(w) -> Some(value = substResult(w, name)); case None -> None }
-      mkExpr(EExists(binders = binders, whereExpr = newWhere, body = substResult(body, name)), e.span)
+      val qRenames = withoutNames(renames, propertyBinderNames(binders))
+      val newWhere: Option[Expr] = match whereOpt {
+        case Some(w) -> Some(value = substResult(w, name, qRenames))
+        case None -> None
+      }
+      mkExpr(EExists(binders = binders, whereExpr = newWhere, body = substResult(body, name, qRenames)), e.span)
     }
-    case ELambda(params, body) -> mkExpr(ELambda(lambdaParams = params, body = substResultBlock(body, name)), e.span)
+    case ELambda(params, body) -> mkExpr(
+      ELambda(
+        lambdaParams = params,
+        body = substResultBlock(
+          body,
+          name,
+          withoutNames(renames, lambdaParamNames(params))
+        )
+      ),
+      e.span
+    )
     case ECall(fn, args) -> {
       val newArgs: List[CallArg] = newList()
       var i = 0
       while i < args.count {
         match args[i] {
-          case CANamed(n, v, sp) -> newArgs.add(CANamed(name = n, value = substResult(v, name), span = sp))
-          case CAPositional(v) -> newArgs.add(CAPositional(expr = substResult(v, name)))
+          case CANamed(n, v, sp) -> newArgs.add(CANamed(name = n, value = substResult(v, name, renames), span = sp))
+          case CAPositional(v) -> newArgs.add(CAPositional(expr = substResult(v, name, renames)))
         }
         i = i + 1
       }
-      mkExpr(ECall(fn = substResult(fn, name), args = newArgs), e.span)
+      mkExpr(ECall(fn = substResult(fn, name, renames), args = newArgs), e.span)
     }
-    case ETypeApp(fn, ts) -> mkExpr(ETypeApp(fn = substResult(fn, name), args = ts), e.span)
+    case ETypeApp(fn, ts) -> mkExpr(ETypeApp(fn = substResult(fn, name, renames), args = ts), e.span)
     case EIndex(recv, indices) -> {
       val newIdx: List[Expr] = newList()
       var i = 0
       while i < indices.count {
-        newIdx.add(substResult(indices[i], name))
+        newIdx.add(substResult(indices[i], name, renames))
         i = i + 1
       }
-      mkExpr(EIndex(receiver = substResult(recv, name), indices = newIdx), e.span)
+      mkExpr(EIndex(receiver = substResult(recv, name, renames), indices = newIdx), e.span)
     }
-    case EMember(recv, mname) -> mkExpr(EMember(receiver = substResult(recv, name), memberName = mname), e.span)
-    case EPropagate(inner) -> mkExpr(EPropagate(inner = substResult(inner, name)), e.span)
-    case EPrefix(op, x) -> mkExpr(EPrefix(op = op, operand = substResult(x, name)), e.span)
-    case EBinop(op, l, r) -> mkExpr(EBinop(op = op, lhs = substResult(l, name), rhs = substResult(r, name)), e.span)
-    case ERange(bound) -> mkExpr(ERange(bound = substResultRange(bound, name)), e.span)
-    case EAssign(t, op, v) -> mkExpr(
-      EAssign(target = substResult(t, name), op = op, value = substResult(v, name)),
+    case EMember(recv, mname) -> mkExpr(
+      EMember(receiver = substResult(recv, name, renames), memberName = mname),
       e.span
     )
-    case EBlock(blk) -> mkExpr(EBlock(block = substResultBlock(blk, name)), e.span)
-    case EUnsafe(blk) -> mkExpr(EUnsafe(block = substResultBlock(blk, name)), e.span)
+    case EPropagate(inner) -> mkExpr(EPropagate(inner = substResult(inner, name, renames)), e.span)
+    case EPrefix(op, x) -> mkExpr(EPrefix(op = op, operand = substResult(x, name, renames)), e.span)
+    case EBinop(op, l, r) -> mkExpr(
+      EBinop(op = op, lhs = substResult(l, name, renames), rhs = substResult(r, name, renames)),
+      e.span
+    )
+    case ERange(bound) -> mkExpr(ERange(bound = substResultRange(bound, name, renames)), e.span)
+    case EAssign(t, op, v) -> mkExpr(
+      EAssign(
+        target = substResult(t, name, renames),
+        op = op,
+        value = substResult(v, name, renames)
+      ),
+      e.span
+    )
+    case EBlock(blk) -> mkExpr(EBlock(block = substResultBlock(blk, name, renames)), e.span)
+    case EUnsafe(blk) -> mkExpr(EUnsafe(block = substResultBlock(blk, name, renames)), e.span)
     case EInterpolated(segs) -> {
       val outs: List[InterpolatedSegment] = newList()
       var i = 0
       while i < segs.count {
         match segs[i] {
           case ISText(t, sp) -> outs.add(ISText(text = t, span = sp))
-          case ISExpr(x) -> outs.add(ISExpr(expr = substResult(x, name)))
+          case ISExpr(x) -> outs.add(ISExpr(expr = substResult(x, name, renames)))
         }
         i = i + 1
       }
@@ -483,98 +528,260 @@ func substResult(e: in Expr, name: in String): Expr {
   }
 }
 
-func substResultEob(eob: in ExprOrBlock, name: in String): ExprOrBlock {
-  match eob {
-    case EOBExpr(x) -> EOBExpr(expr = substResult(x, name))
-    case EOBBlock(blk) -> EOBBlock(block = substResultBlock(blk, name))
+// Rename a single-segment path per `renames` (interface-parameter name ->
+// implementing method's parameter name, used when an impl method inherits
+// its interface method's contract clauses).  Multi-segment paths are
+// qualified references and never name a parameter.
+func renamePath(e: in Expr, p: in ModulePath, renames: in Map[String, String]): Expr {
+  if p.segments.count != 1 {
+    return e
+  }
+  match mapGet(renames, p.segments[0]) {
+    // A dotted target (`__lyric_value.f`, used by the invariant checkers) becomes a
+    // member-access chain, not a single path segment.
+    case Some(target) -> {
+      val parts = Str.split(target, ".")
+      var acc = mkPath(parts[0], e.span)
+      var i = 1
+      while i < parts.length {
+        acc = mkExpr(EMember(receiver = acc, memberName = parts[i]), e.span)
+        i = i + 1
+      }
+      acc
+    }
+    case None -> e
   }
 }
 
-func substResultBlock(blk: in Block, name: in String): Block {
+func withoutNames(renames: in Map[String, String], names: in List[String]): Map[String, String] {
+  var hit = false
+  var i = 0
+  while i < names.count {
+    if renames.containsKey(names[i]) {
+      hit = true
+    }
+    i = i + 1
+  }
+  if not hit {
+    return renames
+  }
+  val acc: Map[String, String] = newMap()
+  val keys = mapKeys(renames)
+  var k = 0
+  while k < keys.count {
+    if not names.contains(keys[k]) {
+      match mapGet(renames, keys[k]) {
+        case Some(v) -> acc.add(keys[k], v)
+        case None -> ()
+      }
+    }
+    k = k + 1
+  }
+  acc
+}
+
+func lambdaParamNames(ps: in List[LambdaParam]): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < ps.count {
+    acc.add(ps[i].name)
+    i = i + 1
+  }
+  acc
+}
+
+func propertyBinderNames(bs: in List[PropertyBinder]): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < bs.count {
+    acc.add(bs[i].name)
+    i = i + 1
+  }
+  acc
+}
+
+func localBindingNames(b: in LocalBinding): List[String] {
+  match b {
+    case LBVal(pat, _, _) -> patternBoundNames(pat)
+    case LBLet(n, _, _) -> {
+      val acc: List[String] = newList()
+      acc.add(n)
+      acc
+    }
+    case LBVar(n, _, _) -> {
+      val acc: List[String] = newList()
+      acc.add(n)
+      acc
+    }
+  }
+}
+
+func patternBoundNames(pat: in Pattern): List[String] {
+  val acc: List[String] = newList()
+  collectPatternNames(pat, acc)
+  acc
+}
+
+func collectPatternNames(pat: in Pattern, acc: in List[String]): Unit {
+  match pat.kind {
+    case PBinding(n, innerOpt) -> {
+      acc.add(n)
+      match innerOpt {
+        case Some(inner) -> collectPatternNames(inner, acc)
+        case None -> ()
+      }
+    }
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count {
+        collectPatternNames(args[i], acc)
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, p, _) -> collectPatternNames(p, acc)
+          case RPFShort(n, _) -> acc.add(n)
+        }
+        i = i + 1
+      }
+    }
+    case PTuple(ps) -> {
+      var i = 0
+      while i < ps.count {
+        collectPatternNames(ps[i], acc)
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> collectPatternNames(inner, acc)
+    case PTypeTest(inner, _) -> collectPatternNames(inner, acc)
+    case POr(ps) -> {
+      if ps.count > 0 {
+        collectPatternNames(ps[0], acc)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func substResultEob(eob: in ExprOrBlock, name: in String, renames: in Map[String, String]): ExprOrBlock {
+  match eob {
+    case EOBExpr(x) -> EOBExpr(expr = substResult(x, name, renames))
+    case EOBBlock(blk) -> EOBBlock(block = substResultBlock(blk, name, renames))
+  }
+}
+
+func substResultBlock(blk: in Block, name: in String, renames: in Map[String, String]): Block {
   val outs: List[Statement] = newList()
+  var scopeRenames = renames
   var i = 0
   while i < blk.statements.count {
-    outs.add(substResultStmt(blk.statements[i], name))
+    val st = blk.statements[i]
+    outs.add(substResultStmt(st, name, scopeRenames))
+    // A local binding shadows a renamed parameter for the rest of the block.
+    match st.kind {
+      case SLocal(binding) -> {
+        scopeRenames = withoutNames(scopeRenames, localBindingNames(binding))
+      }
+      case _ -> ()
+    }
     i = i + 1
   }
   Block(statements = outs, span = blk.span)
 }
 
-func substResultStmt(s: in Statement, name: in String): Statement {
+func substResultStmt(s: in Statement, name: in String, renames: in Map[String, String]): Statement {
   match s.kind {
-    case SLocal(binding) -> mkStmt(SLocal(binding = substResultBinding(binding, name)), s.span)
+    case SLocal(binding) -> mkStmt(SLocal(binding = substResultBinding(binding, name, renames)), s.span)
     case SAssign(t, op, v) -> mkStmt(
-      SAssign(target = substResult(t, name), op = op, value = substResult(v, name)),
+      SAssign(
+        target = substResult(t, name, renames),
+        op = op,
+        value = substResult(v, name, renames)
+      ),
       s.span
     )
     case SReturn(valOpt) -> {
-      val newVal: Option[Expr] = match valOpt { case Some(v) -> Some(value = substResult(v, name)); case None -> None }
+      val newVal: Option[Expr] = match valOpt {
+        case Some(v) -> Some(value = substResult(v, name, renames))
+        case None -> None
+      }
       mkStmt(SReturn(value = newVal), s.span)
     }
     case SBreak(_) -> s
     case SContinue(_) -> s
-    case SThrow(x) -> mkStmt(SThrow(expr = substResult(x, name)), s.span)
+    case SThrow(x) -> mkStmt(SThrow(expr = substResult(x, name, renames)), s.span)
     case STry(body, catches, finally_) -> {
       val newCatches: List[CatchClause] = newList()
       var i = 0
       while i < catches.count {
         val c = catches[i]
         newCatches.add(
-          CatchClause(typeName = c.typeName, bindName = c.bindName, body = substResultBlock(c.body, name), span = c.span)
+          CatchClause(
+            typeName = c.typeName,
+            bindName = c.bindName,
+            body = substResultBlock(c.body, name, renames),
+            span = c.span
+          )
         )
         i = i + 1
       }
-      val newFinally = match finally_ { case None -> None; case Some(fb) -> Some(substResultBlock(fb, name)) }
-      mkStmt(STry(body = substResultBlock(body, name), catches = newCatches, finally_ = newFinally), s.span)
+      val newFinally = match finally_ { case None -> None; case Some(fb) -> Some(substResultBlock(fb, name, renames)) }
+      mkStmt(STry(body = substResultBlock(body, name, renames), catches = newCatches, finally_ = newFinally), s.span)
     }
-    case SDefer(body) -> mkStmt(SDefer(body = substResultBlock(body, name)), s.span)
-    case SScope(label, body) -> mkStmt(SScope(binding = label, body = substResultBlock(body, name)), s.span)
+    case SDefer(body) -> mkStmt(SDefer(body = substResultBlock(body, name, renames)), s.span)
+    case SScope(label, body) -> mkStmt(SScope(binding = label, body = substResultBlock(body, name, renames)), s.span)
     case SFor(label, pat, iter, body) -> mkStmt(
       SFor(
         label = label,
         pat = pat,
-        iter = substResult(iter, name),
-        body = substResultBlock(body, name)
+        iter = substResult(iter, name, renames),
+        body = substResultBlock(body, name, renames)
       ),
       s.span
     )
     case SWhile(label, cond, body) -> mkStmt(
       SWhile(
         label = label,
-        cond = substResult(cond, name),
-        body = substResultBlock(body, name)
+        cond = substResult(cond, name, renames),
+        body = substResultBlock(body, name, renames)
       ),
       s.span
     )
-    case SLoop(label, body) -> mkStmt(SLoop(label = label, body = substResultBlock(body, name)), s.span)
-    case SInvariant(x) -> mkStmt(SInvariant(expr = substResult(x, name)), s.span)
-    case SExpr(x) -> mkStmt(SExpr(expr = substResult(x, name)), s.span)
-    case SRule(l, r) -> mkStmt(SRule(lhs = substResult(l, name), rhs = substResult(r, name)), s.span)
+    case SLoop(label, body) -> mkStmt(SLoop(label = label, body = substResultBlock(body, name, renames)), s.span)
+    case SInvariant(x) -> mkStmt(SInvariant(expr = substResult(x, name, renames)), s.span)
+    case SExpr(x) -> mkStmt(SExpr(expr = substResult(x, name, renames)), s.span)
+    case SRule(l, r) -> mkStmt(SRule(lhs = substResult(l, name, renames), rhs = substResult(r, name, renames)), s.span)
     case SItem(_) -> s
   }
 }
 
-func substResultBinding(b: in LocalBinding, name: in String): LocalBinding {
+func substResultBinding(b: in LocalBinding, name: in String, renames: in Map[String, String]): LocalBinding {
   match b {
-    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = substResult(init, name))
-    case LBLet(n, ty, init) -> LBLet(name = n, ty = ty, init = substResult(init, name))
+    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = substResult(init, name, renames))
+    case LBLet(n, ty, init) -> LBLet(name = n, ty = ty, init = substResult(init, name, renames))
     case LBVar(n, ty, initOpt) -> {
-      val newInit: Option[Expr] = match initOpt { case Some(x) -> Some(value = substResult(x, name)); case None -> None }
+      val newInit: Option[Expr] = match initOpt {
+        case Some(x) -> Some(value = substResult(x, name, renames))
+        case None -> None
+      }
       LBVar(name = n, ty = ty, init = newInit)
     }
   }
 }
 
-func substResultRange(b: in RangeBound, name: in String): RangeBound {
+func substResultRange(b: in RangeBound, name: in String, renames: in Map[String, String]): RangeBound {
   match b {
-    case RBClosed(lo, hi) -> RBClosed(lo = substResult(lo, name), hi = substResult(hi, name))
+    case RBClosed(lo, hi) -> RBClosed(lo = substResult(lo, name, renames), hi = substResult(hi, name, renames))
     case RBHalfOpen(lo, hi, bareDotDot) -> RBHalfOpen(
-      lo = substResult(lo, name),
-      hi = substResult(hi, name),
+      lo = substResult(lo, name, renames),
+      hi = substResult(hi, name, renames),
       bareDotDot = bareDotDot
     )
-    case RBLowerOpen(hi) -> RBLowerOpen(hi = substResult(hi, name))
-    case RBUpperOpen(lo) -> RBUpperOpen(lo = substResult(lo, name))
+    case RBLowerOpen(hi) -> RBLowerOpen(hi = substResult(hi, name, renames))
+    case RBUpperOpen(lo) -> RBUpperOpen(lo = substResult(lo, name, renames))
   }
 }
 
@@ -1000,12 +1207,24 @@ func replaceOldExprBinding(b: in LocalBinding, counter: inout RenameCounter): Lo
 //     clauses (`when:` / `decreases:` / `raises:`) are ignored —
 //     these aren't run-time-checked by the bootstrap either.
 // ─────────────────────────────────────────────────────────────────────────────
-func collectRequires(contracts: in List[ContractClause]): List[SpannedExpr] {
+// `PreconditionViolated: Std.String.repeat requires count >= 0` — the kind,
+// the owning function and the clause text as the formatter renders it.
+func violationMessage(kind: in String, owner: in String, keyword: in String, e: in Expr): String {
+  kind + ": " + owner + " " + keyword + " " + Fmt.exprInline(0, e)
+}
+
+func collectRequires(contracts: in List[ContractClause], owner: in String): List[SpannedExpr] {
   val xs: List[SpannedExpr] = newList()
   var i = 0
   while i < contracts.count {
     match contracts[i] {
-      case CCRequires(e, sp) -> xs.add(SpannedExpr(expr = e, span = sp))
+      case CCRequires(e, sp) -> xs.add(
+        SpannedExpr(
+          expr = e,
+          span = sp,
+          message = violationMessage("PreconditionViolated", owner, "requires", e)
+        )
+      )
       case _ -> {
       }
     }
@@ -1014,12 +1233,18 @@ func collectRequires(contracts: in List[ContractClause]): List[SpannedExpr] {
   xs
 }
 
-func collectEnsures(contracts: in List[ContractClause]): List[SpannedExpr] {
+func collectEnsures(contracts: in List[ContractClause], owner: in String): List[SpannedExpr] {
   val xs: List[SpannedExpr] = newList()
   var i = 0
   while i < contracts.count {
     match contracts[i] {
-      case CCEnsures(e, sp) -> xs.add(SpannedExpr(expr = e, span = sp))
+      case CCEnsures(e, sp) -> xs.add(
+        SpannedExpr(
+          expr = e,
+          span = sp,
+          message = violationMessage("PostconditionViolated", owner, "ensures", e)
+        )
+      )
       case _ -> {
       }
     }
@@ -1038,8 +1263,8 @@ func appendEnsuresAsserts(acc: in List[Statement], ensuresExprs: in List[Spanned
   var i = 0
   while i < ensuresExprs.count {
     val ec = ensuresExprs[i]
-    val cond = substResult(ec.expr, resultName)
-    acc.add(mkAssertCall(cond, ec.span))
+    val cond = substResult(ec.expr, resultName, newMap())
+    acc.add(mkAssertCall(cond, ec.message, ec.span))
     i = i + 1
   }
 }
@@ -1066,8 +1291,8 @@ func appendEnsuresAssertsNoResult(acc: in List[Statement], ensuresExprs: in List
   var i = 0
   while i < ensuresExprs.count {
     val ec = ensuresExprs[i]
-    val cond = if needUnit { substResult(ec.expr, dummyName) } else { ec.expr }
-    acc.add(mkAssertCall(cond, ec.span))
+    val cond = if needUnit { substResult(ec.expr, dummyName, newMap()) } else { ec.expr }
+    acc.add(mkAssertCall(cond, ec.message, ec.span))
     i = i + 1
   }
 }
@@ -1217,7 +1442,7 @@ func elaborateExprOrBlockDeep(
 ): ExprOrBlock {
   match eob {
     case EOBBlock(body) -> EOBBlock(block = elaborateBlockDeep(body, ensuresExprs, counter))
-    case EOBExpr(e) -> EOBExpr(expr = e)
+    case EOBExpr(e) -> EOBExpr(expr = elaborateExprDeep(e, ensuresExprs, counter))
   }
 }
 
@@ -1250,7 +1475,32 @@ func elaborateExprDeep(e: in Expr, ensuresExprs: in List[SpannedExpr], counter: 
       }
       mkExpr(EMatch(scrutinee = scrutinee, arms = newArms), e.span)
     }
+    // A value-producing block or `unsafe { }` can hold a `return` that exits
+    // the enclosing function (#7224).  Lambdas are deliberately not entered:
+    // a `return` there leaves the lambda, not the function.
+    case EBlock(blk) -> mkExpr(EBlock(block = elaborateBlockDeep(blk, ensuresExprs, counter)), e.span)
+    case EUnsafe(blk) -> mkExpr(EUnsafe(block = elaborateBlockDeep(blk, ensuresExprs, counter)), e.span)
+    case EParen(inner) -> mkExpr(EParen(inner = elaborateExprDeep(inner, ensuresExprs, counter)), e.span)
     case _ -> e
+  }
+}
+
+// A `val`/`var`/`let` initializer can hold a `return` inside a `match`/`if`
+// expression (`val v = match o { case None -> return 0; ... }`); rewrite it
+// so the early return also runs the postconditions (#7224).
+func elaborateBindingDeep(
+  b: in LocalBinding, ensuresExprs: in List[SpannedExpr], counter: inout RenameCounter
+): LocalBinding {
+  match b {
+    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = elaborateExprDeep(init, ensuresExprs, counter))
+    case LBLet(n, ty, init) -> LBLet(name = n, ty = ty, init = elaborateExprDeep(init, ensuresExprs, counter))
+    case LBVar(n, ty, initOpt) -> {
+      val newInit: Option[Expr] = match initOpt {
+        case Some(x) -> Some(value = elaborateExprDeep(x, ensuresExprs, counter))
+        case None -> None
+      }
+      LBVar(name = n, ty = ty, init = newInit)
+    }
   }
 }
 
@@ -1288,6 +1538,19 @@ func elaborateStmtDeep(
       val newE = elaborateExprDeep(e, ensuresExprs, counter)
       acc.add(mkStmt(SExpr(expr = newE), s.span))
     }
+    case SLocal(binding) -> acc.add(
+      mkStmt(SLocal(binding = elaborateBindingDeep(binding, ensuresExprs, counter)), s.span)
+    )
+    case SAssign(target, op, value) -> acc.add(
+      mkStmt(
+        SAssign(
+          target = target,
+          op = op,
+          value = elaborateExprDeep(value, ensuresExprs, counter)
+        ),
+        s.span
+      )
+    )
     case SFor(label, pat, iter, body) -> acc.add(
       mkStmt(
         SFor(
@@ -1343,7 +1606,9 @@ func elaborateStmtDeep(
         s.span
       )
     )
-    case SInvariant(inv) -> acc.add(mkAssertCall(inv, s.span))
+    case SInvariant(inv) -> acc.add(
+      mkAssertCall(inv, "LoopInvariantViolated: invariant " + Fmt.exprInline(0, inv), s.span)
+    )
     // Loop `invariant:` (docs/41 §9 Band 4).  We lower to a runtime
     // `assert(inv)` so the check fires at the top of every iteration:
     // the first iteration checks the entry state, and every subsequent
@@ -1504,12 +1769,26 @@ func exprOrBlockHasInvariant(eb: in ExprOrBlock): Bool {
 
 func elaborateFunctionBody(
   contracts: in List[ContractClause],
+  typeInvariants: in List[InvariantClause],
+  owner: in String,
   body: in Block,
   counter: inout RenameCounter,
   isVoidReturn: in Bool,
 ): Block {
-  val requiresExprs = collectRequires(contracts)
-  val ensuresExprs = collectEnsures(contracts)
+  val requiresExprs = collectRequires(contracts, owner)
+  val ensuresExprs = collectEnsures(contracts, owner)
+  var ti = 0
+  while ti < typeInvariants.count {
+    val inv = typeInvariants[ti]
+    ensuresExprs.add(
+      SpannedExpr(
+        expr = inv.expr,
+        span = inv.span,
+        message = violationMessage("InvariantViolated", owner, "invariant", inv.expr)
+      )
+    )
+    ti = ti + 1
+  }
 
   val outs: List[Statement] = newList()
 
@@ -1539,7 +1818,7 @@ func elaborateFunctionBody(
       // `replaceOldExpr` rewrites `EOld` leaves inside the clause expression;
       // the clause's own span is a separate field and passes through unchanged.
       val ec = ensuresExprs[rei]
-      rewritten.add(SpannedExpr(expr = replaceOldExpr(ec.expr, replCounter), span = ec.span))
+      rewritten.add(SpannedExpr(expr = replaceOldExpr(ec.expr, replCounter), span = ec.span, message = ec.message))
       rei = rei + 1
     }
     rewrittenEnsures = rewritten
@@ -1551,7 +1830,7 @@ func elaborateFunctionBody(
   var ri = 0
   while ri < requiresExprs.count {
     val rc = requiresExprs[ri]
-    outs.add(mkAssertCall(rc.expr, rc.span))
+    outs.add(mkAssertCall(rc.expr, rc.message, rc.span))
     ri = ri + 1
   }
 
@@ -1901,6 +2180,12 @@ func isVoidReturnOpt(ret: in Option[TypeExpr]): Bool {
 }
 
 pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
+  elaborateFunctionOwned(fn, fn.name)
+}
+
+/// `elaborateFunction`, naming the function `owner` in contract-violation
+/// messages (e.g. `Std.String.repeat`, `Box.scaled`).
+pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): FunctionDecl {
   // @axiom functions have no body — nothing to elaborate.
   if functionIsAxiom(fn) {
     return fn
@@ -1918,8 +2203,8 @@ pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
   // No requires / ensures / loop invariants → nothing to do.  Preserve
   // identity of the input record so downstream passes (verifier,
   // contract-meta) see the original FunctionDecl.
-  val hasReq = collectRequires(fn.contracts).count > 0
-  val hasEns = collectEnsures(fn.contracts).count > 0
+  val hasReq = collectRequires(fn.contracts, owner).count > 0
+  val hasEns = collectEnsures(fn.contracts, owner).count > 0
   val hasInv = functionBodyHasInvariant(fn)
   if not hasReq and not hasEns and not hasInv {
     return fn
@@ -1932,6 +2217,8 @@ pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
       case FBBlock(blk) -> FBBlock(
         block = elaborateFunctionBody(
           fn.contracts,
+          newList(),
+          owner,
           blk,
           counter,
           isVoid
@@ -1940,6 +2227,8 @@ pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
       case FBExpr(e) -> FBBlock(
         block = elaborateFunctionBody(
           fn.contracts,
+          newList(),
+          owner,
           wrapExprBody(e),
           counter,
           isVoid
@@ -1966,22 +2255,14 @@ pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
   )
 }
 
-func elaborateProtectedMember(m: in ProtectedMember, invariantEnsures: in List[ContractClause]): ProtectedMember {
+func elaborateProtectedMember(
+  m: in ProtectedMember, invariants: in List[InvariantClause], typeName: in String
+): ProtectedMember {
   match m {
     case PMEntry(ed) -> {
-      val combined: List[ContractClause] = newList()
-      var ci = 0
-      while ci < ed.contracts.count {
-        combined.add(ed.contracts[ci])
-        ci = ci + 1
-      }
-      ci = 0
-      while ci < invariantEnsures.count {
-        combined.add(invariantEnsures[ci])
-        ci = ci + 1
-      }
-      val hasReq = collectRequires(combined).count > 0
-      val hasEns = collectEnsures(combined).count > 0
+      val owner = typeName + "." + ed.name
+      val hasReq = collectRequires(ed.contracts, owner).count > 0
+      val hasEns = collectEnsures(ed.contracts, owner).count > 0 or invariants.count > 0
       val hasInv = entryBodyHasInvariant(ed.body)
       if not hasReq and not hasEns and not hasInv {
         m
@@ -1990,11 +2271,20 @@ func elaborateProtectedMember(m: in ProtectedMember, invariantEnsures: in List[C
         val isVoid = isVoidReturnOpt(ed.ret)
         val newBody: FunctionBody = match ed.body {
           case FBBlock(blk) -> FBBlock(
-            block = elaborateFunctionBody(combined, blk, counter, isVoid)
+            block = elaborateFunctionBody(
+              ed.contracts,
+              invariants,
+              owner,
+              blk,
+              counter,
+              isVoid
+            )
           )
           case FBExpr(e) -> FBBlock(
             block = elaborateFunctionBody(
-              combined,
+              ed.contracts,
+              invariants,
+              owner,
               wrapExprBody(e),
               counter,
               isVoid
@@ -2016,26 +2306,251 @@ func elaborateProtectedMember(m: in ProtectedMember, invariantEnsures: in List[C
         )
       }
     }
-    case PMFunc(fn) -> PMFunc(fn = elaborateFunction(fn))
+    case PMFunc(fn) -> PMFunc(fn = elaborateFunctionOwned(fn, typeName + "." + fn.name))
     case other -> other
   }
 }
 
-func elaborateItem(it: in Item): Item {
+// Interface declarations visible to this file, keyed by bare name.  Used to
+// give each `impl I for T` method the `requires:`/`ensures:` clauses its
+// interface method declares (#7223).  File-local interfaces shadow imported
+// ones of the same name.
+pub func interfaceTable(file: in SourceFile, imported: in List[InterfaceDecl]): Map[String, InterfaceDecl] {
+  val table: Map[String, InterfaceDecl] = newMap()
+  var j = 0
+  while j < file.items.count {
+    match file.items[j].kind {
+      case IInterface(decl) -> if not table.containsKey(decl.name) { table.add(decl.name, decl) }
+      case _ -> ()
+    }
+    j = j + 1
+  }
+  var i = 0
+  while i < imported.count {
+    if not table.containsKey(imported[i].name) {
+      table.add(imported[i].name, imported[i])
+    }
+    i = i + 1
+  }
+  table
+}
+
+// The contract-bearing parts of an interface member named `name`, or None.
+func interfaceMemberContract(iface: in InterfaceDecl, name: in String): Option[FunctionSig] {
+  var i = 0
+  while i < iface.members.count {
+    match iface.members[i] {
+      case IMSig(sig) -> if sig.name == name { return Some(value = sig) }
+      case IMFunc(fn) -> if fn.name == name {
+        return Some(
+          value = FunctionSig(
+            docComments = fn.docComments,
+            isAsync = fn.isAsync,
+            name = fn.name,
+            generics = fn.generics,
+            params = fn.params,
+            ret = fn.ret,
+            whereClause = fn.whereClause,
+            contracts = fn.contracts,
+            span = fn.span
+          )
+        )
+      }
+      case IMAssoc(_) -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Interface `requires:`/`ensures:` clauses rewritten into the implementing
+// method's parameter names.  Composition is additive, as for aspects
+// (docs/01 §6.1.1): the impl is checked against the interface clauses AND
+// its own.  A signature whose arity differs from the impl's is not the
+// method being implemented (the type checker reports that separately), so
+// nothing is inherited from it.
+func inheritedClauses(sig: in FunctionSig, fn: in FunctionDecl): List[ContractClause] {
+  val acc: List[ContractClause] = newList()
+  if sig.params.count != fn.params.count {
+    return acc
+  }
+  val renames: Map[String, String] = newMap()
+  var i = 0
+  while i < sig.params.count {
+    if sig.params[i].name != fn.params[i].name {
+      renames.add(sig.params[i].name, fn.params[i].name)
+    }
+    i = i + 1
+  }
+  var c = 0
+  while c < sig.contracts.count {
+    match sig.contracts[c] {
+      // `Lyric.ImplDefaults` copies an un-overridden interface default
+      // method into the impl verbatim, clauses included; such a clause is
+      // already the method's own and must not be asserted twice (#7291).
+      case CCRequires(x, sp) -> if not hasClauseAt(fn.contracts, x, sp) {
+        acc.add(CCRequires(expr = substResult(x, "", renames), span = sp))
+      }
+      case CCEnsures(x, sp) -> if not hasClauseAt(fn.contracts, x, sp) {
+        acc.add(CCEnsures(expr = substResult(x, "", renames), span = sp))
+      }
+      case _ -> ()
+    }
+    c = c + 1
+  }
+  acc
+}
+
+// True when `contracts` already holds the clause `e` written at `sp` — the
+// same source position and the same text, so a coincidental offset match
+// between clauses in two different files is not mistaken for a copy.
+func hasClauseAt(contracts: in List[ContractClause], e: in Expr, sp: in Span): Bool {
+  val text = Fmt.exprInline(0, e)
+  var i = 0
+  while i < contracts.count {
+    val same = match contracts[i] {
+      case CCRequires(x, csp) -> sameSpan(csp, sp) and Fmt.exprInline(0, x) == text
+      case CCEnsures(x, csp) -> sameSpan(csp, sp) and Fmt.exprInline(0, x) == text
+      case _ -> false
+    }
+    if same {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func sameSpan(a: in Span, b: in Span): Bool {
+  a.startPos.offset == b.startPos.offset and a.endPos.offset == b.endPos.offset
+}
+
+// Elaborate `fn` with `extra` clauses prepended to its own, then restore the
+// source-level clause list so contract metadata and the verifier see only
+// what the author wrote on this declaration.
+func elaborateFunctionWith(fn: in FunctionDecl, extra: in List[ContractClause], owner: in String): FunctionDecl {
+  if extra.count == 0 {
+    return elaborateFunctionOwned(fn, owner)
+  }
+  val merged: List[ContractClause] = newList()
+  var i = 0
+  while i < extra.count {
+    merged.add(extra[i])
+    i = i + 1
+  }
+  var j = 0
+  while j < fn.contracts.count {
+    merged.add(fn.contracts[j])
+    j = j + 1
+  }
+  val acc = elaborateFunctionOwned(withContracts(fn, merged), owner)
+  withContracts(acc, fn.contracts)
+}
+
+func withContracts(fn: in FunctionDecl, contracts: in List[ContractClause]): FunctionDecl {
+  FunctionDecl(
+    docComments = fn.docComments,
+    annotations = fn.annotations,
+    visibility = fn.visibility,
+    isAsync = fn.isAsync,
+    name = fn.name,
+    generics = fn.generics,
+    params = fn.params,
+    ret = fn.ret,
+    whereClause = fn.whereClause,
+    contracts = contracts,
+    body = fn.body,
+    span = fn.span
+  )
+}
+
+// `pkg.name`, or `name` when the file declares no package.
+func qualify(pkg: in String, name: in String): String {
+  if pkg.length == 0 {
+    name
+  } else {
+    pkg + "." + name
+  }
+}
+
+func elaborateRecordDecl(decl: in RecordDecl, pkg: in String): RecordDecl {
+  val members: List[RecordMember] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case RMFunc(fn) -> members.add(RMFunc(fn = elaborateFunctionOwned(fn, qualify(pkg, decl.name + "." + fn.name))))
+      case other -> members.add(other)
+    }
+    i = i + 1
+  }
+  RecordDecl(
+    name = decl.name,
+    generics = decl.generics,
+    whereClause = decl.whereClause,
+    members = members,
+    span = decl.span
+  )
+}
+
+func elaborateImplDecl(decl: in ImplDecl, ifaces: in Map[String, InterfaceDecl], pkg: in String): ImplDecl {
+  val segs = decl.iface.head.segments
+  val ifaceOpt: Option[InterfaceDecl] = if segs.count == 0 { None } else { mapGet(ifaces, segs[segs.count - 1]) }
+  val members: List[ImplMember] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMplFunc(fn) -> {
+        val extra: List[ContractClause] = match ifaceOpt {
+          case Some(iface) -> match interfaceMemberContract(iface, fn.name) {
+            case Some(sig) -> inheritedClauses(sig, fn)
+            case None -> newList()
+          }
+          case None -> newList()
+        }
+        members.add(IMplFunc(fn = elaborateFunctionWith(fn, extra, qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name))))
+      }
+      case other -> members.add(other)
+    }
+    i = i + 1
+  }
+  ImplDecl(
+    generics = decl.generics,
+    iface = decl.iface,
+    target = decl.target,
+    whereClause = decl.whereClause,
+    members = members,
+    span = decl.span
+  )
+}
+
+func withKind(it: in Item, kind: in ItemKind): Item {
+  Item(
+    docComments = it.docComments,
+    annotations = it.annotations,
+    visibility = it.visibility,
+    kind = kind,
+    span = it.span
+  )
+}
+
+func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in String): Item {
   match it.kind {
+    case IRecord(decl) -> withKind(it, IRecord(decl = elaborateRecordDecl(decl, pkg)))
+    case IExposedRec(decl) -> withKind(it, IExposedRec(decl = elaborateRecordDecl(decl, pkg)))
+    case IImpl(decl) -> withKind(it, IImpl(decl = elaborateImplDecl(decl, ifaces, pkg)))
     case IFunc(fn) -> Item(
       docComments = it.docComments,
       annotations = it.annotations,
       visibility = it.visibility,
-      kind = IFunc(decl = elaborateFunction(fn)),
+      kind = IFunc(decl = elaborateFunctionOwned(fn, qualify(pkg, fn.name))),
       span = it.span
     )
     case IProtected(decl) -> {
-      val invariantEnsures: List[ContractClause] = newList()
+      val invariants: List[InvariantClause] = newList()
       var mi = 0
       while mi < decl.members.count {
         match decl.members[mi] {
-          case PMInvariant(inv) -> invariantEnsures.add(CCEnsures(expr = inv.expr, span = inv.span))
+          case PMInvariant(inv) -> invariants.add(inv)
           case _ -> {
           }
         }
@@ -2044,7 +2559,7 @@ func elaborateItem(it: in Item): Item {
       val newMembers: List[ProtectedMember] = newList()
       mi = 0
       while mi < decl.members.count {
-        newMembers.add(elaborateProtectedMember(decl.members[mi], invariantEnsures))
+        newMembers.add(elaborateProtectedMember(decl.members[mi], invariants, qualify(pkg, decl.name)))
         mi = mi + 1
       }
       Item(
@@ -2068,7 +2583,15 @@ func elaborateItem(it: in Item): Item {
 }
 
 pub func elaborateFile(file: in SourceFile): SourceFile {
+  elaborateFileWithInterfaces(file, newList())
+}
+
+/// `elaborateFile`, additionally resolving `impl` blocks against interfaces
+/// declared in other packages (`importedIfaces`) so their method contracts
+/// are enforced on the implementation (#7223).
+pub func elaborateFileWithInterfaces(file: in SourceFile, importedIfaces: in List[InterfaceDecl]): SourceFile {
   val canonFile = canonicalizeFileUnitAliases(file)
+  val ifaces = interfaceTable(canonFile, importedIfaces)
   val newItems: List[Item] = newList()
   val isProofRequired = fileIsProofRequired(canonFile)
   var i = 0
@@ -2092,7 +2615,7 @@ pub func elaborateFile(file: in SourceFile): SourceFile {
         case _ -> newItems.add(it)
       }
     } else {
-      newItems.add(elaborateItem(canonFile.items[i]))
+      newItems.add(elaborateItem(canonFile.items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path)))
     }
     i = i + 1
   }

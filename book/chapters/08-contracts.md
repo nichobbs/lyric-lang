@@ -71,6 +71,8 @@ pub func debit(a: in Account, amount: in Amount): Result[Account, AccountError]
 
 The `implies` operator is `a implies b`, meaning "if `a` is true, then `b` must also be true" — equivalent to `not a or b`. Here the two postconditions say: if the debit succeeded, the new balance is exactly reduced by the amount; if it failed, the balance was already too low. Together they rule out the silent-failure case where the function returns `Err` even when there was enough balance.
 
+One path is exempt: an early exit written with `?` (Chapter 7) hands the callee's `Err` or `None` straight back without evaluating your postconditions. For a function returning `Result` or `Option`, state what success guarantees in the `result.isOk implies ...` form, so the clause holds on every path, including the ones that skip the check.
+
 ### `old()` — referring to the pre-state
 
 Postconditions on functions that modify `inout` parameters, or that capture a snapshot of a parameter's state for comparison, use `old(expr)`. The `old()` form evaluates `expr` against the state at the moment the function body began executing — before any modifications:
@@ -88,6 +90,28 @@ func push(s: inout Stack[T], x: in T): Unit
 
 The snapshot is taken after the `requires:` clauses have been evaluated and before the function body runs. The runtime captures only the fields the contract actually reads — `old(s.depth)` costs one integer snapshot, not a deep copy of the stack.
 
+### Contracts on methods and interfaces
+
+Methods take contracts exactly like free functions, whether they live in a `record` body or an `impl` block. An `interface` can also put contracts on its method signatures, and then every implementation is held to them:
+
+```lyric
+interface Shape {
+  func area(self: in Self, scale: in Int): Int
+    requires: scale > 0
+    ensures: result >= 0
+}
+
+impl Shape for Square {
+  func area(self: in Square, s: in Int): Int {
+    self.side * self.side * s
+  }
+}
+```
+
+`Square(side = 2).area(0)` fails the interface's precondition, whether you call it on a `Square` or through a `Shape`. The interface clause names the parameter `scale` and the implementation calls it `s`; clauses are matched to parameters by position, so the rename is fine. An implementation can add its own `requires:` and `ensures:` on top of the interface's, but it cannot drop them.
+
+Keep the §8.2 rule in mind when writing an interface: its preconditions bind every implementation and every caller, so they must describe programmer obligations. An interface over data that arrives from outside, such as storage keys taken from upload names, validates in each implementation and returns a `Result` instead.
+
 ## §8.4 Type invariants
 
 Functions are not the only place contracts live. Records and opaque types can declare invariants — conditions that must hold for every valid value of the type:
@@ -99,7 +123,7 @@ opaque type Account {
 }
 ```
 
-The invariant fires at every public boundary: after every public function in the type's package returns, on every parameter of the type passed into a function, and on every return value of the type. Internal mutations can temporarily violate the invariant — partial updates inside a function body are permitted — but the check fires when control returns to a public boundary.
+The invariant is checked every time a value of the type is built: each constructor call, wherever it is written, and each `.copy(...)`. `Account(balance = -5)` stops with `InvariantViolated: Bank.Account invariant balance >= 0 and balance <= 1_000_000_000_00`. The language reference (§6.2) also specifies re-checks at public boundaries after in-place mutation of `var` fields; the compiler does not perform those yet (#7222), so keep invariant-bearing types immutable, or re-validate after mutating them.
 
 What this buys you: once you hold an `Account` value, you can assume `balance >= 0` without checking. The type carries its own proof of validity. A function that receives an `Account` does not need to re-validate it; the compiler and runtime ensure it was valid when it entered the package.
 
@@ -159,23 +183,27 @@ Chapters 16 and 17 cover both modes in depth. For most of the code you write, `@
 
 ## §8.7 Reading contract violations
 
-When a contract is violated at runtime in `@runtime_checked` mode, the error message identifies the function, the violated clause, and the values of the relevant arguments at the violation point:
+When a contract is violated at runtime in `@runtime_checked` mode, the bug's message names the kind of violation, the function that owns the contract (qualified by its package), and the clause as written. On `--target dotnet` an unhandled violation looks like this:
 
 ```
-account.l:34:3: bug PreconditionViolated: divide — d != 0
-  at Transfer.execute (transfer.l:45)
-  at TransferService.transfer (transferService.l:22)
-  at TransferHttp.handleTransfer (transferHttp.l:88)
-counterexample values at violation:
-  n = 100
-  d = 0
+Unhandled exception. System.Exception: PreconditionViolated: Division.divide requires d != 0
+   at Division.Program.divide(Int32, Int32)
+   at Division.Program.main()
 ```
 
-The stack trace shows the call chain. The counterexample block shows the argument values that caused the failure. If you see this, you know exactly which call site passed `d = 0`, and you can trace back through the stack to find where `0` came from.
+and on `--target jvm`, where the stack frames also carry source lines:
 
-In `@proof_required` mode, the counterexample comes from the SMT solver before the program ever runs. The compiler rejects the build and produces the same counterexample format — but at compile time, not at 3am in production. This is the practical value of static verification: the bug is found when you write the code, not when a specific set of inputs reaches production.
+```
+Exception in thread "main" java.lang.RuntimeException: PreconditionViolated: Division.divide requires d != 0
+	at Division.divide(division.l:5)
+	at Division.main(division.l:12)
+```
 
-Postcondition violations (`PostconditionViolated`) and invariant violations (`InvariantViolated`) follow the same format. The tag in the bug name tells you which kind of contract failed.
+The message tells you which contract failed; the stack trace shows the call chain that reached it. A `PreconditionViolated` means the caller at the frame below the owner passed bad arguments. The runtime does not print argument values, so reproduce the call (or add logging at the call site) to see them.
+
+In `@proof_required` mode, `lyric prove` finds the problem before the program ever runs: the solver reports the unprovable obligation with a counterexample (the argument values that break it) at compile time, not at 3am in production. This is the practical value of static verification: the bug is found when you write the code, not when a specific set of inputs reaches production.
+
+Postcondition violations (`PostconditionViolated: Division.divide ensures ...`), protected-type invariant violations (`InvariantViolated`) and loop-invariant violations (`LoopInvariantViolated`) follow the same format. The tag at the front of the message tells you which kind of contract failed.
 
 ## Exercises
 

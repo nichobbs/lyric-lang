@@ -3282,7 +3282,23 @@ func lowerCallEx(
           val failL = freshLabel(ctx, "assert.fail")
           insns.add(NCondBr(cond = cond.value, thenLabel = okL, elseLabel = failL))
           insns.add(NLabel(name = failL))
-          emitPanicRaw(ctx, insns, "assertion failed", line)
+          if args.count > 1 {
+            // The message is evaluated only on the failure path, as on
+            // MSIL/JVM, so a dynamic message costs nothing when the
+            // assertion holds.
+            val msg = lowerPositionalArg(ctx, insns, args, 1)
+            val cs = callRuntime(ctx, insns, "lyric_string_to_cstring", NPtr(pointee = NI8), arg1(lyricStringNType(), msg.value))
+            val filePtr = emitRawCString(ctx, insns, ctx.mainPkg)
+            val pArgs: List[NArg] = newList()
+            pArgs.add(NArg(ty = NPtr(pointee = NI8), value = cs.value))
+            pArgs.add(NArg(ty = NPtr(pointee = NI8), value = filePtr.value))
+            pArgs.add(NArg(ty = NI32, value = NLitInt(v = line.toLong(), ty = NI32)))
+            insns.add(NCallVoid(fn = NGlobal(name = "lyric_panic_msg"), args = pArgs))
+            insns.add(NUnreachable)
+            insns.add(NLabel(name = freshLabel(ctx, "dead")))
+          } else {
+            emitPanicRaw(ctx, insns, "assertion failed", line)
+          }
           insns.add(NBr(label = okL))
           insns.add(NLabel(name = okL))
           return NVal(ty = NVoid, value = NUndef(ty = NVoid))

@@ -342,3 +342,61 @@ test "collectFixed32/collectFixed64 return an empty list for an absent field num
     }
   }
 }
+
+// ─── Untrusted-input hardening (#7230) ──────────────────────────────────────
+// A length prefix of -11 (a 10-byte varint) right after a 1-byte tag used to
+// yield `nextOffset = 0`, so `decodeMessage` re-decoded the same bytes forever.
+test "decodeMessage rejects a negative length prefix instead of looping" {
+  val crafted: slice[Byte] = [10u8, 245u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 1u8]
+  match decodeMessage(crafted) {
+    case Ok(_) -> assertTrue(false, "expected Err for a negative length")
+    case Err(_) -> assertTrue(true, "Err for a negative length")
+  }
+}
+
+test "decodeMessage rejects a length prefix longer than the input" {
+  val crafted: slice[Byte] = [10u8, 200u8, 1u8, 65u8]
+  match decodeMessage(crafted) {
+    case Ok(_) -> assertTrue(false, "expected Err for an oversized length")
+    case Err(_) -> assertTrue(true, "Err for an oversized length")
+  }
+}
+
+test "decodeStep rejects field number 0" {
+  val crafted: slice[Byte] = [2u8, 0u8]
+  match decodeStep(crafted, 0) {
+    case Ok(_) -> assertTrue(false, "expected Err for field number 0")
+    case Err(_) -> assertTrue(true, "Err for field number 0")
+  }
+}
+
+test "decodeStep rejects a field number above 2^29 - 1 instead of throwing" {
+  // Tag 2^33: field number 2^30, wire type 0.
+  val crafted: slice[Byte] = [128u8, 128u8, 128u8, 128u8, 32u8, 0u8]
+  match decodeStep(crafted, 0) {
+    case Ok(_) -> assertTrue(false, "expected Err for an out-of-range field number")
+    case Err(_) -> assertTrue(true, "Err for an out-of-range field number")
+  }
+}
+
+test "decodeStep rejects a varint whose tenth byte overflows 64 bits" {
+  val crafted: slice[Byte] = [8u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 2u8]
+  match decodeStep(crafted, 0) {
+    case Ok(_) -> assertTrue(false, "expected Err for a 65-bit varint")
+    case Err(_) -> assertTrue(true, "Err for a 65-bit varint")
+  }
+}
+
+test "unzigzag32 keeps only the low 32 bits of an oversized varint" {
+  assertEqualInt(unzigzag32(4294967298i64), 1, "2^32 + 2 decodes as zigzag(2) = 1")
+}
+
+test "encoding an invalid or reserved field number violates the contract" {
+  assertTrue(isValidFieldNumber(1), "1 is valid")
+  assertTrue(isValidFieldNumber(536870911), "2^29 - 1 is valid")
+  assertTrue(not isValidFieldNumber(0), "0 is invalid")
+  assertTrue(not isValidFieldNumber(19500), "19000-19999 is reserved")
+  assertTrue(not isValidFieldNumber(536870912), "2^29 is invalid")
+  assertPanics("field number 0", { -> val _ = encodeMessage([VarField(number = 0, v = 1i64)]) })
+  assertPanics("reserved field number", { -> val _ = boolField(19000, true) })
+}

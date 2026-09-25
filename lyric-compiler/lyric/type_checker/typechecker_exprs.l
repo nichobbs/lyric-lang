@@ -94,8 +94,11 @@ func codegenBuiltinType(name: in String): Option[Type] {
     return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtUnit), isAsync = false))
   }
   if name == "assert" {
+    // `assert(cond)` or `assert(cond, message)`: the message is optional
+    // (`builtinOptionalTrailingArgs`).
     val ps: List[Type] = newList()
     ps.add(TyPrim(pt = PtBool))
+    ps.add(TyPrim(pt = PtString))
     return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtUnit), isAsync = false))
   }
   if name == "format1" {
@@ -2237,6 +2240,10 @@ func checkRecordCopy(
       }
       case None -> tname
     }
+    match recordSymbolOfTid(tbl, tid) {
+      case Some(rs) -> recordInvariantCtorSite(tbl, rs, e.span)
+      case None -> ()
+    }
     val site = RecordCopySite(
       recordName = ctorPath,
       fields = names,
@@ -3292,6 +3299,76 @@ func ctorResultType(sym: in Symbol): Type {
   }
 }
 
+// How many trailing parameters of a codegen builtin's signature may be
+// omitted at a call: `assert`'s message.  Zero for every other callee.
+func builtinOptionalTrailingArgs(fn: in Expr): Int {
+  match fn.kind {
+    case EPath(p) -> if p.segments.count == 1 and p.segments[0] == "assert" { 1 } else { 0 }
+    case _ -> 0
+  }
+}
+
+// Record `span` as a construction of `sym` when the type declares
+// `invariant:` clauses and its construction checker
+// (`__lyric_checked_<Name>`, synthesized in the declaring package by
+// `Lyric.ContractElaborator.synthesizeInvariantCheckers`) is visible here.  A
+// type restored from a package built without checkers has none, and is
+// constructed unchecked rather than failing to compile.
+func recordInvariantCtorSite(tbl: in SymbolTable, sym: in Symbol, span: in Span): Unit {
+  val hasInv = match sym.kind {
+    case DKRecord(_, rd) -> recordDeclHasInvariant(rd.members)
+    case DKExposedRec(_, rd) -> recordDeclHasInvariant(rd.members)
+    case DKOpaque(_, od) -> opaqueDeclHasInvariant(od.members)
+    case _ -> false
+  }
+  if not hasInv {
+    return
+  }
+  val checker = "__lyric_checked_" + sym.name
+  var found = false
+  var i = 0
+  while i < tbl.symbols.count and not found {
+    val cand = tbl.symbols[i]
+    match cand.kind {
+      case DKFunc(_) -> if cand.name == checker and cand.originPackage == sym.originPackage { found = true }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  if not found {
+    return
+  }
+  val path = if sym.isImported and sym.originPackage.length > 0 { sym.originPackage + "." + checker } else { checker }
+  val key = recordCopySiteKey(span)
+  if not tbl.invariantCtorSites.containsKey(key) {
+    tbl.invariantCtorSites.add(key, path)
+  }
+}
+
+func recordDeclHasInvariant(members: in List[RecordMember]): Bool {
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case RMInvariant(_) -> return true
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+func opaqueDeclHasInvariant(members: in List[OpaqueMember]): Bool {
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case OMInvariant(_) -> return true
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
 func inferConstruction(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -3318,6 +3395,7 @@ func inferConstructionExpected(
   span: in Span,
   expected: in Type,
 ): Type {
+  recordInvariantCtorSite(tbl, sym, span)
   // For generic constructors, attempt to infer type arguments from the supplied
   // field initializer types before falling back to T0110.  T0110 fires only when
   // one or more type parameters remain unresolved after inference.
@@ -5147,17 +5225,17 @@ pub func inferExpr(
                   }
                   match fnT {
                     case TyFunction(paramTypes, ret, _) -> {
-                      if paramTypes.count != argTypes.count {
-                        diag.add(
-                          errorDiagnostic(
-                            "T0042",
-                            "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count),
-                            e.span
-                          )
-                        )
+                      val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn)
+                      if argTypes.count > paramTypes.count or argTypes.count < minArgs {
+                        val expectedMsg = if minArgs == paramTypes.count {
+                          toString(paramTypes.count) + " argument(s)"
+                        } else {
+                          toString(minArgs) + "–" + toString(paramTypes.count) + " argument(s)"
+                        }
+                        diag.add(errorDiagnostic("T0042", "expected " + expectedMsg + ", got " + toString(argTypes.count), e.span))
                       } else {
                         var k = 0
-                        while k < paramTypes.count {
+                        while k < argTypes.count {
                           if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) {
                             diag.add(
                               errorDiagnostic(
