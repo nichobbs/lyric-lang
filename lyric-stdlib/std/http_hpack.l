@@ -207,8 +207,12 @@ pub func decodeIntegerAt(bytes: in slice[Byte], offset: in Int, prefixBits: in I
 /// significant bits of the EOS code (all ones), per RFC 7541 §5.2.
 @experimental
 pub func huffmanEncode(octets: in slice[Byte]): slice[Byte] {
-  val codes = buildHuffCodes()
-  val lens = buildHuffLens()
+  huffmanEncodeWith(buildHuffCodes(), buildHuffLens(), octets)
+}
+
+// `huffmanEncode` over code tables built once by the caller (an `HpackEncoder`
+// builds them in `newEncoder`, #7266), taking each code's bits by shifting.
+func huffmanEncodeWith(codes: in List[Int], lens: in List[Int], octets: in slice[Byte]): slice[Byte] {
   val acc: List[Byte] = newList()
   var cur = 0
   var nbits = 0
@@ -219,8 +223,7 @@ pub func huffmanEncode(octets: in slice[Byte]): slice[Byte] {
     val len = lens[sym]
     var b = len - 1
     while b >= 0 {
-      val bit = (code / pow2(b)) % 2
-      cur = cur * 2 + bit
+      cur = cur * 2 + code.shr(b).and(1)
       nbits = nbits + 1
       if nbits == 8 {
         acc.add(cur.toByte())
@@ -267,7 +270,7 @@ func buildHuffTrie(): HuffTrie {
     var node = 0
     var b = len - 1
     while b >= 0 {
-      val bit = (code / pow2(b)) % 2
+      val bit = code.shr(b).and(1)
       val child = if bit == 0 { zero[node] } else { one[node] }
       if child == -1 {
         val newIdx = zero.count
@@ -298,7 +301,12 @@ func buildHuffTrie(): HuffTrie {
 /// and the adversarial-padding surface issue #5886 calls outList.
 @experimental
 pub func huffmanDecode(bytes: in slice[Byte]): Result[slice[Byte], HpackError] {
-  val trie = buildHuffTrie()
+  huffmanDecodeWith(buildHuffTrie(), bytes)
+}
+
+// `huffmanDecode` over a trie built once by the caller (an `HpackDecoder`
+// builds it in `newDecoder`, #7266).
+func huffmanDecodeWith(trie: in HuffTrie, bytes: in slice[Byte]): Result[slice[Byte], HpackError] {
   val outList: List[Byte] = newList()
   var node = 0
   var bitsSinceBoundary = 0
@@ -308,7 +316,7 @@ pub func huffmanDecode(bytes: in slice[Byte]): Result[slice[Byte], HpackError] {
     val byteVal = bytes[i].toInt()
     var b = 7
     while b >= 0 {
-      val bit = (byteVal / pow2(b)) % 2
+      val bit = byteVal.shr(b).and(1)
       if bit == 0 {
         allOnesSinceBoundary = false
       }
@@ -356,20 +364,36 @@ pub record StrResult {
 @experimental
 pub func encodeStringLiteral(octets: in slice[Byte], huffman: in Bool): slice[Byte] {
   val acc: List[Byte] = newList()
+  appendStringLiteral(acc, buildHuffCodes(), buildHuffLens(), octets, huffman)
+  acc.toArray()
+}
+
+// Append the literal form of `octets` to `acc`, Huffman-coding it with the
+// caller's prebuilt tables when `huffman` is set.
+func appendStringLiteral(
+  acc: in List[Byte],
+  codes: in List[Int],
+  lens: in List[Int],
+  octets: in slice[Byte],
+  huffman: in Bool,
+): Unit {
   if huffman {
-    val enc = huffmanEncode(octets)
+    val enc = huffmanEncodeWith(codes, lens, octets)
     encodeIntegerInto(acc, enc.length, 7, 128)
     appendSlice(acc, enc)
   } else {
     encodeIntegerInto(acc, octets.length, 7, 0)
     appendSlice(acc, octets)
   }
-  acc.toArray()
 }
 
 /// Decode a length-prefixed string literal (Huffman or raw) at `offset`.
 @experimental
 pub func decodeStringLiteralAt(bytes: in slice[Byte], offset: in Int): Result[StrResult, HpackError] {
+  decodeStringLiteralAtWith(buildHuffTrie(), bytes, offset)
+}
+
+func decodeStringLiteralAtWith(trie: in HuffTrie, bytes: in slice[Byte], offset: in Int): Result[StrResult, HpackError] {
   if offset >= bytes.length {
     return Err(error = IncompleteInput)
   }
@@ -382,7 +406,7 @@ pub func decodeStringLiteralAt(bytes: in slice[Byte], offset: in Int): Result[St
   }
   val raw = bytes.slice(start, start + len)
   if huffman {
-    val decoded = match huffmanDecode(raw) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
+    val decoded = match huffmanDecodeWith(trie, raw) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
     Ok(value = StrResult(octets = decoded, offset = start + len))
   } else {
     Ok(value = StrResult(octets = raw, offset = start + len))
@@ -548,14 +572,22 @@ pub func newDynamicTable(maxSize: in Int): DynamicTable {
   DynamicTable(entries = entries, size = 0, maxSize = maxSize)
 }
 
-func copyEntries(src: in List[DynEntry]): List[DynEntry] {
-  val outList: List[DynEntry] = newList()
-  var i = 0
-  while i < src.count {
-    outList.add(src[i])
-    i = i + 1
+/// How many of the newest `entries` survive eviction down to `limit` octets,
+/// and their summed cost, without copying the list (eviction removes from the
+/// oldest end, RFC 7541 §4.4).
+record KeptPrefix {
+  count: Int
+  size: Int
+}
+
+func keptPrefix(entries: in List[DynEntry], size: in Int, limit: in Int): KeptPrefix {
+  var keep = entries.count
+  var kept = size
+  while keep > 0 and kept > limit {
+    keep = keep - 1
+    kept = kept - entries[keep].cost
   }
-  outList
+  KeptPrefix(count = keep, size = kept)
 }
 
 /// Insert `(name, value)` at the front, evicting the oldest entries until it
@@ -564,24 +596,18 @@ func copyEntries(src: in List[DynEntry]): List[DynEntry] {
 @experimental
 pub func dynamicTableInsert(table: in DynamicTable, name: in String, value: in String): DynamicTable {
   val cost = name.length + value.length + 32
-  val kept = copyEntries(table.entries)
-  var newSize = table.size
-  while kept.count > 0 and newSize + cost > table.maxSize {
-    val last = kept[kept.count - 1]
-    newSize = newSize - last.cost
-    kept.removeAt(kept.count - 1)
-  }
   if cost > table.maxSize {
     newDynamicTable(table.maxSize)
   } else {
+    val kept = keptPrefix(table.entries, table.size, table.maxSize - cost)
     val outList: List[DynEntry] = newList()
     outList.add(DynEntry(name = name, value = value, cost = cost))
     var i = 0
     while i < kept.count {
-      outList.add(kept[i])
+      outList.add(table.entries[i])
       i = i + 1
     }
-    DynamicTable(entries = outList, size = newSize + cost, maxSize = table.maxSize)
+    DynamicTable(entries = outList, size = kept.size + cost, maxSize = table.maxSize)
   }
 }
 
@@ -589,14 +615,14 @@ pub func dynamicTableInsert(table: in DynamicTable, name: in String, value: in S
 /// (RFC 7541 §4.3).
 @experimental
 pub func dynamicTableResize(table: in DynamicTable, newMax: in Int): DynamicTable {
-  val kept = copyEntries(table.entries)
-  var newSize = table.size
-  while kept.count > 0 and newSize > newMax {
-    val last = kept[kept.count - 1]
-    newSize = newSize - last.cost
-    kept.removeAt(kept.count - 1)
+  val kept = keptPrefix(table.entries, table.size, newMax)
+  val outList: List[DynEntry] = newList()
+  var i = 0
+  while i < kept.count {
+    outList.add(table.entries[i])
+    i = i + 1
   }
-  DynamicTable(entries = kept, size = newSize, maxSize = newMax)
+  DynamicTable(entries = outList, size = kept.size, maxSize = newMax)
 }
 
 @pure
@@ -736,13 +762,29 @@ pub func encodeDynamicTableSizeUpdate(newSize: in Int): slice[Byte] {
 pub record HpackDecoder {
   var table: DynamicTable
   var maxProtocolSize: Int
+  // The Huffman decoding trie (`HuffTrie`'s three arrays), built once per
+  // decoder rather than on every Huffman-coded string (#7266).
+  huffZero: List[Int]
+  huffOne: List[Int]
+  huffSym: List[Int]
 }
 
 /// A decoder whose dynamic table starts empty at `maxProtocolSize` octets.
 @pure
 @experimental
 pub func newDecoder(maxProtocolSize: in Int): HpackDecoder {
-  HpackDecoder(table = newDynamicTable(maxProtocolSize), maxProtocolSize = maxProtocolSize)
+  val trie = buildHuffTrie()
+  HpackDecoder(
+    table = newDynamicTable(maxProtocolSize),
+    maxProtocolSize = maxProtocolSize,
+    huffZero = trie.zero,
+    huffOne = trie.one,
+    huffSym = trie.sym
+  )
+}
+
+func decoderTrie(decoder: in HpackDecoder): HuffTrie {
+  HuffTrie(zero = decoder.huffZero, one = decoder.huffOne, sym = decoder.huffSym)
 }
 
 /// Lower the protocol ceiling (called when this endpoint advertises a smaller
@@ -843,14 +885,20 @@ func decodeLiteralField(
   var nameStr = ""
   var noff = ir.offset
   if nameIndex == 0 {
-    val sr = match decodeStringLiteralAt(block, noff) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
+    val sr = match decodeStringLiteralAtWith(decoderTrie(decoder), block, noff) {
+      case Ok(v) -> v
+      case Err(e) -> return Err(error = e)
+    }
     nameStr = octetsToString(sr.octets)
     noff = sr.offset
   } else {
     val hf = match resolveIndex(decoder.table, nameIndex) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
     nameStr = hf.name
   }
-  val vr = match decodeStringLiteralAt(block, noff) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
+  val vr = match decodeStringLiteralAtWith(decoderTrie(decoder), block, noff) {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = e)
+  }
   val valueStr = octetsToString(vr.octets)
   outList.add(HeaderField(name = nameStr, value = valueStr))
   if addToTable {
@@ -871,6 +919,13 @@ pub record HpackEncoder {
   maxProtocolSize: Int
   huffman: Bool
   var pendingUpdate: Bool
+  // Built once per encoder rather than per header (#7266): the Huffman code
+  // tables, and the static table's first index for each name and for each
+  // exact `name` NUL `value` pair.
+  huffCodes: List[Int]
+  huffLens: List[Int]
+  staticNameIndex: Map[String, Int]
+  staticExactIndex: Map[String, Int]
 }
 
 /// An encoder whose dynamic table starts empty at `maxDynamicTableSize`
@@ -879,12 +934,36 @@ pub record HpackEncoder {
 @pure
 @experimental
 pub func newEncoder(maxDynamicTableSize: in Int, huffman: in Bool): HpackEncoder {
+  val names: Map[String, Int] = newMap()
+  val exact: Map[String, Int] = newMap()
+  var i = 61
+  while i >= 1 {
+    // Walked from the end so the lowest index wins for a repeated name.
+    match staticEntry(i) {
+      case Some(e) -> {
+        names[e.name] = i
+        exact[staticExactKey(e.name, e.value)] = i
+      }
+      case None -> ()
+    }
+    i = i - 1
+  }
   HpackEncoder(
     table = newDynamicTable(maxDynamicTableSize),
     maxProtocolSize = maxDynamicTableSize,
     huffman = huffman,
-    pendingUpdate = false
+    pendingUpdate = false,
+    huffCodes = buildHuffCodes(),
+    huffLens = buildHuffLens(),
+    staticNameIndex = names,
+    staticExactIndex = exact
   )
+}
+
+// The `staticExactIndex` key for a field. A header name never contains NUL
+// (RFC 9113 section 8.2.1 forbids it), so the separator cannot collide.
+func staticExactKey(name: in String, value: in String): String {
+  name + "\u{0000}" + value
 }
 
 @pure
@@ -932,29 +1011,33 @@ pub func encodeHeaderList(encoder: inout HpackEncoder, headers: in List[HeaderFi
 func encodeHeaderField(encoder: inout HpackEncoder, acc: in List[Byte], h: in HeaderField): Result[Unit, HpackError] {
   val nameOctets = match stringToOctets(h.name) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
   val valueOctets = match stringToOctets(h.value) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
-  match findExactIndex(encoder.table, h.name, h.value) {
+  match findExactIndex(encoder, h.name, h.value) {
     case Some(idx) -> {
       appendSlice(acc, encodeIndexedField(idx))
       Ok(value = ())
     }
     case None -> {
-      val nameIndex = findNameIndex(encoder.table, h.name)
-      appendSlice(acc, encodeLiteralIncrementalIndexed(nameIndex, nameOctets, valueOctets, encoder.huffman))
+      // Literal with Incremental Indexing (§6.2.1), name indexed when possible.
+      match findNameIndex(encoder, h.name) {
+        case Some(n) -> encodeIntegerInto(acc, n, 6, 64)
+        case None -> {
+          encodeIntegerInto(acc, 0, 6, 64)
+          appendStringLiteral(acc, encoder.huffCodes, encoder.huffLens, nameOctets, encoder.huffman)
+        }
+      }
+      appendStringLiteral(acc, encoder.huffCodes, encoder.huffLens, valueOctets, encoder.huffman)
       encoder.table = dynamicTableInsert(encoder.table, h.name, h.value)
       Ok(value = ())
     }
   }
 }
 
-func findExactIndex(table: in DynamicTable, name: in String, value: in String): Option[Int] {
-  var i = 1
-  while i <= 61 {
-    match staticEntry(i) {
-      case Some(e) -> if e.name == name and e.value == value { return Some(value = i) }
-      case None -> ()
-    }
-    i = i + 1
+func findExactIndex(encoder: in HpackEncoder, name: in String, value: in String): Option[Int] {
+  match mapGet(encoder.staticExactIndex, staticExactKey(name, value)) {
+    case Some(i) -> return Some(value = i)
+    case None -> ()
   }
+  val table = encoder.table
   var j = 0
   while j < table.entries.count {
     val e = table.entries[j]
@@ -966,15 +1049,12 @@ func findExactIndex(table: in DynamicTable, name: in String, value: in String): 
   None
 }
 
-func findNameIndex(table: in DynamicTable, name: in String): Option[Int] {
-  var i = 1
-  while i <= 61 {
-    match staticEntry(i) {
-      case Some(e) -> if e.name == name { return Some(value = i) }
-      case None -> ()
-    }
-    i = i + 1
+func findNameIndex(encoder: in HpackEncoder, name: in String): Option[Int] {
+  match mapGet(encoder.staticNameIndex, name) {
+    case Some(i) -> return Some(value = i)
+    case None -> ()
   }
+  val table = encoder.table
   var j = 0
   while j < table.entries.count {
     val e = table.entries[j]
