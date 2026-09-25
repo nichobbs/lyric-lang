@@ -1155,3 +1155,27 @@ test "a burst of empty DATA frames in one feed decodes every frame" {
   }
   assertEqualInt(decoded, 3000, "every frame decoded")
 }
+
+test "serializeFrame requires ids and values that fit their wire fields (#7251)" {
+  val noParams: List[SettingsParam] = newList()
+  assertTrue(frameFieldsWellFormed(WindowUpdateFrame(streamId = 0, windowSizeIncrement = 1)), "increment 1")
+  assertTrue(frameFieldsWellFormed(SettingsFrame(settings = noParams, ack = true)), "empty ACK")
+  assertTrue(not frameFieldsWellFormed(WindowUpdateFrame(streamId = 0, windowSizeIncrement = -1)), "negative increment")
+  assertTrue(not frameFieldsWellFormed(WindowUpdateFrame(streamId = 1, windowSizeIncrement = 0)), "increment 0")
+  assertTrue(not frameFieldsWellFormed(RstStreamFrame(streamId = 0, errorCode = H2Cancel)), "RST_STREAM on stream 0")
+  val noDebug: slice[Byte] = []
+  assertTrue(
+    not frameFieldsWellFormed(GoAwayFrame(lastStreamId = -1, errorCode = H2NoError, debugData = noDebug)),
+    "negative lastStreamId"
+  )
+  val one: List[SettingsParam] = newList()
+  one.add(SettingsParam(id = SettingsMaxFrameSize, value = 16384i64))
+  assertTrue(not frameFieldsWellFormed(SettingsFrame(settings = one, ack = true)), "ACK with parameters")
+  val huge: List[SettingsParam] = newList()
+  huge.add(SettingsParam(id = SettingsMaxFrameSize, value = 4294967296i64))
+  assertTrue(not frameFieldsWellFormed(SettingsFrame(settings = huge, ack = false)), "value above 2^32-1")
+  assertPanics(
+    "window increment of 0",
+    { -> val _ = serializeFrame(WindowUpdateFrame(streamId = 0, windowSizeIncrement = 0)) }
+  )
+}
