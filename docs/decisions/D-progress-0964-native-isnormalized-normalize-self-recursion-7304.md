@@ -1,4 +1,4 @@
-# D-progress-961 — `--target native`: `Std.String.isNormalized`/`normalize` infinite self-recursion fixed with an explicit compile-time panic (#7304)
+# D-progress-964 — `--target native`: `Std.String.isNormalized`/`normalize` infinite self-recursion fixed with an explicit compile-time panic (#7304)
 
 **Status:** shipped
 

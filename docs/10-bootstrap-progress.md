@@ -35827,5 +35827,5 @@ naming the method; unrelated native String methods unaffected).
 66/66 (unaffected — native-only codegen fix). Full clean `make lyric`
 succeeds.
 
-**Related:** `docs/decisions/D-progress-0961-native-isnormalized-normalize-self-recursion-7304.md`
+**Related:** `docs/decisions/D-progress-0964-native-isnormalized-normalize-self-recursion-7304.md`
 (full account), #7304 (this fix), #6752 (the precedent this mirrors).
