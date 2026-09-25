@@ -158,6 +158,17 @@ test "Certificate.fromPem rejects malformed PEM as PemMalformed" {
   }
 }
 
+test "empty PEM text is PemMalformed, not a precondition failure (#7251)" {
+  match Certificate.fromPem("") {
+    case Err(PemMalformed(_, _)) -> assertTrue(true, "empty certificate PEM")
+    case _ -> assertTrue(false, "empty certificate PEM must be PemMalformed")
+  }
+  match Identity.fromPem(rsaCert, "") {
+    case Err(PemMalformed(_, msg)) -> assertTrue(msg.contains("private key"), "names the empty key")
+    case _ -> assertTrue(false, "empty key PEM must be PemMalformed")
+  }
+}
+
 test "Certificate.fromPemFile rejects a missing file as CertFileNotFound" {
   match Certificate.fromPemFile("/nonexistent/path/does-not-exist-lyric-tls-test.pem") {
     case Ok(_) -> panic("expected CertFileNotFound for a missing path")
@@ -218,8 +229,11 @@ test "Identity.fromPemFiles rejects a missing key file as CertFileNotFound" {
   match Identity.fromPemFiles(certFile, missingKey) {
     case Ok(_) -> panic("expected CertFileNotFound for a missing key file")
     case Err(e) -> match e {
-      case CertFileNotFound(path) ->
-        assertEqual(path, missingKey, "the missing KEY path is the one reported")
+      case CertFileNotFound(path) -> assertEqual(
+        path,
+        missingKey,
+        "the missing KEY path is the one reported"
+      )
       case _ -> panic("expected CertFileNotFound, got: " + TlsError.message(e))
     }
   }
@@ -236,8 +250,11 @@ test "Identity.fromPemFiles blames the certificate file when the cert is malform
   match Identity.fromPemFiles(certFile, keyFile) {
     case Ok(_) -> panic("expected PemMalformed for a malformed certificate")
     case Err(e) -> match e {
-      case PemMalformed(path, _) ->
-        assertEqual(path, certFile, "the CERT path is the one reported for a malformed cert")
+      case PemMalformed(path, _) -> assertEqual(
+        path,
+        certFile,
+        "the CERT path is the one reported for a malformed cert"
+      )
       case _ -> panic("expected PemMalformed, got: " + TlsError.message(e))
     }
   }
@@ -274,7 +291,10 @@ test "Identity.fromPem rejects a cross-algorithm certificate/key pair as KeyMism
 }
 
 test "TlsError.message renders every case" {
-  assertTrue(TlsError.message(CertFileNotFound(path = "/x")).contains("/x"), "CertFileNotFound message carries the path")
+  assertTrue(
+    TlsError.message(CertFileNotFound(path = "/x")).contains("/x"),
+    "CertFileNotFound message carries the path"
+  )
   assertTrue(
     TlsError.message(PemMalformed(path = "/x", message = "bad")).contains("bad"),
     "PemMalformed message carries the detail"

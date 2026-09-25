@@ -2109,6 +2109,33 @@ pub func compileProjectToJarBundledWithRestored(
     rpi0 = rpi0 + 1
   }
 
+  // A package that re-exports an imported extern type through an alias
+  // (`Std.Random`'s `pub alias Random = Std.RandomHost.Random`) must expose
+  // the alias name with the extern's Java class, or a third package naming
+  // `Random` gets a descriptor for a nonexistent `<its own pkg>/Random`
+  // class (NoClassDefFoundError at run time).  Aliases of aliases resolve
+  // because every pass can see the previous pass's additions.
+  var aliasPass = 0
+  var aliasChanged = true
+  while aliasChanged and aliasPass < 4 {
+    aliasChanged = false
+    var api = 0
+    while api < extPkgNames.count {
+      val apFile = if api == 0 {
+        userFile
+      } else if api - 1 < stdlibFiles.count {
+        stdlibFiles[api - 1]
+      } else {
+        restoredArtifacts[api - 1 - stdlibFiles.count].source
+      }
+      if addReexportedExternAliases(apFile, extPkgMaps[api], extPkgNames, extPkgMaps) {
+        aliasChanged = true
+      }
+      api = api + 1
+    }
+    aliasPass = aliasPass + 1
+  }
+
   // #6929: collect every file's CONSTRUCTOR registrations first, across the
   // whole bundle (user + stdlib + restored), before any `collectFileSigsSeeded`
   // call — so `recordRetClassOfBundle`'s fallback (a function's return type
@@ -2816,4 +2843,59 @@ pub func compileProjectToJarBundledWithRestored(
     classpathJars = mergedClasspathJars
   )
   writeJarFromClassesWithResources(req, allClasses, contractEntryNames, contractEntryDatas)
+}
+
+// Add to `ownMap` each non-generic `alias Name = Pkg.Type` in `file` whose
+// target is an extern (or declared) type registered in `Pkg`'s map, mapped
+// to the same Java class.  Returns true when something was added.
+func addReexportedExternAliases(
+  file: in SourceFile,
+  ownMap: in Map[String, String],
+  pkgNames: in List[String],
+  pkgMaps: in List[Map[String, String]],
+): Bool {
+  var added = false
+  var ii = 0
+  while ii < file.items.count {
+    match file.items[ii].kind {
+      case ITypeAlias(decl) -> {
+        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        if not isGeneric and not ownMap.containsKey(decl.name) {
+          match decl.rhs.kind {
+            case TRef(path) -> {
+              if path.segments.count >= 2 {
+                val targetName = path.segments[path.segments.count - 1]
+                val pkgSegs: List[String] = newList()
+                var si = 0
+                while si < path.segments.count - 1 {
+                  pkgSegs.add(path.segments[si])
+                  si = si + 1
+                }
+                val targetPkg = dottedPath(ModulePath(segments = pkgSegs, span = path.span))
+                var pi = 0
+                while pi < pkgNames.count {
+                  if pkgNames[pi] == targetPkg {
+                    match mapGet(pkgMaps[pi], targetName) {
+                      case Some(javaFqn) -> {
+                        ownMap.add(decl.name, javaFqn)
+                        added = true
+                      }
+                      case None -> ()
+                    }
+                    pi = pkgNames.count
+                  } else {
+                    pi = pi + 1
+                  }
+                }
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+    ii = ii + 1
+  }
+  added
 }

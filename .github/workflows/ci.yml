@@ -4479,6 +4479,11 @@ jobs:
       # Placed in this second sub-batch (not the pre-split batch above, which
       # has drifted back over the ~14-concurrent-step cap; #5913) to keep the
       # runner's parallel-step status collection reliable.
+      - name: Std.Testing.Property test coverage on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/testing_property_contracts_tests.l
       - name: Std.Tls test coverage on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -7269,6 +7274,11 @@ jobs:
       - name: Std.Log test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/log_tests.l
+      # Property runners' preconditions and the JVM re-exported-alias
+      # regression (#7251); the same file runs on --target jvm below.
+      - name: Std.Testing.Property test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/testing_property_contracts_tests.l
 
       # Pins the D-N-026 four-format parse contract on the managed target,
       # including Option[Uuid] flowing through the generic Std.Core helpers
