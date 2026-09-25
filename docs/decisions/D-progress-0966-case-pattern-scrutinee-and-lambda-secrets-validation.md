@@ -1,4 +1,4 @@
-# D-progress-965 — T0128 case patterns must match the scrutinee's type; JVM imported-union case construction; lyric-validation, lyric-aws-secrets and lyric-lambda contracts
+# D-progress-966 — T0128 case patterns must match the scrutinee's type; JVM imported-union case construction; lyric-validation, lyric-aws-secrets and lyric-lambda contracts
 
 **Status:** shipped
 

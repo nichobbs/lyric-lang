@@ -1,4 +1,4 @@
-# D-progress-963 — Ecosystem security fixes; NaN-correct MSIL comparisons
+# D-progress-964 — Ecosystem security fixes; NaN-correct MSIL comparisons
 
 **Status:** shipped
 

@@ -1,4 +1,4 @@
-# D-progress-962 — Stdlib security hardening; invariant checkers for stdlib types
+# D-progress-963 — Stdlib security hardening; invariant checkers for stdlib types
 
 **Status:** shipped
 
