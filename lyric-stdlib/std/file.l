@@ -20,8 +20,9 @@ import Std.FileHost
 
 /// File metadata: last write time, stored as the kernel's opaque
 /// `FileTime` (System.DateTime on .NET, boxed epoch-milliseconds on the
-/// JVM) and compared via `hostDateTimeGreaterThan` — no extern type is
-/// declared here; the kernel owns the boundary.
+/// JVM, a `{ epochNanos: Long }` record on native — issue #6961) and
+/// compared via `hostDateTimeGreaterThan` — no extern type is declared
+/// here; the kernel owns the boundary.
 pub record FileStat {
   modifiedAt: FileTime
 }
@@ -236,8 +237,20 @@ pub func listDirs(dir: in String): Result[List[String], IOError] {
 /// the 1601-01-01 sentinel and the JDK's `File.lastModified()` returns
 /// 0 — without the probe a missing path produced `Ok` with a garbage
 /// timestamp.  A path deleted between the probe and the read (TOCTOU)
-/// still yields that sentinel timestamp, matching the pre-probe
-/// behaviour for the racing case only.
+/// is unaffected by this probe on dotnet/JVM: neither host call throws
+/// there either, so that race still yields `Ok` with a garbage sentinel
+/// timestamp, exactly as before this function had a `hostGetLastWriteTimeUtcResult`
+/// seam to call.  Only native's `stat(2)`-backed seam can actually observe
+/// the race (a missing path is a real syscall failure there), reporting
+/// `Err(IoError)` rather than `FileNotFound` for that racing case —
+/// `hostGetLastWriteTimeUtcResult` has no reason to re-derive a
+/// host-specific missing-path signal a moment after this function's own
+/// probe already ruled out the ordinary case.
+///
+/// No `try`/`catch` here — unlike the other `Std.File` functions, this
+/// one calls straight into an exception-free `Result` seam on every
+/// target, including native (D-N-003: `--target native` has no
+/// unwinding to offer `try`/`catch` in the first place).
 @stable(since = "1.0")
 pub func stat(path: in String): Result[FileStat, IOError] {
   if path.length == 0 {
@@ -246,15 +259,9 @@ pub func stat(path: in String): Result[FileStat, IOError] {
   if not (hostFileExists(path) or hostDirectoryExists(path)) {
     return Err(error = FileNotFound(path = path))
   }
-  return try {
-    val modifiedAt = hostGetLastWriteTimeUtc(path)
-    Ok(value = FileStat(modifiedAt = modifiedAt))
-  } catch Bug as b {
-    if b.message.startsWith("Could not find file") or b.message.contains("FileNotFoundException") or b.message.contains("DirectoryNotFoundException") {
-      Err(error = FileNotFound(path = path))
-    } else {
-      Err(error = IoError(path = path, message = b.message))
-    }
+  match hostGetLastWriteTimeUtcResult(path) {
+    case Ok(modifiedAt) -> Ok(value = FileStat(modifiedAt = modifiedAt))
+    case Err(e) -> Err(error = e)
   }
 }
 

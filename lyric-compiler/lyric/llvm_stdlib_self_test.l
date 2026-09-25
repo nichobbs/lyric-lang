@@ -223,6 +223,96 @@ test "Std.File readTextOrPanic: round-trip, panics on a missing path (ASan) (#69
   assertTrue(panicResult.exitCode != 42 and panicResult.exitCode != 0, "a non-panicking readTextOrPanic would exit 42")
 }
 
+// Issue #6961 (the rest of it, D-progress-957): stat/fileStatIsNewer
+// needed an opaque timestamp twin before a native kernel seam was even
+// meaningful. FileTime is now a native-only `{ epochNanos: Long }`
+// record (the same representation Std.Time's native Instant uses,
+// D-N-027), backed by a new lyric_file_mtime_epoch_nanos_ok lyric-rt
+// seam. stat()'s pure-layer body has NO try/catch on any target now
+// (D-N-003), calling straight into hostGetLastWriteTimeUtcResult.
+test "Std.File stat/fileStatIsNewer: round-trip, real write ordering, missing path (ASan) (#6961)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.File\n" + "import Std.Time\n" + "func main(): Int {\n" +
+    "  val older = \"" +
+    tempBase() +
+    "/lyric-n59-stat-older.txt\"\n" +
+    "  val newer = \"" +
+    tempBase() +
+    "/lyric-n59-stat-newer.txt\"\n" +
+    "  match writeText(older, \"first\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "  sleepMillis(10)\n" +
+    "  match writeText(newer, \"second\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 2\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var olderStat = stat(older)\n" +
+    "  var newerStat = stat(newer)\n" +
+    "  match olderStat {\n" +
+    "    case Err(_) -> {\n" +
+    "      return 3\n" +
+    "    }\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match newerStat {\n" +
+    "    case Err(_) -> {\n" +
+    "      return 4\n" +
+    "    }\n" +
+    "    case Ok(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var isNewer = false\n" +
+    "  var isOlder = false\n" +
+    "  var selfNewer = false\n" +
+    "  match olderStat {\n" +
+    "    case Ok(o) -> {\n" +
+    "      match newerStat {\n" +
+    "        case Ok(n) -> {\n" +
+    "          isNewer = fileStatIsNewer(n, o)\n" +
+    "          isOlder = fileStatIsNewer(o, n)\n" +
+    "          selfNewer = fileStatIsNewer(o, o)\n" +
+    "        }\n" +
+    "        case Err(_) -> {\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  if not isNewer {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  if isOlder {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  if selfNewer {\n" +
+    "    return 7\n" +
+    "  }\n" +
+    "  match stat(\"" +
+    tempBase() +
+    "/nonexistent-lyric-n59-stat\") {\n" +
+    "    case Ok(_) -> {\n" +
+    "      return 8\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  val _ = deleteFile(older)\n" +
+    "  val _ = deleteFile(newer)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "stat/fileStatIsNewer round-trip, ordering, and missing-path classification")
+}
+
 // #4752 residual-seam audit (D-progress-910): both return "" on native,
 // a value each function's own doc comment already documents as valid
 // (runtimeDirectory: "may return an empty string in native-AOT

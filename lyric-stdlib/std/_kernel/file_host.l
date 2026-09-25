@@ -64,6 +64,21 @@ pub func hostDateTimeGreaterThan(a: in FileTime, b: in FileTime): Bool {
   FileTime.op_GreaterThan(a, b)
 }
 
+// Issue #6961: the exception-free Result seam every kernel twin now
+// implements, so `Std.File.stat`'s pure-layer body needs no
+// `try`/`catch` on any target (native has none to offer — D-N-003).
+// `stat()` already probes hostFileExists/hostDirectoryExists before
+// calling this, so a thrown exception here is a TOCTOU race
+// (deleted between the probe and this call) or a genuine host error
+// (permissions, path-too-long, ...) — every case reports IoError.
+pub func hostGetLastWriteTimeUtcResult(path: in String): Result[FileTime, IOError] {
+  try {
+    Ok(value = hostGetLastWriteTimeUtc(path))
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
 // =====================================================================
 // Directory creation — `CreateDirectory` returns `DirectoryInfo` in
 // the BCL; `Std.File` only needs the success/throw signal.

@@ -35282,3 +35282,40 @@ user-defined `T.toString` method on a non-scalar receiver, and the native
 reachability walk traces method calls on a local receiver (`sb.append(x)`).
 Covered by `string_builder_self_test.l` on dotnet, JVM and native
 (D-progress-956, #7257, #7258, epic #7256).
+
+## Native: `FileTime` opaque timestamp twin unblocks `Std.File.stat`/`fileStatIsNewer` (#6961)
+
+The rest of #6961, deliberately left out of the entry above: `stat()`'s
+`try`/`catch` couldn't be removed without a native representation for
+`FileTime` first, since (unlike `readTextOrPanic`) its return type
+carries one. `FileTime` is now a native-only `_kernel_native/file_host.l`
+record, `{ epochNanos: Long }` — the same epoch-nanoseconds
+representation `Std.Time`'s native `Instant` already uses (D-N-027), but
+deliberately not a re-export of `Instant` itself so `Std.FileHost` stays
+independent of `Std.TimeHost` on this target the same way it already
+does on the other two. Backed by a new `lyric_file_mtime_epoch_nanos_ok`
+`lyric-rt` seam (`stat(2)`'s `st_mtim`, with an overflow guard mirroring
+`time_host.l`'s own `checkedAddNanos` pattern). `std/file.l`'s `stat()`
+now calls a `hostGetLastWriteTimeUtcResult` Result seam directly, which
+every kernel twin implements (dotnet/JVM gained thin `try`/`catch`
+wrappers around their existing throwing `hostGetLastWriteTimeUtc` so the
+pure-layer call site is uniform across all three targets).
+
+**Verification.** `lyric-rt/test/lyric_rt_test.c` gained
+`test_file_mtime`: an exact `utimes(2)`-pinned round-trip, a
+strictly-later mtime producing a strictly larger nanos value, a
+pre-1970 mtime round-tripping through negative epoch-nanos, and a
+missing-path failure leaving the out-param untouched.
+`lyric-stdlib/tests/file_tests.l` gained a `fileStatIsNewer` ordering
+test (`Std.Time.sleepMillis` for a real, non-flaky time gap) — this
+function had no dedicated test anywhere in the repo before, despite
+backing real incremental-build staleness checks. `llvm_stdlib_self_test.l`
+gained an end-to-end native case covering round-trip, ordering, and
+missing-path classification through `Lyric.LlvmBridge
+.compileToNativeWithFlags` with `-fsanitize=address`.
+
+**Related:** `docs/decisions/D-progress-0957-native-opaque-filetime-stat-6961.md`
+(full account), D-progress-942 (`readTextOrPanic`'s half of #6961, the
+precedent this entry follows), D-N-027 (`Std.Time`'s native `Instant`
+epoch-nanoseconds representation), #6961 (closed by this entry),
+`native/plan/08-work-items.md` N5.7.

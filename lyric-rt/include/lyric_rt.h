@@ -422,6 +422,16 @@ int32_t lyric_file_rename(const char* old_path, const char* new_path);
  * (including a stat(2) failure or a non-regular-file path). */
 int32_t lyric_file_exists(const char* path);
 
+/* Last-modification time of `path` in nanoseconds since the Unix epoch
+ * (issue #6961's opaque-timestamp prerequisite for Std.File.stat) --
+ * the same representation Std.Time's native Instant uses (D-N-027), so
+ * the Lyric-side FileTime twin is a direct field-for-field match.
+ * Follows symlinks (stat, not lstat), matching lyric_file_exists /
+ * lyric_dir_exists. 0 and *out_nanos set on success; -1 on failure
+ * (missing path, or the conversion falling outside the representable
+ * i64-nanosecond window) with *out_nanos untouched. */
+int32_t lyric_file_mtime_epoch_nanos_ok(const char* path, int64_t* out_nanos);
+
 /* ── Directories (lyric_fs.c) ──────────────────────────────────────── */
 
 /* mkdir(2) wrapper; single level only (no `mkdir -p`), mode 0755.

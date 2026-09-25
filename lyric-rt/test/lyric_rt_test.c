@@ -17,6 +17,7 @@
 #include <string.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -1330,6 +1331,68 @@ static void test_file_io(void) {
     rmdir(dir);
 }
 
+static void test_file_mtime(void) {
+    char dir_tmpl[] = "/tmp/lyric_rt_test_mtime_XXXXXX";
+    char* dir = mkdtemp(dir_tmpl);
+    CHECK(dir != NULL);
+
+    char path[512];
+    snprintf(path, sizeof path, "%s/a.txt", dir);
+    LyricString* content = lyric_string_from_literal((const uint8_t*)"x", 1);
+    CHECK(lyric_file_write_all(path, content, 0) == 0);
+    lyric_release(content);
+
+    /* Missing path fails cleanly, *out untouched. */
+    char missing[512];
+    snprintf(missing, sizeof missing, "%s/missing.txt", dir);
+    int64_t untouched = 12345;
+    CHECK(lyric_file_mtime_epoch_nanos_ok(missing, &untouched) == -1);
+    CHECK(untouched == 12345);
+
+    /* utimes(2) pins an exact, known mtime (avoids a sleep-based flaky
+     * test): 2024-01-15T10:30:45.500000Z, i.e. 1705314645 seconds and
+     * 500000 microseconds past the Unix epoch. */
+    struct timeval times[2];
+    times[0].tv_sec = 1705314645;
+    times[0].tv_usec = 500000;
+    times[1].tv_sec = 1705314645;
+    times[1].tv_usec = 500000;
+    CHECK(utimes(path, times) == 0);
+
+    int64_t nanos = 0;
+    CHECK(lyric_file_mtime_epoch_nanos_ok(path, &nanos) == 0);
+    CHECK(nanos == 1705314645500000000LL);
+
+    /* A strictly later mtime converts to a strictly larger nanos value
+     * (the ordering fileStatIsNewer's `>` comparison relies on). */
+    char path2[512];
+    snprintf(path2, sizeof path2, "%s/b.txt", dir);
+    LyricString* content2 = lyric_string_from_literal((const uint8_t*)"y", 1);
+    CHECK(lyric_file_write_all(path2, content2, 0) == 0);
+    lyric_release(content2);
+    times[0].tv_sec = 1705314646;
+    times[1].tv_sec = 1705314646;
+    CHECK(utimes(path2, times) == 0);
+    int64_t nanos2 = 0;
+    CHECK(lyric_file_mtime_epoch_nanos_ok(path2, &nanos2) == 0);
+    CHECK(nanos2 > nanos);
+
+    /* A pre-1970 mtime round-trips too (negative epoch nanos, within
+     * Instant's own supported 1677..2262 window). */
+    times[0].tv_sec = -3600;
+    times[0].tv_usec = 0;
+    times[1].tv_sec = -3600;
+    times[1].tv_usec = 0;
+    CHECK(utimes(path, times) == 0);
+    int64_t negNanos = 0;
+    CHECK(lyric_file_mtime_epoch_nanos_ok(path, &negNanos) == 0);
+    CHECK(negNanos == -3600000000000LL);
+
+    CHECK(lyric_file_delete(path) == 0);
+    CHECK(lyric_file_delete(path2) == 0);
+    rmdir(dir);
+}
+
 static void test_directories(void) {
     char dir_tmpl[] = "/tmp/lyric_rt_test_dir_XXXXXX";
     char* dir = mkdtemp(dir_tmpl);
@@ -2495,6 +2558,7 @@ int main(void) {
     test_ok_variants();
     test_uuid_v4();
     test_file_io();
+    test_file_mtime();
     test_directories();
     test_environment();
     test_process();

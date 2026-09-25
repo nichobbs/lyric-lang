@@ -15,6 +15,7 @@ import Std.Errors
 import Std.File
 import Std.Environment
 import Std.Testing
+import Std.Time
 
 func scratchDir(label: in String): String {
   val base = Environment.getVarOrDefault("TMPDIR", "/tmp")
@@ -168,6 +169,37 @@ test "stat succeeds for an existing file and fails for a missing one" {
     case Err(FileNotFound(_)) -> ()
     case Err(other) -> panic("expected FileNotFound, got: " + IOError.message(other))
   }
+  val _ = deleteDirRecursive(dir)
+}
+
+// Issue #6961: fileStatIsNewer had no dedicated test anywhere in the
+// repo before the native FileTime twin shipped (D-progress-957) even
+// though it backs real incremental-build staleness checks (see
+// cli_workspace_builder_self_test.l). sleepMillis provides a real,
+// deterministic time gap between the two writes rather than relying on
+// two back-to-back stat() calls to land on different filesystem
+// timestamp ticks.
+test "fileStatIsNewer reflects real write ordering, and is false for a file compared to itself" {
+  val dir = scratchDir("stat_newer")
+  val _ = createDir(dir)
+  val older = dir + "/older.txt"
+  val newer = dir + "/newer.txt"
+  val _ = writeText(older, "first")
+  sleepMillis(10)
+  val _ = writeText(newer, "second")
+
+  val olderStat = match stat(older) {
+    case Ok(s) -> s
+    case Err(e) -> panic("stat on 'older' failed: " + IOError.message(e))
+  }
+  val newerStat = match stat(newer) {
+    case Ok(s) -> s
+    case Err(e) -> panic("stat on 'newer' failed: " + IOError.message(e))
+  }
+
+  assertTrue(fileStatIsNewer(newerStat, olderStat), "the file written second must be newer")
+  assertTrue(not fileStatIsNewer(olderStat, newerStat), "the file written first must not be newer")
+  assertTrue(not fileStatIsNewer(olderStat, olderStat), "a file is never newer than itself")
   val _ = deleteDirRecursive(dir)
 }
 

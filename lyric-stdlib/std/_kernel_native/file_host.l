@@ -20,14 +20,16 @@
 //! D-N-003), reusing `hostReadBytesResult`/`hostReadTextResult`'s own
 //! seams rather than a second extern call each.
 //!
-//! Still unavailable natively: file `stat`/`fileStatIsNewer` (needs an
-//! opaque timestamp twin AND `Std.File.stat`'s own `try`/`catch`
-//! wrapper, which `Lyric.LlvmCodegen` unconditionally rejects for
-//! `--target native` per D-N-003 — the same root cause issue #6887
-//! tracks for `Std.Process`'s piped API, but scoped separately here as
-//! issue #6961 since #6887's own scope and suggested fix are specific
-//! to that facade). Not fixable from this kernel file alone — needs the
-//! opaque timestamp twin first.
+//! `stat`/`fileStatIsNewer` (issue #6961) now ship too: `FileTime` is
+//! the native twin of the dotnet/JVM kernels' `extern type FileTime`
+//! (`System.DateTime` / boxed `java.lang.Long`) — a plain record
+//! holding epoch-nanoseconds, the same representation `Std.Time`'s
+//! native `Instant` already uses (D-N-027), backed by a new
+//! `lyric_file_mtime_epoch_nanos_ok` lyric-rt seam (`stat(2)`'s
+//! `st_mtim`). `hostGetLastWriteTimeUtcResult` is the exception-free
+//! Result seam `Std.File.stat`'s pure-layer body calls directly (no
+//! `try`/`catch` — D-N-003 has no unwinding on this target), mirroring
+//! `hostReadTextResult`'s own precedent.
 @axiom("POSIX file-system calls via lyric-rt conform to their documented contracts")
 package Std.FileHost
 
@@ -35,11 +37,22 @@ import Std.Core
 import Std.Collections
 import Std.Errors
 
+/// Native twin of the dotnet/JVM kernels' `extern type FileTime`: a
+/// plain record holding epoch-nanoseconds, the same representation
+/// `Std.Time`'s native `Instant` uses (D-N-027) — not a re-export of
+/// `Instant` itself, so `Std.FileHost` stays independent of
+/// `Std.TimeHost` on this target the same way it does on the other two.
+pub record FileTime {
+  epochNanos: Long
+}
+
 extern func toC(s: String): NativePtr[Byte] = "lyric_string_to_cstring"
 
 extern func freeC(p: NativePtr[Byte]): Unit = "lyric_cstring_free"
 
 extern func rtFileExists(path: NativePtr[Byte]): Int = "lyric_file_exists"
+
+extern func rtMtimeEpochNanosOk(path: NativePtr[Byte], outp: NativePtr[Long]): Int = "lyric_file_mtime_epoch_nanos_ok"
 
 extern func rtDirExists(path: NativePtr[Byte]): Int = "lyric_dir_exists"
 
@@ -91,6 +104,32 @@ pub func hostDirectoryExists(path: in String): Bool {
   val rc = rtDirExists(c)
   freeC(c)
   rc == 1
+}
+
+// Issue #6961: `Std.File.stat`'s pure-layer body calls this directly
+// with NO `try`/`catch` around it on any target — the exception-free
+// Result seam every kernel twin now implements. `stat()` already probes
+// hostFileExists/hostDirectoryExists before calling this, so the only
+// way `lyric_file_mtime_epoch_nanos_ok` fails here is a TOCTOU race
+// (deleted between the probe and this call) or the nanosecond-range
+// overflow guard — either way it is reported as IoError, matching the
+// dotnet/JVM twins' catch-all classification once their own
+// not-found case is ruled out by the same pre-probe.
+@unsafe_ffi
+pub func hostGetLastWriteTimeUtcResult(path: in String): Result[FileTime, IOError] {
+  var nanos: Long = 0i64
+  val c = toC(path)
+  val rc = rtMtimeEpochNanosOk(c, nativeAddrOf(nanos))
+  freeC(c)
+  if rc == 0 {
+    Ok(value = FileTime(epochNanos = nanos))
+  } else {
+    Err(error = IoError(path = path, message = "the file's modification time could not be read"))
+  }
+}
+
+pub func hostDateTimeGreaterThan(a: in FileTime, b: in FileTime): Bool {
+  a.epochNanos > b.epochNanos
 }
 
 @unsafe_ffi

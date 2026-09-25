@@ -215,6 +215,36 @@ int32_t lyric_file_exists(const char* path) {
     return S_ISREG(st.st_mode) ? 1 : 0;
 }
 
+/* Last-modification time of `path` (issue #6961's opaque-timestamp
+ * prerequisite), as nanoseconds since the Unix epoch -- the same
+ * representation Std.Time's native Instant already uses (D-N-027), so
+ * Std.File's FileTime twin is a direct field-for-field match rather
+ * than a new unit convention. Follows symlinks (stat, not lstat),
+ * matching lyric_file_exists/lyric_dir_exists above. */
+int32_t lyric_file_mtime_epoch_nanos_ok(const char* path, int64_t* out_nanos) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+#if defined(__APPLE__)
+    time_t sec = st.st_mtimespec.tv_sec;
+    long nsec = st.st_mtimespec.tv_nsec;
+#else
+    time_t sec = st.st_mtim.tv_sec;
+    long nsec = st.st_mtim.tv_nsec;
+#endif
+    /* Overflow guard mirroring time_host.l's checkedAddNanos: sec*1e9+nsec
+     * must fit in int64_t on both ends. tv_nsec is always in
+     * [0, 999999999] (POSIX), so only sec*1e9 itself can underflow the
+     * negative side -- adding a non-negative nsec never pushes it further
+     * negative, so the lower bound needs no nsec term. Either bound is
+     * only reachable ~292 years from 1970 (well outside Instant's own
+     * 1677..2262 window), but the conversion stays exact rather than
+     * silently wrapping either way. */
+    if (sec < -9223372036LL) return -1;
+    if (sec > (INT64_MAX - nsec) / 1000000000LL) return -1;
+    *out_nanos = (int64_t)sec * 1000000000LL + (int64_t)nsec;
+    return 0;
+}
+
 /* ── Directories ───────────────────────────────────────────────────── */
 
 int32_t lyric_dir_create(const char* path) {
