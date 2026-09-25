@@ -9,6 +9,7 @@ package Std.ProcessCapture
 import Std.Core
 import Std.Collections
 import Std.ProcessCaptureHost
+import Std.ProcessArgs
 import Std.String
 
 // Quote a single argument so it round-trips through both the .NET
@@ -51,44 +52,7 @@ import Std.String
 // `buildArgString`) can reuse the same escape ordering.
 @stable(since = "1.0")
 pub func quoteArg(arg: in String): String {
-  val sb = StringBuilder.new()
-  sb.append("\"")
-  var i = 0
-  val n = arg.length
-  while i < n {
-    val ch = arg.substring(i, 1)
-    if ch == "\\" {
-      var numBackslashes = 0
-      while i < n and arg.substring(i, 1) == "\\" {
-        numBackslashes += 1
-        i += 1
-      }
-      if i == n {
-        // Trailing backslash run: immediately followed by the closing
-        // `"` this function appends below, so it must be doubled.
-        sb.append(repeat("\\", numBackslashes * 2))
-      } else if arg.substring(i, 1) == "\"" {
-        // Backslash run immediately before a literal quote: 2N+1
-        // backslashes then the quote, so the decoder sees N literal
-        // backslashes followed by an escaped (non-terminating) `"`.
-        sb.append(repeat("\\", numBackslashes * 2 + 1))
-        sb.append("\"")
-        i += 1
-      } else {
-        // Backslash run followed by an ordinary character: the decoder
-        // passes these through unchanged, so this encoder must too.
-        sb.append(repeat("\\", numBackslashes))
-      }
-    } else if ch == "\"" {
-      sb.append("\\\"")
-      i += 1
-    } else {
-      sb.append(ch)
-      i += 1
-    }
-  }
-  sb.append("\"")
-  sb.toString()
+  argvQuote(arg)
 }
 
 // Build a single pre-formed argument string from a list.  Every
@@ -96,17 +60,7 @@ pub func quoteArg(arg: in String): String {
 // the receiving process re-tokenises identically on POSIX and Windows.
 @stable(since = "1.0")
 pub func buildArgString(args: in List[String]): String {
-  val sb = StringBuilder.new()
-  var i = 0
-  val count = args.count
-  while i < count {
-    if i > 0 {
-      sb.append(" ")
-    }
-    sb.append(quoteArg(args[i]))
-    i = i + 1
-  }
-  sb.toString()
+  argvJoin(args)
 }
 
 // Full diagnostic result returned by `runCaptureWithDiagnostics`.

@@ -12,6 +12,7 @@ package Std.ProcessCaptureHost
 
 import Std.Core
 import Std.Collections
+import Std.ProcessArgs
 
 // ── BCL extern types ───────────────────────────────────────────────────────
 extern type Psi = "System.Diagnostics.ProcessStartInfo"
@@ -405,19 +406,8 @@ pub func hostRunCaptureTimeout(
 pub func hostRunCaptureList(
   executable: in String, args: in List[String], stdinContent: in String, timeoutMs: in Int
 ): Result[ProcessCaptureResult, String] {
-  var argStr = ""
-  var i = 0
-  val count = args.count
-  while i < count {
-    if i > 0 {
-      argStr = argStr + " "
-    }
-    val escaped = args[i].replace("\\", "\\\\").replace("\"", "\\\"")
-    argStr = argStr + "\"" + escaped + "\""
-    i += 1
-  }
   try {
-    Ok(value = runImpl(executable, argStr, stdinContent, timeoutMs))
+    Ok(value = runImpl(executable, argvJoin(args), stdinContent, timeoutMs))
   } catch Bug as b {
     Err(error = b.message)
   }

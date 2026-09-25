@@ -38,6 +38,7 @@ package Std.ProcessCaptureHost
 
 import Std.Core
 import Std.Collections
+import Std.ProcessArgs
 
 // ── JDK extern types ──────────────────────────────────────────────────────────
 extern type JProcessBuilder = "java.lang.ProcessBuilder"
@@ -97,64 +98,19 @@ pub func pcResultTimedOut(r: in ProcessCaptureResult): Bool {
 }
 
 // ── Argument-string parser ────────────────────────────────────────────────────
-// Parse the `buildArgString`-formatted `arguments` string (produced by
-// `Std.Process.buildArgString` / `Std.ProcessCapture.buildArgString`, the
-// same format both callers share) back into a `List[String]`.
-// The format is a space-separated sequence of `"..."` tokens where interior
-// `"` is escaped as `\"` and interior `\` is escaped as `\\`.
-// The resulting list is prepended with `executable` so
-// `ProcessBuilder` receives a complete command line.
-// `pub` so `Std.ProcessHost` (the non-capturing spawn kernel) can share this
-// parser rather than reimplementing the same quoting convention.
+// Split the `Std.ProcessArgs.argvJoin`-formatted `arguments` string back into
+// an argv list (the decoder lives in Std.ProcessArgs, shared by every kernel,
+// #7234), prefixed with `executable` so `ProcessBuilder` receives a complete
+// command line.  `pub` so `Std.ProcessHost` shares it.
 pub func parseArgString(executable: in String, argStr: in String): List[String] {
   val parsed: List[String] = newList()
   parsed.add(executable)
+  val rest = argvSplit(argStr)
   var i = 0
-  val n = argStr.length
-  while i < n {
-    // Skip inter-argument whitespace
-    while i < n and argStr[i] == ' ' {
-      i = i + 1
-    }
-    if i >= n {
-      return parsed
-    }
-    if argStr[i] == '"' {
-      // Quoted token
-      i = i + 1
-      var arg = ""
-      var done = false
-      while not done and i < n {
-        val c = argStr[i]
-        if c == '\\' and i + 1 < n {
-          i = i + 1
-          val ec = argStr[i]
-          if ec == '"' {
-            arg = arg + "\""
-          } else if ec == '\\' {
-            arg = arg + "\\"
-          } else {
-            arg = arg + "\\" + argStr.substring(i, 1)
-          }
-          i = i + 1
-        } else if c == '"' {
-          i = i + 1
-          done = true
-        } else {
-          arg = arg + argStr.substring(i, 1)
-          i = i + 1
-        }
-      }
-      parsed.add(arg)
-    } else {
-      // Unquoted token (fallback; buildArgString always quotes)
-      var arg = ""
-      while i < n and argStr[i] != ' ' {
-        arg = arg + argStr.substring(i, 1)
-        i = i + 1
-      }
-      parsed.add(arg)
-    }
+  while i < rest.count {
+    val a: String = rest[i]
+    parsed.add(a)
+    i = i + 1
   }
   parsed
 }
@@ -200,7 +156,11 @@ func closeOutput(stream: in JOutputStream): Unit {
 func runImpl(
   executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
 ): ProcessCaptureResult {
-  val cmdList = parseArgString(executable, arguments)
+  runCmd(parseArgString(executable, arguments), stdinContent, timeoutMs)
+}
+
+// Run the already-tokenised command line `cmdList` (executable first).
+func runCmd(cmdList: in List[String], stdinContent: in String, timeoutMs: in Int): ProcessCaptureResult {
   val pb = JProcessBuilder.new(cmdList)
   val proc = pb.start()
 
@@ -294,30 +254,24 @@ pub func hostRunCaptureTimeout(
 
 // =====================================================================
 // List-argv Result seam — the exception-free surface every kernel twin
-// implements (issue #4752).  Joins to the quoted argument string
-// `runImpl` expects (`parseArgString` reverses the same escaping
-// convention exactly) and absorbs the Bug into the error channel.
+// implements (issue #4752).  Absorbs the Bug into the error channel.
 // =====================================================================
 pub func hostRunCaptureList(
   executable: in String, args: in List[String], stdinContent: in String, timeoutMs: in Int
 ): Result[ProcessCaptureResult, String] {
-  var argStr = ""
+  // The argv list goes to ProcessBuilder as-is: joining it into a quoted
+  // string only for `parseArgString` to split it again is a lossy round trip
+  // for no benefit.
+  val cmdList: List[String] = newList()
+  cmdList.add(executable)
   var i = 0
-  val count = args.count
-  while i < count {
-    if i > 0 {
-      argStr = argStr + " "
-    }
-    // The element read needs the String annotation so `.replace`
-    // resolves against String (an unannotated `args[i]` receiver
-    // erases to Object under the JVM auto-FFI).
+  while i < args.count {
     val arg: String = args[i]
-    val escaped = arg.replace("\\", "\\\\").replace("\"", "\\\"")
-    argStr = argStr + "\"" + escaped + "\""
+    cmdList.add(arg)
     i += 1
   }
   try {
-    Ok(value = runImpl(executable, argStr, stdinContent, timeoutMs))
+    Ok(value = runCmd(cmdList, stdinContent, timeoutMs))
   } catch Bug as b {
     Err(error = b.message)
   }

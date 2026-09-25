@@ -79,68 +79,15 @@ package Std.ProcessPipedHost
 
 import Std.Core
 import Std.Collections
+import Std.ProcessArgs
 
 extern func toC(s: String): NativePtr[Byte] = "lyric_string_to_cstring"
 
 extern func freeC(p: NativePtr[Byte]): Unit = "lyric_cstring_free"
 
-// ── Argument-string parser (same token-scanning algorithm as
-// _kernel_jvm/process_capture_host.l's parseArgString; see module header
-// for why this one takes no `executable` param) ────────────────────────────
+// ── Argument-string parser: the shared Std.ProcessArgs decoder (#7234) ──────
 func parseArgString(argStr: in String): List[String] {
-  val parsed: List[String] = newList()
-  var i = 0
-  val n = argStr.length
-  while i < n {
-    // `.substring(i, 1)` character access, NOT `argStr[i]` bracket
-    // indexing — String bracket indexing has no native codegen lowering
-    // yet (issue #6237), unlike the JVM twin this algorithm mirrors,
-    // which uses `argStr[i]` directly. Every other `_kernel_native/`
-    // file doing character-by-character string scanning already uses
-    // this same `.substring(i, 1)` idiom (e.g. `http_host.l`'s header
-    // parser).
-    while i < n and argStr.substring(i, 1) == " " {
-      i = i + 1
-    }
-    if i >= n {
-      return parsed
-    }
-    if argStr.substring(i, 1) == "\"" {
-      i = i + 1
-      var arg = ""
-      var done = false
-      while not done and i < n {
-        val c = argStr.substring(i, 1)
-        if c == "\\" and i + 1 < n {
-          i = i + 1
-          val ec = argStr.substring(i, 1)
-          if ec == "\"" {
-            arg = arg + "\""
-          } else if ec == "\\" {
-            arg = arg + "\\"
-          } else {
-            arg = arg + "\\" + ec
-          }
-          i = i + 1
-        } else if c == "\"" {
-          i = i + 1
-          done = true
-        } else {
-          arg = arg + c
-          i = i + 1
-        }
-      }
-      parsed.add(arg)
-    } else {
-      var arg = ""
-      while i < n and argStr.substring(i, 1) != " " {
-        arg = arg + argStr.substring(i, 1)
-        i = i + 1
-      }
-      parsed.add(arg)
-    }
-  }
-  parsed
+  argvSplit(argStr)
 }
 
 // ── Extern seam bindings (lyric-rt/src/lyric_process.c) ────────────────────
