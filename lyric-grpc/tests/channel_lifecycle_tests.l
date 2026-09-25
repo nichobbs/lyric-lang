@@ -90,3 +90,35 @@ test "openChannel: two concurrently-open channels get independent handles that b
     }
   }
 }
+
+// ─── Metadata validation (#7248) ─────────────────────────────────────────────
+// A CR/LF in a metadata value would reach the HTTP/2 header block; keys are
+// lowercase on the wire and `grpc-` is reserved by the protocol.
+test "metadata keys: lowercase token characters only, grpc- reserved" {
+  assertTrue(isValidMetadataKey("authorization"), "lowercase key")
+  assertTrue(isValidMetadataKey("x-trace_id.v1"), "digits, -, _ and . are allowed")
+  assertTrue(not isValidMetadataKey(""), "empty key")
+  assertTrue(not isValidMetadataKey("Authorization"), "uppercase key")
+  assertTrue(not isValidMetadataKey("x key"), "space in key")
+  assertTrue(not isValidMetadataKey("grpc-timeout"), "reserved grpc- namespace")
+}
+
+test "metadata values: printable ASCII unless the key is -bin" {
+  assertTrue(isValidMetadataValue("x-id", "abc 123"), "printable ASCII")
+  assertTrue(not isValidMetadataValue("x-id", "a\r\nx-injected: 1"), "CR/LF")
+  assertTrue(not isValidMetadataValue("x-id", "café"), "non-ASCII")
+  assertTrue(isValidMetadataValue("x-blob-bin", "\u{0001}\u{0002}"), "-bin values are raw bytes")
+}
+
+test "tryWithMetadata reports an invalid entry as Err; withMetadata requires a valid one" {
+  match tryWithMetadata(defaultOptions(), "x-id", "a\nb") {
+    case Std.Core.Ok(_) -> assertTrue(false, "expected Err for a newline in the value")
+    case Err(_) -> ()
+  }
+  match tryWithMetadata(defaultOptions(), "x-id", "ok") {
+    case Std.Core.Ok(o) -> assertEqualInt(o.metadata.length, 1, "one entry added")
+    case Err(e) -> assertTrue(false, "unexpected Err: " + e)
+  }
+  assertPanics("uppercase key", { -> val _ = withMetadata(defaultOptions(), "X-Id", "v") })
+  assertPanics("non-positive timeout", { -> val _ = withTimeout(defaultOptions(), 0) })
+}
