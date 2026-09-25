@@ -335,7 +335,9 @@ pub aspect HttpCircuitBreaker {
     } else {
       val key = if name.length > 0 then name else call.qualifiedName
       if Resilience.circuitIsOpen(key, cooldownMs) {
-        ret = Err(WebPkg.serviceUnavailable(key + " is temporarily unavailable"))
+        // The body goes to the client, so it names no internal handler or
+        // circuit (#7249).
+        ret = Err(WebPkg.serviceUnavailable("Service temporarily unavailable — try again later"))
       } else {
         ret = call.proceed()
         match ret {

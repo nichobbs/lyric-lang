@@ -177,6 +177,17 @@ router = Web.withMiddleware(router, Web.requestLogger())
 
 `Web.start` attaches a CORS middleware automatically from the `LYRIC_CONFIG_WEB_CORS_*` env vars (below) when enabled. Call `Web.corsMiddleware` directly if you build your own pipeline instead of using `Web.start`.
 
+With `*` as the origin list the middleware answers `Access-Control-Allow-Origin: *` literally rather than echoing the request's `Origin`, so browsers refuse credentialed requests; list the origins explicitly to allow credentials. The settings are written into response headers, so they must pass `Web.corsSettingsError`: no control characters, method tokens only, and a non-negative max age. `Web.start` checks them at startup and fails closed, instead of failing on every cross-origin request.
+
+### Routes, headers and statuses
+
+These are checked by precondition, so a mistake fails loudly when it is made:
+- **Route patterns** (`addGet` and its siblings, and the streaming variants) must satisfy `Web.isValidRoutePattern`: a leading `/`, no empty segment, `{name}` parameters with unique names, and a `{*name}` catch-all only as the last segment. A malformed `{id` used to be treated as a literal segment.
+- **Response headers** (`withResponseHeader`, `writeHeader`) need a token name and a value without CR, LF or other control characters. For a value taken from the request, `Web.tryWithResponseHeader` returns `Err` instead.
+- **Response builders** (`json`, `text`, `html`, `bytesResponse`, `writeStatus`) take a status of 100 to 599.
+
+A static-file mount must satisfy `Web.isValidStaticFiles`: a non-empty `root`, a `mountPrefix` that is empty or of the form `/segment`, and a non-negative cache lifetime. A mount matches whole path segments only, so `/assets` does not serve `/assetsX/...`.
+
 ---
 
 ## Streaming (chunked) responses
@@ -355,7 +366,7 @@ match Web.tlsServerConfigFromWebTls(cfg) {
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `LYRIC_CONFIG_WEB_CORS_ENABLED` | `Bool` | `false` | Enable CORS middleware |
-| `LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS` | `String` | `*` | Comma-separated origins (or `*`) |
+| `LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS` | `String` | (none; required when enabled) | Comma-separated origins, or `*` for any origin without credentials |
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS` | `String` | `GET,POST,PUT,DELETE,OPTIONS,PATCH` | Comma-separated methods |
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS` | `String` | `Content-Type,Authorization,Accept` | Comma-separated headers |
 | `LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS` | `Int` | `86400` | Preflight cache duration |

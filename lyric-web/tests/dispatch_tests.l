@@ -676,3 +676,129 @@ test "specToJson renders a fully-populated spec correctly" {
 
   disposeJson(doc)
 }
+
+// ─── Route patterns, headers and statuses (#7249) ────────────────────────────
+test "isValidRoutePattern: well-formed patterns only" {
+  assertTrue(isValidRoutePattern("/"), "root")
+  assertTrue(isValidRoutePattern("/users/{id}"), "parameter")
+  assertTrue(isValidRoutePattern("/static/{*path}"), "catch-all last")
+  assertTrue(isValidRoutePattern("/orgs/{org}/repos/{repo}/"), "trailing slash")
+  assertFalse(isValidRoutePattern("users"), "no leading slash")
+  assertFalse(isValidRoutePattern("/users/{id"), "unbalanced brace, which used to match the literal text")
+  assertFalse(isValidRoutePattern("/users/{}"), "empty name")
+  assertFalse(isValidRoutePattern("/a/{*rest}/b"), "catch-all not last")
+  assertFalse(isValidRoutePattern("/a/{id}/b/{id}"), "duplicate name")
+  assertFalse(isValidRoutePattern("/a//b"), "empty segment")
+  assertFalse(isValidRoutePattern("/a{id}"), "brace inside a literal segment")
+}
+
+test "addGet refuses a malformed route pattern" {
+  assertPanics("unbalanced brace", { -> val _ = addGet(create(), "/users/{id", TextHandler(status = 200, body = "x")) })
+}
+
+test "response headers can never carry CR or LF" {
+  val resp = text(200, "ok")
+  match tryWithResponseHeader(resp, "X-Echo", "a\r\nSet-Cookie: evil=1") {
+    case Ok(_) -> assertTrue(false, "a CRLF value must be refused")
+    case Err(_) -> ()
+  }
+  match tryWithResponseHeader(resp, "Bad Name", "v") {
+    case Ok(_) -> assertTrue(false, "a name with a space must be refused")
+    case Err(_) -> ()
+  }
+  match tryWithResponseHeader(resp, "X-Echo", "tab\tok") {
+    case Ok(r) -> assertEqual(mapGetOr(r.headers, "X-Echo"), "tab\tok", "a tab is allowed")
+    case Err(e) -> assertTrue(false, "a safe value must be accepted: " + e)
+  }
+  assertPanics("withResponseHeader with CRLF", { -> val _ = withResponseHeader(resp, "X", "a\nb") })
+}
+
+func mapGetOr(m: in Map[String, String], k: in String): String {
+  match mapGet(m, k) {
+    case Some(v) -> v
+    case None -> ""
+  }
+}
+
+test "response builders require a status of 100 to 599" {
+  assertPanics("status -1 is the streamed-response sentinel", { -> val _ = text(-1, "x") })
+  assertPanics("status 600", { -> val _ = json(600, "{}") })
+  assertEqualInt(noContent().status, 204, "a valid status still builds")
+}
+
+// ─── CORS wildcard, CORS settings and static-file mounts (#7249) ─────────────
+test "dispatch: a `*` CORS origin answers with a literal `*`, never the reflected Origin" {
+  var router = Web.create()
+  router = Web.addGet(router, "/api", TextHandler(status = 200, body = "ok"))
+  router = Web.withMiddleware(router, Web.corsMiddleware("*", "GET", "Content-Type", 600))
+  val resp = Web.dispatch(router, requestWithHeader("GET", "/api", "Origin", "https://any.example"))
+  assertEqual(mapGetOr(resp.headers, "Access-Control-Allow-Origin"), "*", "browsers never send credentials to `*`")
+  val pre = Web.dispatch(router, requestWithHeader("OPTIONS", "/api", "Origin", "https://any.example"))
+  assertEqual(mapGetOr(pre.headers, "Access-Control-Allow-Origin"), "*", "the preflight also answers `*`")
+}
+
+test "corsSettingsError: settings that cannot be written into headers" {
+  assertTrue(Web.corsSettingsValid("https://a.example,https://b.example", "GET, POST", "Content-Type", 600), "valid")
+  assertFalse(Web.corsSettingsValid("", "GET", "Content-Type", 600), "empty origins")
+  assertFalse(Web.corsSettingsValid("*", "GET\r\nX: 1", "Content-Type", 600), "method with CRLF")
+  assertFalse(Web.corsSettingsValid("*", "GET", "Content-Type\n", 600), "headers with LF")
+  assertFalse(Web.corsSettingsValid("*", "GET", "Content-Type", -1), "negative max age")
+  assertPanics("corsMiddleware refuses invalid settings", { -> val _ = Web.corsMiddleware("*", "GET", "X", -5) })
+}
+
+test "isValidStaticFiles: root, mount prefix and cache lifetime" {
+  assertTrue(
+    Web.isValidStaticFiles(
+      Web.StaticFiles(root = "./public", mountPrefix = "/assets", cacheControlSeconds = 0, fallbackToIndex = false)
+    ),
+    "valid"
+  )
+  assertTrue(
+    Web.isValidStaticFiles(
+      Web.StaticFiles(root = "./public", mountPrefix = "", cacheControlSeconds = 60, fallbackToIndex = false)
+    ),
+    "no mount prefix"
+  )
+  assertFalse(
+    Web.isValidStaticFiles(
+      Web.StaticFiles(root = "", mountPrefix = "", cacheControlSeconds = 60, fallbackToIndex = false)
+    ),
+    "empty root"
+  )
+  assertFalse(
+    Web.isValidStaticFiles(
+      Web.StaticFiles(root = "./p", mountPrefix = "assets", cacheControlSeconds = 60, fallbackToIndex = false)
+    ),
+    "mount without a leading slash"
+  )
+  assertFalse(
+    Web.isValidStaticFiles(
+      Web.StaticFiles(root = "./p", mountPrefix = "/assets/", cacheControlSeconds = 60, fallbackToIndex = false)
+    ),
+    "mount with a trailing slash"
+  )
+  assertFalse(
+    Web.isValidStaticFiles(
+      Web.StaticFiles(root = "./p", mountPrefix = "", cacheControlSeconds = -1, fallbackToIndex = false)
+    ),
+    "negative cache lifetime"
+  )
+}
+
+test "dispatch: a static mount matches whole path segments only" {
+  val dir = scratchDir("mount_boundary")
+  val _ = createDir(dir)
+  val _ = writeText(dir + "/a.txt", "file-a")
+  var router = Web.create()
+  router = Web.addGet(router, "/assetsX/a.txt", TextHandler(status = 200, body = "route"))
+  router = Web.withStaticFiles(
+    router,
+    Web.StaticFiles(root = dir, mountPrefix = "/assets", cacheControlSeconds = 60, fallbackToIndex = false)
+  )
+  assertEqual(decodeUtf8(Web.dispatch(router, getRequest("/assets/a.txt")).bodyBytes), "file-a", "inside the mount")
+  assertEqual(
+    decodeUtf8(Web.dispatch(router, getRequest("/assetsX/a.txt")).bodyBytes),
+    "route",
+    "a sibling path is not the mount"
+  )
+}
