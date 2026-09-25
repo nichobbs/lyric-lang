@@ -1,4 +1,4 @@
-# D-progress-962 — lyric-ws Origin check; JVM `catch Exception`; parenthesised lambda formatting
+# D-progress-962 — lyric-ws Origin check; lyric-session id validation; JVM `catch Exception`; parenthesised lambda formatting
 
 **Status:** shipped
 
@@ -35,6 +35,26 @@
     with `AbstractMethodError`.
   - `scripts/ci/lyric-ws-undertow-jvm-smoke.sh` gives the JVM server its
     first live CI coverage.
+
+## lyric-session (#7248)
+
+- **Session ids.** An empty `LYRIC_SESSION` cookie reached the Redis
+  kernels' `requires: sessionId.length > 0` and crashed the handler. Every
+  store now checks `isValidSessionId` (1 to 128 characters from
+  `[A-Za-z0-9_-]`) before touching its backend:
+  - a malformed id loads as `None`;
+  - `destroy` and `touch` are no-ops;
+  - `save` returns `Err(INVALID_SESSION_ID)`.
+- **`SessionConfig` invariants.**
+  - The cookie name must be an RFC 6265 token.
+  - `sameSite` must be a canonical `Strict`, `Lax` or `None`. A lower-case
+    `none` used to skip the forced `Secure`.
+  - The TTL must be 1 second to 1 year.
+
+  `sessionConfigFromEnv` stays fail-soft and normalises its values to
+  satisfy them.
+- **`InProcessSessionStore`** requires a TTL in the same range; 0 used to
+  mean sessions never expired. `inMemory()` now reads the configured TTL.
 
 ## Compiler
 
