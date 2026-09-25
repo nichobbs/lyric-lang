@@ -1943,6 +1943,8 @@ form with the import in scope call the explicit
 | `s.endsWith(suffix)` | `Bool` | ordinal |
 | `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET, `toLowerCase(Locale.ROOT)` on the JVM) |
 | `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET, `toUpperCase(Locale.ROOT)` on the JVM) |
+| `s.isNormalized()` | `Bool` | Unicode NFC normalization check (dotnet/JVM only — see native coverage note below) |
+| `s.normalize()` | `String` | converts to Unicode Normalization Form C (dotnet/JVM only — see native coverage note below) |
 
 Search and prefix/suffix tests compare code units exactly (ordinal) on every
 target; the process culture never affects them, and case conversion never
@@ -1993,7 +1995,11 @@ concatenation and `Char.toString()` are also implemented for
 `--target native`, converting the `Char` via the same UTF-8 encoder
 `s[i]`'s decode inverts (`lyric_string_from_char`). Every `String`
 scalar operation and `s[i]` documented in this section is now implemented
-on `--target native`.
+on `--target native`, **except** `s.isNormalized()`/`s.normalize()`
+(#7304): native has no Unicode normalization tables in `lyric-rt` yet, so
+both methods fail with an explicit compile-time panic naming the method
+rather than silently miscompiling — a real native implementation is a
+tracked follow-up.
 
 ### 12.2 Building and scanning strings
 

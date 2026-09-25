@@ -64,7 +64,8 @@ for t in \
   lyric-compiler/lyric/llvm_enum_case_resolve_self_test.l \
   lyric-compiler/lyric/llvm_inout_self_test.l \
   lyric-compiler/lyric/llvm_project_self_test.l \
-  lyric-compiler/lyric/cli_run_native_project_self_test.l ; do
+  lyric-compiler/lyric/cli_run_native_project_self_test.l \
+  lyric-compiler/lyric/native_string_normalize_panic_self_test.l ; do
   echo "=== $t ==="
   LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
 done
