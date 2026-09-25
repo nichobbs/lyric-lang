@@ -122,6 +122,7 @@ import Std.HttpEngine.H2Frame
 import Std.TcpHost
 import Std.Environment as Env
 import Std.Parse
+import Std.String
 
 // =====================================================================
 // Concurrency externs (BCL threading — the only externs in this file).
@@ -790,18 +791,18 @@ func minIntH2(a: in Int, b: in Int): Int {
 }
 
 func asciiLower(s: in String): String {
-  var acc = ""
+  val sb = StringBuilder.new()
   var i = 0
   while i < s.length {
     val cp = toInt(s[i])
     if cp >= 65 and cp <= 90 {
-      acc = acc + ("" + fromInt(cp + 32))
+      sb.appendChar(Std.Char.fromInt(cp + 32))
     } else {
-      acc = acc + ("" + s[i])
+      sb.appendChar(s[i])
     }
     i = i + 1
   }
-  acc
+  sb.toString()
 }
 
 // RFC 9113 §8.2.2: connection-specific header fields are forbidden in HTTP/2.
@@ -1557,33 +1558,30 @@ func hexDigitValue(c: in Char): Int {
 /// `%XX` escapes, so a whole run is collected before decoding), `+` is NOT
 /// treated as a space, and malformed escapes pass through literally.
 pub func urlDecode(s: in String): String {
-  var result = ""
+  val sb = StringBuilder.new()
   val len = s.length
+  var litStart = 0
   var i = 0
   while i < len {
-    val c = s[i]
-    if c == '%' and i + 2 < len and isHexDigit(s[i + 1]) and isHexDigit(s[i + 2]) {
+    if s[i] == '%' and i + 2 < len and isHexDigit(s[i + 1]) and isHexDigit(s[i + 2]) {
+      sb.append(s.substring(litStart, i - litStart))
+      val runStart = i
       val bytes: List[Byte] = newList()
-      var raw = ""
       while i + 2 < len and s[i] == '%' and isHexDigit(s[i + 1]) and isHexDigit(s[i + 2]) {
         bytes.add((hexDigitValue(s[i + 1]) * 16 + hexDigitValue(s[i + 2])).toByte())
-        raw = raw + "%" + ("" + s[i + 1]) + ("" + s[i + 2])
         i = i + 3
       }
       match tryDecodeUtf8(bytes.toArray()) {
-        case Some(decoded) -> {
-          result = result + decoded
-        }
-        case None -> {
-          result = result + raw
-        }
+        case Some(decoded) -> sb.append(decoded)
+        case None -> sb.append(s.substring(runStart, i - runStart))
       }
+      litStart = i
     } else {
-      result = result + ("" + c)
       i = i + 1
     }
   }
-  result
+  sb.append(s.substring(litStart, len - litStart))
+  sb.toString()
 }
 
 // =====================================================================

@@ -29,8 +29,12 @@ pub union XmlError {
 pub func XmlError.message(e: in XmlError): String {
   match e {
     case UnexpectedChar(pos, expected) -> "unexpected character at position " + toString(pos) + "; expected " + expected
-    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + toString(pos) + "; expected " + expected
-    case MismatchedTag(pos, opened, closed) -> "mismatched tags at position " + toString(pos) + ": opened <" + opened + ">, closed </" + closed + ">"
+    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + toString(pos) + "; expected " +
+      expected
+    case MismatchedTag(pos, opened, closed) -> "mismatched tags at position " + toString(pos) + ": opened <" + opened +
+      ">, closed </" +
+      closed +
+      ">"
     case InvalidDocument(msg) -> "invalid XML document: " + msg
   }
 }
@@ -97,13 +101,20 @@ func xEat(st: inout XmlState, c: in Char): Bool {
   }
 }
 
+// Compares in place: this runs once per character inside comment, CDATA and
+// processing-instruction scans, so it must not allocate.
 func xStartsWith(st: in XmlState, s: in String): Bool {
-  val remaining = st.src.length - st.pos
-  if remaining < s.length {
-    false
-  } else {
-    st.src.substring(st.pos, s.length) == s
+  if st.src.length - st.pos < s.length {
+    return false
   }
+  var k = 0
+  while k < s.length {
+    if st.src[st.pos + k] != s[k] {
+      return false
+    }
+    k += 1
+  }
+  true
 }
 
 func xEatStr(st: inout XmlState, s: in String): Bool {
@@ -287,7 +298,10 @@ func xParseEntity(st: inout XmlState): Result[String, XmlError] {
 // for the `Option`1<Char>` instantiation), which broke every parseXml call on
 // text content.  A plain Bool + Char sidesteps the generic-instantiation path.
 func xCollectText(st: inout XmlState, hasStop: in Bool, stopCh: in Char): Result[String, XmlError] {
-  var result = ""
+  // Entity-free runs are copied as one substring each; per-character
+  // concatenation made long text and attribute values quadratic (#7273).
+  val sb = StringBuilder.new()
+  var runStart = st.pos
   var scanning = true
   while scanning and st.pos < st.src.length {
     val c = st.src[st.pos]
@@ -295,6 +309,7 @@ func xCollectText(st: inout XmlState, hasStop: in Bool, stopCh: in Char): Result
     if isStop {
       scanning = false
     } else if c == '&' {
+      sb.append(st.src.substring(runStart, st.pos - runStart))
       st.pos = st.pos + 1
       match xParseEntity(st) {
         case Err(e) -> {
@@ -308,15 +323,16 @@ func xCollectText(st: inout XmlState, hasStop: in Bool, stopCh: in Char): Result
           return Err(error = e)
         }
         case Ok(s) -> {
-          result = result + s
+          sb.append(s)
+          runStart = st.pos
         }
       }
     } else {
-      result = result + "" + c
       st.pos = st.pos + 1
     }
   }
-  Ok(value = result)
+  sb.append(st.src.substring(runStart, st.pos - runStart))
+  Ok(value = sb.toString())
 }
 
 // ── Attribute value parsing ─────────────────────────────────────────────────────
@@ -785,14 +801,25 @@ pub func textContent(node: in XmlNode): String {
     case Text(v) -> v
     case CData(v) -> v
     case Comment(_) -> ""
-    case Element(tag, attrs, children) -> {
-      var result = ""
+    case Element(_, _, _) -> {
+      val sb = StringBuilder.new()
+      xAppendTextContent(node, sb)
+      sb.toString()
+    }
+  }
+}
+
+func xAppendTextContent(node: in XmlNode, sb: in StringBuilder): Unit {
+  match node {
+    case Text(v) -> sb.append(v)
+    case CData(v) -> sb.append(v)
+    case Comment(_) -> ()
+    case Element(_, _, children) -> {
       var i = 0
       while i < children.count {
-        result = result + textContent(children[i])
+        xAppendTextContent(children[i], sb)
         i += 1
       }
-      result
     }
   }
 }

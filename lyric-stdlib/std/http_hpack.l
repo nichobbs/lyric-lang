@@ -397,13 +397,13 @@ pub func decodeStringLiteralAt(bytes: in slice[Byte], offset: in Int): Result[St
 @pure
 @experimental
 pub func octetsToString(octets: in slice[Byte]): String {
-  var acc = ""
+  val sb = StringBuilder.new()
   var i = 0
   while i < octets.length {
-    acc = acc + codepointToString(octets[i].toInt())
+    sb.append(codepointToString(octets[i].toInt()))
     i = i + 1
   }
-  acc
+  sb.toString()
 }
 
 /// Convert a `String` to its Latin-1 octets, rejecting any code point above

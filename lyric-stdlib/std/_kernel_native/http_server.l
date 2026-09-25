@@ -293,6 +293,7 @@ import Std.Tls
 import Std.HttpEngine
 import Std.TcpHost
 import Std.Time
+import Std.String
 
 // =====================================================================
 // Extern seam bindings.
@@ -710,9 +711,9 @@ func parsePrefix(prefix: in String): ParsedPrefix {
     panic("Std.HttpServer: invalid listener prefix '" + prefix + "': expected \"http://host:port/\"")
   }
   val rest = prefix.substring(7, prefix.length - 7)
-  val slashAt = rest.indexOf("/")
+  val slashAt = indexOfRaw(rest, "/")
   val hostPort = if slashAt >= 0 { rest.substring(0, slashAt) } else { rest }
-  val colonAt = hostPort.indexOf(":")
+  val colonAt = indexOfRaw(hostPort, ":")
   val bindHost = if colonAt >= 0 { hostPort.substring(0, colonAt) } else { hostPort }
   val port = if colonAt >= 0 {
     parsePort(hostPort.substring(colonAt + 1, hostPort.length - colonAt - 1), prefix)
@@ -1384,7 +1385,7 @@ pub func requestMethod(c: in HttpContext): String {
 
 // Index of the first `?` in `target`, or -1.
 func queryStart(target: in String): Int {
-  target.indexOf("?")
+  indexOfRaw(target, "?")
 }
 
 /// Absolute path of the request target (everything before the first `?`).
@@ -1440,35 +1441,33 @@ pub func requestHeaders(c: in HttpContext): Map[String, String] {
 /// `+` is NOT treated as a space, and malformed escapes pass through
 /// literally.
 pub func urlDecode(s: in String): String {
-  var result = ""
+  val sb = StringBuilder.new()
   val len = s.length
+  var litStart = 0
   var i = 0
   while i < len {
     val cp = charCodeAt(s, i)
     if cp == 37 and i + 2 < len and isHexDigitCp(charCodeAt(s, i + 1)) and isHexDigitCp(charCodeAt(s, i + 2)) {
+      sb.append(s.substring(litStart, i - litStart))
+      val runStart = i
       val bytes: List[Byte] = newList()
-      var raw = ""
       while i + 2 < len and charCodeAt(s, i) == 37 and isHexDigitCp(charCodeAt(s, i + 1)) and isHexDigitCp(charCodeAt(s, i + 2)) {
         val hi = hexDigitCpValue(charCodeAt(s, i + 1))
         val lo = hexDigitCpValue(charCodeAt(s, i + 2))
         bytes.add((hi * 16 + lo).toByte())
-        raw = raw + s.substring(i, 3)
         i = i + 3
       }
       match tryDecodeUtf8(bytes.toArray()) {
-        case Some(decoded) -> {
-          result = result + decoded
-        }
-        case None -> {
-          result = result + raw
-        }
+        case Some(decoded) -> sb.append(decoded)
+        case None -> sb.append(s.substring(runStart, i - runStart))
       }
+      litStart = i
     } else {
-      result = result + s.substring(i, 1)
       i = i + 1
     }
   }
-  result
+  sb.append(s.substring(litStart, len - litStart))
+  sb.toString()
 }
 
 // =====================================================================

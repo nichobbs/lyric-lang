@@ -379,6 +379,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/slice_string_self_test.l \
 	lyric-compiler/lyric/source_path_diagnostics_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_iface_self_test.l \
+	lyric-compiler/lyric/stdlib_builders_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_mono_self_test.l \
 	lyric-compiler/lyric/string_bounds_self_test.l \
 	lyric-compiler/lyric/string_builder_self_test.l \

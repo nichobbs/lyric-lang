@@ -192,13 +192,13 @@ pub func toLower(s: in String): String {
 @pure
 @stable(since = "1.0")
 pub func repeat(s: in String, count: in Int): String {
-  var result = ""
+  val sb = StringBuilder.new()
   var i = 0
   while i < count {
-    result = result + s
+    sb.append(s)
     i += 1
   }
-  return result
+  sb.toString()
 }
 
 // Replace all occurrences of a substring with another.

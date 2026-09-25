@@ -35334,3 +35334,24 @@ locale no longer maps 'I' to dotless 'ı'. Covered by
 `string_case_locale_self_test.l` (run under tr-TR in CI)
 (D-progress-959, #7260, #7261, epic #7256).
 
+## Quadratic stdlib string builders rebuilt on StringBuilder
+
+Stdlib functions that built their result with `acc = acc + piece` now use
+`Std.String.StringBuilder` and append escape- and entity-free runs as single
+substrings, so they are linear in their output:
+
+- `Std.Encoding`: `tryDecodeUtf8`, `encodeHex`, `encodeBase64` (#7270, #7271).
+- `Std.String.repeat`, and `Std.Format.padLeft`/`padRight` (#7272).
+- `Std.Xml`: text/attribute collection and `textContent`, with non-allocating
+  lookahead (#7273).
+- `Std.Yaml`/JSON: quoted strings, with non-allocating lookahead and hashed
+  duplicate-key detection (#7274).
+- The JVM `Std.JsonHost` encoder and writer (#7275), and `Std.Log` field
+  escaping (#7276).
+- `urlDecode` in all three HTTP server kernels (#7267), HPACK
+  `octetsToString` (#7266), and the .NET kernel's `asciiLower`.
+- `Std.ProcessCapture.quoteArg`/`buildArgString` (#7278).
+
+`Std.Console.readAll` became linear through the new `joinList`. Covered by
+`stdlib_builders_self_test.l` on dotnet and JVM (epic #7256).
+

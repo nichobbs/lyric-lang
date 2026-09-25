@@ -107,6 +107,7 @@ import Std.Char
 import Std.Collections
 import Std.EncodingHost
 import Std.Tls
+import Std.String
 
 // =====================================================================
 // Extern types — JDK classes the helpers below reference.
@@ -245,7 +246,9 @@ func invoke3[A, B, C, D](target: in A, methodName: in String, arg0: in B, arg1: 
   m.invoke(target, argsList.toArray())
 }
 
-func invoke4[A, B, C, D, E](target: in A, methodName: in String, arg0: in B, arg1: in C, arg2: in D, arg3: in E): JObject {
+func invoke4[A, B, C, D, E](
+  target: in A, methodName: in String, arg0: in B, arg1: in C, arg2: in D, arg3: in E
+): JObject {
   val cls: JClass = target.getClass()
   val m = findMethodByNameAndArity(cls, methodName, 4)
   val argsList: List[JObject] = newList()
@@ -265,7 +268,9 @@ func buildIdentityKeyStore(identity: in Identity): JKeyStore {
   val cert: JCertificate = handle.cert
   val privateKey: JPrivateKey = match handle.key {
     case Some(k) -> k
-    case None -> panic("Std.HttpServer: server Identity has no private key (invariant violation)")
+    case None -> panic(
+      "Std.HttpServer: server Identity has no private key (invariant violation)"
+    )
   }
   val ks: JKeyStore = JKeyStore.getInstance("PKCS12")
   val nullStream = nullOfClass("java.io.InputStream")
@@ -443,9 +448,7 @@ func buildClientCaKeyStore(clientCa: in Certificate): JKeyStore {
 // needs, mirroring the `KeyManager[]` construction the core performs for
 // `KeyManager[]`.
 func buildServerSslContextWithClientCa(
-  identity: in Identity,
-  minVersion: in TlsVersion,
-  clientCa: in Certificate,
+  identity: in Identity, minVersion: in TlsVersion, clientCa: in Certificate
 ): JSSLContext {
   val trustKs = buildClientCaKeyStore(clientCa)
   val tmf: JTrustManagerFactory = JTrustManagerFactory.getInstance(JTrustManagerFactory.getDefaultAlgorithm())
@@ -463,9 +466,7 @@ func buildServerSslContextWithClientCa(
 /// mTLS for the separate, harder `HttpsConfigurator` class-subclassing gap
 /// (#5930) — this function does not touch that path.
 pub func serverSslContextFromConfigMtls(
-  identity: in Identity,
-  minVersion: in TlsVersion,
-  clientCa: in Certificate,
+  identity: in Identity, minVersion: in TlsVersion, clientCa: in Certificate
 ): ServerSslContext {
   ServerSslContext(ctx = buildServerSslContextWithClientCa(identity, minVersion, clientCa))
 }
@@ -623,11 +624,7 @@ pub func startListener(prefix: in String): HttpListener {
 /// termination (identity + minVersion) is fully supported and never
 /// returns `Err` on this target.
 pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): Result[HttpListener, TlsListenError] {
-  val mtlsRequested = tls.requireClientCert or
-    match tls.clientCa {
-      case Some(_) -> true
-      case None -> false
-    }
+  val mtlsRequested = tls.requireClientCert or match tls.clientCa { case Some(_) -> true; case None -> false }
   if mtlsRequested {
     return Err(
       error = NotSupportedOnTarget(
@@ -640,11 +637,7 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
     )
   }
   val ctx = buildServerSslContext(tls.identity, tls.minVersion)
-  val addr = if host == "*" or host == "+" {
-    JInetSocketAddress.new(port)
-  } else {
-    JInetSocketAddress.new(host, port)
-  }
+  val addr = if host == "*" or host == "+" { JInetSocketAddress.new(port) } else { JInetSocketAddress.new(host, port) }
   val httpsServer: JHttpsServer = JHttpsServer.create(addr, 0)
   httpsServer.setHttpsConfigurator(JHttpsConfigurator.new(ctx))
   val server: JHttpServer = httpsServer
@@ -756,24 +749,26 @@ func hexDigitValue(c: in Char): Int {
 /// so a whole run is collected before decoding), `+` is NOT treated as
 /// a space, and malformed escapes pass through literally.
 pub func urlDecode(s: in String): String {
-  var result = ""
+  val sb = StringBuilder.new()
   val len = s.length
+  var litStart = 0
   var i = 0
   while i < len {
-    val c = s[i]
-    if c == '%' and i + 2 < len and isHexDigit(s[i + 1]) and isHexDigit(s[i + 2]) {
+    if s[i] == '%' and i + 2 < len and isHexDigit(s[i + 1]) and isHexDigit(s[i + 2]) {
+      sb.append(s.substring(litStart, i - litStart))
       val bytes: List[Byte] = newList()
       while i + 2 < len and s[i] == '%' and isHexDigit(s[i + 1]) and isHexDigit(s[i + 2]) {
         bytes.add(hexDigitValue(s[i + 1]) * 16 + hexDigitValue(s[i + 2]))
         i = i + 3
       }
-      result = result + JString.new(bytes.toArray(), "UTF-8")
+      sb.append(JString.new(bytes.toArray(), "UTF-8"))
+      litStart = i
     } else {
-      result = result + ("" + c)
       i = i + 1
     }
   }
-  result
+  sb.append(s.substring(litStart, len - litStart))
+  sb.toString()
 }
 
 // Internal: shared response writer.  Sets Content-Type plus any extra

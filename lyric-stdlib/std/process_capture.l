@@ -51,7 +51,8 @@ import Std.String
 // `buildArgString`) can reuse the same escape ordering.
 @stable(since = "1.0")
 pub func quoteArg(arg: in String): String {
-  var acc = "\""
+  val sb = StringBuilder.new()
+  sb.append("\"")
   var i = 0
   val n = arg.length
   while i < n {
@@ -65,27 +66,29 @@ pub func quoteArg(arg: in String): String {
       if i == n {
         // Trailing backslash run: immediately followed by the closing
         // `"` this function appends below, so it must be doubled.
-        acc = acc + repeat("\\", numBackslashes * 2)
+        sb.append(repeat("\\", numBackslashes * 2))
       } else if arg.substring(i, 1) == "\"" {
         // Backslash run immediately before a literal quote: 2N+1
         // backslashes then the quote, so the decoder sees N literal
         // backslashes followed by an escaped (non-terminating) `"`.
-        acc = acc + repeat("\\", numBackslashes * 2 + 1) + "\""
+        sb.append(repeat("\\", numBackslashes * 2 + 1))
+        sb.append("\"")
         i += 1
       } else {
         // Backslash run followed by an ordinary character: the decoder
         // passes these through unchanged, so this encoder must too.
-        acc = acc + repeat("\\", numBackslashes)
+        sb.append(repeat("\\", numBackslashes))
       }
     } else if ch == "\"" {
-      acc = acc + "\\\""
+      sb.append("\\\"")
       i += 1
     } else {
-      acc = acc + ch
+      sb.append(ch)
       i += 1
     }
   }
-  acc + "\""
+  sb.append("\"")
+  sb.toString()
 }
 
 // Build a single pre-formed argument string from a list.  Every
@@ -93,17 +96,17 @@ pub func quoteArg(arg: in String): String {
 // the receiving process re-tokenises identically on POSIX and Windows.
 @stable(since = "1.0")
 pub func buildArgString(args: in List[String]): String {
-  var result = ""
+  val sb = StringBuilder.new()
   var i = 0
   val count = args.count
   while i < count {
     if i > 0 {
-      result = result + " "
+      sb.append(" ")
     }
-    result = result + quoteArg(args[i])
+    sb.append(quoteArg(args[i]))
     i = i + 1
   }
-  result
+  sb.toString()
 }
 
 // Full diagnostic result returned by `runCaptureWithDiagnostics`.
