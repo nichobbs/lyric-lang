@@ -38,15 +38,21 @@ pub func nextInt(rng: in Random): Int {
   hostNextInt(rng)
 }
 
-/// Random integer in `[0, max)`.  Negative `max` panics at the BCL boundary.
+/// Random integer in `[0, max)`.  `max` must be positive.
 @stable(since = "1.0")
-pub func nextIntBelow(rng: in Random, max: in Int): Int {
+pub func nextIntBelow(rng: in Random, max: in Int): Int
+  requires: max > 0
+{
   hostNextIntBelow(rng, max)
 }
 
-/// Random integer in `[min, max)`.  `min >= max` panics at the BCL boundary.
+/// Random integer in `[min, max)`.  `min` must be below `max`: the .NET and
+/// JVM hosts disagree on an empty range (.NET returns `min`, the JVM throws),
+/// so it is a precondition on both (#7251).
 @stable(since = "1.0")
-pub func nextIntRange(rng: in Random, min: in Int, max: in Int): Int {
+pub func nextIntRange(rng: in Random, min: in Int, max: in Int): Int
+  requires: min < max
+{
   hostNextIntRange(rng, min, max)
 }
 

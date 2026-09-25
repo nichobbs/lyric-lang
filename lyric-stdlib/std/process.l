@@ -77,7 +77,9 @@ pub record ProcessResult {
 func projectResult(raw: in ProcessCaptureResult): ProcessResult = ProcessResult(stdout = pcResultStdout(raw), stderr = pcResultStderr(raw), exitCode = pcResultExitCode(raw), timedOut = pcResultTimedOut(raw))
 
 /// Spawn `executable` with `args`, capture its stdout and stderr, and return
-/// a `ProcessResult` when the process exits (or is killed after `timeoutMs`).
+/// a `ProcessResult` when the process exits (or is killed after `timeoutMs`,
+/// which must be positive: the host kernels disagree on what zero or a
+/// negative timeout means, #7251).
 ///
 /// Stdout and stderr are drained in parallel to avoid pipe-buffer deadlock.
 /// Returns `Err` if the executable cannot be started.
@@ -88,7 +90,9 @@ func projectResult(raw: in ProcessCaptureResult): ProcessResult = ProcessResult(
 /// `llvm_bridge.l` (the reachability walk).  Changing this signature's
 /// arity silently disables that redirect — update both sites together.
 @stable(since = "1.0")
-pub func runCapture(executable: in String, args: in List[String], timeoutMs: in Int): Result[ProcessResult, String] {
+pub func runCapture(executable: in String, args: in List[String], timeoutMs: in Int): Result[ProcessResult, String]
+  requires: timeoutMs > 0
+{
   match hostRunCaptureList(executable, args, "", timeoutMs) {
     case Ok(raw) -> Ok(value = projectResult(raw))
     case Err(e) -> Err(error = e)
@@ -108,7 +112,9 @@ pub func runCapture(executable: in String, args: in List[String], timeoutMs: in 
 @stable(since = "1.0")
 pub func runCaptureWithInput(
   executable: in String, args: in List[String], stdin: in String, timeoutMs: in Int
-): Result[ProcessResult, String] {
+): Result[ProcessResult, String]
+  requires: timeoutMs > 0
+{
   match hostRunCaptureList(executable, args, stdin, timeoutMs) {
     case Ok(raw) -> Ok(value = projectResult(raw))
     case Err(e) -> Err(error = e)
@@ -186,9 +192,13 @@ pub func pipedCloseStdin(p: in PipedProcess): Unit {
 }
 
 /// Block up to `timeoutMs` milliseconds for the child to exit. Returns
-/// `true` if it exited within the deadline.
+/// `true` if it exited within the deadline. `0` only checks whether it has
+/// already exited; a negative timeout is a caller bug, since the host
+/// kernels disagree on what it means (#7251).
 @stable(since = "1.0")
-pub func pipedWaitExit(p: in PipedProcess, timeoutMs: in Int): Bool {
+pub func pipedWaitExit(p: in PipedProcess, timeoutMs: in Int): Bool
+  requires: timeoutMs >= 0
+{
   hostPipedWaitExit(p.handle, timeoutMs)
 }
 
