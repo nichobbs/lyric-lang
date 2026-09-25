@@ -39,7 +39,12 @@ interfaces) were never checked.
    declarations the pipeline already collects for the monomorphizer
    (`elaborateFileWithInterfaces`). Implementations of external (FFI)
    interfaces have no Lyric clauses to inherit.
-5. **Source clauses are preserved.** The elaborated function's `contracts`
+5. **Verbatim default copies are not re-inherited.** `Lyric.ImplDefaults`
+   copies an un-overridden interface default method into the impl, clauses
+   included, before elaboration. An interface clause that the method already
+   carries (same source span, same text) is skipped, so each clause is
+   asserted exactly once (#7291).
+6. **Source clauses are preserved.** The elaborated function's `contracts`
    list is restored to the author's own clauses, so contract metadata and
    the verifier see only what was written on that declaration.
 
@@ -59,14 +64,15 @@ tracked in #7242.
 
 ## Verification
 
-`method_contracts_self_test.l` (6 cases, `--target dotnet` and
+`method_contracts_self_test.l` (9 cases, `--target dotnet` and
 `--target jvm`) covers:
 
 - satisfied and violated preconditions on a record-body method;
 - an inherited precondition under a renamed parameter;
 - the same precondition through an interface-typed value;
 - an inherited postcondition;
-- an impl's own precondition combined with an inherited one.
+- an impl's own precondition combined with an inherited one;
+- an inherited default method's precondition, evaluated exactly once per call.
 
 The existing ecosystem suites that now exercise live interface contracts
 (cache, db, feature-flags, i18n, jobs, mq, search, storage, testing) pass.

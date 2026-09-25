@@ -2373,13 +2373,44 @@ func inheritedClauses(sig: in FunctionSig, fn: in FunctionDecl): List[ContractCl
   var c = 0
   while c < sig.contracts.count {
     match sig.contracts[c] {
-      case CCRequires(x, sp) -> acc.add(CCRequires(expr = substResult(x, "", renames), span = sp))
-      case CCEnsures(x, sp) -> acc.add(CCEnsures(expr = substResult(x, "", renames), span = sp))
+      // `Lyric.ImplDefaults` copies an un-overridden interface default
+      // method into the impl verbatim, clauses included; such a clause is
+      // already the method's own and must not be asserted twice (#7291).
+      case CCRequires(x, sp) -> if not hasClauseAt(fn.contracts, x, sp) {
+        acc.add(CCRequires(expr = substResult(x, "", renames), span = sp))
+      }
+      case CCEnsures(x, sp) -> if not hasClauseAt(fn.contracts, x, sp) {
+        acc.add(CCEnsures(expr = substResult(x, "", renames), span = sp))
+      }
       case _ -> ()
     }
     c = c + 1
   }
   acc
+}
+
+// True when `contracts` already holds the clause `e` written at `sp` — the
+// same source position and the same text, so a coincidental offset match
+// between clauses in two different files is not mistaken for a copy.
+func hasClauseAt(contracts: in List[ContractClause], e: in Expr, sp: in Span): Bool {
+  val text = Fmt.exprInline(0, e)
+  var i = 0
+  while i < contracts.count {
+    val same = match contracts[i] {
+      case CCRequires(x, csp) -> sameSpan(csp, sp) and Fmt.exprInline(0, x) == text
+      case CCEnsures(x, csp) -> sameSpan(csp, sp) and Fmt.exprInline(0, x) == text
+      case _ -> false
+    }
+    if same {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func sameSpan(a: in Span, b: in Span): Bool {
+  a.startPos.offset == b.startPos.offset and a.endPos.offset == b.endPos.offset
 }
 
 // Elaborate `fn` with `extra` clauses prepended to its own, then restore the

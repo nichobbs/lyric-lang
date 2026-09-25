@@ -125,3 +125,39 @@ test "violation message: inherited postcondition names the implementing method" 
     { -> val _ = Broken(n = 5).area(1) }
   )
 }
+
+// An interface default method carrying a contract, inherited un-overridden:
+// `Lyric.ImplDefaults` copies it into the impl clauses and all, and the
+// elaborator must not assert the same clause a second time (#7291).
+record Tally {
+  var n: Int
+}
+
+val evaluations: Tally = Tally(n = 0)
+
+func counted(ok: in Bool): Bool {
+  evaluations.n = evaluations.n + 1
+  ok
+}
+
+interface Greeter {
+  func greet(self: in Self, name: in String): String
+    requires: counted(name.length > 0)
+  {
+    "hello " + name
+  }
+}
+
+record Plain {
+  tag: Int
+}
+
+impl Greeter for Plain {
+}
+
+test "inherited default method: its precondition is evaluated exactly once per call" {
+  val before = evaluations.n
+  assertEqual(Plain(tag = 1).greet("ann"), "hello ann", "default method result")
+  assertEqualInt(evaluations.n - before, 1, "one evaluation of the inherited requires")
+  assertPanics("empty name violates the default method's requires", { -> val _ = Plain(tag = 1).greet("") })
+}

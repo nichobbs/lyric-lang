@@ -32,8 +32,9 @@ argument.
   `Pkg.<target type>.method`, including clauses inherited from the
   interface (D-progress-955).
 - The failure stays an ordinary panic (a `Bug`), so `catch Bug as b`
-  observes `b.message` unchanged. The native backend now uses a literal
-  `assert` message argument instead of always printing `assertion failed`.
+  observes `b.message` unchanged. The native backend now evaluates
+  `assert`'s message argument (literal or computed) on the failure path,
+  as MSIL and JVM do, instead of always printing `assertion failed`.
 - The language reference's "configurable in release" for `@runtime_checked`
   never had an implementation. It is replaced by the shipped behaviour:
   contracts are checked in every build profile.
