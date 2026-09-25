@@ -38,8 +38,9 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Runner pools (self-hosted opt-in).  The seven long-running jobs
-# (compiler-self-tests-dotnet-a/-b, compiler-self-tests-jvm,
+# Runner pools (self-hosted opt-in).  The eight long-running jobs
+# (compiler-self-tests-core, compiler-self-tests-dotnet-a/-b,
+# compiler-self-tests-jvm,
 # numbered-backend-self-tests, stdlib-builds, native-backend-self-tests,
 # build-stage2) read their `runs-on` from repository variables so they can be
 # moved to a self-hosted machine without a commit; every other job stays on
@@ -49,7 +50,7 @@ concurrency:
 # no portable .dll fallback (unlike `build`'s framework-dependent artifact,
 # see the dotnet-wrapper note below), so producer and consumer must share an
 # architecture or the consumer hits "Exec format error" / exit 126 (#7025).
-#   CI_HEAVY_RUNNER   a single runner label for the six managed-runtime
+#   CI_HEAVY_RUNNER   a single runner label for the seven managed-runtime
 #                     jobs, e.g. `self-hosted` (a JSON list would need
 #                     fromJSON, so give the machine one distinctive label).
 #   CI_NATIVE_RUNNER  optional override for native-backend-self-tests, which
@@ -749,6 +750,52 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
+  # Self-hosted compiler self-tests (native lyric test) — replaces the deleted
+  # F# `SelfHosted*Tests.fs` Expecto wrappers (#2364). Each `@test_module`
+  # imports its `Lyric.*` compiler package(s), resolved by linking the
+  # already-compiled compiler DLLs as restored deps. Formerly one sequential
+  # background step inside compiler-self-tests-dotnet-a that took ~59 min of
+  # that job's ~88 min wall time; sharded here so the files run in parallel
+  # jobs (interleaved selection, see compiler-self-tests-batch.sh --shard).
+  compiler-self-tests-core:
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_core_changes == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1/4, 2/4, 3/4, 4/4]
+    name: compiler-self-tests-core (${{ matrix.shard }})
+    steps:
+      - name: Redirect temporary directory (#4975)
+        run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Set up Java 21 (jvm_lambda_iface_bundling_self_test.l runs `java -jar`, #6671)
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: bash scripts/ci/write-lyric-dotnet-wrapper.sh "bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+      - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
+        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
+      - name: Compiler self-tests (native lyric test, shard ${{ matrix.shard }})
+        run: bash scripts/ci/compiler-self-tests-batch.sh --shard "${{ matrix.shard }}"
+
   compiler-self-tests-dotnet-a:
     runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
@@ -867,17 +914,9 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/type_alias_resolve_self_test.l
 
-      # Self-hosted compiler self-tests (native lyric test) — replaces the
-      # deleted F# `SelfHosted*Tests.fs` Expecto wrappers (#2364).  Each
-      # `@test_module` imports its `Lyric.*` compiler package(s), resolved by
-      # linking the already-compiled stage-1 bundle DLLs as restored deps; no
-      # recompile-from-source `LYRIC_LOAD_COMPILER=1`.  Run as one step so a
-      # missing-stage-1 / missing-binary guard is shared.
-      - name: Compiler self-tests (native lyric test)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/compiler-self-tests-batch.sh
+      # The 55-file `scripts/ci/compiler-self-tests-batch.sh` corpus runs in
+      # its own sharded `compiler-self-tests-core` job (it was ~59 of this
+      # job's ~88 min, run sequentially behind the batch-1 barrier).
       # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`.
       # Compiler-package imports are resolved by linking the stage-1 bundle
       # DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.  Covers #1123
@@ -6035,7 +6074,11 @@ jobs:
   # other self-test jobs on the 4-vCPU standard runners: msil is 83 files
   # (~60 CPU-min) in 2 shards, jvm is 132 files (~120 CPU-min) in 4 shards.
   numbered-backend-self-tests:
-    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    # A shard whose set has no relevant changes skips every step at step level
+    # (below) but still needs a runner. Send those no-op shards to
+    # `ubuntu-latest` so they never queue for the heavy pool: an msil shard
+    # that ran for 12 s once waited ~22 h for a self-hosted runner.
+    runs-on: ${{ ((matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') || (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')) && (vars.CI_HEAVY_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}
     # Fast-fail mitigation for #7087: the self-hosted lyric-labeled runner
     # pool has repeatedly left jobs queued for the full 24h GitHub job-
     # duration ceiling with zero runner pickup, burning a full day per
@@ -7878,7 +7921,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, numbered-backend-self-tests, ecosystem-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required, resolver-build]
+    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-core, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, numbered-backend-self-tests, ecosystem-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required, resolver-build]
     if: always()
     permissions:
       contents: read
