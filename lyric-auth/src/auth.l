@@ -38,6 +38,7 @@ package Auth
 import Std.Core
 import Std.Encoding
 import Std.String
+import Std.Hash
 import Auth.Kernel.Net as AuthKernelNet
 import Auth.Kernel.Jvm as AuthKernelJvm
 
@@ -59,16 +60,40 @@ import Auth.Kernel.Jvm as AuthKernelJvm
 ///   "MALFORMED_PAYLOAD"    — payload base64url/UTF-8/JSON parse failed
 ///   "ISSUER_MISMATCH"      — iss claim did not match expected issuer
 ///   "AUDIENCE_MISMATCH"    — aud claim did not match expected audience
+///   "MISSING_EXP"          — token carries no exp claim; a token that never
+///                            expires is rejected (RFC 8725 §3.10)
 ///   "EXP_OVERFLOW"         — exp claim present but malformed/overflowed
 ///   "EXPIRED"              — exp in the past (beyond clockSkewSeconds)
 ///   "NBF_OVERFLOW"         — nbf claim present but malformed/overflowed
 ///   "NOT_YET_VALID"        — nbf in the future (beyond clockSkewSeconds)
-///   "VERIFICATION_FAILED"  — JVM-only: any failure mode (JJWT does not
-///                            surface fine-grained categories; tracked in #443)
+///   "VERIFICATION_FAILED"  — reserved; no longer produced.  Both kernels are
+///                            pure Lyric and report the fine-grained codes
+///                            above on every target.
 @stable(since = "0.1")
 pub record JwtError {
   code: String
   message: String
+}
+
+/// Minimum HMAC key length in bytes.  RFC 7518 §3.2 requires a key at least
+/// as long as the hash output: 256 bits for HS256.
+pub func minHmacSecretBytes(): Int {
+  32
+}
+
+/// True when `secret` is long enough to key HS256 (`minHmacSecretBytes`
+/// bytes of UTF-8).  A precondition of every verification entry point: a
+/// short shared secret is a configuration error, and brute-forcing it would
+/// let anyone mint accepted tokens.
+@pure
+pub func isStrongHmacSecret(secret: in String): Bool {
+  encodeUtf8(secret).length >= minHmacSecretBytes()
+}
+
+/// Largest accepted clock-skew leeway in seconds.  RFC 7519 §4.1.4 allows
+/// "a few minutes"; more than that silently extends every token's lifetime.
+pub func maxClockSkewSeconds(): Int {
+  300
 }
 
 /// Default clock-skew leeway in seconds.  60 seconds matches industry
@@ -101,6 +126,8 @@ func makeJwtError(code: in String): JwtError {
     "JWT iss claim did not match expected issuer"
   } else if code == "AUDIENCE_MISMATCH" {
     "JWT aud claim did not contain expected audience"
+  } else if code == "MISSING_EXP" {
+    "JWT has no exp claim"
   } else if code == "EXP_OVERFLOW" {
     "JWT exp claim is malformed or overflows"
   } else if code == "EXPIRED" {
@@ -240,9 +267,17 @@ func jwtAlg(token: in String): String {
 /// confusion attack (signing with a known public key as the HMAC secret).
 ///
 /// Returns:
-///   Ok(())             — token is well-formed, signed correctly, and all
-///                        present iss/aud/exp/nbf claims hold (with a
-///                        60-second leeway around exp and nbf).
+///   Ok(())             — token is well-formed, signed correctly, carries an
+///                        exp claim, and every present iss/aud/exp/nbf
+///                        claim holds (with a 60-second leeway around exp
+///                        and nbf).  A non-empty `issuer`/`audience` must
+///                        match; an empty one is not checked, so pass the
+///                        expected values whenever tokens carry them
+///                        (RFC 8725 §3.8-3.9).
+///
+/// Preconditions: `secret` is at least 32 bytes (`isStrongHmacSecret`,
+/// RFC 7518 §3.2) and `allowedAlgorithms` is a non-empty list without
+/// `none`.
 ///   Err(JwtError(...)) — typed failure; see `JwtError` for the defined
 ///                        codes (`ALG_REJECTED`, `BAD_SIGNATURE`,
 ///                        `EXPIRED`, …).  Callers can branch on `code`
@@ -264,7 +299,7 @@ pub func verifyJwt(
   audience: in String,
   allowedAlgorithms: in String,
 ): Result[Unit, JwtError]
-  requires: secret.length > 0
+  requires: isStrongHmacSecret(secret)
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
   requires: not contains(toLower(allowedAlgorithms), "none")
@@ -281,7 +316,7 @@ pub func verifyJwt(
   audience: in String,
   allowedAlgorithms: in String,
 ): Result[Unit, JwtError]
-  requires: secret.length > 0
+  requires: isStrongHmacSecret(secret)
   requires: allowedAlgorithms.length > 0
   requires: not contains(toLower(allowedAlgorithms), "none")
 {
@@ -311,11 +346,11 @@ pub func verifyJwtWithSkew(
   allowedAlgorithms: in String,
   clockSkewSeconds: in Int,
 ): Result[Unit, JwtError]
-  requires: secret.length > 0
+  requires: isStrongHmacSecret(secret)
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
   requires: not contains(toLower(allowedAlgorithms), "none")
-  requires: clockSkewSeconds >= 0
+  requires: clockSkewSeconds >= 0 and clockSkewSeconds <= maxClockSkewSeconds()
 {
   // Lyric-level algorithm pinning: reject before reaching the extern if the
   // token's `alg` header is not in `allowedAlgorithms`.  Guards against host
@@ -346,11 +381,11 @@ pub func verifyJwtWithSkew(
   allowedAlgorithms: in String,
   clockSkewSeconds: in Int,
 ): Result[Unit, JwtError]
-  requires: secret.length > 0
+  requires: isStrongHmacSecret(secret)
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
   requires: not contains(toLower(allowedAlgorithms), "none")
-  requires: clockSkewSeconds >= 0
+  requires: clockSkewSeconds >= 0 and clockSkewSeconds <= maxClockSkewSeconds()
 {
   // Lyric-level algorithm pinning: same guard as the .NET overload above.
   val alg = jwtAlg(token)
@@ -410,7 +445,9 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
 pub func verifyApiKey(provided: in String, expected: in String): Bool
   requires: expected.length > 0
 {
-  return AuthKernelNet.verifyApiKeyImpl(provided, expected)
+  // Compare fixed-length digests: the kernel's constant-time compare still
+  // returns early on a length mismatch, which would leak the key's length.
+  return AuthKernelNet.verifyApiKeyImpl(sha256OfBytes(encodeUtf8(provided)), sha256OfBytes(encodeUtf8(expected)))
 }
 
 @stable(since = "0.1")
@@ -418,7 +455,9 @@ pub func verifyApiKey(provided: in String, expected: in String): Bool
 pub func verifyApiKey(provided: in String, expected: in String): Bool
   requires: expected.length > 0
 {
-  return AuthKernelJvm.verifyApiKeyImpl(provided, expected)
+  // Compare fixed-length digests: the kernel's constant-time compare still
+  // returns early on a length mismatch, which would leak the key's length.
+  return AuthKernelJvm.verifyApiKeyImpl(sha256OfBytes(encodeUtf8(provided)), sha256OfBytes(encodeUtf8(expected)))
 }
 
 // ─── Role claim helpers ───────────────────────────────────────────────────────

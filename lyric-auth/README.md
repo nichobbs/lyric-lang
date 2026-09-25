@@ -196,7 +196,7 @@ pub func verifyJwt(
   audience: in String,
   allowedAlgorithms: in String
 ): Result[Unit, JwtError]
-  requires: secret.length > 0
+  requires: isStrongHmacSecret(secret)
   requires: allowedAlgorithms.length > 0
   requires: not contains(toLower(allowedAlgorithms), "none")
 ```
@@ -205,16 +205,16 @@ pub func verifyJwt(
 |---|---|
 | `token` | The JWT string to verify |
 | `secret` | The secret (for HS256/HS512) or public key PEM (for RS256/RS512) |
-| `issuer` | Expected `iss` claim value |
-| `audience` | Expected `aud` claim value |
+| `issuer` | Expected `iss` claim value. An empty string skips the check; pass the expected value whenever your tokens carry one (RFC 8725 §3.8). |
+| `audience` | Expected `aud` claim value. An empty string skips the check (RFC 8725 §3.9). |
 | `allowedAlgorithms` | Comma-separated allow-list of JWT `alg` values (e.g., `"HS256"` or `"HS256,RS256"`). Tokens with `alg: none` are always rejected. |
 
 **Preconditions:**
-- `secret` must be non-empty
+- `secret` must be at least 32 bytes of UTF-8 (`isStrongHmacSecret`; RFC 7518 §3.2 requires a 256-bit key for HS256)
 - `allowedAlgorithms` must be a non-empty, comma-separated list of algorithms the caller is prepared to accept (e.g., `"HS256"` or `"RS256,RS512"`)
 - `allowedAlgorithms` must NOT contain the `"none"` algorithm (case-insensitive). Passing `"HS256,none"` violates this precondition and will raise a contract violation at runtime.
 
-Returns `Ok(Unit)` if signature and claims are valid; `Err(JwtError)` otherwise. The `JwtError.code` field contains fine-grained error information (`ALG_REJECTED`, `BAD_SIGNATURE`, `EXPIRED`, etc.).
+Returns `Ok(Unit)` if signature and claims are valid; `Err(JwtError)` otherwise. The `JwtError.code` field contains fine-grained error information (`ALG_REJECTED`, `BAD_SIGNATURE`, `EXPIRED`, etc.). A token without an `exp` claim is rejected with `MISSING_EXP` (RFC 8725 §3.10).
 
 ### `verifyJwtWithSkew`
 
@@ -229,17 +229,17 @@ pub func verifyJwtWithSkew(
   allowedAlgorithms: in String,
   clockSkewSeconds: in Int
 ): Result[Unit, JwtError]
-  requires: secret.length > 0
+  requires: isStrongHmacSecret(secret)
   requires: allowedAlgorithms.length > 0
   requires: not contains(toLower(allowedAlgorithms), "none")
-  requires: clockSkewSeconds >= 0
+  requires: clockSkewSeconds >= 0 and clockSkewSeconds <= maxClockSkewSeconds()
 ```
 
 Like `verifyJwt`, but accepts an explicit clock-skew tolerance in seconds. Pass `0` for strict expiry (no leeway); pass `60` for the industry standard (the `verifyJwt` default).
 
 **Preconditions:**
-- Same as `verifyJwt`: `secret` and `allowedAlgorithms` must be non-empty, and `allowedAlgorithms` must not contain `"none"`
-- `clockSkewSeconds` must be non-negative (0 or greater)
+- Same as `verifyJwt`: `secret` must be at least 32 bytes, `allowedAlgorithms` must be non-empty and must not contain `"none"`
+- `clockSkewSeconds` must be between 0 and `maxClockSkewSeconds()` (300): RFC 7519 §4.1.4 allows "a few minutes", and a larger leeway silently extends every token's lifetime
 
 ### `extractClaim`
 

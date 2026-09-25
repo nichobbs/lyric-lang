@@ -784,6 +784,7 @@ func jwtAlgFromHeader(headerSeg: in String): String {
 //   Err("ISSUER_MISMATCH")       — iss claim does not match expected issuer
 //   Err("AUDIENCE_MISMATCH")     — aud claim does not contain expected audience,
 //                                   OR aud claim has duplicate keys (#2714)
+//   Err("MISSING_EXP")           — no exp claim (RFC 8725 §3.10)
 //   Err("EXP_OVERFLOW")          — exp present but malformed/overflowed
 //   Err("EXPIRED")               — exp in the past (beyond clockSkewSeconds)
 //   Err("NBF_OVERFLOW")          — nbf present but malformed/overflowed
@@ -844,7 +845,8 @@ func validatePayload(
                 }
                 case Ok(opt) -> {
                   match opt {
-                    case None -> ()
+                    // A token with no exp never expires; reject it (RFC 8725 §3.10).
+                    case None -> return Err("MISSING_EXP")
                     case Some(exp) -> {
                       // Reject when nowSec is past exp + skew.
                       if nowSec > exp + skewLong {

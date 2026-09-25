@@ -70,8 +70,10 @@ import Web.Kernel.Runtime as HttpKernel
 ///   enabled            Bool   — master switch; false passes all calls through (default: true)
 ///   @sensitive
 ///   jwtSecret          String — REQUIRED: HMAC-SHA256 secret for JWT verification
-///   issuer             String — expected JWT issuer claim; if empty, issuer is not validated (default: "")
-///   audience           String — expected JWT audience claim; if empty, audience is not validated (default: "")
+///   issuer             String — REQUIRED: expected JWT `iss` claim.  There is no default:
+///                               an empty default silently accepted tokens minted for any
+///                               other service sharing the secret (RFC 8725 §3.8, #7232).
+///   audience           String — REQUIRED: expected JWT `aud` claim (RFC 8725 §3.9)
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values
 ///                               (default: "HS256").  Tokens whose `alg` header is
 ///                               not in this list — including `alg=none` — are
@@ -82,8 +84,8 @@ pub aspect RequiresAuth {
     enabled: Bool = true
     @sensitive
     jwtSecret: String          // required — no default
-    issuer: String = ""
-    audience: String = ""
+    issuer: String             // required — no default
+    audience: String           // required — no default
     allowedAlgorithms: String = "HS256"
   }
   // NOTE: do NOT add `requires: args.authToken != ""` here.  `authToken` is
@@ -132,8 +134,8 @@ pub aspect RequiresAuth {
 ///   enabled            Bool   — master switch (default: true)
 ///   @sensitive
 ///   jwtSecret          String — REQUIRED: HMAC-SHA256 or RS256 secret
-///   issuer             String — expected iss claim (default: "")
-///   audience           String — expected aud claim (default: "")
+///   issuer             String — REQUIRED: expected `iss` claim (no default, #7232)
+///   audience           String — REQUIRED: expected `aud` claim (no default, #7232)
 ///   allowedRoles       String — comma-separated list of accepted role values (e.g. "admin,manager")
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values (default: "HS256")
 @stable(since = "0.1")
@@ -142,8 +144,8 @@ pub aspect RequiresRole {
     enabled: Bool = true
     @sensitive
     jwtSecret: String
-    issuer: String = ""
-    audience: String = ""
+    issuer: String             // required — no default
+    audience: String           // required — no default
     allowedRoles: String        // required — no default
     allowedAlgorithms: String = "HS256"
   }

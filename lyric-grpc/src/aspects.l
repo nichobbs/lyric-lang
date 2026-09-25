@@ -70,8 +70,8 @@ import Resilience
 ///   enabled            Bool   — master switch (default: true)
 ///   @sensitive
 ///   jwtSecret          String — REQUIRED: HMAC-SHA256 or RS256 signing secret
-///   issuer             String — expected iss claim; empty = skip check (default: "")
-///   audience           String — expected aud claim; empty = skip check (default: "")
+///   issuer             String — REQUIRED: expected `iss` claim (no default, #7232)
+///   audience           String — REQUIRED: expected `aud` claim (no default, #7232)
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values
 ///                               (default: "HS256").  See RFC 8725 §3.1.
 @stable(since = "0.1")
@@ -80,8 +80,8 @@ pub aspect RequiresGrpcAuth {
     enabled: Bool = true
     @sensitive
     jwtSecret: String
-    issuer: String = ""
-    audience: String = ""
+    issuer: String             // required — no default
+    audience: String           // required — no default
     allowedAlgorithms: String = "HS256"
   }
   // No `requires: args.authToken != ""`: `authToken` is client-controlled
@@ -126,8 +126,8 @@ pub aspect RequiresGrpcAuth {
 ///   enabled            Bool   — master switch (default: true)
 ///   @sensitive
 ///   jwtSecret          String — REQUIRED: signing secret
-///   issuer             String — expected iss claim (default: "")
-///   audience           String — expected aud claim (default: "")
+///   issuer             String — REQUIRED: expected `iss` claim (no default, #7232)
+///   audience           String — REQUIRED: expected `aud` claim (no default, #7232)
 ///   allowedRoles       String — comma-separated accepted role values (e.g. "admin,editor")
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values (default: "HS256")
 @stable(since = "0.1")
@@ -136,8 +136,8 @@ pub aspect RequiresGrpcRole {
     enabled: Bool = true
     @sensitive
     jwtSecret: String
-    issuer: String = ""
-    audience: String = ""
+    issuer: String             // required — no default
+    audience: String           // required — no default
     allowedRoles: String
     allowedAlgorithms: String = "HS256"
   }

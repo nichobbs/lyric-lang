@@ -163,7 +163,7 @@ import Ws.Aspects
 aspect GuardChat from Ws.Aspects.WsAuth {
   matches: route like "/chat/*"
   config {
-    jwtSecret: String = "your-secret-key";
+    jwtSecret: String = "a-signing-key-of-at-least-32-bytes";
     issuer: String = "https://example.com";
     audience: String = "chat-api";
     algorithm: String = "HS256"
@@ -176,9 +176,9 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `jwtSecret` | `String` | `""` | HMAC secret or public key (PEM) |
-| `issuer` | `String` | `""` | Expected JWT `iss` claim |
-| `audience` | `String` | `""` | Expected JWT `aud` claim |
+| `jwtSecret` | `String` | **required** | HMAC secret, at least 32 bytes |
+| `issuer` | `String` | **required** | Expected JWT `iss` claim |
+| `audience` | `String` | **required** | Expected JWT `aud` claim |
 | `algorithm` | `String` | `"HS256"` | JWT algorithm (HS256, RS256, etc.) |
 
 If token validation fails, the connection is rejected with a 401 Unauthorized response.

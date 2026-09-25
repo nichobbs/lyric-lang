@@ -85,7 +85,11 @@ import Web.Aspects
 
 aspect Auth from Web.Aspects.RequiresAuth {
   matches: name like "guarded*"
-  config { jwtSecret: String = "..." }
+  config {
+    jwtSecret: String = "..."   // at least 32 bytes
+    issuer: String = "https://auth.example.com"
+    audience: String = "orders-api"
+  }
 }
 
 // The aspect wraps this function — authToken is what RequiresAuth reads.
@@ -371,10 +375,10 @@ aspect Auth from Web.Aspects.RequiresAuth {
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | `LYRIC_ASPECT_AUTH_ENABLED` |
 | `jwtSecret` | `String` | **REQUIRED** | `LYRIC_ASPECT_AUTH_JWTSECRET` |
-| `issuer` | `String` | `""` | `LYRIC_ASPECT_AUTH_ISSUER` |
-| `audience` | `String` | `""` | `LYRIC_ASPECT_AUTH_AUDIENCE` |
+| `issuer` | `String` | **REQUIRED** | `LYRIC_ASPECT_AUTH_ISSUER` |
+| `audience` | `String` | **REQUIRED** | `LYRIC_ASPECT_AUTH_AUDIENCE` |
 
-The `jwtSecret` field is `@sensitive` — its value is redacted in `lyric explain` and Swagger UI metadata output.
+The `jwtSecret` field is `@sensitive` — its value is redacted in `lyric explain` and Swagger UI metadata output. It must be at least 32 bytes (the HS256 key minimum). `issuer` and `audience` have no default: an empty default used to skip both checks, so any token signed with the same secret for another service was accepted. Tokens without an `exp` claim are rejected.
 
 ### `Web.Aspects.RateLimit`
 

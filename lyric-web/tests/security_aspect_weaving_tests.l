@@ -51,7 +51,9 @@ test "ApiKey aspect: wrong key is denied with 401 before the handler" {
 aspect AuthGuard from Web.Aspects.RequiresAuth {
   matches: name like "authGuarded*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
   }
 }
 
@@ -67,17 +69,18 @@ test "RequiresAuth aspect: an invalid token is denied with 403 before the handle
 }
 
 // A stable HS256 token signed with the AuthGuard instance's jwtSecret
-// ("test-signing-secret"), carrying no `exp` claim so it never expires. This
+// ("lyric-test-hs256-signing-key-0123456789"), carrying the instance's `iss`/`aud` and a far-future `exp` (a token
+// without one is rejected, #7232). This
 // lets us exercise the RequiresAuth *accept* path — a validly-signed token must
 // flow through Auth.verifyJwt and reach the handler — the counterpart to the
 // rejection test above. Regenerate (e.g. after a secret change) with:
 //   (requires GNU coreutils' `basenc`; on macOS: `brew install coreutils`,
 //   then use `gbasenc` or prefix PATH with coreutils' gnubin)
 //   h=$(printf '{"alg":"HS256","typ":"JWT"}' | basenc --base64url | tr -d '=')
-//   p=$(printf '{"sub":"test-user","role":"admin"}' | basenc --base64url | tr -d '=')
-//   s=$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -hmac "test-signing-secret" -binary | basenc --base64url | tr -d '=')
+//   p=$(printf '{"aud":"lyric-tests-api","iss":"lyric-tests","exp":4102444800,"sub":"test-user","role":"admin"}' | basenc --base64url | tr -d '=')
+//   s=$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -hmac "lyric-test-hs256-signing-key-0123456789" -binary | basenc --base64url | tr -d '=')
 //   echo "$h.$p.$s"
-val validAuthToken: String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJyb2xlIjoiYWRtaW4ifQ.Mj5dNtlMDypmDCnwx73ItntqJ46e90e5jSicrdDqM-s"
+val validAuthToken: String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJseXJpYy10ZXN0cy1hcGkiLCJpc3MiOiJseXJpYy10ZXN0cyIsImV4cCI6NDEwMjQ0NDgwMCwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6ImFkbWluIn0.rAoNIRSAK6HZQFn4IGWEZlFUd015QgLDjlVYf5qHcf8"
 
 test "RequiresAuth aspect: a validly-signed token reaches the handler" {
   match authGuardedHandler(validAuthToken) {
@@ -92,7 +95,9 @@ test "RequiresAuth aspect: a validly-signed token reaches the handler" {
 aspect RoleGuard from Web.Aspects.RequiresRole {
   matches: name like "roleGuarded*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
     allowedRoles: String = "admin"
   }
 }
@@ -173,7 +178,9 @@ test "ApiKey aspect: enabled=false bypasses the key check" {
 aspect AuthGuardDisabled from Web.Aspects.RequiresAuth {
   matches: name like "authBypassed*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
     enabled: Bool = false
   }
 }
@@ -195,7 +202,9 @@ test "RequiresAuth aspect: enabled=false bypasses JWT verification" {
 aspect RoleGuardDisabled from Web.Aspects.RequiresRole {
   matches: name like "roleBypassed*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
     allowedRoles: String = "admin"
     enabled: Bool = false
   }

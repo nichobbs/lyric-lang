@@ -21,8 +21,8 @@ pub aspect WsAuth {
     enabled: Bool = true
     @sensitive
     jwtSecret: String
-    issuer: String = ""
-    audience: String = ""
+    issuer: String             // required — no default
+    audience: String           // required — no default
     allowedAlgorithms: String = "HS256"
   }
   around(call) -> ret where TArgs has { authToken: String } {

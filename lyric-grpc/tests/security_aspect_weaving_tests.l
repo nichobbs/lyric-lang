@@ -21,7 +21,9 @@ import Grpc.Aspects
 aspect AuthGuard from Grpc.Aspects.RequiresGrpcAuth {
   matches: name like "authGuarded*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
   }
 }
 
@@ -32,14 +34,26 @@ pub func authGuardedHandler(authToken: in String): Result[String, GrpcStatus] {
 test "RequiresGrpcAuth: an empty token returns UNAUTHENTICATED without crashing (was a panic)" {
   match authGuardedHandler("") {
     case Ok(_) -> assertTrue(false, "an empty token must be rejected before the handler runs")
-    case Err(status) -> match status.code { case GrpcStatusCode.Unauthenticated -> assertTrue(true, "empty token short-circuits with UNAUTHENTICATED"); case _ -> assertTrue(false, "empty token must map to UNAUTHENTICATED, not another status") }
+    case Err(status) -> match status.code {
+      case GrpcStatusCode.Unauthenticated -> assertTrue(
+        true,
+        "empty token short-circuits with UNAUTHENTICATED"
+      )
+      case _ -> assertTrue(false, "empty token must map to UNAUTHENTICATED, not another status")
+    }
   }
 }
 
 test "RequiresGrpcAuth: a non-empty but invalid token is denied without crashing" {
   match authGuardedHandler("not.a.valid.jwt") {
     case Ok(_) -> assertTrue(false, "an unverifiable token must be rejected before the handler runs")
-    case Err(status) -> match status.code { case GrpcStatusCode.PermissionDenied -> assertTrue(true, "invalid token short-circuits with PERMISSION_DENIED"); case _ -> assertTrue(false, "invalid token must map to PERMISSION_DENIED") }
+    case Err(status) -> match status.code {
+      case GrpcStatusCode.PermissionDenied -> assertTrue(
+        true,
+        "invalid token short-circuits with PERMISSION_DENIED"
+      )
+      case _ -> assertTrue(false, "invalid token must map to PERMISSION_DENIED")
+    }
   }
 }
 
@@ -47,7 +61,9 @@ test "RequiresGrpcAuth: a non-empty but invalid token is denied without crashing
 aspect RoleGuard from Grpc.Aspects.RequiresGrpcRole {
   matches: name like "roleGuarded*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
     allowedRoles: String = "admin"
   }
 }
@@ -59,6 +75,12 @@ pub func roleGuardedHandler(authToken: in String): Result[String, GrpcStatus] {
 test "RequiresGrpcRole: an empty token returns UNAUTHENTICATED without crashing (was a panic)" {
   match roleGuardedHandler("") {
     case Ok(_) -> assertTrue(false, "an empty token must be rejected before the handler runs")
-    case Err(status) -> match status.code { case GrpcStatusCode.Unauthenticated -> assertTrue(true, "empty token short-circuits with UNAUTHENTICATED"); case _ -> assertTrue(false, "empty token must map to UNAUTHENTICATED, not another status") }
+    case Err(status) -> match status.code {
+      case GrpcStatusCode.Unauthenticated -> assertTrue(
+        true,
+        "empty token short-circuits with UNAUTHENTICATED"
+      )
+      case _ -> assertTrue(false, "empty token must map to UNAUTHENTICATED, not another status")
+    }
   }
 }
