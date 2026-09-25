@@ -1,4 +1,4 @@
-# D-progress-962 — lyric-ws Origin check; lyric-session id validation; JVM `catch Exception`; parenthesised lambda formatting
+# D-progress-962 — lyric-ws Origin check; lyric-session ids; refilling rate limiters; lyric-web contracts; JVM `catch Exception`; lambda formatting
 
 **Status:** shipped
 
@@ -55,6 +55,39 @@
   satisfy them.
 - **`InProcessSessionStore`** requires a TTL in the same range; 0 used to
   mean sessions never expired. `inMemory()` now reads the configured TTL.
+
+## Rate limiters and lyric-web (#7249)
+
+- **Rate limiting.**
+  - The four rate-limiter kernel copies (lyric-web and lyric-ws, dotnet and
+    JVM) used a tumbling window. Its burst allowance was a one-time budget
+    per process that never refilled, and the window allowed twice the rate
+    across a boundary.
+  - All four now keep a `Resilience.TokenBucket` per key. The bucket starts
+    full at `rpm + burst` tokens and refills continuously at `rpm` a minute,
+    counted in exact integer units of 1/60000 of a token.
+  - lyric-web's `RateLimit` keys on the handler alone. The new
+    `RateLimitByClient` adds a `clientId` argument, so one client cannot
+    use up everyone's budget.
+- **lyric-web contracts.**
+  - Route patterns must satisfy `isValidRoutePattern`; a malformed `{id`
+    used to be a literal segment.
+  - Response header names must be tokens and values free of control
+    characters. `tryWithResponseHeader` returns `Err` for values taken
+    from the request.
+  - Statuses are 100 to 599. `-1`, the streamed-response sentinel, made
+    the client hang.
+  - Static-file mounts must be valid and match whole path segments.
+- **CORS.** A `*` configuration answers with a literal `*`, so browsers
+  refuse credentials; it used to reflect the `Origin`. The settings are
+  validated at startup.
+- **503 body.** `HttpCircuitBreaker`'s response no longer names the
+  internal handler.
+- **Still open on #7249.**
+  - Symlink resolution for dotnet static files: `GetFullPath` does not
+    follow links, while the JVM's `getCanonicalPath` does.
+  - The env-toggleable `enabled` switch on security aspects.
+  - Ranged aspect config (#7229).
 
 ## Compiler
 
