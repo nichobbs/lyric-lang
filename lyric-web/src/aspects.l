@@ -230,20 +230,24 @@ pub aspect ApiKey {
 // ─── RateLimit ────────────────────────────────────────────────────────────────
 /// Enforce a per-endpoint call rate limit.
 ///
-/// Uses call.qualifiedName as the rate-limit key so each handler has an
-/// independent counter.  When the limit is exceeded the call is short-
-/// circuited with 429 Too Many Requests without invoking the handler.
+/// Uses call.qualifiedName as the rate-limit key, so each handler has one
+/// budget shared by every caller: one client can use it up for everyone.
+/// Use `RateLimitByClient` to give each client its own budget.  When the
+/// limit is exceeded the call is short-circuited with 429 Too Many Requests
+/// without invoking the handler.
 ///
-/// Rate-limit state is maintained by the kernel (in-process sliding window
-/// by default; configurable for distributed deployments).
+/// The limiter is an in-process token bucket (`Resilience.TokenBucket`):
+/// up to `requestsPerMinute + burstSize` calls at once, refilling at
+/// `requestsPerMinute` a minute.  The burst allowance used to be a one-time
+/// budget per process that never refilled (#7249).
 ///
 /// This is B-mode (default): the body does not read named fields off args,
 /// so it composes generically across all matched handlers.
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled           Bool — master switch (default: true)
-///   requestsPerMinute Int  — maximum allowed calls per 60-second window (default: 60)
-///   burstSize         Int  — maximum calls allowed in a single second (default: 10)
+///   requestsPerMinute Int  — sustained calls allowed per minute (default: 60)
+///   burstSize         Int  — extra calls an idle endpoint may make at once (default: 10)
 @stable(since = "0.1")
 pub aspect RateLimit {
   config {
@@ -256,6 +260,39 @@ pub aspect RateLimit {
       ret = call.proceed()
     } else {
       val allowed = HttpKernel.checkRateLimit(call.qualifiedName, requestsPerMinute, burstSize)
+      if allowed {
+        ret = call.proceed()
+      } else {
+        ret = Err(WebPkg.tooManyRequests("Rate limit exceeded — try again later"))
+      }
+    }
+  }
+}
+
+// ─── RateLimitByClient ─────────────────────────────────────────────────────────
+/// `RateLimit` with a separate budget per client, keyed by
+/// `call.qualifiedName` plus the handler's `clientId` argument.
+///
+/// Row-constrained B'-mode (docs/56 / D115): reads `args.clientId` via a
+/// `where TArgs has { clientId: String }` row clause, so the handler must
+/// declare a `clientId: String` parameter carrying a stable client identity
+/// (an authenticated user id or API key id; not a client-supplied header,
+/// which a caller can rotate to escape the limit).  An empty `clientId`
+/// shares one budget with every other empty id.
+///
+/// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>): as `RateLimit`.
+@stable(since = "0.2")
+pub aspect RateLimitByClient {
+  config {
+    enabled: Bool = true
+    requestsPerMinute: Int = 60
+    burstSize: Int = 10
+  }
+  around(call) -> ret where TArgs has { clientId: String } {
+    if not enabled {
+      ret = call.proceed()
+    } else {
+      val allowed = HttpKernel.checkRateLimit(call.qualifiedName + "#" + args.clientId, requestsPerMinute, burstSize)
       if allowed {
         ret = call.proceed()
       } else {

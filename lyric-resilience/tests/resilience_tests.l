@@ -254,3 +254,39 @@ test "CircuitBreaker: a zero failureThreshold fails before the wrapped call runs
   assertPanics("failureThreshold 0", { -> val _ = badCircuitGuarded() })
   assertEqualInt(circuitCalls.n, 0, "the wrapped function never ran")
 }
+
+// ─── Token bucket (#7249) ────────────────────────────────────────────────────
+// The rate limiters' burst allowance used to be a one-shot budget that never
+// came back; the bucket refills continuously.  `nowMs` is injected.
+func take(b: in Resilience.TokenBucket, nowMs: in Long): Resilience.TokenTake {
+  Resilience.takeToken(b, 1, 1, nowMs)
+}
+
+test "takeToken: a full bucket allows requestsPerMinute + burstSize calls at once" {
+  val b0 = Resilience.newTokenBucket(1, 1, 1000i64)
+  val t1 = take(b0, 1000i64)
+  val t2 = take(t1.bucket, 1000i64)
+  val t3 = take(t2.bucket, 1000i64)
+  assertTrue(t1.allowed, "first call")
+  assertTrue(t2.allowed, "second call uses the burst allowance")
+  assertFalse(t3.allowed, "third call finds the bucket empty")
+}
+
+test "takeToken: the bucket refills at requestsPerMinute, burst included" {
+  val b0 = Resilience.newTokenBucket(1, 1, 0i64)
+  val empty = take(take(b0, 0i64).bucket, 0i64).bucket
+  assertFalse(take(empty, 30000i64).allowed, "half a minute refills half a token")
+  val one = take(empty, 60000i64)
+  assertTrue(one.allowed, "a minute refills one token")
+  assertFalse(take(one.bucket, 60000i64).allowed, "and only one")
+  val later = take(empty, 600000i64)
+  assertTrue(later.allowed, "a long idle period refills the bucket")
+  assertTrue(take(later.bucket, 600000i64).allowed, "up to its capacity, burst included")
+  assertFalse(take(take(later.bucket, 600000i64).bucket, 600000i64).allowed, "but no further")
+}
+
+test "takeToken: a clock stepping backwards refills nothing" {
+  val b0 = Resilience.newTokenBucket(1, 1, 100000i64)
+  val empty = take(take(b0, 100000i64).bucket, 100000i64).bucket
+  assertFalse(take(empty, 50000i64).allowed, "an earlier timestamp adds no tokens")
+}

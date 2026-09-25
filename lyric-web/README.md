@@ -388,7 +388,7 @@ The `jwtSecret` field is `@sensitive` — its value is redacted in `lyric explai
 
 ### `Web.Aspects.RateLimit`
 
-Enforces a per-endpoint sliding-window rate limit. **B-mode**: uses `call.qualifiedName` as the bucket key.
+Enforces a per-endpoint rate limit with a refilling token bucket: up to `requestsPerMinute + burstSize` calls at once, refilling at `requestsPerMinute` a minute. An over-limit call gets 429 without reaching the handler. **B-mode**: uses `call.qualifiedName` as the bucket key, so every caller shares one budget per handler; `Web.Aspects.RateLimitByClient` keys on a `clientId: String` handler parameter as well, so each client gets its own. Before #7249 the burst allowance was a one-time budget that never refilled.
 
 ```lyric
 aspect Throttle from Web.Aspects.RateLimit {
@@ -404,8 +404,8 @@ aspect Throttle from Web.Aspects.RateLimit {
 | Config field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `requestsPerMinute` | `Int` | `60` | Max calls per 60-second window |
-| `burstSize` | `Int` | `10` | Max calls per second |
+| `requestsPerMinute` | `Int` | `60` | Sustained calls allowed per minute |
+| `burstSize` | `Int` | `10` | Extra calls an idle endpoint (or client) may make at once |
 
 `Web.Aspects.RequiresRole`, `Web.Aspects.ApiKey`, and `Web.Aspects.HttpCircuitBreaker` follow the same template shape — see `lyric-web/src/aspects.l` and `lyric-web/tests/security_aspect_weaving_tests.l`.
 

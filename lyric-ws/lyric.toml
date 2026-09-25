@@ -44,6 +44,7 @@ jvm    = []   # Undertow WebSockets (Phase 6)
 
 [dependencies]
 "Lyric.Auth"   = { workspace = true }
+"Lyric.Resilience" = { workspace = true }
 
 # [nuget] — no third-party packages needed for the current .NET kernel
 # implementation: Ws.Kernel.Net is pure-Lyric RFC 6455 over Std.TcpHost

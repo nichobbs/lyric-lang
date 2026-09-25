@@ -219,7 +219,9 @@ If token validation fails, the connection is rejected with a 401 Unauthorized re
 ### WsRateLimit aspect
 
 A per-connection message limit on handlers that take a `ctx: WsContext`
-parameter. It works on both targets (`Ws.checkRateLimit`).
+parameter. It is a refilling token bucket (`Resilience.TokenBucket`): up to
+`messagesPerMinute + burstSize` messages at once, then `messagesPerMinute` a
+minute. It works on both targets (`Ws.checkRateLimit`).
 
 ```lyric
 import Ws.Aspects
@@ -238,8 +240,8 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `messagesPerMinute` | `Int` | `120` | Messages allowed per one-minute window |
-| `burstSize` | `Int` | `20` | Extra messages allowed once the window is used up |
+| `messagesPerMinute` | `Int` | `120` | Sustained messages allowed per minute |
+| `burstSize` | `Int` | `20` | Extra messages an idle connection may send at once |
 
 A call over the limit returns `Err(())` without running the handler; the
 connection is not closed.

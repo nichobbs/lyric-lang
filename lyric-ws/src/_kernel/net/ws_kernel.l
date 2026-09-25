@@ -45,6 +45,7 @@
 package Ws.Kernel.Net
 
 import Std.Core
+import Resilience
 import Std.Collections
 import Std.Encoding
 import Std.Environment
@@ -798,18 +799,15 @@ pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
   false
 }
 
-// ─── Rate limiter (tumbling window) ──────────────────────────────────────────
+// ─── Rate limiter (token bucket) ─────────────────────────────────────────────
 //
-// Uses a tumbling (fixed-reset) 60-second window per key, NOT the sliding
-// window that the deleted F# WsHost.fs used (which maintained per-message
-// timestamps and filtered to the trailing 60s).  The tumbling window allows
-// up to 2× the nominal rate at window boundaries; the production rate limiter
-// (#778) should implement the sliding window if boundary bursting is a concern.
-// The burst budget is one-shot: it does not refill when the window resets.
+// One `Resilience.TokenBucket` per key: up to `messagesPerMinute + burstSize`
+// messages at once, refilling at `messagesPerMinute` a minute.  It replaced a
+// tumbling window whose burst budget never refilled and which allowed twice
+// the rate across a window boundary (#7249, #1178).
 record RateEntry {
-  var windowStartMs: Long = 0i64
-  var usedInWindow: Int = 0
-  var burstAvailable: Int = 0
+  var scaledTokens: Long = 0i64
+  var lastRefillMs: Long = 0i64
 }
 
 // Single global lock serialises all rate-limiter mutations.
@@ -832,9 +830,10 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
     monitorExit(rateLock)
   }
 
+  val fullBucket = newTokenBucket(messagesPerMinute, burstSize, nowMs)
   var re: RateEntry = default()
   if not cdTryGetValue(rateLimitMap, key, re) {
-    val newEntry = RateEntry(windowStartMs = nowMs, usedInWindow = 0, burstAvailable = burstSize)
+    val newEntry = RateEntry(scaledTokens = fullBucket.scaledTokens, lastRefillMs = fullBucket.lastRefillMs)
     val _ = cdTryAdd(rateLimitMap, key, newEntry)
     var re2: RateEntry = default()
     if cdTryGetValue(rateLimitMap, key, re2) {
@@ -844,22 +843,13 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
     }
   }
 
-  val elapsed: Long = nowMs - re.windowStartMs
-  if elapsed >= 60000i64 {
-    re.windowStartMs = nowMs
-    re.usedInWindow = 0
-  }
-
-  if re.usedInWindow < messagesPerMinute {
-    re.usedInWindow = re.usedInWindow + 1
-    return true
-  }
-
-  if re.burstAvailable > 0 {
-    re.burstAvailable = re.burstAvailable - 1
-    re.usedInWindow = re.usedInWindow + 1
-    return true
-  }
-
-  false
+  val take = takeToken(
+    TokenBucket(scaledTokens = re.scaledTokens, lastRefillMs = re.lastRefillMs),
+    messagesPerMinute,
+    burstSize,
+    nowMs
+  )
+  re.scaledTokens = take.bucket.scaledTokens
+  re.lastRefillMs = take.bucket.lastRefillMs
+  take.allowed
 }

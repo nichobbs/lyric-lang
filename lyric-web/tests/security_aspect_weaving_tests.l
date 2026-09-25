@@ -11,6 +11,7 @@ package Web.SecurityAspectWeavingTests
 
 import Std.Core
 import Std.Testing
+import Std.Time as Time
 import Web
 import Web.Aspects
 
@@ -267,10 +268,8 @@ test "HttpCircuitBreaker aspect: enabled=false bypasses the circuit" {
 // never flakes.
 //
 // Note: `webRateLimitMap` is process-global and keyed by `call.qualifiedName`.
-// This test exhausts `rateLimitedHandler`'s counter (usedInWindow=3,
-// burstAvailable=0) for the life of the process.  The test is designed to run
-// once per process invocation; a second run in the same process would see the
-// first call immediately denied (run once per CI invocation, as expected).
+// This test empties `rateLimitedHandler`'s token bucket; it refills at 2 a
+// minute, far slower than the test runs.
 aspect RateEnforced from Web.Aspects.RateLimit {
   matches: name like "rateLimited*"
   config {
@@ -292,6 +291,36 @@ test "RateLimit aspect: call after requestsPerMinute + burstSize exhausted is de
   match rateLimitedHandler() {
     case Ok(_) -> assertTrue(false, "an over-limit call must not reach the handler")
     case Err(e) -> assertEqualInt(e.status, 429, "over-limit call short-circuits with 429 Too Many Requests")
+  }
+}
+
+// ─── RateLimitByClient ─────────────────────────────────────────────────────────
+// Each client has its own budget, so one client exhausting it does not lock
+// out another (#7249).
+aspect RateByClient from Web.Aspects.RateLimitByClient {
+  matches: name like "perClientLimited*"
+  config {
+    requestsPerMinute: Int = 1
+    burstSize: Int = 1
+  }
+}
+
+pub func perClientLimitedHandler(clientId: in String): Result[String, Web.ApiError] {
+  return Ok("ok:" + clientId)
+}
+
+test "RateLimitByClient aspect: one client's exhausted budget does not deny another client" {
+  val alice = "alice-" + toString(Time.nowEpochMillis())
+  val bob = "bob-" + toString(Time.nowEpochMillis())
+  val _ = perClientLimitedHandler(alice)
+  val _ = perClientLimitedHandler(alice)
+  match perClientLimitedHandler(alice) {
+    case Ok(_) -> assertTrue(false, "alice's third call must be denied")
+    case Err(e) -> assertEqualInt(e.status, 429, "alice is rate limited")
+  }
+  match perClientLimitedHandler(bob) {
+    case Ok(v) -> assertEqual(v, "ok:" + bob, "bob still has his own budget")
+    case Err(_) -> assertTrue(false, "bob must not be limited by alice's calls")
   }
 }
 

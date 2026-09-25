@@ -35,6 +35,7 @@
 package Web.Kernel.Runtime
 
 import Std.Core
+import Resilience
 import Std.Collections
 import Std.Console as Console
 import Std.Tls
@@ -347,12 +348,10 @@ pub func serveTls(host: in String, port: in Int, tls: in TlsServerConfig, router
   latchAwaitForever(latch)
 }
 
-// ─── Rate limiting (tumbling window) ────────────────────────────────────────
-// Mirrors the .NET kernel's algorithm (`_kernel/net/web_kernel.l`) over
-// java.util.concurrent primitives instead of System.Collections.Concurrent /
-// System.Threading.Monitor.  See that file for the algorithm's documented
-// one-shot-burst tumbling-window semantics and the #778 sliding-window
-// follow-up.
+// ─── Rate limiting (token bucket) ───────────────────────────────────────────
+// The .NET kernel's `Resilience.TokenBucket` limiter (`_kernel/net/web_kernel.l`)
+// over java.util.concurrent primitives instead of
+// System.Collections.Concurrent / System.Threading.Monitor.
 //
 // Named `JvmConcurrentDict` rather than the more obvious `ConcurrentDict` to
 // avoid #5443: this file and `_kernel/net/web_kernel.l` are two alternative
@@ -391,9 +390,8 @@ func newLock(): JLock = ()
 func currentTimeMillis(): Long = ()
 
 record WebRateEntry {
-  var windowStartMs: Long = 0i64
-  var usedInWindow: Int = 0
-  var burstAvailable: Int = 0
+  var scaledTokens: Long = 0i64
+  var lastRefillMs: Long = 0i64
 }
 
 val webRateLock: JLock = newLock()
@@ -420,9 +418,10 @@ pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSiz
     webRateLock.unlock()
   }
 
+  val fullBucket = newTokenBucket(requestsPerMinute, burstSize, nowMs)
   var re: WebRateEntry = default()
   if not cdTryGetValue(webRateLimitMap, endpoint, re) {
-    val newEntry = WebRateEntry(windowStartMs = nowMs, usedInWindow = 0, burstAvailable = burstSize)
+    val newEntry = WebRateEntry(scaledTokens = fullBucket.scaledTokens, lastRefillMs = fullBucket.lastRefillMs)
     cdPut(webRateLimitMap, endpoint, newEntry)
     var re2: WebRateEntry = default()
     if cdTryGetValue(webRateLimitMap, endpoint, re2) {
@@ -432,22 +431,13 @@ pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSiz
     }
   }
 
-  val elapsed: Long = nowMs - re.windowStartMs
-  if elapsed >= 60000i64 {
-    re.windowStartMs = nowMs
-    re.usedInWindow = 0
-  }
-
-  if re.usedInWindow < requestsPerMinute {
-    re.usedInWindow = re.usedInWindow + 1
-    return true
-  }
-
-  if re.burstAvailable > 0 {
-    re.burstAvailable = re.burstAvailable - 1
-    re.usedInWindow = re.usedInWindow + 1
-    return true
-  }
-
-  false
+  val take = takeToken(
+    TokenBucket(scaledTokens = re.scaledTokens, lastRefillMs = re.lastRefillMs),
+    requestsPerMinute,
+    burstSize,
+    nowMs
+  )
+  re.scaledTokens = take.bucket.scaledTokens
+  re.lastRefillMs = take.bucket.lastRefillMs
+  take.allowed
 }

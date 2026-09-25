@@ -324,6 +324,67 @@ pub func checkRetryConfig(
 {
 }
 
+// ─── Token bucket (rate limiting) ──────────────────────────────────────────────
+/// State of one refilling token bucket, for a rate limiter keyed however the
+/// caller likes (lyric-web's `RateLimit`, lyric-ws's `WsRateLimit`).  Pure
+/// value: the caller stores one per key under its own lock.
+///
+/// The bucket holds up to `requestsPerMinute + burstSize` tokens, starts
+/// full, and refills continuously at `requestsPerMinute` tokens per minute;
+/// each allowed call takes one.  So an idle client may make
+/// `requestsPerMinute + burstSize` calls at once and then sustain
+/// `requestsPerMinute` a minute.  Tokens are counted in units of
+/// 1/60000 of a token, which makes the per-millisecond refill of
+/// `requestsPerMinute` units exact in integer arithmetic.
+@stable(since = "0.2")
+pub record TokenBucket {
+  scaledTokens: Long
+  lastRefillMs: Long
+  invariant: scaledTokens >= 0i64
+}
+
+/// The result of `takeToken`: whether the call is allowed, and the bucket
+/// to store for the next call.
+@stable(since = "0.2")
+pub record TokenTake {
+  allowed: Bool
+  bucket: TokenBucket
+}
+
+val tokenScale: Long = 60000i64
+
+/// A full bucket for the given limits, as of `nowMs`.
+@stable(since = "0.2")
+pub func newTokenBucket(requestsPerMinute: in Int, burstSize: in Int, nowMs: in Long): TokenBucket
+  requires: requestsPerMinute >= 1
+  requires: burstSize >= 0
+{
+  TokenBucket(scaledTokens = (requestsPerMinute.toLong() + burstSize.toLong()) * tokenScale, lastRefillMs = nowMs)
+}
+
+/// Refill `bucket` for the time elapsed since its last refill, then take one
+/// token if one is available.  The burst allowance used to be a one-shot
+/// budget per process that never came back (#7249).
+@stable(since = "0.2")
+pub func takeToken(bucket: in TokenBucket, requestsPerMinute: in Int, burstSize: in Int, nowMs: in Long): TokenTake
+  requires: requestsPerMinute >= 1
+  requires: burstSize >= 0
+{
+  val capacity = (requestsPerMinute.toLong() + burstSize.toLong()) * tokenScale
+  // A clock that stepped backwards refills nothing; a gap longer than a day
+  // refills the bucket completely, which also keeps the product below Long.
+  val rawElapsed = nowMs - bucket.lastRefillMs
+  val elapsed = if rawElapsed < 0i64 { 0i64 } else if rawElapsed > 86400000i64 { 86400000i64 } else { rawElapsed }
+  val refilled = bucket.scaledTokens + elapsed * requestsPerMinute.toLong()
+  val available = if refilled > capacity { capacity } else { refilled }
+  val stamp = if nowMs > bucket.lastRefillMs { nowMs } else { bucket.lastRefillMs }
+  if available >= tokenScale {
+    TokenTake(allowed = true, bucket = TokenBucket(scaledTokens = available - tokenScale, lastRefillMs = stamp))
+  } else {
+    TokenTake(allowed = false, bucket = TokenBucket(scaledTokens = available, lastRefillMs = stamp))
+  }
+}
+
 // ─── Retry ────────────────────────────────────────────────────────────────────
 /// Retry a function call on Err, with exponential backoff.
 ///

@@ -64,6 +64,7 @@
 package Ws.Kernel.Jvm
 
 import Std.Core
+import Resilience
 import Std.Collections
 import Ws.Frame
 import Ws.Handshake
@@ -735,13 +736,13 @@ pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
 }
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
-// Tumbling (fixed-reset) 60-second window per key, matching `Ws.Kernel.Net`'s
-// documented semantics (not the deleted F# WsHost.fs's sliding window).  The
-// burst budget is one-shot: it does not refill when the window resets.
+// One `Resilience.TokenBucket` per key, as in `Ws.Kernel.Net`: up to
+// `messagesPerMinute + burstSize` messages at once, refilling at
+// `messagesPerMinute` a minute.  It replaced a tumbling window whose burst
+// budget never refilled (#7249, #1178).
 record RateEntry {
-  var windowStartMs: Long
-  var usedInWindow: Int
-  var burstAvailable: Int
+  var scaledTokens: Long
+  var lastRefillMs: Long
   lock: JReentrantLock
 }
 
@@ -760,10 +761,10 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
   requires: messagesPerMinute > 0
   requires: burstSize > 0
 {
+  val fullBucket = newTokenBucket(messagesPerMinute, burstSize, nowMs())
   val fresh = RateEntry(
-    windowStartMs = nowMs(),
-    usedInWindow = 0,
-    burstAvailable = burstSize,
+    scaledTokens = fullBucket.scaledTokens,
+    lastRefillMs = fullBucket.lastRefillMs,
     lock = JReentrantLock.new()
   )
   // No explicit type annotation on `prior` — matches `Lyric.Resilience`'s
@@ -779,22 +780,13 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
     entry.lock.unlock()
   }
 
-  val elapsed: Long = nowMs() - entry.windowStartMs
-  if elapsed >= 60000i64 {
-    entry.windowStartMs = nowMs()
-    entry.usedInWindow = 0
-  }
-
-  if entry.usedInWindow < messagesPerMinute {
-    entry.usedInWindow = entry.usedInWindow + 1
-    return true
-  }
-
-  if entry.burstAvailable > 0 {
-    entry.burstAvailable = entry.burstAvailable - 1
-    entry.usedInWindow = entry.usedInWindow + 1
-    return true
-  }
-
-  false
+  val take = takeToken(
+    TokenBucket(scaledTokens = entry.scaledTokens, lastRefillMs = entry.lastRefillMs),
+    messagesPerMinute,
+    burstSize,
+    nowMs()
+  )
+  entry.scaledTokens = take.bucket.scaledTokens
+  entry.lastRefillMs = take.bucket.lastRefillMs
+  take.allowed
 }

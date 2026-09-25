@@ -8,8 +8,7 @@
 //! connect/send/receive/close loop but is missing those two (see
 //! `Ws.Kernel.Jvm`'s header for its documented gaps: fragmented multi-frame
 //! messages and automatic ping keepalives — tracked as Q-WS-001 to bring JVM to
-//! dotnet parity).  The rate-limiter's burst budget is one-shot (does not
-//! refill; tracked in issue #1178).
+//! dotnet parity).
 //!
 //! Provides the full connection lifecycle for WebSocket servers:
 //! connection context, message types, a handler interface for
@@ -103,7 +102,7 @@ func kernelStartServer(
   WsKernelJvm.startServer(host, port, path, maxMessageSizeBytes, allowedOrigins, onOpen, onMessage, onClose, onError)
 }
 
-/// Per-key tumbling-window rate check shared by `Ws.Aspects.WsRateLimit`,
+/// Per-key token-bucket rate check (`Resilience.takeToken`) shared by `Ws.Aspects.WsRateLimit`,
 /// dispatched to the active kernel so the aspect works on both targets.
 @stable(since = "0.2")
 @cfg(feature = "dotnet")
