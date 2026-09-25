@@ -6442,9 +6442,9 @@ func emitCompoundCombineMsil(
 // wrap/div-rem-unsigned choice (same as `emitCompoundCombineMsil`); `rTy`
 // drives how the loaded `rSlot` value is coerced to a string when it isn't
 // already one (mirroring `emitCompoundCombineMsil`'s Bool/box+ToString
-// handling) — for every op other than a String `AssPlus`, the type checker
-// still requires `rTy == elemTy` (widening is scoped to that one case), so
-// this is a strict generalization, not a behavior change elsewhere.
+// handling). For the arithmetic ops, `rTy` can be narrower than `elemTy`
+// through M6 numeric widening (`xs[i] -= 8` on a `slice[Long]` has an `Int`
+// rhs), so the loaded rhs is widened to `elemTy` first (#7343).
 func emitCompoundCombineSlotMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,

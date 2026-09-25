@@ -68,3 +68,10 @@ for t in \
   echo "=== $t ==="
   LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
 done
+# Cross-target suites that also run on dotnet/JVM elsewhere in ci.yml; this
+# lane covers their native run (#7364 review).
+for t in \
+  lyric-compiler/lyric/slice_fastpath_self_test.l ; do
+  echo "=== $t (--target native) ==="
+  "$lyric_bin" test --target native "$t"
+done
