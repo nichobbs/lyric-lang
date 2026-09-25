@@ -237,6 +237,9 @@ pub record SymbolTable {
   /// imports, so a caller that transitively imports an unrelated same-named
   /// `Item` from package B silently picks B's `Item` instead of A's.
   packageImports: Map[String, List[String]]
+  /// Every validated record `.copy(...)` call, keyed by `recordCopySiteKey`
+  /// of the call expression's span (see `Lyric.Parser.RecordCopySite`).
+  recordCopySites: Map[String, RecordCopySite]
 }
 
 pub record ImplPair {
@@ -277,7 +280,8 @@ pub func newSymbolTable(): SymbolTable {
     externBlockPackages = newMap(),
     symbolPackages = newMap(),
     symbolPackageMembers = newMap(),
-    packageImports = newMap()
+    packageImports = newMap(),
+    recordCopySites = newMap()
   )
 }
 

@@ -127,6 +127,15 @@ pub record JvmFuncSig {
   // (never consulted) rather than merely unused. No default per the
   // JVM-codegen no-defaulted-field rule (see `isIface`/`retIsSelf` above).
   retIsUnsigned: Bool
+  // The head path of the DECLARED return type when it is a generic
+  // instantiation (`Box[Int]` -> `["Box"]`, `Pkg.Box[Int]` ->
+  // `["Pkg", "Box"]`), set only where `recordRetClass` cannot be decided at
+  // registration: a mono-specialised copy of an IMPORTED generic, whose
+  // record belongs to another package that may not be registered yet.
+  // `narrowStaticCallResult` resolves it at the call site through the
+  // complete `ctx.ctors` registry (`recordParamClassOf`'s lookup). Empty
+  // everywhere else. No default, same rule as the fields above.
+  recordRetHead: List[String]
 }
 
 // One field of a union case class, in declaration order.  A match binding
@@ -1329,6 +1338,19 @@ func closureRetTypeOfTe(
 // per-file pass does not have, and guessing wrong would silently corrupt an
 // otherwise-working cross-package call. `None` is the safe pre-existing
 // erasure-to-`Object` fallback (#3044) for every such case.
+// The head path of a generic-instantiation return type (see
+// `JvmFuncSig.recordRetHead`); empty for any other shape.
+pub func recordRetHeadOf(retOpt: in Option[TypeExpr]): List[String] {
+  match retOpt {
+    case Some(te) -> match te.kind {
+      case TGenericApp(head, _) -> head.segments
+      case TParen(inner) -> recordRetHeadOf(Some(value = inner))
+      case _ -> newList()
+    }
+    case None -> newList()
+  }
+}
+
 pub func recordRetClassOf(
   retOpt: in Option[TypeExpr], owner: in String, localRecordNames: in Map[String, Bool]
 ): Option[String] {
@@ -1393,9 +1415,11 @@ func recordRetClassOfTe(te: in TypeExpr, owner: in String, localRecordNames: in 
 // resolving a bare constructor name across packages (real object
 // construction has relied on it since before this fix), so reusing it here
 // introduces no new collision risk beyond what a `RecordName(...)`
-// constructor call already accepts. Bounded to a BARE single-segment head:
-// a package-qualified head (`Other.Box[Int]`) is left erased to `Object`
-// (`None`) — `ctorClassFor` itself only ever takes a bare short name.
+// constructor call already accepts. A package-qualified head
+// (`Other.Box[Int]`, the form `Lyric.AliasRewriter` gives `import Other as O`
+// + `O.Box[Int]`) resolves only through the registry's dotted
+// package-qualified key (`collectFileCtors`' `<dotted owner>.<name>`), never
+// the bare-name fallback, since it names its owning package explicitly.
 pub func recordParamClassOf(ty: in TypeExpr, ctx: in FuncCtx): Option[String] {
   match ty.kind {
     case TParen(inner) -> recordParamClassOf(inner, ctx)
@@ -1403,11 +1427,24 @@ pub func recordParamClassOf(ty: in TypeExpr, ctx: in FuncCtx): Option[String] {
       if head.segments.count == 1 {
         ctorClassFor(ctx, head.segments[0])
       } else {
-        None
+        mapGet(ctx.ctors, joinSegsDotted(head.segments))
       }
     }
     case _ -> None
   }
+}
+
+func joinSegsDotted(segs: in List[String]): String {
+  var acc = ""
+  var i = 0
+  while i < segs.count {
+    if i > 0 {
+      acc = acc + "."
+    }
+    acc = acc + segs[i]
+    i = i + 1
+  }
+  acc
 }
 
 // Drop a CLR-convention arity suffix (`` `N ``) from a host type name: the
@@ -2295,7 +2332,8 @@ pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFun
                 retIsSelf = false,
                 // A module-val read is `EMember`, never `ECall` — never
                 // consulted by `isUnsignedExpr`'s `ECall` arm.
-                retIsUnsigned = false
+                retIsUnsigned = false,
+                recordRetHead = newList()
               )
             )
           }

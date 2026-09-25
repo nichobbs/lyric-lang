@@ -2028,10 +2028,15 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       } else {
         // Compiler diagnostics belong on stderr, not stdout, so build tooling
         // and CI log parsers that capture stdout don't pick up warning text (#4703).
-        Console.error(
-          "W0005: bufMsilTypeWithCtx: TypeRef/TypeDef not found for MGenericInstByName '" + headFqn +
-            "' — signature degraded to System.Object (#2494)"
-        )
+        // The discovery pass lowers signatures in a throwaway context that has
+        // no stdlib or restored TypeRefs, so every imported generic misses
+        // there; only the real pass's miss is a seeding bug worth reporting.
+        if ctx.discovering.count == 0 {
+          Console.error(
+            "W0005: bufMsilTypeWithCtx: TypeRef/TypeDef not found for MGenericInstByName '" + headFqn +
+              "' — signature degraded to System.Object (#2494)"
+          )
+        }
         bufU1(w, 0x1C)
       }
     }

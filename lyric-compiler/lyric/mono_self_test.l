@@ -939,7 +939,7 @@ test "local function survives imported-name ambiguity eviction (#5961)" {
 // in parameter mode are a genuine ambiguity, not a duplicate — the sig key
 // folds modes in, so they evict like any other conflicting pair.
 test "imported functions differing only in parameter mode are ambiguous (#5962)" {
-  val callerSrc = "package Caller\n" + "func caller(): String { mapLike2(\"hi\", { s: String -> dup(s) }) }\n"
+  val callerSrc = "package Caller\n" + "func caller(): Unit { val r = mapLike2(\"hi\", { s: String -> dup(s) }) }\n"
   val libSrc = "package Lib\n" + "pub func mapLike2[T, U](x: in T, f: (T) -> U): U { f(x) }\n"
   val libASrc = "package LibA\n" + "pub func dup(s: in String): String { s + s }\n"
   val libBSrc = "package LibB\n" + "pub func dup(s: inout String): String { s }\n"
@@ -2489,7 +2489,7 @@ test "opaque binding fed into an imported generic with a Result-shaped param rai
 // #5970's fix is scoped to erasure-UNSAFE shapes and does not regress this
 // legitimate, pervasive usage.
 test "opaque argument to an imported generic with a slice-shaped param still defaults to Object (no regression, #5970)" {
-  val callerSrc = "package Caller\n" + "func caller(getXs: in () -> slice[Int]): Int { firstLike(getXs()) }\n"
+  val callerSrc = "package Caller\n" + "func caller(getXs: in () -> slice[Int]): Unit { val r = firstLike(getXs()) }\n"
   val libSrc = "package Lib\n" + "pub func firstLike[T](xs: in slice[T]): T { xs[0] }\n"
   val callerPr = parse(callerSrc)
   val libPr = parse(libSrc)
@@ -2532,4 +2532,64 @@ test "opaque argument to an imported generic with a Result[slice[T], String]-sha
     1,
     "an opaque argument against a Result[slice[T], String]-shaped param must raise M0004, not silently specialise against a phantom instantiation"
   )
+}
+
+// D-progress-947: a type parameter that argument inference leaves unbound is
+// taken from the type the call's position expects.  The two tests above keep
+// their calls in an unannotated `val` so nothing is expected there.
+test "an unbound type parameter is inferred from the enclosing return type" {
+  val callerSrc = "package Caller\n" + "func caller(getXs: in () -> slice[Int]): Int { firstLike(getXs()) }\n"
+  val libSrc = "package Lib\n" + "pub func firstLike[T](xs: in slice[T]): T { xs[0] }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertTrue(hasFunc(res.file, "firstLike__Int"), "T pinned by the caller's return type")
+}
+
+test "a return-only type parameter is inferred from a binding annotation" {
+  val callerSrc = "package Caller\n" + "func caller(): Int { val b: Pair[Int] = empty()\n 0 }\n"
+  val libSrc = "package Lib\n" + "pub record Pair[T] { n: Int }\n" + "pub func empty[T](): Pair[T] { Pair(n = 0) }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertTrue(hasFunc(res.file, "empty__Int"), "T pinned by the binding annotation")
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "no M0002")
+}
+
+test "a qualified generic head unifies with the declaring package's bare spelling" {
+  val callerSrc = "package Caller\n" + "import Lib\n" + "func caller(xs: in List[Lib.Node[Int]]): Int { count(xs) }\n"
+  val libSrc = "package Lib\n" + "pub union Node[T] { case Leaf(v: T) }\n" +
+    "pub func count[T](xs: in List[Node[T]]): Int { xs.count }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertTrue(hasFunc(res.file, "count__Int"), "Lib.Node[Int] binds T = Int against Node[T]")
+}
+
+test "a function reference argument binds a generic's type parameters (D-progress-951)" {
+  val callerSrc = "package Caller\n" + "func pick(x: in Int): String { \"s\" }\n" +
+    "func caller(xs: in List[Int]): Unit { val r = apply(pick, xs) }\n"
+  val libSrc = "package Lib\n" + "pub func apply[A, B](f: (A) -> B, xs: in List[A]): List[B] { newList() }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertTrue(hasFunc(res.file, "apply__Int__String"), "A and B bound from the function reference")
+}
+
+test "an Object default under a function-typed generic result raises M0004 (D-progress-951)" {
+  val callerSrc = "package Caller\n" + "func caller(xs: in List[Int]): Unit { val r = firstOk(mystery(), xs) }\n"
+  val libSrc = "package Lib\n" + "pub union ResLike[T] { case Yes(v: T)\n case No }\n" +
+    "pub func firstOk[A, T](f: (A) -> ResLike[T], xs: in List[A]): Bool { true }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertFalse(hasFunc(res.file, "firstOk__Int__Object"), "no Object-defaulted specialisation")
+  assertTrue(diagCountCode(res.diagnostics, "M0004") > 0, "M0004 for the unsafe function-typed shape")
+}
+
+test "a nullary union case argument binds a type parameter as a value, not a function reference" {
+  val callerSrc = "package Caller\n" + "union Msg { case Go\n case Stop }\n" +
+    "func caller(): Unit { val r = wrap(Go) }\n"
+  val libSrc = "package Lib\n" + "pub func wrap[M](m: in M): List[M] { newList() }\n"
+  val callerFile = parse(callerSrc).file
+  // The bridges feed every bundle package's case constructors, the caller's own included.
+  val feed = genericsAndUnionCtors(parse(libSrc).file)
+  val own = unionCtorInferenceDecls(callerFile.items)
+  var i = 0
+  while i < own.count {
+    feed.add(own[i])
+    i = i + 1
+  }
+  val res = monoFileWithImports(callerFile, feed)
+  assertTrue(hasFunc(res.file, "wrap__Msg"), "M bound to Msg")
 }

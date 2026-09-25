@@ -2104,6 +2104,171 @@ func resolveMethodCallPick(
   }
 }
 
+// The record type a `.copy(...)` call on `recvTy` copies: a record or
+// exposed record (generic or not) that declares no `copy` method or
+// type-associated `copy` function of its own.
+func recordCopyTarget(tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], recvTy: in Type): Option[TypeId] {
+  match unrefine(recvTy) {
+    case TyUser(tid, tname, _) -> {
+      if not typeIdIsRecord(tbl, tid) {
+        return None
+      }
+      if symTableMethodSigs(tbl, tid, "copy").count > 0 or sigs.containsKey(tname + ".copy") {
+        return None
+      }
+      Some(value = tid)
+    }
+    case _ -> None
+  }
+}
+
+func typeIdIsRecord(tbl: in SymbolTable, tid: in TypeId): Bool {
+  match recordSymbolOfTid(tbl, tid) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func recordSymbolOfTid(tbl: in SymbolTable, tid: in TypeId): Option[Symbol] {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKRecord(did, _) -> if typeIdEq(did, tid) { return Some(value = tbl.symbols[i]) }
+      case DKExposedRec(did, _) -> if typeIdEq(did, tid) { return Some(value = tbl.symbols[i]) }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+func sameStringLists(a: in List[String], b: in List[String]): Bool {
+  if a.count != b.count {
+    return false
+  }
+  var i = 0
+  while i < a.count {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// Check `recv.copy(name = value, ...)` against the record's fields: every
+// argument must be named (T0127), name a field (T0101) at most once (T0127),
+// and be assignable to that field's type at the receiver's instantiation
+// (T0104).  A valid call is recorded in `tbl.recordCopySites` and has the
+// receiver's type.
+func checkRecordCopy(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  tid: in TypeId,
+  recvTy: in Type,
+  args: in List[CallArg],
+): Type {
+  val recv = unrefine(recvTy)
+  val targs: List[Type] = match recv { case TyUser(_, _, a) -> a; case _ -> newList() }
+  val tname = match recv { case TyUser(_, n, _) -> n; case _ -> "" }
+  val fields = if targs.count > 0 { fieldsOfRecordInstantiated(tbl, tid, targs) } else { fieldsOfRecord(tbl, tid) }
+  val seen: List[String] = newList()
+  var ok = true
+  var ai = 0
+  while ai < args.count {
+    match args[ai] {
+      case CANamed(nm, valE, argSpan) -> {
+        if stringListContains(seen, nm) {
+          diag.add(errorDiagnostic("T0127", "field '" + nm + "' is given more than once in '" + tname + ".copy'", argSpan))
+          ok = false
+        }
+        seen.add(nm)
+        var found = false
+        var fi = 0
+        while fi < fields.count {
+          if fields[fi].name == nm {
+            found = true
+            val want = fields[fi].ty
+            val got = inferExprExpected(sc, tbl, sigs, diag, valE, want)
+            if not argSatisfiesParam(tbl, want, got) {
+              diag.add(
+                errorDiagnostic(
+                  "T0104",
+                  "argument for field '" + nm + "' has type " + renderType(got) + " but field expects " + renderType(want),
+                  valE.span
+                )
+              )
+              ok = false
+            }
+          }
+          fi = fi + 1
+        }
+        if not found {
+          val _ = inferExpr(sc, tbl, sigs, diag, valE)
+          diag.add(errorDiagnostic("T0101", "record '" + tname + "' has no field '" + nm + "'", argSpan))
+          ok = false
+        }
+      }
+      case CAPositional(pe) -> {
+        val _ = inferExpr(sc, tbl, sigs, diag, pe)
+        diag.add(
+          errorDiagnostic("T0127", "'" + tname + ".copy' takes named field arguments, e.g. `r.copy(field = value)`", pe.span)
+        )
+        ok = false
+      }
+    }
+    ai = ai + 1
+  }
+  if ok {
+    val names: List[String] = newList()
+    var ni = 0
+    while ni < fields.count {
+      names.add(fields[ni].name)
+      ni = ni + 1
+    }
+    val ctorPath = match recordSymbolOfTid(tbl, tid) {
+      case Some(rs) -> if rs.isImported and rs.originPackage.length > 0 {
+        rs.originPackage + "." + rs.name
+      } else {
+        rs.name
+      }
+      case None -> tname
+    }
+    val site = RecordCopySite(
+      recordName = ctorPath,
+      fields = names,
+      startOffset = e.span.startPos.offset,
+      conflicting = false
+    )
+    val key = recordCopySiteKey(e.span)
+    match mapGet(tbl.recordCopySites, key) {
+      case None -> tbl.recordCopySites.add(key, site)
+      case Some(prev) -> if prev.recordName != ctorPath or not sameStringLists(prev.fields, names) {
+        tbl.recordCopySites.remove(key)
+        tbl.recordCopySites.add(
+          key,
+          RecordCopySite(recordName = ctorPath, fields = names, startOffset = e.span.startPos.offset, conflicting = true)
+        )
+      }
+    }
+  }
+  recvTy
+}
+
+func stringListContains(xs: in List[String], x: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == x {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // A5 (docs/59 §5.1): report an unknown member/method on a receiver whose
 // member surface is fully known — a record, exposed record, or interface
 // DECLARED IN THE FILE BEING CHECKED (`symTableIsMemberComplete`; imported
@@ -3135,6 +3300,24 @@ func inferConstruction(
   argTypes: in List[Type],
   span: in Span,
 ): Type {
+  inferConstructionExpected(tbl, diag, sym, args, argTypes, span, TyError)
+}
+
+// As `inferConstruction`, with the type the construction's position expects
+// (`TyError` for none).  A generic record's type parameter that its field
+// initializers leave unbound — `Box(left = xs, right = None)` for
+// `Box[A, B]` — takes its argument from an expected instantiation of the
+// same type (`val b: Box[Int, String] = ...`), matching how union-case
+// constructors already use the expected type (D-progress-947).
+func inferConstructionExpected(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sym: in Symbol,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  span: in Span,
+  expected: in Type,
+): Type {
   // For generic constructors, attempt to infer type arguments from the supplied
   // field initializer types before falling back to T0110.  T0110 fires only when
   // one or more type parameters remain unresolved after inference.
@@ -3156,6 +3339,22 @@ func inferConstruction(
     val fieldTypes = ctorFieldTypes(tbl, sym, gnames)
     val orderedArgTypes = argTypesInFieldOrder(args, argTypes, fieldNames)
     val targs = inferGenericArgs(gnames, fieldTypes, orderedArgTypes)
+    match unrefine(expected) {
+      case TyUser(eid, _, eargs) -> match symbolTypeIdOpt(sym) {
+        case Some(tid) -> if typeIdEq(eid, tid) and eargs.count == gnames.count {
+          var ei = 0
+          while ei < gnames.count {
+            val unbound = match targs[ei] { case TyError -> true; case _ -> false }
+            if unbound {
+              targs[ei] = eargs[ei]
+            }
+            ei = ei + 1
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
     // Collect names of parameters that could not be inferred.
     val unresolved: List[String] = newList()
     var gi = 0
@@ -4735,6 +4934,21 @@ pub func inferExpr(
         case _ -> {
         }
       }
+      // Record `.copy(field = value, ...)` (docs/01 §2.4): a
+      // non-destructive update of a record value, checked here and rewritten
+      // into a full constructor call by `Lyric.Mono`.
+      match fn.kind {
+        case EMember(copyRecv, copyName) -> if copyName == "copy" {
+          val copyRecvTy = match cachedRecvType { case Some(t) -> t; case None -> inferExpr(sc, tbl, sigs, diag, copyRecv) }
+          match recordCopyTarget(tbl, sigs, copyRecvTy) {
+            case Some(copyTid) -> return checkRecordCopy(sc, tbl, sigs, diag, e, copyTid, copyRecvTy, args)
+            case None -> {
+              cachedRecvType = Some(value = copyRecvTy)
+            }
+          }
+        }
+        case _ -> ()
+      }
       // A4 (docs/59 §5.1): for a member callee, infer the receiver ONCE (with
       // the same module-alias leniency as the plain `EMember` arm, and reusing
       // the conversion pre-pass's cached type) and type the callee through the
@@ -5336,6 +5550,29 @@ func argIsAmbiguousUnionCaseCtor(tbl: in SymbolTable, e: in Expr): Bool {
   }
 }
 
+// True when `fn` names a generic record constructor (not a union case) and
+// `expected` is an instantiation of that same record type.
+func expectsGenericRecordCtor(tbl: in SymbolTable, fn: in Expr, expected: in Type): Bool {
+  match unionCaseSymbolOf(tbl, fn) {
+    case Some(_) -> return false
+    case None -> ()
+  }
+  match constructorSymbolOf(tbl, fn) {
+    case Some(ctorSym) -> if not ctorIsGeneric(ctorSym) {
+      false
+    } else {
+      match unrefine(expected) {
+        case TyUser(eid, _, _) -> match symbolTypeIdOpt(ctorSym) {
+          case Some(tid) -> typeIdEq(eid, tid)
+          case None -> false
+        }
+        case _ -> false
+      }
+    }
+    case None -> false
+  }
+}
+
 // A2: infer `e` under a contextual expected type.  Only lambda literals
 // consume the expectation (their unannotated params adopt the expected
 // function type's parameter types); every other expression shape — and any
@@ -5376,7 +5613,18 @@ pub func inferExprExpected(
     // callee) and raises T0123 there — checked via `diag.count` so this
     // arm never re-raises it a second time by falling into `inferExpr`.
     case ECall(fn, cargs) -> match fn.kind {
-      case EPath(p) -> if p.segments.count == 1 {
+      case EPath(p) -> if expectsGenericRecordCtor(tbl, fn, expected) {
+        val cargTypes: List[Type] = newList()
+        var cri = 0
+        while cri < cargs.count {
+          cargTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(cargs[cri])))
+          cri = cri + 1
+        }
+        match constructorSymbolOf(tbl, fn) {
+          case Some(ctorSym) -> inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
+          case None -> inferExpr(sc, tbl, sigs, diag, e)
+        }
+      } else if p.segments.count == 1 {
         val diagCountBefore = diag.count
         match unionCaseSymbolForScrutinee(tbl, diag, fn, expected) {
           case Some(caseSym) -> {
@@ -5714,6 +5962,13 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
   }
 }
 
+// True when `qualifier` (the dotted prefix of a qualified call) names
+// package `pkg`: the full path, or its trailing segment(s) as an
+// `import A.B` in scope allows (`B.f(...)`).
+func pkgMatchesQualifier(pkg: in String, qualifier: in String): Bool {
+  pkg.length > 0 and (pkg == qualifier or pkg.endsWith("." + qualifier))
+}
+
 func findDirectSig(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -5768,13 +6023,40 @@ func findDirectSig(
         }
         val wantPkg = modulePathJoin(prefix)
         val qcands = gatherOverloadCandidates(sigs, arityKey)
+        // A qualifier names a package by its full path or, for an
+        // `import A.B` in scope, by its last segment (`B.f(...)`).  Once any
+        // candidate comes from the named package the call binds to that
+        // package: an argument mismatch is reported against ITS signature
+        // rather than silently re-resolving to another package's same-named
+        // function (D-progress-946: `Widgets.field(...)` resolved to
+        // `Forms.field`).
+        var qualFirst: Option[ResolvedSignature] = None
+        var haveQualFirst = false
         var qi = 0
         while qi < qcands.count {
           val qc = qcands[qi]
-          if qc.originPackage == wantPkg and paramsMatchArgs(tbl, qc.params, argTypes) {
-            return Some(value = qc)
+          if pkgMatchesQualifier(qc.originPackage, wantPkg) {
+            if paramsMatchArgs(tbl, qc.params, argTypes) {
+              return Some(value = qc)
+            }
+            if not haveQualFirst {
+              qualFirst = Some(value = qc)
+              haveQualFirst = true
+            }
           }
           qi = qi + 1
+        }
+        match mapGet(sigs, arityKey) {
+          case Some(ps) -> if pkgMatchesQualifier(ps.originPackage, wantPkg) {
+            if paramsMatchArgs(tbl, ps.params, argTypes) or not haveQualFirst {
+              return Some(value = ps)
+            }
+          }
+          case None -> ()
+        }
+        match qualFirst {
+          case Some(qf) -> return Some(value = qf)
+          case None -> ()
         }
       }
       // The arity-key "primary" is the historical lookup: a user definition

@@ -3254,6 +3254,61 @@ pub func ownAwareExternTypes(file: in SourceFile, externSeed: in Map[String, Str
 // `extern type` in `Std.TimeHost`) must resolve to the real JVM class in both
 // the registered sig and the emitted descriptor, or the method links against a
 // nonexistent `<pkg>/<Alias>` class at runtime.
+// A function-typed record field (`f: (A) -> R`) is called like a method,
+// `r.f(args)` (D-progress-952): register its RESULT under
+// `fnfield:<class>.<field>` so the call site can unbox/narrow the invoked
+// function's boxed result exactly as a declared function's call would.
+func registerFnFieldSig(
+  into: in Map[String, JvmFuncSig],
+  recClass: in String,
+  fieldName: in String,
+  fieldTy: in TypeExpr,
+  owner: in String,
+  recTps: in List[String],
+  externTypes: in Map[String, String],
+): Unit {
+  val key = "fnfield:" + recClass + "." + fieldName
+  if into.containsKey(key) {
+    return
+  }
+  match fnFieldRetTe(fieldTy) {
+    case Some(r) -> {
+      val noPs: List[JvmType] = newList()
+      into.add(
+        key,
+        JvmFuncSig(
+          owner = recClass,
+          params = noPs,
+          ret = typeExprToJvmErasedExtern(r, owner, recTps, externTypes),
+          paramNames = newList(),
+          paramDefaults = newList(),
+          paramModes = newList(),
+          isIface = false,
+          retGenericArgs = eagerlyResolveGenericArgs(
+            returnTypeGenericArgsFiltered(Some(value = r), recTps),
+            owner,
+            externTypes
+          ),
+          closureRetTy = None,
+          recordRetClass = None,
+          retIsSelf = false,
+          retIsUnsigned = isUnsignedTypeExpr(r),
+          recordRetHead = recordRetHeadOf(Some(value = r))
+        )
+      )
+    }
+    case None -> ()
+  }
+}
+
+func fnFieldRetTe(te: in TypeExpr): Option[TypeExpr] {
+  match te.kind {
+    case TFunction(_, r) -> Some(value = r)
+    case TParen(inner) -> fnFieldRetTe(inner)
+    case _ -> None
+  }
+}
+
 pub func collectFileSigsSeeded(
   file: in SourceFile, into: in Map[String, JvmFuncSig], externSeed: in Map[String, String]
 ): Unit {
@@ -3401,7 +3456,8 @@ pub func collectFileSigsSeeded(
           // A free function's return type is never `Self` (only legal on an
           // interface/impl/record method signature) — always false here.
           retIsSelf = false,
-          retIsUnsigned = sigRetIsUnsigned
+          retIsUnsigned = sigRetIsUnsigned,
+          recordRetHead = newList()
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -3518,6 +3574,7 @@ pub func collectFileSigsSeeded(
             }
             case RMField(f) -> {
               registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
+              registerFnFieldSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
             }
             case _ -> ()
           }
@@ -3540,6 +3597,7 @@ pub func collectFileSigsSeeded(
             }
             case RMField(f) -> {
               registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
+              registerFnFieldSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
             }
             case _ -> ()
           }
@@ -3619,7 +3677,8 @@ pub func collectFileSigsSeeded(
           retIsSelf = false,
           // `Type.from(x)` is `ECall(EMember(…), …)` — never matches
           // `isUnsignedExpr`'s `ECall(EPath, …)`-only arm.
-          retIsUnsigned = false
+          retIsUnsigned = false,
+          recordRetHead = newList()
         )
         if not into.containsKey(fromKey) {
           into.add(fromKey, fromSig)
@@ -3653,7 +3712,8 @@ pub func collectFileSigsSeeded(
           recordRetClass = None,
           retIsSelf = false,
           // `Type.tryFrom(x)` is `ECall(EMember(…), …)` — same as `fromSig`.
-          retIsUnsigned = false
+          retIsUnsigned = false,
+          recordRetHead = newList()
         )
         if not into.containsKey(tryFromKey) {
           into.add(tryFromKey, tryFromSig)
@@ -3756,7 +3816,8 @@ pub func collectFileSigsSeeded(
                       retIsSelf = false,
                       // Field read is `EMember`, not `ECall` — out of scope
                       // for `isUnsignedExpr` (finding 1.2b, see its doc).
-                      retIsUnsigned = false
+                      retIsUnsigned = false,
+                      recordRetHead = newList()
                     )
                   )
                 }
@@ -3846,7 +3907,8 @@ pub func collectFileSigsSeeded(
                   // Keyed `val:`-prefixed, never a bare name — unreachable
                   // from `isUnsignedExpr`'s `ECall` arm, and a val read is
                   // `EMember` anyway, never `ECall`.
-                  retIsUnsigned = false
+                  retIsUnsigned = false,
+                  recordRetHead = newList()
                 )
                 val vqkey = owner + "/val:" + vname
                 if not into.containsKey(vqkey) {
@@ -3901,7 +3963,8 @@ pub func collectFileSigsSeeded(
             retIsSelf = false,
             // Keyed `enum:`/`enumcase:`-prefixed, never a bare name, and a
             // nullary case reference is `EMember`, never `ECall`.
-            retIsUnsigned = false
+            retIsUnsigned = false,
+            recordRetHead = newList()
           )
           // #6683: each tier below gets its OWN key prefix (`enumty:` /
           // `enumfull:` / `enumpkg:`) so a type-scoped, package-scoped, or
@@ -4088,7 +4151,8 @@ func registerInstanceSigErased(
         // Keyed `<class>#<method>` — an instance-method call is
         // `ECall(EMember(…), …)`, never matches `isUnsignedExpr`'s
         // `ECall(EPath, …)`-only arm.
-        retIsUnsigned = false
+        retIsUnsigned = false,
+        recordRetHead = newList()
       )
     )
   }
@@ -4146,7 +4210,8 @@ func registerInstanceSigImplExtern(
         closureRetTy = closureRetTypeOf(retOpt, owner, noTypeParams, externTypes),
         recordRetClass = None,
         retIsSelf = retIsSelf,
-        retIsUnsigned = false
+        retIsUnsigned = false,
+        recordRetHead = newList()
       )
     )
   }
@@ -4248,7 +4313,8 @@ func registerFieldElemSig(
       // `indexedElemTypeOverride`'s field-receiver arm — not the bare-name
       // `varGenericArgs` path `isUnsignedExpr`'s `EIndex` arm consults
       // (finding 1.2c is scoped to a bare-name receiver; see its doc).
-      retIsUnsigned = false
+      retIsUnsigned = false,
+      recordRetHead = newList()
     )
   )
 }
@@ -4314,7 +4380,8 @@ func registerIfaceSig(
         retIsSelf = retIsSelf,
         // Keyed `<ifaceClass>#<method>` — interface method calls are
         // `ECall(EMember(…), …)`, same as `registerInstanceSigErased`.
-        retIsUnsigned = false
+        retIsUnsigned = false,
+        recordRetHead = newList()
       )
     )
   }
@@ -4350,7 +4417,8 @@ func registerStaticWireSig(
         // Keyed `<wireShortName>.<method>` — called `EMember`-form
         // (`AppWire.bootstrap()`), and `ret` here is already an erased
         // `JvmType` with no declared `TypeExpr` on hand to check.
-        retIsUnsigned = false
+        retIsUnsigned = false,
+        recordRetHead = newList()
       )
     )
   }
@@ -5358,7 +5426,8 @@ pub func registerProjectableViews(
                 // class itself, never `Self`.
                 retIsSelf = false,
                 // Keyed `<class>#toView` — called `EMember`-form.
-                retIsUnsigned = false
+                retIsUnsigned = false,
+                recordRetHead = newList()
               )
             )
           }
@@ -5383,7 +5452,8 @@ pub func registerProjectableViews(
                   // `Std.Core.Result`, never `Self`.
                   retIsSelf = false,
                   // Keyed `<class>#tryInto` — called `EMember`-form.
-                  retIsUnsigned = false
+                  retIsUnsigned = false,
+                  recordRetHead = newList()
                 )
               )
             }

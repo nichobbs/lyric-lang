@@ -153,3 +153,42 @@ test "a record's OWN generic-record field resolves via self-access from an insta
   val h = Holder(box = Box(value = 13))
   assertEqualInt(h.selfBoxValue(), 13, "Holder(Box(13)).selfBoxValue() == 13")
 }
+
+// An ANNOTATED LOCAL of a generic-record type (`val b: Box[Int] = f(...)`)
+// used to erase to `Object` too, so a field read on it hit the erased-
+// receiver path: J007 at compile time, or, for a field named `count`, the
+// `__lyricCount` helper casting the record to `Object[]` at run time.
+// `localAnnotatedJvmType` now recovers the record's class like a parameter.
+record Tally[T] {
+  items: List[T]
+  count: Int
+}
+
+func makeBox[T](v: in T): Box[T] {
+  Box(value = v)
+}
+
+func makeTally[T](xs: in List[T]): Tally[T] {
+  Tally(items = xs, count = xs.count)
+}
+
+test "an annotated val of a generic-record type reads its field" {
+  val b: Box[Int] = makeBox(21)
+  assertEqualInt(b.value, 21, "val b: Box[Int]")
+}
+
+test "an annotated var and let of a generic-record type read their fields" {
+  var v: Box[String] = makeBox("first")
+  v = makeBox("second")
+  let l: Box[Int] = makeBox(8)
+  assertEqual(v.value, "second", "var v: Box[String]")
+  assertEqualInt(l.value, 8, "let l: Box[Int]")
+}
+
+test "a generic record's own field named count is read as the field" {
+  val xs: List[String] = newList()
+  xs.add("a")
+  xs.add("b")
+  val t: Tally[String] = makeTally(xs)
+  assertEqualInt(t.count, 2, "Tally.count field, not a collection length")
+}

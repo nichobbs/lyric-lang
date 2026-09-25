@@ -35139,3 +35139,47 @@ follow-up work on #5704.
 
 **Related:** #5704 (partially addressed), D-progress-945 (full account),
 D-progress-667 (the original F0027 warning).
+## Imported generics: qualified calls, origin-scoped bodies, expected-type inference
+
+A generic-heavy library consumed from another package now builds. Qualified
+calls to imported generics (`Pkg.f(...)`, `Pkg.f[T](...)`) take the full
+specialisation path; a specialised copy resolves the names in its body against
+the declaring package and its imports (contract metadata now records each
+package's imports); a qualifier matches a package by its trailing segment(s),
+so `Widgets.field(...)` can no longer bind to another package's `field`; and
+`Lyric.Mono` infers a type parameter that appears only in the return type from
+the type the call's position expects (a binding annotation, the enclosing
+return type, a parameter type, a `List` element type), including when the
+consumer spells the generic's type with a qualifier. See D-progress-946 and
+D-progress-947 (`docs/decisions/`).
+
+## Record `.copy(field = value)` ships
+
+`r.copy(f = v, ...)` (docs/01 §2.4) is implemented on both targets: checked
+like constructor arguments (T0127/T0101/T0104), lowered to a constructor call
+right after type checking, with the receiver and arguments evaluated once,
+left to right. Generic bodies exported through contract metadata carry the
+lowered form, and a `.copy` inside a generic from a sibling package or the
+stdlib is lowered from the specialised receiver type (M0006 when that type is
+unknown). See D-progress-948.
+
+## Calls through a record's function field; generic function arguments
+
+`r.f(args)` on a function-typed record field now invokes the function on
+both targets (it previously failed at run time on MSIL and with
+`NoSuchMethodError` on the JVM). A named function passed to a generic binds
+its type parameters, function-typed parameters take part in the #5970
+erasure-safety check, and a generic record's instantiation-dependent
+function-field types no longer produce bogus closed generics on MSIL. See
+D-progress-951 and D-progress-952.
+
+## Consuming a prebuilt generic library
+
+A restored Lyric package whose generic functions use stdlib or imported names
+in their bodies now loads: the consumer-side surface check type-checks the
+bodyless contract, while the stored source keeps the generic bodies for
+specialisation (D-progress-953). A bare call inside an imported generic now
+binds the declaring package's own function when the consumer also imports a
+same-named, same-arity function from elsewhere (previously T0123 or invalid
+IL), and a bare nullary union case (`Go`) binds a generic's type parameter
+by itself (D-progress-954, D-progress-951).

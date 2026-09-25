@@ -1588,3 +1588,471 @@ test "compilerClosureDllPaths: a bundle that covers the whole closure is used, n
     "complete bundle: the single entry points at the bundle DLL"
   )
 }
+
+// Merging a multi-file package strips only each file's header `package` /
+// `import` / `//!` lines; item bodies are carried over verbatim, so a body
+// line that merely starts with `import ` (here inside a multi-line string)
+// survives, and every merged body line still maps back to its file and line.
+test "multi-file merge strips header lines only and keeps line origins" {
+  val srcA = "//! doc\n@runtime_checked\npackage P\nimport Std.Core\n\n// note\nfunc a(): String {\n  \"\"\"\nimport not.a.decl\n\"\"\"\n}\n"
+  val srcB = "package P\nimport Std.Core\nimport Std.String as Str\nfunc b(): Int { 1 }\n"
+  val sources: List[String] = newList()
+  sources.add(srcA)
+  sources.add(srcB)
+  val paths: List[String] = newList()
+  paths.add("a.l")
+  paths.add("b.l")
+  val none: List[String] = newList()
+  val merged = Emitter.mergePackageSourcesWithOrigins("P", sources, paths, none, none)
+  val lines = Str.split(merged.source, "\n")
+  var coreImports = 0
+  var aliasImports = 0
+  var bodyImportLine = -1
+  var funcBLine = -1
+  var docLines = 0
+  var li = 0
+  while li < lines.length {
+    val line = lines[li]
+    if line == "import Std.Core" {
+      coreImports = coreImports + 1
+    }
+    if line == "import Std.String as Str" {
+      aliasImports = aliasImports + 1
+    }
+    if line == "import not.a.decl" {
+      bodyImportLine = li
+    }
+    if line == "func b(): Int { 1 }" {
+      funcBLine = li
+    }
+    if Str.startsWith(line, "//!") {
+      docLines = docLines + 1
+    }
+    li = li + 1
+  }
+  assertEqualInt(coreImports, 1, "duplicate header imports collapse into one")
+  assertEqualInt(aliasImports, 1, "the aliased import is kept")
+  assertEqualInt(docLines, 0, "module-doc lines are dropped")
+  assertTrue(bodyImportLine >= 0, "an import-like line inside a body string is kept verbatim")
+  assertTrue(funcBLine >= 0, "the second file's body is present")
+  assertEqualInt(merged.origins.count, lines.length, "one origin per merged line")
+  assertEqual(merged.origins[bodyImportLine].path, "a.l", "string line origin file")
+  assertEqualInt(merged.origins[bodyImportLine].originalLine, 9, "string line origin line")
+  assertEqual(merged.origins[funcBLine].path, "b.l", "second body origin file")
+  assertEqualInt(merged.origins[funcBLine].originalLine, 4, "second body origin line")
+}
+
+// Imported generics end to end, on both targets (D-progress-946/947/948/949):
+// a qualified call through an `as` alias, a return-only type parameter
+// inferred from a `List` element type, `.copy` inside an imported generic
+// body and on an imported record, and a specialised body calling its own
+// package's import (`twice`), which the consumer does not import.
+func importedGenericsPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPGen.Util",
+      "package EPGen.Util\n" + "\n" + "pub func twice(n: in Int): Int {\n" + "  return n * 2\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPGen.Core",
+      "package EPGen.Core\n" + "\n" + "import EPGen.Util.{twice}\n" + "\n" + "pub union Node[M] {\n" +
+        "  case Leaf(label: String)\n" +
+        "  case Act(label: String, msg: M)\n" +
+        "}\n" +
+        "\n" +
+        "pub record Box[M] {\n" +
+        "  items: List[Node[M]]\n" +
+        "  count: Int\n" +
+        "}\n" +
+        "\n" +
+        "pub func leaf[M](label: in String): Node[M] {\n" +
+        "  return Leaf(label = label)\n" +
+        "}\n" +
+        "\n" +
+        "pub func labelOf[M](n: in Node[M]): String {\n" +
+        "  return match n {\n" +
+        "    case Leaf(l) -> l\n" +
+        "    case Act(l, _) -> l\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "pub func boxOf[M](xs: in List[Node[M]]): Box[M] {\n" +
+        "  return Box(items = xs, count = xs.count)\n" +
+        "}\n" +
+        "\n" +
+        "pub func recount[M](b: in Box[M], n: in Int): Box[M] {\n" +
+        "  return b.copy(count = n)\n" +
+        "}\n" +
+        "\n" +
+        "pub func doubled[M](b: in Box[M]): Int {\n" +
+        "  return twice(b.count)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPGen.App",
+      "package EPGen.App\n" + "\n" + "import EPGen.Core as C\n" + "\n" + "union Msg {\n" + "  case Go\n" + "}\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  val xs: List[C.Node[Msg]] = newList()\n" +
+        "  xs.add(C.leaf(\"a\"))\n" +
+        "  val b: C.Box[Msg] = C.boxOf(xs)\n" +
+        "  val r: C.Box[Msg] = C.recount(b, 5)\n" +
+        "  val c: C.Box[Msg] = b.copy(count = 7)\n" +
+        "  println(C.labelOf(xs[0]) + \" \" + b.count.toString() + \" \" + r.count.toString() + \" \" + c.count.toString() + \" \" + C.doubled(b).toString())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject imported generics: qualified calls, expected types, record copy (MSIL)" {
+  val result = runEmitProject("emitproj-impgen", importedGenericsPkgs(), "EPGen")
+  assertEqualInt(result.exitCode, 0, "imported generics MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "a 1 5 7 2", "imported generics MSIL: output")
+}
+
+test "emitProject imported generics: qualified calls, expected types, record copy (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-impgen-jvm", importedGenericsPkgs(), "EPGen")
+  assertEqualInt(result.exitCode, 0, "imported generics JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "a 1 5 7 2", "imported generics JVM: output")
+}
+
+// A field read directly on an imported generic's call result, with the
+// consuming package listed FIRST (the order `lyric test` bundles a test
+// package in, #2885), on both targets (D-progress-950). The consumer's
+// specialised copies used to be tokenised before the library's generic
+// records were registered, so the call result erased to `object`: `.n`
+// failed (T0121/J007), `.count` read the record as a collection, and an
+// unannotated local resolved `n` by bare name against the unrelated
+// same-named `LocalPair.n`.
+func genericResultPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPRes.App",
+      "package EPRes.App\n" + "\n" + "import EPRes.Lib.{tally, pairOf}\n" + "\n" + "record LocalPair[T] {\n" +
+        "  first: T\n" +
+        "  n: Int\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val xs: List[String] = newList()\n" +
+        "  xs.add(\"a\")\n" +
+        "  xs.add(\"b\")\n" +
+        "  val p = pairOf(\"x\")\n" +
+        "  val local = LocalPair(first = \"y\", n = 9)\n" +
+        "  println(tally(xs).count.toString() + \" \" + pairOf(1).n.toString() + \" \" + p.n.toString() + \" \" + local.n.toString())\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPRes.Lib",
+      "package EPRes.Lib\n" + "\n" + "pub record Tally[T] {\n" + "  items: List[T]\n" + "  count: Int\n" + "}\n" + "\n" +
+        "pub record Pair[T] {\n" +
+        "  first: T\n" +
+        "  n: Int\n" +
+        "}\n" +
+        "\n" +
+        "pub func tally[T](xs: in List[T]): Tally[T] {\n" +
+        "  return Tally(items = xs, count = xs.count)\n" +
+        "}\n" +
+        "\n" +
+        "pub func pairOf[T](v: in T): Pair[T] {\n" +
+        "  return Pair(first = v, n = 3)\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject member read on an imported generic call result, consumer first (MSIL)" {
+  val result = runEmitProject("emitproj-genres", genericResultPkgs(), "EPRes")
+  assertEqualInt(result.exitCode, 0, "generic result MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2 3 3 9", "generic result MSIL: output")
+}
+
+test "emitProject member read on an imported generic call result, consumer first (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-genres-jvm", genericResultPkgs(), "EPRes")
+  assertEqualInt(result.exitCode, 0, "generic result JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2 3 3 9", "generic result JVM: output")
+}
+
+// A match on a generic union returned through a function, inside an
+// imported generic specialised into the consumer, with the consumer listed
+// first: once through a generic record's function-typed field, once through a
+// function passed by name. The record's field type depends on the
+// record's own type parameters, so MSIL must not register it as a closed
+// instantiation (it named `Msg` as a class of the record's package and the
+// match emitted an isinst against a nonexistent non-generic case class,
+// T0120), and `Lyric.Mono` must bind `Msg` from the function reference
+// instead of defaulting it to `Object` (an invalid cast at run time).
+func genericFieldFnPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPFx.App",
+      "package EPFx.App\n" + "\n" +
+        "import EPFx.Core.{Effect, Go, Stay, Found, Hit, Miss, Program, describe, describeFn}\n" +
+        "\n" +
+        "union Msg {\n" +
+        "  case Ok\n" +
+        "}\n" +
+        "\n" +
+        "union Ev {\n" +
+        "  case Ui(fx: Effect[Msg])\n" +
+        "  case Save\n" +
+        "}\n" +
+        "\n" +
+        "func toFx(e: in Ev): Found[Effect[Msg]] {\n" +
+        "  return match e {\n" +
+        "    case Ui(fx) -> Hit(v = fx)\n" +
+        "    case Save -> Miss\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val xs: List[Ev] = newList()\n" +
+        "  xs.add(Ui(fx = Go(url = \"/a\")))\n" +
+        "  xs.add(Save)\n" +
+        "  xs.add(Ui(fx = Stay))\n" +
+        "  val p: Program[Ev, Msg] = Program(classify = toFx)\n" +
+        "  println(describe(p, xs) + \" \" + describeFn(toFx, xs))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPFx.Core",
+      "package EPFx.Core\n" + "\n" + "pub union Found[T] {\n" + "  case Hit(v: T)\n" + "  case Miss\n" + "}\n" + "\n" +
+        "pub union Effect[Msg] {\n" +
+        "  case Go(url: String)\n" +
+        "  case Stay\n" +
+        "  case Ask(q: String, yes: Msg)\n" +
+        "}\n" +
+        "\n" +
+        "pub record Program[E, Msg] {\n" +
+        "  classify: (E) -> Found[Effect[Msg]]\n" +
+        "}\n" +
+        "\n" +
+        "pub func describe[E, Msg](p: in Program[E, Msg], xs: in List[E]): String {\n" +
+        "  var acc = \"\"\n" +
+        "  for e in xs {\n" +
+        "    match p.classify(e) {\n" +
+        "      case Miss -> {\n" +
+        "        acc = acc + \"app;\"\n" +
+        "      }\n" +
+        "      case Hit(fx) -> match fx {\n" +
+        "        case Go(url) -> {\n" +
+        "          acc = acc + \"go \" + url + \";\"\n" +
+        "        }\n" +
+        "        case Stay -> {\n" +
+        "          acc = acc + \"stay;\"\n" +
+        "        }\n" +
+        "        case Ask(q, _) -> {\n" +
+        "          acc = acc + \"ask \" + q + \";\"\n" +
+        "        }\n" +
+        "      }\n" +
+        "    }\n" +
+        "  }\n" +
+        "  return acc\n" +
+        "}\n" +
+        "\n" +
+        "pub func describeFn[E, Msg](f: (E) -> Found[Effect[Msg]], xs: in List[E]): String {\n" +
+        "  var acc = \"\"\n" +
+        "  for e in xs {\n" +
+        "    match f(e) {\n" +
+        "      case Miss -> {\n" +
+        "        acc = acc + \"app;\"\n" +
+        "      }\n" +
+        "      case Hit(fx) -> match fx {\n" +
+        "        case Go(url) -> {\n" +
+        "          acc = acc + \"go \" + url + \";\"\n" +
+        "        }\n" +
+        "        case Stay -> {\n" +
+        "          acc = acc + \"stay;\"\n" +
+        "        }\n" +
+        "        case Ask(q, _) -> {\n" +
+        "          acc = acc + \"ask \" + q + \";\"\n" +
+        "        }\n" +
+        "      }\n" +
+        "    }\n" +
+        "  }\n" +
+        "  return acc\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject generic union through a function inside an imported generic (MSIL)" {
+  val result = runEmitProject("emitproj-genfx", genericFieldFnPkgs(), "EPFx")
+  assertEqualInt(result.exitCode, 0, "generic fn result MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "go /a;app;stay; go /a;app;stay;", "generic fn result MSIL: output")
+}
+
+test "emitProject generic union through a function inside an imported generic (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-genfx-jvm", genericFieldFnPkgs(), "EPFx")
+  assertEqualInt(result.exitCode, 0, "generic fn result JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "go /a;app;stay; go /a;app;stay;", "generic fn result JVM: output")
+}
+
+// Generic union cases built inside an imported generic and stored in a typed
+// list, consumer first, on both targets: a nullary case argument (`Go`) must
+// bind `Msg` as a value of `Msg`, never as a zero-argument function
+// reference (D-progress-951), and a case whose arguments do not pin its type
+// arguments (`OnInput(toMsg = f)`) must be built at the list's element type,
+// not `Handler<object>`, or the list's typed array rejects the store.
+func genericHandlerPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPHd.App",
+      "package EPHd.App\n" + "\n" + "import EPHd.Core.{Handler, OnClick, OnInput, inputHandlers, clickHandlers}\n" +
+        "\n" +
+        "union Msg {\n" +
+        "  case Typed(s: String)\n" +
+        "  case Go\n" +
+        "}\n" +
+        "\n" +
+        "func describe(h: in Handler[Msg]): String {\n" +
+        "  return match h {\n" +
+        "    case OnClick(m) -> match m {\n" +
+        "      case Go -> \"click go\"\n" +
+        "      case Typed(s) -> \"click \" + s\n" +
+        "    }\n" +
+        "    case OnInput(f) -> match f(\"abc\") {\n" +
+        "      case Typed(s) -> \"input \" + s\n" +
+        "      case Go -> \"input go\"\n" +
+        "    }\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val cs: List[Handler[Msg]] = clickHandlers(Go)\n" +
+        "  val ins: List[Handler[Msg]] = inputHandlers({ s: String -> Typed(s = s) })\n" +
+        "  println(describe(cs[0]) + \"; \" + describe(ins[0]))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPHd.Core",
+      "package EPHd.Core\n" + "\n" + "pub union Handler[Msg] {\n" + "  case OnClick(msg: Msg)\n" +
+        "  case OnInput(toMsg: (String) -> Msg)\n" +
+        "}\n" +
+        "\n" +
+        "pub func inputHandlers[Msg](onInput: in (String) -> Msg): List[Handler[Msg]] {\n" +
+        "  val hs: List[Handler[Msg]] = newList()\n" +
+        "  hs.add(OnInput(toMsg = onInput))\n" +
+        "  return hs\n" +
+        "}\n" +
+        "\n" +
+        "pub func clickHandlers[Msg](m: in Msg): List[Handler[Msg]] {\n" +
+        "  val hs: List[Handler[Msg]] = newList()\n" +
+        "  hs.add(OnClick(msg = m))\n" +
+        "  return hs\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject generic union cases stored in a typed list inside an imported generic (MSIL)" {
+  val result = runEmitProject("emitproj-genhd", genericHandlerPkgs(), "EPHd")
+  assertEqualInt(result.exitCode, 0, "generic handlers MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "click go; input abc", "generic handlers MSIL: output")
+}
+
+test "emitProject generic union cases stored in a typed list inside an imported generic (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-genhd-jvm", genericHandlerPkgs(), "EPHd")
+  assertEqualInt(result.exitCode, 0, "generic handlers JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "click go; input abc", "generic handlers JVM: output")
+}
+
+// A bare call inside an imported generic whose name another imported package
+// also declares, at the same arity: the body was type-checked in its own
+// package, where that package's declaration shadows the import, so its
+// specialisation must call the same one (D-progress-954).  Before the fix the
+// call bound the other package's `findAll` (invalid IL on MSIL) or stayed
+// unresolved (T0123).
+func ownOverloadPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPOv.App",
+      "package EPOv.App\n" + "\n" + "import EPOv.Core.{Box, Full, Empty, Hit, Miss, findFirst}\n" +
+        "import EPOv.Other\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val kids: List[Box[Int]] = newList()\n" +
+        "  val b: Box[Int] = Full(value = 7, children = kids)\n" +
+        "  val hit = match findFirst(b) {\n" +
+        "    case Hit(x) -> match x {\n" +
+        "      case Full(v, _) -> \"found \" + toString(v)\n" +
+        "      case Empty -> \"found empty\"\n" +
+        "    }\n" +
+        "    case Miss -> \"none\"\n" +
+        "  }\n" +
+        "  println(hit + \"; \" + EPOv.Other.findAll(\"a\", \"b\")[0])\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPOv.Core",
+      "package EPOv.Core\n" + "\n" + "pub enum Kind {\n" + "  case A\n" + "  case B\n" + "}\n" + "\n" +
+        "pub union Box[T] {\n" +
+        "  case Full(value: T, children: List[Box[T]])\n" +
+        "  case Empty\n" +
+        "}\n" +
+        "\n" +
+        "pub union Found[T] {\n" +
+        "  case Hit(v: T)\n" +
+        "  case Miss\n" +
+        "}\n" +
+        "\n" +
+        "pub func findAll[T](b: in Box[T], k: in Kind): List[Box[T]] {\n" +
+        "  val acc: List[Box[T]] = newList()\n" +
+        "  acc.add(b)\n" +
+        "  return acc\n" +
+        "}\n" +
+        "\n" +
+        "pub func findFirst[T](b: in Box[T]): Found[Box[T]] {\n" +
+        "  val all: List[Box[T]] = findAll(b, Kind.A)\n" +
+        "  for x in all {\n" +
+        "    val bx: Box[T] = x\n" +
+        "    return Hit(v = bx)\n" +
+        "  }\n" +
+        "  return Miss\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPOv.Other",
+      "package EPOv.Other\n" + "\n" + "pub func findAll(node: in String, tag: in String): List[String] {\n" +
+        "  val acc: List[String] = newList()\n" +
+        "  acc.add(node + tag)\n" +
+        "  return acc\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject bare call in an imported generic prefers its own package's overload (MSIL)" {
+  val result = runEmitProject("emitproj-ownov", ownOverloadPkgs(), "EPOv")
+  assertEqualInt(result.exitCode, 0, "own overload MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "found 7; ab", "own overload MSIL: output")
+}
+
+test "emitProject bare call in an imported generic prefers its own package's overload (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-ownov-jvm", ownOverloadPkgs(), "EPOv")
+  assertEqualInt(result.exitCode, 0, "own overload JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "found 7; ab", "own overload JVM: output")
+}

@@ -991,3 +991,51 @@ pub record ParseResult {
 pub func someAspectAround(a: in AspectAround): Option[AspectAround] {
   Some(value = a)
 }
+
+// ─── Reserved compiler annotations ──────────────────────────────────────────
+/// The reserved annotation naming the package a generic function was
+/// declared in.  Its body is specialised into whichever package calls it, so
+/// `Lyric.Mono` uses the origin to resolve QUALIFIED call sites
+/// (`Pkg.f(...)`, `Pkg.f[T](...)`) to the right declaration, and codegen uses
+/// it to resolve the unqualified names inside a specialised copy against the
+/// declaring package's scope rather than the calling package's
+/// (D-progress-946).
+pub func originAnnotationName(): String {
+  "__lyric_origin"
+}
+
+/// The origin package recorded by `Lyric.Mono.withOriginPkgMono`, or "".
+pub func originPkgOf(anns: in List[Annotation]): String {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == originAnnotationName() and anns[i].args.count == 1 {
+      match anns[i].args[0] {
+        case ALiteral(v, _) -> match v { case AVString(s, _) -> return s; case _ -> () }
+        case _ -> ()
+      }
+    }
+    i = i + 1
+  }
+  ""
+}
+
+/// A validated record `.copy(...)` call site, recorded by the type checker
+/// (`SymbolTable.recordCopySites`) and desugared into a full constructor call
+/// by `Lyric.Mono.desugarRecordCopiesFile` (docs/01 §2.4): the record's
+/// constructor path (dotted; package-qualified when the record is imported),
+/// its field names in declaration order, and the call's start offset.
+/// `conflicting` marks a key two different validated sites shared (only
+/// possible for synthesized, span-less code); such a site is reported, never
+/// desugared by guesswork.
+pub record RecordCopySite {
+  recordName: String
+  fields: List[String]
+  startOffset: Int
+  conflicting: Bool
+}
+
+/// The key of a record-copy call site: its span's start and end offsets.
+pub func recordCopySiteKey(sp: in Span): String {
+  toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
+}

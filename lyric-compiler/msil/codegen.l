@@ -261,6 +261,13 @@ pub record CodegenCtx {
   // manifestation specifically).
   fieldFuncRetTypes: Map[String, MsilType]
   fieldFuncParamTypes: Map[String, List[MsilType]]
+  // The OPEN result type of a generic record's function-typed field, in
+  // terms of the record's own type parameters (`MTypeVar`), keyed like
+  // `fieldFuncRetTypes`.  `recordFuncFieldCallMsil` substitutes the
+  // receiver's type arguments into it (D-progress-952); `fieldFuncRetTypes`
+  // itself keeps the instantiation-independent `object` form for consumers
+  // that have no receiver instantiation (D-progress-951).
+  fieldFuncRetTypesOpen: Map[String, MsilType]
   // Declaring arity (`decl.params.count`) of whichever same-name overload's
   // registration first claimed a bare "func:<fqn>" key in fieldFuncRetTypes
   // (#5795): a mixed-arity overload set only has ONE arity-qualified key per
@@ -403,6 +410,12 @@ pub record CodegenCtx {
   // itself, so the lifted body reads/writes it via `get_Item(0)`/`set_Item(0)`
   // (#1479 v2).  Captures absent from this list are by-value boxed copies.
   lambdaCaptureCells: Map[String, List[String]]
+  // Declared return types of the function-typed captures of each lambda
+  // (keyed like lambdaCaptureNames; inner key = capture name), copied from
+  // the enclosing function's `funcValRetTypes` at the capture site so a call
+  // THROUGH a captured function value inside the lifted body materialises its
+  // result exactly like a call through a local/param slot does.
+  lambdaCaptureFuncRetTypes: Map[String, Map[String, MsilType]]
   // Stage 1 (#1877): synthesized closure classes for lambda capture.
   // Key = lambda name (e.g. "__lambda_0"); value = corresponding MRecord closure class.
   lambdaClosureClasses: Map[String, MRecord]
@@ -2044,6 +2057,7 @@ pub func newCodegenCtx(
     byteFields = newMap(),
     fieldFuncRetTypes = newMap(),
     fieldFuncParamTypes = newMap(),
+    fieldFuncRetTypesOpen = newMap(),
     fieldFuncBareKeyArity = newMap(),
     funcTokens = funcToks,
     bundleFuncFqns = newMap(),
@@ -2070,6 +2084,7 @@ pub func newCodegenCtx(
     lambdaGenerics = newMap(),
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
+    lambdaCaptureFuncRetTypes = newMap(),
     lambdaClosureClasses = newMap(),
     lambdaClosureRecordList = newList(),
     lambdaClosureEmittedCount = newList(),
@@ -3037,6 +3052,106 @@ func registerWireStaticMsil(
   }
 }
 
+/// Register `file`'s type names (`typeFqnByName` / `typeFqnCandidates`) and
+/// its generic record/union arities (`genericTypeArity`) ahead of the
+/// per-package `addPackageTokens` pass, exactly as that pass would for the
+/// same items.  A multi-package bundle calls this for every package, in
+/// bundle order, before tokenising any of them: `addPackageTokens` resolves a
+/// function's declared return type as it registers the function, so a
+/// package tokenised BEFORE the package declaring a generic type it returns
+/// (a `lyric test` bundle puts the test package first, #2885) saw an
+/// unregistered head and erased that return to `object` (D-progress-950).
+/// Registering the same names in the same order keeps every first-wins
+/// resolution identical; `addPackageTokens` re-registers them idempotently.
+pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
+      case IExposedRec(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
+      case IUnion(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
+      case IInterface(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
+      case IOpaque(decl) -> if decl.hasBody and hasAnnotationMsil(decl.annotations, "projectable") {
+        registerTypeFqnCandidate(cctx, decl.name + "View", pkgName + "." + decl.name + "View")
+      }
+      case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+func preRegisterGenericTypeName(cctx: in CodegenCtx, name: in String, pkgName: in String, arity: in Int): Unit {
+  val fqn = pkgName + "." + name
+  registerTypeFqnCandidate(cctx, name, fqn)
+  if arity > 0 and not cctx.genericTypeArity.containsKey(fqn) {
+    cctx.genericTypeArity.add(fqn, arity)
+  }
+}
+
+// The call-site type of a generic record's function-typed field's parameter
+// or result.  A type that mentions one of the record's own type parameters
+// depends on the instantiation (`Program[E, Msg]`'s `(E) ->
+// Option[UiEffect[Msg]]`), which is not known where the record is
+// registered; resolving it here would name the type parameter as a class in
+// the record's package and give the call result a closed generic type that
+// no real instance has.  Such a type is registered as `object`, so the call
+// result takes the erased-value paths that test the runtime type.
+func recordFieldFuncTypeMsil(
+  cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, recGenerics: in List[String]
+): MsilType {
+  if recGenerics.count > 0 and typeExprMentionsNamesMsil(te, recGenerics) {
+    MObject
+  } else {
+    typeExprToMsilCtx(cctx, te, pkgName)
+  }
+}
+
+func typeExprMentionsNamesMsil(te: in TypeExpr, names: in List[String]): Bool {
+  match te.kind {
+    case TRef(path) -> path.segments.count == 1 and names.contains(path.segments[0])
+    case TGenericApp(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(inner) -> if typeExprMentionsNamesMsil(inner, names) { return true }
+          case TAValue(_) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TFunction(ps, r) -> {
+      if typeExprMentionsNamesMsil(r, names) {
+        return true
+      }
+      var i = 0
+      while i < ps.count {
+        if typeExprMentionsNamesMsil(ps[i], names) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TTuple(ts) -> {
+      var i = 0
+      while i < ts.count {
+        if typeExprMentionsNamesMsil(ts[i], names) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TSlice(elem) -> typeExprMentionsNamesMsil(elem, names)
+    case TArray(_, elem) -> typeExprMentionsNamesMsil(elem, names)
+    case TNullable(inner) -> typeExprMentionsNamesMsil(inner, names)
+    case TParen(inner) -> typeExprMentionsNamesMsil(inner, names)
+    case _ -> false
+  }
+}
+
 pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
@@ -3343,11 +3458,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   match funcTe.kind {
                     case TFunction(fParamTes, fRetTe) -> {
                       if not cctx.fieldFuncRetTypes.containsKey(className + "/" + f.name) {
-                        cctx.fieldFuncRetTypes.add(className + "/" + f.name, typeExprToMsilCtx(cctx, fRetTe, pkgName))
+                        cctx.fieldFuncRetTypes.add(className + "/" + f.name, recordFieldFuncTypeMsil(cctx, fRetTe, pkgName, recGenerics))
+                        if recGenerics.count > 0 and not cctx.fieldFuncRetTypesOpen.containsKey(className + "/" + f.name) {
+                          cctx.fieldFuncRetTypesOpen.add(className + "/" + f.name, typeExprToMsilG(cctx, fRetTe, pkgName, recGenerics))
+                        }
                         val fParamMsilTys: List[MsilType] = newList()
                         var ffpi = 0
                         while ffpi < fParamTes.count {
-                          fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[ffpi], pkgName))
+                          fParamMsilTys.add(recordFieldFuncTypeMsil(cctx, fParamTes[ffpi], pkgName, recGenerics))
                           ffpi = ffpi + 1
                         }
                         cctx.fieldFuncParamTypes.add(className + "/" + f.name, fParamMsilTys)
@@ -3525,11 +3643,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   match funcTe.kind {
                     case TFunction(fParamTes, fRetTe) -> {
                       if not cctx.fieldFuncRetTypes.containsKey(className + "/" + f.name) {
-                        cctx.fieldFuncRetTypes.add(className + "/" + f.name, typeExprToMsilCtx(cctx, fRetTe, pkgName))
+                        cctx.fieldFuncRetTypes.add(className + "/" + f.name, recordFieldFuncTypeMsil(cctx, fRetTe, pkgName, recGenerics))
+                        if recGenerics.count > 0 and not cctx.fieldFuncRetTypesOpen.containsKey(className + "/" + f.name) {
+                          cctx.fieldFuncRetTypesOpen.add(className + "/" + f.name, typeExprToMsilG(cctx, fRetTe, pkgName, recGenerics))
+                        }
                         val fParamMsilTys: List[MsilType] = newList()
                         var ffpi = 0
                         while ffpi < fParamTes.count {
-                          fParamMsilTys.add(typeExprToMsilCtx(cctx, fParamTes[ffpi], pkgName))
+                          fParamMsilTys.add(recordFieldFuncTypeMsil(cctx, fParamTes[ffpi], pkgName, recGenerics))
                           ffpi = ffpi + 1
                         }
                         cctx.fieldFuncParamTypes.add(className + "/" + f.name, fParamMsilTys)
@@ -5494,6 +5615,12 @@ pub record FuncCtx {
   // `enumHint` around each `return <expr>` so a bare-case return
   // (`return Http11`) resolves against the function's own declared enum type.
   var declaredRetEnumTy: String
+  // The package a monomorphized copy of an imported generic was DECLARED in
+  // (`Lyric.Parser.originPkgOf` of its `__lyric_origin` annotation), or "".
+  // The copy is compiled into the calling package, but its body was written
+  // against the declaring package's scope, so static call resolution tries
+  // that package (and its imports) for unqualified callees (D-progress-946).
+  var originPkg: String
 }
 
 // A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
@@ -10594,6 +10721,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         cctx.lambdaCaptureNames.add(lambdaKey, caps)
         cctx.lambdaCaptureTypes.add(lambdaKey, capTypes)
         cctx.lambdaCaptureCells.add(lambdaKey, capCells)
+        val capRetTys: Map[String, MsilType] = newMap()
+        var cri = 0
+        while cri < caps.count {
+          match mapGet(fctx.funcValRetTypes, caps[cri]) {
+            case Some(rt) -> capRetTys.add(caps[cri], rt)
+            case None -> ()
+          }
+          cri = cri + 1
+        }
+        cctx.lambdaCaptureFuncRetTypes.add(lambdaKey, capRetTys)
         // Synthesize closure class (#1877 Phase 1): emit a __Closure_<i> record with
         // typed fields for captures instead of object[] array. Store in context for
         // emission to the module's TypeDef table and use in delegate instantiation.
@@ -14121,6 +14258,34 @@ func bindPositionalFieldMsil(
   }
 }
 
+// The text after the last `.` of a dotted name (`Std.Errors.IOError` -> `IOError`).
+func lastDottedSegmentMsil(fqn: in String): String {
+  val dotIdx = String.lastIndexOfRaw(fqn, ".")
+  if dotIdx < 0 {
+    fqn
+  } else {
+    fqn.substring(dotIdx + 1)
+  }
+}
+
+// The parent union of the NON-generic union case named `caseName` (resolved
+// in scope like the erased-scrutinee test phase does), or None when the name
+// is unknown or names a generic case.
+func nonGenericCaseParentMsil(cctx: in CodegenCtx, fctx: in FuncCtx, caseName: in String): Option[String] {
+  match mapGet(cctx.unionCaseCtorByName, caseName) {
+    case Some(cands) -> {
+      val caseFqn = pickCaseFqnByScope(cctx, fctx, cands)
+      val nGen = match mapGet(cctx.caseTypeParamCount, caseFqn) { case Some(n) -> n; case None -> 0 }
+      if nGen > 0 {
+        None
+      } else {
+        mapGet(cctx.caseParentUnion, caseFqn)
+      }
+    }
+    case None -> None
+  }
+}
+
 // Bind pattern variables after a successful match.
 func lowerPatternBindMsil(
   cctx: in CodegenCtx,
@@ -14294,6 +14459,31 @@ func lowerPatternBindMsil(
           fi = fi + 1
         }
       } else {
+        // An erased scrutinee whose pattern names a NON-generic union case
+        // (`case Typed(s)` on the `object` result of invoking a function
+        // value): the test phase has already `isinst`-checked the real case
+        // class (resolved by name, #2126), so bind through that class exactly
+        // as for a statically-typed scrutinee — cast and load each field.
+        // Binding the scrutinee itself (the erased-`Option` sentinel shape
+        // below) silently gave `s` the whole case object (D-progress-952
+        // follow-up).  Generic cases keep the fallback (#2233).
+        // Only a field-binding pattern over a reference-typed scrutinee takes
+        // this path: an enum-case pattern (`case Code.PermissionDenied`) on an
+        // `int32` scrutinee binds nothing, and must never be resolved by its
+        // bare name to a same-named union case elsewhere (`Std.Errors`'
+        // `PermissionDenied(path)`), nor through a qualifier naming another type.
+        val rebindParent: Option[String] = if fields.count > 0 and not isValueType(scrutTy) {
+          nonGenericCaseParentMsil(cctx, fctx, lastSegmentMsil(head))
+        } else {
+          None
+        }
+        match rebindParent {
+          case Some(parentFqn) -> if head.segments.count < 2 or lastDottedSegmentMsil(parentFqn) == head.segments[head.segments.count - 2] {
+            lowerPatternBindMsil(cctx, fctx, insns, pat, scrutSlot, MClass(className = parentFqn))
+            return
+          }
+          case None -> ()
+        }
         // Erased scrutinee (e.g. from mapGet, or a raw-value-encoded case such
         // as `.indexOf`/`.lastIndexOf`'s sentinel-int `Option[Int]`): bind each
         // named field directly to the scrutinee slot.  In the bootstrap
@@ -14802,6 +14992,98 @@ func lowerFuncValueInvokeMsil(
     }
     case None -> MObject
   }
+}
+
+// Invoke a function value already pushed on the stack whose static MSIL
+// type is `valueTy`. A real `System.Action`/`System.Action`N` value (the
+// shape `typeExprToMsilCtx` builds for every `(T1,...,TN) -> Unit`-typed
+// slot, #5329 follow-up / D-progress-886) needs a direct typed invoke — see
+// `buildActionNInvokeTok`'s doc comment — and every other function value
+// goes through the uniform boxed `Func` ABI (`lowerFuncValueInvokeMsil`).
+// Shared by calls through a local/param slot and through a lambda capture
+// or hoisted cell.
+// The FQN a bare call inside a monomorphized copy of an imported generic
+// resolves to in its declaring package's scope (`fctx.originPkg`): the
+// declaring package's own function, else one it imports.  "" when the
+// function is not such a copy, the call is qualified, or neither scope has
+// the callee — the caller then falls through to the calling package's own
+// resolution tiers (D-progress-946).
+func originScopedFqnMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  path: in ModulePath,
+  funcName: in String,
+  arity: in Int,
+  retHint: in MsilType,
+): String {
+  if fctx.originPkg.length == 0 or fctx.originPkg == fctx.pkgName or path.segments.count != 1 {
+    return ""
+  }
+  val own = fctx.originPkg + "." + funcName
+  if cctx.funcTokens.containsKey(own) {
+    return own
+  }
+  match mapGet(cctx.pkgImports, fctx.originPkg) {
+    case Some(imps) -> findImportedFqnWithHint(cctx, imps, funcName, arity, retHint)
+    case None -> ""
+  }
+}
+
+// The imports whose dotted path a qualified callee's qualifier names: the
+// full path, or its trailing segment(s) (`Widgets.f` for `import
+// Ui.Widgets`).
+func importsMatchingQualifierMsil(imps: in List[String], path: in ModulePath): List[String] {
+  val qual = joinSegsMsil(prefixSegsMsil(path.segments), ".")
+  val acc: List[String] = newList()
+  var i = 0
+  while i < imps.count {
+    if imps[i] == qual or imps[i].endsWith("." + qual) {
+      acc.add(imps[i])
+    }
+    i = i + 1
+  }
+  acc
+}
+
+func prefixSegsMsil(segs: in List[String]): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < segs.count - 1 {
+    acc.add(segs[i])
+    i = i + 1
+  }
+  acc
+}
+
+func invokeLoadedFuncValueMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  args: in List[CallArg],
+  valueTy: in MsilType,
+  retType: in Option[MsilType],
+): MsilType {
+  val realActionArity = match valueTy {
+    case MClass(cn) -> if cn == "System.Action" { 0 } else { -1 }
+    case MGenericInstByName(headFqn, tyArgs) -> if headFqn.startsWith("System.Action`") {
+      tyArgs.count
+    } else {
+      -1
+    }
+    case _ -> -1
+  }
+  if realActionArity >= 0 and args.count == realActionArity {
+    var argI = 0
+    while argI < args.count {
+      val argTy = lowerCallArgMsil(cctx, fctx, insns, args[argI])
+      boxIfNeededMsil(cctx, insns, argTy)
+      argI = argI + 1
+    }
+    val invokeTok = if realActionArity == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, realActionArity) }
+    insns.add(MCallvirt(methodToken = invokeTok))
+    return MVoid
+  }
+  lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType)
 }
 
 pub func lowerCallMsil(
@@ -15807,33 +16089,20 @@ func lowerBuiltinOrStaticCallMsil(
             // untracked return type leaves the boxed `object` placeholder.
             emitLoadSlot(insns, slot, fctx.paramCount)
             val slotTy = match mapGet(fctx.types, funcName) { case Some(t) -> t; case None -> MObject }
-            // #5329 follow-up (D-progress-886): a real `Action`/`Action`N`
-            // value (never the uniform boxed `Func`(N+1)` ABI) needs a direct
-            // typed invoke — see `buildActionNInvokeTok`'s doc comment for why.
-            val realActionArity = match slotTy {
-              case MClass(cn) -> if cn == "System.Action" { 0 } else { -1 }
-              case MGenericInstByName(headFqn, tyArgs) -> if headFqn.startsWith("System.Action`") {
-                tyArgs.count
-              } else {
-                -1
-              }
-              case _ -> -1
-            }
-            if realActionArity >= 0 and args.count == realActionArity {
-              var argI = 0
-              while argI < args.count {
-                val argTy = lowerCallArgMsil(cctx, fctx, insns, args[argI])
-                boxIfNeededMsil(cctx, insns, argTy)
-                argI = argI + 1
-              }
-              val invokeTok = if realActionArity == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, realActionArity) }
-              insns.add(MCallvirt(methodToken = invokeTok))
-              MVoid
-            } else {
-              lowerFuncValueInvokeMsil(cctx, fctx, insns, args, mapGet(fctx.funcValRetTypes, funcName))
-            }
+            invokeLoadedFuncValueMsil(cctx, fctx, insns, args, slotTy, mapGet(fctx.funcValRetTypes, funcName))
           }
-          case None -> {
+          case None -> if path.segments.count == 1 and (fctx.captureNameToIndex.containsKey(funcName) or fctx.hoistedCellSlot.containsKey(funcName)) {
+            // A function value that is not a slot of THIS function: a
+            // capture of the enclosing function inside a lifted lambda body,
+            // or an enclosing `var` hoisted into a by-reference cell. Load it
+            // through the ordinary value-read path (which knows both
+            // representations) and invoke it like the slot arm above.
+            // Previously this fell through to static resolution and failed
+            // with T0123 for any lambda that called a captured function
+            // value.
+            val valueTy = lowerExprMsil(cctx, fctx, insns, Expr(kind = EPath(path = path), span = path.span))
+            invokeLoadedFuncValueMsil(cctx, fctx, insns, args, valueTy, mapGet(fctx.funcValRetTypes, funcName))
+          } else {
             // Static call resolution.  Functions are registered FQN-keyed
             // by `addPackageTokens` (#1183 Phase 2), so a call site that
             // arrived here with `funcName` = the last path segment needs
@@ -15867,10 +16136,22 @@ func lowerBuiltinOrStaticCallMsil(
             // match the call-site's required type (yaml.l import-shadowing
             // regression, #3943).
             val importRetHint = if fctx.collExpect.count > 0 { fctx.collExpect[fctx.collExpect.count - 1] } else { MObject }
+            // A qualified call searches only the imports its qualifier names
+            // (full path, or trailing segment(s) of an `import A.B`), never
+            // every import by bare name — that silently bound
+            // `Widgets.field(...)` to another package's `field` (D-progress-946).
             val importedFqn = match mapGet(cctx.pkgImports, fctx.pkgName) {
-              case Some(imps) -> findImportedFqnWithHint(cctx, imps, funcName, args.count, importRetHint)
+              case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
+                findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
+              } else {
+                findImportedFqnWithHint(cctx, imps, funcName, args.count, importRetHint)
+              }
               case None -> ""
             }
+            // A monomorphized copy of an imported generic resolves its bare
+            // callees in the DECLARING package's scope first: its own
+            // functions, then its imports (D-progress-946).
+            val originFqn = originScopedFqnMsil(cctx, fctx, path, funcName, args.count, importRetHint)
             // Bundle-wide fallback (#6849): a bare call to a `pub func`
             // reachable only TRANSITIVELY through a facade package's own
             // imports — no DIRECT import of the declaring package from
@@ -15912,6 +16193,8 @@ func lowerBuiltinOrStaticCallMsil(
               ""
             } else if qualifiedFqn.length > 0 and cctx.funcTokens.containsKey(qualifiedFqn) {
               qualifiedFqn
+            } else if originFqn.length > 0 {
+              originFqn
             } else if cctx.funcTokens.containsKey(localFqn) {
               localFqn
             } else if importedFqn.length > 0 {
@@ -16302,6 +16585,31 @@ func lowerBuiltinOrStaticCallMsil(
               // (mono not specializing a generic call, cfg-erasure removing
               // a call's only definition, etc.), never something codegen can
               // paper over safely. Fail loudly at compile time instead.
+              if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+                // A monomorphized copy of an imported generic: its body was
+                // written against `originPkg`'s scope, and only that
+                // package's `pub` functions (and those of the packages it
+                // imports) are callable from the calling package's assembly.
+                panic(
+                  "error[T0123] " + toString(path.span.startPos.line) + ":" + toString(path.span.startPos.column) +
+                    ": unresolved call to '" +
+                    funcName +
+                    "' inside generic function '" +
+                    fctx.funcName +
+                    "' (declared in package '" +
+                    fctx.originPkg +
+                    "', specialised into package '" +
+                    fctx.pkgName +
+                    "'). A generic function's body is compiled into each package that calls it, so every function " +
+                    "it calls must be `pub` in '" +
+                    fctx.originPkg +
+                    "' or in a package '" +
+                    fctx.originPkg +
+                    "' imports; make '" +
+                    funcName +
+                    "' `pub`."
+                )
+              }
               panic(
                 "error[T0123] " + toString(path.span.startPos.line) + ":" + toString(path.span.startPos.column) +
                   ": unresolved call to '" +
@@ -16709,6 +17017,67 @@ func narrowSelfCallResultMsil(cctx: in CodegenCtx, key: in String, cls: in Strin
 // token in `cctx.methodTokens` and emit `callvirt` so virtual / interface
 // dispatch happens at the call site.  Falls back to the BCL-name dispatch
 // below for `MObject` receivers (e.g. List/Dict).
+// `recv.f(args)` where `f` is a function-typed field of the receiver's
+// record rather than a method: the receiver is already on the stack, so read
+// the field (a delegate) and invoke it (D-progress-952).  None, emitting
+// nothing, when the receiver is not a record with such a field or the record
+// also declares a method named `f` (a method wins, as in the type checker).
+func recordFuncFieldCallMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  recvTy: in MsilType,
+  memberName: in String,
+  args: in List[CallArg],
+): Option[MsilType] {
+  match recvTy {
+    case MClass(cls) -> {
+      val key = cls + "/" + memberName
+      if not cctx.fieldFuncRetTypes.containsKey(key) or recordHasMethodMsil(cctx, cls, memberName, args.count) {
+        return None
+      }
+      match mapGet(cctx.fieldTokens, key) {
+        case Some(tok) -> {
+          insns.add(MCastclassByName(className = cls))
+          insns.add(MLdfld(fieldToken = tok))
+          val fty = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
+          Some(value = invokeLoadedFuncValueMsil(cctx, fctx, insns, args, fty, mapGet(cctx.fieldFuncRetTypes, key)))
+        }
+        case None -> None
+      }
+    }
+    case MGenericInstByName(fqn, typeArgs) -> {
+      val base = stripGenericArity(fqn)
+      val key = base + "/" + memberName
+      if not cctx.fieldFuncRetTypes.containsKey(key) or recordHasMethodMsil(cctx, base, memberName, args.count) or not cctx.fieldSigBytes.containsKey(key) {
+        return None
+      }
+      val fOpen = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
+      insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
+      insns.add(MLdfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fOpen))
+      Some(
+        value = invokeLoadedFuncValueMsil(
+          cctx,
+          fctx,
+          insns,
+          args,
+          substituteTypeVarsMsil(fOpen, typeArgs),
+          match mapGet(cctx.fieldFuncRetTypesOpen, key) {
+            case Some(openRet) -> Some(value = substituteTypeVarsMsil(openRet, typeArgs))
+            case None -> mapGet(cctx.fieldFuncRetTypes, key)
+          }
+        )
+      )
+    }
+    case _ -> None
+  }
+}
+
+func recordHasMethodMsil(cctx: in CodegenCtx, cls: in String, memberName: in String, arity: in Int): Bool {
+  cctx.methodTokens.containsKey(cls + "/" + memberName) or
+    cctx.methodTokens.containsKey(cls + "/" + memberName + "/" + toString(arity))
+}
+
 func lowerMethodCallMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -17049,6 +17418,12 @@ func lowerMethodCallMsil(
     case _ -> {
     }
   }
+  // `r.f(args)` where `f` is a function-typed FIELD of `r`'s record (no
+  // method of that name): read the field and invoke the function it holds.
+  match recordFuncFieldCallMsil(cctx, fctx, insns, recvTy, memberName, args) {
+    case Some(fieldCallTy) -> return fieldCallTy
+    case None -> ()
+  }
   // User-defined instance / interface dispatch path (#878).
   match recvTy {
     case MClass(cls) -> {
@@ -17289,6 +17664,27 @@ func lowerMethodCallMsil(
         true
       }
       case MConcreteList(MGenericInst(_, _, elemArgs)) -> {
+        var ai = 0
+        while ai < elemArgs.count {
+          fctx.contextHintTyArgs.add(elemArgs[ai])
+          ai = ai + 1
+        }
+        true
+      }
+      // An in-bundle generic element (`List[Handler[Msg]]` where `Handler`
+      // is declared in this bundle): a case whose arguments do not pin its
+      // type arguments (`OnInput(toMsg = f)`, a delegate field) otherwise
+      // builds `Handler<object>`, which the list's typed array rejects at
+      // the store (D-progress-952 follow-up).
+      case MListOf(MGenericInstByName(_, elemArgs)) -> {
+        var ai = 0
+        while ai < elemArgs.count {
+          fctx.contextHintTyArgs.add(elemArgs[ai])
+          ai = ai + 1
+        }
+        true
+      }
+      case MConcreteList(MGenericInstByName(_, elemArgs)) -> {
         var ai = 0
         while ai < elemArgs.count {
           fctx.contextHintTyArgs.add(elemArgs[ai])
@@ -19869,7 +20265,8 @@ func makeFuncCtxMsil(
     generics = newList(),
     varEnumTypes = newMap(),
     enumHint = newList(),
-    declaredRetEnumTy = ""
+    declaredRetEnumTy = "",
+    originPkg = ""
   )
 }
 
@@ -27518,6 +27915,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // whichever same-named enum `resolveEnumCaseOrdinalByScope` prefers by
   // CALLER scope instead of the function's own declared return type.
   fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
+  fctx.originPkg = originPkgOf(decl.annotations)
   val insns: List[MInsn] = newList()
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
@@ -27559,6 +27957,20 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
         fctx.captureCellNames.add(lambdaCaps[cni])
       }
       cni = cni + 1
+    }
+    match mapGet(cctx.lambdaCaptureFuncRetTypes, qualifiedLambdaName) {
+      case Some(capRetTys) -> {
+        val capRetNames = mapKeys(capRetTys)
+        var crn = 0
+        while crn < capRetNames.count {
+          match mapGet(capRetTys, capRetNames[crn]) {
+            case Some(rt) -> fctx.funcValRetTypes.add(capRetNames[crn], rt)
+            case None -> ()
+          }
+          crn = crn + 1
+        }
+      }
+      case None -> ()
     }
   }
   // Parameter types propagated from a higher-order-function call site (#1939),
@@ -28008,6 +28420,7 @@ pub func lowerImplMethodMsil(
   fctx.slotTicker.add(0)  // slot 0 = this, no name binding
   // #5995: see the matching comment in lowerFuncMsil.
   fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
+  fctx.originPkg = originPkgOf(decl.annotations)
 
   val insns: List[MInsn] = newList()
 
@@ -28175,6 +28588,7 @@ pub func lowerRecordMethodMsil(
   fctx.slotTicker.add(0)  // slot 0 = self ("this"), no name binding — ESelf reads ldarg.0 directly
   // #5995: see the matching comment in lowerFuncMsil.
   fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
+  fctx.originPkg = originPkgOf(decl.annotations)
 
   if generics.count > 0 {
     // Bind `self`'s type to the OPEN self-instantiation (`Box`1<!0>`) rather
@@ -37905,6 +38319,12 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
       continue
     }
     val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
+    // The restored package's own imports, so a monomorphized copy of one of
+    // its generic functions resolves bare callees in the package's scope
+    // (`originScopedFqnMsil`, D-progress-946).
+    if not cctx.pkgImports.containsKey(art.packageName) {
+      cctx.pkgImports.add(art.packageName, art.contract.imports)
+    }
     var di = 0
     while di < art.contract.decls.count {
       val decl = art.contract.decls[di]

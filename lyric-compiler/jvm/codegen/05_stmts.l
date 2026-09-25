@@ -1079,7 +1079,26 @@ func localAnnotatedJvmType(ctx: in FuncCtx, te: in TypeExpr): JvmType {
   val resolved = BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te)
   match resolved.kind {
     case TFunction(_, _) -> JRef(className = lambdaIfaceName())
-    case _ -> typeExprToJvmExtern(resolved, ctx.pkgName, ctx.externTypes)
+    case _ -> {
+      val erased = typeExprToJvmExtern(resolved, ctx.pkgName, ctx.externTypes)
+      // A generic-record annotation (`val b: Box[String] = f(...)`) would
+      // otherwise erase to `Object`, and every field read on the local would
+      // hit the erased-receiver path (J007, or `__lyricCount` casting the
+      // record to `Object[]` for a field named `count`).  Recover the
+      // record's class exactly as a parameter does (#6691); the store
+      // `checkcast`s to it.
+      match erased {
+        case JRef(cn) -> if cn == "java/lang/Object" {
+          match recordParamClassOf(resolved, ctx) {
+            case Some(cls) -> JRef(className = cls)
+            case None -> erased
+          }
+        } else {
+          erased
+        }
+        case _ -> erased
+      }
+    }
   }
 }
 

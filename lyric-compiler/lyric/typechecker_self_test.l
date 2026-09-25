@@ -4499,3 +4499,49 @@ test "constructing an enum by its type name is a T0125 error (#6838)" {
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0125"), "enum-by-type-name construction fires T0125")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Record `.copy(field = value)` (docs/01 §2.4): named field arguments only
+// (T0127), each a real field (T0101) given at most once (T0127), with a value
+// assignable to the field (T0104, as for a constructor argument).  A valid copy has the receiver's type.
+// ─────────────────────────────────────────────────────────────────────────────
+test "record copy type-checks and has the receiver's type" {
+  val src = "package P\nrecord Pt { x: Int; y: Int }\nfunc f(p: in Pt): Pt { p.copy(x = 1) }\n"
+  val cr = parseCheck(src)
+  assertTrue(cr.diagnostics.count == 0, "valid copy: no diagnostics")
+}
+
+test "record copy rejects positional arguments with T0127" {
+  val src = "package P\nrecord Pt { x: Int; y: Int }\nfunc f(p: in Pt): Pt { p.copy(1) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0127"), "positional copy argument: T0127")
+}
+
+test "record copy rejects an unknown field with T0101" {
+  val src = "package P\nrecord Pt { x: Int; y: Int }\nfunc f(p: in Pt): Pt { p.copy(z = 1) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0101"), "unknown copy field: T0101")
+}
+
+test "record copy rejects a repeated field with T0127" {
+  val src = "package P\nrecord Pt { x: Int; y: Int }\nfunc f(p: in Pt): Pt { p.copy(x = 1, x = 2) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0127"), "repeated copy field: T0127")
+}
+
+test "record copy rejects a mistyped value with T0104" {
+  val src = "package P\nrecord Pt { x: Int; y: Int }\nfunc f(p: in Pt): Pt { p.copy(x = \"one\") }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0104"), "mistyped copy value: T0104")
+}
+
+test "a user-declared copy method takes precedence over record copy" {
+  val src = "package P\nrecord Pt {\n  x: Int\n  func copy(self: in Pt, n: in Int): Int { n }\n}\nfunc f(p: in Pt): Int { p.copy(3) }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0127"), "user copy method: no T0127")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A generic record constructor whose field initializers leave a type parameter
+// unbound takes it from an expected instantiation of the same record (a
+// binding annotation), as union-case constructors already did.
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic record constructor infers a type parameter from the binding annotation" {
+  val src = "package P\nrecord Box[A, B] { left: List[A]; right: Option[B] }\nfunc f(xs: in List[Int]): Unit { val _b: Box[Int, String] = Box(left = xs, right = None) }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0110"), "expected type fills B: no T0110")
+}

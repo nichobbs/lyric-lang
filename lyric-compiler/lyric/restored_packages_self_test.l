@@ -83,6 +83,7 @@ func mkContract(name: in String, decls: in List[Meta.ContractDecl]): Meta.Contra
     formatVersion = 2,
     decls = decls,
     dependencies = newList(),
+    imports = newList(),
     contractHash = ""
   )
 }
@@ -368,7 +369,10 @@ func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
   decls.add(mkDecl("func", "find", "pub func find(x: Int): Option[Int]"))
   val art = mkArtifact("MyApp.Search", decls)
   match synthesiseArtifact(art, emptyDecls()) {
-    case Err(e) -> panic("synth_artifact_whitelisted: unexpected error (T0010 on Option should be filtered): " + errorMessage(e))
+    case Err(e) -> panic(
+      "synth_artifact_whitelisted: unexpected error (T0010 on Option should be filtered): " +
+        errorMessage(e)
+    )
     case Ok(sa) -> {
       assertEqual(sa.packageName, "MyApp.Search", "synth_artifact_whitelisted: round-tripped")
     }
@@ -390,7 +394,10 @@ func testSynthesiseArtifactWhitelistedStdQualifiedFiltered(): Unit {
   decls.add(mkDecl("func", "serveTls", "pub func serveTls(tls: Std.Tls.TlsServerConfig): Std.Tls.TlsVersion"))
   val art = mkArtifact("MyApp.WebTls", decls)
   match synthesiseArtifact(art, emptyDecls()) {
-    case Err(e) -> panic("synth_artifact_std_qualified: unexpected error (T0014 on Std.Tls.* should be filtered): " + errorMessage(e))
+    case Err(e) -> panic(
+      "synth_artifact_std_qualified: unexpected error (T0014 on Std.Tls.* should be filtered): " +
+        errorMessage(e)
+    )
     case Ok(sa) -> {
       assertEqual(sa.packageName, "MyApp.WebTls", "synth_artifact_std_qualified: round-tripped")
     }
@@ -432,7 +439,10 @@ func testSynthesiseArtifactAliasedStdQualifiedFiltered(): Unit {
   )
   val art = mkArtifact("MyApp.FileTools", contract.decls)
   match synthesiseArtifact(art, emptyDecls()) {
-    case Err(e) -> panic("alias_std_qualified: unexpected error (aliased Std.File.FileStat should be filtered): " + errorMessage(e))
+    case Err(e) -> panic(
+      "alias_std_qualified: unexpected error (aliased Std.File.FileStat should be filtered): " +
+        errorMessage(e)
+    )
     case Ok(sa) -> {
       assertEqual(sa.packageName, "MyApp.FileTools", "alias_std_qualified: round-tripped")
     }
@@ -447,8 +457,16 @@ func testSynthesiseArtifactNonStdQualifiedStillErrors(): Unit {
   decls.add(mkDecl("func", "use", "pub func use(x: Other.Pkg.Widget): Int"))
   val art = mkArtifact("MyApp.NeedsOther", decls)
   match synthesiseArtifact(art, emptyDecls()) {
-    case Ok(_) -> panic("synth_artifact_non_std_qualified: expected a real error for a missing non-stdlib qualified type")
-    case Err(e) -> match e { case SynthesisDiagnostics(_, ds) -> assertTrue(ds.count > 0, "synth_artifact_non_std_qualified: at least one diagnostic"); case _ -> panic("synth_artifact_non_std_qualified: wrong error variant") }
+    case Ok(_) -> panic(
+      "synth_artifact_non_std_qualified: expected a real error for a missing non-stdlib qualified type"
+    )
+    case Err(e) -> match e {
+      case SynthesisDiagnostics(_, ds) -> assertTrue(
+        ds.count > 0,
+        "synth_artifact_non_std_qualified: at least one diagnostic"
+      )
+      case _ -> panic("synth_artifact_non_std_qualified: wrong error variant")
+    }
   }
 }
 
@@ -489,7 +507,10 @@ func testSynthesiseArtifactAsyncFuncRoundTripsIsAsyncFlag(): Unit {
     case Ok(sa) -> {
       assertEqualInt(sa.source.items.count, 1, "synth_artifact_async_roundtrip: one item parsed")
       match sa.source.items[0].kind {
-        case IFunc(decl) -> assertTrue(decl.isAsync, "synth_artifact_async_roundtrip: isAsync survives synthesise + re-parse")
+        case IFunc(decl) -> assertTrue(
+          decl.isAsync,
+          "synth_artifact_async_roundtrip: isAsync survives synthesise + re-parse"
+        )
         case _ -> panic("synth_artifact_async_roundtrip: expected an IFunc item")
       }
     }
@@ -516,7 +537,10 @@ func testSynthesiseArtifactRecordWithMethodsRoundTrips(): Unit {
   )
   val art = mkArtifact("MyApp.RecLib", contract.decls)
   match synthesiseArtifact(art, emptyDecls()) {
-    case Err(e) -> panic("record_methods_roundtrip: unexpected error (bodyless method heads must re-typecheck cleanly): " + errorMessage(e))
+    case Err(e) -> panic(
+      "record_methods_roundtrip: unexpected error (bodyless method heads must re-typecheck cleanly): " +
+        errorMessage(e)
+    )
     case Ok(sa) -> {
       assertEqual(sa.packageName, "MyApp.RecLib", "record_methods_roundtrip: round-tripped")
       var foundRecord = false
@@ -648,4 +672,34 @@ test "synthesise artifact: async func isAsync flag round-trips through repr (#63
 
 test "synthesise artifact: record with bodyless method heads round-trips (#6488)" {
   testSynthesiseArtifactRecordWithMethodsRoundTrips()
+}
+
+// A generic function's body is carried for consumer-side specialisation
+// (#6363) and naturally uses names its own package imports (`None`,
+// `newList`, a sibling package's case `Element`).  The standalone surface
+// check has none of those imports in scope, so it validates the signature
+// alone; the stored source still carries the body (D-progress-953).
+func testSynthesiseArtifactGenericBodyUsesImportedNames(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(
+    mkDeclWithBody(
+      "func",
+      "firstOrNone",
+      "pub func firstOrNone[T](xs: in List[T]): Option[T]",
+      "{ val acc: List[T] = newList(); if xs.count == 0 { return None }; return Some(value = xs[0]) }"
+    )
+  )
+  val art = mkArtifact("MyApp.Generic", decls)
+  match synthesiseArtifact(art, emptyDecls()) {
+    case Err(e) -> panic("synth_artifact_generic_body: unexpected error: " + errorMessage(e))
+    case Ok(sa) -> {
+      assertEqualInt(sa.source.items.count, 1, "synth_artifact_generic_body: function parsed")
+      val stored = synthesiseSource(art.contract, emptyDecls())
+      assertTrue(stored.contains("newList()"), "synth_artifact_generic_body: stored source keeps the body")
+    }
+  }
+}
+
+test "synthesise artifact: generic body using imported names validates its surface only (D-progress-953)" {
+  testSynthesiseArtifactGenericBodyUsesImportedNames()
 }

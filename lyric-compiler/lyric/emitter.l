@@ -890,44 +890,94 @@ func extractFileLevelAnnotations(source: in String): String {
   Str.joinList("\n", lines)
 }
 
-func stripPackageAndImports(source: in String): String {
+// A source file split at the end of its header (`SourceFile`, docs/grammar.ebnf):
+// `headerLines` are the lines up to and including the last `import`, in
+// order, and `bodyStart` is the offset of the first item line (-1 when the
+// file has none).  `package` and `import` lines can only occur in the header,
+// so the helpers below never scan an item body line by line: on a large file
+// that per-line pass (and re-joining every line) dominated a multi-package
+// build.  A body line that merely starts with `import ` inside a multi-line
+// string is also left alone.
+record HeaderSplit {
+  headerLines: List[String]
+  bodyStart: Int
+}
+
+func splitHeader(source: in String): HeaderSplit {
   val lines: List[String] = newList()
   var lineStart = 0
   var pos = 0
   var seenPackage = false
+  var inBlockComment = false
   while pos <= source.length {
     val atEnd = pos == source.length
     val isNewline = not atEnd and source.substring(pos, 1) == "\n"
     if atEnd or isNewline {
       val lineLen = pos - lineStart
       val line = if lineLen > 0 { source.substring(lineStart, lineLen) } else { "" }
-      // Skip `package` / `import` lines (each file re-declares them) and
-      // `//!` module-doc header lines.  A multi-file package's bodies are
-      // concatenated into one source; a `//!` is only valid *before*
-      // `package`, so any `//!` left in a stripped body would land
-      // mid-stream once concatenated and parse as `P0040` "expected an
-      // item declaration".  The on-disk files keep their `//!`; only this
-      // in-memory concatenation drops it.
-      //
-      // The same applies to a **file-level annotation** before `package`
-      // (`@runtime_checked`, `@proof_required`, …): it annotates the module,
-      // so once `package` is stripped it would dangle and parse as `P0040`.
-      // Item-level annotations (after `package`) must be kept, so only `@`
-      // lines seen *before* the package decl are dropped.
-      val isPackage = Str.startsWith(line, "package ")
-      val skip = isPackage or Str.startsWith(line, "import ") or Str.startsWith(line, "//!") or
-        (not seenPackage and Str.startsWith(line, "@"))
-      if isPackage {
+      val trimmed = Str.trim(line)
+      var inHeader = true
+      if inBlockComment {
+        if Str.contains(trimmed, "*/") {
+          inBlockComment = false
+        }
+      } else if seenPackage {
+        if Str.startsWith(trimmed, "/*") {
+          inBlockComment = not Str.contains(trimmed, "*/")
+        } else if not (trimmed.length == 0 or Str.startsWith(trimmed, "//") or Str.startsWith(trimmed, "import ") or Str.startsWith(trimmed, "pub use ")) {
+          inHeader = false
+        }
+      } else if Str.startsWith(line, "package ") {
         seenPackage = true
       }
-      if not skip {
-        lines.add(line)
+      if not inHeader {
+        return HeaderSplit(headerLines = lines, bodyStart = lineStart)
       }
+      lines.add(line)
       lineStart = pos + 1
     }
     pos = pos + 1
   }
-  Str.joinList("\n", lines)
+  HeaderSplit(headerLines = lines, bodyStart = -1)
+}
+
+// Whether header line `line` is dropped when a file's body is merged into a
+// multi-file package: `package` / `import` lines (each file re-declares
+// them) and `//!` module-doc lines.  A multi-file package's bodies are
+// concatenated into one source; a `//!` is only valid *before* `package`, so
+// any `//!` left in a stripped body would land mid-stream once concatenated
+// and parse as `P0040` "expected an item declaration".  The on-disk files
+// keep their `//!`; only this in-memory concatenation drops it.
+//
+// The same applies to a **file-level annotation** before `package`
+// (`@runtime_checked`, `@proof_required`, …): it annotates the module, so
+// once `package` is stripped it would dangle and parse as `P0040`.
+// Item-level annotations (after `package`) must be kept, so only `@` lines
+// seen *before* the package decl are dropped.
+func headerLineDropped(line: in String, seenPackage: in Bool): Bool {
+  Str.startsWith(line, "package ") or Str.startsWith(line, "import ") or Str.startsWith(line, "//!") or
+    (not seenPackage and Str.startsWith(line, "@"))
+}
+
+func stripPackageAndImports(source: in String): String {
+  val split = splitHeader(source)
+  val kept: List[String] = newList()
+  var seenPackage = false
+  var i = 0
+  while i < split.headerLines.count {
+    val line = split.headerLines[i]
+    if not headerLineDropped(line, seenPackage) {
+      kept.add(line)
+    }
+    if Str.startsWith(line, "package ") {
+      seenPackage = true
+    }
+    i = i + 1
+  }
+  if split.bodyStart >= 0 {
+    kept.add(source.substring(split.bodyStart, source.length - split.bodyStart))
+  }
+  Str.joinList("\n", kept)
 }
 
 // Given an `import ...` line, return the imported package path (the
@@ -970,9 +1020,9 @@ func importLineAlias(line: in String): String {
 // are distinct binding forms that both survive — each contributing file's
 // alias references stay resolvable in the merged preamble (#2699).
 func collectImportLines(source: in String, acc: in List[String]) {
-  val lines = Str.split(source, "\n")
+  val lines = splitHeader(source).headerLines
   var i = 0
-  while i < lines.length {
+  while i < lines.count {
     val line = lines[i]
     val trimmed = Str.trim(line)
     if Str.startsWith(trimmed, "import ") {
@@ -1157,33 +1207,35 @@ func mergePackageSources(
 func stripPackageAndImportsWithLines(
   source: in String, path: in String, originsOut: in List[DiagUtil.MergedLineOrigin]
 ): String {
-  val lines: List[String] = newList()
-  var lineStart = 0
-  var pos = 0
+  val split = splitHeader(source)
+  val kept: List[String] = newList()
   var seenPackage = false
-  var lineNo = 1
-  while pos <= source.length {
-    val atEnd = pos == source.length
-    val isNewline = not atEnd and source.substring(pos, 1) == "\n"
-    if atEnd or isNewline {
-      val lineLen = pos - lineStart
-      val line = if lineLen > 0 { source.substring(lineStart, lineLen) } else { "" }
-      val isPackage = Str.startsWith(line, "package ")
-      val skip = isPackage or Str.startsWith(line, "import ") or Str.startsWith(line, "//!") or
-        (not seenPackage and Str.startsWith(line, "@"))
-      if isPackage {
-        seenPackage = true
-      }
-      if not skip {
-        lines.add(line)
+  var i = 0
+  while i < split.headerLines.count {
+    val line = split.headerLines[i]
+    if not headerLineDropped(line, seenPackage) {
+      kept.add(line)
+      originsOut.add(DiagUtil.MergedLineOrigin(path = path, originalLine = i + 1))
+    }
+    if Str.startsWith(line, "package ") {
+      seenPackage = true
+    }
+    i = i + 1
+  }
+  if split.bodyStart >= 0 {
+    kept.add(source.substring(split.bodyStart, source.length - split.bodyStart))
+    var lineNo = split.headerLines.count + 1
+    originsOut.add(DiagUtil.MergedLineOrigin(path = path, originalLine = lineNo))
+    var pos = split.bodyStart
+    while pos < source.length {
+      if source.substring(pos, 1) == "\n" {
+        lineNo = lineNo + 1
         originsOut.add(DiagUtil.MergedLineOrigin(path = path, originalLine = lineNo))
       }
-      lineStart = pos + 1
-      lineNo = lineNo + 1
+      pos = pos + 1
     }
-    pos = pos + 1
   }
-  Str.joinList("\n", lines)
+  Str.joinList("\n", kept)
 }
 
 /// A multi-file package's merged source, alongside a per-merged-line

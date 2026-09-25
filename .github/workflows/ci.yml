@@ -1315,6 +1315,19 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Record `.copy(field = value)` (D-progress-948) and calls through a
+      # record's function-typed field, `r.f(args)` (D-progress-952).  Native
+      # `lyric test`, imports only `Std.*`; the JVM job runs both too.
+      - name: Record copy self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/record_copy_self_test.l
+
+      - name: Record function-field self-test (native lyric test)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/record_function_field_self_test.l
+
       # Match-bound pattern type self-test (#5422, #5423 / D-progress-833).
       # Runtime regression test for a `match`-arm pattern-bound variable's
       # type flowing into a downstream generic call / native method dispatch
@@ -3892,6 +3905,20 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # JVM counterparts of the record copy / function-field steps in the
+      # dotnet job (D-progress-948, D-progress-952).
+      - name: Record copy self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/record_copy_self_test.l
+
+      - name: Record function-field self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/record_function_field_self_test.l
 
       # Match-bound pattern type self-test on JVM (#5422, #5423 /
       # D-progress-833) — the JVM half of the dotnet-job step of the same
