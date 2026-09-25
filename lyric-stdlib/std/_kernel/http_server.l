@@ -779,7 +779,11 @@ func onAccepted(
 // Whether an accept failure leaves the loop running: a stopped listener
 // (`AcceptFailed`/`BindFailed`) ends it; anything else is per-connection.
 func acceptLoopContinues(e: in TcpError): Bool {
-  match e { case AcceptFailed(_) -> false; case BindFailed(_) -> false; case _ -> true }
+  match e {
+    case AcceptFailed(_) -> false
+    case BindFailed(_) -> false
+    case _ -> true
+  }
 }
 
 // The TLS connection task body (#7268): run the handshake here, on the
@@ -854,7 +858,11 @@ func tlsAcceptLoop(
     match hostAccept(transport) {
       case Ok(plain) -> {
         semWait(connLimit)
-        val _ = taskRun({ -> serveTlsConnection(plain, tls, queue, available, limits, connLimit, handshakeTimeoutMs, idleTimeoutMs) })
+        val _ = taskRun(
+          { ->
+            serveTlsConnection(plain, tls, queue, available, limits, connLimit, handshakeTimeoutMs, idleTimeoutMs)
+          }
+        )
       }
       case Err(e) -> {
         running = acceptLoopContinues(e)

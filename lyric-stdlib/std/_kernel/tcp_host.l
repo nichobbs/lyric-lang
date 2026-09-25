@@ -274,7 +274,9 @@ extern type SslCertContext = "System.Net.Security.SslStreamCertificateContext"
 func newCertCollection(): X509Certificate2Collection = ()
 
 @externTarget("System.Net.Security.SslStreamCertificateContext.Create")
-func newCertContext(target: in TlsHost.CertHandle, additional: in X509Certificate2Collection, offline: in Bool): SslCertContext = ()
+func newCertContext(
+  target: in TlsHost.CertHandle, additional: in X509Certificate2Collection, offline: in Bool
+): SslCertContext = ()
 
 @externInstance
 @externTarget("System.Net.Security.SslServerAuthenticationOptions.set_ServerCertificateContext")
@@ -598,7 +600,12 @@ func validateServerConfig(
 ): Option[TcpError] {
   if cfg.requireClientCert {
     match cfg.clientCa {
-      case None -> Some(value = TlsConfigInvalid(message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " + "(refusing to fall back to the system trust store, which would accept any publicly-trusted client certificate)"))
+      case None -> Some(
+        value = TlsConfigInvalid(
+          message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a client CA " +
+            "(refusing to fall back to the system trust store, which would accept any publicly-trusted client certificate)"
+        )
+      )
       case Some(_) -> None
     }
   } else {
@@ -609,7 +616,10 @@ func validateServerConfig(
 pub func hostAcceptTls(l: in Listener, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
   match validateServerConfig(cfg) {
     case Some(e) -> Err(error = e)
-    case None -> match hostAccept(l) { case Err(e) -> Err(error = e); case Ok(plain) -> hostUpgradeServerTls(plain, cfg) }
+    case None -> match hostAccept(l) {
+      case Err(e) -> Err(error = e)
+      case Ok(plain) -> hostUpgradeServerTls(plain, cfg)
+    }
   }
 }
 
@@ -667,7 +677,9 @@ pub func hostSetIoTimeout(conn: in Conn, timeoutMs: in Int): Unit
 /// timeout is cleared again on success. On `Err` the plain `conn` is left for
 /// the caller to `hostClose`, so a caller that tracks live connections can
 /// deregister it before its socket is released.
-pub func hostUpgradeServerTlsPrepared(conn: in Conn, tls: in ServerTls, handshakeTimeoutMs: in Int): Result[Conn, TcpError]
+pub func hostUpgradeServerTlsPrepared(
+  conn: in Conn, tls: in ServerTls, handshakeTimeoutMs: in Int
+): Result[Conn, TcpError]
   requires: handshakeTimeoutMs >= 0
 {
   // The `SslStream` ctor itself is wrapped in its own try (#6058) so a throw

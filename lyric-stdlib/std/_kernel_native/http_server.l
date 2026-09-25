@@ -1021,7 +1021,12 @@ func spawnHandler(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits)
 // negotiated-h2 connection is dropped rather than parsed as HTTP/1.1
 // (module header).
 func serveTlsConnection(
-  plain: in Conn, queue: in ServerQueue, tls: in ServerTls, limits: in EngineLimits, handshakeTimeoutMs: in Int, idleTimeoutMs: in Int
+  plain: in Conn,
+  queue: in ServerQueue,
+  tls: in ServerTls,
+  limits: in EngineLimits,
+  handshakeTimeoutMs: in Int,
+  idleTimeoutMs: in Int,
 ): Unit {
   match hostUpgradeServerTlsPrepared(plain, tls, handshakeTimeoutMs) {
     case Err(_) -> {
@@ -1041,9 +1046,18 @@ func serveTlsConnection(
 }
 
 func spawnTlsHandler(
-  plain: in Conn, queue: in ServerQueue, tls: in ServerTls, limits: in EngineLimits, handshakeTimeoutMs: in Int, idleTimeoutMs: in Int
+  plain: in Conn,
+  queue: in ServerQueue,
+  tls: in ServerTls,
+  limits: in EngineLimits,
+  handshakeTimeoutMs: in Int,
+  idleTimeoutMs: in Int,
 ): Unit {
-  spawnConnectionThread(plain, queue, { -> serveTlsConnection(plain, queue, tls, limits, handshakeTimeoutMs, idleTimeoutMs) })
+  spawnConnectionThread(
+    plain,
+    queue,
+    { -> serveTlsConnection(plain, queue, tls, limits, handshakeTimeoutMs, idleTimeoutMs) }
+  )
 }
 
 // Connection timeouts (#7268), identical to the dotnet twin's. A TLS
@@ -1069,7 +1083,11 @@ func positiveIntFromEnv(name: in String, fallback: in Int): Int {
   match Env.getVar(name) {
     case Ok(raw) -> {
       val parsed = parsePositiveDecimal(raw)
-      if parsed >= 1 { parsed } else { fallback }
+      if parsed >= 1 {
+        parsed
+      } else {
+        fallback
+      }
     }
     case Err(_) -> fallback
   }
@@ -1132,7 +1150,12 @@ val acceptOverloadBackoffMs: Int = 5
 // alive from the outside while it had actually stopped accepting new
 // connections for good, with nothing logged; any other per-connection
 // failure is likewise skipped so one bad peer never takes the listener down.
-func onAccepted(accepted: in Result[Conn, TcpError], queue: in ServerQueue, limits: in EngineLimits, idleTimeoutMs: in Int): Bool {
+func onAccepted(
+  accepted: in Result[Conn, TcpError],
+  queue: in ServerQueue,
+  limits: in EngineLimits,
+  idleTimeoutMs: in Int,
+): Bool {
   match accepted {
     case Ok(conn) -> {
       hostSetIoTimeout(conn, idleTimeoutMs)
@@ -1146,16 +1169,16 @@ func onAccepted(accepted: in Result[Conn, TcpError], queue: in ServerQueue, limi
 // Whether an accept failure leaves the loop running (see `onAccepted`).
 func acceptLoopContinues(e: in TcpError): Bool {
   match e {
-      case AcceptFailed(_, _, kind) -> match kind {
-        case AcceptFatal -> false
-        case AcceptTransient -> true
-        case AcceptOverloaded -> {
-          sleepMillis(acceptOverloadBackoffMs)
-          true
-        }
+    case AcceptFailed(_, _, kind) -> match kind {
+      case AcceptFatal -> false
+      case AcceptTransient -> true
+      case AcceptOverloaded -> {
+        sleepMillis(acceptOverloadBackoffMs)
+        true
       }
-      case BindFailed(_) -> false
-      case _ -> true
+    }
+    case BindFailed(_) -> false
+    case _ -> true
   }
 }
 

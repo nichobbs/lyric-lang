@@ -306,10 +306,7 @@ func serveChunked(l: in HttpListener): Unit {
 // Puller that echoes the merged value `requestHeaders` reports for `X-Dup`.
 func serveDupHeaders(l: in HttpListener): Unit {
   val ctx = nextContext(l)
-  val merged = match mapGet(requestHeaders(ctx), "X-Dup") {
-    case Some(v) -> v
-    case None -> "<none>"
-  }
+  val merged = match mapGet(requestHeaders(ctx), "X-Dup") { case Some(v) -> v; case None -> "<none>" }
   respondText(ctx, 200, "x-dup=" + merged + ";")
 }
 
@@ -860,7 +857,10 @@ test "HTTP/2 connection stays healthy after many sequential over-cap rejections 
   while i < 40 {
     match await client.post("https://localhost:19417/overcap/" + toString(i), makeBody(4096)) {
       case Ok(r) -> assertEqualInt(r.statusCode(), 413, "over-cap request " + toString(i) + " rejected with 413")
-      case Err(e) -> panic("over-cap POST " + toString(i) + " should return 413, not a transport error: " + HttpError.message(e))
+      case Err(e) -> panic(
+        "over-cap POST " + toString(i) + " should return 413, not a transport error: " +
+          HttpError.message(e)
+      )
     }
     i = i + 1
   }
@@ -882,7 +882,10 @@ test "startListenerTls rejects requireClientCert without clientCa" {
   val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = true)
   match startListenerTls("127.0.0.1", 19408, cfg) {
     case Ok(_) -> panic("expected InvalidConfig for requireClientCert without clientCa")
-    case Err(e) -> match e { case InvalidConfig(_) -> assertTrue(true, "mTLS misconfiguration rejected before binding"); case NotSupportedOnTarget(_) -> panic("unexpected NotSupportedOnTarget on dotnet") }
+    case Err(e) -> match e {
+      case InvalidConfig(_) -> assertTrue(true, "mTLS misconfiguration rejected before binding")
+      case NotSupportedOnTarget(_) -> panic("unexpected NotSupportedOnTarget on dotnet")
+    }
   }
 }
 

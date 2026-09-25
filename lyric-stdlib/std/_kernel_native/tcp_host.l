@@ -619,7 +619,10 @@ pub record ServerTls {
 pub func hostPrepareServerTls(cfg: in Tls.TlsServerConfig): Result[ServerTls, TcpError] {
   match validateServerConfig(cfg) {
     case Some(e) -> Err(error = e)
-    case None -> match buildServerCtx(cfg) { case Ok(ctx) -> Ok(value = ServerTls(ctx = ctx)); case Err(e) -> Err(error = e) }
+    case None -> match buildServerCtx(cfg) {
+      case Ok(ctx) -> Ok(value = ServerTls(ctx = ctx))
+      case Err(e) -> Err(error = e)
+    }
   }
 }
 
@@ -647,7 +650,9 @@ pub func hostSetIoTimeout(conn: in Conn, timeoutMs: in Int): Unit
 /// timeout is cleared again on success. On `Err` the plain `conn` is left for
 /// the caller to `hostClose`, so a caller that tracks live connections can
 /// deregister it before its socket is released.
-pub func hostUpgradeServerTlsPrepared(conn: in Conn, tls: in ServerTls, handshakeTimeoutMs: in Int): Result[Conn, TcpError]
+pub func hostUpgradeServerTlsPrepared(
+  conn: in Conn, tls: in ServerTls, handshakeTimeoutMs: in Int
+): Result[Conn, TcpError]
   requires: handshakeTimeoutMs >= 0
 {
   if handshakeTimeoutMs > 0 {
