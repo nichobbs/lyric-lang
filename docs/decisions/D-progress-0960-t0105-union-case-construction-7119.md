@@ -3,7 +3,7 @@
 **Status:** shipped
 
 **Context.** `reportMissingCtorFields` (`lyric-compiler/lyric/type_checker/typechecker_exprs.l`),
-the shared missing-required-field check added in #6889 (D-progress-924) for
+the shared missing-required-field check added in #6739 (D-progress-924) for
 records/opaque types, was only wired into `inferConstruction`'s
 record/opaque paths. `inferUnionCaseConstruction` never called it: a
 union-case construction that omitted a required named field from an
