@@ -75,6 +75,50 @@ test "Idempotent: a repeated non-empty id is deduplicated (only the first call r
   assertEqualInt(idemCalls.count, 1, "the handler ran only once for the repeated non-empty id")
 }
 
+// A delivery of an id that is still being handled is not run again (#7321).
+// A nested call on the same id stands in for a concurrent consumer: the
+// outer call holds the claim for the whole handler.
+val nestedCalls: CallCounter = CallCounter(count = 0)
+
+pub func idemGuardedNested(message: in Message): Result[Unit, String] {
+  nestedCalls.count = nestedCalls.count + 1
+  if nestedCalls.count == 1 {
+    val _ = idemGuardedNested(message)
+  }
+  return Ok(())
+}
+
+test "Idempotent: a delivery of an id already in flight does not run the handler" {
+  nestedCalls.count = 0
+  match idemGuardedNested(mkMsg("in-flight-1")) {
+    case Ok(_) -> assertTrue(true, "outer delivery succeeds")
+    case Err(_) -> assertTrue(false, "must not error")
+  }
+  assertEqualInt(nestedCalls.count, 1, "the in-flight duplicate was not run")
+}
+
+// A handler that panics must release its claim, or the id could never be
+// processed again in this process.
+val panicCalls: CallCounter = CallCounter(count = 0)
+
+pub func idemGuardedPanics(message: in Message): Result[Unit, String] {
+  panicCalls.count = panicCalls.count + 1
+  if panicCalls.count == 1 {
+    panic("first attempt fails")
+  }
+  return Ok(())
+}
+
+test "Idempotent: a panicking handler releases its claim" {
+  panicCalls.count = 0
+  assertPanics("first attempt", { -> val _ = idemGuardedPanics(mkMsg("panics-1")) })
+  match idemGuardedPanics(mkMsg("panics-1")) {
+    case Ok(_) -> assertTrue(true, "the redelivery runs")
+    case Err(_) -> assertTrue(false, "must not error")
+  }
+  assertEqualInt(panicCalls.count, 2, "the handler ran again after the panic")
+}
+
 // ─── DeadLetter ─────────────────────────────────────────────────────────────
 // DeadLetter's `requires: args.message.id != ""` was removed in the same fix as
 // Idempotent's (see mq_aspects.l). Its woven handler additionally takes a
@@ -176,6 +220,18 @@ test "DeadLetter: an empty-id failure below the delivery threshold does not cras
   }
   assertEqualInt(dlCalls.count, 1, "the woven handler ran")
   assertEqualInt(consumerCalls.nacks, 0, "below the threshold, nothing is dead-lettered")
+}
+
+test "DeadLetter: the maxDeliveries-th failed delivery dead-letters, the one before does not (#7320)" {
+  dlCalls.count = 0
+  consumerCalls.nacks = 0
+  val consumer = TestConsumer(tag = 0)
+  // deliveryCount is 0-based: 1 is the second delivery, 2 the third.
+  val _ = handleOrderFail(mkMsgN("poison-2", 1), consumer)
+  assertEqualInt(consumerCalls.nacks, 0, "the second failed delivery is redelivered")
+  val _ = handleOrderFail(mkMsgN("poison-2", 2), consumer)
+  assertEqualInt(consumerCalls.nacks, 1, "the third failed delivery is dead-lettered with maxDeliveries 3")
+  assertEqualInt(dlCalls.count, 2, "the handler ran once per delivery, no extra delivery")
 }
 
 test "DeadLetter: a failure past maxDeliveries dead-letters and nacks the consumer" {

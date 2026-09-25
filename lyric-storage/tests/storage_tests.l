@@ -26,6 +26,21 @@ test "isSafeKey accepts ordinary keys" {
   assertTrue(isSafeKey("my..file.txt"), "filename embedding .. is fine")
 }
 
+test "isSafeKey rejects segments Windows would rename (#7327)" {
+  assertTrue(not isSafeKey("photo.jpg.meta.json "), "trailing space hides the sidecar suffix")
+  assertTrue(not isSafeKey("a/foo."), "trailing dot aliases a/foo")
+  assertTrue(not isSafeKey("a/foo /b"), "trailing space inside the key")
+  assertTrue(not isSafeKey("..."), "dots only")
+  assertTrue(not isSafeKey("uploads/CON"), "device name")
+  assertTrue(not isSafeKey("nul.txt"), "device name with an extension")
+  assertTrue(not isSafeKey("x/com1.log"), "COM1 in lower case")
+  assertTrue(not isSafeKey("lpt9"), "LPT9")
+  assertTrue(not isSafeKey("data.txt:hidden"), "NTFS alternate data stream")
+  assertTrue(isSafeKey("console.log"), "a name that only starts like a device is fine")
+  assertTrue(isSafeKey("com10.txt"), "COM10 is not a device name")
+  assertTrue(isSafeKey(".hidden/file"), "a leading dot is fine")
+}
+
 test "isSafeKey rejects empty key" {
   assertTrue(not isSafeKey(""), "empty key")
 }

@@ -125,6 +125,10 @@ pub func storageKeyHasDotDot(s: in String): Bool {
 //   * `.` and empty path segments (`a/./b`, `a//b`, a trailing `/`): the
 //     local-fs backend collapses them, so `a//b` and `a/b` would name the
 //     same file there but different objects on S3 (#7242)
+//   * a segment ending in `.` or a space, which Windows strips (`a/foo.` is
+//     `a/foo` there, and `x.meta.json ` is a sidecar), a Windows device name
+//     (`CON`, `nul.txt`, `COM1`), and `:`, which names an NTFS alternate data
+//     stream (#7327)
 // Checked by every `StorageBucket` implementation on every key it accepts.
 @pure
 pub func isSafeKey(key: in String): Bool {
@@ -165,15 +169,46 @@ pub func isSafeKey(key: in String): Bool {
   if storageKeyHasDotDot(n) {
     return false
   }
+  if Str.contains(n, ":") {
+    return false
+  }
   val segs = Str.split(n, "/")
   var si = 0
   while si < segs.length {
-    if segs[si].length == 0 or segs[si] == "." {
+    val seg = segs[si]
+    if seg.length == 0 {
+      return false
+    }
+    // Windows strips a trailing `.` or space from every path segment, so
+    // `photo.jpg.meta.json ` would write the `photo.jpg` sidecar and `a/foo.`
+    // would alias `a/foo` (#7327).  This also covers `.` and `..`.
+    val last = seg[seg.length - 1]
+    if last == '.' or last == ' ' {
+      return false
+    }
+    if isWindowsDeviceName(seg) {
       return false
     }
     si = si + 1
   }
   return true
+}
+
+// True when `seg`, up to its first `.`, is a Windows reserved device name
+// (CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9, in any case).  A file path
+// through such a segment opens the device instead of a file on Windows.
+@pure
+func isWindowsDeviceName(seg: in String): Bool {
+  val dot = Str.indexOf(seg, ".")
+  val stem = Str.toUpper(match dot { case Some(ix) -> seg.substring(0, ix); case None -> seg })
+  if stem == "CON" or stem == "PRN" or stem == "AUX" or stem == "NUL" {
+    return true
+  }
+  if stem.length == 4 and (Str.startsWith(stem, "COM") or Str.startsWith(stem, "LPT")) {
+    val d = stem[3]
+    return d >= '1' and d <= '9'
+  }
+  false
 }
 
 // True when `prefix` is safe to pass to a storage backend's `list`

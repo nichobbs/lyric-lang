@@ -469,10 +469,15 @@ func headersToJson(headers: in slice[MessageHeader]): String {
 }
 
 // Deserialise a JSON object (produced by the kernel) back into a Message.
-// The kernel emits the same format as messagesToJson above.  `Err` for text
-// that is not a JSON object, so one malformed message cannot panic the
-// consumer after the kernel has already moved it in flight.
-func messageFromJson(json: in String): Result[Message, String] {
+// The kernel emits the same format as messagesToJson above.  Every field is
+// read from the one parsed document with its kind checked first, so a
+// message that is not a JSON object, or has a non-string `id`/`body`, a
+// non-integer `deliveryCount`, or a malformed `headers` array, is an `Err`:
+// the kernel has already moved it in flight, and a panic here would take the
+// consumer down (#7322).  Absent fields take their defaults.  Public so a
+// custom broker binding can decode the same wire format.
+@stable(since = "0.2")
+pub func messageFromJson(json: in String): Result[Message, String] {
   match tryParseJson(json) {
     case Err(e) -> return Err(e)
     case Ok(doc) -> {
@@ -483,95 +488,47 @@ func messageFromJson(json: in String): Result[Message, String] {
       if valueKind(root) != 1 {
         return Err("expected a JSON object")
       }
-      val id = match tryGetProperty(root, "id") { case Some(v) -> getString(v); case None -> "" }
-      val body = match tryGetProperty(root, "body") { case Some(v) -> getString(v); case None -> "" }
-      val deliveryCount = jsonExtractInt(json, "deliveryCount")
-      // Headers are conveyed in a nested JSON array; parse key/value pairs.
-      val hdrsRaw = jsonExtractRaw(json, "headers")
-      return Ok(Message(id = id, body = body, headers = parseHeadersJson(hdrsRaw), deliveryCount = deliveryCount))
+      val id = match optionalStringField(root, "id") { case Ok(v) -> v; case Err(e) -> return Err(e) }
+      val body = match optionalStringField(root, "body") { case Ok(v) -> v; case Err(e) -> return Err(e) }
+      val deliveryCount = match tryGetProperty(root, "deliveryCount") {
+        case None -> 0
+        case Some(v) -> match tryGetInt(v) {
+          case Some(n) -> n
+          case None -> return Err("'deliveryCount' must be an integer")
+        }
+      }
+      val headers = match tryGetProperty(root, "headers") {
+        case None -> []
+        case Some(v) -> match headersFromJson(v) { case Ok(hs) -> hs; case Err(e) -> return Err(e) }
+      }
+      return Ok(Message(id = id, body = body, headers = headers, deliveryCount = deliveryCount))
     }
   }
 }
 
-// Parse a JSON array of {key,value} objects into a list of MessageHeader.
-func parseHeadersJson(json: in String): slice[MessageHeader] {
-  if json == "[]" or json == "" {
-    return []
+// The string value of `obj.name`, "" when absent, `Err` when not a string.
+func optionalStringField(obj: in JsonElement, name: in String): Result[String, String] {
+  match tryGetProperty(obj, name) {
+    case None -> Ok("")
+    case Some(v) -> if valueKind(v) == 3 { Ok(getString(v)) } else { Err("'" + name + "' must be a string") }
   }
-  val resultAcc: List[MessageHeader] = newList()
-  val doc = parseJson(json)
-  val root = rootElement(doc)
-  var en = enumerateArray(root)
+}
+
+// A JSON array of {key,value} string objects as MessageHeaders.
+func headersFromJson(arr: in JsonElement): Result[slice[MessageHeader], String] {
+  if valueKind(arr) != 2 {
+    return Err("'headers' must be an array")
+  }
+  val acc: List[MessageHeader] = newList()
+  var en = enumerateArray(arr)
   while arrayMoveNext(en) {
     val obj = arrayCurrent(en)
-    var key = ""
-    var value = ""
-    match tryGetProperty(obj, "key") {
-      case Some(v) -> {
-        key = getString(v)
-      }
-      case None -> ()
+    if valueKind(obj) != 1 {
+      return Err("each header must be an object")
     }
-    match tryGetProperty(obj, "value") {
-      case Some(v) -> {
-        value = getString(v)
-      }
-      case None -> ()
-    }
-    resultAcc.add(MessageHeader(key = key, value = value))
+    val key = match optionalStringField(obj, "key") { case Ok(v) -> v; case Err(e) -> return Err("header " + e) }
+    val value = match optionalStringField(obj, "value") { case Ok(v) -> v; case Err(e) -> return Err("header " + e) }
+    acc.add(MessageHeader(key = key, value = value))
   }
-  return resultAcc.toArray()
-}
-
-// Extract an integer field value from a JSON object literal.
-func jsonExtractInt(json: in String, field: in String): Int {
-  val needle = "\"" + field + "\":"
-  val start = match json.indexOf(needle) { case Some(i) -> i; case None -> return 0 }
-  val afterColon = start + needle.length
-  // Skip whitespace.
-  var i: Int = afterColon
-  while i < json.length and json[i] == ' ' {
-    i = i + 1
-  }
-  var numStr: String = ""
-  while i < json.length and json[i] != ',' and json[i] != '}' {
-    numStr = numStr + json[i].toString()
-    i = i + 1
-  }
-  match parseOptInt(numStr.trim()) {
-    case Some(n) -> return n
-    case None -> return 0
-  }
-}
-
-// Extract the raw JSON value for a field (for nested objects/arrays).
-func jsonExtractRaw(json: in String, field: in String): String {
-  val needle = "\"" + field + "\":"
-  val start = match json.indexOf(needle) { case Some(i) -> i; case None -> return "[]" }
-  val afterColon = start + needle.length
-  // Search the tail from afterColon: the 2-arg BCL `IndexOf(str, from)`
-  // overload is not a Lyric surface (#4025) — the previous spelling
-  // `json.indexOf("[", afterColon)` lowered to a guaranteed runtime throw
-  // and was caught at compile time when #6496 made the checker strict.
-  val searchTail = json.substring(afterColon, json.length - afterColon)
-  val q1 = match searchTail.indexOf("[") { case Some(i) -> afterColon + i; case None -> return "[]" }
-  var depth: Int = 0
-  var i: Int = q1
-  while i < json.length {
-    val ch = json[i]
-    if ch == '[' {
-      depth = depth + 1
-    } else if ch == ']' {
-      depth = depth - 1
-      if depth == 0 {
-        // substring is (start, LENGTH) — passing `i + 1` as an end index
-        // overran the string whenever q1 > 0 (ArgumentOutOfRange at the
-        // first consume of a message with headers; dead code until the
-        // #6511 dispatch wiring made this path reachable).
-        return json.substring(q1, i + 1 - q1)
-      }
-    }
-    i = i + 1
-  }
-  return "[]"
+  Ok(acc.toArray())
 }

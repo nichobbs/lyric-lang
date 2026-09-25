@@ -44,7 +44,9 @@ with `--target jvm --no-default-features --features jvm` to select it.
 import Auth
 import Std.Core
 
-val secret = "your-secret-key"
+// At least 32 bytes of UTF-8 (Auth.minHmacSecretBytes()); a shorter secret
+// fails verifyJwt's precondition. Load it from configuration, not source.
+val secret = "replace-with-a-random-secret-of-32-bytes-or-more"
 val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 val issuer = "https://example.com"
 val audience = "my-app"

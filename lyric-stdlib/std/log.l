@@ -40,24 +40,29 @@ func levelName(level: in LogLevel): String {
   }
 }
 
-// Escape special characters in a log field key or value to prevent log injection.
-// Replaces \, line breaks, other control characters, = and " with escape
-// sequences, so a field can neither start a new log line nor forge a field.
-// Runs of characters that need no escaping are appended as single substrings,
-// so the common case copies each field once.
-func appendEscapedLogValue(sb: in StringBuilder, s: in String): Unit {
+// Escape a field key or value so a field can neither start a new log line
+// nor forge another field (CWE-117, #7244, #7330).  Backslash, line breaks,
+// other control characters, tab and `"` always become escapes.  Outside
+// quotes (`quoted = false`), `=` and space are escaped too, since they
+// separate fields.  Runs of characters that need no escaping are appended as
+// single substrings, so the common case copies each field once.
+func appendEscapedLogValue(sb: in StringBuilder, s: in String, quoted: in Bool): Unit {
   var runStart = 0
   var i = 0
   while i < s.length {
     val ch: Char = s[i]
     val esc = if ch == '\\' {
       "\\\\"
+    } else if ch == '\t' {
+      "\\t"
     } else if isLineBreakOrControl(ch) {
       controlEscape(ch)
-    } else if ch == '=' {
-      "\\="
     } else if ch == '"' {
       "\\\""
+    } else if not quoted and ch == '=' {
+      "\\="
+    } else if not quoted and ch == ' ' {
+      "\\u0020"
     } else {
       ""
     }
@@ -71,6 +76,12 @@ func appendEscapedLogValue(sb: in StringBuilder, s: in String): Unit {
   sb.append(s.substring(runStart, s.length - runStart))
 }
 
+// Whether a field value is written in logfmt quotes: it is empty or holds a
+// field separator (space, tab), `=` or `"`.
+func valueNeedsQuotes(s: in String): Bool {
+  s.length == 0 or s.contains(" ") or s.contains("\t") or s.contains("=") or s.contains("\"")
+}
+
 @pure
 func formatFields(fields: in slice[LogField]): String {
   if fields.length == 0 {
@@ -81,9 +92,15 @@ func formatFields(fields: in slice[LogField]): String {
   while i < fields.length {
     val f = fields[i]
     sb.appendChar(' ')
-    appendEscapedLogValue(sb, f.key)
+    appendEscapedLogValue(sb, f.key, false)
     sb.appendChar('=')
-    appendEscapedLogValue(sb, f.value)
+    if valueNeedsQuotes(f.value) {
+      sb.appendChar('"')
+      appendEscapedLogValue(sb, f.value, true)
+      sb.appendChar('"')
+    } else {
+      appendEscapedLogValue(sb, f.value, false)
+    }
     i += 1
   }
   sb.toString()
@@ -99,13 +116,7 @@ func appendEscapedLogMessage(sb: in StringBuilder, s: in String): Unit {
   var i = 0
   while i < s.length {
     val ch: Char = s[i]
-    val esc = if ch == '\\' {
-      "\\\\"
-    } else if isLineBreakOrControl(ch) {
-      controlEscape(ch)
-    } else {
-      ""
-    }
+    val esc = if ch == '\\' { "\\\\" } else if isLineBreakOrControl(ch) { controlEscape(ch) } else { "" }
     if esc.length > 0 {
       sb.append(s.substring(runStart, i - runStart))
       sb.append(esc)
@@ -157,8 +168,10 @@ pub func log(level: in LogLevel, msg: in String, fields: in slice[LogField]): Un
 }
 
 /// The text `log` hands to the host sink for `msg` and `fields`: the
-/// escaped message followed by ` key=value` per field.  Never contains a
-/// line break, whatever the inputs.
+/// escaped message followed by ` key=value` per field, logfmt style.  A
+/// value that is empty or contains a space, tab, `=` or `"` is written in
+/// double quotes (`user="bob role=admin"`), so it cannot be read as more
+/// than one field.  Never contains a line break, whatever the inputs.
 @stable(since = "1.2")
 pub func renderLogLine(msg: in String, fields: in slice[LogField]): String {
   val sb = StringBuilder.new()

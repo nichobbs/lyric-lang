@@ -37134,7 +37134,23 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           initInsns.add(MNewobj(ctorToken = 0x0A000000 + alMrRow))
           MObject
         } else {
-          lowerExprMsil(cctx, cctorInitFctx, initInsns, decl.init)
+          match decl.ty {
+            case Some(annTe) -> {
+              // The annotation is the construction hint, as for a local
+              // binding: `val m: Map[String, Bool] = newMap()` must build the
+              // concrete `Dictionary<string, bool>` the field is typed as, not
+              // `Dictionary<object, object>`, which every read then failed to
+              // cast.
+              val annTy = typeExprToMsilCtx(cctx, annTe, pkgName)
+              val savedH = pushAnnoHintTyArgs(cctorInitFctx, annTy)
+              pushCollExpect(cctorInitFctx, annTy)
+              val initTy = lowerExprMsil(cctx, cctorInitFctx, initInsns, decl.init)
+              popCollExpect(cctorInitFctx)
+              restoreHintTyArgs(cctorInitFctx, savedH)
+              initTy
+            }
+            case None -> lowerExprMsil(cctx, cctorInitFctx, initInsns, decl.init)
+          }
         }
         val fieldTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> valTy }
         // When the init is a single ldc.i4 (literal Int), inline into constValues

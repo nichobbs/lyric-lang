@@ -47,12 +47,16 @@ import Jobs
 ///
 /// When `enabled` is false the call passes through without any retry logic.
 ///
+/// A configuration outside the bounds below is a bug: the aspect panics
+/// before running the handler, naming the values.
+///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled        Bool — master switch (default: true)
-///   maxAttempts    Int  — total attempts including the first (default: 3)
-///   initialDelayMs Int  — base delay in ms before the second attempt (default: 500)
-///   backoffFactor  Int  — delay multiplier per retry (default: 2 — exponential)
-///   maxDelayMs     Int  — upper bound on any single delay to prevent Int overflow (default: 30000)
+///   maxAttempts    Int  — total attempts including the first, >= 1 (default: 3)
+///   initialDelayMs Int  — base delay in ms before the second attempt,
+///                         0..maxDelayMs (default: 500)
+///   backoffFactor  Int  — delay multiplier per retry; below 1 counts as 1 (default: 2)
+///   maxDelayMs     Int  — upper bound on any single delay (default: 30000)
 @stable(since = "0.1")
 pub aspect Retryable {
   config {
@@ -65,8 +69,18 @@ pub aspect Retryable {
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
+    } else if maxAttempts < 1 or not Resilience.isValidBackoff(initialDelayMs, maxDelayMs, 0.0f32) {
+      // A configuration bug, raised before the handler runs rather than in
+      // the middle of a retry loop (#7324).
+      panic(
+        "Jobs.Aspects.Retryable: need maxAttempts >= 1 and 0 <= initialDelayMs <= maxDelayMs, got maxAttempts=" +
+          maxAttempts.toString() +
+          " initialDelayMs=" +
+          initialDelayMs.toString() +
+          " maxDelayMs=" +
+          maxDelayMs.toString()
+      )
     } else {
-      Resilience.checkRetryConfig(maxAttempts, initialDelayMs, maxDelayMs, 0.0f32)
       ret = call.proceed()
       var attempt: Int = 1
       while attempt < maxAttempts {

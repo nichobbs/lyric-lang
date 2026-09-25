@@ -77,16 +77,14 @@ pub aspect AuditAccess {
 /// to compose correctly — the short-circuit path returns
 /// `Err(StorageError(code = "INVALID_KEY"))`.
 ///
-/// There is no configuration switch for the traversal check: it used to
-/// have an env-settable `allowDots` field that turned it off (#7242).
-///
-/// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
-///   enabled: Bool — master switch (default: true)
+/// There are no configuration fields.  A switch that turns the traversal
+/// check off would be settable from the environment
+/// (`LYRIC_ASPECT_<INSTANTIATION>_<FIELD>`), so anyone who controls the
+/// environment could remove it: first an `allowDots` field (#7242), then the
+/// `enabled` master switch (#7326) did exactly that.  To stop checking keys,
+/// remove the aspect instantiation from the source.
 @stable(since = "0.1")
 pub aspect ValidateKey {
-  config {
-    enabled: Bool = true
-  }
   // No `requires: isSafeKey(args.key)`: `key` is client-controlled (e.g. an
   // upload path), so a `requires:` clause (D118 elaborates it into a runtime
   // precondition assert) would panic the whole server on a bad key — a
@@ -94,9 +92,7 @@ pub aspect ValidateKey {
   // `Err(INVALID_KEY)` instead.
   // handler must declare a key: String parameter
   around(call) -> ret where TArgs has { key: String } {
-    if not enabled {
-      ret = call.proceed()
-    } else if Storage.isSafeKey(args.key) {
+    if Storage.isSafeKey(args.key) {
       ret = call.proceed()
     } else {
       ret = Err(

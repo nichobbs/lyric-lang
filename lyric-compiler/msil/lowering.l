@@ -5636,10 +5636,16 @@ pub func lowerMFuncsToHostClass(
       val lvRowCctor = addStandAloneSig(ctx.tables, StandAloneSigRow(signature = lvBlobCctor))
       mbSetLocalSig(mbCctor, standaloneToken(lvRowCctor))
     }
-    var ci = 0
-    while ci < cctorInsns.count {
-      lowerMInsn(ctx, cctorInsns[ci], mbCctor)
-      ci = ci + 1
+    // Discovery pass: only the row layout matters, as in `lowerMFunc`.  The
+    // throwaway context has none of the pre-seeded BCL TypeRefs, so lowering
+    // an initializer that builds a concrete `Dictionary`/`List` there
+    // panicked ("TypeRef not seeded").
+    if ctx.discovering.count == 0 {
+      var ci = 0
+      while ci < cctorInsns.count {
+        lowerMInsn(ctx, cctorInsns[ci], mbCctor)
+        ci = ci + 1
+      }
     }
     ctx.bodies.add(mbCctor)
     val rvasC = methodBodyRvas(ctx.bodies)

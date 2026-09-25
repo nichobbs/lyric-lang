@@ -819,6 +819,21 @@ test "search: pagination outside the result window is refused" {
   assertEqual(searchCode(q.copy(from = 9990, size = 10)), "SEARCH_FAILED", "a window of exactly 10000 is allowed")
 }
 
+func suggestCode(size: in Int): String {
+  val client = closedPortClient()
+  match await client.suggest("products", "wid", "name", size) {
+    case Ok(_) -> "OK"
+    case Err(e) -> e.code
+  }
+}
+
+test "suggest: a size outside 1..MAX_RESULT_WINDOW is an error, not a panic (#7323)" {
+  assertEqual(suggestCode(0), "INVALID_PAGINATION", "zero size")
+  assertEqual(suggestCode(-1), "INVALID_PAGINATION", "negative size")
+  assertEqual(suggestCode(5000000), "INVALID_PAGINATION", "size over the window")
+  assertEqual(suggestCode(10), "SUGGEST_FAILED", "a valid size reaches the transport")
+}
+
 test "a base URL with a trailing slash joins cleanly" {
   val cfg = HttpConfig.new(defaultClient(), "http://127.0.0.1:1/", "", "")
   val client: SearchClient = NativeSearchClient(cfg = cfg)

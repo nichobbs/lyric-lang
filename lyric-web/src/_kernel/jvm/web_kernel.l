@@ -163,11 +163,10 @@ func buildJvmRequest(exchange: in JHttpServerExchange): Option[Web.Request] {
   val path = exchange.getRequestPath()
   val queryParams = Web.parseQueryString(exchange.getQueryString())
   val headers = buildRequestHeaders(exchange.getRequestHeaders())
-  val body = if method == "GET" or method == "HEAD" {
-    Some(value = "")
-  } else {
-    readRequestBody(exchange, maxRequestBodyBytes())
-  }
+  // Every method, GET and HEAD included, as `Std.HttpEngine` frames bodies on
+  // dotnet: a GET with an oversized Content-Length is answered 413 too
+  // (#7325).  A request without a body reads as "".
+  val body = readRequestBody(exchange, maxRequestBodyBytes())
   match body {
     case None -> None
     case Some(text) -> {
@@ -418,7 +417,7 @@ pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSiz
     webRateLock.unlock()
   }
 
-  val fullBucket = newTokenBucket(requestsPerMinute, burstSize, nowMs)
+  val fullBucket = Resilience.newTokenBucket(requestsPerMinute, burstSize, nowMs)
   var re: WebRateEntry = default()
   if not cdTryGetValue(webRateLimitMap, endpoint, re) {
     val newEntry = WebRateEntry(scaledTokens = fullBucket.scaledTokens, lastRefillMs = fullBucket.lastRefillMs)
@@ -431,8 +430,8 @@ pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSiz
     }
   }
 
-  val take = takeToken(
-    TokenBucket(scaledTokens = re.scaledTokens, lastRefillMs = re.lastRefillMs),
+  val take = Resilience.takeToken(
+    Resilience.TokenBucket(scaledTokens = re.scaledTokens, lastRefillMs = re.lastRefillMs),
     requestsPerMinute,
     burstSize,
     nowMs

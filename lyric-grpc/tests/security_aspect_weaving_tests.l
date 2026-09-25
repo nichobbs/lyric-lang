@@ -84,3 +84,39 @@ test "RequiresGrpcRole: an empty token returns UNAUTHENTICATED without crashing 
     }
   }
 }
+
+// A placeholder secret shorter than 32 bytes is a configuration error for
+// every call, whatever its token (#7319).
+aspect ShortSecretGuard from Grpc.Aspects.RequiresGrpcAuth {
+  matches: name like "shortSecretGuarded*"
+  config {
+    jwtSecret: String = "REPLACE_ME_WITH_A_REAL_SECRET"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
+  }
+}
+
+pub func shortSecretGuardedHandler(authToken: in String): Result[String, GrpcStatus] {
+  return Std.Core.Ok("reached")
+}
+
+test "RequiresGrpcAuth: a short jwtSecret is a configuration error, even for an empty token" {
+  assertPanicsWith("short secret", "jwtSecret must be at least 32 bytes", { -> val _ = shortSecretGuardedHandler("") })
+}
+
+// A breaker configuration that cannot work is reported before the handler
+// runs (#7331).
+aspect ZeroCooldownBreaker from Grpc.Aspects.GrpcCircuitBreaker {
+  matches: name like "breakerMisconfigured*"
+  config {
+    cooldownMs: Int = 0
+  }
+}
+
+pub func breakerMisconfiguredHandler(): Result[String, GrpcStatus] {
+  return Std.Core.Ok("reached")
+}
+
+test "GrpcCircuitBreaker: cooldownMs 0 fails before the handler runs" {
+  assertPanicsWith("zero cooldown", "cooldownMs", { -> val _ = breakerMisconfiguredHandler() })
+}

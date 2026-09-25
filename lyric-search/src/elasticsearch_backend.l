@@ -434,6 +434,10 @@ pub async func backendSearch(cfg: in HttpConfig, query: in SearchQuery): Result[
 pub async func backendSuggest(
   cfg: in HttpConfig, index: in String, text: in String, field: in String, size: in Int
 ): Result[SuggestResult, SearchError] {
+  match validateSuggestSize(size) {
+    case Some(e) -> return Err(error = e)
+    case None -> ()
+  }
   val path = "/" + pathEscape(index) + "/_search"
   val body = "{\"size\":" + size.toString() + ",\"query\":{\"match_phrase_prefix\":{" + encodeString(field) + ":" +
     encodeString(text) +

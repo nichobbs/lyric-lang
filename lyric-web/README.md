@@ -298,7 +298,7 @@ Request bodies are capped at 10 MiB on both targets (`Std.HttpEngine`'s
 `EngineLimits.defaults().maxBodyBytes`). A larger body is answered with a
 bodyless `413 Content Too Large` and never reaches a handler. That covers a
 declared `Content-Length` and a chunked body that grows past the limit while
-it is read.
+it is read, for every method (a `GET` or `HEAD` carrying a body included).
 
 ### HTTPS (TLS)
 

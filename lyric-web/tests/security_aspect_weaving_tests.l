@@ -362,3 +362,49 @@ test "HttpCircuitBreaker aspect: call after failureThreshold consecutive failure
     case Err(e) -> assertEqualInt(e.status, 503, "open circuit short-circuits with 503 Service Unavailable")
   }
 }
+
+// A breaker configuration that cannot work is reported before the handler
+// runs, not after its side effects when the first failure is recorded
+// (#7331).
+record BreakerCounter {
+  var count: Int = 0
+}
+
+aspect CircuitBreakerZeroThreshold from Web.Aspects.HttpCircuitBreaker {
+  matches: name like "breakerMisconfigured*"
+  config {
+    failureThreshold: Int = 0
+  }
+}
+
+val breakerMisconfiguredCalls: BreakerCounter = BreakerCounter(count = 0)
+
+pub func breakerMisconfiguredHandler(): Result[String, Web.ApiError] {
+  breakerMisconfiguredCalls.count = breakerMisconfiguredCalls.count + 1
+  return Ok("reached")
+}
+
+test "HttpCircuitBreaker aspect: failureThreshold 0 fails before the handler runs" {
+  breakerMisconfiguredCalls.count = 0
+  assertPanicsWith("zero threshold", "failureThreshold", { -> val _ = breakerMisconfiguredHandler() })
+  assertEqualInt(breakerMisconfiguredCalls.count, 0, "the handler never ran")
+}
+
+// A placeholder secret shorter than 32 bytes is a configuration error for
+// every request, whatever its token (#7319).
+aspect ShortSecretGuard from Web.Aspects.RequiresAuth {
+  matches: name like "shortSecretGuarded*"
+  config {
+    jwtSecret: String = "REPLACE_ME_WITH_A_REAL_SECRET"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
+  }
+}
+
+pub func shortSecretGuardedHandler(authToken: in String): Result[String, Web.ApiError] {
+  return Ok("reached")
+}
+
+test "RequiresAuth aspect: a short jwtSecret is a configuration error, even for an empty token" {
+  assertPanicsWith("short secret", "jwtSecret must be at least 32 bytes", { -> val _ = shortSecretGuardedHandler("") })
+}

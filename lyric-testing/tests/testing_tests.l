@@ -299,6 +299,32 @@ test "MockStorageBucket: list pages by maxKeys (#7242)" {
   }
 }
 
+test "MockStorageBucket: list pages in key order like the real backends (#7333)" {
+  val ctx = Testing.newTestContext()
+  Storage.put(ctx.storage, "p/3", "d", "text/plain")
+  Storage.put(ctx.storage, "p/1", "d", "text/plain")
+  Storage.put(ctx.storage, "p/2", "d", "text/plain")
+  match ctx.storage.list("p/", "", 2) {
+    case Err(e) -> Testing.assertTrue(false, "list() must succeed: " + e.message)
+    case Ok(first) -> {
+      Testing.assertEq(first.entries[0].key, "p/1", "sorted, not insertion order")
+      Testing.assertEq(first.entries[1].key, "p/2", "second key in order")
+      // The key the token names is deleted before the next page is read.
+      Storage.delete(ctx.storage, "p/2")
+      match first.nextContinuationToken {
+        case None -> Testing.assertTrue(false, "a truncated page carries a continuation token")
+        case Some(token) -> match ctx.storage.list("p/", token, 2) {
+          case Err(e) -> Testing.assertTrue(false, "second page must succeed: " + e.message)
+          case Ok(second) -> {
+            assertEqualInt(second.entries.length, 1, "keys after the token are still listed")
+            Testing.assertEq(second.entries[0].key, "p/3", "resumes by order, not by finding the token")
+          }
+        }
+      }
+    }
+  }
+}
+
 // ─── MockMessageQueue ─────────────────────────────────────────────────────────
 test "MockMessageQueue: publish returns Ok and increments count" {
   val ctx = Testing.newTestContext()

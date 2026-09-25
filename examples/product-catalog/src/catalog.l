@@ -43,7 +43,13 @@ aspect GrpcAuth from Grpc.Aspects.RequiresGrpcAuth {
   matches: visibility: pub
   config {
     @sensitive
-    jwtSecret: String = ""
+    jwtSecret: String = "REPLACE_ME_WITH_A_REAL_SECRET"
+    // Obviously-invalid placeholder, shorter than the 32 bytes HS256 needs:
+    // every authenticated call fails with a configuration error until it is
+    // replaced (an empty secret would let a token signed with an empty key
+    // validate).  Replace it before running the example for real.
+    issuer: String = "product-catalog"
+    audience: String = "product-catalog-api"
   }
 }
 

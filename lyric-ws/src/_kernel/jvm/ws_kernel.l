@@ -761,7 +761,7 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
   requires: messagesPerMinute > 0
   requires: burstSize > 0
 {
-  val fullBucket = newTokenBucket(messagesPerMinute, burstSize, nowMs())
+  val fullBucket = Resilience.newTokenBucket(messagesPerMinute, burstSize, nowMs())
   val fresh = RateEntry(
     scaledTokens = fullBucket.scaledTokens,
     lastRefillMs = fullBucket.lastRefillMs,
@@ -780,8 +780,8 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
     entry.lock.unlock()
   }
 
-  val take = takeToken(
-    TokenBucket(scaledTokens = entry.scaledTokens, lastRefillMs = entry.lastRefillMs),
+  val take = Resilience.takeToken(
+    Resilience.TokenBucket(scaledTokens = entry.scaledTokens, lastRefillMs = entry.lastRefillMs),
     messagesPerMinute,
     burstSize,
     nowMs()

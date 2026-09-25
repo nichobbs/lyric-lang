@@ -260,3 +260,45 @@ test "allHaveIds" {
   assertTrue(allHaveIds([m, m]), "all ids present")
   assertFalse(allHaveIds([m, m.copy(id = "")]), "one empty id")
 }
+
+// ─── Wire decoding (#7322) ────────────────────────────────────────────────────
+// A malformed message from the broker is an Err, never a panic in consume.
+func decodeError(json: in String): String {
+  match messageFromJson(json) {
+    case Ok(_) -> "OK"
+    case Err(e) -> e
+  }
+}
+
+test "messageFromJson decodes a well-formed message" {
+  match messageFromJson("{\"id\":\"m1\",\"body\":\"hi\",\"headers\":[{\"key\":\"k\",\"value\":\"v\"}],\"deliveryCount\":2}") {
+    case Err(e) -> assertTrue(false, "must decode: " + e)
+    case Ok(m) -> {
+      assertEqual(m.id, "m1", "id")
+      assertEqual(m.body, "hi", "body")
+      assertEqualInt(m.headers.length, 1, "one header")
+      assertEqual(m.headers[0].value, "v", "header value")
+      assertEqualInt(m.deliveryCount, 2, "delivery count")
+    }
+  }
+}
+
+test "messageFromJson returns Err for malformed messages" {
+  assertTrue(decodeError("{\"id\":42,\"body\":\"x\"}").contains("'id' must be a string"), "non-string id")
+  assertTrue(decodeError("{\"id\":\"a\",\"body\":[1]}").contains("'body' must be a string"), "non-string body")
+  assertTrue(decodeError("{\"id\":\"a\",\"headers\":{}}").contains("'headers' must be an array"), "object headers")
+  assertTrue(
+    decodeError("{\"id\":\"a\",\"headers\":[1]}").contains("each header must be an object"),
+    "non-object header"
+  )
+  assertTrue(
+    decodeError("{\"id\":\"a\",\"headers\":[{\"key\":1}]}").contains("header 'key' must be a string"),
+    "non-string header key"
+  )
+  assertTrue(
+    decodeError("{\"id\":\"a\",\"deliveryCount\":\"3\"}").contains("'deliveryCount' must be an integer"),
+    "string count"
+  )
+  assertTrue(decodeError("{\"id\":\"a\",\"headers\":[oops]}") != "OK", "invalid JSON")
+  assertTrue(decodeError("[]") != "OK", "not an object")
+}

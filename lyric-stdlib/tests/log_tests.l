@@ -89,3 +89,25 @@ test "renderLogLine keeps every field on the same line" {
 test "a LogField with an empty key violates its invariant" {
   assertPanics("empty key", { -> val _ = LogField(key = "", value = "v") })
 }
+
+// #7330: a value with a space was written bare, so `bob role=admin` read as a
+// second field to logfmt parsers.
+test "renderLogLine quotes a field value holding a separator" {
+  assertEqual(
+    renderLogLine("login", [field("user", "bob role=admin")]),
+    "login user=\"bob role=admin\"",
+    "space and = keep the value in one quoted field"
+  )
+  assertEqual(renderLogLine("m", [field("k", "a\tb")]), "m k=\"a\\tb\"", "tab is quoted and escaped")
+  assertEqual(
+    renderLogLine("m", [field("k", "say \"hi\"")]),
+    "m k=\"say \\\"hi\\\"\"",
+    "quotes are escaped inside quotes"
+  )
+  assertEqual(renderLogLine("m", [field("k", "")]), "m k=\"\"", "an empty value is an explicit empty string")
+  assertEqual(renderLogLine("m", [field("k", "plain")]), "m k=plain", "a plain value stays bare")
+}
+
+test "renderLogLine escapes separators in a field key" {
+  assertEqual(renderLogLine("m", [field("a b=c", "v")]), "m a\\u0020b\\=c=v", "space and = in a key are escaped")
+}

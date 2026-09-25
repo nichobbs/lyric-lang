@@ -479,6 +479,10 @@ pub async func backendSearch(cfg: in HttpConfig, query: in SearchQuery): Result[
 pub async func backendSuggest(
   cfg: in HttpConfig, index: in String, text: in String, field: in String, size: in Int
 ): Result[SuggestResult, SearchError] {
+  match validateSuggestSize(size) {
+    case Some(e) -> return Err(error = e)
+    case None -> ()
+  }
   val path = "/indexes/" + pathEscape(index) + "/search"
   val body = "{\"q\":" + encodeString(text) + ",\"limit\":" + size.toString() + "}"
   val checked = sendRequest(cfg, POST, path, Some(value = body), "SUGGEST_FAILED")

@@ -196,10 +196,11 @@ pub interface SearchClient {
     requires: query.index.length > 0
 
   /// Return autocomplete suggestions for `text` on `field` in `index`.
+  /// `size` often comes from a client, so an out-of-range value is an
+  /// `INVALID_PAGINATION` error (`validateSuggestSize`), not a precondition.
   async func suggest(index: in String, text: in String, field: in String, size: in Int): Result[SuggestResult, SearchError]
     requires: index.length > 0
     requires: field.length > 0
-    requires: size > 0
 
   /// Delete a single document by ID.
   async func delete(index: in String, id: in String): Result[Unit, SearchError]
@@ -522,6 +523,24 @@ pub func validateSearchQuery(query: in SearchQuery): Option[SearchError] {
           "; expected from >= 0, 0 <= size <= " +
           MAX_RESULT_WINDOW.toString() +
           " and from + size <= " +
+          MAX_RESULT_WINDOW.toString(),
+        code = "INVALID_PAGINATION",
+        statusCode = 0
+      )
+    )
+  }
+  None
+}
+
+/// `Some(error)` when a suggestion `size` is outside 1..`MAX_RESULT_WINDOW`.
+/// Both backends check it before sending, as `validateSearchQuery` does for
+/// search pagination.
+@stable(since = "0.1")
+pub func validateSuggestSize(size: in Int): Option[SearchError] {
+  if size < 1 or size > MAX_RESULT_WINDOW {
+    return Some(
+      value = SearchError(
+        message = "invalid suggestion size " + size.toString() + "; expected 1 <= size <= " +
           MAX_RESULT_WINDOW.toString(),
         code = "INVALID_PAGINATION",
         statusCode = 0

@@ -497,10 +497,20 @@ pub aspect CircuitBreaker {
   }
 }
 
-// Fail fast on a CircuitBreaker configuration that cannot work, before the
-// wrapped call runs (see `checkRetryConfig`).
-func checkCircuitConfig(failureThreshold: in Int, cooldownMs: in Int): Unit
-  requires: failureThreshold >= 1
-  requires: cooldownMs >= 1
+/// True when a circuit breaker can work with these settings: at least one
+/// failure to open and a cooldown of at least 1 ms.
+@pure
+@stable(since = "0.2")
+pub func isValidCircuitConfig(failureThreshold: in Int, cooldownMs: in Int): Bool {
+  failureThreshold >= 1 and cooldownMs >= 1
+}
+
+/// Fail fast on a circuit-breaker configuration that cannot work, before the
+/// wrapped call runs (see `checkRetryConfig`).  Used by `CircuitBreaker` and
+/// by other libraries' breaker aspects, and callable from a consumer's own
+/// `from Resilience.CircuitBreaker` instantiation (#7332).
+@stable(since = "0.2")
+pub func checkCircuitConfig(failureThreshold: in Int, cooldownMs: in Int): Unit
+  requires: isValidCircuitConfig(failureThreshold, cooldownMs)
 {
 }

@@ -346,6 +346,8 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/method_contracts_self_test.l \
 	lyric-compiler/lyric/invariant_self_test.l \
 	lyric-compiler/lyric/nan_compare_self_test.l \
+	lyric-compiler/lyric/module_val_collections_self_test.l \
+	lyric-compiler/lyric/imported_union_case_ctor_self_test.l \
 	lyric-compiler/lyric/modechecker_self_test.l \
 	lyric-compiler/lyric/module_val_self_test.l \
 	lyric-compiler/lyric/mono_self_test.l \

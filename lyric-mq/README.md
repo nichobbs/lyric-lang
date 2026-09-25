@@ -168,15 +168,15 @@ queue name is configured.
 
 ### Idempotent
 
-Deduplicates messages by tracking consumed `messageId` values in a cache.
-Matches `MessageQueue` implementations and caches the `id` field.
+Deduplicates handler calls by message id. Apply it to handlers that take a
+`message: Message` parameter and return `Result[Unit, String]`.
 
 ```lyric
 import Mq.Aspects
 
-aspect IdempotentPublish from Mq.Aspects.Idempotent {
-  matches: name like "*Publish"
-  config { ttlSeconds: Int = 3600; dedupePrefix: String = "mq:dedup:" }
+aspect DedupOrders from Mq.Aspects.Idempotent {
+  matches: name like "handleOrder*"
+  config { ttlSeconds: Int = 3600 }
 }
 ```
 
@@ -185,19 +185,29 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `ttlSeconds` | `Int` | `3600` | Dedup cache TTL in seconds |
-| `dedupePrefix` | `String` | `"mq:dedup:"` | Key prefix for dedup entries |
+| `cacheKeyPrefix` | `String` | `"mq:idem:"` | Prepended to every message id |
+| `ttlSeconds` | `Int` | `3600` | How long a processed id is remembered; `0` never expires; negative is a configuration error |
+
+Each id is claimed atomically before the handler runs
+(`Mq.Aspects.IdempotencyLedger`): a delivery whose id was already processed,
+or is being handled right now by another consumer in the same process,
+returns `Ok(())` without running the handler. A successful handler marks the
+id processed; a failed or panicking one releases the claim so the
+redelivery runs. Deduplication is per process: consumers in separate
+processes each keep their own record. Messages with an empty id are never
+deduplicated.
 
 ### DeadLetter
 
-Routes messages exceeding `maxDeliveryCount` to a dead-letter queue after `nack()`.
+Dead-letters a message whose handler keeps failing. Apply it to handlers
+that take `message: Message` and `consumer: QueueConsumer` parameters.
 
 ```lyric
 import Mq.Aspects
 
 aspect HandleDeadLetters from Mq.Aspects.DeadLetter {
-  matches: name like "*Consumer"
-  config { maxDeliveryCount: Int = 3; dlqName: String = "dead-letters" }
+  matches: name like "handleOrder*"
+  config { maxDeliveries: Int = 3 }
 }
 ```
 
@@ -206,8 +216,11 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `maxDeliveryCount` | `Int` | `3` | Redelivery threshold |
-| `dlqName` | `String` | `"dead-letters"` | Dead-letter queue name |
+| `maxDeliveries` | `Int` | `3` | Failed deliveries before dead-lettering; at least 1 |
+
+On the `maxDeliveries`-th failed delivery (`deliveryCount + 1`, since
+`deliveryCount` is 0 on the first), the message is appended to
+`Mq.Aspects.deadLetterStore` and nacked without requeue.
 
 ## Decision log
 

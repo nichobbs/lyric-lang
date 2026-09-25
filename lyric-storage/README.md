@@ -212,8 +212,10 @@ Environment variable defaults (env prefix `LYRIC_CONFIG_STORAGE_AZUREBLOB_`):
 Every backend checks each key with `Storage.isSafeKey` and returns
 `Err(StorageError(code = "INVALID_KEY"))` for a rejected one: empty keys,
 control characters, absolute keys, `..`, `.` and empty path segments
-(including percent-encoded forms), double-encoded `%25` payloads, and
-`.meta.json` sidecar names. The `ValidateKey` aspect applies the same check
+(including percent-encoded forms), double-encoded `%25` payloads,
+`.meta.json` sidecar names, and names Windows would not store as written: a
+segment ending in `.` or a space, a device name (`CON`, `NUL`, `COM1`,
+`lpt2.txt`), and `:` (an NTFS alternate data stream). The `ValidateKey` aspect applies the same check
 earlier, before a handler runs.
 
 ## Aspect templates (`Storage.Aspects`)
@@ -256,13 +258,12 @@ aspect GuardPaths from Storage.Aspects.ValidateKey {
 }
 ```
 
-Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `enabled` | `Bool` | `true` | Master switch |
-
-There is deliberately no switch for the traversal check itself.
+`ValidateKey` has no configuration fields. Aspect config is settable from the
+environment (`LYRIC_ASPECT_<INSTANTIATION>_<FIELD>`), so any switch would let
+whoever controls the environment turn the traversal check off; the former
+`allowDots` field and `enabled` master switch were removed for that reason.
+An instantiation that still sets `enabled` fails to build; delete the
+setting, or the instantiation if the check is really unwanted.
 
 ## Decision log
 

@@ -830,7 +830,7 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
     monitorExit(rateLock)
   }
 
-  val fullBucket = newTokenBucket(messagesPerMinute, burstSize, nowMs)
+  val fullBucket = Resilience.newTokenBucket(messagesPerMinute, burstSize, nowMs)
   var re: RateEntry = default()
   if not cdTryGetValue(rateLimitMap, key, re) {
     val newEntry = RateEntry(scaledTokens = fullBucket.scaledTokens, lastRefillMs = fullBucket.lastRefillMs)
@@ -843,8 +843,8 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
     }
   }
 
-  val take = takeToken(
-    TokenBucket(scaledTokens = re.scaledTokens, lastRefillMs = re.lastRefillMs),
+  val take = Resilience.takeToken(
+    Resilience.TokenBucket(scaledTokens = re.scaledTokens, lastRefillMs = re.lastRefillMs),
     messagesPerMinute,
     burstSize,
     nowMs

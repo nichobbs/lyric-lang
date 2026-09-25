@@ -504,7 +504,7 @@ lyric-grpc/
   src/
     grpc.l                    Grpc  (channels, RPC invocation)
     types.l                   Grpc.Types  (types, metadata)
-    aspects.l                 Grpc.Aspects  (planned aspect templates)
+    aspects.l                 Grpc.Aspects  (auth, role and circuit-breaker aspect templates)
     _kernel/
       net/
         grpc_kernel.l         Grpc.Kernel.Net  (.NET extern boundary)
@@ -513,6 +513,40 @@ lyric-grpc/
   tests/
     *_tests.l                 test modules
 ```
+
+## Authentication aspects
+
+`Grpc.Aspects.RequiresGrpcAuth` and `RequiresGrpcRole` verify a bearer JWT
+from the handler's `authToken: String` parameter with `Auth.verifyJwt`.
+Every instantiation must supply:
+
+- `jwtSecret`: at least 32 bytes of UTF-8 (`Auth.minHmacSecretBytes()`);
+- `issuer` and `audience`: the values the token's `iss` and `aud` claims
+  must carry.
+
+```lyric
+aspect GrpcAuth from Grpc.Aspects.RequiresGrpcAuth {
+  matches: visibility: pub
+  config {
+    @sensitive
+    jwtSecret: String = "REPLACE_ME_WITH_A_REAL_SECRET"
+    issuer: String = "my-service"
+    audience: String = "my-service-api"
+  }
+}
+```
+
+A missing or empty token is answered with 16 UNAUTHENTICATED and an invalid
+one with 7 PERMISSION_DENIED; neither reaches the handler.  A secret that is
+too short, or an algorithm list that is empty or names `none`, is a
+configuration bug: the aspect panics before handling the request, with a
+message naming the problem (`Auth.jwtConfigProblem`).
+
+**Migration.** `issuer` and `audience` used to default to `""`, which
+skipped the `iss`/`aud` checks, so a token minted for any other service
+sharing the secret was accepted.  They no longer have defaults: an
+instantiation that omits them fails to build (A0044).  Add the two fields,
+and lengthen the secret if it is under 32 bytes.
 
 ## See also
 

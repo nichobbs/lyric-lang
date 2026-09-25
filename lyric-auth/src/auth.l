@@ -90,6 +90,26 @@ pub func isStrongHmacSecret(secret: in String): Bool {
   encodeUtf8(secret).length >= minHmacSecretBytes()
 }
 
+/// Why `secret` and `allowedAlgorithms` can never verify a token, or ""
+/// when they are usable: the secret must satisfy `isStrongHmacSecret`, and
+/// the algorithm list must be non-empty and must not name `none`.  The
+/// authentication aspects check this before handling a request, so a
+/// placeholder or env-supplied secret that is too short is reported as a
+/// configuration error instead of failing `verifyJwt`'s precondition.
+@stable(since = "0.1")
+pub func jwtConfigProblem(secret: in String, allowedAlgorithms: in String): String {
+  if not isStrongHmacSecret(secret) {
+    return "jwtSecret must be at least " + minHmacSecretBytes().toString() + " bytes of UTF-8"
+  }
+  if allowedAlgorithms.length == 0 {
+    return "allowedAlgorithms must name at least one algorithm"
+  }
+  if contains(toLower(allowedAlgorithms), "none") {
+    return "allowedAlgorithms must not include 'none'"
+  }
+  ""
+}
+
 /// Largest accepted clock-skew leeway in seconds.  RFC 7519 §4.1.4 allows
 /// "a few minutes"; more than that silently extends every token's lifetime.
 pub func maxClockSkewSeconds(): Int {

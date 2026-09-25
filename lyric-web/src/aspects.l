@@ -98,6 +98,10 @@ pub aspect RequiresAuth {
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
+    } else if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
+      // A configuration bug (a placeholder or short env-supplied secret):
+      // raised before the request is handled, whatever its token (#7319).
+      panic("Web.Aspects.RequiresAuth: " + Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms))
     } else {
       if args.authToken == "" {
         ret = Err(WebPkg.unauthorized("Authorization header missing or empty"))
@@ -155,6 +159,10 @@ pub aspect RequiresRole {
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
+    } else if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
+      // A configuration bug (a placeholder or short env-supplied secret):
+      // raised before the request is handled, whatever its token (#7319).
+      panic("Web.Aspects.RequiresRole: " + Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms))
     } else {
       if args.authToken == "" {
         ret = Err(WebPkg.unauthorized("Authorization header missing or empty"))
@@ -332,6 +340,15 @@ pub aspect HttpCircuitBreaker {
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
+    } else if not Resilience.isValidCircuitConfig(failureThreshold, cooldownMs) {
+      // A configuration bug, raised before the handler runs, not after its
+      // side effects when the first failure is recorded (#7331).
+      panic(
+        "Web.Aspects.HttpCircuitBreaker: need failureThreshold >= 1 and cooldownMs >= 1, got failureThreshold=" +
+          failureThreshold.toString() +
+          " cooldownMs=" +
+          cooldownMs.toString()
+      )
     } else {
       val key = if name.length > 0 then name else call.qualifiedName
       if Resilience.circuitIsOpen(key, cooldownMs) {

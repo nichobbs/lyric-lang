@@ -92,6 +92,10 @@ pub aspect RequiresGrpcAuth {
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
+    } else if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
+      // A configuration bug (a placeholder or short env-supplied secret):
+      // raised before the request is handled, whatever its token (#7319).
+      panic("Grpc.Aspects.RequiresGrpcAuth: " + Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms))
     } else {
       if args.authToken == "" {
         ret = Err(Grpc.unauthenticated("Authorization metadata missing"))
@@ -149,6 +153,10 @@ pub aspect RequiresGrpcRole {
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
+    } else if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
+      // A configuration bug (a placeholder or short env-supplied secret):
+      // raised before the request is handled, whatever its token (#7319).
+      panic("Grpc.Aspects.RequiresGrpcRole: " + Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms))
     } else {
       if args.authToken == "" {
         ret = Err(Grpc.unauthenticated("Authorization metadata missing"))
@@ -236,6 +244,15 @@ pub aspect GrpcCircuitBreaker {
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
+    } else if not Resilience.isValidCircuitConfig(failureThreshold, cooldownMs) {
+      // A configuration bug, raised before the handler runs, not after its
+      // side effects when the first failure is recorded (#7331).
+      panic(
+        "Grpc.Aspects.GrpcCircuitBreaker: need failureThreshold >= 1 and cooldownMs >= 1, got failureThreshold=" +
+          failureThreshold.toString() +
+          " cooldownMs=" +
+          cooldownMs.toString()
+      )
     } else {
       val key = if name.length > 0 then name else call.qualifiedName
       if Resilience.circuitIsOpen(key, cooldownMs) {

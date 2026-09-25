@@ -53,14 +53,18 @@ code404="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:
 # EngineLimits.maxBodyBytes as the dotnet engine.  A body exactly at the limit
 # is echoed in full; one byte over is refused with 413, whether its size is
 # declared up front (Content-Length) or only discovered while reading
-# (chunked).
+# (chunked), and whatever the method: a GET carrying an oversized body is
+# refused too, as on dotnet (#7325).
 body_dir="$(mktemp -d)"
+trap 'rm -rf "$body_dir"' EXIT
 head -c 10485760 /dev/zero | tr '\0' 'a' > "$body_dir/at-limit"
 head -c 10485761 /dev/zero | tr '\0' 'a' > "$body_dir/over-limit"
-atlimit="$(curl -s --max-time 30 -o /dev/null -w '%{http_code}:%{size_download}' -X POST --data-binary @"$body_dir/at-limit" http://localhost:8099/echo-body)"
+atlimit="$(curl -s --max-time 30 -o /dev/null -w '%{http_code}:%{size_download}' -X POST --data-binary @"$body_dir/at-limit" http://localhost:8099/echo-body || echo 'curl-failed')"
 overdeclared="$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' -X POST --data-binary @"$body_dir/over-limit" http://localhost:8099/echo-body || true)"
 overchunked="$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' -X POST -H 'Transfer-Encoding: chunked' --data-binary @"$body_dir/over-limit" http://localhost:8099/echo-body || true)"
+overget="$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' -X GET --data-binary @"$body_dir/over-limit" http://localhost:8099/hello/Ada || true)"
 rm -rf "$body_dir"
+trap - EXIT
 # TLS phase 2.2/2.3 (#5881/#6017): before the plaintext listener,
 # main runs three in-process self-checks and logs a single
 # PASS/FAIL line each:
@@ -103,6 +107,7 @@ fail=0
 [ "$atlimit" = "200:10485760" ] || { echo "::error::a body at the 10 MiB limit returned '$atlimit', expected 200:10485760"; fail=1; }
 [ "$overdeclared" = "413" ] || { echo "::error::an over-limit Content-Length body returned HTTP $overdeclared, expected 413"; fail=1; }
 [ "$overchunked" = "413" ] || { echo "::error::an over-limit chunked body returned HTTP $overchunked, expected 413"; fail=1; }
+[ "$overget" = "413" ] || { echo "::error::a GET with an over-limit body returned HTTP $overget, expected 413"; fail=1; }
 [ -n "$h2selfcheck" ] || { echo "::error::HTTPS/h2 in-process self-check did not report PASS (Web.serveTls + negotiatedVersion)"; fail=1; }
 [ -n "$mtlsmisconfigselfcheck" ] || { echo "::error::mTLS-misconfig self-check did not report PASS (Web.serveTls requireClientCert with no clientCa -> typed ServerTlsUnsupported)"; fail=1; }
 [ -n "$mtlsacceptselfcheck" ] || { echo "::error::mTLS-accept self-check did not report PASS (trusted client cert should connect)"; fail=1; }
