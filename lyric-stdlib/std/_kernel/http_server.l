@@ -1284,31 +1284,35 @@ func onH2Headers(
   }
 }
 
-// Replenish the connection-level receive window by `len` and send the peer the
-// `WINDOW_UPDATE` (stream 0). Called for every DATA octet the driver consumes —
-// including bytes it drops for an over-limit stream — so the shared connection
-// window never deadlocks the *other* streams on the connection.
-func replenishConnWindow(state: in H2ConnState, len: in Int): Unit {
-  if len > 0 {
-    val bytes = grantConnectionWindow(state.h2, len)
-    if bytes.length > 0 {
-      val _ = hostWrite(state.conn, bytes);
-      ()
+// Receive-window credit (#7269). Rather than a `WINDOW_UPDATE` per DATA frame
+// (two separately written frames for every frame received, an amplification for
+// small frames), a window is topped back up to its initial size only once it has
+// fallen to half of it, the usual strategy: the peer always keeps at least half
+// a window of credit, so it never stalls waiting for us. The FSM's own receive
+// windows are the source of truth, so the credit always equals what the FSM
+// debited, padding included (#6305). Both updates due after one frame go out in
+// a single write.
+//
+// `topUpStream` is false for bytes dropped on a rejected stream: that stream's
+// window is deliberately not replenished (backpressure), while the connection
+// window always is, so the other streams on the connection never stall.
+func topUpReceiveWindows(state: in H2ConnState, streamId: in Int, topUpStream: in Bool): Unit {
+  var frames = emptyBytes()
+  val connInitial = H2.h2InitialWindow()
+  val connWindow = H2.connectionReceiveWindow(state.h2)
+  if connWindow <= connInitial / 2 {
+    frames = frames.concat(grantConnectionWindow(state.h2, connInitial - connWindow))
+  }
+  if topUpStream {
+    val streamInitial = state.h2.localSettings.initialWindowSize
+    val streamWindow = H2.streamReceiveWindow(state.h2, streamId)
+    if streamWindow <= streamInitial / 2 and streamWindow < streamInitial {
+      frames = frames.concat(grantStreamWindow(state.h2, streamId, streamInitial - streamWindow))
     }
   }
-}
-
-// Replenish a stream-level receive window by `len` and send the `WINDOW_UPDATE`.
-// Called only for bytes accepted into an under-cap body, so a large (but legal)
-// request body keeps flowing past the 64 KiB initial window; a rejected stream's
-// window is deliberately NOT replenished (backpressure).
-func replenishStreamWindow(state: in H2ConnState, streamId: in Int, len: in Int): Unit {
-  if len > 0 {
-    val bytes = grantStreamWindow(state.h2, streamId, len)
-    if bytes.length > 0 {
-      val _ = hostWrite(state.conn, bytes);
-      ()
-    }
+  if frames.length > 0 {
+    val _ = hostWrite(state.conn, frames);
+    ()
   }
 }
 
@@ -1343,17 +1347,12 @@ func onH2Data(
   streamId: in Int,
   data: in slice[Byte],
   endStream: in Bool,
-  wireLength: in Int,
   work: in List[H2Event],
 ): Unit {
-  // Every consumed DATA octet gives back connection-level receive window so the
-  // shared window (and thus the other streams on the connection) never stalls,
-  // whether or not this stream's bytes are kept. Credit must match the debit:
-  // the FSM debits the full on-wire length (padding included, RFC 9113
-  // §6.9.1), so replenish by wireLength — using data.length here would leak
-  // the padding octets and drift the window downward on padded frames (#6305).
-  replenishConnWindow(state, wireLength)
   if isRejectedStream(state, streamId) {
+    // Dropped bytes still give back connection-level window so the other
+    // streams on the connection never stall.
+    topUpReceiveWindows(state, streamId, false)
     // Already terminally rejected (#6144): drop further DATA (never buffer past
     // the cap); its END_STREAM closes the stream, so prune the marker.
     if endStream {
@@ -1368,6 +1367,7 @@ func onH2Data(
     // HTTP/1.1 path, which rejects an oversized body as `BodyTooLarge` at
     // `maxBodyBytes`.
     markRejectedStream(state, streamId)
+    topUpReceiveWindows(state, streamId, false)
     sendH2Reject413(state, streamId)
     if endStream {
       forgetRejectedStream(state, streamId)
@@ -1375,10 +1375,10 @@ func onH2Data(
     return
   }
   appendBytes(accum.body, data)
-  // Under the cap: also give back stream-level window so a large legal body can
-  // exceed the 64 KiB initial receive window. Same wireLength symmetry as the
-  // connection-level credit above (#6305).
-  replenishStreamWindow(state, streamId, wireLength)
+  // Under the cap: stream-level window is topped up too, so a large legal body
+  // can exceed the 64 KiB initial receive window (not once the peer has ended
+  // the stream: no further DATA can arrive on it).
+  topUpReceiveWindows(state, streamId, not endStream)
   if endStream {
     dispatchH2Stream(state, streamId, work)
   }
@@ -1407,14 +1407,7 @@ func processH2Event(state: in H2ConnState, ev: in H2Event, work: in List[H2Event
       state.open = false
     }
     case H2RequestHeaders(streamId, headers, endStream) -> onH2Headers(state, streamId, headers, endStream, work)
-    case H2RequestData(streamId, data, endStream, wireLength) -> onH2Data(
-      state,
-      streamId,
-      data,
-      endStream,
-      wireLength,
-      work
-    )
+    case H2RequestData(streamId, data, endStream, _) -> onH2Data(state, streamId, data, endStream, work)
   }
 }
 

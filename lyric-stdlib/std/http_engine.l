@@ -1736,15 +1736,24 @@ pub func serializeResponseHead(
   requires: isResponseSafeString(reason)
   requires: allHeadersResponseSafe(headers)
 {
-  var acc = httpVersionToken(version) + " " + toString(status) + " " + reason + "\r\n"
+  val sb = StringBuilder.new()
+  sb.append(httpVersionToken(version))
+  sb.append(" ")
+  sb.append(toString(status))
+  sb.append(" ")
+  sb.append(reason)
+  sb.append("\r\n")
   var i = 0
   while i < headers.count {
     val h = headers[i]
-    acc = acc + h.name + ": " + h.value + "\r\n"
+    sb.append(h.name)
+    sb.append(": ")
+    sb.append(h.value)
+    sb.append("\r\n")
     i = i + 1
   }
-  acc = acc + "\r\n"
-  asciiStringToBytes(acc)
+  sb.append("\r\n")
+  asciiStringToBytes(sb.toString())
 }
 
 /// Identity by design: a fixed-length body needs no wire framing beyond the

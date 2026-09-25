@@ -371,6 +371,10 @@ pub record H2Connection {
   var connSendWindow: Int
   var connRecvWindow: Int
   var streams: List[H2Stream]
+  // The same `H2Stream` records as `streams`, keyed by id, so the per-frame
+  // stream lookup is O(1) (#7269). `streams` keeps the id-ordered sequence
+  // the iteration and pruning passes need; both are updated together.
+  streamIndex: Map[Int, H2Stream]
   var cont: Option[ContinuationState]
   var lastPeerStreamId: Int
   var expectClientSettings: Bool
@@ -494,6 +498,7 @@ pub func newServerConnection(localSettings: in H2Settings): H2Connection {
     connSendWindow = h2InitialWindow(),
     connRecvWindow = h2InitialWindow(),
     streams = newList(),
+    streamIndex = newMap(),
     cont = noContinuation(),
     lastPeerStreamId = 0,
     expectClientSettings = true,
@@ -554,18 +559,7 @@ pub func goAwayWasReceived(conn: in H2Connection): Bool {
 // §5. Stream bookkeeping.
 // =============================================================================
 func findStream(state: in H2Connection, streamId: in Int): Option[H2Stream] {
-  var i = 0
-  while i < state.streams.count {
-    // Explicit type on a `List`-element bind: on the JVM backend a bare
-    // `List[T]` index is a statically-`Object` receiver (erased generics), so
-    // `st.id` would not lower without the annotation (the #5934/#5935 class).
-    val st: H2Stream = state.streams[i]
-    if st.id == streamId {
-      return Some(value = st)
-    }
-    i = i + 1
-  }
-  None
+  mapGet(state.streamIndex, streamId)
 }
 
 func isActiveState(s: in H2StreamState): Bool {
@@ -599,6 +593,7 @@ func createStream(state: inout H2Connection, streamId: in Int): H2Stream {
     recvWindow = state.localSettings.initialWindowSize
   )
   state.streams.add(st)
+  state.streamIndex[streamId] = st
   st
 }
 
@@ -740,11 +735,31 @@ func pruneClosedStreams(state: inout H2Connection): Unit {
   if threshold <= 0 {
     return
   }
+  // `streams` is in ascending id order (peer stream ids only increase, RFC
+  // 9113 section 5.1.1, and `createStream` appends), so only the prefix below
+  // `threshold` can hold prunable records. Scan just that prefix and rebuild
+  // the list only when it holds one: without this, every `feed` past the
+  // retention count rebuilt the whole list (#7269).
+  var j = 0
+  var anyPrunable = false
+  while j < state.streams.count and not anyPrunable {
+    val st: H2Stream = state.streams[j]
+    if st.id >= threshold {
+      return
+    }
+    anyPrunable = isClosedState(st.state)
+    j = j + 1
+  }
+  if not anyPrunable {
+    return
+  }
   val kept: List[H2Stream] = newList()
   var i = 0
   while i < state.streams.count {
     val st: H2Stream = state.streams[i]
-    if not (isClosedState(st.state) and st.id < threshold) {
+    if isClosedState(st.state) and st.id < threshold {
+      state.streamIndex.remove(st.id)
+    } else {
       kept.add(st)
     }
     i = i + 1

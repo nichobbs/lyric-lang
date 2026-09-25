@@ -449,6 +449,29 @@ int64_t lyric_string_index_of_from(LyricString* haystack, LyricString* needle, i
     return r < 0 ? -1 : r + from;
 }
 
+static int ascii_fold(int c) {
+    return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+}
+
+int32_t lyric_string_ascii_case_compare(LyricString* a, LyricString* b) {
+    int64_t alen = a ? a->len : 0;
+    int64_t blen = b ? b->len : 0;
+    const uint8_t* ad = alen > 0 ? LYRIC_STRING_DATA(a) : NULL;
+    const uint8_t* bd = blen > 0 ? LYRIC_STRING_DATA(b) : NULL;
+    int same = alen == blen;
+    for (int64_t i = 0; i < alen; i++) {
+        if (ad[i] >= 0x80) return -1;
+        if (same) {
+            if (bd[i] >= 0x80) return -1;
+            if (ascii_fold(ad[i]) != ascii_fold(bd[i])) same = 0;
+        }
+    }
+    for (int64_t i = 0; i < blen; i++) {
+        if (bd[i] >= 0x80) return -1;
+    }
+    return same ? 1 : 0;
+}
+
 LyricString* lyric_string_concat_list(LyricList* parts) {
     int64_t n = parts ? parts->len : 0;
     int64_t total = 0;

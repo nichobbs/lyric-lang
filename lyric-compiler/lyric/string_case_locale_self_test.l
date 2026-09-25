@@ -17,6 +17,7 @@ package Lyric.StringCaseLocaleSelfTest
 
 import Std.Core
 import Std.Char
+import Std.String
 import Std.Testing
 
 test "String toLower and toUpper map I and i without locale tailoring" {
@@ -27,4 +28,20 @@ test "String toLower and toUpper map I and i without locale tailoring" {
 test "Char toLower and toUpper map I and i without locale tailoring" {
   assertTrue(Std.Char.toLower('I') == 'i', "Char.toLower")
   assertTrue(Std.Char.toUpper('i') == 'I', "Char.toUpper")
+}
+
+// #7269: equalsCaseInsensitive folds ASCII in place and only lowercases
+// whole strings when either side has a non-ASCII character.
+test "equalsCaseInsensitive folds ASCII without locale tailoring" {
+  assertTrue(Std.String.equalsCaseInsensitive("TITLE", "title"), "I and i fold under any locale")
+  assertTrue(Std.String.equalsCaseInsensitive("Content-Length", "content-length"), "header name")
+  assertTrue(Std.String.equalsCaseInsensitive("", ""), "empty strings")
+  assertTrue(not Std.String.equalsCaseInsensitive("Host", "Hosts"), "length differs")
+  assertTrue(not Std.String.equalsCaseInsensitive("[a]", "{A}"), "only letters fold")
+}
+
+test "equalsCaseInsensitive falls back to full lowercasing for non-ASCII text" {
+  assertTrue(Std.String.equalsCaseInsensitive("\u{C9}COLE", "\u{E9}cole"), "E-acute folds")
+  assertTrue(not Std.String.equalsCaseInsensitive("\u{C9}cole", "ecole"), "E-acute is not e")
+  assertTrue(not Std.String.equalsCaseInsensitive("abc", "ab\u{E9}"), "one side non-ASCII")
 }

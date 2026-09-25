@@ -19,6 +19,8 @@ extern func rtConcatList(parts: List[String]): String = "lyric_string_concat_lis
 
 extern func rtIndexOfFrom(s: String, value: String, from: Long): Long = "lyric_string_index_of_from"
 
+extern func rtAsciiCaseCompare(a: String, b: String): Int = "lyric_string_ascii_case_compare"
+
 // `String + Char` and `Char.toString()` have no native lowering (#6237),
 // so a Char is appended through its code point.
 extern func rtStrFromChar(cp: Int): String = "lyric_string_from_char"
@@ -47,4 +49,11 @@ pub func hostBuilderToString(sb: in HostStringBuilder): String {
 // absent. The caller guarantees 0 <= from <= s.length.
 pub func hostIndexOfFrom(s: in String, value: in String, from: in Int): Int {
   rtIndexOfFrom(s, value, from.toLong()).toInt()
+}
+
+// ASCII case-insensitive comparison without allocating (#7269): 1 equal
+// after folding A-Z, 0 both pure ASCII and different, -1 either contains a
+// non-ASCII byte (the caller then compares full lowercase forms).
+pub func hostAsciiCaseCompare(a: in String, b: in String): Int {
+  rtAsciiCaseCompare(a, b)
 }
