@@ -71,6 +71,8 @@ pub func debit(a: in Account, amount: in Amount): Result[Account, AccountError]
 
 The `implies` operator is `a implies b`, meaning "if `a` is true, then `b` must also be true" — equivalent to `not a or b`. Here the two postconditions say: if the debit succeeded, the new balance is exactly reduced by the amount; if it failed, the balance was already too low. Together they rule out the silent-failure case where the function returns `Err` even when there was enough balance.
 
+One path is exempt: an early exit written with `?` (Chapter 7) hands the callee's `Err` or `None` straight back without evaluating your postconditions. For a function returning `Result` or `Option`, state what success guarantees in the `result.isOk implies ...` form, so the clause holds on every path, including the ones that skip the check.
+
 ### `old()` — referring to the pre-state
 
 Postconditions on functions that modify `inout` parameters, or that capture a snapshot of a parameter's state for comparison, use `old(expr)`. The `old()` form evaluates `expr` against the state at the moment the function body began executing — before any modifications:

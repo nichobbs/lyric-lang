@@ -1018,7 +1018,7 @@ func divide(n: in Int, d: in Int): Int
 ```
 
 - `requires`: precondition. Boolean expression evaluated on entry. Failure raises `PreconditionViolated` (a `Bug`).
-- `ensures`: postcondition. Boolean expression evaluated on return. Has access to `result` (the return value) and `old(expr)` (value of `expr` at entry). Failure raises `PostconditionViolated`.
+- `ensures`: postcondition. Boolean expression evaluated on return. Has access to `result` (the return value) and `old(expr)` (value of `expr` at entry). Failure raises `PostconditionViolated`. Every `return` is checked, wherever it appears: at the top level of the body, in `if`/`match`/loop/`try`/`scope` bodies, inside a `val`/`var` initializer or an assignment's right-hand side, and in an expression-bodied match arm, as well as the trailing fall-off value. The one exception is the early exit synthesized by `?` (§ error propagation): it returns the callee's `Err`/`None` unchanged and does not evaluate the postcondition, so write postconditions of `Result`/`Option`-returning functions in the `result.isOk implies ...` form.
 - The failure message names the violation kind, the owning function qualified by its package, and the clause as written: `PreconditionViolated: Division.divide requires d != 0`, `PostconditionViolated: Division.divide ensures result >= 0`. Methods are named `Pkg.Type.method`; protected-type invariants report `InvariantViolated: Pkg.Type.entry invariant ...` and loop invariants `LoopInvariantViolated: invariant ...`. The message is identical on every target.
 - `requires` and `ensures` clauses may be repeated for clarity:
 

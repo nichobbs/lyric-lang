@@ -133,3 +133,45 @@ test "ensures over an Option result" {
   assertEqualInt(optOr(maybe(7), -1), 7, "maybe(7) -> Some(7)")
   assertEqualInt(optOr(maybe(0), -1), -1, "maybe(0) -> None")
 }
+
+// Early returns nested inside a `val` initializer, an assignment right-hand
+// side, or an expression-bodied match arm must run the postcondition too
+// (#7224).  Each helper returns early with a value that violates its
+// `ensures:` on the `bad` input, so a skipped check would let it through.
+func valInitReturn(o: in Option[Int], bad: in Bool): Int
+  ensures: result >= 0
+{
+  val v = match o { case None -> { return if bad { -1 } else { 0 } }; case Some(x) -> x }
+  v
+}
+
+func assignReturn(o: in Option[Int], bad: in Bool): Int
+  ensures: result >= 0
+{
+  var v = 0
+  v = match o { case None -> { return if bad { -1 } else { 0 } }; case Some(x) -> x }
+  v
+}
+
+func armExprReturn(o: in Option[Int], bad: in Bool): Int
+  ensures: result >= 0
+{
+  val v = match o { case None -> if bad { return -1 } else { 0 }; case Some(x) -> x }
+  v
+}
+
+test "ensures runs on a return nested in a val initializer (#7224)" {
+  assertEqualInt(valInitReturn(Some(4), false), 4, "fall-through value")
+  assertEqualInt(valInitReturn(None, false), 0, "early return that satisfies ensures")
+  assertPanicsWith("early return violating ensures", "PostconditionViolated", { -> val _ = valInitReturn(None, true) })
+}
+
+test "ensures runs on a return nested in an assignment right-hand side (#7224)" {
+  assertEqualInt(assignReturn(Some(4), false), 4, "fall-through value")
+  assertPanicsWith("early return violating ensures", "PostconditionViolated", { -> val _ = assignReturn(None, true) })
+}
+
+test "ensures runs on a return inside an expression-bodied match arm (#7224)" {
+  assertEqualInt(armExprReturn(None, false), 0, "arm value")
+  assertPanicsWith("early return violating ensures", "PostconditionViolated", { -> val _ = armExprReturn(None, true) })
+}

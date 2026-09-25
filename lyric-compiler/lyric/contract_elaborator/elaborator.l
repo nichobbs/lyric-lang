@@ -1430,7 +1430,7 @@ func elaborateExprOrBlockDeep(
 ): ExprOrBlock {
   match eob {
     case EOBBlock(body) -> EOBBlock(block = elaborateBlockDeep(body, ensuresExprs, counter))
-    case EOBExpr(e) -> EOBExpr(expr = e)
+    case EOBExpr(e) -> EOBExpr(expr = elaborateExprDeep(e, ensuresExprs, counter))
   }
 }
 
@@ -1463,7 +1463,32 @@ func elaborateExprDeep(e: in Expr, ensuresExprs: in List[SpannedExpr], counter: 
       }
       mkExpr(EMatch(scrutinee = scrutinee, arms = newArms), e.span)
     }
+    // A value-producing block or `unsafe { }` can hold a `return` that exits
+    // the enclosing function (#7224).  Lambdas are deliberately not entered:
+    // a `return` there leaves the lambda, not the function.
+    case EBlock(blk) -> mkExpr(EBlock(block = elaborateBlockDeep(blk, ensuresExprs, counter)), e.span)
+    case EUnsafe(blk) -> mkExpr(EUnsafe(block = elaborateBlockDeep(blk, ensuresExprs, counter)), e.span)
+    case EParen(inner) -> mkExpr(EParen(inner = elaborateExprDeep(inner, ensuresExprs, counter)), e.span)
     case _ -> e
+  }
+}
+
+// A `val`/`var`/`let` initializer can hold a `return` inside a `match`/`if`
+// expression (`val v = match o { case None -> return 0; ... }`); rewrite it
+// so the early return also runs the postconditions (#7224).
+func elaborateBindingDeep(
+  b: in LocalBinding, ensuresExprs: in List[SpannedExpr], counter: inout RenameCounter
+): LocalBinding {
+  match b {
+    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = elaborateExprDeep(init, ensuresExprs, counter))
+    case LBLet(n, ty, init) -> LBLet(name = n, ty = ty, init = elaborateExprDeep(init, ensuresExprs, counter))
+    case LBVar(n, ty, initOpt) -> {
+      val newInit: Option[Expr] = match initOpt {
+        case Some(x) -> Some(value = elaborateExprDeep(x, ensuresExprs, counter))
+        case None -> None
+      }
+      LBVar(name = n, ty = ty, init = newInit)
+    }
   }
 }
 
@@ -1501,6 +1526,19 @@ func elaborateStmtDeep(
       val newE = elaborateExprDeep(e, ensuresExprs, counter)
       acc.add(mkStmt(SExpr(expr = newE), s.span))
     }
+    case SLocal(binding) -> acc.add(
+      mkStmt(SLocal(binding = elaborateBindingDeep(binding, ensuresExprs, counter)), s.span)
+    )
+    case SAssign(target, op, value) -> acc.add(
+      mkStmt(
+        SAssign(
+          target = target,
+          op = op,
+          value = elaborateExprDeep(value, ensuresExprs, counter)
+        ),
+        s.span
+      )
+    )
     case SFor(label, pat, iter, body) -> acc.add(
       mkStmt(
         SFor(
