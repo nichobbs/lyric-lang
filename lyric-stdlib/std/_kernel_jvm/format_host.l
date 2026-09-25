@@ -49,6 +49,8 @@ extern type JRoundingMode = "java.math.RoundingMode"
 
 extern type JInteger = "java.lang.Integer"
 
+extern type JStringBuilder = "java.lang.StringBuilder"
+
 // =====================================================================
 // Culture singleton.
 // =====================================================================
@@ -88,31 +90,48 @@ func formatPrecision(fmt: in String): Int {
 
 // Left-pad `s` with zeros to at least `width` characters; `width` <= 0 or
 // shorter-than-s is the identity (matching BCL precision semantics).
+// Built in one `StringBuilder` rather than by repeated concatenation, which
+// copied the growing prefix once per pad character (#7272).
 func zeroPadTo(s: in String, width: in Int): String {
-  var pad = ""
-  var need = width - s.length
-  while need > 0 {
-    pad = pad + "0"
-    need = need - 1
+  val need = width - s.length
+  if need <= 0 {
+    return s
   }
-  pad + s
+  val sb = JStringBuilder.new(width)
+  var i = 0
+  while i < need {
+    appendCharTo(sb, '0')
+    i = i + 1
+  }
+  appendStringTo(sb, s)
+  sb.toString()
+}
+
+// Tail-position forms: a discarded auto-FFI instance call on a parameter
+// receiver emits no invoke on this backend (#5379).
+func appendCharTo(sb: in JStringBuilder, c: in Char): Unit {
+  sb.append(c)
+}
+
+func appendStringTo(sb: in JStringBuilder, s: in String): Unit {
+  sb.append(s)
 }
 
 // Uppercase the ASCII hex digits a-f.  Hex output contains only 0-9/a-f, so
 // a full toUpper pass over arbitrary text is unnecessary.
 func hexUpper(s: in String): String {
-  var acc = ""
+  val sb = JStringBuilder.new(s.length)
   var i = 0
   while i < s.length {
     val c = s[i]
     if c >= 'a' and c <= 'f' {
-      acc = acc + ("" + hexUpperChar(c))
+      appendCharTo(sb, hexUpperChar(c))
     } else {
-      acc = acc + ("" + c)
+      appendCharTo(sb, c)
     }
     i += 1
   }
-  acc
+  sb.toString()
 }
 
 func hexUpperChar(c: in Char): Char {
