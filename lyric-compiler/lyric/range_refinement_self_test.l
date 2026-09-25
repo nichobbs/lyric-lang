@@ -59,6 +59,28 @@ func viaLambda(v: in Int): Int {
   c
 }
 
+// A name redeclared in the same block must not break the pass: the second
+// `var` replaces the first (the self-hosted MSIL writer does exactly this).
+func redeclared(): Int {
+  var k = 1
+  k = k + 1
+  var k = 10
+  k = k + 1
+  k
+}
+
+func redeclaredRefined(): Int {
+  var k: Int range 0 ..= 3 = 1
+  var k = 100
+  k = 200
+  k
+}
+
+test "a name redeclared in the same block" {
+  assertTrue(redeclared() == 11, "second var replaces the first")
+  assertTrue(redeclaredRefined() == 200, "an unrefined redeclaration drops the range")
+}
+
 test "a refined parameter is checked on entry" {
   assertTrue(double(9) == 18, "9 is in 0 ..= 9")
   assertPanics("10 is outside 0 ..= 9", { -> val _ = double(10) })

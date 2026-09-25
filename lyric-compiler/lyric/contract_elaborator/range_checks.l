@@ -136,7 +136,13 @@ func declare(sc: in RangeScope, name: in String, ty: in Option[TypeExpr]): Unit 
   if sc.frames.count == 0 {
     pushFrame(sc)
   }
-  sc.frames[sc.frames.count - 1].add(name, ty)
+  // A name may be redeclared in the same block (`var i = 0 ... var i = 0`);
+  // the later declaration replaces the earlier one.
+  val frame = sc.frames[sc.frames.count - 1]
+  if frame.containsKey(name) {
+    frame.remove(name)
+  }
+  frame.add(name, ty)
 }
 
 func declareUnrefined(sc: in RangeScope, names: in List[String]): Unit {
