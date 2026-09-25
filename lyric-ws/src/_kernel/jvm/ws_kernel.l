@@ -64,6 +64,9 @@
 package Ws.Kernel.Jvm
 
 import Std.Core
+import Std.Collections
+import Ws.Frame
+import Ws.Handshake
 
 // ─── JDK / Undertow / XNIO externs ────────────────────────────────────────────
 extern type JUndertow = "io.undertow.Undertow"
@@ -85,6 +88,8 @@ extern type JWsChannel = "io.undertow.websockets.core.WebSocketChannel"
 extern type JWsStreamSourceFrameChannel = "io.undertow.websockets.core.StreamSourceFrameChannel"
 
 extern type JChannelListener = "org.xnio.ChannelListener"
+
+extern type JNioChannel = "java.nio.channels.Channel"
 
 extern type JChannelListenerSetter = "org.xnio.ChannelListener$Setter"
 
@@ -122,6 +127,21 @@ extern type JIterator = "java.util.Iterator"
 
 extern type JSystem = "java.lang.System"
 
+// Origin check ahead of the upgrade (#7243): a Lyric `HttpHandler` wraps the
+// handshake handler, so a refused handshake is answered 403 before Undertow
+// writes its `101 Switching Protocols`.
+extern type JHttpHandler = "io.undertow.server.HttpHandler"
+
+extern type JHttpServerExchange = "io.undertow.server.HttpServerExchange"
+
+extern type JHeaderMap = "io.undertow.util.HeaderMap"
+
+extern type JJavaMap = "java.util.Map"
+
+extern type JJavaList = "java.util.List"
+
+extern type JJavaSet = "java.util.Set"
+
 // ─── Registry state ───────────────────────────────────────────────────────────
 // `onOpen`/`onMessage`/`onClose`/`onError` are `None` for a bookkeeping-only
 // registry allocated via `createRegistry` (no live server, kept for parity
@@ -131,7 +151,7 @@ record RegistryState {
   maxMessageSizeBytes: Int
   var openCount: Int
   connMap: JConcurrentHashMap
-  onOpen: Option[(String, String, String, String) -> Unit]
+  onOpen: Option[(String, String, String, String, Map[String, String]) -> Unit]
   onMessage: Option[(String, String, String) -> Unit]
   onClose: Option[(String, Int, String) -> Unit]
   onError: Option[(String, String) -> Unit]
@@ -181,13 +201,20 @@ func removeConnection(handle: in Int, connId: in String): Unit {
   }
 }
 
-func invokeOnOpen(handle: in Int, connId: in String, path: in String, query: in String, remoteAddress: in String): Unit {
+func invokeOnOpen(
+  handle: in Int,
+  connId: in String,
+  path: in String,
+  query: in String,
+  remoteAddress: in String,
+  headers: in Map[String, String],
+): Unit {
   val state = lookupRegistry(handle)
   if JObjects.isNull(state) {
     return
   }
   match state.onOpen {
-    case Some(cb) -> cb(connId, path, query, remoteAddress)
+    case Some(cb) -> cb(connId, path, query, remoteAddress, headers)
     case None -> ()
   }
 }
@@ -275,8 +302,11 @@ func sendCloseFrameDefault(channel: in JWsChannel, reason: in String): Result[Un
 }
 
 func sendCloseFrame(channel: in JWsChannel, code: in Int, reason: in String): Result[Unit, String] {
+  if not isSendableCloseCode(code) {
+    return Err("close code " + code.toString() + " may not be sent (RFC 6455 7.4.1)")
+  }
   try {
-    JWebSockets.sendCloseBlocking(code, reason, channel)
+    JWebSockets.sendCloseBlocking(code, fitCloseReason(reason), channel)
     Ok(())
   } catch Exception as e {
     Err(e.message)
@@ -372,8 +402,28 @@ record WsReceiveListener {
   connId: String
 }
 
+// `ChannelListener<T extends Channel>.handleEvent(T)` erases to
+// `handleEvent(java.nio.channels.Channel)`, and a Lyric `impl` emits no
+// bridge method, so the listener must declare the erased parameter type:
+// declaring `WebSocketChannel` made XNIO fail every event with
+// `AbstractMethodError` (#7243).  The connection's `WebSocketChannel` comes
+// from the registry instead.
+func connectionChannel(handle: in Int, connId: in String): Option[JWsChannel] {
+  val state = lookupRegistry(handle)
+  if JObjects.isNull(state) {
+    return None
+  }
+  val channel: JWsChannel = state.connMap.get(connId)
+  if JObjects.isNull(channel) {
+    None
+  } else {
+    Some(value = channel)
+  }
+}
+
 impl JChannelListener for WsReceiveListener {
-  func handleEvent(channel: in JWsChannel): Unit {
+  func handleEvent(event: in JNioChannel): Unit {
+    val channel = match connectionChannel(self.registryHandle, self.connId) { case Some(c) -> c; case None -> return }
     try {
       pumpFrames(self.registryHandle, self.connId, channel)
     } catch Exception as e {
@@ -388,7 +438,8 @@ record WsCloseListener {
 }
 
 impl JChannelListener for WsCloseListener {
-  func handleEvent(channel: in JWsChannel): Unit {
+  func handleEvent(event: in JNioChannel): Unit {
+    val channel = match connectionChannel(self.registryHandle, self.connId) { case Some(c) -> c; case None -> return }
     val code = channel.getCloseCode()
     val reasonRaw = channel.getCloseReason()
     val reason = reasonRaw ?? ""
@@ -425,7 +476,48 @@ impl JWsConnectionCallback for WsConnectCallback {
     val reqQuery = reqQueryRaw ?? ""
     val srcAddr: JInetSocketAddress = channel.getSourceAddress()
     val remoteAddress = if JObjects.isNull(srcAddr) { "" } else { srcAddr.toString() }
-    invokeOnOpen(self.registryHandle, connId, reqPath, reqQuery, remoteAddress)
+    invokeOnOpen(self.registryHandle, connId, reqPath, reqQuery, remoteAddress, handshakeHeaders(exchange))
+  }
+}
+
+// The upgrade request's headers under lower-cased names, a repeated header's
+// values joined with ", " — the same shape `Ws.Handshake` gives the dotnet
+// kernel.
+func handshakeHeaders(exchange: in JWsHttpExchange): Map[String, String] {
+  val result: Map[String, String] = newMap()
+  val raw: JJavaMap = exchange.getRequestHeaders()
+  if JObjects.isNull(raw) {
+    return result
+  }
+  val names: JJavaSet = raw.keySet()
+  val it: JIterator = names.iterator()
+  while it.hasNext() {
+    val name: String = it.next()
+    val values: JJavaList = raw.get(name)
+    val joined: String = if JObjects.isNull(values) { "" } else { JStr.join(", ", values) }
+    result[name.toLower()] = joined
+  }
+  result
+}
+
+record WsOriginGuard {
+  allowedOrigins: slice[String]
+  next: JWsHandshakeHandler
+}
+
+impl JHttpHandler for WsOriginGuard {
+  func handleRequest(exchange: in JHttpServerExchange): Unit {
+    val headers: JHeaderMap = exchange.getRequestHeaders()
+    val originRaw = headers.getFirst("Origin")
+    val hostRaw = headers.getFirst("Host")
+    val origin = originRaw ?? ""
+    val host = hostRaw ?? ""
+    if originAllowed(origin, host, self.allowedOrigins) {
+      self.next.handleRequest(exchange)
+    } else {
+      exchange.setStatusCode(403)
+      val _ = exchange.endExchange()
+    }
   }
 }
 
@@ -465,7 +557,7 @@ pub func createRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Re
 /// functions, so `Ws.Kernel.Jvm` never needs to import the public `Ws`
 /// package's `WsHandler`/`WsContext`/`WsMessage` types — `ws.l` does the
 /// primitive <-> rich-type translation, avoiding an import cycle):
-///   onOpen(connectionId, path, query, remoteAddress)
+///   onOpen(connectionId, path, query, remoteAddress, handshakeHeaders)
 ///   onMessage(connectionId, messageType, data)      — messageType per `send`
 ///   onClose(connectionId, code, reason)
 ///   onError(connectionId, message)
@@ -475,13 +567,14 @@ pub func startServer(
   port: in Int,
   path: in String,
   maxMessageSizeBytes: in Int,
-  onOpen: in (String, String, String, String) -> Unit,
+  allowedOrigins: in slice[String],
+  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
   onError: in (String, String) -> Unit,
 ): Result[Int, String]
   requires: host.length > 0
-  requires: port > 0
+  requires: port >= 1 and port <= 65535
   requires: path.length > 0
   requires: maxMessageSizeBytes >= 1024
 {
@@ -503,8 +596,9 @@ pub func startServer(
   try {
     val callback = WsConnectCallback(registryHandle = handle)
     val handshakeHandler: JWsHandshakeHandler = JWsHandshakeHandler.new(callback)
+    val guarded: JHttpHandler = WsOriginGuard(allowedOrigins = allowedOrigins, next = handshakeHandler)
     val pathHandler: JPathHandler = JHandlers.path()
-    val routedHandler: JPathHandler = pathHandler.addExactPath(path, handshakeHandler)
+    val routedHandler: JPathHandler = pathHandler.addExactPath(path, guarded)
     var builder: JUndertowBuilder = JUndertow.builder()
     builder = builder.addHttpListener(port, host)
     builder = builder.setHandler(routedHandler)

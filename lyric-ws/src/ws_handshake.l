@@ -26,12 +26,15 @@ import Std.Hash
 // before hashing.
 val wsGuid: String = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-/// A parsed, validated WebSocket upgrade request.
+/// A parsed, validated WebSocket upgrade request.  `headers` holds every
+/// request header under its lower-cased name; a repeated header's values
+/// are joined with ", " (RFC 9110 §5.3).
 @stable(since = "0.1")
 pub record HandshakeRequest {
   path: String
   query: String
   secWebSocketKey: String
+  headers: Map[String, String] = newMap()
 }
 
 /// `parseHandshakeRequest`'s result plus any bytes read past the header
@@ -93,7 +96,11 @@ pub func findHeaderTerminator(bytes: in slice[Byte]): Option[Int] {
 
 func splitTargetPathQuery(target: in String): HandshakeRequest {
   match indexOf(target, "?") {
-    case Some(q) -> HandshakeRequest(path = substring(target, 0, q), query = substring(target, q + 1), secWebSocketKey = "")
+    case Some(q) -> HandshakeRequest(
+      path = substring(target, 0, q),
+      query = substring(target, q + 1),
+      secWebSocketKey = ""
+    )
     case None -> HandshakeRequest(path = target, query = "", secWebSocketKey = "")
   }
 }
@@ -136,7 +143,14 @@ func parseHeaderLines(lines: in slice[String], startAt: in Int): Result[Map[Stri
           if name.length == 0 {
             return Err(error = "empty header field-name in line: " + line)
           }
-          headers.add(name, value)
+          // A repeated header used to reach `Map.add` and throw, aborting the
+          // connection's handler task (#7243).
+          match mapGet(headers, name) {
+            case Some(prev) -> {
+              headers[name] = prev + ", " + value
+            }
+            case None -> headers.add(name, value)
+          }
         }
       }
     }
@@ -228,8 +242,65 @@ pub func parseHandshakeRequest(bytes: in slice[Byte]): Result[HandshakeResult, S
   val pathQuery = splitTargetPathQuery(target)
   Ok(
     value = HandshakeResult(
-      request = HandshakeRequest(path = pathQuery.path, query = pathQuery.query, secWebSocketKey = key),
+      request = HandshakeRequest(
+        path = pathQuery.path,
+        query = pathQuery.query,
+        secWebSocketKey = key,
+        headers = headers
+      ),
       leftover = leftover
     )
   )
+}
+
+/// Whether a browser upgrade request from `origin` may proceed, per the
+/// cross-site WebSocket hijacking defence (#7243).  Browsers attach cookies
+/// to a cross-site WebSocket handshake and the same-origin policy does not
+/// apply to it, so the server has to check `Origin` itself:
+///
+/// - no `Origin` header (`origin` is empty): allowed, because non-browser
+///   clients do not send one and a browser always does;
+/// - `allowedOrigins` contains `"*"`: allowed (an explicit opt-out);
+/// - `origin` equals an entry of `allowedOrigins`, ignoring ASCII case;
+/// - otherwise the origin's host (and port) must equal the `Host` header:
+///   the same-origin default.
+@stable(since = "0.2")
+pub func originAllowed(origin: in String, host: in String, allowedOrigins: in slice[String]): Bool {
+  if origin.length == 0 {
+    return true
+  }
+  val lowered = toLower(origin)
+  for allowed in allowedOrigins {
+    if allowed == "*" or toLower(allowed) == lowered {
+      return true
+    }
+  }
+  if host.length == 0 {
+    return false
+  }
+  toLower(originAuthority(origin)) == toLower(host)
+}
+
+// The `host[:port]` part of a serialized origin (`scheme://host[:port]`), or
+// "" when it has no scheme.  A default port is not appended, matching how a
+// browser writes the `Host` header for the same URL.
+func originAuthority(origin: in String): String {
+  match indexOf(origin, "://") {
+    case None -> ""
+    case Some(i) -> {
+      val rest = substring(origin, i + 3)
+      match indexOf(rest, "/") {
+        case Some(slash) -> substring(rest, 0, slash)
+        case None -> rest
+      }
+    }
+  }
+}
+
+/// `originAllowed` applied to a parsed request's `Origin` and `Host` headers.
+@stable(since = "0.2")
+pub func requestOriginAllowed(request: in HandshakeRequest, allowedOrigins: in slice[String]): Bool {
+  val origin = match mapGet(request.headers, "origin") { case Some(o) -> o; case None -> "" }
+  val host = match mapGet(request.headers, "host") { case Some(h) -> h; case None -> "" }
+  originAllowed(origin, host, allowedOrigins)
 }

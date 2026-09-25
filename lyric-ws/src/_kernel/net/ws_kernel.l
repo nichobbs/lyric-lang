@@ -98,7 +98,7 @@ record RegistryMeta {
   var maxMessageSizeBytes: Int = 1024
   var pingIntervalMs: Int = 0
   var openCount: Int = 0
-  onOpen: Option[(String, String, String, String) -> Unit] = None
+  onOpen: Option[(String, String, String, String, Map[String, String]) -> Unit] = None
   onMessage: Option[(String, String, String) -> Unit] = None
   onClose: Option[(String, Int, String) -> Unit] = None
   onError: Option[(String, String) -> Unit] = None
@@ -269,13 +269,20 @@ func snapshotConnIds(meta: in RegistryMeta): List[String] {
   copy
 }
 
-func invokeOnOpen(handle: in Int, connId: in String, path: in String, query: in String, remoteAddress: in String): Unit {
+func invokeOnOpen(
+  handle: in Int,
+  connId: in String,
+  path: in String,
+  query: in String,
+  remoteAddress: in String,
+  headers: in Map[String, String],
+): Unit {
   var meta: RegistryMeta = default()
   if not cdTryGetValue(registryMap, handle, meta) {
     return
   }
   match meta.onOpen {
-    case Some(cb) -> cb(connId, path, query, remoteAddress)
+    case Some(cb) -> cb(connId, path, query, remoteAddress, headers)
     case None -> ()
   }
 }
@@ -360,7 +367,7 @@ func sendCloseIfNotAlready(state: in ConnState, conn: in Conn, code: in Int, rea
   }
   if not state.closing {
     state.closing = true
-    val _ = hostWrite(conn, encodeClose(code, reason));
+    val _ = hostWrite(conn, encodeCloseReply(code, reason));
     ()
   }
 }
@@ -392,7 +399,9 @@ func writeMessage(state: in ConnState, conn: in Conn, messageType: in String, da
 // without limit.
 val maxHandshakeBytes: Int = 16384
 
-func performHandshake(conn: in Conn, expectedPath: in String): Result[HandshakeResult, String] {
+func performHandshake(
+  conn: in Conn, expectedPath: in String, allowedOrigins: in slice[String]
+): Result[HandshakeResult, String] {
   val acc: List[Byte] = newList()
   var found = false
   var attempts = 0
@@ -429,6 +438,11 @@ func performHandshake(conn: in Conn, expectedPath: in String): Result[HandshakeR
       if result.request.path != expectedPath {
         val _ = hostWrite(conn, buildRejectResponse(404, "Not Found"))
         Err(error = "path mismatch: expected '" + expectedPath + "', got '" + result.request.path + "'")
+      } else if not requestOriginAllowed(result.request, allowedOrigins) {
+        // Cross-site WebSocket hijacking defence (#7243): refused before the
+        // upgrade, so the page's cookies never reach an open socket.
+        val _ = hostWrite(conn, buildRejectResponse(403, "Forbidden"))
+        Err(error = "origin not allowed")
       } else {
         match hostWrite(conn, buildAcceptResponse(result.request.secWebSocketKey)) {
           case Ok(_) -> Ok(value = result)
@@ -576,8 +590,9 @@ func handleConnection(
   expectedPath: in String,
   maxMessageSizeBytes: in Int,
   pingIntervalMs: in Int,
+  allowedOrigins: in slice[String],
 ): Unit {
-  match performHandshake(conn, expectedPath) {
+  match performHandshake(conn, expectedPath, allowedOrigins) {
     case Err(_) -> hostClose(conn)
     case Ok(hsResult) -> {
       val connId = uuidToString(newUuid())
@@ -585,7 +600,7 @@ func handleConnection(
         case Err(_) -> hostClose(conn)
         case Ok(state) -> {
           val remoteAddress = hostRemoteAddress(conn)
-          invokeOnOpen(handle, connId, hsResult.request.path, hsResult.request.query, remoteAddress)
+          invokeOnOpen(handle, connId, hsResult.request.path, hsResult.request.query, remoteAddress, hsResult.request.headers)
           if pingIntervalMs > 0 {
             val _ = taskRun({ -> runPingLoop(state, conn, pingIntervalMs) })
           }
@@ -603,14 +618,23 @@ func wsAcceptLoop(
   path: in String,
   maxMessageSizeBytes: in Int,
   pingIntervalMs: in Int,
+  allowedOrigins: in slice[String],
 ): Unit {
   var running = true
   while running {
     match hostAccept(transport) {
       case Ok(conn) -> {
-        val _ = taskRun({ -> handleConnection(handle, conn, path, maxMessageSizeBytes, pingIntervalMs) })
+        val _ = taskRun({ -> handleConnection(handle, conn, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins) })
       }
-      case Err(e) -> match e { case AcceptFailed(_) -> { running = false }; case BindFailed(_) -> { running = false }; case _ -> () }
+      case Err(e) -> match e {
+        case AcceptFailed(_) -> {
+          running = false
+        }
+        case BindFailed(_) -> {
+          running = false
+        }
+        case _ -> ()
+      }
     }
   }
 }
@@ -626,13 +650,14 @@ pub func startServer(
   port: in Int,
   path: in String,
   maxMessageSizeBytes: in Int,
-  onOpen: in (String, String, String, String) -> Unit,
+  allowedOrigins: in slice[String],
+  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
   onError: in (String, String) -> Unit,
 ): Result[Int, String]
   requires: host.length > 0
-  requires: port > 0
+  requires: port >= 1 and port <= 65535
   requires: path.length > 0
   requires: maxMessageSizeBytes >= 1024
 {
@@ -658,7 +683,7 @@ pub func startServer(
         hostStopListener(transport)
         return Err(error = "registry handle collision (unreachable)")
       }
-      val _ = taskRun({ -> wsAcceptLoop(handle, transport, path, maxMessageSizeBytes, pingIntervalMs) })
+      val _ = taskRun({ -> wsAcceptLoop(handle, transport, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins) })
       Ok(value = handle)
     }
   }

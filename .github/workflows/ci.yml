@@ -5950,6 +5950,16 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/lyric-web-undertow-jvm-smoke.sh
+      # lyric-ws Undertow smoke on JVM (#7243): the Origin policy (403 for a
+      # cross-origin handshake, 101 for same-origin / no Origin / a listed
+      # origin), handshake headers reaching onOpen, and a text round trip
+      # through the receive listener.  Std.TcpHost has no JVM kernel, so the
+      # dotnet loopback tests cannot cover this target.
+      - name: lyric-ws Undertow smoke on JVM (tests/ws_jvm_origin_smoke.l)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/lyric-ws-undertow-jvm-smoke.sh
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature

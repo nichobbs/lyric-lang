@@ -9,6 +9,7 @@
 package Ws.WsHandshakeTests
 
 import Std.Core
+import Std.Collections
 import Std.Encoding
 import Std.Testing
 import Ws.Handshake
@@ -202,4 +203,46 @@ test "findHeaderTerminator returns None for an incomplete header block" {
     case Some(_) -> assertTrue(false, "expected None for an incomplete header block")
     case None -> assertTrue(true, "correctly reports incomplete")
   }
+}
+
+// ─── Headers and the Origin policy (#7243) ─────────────────────────────────────
+func upgradeRequest(extraHeaders: in String): slice[Byte] {
+  encodeUtf8(
+    "GET /ws HTTP/1.1\r\nHost: example.com\r\n" + extraHeaders +
+      "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" +
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+  )
+}
+
+test "parseHandshakeRequest keeps every header under its lower-cased name" {
+  match parseHandshakeRequest(upgradeRequest("Origin: https://example.com\r\nX-Trace: a\r\nx-trace: b\r\n")) {
+    case Err(e) -> assertTrue(false, "a valid request must parse: " + e)
+    case Ok(r) -> {
+      assertEqual(mapGetOr(r.request.headers, "origin"), "https://example.com", "origin")
+      assertEqual(mapGetOr(r.request.headers, "host"), "example.com", "host")
+      assertEqual(mapGetOr(r.request.headers, "x-trace"), "a, b", "a repeated header is joined, not a crash")
+    }
+  }
+}
+
+func mapGetOr(m: in Map[String, String], k: in String): String {
+  match mapGet(m, k) {
+    case Some(v) -> v
+    case None -> ""
+  }
+}
+
+test "originAllowed: same origin, explicit list, opt-out, and no Origin" {
+  val none: slice[String] = []
+  assertTrue(originAllowed("", "example.com", none), "a non-browser client sends no Origin")
+  assertTrue(originAllowed("https://example.com", "example.com", none), "same origin")
+  assertTrue(originAllowed("http://127.0.0.1:8080", "127.0.0.1:8080", none), "same origin with a port")
+  assertTrue(originAllowed("https://EXAMPLE.com", "example.com", none), "hosts compare case-insensitively")
+  assertFalse(originAllowed("https://evil.example", "example.com", none), "cross-site")
+  assertFalse(originAllowed("https://example.com:8443", "example.com", none), "a different port is a different origin")
+  assertFalse(originAllowed("null", "example.com", none), "an opaque origin")
+  assertFalse(originAllowed("https://example.com", "", none), "no Host to compare against")
+  assertTrue(originAllowed("https://app.example.com", "api.example.com", ["https://APP.example.com"]), "listed origin")
+  assertFalse(originAllowed("https://evil.example", "api.example.com", ["https://app.example.com"]), "unlisted origin")
+  assertTrue(originAllowed("https://evil.example", "api.example.com", ["*"]), "explicit opt-out")
 }

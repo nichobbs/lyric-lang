@@ -7,7 +7,7 @@ package Ws.Aspects
 import Std.Core
 import Std.Console
 import Auth
-import Ws.Kernel.Net as WsKernel
+import Ws
 
 // ─── WsAuth ───────────────────────────────────────────────────────────────────
 /// Validate a bearer token from the WebSocket handshake Authorization header.
@@ -64,7 +64,7 @@ pub aspect WsRateLimit {
       ret = call.proceed()
     } else {
       val rateKey = call.qualifiedName + ":" + args.ctx.connectionId
-      val allowed = WsKernel.checkRateLimit(rateKey, messagesPerMinute, burstSize)
+      val allowed = Ws.checkRateLimit(rateKey, messagesPerMinute, burstSize)
       if allowed {
         ret = call.proceed()
       } else {
