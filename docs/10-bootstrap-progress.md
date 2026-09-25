@@ -35729,7 +35729,7 @@ ran. `docs/01-language-reference.md` and
 `book/chapters/appendix-b-quick-reference.md` updated. `typechecker_self_test.l`:
 430/430 (4 new cases).
 
-**Related:** D-progress-960 (full account, `docs/decisions/`), #7119,
+**Related:** D-progress-963 (full account, `docs/decisions/`), #7119,
 #6739/D-progress-924 (the record/opaque precedent this generalizes), PR
 #7117 (where the gap was flagged).
 
