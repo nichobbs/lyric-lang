@@ -70,6 +70,23 @@ func testConstruction(): Unit {
   assertEqual(join(",", []), "", "join empty")
 }
 
+// Separator placement, multi-character and partially-matching separators,
+// and the non-overlapping left-to-right match rule (.NET String.Split
+// semantics).
+func testSplitEdges(): Unit {
+  assertEqual(join("|", split("", ",")), "", "split empty input")
+  assertEqualInt(split("", ",").length, 1, "split empty input count")
+  assertEqual(join("|", split("abc", "")), "abc", "split empty separator")
+  assertEqual(join("|", split(",a,,b,", ",")), "|a||b|", "split leading/adjacent/trailing")
+  assertEqualInt(split(",a,,b,", ",").length, 5, "split leading/adjacent/trailing count")
+  assertEqual(join("|", split("a\nb\n", "\n")), "a|b|", "split lines with trailing newline")
+  assertEqual(join("|", split("x::y:z::", "::")), "x|y:z|", "split multi-char separator")
+  assertEqual(join("|", split("aXbXXc", "XX")), "aXb|c", "split partial separator prefix")
+  assertEqual(join("|", split("aaaa", "aa")), "||", "split non-overlapping matches")
+  assertEqual(join("|", split("aaa", "aa")), "|a", "split odd-length overlap")
+  assertEqual(join("|", split("ab", "abc")), "ab", "split separator longer than input")
+}
+
 func testCompare(): Unit {
   assertEqualInt(compare("a", "b"), -1, "compare a < b")
   assertEqualInt(compare("b", "a"), 1, "compare b > a")
@@ -97,6 +114,7 @@ func main(): Unit {
   testSubstring()
   testCase()
   testConstruction()
+  testSplitEdges()
   testCompare()
   testCharAccess()
   println("string: ok")

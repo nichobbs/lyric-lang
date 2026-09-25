@@ -1,5 +1,33 @@
 #!/usr/bin/env bash
+# Run the self-hosted compiler `@test_module` corpus through `lyric test`.
+#
+#   scripts/ci/compiler-self-tests-batch.sh [--shard K/N]
+#
+# --shard K/N runs only every N-th file starting at the K-th (1-based,
+# interleaved like scripts/run-numbered-self-tests.sh), so CI can split the
+# corpus across parallel matrix jobs.
 set -euo pipefail
+SHARD_K=1
+SHARD_N=1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --shard)
+      shard="${2:?--shard needs K/N}"
+      if [[ "$shard" != */* ]]; then
+        echo "::error::invalid --shard ${shard}; expected K/N with 1 <= K <= N" >&2
+        exit 2
+      fi
+      SHARD_K="${shard%/*}"
+      SHARD_N="${shard#*/}"
+      shift 2
+      ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+if ! [[ "$SHARD_K" =~ ^[0-9]+$ && "$SHARD_N" =~ ^[0-9]+$ ]] || (( SHARD_N < 1 || SHARD_K < 1 || SHARD_K > SHARD_N )); then
+  echo "::error::invalid --shard ${SHARD_K}/${SHARD_N}; expected K/N with 1 <= K <= N" >&2
+  exit 2
+fi
 if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
   echo "::error::stage 1 bundle missing; skipping compiler self-tests"
   exit 1
@@ -10,6 +38,7 @@ if [ ! -x "$lyric_bin" ]; then
   exit 1
 fi
 ran=""
+idx=0
 for t in \
   lyric-compiler/lyric/lexer_self_test.l \
   lyric-compiler/lyric/parser_self_test.l \
@@ -66,9 +95,17 @@ for t in \
   lyric-compiler/lyric/jvm_impl_extern_class_self_test.l \
   lyric-compiler/lyric/lsp_self_test.l \
   lyric-compiler/lyric/doc_self_test.l ; do
+  idx=$((idx + 1))
+  if (( (idx - 1) % SHARD_N != SHARD_K - 1 )); then
+    continue
+  fi
   echo "=== $t ==="
   bash scripts/ci-retry-on-signal.sh "$lyric_bin" test "$t"
   ran="$ran $t"
 done
-echo "Compiler self-tests ran:$ran" >> "$GITHUB_STEP_SUMMARY"
+if [[ -z "$ran" ]]; then
+  echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2
+  exit 1
+fi
+echo "Compiler self-tests (shard ${SHARD_K}/${SHARD_N}) ran:$ran" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
