@@ -836,24 +836,14 @@ func writeTempSource(source: in String, assemblyName: in String): Result[String,
 // the CLI-chosen assembly stem (`stem = stemOf(basename, 2)`).
 func extractPackageName(source: in String): String {
   val prefix = "package "
-  var pos = 0
-  var atLineStart = true
-  while pos < source.length {
-    if atLineStart and pos + prefix.length <= source.length {
-      val candidate = source.substring(pos, prefix.length)
-      if candidate == prefix {
-        var nameEnd = pos + prefix.length
-        while nameEnd < source.length and source.substring(nameEnd, 1) != "\n" {
-          nameEnd = nameEnd + 1
-        }
-        val nameLen = nameEnd - (pos + prefix.length)
-        if nameLen > 0 {
-          return source.substring(pos + prefix.length, nameLen)
-        }
-      }
+  val lines = splitHeader(source).headerLines
+  var i = 0
+  while i < lines.count {
+    val line = lines[i]
+    if line.length > prefix.length and Str.startsWith(line, prefix) {
+      return line.substring(prefix.length, line.length - prefix.length)
     }
-    atLineStart = source.substring(pos, 1) == "\n"
-    pos = pos + 1
+    i = i + 1
   }
   ""
 }
@@ -869,23 +859,17 @@ func extractPackageName(source: in String): String {
 // correct verification level (e.g. `@axiom` for kernel packages).
 func extractFileLevelAnnotations(source: in String): String {
   val lines: List[String] = newList()
-  var lineStart = 0
-  var pos = 0
-  var done = false
-  while pos <= source.length and not done {
-    val atEnd = pos == source.length
-    val isNewline = not atEnd and source.substring(pos, 1) == "\n"
-    if atEnd or isNewline {
-      val lineLen = pos - lineStart
-      val line = if lineLen > 0 { source.substring(lineStart, lineLen) } else { "" }
-      if Str.startsWith(line, "package ") {
-        done = true
-      } else if Str.startsWith(line, "@") {
-        lines.add(line)
-      }
-      lineStart = pos + 1
+  val header = splitHeader(source).headerLines
+  var i = 0
+  while i < header.count {
+    val line = header[i]
+    if Str.startsWith(line, "package ") {
+      return Str.joinList("\n", lines)
     }
-    pos = pos + 1
+    if Str.startsWith(line, "@") {
+      lines.add(line)
+    }
+    i = i + 1
   }
   Str.joinList("\n", lines)
 }
@@ -1353,30 +1337,29 @@ func isCompilerPackage(pkg: in String): Bool {
     Str.startsWith(pkg, "Native.")
 }
 
-// Discover the self-hosted compiler packages under `compilerDir` and
-// return `ProjectPackagePayload` entries for exactly the import-closure
-// of `testSource` — the packages it `import`s, plus their transitive
-// compiler-package dependencies.  Each package's several source files
-// are merged into one payload (union of import preambles + each file
-// body with its `package`/`import` lines stripped), so a multi-file
-// package such as `Lyric.Parser` or `Lyric.TypeChecker` resolves
-// without any hand-maintained file list.
-//
-// `*_self_test.l` / `*_ci_test.l` files are excluded from discovery
-// (they are programs, not library packages, and the module under test
-// is added separately by the caller).  Returns an empty list if the
-// directory cannot be read or `Lyric.Lexer` is absent.
-func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[ProjectPackagePayload] {
-  val empty: List[ProjectPackagePayload] = newList()
+// The self-hosted compiler packages discovered under a `lyric-compiler/`
+// root, as parallel lists indexed by package: `names[i]`'s raw file
+// sources, its merged import lines, and its file-level annotation.
+record CompilerRegistry {
+  names: List[String]
+  sources: List[List[String]]
+  imports: List[List[String]]
+  annotations: List[String]
+}
 
-  val files = match File.listFilesRecursive(compilerDir) { case Ok(fs) -> fs; case Err(_) -> return empty }
+// Scan every compiler package under `compilerDir`.  Returns an empty
+// registry if the directory cannot be read or `Lyric.Lexer` is absent.
+func scanCompilerRegistry(compilerDir: in String): CompilerRegistry {
+  val emptyReg = CompilerRegistry(names = newList(), sources = newList(), imports = newList(), annotations = newList())
+  val files = match File.listFilesRecursive(compilerDir) { case Ok(fs) -> fs; case Err(_) -> return emptyReg }
 
-  // Pass 1: build a registry of every compiler package, grouping each
-  // package's source files (sorted for determinism) into parallel
-  // lists: name, accumulated body text, the union of import lines, and
-  // the file-level verification annotation (from the first file).
+  // Group each package's source files (sorted for determinism) into
+  // parallel lists: name, raw file sources, the union of import lines, and
+  // the file-level verification annotation (from the first file).  Bodies
+  // are NOT stripped here: only the closure's packages are ever
+  // materialised, and the scan covers the whole compiler tree.
   val regNames: List[String] = newList()
-  val regBodies: List[String] = newList()
+  val regSources: List[List[String]] = newList()
   val regImports: List[List[String]] = newList()
   val regAnnotations: List[String] = newList()
 
@@ -1403,25 +1386,29 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
     var idx = indexOfString(regNames, pkg)
     if idx < 0 {
       regNames.add(pkg)
-      regBodies.add("")
+      val srcs: List[String] = newList()
+      regSources.add(srcs)
       val imps: List[String] = newList()
       regImports.add(imps)
       regAnnotations.add(extractFileLevelAnnotations(src))
       idx = regNames.count - 1
     }
-    val body = stripPackageAndImports(src)
-    val prior = regBodies[idx]
-    regBodies[idx] = if Str.length(prior) == 0 { body } else { prior + "\n" + body }
+    regSources[idx].add(src)
     collectImportLines(src, regImports[idx])
   }
 
   // `Lyric.Lexer` is the mandatory base — every compiler package depends
   // on it transitively.  Its absence means the discovery root is wrong.
   if indexOfString(regNames, "Lyric.Lexer") < 0 {
-    return empty
+    return emptyReg
   }
+  CompilerRegistry(names = regNames, sources = regSources, imports = regImports, annotations = regAnnotations)
+}
 
-  // Pass 2: compute the import-closure of `testSource` over the registry.
+// The import-closure of `testSource` over `reg`, in dependency order.
+func orderedCompilerClosure(reg: in CompilerRegistry, testSource: in String): List[String] {
+  val regNames = reg.names
+  val regImports = reg.imports
   val needed: List[String] = newList()
   val queue: List[String] = newList()
   val testImports: List[String] = newList()
@@ -1456,7 +1443,7 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
     }
   }
 
-  // Pass 3: topologically order the needed packages so a dependency is
+  // Topologically order the needed packages so a dependency is
   // always emitted before the package that imports it.  The bridge's
   // codegen threads one shared `CodegenCtx` across packages in list
   // order (phase 3 token pre-scan), so a dependent compiled before its
@@ -1511,16 +1498,44 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
     fi2 = fi2 + 1
   }
 
-  // Pass 4: materialise a payload per package in dependency order —
-  // optional file-level annotation, `package <name>`, import preamble, bodies.
+  ordered
+}
+
+// Discover the self-hosted compiler packages under `compilerDir` and
+// return `ProjectPackagePayload` entries for exactly the import-closure
+// of `testSource` — the packages it `import`s, plus their transitive
+// compiler-package dependencies.  Each package's several source files
+// are merged into one payload (union of import preambles + each file
+// body with its `package`/`import` lines stripped), so a multi-file
+// package such as `Lyric.Parser` or `Lyric.TypeChecker` resolves
+// without any hand-maintained file list.
+//
+// `*_self_test.l` / `*_ci_test.l` files are excluded from discovery
+// (they are programs, not library packages, and the module under test
+// is added separately by the caller).  Returns an empty list if the
+// directory cannot be read or `Lyric.Lexer` is absent.
+func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[ProjectPackagePayload] {
+  val reg = scanCompilerRegistry(compilerDir)
+  val ordered = orderedCompilerClosure(reg, testSource)
+
+  // Materialise a payload per package in dependency order — optional
+  // file-level annotation, `package <name>`, import preamble, bodies.
   val payloads: List[ProjectPackagePayload] = newList()
   var ni = 0
   while ni < ordered.count {
     val name = ordered[ni]
-    val ridx = indexOfString(regNames, name)
-    val ann = regAnnotations[ridx]
+    val ridx = indexOfString(reg.names, name)
+    val ann = reg.annotations[ridx]
     val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
-    val combined = header + Str.joinList("\n", regImports[ridx]) + "\n" + regBodies[ridx]
+    val srcs = reg.sources[ridx]
+    var bodies = ""
+    var si = 0
+    while si < srcs.count {
+      val body = stripPackageAndImports(srcs[si])
+      bodies = if Str.length(bodies) == 0 { body } else { bodies + "\n" + body }
+      si = si + 1
+    }
+    val combined = header + Str.joinList("\n", reg.imports[ridx]) + "\n" + bodies
     payloads.add(ProjectPackagePayload(name = name, source = combined))
     ni = ni + 1
   }
@@ -2077,15 +2092,15 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
   emitProject(req)
 }
 
-// Names in `payloads` that are not present in `have` (a resolved package-name
+// Names in `closure` that are not present in `have` (a resolved package-name
 // list for one candidate DLL source). Used by `compilerClosureDllPaths` to
 // detect an incomplete closure resolution (#6628) before trusting it.
-func missingPayloadNames(payloads: in List[ProjectPackagePayload], have: in List[String]): List[String] {
+func missingPayloadNames(closure: in List[String], have: in List[String]): List[String] {
   val missing: List[String] = newList()
   var i = 0
-  while i < payloads.count {
-    if indexOfString(have, payloads[i].name) < 0 {
-      missing.add(payloads[i].name)
+  while i < closure.count {
+    if indexOfString(have, closure[i]) < 0 {
+      missing.add(closure[i])
     }
     i = i + 1
   }
@@ -2116,7 +2131,9 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): Comp
   if compilerDir.length == 0 {
     return CompilerClosureResult(dlls = dlls, missingPackages = noMissing)
   }
-  val payloads = loadCompilerPayloads(compilerDir, testSource)
+  // Only the closure's package names are needed to pick DLLs, so skip
+  // `loadCompilerPayloads`' per-package source materialisation.
+  val closure = orderedCompilerClosure(scanCompilerRegistry(compilerDir), testSource)
   // #3086: when the TEST SOURCE references a module-level `pub val` constant
   // exported by its compiler closure, link the self-hosted-emitted
   // per-package compiler DLLs staged under `<libDir>/selfhosted` (by
@@ -2156,7 +2173,7 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): Comp
   // packages from it); threading one entry per package would re-load the bundle
   // N times and double-register every artifact.
   val bundle = Path.join(shDir, "Lyric.Compiler.dll")
-  if payloads.count > 0 and File.fileExists(bundle) {
+  if closure.count > 0 and File.fileExists(bundle) {
     // #6628: a bundle that merely EXISTS may still be a stale build from
     // before one of the closure's packages was added or wired in — verify
     // every closure package is actually embedded (as a `Lyric.Contract.<Pkg>`
@@ -2171,7 +2188,7 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): Comp
       bundlePkgs.add(entries[ei].packageName)
       ei = ei + 1
     }
-    val bundleMissing = missingPayloadNames(payloads, bundlePkgs)
+    val bundleMissing = missingPayloadNames(closure, bundlePkgs)
     if bundleMissing.count == 0 {
       dlls.add("Lyric.Compiler\t" + bundle)
       return CompilerClosureResult(dlls = dlls, missingPackages = noMissing)
@@ -2183,24 +2200,24 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): Comp
         "); it looks stale. Trying the per-package DLL sets instead of trusting it."
     )
   }
-  var shComplete = payloads.count > 0
+  var shComplete = closure.count > 0
   var shi = 0
-  while shi < payloads.count {
-    if not File.fileExists(Path.join(shDir, "Lyric." + payloads[shi].name + ".dll")) {
+  while shi < closure.count {
+    if not File.fileExists(Path.join(shDir, "Lyric." + closure[shi] + ".dll")) {
       shComplete = false
     }
     shi = shi + 1
   }
   if shComplete {
     var sj = 0
-    while sj < payloads.count {
-      val shPkg = payloads[sj].name
+    while sj < closure.count {
+      val shPkg = closure[sj]
       dlls.add(shPkg + "\t" + Path.join(shDir, "Lyric." + shPkg + ".dll"))
       sj = sj + 1
     }
     return CompilerClosureResult(dlls = dlls, missingPackages = noMissing)
   }
-  if payloads.count > 0 {
+  if closure.count > 0 {
     Console.error(
       "test: warning: no complete self-hosted compiler-DLL set was found under '" + shDir +
         "'. Falling back to the F#-emitted stage-1 DLLs, whose arity convention no " +
@@ -2210,8 +2227,8 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): Comp
   }
   val gotPkgs: List[String] = newList()
   var i = 0
-  while i < payloads.count {
-    val pkg = payloads[i].name
+  while i < closure.count {
+    val pkg = closure[i]
     val dll = Path.join(libDir, "Lyric." + pkg + ".dll")
     if File.fileExists(dll) {
       dlls.add(pkg + "\t" + dll)
@@ -2225,7 +2242,7 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): Comp
   // exactly what's still missing after ALL THREE candidate sources (bundle,
   // self-hosted per-package, F#-emitted per-package) so the caller can fail
   // the test run loudly instead of linking a closure with a gap in it.
-  val stillMissing = missingPayloadNames(payloads, gotPkgs)
+  val stillMissing = missingPayloadNames(closure, gotPkgs)
   if stillMissing.count > 0 {
     Console.error("test: warning: compiler DLLs not found in '" + libDir + "'; the test's Lyric.* imports may fail")
   }

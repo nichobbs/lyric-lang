@@ -180,31 +180,38 @@ pub func replace(s: in String, oldValue: in String, newValue: in String): String
 }
 
 // Split a string on a separator, returning a slice of the parts.
-// Pure-Lyric implementation using indexOf/substring; avoids per-backend BCL
-// String.Split intrinsics so the self-hosted compiler emits identical code on
-// MSIL and JVM.  Matches .NET semantics: an empty separator yields the whole
-// string unchanged; adjacent separators produce empty parts.
+// Pure-Lyric implementation; avoids per-backend BCL String.Split intrinsics so
+// the self-hosted compiler emits identical code on MSIL and JVM.  Matches .NET
+// semantics: an empty separator yields the whole string unchanged; adjacent
+// separators produce empty parts; matching is ordinal, left to right and
+// non-overlapping.
+//
+// Single forward scan: each part is copied exactly once. Re-slicing the
+// remainder after every match made this quadratic in the input length, which
+// dominated compile time for callers that split whole source files by line.
 @pure
 @stable(since = "1.0")
 pub func split(s: in String, separator: in String): slice[String] {
   val parts: List[String] = newList()
-  if separator.length == 0 {
+  val sepLen = separator.length
+  if sepLen == 0 {
     parts.add(s)
     return parts.toArray()
   }
-  var rest = s
-  var more = true
-  while more {
-    val i = rest.indexOf(separator)
-    if i < 0 {
-      parts.add(rest)
-      more = false
+  val sepHead = separator[0]
+  val n = s.length
+  var partStart = 0
+  var i = 0
+  while i + sepLen <= n {
+    if s[i] == sepHead and (sepLen == 1 or s.substring(i, sepLen) == separator) {
+      parts.add(s.substring(partStart, i - partStart))
+      i = i + sepLen
+      partStart = i
     } else {
-      parts.add(rest.substring(0, i))
-      val nextStart = i + separator.length
-      rest = rest.substring(nextStart, rest.length - nextStart)
+      i = i + 1
     }
   }
+  parts.add(s.substring(partStart, n - partStart))
   parts.toArray()
 }
 
