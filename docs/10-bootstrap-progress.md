@@ -35065,3 +35065,77 @@ regression from the shared `std/file.l` change.
 inline above), #6806 (the original accept-interrupt fix), #6887 (the
 `Std.Process` sibling of #6961's D-N-003 root cause), #6937/#6961/#6962
 (closed by this entry), `native/plan/08-work-items.md` N5.7.
+
+## #6533 closed: restored `exposed record` (plain or generic) now round-trips through contract metadata
+
+A restored (cross-package/`[dependencies] path`) `exposed record` used to be
+entirely unusable by a downstream consumer — the consumer's type check
+failed with `error[T0020] unknown name 'Point'` before codegen ever ran.
+`Lyric.ContractMeta.buildContractFromFile` matched `IRecord` but never
+`IExposedRec`, so an exposed record was silently dropped from the
+producer's emitted contract metadata entirely. Fixed by threading an
+`isExposed: Bool` through `reprForRecord` (baking the `exposed` keyword
+into the repr's own re-parseable head — `docs/grammar.ebnf` already
+accepts `pub exposed record Name { ... }` as ordinary item syntax, so no
+new JSON kind discriminator or contract-metadata format-version bump was
+needed) and adding the matching `IExposedRec` arms to both of
+`buildContractFromFile`'s item-kind matches. `Msil.Codegen.registerRestoredMembers`
+had the same gap one level down (an `IRecord` arm registering the ctor/
+fields/body-methods, no `IExposedRec` arm); added the matching arm,
+identical to `IRecord`'s.
+
+**Verification.** New tests in `msil_restored_bridge_self_test.l`
+reproduce the issue's exact plain and generic exposed-record repro shapes
+through the real two-assembly restored-dependency harness, asserting real
+field values round-trip: 8/8 pass (was 6/6). `contract_meta_self_test.l`
+(43/43) and `restored_packages_self_test.l` (23/23) unaffected.
+
+**Still open:** JVM parity was flagged as unchecked by the original issue
+and remains unverified here (no JVM-target regression test added) — the
+metadata-layer fix is backend-shared, but JVM's own restored-type codegen
+dispatch may or may not need an equivalent fix; not confirmed either way.
+
+**Related:** #6533 (closed by this fix), D-progress-944 (full account),
+`docs/45-contract-metadata-direct-resolution.md`.
+
+## #5704 progress: ecosystem-wide F0027 audit clears; a real proto3 float encoding bug fixed
+
+Audited every `lyric-*/` package plus `lyric-stdlib` for the `F0027`
+hint-less-`@externTarget` warning (#5704's prerequisite before the warning
+can become a build-gating error). Found exactly two repeated root-cause
+patterns — hint-less `System.Threading.Monitor.Enter`/`Exit` in
+`lyric-web`/`lyric-mq`/`lyric-jobs`/`lyric-resilience`'s `_kernel/net/`
+files, and hint-less `System.BitConverter.SingleToInt32Bits` in
+`lyric-proto/src/proto_main.l` — and added the missing `@externStatic`
+hint to each (both BCL members are unambiguously static, so this is
+behavior-neutral). `lyric-lambda`/`lyric-testing`/`lyric-otel` inherited
+their own F0027 warnings transitively and needed no direct edit.
+
+Making `SingleToInt32Bits`'s hint explicit also enabled F0015 declared-
+signature verification on that extern for the first time, which
+immediately caught a real, pre-existing bug: `floatToInt32Bits` declared
+the extern directly against a Lyric `Float` (which erases to CLR
+`double`), producing a `(double) -> int32` signature matching no real
+`SingleToInt32Bits` overload — silently broken (`MissingMethodException`
+on any real call) the whole time, exactly as `proto_types_tests.l`'s own
+pre-existing comment already flagged. Fixed by narrowing through a real
+32-bit `System.Single` first (`System.Convert.ToSingle`), mirroring
+`Msil.Kernel.bufF4Le`'s identical, already-correct idiom. Replaced the
+stale "round-trip blocked, tracked separately" test comment with a real
+`floatField` round-trip test asserting the exact IEEE-754 binary32 bit
+pattern.
+
+**Verification.** `lyric-proto` test suite: 25/25 pass (new
+`floatField` round-trip test included). Full ecosystem build sweep after
+the fix: zero `F0027` warnings, zero build errors, across every
+`lyric-*/` package and `lyric-stdlib`. `lyric-web`/`lyric-mq`/
+`lyric-jobs`/`lyric-resilience` test suites (all use the
+`monitorEnter`/`monitorExit` lock helpers internally) re-run green.
+
+**Still open:** this closes the audit prerequisite but does not itself
+promote F0027 to a build-gating error, nor add the negative/SDK-less-
+harness test coverage #5704 additionally asks for — both remain open
+follow-up work on #5704.
+
+**Related:** #5704 (partially addressed), D-progress-945 (full account),
+D-progress-667 (the original F0027 warning).

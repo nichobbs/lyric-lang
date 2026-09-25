@@ -43,10 +43,12 @@ record CircuitEntry {
 }
 
 @axiom("System.Threading.Monitor.Enter — acquires an exclusive lock on obj")
+@externStatic
 @externTarget("System.Threading.Monitor.Enter")
 func monitorEnter[T](obj: in T): Unit = ()
 
 @axiom("System.Threading.Monitor.Exit — releases an exclusive lock on obj")
+@externStatic
 @externTarget("System.Threading.Monitor.Exit")
 func monitorExit[T](obj: in T): Unit = ()
 

@@ -9,6 +9,7 @@ package Proto
 
 import Std.Core
 import Std.Collections
+import extern System.{Single}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── .NET kernel boundary (inlined from Proto.Kernel.Net) ────────────────────
@@ -48,9 +49,25 @@ pub func bufToBytes(buf: ProtoBuffer): slice[Byte] {
   return buf.bytes.toArray()
 }
 
-/// Reinterpret a 32-bit float as its IEEE 754 bit pattern (returned as Int).
+// Narrow a `Double` to a true 32-bit CLR `Single` via `System.Convert.ToSingle`.
+// `Single` flows only between this and `singleToInt32Bits` below, mirroring
+// `Msil.Kernel.dblToSingle`/`bufF4Le`'s identical narrow-then-reinterpret idiom.
+@externTarget("System.Convert.ToSingle")
+@externStatic
+func dblToSingle(v: in Double): Single = ()
+
 @externTarget("System.BitConverter.SingleToInt32Bits")
-pub func floatToInt32Bits(v: in Float): Int = ()
+@externStatic
+func singleToInt32Bits(v: in Single): Int = ()
+
+/// Reinterpret a 32-bit float as its IEEE 754 bit pattern (returned as Int).
+/// Proto3 `float` fields are 32-bit; Lyric's `Float` erases to CLR `double`,
+/// so `v` is narrowed to a real `Single` before the bit-pattern reinterpret
+/// (a direct `SingleToInt32Bits(Float)` call declares a `(double) -> int32`
+/// signature that matches no real BCL overload, #5704).
+pub func floatToInt32Bits(v: in Float): Int {
+  singleToInt32Bits(dblToSingle(v))
+}
 
 /// Reinterpret a 64-bit double as its IEEE 754 bit pattern (returned as Long).
 @externTarget("System.BitConverter.DoubleToInt64Bits")
@@ -392,7 +409,15 @@ pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, Strin
       // `WIRE_*` constants directly via `@`, so the magic numbers `0/1/2/5`
       // no longer leak into the match (#3382, #3487).
       match wireTypeId {
-        case @WIRE_VARINT -> match readVarint(data, afterTag) { case Err(e) -> Err(error = "varint field " + fieldNum.toString() + ": " + e); case Ok(vr) -> Ok(value = DecodeStep(field = DecodedVarint(fieldNum, vr.value), nextOffset = vr.nextOffset)) }
+        case @WIRE_VARINT -> match readVarint(data, afterTag) {
+          case Err(e) -> Err(error = "varint field " + fieldNum.toString() + ": " + e)
+          case Ok(vr) -> Ok(
+            value = DecodeStep(
+              field = DecodedVarint(fieldNum, vr.value),
+              nextOffset = vr.nextOffset
+            )
+          )
+        }
         case @WIRE_FIXED64 -> {
           if afterTag + 8 > data.length {
             Err(error = "truncated fixed64 at field " + fieldNum.toString())
@@ -400,7 +425,25 @@ pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, Strin
             Ok(value = DecodeStep(field = DecodedFixed64(fieldNum, int64LE(data, afterTag)), nextOffset = afterTag + 8))
           }
         }
-        case @WIRE_LENGTH_DELIMITED -> match readVarint(data, afterTag) { case Err(e) -> Err(error = "length prefix at field " + fieldNum.toString() + ": " + e); case Ok(lenResult) -> { val length = longAsInt(lenResult.value); val dataStart = lenResult.nextOffset; if dataStart + length > data.length { Err(error = "truncated bytes field " + fieldNum.toString()) } else { Ok(value = DecodeStep(field = DecodedBytes(fieldNum, sliceCopy(data, dataStart, length)), nextOffset = dataStart + length)) } } }
+        case @WIRE_LENGTH_DELIMITED -> match readVarint(data, afterTag) {
+          case Err(e) -> Err(
+            error = "length prefix at field " + fieldNum.toString() + ": " + e
+          )
+          case Ok(lenResult) -> {
+            val length = longAsInt(lenResult.value)
+            val dataStart = lenResult.nextOffset
+            if dataStart + length > data.length {
+              Err(error = "truncated bytes field " + fieldNum.toString())
+            } else {
+              Ok(
+                value = DecodeStep(
+                  field = DecodedBytes(fieldNum, sliceCopy(data, dataStart, length)),
+                  nextOffset = dataStart + length
+                )
+              )
+            }
+          }
+        }
         case @WIRE_FIXED32 -> {
           if afterTag + 4 > data.length {
             Err(error = "truncated fixed32 at field " + fieldNum.toString())

@@ -62,7 +62,10 @@ test "VarField round-trips through encode/decode" {
   val bytes = encodeMessage([VarField(number = 1, v = 300i64)])
   match decodeMessage(bytes) {
     case Err(e) -> assertTrue(false, "decode failed: " + e)
-    case Ok(fields) -> match findVarint(fields, 1) { case Some(v) -> assertTrue(v == 300i64, "field 1 round-trips to 300"); case None -> assertTrue(false, "field 1 not found after decode") }
+    case Ok(fields) -> match findVarint(fields, 1) {
+      case Some(v) -> assertTrue(v == 300i64, "field 1 round-trips to 300")
+      case None -> assertTrue(false, "field 1 not found after decode")
+    }
   }
 }
 
@@ -95,7 +98,10 @@ test "negative VarField round-trips as a 10-byte varint" {
   assertEqualInt(byteAt(bytes, 10), 1, "final varint byte is 0x01")
   match decodeMessage(bytes) {
     case Err(e) -> assertTrue(false, "decode failed: " + e)
-    case Ok(fields) -> match findVarint(fields, 1) { case Some(v) -> assertTrue(v == -1i64, "negative field round-trips to -1"); case None -> assertTrue(false, "field 1 not found after decode") }
+    case Ok(fields) -> match findVarint(fields, 1) {
+      case Some(v) -> assertTrue(v == -1i64, "negative field round-trips to -1")
+      case None -> assertTrue(false, "field 1 not found after decode")
+    }
   }
 }
 
@@ -103,7 +109,10 @@ test "large negative int64 round-trips through encode/decode" {
   val bytes = encodeMessage([VarField(number = 2, v = -9000000000i64)])
   match decodeMessage(bytes) {
     case Err(e) -> assertTrue(false, "decode failed: " + e)
-    case Ok(fields) -> match findVarint(fields, 2) { case Some(v) -> assertTrue(v == -9000000000i64, "large negative round-trips"); case None -> assertTrue(false, "field 2 not found after decode") }
+    case Ok(fields) -> match findVarint(fields, 2) {
+      case Some(v) -> assertTrue(v == -9000000000i64, "large negative round-trips")
+      case None -> assertTrue(false, "field 2 not found after decode")
+    }
   }
 }
 
@@ -112,7 +121,15 @@ test "BytesField round-trips through encode/decode" {
   val bytes = encodeMessage([BytesField(number = 4, data = payload)])
   match decodeMessage(bytes) {
     case Err(e) -> assertTrue(false, "decode failed: " + e)
-    case Ok(fields) -> match findBytes(fields, 4) { case Some(got) -> { assertEqualInt(got.length, 5, "length-delimited payload length"); assertEqualInt(byteAt(got, 0), 1, "byte 0"); assertEqualInt(byteAt(got, 3), 254, "byte 3"); assertEqualInt(byteAt(got, 4), 255, "byte 4") }; case None -> assertTrue(false, "field 4 not found after decode") }
+    case Ok(fields) -> match findBytes(fields, 4) {
+      case Some(got) -> {
+        assertEqualInt(got.length, 5, "length-delimited payload length")
+        assertEqualInt(byteAt(got, 0), 1, "byte 0")
+        assertEqualInt(byteAt(got, 3), 254, "byte 3")
+        assertEqualInt(byteAt(got, 4), 255, "byte 4")
+      }
+      case None -> assertTrue(false, "field 4 not found after decode")
+    }
   }
 }
 
@@ -151,7 +168,10 @@ test "Fix32Field round-trips through encode/decode" {
   val bytes = encodeMessage([Fix32Field(number = 2, bits = 0x01020304)])
   match decodeMessage(bytes) {
     case Err(e) -> assertTrue(false, "decode failed: " + e)
-    case Ok(fields) -> match findFixed32(fields, 2) { case Some(b) -> assertEqualInt(b, 0x01020304, "fixed32 field 2 round-trips"); case None -> assertTrue(false, "fixed32 field 2 not found after decode") }
+    case Ok(fields) -> match findFixed32(fields, 2) {
+      case Some(b) -> assertEqualInt(b, 0x01020304, "fixed32 field 2 round-trips")
+      case None -> assertTrue(false, "fixed32 field 2 not found after decode")
+    }
   }
 }
 
@@ -159,20 +179,53 @@ test "Fix64Field round-trips through encode/decode" {
   val bytes = encodeMessage([Fix64Field(number = 3, bits = 0x0102030405060708i64)])
   match decodeMessage(bytes) {
     case Err(e) -> assertTrue(false, "decode failed: " + e)
-    case Ok(fields) -> match findFixed64(fields, 3) { case Some(b) -> assertTrue(b == 0x0102030405060708i64, "fixed64 field 3 round-trips"); case None -> assertTrue(false, "fixed64 field 3 not found after decode") }
+    case Ok(fields) -> match findFixed64(fields, 3) {
+      case Some(b) -> assertTrue(b == 0x0102030405060708i64, "fixed64 field 3 round-trips")
+      case None -> assertTrue(false, "fixed64 field 3 not found after decode")
+    }
   }
 }
 
 // Convenience-constructor coverage (#3383): doubleField builds a Fix64 field,
-// so it round-trips through findFixed64.  (floatField's round-trip is blocked
-// by a separate Float->BitConverter.SingleToInt32Bits(Double) extern
-// miscompile, tracked separately, so it is not asserted here.)
+// so it round-trips through findFixed64.
+//
+// floatField's round-trip (#5704): `floatToInt32Bits` used to declare a
+// `SingleToInt32Bits(Float)` extern directly, which erases to a
+// `(double) -> int32` signature matching no real BCL overload; fixed by
+// narrowing through a real `Single` first (`dblToSingle` +
+// `singleToInt32Bits`, mirroring `Msil.Kernel.bufF4Le`'s idiom).  Asserted
+// against `3.14159f32`'s known IEEE-754 binary32 bit pattern (`0x40490fd0`)
+// rather than `doubleToInt32Bits(3.14159)` — the latter would assert the
+// (wrong) binary64-truncated bits, defeating the point of the round-trip.
+// `3.14159` is deliberately NOT exactly representable in either binary32 or
+// binary64 (review feedback on PR #7169), so this exercises the actual
+// `Convert.ToSingle` double->single rounding path `dblToSingle` performs —
+// an exactly-representable value like `2.5` would pass even if the
+// narrowing conversion were silently skipped.
+test "floatField round-trips through Fix32 and decodes to the true binary32 bits" {
+  val bytes = encodeMessage([floatField(7, 3.14159f32)])
+  match decodeMessage(bytes) {
+    case Err(e) -> assertTrue(false, "decode failed: " + e)
+    case Ok(fields) -> match findFixed32(fields, 7) {
+      case Some(b) -> assertEqualInt(
+        b,
+        0x40490fd0,
+        "floatField(3.14159) encodes the true binary32 bit pattern"
+      )
+      case None -> assertTrue(false, "floatField field 7 not found after decode")
+    }
+  }
+}
+
 test "doubleField round-trips through Fix64 and decodes to the original bits" {
   val bits = doubleToInt64Bits(2.5)
   val bytes = encodeMessage([doubleField(5, 2.5)])
   match decodeMessage(bytes) {
     case Err(e) -> assertTrue(false, "decode failed: " + e)
-    case Ok(fields) -> match findFixed64(fields, 5) { case Some(b) -> assertTrue(b == bits, "doubleField round-trips to its IEEE-754 bits"); case None -> assertTrue(false, "doubleField field 5 not found after decode") }
+    case Ok(fields) -> match findFixed64(fields, 5) {
+      case Some(b) -> assertTrue(b == bits, "doubleField round-trips to its IEEE-754 bits")
+      case None -> assertTrue(false, "doubleField field 5 not found after decode")
+    }
   }
 }
 

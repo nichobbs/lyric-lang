@@ -41,10 +41,12 @@ func cdTryGetValue[K, V](dict: in ConcurrentDict[K, V], key: in K, value: out V)
 func cdTryAdd[K, V](dict: in ConcurrentDict[K, V], key: in K, value: in V): Bool = ()
 
 @axiom("System.Threading.Monitor.Enter — acquires an exclusive lock on obj")
+@externStatic
 @externTarget("System.Threading.Monitor.Enter")
 func monitorEnter[T](obj: in T): Unit = ()
 
 @axiom("System.Threading.Monitor.Exit — releases an exclusive lock on obj")
+@externStatic
 @externTarget("System.Threading.Monitor.Exit")
 func monitorExit[T](obj: in T): Unit = ()
 
