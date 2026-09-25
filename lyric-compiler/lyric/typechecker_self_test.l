@@ -4644,6 +4644,17 @@ test "a function value naming an unrepresentable cross-package function is T0128
     0,
     "plain function value: no diagnostic"
   )
+  // A call with explicit type arguments is a call, not a function value.
+  val tyAppSrc = "package App\nimport Lib\nfunc g(): Int {\n  Lib.ident[Int](3)\n}\n"
+  assertTrue(
+    not hasDiagCode(checkWithImportedPackages(rewriteFile(parse(tyAppSrc).file), packages), "T0128"),
+    "qualified generic call with type arguments: no T0128"
+  )
+  val bareTyAppSrc = "package App\nimport Lib.{ident}\nfunc g(): Int {\n  ident[Int](3)\n}\n"
+  assertTrue(
+    not hasDiagCode(checkWithImportedPackages(rewriteFile(parse(bareTyAppSrc).file), packages), "T0128"),
+    "bare generic call with type arguments: no T0128"
+  )
   // Control: the qualified path is really resolved, so a mismatched
   // annotation is reported and the zero-diagnostic case is not vacuous.
   val badSrc = "package App\nimport Lib\nfunc g(): Unit {\n  val f: String = Lib.plain\n}\n"

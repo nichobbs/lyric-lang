@@ -5536,6 +5536,23 @@ func inferExprCore(
       if not tbl.funcRefCallees.containsKey(calleeKey) {
         tbl.funcRefCallees.add(calleeKey, true)
       }
+      // So is the function under explicit type arguments (`isOk[T, E](r)`),
+      // which the parser leaves as `ECall(EIndex(fn, typeArgs), args)`.
+      match fn.kind {
+        case EIndex(inner, _) -> {
+          val innerKey = recordCopySiteKey(inner.span)
+          if not tbl.funcRefCallees.containsKey(innerKey) {
+            tbl.funcRefCallees.add(innerKey, true)
+          }
+        }
+        case ETypeApp(inner, _) -> {
+          val innerKey = recordCopySiteKey(inner.span)
+          if not tbl.funcRefCallees.containsKey(innerKey) {
+            tbl.funcRefCallees.add(innerKey, true)
+          }
+        }
+        case _ -> ()
+      }
       // Numeric / character conversion-method intrinsics (#1901): `x.toInt()`,
       // `b.toLong()`, etc.  Recognised only on a numeric/char receiver so a
       // user-defined method of the same name on some other type still falls
