@@ -1,0 +1,44 @@
+# examples/ui-customers/lyric.toml — edit-customer screen built on lyric-ui.
+#
+# Demonstrates the layered application model of docs/65-ui-library-sketch.md:
+#   domain   Customers.Domain        types, rules, form support
+#   ports    Customers.Ports         repository interface
+#   logic    Customers.Edit.Logic    Model / Msg / Effect / update (pure)
+#   effects  Customers.Edit.Effects  Effect -> async Msg (the only I/O)
+#   view     Customers.Edit.View     Model -> View[Msg]
+#
+# Test:  lyric test --manifest examples/ui-customers/lyric.toml
+# Run:   lyric run  --manifest examples/ui-customers/lyric.toml
+#        then open http://localhost:8080/customers/1
+
+[package]
+name        = "Lyric.Examples.UiCustomers"
+version     = "0.1.0"
+description = "Edit-customer screen: the docs/65 UI application model end to end."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Examples.UiCustomers"
+output          = "single"
+output_assembly = "UiCustomers.dll"
+
+[project.packages]
+"Customers.Domain"       = "src/domain.l"
+"Customers.Ports"        = "src/ports.l"
+"Customers.Edit.Logic"   = "src/edit_logic.l"
+"Customers.Edit.Effects" = "src/edit_effects.l"
+"Customers.Edit.View"    = "src/edit_view.l"
+"Customers.Store"        = "src/store.l"
+"Customers"              = "src/main.l"
+
+[project.tests]
+"Customers.EditTests" = "tests/edit_tests.l"
+
+[dependencies]
+"Lyric.Forms"   = { path = "../../lyric-forms" }
+"Lyric.Ui"      = { path = "../../lyric-ui" }
+"Lyric.JsonRpc" = { path = "../../lyric-jsonrpc" }
+"Lyric.Web"     = { path = "../../lyric-web" }
+"Lyric.Ws"      = { path = "../../lyric-ws" }
+"Lyric.Auth"    = { path = "../../lyric-auth" }

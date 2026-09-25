@@ -1,0 +1,88 @@
+/* lyric-ui default theme (docs/65 §13.9). Design tokens are CSS custom
+   properties; override them on :root to theme an application. */
+:root {
+  --lui-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --lui-bg: #f7f7f8;
+  --lui-surface: #ffffff;
+  --lui-text: #1d1d21;
+  --lui-muted: #5d5d66;
+  --lui-border: #d6d6dc;
+  --lui-accent: #2f5bd3;
+  --lui-accent-text: #ffffff;
+  --lui-danger: #b3261e;
+  --lui-info: #1f5fa8;
+  --lui-success: #1e7b3a;
+  --lui-warning: #8a5a00;
+  --lui-radius: 6px;
+  --lui-gap: 12px;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --lui-bg: #151518;
+    --lui-surface: #1f1f24;
+    --lui-text: #ececf1;
+    --lui-muted: #a5a5b0;
+    --lui-border: #3a3a44;
+    --lui-accent: #7c9cff;
+    --lui-accent-text: #0e0e12;
+    --lui-danger: #ff8a80;
+    --lui-info: #8ab4f8;
+    --lui-success: #81c995;
+    --lui-warning: #fdd663;
+  }
+}
+
+body { margin: 0; background: var(--lui-bg); color: var(--lui-text); font: 15px/1.45 var(--lui-font); }
+#lyric-ui { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+#lyric-ui[aria-busy="true"] { opacity: 0.6; }
+
+.lui-column { display: flex; flex-direction: column; gap: var(--lui-gap); }
+.lui-row { display: flex; flex-wrap: wrap; gap: var(--lui-gap); align-items: center; }
+.lui-spacer { flex: 1; }
+.lui-card, .lui-section { background: var(--lui-surface); border: 1px solid var(--lui-border); border-radius: var(--lui-radius); padding: 16px; }
+.lui-card-title, .lui-section-title { margin: 0 0 12px; }
+.lui-card-body, .lui-section-body { display: flex; flex-direction: column; gap: var(--lui-gap); }
+.lui-heading { margin: 0; }
+.lui-paragraph { margin: 0; }
+.lui-badge { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; font-size: 12px; }
+
+.lui-banner { padding: 10px 12px; border-radius: var(--lui-radius); border-left: 4px solid var(--lui-info); background: var(--lui-surface); }
+[data-tone="error"] { --lui-tone: var(--lui-danger); }
+[data-tone="warning"] { --lui-tone: var(--lui-warning); }
+[data-tone="success"] { --lui-tone: var(--lui-success); }
+[data-tone="info"] { --lui-tone: var(--lui-info); }
+.lui-banner[data-tone], .lui-badge[data-tone] { border-color: var(--lui-tone); color: var(--lui-tone); }
+.lui-banner[data-tone] { color: var(--lui-text); }
+
+.lui-spinner { width: 24px; height: 24px; border: 3px solid var(--lui-border); border-top-color: var(--lui-accent); border-radius: 50%; animation: lui-spin 0.8s linear infinite; }
+@keyframes lui-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .lui-spinner { animation: none; } }
+
+.lui-form { display: flex; flex-direction: column; gap: var(--lui-gap); }
+.lui-field { display: flex; flex-direction: column; gap: 4px; }
+.lui-field-label { font-weight: 600; }
+.lui-field-body { display: flex; flex-direction: column; gap: 4px; }
+.lui-field-error { color: var(--lui-danger); font-size: 13px; }
+.lui-input, .lui-select { font: inherit; color: inherit; background: var(--lui-surface); border: 1px solid var(--lui-border); border-radius: var(--lui-radius); padding: 7px 9px; }
+.lui-textarea { min-height: 88px; resize: vertical; }
+.lui-invalid .lui-input, .lui-invalid .lui-select { border-color: var(--lui-danger); }
+.lui-input:focus-visible, .lui-select:focus-visible, .lui-button:focus-visible, .lui-link:focus-visible { outline: 2px solid var(--lui-accent); outline-offset: 2px; }
+.lui-checkbox { display: inline-flex; gap: 8px; align-items: center; }
+
+.lui-button { font: inherit; padding: 7px 14px; border-radius: var(--lui-radius); border: 1px solid var(--lui-border); background: var(--lui-surface); color: inherit; cursor: pointer; }
+.lui-button[data-variant="primary"] { background: var(--lui-accent); border-color: var(--lui-accent); color: var(--lui-accent-text); }
+.lui-button[data-variant="danger"] { background: var(--lui-danger); border-color: var(--lui-danger); color: var(--lui-accent-text); }
+.lui-button:disabled { opacity: 0.6; cursor: default; }
+.lui-button[aria-busy="true"] { cursor: progress; }
+.lui-link { color: var(--lui-accent); }
+
+.lui-table { border-collapse: collapse; width: 100%; background: var(--lui-surface); }
+.lui-table-cell { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lui-border); }
+.lui-table-row:hover { background: color-mix(in srgb, var(--lui-accent) 8%, transparent); }
+
+.lui-dialog-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / 0.4); display: grid; place-items: center; padding: 16px; }
+.lui-dialog { background: var(--lui-surface); border-radius: var(--lui-radius); padding: 20px; max-width: 420px; width: 100%; display: flex; flex-direction: column; gap: 16px; }
+
+.lui-toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; }
+.lui-toast { background: var(--lui-surface); border: 1px solid var(--lui-border); border-left: 4px solid var(--lui-tone, var(--lui-info)); border-radius: var(--lui-radius); padding: 10px 14px; }

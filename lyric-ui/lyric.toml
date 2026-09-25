@@ -1,0 +1,36 @@
+[package]
+name        = "Lyric.Ui"
+version     = "0.1.0"
+authors     = ["Lyric Contributors"]
+license     = "MIT"
+description = "Model-view-update UI library for Lyric: semantic widgets, view diffing, and server-driven sessions (docs/65)."
+
+[project]
+name            = "Lyric.Ui"
+output          = "single"
+output_assembly = "Ui.dll"
+
+[dependencies]
+"Lyric.Forms"   = { workspace = true }
+"Lyric.JsonRpc" = { workspace = true }
+"Lyric.Web"     = { workspace = true }
+"Lyric.Ws"      = { workspace = true }
+
+[project.packages]
+"Ui.Core"     = "src/core.l"
+"Ui.Widgets"  = "src/widgets.l"
+"Ui.Diff"     = "src/diff.l"
+"Ui.Protocol" = "src/protocol.l"
+"Ui.Session"  = "src/session.l"
+"Ui.Testing"  = "src/testing.l"
+"Ui.Forms"    = "src/forms_view.l"
+"Ui.Host"        = "src/host.l"
+"Ui.Host.Assets" = "src/host_assets.l"
+"Ui.Host.Web"    = "src/host_web.l"
+
+[project.tests]
+"Ui.CoreTests"     = "tests/core_tests.l"
+"Ui.DiffTests"     = "tests/diff_tests.l"
+"Ui.ProtocolTests" = "tests/protocol_tests.l"
+"Ui.SessionTests"  = "tests/session_tests.l"
+"Ui.HostTests"     = "tests/host_tests.l"

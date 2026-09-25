@@ -1,0 +1,16 @@
+{
+  "name": "lyric-ui-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser/webview host runtime for lyric-ui (docs/65 §10.3). Applies session patches and renders the semantic widget set.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "6.0.2"
+  }
+}

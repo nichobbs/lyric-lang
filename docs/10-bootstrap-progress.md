@@ -35688,3 +35688,24 @@ values are cast to delegate parameters and fields; async builder, task and
 awaiter TypeSpecs over in-bundle types are re-encoded once TypeDef rows are
 known; and an annotated local in a specialised generic keeps its annotation
 when the initializer's original generic call infers less.
+
+## UI library: `lyric-forms`, `lyric-ui` and the `ui-customers` example (#7373)
+
+The first slice of the UI library (docs/65, D137) ships Phases U1 and U2 on
+MSIL. `lyric-forms` (`Forms.*`) holds field errors, form schemas and parsers
+with no UI dependency (7 tests). `lyric-ui` (`Ui.*`) holds the
+model-view-update core (`Ui.Core`), the semantic widget set (`Ui.Widgets`),
+view diffing (`Ui.Diff`), the JSON wire protocol (`Ui.Protocol`), the session
+loop (`Ui.Session`), a headless test driver (`Ui.Testing`) and the
+server-driven web host (`Ui.Host`), plus the TypeScript runtime in
+`lyric-ui/runtime/` that applies patches and renders widgets in the browser
+(40 Lyric tests; the runtime is type-checked and its mirror-tree semantics
+tested under `node --test`). `examples/ui-customers` is a customer edit screen
+with validation, a key-account rule, save/cancel flows and confirmation
+dialogs (14 tests). A record `.copy` with a bare `None` or `newList()`
+argument is now built at the field's type on MSIL (D-progress-970).
+
+Not yet: the `[layers]` checker (U3), form and route generators (U4), the
+desktop webview host (U5), native consumption of `lyric-ui` (docs/65 §15
+F-13) and a browser end-to-end test.
+
