@@ -2673,6 +2673,7 @@ test "generic call with an explicit extern-type type argument monomorphises (#68
     0,
     "no dangling-reference M0002 for a call site whose type argument names an extern type"
   )
+}
 
 test "a generic call inside a protected member specialises with the protected fields in scope (D-progress-957)" {
   val callerSrc = "package Caller\n" + "protected type Table {\n" + "  var rows: List[Int] = newList()\n" +
