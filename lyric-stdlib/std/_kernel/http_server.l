@@ -1343,11 +1343,7 @@ func sendH2Reject413(state: in H2ConnState, streamId: in Int): Unit {
 }
 
 func onH2Data(
-  state: in H2ConnState,
-  streamId: in Int,
-  data: in slice[Byte],
-  endStream: in Bool,
-  work: in List[H2Event],
+  state: in H2ConnState, streamId: in Int, data: in slice[Byte], endStream: in Bool, work: in List[H2Event]
 ): Unit {
   if isRejectedStream(state, streamId) {
     // Dropped bytes still give back connection-level window so the other

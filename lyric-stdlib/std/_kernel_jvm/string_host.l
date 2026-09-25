@@ -70,5 +70,9 @@ pub func hostAsciiCaseCompare(a: in String, b: in String): Int {
     }
     j = j + 1
   }
-  if same { 1 } else { 0 }
+  if same {
+    1
+  } else {
+    0
+  }
 }

@@ -41,7 +41,7 @@ test "equalsCaseInsensitive folds ASCII without locale tailoring" {
 }
 
 test "equalsCaseInsensitive falls back to full lowercasing for non-ASCII text" {
-  assertTrue(Std.String.equalsCaseInsensitive("\u{C9}COLE", "\u{E9}cole"), "E-acute folds")
-  assertTrue(not Std.String.equalsCaseInsensitive("\u{C9}cole", "ecole"), "E-acute is not e")
-  assertTrue(not Std.String.equalsCaseInsensitive("abc", "ab\u{E9}"), "one side non-ASCII")
+  assertTrue(Std.String.equalsCaseInsensitive("ÉCOLE", "école"), "E-acute folds")
+  assertTrue(not Std.String.equalsCaseInsensitive("École", "ecole"), "E-acute is not e")
+  assertTrue(not Std.String.equalsCaseInsensitive("abc", "abé"), "one side non-ASCII")
 }
