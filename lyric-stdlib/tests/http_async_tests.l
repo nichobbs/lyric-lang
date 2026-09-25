@@ -94,3 +94,35 @@ test "#5564: interface-dispatched call result flows through Result combinators" 
   val ok = match await c.get(deadUrl) { case Ok(_) -> false; case Err(_) -> true }
   assertTrue(ok, "interface-dispatched Result matches through both arms")
 }
+
+// ─── retry resends a fresh request per attempt (#7237) ──────────────────────
+// A host request message can only be sent once; before the fix every attempt
+// after the first failed with the host's "already sent" error instead of the
+// real transport failure.
+test "#7237: retry resends a fresh request on every attempt" {
+  val url = match Url.tryFrom(deadUrl) {
+    case Ok(u) -> u
+    case Err(e) -> panic("Url.tryFrom failed: " + HttpError.message(e))
+  }
+  val shaped = match withHeader(request(PUT, url), "X-Probe", "1") {
+    case Ok(r) -> withJsonBody(r, "{\"a\":1}")
+    case Err(e) -> panic("withHeader failed: " + HttpError.message(e))
+  }
+  match await retry(shaped, 3, 1i64) {
+    case Ok(_) -> panic("expected a connection error against port 1")
+    case Err(ConnectionFailed(_, message)) -> assertFalse(
+      message.contains("already"),
+      "a retried attempt must not reuse the sent request: " + message
+    )
+    case Err(other) -> panic("expected ConnectionFailed, got: " + HttpError.message(other))
+  }
+}
+
+test "#7237: retry rejects an out-of-range attempt count" {
+  val url = match Url.tryFrom(deadUrl) {
+    case Ok(u) -> u
+    case Err(e) -> panic("Url.tryFrom failed: " + HttpError.message(e))
+  }
+  assertPanics("zero attempts", { -> val _ = await retry(request(GET, url), 0, 0i64) })
+  assertPanics("negative backoff", { -> val _ = await retry(request(GET, url), 1, -1i64) })
+}

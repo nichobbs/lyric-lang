@@ -68,11 +68,62 @@ pub alias Uri = Url
 /// Opaque request wrapper.
 ///
 /// The host request handle is hidden so callers compose requests via
-/// Std.Http helpers instead of mutating host objects directly.
+/// Std.Http helpers instead of mutating host objects directly.  Alongside
+/// the handle, a request keeps the recipe that built it (method, headers,
+/// body), so `retry` can send a fresh host request per attempt: a host
+/// request message can only be sent once (#7237).
 @stable(since = "1.0")
 pub opaque type HttpRequest {
   handle: HostHttp.HttpRequestMessage
   url: String
+  method: String
+  headerNames: List[String]
+  headerValues: List[String]
+  bodyContentType: String
+  body: Option[String]
+}
+
+func newHttpRequest(method: in String, url: in String): HttpRequest {
+  HttpRequest(
+    handle = HostHttp.hostMakeRequest(method, url),
+    url = url,
+    method = method,
+    headerNames = newList(),
+    headerValues = newList(),
+    bodyContentType = "",
+    body = None
+  )
+}
+
+func appendedCopy(xs: in List[String], x: in String): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < xs.count {
+    acc.add(xs[i])
+    i = i + 1
+  }
+  acc.add(x)
+  acc
+}
+
+// A fresh host request message built from `request`'s recipe.  Every header
+// was accepted when first added, so replaying it cannot fail.
+func rebuildHandle(request: in HttpRequest): HostHttp.HttpRequestMessage {
+  var handle = HostHttp.hostMakeRequest(request.method, request.url)
+  var i = 0
+  while i < request.headerNames.count {
+    match HostHttp.hostWithHeader(handle, request.headerNames[i], request.headerValues[i]) {
+      case Ok(h) -> {
+        handle = h
+      }
+      case Err(_) -> ()
+    }
+    i = i + 1
+  }
+  match request.body {
+    case Some(b) -> HostHttp.hostWithStringBody(handle, request.bodyContentType, b)
+    case None -> handle
+  }
 }
 
 /// Opaque response wrapper.
@@ -234,10 +285,7 @@ impl HttpClient for HttpClientImpl {
           case Some(reason) -> return Err(error = unsupportedClientError(parsed.value, reason))
           case None -> ()
         }
-        val req = HttpRequest(
-          handle = HostHttp.hostWithStringBody(HostHttp.hostMakeRequest("PUT", parsed.value), "text/plain", body),
-          url = parsed.value
-        )
+        val req = withStringBody(newHttpRequest("PUT", parsed.value), "text/plain", body)
         val result = await HostHttp.hostSendSafe(self.handle, req.handle)
         match result {
           case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
@@ -255,7 +303,7 @@ impl HttpClient for HttpClientImpl {
           case Some(reason) -> return Err(error = unsupportedClientError(parsed.value, reason))
           case None -> ()
         }
-        val req = HttpRequest(handle = HostHttp.hostMakeRequest("DELETE", parsed.value), url = parsed.value)
+        val req = newHttpRequest("DELETE", parsed.value)
         val result = await HostHttp.hostSendSafe(self.handle, req.handle)
         match result {
           case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
@@ -273,10 +321,7 @@ impl HttpClient for HttpClientImpl {
           case Some(reason) -> return Err(error = unsupportedClientError(parsed.value, reason))
           case None -> ()
         }
-        val req = HttpRequest(
-          handle = HostHttp.hostWithStringBody(HostHttp.hostMakeRequest("PATCH", parsed.value), "text/plain", body),
-          url = parsed.value
-        )
+        val req = withStringBody(newHttpRequest("PATCH", parsed.value), "text/plain", body)
         val result = await HostHttp.hostSendSafe(self.handle, req.handle)
         match result {
           case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
@@ -804,7 +849,7 @@ pub func Url.toString(url: in Url): String {
 /// `sendAsync`, not by this pure request-shaping helper.
 @stable(since = "1.0")
 pub func request(method: in HttpMethod, url: in Url): HttpRequest {
-  return HttpRequest(handle = HostHttp.hostMakeRequest(methodName(method), url.value), url = url.value)
+  return newHttpRequest(methodName(method), url.value)
 }
 
 /// Add or replace one request header.
@@ -826,7 +871,17 @@ pub func withHeader(request: in HttpRequest, key: in String, value: in String): 
 {
   match HostHttp.hostWithHeader(request.handle, key, value) {
     case Err(name) -> return Err(error = ReservedHeader(url = request.url, name = name))
-    case Ok(handle) -> return Ok(value = HttpRequest(handle = handle, url = request.url))
+    case Ok(handle) -> return Ok(
+      value = HttpRequest(
+        handle = handle,
+        url = request.url,
+        method = request.method,
+        headerNames = appendedCopy(request.headerNames, key),
+        headerValues = appendedCopy(request.headerValues, value),
+        bodyContentType = request.bodyContentType,
+        body = request.body
+      )
+    )
   }
 }
 
@@ -836,13 +891,25 @@ pub func withHeader(request: in HttpRequest, key: in String, value: in String): 
 /// JSON. Source-generated JSON encoders will feed this in later phases.
 @stable(since = "1.0")
 pub func withJsonBody(request: in HttpRequest, json: in String): HttpRequest {
-  return HttpRequest(handle = HostHttp.hostWithStringBody(request.handle, "application/json", json), url = request.url)
+  return withStringBody(request, "application/json", json)
 }
 
 /// Attach a plain UTF-8 text body.
 @stable(since = "1.0")
 pub func withTextBody(request: in HttpRequest, text: in String): HttpRequest {
-  return HttpRequest(handle = HostHttp.hostWithStringBody(request.handle, "text/plain", text), url = request.url)
+  return withStringBody(request, "text/plain", text)
+}
+
+func withStringBody(request: in HttpRequest, contentType: in String, text: in String): HttpRequest {
+  HttpRequest(
+    handle = HostHttp.hostWithStringBody(request.handle, contentType, text),
+    url = request.url,
+    method = request.method,
+    headerNames = request.headerNames,
+    headerValues = request.headerValues,
+    bodyContentType = contentType,
+    body = Some(value = text)
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -984,20 +1051,42 @@ pub async func HttpResponse.bodyBytes(response: in HttpResponse): Result[slice[B
 // ---------------------------------------------------------------------------
 // Higher-level helpers.
 // ---------------------------------------------------------------------------
-/// Retry a request up to maxAttempts times, with optional delay between
-/// attempts.  Passing `backoffMs = 0` retries immediately.  Returns the
-/// first successful response, or the last error if all attempts fail.
+/// Send `request` up to `maxAttempts` times, waiting `backoffMs`
+/// milliseconds between attempts, and return the first successful response
+/// or the last error.  Each attempt after the first sends a fresh copy of
+/// the request (a host request message can only be sent once, #7237).
+///
+/// Only a transport failure is retried; any HTTP response, including a 5xx,
+/// is returned as-is.  Retrying resends the request, so use it for
+/// idempotent methods (GET, HEAD, PUT, DELETE) or requests the server
+/// de-duplicates.
 @stable(since = "1.0")
 pub async func retry(request: in HttpRequest, maxAttempts: in Int, backoffMs: in Long): Result[HttpResponse, HttpError]
-  requires: maxAttempts > 0
-  requires: backoffMs >= 0
+  requires: maxAttempts > 0 and maxAttempts <= 100
+  requires: backoffMs >= 0i64 and backoffMs <= 2147483647i64
 {
   var attempts: Int = 0
   var last: Result[HttpResponse, HttpError] = Err(
     error = ConnectionFailed(url = request.url, message = "not attempted")
   )
   while attempts < maxAttempts {
-    last = await sendAsync(request)
+    if attempts > 0 and backoffMs > 0i64 {
+      await delay(backoffMs.toInt())
+    }
+    val attempt = if attempts == 0 {
+      request
+    } else {
+      HttpRequest(
+        handle = rebuildHandle(request),
+        url = request.url,
+        method = request.method,
+        headerNames = request.headerNames,
+        headerValues = request.headerValues,
+        bodyContentType = request.bodyContentType,
+        body = request.body
+      )
+    }
+    last = await sendAsync(attempt)
     match last {
       case Ok(response) -> return Ok(value = response)
       case Err(e) -> ()
