@@ -59,6 +59,13 @@ pub record ParseState {
   /// broke exactly that case (#5735: a local named `result` could be
   /// declared but never referenced again by name).
   var inContractClauseExpr: Bool
+  /// True while parsing a contract clause (`requires:`/`ensures:`/`when:`/
+  /// `decreases:`) or an `invariant:` clause: the only positions where a
+  /// `forall`/`exists` quantifier may appear (grammar `QuantifierExpr`).
+  /// Elsewhere a quantifier is P0344: it cannot be evaluated, and the
+  /// backends used to lower it as a constant (#7228).  Set with the same
+  /// save/restore discipline as `inContractClauseExpr`.
+  var quantifierAllowed: Bool
 }
 
 pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic]): ParseState {
@@ -69,7 +76,8 @@ pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic
     diags = diags,
     cstEvents = events,
     suppressArrowLambda = false,
-    inContractClauseExpr = false
+    inContractClauseExpr = false,
+    quantifierAllowed = false
   )
 }
 

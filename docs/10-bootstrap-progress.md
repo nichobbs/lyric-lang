@@ -237,6 +237,7 @@ deferred to Phase 3 by design.
 | Protocol and I/O contracts (#7251): header-name tokens and status bounds in `serializeResponseHead` (kernels filter to them), `EngineLimits` invariants, `Url` shape invariant, `HttpError.InvalidHeader`, confined `Std.Rest` paths; HTTP/2 frame-field, response-header and DATA-size preconditions, H2/HPACK config ranges; empty-PEM `Err`, positive process timeouts, `Std.Random`/`Std.Testing.Property` bounds; `@runtime_checked` `Std.Json` with fail-closed `@generate(Json)` readers; XML `Char`-only character references; JVM `default()` assigned into a primitive target | **Shipped** | D-progress-967 |
 | Loop `invariant:` checked on normal loop exit (condition false, iterator exhausted, zero iterations), skipped on `break` (#7224) | **Shipped** | D-progress-968 |
 | Unsuffixed integer literals range-checked (a literal above `Int` is a `Long`, T0015 for out-of-range bindings, `-2147483648` folded) (#7346); mixed-width arithmetic (`Int op Long`, `UInt op ULong`, `Float op Double`) widened on MSIL, JVM and native (#7350) | **Shipped** | D-progress-969 |
+| Contract quantifiers skipped soundly at runtime (the conjunct containing a `forall`/`exists` is dropped with a located W0002; `not exists` no longer fails every call), and a quantifier outside a contract is P0344 (#7228) | **Shipped** | D-progress-970 |
 
 ### Phase 2 — type system completion (complete)
 

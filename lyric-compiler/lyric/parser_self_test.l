@@ -618,7 +618,11 @@ test "aspect args row clause on its own line still parses" {
       match ad.around {
         case Some(a) -> {
           match a.argsRow {
-            case Some(fields) -> assertEqualInt(fields.count, 1, "args-row-newline: row clause recognised across the line break")
+            case Some(fields) -> assertEqualInt(
+              fields.count,
+              1,
+              "args-row-newline: row clause recognised across the line break"
+            )
             case None -> assertTrue(false, "args-row-newline: expected Some(fields), clause was dropped")
           }
         }
@@ -1051,20 +1055,31 @@ test "forall as function name in function call" {
 
 test "exists as quantifier expression still works" {
   // `exists(x: Int) x > 5` should still parse as a quantifier, not a function call.
-  val src = "package P\nval x: Bool = exists(n: Int) n > 5\n"
+  val src = "package P\nfunc f(): Bool\n  requires: exists(n: Int) n > 5\n{ true }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "quantifier exists(x: T) body parses correctly")
   assertEqualInt(itemCount(pr), 1, "quantifier: one item")
-  assertEqual(firstItemKindName(pr), "val", "quantifier: item is val")
 }
 
 test "forall as quantifier expression still works" {
   // `forall(x: Int) x >= 0` should still parse as a quantifier.
-  val src = "package P\nval x: Bool = forall(n: Int) n >= 0\n"
+  val src = "package P\nfunc f(): Bool\n  ensures: forall(n: Int) n >= 0\n{ true }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "quantifier forall(x: T) body parses correctly")
   assertEqualInt(itemCount(pr), 1, "quantifier: one item")
-  assertEqual(firstItemKindName(pr), "val", "quantifier: item is val")
+}
+
+// #7228: a quantifier outside a contract or invariant clause is P0344 (it
+// cannot be evaluated); `exists(x)` as an ordinary call is unaffected.
+test "a quantifier outside a contract clause is P0344" {
+  val pr = parse("package P\nval x: Bool = exists(n: Int) n > 5\n")
+  assertTrue(hasDiagCode(pr, "P0344"), "exists in a val initializer: P0344")
+  val pr2 = parse(
+    "package P\nfunc f(): Unit {\n  var i = 0\n  while i < 3\n    invariant: forall(k: Int) k >= 0\n  {\n    i = i + 1\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(pr2), 0, "a quantifier in a loop invariant is allowed")
+  val pr3 = parse("package P\nfunc f(p: String): Bool = exists(p)\n")
+  assertEqualInt(diagCount(pr3), 0, "exists(p) is an ordinary call")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1440,7 +1455,8 @@ test "lambda: guard containing an if-block statement with a nested lambda, plus 
     "package P\nfunc classify(y: Int, flag: Bool): Int {\n  match y {\n    case y if if flag { val f = (x) -> x > 0; f(y) } else { false } and (flag) -> 1\n    case _ -> 0\n  }\n}\n"
   )
   assertEqualInt(
-    diagCount(pr), 0,
+    diagCount(pr),
+    0,
     "guard `if if flag { val f = (x) -> x > 0; f(y) } else { false } and (flag) -> ...` parses clean"
   )
 }
@@ -1495,7 +1511,11 @@ func classify6601(y: Int, flag: Bool): Int {
 
 test "lambda: #6601 repro runs correctly — guard picks the right arm and the nested lambda is invocable" {
   assertEqualInt(classify6601(5, true), 1, "positive y, flag true: guard true, arm 1 selected")
-  assertEqualInt(classify6601(-5, true), 0, "non-positive y, flag true: nested lambda call returns false, arm 1 not selected")
+  assertEqualInt(
+    classify6601(-5, true),
+    0,
+    "non-positive y, flag true: nested lambda call returns false, arm 1 not selected"
+  )
   assertEqualInt(classify6601(5, false), 0, "flag false: if-branch not taken, guard false, arm 1 not selected")
 }
 
@@ -1933,7 +1953,11 @@ func protectedMemberFirstAnnName(pm: in ProtectedMember): String {
         }
       }
     }
-    case PMEntry(ed) -> if ed.annotations.count > 0 { modulePathJoin(ed.annotations[0].name.segments) } else { "<none>" }
+    case PMEntry(ed) -> if ed.annotations.count > 0 {
+      modulePathJoin(ed.annotations[0].name.segments)
+    } else {
+      "<none>"
+    }
     case PMFunc(fn) -> if fn.annotations.count > 0 { modulePathJoin(fn.annotations[0].name.segments) } else { "<none>" }
     case PMInvariant(_) -> "<none>"
   }

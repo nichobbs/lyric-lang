@@ -2215,26 +2215,15 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     }
 
     // ── Quantifiers ───────────────────────────────────────────────────────
-    // `forall`/`exists` are proof-time quantifiers over possibly-unbounded
-    // domains.  In `@runtime_checked` modules they are approximated as `true`
-    // (a sound overapproximation — the assert passes, no false-negative
-    // crash), matching the MSIL backend's resolution (#1506); W0002 informs
-    // the user the clause is not enforced at runtime (#3227).
+    // Only legal in a contract clause (P0344), where the contract elaborator
+    // drops every conjunct containing one before codegen (W0002, #7228).
+    // Lowering it as a constant was unsound under negation, so reaching here
+    // is a compiler bug.
     case EForall(_, _, _) -> {
-      Console.error(
-        "W0002: forall quantifier in @runtime_checked contract is not evaluated at runtime " +
-          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
-      )
-      insns.add(LIconst(v = 1))
-      JBoolean
+      panic("Jvm.Codegen: a forall quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
     case EExists(_, _, _) -> {
-      Console.error(
-        "W0002: exists quantifier in @runtime_checked contract is not evaluated at runtime " +
-          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
-      )
-      insns.add(LIconst(v = 1))
-      JBoolean
+      panic("Jvm.Codegen: an exists quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
     case EOld(_) -> {
       panic("Jvm.Codegen: EOld not supported in JVM codegen")

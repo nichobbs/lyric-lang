@@ -10930,27 +10930,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     }
 
     // ── Quantifiers and old-state ─────────────────────────────────────────────
-    // `forall`/`exists` are proof-time quantifiers that can express properties
-    // over infinite or unbounded domains.  In `@runtime_checked` modules the
-    // contract elaborator substitutes snapshot variables for `old(e)` before
-    // reaching here, and quantifiers are approximated as `true` at runtime
-    // (a sound overapproximation — the assert passes, no false-negative crash).
-    // W0002 informs the user so they aren't surprised by the unenforced clause.
+    // A `forall`/`exists` is only legal in a contract clause (P0344), and the
+    // contract elaborator drops every conjunct containing one before codegen
+    // (W0002, #7228): a quantifier ranges over a type and cannot be evaluated.
+    // Lowering it as a constant was unsound under negation, so reaching here
+    // is a compiler bug.
     case EForall(_, _, _) -> {
-      Console.error(
-        "W0002: forall quantifier in @runtime_checked contract is not evaluated at runtime " +
-          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
-      )
-      insns.add(MLdcI4(v = 1))
-      MBool
+      panic("Msil.Codegen: a forall quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
     case EExists(_, _, _) -> {
-      Console.error(
-        "W0002: exists quantifier in @runtime_checked contract is not evaluated at runtime " +
-          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
-      )
-      insns.add(MLdcI4(v = 1))
-      MBool
+      panic("Msil.Codegen: an exists quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
     // `EOld` is materialised as `let __old_N = e` by the contract elaborator;
     // reaching codegen means the elaborator was bypassed — compiler bug.

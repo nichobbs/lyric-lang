@@ -1084,7 +1084,7 @@ Internal mutations may temporarily violate the invariant; the invariant is check
 Contract expressions are pure: no side effects, no I/O, no mutation. They may use:
 - Standard arithmetic and comparison operators
 - Calls to functions explicitly marked `@pure`
-- `forall` and `exists` over finite ranges or collections (decidable fragment for proof; in `@runtime_checked` modules these are approximated as `true` — a sound over-approximation that does not verify the quantified property at runtime)
+- `forall` and `exists` (decidable fragment for proof). A quantifier may appear only in a contract or `invariant:` clause; anywhere else it is `P0344`. Its domain is a type, so a runtime-checked build cannot evaluate it: the top-level `and`-conjunct of the clause that contains it is skipped with warning `W0002` (at the quantifier), and the clause's other conjuncts are still checked. Skipping the whole conjunct, rather than treating the quantifier as `true`, keeps the check sound under negation (`not exists ...`, #7228)
 - `old(expr)` in `ensures` clauses — captures the value of `expr` at function entry; the elaborator inserts a `let __old_N = expr` snapshot before any `requires` assertions
 - `result` in `ensures` clauses
 - `implies` (`a implies b` ≡ `not a or b`)

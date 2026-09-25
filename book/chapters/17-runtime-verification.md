@@ -19,7 +19,7 @@ What this annotation enables:
 - **`ensures:` clauses** are evaluated just before the function returns, after the body has produced a value. The first clause that evaluates to `false` raises a `PostconditionViolated` bug.
 - **`invariant:` clauses** on protected types are checked when each `entry` returns. On records and opaque types they are checked at every construction and `.copy(...)`; re-checking after in-place mutation at public boundaries is not implemented yet (#7222).
 - **Loop `invariant:` clauses** on `while` and `for` are checked at the start of every iteration and again when the loop finishes normally (condition false, iterator exhausted, or a body that never ran). Leaving through `break` skips the exit check.
-- **`forall` and `exists`** quantifiers are not evaluated at runtime: they compile to `true` with warning W0002, so a quantified clause documents intent and feeds `lyric prove` but catches nothing at runtime (#7228).
+- **`forall` and `exists`** quantifiers are not evaluated at runtime: the `and`-part of the clause that contains one is skipped, with warning W0002 pointing at the quantifier, while the rest of the clause is still checked. The quantified part documents intent and feeds `lyric prove` but catches nothing at runtime (#7228). A quantifier outside a contract or `invariant:` clause is a compile error (P0344).
 
 The annotation has no effect on which code you can call. A `@runtime_checked` package can call `@proof_required` packages, `@axiom` boundaries, or any other package without restriction. The restriction runs the other way: `@proof_required` packages are constrained in what they may call (Chapter 18).
 

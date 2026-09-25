@@ -343,13 +343,59 @@ func mkPath(name: in String, sp: in Span): Expr {
   mkExpr(EPath(path = ModulePath(segments = segs, span = sp)), sp)
 }
 
+// Every runtime contract check (requires, ensures, loop and type
+// invariants, aspect contracts) is built here.  A `forall`/`exists` cannot be
+// evaluated at runtime, and approximating the quantifier itself as `true` is
+// only sound in a positive position: `not exists ...` became `false` and
+// failed every call (#7228).  So the clause is split into its top-level
+// `and` conjuncts and each conjunct that contains a quantifier is dropped;
+// the rest is still checked.  `runtimeQuantifierWarnings` reports W0002 for
+// each dropped quantifier.
 func mkAssertCall(cond: in Expr, message: in String, sp: in Span): Statement {
   val callee = mkPath("assert", sp)
   val args: List[CallArg] = newList()
-  args.add(CAPositional(expr = cond))
+  args.add(CAPositional(expr = runtimeCheckableConjuncts(cond, sp)))
   args.add(CAPositional(expr = mkExpr(ELiteral(lit = LString(text = message)), sp)))
   val call = mkExpr(ECall(fn = callee, args = args), sp)
   mkStmt(SExpr(expr = call), sp)
+}
+
+func runtimeCheckableConjuncts(cond: in Expr, sp: in Span): Expr {
+  if not exprHasQuantifier(cond) {
+    return cond
+  }
+  val parts: List[Expr] = newList()
+  collectConjuncts(cond, parts)
+  var kept: Option[Expr] = None
+  var i = 0
+  while i < parts.count {
+    val part = parts[i]
+    if not exprHasQuantifier(part) {
+      kept = match kept {
+        case None -> Some(value = part)
+        case Some(acc) -> Some(value = mkExpr(EBinop(op = BAnd, lhs = acc, rhs = part), part.span))
+      }
+    }
+    i = i + 1
+  }
+  match kept {
+    case Some(e) -> e
+    case None -> mkExpr(ELiteral(lit = LBool(value = true)), sp)
+  }
+}
+
+func collectConjuncts(e: in Expr, acc: in List[Expr]): Unit {
+  match e.kind {
+    case EBinop(op, l, r) -> match op {
+      case BAnd -> {
+        collectConjuncts(l, acc)
+        collectConjuncts(r, acc)
+      }
+      case _ -> acc.add(e)
+    }
+    case EParen(inner) -> collectConjuncts(inner, acc)
+    case _ -> acc.add(e)
+  }
 }
 
 // `let <name> = <init>` with type inferred.

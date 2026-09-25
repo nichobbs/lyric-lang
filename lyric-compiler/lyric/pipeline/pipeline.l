@@ -286,6 +286,11 @@ pub func pipeCheckAndMono(
     return None
   }
 
+  // W0002 for every contract quantifier the elaborator will drop (#7228);
+  // `@proof_required` files are proved, not runtime-checked.
+  if not vlIsProofRequired(mcRes.level) {
+    val _ = gate(opts.pkgLabel, opts.lineOrigins, runtimeQuantifierWarnings(checked))
+  }
   val elaborated = elaborateFileWithInterfaces(checked, monoIfaceDecls)
 
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).
