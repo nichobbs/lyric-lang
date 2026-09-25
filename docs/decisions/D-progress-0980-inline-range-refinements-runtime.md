@@ -40,8 +40,8 @@ Not covered:
 - A module-level `val` with a refined type keeps only the compile-time T0015
   check.
 - Named range subtypes (`type Cents = Long range ...`) are part 2 of #7226:
-  their `from`/`tryFrom` already check, but derived arithmetic is not
-  re-checked.
+  their `from`/`tryFrom` already check, and derived arithmetic is re-checked
+  through `from` by D-progress-985 (#7361).
 
 Tests: `range_refinement_self_test.l` (7 cases, dotnet and JVM) covers
 parameters, a half-open return, `Double` (including NaN) and `Long` bounds,

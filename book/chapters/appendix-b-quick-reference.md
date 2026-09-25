@@ -1342,6 +1342,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0131` | A loop reuses the label of a loop it is nested in, so `break label` would be ambiguous. Rename one; sibling loops may share a label. |
 | `T0132` | A contract clause has the wrong type: `requires:`, `ensures:`, `when:` and loop `invariant:` must be `Bool`. Clauses are checked in the function's scope, with `result` typed as the declared return type. |
 | `T0133` | A contract clause or loop invariant calls a function that is not `@pure`. Mark the callee `@pure` if it has no side effects (the compiler trusts the annotation), or move the check into the body. |
+| `T0134` | A compound assignment (`+=`, `-=`, ...) to a distinct type has a target that is not a variable or field path (`xs[i] += y`). The assignment is rewritten to `x = T.from(x.value op y.value)`, which evaluates the target twice; write it out explicitly. |
 
 ### Type checker warnings (W-series)
 

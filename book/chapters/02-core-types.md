@@ -79,6 +79,8 @@ The proof system (Chapter 11) makes this even stronger: in a `@proof_required` m
 
 The `derives` clause (covered in §2.3) applies to range subtypes too. `type Cents = Long range 0 ..= 1_000_000_000_00 derives Add, Sub, Compare` enables addition, subtraction, and comparison directly on `Cents` values — you can add two `Cents` values together and get a `Cents` back. You cannot multiply them; that's not in `derives`, and `Cents * Cents` would be dimensionally meaningless anyway.
 
+The result of derived arithmetic is checked like a construction: `Cents.from(5) - Cents.from(10)` panics exactly as `Cents.from(-5)` would. `==` and `!=` work on every distinct type and compare the underlying values, and `x.value` reads the underlying value when you need it.
+
 ## §2.3 Distinct types and aliases
 
 Lyric distinguishes between two kinds of type declarations:

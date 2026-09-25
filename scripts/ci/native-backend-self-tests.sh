@@ -73,7 +73,8 @@ done
 # lane covers their native run (#7364 review).
 for t in \
   lyric-compiler/lyric/slice_fastpath_self_test.l \
-  lyric-compiler/lyric/labelled_loops_self_test.l ; do
+  lyric-compiler/lyric/labelled_loops_self_test.l \
+  lyric-compiler/lyric/distinct_ops_self_test.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done

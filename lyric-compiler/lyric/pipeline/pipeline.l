@@ -279,7 +279,10 @@ pub func pipeCheckAndMono(
   // checker (#7222).  After `.copy` desugaring, so a copy's constructor call
   // is covered too; after `checkedSourceOut` is captured, so generic bodies
   // exported for another package's specialisation stay checker-free.
-  val checked = wrapInvariantConstructions(copyRes.file, tcRes.symbols.invariantCtorSites)
+  val invChecked = wrapInvariantConstructions(copyRes.file, tcRes.symbols.invariantCtorSites)
+  // Operators on distinct types go through the underlying value (#7361),
+  // which also re-checks a range subtype's derived arithmetic (#7226).
+  val checked = lowerDistinctOps(invChecked, tcRes.symbols.distinctOpSites, tcRes.symbols.distinctCompoundSites)
 
   val mcRes = checkFile(checked)
   if gate(opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {

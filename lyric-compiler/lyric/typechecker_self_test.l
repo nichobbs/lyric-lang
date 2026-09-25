@@ -1233,6 +1233,20 @@ test "an out-of-range literal argument is a type error" {
   assertTrue(diagCount(cr) > 0, "a Long-valued literal is not an Int argument")
 }
 
+// #7361: a compound assignment to a distinct type is rewritten to
+// `x = T.from(x.value op y.value)`, so its target must be free of side
+// effects.
+test "compound assignment to a distinct type needs a path target (T0134)" {
+  val ok = parseCheck(
+    "package P\ntype C = Long range 0 ..= 9 derives Add\nfunc f(a: in C, b: in C): C {\n  var x = a\n  x += b\n  x\n}\n"
+  )
+  assertTrue(not hasDiagCode(ok, "T0134"), "a variable target is accepted")
+  val bad = parseCheck(
+    "package P\ntype C = Long derives Add\nfunc f(xs: inout slice[C], b: in C): Unit {\n  xs[0] += b\n}\n"
+  )
+  assertTrue(hasDiagCode(bad, "T0134"), "an indexed target is T0134")
+}
+
 test "inline refined half open in bounds" {
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 .. 10 = 9\n}\n"
   val cr = parseCheck(src)
