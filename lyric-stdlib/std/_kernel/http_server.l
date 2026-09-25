@@ -361,8 +361,19 @@ record H2Exchange {
   streamId: Int
   var status: Int
   var contentType: String
-  body: List[Byte]
+  // The response body as the slices the handler wrote, in order, framed as
+  // DATA directly at send time: no per-byte copy into a list and no copy
+  // back out into one array (#7269). `bodyLength` is their total length.
+  bodyChunks: List[slice[Byte]]
+  var bodyLength: Int
   extra: Map[String, String]
+}
+
+func addH2BodyChunk(exchange: in H2Exchange, bytes: in slice[Byte]): Unit {
+  if bytes.length > 0 {
+    exchange.bodyChunks.add(bytes)
+    exchange.bodyLength = exchange.bodyLength + bytes.length
+  }
 }
 
 // Per-stream request accumulation on the connection task: the HPACK-decoded
@@ -1132,7 +1143,13 @@ func pumpForWindow(state: in H2ConnState, streamId: in Int, work: in List[H2Even
 // larger than the peer's max frame size and no larger than the currently
 // available send window (pumping for more window when exhausted). END_STREAM is
 // set on the final frame.
-func sendH2Body(state: in H2ConnState, streamId: in Int, body: in slice[Byte], work: in List[H2Event]): Unit {
+func sendH2Body(
+  state: in H2ConnState,
+  streamId: in Int,
+  body: in slice[Byte],
+  endStream: in Bool,
+  work: in List[H2Event],
+): Bool {
   var off = 0
   while off < body.length and not H2.isFailed(state.h2) {
     var sendable = maxSendableOnStream(state.h2, streamId)
@@ -1144,23 +1161,25 @@ func sendH2Body(state: in H2ConnState, streamId: in Int, body: in slice[Byte], w
         // and did not close): stop. The connection's next read returns EOF/err
         // and the loop tears it down — a loud incomplete response, never a
         // silent truncation the peer can't detect.
-        return
+        return false
       }
     }
     val frameCap = minIntH2(peerMaxFrameSize(state.h2), sendable)
     val chunkLen = minIntH2(frameCap, body.length - off)
-    val isLast = off + chunkLen == body.length
-    val chunk = body.slice(off, off + chunkLen)
+    val isLast = endStream and off + chunkLen == body.length
+    // A slice that fits one frame is framed as-is, without a sub-slice copy.
+    val chunk = if off == 0 and chunkLen == body.length { body } else { body.slice(off, off + chunkLen) }
     match sendData(state.h2, streamId, chunk, isLast) {
       case Ok(bytes) -> {
         val _ = hostWrite(state.conn, bytes)
         off = off + chunkLen
       }
       case Err(_) -> {
-        return
+        return false
       }
     }
   }
+  off == body.length
 }
 
 // Serialize the response the puller placed in `exchange` back onto the wire:
@@ -1171,15 +1190,14 @@ func sendH2Response(state: in H2ConnState, exchange: in H2Exchange, work: in Lis
     return
   }
   val streamId = exchange.streamId
-  val bodyArr = exchange.body.toArray()
   val headers: List[HeaderField] = newList()
   headers.add(HeaderField(name = ":status", value = toString(exchange.status)))
   if exchange.contentType.length > 0 and responseHeaderSafe(exchange.contentType) {
     headers.add(HeaderField(name = "content-type", value = exchange.contentType))
   }
-  headers.add(HeaderField(name = "content-length", value = toString(bodyArr.length)))
+  headers.add(HeaderField(name = "content-length", value = toString(exchange.bodyLength)))
   appendH2ExtraHeaders(headers, exchange.extra)
-  val endOnHeaders = bodyArr.length == 0
+  val endOnHeaders = exchange.bodyLength == 0
   match encodeResponseHeaders(state.h2, streamId, headers, endOnHeaders) {
     case Err(_) -> {
       // The response headers could not be HPACK-encoded: rather than silently
@@ -1194,8 +1212,14 @@ func sendH2Response(state: in H2ConnState, exchange: in H2Exchange, work: in Lis
     }
     case Ok(headBytes) -> {
       val _ = hostWrite(state.conn, headBytes)
-      if bodyArr.length > 0 {
-        sendH2Body(state, streamId, bodyArr, work)
+      // Each written slice is framed in turn; END_STREAM rides the final frame
+      // of the last one. A slice that could not be sent in full stops the rest.
+      var i = 0
+      var sending = true
+      while sending and i < exchange.bodyChunks.count {
+        val isLastChunk = i == exchange.bodyChunks.count - 1
+        sending = sendH2Body(state, streamId, exchange.bodyChunks[i], isLastChunk, work)
+        i = i + 1
       }
     }
   }
@@ -1232,7 +1256,14 @@ func dispatchH2Stream(state: in H2ConnState, streamId: in Int, work: in List[H2E
     case None -> ()
     case Some(accum) -> {
       val line = extractH2Request(accum.headers)
-      val exchange = H2Exchange(streamId = streamId, status = 0, contentType = "", body = newList(), extra = newMap())
+      val exchange = H2Exchange(
+        streamId = streamId,
+        status = 0,
+        contentType = "",
+        bodyChunks = newList(),
+        bodyLength = 0,
+        extra = newMap()
+      )
       val someH2: Option[H2Exchange] = Some(value = exchange)
       val done: Semaphore = newSemaphore(0)
       val ctx = HttpContext(
@@ -1787,7 +1818,9 @@ func respondBytesWith(
       // No wire write happens here (h2 FSM state is owned by the connection task).
       exchange.status = status
       exchange.contentType = contentType
-      appendBytes(exchange.body, body)
+      // A copy (one `Array.Copy`, #7259): the connection task frames it after
+      // this call returns, so it must not alias a buffer the handler may reuse.
+      addH2BodyChunk(exchange, body.slice(0, body.length))
       mapPutAll(exchange.extra, extra)
       signalDone(c)
     }
@@ -1886,8 +1919,9 @@ pub func streamWriteChunk(
   val payload = bytes.slice(offset, offset + count)
   match s.h2 {
     case Some(exchange) -> {
-      // HTTP/2: buffer into the exchange body; flushed as DATA at endChunkedResponse.
-      appendBytes(exchange.body, payload)
+      // HTTP/2: keep the chunk (already a fresh copy); it is framed as DATA at
+      // endChunkedResponse.
+      addH2BodyChunk(exchange, payload)
       Ok(value = ())
     }
     case None -> match hostWrite(s.conn, serializeChunk(payload)) {

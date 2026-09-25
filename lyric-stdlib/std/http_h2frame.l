@@ -559,13 +559,15 @@ pub func serializeFrameHeader(h: in H2FrameHeader): slice[Byte] {
 }
 
 func assembleFrame(frameType: in Int, flags: in Int, streamId: in Int, payload: in slice[Byte]): slice[Byte] {
-  val acc: List[Byte] = newList()
-  push24(acc, payload.length)
-  pushByte(acc, frameType)
-  pushByte(acc, flags)
-  push31(acc, streamId)
-  pushBytes(acc, payload)
-  acc.toArray()
+  // Only the 9-octet header is built byte by byte; the payload (up to the
+  // peer's max frame size) is joined with one bulk copy rather than pushed a
+  // byte at a time and copied out again (#7269).
+  val head: List[Byte] = newList()
+  push24(head, payload.length)
+  pushByte(head, frameType)
+  pushByte(head, flags)
+  push31(head, streamId)
+  head.toArray().concat(payload)
 }
 
 // =============================================================================
@@ -873,16 +875,17 @@ func serializeHeadersFrame(
   if endHeaders {
     flags = flags.or(4)
   }
-  val payload: List[Byte] = newList()
+  // Without a priority block (every server-sent HEADERS) the fragment is the
+  // whole payload and is framed without an intermediate copy (#7269).
   match priority {
     case Some(prio) -> {
       flags = flags.or(32)
-      pushPriorityFields(payload, prio)
+      val prefix: List[Byte] = newList()
+      pushPriorityFields(prefix, prio)
+      assembleFrame(typeHeaders(), flags, streamId, prefix.toArray().concat(fragment))
     }
-    case None -> ()
+    case None -> assembleFrame(typeHeaders(), flags, streamId, fragment)
   }
-  pushBytes(payload, fragment)
-  assembleFrame(typeHeaders(), flags, streamId, payload.toArray())
 }
 
 func serializePriorityFrame(streamId: in Int, priority: in PriorityInfo): slice[Byte] {
