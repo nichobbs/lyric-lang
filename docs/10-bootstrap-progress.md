@@ -35499,3 +35499,14 @@ on dotnet and JVM, a new 500 KB HTTP/2 upload case in
 `http_server_dotnet_tests.l`, new `equalsCaseInsensitive` cases in
 `string_case_locale_self_test.l` (dotnet, JVM, native) and `lyric-rt`'s C
 tests (#7269, epic #7256).
+
+## JVM server bounds request bodies; native client search is linear
+
+The JVM `Std.HttpServer` read request bodies on demand with an unbounded
+`readAllBytes`, so a single request could allocate as much memory as its sender
+chose. The handler now reads each body before queuing the exchange, capped at
+the dotnet server's default 10 MiB; a larger body is answered `413` and never
+reaches `nextContext`. Covered by the new `http_server_jvm_tests.l`. The
+native HTTP client's `findSubstring` allocated a substring at every position it
+tested; it now calls `Std.String.indexOfFromRaw`, which searches in place
+through the native `lyric_string_index_of_from` kernel (#7269, epic #7256).
