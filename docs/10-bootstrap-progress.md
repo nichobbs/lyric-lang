@@ -35729,7 +35729,7 @@ ran. `docs/01-language-reference.md` and
 `book/chapters/appendix-b-quick-reference.md` updated. `typechecker_self_test.l`:
 430/430 (4 new cases).
 
-**Related:** D-progress-945 (full account, `docs/decisions/`), #7119,
+**Related:** D-progress-960 (full account, `docs/decisions/`), #7119,
 #6739/D-progress-924 (the record/opaque precedent this generalizes), PR
 #7117 (where the gap was flagged).
 
@@ -35772,7 +35772,7 @@ follow-up with this design note rather than re-attempting a quick fix.
 intrinsic wrapper functions on both backends, not part of the reverted
 diagnostic.
 
-**Related:** D-progress-944 (full account, `docs/decisions/`), #7099
+**Related:** D-progress-959 (full account, `docs/decisions/`), #7099
 (still open), #7204 (the design-note follow-up filed after the JVM
 regression found in CI and the revert).
 

@@ -1,4 +1,4 @@
-# D-progress-944 — `isNormalized`/`normalize` MSIL↔JVM parity fix; a T0113-for-`String` type-check-time diagnostic attempt for #7099 was reverted before merge
+# D-progress-959 — `isNormalized`/`normalize` MSIL↔JVM parity fix; a T0113-for-`String` type-check-time diagnostic attempt for #7099 was reverted before merge
 
 **Status:** partially shipped (`isNormalized`/`normalize` parity shipped; the T0113 diagnostic attempt reverted)
 
