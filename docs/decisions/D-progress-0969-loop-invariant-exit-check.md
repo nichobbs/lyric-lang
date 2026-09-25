@@ -1,4 +1,4 @@
-# D-progress-968 — Loop invariants are checked on normal loop exit
+# D-progress-969 — Loop invariants are checked on normal loop exit
 
 **Status:** shipped
 

@@ -1,4 +1,4 @@
-# D-progress-971 — Inline range refinements are checked at runtime
+# D-progress-972 — Inline range refinements are checked at runtime
 
 **Status:** shipped
 
