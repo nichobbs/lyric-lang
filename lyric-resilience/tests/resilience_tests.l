@@ -164,3 +164,93 @@ test "backoffDelay: jitter never pushes delay below zero or above maxDelayMs" {
     i = i + 1
   }
 }
+
+// ─── Lost half-open probes (#7240) ──────────────────────────────────────────
+// A probe that panics records no outcome.  It used to leave
+// `halfOpenProbeInFlight` set forever, so the circuit rejected every later
+// call; a probe is now presumed lost once a further cooldown passes.
+test "CircuitBreakerState: a probe that never reports back expires after a cooldown" {
+  val st = Resilience.makeCircuitBreakerState()
+  Resilience.cbStateRecordFailure(st, 1, 1000)
+  assertFalse(Resilience.cbStateCheckOpen(st, 1000, 2000), "probe granted at 2000")
+  assertTrue(Resilience.cbStateCheckOpen(st, 1000, 2999), "still in flight within a cooldown of the probe")
+  assertFalse(Resilience.cbStateCheckOpen(st, 1000, 3000), "a probe silent for a full cooldown is replaced")
+  assertTrue(Resilience.cbStateCheckOpen(st, 1000, 3001), "the replacement probe is now the one in flight")
+}
+
+test "circuit kernel: a lost probe does not wedge the circuit open" {
+  val name = "resilience-test-lost-probe"
+  Resilience.circuitRecordFailure(name, 1)
+  Resilience.sleepMs(20)
+  assertFalse(Resilience.circuitIsOpen(name, 10), "first probe granted after the cooldown")
+  // The probe "panics": neither success nor failure is recorded.
+  Resilience.sleepMs(20)
+  assertFalse(Resilience.circuitIsOpen(name, 10), "a fresh probe is granted once the lost one expires")
+  Resilience.circuitRecordSuccess(name)
+  assertFalse(Resilience.circuitIsOpen(name, 10), "a successful probe closes the circuit")
+}
+
+// ─── Backoff configuration contracts (#7240) ────────────────────────────────
+test "isValidBackoff: rejects negative, inverted and NaN configurations" {
+  assertTrue(Resilience.isValidBackoff(100, 30000, 0.1f32), "defaults")
+  assertTrue(Resilience.isValidBackoff(0, 0, 0.0f32), "all zero")
+  assertFalse(Resilience.isValidBackoff(-1, 30000, 0.0f32), "negative initial delay")
+  assertFalse(Resilience.isValidBackoff(500, 100, 0.0f32), "initial delay above the cap")
+  assertFalse(Resilience.isValidBackoff(100, 30000, -0.1f32), "negative jitter")
+  assertFalse(Resilience.isValidBackoff(100, 30000, 1.5f32), "jitter above 1")
+  assertFalse(Resilience.isValidBackoff(100, 30000, 0.0f32 / 0.0f32), "NaN jitter")
+}
+
+test "backoffDelay: an invalid configuration is a precondition violation" {
+  assertPanicsWith(
+    "negative initial delay",
+    "PreconditionViolated",
+    { -> val _ = Resilience.backoffDelay(-5, 2, 0, 30000, 0.0f32) }
+  )
+  assertPanics("NaN jitter", { -> val _ = Resilience.backoffDelay(100, 2, 0, 30000, 0.0f32 / 0.0f32) })
+  assertPanics("negative attempt", { -> val _ = Resilience.backoffDelay(100, 2, -1, 30000, 0.0f32) })
+}
+
+record Calls {
+  var n: Int
+}
+
+val retryCalls: Calls = Calls(n = 0)
+
+aspect BadRetry from Resilience.Retry {
+  matches: name like "badRetryGuarded*"
+  config {
+    initialDelayMs: Int = -1
+  }
+}
+
+pub func badRetryGuarded(): Result[Int, String] {
+  retryCalls.n = retryCalls.n + 1
+  return Err("fails")
+}
+
+test "Retry: a bad configuration fails before the wrapped call runs (#7240)" {
+  retryCalls.n = 0
+  assertPanics("negative initialDelayMs", { -> val _ = badRetryGuarded() })
+  assertEqualInt(retryCalls.n, 0, "the wrapped function never ran")
+}
+
+val circuitCalls: Calls = Calls(n = 0)
+
+aspect BadCircuit from Resilience.CircuitBreaker {
+  matches: name like "badCircuitGuarded*"
+  config {
+    failureThreshold: Int = 0
+  }
+}
+
+pub func badCircuitGuarded(): Result[Int, String] {
+  circuitCalls.n = circuitCalls.n + 1
+  return Ok(1)
+}
+
+test "CircuitBreaker: a zero failureThreshold fails before the wrapped call runs (#7240)" {
+  circuitCalls.n = 0
+  assertPanics("failureThreshold 0", { -> val _ = badCircuitGuarded() })
+  assertEqualInt(circuitCalls.n, 0, "the wrapped function never ran")
+}

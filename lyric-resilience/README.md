@@ -134,11 +134,15 @@ aspect ApiRetry from Resilience.Retry {
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
 | `maxAttempts` | `Int` | `3` | Max retries (≥ 1) |
-| `initialDelayMs` | `Int` | `100` | Initial backoff in milliseconds |
+| `initialDelayMs` | `Int` | `100` | Initial backoff in milliseconds (0 to `maxDelayMs`) |
 | `maxDelayMs` | `Int` | `30000` | Cap on backoff |
-| `backoffFactor` | `Int` | `2` | Delay multiplier per retry (exponential) |
-| `jitterFraction` | `Float` | `0.1` | Uniform ±jitterFraction×delay random jitter added to each backoff delay (clamped to `[0, maxDelayMs]`); `0.0` disables jitter |
+| `backoffFactor` | `Int` | `2` | Delay multiplier per retry (exponential); values below 1 act as 1 |
+| `jitterFraction` | `Float` | `0.1` | Uniform ±jitterFraction×delay random jitter added to each backoff delay (clamped to `[0, maxDelayMs]`); 0.0 to 1.0, and `0.0` disables jitter |
 | `logRetries` | `Bool` | `true` | Log each failed attempt at warn level |
+
+An out-of-range setting (including a NaN `jitterFraction`) is a precondition
+violation raised before the wrapped function runs, not in the middle of a
+retry loop (`checkRetryConfig`, `isValidBackoff`).
 
 **Security warning for `logRetries`**: When `logRetries` is `true` (the default), the raw error message is written to your log aggregator verbatim. If your functions return credentials, tokens, API keys, or personally identifiable information (PII) inside `Err` values, you MUST either:
 1. Set `logRetries: false` in the aspect config, OR
@@ -199,7 +203,13 @@ aspect ServiceBreaker from Resilience.CircuitBreaker {
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
 | `failureThreshold` | `Int` | `5` | Failures before opening (≥ 1) |
-| `cooldownMs` | `Int` | `30000` | Duration in open state before trying half-open |
+| `cooldownMs` | `Int` | `30000` | Duration in open state before trying half-open (≥ 1) |
+
+An out-of-range setting is a precondition violation raised before the
+wrapped function runs. A half-open probe that panics records no outcome;
+once a further `cooldownMs` passes without one, the probe is presumed lost
+and the next call becomes a fresh probe, so the circuit cannot stay open
+forever.
 
 **Env var**: `LYRIC_ASPECT_<LocalName>_<FIELD>` (e.g., `LYRIC_ASPECT_SERVICEBREAKER_FAILURETHRESHOLD=10`)
 
