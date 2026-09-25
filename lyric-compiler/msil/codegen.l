@@ -213,6 +213,10 @@ pub record CodegenCtx {
   // Distinct/range-subtype classes over `UInt`/`ULong` (erased to the signed
   // representation): stringified with the unsigned formatter.
   unsignedDistincts: Map[String, Bool]
+  // Every distinct/range-subtype class the codegen can see, in-bundle and
+  // restored: its `value` field is in `fieldTokens`/`fieldMsilTypes`, so a
+  // value of the class stringifies as its underlying value (D-progress-960).
+  distinctClasses: Map[String, Bool]
   fieldTokens: Map[String, Int]  // "ClassName/fieldName" → FieldDef token
   // #6596: field NAMES (not "ClassName/fieldName" — see
   // `Lyric.ModeChecker.computeFieldLockSafetyForBuild`'s doc comment for why
@@ -2091,6 +2095,7 @@ pub func newCodegenCtx(
     distinctTryFromTokens = newMap(),
     distinctTryFromRetTypes = newMap(),
     unsignedDistincts = newMap(),
+    distinctClasses = newMap(),
     fieldTokens = fieldToks,
     unsafeFieldLockNames = newMap(),
     fieldSigBytes = newMap(),
@@ -4370,6 +4375,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
         if isUnsignedTypeExprMsil(decl.underlying) and not cctx.unsignedDistincts.containsKey(className) {
           cctx.unsignedDistincts.add(className, true)
+        }
+        if not cctx.distinctClasses.containsKey(className) {
+          cctx.distinctClasses.add(className, true)
         }
         fieldDefRow = fieldDefRow + 1
         // Method 0: .ctor
@@ -8060,9 +8068,11 @@ func boxIfNeededUnsignedMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in 
     case Some(under) -> {
       val underUnsigned = match ty {
         case MClass(cls) -> {
+          // `distinctUnderlyingMsil` answered from `fieldMsilTypes`, and
+          // every registration path adds the field's token with its type.
           match mapGet(cctx.fieldTokens, cls + "/value") {
             case Some(vtok) -> insns.add(MLdfld(fieldToken = vtok))
-            case None -> ()
+            case None -> panic("Msil.Codegen ICE: distinct class '" + cls + "' has a value type but no value field token")
           }
           cctx.unsignedDistincts.containsKey(cls)
         }
@@ -8086,7 +8096,7 @@ func boxIfNeededUnsignedMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in 
 // `value` field's type), or None for any other type.
 func distinctUnderlyingMsil(cctx: in CodegenCtx, ty: in MsilType): Option[MsilType] {
   match ty {
-    case MClass(cls) -> if cctx.distinctFromTokens.containsKey(cls) {
+    case MClass(cls) -> if cctx.distinctClasses.containsKey(cls) {
       mapGet(cctx.fieldMsilTypes, cls + "/value")
     } else {
       None
@@ -37763,6 +37773,31 @@ func registerRestoredRecordCtor(cctx: in CodegenCtx, packageName: in String, rec
 }
 
 // Register cross-assembly FieldRef MemberRefs for a restored record; sig mirrors lowerMRecord's buildFieldSigWithCtx (concrete reference types, not degraded to OBJECT — mismatch faults with Field not found #2359). fieldMsilTypes carries semantic type for EIndex element-type tracking.
+// A restored distinct/range-subtype type's `value` field, so a consumer
+// stringifies its values by value as it does an in-bundle one's
+// (D-progress-960).
+func registerRestoredDistinct(cctx: in CodegenCtx, packageName: in String, decl: in DistinctTypeDecl): Unit {
+  val className = packageName + "." + decl.name
+  val typeRefRow = lookupRestoredTypeRefRow(cctx, packageName, decl.name)
+  if typeRefRow == 0 {
+    return
+  }
+  val key = className + "/value"
+  if not cctx.fieldTokens.containsKey(key) {
+    val innerTy = typeExprToMsilCtx(cctx, decl.underlying, packageName)
+    val fSig = buildFieldSigWithCtx(innerTy, cctx.lctx)
+    val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "value", "restored_field_" + key, fSig)
+    cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
+    cctx.fieldMsilTypes.add(key, innerTy)
+  }
+  if isUnsignedTypeExprMsil(decl.underlying) and not cctx.unsignedDistincts.containsKey(className) {
+    cctx.unsignedDistincts.add(className, true)
+  }
+  if not cctx.distinctClasses.containsKey(className) {
+    cctx.distinctClasses.add(className, true)
+  }
+}
+
 func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, rec: in RecordDecl): Unit {
   val className = packageName + "." + rec.name
   val typeRefRow = lookupRestoredTypeRefRow(cctx, packageName, rec.name)
@@ -38339,6 +38374,7 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact, s
       case IInterface(decl) -> {
         registerRestoredInterface(cctx, art.packageName, decl)
       }
+      case IDistinctType(decl) -> registerRestoredDistinct(cctx, art.packageName, decl)
       case IEnum(decl) -> {
         // Restored enums use the same ordinal-int model as in-bundle ones
         // (#3196): the type name maps signature positions to I4 and each

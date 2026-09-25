@@ -391,3 +391,33 @@ test "val-bound closure passed by name preserves Result's type params (jvm, #687
     "cpgen_valbound_result_jvm: val-bound Err(\"boom\") dispatches to the Err arm"
   )
 }
+
+// A range subtype restored from a dependency names its own wrapper class in
+// a consumer signature (it previously resolved to `<consumerPkg>/Cents`,
+// `NoClassDefFoundError`) and stringifies as its underlying value
+// (jvm, D-progress-960).
+test "a restored range subtype in a consumer signature renders as its value (jvm, D-progress-960)" {
+  val tmpDir = freshTempDir("cprange-restored-jvm")
+  val producerSrc = "package CpRangeJvm.Money\n" + "\n" + "pub type Cents = Long range 0 ..= 1000000\n" + "\n" +
+    "pub func cents(n: in Long): Cents { Cents.from(n) }\n"
+  val producerJar = buildJar(tmpDir, "CpRangeJvm.Money", producerSrc, "CpRangeJvm.Money")
+  val consumerSrc = "package CpRangeJvm.App\n" + "\n" + "import CpRangeJvm.Money\n" +
+    "import CpRangeJvm.Money.{Cents}\n" +
+    "\n" +
+    "func show(c: in Cents): String { c.toString() + \" \${c} \" + toString(c) }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(show(Money.cents(5000)))\n" +
+    "}\n"
+  val captured = buildAndRunConsumer(
+    tmpDir,
+    "CpRangeJvm.App",
+    consumerSrc,
+    "CpRangeJvm.App",
+    "CpRangeJvm.Money",
+    producerJar
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cprange_restored_jvm: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "5000 5000 5000", "cprange_restored_jvm: restored range renders by value")
+}

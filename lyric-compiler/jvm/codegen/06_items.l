@@ -4970,6 +4970,21 @@ pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, S
           case Some(_) -> ()
         }
       }
+      // A distinct/range-subtype type is emitted as its own wrapper class
+      // (`LPDistinctType`); without this a consumer's parameter or binding of
+      // a dependency's distinct type named the in-package guess
+      // (`<consumerPkg>/Cents`) and failed with NoClassDefFoundError
+      // (D-progress-960).
+      case IDistinctType(decl) -> {
+        match decl.generics {
+          case None -> {
+            if not into.containsKey(decl.name) {
+              into.add(decl.name, pkgDotted + "." + decl.name)
+            }
+          }
+          case Some(_) -> ()
+        }
+      }
       case IEnum(decl) -> {
         // Enums are emitted as real JVM classes (`lowerEnum`); without this a
         // consumer's enum-typed parameter / binding / field descriptor named

@@ -942,3 +942,29 @@ test "an annotated local in a specialised generic keeps its type across packages
   assertEqualInt(captured.exitCode, 0, "cpgen_annotated_local: exit 0 (stderr=" + captured.stderr + ")")
   assertEqual(Str.trim(captured.stdout), "lbl n x", "cpgen_annotated_local: inner generic specialised at Msg")
 }
+
+// A range subtype restored from a dependency stringifies as its underlying
+// value, like an in-bundle one (D-progress-960).
+test "a restored range subtype renders as its value (D-progress-960)" {
+  val tmpDir = freshTempDir("cprange-restored")
+  val producerSrc = "package CpRange.Money\n" + "\n" + "pub type Cents = Long range 0 ..= 1000000\n" + "\n" +
+    "pub func cents(n: in Long): Cents { Cents.from(n) }\n"
+  val producerDll = buildDll(tmpDir, "CpRange.Money", producerSrc, "CpRange.Money")
+  val consumerSrc = "package CpRange.App\n" + "\n" + "import CpRange.Money\n" + "import CpRange.Money.{Cents}\n" + "\n" +
+    "func show(c: in Cents): String { c.toString() + \" \${c} \" + toString(c) }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(show(Money.cents(5000)))\n" +
+    "}\n"
+  val captured = buildAndRunConsumerWithStdlib(
+    tmpDir,
+    "CpRange.App",
+    consumerSrc,
+    "CpRange.App",
+    "CpRange.Money",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cprange_restored: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "5000 5000 5000", "cprange_restored: restored range renders by value")
+}
