@@ -32,6 +32,7 @@ import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.AliasRewriter
+import Lyric.ContractElaborator
 import Lyric.Mono
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2592,4 +2593,84 @@ test "a nullary union case argument binds a type parameter as a value, not a fun
   }
   val res = monoFileWithImports(callerFile, feed)
   assertTrue(hasFunc(res.file, "wrap__Msg"), "M bound to Msg")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6968: `rewriteExpr`'s call-site walk treated `ERange`/`EForall`/`EExists`
+// as leaves, the same gap D-progress-904 fixed for the weaver's own
+// `rewriteExpr` (#6833/#6863) — a generic call site inside a range bound or
+// a `forall(...)`/`exists(...)` binder's `where`/body never got rewritten to
+// its specialised name, leaving a dangling reference to a generic Phase 2
+// erases.
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic call site inside a range bound is rewritten (#6968)" {
+  val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func caller(): Int {\n" + "  var total = 0\n" +
+    "  for i in 0 .. id(5) {\n" +
+    "    total = total + i\n" +
+    "  }\n" +
+    "  total\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "id__Int"), "id__Int specialisation emitted for a range-bound call site")
+  assertTrue(not hasFunc(res.file, "id"), "generic id removed from output")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// `requires:`/`ensures:` clauses survive contract elaboration as literal
+// `EForall`/`EExists` nodes wrapped inside the elaborator's inserted
+// `assert(...)` statements (the elaborator recurses into `whereExpr`/`body`
+// but preserves the quantifier node itself — see
+// `contract_elaborator/elaborator.l`'s own `EForall`/`EExists` arms), so a
+// generic call inside a quantifier's `where`/body reaches mono's
+// `rewriteExpr` the same way a plain function-body call does. Runs
+// `elaborateFile` before `monoFile`, mirroring `pipeCheckAndMono`'s real
+// pipeline order, so this is the actually-reachable shape rather than a
+// synthetic one.
+test "generic call site inside a requires: forall(...) where clause is rewritten (#6968)" {
+  val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func caller(n: in Int): Int\n" +
+    "  requires: forall(i: Int) where i < id(10) implies i >= 0\n" +
+    "{ n }\n"
+  val pr = parse(src)
+  val elaborated = elaborateFile(pr.file)
+  val res = monoFile(elaborated)
+  assertTrue(hasFunc(res.file, "id__Int"), "id__Int specialisation emitted for a forall-where call site")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+test "generic call site inside an ensures: exists(...) body is rewritten (#6968)" {
+  val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func caller(n: in Int): Int\n" +
+    "  ensures: exists(i: Int) id(n) > 0\n" +
+    "{ n }\n"
+  val pr = parse(src)
+  val elaborated = elaborateFile(pr.file)
+  val res = monoFile(elaborated)
+  assertTrue(hasFunc(res.file, "id__Int"), "id__Int specialisation emitted for an exists-body call site")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #6891: `indexExprToTypeArgMono`'s single-segment-name whitelist recognised
+// primitives, records, interfaces, distinct types, and unions as legitimate
+// explicit type arguments, but not `extern type` decls -- a generic call
+// instantiated with an explicit type argument that names an `extern type`
+// (e.g. an SDK client type used as a `ConcurrentHashMap` value type) fell
+// through as an unresolvable index expression, leaving a dangling reference
+// to a generic Phase 2 erases with no diagnostic ever raised.
+// ─────────────────────────────────────────────────────────────────────────────
+test "generic call with an explicit extern-type type argument monomorphises (#6891)" {
+  val src = "package P\n" + "extern type JMap[K, V] = \"java.util.HashMap\"\n" +
+    "@externTarget(\"java.util.HashMap.<init>\")\n" +
+    "func newJMap[K, V](): JMap[K, V] = ()\n" +
+    "extern type JClient = \"com.example.Client\"\n" +
+    "func caller(): JMap[String, JClient] { newJMap[String, JClient]() }\n"
+  val res = runMono(src)
+  assertTrue(
+    hasFunc(res.file, "newJMap__String__JClient"),
+    "specialisation emitted for an explicit extern-type type argument"
+  )
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "M0002"),
+    0,
+    "no dangling-reference M0002 for a call site whose type argument names an extern type"
+  )
 }

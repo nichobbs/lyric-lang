@@ -279,8 +279,12 @@ pub func pipeCheckAndMono(
 
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).
   // Runs after the elaborator so a propagated Err/None short-circuit is not
-  // forced through the success-shaped `ensures:` rewrite.
-  val propRes = lowerPropagateFile(elaborated, opts.awaitInTryIsHazard)
+  // forced through the success-shaped `ensures:` rewrite. `monoRecordDecls`
+  // (#6967, mirroring `pipeWeave`'s identical #6702 threading below) lets
+  // the `?`-hoist's `impl`-target field resolution see cross-file/
+  // cross-package records, not just same-file ones. `opts.awaitInTryIsHazard`
+  // (#7198) gates whether F0045's guard fires on this target.
+  val propRes = lowerPropagateFileWithExtraRecords(elaborated, monoRecordDecls, opts.awaitInTryIsHazard)
   if gate(opts.pkgLabel, opts.lineOrigins, propRes.diagnostics) {
     return None
   }

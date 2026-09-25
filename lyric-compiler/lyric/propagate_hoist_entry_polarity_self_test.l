@@ -556,3 +556,109 @@ test "cross-file impl target: a var field mutated during a hoisted await is UNPR
     case _ -> assertTrue(false, "expected the CacheRunner6702 impl as the consumer file's third item")
   }
 }
+
+// #6967: `Lyric.Propagate.hoistPropagateFile` has the identical gap #6702
+// fixed for the await-hoist path above — it passed an empty `extraRecords`
+// list to the shared `Lyric.HoistEngine`, so a bare (implicit-self) field
+// read across a hoisted `?`-propagation hazard, where the `impl`'s target
+// type is declared in a DIFFERENT package, is not recognised as
+// hoist-worthy. Mirrors the #6702 test immediately above exactly, swapping
+// `await` for `?`.
+test "cross-file impl target: a bare field read across a hoisted ? is UNPROTECTED with no extraRecords, PROTECTED once the target's declaring file's records are supplied (#6967)" {
+  // File A: declares the record `impl`ed against in file B. Never merged
+  // into file B's own `SourceFile` — this is the cross-file boundary.
+  val libSrc = "package Lib6967\n" + "record MutBox6967 {\n" + "  tag: Int\n" +
+    "  func describe(self: in MutBox6967, n: Int): Int {\n" +
+    "    self.tag * 1000 + n\n" +
+    "  }\n" +
+    "}\n" +
+    "record Cache6967 {\n" +
+    "  var box: MutBox6967\n" +
+    "}\n"
+  val libPr = parse(libSrc)
+  assertEqualInt(libPr.diagnostics.count, 0, "the library source parses with no diagnostics")
+  val libRecords = extractRecordDecls(libPr.file)
+  assertEqualInt(libRecords.count, 2, "the library file declares exactly two records")
+
+  // File B: an `impl` block targeting `Cache6967` (declared only in file A
+  // above) with a bare implicit-self field read across a hoisted `?` —
+  // the identical #6702 shape, one hazard kind further out.
+  val consumerSrc = "package Consumer6967\n" + "interface CacheRunner6967 {\n" +
+    "  func run(self: in Self): Result[Int, String]\n" +
+    "}\n" +
+    "func maybeSwapBox6967(c: in Cache6967): Result[Int, String] {\n" +
+    "  c.box = MutBox6967(tag = 99)\n" +
+    "  Ok(5)\n" +
+    "}\n" +
+    "impl CacheRunner6967 for Cache6967 {\n" +
+    "  func run(self: in Cache6967): Result[Int, String] {\n" +
+    "    return Ok(box.describe(maybeSwapBox6967(self)?))\n" +
+    "  }\n" +
+    "}\n"
+  val consumerPr = parse(consumerSrc)
+  assertEqualInt(consumerPr.diagnostics.count, 0, "the consumer source parses with no diagnostics")
+
+  // Negative control: no cross-file record index supplied — the pre-fix
+  // behaviour. The `impl` block's target field set stays empty, so the bare
+  // `box` receiver stays unhoisted — only the `?` hazard itself gets
+  // hoisted, so the body grows from 1 to 2 statements, not 3.
+  val noExtraRecords: List[RecordDecl] = newList()
+  val unfixedResult = hoistPropagateFile(consumerPr.file, noExtraRecords)
+  val unfixedImplItem = unfixedResult.items[2]
+  match unfixedImplItem.kind {
+    case IImpl(decl) -> {
+      match decl.members[0] {
+        case IMplFunc(fn) -> {
+          val body = match fn.body { case Some(b) -> b; case None -> panic("expected run to have a body") }
+          match body {
+            case FBBlock(blk) -> {
+              assertEqualInt(
+                blk.statements.count,
+                2,
+                "with no extraRecords, the cross-file target's fields are unresolved so only the hazard argument is hoisted, not the receiver (the pre-#6967 gap)"
+              )
+              match blk.statements[0].kind {
+                case SLocal(_) -> assertTrue(true, "first statement is the hoisted hazard val binding")
+                case _ -> assertTrue(false, "expected the hoisted hazard val as the first statement")
+              }
+              match blk.statements[1].kind {
+                case SReturn(_) -> assertTrue(true, "second statement is the rewritten return")
+                case _ -> assertTrue(false, "expected the rewritten return as the second statement")
+              }
+            }
+            case FBExpr(_) -> assertTrue(false, "expected an FBBlock function body")
+          }
+        }
+        case IMplAssoc(_) -> assertTrue(false, "expected the run method as the impl's first member")
+      }
+    }
+    case _ -> assertTrue(false, "expected the CacheRunner6967 impl as the consumer file's third item")
+  }
+
+  // Fix: the library's records are supplied via `extraRecords`, exactly as
+  // `pipeCheckAndMono` now threads `monoRecordDecls` through
+  // (`lowerPropagateFileWithExtraRecords`). The `impl` block's target field
+  // set now resolves `Cache6967.box`, so the bare `box` read is correctly
+  // recognised as hoist-worthy.
+  val fixedResult = hoistPropagateFile(consumerPr.file, libRecords)
+  val fixedImplItem = fixedResult.items[2]
+  match fixedImplItem.kind {
+    case IImpl(decl) -> {
+      match decl.members[0] {
+        case IMplFunc(fn) -> {
+          val body = match fn.body { case Some(b) -> b; case None -> panic("expected run to have a body") }
+          match body {
+            case FBBlock(blk) -> assertEqualInt(
+              blk.statements.count,
+              3,
+              "with the library's records supplied via extraRecords, the cross-file impl target's fields resolve and the body gains hoisted receiver + hazard vals (#6967)"
+            )
+            case FBExpr(_) -> assertTrue(false, "expected an FBBlock function body")
+          }
+        }
+        case IMplAssoc(_) -> assertTrue(false, "expected the run method as the impl's first member")
+      }
+    }
+    case _ -> assertTrue(false, "expected the CacheRunner6967 impl as the consumer file's third item")
+  }
+}

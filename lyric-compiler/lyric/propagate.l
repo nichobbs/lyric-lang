@@ -65,6 +65,17 @@
 //!
 //!     Returns a new SourceFile with every `?` desugared, plus any F0020
 //!     diagnostics.  The input is not mutated.
+//!
+//!   pub func lowerPropagateFileWithExtraRecords(file: in SourceFile, extraRecords: in List[RecordDecl], awaitInTryIsHazard: Bool): PropagateResult
+//!
+//!     As above, but also takes cross-file/cross-package record decls
+//!     (#6967) so a `?`-hoisted `impl` block's target type resolves its own
+//!     fields even when declared outside `file`.
+//!
+//!   pub func hoistPropagateFile(file: in SourceFile, extraRecords: in List[RecordDecl]): SourceFile
+//!
+//!     The `?`-hoist step alone (§2b), exposed so a test can inspect its
+//!     structural effect directly, mirroring `Lyric.AwaitHoist.hoistAwaitsFile`.
 package Lyric.Propagate
 
 import Std.Core
@@ -650,14 +661,14 @@ func propagateHoistConfig(): HoistConfig {
 // Entry point: hoist every qualifying `?` in `file`, returning a new
 // SourceFile. Files with nothing to hoist are returned as-is (identity).
 // `?`-hoisting runs earlier in the pipeline than `AwaitHoist` (inside
-// `pipeCheckAndMono`, before mono) with no cross-file record index of its
-// own yet threaded to it, so an `impl` block's cross-file target still
-// resolves narrowly here (same-file only) — see `HoistEngine`'s
-// `typeFieldIndex` doc comment; #6702's fix targets `pipeWeave`'s
-// `AwaitHoist` call specifically.
-func hoistPropagateFile(file: in SourceFile): SourceFile {
-  val noExtraRecords: List[RecordDecl] = newList()
-  hoistFile(propagateHoistConfig(), file, noExtraRecords)
+// `pipeCheckAndMono`, before mono) — `extraRecords` is the caller's own
+// cross-file/cross-package record list (mirroring `pipeWeave`'s own
+// `monoRecordDecls` threaded into `AwaitHoist.hoistAwaitsFile`, #6702),
+// letting an `impl` block's target resolve its own fields even when
+// declared outside `file` (#6967 — the identical gap #6702 fixed for the
+// await-hoist path; this one is scoped to the earlier-pipeline `?`-hoist).
+pub func hoistPropagateFile(file: in SourceFile, extraRecords: in List[RecordDecl]): SourceFile {
+  hoistFile(propagateHoistConfig(), file, extraRecords)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1359,13 +1370,24 @@ func rewriteRecordDecl(decl: in RecordDecl, st: in PropState): RecordDecl {
 // a spurious, target-incorrect build failure for code that already
 // compiled and ran correctly on `--target jvm`.
 pub func lowerPropagateFile(file: in SourceFile, awaitInTryIsHazard: Bool): PropagateResult {
+  val noExtraRecords: List[RecordDecl] = newList()
+  lowerPropagateFileWithExtraRecords(file, noExtraRecords, awaitInTryIsHazard)
+}
+
+// As `lowerPropagateFile`, but also takes cross-file/cross-package record
+// decls (#6967) — threaded into the `?`-hoist's `HoistEngine` invocation so
+// an `impl` block's target type resolves its own fields even when declared
+// outside `file`, mirroring `Lyric.AwaitHoist.hoistAwaitsFile`'s
+// `extraRecords` (#6702). `pipeCheckAndMono` passes its own `monoRecordDecls`
+// parameter here.
+pub func lowerPropagateFileWithExtraRecords(file: in SourceFile, extraRecords: in List[RecordDecl], awaitInTryIsHazard: Bool): PropagateResult {
   // #6448: hoist every qualifying `?` (operand-position, stacked-context)
   // into fresh `val` bindings FIRST, before the `?` -> match rewrite below —
   // see §2b's module doc.  Every hoisted `?` lands as a statement-level
   // initializer, the shape the rewrite below already turns into safely
   // compiling IL on both targets.  A no-op (returns `file` unchanged) when
   // nothing in the file qualifies.
-  val hoisted = hoistPropagateFile(file)
+  val hoisted = hoistPropagateFile(file, extraRecords)
   val diags: List[Diagnostic] = newList()
   val aliases: Map[String, TypeExpr] = newMap()
   val syncFuncNames: Map[String, Bool] = newMap()

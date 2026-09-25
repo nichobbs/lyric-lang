@@ -35235,3 +35235,33 @@ binds the declaring package's own function when the consumer also imports a
 same-named, same-arity function from elsewhere (previously T0123 or invalid
 IL), and a bare nullary union case (`Go`) binds a generic's type parameter
 by itself (D-progress-954, D-progress-951).
+
+## Compiler middle-end: mono.l ERange/EForall/EExists/EOld leaf gap, extern-type type arguments, and propagate ?-hoist cross-package threading (#6968, #6891, #6967)
+
+`Lyric.Mono`'s call-site monomorphizer (`mono.l`'s `rewriteExpr`) had the
+same `ERange`/`EForall`/`EExists` leaf gap D-progress-904 fixed for the
+weaver's own `rewriteExpr` — a generic call site inside a range bound or a
+`forall(...)`/`exists(...)` binder's `where`/body never got rewritten to
+its specialised name. Fixed with the identical pattern (new
+`rewriteRangeBound` helper; `EOld` included too for walker consistency,
+though it never actually reaches this walker — the contract elaborator
+replaces every `EOld` node before mono runs).
+
+Separately, `indexExprToTypeArgMono` didn't recognise an `extern type` name
+as a legitimate explicit type argument (`f[JClient](x)`), unlike
+primitives/records/interfaces/distinct types/unions — fixed by adding
+`externTypeDecls` tracking to `MonoState`, mirroring the `unionDecls`
+precedent (#6774).
+
+`Lyric.Propagate.hoistPropagateFile` (the `?`-hoist) had the identical
+cross-package `impl`-target-field stale-read gap #6702 fixed for the
+`await`-hoist path — fixed by threading an `extraRecords` parameter through
+(now `pub`), with `pipeline.l`'s `pipeCheckAndMono` supplying its own
+`monoRecordDecls`.
+
+A fourth issue in the same batch, #7079, was found to already be fixed
+(under #7093, closed during PR #6863's own review cycle) and was closed as
+a stale duplicate rather than re-fixed.
+
+**Related:** `docs/decisions/D-progress-0955-middleend-ast-rewrite-leaf-gaps-and-hoist-threading.md`
+(full account), #6968, #6891, #6967, #7079, D-progress-904, #6774, #6702.
