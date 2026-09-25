@@ -1,16 +1,17 @@
 //! slice_fastpath_self_test.l — `slice[T]` element access and copies give
 //! the same results whichever runtime representation a slice has (#7259).
 //!
-//! On MSIL a `slice[T]` value is either a genuine CLI `T[]` (a slice
-//! literal, `.slice`/`.concat`/`.append`, `List.toArray()`, a BCL array such
-//! as `String.Split`'s or `encodeUtf8`'s) or a `List`-backed slice (a `List`
-//! passed where a slice is expected, #2539). Index reads, index writes, `for`
-//! iteration and slice copies test the representation once and use
-//! `ldelem`/`stelem`/`Array.Copy` for a real array, falling back to the
-//! boxing `IList` path otherwise. Every case below runs each operation over
-//! both kinds of source for each primitive element type, so a fast path that
-//! misreads or miswrites either representation fails here. JVM and native
-//! have one representation each; the module runs there for parity.
+//! On MSIL a `slice[T]` value is either a genuine CLI `T[]` or a
+//! `List`-backed slice (#2539). Index reads, index writes, `for` iteration
+//! and slice copies test the representation once and use
+//! `ldelem`/`stelem`/`Array.Copy` for a real array, keeping the boxing `IList`
+//! path for anything else. Every source this module can build (literals,
+//! `.slice`/`.concat`/`.append`, `List.toArray()`, generic helpers, BCL
+//! arrays from `encodeUtf8` and `String.Split`) is a real array under the
+//! current code generator, so these cases pin the fast paths' results for
+//! each primitive element type; the `IList` fallback is the unchanged
+//! pre-#7259 code, reached only by slices from other assemblies. JVM and
+//! native have one representation each; the module runs there for parity.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/slice_fastpath_self_test.l
 //!   lyric test --target jvm    lyric-compiler/lyric/slice_fastpath_self_test.l
@@ -146,6 +147,19 @@ test "Char, Bool, Long and Double slices read and write through both paths" {
     dsum = dsum + d
   }
   assertTrue(dsum == 2.75, "double write and for")
+}
+
+test "an Int written into a slice[Long] is widened, not truncated or garbled (#7341)" {
+  var ls: slice[Long] = [0i64, 0i64]
+  ls[0] = 4
+  ls[1] = 0 - 7
+  assertTrue(ls[0] == 4i64, "positive Int widened")
+  assertTrue(ls[1] == 0i64 - 7i64, "negative Int sign-extended")
+  var total = 0i64
+  for v in ls {
+    total = total + v
+  }
+  assertTrue(total == 0i64 - 3i64, "widened values read back by for")
 }
 
 test "an empty slice copies and iterates cleanly" {
