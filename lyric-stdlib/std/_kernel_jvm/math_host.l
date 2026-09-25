@@ -73,8 +73,12 @@ pub func hostLog10(x: in Double): Double = ()
 
 // java.lang.Math has no log2.
 pub func hostLog2(x: in Double): Double {
-  hostLn(x) / hostLn(2.0)
+  hostLn(x) / ln2
 }
+
+// The double nearest ln(2), i.e. exactly what Math.log(2.0) returns, so the
+// quotient is unchanged; it is just not recomputed per call (#7283).
+val ln2: Double = 0.6931471805599453
 
 @externTarget("java.lang.Math.exp")
 pub func hostExp(x: in Double): Double = ()

@@ -83,6 +83,8 @@ extern type JPrintWriter = "java.io.PrintWriter"
 
 extern type JThread = "java.lang.Thread"
 
+extern type JAtomicInt = "java.util.concurrent.atomic.AtomicInteger"
+
 @externTarget("java.lang.System.currentTimeMillis")
 func currentTimeMillis(): Long = ()
 
@@ -154,52 +156,35 @@ func drainAvailableInto(stream: in JInputStream, acc: in JBAOS): Unit {
   }
 }
 
-// Index of the first `\n` (0x0A) in `bytes`, or -1 when absent.
-func indexOfNewline(bytes: in slice[Byte]): Int {
-  var i = 0
-  while i < bytes.length {
-    if bytes[i] == 10 {
-      return i
-    }
-    i = i + 1
-  }
-  -1
-}
-
-// Decode `bytes[0, endExclusive)` as UTF-8 text, stripping a trailing `\r`
-// immediately before the cut point (BufferedReader.readLine()'s CRLF
+// Decode `bytes[start, endExclusive)` as UTF-8 text, stripping a trailing
+// `\r` immediately before the cut point (BufferedReader.readLine()'s CRLF
 // convention). Malformed UTF-8 surfaces as a deterministic diagnostic
 // string (byte count) rather than silently dropping the line — a piped
 // peer sending invalid UTF-8 is itself a real (if unusual) condition the
 // caller should be able to observe, not a mysteriously vanished line.
-func decodeLine(bytes: in slice[Byte], endExclusive: in Int): String {
+func decodeLine(bytes: in slice[Byte], start: in Int, endExclusive: in Int): String {
   var cut = endExclusive
-  if cut > 0 and bytes[cut - 1] == 13 {
+  if cut > start and bytes[cut - 1] == 13 {
     cut = cut - 1
   }
-  val acc: List[Byte] = newList()
-  var i = 0
-  while i < cut {
-    acc.add(bytes[i])
-    i = i + 1
-  }
-  val lineBytes: slice[Byte] = acc.toArray()
-  match tryDecodeUtf8(lineBytes) {
+  match tryDecodeUtf8(bytes.slice(start, cut)) {
     case Some(s) -> s
-    case None -> "<invalid utf-8 line: " + cut.toString() + " bytes>"
+    case None -> "<invalid utf-8 line: " + (cut - start).toString() + " bytes>"
   }
 }
 
-// Remaining bytes after the consumed line (and its terminator) — rebuilds
-// the leftover tail as a fresh `slice[Byte]` for `resetBufferTo`.
-func remainderAfter(bytes: in slice[Byte], newlineIdx: in Int): slice[Byte] {
-  val acc: List[Byte] = newList()
-  var i = newlineIdx + 1
-  while i < bytes.length {
-    acc.add(bytes[i])
-    i = i + 1
-  }
-  acc.toArray()
+// Tail-position forms: a discarded auto-FFI instance call whose receiver is a
+// parameter emits no invoke on this backend (#5379).
+func atomicGet(a: in JAtomicInt): Int {
+  a.get()
+}
+
+func atomicSet(a: in JAtomicInt, v: in Int): Unit {
+  a.set(v)
+}
+
+func bufferSize(acc: in JBAOS): Int {
+  acc.size()
 }
 
 // Replace `acc`'s contents with `remaining` in place (no field
@@ -218,7 +203,15 @@ pub record PipedHandle {
   proc: JProcess
   writer: JPrintWriter
   stdout: JInputStream
+  // Bytes read from stdout that do not yet form a complete line.
   lineBuf: JBAOS
+  // Leading bytes of `lineBuf` already scanned without finding a newline.
+  scanned: JAtomicInt
+  // Complete lines split out of `lineBuf` but not yet returned, from
+  // `pendingHead` on. One burst of output is split in a single pass instead
+  // of copying and rescanning the whole buffer for every line (#7277).
+  pending: List[String]
+  pendingHead: JAtomicInt
 }
 
 /// Spawn `fileName` with a pre-formed `arguments` string (see
@@ -232,7 +225,17 @@ pub func hostSpawnPiped(fileName: in String, arguments: in String): PipedHandle 
   val proc = procStart(pb)
   val writer = newLineWriter(procStdin(proc))
   val stdout = procStdout(proc)
-  PipedHandle(proc = proc, writer = writer, stdout = stdout, lineBuf = JBAOS.new())
+  val scanned: JAtomicInt = JAtomicInt.new(0)
+  val pendingHead: JAtomicInt = JAtomicInt.new(0)
+  PipedHandle(
+    proc = proc,
+    writer = writer,
+    stdout = stdout,
+    lineBuf = JBAOS.new(),
+    scanned = scanned,
+    pending = newList(),
+    pendingHead = pendingHead
+  )
 }
 
 // Option seam avoiding `case null`'s catch-all miscompile (#4775); NUL-marker
@@ -250,51 +253,102 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
   // enough to hit the sleep branch) can't spin a full CPU core.
   var growthStreak = 0
   while not done {
-    val snapshot: slice[Byte] = p.lineBuf.toByteArray()
-    val nl = indexOfNewline(snapshot)
-    if nl >= 0 {
-      val line = decodeLine(snapshot, nl)
-      resetBufferTo(p.lineBuf, remainderAfter(snapshot, nl))
-      result = Some(value = line)
-      done = true
-    } else {
-      drainAvailableInto(p.stdout, p.lineBuf)
-      val grew: slice[Byte] = p.lineBuf.toByteArray()
-      if grew.length > snapshot.length {
-        // New bytes arrived — loop straight back to the newline scan
-        // without sleeping, UNLESS this has happened too many times in a
-        // row without ever completing a line (the slow-trickle case).
-        growthStreak = growthStreak + 1
-        if growthStreak >= 64 {
-          JThread.sleep(intToLong(1))
-          growthStreak = 0
-        }
-      } else if procIsAlive(p.proc) {
-        JThread.sleep(intToLong(1))
-        growthStreak = 0
-      } else {
-        // Process has exited. One more drain in case bytes were flushed
-        // between the `isAlive` check above and here (mirrors
-        // `process_capture_host.l`'s post-loop final drain).
-        drainAvailableInto(p.stdout, p.lineBuf)
-        val final_: slice[Byte] = p.lineBuf.toByteArray()
-        val nl2 = indexOfNewline(final_)
-        if nl2 >= 0 {
-          val line = decodeLine(final_, nl2)
-          resetBufferTo(p.lineBuf, remainderAfter(final_, nl2))
-          result = Some(value = line)
-        } else if final_.length > 0 {
-          val line = decodeLine(final_, final_.length)
-          p.lineBuf.reset()
-          result = Some(value = line)
-        } else {
-          result = None
-        }
+    match takePending(p) {
+      case Some(line) -> {
+        result = Some(value = line)
         done = true
+      }
+      case None -> {
+        splitCompleteLines(p)
+        if atomicGet(p.pendingHead) < p.pending.count {
+          growthStreak = 0
+        } else {
+          val before = bufferSize(p.lineBuf)
+          drainAvailableInto(p.stdout, p.lineBuf)
+          if bufferSize(p.lineBuf) > before {
+            // New bytes arrived — loop straight back to the newline scan
+            // without sleeping, UNLESS this has happened too many times in a
+            // row without ever completing a line (the slow-trickle case).
+            growthStreak = growthStreak + 1
+            if growthStreak >= 64 {
+              JThread.sleep(intToLong(1))
+              growthStreak = 0
+            }
+          } else if procIsAlive(p.proc) {
+            JThread.sleep(intToLong(1))
+            growthStreak = 0
+          } else {
+            // Process has exited. One more drain in case bytes were flushed
+            // between the `isAlive` check above and here (mirrors
+            // `process_capture_host.l`'s post-loop final drain).
+            drainAvailableInto(p.stdout, p.lineBuf)
+            splitCompleteLines(p)
+            match takePending(p) {
+              case Some(line) -> {
+                result = Some(value = line)
+              }
+              case None -> {
+                result = takeUnterminatedTail(p)
+              }
+            }
+            done = true
+          }
+        }
       }
     }
   }
   result
+}
+
+// The next split-out line, if any.
+func takePending(p: in PipedHandle): Option[String] {
+  val head = atomicGet(p.pendingHead)
+  if head >= p.pending.count {
+    return None
+  }
+  val line = p.pending[head]
+  if head + 1 == p.pending.count {
+    p.pending.clear()
+    atomicSet(p.pendingHead, 0)
+  } else {
+    atomicSet(p.pendingHead, head + 1)
+  }
+  Some(value = line)
+}
+
+// Move every complete line in `lineBuf` into `pending`, scanning only bytes
+// not already known to be newline-free, and leave just the unterminated tail.
+func splitCompleteLines(p: in PipedHandle): Unit {
+  val size = bufferSize(p.lineBuf)
+  val from = atomicGet(p.scanned)
+  if size <= from {
+    return
+  }
+  val snapshot: slice[Byte] = p.lineBuf.toByteArray()
+  var lineStart = 0
+  var i = from
+  while i < snapshot.length {
+    if snapshot[i] == 10 {
+      p.pending.add(decodeLine(snapshot, lineStart, i))
+      lineStart = i + 1
+    }
+    i = i + 1
+  }
+  if lineStart > 0 {
+    resetBufferTo(p.lineBuf, snapshot.slice(lineStart, snapshot.length))
+  }
+  atomicSet(p.scanned, snapshot.length - lineStart)
+}
+
+// After exit: the final unterminated bytes as one last line, or `None`.
+func takeUnterminatedTail(p: in PipedHandle): Option[String] {
+  if bufferSize(p.lineBuf) == 0 {
+    return None
+  }
+  val tail: slice[Byte] = p.lineBuf.toByteArray()
+  p.lineBuf.reset()
+  atomicSet(p.scanned, 0)
+  Some(value = decodeLine(tail, 0, tail.length))
 }
 
 /// Write one line to the child's stdin (a trailing newline is appended and

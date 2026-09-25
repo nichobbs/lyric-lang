@@ -83,17 +83,15 @@ pub func hostToUpper(c: in Char): Char = ()
 pub func hostToLower(c: in Char): Char = ()
 
 // =====================================================================
-// Code-point bridge.  The JDK has no method form of the (int) c / (char) n
-// casts; Character.hashCode(char) is documented to return the char value
-// itself, and Character.toString(int) + String.charAt(0) round-trips the
-// BMP code points Lyric Char covers.
+// Code-point bridge.  The JDK has no method form of the (int) c cast;
+// Character.hashCode(char) is documented to return the char value itself.
+// The (char) n direction is the backend's `.toChar()` numeric conversion
+// (an `i2c`), which covers the BMP code points Lyric Char holds without the
+// String that Character.toString(int).charAt(0) allocated per call (#7283).
 // =====================================================================
 @externTarget("java.lang.Character.hashCode")
 pub func hostCharToInt(c: in Char): Int = ()
 
-extern type JCharSeq = "java.lang.Character"
-
 pub func hostIntToChar(n: in Int): Char {
-  val s = JCharSeq.toString(n)
-  s.charAt(0)
+  n.toChar()
 }

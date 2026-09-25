@@ -187,6 +187,49 @@ func main(): Int {
     }
   }
 
+  // Case 6: a burst of many lines arriving together is returned complete
+  // and in order (#7277: every line used to copy and rescan the whole
+  // buffered burst).
+  val seqArgs: List[String] = newList()
+  seqArgs.add("1")
+  seqArgs.add("5000")
+  match spawnPiped("seq", seqArgs) {
+    case Err(e) -> {
+      println("FAIL case6 spawn: " + IOError.message(e))
+      failures = failures + 1
+    }
+    case Ok(p) -> {
+      var expected = 1
+      var reading = true
+      var ok = true
+      while reading {
+        match pipedReadLine(p) {
+          case Ok(Some(line)) -> {
+            if line != expected.toString() {
+              ok = false
+              reading = false
+            }
+            expected = expected + 1
+          }
+          case Ok(None) -> {
+            reading = false
+          }
+          case Err(_) -> {
+            ok = false
+            reading = false
+          }
+        }
+      }
+      if ok and expected == 5001 {
+        println("PASS case6: 5000-line burst read in order")
+      } else {
+        println("FAIL case6: stopped at line " + expected.toString())
+        failures = failures + 1
+      }
+      pipedClose(p)
+    }
+  }
+
   println("failures=" + failures.toString())
   failures
 }

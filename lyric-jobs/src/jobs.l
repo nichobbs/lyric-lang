@@ -443,16 +443,16 @@ pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler)
 /// Returns the list of results in execution order.
 @stable(since = "0.1")
 pub func runAll(scheduler: inout InProcessJobScheduler, handler: in JobHandler): slice[JobResult] {
-  var results: slice[JobResult] = []
+  val results: List[JobResult] = newList()
   while scheduler.queue.count > 0 {
     match runNext(scheduler, handler) {
       case Ok(r) -> {
-        results = concat(results, [r])
+        results.add(r)
       }
       case Err(_) -> ()
     }    // runNext only returns Err on empty queue
   }
-  return results
+  return results.toArray()
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -727,7 +727,7 @@ func parseResults(jobId: in String, json: in String): slice[JobResult] {
   if json == "[]" or json == "" {
     return []
   }
-  var results: slice[JobResult] = []
+  val results: List[JobResult] = newList()
   var pos: Int = 0
   while pos < json.length {
     val objStart = indexOfFrom(json, "{", pos)
@@ -744,24 +744,21 @@ func parseResults(jobId: in String, json: in String): slice[JobResult] {
         val error = jsonExtractString(obj, "error")
         val startedAt = jsonExtractLong(obj, "startedAt")
         val finishedAt = jsonExtractLong(obj, "finishedAt")
-        results = concat(
-          results,
-          [
-            JobResult(
-              jobId = jobId,
-              status = parseStatus(statusStr),
-              output = output,
-              error = error,
-              startedAt = startedAt,
-              finishedAt = finishedAt
-            )
-          ]
+        results.add(
+          JobResult(
+            jobId = jobId,
+            status = parseStatus(statusStr),
+            output = output,
+            error = error,
+            startedAt = startedAt,
+            finishedAt = finishedAt
+          )
         )
         pos = objEnd + 1
       }
     }
   }
-  return results
+  return results.toArray()
 }
 
 // Find the closing brace of a JSON object, respecting nested braces.

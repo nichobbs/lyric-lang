@@ -233,9 +233,10 @@ pub func hostSleepMillis(ms: in Int): Unit {
 // Epoch/monotonic seams — the exception-free clock surface every
 // kernel twin implements (issue #4752).
 // =====================================================================
-pub func hostEpochMillis(): Long {
-  hostDtoToEpochMillis(hostDtoUtcNow())
-}
+// System.currentTimeMillis directly: going through an OffsetDateTime cost
+// several allocations and a zone lookup per call (#7283).
+@externTarget("java.lang.System.currentTimeMillis")
+pub func hostEpochMillis(): Long = ()
 
 pub func hostMonotonicNanos(): Long {
   JSystem.nanoTime()

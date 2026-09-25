@@ -215,7 +215,7 @@ pub func esParseIndexResult(elem: in JsonElement): IndexResult {
 }
 
 func esParseBulkResponse(root: in JsonElement): slice[IndexResult] {
-  var results: slice[IndexResult] = []
+  val resultsAcc: List[IndexResult] = newList()
   match tryGetProperty(root, "items") {
     case Some(arr) -> {
       var en = enumerateArray(arr)
@@ -224,25 +224,25 @@ func esParseBulkResponse(root: in JsonElement): slice[IndexResult] {
         var itemCursor = enumerateObject(itemElem)
         if objectMoveNext(itemCursor) {
           val prop = objectCurrent(itemCursor)
-          results = concat(results, [esParseIndexResult(propertyValue(prop))])
+          resultsAcc.add(esParseIndexResult(propertyValue(prop)))
         }
       }
     }
     case None -> ()
   }
-  return results
+  return resultsAcc.toArray()
 }
 
 func esParseHighlight(field: in String, arr: in JsonElement): Highlight {
-  var fragments: slice[String] = []
+  val fragmentsAcc: List[String] = newList()
   var en = enumerateArray(arr)
   while arrayMoveNext(en) {
     val elem = arrayCurrent(en)
     if valueKind(elem) == 3 {
-      fragments = concat(fragments, [getString(elem)])
+      fragmentsAcc.add(getString(elem))
     }
   }
-  return Highlight(field = field, fragments = fragments)
+  return Highlight(field = field, fragments = fragmentsAcc.toArray())
 }
 
 func esParseHit(elem: in JsonElement): SearchHit {
@@ -250,7 +250,7 @@ func esParseHit(elem: in JsonElement): SearchHit {
   var index: String = ""
   var score: Double = 0.0
   var source: Map[String, String] = newMap()
-  var highlights: slice[Highlight] = []
+  val highlightsAcc: List[Highlight] = newList()
   match tryGetProperty(elem, "_id") {
     case Some(v) -> {
       id = getString(v)
@@ -282,18 +282,18 @@ func esParseHit(elem: in JsonElement): SearchHit {
       var en = enumerateObject(obj)
       while objectMoveNext(en) {
         val prop = objectCurrent(en)
-        highlights = concat(highlights, [esParseHighlight(propertyName(prop), propertyValue(prop))])
+        highlightsAcc.add(esParseHighlight(propertyName(prop), propertyValue(prop)))
       }
     }
     case None -> ()
   }
-  return SearchHit(id = id, index = index, score = score, highlights = highlights, source = source)
+  return SearchHit(id = id, index = index, score = score, highlights = highlightsAcc.toArray(), source = source)
 }
 
 pub func esParseSearchResponse(root: in JsonElement): SearchResult {
   var total: Long = 0i64
   var tookMs: Int = 0
-  var hits: slice[SearchHit] = []
+  val hitsAcc: List[SearchHit] = newList()
   match tryGetProperty(root, "took") {
     case Some(v) -> match tryGetInt(v) { case Some(n) -> { tookMs = n }; case None -> () }
     case None -> ()
@@ -301,14 +301,17 @@ pub func esParseSearchResponse(root: in JsonElement): SearchResult {
   match tryGetProperty(root, "hits") {
     case Some(hitsObj) -> {
       match tryGetProperty(hitsObj, "total") {
-        case Some(totalObj) -> match tryGetProperty(totalObj, "value") { case Some(v) -> match tryGetLong(v) { case Some(n) -> { total = n }; case None -> () }; case None -> () }
+        case Some(totalObj) -> match tryGetProperty(totalObj, "value") {
+          case Some(v) -> match tryGetLong(v) { case Some(n) -> { total = n }; case None -> () }
+          case None -> ()
+        }
         case None -> ()
       }
       match tryGetProperty(hitsObj, "hits") {
         case Some(arr) -> {
           var en = enumerateArray(arr)
           while arrayMoveNext(en) {
-            hits = concat(hits, [esParseHit(arrayCurrent(en))])
+            hitsAcc.add(esParseHit(arrayCurrent(en)))
           }
         }
         case None -> ()
@@ -316,21 +319,38 @@ pub func esParseSearchResponse(root: in JsonElement): SearchResult {
     }
     case None -> ()
   }
-  return SearchResult(total = total, hits = hits, tookMs = tookMs, scrollId = None)
+  return SearchResult(total = total, hits = hitsAcc.toArray(), tookMs = tookMs, scrollId = None)
 }
 
 pub func esParseSuggestResponse(root: in JsonElement, field: in String): SuggestResult {
   var tookMs: Int = 0
-  var suggestions: slice[String] = []
+  val suggestionsAcc: List[String] = newList()
   match tryGetProperty(root, "took") {
     case Some(v) -> match tryGetInt(v) { case Some(n) -> { tookMs = n }; case None -> () }
     case None -> ()
   }
   match tryGetProperty(root, "hits") {
-    case Some(hitsObj) -> match tryGetProperty(hitsObj, "hits") { case Some(arr) -> { var en = enumerateArray(arr); while arrayMoveNext(en) { val hitElem = arrayCurrent(en); match tryGetProperty(hitElem, "_source") { case Some(source) -> match tryGetProperty(source, field) { case Some(v) -> { suggestions = concat(suggestions, [jsonScalarToString(v)]) }; case None -> () }; case None -> () } } }; case None -> () }
+    case Some(hitsObj) -> match tryGetProperty(hitsObj, "hits") {
+      case Some(arr) -> {
+        var en = enumerateArray(arr)
+        while arrayMoveNext(en) {
+          val hitElem = arrayCurrent(en)
+          match tryGetProperty(hitElem, "_source") {
+            case Some(source) -> match tryGetProperty(source, field) {
+              case Some(v) -> {
+                suggestionsAcc.add(jsonScalarToString(v))
+              }
+              case None -> ()
+            }
+            case None -> ()
+          }
+        }
+      }
+      case None -> ()
+    }
     case None -> ()
   }
-  return SuggestResult(suggestions = suggestions, tookMs = tookMs)
+  return SuggestResult(suggestions = suggestionsAcc.toArray(), tookMs = tookMs)
 }
 
 // ─── Operations ───────────────────────────────────────────────────────────────

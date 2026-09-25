@@ -373,11 +373,13 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/result_generic_specialization_self_test.l \
 	lyric-compiler/lyric/return_in_try_self_test.l \
 	lyric-compiler/lyric/process_stdin_self_test.l \
+	lyric-compiler/lyric/secure_random_self_test.l \
 	lyric-compiler/lyric/self_method_call_self_test.l \
 	lyric-compiler/lyric/slice_append_widening_self_test.l \
 	lyric-compiler/lyric/slice_array_abi_self_test.l \
 	lyric-compiler/lyric/slice_ops_self_test.l \
 	lyric-compiler/lyric/slice_string_self_test.l \
+	lyric-compiler/lyric/sort_self_test.l \
 	lyric-compiler/lyric/source_path_diagnostics_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_iface_self_test.l \
 	lyric-compiler/lyric/stdlib_builders_self_test.l \

@@ -22,6 +22,8 @@ import Std.Collections
 
 extern type JSecureRandom = "java.security.SecureRandom"
 
+extern type JByteBuffer = "java.nio.ByteBuffer"
+
 val sharedSecureRandom: JSecureRandom = JSecureRandom.new()
 
 /// Cryptographically strong random integer in [0, max).
@@ -37,18 +39,22 @@ pub func hostSecureNextIntRange(min: in Int, max: in Int): Int {
   min + sharedSecureRandom.nextInt(max - min)
 }
 
+// Fill the buffer's backing byte[] in place. Handing `nextBytes` the array
+// straight from `array()` matters: a `slice[Byte]` local passed to a JDK
+// `byte[]` parameter is coerced through a fresh copy, so `nextBytes` filled
+// that temporary and the caller received all zeros (#7283). Tail position
+// because a discarded auto-FFI call on a parameter receiver emits no invoke
+// on this backend (#5379).
+func fillRandom(buffer: in JByteBuffer): Unit {
+  sharedSecureRandom.nextBytes(buffer.array())
+}
+
 /// Fill a new byte slice of the given length with cryptographically strong
 /// random bytes.  count must be >= 0.
 pub func hostSecureGetBytes(count: in Int): slice[Byte]
   requires: count >= 0
 {
-  val zeros: List[Byte] = newListWithCapacity(count)
-  var i = 0
-  while i < count {
-    zeros.add(0)
-    i = i + 1
-  }
-  val arr = zeros.toArray()
-  sharedSecureRandom.nextBytes(arr)
-  arr
+  val buffer: JByteBuffer = JByteBuffer.allocate(count)
+  fillRandom(buffer)
+  buffer.array()
 }

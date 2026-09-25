@@ -35388,3 +35388,50 @@ cursor into the buffer and compact once per `feed`, and the HTTP/1.1 engine
 remembers how far a partial line has been scanned so a slowly delivered line
 is not rescanned from its start (#7263, #7264, epic #7256).
 
+## Std.Iter and Std.Collections size their results; concat is no longer used to append in loops
+
+`Std.Iter.map`, `concat`, `reverse`, `take` and `drop` allocate their result
+at its final size, and `take`/`drop` index directly instead of walking the
+whole input. `mapKeys`, `mapValues` and `mapEntries` pre-size from the map's
+count, `mapPutAll` uses indexed assignment instead of remove-then-add, and
+the JVM `tryGetValue` does one hash lookup on a hit instead of two.
+`lyric-jobs`, `lyric-search`, `lyric-mq` and `lyric-testing` built slices
+with `x = concat(x, [e])` in loops (quadratic); they now accumulate into a
+`List` and call `toArray()` once, and `concat`'s doc comment no longer
+recommends repeated use (#7279, #7282, epic #7256).
+
+## Std.Sort allocates two buffers instead of copying at every level
+
+`Std.Sort.sort` was a top-down merge sort that copied every element into
+fresh sub-slices at each recursion level and recursed down to single
+elements. It is now a bottom-up merge sort: runs of 16 are insertion-sorted
+in place, then merged pairwise between two buffers allocated once, with no
+recursion. Still stable and O(n log n); extra space drops to O(n). Covered by
+`sort_self_test.l` (sizes around the run and merge widths, reversed and
+duplicate-heavy input, stability) (#7281, epic #7256).
+
+## Piped process readLine is linear in the output on the JVM and native
+
+The JVM `hostPipedReadLineOpt` copied the whole buffered output
+(`toByteArray`), rescanned it from the start and rebuilt the remaining tail
+byte by byte through a boxed list for every line, and copied the buffer twice
+more per idle poll. It now splits every complete line out of a burst in one
+pass into a pending queue, remembers how far the unterminated tail has been
+scanned, and uses `size()` for growth checks; a 5000-line `seq` burst reads in
+a seventh of the time. The native `lyric_process_piped_read_line` now resumes
+its `memchr` scan where it stopped and returns lines by advancing an offset,
+compacting only before the next read. Covered by a new burst case in
+`piped_process_jvm_main.l` and `lyric-rt`'s C tests (#7277, epic #7256).
+
+## JVM secure random returns random bytes; cheaper JVM kernel hot paths
+
+`Std.SecureRandom.secureGetBytes` on the JVM returned all-zero bytes: the
+kernel passed a `slice[Byte]` local to `SecureRandom.nextBytes`, and the
+auto-FFI coercion to `byte[]` copies, so the random bytes went to a temporary
+(#7329; `lyric-otel` trace and span ids were all zero on the JVM). It now
+fills a `ByteBuffer`'s backing array in place. Also on the JVM:
+`Std.Char.fromInt` uses the `.toChar()` conversion instead of allocating a
+`String`, `nowEpochMillis` calls `System.currentTimeMillis` instead of going
+through `OffsetDateTime`, and `log2` no longer recomputes `ln(2)` per call
+(#7283, epic #7256). Covered by `secure_random_self_test.l` on dotnet and JVM.
+

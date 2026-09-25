@@ -437,11 +437,11 @@ func headersToJson(headers: in slice[MessageHeader]): String {
   if headers.length == 0 {
     return "[]"
   }
-  var parts: slice[String] = []
+  val partsAcc: List[String] = newList()
   for h in headers {
-    parts = concat(parts, ["{\"key\":\"" + jsonEscape(h.key) + "\",\"value\":\"" + jsonEscape(h.value) + "\"}"])
+    partsAcc.add("{\"key\":\"" + jsonEscape(h.key) + "\",\"value\":\"" + jsonEscape(h.value) + "\"}")
   }
-  return "[" + join(",", parts) + "]"
+  return "[" + join(",", partsAcc.toArray()) + "]"
 }
 
 // Deserialise a JSON object (produced by the kernel) back into a Message.
@@ -465,7 +465,7 @@ func parseHeadersJson(json: in String): slice[MessageHeader] {
   if json == "[]" or json == "" {
     return []
   }
-  var result: slice[MessageHeader] = []
+  val resultAcc: List[MessageHeader] = newList()
   val doc = parseJson(json)
   val root = rootElement(doc)
   var en = enumerateArray(root)
@@ -485,9 +485,9 @@ func parseHeadersJson(json: in String): slice[MessageHeader] {
       }
       case None -> ()
     }
-    result = concat(result, [MessageHeader(key = key, value = value)])
+    resultAcc.add(MessageHeader(key = key, value = value))
   }
-  return result
+  return resultAcc.toArray()
 }
 
 // Extract an integer field value from a JSON object literal.

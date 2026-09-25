@@ -2066,6 +2066,38 @@ static void test_process_piped_final_line_without_newline(void) {
     lyric_process_piped_close(p);
 }
 
+static void test_process_piped_burst_in_order(void) {
+    /* 5000 lines from one `seq` burst (#7277): every line returned in
+     * order, with CR-free content, and end-of-stream afterwards. */
+    LyricList* args = lyric_list_new(2);
+    LyricString* a1 = mk_str("1");
+    LyricString* a2 = mk_str("5000");
+    lyric_list_push(args, (int64_t)(intptr_t)a1);
+    lyric_list_push(args, (int64_t)(intptr_t)a2);
+    lyric_release(a1);
+    lyric_release(a2);
+
+    void* p = lyric_process_piped_spawn("seq", args);
+    lyric_release(args);
+    CHECK(p != NULL);
+
+    char expect[16];
+    int ok = 1;
+    for (int n = 1; n <= 5000; n++) {
+        LyricString* got = NULL;
+        if (lyric_process_piped_read_line(p, &got) != 1) { ok = 0; break; }
+        int len = snprintf(expect, sizeof(expect), "%d", n);
+        if (lyric_string_len(got) != len || memcmp(LYRIC_STRING_DATA(got), expect, (size_t)len) != 0) ok = 0;
+        lyric_release(got);
+        if (!ok) break;
+    }
+    CHECK(ok);
+    LyricString* none = NULL;
+    CHECK(lyric_process_piped_read_line(p, &none) == 0);
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    lyric_process_piped_close(p);
+}
+
 static void test_process_piped_crlf_stripped(void) {
     /* A CRLF-terminated line (printf "a\r\nb\n") must have the \r
      * stripped, matching .NET's StreamReader.ReadLine()/the JVM twin's
@@ -2578,6 +2610,7 @@ int main(void) {
     test_process_op_stdin();
     test_process_piped_line_roundtrip();
     test_process_piped_final_line_without_newline();
+    test_process_piped_burst_in_order();
     test_process_piped_crlf_stripped();
     test_process_piped_kill();
     test_process_piped_spawn_failure();
