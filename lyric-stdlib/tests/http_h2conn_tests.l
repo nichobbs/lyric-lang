@@ -1733,3 +1733,41 @@ test "newServerConnection rejects settings a server may not advertise (#7251)" {
   assertTrue(not H2.isValidLocalSettings(small), "frame size below 16384")
   assertPanics("invalid local settings", { -> val _ = H2.newServerConnection(small) })
 }
+
+test "encodeResponseHeaders requires an RFC 9113 response header list (#7251)" {
+  assertTrue(H2.isH2ResponseHeaderListSafe(responseHeaders()), ":status then a lowercase field")
+  val noStatus: List[HeaderField] = newList()
+  noStatus.add(hf("content-type", "text/plain"))
+  assertTrue(not H2.isH2ResponseHeaderListSafe(noStatus), "no :status")
+  val late: List[HeaderField] = newList()
+  late.add(hf("content-type", "text/plain"))
+  late.add(hf(":status", "200"))
+  assertTrue(not H2.isH2ResponseHeaderListSafe(late), ":status after a regular field")
+  val badStatus: List[HeaderField] = newList()
+  badStatus.add(hf(":status", "42"))
+  assertTrue(not H2.isH2ResponseHeaderListSafe(badStatus), "a status that is not three digits")
+  val requestPseudo: List[HeaderField] = newList()
+  requestPseudo.add(hf(":status", "200"))
+  requestPseudo.add(hf(":path", "/"))
+  assertTrue(not H2.isH2ResponseHeaderListSafe(requestPseudo), "a request pseudo-header")
+  assertTrue(not H2.isH2ResponseFieldSafe("Content-Type", "x"), "uppercase name")
+  assertTrue(not H2.isH2ResponseFieldSafe("connection", "close"), "connection-specific field")
+  assertTrue(not H2.isH2ResponseFieldSafe("x-a", "v\r\nx-b: 1"), "CR/LF in a value")
+  assertTrue(not H2.isH2ResponseFieldSafe("x-a", " v"), "leading space in a value")
+  assertTrue(H2.isH2ResponseFieldSafe("x-a", "v 1"), "an interior space is fine")
+
+  var conn = setupDefault()
+  val r1 = H2.feed(conn, headersFrame(1, encodeBlock(requestHeaders()), true, true))
+  assertPanics(
+    "request pseudo-header in a response",
+    { -> val _ = H2.encodeResponseHeaders(r1.conn, 1, requestPseudo, false) }
+  )
+}
+
+test "sendData requires data within the peer max frame size (#7251)" {
+  var conn = setupDefault()
+  val r1 = H2.feed(conn, headersFrame(1, encodeBlock(requestHeaders()), true, true))
+  val c = r1.conn
+  val limit = H2.peerMaxFrameSize(c)
+  assertPanics("DATA larger than one frame", { -> val _ = H2.sendData(c, 1, mkBytes(limit + 1, 66), false) })
+}
