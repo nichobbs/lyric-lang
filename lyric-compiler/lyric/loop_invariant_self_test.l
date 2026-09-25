@@ -129,6 +129,25 @@ func innerBreakKeepsOuterExitCheck(): Bool {
   }
 }
 
+// `break outer` from a nested loop leaves the labelled loop, so the outer
+// loop's exit check does not run (#7349).
+func labelledInnerBreakSkipsOuterExitCheck(): Int {
+  var i = 0
+  outer: while i < 10
+    invariant: i < 3
+  {
+    while true {
+      if i == 2 {
+        i = 7
+        break outer
+      }
+      break
+    }
+    i = i + 1
+  }
+  i
+}
+
 func sumTo(xs: in List[Int]): Int {
   var total = 0
   for x in xs
@@ -170,4 +189,8 @@ test "an inner break does not suppress the outer loop's exit check (#7224)" {
 
 test "a for loop checks its invariant when the iterator runs out (#7224)" {
   assertTrue(forExitViolation(), "total == 6 at exit violates total < 6")
+}
+
+test "break outer from a nested loop skips the outer exit check (#7349)" {
+  assertEqualInt(labelledInnerBreakSkipsOuterExitCheck(), 7, "i = 7 after break outer, no panic")
 }

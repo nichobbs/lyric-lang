@@ -2336,6 +2336,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/loop_invariant_self_test.l
+      - name: Labelled-loop self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/labelled_loops_self_test.l
 
       # Function-value invocation — pins #1877: invoking a function-typed value
       # (`f()` where f: () -> R) through the uniform Func ABI.  Zero-argument
@@ -5439,6 +5444,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/loop_invariant_self_test.l
+      - name: Labelled-loop self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/labelled_loops_self_test.l
       - name: Integer literal range self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true

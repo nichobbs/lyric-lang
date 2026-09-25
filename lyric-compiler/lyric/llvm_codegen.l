@@ -385,6 +385,9 @@ record Ctx {
   tempScopes: List[List[NOwnedTemp]]
   loopVarDepth: List[Int]
   loopTempDepth: List[Int]
+  // Labelled loops currently being lowered (#7349): label -> the loop's index
+  // in loopBreak/loopCont/loopVarDepth/loopTempDepth.
+  loopLabelIndex: Map[String, Int]
   // `defer` (P2.D1): pending deferred `Block`s per lexical scope, mirroring `scopeRefs` — see D-N-020.
   deferStack: List[List[Block]]
   // `varEnumTypes` scope-undo log, one list per open lexical scope, mirroring
@@ -1262,9 +1265,53 @@ func releaseAllForReturn(ctx: in Ctx, insns: in List[NInsn]): Unit {
 
 /// Emit the releases `break`/`continue` need: var scopes and temp
 /// scopes opened inside the innermost loop (not the loop-outer ones); also runs each scope's pending `defer` blocks first (D-N-020).
-func releaseForLoopExit(ctx: in Ctx, insns: in List[NInsn]): Unit {
-  val varFloor = ctx.loopVarDepth[ctx.loopVarDepth.count - 1]
-  val tempFloor = ctx.loopTempDepth[ctx.loopTempDepth.count - 1]
+func enterLoopLabelNative(
+  // Each loop pushes exactly one entry onto loopBreak/loopCont/loopVarDepth/
+  // loopTempDepth, so a labelled loop's entry is at the stack depth just before
+  // it is lowered.
+  ctx: in Ctx,
+  label: in Option[String],
+): Unit {
+  match label {
+    case Some(l) -> {
+      ctx.loopLabelIndex[l] = ctx.loopBreak.count
+    }
+    case None -> ()
+  }
+}
+
+func exitLoopLabelNative(ctx: in Ctx, label: in Option[String]): Unit {
+  match label {
+    case Some(l) -> ctx.loopLabelIndex.remove(l)
+    case None -> ()
+  }
+}
+
+// The type checker (T0130) guarantees a `break`/`continue` sits in a loop and
+// that its label names an enclosing one.
+func loopIndexForLabelNative(ctx: in Ctx, label: in Option[String]): Int {
+  match label {
+    case None -> {
+      if ctx.loopBreak.count == 0 {
+        panic("Lyric.LlvmCodegen: 'break'/'continue' outside a loop (compiler bug: T0130 should have rejected it)")
+      }
+      ctx.loopBreak.count - 1
+    }
+    case Some(l) -> match mapGet(ctx.loopLabelIndex, l) {
+      case Some(i) -> i
+      case None -> panic(
+        "Lyric.LlvmCodegen: no enclosing loop labelled '" + l +
+          "' (compiler bug: T0130 should have rejected it)"
+      )
+    }
+  }
+}
+
+// Releases and runs the defers of every scope inside loop `li` (for a labelled
+// jump, that includes each inner loop it exits).
+func releaseForLoopExit(ctx: in Ctx, insns: in List[NInsn], li: in Int): Unit {
+  val varFloor = ctx.loopVarDepth[li]
+  val tempFloor = ctx.loopTempDepth[li]
   var ti = ctx.tempScopes.count - 1
   while ti >= tempFloor {
     val scp = ctx.tempScopes[ti]
@@ -6036,6 +6083,92 @@ func lowerForOverList(ctx: in Ctx, insns: in List[NInsn], pat: in Pattern, iter:
   insns.add(NLabel(name = exitL))
 }
 
+/// `for i in lo ..< hi` / `lo ..= hi`: a counted loop over the bounds' common
+/// integer type, both bounds evaluated once at entry (matching the MSIL and
+/// JVM counting loops).  `Byte` bounds compare unsigned (#4628).
+func lowerForOverRange(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  pat: in Pattern,
+  lo: in Expr,
+  hi: in Expr,
+  inclusive: in Bool,
+  body: in Block,
+): Unit {
+  var bindName = ""
+  var haveBind = false
+  match pat.kind {
+    case PBinding(nm, inner) -> {
+      match inner {
+        case Some(_) -> panic(
+          "Lyric.LlvmCodegen: this for-pattern is not yet supported for --target native (use a plain name)"
+        )
+        case None -> {
+          bindName = nm
+          haveBind = true
+        }
+      }
+    }
+    case PWildcard -> {
+    }
+    case _ -> panic("Lyric.LlvmCodegen: this for-pattern is not yet supported for --target native (use a plain name)")
+  }
+  val loV = lowerExpr(ctx, insns, lo)
+  val hiV = lowerExpr(ctx, insns, hi)
+  val w = widenOperands(ctx, insns, loV, hiV)
+  if intNTypeRank(w.ty) == 0 {
+    panic("Lyric.LlvmCodegen: a range `for` needs integer bounds; got " + nTypeToIrString(w.ty))
+  }
+  val ty = w.ty
+  val idxSlot = "for.idx." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = idxSlot, ty = ty))
+  insns.add(NStore(ty = ty, value = w.a.value, ptr = NLocal(name = idxSlot)))
+  val hiSlot = "for.hi." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = hiSlot, ty = ty))
+  insns.add(NStore(ty = ty, value = w.b.value, ptr = NLocal(name = hiSlot)))
+  val pred = match ty { case NI8 -> if inclusive { IUle } else { IUlt }; case _ -> if inclusive { ISle } else { ISlt } }
+  val condL = freshLabel(ctx, "for.cond")
+  val bodyL = freshLabel(ctx, "for.body")
+  val incL = freshLabel(ctx, "for.inc")
+  val exitL = freshLabel(ctx, "for.exit")
+  insns.add(NBr(label = condL))
+  insns.add(NLabel(name = condL))
+  val curIdx = freshTmp(ctx)
+  insns.add(NLoad(dest = curIdx, ty = ty, ptr = NLocal(name = idxSlot)))
+  val curHi = freshTmp(ctx)
+  insns.add(NLoad(dest = curHi, ty = ty, ptr = NLocal(name = hiSlot)))
+  val cmp = freshTmp(ctx)
+  insns.add(NICmp(dest = cmp, pred = pred, ty = ty, a = NLocal(name = curIdx), b = NLocal(name = curHi)))
+  insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = bodyL, elseLabel = exitL))
+  insns.add(NLabel(name = bodyL))
+  ctx.loopBreak.add(exitL)
+  ctx.loopCont.add(incL)
+  ctx.loopVarDepth.add(ctx.scopeRefs.count)
+  ctx.loopTempDepth.add(ctx.tempScopes.count)
+  pushVarScope(ctx)
+  if haveBind {
+    val bodyIdx = freshTmp(ctx)
+    insns.add(NLoad(dest = bodyIdx, ty = ty, ptr = NLocal(name = idxSlot)))
+    bindLocal(ctx, insns, bindName, NVal(ty = ty, value = NLocal(name = bodyIdx)))
+    markVarChar(ctx, bindName, false)
+  }
+  lowerBlockStmts(ctx, insns, body)
+  popVarScope(ctx, insns)
+  ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+  ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+  ctx.loopVarDepth.removeAt(ctx.loopVarDepth.count - 1)
+  ctx.loopTempDepth.removeAt(ctx.loopTempDepth.count - 1)
+  insns.add(NBr(label = incL))
+  insns.add(NLabel(name = incL))
+  val incIdx = freshTmp(ctx)
+  insns.add(NLoad(dest = incIdx, ty = ty, ptr = NLocal(name = idxSlot)))
+  val nextIdx = freshTmp(ctx)
+  insns.add(NAdd(dest = nextIdx, ty = ty, a = NLocal(name = incIdx), b = NLitInt(v = 1i64, ty = ty)))
+  insns.add(NStore(ty = ty, value = NLocal(name = nextIdx), ptr = NLocal(name = idxSlot)))
+  insns.add(NBr(label = condL))
+  insns.add(NLabel(name = exitL))
+}
+
 /// `dictGetKeys(m)` / `dictGetValues(m)` — fresh rc=1 snapshot lists
 /// (the kernel retains ref-typed entries into the list).
 func lowerMapSnapshotBuiltin(ctx: in Ctx, insns: in List[NInsn], m: in NVal, sym: in String, elem: in NType): NVal {
@@ -8955,37 +9088,18 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
       insns.add(NLabel(name = freshLabel(ctx, "dead")))
     }
     case SBreak(label) -> {
-      match label {
-        case Some(_) -> panic("Lyric.LlvmCodegen: labeled break is not yet supported for --target native")
-        case None -> {
-        }
-      }
-      if ctx.loopBreak.count == 0 {
-        panic("Lyric.LlvmCodegen: 'break' outside a loop")
-      }
-      releaseForLoopExit(ctx, insns)
-      insns.add(NBr(label = ctx.loopBreak[ctx.loopBreak.count - 1]))
+      val li = loopIndexForLabelNative(ctx, label)
+      releaseForLoopExit(ctx, insns, li)
+      insns.add(NBr(label = ctx.loopBreak[li]))
       insns.add(NLabel(name = freshLabel(ctx, "dead")))
     }
     case SContinue(label) -> {
-      match label {
-        case Some(_) -> panic("Lyric.LlvmCodegen: labeled continue is not yet supported for --target native")
-        case None -> {
-        }
-      }
-      if ctx.loopCont.count == 0 {
-        panic("Lyric.LlvmCodegen: 'continue' outside a loop")
-      }
-      releaseForLoopExit(ctx, insns)
-      insns.add(NBr(label = ctx.loopCont[ctx.loopCont.count - 1]))
+      val li = loopIndexForLabelNative(ctx, label)
+      releaseForLoopExit(ctx, insns, li)
+      insns.add(NBr(label = ctx.loopCont[li]))
       insns.add(NLabel(name = freshLabel(ctx, "dead")))
     }
     case SWhile(label, cond, body) -> {
-      match label {
-        case Some(_) -> panic("Lyric.LlvmCodegen: labeled while is not yet supported for --target native")
-        case None -> {
-        }
-      }
       val condL = freshLabel(ctx, "while.cond")
       val bodyL = freshLabel(ctx, "while.body")
       val exitL = freshLabel(ctx, "while.exit")
@@ -8997,11 +9111,13 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
       popTempScope(ctx, insns)
       insns.add(NCondBr(cond = c.value, thenLabel = bodyL, elseLabel = exitL))
       insns.add(NLabel(name = bodyL))
+      enterLoopLabelNative(ctx, label)
       ctx.loopBreak.add(exitL)
       ctx.loopCont.add(condL)
       ctx.loopVarDepth.add(ctx.scopeRefs.count)
       ctx.loopTempDepth.add(ctx.tempScopes.count)
       lowerBlockStmts(ctx, insns, body)
+      exitLoopLabelNative(ctx, label)
       ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
       ctx.loopCont.removeAt(ctx.loopCont.count - 1)
       ctx.loopVarDepth.removeAt(ctx.loopVarDepth.count - 1)
@@ -9013,14 +9129,41 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
       val _ = lowerExpr(ctx, insns, ex)
     }
     case SFor(label, pat, iter, body) -> {
-      match label {
-        case Some(_) -> panic("Lyric.LlvmCodegen: labeled for is not yet supported for --target native")
-        case None -> {
+      enterLoopLabelNative(ctx, label)
+      match iter.kind {
+        case ERange(bound) -> match bound {
+          case RBClosed(lo, hi) -> lowerForOverRange(ctx, insns, pat, lo, hi, true, body)
+          case RBHalfOpen(lo, hi, _) -> lowerForOverRange(ctx, insns, pat, lo, hi, false, body)
+          case RBLowerOpen(_) -> panic(
+            "Lyric.LlvmCodegen: an open-start range cannot drive a `for` loop (no lower bound to count from)"
+          )
+          case RBUpperOpen(_) -> panic(
+            "Lyric.LlvmCodegen: an open-end range cannot drive a `for` loop (no upper bound to stop at)"
+          )
         }
+        case _ -> lowerForOverList(ctx, insns, pat, iter, body)
       }
-      lowerForOverList(ctx, insns, pat, iter, body)
+      exitLoopLabelNative(ctx, label)
     }
-    case SLoop(_, _) -> panic("Lyric.LlvmCodegen: 'loop' is not yet supported for --target native (use 'while true')")
+    case SLoop(label, body) -> {
+      val bodyL = freshLabel(ctx, "loop.body")
+      val exitL = freshLabel(ctx, "loop.exit")
+      insns.add(NBr(label = bodyL))
+      insns.add(NLabel(name = bodyL))
+      enterLoopLabelNative(ctx, label)
+      ctx.loopBreak.add(exitL)
+      ctx.loopCont.add(bodyL)
+      ctx.loopVarDepth.add(ctx.scopeRefs.count)
+      ctx.loopTempDepth.add(ctx.tempScopes.count)
+      lowerBlockStmts(ctx, insns, body)
+      exitLoopLabelNative(ctx, label)
+      ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+      ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+      ctx.loopVarDepth.removeAt(ctx.loopVarDepth.count - 1)
+      ctx.loopTempDepth.removeAt(ctx.loopTempDepth.count - 1)
+      insns.add(NBr(label = bodyL))
+      insns.add(NLabel(name = exitL))
+    }
     case SThrow(_) -> panic("Lyric.LlvmCodegen: 'throw' is not supported for --target native (D-N-003: panics abort)")
     case STry(_, _, _) -> panic(
       "Lyric.LlvmCodegen: try/catch is not supported for --target native (D-N-003: no unwinding)"
@@ -9460,6 +9603,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     tempScopes = newList(),
     loopVarDepth = newList(),
     loopTempDepth = newList(),
+    loopLabelIndex = newMap(),
     deferStack = newList(),
     enumTypeUndo = newList(),
     bindingUndo = newList(),
@@ -10352,6 +10496,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     tempScopes = newList(),
     loopVarDepth = newList(),
     loopTempDepth = newList(),
+    loopLabelIndex = newMap(),
     deferStack = newList(),
     enumTypeUndo = newList(),
     bindingUndo = newList(),

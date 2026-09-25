@@ -810,6 +810,23 @@ outer: for x in xs {
 }
 ```
 
+A label is written `name:` directly before `for`, `while` or `do` (the
+unconditional loop `do { ... }`, which exits only through `break` or
+`return`). `break label` leaves the labelled loop and every loop inside it;
+`continue label` starts that loop's next iteration. Every `defer` in each
+loop the jump leaves runs first, innermost first. Resolution rules:
+
+- `break`/`continue` must sit inside a loop of the same function, and a
+  label must name an enclosing loop; otherwise it is a compile error
+  (**T0130**). A lambda body, a `defer` body and a `finally` block start
+  with no enclosing loops, so a jump in one of them cannot target a loop
+  outside it.
+- A loop may not reuse the label of a loop it is nested in (**T0131**).
+  Sibling loops may share a label.
+
+Labels are statement-position only; an identifier followed by `:` is a
+label only when a loop keyword comes next.
+
 `defer { ... }` schedules a block to run when its enclosing scope exits, on
 **every** path — normal fall-off, early `return`, `break`/`continue` out of the
 scope, and exception unwind ("success or failure"). Use it for cleanup that must

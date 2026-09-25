@@ -365,6 +365,8 @@ outer: for row in matrix {
 
 Labels are written as `name:` immediately before the loop keyword. They are only needed when breaking out of nested loops — the vast majority of loops do not need labels.
 
+A label must name a loop that encloses the `break` or `continue`, and a nested loop cannot reuse an outer loop's label; the compiler reports **T0130** and **T0131** for these. A `defer` inside any loop the jump leaves still runs. A lambda or `defer` body cannot jump to a loop outside it.
+
 ## Error propagation with `?`
 
 Chapter 7 covers error handling fully. Here is the short version so you can read code that uses it.

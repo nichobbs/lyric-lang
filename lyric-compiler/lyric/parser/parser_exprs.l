@@ -2310,6 +2310,23 @@ pub func parseStatement(st: inout ParseState): Statement {
   s
 }
 
+func isLoopLabelPrefix(st: in ParseState): Bool {
+  if not isPunct(peekAt(st, 1).token, Colon) {
+    return false
+  }
+  match peekAt(st, 2).token {
+    case TKeyword(k) -> {
+      match k {
+        case KwFor -> true
+        case KwWhile -> true
+        case KwDo -> true
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 func parseStatementInner(st: inout ParseState): Statement {
   val startSpan = peekSpan(st)
   match peekToken(st) {
@@ -2453,7 +2470,21 @@ func parseStatementInner(st: inout ParseState): Statement {
       }
     }
     case TIdent(name) -> {
-      if name == "break" {
+      if isLoopLabelPrefix(st) {
+        // `label: for|while|do { ... }` (grammar ForStmt/WhileStmt/LoopStmt).
+        // Only an identifier immediately followed by `:` and a loop keyword is
+        // a label, so no expression statement is reinterpreted (#7349).
+        val _ = advance(st)
+        val _ = advance(st)
+        val loop = parseStatementInner(st)
+        val labelled = match loop.kind {
+          case SFor(_, pat, iter, body) -> SFor(label = Some(name), pat = pat, iter = iter, body = body)
+          case SWhile(_, cond, body) -> SWhile(label = Some(name), cond = cond, body = body)
+          case SLoop(_, body) -> SLoop(label = Some(name), body = body)
+          case other -> other
+        }
+        mkStmt(labelled, joinSpans(startSpan, loop.span))
+      } else if name == "break" {
         val _ = advance(st)
         val label: Option[String] = match tryEatIdent(st) { case Some(ns) -> Some(value = ns.name); case None -> None }
         mkStmt(SBreak(label = label), joinSpans(startSpan, peekSpan(st)))

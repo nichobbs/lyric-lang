@@ -1469,15 +1469,17 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     }
 
     // ── While loop ─────────────────────────────────────────────────────────
-    case SWhile(_, cond, body) -> {
+    case SWhile(label, cond, body) -> {
       val loopL = freshLabel(ctx)
       val afterL = freshLabel(ctx)
       insns.add(LLabel(name = loopL))
       lowerBoolCond(ctx, insns, cond, afterL)
+      enterLoopLabelJvm(ctx, label)
       ctx.loopBreak.add(afterL)
       ctx.loopCont.add(loopL)
       ctx.loopDeferDepth.add(ctx.deferStack.count)
       lowerBlock(ctx, insns, body)
+      exitLoopLabelJvm(ctx, label)
       ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
       ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
       ctx.loopCont.removeAt(ctx.loopCont.count - 1)
@@ -1486,7 +1488,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     }
 
     // ── For loop (over array) ──────────────────────────────────────────────
-    case SFor(_, pat, iter, body) -> {
+    case SFor(label, pat, iter, body) -> {
+      enterLoopLabelJvm(ctx, label)
       match iter.kind {
         // A range-driven `for` (`for i in 0 ..< n`, `for i in a ..= b`) lowers to
         // a counted loop — mirrors the MSIL `emitCountingForMsil` path.  Bounded
@@ -1677,10 +1680,11 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           }
         }
       }
+      exitLoopLabelJvm(ctx, label)
     }
 
     // ── Loop (unconditional) ───────────────────────────────────────────────
-    case SLoop(_, body) -> {
+    case SLoop(label, body) -> {
       val loopL3 = freshLabel(ctx)
       val afterL3 = freshLabel(ctx)
       insns.add(LLabel(name = loopL3))
@@ -1688,10 +1692,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
       // `loop` exits only via `break`/`return`) and the defer depth at entry, so
       // a `defer` declared in the body replays on `break`/`continue` and the jump
       // lands on *this* loop rather than an enclosing one.
+      enterLoopLabelJvm(ctx, label)
       ctx.loopBreak.add(afterL3)
       ctx.loopCont.add(loopL3)
       ctx.loopDeferDepth.add(ctx.deferStack.count)
       lowerBlock(ctx, insns, body)
+      exitLoopLabelJvm(ctx, label)
       ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
       ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
       ctx.loopCont.removeAt(ctx.loopCont.count - 1)
@@ -1712,28 +1718,18 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     }
 
     // ── Break / continue ──────────────────────────────────────────────────
-    case SBreak(_) -> {
-      if ctx.loopBreak.count > 0 {
-        // Replay any `defer` declared inside the loop body before exiting.
-        if ctx.loopDeferDepth.count > 0 {
-          replayDefers(ctx, insns, ctx.loopDeferDepth[ctx.loopDeferDepth.count - 1])
-        }
-        insns.add(LGoto(label = ctx.loopBreak[ctx.loopBreak.count - 1]))
-      } else {
-        insns.add(LNop)
-      }
+    // Replay every `defer` declared inside the target loop (for a labelled
+    // jump, that includes the defers of each inner loop it exits) first.
+    case SBreak(label) -> {
+      val li = loopIndexForLabelJvm(ctx, label)
+      replayDefers(ctx, insns, ctx.loopDeferDepth[li])
+      insns.add(LGoto(label = ctx.loopBreak[li]))
     }
 
-    case SContinue(_) -> {
-      if ctx.loopCont.count > 0 {
-        // Replay any `defer` declared inside the loop body before continuing.
-        if ctx.loopDeferDepth.count > 0 {
-          replayDefers(ctx, insns, ctx.loopDeferDepth[ctx.loopDeferDepth.count - 1])
-        }
-        insns.add(LGoto(label = ctx.loopCont[ctx.loopCont.count - 1]))
-      } else {
-        insns.add(LNop)
-      }
+    case SContinue(label) -> {
+      val li = loopIndexForLabelJvm(ctx, label)
+      replayDefers(ctx, insns, ctx.loopDeferDepth[li])
+      insns.add(LGoto(label = ctx.loopCont[li]))
     }
 
     // ── Scope block ────────────────────────────────────────────────────────
@@ -2415,6 +2411,44 @@ func lastInsnIsTerminator(insns: in List[LInsn]): Bool {
 // `deferRanSlots[i]` flag so the catch-all handler for that region (which
 // covers the replay site) can detect the early-transfer case and skip
 // re-running the block — preventing double execution (#2855).
+// Each loop pushes exactly one entry onto loopBreak/loopCont/loopDeferDepth,
+// so a labelled loop's entry is at the stack depth just before it is lowered.
+func enterLoopLabelJvm(ctx: in FuncCtx, label: in Option[String]): Unit {
+  match label {
+    case Some(l) -> {
+      ctx.loopLabelIndex[l] = ctx.loopBreak.count
+    }
+    case None -> ()
+  }
+}
+
+func exitLoopLabelJvm(ctx: in FuncCtx, label: in Option[String]): Unit {
+  match label {
+    case Some(l) -> ctx.loopLabelIndex.remove(l)
+    case None -> ()
+  }
+}
+
+// The type checker (T0130) guarantees a `break`/`continue` sits in a loop and
+// that its label names an enclosing one.
+func loopIndexForLabelJvm(ctx: in FuncCtx, label: in Option[String]): Int {
+  match label {
+    case None -> {
+      if ctx.loopBreak.count == 0 {
+        panic("Jvm.Codegen: 'break'/'continue' outside a loop (compiler bug: T0130 should have rejected it)")
+      }
+      ctx.loopBreak.count - 1
+    }
+    case Some(l) -> match mapGet(ctx.loopLabelIndex, l) {
+      case Some(i) -> i
+      case None -> panic(
+        "Jvm.Codegen: no enclosing loop labelled '" + l +
+          "' (compiler bug: T0130 should have rejected it)"
+      )
+    }
+  }
+}
+
 func replayDefers(ctx: in FuncCtx, insns: in List[LInsn], downTo: in Int): Unit {
   var i = ctx.deferStack.count - 1
   while i >= downTo {
