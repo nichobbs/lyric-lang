@@ -621,7 +621,14 @@ func parseDataFrame(h: in H2FrameHeader, payload: in slice[Byte]): Result[H2Fram
   } else {
     match stripPadding(payload, flagPadded(h.flags)) {
       case Err(e) -> Err(error = e)
-      case Ok(data) -> Ok(value = DataFrame(streamId = h.streamId, data = data, endStream = flagEndStream(h.flags), wireLength = payload.length))
+      case Ok(data) -> Ok(
+        value = DataFrame(
+          streamId = h.streamId,
+          data = data,
+          endStream = flagEndStream(h.flags),
+          wireLength = payload.length
+        )
+      )
     }
   }
 }
@@ -964,11 +971,22 @@ pub func serializeFrame(frame: in H2Frame): slice[Byte]
 {
   match frame {
     case DataFrame(streamId, data, endStream, _) -> serializeDataFrame(streamId, data, endStream)
-    case HeadersFrame(streamId, fragment, endStream, endHeaders, priority) -> serializeHeadersFrame(streamId, fragment, endStream, endHeaders, priority)
+    case HeadersFrame(streamId, fragment, endStream, endHeaders, priority) -> serializeHeadersFrame(
+      streamId,
+      fragment,
+      endStream,
+      endHeaders,
+      priority
+    )
     case PriorityFrame(streamId, priority) -> serializePriorityFrame(streamId, priority)
     case RstStreamFrame(streamId, errorCode) -> serializeRstStreamFrame(streamId, errorCode)
     case SettingsFrame(settings, ack) -> serializeSettingsFrame(settings, ack)
-    case PushPromiseFrame(streamId, promisedStreamId, fragment, endHeaders) -> serializePushPromiseFrame(streamId, promisedStreamId, fragment, endHeaders)
+    case PushPromiseFrame(streamId, promisedStreamId, fragment, endHeaders) -> serializePushPromiseFrame(
+      streamId,
+      promisedStreamId,
+      fragment,
+      endHeaders
+    )
     case PingFrame(opaqueData, ack) -> serializePingFrame(opaqueData, ack)
     case GoAwayFrame(lastStreamId, errorCode, debugData) -> serializeGoAwayFrame(lastStreamId, errorCode, debugData)
     case WindowUpdateFrame(streamId, windowSizeIncrement) -> serializeWindowUpdateFrame(streamId, windowSizeIncrement)
@@ -1066,6 +1084,10 @@ pub func defaultMaxFrameSize(): Int {
 @experimental
 pub record FrameDecoder {
   var buf: slice[Byte]
+  // Read cursor into `buf`: frames before `pos` are consumed. Advancing it
+  // instead of re-slicing the remainder keeps each frame O(its own size);
+  // `feedFrames` compacts once per call (#7264).
+  var pos: Int
   maxFrameSize: Int
   var awaitingPreface: Bool
   var fatal: Bool
@@ -1078,7 +1100,13 @@ pub record FrameDecoder {
 @experimental
 pub func newFrameDecoder(expectPreface: in Bool): FrameDecoder {
   val emptyBuf: slice[Byte] = []
-  FrameDecoder(buf = emptyBuf, maxFrameSize = defaultMaxFrameSize(), awaitingPreface = expectPreface, fatal = false)
+  FrameDecoder(
+    buf = emptyBuf,
+    pos = 0,
+    maxFrameSize = defaultMaxFrameSize(),
+    awaitingPreface = expectPreface,
+    fatal = false
+  )
 }
 
 /// A decoder with an explicit frame-size ceiling — used once the peer's
@@ -1087,7 +1115,7 @@ pub func newFrameDecoder(expectPreface: in Bool): FrameDecoder {
 @experimental
 pub func newFrameDecoderWithMaxSize(expectPreface: in Bool, maxFrameSize: in Int): FrameDecoder {
   val emptyBuf: slice[Byte] = []
-  FrameDecoder(buf = emptyBuf, maxFrameSize = maxFrameSize, awaitingPreface = expectPreface, fatal = false)
+  FrameDecoder(buf = emptyBuf, pos = 0, maxFrameSize = maxFrameSize, awaitingPreface = expectPreface, fatal = false)
 }
 
 /// Return a copy of `decoder` with a new frame-size ceiling. The FSM calls
@@ -1098,6 +1126,7 @@ pub func newFrameDecoderWithMaxSize(expectPreface: in Bool, maxFrameSize: in Int
 pub func withMaxFrameSize(decoder: in FrameDecoder, maxFrameSize: in Int): FrameDecoder {
   FrameDecoder(
     buf = decoder.buf,
+    pos = decoder.pos,
     maxFrameSize = maxFrameSize,
     awaitingPreface = decoder.awaitingPreface,
     fatal = decoder.fatal
@@ -1143,11 +1172,11 @@ func failDecoder(state: inout FrameDecoder, events: in List[FrameDecodeEvent], e
 }
 
 func stepPreface(state: inout FrameDecoder, events: in List[FrameDecodeEvent]): Bool {
-  val n = state.buf.length
+  val n = state.buf.length - state.pos
   val cmp = if n < 24 { n } else { 24 }
   var i = 0
   while i < cmp {
-    if state.buf[i].toInt() != prefaceByteAt(i) {
+    if state.buf[state.pos + i].toInt() != prefaceByteAt(i) {
       failDecoder(state, events, mkConnErr(H2ProtocolError, "invalid HTTP/2 connection preface (RFC 9113 section 3.4)"))
       return true
     }
@@ -1156,11 +1185,8 @@ func stepPreface(state: inout FrameDecoder, events: in List[FrameDecodeEvent]): 
   if n < 24 {
     false
   } else {
-    // Binding the slice before assigning `state.buf` avoids the self-hosted
-    // JVM `state.buf = state.buf.slice(...)` inconsistent-stack-map-frame bug
-    // (#5936); `Std.HttpEngine` routes every such site through a local too.
-    val remaining = state.buf.slice(24, n)
-    state.buf = remaining
+    val newPos = state.pos + 24
+    state.pos = newPos
     state.awaitingPreface = false
     events.add(PrefaceReceived)
     true
@@ -1168,10 +1194,10 @@ func stepPreface(state: inout FrameDecoder, events: in List[FrameDecodeEvent]): 
 }
 
 func stepFrame(state: inout FrameDecoder, events: in List[FrameDecodeEvent]): Bool {
-  if state.buf.length < 9 {
+  if state.buf.length - state.pos < 9 {
     false
   } else {
-    val length = read24(state.buf, 0)
+    val length = read24(state.buf, state.pos)
     if length > state.maxFrameSize {
       // §4.2: a frame exceeding SETTINGS_MAX_FRAME_SIZE is FRAME_SIZE_ERROR.
       // Detected from the header alone so an attacker's declared-huge frame is
@@ -1191,18 +1217,19 @@ func stepFrame(state: inout FrameDecoder, events: in List[FrameDecodeEvent]): Bo
 
 func stepFrameWithLength(state: inout FrameDecoder, events: in List[FrameDecodeEvent], length: in Int): Bool {
   val total = 9 + length
-  if state.buf.length < total {
+  val at = state.pos
+  if state.buf.length - at < total {
     false
   } else {
     val header = H2FrameHeader(
       length = length,
-      frameType = state.buf[3].toInt(),
-      flags = state.buf[4].toInt(),
-      streamId = read31(state.buf, 5)
+      frameType = state.buf[at + 3].toInt(),
+      flags = state.buf[at + 4].toInt(),
+      streamId = read31(state.buf, at + 5)
     )
-    val payload = state.buf.slice(9, total)
-    val remaining = state.buf.slice(total, state.buf.length)
-    state.buf = remaining
+    val payload = state.buf.slice(at + 9, at + total)
+    val newPos = at + total
+    state.pos = newPos
     match parseFrame(header, payload) {
       case Ok(frame) -> {
         events.add(FrameDecoded(frame = frame))
@@ -1220,8 +1247,17 @@ func stepFrameWithLength(state: inout FrameDecoder, events: in List[FrameDecodeE
 }
 
 func driveDecoder(state: inout FrameDecoder, bytes: in slice[Byte]): List[FrameDecodeEvent] {
-  val combined = state.buf.concat(bytes)
+  // Compact once per feed: only the unconsumed tail is carried over.
+  val leftover = state.buf.length - state.pos
+  val combined = if leftover == 0 {
+    bytes
+  } else if state.pos == 0 {
+    state.buf.concat(bytes)
+  } else {
+    state.buf.slice(state.pos, state.buf.length).concat(bytes)
+  }
   state.buf = combined
+  state.pos = 0
   val events: List[FrameDecodeEvent] = newList()
   var progress = true
   while progress {

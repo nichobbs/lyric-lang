@@ -35379,3 +35379,12 @@ budget; the JVM feeds stdin from its own virtual thread. A child that never
 reads its input now times out instead of hanging. Covered by
 `process_stdin_self_test.l` on both targets (#7262, epic #7256).
 
+## HTTP parsers advance a read cursor instead of re-slicing their buffer
+
+`Std.HttpEngine` (HTTP/1.1) and `Std.HttpEngine.H2Frame` copied the whole
+remaining buffer after every parse step, so one 64 KiB read of tiny chunks or
+empty frames cost on the order of a gigabyte of copying. Both now keep a read
+cursor into the buffer and compact once per `feed`, and the HTTP/1.1 engine
+remembers how far a partial line has been scanned so a slowly delivered line
+is not rescanned from its start (#7263, #7264, epic #7256).
+
