@@ -35423,3 +35423,15 @@ its `memchr` scan where it stopped and returns lines by advancing an offset,
 compacting only before the next read. Covered by a new burst case in
 `piped_process_jvm_main.l` and `lyric-rt`'s C tests (#7277, epic #7256).
 
+## JVM secure random returns random bytes; cheaper JVM kernel hot paths
+
+`Std.SecureRandom.secureGetBytes` on the JVM returned all-zero bytes: the
+kernel passed a `slice[Byte]` local to `SecureRandom.nextBytes`, and the
+auto-FFI coercion to `byte[]` copies, so the random bytes went to a temporary
+(#7329; `lyric-otel` trace and span ids were all zero on the JVM). It now
+fills a `ByteBuffer`'s backing array in place. Also on the JVM:
+`Std.Char.fromInt` uses the `.toChar()` conversion instead of allocating a
+`String`, `nowEpochMillis` calls `System.currentTimeMillis` instead of going
+through `OffsetDateTime`, and `log2` no longer recomputes `ln(2)` per call
+(#7283, epic #7256). Covered by `secure_random_self_test.l` on dotnet and JVM.
+

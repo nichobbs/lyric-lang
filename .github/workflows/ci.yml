@@ -1373,6 +1373,12 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/string_builder_self_test.l
+      # Std.SecureRandom contract (#7329: the JVM kernel returned zeros).
+      - name: Secure-random self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/secure_random_self_test.l
       # Std.Sort bottom-up merge sort (#7281).
       - name: Sort self-test (native lyric test)
         if: ${{ !cancelled() }}
@@ -4070,6 +4076,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/string_builder_self_test.l
+      - name: Secure-random self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/secure_random_self_test.l
       - name: Sort self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
