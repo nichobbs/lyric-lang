@@ -122,13 +122,16 @@ pub func esQueryClause(q: in String): String {
   return "{\"multi_match\":{\"query\":" + encodeString(q) + ",\"fields\":[\"*\"]}}"
 }
 
-pub func esFilterClause(f: in SearchFilter): String {
+pub func esFilterClause(f: in SearchFilter): String
+  requires: isKnownFilterOperator(f.operator)
+{
   match f.operator {
     case "gt" -> "{\"range\":{" + encodeString(f.field) + ":{\"gt\":" + encodeString(f.value) + "}}}"
     case "gte" -> "{\"range\":{" + encodeString(f.field) + ":{\"gte\":" + encodeString(f.value) + "}}}"
     case "lt" -> "{\"range\":{" + encodeString(f.field) + ":{\"lt\":" + encodeString(f.value) + "}}}"
     case "lte" -> "{\"range\":{" + encodeString(f.field) + ":{\"lte\":" + encodeString(f.value) + "}}}"
     case "contains" -> "{\"match\":{" + encodeString(f.field) + ":" + encodeString(f.value) + "}}"
+    // "eq": the precondition leaves no other operator.
     case _ -> "{\"term\":{" + encodeString(f.field) + ":" + encodeString(f.value) + "}}"
   }
 }
@@ -405,6 +408,10 @@ pub async func backendIndexBatch(
 }
 
 pub async func backendSearch(cfg: in HttpConfig, query: in SearchQuery): Result[SearchResult, SearchError] {
+  match validateSearchQuery(query) {
+    case Some(e) -> return Err(error = e)
+    case None -> ()
+  }
   val path = "/" + pathEscape(query.index) + "/_search"
   val checked = sendRequest(cfg, POST, path, Some(value = esBuildSearchBody(query)), "SEARCH_FAILED")
   match checked {

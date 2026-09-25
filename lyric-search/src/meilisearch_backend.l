@@ -162,7 +162,9 @@ func msSafeField(field: in String): String {
   }
 }
 
-pub func msFilterExpr(f: in SearchFilter): String {
+pub func msFilterExpr(f: in SearchFilter): String
+  requires: isKnownFilterOperator(f.operator)
+{
   val field = msSafeField(f.field)
   match f.operator {
     case "gt" -> field + " > " + msQuote(f.value)
@@ -170,6 +172,7 @@ pub func msFilterExpr(f: in SearchFilter): String {
     case "lt" -> field + " < " + msQuote(f.value)
     case "lte" -> field + " <= " + msQuote(f.value)
     case "contains" -> field + " CONTAINS " + msQuote(f.value)
+    // "eq": the precondition leaves no other operator.
     case _ -> field + " = " + msQuote(f.value)
   }
 }
@@ -450,6 +453,10 @@ pub async func backendIndexBatch(
 }
 
 pub async func backendSearch(cfg: in HttpConfig, query: in SearchQuery): Result[SearchResult, SearchError] {
+  match validateSearchQuery(query) {
+    case Some(e) -> return Err(error = e)
+    case None -> ()
+  }
   val path = "/indexes/" + pathEscape(query.index) + "/search"
   val checked = sendRequest(cfg, POST, path, Some(value = msBuildSearchBody(query, true)), "SEARCH_FAILED")
   match checked {
