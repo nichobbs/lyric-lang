@@ -52,6 +52,14 @@ on both targets.
   - `Retry`, `CircuitBreaker` and lyric-jobs' `Retryable` validate their
     config before the wrapped call runs. lyric-jobs' overflowing duplicate
     backoff is gone.
+- **lyric-storage and lyric-testing (#7242).**
+  - `ValidateKey` applies `Storage.isSafeKey` in full. It used to check only
+    empty keys, a leading `/` and `..`, and had an env-settable `allowDots`
+    switch that turned the traversal check off.
+  - `isSafeKey` also rejects control characters and `.` or empty path
+    segments.
+  - `AuditAccess` logs through `Std.Log`; it used to be a no-op.
+  - `MockStorageBucket` validates keys like a real backend and pages `list`.
 - **lyric-db (#7241).**
   - SQLite uses `SqliteConnectionStringBuilder`, which escapes the data
     source, and rounds a sub-second busy timeout up (0 meant "no timeout").
