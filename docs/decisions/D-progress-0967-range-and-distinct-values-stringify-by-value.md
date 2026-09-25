@@ -28,8 +28,10 @@ both targets erase to the signed representation, formats unsigned.
   `format1`/`2`/`3`) calls `unwrapDistinctForStringMsil` on the lowered
   operand first: for a distinct class (one in `CodegenCtx.distinctClasses`)
   it loads the `value` field and returns the underlying type, so the site's
-  existing per-type handling applies unchanged (lowercase `Bool`,
-  invariant-culture `Double`, unsigned `UInt`/`ULong`). The unsigned flag is
+  existing per-type handling applies unchanged: lowercase `Bool` and unsigned
+  `UInt`/`ULong` everywhere, and whatever `Double` formatting that site already
+  uses for a bare `Double` (invariant culture only in the free `toString(x)`).
+  The unsigned flag is
   `distinctUnsignedMsil`, true for a class in `CodegenCtx.unsignedDistincts`
   (filled from the declared underlying `TypeExpr` at registration).
   `boxIfNeededUnsignedMsil` itself stays a plain value-type box. The
