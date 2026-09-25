@@ -198,6 +198,10 @@ record NDistinctInfo {
   hasRange: Bool
   lo: Long
   hi: Long
+  /// `[lo, hi]` or `[lo, hi)` as written, for the range-violation message.
+  boundsText: String
+  /// `Byte`/`UInt`/`ULong`-backed: bounds compare unsigned.
+  isUnsigned: Bool
 }
 
 /// Reverse metadata for a type instantiation: which generic declaration
@@ -3823,11 +3827,19 @@ func tryLowerConstruct(
     case None -> {
     }
   }
-  // `X.From(v)` distinct-conversion spelling.
-  if Str.endsWith(name, ".From") {
+  // `X.from(v)` (language reference §2.3) and the older `X.From(v)`.
+  if Str.endsWith(name, ".from") or Str.endsWith(name, ".From") {
     val baseName = Str.substring(name, 0, name.length - 5)
     match mapGet(ctx.distinctDefs, baseName) {
       case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, baseName, di, args, line))
+      case None -> {
+      }
+    }
+  }
+  if Str.endsWith(name, ".tryFrom") {
+    val baseName = Str.substring(name, 0, name.length - 8)
+    match mapGet(ctx.distinctDefs, baseName) {
+      case Some(di) -> return Some(value = lowerDistinctTryFrom(ctx, insns, baseName, di, args, line))
       case None -> {
       }
     }
@@ -4319,6 +4331,7 @@ func registerDistinct(ctx: in Ctx, pkg: in String, dd: in DistinctTypeDecl, stri
   var hasRange = false
   var lo = 0i64
   var hi = 0i64
+  var boundsText = ""
   match dd.rangeClause {
     case Some(rb) -> {
       var loExprOpt: Option[Expr] = None
@@ -4375,6 +4388,7 @@ func registerDistinct(ctx: in Ctx, pkg: in String, dd: in DistinctTypeDecl, stri
               boundsOk = true
               lo = l
               hi = if hiInclusive { h } else { h - 1i64 }
+              boundsText = "[" + toString(l) + ", " + toString(h) + (if hiInclusive { "]" } else { ")" })
             }
             case None -> {
             }
@@ -4393,7 +4407,19 @@ func registerDistinct(ctx: in Ctx, pkg: in String, dd: in DistinctTypeDecl, stri
     case None -> {
     }
   }
-  val info = NDistinctInfo(underlying = under, hasRange = hasRange, lo = lo, hi = hi)
+  val underName = match dd.underlying.kind {
+    case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
+    case _ -> ""
+  }
+  val isUnsigned = underName == "Byte" or underName == "UInt" or underName == "ULong"
+  val info = NDistinctInfo(
+    underlying = under,
+    hasRange = hasRange,
+    lo = lo,
+    hi = hi,
+    boundsText = boundsText,
+    isUnsigned = isUnsigned
+  )
   if not ctx.distinctDefs.containsKey(pkg + "." + dd.name) {
     ctx.distinctDefs.add(pkg + "." + dd.name, info)
   }
@@ -8242,25 +8268,119 @@ func lowerDistinctConstruct(
   }
   val v = coerceTo(ctx, insns, lowerPositionalArg(ctx, insns, args, 0), di.underlying)
   if di.hasRange {
-    val loCmp = freshTmp(ctx)
-    insns.add(
-      NICmp(dest = loCmp, pred = ISlt, ty = di.underlying, a = v.value, b = NLitInt(v = di.lo, ty = di.underlying))
-    )
-    val hiCmp = freshTmp(ctx)
-    insns.add(
-      NICmp(dest = hiCmp, pred = ISgt, ty = di.underlying, a = v.value, b = NLitInt(v = di.hi, ty = di.underlying))
-    )
-    val bad = freshTmp(ctx)
-    insns.add(NOr(dest = bad, ty = NI1, a = NLocal(name = loCmp), b = NLocal(name = hiCmp)))
+    val bad = distinctOutOfRange(ctx, insns, di, v)
     val trapL = freshLabel(ctx, "range.trap")
     val okL = freshLabel(ctx, "range.ok")
-    insns.add(NCondBr(cond = NLocal(name = bad), thenLabel = trapL, elseLabel = okL))
+    insns.add(NCondBr(cond = bad, thenLabel = trapL, elseLabel = okL))
     insns.add(NLabel(name = trapL))
-    emitPanicRaw(ctx, insns, "value out of range for type " + name, line)
+    emitPanicRaw(ctx, insns, distinctRangeMessage(name, "from", di), line)
     insns.add(NBr(label = okL))
     insns.add(NLabel(name = okL))
   }
   v
+}
+
+/// The same text the managed targets raise (language reference §2.3).
+func distinctRangeMessage(name: in String, method: in String, di: in NDistinctInfo): String {
+  val dot = lastDotIndex(name)
+  val short = if dot >= 0 { Str.substring(name, dot + 1, name.length - dot - 1) } else { name }
+  short + "." + method + ": value out of range " + di.boundsText
+}
+
+/// An `i1` that is true when `v` lies outside `di`'s bounds.
+func distinctOutOfRange(ctx: in Ctx, insns: in List[NInsn], di: in NDistinctInfo, v: in NVal): NValue {
+  val ltPred = if di.isUnsigned { IUlt } else { ISlt }
+  val gtPred = if di.isUnsigned { IUgt } else { ISgt }
+  val loCmp = freshTmp(ctx)
+  insns.add(
+    NICmp(dest = loCmp, pred = ltPred, ty = di.underlying, a = v.value, b = NLitInt(v = di.lo, ty = di.underlying))
+  )
+  val hiCmp = freshTmp(ctx)
+  insns.add(
+    NICmp(dest = hiCmp, pred = gtPred, ty = di.underlying, a = v.value, b = NLitInt(v = di.hi, ty = di.underlying))
+  )
+  val bad = freshTmp(ctx)
+  insns.add(NOr(dest = bad, ty = NI1, a = NLocal(name = loCmp), b = NLocal(name = hiCmp)))
+  NLocal(name = bad)
+}
+
+/// `T.tryFrom(x)`: `Ok(x)` when `x` is in range, otherwise
+/// `Err("<T>.tryFrom: value out of range [lo, hi]")` as on the managed targets, as `Result[T, String]`.
+/// Each arm is lowered against the expected `Result` type so the generic
+/// cases instantiate with both type arguments known.
+func lowerDistinctTryFrom(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  name: in String,
+  di: in NDistinctInfo,
+  args: in List[CallArg],
+  line: in Int,
+): NVal {
+  if args.count != 1 {
+    panic("Lyric.LlvmCodegen: '" + name + ".tryFrom' takes exactly one argument")
+  }
+  val sp = callArgSpan(args[0])
+  val v = coerceTo(ctx, insns, lowerPositionalArg(ctx, insns, args, 0), di.underlying)
+  val tmp = "__tryfrom_" + freshTmp(ctx)
+  bindLocal(ctx, insns, tmp, v)
+  val tyArgs: List[TypeArg] = newList()
+  tyArgs.add(TAType(ty = TypeExpr(kind = TRef(path = dottedPath(name, sp)), span = sp)))
+  tyArgs.add(TAType(ty = TypeExpr(kind = TRef(path = dottedPath("String", sp)), span = sp)))
+  val want = typeToN(ctx, TypeExpr(kind = TGenericApp(head = dottedPath("Result", sp), args = tyArgs), span = sp))
+  val okCall = caseCallExpr("Ok", Expr(kind = EPath(path = dottedPath(tmp, sp)), span = sp), sp)
+  if not di.hasRange {
+    return lowerExprExpecting(ctx, insns, okCall, want)
+  }
+  val bad = distinctOutOfRange(ctx, insns, di, loadLocal(ctx, insns, tmp))
+  val errL = freshLabel(ctx, "tryfrom.err")
+  val okL = freshLabel(ctx, "tryfrom.ok")
+  val joinL = freshLabel(ctx, "tryfrom.join")
+  val slot = "tryfrom." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = slot, ty = want))
+  insns.add(NCondBr(cond = bad, thenLabel = errL, elseLabel = okL))
+  insns.add(NLabel(name = errL))
+  val msg = Expr(kind = ELiteral(lit = LString(text = distinctRangeMessage(name, "tryFrom", di))), span = sp)
+  val errV = lowerExprExpecting(ctx, insns, caseCallExpr("Err", msg, sp), want)
+  // Ownership moves into the join slot; the joined value is the one temp.
+  ensureOwned(ctx, insns, errV)
+  insns.add(NStore(ty = want, value = errV.value, ptr = NLocal(name = slot)))
+  insns.add(NBr(label = joinL))
+  insns.add(NLabel(name = okL))
+  val okV = lowerExprExpecting(ctx, insns, okCall, want)
+  // Ownership moves into the join slot; the joined value is the one temp.
+  ensureOwned(ctx, insns, okV)
+  insns.add(NStore(ty = want, value = okV.value, ptr = NLocal(name = slot)))
+  insns.add(NBr(label = joinL))
+  insns.add(NLabel(name = joinL))
+  val loaded = freshTmp(ctx)
+  insns.add(NLoad(dest = loaded, ty = want, ptr = NLocal(name = slot)))
+  val res = NVal(ty = want, value = NLocal(name = loaded))
+  registerTemp(ctx, res)
+  res
+}
+
+func callArgSpan(a: in CallArg): Span {
+  match a {
+    case CAPositional(ex) -> ex.span
+    case CANamed(_, _, sp) -> sp
+  }
+}
+
+func dottedPath(name: in String, sp: in Span): ModulePath {
+  val parts = Str.split(name, ".")
+  val segs: List[String] = newList()
+  var i = 0
+  while i < parts.length {
+    segs.add(parts[i])
+    i = i + 1
+  }
+  ModulePath(segments = segs, span = sp)
+}
+
+func caseCallExpr(caseName: in String, arg: in Expr, sp: in Span): Expr {
+  val cargs: List[CallArg] = newList()
+  cargs.add(CAPositional(expr = arg))
+  Expr(kind = ECall(fn = Expr(kind = EPath(path = dottedPath(caseName, sp)), span = sp), args = cargs), span = sp)
 }
 
 // ── Pattern matching (N2.4) ──────────────────────────────────────────────────

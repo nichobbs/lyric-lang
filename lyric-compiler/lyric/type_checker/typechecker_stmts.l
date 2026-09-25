@@ -190,6 +190,18 @@ func reportIntLiteralOutOfRange(declT: in Type, init: in Expr, diag: in List[Dia
   }
 }
 
+// A variable or a chain of field reads on one: evaluating it twice has no
+// side effects.
+func isPurePathExpr(e: in Expr): Bool {
+  match e.kind {
+    case EPath(_) -> true
+    case ESelf -> true
+    case EMember(recv, _) -> isPurePathExpr(recv)
+    case EParen(inner) -> isPurePathExpr(inner)
+    case _ -> false
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Statement checking.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -312,6 +324,32 @@ pub func checkStatement(
       // `isStringPlusVarAssign` (typechecker_exprs.l) for the full rationale
       // and the #5688 follow-up (#5657).
       val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
+      // A compound assignment on a distinct type is rewritten to
+      // `target = T.from(target.value <op> value.value)` (#7361).  That
+      // evaluates the target twice, so it must be a variable or field path.
+      match op {
+        case AssEq -> ()
+        case _ -> match distinctFromPath(tbl, targetType) {
+          case Some(path) -> {
+            if isPurePathExpr(target) {
+              val key = recordCopySiteKey(stmt.span)
+              if not tbl.distinctCompoundSites.containsKey(key) {
+                tbl.distinctCompoundSites.add(key, path)
+              }
+            } else {
+              diag.add(
+                errorDiagnostic(
+                  "T0134",
+                  "compound assignment to a distinct type (" + renderType(targetType) +
+                    ") needs a variable or field target; write the assignment out (`x = x + y`)",
+                  stmt.span
+                )
+              )
+            }
+          }
+          case None -> ()
+        }
+      }
       if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(

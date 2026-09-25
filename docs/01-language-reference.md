@@ -233,6 +233,8 @@ type UserId = Long derives Compare, Hash    // no arithmetic on user IDs
 
 Available derives: `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Compare`, `Ord`, `Hash`, `Equals`, `Default`. `Ord` synthesises a total ordering (`compare(self, other): Int` returning negative/zero/positive); valid on records, unions, enums, and distinct types. Numeric distinct types with `Add`/`Sub` permit operations only with values of the *same* type. `derives Default` is rejected when the underlying primitive's default value falls outside the declared range. The closed marker set is fixed by D034; see `docs/03-decision-log.md`.
 
+A distinct value's operators act on its underlying value. `==` and `!=` compare underlying values for every distinct type. The derived comparisons (`<`, `<=`, `>`, `>=` under `Compare`) order by it. Derived arithmetic produces `T.from(a.value op b.value)`, so a range subtype's result is range-checked exactly as a construction is (`from` panics outside the range). A compound assignment `x op= y` becomes `x = T.from(x.value op y.value)`, so its target must be a variable or a field path; any other target (`xs[i] += y`) is **T0134**. `x.value` reads the underlying value on every target. `T.from(x)` has type `T`, and `T.tryFrom(x)` has type `Result[T, String]`, whose `Err` carries `"<T>.tryFrom: value out of range [lo, hi]"`. On dotnet and the JVM a distinct value is a wrapper class. That class does not yet override value equality and hashing, so a distinct value used as a `Map` or `Set` key is compared by identity there (#7375); native represents distinct values as their underlying scalar.
+
 ### 2.4 Records
 
 ```

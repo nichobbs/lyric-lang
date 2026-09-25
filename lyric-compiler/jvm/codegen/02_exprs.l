@@ -1997,6 +1997,22 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       }
                     }
                   }
+                } else if memberName == "value" and ctx.funcSigs.containsKey(cls + "#$value") {
+                  // `.value` on a distinct/range-subtype wrapper reads its
+                  // underlying value through the synthesised `$value()`, as it
+                  // does on dotnet and native (#7361).
+                  match mapGet(ctx.funcSigs, cls + "#$value") {
+                    case Some(vsig) -> {
+                      val vPs: List[JvmType] = newList()
+                      insns.add(LInvokevirtual(owner = cls, name = "$value", params = vPs, ret = vsig.ret))
+                      match vsig.ret {
+                        case JByte -> maskByteUnsigned(insns)
+                        case _ -> ()
+                      }
+                      vsig.ret
+                    }
+                    case None -> JVoid
+                  }
                 } else {
                   // A precisely-known receiver class with no such registered
                   // field: returning the receiver as the "field value" (the old

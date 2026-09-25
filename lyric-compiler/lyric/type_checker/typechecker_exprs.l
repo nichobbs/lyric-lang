@@ -847,6 +847,106 @@ func isPlainLong(t: in Type): Bool {
   }
 }
 
+// The result type of `T.from` / `T.tryFrom` when `fn` names one on a
+// distinct type `T` that no local shadows.
+func distinctFactoryType(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Option[Type] {
+  match fn.kind {
+    case EMember(recv, mname) -> {
+      if mname != "from" and mname != "tryFrom" {
+        return None
+      }
+      val tname = match recv.kind {
+        case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+        case _ -> ""
+      }
+      if tname == "" {
+        return None
+      }
+      match scopeTryFind(sc, tname) {
+        case Some(_) -> return None
+        case None -> ()
+      }
+      match symTableTryFindOne(tbl, tname) {
+        case Some(sym) -> match sym.kind {
+          case DKDistinctType(did, _) -> {
+            val noArgs: List[Type] = newList()
+            val dty = TyUser(id = did, name = sym.name, args = noArgs)
+            if mname == "from" {
+              return Some(value = dty)
+            }
+            match symTableTryFindOne(tbl, "Result") {
+              case Some(rsym) -> match rsym.kind {
+                case DKUnion(rid, _) -> {
+                  val rargs: List[Type] = newList()
+                  rargs.add(dty)
+                  rargs.add(TyPrim(pt = PtString))
+                  Some(value = TyUser(id = rid, name = rsym.name, args = rargs))
+                }
+                case _ -> None
+              }
+              case None -> None
+            }
+          }
+          case _ -> None
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// The `from` path of a distinct type (`type Cents = Long range ...`,
+// `type UserId = Long`), if `t` is one (#7361).
+pub func distinctFromPath(tbl: in SymbolTable, t: in Type): Option[String] {
+  match t {
+    case TyUser(tid, _, _) -> {
+      var i = 0
+      while i < tbl.symbols.count {
+        val sym = tbl.symbols[i]
+        match sym.kind {
+          case DKDistinctType(did, _) -> {
+            if typeIdEq(did, tid) {
+              return Some(value = sym.name + ".from")
+            }
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+func recordDistinctSite(tbl: in SymbolTable, span: in Span, kind: in String): Unit {
+  val key = recordCopySiteKey(span)
+  if not tbl.distinctOpSites.containsKey(key) {
+    tbl.distinctOpSites.add(key, kind)
+  }
+}
+
+// Derived arithmetic on a distinct type.
+func recordDistinctArith(tbl: in SymbolTable, lhs: in Type, rhs: in Type, span: in Span): Unit {
+  if typeEquiv(lhs, rhs) {
+    match distinctFromPath(tbl, lhs) {
+      case Some(path) -> recordDistinctSite(tbl, span, "arith:" + path)
+      case None -> ()
+    }
+  }
+}
+
+// `==`/`!=` or a derived comparison on two values of one distinct type.
+func recordDistinctCompare(tbl: in SymbolTable, lhs: in Type, rhs: in Type, span: in Span): Unit {
+  if typeEquiv(lhs, rhs) {
+    match distinctFromPath(tbl, lhs) {
+      case Some(_) -> recordDistinctSite(tbl, span, "cmp")
+      case None -> ()
+    }
+  }
+}
+
 func inferBinop(
   tbl: in SymbolTable, diag: in List[Diagnostic], op: in BinOp, lhs: in Type, rhs: in Type, span: in Span
 ): Type {
@@ -858,6 +958,9 @@ func inferBinop(
         }
       }
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Add", lhs)
+      if not isNumericType(lhs) and hasDerive(tbl, "Add", lhs) {
+        recordDistinctArith(tbl, lhs, rhs, span)
+      }
       if not lhsOk {
         diag.add(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
@@ -885,6 +988,9 @@ func inferBinop(
     }
     case BSub -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Sub", lhs)
+      if not isNumericType(lhs) and hasDerive(tbl, "Sub", lhs) {
+        recordDistinctArith(tbl, lhs, rhs, span)
+      }
       if not lhsOk {
         diag.add(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
@@ -909,6 +1015,9 @@ func inferBinop(
     }
     case BMul -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Mul", lhs)
+      if not isNumericType(lhs) and hasDerive(tbl, "Mul", lhs) {
+        recordDistinctArith(tbl, lhs, rhs, span)
+      }
       if not lhsOk {
         diag.add(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
@@ -933,6 +1042,9 @@ func inferBinop(
     }
     case BDiv -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Div", lhs)
+      if not isNumericType(lhs) and hasDerive(tbl, "Div", lhs) {
+        recordDistinctArith(tbl, lhs, rhs, span)
+      }
       if not lhsOk {
         diag.add(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
@@ -957,6 +1069,9 @@ func inferBinop(
     }
     case BMod -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Mod", lhs)
+      if not isNumericType(lhs) and hasDerive(tbl, "Mod", lhs) {
+        recordDistinctArith(tbl, lhs, rhs, span)
+      }
       if not lhsOk {
         diag.add(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
@@ -989,6 +1104,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BNeq -> {
@@ -1001,6 +1117,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BLt -> {
@@ -1016,6 +1133,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BLte -> {
@@ -1031,6 +1149,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BGt -> {
@@ -1046,6 +1165,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BGte -> {
@@ -1061,6 +1181,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BAnd -> {
@@ -5828,6 +5949,21 @@ func inferExprCore(
           }
         }
         case _ -> ()
+      }
+      // A distinct type's static factories: `T.from(x): T` and
+      // `T.tryFrom(x): Result[T, String]` (language reference §2.3).  Typed
+      // here so an operator on their result is recorded like any other
+      // distinct-typed operand (#7361); they previously typed as `TyError`.
+      match distinctFactoryType(sc, tbl, fn) {
+        case Some(ft) -> {
+          var ai = 0
+          while ai < args.count {
+            val _ = inferExpr(sc, tbl, sigs, diag, callArgExpr(args[ai]))
+            ai = ai + 1
+          }
+          return ft
+        }
+        case None -> ()
       }
       // Numeric / character conversion-method intrinsics (#1901): `x.toInt()`,
       // `b.toLong()`, etc.  Recognised only on a numeric/char receiver so a

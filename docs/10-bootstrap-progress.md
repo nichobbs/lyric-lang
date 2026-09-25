@@ -250,6 +250,7 @@ deferred to Phase 3 by design.
 | Labelled loops (`label: for|while|do`, `break label` / `continue label`) parsed and lowered on MSIL, JVM and native, replaying the `defer`s of every loop left; T0130 (jump outside a loop or to an unknown label) and T0131 (nested label reuse); native gains `do` loops and range `for` (#7349) | **Shipped** | D-progress-974 |
 | A literal module-level `val` read from a package codegen'd before its own resolves on MSIL (constants registered in the token pre-pass, not only at emission); negative integer constants round-trip through contract metadata | **Shipped** | D-progress-975 |
 | Contract clauses type-checked (T0132: `requires`/`ensures`/`when`/`invariant` must be `Bool`) and restricted to `@pure` calls (T0133); `@pure` recorded in contract metadata (#7228) | **Shipped** | D-progress-976 |
+| Operators on distinct types act on the underlying value on every target: `==`/`!=`/derived comparisons, derived arithmetic through `T.from` (range subtypes re-checked, #7226), compound assignment (T0134); `.value` on the JVM; native `T.from`/`T.tryFrom`; `T.from`/`T.tryFrom` typed by the checker (#7361) | **Shipped** | D-progress-985 |
 
 ### Phase 2 — type system completion (complete)
 
