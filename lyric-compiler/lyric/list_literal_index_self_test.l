@@ -161,3 +161,33 @@ test "unannotated U16/U32/U64 list literal elements infer for indexed arithmetic
   assertTrue(litU32(), "u32: xs[0] + xs[1] == 100001u32")
   assertTrue(litU64(), "u64: xs[0] + xs[1] == 1000000000001u64")
 }
+
+enum Shade {
+  case Light
+  case Dark
+}
+
+func shadeName(s: in Shade): String {
+  match s {
+    case Light -> "light"
+    case Dark -> "dark"
+  }
+}
+
+// A list literal iterated by a `for` inside a function returning
+// `List[String]` inherited that return type's construction expectation on
+// MSIL and built a `List<string>` of enum values (invalid IL, D-progress-961).
+func shadeNames(): List[String] {
+  val acc: List[String] = newList()
+  for s in [Shade.Light, Shade.Dark] {
+    acc.add(shadeName(s))
+  }
+  return acc
+}
+
+test "a for-loop list literal ignores the enclosing return type (D-progress-961)" {
+  val names = shadeNames()
+  assertEqualInt(names.count, 2, "two names")
+  assertEqual(names[0], "light", "first")
+  assertEqual(names[1], "dark", "second")
+}

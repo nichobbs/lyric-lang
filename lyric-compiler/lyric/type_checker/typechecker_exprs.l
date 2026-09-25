@@ -723,6 +723,10 @@ func isUnsuffixedIntLit(e: in Expr): Bool {
       case LInt(_, sfx, _) -> match sfx { case NoIntSuffix -> true; case _ -> false }
       case _ -> false
     }
+    // A negated literal (`-1`) adopts the other operand's integer type like
+    // the literal itself (D-progress-961).
+    case EPrefix(op, operand) -> match op { case PreNeg -> isUnsuffixedIntLit(operand); case _ -> false }
+    case EParen(inner) -> isUnsuffixedIntLit(inner)
     case _ -> false
   }
 }
@@ -2738,6 +2742,38 @@ func recordArgConversion(tbl: in SymbolTable, arg: in CallArg, paramTy: in Type,
   }
 }
 
+// Record the widened arguments of a direct call to another package's
+// function (D-progress-961). Codegen converts a widened argument only when it
+// knows the callee's parameter types; a restored package's signature reaches
+// the MSIL call site but not its argument lowering, so an `Int` literal was
+// passed as `int32` to a `Long` parameter.
+func recordSigArgConversions(
+  tbl: in SymbolTable,
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Unit {
+  if args.count > sig.params.count {
+    return
+  }
+  val paramNames: List[String] = newList()
+  var pni = 0
+  while pni < sig.params.count {
+    paramNames.add(sig.params[pni].name)
+    pni = pni + 1
+  }
+  val srcIdx = argIndicesInParamOrder(args, paramNames)
+  var k = 0
+  while k < sig.params.count {
+    val ai = srcIdx[k]
+    val isIn = match sig.params[k].mode { case PMIn -> true; case _ -> false }
+    if ai >= 0 and ai < args.count and ai < argTypes.count and isIn {
+      recordArgConversion(tbl, args[ai], sig.params[k].ty, argTypes[ai])
+    }
+    k = k + 1
+  }
+}
+
 /// Every recorded cross-package function value that is not a call callee
 /// (D-progress-955), for `Lyric.Mono.desugarRecordCopiesFile`.
 pub func funcValueSites(tbl: in SymbolTable): Map[String, FuncRefSite] {
@@ -4608,15 +4644,35 @@ func inferGenericArgsDeep(names: in List[String], paramTys: in List[Type], argTy
 func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in List[Type]): Type {
   var bound: Type = TyError
   var haveBinding = false
+  // Whether every occurrence behind `bound` is a bare `T` parameter, whose
+  // argument widens at the call like any numeric argument.
+  var boundBare = true
   var i = 0
   while i < paramTys.count and i < argTys.count {
     match findGenericInPair(name, paramTys[i], argTys[i]) {
-      case Some(v) -> if not haveBinding {
-        bound = v
-        haveBinding = true
-      } else {
-        if not typeEquiv(bound, v) {
-          return TyError
+      case Some(v) -> {
+        val bare = isBareTyVar(paramTys[i], name)
+        if not haveBinding {
+          bound = v
+          haveBinding = true
+          boundBare = bare
+        } else if not typeEquiv(bound, v) {
+          // Numeric widening (D-progress-961): `collect(r, 0)` with `r:
+          // Result[Long, E]` binds `T` to `Long`, the `Int` literal widening
+          // at its bare `fallback: T` parameter.
+          match widenArithmetic(bound, v) {
+            case Some(w) -> if typeEquiv(w, bound) and bare {
+              ()
+            } else if typeEquiv(w, v) and boundBare {
+              bound = v
+              boundBare = bare
+            } else {
+              return TyError
+            }
+            case None -> return TyError
+          }
+        } else {
+          boundBare = boundBare and bare
         }
       }
       case None -> {
@@ -4625,6 +4681,13 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
     i = i + 1
   }
   bound
+}
+
+func isBareTyVar(t: in Type, name: in String): Bool {
+  match t {
+    case TyVar(n) -> n == name
+    case _ -> false
+  }
 }
 
 // A generic function's return type instantiated from the call's argument types:
@@ -5251,6 +5314,41 @@ pub func inferExpr(
   diag: in List[Diagnostic],
   e: in Expr,
 ): Type {
+  val t = inferExprCore(sc, tbl, sigs, diag, e)
+  match e.kind {
+    case ECall(fn, _) -> recordCallResultType(tbl, fn, t, e.span)
+    case _ -> ()
+  }
+  t
+}
+
+// Record a qualified or method call's result type for `Lyric.Mono`
+// (D-progress-961). A bare call's callee is either local (Mono sees its
+// declaration) or imported generic (Mono specialises it), so only the other
+// callee shapes are recorded.
+func recordCallResultType(tbl: in SymbolTable, fn: in Expr, t: in Type, sp: in Span): Unit {
+  val qualified = match fn.kind { case EPath(p) -> p.segments.count > 1; case EMember(_, _) -> true; case _ -> false }
+  if not qualified {
+    return
+  }
+  match typeExprForRef(tbl, t, sp) {
+    case Some(te) -> {
+      val key = recordCopySiteKey(sp)
+      if not tbl.callResultTypes.containsKey(key) {
+        tbl.callResultTypes.add(key, te)
+      }
+    }
+    case None -> ()
+  }
+}
+
+func inferExprCore(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+): Type {
   match e.kind {
     case ELiteral(lit) -> typeOfLiteral(lit)
 
@@ -5496,6 +5594,9 @@ pub func inferExpr(
       match directSig {
         case Some(sig) -> {
           checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
+          if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
+            recordSigArgConversions(tbl, sig, args, argTypes)
+          }
           // H15: verify where-clause bounds on generic call sites.
           checkBoundsSatisfied(tbl, diag, sig, argTypes, e.span)
           // Instantiate a generic return type from the argument types (#1488

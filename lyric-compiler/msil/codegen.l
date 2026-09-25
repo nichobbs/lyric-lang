@@ -3142,6 +3142,65 @@ func preRegisterGenericTypeName(cctx: in CodegenCtx, name: in String, pkgName: i
 // the record's package and give the call result a closed generic type that
 // no real instance has.  Such a type is registered as `object`, so the call
 // result takes the erased-value paths that test the runtime type.
+// A function-typed union case field's return type, keyed like its
+// `fieldMsilTypes` entry, so a pattern binding the field records it for the
+// bound name (`bindCaseFieldFuncRetMsil`, D-progress-961).
+func registerCaseFieldFuncRetMsil(
+  cctx: in CodegenCtx,
+  key: in String,
+  fieldTe: in TypeExpr,
+  pkgName: in String,
+  uGenerics: in List[String],
+): Unit {
+  match resolveFuncTypeExprMsil(cctx, fieldTe) {
+    case Some(funcTe) -> match funcTe.kind {
+      case TFunction(_, fRetTe) -> {
+        if not cctx.fieldFuncRetTypes.containsKey(key) {
+          cctx.fieldFuncRetTypes.add(key, recordFieldFuncTypeMsil(cctx, fRetTe, pkgName, uGenerics))
+        }
+        if uGenerics.count > 0 and not cctx.fieldFuncRetTypesOpen.containsKey(key) {
+          cctx.fieldFuncRetTypesOpen.add(key, typeExprToMsilG(cctx, fRetTe, pkgName, uGenerics))
+        }
+      }
+      case _ -> ()
+    }
+    case None -> ()
+  }
+}
+
+// Record the return type of the function-typed case field `key` for `name`,
+// bound by a constructor pattern over `castTy`: a call through `name` then
+// yields that type instead of `object` (D-progress-961).
+func bindCaseFieldFuncRetMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  name: in String,
+  key: in String,
+  castTy: in MsilType,
+): Unit {
+  val retOpt = match castTy {
+    case MGenericInstByName(_, typeArgs) -> match mapGet(cctx.fieldFuncRetTypesOpen, key) {
+      case Some(openRet) -> Some(
+        value = substituteTypeVarsMsil(
+          openRet,
+          typeArgs
+        )
+      )
+      case None -> mapGet(cctx.fieldFuncRetTypes, key)
+    }
+    case _ -> mapGet(cctx.fieldFuncRetTypes, key)
+  }
+  match retOpt {
+    case Some(rt) -> {
+      if fctx.funcValRetTypes.containsKey(name) {
+        fctx.funcValRetTypes.remove(name)
+      }
+      fctx.funcValRetTypes.add(name, rt)
+    }
+    case None -> ()
+  }
+}
+
 func recordFieldFuncTypeMsil(
   cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, recGenerics: in List[String]
 ): MsilType {
@@ -3855,6 +3914,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), ufTyMsil)
                 }
+                registerCaseFieldFuncRetMsil(cctx, caseName + "/" + name, ufTy, pkgName, uGenerics)
+                registerCaseFieldFuncRetMsil(cctx, caseName + "/field" + toString(fi), ufTy, pkgName, uGenerics)
                 if uArity > 0 {
                   // FIELD VAR(n) for a type-parameter field, the concrete FIELD sig
                   // otherwise; consumed by the generic pattern-match field reads.
@@ -3880,6 +3941,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), ufPosTyMsil)
                 }
+                registerCaseFieldFuncRetMsil(cctx, caseName + "/field" + toString(fi), ufPosTy, pkgName, uGenerics)
                 if uArity > 0 {
                   val fSigP = if gIdxP >= 0 { buildGenericParamFieldSig(gIdxP) } else { buildFieldSig(ufPosTyMsil) }
                   cctx.fieldVarIndices.add(caseName + "/field" + toString(fi), gIdxP)
@@ -6369,9 +6431,8 @@ func pushDefaultValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
       emitLoadSlot(insns, slot, fctx.paramCount)
     }
     case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
-      val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
       val tsKey = "never_default_vtgi_" + msilTypeKeyStr(retTy)
-      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, typeRefCode, typeArgs, true)
       val slot = allocSlotMsil(fctx, "__never_default_" + toString(fctx.slotTicker.count), retTy)
       insns.add(MLdloca(slot = slot - fctx.paramCount))
       insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
@@ -7951,9 +8012,8 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
     case MByte -> 0x01000000 + cctx.trByte
     case MValueTypeRef(code, _) -> 0x01000000 + (code - 1) / 4
     case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
-      val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
       val tsKey = "box_vtgi_" + msilTypeKeyStr(ty)
-      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, typeRefCode, typeArgs, true)
       0x1B000000 + tsRow
     }
     case _ -> 0x01000000 + cctx.lctx.trObject
@@ -12161,12 +12221,17 @@ func lowerStmtsExprFromMsil(
     // stops it leaking into an intermediate `x = Some(v)` / `f(None)` and
     // building a wrong-typed generic value (e.g. `Option_Some<LockFile>` for a
     // `curName = Some(s)` inside a function returning `Result[LockFile, …]`).
+    // The collection-construction expectation (`collExpect`) is cleared the
+    // same way: a `for t in [A, B]` iterable inside a function returning
+    // `List[String]` otherwise built a `List<string>` of enum values.
     val savedBlockHint = pushAnnoHintTyArgs(fctx, MObject)
+    pushCollExpect(fctx, MObject)
     var i = start
     while i < n - 1 {
       lowerStmtMsil(cctx, fctx, insns, stmts[i])
       i = i + 1
     }
+    popCollExpect(fctx)
     restoreHintTyArgs(fctx, savedBlockHint)
     val last = stmts[n - 1]
     return match last.kind {
@@ -12176,7 +12241,9 @@ func lowerStmtsExprFromMsil(
       // (which left a non-void function with no return value → invalid IL, #1823).
       case STry(tbody, tcatches, tfinally) -> lowerTryCatchExprMsil(cctx, fctx, insns, tbody, tcatches, tfinally)
       case _ -> {
+        pushCollExpect(fctx, MObject)
         lowerStmtMsil(cctx, fctx, insns, last)
+        popCollExpect(fctx)
         MVoid
       }
     }
@@ -12186,11 +12253,13 @@ func lowerStmtsExprFromMsil(
   // across these intermediate statements (see the non-defer path above); the
   // recursive call for the value-producing tail re-applies it to its own trailing.
   val savedDeferHint = pushAnnoHintTyArgs(fctx, MObject)
+  pushCollExpect(fctx, MObject)
   var k = start
   while k < deferIdx {
     lowerStmtMsil(cctx, fctx, insns, stmts[k])
     k = k + 1
   }
+  popCollExpect(fctx)
   restoreHintTyArgs(fctx, savedDeferHint)
   val deferBody = match stmts[deferIdx].kind {
     case SDefer(b) -> b
@@ -14754,17 +14823,10 @@ func lowerPatternBindMsil(
         var fi = 0
         while fi < fields.count {
           match fields[fi].kind {
-            case PBinding(_, _) -> bindNamedFieldMsil(
-              cctx,
-              fctx,
-              insns,
-              castTy,
-              castSlot,
-              caseClass,
-              caseClassBt,
-              fi,
-              fields[fi]
-            )
+            case PBinding(bindName, _) -> {
+              bindNamedFieldMsil(cctx, fctx, insns, castTy, castSlot, caseClass, caseClassBt, fi, fields[fi])
+              bindCaseFieldFuncRetMsil(cctx, fctx, bindName, caseClass + "/field" + toString(fi), castTy)
+            }
             case PTuple(_) -> bindPositionalFieldMsil(
               cctx,
               fctx,
@@ -15502,6 +15564,32 @@ pub func lowerCallMsil(
 //     StackUnexpected: found value 'Guid', expected ref 'object').
 //   - neither side `object`: integer-width / concrete-collection coercions
 //     (unchanged from before this function grew the `object` directions).
+func isFuncDelegateHeadMsil(head: in String): Bool {
+  head.startsWith("System.Func`")
+}
+
+// A function value held as `object` (an unannotated `val g = { ... }`, or an
+// erased generic's result) flowing into a function-typed parameter or field:
+// narrow it to that `Func` type (D-progress-961).  `Action` targets are left
+// alone: a Unit-returning lambda is built as a `Func<..., object>` (every
+// invoke casts to `Func`), so the value in an `Action`-typed slot is not an
+// `Action` and a cast would throw.
+func castObjectToDelegateMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
+  match fromTy {
+    case MObject -> match toTy {
+      case MGenericInstByName(head, targs) -> if isFuncDelegateHeadMsil(head) {
+        insns.add(MCastclassGeneric(className = head, typeArgs = targs))
+      }
+      case MGenericInst(trc, head, targs) -> if isFuncDelegateHeadMsil(head) {
+        val dtsRow = ctxAddGenericInstTypeSpec(cctx.lctx, "delegate_cast_ts_" + msilTypeKey(toTy), trc, targs, false)
+        insns.add(MCastclass(typeToken = 0x1B000000 + dtsRow))
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
 func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
   val fromObj = match fromTy { case MObject -> true; case _ -> false }
   val toObj = match toTy { case MObject -> true; case _ -> false }
@@ -15520,7 +15608,7 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       // generic instantiations), so no 0x01000000 tag is added here.
       case MValueTypeRef(_, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
       case MValueTypeGenericInst(_, _, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
-      case _ -> ()
+      case _ -> castObjectToDelegateMsil(cctx, insns, fromTy, toTy)
     }
   } else {
     // NOTE: deliberately NO `toObj` box direction here. The standard
@@ -15851,9 +15939,8 @@ func lowerBuiltinOrStaticCallMsil(
       // TypeRef, or the CLR rejects it — mirrors the fix in
       // `emitExternOptionalDefault`.
       case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
-        val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
         val tsKey = "default_vtgi_" + msilTypeKeyStr(defWant)
-        val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+        val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, typeRefCode, typeArgs, true)
         val dvSlot = allocSlotMsil(fctx, "__default_vt_" + toString(fctx.slotTicker.count), defWant)
         insns.add(MLdloca(slot = dvSlot - fctx.paramCount))
         insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
@@ -16335,6 +16422,7 @@ func lowerBuiltinOrStaticCallMsil(
               ihi = ihi + 1
             }
             val lowered = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
+            castObjectToDelegateMsil(cctx, insns, lowered, innerHint)
             while fctx.contextHintTyArgs.count > 0 {
               fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
             }
@@ -16351,6 +16439,7 @@ func lowerBuiltinOrStaticCallMsil(
             pushCollExpect(fctx, innerHint)
             val loweredC = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
             popCollExpect(fctx)
+            castObjectToDelegateMsil(cctx, insns, loweredC, innerHint)
             loweredC
           }
           argTypes.add(at)
@@ -16752,7 +16841,8 @@ func lowerBuiltinOrStaticCallMsil(
                             ph = ph + 1
                           }
                           pushCollExpect(fctx, pTy)
-                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          val genArgTy = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          coerceCallArgMsil(cctx, insns, genArgTy, pTy)
                           popCollExpect(fctx)
                           while fctx.contextHintTyArgs.count > 0 {
                             fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
@@ -16799,7 +16889,8 @@ func lowerBuiltinOrStaticCallMsil(
                             ph = ph + 1
                           }
                           pushCollExpect(fctx, pTy)
-                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          val genArgTy = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
+                          coerceCallArgMsil(cctx, insns, genArgTy, pTy)
                           popCollExpect(fctx)
                           while fctx.contextHintTyArgs.count > 0 {
                             fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
@@ -18945,8 +19036,7 @@ func emitCollectionForMsil(
 
       val vtBoolArgs2: List[MsilType] = newList()
       vtBoolArgs2.add(MBool)
-      val vtBoolBlob2 = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trValueTask1), vtBoolArgs2)
-      val tsVtBoolRow2 = ctxAddTypeSpec(lctx, "ts_vt_bool", vtBoolBlob2)
+      val tsVtBoolRow2 = ctxAddGenericInstTypeSpec(lctx, "ts_vt_bool", tdrTypeRef(cctx.trValueTask1), vtBoolArgs2, true)
 
       // MemberRef: IAsyncEnumerable<obj>::GetAsyncEnumerator(CancToken) → IAET<!0>
       // Return type uses MTypeVar(0) (= !0), the open form required by ECMA-335 for
@@ -22453,9 +22543,8 @@ func emitExternOptionalDefault(
     // rejects.  Build a TypeSpec for the closed instantiation and initobj
     // against that — the same idiom used for `TaskAwaiter<T>` above.
     case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
-      val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
       val tsKey = "extopt_vtgi_" + msilTypeKeyStr(ty)
-      val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+      val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, typeRefCode, typeArgs, true)
       val slot = allocSlotMsil(fctx, "__opt_default_" + toString(fctx.slotTicker.count), ty)
       insns.add(MLdloca(slot = slot - fctx.paramCount))
       insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
@@ -22991,9 +23080,8 @@ func emitGenericAsyncMethodExternCall(
     val closedInner = eraseMethodTypeVarsToObjectMsil(openInner)
     val tsArgs: List[MsilType] = newList()
     tsArgs.add(closedInner)
-    val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs)
     val tsKey = "ts_task1_result_" + msilTypeKeyStr(closedInner)
-    val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+    val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, tdrTypeRef(cctx.trTask1), tsArgs, false)
     val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
     val getResultRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
     insns.add(MCallvirt(methodToken = 0x0A000000 + getResultRow))
@@ -23664,9 +23752,8 @@ func emitExternTargetBody(
           // BCL method returned Task<T>. Call Task<T>.get_Result() to unwrap to T.
           val tsArgs: List[MsilType] = newList()
           tsArgs.add(retTy)
-          val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs)
           val tsKey = "ts_task1_result_" + msilTypeKeyStr(retTy)
-          val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+          val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, tdrTypeRef(cctx.trTask1), tsArgs, false)
           val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
           val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
           insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
@@ -24318,8 +24405,7 @@ func emitGetAwaiterCallPB(cctx: in CodegenCtx, insns: in List[MInsn], taskTy: in
     // Task<T>.GetAwaiter() → TaskAwaiter<T>  (generic, TypeSpec parent)
     val tsArgs: List[MsilType] = newList()
     tsArgs.add(resT)
-    val tsBlob = buildGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTask1), tsArgs)
-    val tsRow = ctxAddTypeSpec(lctx, "task1_ts_" + tyKey, tsBlob)
+    val tsRow = ctxAddGenericInstTypeSpec(lctx, "task1_ts_" + tyKey, tdrTypeRef(cctx.trTask1), tsArgs, false)
     // Return sig uses VAR 0 (class type param of Task`1)
     val awVarArgs: List[MsilType] = newList()
     awVarArgs.add(MTypeVar(index = 0))
@@ -24354,8 +24440,7 @@ func emitGetIsCompletedCallPB(cctx: in CodegenCtx, insns: in List[MInsn], awTy: 
       if tArgs.count > 0 {
         awTsArgs.add(tArgs[0])
       }
-      val awTsBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs)
-      val awTsRow = ctxAddTypeSpec(lctx, "taskaw1_ts_" + awKey, awTsBlob)
+      val awTsRow = ctxAddGenericInstTypeSpec(lctx, "taskaw1_ts_" + awKey, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs, true)
       val icMrRow1 = ctxAddMemberRefForTypeSpec(lctx, awTsRow, "get_IsCompleted", "taskaw1_iscomp_" + awKey, icSig)
       insns.add(MCall(methodToken = 0x0A000000 + icMrRow1))
     }
@@ -24383,8 +24468,7 @@ func emitGetResultCallPB(cctx: in CodegenCtx, insns: in List[MInsn], awTy: in Ms
       val awKey = msilTypeKey(resT)
       val awTsArgs: List[MsilType] = newList()
       awTsArgs.add(resT)
-      val awTsBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs)
-      val awTsRow = ctxAddTypeSpec(lctx, "taskaw1_ts_" + awKey, awTsBlob)
+      val awTsRow = ctxAddGenericInstTypeSpec(lctx, "taskaw1_ts_" + awKey, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs, true)
       val grArgs1: List[MsilType] = newList()
       val grSig1 = buildInstanceMethodSig(grArgs1, MTypeVar(index = 0))
       val grMrRow1 = ctxAddMemberRefForTypeSpec(lctx, awTsRow, "GetResult", "taskaw1_getresult_" + awKey, grSig1)
@@ -26428,9 +26512,8 @@ func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn
   } else {
     val awTsArgs: List[MsilType] = newList()
     awTsArgs.add(resT)
-    val awTsBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs)
     val awTsKey = "taskaw1_ts_" + tyKey
-    val awTsRow = ctxAddTypeSpec(lctx, awTsKey, awTsBlob)
+    val awTsRow = ctxAddGenericInstTypeSpec(lctx, awTsKey, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs, true)
     0x1B000000 + awTsRow
   }
   insns.add(MInitobj(typeToken = initobjTok))
@@ -26626,10 +26709,9 @@ func synthesizeAsyncSmMsil(
             // Signature uses VAR 0 per ECMA-335 §II.23.2.1.
             val tsArgs: List[MsilType] = newList()
             tsArgs.add(retTy)
-            val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs)
             var taKey = msilTypeKey(retTy)
             val tsKey = "atmb1_ts_" + taKey
-            val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+            val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, tdrTypeRef(cctx.trAtmb1), tsArgs, true)
             val srArgs: List[MsilType] = newList()
             srArgs.add(MTypeVar(index = 0))  // VAR 0, not the concrete retTy — see FBBlock note above
             val srSig = buildInstanceMethodSig(srArgs, MVoid)
@@ -26676,10 +26758,9 @@ func synthesizeAsyncSmMsil(
             mnInsns.add(MLdloc(slot = rSlot2 - 1))
             val tsArgs2: List[MsilType] = newList()
             tsArgs2.add(retTy)
-            val tsBlob2 = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs2)
             val taKey2 = msilTypeKey(retTy)
             val tsKey2 = "atmb1_ts_" + taKey2
-            val tsRow2 = ctxAddTypeSpec(cctx.lctx, tsKey2, tsBlob2)
+            val tsRow2 = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey2, tdrTypeRef(cctx.trAtmb1), tsArgs2, true)
             val srArgs2: List[MsilType] = newList()
             srArgs2.add(MTypeVar(index = 0))  // VAR 0, not the concrete retTy — see FBBlock note above
             val srSig2 = buildInstanceMethodSig(srArgs2, MVoid)
@@ -26823,9 +26904,8 @@ func synthesizeAsyncSmMsil(
   } else {
     val tsArgsS: List[MsilType] = newList()
     tsArgsS.add(retTy)
-    val tsBlobS = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgsS)
     val tsKeyS = "atmb1_ts_" + msilTypeKey(retTy)
-    val tsRowS = ctxAddTypeSpec(cctx.lctx, tsKeyS, tsBlobS)
+    val tsRowS = ctxAddGenericInstTypeSpec(cctx.lctx, tsKeyS, tdrTypeRef(cctx.trAtmb1), tsArgsS, true)
     val startOpenSig = buildAtmbStartOpenSig()
     val startMrKey = "atmb1_start_mr_" + msilTypeKey(retTy)
     ctxAddMemberRefForTypeSpec(cctx.lctx, tsRowS, "Start", startMrKey, startOpenSig)
@@ -26847,9 +26927,8 @@ func synthesizeAsyncSmMsil(
     kfInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
     val tsArgs4: List[MsilType] = newList()
     tsArgs4.add(retTy)
-    val tsBlob4 = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs4)
     val tsKey4 = "atmb1_ts_" + taKey4
-    val tsRow4 = ctxAddTypeSpec(cctx.lctx, tsKey4, tsBlob4)
+    val tsRow4 = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey4, tdrTypeRef(cctx.trAtmb1), tsArgs4, true)
     // Method signature must use VAR 0, not the concrete retTy — the TypeSpec parent
     // already captures the concrete type arg; see ECMA-335 II.23.2.1.
     val taskVarArgs: List[MsilType] = newList()
@@ -27045,13 +27124,12 @@ func synthesizeAsyncSmPhaseBMsil(
   } else {
     val awTsArgs: List[MsilType] = newList()
     awTsArgs.add(retTy)
-    val awTsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), awTsArgs)
     val awTaKey = msilTypeKey(retTy)
     // Use the canonical "atmb1_ts_" prefix so ctxAddTypeSpec deduplicates against
     // the same key used by SetResult / SetException / Start / get_Task; a distinct
     // "await_"-prefixed key produced a redundant TypeSpec row for the same type.
     val awTsKey = "atmb1_ts_" + awTaKey
-    val awTsRow = ctxAddTypeSpec(cctx.lctx, awTsKey, awTsBlob)
+    val awTsRow = ctxAddGenericInstTypeSpec(cctx.lctx, awTsKey, tdrTypeRef(cctx.trAtmb1), awTsArgs, true)
     val awSig = buildAwaitUnsafeOnCompletedOpenSig()
     val awMrKey = "atmb1_await_unsafe_mr_" + awTaKey
     ctxAddMemberRefForTypeSpec(cctx.lctx, awTsRow, "AwaitUnsafeOnCompleted", awMrKey, awSig)
@@ -27197,9 +27275,8 @@ func synthesizeAsyncSmPhaseBMsil(
     val taKey = msilTypeKey(retTy)
     val tsArgsB: List[MsilType] = newList()
     tsArgsB.add(retTy)
-    val tsBlobB = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgsB)
     val tsKeyB = "atmb1_ts_" + taKey
-    val tsRowB = ctxAddTypeSpec(lctx, tsKeyB, tsBlobB)
+    val tsRowB = ctxAddGenericInstTypeSpec(lctx, tsKeyB, tdrTypeRef(cctx.trAtmb1), tsArgsB, true)
     val srArgsB: List[MsilType] = newList()
     srArgsB.add(MTypeVar(index = 0))
     val srSigB = buildInstanceMethodSig(srArgsB, MVoid)
@@ -27242,9 +27319,8 @@ func synthesizeAsyncSmPhaseBMsil(
     val taKeyEx = msilTypeKey(retTy)
     val tsArgsEx: List[MsilType] = newList()
     tsArgsEx.add(retTy)
-    val tsBlobEx = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgsEx)
     val tsKeyEx = "atmb1_ts_" + taKeyEx
-    val tsRowEx = ctxAddTypeSpec(lctx, tsKeyEx, tsBlobEx)
+    val tsRowEx = ctxAddGenericInstTypeSpec(lctx, tsKeyEx, tdrTypeRef(cctx.trAtmb1), tsArgsEx, true)
     val seMrRowEx = ctxAddMemberRefForTypeSpec(lctx, tsRowEx, "SetException", "atmb1_setexception_b1_" + taKeyEx, seSig)
     mnInsns.add(MCall(methodToken = 0x0A000000 + seMrRowEx))
   }
@@ -27363,9 +27439,8 @@ func synthesizeAsyncSmPhaseBMsil(
   } else {
     val tsArgsS2: List[MsilType] = newList()
     tsArgsS2.add(retTy)
-    val tsBlobS2 = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgsS2)
     val tsKeyS2 = "atmb1_ts_" + msilTypeKey(retTy)
-    val tsRowS2 = ctxAddTypeSpec(lctx, tsKeyS2, tsBlobS2)
+    val tsRowS2 = ctxAddGenericInstTypeSpec(lctx, tsKeyS2, tdrTypeRef(cctx.trAtmb1), tsArgsS2, true)
     val startOpenSig2 = buildAtmbStartOpenSig()
     val startMrKey2 = "atmb1_start_mr_" + msilTypeKey(retTy)
     ctxAddMemberRefForTypeSpec(lctx, tsRowS2, "Start", startMrKey2, startOpenSig2)
@@ -27383,9 +27458,8 @@ func synthesizeAsyncSmPhaseBMsil(
     kfInsns2.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
     val tsArgs5: List[MsilType] = newList()
     tsArgs5.add(retTy)
-    val tsBlob5 = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgs5)
     val tsKey5 = "atmb1_ts_" + taKey5
-    val tsRow5 = ctxAddTypeSpec(lctx, tsKey5, tsBlob5)
+    val tsRow5 = ctxAddGenericInstTypeSpec(lctx, tsKey5, tdrTypeRef(cctx.trAtmb1), tsArgs5, true)
     val taskVarArgs5: List[MsilType] = newList()
     taskVarArgs5.add(MTypeVar(index = 0))
     val taskRetTy5: MsilType = MGenericInst(
@@ -27517,14 +27591,12 @@ func synthesizeGeneratorMsil(
   // ValueTask<bool> TypeSpec (value type)
   val vtBoolArgs: List[MsilType] = newList()
   vtBoolArgs.add(MBool)
-  val vtBoolBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trValueTask1), vtBoolArgs)
-  val tsVtBoolRow = ctxAddTypeSpec(lctx, "ts_vt_bool", vtBoolBlob)
+  val tsVtBoolRow = ctxAddGenericInstTypeSpec(lctx, "ts_vt_bool", tdrTypeRef(cctx.trValueTask1), vtBoolArgs, true)
 
   // TaskCompletionSource<bool> TypeSpec (reference type, CLASS encoding)
   val tcsBoolArgs: List[MsilType] = newList()
   tcsBoolArgs.add(MBool)
-  val tcsBoolBlob = buildGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTcs1), tcsBoolArgs)
-  val tsTcsBoolRow = ctxAddTypeSpec(lctx, "ts_tcs_bool", tcsBoolBlob)
+  val tsTcsBoolRow = ctxAddGenericInstTypeSpec(lctx, "ts_tcs_bool", tdrTypeRef(cctx.trTcs1), tcsBoolArgs, false)
 
   // ── MemberRefs for interface dispatch ─────────────────────────────────────
 
@@ -34414,9 +34486,8 @@ func unwrapAutoFfiTaskMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List
         val resT = typeArgs[0]
         val tsArgs: List[MsilType] = newList()
         tsArgs.add(resT)
-        val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs)
         val tsKey = "ts_task1_result_" + msilTypeKeyStr(resT)
-        val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+        val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, tdrTypeRef(cctx.trTask1), tsArgs, false)
         val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
         val mrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
         insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
@@ -34531,9 +34602,8 @@ func emitAutoFfiDefaultLoad(
       }
       case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> match fctxOpt {
         case Some(fctx) -> {
-          val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, typeRefCode, typeArgs)
           val tsKey = "ffidef_vtgi_" + msilTypeKeyStr(pm)
-          val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+          val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, typeRefCode, typeArgs, true)
           val slot = allocSlotMsil(fctx, "__ffi_default_" + toString(fctx.slotTicker.count), pm)
           insns.add(MLdloca(slot = slot - fctx.paramCount))
           insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
@@ -37009,9 +37079,8 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           val alTrRow = internFfiTypeRef(cctx, alAsmName, "System.Threading", "AsyncLocal`1")
           val alObjArgs: List[MsilType] = newList()
           alObjArgs.add(MObject)
-          val alTsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(alTrRow), alObjArgs)
           val alTsKey = "asynclocal_cctor_ts_" + pkgName + "_" + fieldName
-          val alTsRow = ctxAddTypeSpec(cctx.lctx, alTsKey, alTsBlob)
+          val alTsRow = ctxAddGenericInstTypeSpec(cctx.lctx, alTsKey, tdrTypeRef(alTrRow), alObjArgs, false)
           val alCtorParams: List[MsilType] = newList()
           val alCtorSig = buildInstanceMethodSig(alCtorParams, MVoid)
           val alMrKey = "asynclocal_cctor_mr_" + pkgName + "_" + fieldName
@@ -38056,6 +38125,7 @@ func registerRestoredUnionCase(
     val gIdx = match fty { case MTypeVar(idx) -> idx; case _ -> -1 }
     val fSig = if gIdx >= 0 { buildGenericParamFieldSig(gIdx) } else { buildFieldSigWithCtx(fty, cctx.lctx) }
     ctorParams.add(fty)
+    registerCaseFieldFuncRetMsil(cctx, caseFqn + "/field" + toString(fi), rawTy, packageName, uGenerics)
     // Register field MemberRef under declared name + positional alias; seeds fieldSigBytes/fieldVarIndices for MLdfldGeneric Phase 5 path (#3099).
     match uf {
       case UFNamed(fname, _, _) -> {

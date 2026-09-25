@@ -35677,3 +35677,14 @@ A range or distinct value renders as its underlying value in `.toString()`,
 wrapper type's name), and `from`/`tryFrom` widen their argument to the
 underlying type on MSIL (an `Int` literal into a `Long` range)
 (D-progress-960).
+Seven generic-inference and MSIL fixes found by the `ui-customers` example
+(D-progress-961): a `for` literal no longer takes the enclosing return type's
+collection shape; qualified calls into another package widen `Int` arguments
+and feed their result types to `Lyric.Mono`; generic inference binds `T` to
+the wider numeric type when a literal argument widens (a conflict previously
+typed the result as an error and accepted any use of it); calls through
+function-typed union case fields return the declared type; `object` function
+values are cast to delegate parameters and fields; async builder, task and
+awaiter TypeSpecs over in-bundle types are re-encoded once TypeDef rows are
+known; and an annotated local in a specialised generic keeps its annotation
+when the initializer's original generic call infers less.

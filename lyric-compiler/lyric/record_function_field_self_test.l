@@ -139,3 +139,26 @@ test "an Int argument widens to a function value's Long parameter" {
   assertTrue(s.add(3, 4) == 12, "field call widened")
   assertTrue(sumsToFortyTwo(f), "parameter call widened")
 }
+
+union Trigger[M] {
+  case Fixed(msg: M)
+  case FromText(toMsg: (String) -> M)
+}
+
+func fireTrigger[M](t: in Trigger[M], data: in String): M {
+  return match t { case Fixed(m) -> m; case FromText(f) -> f(data) }
+}
+
+// A call through a function-typed union case field bound by a pattern yields
+// the field's return type, not `object`, so it joins a `Msg`-typed match
+// (D-progress-961).
+test "a pattern-bound union function field returns its declared type" {
+  val t: Trigger[Reply] = FromText(toMsg = { s: String -> Said(text = s) })
+  val fixed: Trigger[Reply] = Fixed(msg = Silent)
+  val fromText = match fireTrigger(t, "hi") { case Said(x) -> x; case Silent -> "" }
+  val fromFixed = match fireTrigger(fixed, "") { case Said(_) -> "said"; case Silent -> "silent" }
+  assertEqual(fromText, "hi", "function field result")
+  assertEqual(fromFixed, "silent", "fixed arm")
+  val lengthOf: Trigger[Int] = FromText(toMsg = { s: String -> s.length * 10 })
+  assertEqualInt(fireTrigger(lengthOf, "abcd") + 2, 42, "value-typed function field result")
+}

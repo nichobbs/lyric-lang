@@ -822,3 +822,123 @@ test "cross-package generic calling a sibling package by name inside a closure (
   assertEqualInt(captured.exitCode, 0, "cpgen_sibling_qualified: exit 0 (stderr=" + captured.stderr + ")")
   assertEqual(Str.trim(captured.stdout), "1", "cpgen_sibling_qualified: output")
 }
+
+// Qualified calls into a restored package (D-progress-961): an `Int` literal
+// passed to a `Long` parameter is widened, and a generic whose type parameter
+// is fixed only by another restored call's `Result[Long, String]` specialises
+// at `Long` rather than at the `Int` of its literal fallback.
+test "qualified restored calls widen Int arguments and type generics from their results (D-progress-961)" {
+  val tmpDir = freshTempDir("cplong-qualified")
+  val producerSrc = "package CpLong.Parse\n" + "\n" + "pub func span(lo: in Long, hi: in Long): Long { hi - lo }\n" +
+    "\n" +
+    "pub func longOr(raw: in String): Result[Long, String] {\n" +
+    "  if raw == \"big\" { Ok(value = 5000000000i64) } else { Err(error = \"bad\") }\n" +
+    "}\n" +
+    "\n" +
+    "pub func collect[T](errs: in List[String], r: in Result[T, String], fallback: in T): T {\n" +
+    "  match r {\n" +
+    "    case Ok(v) -> v\n" +
+    "    case Err(e) -> {\n" +
+    "      errs.add(e)\n" +
+    "      fallback\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
+  val producerDll = buildDll(tmpDir, "CpLong.Parse", producerSrc, "CpLong.Parse")
+  val consumerSrc = "package CpLong.App\n" + "\n" + "import CpLong.Parse\n" + "\n" + "func main(): Unit {\n" +
+    "  val errs: List[String] = newList()\n" +
+    "  val big = Parse.collect(errs, Parse.longOr(\"big\"), 0)\n" +
+    "  val dflt = Parse.collect(errs, Parse.longOr(\"x\"), 7)\n" +
+    "  println(Parse.span(-5, 1_000_000).toString() + \" \" + big.toString() + \" \" + dflt.toString() + \" \" + errs.length.toString())\n" +
+    "}\n"
+  val captured = buildAndRunConsumerWithStdlib(
+    tmpDir,
+    "CpLong.App",
+    consumerSrc,
+    "CpLong.App",
+    "CpLong.Parse",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cplong_qualified: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "1000005 5000000000 7 1", "cplong_qualified: widened span and Long collect")
+}
+
+// A generic from one restored package binds an annotated local from calls to
+// another package's generics that take a lambda local, then passes it on
+// (`field(..., input)`): the local keeps its annotated `View[Msg]`, so the
+// inner generic specialises at `Msg`, not `Object` (D-progress-961).
+test "an annotated local in a specialised generic keeps its type across packages (D-progress-961)" {
+  val tmpDir = freshTempDir("cpgen-annotated-local")
+  val coreSrc = "package CpView.Core\n" + "\n" + "pub union View[Msg] {\n" +
+    "  case Wrap(label: String, inner: View[Msg])\n" +
+    "  case Click(msg: Msg)\n" +
+    "}\n"
+  val widgetsSrc = "package CpView.Widgets\n" + "\n" + "import CpView.Core.{View, Wrap, Click}\n" + "\n" +
+    "pub func field[Msg](label: in String, errors: in List[String], inner: in View[Msg]): View[Msg] {\n" +
+    "  Wrap(label = label, inner = inner)\n" +
+    "}\n" +
+    "\n" +
+    "pub func textInput[Msg](v: in String, f: in (String) -> Msg): View[Msg] { Click(msg = f(v)) }\n"
+  val formsSrc = "package CpView.Forms\n" + "\n" + "import CpView.Core.{View}\n" +
+    "import CpView.Widgets.{field, textInput}\n" +
+    "\n" +
+    "pub func fieldView[Msg](flag: in Bool, v: in String, onEdit: in (String, String) -> Msg): View[Msg] {\n" +
+    "  val name = \"n\"\n" +
+    "  val onInput = { s: String -> onEdit(name, s) }\n" +
+    "  val input: View[Msg] = if flag { textInput(v, onInput) } else { textInput(v + \"!\", onInput) }\n" +
+    "  val msgs: List[String] = newList()\n" +
+    "  return field(\"lbl\", msgs, input)\n" +
+    "}\n"
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkPkg("CpView.Core", coreSrc))
+  pkgs.add(mkPkg("CpView.Widgets", widgetsSrc))
+  pkgs.add(mkPkg("CpView.Forms", formsSrc))
+  val producerDll = buildDllPkgs(tmpDir, pkgs, "CpView.Lib")
+  val consumerSrc = "package CpView.App\n" + "\n" + "import CpView.Core.{View, Wrap, Click}\n" +
+    "import CpView.Forms.{fieldView}\n" +
+    "\n" +
+    "union Msg {\n" +
+    "  case Edited(n: String, s: String)\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  match fieldView(true, \"x\", { n: String, s: String -> Edited(n = n, s = s) }) {\n" +
+    "    case Wrap(l, Click(Edited(n, s))) -> println(l + \" \" + n + \" \" + s)\n" +
+    "    case _ -> println(\"other\")\n" +
+    "  }\n" +
+    "}\n"
+  val dllPath = Path.join(tmpDir, "CpView.App.dll")
+  val cpkgs: List[Emitter.ProjectPackage] = newList()
+  cpkgs.add(mkPkg("CpView.App", consumerSrc))
+  val restored: List[String] = newList()
+  restored.add("CpView.Core\t" + producerDll)
+  restored.add("CpView.Widgets\t" + producerDll)
+  restored.add("CpView.Forms\t" + producerDll)
+  val req = Emitter.EmitProjectRequest(
+    packages = cpkgs,
+    assemblyName = "CpView.App",
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = restored,
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  match Emitter.emitProject(req).outputPath {
+    case None -> panic("cpgen_annotated_local: consumer compilation failed")
+    case Some(_) -> ()
+  }
+  Emitter.copyStdlibDllsBeside(dllPath, Emitter.findCompiledStdlibDir())
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_annotated_local: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "lbl n x", "cpgen_annotated_local: inner generic specialised at Msg")
+}

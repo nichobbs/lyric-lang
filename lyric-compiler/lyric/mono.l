@@ -268,6 +268,11 @@ record MonoState {
   /// function (D-progress-955), keyed by `recordCopySiteKey` of the lambda's
   /// span, so a generic call or record taking one infers from it.
   lambdaTypes: Map[String, TypeExpr]
+  /// The checked result type of each qualified or method call
+  /// (D-progress-961), keyed by `recordCopySiteKey` of the call's span: the
+  /// fallback when `inferCallReturnTE` cannot see the callee's signature
+  /// (another package's non-generic function).
+  callResultTypes: Map[String, TypeExpr]
   /// Counter for the fresh locals a copy desugar binds (length = next id).
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
@@ -310,6 +315,7 @@ func newMonoState(
     funcRefSites = newMap(),
     argConversionSites = newMap(),
     lambdaTypes = newMap(),
+    callResultTypes = newMap(),
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
@@ -1669,7 +1675,14 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
         case _ -> None
       }
     }
-    case ECall(fn, args) -> inferCallReturnTE(state, env, fn, args)
+    case ECall(fn, args) -> match inferCallReturnTE(state, env, fn, args) {
+      case Some(te) -> Some(value = te)
+      case None -> if state.callResultTypes.count > 0 and state.originScope[state.originScope.count - 1] == "" {
+        mapGet(state.callResultTypes, recordCopySiteKey(expr.span))
+      } else {
+        None
+      }
+    }
     case ETypeApp(fn, targs) -> inferTypeAppValueTE(state, env, fn, targs)
     case EMember(recv, name) -> inferMemberTE(state, env, recv, name)
     // `self` in an impl / interface method body — its type is seeded into
@@ -6155,7 +6168,12 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
       // `for`-loop patterns; reusing it here closes the same gap for
       // plain `val` destructuring.
       match tyOpt {
-        case Some(te) -> bindPatternEnvMono(state, env, pat, Some(value = bindingEnvTE(state, env, te, init)))
+        // The REWRITTEN initializer names the specialisation the call actually
+        // got (`textInput__Msg`), so its type is the value's real
+        // instantiation; the original generic call may infer less (a lambda
+        // argument's return type is unknown in a foreign body), and must not
+        // override the annotation with `View[Object]` (D-progress-961).
+        case Some(te) -> bindPatternEnvMono(state, env, pat, Some(value = bindingEnvTE(state, env, te, newInit)))
         case None -> {
           val inferred = match inferExprTE(state, env, init) {
             case Some(t) -> Some(value = t)
@@ -6196,7 +6214,7 @@ func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding:
       }
       match tyOpt {
         case Some(te) -> {
-          val envTe = match initOpt { case Some(ie) -> bindingEnvTE(state, env, te, ie); case None -> te }
+          val envTe = match newInit { case Some(ie) -> bindingEnvTE(state, env, te, ie); case None -> te }
           if env.containsKey(name) {
             env.remove(name)
           }
@@ -6502,7 +6520,7 @@ pub func monoFileWithImportsAndTypeDecls(
   importedIfaceDecls: in List[InterfaceDecl],
   importedRecordDecls: in List[RecordDecl],
 ): MonoResult {
-  monoFileWithLambdaTypes(file, importedGenDecls, importedIfaceDecls, importedRecordDecls, newMap())
+  monoFileWithLambdaTypes(file, importedGenDecls, importedIfaceDecls, importedRecordDecls, newMap(), newMap())
 }
 
 /// `monoFileWithImportsAndTypeDecls`, with the function type of each
@@ -6514,6 +6532,7 @@ pub func monoFileWithLambdaTypes(
   importedIfaceDecls: in List[InterfaceDecl],
   importedRecordDecls: in List[RecordDecl],
   lambdaTypes: in Map[String, TypeExpr],
+  callResultTypes: in Map[String, TypeExpr],
 ): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   // #349: also collect every IFunc (generic + non-generic) and every
@@ -6820,6 +6839,15 @@ pub func monoFileWithLambdaTypes(
       case None -> ()
     }
     lti = lti + 1
+  }
+  val crKeys = mapKeys(callResultTypes)
+  var cri = 0
+  while cri < crKeys.count {
+    match mapGet(callResultTypes, crKeys[cri]) {
+      case Some(ct) -> state.callResultTypes.add(crKeys[cri], ct)
+      case None -> ()
+    }
+    cri = cri + 1
   }
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────

@@ -255,6 +255,10 @@ pub record SymbolTable {
   /// Widened arguments of function-value calls, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`).
   argConversionSites: Map[String, ArgConversionSite]
+  /// Result types of qualified and method calls, keyed like
+  /// `recordCopySites`: evidence for `Lyric.Mono`, which cannot see the
+  /// signatures of other packages' non-generic functions (D-progress-961).
+  callResultTypes: Map[String, TypeExpr]
 }
 
 pub record ImplPair {
@@ -300,7 +304,8 @@ pub func newSymbolTable(): SymbolTable {
     invariantCtorSites = newMap(),
     funcRefSites = newMap(),
     funcRefCallees = newMap(),
-    argConversionSites = newMap()
+    argConversionSites = newMap(),
+    callResultTypes = newMap()
   )
 }
 

@@ -307,7 +307,8 @@ pub func pipeCheckAndMono(
     monoGenFuncs,
     monoIfaceDecls,
     monoRecordDecls,
-    funcValueLambdaTypes(valueSites)
+    funcValueLambdaTypes(valueSites),
+    tcRes.symbols.callResultTypes
   )
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None

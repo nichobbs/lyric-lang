@@ -1242,6 +1242,11 @@ pub record LoweringCtx {
   // `MValueTypeRef` local uses row M, causing a token-identity mismatch the
   // CLR JIT rejects as `BadImageFormatException`.
   typeSpecRowByKey: Map[String, Int]
+  // GENERICINST TypeSpecs registered during codegen, before this bundle's
+  // TypeDef rows are known: an in-bundle type argument then encodes as
+  // `object`.  `discoverTypeDefRowsInto` re-encodes each once the rows are
+  // known (D-progress-961).
+  deferredTypeSpecs: List[DeferredTypeSpec]
   // MemberRef row cache keyed by the `sigKey` passed to
   // `ctxAddMemberRefForTypeSpec`.  Makes that function idempotent so that
   // generator synthesis (which creates MemberRef rows for GetAsyncEnumerator,
@@ -1437,6 +1442,7 @@ pub func newLoweringCtxWithVersions(
     dictTokenCache = newMap(),
     discovering = newList(),
     typeSpecRowByKey = newMap(),
+    deferredTypeSpecs = newList(),
     memberRefRowByKey = newMap(),
     projectableToViewMDef = newMap(),
     projectableToViewMDefKeys = newList(),
@@ -1660,6 +1666,63 @@ pub func ctxAddMemberRef(
 
 // Add a TypeSpec row and return its 1-based row index.
 // sigBytes is a type-signature blob (e.g. GENERICINST encoding).
+pub record DeferredTypeSpec {
+  row: Int
+  typeDefOrRef: Int
+  argTypes: List[MsilType]
+  isValueType: Bool
+}
+
+func genericInstBlobWithCtx(
+  ctx: in LoweringCtx, typeDefOrRef: in Int, argTypes: in List[MsilType], isValueType: in Bool
+): List[Byte] {
+  if isValueType {
+    buildValueTypeGenericInstBlobWithCtx(ctx, typeDefOrRef, argTypes)
+  } else {
+    buildGenericInstBlobWithCtx(ctx, typeDefOrRef, argTypes)
+  }
+}
+
+/// A GENERICINST TypeSpec over `typeDefOrRef`, registered from codegen: its
+/// blob is re-encoded once the bundle's TypeDef rows are known, so an
+/// in-bundle type argument (`Option<Msg>`) is not degraded to `object`
+/// (D-progress-961).
+pub func ctxAddGenericInstTypeSpec(
+  ctx: in LoweringCtx,
+  sigKey: in String,
+  typeDefOrRef: in Int,
+  argTypes: in List[MsilType],
+  isValueType: in Bool,
+): Int {
+  match mapGet(ctx.typeSpecRowByKey, sigKey) {
+    case Some(row) -> row
+    case None -> {
+      val row = ctxAddTypeSpec(ctx, sigKey, genericInstBlobWithCtx(ctx, typeDefOrRef, argTypes, isValueType))
+      ctx.deferredTypeSpecs.add(
+        DeferredTypeSpec(row = row, typeDefOrRef = typeDefOrRef, argTypes = argTypes, isValueType = isValueType)
+      )
+      row
+    }
+  }
+}
+
+func reencodeDeferredTypeSpecs(ctx: in LoweringCtx): Unit {
+  var i = 0
+  while i < ctx.deferredTypeSpecs.count {
+    val d = ctx.deferredTypeSpecs[i]
+    val blob = genericInstBlobWithCtx(ctx, d.typeDefOrRef, d.argTypes, d.isValueType)
+    var blobKey = "reencoded_typespec_" + toString(d.row) + ":"
+    var bi = 0
+    while bi < blob.count {
+      blobKey = blobKey + toString(blob[bi].toInt()) + ","
+      bi = bi + 1
+    }
+    val bSig = ctxInternBlob(ctx, blobKey, blob)
+    ctx.tables.typeSpecs[d.row - 1] = TypeSpecRow(signature = bSig)
+    i = i + 1
+  }
+}
+
 pub func ctxAddTypeSpec(ctx: in LoweringCtx, sigKey: in String, sigBytes: in List[Byte]): Int {
   match mapGet(ctx.typeSpecRowByKey, sigKey) {
     case Some(row) -> row
@@ -4542,6 +4605,7 @@ pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage], h
     }
     apk = apk + 1
   }
+  reencodeDeferredTypeSpecs(dst)
 }
 
 // Build (and cache) the concrete `List`1<elemTy>` operation tokens (epic #2359

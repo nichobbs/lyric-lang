@@ -209,6 +209,18 @@ test "int literal adopts context" {
   assertEqualInt(diagCount(parseCheck(branch)), 0, "int-lit: if-branch Long/0 widens to Long")
 }
 
+// D-progress-961: a negated literal adopts the other operand's type like the
+// literal itself, and a generic's type parameter takes the wider numeric type
+// when a literal argument widens at a bare `T` parameter.
+test "negated literal and widening generic argument" {
+  val neg = "package P\npub func f(x: in Long): Bool {\n  x == -1\n}\n"
+  assertEqualInt(diagCount(parseCheck(neg)), 0, "int-lit: Long == -1 type-checks")
+  val gen = "package P\nunion R[T] {\n  case Good(v: T)\n  case Bad\n}\npub func pick[T](r: in R[T], d: in T): T {\n  match r {\n    case Good(v) -> v\n    case Bad -> d\n  }\n}\npub func big(): R[Long] {\n  Good(v = 5000000000i64)\n}\npub func useLong(): Long {\n  pick(big(), 0)\n}\n"
+  assertEqualInt(diagCount(parseCheck(gen)), 0, "generic: T binds Long, the Int literal widens")
+  val wrong = "package P\nunion R[T] {\n  case Good(v: T)\n  case Bad\n}\npub func pick[T](r: in R[T], d: in T): T {\n  match r {\n    case Good(v) -> v\n    case Bad -> d\n  }\n}\npub func big(): R[Long] {\n  Good(v = 5000000000i64)\n}\npub func useString(): String {\n  val s: String = pick(big(), 0)\n  s\n}\n"
+  assertTrue(hasDiagCode(parseCheck(wrong), "T0060"), "generic: a Long result assigned to String is T0060")
+}
+
 // Guard branch widening against over-reach: a genuinely incompatible pair
 // (String vs Int) must still raise T0067, not silently unify.
 test "branch widen still rejects mismatch" {
