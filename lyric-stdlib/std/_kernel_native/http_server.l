@@ -1117,15 +1117,16 @@ func parsePositiveDecimal(raw: in String): Int {
 }
 
 /// The TLS handshake timeout in milliseconds a listener applies: the
-/// `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` environment variable when it is a
-/// positive integer, otherwise 10000. Read once per listener at start.
+/// `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` environment variable when it is an
+/// integer in 1..86400000 (one day), otherwise 10000. Read once per listener at start.
 pub func resolveTlsHandshakeTimeoutMs(): Int {
   positiveIntFromEnv("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", tlsHandshakeTimeoutMsDefault)
 }
 
 /// The connection inactivity timeout in milliseconds a listener applies to
 /// every blocking read and write: the `LYRIC_HTTP_IDLE_TIMEOUT_MS`
-/// environment variable when it is a positive integer, otherwise 120000.
+/// environment variable when it is an integer in 1..86400000 (one day),
+/// otherwise 120000.
 /// Read once per listener at start.
 pub func resolveConnectionIdleTimeoutMs(): Int {
   positiveIntFromEnv("LYRIC_HTTP_IDLE_TIMEOUT_MS", connectionIdleTimeoutMsDefault)

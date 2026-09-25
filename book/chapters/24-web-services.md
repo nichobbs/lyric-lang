@@ -215,8 +215,8 @@ a connection whose reads or writes make no progress for
 `LYRIC_HTTP_IDLE_TIMEOUT_MS` is closed, which ends idle keep-alive
 connections and stalled uploads. A slow handler is not affected: the
 connection waits on the handler, not the socket, while a request is in
-flight. Both follow the same rule as the connection cap: a missing,
-non-numeric or `< 1` value falls back to the default. On `--target jvm`
+flight. Both accept 1 to 86400000 (one day); a missing, non-numeric or
+out-of-range value falls back to the default. On `--target jvm`
 the JDK's own HTTP server runs handshakes off its dispatcher thread and
 applies its own idle limit (`-Dsun.net.httpserver.idleInterval`, in
 seconds, default 30).

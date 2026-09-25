@@ -258,26 +258,34 @@ val tlsHandshakeTimeoutMsDefault: Int = 10000
 
 val connectionIdleTimeoutMsDefault: Int = 120000
 
-// A positive integer from `name`, otherwise `fallback`. A missing,
-// non-numeric, or < 1 value falls back: a zero or negative timeout would
-// silently disable the protection this setting exists for.
+// The largest timeout either override accepts (one day, the same bound the
+// native twin enforces); anything larger falls back to the default.
+val maxTimeoutMs: Int = 86400000
+
+// An integer in 1..`maxTimeoutMs` from `name`, otherwise `fallback`. A
+// missing, non-numeric, or < 1 value falls back: a zero or negative timeout
+// would silently disable the protection this setting exists for.
 func positiveIntFromEnv(name: in String, fallback: in Int): Int {
   match Env.getVar(name) {
-    case Ok(raw) -> match tryParseInt(raw) { case Ok(n) -> if n >= 1 { n } else { fallback }; case Err(_) -> fallback }
+    case Ok(raw) -> match tryParseInt(raw) {
+      case Ok(n) -> if n >= 1 and n <= maxTimeoutMs { n } else { fallback }
+      case Err(_) -> fallback
+    }
     case Err(_) -> fallback
   }
 }
 
 /// The TLS handshake timeout in milliseconds a listener applies: the
-/// `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` environment variable when it is a
-/// positive integer, otherwise 10000. Read once per listener at start.
+/// `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` environment variable when it is an
+/// integer in 1..86400000 (one day), otherwise 10000. Read once per listener at start.
 pub func resolveTlsHandshakeTimeoutMs(): Int {
   positiveIntFromEnv("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", tlsHandshakeTimeoutMsDefault)
 }
 
 /// The connection inactivity timeout in milliseconds a listener applies to
 /// every blocking read and write: the `LYRIC_HTTP_IDLE_TIMEOUT_MS`
-/// environment variable when it is a positive integer, otherwise 120000.
+/// environment variable when it is an integer in 1..86400000 (one day),
+/// otherwise 120000.
 /// Read once per listener at start.
 pub func resolveConnectionIdleTimeoutMs(): Int {
   positiveIntFromEnv("LYRIC_HTTP_IDLE_TIMEOUT_MS", connectionIdleTimeoutMsDefault)
