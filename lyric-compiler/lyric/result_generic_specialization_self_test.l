@@ -80,3 +80,20 @@ test "a widening literal specialises a generic at the wider type (D-progress-968
   assertTrue(fallback == 7i64, "the Int literal fallback is widened to Long")
   assertEqual((big + fallback).toString(), "5000000007", "the specialisation's result is a Long")
 }
+
+// The same widening with the bare `T` parameter first: the specialisation
+// must not bind `T` from the literal before it sees the `Result[Long, _]`
+// argument (#7366).
+func orPick[T](fallback: in T, r: in Result[T, String]): T {
+  match r {
+    case Ok(v) -> v
+    case Err(_) -> fallback
+  }
+}
+
+test "a widening literal before the pinning argument specialises at the wider type (#7366)" {
+  val big: Long = orPick(0, bigLong(true))
+  assertTrue(big == 5000000000i64, "the Ok payload above Int.MAX survives as a Long")
+  val fallback: Long = orPick(7, bigLong(false))
+  assertTrue(fallback == 7i64, "the Int literal fallback is widened to Long")
+}

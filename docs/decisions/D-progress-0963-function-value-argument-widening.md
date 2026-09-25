@@ -1,4 +1,4 @@
-# D-progress-963 — Widened arguments and typed results of a function-value call
+# D-progress-963 — Widened arguments and typed results of a function-value call (#7250)
 
 **Status:** shipped
 

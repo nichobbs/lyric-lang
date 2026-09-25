@@ -1,4 +1,4 @@
-# D-progress-968 — Generic inference and MSIL fixes found by a cross-package UI example
+# D-progress-968 — Generic inference and MSIL fixes found by a cross-package UI example (#7250)
 
 **Status:** shipped
 
@@ -78,6 +78,11 @@ independent:
    callee names the specialisation actually chosen (#5604's rationale: the
    value's instantiation is decided by the callee's specialisation).
 
+`Lyric.Mono`'s call-site unifier (`unifyTE`) applies the same rule: when a
+type parameter is bound twice to primitive types of one numeric widening
+family, the wider binding wins whichever parameter comes first, so the
+specialisation matches the checker's type (#7366).
+
 ## Verification
 
 - `list_literal_index_self_test.l` (for-loop literal, both targets),
@@ -86,7 +91,7 @@ independent:
   (qualified widening and restored-result inference; annotated local in a
   three-package specialised generic), `result_generic_specialization_self_test.l`
   (a same-package generic specialised at `Long` from a widening `Int`
-  literal, both targets).
+  literal, in either parameter order, both targets).
 - `examples/ui-customers`: 14/14 tests. `ilverify` is clean on `lyric-forms`;
   on `lyric-ui` and the example its only findings are the #7219 `Action`
   stores in `Ui.Host.instance` and its specialisation.

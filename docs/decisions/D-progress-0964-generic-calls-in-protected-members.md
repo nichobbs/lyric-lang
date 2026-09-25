@@ -1,4 +1,4 @@
-# D-progress-964 — Generic calls inside protected-type members are specialised
+# D-progress-964 — Generic calls inside protected-type members are specialised (#7250)
 
 **Status:** shipped
 

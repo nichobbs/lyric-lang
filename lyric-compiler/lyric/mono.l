@@ -1131,6 +1131,62 @@ func substBindingValue(valueSubst: in Map[String, Expr], binding: in LocalBindin
 // `typeParams`) against `argTE` (concrete caller type).  Bindings are
 // accumulated in `subst` (map from type-param name → concrete TypeExpr).
 // Conflicts are silently ignored (first-binding wins).
+// The rank of a primitive type name within its numeric widening family
+// (mirroring the checker's `widenPrimArithmetic`): signed `Byte < Int <
+// Long`, unsigned `Byte < UInt < ULong`, float `Float < Double`; -1 when the
+// name is not in `family`.
+func numericRankMono(name: in String, family: in Int): Int {
+  if family == 0 {
+    if name == "Byte" {
+      0
+    } else if name == "Int" {
+      1
+    } else if name == "Long" {
+      2
+    } else {
+      -1
+    }
+  } else if family == 1 {
+    if name == "Byte" {
+      0
+    } else if name == "UInt" {
+      1
+    } else if name == "ULong" {
+      2
+    } else {
+      -1
+    }
+  } else {
+    if name == "Float" {
+      0
+    } else if name == "Double" {
+      1
+    } else {
+      -1
+    }
+  }
+}
+
+// True when `cand` and `prev` are primitive types of one numeric widening
+// family and `cand` is the wider.
+func widerNumericTEMono(prev: in TypeExpr, cand: in TypeExpr): Bool {
+  val pn = match prev.kind { case TRef(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }; case _ -> "" }
+  val cn = match cand.kind { case TRef(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }; case _ -> "" }
+  if pn.length == 0 or cn.length == 0 or pn == cn {
+    return false
+  }
+  var fam = 0
+  while fam < 3 {
+    val pr = numericRankMono(pn, fam)
+    val cr = numericRankMono(cn, fam)
+    if pr >= 0 and cr >= 0 {
+      return cr > pr
+    }
+    fam = fam + 1
+  }
+  false
+}
+
 func unifyTE(
   typeParams: in List[String], paramTE: in TypeExpr, argTE: in TypeExpr, subst: in Map[String, TypeExpr]
 ): Unit {
@@ -1141,6 +1197,14 @@ func unifyTE(
         if listContainsStr(typeParams, name) {
           if not subst.containsKey(name) {
             subst.add(name, argTE)
+          } else {
+            // Two numeric bindings of one type parameter: the checker binds
+            // the wider (or rejects the call), whichever parameter came first
+            // (D-progress-968), so the specialisation does too.
+            match mapGet(subst, name) {
+              case Some(prev) -> if widerNumericTEMono(prev, argTE) { subst.remove(name); subst.add(name, argTE) }
+              case None -> ()
+            }
           }
         }
       }

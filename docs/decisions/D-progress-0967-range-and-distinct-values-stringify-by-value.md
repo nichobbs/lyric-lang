@@ -1,4 +1,4 @@
-# D-progress-967 — Range and distinct values stringify as their underlying value
+# D-progress-967 — Range and distinct values stringify as their underlying value (#7250)
 
 **Status:** shipped
 
@@ -20,7 +20,9 @@ fields into form inputs.
 ## Decision
 
 A range or distinct value stringifies as its underlying value in every
-stringification position, on both targets. A `UInt`/`ULong`-backed type, which
+stringification position, on both targets. (The JVM's `format1`..`format4`
+are an exception only because they substitute no argument at all, a
+pre-existing gap tracked in #7367.) A `UInt`/`ULong`-backed type, which
 both targets erase to the signed representation, formats unsigned.
 
 - **MSIL.** Every stringification site (`println`, `print`, free `toString`,
