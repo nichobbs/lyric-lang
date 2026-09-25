@@ -152,7 +152,7 @@ pub func mapResult[T, U, E](r: in Result[T, E], f: in (T) -> U): Result[U, E] {
 @stable(since = "1.0")
 pub func filterOption[T](o: in Option[T], pred: in (T) -> Bool): Option[T] {
   match o {
-    case Some(v) -> if pred(v) { Some(value = v) } else { None }
+    case Some(v) -> if pred(v) { o } else { None }
     case None -> None
   }
 }

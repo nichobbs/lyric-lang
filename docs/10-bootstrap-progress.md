@@ -35538,3 +35538,47 @@ shifts instead of `pow2` division, a literal field with incremental indexing
 is written straight into the output buffer, and dynamic-table insert and resize
 copy the surviving entries once instead of twice. Wire output is unchanged
 (#7266, epic #7256).
+
+## Small stdlib hot paths: UUID parsing, string compare, shrinking, native mkdir
+
+Several stdlib helpers did far more work than their results needed:
+
+- `Std.Uuid.parseUuidOpt` built its result by string concatenation and
+  classified each character by comparing it against up to 22 one-character
+  substrings of the hex alphabet, about 1000 allocations per parse. It now
+  classifies each character with one ordinal `indexOfFromRaw` search and builds
+  the result with a `StringBuilder`.
+- `Std.String.compare` compared twice (`<` then `>`). It now makes a single
+  ordinal comparison through a new `Std.StringHost.hostCompareOrdinal` kernel
+  (`String.CompareOrdinal` on .NET, `String.compareTo` on the JVM,
+  `lyric_string_cmp` on native).
+- `Std.Char.digitValue`/`hexDigitValue` made up to seven host calls to compute
+  constant code points. They now use literals.
+- `Std.Regex.isTimeout` and `Std.Tls`'s PEM marker search use the ordinal
+  from-index kernel instead of a hand-rolled scan (which, in `Std.Tls`,
+  allocated a substring at every position).
+- `Std.Core.filterOption` returns its input instead of re-wrapping the value.
+- `Std.Testing.Property` shrinks iteratively. A user shrinker that steps by one
+  used to recurse once per step and could overflow the stack. The new
+  `testing_property_tests.l` shrinks from 1,000,000 to its minimal
+  counterexample.
+- The native `Std.File.createDir` issued a `mkdir` for every path prefix and
+  took a substring at every character. It now calls the new lyric-rt
+  `lyric_dir_create_all`, which tries the full path first and creates parents
+  only on `ENOENT`.
+
+(#7284, epic #7256)
+
+## Std.File reads and writes `slice[Byte]` without a per-byte copy
+
+`Std.File.readBytes` returns `List[Byte]`, which each kernel filled one byte at
+a time from the host's byte array (boxing every byte on the JVM), and most
+callers immediately copied it back out with `.toArray()`. The new
+`@experimental` `readByteSlice`/`writeByteSlice` keep the same `Result`
+contracts but hand the host's array through directly: `File.ReadAllBytes` /
+`WriteAllBytes` on .NET, `FileInputStream.readAllBytes` / `FileOutputStream`
+on the JVM, and the existing `lyric_file_read_bytes`/`lyric_file_write_bytes`
+seams on native, where `slice[Byte]` shares the `LyricList` representation
+(D-N-015). The MSIL metadata reader (15 reference-assembly reads), the CLI's
+runtime-DLL copies, `Std.Tls` certificate loading and `lyric-web` static files
+now use them (#7284, epic #7256).

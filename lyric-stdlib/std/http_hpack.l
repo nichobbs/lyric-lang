@@ -572,14 +572,15 @@ pub func newDynamicTable(maxSize: in Int): DynamicTable {
   DynamicTable(entries = entries, size = 0, maxSize = maxSize)
 }
 
-/// How many of the newest `entries` survive eviction down to `limit` octets,
-/// and their summed cost, without copying the list (eviction removes from the
-/// oldest end, RFC 7541 §4.4).
+// The newest `count` entries of a dynamic table and their summed cost.
 record KeptPrefix {
   count: Int
   size: Int
 }
 
+/// How many of the newest `entries` survive eviction down to `limit` octets,
+/// and their summed cost, without copying the list (eviction removes from the
+/// oldest end, RFC 7541 §4.4).
 func keptPrefix(entries: in List[DynEntry], size: in Int, limit: in Int): KeptPrefix {
   var keep = entries.count
   var kept = size

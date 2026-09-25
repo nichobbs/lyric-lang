@@ -62,7 +62,7 @@ extern func rtWriteAll(path: NativePtr[Byte], data: String, append: Int): Int = 
 
 extern func rtDelete(path: NativePtr[Byte]): Int = "lyric_file_delete"
 
-extern func rtDirCreate(path: NativePtr[Byte]): Int = "lyric_dir_create"
+extern func rtDirCreateAll(path: NativePtr[Byte]): Int = "lyric_dir_create_all"
 
 // Return-plus-ok-flag kernels (a ref-container out-param would leak
 // its initialiser; these always return a fresh owned list, empty on
@@ -82,6 +82,12 @@ extern func rtDirList(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String
 extern func rtDirListTyped(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String] = "lyric_dir_list_typed"
 
 extern func rtWriteBytes(path: NativePtr[Byte], data: List[Byte], append: Int): Int = "lyric_file_write_bytes"
+
+// The same two lyric-rt seams typed as `slice[Byte]`, which shares the
+// `LyricList` representation on this target (D-N-015), so no copy is made.
+extern func rtReadByteSlice(path: NativePtr[Byte], okOut: NativePtr[Int]): slice[Byte] = "lyric_file_read_bytes"
+
+extern func rtWriteByteSlice(path: NativePtr[Byte], data: slice[Byte], append: Int): Int = "lyric_file_write_bytes"
 
 extern func rtDirRemove(path: NativePtr[Byte]): Int = "lyric_dir_remove"
 
@@ -183,37 +189,15 @@ pub func hostWriteTextResult(path: in String, text: in String): Result[Unit, IOE
   }
 }
 
-// Single-level create; mkdir(2)'s EEXIST counts as success for a
-// create-if-missing seam.
 @unsafe_ffi
-func createDirOne(path: in String): Bool {
-  val c = toC(path)
-  val rc = rtDirCreate(c)
-  if rc == 0 {
-    freeC(c)
-    return true
-  }
-  val probe = rtDirExists(c)
-  freeC(c)
-  probe == 1
-}
-
 pub func hostCreateDirResult(path: in String): Result[Unit, IOError] {
-  // lyric_dir_create is single-level mkdir(2); create each parent
-  // prefix first so this seam keeps the managed twin's
-  // create-with-parents semantics.  Index 0 is skipped so an absolute
-  // path never asks for mkdir("").
-  var i = 1
-  val n = path.length
-  while i < n {
-    if path.substring(i, 1) == "/" {
-      if not createDirOne(path.substring(0, i)) {
-        return Err(error = IoError(path = path, message = "the directory could not be created"))
-      }
-    }
-    i = i + 1
-  }
-  if createDirOne(path) {
+  // `mkdir -p` in the runtime: one mkdir(2) when the parent exists, and
+  // parents created only on ENOENT, keeping the managed twin's
+  // create-with-parents semantics (#7284).
+  val c = toC(path)
+  val rc = rtDirCreateAll(c)
+  freeC(c)
+  if rc == 0 {
     Ok(value = ())
   } else {
     Err(error = IoError(path = path, message = "the directory could not be created"))
@@ -280,6 +264,31 @@ pub func hostReadAllBytes(path: in String): slice[Byte] {
 pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
   val c = toC(path)
   val rc = rtWriteBytes(c, bytes, 0)
+  freeC(c)
+  if rc == 0 {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = path, message = "the file could not be written"))
+  }
+}
+
+@unsafe_ffi
+pub func hostReadByteSliceResult(path: in String): Result[slice[Byte], IOError] {
+  var ok: Int = 0
+  val c = toC(path)
+  val bytes = rtReadByteSlice(c, nativeAddrOf(ok))
+  freeC(c)
+  if ok == 1 {
+    Ok(value = bytes)
+  } else {
+    Err(error = IoError(path = path, message = "the file could not be read"))
+  }
+}
+
+@unsafe_ffi
+pub func hostWriteByteSliceResult(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
+  val c = toC(path)
+  val rc = rtWriteByteSlice(c, bytes, 0)
   freeC(c)
   if rc == 0 {
     Ok(value = ())

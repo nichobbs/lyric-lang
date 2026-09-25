@@ -23,6 +23,7 @@
 package Std.Uuid
 
 import Std.Core
+import Std.String
 import Std.UuidHost
 
 // =====================================================================
@@ -56,32 +57,23 @@ pub func uuidToString(u: in Uuid): String {
 // Parsing.
 // =====================================================================
 // The canonicalizer below deliberately restricts itself to `length`,
-// `substring`, `==`, and `+` — the String surface every backend
-// (including native) implements — so this file stays target-neutral.
-// Index of `c` in the hex alphabet (either case), or -1.
-func uuidHexIndexOf(c: in String): Int {
-  val lowers = "0123456789abcdef"
-  var i = 0
-  while i < 16 {
-    if lowers.substring(i, 1) == c {
-      return i
+// `substring`, `==`, and `Std.String`'s ordinal search and builder, the
+// String surface every backend (including native) implements, so this file
+// stays target-neutral. Each position costs one single-character substring
+// and one search, and the result is built once (#7284).
+// The canonical lowercase spelling of hex digit `c` (either case), or ""
+// when `c` is not a hex digit.
+func uuidHexCanonical(c: in String): String {
+  if indexOfFromRaw("0123456789abcdef", c, 0) >= 0 {
+    c
+  } else {
+    val j = indexOfFromRaw("ABCDEF", c, 0)
+    if j >= 0 {
+      "abcdef".substring(j, 1)
+    } else {
+      ""
     }
-    i = i + 1
   }
-  val uppers = "ABCDEF"
-  var j = 0
-  while j < 6 {
-    if uppers.substring(j, 1) == c {
-      return 10 + j
-    }
-    j = j + 1
-  }
-  0 - 1
-}
-
-// The canonical lowercase spelling of hex digit `idx` (0..15).
-func uuidHexChar(idx: in Int): String {
-  "0123456789abcdef".substring(idx, 1)
 }
 
 func uuidIsSpace(c: in String): Bool {
@@ -123,7 +115,7 @@ func uuidCanonicalize(s: in String): Option[String] {
     return None
   }
   if t.length == 36 {
-    var acc = ""
+    val acc = StringBuilder.new()
     var i = 0
     while i < 36 {
       val c = t.substring(i, 1)
@@ -131,32 +123,32 @@ func uuidCanonicalize(s: in String): Option[String] {
         if c != "-" {
           return None
         }
-        acc = acc + "-"
+        acc.append("-")
       } else {
-        val idx = uuidHexIndexOf(c)
-        if idx < 0 {
+        val h = uuidHexCanonical(c)
+        if h.length == 0 {
           return None
         }
-        acc = acc + uuidHexChar(idx)
+        acc.append(h)
       }
       i = i + 1
     }
-    Some(value = acc)
+    Some(value = acc.toString())
   } else if t.length == 32 {
-    var acc = ""
+    val acc = StringBuilder.new()
     var i = 0
     while i < 32 {
       if i == 8 or i == 12 or i == 16 or i == 20 {
-        acc = acc + "-"
+        acc.append("-")
       }
-      val idx = uuidHexIndexOf(t.substring(i, 1))
-      if idx < 0 {
+      val h = uuidHexCanonical(t.substring(i, 1))
+      if h.length == 0 {
         return None
       }
-      acc = acc + uuidHexChar(idx)
+      acc.append(h)
       i = i + 1
     }
-    Some(value = acc)
+    Some(value = acc.toString())
   } else {
     None
   }

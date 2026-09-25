@@ -604,21 +604,24 @@ any byte slice.
 ### `Std.StringHost` — `lyric-stdlib/std/_kernel/string_host.l`, `lyric-stdlib/std/_kernel_jvm/string_host.l`
 
 ```
-@axiom("System.Text.StringBuilder and String.IndexOf(string, int, StringComparison) conform to their documented .NET contracts")
-@axiom("java.lang.StringBuilder and String.indexOf(String, int) conform to their documented JVM contracts")
+@axiom("System.Text.StringBuilder, String.IndexOf(string, int, StringComparison) and String.CompareOrdinal(string, string) conform to their documented .NET contracts")
+@axiom("java.lang.StringBuilder, String.indexOf(String, int) and String.compareTo(String) conform to their documented JVM contracts")
 ```
 
 **Host surface**: `System.Text.StringBuilder` (constructor, `Append(string)`,
-`Append(char)`, `ToString`) and `String.IndexOf(string, int,
-StringComparison.Ordinal)` on .NET; `java.lang.StringBuilder` (constructor,
-`append(String)`, `append(char)`, `toString`) and `String.indexOf(String,
-int)` on the JVM. The native twin has no axiom: it binds
-`lyric_string_concat_list` / `lyric_string_index_of_from`, covered by the
+`Append(char)`, `ToString`), `String.IndexOf(string, int,
+StringComparison.Ordinal)` and `String.CompareOrdinal(string, string)` on
+.NET; `java.lang.StringBuilder` (constructor, `append(String)`,
+`append(char)`, `toString`), `String.indexOf(String, int)` and
+`String.compareTo(String)` on the JVM. The native twin binds
+`lyric_string_concat_list` / `lyric_string_index_of_from` /
+`lyric_string_ascii_case_compare` / `lyric_string_cmp`, covered by the
 `lyric-rt` C unit tests.
 
 **Gap**: the axiom assumes the builder's result is the in-order
-concatenation of every appended piece and that the search is ordinal
-(code-unit exact). Neither is modelled by the prover; the public wrappers'
+concatenation of every appended piece and that the search and comparison
+are ordinal (code-unit exact; byte order on native, which equals code-point
+order for UTF-8). Neither is modelled by the prover; the public wrappers'
 `requires:` clauses (`0 <= from <= s.length`) are the only checked
 obligations.
 
@@ -958,7 +961,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.RandomHost` | `random_host.l` | System.Random conforms to its documented .NET contracts; the Shared property returns a thread-safe shared instance (documented since .NET 6) |
 | `dotnet` | `Std.RegexHost` | `regex_host.l` | System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts |
 | `dotnet` | `Std.SecureRandomHost` | `secure_random_host.l` | System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output |
-| `dotnet` | `Std.StringHost` | `string_host.l` | System.Text.StringBuilder and String.IndexOf(string, int, StringComparison) conform to their documented .NET contracts |
+| `dotnet` | `Std.StringHost` | `string_host.l` | System.Text.StringBuilder, String.IndexOf(string, int, StringComparison) and String.CompareOrdinal(string, string) conform to their documented .NET contracts |
 | `dotnet` | `Std.TcpHost` | `tcp_host.l` | System.Net.Sockets and System.Net.Security operations conform to their documented .NET contracts |
 | `dotnet` | `Std.TimeHost` | `time_host.l` | System.DateTime / System.TimeSpan / System.DateTimeOffset / System.Threading.Thread conform to their documented .NET contracts |
 | `dotnet` | `Std.TlsHost` | `tls_host.l` | System.Security.Cryptography.X509Certificates operations conform to their documented .NET contracts |
@@ -983,7 +986,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.RandomHost` | `random_host.l` | java.util.Random conforms to its documented JDK contracts |
 | `jvm` | `Std.RegexHost` | `regex_host.l` | java.util.regex.Pattern and java.util.regex.Matcher conform to their documented JVM contracts |
 | `jvm` | `Std.SecureRandomHost` | `secure_random_host.l` | java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output |
-| `jvm` | `Std.StringHost` | `string_host.l` | java.lang.StringBuilder and String.indexOf(String, int) conform to their documented JVM contracts |
+| `jvm` | `Std.StringHost` | `string_host.l` | java.lang.StringBuilder, String.indexOf(String, int) and String.compareTo(String) conform to their documented JVM contracts |
 | `jvm` | `Std.TimeHost` | `time_host.l` | java.time.* / java.lang.Math.round / java.lang.System.nanoTime / java.lang.Thread.sleep conform to their documented JVM / ISO 8601 contracts |
 | `jvm` | `Std.TlsHost` | `tls_host.l` | java.security.cert / java.security.KeyFactory / java.security.Signature operations conform to their documented JVM contracts |
 | `jvm` | `Std.UnicodeHost` | `unicode_host.l` | java.lang.Character.getType conforms to its documented JVM contract; jvmCategoryToNetConvention correctly cross-references it to the .NET UnicodeCategory convention via Unicode General_Category |

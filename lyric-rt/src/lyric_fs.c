@@ -251,6 +251,45 @@ int32_t lyric_dir_create(const char* path) {
     return mkdir(path, 0755) == 0 ? 0 : -1;
 }
 
+static int32_t dir_is_existing(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode) ? 0 : -1;
+}
+
+/* `buf` is a private, writable copy of the path; `len` is its length.
+ * The full path is tried first, so the common case (parent present) is one
+ * mkdir(2); only ENOENT walks up to create the missing parent. Recursion
+ * depth is bounded by the number of path components. */
+static int32_t dir_create_all_buf(char* buf, size_t len) {
+    if (mkdir(buf, 0755) == 0) return 0;
+    if (errno == EEXIST) return dir_is_existing(buf);
+    if (errno != ENOENT) return -1;
+    size_t i = len;
+    while (i > 0 && buf[i - 1] == '/') i--; /* trailing slashes */
+    while (i > 0 && buf[i - 1] != '/') i--; /* last component */
+    while (i > 0 && buf[i - 1] == '/') i--; /* separator run */
+    if (i == 0) return -1;                  /* no parent left to create */
+    char saved = buf[i];
+    buf[i] = '\0';
+    int32_t rc = dir_create_all_buf(buf, i);
+    buf[i] = saved;
+    if (rc != 0) return -1;
+    if (mkdir(buf, 0755) == 0) return 0;
+    if (errno == EEXIST) return dir_is_existing(buf);
+    return -1;
+}
+
+int32_t lyric_dir_create_all(const char* path) {
+    size_t len = strlen(path);
+    if (len == 0) return -1;
+    char* buf = (char*)malloc(len + 1);
+    if (!buf) return -1;
+    memcpy(buf, path, len + 1);
+    int32_t rc = dir_create_all_buf(buf, len);
+    free(buf);
+    return rc;
+}
+
 int32_t lyric_dir_remove(const char* path) {
     return rmdir(path) == 0 ? 0 : -1;
 }

@@ -186,16 +186,15 @@ pub func isAscii(c: in Char): Bool {
   Host.hostCharToInt(c) <= 127
 }
 
-/// The decimal value of an ASCII digit '0'..'9', or `None` for other chars.
-/// Uses integer subtraction so the prover can verify the range directly.
+/// The decimal value of an ASCII digit '0'..'9' (code points 48..57), or
+/// `None` for other chars. Uses integer subtraction so the prover can verify
+/// the range directly.
 @pure
 @stable(since = "1.0")
 pub func digitValue(c: in Char): Option[Int] {
   val cp = Host.hostCharToInt(c)
-  val zero = Host.hostCharToInt('0')
-  val nine = Host.hostCharToInt('9')
-  if cp >= zero and cp <= nine {
-    Some(value = cp - zero)
+  if cp >= 48 and cp <= 57 {
+    Some(value = cp - 48)
   } else {
     None
   }
@@ -206,19 +205,14 @@ pub func digitValue(c: in Char): Option[Int] {
 @pure
 @stable(since = "1.0")
 pub func hexDigitValue(c: in Char): Option[Int] {
+  // '0'..'9' = 48..57, 'a'..'f' = 97..102, 'A'..'F' = 65..70.
   val cp = Host.hostCharToInt(c)
-  val zero = Host.hostCharToInt('0')
-  val nine = Host.hostCharToInt('9')
-  val lowA = Host.hostCharToInt('a')
-  val lowF = Host.hostCharToInt('f')
-  val upA = Host.hostCharToInt('A')
-  val upF = Host.hostCharToInt('F')
-  if cp >= zero and cp <= nine {
-    Some(value = cp - zero)
-  } else if cp >= lowA and cp <= lowF {
-    Some(value = cp - lowA + 10)
-  } else if cp >= upA and cp <= upF {
-    Some(value = cp - upA + 10)
+  if cp >= 48 and cp <= 57 {
+    Some(value = cp - 48)
+  } else if cp >= 97 and cp <= 102 {
+    Some(value = cp - 87)
+  } else if cp >= 65 and cp <= 70 {
+    Some(value = cp - 55)
   } else {
     None
   }

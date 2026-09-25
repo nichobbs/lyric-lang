@@ -58,19 +58,25 @@ pub func shrinkBool(b: in Bool): List[Bool] {
 // ─────────────────────────────────────────────────────────────────────────────
 // Repeatedly apply `shrink` until no candidate reduces the failure further.
 // First-found-wins: once a smaller failure is located the remaining candidates
-// at the current level are skipped and the recursion dives into the simpler one.
+// at the current level are skipped and shrinking continues from the simpler
+// one. Iterative, so a shrinker that steps by one cannot exhaust the stack
+// (#7284).
 func shrinkToFixedPoint[T](failing: in T, shrink: in (T) -> List[T], prop: in (T) -> Bool): T {
-  val candidates = shrink(failing)
   var best = failing
-  var j = 0
-  while j < candidates.count {
-    val candidate = candidates[j]
-    if not prop(candidate) {
-      best = shrinkToFixedPoint(candidate, shrink, prop)
-      j = candidates.count
-      // first smaller failure wins; skip the rest
-    } else {
-      j = j + 1
+  var progressed = true
+  while progressed {
+    progressed = false
+    val candidates = shrink(best)
+    var j = 0
+    while j < candidates.count {
+      val candidate = candidates[j]
+      if not prop(candidate) {
+        best = candidate
+        progressed = true
+        j = candidates.count
+      } else {
+        j = j + 1
+      }
     }
   }
   best
@@ -114,17 +120,21 @@ pub func forAll[T](
 // Converge Int shrinking toward a fixed point for a single-Int property.
 // Separated from shrinkToFixedPoint to avoid generic closure capture.
 func shrinkIntToFixedPoint(failing: in Int, min: in Int, prop: in (Int) -> Bool): Int {
-  val candidates = shrinkInt(failing, min)
   var best = failing
-  var j = 0
-  while j < candidates.count {
-    val c = candidates[j]
-    if not prop(c) {
-      best = shrinkIntToFixedPoint(c, min, prop)
-      j = candidates.count
-      // first smaller failure wins; skip the rest
-    } else {
-      j = j + 1
+  var progressed = true
+  while progressed {
+    progressed = false
+    val candidates = shrinkInt(best, min)
+    var j = 0
+    while j < candidates.count {
+      val c = candidates[j]
+      if not prop(c) {
+        best = c
+        progressed = true
+        j = candidates.count
+      } else {
+        j = j + 1
+      }
     }
   }
   best
@@ -211,36 +221,46 @@ pub func forAllIntPair(rng: in Random, min: in Int, max: in Int, n: in Int, prop
 }
 
 // Shrink the left component of a failing pair, holding the right fixed.
+// Iterative like `shrinkToFixedPoint` (#7284).
 func shrinkPairLeft(x: in Int, y: in Int, min: in Int, prop: in (Int, Int) -> Bool): Int {
-  val candidates = shrinkInt(x, min)
   var best = x
-  var j = 0
-  while j < candidates.count {
-    val c = candidates[j]
-    if not prop(c, y) {
-      best = shrinkPairLeft(c, y, min, prop)
-      j = candidates.count
-      // first smaller failure wins; skip the rest
-    } else {
-      j = j + 1
+  var progressed = true
+  while progressed {
+    progressed = false
+    val candidates = shrinkInt(best, min)
+    var j = 0
+    while j < candidates.count {
+      val c = candidates[j]
+      if not prop(c, y) {
+        best = c
+        progressed = true
+        j = candidates.count
+      } else {
+        j = j + 1
+      }
     }
   }
   best
 }
 
 // Shrink the right component of a failing pair, holding the left fixed.
+// Iterative like `shrinkToFixedPoint` (#7284).
 func shrinkPairRight(x: in Int, y: in Int, min: in Int, prop: in (Int, Int) -> Bool): Int {
-  val candidates = shrinkInt(y, min)
   var best = y
-  var j = 0
-  while j < candidates.count {
-    val c = candidates[j]
-    if not prop(x, c) {
-      best = shrinkPairRight(x, c, min, prop)
-      j = candidates.count
-      // first smaller failure wins; skip the rest
-    } else {
-      j = j + 1
+  var progressed = true
+  while progressed {
+    progressed = false
+    val candidates = shrinkInt(best, min)
+    var j = 0
+    while j < candidates.count {
+      val c = candidates[j]
+      if not prop(x, c) {
+        best = c
+        progressed = true
+        j = candidates.count
+      } else {
+        j = j + 1
+      }
     }
   }
   best

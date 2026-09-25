@@ -1433,6 +1433,25 @@ static void test_directories(void) {
 
     CHECK(lyric_dir_list("/nonexistent-lyric-rt-test-dir") == NULL);
 
+    /* create_all: nested parents, idempotent, trailing slash, and a
+     * regular file in the way. */
+    char deep[512], mid[512], top[512];
+    snprintf(top, sizeof top, "%s/a", dir);
+    snprintf(mid, sizeof mid, "%s/a/b", dir);
+    snprintf(deep, sizeof deep, "%s/a/b/c/", dir);
+    CHECK(lyric_dir_create_all(deep) == 0);
+    CHECK(lyric_dir_exists(deep));
+    CHECK(lyric_dir_create_all(deep) == 0);
+    CHECK(lyric_dir_create_all(sub) == 0);
+    CHECK(lyric_dir_create_all("") == -1);
+    char blocked[512];
+    snprintf(blocked, sizeof blocked, "%s/one.txt/x", dir);
+    CHECK(lyric_dir_create_all(blocked) == -1);
+    CHECK(lyric_dir_create_all(f1) == -1);
+    CHECK(lyric_dir_remove(deep) == 0);
+    CHECK(lyric_dir_remove(mid) == 0);
+    CHECK(lyric_dir_remove(top) == 0);
+
     /* Removal: non-empty dir fails, empty dir succeeds. */
     CHECK(lyric_dir_remove(dir) == -1); /* not empty */
     CHECK(lyric_dir_remove(sub) == 0);

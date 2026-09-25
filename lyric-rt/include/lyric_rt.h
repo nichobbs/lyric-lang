@@ -443,6 +443,11 @@ int32_t lyric_file_mtime_epoch_nanos_ok(const char* path, int64_t* out_nanos);
  * Returns 0 on success, -1 on failure. */
 int32_t lyric_dir_create(const char* path);
 
+/* `mkdir -p`: creates `path` and any missing parents, mode 0755.  An
+ * existing directory counts as success; an existing non-directory at the
+ * path or any parent is a failure.  Returns 0 on success, -1 on failure. */
+int32_t lyric_dir_create_all(const char* path);
+
 /* rmdir(2) wrapper; the directory must be empty.  Returns 0 on success,
  * -1 on failure. */
 int32_t lyric_dir_remove(const char* path);
