@@ -63,6 +63,8 @@ The range syntax has four forms:
 | `..= b` | From the type's minimum up to `b` |
 | `a ..` | From `a` up to the type's maximum |
 
+A range can also be written inline on a parameter, return type or binding, without naming a type: `func digit(d: in Int range 0 ..= 9)`. The value is still an `Int`, but the range is enforced: an out-of-range literal is a compile error (`T0015`), and anything else is checked at runtime when the parameter arrives, the function returns, the binding is initialised, or a refined `var` is assigned. A failure panics with `RangeViolated` and names the parameter or variable.
+
 One practical payoff comes up in §3.5: array indexing. When you index an `array[N, T]` with a value whose range is statically proven to be within `0 ..= N - 1`, the compiler elides the bounds check entirely. No unsafe annotations, no manual proof — the type system handles it.
 
 ::: sidebar
