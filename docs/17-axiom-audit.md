@@ -975,7 +975,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
 | `jvm` | `Std.ConsoleHost` | `console_host.l` | java.lang.System.{out,err,in} and java.io.BufferedReader conform to their documented JVM contracts |
-| `jvm` | `Std.EncodingHost` | `encoding_host.l` | JVM List[Byte].toArray() produces a properly typed byte array; pure-Lyric accumulators are safe on JVM |
+| `jvm` | `Std.EncodingHost` | `encoding_host.l` | JVM List[Byte].toArray() produces a properly typed byte array and java.lang.String.getBytes(\"UTF-8\") conforms to its documented JVM contract; pure-Lyric accumulators are safe on JVM |
 | `jvm` | `Std.EnvironmentHost` | `environment_host.l` | java.lang.System operations conform to their documented JVM contracts |
 | `jvm` | `Std.FileHost` | `file_host.l` | java.io.File / FileInputStream / FileOutputStream conform to their documented JVM contracts |
 | `jvm` | `Std.FormatHost` | `format_host.l` | java.math.BigDecimal, java.lang.Integer, and java.util.Locale conform to their documented JVM contracts |

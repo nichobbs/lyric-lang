@@ -53,6 +53,34 @@ test "DeadLetterEntry construction and field access" {
 }
 
 // ─── AckMode ─────────────────────────────────────────────────────────────────
+// ─── InProcessDeadLetterStore ─────────────────────────────────────────────────
+func deadLetter(id: in String): Mq.DeadLetterEntry {
+  val msg = Mq.Message(id = id, body = "", headers = [], deliveryCount = 1)
+  Mq.DeadLetterEntry(message = msg, reason = "failed", failedAt = 0)
+}
+
+test "InProcessDeadLetterStore keeps the newest maxEntries entries in order (#7279)" {
+  val store: Mq.DeadLetterStore = Mq.InProcessDeadLetterStore(entries = [], maxEntries = 3)
+  store.append(deadLetter("a"))
+  store.append(deadLetter("b"))
+  store.append(deadLetter("c"))
+  store.append(deadLetter("d"))
+  store.append(deadLetter("e"))
+  val kept = store.list()
+  assertEqualInt(store.count(), 3, "capacity is kept")
+  assertEqual(kept[0].message.id, "c", "oldest retained")
+  assertEqual(kept[1].message.id, "d", "middle")
+  assertEqual(kept[2].message.id, "e", "newest last")
+}
+
+test "InProcessDeadLetterStore with maxEntries 0 keeps only the latest entry" {
+  val store: Mq.DeadLetterStore = Mq.InProcessDeadLetterStore(entries = [], maxEntries = 0)
+  store.append(deadLetter("a"))
+  store.append(deadLetter("b"))
+  assertEqualInt(store.count(), 1, "one entry")
+  assertEqual(store.list()[0].message.id, "b", "the latest")
+}
+
 test "AckMode.Auto can be matched" {
   val mode = Mq.AckMode.Auto
   match mode {

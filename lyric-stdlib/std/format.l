@@ -7,14 +7,13 @@
 //! Three tiers:
 //!
 //!   1. Pure-Lyric helpers (`zeroPad`, `hexPad`) that compose the
-//!      trampolines below without adding new host calls.
+//!      helpers below without adding new host calls.
 //!
-//!   2. Trampolines into BCL instance methods via `Std.FormatHost`
-//!      for hex formatting and fixed-point doubles (`toHexString`,
-//!      `formatFixed`).
+//!   2. Host number formatting via `Std.FormatHost` for hex and
+//!      fixed-point doubles (`toHexString`, `formatFixed`).
 //!
-//!   3. Padding trampolines into `System.String.PadLeft / PadRight` via
-//!      the kernel (`padLeft`, `padRight`).
+//!   3. Padding (`padLeft`, `padRight`), pure Lyric over
+//!      `Std.String.StringBuilder`, linear in the padded width.
 @runtime_checked
 package Std.Format
 

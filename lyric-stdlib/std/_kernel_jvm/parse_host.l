@@ -46,12 +46,69 @@ pub func hostTryParseDouble(s: in String, value: out Double): Bool {
   if last == 'd' or last == 'D' or last == 'f' or last == 'F' {
     return false
   }
+  // Reject malformed input by its syntax rather than by catching
+  // `NumberFormatException`, which builds an exception and stack trace for
+  // every invalid string (#7283). The `try` below remains a safety net that
+  // well-formed input does not reach.
+  if not isJdkDecimalFloat(t) {
+    return false
+  }
   try {
     value = JDouble.parseDouble(t)
     true
   } catch Bug as _ {
     false
   }
+}
+
+// The decimal subset of `Double.valueOf`'s grammar that remains once hex
+// floats and type suffixes are rejected above: an optional sign, then
+// "NaN", "Infinity", or digits with at most one '.' (at least one digit in
+// total) and an optional exponent `[eE][+-]?digits`. `t` is already trimmed.
+func isJdkDecimalFloat(t: in String): Bool {
+  val n = t.length
+  var i = 0
+  if i < n and (t[i] == '+' or t[i] == '-') {
+    i = i + 1
+  }
+  val rest = t.substring(i, n - i)
+  if rest == "NaN" or rest == "Infinity" {
+    return true
+  }
+  var digits = 0
+  while i < n and isAsciiDigit(t[i]) {
+    i = i + 1
+    digits = digits + 1
+  }
+  if i < n and t[i] == '.' {
+    i = i + 1
+    while i < n and isAsciiDigit(t[i]) {
+      i = i + 1
+      digits = digits + 1
+    }
+  }
+  if digits == 0 {
+    return false
+  }
+  if i < n and (t[i] == 'e' or t[i] == 'E') {
+    i = i + 1
+    if i < n and (t[i] == '+' or t[i] == '-') {
+      i = i + 1
+    }
+    var expDigits = 0
+    while i < n and isAsciiDigit(t[i]) {
+      i = i + 1
+      expDigits = expDigits + 1
+    }
+    if expDigits == 0 {
+      return false
+    }
+  }
+  i == n
+}
+
+func isAsciiDigit(c: in Char): Bool {
+  c >= '0' and c <= '9'
 }
 
 /// Trims and matches "true"/"false" case-insensitively — the documented

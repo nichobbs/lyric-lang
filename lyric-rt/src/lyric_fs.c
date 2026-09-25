@@ -120,17 +120,15 @@ int32_t lyric_file_read_all_ok(const char* path, LyricString** out) {
  * binds the returned owned list directly, avoiding the out-param slot
  * protocol that would leak a ref-typed initialiser. */
 LyricList* lyric_file_read_bytes(const char* path, int32_t* ok) {
-    LyricList* list = lyric_list_new(0);
     int64_t len = 0;
     uint8_t* buf = read_file_to_buf(path, &len);
     if (!buf) {
         *ok = 0;
-        return list;
+        return lyric_list_new(0);
     }
-    /* Read straight into the list — no intermediate LyricString (#4834). */
-    for (int64_t i = 0; i < len; i++) {
-        lyric_list_push(list, (int64_t)buf[i]);
-    }
+    /* Read straight into the list — no intermediate LyricString (#4834),
+     * sized once (#7282). */
+    LyricList* list = lyric_list_from_bytes(buf, len);
     free(buf);
     *ok = 1;
     return list;

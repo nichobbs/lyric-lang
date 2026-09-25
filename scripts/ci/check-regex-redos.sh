@@ -6,7 +6,7 @@
 # Builds a program that races a catastrophic-backtracking pattern against
 # adversarial input through Std.Regex.tryIsMatch and asserts Err(TimedOut)
 # within the compiled-in deadline, proving the std/_kernel_jvm/regex_host.l
-# daemon-thread-race shim actually enforces the timeout it accepts.
+# inline deadline (#7283) actually enforces the timeout it accepts.
 #
 # Extracted out of ci.yml to keep the workflow file under its size
 # ceiling — see scripts/ci/self-test.sh's header for the full story.
@@ -39,10 +39,10 @@ set -e
 echo "$out"
 
 if [ "$code" -ne 0 ]; then
-  echo "::error::regex_redos_jvm_main exited $code (#1103 daemon-thread shim not enforcing the deadline, or a hang past the 20s cap)" >&2
+  echo "::error::regex_redos_jvm_main exited $code (the JVM regex deadline, #1103/#7283, is not enforced, or a hang past the 20s cap)" >&2
   exit 1
 fi
 grep -q "^ok:" <<< "$out" || {
-  echo "::error::regex_redos_jvm_main did not report ok (#1103 daemon-thread shim not enforcing the deadline)" >&2
+  echo "::error::regex_redos_jvm_main did not report ok (the JVM regex deadline, #1103/#7283, is not enforced)" >&2
   exit 1
 }

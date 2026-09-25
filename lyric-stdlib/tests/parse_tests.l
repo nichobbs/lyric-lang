@@ -74,6 +74,29 @@ func testParseOptDouble(): Unit {
   assertTrue(isNone[Double](parseOptDouble("xyz")), "xyz double is None")
 }
 
+// Forms both parsers agree on (#7283: the JVM kernel now rejects malformed
+// input by syntax before calling the JDK).
+func testParseOptDoubleForms(): Unit {
+  assertTrue(unwrapOr[Double](parseOptDouble("-2.5e3"), 0.0) == 0.0 - 2500.0, "-2.5e3")
+  assertTrue(unwrapOr[Double](parseOptDouble("+1E-3"), 0.0) == 0.001, "+1E-3")
+  assertTrue(unwrapOr[Double](parseOptDouble(".5"), 0.0) == 0.5, ".5")
+  assertTrue(unwrapOr[Double](parseOptDouble("5."), 0.0) == 5.0, "5.")
+  assertTrue(unwrapOr[Double](parseOptDouble("  42  "), 0.0) == 42.0, "surrounding whitespace")
+  assertTrue(isSome[Double](parseOptDouble("Infinity")), "Infinity")
+  assertTrue(isSome[Double](parseOptDouble("-Infinity")), "-Infinity")
+  assertTrue(isSome[Double](parseOptDouble("NaN")), "NaN")
+  assertTrue(isNone[Double](parseOptDouble("")), "empty")
+  assertTrue(isNone[Double](parseOptDouble("1.2.3")), "two points")
+  assertTrue(isNone[Double](parseOptDouble("e5")), "exponent without mantissa")
+  assertTrue(isNone[Double](parseOptDouble("1e")), "exponent without digits")
+  assertTrue(isNone[Double](parseOptDouble("1e+")), "signed exponent without digits")
+  assertTrue(isNone[Double](parseOptDouble(".")), "lone point")
+  assertTrue(isNone[Double](parseOptDouble("-")), "lone sign")
+  assertTrue(isNone[Double](parseOptDouble("1 2")), "inner space")
+  assertTrue(isNone[Double](parseOptDouble("0x1p3")), "hex float")
+  assertTrue(isNone[Double](parseOptDouble("1.5f")), "type suffix")
+}
+
 func testParseOptBool(): Unit {
   assertTrue(isSome[Bool](parseOptBool("true")), "true parses")
   assertTrue(isSome[Bool](parseOptBool("false")), "false parses")
@@ -89,6 +112,7 @@ func main(): Unit {
   testParseOptLongBasic()
   testParseOptLongBoundary()
   testParseOptDouble()
+  testParseOptDoubleForms()
   testParseOptBool()
   println("parse: ok")
 }

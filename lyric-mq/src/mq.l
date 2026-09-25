@@ -176,13 +176,12 @@ impl DeadLetterStore for InProcessDeadLetterStore {
     if self.entries.length < self.maxEntries {
       self.entries = self.entries.append(dlEntry)
     } else {
-      var trimmed: slice[DeadLetterEntry] = []
-      var i: Int = 1
-      while i < self.entries.length {
-        trimmed = trimmed.append(self.entries[i])
-        i = i + 1
-      }
-      self.entries = trimmed.append(dlEntry)
+      // At capacity: drop the oldest entry (if any, since `maxEntries` may be
+      // 0). One sub-slice copy plus one append, not an append per retained
+      // entry (#7279). The typed local is needed on MSIL (#7365).
+      val keepFrom = if self.entries.length > 0 { 1 } else { 0 }
+      val retained: slice[DeadLetterEntry] = self.entries.slice(keepFrom, self.entries.length)
+      self.entries = retained.append(dlEntry)
     }
   }
 

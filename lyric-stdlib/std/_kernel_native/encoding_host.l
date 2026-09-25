@@ -25,7 +25,7 @@
 //! calling in here).
 //!
 //! Internal: only Std.Encoding should import this.
-@axiom("native List[Byte].toArray() produces a properly typed byte array; pure-Lyric accumulators are safe on native")
+@axiom("native List[Byte].toArray() produces a properly typed byte array and lyric_string_utf8_bytes conforms to its lyric_rt.h contract; pure-Lyric accumulators are safe on native")
 package Std.EncodingHost
 
 import Std.Core
@@ -65,6 +65,10 @@ extern func rtByteAt(s: String, idx: Int): Int = "lyric_string_byte_at"
 // file's `mkDecl1("lyric_string_from_char", ...)` line).
 extern func rtStrFromChar(cp: Int): String = "lyric_string_from_char"
 
+// `slice[Byte]` shares the `LyricList` representation (D-N-015), so the
+// runtime builds the result directly (#7271).
+extern func rtUtf8Bytes(s: String): slice[Byte] = "lyric_string_utf8_bytes"
+
 // Sentinel charset name; the accumulator in hostEncodeUtf8 ignores it.
 pub func hostGetUtf8Enc(): String {
   "utf-8"
@@ -93,16 +97,9 @@ pub func hostStringFromCodepoint(cp: in Int): String {
 // unit / surrogate pair to UTF-8), native's `LyricString` is ALREADY a
 // UTF-8 byte buffer (see lyric_rt.h), so this is a straight byte copy —
 // no surrogate-pair decoding is meaningful here, since there is no UTF-16
-// form to decode from.
+// form to decode from. One sized copy in the runtime (#7271).
 pub func hostEncodeUtf8(enc: in String, s: in String): slice[Byte] {
-  val result: List[Byte] = newList()
-  val len = s.length
-  var i = 0
-  while i < len {
-    result.add(hostCharCodeAt(s, i).toByte())
-    i += 1
-  }
-  result.toArray()
+  rtUtf8Bytes(s)
 }
 
 // Pure-Lyric Base64 decoder, byte-at-a-time (see hostCharCodeAt above).
@@ -112,7 +109,7 @@ pub func hostFromBase64(s: in String): slice[Byte] {
   if len == 0 {
     return []
   }
-  val result: List[Byte] = newList()
+  val result: List[Byte] = newListWithCapacity(len / 4 * 3)
   var i = 0
   while i < len {
     val c0 = b64v(hostCharCodeAt(s, i))

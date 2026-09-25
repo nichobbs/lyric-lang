@@ -1,12 +1,12 @@
 //! std/_kernel/format_host.l — host boundary for number and string formatting.
 //!
-//! All five operations resolve directly to BCL instance methods or a static
+//! Every operation resolves directly to a BCL instance method or a static
 //! property via the emitter's type-aware extern resolver, eliminating the
-//! Lyric.Stdlib.FormatHost F# shim.
+//! Lyric.Stdlib.FormatHost F# shim. (Padding is pure Lyric in `Std.Format`,
+//! not a host call.)
 //!
-//! `System.Int32.ToString(string)` and `System.String.PadLeft/PadRight(int,char)`
-//! are unambiguous via instanceTyped (exact-param-type match after skipping
-//! the receiver arg).  `System.Double.ToString(string, IFormatProvider)` is
+//! `System.Int32.ToString(string)` is unambiguous via instanceTyped
+//! (exact-param-type match after skipping the receiver arg).  `System.Double.ToString(string, IFormatProvider)` is
 //! resolved via instanceArity (2 remaining params), which uniquely identifies
 //! the format+culture overload.  `CultureInfo.InvariantCulture` resolves via
 //! the propGetter() fallback.
