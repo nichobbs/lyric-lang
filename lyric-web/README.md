@@ -283,6 +283,12 @@ All config fields are env-var-backed, read once at startup, fail-fast if a requi
 | `LYRIC_CONFIG_WEB_SERVER_HOST` | `String` | `0.0.0.0` | Bind address |
 | `LYRIC_CONFIG_WEB_SERVER_PORT` | `Int` | `8080` | TCP port (1–65535) |
 
+Request bodies are capped at 10 MiB on both targets (`Std.HttpEngine`'s
+`EngineLimits.defaults().maxBodyBytes`). A larger body is answered with a
+bodyless `413 Content Too Large` and never reaches a handler. That covers a
+declared `Content-Length` and a chunked body that grows past the limit while
+it is read.
+
 ### HTTPS (TLS)
 
 `Web.serveTls(router, host, port, tls)` serves `router` over HTTPS on **both

@@ -49,6 +49,18 @@ hello="$(curl -s --max-time 3 http://localhost:8099/hello/Ada)"
 header="$(curl -s --max-time 3 -H 'X-Test: abc' http://localhost:8099/echo-header)"
 body="$(curl -s --max-time 3 -X POST --data 'ping' http://localhost:8099/echo-body)"
 code404="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' http://localhost:8099/nope)"
+# Request-body cap (#7233): the Undertow kernel enforces the same 10 MiB
+# EngineLimits.maxBodyBytes as the dotnet engine.  A body exactly at the limit
+# is echoed in full; one byte over is refused with 413, whether its size is
+# declared up front (Content-Length) or only discovered while reading
+# (chunked).
+body_dir="$(mktemp -d)"
+head -c 10485760 /dev/zero | tr '\0' 'a' > "$body_dir/at-limit"
+head -c 10485761 /dev/zero | tr '\0' 'a' > "$body_dir/over-limit"
+atlimit="$(curl -s --max-time 30 -o /dev/null -w '%{http_code}:%{size_download}' -X POST --data-binary @"$body_dir/at-limit" http://localhost:8099/echo-body)"
+overdeclared="$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' -X POST --data-binary @"$body_dir/over-limit" http://localhost:8099/echo-body || true)"
+overchunked="$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' -X POST -H 'Transfer-Encoding: chunked' --data-binary @"$body_dir/over-limit" http://localhost:8099/echo-body || true)"
+rm -rf "$body_dir"
 # TLS phase 2.2/2.3 (#5881/#6017): before the plaintext listener,
 # main runs three in-process self-checks and logs a single
 # PASS/FAIL line each:
@@ -88,6 +100,9 @@ fail=0
 [ "$header" = '{"xTest":"abc"}' ] || { echo "::error::header endpoint returned '$header'"; fail=1; }
 [ "$body" = "ping" ] || { echo "::error::body endpoint returned '$body'"; fail=1; }
 [ "$code404" = "404" ] || { echo "::error::unmatched route returned HTTP $code404, expected 404"; fail=1; }
+[ "$atlimit" = "200:10485760" ] || { echo "::error::a body at the 10 MiB limit returned '$atlimit', expected 200:10485760"; fail=1; }
+[ "$overdeclared" = "413" ] || { echo "::error::an over-limit Content-Length body returned HTTP $overdeclared, expected 413"; fail=1; }
+[ "$overchunked" = "413" ] || { echo "::error::an over-limit chunked body returned HTTP $overchunked, expected 413"; fail=1; }
 [ -n "$h2selfcheck" ] || { echo "::error::HTTPS/h2 in-process self-check did not report PASS (Web.serveTls + negotiatedVersion)"; fail=1; }
 [ -n "$mtlsmisconfigselfcheck" ] || { echo "::error::mTLS-misconfig self-check did not report PASS (Web.serveTls requireClientCert with no clientCa -> typed ServerTlsUnsupported)"; fail=1; }
 [ -n "$mtlsacceptselfcheck" ] || { echo "::error::mTLS-accept self-check did not report PASS (trusted client cert should connect)"; fail=1; }
@@ -97,4 +112,4 @@ if [ "$fail" != 0 ]; then
   tail -40 /tmp/jvm_server_smoke.run.log
   exit 1
 fi
-echo "lyric-web Undertow JVM smoke passed (4/4 plaintext endpoints + HTTPS/h2 serveTls: $h2selfcheck; mTLS-misconfig: $mtlsmisconfigselfcheck; mTLS-accept: $mtlsacceptselfcheck; mTLS-reject: $mtlsrejectselfcheck; curl --http2 $curlh2)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+echo "lyric-web Undertow JVM smoke passed (4/4 plaintext endpoints + 10 MiB body cap (413) + HTTPS/h2 serveTls: $h2selfcheck; mTLS-misconfig: $mtlsmisconfigselfcheck; mTLS-accept: $mtlsacceptselfcheck; mTLS-reject: $mtlsrejectselfcheck; curl --http2 $curlh2)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

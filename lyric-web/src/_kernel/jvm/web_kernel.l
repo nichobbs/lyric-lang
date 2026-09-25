@@ -39,6 +39,7 @@ import Std.Collections
 import Std.Console as Console
 import Std.Tls
 import Std.HttpServer
+import Std.HttpEngine
 import Web
 
 // ─── Undertow HTTP server ───────────────────────────────────────────────────
@@ -129,29 +130,68 @@ func buildRequestHeaders(hm: in JHeaderMap): Map[String, String] {
   result
 }
 
-func readRequestBody(exchange: in JHttpServerExchange): String {
+// The request-body ceiling, shared with the dotnet path: `Std.HttpServer`'s
+// engine enforces the same `EngineLimits.defaults().maxBodyBytes` (10 MiB)
+// there, so a body either target accepts is accepted by both (#7233).
+func maxRequestBodyBytes(): Int {
+  EngineLimits.defaults().maxBodyBytes
+}
+
+// The body as UTF-8 text, or `None` when it exceeds `limit` bytes.  A declared
+// `Content-Length` over the limit is refused before anything is read; a
+// chunked or undeclared body is read at most `limit + 1` bytes, so an
+// oversized one never buffers more than that.
+func readRequestBody(exchange: in JHttpServerExchange, limit: in Int): Option[String] {
+  val declared: Long = exchange.getRequestContentLength()
+  if declared > limit.toLong() {
+    return None
+  }
   val stream: JInputStream = exchange.getInputStream()
-  val bytes = stream.readAllBytes()
-  JString.new(bytes, "UTF-8")
+  val bytes = stream.readNBytes(limit + 1)
+  if bytes.length > limit {
+    return None
+  }
+  Some(value = JString.new(bytes, "UTF-8"))
 }
 
 // `pathParams` is filled in by Web.dispatch's route matching, not here —
-// mirrors Web.serve's own dotnet-side buildRequest.
-func buildJvmRequest(exchange: in JHttpServerExchange): Web.Request {
+// mirrors Web.serve's own dotnet-side buildRequest.  `None` means the body
+// exceeded `maxRequestBodyBytes()`.
+func buildJvmRequest(exchange: in JHttpServerExchange): Option[Web.Request] {
   val method = exchange.getRequestMethod().toString().toUpper()
   val path = exchange.getRequestPath()
   val queryParams = Web.parseQueryString(exchange.getQueryString())
   val headers = buildRequestHeaders(exchange.getRequestHeaders())
-  val body = if method == "GET" or method == "HEAD" { "" } else { readRequestBody(exchange) }
-  val noParams: Map[String, String] = newMap()
-  Web.Request(
-    method = method,
-    path = path,
-    pathParams = noParams,
-    queryParams = queryParams,
-    headers = headers,
-    body = body
-  )
+  val body = if method == "GET" or method == "HEAD" {
+    Some(value = "")
+  } else {
+    readRequestBody(exchange, maxRequestBodyBytes())
+  }
+  match body {
+    case None -> None
+    case Some(text) -> {
+      val noParams: Map[String, String] = newMap()
+      Some(
+        value = Web.Request(
+          method = method,
+          path = path,
+          pathParams = noParams,
+          queryParams = queryParams,
+          headers = headers,
+          body = text
+        )
+      )
+    }
+  }
+}
+
+// A bodyless `413 Content Too Large` (RFC 9110 §15.5.14), never dispatched,
+// with the connection closed so the unread remainder of the body is not
+// drained, matching the dotnet engine's rejection.
+func writeBodyTooLarge(exchange: in JHttpServerExchange): Unit {
+  exchange.setStatusCode(413)
+  val _ = exchange.setPersistent(false)
+  val _ = exchange.endExchange()
 }
 
 func writeJvmResponse(exchange: in JHttpServerExchange, resp: in Web.Response): Unit {
@@ -213,9 +253,10 @@ impl JHttpHandler for LyricUndertowHandler {
     // completes the exchange automatically once this method returns.
     val _ = exchange.startBlocking()
     try {
-      val req = buildJvmRequest(exchange)
-      val resp = Web.dispatch(self.router, req)
-      writeJvmResponse(exchange, resp)
+      match buildJvmRequest(exchange) {
+        case None -> writeBodyTooLarge(exchange)
+        case Some(req) -> writeJvmResponse(exchange, Web.dispatch(self.router, req))
+      }
     } catch Bug as e {
       Console.error("[lyric-web] request handling failed: " + e.message)
       writeJvmResponse(exchange, Web.errorResponse(Web.internalError(e.message)))
