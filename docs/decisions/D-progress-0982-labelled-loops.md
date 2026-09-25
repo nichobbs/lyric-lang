@@ -1,4 +1,4 @@
-# D-progress-974 — Labelled loops
+# D-progress-982 — Labelled loops
 
 **Status:** shipped
 
@@ -57,7 +57,7 @@ a panic before: `do { }` and a counted range `for` (`lo ..< hi`,
 MSIL and JVM counting loops do, and uses unsigned comparison for `Byte`
 bounds (#4628).
 
-The contract elaborator's loop-exit invariant walk (D-progress-969) already
+The contract elaborator's loop-exit invariant walk (D-progress-977) already
 treated `break label` inside a nested loop as leaving the labelled loop.
 It now receives real labels.
 

@@ -1,4 +1,4 @@
-# D-progress-968 — Protocol and I/O contracts; JVM `default()` assignment
+# D-progress-976 — Protocol and I/O contracts; JVM `default()` assignment
 
 **Status:** shipped
 
