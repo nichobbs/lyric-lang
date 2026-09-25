@@ -1279,7 +1279,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0012` | Primitive type does not take type arguments |
 | `T0013` | Name is not a type |
 | `T0014` | Unknown qualified type name (last segment not in scope) |
-| `T0015` | Integer literal out of range for an inline range-refined type |
+| `T0015` | Integer literal out of range for the declared integer type (an inline range-refined type, or a plain `Byte`/`Int`/`UInt`/`Long`/`ULong`/`Nat` binding) |
 | `T0016` | Non-exhaustive `match` (uncovered union/enum case, `Bool`, or scalar without `_`) |
 | `T0017` | Type alias is part of a cycle and does not resolve to a type |
 | `T0020` | Unknown name (undefined variable or function) |

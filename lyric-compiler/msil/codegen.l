@@ -11411,6 +11411,43 @@ func normalizeIntCmpWidthMsil(
   }
 }
 
+// Widen a mixed i4/i8 integer operand pair on the stack to i8 before an
+// arithmetic opcode (#7350), as the type checker's `widenArithmetic` types
+// the result (`Int + Long` is a `Long`).  `underTy` is the operand below the
+// top, `topTy` the one on top; `*Unsigned` flags a `UInt` operand, which
+// widens with `conv.u8` (zero-extend) rather than `conv.i8`.  Returns
+// `MLong` when either operand is (now) i8, else `underTy`.  Without this the
+// arms picked the opcode from the left operand alone and combined an i4
+// with an i8 as int32, silently truncating the result.
+func widenArithOperandsMsil(
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  underTy: in MsilType,
+  topTy: in MsilType,
+  underUnsigned: in Bool,
+  topUnsigned: in Bool,
+): MsilType {
+  val uI8 = match underTy { case MLong -> true; case _ -> false }
+  val tI8 = match topTy { case MLong -> true; case _ -> false }
+  val uI4 = match underTy { case MInt -> true; case MByte -> true; case MChar -> true; case _ -> false }
+  val tI4 = match topTy { case MInt -> true; case MByte -> true; case MChar -> true; case _ -> false }
+  if uI8 and tI4 {
+    insns.add(if topUnsigned { MConvU8 } else { MConvI8 })
+    return MLong
+  }
+  if uI4 and tI8 {
+    val tmp = allocSlotMsil(fctx, "__arithw_" + toString(fctx.slotTicker.count), MLong)
+    emitStoreSlot(insns, tmp, fctx.paramCount)
+    insns.add(if underUnsigned { MConvU8 } else { MConvI8 })
+    emitLoadSlot(insns, tmp, fctx.paramCount)
+    return MLong
+  }
+  if uI8 or tI8 {
+    return MLong
+  }
+  underTy
+}
+
 func lowerBinopMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -11789,9 +11826,14 @@ func lowerBinopMsil(
           } else {
             -1
           }
-          lowerExprMsil(cctx, fctx, insns, rhs)
+          val baddLRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+          val baddLLhsUn = isUnsignedExprMsil(fctx, lhs)
+          val baddLRhsUn = isUnsignedExprMsil(fctx, rhs)
           if baddLSpillIdx >= 0 {
             insns.add(MLdloc(slot = baddLSpillIdx))
+            val _ = widenArithOperandsMsil(fctx, insns, baddLRhsTy, MLong, baddLRhsUn, baddLLhsUn)
+          } else {
+            val _ = widenArithOperandsMsil(fctx, insns, MLong, baddLRhsTy, baddLLhsUn, baddLRhsUn)
           }
           insns.add(MAdd)
           MLong
@@ -11815,12 +11857,20 @@ func lowerBinopMsil(
           } else {
             -1
           }
-          lowerExprMsil(cctx, fctx, insns, rhs)
-          if baddISpillIdx >= 0 {
+          val baddIRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+          val baddILhsUn = isUnsignedExprMsil(fctx, lhs)
+          val baddIRhsUn = isUnsignedExprMsil(fctx, rhs)
+          val baddIWide = if baddISpillIdx >= 0 {
             insns.add(MLdloc(slot = baddISpillIdx))
+            widenArithOperandsMsil(fctx, insns, baddIRhsTy, lhsTy, baddIRhsUn, baddILhsUn)
+          } else {
+            widenArithOperandsMsil(fctx, insns, lhsTy, baddIRhsTy, baddILhsUn, baddIRhsUn)
           }
           insns.add(MAdd)
-          MInt
+          match baddIWide {
+            case MLong -> MLong
+            case _ -> MInt
+          }
         }
       }
     }
@@ -11839,7 +11889,16 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = bsubSpillIdx))
         insns.add(MLdloc(slot = rS - fctx.paramCount))
       }
-      match bsubLhsTy {
+      val bsubWide = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bsubLhsTy,
+        bsubRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
+      val bsubWideEff = match bsubWide { case MLong -> MLong; case _ -> bsubLhsTy }
+      match bsubWideEff {
         case MLong -> {
           insns.add(MSub)
           MLong
@@ -11862,11 +11921,17 @@ func lowerBinopMsil(
       } else {
         -1
       }
-      lowerExprMsil(cctx, fctx, insns, rhs)
-      if bmulSpillIdx >= 0 {
+      val bmulRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      val bmulLhsUn = isUnsignedExprMsil(fctx, lhs)
+      val bmulRhsUn = isUnsignedExprMsil(fctx, rhs)
+      val bmulWide = if bmulSpillIdx >= 0 {
         insns.add(MLdloc(slot = bmulSpillIdx))
+        widenArithOperandsMsil(fctx, insns, bmulRhsTy, bmulLhsTy, bmulRhsUn, bmulLhsUn)
+      } else {
+        widenArithOperandsMsil(fctx, insns, bmulLhsTy, bmulRhsTy, bmulLhsUn, bmulRhsUn)
       }
-      match bmulLhsTy {
+      val bmulWideEff = match bmulWide { case MLong -> MLong; case _ -> bmulLhsTy }
+      match bmulWideEff {
         case MLong -> {
           insns.add(MMul)
           MLong
@@ -11902,7 +11967,16 @@ func lowerBinopMsil(
       // divides unsigned (a Byte is unsigned 0..255 regardless of this
       // flag) and `MDouble` has no unsigned form.
       val bdivIsUnsigned = isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs)
-      match bdivLhsTy {
+      val bdivWide = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bdivLhsTy,
+        bdivRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
+      val bdivWideEff = match bdivWide { case MLong -> MLong; case _ -> bdivLhsTy }
+      match bdivWideEff {
         case MLong -> {
           if bdivIsUnsigned {
             insns.add(MDivUn)
@@ -11948,7 +12022,16 @@ func lowerBinopMsil(
       // signed `rem` — see `isUnsignedExprMsil` and the matching `BDiv`
       // comment above.
       val bmodIsUnsigned = isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs)
-      match bmodLhsTy {
+      val bmodWide = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bmodLhsTy,
+        bmodRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
+      val bmodWideEff = match bmodWide { case MLong -> MLong; case _ -> bmodLhsTy }
+      match bmodWideEff {
         case MLong -> {
           if bmodIsUnsigned {
             insns.add(MRemUn)
@@ -21070,6 +21153,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MConvR8 -> 0
     case MConvU1 -> 0
     case MConvU2 -> 0
+    case MConvU8 -> 0
     case MNewobj(_) -> 1
     case MLdfld(_) -> 0
     case MLdflda(_) -> 0

@@ -313,7 +313,44 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
-  Some(value = monoRes.file)
+  Some(value = mapExprsInFile(monoRes.file, foldNegatedIntLiteral))
+}
+
+// `-<unsuffixed integer literal>` becomes one negative literal (#7346).
+// The type checker types `-2147483648` as `Int`, but its operand alone is
+// too large for `Int`, and every backend sized the negation by the operand:
+// the JVM pushed a long into an int slot (VerifyError) and MSIL emitted a
+// long.  A single literal lets each backend size the constant by its real
+// value.  Runs after elaboration and mono, so contract asserts and
+// specialised bodies are covered.
+func foldNegatedIntLiteral(e: in Expr): Expr {
+  match e.kind {
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind {
+        case ELiteral(lit) -> match lit {
+          case LInt(v, sfx, raw) -> match sfx {
+            case NoIntSuffix -> Expr(
+              kind = ELiteral(
+                lit = LInt(
+                  value = 0i64 -
+                    v,
+                  suffix = sfx,
+                  raw = "-" +
+                    raw
+                )
+              ),
+              span = e.span
+            )
+            case _ -> e
+          }
+          case _ -> e
+        }
+        case _ -> e
+      }
+      case _ -> e
+    }
+    case _ -> e
+  }
 }
 
 /// Aspect weaving — after mono, before codegen, on every target.  Resolves
