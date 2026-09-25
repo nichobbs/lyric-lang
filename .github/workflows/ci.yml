@@ -5404,6 +5404,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/default_assign_self_test.l
+      - name: Loop invariant self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/loop_invariant_self_test.l
       # NaN-comparison self-test on JVM (#2772) — pins IEEE 754 §5.11 ordered
       # comparisons for Float/Double: `lowerCmp`/`lowerCmpFail` must select the
       # `fcmpg`/`dcmpg` ("g") variant for `<`/`<=` (NaN -> +1 -> branch not taken

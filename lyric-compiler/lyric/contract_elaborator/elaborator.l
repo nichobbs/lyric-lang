@@ -1551,27 +1551,44 @@ func elaborateStmtDeep(
         s.span
       )
     )
-    case SFor(label, pat, iter, body) -> acc.add(
-      mkStmt(
-        SFor(
-          label = label,
-          pat = pat,
-          iter = iter,
-          body = elaborateBlockDeep(body, ensuresExprs, counter)
-        ),
-        s.span
-      )
-    )
-    case SWhile(label, cond, body) -> acc.add(
-      mkStmt(
-        SWhile(
-          label = label,
-          cond = cond,
-          body = elaborateBlockDeep(body, ensuresExprs, counter)
-        ),
-        s.span
-      )
-    )
+    case SFor(label, pat, iter, body) -> {
+      val loopInvs = loopInvariantsOf(body)
+      val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
+      if loopInvs.count == 0 {
+        acc.add(mkStmt(SFor(label = label, pat = pat, iter = iter, body = newBody), s.span))
+      } else {
+        val flag = freshLoopBrokeName(counter)
+        val scan = BreakScan(found = false)
+        val marked = markBreaksBlock(newBody, label, flag, false, scan)
+        appendLoopWithExitCheck(
+          mkStmt(SFor(label = label, pat = pat, iter = iter, body = marked), s.span),
+          loopInvs,
+          flag,
+          scan.found,
+          s.span,
+          acc
+        )
+      }
+    }
+    case SWhile(label, cond, body) -> {
+      val loopInvs = loopInvariantsOf(body)
+      val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
+      if loopInvs.count == 0 {
+        acc.add(mkStmt(SWhile(label = label, cond = cond, body = newBody), s.span))
+      } else {
+        val flag = freshLoopBrokeName(counter)
+        val scan = BreakScan(found = false)
+        val marked = markBreaksBlock(newBody, label, flag, false, scan)
+        appendLoopWithExitCheck(
+          mkStmt(SWhile(label = label, cond = cond, body = marked), s.span),
+          loopInvs,
+          flag,
+          scan.found,
+          s.span,
+          acc
+        )
+      }
+    }
     case SLoop(label, body) -> acc.add(
       mkStmt(
         SLoop(label = label, body = elaborateBlockDeep(body, ensuresExprs, counter)),
@@ -1614,11 +1631,296 @@ func elaborateStmtDeep(
     // the first iteration checks the entry state, and every subsequent
     // iteration checks that the previous body re-established the
     // invariant.  Continue / fall-through both re-enter the loop head,
-    // so a single assert at the start of the body covers them; break
-    // exits without a check (no postcondition is recovered here).
+    // so a single assert at the start of the body covers them.  The
+    // check on normal exit (the condition went false, or the iterator
+    // ran out, including a loop that never ran) is appended after the
+    // loop by `appendLoopWithExitCheck`; `break` exits carry no
+    // obligation (docs/08 §wp for `while`), #7224.
     case _ -> {
       acc.add(s)
     }
+  }
+}
+
+// The loop `invariant:` clauses of a `while`/`for` body: the parser
+// prepends them to the body as `SInvariant` statements.
+func loopInvariantsOf(body: in Block): List[Expr] {
+  val invs: List[Expr] = newList()
+  var i = 0
+  while i < body.statements.count {
+    match body.statements[i].kind {
+      case SInvariant(inv) -> invs.add(inv)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  invs
+}
+
+func freshLoopBrokeName(c: inout RenameCounter): String {
+  val n = c.next
+  c.next = n + 1
+  "__lyric_loop_broke_" + toString(n)
+}
+
+// Emit `loop` followed by the loop-invariant check on normal exit (#7224).
+// Per the `while` wp rule (docs/08: `ι ∧ ¬c ⇒ Q`) the invariant must hold
+// when the loop ends because its condition went false (or its iterator ran
+// out), including when the body never ran; a `break` leaves without that
+// obligation.  When a `break` targets the loop, `markBreaksBlock` has made
+// each one set `flag` first, and the check is guarded by `not flag`.
+func appendLoopWithExitCheck(
+  loop: in Statement,
+  invs: in List[Expr],
+  flag: in String,
+  hasBreak: in Bool,
+  sp: in Span,
+  acc: in List[Statement],
+): Unit {
+  val checks: List[Statement] = newList()
+  var i = 0
+  while i < invs.count {
+    checks.add(mkAssertCall(invs[i], "LoopInvariantViolated: invariant " + Fmt.exprInline(0, invs[i]), sp))
+    i = i + 1
+  }
+  if not hasBreak {
+    acc.add(loop)
+    var j = 0
+    while j < checks.count {
+      acc.add(checks[j])
+      j = j + 1
+    }
+    return ()
+  }
+  acc.add(
+    mkStmt(
+      SLocal(
+        binding = LBVar(name = flag, ty = None, init = Some(value = mkExpr(ELiteral(lit = LBool(value = false)), sp)))
+      ),
+      sp
+    )
+  )
+  acc.add(loop)
+  val notBroke = mkExpr(EPrefix(op = PreNot, operand = mkPath(flag, sp)), sp)
+  acc.add(
+    mkStmt(
+      SExpr(
+        expr = mkExpr(
+          EIf(
+            cond = notBroke,
+            thenBranch = EOBBlock(block = Block(statements = checks, span = sp)),
+            elseBranch = None,
+            thenForm = false
+          ),
+          sp
+        )
+      ),
+      sp
+    )
+  )
+}
+
+// Whether `markBreaksBlock` rewrote at least one `break`.
+record BreakScan {
+  var found: Bool
+}
+
+// Rewrite every `break` that leaves the loop labelled `label` so it first
+// sets `flag`: any `break` outside a nested loop, or `break label` inside
+// one (labelled loops themselves are #7349).  A nested loop re-using the same label shadows
+// it, so the walk stops there; lambdas cannot `break` out of their
+// enclosing loop and are not entered.
+func markBreaksBlock(
+  blk: in Block, label: in Option[String], flag: in String, nested: in Bool, scan: in BreakScan
+): Block {
+  val outs: List[Statement] = newList()
+  var i = 0
+  while i < blk.statements.count {
+    markBreaksStmt(blk.statements[i], label, flag, nested, scan, outs)
+    i = i + 1
+  }
+  Block(statements = outs, span = blk.span)
+}
+
+// Any `break` directly in the body leaves this loop, whatever label it
+// names; inside a nested loop only `break <label>` naming this loop does.
+func breakTargets(target: in Option[String], label: in Option[String], nested: in Bool): Bool {
+  if not nested {
+    return true
+  }
+  match target {
+    case None -> false
+    case Some(t) -> match label { case Some(l) -> t == l; case None -> false }
+  }
+}
+
+func shadowsLabel(inner: in Option[String], label: in Option[String]): Bool {
+  match inner {
+    case Some(i) -> match label { case Some(l) -> i == l; case None -> false }
+    case None -> false
+  }
+}
+
+func markBreaksStmt(
+  s: in Statement,
+  label: in Option[String],
+  flag: in String,
+  nested: in Bool,
+  scan: in BreakScan,
+  acc: in List[Statement],
+): Unit {
+  match s.kind {
+    case SBreak(target) -> {
+      if breakTargets(target, label, nested) {
+        scan.found = true
+        acc.add(
+          mkStmt(
+            SAssign(target = mkPath(flag, s.span), op = AssEq, value = mkExpr(ELiteral(lit = LBool(value = true)), s.span)),
+            s.span
+          )
+        )
+      }
+      acc.add(s)
+    }
+    case SFor(l, pat, iter, body) -> {
+      if shadowsLabel(l, label) {
+        acc.add(s)
+      } else {
+        acc.add(
+          mkStmt(SFor(label = l, pat = pat, iter = iter, body = markBreaksBlock(body, label, flag, true, scan)), s.span)
+        )
+      }
+    }
+    case SWhile(l, cond, body) -> {
+      if shadowsLabel(l, label) {
+        acc.add(s)
+      } else {
+        acc.add(mkStmt(SWhile(label = l, cond = cond, body = markBreaksBlock(body, label, flag, true, scan)), s.span))
+      }
+    }
+    case SLoop(l, body) -> {
+      if shadowsLabel(l, label) {
+        acc.add(s)
+      } else {
+        acc.add(mkStmt(SLoop(label = l, body = markBreaksBlock(body, label, flag, true, scan)), s.span))
+      }
+    }
+    case STry(body, catches, finally_) -> {
+      val newCatches: List[CatchClause] = newList()
+      var ci = 0
+      while ci < catches.count {
+        val c = catches[ci]
+        newCatches.add(
+          CatchClause(
+            typeName = c.typeName,
+            bindName = c.bindName,
+            body = markBreaksBlock(c.body, label, flag, nested, scan),
+            span = c.span
+          )
+        )
+        ci = ci + 1
+      }
+      val newFinally = match finally_ {
+        case None -> None
+        case Some(fb) -> Some(markBreaksBlock(fb, label, flag, nested, scan))
+      }
+      acc.add(
+        mkStmt(
+          STry(body = markBreaksBlock(body, label, flag, nested, scan), catches = newCatches, finally_ = newFinally),
+          s.span
+        )
+      )
+    }
+    case SScope(b, body) -> acc.add(
+      mkStmt(
+        SScope(binding = b, body = markBreaksBlock(body, label, flag, nested, scan)),
+        s.span
+      )
+    )
+    case SExpr(e) -> acc.add(mkStmt(SExpr(expr = markBreaksExpr(e, label, flag, nested, scan)), s.span))
+    case SLocal(binding) -> acc.add(
+      mkStmt(SLocal(binding = markBreaksBinding(binding, label, flag, nested, scan)), s.span)
+    )
+    case SAssign(t, op, v) -> acc.add(
+      mkStmt(
+        SAssign(target = t, op = op, value = markBreaksExpr(v, label, flag, nested, scan)),
+        s.span
+      )
+    )
+    case _ -> acc.add(s)
+  }
+}
+
+func markBreaksBinding(
+  b: in LocalBinding,
+  label: in Option[String],
+  flag: in String,
+  nested: in Bool,
+  scan: in BreakScan,
+): LocalBinding {
+  match b {
+    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = markBreaksExpr(init, label, flag, nested, scan))
+    case LBLet(n, ty, init) -> LBLet(name = n, ty = ty, init = markBreaksExpr(init, label, flag, nested, scan))
+    case LBVar(n, ty, initOpt) -> match initOpt {
+      case Some(x) -> LBVar(
+        name = n,
+        ty = ty,
+        init = Some(value = markBreaksExpr(x, label, flag, nested, scan))
+      )
+      case None -> b
+    }
+  }
+}
+
+// `break` is a statement, so it only sits inside a block; the expression
+// forms that carry blocks are the ones walked here.
+func markBreaksExpr(e: in Expr, label: in Option[String], flag: in String, nested: in Bool, scan: in BreakScan): Expr {
+  match e.kind {
+    case EParen(inner) -> mkExpr(EParen(inner = markBreaksExpr(inner, label, flag, nested, scan)), e.span)
+    case EIf(cond, thenBranch, elseOpt, thenForm) -> {
+      val newElse: Option[ExprOrBlock] = match elseOpt {
+        case Some(eb) -> Some(value = markBreaksEob(eb, label, flag, nested, scan))
+        case None -> None
+      }
+      mkExpr(
+        EIf(
+          cond = cond,
+          thenBranch = markBreaksEob(thenBranch, label, flag, nested, scan),
+          elseBranch = newElse,
+          thenForm = thenForm
+        ),
+        e.span
+      )
+    }
+    case EMatch(scrutinee, arms) -> {
+      val newArms: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        newArms.add(
+          MatchArm(
+            pattern = arm.pattern,
+            guard = arm.guard,
+            body = markBreaksEob(arm.body, label, flag, nested, scan),
+            span = arm.span
+          )
+        )
+        i = i + 1
+      }
+      mkExpr(EMatch(scrutinee = scrutinee, arms = newArms), e.span)
+    }
+    case EBlock(blk) -> mkExpr(EBlock(block = markBreaksBlock(blk, label, flag, nested, scan)), e.span)
+    case EUnsafe(blk) -> mkExpr(EUnsafe(block = markBreaksBlock(blk, label, flag, nested, scan)), e.span)
+    case _ -> e
+  }
+}
+
+func markBreaksEob(
+  eob: in ExprOrBlock, label: in Option[String], flag: in String, nested: in Bool, scan: in BreakScan
+): ExprOrBlock {
+  match eob {
+    case EOBExpr(x) -> EOBExpr(expr = markBreaksExpr(x, label, flag, nested, scan))
+    case EOBBlock(blk) -> EOBBlock(block = markBreaksBlock(blk, label, flag, nested, scan))
   }
 }
 
