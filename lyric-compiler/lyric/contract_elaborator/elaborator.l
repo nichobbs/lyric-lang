@@ -2118,13 +2118,32 @@ func exprOrBlockHasInvariant(eb: in ExprOrBlock): Bool {
 func elaborateFunctionBody(
   contracts: in List[ContractClause],
   typeInvariants: in List[InvariantClause],
+  params: in List[Param],
+  ret: in Option[TypeExpr],
   owner: in String,
-  body: in Block,
+  body0: in Block,
   counter: inout RenameCounter,
   isVoidReturn: in Bool,
 ): Block {
-  val requiresExprs = collectRequires(contracts, owner)
+  // Inline range refinements (#7226): refined parameters are checked first,
+  // before any `requires:` that may rely on them; a refined return type is
+  // one more `ensures:`; refined bindings and assignments are checked in
+  // place.
+  val body = insertRangeChecks(body0, params, owner)
+  val requiresExprs = paramRangeChecks(params, owner)
+  val declaredRequires = collectRequires(contracts, owner)
+  var dri = 0
+  while dri < declaredRequires.count {
+    requiresExprs.add(declaredRequires[dri])
+    dri = dri + 1
+  }
   val ensuresExprs = collectEnsures(contracts, owner)
+  val retChecks = returnRangeChecks(ret, owner)
+  var rci = 0
+  while rci < retChecks.count {
+    ensuresExprs.add(retChecks[rci])
+    rci = rci + 1
+  }
   var ti = 0
   while ti < typeInvariants.count {
     val inv = typeInvariants[ti]
@@ -2554,7 +2573,12 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
   val hasReq = collectRequires(fn.contracts, owner).count > 0
   val hasEns = collectEnsures(fn.contracts, owner).count > 0
   val hasInv = functionBodyHasInvariant(fn)
-  if not hasReq and not hasEns and not hasInv {
+  val hasRange = match fn.body {
+    case Some(FBBlock(blk)) -> functionHasRangeRefinement(fn.params, fn.ret, blk)
+    case Some(FBExpr(e)) -> functionHasRangeRefinement(fn.params, fn.ret, wrapExprBody(e))
+    case None -> false
+  }
+  if not hasReq and not hasEns and not hasInv and not hasRange {
     return fn
   }
 
@@ -2566,6 +2590,8 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
         block = elaborateFunctionBody(
           fn.contracts,
           newList(),
+          fn.params,
+          fn.ret,
           owner,
           blk,
           counter,
@@ -2576,6 +2602,8 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
         block = elaborateFunctionBody(
           fn.contracts,
           newList(),
+          fn.params,
+          fn.ret,
           owner,
           wrapExprBody(e),
           counter,
@@ -2612,7 +2640,11 @@ func elaborateProtectedMember(
       val hasReq = collectRequires(ed.contracts, owner).count > 0
       val hasEns = collectEnsures(ed.contracts, owner).count > 0 or invariants.count > 0
       val hasInv = entryBodyHasInvariant(ed.body)
-      if not hasReq and not hasEns and not hasInv {
+      val hasRange = match ed.body {
+        case FBBlock(blk) -> functionHasRangeRefinement(ed.params, ed.ret, blk)
+        case FBExpr(e) -> functionHasRangeRefinement(ed.params, ed.ret, wrapExprBody(e))
+      }
+      if not hasReq and not hasEns and not hasInv and not hasRange {
         m
       } else {
         var counter = newRenameCounter()
@@ -2622,6 +2654,8 @@ func elaborateProtectedMember(
             block = elaborateFunctionBody(
               ed.contracts,
               invariants,
+              ed.params,
+              ed.ret,
               owner,
               blk,
               counter,
@@ -2632,6 +2666,8 @@ func elaborateProtectedMember(
             block = elaborateFunctionBody(
               ed.contracts,
               invariants,
+              ed.params,
+              ed.ret,
               owner,
               wrapExprBody(e),
               counter,

@@ -196,8 +196,21 @@ A range refinement may also appear inline as a type annotation
 (`val x: Int range 0 ..= 9 = 5`). An inline refinement is transparent for type
 equivalence — it is interchangeable with its underlying numeric type — but when
 the initialiser is an integer literal outside the declared bounds the compiler
-rejects it at compile time (**T0015**). (Validating *non-literal* constructions
-of a refined type is a runtime/proof obligation, as above.)
+rejects it at compile time (**T0015**). Every other value is checked at
+runtime, with the same bounds (#7226):
+
+- a parameter with a refined type, on entry to the function (before its
+  `requires:` clauses);
+- a refined return type, like an `ensures:` clause on `result`;
+- a refined `val`/`var`/`let`, after its initializer;
+- a refined `var` (or `out`/`inout` parameter), after every assignment to it,
+  compound assignments included. A later binding of the same name (in an
+  inner block, a pattern, a loop or a lambda) shadows the refinement.
+
+A failure raises `RangeViolated: <Pkg.function> <name> must be in <type>`
+(e.g. `RangeViolated: P.digit parameter d must be in Int range 0 ..= 9`), a
+`Bug` like any contract violation. NaN is in no range. A module-level `val`
+with a refined type is checked only by T0015.
 
 ### 2.3 Distinct types
 
