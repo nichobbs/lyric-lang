@@ -35451,6 +35451,7 @@ previously retried a socket timeout forever; they now report it. Covered by
 four new cases in `http_server_dotnet_tests.l`, items K and L of
 `llvm_http_server_self_test.l`, and `lyric-rt`'s C tests (D-progress-960,
 #7268, epic #7256).
+
 ## MSIL slice element access and copies no longer box
 
 Every `slice[T]` index read, index write, `for`-loop element read and
@@ -35470,6 +35471,7 @@ The #7338 review follow-ups ride along: a native TLS upgrade whose handshake
 timeout cannot be armed now fails instead of running unbounded, and both
 targets accept timeout overrides up to one day (native item M covers the
 override parsing).
+
 ## HTTP server constant factors: header lookup, h2 window credit, stream table, reads
 
 - `Std.String.equalsCaseInsensitive` (and so `Std.HttpEngine.headerValue`/
@@ -35496,6 +35498,7 @@ on dotnet and JVM, a new 500 KB HTTP/2 upload case in
 `http_server_dotnet_tests.l`, new `equalsCaseInsensitive` cases in
 `string_case_locale_self_test.l` (dotnet, JVM, native) and `lyric-rt`'s C
 tests (#7269, epic #7256).
+
 ## JVM server bounds request bodies; native client search is linear
 
 The JVM `Std.HttpServer` read request bodies on demand with an unbounded
@@ -35506,6 +35509,7 @@ reaches `nextContext`. Covered by the new `http_server_jvm_tests.l`. The
 native HTTP client's `findSubstring` allocated a substring at every position it
 tested; it now calls `Std.String.indexOfFromRaw`, which searches in place
 through the native `lyric_string_index_of_from` kernel (#7269, epic #7256).
+
 ## HTTP/2 responses are framed without re-copying the body
 
 The dotnet HTTP/2 server copied every response body byte into a `List[Byte]`,
