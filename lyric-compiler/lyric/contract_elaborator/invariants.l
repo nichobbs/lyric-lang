@@ -71,22 +71,33 @@ val checkedParam: String = "__lyric_value"
 
 pub func synthesizeInvariantCheckers(file: in SourceFile): SourceFile {
   val pkg = Fmt.pathStr(file.packageDecl.path)
+  // Idempotent: a file some bridge already passed through here keeps its
+  // checkers and gains no duplicates.
+  val existing: Map[String, Bool] = newMap()
+  var e = 0
+  while e < file.items.count {
+    match file.items[e].kind {
+      case IFunc(fn) -> if not existing.containsKey(fn.name) { existing.add(fn.name, true) }
+      case _ -> ()
+    }
+    e = e + 1
+  }
   val added: List[Item] = newList()
   var i = 0
   while i < file.items.count {
     val it = file.items[i]
     match it.kind {
-      case IRecord(decl) -> if recordMembersHaveInvariant(decl.members) {
+      case IRecord(decl) -> if recordMembersHaveInvariant(decl.members) and not existing.containsKey(invariantCheckerName(decl.name)) {
         added.add(
           checkerItem(it, pkg, decl.name, decl.generics, recordFieldNames(decl.members), recordInvariants(decl.members))
         )
       }
-      case IExposedRec(decl) -> if recordMembersHaveInvariant(decl.members) {
+      case IExposedRec(decl) -> if recordMembersHaveInvariant(decl.members) and not existing.containsKey(invariantCheckerName(decl.name)) {
         added.add(
           checkerItem(it, pkg, decl.name, decl.generics, recordFieldNames(decl.members), recordInvariants(decl.members))
         )
       }
-      case IOpaque(decl) -> if opaqueMembersHaveInvariant(decl.members) {
+      case IOpaque(decl) -> if opaqueMembersHaveInvariant(decl.members) and not existing.containsKey(invariantCheckerName(decl.name)) {
         added.add(
           checkerItem(it, pkg, decl.name, decl.generics, opaqueFieldNames(decl.members), opaqueInvariants(decl.members))
         )

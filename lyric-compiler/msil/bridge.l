@@ -1650,6 +1650,9 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
   var si = 0
   while si < stdlibSources.count {
     val stdPr = parse(stdlibSources[si])
+    // Invariant construction checkers (#7222): the compiled stdlib carries
+    // them, so code built against these sources must see them as well.
+    val stdPrInv = synthesizeInvariantCheckers(stdPr.file)
     // Stdlib parse diagnostics are intentionally not echoed on the MSIL
     // paths (they are advisory self-hosted-parser-gap noise, #914);
     // parse-error files are dropped below instead.
@@ -1657,12 +1660,12 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
       si = si + 1
       continue
     }
-    val pkgName = segmentsToString(stdPr.file.packageDecl.path.segments)
+    val pkgName = segmentsToString(stdPrInv.packageDecl.path.segments)
     val items: List[Item] = newList()
     val privateGenericItems: List[Item] = newList()
     var ii = 0
-    while ii < stdPr.file.items.count {
-      val it = stdPr.file.items[ii]
+    while ii < stdPrInv.items.count {
+      val it = stdPrInv.items[ii]
       // Only `pub` functions surface in the foreign DLL's public
       // method table; private functions get internal accessibility
       // and a cross-assembly MemberRef would fail to bind at
@@ -1712,7 +1715,7 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
       StdlibPkg(
         name = pkgName,
         items = items,
-        imports = collectImportNames(stdPr.file.imports),
+        imports = collectImportNames(stdPrInv.imports),
         privateGenericItems = privateGenericItems
       )
     )

@@ -420,7 +420,8 @@ pub func compileToNativeWithFlags(
     // vs. the stdlib tree must not block user builds — see the
     // matching note in Jvm.Bridge).
     val stdCfg = Cfg.applyCfgErasure(nativeFeatures, noFeatures, pr.file)
-    val stdFile = Aliases.rewriteFile(stdCfg.file)
+    // Invariant construction checkers (#7222), as the other bridges add them.
+    val stdFile = synthesizeInvariantCheckers(Aliases.rewriteFile(stdCfg.file))
     val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < stdFile.items.count {
@@ -768,7 +769,8 @@ pub func compileProjectToNativeWithFlags(
   while si < stdlibSources.count {
     val pr = parse(stdlibSources[si])
     val stdCfg = Cfg.applyCfgErasure(nativeFeatures, noFeatures, pr.file)
-    val stdFile = Aliases.rewriteFile(stdCfg.file)
+    // Invariant construction checkers (#7222), as the other bridges add them.
+    val stdFile = synthesizeInvariantCheckers(Aliases.rewriteFile(stdCfg.file))
     val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < stdFile.items.count {
