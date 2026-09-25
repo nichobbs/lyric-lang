@@ -223,7 +223,7 @@ test "Std.File readTextOrPanic: round-trip, panics on a missing path (ASan) (#69
   assertTrue(panicResult.exitCode != 42 and panicResult.exitCode != 0, "a non-panicking readTextOrPanic would exit 42")
 }
 
-// Issue #6961 (the rest of it, D-progress-944): stat/fileStatIsNewer
+// Issue #6961 (the rest of it, D-progress-955): stat/fileStatIsNewer
 // needed an opaque timestamp twin before a native kernel seam was even
 // meaningful. FileTime is now a native-only `{ epochNanos: Long }`
 // record (the same representation Std.Time's native Instant uses,

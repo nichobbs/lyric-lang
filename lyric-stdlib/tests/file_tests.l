@@ -173,7 +173,7 @@ test "stat succeeds for an existing file and fails for a missing one" {
 }
 
 // Issue #6961: fileStatIsNewer had no dedicated test anywhere in the
-// repo before the native FileTime twin shipped (D-progress-944) even
+// repo before the native FileTime twin shipped (D-progress-955) even
 // though it backs real incremental-build staleness checks (see
 // cli_workspace_builder_self_test.l). sleepMillis provides a real,
 // deterministic time gap between the two writes rather than relying on

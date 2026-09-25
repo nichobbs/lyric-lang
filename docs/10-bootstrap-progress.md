@@ -35191,7 +35191,6 @@ follow-up work on #5704.
 
 **Related:** #5704 (partially addressed), D-progress-945 (full account),
 D-progress-667 (the original F0027 warning).
-
 ## Imported generics: qualified calls, origin-scoped bodies, expected-type inference
 
 A generic-heavy library consumed from another package now builds. Qualified
