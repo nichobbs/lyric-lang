@@ -273,10 +273,12 @@ test "callee-expression call await: invokes with the awaited value (#6457)" {
 // `jvm/codegen/05_stmts.l`), so this is a compiles-and-runs smoke test
 // (walk-consistency), not a crash regression pin — the invariant's own
 // truth is never checked at runtime by either backend yet.
+@pure
 async func fetchCap(): Int {
   return 1000
 }
 
+@pure
 func combine3Invariant(a: in Int, b: in Int, c: in Int): Int {
   a * 100 + b * 10 + c
 }

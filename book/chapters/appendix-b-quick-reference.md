@@ -1340,6 +1340,8 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0129` | A union- or enum-case pattern is matched against a value of a different type: `case Some(i)` on an `Int`, or `case Ok(v)` on an `Option`. The pattern can never match; it used to type-check and then take the wrong arm on dotnet or fail JVM verification. Fix the scrutinee or the pattern. A bare nullary case (`case None`) is checked the same way. Not checked when the scrutinee's type is unknown or open (a type variable, `Self`, a nullable). |
 | `T0130` | `break` or `continue` outside a loop, or `break label` / `continue label` where no enclosing loop has that label. A lambda body, a `defer` body and a `finally` block start with no enclosing loops. |
 | `T0131` | A loop reuses the label of a loop it is nested in, so `break label` would be ambiguous. Rename one; sibling loops may share a label. |
+| `T0132` | A contract clause has the wrong type: `requires:`, `ensures:`, `when:` and loop `invariant:` must be `Bool`. Clauses are checked in the function's scope, with `result` typed as the declared return type. |
+| `T0133` | A contract clause or loop invariant calls a function that is not `@pure`. Mark the callee `@pure` if it has no side effects (the compiler trusts the annotation), or move the check into the body. |
 
 ### Type checker warnings (W-series)
 

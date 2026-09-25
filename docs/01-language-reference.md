@@ -1125,6 +1125,16 @@ Contract expressions cannot:
 - Mutate state
 - Throw
 
+**Enforcement.** Each `requires:`, `ensures:` and `when:` clause and each loop
+`invariant:` is type-checked in the function's scope (`result` has the
+declared return type) and must be `Bool`; otherwise it is **T0132**. A call in any of them that resolves to a
+Lyric function not marked `@pure` is **T0133**. `@pure` is trusted, not
+verified: the compiler does not inspect the callee's body. Built-in members
+(`xs.count`, `s.length`) are not calls. A compiled package records `@pure` in
+its contract metadata, so a consumer's clauses may call its `@pure`
+functions. The allocation, mutation and throw rules are not checked
+separately.
+
 ### 6.4 Module verification levels
 
 Each package declares a verification level:

@@ -248,6 +248,7 @@ pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
 /// result is a genuine byte[].  On JVM a pure-Lyric accumulator is used
 /// via the Std.EncodingHost kernel boundary.
 @stable(since = "1.0")
+@pure
 pub func encodeUtf8(s: in String): slice[Byte] {
   hostEncodeUtf8(hostGetUtf8Enc(), s)
 }

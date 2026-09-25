@@ -89,6 +89,7 @@ pub func roleLevel(r: in Role): Int {
 }
 
 /// True when role `a` is at least as privileged as role `b`.
+@pure
 pub func dominates(a: in Role, b: in Role): Bool {
   return roleLevel(a) >= roleLevel(b)
 }
@@ -99,10 +100,12 @@ pub func dominates(a: in Role, b: in Role): Bool {
 ///   Manager — Read, Write, Delete, ManageUsers
 ///   User    — Read, Write
 ///   Guest   — Read only
+@pure
 pub func hasPermission(role: in Role, perm: in Permission): Bool {
   match role {
     case Role.Admin -> true
-    case Role.Manager -> perm == Permission.Read or perm == Permission.Write or perm == Permission.Delete or perm == Permission.ManageUsers
+    case Role.Manager -> perm == Permission.Read or perm == Permission.Write or perm == Permission.Delete or
+      perm == Permission.ManageUsers
     case Role.User -> perm == Permission.Read or perm == Permission.Write
     case Role.Guest -> perm == Permission.Read
   }

@@ -1039,7 +1039,8 @@ func resolveFunctionSig(
     isHot = isHot,
     isGenerator = fn.isAsync and isGen,
     originPackage = pkgName,
-    span = fn.span
+    span = fn.span,
+    isPure = fnHasAnnotation(fn, "pure")
   )
 }
 
@@ -1252,7 +1253,8 @@ func resolveMethodSigParts(
     isHot = false,
     isGenerator = false,
     originPackage = pkgName,
-    span = span
+    span = span,
+    isPure = false
   )
 }
 
@@ -2443,7 +2445,8 @@ func checkProtectedMemberBodies(
           isHot = sig0.isHot,
           isGenerator = sig0.isGenerator,
           originPackage = sig0.originPackage,
-          span = sig0.span
+          span = sig0.span,
+          isPure = false
         )
         val syntheticBody: Option[FunctionBody] = Some(value = entryDecl.body)
         val fn = FunctionDecl(
@@ -2485,7 +2488,8 @@ func checkProtectedMemberBodies(
           isHot = sig0.isHot,
           isGenerator = sig0.isGenerator,
           originPackage = sig0.originPackage,
-          span = sig0.span
+          span = sig0.span,
+          isPure = fnHasAnnotation(fn, "pure")
         )
         checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
       }
@@ -2605,7 +2609,8 @@ func checkRecordMemberBodies(
           isHot = sig0.isHot,
           isGenerator = sig0.isGenerator,
           originPackage = sig0.originPackage,
-          span = sig0.span
+          span = sig0.span,
+          isPure = fnHasAnnotation(fn, "pure")
         )
         // #6173: a bare field reference/assignment inside a record in-body
         // method (no `self.` prefix) IS a valid, shipped spelling —
@@ -2765,7 +2770,8 @@ func checkImplMemberBodies(
           isHot = sig0.isHot,
           isGenerator = sig0.isGenerator,
           originPackage = sig0.originPackage,
-          span = sig0.span
+          span = sig0.span,
+          isPure = fnHasAnnotation(fn, "pure")
         )
         checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
       }

@@ -54,4 +54,6 @@ pub record ResolvedSignature {
   /// different packages (the alias-rewritten `Rx.tryCompile` case, #1488).
   originPackage: String
   span: Span
+  /// Declared `@pure` (#7228): a contract clause may call only these.
+  isPure: Bool
 }

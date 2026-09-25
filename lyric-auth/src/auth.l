@@ -112,6 +112,7 @@ pub func jwtConfigProblem(secret: in String, allowedAlgorithms: in String): Stri
 
 /// Largest accepted clock-skew leeway in seconds.  RFC 7519 §4.1.4 allows
 /// "a few minutes"; more than that silently extends every token's lifetime.
+@pure
 pub func maxClockSkewSeconds(): Int {
   300
 }

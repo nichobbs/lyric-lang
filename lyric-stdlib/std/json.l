@@ -124,6 +124,7 @@ pub func getDouble(elem: in JsonElement): Double
 
 /// True when `elem` is an object with a property called `name`.
 @stable(since = "1.2")
+@pure
 pub func hasProperty(elem: in JsonElement, name: in String): Bool {
   match tryGetProperty(elem, name) {
     case Some(_) -> true
@@ -133,12 +134,14 @@ pub func hasProperty(elem: in JsonElement, name: in String): Bool {
 
 /// True when `elem` is a JSON string (`getString`'s precondition).
 @stable(since = "1.2")
+@pure
 pub func isJsonString(elem: in JsonElement): Bool {
   hostValueKind(elem) == 3
 }
 
 /// True when `elem` is a number that fits an `Int` (`getInt32`'s precondition).
 @stable(since = "1.2")
+@pure
 pub func isJsonInt32(elem: in JsonElement): Bool {
   match tryGetInt(elem) {
     case Some(_) -> true
@@ -148,6 +151,7 @@ pub func isJsonInt32(elem: in JsonElement): Bool {
 
 /// True when `elem` is a number that fits a `Long` (`getInt64`'s precondition).
 @stable(since = "1.2")
+@pure
 pub func isJsonInt64(elem: in JsonElement): Bool {
   match tryGetLong(elem) {
     case Some(_) -> true
@@ -157,6 +161,7 @@ pub func isJsonInt64(elem: in JsonElement): Bool {
 
 /// True when `elem` is `true` or `false` (`getBoolean`'s precondition).
 @stable(since = "1.2")
+@pure
 pub func isJsonBool(elem: in JsonElement): Bool {
   val kind = hostValueKind(elem)
   kind == 5 or kind == 6
@@ -165,6 +170,7 @@ pub func isJsonBool(elem: in JsonElement): Bool {
 /// True when `elem` is a number readable as a `Double` (`getDouble`'s
 /// precondition).
 @stable(since = "1.2")
+@pure
 pub func isJsonDouble(elem: in JsonElement): Bool {
   match tryGetDouble(elem) {
     case Some(_) -> true
