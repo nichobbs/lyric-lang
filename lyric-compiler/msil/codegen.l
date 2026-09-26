@@ -39439,15 +39439,25 @@ func buildGenericCaseCtorTok(
     typeArgs.add(foundTy)
     tpi = tpi + 1
   }
-  // Build ctor parameter types: for each field, use MTypeVar(varIdx) if the
-  // field's type is a generic parameter, otherwise MObject.
+  // Ctor parameter types: the producer's open parameter list when the stdlib
+  // registration recorded one (#7280: concrete and nested-generic fields keep
+  // their declared types); otherwise MTypeVar(varIdx) for a type-parameter
+  // field and MObject for anything else.
   val ctorPs: List[MsilType] = newList()
+  val openParams = match mapGet(cctx.genericCtorParams, ctorKey) {
+    case Some(p) -> if p.count == argTypes.count { p } else { newList() }
+    case None -> newList()
+  }
   var fi2 = 0
   while fi2 < argTypes.count {
-    val fldKey2 = ctorKey + "/field" + toString(fi2)
-    val vi2 = match mapGet(cctx.fieldVarIndices, fldKey2) { case Some(v) -> v; case None -> -1 }
-    val paramTy: MsilType = if vi2 >= 0 { MTypeVar(index = vi2) } else { MObject }
-    ctorPs.add(paramTy)
+    if openParams.count > 0 {
+      ctorPs.add(openParams[fi2])
+    } else {
+      val fldKey2 = ctorKey + "/field" + toString(fi2)
+      val vi2 = match mapGet(cctx.fieldVarIndices, fldKey2) { case Some(v) -> v; case None -> -1 }
+      val paramTy: MsilType = if vi2 >= 0 { MTypeVar(index = vi2) } else { MObject }
+      ctorPs.add(paramTy)
+    }
     fi2 = fi2 + 1
   }
   // Emit the deferred newobj instruction.  TypeSpec and MemberRef construction
@@ -39743,16 +39753,32 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
                 }
               }
             }
-            val concreteFieldMsilTy = if fieldVarIdx >= 0 { MObject } else { typeExprToMsilCtx(cctx, fieldTyExpr, packageName) }
+            // A field whose type NESTS one of the union's own parameters
+            // (`tail: PersistentList[T]`, `items: List[T]`) must reference the
+            // producer's open field type (`PersistentList`1<!0>`), not the
+            // generics-blind erasure (`PersistentList`1<object>`), or the
+            // FieldRef never binds (`MissingFieldException`, #7280). Mirrors
+            // `registerRestoredUnionCase`, which already lowers through
+            // `typeExprToMsilG`.
+            val nestedFieldTy = stdlibNestedGenericFieldTyMsil(cctx, fieldTyExpr, packageName, decl.generics, fieldVarIdx)
+            val concreteFieldMsilTy = match nestedFieldTy {
+              case Some(t) -> t
+              case None -> if fieldVarIdx >= 0 {
+                MObject
+              } else {
+                typeExprToMsilCtx(cctx, fieldTyExpr, packageName)
+              }
+            }
+            val fieldSigFinal = match nestedFieldTy { case Some(t) -> buildFieldSigWithCtx(t, cctx.lctx); case None -> fieldSig }
             val sigKey = "stdlib_field_" + ctorKey + "_" + declaredName
-            val fieldMrRow = ctxAddMemberRef(cctx.lctx, caseRow, declaredName, sigKey, fieldSig)
+            val fieldMrRow = ctxAddMemberRef(cctx.lctx, caseRow, declaredName, sigKey, fieldSigFinal)
             val fieldTok = 0x0A000000 + fieldMrRow
             val byNameKey = ctorKey + "/" + declaredName
             if not cctx.fieldTokens.containsKey(byNameKey) {
               cctx.fieldTokens.add(byNameKey, fieldTok)
             }
             if not cctx.fieldSigBytes.containsKey(byNameKey) {
-              cctx.fieldSigBytes.add(byNameKey, fieldSig)
+              cctx.fieldSigBytes.add(byNameKey, fieldSigFinal)
             }
             if not cctx.fieldVarIndices.containsKey(byNameKey) {
               cctx.fieldVarIndices.add(byNameKey, fieldVarIdx)
@@ -39765,7 +39791,7 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
               cctx.fieldTokens.add(byPosKey, fieldTok)
             }
             if not cctx.fieldSigBytes.containsKey(byPosKey) {
-              cctx.fieldSigBytes.add(byPosKey, fieldSig)
+              cctx.fieldSigBytes.add(byPosKey, fieldSigFinal)
             }
             if not cctx.fieldVarIndices.containsKey(byPosKey) {
               cctx.fieldVarIndices.add(byPosKey, fieldVarIdx)
@@ -39802,7 +39828,10 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
                 case None -> typeExprToMsilCtx(cctx, cpTy, packageName)
               }
             } else {
-              typeExprToMsilCtx(cctx, cpTy, packageName)
+              match stdlibNestedGenericFieldTyMsil(cctx, cpTy, packageName, decl.generics, 0 - 1) {
+                case Some(t) -> t
+                case None -> typeExprToMsilCtx(cctx, cpTy, packageName)
+              }
             }
             ctorParams2.add(cpMsilTy)
             cpi = cpi + 1
@@ -39826,6 +39855,11 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
           // construction sites (ECMA-335 §III.4.21).
           if unionTypeParamCount > 0 and not cctx.caseTypeParamCount.containsKey(ctorKey) {
             cctx.caseTypeParamCount.add(ctorKey, unionTypeParamCount)
+          }
+          // The producer's open ctor parameter list, so `buildGenericCaseCtorTok`
+          // binds the ctor whatever its field types are (#7280).
+          if unionTypeParamCount > 0 and not cctx.genericCtorParams.containsKey(ctorKey) {
+            cctx.genericCtorParams.add(ctorKey, ctorParams2)
           }
           // A non-generic nullary case carries a static `Instance` singleton
           // (emitted by lowerMNullaryUnionCase) so that `==` and nullary-case
@@ -39888,6 +39922,30 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
 // the ctor MemberRef.  The exposed/opaque distinction does not change what a
 // cross-assembly consumer references.  Assumes the type's own TypeRef was
 // already registered by `registerStdlibTypeItemRefs`.
+// The open field type of a stdlib generic type's field whose type NESTS one
+// of the type's own parameters (`tail: PersistentList[T]`, `prefix: List[T]`),
+// lowered through `typeExprToMsilG` so the parameter stays `!n`; `None` for a
+// non-generic owner, a bare-parameter field (`varIdx >= 0`, which has its own
+// VAR handling) or a field that does not mention a parameter (#7280).
+func stdlibNestedGenericFieldTyMsil(
+  cctx: in CodegenCtx,
+  te: in TypeExpr,
+  packageName: in String,
+  generics: in Option[GenericParams],
+  varIdx: in Int,
+): Option[MsilType] {
+  val names = genericNamesOf(generics)
+  if names.count == 0 or varIdx >= 0 {
+    return None
+  }
+  val t = typeExprToMsilG(cctx, te, packageName, names)
+  if msilTypeHasDanglingTypeVarMsil(t) {
+    Some(value = t)
+  } else {
+    None
+  }
+}
+
 func registerStdlibRecordLikeType(
   cctx: in CodegenCtx,
   decl: in RecordDecl,
@@ -39936,7 +39994,12 @@ func registerStdlibRecordLikeType(
             -1
           }
           if not cctx.fieldTokens.containsKey(key) {
-            val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
+            // Nested-generic field (`prefix: List[T]`): the producer's open
+            // field type, as in the union-case path above (#7280).
+            val fty = match stdlibNestedGenericFieldTyMsil(cctx, f.ty, packageName, decl.generics, ftyVarIdx) {
+              case Some(t) -> t
+              case None -> typeExprToMsilCtx(cctx, f.ty, packageName)
+            }
             val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
             val sigKey = "stdlib_field_" + key
             val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
@@ -39985,7 +40048,12 @@ func registerStdlibRecordLikeType(
     var ci = 0
     while ci < decl.members.count {
       match decl.members[ci] {
-        case RMField(f) -> ctorParams.add(typeExprToMsilCtx(cctx, f.ty, packageName))
+        case RMField(f) -> ctorParams.add(
+          match stdlibNestedGenericFieldTyMsil(cctx, f.ty, packageName, decl.generics, 0 - 1) {
+            case Some(t) -> t
+            case None -> typeExprToMsilCtx(cctx, f.ty, packageName)
+          }
+        )
         case _ -> ()
       }
       ci = ci + 1
@@ -40003,6 +40071,9 @@ func registerStdlibRecordLikeType(
     }
     if recGenericArity > 0 and not cctx.caseTypeParamCount.containsKey(typeFqn) {
       cctx.caseTypeParamCount.add(typeFqn, recGenericArity)
+    }
+    if recGenericArity > 0 and not cctx.genericCtorParams.containsKey(typeFqn) {
+      cctx.genericCtorParams.add(typeFqn, ctorParams)
     }
   }
 }

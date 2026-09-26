@@ -4455,18 +4455,92 @@ func rewriteFuncBodyWithRet(
   rewritten
 }
 
-// Mark each argument of a call to `callee` with its declared parameter type
-// when the callee is non-generic (a generic parameter type mentions type
-// variables the call site has not resolved yet).
-func markArgsExpectedMono(state: in MonoState, callee: in FunctionDecl, args: in List[CallArg]): Unit {
+// Mark each argument of a call to `callee` with its declared parameter type.
+// For a generic callee the parameter types mention its type variables, so
+// they are first bound from the arguments whose types are already known
+// (literals, typed locals, non-generic calls), and an argument is marked only
+// when its parameter type is then fully concrete. That lets a context-typed
+// generic argument such as `plistEmpty()` in `plistCons(1, plistEmpty())` be
+// specialised at `Int` rather than defaulted to `Object` (#7280).
+func markArgsExpectedMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  callee: in FunctionDecl,
+  args: in List[CallArg],
+): Unit {
   val isGeneric = match callee.generics { case Some(_) -> true; case None -> false }
-  if isGeneric {
+  if not isGeneric {
+    var i = 0
+    while i < args.count and i < callee.params.count {
+      markExpectedMono(state, callArgExpr(args[i]), callee.params[i].ty)
+      i = i + 1
+    }
     return
   }
-  var i = 0
-  while i < args.count and i < callee.params.count {
-    markExpectedMono(state, callArgExpr(args[i]), callee.params[i].ty)
-    i = i + 1
+  val typeParams = extractTypeParamNames(callee.generics)
+  if typeParams.count == 0 {
+    return
+  }
+  // Only an argument that is itself a generic call needs context; without
+  // one there is nothing to mark (marking any other call would change how
+  // the outer inference reads that argument's type).
+  var anyGenericArg = false
+  var g = 0
+  while g < args.count {
+    if isGenericCallExprMono(state, callArgExpr(args[g])) {
+      anyGenericArg = true
+    }
+    g = g + 1
+  }
+  if not anyGenericArg {
+    return
+  }
+  val subst: Map[String, TypeExpr] = newMap()
+  val bareBound: Map[String, Bool] = newMap()
+  var j = 0
+  while j < args.count and j < callee.params.count {
+    val argE = callArgExpr(args[j])
+    // A call to another generic is the kind of argument this pass exists to
+    // type; its own inferred type may still mention that generic's type
+    // variables, so it is never evidence here.
+    if not isGenericCallExprMono(state, argE) {
+      match inferExprTE(state, env, argE) {
+        case Some(argTE) -> if not teMentionsTypeParam(typeParams, argTE) {
+          unifyArgMono(typeParams, callee.params[j].ty, argTE, subst, bareBound)
+        }
+        case None -> ()
+      }
+    }
+    j = j + 1
+  }
+  if subst.count == 0 {
+    return
+  }
+  val noValues: Map[String, Expr] = newMap()
+  var k = 0
+  while k < args.count and k < callee.params.count {
+    val argK = callArgExpr(args[k])
+    if isGenericCallExprMono(state, argK) {
+      val pte = substTypeExpr(subst, noValues, callee.params[k].ty)
+      if not teMentionsTypeParam(typeParams, pte) {
+        markExpectedMono(state, argK, pte)
+      }
+    }
+    k = k + 1
+  }
+}
+
+// True when `e` (through parentheses) is a call whose callee is a generic
+// function this pass specialises.
+func isGenericCallExprMono(state: in MonoState, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> isGenericCallExprMono(state, inner)
+    case ECall(callee, _) -> match callee.kind {
+      case EPath(p) -> p.segments.count == 1 and state.genDecls.containsKey(p.segments[0])
+      case ETypeApp(_, _) -> true
+      case _ -> false
+    }
+    case _ -> false
   }
 }
 
@@ -5226,7 +5300,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
         case EPath(cpath) -> if cpath.segments.count == 1 and not env.containsKey(cpath.segments[0]) {
           match mapGet(state.funcDecls, cpath.segments[0]) {
             case Some(calleeDecl) -> if not state.ambiguousFuncOverloads.containsKey(cpath.segments[0]) {
-              markArgsExpectedMono(state, calleeDecl, args)
+              markArgsExpectedMono(state, env, calleeDecl, args)
             }
             case None -> ()
           }

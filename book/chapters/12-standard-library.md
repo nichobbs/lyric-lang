@@ -179,22 +179,22 @@ match m.get("age") {
 
 ### `Std.Collections.Persistent`
 
-`Std.Collections.Persistent` provides persistent (immutable, non-mutating) list operations: every "modifying" function (`plistCons`, `plistInsert`, `plistDelete`, ...) builds and returns a brand-new value, leaving its input completely untouched. The persistent value itself is a bare `slice[T]` — `slice[T]` is already immutable at the language level (no in-place mutation exists for it, §5.2), so no wrapper type is needed to keep the "never mutates" contract, the same way `Std.Sort.sort[T]` operates on bare `slice[T]` rather than inventing a `SortedSlice[T]` type:
+`Std.Collections.Persistent` provides a persistent (immutable, non-mutating) linked list, `PersistentList[T]`: every "modifying" function (`plistCons`, `plistInsert`, `plistDelete`, ...) returns a new list and leaves its input untouched. A derived list shares the part of the original it keeps rather than copying it, so deriving is cheap:
 
 ```lyric
 import Std.Collections.Persistent
 
-val empty: slice[Int] = []
+val empty: PersistentList[Int] = plistEmpty()
 val a = plistCons(3, plistCons(2, plistCons(1, empty)))   // [3, 2, 1]
-val b = plistCons(0, a)                                    // [0, 3, 2, 1]
+val b = plistCons(0, a)                                    // [0, 3, 2, 1], shares a
 // `a` is unchanged — deriving `b` never mutates it.
 println(toString(plistLength(a)))                          // 3
 println(toString(plistLength(b)))                          // 4
 ```
 
-`plistHead`/`plistLookup` are O(1); `plistCons`/`plistTail`/`plistInsert`/`plistDelete` rebuild the backing slice, O(n). `plistToList`/`plistFromList` convert to and from `Std.Collections.List[T]`.
+`plistCons`, `plistHead`, `plistTail`, `plistLength` and `plistIsEmpty` are O(1). `plistLookup`, `plistInsert` and `plistDelete` are O(index): they copy only the nodes before the index. `plistToList`/`plistFromList` convert to and from `Std.Collections.List[T]` in O(n). Use a `slice[T]` when you need O(1) indexed access (D-progress-980).
 
-Pure Lyric, no BCL/JDK extern boundary, so the List ops work identically on every target and contracts/proofs apply throughout, per D038.
+Pure Lyric, no BCL/JDK extern boundary, so the List ops work identically on `--target dotnet` and `--target jvm` and contracts/proofs apply throughout, per D038. (`--target native` cannot yet infer the element type of `plistEmpty()` from context, #7413.)
 
 The same module also ships a persistent `Map[K, V]` (#6570), following the same bare-value representation: a `PersistentMap[K, V]` is a bare `slice[MapEntry[K, V]]` — a persistent association list, keyed by a caller-supplied equality predicate rather than a hash or ordering (Lyric has no generic `Eq`/`Ord` interface to dispatch on):
 

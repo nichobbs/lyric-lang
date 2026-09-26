@@ -582,6 +582,31 @@ test "generic union and record instantiate from arguments" {
   assertEqualInt(r.exitCode, 42, "generic instantiation")
 }
 
+test "arc: a self-referential generic union (cons list) instantiates and is leak-free (#7280)" {
+  // Instantiating `Chain[Int]` lowers its `tail: Chain[Int]` field, which
+  // instantiates `Chain[Int]` again; this overflowed the compiler's stack
+  // before the instantiation registered a stub first.
+  val src = "package T\n" + "union Chain[T] {\n" + "  case End\n" + "  case Link(head: T, tail: Chain[T])\n" + "}\n" +
+    "func size[T](c: in Chain[T]): Int {\n" +
+    "  match c {\n" +
+    "    case End -> 0\n" +
+    "    case Link(_, t) -> 1 + size(t)\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val e: Chain[String] = End\n" +
+    "  var c = e\n" +
+    "  var i = 0\n" +
+    "  while i < 40 {\n" +
+    "    c = Link(head = \"x\", tail = c)\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  size(c) + 2\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 42, "cons list of 40 strings")
+}
+
 test "two-param generic union constructs via expected types" {
   val src = "package T\n" + "union Res[T, E] {\n" + "  case Good(v: T)\n" + "  case Bad(err: E)\n" + "}\n" +
     "func parse(n: in Int): Res[Int, String] {\n" +

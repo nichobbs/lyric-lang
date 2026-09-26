@@ -2524,7 +2524,10 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       val tsBlob = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
       val tsKey = "newobj_ts_gcase_" + toString(typeRefRow) + "_" + taKey
       val tsRow = ctxAddTypeSpec(ctx, tsKey, tsBlob)
-      val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
+      // Context-aware, like MNewobjGenericByName below: a concrete or
+      // nested-generic parameter (`List<!0>`, #7280) must encode its real
+      // type to match the producer's ctor MethodDef.
+      val ctorSig = buildInstanceMethodSigWithCtx(ctorParams, MVoid, ctx)
       var cpKey = ""
       var cpi = 0
       while cpi < ctorParams.count {
