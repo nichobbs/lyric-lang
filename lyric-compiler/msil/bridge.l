@@ -53,7 +53,7 @@ extern type NetFileMove = "System.IO.File"
 
 func writeBytesAtomic(path: in String, bytes: in List[Byte]): Bool {
   val tmpPath = path + ".tmp-" + uuidToString(newUuid())
-  match writeBytes(tmpPath, bytes) {
+  match writeBytes(tmpPath, bytes.toArray()) {
     case Err(_) -> false
     case Ok(_) -> {
       try {

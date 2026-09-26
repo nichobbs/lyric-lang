@@ -243,7 +243,7 @@ func main(): Unit {
   check("ldloc_ok", bs[0x262] == 0xFE and bs[0x263] == 0x0C)
   check("bsjb_ok", bs[0x26C] == 0x42 and bs[0x26D] == 0x53 and bs[0x26E] == 0x4A and bs[0x26F] == 0x42)
 
-  match writeBytes(outPath, bs) {
+  match writeBytes(outPath, bs.toArray()) {
     case Ok(_) -> println("wrote_pe=true")
     case Err(_) -> println("wrote_pe=false")
   }

@@ -215,7 +215,7 @@ func main(): Unit {
   // BSJB at 0x249 + 15 = 0x258
   check("bsjb_ok", bs[0x258] == 0x42 and bs[0x259] == 0x53 and bs[0x25A] == 0x4A and bs[0x25B] == 0x42)
 
-  match writeBytes(outPath, bs) {
+  match writeBytes(outPath, bs.toArray()) {
     case Ok(_) -> println("wrote_pe=true")
     case Err(_) -> println("wrote_pe=false")
   }

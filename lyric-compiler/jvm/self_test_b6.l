@@ -191,21 +191,21 @@ func main(): Unit {
 
   val counterCf = lowerProtected(makeCounterProtected(), pool)
   val counterBytes = serializeClassWithPool(counterCf, pool)
-  match writeBytes(outDir + "/B6Counter.class", counterBytes) {
+  match writeBytes(outDir + "/B6Counter.class", counterBytes.toArray()) {
     case Ok(_) -> println("wrote B6Counter.class (" + toString(counterBytes.count) + " bytes)")
     case Err(_) -> println("writeBytes failed for B6Counter.class")
   }
 
   val servicesCf = lowerWire(makeServicesWire(), pool)
   val servicesBytes = serializeClassWithPool(servicesCf, pool)
-  match writeBytes(outDir + "/B6Services.class", servicesBytes) {
+  match writeBytes(outDir + "/B6Services.class", servicesBytes.toArray()) {
     case Ok(_) -> println("wrote B6Services.class (" + toString(servicesBytes.count) + " bytes)")
     case Err(_) -> println("writeBytes failed for B6Services.class")
   }
 
   val driverCf = makeDriverClass(pool)
   val driverBytes = serializeClassWithPool(driverCf, pool)
-  match writeBytes(outDir + "/B6Driver.class", driverBytes) {
+  match writeBytes(outDir + "/B6Driver.class", driverBytes.toArray()) {
     case Ok(_) -> println("wrote B6Driver.class (" + toString(driverBytes.count) + " bytes)")
     case Err(_) -> println("writeBytes failed for B6Driver.class")
   }

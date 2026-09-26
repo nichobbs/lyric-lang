@@ -60,7 +60,7 @@ func main(): Unit {
   val bytes = makeHelloClassBytes()
   val outPath = "/tmp/lyric-jvm-selftest/Hello.class"
   val _ = createDir("/tmp/lyric-jvm-selftest")
-  match writeBytes(outPath, bytes) {
+  match writeBytes(outPath, bytes.toArray()) {
     case Ok(_) -> println("wrote " + toString(bytes.count) + " bytes to " + outPath)
     case Err(err) -> println("writeBytes failed")
   }

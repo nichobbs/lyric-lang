@@ -65,7 +65,7 @@ func main(): Unit {
   val jarBytes = buildJar(entries)
 
   val jarPath = outDir + "/hello.jar"
-  match writeBytes(jarPath, jarBytes) {
+  match writeBytes(jarPath, jarBytes.toArray()) {
     case Ok(_) -> println("jar_written=true")
     case Err(_) -> println("jar_written=false")
   }

@@ -921,9 +921,9 @@ func cmdTest(argv: in slice[String]): Int {
                       if Str.endsWith(f, ".dll") {
                         val dest = Path.join(testOutDir2, Path.basename(f))
                         if not File.fileExists(dest) {
-                          match File.readByteSlice(f) {
+                          match File.readBytes(f) {
                             case Ok(bs) -> {
-                              val _ = File.writeByteSlice(dest, bs)
+                              val _ = File.writeBytes(dest, bs)
                             }
                             case Err(_) -> ()
                           }

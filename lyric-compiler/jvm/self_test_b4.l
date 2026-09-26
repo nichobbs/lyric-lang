@@ -124,7 +124,7 @@ func main(): Unit {
     val name = names[i]
     val bytes = serializeClassWithPool(cf, pool)
     val path = outDir + "/" + name + ".class"
-    match writeBytes(path, bytes) {
+    match writeBytes(path, bytes.toArray()) {
       case Ok(_) -> println("wrote " + name + ".class (" + toString(bytes.count) + " bytes)")
       case Err(_) -> println("writeBytes failed for " + name + ".class")
     }
@@ -136,7 +136,7 @@ func main(): Unit {
   val helperCf = makeHelperClass(helperPool)
   val helperBytes = serializeClassWithPool(helperCf, helperPool)
   val helperPath = outDir + "/OptionHelper.class"
-  match writeBytes(helperPath, helperBytes) {
+  match writeBytes(helperPath, helperBytes.toArray()) {
     case Ok(_) -> println("wrote OptionHelper.class (" + toString(helperBytes.count) + " bytes)")
     case Err(_) -> println("writeBytes failed for OptionHelper.class")
   }

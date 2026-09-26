@@ -67,7 +67,7 @@ extern func rtDirCreateAll(path: NativePtr[Byte]): Int = "lyric_dir_create_all"
 // Return-plus-ok-flag kernels (a ref-container out-param would leak
 // its initialiser; these always return a fresh owned list, empty on
 // failure, and report success through the Int out-flag).
-extern func rtReadBytes(path: NativePtr[Byte], okOut: NativePtr[Int]): List[Byte] = "lyric_file_read_bytes"
+extern func rtReadBytes(path: NativePtr[Byte], okOut: NativePtr[Int]): slice[Byte] = "lyric_file_read_bytes"
 
 extern func rtDirList(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String] = "lyric_dir_list2"
 
@@ -81,13 +81,7 @@ extern func rtDirList(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String
 // return-plus-ok-flag protocol above exists precisely to avoid that).
 extern func rtDirListTyped(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String] = "lyric_dir_list_typed"
 
-extern func rtWriteBytes(path: NativePtr[Byte], data: List[Byte], append: Int): Int = "lyric_file_write_bytes"
-
-// The same two lyric-rt seams typed as `slice[Byte]`, which shares the
-// `LyricList` representation on this target (D-N-015), so no copy is made.
-extern func rtReadByteSlice(path: NativePtr[Byte], okOut: NativePtr[Int]): slice[Byte] = "lyric_file_read_bytes"
-
-extern func rtWriteByteSlice(path: NativePtr[Byte], data: slice[Byte], append: Int): Int = "lyric_file_write_bytes"
+extern func rtWriteBytes(path: NativePtr[Byte], data: slice[Byte], append: Int): Int = "lyric_file_write_bytes"
 
 extern func rtDirRemove(path: NativePtr[Byte]): Int = "lyric_dir_remove"
 
@@ -230,7 +224,7 @@ pub func hostDeleteFileResult(path: in String): Result[Unit, IOError] {
 // Bytes-mode and enumeration Result seams (issue #4752, D-N-015
 // slice): every failure reports IoError, matching the managed twin.
 @unsafe_ffi
-pub func hostReadBytesResult(path: in String): Result[List[Byte], IOError] {
+pub func hostReadBytesResult(path: in String): Result[slice[Byte], IOError] {
   var ok: Int = 0
   val c = toC(path)
   val bytes = rtReadBytes(c, nativeAddrOf(ok))
@@ -255,40 +249,15 @@ pub func hostReadBytesResult(path: in String): Result[List[Byte], IOError] {
 @unsafe_ffi
 pub func hostReadAllBytes(path: in String): slice[Byte] {
   match hostReadBytesResult(path) {
-    case Ok(bytes) -> bytes.toArray()
+    case Ok(bytes) -> bytes
     case Err(_) -> panic("Std.File.readBytesOrPanic: the file could not be read: " + path)
   }
 }
 
 @unsafe_ffi
-pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
+pub func hostWriteBytesResult(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
   val c = toC(path)
   val rc = rtWriteBytes(c, bytes, 0)
-  freeC(c)
-  if rc == 0 {
-    Ok(value = ())
-  } else {
-    Err(error = IoError(path = path, message = "the file could not be written"))
-  }
-}
-
-@unsafe_ffi
-pub func hostReadByteSliceResult(path: in String): Result[slice[Byte], IOError] {
-  var ok: Int = 0
-  val c = toC(path)
-  val bytes = rtReadByteSlice(c, nativeAddrOf(ok))
-  freeC(c)
-  if ok == 1 {
-    Ok(value = bytes)
-  } else {
-    Err(error = IoError(path = path, message = "the file could not be read"))
-  }
-}
-
-@unsafe_ffi
-pub func hostWriteByteSliceResult(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
-  val c = toC(path)
-  val rc = rtWriteByteSlice(c, bytes, 0)
   freeC(c)
   if rc == 0 {
     Ok(value = ())

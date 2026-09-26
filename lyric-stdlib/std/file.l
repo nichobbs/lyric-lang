@@ -1,4 +1,4 @@
-//! std/file.l - Bootstrap-grade file I/O.
+//! std/file.l - File I/O.
 //!
 //! G10 (`docs/23-fsharp-shim-elimination.md` §5): every helper now
 //! wraps a direct BCL `@externTarget` (declared in
@@ -6,10 +6,10 @@
 //! { … }` to surface host failures as `Result.Err(IoError)`.  No more
 //! F#-side `FileHost` round-trip.
 //!
-//! For bytes round-tripping the public surface stays `List[Byte]` for
-//! caller convenience; the kernel extern returns / accepts
-//! `slice[Byte]` and we shuttle through `slice[T].toList()` /
-//! `List[T].toArray()` in pure Lyric.
+//! Bytes-mode I/O (`readBytes` / `writeBytes`) uses `slice[Byte]`, the
+//! same fixed-size buffer the kernel externs return and accept, so a
+//! read or write hands the host array straight through with no copy
+//! (D-progress-974).
 @runtime_checked
 package Std.File
 
@@ -143,7 +143,7 @@ pub func deleteFile(path: in String): Result[Unit, IOError] {
 /// Returns `Ok(bytes)` on success, `Err(InvalidPath)` for empty paths,
 /// or `Err(IoError)` for any host failure (not found, permission, …).
 @stable(since = "1.0")
-pub func readBytes(path: in String): Result[List[Byte], IOError] {
+pub func readBytes(path: in String): Result[slice[Byte], IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
@@ -193,38 +193,11 @@ pub func readTextOrPanic(path: in String): String {
 /// Returns `Ok(())` on success, `Err(InvalidPath)` for empty paths,
 /// or `Err(IoError)` for any host failure (permission, disk-full, …).
 @stable(since = "1.0")
-pub func writeBytes(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
+pub func writeBytes(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
   }
   hostWriteBytesResult(path, bytes)
-}
-
-/// Read the file at `path` as a `slice[Byte]`.
-///
-/// The same contract as `readBytes`, but the bytes arrive in the fixed-size
-/// buffer form parsers and `writeByteSlice` consume, without a per-byte
-/// copy into a `List[Byte]`. Prefer it whenever the caller does not need to
-/// grow the result.
-@experimental
-pub func readByteSlice(path: in String): Result[slice[Byte], IOError] {
-  if path.length == 0 {
-    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
-  }
-  hostReadByteSliceResult(path)
-}
-
-/// Write `bytes` to `path` (creating or replacing).
-///
-/// The same contract as `writeBytes`, taking a `slice[Byte]` so a buffer
-/// read by `readByteSlice` or built by an encoder is written without first
-/// being copied into a `List[Byte]`.
-@experimental
-pub func writeByteSlice(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
-  if path.length == 0 {
-    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
-  }
-  hostWriteByteSliceResult(path, bytes)
 }
 
 /// List the names of all files directly inside `dir` (non-recursive).

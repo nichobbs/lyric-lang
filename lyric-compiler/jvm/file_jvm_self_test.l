@@ -99,15 +99,15 @@ test "byte round-trip" {
   val bytes: List[Byte] = newList()
   bytes.add(104)
   bytes.add(105)
-  match writeBytes(p, bytes) {
+  match writeBytes(p, bytes.toArray()) {
     case Ok(_) -> assertTrue(true, "writeBytes Ok")
     case Err(_) -> assertTrue(false, "writeBytes must succeed")
   }
   match readBytes(p) {
-    case Ok(rb) -> assertEqualInt(rb.count, 2, "2 bytes read back")
+    case Ok(rb) -> assertEqualInt(rb.length, 2, "2 bytes read back")
     case Err(_) -> assertTrue(false, "readBytes must succeed")
   }
-  assertEqualInt(readBytesOrPanic(p).count, 2, "slice read has 2 bytes")
+  assertEqualInt(readBytesOrPanic(p).length, 2, "slice read has 2 bytes")
   match readText(p) {
     case Ok(s) -> assertEqual(s, "hi", "byte content round-trips (104,105 = \"hi\")")
     case Err(_) -> assertTrue(false, "readText of the byte file must succeed")

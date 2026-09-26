@@ -18,15 +18,14 @@ import Lyric.AppHost as AppHost
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Local copies of the binder's constants.  Reading another package's
 // module-level `pub val` directly from a `@test_module` is not reliably
 // initialized under `lyric test` (cross-package static-init gap, #3086), so the
 // test keeps its own copies.  These must match `Lyric.AppHost`'s `PLACEHOLDER`
 // and `RESERVED_BYTES`; the splice assertions below cross-check that they do —
 // a mismatch would make `bindAppHost` report a missing placeholder and fail.
-val PLACEHOLDER_HEX: String =
-  "c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2"
+val PLACEHOLDER_HEX: String = "c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2"
+
 val RESERVED: Int = 1024
 
 // Append every byte of `s` to `acc`.
@@ -46,7 +45,7 @@ func addStr(acc: in List[Byte], str: in String): Unit {
 // Build a synthetic apphost template: `prefix` bytes, then the placeholder and
 // its NUL-padded RESERVED_BYTES region, then `suffix` bytes.  Returns the
 // template and the offset of the reserved region.
-func makeTemplate(prefix: in String, suffix: in String): List[Byte] {
+func makeTemplate(prefix: in String, suffix: in String): slice[Byte] {
   val acc: List[Byte] = newList()
   addStr(acc, prefix)
   addStr(acc, PLACEHOLDER_HEX)
@@ -57,30 +56,29 @@ func makeTemplate(prefix: in String, suffix: in String): List[Byte] {
     z += 1
   }
   addStr(acc, suffix)
-  acc
+  acc.toArray()
 }
 
-func byteAt(buf: in List[Byte], i: in Int): Int {
+func byteAt(buf: in slice[Byte], i: in Int): Int {
   buf[i].toInt()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Tests
 // ─────────────────────────────────────────────────────────────────────────────
-
 // A well-formed bind splices the path + NUL, zero-fills the rest of the
 // reserved region, preserves surrounding bytes, and keeps the total length.
 test "bind splices path and preserves length" {
   val prefix = "ELFSTUB"
   val suffix = "TRAILERBYTES"
   val tpl = makeTemplate(prefix, suffix)
-  val tplLen = tpl.count
+  val tplLen = tpl.length
   val idx = Enc.encodeUtf8(prefix).length
 
   match AppHost.bindAppHost(tpl, "app.dll") {
     case Err(m) -> panic("bindAppHost unexpectedly failed: " + m)
     case Ok(outBytes) -> {
-      assertEqualInt(outBytes.count, tplLen, "bind: length preserved")
+      assertEqualInt(outBytes.length, tplLen, "bind: length preserved")
 
       // Prefix bytes unchanged.
       var i = 0
@@ -109,11 +107,7 @@ test "bind splices path and preserves length" {
       val suffixBytes = Enc.encodeUtf8(suffix)
       var s = 0
       while s < suffixBytes.length {
-        assertEqualInt(
-          byteAt(outBytes, idx + RESERVED + s),
-          suffixBytes[s].toInt(),
-          "bind: suffix byte preserved"
-        )
+        assertEqualInt(byteAt(outBytes, idx + RESERVED + s), suffixBytes[s].toInt(), "bind: suffix byte preserved")
         s += 1
       }
     }
@@ -128,14 +122,14 @@ test "findBytes locates and reports absence" {
 
   val noHit: List[Byte] = newList()
   addStr(noHit, "no placeholder here at all")
-  assertEqualInt(AppHost.findBytes(noHit, needle), -1, "findBytes: absent reports -1")
+  assertEqualInt(AppHost.findBytes(noHit.toArray(), needle), -1, "findBytes: absent reports -1")
 }
 
 // Binding a template with no placeholder is an error, not a silent pass.
 test "bind rejects missing placeholder" {
   val noPlaceholder: List[Byte] = newList()
   addStr(noPlaceholder, "this is not a real apphost binary")
-  match AppHost.bindAppHost(noPlaceholder, "app.dll") {
+  match AppHost.bindAppHost(noPlaceholder.toArray(), "app.dll") {
     case Ok(_) -> panic("bind should reject a template without the placeholder")
     case Err(_) -> assertTrue(true, "bind: missing placeholder rejected")
   }
@@ -158,7 +152,7 @@ test "bind rejects ambiguous placeholder" {
     acc.add(0)
     z2 += 1
   }
-  match AppHost.bindAppHost(acc, "app.dll") {
+  match AppHost.bindAppHost(acc.toArray(), "app.dll") {
     case Ok(_) -> panic("bind should reject a template with two placeholders")
     case Err(_) -> assertTrue(true, "bind: ambiguous placeholder rejected")
   }

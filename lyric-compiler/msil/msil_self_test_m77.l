@@ -269,7 +269,7 @@ func main(): Unit {
   check("stind_r8_ok", bs[0x28B] == 0x57)
   check("bsjb_ok", bs[0x294] == 0x42 and bs[0x295] == 0x53 and bs[0x296] == 0x4A and bs[0x297] == 0x42)
 
-  match writeBytes(outPath, bs) {
+  match writeBytes(outPath, bs.toArray()) {
     case Ok(_) -> println("wrote_pe=true")
     case Err(_) -> println("wrote_pe=false")
   }

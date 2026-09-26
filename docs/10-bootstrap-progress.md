@@ -35833,3 +35833,18 @@ succeeds.
 
 **Related:** `docs/decisions/D-progress-0973-native-isnormalized-normalize-self-recursion-7304.md`
 (full account), #7304 (this fix), #6752 (the precedent this mirrors).
+
+## `Std.File` byte API uses `slice[Byte]`
+
+`Std.File.readBytes` now returns `Result[slice[Byte], IOError]` and
+`writeBytes` takes `slice[Byte]`, matching `docs/10-stdlib-plan.md`. The
+.NET and JVM kernels hand the host byte array through directly instead of
+copying it into a `List[Byte]` one element at a time; native re-declares
+its runtime externs over `slice[Byte]` (same representation, D-N-015).
+Callers that build bytes in a `List[Byte]` call `.toArray()` at the write.
+The `@experimental` `readByteSlice`/`writeByteSlice` added by #7360 are
+removed: they were the same functions under a second name, and their
+callers (the metadata reader, CLI runtime-DLL copies, `Std.Tls`,
+`lyric-web` static files) now call `readBytes`/`writeBytes`. A linked
+compiler `@test_module` compile drops from about 16.5 s to 11 s
+(D-progress-974).

@@ -258,7 +258,7 @@ func main(): Unit {
   check("ldind_i8_ok", bs[0x26F] == 0x4C)
   check("bsjb_ok", bs[0x27C] == 0x42 and bs[0x27D] == 0x53 and bs[0x27E] == 0x4A and bs[0x27F] == 0x42)
 
-  match writeBytes(outPath, bs) {
+  match writeBytes(outPath, bs.toArray()) {
     case Ok(_) -> println("wrote_pe=true")
     case Err(_) -> println("wrote_pe=false")
   }

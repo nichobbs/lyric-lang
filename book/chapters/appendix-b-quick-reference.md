@@ -733,7 +733,7 @@ output_assembly = "myapp.dll"
 | `Std.String` | String manipulation | `trim`, `split`, `join`, `contains`, `startsWith`, `toUpper`, `substring`, `indexOfFrom`, `StringBuilder` (`new`/`append`/`appendChar`/`toString`) |
 | `Std.Parse` | Numeric parsing | `tryParseInt`, `tryParseLong`, `tryParseDouble`, `tryParseBool` |
 | `Std.Errors` | Standard error types | `ParseError`, `IOError`, `HttpError` |
-| `Std.File` | File system | `readText`, `writeText`, `fileExists`, `createDir` |
+| `Std.File` | File system | `readText`, `writeText`, `readBytes`, `writeBytes` (`slice[Byte]`), `fileExists`, `createDir` |
 | `Std.Collections` | Generic growable containers | `List[T]` (`add`, `[]`, `count`), `Map[K,V]` (`[]`, `containsKey`, `remove`) |
 | `Std.Set` | Hash set | `Set[T]`, `setContains`, `setAdd`, `setRemove`, `setSize`, `setFromSlice`, `setUnion`, `setIntersection`, `setDifference` |
 | `Std.Sort` | Stable sort | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings` |

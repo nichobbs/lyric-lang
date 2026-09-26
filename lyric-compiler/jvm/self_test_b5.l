@@ -102,7 +102,7 @@ func main(): Unit {
 
   val bytes = serializeClassWithPool(cf, pool)
   val path = outDir + "/B5Test.class"
-  match writeBytes(path, bytes) {
+  match writeBytes(path, bytes.toArray()) {
     case Ok(_) -> println("wrote B5Test.class (" + toString(bytes.count) + " bytes)")
     case Err(_) -> println("writeBytes failed for B5Test.class")
   }

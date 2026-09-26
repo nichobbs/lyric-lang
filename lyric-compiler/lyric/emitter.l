@@ -370,9 +370,9 @@ pub func copyStdlibDllsBeside(dllPath: in String, libDir: in String): Unit {
           base == "Lyric.Emitter.dll"
         if wanted {
           val dest = Path.join(destDir, base)
-          match File.readByteSlice(f) {
+          match File.readBytes(f) {
             case Ok(bs) -> {
-              val _ = File.writeByteSlice(dest, bs)
+              val _ = File.writeBytes(dest, bs)
             }
             case Err(_) -> ()
           }

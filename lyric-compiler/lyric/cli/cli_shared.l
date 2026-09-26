@@ -962,7 +962,7 @@ extern type NetFileMove = "System.IO.File"
 
 func writeBytesAtomicBeside(dest: in String, bytes: in slice[Byte]): Unit {
   val tmpPath = dest + ".tmp-" + uuidToString(newUuid())
-  match File.writeByteSlice(tmpPath, bytes) {
+  match File.writeBytes(tmpPath, bytes) {
     case Err(_) -> ()
     case Ok(_) -> {
       try {
@@ -1002,7 +1002,7 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
         if Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll") {
           val dest = Path.join(destDir, base)
           if dest != outPath {
-            match File.readByteSlice(f) {
+            match File.readBytes(f) {
               case Ok(bs) -> writeBytesAtomicBeside(dest, bs)
               case Err(_) -> ()
             }
@@ -1022,7 +1022,7 @@ pub func copyDllBeside(outPath: in String, dllPath: in String): Unit {
     return
   }
   val dest = Path.join(Path.dirname(outPath), Path.basename(dllPath))
-  match File.readByteSlice(dllPath) {
+  match File.readBytes(dllPath) {
     case Ok(bs) -> writeBytesAtomicBeside(dest, bs)
     case Err(_) -> ()
   }

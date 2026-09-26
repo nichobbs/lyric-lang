@@ -234,7 +234,7 @@ func main(): Unit {
   // usOff should be 1
   check("us_off_ok", usOff == 1)
 
-  match writeBytes(outPath, bs) {
+  match writeBytes(outPath, bs.toArray()) {
     case Ok(_) -> println("wrote_pe=true")
     case Err(_) -> println("wrote_pe=false")
   }
