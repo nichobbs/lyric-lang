@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # ffi-f0015-negative-test.sh — Auto-FFI F0015 signature-mismatch negative
-# test (#2945) plus the F0027 hint-less-extern warning test (#5704,
-# D-progress-671).
+# test (#2945) plus the F0027 hint-less-extern enforcement test (#5704,
+# D-progress-979 — supersedes D-progress-671's warning-first "option A").
 #
 # The auto-FFI self-test covers only the happy path (valid signatures
 # resolve), so a regression that silently disabled the signature-
@@ -12,9 +12,11 @@
 # no System.Math.Max overload and asserts the build fails with F0015.
 #
 # F0027: a hint-less @externTarget whose calling convention can't be
-# metadata-verified must WARN (not fail — option A is warning-first), and
-# an explicit @externStatic/@externInstance must silence it. Task.Run's
-# delegate parameter is unscoreable, so it is a stable unverifiable case.
+# metadata-verified must FAIL the build (D-progress-979 promoted this from
+# a warning once the ecosystem-wide audit, D-progress-945/#7169, found zero
+# remaining occurrences), and an explicit @externStatic/@externInstance
+# must still silence it entirely. Task.Run's delegate parameter is
+# unscoreable, so it is a stable unverifiable case.
 #
 # Extracted from `.github/workflows/ci.yml`'s "compiler-self-tests-dotnet-a"
 # job to keep the workflow file under GitHub's undocumented workflow-file
@@ -59,11 +61,11 @@ grep -q "F0015" "$work/build.out" || {
   echo "::error::build failed but did not report F0015"; exit 1; }
 echo "F0015 signature-mismatch negative test passed (rc=$rc)"
 
-# F0027 (#5704, D-progress-671): a hint-less @externTarget whose
-# calling convention can't be metadata-verified must WARN (not fail —
-# option A is warning-first), and an explicit @externStatic/
-# @externInstance must silence it. Task.Run's delegate parameter is
-# unscoreable, so it is a stable unverifiable case.
+# F0027 (#5704, D-progress-979): a hint-less @externTarget whose
+# calling convention can't be metadata-verified must FAIL the build, and
+# an explicit @externStatic/@externInstance must silence it entirely.
+# Task.Run's delegate parameter is unscoreable, so it is a stable
+# unverifiable case.
 cat > "$work/f0027_pos.l" <<'LYR'
 package F0027Pos
 extern type BclTask = "System.Threading.Tasks.Task"
@@ -74,11 +76,11 @@ LYR
 rc=0
 ( cd "$work" && "$bin_abs" build f0027_pos.l ) > "$work/f0027_pos.out" 2>&1 || rc=$?
 echo "--- F0027 positive fixture (rc=$rc) ---"; cat "$work/f0027_pos.out"
-if [ "$rc" -ne 0 ]; then
-  echo "::error::F0027 is warning-first (option A) but the hint-less fixture failed the build"; exit 1
+if [ "$rc" -eq 0 ]; then
+  echo "::error::F0027 is build-gating (D-progress-979) but the hint-less fixture built clean"; exit 1
 fi
 grep -q "F0027" "$work/f0027_pos.out" || {
-  echo "::error::hint-less unverifiable @externTarget did not warn F0027"; exit 1; }
+  echo "::error::hint-less unverifiable @externTarget did not report F0027"; exit 1; }
 cat > "$work/f0027_neg.l" <<'LYR'
 package F0027Neg
 extern type BclTask = "System.Threading.Tasks.Task"
@@ -96,4 +98,4 @@ fi
 if grep -q "F0027" "$work/f0027_neg.out"; then
   echo "::error::explicit @externStatic did not silence F0027"; exit 1
 fi
-echo "F0027 hint-less-extern warning test passed"
+echo "F0027 hint-less-extern enforcement test passed"
