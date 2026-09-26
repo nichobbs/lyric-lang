@@ -20708,7 +20708,10 @@ func enterLoopLabelMsil(fctx: in FuncCtx, label: in Option[String]): Unit {
 
 func exitLoopLabelMsil(fctx: in FuncCtx, label: in Option[String]): Unit {
   match label {
-    case Some(l) -> fctx.loopLabelIndex.remove(l)
+    case Some(l) -> {
+      fctx.loopLabelIndex.remove(l);
+      ()
+    }
     case None -> ()
   }
 }
