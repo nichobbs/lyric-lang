@@ -12,6 +12,7 @@ package Std.Process.Tests
 
 import Std.Core
 import Std.Collections
+import Std.Errors
 import Std.Process
 import Std.Testing
 
@@ -101,6 +102,23 @@ func testCaptureSpawnFailure(): Unit {
   }
 }
 
+func testRunExitCode(): Unit {
+  match run("sh", makeShArgs("exit 7")) {
+    case Ok(code) -> assertEqualInt(code, 7, "run returns the child's exit code")
+    case Err(e) -> assertTrue(false, "run failed: " + IOError.message(e))
+  }
+}
+
+func testRunSpawnFailure(): Unit {
+  // Every target reports an executable that cannot be started as Err, not as
+  // an exit code (the native twin would otherwise see execvp's 127).
+  val args: List[String] = newList()
+  match run("__lyric_definitely_nonexistent_exe_xyz__", args) {
+    case Ok(code) -> assertTrue(false, "nonexistent executable must return Err, got exit code " + code.toString())
+    case Err(_) -> assertTrue(true, "spawn failure returns Err")
+  }
+}
+
 func main(): Int {
   if runningOnWindows() {
     // Every test below uses `sh -c "..."`, which is not present on a
@@ -117,6 +135,8 @@ func main(): Int {
   testCaptureTimeout()
   testCaptureBothStreams()
   testCaptureSpawnFailure()
+  testRunExitCode()
+  testRunSpawnFailure()
   println("process_tests: ok")
   return 0
 }

@@ -23,6 +23,6 @@ calling it failed to build. `file_tests.l` was one: it creates symlinks with
 Verified: `file_tests.l` 14/14 on native, dotnet and JVM;
 `llvm_stdlib_self_test.l` 29/29 (new `Std.Process.run` case, ASan); lyric-rt
 C tests (new `lyric_process_run_inherited` cases: exit code, no args, missing
-executable, signal); `run` on dotnet and JVM returns the exit code and an
-`Err` for a missing executable; `lyric-storage` 39/39 and 3/3 on dotnet and
-JVM.
+executable, signal); `run`'s exit code and missing-executable `Err` on
+dotnet (`process_tests.l`) and JVM (`piped_process_jvm_main.l` cases 7-8);
+`lyric-storage` 39/39 and 3/3 on dotnet and JVM.

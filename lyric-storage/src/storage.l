@@ -28,8 +28,10 @@
 //! Backends:
 //!   * Local filesystem — fully native Lyric implementation on both
 //!     targets: `Storage.Kernel.Net` binds the minimum BCL extern set
-//!     (Base64, MD5, canonical-path resolve, raw file I/O) and
-//!     `Storage.Kernel.Jvm` binds the JDK equivalents (#1444).  The
+//!     (Base64, MD5, canonical-path resolve, sidecar text I/O, directory
+//!     walks) and `Storage.Kernel.Jvm` binds the JDK equivalents (#1444);
+//!     object payloads are read and written through
+//!     `Std.File.readBytes`/`writeBytes`.  The
 //!     kernels export the same `host*` surface and are `@cfg`-gated on
 //!     the `dotnet` / `jvm` features, so the inactive one is erased and
 //!     the unqualified calls below resolve to the survivor.  No host
