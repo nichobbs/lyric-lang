@@ -50,6 +50,7 @@ import Std.Time as Time
 import Std.Math
 import Std.Iter
 import Std.Sort
+import Std.Log
 import Storage.Kernel.Net
 import Storage.Kernel.Jvm
 
@@ -86,6 +87,7 @@ pub func normalisedStorageKey(s: in String): String {
 // and `my..file.txt` are intentionally accepted while `../` and `/../`
 // and a bare `..` are rejected.  Caller is expected to pass a key that
 // has already been normalised by `normalisedStorageKey`.
+@pure
 pub func storageKeyHasDotDot(s: in String): Bool {
   val segs = Str.split(s, "/")
   var i = 0
@@ -118,13 +120,28 @@ pub func storageKeyHasDotDot(s: in String): Bool {
 //     and incorrect `list` results (#1911).  This rejection is
 //     applied uniformly across `put`/`get`/`exists`/`list` so the
 //     contract is: no `.meta.json`-suffixed keys ever.
+//   * control characters (U+0000-U+001F, U+007F), which have no place in an
+//     object name and break log lines and HTTP headers (#7242)
+//   * `.` and empty path segments (`a/./b`, `a//b`, a trailing `/`): the
+//     local-fs backend collapses them, so `a//b` and `a/b` would name the
+//     same file there but different objects on S3 (#7242)
+//   * a segment ending in `.` or a space, which Windows strips (`a/foo.` is
+//     `a/foo` there, and `x.meta.json ` is a sidecar), a Windows device name
+//     (`CON`, `nul.txt`, `COM1`), and `:`, which names an NTFS alternate data
+//     stream (#7327)
 // Checked by every `StorageBucket` implementation on every key it accepts.
+@pure
 pub func isSafeKey(key: in String): Bool {
   if key.length == 0 {
     return false
   }
-  if Str.contains(key, "\u{0000}") {
-    return false
+  var ci = 0
+  while ci < key.length {
+    val c = key[ci]
+    if c < ' ' or c == '\u{007f}' {
+      return false
+    }
+    ci = ci + 1
   }
   // Reject double-encoded payloads (`%25` is the percent-encoded `%`).
   // A single-pass decode in `normalisedStorageKey` would otherwise let
@@ -152,16 +169,60 @@ pub func isSafeKey(key: in String): Bool {
   if storageKeyHasDotDot(n) {
     return false
   }
+  if Str.contains(n, ":") {
+    return false
+  }
+  val segs = Str.split(n, "/")
+  var si = 0
+  while si < segs.length {
+    val seg = segs[si]
+    if seg.length == 0 {
+      return false
+    }
+    // Windows strips a trailing `.` or space from every path segment, so
+    // `photo.jpg.meta.json ` would write the `photo.jpg` sidecar and `a/foo.`
+    // would alias `a/foo` (#7327).  This also covers `.` and `..`.
+    val last = seg[seg.length - 1]
+    if last == '.' or last == ' ' {
+      return false
+    }
+    if isWindowsDeviceName(seg) {
+      return false
+    }
+    si = si + 1
+  }
   return true
+}
+
+// True when `seg`, up to its first `.`, is a Windows reserved device name
+// (CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9, in any case).  A file path
+// through such a segment opens the device instead of a file on Windows.
+@pure
+func isWindowsDeviceName(seg: in String): Bool {
+  val dot = Str.indexOf(seg, ".")
+  val stem = Str.toUpper(match dot { case Some(ix) -> seg.substring(0, ix); case None -> seg })
+  if stem == "CON" or stem == "PRN" or stem == "AUX" or stem == "NUL" {
+    return true
+  }
+  if stem.length == 4 and (Str.startsWith(stem, "COM") or Str.startsWith(stem, "LPT")) {
+    val d = stem[3]
+    return d >= '1' and d <= '9'
+  }
+  false
 }
 
 // True when `prefix` is safe to pass to a storage backend's `list`
 // operation.  Mirrors `isSafeKey` (see its doc-comment caveats — in
 // particular the literal-`%` rejection) but admits the empty prefix
-// (list everything) since `list` semantically accepts that.
+// (list everything) and one trailing `/` (`uploads/`, a directory-style
+// prefix), since `list` semantically accepts both.
+@pure
 pub func isSafePrefix(prefix: in String): Bool {
   if prefix.length == 0 {
     return true
+  }
+  if Str.endsWith(prefix, "/") {
+    return isSafeKey(prefix.substring(0, prefix.length - 1))
   }
   return isSafeKey(prefix)
 }
@@ -349,11 +410,11 @@ func buildSidecarJson(
   userMetaJson: in String,
 ): String {
   val meta = if userMetaJson.length == 0 { "{}" } else { userMetaJson }
-  return "{\"contentType\":" + jsonString(contentType) + ",\"contentLength\":" + toString(contentLength) +
+  return "{\"contentType\":" + encodeString(contentType) + ",\"contentLength\":" + toString(contentLength) +
     ",\"lastModified\":" +
-    jsonString(lastModified) +
+    encodeString(lastModified) +
     ",\"etag\":" +
-    jsonString(etag) +
+    encodeString(etag) +
     ",\"userMeta\":" +
     meta +
     "}"
@@ -990,19 +1051,29 @@ pub func exists(bucket: in StorageBucket, key: in String): Result[Bool, StorageE
 }
 
 // ─── Audit log hook ──────────────────────────────────────────────────────────
-/// Emit an audit log line.  `operation` is the canonical call name,
-/// `level` is one of `"info"` / `"warn"` / `"debug"`, `detail` is an
-/// optional free-form message (empty when there is none).
-///
-/// No-op for the bootstrap; structured audit sink tracked separately.
-/// Kept as a public function so `Storage.Aspects.AuditAccess` continues
-/// to compile against a stable name.  Lives here rather than in
-/// `_kernel/net/storage_kernel.l` because kernel files are the audited
-/// BCL boundary and may only contain `@externTarget` / `extern type`
-/// declarations (#1410).
+/// Emit an audit log line through `Std.Log`, tagged `audit=storage` with
+/// the operation as a structured field.  `operation` is the canonical call
+/// name, `level` is one of `"info"` / `"warn"` / `"debug"`, in any case
+/// (anything else logs at info), and `detail` is an optional free-form message (empty when
+/// there is none).  `Std.Log` escapes every field, so an operation or detail
+/// carrying a line break cannot forge a log line.  It used to be a no-op
+/// (#7242).
 @stable(since = "0.1")
 pub func auditLog(operation: in String, level: in String, detail: in String): Unit {
-  return ()
+  val fields: slice[Std.Log.LogField] = if detail.length == 0 {
+    [Std.Log.field("audit", "storage"), Std.Log.field("operation", operation)]
+  } else {
+    [Std.Log.field("audit", "storage"), Std.Log.field("operation", operation), Std.Log.field("detail", detail)]
+  }
+  val lowered = Str.toLower(level)
+  val lvl = if lowered == "warn" {
+    Std.Log.LogLevel.Warn
+  } else if lowered == "debug" {
+    Std.Log.LogLevel.Debug
+  } else {
+    Std.Log.LogLevel.Info
+  }
+  Std.Log.log(lvl, "storage " + operation, fields)
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
@@ -1023,28 +1094,4 @@ func parseStringMap(rawJson: in String): Map[String, String] {
     m.add(k, v)
   }
   return m
-}
-
-// Wrap a string in JSON double quotes with basic escaping.
-func jsonString(s: in String): String {
-  var buf = "\""
-  var i = 0
-  while i < s.length {
-    val ch = s[i].toString()
-    if ch == "\"" {
-      buf = buf + "\\\""
-    } else if ch == "\\" {
-      buf = buf + "\\\\"
-    } else if ch == "\n" {
-      buf = buf + "\\n"
-    } else if ch == "\r" {
-      buf = buf + "\\r"
-    } else if ch == "\t" {
-      buf = buf + "\\t"
-    } else {
-      buf = buf + ch
-    }
-    i = i + 1
-  }
-  return buf + "\""
 }

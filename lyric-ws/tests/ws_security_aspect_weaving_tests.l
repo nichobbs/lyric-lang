@@ -37,7 +37,9 @@ import Ws.Aspects
 aspect WsAuthGuard from Ws.Aspects.WsAuth {
   matches: name like "wsAuthGuarded*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
   }
 }
 
@@ -53,10 +55,11 @@ test "WsAuth aspect: an invalid token is denied before the handler runs" {
 }
 
 // A stable HS256 token signed with the WsAuthGuard instance's jwtSecret
-// ("test-signing-secret"), carrying no `exp` claim so it never expires. This
+// ("lyric-test-hs256-signing-key-0123456789"), carrying the instance's `iss`/`aud` and a far-future `exp` (a token
+// without one is rejected, #7232). This
 // lets us exercise the WsAuth *accept* path — a validly-signed token must flow
 // through Auth.verifyJwt and reach the handler. See #3643.
-val validAuthToken: String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJyb2xlIjoiYWRtaW4ifQ.Mj5dNtlMDypmDCnwx73ItntqJ46e90e5jSicrdDqM-s"
+val validAuthToken: String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJseXJpYy10ZXN0cy1hcGkiLCJpc3MiOiJseXJpYy10ZXN0cyIsImV4cCI6NDEwMjQ0NDgwMCwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6ImFkbWluIn0.rAoNIRSAK6HZQFn4IGWEZlFUd015QgLDjlVYf5qHcf8"
 
 test "WsAuth aspect: a validly-signed token reaches the handler" {
   match wsAuthGuardedHandler(validAuthToken) {
@@ -69,7 +72,9 @@ test "WsAuth aspect: a validly-signed token reaches the handler" {
 aspect WsAuthGuardDisabled from Ws.Aspects.WsAuth {
   matches: name like "wsAuthBypassed*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
     enabled: Bool = false
   }
 }

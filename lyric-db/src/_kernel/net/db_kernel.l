@@ -370,8 +370,11 @@ func serializeValue(r: in DbReader, i: in Int): String {
     case "System.Single" -> floatToInvariantString(readerGetFloat(r, i), invariantCulture())
     case "System.Boolean" -> if readerGetBoolean(r, i) { "true" } else { "false" }
     case "System.String" -> jsonEscapeString(readerGetString(r, i))
-    case "System.Decimal" -> "{\"$decimal\":" + jsonEscapeString(decimalToInvariantString(readerGetDecimal(r, i), invariantCulture())) + "}"
-    case "System.DateTime" -> "{\"$datetime\":" + jsonEscapeString(dateTimeToIso8601(readerGetDateTime(r, i), "o")) + "}"
+    case "System.Decimal" -> "{\"$decimal\":" +
+      jsonEscapeString(decimalToInvariantString(readerGetDecimal(r, i), invariantCulture())) +
+      "}"
+    case "System.DateTime" -> "{\"$datetime\":" + jsonEscapeString(dateTimeToIso8601(readerGetDateTime(r, i), "o")) +
+      "}"
     case "System.Byte[]" -> "{\"$bytes\":" + jsonEscapeString(readerGetBlobBase64(r, i)) + "}"
     case _ -> jsonEscapeString(objToInvariantString(readerGetValue(r, i), invariantCulture()))
   }
@@ -519,9 +522,25 @@ func msToWholeSecondsRoundedUp(ms: in Int): Int {
 // Build an Npgsql keyword=value connection string. Accepts either a
 // `postgres://` / `postgresql://` URI (parsed here) or an already-formed
 // Npgsql connection string (passed through, with tuning params applied on
-// top via the builder).
+// top via the builder).  `Err` for a URI whose port is not a number in
+// 1..65535 (it used to fall back to 5432 silently) or a keyword string the
+// builder rejects (its `ArgumentException` used to escape `connectPostgres`,
+// #7241).
 @cfg(feature = "postgres")
-pub func buildPgConnStr(dsn: in String, poolSize: in Int, connectTimeoutMs: in Int, passwordOverride: in String): String {
+pub func buildPgConnStr(
+  dsn: in String, poolSize: in Int, connectTimeoutMs: in Int, passwordOverride: in String
+): Result[String, String] {
+  return try {
+    buildPgConnStrUnchecked(dsn, poolSize, connectTimeoutMs, passwordOverride)
+  } catch Bug as b {
+    Err(b.message)
+  }
+}
+
+@cfg(feature = "postgres")
+func buildPgConnStrUnchecked(
+  dsn: in String, poolSize: in Int, connectTimeoutMs: in Int, passwordOverride: in String
+): Result[String, String] {
   val isUri = Str.startsWith(dsn, "postgres://") or Str.startsWith(dsn, "postgresql://")
   val builder = if isUri { newPgConnStrBuilder() } else { newPgConnStrBuilderFrom(dsn) }
 
@@ -562,7 +581,14 @@ pub func buildPgConnStr(dsn: in String, poolSize: in Int, connectTimeoutMs: in I
     match Str.indexOf(hostport, ":") {
       case Some(c) -> {
         host = Str.substring(hostport, 0, c)
-        port = match Std.Parse.parseOptInt(Str.substring(hostport, c + 1)) { case Some(p) -> p; case None -> 5432 }
+        val portText = Str.substring(hostport, c + 1)
+        port = match Std.Parse.parseOptInt(portText) {
+          case Some(p) -> p
+          case None -> return Err("invalid port '" + portText + "' in postgres URI")
+        }
+        if port < 1 or port > 65535 {
+          return Err("port " + port.toString() + " in postgres URI is outside 1..65535")
+        }
       }
       case None -> ()
     }
@@ -598,7 +624,7 @@ pub func buildPgConnStr(dsn: in String, poolSize: in Int, connectTimeoutMs: in I
   }
   pgSetTimeout(builder, msToWholeSecondsRoundedUp(connectTimeoutMs))
   pgSetMaxPoolSize(builder, poolSize)
-  pgConnStrBuilderToString(builder)
+  Ok(pgConnStrBuilderToString(builder))
 }
 
 // Round-trip a built connection string back through
@@ -635,7 +661,10 @@ pub func connectPostgres(
   requires: poolSize >= 1
   requires: connectTimeoutMs >= 100
 {
-  val connStr = buildPgConnStr(url, poolSize, connectTimeoutMs, password)
+  val connStr = match buildPgConnStr(url, poolSize, connectTimeoutMs, password) {
+    case Err(e) -> return Err(e)
+    case Ok(built) -> built
+  }
   try {
     val conn: DbConn = newNpgsqlConnection(connStr)
     connOpen(conn)
@@ -651,22 +680,84 @@ pub func connectPostgres(
 @externTarget("Microsoft.Data.Sqlite.SqliteConnection..ctor")
 func newSqliteConnection(connStr: in String): DbConn = ()
 
+// `SqliteConnectionStringBuilder` escapes the `Data Source` value, so a
+// path containing `;` cannot inject further options (the Postgres builder's
+// #5584 fix, #7241).
+@axiom("Microsoft.Data.Sqlite.SqliteConnectionStringBuilder escapes every keyword value per the ADO.NET connection-string grammar")
+@cfg(feature = "sqlite")
+extern type SqliteConnStrBuilder = "Microsoft.Data.Sqlite.SqliteConnectionStringBuilder"
+
+@cfg(feature = "sqlite")
+@externTarget("Microsoft.Data.Sqlite.SqliteConnectionStringBuilder..ctor")
+func newSqliteConnStrBuilder(): SqliteConnStrBuilder = ()
+
+@cfg(feature = "sqlite")
+@externTarget("Microsoft.Data.Sqlite.SqliteConnectionStringBuilder..ctor")
+func newSqliteConnStrBuilderFrom(connStr: in String): SqliteConnStrBuilder = ()
+
+@cfg(feature = "sqlite")
+@externInstance
+@externTarget("Microsoft.Data.Sqlite.SqliteConnectionStringBuilder.set_DataSource")
+func sqliteSetDataSource(b: in SqliteConnStrBuilder, v: in String): Unit = ()
+
+@cfg(feature = "sqlite")
+@externInstance
+@externTarget("Microsoft.Data.Sqlite.SqliteConnectionStringBuilder.get_DataSource")
+func sqliteGetDataSource(b: in SqliteConnStrBuilder): String = ()
+
+@cfg(feature = "sqlite")
+@externInstance
+@externTarget("Microsoft.Data.Sqlite.SqliteConnectionStringBuilder.set_DefaultTimeout")
+func sqliteSetDefaultTimeout(b: in SqliteConnStrBuilder, v: in Int): Unit = ()
+
+@cfg(feature = "sqlite")
+@externInstance
+@externTarget("Microsoft.Data.Sqlite.SqliteConnectionStringBuilder.get_DefaultTimeout")
+func sqliteGetDefaultTimeout(b: in SqliteConnStrBuilder): Int = ()
+
+@cfg(feature = "sqlite")
+@externInstance
+@externTarget("Microsoft.Data.Sqlite.SqliteConnectionStringBuilder.get_ConnectionString")
+func sqliteConnStrBuilderToString(b: in SqliteConnStrBuilder): String = ()
+
 // Build a Microsoft.Data.Sqlite connection string. Accepts either a
 // `sqlite://<path>` URI, the literal `sqlite::memory:` shorthand, or an
-// already-formed `Data Source=...` connection string.
+// already-formed `Data Source=...` connection string.  `Default Timeout`
+// (the busy timeout) is whole seconds and `0` means wait forever, so a
+// positive sub-second `connectTimeoutMs` rounds up to 1 second (#7241, the
+// SQLite twin of #5596).  `Err` for a keyword string the builder rejects.
 @cfg(feature = "sqlite")
-func buildSqliteConnStr(dsn: in String): String {
-  if dsn == "sqlite::memory:" {
-    return "Data Source=:memory:"
-  }
-  if Str.startsWith(dsn, "sqlite://") {
-    val path = Str.substring(dsn, 9)
-    if path.length == 0 or path == ":memory:" {
-      return "Data Source=:memory:"
+pub func buildSqliteConnStr(dsn: in String, connectTimeoutMs: in Int): Result[String, String] {
+  return try {
+    val builder = if dsn == "sqlite::memory:" {
+      val b = newSqliteConnStrBuilder()
+      sqliteSetDataSource(b, ":memory:")
+      b
+    } else if Str.startsWith(dsn, "sqlite://") {
+      val path = Str.substring(dsn, 9)
+      val b = newSqliteConnStrBuilder()
+      sqliteSetDataSource(b, if path.length == 0 { ":memory:" } else { path })
+      b
+    } else {
+      newSqliteConnStrBuilderFrom(dsn)
     }
-    return "Data Source=" + path
+    sqliteSetDefaultTimeout(builder, msToWholeSecondsRoundedUp(connectTimeoutMs))
+    Ok(sqliteConnStrBuilderToString(builder))
+  } catch Bug as b {
+    Err(b.message)
   }
-  dsn
+}
+
+// Read keywords back out of a built SQLite connection string, so tests can
+// check `buildSqliteConnStr` without declaring externs of their own.
+@cfg(feature = "sqlite")
+pub func sqliteConnStrExtractDataSource(connStr: in String): String {
+  sqliteGetDataSource(newSqliteConnStrBuilderFrom(connStr))
+}
+
+@cfg(feature = "sqlite")
+pub func sqliteConnStrExtractTimeoutSeconds(connStr: in String): Int {
+  sqliteGetDefaultTimeout(newSqliteConnStrBuilderFrom(connStr))
 }
 
 /// Open a SQLite connection.  Available when the `sqlite` feature is active
@@ -674,13 +765,16 @@ func buildSqliteConnStr(dsn: in String): String {
 /// `sqlite://<path>` URI, the literal `sqlite::memory:` shorthand for an
 /// in-memory database, or an already-formed `Data Source=...` connection
 /// string.  `connectTimeoutMs` maps to Microsoft.Data.Sqlite's busy-timeout
-/// (`Default Timeout`, in whole seconds).
+/// (`Default Timeout`, in whole seconds, rounded up).
 @cfg(feature = "sqlite")
 pub func connectSqlite(url: in String, connectTimeoutMs: in Int): Result[DbConn, String]
   requires: url.length > 0
   requires: connectTimeoutMs >= 100
 {
-  val connStr = buildSqliteConnStr(url) + ";Default Timeout=" + (connectTimeoutMs / 1000).toString()
+  val connStr = match buildSqliteConnStr(url, connectTimeoutMs) {
+    case Err(e) -> return Err(e)
+    case Ok(built) -> built
+  }
   try {
     val conn: DbConn = newSqliteConnection(connStr)
     connOpen(conn)

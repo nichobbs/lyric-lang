@@ -91,7 +91,7 @@ test "openChannel: two concurrently-open channels get independent handles that b
   }
 }
 
-// ─── Metadata validation (#7248) ─────────────────────────────────────────────
+// ─── Metadata validation (#7247) ─────────────────────────────────────────────
 // A CR/LF in a metadata value would reach the HTTP/2 header block; keys are
 // lowercase on the wire and `grpc-` is reserved by the protocol.
 test "metadata keys: lowercase token characters only, grpc- reserved" {

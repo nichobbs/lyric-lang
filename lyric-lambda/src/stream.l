@@ -83,6 +83,7 @@ pub opaque type StreamWriter {
 @stable(since = "0.1")
 pub func setContentType(writer: in StreamWriter, contentType: in String): Unit
   requires: contentType.length > 0
+  requires: not contentType.contains("\r") and not contentType.contains("\n")
 {
   return panic("Lambda.Stream: response streaming has no working transport yet")
 }
@@ -90,20 +91,23 @@ pub func setContentType(writer: in StreamWriter, contentType: in String): Unit
 /// Write a UTF-8 string chunk to the response stream.
 /// Each call delivers the chunk to the caller immediately.
 /// Returns LambdaError.InternalError if the stream is already closed or
-/// the connection was dropped by the caller.
+/// the connection was dropped by the caller.  An empty chunk is a no-op.
 @stable(since = "0.1")
-pub func write(writer: in StreamWriter, chunk: in String): Result[Unit, LambdaError]
-  requires: chunk.length > 0
-{
+pub func write(writer: in StreamWriter, chunk: in String): Result[Unit, LambdaError] {
+  if chunk.length == 0 {
+    return Ok(value = ())
+  }
   return panic("Lambda.Stream: response streaming has no working transport yet")
 }
 
 /// Write a base64-encoded binary chunk to the response stream.
 /// The kernel decodes the base64 and delivers raw bytes to the caller.
+/// An empty chunk is a no-op.
 @stable(since = "0.1")
-pub func writeBytes(writer: in StreamWriter, base64Chunk: in String): Result[Unit, LambdaError]
-  requires: base64Chunk.length > 0
-{
+pub func writeBytes(writer: in StreamWriter, base64Chunk: in String): Result[Unit, LambdaError] {
+  if base64Chunk.length == 0 {
+    return Ok(value = ())
+  }
   return panic("Lambda.Stream: response streaming has no working transport yet")
 }
 

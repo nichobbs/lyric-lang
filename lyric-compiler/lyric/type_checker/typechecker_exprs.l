@@ -4532,6 +4532,108 @@ func unionCaseSymbolForScrutinee(
   unionCaseSymbolOf(tbl, fn)
 }
 
+// A union- or enum-case pattern can only match a value of the union or enum
+// that declares the case.  `unionCaseSymbolForScrutinee` falls back to a
+// name-based lookup when the scrutinee's own type has no such case, so
+// without this check `case Some(i)` against an `Int` scrutinee (or
+// `case Ok(v)` against an `Option`) type-checked and then silently
+// miscompiled: MSIL treated the Int as the case object, JVM failed
+// verification.  Returns false (after reporting T0129) on a mismatch.
+// Scrutinees whose type is unknown or open (`TyError`, `TyVar`, `TySelf`,
+// nullable, exception) are left alone: those are either already
+// diagnosed or resolved later.
+func checkCasePatternScrutinee(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  caseSym: in Symbol,
+  scrutineeTy: in Type,
+  span: in Span,
+): Bool {
+  val parentId = match caseSym.kind {
+    case DKUnionCase(pid, _) -> Some(value = pid)
+    case DKEnumCase(pid, _) -> Some(value = pid)
+    case _ -> None
+  }
+  match parentId {
+    case None -> true
+    case Some(pid) -> {
+      val shown = renderType(scrutineeTy)
+      val mismatched = not caseParentMatchesScrutinee(tbl, pid, scrutineeTy)
+      if mismatched {
+        diag.add(
+          errorDiagnostic(
+            "T0129",
+            "pattern '" + caseSym.name + "' is a case of a different type and can never match a value of type '" + shown + "'",
+            span
+          )
+        )
+        return false
+      }
+      true
+    }
+  }
+}
+
+// Nullary-case analog of `checkCasePatternScrutinee` for a bare `case None`
+// (parsed as a binding whose name is a case constructor).  Fires only when
+// no case of that name belongs to the scrutinee's type.
+func checkBareCasePatternScrutinee(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  name: in String,
+  scrutineeTy: in Type,
+  span: in Span,
+): Unit {
+  val cands = symTableTryFindAll(tbl, name)
+  var i = 0
+  while i < cands.count {
+    val cand = cands[i]
+    val belongs = match cand.kind {
+      case DKUnionCase(pid, _) -> caseParentMatchesScrutinee(tbl, pid, scrutineeTy)
+      case DKEnumCase(pid, _) -> caseParentMatchesScrutinee(tbl, pid, scrutineeTy)
+      case _ -> true
+    }
+    if belongs {
+      return ()
+    }
+    i = i + 1
+  }
+  if cands.count > 0 {
+    diag.add(
+      errorDiagnostic(
+        "T0129",
+        "pattern '" + name + "' is a case of a different type and can never match a value of type '" +
+          renderType(scrutineeTy) +
+          "'",
+        span
+      )
+    )
+  }
+}
+
+// True unless the scrutinee is a concrete type that the case with parent
+// `pid` can never belong to (see `checkCasePatternScrutinee`).
+func caseParentMatchesScrutinee(tbl: in SymbolTable, pid: in TypeId, scrutineeTy: in Type): Bool {
+  match unrefine(scrutineeTy) {
+    case TyUser(sid, _, _) -> {
+      if typeIdEq(sid, pid) {
+        true
+      } else {
+        match parentUnionDeclOf(tbl, sid) {
+          case Some(_) -> false
+          case None -> true
+        }
+      }
+    }
+    case TyPrim(_) -> false
+    case TyTuple(_) -> false
+    case TyFunction(_, _, _) -> false
+    case TyArray(_, _) -> false
+    case TySlice(_) -> false
+    case _ -> true
+  }
+}
+
 func parentUnionDeclOf(tbl: in SymbolTable, parentId: in TypeId): Option[UnionDecl] {
   val key = toString(parentId.id)
   if not tbl.unionDeclIndex.containsKey(key) {
@@ -5286,6 +5388,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
           if not scrutineeIsKnown {
             val _ = checkBareNameAmbiguity(tbl, diag, name, pat.span)
           }
+          checkBareCasePatternScrutinee(tbl, diag, name, ty, pat.span)
         } else {
           scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
         }
@@ -5302,7 +5405,13 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
     }
     case PConstructor(head, args) -> {
       val ftypes = match unionCaseSymbolForScrutinee(tbl, diag, pat2fnExpr(head, pat.span), ty) {
-        case Some(caseSym) -> caseFieldTypesInstantiated(tbl, diag, caseSym, ty)
+        case Some(caseSym) -> {
+          if checkCasePatternScrutinee(tbl, diag, caseSym, ty, pat.span) {
+            caseFieldTypesInstantiated(tbl, diag, caseSym, ty)
+          } else {
+            newList()
+          }
+        }
         case None -> newList()
       }
       var i = 0

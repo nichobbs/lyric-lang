@@ -1815,16 +1815,31 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           }
           // TyException built-in members: .message and .typeName.
           if cls == "java/lang/Throwable" and memberName == "message" {
-            val getMessagePs: List[JvmType] = newList()
+            // `getMessage()` is null for many JDK exceptions (e.g.
+            // `ConnectException`), but a Lyric `String` is never null, so a
+            // null message falls back to `toString()` (the class name), the
+            // analogue of .NET's never-null `Exception.Message`.
+            val strTy = JRef(className = "java/lang/String")
+            val excSlot = allocSlot(ctx, "__bug_exc_" + freshLabel(ctx), JRef(className = "java/lang/Throwable"))
+            emitStore(insns, excSlot, JRef(className = "java/lang/Throwable"))
+            emitLoad(insns, excSlot, JRef(className = "java/lang/Throwable"))
+            val noPs: List[JvmType] = newList()
+            insns.add(LInvokevirtual(owner = "java/lang/Throwable", name = "getMessage", params = noPs, ret = strTy))
+            emitLoad(insns, excSlot, JRef(className = "java/lang/Throwable"))
+            insns.add(LInvokevirtual(owner = "java/lang/Object", name = "toString", params = noPs, ret = strTy))
+            val elsePs: List[JvmType] = newList()
+            elsePs.add(JRef(className = "java/lang/Object"))
+            elsePs.add(JRef(className = "java/lang/Object"))
             insns.add(
-              LInvokevirtual(
-                owner = "java/lang/Throwable",
-                name = "getMessage",
-                params = getMessagePs,
-                ret = JRef(className = "java/lang/String")
+              LInvokestatic(
+                owner = "java/util/Objects",
+                name = "requireNonNullElse",
+                params = elsePs,
+                ret = JRef(className = "java/lang/Object")
               )
             )
-            JRef(className = "java/lang/String")
+            insns.add(LCheckcast(className = "java/lang/String"))
+            strTy
           } else if cls == "java/lang/Throwable" and memberName == "typeName" {
             val getClassPs: List[JvmType] = newList()
             insns.add(

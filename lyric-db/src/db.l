@@ -275,10 +275,7 @@ pub func connect(connStr: in String): Result[DbConnection, DbError]
 /// test for why an unclamped `0` would panic downstream instead.
 func envIntClamped(suffix: in String, dflt: in Int, lo: in Int, hi: in Int): Int {
   val raw = Environment.getVarOrDefault("LYRIC_CONFIG_DB_CONNECTION_" + suffix, "")
-  val v = match Std.Parse.parseOptInt(raw) {
-    case Some(n) -> n
-    case None -> dflt
-  }
+  val v = match Std.Parse.parseOptInt(raw) { case Some(n) -> n; case None -> dflt }
   if v < lo {
     lo
   } else if v > hi {
@@ -326,7 +323,12 @@ pub func connectFromEnv(): Result[DbConnection, DbError] {
   if Str.startsWith(url, "sqlite://") or url == "sqlite::memory:" {
     return connectSqlite(url, connectTimeoutMs)
   }
-  Err(DbError(message = "unrecognized DSN scheme (expected postgres://, postgresql://, or sqlite://)", code = "CONFIG_ERROR"))
+  Err(
+    DbError(
+      message = "unrecognized DSN scheme (expected postgres://, postgresql://, or sqlite://)",
+      code = "CONFIG_ERROR"
+    )
+  )
 }
 
 /// Open a PostgreSQL connection directly, bypassing DSN scheme sniffing.
@@ -431,13 +433,25 @@ func parseDbValue(raw: in String): DbValue {
     case 4 -> {
       match StdJson.tryGetInt(elem) {
         case Some(i) -> DbInt(value = i)
-        case None -> match StdJson.tryGetLong(elem) { case Some(l) -> DbLong(value = l); case None -> DbDouble(value = StdJson.getDouble(elem)) }
+        case None -> match StdJson.tryGetLong(elem) {
+          case Some(l) -> DbLong(value = l)
+          case None -> DbDouble(value = StdJson.getDouble(elem))
+        }
       }
     }
     case 1 -> {
       match StdJson.tryGetProperty(elem, "$decimal") {
         case Some(v) -> DbDecimal(value = StdJson.getString(v))
-        case None -> match StdJson.tryGetProperty(elem, "$datetime") { case Some(v) -> DbDateTime(value = StdJson.getString(v)); case None -> match StdJson.tryGetProperty(elem, "$bytes") { case Some(v) -> match Std.Encoding.tryDecodeBase64(StdJson.getString(v)) { case Some(bytes) -> DbBytes(value = bytes); case None -> DbNull }; case None -> DbNull } }
+        case None -> match StdJson.tryGetProperty(elem, "$datetime") {
+          case Some(v) -> DbDateTime(value = StdJson.getString(v))
+          case None -> match StdJson.tryGetProperty(elem, "$bytes") {
+            case Some(v) -> match Std.Encoding.tryDecodeBase64(StdJson.getString(v)) {
+              case Some(bytes) -> DbBytes(value = bytes)
+              case None -> DbNull
+            }
+            case None -> DbNull
+          }
+        }
       }
     }
     case _ -> DbNull
@@ -476,22 +490,26 @@ pub func dbGetString(row: in DbRow, name: in String): String
   }
 }
 
-/// Extract an Int column value.  Returns 0 for NULL or non-integer values.
-/// SQLite reports an `INTEGER` column as `DbLong` whenever the stored value
-/// doesn't fit `Int32` (Microsoft.Data.Sqlite picks the CLR type per value,
-/// not per declared column type), so a `DbLong` is narrowed to `Int` here
-/// too (`.toInt()` truncates toward zero — see `getLong` for the full-range
-/// extractor when that matters).  Use `getLong` for columns that may hold
-/// values outside Int32 range.
+/// Extract an Int column value.  Returns 0 for NULL, non-integer values, and
+/// integers outside Int32 range.  SQLite reports an `INTEGER` column as
+/// `DbLong` (Microsoft.Data.Sqlite picks the CLR type per value, not per
+/// declared column type), so a `DbLong` that fits `Int32` is returned as-is;
+/// one that does not is never truncated into a plausible-looking wrong value
+/// (#7241).  Use `getLong` for columns that may hold values outside Int32
+/// range, or `getIntOpt` to tell an out-of-range value from a zero.
 @stable(since = "0.1")
 pub func getInt(row: in DbRow, name: in String): Int
   requires: name.length > 0
 {
   match col(row, name) {
     case DbInt(v) -> return v
-    case DbLong(v) -> return v.toInt()
+    case DbLong(v) -> return if fitsInt(v) { v.toInt() } else { 0 }
     case _ -> return 0
   }
+}
+
+func fitsInt(v: in Long): Bool {
+  v >= -2147483648i64 and v <= 2147483647i64
 }
 
 /// Extract a Long column value.  Returns 0L for NULL or non-integer values.
@@ -535,10 +553,9 @@ pub func dbGetStringOpt(row: in DbRow, name: in String): Option[String]
   }
 }
 
-/// Extract an Int column value.  Returns None for NULL or non-integer values.
-/// See `getInt`'s doc comment for why a `DbLong` is also narrowed here
-/// (SQLite `INTEGER` columns surface as `DbLong` once the value exceeds
-/// Int32 range).
+/// Extract an Int column value.  Returns None for NULL, non-integer values,
+/// and integers outside Int32 range (see `getInt`: SQLite `INTEGER` columns
+/// surface as `DbLong`, which is narrowed only when it fits).
 @stable(since = "0.1")
 pub func getIntOpt(row: in DbRow, name: in String): Option[Int]
   requires: name.length > 0
@@ -546,7 +563,7 @@ pub func getIntOpt(row: in DbRow, name: in String): Option[Int]
   match col(row, name) {
     case DbNull -> return None
     case DbInt(v) -> return Some(value = v)
-    case DbLong(v) -> return Some(value = v.toInt())
+    case DbLong(v) -> return if fitsInt(v) { Some(value = v.toInt()) } else { None }
     case _ -> return None
   }
 }

@@ -70,8 +70,8 @@ import Resilience
 ///   enabled            Bool   — master switch (default: true)
 ///   @sensitive
 ///   jwtSecret          String — REQUIRED: HMAC-SHA256 or RS256 signing secret
-///   issuer             String — expected iss claim; empty = skip check (default: "")
-///   audience           String — expected aud claim; empty = skip check (default: "")
+///   issuer             String — REQUIRED: expected `iss` claim (no default, #7232)
+///   audience           String — REQUIRED: expected `aud` claim (no default, #7232)
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values
 ///                               (default: "HS256").  See RFC 8725 §3.1.
 @stable(since = "0.1")
@@ -80,8 +80,8 @@ pub aspect RequiresGrpcAuth {
     enabled: Bool = true
     @sensitive
     jwtSecret: String
-    issuer: String = ""
-    audience: String = ""
+    issuer: String             // required — no default
+    audience: String           // required — no default
     allowedAlgorithms: String = "HS256"
   }
   // No `requires: args.authToken != ""`: `authToken` is client-controlled
@@ -92,6 +92,10 @@ pub aspect RequiresGrpcAuth {
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
+    } else if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
+      // A configuration bug (a placeholder or short env-supplied secret):
+      // raised before the request is handled, whatever its token (#7319).
+      panic("Grpc.Aspects.RequiresGrpcAuth: " + Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms))
     } else {
       if args.authToken == "" {
         ret = Err(Grpc.unauthenticated("Authorization metadata missing"))
@@ -126,8 +130,8 @@ pub aspect RequiresGrpcAuth {
 ///   enabled            Bool   — master switch (default: true)
 ///   @sensitive
 ///   jwtSecret          String — REQUIRED: signing secret
-///   issuer             String — expected iss claim (default: "")
-///   audience           String — expected aud claim (default: "")
+///   issuer             String — REQUIRED: expected `iss` claim (no default, #7232)
+///   audience           String — REQUIRED: expected `aud` claim (no default, #7232)
 ///   allowedRoles       String — comma-separated accepted role values (e.g. "admin,editor")
 ///   allowedAlgorithms  String — comma-separated allow-list of `alg` values (default: "HS256")
 @stable(since = "0.1")
@@ -136,8 +140,8 @@ pub aspect RequiresGrpcRole {
     enabled: Bool = true
     @sensitive
     jwtSecret: String
-    issuer: String = ""
-    audience: String = ""
+    issuer: String             // required — no default
+    audience: String           // required — no default
     allowedRoles: String
     allowedAlgorithms: String = "HS256"
   }
@@ -149,6 +153,10 @@ pub aspect RequiresGrpcRole {
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
+    } else if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
+      // A configuration bug (a placeholder or short env-supplied secret):
+      // raised before the request is handled, whatever its token (#7319).
+      panic("Grpc.Aspects.RequiresGrpcRole: " + Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms))
     } else {
       if args.authToken == "" {
         ret = Err(Grpc.unauthenticated("Authorization metadata missing"))
@@ -236,6 +244,15 @@ pub aspect GrpcCircuitBreaker {
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
+    } else if not Resilience.isValidCircuitConfig(failureThreshold, cooldownMs) {
+      // A configuration bug, raised before the handler runs, not after its
+      // side effects when the first failure is recorded (#7331).
+      panic(
+        "Grpc.Aspects.GrpcCircuitBreaker: need failureThreshold >= 1 and cooldownMs >= 1, got failureThreshold=" +
+          failureThreshold.toString() +
+          " cooldownMs=" +
+          cooldownMs.toString()
+      )
     } else {
       val key = if name.length > 0 then name else call.qualifiedName
       if Resilience.circuitIsOpen(key, cooldownMs) {

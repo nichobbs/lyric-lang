@@ -8,6 +8,7 @@ package Std.Directory
 
 import Std.Core
 import Std.Errors
+import Std.Path
 import Std.FileHost
 
 // Empty paths are represented as data errors so callers can recover
@@ -211,6 +212,9 @@ pub func deleteRecursive(path: in String): Result[Unit, IOError] {
   match invalidPath(path) {
     case Some(e) -> return Err(error = e)
     case None -> ()
+  }
+  if isFilesystemRoot(path) {
+    return Err(error = InvalidPath(path = path, reason = "refusing to recursively delete a filesystem root"))
   }
 
   if not hostDirectoryExists(path) {

@@ -326,11 +326,17 @@ func verifyToken(
       )
     }
     case Err(_) -> {
-      Ok(Lambda.Authorizer.deny("anonymous", event.methodArn))
+      Ok(Lambda.Authorizer.denyAnonymous(event.methodArn))
     }
   }
 }
 ```
+
+`allow`, `allowAll` and `deny` require a non-empty `principalId`. The id
+usually comes from a token claim, so check the claim is present before
+calling them and answer a missing one with `denyAnonymous(methodArn)`;
+otherwise a bad token fails the precondition and becomes a 500 instead of
+a 403.
 
 ### HTTP API v2 authorizer
 
@@ -446,7 +452,7 @@ aspect GuardTimeout from Lambda.Aspects.DeadlineGuard {
 | Config field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `thresholdMs` | `Long` | `500` | Time remaining threshold (ms) |
+| `thresholdMs` | `Long` | `500` | Time remaining threshold (ms); must be >= 0, a negative value panics before the handler runs |
 
 ## Local development
 

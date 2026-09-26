@@ -115,6 +115,13 @@ pub union SecretsError {
   /// string-valued secrets — retrying will never succeed for a binary
   /// secret, unlike NetworkError.
   case BinaryValueUnsupported(name: String)
+  /// The requested capability is not available on this backend (for
+  /// example config-block annotation scanning, issue #6866).  Retrying
+  /// will never succeed, unlike NetworkError.
+  case NotImplemented(feature: String, message: String)
+  /// A configuration value (for example SecretCache.ttlSeconds, read from
+  /// its env var) is outside its allowed range.  Nothing was fetched.
+  case InvalidConfig(field: String, message: String)
 }
 
 /// Human-readable message for logging.
@@ -128,6 +135,8 @@ pub func errorMessage(err: in SecretsError): String {
     case NetworkError(name, msg) -> "Network error fetching " + name + ": " + msg
     case BinaryValueUnsupported(name) -> "Secret '" + name +
       "' is stored as binary (SecretBinary), not a string; this API only supports string-valued secrets"
+    case NotImplemented(feature, msg) -> "Not implemented: " + feature + ": " + msg
+    case InvalidConfig(field, msg) -> "Invalid configuration " + field + ": " + msg
   }
 }
 
@@ -139,6 +148,9 @@ pub func errorMessage(err: in SecretsError): String {
 ///
 /// ttlSeconds = 0  — disable caching; fetch on every init() or explicit get call.
 /// ttlSeconds > 0  — cache for this many seconds (default: 300 = 5 minutes).
+/// ttlSeconds must be at most maxCacheTtlSeconds() (86400, one day) so a
+/// rotated secret is always picked up within a day; a negative or larger
+/// value makes every call return InvalidConfig instead of fetching.
 ///
 /// Set TTL to a fraction of your secret rotation period.  For example, if
 /// rotating every 24 hours, a TTL of 300s (5 minutes) ensures stale values
@@ -161,7 +173,38 @@ config SecretCache {
 /// values up to the point of failure are committed to the cache.
 @stable(since = "0.1")
 pub func init(): Result[Unit, SecretsError] {
-  return SecretsKernel.initFromAnnotations(SecretCache.ttlSeconds)
+  match checkCacheTtl(SecretCache.ttlSeconds) {
+    case Err(e) -> Err(error = e)
+    case Ok(ttl) -> SecretsKernel.initFromAnnotations(ttl)
+  }
+}
+
+/// Upper bound for SecretCache.ttlSeconds: one day.
+@stable(since = "0.1")
+pub func maxCacheTtlSeconds(): Int = 86400
+
+/// True when ttlSeconds is an allowed cache TTL (0..maxCacheTtlSeconds()).
+@stable(since = "0.1")
+@pure
+pub func isValidCacheTtl(ttlSeconds: in Int): Bool = ttlSeconds >= 0 and ttlSeconds <= 86400
+
+/// Ok(ttlSeconds) when it is an allowed cache TTL, else InvalidConfig.
+/// SecretCache.ttlSeconds comes from an env var, so an out-of-range value
+/// is reported as an error rather than a contract failure.
+@stable(since = "0.1")
+pub func checkCacheTtl(ttlSeconds: in Int): Result[Int, SecretsError]
+  ensures: match result { case Ok(t) -> isValidCacheTtl(t); case Err(_) -> true }
+{
+  if isValidCacheTtl(ttlSeconds) {
+    return Ok(value = ttlSeconds)
+  }
+  Err(
+    error = InvalidConfig(
+      field = "SecretCache.ttlSeconds",
+      message = "must be between 0 and " + maxCacheTtlSeconds().toString() + " seconds, got " +
+        ttlSeconds.toString()
+    )
+  )
 }
 
 // ─── Explicit fetch API ───────────────────────────────────────────────────────
@@ -172,7 +215,10 @@ pub func init(): Result[Unit, SecretsError] {
 pub func getSecret(name: in String): Result[String, SecretsError]
   requires: name.length > 0
 {
-  return SecretsKernel.fetchSecret(name, None, SecretCache.ttlSeconds)
+  match checkCacheTtl(SecretCache.ttlSeconds) {
+    case Err(e) -> Err(error = e)
+    case Ok(ttl) -> SecretsKernel.fetchSecret(name, None, ttl)
+  }
 }
 
 /// Fetch a single JSON field from a Secrets Manager secret.
@@ -183,7 +229,10 @@ pub func getSecretField(name: in String, key: in String): Result[String, Secrets
   requires: name.length > 0
   requires: key.length > 0
 {
-  return SecretsKernel.fetchSecret(name, Some(key), SecretCache.ttlSeconds)
+  match checkCacheTtl(SecretCache.ttlSeconds) {
+    case Err(e) -> Err(error = e)
+    case Ok(ttl) -> SecretsKernel.fetchSecret(name, Some(key), ttl)
+  }
 }
 
 /// Fetch a plain String or SecureString Parameter Store parameter.
@@ -193,7 +242,10 @@ pub func getSecretField(name: in String, key: in String): Result[String, Secrets
 pub func getParameter(path: in String): Result[String, SecretsError]
   requires: path.length > 0
 {
-  return SecretsKernel.fetchParameter(path, true, SecretCache.ttlSeconds)
+  match checkCacheTtl(SecretCache.ttlSeconds) {
+    case Err(e) -> Err(error = e)
+    case Ok(ttl) -> SecretsKernel.fetchParameter(path, true, ttl)
+  }
 }
 
 /// Fetch a Parameter Store parameter without KMS decryption.
@@ -203,5 +255,8 @@ pub func getParameter(path: in String): Result[String, SecretsError]
 pub func getParameterRaw(path: in String): Result[String, SecretsError]
   requires: path.length > 0
 {
-  return SecretsKernel.fetchParameter(path, false, SecretCache.ttlSeconds)
+  match checkCacheTtl(SecretCache.ttlSeconds) {
+    case Err(e) -> Err(error = e)
+    case Ok(ttl) -> SecretsKernel.fetchParameter(path, false, ttl)
+  }
 }

@@ -70,39 +70,55 @@ pub func sleepMs(ms: in Int): Unit
 /// True if the named circuit is currently open.
 @stable(since = "0.1")
 @cfg(feature = "dotnet")
-pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool {
+pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool
+  requires: name.length > 0
+  requires: cooldownMs > 0
+{
   return ResKernelNet.circuitIsOpen(name, cooldownMs)
 }
 
 @stable(since = "0.1")
 @cfg(feature = "jvm")
-pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool {
+pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool
+  requires: name.length > 0
+  requires: cooldownMs > 0
+{
   return ResKernelJvm.circuitIsOpen(name, cooldownMs)
 }
 
 /// Record a successful call — closes the circuit and resets failure count.
 @stable(since = "0.1")
 @cfg(feature = "dotnet")
-pub func circuitRecordSuccess(name: in String): Unit {
+pub func circuitRecordSuccess(name: in String): Unit
+  requires: name.length > 0
+{
   ResKernelNet.circuitRecordSuccess(name)
 }
 
 @stable(since = "0.1")
 @cfg(feature = "jvm")
-pub func circuitRecordSuccess(name: in String): Unit {
+pub func circuitRecordSuccess(name: in String): Unit
+  requires: name.length > 0
+{
   ResKernelJvm.circuitRecordSuccess(name)
 }
 
 /// Record a failed call — opens the circuit when threshold is reached.
 @stable(since = "0.1")
 @cfg(feature = "dotnet")
-pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit {
+pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit
+  requires: name.length > 0
+  requires: failureThreshold > 0
+{
   ResKernelNet.circuitRecordFailure(name, failureThreshold)
 }
 
 @stable(since = "0.1")
 @cfg(feature = "jvm")
-pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit {
+pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit
+  requires: name.length > 0
+  requires: failureThreshold > 0
+{
   ResKernelJvm.circuitRecordFailure(name, failureThreshold)
 }
 
@@ -132,20 +148,25 @@ pub protected type CircuitBreakerState {
   var isOpen: Bool = false
   var openedAtMs: Long = 0
   var halfOpenProbeInFlight: Bool = false
+  var probeStartedAtMs: Long = 0
   invariant: consecutiveFailures >= 0
   invariant: isOpen or openedAtMs == 0
   invariant: not isOpen or openedAtMs > 0
+  invariant: not halfOpenProbeInFlight or isOpen
   entry recordSuccess(): Unit {
     consecutiveFailures = 0
     isOpen = false
     openedAtMs = 0
     halfOpenProbeInFlight = false
+    probeStartedAtMs = 0
   }
   entry recordFailure(threshold: in Int, nowMs: in Long): Unit
     requires: threshold > 0
     requires: nowMs > 0
   {
-    consecutiveFailures = consecutiveFailures + 1
+    if consecutiveFailures < 2147483647 {
+      consecutiveFailures = consecutiveFailures + 1
+    }
     if isOpen {
       // Half-open probe failed — re-open with a fresh cooldown.
       openedAtMs = nowMs
@@ -169,10 +190,14 @@ pub protected type CircuitBreakerState {
     if elapsed < cooldownMs {
       return true
     }
-    if halfOpenProbeInFlight {
+    // A probe that has not reported back within a cooldown is presumed lost
+    // (it panicked, or its caller abandoned it) and a fresh one is granted;
+    // otherwise the circuit would reject every later call forever (#7240).
+    if halfOpenProbeInFlight and nowMs - probeStartedAtMs < cooldownMs {
       return true
     }
     halfOpenProbeInFlight = true
+    probeStartedAtMs = nowMs
     return false
   }
   func snapshotIsOpen(): Bool {
@@ -213,7 +238,9 @@ pub func cbStateRecordFailure(s: in CircuitBreakerState, threshold: in Int, nowM
 /// True if the circuit is currently rejecting calls.  When the circuit
 /// is open and `cooldownMs` has elapsed since `openedAtMs`, the first
 /// caller is granted the half-open probe (returns false) and subsequent
-/// callers continue to see true until the probe records its outcome.
+/// callers continue to see true until the probe records its outcome, or
+/// until a further `cooldownMs` passes without one, when the probe is
+/// presumed lost and the next caller is granted a fresh probe.
 @stable(since = "0.1")
 pub func cbStateCheckOpen(s: in CircuitBreakerState, cooldownMs: in Long, nowMs: in Long): Bool {
   return s.checkOpen(cooldownMs, nowMs)
@@ -229,14 +256,21 @@ pub func cbStateCheckOpen(s: in CircuitBreakerState, cooldownMs: in Long, nowMs:
 // desynchronise concurrent retriers, so it's meant to vary run-to-run, not
 // to be deterministic. Public (like `CircuitBreakerState` above) so tests
 // can exercise the delay/clamping math directly instead of only indirectly
-// through the `Retry` aspect's timing.
+// through the `Retry` aspect's timing.  The preconditions rule out the
+// configurations that produced a negative delay (a negative
+// `initialDelayMs`) or bypassed every comparison (a NaN `jitterFraction`).
+@stable(since = "0.1")
 pub func backoffDelay(
   initialDelayMs: in Int,
   backoffFactor: in Int,
   attempt: in Int,
   maxDelayMs: in Int,
   jitterFraction: in Float,
-): Int {
+): Int
+  requires: isValidBackoff(initialDelayMs, maxDelayMs, jitterFraction)
+  requires: attempt >= 0
+  ensures: result >= 0 and result <= maxDelayMs
+{
   // Clamp the factor to at least 1: a factor of 0 (or negative) would collapse
   // the delay to 0 and busy-retry; 1 degrades gracefully to a constant delay.
   val factor = if backoffFactor < 1 { 1 } else { backoffFactor }
@@ -268,6 +302,89 @@ pub func backoffDelay(
   }
 }
 
+/// True when a backoff configuration can only produce delays in
+/// `[0, maxDelayMs]`: `0 <= initialDelayMs <= maxDelayMs` and a jitter
+/// fraction in `[0.0, 1.0]` (a NaN fraction fails both comparisons).
+@pure
+@stable(since = "0.2")
+pub func isValidBackoff(initialDelayMs: in Int, maxDelayMs: in Int, jitterFraction: in Float): Bool {
+  initialDelayMs >= 0 and initialDelayMs <= maxDelayMs and jitterFraction >= 0.0f32 and jitterFraction <= 1.0f32
+}
+
+/// Fail fast on a retry configuration that cannot work, before the wrapped
+/// call runs: a bad backoff would otherwise surface only after the first
+/// failure, in the middle of a retry loop.  Used by `Retry` and by other
+/// libraries' retry aspects (lyric-jobs `Retryable`).
+@stable(since = "0.2")
+pub func checkRetryConfig(
+  maxAttempts: in Int, initialDelayMs: in Int, maxDelayMs: in Int, jitterFraction: in Float
+): Unit
+  requires: maxAttempts >= 1
+  requires: isValidBackoff(initialDelayMs, maxDelayMs, jitterFraction)
+{
+}
+
+// ─── Token bucket (rate limiting) ──────────────────────────────────────────────
+/// State of one refilling token bucket, for a rate limiter keyed however the
+/// caller likes (lyric-web's `RateLimit`, lyric-ws's `WsRateLimit`).  Pure
+/// value: the caller stores one per key under its own lock.
+///
+/// The bucket holds up to `requestsPerMinute + burstSize` tokens, starts
+/// full, and refills continuously at `requestsPerMinute` tokens per minute;
+/// each allowed call takes one.  So an idle client may make
+/// `requestsPerMinute + burstSize` calls at once and then sustain
+/// `requestsPerMinute` a minute.  Tokens are counted in units of
+/// 1/60000 of a token, which makes the per-millisecond refill of
+/// `requestsPerMinute` units exact in integer arithmetic.
+@stable(since = "0.2")
+pub record TokenBucket {
+  scaledTokens: Long
+  lastRefillMs: Long
+  invariant: scaledTokens >= 0i64
+}
+
+/// The result of `takeToken`: whether the call is allowed, and the bucket
+/// to store for the next call.
+@stable(since = "0.2")
+pub record TokenTake {
+  allowed: Bool
+  bucket: TokenBucket
+}
+
+val tokenScale: Long = 60000i64
+
+/// A full bucket for the given limits, as of `nowMs`.
+@stable(since = "0.2")
+pub func newTokenBucket(requestsPerMinute: in Int, burstSize: in Int, nowMs: in Long): TokenBucket
+  requires: requestsPerMinute >= 1
+  requires: burstSize >= 0
+{
+  TokenBucket(scaledTokens = (requestsPerMinute.toLong() + burstSize.toLong()) * tokenScale, lastRefillMs = nowMs)
+}
+
+/// Refill `bucket` for the time elapsed since its last refill, then take one
+/// token if one is available.  The burst allowance used to be a one-shot
+/// budget per process that never came back (#7249).
+@stable(since = "0.2")
+pub func takeToken(bucket: in TokenBucket, requestsPerMinute: in Int, burstSize: in Int, nowMs: in Long): TokenTake
+  requires: requestsPerMinute >= 1
+  requires: burstSize >= 0
+{
+  val capacity = (requestsPerMinute.toLong() + burstSize.toLong()) * tokenScale
+  // A clock that stepped backwards refills nothing; a gap longer than a day
+  // refills the bucket completely, which also keeps the product below Long.
+  val rawElapsed = nowMs - bucket.lastRefillMs
+  val elapsed = if rawElapsed < 0i64 { 0i64 } else if rawElapsed > 86400000i64 { 86400000i64 } else { rawElapsed }
+  val refilled = bucket.scaledTokens + elapsed * requestsPerMinute.toLong()
+  val available = if refilled > capacity { capacity } else { refilled }
+  val stamp = if nowMs > bucket.lastRefillMs { nowMs } else { bucket.lastRefillMs }
+  if available >= tokenScale {
+    TokenTake(allowed = true, bucket = TokenBucket(scaledTokens = available - tokenScale, lastRefillMs = stamp))
+  } else {
+    TokenTake(allowed = false, bucket = TokenBucket(scaledTokens = available, lastRefillMs = stamp))
+  }
+}
+
 // ─── Retry ────────────────────────────────────────────────────────────────────
 /// Retry a function call on Err, with exponential backoff.
 ///
@@ -279,11 +396,14 @@ pub func backoffDelay(
 ///
 /// Config:
 ///   enabled         Bool  — master switch; false passes through unchanged (default: true)
-///   maxAttempts     Int   — total attempts including the first (default: 3)
-///   initialDelayMs  Int   — base delay in ms before the second attempt (default: 100)
-///   backoffFactor   Int   — delay multiplier per retry (default: 2 — exponential)
+///   maxAttempts     Int   — total attempts including the first, >= 1 (default: 3)
+///   initialDelayMs  Int   — base delay in ms before the second attempt, 0..maxDelayMs (default: 100)
+///   backoffFactor   Int   — delay multiplier per retry; values below 1 act as 1 (default: 2 — exponential)
 ///   maxDelayMs      Int   — upper bound on inter-retry delay (default: 30000)
-///   jitterFraction  Float — fraction of delay to add as ±jitter; 0.0 = no jitter (default: 0.1)
+///   jitterFraction  Float — fraction of delay to add as ±jitter, 0.0..1.0; 0.0 = no jitter (default: 0.1)
+///
+/// An out-of-range setting is a precondition violation raised before the
+/// wrapped call runs.
 ///   logRetries      Bool  — log each failed attempt at warn level (default: true)
 ///
 /// WARNING (information disclosure): when `logRetries` is true the raw
@@ -306,6 +426,7 @@ pub aspect Retry {
     if not enabled {
       ret = call.proceed()
     } else {
+      checkRetryConfig(maxAttempts, initialDelayMs, maxDelayMs, jitterFraction)
       ret = call.proceed()
       var attempt: Int = 1
       while attempt < maxAttempts {
@@ -342,8 +463,13 @@ pub aspect Retry {
 /// Config:
 ///   enabled          Bool   — master switch (default: true)
 ///   name             String — circuit name; defaults to call.qualifiedName
-///   failureThreshold Int    — consecutive failures before opening (default: 5)
-///   cooldownMs       Int    — ms to wait before probing again (default: 30000)
+///   failureThreshold Int    — consecutive failures before opening, >= 1 (default: 5)
+///   cooldownMs       Int    — ms to wait before probing again, >= 1 (default: 30000)
+///
+/// An out-of-range setting is a precondition violation raised before the
+/// wrapped call runs.  A probe that panics instead of returning records no
+/// outcome; after a further `cooldownMs` it is presumed lost and another
+/// probe is allowed through.
 @stable(since = "0.1")
 pub aspect CircuitBreaker {
   config {
@@ -357,6 +483,7 @@ pub aspect CircuitBreaker {
       ret = call.proceed()
     } else {
       val key = if name.length > 0 then name else call.qualifiedName
+      checkCircuitConfig(failureThreshold, cooldownMs)
       if circuitIsOpen(key, cooldownMs) {
         ret = Err("circuit open: " + key + " is temporarily unavailable")
       } else {
@@ -368,4 +495,22 @@ pub aspect CircuitBreaker {
       }
     }
   }
+}
+
+/// True when a circuit breaker can work with these settings: at least one
+/// failure to open and a cooldown of at least 1 ms.
+@pure
+@stable(since = "0.2")
+pub func isValidCircuitConfig(failureThreshold: in Int, cooldownMs: in Int): Bool {
+  failureThreshold >= 1 and cooldownMs >= 1
+}
+
+/// Fail fast on a circuit-breaker configuration that cannot work, before the
+/// wrapped call runs (see `checkRetryConfig`).  Used by `CircuitBreaker` and
+/// by other libraries' breaker aspects, and callable from a consumer's own
+/// `from Resilience.CircuitBreaker` instantiation (#7332).
+@stable(since = "0.2")
+pub func checkCircuitConfig(failureThreshold: in Int, cooldownMs: in Int): Unit
+  requires: isValidCircuitConfig(failureThreshold, cooldownMs)
+{
 }

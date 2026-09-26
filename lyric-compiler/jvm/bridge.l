@@ -291,6 +291,9 @@ pub func compileToJar(
   var si = 0
   while si < stdlibSources.count {
     val stdPr = parse(stdlibSources[si])
+    // Invariant construction checkers (#7222): the compiled stdlib carries
+    // them, so code built against these sources must see them as well.
+    val stdPrInv = synthesizeInvariantCheckers(stdPr.file)
     // Surface stdlib parse diagnostics — advisory, not fatal (#914).
     // See the matching block in `lyric-compiler/msil/bridge.l` for the
     // rationale: self-hosted `Lyric.Parser` has known gaps vs. the
@@ -299,8 +302,8 @@ pub func compileToJar(
     DiagUtil.diagReport(stdPr.diagnostics)
     val pkgItems: List[Item] = newList()
     var ii = 0
-    while ii < stdPr.file.items.count {
-      val it = stdPr.file.items[ii]
+    while ii < stdPrInv.items.count {
+      val it = stdPrInv.items[ii]
       if pipeIsCrossPackageItem(it) {
         pkgItems.add(it)
       }
@@ -308,12 +311,12 @@ pub func compileToJar(
     }
     importedPkgs.add(
       ImportedPackage(
-        name = dottedPath(stdPr.file.packageDecl.path),
+        name = dottedPath(stdPrInv.packageDecl.path),
         items = pkgItems,
-        imports = collectImportNames(stdPr.file.imports)
+        imports = collectImportNames(stdPrInv.imports)
       )
     )
-    stdlibFiles.add(stdPr.file)
+    stdlibFiles.add(stdPrInv)
     si = si + 1
   }
 
@@ -1927,6 +1930,9 @@ pub func compileProjectToJarBundledWithRestored(
   var si = 0
   while si < stdlibSources.count {
     val pr = parse(stdlibSources[si])
+    // Invariant construction checkers (#7222): the compiled stdlib carries
+    // them, so code built against these sources must see them as well.
+    val prInv = synthesizeInvariantCheckers(pr.file)
     // Stdlib parse diagnostics are advisory and never gate the bundle (only the
     // user file's parse and the per-package codegen are fatal).  Echoing them
     // here leaked self-hosted-parser-gap noise (e.g. `spawn`/`var` keyword
@@ -1944,7 +1950,7 @@ pub func compileProjectToJarBundledWithRestored(
     // regardless of which package declares the file.
     val reservedDiags = reservedKeywordDiags(pr.diagnostics)
     if reservedDiags.count > 0 {
-      val stdPkgLabel = dottedPath(pr.file.packageDecl.path)
+      val stdPkgLabel = dottedPath(prInv.packageDecl.path)
       val _ = DiagUtil.diagReportAndAbortInPkg(stdPkgLabel, reservedDiags)
       return false
     }
@@ -1957,7 +1963,7 @@ pub func compileProjectToJarBundledWithRestored(
     // to the instance-FFI guess and the whole package was silently
     // J003-skipped (Std.Char and Std.Parse — and with them every JVM
     // consumer of char classification and string→number parsing).
-    val prFile = Aliases.rewriteFile(pr.file)
+    val prFile = Aliases.rewriteFile(prInv)
     val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < prFile.items.count {

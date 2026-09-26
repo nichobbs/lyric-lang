@@ -7,7 +7,7 @@ package Ws.Aspects
 import Std.Core
 import Std.Console
 import Auth
-import Ws.Kernel.Net as WsKernel
+import Ws
 
 // ─── WsAuth ───────────────────────────────────────────────────────────────────
 /// Validate a bearer token from the WebSocket handshake Authorization header.
@@ -21,13 +21,17 @@ pub aspect WsAuth {
     enabled: Bool = true
     @sensitive
     jwtSecret: String
-    issuer: String = ""
-    audience: String = ""
+    issuer: String             // required — no default
+    audience: String           // required — no default
     allowedAlgorithms: String = "HS256"
   }
   around(call) -> ret where TArgs has { authToken: String } {
     if not enabled {
       ret = call.proceed()
+    } else if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
+      // A configuration bug (a placeholder or short env-supplied secret):
+      // raised before the request is handled, whatever its token (#7319).
+      panic("Ws.Aspects.WsAuth: " + Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms))
     } else {
       match Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms) {
         case Ok(unit) -> {
@@ -64,7 +68,7 @@ pub aspect WsRateLimit {
       ret = call.proceed()
     } else {
       val rateKey = call.qualifiedName + ":" + args.ctx.connectionId
-      val allowed = WsKernel.checkRateLimit(rateKey, messagesPerMinute, burstSize)
+      val allowed = Ws.checkRateLimit(rateKey, messagesPerMinute, burstSize)
       if allowed {
         ret = call.proceed()
       } else {

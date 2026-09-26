@@ -85,7 +85,11 @@ import Web.Aspects
 
 aspect Auth from Web.Aspects.RequiresAuth {
   matches: name like "guarded*"
-  config { jwtSecret: String = "..." }
+  config {
+    jwtSecret: String = "..."   // at least 32 bytes
+    issuer: String = "https://auth.example.com"
+    audience: String = "orders-api"
+  }
 }
 
 // The aspect wraps this function — authToken is what RequiresAuth reads.
@@ -172,6 +176,17 @@ router = Web.withMiddleware(router, Web.requestLogger())
 ### CORS
 
 `Web.start` attaches a CORS middleware automatically from the `LYRIC_CONFIG_WEB_CORS_*` env vars (below) when enabled. Call `Web.corsMiddleware` directly if you build your own pipeline instead of using `Web.start`.
+
+With `*` as the origin list the middleware answers `Access-Control-Allow-Origin: *` literally rather than echoing the request's `Origin`, so browsers refuse credentialed requests; list the origins explicitly to allow credentials. The settings are written into response headers, so they must pass `Web.corsSettingsError`: no control characters, method tokens only, and a non-negative max age. `Web.start` checks them at startup and fails closed, instead of failing on every cross-origin request.
+
+### Routes, headers and statuses
+
+These are checked by precondition, so a mistake fails loudly when it is made:
+- **Route patterns** (`addGet` and its siblings, and the streaming variants) must satisfy `Web.isValidRoutePattern`: a leading `/`, no empty segment, `{name}` parameters with unique names, and a `{*name}` catch-all only as the last segment. A malformed `{id` used to be treated as a literal segment.
+- **Response headers** (`withResponseHeader`, `writeHeader`) need a token name and a value without CR, LF or other control characters. For a value taken from the request, `Web.tryWithResponseHeader` returns `Err` instead.
+- **Response builders** (`json`, `text`, `html`, `bytesResponse`, `writeStatus`) take a status of 100 to 599.
+
+A static-file mount must satisfy `Web.isValidStaticFiles`: a non-empty `root`, a `mountPrefix` that is empty or of the form `/segment`, and a non-negative cache lifetime. A mount matches whole path segments only, so `/assets` does not serve `/assetsX/...`.
 
 ---
 
@@ -279,6 +294,12 @@ All config fields are env-var-backed, read once at startup, fail-fast if a requi
 | `LYRIC_CONFIG_WEB_SERVER_HOST` | `String` | `0.0.0.0` | Bind address |
 | `LYRIC_CONFIG_WEB_SERVER_PORT` | `Int` | `8080` | TCP port (1–65535) |
 
+Request bodies are capped at 10 MiB on both targets (`Std.HttpEngine`'s
+`EngineLimits.defaults().maxBodyBytes`). A larger body is answered with a
+bodyless `413 Content Too Large` and never reaches a handler. That covers a
+declared `Content-Length` and a chunked body that grows past the limit while
+it is read, for every method (a `GET` or `HEAD` carrying a body included).
+
 ### HTTPS (TLS)
 
 `Web.serveTls(router, host, port, tls)` serves `router` over HTTPS on **both
@@ -345,7 +366,7 @@ match Web.tlsServerConfigFromWebTls(cfg) {
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `LYRIC_CONFIG_WEB_CORS_ENABLED` | `Bool` | `false` | Enable CORS middleware |
-| `LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS` | `String` | `*` | Comma-separated origins (or `*`) |
+| `LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS` | `String` | (none; required when enabled) | Comma-separated origins, or `*` for any origin without credentials |
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS` | `String` | `GET,POST,PUT,DELETE,OPTIONS,PATCH` | Comma-separated methods |
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS` | `String` | `Content-Type,Authorization,Accept` | Comma-separated headers |
 | `LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS` | `Int` | `86400` | Preflight cache duration |
@@ -371,14 +392,14 @@ aspect Auth from Web.Aspects.RequiresAuth {
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | `LYRIC_ASPECT_AUTH_ENABLED` |
 | `jwtSecret` | `String` | **REQUIRED** | `LYRIC_ASPECT_AUTH_JWTSECRET` |
-| `issuer` | `String` | `""` | `LYRIC_ASPECT_AUTH_ISSUER` |
-| `audience` | `String` | `""` | `LYRIC_ASPECT_AUTH_AUDIENCE` |
+| `issuer` | `String` | **REQUIRED** | `LYRIC_ASPECT_AUTH_ISSUER` |
+| `audience` | `String` | **REQUIRED** | `LYRIC_ASPECT_AUTH_AUDIENCE` |
 
-The `jwtSecret` field is `@sensitive` — its value is redacted in `lyric explain` and Swagger UI metadata output.
+The `jwtSecret` field is `@sensitive` — its value is redacted in `lyric explain` and Swagger UI metadata output. It must be at least 32 bytes (the HS256 key minimum). `issuer` and `audience` have no default: an empty default used to skip both checks, so any token signed with the same secret for another service was accepted. Tokens without an `exp` claim are rejected.
 
 ### `Web.Aspects.RateLimit`
 
-Enforces a per-endpoint sliding-window rate limit. **B-mode**: uses `call.qualifiedName` as the bucket key.
+Enforces a per-endpoint rate limit with a refilling token bucket: up to `requestsPerMinute + burstSize` calls at once, refilling at `requestsPerMinute` a minute. An over-limit call gets 429 without reaching the handler. **B-mode**: uses `call.qualifiedName` as the bucket key, so every caller shares one budget per handler; `Web.Aspects.RateLimitByClient` keys on a `clientId: String` handler parameter as well, so each client gets its own. Before #7249 the burst allowance was a one-time budget that never refilled.
 
 ```lyric
 aspect Throttle from Web.Aspects.RateLimit {
@@ -394,8 +415,8 @@ aspect Throttle from Web.Aspects.RateLimit {
 | Config field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `requestsPerMinute` | `Int` | `60` | Max calls per 60-second window |
-| `burstSize` | `Int` | `10` | Max calls per second |
+| `requestsPerMinute` | `Int` | `60` | Sustained calls allowed per minute |
+| `burstSize` | `Int` | `10` | Extra calls an idle endpoint (or client) may make at once |
 
 `Web.Aspects.RequiresRole`, `Web.Aspects.ApiKey`, and `Web.Aspects.HttpCircuitBreaker` follow the same template shape — see `lyric-web/src/aspects.l` and `lyric-web/tests/security_aspect_weaving_tests.l`.
 

@@ -55,14 +55,14 @@ pub func storageKeyGuardedHandler(key: in String): Result[String, StorageError] 
   return Ok("stored:" + key)
 }
 
-// JVM stand-in: see module header. Reproduces ValidateKey's exact empty-key
+// JVM stand-in: see module header. Reproduces ValidateKey's key
 // contract (Err(StorageError(code = "INVALID_KEY"))) directly, without
 // instantiating the aspect, so it never touches the crashing B'-mode
 // call-context codegen.
 @cfg(feature = "jvm")
 pub func storageKeyGuardedHandler(key: in String): Result[String, StorageError] {
-  if key == "" {
-    return Err(StorageError(message = "storage key must not be empty", code = "INVALID_KEY"))
+  if not isSafeKey(key) {
+    return Err(StorageError(message = "storage key rejected", code = "INVALID_KEY"))
   }
   return Ok("stored:" + key)
 }
@@ -78,5 +78,18 @@ test "ValidateKey aspect: a valid key passes through to the handler" {
   match storageKeyGuardedHandler("uploads/photo.jpg") {
     case Ok(v) -> assertEqual(v, "stored:uploads/photo.jpg", "valid key reaches the handler")
     case Err(_) -> assertTrue(false, "valid key must not be rejected")
+  }
+}
+
+// ValidateKey used to check only empty keys, a leading '/' and "..", and had
+// an env-settable `allowDots` switch that disabled even that; it now applies
+// `Storage.isSafeKey` in full (#7242).
+test "ValidateKey aspect: every key isSafeKey rejects is rejected before the handler" {
+  val bad = ["../etc/passwd", "%2e%2e/etc", "%252e%252e/etc", "a//b", "a/./b", "dir/", "x.meta.json", "a\u{0001}b"]
+  for k in bad {
+    match storageKeyGuardedHandler(k) {
+      case Ok(_) -> assertTrue(false, "key must be rejected: " + k)
+      case Err(e) -> assertEqual(e.code, "INVALID_KEY", "rejected with INVALID_KEY: " + k)
+    }
   }
 }

@@ -6,8 +6,8 @@
 //!                  to a structured audit log before proceeding.  Uses
 //!                  `call.qualifiedName` as the operation identifier.
 //!
-//!   ValidateKey  — row-constrained B'-mode (docs/56): rejects empty or
-//!                  path-traversal storage keys before the call reaches the
+//!   ValidateKey  — row-constrained B'-mode (docs/56): rejects any key
+//!                  `Storage.isSafeKey` rejects before the call reaches the
 //!                  handler.  Reads `args.key` from the concrete handler
 //!                  parameter list.
 //!
@@ -23,7 +23,6 @@
 //!   aspect SafeKeys from Storage.Aspects.ValidateKey {
 //!     matches: name in { put, get, delete }
 //!     inside:  AuditStorage
-//!     config { allowDots: Bool = false }
 //!   }
 //!
 //! See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
@@ -31,7 +30,6 @@
 package Storage.Aspects
 
 import Std.Core
-import Std.String as Str
 import Storage
 
 // ─── AuditAccess ─────────────────────────────────────────────────────────────
@@ -64,108 +62,46 @@ pub aspect AuditAccess {
 }
 
 // ─── ValidateKey ─────────────────────────────────────────────────────────────
-/// Reject empty or path-traversal storage keys before the handler runs.
+/// Reject unsafe storage keys before the handler runs, with the same rules
+/// every `StorageBucket` implementation applies (`Storage.isSafeKey`):
+/// empty keys, control characters, absolute keys, `..`, `.` and empty path
+/// segments (including percent-encoded forms), double-encoded `%25`
+/// payloads, and `.meta.json` sidecar names.
 ///
 /// Row-constrained B'-mode (docs/56 / D115): body reads `args.key` via a
 /// `where TArgs has { key: String }` row clause.  Apply only to handlers
 /// that declare a `key: String` parameter; the weaver reports A0047
 /// otherwise.
 ///
-/// The aspect checks:
-///   1. The key must not be empty.
-///   2. When `allowDots` is false (the default), the key must not contain a
-///      ".." path segment (i.e. the substring "..").
-///
 /// The handler's return type must be `Result[T, StorageError]` for this aspect
-/// to compose correctly — the short-circuit path returns `Err(StorageError)`.
+/// to compose correctly — the short-circuit path returns
+/// `Err(StorageError(code = "INVALID_KEY"))`.
 ///
-/// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
-///   enabled:   Bool — master switch (default: true)
-///   allowDots: Bool — when false, keys containing ".." are rejected (default: false)
+/// There are no configuration fields.  A switch that turns the traversal
+/// check off would be settable from the environment
+/// (`LYRIC_ASPECT_<INSTANTIATION>_<FIELD>`), so anyone who controls the
+/// environment could remove it: first an `allowDots` field (#7242), then the
+/// `enabled` master switch (#7326) did exactly that.  To stop checking keys,
+/// remove the aspect instantiation from the source.
 @stable(since = "0.1")
 pub aspect ValidateKey {
-  config {
-    enabled: Bool = true
-    allowDots: Bool = false
-  }
-  // No `requires: args.key != ""`: `key` is client-controlled (e.g. an
+  // No `requires: isSafeKey(args.key)`: `key` is client-controlled (e.g. an
   // upload path), so a `requires:` clause (D118 elaborates it into a runtime
-  // precondition assert) would panic the whole server on an empty key — a
-  // remotely-triggerable DoS.  The `around` body fails closed on the empty
-  // case with a graceful `Err(INVALID_KEY)` instead.
+  // precondition assert) would panic the whole server on a bad key — a
+  // remotely-triggerable DoS.  The `around` body fails closed with a graceful
+  // `Err(INVALID_KEY)` instead.
   // handler must declare a key: String parameter
   around(call) -> ret where TArgs has { key: String } {
-    if not enabled {
+    if Storage.isSafeKey(args.key) {
       ret = call.proceed()
-    } else if args.key == "" {
-      ret = Err(StorageError(message = "storage key must not be empty", code = "INVALID_KEY"))
     } else {
-      val reason = traversalReason(args.key)
-      if reason != "" {
-        ret = Err(StorageError(message = "storage key rejected: " + reason, code = "INVALID_KEY"))
-      } else if not allowDots and containsDotDot(normalisedKey(args.key)) {
-        ret = Err(
-          StorageError(message = "storage key must not contain path traversal segments (\"..\")", code = "INVALID_KEY")
+      ret = Err(
+        StorageError(
+          message = "storage key rejected: empty, absolute, a control character, a '.', '..' or empty path " +
+            "segment, a double-encoded '%', or a '.meta.json' name",
+          code = "INVALID_KEY"
         )
-      } else {
-        ret = call.proceed()
-      }
+      )
     }
   }
-}
-
-// ─── Private helpers ──────────────────────────────────────────────────────────
-// Normalise a key for traversal-detection: URL-decode the path-relevant
-// percent-encodings (only `.`, `/`, `\`; everything else is left alone
-// to avoid silently rewriting legitimate object names), fold backslashes
-// to forward slashes, and lower-case nothing else.  The returned string
-// is *only* for inspection by `containsDotDot` / `traversalReason`;
-// it is never passed downstream to the storage backend.
-func normalisedKey(s: in String): String {
-  // Order matters: decode `%2e` / `%2E` before checking for `..`,
-  // and `%2f` / `%2F` / `%5c` / `%5C` before folding separators.
-  val a = Str.replace(s, "%2e", ".")
-  val b = Str.replace(a, "%2E", ".")
-  val c = Str.replace(b, "%2f", "/")
-  val d = Str.replace(c, "%2F", "/")
-  val e = Str.replace(d, "%5c", "\\")
-  val f = Str.replace(e, "%5C", "\\")
-  Str.replace(f, "\\", "/")
-}
-
-// Reject empty, leading-slash, null-byte, and clearly-bogus keys with
-// a structured reason.  Returns "" when the key clears the cheap
-// rejections; the caller then runs the more expensive
-// containsDotDot check against the normalised key.
-func traversalReason(s: in String): String {
-  if s == "" {
-    return "key must not be empty"
-  }
-  if Str.contains(s, "\u{0000}") {
-    return "key must not contain null bytes"
-  }
-  // After normalisation, a leading separator means an attempt to
-  // escape the configured base path.  Catch literal and percent-
-  // encoded variants.
-  val n = normalisedKey(s)
-  if n.length > 0 and n[0].toString() == "/" {
-    return "key must not be absolute or start with '/'"
-  }
-  return ""
-}
-
-// Checks for path-traversal via `..` segments.  The caller is expected
-// to pass a normalised key (percent-encodings expanded, backslashes
-// folded to forward slashes) so this check catches `%2e%2e`, `..%2f`,
-// `..\foo`, and `../foo` uniformly.
-func containsDotDot(s: in String): Bool {
-  val limit = s.length - 1
-  var i = 0
-  while i < limit {
-    if s[i].toString() == "." and s[i + 1].toString() == "." {
-      return true
-    }
-    i = i + 1
-  }
-  return false
 }

@@ -62,3 +62,52 @@ test "field carries key and value through the record" {
   assertEqual(f.key, "sessionId", "field key round-trips")
   assertEqual(f.value, "abc-123", "field value round-trips")
 }
+
+// #7244: the message itself was written raw, so CR/LF in a message (often
+// built from request data) forged extra log lines.
+test "renderLogLine escapes line breaks and control characters in the message" {
+  assertEqual(
+    renderLogLine("user bob\nlevel=error admin login", []),
+    "user bob\\nlevel=error admin login",
+    "LF is escaped"
+  )
+  assertEqual(renderLogLine("a\rb", []), "a\\rb", "CR is escaped")
+  assertEqual(renderLogLine("nul\u{0000}bell\u{0007}", []), "nul\\u0000bell\\u0007", "other C0 controls are escaped")
+  assertEqual(renderLogLine("sep x", []), "sep\\u2028x", "Unicode line separator is escaped")
+  assertEqual(
+    renderLogLine("tab\tkept = \"as is\"", []),
+    "tab\tkept = \"as is\"",
+    "tab, = and quotes stay in the message"
+  )
+}
+
+test "renderLogLine keeps every field on the same line" {
+  val line = renderLogLine("m", [field("k", "v1\nv2")])
+  assertEqual(line, "m k=v1\\nv2", "field value line break is escaped")
+}
+
+test "a LogField with an empty key violates its invariant" {
+  assertPanics("empty key", { -> val _ = LogField(key = "", value = "v") })
+}
+
+// #7330: a value with a space was written bare, so `bob role=admin` read as a
+// second field to logfmt parsers.
+test "renderLogLine quotes a field value holding a separator" {
+  assertEqual(
+    renderLogLine("login", [field("user", "bob role=admin")]),
+    "login user=\"bob role=admin\"",
+    "space and = keep the value in one quoted field"
+  )
+  assertEqual(renderLogLine("m", [field("k", "a\tb")]), "m k=\"a\\tb\"", "tab is quoted and escaped")
+  assertEqual(
+    renderLogLine("m", [field("k", "say \"hi\"")]),
+    "m k=\"say \\\"hi\\\"\"",
+    "quotes are escaped inside quotes"
+  )
+  assertEqual(renderLogLine("m", [field("k", "")]), "m k=\"\"", "an empty value is an explicit empty string")
+  assertEqual(renderLogLine("m", [field("k", "plain")]), "m k=plain", "a plain value stays bare")
+}
+
+test "renderLogLine escapes separators in a field key" {
+  assertEqual(renderLogLine("m", [field("a b=c", "v")]), "m a\\u0020b\\=c=v", "space and = in a key are escaped")
+}

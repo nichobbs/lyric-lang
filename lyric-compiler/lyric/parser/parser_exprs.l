@@ -1892,7 +1892,7 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
               None
             }
             val pEndSp = match pTy { case Some(t) -> t.span; case None -> pNameTok.span }
-            lambdaParams.add(LambdaParam(name = pname, ty = pTy, span = joinSpans(pNameTok.span, pEndSp)))
+            lambdaParams.add(LambdaParam(name = pname, ty = pTy, span = joinSpans(pNameTok.span, pEndSp), parenthesized = true))
             if isPunct(peekToken(st), Comma) {
               val _ = advance(st)
             } else {

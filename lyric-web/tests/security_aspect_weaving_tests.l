@@ -11,6 +11,7 @@ package Web.SecurityAspectWeavingTests
 
 import Std.Core
 import Std.Testing
+import Std.Time as Time
 import Web
 import Web.Aspects
 
@@ -51,7 +52,9 @@ test "ApiKey aspect: wrong key is denied with 401 before the handler" {
 aspect AuthGuard from Web.Aspects.RequiresAuth {
   matches: name like "authGuarded*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
   }
 }
 
@@ -67,17 +70,18 @@ test "RequiresAuth aspect: an invalid token is denied with 403 before the handle
 }
 
 // A stable HS256 token signed with the AuthGuard instance's jwtSecret
-// ("test-signing-secret"), carrying no `exp` claim so it never expires. This
+// ("lyric-test-hs256-signing-key-0123456789"), carrying the instance's `iss`/`aud` and a far-future `exp` (a token
+// without one is rejected, #7232). This
 // lets us exercise the RequiresAuth *accept* path — a validly-signed token must
 // flow through Auth.verifyJwt and reach the handler — the counterpart to the
 // rejection test above. Regenerate (e.g. after a secret change) with:
 //   (requires GNU coreutils' `basenc`; on macOS: `brew install coreutils`,
 //   then use `gbasenc` or prefix PATH with coreutils' gnubin)
 //   h=$(printf '{"alg":"HS256","typ":"JWT"}' | basenc --base64url | tr -d '=')
-//   p=$(printf '{"sub":"test-user","role":"admin"}' | basenc --base64url | tr -d '=')
-//   s=$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -hmac "test-signing-secret" -binary | basenc --base64url | tr -d '=')
+//   p=$(printf '{"aud":"lyric-tests-api","iss":"lyric-tests","exp":4102444800,"sub":"test-user","role":"admin"}' | basenc --base64url | tr -d '=')
+//   s=$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -hmac "lyric-test-hs256-signing-key-0123456789" -binary | basenc --base64url | tr -d '=')
 //   echo "$h.$p.$s"
-val validAuthToken: String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJyb2xlIjoiYWRtaW4ifQ.Mj5dNtlMDypmDCnwx73ItntqJ46e90e5jSicrdDqM-s"
+val validAuthToken: String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJseXJpYy10ZXN0cy1hcGkiLCJpc3MiOiJseXJpYy10ZXN0cyIsImV4cCI6NDEwMjQ0NDgwMCwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6ImFkbWluIn0.rAoNIRSAK6HZQFn4IGWEZlFUd015QgLDjlVYf5qHcf8"
 
 test "RequiresAuth aspect: a validly-signed token reaches the handler" {
   match authGuardedHandler(validAuthToken) {
@@ -92,7 +96,9 @@ test "RequiresAuth aspect: a validly-signed token reaches the handler" {
 aspect RoleGuard from Web.Aspects.RequiresRole {
   matches: name like "roleGuarded*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
     allowedRoles: String = "admin"
   }
 }
@@ -173,7 +179,9 @@ test "ApiKey aspect: enabled=false bypasses the key check" {
 aspect AuthGuardDisabled from Web.Aspects.RequiresAuth {
   matches: name like "authBypassed*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
     enabled: Bool = false
   }
 }
@@ -195,7 +203,9 @@ test "RequiresAuth aspect: enabled=false bypasses JWT verification" {
 aspect RoleGuardDisabled from Web.Aspects.RequiresRole {
   matches: name like "roleBypassed*"
   config {
-    jwtSecret: String = "test-signing-secret"
+    jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
     allowedRoles: String = "admin"
     enabled: Bool = false
   }
@@ -258,10 +268,8 @@ test "HttpCircuitBreaker aspect: enabled=false bypasses the circuit" {
 // never flakes.
 //
 // Note: `webRateLimitMap` is process-global and keyed by `call.qualifiedName`.
-// This test exhausts `rateLimitedHandler`'s counter (usedInWindow=3,
-// burstAvailable=0) for the life of the process.  The test is designed to run
-// once per process invocation; a second run in the same process would see the
-// first call immediately denied (run once per CI invocation, as expected).
+// This test empties `rateLimitedHandler`'s token bucket; it refills at 2 a
+// minute, far slower than the test runs.
 aspect RateEnforced from Web.Aspects.RateLimit {
   matches: name like "rateLimited*"
   config {
@@ -283,6 +291,36 @@ test "RateLimit aspect: call after requestsPerMinute + burstSize exhausted is de
   match rateLimitedHandler() {
     case Ok(_) -> assertTrue(false, "an over-limit call must not reach the handler")
     case Err(e) -> assertEqualInt(e.status, 429, "over-limit call short-circuits with 429 Too Many Requests")
+  }
+}
+
+// ─── RateLimitByClient ─────────────────────────────────────────────────────────
+// Each client has its own budget, so one client exhausting it does not lock
+// out another (#7249).
+aspect RateByClient from Web.Aspects.RateLimitByClient {
+  matches: name like "perClientLimited*"
+  config {
+    requestsPerMinute: Int = 1
+    burstSize: Int = 1
+  }
+}
+
+pub func perClientLimitedHandler(clientId: in String): Result[String, Web.ApiError] {
+  return Ok("ok:" + clientId)
+}
+
+test "RateLimitByClient aspect: one client's exhausted budget does not deny another client" {
+  val alice = "alice-" + toString(Time.nowEpochMillis())
+  val bob = "bob-" + toString(Time.nowEpochMillis())
+  val _ = perClientLimitedHandler(alice)
+  val _ = perClientLimitedHandler(alice)
+  match perClientLimitedHandler(alice) {
+    case Ok(_) -> assertTrue(false, "alice's third call must be denied")
+    case Err(e) -> assertEqualInt(e.status, 429, "alice is rate limited")
+  }
+  match perClientLimitedHandler(bob) {
+    case Ok(v) -> assertEqual(v, "ok:" + bob, "bob still has his own budget")
+    case Err(_) -> assertTrue(false, "bob must not be limited by alice's calls")
   }
 }
 
@@ -323,4 +361,50 @@ test "HttpCircuitBreaker aspect: call after failureThreshold consecutive failure
     case Ok(_) -> assertTrue(false, "an open circuit must not reach the handler")
     case Err(e) -> assertEqualInt(e.status, 503, "open circuit short-circuits with 503 Service Unavailable")
   }
+}
+
+// A breaker configuration that cannot work is reported before the handler
+// runs, not after its side effects when the first failure is recorded
+// (#7331).
+record BreakerCounter {
+  var count: Int = 0
+}
+
+aspect CircuitBreakerZeroThreshold from Web.Aspects.HttpCircuitBreaker {
+  matches: name like "breakerMisconfigured*"
+  config {
+    failureThreshold: Int = 0
+  }
+}
+
+val breakerMisconfiguredCalls: BreakerCounter = BreakerCounter(count = 0)
+
+pub func breakerMisconfiguredHandler(): Result[String, Web.ApiError] {
+  breakerMisconfiguredCalls.count = breakerMisconfiguredCalls.count + 1
+  return Ok("reached")
+}
+
+test "HttpCircuitBreaker aspect: failureThreshold 0 fails before the handler runs" {
+  breakerMisconfiguredCalls.count = 0
+  assertPanicsWith("zero threshold", "failureThreshold", { -> val _ = breakerMisconfiguredHandler() })
+  assertEqualInt(breakerMisconfiguredCalls.count, 0, "the handler never ran")
+}
+
+// A placeholder secret shorter than 32 bytes is a configuration error for
+// every request, whatever its token (#7319).
+aspect ShortSecretGuard from Web.Aspects.RequiresAuth {
+  matches: name like "shortSecretGuarded*"
+  config {
+    jwtSecret: String = "REPLACE_ME_WITH_A_REAL_SECRET"
+    issuer: String = "lyric-tests"
+    audience: String = "lyric-tests-api"
+  }
+}
+
+pub func shortSecretGuardedHandler(authToken: in String): Result[String, Web.ApiError] {
+  return Ok("reached")
+}
+
+test "RequiresAuth aspect: a short jwtSecret is a configuration error, even for an empty token" {
+  assertPanicsWith("short secret", "jwtSecret must be at least 32 bytes", { -> val _ = shortSecretGuardedHandler("") })
 }

@@ -56,6 +56,7 @@ func threadSleep(ms: in Int): Unit = ()
 record RegistryHolder {
   var registry: Option[NativeRegistry] = None
   var lastConnId: Option[String] = None
+  var lastOrigin: String = ""
 }
 
 record EchoHandler {
@@ -65,6 +66,7 @@ record EchoHandler {
 impl WsHandler for EchoHandler {
   func onOpen(ctx: in WsContext): Result[Unit, WsError] {
     self.holder.lastConnId = Some(value = ctx.connectionId)
+    self.holder.lastOrigin = match mapGet(ctx.headers, "origin") { case Some(o) -> o; case None -> "" }
     Ok(())
   }
 
@@ -140,7 +142,12 @@ record HandshakeOutcome {
 // Reads bytes until the response header terminator, returning the status
 // line and the (lower-cased-name-matched) Sec-WebSocket-Accept header value.
 func clientHandshake(conn: in Conn, path: in String): HandshakeOutcome {
-  val req = "GET " + path + " HTTP/1.1\r\n" + "Host: 127.0.0.1\r\n" + "Upgrade: websocket\r\n" +
+  clientHandshakeWith(conn, path, "")
+}
+
+// `extraHeaders` is zero or more complete `Name: value\r\n` lines.
+func clientHandshakeWith(conn: in Conn, path: in String, extraHeaders: in String): HandshakeOutcome {
+  val req = "GET " + path + " HTTP/1.1\r\n" + "Host: 127.0.0.1\r\n" + extraHeaders + "Upgrade: websocket\r\n" +
     "Connection: Upgrade\r\n" +
     "Sec-WebSocket-Key: " +
     clientKey +
@@ -483,4 +490,41 @@ test "loopback: send and broadcast pushed from outside any handler callback" {
   hostClose(conn1)
   hostClose(conn2)
   val _ = stopServer(registry)
+}
+
+// ─── Origin check and handshake headers (#7243) ───────────────────────────────
+test "loopback: a cross-origin browser handshake is refused with 403 before the upgrade" {
+  val started = startEchoServer(19511)
+  val conn = dial("127.0.0.1", 19511)
+  val outcome = clientHandshakeWith(conn, "/ws", "Origin: https://evil.example\r\n")
+  assertTrue(contains(outcome.statusLine, "403"), "cross-origin handshake is refused: " + outcome.statusLine)
+  threadSleep(50)
+  assertEqualInt(connectionCount(started.registry), 0, "no connection was opened")
+  hostClose(conn)
+  val _ = stopServer(started.registry)
+}
+
+test "loopback: a same-origin handshake is accepted and its headers reach onOpen" {
+  val started = startEchoServer(19512)
+  val conn = dial("127.0.0.1", 19512)
+  val outcome = clientHandshakeWith(conn, "/ws", "Origin: http://127.0.0.1\r\n")
+  assertTrue(contains(outcome.statusLine, "101"), "same-origin handshake is accepted: " + outcome.statusLine)
+  threadSleep(50)
+  assertEqual(started.holder.lastOrigin, "http://127.0.0.1", "the Origin header is in the onOpen context")
+  hostClose(conn)
+  val _ = stopServer(started.registry)
+}
+
+test "loopback: an empty peer close is answered with an empty close, never code 1005" {
+  val started = startEchoServer(19513)
+  val conn = dial("127.0.0.1", 19513)
+  val outcome = clientHandshake(conn, "/ws")
+  assertTrue(contains(outcome.statusLine, "101"), "handshake accepted")
+  val reader = ClientReader()
+  clientSendMasked(conn, 8, true, [])
+  val closeFrame = clientReadFrame(conn, reader)
+  assertEqualInt(closeFrame.opcode, 8, "server answers with a close frame")
+  assertEqualInt(closeFrame.payload.length, 0, "the reserved code 1005 is not put on the wire")
+  hostClose(conn)
+  val _ = stopServer(started.registry)
 }

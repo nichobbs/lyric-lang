@@ -184,8 +184,20 @@ pub record SessionConfig {
 | `LYRIC_CONFIG_SESSION_SESSION_SAMESITE` | `"Lax"` | `SameSite` attribute value: `Strict` / `Lax` / `None` |
 | `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS` | `3600` | Session expiry time in seconds |
 
-Malformed or absent values fall back to the defaults above (fail-soft,
-matching `connectRedis()`'s TTL parsing).
+`SessionConfig` carries invariants:
+- `cookieName` must be an RFC 6265 token (`isCookieToken`);
+- `sameSite` must be exactly `Strict`, `Lax` or `None`;
+- `ttlSeconds` must be 1 to 31536000 (one year).
+
+A hand-built config that breaks one is a precondition failure; it used to
+be silently rewritten, and a lower-case `none` skipped the forced `Secure`.
+`sessionConfigFromEnv()` stays fail-soft, so its result always satisfies
+them:
+- a malformed or absent value falls back to its default;
+- `sameSite` is matched case-insensitively (`none` becomes `None`);
+- a TTL outside the range falls back to 3600.
+
+`Session.inMemory()` reads the same TTL variable.
 
 Use `Session.cookieHeader(sessionId, cfg)` to build the `Set-Cookie`
 header *value* for a session id:
@@ -236,6 +248,18 @@ a phishing link) can have it elevated when the legitimate user signs
 in.  Always obtain a fresh id from `create()` first, and call
 `destroy(oldId)` followed by `create()` on every authentication or
 privilege-elevation event to rotate the id.
+
+### Untrusted session ids
+
+Session ids arrive in request cookies, so every store checks
+`isValidSessionId` (1 to 128 characters from `[A-Za-z0-9_-]`, which covers
+the UUIDs `create()` issues) before touching its backend:
+- an empty or malformed id loads as `None`, and destroying or touching it
+  is a no-op;
+- saving one returns `Err(INVALID_SESSION_ID)`.
+
+A request carrying `LYRIC_SESSION=` used to reach a Redis kernel
+precondition and crash.
 
 ### Secure cookie defaults
 

@@ -2831,13 +2831,25 @@ func lowerPositionalArg(ctx: in Ctx, insns: in List[NInsn], args: in List[CallAr
 
 func isPackagePathExpr(ctx: in Ctx, e: in Expr): Bool {
   // A member receiver is a package path (not a value) when it is a path
-  // whose head is not a local variable.
+  // whose head is not a local variable, nor a bare module-level `val`/`const`
+  // (`MAX_DEPTH.toString()` is a method call on the value, not a qualified
+  // call to a function named `MAX_DEPTH.toString`).
   match e.kind {
     case EPath(path) -> {
       if path.segments.count == 0 {
         return false
       }
-      not ctx.varTypes.containsKey(path.segments[0])
+      val head = path.segments[0]
+      if ctx.varTypes.containsKey(head) {
+        return false
+      }
+      if path.segments.count == 1 {
+        val selfKey = if ctx.curPkg.count > 0 { ctx.curPkg[0] + "." + head } else { head }
+        if ctx.moduleVals.containsKey(selfKey) or ctx.moduleVals.containsKey(head) {
+          return false
+        }
+      }
+      true
     }
     case _ -> false
   }
@@ -3430,6 +3442,24 @@ func lowerCallEx(
             "Lyric.LlvmCodegen: '" + cpath.segments[0] +
               "' is not callable (only function-typed values support indirect calls)"
           )
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
+  // `N.m(args)` where `N` is a module-level `val`/`const` (not a local, not a
+  // package) reaches here as a flat two-segment path: it is a method call on
+  // the value, so re-enter as a member call on the value receiver.
+  match fnExpr.kind {
+    case EPath(mpath) -> {
+      if mpath.segments.count == 2 and not ctx.varTypes.containsKey(mpath.segments[0]) {
+        val headSegs: List[String] = newList()
+        headSegs.add(mpath.segments[0])
+        val headExpr = Expr(kind = EPath(path = ModulePath(segments = headSegs, span = mpath.span)), span = fnExpr.span)
+        if not isPackagePathExpr(ctx, headExpr) {
+          val memberCallee = Expr(kind = EMember(receiver = headExpr, memberName = mpath.segments[1]), span = fnExpr.span)
+          return lowerCallEx(ctx, insns, memberCallee, args, line, wantTask)
         }
       }
     }

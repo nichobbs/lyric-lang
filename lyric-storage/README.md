@@ -209,21 +209,30 @@ Environment variable defaults (env prefix `LYRIC_CONFIG_STORAGE_AZUREBLOB_`):
 ### Local Filesystem
 
 `Storage.connectLocal(rootPath)` uses a local directory as the storage root.
-Path traversal attacks (`../`) are blocked by the `ValidateKey` aspect.
+Every backend checks each key with `Storage.isSafeKey` and returns
+`Err(StorageError(code = "INVALID_KEY"))` for a rejected one: empty keys,
+control characters, absolute keys, `..`, `.` and empty path segments
+(including percent-encoded forms), double-encoded `%25` payloads,
+`.meta.json` sidecar names, and names Windows would not store as written: a
+segment ending in `.` or a space, a device name (`CON`, `NUL`, `COM1`,
+`lpt2.txt`), and `:` (an NTFS alternate data stream). The `ValidateKey` aspect applies the same check
+earlier, before a handler runs.
 
 ## Aspect templates (`Storage.Aspects`)
 
 ### AuditAccess
 
-Logs all `put()`, `get()`, `delete()`, and `list()` operations with
-operation name, key, and timestamp.
+Logs each matched call through `Std.Log`, before the call and again with
+its outcome (`:ok`, or `:err` at warn level with the error message). Each
+line carries `audit=storage` and the operation name as structured fields;
+keys and object data are not logged.
 
 ```lyric
 import Storage.Aspects
 
 aspect LogAllAccess from Storage.Aspects.AuditAccess {
   matches: name like "*Bucket"
-  config { logLevel: String = "INFO" }
+  config { logLevel: String = "info" }
 }
 ```
 
@@ -232,28 +241,29 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `logLevel` | `String` | `"INFO"` | Log level (INFO, DEBUG, WARN) |
+| `logLevel` | `String` | `"info"` | Log level for the before and `:ok` lines: `info`, `debug` or `warn`, in any case |
 
 ### ValidateKey
 
-Blocks keys containing `../` or other path-traversal patterns.
-Prevents directory traversal attacks on local and cloud buckets.
+Rejects any key `Storage.isSafeKey` rejects (see Local Filesystem above)
+with `Err(StorageError(code = "INVALID_KEY"))` before the handler runs. The
+handler must take a `key: String` parameter and return
+`Result[T, StorageError]`.
 
 ```lyric
 import Storage.Aspects
 
 aspect GuardPaths from Storage.Aspects.ValidateKey {
   matches: name like "*Bucket"
-  config { allowedChars: String = "a-zA-Z0-9/_.-" }
 }
 ```
 
-Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `enabled` | `Bool` | `true` | Master switch |
-| `allowedChars` | `String` | `"a-zA-Z0-9/_.-"` | Regex char class for valid key chars |
+`ValidateKey` has no configuration fields. Aspect config is settable from the
+environment (`LYRIC_ASPECT_<INSTANTIATION>_<FIELD>`), so any switch would let
+whoever controls the environment turn the traversal check off; the former
+`allowDots` field and `enabled` master switch were removed for that reason.
+An instantiation that still sets `enabled` fails to build; delete the
+setting, or the instantiation if the check is really unwanted.
 
 ## Decision log
 

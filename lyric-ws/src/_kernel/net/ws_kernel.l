@@ -45,6 +45,7 @@
 package Ws.Kernel.Net
 
 import Std.Core
+import Resilience
 import Std.Collections
 import Std.Encoding
 import Std.Environment
@@ -98,7 +99,7 @@ record RegistryMeta {
   var maxMessageSizeBytes: Int = 1024
   var pingIntervalMs: Int = 0
   var openCount: Int = 0
-  onOpen: Option[(String, String, String, String) -> Unit] = None
+  onOpen: Option[(String, String, String, String, Map[String, String]) -> Unit] = None
   onMessage: Option[(String, String, String) -> Unit] = None
   onClose: Option[(String, Int, String) -> Unit] = None
   onError: Option[(String, String) -> Unit] = None
@@ -269,13 +270,20 @@ func snapshotConnIds(meta: in RegistryMeta): List[String] {
   copy
 }
 
-func invokeOnOpen(handle: in Int, connId: in String, path: in String, query: in String, remoteAddress: in String): Unit {
+func invokeOnOpen(
+  handle: in Int,
+  connId: in String,
+  path: in String,
+  query: in String,
+  remoteAddress: in String,
+  headers: in Map[String, String],
+): Unit {
   var meta: RegistryMeta = default()
   if not cdTryGetValue(registryMap, handle, meta) {
     return
   }
   match meta.onOpen {
-    case Some(cb) -> cb(connId, path, query, remoteAddress)
+    case Some(cb) -> cb(connId, path, query, remoteAddress, headers)
     case None -> ()
   }
 }
@@ -360,7 +368,7 @@ func sendCloseIfNotAlready(state: in ConnState, conn: in Conn, code: in Int, rea
   }
   if not state.closing {
     state.closing = true
-    val _ = hostWrite(conn, encodeClose(code, reason));
+    val _ = hostWrite(conn, encodeCloseReply(code, reason));
     ()
   }
 }
@@ -392,7 +400,9 @@ func writeMessage(state: in ConnState, conn: in Conn, messageType: in String, da
 // without limit.
 val maxHandshakeBytes: Int = 16384
 
-func performHandshake(conn: in Conn, expectedPath: in String): Result[HandshakeResult, String] {
+func performHandshake(
+  conn: in Conn, expectedPath: in String, allowedOrigins: in slice[String]
+): Result[HandshakeResult, String] {
   val acc: List[Byte] = newList()
   var found = false
   var attempts = 0
@@ -429,6 +439,11 @@ func performHandshake(conn: in Conn, expectedPath: in String): Result[HandshakeR
       if result.request.path != expectedPath {
         val _ = hostWrite(conn, buildRejectResponse(404, "Not Found"))
         Err(error = "path mismatch: expected '" + expectedPath + "', got '" + result.request.path + "'")
+      } else if not requestOriginAllowed(result.request, allowedOrigins) {
+        // Cross-site WebSocket hijacking defence (#7243): refused before the
+        // upgrade, so the page's cookies never reach an open socket.
+        val _ = hostWrite(conn, buildRejectResponse(403, "Forbidden"))
+        Err(error = "origin not allowed")
       } else {
         match hostWrite(conn, buildAcceptResponse(result.request.secWebSocketKey)) {
           case Ok(_) -> Ok(value = result)
@@ -576,8 +591,9 @@ func handleConnection(
   expectedPath: in String,
   maxMessageSizeBytes: in Int,
   pingIntervalMs: in Int,
+  allowedOrigins: in slice[String],
 ): Unit {
-  match performHandshake(conn, expectedPath) {
+  match performHandshake(conn, expectedPath, allowedOrigins) {
     case Err(_) -> hostClose(conn)
     case Ok(hsResult) -> {
       val connId = uuidToString(newUuid())
@@ -585,7 +601,7 @@ func handleConnection(
         case Err(_) -> hostClose(conn)
         case Ok(state) -> {
           val remoteAddress = hostRemoteAddress(conn)
-          invokeOnOpen(handle, connId, hsResult.request.path, hsResult.request.query, remoteAddress)
+          invokeOnOpen(handle, connId, hsResult.request.path, hsResult.request.query, remoteAddress, hsResult.request.headers)
           if pingIntervalMs > 0 {
             val _ = taskRun({ -> runPingLoop(state, conn, pingIntervalMs) })
           }
@@ -603,14 +619,23 @@ func wsAcceptLoop(
   path: in String,
   maxMessageSizeBytes: in Int,
   pingIntervalMs: in Int,
+  allowedOrigins: in slice[String],
 ): Unit {
   var running = true
   while running {
     match hostAccept(transport) {
       case Ok(conn) -> {
-        val _ = taskRun({ -> handleConnection(handle, conn, path, maxMessageSizeBytes, pingIntervalMs) })
+        val _ = taskRun({ -> handleConnection(handle, conn, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins) })
       }
-      case Err(e) -> match e { case AcceptFailed(_) -> { running = false }; case BindFailed(_) -> { running = false }; case _ -> () }
+      case Err(e) -> match e {
+        case AcceptFailed(_) -> {
+          running = false
+        }
+        case BindFailed(_) -> {
+          running = false
+        }
+        case _ -> ()
+      }
     }
   }
 }
@@ -626,13 +651,14 @@ pub func startServer(
   port: in Int,
   path: in String,
   maxMessageSizeBytes: in Int,
-  onOpen: in (String, String, String, String) -> Unit,
+  allowedOrigins: in slice[String],
+  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
   onError: in (String, String) -> Unit,
 ): Result[Int, String]
   requires: host.length > 0
-  requires: port > 0
+  requires: port >= 1 and port <= 65535
   requires: path.length > 0
   requires: maxMessageSizeBytes >= 1024
 {
@@ -658,7 +684,7 @@ pub func startServer(
         hostStopListener(transport)
         return Err(error = "registry handle collision (unreachable)")
       }
-      val _ = taskRun({ -> wsAcceptLoop(handle, transport, path, maxMessageSizeBytes, pingIntervalMs) })
+      val _ = taskRun({ -> wsAcceptLoop(handle, transport, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins) })
       Ok(value = handle)
     }
   }
@@ -773,18 +799,15 @@ pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
   false
 }
 
-// ─── Rate limiter (tumbling window) ──────────────────────────────────────────
+// ─── Rate limiter (token bucket) ─────────────────────────────────────────────
 //
-// Uses a tumbling (fixed-reset) 60-second window per key, NOT the sliding
-// window that the deleted F# WsHost.fs used (which maintained per-message
-// timestamps and filtered to the trailing 60s).  The tumbling window allows
-// up to 2× the nominal rate at window boundaries; the production rate limiter
-// (#778) should implement the sliding window if boundary bursting is a concern.
-// The burst budget is one-shot: it does not refill when the window resets.
+// One `Resilience.TokenBucket` per key: up to `messagesPerMinute + burstSize`
+// messages at once, refilling at `messagesPerMinute` a minute.  It replaced a
+// tumbling window whose burst budget never refilled and which allowed twice
+// the rate across a window boundary (#7249, #1178).
 record RateEntry {
-  var windowStartMs: Long = 0i64
-  var usedInWindow: Int = 0
-  var burstAvailable: Int = 0
+  var scaledTokens: Long = 0i64
+  var lastRefillMs: Long = 0i64
 }
 
 // Single global lock serialises all rate-limiter mutations.
@@ -807,9 +830,10 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
     monitorExit(rateLock)
   }
 
+  val fullBucket = Resilience.newTokenBucket(messagesPerMinute, burstSize, nowMs)
   var re: RateEntry = default()
   if not cdTryGetValue(rateLimitMap, key, re) {
-    val newEntry = RateEntry(windowStartMs = nowMs, usedInWindow = 0, burstAvailable = burstSize)
+    val newEntry = RateEntry(scaledTokens = fullBucket.scaledTokens, lastRefillMs = fullBucket.lastRefillMs)
     val _ = cdTryAdd(rateLimitMap, key, newEntry)
     var re2: RateEntry = default()
     if cdTryGetValue(rateLimitMap, key, re2) {
@@ -819,22 +843,13 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
     }
   }
 
-  val elapsed: Long = nowMs - re.windowStartMs
-  if elapsed >= 60000i64 {
-    re.windowStartMs = nowMs
-    re.usedInWindow = 0
-  }
-
-  if re.usedInWindow < messagesPerMinute {
-    re.usedInWindow = re.usedInWindow + 1
-    return true
-  }
-
-  if re.burstAvailable > 0 {
-    re.burstAvailable = re.burstAvailable - 1
-    re.usedInWindow = re.usedInWindow + 1
-    return true
-  }
-
-  false
+  val take = Resilience.takeToken(
+    Resilience.TokenBucket(scaledTokens = re.scaledTokens, lastRefillMs = re.lastRefillMs),
+    messagesPerMinute,
+    burstSize,
+    nowMs
+  )
+  re.scaledTokens = take.bucket.scaledTokens
+  re.lastRefillMs = take.bucket.lastRefillMs
+  take.allowed
 }

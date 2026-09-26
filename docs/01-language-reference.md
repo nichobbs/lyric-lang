@@ -157,7 +157,7 @@ A consequence of newline termination: the postfix call and index forms bind only
 
 Integer arithmetic panics on overflow in checked builds (default for `--debug`). In `--release` builds, overflow on unconstrained integer types wraps; range-constrained subtypes always panic on overflow regardless of build mode. **Not yet implemented:** no backend gates overflow checking on the build profile, so overflow panics in `--release` too. The profile axis became independently selectable in docs/63 band B0; wiring it through to codegen is band-B0 follow-up work (#6263).
 
-Floating-point follows IEEE 754-2019 with default rounding mode (round-to-nearest-even) and traps disabled. NaN comparisons follow the standard (`NaN != NaN` is `true`, `NaN < x` is `false` for all `x`).
+Floating-point follows IEEE 754-2019 with default rounding mode (round-to-nearest-even) and traps disabled. NaN comparisons follow the standard: every ordered comparison involving NaN (`<`, `<=`, `>`, `>=`) is `false`, `NaN == x` is `false`, and `NaN != x` is `true`, for all `x` including NaN. A NaN matches no range pattern (`case 0.0 ..= 1.0`) and is rejected by every floating-point range subtype's `from`/`tryFrom`. All three backends implement this (on MSIL, `<=`/`>=` and range bounds use the unordered compares `cgt.un`/`clt.un`, #7240).
 
 Stringifying a `Double` (`.toString()`, the free `toString(x)` function, string interpolation, `+` concatenation, and `println`/`print`) never emits a trailing `.0` for a whole value: `1500.0.toString()` is `"1500"`, matching .NET's default `Double.ToString()` ("G" format). A value with a genuine fractional part keeps its digits (`1500.5.toString()` is `"1500.5"`). This is normalized identically on both the MSIL and JVM backends — Java's `Double.toString()`/`String.valueOf(double)` would otherwise always render at least one fractional digit (`"1500.0"`); the JVM backend strips the trailing `.0` at every stringification call site to match (#4688). Beyond the trailing-`.0` case, the JVM backend also matches .NET's fixed-vs-scientific-notation switchover: a value renders in fixed-point notation when its decimal exponent is in `[-4, 16]` (`10000000000000000.0` → `"10000000000000000"`) and in scientific notation outside that range (`1e17` → `"1E+17"`, `0.00001` → `"1E-05"`), matching .NET's own `Double.ToString()` threshold exactly rather than Java's own (different) default rules (#5660). (Compound-assignment `s += <rhs>` onto a `String` **plain variable** accepts any RHS type, mirroring `+`'s "any operand + String = String" — `s += true`/`s += 3.5`/`s += 42` stringify the RHS and append it. Field (`obj.f += x`) and indexed (`xs[i] += x`) String targets still require a `String` RHS for now.)
 
@@ -704,7 +704,7 @@ Patterns:
 - Literal patterns: `42`, `"hello"`, `true`
 - Variable binding: `x`
 - Wildcard: `_`
-- Constructor patterns: `Circle(r)`, `Some(x)`
+- Constructor patterns: `Circle(r)`, `Some(x)`. The case must belong to the scrutinee's own union or enum: `case Some(i)` against an `Int`, or `case Ok(v)` against an `Option`, can never match and is a compile error (**T0129**). A bare nullary case (`case None`) is checked the same way.
 - Tuple patterns: `(a, b)`
 - Record patterns: `Point { x, y }`, `Point { x = 0.0, y }` (destructure with literal match on `x`)
 - Range patterns: `0 ..= 9`
@@ -1306,6 +1306,8 @@ A `Bug` raised in:
 - A regular function: propagates up the stack until caught by `try { ... } catch Bug as b { ... }` or until it terminates the thread.
 - An `async` task: propagates to the task's awaiter; if not awaited, the runtime logs and surfaces it via the structured scope.
 - A protected entry: aborts the current entry call without committing state changes. The protected type's invariant is verified to still hold (if not, the program terminates — invariant violation in a protected type is unrecoverable).
+
+`catch Exception as e` is a synonym for `catch Bug as e`: both catch every panic, on every target. A caught `Bug` exposes `b.message` and `b.typeName`, both `String`s and never null. When the host exception carries no message (many JDK exceptions, e.g. `java.net.ConnectException`, have a null `getMessage()`), `--target jvm` falls back to the exception's `toString()`, the analogue of .NET's never-null `Exception.Message`.
 
 `try`/`catch` exists for catching `Bug`s when absolutely needed (top-level handlers, test runners, robustness boundaries). Catching `Bug`s in normal application code is a smell; the compiler emits a warning.
 

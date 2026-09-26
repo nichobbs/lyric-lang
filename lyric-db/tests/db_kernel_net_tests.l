@@ -10,6 +10,13 @@ import Std.Core
 import Std.Testing
 import Db.Kernel.Net as DbKernel
 
+func pgBuilt(dsn: in String, poolSize: in Int, timeoutMs: in Int, password: in String): String {
+  match DbKernel.buildPgConnStr(dsn, poolSize, timeoutMs, password) {
+    case Ok(s) -> s
+    case Err(e) -> panic("buildPgConnStr failed: " + e)
+  }
+}
+
 // ─── Connection-string injection (#5584) ─────────────────────────────────────
 // Before #5584, `buildPgConnStr` concatenated the password/host/database
 // straight into the `Host=...;Password=...;...` text. A password containing
@@ -20,22 +27,17 @@ import Db.Kernel.Net as DbKernel
 // the value instead, so round-tripping the built string back through the
 // same builder must yield the password verbatim.
 test "buildPgConnStr: a password containing ';' round-trips intact" {
-  val connStr = DbKernel.buildPgConnStr("Host=localhost;Database=mydb;Username=appuser", 5, 3000, "sec;ret=1")
+  val connStr = pgBuilt("Host=localhost;Database=mydb;Username=appuser", 5, 3000, "sec;ret=1")
   assertEqual(DbKernel.pgConnStrExtractPassword(connStr), "sec;ret=1", "password with embedded ';' is not split")
 }
 
 test "buildPgConnStr: a password containing '=' round-trips intact" {
-  val connStr = DbKernel.buildPgConnStr("Host=localhost;Database=mydb;Username=appuser", 5, 3000, "sec=et")
+  val connStr = pgBuilt("Host=localhost;Database=mydb;Username=appuser", 5, 3000, "sec=et")
   assertEqual(DbKernel.pgConnStrExtractPassword(connStr), "sec=et", "password with embedded '=' is not split")
 }
 
 test "buildPgConnStr: a password containing both ';' and '=' round-trips intact" {
-  val connStr = DbKernel.buildPgConnStr(
-    "Host=localhost;Database=mydb;Username=appuser",
-    5,
-    3000,
-    "a;b=c;Host=evil.example.com"
-  )
+  val connStr = pgBuilt("Host=localhost;Database=mydb;Username=appuser", 5, 3000, "a;b=c;Host=evil.example.com")
   assertEqual(
     DbKernel.pgConnStrExtractPassword(connStr),
     "a;b=c;Host=evil.example.com",
@@ -49,7 +51,7 @@ test "buildPgConnStr: a password containing both ';' and '=' round-trips intact"
 }
 
 test "buildPgConnStr: a postgres:// URI with an injection-shaped password round-trips intact" {
-  val connStr = DbKernel.buildPgConnStr("postgres://appuser:sec;ret=1@localhost:5432/mydb", 5, 3000, "")
+  val connStr = pgBuilt("postgres://appuser:sec;ret=1@localhost:5432/mydb", 5, 3000, "")
   assertEqual(
     DbKernel.pgConnStrExtractPassword(connStr),
     "sec;ret=1",
@@ -62,7 +64,7 @@ test "buildPgConnStr: a postgres:// URI with an injection-shaped password round-
 // **infinite**, not "immediate". A sub-second `connectTimeoutMs` (e.g. 100)
 // must not truncate to 0 via plain integer division.
 test "buildPgConnStr: a sub-second connectTimeoutMs does not become an infinite Npgsql timeout" {
-  val connStr = DbKernel.buildPgConnStr("Host=localhost;Database=mydb;Username=appuser", 5, 100, "")
+  val connStr = pgBuilt("Host=localhost;Database=mydb;Username=appuser", 5, 100, "")
   assertTrue(
     DbKernel.pgConnStrExtractTimeoutSeconds(connStr) >= 1,
     "a positive sub-second connectTimeoutMs must map to at least 1 second, never 0 (infinite)"
@@ -70,6 +72,64 @@ test "buildPgConnStr: a sub-second connectTimeoutMs does not become an infinite 
 }
 
 test "buildPgConnStr: a multi-second connectTimeoutMs rounds up to whole seconds" {
-  val connStr = DbKernel.buildPgConnStr("Host=localhost;Database=mydb;Username=appuser", 5, 1500, "")
+  val connStr = pgBuilt("Host=localhost;Database=mydb;Username=appuser", 5, 1500, "")
   assertEqualInt(DbKernel.pgConnStrExtractTimeoutSeconds(connStr), 2, "1500ms rounds up to 2s, never down to 1s")
+}
+
+// ─── Invalid URI ports and malformed keyword strings (#7241) ─────────────────
+test "buildPgConnStr: a non-numeric or out-of-range URI port is an Err" {
+  match DbKernel.buildPgConnStr("postgres://u:p@localhost:54x2/db", 5, 3000, "") {
+    case Ok(_) -> assertTrue(false, "a non-numeric port must not fall back to 5432")
+    case Err(e) -> assertTrue(e.contains("port"), "names the port: " + e)
+  }
+  match DbKernel.buildPgConnStr("postgres://u:p@localhost:0/db", 5, 3000, "") {
+    case Ok(_) -> assertTrue(false, "port 0 must be rejected")
+    case Err(_) -> ()
+  }
+  match DbKernel.buildPgConnStr("postgres://u:p@localhost:70000/db", 5, 3000, "") {
+    case Ok(_) -> assertTrue(false, "port 70000 must be rejected")
+    case Err(_) -> ()
+  }
+}
+
+test "buildPgConnStr: a malformed keyword string is an Err, not an exception" {
+  match DbKernel.buildPgConnStr("NoSuchKeyword=1;Host=localhost", 5, 3000, "") {
+    case Ok(_) -> assertTrue(false, "an unknown keyword must be rejected")
+    case Err(e) -> assertTrue(e.length > 0, "carries the builder's message")
+  }
+}
+
+// ─── SQLite connection string (#7241) ────────────────────────────────────────
+func sqliteBuilt(dsn: in String, timeoutMs: in Int): String {
+  match DbKernel.buildSqliteConnStr(dsn, timeoutMs) {
+    case Ok(s) -> s
+    case Err(e) -> panic("buildSqliteConnStr failed: " + e)
+  }
+}
+
+test "buildSqliteConnStr: a path containing ';' cannot inject options" {
+  val connStr = sqliteBuilt("sqlite:///tmp/a;Mode=ReadOnly.db", 3000)
+  assertEqual(
+    DbKernel.sqliteConnStrExtractDataSource(connStr),
+    "/tmp/a;Mode=ReadOnly.db",
+    "the whole path is the data source"
+  )
+}
+
+test "buildSqliteConnStr: a sub-second timeout does not become 'wait forever'" {
+  assertEqualInt(
+    DbKernel.sqliteConnStrExtractTimeoutSeconds(sqliteBuilt("sqlite::memory:", 100)),
+    1,
+    "100ms rounds up to 1s, never down to 0 (no timeout)"
+  )
+  assertEqualInt(
+    DbKernel.sqliteConnStrExtractTimeoutSeconds(sqliteBuilt("sqlite::memory:", 1500)),
+    2,
+    "1500ms rounds up to 2s"
+  )
+  assertEqual(
+    DbKernel.sqliteConnStrExtractDataSource(sqliteBuilt("sqlite::memory:", 1000)),
+    ":memory:",
+    "memory shorthand"
+  )
 }

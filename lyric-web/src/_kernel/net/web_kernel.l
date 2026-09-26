@@ -1,9 +1,10 @@
 //! Web.Kernel.Runtime (dotnet) — pure-Lyric rate limiter for lyric-web.
 //!
 //! Replaces the former @externTarget("Lyric.Ws.RateLimitHost.checkRateLimit")
-//! which pointed at a non-existent F# type.  The implementation uses the same
-//! tumbling-window algorithm as Ws.Kernel.Net.checkRateLimit but maintains
-//! separate process-global state, keyed by the supplied endpoint string.
+//! which pointed at a non-existent F# type.  The limiter is
+//! `Resilience.takeToken`'s refilling token bucket, the same one
+//! Ws.Kernel.Net.checkRateLimit uses, with separate process-global state
+//! keyed by the supplied endpoint string.
 //!
 //! The rate limiter and `startWorkerLoop` (issue #5359's background-worker
 //! dispatch, #778's fire-and-forget task boundary) live here: Web.serve's
@@ -26,6 +27,7 @@ package Web.Kernel.Runtime
 
 import Std.Console
 import Std.Core
+import Resilience
 import Std.Time
 import Web
 
@@ -50,15 +52,14 @@ func monitorEnter[T](obj: in T): Unit = ()
 @externTarget("System.Threading.Monitor.Exit")
 func monitorExit[T](obj: in T): Unit = ()
 
-// ─── Rate limiting (tumbling window) ─────────────────────────────────────────
+// ─── Rate limiting (token bucket) ────────────────────────────────────────────
 //
-// Uses a tumbling (fixed-reset) 60-second window per endpoint key.  The burst
-// budget is one-shot: it does not refill when the window resets.  A sliding
-// window with boundary-burst protection is tracked under #778.
+// One `Resilience.TokenBucket` per key: up to `requestsPerMinute + burstSize`
+// calls at once, refilling at `requestsPerMinute` a minute.  It replaced a
+// tumbling window whose burst budget never refilled (#7249).
 record WebRateEntry {
-  var windowStartMs: Long = 0i64
-  var usedInWindow: Int = 0
-  var burstAvailable: Int = 0
+  var scaledTokens: Long = 0i64
+  var lastRefillMs: Long = 0i64
 }
 
 record WebRateLock {
@@ -83,9 +84,10 @@ pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSiz
     monitorExit(webRateLock)
   }
 
+  val fullBucket = Resilience.newTokenBucket(requestsPerMinute, burstSize, nowMs)
   var re: WebRateEntry = default()
   if not cdTryGetValue(webRateLimitMap, endpoint, re) {
-    val newEntry = WebRateEntry(windowStartMs = nowMs, usedInWindow = 0, burstAvailable = burstSize)
+    val newEntry = WebRateEntry(scaledTokens = fullBucket.scaledTokens, lastRefillMs = fullBucket.lastRefillMs)
     val _ = cdTryAdd(webRateLimitMap, endpoint, newEntry)
     var re2: WebRateEntry = default()
     if cdTryGetValue(webRateLimitMap, endpoint, re2) {
@@ -95,24 +97,15 @@ pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSiz
     }
   }
 
-  val elapsed: Long = nowMs - re.windowStartMs
-  if elapsed >= 60000i64 {
-    re.windowStartMs = nowMs
-    re.usedInWindow = 0
-  }
-
-  if re.usedInWindow < requestsPerMinute {
-    re.usedInWindow = re.usedInWindow + 1
-    return true
-  }
-
-  if re.burstAvailable > 0 {
-    re.burstAvailable = re.burstAvailable - 1
-    re.usedInWindow = re.usedInWindow + 1
-    return true
-  }
-
-  false
+  val take = Resilience.takeToken(
+    Resilience.TokenBucket(scaledTokens = re.scaledTokens, lastRefillMs = re.lastRefillMs),
+    requestsPerMinute,
+    burstSize,
+    nowMs
+  )
+  re.scaledTokens = take.bucket.scaledTokens
+  re.lastRefillMs = take.bucket.lastRefillMs
+  take.allowed
 }
 
 // ─── Background worker dispatch (#5359) ────────────────────────────────────

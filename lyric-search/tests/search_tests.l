@@ -764,6 +764,93 @@ test "delete: a closed port produces a real transport failure via DELETE_FAILED"
   }
 }
 
+// ─── Untrusted ids, filter operators and pagination (#7236) ──────────────────
+// Each case below is rejected before any request is sent, so against the
+// closed-port client it fails with its own code rather than the operation's
+// transport-failure code.
+func expectCode(r: in Result[Unit, SearchError], code: in String, label: in String): Unit {
+  match r {
+    case Ok(_) -> assertTrue(false, label + ": expected " + code)
+    case Err(e) -> assertEqual(e.code, code, label)
+  }
+}
+
+test "delete: a dot-segment or empty id is refused, never sent" {
+  val client = closedPortClient()
+  expectCode(Search.delete(client, "products", ".."), "INVALID_PATH_SEGMENT", "id '..' would address the index")
+  expectCode(Search.delete(client, "products", "."), "INVALID_PATH_SEGMENT", "id '.'")
+  expectCode(Search.delete(client, "products", ""), "INVALID_PATH_SEGMENT", "empty id")
+  expectCode(Search.delete(client, "..", "p-1"), "INVALID_PATH_SEGMENT", "index '..'")
+  expectCode(Search.delete(client, "products", "a.b"), "DELETE_FAILED", "an id containing dots is an ordinary id")
+}
+
+test "exists: a dot-segment id is refused, never sent" {
+  val client = closedPortClient()
+  match await client.exists("products", "..") {
+    case Ok(_) -> assertTrue(false, "id '..' must not be checked")
+    case Err(e) -> assertEqual(e.code, "INVALID_PATH_SEGMENT", "exists refuses '..'")
+  }
+}
+
+func searchCode(q: in SearchQuery): String {
+  match Search.search(closedPortClient(), q) {
+    case Ok(_) -> "OK"
+    case Err(e) -> e.code
+  }
+}
+
+test "search: an unknown filter operator is refused, not treated as equality" {
+  val q = Search.makeQuery("products", "widget")
+  val typo = q.copy(filters = [SearchFilter(field = "tenant", value = "a", operator = "ne")])
+  assertEqual(searchCode(typo), "UNKNOWN_OPERATOR", "'ne' is not an operator")
+  val upper = q.copy(filters = [SearchFilter(field = "price", value = "5", operator = "GT")])
+  assertEqual(searchCode(upper), "UNKNOWN_OPERATOR", "operators are case-sensitive")
+  val known = q.copy(filters = [SearchFilter(field = "price", value = "5", operator = "gte")])
+  assertEqual(searchCode(known), "SEARCH_FAILED", "a known operator reaches the transport")
+}
+
+test "search: pagination outside the result window is refused" {
+  val q = Search.makeQuery("products", "widget")
+  assertEqual(searchCode(q.copy(from = -1)), "INVALID_PAGINATION", "negative from")
+  assertEqual(searchCode(q.copy(size = -1)), "INVALID_PAGINATION", "negative size")
+  assertEqual(searchCode(q.copy(size = 10001)), "INVALID_PAGINATION", "size over the window")
+  assertEqual(searchCode(q.copy(from = 9995, size = 10)), "INVALID_PAGINATION", "from + size over the window")
+  assertEqual(searchCode(q.copy(from = 2147483000, size = 10000)), "INVALID_PAGINATION", "no overflow in from + size")
+  assertEqual(searchCode(q.copy(from = 9990, size = 10)), "SEARCH_FAILED", "a window of exactly 10000 is allowed")
+}
+
+func suggestCode(size: in Int): String {
+  val client = closedPortClient()
+  match await client.suggest("products", "wid", "name", size) {
+    case Ok(_) -> "OK"
+    case Err(e) -> e.code
+  }
+}
+
+test "suggest: a size outside 1..MAX_RESULT_WINDOW is an error, not a panic (#7323)" {
+  assertEqual(suggestCode(0), "INVALID_PAGINATION", "zero size")
+  assertEqual(suggestCode(-1), "INVALID_PAGINATION", "negative size")
+  assertEqual(suggestCode(5000000), "INVALID_PAGINATION", "size over the window")
+  assertEqual(suggestCode(10), "SUGGEST_FAILED", "a valid size reaches the transport")
+}
+
+test "a base URL with a trailing slash joins cleanly" {
+  val cfg = HttpConfig.new(defaultClient(), "http://127.0.0.1:1/", "", "")
+  val client: SearchClient = NativeSearchClient(cfg = cfg)
+  match Search.search(client, Search.makeQuery("products", "widget")) {
+    case Ok(_) -> assertTrue(false, "unexpected search success with no backend listening")
+    case Err(e) -> assertEqual(e.code, "SEARCH_FAILED", "reaches the transport instead of panicking in joinUrl")
+  }
+}
+
+test "isKnownFilterOperator: exactly the documented operators" {
+  assertTrue(isKnownFilterOperator("eq"), "eq")
+  assertTrue(isKnownFilterOperator("contains"), "contains")
+  assertFalse(isKnownFilterOperator("ne"), "ne")
+  assertFalse(isKnownFilterOperator(""), "empty")
+  assertFalse(isKnownFilterOperator("EQ"), "upper case")
+}
+
 // ─── Live integration (opt-in, env-var gated) ────────────────────────────────
 // No Elasticsearch or Meilisearch server is reachable in this repository's
 // CI sandbox. Rather than skip live coverage entirely, this test performs

@@ -15,6 +15,8 @@ import Std.Errors
 import Std.File
 import Std.Environment
 import Std.Testing
+import Std.Collections
+import Std.Process
 import Std.Time
 
 func scratchDir(label: in String): String {
@@ -232,4 +234,29 @@ test "deleteDirRecursive removes a populated directory tree" {
     case Ok(_) -> assertFalse(dirExists(dir), "directory gone after recursive delete")
     case Err(e) -> panic("deleteDirRecursive failed: " + IOError.message(e))
   }
+}
+
+// #7246: a symbolic link to a directory is not descended into, so a link
+// back to an ancestor neither repeats the tree nor recurses without bound.
+test "listFilesRecursive does not follow a symbolic link back to an ancestor" {
+  val dir = scratchDir("symlink_cycle")
+  val _ = deleteDirRecursive(dir)
+  val _ = createDir(dir)
+  val _ = writeText(dir + "/a.txt", "a")
+  val lnArgs: List[String] = newList()
+  lnArgs.add("-s")
+  lnArgs.add(dir)
+  lnArgs.add(dir + "/loop")
+  match Std.Process.run("ln", lnArgs) {
+    case Ok(code) -> assertEqualInt(code, 0, "ln -s succeeded")
+    case Err(e) -> panic("ln failed: " + IOError.message(e))
+  }
+  match listFilesRecursive(dir) {
+    case Ok(fs) -> assertEqualInt(fs.count, 1, "only a.txt, listed once")
+    case Err(e) -> panic("listFilesRecursive failed: " + IOError.message(e))
+  }
+  val rmArgs: List[String] = newList()
+  rmArgs.add("-rf")
+  rmArgs.add(dir)
+  val _ = Std.Process.run("rm", rmArgs)
 }

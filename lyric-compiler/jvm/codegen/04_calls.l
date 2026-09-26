@@ -4099,6 +4099,17 @@ func lowerMethodCall(
         }
         case None -> ()
       }
+      // A Lyric union-case construction qualified by an IMPORTED union
+      // (`Lambda.LambdaError.TimeoutError(remainingMs = ms)`, including the
+      // body of a library aspect woven into a consumer) must not reach the
+      // extern fast path below: the imported-type seed (docs/44 m-58) puts
+      // the union's name into `externTypes`, so the call was looked up as a
+      // static JDK method and panicked (J008).  A real extern type never
+      // registers a `<Type>$<member>` case constructor.
+      match mapGet(ctx.ctors, lastSegment(path) + "$" + memberName) {
+        case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
+        case None -> ()
+      }
       // A multi-segment `path` (the flattened form `Lyric.AliasRewriter`
       // produces for `import X as Y` + `Y.Type`) resolves through its
       // package-qualified key FIRST — same #6338 rationale as

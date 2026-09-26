@@ -114,7 +114,11 @@ pub record SortField {
 }
 
 /// A filter clause applied to search queries.
-/// `operator` is one of: "eq", "gt", "gte", "lt", "lte", "contains".
+/// `operator` is one of: "eq", "gt", "gte", "lt", "lte", "contains"
+/// (`isKnownFilterOperator`).  A search whose filter names any other operator
+/// fails with `UNKNOWN_OPERATOR` rather than being sent: filters are often
+/// access restrictions, so a mistyped operator must not quietly become a
+/// different comparison.
 @stable(since = "0.1")
 pub record SearchFilter {
   field: String
@@ -122,7 +126,10 @@ pub record SearchFilter {
   operator: String
 }
 
-/// A full search request.
+/// A full search request.  `from` and `size` are validated when the query is
+/// sent (`validateSearchQuery`): `from >= 0`, `0 <= size <= MAX_RESULT_WINDOW`
+/// and `from + size <= MAX_RESULT_WINDOW`, so client-supplied pagination
+/// cannot request an unbounded result window.
 @stable(since = "0.1")
 pub record SearchQuery {
   index: String
@@ -167,6 +174,12 @@ pub record IndexResult {
 /// Search engine client.  Obtain via `Search.connectElasticsearch()`,
 /// `Search.connectMeilisearch()`, or the dispatching `Search.connect()`.
 ///
+/// Document ids are usually client-supplied, so they are validated rather
+/// than required: an empty, `.` or `..` id (or index name) fails with
+/// `INVALID_PATH_SEGMENT` instead of being sent, because URL normalisation
+/// would otherwise turn `delete(index, "..")` into a request against the
+/// index itself (#7236).
+///
 /// Every method is `async` because every implementation performs a real
 /// HTTP round trip — there is no synchronous, in-process fast path.
 @stable(since = "0.1")
@@ -174,7 +187,6 @@ pub interface SearchClient {
   /// Index a single document.
   async func index(doc: in SearchDocument): Result[IndexResult, SearchError]
     requires: doc.index.length > 0
-    requires: doc.id.length > 0
 
   /// Index a batch of documents in a single request.
   async func indexBatch(docs: in slice[SearchDocument]): Result[slice[IndexResult], SearchError]
@@ -184,15 +196,15 @@ pub interface SearchClient {
     requires: query.index.length > 0
 
   /// Return autocomplete suggestions for `text` on `field` in `index`.
+  /// `size` often comes from a client, so an out-of-range value is an
+  /// `INVALID_PAGINATION` error (`validateSuggestSize`), not a precondition.
   async func suggest(index: in String, text: in String, field: in String, size: in Int): Result[SuggestResult, SearchError]
     requires: index.length > 0
     requires: field.length > 0
-    requires: size > 0
 
   /// Delete a single document by ID.
   async func delete(index: in String, id: in String): Result[Unit, SearchError]
     requires: index.length > 0
-    requires: id.length > 0
 
   /// Delete an entire index.
   async func deleteIndex(index: in String): Result[Unit, SearchError]
@@ -201,7 +213,6 @@ pub interface SearchClient {
   /// Return whether a document exists.
   async func exists(index: in String, id: in String): Result[Bool, SearchError]
     requires: index.length > 0
-    requires: id.length > 0
 
   /// Create an index with the given mapping JSON.  For Elasticsearch this
   /// is the raw `{"mappings": {...}, "settings": {...}}` body passed
@@ -394,7 +405,6 @@ pub async func connect(provider: in String): Result[SearchClient, SearchError]
 @stable(since = "0.1")
 pub func index(client: in SearchClient, doc: in SearchDocument): Result[IndexResult, SearchError]
   requires: doc.index.length > 0
-  requires: doc.id.length > 0
 {
   return await client.index(doc)
 }
@@ -420,7 +430,6 @@ pub func searchSimple(client: in SearchClient, index: in String, query: in Strin
 @stable(since = "0.1")
 pub func delete(client: in SearchClient, index: in String, id: in String): Result[Unit, SearchError]
   requires: index.length > 0
-  requires: id.length > 0
 {
   return await client.delete(index, id)
 }
@@ -464,7 +473,6 @@ pub func makeSort(field: in String, descending: in Bool): SortField
 @stable(since = "0.1")
 pub func makeDoc(index: in String, id: in String, fields: in Map[String, String]): SearchDocument
   requires: index.length > 0
-  requires: id.length > 0
 {
   return SearchDocument(id = id, index = index, fields = fields)
 }
@@ -478,6 +486,95 @@ func parseIntOrDefault(s: in String, default: in Int): Int {
     case Some(n) -> n
     case None -> default
   }
+}
+
+/// The operators `SearchFilter.operator` may name.
+@stable(since = "0.2")
+pub func isKnownFilterOperator(op: in String): Bool {
+  op == "eq" or op == "gt" or op == "gte" or op == "lt" or op == "lte" or op == "contains"
+}
+
+/// The largest result window (`from + size`) a query may request, matching
+/// Elasticsearch's default `index.max_result_window`.
+@stable(since = "0.2")
+pub val MAX_RESULT_WINDOW: Int = 10000
+
+/// `Some(error)` when `query` must not be sent: an unknown filter operator
+/// (`UNKNOWN_OPERATOR`) or pagination outside the allowed window
+/// (`INVALID_PAGINATION`).  Both backends run this before building a request.
+@stable(since = "0.2")
+pub func validateSearchQuery(query: in SearchQuery): Option[SearchError] {
+  for f in query.filters {
+    if not isKnownFilterOperator(f.operator) {
+      return Some(
+        value = SearchError(
+          message = "unknown filter operator '" + f.operator + "' on field '" + f.field +
+            "'; expected one of eq, gt, gte, lt, lte, contains",
+          code = "UNKNOWN_OPERATOR",
+          statusCode = 0
+        )
+      )
+    }
+  }
+  if query.from < 0 or query.size < 0 or query.size > MAX_RESULT_WINDOW or query.from > MAX_RESULT_WINDOW - query.size {
+    return Some(
+      value = SearchError(
+        message = "invalid pagination from=" + query.from.toString() + " size=" + query.size.toString() +
+          "; expected from >= 0, 0 <= size <= " +
+          MAX_RESULT_WINDOW.toString() +
+          " and from + size <= " +
+          MAX_RESULT_WINDOW.toString(),
+        code = "INVALID_PAGINATION",
+        statusCode = 0
+      )
+    )
+  }
+  None
+}
+
+/// `Some(error)` when a suggestion `size` is outside 1..`MAX_RESULT_WINDOW`.
+/// Both backends check it before sending, as `validateSearchQuery` does for
+/// search pagination.
+@stable(since = "0.1")
+pub func validateSuggestSize(size: in Int): Option[SearchError] {
+  if size < 1 or size > MAX_RESULT_WINDOW {
+    return Some(
+      value = SearchError(
+        message = "invalid suggestion size " + size.toString() + "; expected 1 <= size <= " +
+          MAX_RESULT_WINDOW.toString(),
+        code = "INVALID_PAGINATION",
+        statusCode = 0
+      )
+    )
+  }
+  None
+}
+
+// `Some(segment)` for the first segment of `path` that must not reach the
+// server: empty, `.` or `..`.  Callers escape each caller-supplied value
+// with `pathEscape`, which keeps `.` literal and escapes `/`, so a value of
+// "" / "." / ".." surfaces here as exactly such a segment.  URL normalisation
+// (System.Uri, java.net.URI) resolves dot-segments against the path, turning
+// `DELETE /{index}/_doc/..` into `DELETE /{index}`, and an empty id turns
+// Meilisearch's `DELETE /indexes/{index}/documents/{id}` into "delete every
+// document" (#7236).  The bare root path `/` has no segments to check.
+func unsafePathSegment(path: in String): Option[String] {
+  if path == "/" {
+    return None
+  }
+  var start = if path.length > 0 and path[0] == '/' { 1 } else { 0 }
+  var i = start
+  while i <= path.length {
+    if i == path.length or path[i] == '/' {
+      val segment = path.substring(start, i - start)
+      if segment.length == 0 or segment == "." or segment == ".." {
+        return Some(value = segment)
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  None
 }
 
 /// Percent-encode a single URL path segment (RFC 3986 unreserved set is
@@ -586,7 +683,7 @@ func joinUrl(baseUrl: in String, path: in String): String {
   val baseEndsSlash = baseUrl[lastBase] == '/'
   val pathStartsSlash = path[0] == '/'
   if baseEndsSlash and pathStartsSlash {
-    return baseUrl + path.substring(1, path.length)
+    return baseUrl + path.substring(1, path.length - 1)
   }
   if baseEndsSlash or pathStartsSlash {
     return baseUrl + path
@@ -613,6 +710,19 @@ pub func toSearchError(e: in HttpError, code: in String): SearchError {
 func buildRequest(
   cfg: in HttpConfig, method: in HttpMethod, path: in String, body: in Option[String]
 ): Result[HttpRequest, SearchError] {
+  match unsafePathSegment(path) {
+    case Some(segment) -> return Err(
+      error = SearchError(
+        message = "refusing request path '" + path +
+          "': an index name or document id may not be empty, '.' or '..' (got '" +
+          segment +
+          "')",
+        code = "INVALID_PATH_SEGMENT",
+        statusCode = 0
+      )
+    )
+    case None -> ()
+  }
   val url = joinUrl(cfg.baseUrl, path)
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = toSearchError(e, "INVALID_URL"))

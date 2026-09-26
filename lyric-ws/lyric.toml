@@ -25,11 +25,12 @@ output_assembly = "Ws.dll"
 "Ws.WsDotnetE2eTests"              = "tests/ws_dotnet_e2e_tests.l"
 "Ws.WsSecurityAspectWeavingTests"  = "tests/ws_security_aspect_weaving_tests.l"
 
-# tests/ws_jvm_e2e_test.l is NOT registered here — see its header for why
-# (a real, self-hosted JVM backend bug blocks it from passing today).
+# tests/ws_jvm_origin_smoke.l is a plain program, not a test module: it is
+# the JVM server that scripts/ci/lyric-ws-undertow-jvm-smoke.sh drives from
+# outside (#7243).
 #
 # Ws.WsDotnetE2eTests is dotnet-only (it dials Std.TcpHost directly, which
-# has no JVM kernel) — like ws_jvm_e2e_test.l's exclusion above, this is
+# has no JVM kernel) — this is
 # fine only because CI runs this manifest's tests with the default
 # (dotnet) feature set; a future `lyric test --target jvm --features jvm`
 # run against this manifest would need Ws.WsDotnetE2eTests excluded the
@@ -43,6 +44,7 @@ jvm    = []   # Undertow WebSockets (Phase 6)
 
 [dependencies]
 "Lyric.Auth"   = { workspace = true }
+"Lyric.Resilience" = { workspace = true }
 
 # [nuget] — no third-party packages needed for the current .NET kernel
 # implementation: Ws.Kernel.Net is pure-Lyric RFC 6455 over Std.TcpHost

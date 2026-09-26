@@ -208,7 +208,7 @@ import Jobs.Aspects
 
 aspect EmailRetry from Jobs.Aspects.Retryable {
   matches: name like "send*Email"
-  config { maxAttempts: Int = 3; backoffMs: Int = 1000 }
+  config { maxAttempts: Int = 3; initialDelayMs: Int = 1000 }
 }
 ```
 
@@ -217,8 +217,19 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `maxAttempts` | `Int` | `3` | Maximum retry count |
-| `backoffMs` | `Int` | `1000` | Initial exponential backoff in milliseconds |
+| `maxAttempts` | `Int` | `3` | Total attempts including the first; at least 1 |
+| `initialDelayMs` | `Int` | `500` | Delay before the second attempt; 0 to `maxDelayMs` |
+| `backoffFactor` | `Int` | `2` | Delay multiplier per retry; below 1 counts as 1 |
+| `maxDelayMs` | `Int` | `30000` | Upper bound on any single delay |
+
+The delay before retry *n* is `initialDelayMs × backoffFactor^(n-1)`, capped
+at `maxDelayMs` (`Resilience.backoffDelay`).
+
+A configuration outside these bounds is a bug, reported before the handler
+runs: the aspect panics with a message naming the values. Earlier versions
+accepted `maxAttempts = 0` (no retries) and an `initialDelayMs` above
+`maxDelayMs` (silently clamped); set `maxAttempts = 1` and lower
+`initialDelayMs` instead.
 
 ### Timed
 

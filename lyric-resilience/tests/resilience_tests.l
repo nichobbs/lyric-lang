@@ -164,3 +164,129 @@ test "backoffDelay: jitter never pushes delay below zero or above maxDelayMs" {
     i = i + 1
   }
 }
+
+// ─── Lost half-open probes (#7240) ──────────────────────────────────────────
+// A probe that panics records no outcome.  It used to leave
+// `halfOpenProbeInFlight` set forever, so the circuit rejected every later
+// call; a probe is now presumed lost once a further cooldown passes.
+test "CircuitBreakerState: a probe that never reports back expires after a cooldown" {
+  val st = Resilience.makeCircuitBreakerState()
+  Resilience.cbStateRecordFailure(st, 1, 1000)
+  assertFalse(Resilience.cbStateCheckOpen(st, 1000, 2000), "probe granted at 2000")
+  assertTrue(Resilience.cbStateCheckOpen(st, 1000, 2999), "still in flight within a cooldown of the probe")
+  assertFalse(Resilience.cbStateCheckOpen(st, 1000, 3000), "a probe silent for a full cooldown is replaced")
+  assertTrue(Resilience.cbStateCheckOpen(st, 1000, 3001), "the replacement probe is now the one in flight")
+}
+
+test "circuit kernel: a lost probe does not wedge the circuit open" {
+  val name = "resilience-test-lost-probe"
+  Resilience.circuitRecordFailure(name, 1)
+  Resilience.sleepMs(20)
+  assertFalse(Resilience.circuitIsOpen(name, 10), "first probe granted after the cooldown")
+  // The probe "panics": neither success nor failure is recorded.
+  Resilience.sleepMs(20)
+  assertFalse(Resilience.circuitIsOpen(name, 10), "a fresh probe is granted once the lost one expires")
+  Resilience.circuitRecordSuccess(name)
+  assertFalse(Resilience.circuitIsOpen(name, 10), "a successful probe closes the circuit")
+}
+
+// ─── Backoff configuration contracts (#7240) ────────────────────────────────
+test "isValidBackoff: rejects negative, inverted and NaN configurations" {
+  assertTrue(Resilience.isValidBackoff(100, 30000, 0.1f32), "defaults")
+  assertTrue(Resilience.isValidBackoff(0, 0, 0.0f32), "all zero")
+  assertFalse(Resilience.isValidBackoff(-1, 30000, 0.0f32), "negative initial delay")
+  assertFalse(Resilience.isValidBackoff(500, 100, 0.0f32), "initial delay above the cap")
+  assertFalse(Resilience.isValidBackoff(100, 30000, -0.1f32), "negative jitter")
+  assertFalse(Resilience.isValidBackoff(100, 30000, 1.5f32), "jitter above 1")
+  assertFalse(Resilience.isValidBackoff(100, 30000, 0.0f32 / 0.0f32), "NaN jitter")
+}
+
+test "backoffDelay: an invalid configuration is a precondition violation" {
+  assertPanicsWith(
+    "negative initial delay",
+    "PreconditionViolated",
+    { -> val _ = Resilience.backoffDelay(-5, 2, 0, 30000, 0.0f32) }
+  )
+  assertPanics("NaN jitter", { -> val _ = Resilience.backoffDelay(100, 2, 0, 30000, 0.0f32 / 0.0f32) })
+  assertPanics("negative attempt", { -> val _ = Resilience.backoffDelay(100, 2, -1, 30000, 0.0f32) })
+}
+
+record Calls {
+  var n: Int
+}
+
+val retryCalls: Calls = Calls(n = 0)
+
+aspect BadRetry from Resilience.Retry {
+  matches: name like "badRetryGuarded*"
+  config {
+    initialDelayMs: Int = -1
+  }
+}
+
+pub func badRetryGuarded(): Result[Int, String] {
+  retryCalls.n = retryCalls.n + 1
+  return Err("fails")
+}
+
+test "Retry: a bad configuration fails before the wrapped call runs (#7240)" {
+  retryCalls.n = 0
+  assertPanics("negative initialDelayMs", { -> val _ = badRetryGuarded() })
+  assertEqualInt(retryCalls.n, 0, "the wrapped function never ran")
+}
+
+val circuitCalls: Calls = Calls(n = 0)
+
+aspect BadCircuit from Resilience.CircuitBreaker {
+  matches: name like "badCircuitGuarded*"
+  config {
+    failureThreshold: Int = 0
+  }
+}
+
+pub func badCircuitGuarded(): Result[Int, String] {
+  circuitCalls.n = circuitCalls.n + 1
+  return Ok(1)
+}
+
+test "CircuitBreaker: a zero failureThreshold fails before the wrapped call runs (#7240)" {
+  circuitCalls.n = 0
+  assertPanics("failureThreshold 0", { -> val _ = badCircuitGuarded() })
+  assertEqualInt(circuitCalls.n, 0, "the wrapped function never ran")
+}
+
+// ─── Token bucket (#7249) ────────────────────────────────────────────────────
+// The rate limiters' burst allowance used to be a one-shot budget that never
+// came back; the bucket refills continuously.  `nowMs` is injected.
+func take(b: in Resilience.TokenBucket, nowMs: in Long): Resilience.TokenTake {
+  Resilience.takeToken(b, 1, 1, nowMs)
+}
+
+test "takeToken: a full bucket allows requestsPerMinute + burstSize calls at once" {
+  val b0 = Resilience.newTokenBucket(1, 1, 1000i64)
+  val t1 = take(b0, 1000i64)
+  val t2 = take(t1.bucket, 1000i64)
+  val t3 = take(t2.bucket, 1000i64)
+  assertTrue(t1.allowed, "first call")
+  assertTrue(t2.allowed, "second call uses the burst allowance")
+  assertFalse(t3.allowed, "third call finds the bucket empty")
+}
+
+test "takeToken: the bucket refills at requestsPerMinute, burst included" {
+  val b0 = Resilience.newTokenBucket(1, 1, 0i64)
+  val empty = take(take(b0, 0i64).bucket, 0i64).bucket
+  assertFalse(take(empty, 30000i64).allowed, "half a minute refills half a token")
+  val one = take(empty, 60000i64)
+  assertTrue(one.allowed, "a minute refills one token")
+  assertFalse(take(one.bucket, 60000i64).allowed, "and only one")
+  val later = take(empty, 600000i64)
+  assertTrue(later.allowed, "a long idle period refills the bucket")
+  assertTrue(take(later.bucket, 600000i64).allowed, "up to its capacity, burst included")
+  assertFalse(take(take(later.bucket, 600000i64).bucket, 600000i64).allowed, "but no further")
+}
+
+test "takeToken: a clock stepping backwards refills nothing" {
+  val b0 = Resilience.newTokenBucket(1, 1, 100000i64)
+  val empty = take(take(b0, 100000i64).bucket, 100000i64).bucket
+  assertFalse(take(empty, 50000i64).allowed, "an earlier timestamp adds no tokens")
+}

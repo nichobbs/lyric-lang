@@ -36,6 +36,8 @@ import Std.Core
 import Std.Collections
 import Std.Iter
 import Std.Time
+import Std.Sort
+import Std.String as Str
 import Cache as Cache
 import Mail
 import Storage
@@ -157,7 +159,11 @@ pub func clearSent(sender: inout MockMailSender): Unit {
 // ─── MockStorageBucket ────────────────────────────────────────────────────────
 /// Mock storage bucket that keeps objects in memory for assertion.
 ///
-/// All operations succeed by default.  Use `callCount` to verify that
+/// Keys are validated like every real backend (`Storage.isSafeKey`, or
+/// `Storage.isSafePrefix` for `list`), so a rejected key returns
+/// `Err(StorageError(code = "INVALID_KEY"))` here too, and `list` pages by
+/// `maxKeys` with the last returned key as the continuation token.
+/// Otherwise every operation succeeds.  Use `callCount` to verify that
 /// specific methods were invoked.
 @stable(since = "0.1")
 pub record MockStorageBucket {
@@ -171,6 +177,9 @@ impl Storage.StorageBucket for MockStorageBucket {
   func put(
     key: in String, dataBase64: in String, contentType: in String, userMeta: in Map[String, String]
   ): Result[Storage.StorageMetadata, Storage.StorageError] {
+    if not Storage.isSafeKey(key) {
+      return Err(mockInvalidKey(key))
+    }
     val obj = StoredObject(key = key, dataBase64 = dataBase64, contentType = contentType)
     val existing: Option[StoredObject] = mapGet(self.objects, key)
     if not isSome(existing) {
@@ -191,6 +200,9 @@ impl Storage.StorageBucket for MockStorageBucket {
 
     key: in String,
   ): Result[Storage.StorageObject, Storage.StorageError] {
+    if not Storage.isSafeKey(key) {
+      return Err(mockInvalidKey(key))
+    }
     val found: Option[StoredObject] = mapGet(self.objects, key)
     if not isSome(found) {
       return Err(Storage.StorageError(message = "not found: " + key, code = "NOT_FOUND"))
@@ -210,6 +222,9 @@ impl Storage.StorageBucket for MockStorageBucket {
 
     key: in String,
   ): Result[Unit, Storage.StorageError] {
+    if not Storage.isSafeKey(key) {
+      return Err(mockInvalidKey(key))
+    }
     self.objects.remove(key)
     var newKeys: List[String] = newList()
     for k in self.orderedKeys {
@@ -226,22 +241,31 @@ impl Storage.StorageBucket for MockStorageBucket {
     continuationToken: in String,
     maxKeys: in Int,
   ): Result[Storage.ListResult, Storage.StorageError] {
-    val entriesAcc: List[Storage.ListEntry] = newList()
+    if not Storage.isSafePrefix(prefix) {
+      return Err(mockInvalidKey(prefix))
+    }
+    // Same paging as `Storage.LocalBucket.list` (#7333): keys under `prefix`
+    // strictly after `continuationToken`, in ordinal order, `maxKeys` at a
+    // time.  Resuming by comparison, not by finding the token's key, keeps
+    // paging correct when that key was deleted between pages.
+    val matching: List[String] = newList()
     for k in self.orderedKeys {
-      val obj = self.objects[k]
-      val matches = if prefix.length == 0 {
-        true
-      } else if k.length >= prefix.length {
-        k.substring(0, prefix.length) == prefix
-      } else {
-        false
-      }
-      if matches {
-        val listItem = Storage.ListEntry(key = k, contentLength = 0, lastModified = "", etag = "mock-etag")
-        entriesAcc.add(listItem)
+      if Str.startsWith(k, prefix) and (continuationToken.length == 0 or Str.compare(k, continuationToken) > 0) {
+        matching.add(k)
       }
     }
-    val result = Storage.ListResult(entries = entriesAcc.toArray(), nextContinuationToken = None, isTruncated = false)
+    val sorted = sortStrings(matching.toArray())
+    val truncated = sorted.length > maxKeys
+    val pageCount = if truncated { maxKeys } else { sorted.length }
+    val acc: List[Storage.ListEntry] = newList()
+    var i = 0
+    while i < pageCount {
+      acc.add(Storage.ListEntry(key = sorted[i], contentLength = 0, lastModified = "", etag = "mock-etag"))
+      i = i + 1
+    }
+    val entries = acc.toArray()
+    val next: Option[String] = if truncated and pageCount > 0 { Some(value = sorted[pageCount - 1]) } else { None }
+    val result = Storage.ListResult(entries = entries, nextContinuationToken = next, isTruncated = truncated)
     return Ok(result)
   }
   func presignedUrl(
@@ -249,15 +273,25 @@ impl Storage.StorageBucket for MockStorageBucket {
     key: in String,
     expiresInSeconds: in Int,
   ): Result[String, Storage.StorageError] {
+    if not Storage.isSafeKey(key) {
+      return Err(mockInvalidKey(key))
+    }
     return Ok("https://mock-storage.test/" + self.bucketName + "/" + key)
   }
   func exists(
 
     key: in String,
   ): Result[Bool, Storage.StorageError] {
+    if not Storage.isSafeKey(key) {
+      return Err(mockInvalidKey(key))
+    }
     val found: Option[StoredObject] = mapGet(self.objects, key)
     return Ok(isSome(found))
   }
+}
+
+func mockInvalidKey(key: in String): Storage.StorageError {
+  Storage.StorageError(message = "invalid storage key: " + key, code = "INVALID_KEY")
 }
 
 // ─── MockMessageQueue ─────────────────────────────────────────────────────────

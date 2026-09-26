@@ -216,9 +216,12 @@ per declared column type** — an `INTEGER` column reports `System.Int32`
 `System.Int64` (`DbLong`) the moment a value overflows it (SQLite has no
 native 32-bit integer storage class; this is Microsoft.Data.Sqlite's own
 choice of CLR type per row, verified empirically). `Db.getInt`/
-`Db.getIntOpt` narrow a `DbLong` down to `Int` (`.toInt()`, truncating) so
-callers get a consistent `Int`-typed accessor regardless of which variant
-the driver happened to pick for a given value (#5597); pattern-matching
+`Db.getIntOpt` accept a `DbLong` whose value fits Int32 and return it as an
+`Int`, so callers get a consistent `Int`-typed accessor regardless of which
+variant the driver happened to pick for a given value (#5597). A `DbLong`
+outside Int32 range is never truncated into a plausible-looking wrong value
+(#7241): `getInt` returns `0` and `getIntOpt` returns `None`. Use
+`Db.getLong` for columns that may hold such values. Pattern-matching
 `Db.col(...)` directly still sees the real `DbInt`/`DbLong` split. Both
 cases (fits Int32, overflows Int32) are asserted in
 `tests/db_sqlite_tests.l`.

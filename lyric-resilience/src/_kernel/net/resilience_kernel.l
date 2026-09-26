@@ -40,6 +40,7 @@ record CircuitEntry {
   var isOpen: Bool = false
   var openedAtMs: Long = 0i64
   var halfOpenProbeInFlight: Bool = false
+  var probeStartedAtMs: Long = 0i64
 }
 
 @axiom("System.Threading.Monitor.Enter — acquires an exclusive lock on obj")
@@ -93,14 +94,18 @@ pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool
   if not entry.isOpen {
     return false
   }
-  val elapsed: Long = nowEpochMillis() - entry.openedAtMs
-  if elapsed < cooldownMs.toLong() {
+  val nowMs = nowEpochMillis()
+  if nowMs - entry.openedAtMs < cooldownMs.toLong() {
     return true
   }
-  if entry.halfOpenProbeInFlight {
+  // A probe that has not reported back within a cooldown is presumed lost
+  // (it panicked, or its caller abandoned it); without this expiry the
+  // circuit would reject every later call forever (#7240).
+  if entry.halfOpenProbeInFlight and nowMs - entry.probeStartedAtMs < cooldownMs.toLong() {
     return true
   }
   entry.halfOpenProbeInFlight = true
+  entry.probeStartedAtMs = nowMs
   false
 }
 
@@ -129,7 +134,9 @@ pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit
   defer {
     monitorExit(entry)
   }
-  entry.consecutiveFailures = entry.consecutiveFailures + 1
+  if entry.consecutiveFailures < 2147483647 {
+    entry.consecutiveFailures = entry.consecutiveFailures + 1
+  }
   if entry.isOpen {
     entry.openedAtMs = nowEpochMillis()
     entry.halfOpenProbeInFlight = false

@@ -3172,6 +3172,27 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/invariant_self_test.l
+      # NaN-correct Float/Double comparisons, range patterns and range
+      # subtypes (#7240, #2772); the same file runs on --target jvm below.
+      - name: NaN-comparison self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/nan_compare_self_test.l
+      # Module-level vals holding concrete collections (#7321 follow-up): the
+      # `.cctor` initializer must build the annotated `Dictionary<K,V>`, and the
+      # TypeDef discovery pass must not lower `.cctor` bodies.  The same file
+      # runs on --target jvm below.
+      - name: Module-val collections self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/module_val_collections_self_test.l
+      - name: Imported union case construction self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/imported_union_case_ctor_self_test.l
 
       - name: Wait for parallel tests (dotnet-b batch 4 split, #4975)
         wait-all: true
@@ -4517,6 +4538,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/file_tests.l
 
+      # Std.Path.joinWithin confinement and the shared Std.ProcessArgs argv
+      # encoder/decoder (#7246, #7234).
+      - name: Std.Path / Std.ProcessArgs test coverage on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/path_tests.l
+          bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/process_args_tests.l
+
       # Real HTTP round-trip proving HttpVersion.negotiatedVersion() against
       # a live plaintext Std.HttpServer listener on JVM (docs/61 §5.1, D128
       # decision 4; #5879), in-process via scope/spawn (genuinely concurrent
@@ -5346,6 +5377,18 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/synthesized_method_self_test.l
+      - name: Module-val collections self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/module_val_collections_self_test.l
+      # Imported-union-qualified case construction on JVM (#7253 follow-up):
+      # must build the case, not route to the auto-FFI static-call path (J008).
+      - name: Imported union case construction self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/imported_union_case_ctor_self_test.l
       # NaN-comparison self-test on JVM (#2772) — pins IEEE 754 §5.11 ordered
       # comparisons for Float/Double: `lowerCmp`/`lowerCmpFail` must select the
       # `fcmpg`/`dcmpg` ("g") variant for `<`/`<=` (NaN -> +1 -> branch not taken
@@ -5365,7 +5408,7 @@ jobs:
             exit 1
           fi
           export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
-          .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/jvm/nan_compare_jvm_self_test.l
+          .bootstrap/stage2/bin/lyric test --target jvm lyric-compiler/lyric/nan_compare_self_test.l
       # Extern-handle-across-a-loop self-test (#3307) — pins StackMapTable
       # local-variable typing for `JRef`/extern locals at basic-block
       # boundaries: an `extern type` value driven through a `while`/`if` (loop
@@ -5933,6 +5976,16 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/lyric-web-undertow-jvm-smoke.sh
+      # lyric-ws Undertow smoke on JVM (#7243): the Origin policy (403 for a
+      # cross-origin handshake, 101 for same-origin / no Origin / a listed
+      # origin), handshake headers reaching onOpen, and a text round trip
+      # through the receive listener.  Std.TcpHost has no JVM kernel, so the
+      # dotnet loopback tests cannot cover this target.
+      - name: lyric-ws Undertow smoke on JVM (tests/ws_jvm_origin_smoke.l)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/lyric-ws-undertow-jvm-smoke.sh
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature
@@ -6845,6 +6898,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/file_tests.l
 
+      # Std.Path.joinWithin confinement and the shared Std.ProcessArgs argv
+      # encoder/decoder (#7246, #7234).
+      - name: Std.Path / Std.ProcessArgs test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/path_tests.l
+          bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/process_args_tests.l
+
       - name: Std.Directory test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/directory_tests.l
@@ -7036,7 +7097,7 @@ jobs:
           for suite in \
             core_tests iter_tests encoding_tests regex_safe_tests rest_tests parse_tests \
             process_capture_tests process_tests format_tests json_tests \
-            collections_tests char_tests math_tests hash_tests path_tests \
+            collections_tests char_tests math_tests hash_tests \
             errors_tests environment_tests string_tests string_methods_tests \
             regex_tests yaml_tests testing_tests testing_property_tests \
             mocking_tests xml_tests \

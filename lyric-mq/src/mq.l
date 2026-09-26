@@ -103,7 +103,6 @@ pub interface MessageQueue {
   /// Publish a single message.  Returns Ok(()) on broker acceptance.
   func publish(message: in Message): Result[Unit, String]
     requires: message.id.length > 0
-    requires: message.body.length >= 0
 
   /// Publish a batch of messages.
   ///
@@ -114,9 +113,11 @@ pub interface MessageQueue {
   /// failure — messages already accepted by the broker before that
   /// failure remain in the queue, so callers that need strict
   /// all-or-nothing semantics must use a broker that supports them or
-  /// build idempotency at the consumer (#1046).
+  /// build idempotency at the consumer (#1046).  Every message must carry an
+  /// id, checked before any is published.
   func publishBatch(messages: in slice[Message]): Result[Unit, String]
     requires: messages.length > 0
+    requires: allHaveIds(messages)
 }
 
 // ─── Consumer interface ───────────────────────────────────────────────────────
@@ -131,15 +132,14 @@ pub interface QueueConsumer {
     requires: timeoutMs >= 0
 
   /// Acknowledge that a message was processed successfully.
-  /// No-op when ackMode is Auto.
+  /// No-op when ackMode is Auto.  Message ids come from the broker, so an
+  /// empty id is an `Err`, not a precondition violation.
   func ack(messageId: in String): Result[Unit, String]
-    requires: messageId.length > 0
 
   /// Negatively acknowledge a message.  When `requeue` is true the broker
   /// redelivers the message; when false it routes to the broker dead-letter
-  /// queue (if configured).
+  /// queue (if configured).  An empty id is an `Err` (see `ack`).
   func nack(messageId: in String, requeue: in Bool): Result[Unit, String]
-    requires: messageId.length > 0
 
   /// Close the consumer and release the underlying channel/connection.
   func close(): Unit
@@ -169,6 +169,7 @@ pub interface DeadLetterStore {
 pub record InProcessDeadLetterStore {
   var entries: slice[DeadLetterEntry]
   maxEntries: Int
+  invariant: maxEntries >= 1
 }
 
 impl DeadLetterStore for InProcessDeadLetterStore {
@@ -176,11 +177,10 @@ impl DeadLetterStore for InProcessDeadLetterStore {
     if self.entries.length < self.maxEntries {
       self.entries = self.entries.append(dlEntry)
     } else {
-      // At capacity: drop the oldest entry (if any, since `maxEntries` may be
-      // 0). One sub-slice copy plus one append, not an append per retained
+      // At capacity: drop the oldest entry (the invariant keeps at least one
+      // here). One sub-slice copy plus one append, not an append per retained
       // entry (#7279). The typed local is needed on MSIL (#7365).
-      val keepFrom = if self.entries.length > 0 { 1 } else { 0 }
-      val retained: slice[DeadLetterEntry] = self.entries.slice(keepFrom, self.entries.length)
+      val retained: slice[DeadLetterEntry] = self.entries.slice(1, self.entries.length)
       self.entries = retained.append(dlEntry)
     }
   }
@@ -214,6 +214,7 @@ impl MessageQueue for NativeQueue {
 
   func publishBatch(messages: in slice[Message]): Result[Unit, String]
     requires: messages.length > 0
+    requires: allHaveIds(messages)
   {
     var i: Int = 0
     while i < messages.length {
@@ -241,21 +242,25 @@ impl QueueConsumer for NativeQueue {
         if msgJson == "" {
           return Err("timeout")
         }
-        val msg = messageFromJson(msgJson)
-        return handler(msg)
+        match messageFromJson(msgJson) {
+          case Err(e) -> return Err("malformed message from broker: " + e)
+          case Ok(msg) -> return handler(msg)
+        }
       }
     }
   }
 
-  func ack(messageId: in String): Result[Unit, String]
-    requires: messageId.length > 0
-  {
+  func ack(messageId: in String): Result[Unit, String] {
+    if messageId.length == 0 {
+      return Err(EMPTY_MESSAGE_ID)
+    }
     return mqKernelAck(self.queueId, messageId)
   }
 
-  func nack(messageId: in String, requeue: in Bool): Result[Unit, String]
-    requires: messageId.length > 0
-  {
+  func nack(messageId: in String, requeue: in Bool): Result[Unit, String] {
+    if messageId.length == 0 {
+      return Err(EMPTY_MESSAGE_ID)
+    }
     return mqKernelNack(self.queueId, messageId, requeue)
   }
 
@@ -287,6 +292,9 @@ pub func connect(): Result[NativeQueue, String] {
 /// `LYRIC_CONFIG_MQ_CONNECTION_*` environment lookup `connect()` performs.
 @stable(since = "0.1")
 pub func connectTo(url: in String, queueName: in String): Result[NativeQueue, String] {
+  if queueName.length == 0 {
+    return Err("lyric-mq: no queue name configured (set LYRIC_CONFIG_MQ_CONNECTION_QUEUENAME)")
+  }
   match mqKernelConnect(url, queueName) {
     case Ok(queueId) -> Ok(NativeQueue(queueId = queueId))
     case Err(msg) -> Err(msg)
@@ -302,6 +310,9 @@ pub func connectWithDeadLetter(): Result[(NativeQueue, InProcessDeadLetterStore)
     case Ok(queue) -> {
       val maxEntriesStr = Env.getVarOrDefault("LYRIC_CONFIG_MQ_DEADLETTER_MAXENTRIES", "10000")
       val maxEntries = match parseOptInt(maxEntriesStr) { case Some(n) -> n; case None -> 10000 }
+      if maxEntries < 1 {
+        return Err("lyric-mq: LYRIC_CONFIG_MQ_DEADLETTER_MAXENTRIES must be at least 1, got " + maxEntriesStr)
+      }
       val dlStore = InProcessDeadLetterStore(entries = [], maxEntries = maxEntries)
       Ok((queue, dlStore))
     }
@@ -329,6 +340,7 @@ pub func publish(queue: in MessageQueue, message: in Message): Result[Unit, Stri
 @stable(since = "0.1")
 pub func publishBatch(queue: in MessageQueue, messages: in slice[Message]): Result[Unit, String]
   requires: messages.length > 0
+  requires: allHaveIds(messages)
 {
   return queue.publishBatch(messages)
 }
@@ -346,18 +358,30 @@ pub func consume(
 
 /// Acknowledge a successfully-processed message.
 @stable(since = "0.1")
-pub func ack(consumer: in QueueConsumer, messageId: in String): Result[Unit, String]
-  requires: messageId.length > 0
-{
+pub func ack(consumer: in QueueConsumer, messageId: in String): Result[Unit, String] {
   return consumer.ack(messageId)
 }
 
 /// Negatively acknowledge a message.
 @stable(since = "0.1")
-pub func nack(consumer: in QueueConsumer, messageId: in String, requeue: in Bool): Result[Unit, String]
-  requires: messageId.length > 0
-{
+pub func nack(consumer: in QueueConsumer, messageId: in String, requeue: in Bool): Result[Unit, String] {
   return consumer.nack(messageId, requeue)
+}
+
+/// The `Err` message `ack`/`nack` return for an empty message id.
+@stable(since = "0.2")
+pub val EMPTY_MESSAGE_ID: String = "lyric-mq: empty message id"
+
+/// True when every message in `messages` has a non-empty id.
+@pure
+@stable(since = "0.2")
+pub func allHaveIds(messages: in slice[Message]): Bool {
+  for m in messages {
+    if m.id.length == 0 {
+      return false
+    }
+  }
+  true
 }
 
 // ─── Platform dispatch helpers (private) ─────────────────────────────────────
@@ -438,130 +462,72 @@ func headersToJson(headers: in slice[MessageHeader]): String {
   }
   val partsAcc: List[String] = newList()
   for h in headers {
-    partsAcc.add("{\"key\":\"" + jsonEscape(h.key) + "\",\"value\":\"" + jsonEscape(h.value) + "\"}")
+    partsAcc.add("{\"key\":" + encodeString(h.key) + ",\"value\":" + encodeString(h.value) + "}")
   }
   return "[" + join(",", partsAcc.toArray()) + "]"
 }
 
 // Deserialise a JSON object (produced by the kernel) back into a Message.
-// The kernel emits the same format as messagesToJson above.
-// `id` and `body` are extracted via Std.Json to correctly handle escaped
-// characters in field values (fixes hand-rolled jsonExtractString truncation).
-func messageFromJson(json: in String): Message {
-  val doc = parseJson(json)
-  val root = rootElement(doc)
-  val id = match tryGetProperty(root, "id") { case Some(v) -> getString(v); case None -> "" }
-  val body = match tryGetProperty(root, "body") { case Some(v) -> getString(v); case None -> "" }
-  val deliveryCount = jsonExtractInt(json, "deliveryCount")
-  // Headers are conveyed in a nested JSON array; parse key/value pairs.
-  val hdrsRaw = jsonExtractRaw(json, "headers")
-  val headers = parseHeadersJson(hdrsRaw)
-  return Message(id = id, body = body, headers = headers, deliveryCount = deliveryCount)
+// The kernel emits the same format as messagesToJson above.  Every field is
+// read from the one parsed document with its kind checked first, so a
+// message that is not a JSON object, or has a non-string `id`/`body`, a
+// non-integer `deliveryCount`, or a malformed `headers` array, is an `Err`:
+// the kernel has already moved it in flight, and a panic here would take the
+// consumer down (#7322).  Absent fields take their defaults.  Public so a
+// custom broker binding can decode the same wire format.
+@stable(since = "0.2")
+pub func messageFromJson(json: in String): Result[Message, String] {
+  match tryParseJson(json) {
+    case Err(e) -> return Err(e)
+    case Ok(doc) -> {
+      defer {
+        disposeJson(doc)
+      }
+      val root = rootElement(doc)
+      if valueKind(root) != 1 {
+        return Err("expected a JSON object")
+      }
+      val id = match optionalStringField(root, "id") { case Ok(v) -> v; case Err(e) -> return Err(e) }
+      val body = match optionalStringField(root, "body") { case Ok(v) -> v; case Err(e) -> return Err(e) }
+      val deliveryCount = match tryGetProperty(root, "deliveryCount") {
+        case None -> 0
+        case Some(v) -> match tryGetInt(v) {
+          case Some(n) -> n
+          case None -> return Err("'deliveryCount' must be an integer")
+        }
+      }
+      val headers = match tryGetProperty(root, "headers") {
+        case None -> []
+        case Some(v) -> match headersFromJson(v) { case Ok(hs) -> hs; case Err(e) -> return Err(e) }
+      }
+      return Ok(Message(id = id, body = body, headers = headers, deliveryCount = deliveryCount))
+    }
+  }
 }
 
-// Parse a JSON array of {key,value} objects into a list of MessageHeader.
-func parseHeadersJson(json: in String): slice[MessageHeader] {
-  if json == "[]" or json == "" {
-    return []
+// The string value of `obj.name`, "" when absent, `Err` when not a string.
+func optionalStringField(obj: in JsonElement, name: in String): Result[String, String] {
+  match tryGetProperty(obj, name) {
+    case None -> Ok("")
+    case Some(v) -> if valueKind(v) == 3 { Ok(getString(v)) } else { Err("'" + name + "' must be a string") }
   }
-  val resultAcc: List[MessageHeader] = newList()
-  val doc = parseJson(json)
-  val root = rootElement(doc)
-  var en = enumerateArray(root)
+}
+
+// A JSON array of {key,value} string objects as MessageHeaders.
+func headersFromJson(arr: in JsonElement): Result[slice[MessageHeader], String] {
+  if valueKind(arr) != 2 {
+    return Err("'headers' must be an array")
+  }
+  val acc: List[MessageHeader] = newList()
+  var en = enumerateArray(arr)
   while arrayMoveNext(en) {
     val obj = arrayCurrent(en)
-    var key = ""
-    var value = ""
-    match tryGetProperty(obj, "key") {
-      case Some(v) -> {
-        key = getString(v)
-      }
-      case None -> ()
+    if valueKind(obj) != 1 {
+      return Err("each header must be an object")
     }
-    match tryGetProperty(obj, "value") {
-      case Some(v) -> {
-        value = getString(v)
-      }
-      case None -> ()
-    }
-    resultAcc.add(MessageHeader(key = key, value = value))
+    val key = match optionalStringField(obj, "key") { case Ok(v) -> v; case Err(e) -> return Err("header " + e) }
+    val value = match optionalStringField(obj, "value") { case Ok(v) -> v; case Err(e) -> return Err("header " + e) }
+    acc.add(MessageHeader(key = key, value = value))
   }
-  return resultAcc.toArray()
-}
-
-// Extract an integer field value from a JSON object literal.
-func jsonExtractInt(json: in String, field: in String): Int {
-  val needle = "\"" + field + "\":"
-  val start = match json.indexOf(needle) { case Some(i) -> i; case None -> return 0 }
-  val afterColon = start + needle.length
-  // Skip whitespace.
-  var i: Int = afterColon
-  while i < json.length and json[i] == ' ' {
-    i = i + 1
-  }
-  var numStr: String = ""
-  while i < json.length and json[i] != ',' and json[i] != '}' {
-    numStr = numStr + json[i].toString()
-    i = i + 1
-  }
-  match parseOptInt(numStr.trim()) {
-    case Some(n) -> return n
-    case None -> return 0
-  }
-}
-
-// Extract the raw JSON value for a field (for nested objects/arrays).
-func jsonExtractRaw(json: in String, field: in String): String {
-  val needle = "\"" + field + "\":"
-  val start = match json.indexOf(needle) { case Some(i) -> i; case None -> return "[]" }
-  val afterColon = start + needle.length
-  // Search the tail from afterColon: the 2-arg BCL `IndexOf(str, from)`
-  // overload is not a Lyric surface (#4025) — the previous spelling
-  // `json.indexOf("[", afterColon)` lowered to a guaranteed runtime throw
-  // and was caught at compile time when #6496 made the checker strict.
-  val searchTail = json.substring(afterColon, json.length - afterColon)
-  val q1 = match searchTail.indexOf("[") { case Some(i) -> afterColon + i; case None -> return "[]" }
-  var depth: Int = 0
-  var i: Int = q1
-  while i < json.length {
-    val ch = json[i]
-    if ch == '[' {
-      depth = depth + 1
-    } else if ch == ']' {
-      depth = depth - 1
-      if depth == 0 {
-        // substring is (start, LENGTH) — passing `i + 1` as an end index
-        // overran the string whenever q1 > 0 (ArgumentOutOfRange at the
-        // first consume of a message with headers; dead code until the
-        // #6511 dispatch wiring made this path reachable).
-        return json.substring(q1, i + 1 - q1)
-      }
-    }
-    i = i + 1
-  }
-  return "[]"
-}
-
-// Escape special characters for JSON string embedding.
-func jsonEscape(s: in String): String {
-  var buf: String = ""
-  var i: Int = 0
-  while i < s.length {
-    val ch = s[i]
-    if ch == '"' {
-      buf = buf + "\\\""
-    } else if ch == '\\' {
-      buf = buf + "\\\\"
-    } else if ch == '\n' {
-      buf = buf + "\\n"
-    } else if ch == '\r' {
-      buf = buf + "\\r"
-    } else if ch == '\t' {
-      buf = buf + "\\t"
-    } else {
-      buf = buf + ch.toString()
-    }
-    i = i + 1
-  }
-  return buf
+  Ok(acc.toArray())
 }

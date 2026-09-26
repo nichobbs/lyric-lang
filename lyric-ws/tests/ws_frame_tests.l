@@ -332,7 +332,10 @@ test "a reassembled fragmented message exceeding maxMessageSizeBytes is rejected
   val r2 = feedFrames(r1.state, f2)
   val ev = expectSingleMessage(r2.events)
   match ev {
-    case FeProtocolError(_) -> assertTrue(isFrameDecoderFailed(r2.state), "decoder fails once reassembly exceeds the cap")
+    case FeProtocolError(_) -> assertTrue(
+      isFrameDecoderFailed(r2.state),
+      "decoder fails once reassembly exceeds the cap"
+    )
     case _ -> assertTrue(false, "expected FeProtocolError for oversize reassembly")
   }
 }
@@ -359,7 +362,10 @@ test "a text frame with invalid UTF-8 payload is rejected" {
   val result = feedFrames(dec, frame)
   val ev = expectSingleMessage(result.events)
   match ev {
-    case FeProtocolError(_) -> assertTrue(isFrameDecoderFailed(result.state), "decoder fails on invalid UTF-8 text frame")
+    case FeProtocolError(_) -> assertTrue(
+      isFrameDecoderFailed(result.state),
+      "decoder fails on invalid UTF-8 text frame"
+    )
     case _ -> assertTrue(false, "expected FeProtocolError for invalid UTF-8")
   }
 }
@@ -458,15 +464,21 @@ test "close frame payload round-trips code and reason" {
 }
 
 test "close frame with a reserved status code is rejected" {
-  val payload = encodeClosePayload(1005, "")
-  // encodeClosePayload doesn't itself validate — a real peer could still
-  // send the reserved 1005 on the wire, which the decoder must reject.
+  // A hostile peer can still put the reserved 1005 on the wire (0x03 0xED),
+  // which the decoder must reject; `encodeClosePayload` itself refuses it.
+  val raw: List[Byte] = newList()
+  raw.add(3.toByte())
+  raw.add(237.toByte())
+  val payload = raw.toArray()
   val frame = maskCloseFrame(payload)
   val dec = newFrameDecoder(65536)
   val result = feedFrames(dec, frame)
   val ev = expectSingleMessage(result.events)
   match ev {
-    case FeProtocolError(_) -> assertTrue(isFrameDecoderFailed(result.state), "decoder fails on reserved close code 1005")
+    case FeProtocolError(_) -> assertTrue(
+      isFrameDecoderFailed(result.state),
+      "decoder fails on reserved close code 1005"
+    )
     case _ -> assertTrue(false, "expected FeProtocolError for reserved close code")
   }
 }
@@ -545,4 +557,53 @@ test "feedFrames buffers a partial header across two calls" {
     }
     case _ -> assertTrue(false, "expected FeMessage")
   }
+}
+
+// ─── Sendable close frames (#7243) ─────────────────────────────────────────────
+test "isSendableCloseCode excludes the codes reserved for local reporting" {
+  assertTrue(isSendableCloseCode(1000), "normal")
+  assertTrue(isSendableCloseCode(4999), "top of the application range")
+  assertFalse(isSendableCloseCode(1005), "no status received")
+  assertFalse(isSendableCloseCode(1006), "abnormal closure")
+  assertFalse(isSendableCloseCode(1015), "TLS failure")
+  assertFalse(isSendableCloseCode(999), "below the range")
+  assertFalse(isSendableCloseCode(5000), "above the range")
+}
+
+test "fitCloseReason cuts a long reason to 123 UTF-8 bytes on a character boundary" {
+  var long = ""
+  var i = 0
+  while i < 100 {
+    long = long + "é"
+    i = i + 1
+  }
+  val fitted = fitCloseReason(long)
+  assertTrue(encodeUtf8(fitted).length <= 123, "fits a control frame")
+  assertEqualInt(encodeUtf8(fitted).length, 122, "61 two-byte characters, never half of one")
+  assertEqual(fitCloseReason("bye"), "bye", "a short reason is unchanged")
+}
+
+test "encodeCloseReply never puts an unsendable code or an oversized payload on the wire" {
+  val empty = encodeCloseReply(1005, "ignored")
+  assertEqualInt(empty.length, 2, "1005 becomes a close frame with an empty payload")
+  var long = ""
+  var i = 0
+  while i < 200 {
+    long = long + "x"
+    i = i + 1
+  }
+  val capped = encodeCloseReply(1002, long)
+  assertEqualInt(capped.length, 2 + 125, "code plus a reason cut to 123 bytes")
+}
+
+test "encodeClose and encodePing enforce the control-frame limits" {
+  assertPanics("reserved close code", { -> val _ = encodeClose(1006, "") })
+  var long = ""
+  var i = 0
+  while i < 124 {
+    long = long + "x"
+    i = i + 1
+  }
+  assertPanics("close reason over 123 bytes", { -> val _ = encodeClose(1000, long) })
+  assertPanics("ping payload over 125 bytes", { -> val _ = encodePing(encodeUtf8(long + "xx")) })
 }

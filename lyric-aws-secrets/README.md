@@ -234,6 +234,8 @@ union SecretsError {
   case ParseError(name: String, key: String, message: String)
   case NetworkError(name: String, message: String)
   case BinaryValueUnsupported(name: String)
+  case NotImplemented(feature: String, message: String)
+  case InvalidConfig(field: String, message: String)
 }
 ```
 
@@ -243,7 +245,9 @@ union SecretsError {
 | `AccessDenied` | IAM role lacks permission | Grant `secretsmanager:GetSecretValue` or `ssm:GetParameter` |
 | `DecryptionError` | KMS decryption of a SecureString/secret failed | Verify KMS permissions |
 | `ParseError` | Secret is JSON but the requested key is absent or the value is not valid JSON | Check the secret's JSON shape and key name |
-| `NetworkError` | A transient network/service error, or (on `jvm`/`aws`) any AWS error the best-effort message classifier didn't recognise, or `initFromAnnotations()`'s NOT_IMPLEMENTED call | Retry, or read `errorMessage` for detail |
+| `NetworkError` | A transient network/service error, or (on `jvm`/`aws`) any AWS error the best-effort message classifier didn't recognise | Retry, or read `errorMessage` for detail |
+| `NotImplemented` | (`jvm`/`aws`) `init()`'s config-block annotation scan, which has no compiler support yet (#6866). Retrying never helps | Use the explicit `getSecret`/`getParameter` API or env var overrides |
+| `InvalidConfig` | `SecretCache.ttlSeconds` (from `LYRIC_CONFIG_AWSSECRETS_SECRETCACHE_TTLSECONDS`) is outside 0..86400. Returned by `init()` and every get call without fetching | Fix the env var |
 | `BinaryValueUnsupported` | (`jvm`/`aws`) The secret is stored as raw binary (Secrets Manager's `SecretBinary`) rather than a string (`SecretString`) — this API only supports string-valued secrets | Store the value as a `SecretString` instead, or base64-encode it as one |
 
 On both the `jvm` and `aws` features, classification into `NotFound`/

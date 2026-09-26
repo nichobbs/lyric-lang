@@ -8,8 +8,7 @@
 //! connect/send/receive/close loop but is missing those two (see
 //! `Ws.Kernel.Jvm`'s header for its documented gaps: fragmented multi-frame
 //! messages and automatic ping keepalives — tracked as Q-WS-001 to bring JVM to
-//! dotnet parity).  The rate-limiter's burst budget is one-shot (does not
-//! refill; tracked in issue #1178).
+//! dotnet parity).
 //!
 //! Provides the full connection lifecycle for WebSocket servers:
 //! connection context, message types, a handler interface for
@@ -49,6 +48,7 @@ package Ws
 
 import Std.Core
 import Std.Collections
+import Ws.Frame
 import Ws.Kernel.Net as WsKernelNet
 import Ws.Kernel.Jvm as WsKernelJvm
 
@@ -78,12 +78,13 @@ func kernelStartServer(
   port: in Int,
   path: in String,
   maxMessageSizeBytes: in Int,
-  onOpen: in (String, String, String, String) -> Unit,
+  allowedOrigins: in slice[String],
+  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
   onError: in (String, String) -> Unit,
 ): Result[Int, String] {
-  WsKernelNet.startServer(host, port, path, maxMessageSizeBytes, onOpen, onMessage, onClose, onError)
+  WsKernelNet.startServer(host, port, path, maxMessageSizeBytes, allowedOrigins, onOpen, onMessage, onClose, onError)
 }
 
 @cfg(feature = "jvm")
@@ -92,12 +93,35 @@ func kernelStartServer(
   port: in Int,
   path: in String,
   maxMessageSizeBytes: in Int,
-  onOpen: in (String, String, String, String) -> Unit,
+  allowedOrigins: in slice[String],
+  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
   onError: in (String, String) -> Unit,
 ): Result[Int, String] {
-  WsKernelJvm.startServer(host, port, path, maxMessageSizeBytes, onOpen, onMessage, onClose, onError)
+  WsKernelJvm.startServer(host, port, path, maxMessageSizeBytes, allowedOrigins, onOpen, onMessage, onClose, onError)
+}
+
+/// Per-key token-bucket rate check (`Resilience.takeToken`) shared by `Ws.Aspects.WsRateLimit`,
+/// dispatched to the active kernel so the aspect works on both targets.
+@stable(since = "0.2")
+@cfg(feature = "dotnet")
+pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool
+  requires: key.length > 0
+  requires: messagesPerMinute > 0
+  requires: burstSize > 0
+{
+  WsKernelNet.checkRateLimit(key, messagesPerMinute, burstSize)
+}
+
+@stable(since = "0.2")
+@cfg(feature = "jvm")
+pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool
+  requires: key.length > 0
+  requires: messagesPerMinute > 0
+  requires: burstSize > 0
+{
+  WsKernelJvm.checkRateLimit(key, messagesPerMinute, burstSize)
 }
 
 @cfg(feature = "dotnet")
@@ -111,12 +135,16 @@ func kernelStopServer(registryHandle: in Int): Result[Unit, String] {
 }
 
 @cfg(feature = "dotnet")
-func kernelSend(registryHandle: in Int, connectionId: in String, messageType: in String, data: in String): Result[Unit, String] {
+func kernelSend(
+  registryHandle: in Int, connectionId: in String, messageType: in String, data: in String
+): Result[Unit, String] {
   WsKernelNet.send(registryHandle, connectionId, messageType, data)
 }
 
 @cfg(feature = "jvm")
-func kernelSend(registryHandle: in Int, connectionId: in String, messageType: in String, data: in String): Result[Unit, String] {
+func kernelSend(
+  registryHandle: in Int, connectionId: in String, messageType: in String, data: in String
+): Result[Unit, String] {
   WsKernelJvm.send(registryHandle, connectionId, messageType, data)
 }
 
@@ -159,6 +187,7 @@ func kernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
 func kernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
   WsKernelJvm.isConnected(registryHandle, connectionId)
 }
+
 // ─── Connection identity ──────────────────────────────────────────────────────
 /// Opaque identifier for a single WebSocket connection.
 /// Assigned by the kernel at upgrade time and stable until close.
@@ -203,6 +232,9 @@ pub record WsError {
 
 // ─── Connection context ───────────────────────────────────────────────────────
 /// Snapshot of a WebSocket connection's metadata, available in every callback.
+/// `headers` holds the upgrade request's headers (lower-cased names) in the
+/// `onOpen` context; the later callbacks carry an empty map, so a handler
+/// that needs a header afterwards keeps it keyed by `connectionId`.
 @stable(since = "0.1")
 pub record WsContext {
   connectionId: String
@@ -282,6 +314,15 @@ impl WsRegistry for NativeRegistry {
 
   func close(connectionId: in String, code: in WsCloseCode, reason: in String): Result[Unit, WsError] {
     val codeInt = closeCodeToInt(code)
+    if not isSendableCloseCode(codeInt) {
+      return Err(
+        WsError(
+          message = "close code " + codeInt.toString() + " may not be sent: use 1000-4999 except 1004-1006 and 1015",
+          code = "INVALID_CLOSE_CODE",
+          connectionId = connectionId
+        )
+      )
+    }
     val rh = self.registryHandle
     match kernelClose(rh, connectionId, codeInt, reason) {
       case Ok(u) -> Ok(u)
@@ -312,22 +353,48 @@ pub func createRegistry(): Result[NativeRegistry, WsError] {
 }
 
 // ─── Server ───────────────────────────────────────────────────────────────────
+/// Server options for `startServerWithOptions`.
+///
+/// `allowedOrigins` controls the cross-site WebSocket hijacking defence
+/// (#7243).  A browser sends `Origin` on every WebSocket handshake and
+/// attaches the site's cookies even when another site opens the socket, so
+/// a handshake is refused with `403 Forbidden`, before the upgrade, unless:
+/// - it has no `Origin` header (a non-browser client);
+/// - its `Origin` host and port equal its `Host` header (same origin, the
+///   default with an empty list);
+/// - its `Origin` equals an entry of `allowedOrigins`, such as
+///   `"https://app.example.com"`, ignoring ASCII case; or
+/// - `allowedOrigins` contains `"*"`, which disables the check.
+@stable(since = "0.2")
+pub record WsServerOptions {
+  maxMessageSizeBytes: Int = 65536
+  allowedOrigins: slice[String] = []
+  invariant: maxMessageSizeBytes >= 1024 and maxMessageSizeBytes <= 67108864
+}
+
 /// Start a real WebSocket server bound to `handler`, listening on
 /// `host:port` and upgrading exactly `path` to WebSocket.  Non-blocking:
 /// returns once the server is listening.  Use the returned registry to push
 /// messages from outside the handler callbacks; call `stopServer` to shut
-/// down.  Uses the default 65536-byte max message size — see
-/// `startServerWithConfig` to override it.
+/// down.  Uses the default `WsServerOptions` (65536-byte max message size,
+/// same-origin handshakes only) — see `startServerWithOptions`.
 ///
 /// See the module header for per-target status: real end-to-end on both
 /// `--target dotnet` (pure-Lyric RFC 6455 over `Std.TcpHost`, #778) and
 /// `--target jvm` (Undertow).
 @stable(since = "0.1")
-pub func startServer(host: in String, port: in Int, path: in String, handler: in WsHandler): Result[NativeRegistry, WsError] {
-  startServerWithConfig(host, port, path, 65536, handler)
+pub func startServer(
+  host: in String, port: in Int, path: in String, handler: in WsHandler
+): Result[NativeRegistry, WsError]
+  requires: host.length > 0
+  requires: port >= 1 and port <= 65535
+  requires: path.startsWith("/")
+{
+  startServerWithOptions(host, port, path, WsServerOptions(), handler)
 }
 
-/// As `startServer`, with an explicit max message size in bytes.
+/// As `startServer`, with an explicit max message size in bytes
+/// (1024 to 67108864).
 @stable(since = "0.1")
 pub func startServerWithConfig(
   host: in String,
@@ -335,9 +402,35 @@ pub func startServerWithConfig(
   path: in String,
   maxMessageSizeBytes: in Int,
   handler: in WsHandler,
-): Result[NativeRegistry, WsError] {
-  val onOpenFn = { (connId: String, reqPath: String, reqQuery: String, remoteAddress: String) ->
-    val ctx = WsContext(connectionId = connId, path = reqPath, query = reqQuery, remoteAddress = remoteAddress, headers = newMap())
+): Result[NativeRegistry, WsError]
+  requires: host.length > 0
+  requires: port >= 1 and port <= 65535
+  requires: path.startsWith("/")
+{
+  startServerWithOptions(host, port, path, WsServerOptions(maxMessageSizeBytes = maxMessageSizeBytes), handler)
+}
+
+/// As `startServer`, with explicit `WsServerOptions`.
+@stable(since = "0.2")
+pub func startServerWithOptions(
+  host: in String,
+  port: in Int,
+  path: in String,
+  options: in WsServerOptions,
+  handler: in WsHandler,
+): Result[NativeRegistry, WsError]
+  requires: host.length > 0
+  requires: port >= 1 and port <= 65535
+  requires: path.startsWith("/")
+{
+  val onOpenFn = { (connId: String, reqPath: String, reqQuery: String, remoteAddress: String, headers: Map[String, String]) ->
+    val ctx = WsContext(
+      connectionId = connId,
+      path = reqPath,
+      query = reqQuery,
+      remoteAddress = remoteAddress,
+      headers = headers
+    )
     match handler.onOpen(ctx) {
       case Ok(_) -> ()
       case Err(e) -> handler.onError(ctx, e)
@@ -359,7 +452,7 @@ pub func startServerWithConfig(
     val ctx = WsContext(connectionId = connId, path = path, query = "", remoteAddress = "", headers = newMap())
     handler.onError(ctx, WsError(message = message, code = "TRANSPORT_ERROR", connectionId = connId))
   }
-  match kernelStartServer(host, port, path, maxMessageSizeBytes, onOpenFn, onMessageFn, onCloseFn, onErrorFn) {
+  match kernelStartServer(host, port, path, options.maxMessageSizeBytes, options.allowedOrigins, onOpenFn, onMessageFn, onCloseFn, onErrorFn) {
     case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
     case Err(err) -> Err(WsError(message = err, code = "SERVER_START_FAILED", connectionId = ""))
   }

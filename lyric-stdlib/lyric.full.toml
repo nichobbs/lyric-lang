@@ -31,6 +31,11 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.String"           = "std/string.l"
 "Std.Core.Proof"       = "std/core_proof.l"
 
+# Pure-Lyric argv encoder/decoder shared by Std.Process, Std.ProcessCapture
+# and every process kernel twin (#7234); no dependencies beyond Std.Core and
+# Std.Collections.
+"Std.ProcessArgs"      = "std/process_args.l"
+
 # Kernel boundaries (extern type / @externTarget host shims).
 "Std.ProcessHost"      = "std/_kernel/process_host.l"
 "Std.ProcessCaptureHost" = "std/_kernel/process_capture_host.l"
@@ -82,9 +87,9 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Uuid"             = "std/uuid.l"
 
 # Tier 4 — filesystem, environment, logging, console.
+"Std.Path"             = "std/path.l"
 "Std.File"             = "std/file.l"
 "Std.Directory"        = "std/directory.l"
-"Std.Path"             = "std/path.l"
 "Std.Environment"      = "std/environment.l"
 "Std.Log"              = "std/log.l"
 "Std.Console"          = "std/console.l"

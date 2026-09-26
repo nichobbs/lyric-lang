@@ -277,7 +277,11 @@ import Web.Aspects
 
 aspect Auth from Web.Aspects.RequiresAuth {
   matches: name like "guarded*"
-  config { jwtSecret: String = "..." }
+  config {
+    jwtSecret: String = "..."   // at least 32 bytes
+    issuer: String = "https://auth.example.com"
+    audience: String = "orders-api"
+  }
 }
 
 // The aspect wraps this function — authToken is what RequiresAuth reads.

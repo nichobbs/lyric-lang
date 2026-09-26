@@ -331,7 +331,10 @@ func parseClosePayload(payload: in slice[Byte]): Result[ClosePayload, String] {
 /// by both the outbound `encodeClose` and a kernel echoing a peer's close
 /// code back.
 @stable(since = "0.1")
-pub func encodeClosePayload(code: in Int, reason: in String): slice[Byte] {
+pub func encodeClosePayload(code: in Int, reason: in String): slice[Byte]
+  requires: isSendableCloseCode(code)
+  requires: encodeUtf8(reason).length <= 123
+{
   val acc: List[Byte] = newList()
   pushByte(acc, code.shr(8).and(255))
   pushByte(acc, code.and(255))
@@ -475,7 +478,10 @@ pub func feedFrames(state: in FrameDecoder, bytes: in slice[Byte]): FrameFeedRes
 /// `opContinuation` isn't named here as a `pub val` since it's an internal
 /// wire detail; use `encodeFrame(Ws.Frame.opcodeContinuation(), ...)`).
 @stable(since = "0.1")
-pub func encodeFrame(opcode: in Int, fin: in Bool, payload: in slice[Byte]): slice[Byte] {
+pub func encodeFrame(opcode: in Int, fin: in Bool, payload: in slice[Byte]): slice[Byte]
+  requires: opcode >= 0 and opcode <= 15
+  requires: opcode < 8 or (fin and payload.length <= 125)
+{
   val acc: List[Byte] = newList()
   val b0 = (if fin { 128 } else { 0 }).or(opcode.and(15))
   pushByte(acc, b0)
@@ -512,17 +518,76 @@ pub func encodeBinary(payload: in slice[Byte]): slice[Byte] {
 }
 
 @stable(since = "0.1")
-pub func encodePing(payload: in slice[Byte]): slice[Byte] {
+pub func encodePing(payload: in slice[Byte]): slice[Byte]
+  requires: payload.length <= 125
+{
   encodeFrame(opPing, true, payload)
 }
 
 @stable(since = "0.1")
-pub func encodePong(payload: in slice[Byte]): slice[Byte] {
+pub func encodePong(payload: in slice[Byte]): slice[Byte]
+  requires: payload.length <= 125
+{
   encodeFrame(opPong, true, payload)
 }
 
 /// Encode a Close frame carrying `code`/`reason`.
 @stable(since = "0.1")
-pub func encodeClose(code: in Int, reason: in String): slice[Byte] {
+pub func encodeClose(code: in Int, reason: in String): slice[Byte]
+  requires: isSendableCloseCode(code)
+  requires: encodeUtf8(reason).length <= 123
+{
   encodeFrame(opClose, true, encodeClosePayload(code, reason))
+}
+
+/// The most UTF-8 bytes a close reason may take: a control frame's payload
+/// is at most 125 bytes (RFC 6455 §5.5), two of which carry the code.
+@stable(since = "0.2")
+pub val maxCloseReasonBytes: Int = 123
+
+/// True for a close code an endpoint may put on the wire: 1000-4999 except
+/// 1004-1006 and 1015, which RFC 6455 §7.4.1 reserves for local reporting
+/// (1005 "no status received", 1006 "abnormal closure", 1015 "TLS failure").
+@pure
+@stable(since = "0.2")
+pub func isSendableCloseCode(code: in Int): Bool {
+  code >= 1000 and code <= 4999 and not (code >= 1004 and code <= 1006) and code != 1015
+}
+
+/// `reason` cut to at most `maxCloseReasonBytes` UTF-8 bytes, on a
+/// character boundary.
+@stable(since = "0.2")
+pub func fitCloseReason(reason: in String): String {
+  if encodeUtf8(reason).length <= maxCloseReasonBytes {
+    return reason
+  }
+  var acc = ""
+  var used = 0
+  var i = 0
+  var done = false
+  while i < reason.length and not done {
+    val ch = reason[i].toString()
+    val n = encodeUtf8(ch).length
+    if used + n > maxCloseReasonBytes {
+      done = true
+    } else {
+      acc = acc + ch
+      used = used + n
+      i = i + 1
+    }
+  }
+  acc
+}
+
+/// A Close frame that is always valid on the wire, for replying to a peer or
+/// reporting a local error: a sendable `code` is sent with `reason` cut to
+/// fit, and any other code (such as 1005 for a peer close that carried no
+/// status) becomes a Close frame with an empty payload (#7243).
+@stable(since = "0.2")
+pub func encodeCloseReply(code: in Int, reason: in String): slice[Byte] {
+  if isSendableCloseCode(code) {
+    encodeClose(code, fitCloseReason(reason))
+  } else {
+    encodeFrame(opClose, true, [])
+  }
 }

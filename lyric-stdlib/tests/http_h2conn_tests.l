@@ -911,7 +911,13 @@ test "sendData is bounded by the peer's stream window and replenished by WINDOW_
   }
   match H2.sendData(c, 1, mkBytes(1, 66), false) {
     case Ok(_) -> panic("sendData past the window must fail")
-    case Err(e) -> match e { case WindowExceeded(avail, req) -> { assertEqualInt(avail, 0, "no window available"); assertEqualInt(req, 1, "1 byte requested") }; case StreamNotWritable(_) -> panic("expected WindowExceeded, not StreamNotWritable") }
+    case Err(e) -> match e {
+      case WindowExceeded(avail, req) -> {
+        assertEqualInt(avail, 0, "no window available")
+        assertEqualInt(req, 1, "1 byte requested")
+      }
+      case StreamNotWritable(_) -> panic("expected WindowExceeded, not StreamNotWritable")
+    }
   }
   val r2 = H2.feed(c, windowUpdateFrame(1, 10))
   assertTrue(hasWindowUpdated(r2.events, 1), "WINDOW_UPDATE surfaced")
@@ -935,7 +941,11 @@ test "sendData across multiple streams debits the shared connection send window 
   }
   match H2.sendData(c, 3, mkBytes(200, 66), false) {
     case Err(_) -> panic("sendData on stream 3 should fit the window")
-    case Ok(_) -> assertEqualInt(H2.connectionSendWindow(c), 65235, "connection window further debited by stream 3's 200 bytes")
+    case Ok(_) -> assertEqualInt(
+      H2.connectionSendWindow(c),
+      65235,
+      "connection window further debited by stream 3's 200 bytes"
+    )
   }
 }
 
@@ -943,7 +953,10 @@ test "sendData on a non-writable stream returns StreamNotWritable" {
   var conn = setupDefault()
   match H2.sendData(conn, 7, mkBytes(1, 66), false) {
     case Ok(_) -> panic("sending on an unknown stream must fail")
-    case Err(e) -> match e { case StreamNotWritable(sid) -> assertEqualInt(sid, 7, "reports the unwritable stream id"); case WindowExceeded(_, _) -> panic("expected StreamNotWritable") }
+    case Err(e) -> match e {
+      case StreamNotWritable(sid) -> assertEqualInt(sid, 7, "reports the unwritable stream id")
+      case WindowExceeded(_, _) -> panic("expected StreamNotWritable")
+    }
   }
 }
 
@@ -1180,7 +1193,11 @@ test "a refused stream's header block is HPACK-decoded so the compression contex
   assertFalse(H2.isFailed(r5.conn), "no COMPRESSION_ERROR — the dynamic index resolved")
   match findRequestHeaders(r5.events, 5) {
     case None -> panic("expected request headers on stream 5")
-    case Some(hs) -> assertEqual(headerValueIn(hs, "x-b"), "2", "dynamic-indexed header resolved via the synced context")
+    case Some(hs) -> assertEqual(
+      headerValueIn(hs, "x-b"),
+      "2",
+      "dynamic-indexed header resolved via the synced context"
+    )
   }
 }
 
@@ -1207,7 +1224,11 @@ test "a refused stream's header block split across HEADERS+CONTINUATION is HPACK
   assertFalse(H2.isFailed(r5.conn), "no COMPRESSION_ERROR — the dynamic index resolved")
   match findRequestHeaders(r5.events, 5) {
     case None -> panic("expected request headers on stream 5")
-    case Some(hs) -> assertEqual(headerValueIn(hs, "x-b"), "2", "dynamic-indexed header resolved via the synced context")
+    case Some(hs) -> assertEqual(
+      headerValueIn(hs, "x-b"),
+      "2",
+      "dynamic-indexed header resolved via the synced context"
+    )
   }
 }
 
@@ -1251,7 +1272,11 @@ test "a REJECTED trailer HEADERS block is still HPACK-decoded so the context sta
   assertFalse(H2.isFailed(r3.conn), "no COMPRESSION_ERROR — the rejected block kept the context synced")
   match findRequestHeaders(r3.events, 3) {
     case None -> panic("expected request headers on stream 3")
-    case Some(hs) -> assertEqual(headerValueIn(hs, "x-b"), "2", "dynamic-indexed header resolved via the synced context")
+    case Some(hs) -> assertEqual(
+      headerValueIn(hs, "x-b"),
+      "2",
+      "dynamic-indexed header resolved via the synced context"
+    )
   }
 }
 
@@ -1316,7 +1341,10 @@ test "encodeResponseHeaders on a non-writable stream returns HeaderStreamNotWrit
   var conn = setupDefault()
   match H2.encodeResponseHeaders(conn, 9, responseHeaders(), false) {
     case Ok(_) -> panic("encoding headers on an unknown stream must fail")
-    case Err(e) -> match e { case HeaderStreamNotWritable(sid) -> assertEqualInt(sid, 9, "reports the unwritable stream id"); case HeaderEncodingFailed(_) -> panic("expected HeaderStreamNotWritable") }
+    case Err(e) -> match e {
+      case HeaderStreamNotWritable(sid) -> assertEqualInt(sid, 9, "reports the unwritable stream id")
+      case HeaderEncodingFailed(_) -> panic("expected HeaderStreamNotWritable")
+    }
   }
 }
 
@@ -1629,4 +1657,68 @@ test "streamState reports H2SIdle for a pruned stream, indistinguishable from ne
   assertTrue(stateIs(H2.streamState(c, prunedId), "idle"), "pruned stream misreported as idle (#6572)")
   assertTrue(stateIs(H2.streamState(c, neverSeenId), "idle"), "a truly never-opened stream is idle")
   assertTrue(stateIs(H2.streamState(c, recentId), "closed"), "a retained closed stream still reports closed correctly")
+}
+
+// ── #7231: request-header validation (RFC 9113 sections 8.2 / 8.3.1) ─────────
+func hdrs(pairs: in slice[String]): List[HeaderField] {
+  val acc: List[HeaderField] = newList()
+  var i = 0
+  while i + 1 < pairs.length {
+    acc.add(HeaderField(name = pairs[i], value = pairs[i + 1]))
+    i = i + 2
+  }
+  acc
+}
+
+func reasonOf(pairs: in slice[String]): String {
+  match H2.malformedRequestReason(hdrs(pairs)) {
+    case Some(r) -> r
+    case None -> ""
+  }
+}
+
+test "a well-formed request header list is accepted" {
+  assertEqual(
+    reasonOf([":method", "GET", ":scheme", "https", ":path", "/", ":authority", "x", "accept", "*/*", "te", "trailers"]),
+    "",
+    "well-formed"
+  )
+  assertEqual(reasonOf([":method", "CONNECT", ":authority", "host:443"]), "", "CONNECT needs no :scheme/:path")
+}
+
+test "malformed request header lists are rejected" {
+  assertTrue(reasonOf([":scheme", "https", ":path", "/"]).length > 0, "missing :method")
+  assertTrue(reasonOf([":method", "GET", ":scheme", "https"]).length > 0, "missing :path")
+  assertTrue(
+    reasonOf([":method", "GET", ":method", "POST", ":scheme", "https", ":path", "/"]).length > 0,
+    "duplicate :method"
+  )
+  assertTrue(
+    reasonOf([":method", "GET", "accept", "*/*", ":scheme", "https", ":path", "/"]).length > 0,
+    "pseudo after regular"
+  )
+  assertTrue(
+    reasonOf([":method", "GET", ":scheme", "https", ":path", "/", ":status", "200"]).length > 0,
+    "response pseudo-header"
+  )
+  assertTrue(
+    reasonOf([":method", "GET", ":scheme", "https", ":path", "/", "Accept", "*/*"]).length > 0,
+    "uppercase name"
+  )
+  assertTrue(
+    reasonOf([":method", "GET", ":scheme", "https", ":path", "/", "x-a", "1\r\nx-b: 2"]).length > 0,
+    "CR/LF in a value"
+  )
+  assertTrue(
+    reasonOf([":method", "GET", ":scheme", "https", ":path", "/", "x-a", " padded"]).length > 0,
+    "leading whitespace"
+  )
+  assertTrue(
+    reasonOf([":method", "GET", ":scheme", "https", ":path", "/", "connection", "keep-alive"]).length > 0,
+    "connection-specific"
+  )
+  assertTrue(
+    reasonOf([":method", "GET", ":scheme", "https", ":path", "/", "te", "gzip"]).length > 0,
+    "te other than trailers"
+  )
 }

@@ -4,6 +4,7 @@
 package Session.SessionStoreTests
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 import Session as Session
 
@@ -20,7 +21,10 @@ test "create() returns different IDs on successive calls" {
   val store = Session.inMemory()
   match store.create() {
     case Err(e) -> assertTrue(false, "create() #1 must succeed: " + e.message)
-    case Ok(sid1) -> match store.create() { case Err(e) -> assertTrue(false, "create() #2 must succeed: " + e.message); case Ok(sid2) -> assertTrue(sid1 != sid2, "successive create() calls must produce distinct IDs") }
+    case Ok(sid1) -> match store.create() {
+      case Err(e) -> assertTrue(false, "create() #2 must succeed: " + e.message)
+      case Ok(sid2) -> assertTrue(sid1 != sid2, "successive create() calls must produce distinct IDs")
+    }
   }
 }
 
@@ -29,7 +33,21 @@ test "load() after create() returns Some(data)" {
   val store = Session.inMemory()
   match store.create() {
     case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
-    case Ok(sid) -> match store.load(sid) { case Err(e) -> assertTrue(false, "load() must succeed: " + e.message); case Ok(opt) -> match opt { case None -> assertTrue(false, "load() must return Some for a just-created session"); case Some(_) -> { match store.set(sid, "__probe__", "1") { case Err(e) -> assertTrue(false, "set() into the loaded session must succeed: " + e.message); case Ok(_) -> () } } } }
+    case Ok(sid) -> match store.load(sid) {
+      case Err(e) -> assertTrue(false, "load() must succeed: " + e.message)
+      case Ok(opt) -> match opt {
+        case None -> assertTrue(
+          false,
+          "load() must return Some for a just-created session"
+        )
+        case Some(_) -> {
+          match store.set(sid, "__probe__", "1") {
+            case Err(e) -> assertTrue(false, "set() into the loaded session must succeed: " + e.message)
+            case Ok(_) -> ()
+          }
+        }
+      }
+    }
   }
   // Verify the session is usable (set/get round-trip confirms the correct
   // session was loaded).
@@ -39,7 +57,10 @@ test "load() for unknown ID returns Ok(None)" {
   val store = Session.inMemory()
   match store.load("this-id-does-not-exist") {
     case Err(e) -> assertTrue(false, "load() on unknown id must return Ok(None): " + e.message)
-    case Ok(opt) -> match opt { case Some(_) -> assertTrue(false, "load() on unknown id must be None"); case None -> () }
+    case Ok(opt) -> match opt {
+      case Some(_) -> assertTrue(false, "load() on unknown id must be None")
+      case None -> ()
+    }
   }
 }
 
@@ -48,7 +69,10 @@ test "get() on unknown session returns Ok(None)" {
   val store = Session.inMemory()
   match store.get("nonexistent-session", "any-key") {
     case Err(e) -> assertTrue(false, "get() on unknown session must be Ok(None): " + e.message)
-    case Ok(opt) -> match opt { case Some(_) -> assertTrue(false, "get() on unknown session must return None"); case None -> () }
+    case Ok(opt) -> match opt {
+      case Some(_) -> assertTrue(false, "get() on unknown session must return None")
+      case None -> ()
+    }
   }
 }
 
@@ -63,7 +87,10 @@ test "set() then get() round-trip" {
       }
       match store.get(sid, "username") {
         case Err(e) -> assertTrue(false, "get() must succeed: " + e.message)
-        case Ok(opt) -> match opt { case None -> assertTrue(false, "get() must find value after set()"); case Some(v) -> assertEqual(v, "alice", "round-trip value") }
+        case Ok(opt) -> match opt {
+          case None -> assertTrue(false, "get() must find value after set()")
+          case Some(v) -> assertEqual(v, "alice", "round-trip value")
+        }
       }
     }
   }
@@ -84,7 +111,10 @@ test "set() then delete() then get() returns None" {
       }
       match store.get(sid, "k") {
         case Err(e) -> assertTrue(false, "get() after delete() must return Ok(None): " + e.message)
-        case Ok(opt) -> match opt { case Some(_) -> assertTrue(false, "key must be absent after delete()"); case None -> () }
+        case Ok(opt) -> match opt {
+          case Some(_) -> assertTrue(false, "key must be absent after delete()")
+          case None -> ()
+        }
       }
     }
   }
@@ -105,11 +135,17 @@ test "multiple keys in same session are independent" {
       }
       match store.get(sid, "a") {
         case Err(e) -> assertTrue(false, "get(a) must succeed: " + e.message)
-        case Ok(optA) -> match optA { case None -> assertTrue(false, "get(a) must find value"); case Some(va) -> assertEqual(va, "1", "key a") }
+        case Ok(optA) -> match optA {
+          case None -> assertTrue(false, "get(a) must find value")
+          case Some(va) -> assertEqual(va, "1", "key a")
+        }
       }
       match store.get(sid, "b") {
         case Err(e) -> assertTrue(false, "get(b) must succeed: " + e.message)
-        case Ok(optB) -> match optB { case None -> assertTrue(false, "get(b) must find value"); case Some(vb) -> assertEqual(vb, "2", "key b") }
+        case Ok(optB) -> match optB {
+          case None -> assertTrue(false, "get(b) must find value")
+          case Some(vb) -> assertEqual(vb, "2", "key b")
+        }
       }
     }
   }
@@ -127,7 +163,10 @@ test "destroy() makes session disappear from load()" {
       }
       match store.load(sid) {
         case Err(e) -> assertTrue(false, "load() after destroy() must be Ok(None): " + e.message)
-        case Ok(opt) -> match opt { case Some(_) -> assertTrue(false, "session must not exist after destroy()"); case None -> () }
+        case Ok(opt) -> match opt {
+          case Some(_) -> assertTrue(false, "session must not exist after destroy()")
+          case None -> ()
+        }
       }
     }
   }
@@ -154,16 +193,25 @@ test "clear() empties all keys but session still exists" {
       // Session must still exist.
       match store.load(sid) {
         case Err(e) -> assertTrue(false, "load() after clear() must succeed: " + e.message)
-        case Ok(opt) -> match opt { case None -> assertTrue(false, "session must still exist after clear()"); case Some(_) -> () }
+        case Ok(opt) -> match opt {
+          case None -> assertTrue(false, "session must still exist after clear()")
+          case Some(_) -> ()
+        }
       }
       // Verify all keys are absent (observable behaviour rather than internal count).
       match store.get(sid, "x") {
         case Err(e) -> assertTrue(false, "get(x) after clear() must be Ok: " + e.message)
-        case Ok(optX) -> match optX { case Some(_) -> assertTrue(false, "key x must be absent after clear()"); case None -> () }
+        case Ok(optX) -> match optX {
+          case Some(_) -> assertTrue(false, "key x must be absent after clear()")
+          case None -> ()
+        }
       }
       match store.get(sid, "y") {
         case Err(e) -> assertTrue(false, "get(y) after clear() must be Ok: " + e.message)
-        case Ok(optY) -> match optY { case Some(_) -> assertTrue(false, "key y must be absent after clear()"); case None -> () }
+        case Ok(optY) -> match optY {
+          case Some(_) -> assertTrue(false, "key y must be absent after clear()")
+          case None -> ()
+        }
       }
     }
   }
@@ -174,7 +222,10 @@ test "touch() on existing session returns Ok" {
   val store = Session.inMemory()
   match store.create() {
     case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
-    case Ok(sid) -> match store.touch(sid) { case Err(e) -> assertTrue(false, "touch() on existing session must succeed: " + e.message); case Ok(_) -> () }
+    case Ok(sid) -> match store.touch(sid) {
+      case Err(e) -> assertTrue(false, "touch() on existing session must succeed: " + e.message)
+      case Ok(_) -> ()
+    }
   }
 }
 
@@ -191,7 +242,10 @@ test "delete() on non-existent key is idempotent" {
   val store = Session.inMemory()
   match store.create() {
     case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
-    case Ok(sid) -> match store.delete(sid, "nope") { case Err(e) -> assertTrue(false, "delete() of absent key must be Ok: " + e.message); case Ok(_) -> () }
+    case Ok(sid) -> match store.delete(sid, "nope") {
+      case Err(e) -> assertTrue(false, "delete() of absent key must be Ok: " + e.message)
+      case Ok(_) -> ()
+    }
   }
 }
 
@@ -208,6 +262,78 @@ test "two distinct sessions are independent" {
   val store = Session.inMemory()
   match store.create() {
     case Err(e) -> assertTrue(false, "create() #1 must succeed: " + e.message)
-    case Ok(sid1) -> match store.create() { case Err(e) -> assertTrue(false, "create() #2 must succeed: " + e.message); case Ok(sid2) -> { match store.set(sid1, "role", "admin") { case Err(e) -> assertTrue(false, "set(sid1, role) must succeed: " + e.message); case Ok(_) -> () }; match store.set(sid2, "role", "guest") { case Err(e) -> assertTrue(false, "set(sid2, role) must succeed: " + e.message); case Ok(_) -> () }; match store.get(sid1, "role") { case Err(e) -> assertTrue(false, "get(sid1, role) must succeed: " + e.message); case Ok(opt1) -> match opt1 { case None -> assertTrue(false, "get(sid1, role) must find value"); case Some(r1) -> assertEqual(r1, "admin", "session 1 role") } }; match store.get(sid2, "role") { case Err(e) -> assertTrue(false, "get(sid2, role) must succeed: " + e.message); case Ok(opt2) -> match opt2 { case None -> assertTrue(false, "get(sid2, role) must find value"); case Some(r2) -> assertEqual(r2, "guest", "session 2 role") } } } }
+    case Ok(sid1) -> match store.create() {
+      case Err(e) -> assertTrue(false, "create() #2 must succeed: " + e.message)
+      case Ok(sid2) -> {
+        match store.set(sid1, "role", "admin") {
+          case Err(e) -> assertTrue(false, "set(sid1, role) must succeed: " + e.message)
+          case Ok(_) -> ()
+        }
+        match store.set(sid2, "role", "guest") {
+          case Err(e) -> assertTrue(false, "set(sid2, role) must succeed: " + e.message)
+          case Ok(_) -> ()
+        }
+        match store.get(sid1, "role") {
+          case Err(e) -> assertTrue(false, "get(sid1, role) must succeed: " + e.message)
+          case Ok(opt1) -> match opt1 {
+            case None -> assertTrue(false, "get(sid1, role) must find value")
+            case Some(r1) -> assertEqual(r1, "admin", "session 1 role")
+          }
+        }
+        match store.get(sid2, "role") {
+          case Err(e) -> assertTrue(false, "get(sid2, role) must succeed: " + e.message)
+          case Ok(opt2) -> match opt2 {
+            case None -> assertTrue(false, "get(sid2, role) must find value")
+            case Some(r2) -> assertEqual(r2, "guest", "session 2 role")
+          }
+        }
+      }
+    }
   }
+}
+
+// ─── Untrusted session ids (#7248) ──────────────────────────────────────────────
+test "isValidSessionId accepts create()'s ids and rejects malformed ones" {
+  val store = Session.inMemory()
+  match store.create() {
+    case Ok(id) -> assertTrue(Session.isValidSessionId(id), "a created id is valid: " + id)
+    case Err(e) -> assertTrue(false, "create failed: " + e.message)
+  }
+  assertFalse(Session.isValidSessionId(""), "empty (a bare `LYRIC_SESSION=` cookie)")
+  assertFalse(Session.isValidSessionId("a:b"), "a Redis key separator")
+  assertFalse(Session.isValidSessionId("a b"), "a space")
+  var long = ""
+  var i = 0
+  while i < 129 {
+    long = long + "a"
+    i = i + 1
+  }
+  assertFalse(Session.isValidSessionId(long), "over 128 characters")
+}
+
+test "an invalid session id loads as None and cannot be saved" {
+  val store = Session.inMemory()
+  match store.load("") {
+    case Ok(found) -> match found { case Some(_) -> assertTrue(false, "an empty id loads as None"); case None -> () }
+    case Err(e) -> assertTrue(false, "load must not fail: " + e.message)
+  }
+  val forged = Session.SessionData(
+    id = "bad id",
+    entries = newMap(),
+    createdAt = 1i64,
+    lastAccessedAt = 1i64,
+    expiresAt = 0i64
+  )
+  match store.save(forged) {
+    case Ok(_) -> assertTrue(false, "a malformed id must not be written")
+    case Err(e) -> assertEqual(e.code, "INVALID_SESSION_ID", "save refuses a malformed id")
+  }
+}
+
+test "InProcessSessionStore requires a TTL between one second and one year" {
+  assertPanics(
+    "zero TTL (sessions that never expire)",
+    { -> val _ = Session.InProcessSessionStore(sessions = newMap(), ttlSeconds = 0i64) }
+  )
+  assertPanics("negative TTL", { -> val _ = Session.InProcessSessionStore(sessions = newMap(), ttlSeconds = -5i64) })
 }

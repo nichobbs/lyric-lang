@@ -26,6 +26,21 @@ test "isSafeKey accepts ordinary keys" {
   assertTrue(isSafeKey("my..file.txt"), "filename embedding .. is fine")
 }
 
+test "isSafeKey rejects segments Windows would rename (#7327)" {
+  assertTrue(not isSafeKey("photo.jpg.meta.json "), "trailing space hides the sidecar suffix")
+  assertTrue(not isSafeKey("a/foo."), "trailing dot aliases a/foo")
+  assertTrue(not isSafeKey("a/foo /b"), "trailing space inside the key")
+  assertTrue(not isSafeKey("..."), "dots only")
+  assertTrue(not isSafeKey("uploads/CON"), "device name")
+  assertTrue(not isSafeKey("nul.txt"), "device name with an extension")
+  assertTrue(not isSafeKey("x/com1.log"), "COM1 in lower case")
+  assertTrue(not isSafeKey("lpt9"), "LPT9")
+  assertTrue(not isSafeKey("data.txt:hidden"), "NTFS alternate data stream")
+  assertTrue(isSafeKey("console.log"), "a name that only starts like a device is fine")
+  assertTrue(isSafeKey("com10.txt"), "COM10 is not a device name")
+  assertTrue(isSafeKey(".hidden/file"), "a leading dot is fine")
+}
+
 test "isSafeKey rejects empty key" {
   assertTrue(not isSafeKey(""), "empty key")
 }
@@ -85,6 +100,28 @@ test "isSafePrefix admits empty prefix" {
 test "isSafePrefix rejects traversal" {
   assertTrue(not isSafePrefix("../etc"), "leading ..")
   assertTrue(not isSafePrefix("%252e%252e/etc"), "double-encoded")
+}
+
+test "isSafeKey rejects control characters, '.' and empty segments (#7242)" {
+  assertTrue(isSafeKey("uploads/photo.jpg"), "ordinary key")
+  assertTrue(isSafeKey("a/b.c/d"), "dots inside a segment are fine")
+  assertTrue(not isSafeKey("a\u{0001}b"), "C0 control character")
+  assertTrue(not isSafeKey("a\nb"), "line feed")
+  assertTrue(not isSafeKey("ab"), "DEL")
+  assertTrue(not isSafeKey("a/./b"), "'.' segment")
+  assertTrue(not isSafeKey("a/%2e/b"), "encoded '.' segment")
+  assertTrue(not isSafeKey("a//b"), "empty segment aliases a/b on local-fs")
+  assertTrue(not isSafeKey("dir/"), "trailing '/' is an empty segment")
+  assertTrue(isSafePrefix("dir/"), "a directory-style prefix may end in '/'")
+  assertTrue(not isSafePrefix("dir//"), "but not with an empty segment")
+}
+
+test "auditLog accepts every level spelling without failing" {
+  auditLog("Storage.put", "info", "")
+  auditLog("Storage.put", "WARN", "detail with a\nline break")
+  auditLog("Storage.put", "Debug", "")
+  auditLog("Storage.put", "unknown", "")
+  assertTrue(true, "audit logging never fails the caller")
 }
 
 // ─── connectLocal Result-only checks ─────────────────────────────────────────

@@ -38,6 +38,7 @@ package Mq.Aspects
 
 import Std.Core
 import Std.Time
+import Std.Collections
 import Cache
 import Mq
 
@@ -51,18 +52,25 @@ import Mq
 ///
 /// Logic:
 ///   1. Compute cache key as `cacheKeyPrefix + args.message.id`.
-///   2. If the key exists in the cache, the message was already processed —
-///      return Ok(()) immediately without calling the handler.
+///   2. Atomically claim the key (`IdempotencyLedger.claim`).  If it was
+///      already processed, or another delivery of the same id is being
+///      handled right now, return Ok(()) without calling the handler.
 ///   3. Otherwise call the handler (`call.proceed()`).
 ///   4. On Ok(()) mark the message ID in the cache with `ttlSeconds` TTL.
 ///   5. On Err pass the error through unchanged (do not cache failures).
+///   6. Release the claim, also when the handler panics.
+///
+/// Deduplication is per process: consumers in different processes need a
+/// shared store with an atomic put-if-absent, which `CacheStore` does not
+/// offer yet.
 ///
 /// **Type constraint:** apply only to handlers returning `Result[Unit, String]`.
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled        Bool   — master switch (default: true)
 ///   cacheKeyPrefix String — prepended to every message ID (default: "mq:idem:")
-///   ttlSeconds     Int    — how long to remember processed IDs (default: 3600)
+///   ttlSeconds     Int    — how long to remember processed IDs, >= 0; 0 never
+///                           expires (default: 3600)
 @stable(since = "0.1")
 pub aspect Idempotent {
   config {
@@ -80,28 +88,70 @@ pub aspect Idempotent {
   around(call) -> ret where TArgs has { message: Message } {
     if not enabled {
       ret = call.proceed()
+    } else if ttlSeconds < 0 {
+      // A configuration bug, raised before the handler runs: failing after
+      // it had succeeded would redeliver and process the message twice.
+      panic("Mq.Aspects.Idempotent: ttlSeconds must be >= 0 (0 = never expire), got " + ttlSeconds.toString())
     } else if args.message.id == "" {
       ret = call.proceed()
     } else {
       val key = cacheKeyPrefix + args.message.id
-      match Cache.get(idempotentStore, key) {
-        case Some(_) -> {
-          ret = Ok(())
+      if not idempotencyLedger.claim(key) {
+        // Already processed, or another delivery of the same id is being
+        // handled right now; that delivery acks or is redelivered itself.
+        ret = Ok(())
+      } else {
+        // Runs however the handler exits, a panic included, so a failed
+        // delivery never leaves its id claimed.
+        var succeeded = false
+        defer {
+          idempotencyLedger.finish(key, succeeded, ttlSeconds)
         }
-        case None -> {
-          ret = call.proceed()
-          match ret {
-            case Ok(_) -> Cache.setWithTtl(idempotentStore, key, "1", ttlSeconds)
-            case Err(_) -> ()
-          }
-        }
+        ret = call.proceed()
+        succeeded = match ret { case Ok(_) -> true; case Err(_) -> false }
       }
     }
   }
 }
 
-// Module-level in-process cache shared by all Idempotent instances.
+// Module-level in-process cache shared by all Idempotent instances.  Only
+// `IdempotencyLedger` reads or writes it, under its lock.
 val idempotentStore: CacheStore = Cache.inProcess()
+
+/// The Idempotent aspect's claim-then-execute ledger (#7321).  `claim`
+/// atomically checks both the processed-id cache and the ids currently being
+/// handled, and marks the id in flight; `finish` records a success in the
+/// cache and releases the claim.  Two concurrent deliveries of one id can
+/// therefore never both run the handler.  The ledger is per process: it
+/// deduplicates across the consumers of one process, not across processes.
+@stable(since = "0.1")
+pub protected type IdempotencyLedger {
+  var inFlight: Map[String, Bool] = newMap()
+  entry claim(key: in String): Bool
+    requires: key.length > 0
+  {
+    if inFlight.containsKey(key) {
+      return false
+    }
+    match Cache.get(idempotentStore, key) {
+      case Some(_) -> return false
+      case None -> ()
+    }
+    inFlight[key] = true
+    true
+  }
+  entry finish(key: in String, succeeded: in Bool, ttlSeconds: in Int): Unit
+    requires: key.length > 0
+    requires: ttlSeconds >= 0
+  {
+    if succeeded {
+      Cache.setWithTtl(idempotentStore, key, "1", ttlSeconds)
+    }
+    inFlight.remove(key)
+  }
+}
+
+val idempotencyLedger: IdempotencyLedger = IdempotencyLedger()
 
 // ─── DeadLetter ───────────────────────────────────────────────────────────────
 /// Route messages that exceed their delivery limit to a dead-letter store.
@@ -116,7 +166,9 @@ val idempotentStore: CacheStore = Cache.inProcess()
 /// The weaver reports A0047 if either parameter is absent or mistyped.
 ///
 /// After the handler returns Err, checks `args.message.deliveryCount + 1`
-/// against `maxDeliveries`.  When the limit is reached, appends a
+/// (the deliveries made so far; `deliveryCount` is 0 on the first) against
+/// `maxDeliveries`.  When the limit is reached, so on the
+/// `maxDeliveries`-th failed delivery, appends a
 /// `DeadLetterEntry` to `Mq.Aspects.deadLetterStore` and calls
 /// `nack(messageId, requeue = false)` on the consumer so the broker also
 /// removes the message from the live queue.
@@ -129,7 +181,7 @@ val idempotentStore: CacheStore = Cache.inProcess()
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled       Bool — master switch (default: true)
-///   maxDeliveries Int  — delivery attempts before dead-lettering (default: 3)
+///   maxDeliveries Int  — failed deliveries before dead-lettering, >= 1 (default: 3)
 @stable(since = "0.1")
 pub aspect DeadLetter {
   config {
@@ -140,20 +192,25 @@ pub aspect DeadLetter {
   // / external producers, so a `requires:` clause (D118 elaborates it into a
   // runtime precondition assert) would let a single empty-id message crash the
   // consumer — a DoS.  The body only uses the id to nack after max deliveries,
-  // which tolerates an empty id, so no early rejection is needed.
+  // and `nack` answers an empty id with `Err` rather than a precondition
+  // violation, so no early rejection is needed.
   // handler must declare a message: Message parameter
   // handler must declare a consumer: QueueConsumer parameter (shape checked by A0047)
   around(call) -> ret where TArgs has { message: Message, consumer: QueueConsumer } {
     if not enabled {
       ret = call.proceed()
+    } else if maxDeliveries < 1 {
+      // A configuration bug, raised before the handler runs (#7320).
+      panic("Mq.Aspects.DeadLetter: maxDeliveries must be >= 1, got " + maxDeliveries.toString())
     } else {
       ret = call.proceed()
       match ret {
         case Ok(_) -> ()    // Successful delivery; nothing to do.
         case Err(reason) -> {
-          // deliveryCount is 0-based; add 1 for the just-completed attempt.
+          // deliveryCount is 0-based (0 on the first delivery), so this is
+          // the number of deliveries made, the one that just failed included.
           val attempts = args.message.deliveryCount + 1
-          if attempts > maxDeliveries {
+          if attempts >= maxDeliveries {
             val nowMs = nowEpochMillis()
             val dlEntry = DeadLetterEntry(message = args.message, reason = reason, failedAt = nowMs)
             deadLetterStore.append(dlEntry)

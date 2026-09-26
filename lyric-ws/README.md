@@ -7,7 +7,7 @@ WebSocket server with pluggable backends and aspect-based security.
 | Feature flag | Backend                                                    | Status                                                    |
 |--------------|-------------------------------------------------------------|-----------------------------------------------------------|
 | `dotnet`     | Pure-Lyric RFC 6455 over `Std.TcpHost` via `Ws.Kernel.Net`  | Real: `Ws.startServer` runs a genuine `System.Net.Sockets.TcpListener`-backed server (docs/62-jsonrpc-mcp.md §6, #778). Connect, handshake (`Ws.Handshake`), send/receive (text/binary/ping/pong/close), **fragmented multi-frame message reassembly**, and **automatic ping-interval keepalive** are all real and tested end-to-end (`tests/ws_dotnet_e2e_tests.l`) — including the two capabilities the JVM kernel still lacks (see below, tracked as Q-WS-001) |
-| `jvm`        | Undertow WebSocket via `Ws.Kernel.Jvm`                      | Real: `Ws.startServer` runs a genuine `io.undertow.Undertow` server; connect, send (text/binary/ping/pong/close), receive (single-frame text/binary/ping/pong), and connection-registry queries are all backed by real Undertow/XNIO calls |
+| `jvm`        | Undertow WebSocket via `Ws.Kernel.Jvm`                      | Real: `Ws.startServer` runs a genuine `io.undertow.Undertow` server; connect, send (text/binary/ping/pong/close), receive (single-frame text/binary/ping/pong), and connection-registry queries are all backed by real Undertow/XNIO calls. `scripts/ci/lyric-ws-undertow-jvm-smoke.sh` checks the Origin policy, handshake headers and a text round trip against a live server in CI (#7243; before it, the receive listener failed every event with `AbstractMethodError` and nothing noticed) |
 
 `Ws.Kernel.Net` is pure Lyric: a minimal HTTP/1.1 upgrade-handshake
 parser + `Sec-WebSocket-Accept` derivation (`Ws.Handshake`, via the new
@@ -114,41 +114,74 @@ pub interface WsRegistry {
 ```lyric
 pub record WsContext {
   connectionId: String
-  route: String
+  path: String
+  query: String
   remoteAddress: String
-  headers: slice[Tuple[String, String]]
-  attributes: slice[Tuple[String, String]]
+  headers: Map[String, String]   // upgrade request headers, lower-cased names
 }
 ```
+
+`headers` holds the upgrade request's headers in the `onOpen` context; a
+repeated header's values are joined with `", "`. The later callbacks carry
+an empty map, so a handler that needs a header afterwards (an
+`Authorization` token, say) keeps it keyed by `connectionId`.
 
 ### WsMessage type
 
 ```lyric
-pub record WsMessage {
-  text: String
-  isText: Bool
-  timestamp: Instant
+pub union WsMessage {
+  case Text(text: String)
+  case Binary(dataBase64: String)
+  case Ping
+  case Pong
+  case Close(code: Int, reason: String)
 }
 ```
 
-### Factory and core functions
+### Starting a server
 
 ```lyric
-Ws.createRegistry(): WsRegistry
+Ws.startServer(host, port, path, handler) -> Result[NativeRegistry, WsError]
+Ws.startServerWithConfig(host, port, path, maxMessageSizeBytes, handler)
+Ws.startServerWithOptions(host, port, path, options: WsServerOptions, handler)
 
-Ws.register(registry: in WsRegistry, route: in String, handler: in WsHandler): Unit
-
-Ws.receive(context: in WsContext): Option[WsMessage]
-
-Ws.send(registry: in WsRegistry, connectionId: in String, message: in String)
-  -> Result[Unit, WsError]
-
-Ws.broadcast(registry: in WsRegistry, message: in String): Unit
-
-Ws.close(registry: in WsRegistry, connectionId: in String): Unit
-
-Ws.connectionCount(registry: in WsRegistry): Int
+pub record WsServerOptions {
+  maxMessageSizeBytes: Int = 65536        // 1024 to 67108864
+  allowedOrigins: slice[String] = []
+}
 ```
+
+`port` must be 1 to 65535 and `path` must start with `/`.
+
+**Origin check (cross-site WebSocket hijacking).** A browser sends `Origin`
+on every WebSocket handshake and attaches the site's cookies even when a
+page on another site opens the socket. The server therefore refuses a
+handshake with `403 Forbidden`, before the upgrade, unless one of these
+holds:
+- it has no `Origin` header (non-browser clients send none);
+- its `Origin` host and port equal its `Host` header (same origin; this
+  is the default when `allowedOrigins` is empty);
+- its `Origin` equals an entry of `allowedOrigins`, ignoring ASCII case;
+- `allowedOrigins` contains `"*"`, which disables the check.
+
+The policy is `Ws.Handshake.originAllowed` and is the same on both targets.
+
+### Sending and closing
+
+```lyric
+Ws.sendText(registry, connectionId, text) -> Result[Unit, WsError]
+Ws.broadcastText(registry, text) -> Result[Unit, WsError]
+Ws.closeConnection(registry, connectionId) -> Result[Unit, WsError]
+Ws.connectionCount(registry) -> Int
+Ws.isConnected(registry, connectionId) -> Bool
+registry.close(connectionId, code: WsCloseCode, reason) -> Result[Unit, WsError]
+```
+
+A close code must be sendable (1000 to 4999, except 1004 to 1006 and
+1015); any other code is `Err(INVALID_CLOSE_CODE)`. A reason longer than
+123 UTF-8 bytes is cut to fit the control-frame limit. When a peer closes
+without a status code, the server replies with an empty Close frame and
+never puts the reserved 1005 on the wire.
 
 ## Configuration
 
@@ -163,7 +196,7 @@ import Ws.Aspects
 aspect GuardChat from Ws.Aspects.WsAuth {
   matches: route like "/chat/*"
   config {
-    jwtSecret: String = "your-secret-key";
+    jwtSecret: String = "a-signing-key-of-at-least-32-bytes";
     issuer: String = "https://example.com";
     audience: String = "chat-api";
     algorithm: String = "HS256"
@@ -176,27 +209,28 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `jwtSecret` | `String` | `""` | HMAC secret or public key (PEM) |
-| `issuer` | `String` | `""` | Expected JWT `iss` claim |
-| `audience` | `String` | `""` | Expected JWT `aud` claim |
+| `jwtSecret` | `String` | **required** | HMAC secret, at least 32 bytes |
+| `issuer` | `String` | **required** | Expected JWT `iss` claim |
+| `audience` | `String` | **required** | Expected JWT `aud` claim |
 | `algorithm` | `String` | `"HS256"` | JWT algorithm (HS256, RS256, etc.) |
 
 If token validation fails, the connection is rejected with a 401 Unauthorized response.
 
 ### WsRateLimit aspect
 
-Token-bucket rate limiting per connection. Limits message throughput to prevent
-resource exhaustion and abuse.
+A per-connection message limit on handlers that take a `ctx: WsContext`
+parameter. It is a refilling token bucket (`Resilience.TokenBucket`): up to
+`messagesPerMinute + burstSize` messages at once, then `messagesPerMinute` a
+minute. It works on both targets (`Ws.checkRateLimit`).
 
 ```lyric
 import Ws.Aspects
 
 aspect LimitChat from Ws.Aspects.WsRateLimit {
-  matches: route like "/chat/*"
+  matches: name like "onChat*"
   config {
-    messagesPerSecond: Int = 10;
-    burst: Int = 20;
-    windowSizeMs: Int = 1000
+    messagesPerMinute: Int = 120
+    burstSize: Int = 20
   }
 }
 ```
@@ -206,12 +240,11 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `messagesPerSecond` | `Int` | `10` | Sustained rate limit |
-| `burst` | `Int` | `20` | Burst capacity (tokens in bucket) |
-| `windowSizeMs` | `Int` | `1000` | Token refill window in ms |
+| `messagesPerMinute` | `Int` | `120` | Sustained messages allowed per minute |
+| `burstSize` | `Int` | `20` | Extra messages an idle connection may send at once |
 
-Requests exceeding the rate limit are rejected with a 429 Too Many Requests
-response; the connection is not closed.
+A call over the limit returns `Err(())` without running the handler; the
+connection is not closed.
 
 ## Integration with lyric-web
 

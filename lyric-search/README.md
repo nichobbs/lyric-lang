@@ -234,6 +234,17 @@ directly from a non-`async` context. Wrapping a raw
 `client.<method>(...)` call in your own `async func` can hit compiler
 defect 2 above.
 
+### Input validation
+
+Index names, document ids, filters and pagination often come from clients,
+so they are validated and rejected with an `Err` before any request is sent:
+
+| Code | Rejected input |
+|---|---|
+| `INVALID_PATH_SEGMENT` | An index name or document id that is empty, `.` or `..`. URL normalisation would otherwise resolve `delete(index, "..")` to a request against the whole index, and an empty id would address every document. |
+| `UNKNOWN_OPERATOR` | A `SearchFilter.operator` other than `eq`, `gt`, `gte`, `lt`, `lte` or `contains` (`isKnownFilterOperator`). A mistyped operator is not quietly treated as equality. |
+| `INVALID_PAGINATION` | `from < 0`, `size < 0`, or `from + size > MAX_RESULT_WINDOW` (10000); or a `suggest` size outside 1..`MAX_RESULT_WINDOW`. |
+
 ## Backends
 
 ### Elasticsearch (`elasticsearch` feature, default)

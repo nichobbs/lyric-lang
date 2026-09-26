@@ -13,6 +13,7 @@ package Std.Process
 
 import Std.Core
 import Std.Collections
+import Std.ProcessArgs
 import Std.Errors
 import Std.ProcessHost
 import Std.ProcessCaptureHost
@@ -20,31 +21,16 @@ import Std.ProcessPipedHost
 
 /// Build an argument string for inherited-stdio spawning.
 ///
-/// Arguments that require quoting (contain spaces, quotes, or backslashes)
-/// are wrapped in double-quotes with backslash-escaping (the Windows CRT
-/// `CommandLineToArgvW` convention documented in the file header — NOT
-/// POSIX shell quoting). Exposed (not just used internally by
+/// Every argument is quoted in the Windows CRT `CommandLineToArgvW`
+/// convention (`Std.ProcessArgs.argvJoin`; NOT POSIX shell quoting), so each
+/// one — including an empty argument, or one containing blanks, tabs,
+/// newlines, quotes or backslashes — reaches the child exactly as given. Exposed (not just used internally by
 /// `run`/`runCapture`) so callers can render the same command line for
 /// display purposes (e.g. a `--dry-run` preview of the command that would
 /// be spawned); do not use the result for actual `sh`/`bash` execution.
 @stable(since = "1.0")
 pub func buildArgString(args: in List[String]): String {
-  var result = ""
-  var i = 0
-  val count = args.count
-  while i < count {
-    val arg = args[i]
-    if i > 0 {
-      result = result + " "
-    }
-    if arg.contains(" ") or arg.contains("\"") or arg.contains("\\") {
-      result = result + "\"" + arg.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
-    } else {
-      result = result + arg
-    }
-    i += 1
-  }
-  result
+  argvJoin(args)
 }
 
 /// Spawn a child process, inheriting the current process's stdio.

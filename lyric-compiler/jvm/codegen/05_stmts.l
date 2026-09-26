@@ -2062,7 +2062,7 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
       }
       insns.add(LGoto(label = afterL))
     }
-    val catchClass = if c.typeName == "Bug" { "java/lang/Throwable" } else { lyricNameToJvm(c.typeName) }
+    val catchClass = catchClassJvm(c.typeName)
     insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = a.handlerLabel, catchClass = catchClass))
     i = i + 1
   }
@@ -2167,7 +2167,7 @@ func lowerTryCatchFinallyExpr(
       }
       insns.add(LGoto(label = afterL))
     }
-    val catchClass = if c.typeName == "Bug" { "java/lang/Throwable" } else { lyricNameToJvm(c.typeName) }
+    val catchClass = catchClassJvm(c.typeName)
     insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = a.handlerLabel, catchClass = catchClass))
     i = i + 1
   }
@@ -2278,7 +2278,7 @@ func lowerTryCatch(
     // to `java/lang/Throwable` so the exception-table entry resolves at class
     // load (otherwise: NoClassDefFoundError: Bug).  This mirrors the MSIL
     // backend mapping `Bug` to `System.Exception`.
-    val catchClass = if c.typeName == "Bug" { "java/lang/Throwable" } else { lyricNameToJvm(c.typeName) }
+    val catchClass = catchClassJvm(c.typeName)
     insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = handlerL, catchClass = catchClass))
     i = i + 1
   }
@@ -2945,5 +2945,18 @@ func lowerStmtsTrailingValue(ctx: in FuncCtx, insns: in List[LInsn], stmts: in L
       lowerStmt(ctx, insns, last)
       JVoid
     }
+  }
+}
+
+// The JVM class a `catch <Name>` clause handles.  `Bug` and `Exception` both
+// catch every panic, as they do on MSIL, whose handlers always name
+// `System.Exception`; `Exception` used to lower to a nonexistent class
+// `Exception`, so the enclosing method failed with `NoClassDefFoundError`
+// the first time it ran.
+func catchClassJvm(typeName: in String): String {
+  if typeName == "Bug" or typeName == "Exception" {
+    "java/lang/Throwable"
+  } else {
+    lyricNameToJvm(typeName)
   }
 }

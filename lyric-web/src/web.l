@@ -306,7 +306,9 @@ func jsonResponse(status: in Int, bodyBytes: in slice[Byte]): Response {
 /// that is not itself JSON, e.g. a bare id/UUID/token) as a JSON string, use
 /// `jsonString` instead.
 @stable(since = "0.2")
-pub func json(status: in Int, body: in String): Response {
+pub func json(status: in Int, body: in String): Response
+  requires: isValidStatus(status)
+{
   return jsonResponse(status, utf8Encode(body))
 }
 
@@ -315,13 +317,17 @@ pub func json(status: in Int, body: in String): Response {
 /// string (an id, a UUID, a token) that is not itself JSON. Use `json`
 /// instead when `body` is already a complete JSON document.
 @stable(since = "0.2")
-pub func jsonString(status: in Int, value: in String): Response {
+pub func jsonString(status: in Int, value: in String): Response
+  requires: isValidStatus(status)
+{
   return jsonResponse(status, utf8Encode(encodeString(value)))
 }
 
 /// A `text/plain; charset=utf-8` response.
 @stable(since = "0.2")
-pub func text(status: in Int, body: in String): Response {
+pub func text(status: in Int, body: in String): Response
+  requires: isValidStatus(status)
+{
   val empty: Map[String, String] = newMap()
   return Response(
     status = status,
@@ -333,7 +339,9 @@ pub func text(status: in Int, body: in String): Response {
 
 /// A `text/html; charset=utf-8` response.
 @stable(since = "0.2")
-pub func html(status: in Int, body: in String): Response {
+pub func html(status: in Int, body: in String): Response
+  requires: isValidStatus(status)
+{
   val empty: Map[String, String] = newMap()
   return Response(
     status = status,
@@ -346,7 +354,9 @@ pub func html(status: in Int, body: in String): Response {
 /// A response with a raw byte body and an explicit content type
 /// (static files, images, binary downloads).
 @stable(since = "0.2")
-pub func bytesResponse(status: in Int, contentType: in String, body: in slice[Byte]): Response {
+pub func bytesResponse(status: in Int, contentType: in String, body: in slice[Byte]): Response
+  requires: isValidStatus(status)
+{
   val empty: Map[String, String] = newMap()
   return Response(status = status, contentType = contentType, bodyBytes = body, headers = empty)
 }
@@ -366,13 +376,75 @@ pub func errorResponse(err: in ApiError): Response {
 }
 
 /// Return a copy of `resp` with header `name` set to `value` (replacing
-/// any existing value for that name).
+/// any existing value for that name).  `name` must be an RFC 9110 token and
+/// `value` free of CR, LF and other control characters, so a header can never
+/// split the response; for a value taken from the request, use
+/// `tryWithResponseHeader`, which returns `Err` instead (#7249).
 @stable(since = "0.2")
-pub func withResponseHeader(resp: in Response, name: in String, value: in String): Response {
+pub func withResponseHeader(resp: in Response, name: in String, value: in String): Response
+  requires: isHeaderToken(name)
+  requires: isSafeHeaderValue(value)
+{
   val h: Map[String, String] = newMap()
   mapPutAll(h, resp.headers)
   h[name] = value
   return Response(status = resp.status, contentType = resp.contentType, bodyBytes = resp.bodyBytes, headers = h)
+}
+
+/// `withResponseHeader` for a name or value that may come from the request:
+/// `Err` naming the problem instead of a precondition failure.
+@stable(since = "0.3")
+pub func tryWithResponseHeader(resp: in Response, name: in String, value: in String): Result[Response, String] {
+  if not isHeaderToken(name) {
+    return Err("invalid response header name")
+  }
+  if not isSafeHeaderValue(value) {
+    return Err("response header value contains a control character")
+  }
+  Ok(withResponseHeader(resp, name, value))
+}
+
+/// True for an HTTP status code a response may carry: 100 to 599.
+@pure
+@stable(since = "0.3")
+pub func isValidStatus(status: in Int): Bool {
+  status >= 100 and status <= 599
+}
+
+/// True when `name` is an RFC 9110 `token`: one or more of the visible ASCII
+/// characters other than the delimiters `"(),/:;<=>?@[\]{}`.
+@pure
+@stable(since = "0.3")
+pub func isHeaderToken(name: in String): Bool {
+  if name.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < name.length {
+    val c = name[i]
+    if c <= ' ' or c >= '\u{007f}' or "\"(),/:;<=>?@[\\]{}".contains(c.toString()) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// True when `value` can be written as a header field value: no control
+/// character other than a horizontal tab, so no CR or LF can end the header
+/// line early.
+@pure
+@stable(since = "0.3")
+pub func isSafeHeaderValue(value: in String): Bool {
+  var i = 0
+  while i < value.length {
+    val c = value[i]
+    if (c < ' ' and c != '\t') or c == '\u{007f}' {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 // ─── Handler / Middleware ───────────────────────────────────────────────────────
@@ -476,7 +548,7 @@ func addRoute(router: in Router, method: in String, pattern: in String, handler:
 /// Register a GET route.
 @stable(since = "0.2")
 pub func addGet(router: in Router, pattern: in String, handler: in Handler): Router
-  requires: pattern.length > 0
+  requires: isValidRoutePattern(pattern)
 {
   return addRoute(router, "GET", pattern, handler)
 }
@@ -484,7 +556,7 @@ pub func addGet(router: in Router, pattern: in String, handler: in Handler): Rou
 /// Register a POST route.
 @stable(since = "0.2")
 pub func addPost(router: in Router, pattern: in String, handler: in Handler): Router
-  requires: pattern.length > 0
+  requires: isValidRoutePattern(pattern)
 {
   return addRoute(router, "POST", pattern, handler)
 }
@@ -492,7 +564,7 @@ pub func addPost(router: in Router, pattern: in String, handler: in Handler): Ro
 /// Register a PUT route.
 @stable(since = "0.2")
 pub func addPut(router: in Router, pattern: in String, handler: in Handler): Router
-  requires: pattern.length > 0
+  requires: isValidRoutePattern(pattern)
 {
   return addRoute(router, "PUT", pattern, handler)
 }
@@ -500,7 +572,7 @@ pub func addPut(router: in Router, pattern: in String, handler: in Handler): Rou
 /// Register a DELETE route.
 @stable(since = "0.2")
 pub func addDelete(router: in Router, pattern: in String, handler: in Handler): Router
-  requires: pattern.length > 0
+  requires: isValidRoutePattern(pattern)
 {
   return addRoute(router, "DELETE", pattern, handler)
 }
@@ -508,7 +580,7 @@ pub func addDelete(router: in Router, pattern: in String, handler: in Handler): 
 /// Register a PATCH route.
 @stable(since = "0.2")
 pub func addPatch(router: in Router, pattern: in String, handler: in Handler): Router
-  requires: pattern.length > 0
+  requires: isValidRoutePattern(pattern)
 {
   return addRoute(router, "PATCH", pattern, handler)
 }
@@ -753,7 +825,9 @@ impl Middleware for StaticFileMiddleware {
       return h.handle(req)
     }
     val mount = self.cfg.mountPrefix
-    if mount.length > 0 and not req.path.startsWith(mount) {
+    // Match whole path segments: `/assets` serves `/assets/...` but not
+    // `/assetsX/...`.
+    if mount.length > 0 and req.path != mount and not req.path.startsWith(mount + "/") {
       return h.handle(req)
     }
     val relative = if mount.length > 0 { req.path.substring(mount.length) } else { req.path }
@@ -778,14 +852,29 @@ impl Middleware for StaticFileMiddleware {
 /// an existing file falls through to the rest of the pipeline (routes,
 /// then 404) — mount static files before or after your API routes freely.
 @stable(since = "0.2")
-pub func staticFiles(cfg: in StaticFiles): Middleware {
+pub func staticFiles(cfg: in StaticFiles): Middleware
+  requires: isValidStaticFiles(cfg)
+{
   return StaticFileMiddleware(cfg = cfg)
 }
 
 /// Sugar for `withMiddleware(router, staticFiles(cfg))`.
 @stable(since = "0.2")
-pub func withStaticFiles(router: in Router, cfg: in StaticFiles): Router {
+pub func withStaticFiles(router: in Router, cfg: in StaticFiles): Router
+  requires: isValidStaticFiles(cfg)
+{
   return withMiddleware(router, staticFiles(cfg))
+}
+
+/// True when a static-file mount is usable: a non-empty `root` (an empty one
+/// made every request fail inside the path resolver), a `mountPrefix` that
+/// is empty or starts with `/` without ending in one, and a non-negative
+/// `cacheControlSeconds`.
+@pure
+@stable(since = "0.3")
+pub func isValidStaticFiles(cfg: in StaticFiles): Bool {
+  val mountOk = cfg.mountPrefix.length == 0 or (cfg.mountPrefix.startsWith("/") and not cfg.mountPrefix.endsWith("/"))
+  cfg.root.length > 0 and mountOk and cfg.cacheControlSeconds >= 0
 }
 
 // ─── CORS middleware ────────────────────────────────────────────────────────────
@@ -848,9 +937,14 @@ impl Middleware for CorsMiddleware {
     if origin.length == 0 or not corsOriginAllowed(self.allowedOrigins, origin) {
       return h.handle(req)
     }
+    // A `*` configuration answers with a literal `*`, which browsers never
+    // combine with credentials.  Reflecting the request's Origin instead (as
+    // this used to) made any later `Access-Control-Allow-Credentials: true`
+    // grant every site credentialed access (#7249).
+    val allowOrigin = if self.allowedOrigins == "*" { "*" } else { origin }
     if req.method == "OPTIONS" {
       var resp = noContent()
-      resp = withResponseHeader(resp, "Access-Control-Allow-Origin", origin)
+      resp = withResponseHeader(resp, "Access-Control-Allow-Origin", allowOrigin)
       // `Vary: Origin` so a shared/CDN cache keyed on URL cannot serve a
       // response computed for one origin to a request from another origin
       // (reflected-ACAO cache poisoning).
@@ -862,21 +956,26 @@ impl Middleware for CorsMiddleware {
     }
     val resp = h.handle(req)
     val withVary = withVaryOrigin(resp)
-    return withResponseHeader(withVary, "Access-Control-Allow-Origin", origin)
+    return withResponseHeader(withVary, "Access-Control-Allow-Origin", allowOrigin)
   }
 }
 
 /// Build a CORS middleware.  `Web.start` attaches one automatically from
 /// the `LYRIC_CONFIG_WEB_CORS_*` env vars when CORS is enabled; call this
 /// directly if you build your own middleware pipeline instead of using
-/// `Web.start`.
+/// `Web.start`.  `allowedOrigins` is `*` or a comma-separated origin list;
+/// with `*` the response carries a literal `Access-Control-Allow-Origin: *`,
+/// so browsers refuse credentialed requests.  The settings must satisfy
+/// `corsSettingsError` (they are written into response headers).
 @stable(since = "0.2")
 pub func corsMiddleware(
   allowedOrigins: in String,
   allowedMethods: in String,
   allowedHeaders: in String,
   maxAgeSeconds: in Int,
-): Middleware {
+): Middleware
+  requires: corsSettingsValid(allowedOrigins, allowedMethods, allowedHeaders, maxAgeSeconds)
+{
   return CorsMiddleware(
     allowedOrigins = allowedOrigins,
     allowedMethods = allowedMethods,
@@ -906,6 +1005,51 @@ pub func requestLogger(): Middleware {
 }
 
 // ─── Path pattern matching ───────────────────────────────────────────────────────
+/// True when `pattern` is a well-formed route pattern: it starts with `/`,
+/// has no empty segment, and each segment is a literal (no `{` or `}`), a
+/// `{name}` parameter, or, as the last segment only, a `{*name}` catch-all,
+/// with parameter names non-empty and unique.  A malformed `{id` used to be
+/// accepted and match only the literal text `{id` (#7249).
+@pure
+@stable(since = "0.3")
+pub func isValidRoutePattern(pattern: in String): Bool {
+  if not pattern.startsWith("/") {
+    return false
+  }
+  val segs = normalizedSegments(pattern)
+  val names: List[String] = newList()
+  var i = 0
+  while i < segs.length {
+    val seg = segs[i]
+    if seg.length == 0 {
+      return false
+    }
+    if seg.contains("{") or seg.contains("}") {
+      val isCatchAll = seg.startsWith("{*")
+      if not seg.startsWith("{") or not seg.endsWith("}") {
+        return false
+      }
+      val name = if isCatchAll { seg.substring(2, seg.length - 3) } else { seg.substring(1, seg.length - 2) }
+      if name.length == 0 or name.contains("{") or name.contains("}") or name.contains("*") {
+        return false
+      }
+      if isCatchAll and i != segs.length - 1 {
+        return false
+      }
+      var j = 0
+      while j < names.count {
+        if names[j] == name {
+          return false
+        }
+        j = j + 1
+      }
+      names.add(name)
+    }
+    i = i + 1
+  }
+  true
+}
+
 func normalizedSegments(path: in String): slice[String] {
   var p = path
   if p.startsWith("/") {
@@ -1159,6 +1303,7 @@ func newResponseWriter(ctx: in HttpContext): ResponseWriter {
 @cfg(feature = "dotnet")
 pub func writeStatus(w: in ResponseWriter, code: in Int): Unit
   requires: not w.committed
+  requires: isValidStatus(code)
 {
   w.status = code
 }
@@ -1170,6 +1315,8 @@ pub func writeStatus(w: in ResponseWriter, code: in Int): Unit
 @cfg(feature = "dotnet")
 pub func writeHeader(w: in ResponseWriter, name: in String, value: in String): Unit
   requires: not w.committed
+  requires: isHeaderToken(name)
+  requires: isSafeHeaderValue(value)
 {
   w.headers[name] = value
 }
@@ -1269,7 +1416,7 @@ func addStreamingRoute(
 /// Register a streaming GET route.
 @cfg(feature = "dotnet")
 pub func addStreamingGet(sr: in StreamingRoutes, pattern: in String, handler: in StreamingHandler): StreamingRoutes
-  requires: pattern.length > 0
+  requires: isValidRoutePattern(pattern)
 {
   return addStreamingRoute(sr, "GET", pattern, handler)
 }
@@ -1277,7 +1424,7 @@ pub func addStreamingGet(sr: in StreamingRoutes, pattern: in String, handler: in
 /// Register a streaming POST route.
 @cfg(feature = "dotnet")
 pub func addStreamingPost(sr: in StreamingRoutes, pattern: in String, handler: in StreamingHandler): StreamingRoutes
-  requires: pattern.length > 0
+  requires: isValidRoutePattern(pattern)
 {
   return addStreamingRoute(sr, "POST", pattern, handler)
 }
@@ -1385,6 +1532,54 @@ pub func corsConfigError(enabled: in Bool, origins: in String): Option[String] {
     )
   }
   return None
+}
+
+/// `Some(error)` when CORS settings cannot be written into response headers:
+/// an empty origin list, a non-token method, a header list or origin list
+/// with a control character, or a negative max age.  `start()` checks this
+/// at startup, so a bad `LYRIC_CONFIG_WEB_CORS_*` value fails closed there
+/// instead of on every cross-origin request.
+@pure
+@stable(since = "0.3")
+pub func corsSettingsError(
+  allowedOrigins: in String,
+  allowedMethods: in String,
+  allowedHeaders: in String,
+  maxAgeSeconds: in Int,
+): Option[String] {
+  if allowedOrigins.length == 0 or not isSafeHeaderValue(allowedOrigins) {
+    return Some("CORS allowed origins must be `*` or a non-empty comma-separated list without control characters")
+  }
+  if not isSafeHeaderValue(allowedHeaders) {
+    return Some("CORS allowed headers must not contain control characters")
+  }
+  val methods = allowedMethods.split(",")
+  var i = 0
+  while i < methods.length {
+    if not isHeaderToken(methods[i].trim()) {
+      return Some("CORS allowed methods must be a comma-separated list of method tokens")
+    }
+    i = i + 1
+  }
+  if maxAgeSeconds < 0 {
+    return Some("CORS max age must be >= 0 seconds")
+  }
+  None
+}
+
+/// True when `corsSettingsError` finds nothing wrong.
+@pure
+@stable(since = "0.3")
+pub func corsSettingsValid(
+  allowedOrigins: in String,
+  allowedMethods: in String,
+  allowedHeaders: in String,
+  maxAgeSeconds: in Int,
+): Bool {
+  match corsSettingsError(allowedOrigins, allowedMethods, allowedHeaders, maxAgeSeconds) {
+    case Some(_) -> false
+    case None -> true
+  }
 }
 
 /// Parse `LYRIC_CONFIG_WEB_SERVER_PORT` into a validated TCP port.
@@ -1841,6 +2036,12 @@ func resolveStartConfig(router: in Router): (Router, String, Int) {
     case None -> ()
   }
 
+  if corsEnabled {
+    match corsSettingsError(corsOrigins, corsMethods, corsHeaders, corsMaxAge) {
+      case Some(err) -> panic("invalid LYRIC_CONFIG_WEB_CORS_* setting: " + err)
+      case None -> ()
+    }
+  }
   val routerWithCors = if corsEnabled {
     withMiddleware(router, corsMiddleware(corsOrigins, corsMethods, corsHeaders, corsMaxAge))
   } else {

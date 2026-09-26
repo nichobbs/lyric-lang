@@ -4712,6 +4712,31 @@ test "a function value over an extern type whose name the use site reuses is T01
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// A union- or enum-case pattern must belong to the scrutinee's own type
+// (T0129).  `case Some(i)` against an `Int`, or `case Ok(v)` against an
+// `Option`, used to type-check and then silently miscompile.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a union-case pattern against a primitive scrutinee is T0129" {
+  val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(n: in Int): Int { match n { case A(k) -> k; case _ -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0129"), "A(k) against Int: T0129")
+}
+
+test "a bare nullary case pattern against a primitive scrutinee is T0129" {
+  val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(n: in Int): Int { match n { case B -> 1; case _ -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0129"), "B against Int: T0129")
+}
+
+test "a case of another union against a union scrutinee is T0129" {
+  val src = "package P\nunion U { case A(n: Int); case B }\nunion V { case C(n: Int); case D }\nfunc f(u: in U): Int { match u { case C(k) -> k; case _ -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0129"), "C(k) against U: T0129")
+}
+
+test "a case of the scrutinee's own union is not T0129" {
+  val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(u: in U): Int { match u { case A(k) -> k; case B -> 0 } }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0129"), "own cases: no T0129")
+}
+
 // #7119: `reportMissingCtorFields` (#6739/#3156) was only wired into
 // `inferConstruction`'s record/opaque paths — `inferUnionCaseConstruction`
 // never called it, so a union-case construction omitting a required named

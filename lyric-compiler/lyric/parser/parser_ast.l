@@ -317,6 +317,11 @@ pub record LambdaParam {
   name: String
   ty: Option[TypeExpr]
   span: Span
+  /// The brace lambda spelled its parameter list in parentheses,
+  /// `{ (a: T, b: U) -> … }`, rather than `{ a: T, b: U -> … }`.  Both
+  /// parse to the same parameters; the formatter keeps the spelling so its
+  /// token loss-check holds.
+  parenthesized: Bool = false
 }
 
 pub record MatchArm {

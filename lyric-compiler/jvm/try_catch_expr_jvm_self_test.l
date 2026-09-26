@@ -150,3 +150,22 @@ test "plain construction from a byte[] local verifies and runs (#5572)" {
 test "annotated slice[Byte] local binds a byte[] initializer (#5572)" {
   assertEqualInt(lengthViaAnnotatedLocal("lyric"), 5, "length via annotated local")
 }
+
+// `catch Exception` catches every panic, like `catch Bug`; on the JVM it
+// used to lower to a nonexistent class `Exception`, so the method threw
+// `NoClassDefFoundError` the first time it ran (#7243).
+func caughtAsException(fail: in Bool): String {
+  try {
+    if fail {
+      panic("boom")
+    }
+    "ok"
+  } catch Exception as e {
+    "caught: " + e.message
+  }
+}
+
+test "catch Exception catches a panic, like catch Bug" {
+  assertEqual(caughtAsException(false), "ok", "no panic")
+  assertEqual(caughtAsException(true), "caught: boom", "the panic is caught with its message")
+}
