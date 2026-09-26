@@ -1,10 +1,16 @@
 //! std/_kernel/http_host.l - host boundary for HTTP.
 //!
 //! This file is the audited extern boundary for `Std.Http`.  Every
-//! host-facing function below is either:
+//! host-facing function below is one of:
 //!
-//!   * a direct `@externTarget` to a single BCL method / property /
-//!     constructor (the trivial pass-through case), or
+//!   * a plain `.new()`/property-access/direct dot-call over an `extern
+//!     type` (D-progress-656 tranche-3, #5613 item 2) — the trivial
+//!     pass-through case whenever auto-FFI can resolve it, matching the
+//!     idiom `process_capture_host.l`/`file_host.l` already use, or
+//!   * an `@externTarget` wrapper for a case auto-FFI can't resolve
+//!     (a delegate-typed parameter, an async/`Task`-returning method, or
+//!     a bracket-suffixed generic-instantiation extern type — see the
+//!     inline comments at each such site for which case applies), or
 //!   * a native Lyric helper that composes a sequence of those
 //!     primitives (the multi-step orchestration case — `hostMakeRequest`,
 //!     `hostWithStringBody`, etc.).
