@@ -221,6 +221,14 @@ func testDiagnosticsTimeoutSpawnFailure(): Unit {
   assertTrue(not r.timedOut, "spawn failure is not a timeout")
 }
 
+// #7251: a negative timeout is rejected before any child is spawned.
+func testDiagnosticsTimeoutNegativeRejected(): Unit {
+  assertPanics(
+    "runCaptureWithDiagnosticsTimeout with a negative timeout",
+    { -> val _ = runCaptureWithDiagnosticsTimeout("sh", makeShArgs("true"), "", -1) }
+  )
+}
+
 func main(): Int {
   testQuoteSimple()
   testQuoteWithSpaces()
@@ -243,6 +251,7 @@ func main(): Int {
   testDiagnosticsStderrBytes()
   testDiagnosticsBytesEmptyOnSpawnFailure()
   testDiagnosticsTimeoutSpawnFailure()
+  testDiagnosticsTimeoutNegativeRejected()
   println("process_capture tests: ok")
   return 0
 }

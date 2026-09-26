@@ -2467,3 +2467,29 @@ test "paren-arrow lambda as a bare statement still separates correctly from the 
   val c = formatSourceChecked(src)
   assertTrue(fmtCheckIsOk(c), "arrow lambda as statement: round-trips losslessly")
 }
+
+// An expression-bodied `entry` keeps its `= expr` form; the formatter used
+// to wrap it in braces, which the loss check refused as a token change.
+test "an expression-bodied protected entry round trips" {
+  val src = "package P\n\npub protected type Counter {\n  var n: Int = 0\n\n  entry reset(): Unit = ()\n\n  entry setTo(v: in Int): Unit\n    requires: v >= 0\n    = noteSet(v)\n}\n\nfunc noteSet(v: in Int): Unit {\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "expression-bodied entry: round-trips")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "entry reset(): Unit = ()"), "keeps `= ()` (got " + once + ")")
+  assertEqual(once, format(parse(once)), "expression-bodied entry: idempotent")
+}
+
+// Loop labels (#7349) must survive formatting on every loop form and on
+// `break`/`continue`.
+test "labelled loops round trip" {
+  val src = "package P\n\nfunc go(n: in Int): Int {\n  var total = 0\n  outer: for i in 0 ..< n {\n    inner: while total < 100 {\n      if i == 3 {\n        continue outer\n      }\n      total = total + 1\n      break inner\n    }\n  }\n  again: do {\n    total = total + 1\n    if total > 5 {\n      break again\n    }\n  }\n  total\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "labelled loops: round-trip losslessly")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "outer: for i in"), "keeps the `for` label (got " + once + ")")
+  assertTrue(Str.contains(once, "inner: while"), "keeps the `while` label")
+  assertTrue(Str.contains(once, "again: do"), "keeps the `do` label")
+  assertTrue(Str.contains(once, "continue outer"), "keeps the `continue` target")
+  assertTrue(Str.contains(once, "break inner"), "keeps the `break` target")
+  assertEqual(once, format(parse(once)), "labelled loops: idempotent")
+}

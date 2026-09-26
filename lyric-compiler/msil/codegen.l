@@ -464,11 +464,10 @@ pub record CodegenCtx {
   // its .cctor MethodDef row; predicting "literal, no .cctor" there shifts
   // every later MethodDef token by one (the entry token then points at the
   // wrong method).
-  // This is a SET: only containsKey is ever consulted and every stored value
-  // is `true` — Map[String, Bool] with always-true values is the compiler's
-  // pervasive set idiom (see e.g. Jvm.Lowering.collectBranchTargets); no
-  // compiler package uses Std.Set (#3254).
-  constBareClaimed: Map[String, Bool]
+  // The value is the claiming package, so emission can tell whether this
+  // package owns the bare slot even though the pre-pass has already filled
+  // it (see `registerLiteralConstMsil`).
+  constBareClaimed: Map[String, String]
   // Lyric enums lower to ordinal Int values (mirroring the F# emitter's
   // EnumCaseLookup): type positions encode I4, a case reference emits
   // `ldc.i4 <ordinal>`, and a `case X` pattern compares ordinals.  A
@@ -3381,7 +3380,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // Claim with the RAW literal check — the emission side registers an
         // IConst's bare `constValues` name only in its raw-literal branch.
         if isLiteralI4ExprMsil(decl.init) and not cctx.constBareClaimed.containsKey(decl.name) {
-          cctx.constBareClaimed.add(decl.name, true)
+          cctx.constBareClaimed.add(decl.name, pkgName)
         }
         constEnv.add(decl.name, isLit)
         if not valTypeEnv.containsKey(decl.name) {
@@ -3409,7 +3408,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               if cctx.constBareClaimed.containsKey(valName) {
                 hasValCctor = true
               } else {
-                cctx.constBareClaimed.add(valName, true)
+                cctx.constBareClaimed.add(valName, pkgName)
               }
             }
             constEnv.add(valName, isLit)
@@ -4567,6 +4566,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     match file.items[pv].kind {
       case IConst(decl) -> {
         val isLit = isLiteralI4ExprMsilWithEnv(decl.init, constEnv)
+        if isLiteralI4ExprMsil(decl.init) {
+          registerLiteralConstMsil(cctx, pkgName, decl.name, decl.init)
+        }
         if not isLit {
           val fieldTok = 0x04000000 + fieldDefRow
           val constTy = typeExprToMsilCtx(cctx, decl.ty, pkgName)
@@ -4602,6 +4604,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // reasoning as the first pre-scan above — see isAsyncLocal0 comment).
         val isAsyncLocalPv = hasAnnotationMsil(file.items[pv].annotations, "asyncLocal")
         val isLit = if isAsyncLocalPv { false } else { isLiteralI4ExprMsilWithEnv(decl.init, constEnv) }
+        if isLit {
+          registerLiteralConstMsil(cctx, pkgName, valName, decl.init)
+        }
         if not isLit {
           val fieldTok = 0x04000000 + fieldDefRow
           val valTy = match decl.ty {
@@ -5111,6 +5116,45 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
 
 // True when an IVal's init expression will produce a single MLdcI4 instruction
 // (so no .cctor is needed after the literal-inlining fix).
+// Register a literal `const`/`val`'s inlined value in `constValues` during
+// the `addPackageTokens` pre-pass, as a non-literal val's field token is.
+// Emission used to be the only registration point, so a package lowered
+// before the declaring one (a test package listed ahead of the library it
+// imports, say) could not see the constant at all and failed with T0115.
+// The bare key goes in only when this package claimed it (first-wins, same
+// as emission).
+func registerLiteralConstMsil(cctx: in CodegenCtx, pkgName: in String, name: in String, init: in Expr): Unit {
+  val fctx = makeFuncCtxMsil(pkgName, pkgName, "__const_prescan", 0, MVoid)
+  val insns: List[MInsn] = newList()
+  lowerExprMsil(cctx, fctx, insns, init)
+  if insns.count != 1 {
+    return
+  }
+  match insns[0] {
+    case MLdcI4(v) -> {
+      val slashKey = pkgName + "/" + name
+      if not cctx.constValues.containsKey(slashKey) {
+        cctx.constValues.add(slashKey, v)
+      }
+      val dotKey = pkgName + "." + name
+      if not cctx.constValues.containsKey(dotKey) {
+        cctx.constValues.add(dotKey, v)
+      }
+      if ownsBareConstMsil(cctx, pkgName, name) and not cctx.constValues.containsKey(name) {
+        cctx.constValues.add(name, v)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func ownsBareConstMsil(cctx: in CodegenCtx, pkgName: in String, name: in String): Bool {
+  match mapGet(cctx.constBareClaimed, name) {
+    case Some(owner) -> owner == pkgName
+    case None -> false
+  }
+}
+
 func isLiteralI4ExprMsil(e: in Expr): Bool {
   val empty: Map[String, Bool] = newMap()
   isLiteralI4ExprMsilWithEnv(e, empty)
@@ -5600,6 +5644,9 @@ pub record FuncCtx {
   // out of one or more CLR protected regions and must emit `leave`, not `br`
   // (a `br` across a protected-region boundary is unverifiable IL).  #1481.
   loopTryDepth: List[Int]
+  // Labelled loops currently being lowered (#7349): label -> the loop's index
+  // in loopBreak/loopCont/loopTryDepth.
+  loopLabelIndex: Map[String, Int]
   // Try/catch nesting depth counter (values unused; only `.count` matters).  Pushed around each `try` body and each `catch` handler in lowerTryCatchMsil.
   tryRegionStack: List[Int]
   // Return-through-protected-region support.  A `return` lowered while inside
@@ -10930,27 +10977,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     }
 
     // ── Quantifiers and old-state ─────────────────────────────────────────────
-    // `forall`/`exists` are proof-time quantifiers that can express properties
-    // over infinite or unbounded domains.  In `@runtime_checked` modules the
-    // contract elaborator substitutes snapshot variables for `old(e)` before
-    // reaching here, and quantifiers are approximated as `true` at runtime
-    // (a sound overapproximation — the assert passes, no false-negative crash).
-    // W0002 informs the user so they aren't surprised by the unenforced clause.
+    // A `forall`/`exists` is only legal in a contract clause (P0344), and the
+    // contract elaborator drops every conjunct containing one before codegen
+    // (W0002, #7228): a quantifier ranges over a type and cannot be evaluated.
+    // Lowering it as a constant was unsound under negation, so reaching here
+    // is a compiler bug.
     case EForall(_, _, _) -> {
-      Console.error(
-        "W0002: forall quantifier in @runtime_checked contract is not evaluated at runtime " +
-          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
-      )
-      insns.add(MLdcI4(v = 1))
-      MBool
+      panic("Msil.Codegen: a forall quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
     case EExists(_, _, _) -> {
-      Console.error(
-        "W0002: exists quantifier in @runtime_checked contract is not evaluated at runtime " +
-          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
-      )
-      insns.add(MLdcI4(v = 1))
-      MBool
+      panic("Msil.Codegen: an exists quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
     // `EOld` is materialised as `let __old_N = e` by the contract elaborator;
     // reaching codegen means the elaborator was bypassed — compiler bug.
@@ -11411,6 +11447,43 @@ func normalizeIntCmpWidthMsil(
   }
 }
 
+// Widen a mixed i4/i8 integer operand pair on the stack to i8 before an
+// arithmetic opcode (#7350), as the type checker's `widenArithmetic` types
+// the result (`Int + Long` is a `Long`).  `underTy` is the operand below the
+// top, `topTy` the one on top; `*Unsigned` flags a `UInt` operand, which
+// widens with `conv.u8` (zero-extend) rather than `conv.i8`.  Returns
+// `MLong` when either operand is (now) i8, else `underTy`.  Without this the
+// arms picked the opcode from the left operand alone and combined an i4
+// with an i8 as int32, silently truncating the result.
+func widenArithOperandsMsil(
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  underTy: in MsilType,
+  topTy: in MsilType,
+  underUnsigned: in Bool,
+  topUnsigned: in Bool,
+): MsilType {
+  val uI8 = match underTy { case MLong -> true; case _ -> false }
+  val tI8 = match topTy { case MLong -> true; case _ -> false }
+  val uI4 = match underTy { case MInt -> true; case MByte -> true; case MChar -> true; case _ -> false }
+  val tI4 = match topTy { case MInt -> true; case MByte -> true; case MChar -> true; case _ -> false }
+  if uI8 and tI4 {
+    insns.add(if topUnsigned { MConvU8 } else { MConvI8 })
+    return MLong
+  }
+  if uI4 and tI8 {
+    val tmp = allocSlotMsil(fctx, "__arithw_" + toString(fctx.slotTicker.count), MLong)
+    emitStoreSlot(insns, tmp, fctx.paramCount)
+    insns.add(if underUnsigned { MConvU8 } else { MConvI8 })
+    emitLoadSlot(insns, tmp, fctx.paramCount)
+    return MLong
+  }
+  if uI8 or tI8 {
+    return MLong
+  }
+  underTy
+}
+
 func lowerBinopMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -11566,6 +11639,16 @@ func lowerBinopMsil(
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bltRhsTy)))
         insns.add(MLdloc(slot = bltLhsUnboxS - fctx.paramCount))
       }
+      // Mixed i4/i8 operands widen to i8 before the compare, a `UInt`
+      // zero-extending (#7382); the opcodes need one stack type.
+      val _ = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bltLhsTy,
+        bltRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
       match bltLhsTy {
         case MString -> {
           // `a < b`  ≡  `String.CompareOrdinal(a, b) < 0` (#2539): a raw `clt`
@@ -11614,6 +11697,16 @@ func lowerBinopMsil(
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bgtRhsTy)))
         insns.add(MLdloc(slot = bgtLhsUnboxS - fctx.paramCount))
       }
+      // Mixed i4/i8 operands widen to i8 before the compare, a `UInt`
+      // zero-extending (#7382); the opcodes need one stack type.
+      val _ = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bgtLhsTy,
+        bgtRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
       match bgtLhsTy {
         case MString -> {
           // `a > b`  ≡  `String.CompareOrdinal(a, b) > 0` (#2539).
@@ -11662,6 +11755,16 @@ func lowerBinopMsil(
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, blteRhsTy)))
         insns.add(MLdloc(slot = blteLhsUnboxS - fctx.paramCount))
       }
+      // Mixed i4/i8 operands widen to i8 before the compare, a `UInt`
+      // zero-extending (#7382); the opcodes need one stack type.
+      val _ = widenArithOperandsMsil(
+        fctx,
+        insns,
+        blteLhsTy,
+        blteRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
       match blteLhsTy {
         case MString -> {
           // `a <= b`  ≡  `!(String.CompareOrdinal(a, b) > 0)` (#2539).
@@ -11715,6 +11818,16 @@ func lowerBinopMsil(
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bgteRhsTy)))
         insns.add(MLdloc(slot = bgteLhsUnboxS - fctx.paramCount))
       }
+      // Mixed i4/i8 operands widen to i8 before the compare, a `UInt`
+      // zero-extending (#7382); the opcodes need one stack type.
+      val _ = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bgteLhsTy,
+        bgteRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
       match bgteLhsTy {
         case MString -> {
           // `a >= b`  ≡  `!(String.CompareOrdinal(a, b) < 0)` (#2539).
@@ -11789,9 +11902,14 @@ func lowerBinopMsil(
           } else {
             -1
           }
-          lowerExprMsil(cctx, fctx, insns, rhs)
+          val baddLRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+          val baddLLhsUn = isUnsignedExprMsil(fctx, lhs)
+          val baddLRhsUn = isUnsignedExprMsil(fctx, rhs)
           if baddLSpillIdx >= 0 {
             insns.add(MLdloc(slot = baddLSpillIdx))
+            val _ = widenArithOperandsMsil(fctx, insns, baddLRhsTy, MLong, baddLRhsUn, baddLLhsUn)
+          } else {
+            val _ = widenArithOperandsMsil(fctx, insns, MLong, baddLRhsTy, baddLLhsUn, baddLRhsUn)
           }
           insns.add(MAdd)
           MLong
@@ -11815,12 +11933,20 @@ func lowerBinopMsil(
           } else {
             -1
           }
-          lowerExprMsil(cctx, fctx, insns, rhs)
-          if baddISpillIdx >= 0 {
+          val baddIRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+          val baddILhsUn = isUnsignedExprMsil(fctx, lhs)
+          val baddIRhsUn = isUnsignedExprMsil(fctx, rhs)
+          val baddIWide = if baddISpillIdx >= 0 {
             insns.add(MLdloc(slot = baddISpillIdx))
+            widenArithOperandsMsil(fctx, insns, baddIRhsTy, lhsTy, baddIRhsUn, baddILhsUn)
+          } else {
+            widenArithOperandsMsil(fctx, insns, lhsTy, baddIRhsTy, baddILhsUn, baddIRhsUn)
           }
           insns.add(MAdd)
-          MInt
+          match baddIWide {
+            case MLong -> MLong
+            case _ -> MInt
+          }
         }
       }
     }
@@ -11839,7 +11965,16 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = bsubSpillIdx))
         insns.add(MLdloc(slot = rS - fctx.paramCount))
       }
-      match bsubLhsTy {
+      val bsubWide = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bsubLhsTy,
+        bsubRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
+      val bsubWideEff = match bsubWide { case MLong -> MLong; case _ -> bsubLhsTy }
+      match bsubWideEff {
         case MLong -> {
           insns.add(MSub)
           MLong
@@ -11862,11 +11997,17 @@ func lowerBinopMsil(
       } else {
         -1
       }
-      lowerExprMsil(cctx, fctx, insns, rhs)
-      if bmulSpillIdx >= 0 {
+      val bmulRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      val bmulLhsUn = isUnsignedExprMsil(fctx, lhs)
+      val bmulRhsUn = isUnsignedExprMsil(fctx, rhs)
+      val bmulWide = if bmulSpillIdx >= 0 {
         insns.add(MLdloc(slot = bmulSpillIdx))
+        widenArithOperandsMsil(fctx, insns, bmulRhsTy, bmulLhsTy, bmulRhsUn, bmulLhsUn)
+      } else {
+        widenArithOperandsMsil(fctx, insns, bmulLhsTy, bmulRhsTy, bmulLhsUn, bmulRhsUn)
       }
-      match bmulLhsTy {
+      val bmulWideEff = match bmulWide { case MLong -> MLong; case _ -> bmulLhsTy }
+      match bmulWideEff {
         case MLong -> {
           insns.add(MMul)
           MLong
@@ -11902,7 +12043,16 @@ func lowerBinopMsil(
       // divides unsigned (a Byte is unsigned 0..255 regardless of this
       // flag) and `MDouble` has no unsigned form.
       val bdivIsUnsigned = isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs)
-      match bdivLhsTy {
+      val bdivWide = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bdivLhsTy,
+        bdivRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
+      val bdivWideEff = match bdivWide { case MLong -> MLong; case _ -> bdivLhsTy }
+      match bdivWideEff {
         case MLong -> {
           if bdivIsUnsigned {
             insns.add(MDivUn)
@@ -11948,7 +12098,16 @@ func lowerBinopMsil(
       // signed `rem` — see `isUnsignedExprMsil` and the matching `BDiv`
       // comment above.
       val bmodIsUnsigned = isUnsignedExprMsil(fctx, lhs) or isUnsignedExprMsil(fctx, rhs)
-      match bmodLhsTy {
+      val bmodWide = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bmodLhsTy,
+        bmodRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
+      val bmodWideEff = match bmodWide { case MLong -> MLong; case _ -> bmodLhsTy }
+      match bmodWideEff {
         case MLong -> {
           if bmodIsUnsigned {
             insns.add(MRemUn)
@@ -15791,6 +15950,35 @@ func hasQualifiedFuncOverrideMsil(cctx: in CodegenCtx, path: in ModulePath, argc
   }
 }
 
+// The `when:` barrier intrinsics the contract elaborator inserts into
+// protected entries (#7363).  They run inside the entry's Monitor(this)
+// region: `Monitor.Wait(this)` releases the lock until pulsed, and
+// `Monitor.PulseAll(this)` wakes every waiter to re-test its barrier.
+func lowerProtectedIntrinsicMsil(cctx: in CodegenCtx, insns: in List[MInsn], name: in String): MsilType {
+  val arThreading = ctxAddAssemblyRef(cctx.lctx, "System.Threading", 10, 0)
+  val trMonitor = ctxAddTypeRef(cctx.lctx, "System.Threading", "Monitor", arThreading)
+  val ps: List[MsilType] = newList()
+  ps.add(MObject)
+  insns.add(MLdarg(slot = 0))
+  if name == "__lyric_protected_wait" {
+    val tokWait = 0x0A000000 +
+      ctxAddMemberRef(cctx.lctx, trMonitor, "Wait", "monitor_wait", buildStaticMethodSig(ps, MBool))
+    insns.add(MCall(methodToken = tokWait))
+    insns.add(MPop)
+  } else {
+    val tokPulse = 0x0A000000 +
+      ctxAddMemberRef(
+        cctx.lctx,
+        trMonitor,
+        "PulseAll",
+        "monitor_pulseall",
+        buildStaticMethodSig(ps, MVoid)
+      )
+    insns.add(MCall(methodToken = tokPulse))
+  }
+  MVoid
+}
+
 // Lower a builtin or intra-package static call.
 func lowerBuiltinOrStaticCallMsil(
   cctx: in CodegenCtx,
@@ -15801,6 +15989,9 @@ func lowerBuiltinOrStaticCallMsil(
   args: in List[CallArg],
 ): MsilType {
   val hasQualifiedOverride = hasQualifiedFuncOverrideMsil(cctx, path, args.count)
+  if funcName == "__lyric_protected_wait" or funcName == "__lyric_protected_notify" {
+    return lowerProtectedIntrinsicMsil(cctx, insns, funcName)
+  }
   if (not hasQualifiedOverride) and funcName == "println" {
     if args.count > 0 {
       val printlnRaw = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -20349,16 +20540,18 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     }
 
     // ── While loop ────────────────────────────────────────────────────────────
-    case SWhile(_, cond, body) -> {
+    case SWhile(label, cond, body) -> {
       val loopL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
       insns.add(MLabel(id = loopL))
       lowerBoolOperandMsil(cctx, fctx, insns, cond)
       insns.add(MBrFalse(label = afterL))
+      val savedLabel1 = enterLoopLabelMsil(fctx, label)
       fctx.loopBreak.add(afterL)
       fctx.loopCont.add(loopL)
       fctx.loopTryDepth.add(fctx.tryRegionStack.count)
       lowerBlockMsil(cctx, fctx, insns, body)
+      exitLoopLabelMsil(fctx, label, savedLabel1)
       fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
@@ -20367,19 +20560,23 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     }
 
     // ── For loop (range fast-path + collection iteration, #1478) ──────────────
-    case SFor(_, pat, iter, body) -> {
+    case SFor(label, pat, iter, body) -> {
+      val savedLabel2 = enterLoopLabelMsil(fctx, label)
       lowerForMsil(cctx, fctx, insns, pat, iter, body)
+      exitLoopLabelMsil(fctx, label, savedLabel2)
     }
 
     // ── Loop (unconditional) ──────────────────────────────────────────────────
-    case SLoop(_, body) -> {
+    case SLoop(label, body) -> {
       val loopL2 = freshLabelMsil(fctx)
       val afterL2 = freshLabelMsil(fctx)
       insns.add(MLabel(id = loopL2))
+      val savedLabel3 = enterLoopLabelMsil(fctx, label)
       fctx.loopBreak.add(afterL2)
       fctx.loopCont.add(loopL2)
       fctx.loopTryDepth.add(fctx.tryRegionStack.count)
       lowerBlockMsil(cctx, fctx, insns, body)
+      exitLoopLabelMsil(fctx, label, savedLabel3)
       fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
@@ -20403,11 +20600,13 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // protected region(s) jumps across a CLR try/catch boundary and must use
     // `leave` rather than `br` (a `br` out of a protected region is
     // unverifiable IL).  #1481.
-    case SBreak(_) -> {
-      emitLoopJumpMsil(fctx, insns, fctx.loopBreak[fctx.loopBreak.count - 1])
+    case SBreak(label) -> {
+      val li = loopIndexForLabelMsil(fctx, label)
+      emitLoopJumpMsil(fctx, insns, fctx.loopBreak[li], fctx.loopTryDepth[li])
     }
-    case SContinue(_) -> {
-      emitLoopJumpMsil(fctx, insns, fctx.loopCont[fctx.loopCont.count - 1])
+    case SContinue(label) -> {
+      val li = loopIndexForLabelMsil(fctx, label)
+      emitLoopJumpMsil(fctx, insns, fctx.loopCont[li], fctx.loopTryDepth[li])
     }
 
     // ── Scope block ───────────────────────────────────────────────────────────
@@ -20535,8 +20734,58 @@ func lowerLocalPatBindMsil(
 // entered at a shallower protected-region (try/catch) depth than the current
 // one — i.e. the jump escapes one or more open `try`/`catch` regions — the CLR
 // requires `leave`; otherwise a plain `br` suffices.  #1481 (H17).
-func emitLoopJumpMsil(fctx: in FuncCtx, insns: in List[MInsn], target: in Int): Unit {
-  val loopDepth = if fctx.loopTryDepth.count > 0 { fctx.loopTryDepth[fctx.loopTryDepth.count - 1] } else { 0 }
+// Each loop pushes exactly one entry onto loopBreak/loopCont/loopTryDepth, so
+// a labelled loop's entry is at the stack depth in effect just before it is
+// lowered.
+func enterLoopLabelMsil(fctx: in FuncCtx, label: in Option[String]): Option[Int] {
+  match label {
+    case Some(l) -> {
+      val prev = mapGet(fctx.loopLabelIndex, l)
+      fctx.loopLabelIndex[l] = fctx.loopBreak.count
+      prev
+    }
+    case None -> None
+  }
+}
+
+// Restores the entry a nested loop's label shadowed: a loop in a `defer` or
+// lambda body may reuse an enclosing loop's label (#7394).
+func exitLoopLabelMsil(fctx: in FuncCtx, label: in Option[String], prev: in Option[Int]): Unit {
+  match label {
+    case Some(l) -> match prev {
+      case Some(p) -> {
+        fctx.loopLabelIndex[l] = p
+      }
+      case None -> {
+        fctx.loopLabelIndex.remove(l);
+        ()
+      }
+    }
+    case None -> ()
+  }
+}
+
+// The type checker (T0130) guarantees a `break`/`continue` sits in a loop and
+// that its label names an enclosing one.
+func loopIndexForLabelMsil(fctx: in FuncCtx, label: in Option[String]): Int {
+  match label {
+    case None -> {
+      if fctx.loopBreak.count == 0 {
+        panic("Msil.Codegen: 'break'/'continue' outside a loop (compiler bug: T0130 should have rejected it)")
+      }
+      fctx.loopBreak.count - 1
+    }
+    case Some(l) -> match mapGet(fctx.loopLabelIndex, l) {
+      case Some(i) -> i
+      case None -> panic(
+        "Msil.Codegen: no enclosing loop labelled '" + l +
+          "' (compiler bug: T0130 should have rejected it)"
+      )
+    }
+  }
+}
+
+func emitLoopJumpMsil(fctx: in FuncCtx, insns: in List[MInsn], target: in Int, loopDepth: in Int): Unit {
   if fctx.tryRegionStack.count > loopDepth {
     insns.add(MLeave(label = target))
   } else {
@@ -20871,6 +21120,7 @@ func makeFuncCtxMsil(
   val loopBreak: List[Int] = newList()
   val loopCont: List[Int] = newList()
   val loopTryDepth: List[Int] = newList()
+  val loopLabelIndex: Map[String, Int] = newMap()
   val tryRegionStack: List[Int] = newList()
   val epilogueUsed: List[Int] = newList()
   val yieldSlots: List[Int] = newList()
@@ -20900,6 +21150,7 @@ func makeFuncCtxMsil(
     loopBreak = loopBreak,
     loopCont = loopCont,
     loopTryDepth = loopTryDepth,
+    loopLabelIndex = loopLabelIndex,
     tryRegionStack = tryRegionStack,
     epilogueLabel = -1,
     retvalSlot = -1,
@@ -21070,6 +21321,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MConvR8 -> 0
     case MConvU1 -> 0
     case MConvU2 -> 0
+    case MConvU8 -> 0
     case MNewobj(_) -> 1
     case MLdfld(_) -> 0
     case MLdflda(_) -> 0
@@ -31207,6 +31459,38 @@ func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
 // a try block, and releases Monitor(this) in the finally handler.
 // Using `this` as the lock object avoids an extra field: every CLR object has a
 // built-in sync-block, and `lock (this)` is the canonical per-instance pattern.
+func lockedProtectedMembers(members: in List[ProtectedMember]): List[ProtectedMember] {
+  val lowered: List[ProtectedMember] = newList()
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      // The checker rejects an async or method-generic protected func
+      // (T0135), so every func with a body takes the lock.
+      case PMFunc(fn) -> match fn.body {
+        case Some(b) -> lowered.add(
+          PMEntry(
+            entryDecl = EntryDecl(
+              docComments = fn.docComments,
+              annotations = fn.annotations,
+              visibility = fn.visibility,
+              name = fn.name,
+              params = fn.params,
+              ret = fn.ret,
+              contracts = fn.contracts,
+              body = b,
+              span = fn.span
+            )
+          )
+        )
+        case None -> lowered.add(members[i])
+      }
+      case other -> lowered.add(other)
+    }
+    i = i + 1
+  }
+  lowered
+}
+
 func lowerProtectedMsil(
   cctx: in CodegenCtx,
   decl: in ProtectedTypeDecl,
@@ -31238,9 +31522,13 @@ func lowerProtectedMsil(
   // references in entry/func bodies to EMember(ESelf, name).
   val fieldNames = makeProtectedFieldNames(decl)
 
+  // §7.5: a `func` member is exclusive too, so it is lowered through the
+  // same Monitor-guarded path as an entry (#7363).  Before this only
+  // entries took the lock.
+  val members = lockedProtectedMembers(decl.members)
   var mi = 0
-  while mi < decl.members.count {
-    match decl.members[mi] {
+  while mi < members.count {
+    match members[mi] {
       case PMField(pf) -> {
         match pf {
           case PFVar(name, ty, _, _, _, _) -> {
@@ -31400,11 +31688,23 @@ func lowerProtectedMsil(
           case FBExpr(e) -> {
             // Expression body: expressions cannot contain SReturn, so no epilogue
             // escape is possible.  Lower the expression, stash the result, leave.
-            lowerExprMsil(cctx, entryFctx, entryInsns, e)
-            if entryFctx.retvalSlot < 0 {
-              entryFctx.retvalSlot = allocSlotMsil(entryFctx, "__retval", retTy)
+            // A `Unit` member discards whatever its expression pushed (a void
+            // call pushes nothing); a value member whose expression is void
+            // gets its default (#7400, mirroring `lowerMethodBodyTailMsil`).
+            val exprTailTy = lowerExprMsil(cctx, entryFctx, entryInsns, e)
+            if retTy == MVoid {
+              if exprTailTy != MVoid {
+                entryInsns.add(MPop)
+              }
+            } else {
+              if exprTailTy == MVoid {
+                pushDefaultValueMsil(cctx, entryFctx, entryInsns, retTy)
+              }
+              if entryFctx.retvalSlot < 0 {
+                entryFctx.retvalSlot = allocSlotMsil(entryFctx, "__retval", retTy)
+              }
+              emitStoreSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
             }
-            emitStoreSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
             entryInsns.add(MLeave(label = afterL))
             val finallyStartL = freshLabelMsil(entryFctx)
             val finallyEndL = freshLabelMsil(entryFctx)
@@ -37300,8 +37600,10 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               if not cctx.constValues.containsKey(qualValKey) {
                 cctx.constValues.add(qualValKey, v)
               }
-              if not cctx.constValues.containsKey(fieldName) {
-                cctx.constValues.add(fieldName, v)
+              if ownsBareConstMsil(cctx, pkgName, fieldName) {
+                if not cctx.constValues.containsKey(fieldName) {
+                  cctx.constValues.add(fieldName, v)
+                }
                 sfInitInsns = newList()
               }
               // Dot-qualified key (`Pkg.name`) — see the matching IConst
@@ -39072,7 +39374,43 @@ func mkDistinctTypeIR(
 // mirroring the `addPackageTokens` IConst/IVal fold: lower the init and
 // take the leading `ldc.i4`.  Used to register a restored package's
 // compile-time constants for cross-package inlining.
+// An integer literal, optionally negated, as a restored constant's
+// synthesised source spells it.
+func restoredIntLiteralMsil(e: in Expr): Option[Long] {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> Some(value = v); case _ -> None }
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind {
+        case ELiteral(lit) -> match lit {
+          case LInt(v, _, _) -> Some(value = 0i64 - v)
+          case _ -> None
+        }
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
 func foldConstInitToInt(cctx: in CodegenCtx, pkgName: in String, init: in Expr): Int {
+  // The synthesised source re-parses a negative constant as `-N`, which
+  // lowers to `ldc N; neg`; fold it here rather than read only the `ldc`.
+  // The producer's contract carries only literals in `Int` range (#7403);
+  // anything wider comes from an older compiler and is refused rather than
+  // truncated.
+  match restoredIntLiteralMsil(init) {
+    case Some(v) -> {
+      if v < -2147483648i64 or v > 2147483647i64 {
+        panic(
+          "Msil.Codegen: restored constant in package '" + pkgName + "' has value " + toString(v) +
+            ", outside Int; rebuild that package with this compiler"
+        )
+      }
+      return longToInt(v)
+    }
+    case None -> ()
+  }
   val fctx = makeFuncCtxMsil(pkgName, pkgName, "__const_fold", 0, MVoid)
   val insns: List[MInsn] = newList()
   lowerExprMsil(cctx, fctx, insns, init)

@@ -177,6 +177,21 @@ pub record H2Settings {
   var maxHeaderListSize: Int
 }
 
+/// True when `settings` is something this server may advertise (RFC 9113
+/// §6.5.2): a frame size in 16384..16777215, an initial window in
+/// 0..2^31-1, push disabled (a server never enables it), and non-negative
+/// table, stream and header-list limits. Peer settings are validated as
+/// data when a SETTINGS frame arrives; this guards the local configuration.
+@pure
+@experimental
+pub func isValidLocalSettings(settings: in H2Settings): Bool {
+  settings.maxFrameSize >= 16384 and settings.maxFrameSize <= 16777215 and settings.initialWindowSize >= 0 and
+    settings.enablePush == 0 and
+    settings.headerTableSize >= 0 and
+    settings.maxConcurrentStreams >= 0 and
+    settings.maxHeaderListSize >= 0
+}
+
 /// The default settings a server advertises: RFC-default header table (4096)
 /// and initial window (65535) and frame size (16384), server push disabled
 /// (`enablePush = 0`), a concurrent-streams ceiling of 128, and a 32 KiB
@@ -492,7 +507,9 @@ func longToIntClamped(v: in Long): Int {
 /// to the peer before feeding any bytes.
 @pure
 @experimental
-pub func newServerConnection(localSettings: in H2Settings): H2Connection {
+pub func newServerConnection(localSettings: in H2Settings): H2Connection
+  requires: isValidLocalSettings(localSettings)
+{
   H2Connection(
     dec = newFrameDecoderWithMaxSize(true, localSettings.maxFrameSize),
     hpackDec = newDecoder(localSettings.headerTableSize),
@@ -1661,6 +1678,49 @@ func isValidH2FieldValue(v: in String): Bool {
   not (first == 32 or first == 9 or last == 32 or last == 9)
 }
 
+/// True when `name`/`value` is a regular field an HTTP/2 response may carry
+/// (RFC 9113 §8.2): a lowercase token name that is not a connection-specific
+/// field (`connection`, `keep-alive`, `proxy-connection`,
+/// `transfer-encoding`, `upgrade`), and a value with no CR, LF or NUL and no
+/// leading or trailing space or tab.
+@pure
+@experimental
+pub func isH2ResponseFieldSafe(name: in String, value: in String): Bool {
+  isValidH2FieldName(name) and not isConnectionSpecificField(name) and isValidH2FieldValue(value)
+}
+
+/// `encodeResponseHeaders`'s precondition: exactly one `:status`
+/// pseudo-header, three ASCII digits, before every regular field (RFC 9113
+/// §8.3.2 allows no other response pseudo-header), and every regular field
+/// `isH2ResponseFieldSafe`.
+@pure
+@experimental
+pub func isH2ResponseHeaderListSafe(headers: in List[HeaderField]): Bool {
+  var statusCount = 0
+  var i = 0
+  while i < headers.count {
+    val h = headers[i]
+    if h.name == ":status" {
+      if statusCount > 0 or i > 0 or not isStatusDigits(h.value) {
+        return false
+      }
+      statusCount = 1
+    } else if not isH2ResponseFieldSafe(h.name, h.value) {
+      return false
+    }
+    i = i + 1
+  }
+  statusCount == 1
+}
+
+func isStatusDigits(v: in String): Bool {
+  v.length == 3 and isAsciiDigit(charCodeAt(v, 0)) and isAsciiDigit(charCodeAt(v, 1)) and isAsciiDigit(charCodeAt(v, 2))
+}
+
+func isAsciiDigit(c: in Int): Bool {
+  c >= 48 and c <= 57
+}
+
 func isConnectionSpecificField(name: in String): Bool {
   name == "connection" or name == "proxy-connection" or name == "keep-alive" or name == "transfer-encoding" or
     name == "upgrade"
@@ -1995,13 +2055,21 @@ func headerBlockToFrames(streamId: in Int, block: in slice[Byte], endStream: in 
 /// Fails with `HeaderStreamNotWritable` if the connection is poisoned or the
 /// stream is not in a state that can send HEADERS (#6084/#6085), or
 /// `HeaderEncodingFailed` if HPACK encoding fails.
+///
+/// # Contract
+/// `headers` must satisfy `isH2ResponseHeaderListSafe` (#7251): the caller
+/// builds this list, so a field that would make the response malformed
+/// (RFC 9113 §8.2) is a programmer error. Filter handler-supplied fields
+/// through `isH2ResponseFieldSafe` first.
 @experimental
 pub func encodeResponseHeaders(
   conn: in H2Connection,
   streamId: in Int,
   headers: in List[HeaderField],
   endStream: in Bool,
-): Result[slice[Byte], H2SendError] {
+): Result[slice[Byte], H2SendError]
+  requires: isH2ResponseHeaderListSafe(headers)
+{
   var state = conn
   if isFailed(state) {
     return Err(error = HeaderStreamNotWritable(streamId = streamId))
@@ -2041,12 +2109,18 @@ func encodeResponseHeadersOn(
 /// success the connection and stream send windows are debited and the
 /// serialized frame bytes are returned; on failure nothing is sent and the
 /// caller learns whether the stream is unwritable or the window is too small
-/// (split and retry after a `H2WindowUpdated`). A caller should keep each
-/// `data` within the peer's max frame size (`peerMaxFrameSize`).
+/// (split and retry after a `H2WindowUpdated`).
+///
+/// # Contract
+/// `data` fits in one frame the peer accepts (`peerMaxFrameSize`, #7251): a
+/// larger frame is a `FRAME_SIZE_ERROR` that tears down the whole connection
+/// (RFC 9113 §4.2), so the caller must split first.
 @experimental
 pub func sendData(
   conn: in H2Connection, streamId: in Int, data: in slice[Byte], endStream: in Bool
-): Result[slice[Byte], H2FlowError] {
+): Result[slice[Byte], H2FlowError]
+  requires: data.length <= peerMaxFrameSize(conn)
+{
   var state = conn
   // Never act on a poisoned connection (#6085): a connection-level error has torn
   // it down, so the driver must not keep sending.

@@ -1316,6 +1316,15 @@ func lowerBuiltinOrStaticCall(
     insns.add(LLabel(name = argvOkLabel))
     emitLoad(insns, argvSlot, argvTy)
     argvTy
+  } else if funcName == "__lyric_protected_wait" or funcName == "__lyric_protected_notify" {
+    // `when:` barrier intrinsics (#7363), inside a synchronized protected
+    // member: `this.wait()` releases the monitor until notified, and
+    // `this.notifyAll()` wakes every waiter to re-test its barrier.
+    val noPs: List[JvmType] = newList()
+    insns.add(LAload(slot = 0))
+    val target = if funcName == "__lyric_protected_wait" { "wait" } else { "notifyAll" }
+    insns.add(LInvokevirtual(owner = "java/lang/Object", name = target, params = noPs, ret = JVoid))
+    JVoid
   } else if funcName == "default" {
     insns.add(LAconstNull)
     JRef(className = "java/lang/Object")

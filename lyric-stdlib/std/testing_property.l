@@ -16,6 +16,7 @@
 //!
 //! All randomness is caller-supplied via a `Random` value from `Std.Random`
 //! so tests can be seeded for determinism.
+@runtime_checked
 package Std.Testing.Property
 
 import Std.Core
@@ -102,7 +103,9 @@ pub func forAll[T](
   shrink: in (T) -> List[T],
   display: in (T) -> String,
   prop: in (T) -> Bool,
-): Unit {
+): Unit
+  requires: n > 0
+{
   var i = 0
   while i < n {
     val x = gen(rng)
@@ -161,7 +164,10 @@ func shrinkBoolToFixedPoint(failing: in Bool, prop: in (Bool) -> Bool): Bool {
 /// Run `prop` on `n` random `Int` values in `[min, max)`.
 /// Failing inputs are shrunk toward 0 (or `min`) before the panic message.
 @stable(since = "1.0")
-pub func forAllInt(rng: in Random, min: in Int, max: in Int, n: in Int, prop: in (Int) -> Bool): Unit {
+pub func forAllInt(rng: in Random, min: in Int, max: in Int, n: in Int, prop: in (Int) -> Bool): Unit
+  requires: n > 0
+  requires: min < max
+{
   var i = 0
   while i < n {
     val x = nextIntRange(rng, min, max)
@@ -176,7 +182,9 @@ pub func forAllInt(rng: in Random, min: in Int, max: in Int, n: in Int, prop: in
 /// Run `prop` on `n` random `Bool` samples.
 /// `true` shrinks toward `false`.
 @stable(since = "1.0")
-pub func forAllBool(rng: in Random, n: in Int, prop: in (Bool) -> Bool): Unit {
+pub func forAllBool(rng: in Random, n: in Int, prop: in (Bool) -> Bool): Unit
+  requires: n > 0
+{
   var i = 0
   while i < n {
     val b = nextBool(rng)
@@ -191,7 +199,9 @@ pub func forAllBool(rng: in Random, n: in Int, prop: in (Bool) -> Bool): Unit {
 /// Run `prop` on `n` random `Double` samples in `[0.0, 1.0)`.
 /// Doubles are not shrunk; scale the input inside `prop` for other ranges.
 @stable(since = "1.0")
-pub func forAllDouble(rng: in Random, n: in Int, prop: in (Double) -> Bool): Unit {
+pub func forAllDouble(rng: in Random, n: in Int, prop: in (Double) -> Bool): Unit
+  requires: n > 0
+{
   var i = 0
   while i < n {
     val d = nextDouble(rng)
@@ -206,7 +216,10 @@ pub func forAllDouble(rng: in Random, n: in Int, prop: in (Double) -> Bool): Uni
 /// On failure, greedily shrinks each component toward 0 independently:
 /// first the left component (right held fixed), then the right.
 @stable(since = "1.0")
-pub func forAllIntPair(rng: in Random, min: in Int, max: in Int, n: in Int, prop: in (Int, Int) -> Bool): Unit {
+pub func forAllIntPair(rng: in Random, min: in Int, max: in Int, n: in Int, prop: in (Int, Int) -> Bool): Unit
+  requires: n > 0
+  requires: min < max
+{
   var i = 0
   while i < n {
     val x = nextIntRange(rng, min, max)

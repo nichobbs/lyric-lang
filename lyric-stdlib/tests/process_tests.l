@@ -119,6 +119,23 @@ func testRunSpawnFailure(): Unit {
   }
 }
 
+// #7251: a negative timeout is a programmer error, rejected before any child
+// is spawned.  Zero stays legal ("kill at the first pump").
+func testNegativeTimeoutRejected(): Unit {
+  assertPanics("runCapture with a negative timeout", { -> val _ = runCapture("sh", makeShArgs("true"), -1) })
+  assertPanics(
+    "runCaptureWithInput with a negative timeout",
+    { -> val _ = runCaptureWithInput("sh", makeShArgs("cat"), "x", -1) }
+  )
+  match spawnPiped("sh", makeShArgs("cat")) {
+    case Ok(p) -> {
+      assertPanics("pipedWaitExit with a negative timeout", { -> val _ = pipedWaitExit(p, -1) })
+      pipedKill(p)
+    }
+    case Err(e) -> assertTrue(false, "spawnPiped failed: " + IOError.message(e))
+  }
+}
+
 func main(): Int {
   if runningOnWindows() {
     // Every test below uses `sh -c "..."`, which is not present on a
@@ -137,6 +154,7 @@ func main(): Int {
   testCaptureSpawnFailure()
   testRunExitCode()
   testRunSpawnFailure()
+  testNegativeTimeoutRejected()
   println("process_tests: ok")
   return 0
 }

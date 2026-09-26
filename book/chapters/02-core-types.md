@@ -63,6 +63,8 @@ The range syntax has four forms:
 | `..= b` | From the type's minimum up to `b` |
 | `a ..` | From `a` up to the type's maximum |
 
+A range can also be written inline on a parameter, return type or binding, without naming a type: `func digit(d: in Int range 0 ..= 9)`. The value is still an `Int`, but the range is enforced: an out-of-range literal is a compile error (`T0015`), and anything else is checked at runtime when the parameter arrives, the function returns, the binding is initialised, or a refined `var` is assigned. A failure panics with `RangeViolated` and names the parameter or variable.
+
 One practical payoff comes up in §3.5: array indexing. When you index an `array[N, T]` with a value whose range is statically proven to be within `0 ..= N - 1`, the compiler elides the bounds check entirely. No unsafe annotations, no manual proof — the type system handles it.
 
 ::: sidebar
@@ -76,6 +78,8 @@ The proof system (Chapter 11) makes this even stronger: in a `@proof_required` m
 :::
 
 The `derives` clause (covered in §2.3) applies to range subtypes too. `type Cents = Long range 0 ..= 1_000_000_000_00 derives Add, Sub, Compare` enables addition, subtraction, and comparison directly on `Cents` values — you can add two `Cents` values together and get a `Cents` back. You cannot multiply them; that's not in `derives`, and `Cents * Cents` would be dimensionally meaningless anyway.
+
+The result of derived arithmetic is checked like a construction: `Cents.from(5) - Cents.from(10)` panics exactly as `Cents.from(-5)` would. `==` and `!=` work on every distinct type and compare the underlying values, and `x.value` reads the underlying value when you need it.
 
 ## §2.3 Distinct types and aliases
 
@@ -181,7 +185,7 @@ val sql = """
   """
 ```
 
-**Explicit conversions.** Lyric has no implicit widening. Passing an `Int` where a `Long` is expected is a compile error. Conversions are written explicitly:
+**Conversions.** Lyric never narrows implicitly, and widens implicitly only where no value can change: along `Byte < Int < Long`, `Byte < UInt < ULong` and `Float < Double`. An `Int` passed where a `Long` is expected, or added to a `Long`, becomes a `Long`, and the arithmetic is done at 64 bits. Every other conversion is written explicitly:
 
 ```lyric
 val i: Int  = 42
@@ -190,7 +194,9 @@ val d: Double = i.toDouble()
 val n: Nat = i.toNat()     // panics if i < 0; use tryToNat() for a Result
 ```
 
-This is occasionally verbose but eliminates an entire class of bugs — no silent precision loss, no silent sign extension, no "I didn't realise Int would be widened to Long here."
+This is occasionally verbose but eliminates an entire class of bugs: no silent precision loss, no silent truncation, and no sign change from an `Int` quietly becoming a `UInt`.
+
+An integer literal without a suffix is an `Int` when it fits and a `Long` when it does not, so `3000000000` is a `Long` and `val x: Int = 3000000000` is a compile error (`T0015`) rather than a wrapped value.
 
 ## §2.5 The type `Never`
 

@@ -7,6 +7,13 @@
 //!
 //! Externs live in `_kernel/json_host.l` (`Std.JsonHost`); this file
 //! is pure trampolines + Option-returning safe wrappers.
+//!
+//! The `get*` accessors and `getProperty` require the element to have the
+//! right kind (`isJsonString`, `isJsonInt32`, `hasProperty`, ...): calling
+//! one on the wrong shape is a contract violation, not a host exception.
+//! JSON that came from outside the program should be read with the
+//! `tryGet*` family instead (#7251).
+@runtime_checked
 package Std.Json
 
 import Std.Core
@@ -33,7 +40,6 @@ pub func tryParseJson(s: in String): Result[JsonDoc, String] {
   }
 }
 
-
 /// Release the unmanaged memory held by a `JsonDoc`.  Call this when you
 /// are done walking the document — typically via `defer { disposeJson(doc) }`.
 /// The `lyricJsonGet*` helpers do this automatically; only needed for code
@@ -51,16 +57,22 @@ pub func rootElement(d: in JsonDoc): JsonElement {
 // =====================================================================
 // Walking the tree.
 //
-// `getProperty(elem, "name")` throws if the name doesn't exist; use
+// `getProperty(elem, "name")` requires the name to exist; use
 // `tryGetProperty` for the Option-returning variant.
 // =====================================================================
 @stable(since = "1.0")
-pub func getProperty(elem: in JsonElement, name: in String): JsonElement {
+pub func getProperty(elem: in JsonElement, name: in String): JsonElement
+  requires: hasProperty(elem, name)
+{
   hostGetProperty(elem, name)
 }
 
 @stable(since = "1.0")
 pub func tryGetProperty(elem: in JsonElement, name: in String): Option[JsonElement] {
+  // The host throws for a non-object receiver (JsonValueKind.Object = 1).
+  if hostValueKind(elem) != 1 {
+    return None
+  }
   var v: JsonElement = default()
   if hostTryGetProperty(elem, name, v) {
     Some(value = v)
@@ -72,32 +84,98 @@ pub func tryGetProperty(elem: in JsonElement, name: in String): Option[JsonEleme
 // =====================================================================
 // Leaf accessors.
 //
-// All `getXyz` methods on `JsonElement` throw if the kind is wrong.
-// Use the `tryGet*` family for safer extraction.
+// Each `getXyz` requires the matching `isJsonXyz`. Use the `tryGet*`
+// family for data whose shape is not already known.
 // =====================================================================
 @stable(since = "1.0")
-pub func getString(elem: in JsonElement): String {
+pub func getString(elem: in JsonElement): String
+  requires: isJsonString(elem)
+{
   hostGetString(elem)
 }
 
 @stable(since = "1.0")
-pub func getInt32(elem: in JsonElement): Int {
+pub func getInt32(elem: in JsonElement): Int
+  requires: isJsonInt32(elem)
+{
   hostGetInt32(elem)
 }
 
 @stable(since = "1.0")
-pub func getInt64(elem: in JsonElement): Long {
+pub func getInt64(elem: in JsonElement): Long
+  requires: isJsonInt64(elem)
+{
   hostGetInt64(elem)
 }
 
 @stable(since = "1.0")
-pub func getBoolean(elem: in JsonElement): Bool {
+pub func getBoolean(elem: in JsonElement): Bool
+  requires: isJsonBool(elem)
+{
   hostGetBoolean(elem)
 }
 
 @stable(since = "1.0")
-pub func getDouble(elem: in JsonElement): Double {
+pub func getDouble(elem: in JsonElement): Double
+  requires: isJsonDouble(elem)
+{
   hostGetDouble(elem)
+}
+
+/// True when `elem` is an object with a property called `name`.
+@stable(since = "1.2")
+@pure
+pub func hasProperty(elem: in JsonElement, name: in String): Bool {
+  match tryGetProperty(elem, name) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+/// True when `elem` is a JSON string (`getString`'s precondition).
+@stable(since = "1.2")
+@pure
+pub func isJsonString(elem: in JsonElement): Bool {
+  hostValueKind(elem) == 3
+}
+
+/// True when `elem` is a number that fits an `Int` (`getInt32`'s precondition).
+@stable(since = "1.2")
+@pure
+pub func isJsonInt32(elem: in JsonElement): Bool {
+  match tryGetInt(elem) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+/// True when `elem` is a number that fits a `Long` (`getInt64`'s precondition).
+@stable(since = "1.2")
+@pure
+pub func isJsonInt64(elem: in JsonElement): Bool {
+  match tryGetLong(elem) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+/// True when `elem` is `true` or `false` (`getBoolean`'s precondition).
+@stable(since = "1.2")
+@pure
+pub func isJsonBool(elem: in JsonElement): Bool {
+  val kind = hostValueKind(elem)
+  kind == 5 or kind == 6
+}
+
+/// True when `elem` is a number readable as a `Double` (`getDouble`'s
+/// precondition).
+@stable(since = "1.2")
+@pure
+pub func isJsonDouble(elem: in JsonElement): Bool {
+  match tryGetDouble(elem) {
+    case Some(_) -> true
+    case None -> false
+  }
 }
 
 @stable(since = "1.0")
@@ -130,6 +208,7 @@ pub func tryGetLong(elem: in JsonElement): Option[Long] {
   }
 }
 
+@stable(since = "1.0")
 pub func tryGetDouble(elem: in JsonElement): Option[Double] {
   // JsonValueKind.Number = 4. Check the kind first to avoid the BCL
   // throwing an exception on non-numeric values (#3824).
@@ -236,102 +315,167 @@ pub func propertyValue(prop: in JsonProperty): JsonElement {
 
 // =====================================================================
 // fromJson scalar field readers — used by @generate(Json) synthesised stubs.
-// Each re-parses the JSON string and walks to the named property.
+// Each re-parses the JSON string and walks to the named property. The body
+// is untrusted, so every reader fails closed: malformed JSON, a non-object
+// root, a missing property or a value of the wrong kind or range all return
+// `false` with a default `value`, never a host exception (#7251).
 // =====================================================================
+func lyricJsonParseObject(s: in String): Option[JsonDoc] {
+  match tryParseJson(s) {
+    case Err(_) -> None
+    case Ok(doc) -> {
+      if hostValueKind(hostRootElement(doc)) == 1 {
+        Some(value = doc)
+      } else {
+        hostDisposeJson(doc)
+        None
+      }
+    }
+  }
+}
+
 pub func lyricJsonGetInt(s: in String, name: in String, value: out Int): Bool {
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
+  value = default()
+  match lyricJsonParseObject(s) {
+    case None -> false
+    case Some(doc) -> {
+      defer {
+        hostDisposeJson(doc)
+      }
+      match tryGetProperty(hostRootElement(doc), name) {
+        case None -> false
+        case Some(elem) -> match tryGetInt(elem) { case Some(v) -> { value = v; true }; case None -> false }
+      }
+    }
   }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = default()
-    return false
-  }
-  return hostTryGetInt32(elem, value)
 }
 
 pub func lyricJsonGetLong(s: in String, name: in String, value: out Long): Bool {
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
+  value = default()
+  match lyricJsonParseObject(s) {
+    case None -> false
+    case Some(doc) -> {
+      defer {
+        hostDisposeJson(doc)
+      }
+      match tryGetProperty(hostRootElement(doc), name) {
+        case None -> false
+        case Some(elem) -> match tryGetLong(elem) { case Some(v) -> { value = v; true }; case None -> false }
+      }
+    }
   }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = default()
-    return false
-  }
-  return hostTryGetInt64(elem, value)
 }
 
 pub func lyricJsonGetDouble(s: in String, name: in String, value: out Double): Bool {
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
+  value = default()
+  match lyricJsonParseObject(s) {
+    case None -> false
+    case Some(doc) -> {
+      defer {
+        hostDisposeJson(doc)
+      }
+      match tryGetProperty(hostRootElement(doc), name) {
+        case None -> false
+        case Some(elem) -> match tryGetDouble(elem) { case Some(v) -> { value = v; true }; case None -> false }
+      }
+    }
   }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = default()
-    return false
-  }
-  return hostTryGetDouble(elem, value)
 }
 
 pub func lyricJsonGetBool(s: in String, name: in String, value: out Bool): Bool {
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
-  }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = default()
-    return false
-  }
-  // JsonValueKind.True = 5, JsonValueKind.False = 6
-  val kind = hostValueKind(elem)
-  if kind == 5 or kind == 6 {
-    value = hostGetBoolean(elem)
-    return true
-  }
   value = default()
-  return false
+  match lyricJsonParseObject(s) {
+    case None -> false
+    case Some(doc) -> {
+      defer {
+        hostDisposeJson(doc)
+      }
+      match tryGetProperty(hostRootElement(doc), name) {
+        case None -> false
+        case Some(elem) -> {
+          if isJsonBool(elem) {
+            value = hostGetBoolean(elem)
+            true
+          } else {
+            false
+          }
+        }
+      }
+    }
+  }
 }
 
 pub func lyricJsonGetString(s: in String, name: in String, value: out String): Bool {
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
+  value = default()
+  match lyricJsonParseObject(s) {
+    case None -> false
+    case Some(doc) -> {
+      defer {
+        hostDisposeJson(doc)
+      }
+      match tryGetProperty(hostRootElement(doc), name) {
+        case None -> false
+        case Some(elem) -> {
+          if isJsonString(elem) {
+            value = hostGetString(elem)
+            true
+          } else {
+            false
+          }
+        }
+      }
+    }
   }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = default()
-    return false
+}
+
+/// Whether `elem` can be read as the scalar type named `typeName` without
+/// failing a getter's precondition: `@generate(Json)` readers test it before
+/// each scalar field or element and return `Err` otherwise (#7401). A `Byte`
+/// must be a number in 0..255 and a `Char` a one-character string, as
+/// `toJson` writes them.
+@pure
+pub func lyricJsonIsKind(elem: in JsonElement, typeName: in String): Bool {
+  if typeName == "String" {
+    isJsonString(elem)
+  } else if typeName == "Int" {
+    isJsonInt32(elem)
+  } else if typeName == "Long" {
+    isJsonInt64(elem)
+  } else if typeName == "Bool" {
+    isJsonBool(elem)
+  } else if typeName == "Double" or typeName == "Float" {
+    isJsonDouble(elem)
+  } else if typeName == "Byte" {
+    match tryGetInt(elem) {
+      case Some(v) -> v >= 0 and v <= 255
+      case None -> false
+    }
+  } else if typeName == "Char" {
+    isJsonString(elem) and hostGetString(elem).length == 1
+  } else {
+    false
   }
-  // JsonValueKind.String = 3
-  if hostValueKind(elem) != 3 {
-    value = default()
-    return false
-  }
-  value = hostGetString(elem)
-  return true
 }
 
 pub func lyricJsonGetSubObject(s: in String, name: in String, value: out String): Bool {
-  val doc = hostParseJson(s)
-  defer {
-    hostDisposeJson(doc)
+  value = "{}"
+  match lyricJsonParseObject(s) {
+    case None -> false
+    case Some(doc) -> {
+      defer {
+        hostDisposeJson(doc)
+      }
+      match tryGetProperty(hostRootElement(doc), name) {
+        case None -> false
+        case Some(elem) -> {
+          if hostValueKind(elem) == 1 {
+            value = hostGetRawText(elem)
+            true
+          } else {
+            false
+          }
+        }
+      }
+    }
   }
-  val root = hostRootElement(doc)
-  var elem: JsonElement = default()
-  if not hostTryGetProperty(root, name, elem) {
-    value = "{}"
-    return false
-  }
-  value = hostGetRawText(elem)
-  return true
 }

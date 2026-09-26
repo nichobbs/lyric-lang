@@ -75,6 +75,7 @@ func makeFuncCtx(
     retTy = retTy,
     deferStack = deferStack,
     loopDeferDepth = loopDeferDepth,
+    loopLabelIndex = newMap(),
     deferRanSlots = deferRanSlots,
     selfClass = None,
     moduleVals = moduleVals,
@@ -129,6 +130,7 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     retTy = ctx.retTy,
     deferStack = ctx.deferStack,
     loopDeferDepth = ctx.loopDeferDepth,
+    loopLabelIndex = ctx.loopLabelIndex,
     deferRanSlots = ctx.deferRanSlots,
     selfClass = ctx.selfClass,
     moduleVals = ctx.moduleVals,
@@ -204,6 +206,7 @@ func makeFuncCtxForGenerator(
     retTy = JVoid,
     deferStack = deferStack,
     loopDeferDepth = loopDeferDepth,
+    loopLabelIndex = newMap(),
     deferRanSlots = deferRanSlots,
     selfClass = None,
     moduleVals = moduleVals,
@@ -283,6 +286,7 @@ func makeFuncCtxInstance(
     retTy = retTy,
     deferStack = deferStack,
     loopDeferDepth = loopDeferDepth,
+    loopLabelIndex = newMap(),
     deferRanSlots = deferRanSlots,
     selfClass = Some(value = className),
     moduleVals = moduleVals,
@@ -1974,9 +1978,9 @@ func lowerImplMethod(
 
 // Build a protected-type class as a record-shaped `LPRecord`: data fields plus
 // the entry / helper methods as instance methods.  This mirrors the MSIL
-// backend (`lowerProtectedMsil`), which also emits protected types as records;
-// real ReentrantLock-based mutual exclusion is a documented cross-target gap
-// (MSIL "Phase R6", JVM `lowerProtected` Path-A) tracked in #855 / #1833.  The
+// backend (`lowerProtectedMsil`), which also emits protected types as records.
+// Every member is `synchronized` on the instance (see the PMEntry arm), which
+// is the mutual exclusion §7.5 requires (#7363).  The
 // record shape is required so the field-args constructor matches how protected
 // types are constructed (`TokenBucket(field = …, …)`), unlike the no-arg
 // `lowerProtected` Path-A constructor.
@@ -2027,10 +2031,14 @@ func buildProtected(
         }
       }
       case PMEntry(ed) -> {
+        // ACC_PUBLIC | ACC_SYNCHRONIZED: every `entry` and `func` holds the
+        // instance monitor for its whole body (reentrant, released on an
+        // exception), the JVM counterpart of MSIL's Monitor.Enter/Exit
+        // wrapper.  Without it concurrent entries lost updates (#7363).
         methods.add(
           lowerProtectedMethod(
             className,
-            0x0001,
+            0x0021,
             ed.name,
             ed.params,
             ed.ret,
@@ -2056,7 +2064,7 @@ func buildProtected(
             methods.add(
               lowerProtectedMethod(
                 className,
-                0x0001,
+                0x0021,
                 fn.name,
                 fn.params,
                 fn.ret,
@@ -6696,9 +6704,9 @@ pub func codegenPackageWithSigsSeeded(
         // J3 M-3: emit a record-shaped class via `buildProtected` (an
         // `LPRecord`).  Field members become private data fields; each `entry`
         // / helper `func` becomes an instance method whose bare field
-        // references resolve through `selfClass` (slot 0 = `this`).  Real
-        // ReentrantLock guarding is a documented cross-target gap — MSIL also
-        // emits protected types as plain records.
+        // references resolve through `selfClass` (slot 0 = `this`).  Each
+        // member is a `synchronized` method, so entries are mutually
+        // exclusive (#7363).
         items.add(
           buildProtected(
             decl,

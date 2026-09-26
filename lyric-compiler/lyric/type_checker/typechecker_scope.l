@@ -67,6 +67,9 @@ pub record Scope {
   // type's method-signature space instead of raising a false T0020, exactly
   // as an explicit `self.dup()` call already would.
   selfType: Type
+  // Non-empty while a contract clause or loop invariant is being checked
+  // (#7228): a call made there must resolve to a `@pure` function (T0133).
+  contractDepth: List[Int]
 }
 
 pub func newScope(): Scope {
@@ -83,7 +86,8 @@ pub func newScope(): Scope {
     returnTyExpr = noReturnTyExpr,
     selfFields = noSelfFields,
     selfChecked = false,
-    selfType = TyError
+    selfType = TyError,
+    contractDepth = newList()
   )
 }
 
@@ -116,7 +120,8 @@ pub func newScopeForFunction(
     returnTyExpr = returnTyExpr,
     selfFields = selfFields,
     selfChecked = selfChecked,
-    selfType = selfType
+    selfType = selfType,
+    contractDepth = newList()
   )
 }
 
