@@ -70,9 +70,7 @@ pub protected type SessionRegistry {
   /// every session is connected and the limit is reached.  Making room and
   /// adding happen under one lock, so concurrent connections cannot together
   /// exceed `max`.
-  entry admit(
-    id: in String, inst: in Instance, connectionId: in String, now: in Long, graceMs: in Long, max: in Int
-  ): Bool {
+  entry admit(id: in String, inst: in Instance, connectionId: in String, now: in Long, graceMs: in Long, max: in Int): Bool {
     removeExpired(now, graceMs)
     while byId.count >= max {
       var oldest = ""

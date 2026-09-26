@@ -2454,7 +2454,8 @@ func genericFieldScopePkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPGf.App",
-      "package EPGf.App\n" + "\n" + "import EPGf.Lib.{Tagged, mkItem, total}\n" + "\n" + "record Item {\n" + "  s: String\n" +
+      "package EPGf.App\n" + "\n" + "import EPGf.Lib.{Tagged, mkItem, total}\n" + "\n" + "record Item {\n" +
+        "  s: String\n" +
         "}\n" +
         "\n" +
         "func main(): Unit {\n" +
