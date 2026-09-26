@@ -503,3 +503,51 @@ test "@externTarget typed-delegate parameter passed a direct lambda literal stil
     "a direct lambda-literal argument to a typed-delegate parameter must still compile cleanly"
   )
 }
+
+// ─── F0027: hint-less @externTarget instance method unconfirmed by metadata ─
+// #5704 enforcement half: promotes F0027 from a bare `Console.error` warning
+// (D-progress-671) to a build-gating `errorDiagnostic`, mirroring F0015's
+// conversion. `StringBuilder.Append` is a real BCL instance method (so the
+// declaring type IS present in the reference-assembly index — the gate this
+// diagnostic requires) with no `(String, String)`-shaped overload once the
+// receiver is stripped, so the metadata scorer confirms no candidate and the
+// calling convention stays an unconfirmed static guess — exactly the hazard
+// this diagnostic exists to catch instead of letting it fault at run time
+// with `MissingMethodException`.
+test "F0027: hint-less @externTarget instance method with mismatched arity fails cleanly" {
+  val src = "package F0027App\n" + "\n" + "extern type SB0027 = \"System.Text.StringBuilder\"\n" + "\n" +
+    "@externTarget(\"System.Text.StringBuilder.Append\")\n" +
+    "func sbAppend0027(sb: in SB0027, a: in String, b: in String): SB0027 = ()\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(\"unreachable\")\n" +
+    "}\n"
+  // `func` keyword on line 6, column 1 — `decl.span`'s start
+  // (`parser_items.l::parseFunctionDeclBody`'s `startSpan`).
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0027Bad", src, diags)
+  assertTrue(
+    not ok,
+    "a hint-less @externTarget over StringBuilder.Append with an unmatched arity must be rejected, not compile clean"
+  )
+  assertDiagAt(diags, "F0027", 6, 1, "F0027: hint-less StringBuilder.Append with mismatched arity")
+}
+
+// Companion "good" case: the same hint-less target, but with the arity/types
+// that actually match a real `StringBuilder.Append(string)` overload — the
+// metadata scorer confirms the calling convention, so F0027 must NOT fire.
+// Pins that the promotion from warning to error didn't turn a legitimately
+// metadata-verified hint-less extern into a false positive.
+test "hint-less @externTarget instance method verified by metadata still compiles" {
+  val src = "package F0027GoodApp\n" + "\n" + "extern type SB0027g = \"System.Text.StringBuilder\"\n" + "\n" +
+    "@externTarget(\"System.Text.StringBuilder.Append\")\n" +
+    "func sbAppend0027g(sb: in SB0027g, a: in String): SB0027g = ()\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(\"ok\")\n" +
+    "}\n"
+  assertTrue(
+    compiles("F0027Good", src),
+    "a hint-less @externTarget whose calling convention metadata CAN confirm must still compile cleanly"
+  )
+}

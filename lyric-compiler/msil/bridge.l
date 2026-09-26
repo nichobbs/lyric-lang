@@ -119,8 +119,10 @@ func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
 }
 
 // #4898: prints any `cctx.diagnostics` accumulated by `codegenMPackage`
-// (F0021–F0025, F0034 — external interface conformance + try-catch-as-expression
-// Unit/value mismatch) and reports whether the build must abort.  Named
+// (F0021–F0027, F0034 — external interface conformance, try-catch-as-expression
+// Unit/value mismatch, typed-delegate non-literal arguments, and hint-less
+// unverifiable @externTarget calling convention) and reports whether the
+// build must abort.  Named
 // distinctly from `Lyric.DiagnosticUtil.diagReportAndAbort` per that
 // package's own guidance: a bridge that defined a same-named local
 // `reportAndAbort` would shadow the fully-qualified call and recurse.
@@ -132,7 +134,7 @@ func abortOnCodegenDiagnosticsMsil(cctx: in CodegenCtx): Bool {
 }
 
 // #6598/#6599, widened by #6824 item 2: project-path variant of
-// `abortOnCodegenDiagnosticsMsil` that attributes each F0021–F0025/F0034
+// `abortOnCodegenDiagnosticsMsil` that attributes each F0021–F0027/F0034
 // codegen diagnostic to its real on-disk file and line via `origins` — the
 // same `PackageLineOrigins` table the parse/typecheck/modecheck/elaborate/
 // weave gates on this exact package already use (`ParsedUserPkg.origins`),
@@ -387,7 +389,7 @@ pub func compileToMsilWithVersion(
   // `EmitResult.diagnostics` entry happens one layer up, in
   // `Lyric.Emitter`'s `msilBridgePanicDiagnostic` boundary.
   //
-  // #4898: F0021–F0025, F0034 (external interface conformance + try-catch-as-
+  // #4898: F0021–F0027, F0034 (external interface conformance + try-catch-as-
   // expression Unit/value mismatch) are a different case — genuine,
   // compile-time-detectable user errors that `codegenMPackage` records on
   // `cctx.diagnostics` instead of panicking.  Report and abort here, the
@@ -548,7 +550,7 @@ pub func compileProjectToMsilWithFeatures(
   )
 }
 
-/// Like `compileProjectToMsilWithFeatures`, but also appends any F0021–F0025, F0034
+/// Like `compileProjectToMsilWithFeatures`, but also appends any F0021–F0027, F0034
 /// codegen-conformance diagnostics (#4898) into `outDiagnostics` on failure —
 /// see `compileProjectToMsilWithRestoredAndVersionDiag` for the full
 /// rationale and the cross-assembly caveat.  No restored artifacts, no
@@ -673,7 +675,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
 }
 
 /// Like `compileProjectToMsilWithRestoredAndVersion`, but also appends the
-/// F0021–F0025, F0034 external-interface-conformance / try-catch-as-expression
+/// F0021–F0027, F0034 external-interface-conformance / try-catch-as-expression
 /// diagnostics accumulated on the shared `CodegenCtx` (#4898) into
 /// `outDiagnostics` on a codegen-level failure, instead of discarding them
 /// behind the bare `Bool` return.  `abortOnCodegenDiagnosticsMsil` already
@@ -1315,7 +1317,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
 
   // Phase 4: codegen each package into an MPackage against the same cctx.
   // #6449/#6459: codegen panics escape (the bridge's library contract) —
-  // see the single-file call site's comment above.  #4898: F0021–F0025, F0034
+  // see the single-file call site's comment above.  #4898: F0021–F0027, F0034
   // diagnostics accumulate on the shared `cctx` across every package in the
   // bundle.  #6598: the gate is checked INSIDE the loop, immediately after
   // each package's codegen call, so the build aborts on the first package
@@ -1334,7 +1336,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // above), and `parsedPkgs[ci].label` is the SAME real-path-or-name field
   // the middle-end gate above (`pkgLabel = pp.label`) already uses for
   // this exact package index — using the bare `perPkgNames[ci]` here
-  // instead left a single-file package's F0021–F0025/F0034 diagnostics
+  // instead left a single-file package's F0021–F0027/F0034 diagnostics
   // falling back to the bare package name even when the real path was
   // already known.
   val mpkgs: List[MPackage] = newList()
