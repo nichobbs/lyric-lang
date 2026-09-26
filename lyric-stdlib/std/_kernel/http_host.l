@@ -1,10 +1,16 @@
 //! std/_kernel/http_host.l - host boundary for HTTP.
 //!
 //! This file is the audited extern boundary for `Std.Http`.  Every
-//! host-facing function below is either:
+//! host-facing function below is one of:
 //!
-//!   * a direct `@externTarget` to a single BCL method / property /
-//!     constructor (the trivial pass-through case), or
+//!   * a plain `.new()`/property-access/direct dot-call over an `extern
+//!     type` (D-progress-656 tranche-3, #5613 item 2) — the trivial
+//!     pass-through case whenever auto-FFI can resolve it, matching the
+//!     idiom `process_capture_host.l`/`file_host.l` already use, or
+//!   * an `@externTarget` wrapper for a case auto-FFI can't resolve
+//!     (a delegate-typed parameter, an async/`Task`-returning method, or
+//!     a bracket-suffixed generic-instantiation extern type — see the
+//!     inline comments at each such site for which case applies), or
 //!   * a native Lyric helper that composes a sequence of those
 //!     primitives (the multi-step orchestration case — `hostMakeRequest`,
 //!     `hostWithStringBody`, etc.).
@@ -79,29 +85,42 @@ extern type HttpVersionPolicy = "System.Net.Http.HttpVersionPolicy"
 // Primitive externs (private to this kernel file).  These bind the
 // individual BCL members; the public `host*` helpers compose them.
 // =====================================================================
-@externTarget("System.Text.Encoding.UTF8")
-func utf8(): Encoding = ()
+// D-progress-656 tranche-3 migration (#5613 item 2): the primitives below
+// this point that have no delegate-typed parameter and no Task/async return
+// go through the plain `.new()`/property-access/direct-call auto-FFI idiom
+// instead of an explicit `@externTarget` wrapper — same idiom currency as
+// `process_capture_host.l`/`file_host.l`. Delegate-parameter setters
+// (`socketsSetConnectCallback`, `handlerSetValidationCallback`) and the
+// async client/content methods below stay on `@externTarget`: D122's
+// typed-delegate bridging is scoped to `@externTarget` functions' own
+// parameters (docs/50), and auto-FFI has no `Task`/`Task<T>` unwrap path.
+func utf8(): Encoding {
+  Encoding.UTF8
+}
 
-@externTarget("System.Net.Http.HttpMethod..ctor")
-func newHttpMethod(name: in String): BclHttpMethod = ()
+func newHttpMethod(name: in String): BclHttpMethod {
+  BclHttpMethod.new(name)
+}
 
-@externTarget("System.Net.Http.HttpRequestMessage..ctor")
-func newRequest(method: in BclHttpMethod, url: in String): HttpRequestMessage = ()
+func newRequest(method: in BclHttpMethod, url: in String): HttpRequestMessage {
+  HttpRequestMessage.new(method, url)
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpRequestMessage.Headers")
-func requestHeaders(req: in HttpRequestMessage): HttpHeaders = ()
+func requestHeaders(req: in HttpRequestMessage): HttpHeaders {
+  req.Headers
+}
 
-@externInstance
-@externTarget("System.Net.Http.Headers.HttpHeaders.TryAddWithoutValidation")
-func headersTryAdd(h: in HttpHeaders, name: in String, value: in String): Bool = ()
+func headersTryAdd(h: in HttpHeaders, name: in String, value: in String): Bool {
+  h.TryAddWithoutValidation(name, value)
+}
 
-@externTarget("System.Net.Http.StringContent..ctor")
-func newStringContent(body: in String, encoding: in Encoding, mediaType: in String): StringContent = ()
+func newStringContent(body: in String, encoding: in Encoding, mediaType: in String): StringContent {
+  StringContent.new(body, encoding, mediaType)
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpRequestMessage.set_Content")
-func setRequestContent(req: in HttpRequestMessage, content: in StringContent): Unit = ()
+func setRequestContent(req: in HttpRequestMessage, content: in StringContent): Unit {
+  req.Content = content
+}
 
 // Raw ctors (private, no version applied): every public `hostClient*`
 // function below builds through exactly one of these, then applies exactly
@@ -110,39 +129,45 @@ func setRequestContent(req: in HttpRequestMessage, content: in StringContent): U
 // stamped twice. D128 decision 4's "every constructed client, including the
 // singleton" default is impossible to bypass at a call site: every path to
 // a raw ctor is followed by exactly one `apply*` call.
-@externTarget("System.Net.Http.HttpClient..ctor")
-func rawNewClient(): HttpClientHandle = ()
+func rawNewClient(): HttpClientHandle {
+  HttpClientHandle.new()
+}
 
-@externTarget("System.Net.Http.HttpClient..ctor")
-func rawNewClientFromHandler(handler: in HttpClientHandler): HttpClientHandle = ()
+func rawNewClientFromHandler(handler: in HttpClientHandler): HttpClientHandle {
+  HttpClientHandle.new(handler)
+}
 
-@externTarget("System.Net.Http.HttpClientHandler..ctor")
-func newHandler(): HttpClientHandler = ()
+func newHandler(): HttpClientHandler {
+  HttpClientHandler.new()
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpClientHandler.set_AllowAutoRedirect")
-func setAllowAutoRedirect(h: in HttpClientHandler, v: in Bool): Unit = ()
+func setAllowAutoRedirect(h: in HttpClientHandler, v: in Bool): Unit {
+  h.AllowAutoRedirect = v
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpClientHandler.set_MaxAutomaticRedirections")
-func setMaxAutomaticRedirections(h: in HttpClientHandler, n: in Int): Unit = ()
+func setMaxAutomaticRedirections(h: in HttpClientHandler, n: in Int): Unit {
+  h.MaxAutomaticRedirections = n
+}
 
-@externTarget("System.Net.Sockets.UnixDomainSocketEndPoint..ctor")
-func newUnixDomainSocketEndPoint(path: in String): UnixDomainSocketEndPoint = ()
+func newUnixDomainSocketEndPoint(path: in String): UnixDomainSocketEndPoint {
+  UnixDomainSocketEndPoint.new(path)
+}
 
-@externTarget("System.Net.Http.SocketsHttpHandler..ctor")
-func newSocketsHandler(): SocketsHttpHandler = ()
+func newSocketsHandler(): SocketsHttpHandler {
+  SocketsHttpHandler.new()
+}
 
-@externInstance
-@externTarget("System.Net.Http.SocketsHttpHandler.set_AllowAutoRedirect")
-func socketsSetAllowAutoRedirect(h: in SocketsHttpHandler, v: in Bool): Unit = ()
+func socketsSetAllowAutoRedirect(h: in SocketsHttpHandler, v: in Bool): Unit {
+  h.AllowAutoRedirect = v
+}
 
-@externInstance
-@externTarget("System.Net.Http.SocketsHttpHandler.set_MaxAutomaticRedirections")
-func socketsSetMaxAutomaticRedirections(h: in SocketsHttpHandler, n: in Int): Unit = ()
+func socketsSetMaxAutomaticRedirections(h: in SocketsHttpHandler, n: in Int): Unit {
+  h.MaxAutomaticRedirections = n
+}
 
-@externTarget("System.Net.Http.HttpClient..ctor")
-func rawNewClientFromSocketsHandler(handler: in SocketsHttpHandler): HttpClientHandle = ()
+func rawNewClientFromSocketsHandler(handler: in SocketsHttpHandler): HttpClientHandle {
+  HttpClientHandle.new(handler)
+}
 
 // ---------------------------------------------------------------------------
 // HTTP-version knob (docs/61 §5.1, D128 decision 4; #5879).
@@ -153,22 +178,25 @@ func rawNewClientFromSocketsHandler(handler: in SocketsHttpHandler): HttpClientH
 // converges on the two `apply*` helpers below applied once, right after
 // construction, before the client is ever used.
 // ---------------------------------------------------------------------------
-@externInstance
-@externTarget("System.Net.Http.HttpClient.set_DefaultRequestVersion")
-func setDefaultRequestVersion(c: in HttpClientHandle, v: in Version): Unit = ()
+func setDefaultRequestVersion(c: in HttpClientHandle, v: in Version): Unit {
+  c.DefaultRequestVersion = v
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpClient.set_DefaultVersionPolicy")
-func setDefaultVersionPolicy(c: in HttpClientHandle, p: in HttpVersionPolicy): Unit = ()
+func setDefaultVersionPolicy(c: in HttpClientHandle, p: in HttpVersionPolicy): Unit {
+  c.DefaultVersionPolicy = p
+}
 
-@externTarget("System.Version..ctor")
-func newVersion(major: in Int, minor: in Int): Version = ()
+func newVersion(major: in Int, minor: in Int): Version {
+  Version.new(major, minor)
+}
 
-@externTarget("System.Net.Http.HttpVersionPolicy.RequestVersionOrLower")
-func versionPolicyOrLower(): HttpVersionPolicy = ()
+func versionPolicyOrLower(): HttpVersionPolicy {
+  HttpVersionPolicy.RequestVersionOrLower
+}
 
-@externTarget("System.Net.Http.HttpVersionPolicy.RequestVersionExact")
-func versionPolicyExact(): HttpVersionPolicy = ()
+func versionPolicyExact(): HttpVersionPolicy {
+  HttpVersionPolicy.RequestVersionExact
+}
 
 // h2-or-lower (docs/61 default): request HTTP/2, but negotiate down to
 // HTTP/1.1 rather than fail if the peer doesn't support h2.  This only
@@ -187,28 +215,33 @@ func applyHttp11Exact(c: in HttpClientHandle): HttpClientHandle {
   c
 }
 
-@externTarget("System.Net.Sockets.AddressFamily.Unix")
-func addressFamilyUnix(): SocketAddressFamily = ()
+func addressFamilyUnix(): SocketAddressFamily {
+  SocketAddressFamily.Unix
+}
 
-@externTarget("System.Net.Sockets.SocketType.Stream")
-func socketKindStream(): SocketKind = ()
+func socketKindStream(): SocketKind {
+  SocketKind.Stream
+}
 
-@externTarget("System.Net.Sockets.ProtocolType.Unspecified")
-func protocolTypeUnspecified(): SocketProtocolType = ()
+func protocolTypeUnspecified(): SocketProtocolType {
+  SocketProtocolType.Unspecified
+}
 
-@externTarget("System.Net.Sockets.Socket..ctor")
-func newSocket(family: in SocketAddressFamily, kind: in SocketKind, protocolType: in SocketProtocolType): Socket = ()
+func newSocket(family: in SocketAddressFamily, kind: in SocketKind, protocolType: in SocketProtocolType): Socket {
+  Socket.new(family, kind, protocolType)
+}
 
-@externInstance
-@externTarget("System.Net.Sockets.Socket.Connect")
-func socketConnect(s: in Socket, endpoint: in UnixDomainSocketEndPoint): Unit = ()
+func socketConnect(s: in Socket, endpoint: in UnixDomainSocketEndPoint): Unit {
+  s.Connect(endpoint)
+}
 
-@externInstance
-@externTarget("System.Net.Sockets.Socket.Dispose")
-func socketDispose(s: in Socket): Unit = ()
+func socketDispose(s: in Socket): Unit {
+  s.Dispose()
+}
 
-@externTarget("System.Net.Sockets.NetworkStream..ctor")
-func newNetworkStream(s: in Socket, ownsSocket: in Bool): NetworkStream = ()
+func newNetworkStream(s: in Socket, ownsSocket: in Bool): NetworkStream {
+  NetworkStream.new(s, ownsSocket)
+}
 
 // `ValueTask`1` has no implicit-conversion operator — the C# compiler's
 // `return value;` sugar inside an `async ValueTask<T>` method lowers directly
@@ -289,13 +322,13 @@ async func clientPostAsyncCancel(
   token: in CancellationToken,
 ): HttpResponseMessage = ()
 
-@externInstance
-@externTarget("System.Net.Http.HttpResponseMessage.StatusCode")
-func responseStatusInt(response: in HttpResponseMessage): Int = ()
+func responseStatusInt(response: in HttpResponseMessage): Int {
+  response.StatusCode
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpResponseMessage.Content")
-func responseContent(response: in HttpResponseMessage): HttpContent = ()
+func responseContent(response: in HttpResponseMessage): HttpContent {
+  response.Content
+}
 
 @externInstance
 @externTarget("System.Net.Http.HttpContent.ReadAsStringAsync")
@@ -559,9 +592,9 @@ extern type SslPolicyErrors = "System.Net.Security.SslPolicyErrors"
 
 extern type X509RevocationMode = "System.Security.Cryptography.X509Certificates.X509RevocationMode"
 
-@externInstance
-@externTarget("System.Net.Http.HttpClientHandler.set_SslProtocols")
-func handlerSetSslProtocols(h: in HttpClientHandler, p: in SslProtocols): Unit = ()
+func handlerSetSslProtocols(h: in HttpClientHandler, p: in SslProtocols): Unit {
+  h.SslProtocols = p
+}
 
 // Only the `Tls13`-exact pin ever sets `SslProtocols` explicitly.
 // `SslProtocols` is a `[Flags]` enum with no bitwise-OR method in its
@@ -577,42 +610,45 @@ func handlerSetSslProtocols(h: in HttpClientHandler, p: in SslProtocols): Unit =
 // TLS 1.2 by default since long before this module shipped. Explicitly
 // pinning `Tls12` alone would be WRONG (it would exclude 1.3), so the
 // floor case and the unset case both take the "leave it alone" branch.
-@externTarget("System.Security.Authentication.SslProtocols.Tls13")
-func sslProtocolsTls13(): SslProtocols = ()
+func sslProtocolsTls13(): SslProtocols {
+  SslProtocols.Tls13
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpClientHandler.get_ClientCertificates")
-func handlerClientCertificates(h: in HttpClientHandler): X509CertificateCollection = ()
+func handlerClientCertificates(h: in HttpClientHandler): X509CertificateCollection {
+  h.ClientCertificates
+}
 
-@externInstance
-@externTarget("System.Security.Cryptography.X509Certificates.X509CertificateCollection.Add")
-func certCollectionAdd(c: in X509CertificateCollection, cert: in TlsHost.CertHandle): Int = ()
+func certCollectionAdd(c: in X509CertificateCollection, cert: in TlsHost.CertHandle): Int {
+  c.Add(cert)
+}
 
-@externInstance
-@externTarget("System.Security.Cryptography.X509Certificates.X509Certificate2Collection.Add")
-func x2CollectionAdd(c: in X509Certificate2Collection, cert: in TlsHost.CertHandle): Int = ()
+func x2CollectionAdd(c: in X509Certificate2Collection, cert: in TlsHost.CertHandle): Int {
+  c.Add(cert)
+}
 
-@externTarget("System.Security.Cryptography.X509Certificates.X509Chain..ctor")
-func newX509Chain(): X509Chain = ()
+func newX509Chain(): X509Chain {
+  X509Chain.new()
+}
 
-@externInstance
-@externTarget("System.Security.Cryptography.X509Certificates.X509Chain.get_ChainPolicy")
-func chainPolicyOf(c: in X509Chain): X509ChainPolicy = ()
+func chainPolicyOf(c: in X509Chain): X509ChainPolicy {
+  c.ChainPolicy
+}
 
-@externInstance
-@externTarget("System.Security.Cryptography.X509Certificates.X509ChainPolicy.set_TrustMode")
-func chainPolicySetTrustMode(p: in X509ChainPolicy, m: in X509ChainTrustMode): Unit = ()
+func chainPolicySetTrustMode(p: in X509ChainPolicy, m: in X509ChainTrustMode): Unit {
+  p.TrustMode = m
+}
 
-@externTarget("System.Security.Cryptography.X509Certificates.X509ChainTrustMode.CustomRootTrust")
-func chainTrustModeCustomRoot(): X509ChainTrustMode = ()
+func chainTrustModeCustomRoot(): X509ChainTrustMode {
+  X509ChainTrustMode.CustomRootTrust
+}
 
-@externInstance
-@externTarget("System.Security.Cryptography.X509Certificates.X509ChainPolicy.get_CustomTrustStore")
-func chainPolicyCustomTrustStoreOf(p: in X509ChainPolicy): X509Certificate2Collection = ()
+func chainPolicyCustomTrustStoreOf(p: in X509ChainPolicy): X509Certificate2Collection {
+  p.CustomTrustStore
+}
 
-@externInstance
-@externTarget("System.Security.Cryptography.X509Certificates.X509ChainPolicy.set_RevocationMode")
-func chainPolicySetRevocationMode(p: in X509ChainPolicy, m: in X509RevocationMode): Unit = ()
+func chainPolicySetRevocationMode(p: in X509ChainPolicy, m: in X509RevocationMode): Unit {
+  p.RevocationMode = m
+}
 
 // Matches `HttpClientHandler`'s own default (`CheckCertificateRevocationList
 // = false`, i.e. no revocation check) so configuring a TLS option does not
@@ -620,8 +656,9 @@ func chainPolicySetRevocationMode(p: in X509ChainPolicy, m: in X509RevocationMod
 // would add unexpected latency, or hang outright, against a peer whose
 // revocation endpoint is unreachable (notably the air-gapped/restricted-
 // egress service-mesh case `withExclusiveCaCertificate` targets).
-@externTarget("System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck")
-func revocationModeNoCheck(): X509RevocationMode = ()
+func revocationModeNoCheck(): X509RevocationMode {
+  X509RevocationMode.NoCheck
+}
 
 // The two `SslPolicyErrors` values `applyTlsOptions`'s validation callback
 // checks against via plain `==` (a `ceq` over the enum's underlying int
@@ -629,24 +666,26 @@ func revocationModeNoCheck(): X509RevocationMode = ()
 // `sslProtocolsTls13`'s comment documents does not apply to equality
 // checks against a SPECIFIC known value, only to combining/decomposing
 // flags generically).
-@externTarget("System.Net.Security.SslPolicyErrors.None")
-func sslPolicyErrorsNone(): SslPolicyErrors = ()
+func sslPolicyErrorsNone(): SslPolicyErrors {
+  SslPolicyErrors.None
+}
 
-@externTarget("System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors")
-func sslPolicyErrorsChainErrorsOnly(): SslPolicyErrors = ()
+func sslPolicyErrorsChainErrorsOnly(): SslPolicyErrors {
+  SslPolicyErrors.RemoteCertificateChainErrors
+}
 
-@externInstance
-@externTarget("System.Security.Cryptography.X509Certificates.X509Chain.Build")
-func chainBuild(c: in X509Chain, cert: in TlsHost.CertHandle): Bool = ()
+func chainBuild(c: in X509Chain, cert: in TlsHost.CertHandle): Bool {
+  c.Build(cert)
+}
 
 // `X509Chain` implements `IDisposable` and holds a native certificate-chain-
 // engine handle; `Dispose()` releases it immediately instead of waiting for
 // GC finalization (#5972) — the same discipline `Std.Json`'s
 // `hostDisposeJson`/`Std.ProcessHost`'s `hostDisposeProc` already establish
 // for other `IDisposable` BCL resources reached through this kernel tree.
-@externInstance
-@externTarget("System.Security.Cryptography.X509Certificates.X509Chain.Dispose")
-func chainDispose(c: in X509Chain): Unit = ()
+func chainDispose(c: in X509Chain): Unit {
+  c.Dispose()
+}
 
 @externInstance
 @externTarget("System.Net.Http.HttpClientHandler.set_ServerCertificateCustomValidationCallback")
@@ -911,41 +950,52 @@ extern type IEnumerableStr = "System.Collections.Generic.IEnumerable`1[System.St
 
 extern type NonGenericEnumerator = "System.Collections.IEnumerator"
 
-@externInstance
-@externTarget("System.Net.Http.HttpResponseMessage.Headers")
-func responseHeadersOf(r: in HttpResponseMessage): HttpResponseHeaders = ()
+func responseHeadersOf(r: in HttpResponseMessage): HttpResponseHeaders {
+  r.Headers
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpContent.Headers")
-func contentHeadersOf(c: in HttpContent): HttpContentHeaders = ()
+func contentHeadersOf(c: in HttpContent): HttpContentHeaders {
+  c.Headers
+}
 
-@externInstance
-@externTarget("System.Net.Http.Headers.HttpHeaders.Contains")
-func responseHeadersContain(h: in HttpResponseHeaders, name: in String): Bool = ()
+func responseHeadersContain(h: in HttpResponseHeaders, name: in String): Bool {
+  h.Contains(name)
+}
 
-@externInstance
-@externTarget("System.Net.Http.Headers.HttpHeaders.Contains")
-func contentHeadersContain(h: in HttpContentHeaders, name: in String): Bool = ()
+func contentHeadersContain(h: in HttpContentHeaders, name: in String): Bool {
+  h.Contains(name)
+}
 
-@externInstance
-@externTarget("System.Net.Http.Headers.HttpHeaders.GetValues")
-func responseHeaderValues(h: in HttpResponseHeaders, name: in String): IEnumerableStr = ()
+func responseHeaderValues(h: in HttpResponseHeaders, name: in String): IEnumerableStr {
+  h.GetValues(name)
+}
 
-@externInstance
-@externTarget("System.Net.Http.Headers.HttpHeaders.GetValues")
-func contentHeaderValues(h: in HttpContentHeaders, name: in String): IEnumerableStr = ()
+func contentHeaderValues(h: in HttpContentHeaders, name: in String): IEnumerableStr {
+  h.GetValues(name)
+}
 
+// Stays on an explicit `@externTarget` (not migrated to bare `.GetEnumerator()`):
+// `IEnumerableStr` erases to `MObject` at this FFI boundary (any bracket-
+// suffixed generic-instantiated extern type does, #6029), so a bare auto-FFI
+// dot-call on a value of this type has no static receiver type to resolve
+// a member against and fails at RUNTIME ("unsupported method 'GetEnumerator'
+// on the receiver type at this call site") — confirmed empirically. The
+// explicit `@externTarget` binds directly against the FQN string instead of
+// inferring from the (erased) receiver, so it isn't affected. Also
+// deliberately targets the NON-generic `IEnumerable.GetEnumerator`, not the
+// generic `IEnumerable<string>.GetEnumerator` a same-named auto-FFI call
+// might otherwise prefer (see the module comment on this section).
 @externInstance
 @externTarget("System.Collections.IEnumerable.GetEnumerator")
 func headerValuesEnumerator(values: in IEnumerableStr): NonGenericEnumerator = ()
 
-@externInstance
-@externTarget("System.Collections.IEnumerator.MoveNext")
-func enumeratorMoveNext(e: in NonGenericEnumerator): Bool = ()
+func enumeratorMoveNext(e: in NonGenericEnumerator): Bool {
+  e.MoveNext()
+}
 
-@externInstance
-@externTarget("System.Collections.IEnumerator.Current")
-func enumeratorCurrent(e: in NonGenericEnumerator): String = ()
+func enumeratorCurrent(e: in NonGenericEnumerator): String {
+  e.Current
+}
 
 // First element of `values`, or `""` when the sequence is empty.
 func firstHeaderValue(values: in IEnumerableStr): String {
@@ -995,13 +1045,13 @@ pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): 
 // major component distinguishes HTTP/1.1 from h2/h3, so `Std.Http` maps
 // this raw major int onto `HttpVersion` (1 -> Http11, 2 -> Http2, 3 ->
 // Http3).
-@externInstance
-@externTarget("System.Net.Http.HttpResponseMessage.Version")
-func responseVersionOf(response: in HttpResponseMessage): Version = ()
+func responseVersionOf(response: in HttpResponseMessage): Version {
+  response.Version
+}
 
-@externInstance
-@externTarget("System.Version.Major")
-func versionMajorOf(v: in Version): Int = ()
+func versionMajorOf(v: in Version): Int {
+  v.Major
+}
 
 pub func hostResponseVersionMajor(response: in HttpResponseMessage): Int {
   versionMajorOf(responseVersionOf(response))
