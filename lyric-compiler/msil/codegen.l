@@ -3125,6 +3125,7 @@ pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, p
         registerTypeFqnCandidate(cctx, decl.name + "View", pkgName + "." + decl.name + "View")
       }
       case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
+      case IProtected(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
       case _ -> ()
     }
     i = i + 1
@@ -4241,6 +4242,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         //   recFields from PMField; recMethods from PMEntry/PMFunc.
         // lowerMRecord then adds: FieldDef per field; .ctor; one MethodDef per method.
         val className = pkgName + "." + decl.name
+        // Register the name like every other nominal type so another package
+        // in the bundle resolves `Counter()` to this ctor (`resolveTypeFqn`)
+        // instead of reporting an unresolved call.
+        registerTypeFqnCandidate(cctx, decl.name, className)
         var fi = 0
         var fpos = 0
         while fi < decl.members.count {

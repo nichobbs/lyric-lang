@@ -2347,3 +2347,47 @@ test "emitProject an imported generic resolves its type names in its own package
   assertEqualInt(result.exitCode, 0, "type scope JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "42", "type scope JVM: output")
 }
+
+// Constructing another package's `protected type` (D-progress-979).  MSIL
+// registered every nominal type name for cross-package resolution except
+// protected types, so `Counter()` in a consumer failed with T0123.
+func protectedCtorPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPPt.App",
+      "package EPPt.App\n" + "\n" + "import EPPt.Lib.{Counter}\n" + "\n" + "func main(): Unit {\n" +
+        "  val c = Counter()\n" +
+        "  c.bump()\n" +
+        "  c.bump()\n" +
+        "  println(toString(c.get()))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPPt.Lib",
+      "package EPPt.Lib\n" + "\n" + "pub protected type Counter {\n" + "  var n: Int = 40\n" +
+        "  entry bump(): Unit {\n" +
+        "    n = n + 1\n" +
+        "  }\n" +
+        "  func get(): Int {\n" +
+        "    return n\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject constructs another package's protected type (MSIL)" {
+  val result = runEmitProject("emitproj-protctor", protectedCtorPkgs(), "EPPt")
+  assertEqualInt(result.exitCode, 0, "protected ctor MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "protected ctor MSIL: output")
+}
+
+test "emitProject constructs another package's protected type (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-protctor-jvm", protectedCtorPkgs(), "EPPt")
+  assertEqualInt(result.exitCode, 0, "protected ctor JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "protected ctor JVM: output")
+}

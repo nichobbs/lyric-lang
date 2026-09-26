@@ -92,7 +92,7 @@ pub protected type SessionRegistry {
 
   entry add(id: in String, inst: in Instance, connectionId: in String, now: in Long): Unit {
     byId.add(id, SessionEntry(instance = inst, connectionId = connectionId, since = now))
-    bind(connectionId, id)
+    bindConnection(connectionId, id)
   }
 
   /// Attaches session `id` to `connectionId` when it exists and has not
@@ -107,7 +107,7 @@ pub protected type SessionRegistry {
         }
         byId.remove(id)
         byId.add(id, SessionEntry(instance = e.instance, connectionId = connectionId, since = now))
-        bind(connectionId, id)
+        bindConnection(connectionId, id)
         ResumedSession(instance = e.instance)
       }
       case None -> Unknown
@@ -161,7 +161,7 @@ pub protected type SessionRegistry {
   }
 
   // Records that `connectionId` carries session `id`.
-  entry bind(connectionId: in String, id: in String): Unit {
+  entry bindConnection(connectionId: in String, id: in String): Unit {
     if byConnection.containsKey(connectionId) {
       byConnection.remove(connectionId)
     }
@@ -253,7 +253,7 @@ pub func instance[M, Msg, E](p: in Program[M, Msg, E], init: in Step[M, E], run:
       }
     })
   }
-  val detach = { stillDetached: () -> Bool ->
+  val detach: (() -> Bool) -> Unit = { stillDetached ->
     lock.run({ ->
       if cell.count > 0 and stillDetached() {
         val current: Session[M, Msg] = cell[0]
