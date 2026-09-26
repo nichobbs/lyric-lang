@@ -258,42 +258,64 @@ func parseRecordMembers(st: inout ParseState): List[RecordMember] {
   val xs: List[RecordMember] = newList()
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = mark(st)
-    match peekToken(st) {
-      case TKeyword(k) -> {
-        match k {
-          case KwInvariant -> {
-            xs.add(RMInvariant(inv = parseInvariantClause(st)))
-          }
-          case KwFunc -> {
-            val fn = parseFunctionDeclBody(st, None)
-            xs.add(RMFunc(fn = injectSelfIfNeeded(fn)))
-          }
-          case KwAsync -> {
-            val next1 = peekAt(st, 1)
-            match next1.token {
-              case TKeyword(k2) -> {
-                match k2 {
-                  case KwFunc -> {
-                    val fn = parseFunctionDeclBody(st, None)
-                    xs.add(RMFunc(fn = injectSelfIfNeeded(fn)))
-                  }
-                  case _ -> {
-                    xs.add(RMField(field = parseFieldDecl(st)))
+    if annotationsPrecedeFunc(st) {
+      // `@pure func m(...)`: a record method takes leading annotations like
+      // an impl method (#7383); an annotated field keeps its own path.
+      val anns = parseItemAnnotations(st)
+      val fn0 = parseFunctionDeclBody(st, None)
+      val fn = FunctionDecl(
+        docComments = fn0.docComments,
+        annotations = anns,
+        visibility = fn0.visibility,
+        isAsync = fn0.isAsync,
+        name = fn0.name,
+        generics = fn0.generics,
+        params = fn0.params,
+        ret = fn0.ret,
+        whereClause = fn0.whereClause,
+        contracts = fn0.contracts,
+        body = fn0.body,
+        span = fn0.span
+      )
+      xs.add(RMFunc(fn = injectSelfIfNeeded(fn)))
+    } else {
+      match peekToken(st) {
+        case TKeyword(k) -> {
+          match k {
+            case KwInvariant -> {
+              xs.add(RMInvariant(inv = parseInvariantClause(st)))
+            }
+            case KwFunc -> {
+              val fn = parseFunctionDeclBody(st, None)
+              xs.add(RMFunc(fn = injectSelfIfNeeded(fn)))
+            }
+            case KwAsync -> {
+              val next1 = peekAt(st, 1)
+              match next1.token {
+                case TKeyword(k2) -> {
+                  match k2 {
+                    case KwFunc -> {
+                      val fn = parseFunctionDeclBody(st, None)
+                      xs.add(RMFunc(fn = injectSelfIfNeeded(fn)))
+                    }
+                    case _ -> {
+                      xs.add(RMField(field = parseFieldDecl(st)))
+                    }
                   }
                 }
-              }
-              case _ -> {
-                xs.add(RMField(field = parseFieldDecl(st)))
+                case _ -> {
+                  xs.add(RMField(field = parseFieldDecl(st)))
+                }
               }
             }
-          }
-          case _ -> {
-            xs.add(RMField(field = parseFieldDecl(st)))
+            case _ -> {
+              xs.add(RMField(field = parseFieldDecl(st)))
+            }
           }
         }
-      }
-      case _ -> {
-        xs.add(RMField(field = parseFieldDecl(st)))
+        case _ -> {
+          xs.add(RMField(field = parseFieldDecl(st)))
+        }
       }
     }
     match peekToken(st) {
@@ -324,6 +346,78 @@ func parseRecordMembers(st: inout ParseState): List[RecordMember] {
     }
   }
   xs
+}
+
+// Whether the tokens at the cursor are one or more annotations
+// (`@name`, `@a.b(args)`) followed by `func` or `async func`. A pure
+// lookahead: nothing is consumed.
+func annotationsPrecedeFunc(st: in ParseState): Bool {
+  if not isPunct(peekToken(st), At) {
+    return false
+  }
+  var k = 0
+  while isPunct(peekAt(st, k).token, At) {
+    k = k + 1
+    var inName = true
+    while inName {
+      match peekAt(st, k).token {
+        case TIdent(_) -> {
+          k = k + 1
+        }
+        case TKeyword(_) -> {
+          k = k + 1
+        }
+        case _ -> return false
+      }
+      if isPunct(peekAt(st, k).token, Dot) {
+        k = k + 1
+      } else {
+        inName = false
+      }
+    }
+    if isPunct(peekAt(st, k).token, LParen) {
+      var depth = 0
+      var scanning = true
+      while scanning {
+        val t = peekAt(st, k).token
+        match t {
+          case TEof -> return false
+          case _ -> ()
+        }
+        if isPunct(t, LParen) {
+          depth = depth + 1
+        } else if isPunct(t, RParen) {
+          depth = depth - 1
+          if depth == 0 {
+            scanning = false
+          }
+        }
+        k = k + 1
+      }
+    }
+    var skipping = true
+    while skipping {
+      match peekAt(st, k).token {
+        case TStmtEnd -> {
+          k = k + 1
+        }
+        case _ -> {
+          skipping = false
+        }
+      }
+    }
+  }
+  match peekAt(st, k).token {
+    case TKeyword(kw) -> match kw {
+      case KwFunc -> true
+      case KwAsync -> match peekAt(st, k + 1).token {
+        case TKeyword(kw2) -> match kw2 { case KwFunc -> true; case _ -> false }
+        case _ -> false
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
 }
 
 func parseRecordBody(st: inout ParseState, genericsPrefix: Option[GenericParams], isExposed: Bool): RecordDecl {
@@ -809,6 +903,21 @@ func parseContractClauseExpr(st: inout ParseState): Expr {
   e
 }
 
+// A `when:` barrier decides at runtime whether a caller waits, so it must be
+// evaluable: a quantifier there is P0344, like one outside any clause. The
+// runtime-checked `requires:`/`ensures:` forms can skip a quantified
+// conjunct (W0002), but skipping part of a barrier would stop callers
+// waiting (#7404).
+func parseBarrierClauseExpr(st: inout ParseState): Expr {
+  st.inContractClauseExpr = true
+  val prevQuant = st.quantifierAllowed
+  st.quantifierAllowed = false
+  val e = parseExpr(st)
+  st.quantifierAllowed = prevQuant
+  st.inContractClauseExpr = false
+  e
+}
+
 func parseContractClauseOpt(st: inout ParseState): Option[ContractClause] {
   // Peek before opening the CST node — only emit `SkContractClause`
   // when we know we're committing to a clause; otherwise leave the
@@ -861,7 +970,7 @@ func parseContractClauseOptInner(st: inout ParseState): Option[ContractClause] {
               emitErr(st, "P0170", "expected ':' after 'when'", peekSpan(st))
             }
           }
-          val e = parseContractClauseExpr(st)
+          val e = parseBarrierClauseExpr(st)
           Some(CCWhen(expr = e, span = joinSpans(startSpan, e.span)))
         }
         case _ -> None

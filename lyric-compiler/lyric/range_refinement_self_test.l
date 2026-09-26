@@ -59,6 +59,15 @@ func viaLambda(v: in Int): Int {
   c
 }
 
+// The same assignment through a lambda held in a list: the pass used to skip
+// list, tuple, index and interpolation forms entirely (#7398).
+func viaListedLambda(v: in Int): Int {
+  var c: Int range 0 ..= 3 = 0
+  val hs = [{ -> c = v }]
+  hs[0]()
+  c
+}
+
 // A name redeclared in the same block must not break the pass: the second
 // `var` replaces the first (the self-hosted MSIL writer does exactly this).
 func redeclared(): Int {
@@ -119,4 +128,9 @@ test "a shadowing binding is not checked against the outer range" {
 test "a lambda assigning a captured refined var is checked" {
   assertTrue(viaLambda(2) == 2, "2 is in range")
   assertPanics("9 is outside 0 ..= 3", { -> val _ = viaLambda(9) })
+}
+
+test "an assignment inside a list literal is checked (#7398)" {
+  assertTrue(viaListedLambda(3) == 3, "3 is in range")
+  assertPanics("99 is outside 0 ..= 3 (list)", { -> val _ = viaListedLambda(99) })
 }

@@ -22,6 +22,12 @@ time, and an entry whose `when:` barrier is false blocks until it is true.
   it) or declare its own type parameters (neither backend can lock a
   method-generic member). Both shapes used to compile on dotnet and run
   unlocked. Nothing in the repository used them (#7384 review).
+- **Expression-bodied members.** Locking every `func` sent
+  `func log(): Unit = println(n)` through the entry lowering, which stored
+  the expression's value into a return slot even for `Unit`, leaving an
+  empty stack: invalid IL. That arm now discards a `Unit` member's value and
+  defaults a value member's void expression, as the ordinary method path
+  does (#7400).
 - **Barriers.** No backend lowered `when:`, so a barrier member ran with its
   barrier false. The contract elaborator now rewrites each barrier `entry`
   or `func` to start with `while not (barrier) { __lyric_protected_wait() }`.

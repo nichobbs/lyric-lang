@@ -334,7 +334,7 @@ pub func pipeCheckAndMono(
 func foldNegatedIntLiteral(e: in Expr): Expr {
   match e.kind {
     case EPrefix(op, operand) -> match op {
-      case PreNeg -> match operand.kind {
+      case PreNeg -> match unparenthesized(operand).kind {
         case ELiteral(lit) -> match lit {
           case LInt(v, sfx, raw) -> match sfx {
             case NoIntSuffix -> Expr(
@@ -357,6 +357,15 @@ func foldNegatedIntLiteral(e: in Expr): Expr {
       }
       case _ -> e
     }
+    case _ -> e
+  }
+}
+
+// The checker looks through parentheses under a negation (`-(2147483648)`
+// is an `Int`), so the fold does too (#7397).
+func unparenthesized(e: in Expr): Expr {
+  match e.kind {
+    case EParen(inner) -> unparenthesized(inner)
     case _ -> e
   }
 }

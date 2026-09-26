@@ -169,6 +169,11 @@ func testPathCannotLeaveBase(): Unit {
     "a URL in the query string is data"
   )
   assertTrue(escapeCode(client, "files/a%2fb") != "InvalidUrl", "an encoded slash in a plain segment is allowed")
+  // A base ending in `/` and a path starting with `/` join with one slash;
+  // the join used to take one character too many from the path and fail
+  // `substring`'s precondition (#7251). The transport error names the URL.
+  val slashed = escapeCode(RestClient.create("http://127.0.0.1:1/api/"), "/users")
+  assertTrue(slashed.contains("127.0.0.1:1/api/users") and not slashed.contains("api//users"), "joined URL: " + slashed)
 }
 
 func main(): Int {

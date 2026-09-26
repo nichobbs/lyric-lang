@@ -166,6 +166,7 @@ func headerErrorKind(name: in String, value: in String): String {
 test "withHeader rejects a name that is not a token, or a value with CR/LF/NUL" {
   assertEqual(headerErrorKind("X-Forged: evil", "v"), "InvalidHeader:X-Forged: evil", "colon and space in the name")
   assertEqual(headerErrorKind("X Bad", "v"), "InvalidHeader:X Bad", "space in the name")
+  assertEqual(headerErrorKind("", "v"), "InvalidHeader:", "an empty name, often an unset config value")
   assertEqual(headerErrorKind("X-Note", "a\r\nX-Injected: 1"), "InvalidHeader:X-Note", "CR/LF in the value")
   assertEqual(headerErrorKind("X-Note", "a\u{0000}b"), "InvalidHeader:X-Note", "NUL in the value")
   assertEqual(headerErrorKind("X-Trace-Id", "abc 123\tdef"), "Ok", "space and tab are fine in a value")

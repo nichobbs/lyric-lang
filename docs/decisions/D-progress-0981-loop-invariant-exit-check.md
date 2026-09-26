@@ -27,6 +27,12 @@ that carries an invariant:
 
 `do` loops have no normal exit and are unchanged.
 
+`lyric prove` does not model `break`: the verifier rejects it with a V0026
+error, so a proof through a `break` fails instead of discharging against the
+post-loop assumption `invariant and not cond`, which a `break` exit does not
+satisfy. `verifier_self_test.l` pins this; teaching the verifier `break` must
+drop that assumption for a loop that can break (#7396).
+
 A `for` invariant clause that reads a name bound by the loop pattern
 (`for i in 0 ..< n` with `invariant: i < n`) is checked on every iteration
 but not on exit. After the loop that name is out of scope, or would resolve

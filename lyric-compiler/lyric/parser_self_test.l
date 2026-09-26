@@ -1082,6 +1082,19 @@ test "a quantifier outside a contract clause is P0344" {
   assertEqualInt(diagCount(pr3), 0, "exists(p) is an ordinary call")
 }
 
+// #7404: a `when:` barrier is evaluated at runtime, so a quantifier in one
+// is P0344 too.
+test "a quantifier in a when: barrier is P0344" {
+  val pr = parse(
+    "package P\nprotected type Q {\n  var n: Int = 0\n  entry put(x: in Int): Unit\n    when: exists(i: Int) i > n\n  {\n    n = x\n  }\n}\n"
+  )
+  assertTrue(hasDiagCode(pr, "P0344"), "exists in a when: barrier")
+  val ok = parse(
+    "package P\nprotected type Q {\n  var n: Int = 0\n  entry put(x: in Int): Unit\n    when: n < 10\n  {\n    n = x\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(ok), 0, "a plain barrier parses")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // nested satisfies tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2325,4 +2338,47 @@ test "parsed AST: explicit '..<' for-loop range sets RBHalfOpen.bareDotDot = fal
   val pr = parse("package P\nfunc f(): Unit {\n  for i in 0 ..< 10 {\n  }\n}\n")
   assertEqualInt(diagCount(pr), 0, "bareDotDot AST (..<): no diagnostics")
   assertTrue(not forLoopBareDotDot(pr), "bareDotDot AST: explicit '..<' sets RBHalfOpen.bareDotDot = false")
+}
+
+// A record method takes leading annotations like an impl method (#7383), and
+// an annotated field still parses as a field.
+func recordMethodAnnotationNames(pr: in ParseResult, method: in String): List[String] {
+  val names: List[String] = newList()
+  if pr.file.items.count == 0 {
+    return names
+  }
+  match pr.file.items[0].kind {
+    case IRecord(decl) -> {
+      var i = 0
+      while i < decl.members.count {
+        match decl.members[i] {
+          case RMFunc(fn) -> {
+            if fn.name == method {
+              var j = 0
+              while j < fn.annotations.count {
+                names.add(modulePathJoin(fn.annotations[j].name.segments))
+                j = j + 1
+              }
+            }
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+  names
+}
+
+test "a record method takes leading annotations (#7383)" {
+  val pr = parse(
+    "package P\nrecord Money {\n  @hidden\n  amount: Int\n  @pure\n  func isPositive(self: in Money): Bool { self.amount > 0 }\n  @pure @inline async func later(self: in Money): Int { self.amount }\n  func plain(self: in Money): Int { 1 }\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "parses cleanly")
+  val a = recordMethodAnnotationNames(pr, "isPositive")
+  assertEqualInt(a.count, 1, "isPositive has one annotation")
+  assertEqual(a[0], "pure", "isPositive is @pure")
+  assertEqualInt(recordMethodAnnotationNames(pr, "later").count, 2, "two annotations before async func")
+  assertEqualInt(recordMethodAnnotationNames(pr, "plain").count, 0, "an unannotated method has none")
 }

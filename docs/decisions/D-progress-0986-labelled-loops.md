@@ -57,6 +57,12 @@ a panic before: `do { }` and a counted range `for` (`lo ..< hi`,
 MSIL and JVM counting loops do, and uses unsigned comparison for `Byte`
 bounds (#4628).
 
+A loop in a `defer` or lambda body may reuse an enclosing loop's label (the
+checker starts those bodies with an empty stack). The backends keep one
+label map per function, so entering such a loop saves the outer entry and
+leaving it restores the entry rather than deleting it. Deleting it made a
+later `break outer` in the enclosing loop panic the compiler (#7394).
+
 The contract elaborator's loop-exit invariant walk (D-progress-981) already
 treated `break label` inside a nested loop as leaving the labelled loop.
 It now receives real labels.

@@ -185,6 +185,49 @@ func siblingLabels(): Int {
   n
 }
 
+// A loop in a `defer` or lambda body may reuse an enclosing loop's label;
+// leaving it must not forget the outer one (#7394). `continue outer`
+// replays the defer, whose own `outer` loop runs inside the jump.
+func shadowedInDefer(): Int {
+  var n = 0
+  outer: while n < 5 {
+    defer {
+      outer: while false {
+        break outer
+      }
+    }
+    n = n + 1
+    if n == 2 {
+      continue outer
+    }
+    if n == 4 {
+      break outer
+    }
+  }
+  n
+}
+
+func shadowedInLambda(): Int {
+  var total = 0
+  outer: for i in [1, 2, 3, 4] {
+    val f: (Int) -> Int = { k: Int ->
+      var hits = 0
+      outer: for j in [1, 2, 3] {
+        if j > k {
+          break outer
+        }
+        hits = hits + 1
+      }
+      hits
+    }
+    total = total + f(i)
+    if i == 3 {
+      break outer
+    }
+  }
+  total
+}
+
 test "break outer leaves both loops at the first match" {
   assertEqualInt(findPair([1, 2, 3, 4], [5, 6, 7], 12), 206, "2 * 6 is the first pair")
   assertEqualInt(findPair([1, 2], [3], 100), -1, "no pair")
@@ -257,4 +300,9 @@ test "continue outer runs the inner loop's defers" {
 
 test "sibling loops may reuse a label" {
   assertEqualInt(siblingLabels(), 11, "1 + 4 + 6")
+}
+
+test "a label reused inside a defer or lambda does not hide the outer loop (#7394)" {
+  assertEqualInt(shadowedInDefer(), 4, "break outer after the defer's own outer loop ran")
+  assertEqualInt(shadowedInLambda(), 6, "1 + 2 + 3, then break outer at i = 3")
 }

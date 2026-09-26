@@ -23,6 +23,12 @@ test "Int boundary literals keep their values" {
   assertEqual(toString(takesInt(-2147483648)), "-2147483648", "Int.MinValue as an argument")
 }
 
+test "a parenthesized Int.MinValue literal folds the same way (#7397)" {
+  val lo: Int = -(2147483648)
+  assertEqual(toString(lo), "-2147483648", "binding")
+  assertEqual(toString(takesInt(-((2147483648)))), "-2147483648", "argument")
+}
+
 test "a literal above Int's range is a Long" {
   val big = 3000000000
   val asLong: Long = big

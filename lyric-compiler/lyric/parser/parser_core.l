@@ -59,9 +59,10 @@ pub record ParseState {
   /// broke exactly that case (#5735: a local named `result` could be
   /// declared but never referenced again by name).
   var inContractClauseExpr: Bool
-  /// True while parsing a contract clause (`requires:`/`ensures:`/`when:`/
-  /// `decreases:`) or an `invariant:` clause: the only positions where a
-  /// `forall`/`exists` quantifier may appear (grammar `QuantifierExpr`).
+  /// True while parsing a `requires:`/`ensures:`/`decreases:` or an
+  /// `invariant:` clause: the only positions where a `forall`/`exists`
+  /// quantifier may appear (grammar `QuantifierExpr`).  A `when:` barrier is
+  /// excluded, since it must be evaluated at runtime (#7404).
   /// Elsewhere a quantifier is P0344: it cannot be evaluated, and the
   /// backends used to lower it as a constant (#7228).  Set with the same
   /// save/restore discipline as `inContractClauseExpr`.

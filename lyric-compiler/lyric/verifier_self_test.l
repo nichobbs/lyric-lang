@@ -920,3 +920,24 @@ test "prove generator contract rejected" {
 test "prove trailing expr result sort" {
   testProveTrailingExprResultSort()
 }
+
+// A `break` leaves a loop without the invariant or the negated condition, so
+// the verifier's post-loop assumption (`invariant and not cond`) would be
+// unsound on that path. The verifier does not model `break` and rejects it
+// (V0026 error), so a proof through one fails rather than discharging
+// against the wrong assumption. Supporting `break` must drop that
+// assumption for a loop that can break (#7396).
+test "a proof through a loop break is rejected, not discharged (#7396)" {
+  val src = "@proof_required\npackage Br\n\nfunc f(n: in Int): Int\n  ensures: result >= 0\n{\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n    if i == 3 {\n      i = -1\n      break\n    }\n    i = i + 1\n  }\n  i\n}\n"
+  val summary = prove(src)
+  assertTrue(summaryHasErrorDiag(summary), "break is a V0026 error, so the proof fails")
+  var sawV0026 = false
+  var i = 0
+  while i < summary.diagnostics.count {
+    if summary.diagnostics[i].code == "V0026" {
+      sawV0026 = true
+    }
+    i = i + 1
+  }
+  assertTrue(sawV0026, "the error is V0026")
+}

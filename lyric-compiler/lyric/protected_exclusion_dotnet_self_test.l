@@ -157,3 +157,27 @@ test "a func that opens a barrier wakes an entry and a func waiting on it (#7384
   taskWait(f)
   assertTrue(g.passedCount() == 1, "the waiting entry ran once the func opened the gate")
 }
+
+// Expression-bodied `Unit` members, whose expression pushes nothing (a void
+// call) or a value that must be discarded (#7400).
+func noteInto(c: in Tally): Unit {
+  c.bump()
+}
+
+protected type Tally {
+  var n: Int = 0
+  entry bump(): Unit {
+    n = n + 1
+  }
+  func viaVoidCall(): Unit = noteInto(self)
+  entry viaUnitLiteral(): Unit = ()
+  func value(): Int = n
+}
+
+test "expression-bodied Unit protected members run (#7400)" {
+  val t = Tally()
+  t.viaVoidCall()
+  t.viaUnitLiteral()
+  t.viaVoidCall()
+  assertTrue(t.value() == 2, "two bumps through the expression-bodied func (got " + toString(t.value()) + ")")
+}

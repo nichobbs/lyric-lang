@@ -497,7 +497,10 @@ RecordMember =
       { ItemDocComment }
       { Annotation }
       [ Visibility ]
-      ( FieldDecl | InvariantClause ) ;
+      ( FieldDecl | InvariantClause | FunctionDecl ) ;
+        (* A method (D037) takes the leading annotations like an impl
+           method, e.g. `@pure func isPositive(self: in Money): Bool`
+           (#7383). *)
 
 FieldDecl =
       [ 'var' ] IDENT ':' Type [ '=' Expr ] [ Annotation ] ;
@@ -960,7 +963,7 @@ PrimaryExpr =
     | AwaitExpr
     | SpawnExpr
     | OldExpr                                 (* 'old(expr)' — only inside ensures *)
-    | QuantifierExpr                          (* 'forall', 'exists' — only in contracts *)
+    | QuantifierExpr                          (* 'forall', 'exists' — only in requires/ensures/decreases/invariant *)
     | RecordCtor
     | UnionCtor
     | SelfExpr                                (* 'self' — only inside method-style contexts *)

@@ -428,6 +428,35 @@ pub func lyricJsonGetString(s: in String, name: in String, value: out String): B
   }
 }
 
+/// Whether `elem` can be read as the scalar type named `typeName` without
+/// failing a getter's precondition: `@generate(Json)` readers test it before
+/// each scalar field or element and return `Err` otherwise (#7401). A `Byte`
+/// must be a number in 0..255 and a `Char` a one-character string, as
+/// `toJson` writes them.
+@pure
+pub func lyricJsonIsKind(elem: in JsonElement, typeName: in String): Bool {
+  if typeName == "String" {
+    isJsonString(elem)
+  } else if typeName == "Int" {
+    isJsonInt32(elem)
+  } else if typeName == "Long" {
+    isJsonInt64(elem)
+  } else if typeName == "Bool" {
+    isJsonBool(elem)
+  } else if typeName == "Double" or typeName == "Float" {
+    isJsonDouble(elem)
+  } else if typeName == "Byte" {
+    match tryGetInt(elem) {
+      case Some(v) -> v >= 0 and v <= 255
+      case None -> false
+    }
+  } else if typeName == "Char" {
+    isJsonString(elem) and hostGetString(elem).length == 1
+  } else {
+    false
+  }
+}
+
 pub func lyricJsonGetSubObject(s: in String, name: in String, value: out String): Bool {
   value = "{}"
   match lyricJsonParseObject(s) {

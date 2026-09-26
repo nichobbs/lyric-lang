@@ -628,6 +628,36 @@ func entryDoc(ed: in EntryDecl, ctx: inout FmtCtx): List[String] {
     }
     i = i + 1
   }
+  // An expression body keeps its `= expr` form, as `funcDoc` does; wrapping
+  // it in braces changed the token sequence and the loss check refused it.
+  match ed.body {
+    case FBExpr(e) -> {
+      val acc: List[String] = newList()
+      var j = 0
+      while j < docLs.count {
+        acc.add(docLs[j])
+        j = j + 1
+      }
+      j = 0
+      while j < annoLines.count {
+        acc.add(annoLines[j])
+        j = j + 1
+      }
+      if conLines.count == 0 {
+        acc.add(sig + " = " + exprInline(0, e))
+      } else {
+        acc.add(sig)
+        j = 0
+        while j < conLines.count {
+          acc.add(conLines[j])
+          j = j + 1
+        }
+        acc.add("  = " + exprInline(0, e))
+      }
+      return acc
+    }
+    case FBBlock(_) -> ()
+  }
   val bodyLines: List[String] = match ed.body {
     case FBBlock(b) -> blockLines(b, ctx)
     case FBExpr(e) -> singleLineDoc(exprInline(0, e))

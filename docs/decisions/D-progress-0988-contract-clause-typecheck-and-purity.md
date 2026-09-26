@@ -51,7 +51,13 @@ method got T0133 anyway (#7383). Interface member signatures carry no
 annotations and are never pure; nor are protected `entry` members. A record
 method's repr in contract metadata carries `@pure`, so the flag also
 survives a package boundary. An `impl` restores through its interface's
-signatures and so arrives impure.
+signatures and so arrives impure; `@pure` on interface signatures is #7410.
+
+A record method could not carry an annotation at all: the parser read
+`@pure` in a record body as the start of an annotated field and then failed
+at `func`. `parseRecordMembers` now looks past leading annotations and
+parses a following `func` or `async func` as a method carrying them, as an
+`impl` body does. The formatter already printed a method's annotations.
 
 ## Fallout
 
