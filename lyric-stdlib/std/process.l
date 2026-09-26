@@ -43,16 +43,7 @@ pub func buildArgString(args: in List[String]): String {
 /// - `executable` may be a bare name (resolved via `$PATH`) or a full path.
 @stable(since = "1.0")
 pub func run(executable: in String, args: in List[String]): Result[Int, IOError] {
-  return try {
-    val arguments = buildArgString(args)
-    val proc = hostSpawn(executable, arguments)
-    hostWait(proc)
-    val code = hostExitCode(proc)
-    hostDisposeProc(proc)
-    Ok(value = code)
-  } catch Bug as b {
-    Err(error = IoError(path = executable, message = b.message))
-  }
+  hostRunInheritedResult(executable, args)
 }
 
 /// Spawn a child process and return its exit code directly.

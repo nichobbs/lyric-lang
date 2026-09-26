@@ -19,7 +19,7 @@ compiler is written in Lyric and lives in `lyric-compiler/lyric/`. The repositor
 - `docs/grammar.ebnf` — formal grammar (Phase 0 deliverable #4).
 - `docs/08-contract-semantics.md` — operational semantics for contracts (Phase 0 deliverable #5).
 - `docs/09-msil-emission.md` — MSIL emission strategy (Phase 0 deliverable #7).
-- `docs/10-bootstrap-progress.md` — shipped-milestone status against the phased plan.
+- `docs/10-bootstrap-progress.md` — shipped-milestone status against the phased plan. Its log section is a frozen archive; new progress entries go in `docs/progress/`, one file per entry (see `docs/progress/README.md`).
 - `docs/10-stdlib-plan.md` — standard library module design and stability cut plan.
 - `docs/11-stdlib-examples.md` — worked examples that exercise the standard library.
 - `docs/12-todo-plan.md` — running task list for in-flight and upcoming work.
@@ -195,8 +195,11 @@ changed behaviour), update **all three** of:
 2. **Book** (`book/chapters/`) — at minimum the toolchain table in
    `01-getting-started.md` and the CLI reference in `appendix-b-quick-reference.md`.
    Add or expand the relevant chapter if the feature is substantial.
-3. **Bootstrap progress** (`docs/10-bootstrap-progress.md`) — update the Tier
-   status for the shipped item and correct any "deferred" notes that are now stale.
+3. **Bootstrap progress** — add a progress entry as a new file in
+   `docs/progress/` (`<YYYY-MM-DD>-<slug>.md`; never append to the frozen log
+   in `docs/10-bootstrap-progress.md`), and update the Tier status in
+   `docs/10-bootstrap-progress.md`'s status sections for the shipped item,
+   correcting any "deferred" notes that are now stale.
    Also update `docs/05-implementation-plan.md` if it contains planning text that
    contradicts what actually shipped.
 

@@ -11,6 +11,8 @@
 //! `pipedCloseStdin` clean-exit-with-final-line, a nonexistent-executable
 //! spawn failure, and post-EOF `None` — 5/5 cases, matching that file's
 //! dotnet coverage exactly.
+//! Cases 7 and 8 cover `Std.Process.run` (inherited stdio) on JVM: its exit
+//! code, and `Err` for a nonexistent executable.
 //!
 //! Exercises the byte-level, `available()`-polled rewrite of
 //! `std/_kernel_jvm/process_piped_host.l`'s `hostPipedReadLineOpt` (see
@@ -228,6 +230,34 @@ func main(): Int {
       }
       pipedClose(p)
     }
+  }
+
+  // Case 7: Std.Process.run (inherited stdio) returns the child's exit code.
+  val shArgs: List[String] = newList()
+  shArgs.add("-c")
+  shArgs.add("exit 7")
+  match run("sh", shArgs) {
+    case Ok(code) -> {
+      if code == 7 {
+        println("PASS case7: run returns the exit code")
+      } else {
+        println("FAIL case7: got exit code " + code.toString())
+        failures = failures + 1
+      }
+    }
+    case Err(e) -> {
+      println("FAIL case7: " + IOError.message(e))
+      failures = failures + 1
+    }
+  }
+
+  // Case 8: run on a nonexistent executable is Err on every target.
+  match run("lyric-nonexistent-executable-xyz", newList()) {
+    case Ok(code) -> {
+      println("FAIL case8: expected Err, got exit code " + code.toString())
+      failures = failures + 1
+    }
+    case Err(_) -> println("PASS case8: run rejects a nonexistent executable")
   }
 
   println("failures=" + failures.toString())

@@ -112,8 +112,10 @@ pub func hostPathGetFullPath(path: in String): String {
   f.getCanonicalPath()
 }
 
-// ── Raw file I/O — `slice[Byte]` round-tripping ───────────────────────────────
-pub func hostReadAllBytes(path: in String): slice[Byte] {
+// ── Text file I/O for the metadata sidecars ──────────────────────────────────
+// Object payloads go through `Std.File.readBytes`/`writeBytes`; these byte
+// helpers only back `hostWriteAllText`/`hostReadAllText` below.
+func hostReadAllBytes(path: in String): slice[Byte] {
   val fis = JFIS.new(path)
   // Close on the failure path too (#4780): keeps the stream from leaking
   // until GC when readAllBytes throws mid-read.  A constructor failure
@@ -128,7 +130,7 @@ pub func hostReadAllBytes(path: in String): slice[Byte] {
   }
 }
 
-pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit {
+func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit {
   val fos = JFOS.new(path)
   // Close on the failure path too (#4780) — see hostReadAllBytes.
   try {

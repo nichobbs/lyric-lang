@@ -23,6 +23,8 @@ package Std.ProcessHost
 import Std.Core
 import Std.Collections
 import Std.ProcessCaptureHost
+import Std.Errors
+import Std.ProcessArgs
 
 // An opaque handle to a running child process.
 extern type ProcessHandle = "java.lang.Process"
@@ -75,4 +77,21 @@ pub func hostExitCode(proc: in ProcessHandle): Int {
 // stub standing in for unimplemented behavior.
 pub func hostDisposeProc(proc: in ProcessHandle): Unit {
   ()
+}
+
+// Run `executable` with `args` on inherited stdio and wait for it: the
+// Result seam `Std.Process.run` delegates to.  The host throws when the
+// executable cannot be started; the try/catch lives here, in the kernel,
+// because `--target native` has no unwinding (D-N-003) and its twin
+// reports the same failure as a return code instead.
+pub func hostRunInheritedResult(executable: in String, args: in List[String]): Result[Int, IOError] {
+  try {
+    val proc = hostSpawn(executable, argvJoin(args))
+    hostWait(proc)
+    val code = hostExitCode(proc)
+    hostDisposeProc(proc)
+    Ok(value = code)
+  } catch Bug as b {
+    Err(error = IoError(path = executable, message = b.message))
+  }
 }

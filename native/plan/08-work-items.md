@@ -861,6 +861,15 @@ backed by a new `lyric_file_mtime_epoch_nanos_ok` `lyric-rt` seam
 Result seam every kernel twin now implements — see D-progress-957.
 See D-progress-910, D-progress-942, and D-progress-957 for the full account.
 
+`Std.Process.run` (inherited-stdio spawn) now compiles and runs on
+`--target native` too: its `try`/`catch` moved into a
+`hostRunInheritedResult` Result seam that every `Std.ProcessHost` twin
+implements, with the native twin over a new `lyric_process_run_inherited`
+`lyric-rt` seam (fork/execvp on inherited stdio; a failed exec is reported
+over a CLOEXEC pipe, so a missing executable is an `Err` on every target
+rather than exit code 127). See
+`docs/progress/2026-09-26-native-process-run-and-storage-bytes.md`.
+
 ---
 
 ### N5.8 — `Std.Collections` native verification

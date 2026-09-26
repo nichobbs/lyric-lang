@@ -7,6 +7,11 @@ have been removed; see the git log for details.
 The phased plan lives in `docs/05-implementation-plan.md`; this file records
 what has shipped and what remains open.
 
+New progress entries go in `docs/progress/`, one file per entry (see
+`docs/progress/README.md`). The log below "Active session decisions" is the
+frozen archive of earlier entries; do not append to it. The status sections
+above it are still updated in place.
+
 ---
 
 ## Bootstrap stages — which compiler am I running?
@@ -381,6 +386,10 @@ discharge cleanly under Z3.
 ---
 
 ## Active session decisions
+
+> **Frozen archive.** Everything from here to the end of the file is the
+> historical progress log. New entries are separate files in
+> `docs/progress/` (D-progress-979); do not append here.
 
 ### D-progress-348 — cross-package method dispatch + Map indexer + generic-case inference (#1602)
 

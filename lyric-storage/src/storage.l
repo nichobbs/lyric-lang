@@ -28,8 +28,10 @@
 //! Backends:
 //!   * Local filesystem — fully native Lyric implementation on both
 //!     targets: `Storage.Kernel.Net` binds the minimum BCL extern set
-//!     (Base64, MD5, canonical-path resolve, raw file I/O) and
-//!     `Storage.Kernel.Jvm` binds the JDK equivalents (#1444).  The
+//!     (Base64, MD5, canonical-path resolve, sidecar text I/O, directory
+//!     walks) and `Storage.Kernel.Jvm` binds the JDK equivalents (#1444);
+//!     object payloads are read and written through
+//!     `Std.File.readBytes`/`writeBytes`.  The
 //!     kernels export the same `host*` surface and are `@cfg`-gated on
 //!     the `dotnet` / `jvm` features, so the inactive one is erased and
 //!     the unqualified calls below resolve to the survivor.  No host
@@ -44,6 +46,8 @@ package Storage
 
 import Std.Core
 import Std.Collections
+import Std.Errors
+import Std.File as File
 import Std.Json
 import Std.String as Str
 import Std.Time as Time
@@ -520,8 +524,8 @@ impl StorageBucket for LocalBucket {
           case Ok(_) -> ()
         }
         // Write the object content.
-        match try { hostWriteAllBytes(fullPath, bytes); Ok(()) } catch Bug as b { Err(StorageError(message = "cannot write object '" + key + "': " + b.message, code = "PUT_ERROR")) } {
-          case Err(e) -> return Err(e)
+        match File.writeBytes(fullPath, bytes) {
+          case Err(e) -> return Err(StorageError(message = "cannot write object '" + key + "': " + IOError.message(e), code = "PUT_ERROR"))
           case Ok(_) -> ()
         }
         // Persist the sidecar metadata for round-trippable userMeta /
@@ -571,10 +575,9 @@ impl StorageBucket for LocalBucket {
         if not hostFileExists(fullPath) {
           return Err(StorageError(message = "key '" + key + "' not found in bucket", code = "NOT_FOUND"))
         }
-        val bytes: slice[Byte] = try {
-          hostReadAllBytes(fullPath)
-        } catch Bug as b {
-          return Err(StorageError(message = "cannot read object '" + key + "': " + b.message, code = "GET_ERROR"))
+        val bytes: slice[Byte] = match File.readBytes(fullPath) {
+          case Ok(b) -> b
+          case Err(e) -> return Err(StorageError(message = "cannot read object '" + key + "': " + IOError.message(e), code = "GET_ERROR"))
         }
         val dataBase64 = hostToBase64(bytes)
         match readSidecar(fullPath, intToLong(bytes.length)) {

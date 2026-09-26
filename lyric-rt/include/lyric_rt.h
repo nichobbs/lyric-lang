@@ -621,6 +621,16 @@ int32_t lyric_process_run(const char* path, LyricList* args,
                            LyricString** out_stderr,
                            int32_t* out_timed_out);
 
+/* Runs `path` via fork + execvp (never a shell) with argv built as for
+ * lyric_process_run, but the child inherits the caller's stdin, stdout,
+ * stderr and process group.  Blocks until the child exits.  Returns 0 and
+ * stores the exit status in *out_exit_code (128 + signal number for a
+ * signal-terminated child); returns -1 when the child could not be
+ * started, including an execvp failure such as `path` not found (unlike
+ * lyric_process_run, which reports that as exit code 127). */
+int32_t lyric_process_run_inherited(const char* path, LyricList* args,
+                                    int32_t* out_exit_code);
+
 /* Nonblocking capture op (the async process leaf, D-N-023): the same
  * fork/execvp capture as lyric_process_run, driven by repeated
  * nonblocking pumps instead of one blocking drain, so a coroutine can
