@@ -57,17 +57,6 @@ func cleanup(dir: in String): Unit {
   }
 }
 
-// Run the built `lyric` with a generous timeout.  `runCaptureWithDiagnostics`'
-// default 10s cap is too short for a project build under CI CPU contention
-// (parallel self-test steps): a killed build still exits non-zero but leaves
-// stderr empty, which failed the multi-file case's path assertion with no
-// diagnostic to show.  A timeout is reported as such instead.
-func runLyric(args: in List[String]): Capture.CaptureResult {
-  val result = Capture.runCaptureWithDiagnosticsTimeout(lyricBinPath(), args, "", 300000)
-  assertTrue(not result.timedOut, "lyric " + args[0] + " timed out before producing a diagnostic")
-  result
-}
-
 func lyricBinPath(): String {
   Path.join(Environment.currentDirectory(), "bin/lyric")
 }
