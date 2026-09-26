@@ -833,12 +833,12 @@ func emptyBytes(): slice[Byte] {
   e
 }
 
+// One grow and one memcpy per chunk, instead of a runtime call per byte
+// (#7269).
+extern func rtListAppendBytes(acc: List[Byte], bytes: slice[Byte]): Unit = "lyric_list_append_all"
+
 func appendBytes(acc: in List[Byte], bytes: in slice[Byte]): Unit {
-  var i = 0
-  while i < bytes.length {
-    acc.add(bytes[i])
-    i = i + 1
-  }
+  rtListAppendBytes(acc, bytes)
 }
 
 // Write an interim `100 Continue` head (no body) when the request carried
