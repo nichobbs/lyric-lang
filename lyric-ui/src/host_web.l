@@ -44,6 +44,9 @@ import Ui.Host.{Instance, Outbox, SessionRegistry, ResumedSession, Unknown, stat
 import Ui.Host.Assets
 
 /// Where and how to serve.  `wsPath` is the WebSocket path on `wsPort`.
+/// `publicWsUrl`, when not empty, is the socket URL browsers are told to
+/// open, for a deployment whose proxy routes the socket elsewhere; when
+/// empty it is derived from the request (see `sessionSocketUrl`).
 /// `reconnectGraceMs` is how long a disconnected session can be resumed;
 /// `maxSessions` bounds the sessions held in memory.
 pub record HostConfig {
@@ -52,6 +55,7 @@ pub record HostConfig {
   port: Int
   wsPort: Int
   wsPath: String
+  publicWsUrl: String
   reconnectGraceMs: Long
   maxSessions: Int
 }
@@ -65,6 +69,7 @@ pub func defaultConfig(title: in String): HostConfig {
     port = 8080,
     wsPort = 8081,
     wsPath = "/_ui",
+    publicWsUrl = "",
     reconnectGraceMs = 120_000,
     maxSessions = 10_000
   )
@@ -113,7 +118,7 @@ pub func router(cfg: in HostConfig): Web.Router {
     Asset(body = Assets.runtimeRenderJs, contentType = "text/javascript; charset=utf-8")
   )
   r = Web.addGet(r, "/_ui/theme.css", Asset(body = Assets.themeCss, contentType = "text/css; charset=utf-8"))
-  val shell = Shell(title = cfg.title, wsPort = cfg.wsPort, wsPath = cfg.wsPath)
+  val shell = Shell(title = cfg.title, wsPort = cfg.wsPort, wsPath = cfg.wsPath, publicWsUrl = cfg.publicWsUrl)
   r = Web.addGet(r, "/", shell)
   r = Web.addGet(r, "/{*path}", shell)
   return r
@@ -136,12 +141,19 @@ record Shell {
   title: String
   wsPort: Int
   wsPath: String
+  publicWsUrl: String
 }
 
 impl Handler for Shell {
   func handle(req: in Request): Response {
     val hostHeader = match Web.header(req, "host") { case Some(h) -> h; case None -> "localhost" }
-    val wsUrl = "ws://" + hostnameOf(hostHeader) + ":" + self.wsPort.toString() + self.wsPath
+    val wsUrl = sessionSocketUrl(
+      self.publicWsUrl,
+      Web.header(req, "x-forwarded-proto"),
+      hostHeader,
+      self.wsPort,
+      self.wsPath
+    )
     return Web.html(200, shellHtml(self.title, wsUrl))
   }
 }
@@ -164,6 +176,33 @@ pub func shellHtml(title: in String, wsUrl: in String): String {
     Assets.assetVersion +
     "\"></script>\n" +
     "</body>\n</html>\n"
+}
+
+/// The session socket URL for a page requested with `hostHeader`:
+/// `publicWsUrl` when set, otherwise `wsPort`/`wsPath` on the page's host.
+/// The scheme is `wss` when the page was served over HTTPS by a
+/// TLS-terminating proxy (`X-Forwarded-Proto: https`, first value when the
+/// header lists several proxies), because a browser refuses a plain `ws`
+/// socket from an HTTPS page; `ws` otherwise.
+pub func sessionSocketUrl(
+  publicWsUrl: in String,
+  forwardedProto: in Option[String],
+  hostHeader: in String,
+  wsPort: in Int,
+  wsPath: in String,
+): String {
+  if publicWsUrl.length > 0 {
+    return publicWsUrl
+  }
+  val secure = match forwardedProto {
+    case Some(p) -> {
+      val first = match indexOf(p, ",") { case Some(comma) -> substring(p, 0, comma); case None -> p }
+      toLower(trim(first)) == "https"
+    }
+    case None -> false
+  }
+  val scheme = if secure { "wss" } else { "ws" }
+  return scheme + "://" + hostnameOf(hostHeader) + ":" + wsPort.toString() + wsPath
 }
 
 /// `host` without its port (`example.com:8080` -> `example.com`), keeping a
