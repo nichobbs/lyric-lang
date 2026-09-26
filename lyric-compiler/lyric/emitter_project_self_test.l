@@ -2348,7 +2348,7 @@ test "emitProject an imported generic resolves its type names in its own package
   assertEqual(Str.trim(result.stdout), "42", "type scope JVM: output")
 }
 
-// Constructing another package's `protected type` (D-progress-979).  MSIL
+// Constructing another package's `protected type` (D-progress-980).  MSIL
 // registered every nominal type name for cross-package resolution except
 // protected types, so `Counter()` in a consumer failed with T0123.
 func protectedCtorPkgs(): List[Emitter.ProjectPackage] {
@@ -2394,7 +2394,7 @@ test "emitProject constructs another package's protected type (JVM)" {
 
 // A generic record's type parameter named like a type of the constructing
 // package (`Msg`): each constructor argument must be checked against the
-// field type with the record's own parameters in scope (D-progress-979).
+// field type with the record's own parameters in scope (D-progress-980).
 func genericParamShadowPkgs(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(

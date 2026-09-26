@@ -35722,21 +35722,6 @@ Not yet: the `[layers]` checker (U3), form and route generators (U4), the
 desktop webview host (U5), native consumption of `lyric-ui` (docs/65 §15
 F-13) and a browser end-to-end test.
 
-## UI library: open questions resolved (D138), keyed events, session resume, field paths (#7390)
-
-D138 resolves Q-UI-001 to Q-UI-010. Implemented (D-progress-979): event
-paths address keyed nodes by key (protocol version 2), so a click on a row
-that has moved or gone never reaches a different row; sessions survive a
-dropped connection and resume within `reconnectGraceMs`, with
-`maxSessions` evicting the longest-disconnected sessions first and a
-per-session lock serialising reconnects against running effects;
-`FieldError` carries a structured `FieldPath` and `DraftRows` gives list
-rows stable ids. Constructing another package's `protected type` now works
-on MSIL (it failed with T0123). The remaining resolutions (`Ctx` shape,
-layer purity rules, generator request schema v2, `raw` feature gate, JVM
-desktop binding, runtime schema generation) are designs recorded for their
-phases. `lyric-ui` still builds on MSIL only (#7378).
-
 ## T0105 missing-required-field check now covers named-field union-case construction (#7119)
 
 `reportMissingCtorFields` (#6739, D-progress-924), the shared missing-

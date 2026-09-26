@@ -1,7 +1,7 @@
 # D138 — UI library: resolutions of Q-UI-001 to Q-UI-010
 
 **Status:** accepted. Q-UI-001, Q-UI-005, Q-UI-007 and Q-UI-009 are
-implemented (D-progress-979); the others are designs recorded ahead of the
+implemented (D-progress-980); the others are designs recorded ahead of the
 phase that needs them.
 
 **Sketch:** `docs/65-ui-library-sketch.md` (extends D137). Each resolution

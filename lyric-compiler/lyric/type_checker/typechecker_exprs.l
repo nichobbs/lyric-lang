@@ -4024,7 +4024,7 @@ func inferConstructionExpected(
     // type parameters in scope, instantiated at the inferred arguments
     // (`instantiatedFieldType`).  The plain `fields` list resolves field types
     // without them, so a parameter named like a type of the constructing
-    // package (`Msg`) bound to that type instead (D-progress-979).
+    // package (`Msg`) bound to that type instead (D-progress-980).
     // Reuse the field list collected for the missing-field check above (#3162):
     // both calls traverse the same symbol and produce identical results.
     val fields = prelimFields

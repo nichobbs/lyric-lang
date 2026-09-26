@@ -16,7 +16,7 @@
 //! closes the gap that #5935 had no dedicated regression test pinning the
 //! direct-call-in-condition shape on both `if` and `while`.
 //!
-//! Cases 5 and 6 cover a separate MSIL bug (D-progress-979): an
+//! Cases 5 and 6 cover a separate MSIL bug (D-progress-980): an
 //! UN-annotated lambda parameter whose function type comes from the
 //! lambda's expected type was never given its own return type, so calling
 //! it left a boxed `object` that `if` tested for non-null.  That one needed
@@ -107,7 +107,7 @@ test "call through a function-typed param bound to an explicit Bool local first"
 // lambda's expected type (a `val` annotation, or the parameter it is passed
 // to).  MSIL typed the parameter from the erased delegate shape only, so
 // `p()` stayed a boxed `object` and `if` tested it for non-null: a boxed
-// `false` counted as true (D-progress-979).
+// `false` counted as true (D-progress-980).
 func applyGuard(g: in (() -> Bool) -> String, answer: in Bool): String {
   g({ -> answer })
 }

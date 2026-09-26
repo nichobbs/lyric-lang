@@ -403,7 +403,7 @@ pub record CodegenCtx {
   // parameter takes its logical type from `lambdaParamTypes`, which is the
   // erased delegate shape; without this, invoking such a parameter
   // (`{ p -> if p() ... }`) left its result a boxed `object`, which `if`
-  // tested for non-null — always true for a boxed `false` (D-progress-979).
+  // tested for non-null — always true for a boxed `false` (D-progress-980).
   lambdaParamFnRetTypes: Map[String, MsilType]
   // The same for a function-typed parameter of a function-typed parameter of
   // a non-generic function, keyed "<fqn>#<paramIdx>#<innerParamIdx>"; copied
@@ -12105,7 +12105,7 @@ func lowerBranchWithSiblingHintMsil(
 // example — and branching on a boxed `false` tests the reference for null,
 // so it would count as true.  Such a value is unboxed here, at the one place
 // every Boolean consumer goes through, rather than at each producer
-// (D-progress-979).
+// (D-progress-980).
 func lowerBoolOperandMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], e: in Expr): Unit {
   val ty = lowerExprMsil(cctx, fctx, insns, e)
   if ty == MObject {
