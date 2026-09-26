@@ -99,6 +99,7 @@ func toRedisValue(s: in String): RedisValueT = ()
 
 // StringSet(key, value, Nullable<TimeSpan> expiry, When when): used by `create`.
 // When.Always = 0 = default(); pass default() for `when`.
+@externInstance
 @externTarget("StackExchange.Redis.IDatabase.StringSet")
 func strSetCreate(
   db: in RedisDb,
@@ -110,6 +111,7 @@ func strSetCreate(
 
 // StringSet(key, value, Nullable<TimeSpan> expiry, bool keepTtl, When when, CommandFlags flags): used by `save`.
 // Pass null expiry, keepTtl=true, default When and CommandFlags.
+@externInstance
 @externTarget("StackExchange.Redis.IDatabase.StringSet")
 func strSetKeepTtl(
   db: in RedisDb,
@@ -130,6 +132,7 @@ func strGet(db: in RedisDb, key: in RedisKeyT, flags: in CommandFlagsT): RedisVa
 func keyDel(db: in RedisDb, key: in RedisKeyT, flags: in CommandFlagsT): Bool = ()
 
 // KeyExpire(key, Nullable<TimeSpan> expiry, CommandFlags flags): used by `touch`.
+@externInstance
 @externTarget("StackExchange.Redis.IDatabase.KeyExpire")
 func keyExpire(db: in RedisDb, key: in RedisKeyT, expiry: in NullableTimeSpan, flags: in CommandFlagsT): Bool = ()
 
