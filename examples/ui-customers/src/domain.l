@@ -201,7 +201,11 @@ pub func setCustomerField(d: in CustomerDraft, f: in CustomerField, v: in String
 /// The customer described by `d`, or every problem with it.
 pub func validateCustomer(d: in CustomerDraft, id: in CustomerId): Result[Customer, List[FieldError]] {
   val errs: List[FieldError] = newList()
-  val name = Parse.collect(errs, withinLength(fieldPath("name"), Parse.requiredText(fieldPath("name"), d.name), 100), "")
+  val name = Parse.collect(
+    errs,
+    withinLength(fieldPath("name"), Parse.requiredText(fieldPath("name"), d.name), 100),
+    ""
+  )
   val email = Parse.collect(errs, Parse.email(fieldPath("email"), d.email), "")
   val limit = Parse.collect(errs, Parse.longInRange(fieldPath("creditLimit"), d.creditLimit, 0, 1_000_000), 0)
   val tierText = Parse.collect(errs, Parse.oneOf(fieldPath("tier"), d.tier, tierNames()), "standard")

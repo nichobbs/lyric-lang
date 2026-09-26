@@ -2400,7 +2400,8 @@ func genericParamShadowPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPGs.App",
-      "package EPGs.App\n" + "\n" + "import EPGs.Lib.{Prog, runOnce}\n" + "\n" + "union Msg {\n" + "  case Inc\n" + "}\n" +
+      "package EPGs.App\n" + "\n" + "import EPGs.Lib.{Prog, runOnce}\n" + "\n" + "union Msg {\n" + "  case Inc\n" +
+        "}\n" +
         "\n" +
         "union Other {\n" +
         "  case Dec\n" +

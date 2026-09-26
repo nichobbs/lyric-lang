@@ -3149,7 +3149,11 @@ pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, p
 // of a function-typed parameter of a non-generic function), its declared
 // return type under "<key>#<innerIdx>" for both key aliases.
 func recordFnInnerFnRetsMsil(
-  cctx: in CodegenCtx, fnParams: in List[TypeExpr], aKey: in String, fKey: in String, pkgName: in String
+  cctx: in CodegenCtx,
+  fnParams: in List[TypeExpr],
+  aKey: in String,
+  fKey: in String,
+  pkgName: in String,
 ): Unit {
   var i = 0
   while i < fnParams.count {

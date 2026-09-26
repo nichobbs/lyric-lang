@@ -304,7 +304,13 @@ test "a keyed event reaches its row after an earlier row is removed" {
   // the session removes ann (cat moves from index 2 to 1).
   val o = threeRows()
   val shifted: Output[Rows, RowMsg, RowEffect] = Session.dispatch(rowsProgram(), o.session, Remove(name = "ann"))
-  val ev = Event(renderVersion = o.session.version, path = rowRef("cat", 1), name = "click", data = "", inputVersion = 0)
+  val ev = Event(
+    renderVersion = o.session.version,
+    path = rowRef("cat", 1),
+    name = "click",
+    data = "",
+    inputVersion = 0
+  )
   val after: Output[Rows, RowMsg, RowEffect] = Session.handleEvent(rowsProgram(), shifted.session, ev)
   assertFalse(after.dropped, "delivered")
   assertEqual(after.session.model.deleted, "cat", "the row the user clicked")
@@ -313,7 +319,13 @@ test "a keyed event reaches its row after an earlier row is removed" {
 test "a keyed event for a row that is gone is dropped, not misrouted" {
   val o = threeRows()
   val gone: Output[Rows, RowMsg, RowEffect] = Session.dispatch(rowsProgram(), o.session, Remove(name = "bob"))
-  val ev = Event(renderVersion = o.session.version, path = rowRef("bob", 1), name = "click", data = "", inputVersion = 0)
+  val ev = Event(
+    renderVersion = o.session.version,
+    path = rowRef("bob", 1),
+    name = "click",
+    data = "",
+    inputVersion = 0
+  )
   val after: Output[Rows, RowMsg, RowEffect] = Session.handleEvent(rowsProgram(), gone.session, ev)
   assertTrue(after.dropped, "dropped")
   assertEqual(after.session.model.deleted, "", "nothing deleted")

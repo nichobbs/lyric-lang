@@ -26,7 +26,11 @@ step's patches.
   every instance operation runs inside a per-instance `InstanceLock` entry,
   because `lyric-ws` runs each connection on its own thread. `detach` checks
   `stillDetached()` under that lock, so a reconnect that resumed the session
-  between the close and the detach is not undone.
+  between the close and the detach is not undone. The generic `instance` is
+  compiled into each calling package, which may link `Ui.Host` as a prebuilt
+  assembly where a protected type is opaque (its entries are not callable
+  across that boundary), so the generic body reaches the lock only through
+  the non-generic `newInstanceLock`/`withLock`, compiled in `Ui.Host`.
 - `Ui.Host.SessionRegistry` (a protected type) holds sessions by id and the
   connection each is attached to: `admit` (expire, then evict the
   longest-disconnected, else refuse), `add`, `attach` (reconnect within

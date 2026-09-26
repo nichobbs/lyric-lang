@@ -4040,14 +4040,7 @@ func inferConstructionExpected(
               )
             )
           } else {
-            val fieldTy = instantiatedFieldType(
-              fieldNames,
-              fieldTypes,
-              gnames,
-              targs,
-              fields[posIdx].name,
-              fields[posIdx].ty
-            )
+            val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, fields[posIdx].name, fields[posIdx].ty)
             if not argSatisfiesParam(tbl, fieldTy, argTy) {
               diag.add(
                 errorDiagnostic(

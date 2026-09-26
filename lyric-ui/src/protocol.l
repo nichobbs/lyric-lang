@@ -72,10 +72,7 @@ pub func decodeClient(text: in String): Result[ClientMessage, String] {
     case Ok(j) -> j
     case Err(e) -> return Err(error = "malformed JSON: " + JsonParseError.message(e))
   }
-  val t = match getString(v, "t") {
-    case Some(s) -> s
-    case None -> return Err(error = "missing message type")
-  }
+  val t = match getString(v, "t") { case Some(s) -> s; case None -> return Err(error = "missing message type") }
   if t == "sync" {
     return Ok(value = Sync)
   }
@@ -84,14 +81,8 @@ pub func decodeClient(text: in String): Result[ClientMessage, String] {
       case Some(n) -> n.toInt()
       case None -> return Err(error = "hello: missing protocol version")
     }
-    val url = match getString(v, "url") {
-      case Some(s) -> s
-      case None -> "/"
-    }
-    val sid = match getString(v, "sid") {
-      case Some(s) -> s
-      case None -> ""
-    }
+    val url = match getString(v, "url") { case Some(s) -> s; case None -> "/" }
+    val sid = match getString(v, "sid") { case Some(s) -> s; case None -> "" }
     return Ok(value = Hello(protocolVersion = pv, url = url, sessionId = sid))
   }
   if t == "event" {
@@ -99,10 +90,7 @@ pub func decodeClient(text: in String): Result[ClientMessage, String] {
       case Some(n) -> n.toInt()
       case None -> return Err(error = "event: missing render version")
     }
-    val items = match getArray(v, "p") {
-      case Some(xs) -> xs
-      case None -> return Err(error = "event: missing path")
-    }
+    val items = match getArray(v, "p") { case Some(xs) -> xs; case None -> return Err(error = "event: missing path") }
     val path: List[NodeRef] = newList()
     for item in items {
       match decodeRef(item) {
@@ -110,19 +98,12 @@ pub func decodeClient(text: in String): Result[ClientMessage, String] {
         case None -> return Err(error = "event: path steps must be non-negative indices or non-empty keys")
       }
     }
-    val name = match getString(v, "e") {
-      case Some(s) -> s
-      case None -> return Err(error = "event: missing event name")
-    }
-    val data = match getString(v, "d") {
-      case Some(s) -> s
-      case None -> ""
-    }
-    val iv = match getInt(v, "iv") {
-      case Some(n) -> n.toInt()
-      case None -> 0
-    }
-    return Ok(value = EventMsg(event = Event(renderVersion = rv, path = path, name = name, data = data, inputVersion = iv)))
+    val name = match getString(v, "e") { case Some(s) -> s; case None -> return Err(error = "event: missing event name") }
+    val data = match getString(v, "d") { case Some(s) -> s; case None -> "" }
+    val iv = match getInt(v, "iv") { case Some(n) -> n.toInt(); case None -> 0 }
+    return Ok(
+      value = EventMsg(event = Event(renderVersion = rv, path = path, name = name, data = data, inputVersion = iv))
+    )
   }
   return Err(error = "unknown message type '" + t + "'")
 }
@@ -130,15 +111,11 @@ pub func decodeClient(text: in String): Result[ClientMessage, String] {
 // A path step: a non-negative index, or a non-empty key.
 func decodeRef(item: in JsonValue): Option[NodeRef] {
   match asInt(item) {
-    case Some(n) -> if n >= 0 and n <= 1_000_000 {
-      return Some(value = At(index = n.toInt()))
-    }
+    case Some(n) -> if n >= 0 and n <= 1_000_000 { return Some(value = At(index = n.toInt())) }
     case None -> ()
   }
   match asString(item) {
-    case Some(k) -> if k.length > 0 {
-      return Some(value = Keyed(key = k))
-    }
+    case Some(k) -> if k.length > 0 { return Some(value = Keyed(key = k)) }
     case None -> ()
   }
   return None

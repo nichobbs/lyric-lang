@@ -29,8 +29,14 @@ test "decodes an event" {
     case Ok(EventMsg(ev)) -> {
       assertEqualInt(ev.renderVersion, 4, "render version")
       assertEqualInt(ev.path.count, 3, "path length")
-      match ev.path[0] { case At(i) -> assertEqualInt(i, 0, "index step"); case _ -> assertTrue(false, "expected index") }
-      match ev.path[1] { case Keyed(k) -> assertEqual(k, "cust-42", "key step"); case _ -> assertTrue(false, "expected key") }
+      match ev.path[0] {
+        case At(i) -> assertEqualInt(i, 0, "index step")
+        case _ -> assertTrue(false, "expected index")
+      }
+      match ev.path[1] {
+        case Keyed(k) -> assertEqual(k, "cust-42", "key step")
+        case _ -> assertTrue(false, "expected key")
+      }
       assertEqual(ev.name, "input", "event name")
       assertEqual(ev.data, "Acme", "data")
       assertEqualInt(ev.inputVersion, 7, "input version")
@@ -59,15 +65,7 @@ test "decodes hello and sync" {
 }
 
 test "rejects malformed and unknown messages" {
-  for bad in [
-    "not json",
-    "{}",
-    "{\"t\":\"dance\"}",
-    "{\"t\":\"event\",\"v\":1,\"p\":[\"\"],\"e\":\"click\"}",
-    "{\"t\":\"event\",\"v\":1,\"p\":[-1],\"e\":\"click\"}",
-    "{\"t\":\"event\",\"v\":1,\"p\":[true],\"e\":\"click\"}",
-    "{\"t\":\"hello\"}"
-  ] {
+  for bad in ["not json", "{}", "{\"t\":\"dance\"}", "{\"t\":\"event\",\"v\":1,\"p\":[\"\"],\"e\":\"click\"}", "{\"t\":\"event\",\"v\":1,\"p\":[-1],\"e\":\"click\"}", "{\"t\":\"event\",\"v\":1,\"p\":[true],\"e\":\"click\"}", "{\"t\":\"hello\"}"] {
     match Protocol.decodeClient(bad) {
       case Ok(_) -> assertTrue(false, "should reject " + bad)
       case Err(_) -> assertTrue(true, "rejected")

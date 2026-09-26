@@ -23,7 +23,11 @@ test "requiredText trims and rejects blank input" {
 }
 
 test "longInRange distinguishes required, invalid and out-of-range" {
-  assertEqual(Forms.messageOf(err1(Parse.longInRange(Forms.fieldPath("limit"), "", 0, 100)), "Limit"), "Limit is required", "empty")
+  assertEqual(
+    Forms.messageOf(err1(Parse.longInRange(Forms.fieldPath("limit"), "", 0, 100)), "Limit"),
+    "Limit is required",
+    "empty"
+  )
   assertEqual(
     Forms.messageOf(err1(Parse.longInRange(Forms.fieldPath("limit"), "12a", 0, 100)), "Limit"),
     "Limit must be a whole number",

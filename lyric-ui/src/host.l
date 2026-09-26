@@ -64,7 +64,6 @@ pub record DetachedSession {
 pub protected type SessionRegistry {
   var byId: Map[String, SessionEntry] = newMap()
   var byConnection: Map[String, String] = newMap()
-
   /// Makes room for one more session, evicting expired sessions and then
   /// the longest-disconnected ones.  False when every session is connected
   /// and the limit is reached.
@@ -89,12 +88,10 @@ pub protected type SessionRegistry {
     }
     return true
   }
-
   entry add(id: in String, inst: in Instance, connectionId: in String, now: in Long): Unit {
     byId.add(id, SessionEntry(instance = inst, connectionId = connectionId, since = now))
     bindConnection(connectionId, id)
   }
-
   /// Attaches session `id` to `connectionId` when it exists and has not
   /// expired.  A session still attached to another connection moves to the
   /// new one (the browser reconnected before the old socket closed).
@@ -113,7 +110,6 @@ pub protected type SessionRegistry {
       case None -> Unknown
     }
   }
-
   /// Marks the session carried by `connectionId` disconnected, if that
   /// connection is still the one it is attached to.  The caller then calls
   /// the instance's `detach`, guarded by `isDetached`.
@@ -131,22 +127,18 @@ pub protected type SessionRegistry {
       case None -> None
     }
   }
-
   /// True when session `id` exists and no connection carries it.
   func isDetached(id: in String): Bool {
     return match mapGet(byId, id) { case Some(e) -> e.connectionId.length == 0; case None -> false }
   }
-
   /// The session id carried by `connectionId`.
   func sessionOf(connectionId: in String): Option[String] {
     return mapGet(byConnection, connectionId)
   }
-
   /// The instance of session `id`.
   func instanceOf(id: in String): Option[Instance] {
     return match mapGet(byId, id) { case Some(e) -> Some(value = e.instance); case None -> None }
   }
-
   /// The connection session `id` is attached to, if any.
   func connectionOf(id: in String): Option[String] {
     return match mapGet(byId, id) {
@@ -154,12 +146,10 @@ pub protected type SessionRegistry {
       case None -> None
     }
   }
-
   /// The number of sessions held, connected or not.
   func liveCount(): Int {
     return byId.count
   }
-
   // Records that `connectionId` carries session `id`.
   entry bindConnection(connectionId: in String, id: in String): Unit {
     if byConnection.containsKey(connectionId) {
@@ -167,7 +157,6 @@ pub protected type SessionRegistry {
     }
     byConnection.add(connectionId, id)
   }
-
   // Removes disconnected sessions older than `graceMs`.
   entry removeExpired(now: in Long, graceMs: in Long): Unit {
     val expired: List[String] = newList()
@@ -202,12 +191,26 @@ pub record Instance {
 }
 
 /// Serialises the operations of one instance: each runs entirely inside
-/// `run`'s entry lock.  Public because the generic `instance` creates one
-/// and a generic body is compiled into each calling package.
+/// `run`'s entry lock.
 pub protected type InstanceLock {
   entry run(f: in () -> Unit): Unit {
     f()
   }
+}
+
+// The generic `instance` is compiled into each package that calls it, which
+// may link `Ui.Host` as a prebuilt assembly.  A protected type crosses that
+// boundary as an opaque type (its entries are not callable there), so the
+// generic body reaches the lock only through these two functions, which are
+// compiled here.
+/// A new lock for one instance.
+pub func newInstanceLock(): InstanceLock {
+  return InstanceLock()
+}
+
+/// Runs `f` holding `lock`.
+pub func withLock(lock: in InstanceLock, f: in () -> Unit): Unit {
+  lock.run(f)
 }
 
 /// An instance running program `p` from `init`, with `run` interpreting the
@@ -220,58 +223,70 @@ pub func instance[M, Msg, E](p: in Program[M, Msg, E], init: in Step[M, E], run:
   // The session is owned by this instance and only touched while holding
   // `lock`, so a one-slot list is a sufficient cell.
   val cell: List[Session[M, Msg]] = newList()
-  val lock = InstanceLock()
+  val lock = newInstanceLock()
   val start = { outbox: Outbox ->
-    lock.run({ ->
-      val o: Output[M, Msg, E] = Session.start(p, init)
-      val s: Session[M, Msg] = o.session
-      store(cell, s)
-      drive(p, run, cell, o, outbox)
-    })
-  }
-  val receive = { m: ClientMessage, outbox: Outbox ->
-    lock.run({ ->
-      if cell.count > 0 {
-        match m {
-          case EventMsg(ev) -> {
-            val current: Session[M, Msg] = cell[0]
-            val o: Output[M, Msg, E] = Session.handleEvent(p, current, ev)
-            if not o.dropped {
-              val s: Session[M, Msg] = o.session
-              store(cell, s)
-              drive(p, run, cell, o, outbox)
-            }
-          }
-          case Sync -> {
-            val s: Session[M, Msg] = cell[0]
-            val patches: List[Patch] = Session.resync(s)
-            val noEchoes: List[ValueEcho] = newList()
-            outbox.send(encodePatches(s.version, patches, noEchoes))
-          }
-          case Hello(_, _, _) -> ()
-        }
-      }
-    })
-  }
-  val detach: (() -> Bool) -> Unit = { stillDetached ->
-    lock.run({ ->
-      if cell.count > 0 and stillDetached() {
-        val current: Session[M, Msg] = cell[0]
-        val s: Session[M, Msg] = Session.detach(current)
-        store(cell, s)
-      }
-    })
-  }
-  val resume = { outbox: Outbox ->
-    lock.run({ ->
-      if cell.count > 0 {
-        val current: Session[M, Msg] = cell[0]
-        val o: Output[M, Msg, E] = Session.resume(p, current)
+    withLock(
+      lock,
+      { ->
+        val o: Output[M, Msg, E] = Session.start(p, init)
         val s: Session[M, Msg] = o.session
         store(cell, s)
-        emit(o, outbox)
+        drive(p, run, cell, o, outbox)
       }
-    })
+    )
+  }
+  val receive = { m: ClientMessage, outbox: Outbox ->
+    withLock(
+      lock,
+      { ->
+        if cell.count > 0 {
+          match m {
+            case EventMsg(ev) -> {
+              val current: Session[M, Msg] = cell[0]
+              val o: Output[M, Msg, E] = Session.handleEvent(p, current, ev)
+              if not o.dropped {
+                val s: Session[M, Msg] = o.session
+                store(cell, s)
+                drive(p, run, cell, o, outbox)
+              }
+            }
+            case Sync -> {
+              val s: Session[M, Msg] = cell[0]
+              val patches: List[Patch] = Session.resync(s)
+              val noEchoes: List[ValueEcho] = newList()
+              outbox.send(encodePatches(s.version, patches, noEchoes))
+            }
+            case Hello(_, _, _) -> ()
+          }
+        }
+      }
+    )
+  }
+  val detach: (() -> Bool) -> Unit = { stillDetached ->
+    withLock(
+      lock,
+      { ->
+        if cell.count > 0 and stillDetached() {
+          val current: Session[M, Msg] = cell[0]
+          val s: Session[M, Msg] = Session.detach(current)
+          store(cell, s)
+        }
+      }
+    )
+  }
+  val resume = { outbox: Outbox ->
+    withLock(
+      lock,
+      { ->
+        if cell.count > 0 {
+          val current: Session[M, Msg] = cell[0]
+          val o: Output[M, Msg, E] = Session.resume(p, current)
+          val s: Session[M, Msg] = o.session
+          store(cell, s)
+          emit(o, outbox)
+        }
+      }
+    )
   }
   return Instance(start = start, receive = receive, detach = detach, resume = resume)
 }

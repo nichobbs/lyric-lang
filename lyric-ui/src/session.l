@@ -173,7 +173,13 @@ pub func resume[M, Msg, E](p: in Program[M, Msg, E], s: in Session[M, Msg]): Out
   val dialog: Option[PendingDialog[Msg]] = s.dialog
   val tree: View[SessionMsg[Msg]] = render(p, model, dialog)
   val ivs: List[InputVersion] = newList()
-  val next: Session[M, Msg] = Session(model = model, tree = tree, version = s.version + 1, dialog = dialog, inputVersions = ivs)
+  val next: Session[M, Msg] = Session(
+    model = model,
+    tree = tree,
+    version = s.version + 1,
+    dialog = dialog,
+    inputVersions = ivs
+  )
   val none: List[E] = newList()
   val noDialog: Option[PendingDialog[Msg]] = None
   val split: Split[E, Msg] = splitEffects(p, none, noDialog)

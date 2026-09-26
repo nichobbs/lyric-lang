@@ -273,8 +273,17 @@ func receiveText(s: in UiSocket, connectionId: in String, text: in String): Unit
     case Ok(Hello(pv, url, sid)) -> hello(s, connectionId, pv, url, sid)
     case Ok(m) -> match s.sessions.sessionOf(connectionId) {
       case Some(id) -> match s.sessions.instanceOf(id) {
-        case Some(inst) -> inst.receive(m, SessionOutbox(registry = s.registry, sessions = s.sessions, sessionId = id))
-        case None -> Console.error("lyric-ui: message for an evicted session from " + connectionId)
+        case Some(inst) -> inst.receive(
+          m,
+          SessionOutbox(
+            registry = s.registry,
+            sessions = s.sessions,
+            sessionId = id
+          )
+        )
+        case None -> Console.error(
+          "lyric-ui: message for an evicted session from " + connectionId
+        )
       }
       case None -> Console.error("lyric-ui: message before hello from " + connectionId)
     }
@@ -304,7 +313,10 @@ func hello(s: in UiSocket, connectionId: in String, pv: in Int, url: in String, 
     staticPage("Server busy", "The server is at capacity. Please try again in a few minutes.").start(direct)
     return
   }
-  val inst = match s.route(url) { case Some(i) -> i; case None -> staticPage("Not found", "There is no page at " + url + ".") }
+  val inst = match s.route(url) {
+    case Some(i) -> i
+    case None -> staticPage("Not found", "There is no page at " + url + ".")
+  }
   val id = newSessionId()
   s.sessions.add(id, inst, connectionId, now)
   direct.send(encodeSession(id))

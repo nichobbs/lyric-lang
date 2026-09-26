@@ -220,8 +220,12 @@ test "the session registry evicts the longest-detached session when full" {
   reg.add("a", dummy(), "ca", 0)
   reg.add("b", dummy(), "cb", 0)
   reg.add("c", dummy(), "cc", 0)
-  match reg.release("cb", 100) { case _ -> () }
-  match reg.release("ca", 200) { case _ -> () }
+  match reg.release("cb", 100) {
+    case _ -> ()
+  }
+  match reg.release("ca", 200) {
+    case _ -> ()
+  }
   assertTrue(reg.admit(300, 10_000, 3), "room made by eviction")
   assertEqualInt(reg.liveCount(), 2, "one evicted")
   match reg.instanceOf("b") {

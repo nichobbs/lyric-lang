@@ -314,7 +314,9 @@ pub func findRow[D](rows: in DraftRows[D], id: in Int): Option[DraftRow[D]] {
 /// so every error is reported at once; the result is the rows' values in
 /// order, or every error found.
 pub func validateRows[D, T](
-  rows: in DraftRows[D], path: in FieldPath, f: in (FieldPath, D) -> Result[T, List[FieldError]]
+  rows: in DraftRows[D],
+  path: in FieldPath,
+  f: in (FieldPath, D) -> Result[T, List[FieldError]],
 ): Result[List[T], List[FieldError]] {
   val values: List[T] = newList()
   val errs: List[FieldError] = newList()
