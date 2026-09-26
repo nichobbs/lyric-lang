@@ -1,4 +1,4 @@
-# D-progress-981 — Stdlib security hardening; invariant checkers for stdlib types
+# D-progress-982 — Stdlib security hardening; invariant checkers for stdlib types
 
 **Status:** shipped
 

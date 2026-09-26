@@ -1,4 +1,4 @@
-# D-progress-984 — Integer literals are range-checked; mixed-width arithmetic widens on every backend
+# D-progress-985 — Integer literals are range-checked; mixed-width arithmetic widens on every backend
 
 **Status:** shipped
 
