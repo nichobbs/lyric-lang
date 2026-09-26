@@ -475,8 +475,11 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
     // Emit guard if present.
     match arm.guard {
       case Some(g) -> {
-        lowerExpr(ctx, insns, g)
-        insns.add(LIfeq(label = nextArmL))
+        // Through `lowerBoolCond`, like `if`/`while`: it coerces a guard that
+        // produced an erased `Object` (a call through a generic callback
+        // returning `Bool`) to `boolean` before branching.  A bare `ifeq` on
+        // the reference failed verification (D-progress-979).
+        lowerBoolCond(ctx, insns, g, nextArmL)
       }
       case None -> {
         insns.add(LNop)

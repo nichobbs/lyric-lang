@@ -111,9 +111,17 @@ parameter is now recorded where lambda parameter types are propagated (a
 own function-typed parameters' return types are recorded unless they
 mention the declaring function's type parameters) in
 `lambdaParamFnRetTypes`, and registered when
-the lambda body's parameters are set up. The JVM backend was already
-correct. Regression: `lambda_bool_if_cond_self_test.l` case 5 on both
-targets.
+the lambda body's parameters are set up. Independently of where the
+value comes from, MSIL now unboxes a Boolean operand that arrives as a boxed
+`object` at every consumer (`lowerBoolOperandMsil`: `if`/`while`
+conditions, `and`/`or`/`implies`, `not`, match guards), so a producer that
+does not track its return type (for example a generic callback returning
+`T` with `T = Bool`) cannot turn a boxed `false` into a taken branch. The
+JVM backend already coerced conditions in `lowerBoolCond`, except for match
+guards, which branched on the raw reference and failed verification
+(`VerifyError: Bad type on operand stack`); guards now go through
+`lowerBoolCond` too. Regression: `lambda_bool_if_cond_self_test.l` cases 5
+to 7 on both targets.
 
 ## Tests
 
