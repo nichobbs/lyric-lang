@@ -1,10 +1,10 @@
-# D-progress-976 — Protocol and I/O contracts; JVM `default()` assignment
+# D-progress-979 — Protocol and I/O contracts; JVM `default()` assignment
 
 **Status:** shipped
 
 Programmer-config contracts and untrusted-input `Result` conversions for the
 stdlib's protocol and I/O modules (#7251), plus a JVM codegen bug found along
-the way. Principle, as in D-progress-962: data that can come from outside the
+the way. Principle, as in D-progress-974: data that can come from outside the
 program returns `Err` (or `false`/`None`); a caller building a malformed value
 is a `requires:` or invariant.
 

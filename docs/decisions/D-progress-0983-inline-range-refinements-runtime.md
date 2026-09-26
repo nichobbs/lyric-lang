@@ -1,4 +1,4 @@
-# D-progress-980 — Inline range refinements are checked at runtime
+# D-progress-983 — Inline range refinements are checked at runtime
 
 **Status:** shipped
 
@@ -30,7 +30,7 @@ above.
 - **Messages.** A failure reads
   `RangeViolated: <owner> <parameter x | result | x> must be in <type>`.
   NaN satisfies no range, since the comparisons are the IEEE ordered ones
-  fixed in D-progress-972.
+  fixed in D-progress-975.
 
 `elaborateFunctionBody` now takes the function's parameters and return type.
 Functions and protected entries with a refinement no longer take the
@@ -41,7 +41,7 @@ Not covered:
   check.
 - Named range subtypes (`type Cents = Long range ...`) are part 2 of #7226:
   their `from`/`tryFrom` already check, and derived arithmetic is re-checked
-  through `from` by D-progress-985 (#7361).
+  through `from` by D-progress-988 (#7361).
 
 Tests: `range_refinement_self_test.l` (7 cases, dotnet and JVM) covers
 parameters, a half-open return, `Double` (including NaN) and `Long` bounds,
