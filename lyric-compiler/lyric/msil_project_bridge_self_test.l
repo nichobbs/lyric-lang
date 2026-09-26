@@ -2617,6 +2617,51 @@ test "qualified call to an internal cross-package function resolves (#6580)" {
   )
 }
 
+// #6886: the lyric-lambda `newLambdaRouter` shape — package A is a single
+// segment ("Lambda"), package B is a dotted package whose FIRST segment
+// equals A's whole name ("Lambda.Kernel.WebBridge"), B imports A and calls
+// A's `internal` zero-arg free function BARE (no qualifier at all). This
+// used to fail with `error[T0020] unknown name` (docs/01 §3.1 documents
+// `internal` as visible to sibling packages within the same project) —
+// already fixed by #6580's `pipeIsCrossPackageItemProject` generalisation
+// (D-progress-923); this pins the exact bare-zero-arg-call shape #6886
+// reported as a permanent regression guard.
+test "internal bare zero-arg call from a dotted sub-package sharing A's prefix resolves (#6886)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "Lambda6886",
+      "package Lambda6886\n" + "pub opaque type Thing {\n" + "  x: Int\n" + "}\n" +
+        "internal func makeThing(): Thing {\n" +
+        "  Thing(x = 1)\n" +
+        "}\n" +
+        "pub func unwrap(t: in Thing): Int {\n" +
+        "  t.x\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Lambda6886.Kernel.WebBridge",
+      "package Lambda6886.Kernel.WebBridge\n" + "import Lambda6886\n" + "pub func makeAndUnwrap(): Int {\n" +
+        "  val t = makeThing()\n" +
+        "  unwrap(t)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Lambda6886App",
+      "package Lambda6886App\n" + "import Lambda6886.Kernel.WebBridge\n" + "func main(): Unit {\n" +
+        "  println(Lambda6886.Kernel.WebBridge.makeAndUnwrap())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("internal-bare-dotted-prefix-6886", packages, "InternalBareDottedPrefix6886")
+  assertEqualInt(result.exitCode, 0, "internal_bare_dotted_prefix_6886: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1", "internal bare call from dotted sub-package returns the right value")
+}
+
 // #6537 residual site 1: `resolveFfiClassTypeRef` (used by `bufFfiType` to
 // encode an `@externTarget` FFI method-signature blob) did its own unscoped
 // bare-name lookup into the bundle-global `cctx.externTypeNames`, the same

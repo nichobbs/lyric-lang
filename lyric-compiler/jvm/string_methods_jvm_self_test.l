@@ -137,3 +137,31 @@ test "one-arg substring takes the rest of the string" {
   val s = "hello world"
   assertEqual(s.substring(6), "world", "substring(6) rest-of-string")
 }
+
+// #7099: `isNormalized`/`normalize` have no `java.lang.String` instance
+// method — the JVM intrinsic routes through `java.text.Normalizer`'s
+// static methods. Precomposed "é" (U+00E9) is already NFC; the decomposed
+// form ("e" + U+0301 COMBINING ACUTE ACCENT) is NOT. `lyric fmt` renders
+// both forms as literal glyphs that look IDENTICAL on screen (“café” in
+// every test below) — the underlying codepoints differ (one precomposed
+// é codepoint vs. “e” + a combining mark). Do not “fix” these literals to look
+// the same on the assumption they are duplicates.
+test "isNormalized is true for an already-NFC string" {
+  val s = "café"
+  assertTrue(s.isNormalized(), "precomposed é is already NFC")
+}
+
+test "isNormalized is false for a decomposed (NFD) string" {
+  val s = "café"
+  assertTrue(not s.isNormalized(), "decomposed e + combining acute is not NFC")
+}
+
+test "normalize converts a decomposed string to NFC" {
+  val s = "café"
+  assertEqual(s.normalize(), "café", "normalize converts decomposed to precomposed")
+}
+
+test "normalize is a no-op on an already-NFC string" {
+  val s = "café"
+  assertEqual(s.normalize(), "café", "normalize leaves NFC input unchanged")
+}

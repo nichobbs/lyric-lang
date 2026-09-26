@@ -2641,6 +2641,23 @@ func lowerScalarMethodCall(
     if name == "endsWith" and args.count == 1 {
       return Some(value = lowerStringPredicateCall(ctx, insns, "lyric_string_ends_with", v, args))
     }
+    // #7304: `Std.String.isNormalized`/`normalize`'s bodies call
+    // `s.isNormalized()`/`s.normalize()` via UFCS, exactly like every other
+    // wrapper in this file — safe on MSIL/JVM only because those backends
+    // recognize the name as an intrinsic. Native has no such intrinsic, so
+    // without this explicit panic the call falls through to
+    // `lowerUfcsCall`, which resolves `<curPkg>.<name>/<arity>` and finds
+    // the very function being compiled (`Std.String.isNormalized/1`) —
+    // infinite self-recursion at runtime instead of the clean compile-time
+    // "not yet supported" this file gives every other un-ported method.
+    // Mirrors the `indexOf`/`lastIndexOf` self-package guard above
+    // (#6752) for the same recursion hazard class.
+    if (name == "isNormalized" or name == "normalize") and args.count == 0 {
+      panic(
+        "Lyric.LlvmCodegen: String member '." + name +
+          "' is not yet supported for --target native (Unicode normalization tables not yet ported to lyric-rt)"
+      )
+    }
     return None
   }
   if name == "toString" and args.count == 0 and isScalarNType(v.ty) {

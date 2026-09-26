@@ -54,6 +54,20 @@ pub func trimEnd(s: in String): String {
   s.trimEnd()
 }
 
+// Check if a string is in Unicode Normalization Form C (NFC).
+@pure
+@stable(since = "1.0")
+pub func isNormalized(s: in String): Bool {
+  s.isNormalized()
+}
+
+// Return a string converted to Unicode Normalization Form C (NFC).
+@pure
+@stable(since = "1.0")
+pub func normalize(s: in String): String {
+  s.normalize()
+}
+
 // ---------------------------------------------------------------------------
 // Substring and search.
 // ---------------------------------------------------------------------------

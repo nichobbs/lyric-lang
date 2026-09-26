@@ -23,6 +23,18 @@ func testInspection(): Unit {
   assertEqual(trimEnd("  hi  "), "  hi", "trimEnd")
 }
 
+// #7099/#7205: precomposed "é" (U+00E9) is already NFC; the decomposed
+// form ("e" + U+0301 COMBINING ACUTE ACCENT) is not. `lyric fmt` renders
+// both forms as literal glyphs that look IDENTICAL on screen ("café" in
+// every case below) — the underlying codepoints differ. Do not "fix"
+// these literals to look the same on the assumption they are duplicates.
+func testNormalization(): Unit {
+  assertTrue(isNormalized("café"), "isNormalized: precomposed é is already NFC")
+  assertTrue(not isNormalized("café"), "isNormalized: decomposed e + combining acute is not NFC")
+  assertEqual(normalize("café"), "café", "normalize: converts decomposed to precomposed")
+  assertEqual(normalize("café"), "café", "normalize: no-op on already-NFC input")
+}
+
 func testSearch(): Unit {
   assertTrue(startsWith("hello", "hel"), "startsWith match")
   assertTrue(not startsWith("hello", "xyz"), "startsWith no match")
@@ -110,6 +122,7 @@ func testCharAccess(): Unit {
 
 func main(): Unit {
   testInspection()
+  testNormalization()
   testSearch()
   testSubstring()
   testCase()

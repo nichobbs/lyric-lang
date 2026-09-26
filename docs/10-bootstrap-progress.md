@@ -35435,7 +35435,6 @@ fills a `ByteBuffer`'s backing array in place. Also on the JVM:
 through `OffsetDateTime`, and `log2` no longer recomputes `ln(2)` per call
 (#7283, epic #7256). Covered by `secure_random_self_test.l` on dotnet and JVM.
 
-
 ## HTTPS handshakes run off the accept loop, with handshake and idle timeouts
 
 On dotnet and native the TLS server ran each handshake on its single accept
@@ -35709,3 +35708,128 @@ Not yet: the `[layers]` checker (U3), form and route generators (U4), the
 desktop webview host (U5), native consumption of `lyric-ui` (docs/65 §15
 F-13) and a browser end-to-end test.
 
+## T0105 missing-required-field check now covers named-field union-case construction (#7119)
+
+`reportMissingCtorFields` (#6739, D-progress-924), the shared missing-
+required-field check, was only wired into `inferConstruction`'s
+record/opaque paths — `inferUnionCaseConstruction` never called it, so a
+union-case construction omitting a required named field from an
+all-named-args call reached codegen with no diagnostic (the same
+invalid-IL hazard #6739 fixed for records, left open for unions; raised as
+a non-blocking `claude-review` SUGGESTION on PR #7117 and filed as this
+tracked follow-up). New `collectUnionCaseFields` builds the shared
+`CtorField` list from a union case's named (`UFNamed`) fields only —
+positional (`UFPos`) fields are excluded since they can't be supplied by
+name, and `reportMissingCtorFields` already skips its whole check once any
+positional argument is present in the call. `inferUnionCaseConstruction`
+gained a `checkMissingFields: Bool` gate, `false` at its bare-callee-
+placeholder call site (a call's callee expression is inferred standalone
+with an empty argument list before the enclosing `ECall` re-infers with the
+real arguments and wins) and `true` at its two real call sites — running
+the check unconditionally broke 4 existing tests that construct a
+field-having case by name, since the placeholder step saw zero supplied
+arguments and reported every field "missing" before the real check ever
+ran. `docs/01-language-reference.md` and
+`book/chapters/appendix-b-quick-reference.md` updated. `typechecker_self_test.l`:
+430/430 (4 new cases).
+
+**Related:** D-progress-972 (full account, `docs/decisions/`), #7119,
+#6739/D-progress-924 (the record/opaque precedent this generalizes), PR
+#7117 (where the gap was flagged).
+
+## `isNormalized`/`normalize` MSIL↔JVM parity fix; #7099's type-check-time approach reverted after a real JVM regression
+
+While investigating #7099 (an unknown `String` method type-checks clean and
+only fails at runtime), an attempt to add a `TyPrim(PtString)` arm to
+`maybeUnknownMemberDiag` (a new `T0113` diagnostic gated on an explicit
+allowlist of backend-intrinsic `String` method names) surfaced and fixed a
+genuine pre-existing gap: `isNormalized`/`normalize` had no `Std.String`
+wrapper and no JVM codegen intrinsic at all (MSIL-only). Both are now
+fixed — `lyric-stdlib/std/string.l` gained the two wrapper functions, and
+`lyric-compiler/jvm/codegen/04_calls.l` gained the JVM intrinsic, routing
+through `java.text.Normalizer`'s **static** methods
+(`LGetstatic(Normalizer$Form.NFC)` + `LInvokestatic`) since Java has no
+instance-method equivalent. Verified end-to-end (build **and** run) on
+both targets.
+
+The T0113-for-`String` diagnostic itself was **reverted** before merge: CI
+caught it false-positiving on legitimate JVM-only code
+(`lyric-compiler/lyric/hash_jvm_self_test.l`,
+`lyric-compiler/jvm/try_catch_expr_jvm_self_test.l`, both calling
+`s.getBytes()`). The type checker is shared, target-agnostic code — but
+the actual reachable `String`-method surface is NOT the same on both
+targets: MSIL's `String` handling is a closed, hardcoded cascade (anything
+outside it panics at codegen time, unconditionally, on every target — this
+part is genuinely fully known), while the JVM backend additionally falls
+through to a generic auto-FFI instance-method resolver
+(`lowerAutoFfiInstanceCall` in `04_calls.l`) that resolves *any* real
+`java.lang.String` method directly against JDK metadata when the name
+isn't one of JVM's own hardcoded intrinsics. A static allowlist checked at
+type-check time cannot represent that open, metadata-resolved surface, so
+it necessarily either under-covers (missing real JDK methods like
+`getBytes`) or requires duplicating JDK metadata resolution inside the
+shared type checker — a much larger, properly-scoped change than this
+attempt, needing either target-awareness threaded through the checker or
+the check moved into a target-specific pre-codegen pass. Filed as a
+follow-up with this design note rather than re-attempting a quick fix.
+`isNormalized`/`normalize` are unaffected by the revert — they're real
+intrinsic wrapper functions on both backends, not part of the reverted
+diagnostic.
+
+**Related:** D-progress-971 (full account, `docs/decisions/`), #7099
+(still open), #7204 (the design-note follow-up filed after the JVM
+regression found in CI and the revert).
+
+## `internal` cross-package bare-name/zero-arg free-function calls confirmed fixed, `lyric-lambda` workaround reverted (#6886)
+
+Filed independently of #6580 but the same root cause: a bare (or qualified)
+cross-package call to an `internal` free function failed with `error[T0020]
+unknown name`, contradicting `docs/01-language-reference.md` §3.1's
+documented project-wide `internal` visibility. #6580's
+`pipeIsCrossPackageItemProject` generalisation (D-progress-923, merged via
+PR #7117 shortly after #6886 was filed) already fixed the underlying
+`pipeIsCrossPackageItem` pub-only filter this bug shared. Re-verified with
+the exact reported shape (a bare, zero-argument call to an `internal`
+free function from a dotted sub-package sharing the declaring package's
+name as a prefix — the real `Lambda`/`Lambda.Kernel.WebBridge` shape) via a
+new `msil_project_bridge_self_test.l` regression test and an end-to-end
+`lyric build --manifest lyric-lambda/lyric.toml --features web,local`
+rebuild: no diagnostic, build succeeds. `lyric-lambda/src/lambda.l`'s
+`newLambdaRouter()` — `pub` only as the documented workaround for this bug
+— reverted to `internal` (its originally-intended visibility); the
+`Lambda.Kernel.WebBridge` webbridge tests (manually run per
+`tests/lambda_webbridge_tests.l`'s own header recipe, `--features web`)
+pass unchanged (3/3).
+
+**Related:** D-progress-923 (the #6580 fix this issue shared a root cause
+with), #6886, #6580.
+
+## `--target native`: `Std.String.isNormalized`/`normalize` infinite self-recursion fixed (#7304)
+
+`isNormalized`/`normalize`'s pure-layer bodies call the same-named method
+via UFCS, exactly like every other `Std.String` wrapper (`trim`,
+`toLower`, ...) — safe on MSIL/JVM only because both backends recognize
+the name as a hardcoded intrinsic. Native had no such intrinsic and no
+guard: the call fell through to the generic UFCS resolver, which
+resolves `<currentPackage>.<name>/<arity>` — while lowering
+`Std.String.isNormalized`'s own body, that key matches the very function
+being compiled, causing silent infinite self-recursion (a runtime stack
+overflow) instead of the clean compile-time "not yet supported for
+--target native" panic every other un-ported String method gives. Caught
+as a REQUIRED `claude-review` finding before merge. Fixed by an explicit
+named panic in `Lyric.LlvmCodegen.lowerScalarMethodCall`, mirroring the
+`indexOf`/`lastIndexOf` self-package recursion guard (#6752) that already
+covers the identical hazard class. A real native NFC implementation
+(Unicode normalization tables in `lyric-rt`) remains a tracked follow-up;
+the panic message says so.
+
+**Verification.** New `native_string_normalize_panic_self_test.l`
+(`LYRIC_LOAD_COMPILER=1`, no `clang`/`lyric-rt` build needed — codegen-time
+panic only): 3/3 pass (`isNormalized`/`normalize` panic with a message
+naming the method; unrelated native String methods unaffected).
+`typechecker_self_test.l` 437/437, `msil_project_bridge_self_test.l`
+66/66 (unaffected — native-only codegen fix). Full clean `make lyric`
+succeeds.
+
+**Related:** `docs/decisions/D-progress-0973-native-isnormalized-normalize-self-recursion-7304.md`
+(full account), #7304 (this fix), #6752 (the precedent this mirrors).

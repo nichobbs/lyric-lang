@@ -4711,3 +4711,38 @@ test "a function value over an extern type whose name the use site reuses is T01
     "no clash: the bare extern name is used"
   )
 }
+
+// #7119: `reportMissingCtorFields` (#6739/#3156) was only wired into
+// `inferConstruction`'s record/opaque paths — `inferUnionCaseConstruction`
+// never called it, so a union-case construction omitting a required named
+// field from an all-named-args call reached codegen silently (the same
+// invalid-IL hazard #6739 fixed for records, left open for unions).
+test "union case missing required field emits T0105" {
+  val src = "package P\nunion DbError {\n  case ExecFailed(sql: String, message: String)\n}\nfunc f(): DbError { ExecFailed(sql = \"select 1\") }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0105"), "union case missing required field: T0105")
+}
+
+test "union case all required fields supplied is clean" {
+  val src = "package P\nunion DbError {\n  case ExecFailed(sql: String, message: String)\n}\nfunc f(): DbError { ExecFailed(sql = \"select 1\", message = \"boom\") }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "union case all fields supplied: no errors")
+}
+
+// A positional-arg union case construction is exempt (mirrors the record
+// precedent's `hasPositional` guard — mixed positional/named under-application
+// is out of scope): `ExecFailed("select 1")` under-applies with a positional
+// arg, which should surface as the ordinary arity/type mismatch, not T0105.
+test "union case positional construction does not fire T0105" {
+  val src = "package P\nunion DbError {\n  case ExecFailed(sql: String, message: String)\n}\nfunc f(): DbError { ExecFailed(\"select 1\") }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0105"), "union case positional under-application: no T0105")
+}
+
+// A bare, no-fields union case reference (a genuinely nullary case, not a
+// call) must stay clean — this exercises the same `checkMissingFields = false`
+// placeholder-inference path the field-having-case regression guard above
+// depends on, just for the case that previously already worked (#6838).
+test "nullary union case bare reference is still clean" {
+  val src = "package P\nunion DbError {\n  case ConnLost\n  case ExecFailed(sql: String, message: String)\n}\nfunc f(): DbError { ConnLost }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "nullary case bare reference: no errors")
+}

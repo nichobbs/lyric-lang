@@ -440,7 +440,7 @@ Constraints may be user-defined interfaces or built-in trait-like markers. The c
 
 An unrecognised or unresolvable constraint name in a `where` clause is diagnosed at two independent points, for two different reasons, and both normally fire together for the same mistake. **T0051** (error) fires exactly once, at the `where` clause's own declaration site, whenever the name is neither a known marker nor a visible interface — this rejects a malformed constraint outright, at the point of authorship, regardless of whether the generic function is ever called. **T0111** (warning) fires separately, once at *each* call site that instantiates the generic against concrete type arguments, whenever that same name still cannot be resolved from the call site's own symbol-table view; the bound is treated as satisfied there rather than raising a second hard error, since a call against an already-malformed declaration should not additionally fail every call site too. In practice, calling a generic function whose `where` clause names an unknown constraint produces one T0051 (the malformed declaration) plus one T0111 per call site (each place that meaningless bound was silently waived rather than enforced) — not a single diagnostic chosen between the two severities.
 
-Type arguments in instantiations (e.g. `Box[Int]`) must be type expressions. Writing a value expression where a type argument is expected is a compile error (**T0109**). Generic record and union constructors infer their type arguments from the supplied field values when every type parameter appears in at least one field (named arguments may be given in any order); `Pair(first = 1, second = "x")` types as `Pair[Int, String]` with no annotation. When one or more type parameters cannot be inferred — a phantom parameter that appears in no field, or an uninferable argument shape — the constructor call is a compile error (**T0110**) naming the unresolved parameter(s); supply explicit type arguments (`Tagged[Int, Meters](value = 1)`) to resolve it. A missing required field is reported as a missing-field error (**T0105**), not T0110. **T0105** applies equally to a non-generic record/opaque constructor: omitting a required (no-default) field from an all-named-args construction (e.g. `Point(x = 1)` for `record Point { x: Int; y: Int }`) is a T0105 compile error, not a silent success (#6739).
+Type arguments in instantiations (e.g. `Box[Int]`) must be type expressions. Writing a value expression where a type argument is expected is a compile error (**T0109**). Generic record and union constructors infer their type arguments from the supplied field values when every type parameter appears in at least one field (named arguments may be given in any order); `Pair(first = 1, second = "x")` types as `Pair[Int, String]` with no annotation. When one or more type parameters cannot be inferred — a phantom parameter that appears in no field, or an uninferable argument shape — the constructor call is a compile error (**T0110**) naming the unresolved parameter(s); supply explicit type arguments (`Tagged[Int, Meters](value = 1)`) to resolve it. A missing required field is reported as a missing-field error (**T0105**), not T0110. **T0105** applies equally to a non-generic record/opaque constructor: omitting a required (no-default) field from an all-named-args construction (e.g. `Point(x = 1)` for `record Point { x: Int; y: Int }`) is a T0105 compile error, not a silent success (#6739). **T0105** also applies to a named-field union case construction: omitting a required named field from an all-named-args union-case construction (e.g. `ExecFailed(sql = "…")` for `case ExecFailed(sql: String, message: String)`) is a T0105 compile error (#7119). A union case field never has a default value, and a case's positional (unnamed) fields are exempt from this check the same way a mixed positional/named record construction is (#6739) — they can only be supplied positionally, so any positional argument in the call skips the check entirely.
 
 A generic function's type arguments are inferred from its arguments. When two arguments pin the same type parameter to different numeric types and the narrower one is passed to a bare `T` parameter, `T` takes the wider type and that argument widens like any numeric argument: `collect(errs, r, 0)` with `r: Result[Long, E]` and `fallback: T` infers `T = Long` (D-progress-969). An unsuffixed integer literal, negated or not, adopts the integer type of the other operand of a comparison or arithmetic operator (`someLong == -1`).
 
@@ -1943,6 +1943,8 @@ form with the import in scope call the explicit
 | `s.endsWith(suffix)` | `Bool` | ordinal |
 | `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET, `toLowerCase(Locale.ROOT)` on the JVM) |
 | `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET, `toUpperCase(Locale.ROOT)` on the JVM) |
+| `s.isNormalized()` | `Bool` | Unicode NFC normalization check (dotnet/JVM only — see native coverage note below) |
+| `s.normalize()` | `String` | converts to Unicode Normalization Form C (dotnet/JVM only — see native coverage note below) |
 
 Search and prefix/suffix tests compare code units exactly (ordinal) on every
 target; the process culture never affects them, and case conversion never
@@ -1993,7 +1995,11 @@ concatenation and `Char.toString()` are also implemented for
 `--target native`, converting the `Char` via the same UTF-8 encoder
 `s[i]`'s decode inverts (`lyric_string_from_char`). Every `String`
 scalar operation and `s[i]` documented in this section is now implemented
-on `--target native`.
+on `--target native`, **except** `s.isNormalized()`/`s.normalize()`
+(#7304): native has no Unicode normalization tables in `lyric-rt` yet, so
+both methods fail with an explicit compile-time panic naming the method
+rather than silently miscompiling — a real native implementation is a
+tracked follow-up.
 
 ### 12.2 Building and scanning strings
 

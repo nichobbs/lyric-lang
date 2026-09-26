@@ -4384,6 +4384,31 @@ func lowerMethodCall(
     insns.add(LInvokevirtual(owner = "java/lang/String", name = javaName, params = noPs, ret = retT))
     return retT
   }
+  // #7099: `isNormalized`/`normalize` have no `java.lang.String` instance
+  // method counterpart at all — Java's Unicode normalization lives on
+  // `java.text.Normalizer` as STATIC methods taking a `CharSequence` plus a
+  // `Normalizer.Form` enum constant (`isNormalized(CharSequence, Form): bool`,
+  // `normalize(CharSequence, Form): String`), unlike every other intrinsic in
+  // this block which is a zero-arg instance method. Lyric's `.isNormalized()`/
+  // `.normalize()` (mirroring the MSIL backend's `String.IsNormalized()`/
+  // `.Normalize()`, both NFC by default) push the receiver (already on the
+  // stack per this function's calling convention), then the
+  // `Normalizer.Form.NFC` static field, then invoke the 2-arg static method.
+  if isStringRecv and args.count == 0 and (memberName == "isNormalized" or memberName == "normalize") {
+    val formTy: JvmType = JRef(className = "java/text/Normalizer$Form")
+    insns.add(LGetstatic(owner = "java/text/Normalizer$Form", name = "NFC", t = formTy))
+    val ps: List[JvmType] = newList()
+    ps.add(JRef(className = "java/lang/CharSequence"))
+    ps.add(formTy)
+    if memberName == "isNormalized" {
+      insns.add(LInvokestatic(owner = "java/text/Normalizer", name = "isNormalized", params = ps, ret = JBoolean))
+      return JBoolean
+    } else {
+      val retT: JvmType = JRef(className = "java/lang/String")
+      insns.add(LInvokestatic(owner = "java/text/Normalizer", name = "normalize", params = ps, ret = retT))
+      return retT
+    }
+  }
   if isStringRecv and args.count == 1 and (memberName == "indexOf" or memberName == "lastIndexOf") {
     // Lyric's `s.indexOf(needle)` / `s.lastIndexOf(needle)` is intended as
     // UFCS sugar for `Std.String.indexOf(s, needle): Option[Int]` when the
