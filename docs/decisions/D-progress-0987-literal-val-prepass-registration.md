@@ -1,4 +1,4 @@
-# D-progress-986 — Literal module vals are registered in the MSIL pre-pass
+# D-progress-987 — Literal module vals are registered in the MSIL pre-pass
 
 **Status:** shipped
 
@@ -14,7 +14,7 @@ the one declaring a literal `val` (for example, a `lyric test --manifest`
 test package ahead of the library it imports) found neither a constant nor a
 field. It failed with T0115 ("cannot resolve name").
 
-D-progress-981 (#7346) made this visible. The pipeline now folds `-N` into a
+D-progress-982 (#7346) made this visible. The pipeline now folds `-N` into a
 single literal, so lyric-jsonrpc's `pub val methodNotFound: Int = -32601`
 became a literal and its test suite stopped compiling. Positive literals had
 the same failure all along.
