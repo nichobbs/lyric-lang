@@ -3458,6 +3458,27 @@ func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in Li
 // Return the field names of a constructor symbol in declaration order.
 // Used alongside ctorFieldTypes to reorder named-arg types to declaration
 // order before passing to inferGenericArgs (#3157).
+// The type of field `name` of a generic constructor: its declared type with
+// the constructor's type parameters (`gnames`) in scope, instantiated at
+// `targs`.  `fallback` is used when `name` is not a declared field.
+func instantiatedFieldType(
+  fieldNames: in List[String],
+  fieldTypes: in List[Type],
+  gnames: in List[String],
+  targs: in List[Type],
+  name: in String,
+  fallback: in Type,
+): Type {
+  var i = 0
+  while i < fieldNames.count and i < fieldTypes.count {
+    if fieldNames[i] == name {
+      return substituteTyVars(fieldTypes[i], gnames, targs)
+    }
+    i = i + 1
+  }
+  fallback
+}
+
 func ctorFieldNames(sym: in Symbol): List[String] {
   val result: List[String] = newList()
   val fields = ctorAllFields(sym)
@@ -3979,6 +4000,11 @@ func inferConstructionExpected(
       )
       return inferredTy
     }
+    // Each argument is checked against its field's type with the record's own
+    // type parameters in scope, instantiated at the inferred arguments
+    // (`instantiatedFieldType`).  The plain `fields` list resolves field types
+    // without them, so a parameter named like a type of the constructing
+    // package (`Msg`) bound to that type instead (D-progress-979).
     // Reuse the field list collected for the missing-field check above (#3162):
     // both calls traverse the same symbol and produce identical results.
     val fields = prelimFields
@@ -3991,7 +4017,7 @@ func inferConstructionExpected(
           if not fieldHasName(fields, nm) {
             diag.add(errorDiagnostic("T0101", "'" + sym.name + "' has no field '" + nm + "'", asp))
           } else {
-            val fieldTy = fieldTypeByName(fields, nm)
+            val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, nm, fieldTypeByName(fields, nm))
             if not argSatisfiesParam(tbl, fieldTy, argTy) {
               diag.add(
                 errorDiagnostic(
@@ -4014,7 +4040,14 @@ func inferConstructionExpected(
               )
             )
           } else {
-            val fieldTy = fields[posIdx].ty
+            val fieldTy = instantiatedFieldType(
+              fieldNames,
+              fieldTypes,
+              gnames,
+              targs,
+              fields[posIdx].name,
+              fields[posIdx].ty
+            )
             if not argSatisfiesParam(tbl, fieldTy, argTy) {
               diag.add(
                 errorDiagnostic(

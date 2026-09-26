@@ -96,3 +96,22 @@ test "call through a function-typed param bound to an explicit Bool local first"
   assertEqual(explicitLocalIfCond({ n: Int -> isEven(n) }, 4), "yes", "explicit-local true")
   assertEqual(explicitLocalIfCond({ n: Int -> isEven(n) }, 5), "no", "explicit-local false")
 }
+
+// 5. An UN-annotated lambda parameter whose function type comes from the
+// lambda's expected type (a `val` annotation, or the parameter it is passed
+// to).  MSIL typed the parameter from the erased delegate shape only, so
+// `p()` stayed a boxed `object` and `if` tested it for non-null: a boxed
+// `false` counted as true (D-progress-979).
+func applyGuard(g: in (() -> Bool) -> String, answer: in Bool): String {
+  g({ -> answer })
+}
+
+test "un-annotated function-typed lambda param used as an if condition" {
+  val guard: (() -> Bool) -> String = { p -> if p() then "yes" else "no" }
+  assertEqual(guard({ -> false }), "no", "local-annotated false")
+  assertEqual(guard({ -> true }), "yes", "local-annotated true")
+  val both: (() -> Bool) -> String = { p -> if not p() and true then "not" else "is" }
+  assertEqual(both({ -> false }), "not", "negated in a conjunction")
+  assertEqual(applyGuard({ p -> if p() then "yes" else "no" }, false), "no", "passed to a HOF, false")
+  assertEqual(applyGuard({ p -> if p() then "yes" else "no" }, true), "yes", "passed to a HOF, true")
+}

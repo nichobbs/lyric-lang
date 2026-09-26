@@ -398,6 +398,17 @@ pub record CodegenCtx {
   // body instantiate against the declared `Result[T, E]`-style type instead of
   // the fully-erased `<object,object>` form (#6511).
   lambdaRetTypes: Map[String, MsilType]
+  // Declared return MsilType of a lifted lambda's FUNCTION-typed parameter,
+  // keyed "<pkg>.__lambda_<idx>#<paramIdx>".  An un-annotated lambda
+  // parameter takes its logical type from `lambdaParamTypes`, which is the
+  // erased delegate shape; without this, invoking such a parameter
+  // (`{ p -> if p() ... }`) left its result a boxed `object`, which `if`
+  // tested for non-null — always true for a boxed `false` (D-progress-979).
+  lambdaParamFnRetTypes: Map[String, MsilType]
+  // The same for a function-typed parameter of a function-typed parameter of
+  // a non-generic function, keyed "<fqn>#<paramIdx>#<innerParamIdx>"; copied
+  // into `lambdaParamFnRetTypes` when a lambda literal is passed there.
+  funcParamFnInnerFnRets: Map[String, MsilType]
   // Real (non-erased) parameter/return MsilTypes for a lambda passed directly
   // to an `@externTarget` function's function-typed parameter (see
   // funcParamIsExternTargetDelegate).  Keyed by lambda name ("__lambda_<idx>").
@@ -2127,6 +2138,8 @@ pub func newCodegenCtx(
     funcParamIsExternTargetDelegate = newMap(),
     lambdaParamTypes = newMap(),
     lambdaRetTypes = newMap(),
+    lambdaParamFnRetTypes = newMap(),
+    funcParamFnInnerFnRets = newMap(),
     lambdaExternDelegateParamTypes = newMap(),
     lambdaExternDelegateRetType = newMap(),
     lambdaCaptureNames = newMap(),
@@ -3127,6 +3140,35 @@ pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, p
       case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
       case IProtected(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
       case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// Records, for each function-typed parameter among `fnParams` (the parameters
+// of a function-typed parameter of a non-generic function), its declared
+// return type under "<key>#<innerIdx>" for both key aliases.
+func recordFnInnerFnRetsMsil(
+  cctx: in CodegenCtx, fnParams: in List[TypeExpr], aKey: in String, fKey: in String, pkgName: in String
+): Unit {
+  var i = 0
+  while i < fnParams.count {
+    match resolveFuncTypeExprMsil(cctx, fnParams[i]) {
+      case Some(te) -> match te.kind {
+        case TFunction(_, retTe) -> {
+          val rt = typeExprToMsilCtx(cctx, retTe, pkgName)
+          val ak = aKey + "#" + toString(i)
+          val fk = fKey + "#" + toString(i)
+          if not cctx.funcParamFnInnerFnRets.containsKey(ak) {
+            cctx.funcParamFnInnerFnRets.add(ak, rt)
+          }
+          if not cctx.funcParamFnInnerFnRets.containsKey(fk) {
+            cctx.funcParamFnInnerFnRets.add(fk, rt)
+          }
+        }
+        case _ -> ()
+      }
+      case None -> ()
     }
     i = i + 1
   }
@@ -4933,6 +4975,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 // an enclosing concretely-typed `ret` then cannot satisfy.
                 val declIsGenericFn = match decl.generics { case Some(_) -> true; case None -> false }
                 if not declIsGenericFn {
+                  recordFnInnerFnRetsMsil(cctx, fnParams, aKey, fKey, pkgName)
                   val plainFnRetMsil = typeExprToMsilCtx(cctx, fnRetTe, pkgName)
                   if not cctx.funcParamFnRetType.containsKey(aKey) {
                     cctx.funcParamFnRetType.add(aKey, plainFnRetMsil)
@@ -16752,6 +16795,19 @@ func lowerBuiltinOrStaticCallMsil(
                               }
                               case None -> ()
                             }
+                            var ifr = 0
+                            while ifr < inner.count {
+                              match mapGet(cctx.funcParamFnInnerFnRets, fnInnerKey + "#" + toString(ifr)) {
+                                case Some(innerRet) -> {
+                                  val lpKey = qualifiedPredName + "#" + toString(ifr)
+                                  if not cctx.lambdaParamFnRetTypes.containsKey(lpKey) {
+                                    cctx.lambdaParamFnRetTypes.add(lpKey, innerRet)
+                                  }
+                                }
+                                case None -> ()
+                              }
+                              ifr = ifr + 1
+                            }
                             // FFI delegate-bridging trigger (Epic #1877/#3923 FFI-boundary
                             // slice): only when this parameter belongs to an `@externTarget`
                             // function does the lambda need a real closed System.Func/Action
@@ -19768,6 +19824,18 @@ func registerLocalLambdaLiteralFnTypesMsil(
                     var pi = 0
                     while pi < paramTes.count {
                       inner.add(typeExprToMsilBodyCtx(cctx, fctx, paramTes[pi]))
+                      match resolveFuncTypeExprMsil(cctx, paramTes[pi]) {
+                        case Some(pfTe) -> match pfTe.kind {
+                          case TFunction(_, pRetTe) -> {
+                            val lpKey = predName + "#" + toString(pi)
+                            if not cctx.lambdaParamFnRetTypes.containsKey(lpKey) {
+                              cctx.lambdaParamFnRetTypes.add(lpKey, typeExprToMsilBodyCtx(cctx, fctx, pRetTe))
+                            }
+                          }
+                          case _ -> ()
+                        }
+                        case None -> ()
+                      }
                       pi = pi + 1
                     }
                     cctx.lambdaParamTypes.add(predName, inner)
@@ -28612,6 +28680,14 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
         }
       }
       case None -> {
+        // An un-annotated function-typed lambda parameter: its return type
+        // was recorded where the lambda's parameter types were propagated.
+        if isLambdaFn {
+          match mapGet(cctx.lambdaParamFnRetTypes, qualifiedLambdaName + "#" + toString(pi)) {
+            case Some(prt) -> fctx.funcValRetTypes.add(p.name, prt)
+            case None -> ()
+          }
+        }
       }
     }
     fctx.slotTicker.add(0)

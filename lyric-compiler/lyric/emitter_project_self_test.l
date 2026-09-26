@@ -2391,3 +2391,56 @@ test "emitProject constructs another package's protected type (JVM)" {
   assertEqualInt(result.exitCode, 0, "protected ctor JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "42", "protected ctor JVM: output")
 }
+
+// A generic record's type parameter named like a type of the constructing
+// package (`Msg`): each constructor argument must be checked against the
+// field type with the record's own parameters in scope (D-progress-979).
+func genericParamShadowPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPGs.App",
+      "package EPGs.App\n" + "\n" + "import EPGs.Lib.{Prog, runOnce}\n" + "\n" + "union Msg {\n" + "  case Inc\n" + "}\n" +
+        "\n" +
+        "union Other {\n" +
+        "  case Dec\n" +
+        "}\n" +
+        "\n" +
+        "func stepA(m: in Int, msg: in Msg): Int {\n" +
+        "  return m + 1\n" +
+        "}\n" +
+        "\n" +
+        "func stepB(m: in Int, o: in Other): Int {\n" +
+        "  return m + 40\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val a: Prog[Int, Msg] = Prog(step = stepA)\n" +
+        "  val b: Prog[Int, Other] = Prog(step = stepB)\n" +
+        "  println(toString(runOnce(b, runOnce(a, 1, Inc), Dec)))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPGs.Lib",
+      "package EPGs.Lib\n" + "\n" + "pub record Prog[M, Msg] {\n" + "  step: (M, Msg) -> M\n" + "}\n" + "\n" +
+        "pub func runOnce[M, Msg](p: in Prog[M, Msg], m: in M, msg: in Msg): M {\n" +
+        "  return p.step(m, msg)\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a generic record parameter named like a consumer type (MSIL)" {
+  val result = runEmitProject("emitproj-gshadow", genericParamShadowPkgs(), "EPGs")
+  assertEqualInt(result.exitCode, 0, "generic param shadow MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "generic param shadow MSIL: output")
+}
+
+test "emitProject a generic record parameter named like a consumer type (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-gshadow-jvm", genericParamShadowPkgs(), "EPGs")
+  assertEqualInt(result.exitCode, 0, "generic param shadow JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "generic param shadow JVM: output")
+}

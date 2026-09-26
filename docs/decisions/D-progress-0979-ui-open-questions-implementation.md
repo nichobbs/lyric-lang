@@ -1,9 +1,9 @@
-# D-progress-979 — Keyed event paths, session resume, field paths; cross-package protected-type construction on MSIL
+# D-progress-979 — Keyed event paths, session resume, field paths; three compiler fixes they needed
 
 **Status:** shipped
 
-Implements the four D138 resolutions that affect shipped code, plus a
-compiler fix the session registry needed.
+Implements the four D138 resolutions that affect shipped code, plus three
+compiler fixes the new `lyric-ui` code and its tests needed.
 
 ## Q-UI-005: keyed event paths (protocol version 2)
 
@@ -66,6 +66,35 @@ interfaces, opaque and distinct types but not protected types. All three now
 register `IProtected`. The JVM backend already resolved it. Regression:
 `emitter_project_self_test.l` "constructs another package's protected type"
 on both targets.
+
+## Compiler: generic record fields checked in the wrong scope
+
+`Prog(step = stepB)` where `Prog[M, Msg]` is declared in another package
+and the constructing package has its own type named `Msg` failed with T0104
+"field expects (<error>, Msg) -> <error>". After inferring a generic
+constructor's type arguments, `inferConstruction` checked each argument
+against the field type resolved *without* the record's type parameters in
+scope (the list built for the missing-field check), so `M` became an error
+type and `Msg` bound to the consumer's type. It now checks against the
+parameter-aware field types from `ctorFieldTypes`, instantiated at the
+inferred arguments (`instantiatedFieldType`). Regression:
+`emitter_project_self_test.l` "a generic record parameter named like a
+consumer type" on both targets.
+
+## Compiler: invoking an un-annotated function-typed lambda parameter on MSIL
+
+`val g: (() -> Bool) -> String = { p -> if p() then ... }` took the `then`
+branch for `p` returning `false`. An un-annotated lambda parameter takes its
+logical type from the lambda's expected type (`lambdaParamTypes`), but only
+as the erased delegate shape; the parameter's own return type was never
+registered in `funcValRetTypes`, so `p()` stayed a boxed `object` and the
+condition tested it for non-null. The return type of each function-typed
+parameter is now recorded where lambda parameter types are propagated (a
+`val` annotation, and a lambda passed to a non-generic function's
+function-typed parameter) in `lambdaParamFnRetTypes`, and registered when
+the lambda body's parameters are set up. The JVM backend was already
+correct. Regression: `lambda_bool_if_cond_self_test.l` case 5 on both
+targets.
 
 ## Tests
 
