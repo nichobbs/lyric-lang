@@ -474,6 +474,15 @@ status check.  When it finds **REQUIRED** findings it:
 3. Applies the `review:changes-required` label to the PR.
 4. **Fails the workflow**, blocking auto-merge.
 
+The reviewer only files and closes issues and writes its summary to a
+file; the workflow itself posts that summary and sets or clears
+`review:changes-required` from the open `pr-N` issues carrying
+`**Severity:** REQUIRED`.  If neither the Sonnet nor the Haiku attempt
+writes a summary, the workflow posts an "Automated review did not
+complete" comment and fails the check; its "Report denied tool calls"
+step lists any tool calls the allow-list refused.  That is a workflow
+problem, not a finding against the PR.
+
 When you are subscribed to a PR (`subscribe_pr_activity`) and the
 `claude-review` check fails, treat it as a full work item, not a
 notification to skip:
