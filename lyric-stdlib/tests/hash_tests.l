@@ -135,7 +135,7 @@ func assertFileDigestMatchesBytes(size: in Int, label: in String): Unit {
     i = i + 1
   }
   val path = "/tmp/lyric-hash-test-stream-" + Uuid.uuidToString(Uuid.newUuid()) + ".bin"
-  match writeBytes(path, bytes) {
+  match writeBytes(path, bytes.toArray()) {
     case Ok(_) -> ()
     case Err(_) -> {
       assertTrue(false, "could not write temp file for " + label)
