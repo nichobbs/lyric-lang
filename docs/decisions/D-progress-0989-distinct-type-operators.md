@@ -1,4 +1,4 @@
-# D-progress-988 — Operators on distinct types act on the underlying value
+# D-progress-989 — Operators on distinct types act on the underlying value
 
 **Status:** shipped
 

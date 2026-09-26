@@ -1,9 +1,9 @@
-# D-progress-987 — Contract clauses are type-checked and purity-checked
+# D-progress-988 — Contract clauses are type-checked and purity-checked
 
 **Status:** shipped
 
-Closes the remaining items of #7228. D-progress-982 already made
-quantifiers sound under negation, and D-progress-984 implemented `when:`
+Closes the remaining items of #7228. D-progress-983 already made
+quantifiers sound under negation, and D-progress-985 implemented `when:`
 barriers.
 
 ## Problem
@@ -74,5 +74,5 @@ reported; `old` and quantifiers accepted) and T0133 cases (non-pure call,
 
 - Language reference §6.3 enforcement paragraph.
 - Book chapter 8 §8.5. Its quantifier paragraph also said a runtime-checked
-  `forall` iterates its domain; it now matches D-progress-982.
+  `forall` iterates its domain; it now matches D-progress-983.
 - Book appendix B.
