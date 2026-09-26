@@ -747,6 +747,44 @@ static void test_map_set_purge_shrinks(void) {
     lyric_release(m);
 }
 
+/* lyric_list_append_all appends in place: scalar bytes keep order and
+ * value, ref elements are retained by the destination, and appending a
+ * list to itself doubles it (#7269). */
+static void test_list_append_all(void) {
+    const uint8_t a[] = {1, 2, 3};
+    const uint8_t b[] = {250, 251};
+    LyricList* dst = lyric_list_from_bytes(a, 3);
+    LyricList* src = lyric_list_from_bytes(b, 2);
+    lyric_list_append_all(dst, src);
+    CHECK(lyric_list_len(dst) == 5);
+    CHECK(lyric_list_get(dst, 2) == 3);
+    CHECK(lyric_list_get(dst, 4) == 251);
+    CHECK(lyric_list_len(src) == 2);
+    lyric_list_append_all(dst, dst);
+    CHECK(lyric_list_len(dst) == 10);
+    CHECK(lyric_list_get(dst, 5) == 1);
+    CHECK(lyric_list_get(dst, 9) == 251);
+    LyricList* empty = lyric_list_new(0);
+    lyric_list_append_all(dst, empty);
+    CHECK(lyric_list_len(dst) == 10);
+    lyric_release(empty);
+    lyric_release(src);
+    lyric_release(dst);
+
+    LyricList* rd = lyric_list_new(1);
+    LyricList* rs = lyric_list_new(1);
+    LyricString* x = lyric_string_from_literal((const uint8_t*)"x", 1);
+    lyric_list_push(rs, (int64_t)(intptr_t)x);
+    lyric_release(x);
+    lyric_list_append_all(rd, rs);
+    CHECK(atomic_load(&x->rc) == 2);
+    lyric_list_append_all(rd, rd);
+    CHECK(lyric_list_len(rd) == 2);
+    CHECK(atomic_load(&x->rc) == 3);
+    lyric_release(rs);
+    lyric_release(rd);
+}
+
 static void test_list_copy(void) {
     /* Ref elements: the copy retains; releasing the source leaves the
      * copy's elements alive. */
@@ -2775,6 +2813,7 @@ int main(void) {
     test_map_tombstone_churn();
     test_map_shrinks_on_removal();
     test_map_set_purge_shrinks();
+    test_list_append_all();
     test_map_string_keys();
     test_list_copy();
     test_list_slice_concat_append();

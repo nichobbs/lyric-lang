@@ -82,6 +82,20 @@ static void list_push_range(LyricList* list, const int64_t* src, int64_t n) {
     list->len += n;
 }
 
+/* Append every element of `src` to `dst` in one grow and one memcpy
+ * (retaining ref elements when `dst` owns references).  Backs the native
+ * HTTP server's request-body accumulation, which otherwise pushed one
+ * byte per runtime call (#7269). */
+void lyric_list_append_all(LyricList* dst, LyricList* src) {
+    if (src == dst) {
+        int64_t n = src->len;
+        list_grow(dst, dst->len + n);
+        list_push_range(dst, dst->data, n);
+        return;
+    }
+    list_push_range(dst, src->data, src->len);
+}
+
 LyricList* lyric_list_from_bytes(const uint8_t* data, int64_t len) {
     LyricList* out = lyric_list_new(0);
     if (len <= 0) return out;

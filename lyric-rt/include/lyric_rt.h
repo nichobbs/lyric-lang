@@ -255,6 +255,9 @@ LyricList* lyric_list_slice(LyricList* src, int64_t start, int64_t stop);
 /* `.concat(other)` (#6104): fresh rc=1 list holding every element of
  * `a` then every element of `b`; never mutates either input. */
 LyricList* lyric_list_concat(LyricList* a, LyricList* b);
+/* Mutating bulk append: pushes every element of `src` onto `dst` with
+ * one grow and one memcpy (#7269).  `src == dst` doubles the list. */
+void       lyric_list_append_all(LyricList* dst, LyricList* src);
 /* `.append(x)` (#6104): fresh rc=1 copy of `src` with `x` pushed on the
  * end; never mutates `src` (unlike `.add`/`lyric_list_push`). */
 LyricList* lyric_list_append(LyricList* src, int64_t val);
