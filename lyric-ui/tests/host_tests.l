@@ -141,6 +141,33 @@ test "shell helpers" {
   assertTrue(contains(html, "data-ws=\"ws://h:8081/_ui\""), "socket url")
 }
 
+test "session socket url follows the page scheme" {
+  assertEqual(Web.sessionSocketUrl("", None, "h:8080", 8081, "/_ui"), "ws://h:8081/_ui", "plain http")
+  assertEqual(
+    Web.sessionSocketUrl("", Some(value = "https"), "h", 8081, "/_ui"),
+    "wss://h:8081/_ui",
+    "behind tls proxy"
+  )
+  assertEqual(
+    Web.sessionSocketUrl("", Some(value = " HTTPS , http"), "h", 8081, "/_ui"),
+    "wss://h:8081/_ui",
+    "first of several proxies"
+  )
+  assertEqual(
+    Web.sessionSocketUrl("", Some(value = "http, https"), "h", 8081, "/_ui"),
+    "ws://h:8081/_ui",
+    "client-facing hop was http"
+  )
+  assertEqual(
+    Web.sessionSocketUrl("wss://app.example.com/_ui", Some(value = "http"), "h", 8081, "/_ui"),
+    "wss://app.example.com/_ui",
+    "configured url wins"
+  )
+  val cfg = Web.defaultConfig("t").copy(publicWsUrl = "wss://app.example.com/_ui")
+  assertEqual(cfg.publicWsUrl, "wss://app.example.com/_ui", "config override")
+  assertEqual(Web.defaultConfig("t").publicWsUrl, "", "derived by default")
+}
+
 test "detach then resume re-renders from the kept model" {
   val rec = Recorder()
   val outbox = RecordingOutbox(rec = rec)

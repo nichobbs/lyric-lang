@@ -74,6 +74,18 @@ its model. `maxSessions` (default 10000) bounds the sessions in memory; when
 it is reached, the longest-disconnected sessions are evicted first
 (docs/65 §9.5, §10.1, D138).
 
+The session id is a bearer credential: anyone who obtains it can take over
+the session within the grace period. Serve the page and socket over TLS in
+production. The host itself speaks plain HTTP and `ws`, so put a
+TLS-terminating proxy in front of it; when the proxy sends
+`X-Forwarded-Proto: https` the page opens a `wss` socket on the same host
+and `wsPort`. If the proxy exposes the socket somewhere else (for example
+on port 443 under `/_ui`), set `publicWsUrl` to that URL:
+
+```lyric
+val cfg = WebHost.defaultConfig("Customers").copy(publicWsUrl = "wss://app.example.com/_ui")
+```
+
 Keyed nodes (`keyed(key, view)`) are addressed by key in events, so a click
 on a row that moved between render and click still reaches that row, and a
 click on a row that has gone is dropped. Key the items of dynamic lists.

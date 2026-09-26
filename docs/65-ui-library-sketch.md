@@ -496,6 +496,15 @@ re-runs `init` for the current route. A host that loses track of the tree
 while connected (a patch that fails to apply) sends `{"t":"sync"}` and gets
 a `Replace` of the root.
 
+The session id is a bearer credential: whoever presents it within the grace
+period takes over the session, with the user's model and permissions. It
+therefore travels only over the session socket (never in a URL, so it stays
+out of logs and `Referer`), lives only in page memory, and in production
+the page and socket are served over TLS. The web host serves plain HTTP and
+`ws`; TLS is terminated by a proxy in front of it, and the shell asks for a
+`wss` socket when the proxy reports `X-Forwarded-Proto: https`, since a
+browser refuses a plain socket from an HTTPS page (§10.1).
+
 ---
 
 ## 10. Hosts
@@ -514,7 +523,16 @@ it, expired and then the longest-disconnected sessions are evicted, and if
 every session is connected the new browser gets a "server busy" page (D138,
 Q-UI-007). Expired sessions are removed whenever a session is created or
 resumed. A per-session byte cap is not offered: it cannot be measured
-without serialising the model.
+without serialising the model. Making room scans the sessions for the
+longest-disconnected one, which is linear in `maxSessions` but only runs
+when the limit is reached.
+
+The shell tells the browser which socket to open. By default that is
+`wsPort`/`wsPath` on the page's host, with scheme `wss` when a
+TLS-terminating proxy reports `X-Forwarded-Proto: https` (first value when
+several proxies append to it) and `ws` otherwise;
+`HostConfig.publicWsUrl` overrides it for a proxy that routes the socket
+to a different host or path.
 Typing is debounced by the host (`input` events coalesce per frame).
 
 ### 10.2 Desktop webview (second host)
