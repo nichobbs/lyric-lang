@@ -5310,7 +5310,7 @@ func inferUntypedStaticValMsilType(
             case _ -> MInt
           }
         }
-        case BXor -> MInt
+        case BXor -> MBool
         case BCoalesce -> {
           match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MObject -> inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)
@@ -11986,19 +11986,25 @@ func lowerBinopMsil(
       }
     }
     case BXor -> {
-      val bxorLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      // `xor` is Boolean-only (T0034): unbox either operand left boxed, like
+      // every other Boolean consumer (`lowerBoolOperandMsil`).
+      val bxorRawLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      if bxorRawLhsTy == MObject {
+        materializeBoxedElemMsil(cctx, insns, MBool)
+      }
+      val bxorLhsTy = if bxorRawLhsTy == MObject { MBool } else { bxorRawLhsTy }
       // xor is commutative: just reload spill after rhs.
       val bxorSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
         phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bxorLhsTy)
       } else {
         -1
       }
-      lowerExprMsil(cctx, fctx, insns, rhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, rhs)
       if bxorSpillIdx >= 0 {
         insns.add(MLdloc(slot = bxorSpillIdx))
       }
       insns.add(MXor)
-      MInt
+      MBool
     }
     case BCoalesce -> {
       // Null-coalescing: if lhs is non-null use it, else use rhs.  A nullable lhs

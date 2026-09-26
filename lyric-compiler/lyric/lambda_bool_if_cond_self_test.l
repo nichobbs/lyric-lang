@@ -166,3 +166,15 @@ test "a generic callback returning Bool is unboxed wherever it is used as a cond
     "match guard"
   )
 }
+
+// 8. The same boxed Bool as an operand of a VALUE-producing logical
+// operator (bound to a local, not branched on): `xor` on both targets, and
+// `and`/`or`/`implies` on JVM, lowered their operands without unboxing
+// (#7415).
+test "a generic callback returning Bool is unboxed as an operand of xor, and, or and implies" {
+  assertEqual(viaGeneric(true, { p -> toString(p() xor true) }, false), "true", "xor, false operand")
+  assertEqual(viaGeneric(true, { p -> toString(p() xor true) }, true), "false", "xor, true operand")
+  assertEqual(viaGeneric(true, { p -> toString(p() and true) }, false), "false", "and value")
+  assertEqual(viaGeneric(true, { p -> toString(false or p()) }, false), "false", "or value")
+  assertEqual(viaGeneric(true, { p -> toString(true or p()) }, false), "true", "or value, short-circuit")
+}

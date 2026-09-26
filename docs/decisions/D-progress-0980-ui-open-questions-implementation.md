@@ -114,14 +114,18 @@ mention the declaring function's type parameters) in
 the lambda body's parameters are set up. Independently of where the
 value comes from, MSIL now unboxes a Boolean operand that arrives as a boxed
 `object` at every consumer (`lowerBoolOperandMsil`: `if`/`while`
-conditions, `and`/`or`/`implies`, `not`, match guards), so a producer that
+conditions, `and`/`or`/`implies`/`xor`, `not`, match guards), so a producer that
 does not track its return type (for example a generic callback returning
 `T` with `T = Bool`) cannot turn a boxed `false` into a taken branch. The
 JVM backend already coerced conditions in `lowerBoolCond`, except for match
 guards, which branched on the raw reference and failed verification
 (`VerifyError: Bad type on operand stack`); guards now go through
-`lowerBoolCond` too. Regression: `lambda_bool_if_cond_self_test.l` cases 5
-to 7 on both targets.
+`lowerBoolCond` too. The value-producing operators (`and`/`or`/`implies`
+bound to a local rather than branched on, and `xor`) lowered their operands
+without coercion on JVM, and `xor` on MSIL as well; both backends now coerce
+them (`lowerBoolValue` on JVM), and `xor` is typed `Bool` rather than `Int`
+in both. Regression: `lambda_bool_if_cond_self_test.l` cases 5 to 8 on both
+targets.
 
 ## Tests
 
