@@ -35862,3 +35862,32 @@ callers (the metadata reader, CLI runtime-DLL copies, `Std.Tls`,
 `lyric-web` static files) now call `readBytes`/`writeBytes`. A linked
 compiler `@test_module` compile drops from about 16.5 s to 11 s
 (D-progress-974).
+
+## F0027 promoted from warning to build-gating error (#5704 enforcement)
+
+With the D-progress-945/#7169 ecosystem audit confirming zero remaining
+`F0027` hint-less-`@externTarget` warnings across every `lyric-*/` package
+plus `lyric-stdlib`, the enforcement half #5704 was actually filed for now
+ships: `emitExternTargetBody`'s hint-less-instance-extern check appends a
+build-gating `errorDiagnostic("F0027", …)` to `cctx.diagnostics` instead of
+printing a bare warning, mirroring the `F0015` diagnostic-accumulator
+convention. The gating condition is unchanged from the warning it
+replaces (hint-less, not a ctor, calling convention unconfirmed, declaring
+type present in the reference-assembly index), so this is behavior-
+preserving for every tree the audit already verified clean.
+
+**Verification.** New negative/positive test pair in
+`msil_codegen_diag_self_test.l`: a hint-less, arity-mismatched
+`StringBuilder.Append` extern now fails the build with `F0027` at its
+declaration span (not a runtime `MissingMethodException`); the same
+target with correct arity still compiles cleanly. Full `make lyric` plus
+the stdlib and ecosystem build sweep re-run clean (still zero `F0027`
+occurrences).
+
+**Still open:** the SDK-less (reference-pack-absent) build path is not
+covered — tracked separately in #7387, since it needs a dedicated
+ref-pack-hidden test harness that does not exist today.
+
+**Related:** `docs/decisions/D-progress-0979-f0027-enforcement.md` (full
+account), #5704, D-progress-945/#7169 (the audit prerequisite), #7387
+(SDK-less follow-up).
