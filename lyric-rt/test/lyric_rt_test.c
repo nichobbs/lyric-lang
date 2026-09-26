@@ -715,6 +715,38 @@ static void test_map_shrinks_on_removal(void) {
     lyric_release(m);
 }
 
+/* A tombstone purge inside lyric_map_set also fits the table: when churn
+ * forces the purge while the live set is far below capacity (no removal
+ * crossed the 1/8 shrink line first), the rehash lands on the fitted size
+ * rather than the current capacity. */
+static void test_map_set_purge_shrinks(void) {
+    LyricMap* m = lyric_map_new(0, 0);
+    /* 90 live entries sit in 128 slots.  Removing down to 20 keeps
+     * 20*8 = 160 >= 128, so no remove-triggered shrink fires, but the
+     * fitted size for 21 entries is 64. */
+    for (int64_t i = 0; i < 90; i++) lyric_map_set(m, i, i);
+    CHECK(lyric_map_cap(m) == 128);
+    for (int64_t i = 20; i < 90; i++) CHECK(lyric_map_remove(m, i));
+    CHECK(lyric_map_len(m) == 20);
+    CHECK(lyric_map_cap(m) == 128);
+    /* FIFO churn over the live window [lo, hi) at a constant size of 20
+     * until the tombstones push `used` past 3/4 of capacity and
+     * lyric_map_set purges. */
+    int64_t lo = 0, hi = 20;
+    for (int step = 0; step < 100000 && lyric_map_cap(m) == 128; step++) {
+        CHECK(lyric_map_remove(m, lo));
+        lo++;
+        lyric_map_set(m, hi, hi * 3);
+        hi++;
+    }
+    CHECK(lyric_map_cap(m) == 64);
+    CHECK(lyric_map_len(m) == 20);
+    int64_t v = 0;
+    for (int64_t k = lo; k < hi; k++) CHECK(lyric_map_get(m, k, &v) && v == k * 3);
+    CHECK(!lyric_map_get(m, lo - 1, &v));
+    lyric_release(m);
+}
+
 static void test_list_copy(void) {
     /* Ref elements: the copy retains; releasing the source leaves the
      * copy's elements alive. */
@@ -2742,6 +2774,7 @@ int main(void) {
     test_map_int_keys();
     test_map_tombstone_churn();
     test_map_shrinks_on_removal();
+    test_map_set_purge_shrinks();
     test_map_string_keys();
     test_list_copy();
     test_list_slice_concat_append();

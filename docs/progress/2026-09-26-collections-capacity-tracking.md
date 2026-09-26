@@ -17,7 +17,11 @@ peak-capacity slot to collect a much smaller live set.
 `lyric-rt`'s `test_map_shrinks_on_removal` fills 100,000 entries, removes all
 but 100, and checks that capacity falls to at most 256, that survivors keep
 their values, and that the drained map shrinks to the minimum table and can
-be refilled.
+be refilled. `test_map_set_purge_shrinks` leaves a loose table (20 live
+entries in 128 slots, above the removal shrink line) and churns distinct keys
+until the tombstone purge in `lyric_map_set` fires, checking it lands on the
+fitted 64 slots. The language reference's native divergence note for
+`keys()`/`values()` (section 11) is replaced by the O(len) guarantee.
 
 `mapForEach`/`mapEntries` still re-look-up each key, which is one extra hash
 probe per entry on a linear walk. A lookup-free walk needs an entry-enumeration
