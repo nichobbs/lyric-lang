@@ -190,7 +190,7 @@ protected type RegistryCell {
   entry set(h: in Int): Unit {
     handle = h
   }
-  func get(): Int {
+  entry get(): Int {
     return handle
   }
 }

@@ -167,7 +167,9 @@ pub func detach[M, Msg](s: in Session[M, Msg]): Session[M, Msg] {
 }
 
 /// `s` rendered again for a reconnected host: the whole tree, under a new
-/// render version so events aimed at the old tree are recognisably stale.
+/// render version.  Events are resolved by their paths, not their render
+/// version, so an event aimed at the pre-resume tree still reaches its node
+/// if the node is still there (keyed nodes by key).
 pub func resume[M, Msg, E](p: in Program[M, Msg, E], s: in Session[M, Msg]): Output[M, Msg, E] {
   val model: M = s.model
   val dialog: Option[PendingDialog[Msg]] = s.dialog

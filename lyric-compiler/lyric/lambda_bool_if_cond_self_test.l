@@ -133,3 +133,36 @@ test "un-annotated function-typed lambda param of a generic HOF used as an if co
   assertEqual(applyGuardG(1, { p -> if p() then "yes" else "no" }, false), "no", "generic HOF, false")
   assertEqual(applyGuardG("s", { p -> if p() then "yes" else "no" }, true), "yes", "generic HOF, true")
 }
+
+// 7. A boxed Bool reaches every Boolean consumer, not only `if`: the return
+// type of `() -> T` is not recorded when it mentions the generic function's
+// own `T`, so with `T = Bool` the call stays boxed.  MSIL now unboxes at the
+// consumer (`lowerBoolOperandMsil`): `if`, `while`, `and`, `or`, `not` and
+// match guards (#7408).
+func viaGeneric[T](seed: in T, g: in (() -> T) -> String, v: in T): String {
+  g({ -> v })
+}
+
+test "a generic callback returning Bool is unboxed wherever it is used as a condition" {
+  assertEqual(viaGeneric(true, { p -> if p() then "yes" else "no" }, false), "no", "if, false")
+  assertEqual(viaGeneric(true, { p -> if p() then "yes" else "no" }, true), "yes", "if, true")
+  assertEqual(viaGeneric(true, { p -> if not p() then "not" else "is" }, false), "not", "not")
+  assertEqual(viaGeneric(true, { p -> if p() and true then "both" else "one" }, false), "one", "and")
+  assertEqual(viaGeneric(true, { p -> if false or p() then "some" else "none" }, false), "none", "or")
+  assertEqual(
+    viaGeneric(true, { p ->
+      var n = 0
+      while p() and n < 3 {
+        n = n + 1
+      }
+      n.toString()
+    }, false),
+    "0",
+    "while"
+  )
+  assertEqual(
+    viaGeneric(true, { p -> match 1 { case 1 if p() -> "guarded"; case _ -> "fallthrough" } }, false),
+    "fallthrough",
+    "match guard"
+  )
+}

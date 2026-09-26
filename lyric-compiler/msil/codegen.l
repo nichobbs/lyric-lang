@@ -9895,7 +9895,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           ty
         }
         case PreNot -> {
-          lowerExprMsil(cctx, fctx, insns, operand)
+          lowerBoolOperandMsil(cctx, fctx, insns, operand)
           insns.add(MLdcI4(v = 1))
           insns.add(MXor)
           MBool
@@ -11424,9 +11424,9 @@ func lowerBinopMsil(
     case BAnd -> {
       val falseL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
-      lowerExprMsil(cctx, fctx, insns, lhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, lhs)
       insns.add(MBrFalse(label = falseL))
-      lowerExprMsil(cctx, fctx, insns, rhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, rhs)
       insns.add(MBrFalse(label = falseL))
       insns.add(MLdcI4(v = 1))
       insns.add(MBr(label = afterL))
@@ -11439,9 +11439,9 @@ func lowerBinopMsil(
     case BOr -> {
       val trueL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
-      lowerExprMsil(cctx, fctx, insns, lhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, lhs)
       insns.add(MBrTrue(label = trueL))
-      lowerExprMsil(cctx, fctx, insns, rhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, rhs)
       insns.add(MBrTrue(label = trueL))
       insns.add(MLdcI4(v = 0))
       insns.add(MBr(label = afterL))
@@ -12036,9 +12036,9 @@ func lowerBinopMsil(
       // p => q  ≡  !p || q
       val trueL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
-      lowerExprMsil(cctx, fctx, insns, lhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, lhs)
       insns.add(MBrFalse(label = trueL))  // if lhs false, result is true
-      lowerExprMsil(cctx, fctx, insns, rhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, rhs)
       insns.add(MBr(label = afterL))
       insns.add(MLabel(id = trueL))
       insns.add(MLdcI4(v = 1))
@@ -12098,6 +12098,21 @@ func lowerBranchWithSiblingHintMsil(
   }
 }
 
+// Lowers `e`, which the type checker has typed `Bool`, as a Boolean operand
+// (a condition, a match guard, an operand of `and`/`or`/`implies`/`not`).
+// Some producers leave the value boxed as `object` — a call through a
+// function value whose return type was not tracked at this site, for
+// example — and branching on a boxed `false` tests the reference for null,
+// so it would count as true.  Such a value is unboxed here, at the one place
+// every Boolean consumer goes through, rather than at each producer
+// (D-progress-979).
+func lowerBoolOperandMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], e: in Expr): Unit {
+  val ty = lowerExprMsil(cctx, fctx, insns, e)
+  if ty == MObject {
+    materializeBoxedElemMsil(cctx, insns, MBool)
+  }
+}
+
 func lowerIfExprMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -12109,7 +12124,7 @@ func lowerIfExprMsil(
   val elseL = freshLabelMsil(fctx)
   val afterL = freshLabelMsil(fctx)
 
-  lowerExprMsil(cctx, fctx, insns, cond)
+  lowerBoolOperandMsil(cctx, fctx, insns, cond)
   insns.add(MBrFalse(label = elseL))
 
   match elseBranchOpt {
@@ -13164,7 +13179,7 @@ func lowerMatchExprMsil(
     lowerPatternBindMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy)
     match arm.guard {
       case Some(g) -> {
-        lowerExprMsil(cctx, fctx, armInsns, g)
+        lowerBoolOperandMsil(cctx, fctx, armInsns, g)
         armInsns.add(MBrFalse(label = nextArmL))
       }
       case None -> {
@@ -20332,7 +20347,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       val loopL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
       insns.add(MLabel(id = loopL))
-      lowerExprMsil(cctx, fctx, insns, cond)
+      lowerBoolOperandMsil(cctx, fctx, insns, cond)
       insns.add(MBrFalse(label = afterL))
       fctx.loopBreak.add(afterL)
       fctx.loopCont.add(loopL)

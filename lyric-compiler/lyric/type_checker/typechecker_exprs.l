@@ -3453,16 +3453,17 @@ func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in Li
     gctxPush(ctx, gnames)
   }
   val fields = ctorAllFields(sym)
+  // Report in the declaring package's scope, as the field types are resolved
+  // everywhere else (#6689).
+  val saved = enterDeclaringScope(tbl, sym)
   var i = 0
   while i < fields.count {
     val _ = resolveType(tbl, ctx, diag, fields[i].ty)
     i = i + 1
   }
+  restoreScope(tbl, saved)
 }
 
-// Return the field names of a constructor symbol in declaration order.
-// Used alongside ctorFieldTypes to reorder named-arg types to declaration
-// order before passing to inferGenericArgs (#3157).
 // The type of field `name` of a generic constructor: its declared type with
 // the constructor's type parameters (`gnames`) in scope, instantiated at
 // `targs`.  `fallback` is used when `name` is not a declared field.
@@ -3484,6 +3485,9 @@ func instantiatedFieldType(
   fallback
 }
 
+// Return the field names of a constructor symbol in declaration order.
+// Used alongside ctorFieldTypes to reorder named-arg types to declaration
+// order before passing to inferGenericArgs (#3157).
 func ctorFieldNames(sym: in Symbol): List[String] {
   val result: List[String] = newList()
   val fields = ctorAllFields(sym)

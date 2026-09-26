@@ -60,7 +60,9 @@ pub record DetachedSession {
 
 /// The live sessions of a host, by id, and which session each connection
 /// carries (docs/65 §9.5, D138).  A host creates one and consults it for
-/// every connection event; it holds no transport state of its own.
+/// every connection event; it holds no transport state of its own.  Every
+/// member is an `entry`, readers included: a protected type's plain `func`
+/// members take no lock, and connections run on their own threads.
 pub protected type SessionRegistry {
   var byId: Map[String, SessionEntry] = newMap()
   var byConnection: Map[String, String] = newMap()
@@ -129,26 +131,26 @@ pub protected type SessionRegistry {
     }
   }
   /// True when session `id` exists and no connection carries it.
-  func isDetached(id: in String): Bool {
+  entry isDetached(id: in String): Bool {
     return match mapGet(byId, id) { case Some(e) -> e.connectionId.length == 0; case None -> false }
   }
   /// The session id carried by `connectionId`.
-  func sessionOf(connectionId: in String): Option[String] {
+  entry sessionOf(connectionId: in String): Option[String] {
     return mapGet(byConnection, connectionId)
   }
   /// The instance of session `id`.
-  func instanceOf(id: in String): Option[Instance] {
+  entry instanceOf(id: in String): Option[Instance] {
     return match mapGet(byId, id) { case Some(e) -> Some(value = e.instance); case None -> None }
   }
   /// The connection session `id` is attached to, if any.
-  func connectionOf(id: in String): Option[String] {
+  entry connectionOf(id: in String): Option[String] {
     return match mapGet(byId, id) {
       case Some(e) -> if e.connectionId.length > 0 then Some(value = e.connectionId) else None
       case None -> None
     }
   }
   /// The number of sessions held, connected or not.
-  func liveCount(): Int {
+  entry liveCount(): Int {
     return byId.count
   }
   // Records that `connectionId` carries session `id`.
