@@ -29,28 +29,25 @@
 //! `Std.Collections.mapSize`/`mapIsEmpty` (`@experimental` pending JVM
 //! parity validation, #3577).
 //!
-//! Representation: rather than a bespoke `PersistentList[T]` nominal
-//! type, the persistent value IS a `slice[T]` — `slice[T]` is already
-//! immutable at the language level (`docs/01-language-reference.md`
-//! §5.2: "there is no in-place mutation"), so no wrapper type is needed
-//! to keep the "never mutates" contract.  This mirrors `Std.Sort.sort[T]`,
-//! which likewise operates on bare `slice[T]` rather than inventing a
-//! `SortedSlice[T]` type.  `plistCons`/`plistHead`/`plistTail`/
-//! `plistLookup`/`plistInsert`/`plistDelete`/`plistToList`/
-//! `plistFromList` are head-to-tail order; `plistHead`/`plistLookup` are
-//! O(1), the rest rebuild the slice, O(n).
+//! Representation (#7280, D-progress-980): `PersistentList[T]` is a
+//! singly linked cons list (`PLNil` / `PLCons(head, tail, size)`) with
+//! each node's length cached, so `plistCons`/`plistHead`/`plistTail`/
+//! `plistLength`/`plistIsEmpty` are O(1) and deriving a list shares the
+//! part it keeps: `plistInsert`/`plistDelete`/`plistLookup` are O(index),
+//! copying only the nodes before the index. `plistToList`/`plistFromList`
+//! are O(n). The list was previously a bare `slice[T]`, which made every
+//! cons and tail a full copy, so building or walking a list step by step
+//! was quadratic.
 //!
-//! `PersistentMap[K, V]` (#684, follow-up #6570) uses the same
-//! bare-`slice`-of-`Std.Collections.MapEntry[K, V]` representation — a
-//! persistent association list, keyed by a caller-supplied equality
-//! predicate rather than a hash/ordering (Lyric has no generic `Eq`/`Ord`
-//! interface to dispatch on).  This is the "naive-but-correct over
-//! exotic" v1 the original #684 issue asked for, not a balanced BST —
-//! a BST needs an ORDERING predicate (not just equality) and rebalancing,
-//! a materially larger surface for the same O(n) worst-case complexity
-//! profile this module already accepts throughout.  `pmapInsert`/
-//! `pmapDelete`/`pmapLookup`/`pmapContainsKey` are all O(n); `pmapSize`/
-//! `pmapIsEmpty` are O(1).
+//! `PersistentMap[K, V]` (#684, follow-up #6570) is a bare
+//! `slice[Std.Collections.MapEntry[K, V]]` — a persistent association
+//! list, keyed by a caller-supplied equality predicate rather than a
+//! hash/ordering (Lyric has no generic `Eq`/`Ord`/`Hash` interface to
+//! dispatch on). With only equality, every lookup, insert and delete is an
+//! O(n) scan whatever the representation, so `pmapInsert`/`pmapDelete`/
+//! `pmapLookup`/`pmapContainsKey` are O(n); `pmapSize`/`pmapIsEmpty` are
+//! O(1). An O(log n) HAMT or balanced tree needs a hash or ordering
+//! constraint on `K`, which waits on that language support (D-progress-980).
 //!
 //! Building this module surfaced (and, in the same change, fixed) two
 //! previously-unknown self-hosted MSIL generic-codegen bugs with no prior
@@ -87,129 +84,170 @@ package Std.Collections.Persistent
 import Std.Core
 import Std.Collections
 
-// ─── PersistentList[T] operations (slice[T]) ─────────────────────────────
-// The empty list is `[]` — `val e: slice[Int] = []`.
+// ─── PersistentList[T] ────────────────────────────────────────────────────
+/// An immutable singly linked list. Every node records the length of the
+/// list it heads, so `plistLength` is O(1). Deriving a list from another
+/// never copies the part it keeps: `plistCons` and `plistTail` are O(1), and
+/// `plistInsert`/`plistDelete` copy only the nodes before the index and share
+/// the rest (#7280).
 @experimental
-pub func plistIsEmpty[T](lst: in slice[T]): Bool {
-  lst.length == 0
+pub union PersistentList[T] {
+  case PLNil
+  case PLCons(head: T, tail: PersistentList[T], size: Int)
+}
+
+/// The empty list.  O(1).
+@experimental
+pub func plistEmpty[T](): PersistentList[T] {
+  PLNil
+}
+
+/// True when `lst` has no elements.  O(1).
+@experimental
+pub func plistIsEmpty[T](lst: in PersistentList[T]): Bool {
+  match lst {
+    case PLNil -> true
+    case PLCons(_, _, _) -> false
+  }
 }
 
 /// Number of elements.  O(1).
 @experimental
-pub func plistLength[T](lst: in slice[T]): Int {
-  lst.length
+pub func plistLength[T](lst: in PersistentList[T]): Int {
+  match lst {
+    case PLNil -> 0
+    case PLCons(_, _, n) -> n
+  }
 }
 
 /// The first element, or `None` for the empty list.  O(1).
 @experimental
-pub func plistHead[T](lst: in slice[T]): Option[T] {
-  if lst.length == 0 {
-    None
-  } else {
-    Some(value = lst[0])
+pub func plistHead[T](lst: in PersistentList[T]): Option[T] {
+  match lst {
+    case PLNil -> None
+    case PLCons(h, _, _) -> Some(value = h)
   }
 }
 
-/// Every element after the first, or `None` for the empty list.  O(n):
-/// rebuilds a fresh slice for the remainder.
+/// Every element after the first, or `None` for the empty list.  O(1): the
+/// tail is shared, not copied.
 @experimental
-pub func plistTail[T](lst: in slice[T]): Option[slice[T]] {
-  if lst.length == 0 {
-    None
-  } else {
-    val acc: List[T] = newList()
-    var i = 1
-    while i < lst.length {
-      acc.add(lst[i])
-      i = i + 1
-    }
-    Some(value = acc.toArray())
+pub func plistTail[T](lst: in PersistentList[T]): Option[PersistentList[T]] {
+  match lst {
+    case PLNil -> None
+    case PLCons(_, t, _) -> Some(value = t)
   }
 }
 
-/// Prepend `x` to `lst`, returning a new list.  `lst` itself is left
-/// untouched — any other value that referenced it before the call still
-/// sees the original list.  O(n): rebuilds the slice.
+/// Prepend `x` to `lst`, returning a new list that shares `lst` as its tail.
+/// `lst` itself is untouched.  O(1).
 @experimental
-pub func plistCons[T](x: in T, lst: in slice[T]): slice[T] {
-  val acc: List[T] = newList()
-  acc.add(x)
+pub func plistCons[T](x: in T, lst: in PersistentList[T]): PersistentList[T] {
+  PLCons(head = x, tail = lst, size = plistLength(lst) + 1)
+}
+
+/// The element at `index` (0-based), or `None` if out of range.  O(index).
+@experimental
+pub func plistLookup[T](lst: in PersistentList[T], index: in Int): Option[T] {
+  if index < 0 or index >= plistLength(lst) {
+    return None
+  }
+  var cur = lst
   var i = 0
-  while i < lst.length {
-    acc.add(lst[i])
-    i = i + 1
-  }
-  acc.toArray()
-}
-
-/// The element at `index` (0-based), or `None` if out of range.  O(1).
-@experimental
-pub func plistLookup[T](lst: in slice[T], index: in Int): Option[T] {
-  if index < 0 or index >= lst.length {
-    None
-  } else {
-    Some(value = lst[index])
-  }
-}
-
-/// Insert `x` before position `index`, returning a new list.  `index <= 0`
-/// inserts at the front; `index >=` the current length appends at the
-/// end.  O(n): rebuilds the slice.
-@experimental
-pub func plistInsert[T](lst: in slice[T], index: in Int, x: in T): slice[T] {
-  val n = lst.length
-  val clamped = if index < 0 { 0 } else if index > n { n } else { index }
-  val acc: List[T] = newList()
-  var i = 0
-  while i < clamped {
-    acc.add(lst[i])
-    i = i + 1
-  }
-  acc.add(x)
-  while i < n {
-    acc.add(lst[i])
-    i = i + 1
-  }
-  acc.toArray()
-}
-
-/// Remove the element at `index`, returning a new list.  Out-of-range
-/// `index` (negative, or `>=` the current length) returns `lst`
-/// unchanged.  O(n): rebuilds the slice.
-@experimental
-pub func plistDelete[T](lst: in slice[T], index: in Int): slice[T] {
-  if index < 0 or index >= lst.length {
-    lst
-  } else {
-    val acc: List[T] = newList()
-    var i = 0
-    while i < lst.length {
-      if i != index {
-        acc.add(lst[i])
+  while true {
+    match cur {
+      case PLNil -> return None
+      case PLCons(h, t, _) -> {
+        if i == index {
+          return Some(value = h)
+        }
+        cur = t
+        i = i + 1
       }
-      i = i + 1
     }
-    acc.toArray()
   }
+  None
 }
 
-/// Snapshot into a fresh mutable `Std.Collections.List[T]`, front-to-back.
-@experimental
-pub func plistToList[T](lst: in slice[T]): List[T] {
-  val acc: List[T] = newList()
+// The first `count` elements of `lst` in order, and the list after them.
+// `count` must not exceed the length of `lst`.
+record PListSplit[T] {
+  prefix: List[T]
+  rest: PersistentList[T]
+}
+
+func plistSplitAt[T](lst: in PersistentList[T], count: in Int): PListSplit[T] {
+  val prefix: List[T] = newListWithCapacity(count)
+  var cur = lst
   var i = 0
-  while i < lst.length {
-    acc.add(lst[i])
-    i = i + 1
+  while i < count {
+    match cur {
+      case PLNil -> {
+        i = count
+      }
+      case PLCons(h, t, _) -> {
+        prefix.add(h)
+        cur = t
+        i = i + 1
+      }
+    }
+  }
+  PListSplit(prefix = prefix, rest = cur)
+}
+
+// Cons `prefix` back onto `rest`, last element first, so the result reads
+// `prefix` followed by `rest`.
+func plistPrependAll[T](prefix: in List[T], rest: in PersistentList[T]): PersistentList[T] {
+  var acc = rest
+  var i = prefix.count - 1
+  while i >= 0 {
+    acc = plistCons(prefix[i], acc)
+    i = i - 1
   }
   acc
 }
 
-/// Build a persistent list from `xs`, preserving order (`xs[0]` becomes
-/// the head).
+/// Insert `x` before position `index`, returning a new list.  `index <= 0`
+/// inserts at the front; `index >=` the current length appends at the
+/// end.  O(index): the nodes before `index` are copied and the rest is
+/// shared with `lst`.
 @experimental
-pub func plistFromList[T](xs: in List[T]): slice[T] {
-  xs.toArray()
+pub func plistInsert[T](lst: in PersistentList[T], index: in Int, x: in T): PersistentList[T] {
+  val n = plistLength(lst)
+  val clamped = if index < 0 { 0 } else if index > n { n } else { index }
+  val split = plistSplitAt(lst, clamped)
+  plistPrependAll(split.prefix, plistCons(x, split.rest))
+}
+
+/// Remove the element at `index`, returning a new list.  Out-of-range
+/// `index` (negative, or `>=` the current length) returns `lst`
+/// unchanged.  O(index): the nodes before `index` are copied and the rest
+/// is shared with `lst`.
+@experimental
+pub func plistDelete[T](lst: in PersistentList[T], index: in Int): PersistentList[T] {
+  if index < 0 or index >= plistLength(lst) {
+    return lst
+  }
+  val split = plistSplitAt(lst, index)
+  match split.rest {
+    case PLNil -> lst
+    case PLCons(_, after, _) -> plistPrependAll(split.prefix, after)
+  }
+}
+
+/// Snapshot into a fresh mutable `Std.Collections.List[T]`, front-to-back.
+/// O(n).
+@experimental
+pub func plistToList[T](lst: in PersistentList[T]): List[T] {
+  plistSplitAt(lst, plistLength(lst)).prefix
+}
+
+/// Build a persistent list from `xs`, preserving order (`xs[0]` becomes
+/// the head).  O(n).
+@experimental
+pub func plistFromList[T](xs: in List[T]): PersistentList[T] {
+  val empty: PersistentList[T] = PLNil
+  plistPrependAll(xs, empty)
 }
 
 // ─── PersistentMap[K, V] operations (slice[MapEntry[K, V]]) ──────────────

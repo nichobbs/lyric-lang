@@ -132,3 +132,8 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Testing.Property" = "std/testing_property.l"
 "Std.Testing.Snapshot" = "std/testing_snapshot.l"
 "Std.App"              = "std/app.l"
+
+# Tier 8 — persistent collections (#684). Appended last so earlier packages'
+# token indices are unchanged; bundled since #7280 gave it its own types
+# (`PersistentList[T]`), which D111 requires to live in Lyric.Stdlib.
+"Std.Collections.Persistent" = "std/collections_persistent.l"

@@ -6276,6 +6276,13 @@ func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NT
   if envNames.count != argTys.count {
     return None
   }
+  // A self-referential case field (`tail: PersistentList[T]`) instantiates
+  // this same union again while its fields are being lowered. Register a
+  // zero-payload stub first so that recursion finds it instead of
+  // re-entering (a compiler stack overflow before, #7280), exactly as the
+  // non-generic registration does; the stub is replaced below.
+  val emptyCases: List[NUnionCaseInfo] = newList()
+  ctx.unionDefs.add(instName, NUnionInfo(irName = instName, cases = emptyCases, payloadWords = 0))
   val cases: List[NUnionCaseInfo] = newList()
   var maxBytes = 0
   var ci = 0
@@ -6288,7 +6295,10 @@ func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NT
       names.add(unionFieldName(cd.fields[fi], fi))
       match typeToNEnvOpt(ctx, unionFieldTy(cd.fields[fi]), envNames, argTys) {
         case Some(t) -> tys.add(t)
-        case None -> return None
+        case None -> {
+          ctx.unionDefs.remove(instName)
+          return None
+        }
       }
       fi = fi + 1
     }
@@ -6301,6 +6311,7 @@ func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NT
   }
   val words = (maxBytes + 7) / 8
   val ui = NUnionInfo(irName = instName, cases = cases, payloadWords = words)
+  ctx.unionDefs.remove(instName)
   ctx.unionDefs.add(instName, ui)
   ctx.instMeta.add(instName, NInstInfo(gkey = gkey, argTys = argTys))
   ctx.moduleTypeDefs.add(NTypeDefn(name = instName, fields = unionBodyFields(words)))
@@ -6338,17 +6349,30 @@ func instantiateGenericRecordOpt(ctx: in Ctx, gkey: in String, argTys: in List[N
   val names: List[String] = newList()
   val tys: List[NType] = newList()
   val dflts: List[Option[Expr]] = newList()
+  // Stub first, for a field that refers back to this instantiation (see
+  // `instantiateGenericUnionOpt`, #7280).
+  val stubNames: List[String] = newList()
+  val stubTys: List[NType] = newList()
+  val stubDflts: List[Option[Expr]] = newList()
+  ctx.recordDefs.add(
+    instName,
+    NRecInfo(irName = instName, fieldNames = stubNames, fieldTys = stubTys, fieldDefaults = stubDflts)
+  )
   var i = 0
   while i < fields.count {
     names.add(fields[i].name)
     match typeToNEnvOpt(ctx, fields[i].ty, envNames, argTys) {
       case Some(t) -> tys.add(t)
-      case None -> return None
+      case None -> {
+        ctx.recordDefs.remove(instName)
+        return None
+      }
     }
     dflts.add(fields[i].dflt)
     i = i + 1
   }
   val ri = NRecInfo(irName = instName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts)
+  ctx.recordDefs.remove(instName)
   ctx.recordDefs.add(instName, ri)
   ctx.instMeta.add(instName, NInstInfo(gkey = gkey, argTys = argTys))
   val defnFields: List[NType] = newList()

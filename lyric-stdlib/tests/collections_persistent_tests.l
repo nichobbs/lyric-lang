@@ -7,11 +7,9 @@
 //! Non-mutation here means: deriving a new persistent value from an
 //! existing one (e.g. `plistCons(x, a)`) never mutates the original —
 //! every test that derives `b` from `a` re-reads `a` afterward and
-//! asserts it is unchanged.  This is NOT structural sharing in the
-//! traditional persistent-data-structure sense (internal nodes shared
-//! across versions for cheap amortized derive operations) — every
-//! "modifying" op here does a full O(n) rebuild of a bare `slice[T]`
-//! (see the module's own header doc comment).
+//! asserts it is unchanged.  `PersistentList[T]` is a linked list whose
+//! derive operations share the untouched suffix (#7280);
+//! `testPlistLargeBuildAndWalk` would not finish if cons or tail copied.
 //!
 //! `PersistentMap[K, V]` (#684, #6570) ships in the same module but is
 //! tested separately in `collections_persistent_map_tests.l` — dotnet-only
@@ -24,8 +22,8 @@ import Std.Collections
 import Std.Collections.Persistent
 import Std.Testing
 
-func emptyInts(): slice[Int] {
-  []
+func emptyInts(): PersistentList[Int] {
+  plistEmpty()
 }
 
 // ─── List ops: empty edge cases ──────────────────────────────────────────
@@ -74,7 +72,7 @@ func testPlistConsHeadTail(): Unit {
   }
   match plistTail(c) {
     case Some(rawT) -> {
-      val t: slice[Int] = rawT
+      val t: PersistentList[Int] = rawT
       assertEqualInt(plistLength(t), 2, "tail has one fewer element")
     }
     case None -> assertTrue(false, "expected Some(tail)")
@@ -101,7 +99,7 @@ func testPlistNonMutation(): Unit {
   // b's tail must equal a exactly (same elements).
   match plistTail(b) {
     case Some(rawT) -> {
-      val t: slice[Int] = rawT
+      val t: PersistentList[Int] = rawT
       assertEqualInt(plistLength(t), 3, "b's tail has the same length as a")
       match (plistLookup(t, 0), plistLookup(a, 0)) {
         case (Some(t0), Some(a0)) -> assertEqualInt(t0, a0, "b's tail[0] matches a[0]")
@@ -196,6 +194,45 @@ func testPlistToFromListRoundTrip(): Unit {
   assertEqualInt(back[2], 3, "round-trip preserves order [2]")
 }
 
+// ─── Structural sharing: large lists stay linear (#7280) ─────────────────
+func testPlistLargeBuildAndWalk(): Unit {
+  val n = 200000
+  var lst = emptyInts()
+  var i = 0
+  while i < n {
+    lst = plistCons(i, lst)
+    i = i + 1
+  }
+  assertEqualInt(plistLength(lst), n, "200000 conses")
+  var walked = 0
+  var cur = lst
+  var done = false
+  while not done {
+    match plistTail(cur) {
+      case Some(t) -> {
+        cur = t
+        walked = walked + 1
+      }
+      case None -> {
+        done = true
+      }
+    }
+  }
+  assertEqualInt(walked, n, "tail walks every element once")
+  // Near-front edits copy only the nodes before the index.
+  val edited = plistDelete(plistInsert(lst, 2, 0 - 1), 5)
+  assertEqualInt(plistLength(edited), n, "insert then delete keeps the length")
+  match plistLookup(edited, 2) {
+    case Some(v) -> assertEqualInt(v, 0 - 1, "inserted value at index 2")
+    case None -> assertTrue(false, "expected Some(-1)")
+  }
+  match plistLookup(edited, n - 1) {
+    case Some(v) -> assertEqualInt(v, 0, "the shared suffix is intact")
+    case None -> assertTrue(false, "expected Some(0)")
+  }
+  assertEqualInt(plistLength(lst), n, "the source is unchanged")
+}
+
 func main(): Unit {
   testPlistEmpty()
   testPlistDeleteAndInsertOnEmpty()
@@ -205,5 +242,6 @@ func main(): Unit {
   testPlistInsertMiddleAndEnd()
   testPlistDeleteVariants()
   testPlistToFromListRoundTrip()
+  testPlistLargeBuildAndWalk()
   println("collections_persistent_tests: ok")
 }
