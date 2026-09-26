@@ -2347,3 +2347,152 @@ test "emitProject an imported generic resolves its type names in its own package
   assertEqualInt(result.exitCode, 0, "type scope JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "42", "type scope JVM: output")
 }
+
+// Constructing another package's `protected type` (D-progress-980).  MSIL
+// registered every nominal type name for cross-package resolution except
+// protected types, so `Counter()` in a consumer failed with T0123.
+func protectedCtorPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPPt.App",
+      "package EPPt.App\n" + "\n" + "import EPPt.Lib.{Counter}\n" + "\n" + "func main(): Unit {\n" +
+        "  val c = Counter()\n" +
+        "  c.bump()\n" +
+        "  c.bump()\n" +
+        "  println(toString(c.get()))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPPt.Lib",
+      "package EPPt.Lib\n" + "\n" + "pub protected type Counter {\n" + "  var n: Int = 40\n" +
+        "  entry bump(): Unit {\n" +
+        "    n = n + 1\n" +
+        "  }\n" +
+        "  func get(): Int {\n" +
+        "    return n\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject constructs another package's protected type (MSIL)" {
+  val result = runEmitProject("emitproj-protctor", protectedCtorPkgs(), "EPPt")
+  assertEqualInt(result.exitCode, 0, "protected ctor MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "protected ctor MSIL: output")
+}
+
+test "emitProject constructs another package's protected type (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-protctor-jvm", protectedCtorPkgs(), "EPPt")
+  assertEqualInt(result.exitCode, 0, "protected ctor JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "protected ctor JVM: output")
+}
+
+// A generic record's type parameter named like a type of the constructing
+// package (`Msg`): each constructor argument must be checked against the
+// field type with the record's own parameters in scope (D-progress-980).
+func genericParamShadowPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPGs.App",
+      "package EPGs.App\n" + "\n" + "import EPGs.Lib.{Prog, runOnce}\n" + "\n" + "union Msg {\n" + "  case Inc\n" +
+        "}\n" +
+        "\n" +
+        "union Other {\n" +
+        "  case Dec\n" +
+        "}\n" +
+        "\n" +
+        "func stepA(m: in Int, msg: in Msg): Int {\n" +
+        "  return m + 1\n" +
+        "}\n" +
+        "\n" +
+        "func stepB(m: in Int, o: in Other): Int {\n" +
+        "  return m + 40\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val a: Prog[Int, Msg] = Prog(step = stepA)\n" +
+        "  val b: Prog[Int, Other] = Prog(step = stepB)\n" +
+        "  println(toString(runOnce(b, runOnce(a, 1, Inc), Dec)))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPGs.Lib",
+      "package EPGs.Lib\n" + "\n" + "pub record Prog[M, Msg] {\n" + "  step: (M, Msg) -> M\n" + "}\n" + "\n" +
+        "pub func runOnce[M, Msg](p: in Prog[M, Msg], m: in M, msg: in Msg): M {\n" +
+        "  return p.step(m, msg)\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a generic record parameter named like a consumer type (MSIL)" {
+  val result = runEmitProject("emitproj-gshadow", genericParamShadowPkgs(), "EPGs")
+  assertEqualInt(result.exitCode, 0, "generic param shadow MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "generic param shadow MSIL: output")
+}
+
+test "emitProject a generic record parameter named like a consumer type (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-gshadow-jvm", genericParamShadowPkgs(), "EPGs")
+  assertEqualInt(result.exitCode, 0, "generic param shadow JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "generic param shadow JVM: output")
+}
+
+// A generic record whose field names a type of its own package while the
+// constructing package declares a same-named type: the field type resolves
+// in the declaring package's scope (#6689, #7391).
+func genericFieldScopePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPGf.App",
+      "package EPGf.App\n" + "\n" + "import EPGf.Lib.{Tagged, mkItem, total}\n" + "\n" + "record Item {\n" +
+        "  s: String\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val local = Item(s = \"x\")\n" +
+        "  val t: Tagged[Int] = Tagged(item = mkItem(40), value = 2)\n" +
+        "  println(toString(total(t)))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPGf.Lib",
+      "package EPGf.Lib\n" + "\n" + "pub record Item {\n" + "  n: Int\n" + "}\n" + "\n" + "pub record Tagged[T] {\n" +
+        "  item: Item\n" +
+        "  value: T\n" +
+        "}\n" +
+        "\n" +
+        "pub func mkItem(n: in Int): Item {\n" +
+        "  return Item(n = n)\n" +
+        "}\n" +
+        "\n" +
+        "pub func total(t: in Tagged[Int]): Int {\n" +
+        "  return t.item.n + t.value\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a generic record field names its own package's type (MSIL)" {
+  val result = runEmitProject("emitproj-gfscope", genericFieldScopePkgs(), "EPGf")
+  assertEqualInt(result.exitCode, 0, "generic field scope MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "generic field scope MSIL: output")
+}
+
+test "emitProject a generic record field names its own package's type (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-gfscope-jvm", genericFieldScopePkgs(), "EPGf")
+  assertEqualInt(result.exitCode, 0, "generic field scope JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "generic field scope JVM: output")
+}

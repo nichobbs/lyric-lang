@@ -1164,6 +1164,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
         case IInterface(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
         case IOpaque(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
         case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
+        case IProtected(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
         case _ -> ()
       }
       prtii = prtii + 1

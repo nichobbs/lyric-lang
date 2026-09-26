@@ -16,21 +16,21 @@ It has no UI dependency, so domain packages may import it. `lyric-ui`'s
 
 | Package | Contents |
 |---|---|
-| `Forms` | `FieldError`, `messageOf`, `errorsFor`, `formErrors`; `FormSchema`, `FieldSpec`, `InputKind` and the schema builders |
+| `Forms` | `FieldPath` (`rootPath`, `fieldPath`, `child`, `item`, `samePath`, `isWithin`, `pathText`); `FieldError`, `fieldOf`, `messageOf`, `errorsFor`, `errorsWithin`, `hasErrorFor`, `formErrors`; `DraftRows` (`emptyRows`, `rowsOf`, `addRow`, `removeRow`, `updateRow`, `moveRow`, `findRow`, `validateRows`); `FormSchema`, `FieldSpec`, `InputKind` and the schema builders |
 | `Forms.Parse` | `requiredText`, `optionalText`, `withinLength`, `longInRange`, `optionalLongInRange`, `oneOf`, `email`, and `collect` |
 
 ## Validate function
 
 ```lyric
-import Forms.{FieldError, CrossField}
+import Forms.{FieldError, CrossField, fieldPath}
 import Forms.Parse
 
 pub func validateCustomer(d: in CustomerDraft, id: in CustomerId): Result[Customer, List[FieldError]] {
   val errs: List[FieldError] = newList()
-  val name  = Parse.collect(errs, Parse.requiredText("name", d.name), "")
-  val email = Parse.collect(errs, Parse.email("email", d.email), "")
-  val limit = Parse.collect(errs, Parse.longInRange("creditLimit", d.creditLimit, 0, 1_000_000), 0)
-  if errs.length > 0 {
+  val name  = Parse.collect(errs, Parse.requiredText(fieldPath("name"), d.name), "")
+  val email = Parse.collect(errs, Parse.email(fieldPath("email"), d.email), "")
+  val limit = Parse.collect(errs, Parse.longInRange(fieldPath("creditLimit"), d.creditLimit, 0, 1_000_000), 0)
+  if errs.count > 0 {
     return Err(error = errs)
   }
   return Ok(value = Customer(id = id, name = name, email = email, creditLimit = limit))
@@ -39,6 +39,25 @@ pub func validateCustomer(d: in CustomerDraft, id: in CustomerId): Result[Custom
 
 `collect` returns the parsed value or a fallback, appending the error to a
 list the caller created, so every invalid field is reported at once.
+
+## List fields
+
+Rows of a list-valued field live in a `DraftRows[D]`. Each row gets a
+stable id from a counter in the draft, and errors address a row by that id
+(`child(item(fieldPath("lines"), id), "qty")`), so they stay on the right
+row when rows are added, removed or reordered (docs/65 §11.7, D138).
+`rowsOf` numbers rows from 1, so build a list with it once (when the form
+opens) and edit it with the row operations afterwards; rebuilding it would
+give rows new ids that older errors do not refer to:
+
+```lyric
+val none: DraftRows[LineDraft] = Forms.emptyRows()
+val lines = Forms.addRow(Forms.addRow(none, LineDraft(sku = "", qty = "")), LineDraft(sku = "A-1", qty = "2"))
+match Forms.validateRows(lines, fieldPath("lines"), validateLine) {
+  case Ok(values) -> ...
+  case Err(errs) -> ...   // each error under lines[#id].<field>
+}
+```
 
 ## Schema
 

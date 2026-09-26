@@ -3,7 +3,7 @@
 // (Ui.Diff.applyPatches) defines the same semantics.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Tree, toWire, pathOf, nodeAt, PatchError } from "../dist/tree.js";
+import { Tree, toWire, eventPathOf, nodeAt, PatchError } from "../dist/tree.js";
 
 const text = (v) => ({ t: "text", v });
 const el = (k, c = [], p = {}, e = [], key) => (key ? { t: "el", k, key, p, e, c } : { t: "el", k, p, e, c });
@@ -45,13 +45,37 @@ test("props, text and events", () => {
 test("paths are recomputed from parents", () => {
   const t = treeOf(el("column", [el("row", [text("x"), el("button", [], {}, ["click"])])]));
   const button = nodeAt(t.root, [0, 1]);
-  assert.deepEqual(pathOf(button), [0, 1]);
+  assert.deepEqual(eventPathOf(t.root, button), [0, 1]);
   t.apply({ op: "insert", p: [], i: 0, n: text("before") });
-  assert.deepEqual(pathOf(button), [1, 1]);
+  assert.deepEqual(eventPathOf(t.root, button), [1, 1]);
+});
+
+test("event paths name keyed nodes by key", () => {
+  const row = (key) => el("row", [text(key), el("button", [], {}, ["click"])], {}, [], key);
+  const t = treeOf(el("column", [el("column", [row("ann"), row("bob")])]));
+  const bobDelete = nodeAt(t.root, [0, 1, 1]);
+  assert.deepEqual(eventPathOf(t.root, bobDelete), [0, "bob", 1]);
+  t.apply({ op: "remove", p: [0], i: 0 });
+  assert.deepEqual(eventPathOf(t.root, bobDelete), [0, "bob", 1], "unchanged when an earlier row goes");
 });
 
 test("unresolvable paths throw PatchError", () => {
   const t = treeOf(list("a"));
   assert.throws(() => t.apply({ op: "setText", p: [5, 0], v: "x" }), PatchError);
   assert.throws(() => t.apply({ op: "remove", p: [], i: 3 }), PatchError);
+});
+
+test("a node removed or replaced after an event was raised has no event path", () => {
+  const row = (key) => el("row", [text(key), el("textInput", [], {}, ["input"])], {}, [], key);
+  const t = treeOf(el("column", [row("ann"), row("bob")]));
+  const bobInput = nodeAt(t.root, [1, 1]);
+  const annInput = nodeAt(t.root, [0, 1]);
+  t.apply({ op: "remove", p: [], i: 1 });
+  assert.equal(eventPathOf(t.root, bobInput), null, "removed row");
+  t.apply({ op: "replace", p: [0, 1], n: text("gone") });
+  assert.equal(eventPathOf(t.root, annInput), null, "replaced input");
+  const oldRoot = t.root;
+  t.apply({ op: "replace", p: [], n: el("column", []) });
+  assert.equal(eventPathOf(t.root, oldRoot), null, "replaced root");
+  assert.deepEqual(eventPathOf(t.root, t.root), [], "the root itself");
 });

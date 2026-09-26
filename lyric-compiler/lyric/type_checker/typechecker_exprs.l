@@ -3359,17 +3359,22 @@ func ctorAllFields(sym: in Symbol): List[FieldDecl] {
 func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
   val ctx = newGenericContext()
   gctxPush(ctx, genericNames)
-  // Inference probe only: resolution diagnostics are deliberately discarded
-  // (the authoritative field-type check runs later in inferConstruction);
-  // this pass exists solely to surface TyVar positions for inferGenericArgs.
+  // Resolution diagnostics are discarded here; `surfaceCtorFieldTypeErrors`
+  // reports genuine field-type errors when inference fails.
   val scratch: List[Diagnostic] = newList()
   val result: List[Type] = newList()
   val fields = ctorAllFields(sym)
+  // Resolve under the declaring package's scope, like `collectCtorFields`
+  // (#6689): these types are also the authoritative per-argument check for
+  // generic constructors, so a field type naming a type of the declaring
+  // package must not bind to a same-named type of the constructing one.
+  val saved = enterDeclaringScope(tbl, sym)
   var i = 0
   while i < fields.count {
     result.add(resolveType(tbl, ctx, scratch, fields[i].ty))
     i = i + 1
   }
+  restoreScope(tbl, saved)
   result
 }
 
@@ -3448,11 +3453,36 @@ func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in Li
     gctxPush(ctx, gnames)
   }
   val fields = ctorAllFields(sym)
+  // Report in the declaring package's scope, as the field types are resolved
+  // everywhere else (#6689).
+  val saved = enterDeclaringScope(tbl, sym)
   var i = 0
   while i < fields.count {
     val _ = resolveType(tbl, ctx, diag, fields[i].ty)
     i = i + 1
   }
+  restoreScope(tbl, saved)
+}
+
+// The type of field `name` of a generic constructor: its declared type with
+// the constructor's type parameters (`gnames`) in scope, instantiated at
+// `targs`.  `fallback` is used when `name` is not a declared field.
+func instantiatedFieldType(
+  fieldNames: in List[String],
+  fieldTypes: in List[Type],
+  gnames: in List[String],
+  targs: in List[Type],
+  name: in String,
+  fallback: in Type,
+): Type {
+  var i = 0
+  while i < fieldNames.count and i < fieldTypes.count {
+    if fieldNames[i] == name {
+      return substituteTyVars(fieldTypes[i], gnames, targs)
+    }
+    i = i + 1
+  }
+  fallback
 }
 
 // Return the field names of a constructor symbol in declaration order.
@@ -3688,19 +3718,7 @@ func collectCtorFieldsFromOpaque(
 func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorField]): Bool {
   val ctx = newGenericContext()
   val scratch: List[Diagnostic] = newList()
-  val savedPkg: List[String] = newList()
-  var spi = 0
-  while spi < tbl.scopePkg.count {
-    savedPkg.add(tbl.scopePkg[spi])
-    spi = spi + 1
-  }
-  val savedImports: List[String] = newList()
-  var sii = 0
-  while sii < tbl.scopeImports.count {
-    savedImports.add(tbl.scopeImports[sii])
-    sii = sii + 1
-  }
-  symTableSetScope(tbl, sym.originPackage, symTablePackageImportsOf(tbl, sym.originPackage))
+  val saved = enterDeclaringScope(tbl, sym)
   val result = match sym.kind {
     case DKRecord(_, rd) -> {
       collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc)
@@ -3716,9 +3734,32 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
     }
     case _ -> false
   }
-  val restorePkg = if savedPkg.count > 0 { savedPkg[0] } else { "" }
-  symTableSetScope(tbl, restorePkg, savedImports)
+  restoreScope(tbl, saved)
   result
+}
+
+/// The caller's resolution scope, saved by `enterDeclaringScope`.
+record SavedScope {
+  pkg: String
+  imports: List[String]
+}
+
+// Switches `tbl` to the scope of the package that declares `sym` (#6689),
+// returning the caller's scope for `restoreScope`.
+func enterDeclaringScope(tbl: in SymbolTable, sym: in Symbol): SavedScope {
+  val savedImports: List[String] = newList()
+  var sii = 0
+  while sii < tbl.scopeImports.count {
+    savedImports.add(tbl.scopeImports[sii])
+    sii = sii + 1
+  }
+  val savedPkg = if tbl.scopePkg.count > 0 { tbl.scopePkg[0] } else { "" }
+  symTableSetScope(tbl, sym.originPackage, symTablePackageImportsOf(tbl, sym.originPackage))
+  SavedScope(pkg = savedPkg, imports = savedImports)
+}
+
+func restoreScope(tbl: in SymbolTable, saved: in SavedScope): Unit {
+  symTableSetScope(tbl, saved.pkg, saved.imports)
 }
 
 // #6739: shared missing-required-field check, used by both the generic and
@@ -3979,6 +4020,11 @@ func inferConstructionExpected(
       )
       return inferredTy
     }
+    // Each argument is checked against its field's type with the record's own
+    // type parameters in scope, instantiated at the inferred arguments
+    // (`instantiatedFieldType`).  The plain `fields` list resolves field types
+    // without them, so a parameter named like a type of the constructing
+    // package (`Msg`) bound to that type instead (D-progress-980).
     // Reuse the field list collected for the missing-field check above (#3162):
     // both calls traverse the same symbol and produce identical results.
     val fields = prelimFields
@@ -3991,7 +4037,7 @@ func inferConstructionExpected(
           if not fieldHasName(fields, nm) {
             diag.add(errorDiagnostic("T0101", "'" + sym.name + "' has no field '" + nm + "'", asp))
           } else {
-            val fieldTy = fieldTypeByName(fields, nm)
+            val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, nm, fieldTypeByName(fields, nm))
             if not argSatisfiesParam(tbl, fieldTy, argTy) {
               diag.add(
                 errorDiagnostic(
@@ -4014,7 +4060,7 @@ func inferConstructionExpected(
               )
             )
           } else {
-            val fieldTy = fields[posIdx].ty
+            val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, fields[posIdx].name, fields[posIdx].ty)
             if not argSatisfiesParam(tbl, fieldTy, argTy) {
               diag.add(
                 errorDiagnostic(

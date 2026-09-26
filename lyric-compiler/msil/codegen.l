@@ -398,6 +398,17 @@ pub record CodegenCtx {
   // body instantiate against the declared `Result[T, E]`-style type instead of
   // the fully-erased `<object,object>` form (#6511).
   lambdaRetTypes: Map[String, MsilType]
+  // Declared return MsilType of a lifted lambda's FUNCTION-typed parameter,
+  // keyed "<pkg>.__lambda_<idx>#<paramIdx>".  An un-annotated lambda
+  // parameter takes its logical type from `lambdaParamTypes`, which is the
+  // erased delegate shape; without this, invoking such a parameter
+  // (`{ p -> if p() ... }`) left its result a boxed `object`, which `if`
+  // tested for non-null — always true for a boxed `false` (D-progress-980).
+  lambdaParamFnRetTypes: Map[String, MsilType]
+  // The same for a function-typed parameter of a function-typed parameter of
+  // a non-generic function, keyed "<fqn>#<paramIdx>#<innerParamIdx>"; copied
+  // into `lambdaParamFnRetTypes` when a lambda literal is passed there.
+  funcParamFnInnerFnRets: Map[String, MsilType]
   // Real (non-erased) parameter/return MsilTypes for a lambda passed directly
   // to an `@externTarget` function's function-typed parameter (see
   // funcParamIsExternTargetDelegate).  Keyed by lambda name ("__lambda_<idx>").
@@ -2127,6 +2138,8 @@ pub func newCodegenCtx(
     funcParamIsExternTargetDelegate = newMap(),
     lambdaParamTypes = newMap(),
     lambdaRetTypes = newMap(),
+    lambdaParamFnRetTypes = newMap(),
+    funcParamFnInnerFnRets = newMap(),
     lambdaExternDelegateParamTypes = newMap(),
     lambdaExternDelegateRetType = newMap(),
     lambdaCaptureNames = newMap(),
@@ -3125,7 +3138,45 @@ pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, p
         registerTypeFqnCandidate(cctx, decl.name + "View", pkgName + "." + decl.name + "View")
       }
       case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
+      case IProtected(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
       case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// Records, for each function-typed parameter among `fnParams` (the parameters
+// of a function-typed parameter), its declared return type under
+// "<key>#<innerIdx>" for both key aliases.  A return type that mentions one of
+// the declaring function's type parameters (`generics`) is skipped: resolving
+// a bare type variable outside a generics-aware context pollutes shared
+// codegen state (#5334), and such a lambda's result is erased anyway.
+func recordFnInnerFnRetsMsil(
+  cctx: in CodegenCtx,
+  fnParams: in List[TypeExpr],
+  aKey: in String,
+  fKey: in String,
+  pkgName: in String,
+  generics: in List[String],
+): Unit {
+  var i = 0
+  while i < fnParams.count {
+    match resolveFuncTypeExprMsil(cctx, fnParams[i]) {
+      case Some(te) -> match te.kind {
+        case TFunction(_, retTe) -> if not typeExprMentionsNamesMsil(retTe, generics) {
+          val rt = typeExprToMsilCtx(cctx, retTe, pkgName)
+          val ak = aKey + "#" + toString(i)
+          val fk = fKey + "#" + toString(i)
+          if not cctx.funcParamFnInnerFnRets.containsKey(ak) {
+            cctx.funcParamFnInnerFnRets.add(ak, rt)
+          }
+          if not cctx.funcParamFnInnerFnRets.containsKey(fk) {
+            cctx.funcParamFnInnerFnRets.add(fk, rt)
+          }
+        }
+        case _ -> ()
+      }
+      case None -> ()
     }
     i = i + 1
   }
@@ -4241,6 +4292,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         //   recFields from PMField; recMethods from PMEntry/PMFunc.
         // lowerMRecord then adds: FieldDef per field; .ctor; one MethodDef per method.
         val className = pkgName + "." + decl.name
+        // Register the name like every other nominal type so another package
+        // in the bundle resolves `Counter()` to this ctor (`resolveTypeFqn`)
+        // instead of reporting an unresolved call.
+        registerTypeFqnCandidate(cctx, decl.name, className)
         var fi = 0
         var fpos = 0
         while fi < decl.members.count {
@@ -4927,6 +4982,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 // instead of the fully-erased `<object,object>` form — which
                 // an enclosing concretely-typed `ret` then cannot satisfy.
                 val declIsGenericFn = match decl.generics { case Some(_) -> true; case None -> false }
+                // A callback parameter's own function-typed parameters: safe for
+                // generic declarations too, because only return types that do
+                // not mention the declaration's type parameters are recorded.
+                recordFnInnerFnRetsMsil(cctx, fnParams, aKey, fKey, pkgName, genericNamesOf(decl.generics))
                 if not declIsGenericFn {
                   val plainFnRetMsil = typeExprToMsilCtx(cctx, fnRetTe, pkgName)
                   if not cctx.funcParamFnRetType.containsKey(aKey) {
@@ -5251,7 +5310,7 @@ func inferUntypedStaticValMsilType(
             case _ -> MInt
           }
         }
-        case BXor -> MInt
+        case BXor -> MBool
         case BCoalesce -> {
           match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MObject -> inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)
@@ -9836,7 +9895,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           ty
         }
         case PreNot -> {
-          lowerExprMsil(cctx, fctx, insns, operand)
+          lowerBoolOperandMsil(cctx, fctx, insns, operand)
           insns.add(MLdcI4(v = 1))
           insns.add(MXor)
           MBool
@@ -11365,9 +11424,9 @@ func lowerBinopMsil(
     case BAnd -> {
       val falseL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
-      lowerExprMsil(cctx, fctx, insns, lhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, lhs)
       insns.add(MBrFalse(label = falseL))
-      lowerExprMsil(cctx, fctx, insns, rhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, rhs)
       insns.add(MBrFalse(label = falseL))
       insns.add(MLdcI4(v = 1))
       insns.add(MBr(label = afterL))
@@ -11380,9 +11439,9 @@ func lowerBinopMsil(
     case BOr -> {
       val trueL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
-      lowerExprMsil(cctx, fctx, insns, lhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, lhs)
       insns.add(MBrTrue(label = trueL))
-      lowerExprMsil(cctx, fctx, insns, rhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, rhs)
       insns.add(MBrTrue(label = trueL))
       insns.add(MLdcI4(v = 0))
       insns.add(MBr(label = afterL))
@@ -11927,19 +11986,25 @@ func lowerBinopMsil(
       }
     }
     case BXor -> {
-      val bxorLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      // `xor` is Boolean-only (T0034): unbox either operand left boxed, like
+      // every other Boolean consumer (`lowerBoolOperandMsil`).
+      val bxorRawLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      if bxorRawLhsTy == MObject {
+        materializeBoxedElemMsil(cctx, insns, MBool)
+      }
+      val bxorLhsTy = if bxorRawLhsTy == MObject { MBool } else { bxorRawLhsTy }
       // xor is commutative: just reload spill after rhs.
       val bxorSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
         phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bxorLhsTy)
       } else {
         -1
       }
-      lowerExprMsil(cctx, fctx, insns, rhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, rhs)
       if bxorSpillIdx >= 0 {
         insns.add(MLdloc(slot = bxorSpillIdx))
       }
       insns.add(MXor)
-      MInt
+      MBool
     }
     case BCoalesce -> {
       // Null-coalescing: if lhs is non-null use it, else use rhs.  A nullable lhs
@@ -11977,9 +12042,9 @@ func lowerBinopMsil(
       // p => q  ≡  !p || q
       val trueL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
-      lowerExprMsil(cctx, fctx, insns, lhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, lhs)
       insns.add(MBrFalse(label = trueL))  // if lhs false, result is true
-      lowerExprMsil(cctx, fctx, insns, rhs)
+      lowerBoolOperandMsil(cctx, fctx, insns, rhs)
       insns.add(MBr(label = afterL))
       insns.add(MLabel(id = trueL))
       insns.add(MLdcI4(v = 1))
@@ -12039,6 +12104,21 @@ func lowerBranchWithSiblingHintMsil(
   }
 }
 
+// Lowers `e`, which the type checker has typed `Bool`, as a Boolean operand
+// (a condition, a match guard, an operand of `and`/`or`/`implies`/`not`).
+// Some producers leave the value boxed as `object` — a call through a
+// function value whose return type was not tracked at this site, for
+// example — and branching on a boxed `false` tests the reference for null,
+// so it would count as true.  Such a value is unboxed here, at the one place
+// every Boolean consumer goes through, rather than at each producer
+// (D-progress-980).
+func lowerBoolOperandMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], e: in Expr): Unit {
+  val ty = lowerExprMsil(cctx, fctx, insns, e)
+  if ty == MObject {
+    materializeBoxedElemMsil(cctx, insns, MBool)
+  }
+}
+
 func lowerIfExprMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -12050,7 +12130,7 @@ func lowerIfExprMsil(
   val elseL = freshLabelMsil(fctx)
   val afterL = freshLabelMsil(fctx)
 
-  lowerExprMsil(cctx, fctx, insns, cond)
+  lowerBoolOperandMsil(cctx, fctx, insns, cond)
   insns.add(MBrFalse(label = elseL))
 
   match elseBranchOpt {
@@ -13105,7 +13185,7 @@ func lowerMatchExprMsil(
     lowerPatternBindMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy)
     match arm.guard {
       case Some(g) -> {
-        lowerExprMsil(cctx, fctx, armInsns, g)
+        lowerBoolOperandMsil(cctx, fctx, armInsns, g)
         armInsns.add(MBrFalse(label = nextArmL))
       }
       case None -> {
@@ -16747,6 +16827,19 @@ func lowerBuiltinOrStaticCallMsil(
                               }
                               case None -> ()
                             }
+                            var ifr = 0
+                            while ifr < inner.count {
+                              match mapGet(cctx.funcParamFnInnerFnRets, fnInnerKey + "#" + toString(ifr)) {
+                                case Some(innerRet) -> {
+                                  val lpKey = qualifiedPredName + "#" + toString(ifr)
+                                  if not cctx.lambdaParamFnRetTypes.containsKey(lpKey) {
+                                    cctx.lambdaParamFnRetTypes.add(lpKey, innerRet)
+                                  }
+                                }
+                                case None -> ()
+                              }
+                              ifr = ifr + 1
+                            }
                             // FFI delegate-bridging trigger (Epic #1877/#3923 FFI-boundary
                             // slice): only when this parameter belongs to an `@externTarget`
                             // function does the lambda need a real closed System.Func/Action
@@ -19763,6 +19856,18 @@ func registerLocalLambdaLiteralFnTypesMsil(
                     var pi = 0
                     while pi < paramTes.count {
                       inner.add(typeExprToMsilBodyCtx(cctx, fctx, paramTes[pi]))
+                      match resolveFuncTypeExprMsil(cctx, paramTes[pi]) {
+                        case Some(pfTe) -> match pfTe.kind {
+                          case TFunction(_, pRetTe) -> {
+                            val lpKey = predName + "#" + toString(pi)
+                            if not cctx.lambdaParamFnRetTypes.containsKey(lpKey) {
+                              cctx.lambdaParamFnRetTypes.add(lpKey, typeExprToMsilBodyCtx(cctx, fctx, pRetTe))
+                            }
+                          }
+                          case _ -> ()
+                        }
+                        case None -> ()
+                      }
                       pi = pi + 1
                     }
                     cctx.lambdaParamTypes.add(predName, inner)
@@ -20248,7 +20353,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       val loopL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
       insns.add(MLabel(id = loopL))
-      lowerExprMsil(cctx, fctx, insns, cond)
+      lowerBoolOperandMsil(cctx, fctx, insns, cond)
       insns.add(MBrFalse(label = afterL))
       fctx.loopBreak.add(afterL)
       fctx.loopCont.add(loopL)
@@ -28607,6 +28712,14 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
         }
       }
       case None -> {
+        // An un-annotated function-typed lambda parameter: its return type
+        // was recorded where the lambda's parameter types were propagated.
+        if isLambdaFn {
+          match mapGet(cctx.lambdaParamFnRetTypes, qualifiedLambdaName + "#" + toString(pi)) {
+            case Some(prt) -> fctx.funcValRetTypes.add(p.name, prt)
+            case None -> ()
+          }
+        }
       }
     }
     fctx.slotTicker.add(0)

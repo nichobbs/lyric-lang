@@ -16,6 +16,12 @@
 //! closes the gap that #5935 had no dedicated regression test pinning the
 //! direct-call-in-condition shape on both `if` and `while`.
 //!
+//! Cases 5 and 6 cover a separate MSIL bug (D-progress-980): an
+//! UN-annotated lambda parameter whose function type comes from the
+//! lambda's expected type was never given its own return type, so calling
+//! it left a boxed `object` that `if` tested for non-null.  That one needed
+//! a codegen change (`lambdaParamFnRetTypes` in `lyric-compiler/msil/codegen.l`).
+//!
 //! Run by the native `lyric test` on BOTH targets (like `bitwise_self_test.l`
 //! / `block_shadow_self_test.l`):
 //!   lyric test --target dotnet lyric-compiler/lyric/lambda_bool_if_cond_self_test.l
@@ -95,4 +101,80 @@ test "call through a function-typed param used directly as a while condition" {
 test "call through a function-typed param bound to an explicit Bool local first" {
   assertEqual(explicitLocalIfCond({ n: Int -> isEven(n) }, 4), "yes", "explicit-local true")
   assertEqual(explicitLocalIfCond({ n: Int -> isEven(n) }, 5), "no", "explicit-local false")
+}
+
+// 5. An UN-annotated lambda parameter whose function type comes from the
+// lambda's expected type (a `val` annotation, or the parameter it is passed
+// to).  MSIL typed the parameter from the erased delegate shape only, so
+// `p()` stayed a boxed `object` and `if` tested it for non-null: a boxed
+// `false` counted as true (D-progress-980).
+func applyGuard(g: in (() -> Bool) -> String, answer: in Bool): String {
+  g({ -> answer })
+}
+
+test "un-annotated function-typed lambda param used as an if condition" {
+  val guard: (() -> Bool) -> String = { p -> if p() then "yes" else "no" }
+  assertEqual(guard({ -> false }), "no", "local-annotated false")
+  assertEqual(guard({ -> true }), "yes", "local-annotated true")
+  val both: (() -> Bool) -> String = { p -> if not p() and true then "not" else "is" }
+  assertEqual(both({ -> false }), "not", "negated in a conjunction")
+  assertEqual(applyGuard({ p -> if p() then "yes" else "no" }, false), "no", "passed to a HOF, false")
+  assertEqual(applyGuard({ p -> if p() then "yes" else "no" }, true), "yes", "passed to a HOF, true")
+}
+
+// 6. The same, passed to a GENERIC higher-order function: the callback's own
+// `() -> Bool` parameter does not mention the function's type parameter, so
+// its return type is recorded too (#7392).
+func applyGuardG[T](x: in T, g: in (() -> Bool) -> String, answer: in Bool): String {
+  g({ -> answer })
+}
+
+test "un-annotated function-typed lambda param of a generic HOF used as an if condition" {
+  assertEqual(applyGuardG(1, { p -> if p() then "yes" else "no" }, false), "no", "generic HOF, false")
+  assertEqual(applyGuardG("s", { p -> if p() then "yes" else "no" }, true), "yes", "generic HOF, true")
+}
+
+// 7. A boxed Bool reaches every Boolean consumer, not only `if`: the return
+// type of `() -> T` is not recorded when it mentions the generic function's
+// own `T`, so with `T = Bool` the call stays boxed.  MSIL now unboxes at the
+// consumer (`lowerBoolOperandMsil`): `if`, `while`, `and`, `or`, `not` and
+// match guards (#7408).
+func viaGeneric[T](seed: in T, g: in (() -> T) -> String, v: in T): String {
+  g({ -> v })
+}
+
+test "a generic callback returning Bool is unboxed wherever it is used as a condition" {
+  assertEqual(viaGeneric(true, { p -> if p() then "yes" else "no" }, false), "no", "if, false")
+  assertEqual(viaGeneric(true, { p -> if p() then "yes" else "no" }, true), "yes", "if, true")
+  assertEqual(viaGeneric(true, { p -> if not p() then "not" else "is" }, false), "not", "not")
+  assertEqual(viaGeneric(true, { p -> if p() and true then "both" else "one" }, false), "one", "and")
+  assertEqual(viaGeneric(true, { p -> if false or p() then "some" else "none" }, false), "none", "or")
+  assertEqual(
+    viaGeneric(true, { p ->
+      var n = 0
+      while p() and n < 3 {
+        n = n + 1
+      }
+      n.toString()
+    }, false),
+    "0",
+    "while"
+  )
+  assertEqual(
+    viaGeneric(true, { p -> match 1 { case 1 if p() -> "guarded"; case _ -> "fallthrough" } }, false),
+    "fallthrough",
+    "match guard"
+  )
+}
+
+// 8. The same boxed Bool as an operand of a VALUE-producing logical
+// operator (bound to a local, not branched on): `xor` on both targets, and
+// `and`/`or`/`implies` on JVM, lowered their operands without unboxing
+// (#7415).
+test "a generic callback returning Bool is unboxed as an operand of xor, and, or and implies" {
+  assertEqual(viaGeneric(true, { p -> toString(p() xor true) }, false), "true", "xor, false operand")
+  assertEqual(viaGeneric(true, { p -> toString(p() xor true) }, true), "false", "xor, true operand")
+  assertEqual(viaGeneric(true, { p -> toString(p() and true) }, false), "false", "and value")
+  assertEqual(viaGeneric(true, { p -> toString(false or p()) }, false), "false", "or value")
+  assertEqual(viaGeneric(true, { p -> toString(true or p()) }, false), "true", "or value, short-circuit")
 }

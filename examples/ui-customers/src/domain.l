@@ -14,7 +14,7 @@ package Customers.Domain
 import Std.Core
 import Std.String
 import Forms
-import Forms.{FieldError, FormSchema, FieldSpec, InputKind, CrossField, Choice}
+import Forms.{FieldError, FieldPath, FormSchema, FieldSpec, InputKind, CrossField, Choice, fieldPath}
 import Forms.Parse
 
 pub type CustomerId = Long range 1 ..= 9_999_999
@@ -87,7 +87,8 @@ pub enum CustomerField {
   case Notes
 }
 
-/// The schema name of a field (the `FieldError` field key).
+/// The schema name of a field; `fieldPath(customerFieldName(f))` is the
+/// path its `FieldError`s carry.
 pub func customerFieldName(f: in CustomerField): String {
   return match f {
     case Name -> "name"
@@ -200,11 +201,15 @@ pub func setCustomerField(d: in CustomerDraft, f: in CustomerField, v: in String
 /// The customer described by `d`, or every problem with it.
 pub func validateCustomer(d: in CustomerDraft, id: in CustomerId): Result[Customer, List[FieldError]] {
   val errs: List[FieldError] = newList()
-  val name = Parse.collect(errs, withinLength("name", Parse.requiredText("name", d.name), 100), "")
-  val email = Parse.collect(errs, Parse.email("email", d.email), "")
-  val limit = Parse.collect(errs, Parse.longInRange("creditLimit", d.creditLimit, 0, 1_000_000), 0)
-  val tierText = Parse.collect(errs, Parse.oneOf("tier", d.tier, tierNames()), "standard")
-  val notesText = Parse.collect(errs, withinLength("notes", Ok(value = d.notes), 2000), "")
+  val name = Parse.collect(
+    errs,
+    withinLength(fieldPath("name"), Parse.requiredText(fieldPath("name"), d.name), 100),
+    ""
+  )
+  val email = Parse.collect(errs, Parse.email(fieldPath("email"), d.email), "")
+  val limit = Parse.collect(errs, Parse.longInRange(fieldPath("creditLimit"), d.creditLimit, 0, 1_000_000), 0)
+  val tierText = Parse.collect(errs, Parse.oneOf(fieldPath("tier"), d.tier, tierNames()), "standard")
+  val notesText = Parse.collect(errs, withinLength(fieldPath("notes"), Ok(value = d.notes), 2000), "")
   if errs.count > 0 {
     return Err(error = errs)
   }
@@ -235,6 +240,6 @@ func tierNames(): List[String] {
   return acc
 }
 
-func withinLength(field: in String, r: in Result[String, FieldError], max: in Int): Result[String, FieldError] {
+func withinLength(field: in FieldPath, r: in Result[String, FieldError], max: in Int): Result[String, FieldError] {
   return match r { case Ok(s) -> Parse.withinLength(field, s, max); case Err(e) -> Err(error = e) }
 }

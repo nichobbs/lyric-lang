@@ -140,3 +140,107 @@ test "shell helpers" {
   assertTrue(contains(html, "<title>Cust &lt;omers&gt;</title>"), "escaped title")
   assertTrue(contains(html, "data-ws=\"ws://h:8081/_ui\""), "socket url")
 }
+
+test "detach then resume re-renders from the kept model" {
+  val rec = Recorder()
+  val outbox = RecordingOutbox(rec = rec)
+  val inst = Host.instance(program(), stay[Model, Effect](Model(status = "idle")), { _: Effect -> None })
+  inst.start(outbox)
+  inst.receive(msg("{\"t\":\"event\",\"v\":1,\"p\":[0,1],\"e\":\"click\"}"), outbox)
+  inst.detach({ -> true })
+  inst.resume(outbox)
+  val sent = rec.all()
+  val last = sent[sent.count - 1]
+  assertTrue(contains(last, "\"op\":\"replace\""), last)
+  assertTrue(contains(last, "saving"), "model kept: " + last)
+}
+
+test "detach is skipped when the session was resumed first" {
+  val rec = Recorder()
+  val outbox = RecordingOutbox(rec = rec)
+  val inst = Host.instance(program(), stay[Model, Effect](Model(status = "idle")), { _: Effect -> None })
+  inst.start(outbox)
+  inst.detach({ -> false })
+  // The tree is still there, so an event against it is handled.
+  inst.receive(msg("{\"t\":\"event\",\"v\":1,\"p\":[0,1],\"e\":\"click\"}"), outbox)
+  assertEqualInt(rec.all().count, 2, "render and the click's patch")
+}
+
+func dummy(): Instance {
+  return Host.instance(program(), stay[Model, Effect](Model(status = "idle")), { _: Effect -> None })
+}
+
+test "the session registry resumes within the grace period only" {
+  val reg = Host.SessionRegistry()
+  assertTrue(reg.admit("s1", dummy(), "c1", 1000, 500, 10), "room")
+  assertFalse(reg.isDetached("s1"), "attached")
+  match reg.release("c1", 1100) {
+    case Some(d) -> assertEqual(d.sessionId, "s1", "released session")
+    case None -> assertTrue(false, "expected a release")
+  }
+  assertTrue(reg.isDetached("s1"), "detached")
+  match reg.attach("s1", "c2", 1500, 500) {
+    case Host.ResumedSession(_) -> assertTrue(true, "resumed within grace")
+    case Host.Unknown -> assertTrue(false, "expected resume")
+  }
+  assertFalse(reg.isDetached("s1"), "attached again")
+  match reg.release("c2", 2000) {
+    case Some(_) -> assertTrue(true, "released")
+    case None -> assertTrue(false, "expected a release")
+  }
+  match reg.attach("s1", "c3", 2600, 500) {
+    case Host.ResumedSession(_) -> assertTrue(false, "expired")
+    case Host.Unknown -> assertTrue(true, "unknown after the grace period")
+  }
+  assertEqualInt(reg.liveCount(), 0, "expired session removed")
+}
+
+test "a close from a superseded connection does not detach the session" {
+  val reg = Host.SessionRegistry()
+  assertTrue(reg.admit("s1", dummy(), "old", 0, 10_000, 10), "admitted s1")
+  // The browser reconnects before the old socket's close arrives.
+  match reg.attach("s1", "new", 10, 500) {
+    case Host.ResumedSession(_) -> ()
+    case Host.Unknown -> assertTrue(false, "expected resume")
+  }
+  match reg.release("old", 20) {
+    case Some(_) -> assertTrue(false, "old connection no longer carries the session")
+    case None -> assertTrue(true, "ignored")
+  }
+  assertFalse(reg.isDetached("s1"), "still attached to the new connection")
+  match reg.sessionOf("new") {
+    case Some(id) -> assertEqual(id, "s1", "new connection carries it")
+    case None -> assertTrue(false, "expected a session")
+  }
+}
+
+test "the session registry evicts the longest-detached session when full" {
+  val reg = Host.SessionRegistry()
+  assertTrue(reg.admit("a", dummy(), "ca", 0, 10_000, 10), "admitted a")
+  assertTrue(reg.admit("b", dummy(), "cb", 0, 10_000, 10), "admitted b")
+  assertTrue(reg.admit("c", dummy(), "cc", 0, 10_000, 10), "admitted c")
+  match reg.release("cb", 100) {
+    case _ -> ()
+  }
+  match reg.release("ca", 200) {
+    case _ -> ()
+  }
+  assertTrue(reg.admit("d", dummy(), "cd", 300, 10_000, 3), "room made by eviction")
+  assertEqualInt(reg.liveCount(), 3, "one evicted, one added")
+  match reg.instanceOf("b") {
+    case Some(_) -> assertTrue(false, "b was detached longest")
+    case None -> assertTrue(true, "b evicted")
+  }
+  match reg.instanceOf("a") {
+    case Some(_) -> assertTrue(true, "a kept")
+    case None -> assertTrue(false, "a should be kept")
+  }
+}
+
+test "a full registry of connected sessions admits no more" {
+  val reg = Host.SessionRegistry()
+  assertTrue(reg.admit("a", dummy(), "ca", 0, 10_000, 10), "admitted a")
+  assertTrue(reg.admit("b", dummy(), "cb", 0, 10_000, 10), "admitted b")
+  assertFalse(reg.admit("c", dummy(), "cc", 10, 10_000, 2), "every session is connected")
+  assertEqualInt(reg.liveCount(), 2, "nothing evicted or added")
+}

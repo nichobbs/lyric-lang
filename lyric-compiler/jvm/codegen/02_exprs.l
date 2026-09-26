@@ -1186,9 +1186,9 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           val falseL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
           val resSlot = allocSlot(ctx, "__and_" + freshLabel(ctx), JBoolean)
-          lowerExpr(ctx, insns, lhs)
+          lowerBoolValue(ctx, insns, lhs)
           insns.add(LIfeq(label = falseL))
-          lowerExpr(ctx, insns, rhs)
+          lowerBoolValue(ctx, insns, rhs)
           insns.add(LIfeq(label = falseL))
           insns.add(LIconst(v = 1))
           insns.add(LIstore(slot = resSlot))
@@ -1204,9 +1204,9 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           val trueL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
           val resSlot = allocSlot(ctx, "__or_" + freshLabel(ctx), JBoolean)
-          lowerExpr(ctx, insns, lhs)
+          lowerBoolValue(ctx, insns, lhs)
           insns.add(LIfne(label = trueL))
-          lowerExpr(ctx, insns, rhs)
+          lowerBoolValue(ctx, insns, rhs)
           insns.add(LIfne(label = trueL))
           insns.add(LIconst(v = 0))
           insns.add(LIstore(slot = resSlot))
@@ -1595,10 +1595,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           }
         }
         case BXor -> {
-          lowerExpr(ctx, insns, lhs)
-          lowerExpr(ctx, insns, rhs)
+          lowerBoolValue(ctx, insns, lhs)
+          lowerBoolValue(ctx, insns, rhs)
           insns.add(LIxor)
-          JInt
+          JBoolean
         }
         case BCoalesce -> {
           // Null-coalescing via a result slot with an empty operand stack at every branch target — every StackMapTable frame here assumes that (#4816); `ifnull`/`ifnonnull` are unary tests so no dup'd value is ever left stranded across a branch the way `if_acmpne`/`if_acmpeq` would.
@@ -1633,9 +1633,9 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           // p => q == !p || q
           val trueL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
-          lowerExpr(ctx, insns, lhs)
+          lowerBoolValue(ctx, insns, lhs)
           insns.add(LIfeq(label = trueL))  // if lhs is false, result is true
-          lowerExpr(ctx, insns, rhs)
+          lowerBoolValue(ctx, insns, rhs)
           insns.add(LGoto(label = afterL))
           insns.add(LLabel(name = trueL))
           insns.add(LIconst(v = 1))
@@ -2764,6 +2764,16 @@ func lowerCmpFail(
 
 // Compile a boolean condition, branching to failLabel if it is false.
 // Leaves the operand stack unchanged (no net stack effect).
+// Lowers a `Bool`-typed operand of a value-producing logical operator
+// (`and`/`or`/`implies`/`xor`) and coerces it to a primitive `boolean`: it may
+// arrive as an erased `Object` (a call through a generic callback returning
+// `Bool`), which `ifeq`/`ixor` cannot consume (D-progress-980).  A no-op for
+// an operand that is already primitive.
+func lowerBoolValue(ctx: in FuncCtx, insns: in List[LInsn], e: in Expr): Unit {
+  val ty = lowerExpr(ctx, insns, e)
+  coerceArgTo(insns, ty, JBoolean)
+}
+
 func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLabel: in String): Unit {
   match cond.kind {
     case EBinop(op, lhs, rhs) -> {

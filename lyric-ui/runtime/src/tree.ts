@@ -104,15 +104,26 @@ export function nodeAt(root: MNode, path: number[]): MNode {
   return n;
 }
 
-/** The path of `node` from the root. */
-export function pathOf(node: MNode): number[] {
-  const path: number[] = [];
+/**
+ * The event path of `node` below `root`: each step is the node's key when it
+ * has one and its child index otherwise. The session resolves keys among
+ * siblings, so an event still reaches (or is dropped for) the node it was
+ * aimed at when the tree changed in between (D138, Q-UI-005). `null` when
+ * `node` is no longer in the tree (a patch removed or replaced it after the
+ * event was raised); the event then has no target and is not sent.
+ */
+export function eventPathOf(root: MNode, node: MNode): (number | string)[] | null {
+  const path: (number | string)[] = [];
   let n = node;
   while (n.parent) {
-    path.push(n.parent.children.indexOf(n));
+    const index = n.parent.children.indexOf(n);
+    if (index < 0) {
+      return null;
+    }
+    path.push(n.key !== "" ? n.key : index);
     n = n.parent;
   }
-  return path.reverse();
+  return n === root ? path.reverse() : null;
 }
 
 export class Tree {
@@ -134,6 +145,7 @@ export class Tree {
           this.root = node;
         }
         obs?.replaced(old, node);
+        old.parent = null;
         return;
       }
       case "insert": {
@@ -149,6 +161,7 @@ export class Tree {
         checkIndex(patch.i, parent.children.length);
         const [node] = parent.children.splice(patch.i, 1);
         obs?.removed(parent, patch.i, node);
+        node.parent = null;
         return;
       }
       case "move": {

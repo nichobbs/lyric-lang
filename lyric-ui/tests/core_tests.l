@@ -85,7 +85,7 @@ func draftValue(name: in String): String {
 
 test "Ui.Forms renders a schema with values, bounds and errors" {
   val errs: List[FieldError] = newList()
-  errs.add(Forms.OutOfRange(field = "limit", min = 0, max = 100))
+  errs.add(Forms.OutOfRange(field = Forms.fieldPath("limit"), min = 0, max = 100))
   val onEdit: (String, String) -> Parent = { f: String, v: String -> Edited(field = f, value = v) }
   val valueOf: (String) -> String = draftValue
   val fields: List[View[Parent]] = formFields(schema(), valueOf, errs, onEdit)

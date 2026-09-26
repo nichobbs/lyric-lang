@@ -3,8 +3,9 @@
 **Status:** Specced in D137. Phases U1 (pure core, `lyric-forms`, example)
 and U2 (server-driven web host and TypeScript runtime) are implemented; see
 §14 for the phase plan and §15 for what the first implementation surfaced
-and how each finding was resolved. Open questions Q-UI-001 to Q-UI-011 are
-in §16.
+and how each finding was resolved. The open questions Q-UI-001 to Q-UI-011
+are resolved (§16): Q-UI-011 by the compiler fixes of §15, the others by
+D138.
 
 **Builds on:** `docs/35-js-wasm-component-sketch.md` (WASM target, future
 client host), `docs/40-source-generators.md` (D075, the `@generate` API the
@@ -117,7 +118,9 @@ pub func update(m: in Model, msg: in Msg): Step[Model, Effect]
 ```
 
 `Step[M, E]` is a record `{ model: M, effects: List[E] }` with helpers
-`Ui.Step.none(m)` and `Ui.Step.with(m, effects)`.
+`stay(m)` (no effects), `step1(m, e)` and `stepAll(m, effects)`. It stays a
+record rather than a tuple (D138, Q-UI-001): named fields read better in
+tests and it can gain a field without breaking callers.
 
 Why effects are data: an `Effect` value can be compared, logged, recorded
 and replayed. A test asserts on exactly what the screen asked for. A
@@ -230,11 +233,22 @@ pure layers, and a call to that function from a pure layer is the error.
 | `Y0005` | `@layer` annotation disagrees with the manifest. |
 | `Y0006` | Unknown layer name or preset. |
 
-### 5.5 Known gaps
+### 5.5 Mutable state in pure layers
 
 Module-level mutable state and `protected type` instances reachable from a
-pure layer would break determinism. Both should be rejected in `pure`,
-`logic` and `view` layers by the same check (Q-UI-003).
+pure layer would break determinism. D138 (Q-UI-003) rejects them with two
+package-level rules rather than effect inference:
+
+- A `@pure` package may not declare a module-level `var`, a module-level
+  `val` of a mutable type (`List`, `Map`, a protected type), or create a
+  protected-type instance at module level (`Y0007`).
+- Code in `pure`, `logic` and `view` layers may not call a protected-type
+  `entry` (`Y0008`).
+
+Restricted layers import only pure or layered packages, so both rules are
+transitive by construction. In-place mutation of a list inside the model
+passed to `update` is aliasing rather than hidden state; a lint for it is
+future work.
 
 ---
 
@@ -299,8 +313,8 @@ the host, and they are used as `datePicker(value, onChange)`.
 
 ```lyric
 case CancelClicked ->
-  if m.dirty then Step.with(m, [Ui(Confirm("Discard changes?", DiscardConfirmed))])
-  else Step.with(m, [Ui(Navigate("/customers"))])
+  if m.dirty then step1(m, Ui(Confirm("Discard changes?", DiscardConfirmed)))
+  else step1(m, Ui(Navigate("/customers")))
 ```
 
 `UiEffect[Msg]` (in `Ui.Core`) carries `Navigate`, `Back`, `Confirm`,
@@ -310,7 +324,11 @@ message. Logic tests assert on the `Confirm` value directly.
 ### 6.4 Shared state and cross-screen events
 
 - `Ctx` (current user, permissions, locale, feature flags) is passed into
-  `init`, `update` and `view`. Screens never copy it into their model.
+  `init`, `update` and `view`. Screens never copy it into their model. Its
+  shape is `Ctx[A] = { ui: UiCtx, app: A }` (D138, Q-UI-002): the library
+  owns `UiCtx` (locale, time zone, display density), which its widgets read
+  to format values, and the application supplies `A` (user, permissions,
+  tenant), so `Screen` gains one type parameter.
 - Changes to `Ctx` go through effects handled by a pure session reducer.
 - Cross-screen events use typed topics: saving emits
   `Publish(CustomerChanged(id))`; the list screen subscribes with
@@ -359,12 +377,15 @@ pub union Handler[Msg] {
 }
 ```
 
-Handlers never cross the wire. The session keeps a handler table keyed by
-**stable node path plus event name**; the host sends `(path, event,
-payload)` and the session resolves it against the current tree. Because the
-key is the path rather than a render counter, an event sent against a
-slightly stale render still reaches the right handler; if the node is gone,
-the event is dropped and logged.
+Handlers never cross the wire. The host sends `(path, event, payload)` and
+the session resolves the path against its current tree. The path names each
+node on the way down by its **key** when it has one and by its child index
+otherwise (D138, Q-UI-005); a key resolves only when exactly one sibling
+carries it. So an event sent against a slightly stale render still reaches
+the node it was aimed at, even if that row has moved, and an event for a row
+that has gone is dropped and logged rather than delivered to whichever row
+took its place. Unkeyed dynamic lists still resolve by position, which is
+why they should key their items (§9.1).
 
 `Ui.map(view, f)` rewrites every handler of a child view to wrap its message
 with `f`, which is how embedded components (§6.2) compose.
@@ -372,9 +393,11 @@ with `f`, which is how embedded components (§6.2) compose.
 ### 7.3 `Raw`
 
 `Raw` carries a `SafeHtml` value (constructed only through an escaping
-builder). The desktop webview and server web hosts render it; a future
-non-HTML host renders an error placeholder and the compiler warns when an
-application that declares such a host uses `Raw` (Q-UI-006).
+builder). The desktop webview and server web hosts render it. Its builder is
+declared under `@cfg(feature = "html")` in `lyric-ui`, on by default; a build
+for a host that cannot render HTML disables the feature, so `raw` is not
+available there (D138, Q-UI-006). `@cfg` is to name the missing feature in
+that error for any erased item, rather than reporting an unknown name.
 
 ---
 
@@ -392,9 +415,13 @@ One sequential loop per session:
 structured-concurrency `scope`, so closing the session cancels outstanding
 effects.
 
-The loop is split into a **pure core** (`Ui.Session.step`: state + msg ->
-state + patches + effects) and a thin **driver** that owns the queue and the
-transport. The pure core is what hosts and tests share.
+The loop is split into a **pure core** (`Ui.Session`: `start`, `dispatch`,
+`handleEvent`, `detach`, `resume`, each state in, state + patches + effects
+out) and a thin **driver** (`Ui.Host.instance`) that owns the transport and
+runs effects. The pure core is what hosts and tests share. Every driver
+operation on one session holds that session's lock, because hosts may run
+each connection on its own thread and a reconnect can arrive while an
+effect of the old connection is still running (D138, Q-UI-007).
 
 ---
 
@@ -433,10 +460,14 @@ JSON in v1 (`Ui.Protocol`), one message per WebSocket frame:
 
 ```json
 {"t":"patch","v":12,"ops":[{"op":"setText","p":[0,1],"v":"Saving..."}]}
-{"t":"event","v":12,"p":[0,3,1],"e":"input","d":"Acme Pty","iv":7}
+{"t":"event","v":12,"p":[0,"cust-42",1],"e":"input","d":"Acme Pty","iv":7}
+{"t":"session","id":"9f2c..."}
+{"t":"hello","pv":2,"url":"/customers/7","sid":"9f2c..."}
 ```
 
-`v` is the render version. A compact binary encoding over `lyric-proto` is
+`v` is the render version. Patch paths are child indices; event paths use a
+node's key (a string) where it has one and its index (a number) otherwise
+(§7.2). The protocol version is 2. A compact binary encoding over `lyric-proto` is
 future work (§13.8).
 
 ### 9.4 Controlled inputs
@@ -444,16 +475,26 @@ future work (§13.8).
 The user types "abc"; the server's echo for "ab" arrives afterwards; a naive
 host would reset the field and jump the caret. Each input carries an
 **input version** (`iv`) that the host increments per local edit and sends
-with each event. The session records the last `iv` it processed per input
-path and includes it with any `value` prop it sends. The host ignores a
+with each event. The session records the last `iv` it processed per input,
+identified by the input's event path (so the record follows a moved row),
+drops the records of inputs that no longer exist after each render, and
+includes the `iv` with any `value` prop it sends. The host ignores a
 server `value` whose `iv` is older than its latest local edit. Application
 code never sees this.
 
 ### 9.5 Reconnect
 
-If the session is still alive, the host requests a full render (`{"t":"sync"}`)
-and the session replies with a `Replace` of the root. If the session has
-expired, the screen re-runs `init` for the current route.
+D138 (Q-UI-007). The session sends its id when it starts
+(`{"t":"session","id":...}`, 128 bits from `Std.SecureRandom`); the host
+keeps it in memory for the page's lifetime. When the connection drops, the
+session is **detached**: its tree and input versions are dropped (the tree
+is derivable from the model because `view` is pure) and the model kept.
+When the host reconnects it quotes the id in `hello`; within the host's
+grace period the session re-renders from its model and sends a `Replace` of
+the root under a new render version. After the grace period the id is unknown and the screen
+re-runs `init` for the current route. A host that loses track of the tree
+while connected (a patch that fails to apply) sends `{"t":"sync"}` and gets
+a `Replace` of the root.
 
 ---
 
@@ -462,12 +503,18 @@ expired, the screen re-runs `init` for the current route.
 ### 10.1 Server-driven web (first host)
 
 `Ui.Host.Web` mounts on `lyric-web`: it serves the HTML shell and the
-runtime script, and accepts the WebSocket on `/_ui/ws` through `lyric-ws`.
-One session per socket.
+runtime script, and accepts the WebSocket on `wsPath` (default `/_ui`) of
+`wsPort` through `lyric-ws`. One session per page load; a session outlives
+its socket for `HostConfig.reconnectGraceMs` (default two minutes, §9.5).
 
-Costs: each session holds its model and last `View` tree on the server;
-line-of-business loads (hundreds of concurrent users) are fine, thousands
-need eviction of tree snapshots with re-render on reconnect (Q-UI-007).
+Costs: a connected session holds its model and last `View` tree on the
+server; a disconnected one holds only its model. `HostConfig.maxSessions`
+(default 10000) bounds the sessions held: when a new session would exceed
+it, expired and then the longest-disconnected sessions are evicted, and if
+every session is connected the new browser gets a "server busy" page (D138,
+Q-UI-007). Expired sessions are removed whenever a session is created or
+resumed. A per-session byte cap is not offered: it cannot be measured
+without serialising the model.
 Typing is debounced by the host (`input` events coalesce per frame).
 
 ### 10.2 Desktop webview (second host)
@@ -475,7 +522,10 @@ Typing is debounced by the host (`input` events coalesce per frame).
 The same protocol over an in-process channel to a system webview (WebView2,
 WKWebView, WebKitGTK) through the C `webview` library. The native backend's
 FFI and callback trampolines (N4) cover the binding; MSIL uses the same C
-library. JVM desktop is a dated gap (Q-UI-008).
+library. The JVM desktop host binds the same C library, through the Java
+foreign function API (JDK 22+) or JNI while the JVM baseline is JDK 21;
+JavaFX `WebView` was rejected as a separate dependency with a lagging engine
+(D138, Q-UI-008). `lyric-ui` itself does not yet build on JVM (#7378).
 
 ### 10.3 The TypeScript runtime
 
@@ -487,8 +537,14 @@ component in the UI stack, under these constraints:
   set of semantic widgets, coalesces input events and implements input
   versioning.
 - Target size: a few thousand lines, no third-party runtime dependencies.
-- Checked in as source with the compiled `ui-runtime.js` produced by a
-  pinned `tsc`; CI verifies the compiled file matches the source.
+- Checked in as source; the compiled modules produced by a pinned `tsc` are
+  embedded in `Ui.Host.Assets`, and CI verifies the embedded copy matches
+  the source.
+- The widget schema it depends on (kinds, prop names and allowed values,
+  event names) is to be generated from `Ui.Core`/`Ui.Widgets` into
+  `runtime/src/schema.ts` and imported by the hand-written renderer, so
+  protocol drift fails `tsc`; CI checks the generated file is current. The
+  renderer itself stays hand-written (D138, Q-UI-010).
 
 When the client WASM host exists (§13.1) the same widget renderer is reused
 and the patch applier becomes a direct call from Lyric.
@@ -552,7 +608,7 @@ single `FieldEdited(field, value)` case.
 | `Instant`, date | `String` | `DateInput` | ISO-8601 parse |
 | opaque `T` | `String` | `TextInput` | `T.parse(s): Result[T, String]` or `@form_parse(fn)` |
 | nested derived record | nested draft | `Section` | recursive, dotted field paths |
-| `List[T]` | `List[TDraft]` | repeater | future (Q-UI-009) |
+| `List[T]` | `DraftRows[TDraft]` | repeater | rows keyed by stable row id (§11.7); derivation with Q-UI-004 |
 
 ### 11.4 Invariants become messages
 
@@ -560,8 +616,15 @@ The generator copies each `invariant:` expression into `validate` as a
 boolean check evaluated **before** construction, mapping a failure to
 `FieldError.CrossField(message)`. Construction then cannot fail at runtime.
 In `@proof_required` domains, `validate` returning `Ok` implies the invariant
-holds, which the verifier can discharge. This requires the generator API to
-expose invariant expressions to generators (Q-UI-004).
+holds, which the verifier can discharge. The `@generate` request does not
+yet carry invariants or annotations (it sends `"annotations":[]`); D138
+(Q-UI-004) specifies request schema version 2: type and field annotations
+(name plus raw argument text), type parameters, and each invariant as source
+text with its span and optional `@message`. Source text rather than
+structured AST keeps the generator SDK independent of the compiler's AST;
+the copied expression resolves because `validate` binds each parsed field
+to a local of the same name. Version 1 generators keep receiving the
+version 1 shape.
 
 ### 11.5 Client-side and asynchronous validation
 
@@ -575,6 +638,21 @@ Phase U1 ships `lyric-forms` as a hand-usable library: the example writes
 the draft, field enum, schema and `validate` by hand using `Forms.Parse`
 helpers. That code is exactly what the generator will emit, so it also
 serves as the generator's golden output (§14).
+
+### 11.7 Field paths and list rows
+
+A `FieldError` names its field by a `FieldPath`, a list of segments
+`Named(name)` and `Item(id)` (D138, Q-UI-009): `fieldPath("email")`, or
+`child(item(fieldPath("lines"), 3), "qty")`, rendered `lines[#3].qty`.
+The rows of a list-valued field are a `DraftRows[D]`: each row carries an id
+from a counter held in the draft (so allocating one keeps `update`
+deterministic), never reused within the list. Errors, widget keys and edits
+all address a row by its id, so they stay on the right row when rows are
+added, removed or reordered; index paths (`lines.2.qty`) would not.
+`addRow`, `removeRow`, `updateRow` and `moveRow` return new row lists, and
+`validateRows` validates every row, reporting each row's errors under its
+own path. `Ui.Forms.formFieldsAt(schema, base, ...)` renders one row's form
+with its errors looked up under `base`.
 
 ---
 
@@ -779,25 +857,30 @@ concurrently.
 
 ## 16. Open questions
 
-- **Q-UI-001** Should `Step` be a record or a tuple? Tuples read better in
-  `update`, records are clearer in tests and extend without breaking callers.
-- **Q-UI-002** Should `Ctx` be a generic parameter of `Screen` (application
-  defined) or a fixed library record with an extension slot?
-- **Q-UI-003** How is module-level mutable state and `protected type` access
-  detected in pure layers (§5.5)?
-- **Q-UI-004** Does the D075 generator API expose `invariant:` expressions
-  and field annotations to generators, or does it need extending?
-- **Q-UI-005** Should the handler table key include the widget key when
-  present (more robust to reordering) rather than the path alone?
-- **Q-UI-006** How does an application declare its hosts, so that `Raw`
-  use can be diagnosed at compile time?
-- **Q-UI-007** Session memory policy for the server host: cap, eviction of
-  tree snapshots, or both?
-- **Q-UI-008** JVM desktop host: JavaFX `WebView`, or a JNI binding of the
-  same C `webview` library?
-- **Q-UI-009** Representation of `List[T]` fields in drafts and error paths.
-- **Q-UI-010** Should the TS runtime be generated from a Lyric description
-  of the widget set (single source of truth for props), or hand-written?
+All resolved. Q-UI-011 by the compiler fixes of §15; Q-UI-001 to Q-UI-010 by
+D138 (`docs/decisions/D138-ui-open-questions.md`), whose entries replace the
+questions below. Q-UI-001, -005, -007 and -009 are implemented; the others
+are designs recorded for the phase that needs them.
+
+- **Q-UI-001** *Resolved (implemented):* `Step` stays a record (§4.1).
+- **Q-UI-002** *Resolved (design):* `Ctx[A] = { ui: UiCtx, app: A }` (§6.4).
+- **Q-UI-003** *Resolved (design, U3):* package-level purity rules
+  `Y0007`/`Y0008` in the `[layers]` feature (§5.5).
+- **Q-UI-004** *Resolved (design, U4):* `@generate` request schema version 2
+  with annotations, type parameters and invariants as source text (§11.4).
+- **Q-UI-005** *Resolved (implemented):* event paths name keyed nodes by key;
+  ambiguous or unknown keys drop the event (§7.2, §9.3).
+- **Q-UI-006** *Resolved (design):* `raw` is gated by `@cfg(feature =
+  "html")` (§7.3).
+- **Q-UI-007** *Resolved (implemented):* session ids, detach on disconnect,
+  resume within `reconnectGraceMs`, `maxSessions` with eviction of detached
+  sessions, input-version pruning, per-session lock (§8, §9.5, §10.1).
+- **Q-UI-008** *Resolved (design, U5):* the JVM desktop host binds the C
+  `webview` library, not JavaFX (§10.2).
+- **Q-UI-009** *Resolved (implemented):* `FieldPath` and `DraftRows` with
+  stable row ids (§11.7).
+- **Q-UI-010** *Resolved (design):* generate the runtime's widget schema,
+  not the renderer (§10.3).
 - **Q-UI-011** *Resolved:* the cross-package generics gaps (§15 F-2 to F-7)
   were fixed in the compiler (#7215, #7250) and `lyric-ui` keeps its typed
   `View[Msg]` API.

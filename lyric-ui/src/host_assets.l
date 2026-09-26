@@ -8,7 +8,7 @@
 package Ui.Host.Assets
 
 /// Content digest of the embedded assets, used as a cache-busting version.
-pub val assetVersion: String = "f70439aea6aed109"
+pub val assetVersion: String = "402b9182b737cb47"
 
 /// dist/main.js
 pub val runtimeMainJs: String = r#####"// Lyric UI host runtime: connection to the session (docs/65 §9.3, §10.1).
@@ -18,15 +18,20 @@ pub val runtimeMainJs: String = r#####"// Lyric UI host runtime: connection to t
 //   <script type="module" src="/_ui/runtime/main.js"></script>
 // This module connects, says hello with the current URL, applies patch
 // messages to the mirror tree (which drives the DOM), and reports events.
-import { Tree, pathOf } from "./tree.js";
+// The server names the session once it starts; after a dropped connection
+// the host quotes that id in its next hello and the server resumes the same
+// session (D138, Q-UI-007). The id lives only in memory, so reloading the
+// page starts a fresh session.
+import { Tree, eventPathOf } from "./tree.js";
 import { DomRenderer } from "./render.js";
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export class Host {
     mount;
     url;
     tree;
     socket = null;
     version = 0;
+    sessionId = "";
     retryMs = 500;
     pendingInputs = new Map();
     flushScheduled = false;
@@ -41,7 +46,11 @@ export class Host {
         ws.addEventListener("open", () => {
             this.retryMs = 500;
             this.mount.removeAttribute("aria-busy");
-            this.send({ t: "hello", pv: PROTOCOL_VERSION, url: location.pathname + location.search });
+            const hello = { t: "hello", pv: PROTOCOL_VERSION, url: location.pathname + location.search };
+            if (this.sessionId !== "") {
+                hello.sid = this.sessionId;
+            }
+            this.send(hello);
         });
         ws.addEventListener("message", (ev) => this.onMessage(String(ev.data)));
         ws.addEventListener("close", () => {
@@ -61,6 +70,9 @@ export class Host {
             return;
         }
         switch (msg.t) {
+            case "session":
+                this.sessionId = msg.id;
+                return;
             case "patch":
                 try {
                     for (const op of msg.ops) {
@@ -109,7 +121,13 @@ export class Host {
         }
     }
     sendEvent(node, event, data, iv) {
-        const msg = { t: "event", v: this.version, p: pathOf(node), e: event, d: data };
+        const path = eventPathOf(this.tree.root, node);
+        if (path === null) {
+            // A patch removed the node between the interaction and this send (an
+            // input coalesced until the next frame); there is nothing to address.
+            return;
+        }
+        const msg = { t: "event", v: this.version, p: path, e: event, d: data };
         if (iv > 0) {
             msg.iv = iv;
         }
@@ -192,15 +210,26 @@ export function nodeAt(root, path) {
     }
     return n;
 }
-/** The path of `node` from the root. */
-export function pathOf(node) {
+/**
+ * The event path of `node` below `root`: each step is the node's key when it
+ * has one and its child index otherwise. The session resolves keys among
+ * siblings, so an event still reaches (or is dropped for) the node it was
+ * aimed at when the tree changed in between (D138, Q-UI-005). `null` when
+ * `node` is no longer in the tree (a patch removed or replaced it after the
+ * event was raised); the event then has no target and is not sent.
+ */
+export function eventPathOf(root, node) {
     const path = [];
     let n = node;
     while (n.parent) {
-        path.push(n.parent.children.indexOf(n));
+        const index = n.parent.children.indexOf(n);
+        if (index < 0) {
+            return null;
+        }
+        path.push(n.key !== "" ? n.key : index);
         n = n.parent;
     }
-    return path.reverse();
+    return n === root ? path.reverse() : null;
 }
 export class Tree {
     obs;
@@ -222,6 +251,7 @@ export class Tree {
                     this.root = node;
                 }
                 obs?.replaced(old, node);
+                old.parent = null;
                 return;
             }
             case "insert": {
@@ -237,6 +267,7 @@ export class Tree {
                 checkIndex(patch.i, parent.children.length);
                 const [node] = parent.children.splice(patch.i, 1);
                 obs?.removed(parent, patch.i, node);
+                node.parent = null;
                 return;
             }
             case "move": {

@@ -10,11 +10,19 @@
 //!   {"t":"back"}                          history back
 //!   {"t":"toast","m":"Saved","level":"success"}
 //!
+//!   {"t":"session","id":"9f2c..."}       the session id to quote on reconnect
+//!
 //! Host to server:
 //!
-//!   {"t":"hello","pv":1,"url":"/customers/7"}
-//!   {"t":"event","v":12,"p":[0,3,1],"e":"input","d":"Acme","iv":7}
+//!   {"t":"hello","pv":2,"url":"/customers/7","sid":"9f2c..."}   sid only on reconnect
+//!   {"t":"event","v":12,"p":[0,"cust-42",1],"e":"input","d":"Acme","iv":7}
 //!   {"t":"sync"}                          request a full re-render
+//!
+//! An event path names each node on the way down by its key when it has
+//! one (a JSON string) and by its child index otherwise (a number), so an
+//! event still reaches the node it was aimed at, or is dropped, when the
+//! tree changed in between (D138, Q-UI-005).  Patch paths are child indices
+//! only: patches apply in order to a tree that matches the session's.
 //!
 //! Patch operations and wire nodes are documented on `encodePatch` and
 //! `encodeNode`.  JSON is produced and parsed with the cross-target
@@ -23,28 +31,36 @@
 package Ui.Protocol
 
 import Std.Core
-import JsonRpc.Json.{JsonValue, JsonField, JNull, JBool, JInt, JString, JArray, JObject, parseValue, writeValue, getString, getInt, getArray, asInt, JsonParseError}
+import JsonRpc.Json.{JsonValue, JsonField, JNull, JBool, JInt, JString, JArray, JObject, parseValue, writeValue, getString, getInt, getArray, asInt, asString, JsonParseError}
 import Ui.Core.{Prop}
 import Ui.Diff.{WireNode, WElement, WText, WEmpty, Patch, Replace, Insert, Remove, Move, SetProp, RemoveProp, SetText, SetEvents}
 
 /// The protocol version the TypeScript runtime must match.
-pub val protocolVersion: Int = 1
+pub val protocolVersion: Int = 2
 
 // ─── Host to server ───────────────────────────────────────────────────────────
+/// One step of an event path: a child found by its key, or by its index
+/// when it has no key.
+pub union NodeRef {
+  case At(index: Int)
+  case Keyed(key: String)
+}
+
 /// An interaction reported by a host: the node path, the event name, the
 /// event data (the input's text for `input`/`change`), and the input
 /// version for text inputs (0 when not applicable; docs/65 §9.4).
 pub record Event {
   renderVersion: Int
-  path: List[Int]
+  path: List[NodeRef]
   name: String
   data: String
   inputVersion: Int
 }
 
-/// A message from a host.
+/// A message from a host.  `sessionId` is empty on a first connection and
+/// carries the id from the server's `session` message on a reconnect.
 pub union ClientMessage {
-  case Hello(protocolVersion: Int, url: String)
+  case Hello(protocolVersion: Int, url: String, sessionId: String)
   case EventMsg(event: Event)
   case Sync
 }
@@ -56,10 +72,7 @@ pub func decodeClient(text: in String): Result[ClientMessage, String] {
     case Ok(j) -> j
     case Err(e) -> return Err(error = "malformed JSON: " + JsonParseError.message(e))
   }
-  val t = match getString(v, "t") {
-    case Some(s) -> s
-    case None -> return Err(error = "missing message type")
-  }
+  val t = match getString(v, "t") { case Some(s) -> s; case None -> return Err(error = "missing message type") }
   if t == "sync" {
     return Ok(value = Sync)
   }
@@ -68,54 +81,56 @@ pub func decodeClient(text: in String): Result[ClientMessage, String] {
       case Some(n) -> n.toInt()
       case None -> return Err(error = "hello: missing protocol version")
     }
-    val url = match getString(v, "url") {
-      case Some(s) -> s
-      case None -> "/"
-    }
-    return Ok(value = Hello(protocolVersion = pv, url = url))
+    val url = match getString(v, "url") { case Some(s) -> s; case None -> "/" }
+    val sid = match getString(v, "sid") { case Some(s) -> s; case None -> "" }
+    return Ok(value = Hello(protocolVersion = pv, url = url, sessionId = sid))
   }
   if t == "event" {
     val rv = match getInt(v, "v") {
       case Some(n) -> n.toInt()
       case None -> return Err(error = "event: missing render version")
     }
-    val items = match getArray(v, "p") {
-      case Some(xs) -> xs
-      case None -> return Err(error = "event: missing path")
-    }
-    val path: List[Int] = newList()
+    val items = match getArray(v, "p") { case Some(xs) -> xs; case None -> return Err(error = "event: missing path") }
+    val path: List[NodeRef] = newList()
     for item in items {
-      match asInt(item) {
-        case Some(n) -> path.add(n.toInt())
-        case None -> return Err(error = "event: path must be integers")
+      match decodeRef(item) {
+        case Some(r) -> path.add(r)
+        case None -> return Err(error = "event: path steps must be non-negative indices or non-empty keys")
       }
     }
-    val name = match getString(v, "e") {
-      case Some(s) -> s
-      case None -> return Err(error = "event: missing event name")
-    }
-    val data = match getString(v, "d") {
-      case Some(s) -> s
-      case None -> ""
-    }
-    val iv = match getInt(v, "iv") {
-      case Some(n) -> n.toInt()
-      case None -> 0
-    }
-    return Ok(value = EventMsg(event = Event(renderVersion = rv, path = path, name = name, data = data, inputVersion = iv)))
+    val name = match getString(v, "e") { case Some(s) -> s; case None -> return Err(error = "event: missing event name") }
+    val data = match getString(v, "d") { case Some(s) -> s; case None -> "" }
+    val iv = match getInt(v, "iv") { case Some(n) -> n.toInt(); case None -> 0 }
+    return Ok(
+      value = EventMsg(event = Event(renderVersion = rv, path = path, name = name, data = data, inputVersion = iv))
+    )
   }
   return Err(error = "unknown message type '" + t + "'")
 }
 
+// A path step: a non-negative index, or a non-empty key.
+func decodeRef(item: in JsonValue): Option[NodeRef] {
+  match asInt(item) {
+    case Some(n) -> if n >= 0 and n <= 1_000_000 { return Some(value = At(index = n.toInt())) }
+    case None -> ()
+  }
+  match asString(item) {
+    case Some(k) -> if k.length > 0 { return Some(value = Keyed(key = k)) }
+    case None -> ()
+  }
+  return None
+}
+
 // ─── Server to host ───────────────────────────────────────────────────────────
-/// The input version last processed for the input at a path key (see
-/// `pathKey`).  Sent with `value` updates so hosts can ignore stale echoes.
-pub record InputVersion {
+/// The input version to send with a `value` update at a patch path (keyed
+/// by `pathKey`), so the host can ignore a stale echo of its own typing
+/// (docs/65 §9.4).
+pub record ValueEcho {
   pathKey: String
   version: Int
 }
 
-/// A canonical string key for a path, e.g. `"0.3.1"`.
+/// A canonical string key for a patch path, e.g. `"0.3.1"`.
 pub func pathKey(path: in List[Int]): String {
   var s = ""
   var first = true
@@ -129,22 +144,47 @@ pub func pathKey(path: in List[Int]): String {
   return s
 }
 
-/// The recorded input version for `path`, or 0.
-pub func inputVersionAt(ivs: in List[InputVersion], path: in List[Int]): Int {
+/// A canonical, unambiguous string key for an event path.  Keys are
+/// length-prefixed, so no key text can make two different paths collide.
+pub func refsKey(path: in List[NodeRef]): String {
+  var s = ""
+  for r in path {
+    match r {
+      case At(i) -> {
+        s = s + "i" + i.toString() + ";"
+      }
+      case Keyed(k) -> {
+        s = s + "k" + k.length.toString() + ":" + k
+      }
+    }
+  }
+  return s
+}
+
+/// The echo version for the value at patch path `path`, or 0.
+pub func echoVersionAt(echoes: in List[ValueEcho], path: in List[Int]): Int {
   val k = pathKey(path)
-  for iv in ivs {
-    if iv.pathKey == k {
-      return iv.version
+  for e in echoes {
+    if e.pathKey == k {
+      return e.version
     }
   }
   return 0
 }
 
+/// The session id message, sent once when a session starts.
+pub func encodeSession(id: in String): String {
+  val fs: List[JsonField] = newList()
+  fs.add(fld("t", JString(value = "session")))
+  fs.add(fld("id", JString(value = id)))
+  return writeValue(JObject(fields = fs))
+}
+
 /// A patch message for render `version`.
-pub func encodePatches(version: in Int, patches: in List[Patch], ivs: in List[InputVersion]): String {
+pub func encodePatches(version: in Int, patches: in List[Patch], echoes: in List[ValueEcho]): String {
   val ops: List[JsonValue] = newList()
   for p in patches {
-    ops.add(encodePatch(p, ivs))
+    ops.add(encodePatch(p, echoes))
   }
   val fs: List[JsonField] = newList()
   fs.add(fld("t", JString(value = "patch")))
@@ -187,7 +227,7 @@ pub func encodeToast(message: in String, level: in String): String {
 ///   {"op":"removeProp","p":[..],"k":"disabled"}
 ///   {"op":"setText","p":[..],"v":"Saving..."}
 ///   {"op":"setEvents","p":[..],"e":["click"]}
-pub func encodePatch(p: in Patch, ivs: in List[InputVersion]): JsonValue {
+pub func encodePatch(p: in Patch, echoes: in List[ValueEcho]): JsonValue {
   val fs: List[JsonField] = newList()
   match p {
     case Replace(path, node) -> {
@@ -218,7 +258,7 @@ pub func encodePatch(p: in Patch, ivs: in List[InputVersion]): JsonValue {
       fs.add(fld("k", JString(value = name)))
       fs.add(fld("v", JString(value = value)))
       if name == "value" {
-        val iv = inputVersionAt(ivs, path)
+        val iv = echoVersionAt(echoes, path)
         if iv > 0 {
           fs.add(fld("iv", JInt(value = iv.toLong())))
         }

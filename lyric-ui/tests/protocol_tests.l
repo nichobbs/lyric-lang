@@ -11,7 +11,7 @@ import Ui.Widgets.{button}
 import Ui.Diff
 import Ui.Diff.{Patch, SetProp, SetText, replaceAll}
 import Ui.Protocol
-import Ui.Protocol.{ClientMessage, Hello, EventMsg, Sync, InputVersion}
+import Ui.Protocol.{ClientMessage, Hello, EventMsg, Sync, ValueEcho, NodeRef, At, Keyed}
 
 union Msg {
   case Go
@@ -25,11 +25,18 @@ func ints(a: in Int, b: in Int): List[Int] {
 }
 
 test "decodes an event" {
-  match Protocol.decodeClient("{\"t\":\"event\",\"v\":4,\"p\":[0,3,1],\"e\":\"input\",\"d\":\"Acme\",\"iv\":7}") {
+  match Protocol.decodeClient("{\"t\":\"event\",\"v\":4,\"p\":[0,\"cust-42\",1],\"e\":\"input\",\"d\":\"Acme\",\"iv\":7}") {
     case Ok(EventMsg(ev)) -> {
       assertEqualInt(ev.renderVersion, 4, "render version")
       assertEqualInt(ev.path.count, 3, "path length")
-      assertEqualInt(ev.path[1], 3, "path element")
+      match ev.path[0] {
+        case At(i) -> assertEqualInt(i, 0, "index step")
+        case _ -> assertTrue(false, "expected index")
+      }
+      match ev.path[1] {
+        case Keyed(k) -> assertEqual(k, "cust-42", "key step")
+        case _ -> assertTrue(false, "expected key")
+      }
       assertEqual(ev.name, "input", "event name")
       assertEqual(ev.data, "Acme", "data")
       assertEqualInt(ev.inputVersion, 7, "input version")
@@ -39,11 +46,16 @@ test "decodes an event" {
 }
 
 test "decodes hello and sync" {
-  match Protocol.decodeClient("{\"t\":\"hello\",\"pv\":1,\"url\":\"/customers/7\"}") {
-    case Ok(Hello(pv, url)) -> {
-      assertEqualInt(pv, 1, "protocol version")
+  match Protocol.decodeClient("{\"t\":\"hello\",\"pv\":2,\"url\":\"/customers/7\"}") {
+    case Ok(Hello(pv, url, sid)) -> {
+      assertEqualInt(pv, 2, "protocol version")
       assertEqual(url, "/customers/7", "url")
+      assertEqual(sid, "", "no session id")
     }
+    case _ -> assertTrue(false, "expected hello")
+  }
+  match Protocol.decodeClient("{\"t\":\"hello\",\"pv\":2,\"url\":\"/\",\"sid\":\"abc123\"}") {
+    case Ok(Hello(_, _, sid)) -> assertEqual(sid, "abc123", "session id")
     case _ -> assertTrue(false, "expected hello")
   }
   match Protocol.decodeClient("{\"t\":\"sync\"}") {
@@ -53,7 +65,7 @@ test "decodes hello and sync" {
 }
 
 test "rejects malformed and unknown messages" {
-  for bad in ["not json", "{}", "{\"t\":\"dance\"}", "{\"t\":\"event\",\"v\":1,\"p\":[\"x\"],\"e\":\"click\"}", "{\"t\":\"hello\"}"] {
+  for bad in ["not json", "{}", "{\"t\":\"dance\"}", "{\"t\":\"event\",\"v\":1,\"p\":[\"\"],\"e\":\"click\"}", "{\"t\":\"event\",\"v\":1,\"p\":[-1],\"e\":\"click\"}", "{\"t\":\"event\",\"v\":1,\"p\":[true],\"e\":\"click\"}", "{\"t\":\"hello\"}"] {
     match Protocol.decodeClient(bad) {
       case Ok(_) -> assertTrue(false, "should reject " + bad)
       case Err(_) -> assertTrue(true, "rejected")
@@ -62,8 +74,8 @@ test "rejects malformed and unknown messages" {
 }
 
 test "value updates carry the recorded input version" {
-  val ivs: List[InputVersion] = newList()
-  ivs.add(InputVersion(pathKey = Protocol.pathKey(ints(0, 2)), version = 5))
+  val ivs: List[ValueEcho] = newList()
+  ivs.add(ValueEcho(pathKey = Protocol.pathKey(ints(0, 2)), version = 5))
   val ps: List[Patch] = newList()
   ps.add(SetProp(path = ints(0, 2), name = "value", value = "Acme"))
   ps.add(SetProp(path = ints(0, 3), name = "value", value = "x"))
@@ -95,4 +107,19 @@ test "host commands encode" {
   assertTrue(contains(Protocol.encodeNavigate("/c/1"), "\"url\":\"/c/1\""), "navigate")
   assertTrue(contains(Protocol.encodeToast("Saved", "success"), "\"level\":\"success\""), "toast")
   assertTrue(contains(Protocol.encodeBack(), "\"t\":\"back\""), "back")
+}
+
+test "session ids encode and event path keys are unambiguous" {
+  assertTrue(contains(Protocol.encodeSession("abc"), "\"id\":\"abc\""), "session message")
+  val a: List[NodeRef] = newList()
+  a.add(Keyed(key = "1;k1:x"))
+  val b: List[NodeRef] = newList()
+  b.add(Keyed(key = "1"))
+  b.add(Keyed(key = "x"))
+  assertFalse(Protocol.refsKey(a) == Protocol.refsKey(b), "length prefix keeps keys apart")
+  val c: List[NodeRef] = newList()
+  c.add(At(index = 1))
+  val d: List[NodeRef] = newList()
+  d.add(Keyed(key = "1"))
+  assertFalse(Protocol.refsKey(c) == Protocol.refsKey(d), "index and key differ")
 }
