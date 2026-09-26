@@ -1,4 +1,4 @@
-# D-progress-986 — Labelled loops
+# D-progress-988 — Labelled loops
 
 **Status:** shipped
 
@@ -63,7 +63,7 @@ label map per function, so entering such a loop saves the outer entry and
 leaving it restores the entry rather than deleting it. Deleting it made a
 later `break outer` in the enclosing loop panic the compiler (#7394).
 
-The contract elaborator's loop-exit invariant walk (D-progress-981) already
+The contract elaborator's loop-exit invariant walk (D-progress-983) already
 treated `break label` inside a nested loop as leaving the labelled loop.
 It now receives real labels.
 

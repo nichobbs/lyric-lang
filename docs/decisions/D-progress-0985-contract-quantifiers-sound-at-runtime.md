@@ -1,4 +1,4 @@
-# D-progress-983 — Contract quantifiers are skipped soundly at runtime; quantifiers only in contracts
+# D-progress-985 — Contract quantifiers are skipped soundly at runtime; quantifiers only in contracts
 
 **Status:** shipped
 
