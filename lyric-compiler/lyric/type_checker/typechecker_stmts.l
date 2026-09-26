@@ -167,6 +167,41 @@ func checkRefinedLiteralBound(declT: in Type, init: in Expr, diag: in List[Diagn
   }
 }
 
+// An unsuffixed integer literal whose value does not fit the plain integer
+// type it initialises (`val x: Int = 3000000000`) is reported as T0015 and
+// the caller skips its generic type-mismatch diagnostic (#7346).  Before
+// this the literal typed as `Int` whatever its value and wrapped silently
+// on dotnet.  Refined types are `checkRefinedLiteralBound`'s job.
+func reportIntLiteralOutOfRange(declT: in Type, init: in Expr, diag: in List[Diagnostic]): Bool {
+  match declT {
+    case TyPrim(_) -> match unsuffixedIntLiteralValue(init) {
+      case Some(v) -> {
+        if isConcreteIntType(declT) and not intValueFitsType(v, declT) {
+          diag.add(
+            errorDiagnostic("T0015", "literal " + toString(v) + " is out of range for type " + renderType(declT), init.span)
+          )
+          return true
+        }
+        false
+      }
+      case None -> false
+    }
+    case _ -> false
+  }
+}
+
+// A variable or a chain of field reads on one: evaluating it twice has no
+// side effects.
+func isPurePathExpr(e: in Expr): Bool {
+  match e.kind {
+    case EPath(_) -> true
+    case ESelf -> true
+    case EMember(recv, _) -> isPurePathExpr(recv)
+    case EParen(inner) -> isPurePathExpr(inner)
+    case _ -> false
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Statement checking.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,7 +233,9 @@ pub func checkStatement(
           gctxPush(ctx, genericNames)
           val declT = resolveType(tbl, ctx, diag, te)
           val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
-          if not argSatisfiesParam(tbl, declT, initType) {
+
+          val literalOutOfRange = reportIntLiteralOutOfRange(declT, init, diag)
+          if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
             diag.add(
               errorDiagnostic(
                 "T0060",
@@ -223,7 +260,9 @@ pub func checkStatement(
           match initOpt {
             case Some(initE) -> {
               val initType = inferExprExpected(sc, tbl, sigs, diag, initE, declT)
-              if not argSatisfiesParam(tbl, declT, initType) {
+
+              val literalOutOfRange = reportIntLiteralOutOfRange(declT, initE, diag)
+              if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
                 diag.add(
                   errorDiagnostic(
                     "T0061",
@@ -260,7 +299,9 @@ pub func checkStatement(
           gctxPush(ctx, genericNames)
           val declT = resolveType(tbl, ctx, diag, te)
           val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
-          if not argSatisfiesParam(tbl, declT, initType) {
+
+          val literalOutOfRange = reportIntLiteralOutOfRange(declT, init, diag)
+          if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
             diag.add(
               errorDiagnostic(
                 "T0062",
@@ -283,6 +324,32 @@ pub func checkStatement(
       // `isStringPlusVarAssign` (typechecker_exprs.l) for the full rationale
       // and the #5688 follow-up (#5657).
       val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
+      // A compound assignment on a distinct type is rewritten to
+      // `target = T.from(target.value <op> value.value)` (#7361).  That
+      // evaluates the target twice, so it must be a variable or field path.
+      match op {
+        case AssEq -> ()
+        case _ -> match distinctFromPath(tbl, targetType) {
+          case Some(path) -> {
+            if isPurePathExpr(target) {
+              val key = recordCopySiteKey(stmt.span)
+              if not tbl.distinctCompoundSites.containsKey(key) {
+                tbl.distinctCompoundSites.add(key, path)
+              }
+            } else {
+              diag.add(
+                errorDiagnostic(
+                  "T0134",
+                  "compound assignment to a distinct type (" + renderType(targetType) +
+                    ") needs a variable or field target; write the assignment out (`x = x + y`)",
+                  stmt.span
+                )
+              )
+            }
+          }
+          case None -> ()
+        }
+      }
       if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(
@@ -347,9 +414,7 @@ pub func checkStatement(
     case SContinue(_) -> {
     }
 
-    case SInvariant(e) -> {
-      val _ = inferExpr(sc, tbl, sigs, diag, e)
-    }
+    case SInvariant(e) -> checkBoolClause(sc, tbl, sigs, diag, e, "loop invariant", stmt.span)
 
     case SExpr(e) -> {
       match e.kind {
@@ -1239,6 +1304,56 @@ func checkOutDefiniteAssignment(diag: in List[Diagnostic], fn: in FunctionDecl, 
   }
 }
 
+// Contract clauses are type-checked against the function's own scope
+// (parameters, and `result` as the declared return type through `EResult`),
+// before elaboration turns them into asserts (#7228).  Before this an
+// ill-typed clause type-checked silently and failed, or miscompiled, in
+// codegen.
+func checkContractClauses(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  contracts: in List[ContractClause],
+): Unit {
+  var i = 0
+  while i < contracts.count {
+    match contracts[i] {
+      case CCRequires(e, sp) -> checkBoolClause(sc, tbl, sigs, diag, e, "requires", sp)
+      case CCEnsures(e, sp) -> checkBoolClause(sc, tbl, sigs, diag, e, "ensures", sp)
+      case CCWhen(e, sp) -> checkBoolClause(sc, tbl, sigs, diag, e, "when", sp)
+      case CCDecreases(e, sp) -> {
+        sc.contractDepth.add(0)
+        val t = inferExpr(sc, tbl, sigs, diag, e)
+        sc.contractDepth.removeAt(sc.contractDepth.count - 1)
+        val lenient = match t { case TyError -> true; case _ -> false }
+        if not isConcreteIntType(t) and not lenient {
+          diag.add(errorDiagnostic("T0132", "a decreases: measure must be an integer (got " + renderType(t) + ")", sp))
+        }
+      }
+      case CCRaises(_, _) -> ()
+    }
+    i = i + 1
+  }
+}
+
+func checkBoolClause(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  kind: in String,
+  sp: in Span,
+): Unit {
+  sc.contractDepth.add(0)
+  val t = inferExpr(sc, tbl, sigs, diag, e)
+  sc.contractDepth.removeAt(sc.contractDepth.count - 1)
+  if not typeEquiv(t, TyPrim(pt = PtBool)) {
+    diag.add(errorDiagnostic("T0132", "a " + kind + ": clause must be Bool (got " + renderType(t) + ")", sp))
+  }
+}
+
 pub func checkFunctionBody(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -1347,6 +1462,9 @@ pub func checkFunctionBody(
       )
     }
   }
+
+  checkLoopLabels(diag, fn)
+  checkContractClauses(sc, tbl, sigs, diag, fn.contracts)
 
   match fn.body {
     case None -> {

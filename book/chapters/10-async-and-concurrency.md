@@ -149,6 +149,7 @@ The key rules:
 
 - `entry` operations are mutually exclusive. Only one runs at a time, regardless of how many callers are waiting.
 - A `when:` clause is a barrier condition. A caller blocks until the condition is true. When `put` is called on a full queue, the caller does not spin and does not get an error — it waits until space is available.
+- `func` operations are exclusive as well, so a `func` never sees an entry half-way through. A `func` may have its own `when:` barrier, and a `func` that changes state wakes waiting callers just as an entry does. Since every member runs under the lock, a protected `func` cannot be `async` or generic on its own (T0135). (Barriers are implemented on `--target dotnet` and `--target jvm`; `--target native` rejects a `when:` clause at build time for now.)
 - The `invariant:` is checked after every `entry` returns. If your operation leaves the state in an invariant-violating condition, the program terminates. This is intentional: an invariant violation in a protected type is an unrecoverable bug, not a recoverable error.
 - The state inside the protected type is inaccessible from outside. There is no field access, no reflection, no way to reach around the interface.
 

@@ -343,13 +343,59 @@ func mkPath(name: in String, sp: in Span): Expr {
   mkExpr(EPath(path = ModulePath(segments = segs, span = sp)), sp)
 }
 
+// Every runtime contract check (requires, ensures, loop and type
+// invariants, aspect contracts) is built here.  A `forall`/`exists` cannot be
+// evaluated at runtime, and approximating the quantifier itself as `true` is
+// only sound in a positive position: `not exists ...` became `false` and
+// failed every call (#7228).  So the clause is split into its top-level
+// `and` conjuncts and each conjunct that contains a quantifier is dropped;
+// the rest is still checked.  `runtimeQuantifierWarnings` reports W0002 for
+// each dropped quantifier.
 func mkAssertCall(cond: in Expr, message: in String, sp: in Span): Statement {
   val callee = mkPath("assert", sp)
   val args: List[CallArg] = newList()
-  args.add(CAPositional(expr = cond))
+  args.add(CAPositional(expr = runtimeCheckableConjuncts(cond, sp)))
   args.add(CAPositional(expr = mkExpr(ELiteral(lit = LString(text = message)), sp)))
   val call = mkExpr(ECall(fn = callee, args = args), sp)
   mkStmt(SExpr(expr = call), sp)
+}
+
+func runtimeCheckableConjuncts(cond: in Expr, sp: in Span): Expr {
+  if not exprHasQuantifier(cond) {
+    return cond
+  }
+  val parts: List[Expr] = newList()
+  collectConjuncts(cond, parts)
+  var kept: Option[Expr] = None
+  var i = 0
+  while i < parts.count {
+    val part = parts[i]
+    if not exprHasQuantifier(part) {
+      kept = match kept {
+        case None -> Some(value = part)
+        case Some(acc) -> Some(value = mkExpr(EBinop(op = BAnd, lhs = acc, rhs = part), part.span))
+      }
+    }
+    i = i + 1
+  }
+  match kept {
+    case Some(e) -> e
+    case None -> mkExpr(ELiteral(lit = LBool(value = true)), sp)
+  }
+}
+
+func collectConjuncts(e: in Expr, acc: in List[Expr]): Unit {
+  match e.kind {
+    case EBinop(op, l, r) -> match op {
+      case BAnd -> {
+        collectConjuncts(l, acc)
+        collectConjuncts(r, acc)
+      }
+      case _ -> acc.add(e)
+    }
+    case EParen(inner) -> collectConjuncts(inner, acc)
+    case _ -> acc.add(e)
+  }
 }
 
 // `let <name> = <init>` with type inferred.
@@ -1551,27 +1597,44 @@ func elaborateStmtDeep(
         s.span
       )
     )
-    case SFor(label, pat, iter, body) -> acc.add(
-      mkStmt(
-        SFor(
-          label = label,
-          pat = pat,
-          iter = iter,
-          body = elaborateBlockDeep(body, ensuresExprs, counter)
-        ),
-        s.span
-      )
-    )
-    case SWhile(label, cond, body) -> acc.add(
-      mkStmt(
-        SWhile(
-          label = label,
-          cond = cond,
-          body = elaborateBlockDeep(body, ensuresExprs, counter)
-        ),
-        s.span
-      )
-    )
+    case SFor(label, pat, iter, body) -> {
+      val loopInvs = exitCheckableInvariants(loopInvariantsOf(body), patternBoundNames(pat))
+      val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
+      if loopInvs.count == 0 {
+        acc.add(mkStmt(SFor(label = label, pat = pat, iter = iter, body = newBody), s.span))
+      } else {
+        val flag = freshLoopBrokeName(counter)
+        val scan = BreakScan(found = false)
+        val marked = markBreaksBlock(newBody, label, flag, false, scan)
+        appendLoopWithExitCheck(
+          mkStmt(SFor(label = label, pat = pat, iter = iter, body = marked), s.span),
+          loopInvs,
+          flag,
+          scan.found,
+          s.span,
+          acc
+        )
+      }
+    }
+    case SWhile(label, cond, body) -> {
+      val loopInvs = loopInvariantsOf(body)
+      val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
+      if loopInvs.count == 0 {
+        acc.add(mkStmt(SWhile(label = label, cond = cond, body = newBody), s.span))
+      } else {
+        val flag = freshLoopBrokeName(counter)
+        val scan = BreakScan(found = false)
+        val marked = markBreaksBlock(newBody, label, flag, false, scan)
+        appendLoopWithExitCheck(
+          mkStmt(SWhile(label = label, cond = cond, body = marked), s.span),
+          loopInvs,
+          flag,
+          scan.found,
+          s.span,
+          acc
+        )
+      }
+    }
     case SLoop(label, body) -> acc.add(
       mkStmt(
         SLoop(label = label, body = elaborateBlockDeep(body, ensuresExprs, counter)),
@@ -1614,11 +1677,347 @@ func elaborateStmtDeep(
     // the first iteration checks the entry state, and every subsequent
     // iteration checks that the previous body re-established the
     // invariant.  Continue / fall-through both re-enter the loop head,
-    // so a single assert at the start of the body covers them; break
-    // exits without a check (no postcondition is recovered here).
+    // so a single assert at the start of the body covers them.  The
+    // check on normal exit (the condition went false, or the iterator
+    // ran out, including a loop that never ran) is appended after the
+    // loop by `appendLoopWithExitCheck`; `break` exits carry no
+    // obligation (docs/08 §wp for `while`), #7224.
     case _ -> {
       acc.add(s)
     }
+  }
+}
+
+// The loop `invariant:` clauses of a `while`/`for` body: the parser
+// prepends them to the body as `SInvariant` statements.
+func loopInvariantsOf(body: in Block): List[Expr] {
+  val invs: List[Expr] = newList()
+  var i = 0
+  while i < body.statements.count {
+    match body.statements[i].kind {
+      case SInvariant(inv) -> invs.add(inv)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  invs
+}
+
+// The `for` invariants that can be re-checked after the loop (#7381). A
+// clause that reads a name bound by the loop pattern (`for i in 0 ..< n`
+// with `invariant: i <= n`) refers to the current element, which no longer
+// exists once the loop ends; after the loop that name is out of scope or
+// would resolve to an unrelated outer binding. Such a clause is still
+// checked on every iteration, only the exit check is skipped.
+func exitCheckableInvariants(invs: in List[Expr], patNames: in List[String]): List[Expr] {
+  val kept: List[Expr] = newList()
+  var i = 0
+  while i < invs.count {
+    if not exprReadsAnyName(invs[i], patNames) {
+      kept.add(invs[i])
+    }
+    i = i + 1
+  }
+  kept
+}
+
+record NameScan {
+  var found: Bool
+}
+
+// Whether `e` reads any of `names` as a single-segment path. A lambda
+// parameter that shadows one of them also counts, which only skips a check.
+func exprReadsAnyName(e: in Expr, names: in List[String]): Bool {
+  if names.count == 0 {
+    return false
+  }
+  val scan = NameScan(found = false)
+  val _ = mapExpr(e, { x: Expr -> notePathRead(x, names, scan) })
+  scan.found
+}
+
+func notePathRead(x: in Expr, names: in List[String], scan: in NameScan): Expr {
+  match x.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        var i = 0
+        while i < names.count {
+          if names[i] == p.segments[0] {
+            scan.found = true
+          }
+          i = i + 1
+        }
+      }
+    }
+    case _ -> ()
+  }
+  x
+}
+
+func freshLoopBrokeName(c: inout RenameCounter): String {
+  val n = c.next
+  c.next = n + 1
+  "__lyric_loop_broke_" + toString(n)
+}
+
+// Emit `loop` followed by the loop-invariant check on normal exit (#7224).
+// Per the `while` wp rule (docs/08: `ι ∧ ¬c ⇒ Q`) the invariant must hold
+// when the loop ends because its condition went false (or its iterator ran
+// out), including when the body never ran; a `break` leaves without that
+// obligation.  When a `break` targets the loop, `markBreaksBlock` has made
+// each one set `flag` first, and the check is guarded by `not flag`.
+func appendLoopWithExitCheck(
+  loop: in Statement,
+  invs: in List[Expr],
+  flag: in String,
+  hasBreak: in Bool,
+  sp: in Span,
+  acc: in List[Statement],
+): Unit {
+  val checks: List[Statement] = newList()
+  var i = 0
+  while i < invs.count {
+    checks.add(mkAssertCall(invs[i], "LoopInvariantViolated: invariant " + Fmt.exprInline(0, invs[i]), sp))
+    i = i + 1
+  }
+  if not hasBreak {
+    acc.add(loop)
+    var j = 0
+    while j < checks.count {
+      acc.add(checks[j])
+      j = j + 1
+    }
+    return ()
+  }
+  acc.add(
+    mkStmt(
+      SLocal(
+        binding = LBVar(name = flag, ty = None, init = Some(value = mkExpr(ELiteral(lit = LBool(value = false)), sp)))
+      ),
+      sp
+    )
+  )
+  acc.add(loop)
+  val notBroke = mkExpr(EPrefix(op = PreNot, operand = mkPath(flag, sp)), sp)
+  acc.add(
+    mkStmt(
+      SExpr(
+        expr = mkExpr(
+          EIf(
+            cond = notBroke,
+            thenBranch = EOBBlock(block = Block(statements = checks, span = sp)),
+            elseBranch = None,
+            thenForm = false
+          ),
+          sp
+        )
+      ),
+      sp
+    )
+  )
+}
+
+// Whether `markBreaksBlock` rewrote at least one `break`.
+record BreakScan {
+  var found: Bool
+}
+
+// Rewrite every `break` that leaves the loop labelled `label` so it first
+// sets `flag`: any `break` outside a nested loop, or `break label` inside
+// one (labelled loops themselves are #7349).  A nested loop re-using the same label shadows
+// it, so the walk stops there; lambdas cannot `break` out of their
+// enclosing loop and are not entered.
+func markBreaksBlock(
+  blk: in Block, label: in Option[String], flag: in String, nested: in Bool, scan: in BreakScan
+): Block {
+  val outs: List[Statement] = newList()
+  var i = 0
+  while i < blk.statements.count {
+    markBreaksStmt(blk.statements[i], label, flag, nested, scan, outs)
+    i = i + 1
+  }
+  Block(statements = outs, span = blk.span)
+}
+
+// Any `break` directly in the body leaves this loop, whatever label it
+// names; inside a nested loop only `break <label>` naming this loop does.
+func breakTargets(target: in Option[String], label: in Option[String], nested: in Bool): Bool {
+  if not nested {
+    return true
+  }
+  match target {
+    case None -> false
+    case Some(t) -> match label { case Some(l) -> t == l; case None -> false }
+  }
+}
+
+func shadowsLabel(inner: in Option[String], label: in Option[String]): Bool {
+  match inner {
+    case Some(i) -> match label { case Some(l) -> i == l; case None -> false }
+    case None -> false
+  }
+}
+
+func markBreaksStmt(
+  s: in Statement,
+  label: in Option[String],
+  flag: in String,
+  nested: in Bool,
+  scan: in BreakScan,
+  acc: in List[Statement],
+): Unit {
+  match s.kind {
+    case SBreak(target) -> {
+      if breakTargets(target, label, nested) {
+        scan.found = true
+        acc.add(
+          mkStmt(
+            SAssign(target = mkPath(flag, s.span), op = AssEq, value = mkExpr(ELiteral(lit = LBool(value = true)), s.span)),
+            s.span
+          )
+        )
+      }
+      acc.add(s)
+    }
+    case SFor(l, pat, iter, body) -> {
+      if shadowsLabel(l, label) {
+        acc.add(s)
+      } else {
+        acc.add(
+          mkStmt(SFor(label = l, pat = pat, iter = iter, body = markBreaksBlock(body, label, flag, true, scan)), s.span)
+        )
+      }
+    }
+    case SWhile(l, cond, body) -> {
+      if shadowsLabel(l, label) {
+        acc.add(s)
+      } else {
+        acc.add(mkStmt(SWhile(label = l, cond = cond, body = markBreaksBlock(body, label, flag, true, scan)), s.span))
+      }
+    }
+    case SLoop(l, body) -> {
+      if shadowsLabel(l, label) {
+        acc.add(s)
+      } else {
+        acc.add(mkStmt(SLoop(label = l, body = markBreaksBlock(body, label, flag, true, scan)), s.span))
+      }
+    }
+    case STry(body, catches, finally_) -> {
+      val newCatches: List[CatchClause] = newList()
+      var ci = 0
+      while ci < catches.count {
+        val c = catches[ci]
+        newCatches.add(
+          CatchClause(
+            typeName = c.typeName,
+            bindName = c.bindName,
+            body = markBreaksBlock(c.body, label, flag, nested, scan),
+            span = c.span
+          )
+        )
+        ci = ci + 1
+      }
+      val newFinally = match finally_ {
+        case None -> None
+        case Some(fb) -> Some(markBreaksBlock(fb, label, flag, nested, scan))
+      }
+      acc.add(
+        mkStmt(
+          STry(body = markBreaksBlock(body, label, flag, nested, scan), catches = newCatches, finally_ = newFinally),
+          s.span
+        )
+      )
+    }
+    case SScope(b, body) -> acc.add(
+      mkStmt(
+        SScope(binding = b, body = markBreaksBlock(body, label, flag, nested, scan)),
+        s.span
+      )
+    )
+    case SExpr(e) -> acc.add(mkStmt(SExpr(expr = markBreaksExpr(e, label, flag, nested, scan)), s.span))
+    case SLocal(binding) -> acc.add(
+      mkStmt(SLocal(binding = markBreaksBinding(binding, label, flag, nested, scan)), s.span)
+    )
+    case SAssign(t, op, v) -> acc.add(
+      mkStmt(
+        SAssign(target = t, op = op, value = markBreaksExpr(v, label, flag, nested, scan)),
+        s.span
+      )
+    )
+    case _ -> acc.add(s)
+  }
+}
+
+func markBreaksBinding(
+  b: in LocalBinding,
+  label: in Option[String],
+  flag: in String,
+  nested: in Bool,
+  scan: in BreakScan,
+): LocalBinding {
+  match b {
+    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = markBreaksExpr(init, label, flag, nested, scan))
+    case LBLet(n, ty, init) -> LBLet(name = n, ty = ty, init = markBreaksExpr(init, label, flag, nested, scan))
+    case LBVar(n, ty, initOpt) -> match initOpt {
+      case Some(x) -> LBVar(
+        name = n,
+        ty = ty,
+        init = Some(value = markBreaksExpr(x, label, flag, nested, scan))
+      )
+      case None -> b
+    }
+  }
+}
+
+// `break` is a statement, so it only sits inside a block; the expression
+// forms that carry blocks are the ones walked here.
+func markBreaksExpr(e: in Expr, label: in Option[String], flag: in String, nested: in Bool, scan: in BreakScan): Expr {
+  match e.kind {
+    case EParen(inner) -> mkExpr(EParen(inner = markBreaksExpr(inner, label, flag, nested, scan)), e.span)
+    case EIf(cond, thenBranch, elseOpt, thenForm) -> {
+      val newElse: Option[ExprOrBlock] = match elseOpt {
+        case Some(eb) -> Some(value = markBreaksEob(eb, label, flag, nested, scan))
+        case None -> None
+      }
+      mkExpr(
+        EIf(
+          cond = cond,
+          thenBranch = markBreaksEob(thenBranch, label, flag, nested, scan),
+          elseBranch = newElse,
+          thenForm = thenForm
+        ),
+        e.span
+      )
+    }
+    case EMatch(scrutinee, arms) -> {
+      val newArms: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        newArms.add(
+          MatchArm(
+            pattern = arm.pattern,
+            guard = arm.guard,
+            body = markBreaksEob(arm.body, label, flag, nested, scan),
+            span = arm.span
+          )
+        )
+        i = i + 1
+      }
+      mkExpr(EMatch(scrutinee = scrutinee, arms = newArms), e.span)
+    }
+    case EBlock(blk) -> mkExpr(EBlock(block = markBreaksBlock(blk, label, flag, nested, scan)), e.span)
+    case EUnsafe(blk) -> mkExpr(EUnsafe(block = markBreaksBlock(blk, label, flag, nested, scan)), e.span)
+    case _ -> e
+  }
+}
+
+func markBreaksEob(
+  eob: in ExprOrBlock, label: in Option[String], flag: in String, nested: in Bool, scan: in BreakScan
+): ExprOrBlock {
+  match eob {
+    case EOBExpr(x) -> EOBExpr(expr = markBreaksExpr(x, label, flag, nested, scan))
+    case EOBBlock(blk) -> EOBBlock(block = markBreaksBlock(blk, label, flag, nested, scan))
   }
 }
 
@@ -1770,13 +2169,32 @@ func exprOrBlockHasInvariant(eb: in ExprOrBlock): Bool {
 func elaborateFunctionBody(
   contracts: in List[ContractClause],
   typeInvariants: in List[InvariantClause],
+  params: in List[Param],
+  ret: in Option[TypeExpr],
   owner: in String,
-  body: in Block,
+  body0: in Block,
   counter: inout RenameCounter,
   isVoidReturn: in Bool,
 ): Block {
-  val requiresExprs = collectRequires(contracts, owner)
+  // Inline range refinements (#7226): refined parameters are checked first,
+  // before any `requires:` that may rely on them; a refined return type is
+  // one more `ensures:`; refined bindings and assignments are checked in
+  // place.
+  val body = insertRangeChecks(body0, params, owner)
+  val requiresExprs = paramRangeChecks(params, owner)
+  val declaredRequires = collectRequires(contracts, owner)
+  var dri = 0
+  while dri < declaredRequires.count {
+    requiresExprs.add(declaredRequires[dri])
+    dri = dri + 1
+  }
   val ensuresExprs = collectEnsures(contracts, owner)
+  val retChecks = returnRangeChecks(ret, owner)
+  var rci = 0
+  while rci < retChecks.count {
+    ensuresExprs.add(retChecks[rci])
+    rci = rci + 1
+  }
   var ti = 0
   while ti < typeInvariants.count {
     val inv = typeInvariants[ti]
@@ -2206,7 +2624,12 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
   val hasReq = collectRequires(fn.contracts, owner).count > 0
   val hasEns = collectEnsures(fn.contracts, owner).count > 0
   val hasInv = functionBodyHasInvariant(fn)
-  if not hasReq and not hasEns and not hasInv {
+  val hasRange = match fn.body {
+    case Some(FBBlock(blk)) -> functionHasRangeRefinement(fn.params, fn.ret, blk)
+    case Some(FBExpr(e)) -> functionHasRangeRefinement(fn.params, fn.ret, wrapExprBody(e))
+    case None -> false
+  }
+  if not hasReq and not hasEns and not hasInv and not hasRange {
     return fn
   }
 
@@ -2218,6 +2641,8 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
         block = elaborateFunctionBody(
           fn.contracts,
           newList(),
+          fn.params,
+          fn.ret,
           owner,
           blk,
           counter,
@@ -2228,6 +2653,8 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
         block = elaborateFunctionBody(
           fn.contracts,
           newList(),
+          fn.params,
+          fn.ret,
           owner,
           wrapExprBody(e),
           counter,
@@ -2255,6 +2682,146 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
   )
 }
 
+// `when:` barriers on protected entries and funcs (§7.5, #7363, #7384).  A
+// member whose barrier is false blocks until another operation makes it true:
+//
+//   entry take(): T  when: count > 0 { body }
+//     ->  while not (count > 0) { __lyric_protected_wait() }
+//         defer { __lyric_protected_notify() }
+//         body
+//
+// Every entry and func of a type that has any barrier notifies on exit
+// (normal or exceptional): any of them may change state that enables a
+// waiting caller, and a func that did so without notifying would leave the
+// waiter blocked forever (#7384).  The two intrinsics are lowered by each
+// backend onto the member's own lock (`Monitor.Wait`/`PulseAll` on MSIL,
+// `Object.wait`/`notifyAll` on the JVM); waiting releases the lock.  Several
+// barriers on one member are conjoined.
+func protectedHasBarrier(members: in List[ProtectedMember]): Bool {
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case PMEntry(ed) -> {
+        if entryBarrier(ed.contracts).count > 0 {
+          return true
+        }
+      }
+      case PMFunc(fn) -> {
+        if entryBarrier(fn.contracts).count > 0 {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+func entryBarrier(contracts: in List[ContractClause]): List[Expr] {
+  val xs: List[Expr] = newList()
+  var i = 0
+  while i < contracts.count {
+    match contracts[i] {
+      case CCWhen(e, _) -> xs.add(e)
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  xs
+}
+
+func intrinsicCallStmt(name: in String, sp: in Span): Statement {
+  val args: List[CallArg] = newList()
+  mkStmt(SExpr(expr = mkExpr(ECall(fn = mkPath(name, sp), args = args), sp)), sp)
+}
+
+func applyBarrierProtocol(m: in ProtectedMember, anyBarrier: in Bool): ProtectedMember {
+  if not anyBarrier {
+    return m
+  }
+  match m {
+    case PMEntry(ed) -> PMEntry(
+      entryDecl = EntryDecl(
+        docComments = ed.docComments,
+        annotations = ed.annotations,
+        visibility = ed.visibility,
+        name = ed.name,
+        params = ed.params,
+        ret = ed.ret,
+        contracts = ed.contracts,
+        body = FBBlock(block = barrierWrappedBody(ed.contracts, ed.body, ed.span)),
+        span = ed.span
+      )
+    )
+    case PMFunc(fn) -> match fn.body {
+      case Some(body) -> PMFunc(
+        fn = FunctionDecl(
+          docComments = fn.docComments,
+          annotations = fn.annotations,
+          visibility = fn.visibility,
+          isAsync = fn.isAsync,
+          name = fn.name,
+          generics = fn.generics,
+          params = fn.params,
+          ret = fn.ret,
+          whereClause = fn.whereClause,
+          contracts = fn.contracts,
+          body = Some(
+            value = FBBlock(
+              block = barrierWrappedBody(
+                fn.contracts,
+                body,
+                fn.span
+              )
+            )
+          ),
+          span = fn.span
+        )
+      )
+      case None -> m
+    }
+    case other -> other
+  }
+}
+
+// `body` preceded by the member's barrier wait loop (when it has `when:`
+// clauses) and the notify-on-exit `defer`.
+func barrierWrappedBody(contracts: in List[ContractClause], body: in FunctionBody, sp: in Span): Block {
+  val prelude: List[Statement] = newList()
+  val barriers = entryBarrier(contracts)
+  if barriers.count > 0 {
+    var cond = barriers[0]
+    var bi = 1
+    while bi < barriers.count {
+      cond = mkExpr(EBinop(op = BAnd, lhs = cond, rhs = barriers[bi]), sp)
+      bi = bi + 1
+    }
+    val waitBody: List[Statement] = newList()
+    waitBody.add(intrinsicCallStmt("__lyric_protected_wait", sp))
+    prelude.add(
+      mkStmt(
+        SWhile(
+          label = None,
+          cond = mkExpr(EPrefix(op = PreNot, operand = mkExpr(EParen(inner = cond), sp)), sp),
+          body = Block(statements = waitBody, span = sp)
+        ),
+        sp
+      )
+    )
+  }
+  val notifyBody: List[Statement] = newList()
+  notifyBody.add(intrinsicCallStmt("__lyric_protected_notify", sp))
+  prelude.add(mkStmt(SDefer(body = Block(statements = notifyBody, span = sp)), sp))
+  val blk = match body { case FBBlock(b) -> b; case FBExpr(e) -> wrapExprBody(e) }
+  var si = 0
+  while si < blk.statements.count {
+    prelude.add(blk.statements[si])
+    si = si + 1
+  }
+  Block(statements = prelude, span = blk.span)
+}
+
 func elaborateProtectedMember(
   m: in ProtectedMember, invariants: in List[InvariantClause], typeName: in String
 ): ProtectedMember {
@@ -2264,7 +2831,11 @@ func elaborateProtectedMember(
       val hasReq = collectRequires(ed.contracts, owner).count > 0
       val hasEns = collectEnsures(ed.contracts, owner).count > 0 or invariants.count > 0
       val hasInv = entryBodyHasInvariant(ed.body)
-      if not hasReq and not hasEns and not hasInv {
+      val hasRange = match ed.body {
+        case FBBlock(blk) -> functionHasRangeRefinement(ed.params, ed.ret, blk)
+        case FBExpr(e) -> functionHasRangeRefinement(ed.params, ed.ret, wrapExprBody(e))
+      }
+      if not hasReq and not hasEns and not hasInv and not hasRange {
         m
       } else {
         var counter = newRenameCounter()
@@ -2274,6 +2845,8 @@ func elaborateProtectedMember(
             block = elaborateFunctionBody(
               ed.contracts,
               invariants,
+              ed.params,
+              ed.ret,
               owner,
               blk,
               counter,
@@ -2284,6 +2857,8 @@ func elaborateProtectedMember(
             block = elaborateFunctionBody(
               ed.contracts,
               invariants,
+              ed.params,
+              ed.ret,
               owner,
               wrapExprBody(e),
               counter,
@@ -2556,10 +3131,12 @@ func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in S
         }
         mi = mi + 1
       }
+      val anyBarrier = protectedHasBarrier(decl.members)
       val newMembers: List[ProtectedMember] = newList()
       mi = 0
       while mi < decl.members.count {
-        newMembers.add(elaborateProtectedMember(decl.members[mi], invariants, qualify(pkg, decl.name)))
+        val withBarriers = applyBarrierProtocol(decl.members[mi], anyBarrier)
+        newMembers.add(elaborateProtectedMember(withBarriers, invariants, qualify(pkg, decl.name)))
         mi = mi + 1
       }
       Item(

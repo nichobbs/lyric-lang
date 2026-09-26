@@ -946,7 +946,9 @@ func testBuildBModeAspectIncluded(): Unit {
   assertTrue(d.bmode, "B'-mode aspect is tagged bmode = true")
   match d.body {
     case Some(_) -> ()
-    case None -> panic("buildContractFromFile: B'-mode aspect body must still be embedded (needed by the weaver either way)")
+    case None -> panic(
+      "buildContractFromFile: B'-mode aspect body must still be embedded (needed by the weaver either way)"
+    )
   }
 }
 
@@ -1140,4 +1142,35 @@ test "buildContractFromFile omits private aspects" {
 
 test "buildContractFromFile includes B'-mode pub aspects tagged bmode = true" {
   testBuildBModeAspectIncluded()
+}
+
+// A literal `val` crosses a package boundary as an inlined `Int`, so a
+// value outside `Int` stays out of the contract instead of arriving
+// truncated (#7403).
+test "buildContractFromFile carries only Int-range literal vals" {
+  val src = "package P\n\npub val small: Long = -7\npub val big: Long = -5000000000\npub val huge: Long = 5000000000\npub val top: Int = 2147483647\n"
+  val c = buildContractFromFile(parse(src).file, "1.0.0")
+  assertTrue(isSomeDecl(findDeclByKind(c.decls, "val", "small")), "an in-range negative val is carried")
+  assertTrue(not isSomeDecl(findDeclByKind(c.decls, "val", "big")), "a negative val below Int is omitted")
+  assertTrue(not isSomeDecl(findDeclByKind(c.decls, "val", "huge")), "a positive val above Int is omitted")
+  assertTrue(isSomeDecl(findDeclByKind(c.decls, "val", "top")), "Int.MaxValue is carried")
+}
+
+// A record method's `@pure` rides in its repr so a restored consumer's
+// contract clauses may call it (#7383, #7395).
+test "buildContractFromFile keeps @pure on a record method" {
+  val src = "package P\n\npub record Money {\n  amount: Int\n  @pure\n  func isPositive(self: in Money): Bool { self.amount > 0 }\n  func bump(self: in Money): Money { self }\n}\n"
+  val c = buildContractFromFile(parse(src).file, "1.0.0")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "record", "Money"), "record Money missing")
+  assertTrue(Str.contains(d.repr, "@pure func isPositive"), "@pure carried (got " + d.repr + ")")
+  assertTrue(not Str.contains(d.repr, "@pure func bump"), "no @pure on an impure method")
+  val rt = parse("package P\n\n" + d.repr + "\n")
+  assertEqualInt(rt.diagnostics.count, 0, "the repr re-parses (got " + d.repr + ")")
+}
+
+func isSomeDecl(o: in Option[ContractDecl]): Bool {
+  match o {
+    case Some(_) -> true
+    case None -> false
+  }
 }

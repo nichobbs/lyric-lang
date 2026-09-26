@@ -1357,6 +1357,40 @@ test "self-qualified literal pub val read resolves correctly" {
   )
 }
 
+// ─── Regression: a literal pub val read from a package codegen'd
+// BEFORE the declaring one ─────────────────────────────────────────────────
+// A literal `val` is inlined rather than stored in a field, and its
+// value used to reach `cctx.constValues` only when the declaring package was
+// codegen'd. A package lowered earlier (bundle order is list order: a test
+// package ahead of the library it imports) found neither a constant nor a
+// field and failed with T0115. The pre-pass now registers the constant, like
+// a non-literal val's field token. Negative literals are covered because
+// the pipeline folds `-N` into one literal (#7346), which is what turned
+// lyric-jsonrpc's `pub val methodNotFound: Int = -32601` into a literal.
+test "a literal pub val read by a package codegen'd before its own resolves" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "EarlyRead.App",
+      "package EarlyRead.App\n" + "\n" + "import EarlyRead.Lib\n" + "\n" + "func main(): Unit {\n" + "  println(neg)\n" +
+        "  println(pos)\n" +
+        "  println(k)\n" +
+        "  println(EarlyRead.Lib.neg)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "EarlyRead.Lib",
+      "package EarlyRead.Lib\n" + "\n" + "pub val neg: Int = -32601\n" + "pub val pos: Int = 5\n" +
+        "pub val k: Int = -7\n"
+    )
+  )
+  val result = compileAndRun("earlyread", packages, "EarlyRead")
+  assertEqualInt(result.exitCode, 0, "early_read_literal_val: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "-32601\n5\n-7\n-32601", "early_read_literal_val: values")
+}
+
 // ─── Regression: local shadowing a package name is not mistaken for a
 // qualified static val (#5265) ────────────────────────────────────────────
 // `tryQualifiedStaticValNameMsil`'s first-segment-local guard (mirroring

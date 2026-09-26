@@ -734,6 +734,16 @@ func jsonScalarOrNone(typeName: in String): Bool {
   jsonScalarGetterFor(typeName).length > 0
 }
 
+// `if not Std.Json.lyricJsonIsKind(<elem>, "<Type>") { return Err(...) }`:
+// a present field or element of the wrong kind is an `Err`, like a missing
+// one, instead of failing the getter's precondition (#7401).
+func jsonKindGuard(elemVarName: in String, typeName: in String, what: in String): Statement {
+  stmtIf(
+    notExpr(jsonCall2("lyricJsonIsKind", pathExpr(elemVarName), strLit(typeName))),
+    blockOf(oneStmtList(stmtReturn(call1("Err", strLit(what + ": expected " + typeName)))))
+  )
+}
+
 func jsonDecodeScalarExpr(elemVarName: in String, typeName: in String): Expr {
   val getterExpr = jsonCall1(jsonScalarGetterFor(typeName), pathExpr(elemVarName))
   if typeName == "Byte" {
@@ -757,6 +767,7 @@ func jsonSliceDecodeBlock(fieldName: in String, elemTy: in TypeExpr, restExpr: i
   val loopStmts: List[Statement] = newList()
   loopStmts.add(stmtVal("__json_elem", None, jsonCall1("arrayCurrent", pathExpr("__json_cur"))))
   if jsonScalarOrNone(elemTypeName) {
+    loopStmts.add(jsonKindGuard("__json_elem", elemTypeName, "an element of field '" + fieldName + "'"))
     loopStmts.add(
       stmtAssign(
         pathExpr(fieldName),
@@ -820,7 +831,10 @@ func jsonFieldDecodeBlock(fieldName: in String, ty: in TypeExpr, restExpr: in Ex
       val typeName = jsonTypeNameOf(ty)
       val getter = jsonScalarGetterFor(typeName)
       if getter.length > 0 {
-        blockValue(oneStmtList(stmtVal(fieldName, None, jsonDecodeScalarExpr("__e", typeName))), restExpr)
+        val stmts: List[Statement] = newList()
+        stmts.add(jsonKindGuard("__e", typeName, "field '" + fieldName + "'"))
+        stmts.add(stmtVal(fieldName, None, jsonDecodeScalarExpr("__e", typeName)))
+        blockValue(stmts, restExpr)
       } else {
         // Nested record: `TypeName.fromJson(Std.Json.getRawText(__e))` returns
         // `Result[TypeName, String]`; unwrap via a nested match, propagating a

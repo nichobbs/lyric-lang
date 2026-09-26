@@ -78,6 +78,8 @@ The compiler enforces one direction: a non-experimental `pub` function may not c
 100u32      // type suffix: u8, u16, u32, u64, i8, i16, i32, i64
 ```
 
+An unsuffixed integer literal is an `Int` when its value fits `Int` (`-2147483648 ..= 2147483647`) and a `Long` otherwise; it is never a wrapped `Int` (#7346).  `-2147483648` is an `Int`.  Next to an operand of another integer type the literal takes that type when its value fits it (`b == 200` with `b: Byte`).  An unsuffixed literal outside the range of the plain integer type a binding declares is `T0015` (`val x: Int = 3000000000`); as a call argument it is an ordinary type mismatch.
+
 C-style leading-zero octal (`0755`) is rejected by the lexer.
 
 An unrecognised suffix on a numeric literal (e.g. `100xyz`) is a lexer error (`L0015`). A based literal with no valid digits after the prefix (e.g. bare `0x`, `0b___` with only underscores) is also a lexer error (`L0016`).
@@ -194,8 +196,21 @@ A range refinement may also appear inline as a type annotation
 (`val x: Int range 0 ..= 9 = 5`). An inline refinement is transparent for type
 equivalence — it is interchangeable with its underlying numeric type — but when
 the initialiser is an integer literal outside the declared bounds the compiler
-rejects it at compile time (**T0015**). (Validating *non-literal* constructions
-of a refined type is a runtime/proof obligation, as above.)
+rejects it at compile time (**T0015**). Every other value is checked at
+runtime, with the same bounds (#7226):
+
+- a parameter with a refined type, on entry to the function (before its
+  `requires:` clauses);
+- a refined return type, like an `ensures:` clause on `result`;
+- a refined `val`/`var`/`let`, after its initializer;
+- a refined `var` (or `out`/`inout` parameter), after every assignment to it,
+  compound assignments included. A later binding of the same name (in an
+  inner block, a pattern, a loop or a lambda) shadows the refinement.
+
+A failure raises `RangeViolated: <Pkg.function> <name> must be in <type>`
+(e.g. `RangeViolated: P.digit parameter d must be in Int range 0 ..= 9`), a
+`Bug` like any contract violation. NaN is in no range. A module-level `val`
+with a refined type is checked only by T0015.
 
 ### 2.3 Distinct types
 
@@ -217,6 +232,8 @@ type UserId = Long derives Compare, Hash    // no arithmetic on user IDs
 ```
 
 Available derives: `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Compare`, `Ord`, `Hash`, `Equals`, `Default`. `Ord` synthesises a total ordering (`compare(self, other): Int` returning negative/zero/positive); valid on records, unions, enums, and distinct types. Numeric distinct types with `Add`/`Sub` permit operations only with values of the *same* type. `derives Default` is rejected when the underlying primitive's default value falls outside the declared range. The closed marker set is fixed by D034; see `docs/03-decision-log.md`.
+
+A distinct value's operators act on its underlying value. `==` and `!=` compare underlying values for every distinct type. The derived comparisons (`<`, `<=`, `>`, `>=` under `Compare`) order by it. Derived arithmetic produces `T.from(a.value op b.value)`, so a range subtype's result is range-checked exactly as a construction is (`from` panics outside the range). A compound assignment `x op= y` becomes `x = T.from(x.value op y.value)`, so its target must be a variable or a field path; any other target (`xs[i] += y`) is **T0134**. `x.value` reads the underlying value on every target. `T.from(x)` has type `T`, and `T.tryFrom(x)` has type `Result[T, String]`, whose `Err` carries `"<T>.tryFrom: value out of range [lo, hi]"`. On dotnet and the JVM a distinct value is a wrapper class. That class does not yet override value equality and hashing, so a distinct value used as a `Map` or `Set` key is compared by identity there (#7375); native represents distinct values as their underlying scalar.
 
 ### 2.4 Records
 
@@ -264,7 +281,7 @@ record Counter {
 
 The `var` prefix is accepted by the parser, which carries it into `FieldDecl.isMutable`. The mode checker (`lyric-compiler/lyric/mode_checker/`) enforces it for the shapes it can resolve without a symbol table. Three receiver forms are checked: a write to `r.field` (or `r.field op= …`) after construction, where `r` is a `var` local of a record or protected type declared in the same file and `field` is not marked `var`; a write to `c.field` (or `c.field op= …`) through an `inout` parameter `c` whose declared type is likewise a same-file record or protected type (issue #1815 part 2, #6155) — under the SAME rule: a write to a `var` field through the `inout` alias is allowed (the correct, safe idiom cursor-style state-threading records rely on, e.g. `Std.Xml.XmlState.pos`, once the mutated field itself carries `var`), a write to a non-`var` field is V0015; and a write to `self.field` (or `self.field op= …`) inside a method/entry body whose enclosing type is known — a record's own inherent method, an `impl` block method, or a protected type's `entry`/`func` member. All three are rejected with **V0015** ("cannot reassign immutable field"). Construction (`Rec(field = x)`) is never flagged. This is deliberately narrow (issue #1815 parts 1–2, widened for `self`/protected types by #6203/#6181): a write through an immutable (`val`/`let`/`in`) binding, or an `in`-mode parameter, is not tracked; nor is a write through a type declared in a different file; nor a **bare** implicit-self write (`field = x` with no `self.` prefix) inside a method body — distinguishing that shape from an ordinary local-variable reassignment of the same name requires tracking every declared local/parameter name in scope, not just `var`-record-typed ones, and is left for future work. An aspect's `around` advice body is walked for the local/`var`-record-typed-receiver form above, but has no enclosing `self` (aspect advice is not a method on a type), so the `self.field` form does not apply there. Emitter-level enforcement ships (issue #1815 part 2, #6596): the MSIL and JVM backends mark a non-`var` field `initonly`/`ACC_FINAL` — but ONLY when a whole-build write-safety audit (`Lyric.ModeChecker.computeFieldLockSafetyForBuild`, run once across every in-build package's source before any package's codegen) finds no write to that field NAME anywhere in the build through a shape V0015 above does not resolve — a nested field-access chain (`c.inner.n = …`), a write through a `val`-bound receiver, or the field passed as an `out`/`inout` call argument in a call the mode checker itself cannot resolve as the checked `inout`-cursor idiom above. A field caught by any of those unchecked shapes is left unlocked at the IL/bytecode level rather than risk emitting a store that violates `initonly`/`ACC_FINAL` (invalid IL CoreCLR tolerates at runtime but the JVM verifier rejects with `IllegalAccessError` — a silent cross-target divergence otherwise). The audit is keyed by bare field name, not per-record, so it is sound but occasionally more conservative than a fully precise per-record analysis; a record imported from a separately restored/precompiled dependency is outside what it can see, the same residual gap V0015 itself already discloses for cross-file writes. Widening the mode-checker rule itself to cross-file types and bare implicit-self writes is tracked as further follow-up work. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
 
-**Record-body method bodies are type-checked.** A `func` declared inside a `record { }` body (D037's in-body method form, §2.12 below covers `impl` methods) has its BODY — not just its parameter/return types — fully type-checked like an ordinary function (D-progress-774, #6487): both field-access spellings resolve — `self.field` (the explicit-receiver form) and a bare `field` reference (the same implicit-`self` fallback protected types get, #6173) — against the record's own declared fields, substituted through the record's own generic parameters for a generic record. An unknown name in either spelling is **T0020**, a write-type mismatch is **T0063**, and an ill-typed trailing expression is **T0070**. A bare call to another method of the SAME record (`dup()` with no receiver, #1722/#6435) also dispatches on the implicit `self` — and when a free function of the same bare name is also visible at the call site, the sibling method wins, identically on both targets (#6489; a qualified call `Pkg.f()` always resolves the free function).
+**Record-body method bodies are type-checked.** A `func` declared inside a `record { }` body (D037's in-body method form, §2.12 below covers `impl` methods) has its BODY — not just its parameter/return types — fully type-checked like an ordinary function (D-progress-774, #6487): both field-access spellings resolve — `self.field` (the explicit-receiver form) and a bare `field` reference (the same implicit-`self` fallback protected types get, #6173) — against the record's own declared fields, substituted through the record's own generic parameters for a generic record. An unknown name in either spelling is **T0020**, a write-type mismatch is **T0063**, and an ill-typed trailing expression is **T0070**. A record method takes leading annotations like an `impl` method (`@pure func isPositive(self: in Money): Bool { ... }`, #7383), so a contract clause may call a `@pure` one (§6.3); the annotation also crosses a package boundary. A bare call to another method of the SAME record (`dup()` with no receiver, #1722/#6435) also dispatches on the implicit `self` — and when a free function of the same bare name is also visible at the call site, the sibling method wins, identically on both targets (#6489; a qualified call `Pkg.f()` always resolves the free function).
 
 ### 2.5 Unions (sum types)
 
@@ -666,7 +683,7 @@ Lyric adopts the **Swift operator precedence table** as its base, with the follo
 - Bitwise operators are not symbolic — use `.and()`, `.or()`, `.xor()`, `.shl()`, `.shr()` methods on integer types. This sidesteps the C-family precedence trap with `&` and `==`.
   - `.shl(n: Int)` — logical left shift by `n` bits.  Equivalent to multiplication by `2^n`; high bits are discarded.
   - `.shr(n: Int)` — **arithmetic** right shift on signed integer types (`Byte`, `Int`, `Long`).  Sign bit is replicated into the vacated high bits, so negative inputs stay negative (`-1.shr(1) == -1`).  Unsigned types (`UInt`, `ULong`) get **logical** right shift (zero-extended).  This matches the .NET runtime's distinction between `>>` on `int` (arithmetic) and `int.UnsignedRightShift` / `>>>` introduced in .NET 7.  Protobuf zigzag encoders rely on this signed/unsigned split — see lyric-proto #361 for the RFC vector tests that pin the behaviour.
-- **Numeric / character conversions are explicit** — Lyric performs no implicit numeric widening or narrowing.  The numeric and character primitives `Byte`, `Int`, `Long`, `Double`, and `Char` carry the conversion methods `.toByte()`, `.toInt()`, `.toLong()`, `.toChar()`, and `.toDouble()`, each yielding the named target type.  Widening (`Int.toLong()`, `Int.toDouble()`) is lossless; narrowing (`Long.toInt()`, `Double.toInt()`) truncates toward zero, and `.toByte()` reduces modulo 256 to the **unsigned** `0..255` range (`Byte` is unsigned).  These are the surface form for mixing widths — e.g. summing a `slice[Byte]` element into an `Int` accumulator is `acc + b.toInt()`, never `acc + b`.  (Conversion methods on the unsigned integers `UInt`/`ULong`/`Nat` are not yet implemented — both targets now have a real erased representation for `UInt`/`ULong` (#6756/#6661/#6695) and unsigned-aware comparison/division/stringification for a bare scalar of either type (#6748/#6754 on `--target jvm`, #6913 on `--target dotnet`), so this is a remaining method-surface gap rather than a missing backend representation or unsigned-aware codegen; tracked separately (no issue filed yet). `.toFloat()` is separately reserved pending backend support for `Float`. Calling a conversion method on `String`/`Bool`/`Unit` is a `T0103` error.)
+- **Numeric / character conversions are explicit, except lossless widening** — Lyric performs no implicit narrowing, and widens implicitly only along the lossless chains `Byte < Int < Long`, `Byte < UInt < ULong` and `Float < Double`: an arithmetic or ordering (`<`, `<=`, `>`, `>=`) operand pair of two such types has the wider type (`i + l` with `i: Int`, `l: Long` is a `Long`, and `i < l` compares at 64 bits, on every target, a `UInt` zero-extending; #7350, #7382), while `==`/`!=` still require identical types (`T0032`), and a narrower value may initialise or be passed where a wider one of the same chain is declared.  `Char`, and conversions between chains (`Int` to `Double`, `Int` to `UInt`), are always explicit.  The numeric and character primitives `Byte`, `Int`, `Long`, `Double`, and `Char` carry the conversion methods `.toByte()`, `.toInt()`, `.toLong()`, `.toChar()`, and `.toDouble()`, each yielding the named target type.  Widening (`Int.toLong()`, `Int.toDouble()`) is lossless; narrowing (`Long.toInt()`, `Double.toInt()`) truncates toward zero, and `.toByte()` reduces modulo 256 to the **unsigned** `0..255` range (`Byte` is unsigned).  These are the surface form for mixing widths — e.g. summing a `slice[Byte]` element into an `Int` accumulator is `acc + b.toInt()`, never `acc + b`.  (Conversion methods on the unsigned integers `UInt`/`ULong`/`Nat` are not yet implemented — both targets now have a real erased representation for `UInt`/`ULong` (#6756/#6661/#6695) and unsigned-aware comparison/division/stringification for a bare scalar of either type (#6748/#6754 on `--target jvm`, #6913 on `--target dotnet`), so this is a remaining method-surface gap rather than a missing backend representation or unsigned-aware codegen; tracked separately (no issue filed yet). `.toFloat()` is separately reserved pending backend support for `Float`. Calling a conversion method on `String`/`Bool`/`Unit` is a `T0103` error.)
 - Chained comparisons follow **Rust's rule**: `a < b < c` is a parse error, not `(a < b) < c`. Comparison operators do not associate.
 - The ternary `?:` operator does not exist. Use `if expr then a else b`.
 - The `?` operator (error propagation) has its own precedence level immediately above postfix.
@@ -794,6 +811,23 @@ outer: for x in xs {
   }
 }
 ```
+
+A label is written `name:` directly before `for`, `while` or `do` (the
+unconditional loop `do { ... }`, which exits only through `break` or
+`return`). `break label` leaves the labelled loop and every loop inside it;
+`continue label` starts that loop's next iteration. Every `defer` in each
+loop the jump leaves runs first, innermost first. Resolution rules:
+
+- `break`/`continue` must sit inside a loop of the same function, and a
+  label must name an enclosing loop; otherwise it is a compile error
+  (**T0130**). A lambda body, a `defer` body and a `finally` block start
+  with no enclosing loops, so a jump in one of them cannot target a loop
+  outside it.
+- A loop may not reuse the label of a loop it is nested in (**T0131**).
+  Sibling loops may share a label.
+
+Labels are statement-position only; an identifier followed by `:` is a
+label only when a loop keyword comes next.
 
 `defer { ... }` schedules a block to run when its enclosing scope exits, on
 **every** path — normal fall-off, early `return`, `break`/`continue` out of the
@@ -1027,6 +1061,7 @@ func divide(n: in Int, d: in Int): Int
 
 - `requires`: precondition. Boolean expression evaluated on entry. Failure raises `PreconditionViolated` (a `Bug`).
 - `ensures`: postcondition. Boolean expression evaluated on return. Has access to `result` (the return value) and `old(expr)` (value of `expr` at entry). Failure raises `PostconditionViolated`. Every `return` is checked, wherever it appears: at the top level of the body, in `if`/`match`/loop/`try`/`scope` bodies, inside a `val`/`var` initializer or an assignment's right-hand side, and in an expression-bodied match arm, as well as the trailing fall-off value. The one exception is the early exit synthesized by `?` (§ error propagation): it returns the callee's `Err`/`None` unchanged and does not evaluate the postcondition, so write postconditions of `Result`/`Option`-returning functions in the `result.isOk implies ...` form.
+- Loop `invariant:` (on `while` and `for`, written between the header and the body): checked at the start of every iteration and again when the loop exits normally, that is when its condition is false or its iterator is exhausted, including a loop whose body never runs. An exit through `break` is not checked. Failure raises `LoopInvariantViolated`.
 - The failure message names the violation kind, the owning function qualified by its package, and the clause as written: `PreconditionViolated: Division.divide requires d != 0`, `PostconditionViolated: Division.divide ensures result >= 0`. Methods are named `Pkg.Type.method`; protected-type invariants report `InvariantViolated: Pkg.Type.entry invariant ...` and loop invariants `LoopInvariantViolated: invariant ...`. The message is identical on every target.
 - `requires` and `ensures` clauses may be repeated for clarity:
 
@@ -1081,7 +1116,7 @@ Internal mutations may temporarily violate the invariant; the invariant is check
 Contract expressions are pure: no side effects, no I/O, no mutation. They may use:
 - Standard arithmetic and comparison operators
 - Calls to functions explicitly marked `@pure`
-- `forall` and `exists` over finite ranges or collections (decidable fragment for proof; in `@runtime_checked` modules these are approximated as `true` — a sound over-approximation that does not verify the quantified property at runtime)
+- `forall` and `exists` (decidable fragment for proof). A quantifier may appear only in a `requires:`, `ensures:`, `decreases:` or `invariant:` clause; anywhere else it is `P0344`, including a `when:` barrier, which must be evaluated at runtime to decide whether a caller waits (#7404). Its domain is a type, so a runtime-checked build cannot evaluate it: the top-level `and`-conjunct of the clause that contains it is skipped with warning `W0002` (at the quantifier), and the clause's other conjuncts are still checked. Skipping the whole conjunct, rather than treating the quantifier as `true`, keeps the check sound under negation (`not exists ...`, #7228)
 - `old(expr)` in `ensures` clauses — captures the value of `expr` at function entry; the elaborator inserts a `let __old_N = expr` snapshot before any `requires` assertions
 - `result` in `ensures` clauses
 - `implies` (`a implies b` ≡ `not a or b`)
@@ -1091,6 +1126,20 @@ Contract expressions cannot:
 - Allocate
 - Mutate state
 - Throw
+
+**Enforcement.** Each `requires:`, `ensures:` and `when:` clause and each loop
+`invariant:` is type-checked in the function's scope (`result` has the
+declared return type) and must be `Bool`; otherwise it is **T0132**. A call in any of them that resolves to a
+Lyric function not marked `@pure` is **T0133**. `@pure` is trusted, not
+verified: the compiler does not inspect the callee's body. Built-in members
+(`xs.count`, `s.length`) are not calls. A function, record method, `impl`
+method or protected `func` is pure when it carries `@pure`; an interface
+method signature cannot carry annotations, so a call dispatched through an
+interface is never pure (#7410). A compiled package records `@pure` on its
+functions and record methods in its contract metadata, so a consumer's
+clauses may call them; an `impl` method restored from another package is
+seen through its interface's signature and is not. The allocation, mutation
+and throw rules are not checked separately.
 
 ### 6.4 Module verification levels
 
@@ -1279,9 +1328,9 @@ Semantics:
 - `entry` operations are exclusive (one at a time), may have a `when:` barrier (caller blocks until barrier is true), and may mutate state.
 - `func` operations are exclusive too — **[OPEN: should we allow concurrent reads? See 06-open-questions.md]**.
 - Barriers are re-evaluated whenever any operation completes.
-- The compiler emits a `SemaphoreSlim`-based mutual exclusion plus condition signaling for barriers (see `docs/09-msil-emission.md` §17.1–17.3).
+- Every `entry` and `func` holds the instance lock for its whole body: `Monitor.Enter`/`Exit(this)` in a `finally` on `--target dotnet`, a `synchronized` method on `--target jvm`, a `pthread` mutex on `--target native` (#7363). An `entry` or `func` whose `when:` barrier is false waits on that lock (`Monitor.Wait` / `Object.wait`, which release it), and every `entry` and `func` of a type with a barrier wakes all waiters on exit (`Monitor.PulseAll` / `notifyAll`, normal or exceptional exit), so each barrier is re-tested after every state change, whichever kind of member made it (#7384). Because the body runs under the lock, a protected `func` cannot be `async` or declare its own type parameters (`T0135`). `--target native` does not implement barriers yet and rejects them at build time (D-N-017).
 - The invariant is checked after every entry/func returns control to the caller.
-- `return` (including from inside nested `if`/`match`/`while`, not only as the body's literal last statement) and `?` are fully supported inside `entry` bodies on both the MSIL and JVM backends, routing correctly through the entry's lock-release path (D-progress-771). Plain `func` members of a protected type were never affected — they lower via the ordinary method path with no lock region.
+- `return` (including from inside nested `if`/`match`/`while`, not only as the body's literal last statement) and `?` are fully supported inside `entry` and `func` bodies on both the MSIL and JVM backends, routing correctly through the member's lock-release path (D-progress-771, #7363).
 - `entry` and `func` member BODIES are fully type-checked like ordinary function bodies (D-progress-772, #6481): the protected type's fields are in scope as locals (a `let`/immutable field rejects writes with T0087; a parameter shadows a same-named field), and ill-typed bodies are rejected at check time (T0070/T0020/T0043) instead of reaching the backends. Both field spellings are checked — the bare name (`count = v`) and the `self.` receiver form (`self.count = v`, D-progress-773, #6485); an unknown `self.<name>` in a member body is a T0020.
 - A member body may call a SIBLING member of the same protected type — by bare name (`doubled()`) or through `self.` (`self.doubled()`) — including an `entry` calling another `entry`: the lock wrappers are reentrant on both targets (CLR `Monitor`, JVM object monitors), so the nested acquisition is a no-op (D-progress-776, #6483). The same shadowing rule as records and impls applies: a same-named free function loses to the sibling member (#6489).
 

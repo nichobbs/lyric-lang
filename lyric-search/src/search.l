@@ -490,6 +490,7 @@ func parseIntOrDefault(s: in String, default: in Int): Int {
 
 /// The operators `SearchFilter.operator` may name.
 @stable(since = "0.2")
+@pure
 pub func isKnownFilterOperator(op: in String): Bool {
   op == "eq" or op == "gt" or op == "gte" or op == "lt" or op == "lte" or op == "contains"
 }

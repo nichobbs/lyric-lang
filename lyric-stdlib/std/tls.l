@@ -240,11 +240,14 @@ pub func Certificate.fromPemFile(path: in String): Result[Certificate, TlsError]
 /// Load a certificate (no private key) from PEM text already in memory.
 ///
 /// # Errors
-/// - `PemMalformed`: `pem` does not contain a parseable certificate.
+/// - `PemMalformed`: `pem` is empty or does not contain a parseable
+///   certificate. PEM text usually comes from an environment variable or a
+///   secret store, so an empty value is an error, not a precondition (#7251).
 @stable(since = "1.2")
-pub func Certificate.fromPem(pem: in String): Result[Certificate, TlsError]
-  requires: pem.length > 0
-{
+pub func Certificate.fromPem(pem: in String): Result[Certificate, TlsError] {
+  if pem.length == 0 {
+    return Err(error = PemMalformed(path = "<memory>", message = "the certificate PEM text is empty"))
+  }
   certFromBytes("<memory>", encodeUtf8(pem))
 }
 
@@ -279,12 +282,15 @@ pub func Identity.fromPemFiles(certPath: in String, keyPath: in String): Result[
 
 /// Load a certificate and its private key from PEM text already in memory.
 /// Same error discipline as `fromPemFiles`; `path` in the returned error is
-/// `"<memory>"`.
+/// `"<memory>"`. Empty PEM text is `PemMalformed` (#7251).
 @stable(since = "1.2")
-pub func Identity.fromPem(certPem: in String, keyPem: in String): Result[Identity, TlsError]
-  requires: certPem.length > 0
-  requires: keyPem.length > 0
-{
+pub func Identity.fromPem(certPem: in String, keyPem: in String): Result[Identity, TlsError] {
+  if certPem.length == 0 {
+    return Err(error = PemMalformed(path = "<memory>", message = "the certificate PEM text is empty"))
+  }
+  if keyPem.length == 0 {
+    return Err(error = PemMalformed(path = "<memory>", message = "the private key PEM text is empty"))
+  }
   identityFromBytes("<memory>", "<memory>", encodeUtf8(certPem), encodeUtf8(keyPem))
 }
 

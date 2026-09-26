@@ -198,6 +198,10 @@ record NDistinctInfo {
   hasRange: Bool
   lo: Long
   hi: Long
+  /// `[lo, hi]` or `[lo, hi)` as written, for the range-violation message.
+  boundsText: String
+  /// `Byte`/`UInt`/`ULong`-backed: bounds compare unsigned.
+  isUnsigned: Bool
 }
 
 /// Reverse metadata for a type instantiation: which generic declaration
@@ -385,6 +389,9 @@ record Ctx {
   tempScopes: List[List[NOwnedTemp]]
   loopVarDepth: List[Int]
   loopTempDepth: List[Int]
+  // Labelled loops currently being lowered (#7349): label -> the loop's index
+  // in loopBreak/loopCont/loopVarDepth/loopTempDepth.
+  loopLabelIndex: Map[String, Int]
   // `defer` (P2.D1): pending deferred `Block`s per lexical scope, mirroring `scopeRefs` — see D-N-020.
   deferStack: List[List[Block]]
   // `varEnumTypes` scope-undo log, one list per open lexical scope, mirroring
@@ -1262,9 +1269,59 @@ func releaseAllForReturn(ctx: in Ctx, insns: in List[NInsn]): Unit {
 
 /// Emit the releases `break`/`continue` need: var scopes and temp
 /// scopes opened inside the innermost loop (not the loop-outer ones); also runs each scope's pending `defer` blocks first (D-N-020).
-func releaseForLoopExit(ctx: in Ctx, insns: in List[NInsn]): Unit {
-  val varFloor = ctx.loopVarDepth[ctx.loopVarDepth.count - 1]
-  val tempFloor = ctx.loopTempDepth[ctx.loopTempDepth.count - 1]
+func enterLoopLabelNative(ctx: in Ctx, label: in Option[String]): Option[Int] {
+  match label {
+    case Some(l) -> {
+      val prev = mapGet(ctx.loopLabelIndex, l)
+      ctx.loopLabelIndex[l] = ctx.loopBreak.count
+      prev
+    }
+    case None -> None
+  }
+}
+
+// Restores the entry a nested loop's label shadowed: a loop in a `defer` or
+// lambda body may reuse an enclosing loop's label (#7394).
+func exitLoopLabelNative(ctx: in Ctx, label: in Option[String], prev: in Option[Int]): Unit {
+  match label {
+    case Some(l) -> match prev {
+      case Some(p) -> {
+        ctx.loopLabelIndex[l] = p
+      }
+      case None -> {
+        ctx.loopLabelIndex.remove(l);
+        ()
+      }
+    }
+    case None -> ()
+  }
+}
+
+// The type checker (T0130) guarantees a `break`/`continue` sits in a loop and
+// that its label names an enclosing one.
+func loopIndexForLabelNative(ctx: in Ctx, label: in Option[String]): Int {
+  match label {
+    case None -> {
+      if ctx.loopBreak.count == 0 {
+        panic("Lyric.LlvmCodegen: 'break'/'continue' outside a loop (compiler bug: T0130 should have rejected it)")
+      }
+      ctx.loopBreak.count - 1
+    }
+    case Some(l) -> match mapGet(ctx.loopLabelIndex, l) {
+      case Some(i) -> i
+      case None -> panic(
+        "Lyric.LlvmCodegen: no enclosing loop labelled '" + l +
+          "' (compiler bug: T0130 should have rejected it)"
+      )
+    }
+  }
+}
+
+// Releases and runs the defers of every scope inside loop `li` (for a labelled
+// jump, that includes each inner loop it exits).
+func releaseForLoopExit(ctx: in Ctx, insns: in List[NInsn], li: in Int): Unit {
+  val varFloor = ctx.loopVarDepth[li]
+  val tempFloor = ctx.loopTempDepth[li]
   var ti = ctx.tempScopes.count - 1
   while ti >= tempFloor {
     val scp = ctx.tempScopes[ti]
@@ -1707,35 +1764,81 @@ func isIntNType(t: in NType): Bool {
   }
 }
 
-/// Unify the operand types of a binary op: identical types pass; a
-/// literal adapts to the other side's width.  Anything else is a
-/// codegen error (the type checker rejects it upstream).
-func unifyOperands(a: in NVal, b: in NVal): NType {
-  val sameKind = nTypeToIrString(a.ty) == nTypeToIrString(b.ty)
-  if sameKind {
-    return a.ty
+/// Both operands of a binary op at the type the checker gives it.
+record WidenedOperands {
+  a: NVal
+  b: NVal
+  ty: NType
+}
+
+func intNTypeRank(t: in NType): Int {
+  match t {
+    case NI8 -> 1
+    case NI32 -> 2
+    case NI64 -> 3
+    case _ -> 0
+  }
+}
+
+func litFitsNType(v: in Long, t: in NType): Bool {
+  match t {
+    case NI8 -> v >= 0i64 and v <= 255i64
+    case NI32 -> v >= 0i64 - 2147483648i64 and v <= 2147483647i64
+    case NI64 -> true
+    case _ -> false
+  }
+}
+
+// Extend an integer operand to `toTy`: `Byte` (i8) is unsigned and
+// zero-extends; `Int` sign-extends.
+func extendIntOperand(ctx: in Ctx, insns: in List[NInsn], v: in NVal, toTy: in NType): NVal {
+  val dest = freshTmp(ctx)
+  match v.ty {
+    case NI8 -> insns.add(NZExt(dest = dest, fromTy = v.ty, value = v.value, toTy = toTy))
+    case _ -> insns.add(NSExt(dest = dest, fromTy = v.ty, value = v.value, toTy = toTy))
+  }
+  NVal(ty = toTy, value = NLocal(name = dest))
+}
+
+/// Bring a binary op's operands to one type, as the type checker's
+/// `widenArithmetic` does (#7350): identical types pass; an integer literal
+/// takes the other side's width when its value fits there; otherwise the
+/// narrower integer operand is extended to the wider one (`Byte < Int <
+/// Long`).  `Float` and `Double` are both `double` here.  Anything else is
+/// a codegen error (the type checker rejects it upstream).
+func widenOperands(ctx: in Ctx, insns: in List[NInsn], a: in NVal, b: in NVal): WidenedOperands {
+  if nTypeToIrString(a.ty) == nTypeToIrString(b.ty) {
+    return WidenedOperands(a = a, b = b, ty = a.ty)
   }
   match a.value {
-    case NLitInt(_, _) -> {
-      if isIntNType(b.ty) {
-        return b.ty
+    case NLitInt(v, _) -> {
+      if litFitsNType(v, b.ty) {
+        return WidenedOperands(a = NVal(ty = b.ty, value = a.value), b = b, ty = b.ty)
       }
     }
     case _ -> {
     }
   }
   match b.value {
-    case NLitInt(_, _) -> {
-      if isIntNType(a.ty) {
-        return a.ty
+    case NLitInt(v, _) -> {
+      if litFitsNType(v, a.ty) {
+        return WidenedOperands(a = a, b = NVal(ty = a.ty, value = b.value), ty = a.ty)
       }
     }
     case _ -> {
     }
   }
+  val ra = intNTypeRank(a.ty)
+  val rb = intNTypeRank(b.ty)
+  if ra > 0 and rb > 0 {
+    if ra > rb {
+      return WidenedOperands(a = a, b = extendIntOperand(ctx, insns, b, a.ty), ty = a.ty)
+    }
+    return WidenedOperands(a = extendIntOperand(ctx, insns, a, b.ty), b = b, ty = b.ty)
+  }
   panic(
     "Lyric.LlvmCodegen: mixed operand types '" + nTypeToIrString(a.ty) + "' and '" + nTypeToIrString(b.ty) +
-      "' (insert an explicit conversion such as .toLong()/.toFloat())"
+      "' reached codegen; the type checker admits no such pair"
   )
 }
 
@@ -2265,38 +2368,38 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
     }
     return lowerStringBinop(ctx, insns, op, a2, b2)
   }
+  val w = widenOperands(ctx, insns, a, b)
   if isComparisonOp(op) {
-    match unifyOperands(a, b) {
+    match w.ty {
       case NDouble -> {
         val dest = freshTmp(ctx)
-        insns.add(NFCmp(dest = dest, pred = fcmpPredFor(op), a = a.value, b = b.value))
+        insns.add(NFCmp(dest = dest, pred = fcmpPredFor(op), a = w.a.value, b = w.b.value))
         return NVal(ty = NI1, value = NLocal(name = dest))
       }
       case NI8 -> {
         val dest = freshTmp(ctx)
-        insns.add(NICmp(dest = dest, pred = icmpPredForUnsigned(op), ty = NI8, a = a.value, b = b.value))
+        insns.add(NICmp(dest = dest, pred = icmpPredForUnsigned(op), ty = NI8, a = w.a.value, b = w.b.value))
         return NVal(ty = NI1, value = NLocal(name = dest))
       }
       case ty -> {
         val dest = freshTmp(ctx)
-        insns.add(NICmp(dest = dest, pred = icmpPredFor(op), ty = ty, a = a.value, b = b.value))
+        insns.add(NICmp(dest = dest, pred = icmpPredFor(op), ty = ty, a = w.a.value, b = w.b.value))
         return NVal(ty = NI1, value = NLocal(name = dest))
       }
     }
   }
   match op {
     case BXor -> {
-      val ty = unifyOperands(a, b)
       val dest = freshTmp(ctx)
-      insns.add(NXor(dest = dest, ty = ty, a = a.value, b = b.value))
-      return NVal(ty = ty, value = NLocal(name = dest))
+      insns.add(NXor(dest = dest, ty = w.ty, a = w.a.value, b = w.b.value))
+      return NVal(ty = w.ty, value = NLocal(name = dest))
     }
     case _ -> {
     }
   }
-  match unifyOperands(a, b) {
-    case NDouble -> binFloatOp(ctx, insns, op, a.value, b.value)
-    case ty -> binIntOp(ctx, insns, op, ty, a.value, b.value, line)
+  match w.ty {
+    case NDouble -> binFloatOp(ctx, insns, op, w.a.value, w.b.value)
+    case ty -> binIntOp(ctx, insns, op, ty, w.a.value, w.b.value, line)
   }
 }
 
@@ -3305,6 +3408,9 @@ func lowerCallEx(
             case CANamed(_, _, _) -> panic("Lyric.LlvmCodegen: nativeAddrOf takes a positional local variable")
           }
         }
+        if n == "__lyric_protected_wait" or n == "__lyric_protected_notify" {
+          panic("Lyric.LlvmCodegen: protected-type `when:` barriers are not yet supported for --target native (D-N-017)")
+        }
         if n == "assert" and args.count >= 1 {
           val cond = lowerPositionalArg(ctx, insns, args, 0)
           val okL = freshLabel(ctx, "assert.ok")
@@ -3727,11 +3833,19 @@ func tryLowerConstruct(
     case None -> {
     }
   }
-  // `X.From(v)` distinct-conversion spelling.
-  if Str.endsWith(name, ".From") {
+  // `X.from(v)` (language reference §2.3) and the older `X.From(v)`.
+  if Str.endsWith(name, ".from") or Str.endsWith(name, ".From") {
     val baseName = Str.substring(name, 0, name.length - 5)
     match mapGet(ctx.distinctDefs, baseName) {
       case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, baseName, di, args, line))
+      case None -> {
+      }
+    }
+  }
+  if Str.endsWith(name, ".tryFrom") {
+    val baseName = Str.substring(name, 0, name.length - 8)
+    match mapGet(ctx.distinctDefs, baseName) {
+      case Some(di) -> return Some(value = lowerDistinctTryFrom(ctx, insns, baseName, di, args, line))
       case None -> {
       }
     }
@@ -4223,6 +4337,7 @@ func registerDistinct(ctx: in Ctx, pkg: in String, dd: in DistinctTypeDecl, stri
   var hasRange = false
   var lo = 0i64
   var hi = 0i64
+  var boundsText = ""
   match dd.rangeClause {
     case Some(rb) -> {
       var loExprOpt: Option[Expr] = None
@@ -4279,6 +4394,7 @@ func registerDistinct(ctx: in Ctx, pkg: in String, dd: in DistinctTypeDecl, stri
               boundsOk = true
               lo = l
               hi = if hiInclusive { h } else { h - 1i64 }
+              boundsText = "[" + toString(l) + ", " + toString(h) + (if hiInclusive { "]" } else { ")" })
             }
             case None -> {
             }
@@ -4297,7 +4413,19 @@ func registerDistinct(ctx: in Ctx, pkg: in String, dd: in DistinctTypeDecl, stri
     case None -> {
     }
   }
-  val info = NDistinctInfo(underlying = under, hasRange = hasRange, lo = lo, hi = hi)
+  val underName = match dd.underlying.kind {
+    case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
+    case _ -> ""
+  }
+  val isUnsigned = underName == "Byte" or underName == "UInt" or underName == "ULong"
+  val info = NDistinctInfo(
+    underlying = under,
+    hasRange = hasRange,
+    lo = lo,
+    hi = hi,
+    boundsText = boundsText,
+    isUnsigned = isUnsigned
+  )
   if not ctx.distinctDefs.containsKey(pkg + "." + dd.name) {
     ctx.distinctDefs.add(pkg + "." + dd.name, info)
   }
@@ -5983,6 +6111,92 @@ func lowerForOverList(ctx: in Ctx, insns: in List[NInsn], pat: in Pattern, iter:
   val nextIdx = freshTmp(ctx)
   insns.add(NAdd(dest = nextIdx, ty = NI64, a = NLocal(name = incIdx), b = NLitInt(v = 1i64, ty = NI64)))
   insns.add(NStore(ty = NI64, value = NLocal(name = nextIdx), ptr = NLocal(name = idxSlot)))
+  insns.add(NBr(label = condL))
+  insns.add(NLabel(name = exitL))
+}
+
+/// `for i in lo ..< hi` / `lo ..= hi`: a counted loop over the bounds' common
+/// integer type, both bounds evaluated once at entry (matching the MSIL and
+/// JVM counting loops).  `Byte` bounds compare unsigned (#4628).
+func lowerForOverRange(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  pat: in Pattern,
+  lo: in Expr,
+  hi: in Expr,
+  inclusive: in Bool,
+  body: in Block,
+): Unit {
+  var bindName = ""
+  var haveBind = false
+  match pat.kind {
+    case PBinding(nm, inner) -> {
+      match inner {
+        case Some(_) -> panic(
+          "Lyric.LlvmCodegen: this for-pattern is not yet supported for --target native (use a plain name)"
+        )
+        case None -> {
+          bindName = nm
+          haveBind = true
+        }
+      }
+    }
+    case PWildcard -> {
+    }
+    case _ -> panic("Lyric.LlvmCodegen: this for-pattern is not yet supported for --target native (use a plain name)")
+  }
+  val loV = lowerExpr(ctx, insns, lo)
+  val hiV = lowerExpr(ctx, insns, hi)
+  val w = widenOperands(ctx, insns, loV, hiV)
+  if intNTypeRank(w.ty) == 0 {
+    panic("Lyric.LlvmCodegen: a range `for` needs integer bounds; got " + nTypeToIrString(w.ty))
+  }
+  val ty = w.ty
+  val idxSlot = "for.idx." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = idxSlot, ty = ty))
+  insns.add(NStore(ty = ty, value = w.a.value, ptr = NLocal(name = idxSlot)))
+  val hiSlot = "for.hi." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = hiSlot, ty = ty))
+  insns.add(NStore(ty = ty, value = w.b.value, ptr = NLocal(name = hiSlot)))
+  val pred = match ty { case NI8 -> if inclusive { IUle } else { IUlt }; case _ -> if inclusive { ISle } else { ISlt } }
+  val condL = freshLabel(ctx, "for.cond")
+  val bodyL = freshLabel(ctx, "for.body")
+  val incL = freshLabel(ctx, "for.inc")
+  val exitL = freshLabel(ctx, "for.exit")
+  insns.add(NBr(label = condL))
+  insns.add(NLabel(name = condL))
+  val curIdx = freshTmp(ctx)
+  insns.add(NLoad(dest = curIdx, ty = ty, ptr = NLocal(name = idxSlot)))
+  val curHi = freshTmp(ctx)
+  insns.add(NLoad(dest = curHi, ty = ty, ptr = NLocal(name = hiSlot)))
+  val cmp = freshTmp(ctx)
+  insns.add(NICmp(dest = cmp, pred = pred, ty = ty, a = NLocal(name = curIdx), b = NLocal(name = curHi)))
+  insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = bodyL, elseLabel = exitL))
+  insns.add(NLabel(name = bodyL))
+  ctx.loopBreak.add(exitL)
+  ctx.loopCont.add(incL)
+  ctx.loopVarDepth.add(ctx.scopeRefs.count)
+  ctx.loopTempDepth.add(ctx.tempScopes.count)
+  pushVarScope(ctx)
+  if haveBind {
+    val bodyIdx = freshTmp(ctx)
+    insns.add(NLoad(dest = bodyIdx, ty = ty, ptr = NLocal(name = idxSlot)))
+    bindLocal(ctx, insns, bindName, NVal(ty = ty, value = NLocal(name = bodyIdx)))
+    markVarChar(ctx, bindName, false)
+  }
+  lowerBlockStmts(ctx, insns, body)
+  popVarScope(ctx, insns)
+  ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+  ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+  ctx.loopVarDepth.removeAt(ctx.loopVarDepth.count - 1)
+  ctx.loopTempDepth.removeAt(ctx.loopTempDepth.count - 1)
+  insns.add(NBr(label = incL))
+  insns.add(NLabel(name = incL))
+  val incIdx = freshTmp(ctx)
+  insns.add(NLoad(dest = incIdx, ty = ty, ptr = NLocal(name = idxSlot)))
+  val nextIdx = freshTmp(ctx)
+  insns.add(NAdd(dest = nextIdx, ty = ty, a = NLocal(name = incIdx), b = NLitInt(v = 1i64, ty = ty)))
+  insns.add(NStore(ty = ty, value = NLocal(name = nextIdx), ptr = NLocal(name = idxSlot)))
   insns.add(NBr(label = condL))
   insns.add(NLabel(name = exitL))
 }
@@ -8060,25 +8274,119 @@ func lowerDistinctConstruct(
   }
   val v = coerceTo(ctx, insns, lowerPositionalArg(ctx, insns, args, 0), di.underlying)
   if di.hasRange {
-    val loCmp = freshTmp(ctx)
-    insns.add(
-      NICmp(dest = loCmp, pred = ISlt, ty = di.underlying, a = v.value, b = NLitInt(v = di.lo, ty = di.underlying))
-    )
-    val hiCmp = freshTmp(ctx)
-    insns.add(
-      NICmp(dest = hiCmp, pred = ISgt, ty = di.underlying, a = v.value, b = NLitInt(v = di.hi, ty = di.underlying))
-    )
-    val bad = freshTmp(ctx)
-    insns.add(NOr(dest = bad, ty = NI1, a = NLocal(name = loCmp), b = NLocal(name = hiCmp)))
+    val bad = distinctOutOfRange(ctx, insns, di, v)
     val trapL = freshLabel(ctx, "range.trap")
     val okL = freshLabel(ctx, "range.ok")
-    insns.add(NCondBr(cond = NLocal(name = bad), thenLabel = trapL, elseLabel = okL))
+    insns.add(NCondBr(cond = bad, thenLabel = trapL, elseLabel = okL))
     insns.add(NLabel(name = trapL))
-    emitPanicRaw(ctx, insns, "value out of range for type " + name, line)
+    emitPanicRaw(ctx, insns, distinctRangeMessage(name, "from", di), line)
     insns.add(NBr(label = okL))
     insns.add(NLabel(name = okL))
   }
   v
+}
+
+/// The same text the managed targets raise (language reference §2.3).
+func distinctRangeMessage(name: in String, method: in String, di: in NDistinctInfo): String {
+  val dot = lastDotIndex(name)
+  val short = if dot >= 0 { Str.substring(name, dot + 1, name.length - dot - 1) } else { name }
+  short + "." + method + ": value out of range " + di.boundsText
+}
+
+/// An `i1` that is true when `v` lies outside `di`'s bounds.
+func distinctOutOfRange(ctx: in Ctx, insns: in List[NInsn], di: in NDistinctInfo, v: in NVal): NValue {
+  val ltPred = if di.isUnsigned { IUlt } else { ISlt }
+  val gtPred = if di.isUnsigned { IUgt } else { ISgt }
+  val loCmp = freshTmp(ctx)
+  insns.add(
+    NICmp(dest = loCmp, pred = ltPred, ty = di.underlying, a = v.value, b = NLitInt(v = di.lo, ty = di.underlying))
+  )
+  val hiCmp = freshTmp(ctx)
+  insns.add(
+    NICmp(dest = hiCmp, pred = gtPred, ty = di.underlying, a = v.value, b = NLitInt(v = di.hi, ty = di.underlying))
+  )
+  val bad = freshTmp(ctx)
+  insns.add(NOr(dest = bad, ty = NI1, a = NLocal(name = loCmp), b = NLocal(name = hiCmp)))
+  NLocal(name = bad)
+}
+
+/// `T.tryFrom(x)`: `Ok(x)` when `x` is in range, otherwise
+/// `Err("<T>.tryFrom: value out of range [lo, hi]")` as on the managed targets, as `Result[T, String]`.
+/// Each arm is lowered against the expected `Result` type so the generic
+/// cases instantiate with both type arguments known.
+func lowerDistinctTryFrom(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  name: in String,
+  di: in NDistinctInfo,
+  args: in List[CallArg],
+  line: in Int,
+): NVal {
+  if args.count != 1 {
+    panic("Lyric.LlvmCodegen: '" + name + ".tryFrom' takes exactly one argument")
+  }
+  val sp = callArgSpan(args[0])
+  val v = coerceTo(ctx, insns, lowerPositionalArg(ctx, insns, args, 0), di.underlying)
+  val tmp = "__tryfrom_" + freshTmp(ctx)
+  bindLocal(ctx, insns, tmp, v)
+  val tyArgs: List[TypeArg] = newList()
+  tyArgs.add(TAType(ty = TypeExpr(kind = TRef(path = dottedPath(name, sp)), span = sp)))
+  tyArgs.add(TAType(ty = TypeExpr(kind = TRef(path = dottedPath("String", sp)), span = sp)))
+  val want = typeToN(ctx, TypeExpr(kind = TGenericApp(head = dottedPath("Result", sp), args = tyArgs), span = sp))
+  val okCall = caseCallExpr("Ok", Expr(kind = EPath(path = dottedPath(tmp, sp)), span = sp), sp)
+  if not di.hasRange {
+    return lowerExprExpecting(ctx, insns, okCall, want)
+  }
+  val bad = distinctOutOfRange(ctx, insns, di, loadLocal(ctx, insns, tmp))
+  val errL = freshLabel(ctx, "tryfrom.err")
+  val okL = freshLabel(ctx, "tryfrom.ok")
+  val joinL = freshLabel(ctx, "tryfrom.join")
+  val slot = "tryfrom." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = slot, ty = want))
+  insns.add(NCondBr(cond = bad, thenLabel = errL, elseLabel = okL))
+  insns.add(NLabel(name = errL))
+  val msg = Expr(kind = ELiteral(lit = LString(text = distinctRangeMessage(name, "tryFrom", di))), span = sp)
+  val errV = lowerExprExpecting(ctx, insns, caseCallExpr("Err", msg, sp), want)
+  // Ownership moves into the join slot; the joined value is the one temp.
+  ensureOwned(ctx, insns, errV)
+  insns.add(NStore(ty = want, value = errV.value, ptr = NLocal(name = slot)))
+  insns.add(NBr(label = joinL))
+  insns.add(NLabel(name = okL))
+  val okV = lowerExprExpecting(ctx, insns, okCall, want)
+  // Ownership moves into the join slot; the joined value is the one temp.
+  ensureOwned(ctx, insns, okV)
+  insns.add(NStore(ty = want, value = okV.value, ptr = NLocal(name = slot)))
+  insns.add(NBr(label = joinL))
+  insns.add(NLabel(name = joinL))
+  val loaded = freshTmp(ctx)
+  insns.add(NLoad(dest = loaded, ty = want, ptr = NLocal(name = slot)))
+  val res = NVal(ty = want, value = NLocal(name = loaded))
+  registerTemp(ctx, res)
+  res
+}
+
+func callArgSpan(a: in CallArg): Span {
+  match a {
+    case CAPositional(ex) -> ex.span
+    case CANamed(_, _, sp) -> sp
+  }
+}
+
+func dottedPath(name: in String, sp: in Span): ModulePath {
+  val parts = Str.split(name, ".")
+  val segs: List[String] = newList()
+  var i = 0
+  while i < parts.length {
+    segs.add(parts[i])
+    i = i + 1
+  }
+  ModulePath(segments = segs, span = sp)
+}
+
+func caseCallExpr(caseName: in String, arg: in Expr, sp: in Span): Expr {
+  val cargs: List[CallArg] = newList()
+  cargs.add(CAPositional(expr = arg))
+  Expr(kind = ECall(fn = Expr(kind = EPath(path = dottedPath(caseName, sp)), span = sp), args = cargs), span = sp)
 }
 
 // ── Pattern matching (N2.4) ──────────────────────────────────────────────────
@@ -8906,37 +9214,18 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
       insns.add(NLabel(name = freshLabel(ctx, "dead")))
     }
     case SBreak(label) -> {
-      match label {
-        case Some(_) -> panic("Lyric.LlvmCodegen: labeled break is not yet supported for --target native")
-        case None -> {
-        }
-      }
-      if ctx.loopBreak.count == 0 {
-        panic("Lyric.LlvmCodegen: 'break' outside a loop")
-      }
-      releaseForLoopExit(ctx, insns)
-      insns.add(NBr(label = ctx.loopBreak[ctx.loopBreak.count - 1]))
+      val li = loopIndexForLabelNative(ctx, label)
+      releaseForLoopExit(ctx, insns, li)
+      insns.add(NBr(label = ctx.loopBreak[li]))
       insns.add(NLabel(name = freshLabel(ctx, "dead")))
     }
     case SContinue(label) -> {
-      match label {
-        case Some(_) -> panic("Lyric.LlvmCodegen: labeled continue is not yet supported for --target native")
-        case None -> {
-        }
-      }
-      if ctx.loopCont.count == 0 {
-        panic("Lyric.LlvmCodegen: 'continue' outside a loop")
-      }
-      releaseForLoopExit(ctx, insns)
-      insns.add(NBr(label = ctx.loopCont[ctx.loopCont.count - 1]))
+      val li = loopIndexForLabelNative(ctx, label)
+      releaseForLoopExit(ctx, insns, li)
+      insns.add(NBr(label = ctx.loopCont[li]))
       insns.add(NLabel(name = freshLabel(ctx, "dead")))
     }
     case SWhile(label, cond, body) -> {
-      match label {
-        case Some(_) -> panic("Lyric.LlvmCodegen: labeled while is not yet supported for --target native")
-        case None -> {
-        }
-      }
       val condL = freshLabel(ctx, "while.cond")
       val bodyL = freshLabel(ctx, "while.body")
       val exitL = freshLabel(ctx, "while.exit")
@@ -8948,11 +9237,13 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
       popTempScope(ctx, insns)
       insns.add(NCondBr(cond = c.value, thenLabel = bodyL, elseLabel = exitL))
       insns.add(NLabel(name = bodyL))
+      val savedLabel1 = enterLoopLabelNative(ctx, label)
       ctx.loopBreak.add(exitL)
       ctx.loopCont.add(condL)
       ctx.loopVarDepth.add(ctx.scopeRefs.count)
       ctx.loopTempDepth.add(ctx.tempScopes.count)
       lowerBlockStmts(ctx, insns, body)
+      exitLoopLabelNative(ctx, label, savedLabel1)
       ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
       ctx.loopCont.removeAt(ctx.loopCont.count - 1)
       ctx.loopVarDepth.removeAt(ctx.loopVarDepth.count - 1)
@@ -8964,14 +9255,41 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
       val _ = lowerExpr(ctx, insns, ex)
     }
     case SFor(label, pat, iter, body) -> {
-      match label {
-        case Some(_) -> panic("Lyric.LlvmCodegen: labeled for is not yet supported for --target native")
-        case None -> {
+      val savedLabel2 = enterLoopLabelNative(ctx, label)
+      match iter.kind {
+        case ERange(bound) -> match bound {
+          case RBClosed(lo, hi) -> lowerForOverRange(ctx, insns, pat, lo, hi, true, body)
+          case RBHalfOpen(lo, hi, _) -> lowerForOverRange(ctx, insns, pat, lo, hi, false, body)
+          case RBLowerOpen(_) -> panic(
+            "Lyric.LlvmCodegen: an open-start range cannot drive a `for` loop (no lower bound to count from)"
+          )
+          case RBUpperOpen(_) -> panic(
+            "Lyric.LlvmCodegen: an open-end range cannot drive a `for` loop (no upper bound to stop at)"
+          )
         }
+        case _ -> lowerForOverList(ctx, insns, pat, iter, body)
       }
-      lowerForOverList(ctx, insns, pat, iter, body)
+      exitLoopLabelNative(ctx, label, savedLabel2)
     }
-    case SLoop(_, _) -> panic("Lyric.LlvmCodegen: 'loop' is not yet supported for --target native (use 'while true')")
+    case SLoop(label, body) -> {
+      val bodyL = freshLabel(ctx, "loop.body")
+      val exitL = freshLabel(ctx, "loop.exit")
+      insns.add(NBr(label = bodyL))
+      insns.add(NLabel(name = bodyL))
+      val savedLabel3 = enterLoopLabelNative(ctx, label)
+      ctx.loopBreak.add(exitL)
+      ctx.loopCont.add(bodyL)
+      ctx.loopVarDepth.add(ctx.scopeRefs.count)
+      ctx.loopTempDepth.add(ctx.tempScopes.count)
+      lowerBlockStmts(ctx, insns, body)
+      exitLoopLabelNative(ctx, label, savedLabel3)
+      ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+      ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+      ctx.loopVarDepth.removeAt(ctx.loopVarDepth.count - 1)
+      ctx.loopTempDepth.removeAt(ctx.loopTempDepth.count - 1)
+      insns.add(NBr(label = bodyL))
+      insns.add(NLabel(name = exitL))
+    }
     case SThrow(_) -> panic("Lyric.LlvmCodegen: 'throw' is not supported for --target native (D-N-003: panics abort)")
     case STry(_, _, _) -> panic(
       "Lyric.LlvmCodegen: try/catch is not supported for --target native (D-N-003: no unwinding)"
@@ -9411,6 +9729,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     tempScopes = newList(),
     loopVarDepth = newList(),
     loopTempDepth = newList(),
+    loopLabelIndex = newMap(),
     deferStack = newList(),
     enumTypeUndo = newList(),
     bindingUndo = newList(),
@@ -10303,6 +10622,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     tempScopes = newList(),
     loopVarDepth = newList(),
     loopTempDepth = newList(),
+    loopLabelIndex = newMap(),
     deferStack = newList(),
     enumTypeUndo = newList(),
     bindingUndo = newList(),

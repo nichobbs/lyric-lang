@@ -2336,6 +2336,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/loop_invariant_self_test.l
+      - name: Labelled-loop self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/labelled_loops_self_test.l
 
       # Function-value invocation — pins #1877: invoking a function-typed value
       # (`f()` where f: () -> R) through the uniform Func ABI.  Zero-argument
@@ -3193,6 +3198,51 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/imported_union_case_ctor_self_test.l
+      - name: default() assignment self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/default_assign_self_test.l
+      - name: Integer literal range self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/int_literal_range_self_test.l
+      - name: Mixed-width arithmetic self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/mixed_width_arith_self_test.l
+      - name: Mixed-width unsigned arithmetic self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/mixed_width_unsigned_self_test.l
+      - name: Contract quantifier self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/contract_quantifier_self_test.l
+      - name: Range refinement self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/range_refinement_self_test.l
+      - name: Protected-type exclusion and barriers self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/protected_exclusion_dotnet_self_test.l
+      - name: Range subtype arithmetic self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/range_subtype_arith_self_test.l
+      - name: Distinct-type operator self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/distinct_ops_self_test.l
 
       - name: Wait for parallel tests (dotnet-b batch 4 split, #4975)
         wait-all: true
@@ -4479,6 +4529,11 @@ jobs:
       # Placed in this second sub-batch (not the pre-split batch above, which
       # has drifted back over the ~14-concurrent-step cap; #5913) to keep the
       # runner's parallel-step status collection reliable.
+      - name: Std.Testing.Property test coverage on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/testing_property_contracts_tests.l
       - name: Std.Tls test coverage on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -5389,6 +5444,61 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/imported_union_case_ctor_self_test.l
+      - name: default() assignment self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/default_assign_self_test.l
+      - name: Loop invariant self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/loop_invariant_self_test.l
+      - name: Labelled-loop self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/labelled_loops_self_test.l
+      - name: Integer literal range self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/int_literal_range_self_test.l
+      - name: Mixed-width arithmetic self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/mixed_width_arith_self_test.l
+      - name: Mixed-width unsigned arithmetic self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/mixed_width_unsigned_self_test.l
+      - name: Contract quantifier self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/contract_quantifier_self_test.l
+      - name: Range refinement self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_refinement_self_test.l
+      - name: Protected-type exclusion and barriers self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/protected_exclusion_jvm_self_test.l
+      - name: Range subtype arithmetic self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/range_subtype_arith_self_test.l
+      - name: Distinct-type operator self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/distinct_ops_self_test.l
       # NaN-comparison self-test on JVM (#2772) — pins IEEE 754 §5.11 ordered
       # comparisons for Float/Double: `lowerCmp`/`lowerCmpFail` must select the
       # `fcmpg`/`dcmpg` ("g") variant for `<`/`<=` (NaN -> +1 -> branch not taken
@@ -7269,6 +7379,11 @@ jobs:
       - name: Std.Log test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/log_tests.l
+      # Property runners' preconditions and the JVM re-exported-alias
+      # regression (#7251); the same file runs on --target jvm below.
+      - name: Std.Testing.Property test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/testing_property_contracts_tests.l
 
       # Pins the D-N-026 four-format parse contract on the managed target,
       # including Option[Uuid] flowing through the generic Std.Core helpers

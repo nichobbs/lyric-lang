@@ -1212,6 +1212,41 @@ test "inline refined half open excludes hi" {
   assertTrue(hasDiagCode(cr, "T0015"), "inline-range half-open excludes hi: T0015")
 }
 
+// #7346: an unsuffixed literal outside Int's range is not an Int.
+test "int literal out of range for Int is T0015" {
+  val cr = parseCheck("package P\nfunc f(): Unit {\n  val x: Int = 2147483648\n}\n")
+  assertTrue(hasDiagCode(cr, "T0015"), "2147483648 into Int: T0015")
+  assertTrue(not hasDiagCode(cr, "T0060"), "2147483648 into Int: no duplicate T0060")
+  val cr2 = parseCheck("package P\nfunc f(): Unit {\n  var y: Int = -2147483649\n}\n")
+  assertTrue(hasDiagCode(cr2, "T0015"), "-2147483649 into Int: T0015")
+}
+
+test "int literal boundaries and Long defaults" {
+  val src = "package P\nfunc f(): Unit {\n  val a: Int = 2147483647\n  val b: Int = -2147483648\n" +
+    "  val c: Long = 3000000000\n  val d = 3000000000\n  val e: Long = d\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Int bounds and Long-valued literals are clean")
+}
+
+test "an out-of-range literal argument is a type error" {
+  val cr = parseCheck("package P\nfunc g(x: in Int): Int = x\nfunc f(): Int = g(2147483648)\n")
+  assertTrue(diagCount(cr) > 0, "a Long-valued literal is not an Int argument")
+}
+
+// #7361: a compound assignment to a distinct type is rewritten to
+// `x = T.from(x.value op y.value)`, so its target must be free of side
+// effects.
+test "compound assignment to a distinct type needs a path target (T0134)" {
+  val ok = parseCheck(
+    "package P\ntype C = Long range 0 ..= 9 derives Add\nfunc f(a: in C, b: in C): C {\n  var x = a\n  x += b\n  x\n}\n"
+  )
+  assertTrue(not hasDiagCode(ok, "T0134"), "a variable target is accepted")
+  val bad = parseCheck(
+    "package P\ntype C = Long derives Add\nfunc f(xs: inout slice[C], b: in C): Unit {\n  xs[0] += b\n}\n"
+  )
+  assertTrue(hasDiagCode(bad, "T0134"), "an indexed target is T0134")
+}
+
 test "inline refined half open in bounds" {
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 .. 10 = 9\n}\n"
   val cr = parseCheck(src)
@@ -4770,4 +4805,142 @@ test "union case positional construction does not fire T0105" {
 test "nullary union case bare reference is still clean" {
   val src = "package P\nunion DbError {\n  case ConnLost\n  case ExecFailed(sql: String, message: String)\n}\nfunc f(): DbError { ConnLost }\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "nullary case bare reference: no errors")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Loop labels (#7349): `break`/`continue` must sit in a loop and a label must
+// name an enclosing one (T0130); a nested loop may not reuse an enclosing
+// loop's label (T0131).  Lambdas and `defer` bodies start with no loops.
+// ─────────────────────────────────────────────────────────────────────────────
+test "labelled loops parse and resolve" {
+  val src = "package P\nfunc f(xs: in List[Int]): Int {\n  var n = 0\n  outer: for x in xs {\n    inner: while n < x {\n      n = n + 1\n      if n > 5 { break outer }\n      if n > 3 { continue inner }\n    }\n    do { break }\n  }\n  n\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "P0050"), "label prefix parses")
+  assertTrue(not hasDiagCode(cr, "T0130"), "labels resolve: no T0130")
+  assertTrue(not hasDiagCode(cr, "T0131"), "distinct labels: no T0131")
+}
+
+test "a break naming no enclosing loop is T0130" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  outer: for x in xs { }\n  for y in xs { break outer }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0130"), "outer is a sibling, not an enclosing loop")
+}
+
+test "a continue with an unknown label is T0130" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  for y in xs { continue nope }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0130"), "unknown label")
+}
+
+test "a break outside any loop is T0130" {
+  val src = "package P\nfunc f(n: in Int): Unit {\n  if n > 0 { break }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0130"), "break outside a loop")
+}
+
+test "a break in a lambda cannot target the enclosing loop" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  outer: for x in xs {\n    val g = { () -> break outer }\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0130"), "lambda body starts with no loops")
+}
+
+test "a break in a defer body cannot target the enclosing loop" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  for x in xs {\n    defer { break }\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0130"), "defer body starts with no loops")
+}
+
+test "a nested loop reusing an enclosing label is T0131" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  outer: for x in xs {\n    outer: for y in xs { break outer }\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0131"), "shadowed label")
+}
+
+test "sibling loops may share a label" {
+  val src = "package P\nfunc f(xs: in List[Int]): Unit {\n  scan: for x in xs { break scan }\n  scan: for y in xs { continue scan }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0131"), "siblings: no T0131")
+  assertTrue(not hasDiagCode(cr, "T0130"), "siblings: no T0130")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Contract clauses are type-checked (#7228): a requires/ensures/when clause
+// and a loop invariant must be Bool (T0132),
+// and names inside a clause resolve like the function body's.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a non-Bool requires clause is T0132" {
+  val src = "package P\nfunc f(x: in Int): Int\n  requires: x + 1\n{\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0132"), "Int-typed requires")
+}
+
+test "an ensures clause is checked with result as the return type" {
+  val ok = "package P\nfunc f(x: in Int): Int\n  ensures: result >= x\n{\n  x\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0132"), "result >= x is Bool")
+  val bad = "package P\nfunc f(x: in Int): String\n  ensures: result\n{\n  \"a\"\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0132"), "String-typed ensures")
+}
+
+test "an unknown name in a clause is reported by the type checker" {
+  val src = "package P\nfunc f(x: in Int): Int\n  requires: x > nope\n{\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0020"), "nope is unknown")
+}
+
+test "a mismatched comparison in a clause is reported" {
+  val src = "package P\nfunc f(x: in Int): Int\n  requires: x == \"a\"\n{\n  x\n}\n"
+  assertTrue(diagCount(parseCheck(src)) > 0, "Int == String")
+}
+
+test "a non-Bool loop invariant is T0132" {
+  val src = "package P\nfunc f(n: in Int): Int {\n  var i = 0\n  while i < n\n    invariant: i\n  {\n    i = i + 1\n  }\n  i\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0132"), "Int-typed invariant")
+}
+
+test "old() and quantifiers in clauses type-check" {
+  val src = "package P\nfunc f(xs: inout List[Int]): Unit\n  ensures: xs.count == old(xs.count) + 1\n  ensures: forall (i: Int) where i >= 0 and i < xs.count { xs[i] >= 0 }\n{\n  xs.add(0)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0132"), "well-typed old/forall clauses")
+}
+
+// A contract clause or loop invariant may call only @pure functions (T0133,
+// #7228, language reference §6.3).
+test "a clause calling a non-@pure function is T0133" {
+  val src = "package P\nfunc check(x: in Int): Bool { x > 0 }\nfunc f(x: in Int): Int\n  requires: check(x)\n{\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0133"), "check is not @pure")
+}
+
+test "a clause calling a @pure function is accepted" {
+  val src = "package P\n@pure\nfunc check(x: in Int): Bool { x > 0 }\nfunc f(x: in Int): Int\n  requires: check(x)\n  ensures: check(result)\n{\n  x\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "check is @pure")
+}
+
+test "a non-@pure call in the body is not T0133" {
+  val src = "package P\nfunc check(x: in Int): Bool { x > 0 }\nfunc f(x: in Int): Bool\n  requires: x > 0\n{\n  check(x)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "body calls are unrestricted")
+}
+
+test "a loop invariant calling a non-@pure function is T0133" {
+  val src = "package P\nfunc ok(i: in Int): Bool { i >= 0 }\nfunc f(n: in Int): Int {\n  var i = 0\n  while i < n\n    invariant: ok(i)\n  {\n    i = i + 1\n  }\n  i\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0133"), "invariant calls ok")
+}
+
+test "a clause calling a @pure record method is accepted (#7383)" {
+  val src = "package P\nrecord Box {\n  v: Int\n  @pure\n  func positive(self: in Box): Bool { self.v > 0 }\n}\nfunc f(b: in Box): Int\n  requires: b.positive()\n{\n  b.v\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "positive is @pure")
+}
+
+test "a clause calling a non-@pure record method is T0133 (#7383)" {
+  val src = "package P\nrecord Box {\n  v: Int\n  func positive(self: in Box): Bool { self.v > 0 }\n}\nfunc f(b: in Box): Int\n  requires: b.positive()\n{\n  b.v\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0133"), "positive is not @pure")
+}
+
+test "a clause calling a @pure impl method is accepted (#7383)" {
+  val src = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  func positive(): Bool\n}\nimpl Signed for Box {\n  @pure\n  func positive(): Bool { self.v > 0 }\n}\nfunc f(b: in Box): Int\n  requires: b.positive()\n{\n  b.v\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "the impl method is @pure")
+}
+
+test "an async or method-generic protected func is T0135 (#7384)" {
+  val asyncSrc = "package P\nprotected type C {\n  var n: Int = 0\n  async func get(): Int {\n    n\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(asyncSrc), "T0135"), "async func")
+  val genSrc = "package P\nprotected type C {\n  var n: Int = 0\n  func pick[T](a: in T): T {\n    a\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(genSrc), "T0135"), "method-generic func")
+  val okSrc = "package P\nprotected type C {\n  var n: Int = 0\n  func get(): Int {\n    n\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(okSrc), "T0135"), "a plain func is accepted")
+}
+
+test "built-in members in a clause are not calls to check" {
+  val src = "package P\nfunc f(xs: in List[Int], s: in String): Int\n  requires: xs.count > 0 and s.length > 0\n{\n  xs[0]\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "count/length")
 }

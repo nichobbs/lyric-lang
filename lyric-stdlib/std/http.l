@@ -58,7 +58,7 @@ pub enum HttpVersion {
 @stable(since = "1.0")
 pub opaque type Url {
   value: String
-  invariant: value.length > 0
+  invariant: isHttpUrlShape(value)
 }
 
 /// Alias for callers that prefer URI terminology.
@@ -813,21 +813,55 @@ func methodName(method: in HttpMethod): String {
 // ---------------------------------------------------------------------------
 /// Parse and validate an HTTP(S) URL.
 ///
-/// # Preconditions as data
-/// - `raw` must be non-empty.
-/// - `raw` must start with `http://` or `https://`.
-///
 /// # Errors
-/// - `InvalidUrl`: empty or unsupported URL syntax.
+/// - `InvalidUrl`: `raw` is not `isHttpUrlShape`: not `http://` or
+///   `https://`, no host, or a space or control character anywhere.
 @stable(since = "1.0")
 pub func Url.tryFrom(raw: in String): Result[Url, HttpError] {
-  if raw.length == 0 {
-    return Err(error = InvalidUrl(url = raw))
-  }
-  if raw.startsWith("http://") or raw.startsWith("https://") {
+  if isHttpUrlShape(raw) {
     return Ok(value = Url(value = raw))
   }
   return Err(error = InvalidUrl(url = raw))
+}
+
+/// True when `raw` has the shape `Url` accepts: an `http://` or `https://`
+/// prefix, a non-empty host (the authority before any `/`, `?` or `#`, less
+/// any `user@` part), and no space or control character anywhere. Before
+/// #7251 only the prefix was checked, so `http://` and a URL carrying CR/LF
+/// were accepted and failed later, inside the host HTTP client.
+@pure
+@stable(since = "1.2")
+pub func isHttpUrlShape(raw: in String): Bool {
+  var i = 0
+  while i < raw.length {
+    val c = raw[i]
+    if c <= ' ' or c == '\u{007f}' {
+      return false
+    }
+    i = i + 1
+  }
+  var start = 0
+  if raw.startsWith("https://") {
+    start = 8
+  } else if raw.startsWith("http://") {
+    start = 7
+  } else {
+    return false
+  }
+  var authorityEnd = start
+  while authorityEnd < raw.length and raw[authorityEnd] != '/' and raw[authorityEnd] != '?' and raw[authorityEnd] != '#' {
+    authorityEnd = authorityEnd + 1
+  }
+  // The host follows the last `@` of the authority, if any.
+  var hostStart = start
+  var k = start
+  while k < authorityEnd {
+    if raw[k] == '@' {
+      hostStart = k + 1
+    }
+    k = k + 1
+  }
+  hostStart < authorityEnd and raw[hostStart] != ':'
 }
 
 /// Return the original string value for a validated URL.
@@ -858,6 +892,10 @@ pub func request(method: in HttpMethod, url: in Url): HttpRequest {
 /// - `key` must be non-empty. Empty header names are caller bugs.
 ///
 /// # Errors
+/// - `InvalidHeader`: `key` is empty or not an RFC 9110 token (a `:`, space or other
+///   separator could forge a different header), or `value` contains CR, LF
+///   or NUL (#7251). Before, .NET dropped such a header silently and the JVM
+///   failed only when sending.
 /// - `ReservedHeader`: `key` (case-insensitively) names a framing header
 ///   this library sets automatically — `Host`, `Connection`,
 ///   `Content-Type`, or `Content-Length`. Setting one of these directly
@@ -866,9 +904,10 @@ pub func request(method: in HttpMethod, url: in Url): HttpRequest {
 ///   content type, or a request-shaping option on `HttpClientBuilder` for
 ///   `Host`/`Connection`.
 @stable(since = "1.2")
-pub func withHeader(request: in HttpRequest, key: in String, value: in String): Result[HttpRequest, HttpError]
-  requires: key.length > 0
-{
+pub func withHeader(request: in HttpRequest, key: in String, value: in String): Result[HttpRequest, HttpError] {
+  if not isHeaderNameToken(key) or not isHeaderValueSafe(value) {
+    return Err(error = InvalidHeader(url = request.url, name = key))
+  }
   match HostHttp.hostWithHeader(request.handle, key, value) {
     case Err(name) -> return Err(error = ReservedHeader(url = request.url, name = name))
     case Ok(handle) -> return Ok(
@@ -883,6 +922,41 @@ pub func withHeader(request: in HttpRequest, key: in String, value: in String): 
       )
     )
   }
+}
+
+// RFC 9110 `token`: the characters legal in a header field-name.
+func isHeaderNameToken(name: in String): Bool {
+  if name.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < name.length {
+    val c = name[i]
+    val ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '!' or c == '#' or
+      c == '$' or
+      c == '%' or
+      c == '&' or
+      c == '\'' or
+      c == '*' or
+      c == '+' or
+      c == '-' or
+      c == '.' or
+      c == '^' or
+      c == '_' or
+      c == '`' or
+      c == '|' or
+      c == '~'
+    if not ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// A header value must not carry CR, LF or NUL, which would end the line.
+func isHeaderValueSafe(value: in String): Bool {
+  not value.contains("\r") and not value.contains("\n") and not value.contains("\u{0000}")
 }
 
 /// Attach a JSON string body and set the request content type.

@@ -869,6 +869,7 @@ func renderConstExpr(e: in Expr): String {
         case _ -> "0"
       }
     }
+    case EPrefix(op, operand) -> match op { case PreNeg -> "-" + renderConstExpr(operand); case _ -> "0" }
     case _ -> "0"
   }
 }
@@ -966,7 +967,10 @@ func reprForRecordMethod(fn: in FunctionDecl): String {
   }
   val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if fn.isAsync { "async " } else { "" }
-  asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
+  // `@pure` rides into the repr so a restored consumer's contract clauses
+  // may call the method (T0133, #7383).
+  val purePrefix = if hasPureAnnotation(fn.annotations) { "@pure " } else { "" }
+  purePrefix + asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
 }
 
 // Build the `pub record Name[T] { field1: T1, field2: T2 }` repr for
@@ -1130,6 +1134,18 @@ func hasExternTargetAnnotation(anns: in List[Annotation]): Bool {
   false
 }
 
+func hasPureAnnotation(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == "pure" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Build the `ContractDecl` for a `func` item.  A GENERIC function also
 // carries its real body (`funcBodyText`) so a restored consumer's
 // `Lyric.Mono.monoFileWithImports` can specialise a call site into a
@@ -1151,7 +1167,7 @@ func funcDecl(fn: in FunctionDecl, vis: in Option[Visibility]): ContractDecl {
     name = fn.name,
     repr = reprForFunc(fn),
     visibility = visibilityStr(vis),
-    isPure = false,
+    isPure = hasPureAnnotation(fn.annotations),
     stability = "",
     requiresClauses = newList(),
     ensuresClauses = newList(),
@@ -1522,11 +1538,40 @@ func basicDecl(kind: in String, name: in String, repr: in String, vis: in Option
 // (codegen `addPackageTokens` IConst/IVal).  Cross-package inlining of a
 // module-level constant only carries this form; non-literal initializers
 // are not compile-time foldable and fall outside the inlinable surface.
+// A negated literal counts: the pipeline folds `-N` into one literal after
+// mono (#7346), so the producer inlines it either way and the contract must
+// carry it.
 func isIntLiteralExpr(e: in Expr): Bool {
-  match e.kind {
-    case ELiteral(lit) -> match lit { case LInt(_, _, _) -> true; case _ -> false }
-    case _ -> false
+  match intLiteralValue(e) {
+    case Some(v) -> fitsInt32(v)
+    case None -> false
   }
+}
+
+// The value of an integer literal, optionally negated, or None.
+func intLiteralValue(e: in Expr): Option[Long] {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> Some(value = v); case _ -> None }
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind {
+        case ELiteral(lit) -> match lit {
+          case LInt(v, _, _) -> Some(value = 0i64 - v)
+          case _ -> None
+        }
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+// A consumer inlines a restored constant as an `Int` (`ldc.i4`), so only a
+// value in `Int` range may cross the boundary that way. A wider literal
+// (`pub val big: Long = -5000000000`) stays out of the contract: a consumer
+// naming it fails to resolve instead of reading a truncated value (#7403).
+func fitsInt32(v: in Long): Bool {
+  v >= -2147483648i64 and v <= 2147483647i64
 }
 
 // Repr for a module-level `pub const`: `pub const NAME: TYPE = N`.  The
@@ -1695,7 +1740,12 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         // boundaries by inlining (see codegen `addPackageTokens`).  A
         // consumer compiled separately (per-package emit) needs the value
         // from the producer's contract; carry it here.
-        case IConst(c) -> decls.add(basicDecl("const", c.name, reprForConst(c), it.visibility))
+        case IConst(c) -> {
+          val inlinable = match intLiteralValue(c.init) { case Some(v) -> fitsInt32(v); case None -> true }
+          if inlinable {
+            decls.add(basicDecl("const", c.name, reprForConst(c), it.visibility))
+          }
+        }
         case IVal(v) -> match reprForInlinableVal(v) {
           case Some(repr) -> decls.add(basicDecl("val", bindingName(v.pattern), repr, it.visibility))
           case None -> ()

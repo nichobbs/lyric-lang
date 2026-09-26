@@ -190,7 +190,105 @@ func testTryParseJson(): Unit {
   }
 }
 
+// #7251: the throwing getters are guarded by checked preconditions, and the
+// @generate(Json) field readers fail closed on untrusted bodies.
+func testGetterPreconditions(): Unit {
+  val doc = parseJson("{\"n\": 3000000000, \"s\": \"x\", \"b\": true}")
+  val root = rootElement(doc)
+  assertTrue(hasProperty(root, "s"), "hasProperty finds s")
+  assertTrue(not hasProperty(root, "missing"), "hasProperty misses")
+  assertTrue(not hasProperty(getProperty(root, "s"), "s"), "hasProperty on a non-object is false, not a throw")
+  assertTrue(isJsonInt64(getProperty(root, "n")), "3e9 fits a Long")
+  assertTrue(not isJsonInt32(getProperty(root, "n")), "3e9 does not fit an Int")
+  assertTrue(isJsonBool(getProperty(root, "b")), "true is a Bool")
+  assertPanics("getProperty on a missing name", { -> val _ = getProperty(root, "missing") })
+  assertPanics("getInt32 on an out-of-range number", { -> val _ = getInt32(getProperty(root, "n")) })
+  assertPanics("getString on a number", { -> val _ = getString(getProperty(root, "n")) })
+  assertPanics("getBoolean on a string", { -> val _ = getBoolean(getProperty(root, "s")) })
+  disposeJson(doc)
+}
+
+func testFieldReadersFailClosed(): Unit {
+  var i = 0
+  assertTrue(lyricJsonGetInt("{\"a\": 7}", "a", i) and i == 7, "reads an Int field")
+  assertTrue(not lyricJsonGetInt("not json", "a", i) and i == 0, "malformed body")
+  assertTrue(not lyricJsonGetInt("[1, 2]", "a", i), "non-object root")
+  assertTrue(not lyricJsonGetInt("{\"a\": \"7\"}", "a", i), "string where an Int is expected")
+  assertTrue(not lyricJsonGetInt("{\"a\": 3000000000}", "a", i), "Int out of range")
+  var l = 0i64
+  assertTrue(lyricJsonGetLong("{\"a\": 3000000000}", "a", l) and l == 3000000000i64, "reads a Long field")
+  assertTrue(not lyricJsonGetLong("{\"a\": true}", "a", l), "Bool where a Long is expected")
+  var d = 0.0
+  assertTrue(not lyricJsonGetDouble("{\"a\": null}", "a", d), "null where a Double is expected")
+  var b = false
+  assertTrue(not lyricJsonGetBool("\"x\"", "a", b), "string root")
+  var str = ""
+  assertTrue(not lyricJsonGetString("{\"a\": 1}", "a", str), "number where a String is expected")
+  var sub = ""
+  assertTrue(not lyricJsonGetSubObject("{", "a", sub) and sub == "{}", "truncated body")
+  assertTrue(lyricJsonGetSubObject("{\"a\": {\"b\": 1}}", "a", sub) and sub.contains("\"b\""), "reads an object field")
+  assertTrue(not lyricJsonGetSubObject("{\"a\": [1]}", "a", sub) and sub == "{}", "array where an object is expected")
+  assertTrue(
+    not lyricJsonGetSubObject("{\"a\": \"x\"}", "a", sub) and sub == "{}",
+    "string where an object is expected"
+  )
+  assertTrue(not lyricJsonGetSubObject("{\"a\": null}", "a", sub) and sub == "{}", "null where an object is expected")
+}
+
+// A synthesised `fromJson` returns `Err` for a present field or element of
+// the wrong kind, as it does for a missing one (#7401).
+@generate(Json)
+record Person {
+  name: String
+  age: Int
+  initial: Char
+  level: Byte
+  scores: slice[Int]
+}
+
+func personErr(json: in String): Bool {
+  match Person.fromJson(json) {
+    case Ok(_) -> false
+    case Err(_) -> true
+  }
+}
+
+func testGeneratedReaderFailsClosed(): Unit {
+  val good = "{\"name\": \"Ada\", \"age\": 36, \"initial\": \"A\", \"level\": 7, \"scores\": [1, 2]}"
+  match Person.fromJson(good) {
+    case Ok(decoded) -> {
+      val p: Person = decoded
+      assertTrue(
+        p.name == "Ada" and p.age == 36 and p.level.toInt() == 7 and p.scores.length == 2,
+        "decodes a well-formed body"
+      )
+    }
+    case Err(e) -> assertTrue(false, "well-formed body rejected: " + e)
+  }
+  assertTrue(
+    personErr("{\"name\": 42, \"age\": 36, \"initial\": \"A\", \"level\": 7, \"scores\": []}"),
+    "number where a String is expected"
+  )
+  assertTrue(
+    personErr("{\"name\": \"Ada\", \"age\": 3000000000, \"initial\": \"A\", \"level\": 7, \"scores\": []}"),
+    "Int out of range"
+  )
+  assertTrue(
+    personErr("{\"name\": \"Ada\", \"age\": 36, \"initial\": \"\", \"level\": 7, \"scores\": []}"),
+    "empty string where a Char is expected"
+  )
+  assertTrue(
+    personErr("{\"name\": \"Ada\", \"age\": 36, \"initial\": \"A\", \"level\": 300, \"scores\": []}"),
+    "Byte out of range"
+  )
+  assertTrue(
+    personErr("{\"name\": \"Ada\", \"age\": 36, \"initial\": \"A\", \"level\": 7, \"scores\": [1, \"x\"]}"),
+    "a string element in an Int slice"
+  )
+}
+
 func main(): Unit {
+  testGeneratedReaderFailsClosed()
   testParseString()
   testParseInt()
   testParseBool()
@@ -204,6 +302,7 @@ func main(): Unit {
   testTryGetInt()
   testTryGetLong()
   testTryParseJson()
+  testGetterPreconditions()
+  testFieldReadersFailClosed()
   println("json_tests: ok")
 }
-

@@ -89,6 +89,9 @@ pub union HttpError {
   // `Content-Type`, `Content-Length`) — see #6658. `name` is the
   // caller-supplied header name exactly as given (not case-normalized).
   case ReservedHeader(url: String, name: String)
+  // `withHeader` was given a name that is not an RFC 9110 token, or a value
+  // containing CR, LF or NUL (#7251). `name` is the name exactly as given.
+  case InvalidHeader(url: String, name: String)
   // Human-readable message for an HttpError.
 }
 
@@ -102,5 +105,8 @@ pub func HttpError.message(e: in HttpError): String {
     case InvalidUrl(url) -> "invalid URL: " + url
     case Transport(url, error) -> "I/O error for " + url + ": " + IOError.message(error)
     case ReservedHeader(url, name) -> "header \"" + name + "\" is reserved (set automatically) for request to " + url
+    case InvalidHeader(url, name) -> "header \"" + name +
+      "\" is not a valid header name, or its value contains CR, LF or NUL, for request to " +
+      url
   }
 }

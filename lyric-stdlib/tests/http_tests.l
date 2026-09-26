@@ -47,6 +47,48 @@ test "Url.tryFrom rejects URLs without an http(s) scheme" {
   }
 }
 
+test "Url.tryFrom rejects a missing host, spaces and control characters" {
+  val bad = [
+    "http://",
+    "https://",
+    "http:///path",
+    "https://user@/x",
+    "http://:8080/",
+    "http://exa mple.com",
+    "http://example.com/a\r\nX-Injected: 1",
+    "http://example.com/\t"
+  ]
+  var i = 0
+  while i < bad.count {
+    match Url.tryFrom(bad[i]) {
+      case Ok(_) -> panic("expected InvalidUrl for: " + bad[i])
+      case Err(InvalidUrl(_)) -> ()
+      case Err(other) -> panic("expected InvalidUrl, got: " + HttpError.message(other))
+    }
+    i = i + 1
+  }
+}
+
+test "Url.tryFrom accepts userinfo, ports, queries and fragments" {
+  val good = [
+    "http://user@host/path",
+    "https://u:p@example.com:8443/a?b=c#d",
+    "http://localhost:8080",
+    "https://example.com?q",
+    "http://[::1]:80/"
+  ]
+  var i = 0
+  while i < good.count {
+    match Url.tryFrom(good[i]) {
+      case Ok(url) -> assertEqual(Url.toString(url), good[i], "URL round-trips")
+      case Err(e) -> panic("expected Ok for " + good[i] + ", got: " + HttpError.message(e))
+    }
+    i = i + 1
+  }
+  assertTrue(isHttpUrlShape("http://a"), "single-letter host is a shape")
+  assertFalse(isHttpUrlShape("HTTP://a"), "the scheme prefix is matched case-sensitively, as Url.tryFrom always has")
+}
+
 test "request/withHeader/withJsonBody/withTextBody construct without a live connection" {
   val url = match Url.tryFrom("https://example.com") {
     case Ok(u) -> u
@@ -105,6 +147,29 @@ test "withHeader rejects reserved framing headers, case-insensitively" {
     }
     i = i + 1
   }
+}
+
+// #7251: an invalid header name or a value with CR/LF/NUL is an Err on both
+// targets (.NET used to drop it silently, the JVM to fail only at send).
+func headerErrorKind(name: in String, value: in String): String {
+  val url = match Url.tryFrom("https://example.com") {
+    case Ok(u) -> u
+    case Err(e) -> panic("unexpected InvalidUrl: " + HttpError.message(e))
+  }
+  match withHeader(request(GET, url), name, value) {
+    case Ok(_) -> "Ok"
+    case Err(InvalidHeader(_, errName)) -> "InvalidHeader:" + errName
+    case Err(other) -> HttpError.message(other)
+  }
+}
+
+test "withHeader rejects a name that is not a token, or a value with CR/LF/NUL" {
+  assertEqual(headerErrorKind("X-Forged: evil", "v"), "InvalidHeader:X-Forged: evil", "colon and space in the name")
+  assertEqual(headerErrorKind("X Bad", "v"), "InvalidHeader:X Bad", "space in the name")
+  assertEqual(headerErrorKind("", "v"), "InvalidHeader:", "an empty name, often an unset config value")
+  assertEqual(headerErrorKind("X-Note", "a\r\nX-Injected: 1"), "InvalidHeader:X-Note", "CR/LF in the value")
+  assertEqual(headerErrorKind("X-Note", "a\u{0000}b"), "InvalidHeader:X-Note", "NUL in the value")
+  assertEqual(headerErrorKind("X-Trace-Id", "abc 123\tdef"), "Ok", "space and tab are fine in a value")
 }
 
 test "withHeader still accepts an ordinary (non-reserved) header" {

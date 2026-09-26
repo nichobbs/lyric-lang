@@ -1,8 +1,8 @@
 //! A post-order expression rewriter over a whole source file: every
 //! expression reachable from a function, method, entry, test, `val`,
 //! `const` or field default is rebuilt bottom-up and then passed to `f`,
-//! whose result replaces it.  Patterns, types and contract clauses are left
-//! untouched.  Used by `wrapInvariantConstructions`.
+//! whose result replaces it.  Patterns and types are left untouched, and
+//! contract clauses are too unless the mapper opts in (`contracts`).
 package Lyric.ContractElaborator
 
 import Std.Core
@@ -10,11 +10,49 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 
+/// The callbacks of a traversal: `expr` sees every expression bottom-up,
+/// `stmt` every statement after its parts have been rebuilt.
+pub record AstMapper {
+  expr: (Expr) -> Expr
+  stmt: (Statement) -> Statement
+  /// Also rewrite `requires:`/`ensures:`/`when:`/`decreases:` clauses.
+  contracts: Bool
+}
+
+func exprOnly(f: in (Expr) -> Expr): AstMapper {
+  AstMapper(expr = f, stmt = { s: Statement -> s }, contracts = false)
+}
+
+/// `mapExprsInFile` and `mapStmtsInFile` in one pass, contract clauses
+/// included.
+pub func mapFileAndContracts(file: in SourceFile, f: in (Expr) -> Expr, g: in (Statement) -> Statement): SourceFile {
+  mapFileWith(file, AstMapper(expr = f, stmt = g, contracts = true))
+}
+
 pub func mapExprsInFile(file: in SourceFile, f: in (Expr) -> Expr): SourceFile {
+  mapFileWith(file, exprOnly(f))
+}
+
+/// A post-order statement rewriter over the same reach as `mapExprsInFile`:
+/// each statement is passed to `g` after its sub-statements and expressions
+/// have been rebuilt, and `g`'s result replaces it.
+pub func mapStmtsInFile(file: in SourceFile, g: in (Statement) -> Statement): SourceFile {
+  mapFileWith(file, AstMapper(expr = { e: Expr -> e }, stmt = g, contracts = false))
+}
+
+pub func mapExpr(e: in Expr, f: in (Expr) -> Expr): Expr {
+  mapExprWith(e, exprOnly(f))
+}
+
+pub func mapBlock(blk: in Block, f: in (Expr) -> Expr): Block {
+  mapBlockWith(blk, exprOnly(f))
+}
+
+func mapFileWith(file: in SourceFile, m: in AstMapper): SourceFile {
   val items: List[Item] = newList()
   var i = 0
   while i < file.items.count {
-    items.add(mapItem(file.items[i], f))
+    items.add(mapItem(file.items[i], m))
     i = i + 1
   }
   SourceFile(
@@ -27,17 +65,17 @@ pub func mapExprsInFile(file: in SourceFile, f: in (Expr) -> Expr): SourceFile {
   )
 }
 
-func mapItem(it: in Item, f: in (Expr) -> Expr): Item {
+func mapItem(it: in Item, m: in AstMapper): Item {
   val kind: ItemKind = match it.kind {
-    case IFunc(fn) -> IFunc(decl = mapFunction(fn, f))
-    case IRecord(decl) -> IRecord(decl = mapRecordDecl(decl, f))
-    case IExposedRec(decl) -> IExposedRec(decl = mapRecordDecl(decl, f))
+    case IFunc(fn) -> IFunc(decl = mapFunction(fn, m))
+    case IRecord(decl) -> IRecord(decl = mapRecordDecl(decl, m))
+    case IExposedRec(decl) -> IExposedRec(decl = mapRecordDecl(decl, m))
     case IOpaque(decl) -> {
       val members: List[OpaqueMember] = newList()
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
-          case OMField(fd) -> members.add(OMField(field = mapFieldDecl(fd, f)))
+          case OMField(fd) -> members.add(OMField(field = mapFieldDecl(fd, m)))
           case other -> members.add(other)
         }
         i = i + 1
@@ -59,7 +97,7 @@ func mapItem(it: in Item, f: in (Expr) -> Expr): Item {
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
-          case IMplFunc(fn) -> members.add(IMplFunc(fn = mapFunction(fn, f)))
+          case IMplFunc(fn) -> members.add(IMplFunc(fn = mapFunction(fn, m)))
           case other -> members.add(other)
         }
         i = i + 1
@@ -80,7 +118,7 @@ func mapItem(it: in Item, f: in (Expr) -> Expr): Item {
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
-          case IMFunc(fn) -> members.add(IMFunc(fn = mapFunction(fn, f)))
+          case IMFunc(fn) -> members.add(IMFunc(fn = mapFunction(fn, m)))
           case other -> members.add(other)
         }
         i = i + 1
@@ -109,14 +147,14 @@ func mapItem(it: in Item, f: in (Expr) -> Expr): Item {
                 name = ed.name,
                 params = ed.params,
                 ret = ed.ret,
-                contracts = ed.contracts,
-                body = mapFunctionBody(ed.body, f),
+                contracts = mapContracts(ed.contracts, m),
+                body = mapFunctionBody(ed.body, m),
                 span = ed.span
               )
             )
           )
-          case PMFunc(fn) -> members.add(PMFunc(fn = mapFunction(fn, f)))
-          case PMField(pf) -> members.add(PMField(field = mapProtectedField(pf, f)))
+          case PMFunc(fn) -> members.add(PMFunc(fn = mapFunction(fn, m)))
+          case PMField(pf) -> members.add(PMField(field = mapProtectedField(pf, m)))
           case other -> members.add(other)
         }
         i = i + 1
@@ -135,7 +173,7 @@ func mapItem(it: in Item, f: in (Expr) -> Expr): Item {
       decl = ValDecl(
         pattern = decl.pattern,
         ty = decl.ty,
-        init = mapExpr(decl.init, f),
+        init = mapExprWith(decl.init, m),
         span = decl.span
       )
     )
@@ -143,14 +181,14 @@ func mapItem(it: in Item, f: in (Expr) -> Expr): Item {
       decl = ConstDecl(
         name = decl.name,
         ty = decl.ty,
-        init = mapExpr(decl.init, f),
+        init = mapExprWith(decl.init, m),
         span = decl.span
       )
     )
     case ITest(decl) -> ITest(
       decl = TestDecl(
         title = decl.title,
-        body = mapBlock(decl.body, f),
+        body = mapBlockWith(decl.body, m),
         span = decl.span
       )
     )
@@ -158,8 +196,8 @@ func mapItem(it: in Item, f: in (Expr) -> Expr): Item {
       decl = PropertyDecl(
         title = decl.title,
         forAll = decl.forAll,
-        guardExpr = mapExprOpt(decl.guardExpr, f),
-        body = mapBlock(decl.body, f),
+        guardExpr = mapExprOpt(decl.guardExpr, m),
+        body = mapBlockWith(decl.body, m),
         span = decl.span
       )
     )
@@ -174,13 +212,13 @@ func mapItem(it: in Item, f: in (Expr) -> Expr): Item {
   )
 }
 
-func mapRecordDecl(decl: in RecordDecl, f: in (Expr) -> Expr): RecordDecl {
+func mapRecordDecl(decl: in RecordDecl, m: in AstMapper): RecordDecl {
   val members: List[RecordMember] = newList()
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
-      case RMField(fd) -> members.add(RMField(field = mapFieldDecl(fd, f)))
-      case RMFunc(fn) -> members.add(RMFunc(fn = mapFunction(fn, f)))
+      case RMField(fd) -> members.add(RMField(field = mapFieldDecl(fd, m)))
+      case RMFunc(fn) -> members.add(RMFunc(fn = mapFunction(fn, m)))
       case other -> members.add(other)
     }
     i = i + 1
@@ -194,7 +232,7 @@ func mapRecordDecl(decl: in RecordDecl, f: in (Expr) -> Expr): RecordDecl {
   )
 }
 
-func mapFieldDecl(fd: in FieldDecl, f: in (Expr) -> Expr): FieldDecl {
+func mapFieldDecl(fd: in FieldDecl, m: in AstMapper): FieldDecl {
   FieldDecl(
     docComments = fd.docComments,
     annotations = fd.annotations,
@@ -202,18 +240,18 @@ func mapFieldDecl(fd: in FieldDecl, f: in (Expr) -> Expr): FieldDecl {
     isMutable = fd.isMutable,
     name = fd.name,
     ty = fd.ty,
-    dflt = mapExprOpt(fd.dflt, f),
+    dflt = mapExprOpt(fd.dflt, m),
     span = fd.span,
     trailingAnnotationCount = fd.trailingAnnotationCount
   )
 }
 
-func mapProtectedField(pf: in ProtectedField, f: in (Expr) -> Expr): ProtectedField {
+func mapProtectedField(pf: in ProtectedField, m: in AstMapper): ProtectedField {
   match pf {
     case PFVar(n, ty, init, docs, anns, sp) -> PFVar(
       name = n,
       ty = ty,
-      init = mapExprOpt(init, f),
+      init = mapExprOpt(init, m),
       docComments = docs,
       annotations = anns,
       span = sp
@@ -221,18 +259,18 @@ func mapProtectedField(pf: in ProtectedField, f: in (Expr) -> Expr): ProtectedFi
     case PFLet(n, ty, init, docs, anns, sp) -> PFLet(
       name = n,
       ty = ty,
-      init = mapExprOpt(init, f),
+      init = mapExprOpt(init, m),
       docComments = docs,
       annotations = anns,
       span = sp
     )
-    case PFImmutable(fd) -> PFImmutable(field = mapFieldDecl(fd, f))
+    case PFImmutable(fd) -> PFImmutable(field = mapFieldDecl(fd, m))
   }
 }
 
-func mapFunction(fn: in FunctionDecl, f: in (Expr) -> Expr): FunctionDecl {
+func mapFunction(fn: in FunctionDecl, m: in AstMapper): FunctionDecl {
   val body: Option[FunctionBody] = match fn.body {
-    case Some(b) -> Some(value = mapFunctionBody(b, f))
+    case Some(b) -> Some(value = mapFunctionBody(b, m))
     case None -> None
   }
   FunctionDecl(
@@ -245,53 +283,74 @@ func mapFunction(fn: in FunctionDecl, f: in (Expr) -> Expr): FunctionDecl {
     params = fn.params,
     ret = fn.ret,
     whereClause = fn.whereClause,
-    contracts = fn.contracts,
+    contracts = mapContracts(fn.contracts, m),
     body = body,
     span = fn.span
   )
 }
 
-func mapFunctionBody(b: in FunctionBody, f: in (Expr) -> Expr): FunctionBody {
+func mapContracts(cs: in List[ContractClause], m: in AstMapper): List[ContractClause] {
+  if not m.contracts {
+    return cs
+  }
+  val mapped: List[ContractClause] = newList()
+  var i = 0
+  while i < cs.count {
+    mapped.add(
+      match cs[i] {
+        case CCRequires(e, sp) -> CCRequires(expr = mapExprWith(e, m), span = sp)
+        case CCEnsures(e, sp) -> CCEnsures(expr = mapExprWith(e, m), span = sp)
+        case CCWhen(e, sp) -> CCWhen(expr = mapExprWith(e, m), span = sp)
+        case CCDecreases(e, sp) -> CCDecreases(expr = mapExprWith(e, m), span = sp)
+        case other -> other
+      }
+    )
+    i = i + 1
+  }
+  mapped
+}
+
+func mapFunctionBody(b: in FunctionBody, m: in AstMapper): FunctionBody {
   match b {
-    case FBExpr(e) -> FBExpr(expr = mapExpr(e, f))
-    case FBBlock(blk) -> FBBlock(block = mapBlock(blk, f))
+    case FBExpr(e) -> FBExpr(expr = mapExprWith(e, m))
+    case FBBlock(blk) -> FBBlock(block = mapBlockWith(blk, m))
   }
 }
 
-func mapExprOpt(eo: in Option[Expr], f: in (Expr) -> Expr): Option[Expr] {
+func mapExprOpt(eo: in Option[Expr], m: in AstMapper): Option[Expr] {
   match eo {
-    case Some(e) -> Some(value = mapExpr(e, f))
+    case Some(e) -> Some(value = mapExprWith(e, m))
     case None -> None
   }
 }
 
-func mapExprList(xs: in List[Expr], f: in (Expr) -> Expr): List[Expr] {
+func mapExprList(xs: in List[Expr], m: in AstMapper): List[Expr] {
   val acc: List[Expr] = newList()
   var i = 0
   while i < xs.count {
-    acc.add(mapExpr(xs[i], f))
+    acc.add(mapExprWith(xs[i], m))
     i = i + 1
   }
   acc
 }
 
-func mapEob(eob: in ExprOrBlock, f: in (Expr) -> Expr): ExprOrBlock {
+func mapEob(eob: in ExprOrBlock, m: in AstMapper): ExprOrBlock {
   match eob {
-    case EOBExpr(e) -> EOBExpr(expr = mapExpr(e, f))
-    case EOBBlock(blk) -> EOBBlock(block = mapBlock(blk, f))
+    case EOBExpr(e) -> EOBExpr(expr = mapExprWith(e, m))
+    case EOBBlock(blk) -> EOBBlock(block = mapBlockWith(blk, m))
   }
 }
 
-func mapRange(rb: in RangeBound, f: in (Expr) -> Expr): RangeBound {
+func mapRange(rb: in RangeBound, m: in AstMapper): RangeBound {
   match rb {
-    case RBClosed(lo, hi) -> RBClosed(lo = mapExpr(lo, f), hi = mapExpr(hi, f))
-    case RBHalfOpen(lo, hi, bare) -> RBHalfOpen(lo = mapExpr(lo, f), hi = mapExpr(hi, f), bareDotDot = bare)
-    case RBLowerOpen(hi) -> RBLowerOpen(hi = mapExpr(hi, f))
-    case RBUpperOpen(lo) -> RBUpperOpen(lo = mapExpr(lo, f))
+    case RBClosed(lo, hi) -> RBClosed(lo = mapExprWith(lo, m), hi = mapExprWith(hi, m))
+    case RBHalfOpen(lo, hi, bare) -> RBHalfOpen(lo = mapExprWith(lo, m), hi = mapExprWith(hi, m), bareDotDot = bare)
+    case RBLowerOpen(hi) -> RBLowerOpen(hi = mapExprWith(hi, m))
+    case RBUpperOpen(lo) -> RBUpperOpen(lo = mapExprWith(lo, m))
   }
 }
 
-pub func mapExpr(e: in Expr, f: in (Expr) -> Expr): Expr {
+func mapExprWith(e: in Expr, m: in AstMapper): Expr {
   val sp = e.span
   val rebuilt: Expr = match e.kind {
     case EInterpolated(segs) -> {
@@ -300,18 +359,18 @@ pub func mapExpr(e: in Expr, f: in (Expr) -> Expr): Expr {
       while i < segs.count {
         match segs[i] {
           case ISText(t, tsp) -> acc.add(ISText(text = t, span = tsp))
-          case ISExpr(x) -> acc.add(ISExpr(expr = mapExpr(x, f)))
+          case ISExpr(x) -> acc.add(ISExpr(expr = mapExprWith(x, m)))
         }
         i = i + 1
       }
       mkExpr(EInterpolated(segments = acc), sp)
     }
-    case EParen(inner) -> mkExpr(EParen(inner = mapExpr(inner, f)), sp)
-    case ETuple(xs) -> mkExpr(ETuple(exprs = mapExprList(xs, f)), sp)
-    case EList(xs) -> mkExpr(EList(exprs = mapExprList(xs, f)), sp)
+    case EParen(inner) -> mkExpr(EParen(inner = mapExprWith(inner, m)), sp)
+    case ETuple(xs) -> mkExpr(ETuple(exprs = mapExprList(xs, m)), sp)
+    case EList(xs) -> mkExpr(EList(exprs = mapExprList(xs, m)), sp)
     case EIf(cond, thenB, elseB, thenForm) -> {
-      val newElse: Option[ExprOrBlock] = match elseB { case Some(eb) -> Some(value = mapEob(eb, f)); case None -> None }
-      mkExpr(EIf(cond = mapExpr(cond, f), thenBranch = mapEob(thenB, f), elseBranch = newElse, thenForm = thenForm), sp)
+      val newElse: Option[ExprOrBlock] = match elseB { case Some(eb) -> Some(value = mapEob(eb, m)); case None -> None }
+      mkExpr(EIf(cond = mapExprWith(cond, m), thenBranch = mapEob(thenB, m), elseBranch = newElse, thenForm = thenForm), sp)
     }
     case EMatch(scrut, arms) -> {
       val acc: List[MatchArm] = newList()
@@ -319,122 +378,145 @@ pub func mapExpr(e: in Expr, f: in (Expr) -> Expr): Expr {
       while i < arms.count {
         val arm = arms[i]
         acc.add(
-          MatchArm(pattern = arm.pattern, guard = mapExprOpt(arm.guard, f), body = mapEob(arm.body, f), span = arm.span)
+          MatchArm(pattern = arm.pattern, guard = mapExprOpt(arm.guard, m), body = mapEob(arm.body, m), span = arm.span)
         )
         i = i + 1
       }
-      mkExpr(EMatch(scrutinee = mapExpr(scrut, f), arms = acc), sp)
+      mkExpr(EMatch(scrutinee = mapExprWith(scrut, m), arms = acc), sp)
     }
-    case EAwait(inner) -> mkExpr(EAwait(inner = mapExpr(inner, f)), sp)
-    case EYield(inner) -> mkExpr(EYield(inner = mapExpr(inner, f)), sp)
-    case ESpawn(inner) -> mkExpr(ESpawn(inner = mapExpr(inner, f)), sp)
-    case ETry(inner) -> mkExpr(ETry(inner = mapExpr(inner, f)), sp)
-    case EOld(inner) -> mkExpr(EOld(inner = mapExpr(inner, f)), sp)
+    case EAwait(inner) -> mkExpr(EAwait(inner = mapExprWith(inner, m)), sp)
+    case EYield(inner) -> mkExpr(EYield(inner = mapExprWith(inner, m)), sp)
+    case ESpawn(inner) -> mkExpr(ESpawn(inner = mapExprWith(inner, m)), sp)
+    case ETry(inner) -> mkExpr(ETry(inner = mapExprWith(inner, m)), sp)
+    case EOld(inner) -> mkExpr(EOld(inner = mapExprWith(inner, m)), sp)
     case EForall(bs, w, body) -> mkExpr(
       EForall(
         binders = bs,
-        whereExpr = mapExprOpt(w, f),
-        body = mapExpr(body, f)
+        whereExpr = mapExprOpt(w, m),
+        body = mapExprWith(body, m)
       ),
       sp
     )
     case EExists(bs, w, body) -> mkExpr(
       EExists(
         binders = bs,
-        whereExpr = mapExprOpt(w, f),
-        body = mapExpr(body, f)
+        whereExpr = mapExprOpt(w, m),
+        body = mapExprWith(body, m)
       ),
       sp
     )
-    case ELambda(ps, body) -> mkExpr(ELambda(lambdaParams = ps, body = mapBlock(body, f)), sp)
+    case ELambda(ps, body) -> mkExpr(ELambda(lambdaParams = ps, body = mapBlockWith(body, m)), sp)
     case ECall(fn, args) -> {
       val acc: List[CallArg] = newList()
       var i = 0
       while i < args.count {
         match args[i] {
-          case CANamed(n, v, asp) -> acc.add(CANamed(name = n, value = mapExpr(v, f), span = asp))
-          case CAPositional(v) -> acc.add(CAPositional(expr = mapExpr(v, f)))
+          case CANamed(n, v, asp) -> acc.add(CANamed(name = n, value = mapExprWith(v, m), span = asp))
+          case CAPositional(v) -> acc.add(CAPositional(expr = mapExprWith(v, m)))
         }
         i = i + 1
       }
-      mkExpr(ECall(fn = mapExpr(fn, f), args = acc), sp)
+      mkExpr(ECall(fn = mapExprWith(fn, m), args = acc), sp)
     }
-    case ETypeApp(fn, targs) -> mkExpr(ETypeApp(fn = mapExpr(fn, f), args = targs), sp)
+    case ETypeApp(fn, targs) -> mkExpr(ETypeApp(fn = mapExprWith(fn, m), args = targs), sp)
     case EIndex(recv, idx) -> mkExpr(
-      EIndex(receiver = mapExpr(recv, f), indices = mapExprList(idx, f)),
+      EIndex(
+        receiver = mapExprWith(recv, m),
+        indices = mapExprList(idx, m)
+      ),
       sp
     )
-    case EMember(recv, m) -> mkExpr(EMember(receiver = mapExpr(recv, f), memberName = m), sp)
-    case EPropagate(inner) -> mkExpr(EPropagate(inner = mapExpr(inner, f)), sp)
-    case EPrefix(op, x) -> mkExpr(EPrefix(op = op, operand = mapExpr(x, f)), sp)
-    case EBinop(op, l, r) -> mkExpr(EBinop(op = op, lhs = mapExpr(l, f), rhs = mapExpr(r, f)), sp)
-    case ERange(rb) -> mkExpr(ERange(bound = mapRange(rb, f)), sp)
+    case EMember(recv, mname) -> mkExpr(
+      EMember(receiver = mapExprWith(recv, m), memberName = mname),
+      sp
+    )
+    case EPropagate(inner) -> mkExpr(EPropagate(inner = mapExprWith(inner, m)), sp)
+    case EPrefix(op, x) -> mkExpr(EPrefix(op = op, operand = mapExprWith(x, m)), sp)
+    case EBinop(op, l, r) -> mkExpr(
+      EBinop(op = op, lhs = mapExprWith(l, m), rhs = mapExprWith(r, m)),
+      sp
+    )
+    case ERange(rb) -> mkExpr(ERange(bound = mapRange(rb, m)), sp)
     case EAssign(t, op, v) -> mkExpr(
-      EAssign(target = mapExpr(t, f), op = op, value = mapExpr(v, f)),
+      EAssign(
+        target = mapExprWith(t, m),
+        op = op,
+        value = mapExprWith(v, m)
+      ),
       sp
     )
-    case EBlock(blk) -> mkExpr(EBlock(block = mapBlock(blk, f)), sp)
-    case EUnsafe(blk) -> mkExpr(EUnsafe(block = mapBlock(blk, f)), sp)
+    case EBlock(blk) -> mkExpr(EBlock(block = mapBlockWith(blk, m)), sp)
+    case EUnsafe(blk) -> mkExpr(EUnsafe(block = mapBlockWith(blk, m)), sp)
     case _ -> e
   }
-  f(rebuilt)
+  val fe = m.expr
+  fe(rebuilt)
 }
 
-pub func mapBlock(blk: in Block, f: in (Expr) -> Expr): Block {
+func mapBlockWith(blk: in Block, m: in AstMapper): Block {
   val acc: List[Statement] = newList()
   var i = 0
   while i < blk.statements.count {
-    acc.add(mapStmt(blk.statements[i], f))
+    acc.add(mapStmt(blk.statements[i], m))
     i = i + 1
   }
   Block(statements = acc, span = blk.span)
 }
 
-func mapBinding(b: in LocalBinding, f: in (Expr) -> Expr): LocalBinding {
+func mapBinding(b: in LocalBinding, m: in AstMapper): LocalBinding {
   match b {
-    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = mapExpr(init, f))
-    case LBLet(n, ty, init) -> LBLet(name = n, ty = ty, init = mapExpr(init, f))
-    case LBVar(n, ty, init) -> LBVar(name = n, ty = ty, init = mapExprOpt(init, f))
+    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = mapExprWith(init, m))
+    case LBLet(n, ty, init) -> LBLet(name = n, ty = ty, init = mapExprWith(init, m))
+    case LBVar(n, ty, init) -> LBVar(name = n, ty = ty, init = mapExprOpt(init, m))
   }
 }
 
-func mapStmt(s: in Statement, f: in (Expr) -> Expr): Statement {
+func mapStmt(s: in Statement, m: in AstMapper): Statement {
   val sp = s.span
-  match s.kind {
-    case SLocal(b) -> mkStmt(SLocal(binding = mapBinding(b, f)), sp)
-    case SAssign(t, op, v) -> mkStmt(SAssign(target = mapExpr(t, f), op = op, value = mapExpr(v, f)), sp)
-    case SReturn(v) -> mkStmt(SReturn(value = mapExprOpt(v, f)), sp)
-    case SThrow(x) -> mkStmt(SThrow(expr = mapExpr(x, f)), sp)
+  val rebuilt = match s.kind {
+    case SLocal(b) -> mkStmt(SLocal(binding = mapBinding(b, m)), sp)
+    case SAssign(t, op, v) -> mkStmt(
+      SAssign(target = mapExprWith(t, m), op = op, value = mapExprWith(v, m)),
+      sp
+    )
+    case SReturn(v) -> mkStmt(SReturn(value = mapExprOpt(v, m)), sp)
+    case SThrow(x) -> mkStmt(SThrow(expr = mapExprWith(x, m)), sp)
     case STry(body, catches, fin) -> {
       val acc: List[CatchClause] = newList()
       var i = 0
       while i < catches.count {
         val c = catches[i]
-        acc.add(CatchClause(typeName = c.typeName, bindName = c.bindName, body = mapBlock(c.body, f), span = c.span))
+        acc.add(CatchClause(typeName = c.typeName, bindName = c.bindName, body = mapBlockWith(c.body, m), span = c.span))
         i = i + 1
       }
-      val newFin: Option[Block] = match fin { case Some(fb) -> Some(value = mapBlock(fb, f)); case None -> None }
-      mkStmt(STry(body = mapBlock(body, f), catches = acc, finally_ = newFin), sp)
+      val newFin: Option[Block] = match fin { case Some(fb) -> Some(value = mapBlockWith(fb, m)); case None -> None }
+      mkStmt(STry(body = mapBlockWith(body, m), catches = acc, finally_ = newFin), sp)
     }
-    case SDefer(body) -> mkStmt(SDefer(body = mapBlock(body, f)), sp)
-    case SScope(b, body) -> mkStmt(SScope(binding = b, body = mapBlock(body, f)), sp)
+    case SDefer(body) -> mkStmt(SDefer(body = mapBlockWith(body, m)), sp)
+    case SScope(b, body) -> mkStmt(SScope(binding = b, body = mapBlockWith(body, m)), sp)
     case SFor(label, pat, iter, body) -> mkStmt(
       SFor(
         label = label,
         pat = pat,
-        iter = mapExpr(iter, f),
-        body = mapBlock(body, f)
+        iter = mapExprWith(iter, m),
+        body = mapBlockWith(body, m)
       ),
       sp
     )
     case SWhile(label, cond, body) -> mkStmt(
-      SWhile(label = label, cond = mapExpr(cond, f), body = mapBlock(body, f)),
+      SWhile(
+        label = label,
+        cond = mapExprWith(cond, m),
+        body = mapBlockWith(body, m)
+      ),
       sp
     )
-    case SLoop(label, body) -> mkStmt(SLoop(label = label, body = mapBlock(body, f)), sp)
-    case SInvariant(x) -> mkStmt(SInvariant(expr = mapExpr(x, f)), sp)
-    case SExpr(x) -> mkStmt(SExpr(expr = mapExpr(x, f)), sp)
-    case SRule(l, r) -> mkStmt(SRule(lhs = mapExpr(l, f), rhs = mapExpr(r, f)), sp)
+    case SLoop(label, body) -> mkStmt(SLoop(label = label, body = mapBlockWith(body, m)), sp)
+    case SInvariant(x) -> mkStmt(SInvariant(expr = mapExprWith(x, m)), sp)
+    case SExpr(x) -> mkStmt(SExpr(expr = mapExprWith(x, m)), sp)
+    case SRule(l, r) -> mkStmt(SRule(lhs = mapExprWith(l, m), rhs = mapExprWith(r, m)), sp)
     case _ -> s
   }
+  val fs = m.stmt
+  fs(rebuilt)
 }

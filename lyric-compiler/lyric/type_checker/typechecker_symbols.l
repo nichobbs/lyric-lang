@@ -265,6 +265,17 @@ pub record SymbolTable {
   /// One entry per symbol already folded into `typeSymbolsById` (its count is
   /// the index cursor, the `TypeIdCounter` idiom).
   typeSymbolsIndexed: List[Int]
+  /// Every operator applied to distinct-typed operands, keyed by
+  /// `recordCopySiteKey` of the binop's span: `arith:<T>.from` for derived
+  /// arithmetic (`a + b` via `derives Add`), `cmp` for `==`/`!=` and the
+  /// derived comparisons.  A distinct value is a wrapper on the managed
+  /// targets, so `Lyric.ContractElaborator.lowerDistinctOps` rewrites each
+  /// site through `.value` and `T.from`, which also re-checks a range
+  /// subtype's result (#7361, #7226).
+  distinctOpSites: Map[String, String]
+  /// A compound assignment (`c += d`) whose target is distinct-typed, keyed
+  /// by the statement's span, mapped to `<T>.from`.
+  distinctCompoundSites: Map[String, String]
 }
 
 pub record ImplPair {
@@ -313,7 +324,9 @@ pub func newSymbolTable(): SymbolTable {
     argConversionSites = newMap(),
     callResultTypes = newMap(),
     typeSymbolsById = newMap(),
-    typeSymbolsIndexed = newList()
+    typeSymbolsIndexed = newList(),
+    distinctOpSites = newMap(),
+    distinctCompoundSites = newMap()
   )
 }
 

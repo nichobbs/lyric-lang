@@ -965,12 +965,16 @@ func serializeUnknownFrame(header: in H2FrameHeader, payload: in slice[Byte]): s
 /// `PRIORITY`-carrying frame's weight must fit the 1..=256 domain §6.3
 /// defines (the wire byte is `weight - 1`) — both are misconstructed-frame
 /// programmer errors, not wire content, caught here rather than silently
-/// truncated by `push24`/`pushByte`.
+/// truncated by `push24`/`pushByte`. Stream ids, the window increment and
+/// SETTINGS values must also fit their wire fields (`frameFieldsWellFormed`,
+/// #7251): the writers mask rather than reject, so a zero or negative
+/// increment or a stream-level frame on stream 0 would otherwise go out.
 @experimental
 pub func serializeFrame(frame: in H2Frame): slice[Byte]
   requires: pingDataWellSized(frame)
   requires: framePayloadWellSized(frame)
   requires: priorityWeightWellSized(frame)
+  requires: frameFieldsWellFormed(frame)
 {
   match frame {
     case DataFrame(streamId, data, endStream, _) -> serializeDataFrame(streamId, data, endStream)
@@ -1067,6 +1071,70 @@ pub func priorityWeightWellSized(frame: in H2Frame): Bool {
   }
 }
 
+func isStreamId(id: in Int): Bool {
+  id >= 0 and id <= 2147483647
+}
+
+func isNonZeroStreamId(id: in Int): Bool {
+  id >= 1 and id <= 2147483647
+}
+
+// See `priorityInfoWeightOk` for why the field read sits behind a
+// concretely-typed parameter.
+func priorityInfoDependencyOk(prio: in PriorityInfo): Bool {
+  isStreamId(prio.streamDependency)
+}
+
+func priorityDependencyOk(priority: in Option[PriorityInfo]): Bool {
+  match priority {
+    case Some(prio) -> priorityInfoDependencyOk(prio)
+    case None -> true
+  }
+}
+
+func settingsParamOk(p: in SettingsParam): Bool {
+  p.value >= 0i64 and p.value <= 4294967295i64
+}
+
+func settingsValuesOk(settings: in List[SettingsParam]): Bool {
+  var i = 0
+  while i < settings.count {
+    if not settingsParamOk(settings[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Every id and value fits its wire field (RFC 9113 §4.1, §6): stream-level
+/// frames carry a non-zero 31-bit stream id, `lastStreamId` and priority
+/// dependencies are 31-bit, a `WINDOW_UPDATE` increment is `1..2^31-1`,
+/// SETTINGS values are unsigned 32-bit, and a SETTINGS ACK carries no
+/// parameters. The serializer masks rather than rejects out-of-range values,
+/// so without this a misconstructed frame is silently rewritten.
+@pure
+@experimental
+pub func frameFieldsWellFormed(frame: in H2Frame): Bool {
+  match frame {
+    case DataFrame(streamId, _, _, _) -> isNonZeroStreamId(streamId)
+    case HeadersFrame(streamId, _, _, _, priority) -> isNonZeroStreamId(streamId) and priorityDependencyOk(priority)
+    case PriorityFrame(streamId, priority) -> isNonZeroStreamId(streamId) and priorityInfoDependencyOk(priority)
+    case RstStreamFrame(streamId, _) -> isNonZeroStreamId(streamId)
+    case SettingsFrame(settings, ack) -> if ack { settings.count == 0 } else { settingsValuesOk(settings) }
+    case PushPromiseFrame(streamId, promised, _, _) -> isNonZeroStreamId(streamId) and isNonZeroStreamId(promised)
+    case PingFrame(_, _) -> true
+    case GoAwayFrame(lastStreamId, _, _) -> isStreamId(lastStreamId)
+    case WindowUpdateFrame(streamId, increment) -> isStreamId(streamId) and increment >= 1
+    case ContinuationFrame(streamId, _, _) -> isNonZeroStreamId(streamId)
+    case UnknownFrame(header, _) -> unknownHeaderOk(header)
+  }
+}
+
+func unknownHeaderOk(h: in H2FrameHeader): Bool {
+  isStreamId(h.streamId) and h.frameType >= 0 and h.frameType <= 255 and h.flags >= 0 and h.flags <= 255
+}
+
 // =============================================================================
 // §10. The streaming frame decoder (sans-IO, boundary-agnostic).
 // =============================================================================
@@ -1112,21 +1180,28 @@ pub func newFrameDecoder(expectPreface: in Bool): FrameDecoder {
   )
 }
 
-/// A decoder with an explicit frame-size ceiling — used once the peer's
-/// `SETTINGS_MAX_FRAME_SIZE` has been received (the FSM, #5888, drives this).
+/// A decoder with an explicit frame-size ceiling. A receiver enforces the
+/// `SETTINGS_MAX_FRAME_SIZE` it advertised itself (RFC 9113 §4.2), so this is
+/// the local setting, not the peer's. It must lie in the RFC's
+/// 16384..16777215 range.
 @pure
 @experimental
-pub func newFrameDecoderWithMaxSize(expectPreface: in Bool, maxFrameSize: in Int): FrameDecoder {
+pub func newFrameDecoderWithMaxSize(expectPreface: in Bool, maxFrameSize: in Int): FrameDecoder
+  requires: maxFrameSize >= 16384 and maxFrameSize <= 16777215
+{
   val emptyBuf: slice[Byte] = []
   FrameDecoder(buf = emptyBuf, pos = 0, maxFrameSize = maxFrameSize, awaitingPreface = expectPreface, fatal = false)
 }
 
-/// Return a copy of `decoder` with a new frame-size ceiling. The FSM calls
-/// this after applying a peer `SETTINGS` frame; the codec only enforces the
-/// value, it never decides it.
+/// Return a copy of `decoder` with a new frame-size ceiling: the receiver's
+/// own advertised `SETTINGS_MAX_FRAME_SIZE` (RFC 9113 §4.2), in the RFC's
+/// 16384..16777215 range. The codec only enforces the value, it never
+/// decides it.
 @pure
 @experimental
-pub func withMaxFrameSize(decoder: in FrameDecoder, maxFrameSize: in Int): FrameDecoder {
+pub func withMaxFrameSize(decoder: in FrameDecoder, maxFrameSize: in Int): FrameDecoder
+  requires: maxFrameSize >= 16384 and maxFrameSize <= 16777215
+{
   FrameDecoder(
     buf = decoder.buf,
     pos = decoder.pos,

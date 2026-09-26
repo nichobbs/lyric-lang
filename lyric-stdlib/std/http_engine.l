@@ -202,6 +202,11 @@ pub record EngineLimits {
   maxHeaderLineLength: Int
   maxTotalHeaderBytes: Int
   maxBodyBytes: Int
+  // Each limit is a positive bound; a zero or negative one would reject
+  // every request (or, for a body, disable the cap's meaning). A total
+  // header budget below the per-line limit is allowed: it is only stricter.
+  invariant: maxRequestLineLength > 0 and maxHeaderCount > 0 and maxHeaderLineLength > 0
+  invariant: maxTotalHeaderBytes > 0 and maxBodyBytes >= 0
 }
 
 /// Sane production defaults: an 8 KiB request line, at most 100 headers, an
@@ -1678,6 +1683,7 @@ func isResponseSafeByte(cp: in Int): Bool {
 // 0x80, outside `isResponseSafeByte`'s `[32, 126]`/HTAB range, so scanning
 // bytes instead of decoded characters still rejects non-ASCII input exactly
 // as before.
+@pure
 func isResponseSafeString(s: in String): Bool {
   val bytes = encodeUtf8(s)
   var i = 0
@@ -1690,11 +1696,34 @@ func isResponseSafeString(s: in String): Bool {
   true
 }
 
+@pure
 func allHeadersResponseSafe(headers: in List[HeaderField]): Bool {
   var i = 0
   while i < headers.count {
     val h = headers[i]
-    if h.name.length == 0 or not isResponseSafeString(h.name) or not isResponseSafeString(h.value) {
+    if not isFieldNameToken(h.name) or not isResponseSafeString(h.value) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// A non-empty RFC 9110 field-name: `tchar`s only.  A name with `:` or a
+/// space would forge a different header (`Location: http://evil` as a name
+/// serializes as a `Location` header), so CR/LF/NUL-freedom is not enough.
+/// `serializeResponseHead` requires it of every header name; filter
+/// untrusted names through it first.
+@pure
+@experimental
+pub func isFieldNameToken(name: in String): Bool {
+  val bytes = encodeUtf8(name)
+  if bytes.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < bytes.length {
+    if not isTchar(bytes[i]) {
       return false
     }
     i = i + 1
@@ -1719,8 +1748,10 @@ func asciiStringToBytes(s: in String): slice[Byte] {
 /// formats whatever `headers` it is given.
 ///
 /// # Contract
-/// `reason` (which RFC 9112 section 4 permits to be empty) and every
-/// header name/value must be free of CR, LF, and NUL (see
+/// `status` is a three-digit code (100..999), and every header name is a
+/// non-empty RFC 9110 token (no `:`, space or other separator, which would
+/// forge a different header). `reason` (which RFC 9112 section 4 permits to
+/// be empty) and every header value must be free of CR, LF, and NUL (see
 /// `isResponseSafeByte`'s doc comment) — this is a programmer-facing
 /// misuse guard against response splitting, not a wire-content condition,
 /// since this side of the engine is never fed untrusted network bytes
@@ -1733,6 +1764,7 @@ func asciiStringToBytes(s: in String): slice[Byte] {
 pub func serializeResponseHead(
   version: in HttpVersion, status: in Int, reason: in String, headers: in List[HeaderField]
 ): slice[Byte]
+  requires: status >= 100 and status <= 999
   requires: isResponseSafeString(reason)
   requires: allHeadersResponseSafe(headers)
 {

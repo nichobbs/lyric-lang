@@ -279,13 +279,21 @@ pub func pipeCheckAndMono(
   // checker (#7222).  After `.copy` desugaring, so a copy's constructor call
   // is covered too; after `checkedSourceOut` is captured, so generic bodies
   // exported for another package's specialisation stay checker-free.
-  val checked = wrapInvariantConstructions(copyRes.file, tcRes.symbols.invariantCtorSites)
+  val invChecked = wrapInvariantConstructions(copyRes.file, tcRes.symbols.invariantCtorSites)
+  // Operators on distinct types go through the underlying value (#7361),
+  // which also re-checks a range subtype's derived arithmetic (#7226).
+  val checked = lowerDistinctOps(invChecked, tcRes.symbols.distinctOpSites, tcRes.symbols.distinctCompoundSites)
 
   val mcRes = checkFile(checked)
   if gate(opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {
     return None
   }
 
+  // W0002 for every contract quantifier the elaborator will drop (#7228);
+  // `@proof_required` files are proved, not runtime-checked.
+  if not vlIsProofRequired(mcRes.level) {
+    val _ = gate(opts.pkgLabel, opts.lineOrigins, runtimeQuantifierWarnings(checked))
+  }
   val elaborated = elaborateFileWithInterfaces(checked, monoIfaceDecls)
 
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).
@@ -313,7 +321,53 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
-  Some(value = monoRes.file)
+  Some(value = mapExprsInFile(monoRes.file, foldNegatedIntLiteral))
+}
+
+// `-<unsuffixed integer literal>` becomes one negative literal (#7346).
+// The type checker types `-2147483648` as `Int`, but its operand alone is
+// too large for `Int`, and every backend sized the negation by the operand:
+// the JVM pushed a long into an int slot (VerifyError) and MSIL emitted a
+// long.  A single literal lets each backend size the constant by its real
+// value.  Runs after elaboration and mono, so contract asserts and
+// specialised bodies are covered.
+func foldNegatedIntLiteral(e: in Expr): Expr {
+  match e.kind {
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match unparenthesized(operand).kind {
+        case ELiteral(lit) -> match lit {
+          case LInt(v, sfx, raw) -> match sfx {
+            case NoIntSuffix -> Expr(
+              kind = ELiteral(
+                lit = LInt(
+                  value = 0i64 -
+                    v,
+                  suffix = sfx,
+                  raw = "-" +
+                    raw
+                )
+              ),
+              span = e.span
+            )
+            case _ -> e
+          }
+          case _ -> e
+        }
+        case _ -> e
+      }
+      case _ -> e
+    }
+    case _ -> e
+  }
+}
+
+// The checker looks through parentheses under a negation (`-(2147483648)`
+// is an `Int`), so the fold does too (#7397).
+func unparenthesized(e: in Expr): Expr {
+  match e.kind {
+    case EParen(inner) -> unparenthesized(inner)
+    case _ -> e
+  }
 }
 
 /// Aspect weaving — after mono, before codegen, on every target.  Resolves

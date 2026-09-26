@@ -1417,7 +1417,12 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               JRef(className = "java/lang/String")
             }
             case JLong -> {
-              lowerExpr(ctx, insns, rhs)
+              val rTy = lowerExpr(ctx, insns, rhs)
+              if isIntLikeJvm(rTy) {
+                val _ = reconcileArithOperands(ctx, insns, lhsTy, rTy, lhs, rhs)
+              } else {
+                coerceArgTo(insns, rTy, JLong)
+              }
               insns.add(LLadd)
               JLong
             }
@@ -1429,26 +1434,40 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             }
             case JFloat -> {
               val rTy = lowerExpr(ctx, insns, rhs)
-              coerceArgTo(insns, rTy, JFloat)
-              insns.add(LFadd)
-              JFloat
+              // `Float + Double` is a `Double` (#7350): widen the float below.
+              if isDoubleJvm(rTy) {
+                val _ = reconcileArithOperands(ctx, insns, lhsTy, rTy, lhs, rhs)
+                insns.add(LDadd)
+                JDouble
+              } else {
+                coerceArgTo(insns, rTy, JFloat)
+                insns.add(LFadd)
+                JFloat
+              }
             }
             case _ -> {
               // Coerce like the JDouble/JFloat arms: the rhs may be an
               // erased-Object value (a lambda invoke's boxed return —
               // `result + f(1)` in closure_zero_overhead_self_test) and
-              // `iadd` rejects a reference operand at verification.
+              // `iadd` rejects a reference operand at verification.  An
+              // int-like lhs with a long rhs widens to `ladd` (#7350).
               val rTy = lowerExpr(ctx, insns, rhs)
-              coerceArgTo(insns, rTy, JInt)
-              insns.add(LIadd)
-              JInt
+              if isIntLikeJvm(lhsTy) and isLongJvm(rTy) {
+                val _ = reconcileArithOperands(ctx, insns, lhsTy, rTy, lhs, rhs)
+                insns.add(LLadd)
+                JLong
+              } else {
+                coerceArgTo(insns, rTy, JInt)
+                insns.add(LIadd)
+                JInt
+              }
             }
           }
         }
         case BSub -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          val lhsTy = reconcileArithOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs)
           match lhsTy {
             case JLong -> {
               insns.add(LLsub)
@@ -1471,7 +1490,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BMul -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          val lhsTy = reconcileArithOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs)
           match lhsTy {
             case JLong -> {
               insns.add(LLmul)
@@ -1494,7 +1513,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BDiv -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          val lhsTy = reconcileArithOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs)
           // #6748: `UInt`/`ULong` erase to the JVM's signed `int`/`long`, so
           // `idiv`/`ldiv` compute the WRONG quotient whenever either operand
           // has its sign bit set — dispatch to `Integer`/`Long.divideUnsigned`
@@ -1547,7 +1566,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BMod -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, true)
+          val lhsTy = reconcileArithOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs)
           // #6748: see the matching `BDiv` note above.
           val isUnsignedMod = isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs)
           match lhsTy {
@@ -1978,6 +1997,22 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                       }
                     }
                   }
+                } else if memberName == "value" and ctx.funcSigs.containsKey(cls + "#$value") {
+                  // `.value` on a distinct/range-subtype wrapper reads its
+                  // underlying value through the synthesised `$value()`, as it
+                  // does on dotnet and native (#7361).
+                  match mapGet(ctx.funcSigs, cls + "#$value") {
+                    case Some(vsig) -> {
+                      val vPs: List[JvmType] = newList()
+                      insns.add(LInvokevirtual(owner = cls, name = "$value", params = vPs, ret = vsig.ret))
+                      match vsig.ret {
+                        case JByte -> maskByteUnsigned(insns)
+                        case _ -> ()
+                      }
+                      vsig.ret
+                    }
+                    case None -> JVoid
+                  }
                 } else {
                   // A precisely-known receiver class with no such registered
                   // field: returning the receiver as the "field value" (the old
@@ -2196,26 +2231,15 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     }
 
     // ── Quantifiers ───────────────────────────────────────────────────────
-    // `forall`/`exists` are proof-time quantifiers over possibly-unbounded
-    // domains.  In `@runtime_checked` modules they are approximated as `true`
-    // (a sound overapproximation — the assert passes, no false-negative
-    // crash), matching the MSIL backend's resolution (#1506); W0002 informs
-    // the user the clause is not enforced at runtime (#3227).
+    // Only legal in a contract clause (P0344), where the contract elaborator
+    // drops every conjunct containing one before codegen (W0002, #7228).
+    // Lowering it as a constant was unsound under negation, so reaching here
+    // is a compiler bug.
     case EForall(_, _, _) -> {
-      Console.error(
-        "W0002: forall quantifier in @runtime_checked contract is not evaluated at runtime " +
-          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
-      )
-      insns.add(LIconst(v = 1))
-      JBoolean
+      panic("Jvm.Codegen: a forall quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
     case EExists(_, _, _) -> {
-      Console.error(
-        "W0002: exists quantifier in @runtime_checked contract is not evaluated at runtime " +
-          "(sound overapproximation as true; consider restricting the domain or using @proof_required)"
-      )
-      insns.add(LIconst(v = 1))
-      JBoolean
+      panic("Jvm.Codegen: an exists quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
     case EOld(_) -> {
       panic("Jvm.Codegen: EOld not supported in JVM codegen")
@@ -2561,6 +2585,16 @@ func reconcileCmpOperands(
     insns.add(LI2l)
     emitLoad(insns, rhsSlotL, JLong)
     JLong
+  } else if isDoubleJvm(lhsTy) and isFloatJvm(rhsTy) {
+    // Float widens to Double (the checker's `Float < Double`, #7350).
+    insns.add(LF2d)
+    JDouble
+  } else if isFloatJvm(lhsTy) and isDoubleJvm(rhsTy) {
+    val rhsSlotD = allocSlot(ctx, "__cmp_rhs_" + freshLabel(ctx), JDouble)
+    emitStore(insns, rhsSlotD, JDouble)
+    insns.add(LF2d)
+    emitLoad(insns, rhsSlotD, JDouble)
+    JDouble
   } else {
     // Both operands have the same primitive type, or the same concretely-
     // known reference type (e.g. two `String`s — the caller's own
@@ -2572,10 +2606,67 @@ func reconcileCmpOperands(
   }
 }
 
+func isDoubleJvm(ty: in JvmType): Bool {
+  match ty {
+    case JDouble -> true
+    case _ -> false
+  }
+}
+
+func isFloatJvm(ty: in JvmType): Bool {
+  match ty {
+    case JFloat -> true
+    case _ -> false
+  }
+}
+
+// Reconcile arithmetic operands (`lhs` below `rhs` on the stack) to the type
+// the checker gives the result (#7350).
+func reconcileArithOperands(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  lhsTy: in JvmType,
+  rhsTy: in JvmType,
+  lhs: in Expr,
+  rhs: in Expr,
+): JvmType {
+  reconcileWidenedOperands(ctx, insns, lhsTy, rhsTy, lhs, rhs, true)
+}
+
+// Reconcile an arithmetic or comparison operand pair (`lhs` below `rhs`).  A
+// `UInt` operand beside a `Long`/`ULong` zero-extends via
+// `Integer.toUnsignedLong` rather than `i2l`, which would sign-extend a value
+// with its top bit set (#7350 arithmetic, #7382 comparisons); everything else
+// goes through `reconcileCmpOperands`.
+func reconcileWidenedOperands(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  lhsTy: in JvmType,
+  rhsTy: in JvmType,
+  lhs: in Expr,
+  rhs: in Expr,
+  panicOnErased: in Bool,
+): JvmType {
+  val ps: List[JvmType] = newList()
+  ps.add(JInt)
+  if isLongJvm(lhsTy) and isIntLikeJvm(rhsTy) and isUnsignedExpr(ctx, rhs) {
+    insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toUnsignedLong", params = ps, ret = JLong))
+    return JLong
+  }
+  if isIntLikeJvm(lhsTy) and isUnsignedExpr(ctx, lhs) and isLongJvm(rhsTy) {
+    val rhsSlot = allocSlot(ctx, "__arith_rhs_" + freshLabel(ctx), JLong)
+    emitStore(insns, rhsSlot, JLong)
+    insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toUnsignedLong", params = ps, ret = JLong))
+    emitLoad(insns, rhsSlot, JLong)
+    return JLong
+  }
+  reconcileCmpOperands(ctx, insns, lhsTy, rhsTy, panicOnErased)
+}
+
 func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in Expr, rhs: in Expr): JvmType {
   val rawLhsTy = lowerExpr(ctx, insns, lhs)
   val rhsTy = lowerExpr(ctx, insns, rhs)
-  val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+  val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
   val trueL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
   // Materialise the 0/1 boolean through a result local so the operand stack is
@@ -2791,37 +2882,37 @@ func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLa
         case BEq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BEq, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BNeq, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BLt, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BLte, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BGt, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BGte, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case _ -> {
@@ -2880,37 +2971,37 @@ func lowerBoolCondTrue(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, su
         case BEq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case _ -> {

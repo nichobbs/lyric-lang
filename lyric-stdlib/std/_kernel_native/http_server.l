@@ -1670,8 +1670,10 @@ func responseHeaderSafe(s: in String): Bool {
   true
 }
 
+// A header name must also be an RFC 9110 token (`isFieldNameToken`), which
+// `serializeResponseHead` requires (#7251).
 func appendSafeHeader(headers: in List[HeaderField], name: in String, value: in String): Unit {
-  if name.length > 0 and responseHeaderSafe(name) and responseHeaderSafe(value) {
+  if isFieldNameToken(name) and responseHeaderSafe(value) {
     headers.add(HeaderField(name = name, value = value))
   }
 }
@@ -1744,6 +1746,9 @@ func respondBytesWith(
   // unrelated request's `HttpContext.done` by the time it happens.
   if c.responded {
     panic("Std.HttpServer: respond* called more than once on the same HttpContext (invariant violation)")
+  }
+  if status < 100 or status > 999 {
+    panic("HTTP response status must be a three-digit code (100..999), got " + toString(status))
   }
   c.responded = true
   val headers: List[HeaderField] = newList()

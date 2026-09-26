@@ -38,8 +38,11 @@ pub func isStringPlusVarAssign(target: in Expr, op: in AssignOp, targetType: in 
 // ─────────────────────────────────────────────────────────────────────────────
 pub func typeOfLiteral(lit: in Literal): Type {
   match lit {
-    case LInt(_, sfx, _) -> match sfx {
-      case NoIntSuffix -> TyPrim(pt = PtInt)
+    case LInt(v, sfx, _) -> match sfx {
+      // An unsuffixed literal defaults to `Int` only when its value fits;
+      // a larger one is a `Long` (never a wrapped `Int`, #7346).  The one
+      // exception, `-2147483648`, is handled by `inferExpr`'s negation arm.
+      case NoIntSuffix -> if longFitsInt(v) { TyPrim(pt = PtInt) } else { TyPrim(pt = PtLong) }
       case I8 -> TyPrim(pt = PtByte)
       case I16 -> TyPrim(pt = PtInt)
       case I32 -> TyPrim(pt = PtInt)
@@ -748,6 +751,62 @@ func isConcreteIntType(t: in Type): Bool {
   }
 }
 
+func longFitsInt(v: in Long): Bool {
+  v >= 0i64 - 2147483648i64 and v <= 2147483647i64
+}
+
+// True when the integer value `v` is representable in the integer type `t`
+// (after stripping range refinements; the refinement's own bounds are T0015's
+// job).  `ULong`'s upper half cannot arise: a literal's value is a `Long`.
+pub func intValueFitsType(v: in Long, t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt {
+      case PtByte -> v >= 0i64 and v <= 255i64
+      case PtInt -> longFitsInt(v)
+      case PtLong -> true
+      case PtUInt -> v >= 0i64 and v <= 4294967295i64
+      case PtULong -> v >= 0i64
+      case PtNat -> v >= 0i64
+      case _ -> true
+    }
+    case _ -> true
+  }
+}
+
+// The value of an integer literal written without a suffix, seen through
+// parentheses and one unary minus (`-2147483648` parses as a negated
+// `2147483648`).  `None` for anything else.
+pub func unsuffixedIntLiteralValue(e: in Expr): Option[Long] {
+  match e.kind {
+    case EParen(inner) -> unsuffixedIntLiteralValue(inner)
+    case ELiteral(lit) -> match lit {
+      case LInt(v, sfx, _) -> match sfx { case NoIntSuffix -> Some(value = v); case _ -> None }
+      case _ -> None
+    }
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind {
+        case ELiteral(lit) -> match lit {
+          case LInt(v, sfx, _) -> match sfx {
+            case NoIntSuffix -> Some(
+              value = 0i64 -
+                v
+            )
+            case _ -> None
+          }
+          case _ -> None
+        }
+        case EParen(_) -> match unsuffixedIntLiteralValue(operand) {
+          case Some(v) -> Some(value = 0i64 - v)
+          case None -> None
+        }
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
 // True when `t` is exactly the default literal type `Int` (the type an
 // unsuffixed integer literal infers to before context adjustment).
 func isPlainInt(t: in Type): Bool {
@@ -762,35 +821,130 @@ func isPlainInt(t: in Type): Bool {
 // integer type (e.g. `Long` from `someLong <= 0`, a return type, a binding
 // annotation, or a parameter type).  Returns the adjusted type, or `actual`
 // unchanged when no coercion applies.
-// True when `e` is a negated literal (`-1`, `(-1)`).
-func isNegatedLit(e: in Expr): Bool {
-  match e.kind {
-    case EPrefix(op, _) -> match op { case PreNeg -> true; case _ -> false }
-    case EParen(inner) -> isNegatedLit(inner)
-    case _ -> false
-  }
-}
-
-// True when `t` (after stripping range refinements) is an integer primitive
-// with no negative values, which a negated literal must never adopt.
-func isNonNegativeIntType(t: in Type): Bool {
-  match unrefine(t) {
-    case TyPrim(pt) -> match pt {
-      case PtByte -> true
-      case PtUInt -> true
-      case PtULong -> true
-      case PtNat -> true
-      case _ -> false
-    }
-    case _ -> false
-  }
-}
-
+//
+// The literal's value must fit `expected` (#7346): `b == 300` with `b: Byte`
+// keeps the literal an `Int` rather than adopting a `Byte` it cannot be.  A
+// literal already typed `Long` because it is too large for `Int` may still
+// adopt `ULong`/`UInt` when it fits.
 func adoptIntLiteralType(e: in Expr, actual: in Type, expected: in Type): Type {
-  if isUnsuffixedIntLit(e) and isPlainInt(actual) and isConcreteIntType(expected) and not (isNegatedLit(e) and isNonNegativeIntType(expected)) {
-    return expected
+  if isUnsuffixedIntLit(e) and (isPlainInt(actual) or isPlainLong(actual)) and isConcreteIntType(expected) {
+    match unsuffixedIntLiteralValue(e) {
+      case Some(v) -> {
+        if intValueFitsType(v, expected) {
+          return expected
+        }
+      }
+      case None -> ()
+    }
   }
   actual
+}
+
+func isPlainLong(t: in Type): Bool {
+  match t {
+    case TyPrim(pt) -> match pt { case PtLong -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// The result type of `T.from` / `T.tryFrom` when `fn` names one on a
+// distinct type `T` that no local shadows.
+func distinctFactoryType(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Option[Type] {
+  match fn.kind {
+    case EMember(recv, mname) -> {
+      if mname != "from" and mname != "tryFrom" {
+        return None
+      }
+      val tname = match recv.kind {
+        case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+        case _ -> ""
+      }
+      if tname == "" {
+        return None
+      }
+      match scopeTryFind(sc, tname) {
+        case Some(_) -> return None
+        case None -> ()
+      }
+      match symTableTryFindOne(tbl, tname) {
+        case Some(sym) -> match sym.kind {
+          case DKDistinctType(did, _) -> {
+            val noArgs: List[Type] = newList()
+            val dty = TyUser(id = did, name = sym.name, args = noArgs)
+            if mname == "from" {
+              return Some(value = dty)
+            }
+            match symTableTryFindOne(tbl, "Result") {
+              case Some(rsym) -> match rsym.kind {
+                case DKUnion(rid, _) -> {
+                  val rargs: List[Type] = newList()
+                  rargs.add(dty)
+                  rargs.add(TyPrim(pt = PtString))
+                  Some(value = TyUser(id = rid, name = rsym.name, args = rargs))
+                }
+                case _ -> None
+              }
+              case None -> None
+            }
+          }
+          case _ -> None
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// The `from` path of a distinct type (`type Cents = Long range ...`,
+// `type UserId = Long`), if `t` is one (#7361).
+pub func distinctFromPath(tbl: in SymbolTable, t: in Type): Option[String] {
+  match t {
+    case TyUser(tid, _, _) -> {
+      var i = 0
+      while i < tbl.symbols.count {
+        val sym = tbl.symbols[i]
+        match sym.kind {
+          case DKDistinctType(did, _) -> {
+            if typeIdEq(did, tid) {
+              return Some(value = sym.name + ".from")
+            }
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+func recordDistinctSite(tbl: in SymbolTable, span: in Span, kind: in String): Unit {
+  val key = recordCopySiteKey(span)
+  if not tbl.distinctOpSites.containsKey(key) {
+    tbl.distinctOpSites.add(key, kind)
+  }
+}
+
+// Derived arithmetic on a distinct type.
+func recordDistinctArith(tbl: in SymbolTable, lhs: in Type, rhs: in Type, span: in Span): Unit {
+  if typeEquiv(lhs, rhs) {
+    match distinctFromPath(tbl, lhs) {
+      case Some(path) -> recordDistinctSite(tbl, span, "arith:" + path)
+      case None -> ()
+    }
+  }
+}
+
+// `==`/`!=` or a derived comparison on two values of one distinct type.
+func recordDistinctCompare(tbl: in SymbolTable, lhs: in Type, rhs: in Type, span: in Span): Unit {
+  if typeEquiv(lhs, rhs) {
+    match distinctFromPath(tbl, lhs) {
+      case Some(_) -> recordDistinctSite(tbl, span, "cmp")
+      case None -> ()
+    }
+  }
 }
 
 func inferBinop(
@@ -804,6 +958,9 @@ func inferBinop(
         }
       }
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Add", lhs)
+      if not isNumericType(lhs) and hasDerive(tbl, "Add", lhs) {
+        recordDistinctArith(tbl, lhs, rhs, span)
+      }
       if not lhsOk {
         diag.add(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
@@ -831,6 +988,9 @@ func inferBinop(
     }
     case BSub -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Sub", lhs)
+      if not isNumericType(lhs) and hasDerive(tbl, "Sub", lhs) {
+        recordDistinctArith(tbl, lhs, rhs, span)
+      }
       if not lhsOk {
         diag.add(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
@@ -855,6 +1015,9 @@ func inferBinop(
     }
     case BMul -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Mul", lhs)
+      if not isNumericType(lhs) and hasDerive(tbl, "Mul", lhs) {
+        recordDistinctArith(tbl, lhs, rhs, span)
+      }
       if not lhsOk {
         diag.add(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
@@ -879,6 +1042,9 @@ func inferBinop(
     }
     case BDiv -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Div", lhs)
+      if not isNumericType(lhs) and hasDerive(tbl, "Div", lhs) {
+        recordDistinctArith(tbl, lhs, rhs, span)
+      }
       if not lhsOk {
         diag.add(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
@@ -903,6 +1069,9 @@ func inferBinop(
     }
     case BMod -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Mod", lhs)
+      if not isNumericType(lhs) and hasDerive(tbl, "Mod", lhs) {
+        recordDistinctArith(tbl, lhs, rhs, span)
+      }
       if not lhsOk {
         diag.add(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
@@ -935,6 +1104,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BNeq -> {
@@ -947,6 +1117,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BLt -> {
@@ -962,6 +1133,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BLte -> {
@@ -977,6 +1149,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BGt -> {
@@ -992,6 +1165,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BGte -> {
@@ -1007,6 +1181,7 @@ func inferBinop(
           )
         )
       }
+      recordDistinctCompare(tbl, lhs, rhs, span)
       TyPrim(pt = PtBool)
     }
     case BAnd -> {
@@ -1926,7 +2101,8 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
     isHot = entry.sig.isHot,
     isGenerator = entry.sig.isGenerator,
     originPackage = entry.sig.originPackage,
-    span = entry.sig.span
+    span = entry.sig.span,
+    isPure = entry.sig.isPure
   )
 }
 
@@ -2035,7 +2211,8 @@ func dropReceiverParam(full: in ResolvedSignature): ResolvedSignature {
     isHot = full.isHot,
     isGenerator = full.isGenerator,
     originPackage = full.originPackage,
-    span = full.span
+    span = full.span,
+    isPure = full.isPure
   )
 }
 
@@ -5726,6 +5903,16 @@ func inferExprCore(
 
     case EPrefix(op, inner) -> {
       val it = inferExpr(sc, tbl, sigs, diag, inner)
+      // `-2147483648` is `Int.MinValue`: its operand alone is too large for
+      // `Int` (so it typed `Long`), but the negated value fits (#7346).
+      match unsuffixedIntLiteralValue(e) {
+        case Some(v) -> {
+          if v == 0i64 - 2147483648i64 {
+            return TyPrim(pt = PtInt)
+          }
+        }
+        case None -> ()
+      }
       inferPrefix(diag, op, it, e.span)
     }
 
@@ -5762,6 +5949,21 @@ func inferExprCore(
           }
         }
         case _ -> ()
+      }
+      // A distinct type's static factories: `T.from(x): T` and
+      // `T.tryFrom(x): Result[T, String]` (language reference §2.3).  Typed
+      // here so an operator on their result is recorded like any other
+      // distinct-typed operand (#7361); they previously typed as `TyError`.
+      match distinctFactoryType(sc, tbl, fn) {
+        case Some(ft) -> {
+          var ai = 0
+          while ai < args.count {
+            val _ = inferExpr(sc, tbl, sigs, diag, callArgExpr(args[ai]))
+            ai = ai + 1
+          }
+          return ft
+        }
+        case None -> ()
       }
       // Numeric / character conversion-method intrinsics (#1901): `x.toInt()`,
       // `b.toLong()`, etc.  Recognised only on a numeric/char receiver so a
@@ -5943,6 +6145,7 @@ func inferExprCore(
       }
       match directSig {
         case Some(sig) -> {
+          checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
             recordSigArgConversions(tbl, sig, args, argTypes)
@@ -5979,6 +6182,7 @@ func inferExprCore(
               }
               case None -> match methodPick {
                 case Some(mp) -> {
+                  checkContractCallPure(sc, diag, mp.sig, fn, e.span)
                   checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
                   checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
                   match mp.fullSig {
@@ -6566,6 +6770,35 @@ pub func inferExprExpected(
 // T0085).  Shared by the direct-signature path and the A4 method-call path
 // (whose signatures are receiver-dropped, so `sig.params` aligns 1:1 with
 // `args` in both).
+// T0133 (#7228, language reference §6.3): a contract clause or loop
+// invariant may call only `@pure` functions.  Only calls that resolve to a
+// declared Lyric function reach here; operators, field reads and built-in
+// collection/string members are not function calls.
+func checkContractCallPure(
+  sc: in Scope,
+  diag: in List[Diagnostic],
+  sig: in ResolvedSignature,
+  fn: in Expr,
+  span: in Span,
+): Unit {
+  if sc.contractDepth.count == 0 or sig.isPure {
+    return
+  }
+  val name = match fn.kind {
+    case EPath(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "?" }
+    case EMember(_, m) -> m
+    case _ -> "?"
+  }
+  diag.add(
+    errorDiagnostic(
+      "T0133",
+      "a contract clause may call only @pure functions; '" + name +
+        "' is not @pure (mark it @pure if it has no side effects, or move the check into the body)",
+      span
+    )
+  )
+}
+
 func checkCallArgsAgainstSig(
   sc: in Scope,
   tbl: in SymbolTable,

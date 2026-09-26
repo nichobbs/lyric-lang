@@ -570,6 +570,9 @@ pub record FuncCtx {
   // >= this depth) before jumping, so a `defer` declared in a loop body runs on
   // loop-exit and loop-continue as well as on fall-off.
   loopDeferDepth: List[Int]
+  // Labelled loops currently being lowered (#7349): label -> the loop's index
+  // in loopBreak/loopCont/loopDeferDepth.
+  loopLabelIndex: Map[String, Int]
   // Parallel to `deferStack`: the JVM local-variable slot holding the
   // "already-replayed" flag for each active defer region (#2855).  Entry `i` is
   // the int slot allocated by `lowerDeferRegion` / `lowerBlockExprWithDefer` and

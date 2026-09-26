@@ -747,7 +747,7 @@ output_assembly = "myapp.dll"
 | `Std.Uuid` | UUID generation and parsing | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Stream` | I/O stream interfaces | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
 | `Std.Time` | Instants and durations | `Instant`, `Duration`, `now`, `toIsoString`, ISO-8601 parsing |
-| `Std.Json` | RFC 8259 JSON | `JsonDoc`, `JsonElement`, `parseJson`, `tryParseJson`, `getString`, `getInt32` |
+| `Std.Json` | RFC 8259 JSON | `JsonDoc`, `JsonElement`, `parseJson`, `tryParseJson`, `tryGetProperty`, `getString`, `getInt32` (the `get*` getters require `isJson*`; use `tryGet*` for untrusted data) |
 | `Std.Http` | HTTP client/server primitives | `get`, `post`, `HttpRequest`, `HttpResponse`, `statusCode`, `HttpClientBuilder`, `withHttpVersion`, `HttpVersion`, `negotiatedVersion`, `withCaCertificate`, `withExclusiveCaCertificate`, `withClientIdentity`, `withMinTlsVersion`, `withInsecureSkipVerify`, `tlsConfigSupported`, `resolveInsecureVerifyPolicy` |
 | `Std.Tls` | PEM certificate/private-key loading | `Certificate`, `Identity`, `TlsVersion`, `TlsServerConfig`, `Certificate.fromPemFile`/`fromPem`, `Identity.fromPemFiles`/`fromPem` |
 | `Std.HttpServer` | Low-level HTTP(S) server (`lyric-web` builds on this); on `--target dotnet` a pure-Lyric sans-IO engine over `System.Net.Sockets`/`SslStream` (the `HttpListener` server was retired, docs/61 §6). Over TLS it advertises `h2` then `http/1.1` via ALPN and serves **HTTP/2** end-to-end through `Std.HttpEngine.H2Conn` when the client offers it, falling back to HTTP/1.1 otherwise — same handlers, no code change (docs/61 §6.4). On `--target native` (N9.3, #6104) the same sans-IO engine runs thread-per-connection over real `pthread_create`d OS threads (native `spawn`/`scope` is not yet real concurrency); HTTP/1.1 only — a negotiated-`h2` TLS connection is closed rather than mis-parsed (N9.5 tracks native h2) — with no `startListener{,Tls}WithLimits`/backpressure cap yet | `startListener`, `startListenerTls` (real TLS + h2 on `--target dotnet`, real TLS on `--target jvm`, real TLS (no h2) on `--target native`; dotnet/native return `InvalidConfig` for a `requireClientCert`-without-`clientCa` mTLS misconfig, docs/61 §6.3), `startListenerWithLimits`/`startListenerTlsWithLimits` (dotnet only — raise the engine's request-size caps, e.g. the default 10 MiB body limit; the JVM server applies the same fixed 10 MiB cap, answering `413`), `nextContext`, `respondText`/`respondJson`/`respondBytesWithHeaders`; dotnet/native handshake off the accept loop with `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` / `LYRIC_HTTP_IDLE_TIMEOUT_MS` timeouts (`resolveTlsHandshakeTimeoutMs`/`resolveConnectionIdleTimeoutMs`) |
@@ -1279,7 +1279,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0012` | Primitive type does not take type arguments |
 | `T0013` | Name is not a type |
 | `T0014` | Unknown qualified type name (last segment not in scope) |
-| `T0015` | Integer literal out of range for an inline range-refined type |
+| `T0015` | Integer literal out of range for the declared integer type (an inline range-refined type, or a plain `Byte`/`Int`/`UInt`/`Long`/`ULong`/`Nat` binding) |
 | `T0016` | Non-exhaustive `match` (uncovered union/enum case, `Bool`, or scalar without `_`) |
 | `T0017` | Type alias is part of a cycle and does not resolve to a type |
 | `T0020` | Unknown name (undefined variable or function) |
@@ -1338,11 +1338,18 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0127` | A record `.copy(...)` call is malformed: it passes a positional argument (copy takes named field arguments, `r.copy(field = value)`) or names the same field more than once. |
 | `T0128` | Another package's function is used as a value, but it is generic, `async`, has a non-`in` parameter, or has a parameter type that cannot be named at the use site, so no forwarding lambda can stand for it. Wrap the call in a lambda instead: `{ x: Int -> Pkg.f(x) }`. |
 | `T0129` | A union- or enum-case pattern is matched against a value of a different type: `case Some(i)` on an `Int`, or `case Ok(v)` on an `Option`. The pattern can never match; it used to type-check and then take the wrong arm on dotnet or fail JVM verification. Fix the scrutinee or the pattern. A bare nullary case (`case None`) is checked the same way. Not checked when the scrutinee's type is unknown or open (a type variable, `Self`, a nullable). |
+| `T0130` | `break` or `continue` outside a loop, or `break label` / `continue label` where no enclosing loop has that label. A lambda body, a `defer` body and a `finally` block start with no enclosing loops. |
+| `T0131` | A loop reuses the label of a loop it is nested in, so `break label` would be ambiguous. Rename one; sibling loops may share a label. |
+| `T0132` | A contract clause has the wrong type: `requires:`, `ensures:`, `when:` and loop `invariant:` must be `Bool`. Clauses are checked in the function's scope, with `result` typed as the declared return type. |
+| `T0133` | A contract clause or loop invariant calls a function that is not `@pure`. Mark the callee `@pure` if it has no side effects (the compiler trusts the annotation), or move the check into the body. |
+| `T0134` | A compound assignment (`+=`, `-=`, ...) to a distinct type has a target that is not a variable or field path (`xs[i] += y`). The assignment is rewritten to `x = T.from(x.value op y.value)`, which evaluates the target twice; write it out explicitly. |
+| `T0135` | A protected type's `func` member is `async` or declares its own type parameters. Every `entry` and `func` runs under the instance lock, which cannot be held across an `await` or taken by a method-generic member. |
 
 ### Type checker warnings (W-series)
 
 | Code | Severity | Meaning |
 |---|---|---|
+| `W0002` | warning | A `forall`/`exists` in a contract of a runtime-checked package: its domain is a type, so it cannot be evaluated. The top-level `and`-conjunct containing it is skipped at runtime; the clause's other conjuncts are still checked. Put the property in a `@proof_required` package to have it proved. |
 | `W0006` | warning | A `pub` function exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature. Nested types are host implementation details meant to stay behind the `_kernel/` FFI boundary. A kernel file that declares the extern type locally is exempt. Fix: wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`) instead of exposing it directly. Top-level domain extern types are not flagged. |
 
 ### Emitter (E-series)

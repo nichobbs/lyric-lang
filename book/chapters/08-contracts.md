@@ -133,7 +133,9 @@ What this buys you: once you hold an `Account` value, you can assume `balance >=
 
 ## §8.5 The contract expression sublanguage
 
-Contract expressions are restricted. They must be pure — no side effects, no I/O, no mutation. The compiler enforces this statically: a contract expression that calls a non-`@pure` function is a compile error.
+Contract expressions are restricted. They must be pure — no side effects, no I/O, no mutation. The compiler enforces this statically: a contract expression (including a loop `invariant:`) that calls a non-`@pure` function is a compile error, **T0133**. Every clause is also type-checked like the function body: `requires:`, `ensures:`, `when:` and `invariant:` must be `Bool` (**T0132**).
+
+`@pure` is a promise the compiler trusts; it does not inspect the function's body. Built-in members such as `xs.count` or `s.length` are not function calls and need no annotation. A function from another compiled package can be called from a contract when that package was built with its `@pure` annotations recorded in its contract metadata.
 
 What you can use:
 
@@ -142,13 +144,13 @@ What you can use:
 - Field access (`a.balance`, `s.depth`)
 - `result` and `old(expr)` in `ensures:` clauses
 - `implies` — `a implies b` is equivalent to `not a or b`
-- `forall` and `exists` quantifiers over finite collections:
+- `forall` and `exists` quantifiers:
 
 ```lyric
-ensures: forall (x: T) where xs.contains(x) implies result.contains(x)
+ensures: forall (x: T) where xs.contains(x) { result.contains(x) }
 ```
 
-In `@runtime_checked` mode, a `forall` over a slice iterates the slice at runtime. In `@proof_required` mode, it becomes a universally-quantified formula for the SMT solver.
+A quantifier ranges over a type, so a `@runtime_checked` build cannot evaluate it: the `and`-conjunct of the clause that contains it is skipped, with warning `W0002`, and the clause's other conjuncts are still checked. In `@proof_required` mode it becomes a universally-quantified formula for the SMT solver.
 
 What you cannot use:
 
