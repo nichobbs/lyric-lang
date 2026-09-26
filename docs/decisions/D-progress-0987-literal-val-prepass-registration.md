@@ -34,9 +34,15 @@ the same failure all along.
   `-N`, and `renderConstExpr` keeps the sign. A consumer that re-parses
   `-N` from the synthesised source folds it in `foldConstInitToInt` instead
   of reading only the `ldc`, which would have inlined `N`.
+- A consumer inlines a restored constant as an `Int`, so a literal outside
+  `Int` range (`pub val big: Long = -5000000000`) is left out of the
+  contract; a consumer naming it fails to resolve instead of reading a
+  truncated value. `foldConstInitToInt` refuses such a value from an older
+  package rather than truncate it (#7403).
 
 ## Tests
 
 `msil_project_bridge_self_test.l` has a new case: an app package listed
 before its library reads a negative and a positive literal `val`, both
-bare and qualified. The lyric-jsonrpc suite passes again.
+bare and qualified. `contract_meta_self_test.l` checks that out-of-range
+literal `val`s and `const`s stay out of the contract. The lyric-jsonrpc suite passes again.

@@ -36,9 +36,18 @@ above.
 Functions and protected entries with a refinement no longer take the
 nothing-to-elaborate fast path.
 
+The walker covers every expression form that holds a sub-expression, with
+no catch-all, so an assignment inside a list, tuple, index, interpolation,
+type application, `yield` or range bound is checked too (#7398). A lambda
+kept in a list was skipped before, and the fast-path gate uses the same
+walker, so such a function was not instrumented at all.
+
 Not covered:
 - A module-level `val` with a refined type keeps only the compile-time T0015
   check.
+- An assignment through a field path (`w.field = v`) to a range-refined
+  record field: the refinement is on the field's declared type, which this
+  pass does not see.
 - Named range subtypes (`type Cents = Long range ...`) are part 2 of #7226:
   their `from`/`tryFrom` already check, and derived arithmetic is re-checked
   through `from` by D-progress-989 (#7361).
@@ -46,4 +55,5 @@ Not covered:
 Tests: `range_refinement_self_test.l` (7 cases, dotnet and JVM) covers
 parameters, a half-open return, `Double` (including NaN) and `Long` bounds,
 a non-literal binding, repeated and compound assignment, shadowing, and a
-lambda assigning a captured refined `var`.
+lambda assigning a captured refined `var`, held directly or in a list or
+tuple.

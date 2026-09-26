@@ -95,9 +95,16 @@ is a `requires:` or invariant.
     exceptions.
   - `tryGetProperty` returns `None` for a non-object receiver instead of
     throwing.
-  - The `lyricJsonGet*` readers used by `@generate(Json)` fail closed:
-    malformed JSON, a non-object root, or a missing, wrong-kind or
-    out-of-range field returns `false`.
+  - The `lyricJsonGet*` field readers fail closed: malformed JSON, a
+    non-object root, or a missing, wrong-kind or out-of-range field returns
+    `false`, and `lyricJsonGetSubObject` returns `false` for a value that is
+    not an object (#7380).
+  - A synthesised `@generate(Json)` `fromJson` calls the `get*` accessors
+    directly, so a present field or slice element of the wrong kind failed
+    their new preconditions instead of returning `Err`. The generator now
+    guards each scalar with `lyricJsonIsKind` and returns
+    `Err("field 'x': expected T")`; a `Byte` must be 0..255 and a `Char` a
+    one-character string, as `toJson` writes them (#7401).
   - Their per-field re-parse is a performance issue, tracked in #7347.
 - `Std.Xml` character references must name an XML 1.0 `Char`. `&#0;`, other
   C0 controls, surrogates and U+FFFE/U+FFFF are `UnexpectedChar`.

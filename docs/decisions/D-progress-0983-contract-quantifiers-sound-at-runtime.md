@@ -25,8 +25,11 @@ failed on every call. Native could not lower quantifiers at all.
 - **P0344.** The grammar has always said a quantifier may appear only in a
   contract, but the parser accepted one anywhere, and a body expression like
   `not (exists (i: Int) { i == 3 })` compiled to `false`. The parser now
-  reports P0344 outside `requires:`/`ensures:`/`when:`/`decreases:` and
-  `invariant:` clauses (`ParseState.quantifierAllowed`). `exists(p)` as an
+  reports P0344 outside `requires:`/`ensures:`/`decreases:` and
+  `invariant:` clauses (`ParseState.quantifierAllowed`). A `when:` barrier
+  is excluded as well: it decides at runtime whether a caller waits, so a
+  quantified conjunct cannot be skipped the way a runtime-checked
+  `requires:` conjunct is. It used to reach codegen and panic (#7404). `exists(p)` as an
   ordinary call is unaffected: the quantifier form needs `(name :`.
 - **Codegen.** A quantifier can therefore no longer reach MSIL or JVM
   codegen. Those arms now fail as internal compiler errors, like `EOld`,

@@ -389,12 +389,13 @@ func rangeWalkExpr(e: in Expr, sc: in RangeScope): Expr {
     case ECall(fn, args) -> mkExpr(ECall(fn = rangeWalkExpr(fn, sc), args = rangeWalkArgs(args, sc)), e.span)
     case EAssign(target, op, value) -> {
       // An assignment in expression position: `{ target = value; check }`.
+      val walkedValue = rangeWalkExpr(value, sc)
       val stmts: List[Statement] = newList()
-      stmts.add(mkStmt(SAssign(target = target, op = op, value = rangeWalkExpr(value, sc)), e.span))
+      stmts.add(mkStmt(SAssign(target = target, op = op, value = walkedValue), e.span))
       val before = stmts.count
       appendAssignCheck(target, sc, e.span, stmts)
       if stmts.count == before {
-        mkExpr(EAssign(target = target, op = op, value = rangeWalkExpr(value, sc)), e.span)
+        mkExpr(EAssign(target = target, op = op, value = walkedValue), e.span)
       } else {
         mkExpr(EBlock(block = Block(statements = stmts, span = e.span)), e.span)
       }
@@ -406,6 +407,71 @@ func rangeWalkExpr(e: in Expr, sc: in RangeScope): Expr {
     case EBinop(op, l, r) -> mkExpr(EBinop(op = op, lhs = rangeWalkExpr(l, sc), rhs = rangeWalkExpr(r, sc)), e.span)
     case EPrefix(op, x) -> mkExpr(EPrefix(op = op, operand = rangeWalkExpr(x, sc)), e.span)
     case EMember(recv, n) -> mkExpr(EMember(receiver = rangeWalkExpr(recv, sc), memberName = n), e.span)
-    case _ -> e
+    // Every other form that holds a sub-expression is walked too, so an
+    // assignment nested in a list, tuple, index or interpolation (a lambda
+    // stored in a list, say) is checked like any other (#7398).
+    case EList(xs) -> mkExpr(EList(exprs = rangeWalkExprs(xs, sc)), e.span)
+    case ETuple(xs) -> mkExpr(ETuple(exprs = rangeWalkExprs(xs, sc)), e.span)
+    case EIndex(recv, idxs) -> mkExpr(
+      EIndex(receiver = rangeWalkExpr(recv, sc), indices = rangeWalkExprs(idxs, sc)),
+      e.span
+    )
+    case EInterpolated(segs) -> {
+      val walked: List[InterpolatedSegment] = newList()
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(x) -> walked.add(ISExpr(expr = rangeWalkExpr(x, sc)))
+          case ISText(t, sp) -> walked.add(ISText(text = t, span = sp))
+        }
+        i = i + 1
+      }
+      mkExpr(EInterpolated(segments = walked), e.span)
+    }
+    case ETypeApp(f, targs) -> mkExpr(ETypeApp(fn = rangeWalkExpr(f, sc), args = targs), e.span)
+    case EYield(inner) -> mkExpr(EYield(inner = rangeWalkExpr(inner, sc)), e.span)
+    case ERange(rb) -> match rb {
+      case RBClosed(lo, hi) -> mkExpr(
+        ERange(
+          bound = RBClosed(
+            lo = rangeWalkExpr(lo, sc),
+            hi = rangeWalkExpr(hi, sc)
+          )
+        ),
+        e.span
+      )
+      case RBHalfOpen(lo, hi, bare) -> mkExpr(
+        ERange(
+          bound = RBHalfOpen(
+            lo = rangeWalkExpr(lo, sc),
+            hi = rangeWalkExpr(hi, sc),
+            bareDotDot = bare
+          )
+        ),
+        e.span
+      )
+      case RBLowerOpen(hi) -> mkExpr(ERange(bound = RBLowerOpen(hi = rangeWalkExpr(hi, sc))), e.span)
+      case RBUpperOpen(lo) -> mkExpr(ERange(bound = RBUpperOpen(lo = rangeWalkExpr(lo, sc))), e.span)
+    }
+    // Leaves, and contract-only forms (`old`, quantifiers) that never hold
+    // an assignment.
+    case ELiteral(_) -> e
+    case EPath(_) -> e
+    case ESelf -> e
+    case EResult -> e
+    case EError -> e
+    case EOld(_) -> e
+    case EForall(_, _, _) -> e
+    case EExists(_, _, _) -> e
   }
+}
+
+func rangeWalkExprs(xs: in List[Expr], sc: in RangeScope): List[Expr] {
+  val walked: List[Expr] = newList()
+  var i = 0
+  while i < xs.count {
+    walked.add(rangeWalkExpr(xs[i], sc))
+    i = i + 1
+  }
+  walked
 }

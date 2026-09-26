@@ -1542,20 +1542,36 @@ func basicDecl(kind: in String, name: in String, repr: in String, vis: in Option
 // mono (#7346), so the producer inlines it either way and the contract must
 // carry it.
 func isIntLiteralExpr(e: in Expr): Bool {
+  match intLiteralValue(e) {
+    case Some(v) -> fitsInt32(v)
+    case None -> false
+  }
+}
+
+// The value of an integer literal, optionally negated, or None.
+func intLiteralValue(e: in Expr): Option[Long] {
   match e.kind {
-    case ELiteral(lit) -> match lit { case LInt(_, _, _) -> true; case _ -> false }
+    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> Some(value = v); case _ -> None }
     case EPrefix(op, operand) -> match op {
       case PreNeg -> match operand.kind {
         case ELiteral(lit) -> match lit {
-          case LInt(_, _, _) -> true
-          case _ -> false
+          case LInt(v, _, _) -> Some(value = 0i64 - v)
+          case _ -> None
         }
-        case _ -> false
+        case _ -> None
       }
-      case _ -> false
+      case _ -> None
     }
-    case _ -> false
+    case _ -> None
   }
+}
+
+// A consumer inlines a restored constant as an `Int` (`ldc.i4`), so only a
+// value in `Int` range may cross the boundary that way. A wider literal
+// (`pub val big: Long = -5000000000`) stays out of the contract: a consumer
+// naming it fails to resolve instead of reading a truncated value (#7403).
+func fitsInt32(v: in Long): Bool {
+  v >= -2147483648i64 and v <= 2147483647i64
 }
 
 // Repr for a module-level `pub const`: `pub const NAME: TYPE = N`.  The
@@ -1724,7 +1740,12 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         // boundaries by inlining (see codegen `addPackageTokens`).  A
         // consumer compiled separately (per-package emit) needs the value
         // from the producer's contract; carry it here.
-        case IConst(c) -> decls.add(basicDecl("const", c.name, reprForConst(c), it.visibility))
+        case IConst(c) -> {
+          val inlinable = match intLiteralValue(c.init) { case Some(v) -> fitsInt32(v); case None -> true }
+          if inlinable {
+            decls.add(basicDecl("const", c.name, reprForConst(c), it.visibility))
+          }
+        }
         case IVal(v) -> match reprForInlinableVal(v) {
           case Some(repr) -> decls.add(basicDecl("val", bindingName(v.pattern), repr, it.visibility))
           case None -> ()

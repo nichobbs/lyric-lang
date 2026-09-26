@@ -892,7 +892,7 @@ pub func request(method: in HttpMethod, url: in Url): HttpRequest {
 /// - `key` must be non-empty. Empty header names are caller bugs.
 ///
 /// # Errors
-/// - `InvalidHeader`: `key` is not an RFC 9110 token (a `:`, space or other
+/// - `InvalidHeader`: `key` is empty or not an RFC 9110 token (a `:`, space or other
 ///   separator could forge a different header), or `value` contains CR, LF
 ///   or NUL (#7251). Before, .NET dropped such a header silently and the JVM
 ///   failed only when sending.
@@ -904,9 +904,7 @@ pub func request(method: in HttpMethod, url: in Url): HttpRequest {
 ///   content type, or a request-shaping option on `HttpClientBuilder` for
 ///   `Host`/`Connection`.
 @stable(since = "1.2")
-pub func withHeader(request: in HttpRequest, key: in String, value: in String): Result[HttpRequest, HttpError]
-  requires: key.length > 0
-{
+pub func withHeader(request: in HttpRequest, key: in String, value: in String): Result[HttpRequest, HttpError] {
   if not isHeaderNameToken(key) or not isHeaderValueSafe(value) {
     return Err(error = InvalidHeader(url = request.url, name = key))
   }

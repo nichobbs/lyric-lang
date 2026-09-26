@@ -235,7 +235,60 @@ func testFieldReadersFailClosed(): Unit {
   assertTrue(not lyricJsonGetSubObject("{\"a\": null}", "a", sub) and sub == "{}", "null where an object is expected")
 }
 
+// A synthesised `fromJson` returns `Err` for a present field or element of
+// the wrong kind, as it does for a missing one (#7401).
+@generate(Json)
+record Person {
+  name: String
+  age: Int
+  initial: Char
+  level: Byte
+  scores: slice[Int]
+}
+
+func personErr(json: in String): Bool {
+  match Person.fromJson(json) {
+    case Ok(_) -> false
+    case Err(_) -> true
+  }
+}
+
+func testGeneratedReaderFailsClosed(): Unit {
+  val good = "{\"name\": \"Ada\", \"age\": 36, \"initial\": \"A\", \"level\": 7, \"scores\": [1, 2]}"
+  match Person.fromJson(good) {
+    case Ok(decoded) -> {
+      val p: Person = decoded
+      assertTrue(
+        p.name == "Ada" and p.age == 36 and p.level.toInt() == 7 and p.scores.length == 2,
+        "decodes a well-formed body"
+      )
+    }
+    case Err(e) -> assertTrue(false, "well-formed body rejected: " + e)
+  }
+  assertTrue(
+    personErr("{\"name\": 42, \"age\": 36, \"initial\": \"A\", \"level\": 7, \"scores\": []}"),
+    "number where a String is expected"
+  )
+  assertTrue(
+    personErr("{\"name\": \"Ada\", \"age\": 3000000000, \"initial\": \"A\", \"level\": 7, \"scores\": []}"),
+    "Int out of range"
+  )
+  assertTrue(
+    personErr("{\"name\": \"Ada\", \"age\": 36, \"initial\": \"\", \"level\": 7, \"scores\": []}"),
+    "empty string where a Char is expected"
+  )
+  assertTrue(
+    personErr("{\"name\": \"Ada\", \"age\": 36, \"initial\": \"A\", \"level\": 300, \"scores\": []}"),
+    "Byte out of range"
+  )
+  assertTrue(
+    personErr("{\"name\": \"Ada\", \"age\": 36, \"initial\": \"A\", \"level\": 7, \"scores\": [1, \"x\"]}"),
+    "a string element in an Int slice"
+  )
+}
+
 func main(): Unit {
+  testGeneratedReaderFailsClosed()
   testParseString()
   testParseInt()
   testParseBool()

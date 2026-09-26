@@ -31,7 +31,8 @@ Now:
   single negative literal (`foldNegatedIntLiteral` at the end of
   `pipeCheckAndMono`). Each backend then sizes `-2147483648` by its real
   value instead of by its operand; several independent MSIL type-inference
-  helpers had sized it as a `long`.
+  helpers had sized it as a `long`. The fold looks through parentheses, as
+  the checker does, so `-(2147483648)` is folded too (#7397).
 
 ## #7350: mixed-width arithmetic
 
@@ -91,5 +92,5 @@ decision.
   yet.
 - `mixed_width_arith_self_test.l` also covers `Int`/`Long` and
   `Float`/`Double` ordering comparisons.
-- `typechecker_self_test.l` adds three T0015 cases (440/440).
+- `typechecker_self_test.l` adds three T0015 cases.
 - The native runs are wired into `scripts/ci/native-target-smoke-test.sh`.

@@ -20546,12 +20546,12 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       insns.add(MLabel(id = loopL))
       lowerBoolOperandMsil(cctx, fctx, insns, cond)
       insns.add(MBrFalse(label = afterL))
-      enterLoopLabelMsil(fctx, label)
+      val savedLabel1 = enterLoopLabelMsil(fctx, label)
       fctx.loopBreak.add(afterL)
       fctx.loopCont.add(loopL)
       fctx.loopTryDepth.add(fctx.tryRegionStack.count)
       lowerBlockMsil(cctx, fctx, insns, body)
-      exitLoopLabelMsil(fctx, label)
+      exitLoopLabelMsil(fctx, label, savedLabel1)
       fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
@@ -20561,9 +20561,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 
     // ── For loop (range fast-path + collection iteration, #1478) ──────────────
     case SFor(label, pat, iter, body) -> {
-      enterLoopLabelMsil(fctx, label)
+      val savedLabel2 = enterLoopLabelMsil(fctx, label)
       lowerForMsil(cctx, fctx, insns, pat, iter, body)
-      exitLoopLabelMsil(fctx, label)
+      exitLoopLabelMsil(fctx, label, savedLabel2)
     }
 
     // ── Loop (unconditional) ──────────────────────────────────────────────────
@@ -20571,12 +20571,12 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       val loopL2 = freshLabelMsil(fctx)
       val afterL2 = freshLabelMsil(fctx)
       insns.add(MLabel(id = loopL2))
-      enterLoopLabelMsil(fctx, label)
+      val savedLabel3 = enterLoopLabelMsil(fctx, label)
       fctx.loopBreak.add(afterL2)
       fctx.loopCont.add(loopL2)
       fctx.loopTryDepth.add(fctx.tryRegionStack.count)
       lowerBlockMsil(cctx, fctx, insns, body)
-      exitLoopLabelMsil(fctx, label)
+      exitLoopLabelMsil(fctx, label, savedLabel3)
       fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
@@ -20737,20 +20737,29 @@ func lowerLocalPatBindMsil(
 // Each loop pushes exactly one entry onto loopBreak/loopCont/loopTryDepth, so
 // a labelled loop's entry is at the stack depth in effect just before it is
 // lowered.
-func enterLoopLabelMsil(fctx: in FuncCtx, label: in Option[String]): Unit {
+func enterLoopLabelMsil(fctx: in FuncCtx, label: in Option[String]): Option[Int] {
   match label {
     case Some(l) -> {
+      val prev = mapGet(fctx.loopLabelIndex, l)
       fctx.loopLabelIndex[l] = fctx.loopBreak.count
+      prev
     }
-    case None -> ()
+    case None -> None
   }
 }
 
-func exitLoopLabelMsil(fctx: in FuncCtx, label: in Option[String]): Unit {
+// Restores the entry a nested loop's label shadowed: a loop in a `defer` or
+// lambda body may reuse an enclosing loop's label (#7394).
+func exitLoopLabelMsil(fctx: in FuncCtx, label: in Option[String], prev: in Option[Int]): Unit {
   match label {
-    case Some(l) -> {
-      fctx.loopLabelIndex.remove(l);
-      ()
+    case Some(l) -> match prev {
+      case Some(p) -> {
+        fctx.loopLabelIndex[l] = p
+      }
+      case None -> {
+        fctx.loopLabelIndex.remove(l);
+        ()
+      }
     }
     case None -> ()
   }
@@ -31679,11 +31688,23 @@ func lowerProtectedMsil(
           case FBExpr(e) -> {
             // Expression body: expressions cannot contain SReturn, so no epilogue
             // escape is possible.  Lower the expression, stash the result, leave.
-            lowerExprMsil(cctx, entryFctx, entryInsns, e)
-            if entryFctx.retvalSlot < 0 {
-              entryFctx.retvalSlot = allocSlotMsil(entryFctx, "__retval", retTy)
+            // A `Unit` member discards whatever its expression pushed (a void
+            // call pushes nothing); a value member whose expression is void
+            // gets its default (#7400, mirroring `lowerMethodBodyTailMsil`).
+            val exprTailTy = lowerExprMsil(cctx, entryFctx, entryInsns, e)
+            if retTy == MVoid {
+              if exprTailTy != MVoid {
+                entryInsns.add(MPop)
+              }
+            } else {
+              if exprTailTy == MVoid {
+                pushDefaultValueMsil(cctx, entryFctx, entryInsns, retTy)
+              }
+              if entryFctx.retvalSlot < 0 {
+                entryFctx.retvalSlot = allocSlotMsil(entryFctx, "__retval", retTy)
+              }
+              emitStoreSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
             }
-            emitStoreSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
             entryInsns.add(MLeave(label = afterL))
             val finallyStartL = freshLabelMsil(entryFctx)
             val finallyEndL = freshLabelMsil(entryFctx)
@@ -39353,21 +39374,42 @@ func mkDistinctTypeIR(
 // mirroring the `addPackageTokens` IConst/IVal fold: lower the init and
 // take the leading `ldc.i4`.  Used to register a restored package's
 // compile-time constants for cross-package inlining.
-func foldConstInitToInt(cctx: in CodegenCtx, pkgName: in String, init: in Expr): Int {
-  // The synthesised source re-parses a negative constant as `-N`, which
-  // lowers to `ldc N; neg`; fold it here rather than read only the `ldc`.
-  match init.kind {
+// An integer literal, optionally negated, as a restored constant's
+// synthesised source spells it.
+func restoredIntLiteralMsil(e: in Expr): Option[Long] {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> Some(value = v); case _ -> None }
     case EPrefix(op, operand) -> match op {
       case PreNeg -> match operand.kind {
         case ELiteral(lit) -> match lit {
-          case LInt(v, _, _) -> return longToInt(0i64 - v)
-          case _ -> ()
+          case LInt(v, _, _) -> Some(value = 0i64 - v)
+          case _ -> None
         }
-        case _ -> ()
+        case _ -> None
       }
-      case _ -> ()
+      case _ -> None
     }
-    case _ -> ()
+    case _ -> None
+  }
+}
+
+func foldConstInitToInt(cctx: in CodegenCtx, pkgName: in String, init: in Expr): Int {
+  // The synthesised source re-parses a negative constant as `-N`, which
+  // lowers to `ldc N; neg`; fold it here rather than read only the `ldc`.
+  // The producer's contract carries only literals in `Int` range (#7403);
+  // anything wider comes from an older compiler and is refused rather than
+  // truncated.
+  match restoredIntLiteralMsil(init) {
+    case Some(v) -> {
+      if v < -2147483648i64 or v > 2147483647i64 {
+        panic(
+          "Msil.Codegen: restored constant in package '" + pkgName + "' has value " + toString(v) +
+            ", outside Int; rebuild that package with this compiler"
+        )
+      }
+      return longToInt(v)
+    }
+    case None -> ()
   }
   val fctx = makeFuncCtxMsil(pkgName, pkgName, "__const_fold", 0, MVoid)
   val insns: List[MInsn] = newList()

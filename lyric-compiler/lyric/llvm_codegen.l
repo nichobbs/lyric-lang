@@ -1269,26 +1269,29 @@ func releaseAllForReturn(ctx: in Ctx, insns: in List[NInsn]): Unit {
 
 /// Emit the releases `break`/`continue` need: var scopes and temp
 /// scopes opened inside the innermost loop (not the loop-outer ones); also runs each scope's pending `defer` blocks first (D-N-020).
-func enterLoopLabelNative(
-  // Each loop pushes exactly one entry onto loopBreak/loopCont/loopVarDepth/
-  // loopTempDepth, so a labelled loop's entry is at the stack depth just before
-  // it is lowered.
-  ctx: in Ctx,
-  label: in Option[String],
-): Unit {
+func enterLoopLabelNative(ctx: in Ctx, label: in Option[String]): Option[Int] {
   match label {
     case Some(l) -> {
+      val prev = mapGet(ctx.loopLabelIndex, l)
       ctx.loopLabelIndex[l] = ctx.loopBreak.count
+      prev
     }
-    case None -> ()
+    case None -> None
   }
 }
 
-func exitLoopLabelNative(ctx: in Ctx, label: in Option[String]): Unit {
+// Restores the entry a nested loop's label shadowed: a loop in a `defer` or
+// lambda body may reuse an enclosing loop's label (#7394).
+func exitLoopLabelNative(ctx: in Ctx, label: in Option[String], prev: in Option[Int]): Unit {
   match label {
-    case Some(l) -> {
-      ctx.loopLabelIndex.remove(l);
-      ()
+    case Some(l) -> match prev {
+      case Some(p) -> {
+        ctx.loopLabelIndex[l] = p
+      }
+      case None -> {
+        ctx.loopLabelIndex.remove(l);
+        ()
+      }
     }
     case None -> ()
   }
@@ -9234,13 +9237,13 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
       popTempScope(ctx, insns)
       insns.add(NCondBr(cond = c.value, thenLabel = bodyL, elseLabel = exitL))
       insns.add(NLabel(name = bodyL))
-      enterLoopLabelNative(ctx, label)
+      val savedLabel1 = enterLoopLabelNative(ctx, label)
       ctx.loopBreak.add(exitL)
       ctx.loopCont.add(condL)
       ctx.loopVarDepth.add(ctx.scopeRefs.count)
       ctx.loopTempDepth.add(ctx.tempScopes.count)
       lowerBlockStmts(ctx, insns, body)
-      exitLoopLabelNative(ctx, label)
+      exitLoopLabelNative(ctx, label, savedLabel1)
       ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
       ctx.loopCont.removeAt(ctx.loopCont.count - 1)
       ctx.loopVarDepth.removeAt(ctx.loopVarDepth.count - 1)
@@ -9252,7 +9255,7 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
       val _ = lowerExpr(ctx, insns, ex)
     }
     case SFor(label, pat, iter, body) -> {
-      enterLoopLabelNative(ctx, label)
+      val savedLabel2 = enterLoopLabelNative(ctx, label)
       match iter.kind {
         case ERange(bound) -> match bound {
           case RBClosed(lo, hi) -> lowerForOverRange(ctx, insns, pat, lo, hi, true, body)
@@ -9266,20 +9269,20 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
         }
         case _ -> lowerForOverList(ctx, insns, pat, iter, body)
       }
-      exitLoopLabelNative(ctx, label)
+      exitLoopLabelNative(ctx, label, savedLabel2)
     }
     case SLoop(label, body) -> {
       val bodyL = freshLabel(ctx, "loop.body")
       val exitL = freshLabel(ctx, "loop.exit")
       insns.add(NBr(label = bodyL))
       insns.add(NLabel(name = bodyL))
-      enterLoopLabelNative(ctx, label)
+      val savedLabel3 = enterLoopLabelNative(ctx, label)
       ctx.loopBreak.add(exitL)
       ctx.loopCont.add(bodyL)
       ctx.loopVarDepth.add(ctx.scopeRefs.count)
       ctx.loopTempDepth.add(ctx.tempScopes.count)
       lowerBlockStmts(ctx, insns, body)
-      exitLoopLabelNative(ctx, label)
+      exitLoopLabelNative(ctx, label, savedLabel3)
       ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
       ctx.loopCont.removeAt(ctx.loopCont.count - 1)
       ctx.loopVarDepth.removeAt(ctx.loopVarDepth.count - 1)
