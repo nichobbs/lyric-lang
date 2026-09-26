@@ -28,6 +28,8 @@ type Ratio = Double derives Add, Mul, Compare
 
 type Tag = Byte
 
+type Email = String
+
 record Account {
   id: UserId
   var balance: Cents
@@ -117,4 +119,23 @@ test "tryFrom is Ok in range and Err with the range message outside" {
     case Ok(u) -> assertTrue(u == UserId.from(9i64), "no range: always Ok")
     case Err(_) -> assertTrue(false, "UserId has no range")
   }
+}
+
+// #7375: a Map keyed by a distinct type finds a key built separately from the
+// one it was stored under, on every underlying kind.
+test "a distinct value works as a Map key" {
+  val byUser: Map[UserId, String] = newMap()
+  byUser.add(UserId.from(7i64), "seven")
+  assertTrue(byUser.containsKey(UserId.from(7i64)), "Long-backed key found by an equal value")
+  assertTrue(not byUser.containsKey(UserId.from(8i64)), "a different Long-backed key is not found")
+  val byScore: Map[Score, Int] = newMap()
+  byScore.add(Score.from(3), 30)
+  assertTrue(byScore.containsKey(Score.from(3)), "Int-backed key found by an equal value")
+  val byRatio: Map[Ratio, Int] = newMap()
+  byRatio.add(Ratio.from(0.5), 1)
+  assertTrue(byRatio.containsKey(Ratio.from(0.5)), "Double-backed key found by an equal value")
+  val byEmail: Map[Email, Int] = newMap()
+  byEmail.add(Email.from("a@example.com"), 1)
+  assertTrue(byEmail.containsKey(Email.from("a@" + "example.com")), "String-backed key found by an equal value")
+  assertTrue(not byEmail.containsKey(Email.from("b@example.com")), "a different String-backed key is not found")
 }

@@ -4477,6 +4477,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           }
           methodDefRow = methodDefRow + 1
         }
+        // Methods 4-5: value `Equals(object)` / `GetHashCode()` overrides, so
+        // a distinct value works as a Map/Set key (#7375).
+        methodDefRow = methodDefRow + 2
       }
       case IConfig(decl) -> {
         // Config block: N FieldDef rows (one per field) + 1 MethodDef row (.cctor),
