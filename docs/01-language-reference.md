@@ -1889,13 +1889,10 @@ never visited, and removal can shift indices such that an element is
 skipped or an index is revisited (#4790). Don't mutate a `List` you're
 currently iterating over on the native target.
 
-`Map.keys()`/`Map.values()` also diverge on `--target native`: the
-snapshot walks every slot up to the map's capacity (its high-water mark,
-which never shrinks on removal) rather than only its current length, so
-the call is O(capacity), not O(current length) — a map populated with
-many entries and then mostly cleared still pays for its peak capacity on
-every `keys()`/`values()` call (#4795). O(current length) is only
-guaranteed on the managed (.NET/JVM) targets.
+`Map.keys()`/`Map.values()` are O(current length) on every target. On
+`--target native` the map's open-addressing table shrinks once its live
+entries fall below 1/8 of capacity, so capacity stays proportional to the
+current length rather than the map's high-water mark (#4795, #7282).
 
 ## 12. Standard library
 

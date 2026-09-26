@@ -74,10 +74,10 @@ pub func setElements[T](s: in Set[T]): slice[T] {
 }
 
 /// Collect all elements of `s` into a new slice.  Iterates via the
-/// IEnumerable for-loop and accumulates into a `List[T]`.
+/// IEnumerable for-loop and accumulates into a `List[T]` sized to the set.
 @stable(since = "1.0")
 pub func setToSlice[T](s: in Set[T]): slice[T] {
-  val result: List[T] = newList()
+  val result: List[T] = newListWithCapacity(s.count)
   for item in s {
     result.add(item)
   }
