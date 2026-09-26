@@ -439,8 +439,12 @@ pub func lyricJsonGetSubObject(s: in String, name: in String, value: out String)
       match tryGetProperty(hostRootElement(doc), name) {
         case None -> false
         case Some(elem) -> {
-          value = hostGetRawText(elem)
-          true
+          if hostValueKind(elem) == 1 {
+            value = hostGetRawText(elem)
+            true
+          } else {
+            false
+          }
         }
       }
     }

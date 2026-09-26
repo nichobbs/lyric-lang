@@ -4916,6 +4916,30 @@ test "a loop invariant calling a non-@pure function is T0133" {
   assertTrue(hasDiagCode(parseCheck(src), "T0133"), "invariant calls ok")
 }
 
+test "a clause calling a @pure record method is accepted (#7383)" {
+  val src = "package P\nrecord Box {\n  v: Int\n  @pure\n  func positive(self: in Box): Bool { self.v > 0 }\n}\nfunc f(b: in Box): Int\n  requires: b.positive()\n{\n  b.v\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "positive is @pure")
+}
+
+test "a clause calling a non-@pure record method is T0133 (#7383)" {
+  val src = "package P\nrecord Box {\n  v: Int\n  func positive(self: in Box): Bool { self.v > 0 }\n}\nfunc f(b: in Box): Int\n  requires: b.positive()\n{\n  b.v\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0133"), "positive is not @pure")
+}
+
+test "a clause calling a @pure impl method is accepted (#7383)" {
+  val src = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  func positive(): Bool\n}\nimpl Signed for Box {\n  @pure\n  func positive(): Bool { self.v > 0 }\n}\nfunc f(b: in Box): Int\n  requires: b.positive()\n{\n  b.v\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "the impl method is @pure")
+}
+
+test "an async or method-generic protected func is T0135 (#7384)" {
+  val asyncSrc = "package P\nprotected type C {\n  var n: Int = 0\n  async func get(): Int {\n    n\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(asyncSrc), "T0135"), "async func")
+  val genSrc = "package P\nprotected type C {\n  var n: Int = 0\n  func pick[T](a: in T): T {\n    a\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(genSrc), "T0135"), "method-generic func")
+  val okSrc = "package P\nprotected type C {\n  var n: Int = 0\n  func get(): Int {\n    n\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(okSrc), "T0135"), "a plain func is accepted")
+}
+
 test "built-in members in a clause are not calls to check" {
   val src = "package P\nfunc f(xs: in List[Int], s: in String): Int\n  requires: xs.count > 0 and s.length > 0\n{\n  xs[0]\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "count/length")

@@ -1213,6 +1213,7 @@ func resolveMethodSigParts(
   fnParams: in List[Param],
   fnRet: in Option[TypeExpr],
   fnIsAsync: in Bool,
+  fnIsPure: in Bool,
   span: in Span,
 ): ResolvedSignature {
   val genericNames = extractGenericNames(fnGenerics)
@@ -1254,7 +1255,7 @@ func resolveMethodSigParts(
     isGenerator = false,
     originPackage = pkgName,
     span = span,
-    isPure = false
+    isPure = fnIsPure
   )
 }
 
@@ -1289,6 +1290,7 @@ func addRecordMethodSigs(tbl: in SymbolTable, pkgName: in String, decl: in Recor
                   fn.params,
                   fn.ret,
                   fn.isAsync,
+                  fnHasAnnotation(fn, "pure"),
                   fn.span
                 )
               )
@@ -1346,6 +1348,7 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                       fn.params,
                       fn.ret,
                       fn.isAsync,
+                      fnHasAnnotation(fn, "pure"),
                       fn.span
                     )
                   )
@@ -1383,6 +1386,7 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                         sig.params,
                         sig.ret,
                         sig.isAsync,
+                        false,
                         sig.span
                       )
                     )
@@ -1402,6 +1406,7 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                         fn.params,
                         fn.ret,
                         fn.isAsync,
+                        fnHasAnnotation(fn, "pure"),
                         fn.span
                       )
                     )
@@ -1453,6 +1458,7 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                         ed.params,
                         ed.ret,
                         false,
+                        false,
                         ed.span
                       )
                     )
@@ -1472,6 +1478,7 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                         fn.params,
                         fn.ret,
                         fn.isAsync,
+                        fnHasAnnotation(fn, "pure"),
                         fn.span
                       )
                     )
@@ -2325,11 +2332,42 @@ func checkProtectedDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], dec
           }
         }
       }
-      case PMFunc(fn) -> checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+      case PMFunc(fn) -> {
+        checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+        checkProtectedFuncShape(diag, decl.name, fn)
+      }
       case PMInvariant(_) -> {
       }
     }
     i = i + 1
+  }
+}
+
+// A protected `func` runs under the instance lock like an `entry` (§7.5,
+// #7363), so it cannot be `async` (a monitor cannot be held across a
+// suspension, and the CLR `Monitor` is owned by the thread that took it) and
+// cannot declare its own type parameters (neither backend can lock a
+// method-generic member). T0135 (#7384).
+func checkProtectedFuncShape(diag: in List[Diagnostic], typeName: in String, fn: in FunctionDecl): Unit {
+  if fn.isAsync {
+    diag.add(
+      errorDiagnostic(
+        "T0135",
+        "protected type '" + typeName + "': func '" + fn.name + "' cannot be async; its body runs under the instance lock",
+        fn.span
+      )
+    )
+  }
+  match fn.generics {
+    case Some(_) -> diag.add(
+      errorDiagnostic(
+        "T0135",
+        "protected type '" + typeName + "': func '" + fn.name +
+          "' cannot declare its own type parameters; its body runs under the instance lock",
+        fn.span
+      )
+    )
+    case None -> ()
   }
 }
 
@@ -2434,6 +2472,7 @@ func checkProtectedMemberBodies(
           entryDecl.params,
           entryDecl.ret,
           false,
+          false,
           entryDecl.span
         )
         val sig = ResolvedSignature(
@@ -2478,7 +2517,17 @@ func checkProtectedMemberBodies(
           combinedGenerics.add(ownFnGenerics[g2])
           g2 = g2 + 1
         }
-        val sig0 = resolveMethodSigParts(tbl, "", ownerGenerics, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span)
+        val sig0 = resolveMethodSigParts(
+          tbl,
+          "",
+          ownerGenerics,
+          fn.generics,
+          fn.params,
+          fn.ret,
+          fn.isAsync,
+          fnHasAnnotation(fn, "pure"),
+          fn.span
+        )
         val sig = ResolvedSignature(
           generics = combinedGenerics,
           bounds = sig0.bounds,
@@ -2599,7 +2648,17 @@ func checkRecordMemberBodies(
           combinedGenerics.add(ownFnGenerics[g2])
           g2 = g2 + 1
         }
-        val sig0 = resolveMethodSigParts(tbl, "", ownerGenerics, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span)
+        val sig0 = resolveMethodSigParts(
+          tbl,
+          "",
+          ownerGenerics,
+          fn.generics,
+          fn.params,
+          fn.ret,
+          fn.isAsync,
+          fnHasAnnotation(fn, "pure"),
+          fn.span
+        )
         val sig = ResolvedSignature(
           generics = combinedGenerics,
           bounds = sig0.bounds,
@@ -2760,7 +2819,17 @@ func checkImplMemberBodies(
           combinedGenerics.add(ownFnGenerics[g2])
           g2 = g2 + 1
         }
-        val sig0 = resolveMethodSigParts(tbl, "", implGenerics, fn.generics, fn.params, fn.ret, fn.isAsync, fn.span)
+        val sig0 = resolveMethodSigParts(
+          tbl,
+          "",
+          implGenerics,
+          fn.generics,
+          fn.params,
+          fn.ret,
+          fn.isAsync,
+          fnHasAnnotation(fn, "pure"),
+          fn.span
+        )
         val sig = ResolvedSignature(
           generics = combinedGenerics,
           bounds = sig0.bounds,

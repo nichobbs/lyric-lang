@@ -59,3 +59,27 @@ test "a compound assignment widens its Int operand" {
   l -= i
   assertEqual(toString(l), "3000000000", "Long -= Int")
 }
+
+test "Int and Long compare after widening in both operand orders (#7382)" {
+  val i: Int = 7
+  val l: Long = big()
+  val neg: Int = -5
+  val small: Long = 7i64
+  assertTrue(i < l, "Int < Long")
+  assertTrue(l > i, "Long > Int")
+  assertTrue(i <= l, "Int <= Long")
+  assertTrue(l >= i, "Long >= Int")
+  assertTrue(not (i > l), "not Int > Long")
+  assertTrue(not (l < i), "not Long < Int")
+  assertTrue(i >= small and i <= small, "Int equal to Long is both <= and >=")
+  assertTrue(neg < small, "negative Int sign-extends before <")
+  assertTrue(one() < big(), "call results compare too")
+}
+
+test "Float and Double compare after widening (#7382)" {
+  val f: Float = 1.5f32
+  val d: Double = 2.25
+  assertTrue(f < d, "Float < Double")
+  assertTrue(d >= f, "Double >= Float")
+  assertTrue(not (f > d), "not Float > Double")
+}

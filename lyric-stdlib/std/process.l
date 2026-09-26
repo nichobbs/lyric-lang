@@ -77,9 +77,10 @@ pub record ProcessResult {
 func projectResult(raw: in ProcessCaptureResult): ProcessResult = ProcessResult(stdout = pcResultStdout(raw), stderr = pcResultStderr(raw), exitCode = pcResultExitCode(raw), timedOut = pcResultTimedOut(raw))
 
 /// Spawn `executable` with `args`, capture its stdout and stderr, and return
-/// a `ProcessResult` when the process exits (or is killed after `timeoutMs`,
-/// which must be positive: the host kernels disagree on what zero or a
-/// negative timeout means, #7251).
+/// a `ProcessResult` when the process exits (or is killed after `timeoutMs`).
+/// `timeoutMs` must not be negative: every host kernel kills the child at
+/// its first poll when it is zero, but they disagree on a negative value
+/// (.NET reads it as "wait forever"), #7251 / #7379.
 ///
 /// Stdout and stderr are drained in parallel to avoid pipe-buffer deadlock.
 /// Returns `Err` if the executable cannot be started.
@@ -91,7 +92,7 @@ func projectResult(raw: in ProcessCaptureResult): ProcessResult = ProcessResult(
 /// arity silently disables that redirect — update both sites together.
 @stable(since = "1.0")
 pub func runCapture(executable: in String, args: in List[String], timeoutMs: in Int): Result[ProcessResult, String]
-  requires: timeoutMs > 0
+  requires: timeoutMs >= 0
 {
   match hostRunCaptureList(executable, args, "", timeoutMs) {
     case Ok(raw) -> Ok(value = projectResult(raw))
@@ -113,7 +114,7 @@ pub func runCapture(executable: in String, args: in List[String], timeoutMs: in 
 pub func runCaptureWithInput(
   executable: in String, args: in List[String], stdin: in String, timeoutMs: in Int
 ): Result[ProcessResult, String]
-  requires: timeoutMs > 0
+  requires: timeoutMs >= 0
 {
   match hostRunCaptureList(executable, args, stdin, timeoutMs) {
     case Ok(raw) -> Ok(value = projectResult(raw))

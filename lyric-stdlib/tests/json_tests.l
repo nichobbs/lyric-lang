@@ -226,6 +226,13 @@ func testFieldReadersFailClosed(): Unit {
   assertTrue(not lyricJsonGetString("{\"a\": 1}", "a", str), "number where a String is expected")
   var sub = ""
   assertTrue(not lyricJsonGetSubObject("{", "a", sub) and sub == "{}", "truncated body")
+  assertTrue(lyricJsonGetSubObject("{\"a\": {\"b\": 1}}", "a", sub) and sub.contains("\"b\""), "reads an object field")
+  assertTrue(not lyricJsonGetSubObject("{\"a\": [1]}", "a", sub) and sub == "{}", "array where an object is expected")
+  assertTrue(
+    not lyricJsonGetSubObject("{\"a\": \"x\"}", "a", sub) and sub == "{}",
+    "string where an object is expected"
+  )
+  assertTrue(not lyricJsonGetSubObject("{\"a\": null}", "a", sub) and sub == "{}", "null where an object is expected")
 }
 
 func main(): Unit {

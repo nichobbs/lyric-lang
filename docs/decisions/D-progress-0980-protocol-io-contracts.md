@@ -76,8 +76,11 @@ is a `requires:` or invariant.
 - `Certificate.fromPem` / `Identity.fromPem` return `PemMalformed` for empty
   input (usually an unset secret) instead of failing a precondition.
 - `Std.Process.runCapture*` and `Std.ProcessCapture.runCaptureWithDiagnosticsTimeout`
-  require `timeoutMs > 0`, and `pipedWaitExit` requires `>= 0`: the host
-  kernels disagree on what zero or negative timeouts mean.
+  and `pipedWaitExit` require `timeoutMs >= 0`. Zero is supported and
+  means "kill at the first poll", which every host kernel implements
+  the same way. The kernels disagree only on negative values (.NET reads
+  one as "wait forever"). An earlier draft required `> 0`, which broke the
+  native zero-timeout test (#7379).
 - `Std.Random`: `nextIntBelow` requires `max > 0`, and `nextIntRange` requires `min < max`.
 - `Std.Testing.Property` is `@runtime_checked`, and `forAll*` require
   `n > 0` (and `min < max` for the ranged forms). New

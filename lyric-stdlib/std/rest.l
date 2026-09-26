@@ -148,10 +148,8 @@ func isSafeRelativePath(path: in String): Bool {
   if path.contains("\r") or path.contains("\n") or path.contains("\u{0000}") {
     return false
   }
-  if path.startsWith("//") or path.contains("://") {
-    return false
-  }
-  // Only the path part: a `..` in a query string is data.
+  // Only the path part: a `..` or a `://` in a query string is data
+  // (`/callback?next=https://example.com/x`).
   var pathEnd = path.length
   var i = 0
   while i < path.length {
@@ -162,18 +160,42 @@ func isSafeRelativePath(path: in String): Bool {
       i = i + 1
     }
   }
+  val pathPart = path.substring(0, pathEnd)
+  if pathPart.startsWith("//") or pathPart.contains("://") {
+    return false
+  }
+  // A percent-encoded `/` or `\` separates segments too: a server that
+  // decodes it would otherwise see `..%2f..` as two dot-segments.
   var segStart = 0
   var j = 0
   while j <= pathEnd {
-    if j == pathEnd or path[j] == '/' or path[j] == '\\' {
+    val sepLen = separatorLengthAt(path, j, pathEnd)
+    if sepLen > 0 {
       if isDotSegment(path.substring(segStart, j - segStart)) {
         return false
       }
-      segStart = j + 1
+      segStart = j + sepLen
+      j = j + sepLen
+    } else {
+      j = j + 1
     }
-    j = j + 1
   }
   true
+}
+
+// The length of the segment separator at `j` (the path end counts as one of
+// length 1), or 0: `/`, `\`, or a percent-encoded `%2f`/`%5c`.
+func separatorLengthAt(path: in String, j: in Int, pathEnd: in Int): Int {
+  if j == pathEnd or path[j] == '/' or path[j] == '\\' {
+    return 1
+  }
+  if path[j] == '%' and j + 3 <= pathEnd {
+    val code = path.substring(j, 3).toLower()
+    if code == "%2f" or code == "%5c" {
+      return 3
+    }
+  }
+  0
 }
 
 func isDotSegment(seg: in String): Bool {
@@ -184,10 +206,7 @@ func isDotSegment(seg: in String): Bool {
 async func sendRequest(
   client: in RestClient, method: in HttpMethod, path: in String, body: in Option[String]
 ): Result[HttpResponse, RestError] {
-  val url = match fullUrl(client, path) {
-    case Ok(u) -> u
-    case Err(e) -> return Err(error = e)
-  }
+  val url = match fullUrl(client, path) { case Ok(u) -> u; case Err(e) -> return Err(error = e) }
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = Http(error = e))
     case Ok(parsed) -> {

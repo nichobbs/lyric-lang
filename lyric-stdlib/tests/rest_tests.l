@@ -162,6 +162,13 @@ func testPathCannotLeaveBase(): Unit {
   assertTrue(escapeCode(client, "http://evil.example/x") == "InvalidUrl", "absolute URL")
   assertTrue(escapeCode(client, "users\r\nX-Injected: 1") == "InvalidUrl", "CR/LF")
   assertTrue(escapeCode(RestClient.create(""), "users") == "InvalidUrl", "empty base")
+  assertTrue(escapeCode(client, "..%2fadmin") == "InvalidUrl", "encoded slash after ..")
+  assertTrue(escapeCode(client, "users%5C..%5Cadmin") == "InvalidUrl", "encoded backslashes around ..")
+  assertTrue(
+    escapeCode(client, "callback?next=https://example.com/x") != "InvalidUrl",
+    "a URL in the query string is data"
+  )
+  assertTrue(escapeCode(client, "files/a%2fb") != "InvalidUrl", "an encoded slash in a plain segment is allowed")
 }
 
 func main(): Int {

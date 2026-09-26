@@ -44,8 +44,14 @@ runtime-checked clause.
   is rejected until that package is rebuilt.
 
 `ResolvedSignature` gains `isPure`. Record, impl and protected `func`
-members take it from their annotations. Protected `entry` members are never
-pure.
+members take it from their annotations, both in the call-facing method table
+a caller resolves against and in the signature their own body is checked
+with. A first draft set it only on the second, so a clause calling a `@pure`
+method got T0133 anyway (#7383). Interface member signatures carry no
+annotations and are never pure; nor are protected `entry` members. A record
+method's repr in contract metadata carries `@pure`, so the flag also
+survives a package boundary. An `impl` restores through its interface's
+signatures and so arrives impure.
 
 ## Fallout
 
@@ -68,7 +74,8 @@ counts clause evaluations. It is marked `@pure` with a comment saying so.
 `typechecker_self_test.l` has T0132 cases (non-Bool `requires`, `ensures`
 with `result`, loop invariant; unknown names and mismatches
 reported; `old` and quantifiers accepted) and T0133 cases (non-pure call,
-`@pure` call, body calls unrestricted, invariant, built-in members).
+`@pure` call, body calls unrestricted, invariant, built-in members, and
+`@pure` and non-`@pure` record and impl methods).
 
 ## Docs
 

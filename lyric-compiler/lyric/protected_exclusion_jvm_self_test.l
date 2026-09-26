@@ -135,3 +135,58 @@ test "when: barriers make a caller wait for the state it needs" {
   val total = await pipeline()
   assertTrue(total == 5050, "every item delivered exactly once (got " + toString(total) + ")")
 }
+
+// A func that changes barrier state must wake the waiters too, and a func
+// may carry its own `when:` barrier (#7384).  Before, only entries notified,
+// so a waiter released only by `open()` blocked forever.
+protected type Gate {
+  var isOpen: Bool = false
+  var passed: Int = 0
+  entry pass(): Unit
+    when: isOpen
+  {
+    passed = passed + 1
+  }
+  func peekOpen(): Int
+    when: isOpen
+  {
+    7
+  }
+  func open(): Unit {
+    isOpen = true
+  }
+  func passedCount(): Int = passed
+}
+
+async func passer(g: in Gate): Int {
+  g.pass()
+  0
+}
+
+async func peeker(g: in Gate): Int {
+  g.peekOpen()
+}
+
+async func opener(g: in Gate): Int {
+  g.open()
+  0
+}
+
+async func gateRun(): Int {
+  val g = Gate()
+  var seen = 0
+  scope {
+    val w = spawn passer(g)
+    val f = spawn peeker(g)
+    val o = spawn opener(g)
+    val opened = await o
+    val passedAt = await w
+    seen = await f + opened + passedAt
+  }
+  seen + g.passedCount()
+}
+
+test "a func that opens a barrier wakes an entry and a func waiting on it (#7384)" {
+  val r = await gateRun()
+  assertTrue(r == 8, "func barrier saw 7 and the entry passed once (got " + toString(r) + ")")
+}

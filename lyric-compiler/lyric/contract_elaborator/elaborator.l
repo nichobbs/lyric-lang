@@ -1598,7 +1598,7 @@ func elaborateStmtDeep(
       )
     )
     case SFor(label, pat, iter, body) -> {
-      val loopInvs = loopInvariantsOf(body)
+      val loopInvs = exitCheckableInvariants(loopInvariantsOf(body), patternBoundNames(pat))
       val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
       if loopInvs.count == 0 {
         acc.add(mkStmt(SFor(label = label, pat = pat, iter = iter, body = newBody), s.span))
@@ -1701,6 +1701,57 @@ func loopInvariantsOf(body: in Block): List[Expr] {
     i = i + 1
   }
   invs
+}
+
+// The `for` invariants that can be re-checked after the loop (#7381). A
+// clause that reads a name bound by the loop pattern (`for i in 0 ..< n`
+// with `invariant: i <= n`) refers to the current element, which no longer
+// exists once the loop ends; after the loop that name is out of scope or
+// would resolve to an unrelated outer binding. Such a clause is still
+// checked on every iteration, only the exit check is skipped.
+func exitCheckableInvariants(invs: in List[Expr], patNames: in List[String]): List[Expr] {
+  val kept: List[Expr] = newList()
+  var i = 0
+  while i < invs.count {
+    if not exprReadsAnyName(invs[i], patNames) {
+      kept.add(invs[i])
+    }
+    i = i + 1
+  }
+  kept
+}
+
+record NameScan {
+  var found: Bool
+}
+
+// Whether `e` reads any of `names` as a single-segment path. A lambda
+// parameter that shadows one of them also counts, which only skips a check.
+func exprReadsAnyName(e: in Expr, names: in List[String]): Bool {
+  if names.count == 0 {
+    return false
+  }
+  val scan = NameScan(found = false)
+  val _ = mapExpr(e, { x: Expr -> notePathRead(x, names, scan) })
+  scan.found
+}
+
+func notePathRead(x: in Expr, names: in List[String], scan: in NameScan): Expr {
+  match x.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        var i = 0
+        while i < names.count {
+          if names[i] == p.segments[0] {
+            scan.found = true
+          }
+          i = i + 1
+        }
+      }
+    }
+    case _ -> ()
+  }
+  x
 }
 
 func freshLoopBrokeName(c: inout RenameCounter): String {
@@ -2631,25 +2682,32 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
   )
 }
 
-// `when:` barriers on protected entries (§7.5, #7363).  An entry whose
-// barrier is false blocks until another operation makes it true:
+// `when:` barriers on protected entries and funcs (§7.5, #7363, #7384).  A
+// member whose barrier is false blocks until another operation makes it true:
 //
 //   entry take(): T  when: count > 0 { body }
 //     ->  while not (count > 0) { __lyric_protected_wait() }
 //         defer { __lyric_protected_notify() }
 //         body
 //
-// Every entry of a type that has any barrier notifies on exit (normal or
-// exceptional), because any state change may enable a waiting caller.  The
-// two intrinsics are lowered by each backend onto the entry's own lock
-// (`Monitor.Wait`/`PulseAll` on MSIL, `Object.wait`/`notifyAll` on the JVM);
-// waiting releases the lock.  Several barriers on one entry are conjoined.
+// Every entry and func of a type that has any barrier notifies on exit
+// (normal or exceptional): any of them may change state that enables a
+// waiting caller, and a func that did so without notifying would leave the
+// waiter blocked forever (#7384).  The two intrinsics are lowered by each
+// backend onto the member's own lock (`Monitor.Wait`/`PulseAll` on MSIL,
+// `Object.wait`/`notifyAll` on the JVM); waiting releases the lock.  Several
+// barriers on one member are conjoined.
 func protectedHasBarrier(members: in List[ProtectedMember]): Bool {
   var i = 0
   while i < members.count {
     match members[i] {
       case PMEntry(ed) -> {
         if entryBarrier(ed.contracts).count > 0 {
+          return true
+        }
+      }
+      case PMFunc(fn) -> {
+        if entryBarrier(fn.contracts).count > 0 {
           return true
         }
       }
@@ -2683,55 +2741,85 @@ func applyBarrierProtocol(m: in ProtectedMember, anyBarrier: in Bool): Protected
     return m
   }
   match m {
-    case PMEntry(ed) -> {
-      val sp = ed.span
-      val prelude: List[Statement] = newList()
-      val barriers = entryBarrier(ed.contracts)
-      if barriers.count > 0 {
-        var cond = barriers[0]
-        var bi = 1
-        while bi < barriers.count {
-          cond = mkExpr(EBinop(op = BAnd, lhs = cond, rhs = barriers[bi]), sp)
-          bi = bi + 1
-        }
-        val waitBody: List[Statement] = newList()
-        waitBody.add(intrinsicCallStmt("__lyric_protected_wait", sp))
-        prelude.add(
-          mkStmt(
-            SWhile(
-              label = None,
-              cond = mkExpr(EPrefix(op = PreNot, operand = mkExpr(EParen(inner = cond), sp)), sp),
-              body = Block(statements = waitBody, span = sp)
-            ),
-            sp
-          )
-        )
-      }
-      val notifyBody: List[Statement] = newList()
-      notifyBody.add(intrinsicCallStmt("__lyric_protected_notify", sp))
-      prelude.add(mkStmt(SDefer(body = Block(statements = notifyBody, span = sp)), sp))
-      val blk = match ed.body { case FBBlock(b) -> b; case FBExpr(e) -> wrapExprBody(e) }
-      var si = 0
-      while si < blk.statements.count {
-        prelude.add(blk.statements[si])
-        si = si + 1
-      }
-      PMEntry(
-        entryDecl = EntryDecl(
-          docComments = ed.docComments,
-          annotations = ed.annotations,
-          visibility = ed.visibility,
-          name = ed.name,
-          params = ed.params,
-          ret = ed.ret,
-          contracts = ed.contracts,
-          body = FBBlock(block = Block(statements = prelude, span = blk.span)),
-          span = ed.span
+    case PMEntry(ed) -> PMEntry(
+      entryDecl = EntryDecl(
+        docComments = ed.docComments,
+        annotations = ed.annotations,
+        visibility = ed.visibility,
+        name = ed.name,
+        params = ed.params,
+        ret = ed.ret,
+        contracts = ed.contracts,
+        body = FBBlock(block = barrierWrappedBody(ed.contracts, ed.body, ed.span)),
+        span = ed.span
+      )
+    )
+    case PMFunc(fn) -> match fn.body {
+      case Some(body) -> PMFunc(
+        fn = FunctionDecl(
+          docComments = fn.docComments,
+          annotations = fn.annotations,
+          visibility = fn.visibility,
+          isAsync = fn.isAsync,
+          name = fn.name,
+          generics = fn.generics,
+          params = fn.params,
+          ret = fn.ret,
+          whereClause = fn.whereClause,
+          contracts = fn.contracts,
+          body = Some(
+            value = FBBlock(
+              block = barrierWrappedBody(
+                fn.contracts,
+                body,
+                fn.span
+              )
+            )
+          ),
+          span = fn.span
         )
       )
+      case None -> m
     }
     case other -> other
   }
+}
+
+// `body` preceded by the member's barrier wait loop (when it has `when:`
+// clauses) and the notify-on-exit `defer`.
+func barrierWrappedBody(contracts: in List[ContractClause], body: in FunctionBody, sp: in Span): Block {
+  val prelude: List[Statement] = newList()
+  val barriers = entryBarrier(contracts)
+  if barriers.count > 0 {
+    var cond = barriers[0]
+    var bi = 1
+    while bi < barriers.count {
+      cond = mkExpr(EBinop(op = BAnd, lhs = cond, rhs = barriers[bi]), sp)
+      bi = bi + 1
+    }
+    val waitBody: List[Statement] = newList()
+    waitBody.add(intrinsicCallStmt("__lyric_protected_wait", sp))
+    prelude.add(
+      mkStmt(
+        SWhile(
+          label = None,
+          cond = mkExpr(EPrefix(op = PreNot, operand = mkExpr(EParen(inner = cond), sp)), sp),
+          body = Block(statements = waitBody, span = sp)
+        ),
+        sp
+      )
+    )
+  }
+  val notifyBody: List[Statement] = newList()
+  notifyBody.add(intrinsicCallStmt("__lyric_protected_notify", sp))
+  prelude.add(mkStmt(SDefer(body = Block(statements = notifyBody, span = sp)), sp))
+  val blk = match body { case FBBlock(b) -> b; case FBExpr(e) -> wrapExprBody(e) }
+  var si = 0
+  while si < blk.statements.count {
+    prelude.add(blk.statements[si])
+    si = si + 1
+  }
+  Block(statements = prelude, span = blk.span)
 }
 
 func elaborateProtectedMember(

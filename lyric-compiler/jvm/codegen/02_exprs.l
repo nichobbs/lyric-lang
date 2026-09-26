@@ -2621,10 +2621,7 @@ func isFloatJvm(ty: in JvmType): Bool {
 }
 
 // Reconcile arithmetic operands (`lhs` below `rhs` on the stack) to the type
-// the checker gives the result (#7350).  A `UInt` operand beside a `Long`/
-// `ULong` zero-extends via `Integer.toUnsignedLong` rather than `i2l`, which
-// would sign-extend a value with its top bit set; everything else goes
-// through `reconcileCmpOperands`.
+// the checker gives the result (#7350).
 func reconcileArithOperands(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -2632,6 +2629,23 @@ func reconcileArithOperands(
   rhsTy: in JvmType,
   lhs: in Expr,
   rhs: in Expr,
+): JvmType {
+  reconcileWidenedOperands(ctx, insns, lhsTy, rhsTy, lhs, rhs, true)
+}
+
+// Reconcile an arithmetic or comparison operand pair (`lhs` below `rhs`).  A
+// `UInt` operand beside a `Long`/`ULong` zero-extends via
+// `Integer.toUnsignedLong` rather than `i2l`, which would sign-extend a value
+// with its top bit set (#7350 arithmetic, #7382 comparisons); everything else
+// goes through `reconcileCmpOperands`.
+func reconcileWidenedOperands(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  lhsTy: in JvmType,
+  rhsTy: in JvmType,
+  lhs: in Expr,
+  rhs: in Expr,
+  panicOnErased: in Bool,
 ): JvmType {
   val ps: List[JvmType] = newList()
   ps.add(JInt)
@@ -2646,13 +2660,13 @@ func reconcileArithOperands(
     emitLoad(insns, rhsSlot, JLong)
     return JLong
   }
-  reconcileCmpOperands(ctx, insns, lhsTy, rhsTy, true)
+  reconcileCmpOperands(ctx, insns, lhsTy, rhsTy, panicOnErased)
 }
 
 func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in Expr, rhs: in Expr): JvmType {
   val rawLhsTy = lowerExpr(ctx, insns, lhs)
   val rhsTy = lowerExpr(ctx, insns, rhs)
-  val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+  val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
   val trueL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
   // Materialise the 0/1 boolean through a result local so the operand stack is
@@ -2868,37 +2882,37 @@ func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLa
         case BEq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BEq, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BNeq, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BLt, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BLte, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BGt, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmpFail(insns, BGte, lhsTy, failLabel, isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case _ -> {
@@ -2957,37 +2971,37 @@ func lowerBoolCondTrue(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, su
         case BEq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
-          val lhsTy = reconcileCmpOperands(ctx, insns, rawLhsTy, rhsTy, false)
+          val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
           lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "", isUnsignedExpr(ctx, lhs) or isUnsignedExpr(ctx, rhs))
         }
         case _ -> {

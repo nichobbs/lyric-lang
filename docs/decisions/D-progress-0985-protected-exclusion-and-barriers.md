@@ -15,17 +15,24 @@ time, and an entry whose `when:` barrier is false blocks until it is true.
   body, it is reentrant, and it is released on an exception.
 - **MSIL.** Entries already held `Monitor(this)` in a `finally`, but `func`
   members took no lock, so a `func` could read a half-applied entry (the
-  test saw 30 torn reads in 4000). A plain (non-generic, non-async) `func` is
-  now lowered through the same Monitor-guarded path as an entry.
-- **Barriers.** No backend lowered `when:`, so a barrier entry ran with its
-  barrier false. The contract elaborator now rewrites each barrier entry to
-  start with `while not (barrier) { __lyric_protected_wait() }`. In a type
-  with any barrier, every entry also gets
+  test saw 30 torn reads in 4000). Every `func` is now lowered through the
+  same Monitor-guarded path as an entry.
+- **T0135.** A protected `func` cannot be `async` (a monitor cannot be held
+  across a suspension, and the CLR `Monitor` belongs to the thread that took
+  it) or declare its own type parameters (neither backend can lock a
+  method-generic member). Both shapes used to compile on dotnet and run
+  unlocked. Nothing in the repository used them (#7384 review).
+- **Barriers.** No backend lowered `when:`, so a barrier member ran with its
+  barrier false. The contract elaborator now rewrites each barrier `entry`
+  or `func` to start with `while not (barrier) { __lyric_protected_wait() }`.
+  In a type with any barrier, every entry and func also gets
   `defer { __lyric_protected_notify() }`, which runs on normal and
-  exceptional exit because any state change may enable a waiter. Several
-  barriers on one entry are conjoined. The intrinsics lower onto the
-  entry's own lock: `Monitor.Wait`/`PulseAll(this)` on MSIL,
-  `Object.wait`/`notifyAll` on the JVM. Waiting releases the lock.
+  exceptional exit because any state change may enable a waiter. A first
+  draft notified only from entries, so a waiter released by a func that set
+  the barrier state blocked forever (#7384). Several barriers on one member
+  are conjoined. The intrinsics lower onto the member's own lock:
+  `Monitor.Wait`/`PulseAll(this)` on MSIL, `Object.wait`/`notifyAll` on the
+  JVM. Waiting releases the lock.
   `--target native` has a mutex but no condition variable yet, and now
   rejects a barrier at build time instead of ignoring it (D-N-017).
 
@@ -35,5 +42,7 @@ lyric-mq's `IdempotencyLedger` (#7307).
 
 Tests: `protected_exclusion_jvm_self_test.l` (spawned virtual threads) and
 `protected_exclusion_dotnet_self_test.l` (`Task.Run`). Each covers lost
-updates, torn `func` reads and a one-slot producer/consumer buffer driven by
-`when:` barriers. All of them failed before.
+updates, torn `func` reads, a one-slot producer/consumer buffer driven by
+`when:` barriers, and a gate that a `func` opens while an entry and a
+barrier `func` wait on it. All of them failed before.
+`typechecker_self_test.l` covers T0135.

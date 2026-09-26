@@ -27,13 +27,20 @@ that carries an invariant:
 
 `do` loops have no normal exit and are unchanged.
 
+A `for` invariant clause that reads a name bound by the loop pattern
+(`for i in 0 ..< n` with `invariant: i < n`) is checked on every iteration
+but not on exit. After the loop that name is out of scope, or would resolve
+to an unrelated outer binding the pattern shadowed (#7381). The loop's other
+clauses keep their exit check.
+
 Labelled loops are specified but not parsed today, and every backend
 treats `break label` as a plain `break`. That miscompile is tracked in
 #7349. The elaborator's label rule is already the one that issue needs.
 
 Tests:
 - `loop_invariant_self_test.l` adds exit-only, zero-iteration, `break`,
-  inner-`break` and `for` cases, and now runs on both targets.
+  inner-`break` and `for` cases (including pattern-variable, shadowed and
+  mixed clauses), and now runs on both targets.
 - `contract_elaborator_self_test.l` pins the lowered shape.
 
 Docs: language reference §contracts (loop `invariant:` bullet), book chapter
