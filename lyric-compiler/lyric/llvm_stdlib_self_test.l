@@ -187,24 +187,24 @@ test "Std.File readBytesOrPanic: round-trip, panics on a missing path (ASan)" {
   assertTrue(panicResult.exitCode != 42 and panicResult.exitCode != 0, "a non-panicking readBytesOrPanic would exit 42")
 }
 
-test "Std.File readByteSlice/writeByteSlice: zero-copy round-trip, missing path (ASan) (#7284)" {
+test "Std.File readBytes/writeBytes: zero-copy round-trip, missing path (ASan) (#7284)" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.File\n" +
     "func main(): Int {\n" +
     "  val path = \"" +
     tempBase() +
-    "/lyric-byteslice.bin\"\n" +
+    "/lyric-bytes-roundtrip.bin\"\n" +
     "  val src: List[Byte] = newList()\n" +
     "  src.add(0)\n" +
     "  src.add(1)\n" +
     "  src.add(255)\n" +
-    "  match writeByteSlice(path, src.toArray()) {\n" +
+    "  match writeBytes(path, src.toArray()) {\n" +
     "    case Ok(_) -> {\n" +
     "    }\n" +
     "    case Err(_) -> {\n" +
     "      return 1\n" +
     "    }\n" +
     "  }\n" +
-    "  match readByteSlice(path) {\n" +
+    "  match readBytes(path) {\n" +
     "    case Ok(b) -> {\n" +
     "      if b.length != 3 or b[2] != 255 {\n" +
     "        return 2\n" +
@@ -214,7 +214,7 @@ test "Std.File readByteSlice/writeByteSlice: zero-copy round-trip, missing path 
     "      return 3\n" +
     "    }\n" +
     "  }\n" +
-    "  match readByteSlice(path + \".missing\") {\n" +
+    "  match readBytes(path + \".missing\") {\n" +
     "    case Ok(_) -> {\n" +
     "      return 4\n" +
     "    }\n" +
@@ -225,7 +225,7 @@ test "Std.File readByteSlice/writeByteSlice: zero-copy round-trip, missing path 
     "  42\n" +
     "}\n"
   val r = compileAndRunNative(src)
-  assertEqualInt(r.exitCode, 42, "readByteSlice/writeByteSlice round-trip")
+  assertEqualInt(r.exitCode, 42, "readBytes/writeBytes round-trip")
 }
 
 // Issue #6961 (D-N-003 follow-up): readTextOrPanic's own try/catch
@@ -903,7 +903,7 @@ test "slice[T] via the list repr: bytes round-trip, listFiles, args (ASan)" {
     "  payload.add(104)\n" +
     "  payload.add(0)\n" +
     "  payload.add(105)\n" +
-    "  match writeBytes(path, payload) {\n" +
+    "  match writeBytes(path, payload.toArray()) {\n" +
     "    case Ok(_) -> {\n" +
     "    }\n" +
     "    case Err(_) -> {\n" +
@@ -913,7 +913,7 @@ test "slice[T] via the list repr: bytes round-trip, listFiles, args (ASan)" {
     "  var total = 0\n" +
     "  match readBytes(path) {\n" +
     "    case Ok(got) -> {\n" +
-    "      if got.count != 3 {\n" +
+    "      if got.length != 3 {\n" +
     "        return 3\n" +
     "      }\n" +
     "      for b in got {\n" +

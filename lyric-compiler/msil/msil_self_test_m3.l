@@ -193,7 +193,7 @@ func main(): Unit {
   val peBuf = assemblePe(inp)
   val bs = bufToList(peBuf)
 
-  match writeBytes(outPath, bs) {
+  match writeBytes(outPath, bs.toArray()) {
     case Ok(_) -> println("wrote_pe=true")
     case Err(_) -> println("wrote_pe=false")
   }

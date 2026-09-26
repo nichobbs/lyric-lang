@@ -58,7 +58,7 @@ func main(): Unit {
     }
     case Ok(bytes) -> {
       println("read_ok=true")
-      println("byte_count=" + toString(bytes.count))
+      println("byte_count=" + toString(bytes.length))
 
       val summary = parseClassSummary(bytes)
 

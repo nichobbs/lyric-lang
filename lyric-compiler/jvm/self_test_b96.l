@@ -34,7 +34,7 @@ func main(): Unit {
   val bytes = serializeClassWithPool(cf, pool)
 
   // Parse the bytes back and check the structural summary.
-  val summary = parseClassSummary(bytes)
+  val summary = parseClassSummary(bytes.toArray())
 
   if summary.magicValid {
     println("magic_valid=true")

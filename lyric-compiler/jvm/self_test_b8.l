@@ -52,8 +52,11 @@ func main(): Unit {
   val fields: List[FieldInfo] = newList()
   val cf = makeClassFull("B8Corpus", fields, methods)
   val bytes = serializeClassWithPool(cf, pool)
-  match writeBytes(outDir + "/B8Corpus.class", bytes) {
-    case Ok(_) -> println("wrote B8Corpus.class (" + toString(bytes.count) + " bytes, " + toString(methods.count) + " methods)")
+  match writeBytes(outDir + "/B8Corpus.class", bytes.toArray()) {
+    case Ok(_) -> println(
+      "wrote B8Corpus.class (" + toString(bytes.count) + " bytes, " + toString(methods.count) +
+        " methods)"
+    )
     case Err(_) -> println("writeBytes failed for B8Corpus.class")
   }
 }

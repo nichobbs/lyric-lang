@@ -85,14 +85,14 @@ func main(): Unit {
 
   val adderPath = outDir + "/Adder.class"
   val adderBytes = makeAdderBytes()
-  match writeBytes(adderPath, adderBytes) {
+  match writeBytes(adderPath, adderBytes.toArray()) {
     case Ok(_) -> println("wrote Adder.class (" + toString(adderBytes.count) + " bytes)")
     case Err(err) -> println("writeBytes failed for Adder.class")
   }
 
   val pointPath = outDir + "/Point.class"
   val pointBytes = makePointBytes()
-  match writeBytes(pointPath, pointBytes) {
+  match writeBytes(pointPath, pointBytes.toArray()) {
     case Ok(_) -> println("wrote Point.class (" + toString(pointBytes.count) + " bytes)")
     case Err(err) -> println("writeBytes failed for Point.class")
   }

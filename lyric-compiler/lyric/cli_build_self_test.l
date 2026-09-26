@@ -812,12 +812,12 @@ func writeManifestOrPanic(path: in String, content: in String): Unit {
   writeFileOrPanic(path, content)
 }
 
-func bytesEqual(a: in List[Byte], b: in List[Byte]): Bool {
-  if a.count != b.count {
+func bytesEqual(a: in slice[Byte], b: in slice[Byte]): Bool {
+  if a.length != b.length {
     return false
   }
   var i = 0
-  while i < a.count {
+  while i < a.length {
     if a[i] != b[i] {
       return false
     }

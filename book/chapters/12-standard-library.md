@@ -21,7 +21,7 @@ Here is the full module inventory:
 | `Std.Format` | `toHexString`, `formatFixed`, `zeroPad`, `padLeft`, `padRight` |
 | `Std.Char` | `isLetter`, `isDigit`, `isWhiteSpace`, `toUpper`, `toLower`, `digitValue` |
 | `Std.Errors` | `ParseError`, `IOError`, `HttpError` |
-| `Std.File` | `readText`, `writeText`, `fileExists`, `createDir` |
+| `Std.File` | `readText`, `writeText`, `readBytes`, `writeBytes`, `fileExists`, `createDir` |
 | `Std.Console` | `print`, `println`, `error`, `readLine`, `readAll` |
 | `Std.Directory` | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `delete` |
 | `Std.Path` | Pure path helpers: `join`, `extension`, `basename`, `dirname`, `isAbsolute` |
@@ -266,6 +266,8 @@ match readText("/tmp/output.txt") {
 
 val exists = fileExists("/tmp/output.txt")   // Bool, not Result
 ```
+
+Binary files use `readBytes(path): Result[slice[Byte], IOError]` and `writeBytes(path, bytes: slice[Byte]): Result[Unit, IOError]`. Both work on `slice[Byte]`, the fixed-size buffer form, so a file read and written back never passes through a growable `List[Byte]`. If you build bytes up incrementally in a `List[Byte]`, call `.toArray()` when you hand them to `writeBytes`.
 
 Every operation that can fail returns `Result`. `fileExists` is the exception: it returns `Bool` directly, because a check that says "the file was there when I asked" is already racy, and wrapping it in `Result` would invite code that treats `Err` as "the file doesn't exist" when `Err` actually means "the OS refused to answer."
 

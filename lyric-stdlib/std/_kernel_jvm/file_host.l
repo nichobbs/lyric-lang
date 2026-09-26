@@ -311,32 +311,7 @@ func deleteRecursively(path: in String): Unit {
 
 // Bytes-mode and enumeration Result seams (issue #4752, D-N-015
 // slice): every failure reports IoError, matching the managed twin.
-pub func hostReadBytesResult(path: in String): Result[List[Byte], IOError] {
-  try {
-    val raw = hostReadAllBytes(path)
-    val acc: List[Byte] = newListWithCapacity(raw.length)
-    for b in raw {
-      acc.add(b)
-    }
-    Ok(value = acc)
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
-}
-
-pub func hostWriteBytesResult(path: in String, bytes: in List[Byte]): Result[Unit, IOError] {
-  try {
-    hostWriteAllBytes(path, bytes.toArray())
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
-}
-
-// `slice[Byte]` twins of the two seams above (#7284): the host already
-// reads and writes a byte array, so these skip the per-byte `List[Byte]`
-// copy.
-pub func hostReadByteSliceResult(path: in String): Result[slice[Byte], IOError] {
+pub func hostReadBytesResult(path: in String): Result[slice[Byte], IOError] {
   try {
     Ok(value = hostReadAllBytes(path))
   } catch Bug as b {
@@ -344,7 +319,7 @@ pub func hostReadByteSliceResult(path: in String): Result[slice[Byte], IOError] 
   }
 }
 
-pub func hostWriteByteSliceResult(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
+pub func hostWriteBytesResult(path: in String, bytes: in slice[Byte]): Result[Unit, IOError] {
   try {
     hostWriteAllBytes(path, bytes)
     Ok(value = ())

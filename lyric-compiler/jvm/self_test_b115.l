@@ -32,7 +32,7 @@ func makeSignedClassBytes(pool: in Pool): List[Byte] {
 // ── Build Main class ──────────────────────────────────────────────────────────
 func makeMainBytes(signedBytes: in List[Byte], pool: in Pool): List[Byte] {
   // Round-trip: verify the serialized class is structurally valid
-  val summary = parseClassSummary(signedBytes)
+  val summary = parseClassSummary(signedBytes.toArray())
   val isValid = summary.magicValid and summary.majorVersion == 65
 
   val asm = newAssembler(pool)

@@ -29,8 +29,7 @@ import Std.Process as Process
 // SHA-256("foobar") in lowercase hex — the app-binary-path placeholder the
 // .NET apphost template embeds (Microsoft.NET.HostModel).  Exactly 64 ASCII
 // bytes; the reserved region that follows is NUL-padded.
-pub val PLACEHOLDER: String =
-  "c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2"
+pub val PLACEHOLDER: String = "c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2"
 
 // The apphost reserves this many bytes at the placeholder offset for the path
 // (Microsoft.NET.HostModel `MaxAppBinaryPathSizeInBytes`).  The embedded DLL
@@ -48,7 +47,6 @@ pub record AppHostTemplate {
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Placeholder binding (pure — hermetically testable)
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// The result of a single placeholder scan: how many non-overlapping
 /// occurrences of the needle were found, and the offset of the first (or -1).
 record PlaceholderScan {
@@ -61,11 +59,11 @@ record PlaceholderScan {
 /// both the count (to reject missing/ambiguous placeholders) and the offset (to
 /// splice), so a single scan replaces what was two.  Naive O(n·m) match; the
 /// apphost template is well under 100 KB so this is fine.
-func scanPlaceholder(hay: in List[Byte], needle: in slice[Byte]): PlaceholderScan {
+func scanPlaceholder(hay: in slice[Byte], needle: in slice[Byte]): PlaceholderScan {
   if needle.length == 0 {
     return PlaceholderScan(count = 0, firstOffset = -1)
   }
-  val last = hay.count - needle.length
+  val last = hay.length - needle.length
   var count = 0
   var firstOffset = -1
   var i = 0
@@ -94,7 +92,7 @@ func scanPlaceholder(hay: in List[Byte], needle: in slice[Byte]): PlaceholderSca
 }
 
 /// Find the first occurrence of `needle` in `hay`, or -1 if absent.
-pub func findBytes(hay: in List[Byte], needle: in slice[Byte]): Int {
+pub func findBytes(hay: in slice[Byte], needle: in slice[Byte]): Int {
   scanPlaceholder(hay, needle).firstOffset
 }
 
@@ -105,9 +103,7 @@ pub func findBytes(hay: in List[Byte], needle: in slice[Byte]): Int {
 ///
 /// Errors when the placeholder is missing or ambiguous, when the reserved
 /// region runs past the end of the template, or when the path does not fit.
-pub func bindAppHost(
-  templateBytes: in List[Byte], appRelDllPath: in String
-): Result[List[Byte], String] {
+pub func bindAppHost(templateBytes: in slice[Byte], appRelDllPath: in String): Result[slice[Byte], String] {
   val needle = Enc.encodeUtf8(PLACEHOLDER)
   val scan = scanPlaceholder(templateBytes, needle)
   if scan.count == 0 {
@@ -118,18 +114,16 @@ pub func bindAppHost(
   }
   val idx = scan.firstOffset
 
-  if idx + RESERVED_BYTES > templateBytes.count {
-    return Err(
-      error = "apphost template too short: reserved region extends past end of file"
-    )
+  if idx + RESERVED_BYTES > templateBytes.length {
+    return Err(error = "apphost template too short: reserved region extends past end of file")
   }
 
   val pathBytes = Enc.encodeUtf8(appRelDllPath)
   // path + NUL terminator must fit the reserved region.
   if pathBytes.length + 1 > RESERVED_BYTES {
     return Err(
-      error = "managed DLL path is longer than the apphost reserved region (" +
-        toString(RESERVED_BYTES) + " bytes)"
+      error = "managed DLL path is longer than the apphost reserved region (" + toString(RESERVED_BYTES) +
+        " bytes)"
     )
   }
 
@@ -155,17 +149,16 @@ pub func bindAppHost(
   }
   // Bytes after the reserved region, verbatim.
   var j = idx + RESERVED_BYTES
-  while j < templateBytes.count {
+  while j < templateBytes.length {
     outBytes.add(templateBytes[j])
     j += 1
   }
-  Ok(value = outBytes)
+  Ok(value = outBytes.toArray())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Template discovery
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Candidate .NET install roots, in priority order.  Mirrors the reference-pack
 // discovery in `Msil.MetadataReader`; the Unix fallbacks are best-effort —
 // set `DOTNET_ROOT` explicitly on Windows.
@@ -279,9 +272,7 @@ func apphostFileName(rid: in String): String {
 /// setups).  Otherwise the first discovered candidate is used (the single-RID
 /// common case, and the JVM/unknown-host case where `hostRid` is empty).
 /// Pure and hermetically testable.
-pub func preferHostRid(
-  candidates: in List[AppHostTemplate], hostRid: in String
-): Option[AppHostTemplate] {
+pub func preferHostRid(candidates: in List[AppHostTemplate], hostRid: in String): Option[AppHostTemplate] {
   if hostRid.length > 0 {
     var ci = 0
     while ci < candidates.count {
@@ -319,10 +310,7 @@ pub func locateTemplate(): Option[AppHostTemplate] {
               match pickHighestDir(packDir) {
                 case Some(ver) -> {
                   val ahPath = Path.join(
-                    Path.join(
-                      Path.join(Path.join(packDir, ver), "runtimes"),
-                      rid
-                    ),
+                    Path.join(Path.join(Path.join(packDir, ver), "runtimes"), rid),
                     Path.join("native", apphostFileName(rid))
                   )
                   if File.fileExists(ahPath) {
@@ -346,7 +334,6 @@ pub func locateTemplate(): Option[AppHostTemplate] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. End-to-end emission
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// The launcher file name for an assembly stem and RID (`<stem>.exe` on
 /// Windows, bare `<stem>` elsewhere).
 pub func launcherName(stem: in String, rid: in String): String {
@@ -362,11 +349,7 @@ pub func launcherName(stem: in String, rid: in String): String {
 func launcherPathBesideDll(dllPath: in String, rid: in String): String {
   val dir = Path.dirname(dllPath)
   val base = Path.basename(dllPath)
-  val stem = if Str.endsWith(base, ".dll") {
-    Str.substring(base, 0, base.length - 4)
-  } else {
-    base
-  }
+  val stem = if Str.endsWith(base, ".dll") { Str.substring(base, 0, base.length - 4) } else { base }
   Path.join(dir, launcherName(stem, rid))
 }
 
@@ -388,10 +371,7 @@ pub func launcherPathForDll(dllPath: in String): Option[String] {
 /// invalidates the signature).  Returns the launcher path on success.
 pub func emitAppHost(dllPath: in String): Result[String, String] {
   match locateTemplate() {
-    case None ->
-      Err(
-        error = "could not locate a .NET apphost template; set DOTNET_ROOT to a .NET SDK install"
-      )
+    case None -> Err(error = "could not locate a .NET apphost template; set DOTNET_ROOT to a .NET SDK install")
     case Some(tpl) -> {
       val launcherPath = launcherPathBesideDll(dllPath, tpl.rid)
       val templateBytes = match File.readBytes(tpl.path) {
@@ -399,10 +379,7 @@ pub func emitAppHost(dllPath: in String): Result[String, String] {
         case Err(e) -> return Err(error = "reading apphost template: " + IOError.message(e))
       }
       val appRel = Path.basename(dllPath)
-      val bound = match bindAppHost(templateBytes, appRel) {
-        case Ok(b) -> b
-        case Err(m) -> return Err(error = m)
-      }
+      val bound = match bindAppHost(templateBytes, appRel) { case Ok(b) -> b; case Err(m) -> return Err(error = m) }
       match File.writeBytes(launcherPath, bound) {
         case Ok(_) -> ()
         case Err(e) -> return Err(error = "writing apphost launcher: " + IOError.message(e))
@@ -414,8 +391,7 @@ pub func emitAppHost(dllPath: in String): Result[String, String] {
         chmodArgs.add(launcherPath)
         match Process.run("chmod", chmodArgs) {
           case Ok(_) -> ()
-          case Err(e) ->
-            return Err(error = "marking apphost executable: " + IOError.message(e))
+          case Err(e) -> return Err(error = "marking apphost executable: " + IOError.message(e))
         }
       }
       // macOS: modifying the binary invalidates its code signature; ad-hoc
@@ -428,8 +404,7 @@ pub func emitAppHost(dllPath: in String): Result[String, String] {
         signArgs.add(launcherPath)
         match Process.run("codesign", signArgs) {
           case Ok(_) -> ()
-          case Err(e) ->
-            return Err(error = "ad-hoc signing apphost (macOS): " + IOError.message(e))
+          case Err(e) -> return Err(error = "ad-hoc signing apphost (macOS): " + IOError.message(e))
         }
       }
       Ok(value = launcherPath)

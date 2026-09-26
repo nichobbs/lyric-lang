@@ -134,7 +134,7 @@ pub record TlsServerConfig {
 // Shared loading helpers.
 // ---------------------------------------------------------------------------
 func readBytesOrTls(path: in String): Result[slice[Byte], TlsError] {
-  match readByteSlice(path) {
+  match readBytes(path) {
     case Err(_) -> Err(error = CertFileNotFound(path = path))
     case Ok(bytes) -> Ok(value = bytes)
   }

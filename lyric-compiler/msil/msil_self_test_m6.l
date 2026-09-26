@@ -295,7 +295,7 @@ func main(): Unit {
   check("bsjb_ok", bs[0x25B] == 0x42 and bs[0x25C] == 0x53 and bs[0x25D] == 0x4A and bs[0x25E] == 0x42)
 
   // ── Write PE and signal completion ────────────────────────────────────────
-  match writeBytes(outPath, bs) {
+  match writeBytes(outPath, bs.toArray()) {
     case Ok(_) -> println("wrote_pe=true")
     case Err(_) -> println("wrote_pe=false")
   }

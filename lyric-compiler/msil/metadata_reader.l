@@ -1169,7 +1169,7 @@ pub func isStaticFieldExternIn(
 
 // Read-from-disk wrapper over `isStaticFieldExternIn`.
 pub func isStaticFieldExtern(asmPath: in String, typeFqn: in String, fieldName: in String): Bool {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> false
     case Ok(raw) -> match readPe(raw) {
       case Err(_) -> false
@@ -1376,7 +1376,7 @@ pub func getLiteralFieldConstIn(
 
 // Read-from-disk wrapper over `getLiteralFieldConstIn`.
 pub func getLiteralFieldConst(asmPath: in String, typeFqn: in String, fieldName: in String): Option[ExternConstValue] {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> None
     case Ok(raw) -> match readPe(raw) {
       case Err(_) -> None
@@ -1455,7 +1455,7 @@ pub func findFieldExternIn(
 
 // Read-from-disk wrapper over `findFieldExternIn`.
 pub func findFieldExtern(asmPath: in String, typeFqn: in String, fieldName: in String): Option[ExternFieldInfo] {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> None
     case Ok(raw) -> match readPe(raw) {
       case Err(_) -> None
@@ -1497,7 +1497,7 @@ pub func isEnumTypeIn(img: in PeImage, layout: in TableLayout, th: in TablesHead
 
 // Read-from-disk wrapper over `isEnumTypeIn`.
 pub func isEnumType(asmPath: in String, typeFqn: in String): Bool {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> false
     case Ok(raw) -> match readPe(raw) {
       case Err(_) -> false
@@ -1522,7 +1522,7 @@ pub func isEnumType(asmPath: in String, typeFqn: in String): Bool {
 
 // Read-from-disk wrapper over `getLiteralFieldInt32In`.
 pub func getLiteralFieldInt32(asmPath: in String, typeFqn: in String, fieldName: in String): Option[Int] {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> None
     case Ok(raw) -> match readPe(raw) {
       case Err(_) -> None
@@ -2389,7 +2389,7 @@ func scanNestedValueTypes(ri: in ResourceImage, vtypeSet: in Map[String, Bool]):
 // Malformed or unreadable assemblies (read failure, bad PE/metadata) are
 // skipped silently — a single broken DLL must not abort building the index.
 pub func addAssemblyTypes(index: in Map[String, String], asmPath: in String): Unit {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> {
     }
     case Ok(raw) -> match parseAssemblyImage(raw) {
@@ -2453,7 +2453,7 @@ pub func addAssemblyToIndexesAndValueTypes(
     }
     case None -> pathIndex.add(nm, asmPath)
   }
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(e) -> {
       val reason = match e {
         case InvalidPath(p, r) -> "invalid path: " + p + " (" + r + ")"
@@ -2515,7 +2515,7 @@ pub func assemblyForType(index: in Map[String, String], typeFqn: in String): Opt
 // value-type half of `addAssemblyToIndexesAndValueTypes`, which callers
 // filling all three indexes should prefer (it reads the DLL once).
 pub func addAssemblyValueTypes(vtypeSet: in Map[String, Bool], asmPath: in String): Unit {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> {
     }
     case Ok(raw) -> match parseAssemblyImage(raw) { case None -> {  }; case Some(ri) -> scanValueTypes(ri, vtypeSet) }
@@ -3260,7 +3260,7 @@ pub func resolveOverloadIn(
 pub func resolveOverload(
   asmPath: in String, typeFqn: in String, member: in String, argTypes: in List[SigType]
 ): Option[ResolvedMethod] {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> None
     case Ok(raw) -> match readPe(raw) {
       case Err(_) -> None
@@ -3317,7 +3317,7 @@ pub record MdrParsedAssembly {
 // at `asmPath`.  Stateless — no caching; see `loadParsedAssemblyCached` for
 // the cross-call-cached entry point.
 pub func loadParsedAssembly(asmPath: in String): Option[MdrParsedAssembly] {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> None
     case Ok(raw) -> match readPe(raw) {
       case Err(_) -> None
@@ -3772,7 +3772,7 @@ pub func resolveExternMethodScored(
   member: in String,
   fullArgTypes: in List[SigType],
 ): Option[DecodedMethodSig] {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> None
     case Ok(raw) -> match readPe(raw) {
       case Err(_) -> None
@@ -3903,7 +3903,7 @@ pub record InterfaceInspection {
 // backend's `validateExternImplConformanceMsil`; co-located here so the
 // File / PE / metadata layering stays self-contained.
 pub func inspectInterfaceTarget(asmPath: in String, typeFqn: in String): Option[InterfaceInspection] {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> None
     case Ok(raw) -> match readPe(raw) {
       case Err(_) -> None
@@ -3974,7 +3974,7 @@ pub func resolveOverloadOrBase(
   argTypes: in List[SigType],
   argBases: in List[List[String]],
 ): OverloadOrBase {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> OverloadOrBase(found = None, baseFqn = "")
     case Ok(raw) -> match readPe(raw) {
       case Err(_) -> OverloadOrBase(found = None, baseFqn = "")
@@ -4013,7 +4013,7 @@ pub func resolveOverloadOrBase(
 // The base-type FQN of `typeFqn` in the assembly at `asmPath`, or "" when the
 // file is unreadable, the type is absent, or it has no base.
 pub func typeBaseFqn(asmPath: in String, typeFqn: in String): String {
-  match File.readByteSlice(asmPath) {
+  match File.readBytes(asmPath) {
     case Err(_) -> ""
     case Ok(raw) -> match parseAssemblyImage(raw) {
       case None -> ""
@@ -4327,7 +4327,7 @@ func parseAssemblyImage(raw: in slice[Byte]): Option[ResourceImage] {
 // resources", matching the previous loader-based behaviour).  Pure byte
 // reading — no runtime assembly load, so it is Native-AOT-safe.
 pub func openResourceImage(path: in String): Option[ResourceImage] {
-  match File.readByteSlice(path) {
+  match File.readBytes(path) {
     case Err(_) -> None
     case Ok(raw) -> parseAssemblyImage(raw)
   }

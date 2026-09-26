@@ -1,6 +1,6 @@
 //! jvm/reader.l — Stage B9: class-file binary reader (round-trip verification).
 //!
-//! Parses the JVM class-file format (JVMS §4) from a List[Byte] and returns a
+//! Parses the JVM class-file format (JVMS §4) from a slice[Byte] and returns a
 //! ClassSummary containing the magic check, major version, constant-pool count,
 //! access flags, and method count.  Used for round-trip smoke tests that write a
 //! class file (via Jvm.Classfile + Jvm.Lowering) and then read it back to
@@ -32,19 +32,19 @@ record PoolStep {
 }
 
 // Read big-endian u2 at offset (result: 0..=65535, always fits in Int).
-pub func readU2(bytes: in List[Byte], offset: in Int): Int {
+pub func readU2(bytes: in slice[Byte], offset: in Int): Int {
   bytes[offset].toInt() * 256 + bytes[offset + 1].toInt()
 }
 
 // True iff the first four bytes equal 0xCAFEBABE.
-func checkMagic(bytes: in List[Byte]): Bool {
+func checkMagic(bytes: in slice[Byte]): Bool {
   bytes[0] == 0xCA and bytes[1] == 0xFE and bytes[2] == 0xBA and bytes[3] == 0xBE
 }
 
 // Advance one constant-pool entry starting at pos.
 // Uses if-else rather than match to avoid emitter issues with large integer-
 // literal match expressions returning a record value.
-func skipPoolEntry(bytes: in List[Byte], pos: in Int): PoolStep {
+func skipPoolEntry(bytes: in slice[Byte], pos: in Int): PoolStep {
   val tag = bytes[pos]
   // Start with the most-common case (4-byte data, one index, tags 3/4/9-12/17/18).
   var nextP = pos + 5
@@ -75,7 +75,7 @@ func skipPoolEntry(bytes: in List[Byte], pos: in Int): PoolStep {
 }
 
 // Skip poolCount - 1 pool entries starting at startPos; return the end offset.
-pub func skipPool(bytes: in List[Byte], startPos: in Int, poolCount: in Int): Int {
+pub func skipPool(bytes: in slice[Byte], startPos: in Int, poolCount: in Int): Int {
   var pos = startPos
   var idx = 1
   while idx < poolCount {
@@ -88,13 +88,13 @@ pub func skipPool(bytes: in List[Byte], startPos: in Int, poolCount: in Int): In
 
 // Skip one attribute_info.  Reads the low u2 of the u4 attribute_length
 // (correct when attribute_length < 65536, which is always true for Code attrs).
-func skipAttribute(bytes: in List[Byte], pos: in Int): Int {
+func skipAttribute(bytes: in slice[Byte], pos: in Int): Int {
   val attrLen = readU2(bytes, pos + 4)
   pos + 6 + attrLen
 }
 
 // Skip one field_info including its attributes.
-func skipField(bytes: in List[Byte], pos: in Int): Int {
+func skipField(bytes: in slice[Byte], pos: in Int): Int {
   val attrCount = readU2(bytes, pos + 6)
   var p = pos + 8
   var ai = 0
@@ -106,7 +106,7 @@ func skipField(bytes: in List[Byte], pos: in Int): Int {
 }
 
 // Skip `count` field_info entries starting at pos.
-func skipFields(bytes: in List[Byte], pos: in Int, count: in Int): Int {
+func skipFields(bytes: in slice[Byte], pos: in Int, count: in Int): Int {
   var p = pos
   var i = 0
   while i < count {
@@ -117,7 +117,7 @@ func skipFields(bytes: in List[Byte], pos: in Int, count: in Int): Int {
 }
 
 // Parse the class-file header from bytes and return a ClassSummary.
-pub func parseClassSummary(bytes: in List[Byte]): ClassSummary {
+pub func parseClassSummary(bytes: in slice[Byte]): ClassSummary {
   val magicOk = checkMagic(bytes)
   val major = readU2(bytes, 6)
   val poolCount = readU2(bytes, 8)

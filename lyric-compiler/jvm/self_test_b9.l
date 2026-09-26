@@ -41,7 +41,7 @@ func makeHelloBytes(): List[Byte] {
 
 func main(): Unit {
   val bytes = makeHelloBytes()
-  val summary = parseClassSummary(bytes)
+  val summary = parseClassSummary(bytes.toArray())
 
   if summary.magicValid {
     println("magic_valid=true")

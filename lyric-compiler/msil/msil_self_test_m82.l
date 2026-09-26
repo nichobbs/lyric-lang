@@ -315,7 +315,7 @@ func main(): Unit {
   check("ldelem_tok_ok", bs[0x299] == 0xA3)
   check("bsjb_ok", bs[0x2AA] == 0x42 and bs[0x2AB] == 0x53 and bs[0x2AC] == 0x4A and bs[0x2AD] == 0x42)
 
-  match writeBytes(outPath, bs) {
+  match writeBytes(outPath, bs.toArray()) {
     case Ok(_) -> println("wrote_pe=true")
     case Err(_) -> println("wrote_pe=false")
   }

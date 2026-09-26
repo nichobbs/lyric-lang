@@ -99,7 +99,7 @@ pub func writeJarFromClassesWithResources(
   val jarBytes = buildJar(jarEntries)
 
   var wrote = false
-  match writeBytes(req.outPath, jarBytes) {
+  match writeBytes(req.outPath, jarBytes.toArray()) {
     case Ok(_) -> {
       wrote = true
     }
