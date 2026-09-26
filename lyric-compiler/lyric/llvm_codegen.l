@@ -1286,7 +1286,10 @@ func enterLoopLabelNative(
 
 func exitLoopLabelNative(ctx: in Ctx, label: in Option[String]): Unit {
   match label {
-    case Some(l) -> ctx.loopLabelIndex.remove(l)
+    case Some(l) -> {
+      ctx.loopLabelIndex.remove(l);
+      ()
+    }
     case None -> ()
   }
 }

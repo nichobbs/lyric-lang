@@ -2424,7 +2424,10 @@ func enterLoopLabelJvm(ctx: in FuncCtx, label: in Option[String]): Unit {
 
 func exitLoopLabelJvm(ctx: in FuncCtx, label: in Option[String]): Unit {
   match label {
-    case Some(l) -> ctx.loopLabelIndex.remove(l)
+    case Some(l) -> {
+      ctx.loopLabelIndex.remove(l);
+      ()
+    }
     case None -> ()
   }
 }
