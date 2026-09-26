@@ -35722,7 +35722,7 @@ Not yet: the `[layers]` checker (U3), form and route generators (U4), the
 desktop webview host (U5), native consumption of `lyric-ui` (docs/65 §15
 F-13) and a browser end-to-end test.
 
-## UI library: open questions resolved (D138), keyed events, session resume, field paths
+## UI library: open questions resolved (D138), keyed events, session resume, field paths (#7390)
 
 D138 resolves Q-UI-001 to Q-UI-010. Implemented (D-progress-979): event
 paths address keyed nodes by key (protocol version 2), so a click on a row

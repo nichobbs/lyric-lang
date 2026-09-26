@@ -1,4 +1,4 @@
-# D-progress-979 — Keyed event paths, session resume, field paths; three compiler fixes they needed
+# D-progress-979 — Keyed event paths, session resume, field paths; three compiler fixes they needed (#7390)
 
 **Status:** shipped
 
