@@ -11,29 +11,54 @@
 package Ui.Forms
 
 import Std.Core
-import Forms.{FormSchema, FieldSpec, FieldError, InputKind, errorsFor, messageOf}
+import Forms.{FormSchema, FieldSpec, FieldError, FieldPath, InputKind, errorsFor, messageOf, rootPath, child}
 import Ui.Core.{View}
 import Ui.Widgets.{field, textInput, textArea, numberInput, checkbox, select, SelectChoice, NumberBounds, InputOpts, inputOpts}
 
 /// One field view per schema entry, in schema order.  `valueOf` returns the
 /// draft text for a field name; `onEdit` builds the message for an edit of
-/// a field (name, new text).
+/// a field (name, new text).  Errors are matched at the top-level path of
+/// each field name.
 pub func formFields[Msg](
   schema: in FormSchema,
   valueOf: in (String) -> String,
   errors: in List[FieldError],
   onEdit: in (String, String) -> Msg,
 ): List[View[Msg]] {
+  return formFieldsAt(schema, rootPath(), valueOf, errors, onEdit)
+}
+
+/// Like `formFields`, for a form nested at `base`, such as one row of a
+/// list (`item(fieldPath("lines"), id)`): each field's errors are the ones
+/// at `child(base, name)`.
+pub func formFieldsAt[Msg](
+  schema: in FormSchema,
+  base: in FieldPath,
+  valueOf: in (String) -> String,
+  errors: in List[FieldError],
+  onEdit: in (String, String) -> Msg,
+): List[View[Msg]] {
   val acc: List[View[Msg]] = newList()
   for spec in schema.fields {
-    acc.add(fieldView(spec, valueOf(spec.name), errors, onEdit))
+    acc.add(fieldViewAt(spec, base, valueOf(spec.name), errors, onEdit))
   }
   return acc
 }
 
-/// The view of one field.
+/// The view of one top-level field.
 pub func fieldView[Msg](
   spec: in FieldSpec,
+  value: in String,
+  errors: in List[FieldError],
+  onEdit: in (String, String) -> Msg,
+): View[Msg] {
+  return fieldViewAt(spec, rootPath(), value, errors, onEdit)
+}
+
+/// The view of one field of a form nested at `base`.
+pub func fieldViewAt[Msg](
+  spec: in FieldSpec,
+  base: in FieldPath,
   value: in String,
   errors: in List[FieldError],
   onEdit: in (String, String) -> Msg,
@@ -63,7 +88,7 @@ pub func fieldView[Msg](
     }
   }
   val messages: List[String] = newList()
-  for e in errorsFor(errors, name) {
+  for e in errorsFor(errors, child(base, name)) {
     messages.add(messageOf(e, spec.label))
   }
   return field(spec.label, messages, input)

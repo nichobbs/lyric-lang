@@ -5,13 +5,18 @@
 //   <script type="module" src="/_ui/runtime/main.js"></script>
 // This module connects, says hello with the current URL, applies patch
 // messages to the mirror tree (which drives the DOM), and reports events.
+// The server names the session once it starts; after a dropped connection
+// the host quotes that id in its next hello and the server resumes the same
+// session (D138, Q-UI-007). The id lives only in memory, so reloading the
+// page starts a fresh session.
 
-import { Tree, pathOf, type MNode, type Patch } from "./tree.js";
+import { Tree, eventPathOf, type MNode, type Patch } from "./tree.js";
 import { DomRenderer } from "./render.js";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 type ServerMessage =
+  | { t: "session"; id: string }
   | { t: "patch"; v: number; ops: Patch[] }
   | { t: "navigate"; url: string }
   | { t: "back" }
@@ -27,6 +32,7 @@ export class Host {
   private readonly tree: Tree;
   private socket: WebSocket | null = null;
   private version = 0;
+  private sessionId = "";
   private retryMs = 500;
   private pendingInputs = new Map<MNode, PendingInput>();
   private flushScheduled = false;
@@ -41,7 +47,11 @@ export class Host {
     ws.addEventListener("open", () => {
       this.retryMs = 500;
       this.mount.removeAttribute("aria-busy");
-      this.send({ t: "hello", pv: PROTOCOL_VERSION, url: location.pathname + location.search });
+      const hello: Record<string, unknown> = { t: "hello", pv: PROTOCOL_VERSION, url: location.pathname + location.search };
+      if (this.sessionId !== "") {
+        hello.sid = this.sessionId;
+      }
+      this.send(hello);
     });
     ws.addEventListener("message", (ev) => this.onMessage(String(ev.data)));
     ws.addEventListener("close", () => {
@@ -61,6 +71,9 @@ export class Host {
       return;
     }
     switch (msg.t) {
+      case "session":
+        this.sessionId = msg.id;
+        return;
       case "patch":
         try {
           for (const op of msg.ops) {
@@ -111,7 +124,7 @@ export class Host {
   }
 
   private sendEvent(node: MNode, event: string, data: string, iv: number): void {
-    const msg: Record<string, unknown> = { t: "event", v: this.version, p: pathOf(node), e: event, d: data };
+    const msg: Record<string, unknown> = { t: "event", v: this.version, p: eventPathOf(node), e: event, d: data };
     if (iv > 0) {
       msg.iv = iv;
     }

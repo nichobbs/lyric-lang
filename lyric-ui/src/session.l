@@ -12,13 +12,23 @@
 //! The rendered tree wraps the application view in a fixed two-child root,
 //! `column[app, overlay]`, where `overlay` shows a pending confirmation
 //! dialog.  Host paths therefore start with `0` for the application view.
+//!
+//! Host events name nodes by key where a node has one (D138, Q-UI-005):
+//! `handleEvent` resolves a key only when exactly one sibling carries it, so
+//! an event aimed at a row that has since moved still reaches that row, and
+//! one aimed at a row that is gone is dropped instead of reaching whichever
+//! row took its place.
+//!
+//! A session whose host has disconnected is `detach`ed: the rendered tree is
+//! dropped (it is derivable from the model because `view` is pure) and
+//! `resume` renders it again when a host reconnects (D138, Q-UI-007).
 @runtime_checked
 package Ui.Session
 
 import Std.Core
 import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, Prop, WidgetKind, Step, UiEffect, Navigate, Back, Confirm, Notify, toastLevelName, eventName, fire, mapView, childrenOf}
-import Ui.Diff.{Patch, diff, replaceAll}
-import Ui.Protocol.{Event, InputVersion, pathKey}
+import Ui.Diff.{Patch, SetProp, diff, replaceAll, keyOf}
+import Ui.Protocol.{Event, NodeRef, At, Keyed, ValueEcho, refsKey, pathKey}
 
 // ─── Program ──────────────────────────────────────────────────────────────────
 /// What a session runs: the screen's pure functions, and how to recognise
@@ -49,7 +59,17 @@ pub union HostCommand {
   case ShowToast(message: String, level: String)
 }
 
-/// The state of one session.
+/// The input version last processed for one text input, identified by its
+/// event path (keys where the path's nodes have them), so the record follows
+/// the input when its row moves.
+pub record InputVersion {
+  key: String
+  path: List[NodeRef]
+  version: Int
+}
+
+/// The state of one session.  `tree` is `Empty` while the session is
+/// detached.
 pub record Session[M, Msg] {
   model: M
   tree: View[SessionMsg[Msg]]
@@ -60,10 +80,12 @@ pub record Session[M, Msg] {
 
 /// The result of one step.  `dropped` is true when a host event did not
 /// resolve to a handler (stale path or unknown event); nothing else changes
-/// in that case and the driver logs it.
+/// in that case and the driver logs it.  `echoes` are the input versions to
+/// send with this step's `value` patches.
 pub record Output[M, Msg, E] {
   session: Session[M, Msg]
   patches: List[Patch]
+  echoes: List[ValueEcho]
   effects: List[E]
   commands: List[HostCommand]
   dropped: Bool
@@ -128,10 +150,34 @@ pub func handleEvent[M, Msg, E](p: in Program[M, Msg, E], s: in Session[M, Msg],
   }
 }
 
-/// The patches that bring a (re)connected host up to date: a replacement of
-/// the whole tree.
+/// The patches that bring a host up to date after it lost track of the
+/// tree: a replacement of the whole tree.
 pub func resync[M, Msg](s: in Session[M, Msg]): List[Patch] {
   return replaceAll(s.tree)
+}
+
+/// `s` without its rendered tree and input versions, for a session whose
+/// host has disconnected.  The model and any pending dialog are kept.
+pub func detach[M, Msg](s: in Session[M, Msg]): Session[M, Msg] {
+  val model: M = s.model
+  val dialog: Option[PendingDialog[Msg]] = s.dialog
+  val ivs: List[InputVersion] = newList()
+  val none: View[SessionMsg[Msg]] = Empty
+  return Session(model = model, tree = none, version = s.version, dialog = dialog, inputVersions = ivs)
+}
+
+/// `s` rendered again for a reconnected host: the whole tree, under a new
+/// render version so events aimed at the old tree are recognisably stale.
+pub func resume[M, Msg, E](p: in Program[M, Msg, E], s: in Session[M, Msg]): Output[M, Msg, E] {
+  val model: M = s.model
+  val dialog: Option[PendingDialog[Msg]] = s.dialog
+  val tree: View[SessionMsg[Msg]] = render(p, model, dialog)
+  val ivs: List[InputVersion] = newList()
+  val next: Session[M, Msg] = Session(model = model, tree = tree, version = s.version + 1, dialog = dialog, inputVersions = ivs)
+  val none: List[E] = newList()
+  val noDialog: Option[PendingDialog[Msg]] = None
+  val split: Split[E, Msg] = splitEffects(p, none, noDialog)
+  return output(next, replaceAll(tree), split, false)
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
@@ -184,7 +230,7 @@ pub func rerender[M, Msg, E](
     tree = tree,
     version = version,
     dialog = dialog,
-    inputVersions = ivs
+    inputVersions = liveInputVersions(tree, ivs)
   )
   return output(next, patches, split, false)
 }
@@ -194,7 +240,16 @@ pub func output[M, Msg, E](
 ): Output[M, Msg, E] {
   val effects: List[E] = split.appEffects
   val commands: List[HostCommand] = split.commands
-  return Output(session = s, patches = patches, effects = effects, commands = commands, dropped = dropped)
+  val tree: View[SessionMsg[Msg]] = s.tree
+  val echoes: List[ValueEcho] = echoesFor(tree, patches, s.inputVersions)
+  return Output(
+    session = s,
+    patches = patches,
+    echoes = echoes,
+    effects = effects,
+    commands = commands,
+    dropped = dropped
+  )
 }
 
 pub func unchanged[M, Msg, E](p: in Program[M, Msg, E], s: in Session[M, Msg], dropped: in Bool): Output[M, Msg, E] {
@@ -265,17 +320,67 @@ pub func dialogButton[Msg](label: in String, variant: in String, msg: in Session
   return Element(kind = WidgetKind.Button, key = "", props = ps, handlers = hs, children = cs)
 }
 
-/// The handler for event `name` on the node at `path`, if any.
-pub func handlerAt[Msg](tree: in View[Msg], path: in List[Int], name: in String): Option[Handler[Msg]] {
+/// The node an event path names in `tree`, if it still exists.  A key step
+/// matches only when exactly one sibling carries that key.
+pub func resolveRefs[Msg](tree: in View[Msg], path: in List[NodeRef]): Option[View[Msg]] {
+  var node = tree
+  for r in path {
+    val cs = childrenOf(node)
+    match r {
+      case At(i) -> {
+        if i < 0 or i >= cs.count {
+          return None
+        }
+        node = cs[i]
+      }
+      case Keyed(k) -> {
+        var found = -1
+        var i = 0
+        while i < cs.count {
+          if keyOf(cs[i]) == k {
+            if found >= 0 {
+              return None
+            }
+            found = i
+          }
+          i = i + 1
+        }
+        if found < 0 {
+          return None
+        }
+        node = cs[found]
+      }
+    }
+  }
+  return Some(value = node)
+}
+
+/// The event path of the node at child-index path `path` in `tree`: each
+/// step is the node's key when it has one, its index otherwise (the form a
+/// host sends).
+pub func refsOf[Msg](tree: in View[Msg], path: in List[Int]): List[NodeRef] {
+  val acc: List[NodeRef] = newList()
   var node = tree
   for i in path {
     val cs = childrenOf(node)
     if i < 0 or i >= cs.count {
-      return None
+      return acc
     }
     node = cs[i]
+    val k = keyOf(node)
+    if k.length > 0 {
+      acc.add(Keyed(key = k))
+    } else {
+      acc.add(At(index = i))
+    }
   }
-  return match node {
+  return acc
+}
+
+/// The handler for event `name` on the node `path` names, if any.
+pub func handlerAt[Msg](tree: in View[Msg], path: in List[NodeRef], name: in String): Option[Handler[Msg]] {
+  val target: View[Msg] = match resolveRefs(tree, path) { case Some(n) -> n; case None -> return None }
+  return match target {
     case Element(_, _, _, handlers, _) -> {
       var found: Option[Handler[Msg]] = None
       for h in handlers {
@@ -289,14 +394,50 @@ pub func handlerAt[Msg](tree: in View[Msg], path: in List[Int], name: in String)
   }
 }
 
-pub func recordInputVersion(ivs: in List[InputVersion], path: in List[Int], version: in Int): List[InputVersion] {
-  val k = pathKey(path)
+/// `ivs` with the version for the input at `path` set to `version`.
+pub func recordInputVersion(ivs: in List[InputVersion], path: in List[NodeRef], version: in Int): List[InputVersion] {
+  val k = refsKey(path)
   val acc: List[InputVersion] = newList()
   for iv in ivs {
-    if iv.pathKey != k {
+    if iv.key != k {
       acc.add(iv)
     }
   }
-  acc.add(InputVersion(pathKey = k, version = version))
+  acc.add(InputVersion(key = k, path = path, version = version))
+  return acc
+}
+
+/// The entries of `ivs` whose input still exists in `tree`.
+pub func liveInputVersions[Msg](tree: in View[Msg], ivs: in List[InputVersion]): List[InputVersion] {
+  val acc: List[InputVersion] = newList()
+  for iv in ivs {
+    match resolveRefs(tree, iv.path) {
+      case Some(_) -> acc.add(iv)
+      case None -> ()
+    }
+  }
+  return acc
+}
+
+/// The input versions to send with the `value` patches in `patches`, whose
+/// paths are child-index paths into `tree` (the tree after the patches).
+pub func echoesFor[Msg](tree: in View[Msg], patches: in List[Patch], ivs: in List[InputVersion]): List[ValueEcho] {
+  val acc: List[ValueEcho] = newList()
+  if ivs.count == 0 {
+    return acc
+  }
+  for p in patches {
+    match p {
+      case SetProp(path, name, _) -> if name == "value" {
+        val k = refsKey(refsOf(tree, path))
+        for iv in ivs {
+          if iv.key == k {
+            acc.add(ValueEcho(pathKey = pathKey(path), version = iv.version))
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
   return acc
 }

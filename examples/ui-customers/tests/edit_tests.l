@@ -61,7 +61,7 @@ test "an out-of-range credit limit blocks save and reports the field" {
   val m = edit(loaded(), CustomerField.CreditLimitField, "2000000")
   val s = Logic.update(m, SaveClicked)
   assertEqualInt(s.effects.count, 0, "no save effect")
-  assertTrue(Forms.hasErrorFor(s.model.errors, "creditLimit"), "credit limit error")
+  assertTrue(Forms.hasErrorFor(s.model.errors, Forms.fieldPath("creditLimit")), "credit limit error")
   val shown = UiTest.fieldErrors(View.view(s.model), "Credit limit")
   assertEqualInt(shown.count, 1, "error shown under the field")
   assertEqual(shown[0], "Credit limit must be between 0 and 1000000", "message")
@@ -70,8 +70,8 @@ test "an out-of-range credit limit blocks save and reports the field" {
 test "every invalid field is reported at once" {
   val m = edit(edit(loaded(), CustomerField.Name, "  "), CustomerField.Email, "nope")
   val s = Logic.update(m, SaveClicked)
-  assertTrue(Forms.hasErrorFor(s.model.errors, "name"), "name")
-  assertTrue(Forms.hasErrorFor(s.model.errors, "email"), "email")
+  assertTrue(Forms.hasErrorFor(s.model.errors, Forms.fieldPath("name")), "name")
+  assertTrue(Forms.hasErrorFor(s.model.errors, Forms.fieldPath("email")), "email")
 }
 
 test "errors clear as the user fixes them after a failed save" {

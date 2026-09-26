@@ -6,8 +6,8 @@
 //! stopping at the first, so the user sees every problem at once:
 //!
 //!   val errs: List[FieldError] = newList()
-//!   val name = Parse.collect(errs, Parse.requiredText("name", d.name), "")
-//!   val limit = Parse.collect(errs, Parse.longInRange("creditLimit", d.creditLimit, 0, 1000000), 0)
+//!   val name = Parse.collect(errs, Parse.requiredText(fieldPath("name"), d.name), "")
+//!   val limit = Parse.collect(errs, Parse.longInRange(fieldPath("creditLimit"), d.creditLimit, 0, 1000000), 0)
 //!   if errs.count > 0 { return Err(error = errs) }
 //!   return Ok(value = Customer(name = name, creditLimit = limit))
 //!
@@ -20,7 +20,7 @@ package Forms.Parse
 import Std.Core
 import Std.String
 import Std.Parse as P
-import Forms.{FieldError, Required, Invalid, OutOfRange, TooLong}
+import Forms.{FieldError, FieldPath, Required, Invalid, OutOfRange, TooLong}
 
 /// The value of `r`, or `fallback` after appending the error to `errs`.
 pub func collect[T](errs: in List[FieldError], r: in Result[T, FieldError], fallback: in T): T {
@@ -28,7 +28,7 @@ pub func collect[T](errs: in List[FieldError], r: in Result[T, FieldError], fall
 }
 
 /// `raw` with surrounding whitespace removed; `Required` when that is empty.
-pub func requiredText(field: in String, raw: in String): Result[String, FieldError] {
+pub func requiredText(field: in FieldPath, raw: in String): Result[String, FieldError] {
   val t = trim(raw)
   if t.length == 0 {
     return Err(error = Required(field = field))
@@ -46,7 +46,7 @@ pub func optionalText(raw: in String): Option[String] {
 }
 
 /// `Ok(text)` when `text` has at most `max` characters, else `TooLong`.
-pub func withinLength(field: in String, text: in String, max: in Int): Result[String, FieldError]
+pub func withinLength(field: in FieldPath, text: in String, max: in Int): Result[String, FieldError]
   requires: max > 0
 {
   if text.length > max {
@@ -57,7 +57,7 @@ pub func withinLength(field: in String, text: in String, max: in Int): Result[St
 
 /// `raw` parsed as a whole number in `min ..= max`.  Empty input is
 /// `Required`; non-numeric input is `Invalid`; out-of-range is `OutOfRange`.
-pub func longInRange(field: in String, raw: in String, min: in Long, max: in Long): Result[Long, FieldError]
+pub func longInRange(field: in FieldPath, raw: in String, min: in Long, max: in Long): Result[Long, FieldError]
   requires: min <= max
 {
   val t = trim(raw)
@@ -76,7 +76,7 @@ pub func longInRange(field: in String, raw: in String, min: in Long, max: in Lon
 
 /// Like `longInRange`, but empty input is `Ok(None)`.
 pub func optionalLongInRange(
-  field: in String, raw: in String, min: in Long, max: in Long
+  field: in FieldPath, raw: in String, min: in Long, max: in Long
 ): Result[Option[Long], FieldError]
   requires: min <= max
 {
@@ -91,7 +91,7 @@ pub func optionalLongInRange(
 
 /// `raw` as one of `allowed` (compared after trimming).  Empty input is
 /// `Required`; anything else outside `allowed` is `Invalid`.
-pub func oneOf(field: in String, raw: in String, allowed: in List[String]): Result[String, FieldError] {
+pub func oneOf(field: in FieldPath, raw: in String, allowed: in List[String]): Result[String, FieldError] {
   val t = trim(raw)
   if t.length == 0 {
     return Err(error = Required(field = field))
@@ -107,7 +107,7 @@ pub func oneOf(field: in String, raw: in String, allowed: in List[String]): Resu
 /// A minimal structural email check: one `@` with text on both sides and a
 /// `.` in the domain part.  Deliverability is out of scope; use an effect for
 /// anything stronger.
-pub func email(field: in String, raw: in String): Result[String, FieldError] {
+pub func email(field: in FieldPath, raw: in String): Result[String, FieldError] {
   return match requiredText(field, raw) {
     case Err(e) -> Err(error = e)
     case Ok(t) -> match indexOf(t, "@") {

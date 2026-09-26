@@ -67,6 +67,17 @@ func main(): Unit {
 HTTP is served on `port` (default 8080) and the session WebSocket on
 `wsPort` (default 8081), because `lyric-ws` runs its own listener.
 
+A session survives a dropped connection: the browser reconnects with the
+session id it was given and resumes where it left off, within
+`reconnectGraceMs` (default two minutes). A disconnected session keeps only
+its model. `maxSessions` (default 10000) bounds the sessions in memory; when
+it is reached, the longest-disconnected sessions are evicted first
+(docs/65 §9.5, §10.1, D138).
+
+Keyed nodes (`keyed(key, view)`) are addressed by key in events, so a click
+on a row that moved between render and click still reaches that row, and a
+click on a row that has gone is dropped. Key the items of dynamic lists.
+
 ## Host runtime (TypeScript)
 
 `runtime/` holds the browser/webview runtime: it applies patches to a

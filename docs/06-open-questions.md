@@ -576,9 +576,9 @@ open.
 
 UI library open questions (Q-UI-001–Q-UI-011) are maintained in
 `docs/65-ui-library-sketch.md` §16.  They live there because they require
-the UI application-model context (D137) to evaluate.  Q-UI-011 is resolved
-(the cross-package generics gaps were fixed in the compiler); the others are
-open.
+the UI application-model context (D137) to evaluate.  All are resolved:
+Q-UI-011 by compiler fixes (the cross-package generics gaps), Q-UI-001 to
+Q-UI-010 by D138.
 
 ---
 

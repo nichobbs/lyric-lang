@@ -3,7 +3,7 @@
 // (Ui.Diff.applyPatches) defines the same semantics.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Tree, toWire, pathOf, nodeAt, PatchError } from "../dist/tree.js";
+import { Tree, toWire, eventPathOf, nodeAt, PatchError } from "../dist/tree.js";
 
 const text = (v) => ({ t: "text", v });
 const el = (k, c = [], p = {}, e = [], key) => (key ? { t: "el", k, key, p, e, c } : { t: "el", k, p, e, c });
@@ -45,9 +45,18 @@ test("props, text and events", () => {
 test("paths are recomputed from parents", () => {
   const t = treeOf(el("column", [el("row", [text("x"), el("button", [], {}, ["click"])])]));
   const button = nodeAt(t.root, [0, 1]);
-  assert.deepEqual(pathOf(button), [0, 1]);
+  assert.deepEqual(eventPathOf(button), [0, 1]);
   t.apply({ op: "insert", p: [], i: 0, n: text("before") });
-  assert.deepEqual(pathOf(button), [1, 1]);
+  assert.deepEqual(eventPathOf(button), [1, 1]);
+});
+
+test("event paths name keyed nodes by key", () => {
+  const row = (key) => el("row", [text(key), el("button", [], {}, ["click"])], {}, [], key);
+  const t = treeOf(el("column", [el("column", [row("ann"), row("bob")])]));
+  const bobDelete = nodeAt(t.root, [0, 1, 1]);
+  assert.deepEqual(eventPathOf(bobDelete), [0, "bob", 1]);
+  t.apply({ op: "remove", p: [0], i: 0 });
+  assert.deepEqual(eventPathOf(bobDelete), [0, "bob", 1], "unchanged when an earlier row goes");
 });
 
 test("unresolvable paths throw PatchError", () => {

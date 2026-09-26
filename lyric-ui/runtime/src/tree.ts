@@ -104,12 +104,17 @@ export function nodeAt(root: MNode, path: number[]): MNode {
   return n;
 }
 
-/** The path of `node` from the root. */
-export function pathOf(node: MNode): number[] {
-  const path: number[] = [];
+/**
+ * The event path of `node`: each step is the node's key when it has one and
+ * its child index otherwise. The session resolves keys among siblings, so an
+ * event still reaches (or is dropped for) the node it was aimed at when the
+ * tree changed in between (D138, Q-UI-005).
+ */
+export function eventPathOf(node: MNode): (number | string)[] {
+  const path: (number | string)[] = [];
   let n = node;
   while (n.parent) {
-    path.push(n.parent.children.indexOf(n));
+    path.push(n.key !== "" ? n.key : n.parent.children.indexOf(n));
     n = n.parent;
   }
   return path.reverse();

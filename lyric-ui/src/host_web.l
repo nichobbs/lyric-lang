@@ -15,6 +15,16 @@
 //! `lyric-ws` runs its own listener, so the WebSocket endpoint is on
 //! `wsPort`, next to the HTTP `port` (docs/65 §15, finding F-11).  The shell
 //! page derives the socket URL from the request's `Host` header.
+//!
+//! Sessions outlive their connection (D138, Q-UI-007).  Each session gets an
+//! unguessable id, sent to the browser when it starts; a browser that
+//! reconnects quotes it in `hello` and resumes the same session within
+//! `reconnectGraceMs`.  A disconnected session keeps only its model (the
+//! tree is rebuilt on resume).  At most `maxSessions` sessions are live:
+//! when a new session would exceed that, expired and then the longest
+//! disconnected sessions are evicted, and if every session is connected the
+//! new browser gets a "server busy" page instead.  Expired sessions are
+//! removed whenever a session is created or resumed.
 @runtime_checked
 package Ui.Host.Web
 
@@ -23,34 +33,57 @@ import Std.Collections
 import Std.Console
 import Std.String
 import Std.Encoding as Enc
+import Std.SecureRandom as SecureRandom
+import Std.Time as Time
 import Web
 import Web.{Request, Response, Handler}
 import Ws
 import Ws.{WsHandler, WsContext, WsMessage, WsError, WsCloseCode, NativeRegistry}
-import Ui.Protocol.{ClientMessage, Hello, EventMsg, Sync, decodeClient, protocolVersion}
-import Ui.Host.{Instance, Outbox, staticPage}
+import Ui.Protocol.{ClientMessage, Hello, EventMsg, Sync, decodeClient, encodeSession, protocolVersion}
+import Ui.Host.{Instance, Outbox, SessionRegistry, ResumedSession, Unknown, staticPage}
 import Ui.Host.Assets
 
 /// Where and how to serve.  `wsPath` is the WebSocket path on `wsPort`.
+/// `reconnectGraceMs` is how long a disconnected session can be resumed;
+/// `maxSessions` bounds the sessions held in memory.
 pub record HostConfig {
   title: String
   host: String
   port: Int
   wsPort: Int
   wsPath: String
+  reconnectGraceMs: Long
+  maxSessions: Int
 }
 
-/// Serve on all interfaces, HTTP on 8080 and WebSocket on 8081.
+/// Serve on all interfaces, HTTP on 8080 and WebSocket on 8081; resume a
+/// disconnected session for two minutes; hold at most 10000 sessions.
 pub func defaultConfig(title: in String): HostConfig {
-  return HostConfig(title = title, host = "0.0.0.0", port = 8080, wsPort = 8081, wsPath = "/_ui")
+  return HostConfig(
+    title = title,
+    host = "0.0.0.0",
+    port = 8080,
+    wsPort = 8081,
+    wsPath = "/_ui",
+    reconnectGraceMs = 120_000,
+    maxSessions = 10_000
+  )
 }
 
 /// Starts the WebSocket listener, then serves HTTP until the process ends.
 /// `route` maps the page URL (path and query) a browser opened to the
 /// screen instance for it, or `None` for "not found".
-pub func serve(cfg: in HostConfig, route: in (String) -> Option[Instance]): Result[Unit, String] {
+pub func serve(cfg: in HostConfig, route: in (String) -> Option[Instance]): Result[Unit, String]
+  requires: cfg.reconnectGraceMs >= 0 and cfg.maxSessions > 0
+{
   val regs = RegistryCell()
-  val socket = UiSocket(route = route, conns = Connections(), registry = regs)
+  val socket = UiSocket(
+    route = route,
+    sessions = SessionRegistry(),
+    registry = regs,
+    graceMs = cfg.reconnectGraceMs,
+    maxSessions = cfg.maxSessions
+  )
   val registry = match Ws.startServer(cfg.host, cfg.wsPort, cfg.wsPath, socket) {
     case Ok(r) -> r
     case Err(e) -> return Err(error = "WebSocket listener on port " + cfg.wsPort.toString() + ": " + e.message)
@@ -152,24 +185,6 @@ pub func escapeHtml(s: in String): String {
 }
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
-protected type Connections {
-  var byId: Map[String, Instance] = newMap()
-  entry put(id: in String, inst: in Instance): Unit {
-    if byId.containsKey(id) {
-      byId.remove(id)
-    }
-    byId.add(id, inst)
-  }
-  entry drop(id: in String): Unit {
-    if byId.containsKey(id) {
-      byId.remove(id)
-    }
-  }
-  func find(id: in String): Option[Instance] {
-    return mapGet(byId, id)
-  }
-}
-
 protected type RegistryCell {
   var handle: Int = -1
   entry set(h: in Int): Unit {
@@ -180,29 +195,54 @@ protected type RegistryCell {
   }
 }
 
-record SocketOutbox {
+func sendTo(registry: in RegistryCell, connectionId: in String, text: in String): Unit {
+  val h = registry.get()
+  if h >= 0 {
+    match Ws.sendText(NativeRegistry(registryHandle = h), connectionId, text) {
+      case Ok(_) -> ()
+      // The browser went away mid-step; the close callback detaches the
+      // session, so there is nothing further to do here.
+      case Err(_) -> ()
+    }
+  }
+}
+
+/// Sends to whichever connection a session is attached to when the message
+/// is sent, so the output of a step that was running when the browser
+/// reconnected reaches the new connection.
+record SessionOutbox {
+  registry: RegistryCell
+  sessions: SessionRegistry
+  sessionId: String
+}
+
+impl Outbox for SessionOutbox {
+  func send(text: in String): Unit {
+    match self.sessions.connectionOf(self.sessionId) {
+      case Some(c) -> sendTo(self.registry, c, text)
+      case None -> ()
+    }
+  }
+}
+
+/// Sends to one connection (pages that hold no session).
+record ConnectionOutbox {
   registry: RegistryCell
   connectionId: String
 }
 
-impl Outbox for SocketOutbox {
+impl Outbox for ConnectionOutbox {
   func send(text: in String): Unit {
-    val h = self.registry.get()
-    if h >= 0 {
-      match Ws.sendText(NativeRegistry(registryHandle = h), self.connectionId, text) {
-        case Ok(_) -> ()
-        // The browser went away mid-step; the close callback drops the
-        // session, so there is nothing further to do here.
-        case Err(_) -> ()
-      }
-    }
+    sendTo(self.registry, self.connectionId, text)
   }
 }
 
 record UiSocket {
   route: (String) -> Option[Instance]
-  conns: Connections
+  sessions: SessionRegistry
   registry: RegistryCell
+  graceMs: Long
+  maxSessions: Int
 }
 
 impl WsHandler for UiSocket {
@@ -219,7 +259,7 @@ impl WsHandler for UiSocket {
   }
 
   func onClose(ctx: in WsContext, code: in WsCloseCode): Unit {
-    self.conns.drop(ctx.connectionId)
+    release(self.sessions, ctx.connectionId)
   }
 
   func onError(ctx: in WsContext, error: in WsError): Unit {
@@ -228,17 +268,65 @@ impl WsHandler for UiSocket {
 }
 
 func receiveText(s: in UiSocket, connectionId: in String, text: in String): Unit {
-  val outbox = SocketOutbox(registry = s.registry, connectionId = connectionId)
   match decodeClient(text) {
     case Err(e) -> Console.error("lyric-ui: dropped message from " + connectionId + ": " + e)
-    case Ok(Hello(pv, url)) -> {
-      val inst = if pv != protocolVersion then staticPage("Please reload", "This page was loaded from an older version of the application.") else match s.route(url) { case Some(i) -> i; case None -> staticPage("Not found", "There is no page at " + url + ".") }
-      s.conns.put(connectionId, inst)
-      inst.start(outbox)
-    }
-    case Ok(m) -> match s.conns.find(connectionId) {
-      case Some(inst) -> inst.receive(m, outbox)
+    case Ok(Hello(pv, url, sid)) -> hello(s, connectionId, pv, url, sid)
+    case Ok(m) -> match s.sessions.sessionOf(connectionId) {
+      case Some(id) -> match s.sessions.instanceOf(id) {
+        case Some(inst) -> inst.receive(m, SessionOutbox(registry = s.registry, sessions = s.sessions, sessionId = id))
+        case None -> Console.error("lyric-ui: message for an evicted session from " + connectionId)
+      }
       case None -> Console.error("lyric-ui: message before hello from " + connectionId)
     }
   }
+}
+
+func hello(s: in UiSocket, connectionId: in String, pv: in Int, url: in String, sid: in String): Unit {
+  // A second hello on one connection starts over: whatever session it
+  // carried is detached like on a close.
+  release(s.sessions, connectionId)
+  val direct = ConnectionOutbox(registry = s.registry, connectionId = connectionId)
+  if pv != protocolVersion {
+    staticPage("Please reload", "This page was loaded from an older version of the application.").start(direct)
+    return
+  }
+  val now = Time.nowEpochMillis()
+  if sid.length > 0 {
+    match s.sessions.attach(sid, connectionId, now, s.graceMs) {
+      case ResumedSession(inst) -> {
+        inst.resume(SessionOutbox(registry = s.registry, sessions = s.sessions, sessionId = sid))
+        return
+      }
+      case Unknown -> ()
+    }
+  }
+  if not s.sessions.admit(now, s.graceMs, s.maxSessions) {
+    staticPage("Server busy", "The server is at capacity. Please try again in a few minutes.").start(direct)
+    return
+  }
+  val inst = match s.route(url) { case Some(i) -> i; case None -> staticPage("Not found", "There is no page at " + url + ".") }
+  val id = newSessionId()
+  s.sessions.add(id, inst, connectionId, now)
+  direct.send(encodeSession(id))
+  inst.start(SessionOutbox(registry = s.registry, sessions = s.sessions, sessionId = id))
+}
+
+// Detaches the session `connectionId` carries.  The instance drops its tree
+// only if the session is still disconnected once it holds the instance lock:
+// a reconnect may have resumed it in between.
+func release(sessions: in SessionRegistry, connectionId: in String): Unit {
+  match sessions.release(connectionId, Time.nowEpochMillis()) {
+    case Some(d) -> {
+      val id = d.sessionId
+      d.instance.detach({ -> sessions.isDetached(id) })
+    }
+    case None -> ()
+  }
+}
+
+/// 128 random bits from the operating system's secure generator, as hex.
+/// The id is the only credential for resuming a session, so it must not be
+/// guessable.
+func newSessionId(): String {
+  return Enc.encodeHex(SecureRandom.secureGetBytes(16))
 }
