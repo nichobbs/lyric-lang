@@ -481,7 +481,11 @@ file; the workflow itself posts that summary and sets or clears
 writes a summary, the workflow posts an "Automated review did not
 complete" comment and fails the check; its "Report denied tool calls"
 step lists any tool calls the allow-list refused.  That is a workflow
-problem, not a finding against the PR.
+problem, not a finding against the PR.  A PR that edits
+`.github/workflows/claude-code-review.yml` cannot be reviewed by it
+(claude-code-action only runs a workflow identical to the default
+branch's); the workflow posts an "Automated review skipped" comment and
+does not fail the check for that reason.
 
 When you are subscribed to a PR (`subscribe_pr_activity`) and the
 `claude-review` check fails, treat it as a full work item, not a

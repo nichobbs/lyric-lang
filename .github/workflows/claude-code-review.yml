@@ -139,11 +139,33 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
 
+      # claude-code-action refuses to run when this workflow file differs from
+      # the default branch's copy (it exits "successfully" without reviewing),
+      # so a PR that edits this file cannot be reviewed by it. Detect that
+      # here instead of reporting it as a failed review.
+      - name: Check whether this PR changes the review workflow
+        id: workflow-check
+        run: |
+          gh api "repos/$REPO/contents/$WORKFLOW_PATH?ref=$DEFAULT_BRANCH" \
+            -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/default-workflow.yml"
+          if cmp -s "$WORKFLOW_PATH" "$RUNNER_TEMP/default-workflow.yml"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::This PR changes $WORKFLOW_PATH; claude-code-action only runs once the change is on $DEFAULT_BRANCH."
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          WORKFLOW_PATH: .github/workflows/claude-code-review.yml
+
       # Primary attempt — Sonnet. `continue-on-error: true` lets the workflow
       # proceed to the Haiku fallback step when Sonnet errors out (most
       # commonly: "You've hit your Sonnet limit · resets …").
       - name: Run Claude Code Review (Sonnet)
         id: claude-review
+        if: steps.workflow-check.outputs.changed != 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1.0.228
         with:
@@ -158,7 +180,9 @@ jobs:
       # tool allow-list are identical; only the model differs.
       - name: Run Claude Code Review (Haiku fallback)
         id: claude-review-haiku
-        if: steps.claude-review.outcome == 'failure' || hashFiles(env.SUMMARY_FILE) == ''
+        if: >-
+          steps.workflow-check.outputs.changed != 'true' &&
+          (steps.claude-review.outcome == 'failure' || hashFiles(env.SUMMARY_FILE) == '')
         continue-on-error: true
         uses: anthropics/claude-code-action@v1.0.228
         with:
@@ -188,7 +212,10 @@ jobs:
         id: post-summary
         if: always()
         run: |
-          if [ -s "$SUMMARY_FILE" ]; then
+          if [ "$WORKFLOW_CHANGED" = "true" ]; then
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "**Automated review skipped.** This PR changes \`.github/workflows/claude-code-review.yml\`, and claude-code-action only runs a review workflow whose content matches the default branch. The new workflow takes effect for other PRs once this merges. \`review:changes-required\` still reflects the open \`pr-$PR_NUMBER\` issues. Run log: $RUN_URL"
+            echo "posted=skipped" >> "$GITHUB_OUTPUT"
+          elif [ -s "$SUMMARY_FILE" ]; then
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$SUMMARY_FILE"
             echo "posted=true" >> "$GITHUB_OUTPUT"
           else
@@ -200,6 +227,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WORKFLOW_CHANGED: ${{ steps.workflow-check.outputs.changed }}
           SONNET_OUTCOME: ${{ steps.claude-review.outcome }}
           HAIKU_OUTCOME: ${{ steps.claude-review-haiku.outcome || 'skipped' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -228,7 +256,9 @@ jobs:
       # Fail when no review ran, so the check never reports a pass for a review
       # that did not happen.
       - name: Fail if the review did not complete
-        if: always() && steps.post-summary.outputs.posted != 'true'
+        if: >-
+          always() && steps.post-summary.outputs.posted != 'true' &&
+          steps.post-summary.outputs.posted != 'skipped'
         run: |
           echo "::error::Neither the Sonnet nor the Haiku review produced a summary. See 'Report denied tool calls' above and both review steps' logs."
           exit 1
