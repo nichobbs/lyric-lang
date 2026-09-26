@@ -372,7 +372,7 @@ family:
 | `F0022`–`F0024` | FFI interface validation: parameter, return, and shape mismatches (docs/51) | `msil/codegen.l:28641`, `:28670`, `:28744` |
 | `F0025` | try-catch-as-expression whose catch arm yields `Unit` (type-checker gap #2042) | `msil/codegen.l:15594` |
 | `F0026` | non-literal argument where a delegate-bridged parameter needs a lambda literal | `msil/codegen.l:12862` |
-| `F0027` | hint-less `@externTarget` whose calling convention could not be metadata-verified (error since D-progress-979, which also closed a NuGet-backed gap the #7169 audit missed; shipped as a warning in D-progress-671) | `msil/codegen.l:23661` |
+| `F0027` | hint-less `@externTarget` whose calling convention could not be metadata-verified (error since D-progress-980, which also closed a NuGet-backed gap the #7169 audit missed; shipped as a warning in D-progress-671) | `msil/codegen.l:23661` |
 | `F0030`–`F0032` | build defines: non-`String` `val`, non-module-level `val`, malformed define (docs/60) | `build_defines.l:486`, `:516`, `:479` |
 | `F0034` | FFI "not an interface" — `impl` target resolves through `extern type`/`import extern` but isn't a .NET interface (renumbered off `F0020` by #6648 to resolve the collision above) | `msil/codegen.l:32902` |
 | `F0045` | `?`'s implicit `await` (of a direct async-call scrutinee, #6920) would land inside a try/catch/finally in an async function — the same invalid-IL hazard V0012 guards against for a literal `await`, but at a pipeline stage V0012 cannot see (#7170) | `propagate.l` (`implicitAwaitScrutinee`) |
