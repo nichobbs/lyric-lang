@@ -1622,6 +1622,44 @@ static void test_process(void) {
     lyric_release(err4);
 }
 
+static void test_process_run_inherited(void) {
+    LyricList* args = lyric_list_new(2);
+    LyricString* a1 = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    LyricString* a2 = lyric_string_from_literal((const uint8_t*)"exit 7", 6);
+    lyric_list_push(args, (int64_t)(intptr_t)a1);
+    lyric_list_push(args, (int64_t)(intptr_t)a2);
+    lyric_release(a1);
+    lyric_release(a2);
+    int32_t code = -99;
+    CHECK(lyric_process_run_inherited("/bin/sh", args, &code) == 0);
+    CHECK(code == 7);
+    lyric_release(args);
+
+    /* No args, zero exit. */
+    int32_t code2 = -99;
+    CHECK(lyric_process_run_inherited("/bin/true", NULL, &code2) == 0);
+    CHECK(code2 == 0);
+
+    /* A missing executable is a spawn failure, and leaves the out-param
+     * untouched. */
+    int32_t code3 = -99;
+    CHECK(lyric_process_run_inherited("/nonexistent-lyric-rt-test-exe", NULL, &code3) == -1);
+    CHECK(code3 == -99);
+
+    /* A signal-terminated child reports 128 + signal number. */
+    LyricList* kargs = lyric_list_new(2);
+    LyricString* k1 = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    LyricString* k2 = lyric_string_from_literal((const uint8_t*)"kill -9 $$", 10);
+    lyric_list_push(kargs, (int64_t)(intptr_t)k1);
+    lyric_list_push(kargs, (int64_t)(intptr_t)k2);
+    lyric_release(k1);
+    lyric_release(k2);
+    int32_t code4 = -99;
+    CHECK(lyric_process_run_inherited("/bin/sh", kargs, &code4) == 0);
+    CHECK(code4 == 128 + 9);
+    lyric_release(kargs);
+}
+
 static void test_process_closed_stdio(void) {
     /* Regression: with fd 1/2 closed in the caller, pipe() hands the child
      * those very numbers.  The original wiring dup2'ed in place (a no-op
@@ -2710,6 +2748,7 @@ int main(void) {
     test_process_sync_timeout_setsid_escapee();
     test_process_op_stdin();
     test_process_piped_line_roundtrip();
+    test_process_run_inherited();
     test_process_piped_final_line_without_newline();
     test_process_piped_burst_in_order();
     test_process_piped_crlf_stripped();

@@ -12,10 +12,6 @@
 //!     (`System.Security.Cryptography.MD5.HashData`).
 //!   * Canonical-path resolution for path-traversal defence-in-depth
 //!     (`System.IO.Path.GetFullPath`).
-//!   * Raw `slice[Byte]` round-tripping for `File.ReadAllBytes` /
-//!     `File.WriteAllBytes` (the `Std.File` wrappers shuttle through
-//!     `List[Byte]`, which forces an O(n) per-byte copy in both
-//!     directions — unacceptable for object storage payloads).
 //!   * `File.Exists` / `File.Delete` for sidecar handling without the
 //!     `Std.File` `IOError` wrapping (storage maps to `StorageError`).
 //!   * `Directory.GetFiles` / `Directory.GetDirectories` for recursive
@@ -76,18 +72,13 @@ pub func hostBytesToHexUpper(bytes: in slice[Byte]): String = ()
 pub func hostPathGetFullPath(path: in String): String = ()
 
 // =====================================================================
-// Raw file I/O — `slice[Byte]` round-tripping without the `Std.File`
-// `List[Byte]` shuttle.
+// Text file I/O for the metadata sidecars.  Object payloads go through
+// `Std.File.readBytes`/`writeBytes`, which hand `slice[Byte]` straight
+// through.
 //
 // These throw on host failure; `storage.l` wraps in `try { … } catch
 // Bug as b { … }` and surfaces failures as `StorageError`.
 // =====================================================================
-@externTarget("System.IO.File.ReadAllBytes")
-pub func hostReadAllBytes(path: in String): slice[Byte] = ()
-
-@externTarget("System.IO.File.WriteAllBytes")
-pub func hostWriteAllBytes(path: in String, bytes: in slice[Byte]): Unit = ()
-
 @externTarget("System.IO.File.WriteAllText")
 pub func hostWriteAllText(path: in String, contents: in String): Unit = ()
 

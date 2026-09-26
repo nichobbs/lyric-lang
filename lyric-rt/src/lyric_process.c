@@ -440,6 +440,77 @@ int32_t lyric_process_run(const char* path, LyricList* args,
     return 0;
 }
 
+/* Inherited-stdio run for Std.Process.run: the child shares the caller's
+ * stdin/stdout/stderr and process group (terminal signals reach both,
+ * unlike the captured runs above, which isolate the child in its own
+ * group for deadline kills).
+ *
+ * A failed exec is reported back as a spawn failure rather than as exit
+ * code 127, matching the managed twins, whose Process.Start throws when
+ * the executable cannot be started: the child writes errno to a CLOEXEC
+ * pipe only if execvp returns, so the parent reads EOF on success and 4
+ * bytes on failure. */
+static int32_t status_to_exit_code(int status);
+
+int32_t lyric_process_run_inherited(const char* path, LyricList* args,
+                                    int32_t* out_exit_code) {
+    int errpipe[2];
+    if (pipe_cloexec(errpipe) != 0) return -1;
+
+    int64_t nargs = args ? lyric_list_len(args) : 0;
+    char** argv = (char**)malloc((size_t)(nargs + 2) * sizeof(char*));
+    if (!argv) {
+        close(errpipe[0]);
+        close(errpipe[1]);
+        return -1;
+    }
+    argv[0] = (char*)path; /* borrowed: never freed below */
+    for (int64_t i = 0; i < nargs; i++) {
+        LyricString* s = (LyricString*)(intptr_t)lyric_list_get(args, i);
+        argv[i + 1] = (char*)lyric_string_to_cstring(s);
+    }
+    argv[nargs + 1] = NULL;
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Child: only async-signal-safe calls until exec or _exit. */
+        close(errpipe[0]);
+        execvp(path, argv);
+        int e = errno;
+        ssize_t wr;
+        do {
+            wr = write(errpipe[1], &e, sizeof e);
+        } while (wr < 0 && errno == EINTR);
+        _exit(127);
+    }
+
+    for (int64_t i = 0; i < nargs; i++) lyric_cstring_free(argv[i + 1]);
+    free(argv);
+    close(errpipe[1]);
+    if (pid < 0) {
+        close(errpipe[0]);
+        return -1;
+    }
+
+    int child_errno = 0;
+    ssize_t n;
+    do {
+        n = read(errpipe[0], &child_errno, sizeof child_errno);
+    } while (n < 0 && errno == EINTR);
+    close(errpipe[0]);
+
+    int status = 0;
+    pid_t w;
+    do {
+        w = waitpid(pid, &status, 0);
+    } while (w < 0 && errno == EINTR);
+    if (w < 0) return -1;
+    if (n == (ssize_t)sizeof child_errno) return -1; /* exec failed */
+
+    *out_exit_code = status_to_exit_code(status);
+    return 0;
+}
+
 /* ── Nonblocking capture op (the async process leaf, D-N-023) ─────────
  *
  * The cooperative scheduler cannot block in lyric_process_run: a

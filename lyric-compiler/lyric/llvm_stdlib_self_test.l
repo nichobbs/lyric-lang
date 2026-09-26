@@ -504,6 +504,44 @@ test "Std.Process capture: argv passthrough, exec failure, stdin round-trip (ASa
   assertEqualInt(r.exitCode, 42, "process capture seams")
 }
 
+// Std.Process.run wrapped its host calls in try/catch, which --target native
+// rejects (D-N-003), so run never compiled for native; it now delegates to
+// the Std.ProcessHost.hostRunInheritedResult seam, which the native twin
+// implements over lyric_process_run_inherited.  A missing executable is an
+// Err on every target, not exit code 127.
+test "Std.Process.run: exit code on inherited stdio, Err for a missing executable (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process\n" +
+    "func main(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  args.add(\"-c\")\n" +
+    "  args.add(\"exit 7\")\n" +
+    "  match run(\"/bin/sh\", args) {\n" +
+    "    case Ok(code) -> {\n" +
+    "      if code != 7 {\n" +
+    "        return 1\n" +
+    "      }\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "      return 2\n" +
+    "    }\n" +
+    "  }\n" +
+    "  val noArgs: List[String] = newList()\n" +
+    "  match run(\"/definitely-missing-lyric-process-run\", noArgs) {\n" +
+    "    case Ok(_) -> {\n" +
+    "      return 3\n" +
+    "    }\n" +
+    "    case Err(_) -> {\n" +
+    "    }\n" +
+    "  }\n" +
+    "  if runChecked(\"/bin/true\", noArgs) != 0 {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.Process.run on native")
+}
+
 // Exercises `Std.ProcessPipedHost` directly (issue #6142), not the shared
 // `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine` facade: those
 // three functions wrap the host call in `try { } catch Bug as b { }`,

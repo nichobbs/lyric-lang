@@ -189,7 +189,7 @@ Reviewers: 03 → 04 → 06.
 
 ## Implementation progress
 
-See [docs/10-bootstrap-progress.md](docs/10-bootstrap-progress.md) for the running log of what has shipped vs. what's deferred.  See [docs/05-implementation-plan.md](docs/05-implementation-plan.md) for the full phased plan.
+See [docs/10-bootstrap-progress.md](docs/10-bootstrap-progress.md) for what has shipped vs. what's deferred, and [docs/progress/](docs/progress/) for the per-change progress log.  See [docs/05-implementation-plan.md](docs/05-implementation-plan.md) for the full phased plan.
 
 ## Contributing to the design
 
