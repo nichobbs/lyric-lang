@@ -677,7 +677,7 @@ test "a Bool distinct type renders lowercase like a Bool (D-progress-968)" {
 // VerifyError that failed this whole module at class load (D-progress-968).
 test "println and print of range and distinct values run on both targets (D-progress-968)" {
   println(Cents.from(5000))
-  print(Ratio.from(0.5))
+  print(toString(Ratio.from(0.5)))
   println("")
   println(Enabled.from(true))
   println(Quota.from(4000000000u32))
