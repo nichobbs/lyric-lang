@@ -27,8 +27,9 @@ that carries an invariant:
 
 `do` loops have no normal exit and are unchanged.
 
-`lyric prove` does not model `break`: the verifier rejects it with a V0026
-error, so a proof through a `break` fails instead of discharging against the
+`lyric prove` does not model `break`. `vcgen.l` has no `break` handling of
+its own: `break` falls into the verifier's generic V0026 "unsupported
+statement" error, so a proof through a `break` fails instead of discharging against the
 post-loop assumption `invariant and not cond`, which a `break` exit does not
 satisfy. `verifier_self_test.l` pins this; teaching the verifier `break` must
 drop that assumption for a loop that can break (#7396).

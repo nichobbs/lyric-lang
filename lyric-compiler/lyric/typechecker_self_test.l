@@ -1247,6 +1247,22 @@ test "compound assignment to a distinct type needs a path target (T0134)" {
   assertTrue(hasDiagCode(bad, "T0134"), "an indexed target is T0134")
 }
 
+// #7425: `x op= y` needs the derive `x op y` needs.
+test "compound assignment to a distinct type needs its derive (T0030)" {
+  val bad = parseCheck(
+    "package P\ntype UserId = Long derives Compare, Hash\nfunc f(a: in UserId, b: in UserId): UserId {\n  var x = a\n  x += b\n  x\n}\n"
+  )
+  assertTrue(hasDiagCode(bad, "T0030"), "+= without derives Add is T0030")
+  val sub = parseCheck(
+    "package P\ntype C = Long derives Add\nfunc f(a: in C, b: in C): C {\n  var x = a\n  x -= b\n  x\n}\n"
+  )
+  assertTrue(hasDiagCode(sub, "T0030"), "-= needs derives Sub, not Add")
+  val ok = parseCheck(
+    "package P\ntype C = Long derives Add, Mul\nfunc f(a: in C, b: in C): C {\n  var x = a\n  x += b\n  x *= b\n  x\n}\n"
+  )
+  assertTrue(not hasDiagCode(ok, "T0030"), "derived operators are accepted")
+}
+
 test "inline refined half open in bounds" {
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 .. 10 = 9\n}\n"
   val cr = parseCheck(src)

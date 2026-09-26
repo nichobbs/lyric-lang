@@ -38,6 +38,10 @@ One backend-neutral rewrite after type checking,
 - **T0134.** The compound rewrite evaluates its target twice, so the target
   must be a variable or field path. The parked #7226 draft called this
   T0129, a code #7307 now uses.
+- **Compound assignment needs the operator's derive.** `x op= y` is checked
+  like `x op y`: `+=` on a type without `derives Add` is T0030, as `x + y`
+  is. Before #7425 the compound path skipped that gate, so `+=` did
+  arithmetic on a type such as `type UserId = Long derives Compare, Hash`.
 - **One spelling on every target.**
   - `.value` already worked on dotnet and native. On the JVM it now calls
     the wrapper's synthesised `$value()`.
@@ -68,7 +72,8 @@ JVM. That is a separate change to the classes themselves (`Equals` /
   variable and a field, contract clauses, and `tryFrom` Ok/Err.
 - `range_subtype_arith_self_test.l` (dotnet, JVM) checks that derived
   results outside the range panic.
-- `typechecker_self_test.l` covers T0134.
+- `typechecker_self_test.l` covers T0134 and the compound-assignment derive
+  gate.
 
 ## Docs
 

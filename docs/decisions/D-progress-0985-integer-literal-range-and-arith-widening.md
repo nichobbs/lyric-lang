@@ -81,6 +81,15 @@ narrowing, never across chains). If the intended language has no implicit
 widening at all, the checker is what must change, and that needs a new
 decision.
 
+## Not covered
+
+The unsigned widening relies on the backends' existing "is this operand
+unsigned" helpers (`isUnsignedExprMsil`, JVM `isUnsignedExpr`). Neither
+recognises a record-field read (`EMember`), and the MSIL one does not
+recognise a call result either, so a `UInt` with its top bit set read through
+one of those still sign-extends. That gap predates this entry and is tracked
+in #6756.
+
 ## Tests
 
 - `int_literal_range_self_test.l` runs on dotnet, JVM and native.

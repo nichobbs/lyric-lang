@@ -32,6 +32,21 @@ func outBool(value: out Bool): Bool {
   false
 }
 
+func outFloat(value: out Float): Bool {
+  value = default()
+  false
+}
+
+func outByte(value: out Byte): Bool {
+  value = default()
+  false
+}
+
+func outChar(value: out Char): Bool {
+  value = default()
+  false
+}
+
 func outString(value: out String): Bool {
   value = default()
   false
@@ -54,6 +69,15 @@ test "default() into out parameters of each primitive type" {
   var b = true
   val _ = outBool(b)
   assertTrue(not b, "Bool false")
+  var f: Float = 5.0f32
+  val _ = outFloat(f)
+  assertTrue(f == 0.0f32, "Float zero")
+  var y: Byte = 200.toByte()
+  val _ = outByte(y)
+  assertTrue(y == 0.toByte(), "Byte zero")
+  var c = 'x'
+  val _ = outChar(c)
+  assertTrue(c == '\u{0000}', "Char zero")
 }
 
 test "default() into a reference-typed out parameter still works" {

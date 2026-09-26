@@ -202,6 +202,18 @@ func isPurePathExpr(e: in Expr): Bool {
   }
 }
 
+// The `derives` marker a compound operator's binary form requires.
+func compoundAssignDerive(op: in AssignOp): String {
+  match op {
+    case AssPlus -> "Add"
+    case AssMinus -> "Sub"
+    case AssStar -> "Mul"
+    case AssSlash -> "Div"
+    case AssPercent -> "Mod"
+    case AssEq -> ""
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Statement checking.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -331,7 +343,14 @@ pub func checkStatement(
         case AssEq -> ()
         case _ -> match distinctFromPath(tbl, targetType) {
           case Some(path) -> {
-            if isPurePathExpr(target) {
+            // `x op= y` is `x = x op y`, so it needs the same `derives` marker
+            // the binary operator does (#7425).
+            val marker = compoundAssignDerive(op)
+            if not hasDerive(tbl, marker, targetType) {
+              diag.add(
+                errorDiagnostic("T0030", "compound assignment needs " + renderType(targetType) + " to derive " + marker, stmt.span)
+              )
+            } else if isPurePathExpr(target) {
               val key = recordCopySiteKey(stmt.span)
               if not tbl.distinctCompoundSites.containsKey(key) {
                 tbl.distinctCompoundSites.add(key, path)

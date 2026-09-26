@@ -1283,7 +1283,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0016` | Non-exhaustive `match` (uncovered union/enum case, `Bool`, or scalar without `_`) |
 | `T0017` | Type alias is part of a cycle and does not resolve to a type |
 | `T0020` | Unknown name (undefined variable or function) |
-| `T0030` | Arithmetic on a non-numeric type |
+| `T0030` | Arithmetic on a non-numeric type, or on a distinct type without the operator's `derives` marker (including a compound assignment such as `+=` without `Add`) |
 | `T0031` | Arithmetic operands have mismatched types |
 | `T0032` | Equality operands have mismatched types |
 | `T0033` | Comparison operands must be matching ordered types |

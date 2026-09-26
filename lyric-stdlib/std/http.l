@@ -893,8 +893,8 @@ pub func request(method: in HttpMethod, url: in Url): HttpRequest {
 ///
 /// # Errors
 /// - `InvalidHeader`: `key` is empty or not an RFC 9110 token (a `:`, space or other
-///   separator could forge a different header), or `value` contains CR, LF
-///   or NUL (#7251). Before, .NET dropped such a header silently and the JVM
+///   separator could forge a different header), or `value` contains a control
+///   character other than tab, or DEL (#7251). Before, .NET dropped such a header silently and the JVM
 ///   failed only when sending.
 /// - `ReservedHeader`: `key` (case-insensitively) names a framing header
 ///   this library sets automatically — `Host`, `Connection`,
@@ -954,9 +954,18 @@ func isHeaderNameToken(name: in String): Bool {
   true
 }
 
-// A header value must not carry CR, LF or NUL, which would end the line.
+// RFC 9110 field-value: no control characters except HTAB, and no DEL.
+// CR and LF in particular would end the header line.
 func isHeaderValueSafe(value: in String): Bool {
-  not value.contains("\r") and not value.contains("\n") and not value.contains("\u{0000}")
+  var i = 0
+  while i < value.length {
+    val c = value[i]
+    if (c < ' ' and c != '\t') or c == '\u{007f}' {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 /// Attach a JSON string body and set the request content type.

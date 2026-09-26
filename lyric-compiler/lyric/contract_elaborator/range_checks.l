@@ -261,6 +261,7 @@ func rangeWalkStmt(s: in Statement, sc: in RangeScope, acc: in List[Statement]):
       case None -> acc.add(s)
     }
     case SExpr(e) -> acc.add(mkStmt(SExpr(expr = rangeWalkExpr(e, sc)), s.span))
+    case SThrow(e) -> acc.add(mkStmt(SThrow(expr = rangeWalkExpr(e, sc)), s.span))
     case SFor(label, pat, iter, body) -> {
       val newIter = rangeWalkExpr(iter, sc)
       pushFrame(sc)

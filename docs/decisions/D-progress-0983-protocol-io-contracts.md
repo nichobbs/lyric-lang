@@ -28,7 +28,8 @@ is a `requires:` or invariant.
   predicate. Before this, `http://` and a URL carrying CR/LF were accepted and
   failed later inside the host client.
 - `withHeader` returns the new `HttpError.InvalidHeader(url, name)` for a
-  non-token name or a value containing CR, LF or NUL. Before, the dotnet
+  non-token name or a value containing a control character other than tab
+  (RFC 9110 `field-value`), or DEL. Before, the dotnet
   kernel dropped the header silently and CR/LF surfaced only at send, as an
   opaque `ConnectionFailed`. `Std.Rest` auth headers go through the same
   check.

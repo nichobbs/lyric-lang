@@ -149,7 +149,7 @@ test "withHeader rejects reserved framing headers, case-insensitively" {
   }
 }
 
-// #7251: an invalid header name or a value with CR/LF/NUL is an Err on both
+// #7251: an invalid header name or a value with a control character is an Err on both
 // targets (.NET used to drop it silently, the JVM to fail only at send).
 func headerErrorKind(name: in String, value: in String): String {
   val url = match Url.tryFrom("https://example.com") {
@@ -163,12 +163,14 @@ func headerErrorKind(name: in String, value: in String): String {
   }
 }
 
-test "withHeader rejects a name that is not a token, or a value with CR/LF/NUL" {
+test "withHeader rejects a name that is not a token, or a value with a control character" {
   assertEqual(headerErrorKind("X-Forged: evil", "v"), "InvalidHeader:X-Forged: evil", "colon and space in the name")
   assertEqual(headerErrorKind("X Bad", "v"), "InvalidHeader:X Bad", "space in the name")
   assertEqual(headerErrorKind("", "v"), "InvalidHeader:", "an empty name, often an unset config value")
   assertEqual(headerErrorKind("X-Note", "a\r\nX-Injected: 1"), "InvalidHeader:X-Note", "CR/LF in the value")
   assertEqual(headerErrorKind("X-Note", "a\u{0000}b"), "InvalidHeader:X-Note", "NUL in the value")
+  assertEqual(headerErrorKind("X-Note", "a\u{0001}b"), "InvalidHeader:X-Note", "another C0 control in the value")
+  assertEqual(headerErrorKind("X-Note", "ab"), "InvalidHeader:X-Note", "DEL in the value")
   assertEqual(headerErrorKind("X-Trace-Id", "abc 123\tdef"), "Ok", "space and tab are fine in a value")
 }
 

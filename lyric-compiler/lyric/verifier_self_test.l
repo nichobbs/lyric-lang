@@ -923,8 +923,8 @@ test "prove trailing expr result sort" {
 
 // A `break` leaves a loop without the invariant or the negated condition, so
 // the verifier's post-loop assumption (`invariant and not cond`) would be
-// unsound on that path. The verifier does not model `break` and rejects it
-// (V0026 error), so a proof through one fails rather than discharging
+// unsound on that path. The verifier does not model `break`: it falls into
+// the generic V0026 "unsupported statement" error, so a proof through one fails rather than discharging
 // against the wrong assumption. Supporting `break` must drop that
 // assumption for a loop that can break (#7396).
 test "a proof through a loop break is rejected, not discharged (#7396)" {

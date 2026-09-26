@@ -29,9 +29,9 @@ declared but not enforced. The decision entries hold the detail.
     zero-extending a `UInt`.
 - **Range refinements** (D-progress-987, #7226, #7398). Inline refinements
   are checked at runtime wherever an assignment can appear.
-- **Distinct types** (D-progress-992, #7361). Operators act on the
-  underlying value on every target; compound assignment needs a path target
-  (T0134).
+- **Distinct types** (D-progress-992, #7361, #7425). Operators act on the
+  underlying value on every target; compound assignment needs the operator's
+  `derives` marker (T0030) and a path target (T0134).
 - **Protected types** (D-progress-988, #7363, #7384, #7400).
   - Every `entry` and `func` holds the instance lock.
   - `when:` barriers work on entries and funcs on dotnet and the JVM, and
