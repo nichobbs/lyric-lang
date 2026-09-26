@@ -119,8 +119,10 @@ func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
 }
 
 // #4898: prints any `cctx.diagnostics` accumulated by `codegenMPackage`
-// (F0021–F0025, F0034 — external interface conformance + try-catch-as-expression
-// Unit/value mismatch) and reports whether the build must abort.  Named
+// (F0021–F0027, F0034 — external interface conformance, try-catch-as-expression
+// Unit/value mismatch, typed-delegate non-literal arguments, and hint-less
+// unverifiable @externTarget calling convention) and reports whether the
+// build must abort.  Named
 // distinctly from `Lyric.DiagnosticUtil.diagReportAndAbort` per that
 // package's own guidance: a bridge that defined a same-named local
 // `reportAndAbort` would shadow the fully-qualified call and recurse.

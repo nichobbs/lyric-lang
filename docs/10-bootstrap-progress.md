@@ -35873,16 +35873,28 @@ build-gating `errorDiagnostic("F0027", …)` to `cctx.diagnostics` instead of
 printing a bare warning, mirroring the `F0015` diagnostic-accumulator
 convention. The gating condition is unchanged from the warning it
 replaces (hint-less, not a ctor, calling convention unconfirmed, declaring
-type present in the reference-assembly index), so this is behavior-
-preserving for every tree the audit already verified clean.
+type present in the reference-assembly index).
+
+**D-progress-945's audit had a blind spot.** That audit grepped for two
+BCL-only patterns and never exercised a NuGet-backed extern kernel as its
+own category. Turning enforcement on for real surfaced exactly that gap:
+`lyric-session/src/_kernel/net/session_kernel.l` had three hint-less
+`@externTarget`s over `StackExchange.Redis.IDatabase` D-progress-945 never
+found. Fixed with the same `@externInstance` hint, verified against a
+live Redis server. Every other NuGet-dependent package that currently
+builds in its production-feature configuration (`lyric-aws-secrets`,
+`lyric-aws-xray`, `lyric-db`, `lyric-grpc`) was also restored and rebuilt:
+zero further `F0027` occurrences. (`lyric-jobs`+hangfire, `lyric-mail`
++smtp, and `lyric-mq`+rabbitmq don't build at all today for unrelated,
+pre-existing reasons, so they're outside what this pass could evaluate.)
 
 **Verification.** New negative/positive test pair in
 `msil_codegen_diag_self_test.l`: a hint-less, arity-mismatched
 `StringBuilder.Append` extern now fails the build with `F0027` at its
 declaration span (not a runtime `MissingMethodException`); the same
 target with correct arity still compiles cleanly. Full `make lyric` plus
-the stdlib and ecosystem build sweep re-run clean (still zero `F0027`
-occurrences).
+the stdlib and ecosystem build sweep (including the NuGet-restored
+packages above) re-run clean.
 
 **Still open:** the SDK-less (reference-pack-absent) build path is not
 covered — tracked separately in #7387, since it needs a dedicated
