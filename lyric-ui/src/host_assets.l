@@ -8,7 +8,7 @@
 package Ui.Host.Assets
 
 /// Content digest of the embedded assets, used as a cache-busting version.
-pub val assetVersion: String = "4c730a5fb11b32c2"
+pub val assetVersion: String = "402b9182b737cb47"
 
 /// dist/main.js
 pub val runtimeMainJs: String = r#####"// Lyric UI host runtime: connection to the session (docs/65 §9.3, §10.1).
@@ -121,7 +121,13 @@ export class Host {
         }
     }
     sendEvent(node, event, data, iv) {
-        const msg = { t: "event", v: this.version, p: eventPathOf(node), e: event, d: data };
+        const path = eventPathOf(this.tree.root, node);
+        if (path === null) {
+            // A patch removed the node between the interaction and this send (an
+            // input coalesced until the next frame); there is nothing to address.
+            return;
+        }
+        const msg = { t: "event", v: this.version, p: path, e: event, d: data };
         if (iv > 0) {
             msg.iv = iv;
         }
@@ -205,19 +211,25 @@ export function nodeAt(root, path) {
     return n;
 }
 /**
- * The event path of `node`: each step is the node's key when it has one and
- * its child index otherwise. The session resolves keys among siblings, so an
- * event still reaches (or is dropped for) the node it was aimed at when the
- * tree changed in between (D138, Q-UI-005).
+ * The event path of `node` below `root`: each step is the node's key when it
+ * has one and its child index otherwise. The session resolves keys among
+ * siblings, so an event still reaches (or is dropped for) the node it was
+ * aimed at when the tree changed in between (D138, Q-UI-005). `null` when
+ * `node` is no longer in the tree (a patch removed or replaced it after the
+ * event was raised); the event then has no target and is not sent.
  */
-export function eventPathOf(node) {
+export function eventPathOf(root, node) {
     const path = [];
     let n = node;
     while (n.parent) {
-        path.push(n.key !== "" ? n.key : n.parent.children.indexOf(n));
+        const index = n.parent.children.indexOf(n);
+        if (index < 0) {
+            return null;
+        }
+        path.push(n.key !== "" ? n.key : index);
         n = n.parent;
     }
-    return path.reverse();
+    return n === root ? path.reverse() : null;
 }
 export class Tree {
     obs;
@@ -239,6 +251,7 @@ export class Tree {
                     this.root = node;
                 }
                 obs?.replaced(old, node);
+                old.parent = null;
                 return;
             }
             case "insert": {
@@ -254,6 +267,7 @@ export class Tree {
                 checkIndex(patch.i, parent.children.length);
                 const [node] = parent.children.splice(patch.i, 1);
                 obs?.removed(parent, patch.i, node);
+                node.parent = null;
                 return;
             }
             case "move": {

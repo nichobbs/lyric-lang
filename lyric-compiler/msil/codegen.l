@@ -3146,20 +3146,24 @@ pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, p
 }
 
 // Records, for each function-typed parameter among `fnParams` (the parameters
-// of a function-typed parameter of a non-generic function), its declared
-// return type under "<key>#<innerIdx>" for both key aliases.
+// of a function-typed parameter), its declared return type under
+// "<key>#<innerIdx>" for both key aliases.  A return type that mentions one of
+// the declaring function's type parameters (`generics`) is skipped: resolving
+// a bare type variable outside a generics-aware context pollutes shared
+// codegen state (#5334), and such a lambda's result is erased anyway.
 func recordFnInnerFnRetsMsil(
   cctx: in CodegenCtx,
   fnParams: in List[TypeExpr],
   aKey: in String,
   fKey: in String,
   pkgName: in String,
+  generics: in List[String],
 ): Unit {
   var i = 0
   while i < fnParams.count {
     match resolveFuncTypeExprMsil(cctx, fnParams[i]) {
       case Some(te) -> match te.kind {
-        case TFunction(_, retTe) -> {
+        case TFunction(_, retTe) -> if not typeExprMentionsNamesMsil(retTe, generics) {
           val rt = typeExprToMsilCtx(cctx, retTe, pkgName)
           val ak = aKey + "#" + toString(i)
           val fk = fKey + "#" + toString(i)
@@ -4978,8 +4982,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 // instead of the fully-erased `<object,object>` form — which
                 // an enclosing concretely-typed `ret` then cannot satisfy.
                 val declIsGenericFn = match decl.generics { case Some(_) -> true; case None -> false }
+                // A callback parameter's own function-typed parameters: safe for
+                // generic declarations too, because only return types that do
+                // not mention the declaration's type parameters are recorded.
+                recordFnInnerFnRetsMsil(cctx, fnParams, aKey, fKey, pkgName, genericNamesOf(decl.generics))
                 if not declIsGenericFn {
-                  recordFnInnerFnRetsMsil(cctx, fnParams, aKey, fKey, pkgName)
                   val plainFnRetMsil = typeExprToMsilCtx(cctx, fnRetTe, pkgName)
                   if not cctx.funcParamFnRetType.containsKey(aKey) {
                     cctx.funcParamFnRetType.add(aKey, plainFnRetMsil)

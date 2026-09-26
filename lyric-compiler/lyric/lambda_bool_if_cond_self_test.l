@@ -115,3 +115,15 @@ test "un-annotated function-typed lambda param used as an if condition" {
   assertEqual(applyGuard({ p -> if p() then "yes" else "no" }, false), "no", "passed to a HOF, false")
   assertEqual(applyGuard({ p -> if p() then "yes" else "no" }, true), "yes", "passed to a HOF, true")
 }
+
+// 6. The same, passed to a GENERIC higher-order function: the callback's own
+// `() -> Bool` parameter does not mention the function's type parameter, so
+// its return type is recorded too (#7392).
+func applyGuardG[T](x: in T, g: in (() -> Bool) -> String, answer: in Bool): String {
+  g({ -> answer })
+}
+
+test "un-annotated function-typed lambda param of a generic HOF used as an if condition" {
+  assertEqual(applyGuardG(1, { p -> if p() then "yes" else "no" }, false), "no", "generic HOF, false")
+  assertEqual(applyGuardG("s", { p -> if p() then "yes" else "no" }, true), "yes", "generic HOF, true")
+}

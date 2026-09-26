@@ -124,7 +124,13 @@ export class Host {
   }
 
   private sendEvent(node: MNode, event: string, data: string, iv: number): void {
-    const msg: Record<string, unknown> = { t: "event", v: this.version, p: eventPathOf(node), e: event, d: data };
+    const path = eventPathOf(this.tree.root, node);
+    if (path === null) {
+      // A patch removed the node between the interaction and this send (an
+      // input coalesced until the next frame); there is nothing to address.
+      return;
+    }
+    const msg: Record<string, unknown> = { t: "event", v: this.version, p: path, e: event, d: data };
     if (iv > 0) {
       msg.iv = iv;
     }

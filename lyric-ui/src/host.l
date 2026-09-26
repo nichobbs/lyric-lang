@@ -64,18 +64,23 @@ pub record DetachedSession {
 pub protected type SessionRegistry {
   var byId: Map[String, SessionEntry] = newMap()
   var byConnection: Map[String, String] = newMap()
-  /// Makes room for one more session, evicting expired sessions and then
-  /// the longest-disconnected ones.  False when every session is connected
-  /// and the limit is reached.
-  entry admit(now: in Long, graceMs: in Long, max: in Int): Bool {
+  /// Adds session `id`, attached to `connectionId`, when there is room for
+  /// it under `max`: expired sessions are removed first, then the
+  /// longest-disconnected ones are evicted.  False, adding nothing, when
+  /// every session is connected and the limit is reached.  Making room and
+  /// adding happen under one lock, so concurrent connections cannot together
+  /// exceed `max`.
+  entry admit(
+    id: in String, inst: in Instance, connectionId: in String, now: in Long, graceMs: in Long, max: in Int
+  ): Bool {
     removeExpired(now, graceMs)
     while byId.count >= max {
       var oldest = ""
       var oldestSince = now
-      for id in mapKeys(byId) {
-        match mapGet(byId, id) {
+      for sid in mapKeys(byId) {
+        match mapGet(byId, sid) {
           case Some(e) -> if e.connectionId.length == 0 and (oldest.length == 0 or e.since < oldestSince) {
-            oldest = id
+            oldest = sid
             oldestSince = e.since
           }
           case None -> ()
@@ -86,11 +91,9 @@ pub protected type SessionRegistry {
       }
       byId.remove(oldest)
     }
-    return true
-  }
-  entry add(id: in String, inst: in Instance, connectionId: in String, now: in Long): Unit {
     byId.add(id, SessionEntry(instance = inst, connectionId = connectionId, since = now))
     bindConnection(connectionId, id)
+    return true
   }
   /// Attaches session `id` to `connectionId` when it exists and has not
   /// expired.  A session still attached to another connection moves to the

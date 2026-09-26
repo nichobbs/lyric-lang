@@ -2445,3 +2445,53 @@ test "emitProject a generic record parameter named like a consumer type (JVM)" {
   assertEqualInt(result.exitCode, 0, "generic param shadow JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "42", "generic param shadow JVM: output")
 }
+
+// A generic record whose field names a type of its own package while the
+// constructing package declares a same-named type: the field type resolves
+// in the declaring package's scope (#6689, #7391).
+func genericFieldScopePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPGf.App",
+      "package EPGf.App\n" + "\n" + "import EPGf.Lib.{Tagged, mkItem, total}\n" + "\n" + "record Item {\n" + "  s: String\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val local = Item(s = \"x\")\n" +
+        "  val t: Tagged[Int] = Tagged(item = mkItem(40), value = 2)\n" +
+        "  println(toString(total(t)))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPGf.Lib",
+      "package EPGf.Lib\n" + "\n" + "pub record Item {\n" + "  n: Int\n" + "}\n" + "\n" + "pub record Tagged[T] {\n" +
+        "  item: Item\n" +
+        "  value: T\n" +
+        "}\n" +
+        "\n" +
+        "pub func mkItem(n: in Int): Item {\n" +
+        "  return Item(n = n)\n" +
+        "}\n" +
+        "\n" +
+        "pub func total(t: in Tagged[Int]): Int {\n" +
+        "  return t.item.n + t.value\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a generic record field names its own package's type (MSIL)" {
+  val result = runEmitProject("emitproj-gfscope", genericFieldScopePkgs(), "EPGf")
+  assertEqualInt(result.exitCode, 0, "generic field scope MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "generic field scope MSIL: output")
+}
+
+test "emitProject a generic record field names its own package's type (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-gfscope-jvm", genericFieldScopePkgs(), "EPGf")
+  assertEqualInt(result.exitCode, 0, "generic field scope JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "generic field scope JVM: output")
+}

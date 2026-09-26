@@ -33,7 +33,9 @@ step's patches.
   the non-generic `newInstanceLock`/`withLock`, compiled in `Ui.Host`.
 - `Ui.Host.SessionRegistry` (a protected type) holds sessions by id and the
   connection each is attached to: `admit` (expire, then evict the
-  longest-disconnected, else refuse), `add`, `attach` (reconnect within
+  longest-disconnected, else refuse; making room and adding the session
+  are one entry, so concurrent connections cannot exceed the limit),
+  `attach` (reconnect within
   the grace period, moving a session off a connection that has not closed
   yet), `release` (only the connection currently carrying the session
   detaches it). It lives in `Ui.Host` so the desktop host can reuse it.
@@ -71,6 +73,14 @@ register `IProtected`. The JVM backend already resolved it. Regression:
 `emitter_project_self_test.l` "constructs another package's protected type"
 on both targets.
 
+## Detached nodes in the TypeScript runtime
+
+`remove` and `replace` now clear the detached node's `parent`, and
+`eventPathOf(root, node)` returns `null` for a node that is no longer under
+the root. An input event coalesced until the next frame for a node a patch
+removed in between is not sent (before, it produced a `-1` path step that
+the session rejected as a malformed message).
+
 ## Compiler: generic record fields checked in the wrong scope
 
 `Prog(step = stepB)` where `Prog[M, Msg]` is declared in another package
@@ -81,7 +91,10 @@ against the field type resolved *without* the record's type parameters in
 scope (the list built for the missing-field check), so `M` became an error
 type and `Msg` bound to the consumer's type. It now checks against the
 parameter-aware field types from `ctorFieldTypes`, instantiated at the
-inferred arguments (`instantiatedFieldType`). Regression:
+inferred arguments (`instantiatedFieldType`). `ctorFieldTypes` now resolves
+under the declaring package's scope, as `collectCtorFields` already did for
+#6689, so a field type naming the declaring package's own type does not
+bind to a same-named type of the constructing package. Regression:
 `emitter_project_self_test.l` "a generic record parameter named like a
 consumer type" on both targets.
 
@@ -94,8 +107,10 @@ as the erased delegate shape; the parameter's own return type was never
 registered in `funcValRetTypes`, so `p()` stayed a boxed `object` and the
 condition tested it for non-null. The return type of each function-typed
 parameter is now recorded where lambda parameter types are propagated (a
-`val` annotation, and a lambda passed to a non-generic function's
-function-typed parameter) in `lambdaParamFnRetTypes`, and registered when
+`val` annotation, and a lambda passed to a function-typed parameter, whose
+own function-typed parameters' return types are recorded unless they
+mention the declaring function's type parameters) in
+`lambdaParamFnRetTypes`, and registered when
 the lambda body's parameters are set up. The JVM backend was already
 correct. Regression: `lambda_bool_if_cond_self_test.l` case 5 on both
 targets.

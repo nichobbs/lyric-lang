@@ -309,16 +309,15 @@ func hello(s: in UiSocket, connectionId: in String, pv: in Int, url: in String, 
       case Unknown -> ()
     }
   }
-  if not s.sessions.admit(now, s.graceMs, s.maxSessions) {
-    staticPage("Server busy", "The server is at capacity. Please try again in a few minutes.").start(direct)
-    return
-  }
   val inst = match s.route(url) {
     case Some(i) -> i
     case None -> staticPage("Not found", "There is no page at " + url + ".")
   }
   val id = newSessionId()
-  s.sessions.add(id, inst, connectionId, now)
+  if not s.sessions.admit(id, inst, connectionId, now, s.graceMs, s.maxSessions) {
+    staticPage("Server busy", "The server is at capacity. Please try again in a few minutes.").start(direct)
+    return
+  }
   direct.send(encodeSession(id))
   inst.start(SessionOutbox(registry = s.registry, sessions = s.sessions, sessionId = id))
 }

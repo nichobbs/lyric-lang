@@ -3359,17 +3359,22 @@ func ctorAllFields(sym: in Symbol): List[FieldDecl] {
 func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
   val ctx = newGenericContext()
   gctxPush(ctx, genericNames)
-  // Inference probe only: resolution diagnostics are deliberately discarded
-  // (the authoritative field-type check runs later in inferConstruction);
-  // this pass exists solely to surface TyVar positions for inferGenericArgs.
+  // Resolution diagnostics are discarded here; `surfaceCtorFieldTypeErrors`
+  // reports genuine field-type errors when inference fails.
   val scratch: List[Diagnostic] = newList()
   val result: List[Type] = newList()
   val fields = ctorAllFields(sym)
+  // Resolve under the declaring package's scope, like `collectCtorFields`
+  // (#6689): these types are also the authoritative per-argument check for
+  // generic constructors, so a field type naming a type of the declaring
+  // package must not bind to a same-named type of the constructing one.
+  val saved = enterDeclaringScope(tbl, sym)
   var i = 0
   while i < fields.count {
     result.add(resolveType(tbl, ctx, scratch, fields[i].ty))
     i = i + 1
   }
+  restoreScope(tbl, saved)
   result
 }
 
@@ -3709,19 +3714,7 @@ func collectCtorFieldsFromOpaque(
 func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorField]): Bool {
   val ctx = newGenericContext()
   val scratch: List[Diagnostic] = newList()
-  val savedPkg: List[String] = newList()
-  var spi = 0
-  while spi < tbl.scopePkg.count {
-    savedPkg.add(tbl.scopePkg[spi])
-    spi = spi + 1
-  }
-  val savedImports: List[String] = newList()
-  var sii = 0
-  while sii < tbl.scopeImports.count {
-    savedImports.add(tbl.scopeImports[sii])
-    sii = sii + 1
-  }
-  symTableSetScope(tbl, sym.originPackage, symTablePackageImportsOf(tbl, sym.originPackage))
+  val saved = enterDeclaringScope(tbl, sym)
   val result = match sym.kind {
     case DKRecord(_, rd) -> {
       collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc)
@@ -3737,9 +3730,32 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
     }
     case _ -> false
   }
-  val restorePkg = if savedPkg.count > 0 { savedPkg[0] } else { "" }
-  symTableSetScope(tbl, restorePkg, savedImports)
+  restoreScope(tbl, saved)
   result
+}
+
+/// The caller's resolution scope, saved by `enterDeclaringScope`.
+record SavedScope {
+  pkg: String
+  imports: List[String]
+}
+
+// Switches `tbl` to the scope of the package that declares `sym` (#6689),
+// returning the caller's scope for `restoreScope`.
+func enterDeclaringScope(tbl: in SymbolTable, sym: in Symbol): SavedScope {
+  val savedImports: List[String] = newList()
+  var sii = 0
+  while sii < tbl.scopeImports.count {
+    savedImports.add(tbl.scopeImports[sii])
+    sii = sii + 1
+  }
+  val savedPkg = if tbl.scopePkg.count > 0 { tbl.scopePkg[0] } else { "" }
+  symTableSetScope(tbl, sym.originPackage, symTablePackageImportsOf(tbl, sym.originPackage))
+  SavedScope(pkg = savedPkg, imports = savedImports)
+}
+
+func restoreScope(tbl: in SymbolTable, saved: in SavedScope): Unit {
+  symTableSetScope(tbl, saved.pkg, saved.imports)
 }
 
 // #6739: shared missing-required-field check, used by both the generic and
