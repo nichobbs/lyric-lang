@@ -171,6 +171,51 @@ func forExitViolation(): Bool {
   }
 }
 
+// An invariant over the loop's own element has no meaning after the loop:
+// it is checked on every iteration but not on exit (#7381).
+func countBelow(n: in Int): Int {
+  var count = 0
+  for i in 0 ..< n
+    invariant: i < n
+  {
+    count = count + 1
+  }
+  count
+}
+
+// The exit check must not read an outer binding the pattern shadows.
+func shadowedElementInvariant(): Int {
+  val x = 100
+  var total = x
+  for x in [1, 2, 3]
+    invariant: x < 10
+  {
+    total = total + x
+  }
+  total
+}
+
+// A clause over outer state is still checked on exit next to one over the
+// element.
+func mixedClausesExitViolation(): Bool {
+  val xs: List[Int] = newList()
+  xs.add(1)
+  xs.add(2)
+  xs.add(3)
+  try {
+    var total = 0
+    for x in xs
+      invariant: x > 0
+      invariant: total < 6
+    {
+      total = total + x
+    }
+    false
+  } catch Bug as _ {
+    true
+  }
+}
+
 test "a loop invariant is checked when the condition goes false (#7224)" {
   assertTrue(exitOnlyViolation(), "i < 3 fails only at exit")
 }
@@ -193,4 +238,17 @@ test "a for loop checks its invariant when the iterator runs out (#7224)" {
 
 test "break outer from a nested loop skips the outer exit check (#7349)" {
   assertEqualInt(labelledInnerBreakSkipsOuterExitCheck(), 7, "i = 7 after break outer, no panic")
+}
+
+test "an invariant over the for pattern variable is not re-checked after the loop (#7381)" {
+  assertEqualInt(countBelow(4), 4, "i < n holds on every iteration")
+  assertEqualInt(countBelow(0), 0, "a loop that never runs has no element to check")
+}
+
+test "the exit check does not read an outer binding the pattern shadows (#7381)" {
+  assertEqualInt(shadowedElementInvariant(), 106, "outer x = 100 is not checked against x < 10")
+}
+
+test "an outer-state clause is still checked on exit beside an element clause (#7381)" {
+  assertTrue(mixedClausesExitViolation(), "total == 6 at exit violates total < 6")
 }

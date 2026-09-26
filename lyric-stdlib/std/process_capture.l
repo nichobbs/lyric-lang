@@ -133,7 +133,7 @@ pub func runCaptureWithDiagnosticsTimeout(
   stdinContent: in String,
   timeoutMs: in Int,
 ): CaptureResult
-  requires: timeoutMs > 0
+  requires: timeoutMs >= 0
 {
   val argStr = buildArgString(args)
   val raw = hostRunCaptureTimeout(executable, argStr, stdinContent, timeoutMs)

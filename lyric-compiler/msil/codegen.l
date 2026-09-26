@@ -11639,6 +11639,16 @@ func lowerBinopMsil(
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bltRhsTy)))
         insns.add(MLdloc(slot = bltLhsUnboxS - fctx.paramCount))
       }
+      // Mixed i4/i8 operands widen to i8 before the compare, a `UInt`
+      // zero-extending (#7382); the opcodes need one stack type.
+      val _ = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bltLhsTy,
+        bltRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
       match bltLhsTy {
         case MString -> {
           // `a < b`  ≡  `String.CompareOrdinal(a, b) < 0` (#2539): a raw `clt`
@@ -11687,6 +11697,16 @@ func lowerBinopMsil(
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bgtRhsTy)))
         insns.add(MLdloc(slot = bgtLhsUnboxS - fctx.paramCount))
       }
+      // Mixed i4/i8 operands widen to i8 before the compare, a `UInt`
+      // zero-extending (#7382); the opcodes need one stack type.
+      val _ = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bgtLhsTy,
+        bgtRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
       match bgtLhsTy {
         case MString -> {
           // `a > b`  ≡  `String.CompareOrdinal(a, b) > 0` (#2539).
@@ -11735,6 +11755,16 @@ func lowerBinopMsil(
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, blteRhsTy)))
         insns.add(MLdloc(slot = blteLhsUnboxS - fctx.paramCount))
       }
+      // Mixed i4/i8 operands widen to i8 before the compare, a `UInt`
+      // zero-extending (#7382); the opcodes need one stack type.
+      val _ = widenArithOperandsMsil(
+        fctx,
+        insns,
+        blteLhsTy,
+        blteRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
       match blteLhsTy {
         case MString -> {
           // `a <= b`  ≡  `!(String.CompareOrdinal(a, b) > 0)` (#2539).
@@ -11788,6 +11818,16 @@ func lowerBinopMsil(
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, bgteRhsTy)))
         insns.add(MLdloc(slot = bgteLhsUnboxS - fctx.paramCount))
       }
+      // Mixed i4/i8 operands widen to i8 before the compare, a `UInt`
+      // zero-extending (#7382); the opcodes need one stack type.
+      val _ = widenArithOperandsMsil(
+        fctx,
+        insns,
+        bgteLhsTy,
+        bgteRhsTy,
+        isUnsignedExprMsil(fctx, lhs),
+        isUnsignedExprMsil(fctx, rhs)
+      )
       match bgteLhsTy {
         case MString -> {
           // `a >= b`  ≡  `!(String.CompareOrdinal(a, b) < 0)` (#2539).
@@ -31415,32 +31455,25 @@ func lockedProtectedMembers(members: in List[ProtectedMember]): List[ProtectedMe
   var i = 0
   while i < members.count {
     match members[i] {
-      case PMFunc(fn) -> {
-        val plain = match fn.generics { case None -> not fn.isAsync; case Some(_) -> false }
-        match fn.body {
-          case Some(b) -> {
-            if plain {
-              lowered.add(
-                PMEntry(
-                  entryDecl = EntryDecl(
-                    docComments = fn.docComments,
-                    annotations = fn.annotations,
-                    visibility = fn.visibility,
-                    name = fn.name,
-                    params = fn.params,
-                    ret = fn.ret,
-                    contracts = fn.contracts,
-                    body = b,
-                    span = fn.span
-                  )
-                )
-              )
-            } else {
-              lowered.add(members[i])
-            }
-          }
-          case None -> lowered.add(members[i])
-        }
+      // The checker rejects an async or method-generic protected func
+      // (T0135), so every func with a body takes the lock.
+      case PMFunc(fn) -> match fn.body {
+        case Some(b) -> lowered.add(
+          PMEntry(
+            entryDecl = EntryDecl(
+              docComments = fn.docComments,
+              annotations = fn.annotations,
+              visibility = fn.visibility,
+              name = fn.name,
+              params = fn.params,
+              ret = fn.ret,
+              contracts = fn.contracts,
+              body = b,
+              span = fn.span
+            )
+          )
+        )
+        case None -> lowered.add(members[i])
       }
       case other -> lowered.add(other)
     }
@@ -31480,9 +31513,9 @@ func lowerProtectedMsil(
   // references in entry/func bodies to EMember(ESelf, name).
   val fieldNames = makeProtectedFieldNames(decl)
 
-  // §7.5: a `func` member is exclusive too, so a plain (non-generic,
-  // non-async) func is lowered through the same Monitor-guarded path as an
-  // entry (#7363).  Before this only entries took the lock.
+  // §7.5: a `func` member is exclusive too, so it is lowered through the
+  // same Monitor-guarded path as an entry (#7363).  Before this only
+  // entries took the lock.
   val members = lockedProtectedMembers(decl.members)
   var mi = 0
   while mi < members.count {

@@ -967,7 +967,10 @@ func reprForRecordMethod(fn: in FunctionDecl): String {
   }
   val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if fn.isAsync { "async " } else { "" }
-  asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
+  // `@pure` rides into the repr so a restored consumer's contract clauses
+  // may call the method (T0133, #7383).
+  val purePrefix = if hasPureAnnotation(fn.annotations) { "@pure " } else { "" }
+  purePrefix + asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
 }
 
 // Build the `pub record Name[T] { field1: T1, field2: T2 }` repr for

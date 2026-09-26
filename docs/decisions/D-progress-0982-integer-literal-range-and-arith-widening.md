@@ -57,6 +57,15 @@ Now:
   `Integer.toUnsignedLong`. `reconcileCmpOperands` widens `Float` to
   `Double` with `f2d`, which also fixes comparisons. `+` goes through the
   same path.
+- **Ordering comparisons** (`<`, `<=`, `>`, `>=`, #7382). A first draft
+  widened only arithmetic. MSIL's relational arms combined an `i4` with an
+  `i8` unconverted: unverifiable IL that the JIT happened to sign-extend.
+  The JVM sign-extended a `UInt` beside a `ULong`, so
+  `4000000000u32 < 5000000000u64` was false on both targets. MSIL's four
+  relational arms now call `widenArithOperandsMsil`. On the JVM every
+  comparison site goes through `reconcileWidenedOperands`, the unsigned-aware
+  step `reconcileArithOperands` already used. `==`/`!=` still require
+  identical types (T0032).
 - **Native:** `widenOperands` sign-extends `Int`, zero-extends `Byte`, and
   lets a literal adapt only when it fits. It replaces `unifyOperands`.
 
@@ -77,7 +86,10 @@ decision.
 - `mixed_width_arith_self_test.l` covers every operator in both operand
   orders, call results, a negative `Int`, `Float op Double` and compound
   assignment, on dotnet, JVM and native.
-- `mixed_width_unsigned_self_test.l` covers `UInt op ULong` on dotnet and
-  JVM; native has no unsigned types yet.
+- `mixed_width_unsigned_self_test.l` covers every `UInt op ULong` operator
+  and ordering comparison on dotnet and JVM; native has no unsigned types
+  yet.
+- `mixed_width_arith_self_test.l` also covers `Int`/`Long` and
+  `Float`/`Double` ordering comparisons.
 - `typechecker_self_test.l` adds three T0015 cases (440/440).
 - The native runs are wired into `scripts/ci/native-target-smoke-test.sh`.
