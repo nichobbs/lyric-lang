@@ -222,7 +222,9 @@ pub func emptyRows[D](): DraftRows[D] {
   return DraftRows(rows = rs, nextId = 1)
 }
 
-/// Rows holding `drafts`, in order, with fresh ids.
+/// Rows holding `drafts`, in order, with ids from 1.  Build a list once
+/// with this and edit it with the row operations: a rebuilt list gets new
+/// ids, which errors recorded against the old rows do not refer to.
 pub func rowsOf[D](drafts: in List[D]): DraftRows[D] {
   val rs: List[DraftRow[D]] = newList()
   var next = 1

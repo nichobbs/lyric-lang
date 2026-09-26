@@ -16,6 +16,12 @@
 //! closes the gap that #5935 had no dedicated regression test pinning the
 //! direct-call-in-condition shape on both `if` and `while`.
 //!
+//! Cases 5 and 6 cover a separate MSIL bug (D-progress-979): an
+//! UN-annotated lambda parameter whose function type comes from the
+//! lambda's expected type was never given its own return type, so calling
+//! it left a boxed `object` that `if` tested for non-null.  That one needed
+//! a codegen change (`lambdaParamFnRetTypes` in `lyric-compiler/msil/codegen.l`).
+//!
 //! Run by the native `lyric test` on BOTH targets (like `bitwise_self_test.l`
 //! / `block_shadow_self_test.l`):
 //!   lyric test --target dotnet lyric-compiler/lyric/lambda_bool_if_cond_self_test.l

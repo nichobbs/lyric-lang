@@ -16,7 +16,7 @@ It has no UI dependency, so domain packages may import it. `lyric-ui`'s
 
 | Package | Contents |
 |---|---|
-| `Forms` | `FieldPath` (`fieldPath`, `child`, `item`); `FieldError`, `messageOf`, `errorsFor`, `errorsWithin`, `formErrors`; `DraftRows` (`addRow`, `removeRow`, `updateRow`, `moveRow`, `validateRows`); `FormSchema`, `FieldSpec`, `InputKind` and the schema builders |
+| `Forms` | `FieldPath` (`rootPath`, `fieldPath`, `child`, `item`, `samePath`, `isWithin`, `pathText`); `FieldError`, `fieldOf`, `messageOf`, `errorsFor`, `errorsWithin`, `hasErrorFor`, `formErrors`; `DraftRows` (`emptyRows`, `rowsOf`, `addRow`, `removeRow`, `updateRow`, `moveRow`, `findRow`, `validateRows`); `FormSchema`, `FieldSpec`, `InputKind` and the schema builders |
 | `Forms.Parse` | `requiredText`, `optionalText`, `withinLength`, `longInRange`, `optionalLongInRange`, `oneOf`, `email`, and `collect` |
 
 ## Validate function
@@ -45,7 +45,10 @@ list the caller created, so every invalid field is reported at once.
 Rows of a list-valued field live in a `DraftRows[D]`. Each row gets a
 stable id from a counter in the draft, and errors address a row by that id
 (`child(item(fieldPath("lines"), id), "qty")`), so they stay on the right
-row when rows are added, removed or reordered (docs/65 §11.7, D138):
+row when rows are added, removed or reordered (docs/65 §11.7, D138).
+`rowsOf` numbers rows from 1, so build a list with it once (when the form
+opens) and edit it with the row operations afterwards; rebuilding it would
+give rows new ids that older errors do not refer to:
 
 ```lyric
 val none: DraftRows[LineDraft] = Forms.emptyRows()
