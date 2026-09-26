@@ -1,4 +1,4 @@
-# D-progress-980 — F0027 promoted from warning to build-gating error (#5704 enforcement)
+# D-progress-981 — F0027 promoted from warning to build-gating error (#5704 enforcement)
 
 **Status:** shipped (partial — see "Still open")
 

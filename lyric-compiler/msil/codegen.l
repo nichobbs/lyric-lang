@@ -23751,7 +23751,7 @@ func emitExternTargetBody(
       // ecosystem could be annotated incrementally; that audit is now
       // complete (#7169 found and fixed the only two remaining hint-less
       // patterns ecosystem-wide), so this is promoted to a hard error
-      // (D-progress-980, #5704) — mirroring the `errorDiagnostic` +
+      // (D-progress-981, #5704) — mirroring the `errorDiagnostic` +
       // `cctx.diagnostics` convention `F0015` already uses for the same
       // "silently keep an unverifiable calling-convention guess" hazard.
       val f0027HintLess = match hint { case RHEither -> true; case _ -> false }
@@ -36672,7 +36672,7 @@ func checkOneInterfaceMethodMsil(
 // convention F0015 (auto-FFI signature validation) uses for the same
 // reference-pack-absent case.
 // F0027 is now a build-gating `errorDiagnostic` appended to `cctx.diagnostics`
-// at its call site in `emitExternTargetBody` (D-progress-980, #5704
+// at its call site in `emitExternTargetBody` (D-progress-981, #5704
 // enforcement) rather than a standalone warn helper — see that call site's
 // comment for the full rationale.
 func warnFfiIndexEmptyOnceMsil(cctx: in CodegenCtx): Unit {
