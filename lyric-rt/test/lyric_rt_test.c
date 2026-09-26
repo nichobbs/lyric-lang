@@ -684,6 +684,37 @@ static void test_map_tombstone_churn(void) {
     lyric_release(m);
 }
 
+/* Removing most entries shrinks capacity back toward the live size, so a
+ * key/value snapshot after a mass removal is O(live), and the survivors keep
+ * their values across the shrinking rehashes (#7282). */
+static void test_map_shrinks_on_removal(void) {
+    LyricMap* m = lyric_map_new(0, 0);
+    for (int64_t i = 0; i < 100000; i++) lyric_map_set(m, i, i + 1);
+    int64_t peak = lyric_map_cap(m);
+    CHECK(peak >= 131072);
+    for (int64_t i = 0; i < 100000; i++) {
+        if (i % 1000 != 0) CHECK(lyric_map_remove(m, i));
+    }
+    CHECK(lyric_map_len(m) == 100);
+    CHECK(lyric_map_cap(m) <= 256);
+    int64_t v = 0;
+    for (int64_t i = 0; i < 100000; i += 1000) {
+        CHECK(lyric_map_get(m, i, &v) && v == i + 1);
+    }
+    CHECK(!lyric_map_get(m, 1, &v));
+    LyricList* ks = lyric_map_keys(m);
+    CHECK(lyric_list_len(ks) == 100);
+    lyric_release(ks);
+    /* Draining to empty keeps the minimum table; refilling still works. */
+    for (int64_t i = 0; i < 100000; i += 1000) CHECK(lyric_map_remove(m, i));
+    CHECK(lyric_map_len(m) == 0);
+    CHECK(lyric_map_cap(m) == 16);
+    for (int64_t i = 0; i < 50; i++) lyric_map_set(m, i, i);
+    CHECK(lyric_map_len(m) == 50);
+    CHECK(lyric_map_get(m, 49, &v) && v == 49);
+    lyric_release(m);
+}
+
 static void test_list_copy(void) {
     /* Ref elements: the copy retains; releasing the source leaves the
      * copy's elements alive. */
@@ -2710,6 +2741,7 @@ int main(void) {
     test_list_refs();
     test_map_int_keys();
     test_map_tombstone_churn();
+    test_map_shrinks_on_removal();
     test_map_string_keys();
     test_list_copy();
     test_list_slice_concat_append();

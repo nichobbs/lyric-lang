@@ -270,6 +270,8 @@ struct LyricMap {
     int32_t         vals_are_refs;
 };
 
+#define MAP_MIN_CAP 16
+
 static uint64_t map_hash(LyricMap* m, int64_t key) {
     if (m->keys_are_strings) {
         LyricString* s = (LyricString*)(intptr_t)key;
@@ -331,6 +333,15 @@ static void map_rehash(LyricMap* m, int64_t newCap) {
     free(old);
 }
 
+/* Smallest power-of-two capacity (at least MAP_MIN_CAP) holding `n` live
+ * entries at load <= 1/2.  Growth fires at 3/4 and shrink at 1/8, so a
+ * freshly fitted table is never immediately resized again. */
+static int64_t map_fit_cap(int64_t n) {
+    int64_t cap = MAP_MIN_CAP;
+    while (n * 2 > cap) cap *= 2;
+    return cap;
+}
+
 /* Returns the slot index for `key`: the occupied slot when present,
  * otherwise the first insertable (empty or tombstone) slot. */
 static int64_t map_find(LyricMap* m, int64_t key) {
@@ -357,8 +368,17 @@ void lyric_map_set(LyricMap* map, int64_t key, int64_t val) {
          * small.  Grow (cap*2) only when the live entries actually hit the load
          * threshold; otherwise rehash in place (same cap) to purge tombstones,
          * which resets `used` to `len`. */
-        int64_t newCap = map->cap == 0 ? 16
-                       : ((map->len + 1) * 4 >= map->cap * 3 ? map->cap * 2 : map->cap);
+        int64_t newCap;
+        if (map->cap == 0) {
+            newCap = MAP_MIN_CAP;
+        } else if ((map->len + 1) * 4 >= map->cap * 3) {
+            newCap = map->cap * 2;
+        } else {
+            /* A purge may also find the live set far below capacity (heavy
+             * removal before the churn); rehash straight to a fitted size. */
+            int64_t fit = map_fit_cap(map->len + 1);
+            newCap = fit < map->cap ? fit : map->cap;
+        }
         map_rehash(map, newCap);
     }
     int64_t i = map_find(map, key);
@@ -402,6 +422,14 @@ int32_t lyric_map_remove(LyricMap* map, int64_t key) {
     elem_release(map->vals_are_refs, s->val);
     s->state = 2;
     map->len--;
+    /* Shrink once the live set drops below 1/8 of capacity, so capacity
+     * tracks the live size rather than the high-water mark and the
+     * snapshots below stay O(len).  Reaching 1/8 from the >= 1/4 load a
+     * resize leaves takes at least cap/8 removals, so the O(cap) rehash is
+     * amortised O(1) per removal. */
+    if (map->cap > MAP_MIN_CAP && map->len * 8 < map->cap) {
+        map_rehash(map, map_fit_cap(map->len));
+    }
     return 1;
 }
 
@@ -422,17 +450,13 @@ int64_t lyric_map_cap(LyricMap* map) {
  * key/value flags), so the caller owns exactly one reference to the
  * list and none to the entries.
  *
- * O(cap), not O(len): every capacity slot is walked regardless of how
- * many are occupied.  A map's capacity is its high-water mark and never
- * shrinks on removal (only `map_rehash` on growth reallocates), so a
- * map populated with many entries and then mostly cleared retains its
- * peak capacity — a snapshot after that walks every peak-capacity slot
- * to collect a much smaller live set.  Tracked as a known cost rather
- * than fixed with an auxiliary occupied-index list, since that would
- * add bookkeeping overhead to every `lyric_map_set`/`lyric_map_remove`
- * call to speed up a comparatively rare snapshot operation (#4795). */
+ * O(len + cap), and cap is O(len): `lyric_map_remove` shrinks the table
+ * once the live set falls below 1/8 of capacity, so a map that was
+ * populated and then mostly cleared no longer keeps its peak capacity.
+ * The output list is sized once up front. */
 LyricList* lyric_map_keys(LyricMap* map) {
     LyricList* out = lyric_list_new(map->keys_are_strings);
+    list_grow(out, map->len);
     for (int64_t i = 0; i < map->cap; i++) {
         if (map->slots[i].state == 1) lyric_list_push(out, map->slots[i].key);
     }
@@ -441,6 +465,7 @@ LyricList* lyric_map_keys(LyricMap* map) {
 
 LyricList* lyric_map_values(LyricMap* map) {
     LyricList* out = lyric_list_new(map->vals_are_refs);
+    list_grow(out, map->len);
     for (int64_t i = 0; i < map->cap; i++) {
         if (map->slots[i].state == 1) lyric_list_push(out, map->slots[i].val);
     }
