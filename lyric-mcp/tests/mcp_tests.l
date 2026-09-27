@@ -972,6 +972,52 @@ test "a real McpClient round-trips server/discover + tools/list against a real M
   }
 }
 
+// #7520 review: `Mcp.Client` never used to drain `RpcPeer.pendingQueue` — a
+// server-sent notification/request seen interleaved with a call's own
+// response is queued by `JsonRpc.callWithin` for whoever runs `runLoop` to
+// pick up later, and `Mcp.Client` never runs `runLoop`. Without the fix
+// (draining after every call in `requestWithin`), one queued notification
+// per round accumulates forever, and once the count passes
+// `maxPendingMessages` every later call starts failing its own
+// `callWithin` (the "more than N unanswered inbound messages queued"
+// guard). More than `maxPendingMessages` rounds, each staging one
+// interleaved notification ahead of its call's response, proves the queue
+// is actually drained: every round must still succeed.
+test "Mcp.Client drains pendingQueue after each call: >maxPendingMessages notifications across calls do not break later calls" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+
+  match connectTransport(ClientSideTransport(box = box)) {
+    case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
+    case Ok(clientVal) -> {
+      var client = clientVal
+      val rounds = maxPendingMessages + 200
+      var i = 0
+      var failures = 0
+      while i < rounds {
+        // A server-sent notification the client will see interleaved with
+        // its own call's response — exactly what a real MCP server
+        // streaming progress notifications mid-call looks like.
+        box.toClient.add(notifyText("notifications/progress", None))
+        stage(serverPeer, box, reqText((i + 1).toLong(), "ping", None))
+        match ping(client) {
+          case Ok(_) -> ()
+          case Err(_) -> {
+            failures = failures + 1
+          }
+        }
+        i = i + 1
+      }
+      assertEqualInt(
+        failures,
+        0,
+        "every ping still succeeds after " + rounds.toString() +
+          " rounds (> maxPendingMessages) of one interleaved notification each"
+      )
+    }
+  }
+}
+
 test "a real McpClient drives the full input_required resume loop against a real McpServer" {
   val box = newMailbox()
   var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())

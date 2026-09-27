@@ -106,10 +106,23 @@ func request(client: inout McpClient, method: in String, params: in Option[JsonV
   requestWithin(client, method, params, client.peer.callTimeoutMs)
 }
 
+// `callWithin` queues any server-sent request/notification it sees while
+// waiting for this call's own response (`JsonRpc`'s "Dispatch model" doc);
+// `Mcp.Client` never runs `runLoop`, so every operation drains that queue
+// itself right after its `callWithin` returns (#7520 review) — otherwise queued
+// entries accumulate across calls toward `maxPendingMessages` and every
+// later call starts failing. `NullHandler` answers a queued request with
+// the standard `-32601 Method not found` and drops a queued notification
+// (see `NullHandler`'s own doc and `JsonRpc.drainPendingQueue`). The drain
+// result itself is best-effort here: a transport failure surfaces on this
+// or a later call's own `callWithin` regardless, so it must not shadow the
+// result this call already obtained.
 func requestWithin(
   client: inout McpClient, method: in String, params: in Option[JsonValue], timeoutMs: in Int
 ): Result[JsonValue, String] {
-  match callWithin(client.peer, method, params, timeoutMs) {
+  val result = callWithin(client.peer, method, params, timeoutMs)
+  val _: Result[Unit, String] = drainPendingQueue(client.peer)
+  match result {
     case Ok(v) -> Ok(value = v)
     case Err(e) -> Err(error = "'" + method + "' failed: " + e.message)
   }

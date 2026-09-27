@@ -77,6 +77,17 @@ rather than handed to the next call. A tool that waits on a person
 should answer `input_required` (docs/64 §3.1) rather than hold the call
 open past the deadline.
 
+`McpClient` never runs `JsonRpc.runLoop` (every operation is a plain
+`call`/`callWithin`), so it drains `RpcPeer.pendingQueue` itself
+(`JsonRpc.drainPendingQueue`) right after each operation's call returns
+— otherwise a server-sent request/notification seen interleaved with a
+call's response would sit queued forever, and once enough of them
+accumulated across calls past `maxPendingMessages` every later call
+would start failing (#7520 review). A queued request gets the client's
+`NullHandler` answer (ordinarily `-32601 Method not found`, since the
+client has no inbound handler — sampling/elicitation are out of scope,
+docs/64 §1); a queued notification is dropped.
+
 ## Known JVM gaps
 
 All three gaps below are resolved; they are kept as a record of what was
@@ -91,7 +102,15 @@ drains stdout with the `InputStream.available()`-polled,
 `readNBytes`-into-a-`ByteArrayOutputStream` technique
 `process_capture_host.l` uses, never calling a blocking `Reader` method;
 see `lyric-stdlib/std/_kernel_jvm/process_piped_host.l`'s module header.
-The same loop carries the deadline for `pipedReadLineWithin` (#7451).
+The same loop carries the deadline for `pipedReadLineWithin` (#7451),
+checked against `System.nanoTime()` (monotonic) every non-sleeping
+iteration, not `System.currentTimeMillis()` (wall-clock, subject to NTP
+steps and manual clock changes — #7520 review). The `dotnet` kernel's
+`ReadLine`/`Read` blocking reads run on a dedicated
+`Task.Factory.StartNew(..., TaskCreationOptions.LongRunning)` thread
+rather than the shared thread-pool `Task.Run`, so pool pressure cannot
+delay a read enough to make `Task.Wait(ms)` report a spurious timeout
+(#7520 review).
 
 ### 2. `lyric-jsonrpc`'s JVM gap: `JObject`/`JArray` results over `runLoop` — no longer reproduces
 

@@ -55,9 +55,17 @@
 //! diagnose it further.
 //!
 //! **Bounded reads (#7451).** `hostPipedReadLineWithinResult` runs the same
-//! polling loop with a deadline checked only where the loop would otherwise
-//! sleep, so a timed-out read returns without losing bytes: a partial line
-//! stays in `lineBuf` for the next read.
+//! polling loop with a deadline checked every non-sleeping iteration too
+//! (#7520 review), so a timed-out read returns without losing bytes: a partial
+//! line stays in `lineBuf` for the next read.
+//!
+//! **Monotonic deadlines (#7520 review).** Deadlines are computed and compared
+//! with `System.nanoTime()`, not `System.currentTimeMillis()`: `nanoTime()`
+//! is monotonic and immune to NTP steps, leap-second smears, and manual
+//! clock changes, matching `--target native`'s `lyric_monotonic_nanos()`
+//! and `_kernel_jvm/task.l`'s `makeCancelSourceTimeout` deadline (see that
+//! file's header for the full rationale). `deadlineNanos` is an absolute
+//! `nanoTime()` instant, or negative for no bound.
 //!
 //! Internal: only Std.Process should import this.
 @axiom("java.lang.ProcessBuilder + java.lang.Process piped stdin/stdout conform to their documented JVM contracts")
@@ -92,8 +100,11 @@ extern type JThread = "java.lang.Thread"
 
 extern type JAtomicInt = "java.util.concurrent.atomic.AtomicInteger"
 
-@externTarget("java.lang.System.currentTimeMillis")
-func currentTimeMillis(): Long = ()
+extern type JSystem = "java.lang.System"
+
+func nanoTime(): Long {
+  JSystem.nanoTime()
+}
 
 // ── Process construction ──────────────────────────────────────────────────────
 func buildProcessBuilder(cmd: in List[String]): JProcessBuilder {
@@ -265,11 +276,11 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
 }
 
 // The polling read loop behind both the unbounded and the bounded read.
-// `deadlineMs` is a `currentTimeMillis()` instant, or negative for no bound.
-// Only the idle branches consult it, so a timed-out read has consumed
-// nothing but whole bytes into `lineBuf`: an incomplete line stays buffered
-// for the next read (#7451).
-func readLineUntil(p: in PipedHandle, deadlineMs: in Long): HostPipedRead {
+// `deadlineNanos` is a `nanoTime()` instant, or negative for no bound. Every
+// non-sleeping iteration consults it (#7520 review), so a timed-out read has
+// consumed nothing but whole bytes into `lineBuf`: an incomplete line stays
+// buffered for the next read (#7451).
+func readLineUntil(p: in PipedHandle, deadlineNanos: in Long): HostPipedRead {
   var done = false
   var result: HostPipedRead = HostPipedEof
   // Consecutive no-sleep iterations where `drainAvailableInto` grew the
@@ -292,21 +303,21 @@ func readLineUntil(p: in PipedHandle, deadlineMs: in Long): HostPipedRead {
           val before = bufferSize(p.lineBuf)
           drainAvailableInto(p.stdout, p.lineBuf)
           if bufferSize(p.lineBuf) > before {
-            // New bytes arrived — loop straight back to the newline scan
-            // without sleeping, UNLESS this has happened too many times in a
-            // row without ever completing a line (the slow-trickle case).
+            // New bytes arrived. The deadline is checked every such
+            // iteration (#7520 review, `nanoTime()` is a cheap monotonic call) so a
+            // slow-but-steady trickle cannot outrun a caller's timeout; only
+            // the CPU-spin throttle (yield via a 1ms sleep) is capped to
+            // every 64th iteration, not the deadline check.
             growthStreak = growthStreak + 1
-            if growthStreak >= 64 {
-              if pastDeadline(deadlineMs) {
-                result = HostPipedTimedOut
-                done = true
-              } else {
-                JThread.sleep(1i64)
-                growthStreak = 0
-              }
+            if pastDeadline(deadlineNanos) {
+              result = HostPipedTimedOut
+              done = true
+            } else if growthStreak >= 64 {
+              JThread.sleep(1i64)
+              growthStreak = 0
             }
           } else if procIsAlive(p.proc) {
-            if pastDeadline(deadlineMs) {
+            if pastDeadline(deadlineNanos) {
               result = HostPipedTimedOut
               done = true
             } else {
@@ -341,8 +352,8 @@ func readLineUntil(p: in PipedHandle, deadlineMs: in Long): HostPipedRead {
   result
 }
 
-func pastDeadline(deadlineMs: in Long): Bool {
-  deadlineMs >= 0i64 and currentTimeMillis() >= deadlineMs
+func pastDeadline(deadlineNanos: in Long): Bool {
+  deadlineNanos >= 0i64 and nanoTime() >= deadlineNanos
 }
 
 // The next split-out line, if any.
@@ -421,10 +432,10 @@ pub func hostPipedKill(p: in PipedHandle): Unit {
 /// `isAlive()` with a 1ms sleep between checks — see module doc). Returns
 /// `true` if it exited within the deadline.
 pub func hostPipedWaitExit(p: in PipedHandle, timeoutMs: in Int): Bool {
-  val startMs = currentTimeMillis()
-  val timeoutMsL = timeoutMs.toLong()
+  val startNanos = nanoTime()
+  val timeoutNanosL = timeoutMs.toLong() * 1000000i64
   var exited = not procIsAlive(p.proc)
-  while not exited and (currentTimeMillis() - startMs) < timeoutMsL {
+  while not exited and (nanoTime() - startNanos) < timeoutNanosL {
     JThread.sleep(1i64)
     exited = not procIsAlive(p.proc)
   }
@@ -502,7 +513,7 @@ pub func hostPipedReadLineResult(p: in PipedHandle): Result[Option[String], Stri
 /// of either kind returns it once complete.
 pub func hostPipedReadLineWithinResult(p: in PipedHandle, timeoutMs: in Int): Result[HostPipedRead, String] {
   try {
-    Ok(value = readLineUntil(p, currentTimeMillis() + timeoutMs.toLong()))
+    Ok(value = readLineUntil(p, nanoTime() + timeoutMs.toLong() * 1000000i64))
   } catch Bug as b {
     Err(error = b.message)
   }

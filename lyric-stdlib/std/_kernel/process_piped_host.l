@@ -17,17 +17,23 @@
 //! own stderr instead of needing a dedicated drain loop.
 //!
 //! **Bounded reads (#7451).** `StreamReader.ReadLine()` has no timeout, so
-//! `hostPipedReadLineWithinResult` runs the blocking `ReadLine()` on a
-//! thread-pool thread (`Task.Run(Action)`) and waits for it with
-//! `Task.Wait(int)`, which returns `false` on timeout instead of throwing.
-//! A read that times out is not abandoned: its `Task` stays on the handle
-//! (`inflight`), and the next read of either kind joins it first, so a line
-//! that arrives after the deadline is delivered by the next read rather than
-//! lost or read out of order. At most one background read is outstanding per
+//! `hostPipedReadLineWithinResult` runs the blocking `ReadLine()` on its own
+//! long-running thread (`Task.Factory.StartNew(Action,
+//! TaskCreationOptions.LongRunning)`, #7520 review — plain `Task.Run` schedules on
+//! the shared thread-pool queue, where pool pressure from unrelated work can
+//! delay the blocking read from even starting, which then makes a short
+//! `Task.Wait(ms)` report a spurious timeout even though nothing is actually
+//! stuck; `LongRunning` tells the scheduler to give the work a dedicated
+//! thread instead of a pool slot) and waits for it with `Task.Wait(int)`,
+//! which returns `false` on timeout instead of throwing. A read that times
+//! out is not abandoned: its `Task` stays on the handle (`inflight`), and
+//! the next read of either kind joins it first, so a line that arrives
+//! after the deadline is delivered by the next read rather than lost or
+//! read out of order. At most one background read is outstanding per
 //! handle.
 //!
 //! Internal: only Std.Process should import this.
-@axiom("System.Diagnostics.Process piped stdin/stdout and System.Threading.Tasks.Task.Run/Wait conform to their documented .NET contracts")
+@axiom("System.Diagnostics.Process piped stdin/stdout and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts")
 package Std.ProcessPipedHost
 
 import Std.Core
@@ -46,9 +52,32 @@ extern type ProcReader = "System.IO.StreamReader"
 
 extern type Task = "System.Threading.Tasks.Task"
 
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
+extern type TaskFactory = "System.Threading.Tasks.TaskFactory"
+
+extern type TaskCreationOptions = "System.Threading.Tasks.TaskCreationOptions"
+
+// `Task.Factory` is a static property; `Task.LongRunning` is a static field
+// (the same auto-FFI field-read path already used for `Duration.Zero` /
+// `Instant.UtcNow` in `_kernel/time_host.l`).
+func taskFactory(): TaskFactory {
+  Task.Factory
+}
+
+// stays @externTarget: auto-FFI's reference-assembly overload scoring
+// cannot match `StartNew` against a `() -> Unit` lambda argument (it has no
+// BCL delegate type to compare shapes against until the call site commits
+// to one specific overload) — the same reason `_kernel/http_host.l`,
+// `_kernel/tcp_host.l`, and others keep an explicit wrapper for any BCL
+// member taking a delegate-typed parameter.
+@externInstance
+@externTarget("System.Threading.Tasks.TaskFactory.StartNew")
+func taskFactoryStartNew(f: in TaskFactory, work: in () -> Unit, options: in TaskCreationOptions): Task = ()
+
+// Each blocking read gets its own dedicated thread instead of a thread-pool
+// slot (#7520 review — see the module doc for why plain `Task.Run` is unsafe here).
+func taskRun(work: in () -> Unit): Task {
+  taskFactoryStartNew(taskFactory(), work, TaskCreationOptions.LongRunning)
+}
 
 // `Task.Wait(int)`: `true` once the task completed, `false` when `ms` elapsed
 // first. `-1` (`Timeout.Infinite`) waits without a bound.

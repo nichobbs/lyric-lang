@@ -54,15 +54,20 @@ file.
 ### `Std.ConsoleHost` — `lyric-stdlib/std/_kernel/console_host.l`
 
 ```
-@axiom("System.Console operations and System.Threading.Tasks.Task.Run/Wait conform to their documented .NET contracts")
+@axiom("System.Console operations and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts")
 ```
 
 **BCL surface**: `System.Console` (Read, Write, WriteLine, ReadLine, In, Out,
 Error, OpenStandardInput), backing `Std.Console`. The stdin byte reader
-(`Std.Console.readStdinWithin`, #7451) runs a blocking `Stream.Read` on a
-thread-pool thread (`Task.Run`) and bounds the wait with `Task.Wait(int)`;
-the JVM twin uses a virtual thread and `Thread.join(long)`, which its axiom
-(`java.lang.Thread`) covers.
+(`Std.Console.readStdinWithin`, #7451) runs a blocking `Stream.Read` on its
+own long-running thread (`Task.Factory.StartNew(Action,
+TaskCreationOptions.LongRunning)`, #7520 review — not `Task.Run`, whose shared
+thread-pool queue can delay the blocking read from even starting under pool
+pressure and make a short `Task.Wait(ms)` report a spurious timeout) and
+bounds the wait with `Task.Wait(int)`; the JVM twin uses a daemon platform
+thread (`new Thread(Runnable)`, not a virtual thread — a blocking read on
+`System.in` pins a virtual thread's carrier) and `Thread.join(long)`, which
+its axiom (`java.lang.Thread`) covers.
 
 **Gap**: Console I/O has observable side-effects and depends on process-level
 shared file descriptors that cannot be modelled in first-order logic without an
@@ -416,7 +421,7 @@ The verifier pre-checks this; application code should not use this module.
 ### `Std.ProcessPipedHost` — `lyric-stdlib/std/_kernel/process_piped_host.l`
 
 ```
-@axiom("System.Diagnostics.Process piped stdin/stdout and System.Threading.Tasks.Task.Run/Wait conform to their documented .NET contracts")
+@axiom("System.Diagnostics.Process piped stdin/stdout and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts")
 ```
 
 **BCL surface**: `Std.ProcessPipedHost` — spawns a child process with
@@ -430,11 +435,17 @@ claim; its read path was unreliable (spurious immediate EOF or unbounded
 blocking against a live child) until fixed in #6135 via a byte-level
 `available()`-polled rewrite — verified against a real `cat` subprocess
 (`lyric-compiler/jvm/piped_process_jvm_main.l`).  The bounded read
-`pipedReadLineWithin` (#7451) runs `StreamReader.ReadLine` on a
-thread-pool thread (`Task.Run`) and waits with `Task.Wait(int)`; a read
-that times out stays outstanding on the handle and the next read joins it.
-The JVM twin checks the deadline in its polling loop, and the native twin
-`poll(2)`s the pipe (`lyric_process_piped_read_line_within`).
+`pipedReadLineWithin` (#7451) runs `StreamReader.ReadLine` on its own
+long-running thread (`Task.Factory.StartNew(Action,
+TaskCreationOptions.LongRunning)`, #7520 review — not `Task.Run`, for the same
+thread-pool-starvation reason `Std.ConsoleHost` above avoids it) and waits
+with `Task.Wait(int)`; a read that times out stays outstanding on the
+handle and the next read joins it. The JVM twin checks the deadline against
+`System.nanoTime()` (monotonic, #7520 review — not `System.currentTimeMillis()`,
+which is wall-clock and subject to NTP steps/clock changes) every
+non-sleeping iteration of its polling loop, and the native twin `poll(2)`s
+the pipe (`lyric_process_piped_read_line_within`) against
+`lyric_monotonic_nanos()`.
 
 **Gap**: Long-lived child-process lifecycle and blocking pipe I/O involve
 OS state that cannot be modelled in first-order logic.  Spawn and I/O
@@ -957,7 +968,7 @@ spaces; consult the kernel file itself for the unfolded source.
 |---|---|---|---|
 | `dotnet` | `Std.CharHost` | `char_host.l` | System.Char and System.Convert character operations conform to their documented .NET contracts |
 | `dotnet` | `Std.CollectionsHost` | `collections_host.l` | System.Collections.Generic.List / Dictionary conform to their documented .NET contracts |
-| `dotnet` | `Std.ConsoleHost` | `console_host.l` | System.Console operations and System.Threading.Tasks.Task.Run/Wait conform to their documented .NET contracts |
+| `dotnet` | `Std.ConsoleHost` | `console_host.l` | System.Console operations and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts |
 | `dotnet` | `Std.EncodingHost` | `encoding_host.l` | .NET Encoding.GetBytes and Convert.FromBase64String conform to their documented .NET contracts and return genuine byte[] arrays |
 | `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Environment operations conform to their documented .NET contracts |
 | `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory conforms to its documented .NET contract |
@@ -975,7 +986,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.PathHost` | `path_host.l` | System.IO.Path operations conform to their documented .NET contracts |
 | `dotnet` | `Std.ProcessCaptureHost` | `process_capture_host.l` | System.Diagnostics.Process piped stdout/stderr capture |
 | `dotnet` | `Std.ProcessHost` | `process_host.l` | System.Diagnostics.Process conforms to its documented .NET contracts |
-| `dotnet` | `Std.ProcessPipedHost` | `process_piped_host.l` | System.Diagnostics.Process piped stdin/stdout and System.Threading.Tasks.Task.Run/Wait conform to their documented .NET contracts |
+| `dotnet` | `Std.ProcessPipedHost` | `process_piped_host.l` | System.Diagnostics.Process piped stdin/stdout and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts |
 | `dotnet` | `Std.RandomHost` | `random_host.l` | System.Random conforms to its documented .NET contracts; the Shared property returns a thread-safe shared instance (documented since .NET 6) |
 | `dotnet` | `Std.RegexHost` | `regex_host.l` | System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts |
 | `dotnet` | `Std.SecureRandomHost` | `secure_random_host.l` | System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output |
