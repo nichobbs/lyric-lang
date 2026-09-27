@@ -240,7 +240,8 @@ func emitRangedFixture(dir: in String, target: in Emitter.CompileTarget, outName
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   match Emitter.emitProject(req).outputPath {
     case None -> panic("ranged config fixture: emitProject produced no output (diagnostics on stderr)")

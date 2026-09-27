@@ -2902,15 +2902,29 @@ func configFieldTypeName(te: in TypeExpr): String {
 // be numeric literals (the runtime check compares against constants) and the
 // range must not be empty.  Returns the range when it is well formed, so the
 // caller can check the default against it (G0010).
+func rangeLowerExpr(rb: in RangeBound): Option[Expr] {
+  match rb {
+    case RBClosed(lo, _) -> Some(value = lo)
+    case RBHalfOpen(lo, _, _) -> Some(value = lo)
+    case RBLowerOpen(_) -> None
+    case RBUpperOpen(lo) -> Some(value = lo)
+  }
+}
+
+func rangeUpperExpr(rb: in RangeBound): Option[Expr] {
+  match rb {
+    case RBClosed(_, hi) -> Some(value = hi)
+    case RBHalfOpen(_, hi, _) -> Some(value = hi)
+    case RBLowerOpen(hi) -> Some(value = hi)
+    case RBUpperOpen(_) -> None
+  }
+}
+
 func checkConfigFieldRange(diag: in List[Diagnostic], cd: in ConfigDecl, f: in ConfigField): Option[RangeBound] {
   match f.ty.kind {
     case TRefined(_, rb) -> {
-      val (loE, hiE) = match rb {
-        case RBClosed(lo, hi) -> (Some(value = lo), Some(value = hi))
-        case RBHalfOpen(lo, hi, _) -> (Some(value = lo), Some(value = hi))
-        case RBLowerOpen(hi) -> (None, Some(value = hi))
-        case RBUpperOpen(lo) -> (Some(value = lo), None)
-      }
+      val loE = rangeLowerExpr(rb)
+      val hiE = rangeUpperExpr(rb)
       var ok = true
       val lo = match loE {
         case Some(e) -> foldLiteralBound(e)
