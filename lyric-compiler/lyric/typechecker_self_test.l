@@ -4935,6 +4935,23 @@ test "a bare call binds a direct import's function over a transitive one" {
   )
 }
 
+// #7579: the lowest tier that declares the name decides; a matching
+// function reached only transitively does not answer for a direct import's
+// mismatched one.
+test "a bare call reports a mismatch against the direct import, not a transitive match" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(rulePkg("PkgPt", "package PkgPt\npub func parse(n: in Int): Int { n }\n"))
+  packages.add(rulePkg("PkgPr", "package PkgPr\nimport PkgPt\npub func viaR(): Int { 1 }\n"))
+  packages.add(rulePkg("PkgPd", "package PkgPd\npub func parse(s: in String): Int { 0 }\n"))
+  val src = "package App\nimport PkgPr\nimport PkgPd\nfunc f(): Int { parse(5) }\n"
+  assertTrue(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)) > 0,
+    "parse(5) is checked against PkgPd.parse(String)"
+  )
+  val okSrc = "package App\nimport PkgPr\nimport PkgPd\nfunc f(): Int { parse(\"5\") }\n"
+  assertEqualInt(diagCount(checkWithImportedPackages(parse(okSrc).file, packages)), 0, "parse(\"5\") is PkgPd's")
+}
+
 // #7557: `import P.{f as g}` is not supported; it is T0137 rather than a
 // name that silently fails to resolve.
 test "renaming a selectively imported name is T0137" {

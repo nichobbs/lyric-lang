@@ -1751,6 +1751,7 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
         items = items,
         imports = collectImportNames(stdPrInv.imports),
         wholeImports = collectWholeImportNames(stdPrInv.imports),
+        selectedImports = collectSelectedImportNames(stdPrInv.imports),
         privateGenericItems = privateGenericItems
       )
     )

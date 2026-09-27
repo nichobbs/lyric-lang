@@ -75,7 +75,11 @@ its records' field types. `import P.{v}` need not also list the type of `v`
   A bare call takes its function from the lowest tier that has a match, as
   every other bare name does: the current package, then a direct import,
   then a package reached only transitively (`symTableBareFuncTier`, #7567);
-  another package's package-private function is never a candidate.
+  another package's package-private function is never a candidate.  The
+  lowest tier that declares the name and arity decides: when none of its
+  functions matches the arguments, the call reports the mismatch there
+  rather than binding a matching function of a higher tier, which the
+  backends' name-and-arity lookups could not follow (#7579).
   The resolver's fallback scans for an alias target or a type-position name
   see only visible symbols, and a package-qualified alias target resolves in
   that package (`resolveQualifiedAliasPath`, #7553).
@@ -87,7 +91,8 @@ its records' field types. `import P.{v}` need not also list the type of `v`
   tiers (`importAwareRegistry`: transitive packages, then whole imports and
   selectively listed names, then the file's own package; #7551).
   Another package's package-private function or enum never takes a bare key
-  (a `~private~` marker, #7568).
+  (per-arity `~private~` markers, so a private overload does not hide a
+  public one of another arity; #7568, #7580).
   Specialised copies of another package's generics get
   the same keys for their origin package (`~wimport~`, `~selimport~`).
 - The MSIL backend's bare-name resolvers (union cases, types, free
@@ -101,9 +106,13 @@ its records' field types. `import P.{v}` need not also list the type of `v`
   direct import (`findBareImportedFqnMsil`, #7570), and a specialised copy
   of a generic resolves its bare calls the same way in its origin package
   (#7569). The async pre-scan resolves an awaited bare call through the same
-  lookup as emission (#7562). Cached import closures are dropped whenever a
-  package registers its imports, since packages register in bundle order,
-  not dependency order (#7571). A package's own `extern type`
+  lookup as emission (#7562). Every bundle package records its imports in
+  the pre-pass before any is tokenised, and cached import closures are
+  dropped whenever a package registers its imports, since packages register
+  in bundle order, not dependency order (#7571, #7582). Stdlib packages get
+  the same bare-import tables from `StdlibPkg`'s whole and selected imports,
+  so a specialised copy of a stdlib generic never resolves through an
+  aliased import (#7581). A package's own `extern type`
   or `import extern` name outranks a Lyric type of that name reached only
   transitively, as in the checker (`pkgLocalExterns`), so `import Std.Uuid`
   (which imports `Std.String` whole) leaves `import extern

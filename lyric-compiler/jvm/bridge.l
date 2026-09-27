@@ -936,13 +936,15 @@ func importAwareRegistry(
   overlay
 }
 
-// Whether `owner`'s bare key `bare` (`name`, `name@<arity>` or
-// `enumcase:<Case>`) names a package-private declaration, which no other
-// package may call bare.
+// Whether `owner`'s bare key `bare` names a package-private declaration,
+// which no other package may call bare: `name@<arity>` when that overload is
+// private, `name` or `enumcase:<Case>` when no declaration of the name is
+// exported (markers written by `collectFileSigsSeeded`).
 func isPackagePrivateKeyJvm(registry: in Map[String, JvmFuncSig], owner: in String, bare: in String): Bool {
-  val at = Str.indexOfRaw(bare, "@")
-  val name = if at > 0 { bare.substring(0, at) } else { bare }
-  registry.containsKey(owner + "/~private~" + name)
+  if Str.indexOfRaw(bare, "@") > 0 {
+    return registry.containsKey(owner + "/~private~" + bare)
+  }
+  registry.containsKey(owner + "/~privname~" + bare) and not registry.containsKey(owner + "/~public~" + bare)
 }
 
 // Whether the bare registry key `bare` of `owner` names something a
@@ -1481,8 +1483,17 @@ func collectDeriveFreeSigs(
           // Bare key only for a helper callable from another package, as
           // `collectFileSigs` does (#6853).
           val bundleCallable = match decl.visibility { case Some(_) -> true; case None -> false }
-          if not bundleCallable {
-            markPackagePrivateJvm(into, owner, decl.name, sig)
+          val privateArityKey = owner + "/~private~" + decl.name + "@" + toString(decl.params.count)
+          val privateNameKey = owner + "/~privname~" + decl.name
+          val publicNameKey = owner + "/~public~" + decl.name
+          if not bundleCallable and not into.containsKey(privateArityKey) {
+            into.add(privateArityKey, sig)
+          }
+          if not bundleCallable and not into.containsKey(privateNameKey) {
+            into.add(privateNameKey, sig)
+          }
+          if bundleCallable and not into.containsKey(publicNameKey) {
+            into.add(publicNameKey, sig)
           }
           if bundleCallable and not into.containsKey(decl.name) {
             into.add(decl.name, sig)

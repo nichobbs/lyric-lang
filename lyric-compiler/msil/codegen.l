@@ -3160,6 +3160,52 @@ func registerWireStaticMsil(
   }
 }
 
+// Stash `pkgName`'s import edges so call-site resolution can walk them
+// (#1183 Phase 2), with the forms the bare-name resolvers follow (docs/01
+// §9.2).  The bridge calls this for every bundle package before any is
+// tokenised (`preRegisterPackageTypeNames`), so a package's signatures never
+// resolve against a transitive closure cut short by a dependency that
+// registers later in bundle order (#7582); `addPackageTokens` calls it again
+// for the single-file path.
+pub func recordPackageImportsMsil(cctx: in CodegenCtx, pkgName: in String, imports: in List[ImportDecl]): Unit {
+  // The alias-as suffix (`import X.Y as Z`) is ignored here; the codegen
+  // falls back to the source package's FQN whatever rebinding the type
+  // checker applied.
+  val importedDottedNames: List[String] = newList()
+  var mi = 0
+  while mi < imports.count {
+    val imp = imports[mi]
+    val impDotted = joinSegsMsil(imp.path.segments, ".")
+    importedDottedNames.add(impDotted)
+    // Record the `as Alias` rebinding so an alias-qualified free-function call
+    // (`Str.split(..)` for `import Std.String as Str`) resolves to the real
+    // package FQN in `lowerMethodCallMsil`'s static-call fast path.
+    match imp.asAlias {
+      case Some(al) -> {
+        val aliasKey = pkgName + "/" + al
+        if not cctx.pkgImportAliases.containsKey(aliasKey) {
+          cctx.pkgImportAliases.add(aliasKey, impDotted)
+        }
+      }
+      case None -> ()
+    }
+    mi = mi + 1
+  }
+  if cctx.pkgImports.containsKey(pkgName) {
+    cctx.pkgImports.remove(pkgName)
+  }
+  cctx.pkgImports.add(pkgName, importedDottedNames)
+  invalidateImportClosuresMsil(cctx)
+  if not cctx.pkgBareImports.containsKey(pkgName) {
+    cctx.pkgBareImports.add(pkgName, bareImportOrderMsil(imports, false))
+    if cctx.pkgWholeImports.containsKey(pkgName) {
+      cctx.pkgWholeImports.remove(pkgName)
+    }
+    cctx.pkgWholeImports.add(pkgName, bareImportOrderMsil(imports, true))
+    recordSelectiveImportsMsil(cctx, pkgName, imports)
+  }
+}
+
 /// Register `file`'s type names (`typeFqnByName` / `typeFqnCandidates`) and
 /// its generic record/union arities (`genericTypeArity`) ahead of the
 /// per-package `addPackageTokens` pass, exactly as that pass would for the
@@ -3172,6 +3218,7 @@ func registerWireStaticMsil(
 /// Registering the same names in the same order keeps every first-wins
 /// resolution identical; `addPackageTokens` re-registers them idempotently.
 pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
+  recordPackageImportsMsil(cctx, pkgName, file.imports)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -3369,44 +3416,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   // `preSeedBundleAsyncRetTypesMsil` seeding).
   pbSeedTypeInfoItemsMsil(cctx, pkgName, file.items)
 
-  // Stash this package's import edges so call-site resolution can walk
-  // them (#1183 Phase 2).  Each import contributes its dotted path; the
-  // alias-as suffix (`import X.Y as Z`) is ignored — the codegen falls back
-  // to the source package's FQN regardless of any rebinding the typechecker
-  // already applied.
-  val importedDottedNames: List[String] = newList()
-  var mi = 0
-  while mi < file.imports.count {
-    val imp = file.imports[mi]
-    val impDotted = joinSegsMsil(imp.path.segments, ".")
-    importedDottedNames.add(impDotted)
-    // Record the `as Alias` rebinding so an alias-qualified free-function call
-    // (`Str.split(..)` for `import Std.String as Str`) resolves to the real
-    // package FQN in `lowerMethodCallMsil`'s static-call fast path.
-    match imp.asAlias {
-      case Some(al) -> {
-        val aliasKey = pkgName + "/" + al
-        if not cctx.pkgImportAliases.containsKey(aliasKey) {
-          cctx.pkgImportAliases.add(aliasKey, impDotted)
-        }
-      }
-      case None -> ()
-    }
-    mi = mi + 1
-  }
-  if cctx.pkgImports.containsKey(pkgName) {
-    cctx.pkgImports.remove(pkgName)
-  }
-  cctx.pkgImports.add(pkgName, importedDottedNames)
-  invalidateImportClosuresMsil(cctx)
-  if not cctx.pkgBareImports.containsKey(pkgName) {
-    cctx.pkgBareImports.add(pkgName, bareImportOrderMsil(file.imports, false))
-    if cctx.pkgWholeImports.containsKey(pkgName) {
-      cctx.pkgWholeImports.remove(pkgName)
-    }
-    cctx.pkgWholeImports.add(pkgName, bareImportOrderMsil(file.imports, true))
-    recordSelectiveImportsMsil(cctx, pkgName, file.imports)
-  }
+  recordPackageImportsMsil(cctx, pkgName, file.imports)
 
   // Resume row numbering from where the previous package's pre-scan left off
   // (#1183 — multi-package compilation).  For a single-package compile via
@@ -16454,10 +16464,10 @@ func wholeClosureMsil(cctx: in CodegenCtx, pkg: in String): List[String] {
   closure
 }
 
-// A restored package's bare-name imports from the forms its contract records
-// (`Contract.wholeImports`, `Contract.selectedImports`), as
-// `bareImportOrderMsil` and `recordSelectiveImportsMsil` derive them from a
-// source file's imports.
+// The bare-name imports of a package with no source in the bundle (a
+// restored dependency's contract, `Contract.wholeImports`/`selectedImports`,
+// or a stdlib package's `StdlibPkg` lists), as `bareImportOrderMsil` and
+// `recordSelectiveImportsMsil` derive them from a source file's imports.
 func recordRestoredBareImportsMsil(
   cctx: in CodegenCtx,
   pkg: in String,
@@ -41036,6 +41046,8 @@ pub record StdlibPkg {
   imports: List[String]
   /// The subset of `imports` the package imports whole (docs/01 §9.2).
   wholeImports: List[String]
+  /// `<package>::<name>` for each name the package imports selectively.
+  selectedImports: List[String]
   /// Private (non-`pub`) generic funcs with a body, kept separate from
   /// `items` (whose pub-only filter `registerStdlibArtifactTokens` depends
   /// on for token registration) purely so `Msil.Bridge.collectStdlibGenericFuncs`
@@ -41092,6 +41104,12 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
     if not cctx.pkgWholeImports.containsKey(pkg.name) {
       invalidateImportClosuresMsil(cctx)
       cctx.pkgWholeImports.add(pkg.name, pkg.wholeImports)
+    }
+    // Its bare-name imports, so a specialised copy of one of its generics
+    // resolves bare calls as the checker did in the package (docs/01 §9.2,
+    // #7581): aliased imports never, the transitive tier last.
+    if not cctx.pkgBareImports.containsKey(pkg.name) {
+      recordRestoredBareImportsMsil(cctx, pkg.name, pkg.wholeImports, pkg.selectedImports)
     }
     var iia = 0
     while iia < pkg.items.count {

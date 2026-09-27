@@ -3404,6 +3404,35 @@ pub func collectWholeImportNames(imports: in List[ImportDecl]): List[String] {
   names
 }
 
+// `<package>::<name>` for each name `imports` imports selectively.
+pub func collectSelectedImportNames(imports: in List[ImportDecl]): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    if not imp.isExtern {
+      match imp.selector {
+        case Some(sel) -> {
+          val items: List[ImportItem] = match sel {
+            case ISGroup(group) -> group
+            case ISSingle(one) -> {
+              val single: List[ImportItem] = newList()
+              single.add(one)
+              single
+            }
+          }
+          for item in items {
+            names.add(dottedPackageName(imp.path) + "::" + item.name)
+          }
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
 func isWholeImportForm(imp: in ImportDecl): Bool {
   match imp.selector {
     case Some(_) -> false

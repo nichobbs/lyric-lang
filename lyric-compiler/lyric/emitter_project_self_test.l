@@ -3249,3 +3249,84 @@ test "emitProject a union-qualified case resolves to the union the file sees bar
   assertEqualInt(result.exitCode, 0, "unionqual MSIL: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "8", "unionqual MSIL: output")
 }
+
+// A package-private overload hides only its own arity (#7580): `EPPo.P`'s
+// public one-argument `f` still answers a bare call, not `EPPo.Q`'s, which
+// registered first.
+func privateOverloadPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("EPPo.Q", "package EPPo.Q\n" + "\n" + "pub func f(x: in Int): Int {\n" + "  0 - 999\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPPo.P",
+      "package EPPo.P\n" + "\n" + "pub func f(x: in Int): Int {\n" + "  x\n" + "}\n" + "\n" +
+        "func f(x: in Int, y: in Int): Int {\n" +
+        "  x + y\n" +
+        "}\n" +
+        "\n" +
+        "pub func g(): Int {\n" +
+        "  f(1, 1)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPPo.App",
+      "package EPPo.App\n" + "\n" + "import EPPo.P\n" + "\n" + "func main(): Unit {\n" + "  println(f(1))\n" +
+        "  println(g())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a private overload hides only its own arity (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-privoverload-jvm", privateOverloadPkgs(), "EPPo")
+  assertEqualInt(result.exitCode, 0, "privoverload JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n2", "privoverload JVM: output")
+}
+
+test "emitProject a private overload hides only its own arity (MSIL)" {
+  val result = runEmitProject("emitproj-privoverload", privateOverloadPkgs(), "EPPo")
+  assertEqualInt(result.exitCode, 0, "privoverload MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n2", "privoverload MSIL: output")
+}
+
+// A type reached through a chain of whole imports resolves in the package
+// the chain reaches even when the entry package registers first and an
+// unrelated package declaring the same name registers last (#7582).
+func entryFirstTypePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPEt.App",
+      "package EPEt.App\n" + "\n" + "import EPEt.B\n" + "\n" + "func make(): Item {\n" + "  Item(label = \"c\")\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  println(make().label)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPEt.B",
+      "package EPEt.B\n" + "\n" + "import EPEt.C\n" + "\n" + "pub func b(): Int {\n" + "  0\n" + "}\n"
+    )
+  )
+  pkgs.add(mkProjectPkg("EPEt.C", "package EPEt.C\n" + "\n" + "pub record Item {\n" + "  label: String\n" + "}\n"))
+  pkgs.add(mkProjectPkg("EPEt.E", "package EPEt.E\n" + "\n" + "pub record Item {\n" + "  count: Int\n" + "}\n"))
+  pkgs
+}
+
+test "emitProject a transitive type resolves when the entry package registers first (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-entrytype-jvm", entryFirstTypePkgs(), "EPEt")
+  assertEqualInt(result.exitCode, 0, "entrytype JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "c", "entrytype JVM: output")
+}
+
+test "emitProject a transitive type resolves when the entry package registers first (MSIL)" {
+  val result = runEmitProject("emitproj-entrytype", entryFirstTypePkgs(), "EPEt")
+  assertEqualInt(result.exitCode, 0, "entrytype MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "c", "entrytype MSIL: output")
+}

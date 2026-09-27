@@ -3769,10 +3769,15 @@ func visibleBareFuncSigs(
   acc
 }
 
-// The visible function `name` of `arity` whose params match `argTypes`, in
-// the lowest resolution tier that has one (`symTableBareFuncTier`); within a
-// tier, `primary` first, then non-generic overloads, then generic ones.
-// `None` when no visible function matches.
+// The function a bare call `name(args)` of `arity` binds: the lowest
+// resolution tier (`symTableBareFuncTier`) that declares a visible function
+// of that name and arity decides, as for every other bare name; within it,
+// `primary` first, then non-generic overloads, then generic ones, the first
+// whose params match `argTypes`.  When none in that tier matches, its first
+// candidate is returned so the call reports the mismatch there: a matching
+// function of a higher tier never answers instead, which the backends'
+// name-and-arity lookups could not follow.  `None` when no visible function
+// of the name and arity exists.
 func tieredBareSig(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -3786,35 +3791,45 @@ func tieredBareSig(
     return None
   }
   val tiers: List[Int] = newList()
+  var tier = 3
   for v in visible {
-    tiers.add(symTableBareFuncTier(tbl, v.originPackage, name))
-  }
-  val primaryTier = match primary {
-    case Some(p) -> symTableBareFuncTier(tbl, p.originPackage, name)
-    case None -> -1
-  }
-  var tier = 0
-  while tier <= 2 {
-    match primary {
-      case Some(p) -> if primaryTier == tier and paramsMatchArgs(tbl, p.params, argTypes) {
-        return primary
-      }
-      case None -> ()
+    val t = symTableBareFuncTier(tbl, v.originPackage, name)
+    tiers.add(t)
+    if t >= 0 and t < tier {
+      tier = t
     }
-    var pass = 0
-    while pass < 2 {
-      var i = 0
-      while i < visible.count {
-        val cand = visible[i]
-        val isGeneric = cand.generics.count > 0
-        if (pass == 0) != isGeneric and tiers[i] == tier and paramsMatchArgs(tbl, cand.params, argTypes) {
-          return Some(value = cand)
-        }
-        i = i + 1
+  }
+  val primaryInTier = match primary {
+    case Some(p) -> p.params.count == arity and
+      symTableBareFuncTier(tbl, p.originPackage, name) == tier
+    case None -> false
+  }
+  match primary {
+    case Some(p) -> if primaryInTier and paramsMatchArgs(tbl, p.params, argTypes) { return primary }
+    case None -> ()
+  }
+  var pass = 0
+  while pass < 2 {
+    var i = 0
+    while i < visible.count {
+      val cand = visible[i]
+      val isGeneric = cand.generics.count > 0
+      if (pass == 0) != isGeneric and tiers[i] == tier and paramsMatchArgs(tbl, cand.params, argTypes) {
+        return Some(value = cand)
       }
-      pass = pass + 1
+      i = i + 1
     }
-    tier = tier + 1
+    pass = pass + 1
+  }
+  if primaryInTier {
+    return primary
+  }
+  var j = 0
+  while j < visible.count {
+    if tiers[j] == tier {
+      return Some(value = visible[j])
+    }
+    j = j + 1
   }
   None
 }

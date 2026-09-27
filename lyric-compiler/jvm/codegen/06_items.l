@@ -3722,10 +3722,20 @@ pub func collectFileSigsSeeded(
         // (`Msil.Codegen`'s `bundleFuncFqnByName` seeding, #6851).
         val bundleCallable = match decl.visibility { case Some(_) -> true; case None -> false }
         // Another package's bare-name overlay never re-points at a
-        // package-private function (`Jvm.Bridge.overlayOwnerNamesJvm`).
-        val privateKey = owner + "/~private~" + decl.name
-        if not bundleCallable and not into.containsKey(privateKey) {
-          into.add(privateKey, sig)
+        // package-private function (`Jvm.Bridge.overlayOwnerNamesJvm`): the
+        // marker names the private overload's arity, and a name-only marker
+        // counts only while no overload of the name is exported.
+        val privateArityKey = owner + "/~private~" + decl.name + "@" + toString(decl.params.count)
+        val privateNameKey = owner + "/~privname~" + decl.name
+        val publicNameKey = owner + "/~public~" + decl.name
+        if not bundleCallable and not into.containsKey(privateArityKey) {
+          into.add(privateArityKey, sig)
+        }
+        if not bundleCallable and not into.containsKey(privateNameKey) {
+          into.add(privateNameKey, sig)
+        }
+        if bundleCallable and not into.containsKey(publicNameKey) {
+          into.add(publicNameKey, sig)
         }
         if bundleCallable {
           if not into.containsKey(decl.name) {
@@ -4305,7 +4315,7 @@ pub func collectFileSigsSeeded(
           if not into.containsKey(eqkey) {
             into.add(eqkey, esig)
           }
-          val privateCaseKey = owner + "/~private~enumcase:" + ecn
+          val privateCaseKey = owner + "/~privname~enumcase:" + ecn
           if not enumExported and not into.containsKey(privateCaseKey) {
             into.add(privateCaseKey, esig)
           }
@@ -7776,16 +7786,4 @@ pub func codegenPackageWithSigsSeeded(
   }
 
   LPackage(packageName = pkgName, items = items)
-}
-
-// Record that `owner`'s `name` (a function, or an `enumcase:` key) is
-// package-private, so another package's bare-name overlay never re-points
-// at it (`Jvm.Bridge.overlayOwnerNamesJvm`, docs/01 §9.2).
-pub func markPackagePrivateJvm(
-  into: in Map[String, JvmFuncSig], owner: in String, name: in String, sig: in JvmFuncSig
-): Unit {
-  val key = owner + "/~private~" + name
-  if not into.containsKey(key) {
-    into.add(key, sig)
-  }
 }
