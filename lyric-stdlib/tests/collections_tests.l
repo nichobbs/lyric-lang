@@ -148,6 +148,21 @@ func testMapEntriesPairsKeysWithValues(): Unit {
   assertEqualInt(mismatched, 0, "mapEntries pairs each key with its own value")
 }
 
+func testMapPutAllCopiesAndOverwrites(): Unit {
+  val dst: Map[String, Int] = newMap()
+  dst["a"] = 1
+  dst["b"] = 2
+  val src: Map[String, Int] = newMap()
+  src["b"] = 20
+  src["c"] = 30
+  mapPutAll(dst, src)
+  assertEqualInt(dst.count, 3, "mapPutAll adds the new key")
+  assertEqualInt(unwrapOr(mapGet(dst, "a"), 0), 1, "mapPutAll keeps a key src lacks")
+  assertEqualInt(unwrapOr(mapGet(dst, "b"), 0), 20, "mapPutAll overwrites a shared key")
+  assertEqualInt(unwrapOr(mapGet(dst, "c"), 0), 30, "mapPutAll copies src's value")
+  assertEqualInt(src.count, 2, "mapPutAll leaves src unchanged")
+}
+
 func main(): Unit {
   testListConstruction()
   testListAddAndAccess()
@@ -160,5 +175,6 @@ func main(): Unit {
   testMapIntKeys()
   testMapForEachPairsKeysWithValues()
   testMapEntriesPairsKeysWithValues()
+  testMapPutAllCopiesAndOverwrites()
   println("collections_tests: ok")
 }

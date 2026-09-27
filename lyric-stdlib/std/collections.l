@@ -93,14 +93,7 @@ pub func mapForEach[K, V](m: in Map[K, V], action: in (K, V) -> Unit): Unit {
 /// Copy every entry from `src` into `dst`, overwriting existing keys.
 @stable(since = "1.0")
 pub func mapPutAll[K, V](dst: in Map[K, V], src: in Map[K, V]): Unit {
-  for k in dictGetKeys(src) {
-    match mapGet(src, k) {
-      case Some(v) -> {
-        dst[k] = v
-      }
-      case None -> ()
-    }
-  }
+  dictForEachEntry(src, { k, v -> dst[k] = v })
 }
 
 /// Return all entries of `m` as a list of `MapEntry[K, V]` records.
