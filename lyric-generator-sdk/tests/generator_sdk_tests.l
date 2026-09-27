@@ -361,6 +361,74 @@ test "serializeRequest: request with fields" {
   assertTrue(json.contains("\"Primitive\""), "field type kind")
 }
 
+// parseRequest is the inverse of serializeRequest, and is what runGenerator
+// uses to decode stdin. Type parameters and fields (including field type
+// arguments) round-trip; before #7422 the decoder called a List method no
+// backend implements, so any request with fields or type parameters threw.
+test "parseRequest: round-trips type parameters and fields" {
+  val fields = [
+    FieldDescriptor(
+      name = "id",
+      fieldType = FieldType(kind = Primitive, name = "Int", typeArgs = []),
+      isPublic = true,
+      annotations = []
+    ),
+    FieldDescriptor(
+      name = "tags",
+      fieldType = FieldType(kind = Generic, name = "Map", typeArgs = ["String", "T"]),
+      isPublic = true,
+      annotations = []
+    )
+  ]
+  val td = TypeDescriptor(
+    kind = Union,
+    name = "Tagged",
+    packageName = "Models",
+    typeParams = ["T"],
+    fields = fields,
+    annotations = []
+  )
+  val req = GeneratorRequest(
+    generatorArg = "Proto.Derive",
+    typeDescriptor = td,
+    packageName = "Models",
+    sourceFile = "m.l"
+  )
+  match parseRequest(serializeRequest(req)) {
+    case Err(msg) -> assertTrue(false, "parseRequest failed: " + msg)
+    case Ok(back) -> {
+      assertEqual(back.generatorArg, "Proto.Derive", "generatorArg")
+      assertEqual(back.packageName, "Models", "packageName")
+      assertEqual(back.sourceFile, "m.l", "sourceFile")
+      assertEqual(back.typeDescriptor.name, "Tagged", "type name")
+      assertTrue(match back.typeDescriptor.kind { case Union -> true; case _ -> false }, "kind")
+      assertEqualInt(back.typeDescriptor.typeParams.length, 1, "type param count")
+      assertEqual(back.typeDescriptor.typeParams[0], "T", "type param")
+      assertEqualInt(back.typeDescriptor.fields.length, 2, "field count")
+      assertEqual(back.typeDescriptor.fields[1].name, "tags", "second field name")
+      assertEqualInt(back.typeDescriptor.fields[1].fieldType.typeArgs.length, 2, "field type arg count")
+      assertEqual(back.typeDescriptor.fields[1].fieldType.typeArgs[1], "T", "field type arg")
+    }
+  }
+}
+
+test "parseRequest: rejects an unsupported schema version and a missing type name" {
+  assertTrue(
+    match parseRequest("{\"schemaVersion\":\"2\"}") {
+      case Err(msg) -> msg.contains("unsupported schemaVersion 2")
+      case Ok(_) -> false
+    },
+    "schema version 2 rejected"
+  )
+  assertTrue(
+    match parseRequest("{\"schemaVersion\":\"1\",\"typeDescriptor\":{\"kind\":\"Record\"}}") {
+      case Err(msg) -> msg.contains("missing or empty typeDescriptor.name")
+      case Ok(_) -> false
+    },
+    "missing type name rejected"
+  )
+}
+
 test "serializeRequest: ExposedRecord variant" {
   val td = TypeDescriptor(
     kind = ExposedRecord,
