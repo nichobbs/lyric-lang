@@ -12,7 +12,9 @@
 //!      correct surface (`isLetter`, `isDigit`, `isWhiteSpace`, etc.) where
 //!      the BCL's `System.Char` statics are the ground truth.
 //!
-//! `toInt` / `fromInt` bridge between `Char` and `Int` (UTF-16 code units).
+//! `toInt` / `fromInt` / `tryFromInt` bridge between `Char` and `Int`.  A
+//! `Char` is a BMP Unicode scalar value (§2.1 of the language reference), so
+//! `fromInt` rejects the surrogate range U+D800..U+DFFF.
 //! They are the building blocks for `digitValue`, `hexDigitValue`, and any
 //! pure-Lyric text processing that needs arithmetic on characters.
 @runtime_checked
@@ -166,14 +168,31 @@ pub func toInt(c: in Char): Int {
   Host.hostCharToInt(c)
 }
 
-/// Construct a `Char` from a UTF-16 code-unit integer.
-/// Panics at runtime when `n` is outside 0..65535.
+/// Construct a `Char` from a BMP Unicode scalar value.
+/// A `Char` is a BMP scalar (U+0000..U+FFFF excluding the surrogate range
+/// U+D800..U+DFFF, language reference §2.1), so `fromInt` panics at runtime
+/// when `n` is outside 0..65535 or names a UTF-16 surrogate code unit.
+/// A supplementary-plane code point (U+10000..U+10FFFF) has no `Char`
+/// representation: build its `String` with `Std.Encoding.codepointToString`.
+/// Use `tryFromInt` for a non-panicking check.
 @pure
 @stable(since = "1.0")
 pub func fromInt(n: in Int): Char
-  requires: n >= 0 and n <= 65535
+  requires: n >= 0 and n <= 0xFFFF and (n < 0xD800 or n > 0xDFFF)
 {
   Host.hostIntToChar(n)
+}
+
+/// `fromInt`, but `None` instead of a panic when `n` is not a BMP scalar
+/// value (outside 0..65535, or in the surrogate range U+D800..U+DFFF).
+@pure
+@experimental
+pub func tryFromInt(n: in Int): Option[Char] {
+  if n < 0 or n > 0xFFFF or (n >= 0xD800 and n <= 0xDFFF) {
+    None
+  } else {
+    Some(value = fromInt(n))
+  }
 }
 
 // =====================================================================

@@ -19,7 +19,7 @@ Here is the full module inventory:
 | `Std.String` | `trim`, `split`, `join`, case conversion, `substring`, `startsWith`, `endsWith`, `indexOfFrom`, `StringBuilder` |
 | `Std.Parse` | `tryParseInt`, `tryParseLong`, `tryParseDouble`, `tryParseBool` |
 | `Std.Format` | `toHexString`, `formatFixed`, `zeroPad`, `padLeft`, `padRight` |
-| `Std.Char` | `isLetter`, `isDigit`, `isWhiteSpace`, `toUpper`, `toLower`, `digitValue` |
+| `Std.Char` | `isLetter`, `isDigit`, `isWhiteSpace`, `toUpper`, `toLower`, `digitValue`, `toInt`, `fromInt`, `tryFromInt` |
 | `Std.Errors` | `ParseError`, `IOError`, `HttpError` |
 | `Std.File` | `readText`, `writeText`, `readBytes`, `writeBytes`, `fileExists`, `createDir` |
 | `Std.Console` | `print`, `println`, `error`, `readLine`, `readAll` |
@@ -143,6 +143,17 @@ val semis = sb.toString()                  // "a;b;c" for csv = "a,b,c"
 ```
 
 `join` and `joinList` are built on the same builder, so they are linear in the total length.
+
+A `Char` is one BMP scalar value: U+0000 to U+FFFF, excluding the surrogate range U+D800 to U+DFFF. `Std.Char.fromInt(n)` requires such a value and panics with a precondition violation otherwise; `tryFromInt(n)` returns `None` instead. A character outside the BMP, such as an emoji, has no `Char`. Build its text with `Std.Encoding.codepointToString(cp)`, which accepts any scalar value up to U+10FFFF:
+
+```lyric
+import Std.Char
+import Std.Encoding
+
+val e = Std.Char.fromInt(233)             // 'é'
+val none = tryFromInt(55296)              // None: U+D800 is a surrogate
+val grin = codepointToString(128512)      // "😀", U+1F600
+```
 
 ## §12.4 `Std.Collections`
 

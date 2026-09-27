@@ -40,7 +40,6 @@
 package JsonRpc.Stdio
 
 import Std.Core
-import Std.Char
 import Std.Console
 import Std.ConsoleHost
 import Std.Encoding
@@ -207,7 +206,7 @@ func clReadHeaderLine(reader: in CharReader): Result[Option[String], String] {
     } else {
       any = true
       chars = chars + 1
-      line = line + ("" + fromInt(c))
+      line = line + clCodeUnitText(c)
     }
   }
   result
@@ -321,13 +320,27 @@ func clContentLengthOf(line: in String, current: in Int): Int {
   }
 }
 
+// The text of one UTF-16 code unit read from a `CharReader`.  A `Char` is a
+// BMP scalar value, so an unpaired surrogate code unit cannot be kept as-is:
+// it becomes U+FFFD, exactly what `encodeUtf8` would have written for it and
+// what a UTF-8 decoder yields for the malformed bytes behind it (#7252).
+func clCodeUnitText(c: in Int): String {
+  if c >= 0xD800 and c <= 0xDFFF {
+    "�"
+  } else {
+    codepointToString(c)
+  }
+}
+
 // Reads exactly `contentLength` UTF-8 bytes' worth of body, one UTF-16 code
 // unit at a time from `reader`. A lone high surrogate is buffered until
-// the matching low surrogate arrives (a complete supplementary-plane code
-// point is 4 UTF-8 bytes, not two independent 3-byte encodings); an
-// unpaired surrogate at end-of-body is a framing error, since a conforming
-// UTF-8 encoder never splits a surrogate pair across the declared byte
-// count.
+// the matching low surrogate arrives, and the pair decodes to one
+// supplementary-plane code point (4 UTF-8 bytes, not two independent 3-byte
+// encodings). A high surrogate not followed by a low one, or a low
+// surrogate with no high one before it, becomes U+FFFD (3 bytes) rather
+// than failing the whole frame on that malformed shape. An unpaired high
+// surrogate at end-of-body is a framing error, since a conforming UTF-8
+// encoder never splits a surrogate pair across the declared byte count.
 func clReadBodyBytes(contentLength: in Int, reader: in CharReader): Result[String, String] {
   // Pieces are collected and joined once: repeated `+` on a growing string
   // is quadratic in the body size.
@@ -343,34 +356,26 @@ func clReadBodyBytes(contentLength: in Int, reader: in CharReader): Result[Strin
       err = "Content-Length framing: unexpected end of stream reading the message body (" + bytesRead.toString() + " of " +
         contentLength.toString() +
         " bytes)"
-    } else if pendingHigh >= 0 {
-      if c >= 0xDC00 and c <= 0xDFFF {
-        val piece = "" + fromInt(pendingHigh) + "" + fromInt(c)
-        parts.add(piece)
-        bytesRead = bytesRead + encodeUtf8(piece).length
-        pendingHigh = 0 - 1
-      } else {
-        // The buffered high surrogate was not followed by a matching low
-        // surrogate — flush it standalone and reprocess `c` fresh rather
-        // than failing the whole frame outright on this malformed shape.
-        val hiChar = "" + fromInt(pendingHigh)
-        parts.add(hiChar)
-        bytesRead = bytesRead + encodeUtf8(hiChar).length
-        pendingHigh = 0 - 1
-        if c >= 0xD800 and c <= 0xDBFF {
-          pendingHigh = c
-        } else {
-          val ch = "" + fromInt(c)
-          parts.add(ch)
-          bytesRead = bytesRead + encodeUtf8(ch).length
-        }
-      }
-    } else if c >= 0xD800 and c <= 0xDBFF {
-      pendingHigh = c
+    } else if pendingHigh >= 0 and c >= 0xDC00 and c <= 0xDFFF {
+      parts.add(codepointToString(0x10000 + (pendingHigh - 0xD800) * 0x400 + (c - 0xDC00)))
+      bytesRead = bytesRead + 4
+      pendingHigh = 0 - 1
     } else {
-      val ch = "" + fromInt(c)
-      parts.add(ch)
-      bytesRead = bytesRead + encodeUtf8(ch).length
+      if pendingHigh >= 0 {
+        // The buffered high surrogate was not followed by a matching low
+        // surrogate: flush it as U+FFFD and process `c` fresh.
+        val replacement = clCodeUnitText(pendingHigh)
+        parts.add(replacement)
+        bytesRead = bytesRead + encodeUtf8(replacement).length
+        pendingHigh = 0 - 1
+      }
+      if c >= 0xD800 and c <= 0xDBFF {
+        pendingHigh = c
+      } else {
+        val ch = clCodeUnitText(c)
+        parts.add(ch)
+        bytesRead = bytesRead + encodeUtf8(ch).length
+      }
     }
   }
   if not ok {

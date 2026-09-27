@@ -17,6 +17,7 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Std.Char
+import Std.Encoding
 
 // ── Error type ─────────────────────────────────────────────────────────────────
 pub union XmlError {
@@ -180,13 +181,6 @@ func xParseHexDigit(c: in Char): Int {
   }
 }
 
-// Emit the string for a Unicode scalar value parsed from a numeric character
-// reference.  BMP code points (<= U+FFFF) go through `Char.fromInt` directly;
-// astral code points are emitted as a UTF-16 surrogate pair (matching how
-// Std.Encoding reconstructs 4-byte UTF-8).  Code points outside the Unicode
-// range or in the surrogate range are rejected with an XmlError so the parser
-// stays total — routing them through `Char.fromInt` would trip its
-// `requires: n <= 65535` contract (`Std.Char` is @runtime_checked) and panic.
 // XML 1.0 `Char` (§2.2): TAB, LF, CR, and U+0020..U+D7FF, U+E000..U+FFFD,
 // U+10000..U+10FFFF. A character reference must name one (well-formedness
 // constraint "Legal Character", §4.1), so `&#0;`, the other C0 controls,
@@ -197,6 +191,12 @@ func xIsXmlChar(cp: in Int): Bool {
     (cp >= 65536 and cp <= 1114111)
 }
 
+// Emit the string for a Unicode scalar value parsed from a numeric character
+// reference via `Std.Encoding.codepointToString`, which handles BMP and
+// astral code points alike.  Code points that are not an XML `Char` (which
+// excludes the surrogate range and everything above U+10FFFF) are rejected
+// with an XmlError first, so the parser stays total rather than tripping
+// `codepointToString`'s scalar-value precondition.
 func xEmitCodePoint(cp: in Int, pos: in Int): Result[String, XmlError] {
   if not xIsXmlChar(cp) {
     return Err(
@@ -206,18 +206,7 @@ func xEmitCodePoint(cp: in Int, pos: in Int): Result[String, XmlError] {
       )
     )
   }
-  if cp <= 65535 {
-    // Fully-qualified `Std.Char.fromInt`, not bare `fromInt`: this file imports
-    // both Std.String and Std.Char, which each export a `fromInt(Int)` (String
-    // returns the decimal text, Char returns the code point).  Inside a `"" +
-    // …` concat the Char return-type hint is lost, so a bare call resolves by
-    // import order to Std.String.fromInt in the bundle build — turning `&#65;`
-    // into "65" instead of "A".  Qualifying pins the correct target (#4424).
-    Ok(value = "" + Std.Char.fromInt(cp))
-  } else {
-    val c = cp - 65536
-    Ok(value = ("" + Std.Char.fromInt(55296 + c / 1024)) + ("" + Std.Char.fromInt(56320 + c % 1024)))
-  }
+  Ok(value = codepointToString(cp))
 }
 
 // Parse an entity reference starting just after '&'.

@@ -12,6 +12,8 @@
 //! bounds checks throughout the ZIP walk.  The happy path (real JDK jmod
 //! decoding) is covered by `auto_ffi_jvm_self_test.l`; this module drives the
 //! decoders directly with malformed input, the coverage gap #5489 flagged.
+//! The last section drives `Jvm.ClassReader`'s modified-UTF-8 decoder the
+//! same way (#7252): surrogate halves encoded as separate 3-byte sequences.
 //!
 //! Placed in `lyric-compiler/lyric/` (not `lyric-compiler/jvm/`) and run on the
 //! default `dotnet` target so `lyric test` resolves the `Jvm.Deflate` /
@@ -30,6 +32,7 @@ package Lyric.DeflateZipSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Jvm.ClassReader
 import Jvm.Deflate
 import Jvm.ZipReader
 
@@ -299,4 +302,96 @@ test "extractEntry STORED copy is bounded by the real buffer, not the claimed si
   )
   // Copy stops when dataOffset + i reaches the buffer length: offsets 2,3,4 -> 3 bytes.
   assertEqualInt(extractEntry(toSlice(small), ent).count, 3, "STORED copy clamped to buffer")
+}
+
+// ── Jvm.ClassReader modified UTF-8 (#7252) ───────────────────────────────────
+// A class file's CONSTANT_Utf8 entries are "modified UTF-8": a supplementary-
+// plane character is its UTF-16 surrogate pair, each half its own 3-byte
+// sequence.  A pair must decode to one code point; an unpaired or reversed
+// surrogate becomes U+FFFD rather than an unpaired UTF-16 surrogate.
+// The binary name of a minimal class file whose this_class name is the
+// modified-UTF-8 bytes `nameBytes`, or "<none>" if it does not parse.
+func classNameFromUtf8(nameBytes: in List[Int]): String {
+  val b: List[Int] = newList()
+  b.add(202)
+  b.add(254)
+  b.add(186)
+  b.add(190)   // magic 0xCAFEBABE
+  b.add(0)
+  b.add(0)
+  b.add(0)
+  b.add(65)   // minor 0, major 65
+  b.add(0)
+  b.add(3)   // constant_pool_count: #1 Utf8, #2 Class
+  b.add(1)   // #1 CONSTANT_Utf8
+  b.add(nameBytes.count / 256)
+  b.add(nameBytes.count % 256)
+  var i = 0
+  while i < nameBytes.count {
+    b.add(nameBytes[i])
+    i = i + 1
+  }
+  b.add(7)   // #2 CONSTANT_Class -> #1
+  b.add(0)
+  b.add(1)
+  b.add(0)
+  b.add(33)   // access_flags: ACC_PUBLIC | ACC_SUPER
+  b.add(0)
+  b.add(2)   // this_class #2
+  b.add(0)
+  b.add(0)   // super_class none
+  var z = 0
+  while z < 8 {
+    b.add(0)   // interfaces, fields, methods, attributes counts
+    z = z + 1
+  }
+  match parseClass(b) {
+    case Some(info) -> info.binaryName
+    case None -> "<none>"
+  }
+}
+
+func bytesOf(vals: in slice[Int]): List[Int] {
+  val l: List[Int] = newList()
+  var i = 0
+  while i < vals.length {
+    l.add(vals[i])
+    i = i + 1
+  }
+  l
+}
+
+test "ClassReader decodes 1-, 2- and 3-byte modified UTF-8" {
+  // "a", U+00E9 (C3 A9), U+4E2D (E4 B8 AD)
+  assertEqual(classNameFromUtf8(bytesOf([97, 195, 169, 228, 184, 173])), "aé中", "BMP sequences decode")
+}
+
+test "ClassReader combines a CESU-8 surrogate pair into one code point" {
+  // U+1F600 = high D83D (ED A0 BD) + low DE00 (ED B8 80)
+  assertEqual(
+    classNameFromUtf8(bytesOf([97, 237, 160, 189, 237, 184, 128, 98])),
+    "a😀b",
+    "surrogate pair decodes to U+1F600"
+  )
+}
+
+test "ClassReader turns a lone high surrogate into U+FFFD" {
+  assertEqual(classNameFromUtf8(bytesOf([97, 237, 160, 189, 98])), "a�b", "unpaired high surrogate")
+  assertEqual(
+    classNameFromUtf8(bytesOf([237, 160, 189, 228, 184, 173])),
+    "�中",
+    "high surrogate before a non-surrogate 3-byte sequence"
+  )
+}
+
+test "ClassReader turns a lone low surrogate into U+FFFD" {
+  assertEqual(classNameFromUtf8(bytesOf([97, 237, 184, 128, 98])), "a�b", "unpaired low surrogate")
+}
+
+test "ClassReader turns a reversed surrogate pair into two U+FFFD" {
+  assertEqual(
+    classNameFromUtf8(bytesOf([97, 237, 184, 128, 237, 160, 189, 98])),
+    "a��b",
+    "low surrogate before high surrogate"
+  )
 }

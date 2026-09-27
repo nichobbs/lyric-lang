@@ -581,7 +581,23 @@ func parseHex4Digits(hex: in String): Option[Int] {
   Some(value = value)
 }
 
+/// The code unit of a `\uXXXX` low-surrogate escape (U+DC00..U+DFFF)
+/// starting at `at` (the backslash), or `None` if there is none there.
+func lowSurrogateEscapeAt(s: in String, at: in Int): Option[Int] {
+  if at + 5 >= s.length or s.substring(at, 2) != "\\u" {
+    return None
+  }
+  match parseHex4Digits(s.substring(at + 2, 4)) {
+    case Some(low) -> if low >= 0xDC00 and low <= 0xDFFF { Some(value = low) } else { None }
+    case None -> None
+  }
+}
+
 /// Unescape a JSON string value (reverse of RFC 8259 escape sequences).
+/// A `\uXXXX` escape decodes to one Unicode scalar value; a high+low
+/// surrogate escape pair combines into one supplementary-plane code point,
+/// and a lone or reversed surrogate escape decodes to U+FFFD rather than an
+/// unpaired UTF-16 surrogate (#7252).
 func jsonUnescapeValue(s: in String): String {
   val parts: List[String] = newList()
   var i = 0
@@ -618,8 +634,24 @@ func jsonUnescapeValue(s: in String): String {
         val codeOpt = parseHex4Digits(hexStr)
         match codeOpt {
           case Some(code) -> {
-            parts.add("" + Std.Char.fromInt(code))
-            i = i + 6
+            if code >= 0xD800 and code <= 0xDBFF {
+              match lowSurrogateEscapeAt(s, i + 6) {
+                case Some(low) -> {
+                  parts.add(codepointToString(0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00)))
+                  i = i + 12
+                }
+                case None -> {
+                  parts.add("�")
+                  i = i + 6
+                }
+              }
+            } else if code >= 0xDC00 and code <= 0xDFFF {
+              parts.add("�")
+              i = i + 6
+            } else {
+              parts.add(codepointToString(code))
+              i = i + 6
+            }
           }
           case None -> {
             parts.add(c)

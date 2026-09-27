@@ -23,6 +23,7 @@ import Std.Core
 import Std.Collections
 import Std.Json
 import Std.Char
+import Std.Encoding
 import Std.Parse
 import Std.ConsoleHost
 import Std.FileHost
@@ -100,6 +101,7 @@ func readLspFrame(): Option[String] {
   var eof = false
   while not headerDone and not eof {
     var line = ""
+    var lineHigh = -1
     var lineDone = false
     while not lineDone and not eof {
       val c = hostConsoleRead()
@@ -107,14 +109,14 @@ func readLspFrame(): Option[String] {
       if c < 0 {
         eof = true
       } else if c == 10 {
+        line = lspFlushCodeUnits(line, lineHigh)
         lineDone = true
       } else if c == 13 {
         // LF
       } else {
         // CR — skip
-        line = line + ("" + fromInt(c))
+        line = lspAppendCodeUnit(line, lineHigh, c)
       }
-      // fromInt: Std.Char → Char; "" + Char → String
     }
     if eof {
     } else if line.length == 0 {
@@ -142,16 +144,51 @@ func readLspFrame(): Option[String] {
     return None
   }
   var body = ""
+  var bodyHigh = -1
   var rem = contentLength
   while rem > 0 {
     val c = hostConsoleRead()
     if c < 0 {
-      return Some(value = body)
+      return Some(value = lspFlushCodeUnits(body, bodyHigh))
     }
-    body = body + ("" + fromInt(c))
+    body = lspAppendCodeUnit(body, bodyHigh, c)
     rem = rem - 1
   }
-  Some(value = body)
+  Some(value = lspFlushCodeUnits(body, bodyHigh))
+}
+
+// Append UTF-16 code unit `c` (from `System.Console.Read`) to `acc`.  A high
+// surrogate waits in `pendingHigh` (-1 when none) for its low surrogate, and
+// the pair appends one supplementary-plane code point.  A `Char` is a BMP
+// scalar value, so an unpaired surrogate appends U+FFFD instead (#7252).
+pub func lspAppendCodeUnit(acc: in String, pendingHigh: inout Int, c: in Int): String {
+  var text = acc
+  if pendingHigh >= 0 {
+    val high = pendingHigh
+    pendingHigh = -1
+    if c >= 0xDC00 and c <= 0xDFFF {
+      return text + codepointToString(0x10000 + (high - 0xD800) * 0x400 + (c - 0xDC00))
+    }
+    text = text + "�"
+  }
+  if c >= 0xD800 and c <= 0xDBFF {
+    pendingHigh = c
+    text
+  } else if c >= 0xDC00 and c <= 0xDFFF {
+    text + "�"
+  } else {
+    text + codepointToString(c)
+  }
+}
+
+// `acc` with a still-unpaired high surrogate (see `lspAppendCodeUnit`) flushed
+// as U+FFFD.
+pub func lspFlushCodeUnits(acc: in String, pendingHigh: in Int): String {
+  if pendingHigh >= 0 {
+    acc + "�"
+  } else {
+    acc
+  }
 }
 
 func writeLspFrame(json: in String): Unit {
@@ -275,7 +312,10 @@ func jNested2Int(doc: in JsonDoc, p1: in String, p2: in String): Int {
   val root = rootElement(doc)
   match tryGetProperty(root, p1) {
     case None -> 0
-    case Some(e1) -> match tryGetProperty(e1, p2) { case None -> 0; case Some(e2) -> match tryGetInt(e2) { case None -> 0; case Some(n) -> n } }
+    case Some(e1) -> match tryGetProperty(e1, p2) {
+      case None -> 0
+      case Some(e2) -> match tryGetInt(e2) { case None -> 0; case Some(n) -> n }
+    }
   }
 }
 
@@ -1547,11 +1587,17 @@ func lspRangePositionInside(rng: in String, target: in Span): Bool {
   val r = rootElement(pdoc)
   val sLine = match tryGetProperty(r, "start") {
     case None -> -1
-    case Some(sp) -> match tryGetProperty(sp, "line") { case None -> -1; case Some(e) -> match tryGetInt(e) { case None -> -1; case Some(n) -> n + 1 } }
+    case Some(sp) -> match tryGetProperty(sp, "line") {
+      case None -> -1
+      case Some(e) -> match tryGetInt(e) { case None -> -1; case Some(n) -> n + 1 }
+    }
   }
   val sCol = match tryGetProperty(r, "start") {
     case None -> -1
-    case Some(sp) -> match tryGetProperty(sp, "character") { case None -> -1; case Some(e) -> match tryGetInt(e) { case None -> -1; case Some(n) -> n + 1 } }
+    case Some(sp) -> match tryGetProperty(sp, "character") {
+      case None -> -1
+      case Some(e) -> match tryGetInt(e) { case None -> -1; case Some(n) -> n + 1 }
+    }
   }
   if sLine < 0 {
     return false
@@ -1849,7 +1895,37 @@ func buildExternStubBlock(state: in LspState, externFqn: in String, impls: in Li
   ensureLspMetadataIndex(state)
   match mapGet(state.ffiTypeIndex, externFqn) {
     case None -> ""
-    case Some(asmName) -> match mapGet(state.ffiPathIndex, asmName) { case None -> ""; case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, externFqn) { case None -> ""; case Some(insp) -> { if not insp.isInterface { return "" }; var block = ""; var i = 0; while i < insp.methods.count { val m = insp.methods[i]; if m.isAbstract and not m.isStatic and not listContainsString(impls, m.name) { var renderable = sigIsRenderable(m.returnType); var pj = 0; while pj < m.paramTypes.count and renderable { if not sigIsRenderable(m.paramTypes[pj]) { renderable = false }; pj = pj + 1 }; if renderable { block = block + stubFromExternSig(m, indent + "  ") } }; i = i + 1 }; block } } }
+    case Some(asmName) -> match mapGet(state.ffiPathIndex, asmName) {
+      case None -> ""
+      case Some(asmPath) -> match Mdr.inspectInterfaceTarget(asmPath, externFqn) {
+        case None -> ""
+        case Some(insp) -> {
+          if not insp.isInterface {
+            return ""
+          }
+          var block = ""
+          var i = 0
+          while i < insp.methods.count {
+            val m = insp.methods[i]
+            if m.isAbstract and not m.isStatic and not listContainsString(impls, m.name) {
+              var renderable = sigIsRenderable(m.returnType)
+              var pj = 0
+              while pj < m.paramTypes.count and renderable {
+                if not sigIsRenderable(m.paramTypes[pj]) {
+                  renderable = false
+                }
+                pj = pj + 1
+              }
+              if renderable {
+                block = block + stubFromExternSig(m, indent + "  ")
+              }
+            }
+            i = i + 1
+          }
+          block
+        }
+      }
+    }
   }
 }
 

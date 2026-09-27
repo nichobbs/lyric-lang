@@ -589,6 +589,44 @@ test "extractClaim: simple ASCII claim still extracts (#1079 regression guard)" 
   }
 }
 
+// ─── #7252: \uXXXX escapes in claim values ──────────────────────────────────
+// A BMP escape decodes to its character, a surrogate-pair escape combines
+// into one supplementary-plane code point, and a lone or reversed surrogate
+// escape decodes to U+FFFD rather than an unpaired UTF-16 surrogate.
+// extractClaim does not check the signature, so these tokens carry a
+// placeholder one.
+func expectSubClaim(payloadSegment: in String, expected: in String, label: in String): Unit {
+  match Auth.extractClaim("eyJhbGciOiJIUzI1NiJ9." + payloadSegment + ".c2ln", "sub") {
+    case None -> assertTrue(false, label + ": sub claim must be extracted")
+    case Some(value) -> assertEqual(value, expected, label)
+  }
+}
+
+test "extractClaim: a BMP unicode escape decodes to its character (#7252)" {
+  // Payload: {"sub":"caf\u00e9"}
+  expectSubClaim("eyJzdWIiOiJjYWZcdTAwZTkifQ", "café", "BMP escape decodes to é")
+}
+
+test "extractClaim: a surrogate-pair escape decodes to one astral character (#7252)" {
+  // Payload: {"sub":"a\ud83d\ude00b"}
+  expectSubClaim("eyJzdWIiOiJhXHVkODNkXHVkZTAwYiJ9", "a😀b", "surrogate pair decodes to U+1F600")
+}
+
+test "extractClaim: a lone high surrogate escape decodes to U+FFFD (#7252)" {
+  // Payload: {"sub":"a\ud83db"}
+  expectSubClaim("eyJzdWIiOiJhXHVkODNkYiJ9", "a�b", "lone high surrogate becomes U+FFFD")
+}
+
+test "extractClaim: a lone low surrogate escape decodes to U+FFFD (#7252)" {
+  // Payload: {"sub":"a\ude00b"}
+  expectSubClaim("eyJzdWIiOiJhXHVkZTAwYiJ9", "a�b", "lone low surrogate becomes U+FFFD")
+}
+
+test "extractClaim: a reversed surrogate pair decodes to two U+FFFD (#7252)" {
+  // Payload: {"sub":"a\ude00\ud83db"}
+  expectSubClaim("eyJzdWIiOiJhXHVkZTAwXHVkODNkYiJ9", "a��b", "reversed pair becomes two U+FFFD")
+}
+
 // ─── #1081: clock-skew leeway ─────────────────────────────────────────────────
 // We cannot easily test the wall-clock interaction in unit tests, so we exercise
 // the parameter plumbing and contract: skewSeconds=0 must enforce strict

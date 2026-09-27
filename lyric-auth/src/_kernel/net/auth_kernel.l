@@ -123,25 +123,17 @@ func hexDigit(c: in Char): Int {
   return -1  // non-hex digit
 }
 
-// Append the UTF-8 encoding of a Unicode code point to `acc`.
-// Returns the new accumulated string.  Code points within the BMP are emitted
-// directly via Std.Char.fromInt; astral code points (>0xFFFF) are split into a
-// UTF-16 surrogate pair (matching how Std.Encoding.tryDecodeUtf8 reconstructs
-// 4-byte UTF-8 — see std/encoding.l).  Invalid inputs (outside Unicode range,
-// lone surrogate) emit U+FFFD so the function is total.
+// Append the text of a Unicode code point to `acc` and return the result.
+// `Std.Encoding.codepointToString` builds BMP and astral code points alike
+// (an astral one becomes a UTF-16 surrogate pair inside the String).
+// Invalid inputs (outside the Unicode range, or a surrogate code point)
+// append U+FFFD so the function is total.
 func appendCodepoint(acc: in String, cp: in Int): String {
   if cp < 0 or cp > 1114111 or (cp >= 55296 and cp <= 57343) {
     // U+FFFD REPLACEMENT CHARACTER.
     return acc + "�"
   }
-  if cp <= 65535 {
-    return acc + ("" + Std.Char.fromInt(cp))
-  }
-  // Astral plane: encode as UTF-16 surrogate pair.
-  val cp1 = cp - 65536
-  val high = 55296 + cp1 / 1024
-  val low = 56320 + cp1 % 1024
-  acc + ("" + Std.Char.fromInt(high)) + ("" + Std.Char.fromInt(low))
+  acc + codepointToString(cp)
 }
 
 // Decode JSON string escape sequences in `s` (RFC 8259 §7).

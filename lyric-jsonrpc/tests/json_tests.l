@@ -445,6 +445,13 @@ test "two high surrogates in a row is rejected (first one is never paired)" {
   }
 }
 
+test "a reversed surrogate pair (low before high) is rejected" {
+  match parseValue("\"\\uDE00\\uD83D\"") {
+    case Ok(v) -> assertTrue(false, "expected rejection of a reversed surrogate pair")
+    case Err(e) -> ()
+  }
+}
+
 // ── Depth limit ──────────────────────────────────────────────────────────────
 func nestedArray(depth: in Int): String {
   var s = ""

@@ -13,8 +13,9 @@
 //!                Multi-document, anchors/aliases are not yet supported;
 //!                they return UnsupportedFeature.
 //!
-//! Cross-platform: no BCL/JVM externs. Works on both MSIL and JVM
-//! targets without any kernel bridge.
+//! Cross-platform: no BCL/JVM externs of its own. Works on both MSIL and
+//! JVM targets; the only kernel-backed call is `Std.Encoding.codepointToString`
+//! for `\uXXXX` escapes.
 @runtime_checked
 package Std.Yaml
 
@@ -22,6 +23,7 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Std.Char
+import Std.Encoding
 import Std.Parse
 
 // ── Error type ─────────────────────────────────────────────────────────────────
@@ -204,7 +206,8 @@ func yParseHexDigit(c: in Char): Int {
   }
 }
 
-func yParseUnicode4(st: inout YamlState): Result[Char, YamlError] {
+// The four hex digits of a `\uXXXX` escape, as a UTF-16 code unit.
+func yParseUnicode4(st: inout YamlState): Result[Int, YamlError] {
   var value = 0
   var i = 0
   while i < 4 {
@@ -219,7 +222,33 @@ func yParseUnicode4(st: inout YamlState): Result[Char, YamlError] {
     st.pos = st.pos + 1
     i += 1
   }
-  Ok(value = Std.Char.fromInt(value))
+  Ok(value = value)
+}
+
+// Decode a `\uXXXX` escape (with `st.pos` just after the `u`) to the text of
+// one Unicode scalar value.  A supplementary-plane character is written as a
+// high-surrogate escape immediately followed by a low-surrogate escape
+// (RFC 8259 §7, YAML 1.2 §5.7); the pair combines into one code point.  A
+// lone or reversed surrogate names no character and is rejected (#7252).
+func yParseUnicodeEscape(st: inout YamlState): Result[String, YamlError] {
+  val escPos = st.pos - 2
+  val first = match yParseUnicode4(st) { case Err(e) -> { return Err(error = e) }; case Ok(v) -> v }
+  if first >= 0xDC00 and first <= 0xDFFF {
+    return Err(error = UnexpectedChar(pos = escPos, expected = "a character escape, not a lone low surrogate"))
+  }
+  if first < 0xD800 or first > 0xDBFF {
+    return Ok(value = codepointToString(first))
+  }
+  if not yStartsWith(st, "\\u") {
+    return Err(error = UnexpectedChar(pos = st.pos, expected = "\\u low-surrogate escape after a high-surrogate escape"))
+  }
+  val lowPos = st.pos
+  st.pos = st.pos + 2
+  val second = match yParseUnicode4(st) { case Err(e) -> { return Err(error = e) }; case Ok(v) -> v }
+  if second < 0xDC00 or second > 0xDFFF {
+    return Err(error = UnexpectedChar(pos = lowPos, expected = "\\u low-surrogate escape after a high-surrogate escape"))
+  }
+  Ok(value = codepointToString(0x10000 + (first - 0xD800) * 0x400 + (second - 0xDC00)))
 }
 
 // Parse a JSON/YAML double-quoted string (starting just after the opening '"').
@@ -263,12 +292,12 @@ func yParseDoubleQuoted(st: inout YamlState): Result[String, YamlError] {
         } else if esc == 'f' {
           sb.append("\u{000c}")
         } else if esc == 'u' {
-          match yParseUnicode4(st) {
+          match yParseUnicodeEscape(st) {
             case Err(e) -> {
               ok = false
               err = e
             }
-            case Ok(ch) -> sb.appendChar(ch)
+            case Ok(text) -> sb.append(text)
           }
         } else {
           ok = false
