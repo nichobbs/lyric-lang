@@ -5145,10 +5145,20 @@ func libRestPackages(): List[ImportedPackage] {
   val pkgWrap = parse("package Lib.Wrap\nimport Lib.Rest\npub func wrapFn(): Int { 1 }\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "Lib.Rest", items = pkgRest.file.items, imports = collectImportNames(pkgRest.file.imports))
+    ImportedPackage(
+      name = "Lib.Rest",
+      items = pkgRest.file.items,
+      imports = collectImportNames(pkgRest.file.imports),
+      wholeImports = collectWholeImportNames(pkgRest.file.imports)
+    )
   )
   packages.add(
-    ImportedPackage(name = "Lib.Wrap", items = pkgWrap.file.items, imports = collectImportNames(pkgWrap.file.imports))
+    ImportedPackage(
+      name = "Lib.Wrap",
+      items = pkgWrap.file.items,
+      imports = collectImportNames(pkgWrap.file.imports),
+      wholeImports = collectWholeImportNames(pkgWrap.file.imports)
+    )
   )
   packages
 }
@@ -5191,7 +5201,12 @@ test "package-qualified Std.Core prelude reference needs no import (#7495)" {
   val pkgCore = parse("package Std.Core\npub func preludeFn(): Int { 7 }\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "Std.Core", items = pkgCore.file.items, imports = collectImportNames(pkgCore.file.imports))
+    ImportedPackage(
+      name = "Std.Core",
+      items = pkgCore.file.items,
+      imports = collectImportNames(pkgCore.file.imports),
+      wholeImports = collectWholeImportNames(pkgCore.file.imports)
+    )
   )
   val src = "package App\nfunc f(): Int {\n  Std.Core.preludeFn()\n}\n"
   assertEqualInt(
@@ -5207,7 +5222,12 @@ test "local whose field chain spells a package name is not a package reference (
   )
   val packages = libRestPackages()
   packages.add(
-    ImportedPackage(name = "Lib.Shape", items = pkgRec.file.items, imports = collectImportNames(pkgRec.file.imports))
+    ImportedPackage(
+      name = "Lib.Shape",
+      items = pkgRec.file.items,
+      imports = collectImportNames(pkgRec.file.imports),
+      wholeImports = collectWholeImportNames(pkgRec.file.imports)
+    )
   )
   val src = "package App\nimport Lib.Shape\nfunc f(o: in Outer): Int {\n  val Lib = o\n  Lib.Rest.Widget\n}\n"
   assertEqualInt(
@@ -5231,14 +5251,16 @@ func libNetRestPackages(): List[ImportedPackage] {
     ImportedPackage(
       name = "Lib.Net.Rest",
       items = pkgRest.file.items,
-      imports = collectImportNames(pkgRest.file.imports)
+      imports = collectImportNames(pkgRest.file.imports),
+      wholeImports = collectWholeImportNames(pkgRest.file.imports)
     )
   )
   packages.add(
     ImportedPackage(
       name = "Lib.Net.Priv",
       items = pkgPriv.file.items,
-      imports = collectImportNames(pkgPriv.file.imports)
+      imports = collectImportNames(pkgPriv.file.imports),
+      wholeImports = collectWholeImportNames(pkgPriv.file.imports)
     )
   )
   packages
@@ -5283,7 +5305,12 @@ func privateWidgetPackages(): List[ImportedPackage] {
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "PkgPriv", items = pkgPriv.file.items, imports = collectImportNames(pkgPriv.file.imports))
+    ImportedPackage(
+      name = "PkgPriv",
+      items = pkgPriv.file.items,
+      imports = collectImportNames(pkgPriv.file.imports),
+      wholeImports = collectWholeImportNames(pkgPriv.file.imports)
+    )
   )
   packages
 }

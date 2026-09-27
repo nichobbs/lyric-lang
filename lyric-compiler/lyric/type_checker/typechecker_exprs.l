@@ -949,7 +949,14 @@ func checkUnimportedTypeReceiver(
       )
     }
     case None -> {
-      // Hidden by the file's import rule (docs/01 §9.2).
+      // Hidden by the file's import rule (docs/01 §9.2).  A package-private
+      // type stays T0097 (#7499): no import would make it nameable.
+      for cand in symTableTryFindAll(tbl, name) {
+        if symbolIsType(cand) and cand.originPackage != curPkg and symbolIsPackagePrivateBinding(cand) {
+          checkImportedVisibility(cand, span, diag)
+          return
+        }
+      }
       val hint = symTableHiddenImportHint(tbl, name)
       if hint.length > 0 {
         diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + hint, span))
