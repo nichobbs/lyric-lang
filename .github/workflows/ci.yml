@@ -3951,27 +3951,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_uint_erasure_jvm_self_test.l
 
-      # Generic-record PARAMETER field-read self-test (#6691): a field read
-      # on a generic-record-typed function/method PARAMETER used to resolve
-      # by bare field NAME across every bundled type instead of by the
-      # parameter's own class (a silent wrong-class `checkcast`).
-      - name: Generic-record parameter field-read self-test on JVM (native lyric test --target jvm)
+      # Batches 4 JVM generic/cross-package-type self-tests into one step
+      # (#6691, #6708, #7337, #7357) via jvm-generics-self-tests-batch.sh —
+      # ci.yml is near GitHub's size ceiling, so new coverage lands as one
+      # line in that script rather than a whole new step block.
+      - name: JVM generics self-tests batch (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_param_field_read_jvm_self_test.l
-
-      # Generic-record indexed-ELEMENT field-read self-test (#6708): a field
-      # read on an indexed element of a `slice[Entry[K, V]]`/`List[Entry[K,
-      # V]]` container, where `Entry` is a generic record instantiated over
-      # the enclosing generic function's own type parameters, used to fail
-      # with `error[J007]` (erased-Object receiver) instead of resolving
-      # against the record's real class.
-      - name: Generic-record indexed-element field-read self-test on JVM (native lyric test --target jvm)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/generic_element_field_read_jvm_self_test.l
+        run: bash scripts/ci/jvm-generics-self-tests-batch.sh
 
       # Slice array-ABI self-test on JVM (#6586) — sibling of the `--target
       # dotnet` step (`compiler-self-tests-dotnet-a`) covering the SAME
@@ -5902,12 +5890,9 @@ jobs:
           echo "$out" | tail -3
           grep -q "task ambient jvm tests: ok" <<< "$out" || { echo "::error::Std.Task ambient-slot JVM suite did not report success"; exit 1; }
       # lyric-storage suite on JVM (band J6, #1444/#2669) — the first
-      # multi-package ecosystem manifest exercised on --target jvm.  Pins the
-      # in-process multi-package JVM project build (sibling packages bundled
-      # alongside the stdlib closure), the @cfg dotnet/jvm kernel split
-      # selected via the new `lyric test` feature flags, the pure-Lyric
-      # Storage.Kernel.Jvm (Base64 / MD5 / HexFormat / java.io), and the
-      # Std.Json JVM kernel underneath the sidecar reads.
+      # multi-package ecosystem manifest on --target jvm: multi-package JVM
+      # project build, @cfg dotnet/jvm kernel split, Storage.Kernel.Jvm, and
+      # the Std.Json JVM kernel under the sidecar reads.
       - name: lyric-storage suite on JVM (lyric test --target jvm --features jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -5930,6 +5915,12 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --manifest lyric-health/lyric.toml --target jvm --no-default-features --features jvm
+      # lyric-lambda suite on JVM (#7337, #7357); needs Undertow Maven-restored.
+      - name: lyric-lambda suite on JVM (lyric test --target jvm --features jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/manifest-jvm-maven-test.sh lyric-lambda/lyric.toml --target jvm --no-default-features --features jvm
       # lyric-aws-secrets suite on JVM (#7033) — pins the real
       # SecretsManagerClient/SsmClient bindings (secrets_kernel_jvm.l)
       # against the actual AWS SDK for Java v2 JARs: classifySecretsError/

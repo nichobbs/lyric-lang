@@ -208,16 +208,50 @@ pub func inProcess(): InProcessTranslationStore {
 /// locale, or a translation value that is not a JSON string all return
 /// `Err` (naming the offending key, where applicable) instead of raising a
 /// `Bug`.
+func decodeLocaleTranslations(
+  // Decode one locale's `{ "key": "value", ... }` object into `m`, keyed
+  // `"<canonicalKey>|<translationKey>"`. Takes the locale's `JsonElement`
+  // directly as a parameter — a plain free-function helper, not inlined into
+  // `fromJson` (#7357: this used to be impossible on the self-hosted JVM
+  // backend, which resolved a bare `JsonElement` parameter/lambda-parameter
+  // type declared outside the CURRENT package — here, imported transitively
+  // via `Std.Json`'s own `import Std.JsonHost`, never imported directly by
+  // this file — to a phantom same-package class instead of the real
+  // `Std.JsonHost.JsonElement`, throwing `NoClassDefFoundError` at class-load;
+  // fixed by resolving a bare type reference through the file's TRANSITIVE
+  // import closure, not just its direct imports).
+  localeVal: in JsonElement,
+  lk: in String,
+  canonicalKey: in String,
+  m: in Map[String, String],
+): Result[Unit, I18nError] {
+  var innerEn = enumerateObject(localeVal)
+  while objectMoveNext(innerEn) {
+    val tkeyProp = objectCurrent(innerEn)
+    val tkey = propertyName(tkeyProp)
+    if tkey.contains("|") {
+      return Err(I18nError(message = "Translation key \"" + tkey + "\" must not contain '|'", code = "INVALID_KEY"))
+    }
+    val tvalElem = propertyValue(tkeyProp)
+    if not isJsonString(tvalElem) {
+      return Err(
+        I18nError(
+          message = "Translation value for key \"" + tkey + "\" in locale \"" + lk + "\" is not a string",
+          code = "INVALID_VALUE"
+        )
+      )
+    }
+    val tval = getString(tvalElem)
+    val compound = canonicalKey + "|" + tkey
+    if not m.containsKey(compound) {
+      m.add(compound, tval)
+    }
+  }
+  return Ok(value = ())
+}
+
 @stable(since = "0.1")
 pub func fromJson(json: in String): Result[InProcessTranslationStore, I18nError] {
-  // The whole tree walk lives in this one function, rather than delegating
-  // to a helper that takes a `JsonElement`/`JsonDoc` parameter: passing
-  // either type across a function boundary inside a *consumer* package
-  // (not `Std.Json` itself) fails at runtime on the self-hosted JVM backend
-  // (`NoClassDefFoundError: <ThisPackage>/JsonElement` — confirmed with an
-  // isolated repro; it looks for the type in the caller's own package
-  // instead of the imported one). Keeping every `JsonElement`/`JsonProperty`
-  // value local to this function's body sidesteps that gap.
   match tryParseJson(json) {
     case Err(msg) -> return Err(I18nError(message = "Malformed translations JSON: " + msg, code = "PARSE_ERROR"))
     case Ok(doc) -> {
@@ -267,27 +301,9 @@ pub func fromJson(json: in String): Result[InProcessTranslationStore, I18nError]
                   )
                 )
               }
-              var innerEn = enumerateObject(localeVal)
-              while objectMoveNext(innerEn) {
-                val tkeyProp = objectCurrent(innerEn)
-                val tkey = propertyName(tkeyProp)
-                if tkey.contains("|") {
-                  return Err(I18nError(message = "Translation key \"" + tkey + "\" must not contain '|'", code = "INVALID_KEY"))
-                }
-                val tvalElem = propertyValue(tkeyProp)
-                if not isJsonString(tvalElem) {
-                  return Err(
-                    I18nError(
-                      message = "Translation value for key \"" + tkey + "\" in locale \"" + lk + "\" is not a string",
-                      code = "INVALID_VALUE"
-                    )
-                  )
-                }
-                val tval = getString(tvalElem)
-                val compound = canonicalKey + "|" + tkey
-                if not m.containsKey(compound) {
-                  m.add(compound, tval)
-                }
+              match decodeLocaleTranslations(localeVal, lk, canonicalKey, m) {
+                case Err(e) -> return Err(e)
+                case Ok(_) -> ()
               }
               // A locale-value entry that isn't itself an object is silently
               // skipped (unchanged from the pre-existing behaviour;

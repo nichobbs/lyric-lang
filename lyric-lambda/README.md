@@ -25,7 +25,7 @@ AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). 
 |---|---|---|
 | `aws` | .NET custom runtime: HTTP long-polling against `$AWS_LAMBDA_RUNTIME_API` | Available — all six event sources (`aws:sqs`/`aws:sns`/`aws:s3`/`aws:dynamodb`/`aws:kinesis`/EventBridge), `raw`, and authorizers wired; HTTP/streaming not implemented (see "Known gaps") |
 | `local` | Local test server (compatible with `sam local invoke`) | Available — same dispatch logic and gaps as `aws`, different transport |
-| `jvm` | JVM custom runtime (`provided.al2`/`provided.al2023`): the SAME `Lambda.Dispatch` HTTP long-polling loop as `aws` | Available — same dispatch logic and gaps as `aws`/`local`; verified in isolation (a standalone `Std.Http`+`Std.HttpServer`+`scope`/`spawn`/`await` spike passes on `--target jvm`) — full project-level `--target jvm` verification is blocked in this environment by an unrelated, pre-existing Maven-resolver gap (see "Known gaps") |
+| `jvm` | JVM custom runtime (`provided.al2`/`provided.al2023`): the SAME `Lambda.Dispatch` HTTP long-polling loop as `aws` | Available, same dispatch logic and gaps as `aws`/`local`. The full suite (`lambda_tests.l`, `lambda_dispatch_tests.l`, `lambda_aspect_weaving_tests.l`) now builds and passes on `--target jvm` and runs in CI: #7337 fixed a J007 erased-receiver gap in the JVM backend's generic-return inference (`mapGet(...)` on a `Map` field reached through a chained receiver); #7357 fixed a bare/qualified cross-package type reference resolving to a phantom same-package class instead of the real one (hit `detectEventSource`'s `Std.Json.JsonElement` helper parameter, and the `DeadlineGuard` aspect's `Lambda.LambdaContext`-typed row-constraint args record) |
 
 ## Packages
 
@@ -510,7 +510,6 @@ or a `panic` with an explanatory message) rather than pretending to work:
 | Response streaming (`Lambda.Stream`, `Lambda.withStreamingHandler`, `Lambda.Direct.streamingHandler`) | Every `Lambda.Stream` function panics; `streamingHandler` panics at registration time | A real streaming transport design (Function URL `RESPONSE_STREAM` uses a different invoke path than the GET-next/POST-response loop this library implements) |
 | `web` feature not target-gated | Compiles regardless of `--target`; `ConditionalWeakTable` (its extern boundary) is .NET-only | Target-gating, or a JVM-side registry (a plain `Map[LambdaRouter, Web.Router]` needs no weak table on that target) once a real JVM `feature = "web"` consumer exists |
 | String-based `on*`/`onTokenAuthorizer`/etc. registration | Registers successfully; dispatch fails closed if no `Lambda.Direct` handler also covers the same source | None planned — `Lambda.Direct` is the sanctioned replacement (D099) |
-| Full project-level `--target jvm` verification | Blocked in sandboxed CI-like environments without a `lyric-resolver.jar` (Maven resolution unavailable to fetch `lyric-web`'s `io.undertow:undertow-core`, which `Lambda`'s unconditional `import Web` pulls in transitively on JVM) | A `lyric-resolver.jar` (`make maven-resolver`) with network access to Maven Central; the JVM kernel logic itself is verified in isolation (a standalone `Std.Http`+`Std.HttpServer`+`scope`/`spawn`/`await` spike passes on `--target jvm`) |
 
 ## Package layout
 
