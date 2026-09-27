@@ -3678,6 +3678,25 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
   }
 }
 
+// The `box` operand for a distinct type's underlying value, or 0 when it is
+// a reference type.  An unsigned underlying type boxes as UInt32 / UInt64 so
+// its hash and equality match the unsigned value.
+func distinctBoxToken(d: in MDistinctType, ctx: in LoweringCtx): Int {
+  val name = match d.inner {
+    case MInt -> if d.isUnsigned { "UInt32" } else { "Int32" }
+    case MLong -> if d.isUnsigned { "UInt64" } else { "Int64" }
+    case MDouble -> "Double"
+    case MBool -> "Boolean"
+    case MChar -> "Char"
+    case MByte -> "Byte"
+    case _ -> ""
+  }
+  match d.inner {
+    case MValueTypeRef(code, _) -> 0x01000000 + (code - 1) / 4
+    case _ -> if name.length == 0 { 0 } else { 0x01000000 + ctxAddTypeRef(ctx, "System", name, ctx.arRuntime) }
+  }
+}
+
 // Human-readable range description for the bounds-violation message.
 func distinctRangeDesc(d: in MDistinctType): String {
   val lo = if d.rangeIsFloat { d.minF.toString() } else { d.minI.toString() }
@@ -3877,6 +3896,76 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
     }
     addSynthMethodDef(ctx, d.className, mbConv, convName, bConvSig, MDA_PUBLIC + MDA_HIDE_BY_SIG, 0)
   }
+
+  // ── Methods 4-5: value Equals / GetHashCode overrides (#7375) ──
+  // A distinct value is a wrapper object, so without these a Dictionary /
+  // HashSet keyed by it compares references.  Both delegate to the underlying
+  // value's own Equals / GetHashCode (boxed when it is a value type), which is
+  // reflexive for Double NaN as a hash key must be.
+  val selfTok = 0x02000000 + t.typeDefs.count + 1
+  val eqParams: List[MsilType] = newList()
+  eqParams.add(MObject)
+  val eqSig = buildInstanceMethodSigWithCtx(eqParams, MBool, ctx)
+  val bEqSig = internBlob(bh, "deq_" + d.className, eqSig)
+  val mbEq = newMethodBody()
+  val hashSig = buildInstanceMethodSigWithCtx(newList(), MInt, ctx)
+  val bHashSig = internBlob(bh, "dhash_" + d.className, hashSig)
+  val mbHash = newMethodBody()
+  if not isDiscover {
+    val boxTok = distinctBoxToken(d, ctx)
+    val objEqPs: List[MsilType] = newList()
+    objEqPs.add(MObject)
+    objEqPs.add(MObject)
+    val mrObjEquals = 0x0A000000 +
+      ctxAddMemberRef(
+        ctx,
+        ctx.trObject,
+        "Equals",
+        "obj_static_eq",
+        buildStaticMethodSig(objEqPs, MBool)
+      )
+    val mrObjHash = 0x0A000000 +
+      ctxAddMemberRef(
+        ctx,
+        ctx.trObject,
+        "GetHashCode",
+        "obj_gethashcode",
+        buildInstanceMethodSig(newList(), MInt)
+      )
+
+    mbEq.maxStack = 3
+    val notSame = mbNewLabel(mbEq)
+    emitLdarg(mbEq, 1)
+    emitIsinst(mbEq, selfTok)
+    emitBrfalse(mbEq, notSame)
+    emitLdarg_0(mbEq)
+    emitLdfld(mbEq, valueFieldTok)
+    if boxTok != 0 {
+      emitBox(mbEq, boxTok)
+    }
+    emitLdarg(mbEq, 1)
+    emitCastclass(mbEq, selfTok)
+    emitLdfld(mbEq, valueFieldTok)
+    if boxTok != 0 {
+      emitBox(mbEq, boxTok)
+    }
+    emitCall(mbEq, mrObjEquals)
+    emitRet(mbEq)
+    mbMarkLabel(mbEq, notSame)
+    emitLdc_I4(mbEq, 0)
+    emitRet(mbEq)
+
+    mbHash.maxStack = 1
+    emitLdarg_0(mbHash)
+    emitLdfld(mbHash, valueFieldTok)
+    if boxTok != 0 {
+      emitBox(mbHash, boxTok)
+    }
+    emitCallvirt(mbHash, mrObjHash)
+    emitRet(mbHash)
+  }
+  addSynthMethodDef(ctx, d.className, mbEq, "Equals", bEqSig, MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG, 1)
+  addSynthMethodDef(ctx, d.className, mbHash, "GetHashCode", bHashSig, MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG, 0)
 
   val typeRow = addTypeDef(
     t,

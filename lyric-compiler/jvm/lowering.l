@@ -3963,6 +3963,75 @@ func lowerDistinctAccessor(d: in LDistinctType, pool: in Pool, fieldIdx: in Int,
   makeMethodInfo(ACC_PUBLIC, methodName, buildDescriptor(noPs, d.underlyingType), accAttrs)
 }
 
+// Box the underlying value on the stack (a no-op for a reference type), so
+// `Objects.equals` / `Objects.hashCode` compare and hash it by value.
+func emitJvmDistinctBoxValue(asm: in MethodAssembler, pool: in Pool, ty: in JvmType): Unit {
+  val owner = match ty {
+    case JInt -> "java/lang/Integer"
+    case JLong -> "java/lang/Long"
+    case JDouble -> "java/lang/Double"
+    case JFloat -> "java/lang/Float"
+    case JBoolean -> "java/lang/Boolean"
+    case JByte -> "java/lang/Byte"
+    case JChar -> "java/lang/Character"
+    case JShort -> "java/lang/Short"
+    case _ -> ""
+  }
+  if owner.length > 0 {
+    val ps: List[JvmType] = newList()
+    ps.add(ty)
+    emitInvokestatic(asm, poolMethodref(pool, owner, "valueOf", buildDescriptor(ps, JRef(className = owner))))
+  }
+}
+
+// `public boolean equals(Object o)`: true when `o` is the same distinct type
+// and its underlying value equals this one's.
+func lowerDistinctEquals(d: in LDistinctType, pool: in Pool, fieldIdx: in Int): MethodInfo {
+  val selfClass = poolClass(pool, d.wrapperClass)
+  val asm = newAssembler(pool)
+  emitAload(asm, 1)
+  emitInstanceof(asm, selfClass)
+  emitIfeq(asm, "notSame")
+  emitAload(asm, 0)
+  emitGetfield(asm, fieldIdx)
+  emitJvmDistinctBoxValue(asm, pool, d.underlyingType)
+  emitAload(asm, 1)
+  emitCheckcast(asm, selfClass)
+  emitGetfield(asm, fieldIdx)
+  emitJvmDistinctBoxValue(asm, pool, d.underlyingType)
+  emitInvokestatic(asm, poolMethodref(pool, "java/util/Objects", "equals", "(Ljava/lang/Object;Ljava/lang/Object;)Z"))
+  emitIreturn(asm)
+  emitLabel(asm, "notSame")
+  emitIconst(asm, 0)
+  emitIreturn(asm)
+  val frameLocals: List[VerifierType] = newList()
+  frameLocals.add(VObject(className = d.wrapperClass))
+  frameLocals.add(VObject(className = "java/lang/Object"))
+  // Peak: the boxed receiver value plus the other value before boxing (a
+  // long/double takes two words).
+  val code = assembleCodeWithFrames(asm, 3, 2, frameLocals)
+  val attrs: List[Attribute] = newList()
+  attrs.add(code)
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/Object"))
+  makeMethodInfo(ACC_PUBLIC, "equals", buildDescriptor(ps, JBoolean), attrs)
+}
+
+// `public int hashCode()`: the underlying value's hash, consistent with
+// `equals`.
+func lowerDistinctHashCode(d: in LDistinctType, pool: in Pool, fieldIdx: in Int): MethodInfo {
+  val asm = newAssembler(pool)
+  emitAload(asm, 0)
+  emitGetfield(asm, fieldIdx)
+  emitJvmDistinctBoxValue(asm, pool, d.underlyingType)
+  emitInvokestatic(asm, poolMethodref(pool, "java/util/Objects", "hashCode", "(Ljava/lang/Object;)I"))
+  emitIreturn(asm)
+  val code = assembleCode(asm, 2, 1)
+  val attrs: List[Attribute] = newList()
+  attrs.add(code)
+  makeMethodInfo(ACC_PUBLIC, "hashCode", buildDescriptor(newList(), JInt), attrs)
+}
+
 pub func lowerDistinctType(d: in LDistinctType, pool: in Pool): ClassFile {
   val valueDesc = typeDescriptor(d.underlyingType)
   val fieldIdx = poolFieldref(pool, d.wrapperClass, "$value", valueDesc)
@@ -4025,6 +4094,10 @@ pub func lowerDistinctType(d: in LDistinctType, pool: in Pool): ClassFile {
   // `lowerMDistinctType`.
   methods.add(lowerDistinctFrom(d, pool))
   methods.add(lowerDistinctTryFrom(d, pool))
+  // Value `equals` / `hashCode` (#7375): a distinct value is a wrapper object,
+  // so without these a HashMap / HashSet keyed by it compares identity.
+  methods.add(lowerDistinctEquals(d, pool, fieldIdx))
+  methods.add(lowerDistinctHashCode(d, pool, fieldIdx))
 
   ClassFile(
     minorVersion = 0,
