@@ -19,7 +19,27 @@ extern func toC(s: String): NativePtr[Byte] = "lyric_string_to_cstring"
 
 extern func freeC(p: NativePtr[Byte]): Unit = "lyric_cstring_free"
 
+// `args` rides as the raw kernel handle of a Std.Collections List[String]
+// (LyricList*): collection values passed as call arguments ride
+// NativePtr[Byte] under N4.5 argument adaptation, the convention
+// `process_capture_host.l`'s `rtProcessRun` also uses.
 extern func rtProcessRunInherited(path: NativePtr[Byte], args: NativePtr[Byte], outCode: NativePtr[Int]): Int = "lyric_process_run_inherited"
+
+extern func rtLastSpawnErrno(): Int = "lyric_process_last_spawn_errno"
+
+extern func rtErrnoMessage(e: Int): String = "lyric_process_errno_message"
+
+// The reason the child could not be started, as the OS reports it (e.g.
+// "No such file or directory" for a missing executable), matching the
+// managed twins, whose IoError carries the host exception's message.
+func spawnFailureMessage(): String {
+  val e = rtLastSpawnErrno()
+  if e == 0 {
+    "the process could not be started"
+  } else {
+    "the process could not be started: " + rtErrnoMessage(e)
+  }
+}
 
 // Run `executable` with `args` on inherited stdio and wait for it.  A child
 // that cannot be started (including an executable that is not found) is an
@@ -33,6 +53,6 @@ pub func hostRunInheritedResult(executable: in String, args: in List[String]): R
   if rc == 0 {
     Ok(value = code)
   } else {
-    Err(error = IoError(path = executable, message = "the process could not be started"))
+    Err(error = IoError(path = executable, message = spawnFailureMessage()))
   }
 }

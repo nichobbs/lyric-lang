@@ -869,6 +869,10 @@ implements, with the native twin over a new `lyric_process_run_inherited`
 over a CLOEXEC pipe, so a missing executable is an `Err` on every target
 rather than exit code 127). See
 `docs/progress/2026-09-26-native-process-run-and-storage-bytes.md`.
+The piped API (`spawnPiped`/`pipedReadLine`/`pipedWriteLine`, issue #6887)
+followed through the same kind of seam in `Std.ProcessPipedHost`, and native
+spawn failures now carry the OS reason; see
+`docs/progress/2026-09-26-native-piped-process-api.md`.
 
 ---
 

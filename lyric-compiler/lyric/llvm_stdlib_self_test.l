@@ -542,23 +542,15 @@ test "Std.Process.run: exit code on inherited stdio, Err for a missing executabl
   assertEqualInt(r.exitCode, 42, "Std.Process.run on native")
 }
 
-// Exercises `Std.ProcessPipedHost` directly (issue #6142), not the shared
-// `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine` facade: those
-// three functions wrap the host call in `try { } catch Bug as b { }`,
-// which `Lyric.LlvmCodegen` unconditionally rejects for `--target native`
-// (D-N-003 — "try/catch is not supported ... no unwinding"), a real,
-// pre-existing, tracked-separately blocker independent of this kernel's
-// own correctness. `Std.Process.buildArgString` (also on that shared call
-// path) additionally calls `.replace()`, which has no native codegen
-// lowering yet either. Both gaps are documented, not silently routed
-// around — see this file's own header note and D-progress-909. The kernel
-// itself (spawn/read/write/kill/waitExit/exitCode/closeStdin/close) is
-// fully exercised here against a real `cat` child, matching the coverage
-// `lyric-compiler/jvm/piped_process_jvm_main.l` gives the JVM twin one
-// layer up (through `Std.Process`, which has no such blocker on that
-// target).
+// Exercises `Std.ProcessPipedHost` directly (issue #6142): the kernel's
+// spawn/read/write/kill/waitExit/exitCode/closeStdin/close against a real
+// `cat` child, and `hostSpawnPipedResult`'s Err (with the OS reason) for a
+// missing executable. The `Std.Process` facade over it is covered by the
+// next test.
 test "Std.ProcessPipedHost native kernel: spawn/read/write/kill/waitExit/closeStdin over a real cat child (ASan)" {
-  val src = "package T\n" + "import Std.Core\n" + "import Std.ProcessPipedHost\n" + "func main(): Int {\n" +
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Errors\n" +
+    "import Std.ProcessPipedHost\n" +
+    "func main(): Int {\n" +
     "  val p = hostSpawnPiped(\"/bin/cat\", \"\")\n" +
     "  if not hostPipedIsAlive(p) {\n" +
     "    return 1\n" +
@@ -622,14 +614,18 @@ test "Std.ProcessPipedHost native kernel: spawn/read/write/kill/waitExit/closeSt
     "    return 12\n" +
     "  }\n" +
     "  hostPipedClose(p2)\n" +
-    "  val p3 = hostSpawnPiped(\"/nonexistent-lyric-piped-n62\", \"\")\n" +
-    "  if not hostPipedWaitExit(p3, 5000) {\n" +
-    "    return 13\n" +
+    "  val noArgs: List[String] = newList()\n" +
+    "  match hostSpawnPipedResult(\"/nonexistent-lyric-piped-n62\", noArgs) {\n" +
+    "    case Ok(p3) -> {\n" +
+    "      hostPipedClose(p3)\n" +
+    "      return 13\n" +
+    "    }\n" +
+    "    case Err(e) -> {\n" +
+    "      if not IOError.message(e).contains(\"No such file\") {\n" +
+    "        return 14\n" +
+    "      }\n" +
+    "    }\n" +
     "  }\n" +
-    "  if hostPipedExitCode(p3) != 127 {\n" +
-    "    return 14\n" +
-    "  }\n" +
-    "  hostPipedClose(p3)\n" +
     "  val p4 = hostSpawnPiped(\"/bin/echo\", \"\\\"hello world\\\"\")\n" +
     "  match hostPipedReadLineOpt(p4) {\n" +
     "    case Some(line) -> {\n" +
@@ -647,6 +643,85 @@ test "Std.ProcessPipedHost native kernel: spawn/read/write/kill/waitExit/closeSt
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "piped process kernel seams")
+}
+
+// Std.Process.spawnPiped/pipedReadLine/pipedWriteLine wrapped their host
+// calls in try/catch, which --target native rejects (D-N-003, #6887); they
+// now go through Std.ProcessPipedHost's Result seams. Also checks that a
+// missing executable's Err carries the OS reason on native, for both
+// spawnPiped and run.
+test "Std.Process piped API and spawn-failure messages on native (ASan) (#6887)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Errors\n" +
+    "import Std.Process\n" +
+    "func main(): Int {\n" +
+    "  val noArgs: List[String] = newList()\n" +
+    "  match spawnPiped(\"/bin/cat\", noArgs) {\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "    case Ok(p) -> {\n" +
+    "      match pipedWriteLine(p, \"round trip\") {\n" +
+    "        case Err(_) -> {\n" +
+    "          return 2\n" +
+    "        }\n" +
+    "        case Ok(_) -> {\n" +
+    "        }\n" +
+    "      }\n" +
+    "      match pipedReadLine(p) {\n" +
+    "        case Ok(Some(line)) -> {\n" +
+    "          if line != \"round trip\" {\n" +
+    "            return 3\n" +
+    "          }\n" +
+    "        }\n" +
+    "        case _ -> {\n" +
+    "          return 4\n" +
+    "        }\n" +
+    "      }\n" +
+    "      pipedCloseStdin(p)\n" +
+    "      if not pipedWaitExit(p, 5000) {\n" +
+    "        return 5\n" +
+    "      }\n" +
+    "      match pipedReadLine(p) {\n" +
+    "        case Ok(None) -> {\n" +
+    "        }\n" +
+    "        case _ -> {\n" +
+    "          return 6\n" +
+    "        }\n" +
+    "      }\n" +
+    "      match pipedWriteLine(p, \"after close\") {\n" +
+    "        case Ok(_) -> {\n" +
+    "          return 7\n" +
+    "        }\n" +
+    "        case Err(_) -> {\n" +
+    "        }\n" +
+    "      }\n" +
+    "      pipedClose(p)\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match spawnPiped(\"/definitely-missing-lyric-piped\", noArgs) {\n" +
+    "    case Ok(_) -> {\n" +
+    "      return 8\n" +
+    "    }\n" +
+    "    case Err(e) -> {\n" +
+    "      if not IOError.message(e).contains(\"No such file\") {\n" +
+    "        return 9\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  match run(\"/definitely-missing-lyric-run\", noArgs) {\n" +
+    "    case Ok(_) -> {\n" +
+    "      return 10\n" +
+    "    }\n" +
+    "    case Err(e) -> {\n" +
+    "      if not IOError.message(e).contains(\"No such file\") {\n" +
+    "        return 11\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.Process piped API on native")
 }
 
 test "Std.Time seams: epoch, monotonic, sleep (ASan)" {

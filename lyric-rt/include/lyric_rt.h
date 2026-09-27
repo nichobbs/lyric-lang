@@ -634,6 +634,16 @@ int32_t lyric_process_run(const char* path, LyricList* args,
 int32_t lyric_process_run_inherited(const char* path, LyricList* args,
                                     int32_t* out_exit_code);
 
+/* The errno that made the most recent lyric_process_run_inherited or
+ * lyric_process_piped_spawn call on this thread fail to start its child
+ * (the child's execvp errno for a missing executable), or 0 when unknown.
+ * Only meaningful right after such a failure. */
+int32_t lyric_process_last_spawn_errno(void);
+
+/* strerror's text for errno `e` as a fresh rc=1 LyricString
+ * (thread-safe). */
+LyricString* lyric_process_errno_message(int32_t e);
+
 /* Nonblocking capture op (the async process leaf, D-N-023): the same
  * fork/execvp capture as lyric_process_run, driven by repeated
  * nonblocking pumps instead of one blocking drain, so a coroutine can
@@ -676,8 +686,10 @@ void lyric_process_free(void* op);
  * loop driving both directions at once, the same model
  * lyric_sock_read/lyric_sock_write already use for a TCP connection.
  *
- * Lifecycle: spawn (NULL on an OS-level spawn failure -- no handle
- * exists to free in that case) -> read_line/write_line/is_alive any
+ * Lifecycle: spawn (NULL when the child could not be started: a
+ * pipe/fork failure, or an execvp failure such as `path` not found,
+ * reported back over a CLOEXEC pipe; no handle exists to free in that
+ * case) -> read_line/write_line/is_alive any
  * number of times in any order -> close (does not itself wait for or
  * kill the child) or kill/wait_exit first if the caller needs the child
  * gone. read_line blocks until a complete '\n'-terminated line is

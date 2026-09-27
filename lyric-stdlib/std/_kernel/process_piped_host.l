@@ -21,6 +21,9 @@
 package Std.ProcessPipedHost
 
 import Std.Core
+import Std.Collections
+import Std.Errors
+import Std.ProcessArgs
 
 // ── BCL extern types ───────────────────────────────────────────────────────
 extern type Psi = "System.Diagnostics.ProcessStartInfo"
@@ -214,5 +217,35 @@ pub func hostPipedClose(p: in PipedHandle): Unit {
     procDispose(p.proc)
   } catch Bug as _ {
     ()
+  }
+}
+
+// ── Result seams for Std.Process (#6887) ─────────────────────────────────────
+// `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine` delegate here.
+// The host throws on a failed spawn, read or write; the try/catch lives in
+// the kernel because `--target native` has no unwinding (D-N-003) and its
+// twin reports the same failures as return codes instead.
+pub func hostSpawnPipedResult(fileName: in String, args: in List[String]): Result[PipedHandle, IOError] {
+  try {
+    Ok(value = hostSpawnPiped(fileName, argvJoin(args)))
+  } catch Bug as b {
+    Err(error = IoError(path = fileName, message = b.message))
+  }
+}
+
+pub func hostPipedReadLineResult(p: in PipedHandle): Result[Option[String], String] {
+  try {
+    Ok(value = hostPipedReadLineOpt(p))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub func hostPipedWriteLineResult(p: in PipedHandle, line: in String): Result[Unit, String] {
+  try {
+    hostPipedWriteLine(p, line)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = b.message)
   }
 }
