@@ -847,6 +847,110 @@ func isPlainLong(t: in Type): Bool {
   }
 }
 
+// #7345: is `target` reachable from `pkg` by following declared `import`s
+// transitively? Starting the walk from the CURRENT file's own package (whose
+// registered import list already includes every package it directly
+// imports) and following each visited package's own declared imports in turn
+// closes the exact gap #6287's writeup flagged as blocking a broader
+// unimported-name rejection: the stdlib's kernel/host re-export idiom
+// (`Std.Collections` importing `Std.CollectionsHost`, which is where
+// `List`/`Map` are actually declared) is reachable through this walk even
+// though the file itself never names `Std.CollectionsHost`. Bounded by the
+// total package count in the build (a `visited` map), so it terminates even
+// if the import graph were ever cyclic.
+func symTableImportReachable(tbl: in SymbolTable, startPkg: in String, target: in String): Bool {
+  val visited: Map[String, Bool] = newMap()
+  val queue: List[String] = newList()
+  queue.add(startPkg)
+  var head = 0
+  while head < queue.count {
+    val p = queue[head]
+    head = head + 1
+    if p == target {
+      return true
+    }
+    if not visited.containsKey(p) {
+      visited.add(p, true)
+      val imps = symTablePackageImportsOf(tbl, p)
+      var i = 0
+      while i < imps.count {
+        queue.add(imps[i])
+        i = i + 1
+      }
+    }
+  }
+  false
+}
+
+// #7345: a bare, uppercase-starting single-segment name used in method-call
+// position (`RestClient.create(...)`, docs/49's dotted type-associated-
+// function convention) is deliberately left untyped by `resolveExprPath` —
+// it names a TYPE, never a value, and the actual dispatch (which function,
+// in which package) is owned by codegen, which resolves it by walking the
+// file's own import closure. That leniency must not swallow the case where
+// the name is not reachable from this file's imports at all: without this
+// check, a real stdlib type from a package the file never imported
+// (`Std.Rest.RestClient`) silently degraded to a backend-specific runtime
+// failure instead of a compile-time error (#7345).
+//
+// Firing only when the symbol is a TYPE, is declared by a different package
+// than the current scope, is not reachable through the import closure (see
+// `symTableImportReachable`), and is not part of the implicit `Std.Core`
+// prelude (docs/01 §9.2 — `Option`/`Result` are referenced tree-wide with no
+// `import Std.Core` at all, predating any scoped-resolution tiering, #6287)
+// keeps this additive: every call this checker already accepted
+// (same-package, imported, transitively re-exported, or `Std.Core`) is
+// untouched. A check with no package scope set at all (`curPkg == ""` — a
+// synthesised contract-surface check or the flat `checkWithImports` shim,
+// #6287's "historical last-registered-wins" mode) never diagnoses: it has no
+// import list to test reachability against.
+func checkUnimportedTypeReceiver(
+  tbl: in SymbolTable,
+  sc: in Scope,
+  name: in String,
+  span: in Span,
+  diag: in List[Diagnostic],
+): Unit {
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 {
+    return
+  }
+  match scopeTryFind(sc, name) {
+    case Some(_) -> {
+      return
+    }
+    case None -> ()
+  }
+  match symTableTryFindOne(tbl, name) {
+    case Some(sym) -> {
+      if not symbolIsType(sym) {
+        return
+      }
+      if sym.originPackage.length == 0 or sym.originPackage == "Std.Core" or sym.originPackage == curPkg {
+        return
+      }
+      if symTableImportReachable(tbl, curPkg, sym.originPackage) {
+        return
+      }
+      match sym.visibility {
+        case Some(_) -> {
+          diag.add(
+            errorDiagnostic(
+              "T0020",
+              "unknown name '" + name + "' (declared in " + sym.originPackage + "; add `import " + sym.originPackage + "`)",
+              span
+            )
+          )
+        }
+        case None -> {
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
 // The result type of `T.from` / `T.tryFrom` when `fn` names one on a
 // distinct type `T` that no local shadows.
 func distinctFactoryType(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Option[Type] {
@@ -6212,6 +6316,7 @@ func inferExprCore(
             case None -> {
               val rt1 = match recvE2.kind {
                 case EPath(p2) -> if p2.segments.count == 1 and startsUppercase(p2.segments[0]) {
+                  checkUnimportedTypeReceiver(tbl, sc, p2.segments[0], recvE2.span, diag)
                   val scratch2: List[Diagnostic] = newList()
                   inferExpr(sc, tbl, sigs, scratch2, recvE2)
                 } else {
@@ -6520,6 +6625,7 @@ func inferExprCore(
       // branch bodies are type-checked, #1943.)
       val rt = match recv.kind {
         case EPath(p) -> if p.segments.count == 1 and startsUppercase(p.segments[0]) {
+          checkUnimportedTypeReceiver(tbl, sc, p.segments[0], recv.span, diag)
           val scratch: List[Diagnostic] = newList()
           inferExpr(sc, tbl, sigs, scratch, recv)
         } else {

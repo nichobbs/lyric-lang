@@ -1418,6 +1418,10 @@ import std.collections as Coll      // alias
 
 Wildcard imports (`import Money.*`) are not permitted. Every imported name is explicit.
 
+**Implicit prelude.** `Option` and `Result` (both declared in `Std.Core`) are visible in every file without an explicit `import Std.Core` — an implicit-prelude convention that predates scoped-name resolution and is referenced tree-wide across the stdlib and ecosystem (#6287). No other package is implicitly visible: every other name must be reachable from the file's own `import` list, directly or transitively (a package's own declared imports count — the kernel/host re-export idiom, e.g. `Std.Collections` importing `Std.CollectionsHost`, resolves through this without the consumer naming `Std.CollectionsHost` itself).
+
+**Unimported type as a call receiver (#7345).** A dotted type-associated-function call (a top-level `func Type.method(...)` declaration, called as `Type.method(...)`) whose receiver names a real type declared by a package outside the file's import closure (and outside the `Std.Core` prelude above) is **T0020**, e.g. `unknown name 'RestClient' (declared in Std.Rest; add import Std.Rest)`, reported at check time rather than deferred to a target-specific runtime failure (MSIL threw "unsupported method" from the receiver's erased dispatch stub; JVM threw `NoClassDefFoundError` naming the type under the CALLING package). The diagnostic fires only when the name is otherwise unresolved from the current scope; a type reachable through the current package, an import, or the prelude above type-checks exactly as before.
+
 **External type imports:**
 ```
 import extern System.Net.Http.{HttpClient, HttpRequestMessage as ReqMsg}
