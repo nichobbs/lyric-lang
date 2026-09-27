@@ -286,6 +286,39 @@ test "proof_required file keeps runtime checks" {
   assertEqualInt(fn.contracts.count, 2, "proof_required: both contracts preserved")
 }
 
+// A quantifier conjunct has no runtime form, so in a @proof_required file it
+// stays a proof-only obligation: the runtime check keeps the plain conjunct
+// and drops the quantifier (#7227).
+test "proof_required quantifier conjunct is dropped, plain conjunct kept" {
+  val src = "@proof_required\n" + "package P\n" + "import Std.Core\n" + "pub func f(n: in Int): Int\n" +
+    "  requires: n > 0 and forall (i: Int) where i > 0 and i < n { i < n }\n" +
+    "{\n" +
+    "  return n\n" +
+    "}\n"
+  val fn = firstFunction(parseAndElaborate(src), "f")
+  val blk = bodyBlockOf(fn)
+  assertTrue(isAssertCall(blk.statements[0]), "the requires clause is checked at runtime")
+  match blk.statements[0].kind {
+    case SExpr(e) -> match e.kind {
+      case ECall(_, args) -> match args[0] {
+        case CAPositional(cond) -> {
+          assertTrue(not exprHasQuantifier(cond), "the quantifier conjunct is not in the runtime check")
+          match cond.kind {
+            case EBinop(op, _, _) -> match op {
+              case BGt -> assertTrue(true, "the plain conjunct n > 0 is kept")
+              case _ -> assertTrue(false, "expected the plain conjunct n > 0")
+            }
+            case _ -> assertTrue(false, "expected the plain conjunct n > 0")
+          }
+        }
+        case _ -> assertTrue(false, "expected a positional assert argument")
+      }
+      case _ -> assertTrue(false, "expected an assert call")
+    }
+    case _ -> assertTrue(false, "expected an expression statement")
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. @axiom functions are skipped (no body to elaborate).
 // ─────────────────────────────────────────────────────────────────────────────

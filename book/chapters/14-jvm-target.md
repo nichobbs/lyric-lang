@@ -166,7 +166,7 @@ Non-modular projects (classpath-based) can use Lyric JARs as automatic modules w
 
 Lyric contracts (`requires:` / `ensures:`) are enforced at runtime for `@runtime_checked` packages. A Java caller that violates a `requires:` clause will see a `lyric.runtime.ContractViolation` thrown (its exact JVM exception hierarchy is finalised in `docs/18-jvm-emission.md`). This is intentional: the contract is not just documentation, it is enforced.
 
-For `@proof_required` packages, contracts are proved at Lyric compile time. Java callers bypass the proof but still see runtime checks in debug builds.
+For `@proof_required` packages, `lyric prove` proves the contracts statically. The build still compiles every clause into a runtime check, in every build profile, so a Java caller that violates a `requires:` clause sees the same `ContractViolation` as with a `@runtime_checked` package.
 
 ## §14.4 Testing on the JVM
 
