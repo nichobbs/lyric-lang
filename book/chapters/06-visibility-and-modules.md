@@ -66,6 +66,8 @@ pub func makeCustomer(id: in CustomerId, email: in Email): Customer {
 
 Outside the `Account` package, callers use `makeCustomer`. Inside it, they can use the record syntax directly. This is Lyric's way of making smart constructors the default rather than a workaround.
 
+The constructor must hang off something callers can name. A type-associated function such as `pub func Ledger.open(...)` on a package-private `Ledger` compiles, but from another package `Ledger.open(...)` is a visibility error (T0097) — the caller cannot name `Ledger`, and importing the package does not change that. Mark the type `pub` (or `internal`) if the function is meant to be called from outside.
+
 ::: sidebar
 **Why not classes with access modifiers?** Class-based languages put visibility on each member and rely on developers to get it right per-field. Records in Lyric are structurally transparent by default inside their package and can be selectively exposed outside. The key difference is that the *construction* rule is automatic: if you expose a partial record, the compiler requires a constructor function without any extra annotation. You cannot accidentally expose a private field through direct construction.
 :::
@@ -83,7 +85,7 @@ import std.collections as Coll         // alias the entire package
 
 When you use the `as` form, you access its names through the alias: `Coll.Map`, `Coll.Set`. When you use the named form, the names are in scope directly.
 
-The one exception is `Option` and `Result`: they come from `Std.Core` but are visible everywhere without an explicit import — an implicit prelude, the same way they behave in most languages that have them. Every other name needs an import, directly or transitively (importing a package that itself imports another one brings that other package's names into scope too — the pattern the standard library's own kernel modules use). A type referenced without a reachable import, including in `Type.method(...)` call position, is a compile error naming the type and the package to import.
+The one exception is `Option` and `Result`: they come from `Std.Core` but are visible everywhere without an explicit import — an implicit prelude, the same way they behave in most languages that have them. Every other name needs an import, directly or transitively (importing a package that itself imports another one brings that other package's names into scope too — the pattern the standard library's own kernel modules use). A type referenced without a reachable import, including in `Type.method(...)` call position, is a compile error naming the type and the package to import. Spelling the package out does not get around this: `Std.Rest.RestClient.create(url)` in a file that never imports `Std.Rest` (directly or through another import) is the same error, pointing at the missing `import Std.Rest`.
 
 There are no wildcard imports. `import Money.*` is a compile error. Every imported name must be written explicitly:
 

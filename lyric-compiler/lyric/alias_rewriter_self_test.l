@@ -426,6 +426,75 @@ test "bare three-segment import referenced by its full Foo.Bar.Baz.qux() form re
   }
 }
 
+// #7495: a docs/49 type-associated function reached through a multi-segment
+// package's full name (`Foo.Bar.Widget.create()`, the shape of
+// `Std.Rest.RestClient.create(url)`) has a receiver one member past the
+// package path. It collapses to `EMember(EPath(["Foo","Bar","Widget"]),
+// "create")` — the same shape a single-segment package's
+// `Lib.Widget.create()` already gets — rather than staying a nested
+// `EMember` chain whose root `Foo` the JVM backend treated as a value.
+func calleeOfFirstStmt(file: in SourceFile): Option[Expr] {
+  match file.items[0].kind {
+    case IFunc(decl) -> match decl.body {
+      case Some(fb) -> match fb {
+        case FBBlock(block) -> match block.statements[0].kind {
+          case SExpr(callExpr) -> match callExpr.kind {
+            case ECall(fn, _) -> Some(
+              value = fn
+            )
+            case _ -> None
+          }
+          case _ -> None
+        }
+        case FBExpr(_) -> None
+      }
+      case None -> None
+    }
+    case _ -> None
+  }
+}
+
+test "multi-segment package type receiver Foo.Bar.Widget.create() collapses its receiver (#7495)" {
+  val src = "package Test\nimport Foo.Bar\nfunc f(): Int {\n  Foo.Bar.Widget.create()\n}\n"
+  match calleeOfFirstStmt(rewriteFile(parse(src).file)) {
+    case Some(fn) -> match fn.kind {
+      case EMember(recv, m) -> {
+        assertEqual(m, "create", "the call's own member name is kept")
+        match recv.kind {
+          case EPath(p) -> {
+            assertEqualInt(p.segments.count, 3, "receiver is the flat Foo.Bar.Widget path")
+            assertEqual(p.segments[2], "Widget", "receiver ends at the type name")
+          }
+          case _ -> assertTrue(false, "receiver is still a nested EMember chain (#7495)")
+        }
+      }
+      case _ -> assertTrue(false, "callee is not an EMember on the collapsed receiver")
+    }
+    case None -> assertTrue(false, "first statement is not a call")
+  }
+}
+
+test "unimported multi-segment package receiver is left untouched (#7495)" {
+  val src = "package Test\nfunc f(): Int {\n  Foo.Bar.Widget.create()\n}\n"
+  match calleeOfFirstStmt(rewriteFile(parse(src).file)) {
+    case Some(fn) -> match fn.kind {
+      case EMember(recv, _) -> match recv.kind {
+        case EMember(_, w) -> assertEqual(
+          w,
+          "Widget",
+          "receiver chain is unchanged without the import"
+        )
+        case _ -> assertTrue(
+          false,
+          "an unimported qualifier must not be collapsed"
+        )
+      }
+      case _ -> assertTrue(false, "callee is not an EMember")
+    }
+    case None -> assertTrue(false, "first statement is not a call")
+  }
+}
+
 // A NON-call qualified reference (bare value/field access, no trailing
 // `()`) into a multi-segment bare-imported package must NOT be touched by
 // the #6294 generalization at all, even though the SAME dotted chain would

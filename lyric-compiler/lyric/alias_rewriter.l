@@ -418,6 +418,44 @@ func rewriteQualifiedMemberChain(
   None
 }
 
+// A qualified call whose RECEIVER is one member past a known package path —
+// `Std.Rest.RestClient.create(url)`, a docs/49 type-associated function
+// reached through its multi-segment package's full name (#7495). The
+// receiver becomes the flat `EPath` `Std.Rest.RestClient`, the same shape
+// the depth-1 `EMember` arm already gives a single-segment package's
+// `Lib.Widget.create(...)`, which both backends lower; left as a nested
+// `EMember` chain, the JVM backend treated the root `Std` as a value and
+// failed. As with `rewriteQualifiedMemberChain`, the qualifier must match a
+// key in its entirety and only the call-callee position is rewritten.
+func rewriteQualifiedReceiverChain(
+  aliases: in List[String],
+  recvSegs: in List[String],
+  trailingMember: in String,
+  recvSpan: in Span,
+  outerSpan: in Span,
+): Option[Expr] {
+  if recvSegs.count < 2 {
+    return None
+  }
+  val qualSegs: List[String] = newList()
+  var i = 0
+  while i < recvSegs.count - 1 {
+    qualSegs.add(recvSegs[i])
+    i = i + 1
+  }
+  val candidate = joinSegs(qualSegs)
+  if not aliasContains(aliases, candidate) {
+    return None
+  }
+  val recvExpr = rebuildQualifiedChain(
+    aliasPkgSegs(aliases, candidate),
+    recvSegs[recvSegs.count - 1],
+    recvSpan,
+    recvSpan
+  )
+  Some(value = Expr(kind = EMember(receiver = recvExpr, memberName = trailingMember), span = outerSpan))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Expr rewriting.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -582,7 +620,13 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
         case EMember(receiver, memberName) -> match flattenPathExpr(receiver) {
           case Some(recvSegs) -> match rewriteQualifiedMemberChain(aliases, recvSegs, memberName, receiver.span, fn.span) {
             case Some(rewritten) -> rewritten
-            case None -> rewriteExpr(aliases, fn)
+            case None -> match rewriteQualifiedReceiverChain(aliases, recvSegs, memberName, receiver.span, fn.span) {
+              case Some(rewritten2) -> rewritten2
+              case None -> rewriteExpr(
+                aliases,
+                fn
+              )
+            }
           }
           case None -> rewriteExpr(aliases, fn)
         }
