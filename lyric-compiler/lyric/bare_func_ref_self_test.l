@@ -802,3 +802,66 @@ test "diamond default conflict resolved by explicit override runs the override (
   val g = Gem6447(n = 0)
   assertEqualInt(g.label(), 42, "the explicit override claims the name for the whole target namespace")
 }
+
+// #7586: a `Self`-returning call THROUGH AN INTERFACE-TYPED RECEIVER, bound
+// to an UNTYPED local. The type checker types `m.fresh()` as the interface
+// itself (T0113), so on JVM the codegen-internal call-site narrowing
+// (`narrowSelfCallResult`, `jvm/codegen/04_calls.l`) used to early-out for an
+// interface receiver and leave the tracked type at the erased
+// `java/lang/Object`, so an unannotated `val` fell to the erased auto-FFI
+// guess on a later method call instead of dispatching via `invokeinterface`.
+// Reproduces with a plain record impl (no protected type involved) — the
+// protected-type analog lives in `protected_iface_impl_self_type_self_test.l`.
+interface Maker7586 {
+  func fresh(): Self
+  func size(): Int
+}
+
+record R7586 {
+  n: Int
+}
+
+impl Maker7586 for R7586 {
+  func fresh(): Self {
+    R7586(n = n + 1)
+  }
+  func size(): Int {
+    n
+  }
+}
+
+func viaInterfaceParam7586(m: in Maker7586): Int {
+  val x = m.fresh()
+  x.size()
+}
+
+test "untyped local from a Self-returning call through an interface receiver resolves (#7586, dual-target)" {
+  val m: Maker7586 = R7586(n = 41)
+  val x = m.fresh()
+  assertEqualInt(x.size(), 42, "the untyped local narrows to the interface so size() dispatches correctly")
+}
+
+test "the same shape through an interface-typed function parameter (#7586, dual-target)" {
+  assertEqualInt(viaInterfaceParam7586(R7586(n = 41)), 42, "an interface param's fresh() result also narrows")
+}
+
+test "chained Self-returning calls through an interface receiver keep narrowing (#7586, dual-target)" {
+  val m: Maker7586 = R7586(n = 40)
+  val x = m.fresh().fresh()
+  assertEqualInt(x.size(), 42, "each chained .fresh() call re-narrows so the final .size() dispatches")
+}
+
+test "the interface call result flows into a var, reassigned across two fresh() calls (#7586, dual-target)" {
+  var m: Maker7586 = R7586(n = 41)
+  var x = m.fresh()
+  assertEqualInt(x.size(), 42, "first reassignment: the var's narrowed type still resolves size()")
+  m = x
+  x = m.fresh()
+  assertEqualInt(x.size(), 43, "second reassignment: re-narrowing after another fresh() call still resolves")
+}
+
+test "the untyped local's result can itself be passed to a function taking the interface (#7586, dual-target)" {
+  val m: Maker7586 = R7586(n = 20)
+  val x = m.fresh()
+  assertEqualInt(viaInterfaceParam7586(x), 22, "x flows into an interface-typed param and fresh() dispatches there too")
+}

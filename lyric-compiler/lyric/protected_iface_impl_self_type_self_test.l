@@ -57,16 +57,13 @@ test "a Self parameter reads the other instance's own field, via the concrete re
 test "a Self return narrows so the returned value's own members resolve, via an interface binding" {
   val a = Acc(n = 9)
   val m: Merger = a
-  // The explicit `Merger` annotation (rather than an untyped `val f = ...`)
-  // sidesteps a pre-existing, unrelated JVM binding quirk shared with
-  // ordinary record impls: an untyped local bound from a `Self`-returning
-  // call through an INTERFACE-typed receiver tracks as raw `Object`
-  // codegen-internally (the type checker itself types the call result as
-  // the interface, T0113 — `narrowSelfCallResult`'s own `sig.isIface`
-  // early-out deliberately does not narrow further), so a later method
-  // call on the untyped local's raw tracked type falls to the erased
-  // Object auto-FFI guess instead of dispatching through the interface.
-  val f: Merger = m.fresh()
+  // Untyped local (#7586): a `Self`-returning call through an
+  // INTERFACE-typed receiver types as the interface itself (T0113), and
+  // `narrowSelfCallResult` now narrows the codegen-internal tracked type
+  // (and checkcasts) to the interface class on JVM too, so an unannotated
+  // `val` resolves a later method call through the interface rather than
+  // falling to the erased Object auto-FFI guess.
+  val f = m.fresh()
   assertTrue(f.value() == 9, "fresh() through the interface returns a usable Acc")
 }
 

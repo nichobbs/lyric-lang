@@ -1831,8 +1831,9 @@ func isSelfTypeExprJvm(te: in TypeExpr): Bool {
 // "signature untouched, internal bookkeeping only" property even though the
 // JVM side additionally needs real bytecode. `selfTypeName` is the enclosing
 // impl/record method's own concrete target class (`<pkg>/<Name>`, matching
-// `ctx.caseFields`'/`ctx.ctors`' key format) — always non-empty at both call
-// sites (`lowerImplMethod`, `lowerRecordMethod`).
+// `ctx.caseFields`'/`ctx.ctors`' key format) — always non-empty at all three
+// call sites (`lowerProtectedMethod`, `lowerRecordMethod`, `lowerImplMethod`;
+// #7550 added the first).
 func emitSelfParamChecksJvm(
   ctx: in FuncCtx, insns: in List[LInsn], params: in List[Param], selfTypeName: in String
 ): Unit {
