@@ -214,3 +214,91 @@ test "expression-bodied Unit protected members run (#7400)" {
   t.viaVoidCall()
   assertTrue(t.value() == 2, "two bumps through the expression-bodied func (got " + toString(t.value()) + ")")
 }
+
+// #7457: an interface method implemented for a protected type is a locked
+// member too.  Concurrent calls through the interface must not lose updates,
+// and one that opens a barrier must wake the member waiting on it.
+pub interface Bumper {
+  func bumpOnce(): Unit
+  func openGate(): Unit
+}
+
+protected type Shared {
+  var hits: Int = 0
+  var isOpen: Bool = false
+  entry passWhenOpen(): Int
+    when: isOpen
+  {
+    hits
+  }
+  func hitCount(): Int = hits
+}
+
+impl Bumper for Shared {
+  func bumpOnce(): Unit {
+    val cur = hits
+    var spin = 0
+    while spin < 200 {
+      spin = spin + 1
+    }
+    hits = cur + 1
+  }
+  func openGate(): Unit {
+    isOpen = true
+  }
+}
+
+async func ifaceBumper(b: in Bumper): Int {
+  var i = 0
+  while i < 2000 {
+    b.bumpOnce()
+    i = i + 1
+  }
+  0
+}
+
+async func ifaceRace(): Int {
+  val s = Shared()
+  scope {
+    val w1 = spawn ifaceBumper(s)
+    val w2 = spawn ifaceBumper(s)
+    val w3 = spawn ifaceBumper(s)
+    val w4 = spawn ifaceBumper(s)
+    val _ = await w1
+    val _ = await w2
+    val _ = await w3
+    val _ = await w4
+  }
+  s.hitCount()
+}
+
+test "interface methods implemented for a protected type are exclusive (#7457)" {
+  val result = await ifaceRace()
+  assertTrue(result == 8000, "4 x 2000 increments through the interface (got " + toString(result) + ")")
+}
+
+async func gateWaiter(s: in Shared): Int {
+  s.passWhenOpen()
+}
+
+async func gateOpener(b: in Bumper): Int {
+  b.openGate()
+  0
+}
+
+async func ifaceGateRun(): Int {
+  val s = Shared()
+  var seen = -1
+  scope {
+    val w = spawn gateWaiter(s)
+    val o = spawn gateOpener(s)
+    val _ = await o
+    seen = await w
+  }
+  seen
+}
+
+test "an interface method that opens a barrier wakes the waiter (#7457)" {
+  val r = await ifaceGateRun()
+  assertTrue(r == 0, "the waiting entry ran once the impl method opened the gate (got " + toString(r) + ")")
+}

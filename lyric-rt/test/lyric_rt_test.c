@@ -1299,6 +1299,8 @@ static void test_posix(void) {
     CHECK(lyric_mutex_size() <= (int32_t)sizeof(mutex_buf));
     lyric_mutex_init(mutex_buf);
     lyric_mutex_lock(mutex_buf);
+    lyric_mutex_lock(mutex_buf); /* reentrant: a protected member calls a sibling */
+    lyric_mutex_unlock(mutex_buf);
     lyric_mutex_unlock(mutex_buf);
     lyric_mutex_destroy(mutex_buf);
 

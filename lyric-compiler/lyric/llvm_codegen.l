@@ -12521,7 +12521,14 @@ func ifaceVtableInitStr(
     if i > 0 {
       acc = acc + ", "
     }
-    val implIr = pkg + "." + implMethodName(recordName, ifaceName, ii.methodNames[i])
+    // #7457: an impl for a protected type has its methods moved into the
+    // type as entries by the contract elaborator, so the slot points at the
+    // entry's lock wrapper (`<Type>.<method>`), not an impl-method symbol.
+    val implIr = if ctx.protectedRecNames.containsKey(pkg + "." + recordName) {
+      pkg + "." + recordName + "." + ii.methodNames[i]
+    } else {
+      pkg + "." + implMethodName(recordName, ifaceName, ii.methodNames[i])
+    }
     val fnParams: List[NType] = newList()
     fnParams.add(selfPtrTy)
     var pi = 0

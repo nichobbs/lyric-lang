@@ -153,6 +153,27 @@ The key rules:
 - The `invariant:` is checked after every `entry` returns. If your operation leaves the state in an invariant-violating condition, the program terminates. This is intentional: an invariant violation in a protected type is an unrecoverable bug, not a recoverable error.
 - The state inside the protected type is inaccessible from outside. There is no field access, no reflection, no way to reach around the interface.
 
+A protected type can implement an interface. The methods of an `impl` for a protected type become locked members of the type, so they run one at a time with every other member, see the fields directly, and wake barrier waiters:
+
+```lyric
+pub interface Counter {
+  func bump(by: in Int): Int
+}
+
+protected type Tally {
+  var n: Int = 0
+}
+
+impl Counter for Tally {
+  func bump(by: in Int): Int {
+    n = n + by
+    n
+  }
+}
+```
+
+Code that holds a `Counter` gets the lock without knowing a protected type is behind it. The impl must live in the same package as the protected type, and an impl method cannot reuse the name of one of the type's own `entry` or `func` members (T0136).
+
 Here is the token-bucket rate limiter from the worked examples. The `acquire` entry shows the barrier pattern in a realistic setting:
 
 ```lyric

@@ -94,10 +94,17 @@ int32_t lyric_mutex_size(void) {
     return (int32_t)sizeof(pthread_mutex_t);
 }
 
+/* Recursive: a protected type's member may call a sibling member, which
+ * takes the same instance lock again (docs/01 §7.5; the CLR Monitor and JVM
+ * object monitors are reentrant too).  A default mutex deadlocked there. */
 void lyric_mutex_init(void* m) {
-    if (pthread_mutex_init((pthread_mutex_t*)m, 0) != 0) {
+    pthread_mutexattr_t attr;
+    if (pthread_mutexattr_init(&attr) != 0 ||
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) != 0 ||
+        pthread_mutex_init((pthread_mutex_t*)m, &attr) != 0) {
         lyric_panic_msg("pthread_mutex_init failed", "lyric_posix.c", __LINE__);
     }
+    pthread_mutexattr_destroy(&attr);
 }
 
 void lyric_mutex_lock(void* m) {

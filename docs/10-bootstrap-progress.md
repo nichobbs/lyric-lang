@@ -246,6 +246,7 @@ deferred to Phase 3 by design.
 | Operators on distinct types act on the underlying value on every target: `==`/`!=`/derived comparisons, derived arithmetic through `T.from` (range subtypes re-checked, #7226), compound assignment (T0134); `.value` on the JVM; native `T.from`/`T.tryFrom`; `T.from`/`T.tryFrom` typed by the checker (#7361) | **Shipped** | D-progress-992 |
 | Distinct and range-subtype wrapper classes override `Equals`/`GetHashCode` (dotnet) and `equals`/`hashCode` (JVM) by the underlying value, so a distinct value works as a `Map`/`Set` key (#7375) | **Shipped** | D-progress-993 |
 | `@generate(Json)` parses once per `fromJson`: nested records and record slices decode from their child elements through a synthesised public `T.fromJsonElement` (hand-written decoders kept and forwarded to); JVM registers derive-synthesised functions under the scoped/bare keys so their calls type correctly in value positions; dead JVM `lyricJsonGet*Slice` readers removed (#7347) | **Shipped** | D-progress-1002 |
+| `impl Iface for P` on a protected type: impl methods become locked entries of `P` (lock, field access, barrier notify, invariant re-check, interface contracts) on dotnet, JVM and native; T0136 for an impl in another package, for a generic protected type, or clashing with a member of `P`; async/method-generic impl methods are T0135; native protected lock made reentrant (#7457) | **Shipped** | D-progress-1009 |
 
 ### Phase 2 — type system completion (complete)
 
