@@ -5420,7 +5420,12 @@ test "package-qualified Std.Core type position needs no import (#7548)" {
   val pkgCore = parse("package Std.Core\npub record Thing {\n  x: Int\n}\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "Std.Core", items = pkgCore.file.items, imports = collectImportNames(pkgCore.file.imports))
+    ImportedPackage(
+      name = "Std.Core",
+      items = pkgCore.file.items,
+      imports = collectImportNames(pkgCore.file.imports),
+      wholeImports = collectWholeImportNames(pkgCore.file.imports)
+    )
   )
   val src = "package App\nfunc f(t: in Std.Core.Thing): Unit {}\n"
   assertEqualInt(
@@ -5485,7 +5490,12 @@ func libRestKindPackages(): List[ImportedPackage] {
   val pkgRest = parse("package Lib.Rest\npub union Kind {\n  case A(x: Int)\n  case B\n}\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "Lib.Rest", items = pkgRest.file.items, imports = collectImportNames(pkgRest.file.imports))
+    ImportedPackage(
+      name = "Lib.Rest",
+      items = pkgRest.file.items,
+      imports = collectImportNames(pkgRest.file.imports),
+      wholeImports = collectWholeImportNames(pkgRest.file.imports)
+    )
   )
   packages
 }
@@ -5521,7 +5531,12 @@ func privateKindPackages(): List[ImportedPackage] {
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "PkgPriv", items = pkgPriv.file.items, imports = collectImportNames(pkgPriv.file.imports))
+    ImportedPackage(
+      name = "PkgPriv",
+      items = pkgPriv.file.items,
+      imports = collectImportNames(pkgPriv.file.imports),
+      wholeImports = collectWholeImportNames(pkgPriv.file.imports)
+    )
   )
   packages
 }

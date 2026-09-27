@@ -3196,13 +3196,24 @@ pub func recordPackageImportsMsil(cctx: in CodegenCtx, pkgName: in String, impor
   }
   cctx.pkgImports.add(pkgName, importedDottedNames)
   invalidateImportClosuresMsil(cctx)
-  if not cctx.pkgBareImports.containsKey(pkgName) {
-    cctx.pkgBareImports.add(pkgName, bareImportOrderMsil(imports, false))
-    if cctx.pkgWholeImports.containsKey(pkgName) {
-      cctx.pkgWholeImports.remove(pkgName)
+  // A package registers more than once (the pre-pass, then each of its
+  // files, whose imports the weaver may have extended with `import
+  // Std.Time`): each registration adds the imports not already recorded.
+  mergeImportListMsil(cctx.pkgBareImports, pkgName, bareImportOrderMsil(imports, false))
+  mergeImportListMsil(cctx.pkgWholeImports, pkgName, bareImportOrderMsil(imports, true))
+  recordSelectiveImportsMsil(cctx, pkgName, imports)
+}
+
+func mergeImportListMsil(into: in Map[String, List[String]], pkgName: in String, added: in List[String]): Unit {
+  match mapGet(into, pkgName) {
+    case Some(existing) -> {
+      for a in added {
+        if not existing.contains(a) {
+          existing.add(a)
+        }
+      }
     }
-    cctx.pkgWholeImports.add(pkgName, bareImportOrderMsil(imports, true))
-    recordSelectiveImportsMsil(cctx, pkgName, imports)
+    case None -> into.add(pkgName, added)
   }
 }
 
