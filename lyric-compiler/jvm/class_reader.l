@@ -21,7 +21,7 @@ package Jvm.ClassReader
 
 import Std.Core
 import Std.Collections
-import Std.Char
+import Std.Encoding
 
 // ── Big-endian u2/u4 readers ──────────────────────────────────────────────────
 // Bytes in List[Int] are already 0-255 (produced by inflate/extractEntry).
@@ -107,10 +107,12 @@ func setSStr(m: in Map[String, String], k: in String, v: in String): Unit {
 }
 
 // Read a CONSTANT_Utf8 entry starting at `pos` (after the tag byte).
-// Returns (string, nextPos).  Modified UTF-8 is treated as standard UTF-8;
-// the difference only matters for null bytes (0xC0 0x80 = U+0000) and
-// supplementary-plane characters via the CESU-8 six-byte encoding, neither
-// of which appear in class/method names or JVM descriptors.
+// The entry is JVM "modified UTF-8" (JVMS §4.4.7): standard UTF-8 except
+// that U+0000 is the two bytes 0xC0 0x80 (decoded by the 2-byte branch) and
+// a supplementary-plane character is its UTF-16 surrogate pair, each half
+// encoded as its own 3-byte sequence (CESU-8).  Such a pair decodes to one
+// code point; an unpaired surrogate becomes U+FFFD, since a `Char` is a
+// BMP scalar value (#7252).  Malformed bytes are skipped.
 func readUtf8Entry(b: in List[Int], pos: in Int): String {
   val len = rdU16(b, pos)
   var s = ""
@@ -119,26 +121,42 @@ func readUtf8Entry(b: in List[Int], pos: in Int): String {
     val c0 = rdU8(b, pos + 2 + i)
     if c0 < 128 {
       // 1-byte ASCII
-      s = s + ("" + fromInt(c0))
+      s = s + codepointToString(c0)
       i = i + 1
     } else if c0 / 32 == 6 and i + 1 < len {
       // 2-byte sequence: first byte 0xC0..0xDF (c0/32 == 6)
       val c1 = rdU8(b, pos + 2 + i + 1)
-      val cp = (c0 % 32) * 64 + c1 % 64
-      s = s + ("" + fromInt(cp))
+      s = s + codepointToString((c0 % 32) * 64 + c1 % 64)
       i = i + 2
     } else if c0 / 16 == 14 and i + 2 < len {
       // 3-byte sequence: first byte 0xE0..0xEF (c0/16 == 14)
-      val c1 = rdU8(b, pos + 2 + i + 1)
-      val c2 = rdU8(b, pos + 2 + i + 2)
-      val cp = (c0 % 16) * 4096 + (c1 % 64) * 64 + c2 % 64
-      s = s + ("" + fromInt(cp))
-      i = i + 3
+      val cp = utf8Unit3(b, pos + 2 + i)
+      if cp >= 0xD800 and cp <= 0xDBFF and i + 5 < len and rdU8(b, pos + 2 + i + 3) / 16 == 14 {
+        val low = utf8Unit3(b, pos + 2 + i + 3)
+        if low >= 0xDC00 and low <= 0xDFFF {
+          s = s + codepointToString(0x10000 + (cp - 0xD800) * 0x400 + (low - 0xDC00))
+          i = i + 6
+        } else {
+          s = s + "�"
+          i = i + 3
+        }
+      } else if cp >= 0xD800 and cp <= 0xDFFF {
+        s = s + "�"
+        i = i + 3
+      } else {
+        s = s + codepointToString(cp)
+        i = i + 3
+      }
     } else {
       i = i + 1   // skip invalid/unhandled byte
     }
   }
   s
+}
+
+// The 16-bit value of the 3-byte UTF-8 sequence starting at byte `at`.
+func utf8Unit3(b: in List[Int], at: in Int): Int {
+  (rdU8(b, at) % 16) * 4096 + (rdU8(b, at + 1) % 64) * 64 + rdU8(b, at + 2) % 64
 }
 
 // Return the byte offset after a constant pool entry starting at `pos`

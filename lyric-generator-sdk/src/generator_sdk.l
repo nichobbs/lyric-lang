@@ -11,6 +11,7 @@ package Lyric.GeneratorSdk
 
 import Std.Char as Ch
 import Std.Core
+import Std.Encoding
 import Std.Collections
 import Std.Console as Console
 import Std.File as File
@@ -123,16 +124,29 @@ func parseHex4(hex: in String): Option[Int] {
   Some(value = value)
 }
 
+// The code unit of a `\uXXXX` low-surrogate escape (U+DC00..U+DFFF)
+// starting at `at` (the backslash), or `None` if there is none there.
+func lowSurrogateEscapeAt(src: in String, at: in Int): Option[Int] {
+  if at + 5 >= src.length or src[at] != '\\' or src[at + 1] != 'u' {
+    return None
+  }
+  match parseHex4(src.substring(at + 2, 4)) {
+    case Some(low) -> if low >= 0xDC00 and low <= 0xDFFF { Some(value = low) } else { None }
+    case None -> None
+  }
+}
+
 // Parse a JSON string value from `src` starting at position `pos`.
 // Advances `pos` past the closing quote and returns the unescaped content.
 //
 // Decodes every RFC 8259 §7 escape: the six named escapes plus `\/`
 // (previously only `\n`/`\t`/`\r`/`\"`/`\\` were handled, and `\uXXXX` was
-// left as a literal backslash-u sequence). A `\uXXXX` escape decodes to its
-// raw UTF-16 code unit via `Ch.fromInt`; a surrogate pair (`😀`)
-// decodes correctly with no special-case combining logic, since appending
-// two UTF-16 code units in sequence reconstructs the pair the same way any
-// other UTF-16 string does.
+// left as a literal backslash-u sequence). A `\uXXXX` escape decodes to one
+// Unicode scalar value via `Std.Encoding.codepointToString`; a high+low
+// surrogate escape pair (`\ud83d\ude00`) combines into one supplementary-
+// plane code point. A lone or reversed surrogate escape names no character
+// and decodes to U+FFFD, keeping the reader total without producing an
+// unpaired UTF-16 surrogate (#7252).
 func parseJsonString(src: in String, pos: inout Int): String {
   pos += 1  // skip opening "
   var s = ""
@@ -159,8 +173,24 @@ func parseJsonString(src: in String, pos: inout Int): String {
       } else if esc == 'u' and pos + 4 < src.length {
         match parseHex4(src.substring(pos + 1, 4)) {
           case Some(code) -> {
-            s = s + charToString(Ch.fromInt(code))
-            pos += 4
+            if code >= 0xD800 and code <= 0xDBFF {
+              match lowSurrogateEscapeAt(src, pos + 5) {
+                case Some(low) -> {
+                  s = s + codepointToString(0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00))
+                  pos += 10
+                }
+                case None -> {
+                  s = s + "�"
+                  pos += 4
+                }
+              }
+            } else if code >= 0xDC00 and code <= 0xDFFF {
+              s = s + "�"
+              pos += 4
+            } else {
+              s = s + codepointToString(code)
+              pos += 4
+            }
           }
           case None -> {
             s = s + "\\" + charToString(esc)

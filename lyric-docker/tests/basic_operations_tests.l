@@ -300,6 +300,30 @@ test "extractJsonField decodes a \\uXXXX escape for a non-ASCII character" {
   assertEqual(extracted, "café", "\\u00e9 decodes back to the Unicode character e-acute")
 }
 
+// #7252: a surrogate-pair escape combines into one astral code point; a
+// lone or reversed surrogate escape decodes to U+FFFD, never an unpaired
+// UTF-16 surrogate.
+func extractedId(escapedId: in String): String {
+  Lyric.Docker.extractJsonField("{\"Id\":\"" + escapedId + "\"}", "Id")
+}
+
+test "extractJsonField decodes a surrogate-pair escape to one astral character" {
+  assertEqual(extractedId("a\\ud83d\\ude00b"), "a😀b", "surrogate pair decodes to U+1F600")
+}
+
+test "extractJsonField decodes a lone high surrogate escape to U+FFFD" {
+  assertEqual(extractedId("a\\ud83db"), "a�b", "lone high surrogate becomes U+FFFD")
+  assertEqual(extractedId("a\\ud83d\\u0041"), "a�A", "high surrogate before a non-low escape")
+}
+
+test "extractJsonField decodes a lone low surrogate escape to U+FFFD" {
+  assertEqual(extractedId("a\\ude00b"), "a�b", "lone low surrogate becomes U+FFFD")
+}
+
+test "extractJsonField decodes a reversed surrogate pair to two U+FFFD" {
+  assertEqual(extractedId("a\\ude00\\ud83db"), "a��b", "reversed pair becomes two U+FFFD")
+}
+
 test "extractJsonField returns empty string when the field is absent" {
   val body = "{\"Other\":\"value\"}"
   val extracted = Lyric.Docker.extractJsonField(body, "Id")

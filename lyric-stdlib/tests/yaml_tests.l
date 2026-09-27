@@ -404,14 +404,20 @@ func testGetFieldMissing(): Unit {
 func testYamlFloatBlock(): Unit {
   match parseYaml("1.5") {
     case Err(e) -> assertTrue(false, "float block: " + YamlError.message(e))
-    case Ok(v) -> match asFloat(v) { case None -> assertTrue(false, "expected YFloat"); case Some(f) -> assertTrue(f == 1.5, "block scalar 1.5 parsed as YFloat") }
+    case Ok(v) -> match asFloat(v) {
+      case None -> assertTrue(false, "expected YFloat")
+      case Some(f) -> assertTrue(f == 1.5, "block scalar 1.5 parsed as YFloat")
+    }
   }
 }
 
 func testJsonFloatRoundtrip(): Unit {
   match parseJson("{\"x\":3.14}") {
     case Err(e) -> assertTrue(false, "json float: " + YamlError.message(e))
-    case Ok(v) -> match getFloat(v, "x") { case None -> assertTrue(false, "getFloat should return Some"); case Some(f) -> assertTrue(f == 3.14, "getFloat returns 3.14") }
+    case Ok(v) -> match getFloat(v, "x") {
+      case None -> assertTrue(false, "getFloat should return Some")
+      case Some(f) -> assertTrue(f == 3.14, "getFloat returns 3.14")
+    }
   }
 }
 
@@ -425,7 +431,10 @@ func testAsFloatNonFloat(): Unit {
 func testYamlFloatExponent(): Unit {
   match parseYaml("1.0e2") {
     case Err(e) -> assertTrue(false, "float exp: " + YamlError.message(e))
-    case Ok(v) -> match asFloat(v) { case None -> assertTrue(false, "1.0e2 should be YFloat"); case Some(f) -> assertTrue(f == 100.0, "1.0e2 == 100.0") }
+    case Ok(v) -> match asFloat(v) {
+      case None -> assertTrue(false, "1.0e2 should be YFloat")
+      case Some(f) -> assertTrue(f == 100.0, "1.0e2 == 100.0")
+    }
   }
 }
 
@@ -511,6 +520,7 @@ func main(): Unit {
   testYamlDepthBoundary()
   testYamlDashScalar()
   testIntegerOverflowIsFloat()
+  testJsonUnicodeEscapes()
   println("yaml_tests: ok")
 }
 
@@ -547,7 +557,54 @@ func testIntegerOverflowIsFloat(): Unit {
     case Ok(v) -> {
       match asInt(v) {
         case Some(_) -> assertTrue(false, "an Int64-overflowing literal must not be a (wrapped) YInt")
-        case None -> match asFloat(v) { case Some(f) -> assertTrue(f > 1.0e19, "overflowing integer is preserved as a large float"); case None -> assertTrue(false, "overflowing integer must be a YFloat") }
+        case None -> match asFloat(v) {
+          case Some(f) -> assertTrue(f > 1.0e19, "overflowing integer is preserved as a large float")
+          case None -> assertTrue(false, "overflowing integer must be a YFloat")
+        }
+      }
+    }
+  }
+}
+
+// A `\uXXXX` escape decodes to one Unicode scalar value.  A supplementary-
+// plane character arrives as a high+low surrogate escape pair and must
+// combine into one code point; a lone or reversed surrogate names no
+// character and is a parse error (#7252).
+func expectJsonString(src: in String, expected: in String, label: in String): Unit {
+  match parseJson(src) {
+    case Err(e) -> assertTrue(false, label + ": " + YamlError.message(e))
+    case Ok(v) -> {
+      match asString(v) {
+        case Some(s) -> assertTrue(s == expected, label)
+        case None -> assertTrue(false, label + ": not a string")
+      }
+    }
+  }
+}
+
+func expectJsonError(src: in String, label: in String): Unit {
+  match parseJson(src) {
+    case Err(_) -> assertTrue(true, label)
+    case Ok(_) -> assertTrue(false, label + ": expected a parse error")
+  }
+}
+
+func testJsonUnicodeEscapes(): Unit {
+  expectJsonString("\"\\u00e9\"", "é", "BMP \\u escape")
+  expectJsonString("\"a\\u4e2dz\"", "a中z", "BMP \\u escape between plain characters")
+  expectJsonString("\"\\ud83d\\ude00\"", "😀", "surrogate-pair escape combines into U+1F600")
+  expectJsonString("\"x\\uD83D\\uDE00y\"", "x😀y", "upper-case surrogate-pair escape")
+  expectJsonError("\"\\ud83d\"", "lone high surrogate escape is rejected")
+  expectJsonError("\"\\ud83dx\"", "high surrogate escape followed by a plain character is rejected")
+  expectJsonError("\"\\ude00\"", "lone low surrogate escape is rejected")
+  expectJsonError("\"\\ude00\\ud83d\"", "reversed surrogate pair is rejected")
+  expectJsonError("\"\\ud83d\\u0041\"", "high surrogate escape followed by a non-surrogate escape is rejected")
+  match parseYaml("v: \"\\ud83d\\ude00\"") {
+    case Err(e) -> assertTrue(false, "yaml surrogate pair: " + YamlError.message(e))
+    case Ok(v) -> {
+      match getString(v, "v") {
+        case Some(s) -> assertTrue(s == "😀", "yaml double-quoted surrogate-pair escape")
+        case None -> assertTrue(false, "yaml surrogate pair: not a string")
       }
     }
   }

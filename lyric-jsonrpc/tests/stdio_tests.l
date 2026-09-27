@@ -328,3 +328,94 @@ test "NDJSON: a line above the 16 MiB limit is rejected" {
     case Err(_) -> ()
   }
 }
+
+// ── Surrogate code units from the reader (#7252) ───────────────────────────
+// A `CharReader` yields raw UTF-16 code units, so it can hand the framing
+// layer a surrogate pair, or a malformed lone or reversed surrogate.  A pair
+// decodes to one supplementary-plane code point; an unpaired surrogate
+// becomes U+FFFD (3 UTF-8 bytes) instead of an invalid UTF-16 string.
+pub record CodeUnitSource {
+  var units: List[Int]
+  var pos: Int
+}
+
+impl CharReader for CodeUnitSource {
+  func next(): Int {
+    if self.pos < self.units.count {
+      val c = self.units[self.pos]
+      self.pos = self.pos + 1
+      c
+    } else {
+      0 - 1
+    }
+  }
+}
+
+// A reader that yields `prefix`'s code units, then each of `middle`, then
+// `suffix`'s code units.
+func codeUnitSource(prefix: in String, middle: in slice[Int], suffix: in String): CodeUnitSource {
+  val units: List[Int] = newList()
+  addCodeUnits(units, prefix)
+  var j = 0
+  while j < middle.length {
+    units.add(middle[j])
+    j = j + 1
+  }
+  addCodeUnits(units, suffix)
+  CodeUnitSource(units = units, pos = 0)
+}
+
+func addCodeUnits(units: in List[Int], s: in String): Unit {
+  var i = 0
+  while i < s.length {
+    units.add(toInt(s[i]))
+    i = i + 1
+  }
+}
+
+func expectBody(src: in CodeUnitSource, expected: in String, label: in String): Unit {
+  match clReceiveVia(src) {
+    case Err(e) -> assertTrue(false, label + ": unexpected receive error: " + e)
+    case Ok(None) -> assertTrue(false, label + ": unexpected clean EOF")
+    case Ok(Some(body)) -> assertEqual(body, expected, label)
+  }
+}
+
+test "Content-Length: a BMP code unit decodes to its character" {
+  expectBody(codeUnitSource("Content-Length: 2\r\n\r\n", [233], ""), "é", "U+00E9 is 2 UTF-8 bytes")
+}
+
+test "Content-Length: a surrogate pair decodes to one supplementary-plane character" {
+  expectBody(codeUnitSource("Content-Length: 4\r\n\r\n", [55357, 56832], ""), "😀", "U+1F600 is 4 UTF-8 bytes")
+}
+
+test "Content-Length: a lone high surrogate becomes U+FFFD" {
+  expectBody(codeUnitSource("Content-Length: 4\r\n\r\n", [55357, 97], ""), "�a", "unpaired high surrogate")
+}
+
+test "Content-Length: a lone low surrogate becomes U+FFFD" {
+  expectBody(codeUnitSource("Content-Length: 4\r\n\r\n", [56832, 97], ""), "�a", "unpaired low surrogate")
+}
+
+test "Content-Length: a reversed surrogate pair becomes two U+FFFD" {
+  expectBody(
+    codeUnitSource("Content-Length: 7\r\n\r\n", [56832, 55357, 97], ""),
+    "��a",
+    "low surrogate before high surrogate"
+  )
+}
+
+test "Content-Length: a body ending on a high surrogate is a framing error" {
+  match clReceiveVia(codeUnitSource("Content-Length: 3\r\n\r\n", [55357], "")) {
+    case Ok(_) -> assertTrue(false, "expected a framing error for a body ending mid-surrogate-pair")
+    case Err(_) -> ()
+  }
+}
+
+test "Content-Length: a surrogate code unit in an unrelated header line does not abort the frame" {
+  expectBody(
+    codeUnitSource("X-Name: ", [55296], "\r\nContent-Length: 1\r\n\r\na"),
+    "a",
+    "header surrogate is replaced, the body still reads"
+  )
+}

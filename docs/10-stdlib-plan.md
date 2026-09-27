@@ -454,7 +454,7 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.Testing.Property` (`testing_property.l`) | `@experimental` | No shrinking, no `Gen[T]` type-class yet. Full property-test harness tracked for stabilisation. |
 | `Std.Testing.Snapshot` (`testing_snapshot.l`) | `@experimental` | No inline diff, no snapshot update workflow yet — tracked for stabilisation. |
 | `Std.CoreProof` (`core_proof.l`) | `@experimental` | Proof scaffolding helpers (`identity`, `trueLit`, `assertEq`, etc.); internal to the Phase 4 test suite. |
-| `Std.Char` (`char.l`) | `@stable` | Unicode character classification and conversion helpers (`isLetter`, `isDigit`, `isWhitespace`, `toLower`, `toUpper`, `toInt`, `fromInt`). |
+| `Std.Char` (`char.l`) | `@stable` | Unicode character classification and conversion helpers (`isLetter`, `isDigit`, `isWhitespace`, `toLower`, `toUpper`, `toInt`, `fromInt`, plus `@experimental` `tryFromInt`). `fromInt` accepts only BMP scalar values (surrogates rejected, D-progress-1003). |
 | `Std.Encoding` (`encoding.l`) | `@stable` | UTF-8 encode/decode (`toUtf8Bytes`, `fromUtf8Bytes`, NFC normalization via `_kernel/unicode_host.l`). |
 | `Std.Format` (`format.l`) | `@stable` | `format1`–`format6` string interpolation helpers; backing for the `format` builtin. |
 | `Std.Sort` (`sort.l`) | `@stable` | In-place list sort (`sortBy`, `sortAscBy`, `sortDescBy`) with comparator. |

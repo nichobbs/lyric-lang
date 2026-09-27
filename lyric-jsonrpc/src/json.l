@@ -36,6 +36,7 @@ package JsonRpc.Json
 import Std.Core
 import Std.Collections
 import Std.Char
+import Std.Encoding
 import Std.Parse
 import Std.Math
 
@@ -227,7 +228,7 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
               case Ok(code) -> {
                 if pendingHigh >= 0 {
                   if code >= 0xDC00 and code <= 0xDFFF {
-                    result = result + "" + fromInt(pendingHigh) + "" + fromInt(code)
+                    result = result + codepointToString(0x10000 + (pendingHigh - 0xD800) * 0x400 + (code - 0xDC00))
                     pendingHigh = 0 - 1
                   } else {
                     ok = false
@@ -240,7 +241,7 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
                   ok = false
                   err = LoneSurrogate(pos = startCharPos, code = code)
                 } else {
-                  result = result + "" + fromInt(code)
+                  result = result + codepointToString(code)
                 }
               }
             }

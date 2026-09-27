@@ -703,6 +703,39 @@ test "parseResponse: always returns Ok (lenient parsing)" {
   assertTrue(isValid, "parseResponse is lenient and always returns Ok")
 }
 
+// `lyricSource` after decoding a JSON string body `escapedBody`.
+func decodedLyricSource(escapedBody: in String): String {
+  val json = "{\"lyricSource\":\"" + escapedBody + "\",\"additionalImports\":[],\"diagnostics\":[]}"
+  match parseResponse(json) {
+    case Ok(resp) -> resp.lyricSource
+    case Err(e) -> "parseResponse failed: " + e
+  }
+}
+
+// #7252: a `\uXXXX` escape decodes to one Unicode scalar value.  A
+// surrogate-pair escape combines into one astral code point; a lone or
+// reversed surrogate escape decodes to U+FFFD, never an unpaired surrogate.
+test "parseResponse: a BMP unicode escape decodes to its character" {
+  assertEqual(decodedLyricSource("caf\\u00e9"), "café", "BMP escape decodes to é")
+}
+
+test "parseResponse: a surrogate-pair escape decodes to one astral character" {
+  assertEqual(decodedLyricSource("a\\ud83d\\ude00b"), "a😀b", "surrogate pair decodes to U+1F600")
+}
+
+test "parseResponse: a lone high surrogate escape decodes to U+FFFD" {
+  assertEqual(decodedLyricSource("a\\ud83db"), "a�b", "lone high surrogate becomes U+FFFD")
+  assertEqual(decodedLyricSource("a\\ud83d\\u0041"), "a�A", "high surrogate before a non-low escape")
+}
+
+test "parseResponse: a lone low surrogate escape decodes to U+FFFD" {
+  assertEqual(decodedLyricSource("a\\ude00b"), "a�b", "lone low surrogate becomes U+FFFD")
+}
+
+test "parseResponse: a reversed surrogate pair decodes to two U+FFFD" {
+  assertEqual(decodedLyricSource("a\\ude00\\ud83db"), "a��b", "reversed pair becomes two U+FFFD")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §15. Full integration — request/response round-trip with realistic generator
 // ─────────────────────────────────────────────────────────────────────────────

@@ -165,6 +165,8 @@ Stringifying a `Double` (`.toString()`, the free `toString(x)` function, string 
 
 Stringifying a `Bool` (the same four call sites — `.toString()`, `toString(x)`, string interpolation, `+` concatenation) always renders lowercase `true`/`false`, matching the language's own `Bool` literals and `Std.Json`: `true.toString()` is `"true"`, never `"True"`. This is normalized identically on both backends — .NET's default `Boolean.ToString()` would otherwise render `"True"`/`"False"` on `--target dotnet` while Java's `String.valueOf(boolean)` already renders lowercase on `--target jvm`; the MSIL backend pins lowercase at every stringification call site to match (#5552).
 
+A `Char` value is a BMP scalar value, not a lone surrogate. `Std.Char.fromInt(n)` enforces this with a `requires:` precondition (`n` in `0..=0xFFFF`, outside `0xD800..=0xDFFF`); `Std.Char.tryFromInt(n)` returns `None` for the same inputs. A supplementary-plane code point has no `Char`; `Std.Encoding.codepointToString(cp)` builds its `String` (a surrogate pair in UTF-16 terms). **Not yet enforced everywhere:** string indexing `s[i]` (§12.1), string iteration and the unchecked `Int.toChar()` conversion can still yield a surrogate half (#7505).
+
 ### 2.2 Range subtypes
 
 A range subtype constrains a numeric type to a contiguous range:

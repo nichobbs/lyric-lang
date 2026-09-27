@@ -91,8 +91,9 @@ func testNumericEntities(): Unit {
   }
 }
 
-// Astral-plane (> U+FFFF) numeric references must decode to a UTF-16 surrogate
-// pair, not panic through Std.Char.fromInt's `n <= 65535` contract.
+// Astral-plane (> U+FFFF) numeric references must decode to the whole code
+// point (a UTF-16 surrogate pair in the String), not panic through a
+// per-half `Std.Char.fromInt` call.
 func testAstralNumericEntities(): Unit {
   // U+1F600 GRINNING FACE, decimal and hex forms.
   match parseXml("<e>&#128512;</e>") {
@@ -121,6 +122,23 @@ func testAstralNumericEntities(): Unit {
       case Ok(_) -> assertTrue(false, "non-Char entity should be rejected: " + illegal[i])
     }
     i = i + 1
+  }
+  // A BMP reference decodes to its one character.
+  match parseXml("<e>&#xE9;</e>") {
+    case Err(e) -> assertTrue(false, "BMP hex entity: " + XmlError.message(e))
+    case Ok(doc) -> assertTrue(textContent(documentRoot(doc)) == "é", "BMP hex entity")
+  }
+  // XML character references name scalar values, so an astral character
+  // cannot be spelled as two surrogate references: a lone high, a lone low,
+  // a high+low pair and a reversed pair are all rejected (#7252).
+  val surrogateRefs = ["&#xD83D;", "&#xDE00;", "&#xD83D;&#xDE00;", "&#xDE00;&#xD83D;"]
+  var j = 0
+  while j < surrogateRefs.count {
+    match parseXml("<e>" + surrogateRefs[j] + "</e>") {
+      case Err(_) -> assertTrue(true, "surrogate entity rejected")
+      case Ok(_) -> assertTrue(false, "surrogate entity should be rejected: " + surrogateRefs[j])
+    }
+    j = j + 1
   }
   match parseXml("<e>&#9;&#xA;&#13;&#x20;&#xFFFD;</e>") {
     case Err(e) -> assertTrue(false, "TAB/LF/CR/space/U+FFFD entities: " + XmlError.message(e))

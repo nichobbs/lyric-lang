@@ -3,7 +3,7 @@
 //! Covers: classification (isLetter, isDigit, isLetterOrDigit,
 //! isWhiteSpace, isUpper, isLower, isPunctuation, isControl),
 //! case conversion (toUpper, toLower), code-point bridge (toInt,
-//! fromInt, isAscii), and digit value helpers (digitValue, hexDigitValue).
+//! fromInt, tryFromInt, isAscii), and digit value helpers (digitValue, hexDigitValue).
 package Std.Char.Tests
 
 import Std.Core
@@ -83,6 +83,47 @@ func testToIntFromInt(): Unit {
 
   assertEqual("" + fromInt(65), "A", "fromInt 65")
   assertEqual("" + fromInt(97), "a", "fromInt 97")
+  assertEqualInt(toInt(fromInt(55295)), 55295, "fromInt U+D7FF, the last scalar below the surrogates")
+  assertEqualInt(toInt(fromInt(57344)), 57344, "fromInt U+E000, the first scalar above the surrogates")
+  assertEqualInt(toInt(fromInt(65535)), 65535, "fromInt U+FFFF")
+}
+
+// Named helpers for assertPanicsWith (block-bodied lambdas `() -> { ... }` are
+// refused by `lyric fmt`, #7151).
+func callFromIntHighSurrogate(): Unit {
+  val ignored = fromInt(55296)
+}
+
+func callFromIntLowSurrogate(): Unit {
+  val ignored = fromInt(57343)
+}
+
+func callFromIntAboveBmp(): Unit {
+  val ignored = fromInt(65536)
+}
+
+func callFromIntNegative(): Unit {
+  val ignored = fromInt(-1)
+}
+
+// A `Char` is a BMP scalar value (language reference §2.1): `fromInt`
+// rejects the surrogate range as well as everything outside 0..65535 (#7252).
+func testFromIntRejectsNonScalar(): Unit {
+  assertPanicsWith("fromInt(U+D800) violates the precondition", "PreconditionViolated", callFromIntHighSurrogate)
+  assertPanicsWith("fromInt(U+DFFF) violates the precondition", "PreconditionViolated", callFromIntLowSurrogate)
+  assertPanicsWith("fromInt(U+10000) violates the precondition", "PreconditionViolated", callFromIntAboveBmp)
+  assertPanicsWith("fromInt(-1) violates the precondition", "PreconditionViolated", callFromIntNegative)
+}
+
+func testTryFromInt(): Unit {
+  assertEqual("" + unwrapOr(tryFromInt(65), ' '), "A", "tryFromInt 65")
+  assertEqualInt(toInt(unwrapOr(tryFromInt(55295), ' ')), 55295, "tryFromInt U+D7FF")
+  assertEqualInt(toInt(unwrapOr(tryFromInt(57344), ' ')), 57344, "tryFromInt U+E000")
+  assertTrue(isNone(tryFromInt(55296)), "tryFromInt U+D800 is None")
+  assertTrue(isNone(tryFromInt(56320)), "tryFromInt U+DC00 is None")
+  assertTrue(isNone(tryFromInt(57343)), "tryFromInt U+DFFF is None")
+  assertTrue(isNone(tryFromInt(65536)), "tryFromInt U+10000 is None")
+  assertTrue(isNone(tryFromInt(-1)), "tryFromInt -1 is None")
 }
 
 func testIsAscii(): Unit {
@@ -171,6 +212,8 @@ func main(): Unit {
   testIsUpperLower()
   testToUpperLower()
   testToIntFromInt()
+  testFromIntRejectsNonScalar()
+  testTryFromInt()
   testIsAscii()
   testDigitValue()
   testHexDigitValue()

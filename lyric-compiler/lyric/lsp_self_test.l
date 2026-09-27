@@ -67,3 +67,39 @@ test "hover on a private (unmarked) record reports no visibility prefix" {
   assertFalse(Str.contains(hover, "pub record Baz"), "hover: private record must not be labeled pub")
   assertFalse(Str.contains(hover, "internal record Baz"), "hover: private record must not be labeled internal")
 }
+
+// ── Framing: UTF-16 code units from the console (#7252) ─────────────────────
+// `readLspFrame` receives raw UTF-16 code units.  A surrogate pair must decode
+// to one code point; an unpaired or reversed surrogate becomes U+FFFD rather
+// than an unpaired surrogate (a `Char` is a BMP scalar value).
+func decodeCodeUnits(units: in slice[Int]): String {
+  var acc = ""
+  var pendingHigh = -1
+  var i = 0
+  while i < units.length {
+    acc = lspAppendCodeUnit(acc, pendingHigh, units[i])
+    i = i + 1
+  }
+  lspFlushCodeUnits(acc, pendingHigh)
+}
+
+test "LSP framing decodes BMP code units" {
+  assertEqual(decodeCodeUnits([97, 233, 20013]), "aé中", "BMP code units decode to their characters")
+}
+
+test "LSP framing combines a surrogate pair into one code point" {
+  assertEqual(decodeCodeUnits([97, 55357, 56832, 98]), "a😀b", "surrogate pair decodes to U+1F600")
+}
+
+test "LSP framing turns a lone high surrogate into U+FFFD" {
+  assertEqual(decodeCodeUnits([97, 55357, 98]), "a�b", "high surrogate before a BMP code unit")
+  assertEqual(decodeCodeUnits([97, 55357]), "a�", "high surrogate at end of input")
+}
+
+test "LSP framing turns a lone low surrogate into U+FFFD" {
+  assertEqual(decodeCodeUnits([97, 56832, 98]), "a�b", "unpaired low surrogate")
+}
+
+test "LSP framing turns a reversed surrogate pair into two U+FFFD" {
+  assertEqual(decodeCodeUnits([97, 56832, 55357, 98]), "a��b", "low surrogate before high surrogate")
+}
