@@ -1984,6 +1984,7 @@ form with the import in scope call the explicit
 | `s.trimStart()` | `String` | leading whitespace removed |
 | `s.trimEnd()` | `String` | trailing whitespace removed |
 | `s.replace(old, new)` | `String` | all occurrences |
+| `s.split(sep)` | `slice[String]` | pieces between occurrences of `sep`; `[s]` when absent |
 | `s.indexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | first index; `None` / `-1` if absent; ordinal |
 | `s.lastIndexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | last index; `None` / `-1` if absent; ordinal |
 | `s.contains(sub)` | `Bool` | |
@@ -1997,6 +1998,20 @@ form with the import in scope call the explicit
 Search and prefix/suffix tests compare code units exactly (ordinal) on every
 target; the process culture never affects them, and case conversion never
 applies locale tailoring such as Turkish dotless I (#7260, #7261).
+
+Every row in the table above (`.indexOf`/`.lastIndexOf` included) types as a
+real function signature at compile time — argument count and argument types
+are checked, and a wrong-typed argument or wrong arity is a `T0042`/`T0043`
+error, the same as any other method call (#7335). This closed a gap where
+these methods typed as the lenient `TyError` — which unifies with anything —
+so a call through one of them (e.g. `s.substring(0, 2).indexOf(":")`) hid
+every downstream type error instead of reporting one. This is bounded to the
+names this table documents; an unrecognised method name on a `String`
+receiver still degrades to `TyError` rather than a hard "unknown method"
+error, since the two targets' actual resolvable-method surfaces genuinely
+differ (MSIL's is closed to this table; JVM additionally resolves any real
+`java.lang.String` method through auto-FFI, e.g. `.getBytes()` — see
+D-progress-971).
 
 String `==` / `!=` compare by value (not reference identity). An empty-string
 check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a

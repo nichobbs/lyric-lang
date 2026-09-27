@@ -2008,6 +2008,71 @@ func stringIndexOfMember(tbl: in SymbolTable, name: in String): Option[Type] {
   Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtInt), isAsync = false))
 }
 
+// #7335: real `TyFunction` types for the rest of the documented `String`
+// host-method surface (docs/01 §12.1) that both backends' hardcoded
+// `String`-method dispatch cascades implement (`lyric-compiler/msil/codegen.l`,
+// `lyric-compiler/jvm/codegen/04_calls.l`).  Before this, every one of these
+// names (`substring`, `trim`, `toLower`, `replace`, ...) fell through
+// `builtinMember`'s `TyPrim(PtString)` arm (which only ever knew `length`/
+// `isEmpty`) to `TyError` — the universal unifier — so a call like
+// `s.substring(0, 2)` type-checked with NO arg validation and its result
+// silently unified with whatever the caller expected next, hiding every
+// downstream check (the repro: `.indexOf`'s `Option[Int]`-vs-`Int` mismatch
+// went undiagnosed). `.indexOf`/`.lastIndexOf` stay in `stringIndexOfMember`
+// above (import-sensitive return type); `.length`/`.isEmpty` stay bare
+// field-style types in `builtinMember` (no call syntax, so no arg
+// validation is needed). Deliberately NOT a general "unknown String method"
+// allowlist/diagnostic — D-progress-971 found that shape unsound (JVM's
+// `String` method surface is open via auto-FFI against real
+// `java.lang.String` metadata for names outside this list, e.g.
+// `.getBytes()`; MSIL's is closed). A name this function does not recognise
+// returns `None` and keeps falling through to `builtinMember`/`TyError`
+// exactly as before, so an unmapped method call keeps whatever leniency it
+// had — no new false positive for JVM's wider surface.
+func stringHostMethodType(name: in String): Option[Type] {
+  val strT = TyPrim(pt = PtString)
+  val boolT = TyPrim(pt = PtBool)
+  val intT = TyPrim(pt = PtInt)
+  if name == "substring" {
+    // `s.substring(start)` / `s.substring(start, count)`: both params are
+    // declared so the arg-type check runs on either arity, and the second
+    // (`count`) is the one optional trailing arg `builtinOptionalTrailingArgs`
+    // recognises for this member name below.
+    val ps: List[Type] = newList()
+    ps.add(intT)
+    ps.add(intT)
+    return Some(value = TyFunction(params = ps, ret = strT, isAsync = false))
+  }
+  if name == "trim" or name == "trimStart" or name == "trimEnd" or name == "toLower" or name == "toUpper" or name == "normalize" {
+    val ps: List[Type] = newList()
+    return Some(value = TyFunction(params = ps, ret = strT, isAsync = false))
+  }
+  if name == "isNormalized" {
+    val ps: List[Type] = newList()
+    return Some(value = TyFunction(params = ps, ret = boolT, isAsync = false))
+  }
+  if name == "replace" {
+    val ps: List[Type] = newList()
+    ps.add(strT)
+    ps.add(strT)
+    return Some(value = TyFunction(params = ps, ret = strT, isAsync = false))
+  }
+  if name == "contains" or name == "startsWith" or name == "endsWith" {
+    val ps: List[Type] = newList()
+    ps.add(strT)
+    return Some(value = TyFunction(params = ps, ret = boolT, isAsync = false))
+  }
+  if name == "split" {
+    // `Std.String.split(s, sep): slice[String]` (`lyric-stdlib/std/string.l`)
+    // — the one implementation both backends' method-syntax `.split(sep)`
+    // route through (docs/01 §12.1).
+    val ps: List[Type] = newList()
+    ps.add(strT)
+    return Some(value = TyFunction(params = ps, ret = TySlice(element = strT), isAsync = false))
+  }
+  None
+}
+
 // Field / builtin member typing only — no method-space consultation and no
 // unknown-member diagnostics.  The `ECall` arm uses this directly for a
 // member callee (methods are resolved arity-aware there); the plain `EMember`
@@ -2034,14 +2099,24 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
     }
     case TyError -> TyError
     case _ -> {
-      // Strict String `.indexOf`/`.lastIndexOf` typing (#6496) — consulted
-      // before the generic builtin table because the result depends on the
-      // file's imports, which `builtinMember` does not see.
+      // Strict String `.indexOf`/`.lastIndexOf` typing (#6496) and the rest
+      // of the documented host-method surface (#7335) — consulted before
+      // the generic builtin table because `.indexOf`/`.lastIndexOf`'s
+      // result depends on the file's imports, which `builtinMember` does
+      // not see, and because the other names need a real `TyFunction` (not
+      // `builtinMember`'s bare-type shape) for the `ECall` arm's arg
+      // validation to run.
       match recv {
         case TyPrim(mbPt) -> match mbPt {
-          case PtString -> match stringIndexOfMember(tbl, name) {
-            case Some(sit) -> return sit
-            case None -> ()
+          case PtString -> {
+            match stringIndexOfMember(tbl, name) {
+              case Some(sit) -> return sit
+              case None -> ()
+            }
+            match stringHostMethodType(name) {
+              case Some(smt) -> return smt
+              case None -> ()
+            }
           }
           case _ -> ()
         }
@@ -4020,10 +4095,22 @@ func ctorResultType(sym: in Symbol): Type {
 
 // How many trailing parameters of a codegen builtin's signature may be
 // omitted at a call: `assert`'s message.  Zero for every other callee.
-func builtinOptionalTrailingArgs(fn: in Expr): Int {
+func builtinOptionalTrailingArgs(fn: in Expr, recvTy: in Option[Type]): Int {
   match fn.kind {
     case EPath(p) -> if p.segments.count == 1 and p.segments[0] == "assert" { 1 } else { 0 }
+    // #7335: `s.substring(start)` / `s.substring(start, count)` — the second
+    // `Int` param `stringHostMethodType` declares is optional.  Only for a
+    // `String` receiver: a user member that happens to be named `substring`
+    // keeps its full arity.
+    case EMember(_, mname) -> if mname == "substring" and isStringReceiver(recvTy) { 1 } else { 0 }
     case _ -> 0
+  }
+}
+
+func isStringReceiver(recvTy: in Option[Type]): Bool {
+  match recvTy {
+    case Some(t) -> match t { case TyPrim(p) -> match p { case PtString -> true; case _ -> false }; case _ -> false }
+    case None -> false
   }
 }
 
@@ -6310,7 +6397,7 @@ func inferExprCore(
                   }
                   match fnT {
                     case TyFunction(paramTypes, ret, _) -> {
-                      val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn)
+                      val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
                       if argTypes.count > paramTypes.count or argTypes.count < minArgs {
                         val expectedMsg = if minArgs == paramTypes.count {
                           toString(paramTypes.count) + " argument(s)"

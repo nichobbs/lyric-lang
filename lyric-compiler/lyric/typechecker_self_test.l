@@ -5009,3 +5009,106 @@ test "built-in members in a clause are not calls to check" {
   val src = "package P\nfunc f(xs: in List[Int], s: in String): Int\n  requires: xs.count > 0 and s.length > 0\n{\n  xs[0]\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "count/length")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7335: the documented `String` host-method surface (docs/01 §12.1) types
+// as a real `TyFunction`, not the `TyError` every one of these fell through
+// to before. `TyError` unifies with everything, so a call through one of
+// these methods used to hide every downstream type error (the repro below).
+// ─────────────────────────────────────────────────────────────────────────────
+test "#7335 repro: substring result feeds indexOf, whose Int/Option mismatch is now caught" {
+  // No `import Std.String`, so `.indexOf` keeps the raw `Int` (-1 sentinel)
+  // binding — matching it against `Some`/`None` is a real scrutinee/pattern
+  // type mismatch. Before this fix `.substring` typed `TyError`, which
+  // unified with the `match` scrutinee leniently and let this compile clean.
+  // `Option` is defined inline (`parseCheck` checks one isolated file, same
+  // as the other T0129 tests above) rather than via `import Std.Core`.
+  val src = "package Idx\nunion Option[T] { case Some(value: T); case None }\nfunc main(): Unit {\n  val s = \"ab:c\"\n  val t = s.substring(0, 2)\n  match t.indexOf(\":\") {\n    case Some(i) -> ()\n    case None -> ()\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0129"), "Some/None patterns can never match an Int scrutinee (#7335's exact repro)")
+}
+
+test "s.substring(start) types as (String) with a String result" {
+  val src = "package P\nfunc f(s: in String): String { s.substring(1) }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "1-arg substring: no diagnostics")
+}
+
+test "s.substring(start, count) types as (Int, Int) -> String" {
+  val src = "package P\nfunc f(s: in String): String { s.substring(1, 2) }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "2-arg substring: no diagnostics")
+}
+
+test "s.substring(start, count) with a wrong argument type is T0043" {
+  val src = "package P\nfunc f(s: in String): String { s.substring(\"x\", 2) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "substring's start must be Int")
+}
+
+test "a user member named substring keeps its full arity" {
+  val src = "package P\nrecord R { substring: (Int, Int, Int) -> String }\nfunc f(r: in R): String {\n  r.substring(1, 2)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0042"), "the optional-count rule applies only to String receivers")
+}
+
+test "s.substring(start) result used as Int is T0043 (return type known)" {
+  val src = "package P\nfunc wantInt(x: in Int): Int { x }\nfunc f(s: in String): Int { wantInt(s.substring(0)) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "substring returns String, not Int")
+}
+
+test "s.toLower() types as () -> String" {
+  val src = "package P\nfunc f(s: in String): String { s.toLower() }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "toLower: no diagnostics")
+}
+
+test "s.toLower() called with an argument is T0042 (wrong arity)" {
+  val src = "package P\nfunc f(s: in String): String { s.toLower(\"x\") }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0042"), "toLower takes no arguments")
+}
+
+test "s.toUpper() result used as Int is T0043" {
+  val src = "package P\nfunc wantInt(x: in Int): Int { x }\nfunc f(s: in String): Int { wantInt(s.toUpper()) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "toUpper returns String, not Int")
+}
+
+test "s.trim()/trimStart()/trimEnd() type as () -> String" {
+  val src = "package P\nfunc f(s: in String): String { s.trim() }\nfunc g(s: in String): String { s.trimStart() }\nfunc h(s: in String): String { s.trimEnd() }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "trim family: no diagnostics")
+}
+
+test "s.replace(old, new) types as (String, String) -> String" {
+  val src = "package P\nfunc f(s: in String): String { s.replace(\"a\", \"b\") }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "replace: no diagnostics")
+}
+
+test "s.replace with a non-String argument is T0043" {
+  val src = "package P\nfunc f(s: in String): String { s.replace(\"a\", 1) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "replace's new value must be String")
+}
+
+test "s.split(sep) types as (String) -> slice[String]" {
+  val src = "package P\nfunc f(s: in String): Int { s.split(\",\").length }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "split result has slice methods (.length)")
+}
+
+test "s.split with a non-String separator is T0043" {
+  val src = "package P\nfunc f(s: in String): slice[String] { s.split(1) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "split's separator must be String")
+}
+
+test "s.startsWith(prefix)/endsWith(suffix)/contains(sub) type as (String) -> Bool" {
+  val src = "package P\nfunc f(s: in String): Bool { s.startsWith(\"a\") }\nfunc g(s: in String): Bool { s.endsWith(\"a\") }\nfunc h(s: in String): Bool { s.contains(\"a\") }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "startsWith/endsWith/contains: no diagnostics")
+}
+
+test "s.startsWith with a non-String argument is T0043" {
+  val src = "package P\nfunc f(s: in String): Bool { s.startsWith(1) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "startsWith's prefix must be String")
+}
+
+test "s.isNormalized() types as () -> Bool; s.normalize() as () -> String" {
+  val src = "package P\nfunc f(s: in String): Bool { s.isNormalized() }\nfunc g(s: in String): String { s.normalize() }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "isNormalized/normalize: no diagnostics")
+}
+
+test "chained String host methods still type-check end to end" {
+  val src = "package P\nfunc f(s: in String): Bool { s.trim().toLower().startsWith(\"a\") }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "chained calls resolve real types at each step")
+}
