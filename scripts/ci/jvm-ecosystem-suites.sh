@@ -12,6 +12,7 @@
 #   jsonrpc     call deadlines against silent and late peers (#7451)
 #   mcp         client timeouts over real child processes (#7451)
 #   health      runCheckIsolated's jvm arm, panic isolation (#7461)
+#   generator-sdk  slice `.toArray()`, literal `String.split` (#7480, #7511)
 #
 # Replaces one ci.yml step per library (ci.yml is at its size ceiling,
 # scripts/ci/check-workflow-size.sh). Every suite runs even after a failure;
@@ -23,7 +24,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 failed=""
-for lib in storage resilience jsonrpc mcp health; do
+for lib in storage resilience jsonrpc mcp health generator-sdk; do
   echo "=== lyric-$lib (--target jvm) ==="
   if ! bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml" --target jvm --no-default-features --features jvm; then
     echo "::error::lyric-$lib suite failed on --target jvm"

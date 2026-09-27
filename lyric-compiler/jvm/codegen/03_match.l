@@ -397,7 +397,7 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
           val viaInstance = instanceMethodRetGenericArgs(ctx, recv, memberName)
           if viaInstance.count > 0 {
             viaInstance
-          } else if memberName == "append" or memberName == "concat" or memberName == "slice" {
+          } else if memberName == "append" or memberName == "concat" or memberName == "slice" or (memberName == "toArray" and callArgs.count == 0) {
             // #6586: `.append`/`.concat`/`.slice` are slice-builtin
             // intrinsics (`Jvm.Codegen.lowerSliceAppendJvm`/
             // `lowerSliceConcatJvm`/`lowerSliceSliceJvm`, 04_calls.l) that
@@ -415,7 +415,10 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
             // `toInt()` on `java.lang.Object`.  Only fires when no genuine
             // user-defined instance method already claimed the name (the
             // `viaInstance` check above), so a real `impl`'s own `.append`
-            // is unaffected.
+            // is unaffected.  `List[T].toArray()` / `slice[T].toArray()` is
+            // the same kind of intrinsic: its `slice[T]` result has the
+            // receiver's element type, so `val bs = bl.toArray()` records it
+            // and `bs[0]` narrows to `T` (#7362).
             scrutineeGenericArgs(ctx, recv)
           } else {
             // `s.indexOf(x)` / `s.lastIndexOf(x)` on a String receiver routes
@@ -430,9 +433,12 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
             if isStrRecv and ctx.importsStdString and (memberName == "indexOf" or memberName == "lastIndexOf") {
               funcSigRetGenericArgs(mapGet(ctx.funcSigs, "Std/String/" + memberName + "@2"))
             } else {
-              match recv.kind {
-                case EPath(p) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, lastSegment(p) + "." + memberName))
-                case _ -> newList()
+              match qualifiedDotNamedSigJvm(ctx, recv, memberName, callArgs.count) {
+                case Some(qsig) -> qsig.retGenericArgs
+                case None -> match recv.kind {
+                  case EPath(p) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, lastSegment(p) + "." + memberName))
+                  case _ -> newList()
+                }
               }
             }
           }
