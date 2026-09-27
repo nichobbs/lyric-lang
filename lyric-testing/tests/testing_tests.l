@@ -87,6 +87,25 @@ test "advance by 0 is a no-op" {
   assertEqualInt(Testing.now(ctx.clock).toInt(), 1000, "advance(0) leaves clock unchanged")
 }
 
+func advanceByNegativeMs(): Unit {
+  val ctx = Testing.newTestContext()
+  Testing.advance(ctx.clock, -1i64)
+}
+
+test "advance panics on a negative ms (time cannot move backwards)" {
+  assertPanics("advance(-1)", advanceByNegativeMs)
+}
+
+func advanceByAmountThatWouldOverflow(): Unit {
+  val ctx = Testing.newTestContext()
+  Testing.advance(ctx.clock, 9223372036854775807i64)
+  Testing.advance(ctx.clock, 9223372036854775807i64)
+}
+
+test "advance panics rather than overflowing Long" {
+  assertPanics("advance amounts that together overflow Long.MAX", advanceByAmountThatWouldOverflow)
+}
+
 // ─── MockMailSender ───────────────────────────────────────────────────────────
 test "MockMailSender: send returns Ok" {
   val ctx = Testing.newTestContext()
@@ -235,6 +254,46 @@ test "MockStorageBucket: presignedUrl returns url containing bucket name" {
     case Err(e) -> Testing.assertTrue(false, "presignedUrl() must succeed: " + e.message)
     case Ok(url) -> Testing.assertTrue(url.contains("test-bucket"), "url contains bucket name")
   }
+}
+
+// The interface method is called directly here (bucket.presignedUrl(...)/
+// bucket.list(...)), bypassing Storage.presignedUrl/Storage.list's own
+// requires: clauses — these two tests exercise MockStorageBucket's OWN
+// contract on the interface method itself (#7255), which used to be absent.
+func presignedUrlWithZeroExpiry(): Unit {
+  val ctx = Testing.newTestContext()
+  val result = ctx.storage.presignedUrl("some/key", 0)
+}
+
+test "MockStorageBucket: presignedUrl panics on expiresInSeconds < 1 (called directly on the interface)" {
+  assertPanics("presignedUrl(key, 0)", presignedUrlWithZeroExpiry)
+}
+
+func presignedUrlWithTooLongExpiry(): Unit {
+  val ctx = Testing.newTestContext()
+  val result = ctx.storage.presignedUrl("some/key", 604801)
+}
+
+test "MockStorageBucket: presignedUrl panics on expiresInSeconds > 604800 (called directly on the interface)" {
+  assertPanics("presignedUrl(key, 604801)", presignedUrlWithTooLongExpiry)
+}
+
+func listWithZeroMaxKeys(): Unit {
+  val ctx = Testing.newTestContext()
+  val result = ctx.storage.list("", "", 0)
+}
+
+test "MockStorageBucket: list panics on maxKeys < 1 (called directly on the interface)" {
+  assertPanics("list(\"\", \"\", 0)", listWithZeroMaxKeys)
+}
+
+func listWithTooManyMaxKeys(): Unit {
+  val ctx = Testing.newTestContext()
+  val result = ctx.storage.list("", "", 1001)
+}
+
+test "MockStorageBucket: list panics on maxKeys > 1000 (called directly on the interface)" {
+  assertPanics("list(\"\", \"\", 1001)", listWithTooManyMaxKeys)
 }
 
 test "MockStorageBucket: list with prefix filters correctly" {
@@ -508,4 +567,20 @@ test "Testing.assertTrue passes for true" {
 
 test "Testing.assertFalse passes for false" {
   Testing.assertFalse(false, "literal false")
+}
+
+// ─── MockCacheStore ───────────────────────────────────────────────────────────
+func mockCacheSetWithNegativeTtl(): Unit {
+  val ctx = Testing.newTestContext()
+  ctx.cache.set("key", "value", -1)
+}
+
+test "MockCacheStore: set panics on a negative ttlSeconds" {
+  assertPanics("cache.set(key, value, -1)", mockCacheSetWithNegativeTtl)
+}
+
+test "MockCacheStore: set accepts ttlSeconds = 0 (no expiry)" {
+  val ctx = Testing.newTestContext()
+  ctx.cache.set("key", "value", 0)
+  Testing.assertEq(Testing.assertSome(ctx.cache.get("key"), "value present"), "value", "stored value round-trips")
 }

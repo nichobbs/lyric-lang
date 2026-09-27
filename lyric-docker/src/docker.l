@@ -22,10 +22,12 @@ import Std.Char
 import Std.Collections
 import Std.Core
 import Std.Encoding
+import Std.Environment
 import Std.Format
 import Std.Http
 import Std.Parse
 import Std.String
+import Std.Task
 
 /// Docker Engine API version this client targets, without a host. Unix-socket
 /// clients use this directly with the placeholder host "docker" (ignored by
@@ -58,7 +60,11 @@ pub record DockerError {
 func fromHttpError(httpError: in HttpError, details: in String): DockerError {
   match httpError {
     case ConnectionFailed(_, message) -> DockerError(statusCode = None, message = message, details = details)
-    case BadStatus(_, statusCode) -> DockerError(statusCode = Some(value = statusCode), message = "HTTP " + toString(statusCode), details = details)
+    case BadStatus(_, statusCode) -> DockerError(
+      statusCode = Some(value = statusCode),
+      message = "HTTP " + toString(statusCode),
+      details = details
+    )
     case InvalidUrl(url) -> DockerError(statusCode = None, message = "Invalid Docker URL: " + url, details = details)
     case _ -> DockerError(statusCode = None, message = "Unknown Docker error", details = details)
   }
@@ -76,19 +82,72 @@ func resolveDockerUrl(urlStr: in String): Result[Std.Http.Url, DockerError] {
 }
 
 /// Connect to the Docker daemon, honouring DOCKER_HOST then the default
-/// Unix socket.
-pub func makeDockerClient(): DockerClient {
+/// Unix socket. Non-panicking form of `makeDockerClient`.
+///
+/// A `tcp://host:port` DOCKER_HOST routes to `makeDockerClientTcp` rather
+/// than being silently ignored in favour of the default Unix socket — the
+/// previous behaviour when DOCKER_HOST named a transport `parseDockerHost`
+/// doesn't understand. DOCKER_HOST is environment input, not a programming
+/// error, so a malformed `tcp://` value (one that fails `isHostPort`) is
+/// reported as `Err` naming DOCKER_HOST and the bad value, rather than
+/// tripping `makeDockerClientTcp`'s `requires: isHostPort(hostPort)`
+/// precondition and crashing the process.
+@stable(since = "0.1")
+pub func tryMakeDockerClient(): Result[DockerClient, DockerError] {
+  match Std.Environment.getVar("DOCKER_HOST") {
+    case Ok(dockerHost) -> match Lyric.Docker.Sockets.parseTcpDockerHost(dockerHost) {
+      case Some(hostPort) -> {
+        if not isHostPort(hostPort) {
+          return Err(
+            error = DockerError(
+              statusCode = None,
+              message = "DOCKER_HOST is not a valid tcp:// host:port",
+              details = "DOCKER_HOST=" + dockerHost
+            )
+          )
+        }
+        return Ok(value = makeDockerClientTcp(hostPort))
+      }
+      case None -> ()
+    }
+    case Err(_) -> ()
+  }
   val socketPath = match Lyric.Docker.Sockets.parseDockerHost() {
     case Some(p) -> p
     case None -> Lyric.Docker.Sockets.unixSocketPath()
   }
-  DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath), apiBase = "http://docker" + dockerApiVersion)
+  return Ok(
+    value = DockerClient(
+      handle = Std.Http.clientWithUnixSocket(socketPath),
+      apiBase = "http://docker" + dockerApiVersion
+    )
+  )
+}
+
+/// Connect to the Docker daemon, honouring DOCKER_HOST then the default
+/// Unix socket.
+///
+/// Panics on a malformed `tcp://` DOCKER_HOST (a value that fails
+/// `isHostPort` after the `tcp://` prefix) — use `tryMakeDockerClient` for
+/// the non-panicking form that reports a malformed DOCKER_HOST as `Err`
+/// instead.
+@stable(since = "0.1")
+pub func makeDockerClient(): DockerClient {
+  match tryMakeDockerClient() {
+    case Ok(client) -> client
+    case Err(e) -> panic(e.message + ": " + e.details)
+  }
 }
 
 /// Connect to the Docker daemon in rootless mode ($XDG_RUNTIME_DIR/docker.sock).
 pub func makeRootlessDockerClient(): Result[DockerClient, DockerError] {
   match Lyric.Docker.Sockets.resolveRootlessSocket() {
-    case Ok(socketPath) -> Ok(value = DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath), apiBase = "http://docker" + dockerApiVersion))
+    case Ok(socketPath) -> Ok(
+      value = DockerClient(
+        handle = Std.Http.clientWithUnixSocket(socketPath),
+        apiBase = "http://docker" + dockerApiVersion
+      )
+    )
     case Err(message) -> Err(error = DockerError(statusCode = None, message = message, details = ""))
   }
 }
@@ -98,6 +157,120 @@ pub func makeDockerClientAt(socketPath: in String): DockerClient
   requires: socketPath.length > 0
 {
   DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath), apiBase = "http://docker" + dockerApiVersion)
+}
+
+/// True when `c` is an ASCII hexadecimal digit (`0`-`9`, `a`-`f`, `A`-`F`).
+@pure
+func isHexDigitChar(c: in Char): Bool {
+  (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')
+}
+
+/// True when `s` is a plausible IPv6 literal's *interior* (between the `[`
+/// and `]` of a bracketed address): non-empty, at least one `:`, and every
+/// character a hex digit, `:`, or `.` (the latter for an IPv4-mapped tail
+/// like `::ffff:192.0.2.1`). Not a full IPv6 grammar — just enough to reject
+/// injected path/query/scheme characters.
+@pure
+func isPlausibleIpv6Literal(s: in String): Bool {
+  val len = s.length
+  if len == 0 {
+    return false
+  }
+  var i = 0
+  var ok = true
+  var hasColon = false
+  while i < len and ok {
+    val c = s[i]
+    if c == ':' {
+      hasColon = true
+    } else if not (isHexDigitChar(c) or c == '.') {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok and hasColon
+}
+
+/// True when `s` is a plausible hostname or IPv4 literal: non-empty,
+/// every character alphanumeric, `.`, or `-`, and both the first and last
+/// character alphanumeric. Not a full RFC 1123 grammar — just enough to
+/// reject `/`, `?`, `@`, and other characters that would inject into a URL.
+@pure
+func isPlausibleHostLiteral(s: in String): Bool {
+  val len = s.length
+  if len == 0 {
+    return false
+  }
+  var i = 0
+  var ok = true
+  while i < len and ok {
+    val c = s[i]
+    if not (Std.Char.isAsciiLetterOrDigit(c) or c == '.' or c == '-') {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok and Std.Char.isAsciiLetterOrDigit(s[0]) and Std.Char.isAsciiLetterOrDigit(s[len - 1])
+}
+
+/// True when `s` is 1-5 ASCII digits spelling an integer in `1..=65535`.
+@pure
+func isValidPortDigits(s: in String): Bool {
+  val len = s.length
+  if len == 0 or len > 5 {
+    return false
+  }
+  var i = 0
+  var value = 0
+  var ok = true
+  while i < len and ok {
+    val c = s[i]
+    if c < '0' or c > '9' {
+      ok = false
+    } else {
+      value = value * 10 + (Std.Char.toInt(c) - Std.Char.toInt('0'))
+    }
+    i = i + 1
+  }
+  ok and value >= 1 and value <= 65535
+}
+
+/// True when `hostPort` has the shape `makeDockerClientTcp` requires: a
+/// hostname or IPv4 literal, or a bracketed IPv6 literal (`[::1]`),
+/// followed by `:` and a port `1..=65535`. Rejects `/`, `?`, `@`, embedded
+/// scheme text, or anything else that would inject into `apiBase`.
+@pure
+@stable(since = "0.1")
+pub func isHostPort(hostPort: in String): Bool {
+  val len = hostPort.length
+  if len == 0 {
+    return false
+  }
+  if hostPort[0] == '[' {
+    match Std.String.indexOf(hostPort, "]") {
+      case None -> false
+      case Some(closeIdx) -> {
+        if closeIdx <= 1 or closeIdx + 1 >= len or hostPort[closeIdx + 1] != ':' {
+          false
+        } else {
+          isPlausibleIpv6Literal(hostPort.substring(1, closeIdx - 1)) and
+            isValidPortDigits(hostPort.substring(closeIdx + 2, len - closeIdx - 2))
+        }
+      }
+    }
+  } else {
+    match Std.String.lastIndexOf(hostPort, ":") {
+      case None -> false
+      case Some(colonIdx) -> {
+        if colonIdx == 0 or colonIdx == len - 1 {
+          false
+        } else {
+          isPlausibleHostLiteral(hostPort.substring(0, colonIdx)) and
+            isValidPortDigits(hostPort.substring(colonIdx + 1, len - colonIdx - 1))
+        }
+      }
+    }
+  }
 }
 
 /// Connect to the Docker daemon over plain TCP (`host:port`, e.g.
@@ -116,6 +289,7 @@ pub func makeDockerClientAt(socketPath: in String): DockerClient
 /// applies.
 pub func makeDockerClientTcp(hostPort: in String): DockerClient
   requires: hostPort.length > 0
+  requires: isHostPort(hostPort)
 {
   DockerClient(handle = Std.Http.defaultClient(), apiBase = "http://" + hostPort + dockerApiVersion)
 }
@@ -131,6 +305,44 @@ async func sendAndReadBody(
   failMsg: in String,
 ): Result[String, DockerError] {
   val sent = await client.handle.send(request)
+  val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
+
+  val bodyResult = await response.bodyText()
+  val body = match bodyResult {
+    case Ok(b) -> b
+    case Err(_) -> return Err(error = fromHttpError(ConnectionFailed(url = urlStr, message = "IO error reading response"), ""))
+  }
+
+  if response.isSuccess() {
+    Ok(value = body)
+  } else {
+    Err(error = DockerError(statusCode = Some(value = response.statusCode()), message = failMsg, details = body))
+  }
+}
+
+/// Like `sendAndReadBody`, but bounds the wait for a response with
+/// `timeoutSec` (converted to milliseconds) via the client's own
+/// `sendWithCancel` — honouring the same per-client configuration (Unix
+/// socket, redirects, etc.) that `send` does, unlike the free
+/// `Std.Http.sendWithTimeoutAsync` (currently `@experimental` and known to
+/// throw at runtime on `--target dotnet`, #6367; not used here). Cancels the
+/// pending HTTP request once `timeoutSec` elapses — it does not, and
+/// cannot, bound how long the Docker daemon itself takes to respond. Used by
+/// `waitContainer`, whose `/wait` endpoint otherwise blocks server-side for
+/// as long as the container runs.
+async func sendAndReadBodyWithTimeout(
+  client: in DockerClient,
+  request: in Std.Http.HttpRequest,
+  urlStr: in String,
+  failMsg: in String,
+  timeoutSec: in Int,
+): Result[String, DockerError]
+  requires: timeoutSec > 0 and timeoutSec <= 2147483
+{
+  val src = Std.Task.makeCancelSourceTimeout(timeoutSec * 1000)
+  val token = Std.Task.sourceToken(src)
+  val sent = await client.handle.sendWithCancel(request, token)
+  Std.Task.disposeSource(src)
   val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
 
   val bodyResult = await response.bodyText()
@@ -264,6 +476,56 @@ func jsonStringArray(items: in slice[String]): String {
   return acc + "]"
 }
 
+/// True when every entry of `env` contains a `=` (the shape Docker's
+/// `HostConfig.Env`/top-level `Env` expects: `KEY=VALUE`). Vacuously true
+/// for an empty slice.
+@pure
+func allEnvEntriesHaveEquals(env: in slice[String]): Bool {
+  var i = 0
+  var ok = true
+  while i < env.length and ok {
+    if not env[i].contains("=") {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// True when `bind` has the shape Docker's `HostConfig.Binds` expects:
+/// `src:dst` or `src:dst:mode`, with every colon-separated part non-empty.
+@pure
+func isValidBindShape(bindSpec: in String): Bool {
+  val parts = bindSpec.split(":")
+  if parts.length != 2 and parts.length != 3 {
+    return false
+  }
+  var i = 0
+  var ok = true
+  while i < parts.length and ok {
+    if parts[i].length == 0 {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// True when every entry of `binds` satisfies `isValidBindShape`. Vacuously
+/// true for an empty slice.
+@pure
+func allBindsValid(binds: in slice[String]): Bool {
+  var i = 0
+  var ok = true
+  while i < binds.length and ok {
+    if not isValidBindShape(binds[i]) {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
 /// Build the JSON body for POST /containers/create, optionally pinning the
 /// container's NetworkMode (e.g. "none" for full isolation, or a named
 /// Docker network). NetworkMode is only emitted when set, so callers that
@@ -276,7 +538,11 @@ pub func createContainerBodyWithNetwork(
   env: in slice[String],
   binds: in slice[String],
   networkMode: in String,
-): String {
+): String
+  requires: image.length > 0
+  requires: allEnvEntriesHaveEquals(env)
+  requires: allBindsValid(binds)
+{
   var hostConfig = "\"Binds\":" + jsonStringArray(binds)
   if networkMode.length > 0 {
     hostConfig = hostConfig + ",\"NetworkMode\":\"" + jsonEscapeValue(networkMode) + "\""
@@ -692,11 +958,12 @@ func scopeJsonObject(json: in String, pos: in Int): String {
 /// Validate a Docker container ID: must be a lowercase hex string of length 12
 /// (short form) or 64 (full SHA-256), as returned by the Docker API.  Rejects
 /// values containing path-separator or query characters that would silently
-/// reach unintended API endpoints. Public so callers can validate a
-/// caller-supplied container ID (e.g. from user input or a config file)
-/// before it reaches startContainer/stopContainer/removeContainer/
-/// getContainerLogs, unlike jsonEscapeValue/jsonUnescapeValue which are
-/// internal JSON-serialization plumbing with no meaning outside this file.
+/// reach unintended API endpoints.
+///
+/// @deprecated Superseded by `ContainerId`/`ContainerId.tryFrom` (#7255): this
+/// check also rejects a valid unique hex prefix of any other length and a
+/// valid container name — `ContainerId.tryFrom` accepts the full shape Docker
+/// itself accepts. Kept for source compatibility; prefer `ContainerId`.
 pub func isValidContainerId(id: in String): Bool {
   val len = id.length
   if len != 12 and len != 64 {
@@ -711,6 +978,87 @@ pub func isValidContainerId(id: in String): Bool {
     i = i + 1
   }
   true
+}
+
+/// True when `s` is 1-64 lowercase hex characters — a full 64-character
+/// SHA-256 container ID or any unique prefix of one, exactly the shape the
+/// Docker Engine API accepts wherever a container ID is expected.
+@pure
+func isHexContainerId(s: in String): Bool {
+  val len = s.length
+  if len == 0 or len > 64 {
+    return false
+  }
+  var i = 0
+  var ok = true
+  while i < len and ok {
+    val c = s[i]
+    if not ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f')) {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// True when `s` matches Docker's container-name shape: a leading
+/// alphanumeric character followed by one or more alphanumeric, `_`, `.`, or
+/// `-` characters (`[a-zA-Z0-9][a-zA-Z0-9_.-]+`, per the Docker Engine API).
+@pure
+func isContainerNameShape(s: in String): Bool {
+  val len = s.length
+  if len < 2 or not Std.Char.isAsciiLetterOrDigit(s[0]) {
+    return false
+  }
+  var i = 1
+  var ok = true
+  while i < len and ok {
+    val c = s[i]
+    if not (Std.Char.isAsciiLetterOrDigit(c) or c == '_' or c == '.' or c == '-') {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// True when `s` is a shape the Docker Engine API accepts as a container
+/// reference: a full 64-hex ID, a unique hex prefix of any length 1-64, or a
+/// container name (`isContainerNameShape`).
+@pure
+@stable(since = "0.1")
+pub func isValidContainerIdOrName(s: in String): Bool {
+  isHexContainerId(s) or isContainerNameShape(s)
+}
+
+/// A validated container identifier — either a full 64-hex ID, a unique hex
+/// prefix, or a container name — accepted by `start`/`stop`/`wait`/`remove`.
+/// Opaque so a caller can only obtain one through `ContainerId.tryFrom` (or
+/// as the result of `createContainer`), never by constructing an unvalidated
+/// string directly.
+@stable(since = "0.1")
+pub opaque type ContainerId {
+  value: String
+  invariant: isValidContainerIdOrName(value)
+}
+
+/// Validate and wrap a caller-supplied container ID or name — from user
+/// input, a config file, or a prior `docker ps` — before it reaches
+/// `startContainer`/`stopContainer`/`waitContainer`/`removeContainer`/
+/// `getContainerLogs`.
+@stable(since = "0.1")
+pub func ContainerId.tryFrom(raw: in String): Result[ContainerId, DockerError] {
+  if isValidContainerIdOrName(raw) {
+    return Ok(value = ContainerId(value = raw))
+  }
+  return Err(error = DockerError(statusCode = None, message = "Invalid container ID or name", details = raw))
+}
+
+/// The validated string this `ContainerId` wraps (its full ID, hex prefix, or
+/// name), for building request paths or for display.
+@stable(since = "0.1")
+pub func ContainerId.toString(id: in ContainerId): String {
+  id.value
 }
 
 /// Send a request expecting only success/failure (no useful body on success).
@@ -737,14 +1085,14 @@ async func sendExpectSuccess(
 /// Create a container from an image with environment variables and volume
 /// binds, additionally pinning the container's NetworkMode (e.g. "none" for
 /// full isolation, or a named Docker network). An empty networkMode keeps
-/// the Docker default (bridge). Returns the new container id.
+/// the Docker default (bridge). Returns the new container's validated id.
 pub async func createContainerWithNetwork(
   client: in DockerClient,
   image: in String,
   env: in slice[String],
   binds: in slice[String],
   networkMode: in String,
-): Result[String, DockerError] {
+): Result[ContainerId, DockerError] {
   val urlStr = client.apiBase + "/containers/create"
   val url = resolveDockerUrl(urlStr)?
   val request = Std.Http.withJsonBody(
@@ -754,10 +1102,10 @@ pub async func createContainerWithNetwork(
   match await sendAndReadBody(client, request, urlStr, "Create container failed") {
     case Ok(body) -> {
       val id = extractJsonField(body, "Id")
-      if id.length > 0 {
-        Ok(value = id)
-      } else {
+      if id.length == 0 {
         Err(error = DockerError(statusCode = None, message = "Create container returned no Id", details = body))
+      } else {
+        ContainerId.tryFrom(id)
       }
     }
     case Err(e) -> Err(error = e)
@@ -765,19 +1113,17 @@ pub async func createContainerWithNetwork(
 }
 
 /// Create a container from an image with environment variables and volume
-/// binds, using the Docker default network. Returns the new container id.
+/// binds, using the Docker default network. Returns the new container's
+/// validated id.
 pub async func createContainer(
   client: in DockerClient, image: in String, env: in slice[String], binds: in slice[String]
-): Result[String, DockerError] {
+): Result[ContainerId, DockerError] {
   await createContainerWithNetwork(client, image, env, binds, "")
 }
 
 /// Start a created container.
-pub async func startContainer(client: in DockerClient, containerId: in String): Result[Unit, DockerError] {
-  if not isValidContainerId(containerId) {
-    return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
-  }
-  await sendExpectSuccess(client, client.apiBase + "/containers/" + containerId + "/start", Std.Http.POST, "Start container failed")
+pub async func startContainer(client: in DockerClient, containerId: in ContainerId): Result[Unit, DockerError] {
+  await sendExpectSuccess(client, client.apiBase + "/containers/" + containerId.value + "/start", Std.Http.POST, "Start container failed")
 }
 
 /// Block until a container exits, then return its exit code.
@@ -795,13 +1141,20 @@ pub async func startContainer(client: in DockerClient, containerId: in String): 
 /// while waiting) and can be present even when `StatusCode` reads `0` —
 /// checked first and reported as `Err` rather than silently returning
 /// `Ok(0)` as if the wait had gone cleanly.
-pub async func waitContainer(client: in DockerClient, containerId: in String): Result[Int, DockerError] {
-  if not isValidContainerId(containerId) {
-    return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
-  }
-  val urlStr = client.apiBase + "/containers/" + containerId + "/wait"
+///
+/// `/wait` blocks server-side for as long as the container runs, so the only
+/// honest bound is a client-side cancellation: `timeoutSec` is passed to the
+/// underlying client's own `sendWithCancel` (see `sendAndReadBodyWithTimeout`),
+/// which cancels the pending request — not the container itself — once
+/// `timeoutSec` elapses, surfacing as `Err` with a "cancelled" message.
+pub async func waitContainer(
+  client: in DockerClient, containerId: in ContainerId, timeoutSec: in Int
+): Result[Int, DockerError]
+  requires: timeoutSec > 0 and timeoutSec <= 2147483
+{
+  val urlStr = client.apiBase + "/containers/" + containerId.value + "/wait"
   val url = resolveDockerUrl(urlStr)?
-  match await sendAndReadBody(client, Std.Http.request(Std.Http.POST, url), urlStr, "Wait for container failed") {
+  match await sendAndReadBodyWithTimeout(client, Std.Http.request(Std.Http.POST, url), urlStr, "Wait for container failed", timeoutSec) {
     case Ok(body) -> match jsonFieldObjectStart(body, "Error") {
       case Some(errStart) -> {
         // Scope the Message lookup to the Error object itself, not the
@@ -819,37 +1172,67 @@ pub async func waitContainer(client: in DockerClient, containerId: in String): R
           )
         )
       }
-      case None -> match extractJsonIntField(body, "StatusCode") { case Some(code) -> Ok(value = code); case None -> Err(error = DockerError(statusCode = None, message = "Wait for container returned no StatusCode", details = body)) }
+      case None -> match extractJsonIntField(body, "StatusCode") {
+        case Some(code) -> Ok(value = code)
+        case None -> Err(
+          error = DockerError(
+            statusCode = None,
+            message = "Wait for container returned no StatusCode",
+            details = body
+          )
+        )
+      }
     }
     case Err(e) -> Err(error = e)
   }
 }
 
 /// Stop a running container.
-pub async func stopContainer(client: in DockerClient, containerId: in String): Result[Unit, DockerError] {
-  if not isValidContainerId(containerId) {
-    return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
-  }
-  await sendExpectSuccess(client, client.apiBase + "/containers/" + containerId + "/stop", Std.Http.POST, "Stop container failed")
+///
+/// `timeoutSec` is Docker's own graceful-stop grace period (the `/stop`
+/// endpoint's `t` query parameter, in seconds): Docker sends SIGTERM,
+/// waits up to `timeoutSec` for the container to exit, then sends SIGKILL.
+pub async func stopContainer(
+  client: in DockerClient, containerId: in ContainerId, timeoutSec: in Int
+): Result[Unit, DockerError]
+  requires: timeoutSec > 0
+{
+  await sendExpectSuccess(client, client.apiBase + "/containers/" + containerId.value + "/stop?t=" + timeoutSec.toString(), Std.Http.POST, "Stop container failed")
 }
 
 /// Remove a container.
-pub async func removeContainer(client: in DockerClient, containerId: in String): Result[Unit, DockerError] {
-  if not isValidContainerId(containerId) {
-    return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
-  }
-  await sendExpectSuccess(client, client.apiBase + "/containers/" + containerId + "?force=true", Std.Http.DELETE, "Remove container failed")
+pub async func removeContainer(client: in DockerClient, containerId: in ContainerId): Result[Unit, DockerError] {
+  await sendExpectSuccess(client, client.apiBase + "/containers/" + containerId.value + "?force=true", Std.Http.DELETE, "Remove container failed")
 }
+
+/// Maximum total decoded bytes `demultiplexDockerStream` accumulates before
+/// giving up with `Err`. Docker's own frame-size field is bounded only by the
+/// remaining input buffer, so a very large (or maliciously crafted) response
+/// could otherwise drive unbounded memory use. 64 MiB.
+val maxDemultiplexedStreamBytes: Int = 67108864
 
 /// Demultiplex a raw Docker multiplexed stream into a UTF-8 String.
 /// Accepts the raw bytes of a multiplexed stream and decodes combined stdout/stderr.
-/// `Err` carries a description when the demultiplexed bytes are not valid
-/// UTF-8; an empty (or entirely-non-stdout/stderr) stream decodes to `Ok("")`.
+///
+/// `Err` when:
+/// - the decoded bytes are not valid UTF-8;
+/// - the buffer ends with a partial frame (a header shorter than 8 bytes, or
+///   a header whose declared size runs past the end of the buffer) — a
+///   truncated trailing frame previously decoded whatever bytes preceded it
+///   as if the stream were complete;
+/// - a frame's stream-type byte is neither `1` (stdout) nor `2` (stderr) —
+///   previously any other stream type (including `0`, stdin) was silently
+///   skipped rather than treated as malformed input;
+/// - the accumulated stdout/stderr bytes exceed `maxDemultiplexedStreamBytes`.
+///
+/// An empty stream decodes to `Ok("")`.
 pub func demultiplexDockerStream(bytes: in slice[Byte]): Result[String, String] {
   val len = bytes.length
   val outBytes: List[Byte] = newList()
   var i = 0
-  while i + 8 <= len {
+  var errMsg = ""
+  var failed = false
+  while i + 8 <= len and not failed {
     val streamType = bytes[i]
 
     val size_b3 = bytes[i + 4]
@@ -866,20 +1249,36 @@ pub func demultiplexDockerStream(bytes: in slice[Byte]): Result[String, String] 
       size_b1.toInt().toLong() * 256i64 +
       size_b0.toInt().toLong()
 
-    if sizeL < 0i64 or i.toLong() + 8i64 + sizeL > len.toLong() {
-      break
-    }
-    val size = sizeL.toInt()
-
-    if streamType == 1u8 or streamType == 2u8 {
+    if streamType != 1u8 and streamType != 2u8 {
+      failed = true
+      errMsg = "Demultiplexed Docker stream contains an unrecognized stream type"
+    } else if outBytes.count.toLong() + sizeL > maxDemultiplexedStreamBytes.toLong() {
+      // Checked against the declared size directly, before the remaining-buffer
+      // bound below: a caller passing a maliciously large declared frame size
+      // should not have to actually supply that many bytes to trigger the cap.
+      failed = true
+      errMsg = "Demultiplexed Docker stream exceeds the " + maxDemultiplexedStreamBytes.toString() + "-byte cap"
+    } else if i.toLong() + 8i64 + sizeL > len.toLong() {
+      failed = true
+      errMsg = "Demultiplexed Docker stream ends with a truncated frame"
+    } else {
+      val size = sizeL.toInt()
       var j = 0
       while j < size {
         outBytes.add(bytes[i + 8 + j])
         j = j + 1
       }
+      i = i + 8 + size
     }
+  }
 
-    i = i + 8 + size
+  if failed {
+    return Err(error = errMsg)
+  }
+  if i != len {
+    // Fewer than 8 bytes remain: not enough for another frame header, and
+    // not zero either — a partial header at the very end of the stream.
+    return Err(error = "Demultiplexed Docker stream ends with a truncated frame header")
   }
 
   match Std.Encoding.tryDecodeUtf8(outBytes.toArray()) {
@@ -896,8 +1295,8 @@ pub func demultiplexDockerStream(bytes: in slice[Byte]): Result[String, String] 
 /// be used for this. Defaults to `false` (multiplexed) if `Config.Tty` is
 /// absent or malformed, matching the Docker API's own default when a
 /// container is created without an explicit `Tty` field.
-async func containerIsTty(client: in DockerClient, containerId: in String): Result[Bool, DockerError] {
-  val bodyResult = await fetchBodyText(client, client.apiBase + "/containers/" + containerId + "/json", "Inspect container failed")
+async func containerIsTty(client: in DockerClient, containerId: in ContainerId): Result[Bool, DockerError] {
+  val bodyResult = await fetchBodyText(client, client.apiBase + "/containers/" + containerId.value + "/json", "Inspect container failed")
   val body = match bodyResult { case Err(e) -> return Err(error = e); case Ok(b) -> b }
   match jsonFieldObjectStart(body, "Config") {
     case None -> Ok(value = false)
@@ -928,14 +1327,11 @@ async func containerIsTty(client: in DockerClient, containerId: in String): Resu
 /// producing a "Failed to decode container logs as UTF-8" error on every
 /// call. `containerIsTty` queries the container's actual `Config.Tty`
 /// setting instead, which is authoritative.
-pub async func getContainerLogs(client: in DockerClient, containerId: in String): Result[String, DockerError] {
-  if not isValidContainerId(containerId) {
-    return Err(error = DockerError(statusCode = None, message = "Invalid container ID", details = containerId))
-  }
+pub async func getContainerLogs(client: in DockerClient, containerId: in ContainerId): Result[String, DockerError] {
   val isTtyResult = await containerIsTty(client, containerId)
   val isTty = match isTtyResult { case Err(e) -> return Err(error = e); case Ok(v) -> v }
 
-  val urlStr = client.apiBase + "/containers/" + containerId + "/logs?stdout=true&stderr=true"
+  val urlStr = client.apiBase + "/containers/" + containerId.value + "/logs?stdout=true&stderr=true"
   val url = resolveDockerUrl(urlStr)?
   val bytesResult = await sendAndReadBytes(client, Std.Http.request(Std.Http.GET, url), urlStr, "Get container logs failed")
   val bytes = match bytesResult { case Err(e) -> return Err(error = e); case Ok(b) -> b }
@@ -943,12 +1339,24 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
   if isTty {
     match Std.Encoding.tryDecodeUtf8(bytes) {
       case Some(s) -> Ok(value = s)
-      case None -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = ""))
+      case None -> Err(
+        error = DockerError(
+          statusCode = None,
+          message = "Failed to decode container logs as UTF-8",
+          details = ""
+        )
+      )
     }
   } else {
     match demultiplexDockerStream(bytes) {
       case Ok(s) -> Ok(value = s)
-      case Err(reason) -> Err(error = DockerError(statusCode = None, message = "Failed to decode container logs as UTF-8", details = reason))
+      case Err(reason) -> Err(
+        error = DockerError(
+          statusCode = None,
+          message = "Failed to decode container logs as UTF-8",
+          details = reason
+        )
+      )
     }
   }
 }

@@ -675,3 +675,156 @@ test "Full integration: request and response round-trip" {
   val isValid = match respResult { case Ok(_) -> true; case Err(_) -> false }
   assertTrue(isValid, "response parses successfully")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §16. parseResponse — additionalImports validation (#7255)
+// ─────────────────────────────────────────────────────────────────────────────
+test "parseResponse: accepts a well-formed 'import extern' entry" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import extern System.DateTime\"],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertTrue(isValid, "'import extern <QualifiedName>' is accepted")
+}
+
+test "parseResponse: accepts an entry with an 'as' alias" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json as J\"],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertTrue(isValid, "'import <QualifiedName> as <Identifier>' is accepted")
+}
+
+test "parseResponse: rejects an additionalImports entry that is not an import statement at all" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"package Evil\"],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertFalse(isValid, "an entry without an 'import ' prefix is rejected")
+}
+
+test "parseResponse: rejects an additionalImports entry smuggling a second statement" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json\\npub func backdoor(): Unit {}\"],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertFalse(isValid, "an entry with an embedded newline (a second statement) is rejected")
+}
+
+test "parseResponse: rejects an additionalImports entry with a malformed qualified name" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std..Json\"],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertFalse(isValid, "a doubled '.' in the qualified name is rejected")
+}
+
+test "parseResponse: rejects an additionalImports entry with a semicolon-separated second statement" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json; import Evil\"],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertFalse(isValid, "a ';'-separated second statement is rejected")
+}
+
+test "parseResponse: one malformed entry fails the whole additionalImports list" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json\",\"not an import\"],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
+  assertFalse(isValid, "a well-formed entry does not rescue a malformed sibling")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §17. parseResponse — diagnostics deserialization (#7255)
+// ─────────────────────────────────────────────────────────────────────────────
+test "parseResponse: deserializes a single Error diagnostic (previously always dropped)" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[],\"diagnostics\":[{\"severity\":\"Error\",\"message\":\"boom\",\"code\":\"PD001\"}]}"
+  val result = parseResponse(json)
+  match result {
+    case Err(e) -> assertTrue(false, "response must parse: " + e)
+    case Ok(resp) -> {
+      val diags = resp.diagnostics.toArray()
+      assertTrue(diags.count == 1, "one diagnostic present")
+      val d = diags[0]
+      match d.severity {
+        case Error -> assertTrue(true, "severity is Error")
+        case _ -> assertTrue(false, "severity must be Error")
+      }
+      assertEqual(d.message, "boom", "message decoded")
+      match d.code {
+        case Some(c) -> assertEqual(c, "PD001", "code decoded")
+        case None -> assertTrue(false, "code must be Some")
+      }
+    }
+  }
+}
+
+test "parseResponse: deserializes multiple diagnostics with a null code" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[],\"diagnostics\":[" +
+    "{\"severity\":\"Warning\",\"message\":\"careful\",\"code\":null}," +
+    "{\"severity\":\"Info\",\"message\":\"fyi\",\"code\":null}" +
+    "]}"
+  val result = parseResponse(json)
+  match result {
+    case Err(e) -> assertTrue(false, "response must parse: " + e)
+    case Ok(resp) -> {
+      val diags = resp.diagnostics.toArray()
+      assertTrue(diags.count == 2, "two diagnostics present")
+      match diags[0].code {
+        case None -> assertTrue(true, "null code decodes to None")
+        case Some(_) -> assertTrue(false, "null code must decode to None")
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §18. parseJsonString — RFC 8259 §7 escapes (#7255)
+// ─────────────────────────────────────────────────────────────────────────────
+test "parseResponse: decodes \\/ \\b \\f escapes in lyricSource" {
+  val json = "{\"lyricSource\":\"a\\/b\\bc\\fd\",\"additionalImports\":[],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  match result {
+    case Err(e) -> assertTrue(false, "response must parse: " + e)
+    case Ok(resp) -> assertEqual(resp.lyricSource, "a/b\u{0008}c\u{000c}d", "\\/, \\b, \\f decoded")
+  }
+}
+
+test "parseResponse: decodes a \\uXXXX escape (BMP character) in lyricSource" {
+  val json = "{\"lyricSource\":\"caf\\u00e9\",\"additionalImports\":[],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  match result {
+    case Err(e) -> assertTrue(false, "response must parse: " + e)
+    case Ok(resp) -> assertEqual(resp.lyricSource, "café", "\\u00e9 decodes to é")
+  }
+}
+
+test "parseResponse: decodes a \\uXXXX surrogate pair (astral character) in lyricSource" {
+  val json = "{\"lyricSource\":\"go \\ud83d\\ude00 now\",\"additionalImports\":[],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  match result {
+    case Err(e) -> assertTrue(false, "response must parse: " + e)
+    case Ok(resp) -> assertEqual(resp.lyricSource, "go 😀 now", "surrogate pair decodes to one astral character")
+  }
+}
+
+test "parseResponse: an unparseable \\uXXXX escape falls back to a literal backslash-u" {
+  val json = "{\"lyricSource\":\"bad\\uZZZZend\",\"additionalImports\":[],\"diagnostics\":[]}"
+  val result = parseResponse(json)
+  match result {
+    case Err(e) -> assertTrue(false, "response must parse: " + e)
+    case Ok(resp) -> assertTrue(resp.lyricSource.contains("\\u"), "malformed \\u escape left as a literal backslash-u")
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §19. TypeDescriptor invariant (#7255)
+// ─────────────────────────────────────────────────────────────────────────────
+func constructTypeDescriptorWithEmptyName(): Unit {
+  val td = TypeDescriptor(
+    kind = Record,
+    name = "",
+    packageName = "MyApp",
+    typeParams = [],
+    fields = [],
+    annotations = []
+  )
+}
+
+test "TypeDescriptor: invariant panics on an empty name" {
+  assertPanics("TypeDescriptor(name = \"\")", constructTypeDescriptorWithEmptyName)
+}

@@ -83,20 +83,33 @@ pub record PublishedMessage {
 ///
 /// Advance the clock with `advance(ms)` to simulate the passage of time
 /// without waiting for real wall-clock time.
+///
+/// Opaque so `currentEpochMs` can only move forward through `advance`:
+/// a public mutable field would let a test move time backwards (or set it
+/// negative) directly, bypassing `advance`'s own `requires: ms >= 0i64`.
 @stable(since = "0.1")
-pub record TestClock {
+pub opaque type TestClock {
   var currentEpochMs: Long
+  invariant: currentEpochMs >= 0i64
 }
 
 /// Advance the test clock by `ms` milliseconds.
+///
+/// `ms` must be non-negative (time cannot move backwards) and small enough
+/// that `currentEpochMs + ms` cannot overflow `Long` — the second bound is
+/// expressed against the literal `Long` maximum (`9223372036854775807i64`;
+/// there is no `Long.MAX` constant in the stdlib).
 @stable(since = "0.1")
 pub func advance(clock: inout TestClock, ms: in Long): Unit
   requires: ms >= 0i64
+  requires: ms <= 9223372036854775807i64 - now(clock)
+  ensures: now(clock) == old(now(clock)) + ms
 {
   clock.currentEpochMs = clock.currentEpochMs + ms
 }
 
 /// Return the current epoch time in milliseconds from the test clock.
+@pure
 @stable(since = "0.1")
 pub func now(clock: in TestClock): Long {
   return clock.currentEpochMs
@@ -240,7 +253,10 @@ impl Storage.StorageBucket for MockStorageBucket {
     prefix: in String,
     continuationToken: in String,
     maxKeys: in Int,
-  ): Result[Storage.ListResult, Storage.StorageError] {
+  ): Result[Storage.ListResult, Storage.StorageError]
+    requires: maxKeys >= 1
+    requires: maxKeys <= 1000
+  {
     if not Storage.isSafePrefix(prefix) {
       return Err(mockInvalidKey(prefix))
     }
@@ -272,7 +288,10 @@ impl Storage.StorageBucket for MockStorageBucket {
 
     key: in String,
     expiresInSeconds: in Int,
-  ): Result[String, Storage.StorageError] {
+  ): Result[String, Storage.StorageError]
+    requires: expiresInSeconds >= 1
+    requires: expiresInSeconds <= 604800
+  {
     if not Storage.isSafeKey(key) {
       return Err(mockInvalidKey(key))
     }
@@ -540,7 +559,9 @@ impl Cache.CacheStore for MockCacheStore {
   func get(key: in String): Option[String] {
     return mapGet(self.entries, key)
   }
-  func set(key: in String, value: in String, ttlSeconds: in Int): Unit {
+  func set(key: in String, value: in String, ttlSeconds: in Int): Unit
+    requires: ttlSeconds >= 0
+  {
     self.entries[key] = value
   }
   func delete(key: in String): Unit {

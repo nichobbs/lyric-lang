@@ -367,7 +367,9 @@ func parseFields(block: in String): List[StringPair] {
   fields
 }
 
-record StringPair {
+/// A pair of strings: `parseResponseJson` returns the generated source and
+/// its import lines.
+pub record StringPair {
   first: String
   second: String
   // Classify a type text string into FieldTypeKind + inner args.
@@ -402,7 +404,13 @@ func classifyType(typeText: in String): StringPair {
     // first `[` and the last `]` so source generators can see the
     // applied arguments (#703).
     match Str.indexOf(typeText, "[") {
-      case Some(openIx) -> match Str.lastIndexOf(typeText, "]") { case Some(closeIx) -> if closeIx > openIx { return StringPair(first = "Generic", second = typeText.substring(openIx + 1, closeIx - openIx - 1)) }; case None -> {  } }
+      case Some(openIx) -> match Str.lastIndexOf(typeText, "]") {
+        case Some(closeIx) -> if closeIx > openIx {
+          return StringPair(first = "Generic", second = typeText.substring(openIx + 1, closeIx - openIx - 1))
+        }
+        case None -> {
+        }
+      }
       case None -> {
       }
     }
@@ -634,11 +642,63 @@ func parseJsonStringArray(json: in String, pos: inout Int): List[String] {
   items
 }
 
+func isGeneratorIdentifier(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    val c = s[i]
+    val letter = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_'
+    val digit = c >= '0' and c <= '9'
+    if not letter and not (digit and i > 0) {
+      return false
+    }
+    i += 1
+  }
+  true
+}
+
+func isGeneratorQualifiedName(s: in String): Bool {
+  val segments = Str.split(s, ".")
+  var i = 0
+  while i < segments.length {
+    if not isGeneratorIdentifier(segments[i]) {
+      return false
+    }
+    i += 1
+  }
+  segments.length > 0
+}
+
+/// True when `stmt` is exactly one `import <QualifiedName>` or
+/// `import extern <QualifiedName>` statement, optionally `as <Identifier>`.
+/// A generator is an untrusted subprocess and its `additionalImports`
+/// entries are placed in the file's import section, so anything else
+/// (a second statement, a declaration, a newline) is rejected rather than
+/// spliced (#7490).  Mirrors `Lyric.GeneratorSdk.isValidImportStatement`.
+pub func isValidGeneratorImport(stmt: in String): Bool {
+  var rest = ""
+  if Str.startsWith(stmt, "import extern ") {
+    rest = stmt.substring(14)
+  } else if Str.startsWith(stmt, "import ") {
+    rest = stmt.substring(7)
+  } else {
+    return false
+  }
+  match Str.indexOf(rest, " as ") {
+    case None -> isGeneratorQualifiedName(rest)
+    case Some(idx) -> isGeneratorQualifiedName(rest.substring(0, idx)) and
+      isGeneratorIdentifier(rest.substring(idx + 4))
+  }
+}
+
 // Parse the response JSON: extract lyricSource, additionalImports, and any
 // Error-severity diagnostics.  `stderr`, `exitCode`, and `timedOut` are
 // passed through from the capture result so they can be included in error
-// messages when stdout is empty or invalid (#1025).
-func parseResponseJson(
+// messages when stdout is empty or invalid (#1025).  An `additionalImports`
+// entry that is not a single import statement fails the response.
+pub func parseResponseJson(
   json: in String, stderr: in String, exitCode: in Int, timedOut: in Bool
 ): Result[StringPair, String] {
   // Guard: empty/non-JSON output — include stderr and exit code so the
@@ -680,6 +740,11 @@ func parseResponseJson(
           val items = parseJsonStringArray(json, pos)
           var ii = 0
           while ii < items.count {
+            if not isValidGeneratorImport(items[ii]) {
+              return Err(
+                error = "generator returned an additionalImports entry that is not a single import statement: " + items[ii]
+              )
+            }
             if ii > 0 {
               importsText = importsText + "\n"
             }
@@ -770,8 +835,19 @@ pub func checkGeneratorKind(
   generatorArg: in String, depMfPath: in String, depMf: in Manifest.Manifest
 ): Result[String, String] {
   match depMf.packageSection.kind {
-    case Some(k) -> if k == "source-generator" { Ok(value = "") } else { Err(error = "G0002: @generate(" + generatorArg + ") declares [package].kind = \"" + k + "\" (must be \"source-generator\") in " + depMfPath) }
-    case None -> Err(error = "G0002: @generate(" + generatorArg + ") is missing [package].kind = \"source-generator\" in " + depMfPath)
+    case Some(k) -> if k == "source-generator" {
+      Ok(value = "")
+    } else {
+      Err(
+        error = "G0002: @generate(" + generatorArg + ") declares [package].kind = \"" + k +
+          "\" (must be \"source-generator\") in " +
+          depMfPath
+      )
+    }
+    case None -> Err(
+      error = "G0002: @generate(" + generatorArg + ") is missing [package].kind = \"source-generator\" in " +
+        depMfPath
+    )
   }
 }
 
@@ -779,7 +855,10 @@ func checkGeneratorDependency(mfPath: in String, generatorArg: in String): Resul
   val consumerMf = match File.readText(mfPath) {
     case Err(_) -> return Ok(value = "")
     // can't read manifest -> skip; cli.l will surface the real error
-    case Ok(text) -> match Manifest.parseManifest(text, mfPath) { case Err(_) -> return Ok(value = ""); case Ok(m) -> m }
+    case Ok(text) -> match Manifest.parseManifest(text, mfPath) {
+      case Err(_) -> return Ok(value = "")
+      case Ok(m) -> m
+    }
   }
   // parse error -> cli.l will surface it
   val declared = checkGeneratorDeclaredIn(consumerMf, generatorArg)
@@ -805,7 +884,10 @@ func checkGeneratorDependency(mfPath: in String, generatorArg: in String): Resul
       match File.readText(p) {
         case Err(_) -> Ok(value = "")
         // missing — restore step will surface it.
-        case Ok(text) -> match Manifest.parseManifest(text, p) { case Err(_) -> Ok(value = ""); case Ok(depMf) -> checkGeneratorKind(generatorArg, p, depMf) }
+        case Ok(text) -> match Manifest.parseManifest(text, p) {
+          case Err(_) -> Ok(value = "")
+          case Ok(depMf) -> checkGeneratorKind(generatorArg, p, depMf)
+        }
       }
       // parse error there — separate concern.
     }

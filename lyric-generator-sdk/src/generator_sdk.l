@@ -9,6 +9,7 @@
 //! once per annotated type per generator.  See docs/40-source-generators.md.
 package Lyric.GeneratorSdk
 
+import Std.Char as Ch
 import Std.Core
 import Std.Collections
 import Std.Console as Console
@@ -65,6 +66,7 @@ pub record TypeDescriptor {
   typeParams: slice[String]       // ["T", "E"] for generic types
   fields: slice[FieldDescriptor]  // empty for unions and interfaces
   annotations: slice[AnnotationDescriptor]
+  invariant: name.length > 0
 }
 
 // The full request handed to the generator entry point.
@@ -100,8 +102,37 @@ pub record GeneratorResponse {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Driver — stdin/stdout JSON I/O bridge
 // ─────────────────────────────────────────────────────────────────────────────
+// Parse a 4-character hexadecimal string into its integer value, or `None`
+// if any character isn't a valid hex digit. Decodes a `\uXXXX` JSON escape's
+// payload.
+func parseHex4(hex: in String): Option[Int] {
+  if hex.length != 4 {
+    return None
+  }
+  var value = 0
+  var i = 0
+  while i < 4 {
+    match Ch.hexDigitValue(hex[i]) {
+      case Some(d) -> {
+        value = value * 16 + d
+      }
+      case None -> return None
+    }
+    i += 1
+  }
+  Some(value = value)
+}
+
 // Parse a JSON string value from `src` starting at position `pos`.
 // Advances `pos` past the closing quote and returns the unescaped content.
+//
+// Decodes every RFC 8259 §7 escape: the six named escapes plus `\/`
+// (previously only `\n`/`\t`/`\r`/`\"`/`\\` were handled, and `\uXXXX` was
+// left as a literal backslash-u sequence). A `\uXXXX` escape decodes to its
+// raw UTF-16 code unit via `Ch.fromInt`; a surrogate pair (`😀`)
+// decodes correctly with no special-case combining logic, since appending
+// two UTF-16 code units in sequence reconstructs the pair the same way any
+// other UTF-16 string does.
 func parseJsonString(src: in String, pos: inout Int): String {
   pos += 1  // skip opening "
   var s = ""
@@ -119,6 +150,22 @@ func parseJsonString(src: in String, pos: inout Int): String {
         s = s + "\""
       } else if esc == '\\' {
         s = s + "\\"
+      } else if esc == '/' {
+        s = s + "/"
+      } else if esc == 'b' {
+        s = s + "\u{0008}"
+      } else if esc == 'f' {
+        s = s + "\u{000c}"
+      } else if esc == 'u' and pos + 4 < src.length {
+        match parseHex4(src.substring(pos + 1, 4)) {
+          case Some(code) -> {
+            s = s + charToString(Ch.fromInt(code))
+            pos += 4
+          }
+          case None -> {
+            s = s + "\\" + charToString(esc)
+          }
+        }
       } else {
         s = s + "\\" + charToString(esc)
       }
@@ -337,54 +384,163 @@ pub func serializeRequest(req: in GeneratorRequest): String {
     "}}"
 }
 
+// True when every character of `s` is valid in a Lyric identifier at
+// position `isFirst` (letters/underscore first, plus digits thereafter).
+func isValidIdentifierChar(c: in Char, isFirst: in Bool): Bool {
+  if isFirst {
+    Ch.isAsciiLetter(c) or c == '_'
+  } else {
+    Ch.isAsciiLetterOrDigit(c) or c == '_'
+  }
+}
+
+// True when `s` is a single valid Lyric identifier (non-empty, starts with
+// a letter or underscore, continues with letters/digits/underscores).
+func isValidIdentifier(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  var ok = true
+  while i < s.length and ok {
+    if not isValidIdentifierChar(s[i], i == 0) {
+      ok = false
+    }
+    i += 1
+  }
+  ok
+}
+
+// True when `s` is a dotted chain of valid identifiers (e.g. "Std.Json",
+// "MyApp.Models.Order"), and non-empty.
+func isValidQualifiedName(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  val segments = s.split(".")
+  if segments.length == 0 {
+    return false
+  }
+  var i = 0
+  var ok = true
+  while i < segments.length and ok {
+    if not isValidIdentifier(segments[i]) {
+      ok = false
+    }
+    i += 1
+  }
+  ok
+}
+
+// True when `stmt` is exactly a single `import <QualifiedName>` or
+// `import extern <QualifiedName>` statement, optionally followed by
+// `as <Identifier>` — the only shapes an `additionalImports` entry is
+// allowed to take.
+//
+// A generator is an untrusted subprocess (docs/40-source-generators.md
+// §"Security and trust"): its `additionalImports` entries are spliced
+// verbatim into the compiled program's source. Without this check, any
+// string at all — including multiple statements, or non-import source —
+// was accepted, letting a malicious or buggy generator inject arbitrary
+// source rather than just the header line it claims to be.
+func isValidImportStatement(stmt: in String): Bool {
+  var rest = stmt
+  var matchedPrefix = false
+  if Str.startsWith(rest, "import extern ") {
+    rest = rest.substring(14)
+    matchedPrefix = true
+  } else if Str.startsWith(rest, "import ") {
+    rest = rest.substring(7)
+    matchedPrefix = true
+  }
+  if not matchedPrefix or rest.length == 0 {
+    return false
+  }
+  match Str.indexOf(rest, " as ") {
+    case None -> isValidQualifiedName(rest)
+    case Some(idx) -> {
+      val namePart = rest.substring(0, idx)
+      val aliasPart = rest.substring(idx + 4)
+      isValidQualifiedName(namePart) and isValidIdentifier(aliasPart)
+    }
+  }
+}
+
+// Parse a slice of GeneratorDiagnostic from the inner content of the
+// diagnostics JSON array (the text between `[` and `]`). An entry whose
+// "severity" is missing or unrecognized defaults to Error (fail safe: an
+// unparseable diagnostic should not be silently downgraded to Info).
+func parseGeneratorDiagnostics(diagContent: in String): slice[GeneratorDiagnostic] {
+  val result: List[GeneratorDiagnostic] = newList()
+  var pos = 0
+  skipJsonWhitespace(diagContent, pos)
+  while pos < diagContent.length {
+    if diagContent[pos] == '{' {
+      val objContent = extractJsonBlock(diagContent, pos)
+      val sevStr = unwrapOr(jsonGetString(objContent, "severity"), "Error")
+      val message = unwrapOr(jsonGetString(objContent, "message"), "")
+      val code = jsonGetString(objContent, "code")
+      val severity = if sevStr == "Warning" { Warning } else if sevStr == "Info" { Info } else { Error }
+      result.add(GeneratorDiagnostic(severity = severity, message = message, code = code))
+    } else {
+      pos += 1
+    }
+    skipJsonWhitespace(diagContent, pos)
+    if pos < diagContent.length and diagContent[pos] == ',' {
+      pos += 1
+    }
+    skipJsonWhitespace(diagContent, pos)
+  }
+  result.toArray()
+}
+
 // Parse a GeneratorResponse from JSON returned by the subprocess.
+//
+// Returns `Err` for a malformed `additionalImports` entry (anything other
+// than a single clean `import <QualifiedName>` statement, per
+// `isValidImportStatement`) rather than accepting it — see that function's
+// doc comment. Otherwise lenient: a missing or malformed top-level field
+// (including a missing `additionalImports`/`diagnostics` key entirely, or
+// unparseable overall JSON) degrades to an empty/default value rather than
+// failing the whole response.
 pub func parseResponse(json: in String): Result[GeneratorResponse, String] {
   val lyricSource = unwrapOr(jsonGetString(json, "lyricSource"), "")
 
-  // Parse additionalImports array
+  // Parse and validate additionalImports.
   val additionalImports: List[String] = newList()
-  val importsKey = "\"additionalImports\""
-  var ki = 0
-  while ki < json.length {
-    if json.length - ki >= importsKey.length {
-      var matchOk = true
-      var m = 0
-      while m < importsKey.length {
-        if json[ki + m] != importsKey[m] {
-          matchOk = false
-        }
-        m += 1
+  val importsBlockPos = jsonFindBlock(json, "additionalImports")
+  if importsBlockPos >= 0 {
+    var importsPos = importsBlockPos
+    val items = parseJsonStringArray(json, importsPos)
+    var ii = 0
+    while ii < items.count {
+      val entry = items[ii]
+      if not isValidImportStatement(entry) {
+        return Err(
+          error = "GeneratorSdk: malformed additionalImports entry (expected a single " +
+            "'import <QualifiedName>' statement): " +
+            entry
+        )
       }
-      if matchOk {
-        var pos = ki + importsKey.length
-        skipJsonWhitespace(json, pos)
-        if pos < json.length and json[pos] == ':' {
-          pos += 1
-          skipJsonWhitespace(json, pos)
-          if pos < json.length and json[pos] == '[' {
-            val items = parseJsonStringArray(json, pos)
-            var ii = 0
-            while ii < items.count {
-              additionalImports.add(items[ii])
-              ii += 1
-            }
-          }
-        }
-        ki = json.length  // done
-      }
+      additionalImports.add(entry)
+      ii += 1
     }
-    ki += 1
   }
 
-  // For diagnostics we do a lightweight scan: look for "severity":"Error" / "message":"..."
-  // pairs inside the diagnostics array.  A full JSON parser is out of scope for the SDK.
-  val diagnostics: List[GeneratorDiagnostic] = newList()
+  // Parse diagnostics.
+  var diagnostics: slice[GeneratorDiagnostic] = []
+  val diagBlockPos = jsonFindBlock(json, "diagnostics")
+  if diagBlockPos >= 0 {
+    var diagPos = diagBlockPos
+    val diagContent = extractJsonBlock(json, diagPos)
+    diagnostics = parseGeneratorDiagnostics(diagContent)
+  }
 
   Ok(
     value = GeneratorResponse(
       lyricSource = lyricSource,
       additionalImports = additionalImports.toArray(),
-      diagnostics = diagnostics.toArray()
+      diagnostics = diagnostics
     )
   )
 }
@@ -602,6 +758,18 @@ pub func runGenerator(generate: (GeneratorRequest) -> GeneratorResponse): Int {
       val fContent = extractJsonBlock(tdContent, mFPos)
       tdFields = parseFieldDescriptors(fContent)
     }
+  }
+
+  // `TypeDescriptor.name` carries an `invariant: name.length > 0` — but a
+  // missing `typeDescriptor` block or an unrecognized `kind` used to
+  // silently fall through to an empty-named `Record` here rather than
+  // failing the build with a message naming the actual problem. Check
+  // explicitly (rather than letting the invariant panic escape as an
+  // uncaught `Bug`) so the failure is a clean exit code with a clear
+  // stderr message, matching every other malformed-request check above.
+  if tdName.length == 0 {
+    Console.error("GeneratorSdk: malformed request: missing or empty typeDescriptor.name")
+    return 1
   }
 
   val td = TypeDescriptor(

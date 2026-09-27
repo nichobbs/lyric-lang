@@ -214,3 +214,32 @@ test "preprocess no directives passes through" {
 test "preprocess directive without manifest returns err" {
   testPreprocess_DirectiveWithoutManifest_ReturnsErr()
 }
+
+// #7490: the compiler's own response parser rejects additionalImports
+// entries that are not a single import statement.
+test "generator imports: well-formed import statements are accepted" {
+  assertTrue(isValidGeneratorImport("import Std.Json"), "plain import")
+  assertTrue(isValidGeneratorImport("import extern System.Text.Json"), "import extern")
+  assertTrue(isValidGeneratorImport("import MyApp.Models as M"), "aliased import")
+}
+
+test "generator imports: anything else is rejected" {
+  assertFalse(isValidGeneratorImport("pub func backdoor(): Unit {}"), "a declaration")
+  assertFalse(isValidGeneratorImport("import Std.Json\npub func x(): Unit {}"), "a second statement")
+  assertFalse(isValidGeneratorImport("import Std..Json"), "empty segment")
+  assertFalse(isValidGeneratorImport("import Std.Json as 1x"), "bad alias")
+  assertFalse(isValidGeneratorImport("import "), "no name")
+}
+
+test "generator response with a smuggled statement in additionalImports is Err" {
+  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"pub func backdoor(): Unit {}\"],\"diagnostics\":[]}"
+  match parseResponseJson(json, "", 0, false) {
+    case Ok(_) -> assertTrue(false, "a non-import entry must fail the response")
+    case Err(e) -> assertTrue(e.contains("not a single import statement"), "message names the problem")
+  }
+  val ok = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json\"],\"diagnostics\":[]}"
+  match parseResponseJson(ok, "", 0, false) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "a valid import must be accepted: " + e)
+  }
+}
