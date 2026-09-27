@@ -255,12 +255,14 @@ pub record SymbolTable {
   /// Widened arguments of function-value calls, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`).
   argConversionSites: Map[String, ArgConversionSite]
-  /// Result types of qualified and method calls, keyed like
-  /// `recordCopySites`: evidence for `Lyric.Mono`, which cannot see the
-  /// signatures of other packages' non-generic functions (D-progress-969).
+  /// Result types of qualified and method calls and of field reads, keyed
+  /// like `recordCopySites`: evidence for `Lyric.Mono`, which cannot see the
+  /// signatures of other packages' non-generic functions (D-progress-969) or
+  /// the fields of a restored package's records, so `mapKeys(o.inner.m)`
+  /// infers its type arguments from the checked type of `o.inner.m` (#7441).
   callResultTypes: Map[String, TypeExpr]
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
-  /// opaque or protected type each field-access or method-call receiver
+  /// opaque, protected or distinct type each field-access or method-call receiver
   /// has, keyed like
   /// `recordCopySites` by the receiver's span.  The JVM backend erases
   /// generics, so a receiver read out of a generic container or a generic

@@ -2584,3 +2584,70 @@ test "emitProject a bare constructor resolves through a selective import (JVM)" 
   assertEqualInt(result.exitCode, 0, "ctor import JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "n not in 0..10", "ctor import JVM: output")
 }
+
+// A bare constructor resolves through the declaring package's imports in
+// every import form the type checker counts — here an aliased one — both in
+// a package's own code and in a specialised copy of its generic compiled
+// into another package (D139).  `EPSg.Other`, registered first and never
+// imported by `EPSg.Lib`, also declares `Square`; before this both forms
+// bound to its case.  Each constructor is bound to an unannotated local so
+// no expected type steers it.
+func specialisedCtorScopePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPSg.App",
+      "package EPSg.App\n" + "\n" + "import EPSg.Shapes\n" + "import EPSg.Lib\n" + "\n" +
+        "func sideOf(s: in Shape): Int {\n" +
+        "  match s {\n" +
+        "    case Square(n) -> n\n" +
+        "    case Dot -> 0\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  println(sideOf(wrap(1)))\n" +
+        "  println(sideOf(direct()))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSg.Other",
+      "package EPSg.Other\n" + "\n" + "pub union Mark {\n" + "  case Square(n: Int)\n" + "  case Blank\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSg.Shapes",
+      "package EPSg.Shapes\n" + "\n" + "pub union Shape {\n" + "  case Square(side: Int)\n" + "  case Dot\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSg.Lib",
+      "package EPSg.Lib\n" + "\n" + "import EPSg.Shapes as S\n" + "\n" + "pub func wrap[T](x: in T): S.Shape {\n" +
+        "  val made = Square(side = 4)\n" +
+        "  made\n" +
+        "}\n" +
+        "\n" +
+        "pub func direct(): S.Shape {\n" +
+        "  val made = Square(side = 5)\n" +
+        "  made\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a bare constructor resolves through an aliased import, directly and specialised (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-sgctor-jvm", specialisedCtorScopePkgs(), "EPSg")
+  assertEqualInt(result.exitCode, 0, "aliased-import ctor JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "4\n5", "aliased-import ctor JVM: output")
+}
+
+test "emitProject a bare constructor resolves through an aliased import, directly and specialised (MSIL)" {
+  val result = runEmitProject("emitproj-sgctor", specialisedCtorScopePkgs(), "EPSg")
+  assertEqualInt(result.exitCode, 0, "aliased-import ctor MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "4\n5", "aliased-import ctor MSIL: output")
+}

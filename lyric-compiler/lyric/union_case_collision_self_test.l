@@ -103,54 +103,30 @@ test "Yaml.parseYaml with well-formed YAML returns Ok" {
   assertEqualInt(okCount, 1, "parseYaml returned Ok")
 }
 
-// ── #2919: explicit user-side construction of a colliding case name ──────────
-// The issue's originally-suggested regression case — an explicitly-typed
-// binding like `val e: Xml.XmlError = InvalidDocument(message = "oops")` — is
-// still blocked by a pre-existing, unrelated type-checker gap: the type
-// checker resolves the bare name `InvalidDocument` independently of the
-// declared binding type (context-free `inferExpr`), so an explicit type
-// annotation that disagrees with whichever case it happened to pick emits
-// T0060 before the emitter's `pickCaseFqnByScope` import-priority branch is
-// ever reached. That architectural gap (bidirectional/context-aware
-// constructor-name checking) is out of scope for a test-only change and
-// remains tracked separately.
-//
-// However, a DIFFERENT construction shape — a bare, UNqualified,
-// UNannotated construction (`InvalidDocument(message = "oops")`, no `Xml.`/
-// `Yaml.` qualifier and no declared `val` type) — does not hit T0060 (nothing
-// to disagree with) and genuinely exercises `pickCaseFqnByScope`'s
-// import-priority branch at the construction call site: with no same-package
-// prefix match, `unionCaseCtorByName["InvalidDocument"]` has two candidates
-// (`Std.Xml.XmlError_InvalidDocument` and `Std.Yaml.YamlError_InvalidDocument`)
-// and the resolver falls through to the import-scan loop.  The tests below
-// pin the resulting resolution as a deterministic, observable regression
-// guard: they match the bare-constructed value against explicitly-qualified
-// patterns for BOTH unions so a future change that flips (or randomizes)
-// which candidate wins is caught, rather than silently passing because both
-// cases share the same `message: String` field shape.
-test "bare unqualified InvalidDocument() constructs Xml's case (import-priority resolution)" {
-  val e = InvalidDocument(message = "oops")
+// ── #2919: user-side construction of a colliding case name ──────────────────
+// A bare `InvalidDocument(...)` with both packages imported is ambiguous and
+// rejected (T0123, #6287 Phase B; covered in `typechecker_self_test.l`), so a
+// user names the union.  These pin that each qualified construction builds
+// its own union's case and that a qualified pattern matches it — the
+// constructor and pattern lookups this file guards (#2899) must never pick the
+// other package's same-named case.
+test "Xml-qualified InvalidDocument constructs and matches Xml's case" {
+  val e = Xml.XmlError.InvalidDocument(message = "oops")
   match e {
-    case Xml.XmlError.InvalidDocument(_) -> assertEqualInt(1, 1, "resolved to Std.Xml.XmlError's case")
-    case Yaml.YamlError.InvalidDocument(_) -> panic("resolved to Std.Yaml.YamlError's case instead of Std.Xml.XmlError's")
-    case _ -> panic("resolved to neither colliding union's case")
+    case Xml.XmlError.InvalidDocument(msg) -> assertEqual(msg, "oops", "Xml's case carries its message")
+    case _ -> panic("Xml.XmlError.InvalidDocument matched another case")
   }
 }
 
-test "bare unqualified InvalidDocument() match arm resolves the same way as construction" {
-  // Constructs AND matches with the bare (unqualified) name on both sides —
-  // this is self-consistent by construction (both resolve through the same
-  // `unionCaseCtorByName`/`pickCaseFqnByScope` lookup), but it pins that the
-  // bare match arm does not panic with `MissingFieldException` at runtime,
-  // which was the original #2899 failure mode this whole file guards.
-  val e = InvalidDocument(message = "collision")
+test "Yaml-qualified InvalidDocument constructs and matches Yaml's case" {
+  val e = Yaml.YamlError.InvalidDocument(message = "collision")
   var matched = 0
   match e {
-    case InvalidDocument(msg) -> {
-      assertEqual(msg, "collision", "the matched case's field carries the constructed value")
+    case Yaml.YamlError.InvalidDocument(msg) -> {
+      assertEqual(msg, "collision", "Yaml's case carries its message")
       matched = matched + 1
     }
-    case _ -> panic("bare InvalidDocument() failed to match its own bare-constructed value")
+    case _ -> panic("Yaml.YamlError.InvalidDocument matched another case")
   }
   assertEqualInt(matched, 1, "exactly one arm matched")
 }

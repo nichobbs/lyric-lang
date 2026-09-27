@@ -5842,6 +5842,12 @@ func recordCallResultType(tbl: in SymbolTable, fn: in Expr, t: in Type, sp: in S
   if not qualified {
     return
   }
+  recordResultTypeAt(tbl, t, sp)
+}
+
+// Record `t` as the result type of the expression at `sp` (see
+// `SymbolTable.callResultTypes`).
+func recordResultTypeAt(tbl: in SymbolTable, t: in Type, sp: in Span): Unit {
   val key = recordCopySiteKey(sp)
   if tbl.callResultTypes.containsKey(key) {
     return
@@ -5852,11 +5858,64 @@ func recordCallResultType(tbl: in SymbolTable, fn: in Expr, t: in Type, sp: in S
   }
 }
 
+// A non-call member read on a distinct type (docs/01 §2.3).  A distinct type
+// is nominal and does not expose its underlying type's members: `x.value`
+// reads the underlying value, and any other member is T0113, pointing at
+// `x.value`.  Before this every such read type-checked as an unchecked
+// error type and miscompiled (an invalid MSIL program, a J009 refusal on the
+// JVM) — `.value` itself was unchecked too (#7439).  `None` for a
+// non-distinct receiver, and for a generic distinct type, whose underlying
+// type depends on its arguments and keeps the lenient path.
+func distinctMemberType(
+  tbl: in SymbolTable, diag: in List[Diagnostic], recvRaw: in Type, name: in String, span: in Span
+): Option[Type] {
+  match unrefine(recvRaw) {
+    case TyUser(tid, tname, _) -> {
+      var i = 0
+      while i < tbl.symbols.count {
+        val sym = tbl.symbols[i]
+        match sym.kind {
+          case DKDistinctType(did, dt) -> {
+            if typeIdEq(did, tid) {
+              match dt.generics {
+                case Some(_) -> return None
+                case None -> ()
+              }
+              if name == "value" {
+                val saved = enterDeclaringScope(tbl, sym)
+                val scratch: List[Diagnostic] = newList()
+                val underlying = resolveType(tbl, newGenericContext(), scratch, dt.underlying)
+                restoreScope(tbl, saved)
+                return Some(value = underlying)
+              }
+              diag.add(
+                errorDiagnostic(
+                  "T0113",
+                  "no member '" + name + "' on distinct type '" + tname +
+                    "'; a distinct type does not expose its underlying type's members, read them through '.value' (e.g. 'x.value." +
+                    name +
+                    "')",
+                  span
+                )
+              )
+              return Some(value = TyError)
+            }
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
 // Record the nominal type of a field-access receiver (see
 // `SymbolTable.memberRecvClasses`).  Only types that are a class of their own
-// on every backend are recorded: a distinct type, enum, interface or extern
-// type has no such class, and a type parameter or error type carries nothing
-// to narrow to.
+// on every backend are recorded: an enum, interface or extern type has no
+// such class, and a type parameter or error type carries nothing to narrow
+// to.
 func recordMemberRecvClass(tbl: in SymbolTable, sp: in Span, t: in Type): Unit {
   match unrefine(t) {
     case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
@@ -5867,6 +5926,9 @@ func recordMemberRecvClass(tbl: in SymbolTable, sp: in Span, t: in Type): Unit {
           case DKUnion(_, _) -> true
           case DKOpaque(_, _) -> true
           case DKProtected(_, _) -> true
+          // A distinct value is a wrapper class on dotnet and the JVM
+          // (docs/01 §2.3), so an erased one narrows to it before `.value`.
+          case DKDistinctType(_, _) -> true
           case _ -> false
         }
         if isClass and sym.originPackage.length > 0 {
@@ -6379,7 +6441,13 @@ func inferExprCore(
         case _ -> inferExpr(sc, tbl, sigs, diag, recv)
       }
       recordMemberRecvClass(tbl, recv.span, rt)
-      inferMember(tbl, sigs, diag, rt, name, e.span)
+      match distinctMemberType(tbl, diag, rt, name, e.span) {
+        case Some(dt) -> return dt
+        case None -> ()
+      }
+      val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
+      recordResultTypeAt(tbl, memberTy, e.span)
+      memberTy
     }
 
     case EPropagate(inner) -> {

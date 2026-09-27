@@ -2089,7 +2089,8 @@ pub func ctorClassFor(ctx: in FuncCtx, name: in String): Option[String] {
 // The constructor a bare `name` means through the current file's imports
 // (recorded by `addCtorImportScope`, or by `originScopedExternTypes` for a
 // specialised copy of another package's generic): a selectively imported
-// name, then the one imported package that declares it.  `None` when the imports
+// name, then the one imported package that declares it (any import form, as
+// the type checker counts them).  `None` when the imports
 // do not decide it (no importing package declares it, or two do), leaving the
 // bundle-wide bare-name fallback.  Without this tier a bare `OutOfRange(...)`
 // in a package importing `Forms.{OutOfRange}` built whichever package's

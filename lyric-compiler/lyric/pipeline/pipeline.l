@@ -291,8 +291,10 @@ pub func pipeCheckAndMono(
     return None
   }
   opts.checkedSourceOut.add(copyRes.file)
-  // Bound to an annotated local: MSIL instantiates `mapKeys` over `Object`
-  // when its argument is a cross-package field chain (#7441).
+  // Bound to an annotated local: the stage-0 seed compiler that builds this
+  // package cannot infer `mapKeys`'s type arguments from a restored
+  // package's field chain and instantiates it over `Object` (#7441, fixed
+  // in the compiler itself; the seed predates the fix).
   val recvClasses: Map[String, String] = tcRes.symbols.memberRecvClasses
   for rk in mapKeys(recvClasses) {
     match mapGet(recvClasses, rk) {

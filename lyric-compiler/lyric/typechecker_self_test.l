@@ -3623,6 +3623,24 @@ test "unknown member on known record is T0113" {
   assertTrue(diagMessageFor(cr, "T0113").contains("Point"), "T0113 names the receiver type")
 }
 
+// #7439: a distinct type is nominal (docs/01 §2.3).  `.value` reads the
+// underlying value, typed as the underlying type; any other member read is
+// T0113 pointing at `.value` (it used to type-check unchecked and miscompile).
+test "field read through a distinct type over a record is T0113" {
+  val src = "package P\nrecord Widget {\n  n: Int\n}\ntype Wid = Widget\nfunc get(w: in Wid): Int { w.n }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0113"), "w.n on a distinct type: T0113")
+  assertTrue(diagMessageFor(cr, "T0113").contains(".value"), "T0113 points at .value")
+}
+
+test "value on a distinct type has the underlying type" {
+  val ok = "package P\nrecord Widget {\n  n: Int\n}\ntype Wid = Widget\nfunc get(w: in Wid): Int { w.value.n }\n"
+  assertEqualInt(countDiagCode(parseCheck(ok), "T0113"), 0, "w.value.n: no T0113")
+  assertEqualInt(countDiagCode(parseCheck(ok), "T0070"), 0, "w.value.n: Int")
+  val bad = "package P\ntype UserId = Long\nfunc f(u: in UserId): String {\n  val s: String = u.value\n  s\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "UserId.value is a Long, not a String: T0060")
+}
+
 test "unknown method call on known record is T0113" {
   val src = "package P\nrecord Point {\n  x: Int\n}\nfunc consume(p: in Point): Int { p.frobnicate(1) }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0113"), "unknown method on local record: T0113")
