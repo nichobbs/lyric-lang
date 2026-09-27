@@ -132,8 +132,14 @@ pub func callTool(client: inout McpClient, name: in String, args: in Option[Json
   match call(client.peer, "tools/call", Some(value = JObject(fields = fields))) {
     case Ok(v) -> {
       match decodeToolCallOutcome(v) {
-        case ToolResult(result) -> Ok(value = result)
-        case InputRequired(_) -> Err(error = "'" + name + "' is a resumable tool waiting for more input (resultType: input_required) — call it with Mcp.Client.callResumableTool/resumeToolCall instead of callTool")
+        case Err(e) -> Err(error = "'tools/call' returned a malformed result: " + e)
+        case Ok(outcome) -> match outcome {
+          case ToolResult(result) -> Ok(value = result)
+          case InputRequired(_) -> Err(
+            error = "'" + name +
+              "' is a resumable tool waiting for more input (resultType: input_required) — call it with Mcp.Client.callResumableTool/resumeToolCall instead of callTool"
+          )
+        }
       }
     }
     case Err(e) -> Err(error = "'tools/call' failed: " + e.message)
@@ -155,7 +161,10 @@ pub func callResumableTool(
     case None -> ()
   }
   match call(client.peer, "tools/call", Some(value = JObject(fields = fields))) {
-    case Ok(v) -> Ok(value = decodeToolCallOutcome(v))
+    case Ok(v) -> match decodeToolCallOutcome(v) {
+      case Ok(outcome) -> Ok(value = outcome)
+      case Err(e) -> Err(error = "'tools/call' returned a malformed result: " + e)
+    }
     case Err(e) -> Err(error = "'tools/call' failed: " + e.message)
   }
 }
@@ -173,7 +182,10 @@ pub func resumeToolCall(
   fields.add(JsonField(name = "requestState", value = JString(value = requestState)))
   fields.add(JsonField(name = "inputResponses", value = inputResponses))
   match call(client.peer, "tools/call", Some(value = JObject(fields = fields))) {
-    case Ok(v) -> Ok(value = decodeToolCallOutcome(v))
+    case Ok(v) -> match decodeToolCallOutcome(v) {
+      case Ok(outcome) -> Ok(value = outcome)
+      case Err(e) -> Err(error = "'tools/call' returned a malformed result: " + e)
+    }
     case Err(e) -> Err(error = "'tools/call' failed: " + e.message)
   }
 }
@@ -190,7 +202,16 @@ pub func listResources(client: inout McpClient): Result[List[McpResourceInfo], S
 pub func readResource(client: inout McpClient, uri: in String): Result[McpResourceContent, String] {
   val params = JObject(fields = [JsonField(name = "uri", value = JString(value = uri))])
   match call(client.peer, "resources/read", Some(value = params)) {
-    case Ok(v) -> match getArray(v, "contents") { case None -> Err(error = "'resources/read' response missing 'contents'"); case Some(items) -> { if items.count == 0 { Err(error = "'resources/read' response has an empty 'contents' array") } else { Ok(value = decodeResourceContent(items[0])) } } }
+    case Ok(v) -> match getArray(v, "contents") {
+      case None -> Err(error = "'resources/read' response missing 'contents'")
+      case Some(items) -> {
+        if items.count == 0 {
+          Err(error = "'resources/read' response has an empty 'contents' array")
+        } else {
+          Ok(value = decodeResourceContent(items[0]))
+        }
+      }
+    }
     case Err(e) -> Err(error = "'resources/read' failed: " + e.message)
   }
 }

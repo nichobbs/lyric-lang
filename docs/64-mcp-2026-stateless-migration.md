@@ -88,6 +88,7 @@ Tracked as the (still open) Q-MCP-003.
   pub record McpInputRequired {
     inputRequests: JsonValue      // opaque object; caller-defined shape
     requestState: String          // opaque token, echoed back verbatim
+    invariant: requestState.length >= 1 and requestState.length <= maxRequestStateLength
   }
   pub union McpToolCallOutcome {
     case ToolResult(value: McpToolResult)
@@ -104,6 +105,21 @@ Tracked as the (still open) Q-MCP-003.
   `confirm_delete` example does, for illustration) must still perform
   its own authorization check inside `resume` — the round trip is a
   UX/retry pattern, not a security boundary.
+
+  **Sealed state (#7245, D-progress-996).** `Mcp` ships the check such a
+  handler needs: `sealRequestState(key, toolName, payload,
+  expiresAtEpochMillis)` returns `v1.<base64 payload>.<expiry>.<hex
+  HMAC-SHA-256>` (MAC over a domain tag, the length-prefixed tool name,
+  the expiry and the encoded payload; key at least 32 bytes), and
+  `openRequestState(key, toolName, token, nowEpochMillis)` returns the
+  payload only if the MAC matches in constant time and the deadline has
+  not passed. This defeats fabrication, tampering and cross-tool reuse;
+  it does not stop the same peer replaying a live token, so an
+  at-most-once action still has to remember consumed tokens. The
+  dispatcher rejects a `requestState` outside 1..`maxRequestStateLength`
+  (8192) with `-32602`, and the client decoder returns `Err` for an
+  `input_required` result without a valid one instead of defaulting to
+  `""`.
 
   `McpToolHandler.call` gains no new method. A handler that needs
   mid-call input is **not** expressed by widening `call`'s existing
@@ -236,6 +252,9 @@ Builds `docs/62` §5.3's deferred milestone, updated for `2026-07-28`:
   or explicitly re-state (not silently inherit) Phase A's "the handler
   must authorize inside `resume`" mitigation for the multi-peer case —
   do not ship Phase B assuming Phase A's framing still fully covers it.
+  The sealed-state helpers (§3.1) cover fabrication; binding to the peer
+  means including the peer's authenticated identity in the sealed
+  payload, which Phase B has to supply.
 
 ## 5. Phase C — Tasks extension (`Mcp.Tasks`)
 

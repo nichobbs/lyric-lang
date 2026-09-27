@@ -150,7 +150,13 @@ test "JInt round-trips i64 boundary values exactly" {
     val text = writeValue(JInt(value = n))
     match parseValue(text) {
       case Err(e) -> assertTrue(false, "round-trip parse failed for " + text + ": " + e.message())
-      case Ok(v) -> match asInt(v) { case None -> assertTrue(false, "expected JInt for " + text); case Some(got) -> assertTrue(got == n, "round-trip mismatch: wrote " + text + ", got back a different value") }
+      case Ok(v) -> match asInt(v) {
+        case None -> assertTrue(false, "expected JInt for " + text)
+        case Some(got) -> assertTrue(
+          got == n,
+          "round-trip mismatch: wrote " + text + ", got back a different value"
+        )
+      }
     }
     i = i + 1
   }
@@ -176,11 +182,17 @@ test "an integer literal beyond i64 range parses as JFloat, not a silently wrapp
 test "JFloat round-trips ordinary values" {
   match parseValue("3.5") {
     case Err(e) -> assertTrue(false, "unexpected error: " + e.message())
-    case Ok(v) -> match asFloat(v) { case Some(f) -> assertTrue(f == 3.5, "3.5"); case None -> assertTrue(false, "expected JFloat") }
+    case Ok(v) -> match asFloat(v) {
+      case Some(f) -> assertTrue(f == 3.5, "3.5")
+      case None -> assertTrue(false, "expected JFloat")
+    }
   }
   match parseValue("-0.25") {
     case Err(e) -> assertTrue(false, "unexpected error: " + e.message())
-    case Ok(v) -> match asFloat(v) { case Some(f) -> assertTrue(f == 0.0 - 0.25, "-0.25"); case None -> assertTrue(false, "expected JFloat") }
+    case Ok(v) -> match asFloat(v) {
+      case Some(f) -> assertTrue(f == 0.0 - 0.25, "-0.25")
+      case None -> assertTrue(false, "expected JFloat")
+    }
   }
 }
 
@@ -244,7 +256,14 @@ test "a bare minus with no digits is rejected" {
 test "parseValue: basic string escapes" {
   match parseValue("\"a\\\"b\\\\c\\/d\\ne\\rf\\tg\\bh\\fi\"") {
     case Err(e) -> assertTrue(false, "unexpected error: " + e.message())
-    case Ok(v) -> match asString(v) { case None -> assertTrue(false, "expected JString"); case Some(s) -> assertEqual(s, "a\"b\\c/d\ne\rf\tg\u{0008}h\u{000c}i", "all named escapes decode correctly") }
+    case Ok(v) -> match asString(v) {
+      case None -> assertTrue(false, "expected JString")
+      case Some(s) -> assertEqual(
+        s,
+        "a\"b\\c/d\ne\rf\tg\u{0008}h\u{000c}i",
+        "all named escapes decode correctly"
+      )
+    }
   }
 }
 
@@ -270,7 +289,10 @@ test "writeValue: forward slash and high-Unicode are NOT escaped (compact writer
 test "parseValue: \\uXXXX escapes decode to the exact code unit" {
   match parseValue("\"\\u0041\\u00e9\"") {
     case Err(e) -> assertTrue(false, "unexpected error: " + e.message())
-    case Ok(v) -> match asString(v) { case Some(s) -> assertEqual(s, "Aé", "\\u0041 = 'A', \\u00e9 = 'é'"); case None -> assertTrue(false, "expected JString") }
+    case Ok(v) -> match asString(v) {
+      case Some(s) -> assertEqual(s, "Aé", "\\u0041 = 'A', \\u00e9 = 'é'")
+      case None -> assertTrue(false, "expected JString")
+    }
   }
 }
 
@@ -278,7 +300,10 @@ test "parseValue: a valid surrogate pair decodes to one supplementary-plane char
   // U+1F600 GRINNING FACE = surrogate pair 😀.
   match parseValue("\"\\uD83D\\uDE00\"") {
     case Err(e) -> assertTrue(false, "unexpected error: " + e.message())
-    case Ok(v) -> match asString(v) { case Some(s) -> assertEqual(s, "😀", "surrogate pair decodes to the emoji"); case None -> assertTrue(false, "expected JString") }
+    case Ok(v) -> match asString(v) {
+      case Some(s) -> assertEqual(s, "😀", "surrogate pair decodes to the emoji")
+      case None -> assertTrue(false, "expected JString")
+    }
   }
 }
 
@@ -287,7 +312,10 @@ test "writeValue then parseValue round-trips a supplementary-plane character" {
   val text = writeValue(JString(value = original))
   match parseValue(text) {
     case Err(e) -> assertTrue(false, "unexpected error: " + e.message())
-    case Ok(v) -> match asString(v) { case Some(s) -> assertEqual(s, original, "round-trips exactly"); case None -> assertTrue(false, "expected JString") }
+    case Ok(v) -> match asString(v) {
+      case Some(s) -> assertEqual(s, original, "round-trips exactly")
+      case None -> assertTrue(false, "expected JString")
+    }
   }
 }
 
@@ -450,6 +478,32 @@ test "an array nested beyond the depth limit is rejected" {
   }
 }
 
+test "the depth limit counts each container once" {
+  match parseValueWithDepthLimit(nestedArray(10), 10) {
+    case Err(e) -> assertTrue(false, "nesting equal to the limit must parse: " + e.message())
+    case Ok(v) -> ()
+  }
+  match parseValueWithDepthLimit(nestedArray(11), 10) {
+    case Ok(v) -> assertTrue(false, "one level past the limit must be rejected")
+    case Err(e) -> ()
+  }
+  match parseValueWithDepthLimit("{\"a\":{\"b\":[1]}}", 3) {
+    case Err(e) -> assertTrue(false, "three nested containers within a limit of 3: " + e.message())
+    case Ok(v) -> ()
+  }
+  match parseValueWithDepthLimit("{\"a\":{\"b\":[1]}}", 2) {
+    case Ok(v) -> assertTrue(false, "three nested containers past a limit of 2")
+    case Err(e) -> ()
+  }
+}
+
+test "the default depth limit (128) accepts 128 levels" {
+  match parseValue(nestedArray(128)) {
+    case Err(e) -> assertTrue(false, "128 levels is within the default limit: " + e.message())
+    case Ok(v) -> ()
+  }
+}
+
 test "the default depth limit (128) rejects deeper nesting" {
   val text = nestedArray(200)
   match parseValue(text) {
@@ -515,7 +569,10 @@ test "whitespace between tokens is insignificant" {
 test "duplicate object keys are preserved (not rejected, not deduplicated)" {
   match parseValue("{\"a\":1,\"a\":2}") {
     case Err(e) -> assertTrue(false, "unexpected error: " + e.message())
-    case Ok(v) -> match asObject(v) { case None -> assertTrue(false, "expected JObject"); case Some(fields) -> assertEqualInt(fields.count, 2, "both occurrences kept") }
+    case Ok(v) -> match asObject(v) {
+      case None -> assertTrue(false, "expected JObject")
+      case Some(fields) -> assertEqualInt(fields.count, 2, "both occurrences kept")
+    }
   }
 }
 

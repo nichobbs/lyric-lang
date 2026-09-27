@@ -74,9 +74,6 @@ pub func tryDecodeHex(s: in String): Option[slice[Byte]] {
   if len % 2 != 0 {
     return None
   }
-  if len == 0 {
-    return Some(value = [])
-  }
   val result: List[Byte] = newListWithCapacity(len / 2)
   var i = 0
   while i < len {
@@ -191,9 +188,6 @@ pub func encodeBase64(bytes: in slice[Byte]): String {
 @stable(since = "1.0")
 pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
   val len = s.length
-  if len == 0 {
-    return Some(value = [])
-  }
   if len % 4 != 0 {
     return None
   }

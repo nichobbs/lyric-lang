@@ -186,7 +186,10 @@ test "runLoop: distinct requests each get their own correctly correlated id" {
   val r2 = parseOrFail(t.outbox[2], "resp2")
   assertFieldInt(r0, "id", 1i64, "resp0 id")
   match getField(r1, "id") {
-    case Some(idv) -> match asString(idv) { case Some(s) -> assertEqual(s, "abc", "resp1 has the string id"); case None -> assertTrue(false, "resp1 id should be a string") }
+    case Some(idv) -> match asString(idv) {
+      case Some(s) -> assertEqual(s, "abc", "resp1 has the string id")
+      case None -> assertTrue(false, "resp1 id should be a string")
+    }
     case None -> assertTrue(false, "resp1 missing id")
   }
   assertFieldInt(r2, "id", 3i64, "resp2 id")
@@ -292,6 +295,19 @@ test "runLoop: a handler panic maps to -32603 internalError, never kills the loo
   assertNoField(r1, "error", "the request after the panic is handled normally")
 }
 
+test "runLoop: a handler panic's message is not sent to the peer" {
+  val t = newInMemoryTransport()
+  feed(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"boom\"}")
+  var peer = newPeer(t, newRecordingHandler())
+  match runLoop(peer) {
+    case Err(e) -> assertTrue(false, "unexpected runLoop error: " + e)
+    case Ok(_) -> ()
+  }
+  val err = unwrapOption(getField(parseOrFail(t.outbox[0], "resp"), "error"))
+  assertJString(unwrapOption(getField(err, "message")), "Internal error", "generic message only")
+  assertFalse(t.outbox[0].contains("deliberate panic"), "panic text stays local")
+}
+
 test "runLoop: a notification handler panic is discarded silently" {
   val t = newInMemoryTransport()
   feed(t, "{\"jsonrpc\":\"2.0\",\"method\":\"boom\"}")
@@ -320,7 +336,14 @@ test "runLoop: batch responses preserve request order and skip notifications" {
   assertEqualInt(h.notificationCount, 1, "the notification still reached the handler")
   match parseValue(t.outbox[0]) {
     case Err(e) -> assertTrue(false, "batch response is not valid JSON: " + e.message())
-    case Ok(v) -> match asArray(v) { case None -> assertTrue(false, "expected a JSON array"); case Some(items) -> { assertEqualInt(items.count, 2, "two responses (the notification is skipped)"); assertFieldInt(items[0], "id", 1i64, "first response id, in request order"); assertFieldInt(items[1], "id", 2i64, "second response id, in request order") } }
+    case Ok(v) -> match asArray(v) {
+      case None -> assertTrue(false, "expected a JSON array")
+      case Some(items) -> {
+        assertEqualInt(items.count, 2, "two responses (the notification is skipped)")
+        assertFieldInt(items[0], "id", 1i64, "first response id, in request order")
+        assertFieldInt(items[1], "id", 2i64, "second response id, in request order")
+      }
+    }
   }
 }
 
@@ -354,6 +377,30 @@ test "runLoop: an empty batch array is -32600 Invalid Request" {
   }
 }
 
+test "runLoop: a batch longer than maxBatchSize is rejected whole" {
+  val t = newInMemoryTransport()
+  var batch = "["
+  var i = 0
+  while i <= maxBatchSize {
+    if i > 0 {
+      batch = batch + ","
+    }
+    batch = batch + "{\"jsonrpc\":\"2.0\",\"method\":\"n\"}"
+    i = i + 1
+  }
+  feed(t, batch + "]")
+  val h = newRecordingHandler()
+  var peer = newPeer(t, h)
+  match runLoop(peer) {
+    case Err(e) -> assertTrue(false, "unexpected runLoop error: " + e)
+    case Ok(_) -> ()
+  }
+  assertEqualInt(h.notificationCount, 0, "no element of an oversized batch is dispatched")
+  assertEqualInt(t.outbox.count, 1, "one error response")
+  val resp = parseOrFail(t.outbox[0], "response")
+  assertFieldInt(unwrapOption(getField(resp, "error")), "code", intToLongForTest(invalidRequest), "-32600")
+}
+
 // ── call() / notify() (outbound side) ───────────────────────────────────────
 test "call: sends a well-formed request and resolves on a matching response" {
   val t = newInMemoryTransport()
@@ -364,7 +411,10 @@ test "call: sends a well-formed request and resolves on a matching response" {
   feed(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}")
   match call(peer, "doThing", Some(value = JInt(value = 5i64))) {
     case Err(e) -> assertTrue(false, "unexpected call error: " + e.message)
-    case Ok(v) -> match getBool(v, "ok") { case Some(b) -> assertTrue(b, "resolved with the response's result"); case None -> assertTrue(false, "expected {ok: true}") }
+    case Ok(v) -> match getBool(v, "ok") {
+      case Some(b) -> assertTrue(b, "resolved with the response's result")
+      case None -> assertTrue(false, "expected {ok: true}")
+    }
   }
   assertEqualInt(t.outbox.count, 1, "exactly one outbound request")
   val req = parseOrFail(t.outbox[0], "outbound request")
@@ -416,6 +466,68 @@ test "call: a request/notification arriving from the peer while awaiting a respo
     case Ok(_) -> ()
   }
   assertEqualInt(h.notificationCount, 1, "the queued notification is dispatched by the next runLoop")
+}
+
+test "call: an error code outside the Int range maps to internalError" {
+  val t = newInMemoryTransport()
+  var peer = newPeer(t, newRecordingHandler())
+  feed(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":4294934528,\"message\":\"wide\"}}")
+  match call(peer, "doThing", None) {
+    case Ok(v) -> assertTrue(false, "expected Err")
+    case Err(e) -> {
+      assertEqualInt(e.code, internalError, "not truncated to -32768")
+      assertEqual(e.message, "wide", "message carried through")
+    }
+  }
+}
+
+test "call: flooding past maxPendingMessages fails the call and keeps the queue" {
+  val t = newInMemoryTransport()
+  val h = newRecordingHandler()
+  var peer = newPeer(t, h)
+  var i = 0
+  while i <= maxPendingMessages {
+    feed(t, "{\"jsonrpc\":\"2.0\",\"method\":\"n\"}")
+    i = i + 1
+  }
+  feed(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"late\"}")
+  match call(peer, "doThing", None) {
+    case Ok(v) -> assertTrue(false, "expected the call to fail once the queue overflows")
+    case Err(e) -> assertEqualInt(e.code, internalError, "internalError")
+  }
+  assertEqualInt(peer.pendingQueue.count, maxPendingMessages + 1, "queued messages are kept for runLoop")
+}
+
+test "call/notify: empty and rpc.-prefixed method names violate the precondition" {
+  assertFalse(isValidOutboundMethod(""), "empty")
+  assertFalse(isValidOutboundMethod("rpc.discover"), "rpc. namespace")
+  assertTrue(isValidOutboundMethod("tools/call"), "ordinary method")
+  assertTrue(isValidOutboundMethod("rpcx"), "only the rpc. prefix is reserved")
+  assertPanics("call with an rpc. method", () -> callReservedMethod())
+  assertPanics("notify with an empty method", () -> notifyEmptyMethod())
+}
+
+func callReservedMethod(): Unit {
+  var peer = newPeer(newInMemoryTransport(), newRecordingHandler())
+  val r = call(peer, "rpc.x", None)
+}
+
+func notifyEmptyMethod(): Unit {
+  var peer = newPeer(newInMemoryTransport(), newRecordingHandler())
+  val r = notify(peer, "", None)
+}
+
+test "applicationError rejects codes in the reserved range" {
+  assertTrue(isReservedErrorCode(0 - 32768), "lower bound reserved")
+  assertTrue(isReservedErrorCode(0 - 32000), "upper bound reserved")
+  assertFalse(isReservedErrorCode(0 - 32769), "below the range")
+  assertFalse(isReservedErrorCode(0 - 31999), "above the range")
+  assertEqualInt(applicationError(0 - 1, "app", None).code, 0 - 1, "application code kept")
+  assertPanics("reserved code", () -> spoofProtocolError())
+}
+
+func spoofProtocolError(): Unit {
+  val e = applicationError(methodNotFound, "spoofed", None)
 }
 
 // `RpcError.code`'s field type is `Int`, but the standard-code `pub val`s

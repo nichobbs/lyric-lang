@@ -39,6 +39,10 @@ package Mcp
 
 import Std.Core
 import Std.Collections
+import Std.Encoding
+import Std.Hash
+import Std.Parse
+import Std.String
 import JsonRpc.Json
 
 // ── Protocol version ────────────────────────────────────────────────────────
@@ -52,6 +56,7 @@ pub val protocolVersionLatest: String = "2026-07-28"
 @stable(since = "0.1")
 pub val protocolVersionLegacy: String = "2025-06-18"
 
+@pure
 @stable(since = "0.1")
 pub func isSupportedProtocolVersion(v: in String): Bool {
   v == protocolVersionLatest or v == protocolVersionLegacy
@@ -69,7 +74,9 @@ pub func isSupportedProtocolVersion(v: in String): Bool {
 /// `2026-07-28` there is no per-connection version to pin, since there is
 /// no more connection lifecycle (docs/64 §3.1).
 @stable(since = "0.1")
-pub func negotiateProtocolVersion(requested: in String): String {
+pub func negotiateProtocolVersion(requested: in String): String
+  ensures: isSupportedProtocolVersion(result)
+{
   if isSupportedProtocolVersion(requested) {
     requested
   } else {
@@ -109,9 +116,48 @@ pub union McpContent {
 
 func encodeContent(c: in McpContent): JsonValue {
   match c {
-    case TextContent(text) -> JObject(fields = [JsonField(name = "type", value = JString(value = "text")), JsonField(name = "text", value = JString(value = text))])
-    case ImageContent(data, mimeType) -> JObject(fields = [JsonField(name = "type", value = JString(value = "image")), JsonField(name = "data", value = JString(value = data)), JsonField(name = "mimeType", value = JString(value = mimeType))])
-    case EmbeddedResource(uri, mimeType, text) -> JObject(fields = [JsonField(name = "type", value = JString(value = "resource")), JsonField(name = "resource", value = JObject(fields = [JsonField(name = "uri", value = JString(value = uri)), JsonField(name = "mimeType", value = JString(value = mimeType)), JsonField(name = "text", value = JString(value = text))]))])
+    case TextContent(text) -> JObject(
+      fields = [
+        JsonField(name = "type", value = JString(value = "text")),
+        JsonField(name = "text", value = JString(value = text))
+      ]
+    )
+    case ImageContent(data, mimeType) -> JObject(
+      fields = [
+        JsonField(name = "type", value = JString(value = "image")),
+        JsonField(name = "data", value = JString(value = data)),
+        JsonField(name = "mimeType", value = JString(value = mimeType))
+      ]
+    )
+    case EmbeddedResource(uri, mimeType, text) -> JObject(
+      fields = [
+        JsonField(
+          name = "type",
+          value = JString(value = "resource")
+        ),
+        JsonField(
+          name = "resource",
+          value = JObject(
+            fields = [
+              JsonField(
+                name = "uri",
+                value = JString(value = uri)
+              ),
+              JsonField(
+                name = "mimeType",
+                value = JString(
+                  value = mimeType
+                )
+              ),
+              JsonField(
+                name = "text",
+                value = JString(value = text)
+              )
+            ]
+          )
+        )
+      ]
+    )
   }
 }
 
@@ -292,15 +338,23 @@ pub func decodeToolInfoList(v: in JsonValue): List[McpToolInfo] {
 }
 
 // ── Resumable tools (input_required multi-round-trip, docs/64 §3.1) ────────
+/// Longest `requestState` this library issues, accepts from a server, or
+/// forwards to a resumable tool's `resume`.
+@stable(since = "0.2")
+pub val maxRequestStateLength: Int = 8192
+
 /// The server's answer to `tools/call` when the tool needs the peer to
 /// supply more input mid-call (the permission-prompt case). `requestState`
 /// is an opaque token the caller must echo back verbatim on the follow-up
 /// `tools/call` (see `Mcp.Client.resumeToolCall`); this library never
-/// interprets it, only carries it.
+/// interprets it, only carries it. The peer can forge or replay it, so a
+/// tool whose state matters should issue it with `sealRequestState` and
+/// check it with `openRequestState`.
 @stable(since = "0.2")
 pub record McpInputRequired {
   inputRequests: JsonValue
   requestState: String
+  invariant: requestState.length >= 1 and requestState.length <= maxRequestStateLength
 }
 
 /// What a resumable tool call answers with: either a normal finished
@@ -323,30 +377,139 @@ pub union McpToolCallOutcome {
 pub func encodeToolCallOutcome(outcome: in McpToolCallOutcome): JsonValue {
   match outcome {
     case ToolResult(result) -> encodeToolResult(result)
-    case InputRequired(ir) -> JObject(fields = [JsonField(name = "resultType", value = JString(value = "input_required")), JsonField(name = "inputRequests", value = ir.inputRequests), JsonField(name = "requestState", value = JString(value = ir.requestState))])
+    case InputRequired(ir) -> JObject(
+      fields = [
+        JsonField(name = "resultType", value = JString(value = "input_required")),
+        JsonField(name = "inputRequests", value = ir.inputRequests),
+        JsonField(name = "requestState", value = JString(value = ir.requestState))
+      ]
+    )
   }
 }
 
 /// Decode a `tools/call` result that may be either shape: an
 /// `input_required` object (`"resultType": "input_required"`) or a plain
-/// `CallToolResult`.
-pub func decodeToolCallOutcome(v: in JsonValue): McpToolCallOutcome {
+/// `CallToolResult`. An `input_required` result without a string
+/// `requestState` of 1 to `maxRequestStateLength` characters is malformed
+/// and decodes to `Err`: there would be nothing valid to resume with.
+pub func decodeToolCallOutcome(v: in JsonValue): Result[McpToolCallOutcome, String] {
   match getString(v, "resultType") {
     case Some(rt) -> {
       if rt == "input_required" {
         val inputRequests = match getField(v, "inputRequests") { case Some(x) -> x; case None -> JObject(fields = newList()) }
-        // A missing `requestState` on a genuine `input_required` response is
-        // a malformed/buggy server, not a case this client tries to detect —
-        // consistent with this decoder's lenient philosophy elsewhere, the
-        // empty-string default is echoed back verbatim by a later `resume`
-        // call, which the server is free to reject on its own terms.
-        val requestState = match getString(v, "requestState") { case Some(s) -> s; case None -> "" }
-        InputRequired(value = McpInputRequired(inputRequests = inputRequests, requestState = requestState))
+        match getString(v, "requestState") {
+          case None -> Err(error = "input_required result has no string 'requestState'")
+          case Some(requestState) -> {
+            if requestState.length == 0 or requestState.length > maxRequestStateLength {
+              Err(
+                error = "input_required 'requestState' must be 1 to " + maxRequestStateLength.toString() + " characters, got " +
+                  requestState.length.toString()
+              )
+            } else {
+              Ok(value = InputRequired(value = McpInputRequired(inputRequests = inputRequests, requestState = requestState)))
+            }
+          }
+        }
       } else {
-        ToolResult(value = decodeToolResult(v))
+        Ok(value = ToolResult(value = decodeToolResult(v)))
       }
     }
-    case None -> ToolResult(value = decodeToolResult(v))
+    case None -> Ok(value = ToolResult(value = decodeToolResult(v)))
+  }
+}
+
+// ── Sealed request state (#7245) ────────────────────────────────────────────
+/// Minimum HMAC key length, in bytes, for `sealRequestState` /
+/// `openRequestState` (256 bits, the HMAC-SHA-256 output size).
+@stable(since = "0.2")
+pub val requestStateKeyMinBytes: Int = 32
+
+// Everything the MAC covers, with the tool name length-prefixed so no two
+// (tool, expiry, payload) triples serialize to the same bytes.
+func requestStateMacInput(toolName: in String, expiresAtEpochMillis: in Long, payloadB64: in String): slice[Byte] {
+  encodeUtf8(
+    "lyric-mcp-request-state-v1\n" + toolName.length.toString() + ":" + toolName + "\n" +
+      expiresAtEpochMillis.toString() +
+      "\n" +
+      payloadB64
+  )
+}
+
+/// Seal `payload` into a `requestState` token bound to `toolName` that
+/// expires at `expiresAtEpochMillis`: `v1.<base64 payload>.<expiry>.<hex
+/// HMAC-SHA-256>`. The payload is authenticated, not encrypted, so it must
+/// not carry secrets the peer may not see. Returns `Err` when the token
+/// would exceed `maxRequestStateLength`.
+///
+/// `key` must be at least `requestStateKeyMinBytes` random bytes that stay
+/// on the server; rotating it invalidates every outstanding token.
+@stable(since = "0.2")
+pub func sealRequestState(
+  key: in slice[Byte], toolName: in String, payload: in String, expiresAtEpochMillis: in Long
+): Result[String, String]
+  requires: key.length >= requestStateKeyMinBytes
+  requires: toolName.length > 0
+  requires: expiresAtEpochMillis > 0i64
+{
+  val payloadB64 = encodeBase64(encodeUtf8(payload))
+  val mac = hmacSha256(key, requestStateMacInput(toolName, expiresAtEpochMillis, payloadB64))
+  val token = "v1." + payloadB64 + "." + expiresAtEpochMillis.toString() + "." + encodeHex(mac)
+  if token.length > maxRequestStateLength {
+    Err(
+      error = "sealed requestState is " + token.length.toString() + " characters, over the limit of " +
+        maxRequestStateLength.toString()
+    )
+  } else {
+    Ok(value = token)
+  }
+}
+
+/// Verify a token produced by `sealRequestState` for the same `key` and
+/// `toolName` and return its payload. Fails when the token is malformed,
+/// was sealed for another tool or with another key, has been altered, or
+/// its expiry is not after `nowEpochMillis`. The MAC is compared in
+/// constant time and checked before the expiry, so a forged token learns
+/// nothing from the error it gets back.
+@stable(since = "0.2")
+pub func openRequestState(
+  key: in slice[Byte], toolName: in String, token: in String, nowEpochMillis: in Long
+): Result[String, String]
+  requires: key.length >= requestStateKeyMinBytes
+  requires: toolName.length > 0
+{
+  if token.length == 0 or token.length > maxRequestStateLength {
+    return Err(error = "requestState has an invalid length")
+  }
+  val parts = split(token, ".")
+  if parts.length != 4 or parts[0] != "v1" {
+    return Err(error = "requestState is not a sealed v1 token")
+  }
+  val payloadB64 = parts[1]
+  match tryParseLong(parts[2]) {
+    case Err(_) -> Err(error = "requestState is not a sealed v1 token")
+    case Ok(expiresAt) -> match tryDecodeHex(parts[3]) {
+      case None -> Err(error = "requestState is not a sealed v1 token")
+      case Some(presented) -> {
+        val expected = hmacSha256(key, requestStateMacInput(toolName, expiresAt, payloadB64))
+        if not constantTimeEquals(presented, expected) {
+          Err(error = "requestState failed authentication")
+        } else if nowEpochMillis >= expiresAt {
+          Err(error = "requestState has expired")
+        } else {
+          decodeRequestStatePayload(payloadB64)
+        }
+      }
+    }
+  }
+}
+
+func decodeRequestStatePayload(payloadB64: in String): Result[String, String] {
+  match tryDecodeBase64(payloadB64) {
+    case None -> Err(error = "requestState payload is not valid base64")
+    case Some(bytes) -> match tryDecodeUtf8(bytes) {
+      case None -> Err(error = "requestState payload is not valid UTF-8")
+      case Some(text) -> Ok(value = text)
+    }
   }
 }
 
@@ -362,14 +525,13 @@ pub interface McpResumableToolHandler {
   func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String]
   /// Handle a follow-up `tools/call` carrying a `requestState` string and
   /// the peer's `inputResponses` answering the earlier `inputRequests`.
-  /// `requestState` is an unauthenticated, unvalidated opaque echo token
-  /// — the dispatcher (`Mcp.Server`) routes to `resume` purely because
-  /// the incoming params include a `requestState` field, with no check
-  /// that this (or any) handler ever issued it. A peer can call `resume`
-  /// directly with a fabricated `requestState`, skipping `call` entirely.
-  /// A handler encoding a security-sensitive target in `requestState`
-  /// must independently verify/authorize inside `resume` itself before
-  /// acting — never assume the runtime already validated provenance.
+  /// The dispatcher (`Mcp.Server`) checks only that `requestState` is 1 to
+  /// `maxRequestStateLength` characters; it routes to `resume` whenever the
+  /// params carry one, with no check that this (or any) handler issued it.
+  /// A peer can call `resume` directly with a fabricated or replayed
+  /// `requestState`, skipping `call` entirely. A handler whose state
+  /// matters must issue it with `sealRequestState` in `call` and verify it
+  /// with `openRequestState` here before acting on it.
   func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String]
 }
 
@@ -658,7 +820,13 @@ func encodePromptMessage(m: in McpPromptMessage): JsonValue {
 func decodePromptMessage(v: in JsonValue): Option[McpPromptMessage] {
   match getString(v, "role") {
     case None -> None
-    case Some(role) -> match getField(v, "content") { case None -> None; case Some(cv) -> match decodeContent(cv) { case None -> None; case Some(c) -> Some(value = McpPromptMessage(role = role, content = c)) } }
+    case Some(role) -> match getField(v, "content") {
+      case None -> None
+      case Some(cv) -> match decodeContent(cv) {
+        case None -> None
+        case Some(c) -> Some(value = McpPromptMessage(role = role, content = c))
+      }
+    }
   }
 }
 
@@ -853,13 +1021,24 @@ pub record McpInitializeParams {
 pub func decodeInitializeParams(paramsOpt: in Option[JsonValue]): Option[McpInitializeParams] {
   match paramsOpt {
     case None -> None
-    case Some(p) -> match getString(p, "protocolVersion") { case None -> None; case Some(pv) -> { val clientInfo = match getField(p, "clientInfo") { case Some(ci) -> decodeImplementation(ci); case None -> McpImplementation(name = "", version = "") }; Some(value = McpInitializeParams(protocolVersion = pv, clientInfo = clientInfo)) } }
+    case Some(p) -> match getString(p, "protocolVersion") {
+      case None -> None
+      case Some(pv) -> {
+        val clientInfo = match getField(p, "clientInfo") {
+          case Some(ci) -> decodeImplementation(ci)
+          case None -> McpImplementation(name = "", version = "")
+        }
+        Some(value = McpInitializeParams(protocolVersion = pv, clientInfo = clientInfo))
+      }
+    }
   }
 }
 
 /// Encode an `InitializeRequest` params object (client -> server).
 @stable(since = "0.1")
-pub func encodeInitializeParams(protocolVersion: in String, clientInfo: in McpImplementation): JsonValue {
+pub func encodeInitializeParams(protocolVersion: in String, clientInfo: in McpImplementation): JsonValue
+  requires: clientInfo.name.length > 0
+{
   JObject(
     fields = [
       JsonField(name = "protocolVersion", value = JString(value = protocolVersion)),

@@ -82,6 +82,17 @@ import Mcp
 import Mcp.Server
 import Mcp.Client
 
+// Decode a `tools/call` result the test expects to be well formed.
+func decodedOutcome(v: in JsonValue): McpToolCallOutcome {
+  match decodeToolCallOutcome(v) {
+    case Ok(o) -> o
+    case Err(e) -> {
+      assertTrue(false, "decodeToolCallOutcome failed: " + e)
+      ToolResult(value = toolErrorResult(e))
+    }
+  }
+}
+
 // ── In-memory transport pair (non-recursive — see module doc) ──────────────
 record Mailbox {
   var toServer: List[String]
@@ -684,6 +695,33 @@ test "tools/call: a non-string requestState against a resumable tool is a protoc
   assertErrorCode(popResponse(box, "tools/call"), 0i64 - 32602i64, "invalidParams for a non-string requestState")
 }
 
+test "tools/call: an empty or oversized requestState is rejected before resume runs" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  val empty = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "confirm_delete")),
+      JsonField(name = "requestState", value = JString(value = "")),
+      JsonField(name = "inputResponses", value = JObject(fields = newList()))
+    ]
+  )
+  stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = empty)))
+  assertErrorCode(popResponse(box, "tools/call"), 0i64 - 32602i64, "invalidParams for an empty requestState")
+  var big = "x"
+  while big.length <= maxRequestStateLength {
+    big = big + big
+  }
+  val oversized = JObject(
+    fields = [
+      JsonField(name = "name", value = JString(value = "confirm_delete")),
+      JsonField(name = "requestState", value = JString(value = big)),
+      JsonField(name = "inputResponses", value = JObject(fields = newList()))
+    ]
+  )
+  stage(serverPeer, box, reqText(2i64, "tools/call", Some(value = oversized)))
+  assertErrorCode(popResponse(box, "tools/call"), 0i64 - 32602i64, "invalidParams for an oversized requestState")
+}
+
 // ── Resumable tools: input_required multi-round-trip (docs/64 §3.1) ────────
 test "tools/call against a resumable tool answers with input_required, not a finished result" {
   val box = newMailbox()
@@ -701,7 +739,7 @@ test "tools/call against a resumable tool answers with input_required, not a fin
   )
   stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callParams)))
   val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
-  match decodeToolCallOutcome(result) {
+  match decodedOutcome(result) {
     case InputRequired(ir) -> assertEqual(
       ir.requestState,
       "delete:/tmp/x",
@@ -726,7 +764,7 @@ test "tools/call resume: echoing requestState + confirm:true finishes the deleti
   )
   stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = resumeParams)))
   val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
-  match decodeToolCallOutcome(result) {
+  match decodedOutcome(result) {
     case ToolResult(r) -> {
       assertFalse(r.isError, "confirmed deletion is not an error")
       match r.content[0] {
@@ -755,7 +793,7 @@ test "tools/call resume: confirm:false is reported as isError, not a protocol er
   )
   stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = resumeParams)))
   val result = assertResultField(popResponse(box, "tools/call"), "tools/call")
-  match decodeToolCallOutcome(result) {
+  match decodedOutcome(result) {
     case ToolResult(r) -> assertTrue(r.isError, "refused confirmation surfaces as isError")
     case InputRequired(_) -> assertTrue(false, "expected a finished ToolResult after resume")
   }
