@@ -195,7 +195,18 @@ pub func clrIsValueType(typeFqn: in String): Bool {
     typeFqn == "System.Text.Json.JsonProperty" or
     typeFqn == "System.Text.Json.JsonElement+ArrayEnumerator" or
     typeFqn == "System.Text.Json.JsonElement+ObjectEnumerator" or
-    typeFqn == "System.Net.Security.SslApplicationProtocol"
+    typeFqn == "System.Net.Security.SslApplicationProtocol" or
+    typeFqn == "System.Double" or
+    typeFqn == "System.Char" or
+    typeFqn == "System.StringComparison" or
+    typeFqn == "System.Net.Sockets.AddressFamily" or
+    typeFqn == "System.Net.Sockets.SocketType" or
+    typeFqn == "System.Net.Sockets.ProtocolType" or
+    typeFqn == "System.Net.Http.HttpVersionPolicy" or
+    typeFqn == "System.Net.Security.SslPolicyErrors" or
+    typeFqn == "System.Security.Authentication.SslProtocols" or
+    typeFqn == "System.Security.Cryptography.X509Certificates.X509ChainTrustMode" or
+    typeFqn == "System.Security.Cryptography.X509Certificates.X509RevocationMode"
 }
 
 // ── Resolver ─────────────────────────────────────────────────────────────────
