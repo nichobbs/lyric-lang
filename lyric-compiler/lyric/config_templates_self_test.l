@@ -29,6 +29,17 @@ pub config StaticFiles {
   fallbackToIndex: Bool = false
 }
 
+// A ranged template field (#7229): the override restates only the base
+// type and the template's range still guards the value at startup.
+pub config Listener {
+  port: Int range 1 ..= 65535 = 8080
+  backlog: Long range 1 ..= 100000 = 128i64
+}
+
+config AdminListener from Listener {
+  port: Int = 9090
+}
+
 // Env-var override target: the env var derives from the LOCAL name
 // (LYRIC_CONFIG_<PKG>_<LOCAL>_<FIELD>), so set it before the config
 // class is first touched (its .cctor reads the environment once).
@@ -54,6 +65,11 @@ wire FileServer {
   singleton fromModule: Server = Server(files = Assets, name = name)
   expose server
   expose fromModule
+}
+
+test "a ranged template field accepts an in-range override" {
+  assertEqualInt(AdminListener.port, 9090, "override within the template range")
+  assertTrue(AdminListener.backlog == 128i64, "ranged template default kept")
 }
 
 test "module-level instantiation materialises overrides and template defaults" {

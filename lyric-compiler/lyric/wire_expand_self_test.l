@@ -313,6 +313,63 @@ test "config override with mismatched type is W0012" {
   assertTrue(hasDiag(res, "W0012"), "type mismatch reported")
 }
 
+test "config override of a ranged template field keeps the template range" {
+  val src = "package P\n" + "pub config T { port: Int range 1 ..= 65535 = 8080 }\n" +
+    "config C from T { port: Int = 9090 }\n"
+  val res = expandSrc(src)
+  assertEqualInt(diagCount(res), 0, "restating the base type is accepted")
+  val cd = firstConfig(res, "C")
+  assertEqual(configFieldDefaultStr(cd, "port"), "9090", "override default wins")
+  match cd.fields[0].ty.kind {
+    case TRefined(_, _) -> ()
+    case _ -> assertTrue(false, "merged field keeps the template's range")
+  }
+}
+
+test "a pub config template with a malformed range is G0009 without any instantiation" {
+  val src = "package P\n" + "pub config T { port: Int range 10 ..= 5 = 7 }\n"
+  val res = expandSrc(src)
+  assertTrue(hasDiag(res, "G0009"), "empty template range reported at the declaration")
+  assertEqualInt(diagCount(res), 1, "reported once")
+}
+
+test "a pub config template whose default is outside its range is G0010 without any instantiation" {
+  val src = "package P\n" + "pub config T { port: Int range 1 ..= 100 = 500 }\n"
+  val res = expandSrc(src)
+  assertTrue(hasDiag(res, "G0010"), "out-of-range template default reported at the declaration")
+}
+
+test "a template range fault is not repeated by an instantiation" {
+  val src = "package P\n" + "pub config T { port: Int range 1 ..= 100 = 500 }\n" + "config C from T { }\n"
+  val res = expandSrc(src)
+  assertEqualInt(diagCount(res), 1, "only the template declaration reports it")
+  val cd = firstConfig(res, "C")
+  match cd.fields[0].ty.kind {
+    case TRef(_) -> ()
+    case _ -> assertTrue(false, "the already-reported range is dropped from the instance")
+  }
+}
+
+test "a template with a well-formed range and in-range default has no diagnostics" {
+  val src = "package P\n" + "pub config T { port: Int range 1 ..= 100 = 50; ratio: Double range 0.0 ..< 1.0 = 0.5 }\n"
+  val res = expandSrc(src)
+  assertEqualInt(diagCount(res), 0, "clean template")
+}
+
+test "config override that declares its own range is W0012" {
+  val src = "package P\n" + "pub config T { port: Int range 1 ..= 65535 = 8080 }\n" +
+    "config C from T { port: Int range 1 ..= 100 = 50 }\n"
+  val res = expandSrc(src)
+  assertTrue(hasDiag(res, "W0012"), "a range on the override is rejected")
+}
+
+test "config override of a ranged field with a different base type is W0012" {
+  val src = "package P\n" + "pub config T { port: Int range 1 ..= 65535 = 8080 }\n" +
+    "config C from T { port: Long = 9090 }\n"
+  val res = expandSrc(src)
+  assertTrue(hasDiag(res, "W0012"), "base type mismatch reported")
+}
+
 test "pub on a config instantiation is W0013" {
   val src = "package P\n" + "pub config T { root: String = \"a\" }\n" + "pub config C from T { root: String = \"b\" }\n"
   val res = expandSrc(src)

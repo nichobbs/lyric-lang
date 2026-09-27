@@ -7019,6 +7019,108 @@ pub record LConfigField {
   hasDefault: Bool
   defaultInsns: List[LInsn]
   requiredErrMsg: String
+  // Range refinement (#7229) — mirrors `Msil.Lowering.MConfigField`.  After
+  // the value is stored, `<clinit>` re-reads it and exits 78 with
+  // `rangeErrMsg` (G0004) when it lies outside the bounds.
+  hasMin: Bool
+  hasMax: Bool
+  upperExclusive: Bool
+  minI: Long
+  maxI: Long
+  minF: Double
+  maxF: Double
+  rangeErrMsg: String
+}
+
+// Range check for a refined config field (#7229), emitted after the field is
+// stored so the operand stack is empty at every label.  Floating-point bounds
+// use `dcmpl`/`fcmpl` for the minimum and `dcmpg`/`fcmpg` for the maximum, so
+// NaN fails both.
+func emitConfigRangeCheckJvm(
+  insns: in List[LInsn],
+  className: in String,
+  f: in LConfigField,
+  failLabel: in String,
+  okLabel: in String,
+): Unit {
+  if f.hasMin {
+    insns.add(LGetstatic(owner = className, name = f.name, t = f.fieldType))
+    match f.fieldType {
+      case JInt -> {
+        insns.add(LIconst(v = longToInt(f.minI)))
+        insns.add(LIfIcmplt(label = failLabel))
+      }
+      case JLong -> {
+        insns.add(LLconst(v = f.minI))
+        insns.add(LLcmp)
+        insns.add(LIflt(label = failLabel))
+      }
+      case JFloat -> {
+        insns.add(LFconst(v = f.minF))
+        insns.add(LFcmpl)
+        insns.add(LIflt(label = failLabel))
+      }
+      case _ -> {
+        insns.add(LDconst(v = f.minF))
+        insns.add(LDcmpl)
+        insns.add(LIflt(label = failLabel))
+      }
+    }
+  }
+  if f.hasMax {
+    insns.add(LGetstatic(owner = className, name = f.name, t = f.fieldType))
+    match f.fieldType {
+      case JInt -> {
+        insns.add(LIconst(v = longToInt(f.maxI)))
+        if f.upperExclusive {
+          insns.add(LIfIcmpge(label = failLabel))
+        } else {
+          insns.add(LIfIcmpgt(label = failLabel))
+        }
+      }
+      case JLong -> {
+        insns.add(LLconst(v = f.maxI))
+        insns.add(LLcmp)
+        if f.upperExclusive {
+          insns.add(LIfge(label = failLabel))
+        } else {
+          insns.add(LIfgt(label = failLabel))
+        }
+      }
+      case JFloat -> {
+        insns.add(LFconst(v = f.maxF))
+        insns.add(LFcmpg)
+        if f.upperExclusive {
+          insns.add(LIfge(label = failLabel))
+        } else {
+          insns.add(LIfgt(label = failLabel))
+        }
+      }
+      case _ -> {
+        insns.add(LDconst(v = f.maxF))
+        insns.add(LDcmpg)
+        if f.upperExclusive {
+          insns.add(LIfge(label = failLabel))
+        } else {
+          insns.add(LIfgt(label = failLabel))
+        }
+      }
+    }
+  }
+  insns.add(LGoto(label = okLabel))
+  insns.add(LLabel(name = failLabel))
+  val strTy = JRef(className = "java/lang/String")
+  insns.add(LGetstatic(owner = "java/lang/System", name = "err", t = JRef(className = "java/io/PrintStream")))
+  insns.add(LPushString(s = f.rangeErrMsg))
+  val printlnPs: List[JvmType] = newList()
+  printlnPs.add(strTy)
+  insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = printlnPs, ret = JVoid))
+  insns.add(LIconst(v = 78))
+  val exitPs: List[JvmType] = newList()
+  exitPs.add(JInt)
+  insns.add(LInvokestatic(owner = "java/lang/System", name = "exit", params = exitPs, ret = JVoid))
+  insns.add(LGoto(label = okLabel))
+  insns.add(LLabel(name = okLabel))
 }
 
 pub union LPackageItem {
@@ -7246,6 +7348,9 @@ pub func lowerConfigBlock(ns: in String, blockName: in String, fields: in List[L
     }
     clinitInsns.add(LGoto(label = doneLabel))
     clinitInsns.add(LLabel(name = doneLabel))
+    if f.hasMin or f.hasMax {
+      emitConfigRangeCheckJvm(clinitInsns, className, f, "cfg_range_fail_" + fi, "cfg_range_ok_" + fi)
+    }
 
     fi = fi + 1
   }

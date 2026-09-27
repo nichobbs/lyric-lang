@@ -2515,6 +2515,15 @@ The following are specified but not yet fully woven:
 `config {}` blocks and `@inline_template` `args.<field>` rewriting
 are now fully woven by the self-hosted weaver (todo/06 #683 / #681).
 
+A `config { }` field, in a module-scope config block or an aspect, may be a
+range of `Int`, `Long`, `Float` or `Double` (`port: Int range 1 ..= 65535 =
+8080`; also `lo ..< hi`, `lo ..` and `..= hi`) with numeric-literal bounds
+(`G0009` otherwise, and for an empty range). A default outside the range is
+`G0010`, and so is a `from`-instance aspect value outside the template field's
+range. A module-scope block's env value outside the range, including `NaN`,
+stops startup with exit code 78 (`G0004`) on dotnet and the JVM
+(`docs/25-config-blocks.md` §3, D-progress-995, #7229).
+
 ---
 
 ## Index of TBD items

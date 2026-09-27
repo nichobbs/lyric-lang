@@ -253,7 +253,7 @@ protected type BoundedQueue[T] {
 // Declared at module scope; package-private; not a type.
 config Server {
   host:    String                   = "0.0.0.0"
-  port:    Int range 1 ..= 65535   = 8080
+  port:    Int range 1 ..= 65535   = 8080       // out-of-range env value exits 78 (G0004)
   @sensitive
   secret:  String                             // required — no default; exits with G0001 if unset
 }

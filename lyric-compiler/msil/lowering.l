@@ -983,6 +983,20 @@ pub record MConfigField {
   defaultInsns: List[MInsn]
   // ldstr token for the stderr error message (0 when hasDefault = true).
   requiredMsgTok: Int
+  // Range refinement on the field (#7229): after the value is stored, the
+  // .cctor re-reads it and exits 78 with `rangeMsgTok` (G0004) when it lies
+  // outside [min, max] (or [min, max) when `upperExclusive`).  `hasMin` /
+  // `hasMax` are false for the open end of a one-sided range.  Float fields
+  // compare against `minF`/`maxF` and reject NaN; integer fields against
+  // `minI`/`maxI`.
+  hasMin: Bool
+  hasMax: Bool
+  upperExclusive: Bool
+  minI: Long
+  maxI: Long
+  minF: Double
+  maxF: Double
+  rangeMsgTok: Int
 }
 
 // ── MInterface / MImplData ───────────────────────────────────────────────────
@@ -5910,6 +5924,63 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
 //    for Float/Double fields — omitted for String fields]
 //   stsfld fieldToken_i
 //   doneLabel_i:
+// Range check for a refined config field (#7229), run after the field is
+// stored (stack empty at every label).  Loads the field, compares it with each
+// present bound, and on a violation prints `rangeMsgTok` to stderr and exits
+// 78 (G0004).  Floating-point comparisons use the unordered forms so NaN
+// fails the check.
+func emitConfigRangeCheckMsil(
+  insns: in List[MInsn],
+  f: in MConfigField,
+  fieldTok: in Int,
+  failLabel: in Int,
+  okLabel: in Int,
+  configToks: in ConfigTokens,
+): Unit {
+  val isFloat = match f.fieldType { case MDouble -> true; case _ -> false }
+  if f.hasMin {
+    insns.add(MLdsfld(fieldToken = fieldTok))
+    pushConfigBoundMsil(insns, f.fieldType, f.minI, f.minF)
+    if isFloat {
+      insns.add(MClt_Un)
+    } else {
+      insns.add(MClt)
+    }
+    insns.add(MBrTrue(label = failLabel))
+  }
+  if f.hasMax {
+    insns.add(MLdsfld(fieldToken = fieldTok))
+    pushConfigBoundMsil(insns, f.fieldType, f.maxI, f.maxF)
+    if f.upperExclusive {
+      insns.add(MClt)
+      insns.add(MBrFalse(label = failLabel))
+    } else {
+      if isFloat {
+        insns.add(MCgt_Un)
+      } else {
+        insns.add(MCgt)
+      }
+      insns.add(MBrTrue(label = failLabel))
+    }
+  }
+  insns.add(MBr(label = okLabel))
+  insns.add(MLabel(id = failLabel))
+  insns.add(MCall(methodToken = configToks.tokConsoleError))
+  insns.add(MLdStr(token = f.rangeMsgTok))
+  insns.add(MCallvirt(methodToken = configToks.tokTwWriteLine))
+  insns.add(MLdcI4(v = 78))
+  insns.add(MCall(methodToken = configToks.tokEnvExit))
+  insns.add(MLabel(id = okLabel))
+}
+
+func pushConfigBoundMsil(insns: in List[MInsn], ty: in MsilType, i: in Long, d: in Double): Unit {
+  match ty {
+    case MInt -> insns.add(MLdcI4(v = longToInt(i)))
+    case MLong -> insns.add(MLdcI8(v = i))
+    case _ -> insns.add(MLdcR8(v = d))
+  }
+}
+
 func lowerMConfig(
   ns: in String,
   typeName: in String,
@@ -6000,6 +6071,12 @@ func lowerMConfig(
       }
       cctorInsns.add(MStsfld(fieldToken = fieldTok))
       cctorInsns.add(MLabel(id = doneLabel))
+      if f.hasMin or f.hasMax {
+        // Labels: 2ci / 2ci+1 are the field's parse/done labels, then one
+        // fail label and one ok label per field in two further disjoint
+        // blocks of `fields.count`.
+        emitConfigRangeCheckMsil(cctorInsns, f, fieldTok, 2 * fields.count + ci, 3 * fields.count + ci, configToks)
+      }
 
       ci = ci + 1
     }

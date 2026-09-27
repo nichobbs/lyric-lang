@@ -37831,6 +37831,15 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               val msg = "error: required config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is not set"
               ctxInternUs(cctx.lctx, msg)
             }
+            val cr = configFieldRange(cf.ty)
+            val rangeMsgTok = if cr.hasMin or cr.hasMax {
+              ctxInternUs(
+                cctx.lctx,
+                "error: config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is outside its range " + cr.desc
+              )
+            } else {
+              0
+            }
             cfieldsList.add(
               MConfigField(
                 name = cf.name,
@@ -37838,7 +37847,15 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
                 envVarTok = envVarTok,
                 hasDefault = hasDefault,
                 defaultInsns = defaultInsnsList,
-                requiredMsgTok = requiredMsgTok
+                requiredMsgTok = requiredMsgTok,
+                hasMin = cr.hasMin,
+                hasMax = cr.hasMax,
+                upperExclusive = cr.upperExclusive,
+                minI = cr.minI,
+                maxI = cr.maxI,
+                minF = cr.minF,
+                maxF = cr.maxF,
+                rangeMsgTok = rangeMsgTok
               )
             )
             cfi = cfi + 1
@@ -39259,6 +39276,85 @@ record RangeBoundVal {
   isFloat: Bool
   l: Long
   d: Double
+}
+
+// The folded bounds of a range-refined config field (#7229).  Both flags are
+// false for an unrefined field; the type checker (G0009) guarantees literal
+// bounds for a refined one.
+record ConfigFieldRange {
+  hasMin: Bool
+  hasMax: Bool
+  upperExclusive: Bool
+  minI: Long
+  maxI: Long
+  minF: Double
+  maxF: Double
+  desc: String
+}
+
+func rangeBoundText(b: in RangeBoundVal): String {
+  if b.isFloat {
+    b.d.toString()
+  } else {
+    b.l.toString()
+  }
+}
+
+func configFieldRange(te: in TypeExpr): ConfigFieldRange {
+  val none = ConfigFieldRange(
+    hasMin = false,
+    hasMax = false,
+    upperExclusive = false,
+    minI = 0i64,
+    maxI = 0i64,
+    minF = 0.0,
+    maxF = 0.0,
+    desc = ""
+  )
+  match te.kind {
+    case TRefined(_, rb) -> {
+      val zero = RangeBoundVal(ok = true, isFloat = false, l = 0i64, d = 0.0)
+      val (lo, hi, hasMin, hasMax, excl) = match rb {
+        case RBClosed(loE, hiE) -> (
+          foldRangeBound(loE),
+          foldRangeBound(hiE),
+          true,
+          true,
+          false
+        )
+        case RBHalfOpen(loE, hiE, _) -> (
+          foldRangeBound(loE),
+          foldRangeBound(hiE),
+          true,
+          true,
+          true
+        )
+        case RBLowerOpen(hiE) -> (zero, foldRangeBound(hiE), false, true, false)
+        case RBUpperOpen(loE) -> (foldRangeBound(loE), zero, true, false, false)
+      }
+      if not lo.ok or not hi.ok {
+        panic("Msil.Codegen ICE: config range bound is not a literal — the type checker (G0009) should have rejected this")
+      }
+      val desc = if hasMin and hasMax {
+        "[" + rangeBoundText(lo) + ", " + rangeBoundText(hi) + (if excl { ")" } else { "]" })
+      } else if hasMin {
+        "(at least " + rangeBoundText(lo) + ")"
+      } else {
+        "(at most " + rangeBoundText(hi) + ")"
+      }
+      ConfigFieldRange(
+        hasMin = hasMin,
+        hasMax = hasMax,
+        upperExclusive = excl,
+        minI = lo.l,
+        maxI = hi.l,
+        minF = if lo.isFloat { lo.d } else { lo.l.toDouble() },
+        maxF = if hi.isFloat { hi.d } else { hi.l.toDouble() },
+        desc = desc
+      )
+    }
+    case _ -> none
+  }
 }
 
 func foldRangeBound(e: in Expr): RangeBoundVal {

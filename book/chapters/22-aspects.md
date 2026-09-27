@@ -180,7 +180,9 @@ a caller-site stack walk that is not implemented; references surface
 as an **A0043** weave-time diagnostic naming the unrecognised field
 and listing the recognised ones.
 
-**`config {}` injection.** Each `config { }` field with a literal
+**`config {}` injection.** A field may be a numeric range
+(`perMinute: Int range 1 ..= 1000 = 60`); a default or an instance override
+outside it is a compile error (G0010, see Chapter 21). Each `config { }` field with a literal
 default is materialised by the weaver as a synthetic
 `val __aspect_cfg_<name>: <ty> = <default>` at the top of the woven
 body, and `config.<name>` member accesses inside the body are

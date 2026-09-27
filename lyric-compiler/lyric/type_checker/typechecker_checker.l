@@ -2893,10 +2893,64 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
 func configFieldTypeName(te: in TypeExpr): String {
   match te.kind {
     case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+    case TRefined(path, _) -> if path.segments.count == 1 { path.segments[0] } else { "" }
     case _ -> ""
   }
 }
 
+// G0009 for a malformed range refinement on a config field (see
+// `configRangeProblem`).  Returns the range when it is well formed, so the
+// caller can check the default against it (G0010).
+func checkConfigFieldRange(diag: in List[Diagnostic], cd: in ConfigDecl, f: in ConfigField): Option[RangeBound] {
+  match f.ty.kind {
+    case TRefined(_, rb) -> {
+      val problem = configRangeProblem(configFieldTypeName(f.ty), rb)
+      if problem.length > 0 {
+        diag.add(errorDiagnostic("G0009", "config field '" + cd.name + "." + f.name + "' " + problem, f.ty.span))
+        None
+      } else {
+        Some(value = rb)
+      }
+    }
+    case _ -> None
+  }
+}
+
+// An aspect's own `config { }` fields may be ranges too (#7229).  Their
+// values are compile-time literals, so a malformed range is G0009 and a
+// default outside it G0010, as for a module-scope config block.  The other
+// config-block rules (allowed types, literal defaults) are the weaver's
+// concern for aspects; a `from`-instance override is range-checked by the
+// weaver against the template's field.
+func checkAspectConfigRanges(diag: in List[Diagnostic], decl: in AspectDecl): Unit {
+  val cd = ConfigDecl(name = decl.name, from = None, fields = decl.config, span = decl.span)
+  var i = 0
+  while i < decl.config.count {
+    val f = decl.config[i]
+    match checkConfigFieldRange(diag, cd, f) {
+      case Some(rb) -> match f.default {
+        case Some(d) -> {
+          val v = foldLiteralBound(d)
+          if v.ok and not literalInRange(v, rb) {
+            diag.add(
+              errorDiagnostic(
+                "G0010",
+                "config default for '" + decl.name + "." + f.name + "' is outside the field's range",
+                d.span
+              )
+            )
+          }
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+}
+
+// An integer field takes integer bounds within its own range; a floating
+// field takes either.
 // Whether a literal default can initialise a config field of type `tyName`.
 // Int literals widen to Long / Float / Double; Float literals fit Float /
 // Double; everything else must match exactly.
@@ -2913,10 +2967,12 @@ func configLiteralFitsType(lit: in Literal, tyName: in String): Bool {
 }
 
 // Well-formedness check for a `config` block.  v1 enforces:
-//   * Field type is one of Bool / Int / Long / Float / Double / String
-//     (G0009); range subtypes, enums, and lists are deferred to v1.1.
+//   * Field type is one of Bool / Int / Long / Float / Double / String, or a
+//     range of Int / Long / Float / Double with literal, non-empty bounds
+//     (G0009, #7229); enums and lists are deferred.
 //   * Field default, when present, is a literal of the declared type,
-//     optionally negated for numeric fields (G0010).
+//     optionally negated for numeric fields, and inside the field's range
+//     when it has one (G0010).
 //   * Field names are unique within the block (G0013).
 // The MSIL config lowering relies on these guarantees: an unchecked field
 // type silently zero-fills the default path and emits invalid IL on the
@@ -2932,18 +2988,20 @@ func checkConfigBlock(diag: in List[Diagnostic], cd: in ConfigDecl): Unit {
       seen.add(f.name)
     }
     val tyName = configFieldTypeName(f.ty)
-    val allowed = tyName == "Bool" or tyName == "Int" or tyName == "Long" or tyName == "Float" or tyName == "Double" or
-      tyName == "String"
+    val isRefined = match f.ty.kind { case TRefined(_, _) -> true; case _ -> false }
+    val numeric = tyName == "Int" or tyName == "Long" or tyName == "Float" or tyName == "Double"
+    val allowed = if isRefined { numeric } else { numeric or tyName == "Bool" or tyName == "String" }
     if not allowed {
       diag.add(
         errorDiagnostic(
           "G0009",
           "config field '" + cd.name + "." + f.name +
-            "' has a type not allowed in a config block; allowed types: Bool, Int, Long, Float, Double, String",
+            "' has a type not allowed in a config block; allowed types: Bool, Int, Long, Float, Double, String, and a range of Int, Long, Float or Double",
           f.ty.span
         )
       )
     } else {
+      val range = checkConfigFieldRange(diag, cd, f)
       match f.default {
         case Some(d) -> {
           val ok = match d.kind {
@@ -2975,6 +3033,15 @@ func checkConfigBlock(diag: in List[Diagnostic], cd: in ConfigDecl): Unit {
                 d.span
               )
             )
+          } else {
+            match range {
+              case Some(rb) -> if not literalInRange(foldLiteralBound(d), rb) {
+                diag.add(
+                  errorDiagnostic("G0010", "config default for '" + cd.name + "." + f.name + "' is outside the field's range", d.span)
+                )
+              }
+              case None -> ()
+            }
           }
         }
         case None -> {
@@ -3297,6 +3364,7 @@ func checkWithImportedPackagesCore(
       case IRecord(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
       case IExposedRec(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
       case IConfig(decl) -> checkConfigBlock(diag, decl)
+      case IAspect(decl) -> checkAspectConfigRanges(diag, decl)
       case _ -> {
       }
     }

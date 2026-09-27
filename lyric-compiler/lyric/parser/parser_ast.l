@@ -90,6 +90,145 @@ pub union RangeBound {
   case RBUpperOpen(lo: Expr)
 }
 
+/// A range bound folded to a number: a numeric literal, optionally negated
+/// (`ok` is false for anything else).  Used where a range must be checked
+/// against constants, such as a `config` field's refinement (#7229).
+pub record LiteralBound {
+  pub ok: Bool
+  pub isFloat: Bool
+  pub l: Long
+  pub d: Double
+}
+
+pub func foldLiteralBound(e: in Expr): LiteralBound {
+  val none = LiteralBound(ok = false, isFloat = false, l = 0i64, d = 0.0)
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(v, _, _) -> LiteralBound(ok = true, isFloat = false, l = v, d = v.toDouble())
+      case LFloat(v, _, _) -> LiteralBound(ok = true, isFloat = true, l = 0i64, d = v)
+      case _ -> none
+    }
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> {
+        val b = foldLiteralBound(inner)
+        if b.ok {
+          // The lexer accepts `9223372036854775808` only under a unary minus
+          // and carries it as Long.MinValue; the wrapping negation below maps
+          // that back to Long.MinValue, which is the value the user wrote.
+          LiteralBound(ok = true, isFloat = b.isFloat, l = 0i64 - b.l, d = 0.0 - b.d)
+        } else {
+          none
+        }
+      }
+      case _ -> none
+    }
+    case _ -> none
+  }
+}
+
+/// `x < b` (`strict`) or `x <= b`, comparing as floating point when either
+/// side is.
+pub func literalBoundBelow(x: in LiteralBound, b: in LiteralBound, strict: in Bool): Bool {
+  if x.isFloat or b.isFloat {
+    if strict {
+      x.d < b.d
+    } else {
+      x.d <= b.d
+    }
+  } else {
+    if strict {
+      x.l < b.l
+    } else {
+      x.l <= b.l
+    }
+  }
+}
+
+/// Whether the folded value `v` lies inside `rb`.  Every bound of `rb` must
+/// fold (callers check that first).
+pub func literalInRange(v: in LiteralBound, rb: in RangeBound): Bool {
+  match rb {
+    case RBClosed(lo, hi) -> literalBoundBelow(foldLiteralBound(lo), v, false) and
+      literalBoundBelow(v, foldLiteralBound(hi), false)
+    case RBHalfOpen(lo, hi, _) -> literalBoundBelow(foldLiteralBound(lo), v, false) and
+      literalBoundBelow(v, foldLiteralBound(hi), true)
+    case RBLowerOpen(hi) -> literalBoundBelow(v, foldLiteralBound(hi), false)
+    case RBUpperOpen(lo) -> literalBoundBelow(foldLiteralBound(lo), v, false)
+  }
+}
+
+/// The lower bound of a range refinement, when it has one.
+pub func rangeLowerExpr(rb: in RangeBound): Option[Expr] {
+  match rb {
+    case RBClosed(lo, _) -> Some(value = lo)
+    case RBHalfOpen(lo, _, _) -> Some(value = lo)
+    case RBLowerOpen(_) -> None
+    case RBUpperOpen(lo) -> Some(value = lo)
+  }
+}
+
+/// The upper bound of a range refinement, when it has one.
+pub func rangeUpperExpr(rb: in RangeBound): Option[Expr] {
+  match rb {
+    case RBClosed(_, hi) -> Some(value = hi)
+    case RBHalfOpen(_, hi, _) -> Some(value = hi)
+    case RBLowerOpen(hi) -> Some(value = hi)
+    case RBUpperOpen(_) -> None
+  }
+}
+
+/// Whether folded bounds `lo`/`hi` can be compared against a value of the
+/// numeric type `tyName`: floating bounds only on Float/Double, integer
+/// bounds on Int only within Int's width.
+pub func literalBoundsFitType(tyName: in String, lo: in LiteralBound, hi: in LiteralBound): Bool {
+  if tyName == "Float" or tyName == "Double" {
+    return true
+  }
+  if tyName != "Int" and tyName != "Long" {
+    return false
+  }
+  if lo.isFloat or hi.isFloat {
+    return false
+  }
+  if tyName == "Int" {
+    val minInt = 0i64 - 2147483648i64
+    return lo.l >= minInt and lo.l <= 2147483647i64 and hi.l >= minInt and hi.l <= 2147483647i64
+  }
+  true
+}
+
+/// Why a range refinement on a config field of base type `tyName` is
+/// malformed (#7229), or `""` when it is well formed: the base type must be
+/// Int, Long, Float or Double, the bounds numeric literals that fit it, and
+/// the range non-empty.  Shared by the type checker (config blocks, aspect
+/// config) and `Lyric.WireExpand` (config templates), which report it as
+/// G0009.
+pub func configRangeProblem(tyName: in String, rb: in RangeBound): String {
+  if tyName != "Int" and tyName != "Long" and tyName != "Float" and tyName != "Double" {
+    return "has a range on type " + tyName + "; a range is allowed only on Int, Long, Float or Double"
+  }
+  val zero = LiteralBound(ok = true, isFloat = false, l = 0i64, d = 0.0)
+  val loE = rangeLowerExpr(rb)
+  val hiE = rangeUpperExpr(rb)
+  val lo = match loE { case Some(e) -> foldLiteralBound(e); case None -> zero }
+  val hi = match hiE { case Some(e) -> foldLiteralBound(e); case None -> zero }
+  if not lo.ok or not hi.ok {
+    return "has a range bound that is not a numeric literal"
+  }
+  if not literalBoundsFitType(tyName, lo, hi) {
+    return "has a range bound that does not fit " + tyName
+  }
+  val bothBounds = match loE {
+    case Some(_) -> match hiE { case Some(_) -> true; case None -> false }
+    case None -> false
+  }
+  val halfOpen = match rb { case RBHalfOpen(_, _, _) -> true; case _ -> false }
+  if bothBounds and not literalBoundBelow(lo, hi, halfOpen) {
+    return "has an empty range"
+  }
+  ""
+}
+
 pub union TypeArg {
   case TAType(ty: TypeExpr)
   case TAValue(expr: Expr)

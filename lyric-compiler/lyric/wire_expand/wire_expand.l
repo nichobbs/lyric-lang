@@ -166,7 +166,23 @@ func typeToStrWE(t: in TypeExpr): String {
       s + ")"
     }
     case TNullable(inner) -> typeToStrWE(inner) + "?"
+    case TRefined(path, _) -> dottedPathWE(path) + " range …"
     case _ -> "<type>"
+  }
+}
+
+/// A config field's type with any range refinement stripped (#7229).
+func configBaseTypeStrWE(t: in TypeExpr): String {
+  match t.kind {
+    case TRefined(path, _) -> dottedPathWE(path)
+    case _ -> typeToStrWE(t)
+  }
+}
+
+func isRefinedWE(t: in TypeExpr): Bool {
+  match t.kind {
+    case TRefined(_, _) -> true
+    case _ -> false
   }
 }
 
@@ -488,24 +504,82 @@ record ConfigInstance {
 /// Types legal for a config field (docs/25 §3, v1 self-hosted subset —
 /// mirrors `checkConfigBlock`'s G0009 set).
 func configTypeAllowedWE(t: in TypeExpr): Bool {
-  val n = match t.kind { case TRef(path) -> lastSegmentWE(path); case _ -> "" }
-  n == "Bool" or n == "Int" or n == "Long" or n == "Float" or n == "Double" or n == "String"
+  match t.kind {
+    case TRef(path) -> {
+      val n = lastSegmentWE(path)
+      n == "Bool" or n == "Int" or n == "Long" or n == "Float" or n == "Double" or n == "String"
+    }
+    // A range of a numeric type (#7229); `checkConfigBlock` validates the
+    // bounds once the template becomes a config block.
+    case TRefined(path, _) -> {
+      val n = lastSegmentWE(path)
+      n == "Int" or n == "Long" or n == "Float" or n == "Double"
+    }
+    case _ -> false
+  }
+}
+
+/// A template field's range problem (`configRangeProblem`), or `""` when the
+/// field has no range or a well-formed one.
+func templateFieldRangeProblemWE(f: in ConfigField): String {
+  match f.ty.kind {
+    case TRefined(path, rb) -> configRangeProblem(lastSegmentWE(path), rb)
+    case _ -> ""
+  }
+}
+
+/// Whether a ranged template field's own default lies outside its range.
+/// False when the field has no range, no default, a malformed range, or a
+/// non-literal default (the checker reports those on the record twin).
+func templateDefaultOutOfRangeWE(f: in ConfigField): Bool {
+  match f.ty.kind {
+    case TRefined(path, rb) -> if configRangeProblem(lastSegmentWE(path), rb).length > 0 {
+      false
+    } else {
+      match f.default {
+        case Some(d) -> {
+          val v = foldLiteralBound(d)
+          v.ok and not literalInRange(v, rb)
+        }
+        case None -> false
+      }
+    }
+    case _ -> false
+  }
 }
 
 /// Validate a `pub config` template declaration's fields (the analogue of
-/// the checker's G0009 for a template that never becomes a config block
-/// itself).  Emits W0014 for a disallowed field type.
+/// the checker's `checkConfigBlock` for a template that never becomes a
+/// config block itself, #7459).  Emits W0014 for a disallowed field type,
+/// G0009 for a malformed range and G0010 for a default outside the range,
+/// so a library that only declares a template catches these in its own
+/// build.  `materializeConfigInstance` drops a range already reported here
+/// so an instantiation does not repeat the diagnostic.
 func validateConfigTemplateDecl(diags: in List[Diagnostic], decl: in ConfigDecl): Unit {
   var i = 0
   while i < decl.fields.count {
     val f = decl.fields[i]
+    val problem = templateFieldRangeProblemWE(f)
     if not configTypeAllowedWE(f.ty) {
       diags.add(
         errorDiagnostic(
           "W0014",
           "config template '" + decl.name + "' field '" + f.name +
-            "' has a type not allowed in a config template; allowed types: Bool, Int, Long, Float, Double, String",
+            "' has a type not allowed in a config template; allowed types: Bool, Int, Long, Float, Double, String, and a range of Int, Long, Float or Double",
           f.ty.span
+        )
+      )
+    } else if problem.length > 0 {
+      diags.add(
+        errorDiagnostic("G0009", "config template '" + decl.name + "' field '" + f.name + "' " + problem, f.ty.span)
+      )
+    } else if templateDefaultOutOfRangeWE(f) {
+      val dspan = match f.default { case Some(d) -> d.span; case None -> f.span }
+      diags.add(
+        errorDiagnostic(
+          "G0010",
+          "config template '" + decl.name + "' default for field '" + f.name + "' is outside the field's range",
+          dspan
         )
       )
     }
@@ -522,6 +596,16 @@ func configTemplateRecordItem(templateItem: in Item, decl: in ConfigDecl): Item 
   var i = 0
   while i < decl.fields.count {
     val f = decl.fields[i]
+    // A malformed range was reported on the template (G0009); the twin keeps
+    // only the base type so the checker does not report it a second time.
+    val fieldTy = match f.ty.kind {
+      case TRefined(path, _) -> if templateFieldRangeProblemWE(f).length > 0 {
+        TypeExpr(kind = TRef(path = path), span = f.ty.span)
+      } else {
+        f.ty
+      }
+      case _ -> f.ty
+    }
     members.add(
       RMField(
         field = FieldDecl(
@@ -530,7 +614,7 @@ func configTemplateRecordItem(templateItem: in Item, decl: in ConfigDecl): Item 
           visibility = None,
           isMutable = false,
           name = f.name,
-          ty = f.ty,
+          ty = fieldTy,
           dflt = None,
           span = f.span
         )
@@ -550,8 +634,9 @@ func configTemplateRecordItem(templateItem: in Item, decl: in ConfigDecl): Item 
 
 /// Merge a config-template instantiation over its template: template fields
 /// in template order; an overridden field keeps the template's declared
-/// type and takes the instantiation's default.  Emits W0011 (unknown
-/// field) and W0012 (type mismatch) for bad overrides.
+/// type, including any range, and takes the instantiation's default.  Emits
+/// W0011 (unknown field) and W0012 (type mismatch, or an override that
+/// declares its own range) for bad overrides.
 func materializeConfigInstance(
   diags: in List[Diagnostic],
   localName: in String,
@@ -568,14 +653,32 @@ func materializeConfigInstance(
     while ti < tmpl.fields.count {
       if tmpl.fields[ti].name == ov.name {
         found = true
-        if typeToStrWE(tmpl.fields[ti].ty) != typeToStrWE(ov.ty) {
+        // An override restates only the base type; a ranged template
+        // field keeps the template's range, which the checker enforces on
+        // the merged default (G0010).
+        if isRefinedWE(ov.ty) {
+          val applies = if isRefinedWE(tmpl.fields[ti].ty) {
+            " and the range from template '" + tmpl.name + "' applies"
+          } else {
+            "; template '" + tmpl.name + "' declares this field without a range"
+          }
+          diags.add(
+            errorDiagnostic(
+              "W0012",
+              "config override '" + localName + "." + ov.name + "' must not declare a range; write the base type " +
+                configBaseTypeStrWE(ov.ty) +
+                applies,
+              ov.span
+            )
+          )
+        } else if configBaseTypeStrWE(tmpl.fields[ti].ty) != typeToStrWE(ov.ty) {
           diags.add(
             errorDiagnostic(
               "W0012",
               "config override '" + localName + "." + ov.name + "' declares type " + typeToStrWE(ov.ty) + " but template '" +
                 tmpl.name +
                 "' declares " +
-                typeToStrWE(tmpl.fields[ti].ty),
+                configBaseTypeStrWE(tmpl.fields[ti].ty),
               ov.span
             )
           )
@@ -594,25 +697,40 @@ func materializeConfigInstance(
     }
     oi = oi + 1
   }
-  // Merge: template order, override defaults win.
+  // Merge: template order, override defaults win.  A ranged field whose
+  // range, or whose inherited template default, the template declaration
+  // already reported (`validateConfigTemplateDecl`) keeps only its base type
+  // here, so the checker does not report the same fault again.
   val merged: List[ConfigField] = newList()
   var ti2 = 0
   while ti2 < tmpl.fields.count {
     val tf = tmpl.fields[ti2]
     var dflt = tf.default
+    var overridden = false
     var oj = 0
     while oj < overrides.count {
       if overrides[oj].name == tf.name {
         dflt = overrides[oj].default
+        overridden = true
       }
       oj = oj + 1
+    }
+    val alreadyReported = templateFieldRangeProblemWE(tf).length > 0 or
+      (not overridden and templateDefaultOutOfRangeWE(tf))
+    val ty = match tf.ty.kind {
+      case TRefined(path, _) -> if alreadyReported {
+        TypeExpr(kind = TRef(path = path), span = tf.ty.span)
+      } else {
+        tf.ty
+      }
+      case _ -> tf.ty
     }
     merged.add(
       ConfigField(
         docComments = tf.docComments,
         annotations = tf.annotations,
         name = tf.name,
-        ty = tf.ty,
+        ty = ty,
         default = dflt,
         span = tf.span,
         trailingAnnotationCount = tf.trailingAnnotationCount
