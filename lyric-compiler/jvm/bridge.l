@@ -919,21 +919,30 @@ func importAwareRegistry(
   if transitive.length > 0 {
     for tp in Str.split(transitive, ",") {
       if not wholeOwners.contains(tp) {
-        overlayOwnerNamesJvm(overlay, registry, tp, selectedNames, false)
+        overlayOwnerNamesJvm(overlay, registry, tp, selectedNames, false, false)
       }
     }
   }
   for sel in selectedOwners {
     if not wholeOwners.contains(sel) {
-      overlayOwnerNamesJvm(overlay, registry, sel, selectedNames, true)
+      overlayOwnerNamesJvm(overlay, registry, sel, selectedNames, true, false)
     }
   }
   for w in wholeOwners {
-    overlayOwnerNamesJvm(overlay, registry, w, selectedNames, false)
+    overlayOwnerNamesJvm(overlay, registry, w, selectedNames, false, false)
   }
   // Own package last, so in-file definitions win over any import.
-  overlayOwnerNamesJvm(overlay, registry, pkgJvmOwner(file.packageDecl.path), selectedNames, false)
+  overlayOwnerNamesJvm(overlay, registry, pkgJvmOwner(file.packageDecl.path), selectedNames, false, true)
   overlay
+}
+
+// Whether `owner`'s bare key `bare` (`name`, `name@<arity>` or
+// `enumcase:<Case>`) names a package-private declaration, which no other
+// package may call bare.
+func isPackagePrivateKeyJvm(registry: in Map[String, JvmFuncSig], owner: in String, bare: in String): Bool {
+  val at = Str.indexOfRaw(bare, "@")
+  val name = if at > 0 { bare.substring(0, at) } else { bare }
+  registry.containsKey(owner + "/~private~" + name)
 }
 
 // Whether the bare registry key `bare` of `owner` names something a
@@ -967,12 +976,13 @@ func overlayOwnerNamesJvm(
   owner: in String,
   selectedNames: in Map[String, Bool],
   onlySelected: in Bool,
+  isOwnPackage: in Bool,
 ): Unit {
   val pfx = owner + "/"
   for k2 in mapKeys(registry) {
     if Str.startsWith(k2, pfx) {
       val bare = k2.substring(pfx.length, k2.length - pfx.length)
-      if bare.length > 0 and not Str.contains(bare, "/") and not Str.contains(bare, "#") and not Str.contains(bare, ".") {
+      if bare.length > 0 and not Str.startsWith(bare, "~") and not Str.contains(bare, "/") and not Str.contains(bare, "#") and not Str.contains(bare, ".") and (isOwnPackage or not isPackagePrivateKeyJvm(registry, owner, bare)) {
         match mapGet(registry, k2) {
           case Some(sig2) -> {
             if not onlySelected or selectedBareKeyJvm(owner, bare, sig2, selectedNames) {
@@ -1471,6 +1481,9 @@ func collectDeriveFreeSigs(
           // Bare key only for a helper callable from another package, as
           // `collectFileSigs` does (#6853).
           val bundleCallable = match decl.visibility { case Some(_) -> true; case None -> false }
+          if not bundleCallable {
+            markPackagePrivateJvm(into, owner, decl.name, sig)
+          }
           if bundleCallable and not into.containsKey(decl.name) {
             into.add(decl.name, sig)
           }

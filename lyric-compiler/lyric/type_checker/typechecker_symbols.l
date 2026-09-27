@@ -237,6 +237,9 @@ pub record SymbolTable {
   /// imports, so a caller that transitively imports an unrelated same-named
   /// `Item` from package B silently picks B's `Item` instead of A's.
   packageImports: Map[String, List[String]]
+  /// `<pkg>|<name>` -> whether `pkg` exports a function `name` to other
+  /// packages (`symTablePackageExportsFunc`), filled on first use.
+  funcExportCache: Map[String, Bool]
   /// Every validated record `.copy(...)` call, keyed by `recordCopySiteKey`
   /// of the call expression's span (see `Lyric.Parser.RecordCopySite`).
   recordCopySites: Map[String, RecordCopySite]
@@ -341,6 +344,7 @@ pub func newSymbolTable(): SymbolTable {
     symbolPackages = newMap(),
     symbolPackageMembers = newMap(),
     packageImports = newMap(),
+    funcExportCache = newMap(),
     recordCopySites = newMap(),
     invariantCtorSites = newMap(),
     funcRefSites = newMap(),
@@ -804,6 +808,62 @@ pub func symTableBareFuncVisible(tbl: in SymbolTable, origin: in String, name: i
   }
   origin.length == 0 or origin == curPkg or tbl.importVisiblePkgs.containsKey(origin) or
     tbl.importVisibleNames.containsKey(origin + "|" + name)
+}
+
+// The resolution tier of a function `name` declared in `origin` for a bare
+// reference under the current scope, as `symTableTryFindOne` orders other
+// names: 0 for the current package (or no import rule), 1 for a direct
+// import, 2 for a package reached only transitively or the prelude, and -1
+// when the import rule hides it.  A lower tier shadows a higher one.
+pub func symTableBareFuncTier(tbl: in SymbolTable, origin: in String, name: in String): Int {
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) or origin.length == 0 or origin == curPkg {
+    return 0
+  }
+  if not symTableBareFuncVisible(tbl, origin, name) or not symTablePackageExportsFunc(tbl, origin, name) {
+    return -1
+  }
+  if symTableScopeAllows(tbl, origin) {
+    1
+  } else {
+    2
+  }
+}
+
+// Whether package `pkg`'s functions named `name` include one another package
+// may call (`pub` or `internal`); a name whose declarations there are all
+// package-private is never a bare-call candidate outside the package.  A
+// signature with no function symbol behind it (a synthesised one) counts.
+func symTablePackageExportsFunc(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
+  val key = pkg + "|" + name
+  match mapGet(tbl.funcExportCache, key) {
+    case Some(known) -> return known
+    case None -> ()
+  }
+  val exported = scanPackageExportsFunc(tbl, pkg, name)
+  tbl.funcExportCache.add(key, exported)
+  exported
+}
+
+func scanPackageExportsFunc(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
+  var sawFunc = false
+  var i = 0
+  while i < tbl.symbols.count {
+    val s = tbl.symbols[i]
+    if s.name == name and s.originPackage == pkg {
+      match s.kind {
+        case DKFunc(_) -> {
+          if symIsCrossPackageVisible(s) {
+            return true
+          }
+          sawFunc = true
+        }
+        case _ -> ()
+      }
+    }
+    i = i + 1
+  }
+  not sawFunc
 }
 
 // When a bare `name` failed to resolve only because the import rule hides

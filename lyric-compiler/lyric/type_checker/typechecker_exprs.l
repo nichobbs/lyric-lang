@@ -3754,7 +3754,7 @@ func visibleBareFuncSigs(
   var i = 0
   while i < all.count {
     val cand = all[i]
-    if (arity < 0 or cand.params.count == arity) and symTableBareFuncVisible(tbl, cand.originPackage, name) {
+    if (arity < 0 or cand.params.count == arity) and symTableBareFuncTier(tbl, cand.originPackage, name) >= 0 {
       acc.add(cand)
     }
     i = i + 1
@@ -3762,32 +3762,87 @@ func visibleBareFuncSigs(
   acc
 }
 
-// The signature a bare `name` denotes: `first` (the `sigs[name]` slot) when
-// the import rule lets it be named bare, otherwise a visible function of that
-// name (the current package's first), or `None` when every one is hidden.
+// The visible function `name` of `arity` whose params match `argTypes`, in
+// the lowest resolution tier that has one (`symTableBareFuncTier`); within a
+// tier, `primary` first, then non-generic overloads, then generic ones.
+// `None` when no visible function matches.
+func tieredBareSig(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  name: in String,
+  arity: in Int,
+  argTypes: in List[Type],
+  primary: in Option[ResolvedSignature],
+): Option[ResolvedSignature] {
+  val visible = visibleBareFuncSigs(tbl, sigs, name, arity)
+  if visible.count == 0 {
+    return None
+  }
+  val tiers: List[Int] = newList()
+  for v in visible {
+    tiers.add(symTableBareFuncTier(tbl, v.originPackage, name))
+  }
+  val primaryTier = match primary {
+    case Some(p) -> symTableBareFuncTier(tbl, p.originPackage, name)
+    case None -> -1
+  }
+  var tier = 0
+  while tier <= 2 {
+    match primary {
+      case Some(p) -> if primaryTier == tier and paramsMatchArgs(tbl, p.params, argTypes) {
+        return primary
+      }
+      case None -> ()
+    }
+    var pass = 0
+    while pass < 2 {
+      var i = 0
+      while i < visible.count {
+        val cand = visible[i]
+        val isGeneric = cand.generics.count > 0
+        if (pass == 0) != isGeneric and tiers[i] == tier and paramsMatchArgs(tbl, cand.params, argTypes) {
+          return Some(value = cand)
+        }
+        i = i + 1
+      }
+      pass = pass + 1
+    }
+    tier = tier + 1
+  }
+  None
+}
+
+// The signature a bare `name` denotes: the visible function of that name in
+// the lowest resolution tier (`symTableBareFuncTier`), `first` (the
+// `sigs[name]` slot) winning within its tier; `None` when every one is
+// hidden.
 func visibleBareSig(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   name: in String,
   first: in ResolvedSignature,
 ): Option[ResolvedSignature] {
-  if symTableBareFuncVisible(tbl, first.originPackage, name) {
-    return Some(value = first)
-  }
   val visible = visibleBareFuncSigs(tbl, sigs, name, -1)
-  val curPkg = symTableScopePkg(tbl)
-  var i = 0
-  while i < visible.count {
-    if visible[i].originPackage == curPkg {
-      return Some(value = visible[i])
+  val firstTier = symTableBareFuncTier(tbl, first.originPackage, name)
+  val tiers: List[Int] = newList()
+  for v in visible {
+    tiers.add(symTableBareFuncTier(tbl, v.originPackage, name))
+  }
+  var tier = 0
+  while tier <= 2 {
+    if firstTier == tier {
+      return Some(value = first)
     }
-    i = i + 1
+    var i = 0
+    while i < visible.count {
+      if tiers[i] == tier {
+        return Some(value = visible[i])
+      }
+      i = i + 1
+    }
+    tier = tier + 1
   }
-  if visible.count > 0 {
-    Some(value = visible[0])
-  } else {
-    None
-  }
+  None
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7961,6 +8016,16 @@ func findDirectSig(
           None
         }
         case None -> None
+      }
+      // A direct import's function shadows one reached only transitively, as
+      // for every other bare name (docs/01 §9.2): take the first of the
+      // lowest tier whose params match before the historical first-registered
+      // order below, which knows no tiers.
+      if bare {
+        match tieredBareSig(tbl, sigs, name, arity, argTypes, primary) {
+          case Some(s) -> return Some(value = s)
+          case None -> ()
+        }
       }
       // Preserve shadowing and the common case: if the primary's params match
       // the arguments, use it.  Only when it does *not* match do we consult the

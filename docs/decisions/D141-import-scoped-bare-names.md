@@ -72,6 +72,10 @@ its records' field types. `import P.{v}` need not also list the type of `v`
   map. Every function signature, generic included, is also listed under
   `~fn~<name>`, so when the first-registered signature for a name is hidden
   a bare reference types against the visible one (`visibleBareSig`, #7552).
+  A bare call takes its function from the lowest tier that has a match, as
+  every other bare name does: the current package, then a direct import,
+  then a package reached only transitively (`symTableBareFuncTier`, #7567);
+  another package's package-private function is never a candidate.
   The resolver's fallback scans for an alias target or a type-position name
   see only visible symbols, and a package-qualified alias target resolves in
   that package (`resolveQualifiedAliasPath`, #7553).
@@ -82,6 +86,8 @@ its records' field types. `import P.{v}` need not also list the type of `v`
   (`~ctor-tpkgs~`).  Bare function calls and enum cases follow the same
   tiers (`importAwareRegistry`: transitive packages, then whole imports and
   selectively listed names, then the file's own package; #7551).
+  Another package's package-private function or enum never takes a bare key
+  (a `~private~` marker, #7568).
   Specialised copies of another package's generics get
   the same keys for their origin package (`~wimport~`, `~selimport~`).
 - The MSIL backend's bare-name resolvers (union cases, types, free
@@ -90,16 +96,23 @@ its records' field types. `import P.{v}` need not also list the type of `v`
   are left out (`CodegenCtx.pkgBareImports`, `bareImportsOfMsil`).  A
   selectively imported package admits only its listed names (a case by its
   own name, #7560), and a union's cases when the union is listed
-  (`bareImportAdmitsMsil`). The async pre-scan resolves an awaited bare call
-  through the same list as emission (#7562). A package's own `extern type`
+  (`bareImportAdmitsMsil`). A bare call is looked up in the direct imports
+  before the transitive ones, so a return-type hint never reaches past a
+  direct import (`findBareImportedFqnMsil`, #7570), and a specialised copy
+  of a generic resolves its bare calls the same way in its origin package
+  (#7569). The async pre-scan resolves an awaited bare call through the same
+  lookup as emission (#7562). Cached import closures are dropped whenever a
+  package registers its imports, since packages register in bundle order,
+  not dependency order (#7571). A package's own `extern type`
   or `import extern` name outranks a Lyric type of that name reached only
   transitively, as in the checker (`pkgLocalExterns`), so `import Std.Uuid`
   (which imports `Std.String` whole) leaves `import extern
   System.Text.{StringBuilder}` naming the BCL type.  A type is taken
   from a direct import before a transitive one.  A qualified case
   (`MA.Square`, rewritten to `EPAx.Marks.Square`) prefers a union the
-  qualifier names exactly, then the package it names, and only then a union
-  whose simple name is its last segment (#7561).
+  qualifier names exactly, then the package it names, then the union of
+  that simple name the file sees bare, and only then any union of that name
+  (#7561).
 - MSIL enum case ordinals follow the declared type: a qualified annotation
   (`val m: B.Mode`) records `EPEn.B::Mode`, so a bare `case Fast ->` over it
   resolves in that package; a simple name is looked up through the bare

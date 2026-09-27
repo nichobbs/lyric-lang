@@ -56,3 +56,13 @@ as constructors, the MSIL resolver admits a selectively listed case name,
 prefers the qualifier's own package for a qualified case, and the async
 pre-scan agrees with emission. New tests cover each case in
 `typechecker_self_test.l` and, on both targets, `emitter_project_self_test.l`.
+
+A third round made bare function calls follow the same tiers as other bare
+names (a direct import's function shadows a transitive one, and another
+package's private function is never a candidate, on the checker and JVM),
+kept MSIL's return-type hint and specialised generic bodies inside those
+tiers, scoped `Shape.Square`-style qualified cases to the union the file sees
+bare, and stopped MSIL caching an import closure before every package had
+registered. Two `msil_project_bridge_self_test.l` cases that relied on two
+transitively reached declarers compiling now pin T0123 and an aliased
+import respectively.

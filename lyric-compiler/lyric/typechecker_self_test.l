@@ -4920,6 +4920,21 @@ test "a bare name declared by two transitively reached packages is T0123" {
   )
 }
 
+// #7567: a directly imported function shadows one reached only
+// transitively, even when the transitive one registered first.
+test "a bare call binds a direct import's function over a transitive one" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(rulePkg("PkgFc", "package PkgFc\npub func foo(): String { \"c\" }\n"))
+  packages.add(rulePkg("PkgFt", "package PkgFt\nimport PkgFc\npub func useT(): Int { 1 }\n"))
+  packages.add(rulePkg("PkgFd", "package PkgFd\npub func foo(): Int { 2 }\n"))
+  val src = "package App\nimport PkgFt\nimport PkgFd\nfunc run(): Int { foo() }\nfunc value(): Int {\n  val f = foo\n  f()\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    0,
+    "foo is PkgFd's Int function, not PkgFc's"
+  )
+}
+
 // #7557: `import P.{f as g}` is not supported; it is T0137 rather than a
 // name that silently fails to resolve.
 test "renaming a selectively imported name is T0137" {
