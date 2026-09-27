@@ -54,6 +54,11 @@
 //! caused the original symptom entirely, rather than attempting to
 //! diagnose it further.
 //!
+//! **Bounded reads (#7451).** `hostPipedReadLineWithinResult` runs the same
+//! polling loop with a deadline checked only where the loop would otherwise
+//! sleep, so a timed-out read returns without losing bytes: a partial line
+//! stays in `lineBuf` for the next read.
+//!
 //! Internal: only Std.Process should import this.
 @axiom("java.lang.ProcessBuilder + java.lang.Process piped stdin/stdout conform to their documented JVM contracts")
 package Std.ProcessPipedHost
@@ -240,14 +245,33 @@ pub func hostSpawnPiped(fileName: in String, arguments: in String): PipedHandle 
   )
 }
 
+/// Outcome of a bounded read (`hostPipedReadLineWithinResult`).
+pub union HostPipedRead {
+  case HostPipedLine(line: String)
+  case HostPipedEof
+  case HostPipedTimedOut
+}
+
 // Option seam avoiding `case null`'s catch-all miscompile (#4775); NUL-marker
 // mirrors `console_host.l`'s `hostReadLineOpt`. Blocks (polling, never a
 // blocking JDK call — see module header) until a complete line is
 // available, the process exits with a final unterminated remainder, or
 // the process exits with nothing left to read.
 pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
+  match readLineUntil(p, 0 - 1i64) {
+    case HostPipedLine(line) -> Some(value = line)
+    case _ -> None
+  }
+}
+
+// The polling read loop behind both the unbounded and the bounded read.
+// `deadlineMs` is a `currentTimeMillis()` instant, or negative for no bound.
+// Only the idle branches consult it, so a timed-out read has consumed
+// nothing but whole bytes into `lineBuf`: an incomplete line stays buffered
+// for the next read (#7451).
+func readLineUntil(p: in PipedHandle, deadlineMs: in Long): HostPipedRead {
   var done = false
-  var result: Option[String] = None
+  var result: HostPipedRead = HostPipedEof
   // Consecutive no-sleep iterations where `drainAvailableInto` grew the
   // buffer but no newline appeared yet (see below) — capped so a
   // pathologically slow-trickling child (bytes keep arriving one at a
@@ -257,7 +281,7 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
   while not done {
     match takePending(p) {
       case Some(line) -> {
-        result = Some(value = line)
+        result = HostPipedLine(line = line)
         done = true
       }
       case None -> {
@@ -273,12 +297,22 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
             // row without ever completing a line (the slow-trickle case).
             growthStreak = growthStreak + 1
             if growthStreak >= 64 {
+              if pastDeadline(deadlineMs) {
+                result = HostPipedTimedOut
+                done = true
+              } else {
+                JThread.sleep(1i64)
+                growthStreak = 0
+              }
+            }
+          } else if procIsAlive(p.proc) {
+            if pastDeadline(deadlineMs) {
+              result = HostPipedTimedOut
+              done = true
+            } else {
               JThread.sleep(1i64)
               growthStreak = 0
             }
-          } else if procIsAlive(p.proc) {
-            JThread.sleep(1i64)
-            growthStreak = 0
           } else {
             // Process has exited. One more drain in case bytes were flushed
             // between the `isAlive` check above and here (mirrors
@@ -287,10 +321,15 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
             splitCompleteLines(p)
             match takePending(p) {
               case Some(line) -> {
-                result = Some(value = line)
+                result = HostPipedLine(line = line)
               }
-              case None -> {
-                result = takeUnterminatedTail(p)
+              case None -> match takeUnterminatedTail(p) {
+                case Some(tail) -> {
+                  result = HostPipedLine(line = tail)
+                }
+                case None -> {
+                  result = HostPipedEof
+                }
               }
             }
             done = true
@@ -300,6 +339,10 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
     }
   }
   result
+}
+
+func pastDeadline(deadlineMs: in Long): Bool {
+  deadlineMs >= 0i64 and currentTimeMillis() >= deadlineMs
 }
 
 // The next split-out line, if any.
@@ -449,6 +492,17 @@ pub func hostSpawnPipedResult(fileName: in String, args: in List[String]): Resul
 pub func hostPipedReadLineResult(p: in PipedHandle): Result[Option[String], String] {
   try {
     Ok(value = hostPipedReadLineOpt(p))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+/// Read one line, waiting at most `timeoutMs` milliseconds. A read that
+/// times out leaves any partial line buffered on the handle, so the next read
+/// of either kind returns it once complete.
+pub func hostPipedReadLineWithinResult(p: in PipedHandle, timeoutMs: in Int): Result[HostPipedRead, String] {
+  try {
+    Ok(value = readLineUntil(p, currentTimeMillis() + timeoutMs.toLong()))
   } catch Bug as b {
     Err(error = b.message)
   }

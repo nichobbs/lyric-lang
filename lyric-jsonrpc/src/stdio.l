@@ -1,36 +1,44 @@
 //! src/stdio.l — JsonRpc.Stdio: NDJSON and Content-Length stdio framings.
 //!
-//! Two `RpcTransport` implementations over `Std.Console` / `Std.ConsoleHost`
-//! primitives (the same seam `lyric-compiler/lyric/lsp.l` reads today):
+//! Two `RpcTransport` implementations over this process's stdin/stdout:
 //!
 //!   - `NdjsonTransport`        — one JSON message per `\n`-terminated line
 //!     (the MCP stdio transport). `writeValue` is always compact (see
 //!     `JsonRpc.Json`), so an outbound message never contains an embedded
 //!     newline that would corrupt the framing.
 //!   - `ContentLengthTransport` — `Content-Length: N\r\n\r\n` + N bytes (the
-//!     LSP framing), byte-accurate on UTF-8. This closes a known gap in
-//!     `lsp.l`'s own hand-rolled framing (documented in its header): reading
-//!     N *bytes* through `Std.ConsoleHost.hostConsoleRead()`, which returns
-//!     UTF-16 *code units*, requires surrogate-pair-aware accounting — a
-//!     naive "read N chars" loop under-reads whenever the body contains
-//!     any character outside the ASCII range. `clReadBodyBytes` below tracks
-//!     UTF-8 byte length incrementally per code unit (or per surrogate
-//!     pair, when the code unit is one half of one), so the body read
-//!     always stops at the exact byte the peer declared.
+//!     LSP framing), byte-accurate on UTF-8.
 //!
-//! Both framings are implemented sans-IO: the actual line/byte-counting
-//! logic (`clReceiveVia`/`clSendVia`/`ndjsonReceiveVia`/`ndjsonSendVia`)
-//! is parameterized over the small `CharReader`/`LineReader`/`StringWriter`/
-//! `LineWriter` interfaces below rather than calling `Std.ConsoleHost`
-//! directly, so `tests/stdio_tests.l` can drive the framing math against an
-//! in-memory stand-in with no real pipe. This is deliberately an
-//! interface seam, not a stored `() -> Int` / `(String) -> Unit` closure
-//! parameter: a closure argument passed *across a package boundary* on the
-//! current self-hosted JVM backend is wrapped in a lambda-adapter class
-//! scoped to the *caller's* package, which the *callee's* package then
-//! fails to downcast back to its own expected lambda type
-//! (`ClassCastException: JsonRpc.Stdio.StdioTests$Lambda$0 cannot be cast
-//! to class JsonRpc.Stdio.Lyric$Lambda`, reproduced in isolation — the
+//! **Inbound framing is byte-level.** Both transports read raw stdin bytes
+//! through the `ByteSource` seam (production: `Std.Console`'s
+//! `StdinReader`) into a `FrameBuffer`, and cut frames out of it:
+//! `ndjsonReceiveFrom` at each `\n` byte, `clReceiveFrom` after exactly the
+//! declared number of body bytes. A message is decoded as UTF-8 only once it
+//! is complete, so the Content-Length count is exact by construction.
+//! `receiveWithin` (#7451) gives each wait for more bytes only the time left
+//! before its deadline; when it runs out, the bytes read so far stay in the
+//! `FrameBuffer`, so a message that straddles a timeout is returned whole by
+//! the next receive, never split or dropped.
+//!
+//! The character- and line-level cores (`clReceiveVia`/`ndjsonReceiveVia`
+//! over the `CharReader`/`LineReader` seams, and `clSendVia`/`ndjsonSendVia`)
+//! remain for callers that frame other streams: `Mcp.Stdio` reuses
+//! `ndjsonReceiveVia` over a child process's piped stdout. `clReceiveVia`
+//! reads UTF-16 code units and tracks the UTF-8 byte length of each one (or
+//! of each surrogate pair), so its body read also stops at the exact byte the
+//! peer declared.
+//!
+//! All of it is sans-IO: the framing logic is parameterized over the small
+//! `ByteSource`/`CharReader`/`LineReader`/`StringWriter`/`LineWriter`
+//! interfaces rather than calling the console directly, so
+//! `tests/stdio_tests.l` drives it against in-memory stand-ins with no real
+//! pipe. This is deliberately an interface seam, not a stored `() -> Int` /
+//! `(String) -> Unit` closure parameter: a closure argument passed *across a
+//! package boundary* on the current self-hosted JVM backend is wrapped in a
+//! lambda-adapter class scoped to the *caller's* package, which the
+//! *callee's* package then fails to downcast back to its own expected lambda
+//! type (`ClassCastException: JsonRpc.Stdio.StdioTests$Lambda$0 cannot be
+//! cast to class JsonRpc.Stdio.Lyric$Lambda`, reproduced in isolation — the
 //! .NET target is unaffected). Cross-package `impl` dispatch on a plain
 //! interface does not hit that bug (also matches `lyric-cache/src/cache.l`'s
 //! own documented reason for using a record-of-interface `Clock` instead of
@@ -45,6 +53,7 @@ import Std.ConsoleHost
 import Std.Encoding
 import Std.Errors
 import Std.Parse
+import Std.Time
 import JsonRpc
 
 // ── Sans-IO seams ────────────────────────────────────────────────────────────
@@ -71,27 +80,31 @@ pub interface LineWriter {
   func writeLine(s: in String): Unit
 }
 
-// Production adapters onto the real console. Records carry no state; each
-// method call is a direct trampoline onto the Std.Console(Host) primitive
-// it names.
-record HostCharReader {
+/// Outcome of `ByteSource.readWithin`: the bytes read (never empty), clean
+/// end of stream, or nothing within the timeout.
+@stable(since = "0.2")
+pub union ByteRead {
+  case BytesRead(bytes: slice[Byte])
+  case BytesEnd
+  case BytesTimedOut
 }
 
-impl CharReader for HostCharReader {
-  func next(): Int {
-    hostConsoleRead()
-  }
+/// A stream of raw bytes: the seam the byte-level framings read through.
+@stable(since = "0.2")
+pub interface ByteSource {
+  /// Block until at least one byte arrives (`Some`) or the stream ends
+  /// (`None`).
+  func read(): Result[Option[slice[Byte]], String]
+
+  /// Wait at most `timeoutMs` milliseconds (`timeoutMs >= 0`) for bytes. A
+  /// timeout loses nothing: bytes that arrive later are returned by the next
+  /// `read` or `readWithin`.
+  func readWithin(timeoutMs: in Int): Result[ByteRead, String]
 }
 
-record HostLineReader {
-}
-
-impl LineReader for HostLineReader {
-  func nextLine(): Result[String, IOError] {
-    readLine()
-  }
-}
-
+// Production adapters onto the real console. The writers carry no state;
+// each call is a direct trampoline onto the Std.Console(Host) primitive it
+// names. Reading goes through `HostStdinSource` below.
 record HostStringWriter {
 }
 
@@ -107,6 +120,30 @@ record HostLineWriter {
 impl LineWriter for HostLineWriter {
   func writeLine(s: in String): Unit {
     println(s)
+  }
+}
+
+record HostStdinSource {
+  reader: StdinReader
+}
+
+impl ByteSource for HostStdinSource {
+  func read(): Result[Option[slice[Byte]], String] {
+    match readStdin(self.reader) {
+      case Ok(bytes) -> Ok(value = bytes)
+      case Err(e) -> Err(error = IOError.message(e))
+    }
+  }
+
+  func readWithin(timeoutMs: in Int): Result[ByteRead, String] {
+    match readStdinWithin(self.reader, timeoutMs) {
+      case Err(e) -> Err(error = IOError.message(e))
+      case Ok(chunk) -> match chunk {
+        case StdinBytes(bytes) -> Ok(value = BytesRead(bytes = bytes))
+        case StdinEnd -> Ok(value = BytesEnd)
+        case StdinTimedOut -> Ok(value = BytesTimedOut)
+      }
+    }
   }
 }
 
@@ -127,12 +164,23 @@ val MAX_HEADER_LINES: Int = 64
 @stable(since = "0.1")
 pub func ndjsonReceiveVia(reader: in LineReader): Result[Option[String], String] {
   match reader.nextLine() {
-    case Ok(line) -> if line.length > MAX_MESSAGE_BYTES or encodeUtf8(line).length > MAX_MESSAGE_BYTES {
-      Err(error = "NDJSON framing: message exceeds the " + MAX_MESSAGE_BYTES.toString() + "-byte limit")
-    } else {
-      Ok(value = Some(value = line))
+    case Ok(line) -> match ndjsonAcceptLine(line) {
+      case Ok(accepted) -> Ok(value = Some(value = accepted))
+      case Err(e) -> Err(error = e)
     }
     case Err(e) -> match e { case EndOfInput(_) -> Ok(value = None); case _ -> Err(error = IOError.message(e)) }
+  }
+}
+
+/// Apply the NDJSON framing limits to a line some other reader already
+/// split off (e.g. a bounded read of a child process's stdout): the line
+/// itself, or a framing `Err` when it exceeds the 16 MiB message limit.
+@stable(since = "0.2")
+pub func ndjsonAcceptLine(line: in String): Result[String, String] {
+  if line.length > MAX_MESSAGE_BYTES or encodeUtf8(line).length > MAX_MESSAGE_BYTES {
+    Err(error = ndjsonTooLong())
+  } else {
+    Ok(value = line)
   }
 }
 
@@ -147,15 +195,22 @@ pub func ndjsonSendVia(payload: in String, writer: in LineWriter): Result[Unit, 
 
 @stable(since = "0.1")
 pub record NdjsonTransport {
+  source: ByteSource
+  writer: LineWriter
+  buffer: FrameBuffer
 }
 
 impl RpcTransport for NdjsonTransport {
   func receive(): Result[Option[String], String] {
-    ndjsonReceiveVia(HostLineReader())
+    ndjsonReceiveFrom(self.source, self.buffer)
+  }
+
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String] {
+    ndjsonReceiveWithinFrom(self.source, self.buffer, timeoutMs)
   }
 
   func send(payload: in String): Result[Unit, String] {
-    ndjsonSendVia(payload, HostLineWriter())
+    ndjsonSendVia(payload, self.writer)
   }
 
   func close(): Unit {
@@ -163,10 +218,15 @@ impl RpcTransport for NdjsonTransport {
 }
 
 /// Construct an `RpcTransport` that frames one JSON message per line over
-/// stdin/stdout — the MCP stdio transport.
+/// stdin/stdout — the MCP stdio transport. It owns stdin: do not also read
+/// it through `Std.Console.readLine`.
 @stable(since = "0.1")
 pub func newNdjsonTransport(): NdjsonTransport {
-  NdjsonTransport()
+  NdjsonTransport(
+    source = HostStdinSource(reader = openStdinReader()),
+    writer = HostLineWriter(),
+    buffer = newFrameBuffer()
+  )
 }
 
 // ── Content-Length framing (sans-IO core) ───────────────────────────────────
@@ -442,15 +502,22 @@ pub func clSendVia(payload: in String, writer: in StringWriter): Result[Unit, St
 
 @stable(since = "0.1")
 pub record ContentLengthTransport {
+  source: ByteSource
+  writer: StringWriter
+  buffer: FrameBuffer
 }
 
 impl RpcTransport for ContentLengthTransport {
   func receive(): Result[Option[String], String] {
-    clReceiveVia(HostCharReader())
+    clReceiveFrom(self.source, self.buffer)
+  }
+
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String] {
+    clReceiveWithinFrom(self.source, self.buffer, timeoutMs)
   }
 
   func send(payload: in String): Result[Unit, String] {
-    clSendVia(payload, HostStringWriter())
+    clSendVia(payload, self.writer)
   }
 
   func close(): Unit {
@@ -459,8 +526,331 @@ impl RpcTransport for ContentLengthTransport {
 
 /// Construct an `RpcTransport` that frames messages with an LSP-style
 /// `Content-Length: N\r\n\r\n` header over stdin/stdout, byte-accurate on
-/// UTF-8 (see the module doc).
+/// UTF-8 (see the module doc). It owns stdin, like `newNdjsonTransport`.
 @stable(since = "0.1")
 pub func newContentLengthTransport(): ContentLengthTransport {
-  ContentLengthTransport()
+  ContentLengthTransport(
+    source = HostStdinSource(reader = openStdinReader()),
+    writer = HostStringWriter(),
+    buffer = newFrameBuffer()
+  )
+}
+
+// ── Byte-level framing over a ByteSource (sans-IO core, #7451) ──────────────
+/// Bytes read from a `ByteSource` that no complete frame has consumed yet.
+/// A transport keeps one for its whole life, so bytes read before a
+/// `receiveWithin` timeout are still there for the next receive.
+@stable(since = "0.2")
+pub record FrameBuffer {
+  var bytes: slice[Byte]
+  // Read cursor: bytes before `pos` belong to frames already returned.
+  var pos: Int
+  // Bytes from `pos` already scanned for a newline without finding one, so
+  // a long NDJSON line that arrives in many reads is not rescanned.
+  var scanned: Int
+  var ended: Bool
+}
+
+@stable(since = "0.2")
+pub func newFrameBuffer(): FrameBuffer {
+  val empty: slice[Byte] = []
+  FrameBuffer(bytes = empty, pos = 0, scanned = 0, ended = false)
+}
+
+func pendingBytes(fb: in FrameBuffer): Int {
+  fb.bytes.length - fb.pos
+}
+
+// Append `more`, dropping the consumed prefix while copying anyway.
+func appendBytes(fb: in FrameBuffer, more: in slice[Byte]): Unit {
+  if pendingBytes(fb) == 0 {
+    fb.bytes = more
+  } else if fb.pos == 0 {
+    fb.bytes = fb.bytes.concat(more)
+  } else {
+    fb.bytes = fb.bytes.slice(fb.pos, fb.bytes.length).concat(more)
+  }
+  fb.pos = 0
+}
+
+func consumeTo(fb: in FrameBuffer, newPos: in Int): Unit {
+  fb.pos = newPos
+  fb.scanned = 0
+}
+
+// What one attempt to cut a frame out of the buffer found.
+union FrameStep {
+  case FrameReady(text: String)
+  case FrameNeedsMore
+  case FrameEnd
+  case FrameFailed(message: String)
+}
+
+func decodeFrame(bytes: in slice[Byte], start: in Int, endExclusive: in Int, framing: in String): FrameStep {
+  match tryDecodeUtf8(bytes.slice(start, endExclusive)) {
+    case Some(text) -> FrameReady(text = text)
+    case None -> FrameFailed(message = framing + " framing: message is not valid UTF-8")
+  }
+}
+
+// NDJSON: the next `\n`-terminated line (a `\r` before the `\n` is
+// dropped). At end of stream a final unterminated line is still a message,
+// matching `Std.Console.readLine`.
+func ndjsonStep(fb: in FrameBuffer): FrameStep {
+  val bytes = fb.bytes
+  var i = fb.pos + fb.scanned
+  while i < bytes.length {
+    if bytes[i] == 10u8 {
+      val start = fb.pos
+      var cut = i
+      if cut > start and bytes[cut - 1] == 13u8 {
+        cut = cut - 1
+      }
+      consumeTo(fb, i + 1)
+      if cut - start > MAX_MESSAGE_BYTES {
+        return FrameFailed(message = ndjsonTooLong())
+      }
+      return decodeFrame(bytes, start, cut, "NDJSON")
+    }
+    i = i + 1
+  }
+  fb.scanned = bytes.length - fb.pos
+  if pendingBytes(fb) > MAX_MESSAGE_BYTES + 1 {
+    return FrameFailed(message = ndjsonTooLong())
+  }
+  if not fb.ended {
+    return FrameNeedsMore
+  }
+  if pendingBytes(fb) == 0 {
+    return FrameEnd
+  }
+  val start = fb.pos
+  var cut = bytes.length
+  if bytes[cut - 1] == 13u8 {
+    cut = cut - 1
+  }
+  consumeTo(fb, bytes.length)
+  decodeFrame(bytes, start, cut, "NDJSON")
+}
+
+func ndjsonTooLong(): String {
+  "NDJSON framing: message exceeds the " + MAX_MESSAGE_BYTES.toString() + "-byte limit"
+}
+
+// Content-Length: a header block, then exactly the declared body bytes.
+// Headers are re-parsed from `pos` on each attempt (they are bounded by
+// `MAX_HEADER_LINES` x `MAX_HEADER_LINE_CHARS`), and nothing is consumed
+// until the whole frame is present. `\r` bytes in a header line are
+// ignored, as `clReceiveVia` ignores them.
+func clStep(fb: in FrameBuffer): FrameStep {
+  val bytes = fb.bytes
+  var i = fb.pos
+  var lineStart = i
+  var lines = 0
+  var contentLength = 0 - 1
+  var bodyStart = 0 - 1
+  while bodyStart < 0 and i < bytes.length {
+    if bytes[i] == 10u8 {
+      val line = headerLineText(bytes, lineStart, i)
+      if line.length == 0 {
+        if contentLength < 0 {
+          return FrameFailed(message = "Content-Length framing: header block ended without a Content-Length header")
+        }
+        bodyStart = i + 1
+      } else {
+        lines = lines + 1
+        if lines > MAX_HEADER_LINES {
+          return FrameFailed(message = "Content-Length framing: header block exceeds " + MAX_HEADER_LINES.toString() + " lines")
+        }
+        val headerErr = clApplyHeaderLine(line, contentLength)
+        if headerErr.length > 0 {
+          return FrameFailed(message = headerErr)
+        }
+        contentLength = clContentLengthOf(line, contentLength)
+      }
+      lineStart = i + 1
+    } else if i - lineStart >= MAX_HEADER_LINE_CHARS {
+      return FrameFailed(
+        message = "Content-Length framing: header line exceeds " + MAX_HEADER_LINE_CHARS.toString() + " characters"
+      )
+    }
+    i = i + 1
+  }
+  if bodyStart >= 0 and bytes.length - bodyStart >= contentLength {
+    consumeTo(fb, bodyStart + contentLength)
+    return decodeFrame(bytes, bodyStart, bodyStart + contentLength, "Content-Length")
+  }
+  if not fb.ended {
+    return FrameNeedsMore
+  }
+  if pendingBytes(fb) == 0 {
+    return FrameEnd
+  }
+  if bodyStart < 0 {
+    FrameFailed(message = "Content-Length framing: unexpected end of stream inside the header block")
+  } else {
+    FrameFailed(
+      message = "Content-Length framing: unexpected end of stream reading the message body (" +
+        (bytes.length - bodyStart).toString() +
+        " of " +
+        contentLength.toString() +
+        " bytes)"
+    )
+  }
+}
+
+// A header line's text with every `\r` removed. Header bytes outside ASCII
+// decode as UTF-8; an invalid line decodes as "?", which `clApplyHeaderLine`
+// ignores like any header without a colon.
+func headerLineText(bytes: in slice[Byte], start: in Int, endExclusive: in Int): String {
+  match tryDecodeUtf8(bytes.slice(start, endExclusive)) {
+    case Some(text) -> text.replace("\r", "")
+    case None -> "?"
+  }
+}
+
+func ndjsonFraming(): Int {
+  0
+}
+
+func clFraming(): Int {
+  1
+}
+
+func frameStep(framing: in Int, fb: in FrameBuffer): FrameStep {
+  if framing == ndjsonFraming() {
+    ndjsonStep(fb)
+  } else {
+    clStep(fb)
+  }
+}
+
+// Receive one frame, blocking on `source` for as long as it takes.
+func receiveFrom(framing: in Int, source: in ByteSource, fb: in FrameBuffer): Result[Option[String], String] {
+  var outcome: Result[Option[String], String] = Ok(value = None)
+  var done = false
+  while not done {
+    match frameStep(framing, fb) {
+      case FrameReady(text) -> {
+        outcome = Ok(value = Some(value = text))
+        done = true
+      }
+      case FrameEnd -> {
+        outcome = Ok(value = None)
+        done = true
+      }
+      case FrameFailed(message) -> {
+        outcome = Err(error = message)
+        done = true
+      }
+      case FrameNeedsMore -> {
+        val read: Result[Option[slice[Byte]], String] = source.read()
+        match read {
+          case Err(e) -> {
+            outcome = Err(error = e)
+            done = true
+          }
+          case Ok(chunk) -> match chunk { case Some(bytes) -> appendBytes(fb, bytes); case None -> { fb.ended = true } }
+        }
+      }
+    }
+  }
+  outcome
+}
+
+// Receive one frame, waiting on `source` for at most `timeoutMs` in total.
+func receiveWithinFrom(
+  framing: in Int, source: in ByteSource, fb: in FrameBuffer, timeoutMs: in Int
+): Result[ReceiveOutcome, String] {
+  val deadline = monotonicNanos() + timeoutMs.toLong() * 1000000i64
+  var outcome: Result[ReceiveOutcome, String] = Ok(value = RpcTimedOut)
+  var done = false
+  while not done {
+    match frameStep(framing, fb) {
+      case FrameReady(text) -> {
+        outcome = Ok(value = RpcMessage(text = text))
+        done = true
+      }
+      case FrameEnd -> {
+        outcome = Ok(value = RpcEndOfStream)
+        done = true
+      }
+      case FrameFailed(message) -> {
+        outcome = Err(error = message)
+        done = true
+      }
+      case FrameNeedsMore -> {
+        val left = deadline - monotonicNanos()
+        val budget = if left <= 0i64 { 0 } else { ((left + 999999i64) / 1000000i64).toInt() }
+        val read: Result[ByteRead, String] = source.readWithin(budget)
+        match read {
+          case Err(e) -> {
+            outcome = Err(error = e)
+            done = true
+          }
+          case Ok(chunk) -> match chunk {
+            case BytesRead(bytes) -> appendBytes(fb, bytes)
+            case BytesEnd -> {
+              fb.ended = true
+            }
+            case BytesTimedOut -> {
+              outcome = Ok(value = RpcTimedOut)
+              done = true
+            }
+          }
+        }
+      }
+    }
+  }
+  outcome
+}
+
+/// Read one NDJSON-framed message from `source`, buffering in `buffer`.
+/// `Ok(None)` marks clean end of stream.
+@stable(since = "0.2")
+pub func ndjsonReceiveFrom(source: in ByteSource, buffer: in FrameBuffer): Result[Option[String], String] {
+  receiveFrom(ndjsonFraming(), source, buffer)
+}
+
+/// `ndjsonReceiveFrom`, waiting at most `timeoutMs` milliseconds in total.
+/// On `RpcTimedOut` the bytes read so far stay in `buffer`.
+@stable(since = "0.2")
+pub func ndjsonReceiveWithinFrom(
+  source: in ByteSource, buffer: in FrameBuffer, timeoutMs: in Int
+): Result[ReceiveOutcome, String]
+  requires: timeoutMs >= 0
+{
+  receiveWithinFrom(ndjsonFraming(), source, buffer, timeoutMs)
+}
+
+/// Read one Content-Length-framed message from `source`, buffering in
+/// `buffer`. `Ok(None)` marks clean end of stream at a frame boundary.
+@stable(since = "0.2")
+pub func clReceiveFrom(source: in ByteSource, buffer: in FrameBuffer): Result[Option[String], String] {
+  receiveFrom(clFraming(), source, buffer)
+}
+
+/// `clReceiveFrom`, waiting at most `timeoutMs` milliseconds in total. On
+/// `RpcTimedOut` the bytes read so far stay in `buffer`.
+@stable(since = "0.2")
+pub func clReceiveWithinFrom(
+  source: in ByteSource, buffer: in FrameBuffer, timeoutMs: in Int
+): Result[ReceiveOutcome, String]
+  requires: timeoutMs >= 0
+{
+  receiveWithinFrom(clFraming(), source, buffer, timeoutMs)
+}
+
+/// An NDJSON `RpcTransport` reading from `source` and writing through
+/// `writer` — the stdio transport over any byte stream.
+@stable(since = "0.2")
+pub func newNdjsonTransportOver(source: in ByteSource, writer: in LineWriter): NdjsonTransport {
+  NdjsonTransport(source = source, writer = writer, buffer = newFrameBuffer())
+}
+
+/// A Content-Length `RpcTransport` reading from `source` and writing
+/// through `writer`.
+@stable(since = "0.2")
+pub func newContentLengthTransportOver(source: in ByteSource, writer: in StringWriter): ContentLengthTransport {
+  ContentLengthTransport(source = source, writer = writer, buffer = newFrameBuffer())
 }

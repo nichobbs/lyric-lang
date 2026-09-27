@@ -2328,6 +2328,82 @@ static void test_process_piped_final_line_without_newline(void) {
     lyric_process_piped_close(p);
 }
 
+static void test_process_piped_read_line_within(void) {
+    /* Issue #7451: a silent child times out (2) instead of blocking; a
+     * line that arrives after the deadline is returned by the next read. */
+    void* p = lyric_process_piped_spawn("/bin/cat", NULL);
+    CHECK(p != NULL);
+    LyricString* none = NULL;
+    int64_t t0 = lyric_monotonic_nanos();
+    CHECK(lyric_process_piped_read_line_within(p, &none, 100) == 2);
+    int64_t waited_ms = (lyric_monotonic_nanos() - t0) / 1000000;
+    CHECK(waited_ms >= 90);
+    CHECK(waited_ms < 5000);
+    CHECK(lyric_process_piped_read_line_within(p, &none, 0) == 2);
+
+    LyricString* late = mk_str("late");
+    CHECK(lyric_process_piped_write_line(p, late) == 0);
+    lyric_release(late);
+    LyricString* got = NULL;
+    CHECK(lyric_process_piped_read_line_within(p, &got, 5000) == 1);
+    CHECK(lyric_string_len(got) == 4);
+    CHECK(memcmp(LYRIC_STRING_DATA(got), "late", 4) == 0);
+    lyric_release(got);
+
+    CHECK(lyric_process_piped_close_stdin(p) == 0);
+    LyricString* eof = NULL;
+    CHECK(lyric_process_piped_read_line_within(p, &eof, 5000) == 0);
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    lyric_process_piped_close(p);
+
+    /* A line split across the deadline: the half read before the timeout
+     * stays buffered and is joined with the rest by the next read. */
+    LyricList* args = lyric_list_new(2);
+    LyricString* flag = mk_str("-c");
+    LyricString* script = mk_str("printf abc; sleep 1; printf 'def\\n'");
+    lyric_list_push(args, (int64_t)(intptr_t)flag);
+    lyric_list_push(args, (int64_t)(intptr_t)script);
+    lyric_release(flag);
+    lyric_release(script);
+    void* q = lyric_process_piped_spawn("/bin/sh", args);
+    lyric_release(args);
+    CHECK(q != NULL);
+    LyricString* partial = NULL;
+    CHECK(lyric_process_piped_read_line_within(q, &partial, 300) == 2);
+    LyricString* whole = NULL;
+    CHECK(lyric_process_piped_read_line_within(q, &whole, 10000) == 1);
+    CHECK(lyric_string_len(whole) == 6);
+    CHECK(memcmp(LYRIC_STRING_DATA(whole), "abcdef", 6) == 0);
+    lyric_release(whole);
+    CHECK(lyric_process_piped_wait_exit(q, 5000) == 1);
+    lyric_process_piped_close(q);
+
+    /* #7523: a zero budget still returns a line that is already sitting in
+     * the pipe, and a zero budget with nothing written still times out. */
+    void* r = lyric_process_piped_spawn("/bin/cat", NULL);
+    CHECK(r != NULL);
+    LyricString* ready = mk_str("ready");
+    CHECK(lyric_process_piped_write_line(r, ready) == 0);
+    lyric_release(ready);
+    LyricString* got0 = NULL;
+    int rc0 = 2;
+    for (int i = 0; i < 500 && rc0 == 2; i++) {
+        rc0 = lyric_process_piped_read_line_within(r, &got0, 0);
+        if (rc0 == 2) usleep(10000);
+    }
+    CHECK(rc0 == 1);
+    if (rc0 == 1) {
+        CHECK(lyric_string_len(got0) == 5);
+        CHECK(memcmp(LYRIC_STRING_DATA(got0), "ready", 5) == 0);
+        lyric_release(got0);
+    }
+    LyricString* empty = NULL;
+    CHECK(lyric_process_piped_read_line_within(r, &empty, 0) == 2);
+    CHECK(lyric_process_piped_close_stdin(r) == 0);
+    CHECK(lyric_process_piped_wait_exit(r, 5000) == 1);
+    lyric_process_piped_close(r);
+}
+
 static void test_process_piped_burst_in_order(void) {
     /* 5000 lines from one `seq` burst (#7277): every line returned in
      * order, with CR-free content, and end-of-stream afterwards. */
@@ -2891,6 +2967,7 @@ int main(void) {
     test_process_run_inherited();
     test_string_replace();
     test_process_piped_final_line_without_newline();
+    test_process_piped_read_line_within();
     test_process_piped_burst_in_order();
     test_process_piped_crlf_stripped();
     test_process_piped_kill();

@@ -76,6 +76,7 @@ package Mcp.McpTests
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.Time
 import JsonRpc.Json
 import JsonRpc
 import Mcp
@@ -118,6 +119,16 @@ impl RpcTransport for ServerSideTransport {
     }
   }
 
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String] {
+    if self.box.toServer.count > 0 {
+      val msg = self.box.toServer[0]
+      self.box.toServer.removeAt(0)
+      Ok(value = RpcMessage(text = msg))
+    } else {
+      Ok(value = RpcEndOfStream)
+    }
+  }
+
   func send(payload: in String): Result[Unit, String] {
     self.box.toClient.add(payload)
     Ok(value = ())
@@ -139,6 +150,55 @@ impl RpcTransport for ClientSideTransport {
       Ok(value = Some(value = msg))
     } else {
       Ok(value = None)
+    }
+  }
+
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String] {
+    if self.box.toClient.count > 0 {
+      val msg = self.box.toClient[0]
+      self.box.toClient.removeAt(0)
+      Ok(value = RpcMessage(text = msg))
+    } else {
+      Ok(value = RpcEndOfStream)
+    }
+  }
+
+  func send(payload: in String): Result[Unit, String] {
+    self.box.toServer.add(payload)
+    Ok(value = ())
+  }
+
+  func close(): Unit {
+  }
+}
+
+// A client-side transport whose server has gone quiet: once the staged
+// responses run out, `receiveWithin` sleeps out its budget and times out
+// (#7451), the way the piped transport does against a server that never
+// answers.
+record SilentClientTransport {
+  box: Mailbox
+}
+
+impl RpcTransport for SilentClientTransport {
+  func receive(): Result[Option[String], String] {
+    if self.box.toClient.count > 0 {
+      val msg = self.box.toClient[0]
+      self.box.toClient.removeAt(0)
+      Ok(value = Some(value = msg))
+    } else {
+      Err(error = "SilentClientTransport: an unbounded receive would block forever")
+    }
+  }
+
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String] {
+    if self.box.toClient.count > 0 {
+      val msg = self.box.toClient[0]
+      self.box.toClient.removeAt(0)
+      Ok(value = RpcMessage(text = msg))
+    } else {
+      sleepMillis(timeoutMs)
+      Ok(value = RpcTimedOut)
     }
   }
 
@@ -1104,5 +1164,88 @@ test "callTool against a plain tool's ordinary result returns Ok with the expect
         }
       }
     }
+  }
+}
+
+// ── Client deadlines (#7451) ────────────────────────────────────────────────
+test "callToolWithin: a server that never answers fails the call at its deadline" {
+  val box = newMailbox()
+  match connectTransport(SilentClientTransport(box = box)) {
+    case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
+    case Ok(clientVal) -> {
+      var client = clientVal
+      val start = monotonicNanos()
+      match callToolWithin(client, "echo", None, 150) {
+        case Ok(_) -> assertTrue(false, "expected the call to time out")
+        case Err(e) -> {
+          assertTrue(e.contains("'tools/call' failed"), "names the method: " + e)
+          assertTrue(e.contains("timed out after 150 ms"), "says it timed out: " + e)
+        }
+      }
+      val elapsedMs = (monotonicNanos() - start) / 1000000i64
+      assertTrue(elapsedMs >= 100i64, "waited for the deadline")
+      assertTrue(elapsedMs < 10000i64, "returned promptly once it passed")
+    }
+  }
+}
+
+test "setClientCallTimeout bounds every operation, and a late answer is dropped" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  match connectTransport(SilentClientTransport(box = box)) {
+    case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
+    case Ok(clientVal) -> {
+      var client = clientVal
+      setClientCallTimeout(client, 100)
+      match listTools(client) {
+        case Ok(_) -> assertTrue(false, "expected tools/list (id 1) to time out")
+        case Err(e) -> assertTrue(e.contains("timed out after 100 ms"), "the client timeout applies: " + e)
+      }
+      // The server answers id 1 only now, then id 2: the late tools/list
+      // answer must not be taken for the ping's.
+      stage(serverPeer, box, reqText(1i64, "tools/list", None))
+      stage(serverPeer, box, reqText(2i64, "ping", None))
+      match ping(client) {
+        case Err(e) -> assertTrue(false, "ping failed: " + e)
+        case Ok(_) -> ()
+      }
+      assertEqualInt(box.toClient.count, 0, "both answers were read; the stale one was discarded")
+    }
+  }
+}
+
+test "callResumableToolWithin and resumeToolCallWithin reject an out-of-range timeout" {
+  assertPanics("callToolWithin with a zero timeout", () -> callToolWithZeroTimeout())
+  assertPanics("callResumableToolWithin with a negative timeout", () -> resumableWithNegativeTimeout())
+  assertPanics("setClientCallTimeout with a zero timeout", () -> clientTimeoutZero())
+}
+
+func callToolWithZeroTimeout(): Unit {
+  match connectTransport(SilentClientTransport(box = newMailbox())) {
+    case Ok(clientVal) -> {
+      var client = clientVal
+      val r = callToolWithin(client, "echo", None, 0)
+    }
+    case Err(_) -> ()
+  }
+}
+
+func resumableWithNegativeTimeout(): Unit {
+  match connectTransport(SilentClientTransport(box = newMailbox())) {
+    case Ok(clientVal) -> {
+      var client = clientVal
+      val r = callResumableToolWithin(client, "echo", None, 0 - 1)
+    }
+    case Err(_) -> ()
+  }
+}
+
+func clientTimeoutZero(): Unit {
+  match connectTransport(SilentClientTransport(box = newMailbox())) {
+    case Ok(clientVal) -> {
+      var client = clientVal
+      setClientCallTimeout(client, 0)
+    }
+    case Err(_) -> ()
   }
 }

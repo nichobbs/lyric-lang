@@ -9,15 +9,12 @@ See `docs/62-jsonrpc-mcp.md` §5 and
 library implements. First consumer: `nichobbs/cloud-agents`' in-container
 permission-callback MCP server.
 
-> **Status**: `@experimental`. `.NET` is fully implemented and tested on
-> `--target dotnet` (`./bin/lyric test --manifest lyric-mcp/lyric.toml`),
-> including a real spawned-child-process round trip. **JVM is not
-> currently usable for this library at all** — every one of this
-> library's own test files fails to even type-check under `--target jvm`
-> (see "Known JVM gaps" #3 below), a deeper and more fundamental gap than
-> anticipated going in, predating and unaffected by the `2026-07-28`
-> migration. See "Known JVM gaps" before depending on the JVM target for
-> anything in this library.
+> **Status**: `@experimental`. Implemented and tested on both
+> `--target dotnet` and `--target jvm` (`lyric test --manifest
+> lyric-mcp/lyric.toml [--target jvm --no-default-features --features
+> jvm]`), including real spawned-child-process round trips and call
+> deadlines against silent and late servers. See "Known JVM gaps" for the
+> history of the JVM target.
 
 ## Migrating from `2025-06-18` (stateless core, docs/64)
 
@@ -45,122 +42,72 @@ start section below.
 
 | Package | `.NET` | JVM |
 |---|---|---|
-| `Mcp` (types, encode/decode) | full, 28/28 pure-serialization tests pass | pure Lyric, no I/O — but see gap #3: this library's own test suite does not type-check under `--target jvm` at all, so this is unverified in practice, not merely undertested |
-| `Mcp.Server` (`serveStdio`) | full, 26/26 in-memory lifecycle tests pass | unverified (gap #3) |
-| `Mcp.Client` (`connectStdio`) | full, tested against a real spawned process (5/5 process tests) | unverified (gap #3); the underlying `Std.Process` piped-spawn kernel also has its own separate, real JVM gap (#1) even setting #3 aside |
-| `Mcp.Stdio` (`PipedNdjsonTransport`) | full | unverified (gap #3); also gap #1 |
-| `Std.Process.spawnPiped` / `pipedReadLine` / `pipedWriteLine` (stdlib seam this library needed and added) | full, tested with a real `cat` subprocess | **fixed (#6135)** — full, tested with a real `cat` subprocess (`lyric-compiler/jvm/piped_process_jvm_main.l`, 5/5 cases matching the dotnet coverage); see gap #1 below for the byte-level rewrite that fixed it. This library's own use of it (`Mcp.Client.connectStdio` etc.) is still unverified on this target — gap #3 |
+| `Mcp` (types, encode/decode) | 36/36 serialization tests | 36/36 |
+| `Mcp.Server` (`serveStdio`) | in-memory lifecycle tests (`tests/mcp_tests.l`, 31/31 with the client cases) | 31/31 |
+| `Mcp.Client` (`connectStdio`, call deadlines) | tested against real spawned processes (7/7 process tests) | 7/7 |
+| `Mcp.Stdio` (`PipedNdjsonTransport`) | full | full |
+| `Std.Process` piped seam (`spawnPiped`, `pipedReadLine`, `pipedReadLineWithin`, `pipedWriteLine`, ...) | tested with real `cat`/`sh` children | same, plus `lyric-compiler/jvm/piped_process_jvm_main.l` |
 
 `Mcp.Server`'s protocol logic (`server/discover` capability derivation,
 tools/resources/prompts dispatch, resumable-tool `input_required`/resume
-handling, batch handling — no more initialize/readiness gate to exercise,
-per "Migrating from `2025-06-18`" above) is exercised end-to-end by
-`tests/mcp_tests.l` over an in-memory transport pair — no process or
-socket involved. It is `.NET`-only in practice today (gap #3), though
-nothing about its own design is target-specific.
+handling, batch handling) is exercised end-to-end by `tests/mcp_tests.l`
+over an in-memory transport pair — no process or socket involved.
+
+## Call deadlines
+
+Every `Mcp.Client` operation waits at most the client's call timeout for
+its response — 60 s by default (`JsonRpc.defaultCallTimeoutMs`), changed
+with `setClientCallTimeout(client, ms)` (1 ms to 24 h). A server that
+never answers, and never exits, can no longer hang the client (#7451).
+The tool-call operations, which a slow tool can legitimately stretch,
+also take a per-call timeout:
+
+```lyric
+pub func setClientCallTimeout(client: inout McpClient, timeoutMs: in Int): Unit
+pub func callToolWithin(client: inout McpClient, name: in String, args: in Option[JsonValue], timeoutMs: in Int): Result[McpToolResult, String]
+pub func callResumableToolWithin(client: inout McpClient, name: in String, args: in Option[JsonValue], timeoutMs: in Int): Result[McpToolCallOutcome, String]
+pub func resumeToolCallWithin(client: inout McpClient, name: in String, requestState: in String, inputResponses: in JsonValue, timeoutMs: in Int): Result[McpToolCallOutcome, String]
+```
+
+A timed-out call returns `Err("'<method>' failed: timed out after N ms
+awaiting response to '<method>'")`. Over the stdio transport the wait is
+`Std.Process.pipedReadLineWithin`; the child is left running (call
+`disconnect` to stop it), and if its answer arrives later it is dropped
+rather than handed to the next call. A tool that waits on a person
+should answer `input_required` (docs/64 §3.1) rather than hold the call
+open past the deadline.
 
 ## Known JVM gaps
 
-### 1. `Std.Process`'s piped-spawn kernel: reads don't reliably work on JVM — FIXED (#6135)
+All three gaps below are resolved; they are kept as a record of what was
+investigated.
 
-This library needed a stdlib seam `Std.Process` did not have: a
-long-lived, bidirectional piped child process (`Std.Process.run` blocks
-until exit; `Std.Process.runCapture` only returns output after the
-process has already finished — neither fits an MCP client that must
-write to and read from a server process interleaved, indefinitely). It
-was added in this track, in `lyric-stdlib/std/_kernel/process_piped_host.l`
-(`.NET`) and `lyric-stdlib/std/_kernel_jvm/process_piped_host.l` (JVM),
-with a public `Std.Process` surface: `spawnPiped`, `pipedReadLine`,
-`pipedWriteLine`, `pipedIsAlive`, `pipedKill`, `pipedWaitExit`,
-`pipedExitCode`, `pipedCloseStdin`, `pipedClose`.
+### 1. `Std.Process`'s piped-spawn kernel: reads didn't reliably work on JVM — FIXED (#6135)
 
-**The `.NET` kernel works correctly and is tested** — `spawnPiped`
-followed by `pipedWriteLine`/`pipedReadLine` round-trips real data
-through a real `cat` subprocess repeatably (`lyric-mcp/tests/
-mcp_stdio_process_tests.l`, and `Std.Process` itself gained no dedicated
-stdlib-level test in this track — that's `lyric-mcp`'s job as the first
-consumer, tracked as a stdlib test-coverage gap worth closing directly in
-`lyric-stdlib/tests/` in a follow-up).
+The JVM kernel's `pipedReadLine` originally went through
+`BufferedReader.readLine()` and failed unreliably against a live child (a
+spurious immediate end of stream, or a block past any deadline). It now
+drains stdout with the `InputStream.available()`-polled,
+`readNBytes`-into-a-`ByteArrayOutputStream` technique
+`process_capture_host.l` uses, never calling a blocking `Reader` method;
+see `lyric-stdlib/std/_kernel_jvm/process_piped_host.l`'s module header.
+The same loop carries the deadline for `pipedReadLineWithin` (#7451).
 
-**The JVM kernel's read side is now fixed (#6135).** The previous
-version routed `pipedReadLine` through `BufferedReader.readLine()`
-(mirroring the `.NET` kernel's blocking `StreamReader.ReadLine()`) and
-observed it fail unreliably — a spurious immediate `None` (as if EOF)
-against a process that was still alive with real bytes queued, or a
-block past any reasonable deadline, depending on the exact code path.
-Two candidate root causes (the `redirectError(Redirect.INHERIT)` call,
-and the nested `BufferedReader`/`InputStreamReader` constructor chain)
-were investigated and ruled out by direct experiment; the actual fix
-was the byte-level rewrite flagged as the most promising next step
-below — `pipedReadLine` now routes stdout through the SAME
-`InputStream.available()`-polled, `readNBytes`-into-a-
-`ByteArrayOutputStream` technique `process_capture_host.l`'s
-`hostRunCapture` already used reliably for batch output capture, never
-calling a blocking `Reader`/`InputStream` method at all. See
-`lyric-stdlib/std/_kernel_jvm/process_piped_host.l`'s module header for
-the full technique. Verified with the same 5-case coverage as the
-`.NET` suite above — a real `cat` subprocess: single-line echo,
-multi-line ordering, `pipedCloseStdin` clean-exit-with-final-line, a
-nonexistent-executable spawn failure, and post-EOF `None`
-(`lyric-compiler/jvm/piped_process_jvm_main.l`, run via `lyric build
---target jvm` + `java -jar` in CI, mirroring `entry_args_jvm_main.l`'s
-pattern since `lyric test` doesn't fit a real-process-spawning check
-any better here than it did there).
+### 2. `lyric-jsonrpc`'s JVM gap: `JObject`/`JArray` results over `runLoop` — no longer reproduces
 
-**Practical consequence:** the `Std.Process` piped-spawn kernel itself
-is now reliable on JVM. `Mcp.Client.connectStdio` /
-`Mcp.Stdio.newPipedNdjsonTransport` still cannot be verified on this
-target, but for an entirely separate, unrelated reason — gap #3 below
-(this library's own test suite fails to type-check under `--target
-jvm`, a pre-existing multi-package-workspace-dependency gap that has
-nothing to do with the piped-process kernel). `tests/
-mcp_stdio_process_tests.l` stays `@cfg(target = "dotnet")`-gated
-(docs/24-build-features.md "whole-file gating") until gap #3 is
-resolved and the file can even be type-checked on `--target jvm`.
+`lyric-jsonrpc/README.md` documented `runLoop` failing on the JVM to
+thread a container-shaped result back through dispatch (#6123). Every
+`lyric-jsonrpc` and `lyric-mcp` test now passes under `--target jvm`, and
+CI runs both suites on the JVM.
 
-### 2. `lyric-jsonrpc`'s known JVM gap: `JObject`/`JArray` results over `runLoop`
+### 3. The test suite failed to type-check under `--target jvm` — no longer reproduces
 
-Inherited, not introduced by this library: `lyric-jsonrpc/README.md`
-"Known upstream issues" documents that `JsonRpc.runLoop`, on the JVM
-backend only, fails to correctly thread a **container-shaped** (`JObject`
-or `JArray`) result value from a cross-package `RpcHandler.onRequest`
-call back through its own dispatch machinery (`Jvm.Codegen: match not
-exhaustive`, no further detail available). Every MCP response that isn't
-a bare scalar — which is effectively every MCP response, since
-`InitializeResult`, `ListToolsResult`, `CallToolResult`, etc. are all
-JSON objects — would hit this if `tests/mcp_tests.l` could even compile
-under `--target jvm` (it cannot — see gap #3), so this is documented as
-inherited-and-still-applicable rather than independently re-verified
-here.
-
-### 3. This library's entire test suite fails to type-check under `--target jvm`
-
-Discovered while trying to verify gap #2 above: `./bin/lyric test
---manifest lyric-mcp/lyric.toml --target jvm` fails all three test files
-at the *type-checking* stage, not just at runtime — every cross-package
-name from **both** the `Lyric.JsonRpc` workspace dependency (`JsonValue`,
-`RpcPeer`, `newPeer`, `writeValue`, `parseValue`, `JsonField`, `JInt`,
-`getArray`, `asArray`, `runLoop`, `encodeRequest`, `RpcRequest`, `IntId`,
-...) **and** this project's own sibling packages (`Mcp`/`Mcp.Server`/
-`Mcp.Client`/`Mcp.Stdio` importing each other) comes back `T0010 unknown
-type name` / `T0020 unknown name`. `lyric-mcp/src/*.l` themselves compile
-fine (`lyric build --manifest lyric-mcp/lyric.toml --target jvm`
-succeeds) — the failure is specific to the *test-file* compilation
-pathway. This looks like a deeper, more fundamental gap than the
-per-symbol issues below: a project that is itself multi-package *and*
-depends on a workspace dependency that is itself multi-package may simply
-not have been exercised under `--target jvm` before in this repository
-(`lyric-jsonrpc`, the first library to add this kind of workspace
-dependency, has no *further* dependency of its own to compose with).
-Manually pre-building `lyric-jsonrpc` for `--target jvm`
-(`lyric build --manifest lyric-jsonrpc/lyric.toml --target jvm`) before
-retrying made no difference, ruling out a stale-artifact explanation.
-Not root-caused further within this track's budget — flagged here as the
-most consequential JVM finding of this track, superseding gap #2's
-narrower scope (a `--target jvm` test run cannot even reach the point
-where gap #2 would matter). `--target jvm` runs against `lyric-mcp`
-should be treated as **entirely unverified**, not "known-partial," until
-this is investigated.
+Every cross-package name from the `Lyric.JsonRpc` workspace dependency
+and from this project's own packages used to come back `T0010`/`T0020`
+unknown when compiling the test files for the JVM. It does not reproduce
+with the CLI as CI runs it (`dotnet lyric.dll`); `tests/
+mcp_stdio_process_tests.l`, once gated to `--target dotnet` on account of
+gaps #1 and #3, now runs on both targets.
 
 ## Upstream compiler bugs found and worked around (`.NET`)
 
@@ -266,7 +213,7 @@ hardcoded per bug #2.
 |---|---|
 | `Mcp` | Shared types: protocol version negotiation, content blocks (`McpContent`), tool/resource/prompt wire shapes, the `McpToolCallOutcome`/`McpResumableToolHandler` `input_required` shapes, and every JSON encode/decode helper both the server and client use |
 | `Mcp.Server` | `McpServer` builder (`newServer` / `addTool` / `addResumableTool` / `addResource` / `addPrompt`) + `serveStdio` |
-| `Mcp.Client` | `McpClient`, `connectStdio` (and the lower-level `connectTransport`), `discoverServer`, `listTools` / `callTool` / `callResumableTool` / `resumeToolCall` / `listResources` / `readResource` / `listPrompts` / `getPrompt` / `ping` / `disconnect` |
+| `Mcp.Client` | `McpClient`, `connectStdio` (and the lower-level `connectTransport`), `discoverServer`, `listTools` / `callTool` / `callResumableTool` / `resumeToolCall` / `listResources` / `readResource` / `listPrompts` / `getPrompt` / `ping` / `disconnect`; deadlines: `setClientCallTimeout`, `callToolWithin` / `callResumableToolWithin` / `resumeToolCallWithin` |
 | `Mcp.Stdio` | Client-side piped-child-process NDJSON transport (`Std.Process.PipedProcess` wrapped as a `JsonRpc.RpcTransport`, reusing `JsonRpc.Stdio`'s framing helpers rather than re-implementing them) |
 
 ## Installation
@@ -379,7 +326,7 @@ On the client side, `callResumableTool`/`resumeToolCall` return `Err` for
 an `input_required` result whose `requestState` is missing, not a string,
 empty or longer than `maxRequestStateLength`.
 
-### Connecting to a server (client, `.NET` only — see "Known JVM gaps")
+### Connecting to a server (client)
 
 ```lyric
 import Std.Core
@@ -480,7 +427,7 @@ wire-protocol migration.
 Phase A (docs/64 §3, stateless core: no more `initialize` gate,
 `server/discover`, `input_required` multi-round-trip via
 `addResumableTool`/`McpResumableToolHandler`) is implemented and tested on
-`--target dotnet`. **Streamable HTTP (docs/64 §4, Phase B) and the Tasks
+`--target dotnet` and `--target jvm`. **Streamable HTTP (docs/64 §4, Phase B) and the Tasks
 extension (docs/64 §5, Phase C) are not attempted in this track** — each
 is left for a dedicated follow-up PR per docs/64 §2's phasing.
 
@@ -498,11 +445,11 @@ lyric-mcp/
   tests/
     mcp_tests.l                       Mcp.McpTests (in-memory lifecycle)
     mcp_serialization_tests.l         Mcp.McpSerializationTests (pure JSON shapes)
-    mcp_stdio_process_tests.l         Mcp.McpStdioProcessTests (real spawned process, dotnet only)
+    mcp_stdio_process_tests.l         Mcp.McpStdioProcessTests (real spawned processes, both targets)
 ```
 
 ## See also
 
 - `docs/62-jsonrpc-mcp.md` — the agreed build spec (§5 covers this library)
-- `lyric-jsonrpc/README.md` — the JSON-RPC 2.0 peer this library builds on, including its own documented JVM gaps
+- `lyric-jsonrpc/README.md` — the JSON-RPC 2.0 peer this library builds on, including call deadlines and its JVM history
 - [Model Context Protocol specification](https://modelcontextprotocol.io/specification/2025-06-18) (external reference)

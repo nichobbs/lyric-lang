@@ -17,14 +17,21 @@ package JsonRpc.JsonRpcTests
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.Time
 import JsonRpc.Json
 import JsonRpc
 
 // ── In-memory RpcTransport test double ──────────────────────────────────────
+// `silent`: an empty inbox means the peer has said nothing yet, so
+// `receiveWithin` sleeps out the budget it was given and times out, the way
+// a real transport waiting on a peer that never answers does. Otherwise an
+// empty inbox is end of stream.
 pub record InMemoryTransport {
   var inbox: List[String]
   var outbox: List[String]
   var closed: Bool
+  var silent: Bool
+  var budgets: List[Int]
 }
 
 impl RpcTransport for InMemoryTransport {
@@ -35,6 +42,20 @@ impl RpcTransport for InMemoryTransport {
       Ok(value = Some(value = msg))
     } else {
       Ok(value = None)
+    }
+  }
+
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String] {
+    self.budgets.add(timeoutMs)
+    if self.inbox.count > 0 {
+      val msg = self.inbox[0]
+      self.inbox.removeAt(0)
+      Ok(value = RpcMessage(text = msg))
+    } else if self.silent {
+      sleepMillis(timeoutMs)
+      Ok(value = RpcTimedOut)
+    } else {
+      Ok(value = RpcEndOfStream)
     }
   }
 
@@ -49,7 +70,7 @@ impl RpcTransport for InMemoryTransport {
 }
 
 func newInMemoryTransport(): InMemoryTransport {
-  InMemoryTransport(inbox = newList(), outbox = newList(), closed = false)
+  InMemoryTransport(inbox = newList(), outbox = newList(), closed = false, silent = false, budgets = newList())
 }
 
 func feed(t: in InMemoryTransport, msg: in String): Unit {
@@ -496,6 +517,143 @@ test "call: flooding past maxPendingMessages fails the call and keeps the queue"
     case Err(e) -> assertEqualInt(e.code, internalError, "internalError")
   }
   assertEqualInt(peer.pendingQueue.count, maxPendingMessages + 1, "queued messages are kept for runLoop")
+}
+
+// ── Deadlines (#7451) ───────────────────────────────────────────────────────
+func newSilentTransport(): InMemoryTransport {
+  InMemoryTransport(inbox = newList(), outbox = newList(), closed = false, silent = true, budgets = newList())
+}
+
+test "callWithin: a peer that never answers times out with requestTimedOut" {
+  val t = newSilentTransport()
+  var peer = newPeer(t, newRecordingHandler())
+  val start = monotonicNanos()
+  match callWithin(peer, "slow", None, 150) {
+    case Ok(v) -> assertTrue(false, "expected the call to time out")
+    case Err(e) -> {
+      assertEqualInt(e.code, requestTimedOut, "requestTimedOut")
+      assertTrue(isTimeoutError(e), "isTimeoutError")
+      assertTrue(e.message.contains("'slow'"), "the message names the method")
+      match e.data {
+        case Some(d) -> assertFieldInt(d, "timeoutMs", 150i64, "data carries the timeout")
+        case None -> assertTrue(false, "expected data")
+      }
+    }
+  }
+  val elapsedMs = (monotonicNanos() - start) / 1000000i64
+  assertTrue(elapsedMs >= 100i64, "waited for the deadline")
+  assertTrue(elapsedMs < 10000i64, "returned promptly once it passed")
+  assertEqualInt(t.outbox.count, 1, "the request was sent")
+  var total = 0
+  var i = 0
+  while i < t.budgets.count {
+    assertTrue(t.budgets[i] >= 1 and t.budgets[i] <= 150, "each wait is bounded by the time left")
+    total = total + t.budgets[i]
+    i = i + 1
+  }
+  assertTrue(total <= 150 + t.budgets.count, "the waits add up to the timeout, not more")
+}
+
+test "call: applies the peer's call timeout" {
+  val t = newSilentTransport()
+  var peer = newPeerWithTimeout(t, newRecordingHandler(), 100)
+  assertEqualInt(peer.callTimeoutMs, 100, "newPeerWithTimeout sets the call timeout")
+  match call(peer, "slow", None) {
+    case Ok(v) -> assertTrue(false, "expected the call to time out")
+    case Err(e) -> assertEqualInt(e.code, requestTimedOut, "requestTimedOut")
+  }
+  setCallTimeout(peer, 50)
+  assertEqualInt(peer.callTimeoutMs, 50, "setCallTimeout changes it")
+  match call(peer, "slow", None) {
+    case Ok(v) -> assertTrue(false, "expected the call to time out")
+    case Err(e) -> assertTrue(e.message.contains("50 ms"), "the new timeout applies")
+  }
+  assertEqualInt(newPeer(t, newRecordingHandler()).callTimeoutMs, defaultCallTimeoutMs, "newPeer uses the default")
+}
+
+test "callWithin: a late response to a timed-out call is dropped, not delivered to the next call" {
+  val t = newSilentTransport()
+  val h = newRecordingHandler()
+  var peer = newPeer(t, h)
+  match callWithin(peer, "first", None, 50) {
+    case Ok(v) -> assertTrue(false, "expected the first call to time out")
+    case Err(e) -> assertEqualInt(e.code, requestTimedOut, "first call timed out")
+  }
+  // The answer to call 1 arrives late, ahead of the answer to call 2.
+  feed(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"stale\"}")
+  feed(t, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":\"fresh\"}")
+  match callWithin(peer, "second", None, 5000) {
+    case Err(e) -> assertTrue(false, "unexpected call error: " + e.message)
+    case Ok(v) -> assertJString(v, "fresh", "the second call gets its own response, not the stale one")
+  }
+  assertEqualInt(peer.pendingQueue.count, 0, "the stale response is not queued for dispatch")
+}
+
+test "runLoop: a late response to a timed-out call is dropped without a reply" {
+  val t = newSilentTransport()
+  val h = newRecordingHandler()
+  var peer = newPeer(t, h)
+  match callWithin(peer, "first", None, 50) {
+    case Ok(v) -> assertTrue(false, "expected the call to time out")
+    case Err(e) -> assertEqualInt(e.code, requestTimedOut, "timed out")
+  }
+  t.silent = false
+  feed(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"stale\"}")
+  match runLoop(peer) {
+    case Err(e) -> assertTrue(false, "unexpected runLoop error: " + e)
+    case Ok(_) -> ()
+  }
+  assertEqualInt(t.outbox.count, 1, "only the original request was ever sent")
+  assertEqualInt(h.requestCount + h.notificationCount, 0, "nothing was dispatched to the handler")
+}
+
+test "callWithin: messages from the peer while waiting are queued and do not extend the deadline" {
+  val t = newSilentTransport()
+  val h = newRecordingHandler()
+  var peer = newPeer(t, h)
+  feed(t, "{\"jsonrpc\":\"2.0\",\"method\":\"progress\"}")
+  match callWithin(peer, "slow", None, 80) {
+    case Ok(v) -> assertTrue(false, "expected the call to time out")
+    case Err(e) -> assertEqualInt(e.code, requestTimedOut, "timed out")
+  }
+  assertEqualInt(peer.pendingQueue.count, 1, "the notification stays queued for runLoop")
+}
+
+test "callWithin: end of stream while waiting is internalError, not a timeout" {
+  val t = newInMemoryTransport()
+  var peer = newPeer(t, newRecordingHandler())
+  match callWithin(peer, "doThing", None, 5000) {
+    case Ok(v) -> assertTrue(false, "expected Err")
+    case Err(e) -> {
+      assertEqualInt(e.code, internalError, "internalError")
+      assertFalse(isTimeoutError(e), "not a timeout")
+    }
+  }
+}
+
+test "call timeouts outside 1 ms .. maxCallTimeoutMs violate the precondition" {
+  assertFalse(isValidCallTimeout(0), "zero")
+  assertFalse(isValidCallTimeout(0 - 5), "negative")
+  assertFalse(isValidCallTimeout(maxCallTimeoutMs + 1), "above the maximum")
+  assertTrue(isValidCallTimeout(1), "one millisecond")
+  assertTrue(isValidCallTimeout(maxCallTimeoutMs), "the maximum")
+  assertPanics("callWithin with a zero timeout", () -> callWithZeroTimeout())
+  assertPanics("newPeerWithTimeout with a negative timeout", () -> peerWithNegativeTimeout())
+  assertPanics("setCallTimeout above the maximum", () -> setOversizedTimeout())
+}
+
+func callWithZeroTimeout(): Unit {
+  var peer = newPeer(newInMemoryTransport(), newRecordingHandler())
+  val r = callWithin(peer, "doThing", None, 0)
+}
+
+func peerWithNegativeTimeout(): Unit {
+  val peer = newPeerWithTimeout(newInMemoryTransport(), newRecordingHandler(), 0 - 1)
+}
+
+func setOversizedTimeout(): Unit {
+  var peer = newPeer(newInMemoryTransport(), newRecordingHandler())
+  setCallTimeout(peer, maxCallTimeoutMs + 1)
 }
 
 test "call/notify: empty and rpc.-prefixed method names violate the precondition" {

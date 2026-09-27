@@ -206,6 +206,14 @@ Tracked as the (still open) Q-MCP-003.
   different `params` shape; `JsonRpc` never sees the difference.
 - Tool-execution-failure-as-`isError`-result stays exactly as is.
 - Batch handling stays exactly as is (unaffected by this revision).
+- Client calls are bounded independently of this revision (#7451,
+  D-progress-1007): every `Mcp.Client` operation waits at most the
+  client's call timeout (60 s by default, `setClientCallTimeout`), and
+  the tool-call operations take a per-call timeout through
+  `callToolWithin`/`callResumableToolWithin`/`resumeToolCallWithin`. A
+  tool that must wait on a person should answer `input_required` rather
+  than hold the call open, which keeps each round trip inside the
+  deadline.
 
 ## 4. Phase B — streamable HTTP transport (`Mcp.Http`)
 
@@ -298,6 +306,11 @@ ships Phase A:
   known today, but worth grepping for at migration time) goes away.
 - Existing `McpToolHandler` implementations need no changes — the
   resumable interface is additive (§3.1).
+- `Mcp.Client` calls now time out (#7451): a call the server does not
+  answer within 60 s fails with a "timed out after 60000 ms" error
+  instead of blocking forever. A consumer that calls a tool known to run
+  longer raises the bound with `setClientCallTimeout` or passes one to
+  `callToolWithin`.
 - Legacy-peer tolerance is **server-side only, not symmetric**:
   `Mcp.Server` still answers `initialize` for a peer that sends it, but
   `Mcp.Client` no longer performs any handshake at all — it cannot

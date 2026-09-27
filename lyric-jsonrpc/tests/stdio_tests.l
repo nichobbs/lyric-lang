@@ -17,6 +17,9 @@ import Std.Char
 import Std.Encoding
 import Std.Errors
 import Std.Testing
+import Std.Time
+import JsonRpc.Json
+import JsonRpc
 import JsonRpc.Stdio
 
 // ── In-memory stand-ins ──────────────────────────────────────────────────────
@@ -326,6 +329,231 @@ test "NDJSON: a line above the 16 MiB limit is rejected" {
   match ndjsonReceiveVia(LineSource(lines = lines, pos = 0)) {
     case Ok(_) -> assertTrue(false, "expected a framing error for an oversized NDJSON line")
     case Err(_) -> ()
+  }
+}
+
+// ── Byte-level framing over a ByteSource, with deadlines (#7451) ────────────
+// Hands out `chunks` one per read. Once they run out: end of stream when
+// `ended`, otherwise the peer is silent — `readWithin` sleeps out its budget
+// and times out, and `read` (which would block forever) fails the test.
+pub record ChunkSource {
+  var chunks: List[String]
+  var ended: Bool
+  var budgets: List[Int]
+}
+
+impl ByteSource for ChunkSource {
+  func read(): Result[Option[slice[Byte]], String] {
+    if self.chunks.count > 0 {
+      val c = self.chunks[0]
+      self.chunks.removeAt(0)
+      Ok(value = Some(value = encodeUtf8(c)))
+    } else if self.ended {
+      Ok(value = None)
+    } else {
+      Err(error = "ChunkSource: an unbounded read on a silent peer would block forever")
+    }
+  }
+
+  func readWithin(timeoutMs: in Int): Result[ByteRead, String] {
+    self.budgets.add(timeoutMs)
+    if self.chunks.count > 0 {
+      val c = self.chunks[0]
+      self.chunks.removeAt(0)
+      Ok(value = BytesRead(bytes = encodeUtf8(c)))
+    } else if self.ended {
+      Ok(value = BytesEnd)
+    } else {
+      sleepMillis(timeoutMs)
+      Ok(value = BytesTimedOut)
+    }
+  }
+}
+
+func chunkSource(chunks: in List[String], ended: in Bool): ChunkSource {
+  ChunkSource(chunks = chunks, ended = ended, budgets = newList())
+}
+
+func expectMessage(r: in Result[ReceiveOutcome, String], expected: in String, label: in String): Unit {
+  match r {
+    case Ok(outcome) -> match outcome {
+      case RpcMessage(text) -> assertEqual(text, expected, label)
+      case RpcEndOfStream -> assertTrue(false, label + ": unexpected end of stream")
+      case RpcTimedOut -> assertTrue(false, label + ": unexpected timeout")
+    }
+    case Err(e) -> assertTrue(false, label + ": unexpected error: " + e)
+  }
+}
+
+func expectTimedOut(r: in Result[ReceiveOutcome, String], label: in String): Unit {
+  match r {
+    case Ok(outcome) -> match outcome {
+      case RpcTimedOut -> ()
+      case _ -> assertTrue(false, label + ": expected a timeout")
+    }
+    case Err(e) -> assertTrue(false, label + ": unexpected error: " + e)
+  }
+}
+
+test "NDJSON bytes: lines split across reads, CRLF and multi-byte UTF-8 frame exactly" {
+  val chunks: List[String] = newList()
+  chunks.add("{\"a\":1}\n{\"b\":\"caf")
+  chunks.add("é 😀\"}\r")
+  chunks.add("\ntail")
+  val src = chunkSource(chunks, true)
+  val buffer = newFrameBuffer()
+  match ndjsonReceiveFrom(src, buffer) {
+    case Ok(Some(m)) -> assertEqual(m, "{\"a\":1}", "first line")
+    case _ -> assertTrue(false, "expected the first line")
+  }
+  match ndjsonReceiveFrom(src, buffer) {
+    case Ok(Some(m)) -> assertEqual(m, "{\"b\":\"café 😀\"}", "second line, CR dropped, UTF-8 intact")
+    case _ -> assertTrue(false, "expected the second line")
+  }
+  match ndjsonReceiveFrom(src, buffer) {
+    case Ok(Some(m)) -> assertEqual(m, "tail", "an unterminated final line is still a message")
+    case _ -> assertTrue(false, "expected the final line")
+  }
+  match ndjsonReceiveFrom(src, buffer) {
+    case Ok(None) -> ()
+    case _ -> assertTrue(false, "expected end of stream")
+  }
+}
+
+test "NDJSON bytes: a silent peer times out, and a line straddling the timeout is returned whole" {
+  val chunks: List[String] = newList()
+  chunks.add("{\"id\":")
+  val src = chunkSource(chunks, false)
+  val buffer = newFrameBuffer()
+  val start = monotonicNanos()
+  expectTimedOut(ndjsonReceiveWithinFrom(src, buffer, 120), "half a line, then silence")
+  val elapsedMs = (monotonicNanos() - start) / 1000000i64
+  assertTrue(elapsedMs >= 80i64, "waited for the deadline")
+  var i = 0
+  while i < src.budgets.count {
+    assertTrue(src.budgets[i] <= 120, "no single wait exceeds the timeout")
+    i = i + 1
+  }
+  src.chunks.add("7}\n")
+  expectMessage(ndjsonReceiveWithinFrom(src, buffer, 5000), "{\"id\":7}", "the rest completes the buffered half")
+  src.ended = true
+  match ndjsonReceiveWithinFrom(src, buffer, 5000) {
+    case Ok(RpcEndOfStream) -> ()
+    case _ -> assertTrue(false, "expected end of stream")
+  }
+}
+
+test "NDJSON bytes: invalid UTF-8 is a framing error" {
+  val src = chunkSource(newList(), true)
+  val buffer = newFrameBuffer()
+  val bad: slice[Byte] = [123u8, 255u8, 125u8, 10u8]
+  buffer.bytes = bad
+  match ndjsonReceiveFrom(src, buffer) {
+    case Err(e) -> assertTrue(e.contains("UTF-8"), "names the encoding problem")
+    case Ok(_) -> assertTrue(false, "expected a framing error")
+  }
+}
+
+test "Content-Length bytes: the body is cut at the declared byte count across reads" {
+  val payload = "\"café 😀\""
+  val n = encodeUtf8(payload).length
+  val chunks: List[String] = newList()
+  chunks.add("Content-Length: " + n.toString() + "\r")
+  chunks.add("\n\r\n\"caf")
+  chunks.add("é 😀\"Content-Length: 2\r\n\r\n{}")
+  val src = chunkSource(chunks, true)
+  val buffer = newFrameBuffer()
+  match clReceiveFrom(src, buffer) {
+    case Ok(Some(m)) -> assertEqual(m, payload, "first body, byte-exact")
+    case _ -> assertTrue(false, "expected the first message")
+  }
+  match clReceiveFrom(src, buffer) {
+    case Ok(Some(m)) -> assertEqual(m, "{}", "second body from the same read")
+    case _ -> assertTrue(false, "expected the second message")
+  }
+  match clReceiveFrom(src, buffer) {
+    case Ok(None) -> ()
+    case _ -> assertTrue(false, "expected end of stream")
+  }
+}
+
+test "Content-Length bytes: a timeout mid-body keeps the partial frame for the next receive" {
+  val chunks: List[String] = newList()
+  chunks.add("Content-Length: 11\r\n\r\n{\"ok\":")
+  val src = chunkSource(chunks, false)
+  val buffer = newFrameBuffer()
+  expectTimedOut(clReceiveWithinFrom(src, buffer, 100), "partial body, then silence")
+  src.chunks.add("true}")
+  expectMessage(clReceiveWithinFrom(src, buffer, 5000), "{\"ok\":true}", "completed after the timeout")
+}
+
+test "Content-Length bytes: truncation and limits are framing errors" {
+  val truncated: List[String] = newList()
+  truncated.add("Content-Length: 10\r\n\r\n{}")
+  match clReceiveFrom(chunkSource(truncated, true), newFrameBuffer()) {
+    case Err(e) -> ()
+    case Ok(_) -> assertTrue(false, "a short body at end of stream is an error")
+  }
+  val oversized: List[String] = newList()
+  oversized.add("Content-Length: 16777217\r\n\r\n")
+  match clReceiveFrom(chunkSource(oversized, false), newFrameBuffer()) {
+    case Err(e) -> ()
+    case Ok(_) -> assertTrue(false, "an oversized length is rejected before the body")
+  }
+  val missing: List[String] = newList()
+  missing.add("X-Other: 1\r\n\r\nbody")
+  match clReceiveFrom(chunkSource(missing, true), newFrameBuffer()) {
+    case Err(e) -> ()
+    case Ok(_) -> assertTrue(false, "a missing Content-Length is an error")
+  }
+}
+
+test "NDJSON transport over a ByteSource: receiveWithin times out, then delivers the late message" {
+  val src = chunkSource(newList(), false)
+  val sink = LineSink(lines = newList())
+  val transport = newNdjsonTransportOver(src, sink)
+  match transport.receiveWithin(60) {
+    case Ok(RpcTimedOut) -> ()
+    case _ -> assertTrue(false, "a silent peer times out")
+  }
+  src.chunks.add("{\"late\":true}\n")
+  match transport.receive() {
+    case Ok(Some(m)) -> assertEqual(m, "{\"late\":true}", "the next receive returns the late message")
+    case _ -> assertTrue(false, "expected the late message")
+  }
+}
+
+test "a JSON-RPC call over a silent NDJSON peer times out with requestTimedOut" {
+  val src = chunkSource(newList(), false)
+  val sink = LineSink(lines = newList())
+  var peer = newPeerWithTimeout(newNdjsonTransportOver(src, sink), NoopHandler(), 100)
+  match call(peer, "never/answered", None) {
+    case Ok(_) -> assertTrue(false, "expected a timeout")
+    case Err(e) -> assertTrue(isTimeoutError(e), "requestTimedOut")
+  }
+  assertEqualInt(sink.lines.count, 1, "the request went out as one line")
+}
+
+test "a JSON-RPC call over a silent Content-Length peer times out with requestTimedOut" {
+  val src = chunkSource(newList(), false)
+  val sink = Sink(written = "")
+  var peer = newPeerWithTimeout(newContentLengthTransportOver(src, sink), NoopHandler(), 100)
+  match callWithin(peer, "never/answered", None, 80) {
+    case Ok(_) -> assertTrue(false, "expected a timeout")
+    case Err(e) -> assertTrue(isTimeoutError(e), "requestTimedOut")
+  }
+  assertTrue(sink.written.startsWith("Content-Length: "), "the request went out Content-Length framed")
+}
+
+record NoopHandler {
+}
+
+impl RpcHandler for NoopHandler {
+  func onRequest(method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError] {
+    Ok(value = JNull)
+  }
+
+  func onNotification(method: in String, params: in Option[JsonValue]): Unit {
   }
 }
 

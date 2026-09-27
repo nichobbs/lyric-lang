@@ -5846,6 +5846,14 @@ pub record FuncCtx {
   // `enumHint` around each `return <expr>` so a bare-case return
   // (`return Http11`) resolves against the function's own declared enum type.
   var declaredRetEnumTy: String
+  // #7520: source offset of the function body's implicit-return tail
+  // expression when it is a lambda literal bound for a `Unit`-returning
+  // function-typed return slot (`System.Action`/`Action`N`), else -1.
+  // Armed by `lowerFuncMsilScoped` before the body block is lowered and
+  // consumed by `lowerStmtsExprFromMsil` exactly when it reaches that tail —
+  // the lambda ticker only predicts the right `__lambda_<i>` name once every
+  // earlier statement's lambdas have been lowered.
+  var voidLambdaTailOffset: Int
   // The package a monomorphized copy of an imported generic was DECLARED in
   // (`Lyric.Parser.originPkgOf` of its `__lyric_origin` annotation), or "".
   // The copy is compiled into the calling package, but its body was written
@@ -11251,19 +11259,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // callee — checking it here, before falling back to `funcRetTypes`,
           // closes the gap for the ordinary-HOF case too, matching the
           // MethodDef signature `typeExprToMsilCtx` already committed to.
-          val returnsVoid = match mapGet(cctx.lambdaExternDelegateRetType, lambdaKey) {
-            case Some(MVoid) -> true
-            case Some(_) -> false
-            case None -> match mapGet(cctx.lambdaRetTypes, lambdaKey) {
-              case Some(MVoid) -> true
-              case Some(_) -> false
-              case None -> match mapGet(cctx.funcRetTypes, lambdaKey) {
-                case Some(MVoid) -> true
-                case None -> true
-                case _ -> false
-              }
-            }
-          }
+          //
+          // #7520: the SAME predicate decides the lifted method's own `.method`
+          // return type in `lowerFuncMsilScoped` — see `lambdaReturnsVoidMsil`.
+          val returnsVoid = lambdaReturnsVoidMsil(cctx, lambdaKey)
           // Lambdas default to an all-object delegate TypeSpec so the ctor, castclass,
           // and callvirt Invoke all reference the same TypeSpec row (#4266). The one
           // exception: a lambda passed directly to an `@externTarget` function's
@@ -12499,7 +12498,14 @@ func lowerStmtsExprFromMsil(
     restoreHintTyArgs(fctx, savedBlockHint)
     val last = stmts[n - 1]
     return match last.kind {
-      case SExpr(e) -> lowerExprMsil(cctx, fctx, insns, e)
+      case SExpr(e) -> {
+        // #7520: see `FuncCtx.voidLambdaTailOffset`.
+        if fctx.voidLambdaTailOffset > 0 and e.span.startPos.offset == fctx.voidLambdaTailOffset {
+          fctx.voidLambdaTailOffset = -1
+          seedNextLambdaVoidRetMsil(cctx, fctx)
+        }
+        lowerExprMsil(cctx, fctx, insns, e)
+      }
       // A `try { … } catch … { … }` in trailing-value position yields the
       // branch values; lower it as a value rather than a discarded statement
       // (which left a non-void function with no return value → invalid IL, #1823).
@@ -15802,7 +15808,7 @@ pub func lowerCallMsil(
       // slot (#6392). Without this, the callee was silently never lowered at
       // all — the entire sub-expression's codegen was dropped, producing
       // `ilverify`-confirmed invalid IL (StackUnderflow).
-      lowerExprMsil(cctx, fctx, insns, fn)
+      val calleeTy = lowerExprMsil(cctx, fctx, insns, fn)
       // When `fn` is a call to a known same-package top-level function whose
       // OWN return type is itself function-shaped, `recordFieldFuncKeyMsil`
       // (#5774/#5790) resolves the real nested return type via
@@ -15815,7 +15821,11 @@ pub func lowerCallMsil(
       // function-value return type is unknown.
       val fieldKey = recordFieldFuncKeyMsil(cctx, fctx, fn)
       val retType = if fieldKey.length > 0 { mapGet(cctx.fieldFuncRetTypes, fieldKey) } else { None }
-      lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType)
+      // #7520: a factory declared to return `() -> Unit` hands back a real
+      // `System.Action` (its returned lambda literal is built as one), so
+      // dispatch on the callee value's static type like a slot invoke does
+      // rather than always casting it to the uniform `Func`.
+      invokeLoadedFuncValueMsil(cctx, fctx, insns, args, calleeTy, retType)
     }
   }
 }
@@ -16715,6 +16725,7 @@ func lowerBuiltinOrStaticCallMsil(
               fctx.contextHintTyArgs.add(innerHintArgs[ihi])
               ihi = ihi + 1
             }
+            seedLambdaLiteralVoidRetMsil(cctx, fctx, callArgExpr(ctorArgs[ci]), innerHint)
             val lowered = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
             castObjectToDelegateMsil(cctx, insns, lowered, innerHint)
             while fctx.contextHintTyArgs.count > 0 {
@@ -16731,6 +16742,7 @@ func lowerBuiltinOrStaticCallMsil(
             // concrete type so a bare `[...]` / `newList()` argument builds the
             // concrete instance the field's signature requires.
             pushCollExpect(fctx, innerHint)
+            seedLambdaLiteralVoidRetMsil(cctx, fctx, callArgExpr(ctorArgs[ci]), innerHint)
             val loweredC = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
             popCollExpect(fctx)
             castObjectToDelegateMsil(cctx, insns, loweredC, innerHint)
@@ -18587,6 +18599,21 @@ func lowerMethodCallMsil(
         case Some(e) -> pushCollExpect(fctx, e)
         case None -> ()
       }
+      // #7520: a lambda literal stored into a `List[() -> Unit]` /
+      // `Map[K, () -> Unit]` slot must be the slot's real `Action`, or the
+      // typed backing array rejects it (`ArrayTypeMismatchException`).
+      val addSlotTy = match addElemTy {
+        case Some(e) -> e
+        case None -> if i == 1 {
+          match recvTy {
+            case MConcreteMap(_, v) -> v
+            case _ -> MObject
+          }
+        } else {
+          MObject
+        }
+      }
+      seedLambdaLiteralVoidRetMsil(cctx, fctx, callArgExpr(args[i]), addSlotTy)
       val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
       match addElemTy {
         case Some(_) -> popCollExpect(fctx)
@@ -20415,6 +20442,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // #5995: a bare-case return (`return Http11`) resolves against
             // THIS function's own declared enum return type.
             pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
+            seedLambdaLiteralVoidRetMsil(cctx, fctx, e, fctx.declaredRetTy)
             val retExprTy1 = lowerExprMsil(cctx, fctx, insns, e)
             popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedRetHint1)
@@ -20481,6 +20509,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             val savedRetHint2 = pushRetHintTyArgs(fctx, fctx.declaredRetTy)
             // #5995: see the matching comment on the protected-region arm above.
             pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
+            seedLambdaLiteralVoidRetMsil(cctx, fctx, e, fctx.declaredRetTy)
             val retExprTy2 = lowerExprMsil(cctx, fctx, insns, e)
             popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedRetHint2)
@@ -21178,6 +21207,7 @@ func makeFuncCtxMsil(
     varEnumTypes = newMap(),
     enumHint = newList(),
     declaredRetEnumTy = "",
+    voidLambdaTailOffset = -1,
     originPkg = ""
   )
 }
@@ -28902,6 +28932,88 @@ func emitEpilogueMsil(fctx: in FuncCtx, insns: in List[MInsn]): Unit {
   }
 }
 
+// #7520: a lambda LITERAL whose destination slot is a `Unit`-returning
+// function type — `System.Action` / `System.Action`N` per
+// `typeExprToMsilCtx`'s `TFunction` rule — must be built as that `Action`
+// around a `void` lifted method.  Left unseeded it falls back to the Uniform
+// Func ABI's `Func<object>`/`object`-returning method: a value whose runtime
+// type does not implement the slot's `Action` at all (`ilverify`
+// `StackUnexpected`; `Task.Run(Action)` silently never runs it — the #5329
+// symptom).  `registerLocalLambdaLiteralFnTypesMsil` (annotated locals) and
+// the call-argument propagation (function-typed parameters) already seed
+// `lambdaRetTypes`; this covers the remaining typed destinations — a record
+// field initializer and a function's returned value — keyed off the slot's
+// own MSIL type.  Only a literal whose arity matches the slot's qualifies.
+func lambdaLiteralTargetsActionSlotMsil(expr: in Expr, slotTy: in MsilType): Bool {
+  match unwrapParenExpr(expr).kind {
+    case ELambda(lparams, _) -> {
+      val slotArity = match slotTy {
+        case MClass(n) -> if n == "System.Action" { 0 } else { -1 }
+        case MGenericInstByName(h, targs) -> if startsWith(h, "System.Action`") { targs.count } else { -1 }
+        case _ -> -1
+      }
+      slotArity >= 0 and slotArity == lparams.count
+    }
+    case _ -> false
+  }
+}
+
+// Marks the NEXT lambda literal lowered in `fctx` (predicted exactly like
+// `registerLocalLambdaLiteralFnTypesMsil` and the call-argument propagation
+// do) as `Unit`-returning.  Callers invoke it immediately before lowering the
+// literal itself, so no other lambda can advance the ticker in between.
+func seedNextLambdaVoidRetMsil(cctx: in CodegenCtx, fctx: in FuncCtx): Unit {
+  val predName = fctx.pkgName + ".__lambda_" + toString(cctx.lambdaTicker.count)
+  if not cctx.lambdaRetTypes.containsKey(predName) {
+    cctx.lambdaRetTypes.add(predName, MVoid)
+  }
+}
+
+func seedLambdaLiteralVoidRetMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr, slotTy: in MsilType): Unit {
+  if lambdaLiteralTargetsActionSlotMsil(expr, slotTy) {
+    seedNextLambdaVoidRetMsil(cctx, fctx)
+  }
+}
+
+// The implicit-return tail expression of `block` (its last statement, when
+// that is a bare expression statement).
+func blockTailExprMsil(block: in Block): Option[Expr] {
+  val n = block.statements.count
+  if n == 0 {
+    None
+  } else {
+    match block.statements[n - 1].kind {
+      case SExpr(e) -> Some(e)
+      case _ -> None
+    }
+  }
+}
+
+// Whether the lifted lambda `lambdaKey` (`<pkg>.__lambda_<i>`) is a `void`
+// method wrapped in a `System.Action`/`Action`N` delegate, rather than an
+// `object`-returning one wrapped in a `System.Func`N`.  The single source of
+// truth for BOTH the ELambda construction site's delegate ctor choice and
+// `lowerFuncMsilScoped`'s `.method` return type: `ldftn` + `newobj
+// <Delegate>::.ctor` is only verifiable when the target method's signature
+// matches the delegate's `Invoke` (ECMA-335 III.4.21), so the two must never
+// disagree (#7520).  `funcRetTypes` is always `MObject` for a lifted lambda
+// (the Uniform Func ABI), so only the two real-return-type registries decide.
+func lambdaReturnsVoidMsil(cctx: in CodegenCtx, lambdaKey: in String): Bool {
+  match mapGet(cctx.lambdaExternDelegateRetType, lambdaKey) {
+    case Some(MVoid) -> true
+    case Some(_) -> false
+    case None -> match mapGet(cctx.lambdaRetTypes, lambdaKey) {
+      case Some(MVoid) -> true
+      case Some(_) -> false
+      case None -> match mapGet(cctx.funcRetTypes, lambdaKey) {
+        case Some(MVoid) -> true
+        case None -> true
+        case _ -> false
+      }
+    }
+  }
+}
+
 pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): MFunc {
   enterTypeScopeOriginMsil(cctx, decl, pkgName)
   val lowered = lowerFuncMsilScoped(cctx, decl, pkgName)
@@ -28936,9 +29048,20 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     // #1877/#3923 FFI-boundary slice — see
     // CodegenCtx.funcParamIsExternTargetDelegate's doc comment). Every other
     // lambda (no entry in lambdaExternDelegateRetType) is unaffected.
+    //
+    // #7520: a lambda whose construction site builds a `System.Action`
+    // delegate (a `Unit`-returning lambda bound to a `() -> Unit` local, or
+    // passed to an ordinary higher-order function's `() -> Unit` parameter —
+    // `lambdaRetTypes` carries `MVoid`) must itself be a `void` method.  The
+    // construction site already chose `Action` from `lambdaRetTypes` (#5329),
+    // but this signature only consulted `lambdaExternDelegateRetType`, so it
+    // stayed `object`-returning: `ldftn object __lambda_N(...)` feeding
+    // `newobj Action::.ctor` — a delegate/target signature mismatch the CLR
+    // does not check at `newobj` but `ilverify` rejects as `DelegateCtor`.
+    // Both sites now share `lambdaReturnsVoidMsil`.
     match mapGet(cctx.lambdaExternDelegateRetType, pkgName + "." + decl.name) {
       case Some(rt) -> rt
-      case None -> MObject
+      case None -> if lambdaReturnsVoidMsil(cctx, pkgName + "." + decl.name) { MVoid } else { MObject }
     }
   } else {
     match decl.ret {
@@ -29230,7 +29353,16 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
               // this tail form bypasses `SReturn` entirely (the block's
               // last expression falls off the end).
               pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
+              match blockTailExprMsil(block) {
+                case Some(tailE) -> {
+                  if tailE.span.startPos.offset > 0 and lambdaLiteralTargetsActionSlotMsil(tailE, retTy) {
+                    fctx.voidLambdaTailOffset = tailE.span.startPos.offset
+                  }
+                }
+                case None -> ()
+              }
               val trailTy = lowerBlockExprMsil(cctx, fctx, insns, block)
+              fctx.voidLambdaTailOffset = -1
               popEnumHintMsil(fctx)
               restoreHintTyArgs(fctx, savedTrailHint)
               popCollExpect(fctx)
@@ -29255,6 +29387,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
             val savedExprHint = pushRetHintTyArgs(fctx, retTy)
             // #5995: see the matching FBBlock comment above.
             pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
+            seedLambdaLiteralVoidRetMsil(cctx, fctx, e, retTy)
             val exprTailTy = lowerExprMsil(cctx, fctx, insns, e)
             popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedExprHint)

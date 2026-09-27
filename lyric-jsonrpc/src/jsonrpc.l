@@ -12,6 +12,14 @@
 //! any interleaved incoming requests/notifications for dispatch after the
 //! call returns — the same discipline LSP servers use.
 //!
+//! Every outbound call has a deadline (#7451): `call` applies the peer's
+//! call timeout (`defaultCallTimeoutMs` unless set with `newPeerWithTimeout`
+//! or `setCallTimeout`), and `callWithin` takes one per call. The wait uses
+//! `RpcTransport.receiveWithin`, so a peer that never answers fails the call
+//! with `requestTimedOut` instead of blocking it forever. The request's id is
+//! never reused, so a response that arrives after its call timed out matches
+//! nothing: `runLoop` and later calls drop it like any unsolicited response.
+//!
 //! Batch requests (JSON-RPC 2.0 §6) are supported: an array envelope maps
 //! over dispatch, order-preserving, notifications are skipped in the
 //! response array, and an empty batch is `-32600 Invalid Request`. A batch
@@ -20,6 +28,7 @@ package JsonRpc
 
 import Std.Core
 import Std.Collections
+import Std.Time
 import JsonRpc.Json
 
 // ── Envelope types ─────────────────────────────────────────────────────────
@@ -106,6 +115,34 @@ pub func isValidOutboundMethod(method: in String): Bool {
 @stable(since = "0.2")
 pub val maxBatchSize: Int = 1024
 
+/// Error code of the local failure `call`/`callWithin` return when no
+/// response arrives before the deadline. `-32001` lies in the range JSON-RPC
+/// 2.0 §5.1 leaves to implementation-defined server errors, and is the code
+/// MCP SDKs use for a request timeout. It is never sent to the peer.
+@stable(since = "0.2")
+pub val requestTimedOut: Int = -32001
+
+/// The call timeout a peer from `newPeer` applies to `call`, in milliseconds.
+@stable(since = "0.2")
+pub val defaultCallTimeoutMs: Int = 60000
+
+/// Upper bound on a call timeout: 24 hours.
+@stable(since = "0.2")
+pub val maxCallTimeoutMs: Int = 86400000
+
+/// True when `timeoutMs` is an accepted call timeout: 1 ms to
+/// `maxCallTimeoutMs`.
+@pure
+pub func isValidCallTimeout(timeoutMs: in Int): Bool {
+  timeoutMs >= 1 and timeoutMs <= maxCallTimeoutMs
+}
+
+/// True when `e` is the local failure of a call whose deadline passed.
+@pure
+pub func isTimeoutError(e: in RpcError): Bool {
+  e.code == requestTimedOut
+}
+
 /// Upper bound on the inbound requests/notifications `call` will queue while
 /// it waits for its own response. A peer that floods past it fails the
 /// pending `call` rather than growing the queue without limit.
@@ -125,10 +162,26 @@ pub interface RpcHandler {
   func onNotification(method: in String, params: in Option[JsonValue]): Unit
 }
 
+/// Outcome of `RpcTransport.receiveWithin`: one complete message, clean end
+/// of stream, or no complete message within the timeout.
+@stable(since = "0.2")
+pub union ReceiveOutcome {
+  case RpcMessage(text: String)
+  case RpcEndOfStream
+  case RpcTimedOut
+}
+
 @stable(since = "0.1")
 pub interface RpcTransport {
   /// Block until the next complete message arrives. `None` ⇒ clean EOF.
   func receive(): Result[Option[String], String]
+
+  /// Wait at most `timeoutMs` milliseconds (`timeoutMs >= 0`) for the next
+  /// complete message. A timeout must lose nothing: bytes of a partly
+  /// received message stay buffered, and the message is returned whole by a
+  /// later `receive` or `receiveWithin`.
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String]
+
   func send(payload: in String): Result[Unit, String]
   func close(): Unit
 }
@@ -144,14 +197,45 @@ pub record RpcPeer {
   // iteration (or the next `call()`, which drains this queue first — see
   // `runLoop`'s pending-queue check).
   var pendingQueue: List[JsonValue]
+  // The deadline `call` applies, in milliseconds (`isValidCallTimeout`).
+  var callTimeoutMs: Int
 }
 
-/// Construct a peer over the given transport and handler. `runLoop`/`call`/
-/// `notify` all take the peer `inout` since dispatch mutates `nextId` and
-/// `pendingQueue`.
+/// Construct a peer over the given transport and handler, with
+/// `defaultCallTimeoutMs` as its call timeout. `runLoop`/`call`/`notify` all
+/// take the peer `inout` since dispatch mutates `nextId` and `pendingQueue`.
 @stable(since = "0.1")
 pub func newPeer(transport: in RpcTransport, handler: in RpcHandler): RpcPeer {
-  RpcPeer(transport = transport, handler = handler, nextId = 1i64, pendingQueue = newList())
+  RpcPeer(
+    transport = transport,
+    handler = handler,
+    nextId = 1i64,
+    pendingQueue = newList(),
+    callTimeoutMs = defaultCallTimeoutMs
+  )
+}
+
+/// Construct a peer whose `call` waits at most `callTimeoutMs` milliseconds
+/// for each response.
+@stable(since = "0.2")
+pub func newPeerWithTimeout(transport: in RpcTransport, handler: in RpcHandler, callTimeoutMs: in Int): RpcPeer
+  requires: isValidCallTimeout(callTimeoutMs)
+{
+  RpcPeer(
+    transport = transport,
+    handler = handler,
+    nextId = 1i64,
+    pendingQueue = newList(),
+    callTimeoutMs = callTimeoutMs
+  )
+}
+
+/// Change the deadline `call` applies to later calls on this peer.
+@stable(since = "0.2")
+pub func setCallTimeout(peer: inout RpcPeer, callTimeoutMs: in Int): Unit
+  requires: isValidCallTimeout(callTimeoutMs)
+{
+  peer.callTimeoutMs = callTimeoutMs
 }
 
 /// Close the peer's underlying transport.
@@ -398,8 +482,8 @@ func dispatchSingle(peer: inout RpcPeer, v: in JsonValue): Option[JsonValue] {
         dispatchAsRequestOrNotification(peer, v)
       } else if hasField(v, "result") or hasField(v, "error") {
         // An unsolicited Response object seen outside `call`'s inline read
-        // (e.g. arriving after the call it answered already timed out /
-        // moved on). Nothing to correlate it against; drop it.
+        // (e.g. arriving after the call it answered already timed out).
+        // Nothing to correlate it against; drop it.
         None
       } else {
         Some(
@@ -632,92 +716,118 @@ pub func runLoop(peer: inout RpcPeer): Result[Unit, String] {
   outcome
 }
 
-/// Issue an outbound request and block until its response arrives. Any
-/// requests/notifications the peer sends while we wait are queued for
-/// `runLoop` (or the next `call()`) to dispatch afterwards — see the
-/// module doc. If the queue grows past `maxPendingMessages` the call fails
-/// with `internalError`; the queued messages stay queued for `runLoop`.
+/// Issue an outbound request and wait for its response, for at most the
+/// peer's call timeout (`callWithin` with `peer.callTimeoutMs`).
 @stable(since = "0.1")
 pub func call(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]
   requires: isValidOutboundMethod(method)
 {
+  callWithin(peer, method, params, peer.callTimeoutMs)
+}
+
+func callFailure(message: in String): Result[JsonValue, RpcError] {
+  Err(error = RpcError(code = internalError, message = message, data = None))
+}
+
+func callTimedOut(method: in String, timeoutMs: in Int): Result[JsonValue, RpcError] {
+  val detail: List[JsonField] = newList()
+  detail.add(JsonField(name = "timeoutMs", value = JInt(value = timeoutMs.toLong())))
+  Err(
+    error = RpcError(
+      code = requestTimedOut,
+      message = "timed out after " + timeoutMs.toString() + " ms awaiting response to '" + method + "'",
+      data = Some(value = JObject(fields = detail))
+    )
+  )
+}
+
+// Milliseconds left before `deadlineNanos` (a `monotonicNanos` instant),
+// rounded up; zero or less once it has passed.
+func remainingMs(deadlineNanos: in Long): Int {
+  val left = deadlineNanos - monotonicNanos()
+  if left <= 0i64 {
+    0
+  } else {
+    ((left + 999999i64) / 1000000i64).toInt()
+  }
+}
+
+/// Issue an outbound request and wait at most `timeoutMs` milliseconds for
+/// its response. Any requests/notifications the peer sends while we wait
+/// are queued for `runLoop` (or the next call) to dispatch afterwards — see
+/// the module doc; they do not extend the deadline.
+///
+/// Fails with a local `RpcError` (never sent to the peer): `requestTimedOut`
+/// when the deadline passes first (`data` carries `timeoutMs`), otherwise
+/// `internalError` — the transport failed or closed, a malformed message
+/// arrived, or more than `maxPendingMessages` inbound messages queued up.
+/// Queued messages stay queued for `runLoop` in every case, and a response
+/// that arrives after a timeout is dropped when it is later read.
+@stable(since = "0.2")
+pub func callWithin(
+  peer: inout RpcPeer, method: in String, params: in Option[JsonValue], timeoutMs: in Int
+): Result[JsonValue, RpcError]
+  requires: isValidOutboundMethod(method) and isValidCallTimeout(timeoutMs)
+{
+  val deadline = monotonicNanos() + timeoutMs.toLong() * 1000000i64
   val id = allocateId(peer)
   val reqObj = encodeRequestObject(Some(value = id), method, params)
   match peer.transport.send(writeValue(reqObj)) {
-    case Err(e) -> return Err(error = RpcError(code = internalError, message = "transport send failed: " + e, data = None))
+    case Err(e) -> return callFailure("transport send failed: " + e)
     case Ok(_) -> ()
   }
-  // See runLoop's NOTE above: the Result[Option[String], String] from
-  // `receive()` is matched in two steps, and the loop condition is a plain
-  // `Bool` flag (not `isNone(settled)`) for the same reason.
+  // See runLoop's NOTE above: the transport's result is bound to a typed
+  // local and matched in two steps, and the loop condition is a plain `Bool`
+  // flag (not `isNone(settled)`) for the same reason.
   var settled: Option[Result[JsonValue, RpcError]] = None
   var waiting = true
   while waiting {
-    val received: Result[Option[String], String] = peer.transport.receive()
-    match received {
-      case Err(e) -> {
-        settled = Some(
-          value = Err(
-            error = RpcError(
-              code = internalError,
-              message = "transport receive failed while awaiting response to '" + method + "': " + e,
-              data = None
-            )
-          )
-        )
-        waiting = false
-      }
-      case Ok(opt) -> match opt {
-        case None -> {
-          settled = Some(
-            value = Err(
-              error = RpcError(
-                code = internalError,
-                message = "transport closed while awaiting response to '" + method + "'",
-                data = None
-              )
-            )
-          )
+    val budget = remainingMs(deadline)
+    if budget <= 0 {
+      settled = Some(value = callTimedOut(method, timeoutMs))
+      waiting = false
+    } else {
+      val received: Result[ReceiveOutcome, String] = peer.transport.receiveWithin(budget)
+      match received {
+        case Err(e) -> {
+          settled = Some(value = callFailure("transport receive failed while awaiting response to '" + method + "': " + e))
           waiting = false
         }
-        case Some(text) -> {
-          match parseValue(text) {
-            case Err(e) -> {
-              settled = Some(
-                value = Err(
-                  error = RpcError(
-                    code = internalError,
-                    message = "malformed message while awaiting response to '" + method + "': " +
-                      e.message(),
-                    data = None
-                  )
-                )
-              )
-              waiting = false
-            }
-            case Ok(v) -> {
-              val found = handleDuringCall(peer, v, id)
-              match found {
-                case None -> {
-                  if peer.pendingQueue.count > maxPendingMessages {
-                    settled = Some(
-                      value = Err(
-                        error = RpcError(
-                          code = internalError,
-                          message = "more than " + maxPendingMessages.toString() +
+        case Ok(outcome) -> match outcome {
+          case RpcTimedOut -> {
+            settled = Some(value = callTimedOut(method, timeoutMs))
+            waiting = false
+          }
+          case RpcEndOfStream -> {
+            settled = Some(value = callFailure("transport closed while awaiting response to '" + method + "'"))
+            waiting = false
+          }
+          case RpcMessage(text) -> {
+            match parseValue(text) {
+              case Err(e) -> {
+                settled = Some(value = callFailure("malformed message while awaiting response to '" + method + "': " + e.message()))
+                waiting = false
+              }
+              case Ok(v) -> {
+                val found = handleDuringCall(peer, v, id)
+                match found {
+                  case None -> {
+                    if peer.pendingQueue.count > maxPendingMessages {
+                      settled = Some(
+                        value = callFailure(
+                          "more than " + maxPendingMessages.toString() +
                             " unanswered inbound messages queued while awaiting response to '" +
                             method +
-                            "'",
-                          data = None
+                            "'"
                         )
                       )
-                    )
+                      waiting = false
+                    }
+                  }
+                  case Some(r) -> {
+                    settled = Some(value = r)
                     waiting = false
                   }
-                }
-                case Some(r) -> {
-                  settled = Some(value = r)
-                  waiting = false
                 }
               }
             }
@@ -728,13 +838,7 @@ pub func call(peer: inout RpcPeer, method: in String, params: in Option[JsonValu
   }
   match settled {
     case Some(r) -> r
-    case None -> Err(
-      error = RpcError(
-        code = internalError,
-        message = "internal error: call() loop exited without a result",
-        data = None
-      )
-    )
+    case None -> callFailure("internal error: call() loop exited without a result")
   }
 }
 
