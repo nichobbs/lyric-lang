@@ -2714,3 +2714,82 @@ test "widened type parameter binding follows the checker's bare-T rule" {
   assertTrue(hasFunc(r3.file, "both__Int"), "two container bindings: the first is kept")
   assertTrue(not hasFunc(r3.file, "both__Long"), "two container bindings: no widening")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7466: a generic call on `result` in an `ensures:` clause.  The elaborator
+// binds `result` to a synthetic `__lyric_result_<n>` local annotated with the
+// declared return type, so the call's type argument is inferred from it even
+// when the returned expression (an `if` over `Some`/`None`) says nothing
+// about it.  Elaborate-then-mono, as in `pipeCheckAndMono`.
+// ─────────────────────────────────────────────────────────────────────────────
+func optLibGenerics(): List[FunctionDecl] {
+  val libSrc = "package Lib\n" + "pub union Opt[T] { case Som(value: T)\n case Non }\n" +
+    "pub func isSom[T](o: in Opt[T]): Bool { match o { case Som(_) -> true\n case _ -> false } }\n" +
+    "pub func isNon[T](o: in Opt[T]): Bool { match o { case Non -> true\n case _ -> false } }\n" +
+    "pub func orElse[T](o: in Opt[T], d: in T): T { match o { case Som(v) -> v\n case _ -> d } }\n"
+  genericsAndUnionCtors(parse(libSrc).file)
+}
+
+func elaborateAndMonoWithOpt(callerSrc: in String): MonoResult {
+  monoFileWithImports(elaborateFile(parse(callerSrc).file), optLibGenerics())
+}
+
+test "ensures: isSome(result) / isNone(result) infer T from the declared return type (#7466)" {
+  val src = "package Caller\n" + "func first(s: in String): Opt[Char]\n" +
+    "  ensures: (s.length > 0 and isSom(result)) or (s.length == 0 and isNon(result))\n" +
+    "{ if s.length > 0 { Som(value = s[0]) } else { Non } }\n"
+  val res = elaborateAndMonoWithOpt(src)
+  assertTrue(hasFunc(res.file, "isSom__Char"), "isSom specialised at Char from `result`")
+  assertTrue(hasFunc(res.file, "isNon__Char"), "isNon specialised at Char from `result`")
+  assertEqualInt(diagCountCode(res.diagnostics, "M0004"), 0, "no M0004 for a generic call on `result`")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+test "ensures: on `result` bound by an early `return` infers T (#7466)" {
+  val src = "package Caller\n" + "func pick(n: in Int): Opt[Int]\n" +
+    "  ensures: isNon(result) or orElse(result, 0) > 0\n" +
+    "{\n" +
+    "  if n <= 0 {\n" +
+    "    return Non\n" +
+    "  }\n" +
+    "  Som(value = n)\n" +
+    "}\n"
+  val res = elaborateAndMonoWithOpt(src)
+  assertTrue(hasFunc(res.file, "isNon__Int"), "isNon specialised at Int")
+  assertTrue(hasFunc(res.file, "orElse__Int"), "orElse specialised at Int")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+test "requires: and old(...) generic calls infer T from parameter types (#7466)" {
+  val src = "package Caller\n" + "func bump(o: in Opt[Long]): Long\n" + "  requires: isSom(o)\n" +
+    "  ensures: isSom(old(o)) and result > 0i64\n" +
+    "{ orElse(o, 0i64) + 1i64 }\n"
+  val res = elaborateAndMonoWithOpt(src)
+  assertTrue(hasFunc(res.file, "isSom__Long"), "isSom specialised at Long from the parameter and its old() snapshot")
+  assertTrue(hasFunc(res.file, "orElse__Long"), "orElse specialised at Long")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+test "a protected entry's ensures: on `result` infers T (#7466)" {
+  val src = "package Caller\n" + "protected type Slot {\n" + "  var held: Opt[Int]\n" + "  entry take(): Opt[Int]\n" +
+    "    ensures: isSom(result) or isNon(held)\n" +
+    "  {\n" +
+    "    held\n" +
+    "  }\n" +
+    "}\n"
+  val res = elaborateAndMonoWithOpt(src)
+  assertTrue(hasFunc(res.file, "isSom__Int"), "isSom specialised at Int from the entry's `result`")
+  assertTrue(hasFunc(res.file, "isNon__Int"), "isNon specialised at Int from the protected field")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+test "a same-file generic on `result` in ensures: specialises without M0002 (#7466)" {
+  val src = "package P\n" + "union Box[T] { case Full(v: T)\n case Empty }\n" +
+    "func isFull[T](b: in Box[T]): Bool { match b { case Full(_) -> true\n case _ -> false } }\n" +
+    "func make(n: in Int): Box[String]\n" +
+    "  ensures: isFull(result) or n <= 0\n" +
+    "{ if n > 0 { Full(v = \"x\") } else { Empty } }\n"
+  val res = monoFile(elaborateFile(parse(src).file))
+  assertTrue(hasFunc(res.file, "isFull__String"), "isFull specialised at String")
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "no dangling-reference M0002")
+}

@@ -410,9 +410,11 @@ pub func fromInt(n: in Int): String {
 // units on .NET and the JVM, UTF-8 bytes on native (D-N-006).
 //
 // The `Option[Char]` postconditions below go through the non-generic
-// `noChar`: the monomorphizer does not yet infer `isNone`'s type argument
-// from `result` inside a contract clause (#7466), and `--target native` does
-// not yet lower the explicit `noChar(result)` spelling.
+// `noChar`: the stage-0 seed compiler that builds the stdlib cannot infer
+// `isNone`'s type argument from `result` inside a contract clause (#7466,
+// fixed in the compiler itself; the seed predates the fix), and
+// `--target native` does not yet lower the explicit `isNone[Char](result)`
+// spelling.
 @pure
 func noChar(o: in Option[Char]): Bool {
   match o {

@@ -42,7 +42,8 @@ for t in \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
-  lyric-compiler/lyric/protected_iface_impl_contracts_self_test.l ; do
+  lyric-compiler/lyric/protected_iface_impl_contracts_self_test.l \
+  lyric-compiler/lyric/contract_generic_call_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"

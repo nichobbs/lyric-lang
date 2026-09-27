@@ -106,6 +106,13 @@ func functionIsAxiom(fn: in FunctionDecl): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 pub record RenameCounter {
   var next: Int
+  // The type each `__lyric_result_<n>` binding is annotated with: the
+  // function's declared return type, the type the checker gave `result` in
+  // its `ensures:` clauses.  Without it the binding's type is whatever
+  // `Lyric.Mono` can infer from the returned expression, which for an
+  // `if`/`match` or a bare `None` is nothing, so a generic call on `result`
+  // (`isNone(result)`) could not be specialised (#7466).
+  var resultTy: Option[TypeExpr]
 }
 
 /// A contract clause's expression together with the span of the clause it
@@ -131,7 +138,8 @@ record SpannedExpr {
 }
 
 pub func newRenameCounter(): RenameCounter {
-  RenameCounter(next = 0)
+  val noTy: Option[TypeExpr] = None
+  RenameCounter(next = 0, resultTy = noTy)
 }
 
 func freshResultName(c: inout RenameCounter): String {
@@ -386,6 +394,72 @@ func collectConjuncts(e: in Expr, acc: in List[Expr]): Unit {
     }
     case EParen(inner) -> collectConjuncts(inner, acc)
     case _ -> acc.add(e)
+  }
+}
+
+// `let <name>: <ty> = <init>` for a synthetic `__lyric_result_<n>`.
+func mkResultBinding(name: in String, ty: in Option[TypeExpr], init: in Expr, sp: in Span): Statement {
+  mkStmt(SLocal(binding = LBLet(name = name, ty = ty, init = init)), sp)
+}
+
+// The annotation for a `__lyric_result_<n>` binding in a function returning
+// `ret`.  A range refinement annotates with its underlying type: the
+// refinement is already checked by the `ensures:` that `returnRangeChecks`
+// adds.  `Self` is left to inference: it is not a type a local binding can
+// name on every backend, and `Unit`/`Never` returns bind no result.
+func resultBindingType(ret: in Option[TypeExpr]): Option[TypeExpr] {
+  val noTy: Option[TypeExpr] = None
+  match ret {
+    case None -> noTy
+    case Some(te) -> match te.kind {
+      case TParen(inner) -> resultBindingType(Some(value = inner))
+      case TRefined(underlying, _) -> Some(
+        value = TypeExpr(
+          kind = TRef(path = underlying),
+          span = te.span
+        )
+      )
+      case TUnit -> noTy
+      case TNever -> noTy
+      case TError -> noTy
+      case _ -> if typeMentionsSelf(te) { noTy } else { Some(value = te) }
+    }
+  }
+}
+
+func typeMentionsSelf(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSelf -> true
+    case TGenericApp(_, args) -> {
+      for a in args {
+        match a {
+          case TAType(t) -> if typeMentionsSelf(t) { return true }
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case TArray(_, element) -> typeMentionsSelf(element)
+    case TSlice(element) -> typeMentionsSelf(element)
+    case TTuple(types) -> {
+      for t in types {
+        if typeMentionsSelf(t) {
+          return true
+        }
+      }
+      false
+    }
+    case TNullable(inner) -> typeMentionsSelf(inner)
+    case TFunction(ps, r) -> {
+      for p in ps {
+        if typeMentionsSelf(p) {
+          return true
+        }
+      }
+      typeMentionsSelf(r)
+    }
+    case TParen(inner) -> typeMentionsSelf(inner)
+    case _ -> false
   }
 }
 
@@ -1350,7 +1424,7 @@ func rewriteReturnSome(
     return
   }
   val name = freshResultName(counter)
-  acc.add(mkLetBinding(name, e, sp))
+  acc.add(mkResultBinding(name, counter.resultTy, e, sp))
   appendEnsuresAsserts(acc, ensuresExprs, name)
   acc.add(mkStmt(SReturn(value = Some(value = mkPath(name, sp))), sp))
 }
@@ -1408,7 +1482,7 @@ func rewriteTrailingSExpr(
     return
   }
   val name = freshResultName(counter)
-  acc.add(mkLetBinding(name, newE, sp))
+  acc.add(mkResultBinding(name, counter.resultTy, newE, sp))
   appendEnsuresAsserts(acc, ensuresExprs, name)
   acc.add(mkStmt(SExpr(expr = mkPath(name, sp)), sp))
 }
@@ -2171,6 +2245,7 @@ func elaborateFunctionBody(
   // before any `requires:` that may rely on them; a refined return type is
   // one more `ensures:`; refined bindings and assignments are checked in
   // place.
+  counter.resultTy = resultBindingType(ret)
   val body = insertRangeChecks(body0, params, owner)
   val requiresExprs = paramRangeChecks(params, owner)
   val declaredRequires = collectRequires(contracts, owner)

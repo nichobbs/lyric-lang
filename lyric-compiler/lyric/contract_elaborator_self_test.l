@@ -1110,3 +1110,71 @@ test "requires and ensures asserts do not share a span" {
   assertEqualInt(stmtLine(blk.statements[0]), 3, "mixed-span: requires assert on its clause line")
   assertEqualInt(stmtLine(blk.statements[2]), 4, "mixed-span: ensures assert on its clause line")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7466: each `__lyric_result_<n>` binding is annotated with the declared
+// return type, so `Lyric.Mono` can infer a generic call's type argument from
+// `result` (`ensures: isNone(result)`) without an explicit `[T]`.
+// ─────────────────────────────────────────────────────────────────────────────
+// The rendered head of the annotation on a `let` binding, "" when it has none.
+func letTypeHead(s: in Statement): String {
+  match s.kind {
+    case SLocal(b) -> match b {
+      case LBLet(_, ty, _) -> match ty {
+        case Some(te) -> match te.kind {
+          case TRef(path) -> path.segments[path.segments.count - 1]
+          case TGenericApp(head, _) -> head.segments[head.segments.count - 1]
+          case _ -> "?"
+        }
+        case None -> ""
+      }
+      case _ -> ""
+    }
+    case _ -> ""
+  }
+}
+
+test "a trailing result binding is annotated with the declared return type (#7466)" {
+  val src = "package P\n" + "func f(n: in Int): Option[Int]\n" + "  ensures: isNone(result) or n > 0\n" +
+    "{ if n > 0 { Some(value = n) } else { None } }\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqual(letName(blk.statements[0]), "__lyric_result_0", "annot-trailing: stmt[0] is the result binding")
+  assertEqual(letTypeHead(blk.statements[0]), "Option", "annot-trailing: annotated Option[Int]")
+}
+
+test "an explicit-return result binding is annotated with the declared return type (#7466)" {
+  val src = "package P\n" + "func f(n: in Int): Option[Int]\n" + "  ensures: isSome(result) or n <= 0\n" + "{\n" +
+    "  if n <= 0 {\n" +
+    "    return None\n" +
+    "  }\n" +
+    "  Some(value = n)\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  // [0] = if n <= 0 { let __lyric_result_0: Option[Int] = None; assert; return }
+  // [1] = let __lyric_result_1: Option[Int] = Some(value = n); [2] = assert; [3] = trailing.
+  assertEqual(letName(blk.statements[1]), "__lyric_result_1", "annot-return: stmt[1] is the trailing binding")
+  assertEqual(letTypeHead(blk.statements[1]), "Option", "annot-return: trailing binding annotated")
+  match blk.statements[0].kind {
+    case SExpr(e) -> match e.kind {
+      case EIf(_, thenBranch, _) -> match thenBranch {
+        case EOBBlock(inner) -> {
+          assertEqual(letName(inner.statements[0]), "__lyric_result_0", "annot-return: nested binding name")
+          assertEqual(letTypeHead(inner.statements[0]), "Option", "annot-return: nested binding annotated")
+        }
+        case EOBExpr(_) -> assertTrue(
+          false,
+          "annot-return: then-branch is a block"
+        )
+      }
+      case _ -> assertTrue(false, "annot-return: stmt[0] is the if")
+    }
+    case _ -> assertTrue(false, "annot-return: stmt[0] is an expression statement")
+  }
+}
+
+test "a range-refined return annotates the result binding with the underlying type (#7466)" {
+  val src = "package P\n" + "func f(n: in Int): Int range 0 .. 10\n" + "  ensures: result >= 0\n" + "{ n }\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqual(letName(blk.statements[0]), "__lyric_result_0", "annot-refined: stmt[0] is the result binding")
+  assertEqual(letTypeHead(blk.statements[0]), "Int", "annot-refined: annotated with the underlying Int")
+}
