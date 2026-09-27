@@ -1,4 +1,4 @@
-# D-progress-998 — Recover closed generic instantiation at an `@externTarget` parameter/return position instead of erasing to `object` (#6029)
+# D-progress-999 — Recover closed generic instantiation at an `@externTarget` parameter/return position instead of erasing to `object` (#6029)
 
 **Status:** shipped
 

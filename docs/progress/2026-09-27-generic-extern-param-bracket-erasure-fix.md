@@ -1,4 +1,4 @@
-# Generic-collection-over-extern-value-type parameters/returns now bind at `@externTarget` FFI boundary (#6029, D-progress-998)
+# Generic-collection-over-extern-value-type parameters/returns now bind at `@externTarget` FFI boundary (#6029, D-progress-999)
 
 A bracket-suffixed extern-type alias (a closed generic instantiation such as
 `List\`1[SomeValueType]`) used as a **parameter or return type** of an
@@ -25,7 +25,7 @@ closed generic instantiation, filed as a separate follow-up. See
 `docs/66-ffi-generic-instantiation-boundary.md` for the full scoping of this
 gap and three related, still-open ones (delegate-erasure contravariance,
 `ByRefLike` types, and Lyric's own `List[T]`/`Map[K,V]` local-hint
-threading), and `docs/decisions/D-progress-0998-generic-extern-param-return-
+threading), and `docs/decisions/D-progress-0999-generic-extern-param-return-
 bracket-erasure.md` for the shipped decision.
 
 New self-test: `lyric-compiler/lyric/generic_extern_param_self_test.l`,

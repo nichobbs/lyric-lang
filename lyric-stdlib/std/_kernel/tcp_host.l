@@ -314,7 +314,7 @@ func sslProtocolsTls13(): SslProtocols = ()
 // ALPN protocol list is now set through a direct `List<SslApplicationProtocol>`
 // construction and the real `set_ApplicationProtocols` setter — a bracket-
 // suffixed extern-type alias used as an `@externTarget` parameter type,
-// exactly the shape D-progress-997 (#6029) fixed: the self-hosted MSIL
+// exactly the shape D-progress-999 (#6029) fixed: the self-hosted MSIL
 // emitter previously erased that generic instantiation to `System.Object` at
 // a parameter/return position (`MissingMethodException` at run time), and the
 // auto-FFI property-assignment path still panics outright
