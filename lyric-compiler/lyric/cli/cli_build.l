@@ -861,7 +861,8 @@ func emitSingleFileOrProject(
     packageVersion = req.packageVersion,
     depTemplateSrcs = resolvedDeps.depTemplateSrcs,
     nugetAssemblyPaths = resolvedDeps.nugetThirdPartyPaths,
-    defines = req.defines
+    defines = req.defines,
+    packageFeatures = Emitter.noPackageFeatures()
   )
 
   var mavenSaved: Option[String] = None
@@ -951,7 +952,8 @@ func emitSingleFileWithWorkspaceMembers(req: in EmitRequest, sourcePath: in Stri
     packageVersion = req.packageVersion,
     depTemplateSrcs = wsDeps.depTemplateSrcs,
     nugetAssemblyPaths = noNuget,
-    defines = req.defines
+    defines = req.defines,
+    packageFeatures = wsDeps.depPackageFeatures
   )
   val emitResult = Emitter.emitProject(projReq)
   NonNativeEmitOutcome(
@@ -2694,7 +2696,8 @@ pub func buildProjectFromManifest(
     // Layer manifest `[build.define]` beneath CLI `--define`s (docs/60 §3.1):
     // CLI wins over a manifest define of the same key, both over the well-known
     // `version` fallback the bridges prepend (decodeDefines is last-wins).
-    defines = BD.withManifestDefines(Mf.getManifestBuildDefines(manifest), cliDefines)
+    defines = BD.withManifestDefines(Mf.getManifestBuildDefines(manifest), cliDefines),
+    packageFeatures = resolved.depPackageFeatures
   )
 
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM

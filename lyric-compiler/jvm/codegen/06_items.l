@@ -3291,7 +3291,60 @@ pub func ownAwareExternTypes(file: in SourceFile, externSeed: in Map[String, Str
       }
     }
   }
-  mergeExternSeed(collectExternTypesFromFile(file), mergeExternSeed(collidingOwn, externSeed))
+  val merged = mergeExternSeed(collectExternTypesFromFile(file), mergeExternSeed(collidingOwn, externSeed))
+  addCtorImportScope(file, merged)
+  merged
+}
+
+// Records which constructor names `file`'s imports bring into scope, so a
+// bare constructor call resolves the way the type checker resolved it rather
+// than to whichever package registered the name first (#7378):
+// `~ctor-import~<local>` -> `<pkg>::<Name>` for each selectively imported
+// name (`import Forms.{OutOfRange}`), and `~ctor-pkgs~` -> the
+// comma-separated JVM paths of the packages imported whole and unaliased
+// (`import Forms`), whose names are in scope unqualified.  An aliased whole
+// import (`import Std.Parse as P`) brings no bare names.  The `~` keys name
+// no type, so type lookups never see them; see `ctorClassFromImports`.
+func addCtorImportScope(file: in SourceFile, into: in Map[String, String]): Unit {
+  var wholePkgs = ""
+  for imp in file.imports {
+    if imp.isExtern {
+      continue
+    }
+    val pkgPath = segmentsToJvmPath(imp.path.segments)
+    match imp.selector {
+      case Some(sel) -> {
+        val items: List[ImportItem] = match sel {
+          case ISSingle(item) -> {
+            val one: List[ImportItem] = newList()
+            one.add(item)
+            one
+          }
+          case ISGroup(group) -> group
+        }
+        for item in items {
+          val local = match item.asAlias { case Some(a) -> a; case None -> item.name }
+          val key = "~ctor-import~" + local
+          if into.containsKey(key) {
+            into.remove(key)
+          }
+          into.add(key, pkgPath + "::" + item.name)
+        }
+      }
+      case None -> {
+        match imp.asAlias {
+          case Some(_) -> ()
+          case None -> {
+            wholePkgs = if wholePkgs.length == 0 { pkgPath } else { wholePkgs + "," + pkgPath }
+          }
+        }
+      }
+    }
+  }
+  if into.containsKey("~ctor-pkgs~") {
+    into.remove("~ctor-pkgs~")
+  }
+  into.add("~ctor-pkgs~", wholePkgs)
 }
 
 // As `collectFileSigs`, but resolving extern-type aliases against the file's
@@ -3613,9 +3666,39 @@ pub func collectFileSigsSeeded(
             }
             case PMField(pf) -> {
               match pf {
-                case PFVar(name, ty, _, _, _, _) -> registerFieldElemSig(into, protClass, name, ty, owner, protTps, externTypes)
-                case PFLet(name, ty, _, _, _, _) -> registerFieldElemSig(into, protClass, name, ty, owner, protTps, externTypes)
-                case PFImmutable(f) -> registerFieldElemSig(into, protClass, f.name, f.ty, owner, protTps, externTypes)
+                case PFVar(name, ty, _, _, _, _) -> registerFieldElemSig(
+                  into,
+                  protClass,
+                  name,
+                  ty,
+                  owner,
+                  protTps,
+                  externTypes,
+                  ctorReg,
+                  localRecordNames
+                )
+                case PFLet(name, ty, _, _, _, _) -> registerFieldElemSig(
+                  into,
+                  protClass,
+                  name,
+                  ty,
+                  owner,
+                  protTps,
+                  externTypes,
+                  ctorReg,
+                  localRecordNames
+                )
+                case PFImmutable(f) -> registerFieldElemSig(
+                  into,
+                  protClass,
+                  f.name,
+                  f.ty,
+                  owner,
+                  protTps,
+                  externTypes,
+                  ctorReg,
+                  localRecordNames
+                )
               }
             }
             case _ -> ()
@@ -3638,7 +3721,7 @@ pub func collectFileSigsSeeded(
               registerInstanceSigErased(into, recClass, fn.name, fn.params, fn.ret, owner, recTps, externTypes)
             }
             case RMField(f) -> {
-              registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
+              registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes, ctorReg, localRecordNames)
               registerFnFieldSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
             }
             case _ -> ()
@@ -3661,7 +3744,7 @@ pub func collectFileSigsSeeded(
               registerInstanceSigErased(into, recClass, fn.name, fn.params, fn.ret, owner, recTps, externTypes)
             }
             case RMField(f) -> {
-              registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
+              registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes, ctorReg, localRecordNames)
               registerFnFieldSig(into, recClass, f.name, f.ty, owner, recTps, externTypes)
             }
             case _ -> ()
@@ -3869,7 +3952,7 @@ pub func collectFileSigsSeeded(
           while mi < decl.members.count {
             match decl.members[mi] {
               case OMField(f) -> {
-                registerFieldElemSig(into, opqCls, f.name, f.ty, owner, opqTps, externTypes)
+                registerFieldElemSig(into, opqCls, f.name, f.ty, owner, opqTps, externTypes, ctorReg, localRecordNames)
                 val fkey = "field:" + f.name
                 if not into.containsKey(fkey) {
                   val fPs: List[JvmType] = newList()
@@ -4324,6 +4407,8 @@ func registerFieldElemSig(
   owner: in String,
   typeParams: in List[String],
   externTypes: in Map[String, String],
+  ctorReg: in Map[String, String],
+  localRecordNames: in Map[String, Bool],
 ): Unit {
   val elems: List[TypeExpr] = newList()
   match fty.kind {
@@ -4342,7 +4427,7 @@ func registerFieldElemSig(
       }
     }
     case TParen(inner) -> {
-      registerFieldElemSig(into, className, fieldName, inner, owner, typeParams, externTypes)
+      registerFieldElemSig(into, className, fieldName, inner, owner, typeParams, externTypes, ctorReg, localRecordNames)
       return
     }
     case _ -> ()
@@ -4353,7 +4438,24 @@ func registerFieldElemSig(
   if typeParamIndexOf(elems[0], typeParams) >= 0 {
     return
   }
-  val elemJvm = typeExprToJvmErasedExtern(elems[0], owner, typeParams, externTypes)
+  // A generic-record element (`List[DraftRow[D]]`) erases to `Object` in
+  // `typeExprToJvmErasedExtern`, but its raw class is known: resolve it the
+  // way a generic-record return type is resolved (#6929), so a field read on
+  // an element of this field (`for r in rs.rows { r.id }`) narrows to the
+  // record instead of failing J007 on an `Object` receiver (#7378).
+  val elemJvm = match typeExprToJvmErasedExtern(elems[0], owner, typeParams, externTypes) {
+    case JRef(erased) -> {
+      if erased == "java/lang/Object" {
+        match fieldElemRecordClass(elems[0], owner, ctorReg, externTypes, localRecordNames) {
+          case Some(cls) -> JRef(className = cls)
+          case None -> JRef(className = erased)
+        }
+      } else {
+        JRef(className = erased)
+      }
+    }
+    case other -> other
+  }
   val usable = match elemJvm {
     case JRef(cls) -> cls != "java/lang/Object"
     case JArray(_) -> false
@@ -4395,6 +4497,36 @@ func registerFieldElemSig(
       recordRetHead = newList()
     )
   )
+}
+
+// The raw class of a generic-record field element: the bundle-wide
+// constructor registry first (covers a record declared in another file or
+// package), then this file's own records (`collectFileSigs`'s single-file
+// path has an empty registry).
+func fieldElemRecordClass(
+  te: in TypeExpr,
+  owner: in String,
+  ctorReg: in Map[String, String],
+  externTypes: in Map[String, String],
+  localRecordNames: in Map[String, Bool],
+): Option[String] {
+  match te.kind {
+    case TGenericApp(head, _) -> {
+      if head.segments.count == 1 and externTypes.containsKey(head.segments[0]) {
+        return None
+      }
+      match recordRetClassOfBundleTe(te, owner, ctorReg, externTypes) {
+        case Some(cls) -> return Some(value = cls)
+        case None -> ()
+      }
+      if head.segments.count == 1 and localRecordNames.containsKey(head.segments[0]) {
+        return Some(value = owner + "/" + head.segments[0])
+      }
+      None
+    }
+    case TParen(inner) -> fieldElemRecordClass(inner, owner, ctorReg, externTypes, localRecordNames)
+    case _ -> None
+  }
 }
 
 // Register one interface member under `<ifaceClass>#<method>` with
@@ -4588,11 +4720,18 @@ pub func collectFileCasesExtern(
                     // `resolveConcreteTypeExpr`'s `checkcast <pkg>/T`
                     // against a nonexistent class — see
                     // `returnTypeGenericArgsFiltered`'s own doc comment.
-                    genericArgs = returnTypeGenericArgsFiltered(
-                      Some(
-                        value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty)
+                    genericArgs = eagerlyResolveGenericArgs(
+                      returnTypeGenericArgsFiltered(
+                        Some(
+                          value = BareFuncRef.resolveFuncTypeAliasOrSelf(
+                            aliasTargets,
+                            ty
+                          )
+                        ),
+                        tps
                       ),
-                      tps
+                      owner,
+                      externTypes
                     )
                   )
                 )
@@ -4609,9 +4748,13 @@ pub func collectFileCasesExtern(
                     paramIdx = typeParamIndexOf(ty, tps),
                     dflt = None,
                     // #7176: see the UFNamed arm's comment above.
-                    genericArgs = returnTypeGenericArgsFiltered(
-                      Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty)),
-                      tps
+                    genericArgs = eagerlyResolveGenericArgs(
+                      returnTypeGenericArgsFiltered(
+                        Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, ty)),
+                        tps
+                      ),
+                      owner,
+                      externTypes
                     )
                   )
                 )
@@ -4645,9 +4788,13 @@ pub func collectFileCasesExtern(
                   dflt = f.dflt,
                   // #7176: see the union arms' comment above — filtered
                   // against the record's own generic type params.
-                  genericArgs = returnTypeGenericArgsFiltered(
-                    Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty)),
-                    tps
+                  genericArgs = eagerlyResolveGenericArgs(
+                    returnTypeGenericArgsFiltered(
+                      Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty)),
+                      tps
+                    ),
+                    owner,
+                    externTypes
                   )
                 )
               )
@@ -4687,9 +4834,13 @@ pub func collectFileCasesExtern(
                   dflt = f.dflt,
                   // #7176: see the union arms' comment above — filtered
                   // against the exposed record's own generic type params.
-                  genericArgs = returnTypeGenericArgsFiltered(
-                    Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty)),
-                    tps
+                  genericArgs = eagerlyResolveGenericArgs(
+                    returnTypeGenericArgsFiltered(
+                      Some(value = BareFuncRef.resolveFuncTypeAliasOrSelf(aliasTargets, f.ty)),
+                      tps
+                    ),
+                    owner,
+                    externTypes
                   )
                 )
               )
@@ -4726,7 +4877,11 @@ pub func collectFileCasesExtern(
                       ty = typeExprToJvmExtern(ty, owner, externTypes),
                       paramIdx = -1,
                       dflt = init,
-                      genericArgs = returnTypeGenericArgsFiltered(Some(value = ty), protTps)
+                      genericArgs = eagerlyResolveGenericArgs(
+                        returnTypeGenericArgsFiltered(Some(value = ty), protTps),
+                        owner,
+                        externTypes
+                      )
                     )
                   )
                   case PFLet(name, ty, init, _, _, _) -> flds.add(
@@ -4735,7 +4890,11 @@ pub func collectFileCasesExtern(
                       ty = typeExprToJvmExtern(ty, owner, externTypes),
                       paramIdx = -1,
                       dflt = init,
-                      genericArgs = returnTypeGenericArgsFiltered(Some(value = ty), protTps)
+                      genericArgs = eagerlyResolveGenericArgs(
+                        returnTypeGenericArgsFiltered(Some(value = ty), protTps),
+                        owner,
+                        externTypes
+                      )
                     )
                   )
                   case PFImmutable(f) -> flds.add(
@@ -4744,7 +4903,11 @@ pub func collectFileCasesExtern(
                       ty = typeExprToJvmExtern(f.ty, owner, externTypes),
                       paramIdx = -1,
                       dflt = f.dflt,
-                      genericArgs = returnTypeGenericArgsFiltered(Some(value = f.ty), protTps)
+                      genericArgs = eagerlyResolveGenericArgs(
+                        returnTypeGenericArgsFiltered(Some(value = f.ty), protTps),
+                        owner,
+                        externTypes
+                      )
                     )
                   )
                 }
@@ -4782,9 +4945,13 @@ pub func collectFileCasesExtern(
                     // #7176: see the union/record arms' comment above —
                     // filtered against the opaque type's own generic type
                     // params.
-                    genericArgs = returnTypeGenericArgsFiltered(
-                      Some(value = f.ty),
-                      genericParamNames(decl.generics)
+                    genericArgs = eagerlyResolveGenericArgs(
+                      returnTypeGenericArgsFiltered(
+                        Some(value = f.ty),
+                        genericParamNames(decl.generics)
+                      ),
+                      owner,
+                      externTypes
                     )
                   )
                 )
@@ -4865,19 +5032,33 @@ pub func originScopedExternTypes(
   if origin.length == 0 or origin == pkgName {
     return externTypes
   }
+  // The receiver classes and constructor import scope describe the file
+  // being generated; the specialised copy's body was written elsewhere, so
+  // its spans do not refer to them and its bare constructor names resolve
+  // in the origin package's scope: the origin itself, then the packages it
+  // imports (see `ctorClassFromImports`).
   val view: Map[String, String] = newMap()
   for k in mapKeys(externTypes) {
+    if k.startsWith("~recv~") or k.startsWith("~ctor-") {
+      continue
+    }
     match mapGet(externTypes, k) {
       case Some(v) -> view.add(k, v)
       case None -> ()
     }
   }
   val importPrefix = origin + ".~import~"
+  var originImports = ""
   for ik in mapKeys(externTypes) {
     if ik.startsWith(importPrefix) {
-      overlayPackageTypesJvm(view, externTypes, ik.substring(importPrefix.length))
+      val imported = ik.substring(importPrefix.length)
+      overlayPackageTypesJvm(view, externTypes, imported)
+      val importedPath = imported.replace(".", "/")
+      originImports = if originImports.length == 0 { importedPath } else { originImports + "," + importedPath }
     }
   }
+  view.add("~ctor-own~", origin.replace(".", "/"))
+  view.add("~ctor-pkgs~", originImports)
   overlayPackageTypesJvm(view, externTypes, origin)
   view
 }
@@ -6195,7 +6376,7 @@ func fileNeedsLambdaIface(file: in SourceFile): Bool {
 // Backward-compatible single-package entry: the registry carries only this
 // file's own functions (enough to resolve intra-package calls — including
 // void-returning ones the legacy guess mis-resolved).
-pub func codegenPackage(file: in SourceFile): LPackage {
+pub func codegenPackage(file: in SourceFile, externSeed: in Map[String, String]): LPackage {
   val sigs: Map[String, JvmFuncSig] = newMap()
   collectFileSigs(file, sigs)
   val cases: Map[String, List[JvmCaseField]] = newMap()
@@ -6214,7 +6395,7 @@ pub func codegenPackage(file: in SourceFile): LPackage {
   singleFileForAudit.add(file)
   val unsafeFieldLockNames: Map[String, Bool] = newMap()
   computeFieldLockSafetyForBuild(singleFileForAudit, unsafeFieldLockNames)
-  codegenPackageWithSigs(file, sigs, cases, ctors, autoFfi, allProjFqns, unsafeFieldLockNames)
+  codegenPackageWithSigsSeeded(file, sigs, cases, ctors, autoFfi, allProjFqns, externSeed, unsafeFieldLockNames)
 }
 
 // Codegen a package against a pre-built call registry `funcSigs` spanning the

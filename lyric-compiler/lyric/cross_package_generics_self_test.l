@@ -130,7 +130,8 @@ func buildDll(tmpDir: in String, pkgName: in String, source: in String, asmName:
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -184,7 +185,8 @@ func buildAndRunConsumer(
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -573,7 +575,8 @@ func buildAndRunConsumerWithStdlib(
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -743,7 +746,8 @@ func buildDllPkgs(tmpDir: in String, pkgs: in List[Emitter.ProjectPackage], asmN
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   match Emitter.emitProject(req).outputPath {
     case None -> panic("buildDllPkgs(" + asmName + "): compilation failed")
@@ -807,7 +811,8 @@ test "cross-package generic calling a sibling package by name inside a closure (
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   match Emitter.emitProject(req).outputPath {
     case None -> panic("cpgen_sibling_qualified: consumer compilation failed")
@@ -926,7 +931,8 @@ test "an annotated local in a specialised generic keeps its type across packages
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   match Emitter.emitProject(req).outputPath {
     case None -> panic("cpgen_annotated_local: consumer compilation failed")

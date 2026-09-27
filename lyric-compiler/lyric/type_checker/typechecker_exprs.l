@@ -5852,6 +5852,36 @@ func recordCallResultType(tbl: in SymbolTable, fn: in Expr, t: in Type, sp: in S
   }
 }
 
+// Record the nominal type of a field-access receiver (see
+// `SymbolTable.memberRecvClasses`).  Only types that are a class of their own
+// on every backend are recorded: a distinct type, enum, interface or extern
+// type has no such class, and a type parameter or error type carries nothing
+// to narrow to.
+func recordMemberRecvClass(tbl: in SymbolTable, sp: in Span, t: in Type): Unit {
+  match unrefine(t) {
+    case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
+      case Some(sym) -> {
+        val isClass = match sym.kind {
+          case DKRecord(_, _) -> true
+          case DKExposedRec(_, _) -> true
+          case DKUnion(_, _) -> true
+          case DKOpaque(_, _) -> true
+          case DKProtected(_, _) -> true
+          case _ -> false
+        }
+        if isClass and sym.originPackage.length > 0 {
+          val key = recordCopySiteKey(sp)
+          if not tbl.memberRecvClasses.containsKey(key) {
+            tbl.memberRecvClasses.add(key, sym.originPackage + "." + sym.name)
+          }
+        }
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+}
+
 func inferExprCore(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -6028,6 +6058,7 @@ func inferExprCore(
           match cachedRecvType {
             case Some(rt0) -> {
               memberRecvTy = Some(value = rt0)
+              recordMemberRecvClass(tbl, recvE2.span, rt0)
             }
             case None -> {
               val rt1 = match recvE2.kind {
@@ -6040,6 +6071,7 @@ func inferExprCore(
                 case _ -> inferExpr(sc, tbl, sigs, diag, recvE2)
               }
               memberRecvTy = Some(value = rt1)
+              recordMemberRecvClass(tbl, recvE2.span, rt1)
             }
           }
         }
@@ -6346,6 +6378,7 @@ func inferExprCore(
         }
         case _ -> inferExpr(sc, tbl, sigs, diag, recv)
       }
+      recordMemberRecvClass(tbl, recv.span, rt)
       inferMember(tbl, sigs, diag, rt, name, e.span)
     }
 

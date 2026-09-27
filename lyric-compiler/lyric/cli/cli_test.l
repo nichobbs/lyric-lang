@@ -14,6 +14,7 @@ import Std.ProcessCapture as ProcessCapture
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Emitter as Emitter
+import Lyric.Pipeline as Pipe
 import Lyric.TestSynth as TestSynth
 import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
@@ -150,7 +151,8 @@ func emitTestLinked(
       packageVersion = "",
       depTemplateSrcs = noDepTemplateSrcs,
       nugetAssemblyPaths = emptyNugetPaths,
-      defines = newList()
+      defines = newList(),
+      packageFeatures = Emitter.noPackageFeatures()
     )
   )
 }
@@ -1492,6 +1494,9 @@ func cmdTestManifest(
   }
   val depBinDirs: List[String] = newList()
   val depTemplatePkgsList: List[ProjectPackage] = newList()
+  // The `@cfg` features each bundled dependency package is erased with
+  // (`collectDepPackageFeatures`, #7378).
+  val depPackageFeatures: List[Pipe.PackageFeatureSet] = newList()
   var di = 0
   while di < manifest.deps.count {
     val dep = manifest.deps[di]
@@ -1543,6 +1548,7 @@ func cmdTestManifest(
               printErr("test: local dep '" + dep.name + "': " + e)
             }
           }
+          collectDepPackageFeatures(depDir, cliFeatures, noDefaultFeatures, testTarget, depPackageFeatures)
           // Collect source files from this path dep for cross-package aspect template
           // resolution (parity with cli_build.l; fixes lyric build vs lyric test --manifest
           // inconsistency where A0045 fired for aspects that built cleanly — #3649).
@@ -1623,7 +1629,10 @@ func cmdTestManifest(
           case Some(wsCtx) -> {
             match Ws.resolveDep(dep.name, wsCtx) {
               case None -> ()
-              case Some(depDir) -> collectDepTemplateSources(depDir, dep.name, depTemplatePkgsList)
+              case Some(depDir) -> {
+                collectDepTemplateSources(depDir, dep.name, depTemplatePkgsList)
+                collectDepPackageFeatures(depDir, cliFeatures, noDefaultFeatures, testTarget, depPackageFeatures)
+              }
             }
           }
         }
@@ -1643,6 +1652,15 @@ func cmdTestManifest(
   // `WireExpand.collectWireTemplates` simply re-scan the same source a
   // second time.
   if targetJvm {
+    collectTransitiveDepSources(
+      manifest,
+      mfDir,
+      cliFeatures,
+      noDefaultFeatures,
+      testTarget,
+      depTemplatePkgsList,
+      depPackageFeatures
+    )
     var jdpi = 0
     while jdpi < depTemplatePkgsList.count {
       libPkgs.add(depTemplatePkgsList[jdpi])
@@ -1828,7 +1846,8 @@ func cmdTestManifest(
       packageVersion = manifest.packageSection.version,
       depTemplateSrcs = depTemplatePkgsList,
       nugetAssemblyPaths = nugetThirdPartyPaths,
-      defines = newList()
+      defines = newList(),
+      packageFeatures = depPackageFeatures
     )
     val result = Emitter.emitProject(projReq)
     var hadBuildError = false

@@ -276,13 +276,15 @@ pub func compileToMsilWithVersion(
   // #7198: MSIL's async lowering genuinely suspends (Phase B state
   // machine), so F0045's protected-region hazard applies on this target.
   val singleFileOptsCheckedOut: List[SourceFile] = newList()
+  val singleFileOptsRecvOut: Map[String, String] = newMap()
   val singleFileOpts = MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
     pkgLabel = path,
     lineOrigins = noSingleFileOrigins,
     awaitInTryIsHazard = true,
-    checkedSourceOut = singleFileOptsCheckedOut
+    checkedSourceOut = singleFileOptsCheckedOut,
+    memberRecvClassesOut = singleFileOptsRecvOut
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
     case Some(f) -> f
@@ -1046,13 +1048,15 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // does, instead of falling back to the bare package name.
     // #7198: see the other `MiddleEndOptions` construction site in this file.
     val projOptsCheckedOut: List[SourceFile] = newList()
+    val projOptsRecvOut: Map[String, String] = newMap()
     val projOpts = MiddleEndOptions(
       tcFatal = true,
       tcReport = false,
       pkgLabel = pp.label,
       lineOrigins = pp.origins,
       awaitInTryIsHazard = true,
-      checkedSourceOut = projOptsCheckedOut
+      checkedSourceOut = projOptsCheckedOut,
+      memberRecvClassesOut = projOptsRecvOut
     )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, flattenImportedItems(importedPkgs), allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f

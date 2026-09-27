@@ -249,6 +249,12 @@ These entries are:
 This model makes `[nuget]` and `[maven]` a library-author concern, not an
 application-developer concern.
 
+**Status.** Transitive `[maven]` propagation for workspace and path
+dependencies is implemented in `lyric restore` (D139): the nearest
+declaration of an artifact wins and a dropped version is reported. Registry
+and git dependencies, which need the published metadata described above,
+are not walked yet.
+
 ---
 
 ## 5. Publishing behavior

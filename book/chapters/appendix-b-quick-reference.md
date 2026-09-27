@@ -1197,6 +1197,7 @@ lyric clean <dir>                      # clean a specific directory
 
 # Package management
 lyric restore                          # download all dependencies declared in lyric.toml
+                                       # ([maven] entries of workspace/path deps included, transitively)
 lyric restore --locked                 # restore strictly from lyric.lock (fail if lock is stale)
 lyric update                           # re-resolve all deps to latest compatible versions
                                        # and rewrite lyric.lock (deletes the old lock first)

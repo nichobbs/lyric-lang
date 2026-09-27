@@ -543,7 +543,8 @@ FFI and callback trampolines (N4) cover the binding; MSIL uses the same C
 library. The JVM desktop host binds the same C library, through the Java
 foreign function API (JDK 22+) or JNI while the JVM baseline is JDK 21;
 JavaFX `WebView` was rejected as a separate dependency with a lagging engine
-(D138, Q-UI-008). `lyric-ui` itself does not yet build on JVM (#7378).
+(D138, Q-UI-008). `lyric-ui` itself builds and passes its tests on JVM
+(#7378, D139); the web host serves browsers from either runtime.
 
 ### 10.3 The TypeScript runtime
 
@@ -764,8 +765,8 @@ custom properties (design tokens) with light and dark sets.
 
 | Phase | Scope | Status |
 |---|---|---|
-| U1 | `lyric-forms`; `lyric-ui` pure core (`Ui.Core`, `Ui.Widgets`, `Ui.Diff`, `Ui.Protocol`, `Ui.Session`, `Ui.Testing`); example logic, view and tests | Implemented (MSIL) |
-| U2 | Server-driven web host (`Ui.Host`) + TS runtime; example runs in a browser | Implemented (MSIL); host and runtime covered by `lyric test` and `node --test`, no browser end-to-end test yet |
+| U1 | `lyric-forms`; `lyric-ui` pure core (`Ui.Core`, `Ui.Widgets`, `Ui.Diff`, `Ui.Protocol`, `Ui.Session`, `Ui.Testing`); example logic, view and tests | Implemented (MSIL, JVM) |
+| U2 | Server-driven web host (`Ui.Host`) + TS runtime; example runs in a browser | Implemented (MSIL, JVM); host and runtime covered by `lyric test` and `node --test`, no browser end-to-end test yet |
 | U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Planned |
 | U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Planned |
 | U5 | Desktop webview host (native + MSIL) | Planned |
@@ -788,6 +789,31 @@ inference) in #7250 (D-progress-963 to 969). A record `.copy` with a bare
 this library (D-progress-970). With those, `lyric-forms` (7 tests),
 `lyric-ui` (40) and `examples/ui-customers` (14) pass on MSIL, and the
 example uses `.copy` and inferred type arguments rather than helpers.
+
+### JVM parity (resolved, #7378)
+
+The same packages first failed to compile on `--target jvm`. Every cause
+was in the JVM backend or the build tooling, and each was fixed there
+(D139):
+
+- **Erased receivers.** A field read or method call on a value the JVM
+  backend sees as `Object` (an element of a generic container, a generic
+  call's result, a match binding of a generic payload) failed J007. The type
+  checker now records each member-access receiver's class and the JVM
+  backend narrows to it; a union case's `List[Prop]` field also carries its
+  element type into a `for` loop.
+- **Bare-name resolution.** A bare constructor resolved to whichever package
+  registered the name first (a `Forms.OutOfRange` built as
+  `Std.Errors.ParseError.OutOfRange`, a silent `ClassCastException`), and a
+  bare enum case sharing its name with an unrelated type compiled as a
+  catch-all binding (`case Info ->` hijacked every later arm). Both now
+  resolve through the file's own imports and the scrutinee's own type.
+- **Dependencies.** A dependency compiled into a JVM bundle took the
+  consumer's `@cfg` features (so lyric-web's `jvm` kernel was erased),
+  transitive dependencies were not bundled, and a dependency's `[maven]`
+  artifacts were not restored for its consumers. Dependencies now keep their
+  own features, are bundled transitively, and `lyric restore` propagates
+  `[maven]` (docs/38 §4).
 
 ### Compiler: generics (resolved)
 

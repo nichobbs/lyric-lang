@@ -54,6 +54,7 @@ import Lyric.CliShell as CliShell
 import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages as RP
 import Lyric.DiagnosticUtil as DiagUtil
+import Lyric.Pipeline as Pipe
 import Msil.Bridge as MsilBridge
 import Jvm.Bridge as JvmBridge
 import Lyric.LlvmBridge as LlvmBridge
@@ -172,6 +173,12 @@ pub record EmitProjectRequest {
   /// beneath the auto-injected well-known `version` (M1d) inside the bridges.
   /// Pass `newList()` when there are no user defines.
   defines: List[String]
+  /// Packages erased with their own `@cfg` features instead of
+  /// `activeFeatures` / `declaredFeatures`, matched by package name: a
+  /// workspace or path dependency compiled from source into a JVM bundle
+  /// (#7378).  Pass `Emitter.noPackageFeatures()` when every package uses
+  /// the request's features.
+  packageFeatures: List[Pipe.PackageFeatureSet]
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
   // ─────────────────────────────────────────────────────────────────────────────
@@ -182,6 +189,22 @@ pub record EmitProjectRequest {
   // with the enclosing module's symbol, producing infinite recursion
   // at runtime (observed via stack-overflow when both were named
   // `lyrExe`).
+}
+
+/// No per-package feature overrides (`EmitProjectRequest.packageFeatures`).
+pub func noPackageFeatures(): List[Pipe.PackageFeatureSet] {
+  val none: List[Pipe.PackageFeatureSet] = newList()
+  none
+}
+
+/// The feature set package `name` is erased with in `req`.
+func featuresForPackage(req: in EmitProjectRequest, name: in String): Pipe.PackageFeatureSet {
+  for pf in req.packageFeatures {
+    if pf.packageName == name {
+      return pf
+    }
+  }
+  return Pipe.PackageFeatureSet(packageName = name, active = req.activeFeatures, declared = req.declaredFeatures)
 }
 
 func cliShellExe(): String {
@@ -1850,7 +1873,8 @@ func emitPerPackagePackage(
     packageVersion = "0.1.0",
     depTemplateSrcs = noDepTemplateSrcs,
     nugetAssemblyPaths = emptyNugetPaths,
-    defines = newList()
+    defines = newList(),
+    packageFeatures = noPackageFeatures()
   )
   val res = emitProject(req)
   match res.outputPath {
@@ -2087,7 +2111,8 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
     packageVersion = "0.1.0",
     depTemplateSrcs = noDepTemplateSrcs,
     nugetAssemblyPaths = emptyNugetPaths,
-    defines = newList()
+    defines = newList(),
+    packageFeatures = noPackageFeatures()
   )
   emitProject(req)
 }
@@ -2366,12 +2391,13 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   while mi < req.packages.count {
     val pkg = req.packages[mi]
     if pkg.sources.count > 1 {
+      val pkgFeatures = featuresForPackage(req, pkg.name)
       val mergedRes = mergePackageSourcesWithOrigins(
         pkg.name,
         pkg.sources,
         pkg.paths,
-        req.activeFeatures,
-        req.declaredFeatures
+        pkgFeatures.active,
+        pkgFeatures.declared
       )
       val merged: List[String] = newList()
       merged.add(mergedRes.source)
@@ -2399,7 +2425,8 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     packageVersion = req.packageVersion,
     depTemplateSrcs = req.depTemplateSrcs,
     nugetAssemblyPaths = req.nugetAssemblyPaths,
-    defines = req.defines
+    defines = req.defines,
+    packageFeatures = req.packageFeatures
   )
 
   match req.target {
@@ -2931,10 +2958,13 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[Dia
     // was an unbounded process-spawn loop and is deleted.
     val pkgSrcs: List[String] = newList()
     val pkgPaths: List[String] = newList()
+    val pkgFeatures: List[Pipe.PackageFeatureSet] = newList()
     var mpi = 0
     while mpi < req.packages.count {
       val mp = req.packages[mpi]
-      pkgSrcs.add(mergePackageSources(mp.name, mp.sources, req.activeFeatures, req.declaredFeatures))
+      val mpFeatures = featuresForPackage(req, mp.name)
+      pkgFeatures.add(mpFeatures)
+      pkgSrcs.add(mergePackageSources(mp.name, mp.sources, mpFeatures.active, mpFeatures.declared))
       // A single-file package's real path survives the merge (fast path,
       // #6282's genuinely-multi-file case has no single path — see
       // `emitProject`'s `mergedPaths` comment).
@@ -2959,7 +2989,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[Dia
         req.packageVersion,
         restoredArtifactsJvm,
         pkgPaths,
-        pkgOrigins
+        pkgOrigins,
+        pkgFeatures
       )
     } catch Bug as b {
       diags.add(jvmBridgePanicDiagnostic(b.message))

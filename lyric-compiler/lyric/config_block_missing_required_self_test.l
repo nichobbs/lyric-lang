@@ -126,7 +126,8 @@ test "required field with no default and no env var exits 78 (subprocess, dotnet
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -176,7 +177,8 @@ test "required field with no default and no env var exits 78 (subprocess, jvm)" 
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {

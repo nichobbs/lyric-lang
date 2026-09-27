@@ -260,7 +260,8 @@ pub func main(argv: in slice[String]): Int {
           packageVersion = "",
           depTemplateSrcs = newList(),
           nugetAssemblyPaths = nugetAssemblyPaths,
-          defines = newList()
+          defines = newList(),
+          packageFeatures = Emitter.noPackageFeatures()
         )
 
         val result = Emitter.emitProject(req)

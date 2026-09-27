@@ -224,6 +224,20 @@ Lyric JVM packages can depend on Maven Central libraries through the `[maven]` t
 
 Running `lyric restore` downloads the declared JARs to the local Maven cache (`~/.m2/repository/`) via `lyric-resolver.jar` and writes a classpath manifest at `target/restore/jvm-classpath.txt` (one JAR path per line). `lyric build --target jvm` reads that file and injects the JAR paths as `LYRIC_FFI_JARS` before invoking the self-hosted JVM emitter, so the auto-FFI resolver can find the Maven library's `.class` files and emit correct `invokevirtual`/`invokestatic` call sites. The build also copies `jvm-classpath.txt` to `bin/module-path.txt` so callers can pass it directly to `java --module-path`.
 
+`[maven]` entries are a library's concern, not its consumers'. `lyric restore`
+also reads the `[maven]` tables of every workspace and path dependency the
+manifest reaches, directly or through other dependencies, and restores them
+into the same `jvm-classpath.txt`. An application that depends on `lyric-web`
+gets Undertow without declaring it. When two manifests name different
+versions of the same artifact, the nearest one wins (the manifest itself,
+then its direct dependencies, and so on) and `lyric restore` prints a note
+naming the version it dropped.
+
+A dependency compiled into a JVM build keeps its own `@cfg` features: its
+`[features].default`, plus any `--features` you pass, normalized to the JVM
+target. A library whose JVM kernel sits behind `@cfg(feature = "jvm")` is
+compiled with that kernel even when the application declares no features.
+
 To call into a Maven library, declare an `extern type` binding in your Lyric source:
 
 ```lyric
