@@ -692,7 +692,10 @@ test "Std.Process piped API and spawn-failure messages on native (ASan) (#6887)"
     "        case Ok(_) -> {\n" +
     "          return 7\n" +
     "        }\n" +
-    "        case Err(_) -> {\n" +
+    "        case Err(msg) -> {\n" +
+    "          if not msg.contains(\"already closed\") {\n" +
+    "            return 12\n" +
+    "          }\n" +
     "        }\n" +
     "      }\n" +
     "      pipedClose(p)\n" +
@@ -722,6 +725,35 @@ test "Std.Process piped API and spawn-failure messages on native (ASan) (#6887)"
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.Process piped API on native")
+}
+
+// String.replace lowers to lyric-rt's lyric_string_replace (#6888): ordinal,
+// left to right, non-overlapping; an empty search string leaves the input
+// unchanged on native (see the runtime's own comment for why).
+test "String.replace on native (ASan) (#6888)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.String as Str\n" + "func main(): Int {\n" +
+    "  if \"a,b,,c\".replace(\",\", \";\") != \"a;b;;c\" {\n" +
+    "    return 1\n" +
+    "  }\n" +
+    "  if \"aaaa\".replace(\"aa\", \"b\") != \"bb\" {\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  if \"aaa\".replace(\"aa\", \"b\") != \"ba\" {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  if Str.replace(\"hello\", \"l\", \"\") != \"heo\" {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  if \"abc\".replace(\"zz\", \"y\") != \"abc\" {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  if \"abc\".replace(\"\", \"y\") != \"abc\" {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "String.replace on native")
 }
 
 test "Std.Time seams: epoch, monotonic, sleep (ASan)" {

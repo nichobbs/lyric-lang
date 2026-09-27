@@ -103,6 +103,17 @@ pub func runtimeIdentifier(): String {
   hostRuntimeIdentifier()
 }
 
+/// True when the process is running on Windows.
+///
+/// For choosing platform-specific behaviour, such as which shell to spawn.
+/// On .NET this is `System.OperatingSystem.IsWindows()`, on the JVM the
+/// `os.name` system property, and on native a property of the runtime the
+/// program was built against.
+@experimental
+pub func isWindows(): Bool {
+  hostIsWindows()
+}
+
 /// Set (or replace) a process-level environment variable.
 ///
 /// The new value is visible to subsequent `getVar` / `getVarOrDefault` calls

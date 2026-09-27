@@ -46,6 +46,8 @@ extern func rtEnvGetOk(name: NativePtr[Byte], outp: NativePtr[String]): Int = "l
 
 extern func rtEnvSet(name: NativePtr[Byte], value: NativePtr[Byte]): Int = "lyric_env_set"
 
+extern func rtEnvIsWindows(): Int = "lyric_env_is_windows"
+
 extern func rtEnvCwdOk(outp: NativePtr[String]): Int = "lyric_env_cwd_ok"
 
 extern func rtEnvAppBaseDirectoryOk(outp: NativePtr[String]): Int = "lyric_env_app_base_directory_ok"
@@ -127,4 +129,10 @@ pub func hostRuntimeDirectory(): String {
 /// .runtimeIdentifier`.
 pub func hostRuntimeIdentifier(): String {
   ""
+}
+
+// True when lyric-rt was built for Windows (a compile-time property of the
+// runtime this program links against).
+pub func hostIsWindows(): Bool {
+  rtEnvIsWindows() != 0
 }

@@ -18,6 +18,8 @@ extern type NetRuntimeEnv = "System.Runtime.InteropServices.RuntimeEnvironment"
 
 extern type NetRuntimeInfo = "System.Runtime.InteropServices.RuntimeInformation"
 
+extern type NetOperatingSystem = "System.OperatingSystem"
+
 pub func hostGetEnvironmentVariable(key: in String): String? {
   NetEnvironment.GetEnvironmentVariable(key)
 }
@@ -103,4 +105,10 @@ pub func hostGetVarOpt(key: in String): Option[String] {
   } catch Bug as _ {
     None
   }
+}
+
+// True when the process is running on Windows.  Wraps
+// `System.OperatingSystem.IsWindows()`.
+pub func hostIsWindows(): Bool {
+  NetOperatingSystem.IsWindows()
 }

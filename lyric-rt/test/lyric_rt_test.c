@@ -1766,6 +1766,39 @@ static void test_process_run_inherited(void) {
     lyric_release(kargs);
 }
 
+static LyricString* str_lit(const char* c) {
+    return lyric_string_from_literal((const uint8_t*)c, (int64_t)strlen(c));
+}
+
+static int str_eq(LyricString* s, const char* c) {
+    int64_t n = (int64_t)strlen(c);
+    return lyric_string_len(s) == n && (n == 0 || memcmp(LYRIC_STRING_DATA(s), c, (size_t)n) == 0);
+}
+
+static void check_replace(const char* s, const char* old, const char* rep, const char* want) {
+    LyricString* a = str_lit(s);
+    LyricString* b = str_lit(old);
+    LyricString* c = str_lit(rep);
+    LyricString* got = lyric_string_replace(a, b, c);
+    CHECK(str_eq(got, want));
+    lyric_release(got);
+    lyric_release(a);
+    lyric_release(b);
+    lyric_release(c);
+}
+
+static void test_string_replace(void) {
+    check_replace("a,b,,c", ",", ";", "a;b;;c");
+    check_replace("hello", "l", "", "heo");          /* removal */
+    check_replace("aaaa", "aa", "b", "bb");           /* non-overlapping */
+    check_replace("aaa", "aa", "b", "ba");            /* left to right */
+    check_replace("abc", "abc", "xyzxyz", "xyzxyz");  /* whole string, growth */
+    check_replace("abc", "zz", "y", "abc");           /* no match */
+    check_replace("", "a", "b", "");                  /* empty input */
+    check_replace("x::y", "::", "\\\\", "x\\\\y");    /* backslashes */
+    check_replace("caf\xc3\xa9 caf\xc3\xa9", "\xc3\xa9", "e", "cafe cafe"); /* multibyte */
+}
+
 static void test_process_closed_stdio(void) {
     /* Regression: with fd 1/2 closed in the caller, pipe() hands the child
      * those very numbers.  The original wiring dup2'ed in place (a no-op
@@ -2252,6 +2285,9 @@ static void test_process_piped_line_roundtrip(void) {
     lyric_release(got2);
 
     CHECK(lyric_process_piped_close_stdin(p) == 0);
+    LyricString* l3 = mk_str("after close");
+    CHECK(lyric_process_piped_write_line(p, l3) == -2);
+    lyric_release(l3);
     /* cat sees EOF on stdin, writes nothing more, and exits. */
     CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
     CHECK(lyric_process_piped_exit_code(p) == 0);
@@ -2853,6 +2889,7 @@ int main(void) {
     test_process_op_stdin();
     test_process_piped_line_roundtrip();
     test_process_run_inherited();
+    test_string_replace();
     test_process_piped_final_line_without_newline();
     test_process_piped_burst_in_order();
     test_process_piped_crlf_stripped();

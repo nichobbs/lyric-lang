@@ -1005,15 +1005,13 @@ int32_t lyric_process_piped_read_line(void* raw, LyricString** out_line) {
 }
 
 /* Write one line (content + '\n') to the child's stdin, blocking until
- * the whole line is accepted by the pipe. Returns 0 on success, -1 if
- * stdin is already closed or the child is gone (broken pipe / hard
- * write error) -- the caller (`Std.ProcessPipedHost.hostPipedWriteLine`)
- * surfaces this as a panic, matching the dotnet/JVM twins' identical
- * "an uncaught write exception propagates" contract for this same
- * failure (neither twin's hostPipedWriteLine catches one). */
+ * the whole line is accepted by the pipe. Returns 0 on success, -2 if
+ * stdin was already closed (lyric_process_piped_close_stdin), and -1 if
+ * the write failed (broken pipe: the child is gone, or a hard write
+ * error). */
 int32_t lyric_process_piped_write_line(void* raw, LyricString* line) {
     LyricPipedProc* p = (LyricPipedProc*)raw;
-    if (p->stdin_wr < 0) return -1;
+    if (p->stdin_wr < 0) return -2;
     int64_t len = line ? lyric_string_len(line) : 0;
     const uint8_t* data = line ? LYRIC_STRING_DATA(line) : NULL;
     int64_t off = 0;
