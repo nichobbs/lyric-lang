@@ -4647,6 +4647,148 @@ test "same-package type as call receiver resolves cleanly (#7345)" {
   assertEqualInt(diagCount(parseCheck(src)), 0, "Widget declared in the same package as its use: no diagnostic")
 }
 
+// #7495: the fully package-qualified spelling of the #7345 call —
+// `Lib.Rest.Widget.create(...)` (a multi-segment package, like
+// `Std.Rest.RestClient.create(...)`) with no `import Lib.Rest` — must be
+// rejected the same way the bare-receiver form is (docs/01 §9.2: a package
+// outside the file's import closure is not nameable, qualified or not).
+// `Lyric.Pipeline` loads every stdlib package's signatures whatever the file
+// imports, so the package is "known" to the checker; only reachability can
+// tell the two apart.
+func libRestPackages(): List[ImportedPackage] {
+  val pkgRest = parse(
+    "package Lib.Rest\npub opaque type Widget {\n  name: String\n}\npub func Widget.create(name: in String): Widget {\n  Widget(name = name)\n}\npub func ping(): Int { 1 }\n"
+  )
+  val pkgWrap = parse("package Lib.Wrap\nimport Lib.Rest\npub func wrapFn(): Int { 1 }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Lib.Rest", items = pkgRest.file.items, imports = collectImportNames(pkgRest.file.imports))
+  )
+  packages.add(
+    ImportedPackage(name = "Lib.Wrap", items = pkgWrap.file.items, imports = collectImportNames(pkgWrap.file.imports))
+  )
+  packages
+}
+
+test "unimported package-qualified type receiver is T0020 (#7495)" {
+  val src = "package App\nfunc f(): Unit {\n  val w = Lib.Rest.Widget.create(\"x\")\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libRestPackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "unimported Lib.Rest.Widget.create(...) is exactly one T0020")
+  val msg = diagMessageFor(cr, "T0020")
+  assertTrue(msg.contains("Lib.Rest.Widget"), "T0020 names the qualified reference: " + msg)
+  assertTrue(msg.contains("import Lib.Rest"), "T0020 suggests the fix: " + msg)
+}
+
+test "unimported package-qualified function call is T0020 (#7495)" {
+  val src = "package App\nfunc f(): Int {\n  Lib.Rest.ping()\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libRestPackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "unimported Lib.Rest.ping() is exactly one T0020")
+  assertTrue(diagMessageFor(cr, "T0020").contains("import Lib.Rest"), "T0020 suggests `import Lib.Rest`")
+}
+
+test "imported package-qualified references resolve cleanly (#7495)" {
+  val src = "package App\nimport Lib.Rest\nfunc f(): Int {\n  val w = Lib.Rest.Widget.create(\"x\")\n  Lib.Rest.ping()\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, libRestPackages()), "T0020"),
+    0,
+    "qualified references into an imported package: no T0020"
+  )
+}
+
+test "package-qualified reference reachable only transitively resolves cleanly (#7495)" {
+  val src = "package App\nimport Lib.Wrap\nfunc f(): Int {\n  val w = Lib.Rest.Widget.create(\"x\")\n  Lib.Rest.ping()\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, libRestPackages()), "T0020"),
+    0,
+    "Lib.Rest is reachable through Lib.Wrap's own import (kernel/host idiom): no T0020"
+  )
+}
+
+test "package-qualified Std.Core prelude reference needs no import (#7495)" {
+  val pkgCore = parse("package Std.Core\npub func preludeFn(): Int { 7 }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Std.Core", items = pkgCore.file.items, imports = collectImportNames(pkgCore.file.imports))
+  )
+  val src = "package App\nfunc f(): Int {\n  Std.Core.preludeFn()\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0020"),
+    0,
+    "Std.Core is the implicit prelude: a qualified reference needs no import"
+  )
+}
+
+test "local whose field chain spells a package name is not a package reference (#7495)" {
+  val pkgRec = parse(
+    "package Lib.Shape\npub record Inner {\n  pub Widget: Int\n}\npub record Outer {\n  pub Rest: Inner\n}\n"
+  )
+  val packages = libRestPackages()
+  packages.add(
+    ImportedPackage(name = "Lib.Shape", items = pkgRec.file.items, imports = collectImportNames(pkgRec.file.imports))
+  )
+  val src = "package App\nimport Lib.Shape\nfunc f(o: in Outer): Int {\n  val Lib = o\n  Lib.Rest.Widget\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0020"),
+    0,
+    "a local named `Lib` wins over the unimported package `Lib.Rest`"
+  )
+}
+
+// #7499: a `pub func Widget.create(...)` on a package-private `Widget` is not
+// callable from another package: the receiver type is not nameable there, so
+// the call is T0097 (adding an import cannot fix it), never T0020.
+func privateWidgetPackages(): List[ImportedPackage] {
+  val pkgPriv = parse(
+    "package PkgPriv\nopaque type Widget {\n  name: String\n}\npub func Widget.create(name: in String): Widget {\n  Widget(name = name)\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "PkgPriv", items = pkgPriv.file.items, imports = collectImportNames(pkgPriv.file.imports))
+  )
+  packages
+}
+
+test "package-private type receiver from an importing package is T0097 (#7499)" {
+  val src = "package App\nimport PkgPriv\nfunc f(): Unit {\n  val w = Widget.create(\"x\")\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privateWidgetPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "private Widget.create(...) across packages is exactly one T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "not T0020: an import cannot fix a private type")
+  assertTrue(diagMessageFor(cr, "T0097").contains("Widget"), "T0097 names the private type")
+}
+
+test "package-private type receiver without the import is still T0097 (#7499)" {
+  val src = "package App\nfunc f(): Unit {\n  val w = Widget.create(\"x\")\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privateWidgetPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "private Widget.create(...), unimported: T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "unimported private type: T0097 wins over T0020")
+}
+
+test "package-qualified private type receiver is T0097 (#7499)" {
+  val src = "package App\nimport PkgPriv\nfunc f(): Unit {\n  val w = PkgPriv.Widget.create(\"x\")\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privateWidgetPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "PkgPriv.Widget.create(...) across packages is exactly one T0097")
+}
+
+// The real pipeline runs `Lyric.AliasRewriter` first, which collapses an
+// imported package's qualified receiver into a flat `EPath` — the
+// `resolveExprPath` route rather than the un-collapsed `EMember` chain.
+test "alias-rewritten qualified private type receiver is T0097 (#7499)" {
+  val src = "package App\nimport PkgPriv\nfunc f(): Unit {\n  val w = PkgPriv.Widget.create(\"x\")\n}\n"
+  val cr = checkWithImportedPackages(rewriteFile(parse(src).file), privateWidgetPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "rewritten PkgPriv.Widget.create(...) is exactly one T0097")
+}
+
+test "alias-rewritten imported qualified reference resolves cleanly (#7495)" {
+  val src = "package App\nimport Lib.Rest\nfunc f(): Int {\n  val w = Lib.Rest.Widget.create(\"x\")\n  Lib.Rest.ping()\n}\n"
+  val cr = checkWithImportedPackages(rewriteFile(parse(src).file), libRestPackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "rewritten qualified references into an imported package: no T0020")
+}
+
+test "same-package private type receiver resolves cleanly (#7499)" {
+  val src = "package App\nopaque type Widget {\n  name: String\n}\npub func Widget.create(name: in String): Widget {\n  Widget(name = name)\n}\nfunc f(): Unit {\n  val w = Widget.create(\"x\")\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "a private type used inside its own package: no diagnostic")
+}
+
 // #6700: `unionCaseSymbolForScrutinee`'s fallback (reached when the scrutinee
 // type doesn't resolve — here, an unknown identifier types as `TyError`, so
 // the DKUnionCase/DKEnumCase scrutinee-based tiers above never fire) must NOT

@@ -929,25 +929,159 @@ func checkUnimportedTypeReceiver(
       if sym.originPackage.length == 0 or sym.originPackage == "Std.Core" or sym.originPackage == curPkg {
         return
       }
-      if symTableImportReachable(tbl, curPkg, sym.originPackage) {
+      // #7499: a package-private type is not nameable from another package
+      // whether or not that package is imported, so this is T0097 (adding an
+      // import cannot fix it), checked before reachability.
+      if symbolIsPackagePrivateBinding(sym) {
+        checkImportedVisibility(sym, span, diag)
         return
       }
-      match sym.visibility {
-        case Some(_) -> {
-          diag.add(
-            errorDiagnostic(
-              "T0020",
-              "unknown name '" + name + "' (declared in " + sym.originPackage + "; add `import " + sym.originPackage + "`)",
-              span
-            )
-          )
-        }
-        case None -> {
-        }
+      // An extern-type binding (no visibility modifier) keeps its
+      // kernel-boundary resolution (docs/01 §3.1) and is not diagnosed here.
+      val hasVisibility = match sym.visibility { case Some(_) -> true; case None -> false }
+      if not hasVisibility or symTableImportReachable(tbl, curPkg, sym.originPackage) {
+        return
       }
+      diag.add(
+        errorDiagnostic(
+          "T0020",
+          "unknown name '" + name + "' (declared in " + sym.originPackage + "; add `import " + sym.originPackage + "`)",
+          span
+        )
+      )
     }
     case None -> {
     }
+  }
+}
+
+// #7499: a symbol whose cross-package use `checkImportedVisibility` rejects
+// (T0097) — declared by another package with no `pub`/`internal` modifier and
+// not an FFI host binding (extern types/packages sit outside the visibility
+// tiers, docs/01 §3.1).
+func symbolIsPackagePrivateBinding(sym: in Symbol): Bool {
+  if not sym.isImported {
+    return false
+  }
+  val isExternBinding = match sym.kind { case DKExternType(_, _) -> true; case DKExtern(_) -> true; case _ -> false }
+  if isExternBinding {
+    return false
+  }
+  match sym.visibility {
+    case Some(_) -> false
+    case None -> true
+  }
+}
+
+// Add `d` unless an identical diagnostic (code, message, span) is already
+// present: the package-qualified checks below run from both the call-callee
+// and the plain member-access paths, which can reach the same node.
+func addDiagnosticOnce(diag: in List[Diagnostic], d: in Diagnostic): Unit {
+  val key = recordCopySiteKey(d.span)
+  var i = 0
+  while i < diag.count {
+    val x = diag[i]
+    if x.code == d.code and x.message == d.message and recordCopySiteKey(x.span) == key {
+      return
+    }
+    i = i + 1
+  }
+  diag.add(d)
+}
+
+// #7495: `pkgSegs` spells a package-qualified reference's qualifier
+// (`Std.Rest` in `Std.Rest.RestClient.create(url)`), `member` the segment
+// after it. docs/01 §9.2: apart from the `Std.Core` prelude, a name is usable
+// only when its package is reachable from the file's own imports (directly
+// or through the imported packages' own imports — the kernel/host re-export
+// idiom). `Lyric.Pipeline` loads every stdlib package's signatures whatever
+// the file imports, so without this a qualified path into an unimported
+// package type-checked cleanly and whether it then built depended on the
+// backend and on what the build bundled (D-progress-1011). A reachable
+// qualifier naming another package's package-private type is T0097 (#7499).
+//
+// Only fires when the qualifier is a package the checker actually loaded
+// (`symTablePackageHasAnySymbol` / an `extern package` block), so a deferred
+// host path (`System.Console.WriteLine`) is untouched, and never when the
+// root segment is a local or a symbol already in scope (a field chain that
+// merely spells a package name). A check with no package scope (`curPkg ==
+// ""`) never diagnoses, as for `checkUnimportedTypeReceiver`.
+func checkQualifiedPackageRef(
+  tbl: in SymbolTable,
+  sc: in Scope,
+  pkgSegs: in List[String],
+  member: in String,
+  span: in Span,
+  diag: in List[Diagnostic],
+): Unit {
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 or pkgSegs.count == 0 {
+    return
+  }
+  val pkg = modulePathJoin(pkgSegs)
+  if pkg == curPkg or pkg == "Std.Core" {
+    return
+  }
+  if not (symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)) {
+    return
+  }
+  match scopeTryFind(sc, pkgSegs[0]) {
+    case Some(_) -> {
+      return
+    }
+    case None -> ()
+  }
+  match symTableTryFindOne(tbl, pkgSegs[0]) {
+    case Some(rootSym) -> {
+      // A single-segment qualifier that also names a symbol is a type
+      // receiver, owned by `checkUnimportedTypeReceiver`; a deeper chain
+      // rooted at a symbol in scope is a value's field chain.
+      if pkgSegs.count == 1 or rootSym.originPackage == curPkg or symTableScopeAllows(tbl, rootSym.originPackage) {
+        return
+      }
+    }
+    case None -> ()
+  }
+  if not (symTableScopeAllows(tbl, pkg) or symTableImportReachable(tbl, curPkg, pkg)) {
+    addDiagnosticOnce(
+      diag,
+      errorDiagnostic(
+        "T0020",
+        "unknown name '" + pkg + "." + member + "' (package " + pkg + " is not imported; add `import " + pkg + "`)",
+        span
+      )
+    )
+    return
+  }
+  match symTableTryFindInPackage(tbl, pkg, member) {
+    case Some(sym) -> {
+      if symbolIsType(sym) and symbolIsPackagePrivateBinding(sym) {
+        val vd: List[Diagnostic] = newList()
+        checkImportedVisibility(sym, span, vd)
+        var i = 0
+        while i < vd.count {
+          addDiagnosticOnce(diag, vd[i])
+          i = i + 1
+        }
+      }
+    }
+    case None -> ()
+  }
+}
+
+// `checkQualifiedPackageRef` for a member access `recv.member` whose receiver
+// is a pure dotted chain (`Pkg.Sub.member`); a no-op for any other receiver.
+func checkQualifiedMemberRef(
+  tbl: in SymbolTable,
+  sc: in Scope,
+  recv: in Expr,
+  member: in String,
+  span: in Span,
+  diag: in List[Diagnostic],
+): Unit {
+  val segs: List[String] = newList()
+  if flattenCalleePathSegs(recv, segs) {
+    checkQualifiedPackageRef(tbl, sc, segs, member, span, diag)
   }
 }
 
@@ -3387,6 +3521,7 @@ func resolveExprPath(
       pi = pi + 1
     }
     val pkg = modulePathJoin(prefix)
+    checkQualifiedPackageRef(tbl, sc, prefix, name, span, diag)
     // #6378: a package known ONLY via `extern package { ... }` block members
     // (its file has no ordinary `pub func`/`pub val`/… at all, e.g.
     // `AwsXRay.Kernel.Net`) never adds anything to `tbl.symbols`, so
@@ -6219,6 +6354,12 @@ func inferExprCore(
     }
 
     case ECall(fn, args) -> {
+      // #7495: a qualified callee (`Pkg.Sub.fn(...)`) left un-collapsed by the
+      // alias rewriter never passes through the `EMember` arm below.
+      match fn.kind {
+        case EMember(qualRecv, qualName) -> checkQualifiedMemberRef(tbl, sc, qualRecv, qualName, fn.span, diag)
+        case _ -> ()
+      }
       // The callee's function reference is a call, never a value to desugar.
       val calleeKey = recordCopySiteKey(fn.span)
       if not tbl.funcRefCallees.containsKey(calleeKey) {
@@ -6597,6 +6738,7 @@ func inferExprCore(
         case _ -> {
         }
       }
+      checkQualifiedMemberRef(tbl, sc, recv, name, e.span, diag)
       // A full package path used as a function value (`Pkg.Sub.fn`, not
       // collapsed by the alias rewriter since it is not a call callee).  A
       // root bound as a local is a field chain, never a package.
