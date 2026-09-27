@@ -289,8 +289,9 @@ pub func pipeCheckAndMono(
     return None
   }
 
-  // W0002 for every contract quantifier the elaborator will drop (#7228);
-  // `@proof_required` files are proved, not runtime-checked.
+  // W0002 for every contract quantifier the elaborator will drop (#7228).
+  // In a `@proof_required` file a quantifier is an obligation for `lyric
+  // prove`, so the warning would only repeat what the annotation says.
   if not vlIsProofRequired(mcRes.level) {
     val _ = gate(opts.pkgLabel, opts.lineOrigins, runtimeQuantifierWarnings(checked))
   }

@@ -257,13 +257,11 @@ test "multiple ensures" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §8b. @proof_required files are reconstructed without contract injection —
-// contracts are SMT obligations only, not runtime assertions.
+// §8b. @proof_required files keep their runtime checks (#7227): `lyric build`
+// does not run the prover, so a clause only it could discharge must still be
+// checked at runtime.
 // ─────────────────────────────────────────────────────────────────────────────
-test "proof_required file skipped entirely" {
-  // A @proof_required function with requires+ensures must NOT have runtime
-  // asserts injected — the elaborator reconstructs the SourceFile but skips
-  // calling elaborateFunction for IFunc items.
+test "proof_required file keeps runtime checks" {
   val src = "@proof_required\n" + "package P\n" + "import Std.Core\n" + "pub func f(x: in Bool): Bool\n" +
     "  requires: x\n" +
     "  ensures: result == true\n" +
@@ -272,24 +270,53 @@ test "proof_required file skipped entirely" {
     "}\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
-  // Body should contain exactly the original `return true` — no synthetic
-  // let-binding or assert call injected by the elaborator.
   match fn.body {
     case None -> assertTrue(false, "proof_required: function body disappeared")
     case Some(body) -> {
       match body {
         case FBBlock(blk) -> {
-          // Original body: single `return true` statement — no assert or let injected.
-          assertEqualInt(blk.statements.count, 1, "proof_required: body has exactly 1 stmt (no elaboration)")
-          assertTrue(not isAssertCall(blk.statements[0]), "proof_required: stmt[0] is not an injected assert")
-          assertTrue(not isLetBinding(blk.statements[0]), "proof_required: stmt[0] is not a synthetic let-binding")
+          assertTrue(blk.statements.count > 1, "proof_required: contracts lowered into the body")
+          assertTrue(isAssertCall(blk.statements[0]), "proof_required: stmt[0] is the requires assert")
         }
         case FBExpr(_) -> assertTrue(false, "proof_required: unexpected FBExpr body")
       }
     }
   }
-  // Original contract clauses must be preserved for lyric prove.
+  // The source clauses stay on the declaration for `lyric prove`.
   assertEqualInt(fn.contracts.count, 2, "proof_required: both contracts preserved")
+}
+
+// A quantifier conjunct has no runtime form, so in a @proof_required file it
+// stays a proof-only obligation: the runtime check keeps the plain conjunct
+// and drops the quantifier (#7227).
+test "proof_required quantifier conjunct is dropped, plain conjunct kept" {
+  val src = "@proof_required\n" + "package P\n" + "import Std.Core\n" + "pub func f(n: in Int): Int\n" +
+    "  requires: n > 0 and forall (i: Int) where i > 0 and i < n { i < n }\n" +
+    "{\n" +
+    "  return n\n" +
+    "}\n"
+  val fn = firstFunction(parseAndElaborate(src), "f")
+  val blk = bodyBlockOf(fn)
+  assertTrue(isAssertCall(blk.statements[0]), "the requires clause is checked at runtime")
+  match blk.statements[0].kind {
+    case SExpr(e) -> match e.kind {
+      case ECall(_, args) -> match args[0] {
+        case CAPositional(cond) -> {
+          assertTrue(not exprHasQuantifier(cond), "the quantifier conjunct is not in the runtime check")
+          match cond.kind {
+            case EBinop(op, _, _) -> match op {
+              case BGt -> assertTrue(true, "the plain conjunct n > 0 is kept")
+              case _ -> assertTrue(false, "expected the plain conjunct n > 0")
+            }
+            case _ -> assertTrue(false, "expected the plain conjunct n > 0")
+          }
+        }
+        case _ -> assertTrue(false, "expected a positional assert argument")
+      }
+      case _ -> assertTrue(false, "expected an assert call")
+    }
+    case _ -> assertTrue(false, "expected an expression statement")
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

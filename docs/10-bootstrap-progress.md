@@ -374,6 +374,7 @@ deferred to Phase 3 by design.
 | M4.3 — `lyric prove --json` schema (frozen public surface) | **Shipped** | D-progress-113 (CLI emitter + appendix A in `docs/15-phase-4-proof-plan.md` + ProveTests schema tests) |
 | M4.3 — LSP integration: V0007/V0008 hover counterexamples + code actions | **Shipped** | D-progress-113 (`Server.fs` proof-failure hover section; V0007/V0008 downgrade-to-runtime_checked quickfix; ProtocolTests covers V0003 / V0007 / V0008 / V0009) |
 | M4.3 — `@proof_required(checked_arithmetic)` mode | **Shipped** | D-progress-113 (`VCGen.Env.CheckedArithmetic` + per-binop overflow side conditions on `+`/`-`/`*` for `SInt`; DriverTests coverage) |
+| M4.3 — `@proof_required` builds keep every contract clause as a runtime check; `lyric prove` discharges them statically (build-time proving with per-obligation elision: #7431) | **Shipped** | D-progress-994 (#7227) |
 | M4.3 — `unsafe { ... }` + `assert φ` end-to-end (V0003, V0009) | **Shipped** | D-progress-113 (`ModeCheck.onUnsafe`/`checkAssumeUsage`; `VCGen` opacity for `EUnsafe`; assert-as-side-goal-and-assumption in DriverTests) |
 | M4.3 — banking-example proof tutorial chapter | **Shipped** | D-progress-113 (`docs/13-tutorial.md` §8: annotation, debit/credit/execute contracts, `--explain`, `--json`, `checked_arithmetic`, `unsafe { }`) |
 | M4.3 — `docs/17-axiom-audit.md` (renumbered from 16; slot 16 went to `16-lsp-vscode-plan.md`) | **Shipped** | `docs/17-axiom-audit.md` ships the full audit for `std.bcl.*`; references corrected in 15 / 12 / bootstrap-progress |

@@ -650,10 +650,17 @@ For `level(P) = runtime_checked`:
 
 ## 10. Proof-required semantics
 
-For `level(P) = proof_required`, contracts are not evaluated at run
-time; instead they generate **verification conditions** — Boolean
-formulae in a typed first-order logic — that an SMT solver discharges
-at compile time. If any VC is not discharged, compilation fails.
+For `level(P) = proof_required`, contracts also generate **verification
+conditions**: Boolean formulae in a typed first-order logic that an SMT
+solver discharges before the program runs. `lyric prove` generates and
+discharges them and fails if any is not discharged.
+
+`lyric build` does not run the prover. It evaluates a `proof_required`
+module's contracts at run time exactly as for `runtime_checked` (§3–§9),
+so a module that has not been proved is still checked. The one exception
+is a quantifier conjunct, which has no runtime form and is only a VC
+(D-progress-994, #7227). Eliding the runtime check for each discharged
+VC during the build is tracked in #7431.
 
 This section defines the VC generation. The dual viewpoint with the
 runtime semantics is summarised in Theorem 1 (§13.1).

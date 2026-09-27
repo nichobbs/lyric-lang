@@ -186,12 +186,12 @@ Lengths, counts, indices, loop counters — all should be `Nat`. It's in every s
 **Contract violations are `Bug`, not errors — do not catch them.**
 `PreconditionViolated`, `PostconditionViolated`, `InvariantViolated` are programming mistakes. Do not put them in `Result`, do not catch them. Fix the bug.
 
-**`requires:` on `pub` functions is always checked, even in release builds.**
-Internal (`non-pub`) `requires:` is elided in release. `ensures:` is elided in release by default.
+**Contracts are checked in every build profile.** `--release` removes no
+`requires:`, `ensures:` or `invariant:` check (language reference §6.4).
 
 **`assert` ≠ `requires:`.** `assert` is an internal sanity check, not part of the API contract, not visible in docs, not reasoned about by the prover the same way. Wrong choice produces confusing diagnostics.
 
-**`forall`/`exists` in `ensures:` iterate at runtime** — they are not free. A `forall` over a million-element slice in an `ensures:` clause runs on every return.
+**`forall`/`exists` in a contract are not checked at runtime.** A quantifier ranges over a type, so the `and`-conjunct containing it is skipped (warning W0002) and only `lyric prove` checks it; the clause's other conjuncts still run (#7228).
 
 **`requires:` and `ensures:` clauses follow the parameter list, before the body.**
 ```lyric

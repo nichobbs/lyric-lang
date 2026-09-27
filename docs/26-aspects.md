@@ -296,9 +296,10 @@ rebinding occurs, the wrapper inserts contract-preservation checks at
 the boundary:
 
 - **Rebound `args`** must satisfy the target's `requires:`. The check
-  is inserted immediately before `proceed`. In `@runtime_checked`,
-  it's a runtime assert; in `@proof_required`, it's a verifier
-  obligation.
+  is inserted immediately before `proceed` as a runtime assert, at
+  every verification level (a `@proof_required` build keeps its
+  runtime checks, D-progress-994); in `@proof_required` it is also a
+  verifier obligation for `lyric prove`.
 - **Rebound return value** must satisfy the wrapper's composed
   `ensures:` (§5). Same insertion rules.
 
