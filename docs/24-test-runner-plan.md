@@ -128,7 +128,7 @@ lyric test --manifest <lyric.toml> [--filter <substring>] [--list]
   not counted in the `1..N` plan, so a file whose only other test runs
   reports `1..1`. `Lyric.TestSynth` generates the runner's `main` before
   erasure, so it decides each `test`/`property` item's gating with the
-  same predicate (`Lyric.Cfg.isCfgGatedOut`) and leaves erased items out
+  same predicate (`Lyric.Cfg.isItemCfgGatedOut`) and leaves erased items out
   of `main`; the annotation still stays on the synthesized function, so
   erasure removes it and reports `F0012`/`F0013` for it like any other
   item. Before #7481, `main` still called the erased function, a

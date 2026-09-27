@@ -132,7 +132,7 @@ record ClassifyOut {
 pub func isFileCfgGatedOut(
   active: in List[String], declared: in List[String], fileAnnotations: in List[Annotation]
 ): Bool {
-  isCfgGatedOut(active, declared, fileAnnotations)
+  isItemCfgGatedOut(active, declared, fileAnnotations)
 }
 
 /// True iff `applyCfgErasure` would erase an item carrying `annotations`
@@ -141,7 +141,7 @@ pub func isFileCfgGatedOut(
 /// malformed-predicate-is-kept policy: `lyric test` uses it to leave an
 /// erased `test`/`property` item out of the synthesized runner, which is
 /// generated before erasure runs (#7481).
-pub func isCfgGatedOut(active: in List[String], declared: in List[String], annotations: in List[Annotation]): Bool {
+pub func isItemCfgGatedOut(active: in List[String], declared: in List[String], annotations: in List[Annotation]): Bool {
   not classifyAnnotations(active, declared, annotations).keep
 }
 
