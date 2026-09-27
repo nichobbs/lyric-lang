@@ -1350,28 +1350,6 @@ func splitFloatSuffix(raw: in String): FloatSuffixSplit {
   }
 }
 
-@pure
-func intToLong(n: in Int): Long {
-  // Tiny widening shim — Lyric's surface language requires explicit
-  // promotion here.  Inputs are bounded to small magnitudes (digit
-  // values 0..15, base ∈ {2, 8, 10, 16}) so the loop is constant time.
-  var acc: Long = 0i64
-  if n >= 0 {
-    var i = 0
-    while i < n {
-      acc = acc + 1i64
-      i = i + 1
-    }
-  } else {
-    var i = 0
-    while i > n {
-      acc = acc - 1i64
-      i = i - 1
-    }
-  }
-  acc
-}
-
 /// Predicate companion to `parseDigits`: true iff `(body, base)`
 /// is the special case `9223372036854775808` in decimal — the
 /// absolute value of `Long.MinValue`.  Used by the decimal lex path
@@ -1401,7 +1379,7 @@ func parseDigits(body: in String, base: in Int): Option[Long] {
   if body.length == 0 {
     return None
   }
-  val baseL = intToLong(base)
+  val baseL = base.toLong()
   var value: Long = 0i64
   var overflowed = false
   var i = 0
@@ -1414,7 +1392,7 @@ func parseDigits(body: in String, base: in Int): Option[Long] {
     if d < 0 or d >= base {
       overflowed = true
     } else {
-      val dL = intToLong(d)
+      val dL = d.toLong()
       val maxBefore = (limit - dL) / baseL
       if value > maxBefore {
         overflowed = true
@@ -1469,7 +1447,11 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
   }
   val body = stripUnderscores(raw)
   match parseDigits(body, base) {
-    case Some(v) -> emit(state, TInt(value = v, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+    case Some(v) -> emit(
+      state,
+      TInt(value = v, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)),
+      startP
+    )
     case None -> {
       recordError(state, "L0010", "integer literal out of range", makeSpan(startP, currentPosition(state)))
       emit(state, TInt(value = 0i64, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
@@ -1583,7 +1565,11 @@ func lexDecimalNumber(state: inout LexerState): Unit {
     val fsplit = splitFloatSuffix(combined)
     val stripped = stripUnderscores(fsplit.body)
     match parseDoubleLiteral(stripped) {
-      case Some(v) -> emit(state, TFloat(value = v, suffix = fsplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+      case Some(v) -> emit(
+        state,
+        TFloat(value = v, suffix = fsplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)),
+        startP
+      )
       case None -> {
         recordError(state, "L0011", "invalid float literal", makeSpan(startP, currentPosition(state)))
         emit(state, TFloat(value = 0.0, suffix = fsplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
@@ -1676,21 +1662,8 @@ func longToChar(v: in Long): Char {
   if v < 0i64 or v > 65535i64 or (v >= 55296i64 and v <= 57343i64) {
     '\u{fffd}'
   } else {
-    CharHost.hostIntToChar(longToInt(v))
+    CharHost.hostIntToChar(v.toInt())
   }
-}
-
-@pure
-func longToInt(v: in Long): Int {
-  // Saturating downcast for the small-positive range we need above.
-  // A real `conv.i4` builtin would replace this once exposed.
-  var acc = 0
-  var rem = v
-  while rem > 0i64 {
-    acc = acc + 1
-    rem = rem - 1i64
-  }
-  acc
 }
 
 @pure
@@ -1706,8 +1679,8 @@ func nonBmpToSurrPairString(v: in Long): String {
   val cpPrime = v - 65536i64
   val highOffset = cpPrime / 1024i64
   val lowOffset = cpPrime - highOffset * 1024i64
-  val highChar = CharHost.hostIntToChar(55296 + longToInt(highOffset))
-  val lowChar = CharHost.hostIntToChar(56320 + longToInt(lowOffset))
+  val highChar = CharHost.hostIntToChar(55296 + highOffset.toInt())
+  val lowChar = CharHost.hostIntToChar(56320 + lowOffset.toInt())
   charToString(highChar) + charToString(lowChar)
 }
 

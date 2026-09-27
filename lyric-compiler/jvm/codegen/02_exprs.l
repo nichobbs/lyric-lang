@@ -949,9 +949,9 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           // stack-shape/verifier type mismatch against the `int`-typed JVM
           // slot every OTHER `UInt`-erasing call site in this file expects
           // (`Jvm.Codegen.typeExprToJvm`'s `UInt -> JInt`), not merely a
-          // wrong value.  `longToInt` (`Std.Math.longToInt` ->
-          // `Convert.ToInt32`) narrows the value into its `int` bit
-          // pattern — the range-subtype bound fold
+          // wrong value.  `.toInt()` (an unchecked `conv.i4` truncation,
+          // unlike the range-checked `Std.Math.longToInt`, #7465) narrows
+          // the value into its `int` bit pattern — the range-subtype bound fold
           // (`Jvm.Lowering.emitJvmDistinctBoundsToFail`) already relies on
           // the identical conversion for a `UInt` upper bound above
           // `Int32.MaxValue`, matching how JVM natively represents `UInt`.
@@ -968,10 +968,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             insns.add(LLconst(v = v))
             JLong
           } else if isExplicit32OrNarrower {
-            insns.add(LIconst(v = longToInt(v)))
+            insns.add(LIconst(v = v.toInt()))
             JInt
           } else if v >= -2147483648i64 and v <= 2147483647i64 {
-            insns.add(LIconst(v = longToInt(v)))
+            insns.add(LIconst(v = v.toInt()))
             JInt
           } else {
             insns.add(LLconst(v = v))

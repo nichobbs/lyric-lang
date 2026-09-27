@@ -72,3 +72,35 @@ echo "Native slice_fastpath_self_test.l (--target native) passed"
 "$lyric_bin" test lyric-compiler/lyric/int_literal_range_self_test.l --target native
 "$lyric_bin" test lyric-compiler/lyric/mixed_width_arith_self_test.l --target native
 echo "Native int_literal_range / mixed_width_arith self-tests (--target native) passed"
+# A bare `longToInt` resolves to the range-checked Std.Math.longToInt, not an
+# unchecked truncation (#7465). Native has no try/catch, so the out-of-range
+# case is checked from outside: the run must fail with the precondition. The
+# dotnet/JVM half is conversion_name_resolution_self_test.l.
+cat > "$work/long_to_int.l" <<'LYR'
+package NativeLongToInt
+
+import Std.Core
+import Std.Console
+import Std.Math
+
+func main(): Unit {
+  println(toString(longToInt(2147483647i64)))
+  println(toString(Std.Math.longToInt(-2147483648i64)))
+  println(toString(3000000000i64.toInt()))
+  val big = 3000000000i64
+  println(toString(longToInt(big)))
+}
+LYR
+set +e
+lti_out="$("$lyric_bin" run --target native "$work/long_to_int.l" 2>&1)"
+lti_rc=$?
+set -e
+lti_values="$(printf '%s\n' "$lti_out" | grep -E '^-?[0-9]+$' | tr '\n' ' ')"
+if [ "$lti_rc" -eq 0 ] \
+  || [ "$lti_values" != "2147483647 -2147483648 -1294967296 " ] \
+  || ! printf '%s\n' "$lti_out" | grep -q 'PreconditionViolated: Std.Math.longToInt'; then
+  echo "::error::bare longToInt on --target native: expected the in-range values then a Std.Math.longToInt precondition failure (#7465), got exit $lti_rc:"
+  printf '%s\n' "$lti_out"
+  exit 1
+fi
+echo "Native bare longToInt precondition check (--target native) passed"

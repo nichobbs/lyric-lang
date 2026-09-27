@@ -273,11 +273,11 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
             // row without ever completing a line (the slow-trickle case).
             growthStreak = growthStreak + 1
             if growthStreak >= 64 {
-              JThread.sleep(intToLong(1))
+              JThread.sleep(1i64)
               growthStreak = 0
             }
           } else if procIsAlive(p.proc) {
-            JThread.sleep(intToLong(1))
+            JThread.sleep(1i64)
             growthStreak = 0
           } else {
             // Process has exited. One more drain in case bytes were flushed
@@ -379,10 +379,10 @@ pub func hostPipedKill(p: in PipedHandle): Unit {
 /// `true` if it exited within the deadline.
 pub func hostPipedWaitExit(p: in PipedHandle, timeoutMs: in Int): Bool {
   val startMs = currentTimeMillis()
-  val timeoutMsL = intToLong(timeoutMs)
+  val timeoutMsL = timeoutMs.toLong()
   var exited = not procIsAlive(p.proc)
   while not exited and (currentTimeMillis() - startMs) < timeoutMsL {
-    JThread.sleep(intToLong(1))
+    JThread.sleep(1i64)
     exited = not procIsAlive(p.proc)
   }
   exited

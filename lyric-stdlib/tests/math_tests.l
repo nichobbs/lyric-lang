@@ -59,17 +59,30 @@ func testSignDoubleNaN(): Unit {
 // `requires:` rejects one that doesn't (matching the panic the BCL/JVM
 // hosts already raised for an out-of-range value).
 //
-// Called qualified (`Math.longToInt`, not bare `longToInt`): both backends
-// still lower a BARE `longToInt` to an unchecked truncating conversion that
-// never reaches Std.Math's function or its contract (#7465).
+// #7465: a bare `longToInt` resolves to this same checked function; it used
+// to be lowered to an unchecked truncating conversion instead.
 func callLongToIntOverflow(): Unit {
   val ignored = Math.longToInt(9223372036854775807i64)
+}
+
+func callBareLongToIntOverflow(): Unit {
+  val ignored = longToInt(3000000000i64)
+}
+
+func callBareLongToIntUnderflow(): Unit {
+  val ignored = longToInt(-2147483649i64)
 }
 
 func testLongToIntBounds(): Unit {
   assertEqualInt(Math.longToInt(2147483647i64), 2147483647, "longToInt max")
   assertEqualInt(Math.longToInt(-2147483648i64), -2147483648, "longToInt min")
   assertPanics("longToInt rejects a value outside Int range", callLongToIntOverflow)
+  assertEqualInt(longToInt(2147483647i64), 2147483647, "bare longToInt max")
+  assertEqualInt(longToInt(-2147483648i64), -2147483648, "bare longToInt min")
+  assertEqualInt(longToInt(42i64), 42, "bare longToInt in range")
+  assertPanics("bare longToInt rejects 3_000_000_000", callBareLongToIntOverflow)
+  assertPanics("bare longToInt rejects Int min - 1", callBareLongToIntUnderflow)
+  assertTrue(intToLong(2000000000) + intToLong(2000000000) == 4000000000i64, "bare intToLong widens")
 }
 
 // #7252: absInt/absLong reject Int.MinValue/Long.MinValue, whose negation

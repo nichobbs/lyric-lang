@@ -860,7 +860,7 @@ func respondBytesWith(
     i = i + 1
   }
   if body.length > 0 {
-    c.sendResponseHeaders(status, intToLong(body.length))
+    c.sendResponseHeaders(status, body.length.toLong())
     val os: JOutputStream = c.getResponseBody()
     os.write(body)
     os.close()

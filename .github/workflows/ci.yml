@@ -3208,11 +3208,13 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/int_literal_range_self_test.l
-      - name: Mixed-width arithmetic self-test (native lyric test)
+      - name: Mixed-width arithmetic + conversion-name self-tests (native lyric test)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/mixed_width_arith_self_test.l
+        run: |
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/mixed_width_arith_self_test.l
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/conversion_name_resolution_self_test.l
       - name: Mixed-width unsigned arithmetic self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true
@@ -5457,11 +5459,13 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/int_literal_range_self_test.l
-      - name: Mixed-width arithmetic self-test on JVM (native lyric test --target jvm)
+      - name: Mixed-width arithmetic + conversion-name self-tests on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/mixed_width_arith_self_test.l
+        run: |
+          bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/mixed_width_arith_self_test.l
+          bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/conversion_name_resolution_self_test.l
       - name: Mixed-width unsigned arithmetic self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -7259,7 +7263,8 @@ jobs:
           "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_map_tests.l
 
       # Std.Random on JVM: wide nextIntRange must not overflow (#7252).
-      - name: Std.Random suite on JVM (random_tests.l)
+      # Std.Math on JVM: longToInt's precondition, bare or qualified (#7465).
+      - name: Std.Random + Std.Math suites on JVM
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -7269,6 +7274,7 @@ jobs:
             exit 1
           fi
           "$lyric_bin" run --target jvm lyric-stdlib/tests/random_tests.l
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/math_tests.l
 
       # Std.Process on JVM: capture, exit codes, stdin, timeouts, and `run`
       # (inherited stdio). The suite could not compile on JVM while it

@@ -1614,14 +1614,10 @@ func emitPanicRaw(ctx: in Ctx, insns: in List[NInsn], msg: in String, line: in I
   val args: List[NArg] = newList()
   args.add(NArg(ty = NPtr(pointee = NI8), value = msgPtr.value))
   args.add(NArg(ty = NPtr(pointee = NI8), value = filePtr.value))
-  args.add(NArg(ty = NI32, value = NLitInt(v = intToLong(line), ty = NI32)))
+  args.add(NArg(ty = NI32, value = NLitInt(v = line.toLong(), ty = NI32)))
   insns.add(NCallVoid(fn = NGlobal(name = "lyric_panic_msg"), args = args))
   insns.add(NUnreachable)
   insns.add(NLabel(name = freshLabel(ctx, "dead")))
-}
-
-func intToLong(v: in Int): Long {
-  v.toLong()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2032,7 +2028,7 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
       match mapGet(ctx.enumDefs, joined) {
         case Some(idx) -> {
           if not Str.endsWith(joined, ".__enum") {
-            return NVal(ty = NI32, value = NLitInt(v = intToLong(idx), ty = NI32))
+            return NVal(ty = NI32, value = NLitInt(v = idx.toLong(), ty = NI32))
           }
         }
         case None -> {
@@ -2486,7 +2482,7 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
       case EPath(rpath) -> {
         val joined = modulePathJoin(rpath.segments) + "." + memberName
         match mapGet(ctx.enumDefs, joined) {
-          case Some(idx) -> return NVal(ty = NI32, value = NLitInt(v = intToLong(idx), ty = NI32))
+          case Some(idx) -> return NVal(ty = NI32, value = NLitInt(v = idx.toLong(), ty = NI32))
           case None -> {
           }
         }
@@ -2582,7 +2578,7 @@ func lowerRecordFieldLoad(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, v
   val fieldPtr = freshTmp(ctx)
   val fArgs: List[NArg] = newList()
   fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + idx), ty = NI32)))
+  fArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + idx).toLong(), ty = NI32)))
   insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = v.value, indices = fArgs))
   val dest = freshTmp(ctx)
   insns.add(NLoad(dest = dest, ty = ri.fieldTys[idx], ptr = NLocal(name = fieldPtr)))
@@ -3219,7 +3215,7 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
       val fieldPtr = freshTmp(ctx)
       val fArgs: List[NArg] = newList()
       fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + idx), ty = NI32)))
+      fArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + idx).toLong(), ty = NI32)))
       insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = obj.value, indices = fArgs))
       NVal(ty = NPtr(pointee = fieldTy), value = NLocal(name = fieldPtr))
     }
@@ -5235,7 +5231,7 @@ func emitUnionPayloadFieldRead(
   val fieldPtr = freshTmp(ctx)
   val fArgs: List[NArg] = newList()
   fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(fi), ty = NI32)))
+  fArgs.add(NArg(ty = NI32, value = NLitInt(v = fi.toLong(), ty = NI32)))
   insns.add(NGEP(dest = fieldPtr, ty = caseTy, ptr = NLocal(name = casePtr), indices = fArgs))
   val fieldVal = freshTmp(ctx)
   insns.add(NLoad(dest = fieldVal, ty = ui.cases[caseIdx].fieldTys[fi], ptr = NLocal(name = fieldPtr)))
@@ -5331,7 +5327,7 @@ func emitAsyncRunCapture(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, c
   insns.add(NLoad(dest = disc, ty = NI32, ptr = NLocal(name = discPtr)))
   val isOk = freshTmp(ctx)
   insns.add(
-    NICmp(dest = isOk, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = intToLong(rawOk), ty = NI32))
+    NICmp(dest = isOk, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = rawOk.toLong(), ty = NI32))
   )
   val okL = freshLabel(ctx, "prc.ok")
   val errL = freshLabel(ctx, "prc.err")
@@ -7425,7 +7421,7 @@ func lowerLambda(
     val capSlot = freshTmp(ctx)
     val cArgs: List[NArg] = newList()
     cArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    cArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(3 + si), ty = NI32)))
+    cArgs.add(NArg(ty = NI32, value = NLitInt(v = (3 + si).toLong(), ty = NI32)))
     insns.add(NGEP(dest = capSlot, ty = structTy, ptr = NLocal(name = obj), indices = cArgs))
     insns.add(NStore(ty = capTys[si], value = capVal.value, ptr = NLocal(name = capSlot)))
     si = si + 1
@@ -7468,7 +7464,7 @@ func synthLambdaBody(
     val capPtr = freshTmp(ctx)
     val gArgs: List[NArg] = newList()
     gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    gArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(3 + ci), ty = NI32)))
+    gArgs.add(NArg(ty = NI32, value = NLitInt(v = (3 + ci).toLong(), ty = NI32)))
     bodyInsns.add(NGEP(dest = capPtr, ty = structTy, ptr = NLocal(name = "self.env"), indices = gArgs))
     val capVal = freshTmp(ctx)
     bodyInsns.add(NLoad(dest = capVal, ty = capTys[ci], ptr = NLocal(name = capPtr)))
@@ -7560,7 +7556,7 @@ func synthClosureDtor(
       val fieldPtr = freshTmp(ctx)
       val gArgs: List[NArg] = newList()
       gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      gArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(3 + i), ty = NI32)))
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = (3 + i).toLong(), ty = NI32)))
       body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = gArgs))
       val fieldVal = freshTmp(ctx)
       body.add(NLoad(dest = fieldVal, ty = capTys[i], ptr = NLocal(name = fieldPtr)))
@@ -7884,7 +7880,7 @@ func synthRecordDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
       val fieldPtr = freshTmp(ctx)
       val idxArgs: List[NArg] = newList()
       idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      idxArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + i), ty = NI32)))
+      idxArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + i).toLong(), ty = NI32)))
       body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = idxArgs))
       val fieldVal = freshTmp(ctx)
       body.add(NLoad(dest = fieldVal, ty = ri.fieldTys[i], ptr = NLocal(name = fieldPtr)))
@@ -7940,7 +7936,7 @@ func synthUnionDtor(ctx: in Ctx, ui: in NUnionInfo): NFunc {
     if hasRef {
       val label = "dtor.case." + ci.toString()
       caseLabels.add(label)
-      switchCases.add(NSwitchCase(matchVal = intToLong(ci), label = label))
+      switchCases.add(NSwitchCase(matchVal = ci.toLong(), label = label))
     } else {
       caseLabels.add("")
     }
@@ -7972,7 +7968,7 @@ func synthUnionDtor(ctx: in Ctx, ui: in NUnionInfo): NFunc {
           val fieldPtr = freshTmp(ctx)
           val fArgs: List[NArg] = newList()
           fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-          fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(fi), ty = NI32)))
+          fArgs.add(NArg(ty = NI32, value = NLitInt(v = fi.toLong(), ty = NI32)))
           body.add(NGEP(dest = fieldPtr, ty = caseTy, ptr = NLocal(name = casePtr), indices = fArgs))
           val fieldVal = freshTmp(ctx)
           body.add(NLoad(dest = fieldVal, ty = ui.cases[ci2].fieldTys[fi], ptr = NLocal(name = fieldPtr)))
@@ -8012,7 +8008,7 @@ func emitHeapAlloc(ctx: in Ctx, insns: in List[NInsn], objTy: in NType, size: in
       dest = raw,
       retTy = NPtr(pointee = NI8),
       fn = NGlobal(name = "lyric_alloc"),
-      args = arg1(NI64, NLitInt(v = intToLong(size), ty = NI64))
+      args = arg1(NI64, NLitInt(v = size.toLong(), ty = NI64))
     )
   )
   val obj = freshTmp(ctx)
@@ -8144,7 +8140,7 @@ func lowerRecordConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInf
     val fieldPtr = freshTmp(ctx)
     val fArgs: List[NArg] = newList()
     fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + fi), ty = NI32)))
+    fArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + fi).toLong(), ty = NI32)))
     insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = obj), indices = fArgs))
     insns.add(NStore(ty = ri.fieldTys[fi], value = vals[fi].value, ptr = NLocal(name = fieldPtr)))
     fi = fi + 1
@@ -8205,7 +8201,7 @@ func lowerUnionConstructVals(
   dArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
   dArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
   insns.add(NGEP(dest = discPtr, ty = structTy, ptr = NLocal(name = obj), indices = dArgs))
-  insns.add(NStore(ty = NI32, value = NLitInt(v = intToLong(caseIdx), ty = NI32), ptr = NLocal(name = discPtr)))
+  insns.add(NStore(ty = NI32, value = NLitInt(v = caseIdx.toLong(), ty = NI32), ptr = NLocal(name = discPtr)))
   if vals.count > 0 {
     val casePtr = emitCasePayloadPtr(ctx, insns, ui, structTy, obj, caseIdx)
     val caseTy = casePayloadStructType(ui, ci)
@@ -8222,7 +8218,7 @@ func lowerUnionConstructVals(
       val fieldPtr = freshTmp(ctx)
       val fArgs: List[NArg] = newList()
       fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(fi), ty = NI32)))
+      fArgs.add(NArg(ty = NI32, value = NLitInt(v = fi.toLong(), ty = NI32)))
       insns.add(NGEP(dest = fieldPtr, ty = caseTy, ptr = NLocal(name = casePtr), indices = fArgs))
       insns.add(NStore(ty = ci.fieldTys[fi], value = vals[fi].value, ptr = NLocal(name = fieldPtr)))
       fi = fi + 1
@@ -8660,7 +8656,7 @@ func emitConstructorTest(
       match mapGet(ctx.enumDefs, joined) {
         case Some(idx) -> {
           val cmp = freshTmp(ctx)
-          insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = sv.value, b = NLitInt(v = intToLong(idx), ty = NI32)))
+          insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = sv.value, b = NLitInt(v = idx.toLong(), ty = NI32)))
           insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = okLabel, elseLabel = failLabel))
           return
         }
@@ -8703,13 +8699,7 @@ func emitConstructorTest(
   insns.add(NLoad(dest = disc, ty = NI32, ptr = NLocal(name = discPtr)))
   val cmp = freshTmp(ctx)
   insns.add(
-    NICmp(
-      dest = cmp,
-      pred = IEq,
-      ty = NI32,
-      a = NLocal(name = disc),
-      b = NLitInt(v = intToLong(cref.caseIdx), ty = NI32)
-    )
+    NICmp(dest = cmp, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = cref.caseIdx.toLong(), ty = NI32))
   )
   val ci = ui.cases[cref.caseIdx]
   if subpats.count == 0 {
@@ -8750,7 +8740,7 @@ func emitConstructorTest(
     val fieldPtr = freshTmp(ctx)
     val fArgs: List[NArg] = newList()
     fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(fi), ty = NI32)))
+    fArgs.add(NArg(ty = NI32, value = NLitInt(v = fi.toLong(), ty = NI32)))
     insns.add(NGEP(dest = fieldPtr, ty = caseTy, ptr = NLocal(name = casePtr), indices = fArgs))
     val fieldVal = freshTmp(ctx)
     insns.add(NLoad(dest = fieldVal, ty = ci.fieldTys[fi], ptr = NLocal(name = fieldPtr)))
@@ -9563,7 +9553,7 @@ func lowerFieldAssign(
   val fieldPtr = freshTmp(ctx)
   val fArgs: List[NArg] = newList()
   fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + idx), ty = NI32)))
+  fArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + idx).toLong(), ty = NI32)))
   insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = obj.value, indices = fArgs))
   val newVal = match op {
     case AssEq -> lowerExprExpecting(ctx, insns, value, fieldTy)
@@ -11536,7 +11526,7 @@ func synthProtectedDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
       val fieldPtr = freshTmp(ctx)
       val idxArgs: List[NArg] = newList()
       idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      idxArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + i), ty = NI32)))
+      idxArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + i).toLong(), ty = NI32)))
       body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = idxArgs))
       val fieldVal = freshTmp(ctx)
       body.add(NLoad(dest = fieldVal, ty = ri.fieldTys[i], ptr = NLocal(name = fieldPtr)))
@@ -11549,7 +11539,7 @@ func synthProtectedDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
   val mutexFieldPtr = freshTmp(ctx)
   val mIdxArgs: List[NArg] = newList()
   mIdxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  mIdxArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + mutexIdx), ty = NI32)))
+  mIdxArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + mutexIdx).toLong(), ty = NI32)))
   body.add(NGEP(dest = mutexFieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = mIdxArgs))
   val mutexVal = freshTmp(ctx)
   body.add(NLoad(dest = mutexVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = mutexFieldPtr)))
@@ -11645,7 +11635,7 @@ func lowerProtectedConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRec
     val fieldPtr = freshTmp(ctx)
     val fArgs: List[NArg] = newList()
     fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    fArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + fi), ty = NI32)))
+    fArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + fi).toLong(), ty = NI32)))
     insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = obj), indices = fArgs))
     insns.add(NStore(ty = ri.fieldTys[fi], value = vals[fi].value, ptr = NLocal(name = fieldPtr)))
     fi = fi + 1
@@ -11797,7 +11787,7 @@ func synthProtectedWrapper(
   val mutexFieldPtr = freshTmp(ctx)
   val idxArgs: List[NArg] = newList()
   idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(2 + mutexIdx), ty = NI32)))
+  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + mutexIdx).toLong(), ty = NI32)))
   body.add(NGEP(dest = mutexFieldPtr, ty = structTy, ptr = NLocal(name = "self"), indices = idxArgs))
   val mutexVal = freshTmp(ctx)
   body.add(NLoad(dest = mutexVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = mutexFieldPtr)))
@@ -12443,7 +12433,7 @@ func lowerIfaceDispatch(
   val fnSlotPtr = freshTmp(ctx)
   val mArgs: List[NArg] = newList()
   mArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  mArgs.add(NArg(ty = NI32, value = NLitInt(v = intToLong(slot), ty = NI32)))
+  mArgs.add(NArg(ty = NI32, value = NLitInt(v = slot.toLong(), ty = NI32)))
   insns.add(NGEP(dest = fnSlotPtr, ty = ifaceVtStructType(ii), ptr = NLocal(name = vtbl), indices = mArgs))
   val fnRaw = freshTmp(ctx)
   insns.add(NLoad(dest = fnRaw, ty = NPtr(pointee = NI8), ptr = NLocal(name = fnSlotPtr)))
