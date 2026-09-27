@@ -33,7 +33,7 @@ Here is the full module inventory:
 | `Std.Stream` | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
 | `Std.Collections` | `List[T]`, `Map[K, V]` |
 | `Std.Set` | `Set[T]`, `setContains`, `setAdd`, `setRemove`, `setUnion`, `setIntersection` |
-| `Std.Sort` | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings` |
+| `Std.Sort` | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings`; `isAscendingInts`/`isAscendingLongs`/`isAscendingStrings` |
 | `Std.Iter` | `map`, `filter`, `fold`, `find`, `take`, `drop` over slices |
 | `Std.Math` | `absDouble`, `sqrt`, `pow`, `minPairDouble`, `maxPairDouble`, `floor`, `ceiling` |
 | `Std.Random` | seeded RNG: `makeRandom`, `nextInt`, `nextDouble` |
@@ -238,6 +238,8 @@ val formatted = parsed.toIso8601()
 `Instant` represents a point in time as an opaque value; you do not construct one from raw numbers. `Duration` has `seconds()`, `millis()`, and `nanos()` accessors. `Duration.between(a, b)` is always non-negative — it returns the absolute difference; if `a` is after `b`, the result is still positive.
 
 `Instant.fromIso8601` returns `Result[Instant, ParseError]`. The `?` propagates the error if parsing fails. If you are parsing user input, you will always want to handle the `Err` case explicitly.
+
+`fromEpochMillis(n)` and `fromEpochSeconds(n)` accept the range every target can represent, about 292 years either side of 1970. A value outside it is a precondition violation. For untrusted input, use `tryFromEpochMillis`/`tryFromEpochSeconds`, which return `None` instead. The `Duration` constructors (`millis`, `seconds`, `minutes`, `hours`, `days`) likewise reject `NaN` and magnitudes beyond that range.
 
 The `Clock` interface is what testability depends on:
 

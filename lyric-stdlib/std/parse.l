@@ -15,6 +15,7 @@
 //!     Reserved for trusted literals or startup code; calls
 //!     `tryParseXxx` and panics with the `ParseError`'s message on
 //!     failure.
+@runtime_checked
 package Std.Parse
 
 import Std.Core

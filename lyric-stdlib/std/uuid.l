@@ -20,6 +20,7 @@
 //! tolerated.  The .NET-only exotic "X" form
 //! ("{0x..,0x..,..,{0x..,..}}") is intentionally not part of the
 //! cross-target surface.
+@runtime_checked
 package Std.Uuid
 
 import Std.Core
@@ -49,7 +50,9 @@ pub func nilUuid(): Uuid {
 /// Format `u` as the canonical lowercase hyphenated string.
 /// Example: "550e8400-e29b-41d4-a716-446655440000".
 @stable(since = "1.0")
-pub func uuidToString(u: in Uuid): String {
+pub func uuidToString(u: in Uuid): String
+  ensures: result.length == 36
+{
   hostGuidToString(u)
 }
 

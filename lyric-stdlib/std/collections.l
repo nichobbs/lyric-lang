@@ -22,6 +22,7 @@
 //!     case Some(v) -> println(v)
 //!     case None    -> println("missing")
 //!   }
+@runtime_checked
 package Std.Collections
 
 import Std.Core

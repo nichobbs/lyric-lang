@@ -14,6 +14,7 @@
 //! Stability guarantee: insertion sort only moves an element past a
 //! strictly greater one, and `mergeRuns` takes from the left run when
 //! `cmp(left, right) <= 0`, so equal elements keep their original order.
+@runtime_checked
 package Std.Sort
 
 import Std.Collections
@@ -30,7 +31,9 @@ import Std.Collections
 ///
 /// The sort is stable: equal elements preserve their original relative order.
 @stable(since = "1.0")
-pub func sort[T](xs: in slice[T], cmp: in (T, T) -> Int): slice[T] {
+pub func sort[T](xs: in slice[T], cmp: in (T, T) -> Int): slice[T]
+  ensures: result.length == xs.length
+{
   val n = xs.length
   if n <= 1 {
     return xs
@@ -71,21 +74,78 @@ pub func sort[T](xs: in slice[T], cmp: in (T, T) -> Int): slice[T] {
   src.toArray()
 }
 
+/// True iff `xs` is non-strictly ascending (`xs[i - 1] <= xs[i]` for every
+/// adjacent pair).  Vacuously true for empty and single-element slices.
+/// O(n) — a linear check on an O(n log n) sort, cheap enough to run as a
+/// postcondition.
+@pure
+@experimental
+pub func isAscendingInts(xs: in slice[Int]): Bool {
+  var ok = true
+  var i = 1
+  while i < xs.length {
+    if xs[i - 1] > xs[i] {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// `isAscendingInts`, for `Long`.
+@pure
+@experimental
+pub func isAscendingLongs(xs: in slice[Long]): Bool {
+  var ok = true
+  var i = 1
+  while i < xs.length {
+    if xs[i - 1] > xs[i] {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// `isAscendingInts`, for `String` (ordinal comparison, matching `sortStrings`).
+@pure
+@experimental
+pub func isAscendingStrings(xs: in slice[String]): Bool {
+  var ok = true
+  var i = 1
+  while i < xs.length {
+    if xs[i - 1] > xs[i] {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
 /// Sort an `Int` slice into ascending order.
 @stable(since = "1.0")
-pub func sortInts(xs: in slice[Int]): slice[Int] {
+pub func sortInts(xs: in slice[Int]): slice[Int]
+  ensures: result.length == xs.length
+  ensures: isAscendingInts(result)
+{
   sort(xs, { a: Int, b: Int -> if a < b { -1 } else if a > b { 1 } else { 0 } })
 }
 
 /// Sort a `Long` slice into ascending order.
 @stable(since = "1.0")
-pub func sortLongs(xs: in slice[Long]): slice[Long] {
+pub func sortLongs(xs: in slice[Long]): slice[Long]
+  ensures: result.length == xs.length
+  ensures: isAscendingLongs(result)
+{
   sort(xs, { a: Long, b: Long -> if a < b { -1 } else if a > b { 1 } else { 0 } })
 }
 
 /// Sort a `String` slice in ascending lexicographic order.
 @stable(since = "1.0")
-pub func sortStrings(xs: in slice[String]): slice[String] {
+pub func sortStrings(xs: in slice[String]): slice[String]
+  ensures: result.length == xs.length
+  ensures: isAscendingStrings(result)
+{
   sort(xs, { a: String, b: String -> if a < b { -1 } else if a > b { 1 } else { 0 } })
 }
 

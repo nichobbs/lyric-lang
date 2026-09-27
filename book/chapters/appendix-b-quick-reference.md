@@ -746,7 +746,7 @@ output_assembly = "myapp.dll"
 | `Std.Encoding` | Byte-level encoding | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8` |
 | `Std.Uuid` | UUID generation and parsing | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Stream` | I/O stream interfaces | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
-| `Std.Time` | Instants and durations | `Instant`, `Duration`, `now`, `toIsoString`, ISO-8601 parsing |
+| `Std.Time` | Instants and durations | `Instant`, `Duration`, `now`, `toIsoString`, ISO-8601 parsing, `tryFromEpochMillis`/`tryFromEpochSeconds` |
 | `Std.Json` | RFC 8259 JSON | `JsonDoc`, `JsonElement`, `parseJson`, `tryParseJson`, `tryGetProperty`, `getString`, `getInt32` (the `get*` getters require `isJson*`; use `tryGet*` for untrusted data) |
 | `Std.Http` | HTTP client/server primitives | `get`, `post`, `HttpRequest`, `HttpResponse`, `statusCode`, `HttpClientBuilder`, `withHttpVersion`, `HttpVersion`, `negotiatedVersion`, `withCaCertificate`, `withExclusiveCaCertificate`, `withClientIdentity`, `withMinTlsVersion`, `withInsecureSkipVerify`, `tlsConfigSupported`, `resolveInsecureVerifyPolicy` |
 | `Std.Tls` | PEM certificate/private-key loading | `Certificate`, `Identity`, `TlsVersion`, `TlsServerConfig`, `Certificate.fromPemFile`/`fromPem`, `Identity.fromPemFiles`/`fromPem` |

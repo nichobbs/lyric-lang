@@ -3,6 +3,7 @@
 //! This package defines the small algebraic types and helpers that the
 //! rest of the stdlib builds on. Keep these APIs boring and stable:
 //! Option and Result appear in almost every safe wrapper.
+@runtime_checked
 package Std.Core
 
 // ---------------------------------------------------------------------------
@@ -15,6 +16,7 @@ pub union Option[T] {
 }
 
 /// Return the value inside `Some`, or `default` if `None`.
+@pure
 @stable(since = "1.0")
 pub func unwrapOr[T](o: in Option[T], default: in T): T {
   match o {
@@ -24,6 +26,7 @@ pub func unwrapOr[T](o: in Option[T], default: in T): T {
 }
 
 /// `true` iff the option is a Some.
+@pure
 @stable(since = "1.0")
 pub func isSome[T](o: in Option[T]): Bool {
   match o {
@@ -33,6 +36,7 @@ pub func isSome[T](o: in Option[T]): Bool {
 }
 
 /// `true` iff the option is None.
+@pure
 @stable(since = "1.0")
 pub func isNone[T](o: in Option[T]): Bool {
   match o {
@@ -51,6 +55,7 @@ pub union Result[T, E] {
 }
 
 /// `true` iff the result is Ok.
+@pure
 @stable(since = "1.0")
 pub func isOk[T, E](r: in Result[T, E]): Bool {
   match r {
@@ -60,6 +65,7 @@ pub func isOk[T, E](r: in Result[T, E]): Bool {
 }
 
 /// `true` iff the result is Err.
+@pure
 @stable(since = "1.0")
 pub func isErr[T, E](r: in Result[T, E]): Bool {
   match r {
@@ -69,6 +75,7 @@ pub func isErr[T, E](r: in Result[T, E]): Bool {
 }
 
 /// Return the success value, or `default` on error.
+@pure
 @stable(since = "1.0")
 pub func unwrapResultOr[T, E](r: in Result[T, E], default: in T): T {
   match r {
@@ -103,7 +110,9 @@ pub func sumInts(xs: in slice[Int]): Int {
 
 /// Maximum element. Caller is responsible for non-empty input.
 @stable(since = "1.0")
-pub func maxInt(xs: in slice[Int]): Int {
+pub func maxInt(xs: in slice[Int]): Int
+  requires: xs.length > 0
+{
   var best = xs[0]
   var i = 1
   while i < xs.length {
@@ -219,7 +228,9 @@ pub func mapResultErr[T, E, F](r: in Result[T, E], f: in (E) -> F): Result[T, F]
 /// and you want the error text in the panic message, use `unwrapResultStr`
 /// instead.
 @stable(since = "1.0")
-pub func unwrapResult[T, E](r: in Result[T, E]): T {
+pub func unwrapResult[T, E](r: in Result[T, E]): T
+  requires: isOk(r)
+{
   match r {
     case Ok(v) -> v
     case Err(_) -> panic("unwrapResult called on Err")
@@ -230,7 +241,9 @@ pub func unwrapResult[T, E](r: in Result[T, E]): T {
 /// message includes the `Err` payload.  Prefer this over `unwrapResult` when
 /// `E = String` so the error text appears at the crash site.
 @stable(since = "1.0")
-pub func unwrapResultStr[T](r: in Result[T, String]): T {
+pub func unwrapResultStr[T](r: in Result[T, String]): T
+  requires: isOk(r)
+{
   match r {
     case Ok(v) -> v
     case Err(e) -> panic("unwrapResult called on Err: " + e)
@@ -240,7 +253,9 @@ pub func unwrapResultStr[T](r: in Result[T, String]): T {
 /// Unwrap the `Some` value of an Option, raising a `Bug` if the option is `None`.
 /// Only appropriate when `None` is impossible by construction.
 @stable(since = "1.0")
-pub func unwrapOption[T](o: in Option[T]): T {
+pub func unwrapOption[T](o: in Option[T]): T
+  requires: isSome(o)
+{
   match o {
     case Some(v) -> v
     case None -> panic("unwrapOption called on None")

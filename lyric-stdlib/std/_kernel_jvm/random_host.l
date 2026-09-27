@@ -52,8 +52,16 @@ pub func hostNextIntBelow(rng: in Random, max: in Int): Int {
 }
 
 /// Random integer in `[min, max)`. `min >= max` panics at the JDK boundary.
+///
+/// Computed via Long so a wide range (e.g. `min` near `Int.MinValue` and
+/// `max` near `Int.MaxValue`) cannot overflow the Int32 `max - min`
+/// subtraction that used to feed `nextInt(bound)` directly (#7252) — that
+/// overflow could wrap to a negative bound and throw
+/// `IllegalArgumentException` even though `min < max` held.
 pub func hostNextIntRange(rng: in Random, min: in Int, max: in Int): Int {
-  min + rng.nextInt(max - min)
+  val range: Long = max.toLong() - min.toLong()
+  val r: Long = rng.nextLong().and(9223372036854775807i64) % range;
+  (min.toLong() + r).toInt()
 }
 
 pub func hostNextLong(rng: in Random): Long {

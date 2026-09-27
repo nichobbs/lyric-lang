@@ -71,11 +71,13 @@ pub func compile(pattern: in String): CompiledRegex {
 
 /// Compile a regex pattern with a custom timeout in seconds.
 ///
-/// `seconds` must be positive.  Typical values: 5.0 for interactive
-/// workloads, 60.0 for long-running batch pipelines.
+/// `seconds` must be positive, and no more than ~24.8 days (the largest
+/// value .NET's `Regex` timeout can hold: `Int32.MaxValue` milliseconds).
+/// Typical values: 5.0 for interactive workloads, 60.0 for long-running
+/// batch pipelines.
 @stable(since = "1.0")
 pub func compileWithTimeout(pattern: in String, seconds: in Double): CompiledRegex
-  requires: seconds > 0.0
+  requires: seconds > 0.0 and seconds <= 2147483.0
 {
   CompiledRegex(handle = RxHost.hostCompileWithTimeout(pattern, seconds))
 }

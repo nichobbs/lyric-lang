@@ -45,6 +45,7 @@ pub func tau(): Double {
 @pure
 @stable(since = "1.0")
 pub func absInt(n: in Int): Int
+  requires: n != -2147483648
   ensures: result >= 0
 {
   if n < 0 {
@@ -58,6 +59,7 @@ pub func absInt(n: in Int): Int
 @pure
 @stable(since = "1.0")
 pub func absLong(n: in Long): Long
+  requires: n != -9223372036854775808i64
   ensures: result >= 0i64
 {
   if n < 0i64 {
@@ -341,11 +343,22 @@ pub func signLong(n: in Long): Int
   }
 }
 
+/// The sign of `n`: -1, 0, or 1.  `NaN` has no sign, so it maps to 0
+/// (matching neither IEEE 754 nor the .NET host directly: `Math.Sign(double)`
+/// throws on `NaN`, so shared code checks first rather than delegating).
+@pure
 @stable(since = "1.0")
-pub func signDouble(n: in Double): Int {
-  Host.hostSignDouble(n)
+pub func signDouble(n: in Double): Int
+  ensures: result >= -1 and result <= 1
+{
+  if isNaN(n) {
+    0
+  } else {
+    Host.hostSignDouble(n)
+  }
 }
 
+@pure
 @stable(since = "1.0")
 pub func isNaN(x: in Double): Bool {
   Host.hostIsNaN(x)
@@ -374,10 +387,17 @@ pub func intToLong(n: in Int): Long {
 
 /// Narrow a 64-bit signed integer to a 32-bit signed integer.
 ///
-/// Panics (OverflowException) if the value is outside the Int range
-/// [-2 147 483 648 .. 2 147 483 647].  Callers must range-check before
-/// calling if the value may be out of range.
+/// A value outside the Int range [-2 147 483 648 .. 2 147 483 647]
+/// violates the precondition.  Callers must range-check before calling if
+/// the value may be out of range.
+///
+/// Call it qualified (`Math.longToInt(n)`): a bare `longToInt(n)` is still
+/// lowered by both backends to an unchecked truncating conversion that
+/// never reaches this function (#7465).
 @stable(since = "1.0")
-pub func longToInt(n: in Long): Int {
+pub func longToInt(n: in Long): Int
+  requires: n >= -2147483648i64 and n <= 2147483647i64
+  ensures: result.toLong() == n
+{
   Host.hostLongToInt(n)
 }

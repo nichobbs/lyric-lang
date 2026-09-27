@@ -1,7 +1,9 @@
 //! std/string.l - String manipulation and inspection.
 //!
-//! Safe, contract-driven string operations. All functions that may fail
-//! return Result or Option; none throw exceptions.
+//! Safe, contract-driven string operations. Functions that may fail on
+//! untrusted input return `Result` or `Option`; functions that document a
+//! precondition (`requires:`) panic via `PreconditionViolated` when the
+//! caller violates it (see `substring`, `repeat`).
 @runtime_checked
 package Std.String
 
@@ -167,6 +169,7 @@ pub func indexOfFromRaw(s: in String, substring: in String, from: in Int): Int
 pub func substring(s: in String, start: in Int): String
   requires: start >= 0
   requires: start <= s.length
+  ensures: result.length == s.length - start
 {
   return s.substring(start, s.length - start)
 }
@@ -177,7 +180,8 @@ pub func substring(s: in String, start: in Int): String
 pub func substring(s: in String, start: in Int, count: in Int): String
   requires: start >= 0
   requires: count >= 0
-  requires: start + count <= s.length
+  requires: count <= s.length - start
+  ensures: result.length == count
 {
   return s.substring(start, count)
 }
@@ -205,7 +209,11 @@ pub func toLower(s: in String): String {
 // Repeat a string n times.
 @pure
 @stable(since = "1.0")
-pub func repeat(s: in String, count: in Int): String {
+pub func repeat(s: in String, count: in Int): String
+  requires: count >= 0
+  requires: s.length == 0 or count <= 2147483647 / s.length
+  ensures: result.length == s.length * count
+{
   val sb = StringBuilder.new()
   var i = 0
   while i < count {
@@ -233,7 +241,9 @@ pub func replace(s: in String, oldValue: in String, newValue: in String): String
 // dominated compile time for callers that split whole source files by line.
 @pure
 @stable(since = "1.0")
-pub func split(s: in String, separator: in String): slice[String] {
+pub func split(s: in String, separator: in String): slice[String]
+  ensures: result.length >= 1
+{
   val parts: List[String] = newList()
   val sepLen = separator.length
   if sepLen == 0 {
@@ -392,10 +402,16 @@ pub func fromInt(n: in Int): String {
 // ---------------------------------------------------------------------------
 // Character access.
 // ---------------------------------------------------------------------------
+// The postconditions below name the Option type argument explicitly
+// (`isNone[Char](result)`): the monomorphizer does not yet infer it from
+// `result` inside a contract clause (#7466).
 // Get the character at a given index, or None if out of bounds.
 @pure
 @stable(since = "1.0")
-pub func charAt(s: in String, index: in Int): Option[Char] {
+pub func charAt(s: in String, index: in Int): Option[Char]
+  ensures: (index >= 0 and index < s.length) or isNone[Char](result)
+  ensures: (index < 0 or index >= s.length) or isSome[Char](result)
+{
   if index >= 0 and index < s.length {
     Some(value = s[index])
   } else {
@@ -406,7 +422,9 @@ pub func charAt(s: in String, index: in Int): Option[Char] {
 // Get the first character, or None if the string is empty.
 @pure
 @stable(since = "1.0")
-pub func first(s: in String): Option[Char] {
+pub func first(s: in String): Option[Char]
+  ensures: (s.length > 0 and isSome[Char](result)) or (s.length == 0 and isNone[Char](result))
+{
   if s.length > 0 {
     Some(value = s[0])
   } else {
@@ -417,7 +435,9 @@ pub func first(s: in String): Option[Char] {
 // Get the last character, or None if the string is empty.
 @pure
 @stable(since = "1.0")
-pub func last(s: in String): Option[Char] {
+pub func last(s: in String): Option[Char]
+  ensures: (s.length > 0 and isSome[Char](result)) or (s.length == 0 and isNone[Char](result))
+{
   if s.length > 0 {
     Some(value = s[s.length - 1])
   } else {

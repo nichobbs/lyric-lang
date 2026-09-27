@@ -6,6 +6,7 @@
 //!
 //! For non-security uses (simulations, games, test fixtures), prefer
 //! Std.Random which is faster.
+@runtime_checked
 package Std.SecureRandom
 
 import Std.Core
@@ -16,6 +17,7 @@ import Std.SecureRandomHost
 @stable(since = "1.0")
 pub func secureNextInt(max: in Int): Int
   requires: max > 0
+  ensures: result >= 0 and result < max
 {
   hostSecureNextInt(max)
 }
@@ -25,6 +27,7 @@ pub func secureNextInt(max: in Int): Int
 @stable(since = "1.0")
 pub func secureNextIntRange(min: in Int, max: in Int): Int
   requires: min < max
+  ensures: result >= min and result < max
 {
   hostSecureNextIntRange(min, max)
 }
@@ -34,6 +37,7 @@ pub func secureNextIntRange(min: in Int, max: in Int): Int
 @stable(since = "1.0")
 pub func secureGetBytes(count: in Int): slice[Byte]
   requires: count >= 0
+  ensures: result.length == count
 {
   hostSecureGetBytes(count)
 }

@@ -60,6 +60,21 @@ func testSubstring(): Unit {
   assertEqual(substring("hello", 1, 3), "ell", "substring with count")
 }
 
+// #7252: `count` past the end of the string is rejected via
+// `count <= s.length - start` rather than `start + count <= s.length`,
+// which could itself overflow for a huge `count` and wrongly appear to
+// satisfy the precondition.
+func callSubstringHugeCountOverflow(): Unit {
+  val ignored = substring("hello", 2, 2147483647)
+}
+
+func testSubstringRejectsOverflowingCount(): Unit {
+  assertPanics(
+    "substring(s, start, count) rejects a count that would overflow start + count",
+    callSubstringHugeCountOverflow
+  )
+}
+
 func testCase(): Unit {
   assertEqual(toUpper("hello"), "HELLO", "toUpper")
   assertEqual(toLower("HELLO"), "hello", "toLower")
@@ -67,9 +82,16 @@ func testCase(): Unit {
   assertTrue(not equalsCaseInsensitive("Hi", "hello"), "equalsCaseInsensitive no match")
 }
 
+func callRepeatNegativeCount(): Unit {
+  val ignored = repeat("ab", -1)
+}
+
 func testConstruction(): Unit {
   assertEqual(repeat("ab", 3), "ababab", "repeat")
   assertEqual(repeat("x", 0), "", "repeat zero")
+  // #7252: a negative count used to silently return "" instead of being
+  // rejected as a programmer error.
+  assertPanics("repeat rejects a negative count", callRepeatNegativeCount)
   assertEqual(replace("aabbcc", "bb", "XX"), "aaXXcc", "replace")
 
   val parts = split("a,b,c", ",")
@@ -125,6 +147,7 @@ func main(): Unit {
   testNormalization()
   testSearch()
   testSubstring()
+  testSubstringRejectsOverflowingCount()
   testCase()
   testConstruction()
   testSplitEdges()

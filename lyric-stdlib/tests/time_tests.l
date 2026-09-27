@@ -131,6 +131,49 @@ func testParseRoundTrip(): Unit {
   }
 }
 
+// #7252: fromEpochMillis/fromEpochSeconds now enforce a `requires:` bound
+// at the common (tightest, native) representable range; tryFromEpochMillis/
+// tryFromEpochSeconds give the exception-free `Option` form at the same
+// boundary.
+func callFromEpochMillisOutOfRange(): Unit {
+  val ignored = fromEpochMillis(9223372036855i64)
+}
+
+// Pattern-matched rather than through the generic `isSome`/`isNone`
+// helpers: monomorphizing those over `Option[Instant]` (`Instant` is an
+// extern type alias, not a Lyric-defined class) is its own separate,
+// pre-existing JVM backend gap (`isSome__Instant` resolves to a bogus
+// `Std.Time.Tests.Instant` class instead of the real extern type) —
+// unrelated to this contract change, so this test sidesteps it rather
+// than exercising it incidentally.
+func testTryFromEpochMillisBounds(): Unit {
+  match tryFromEpochMillis(9223372036854i64) {
+    case Some(_) -> assertTrue(true, "tryFromEpochMillis at the upper bound is Some")
+    case None -> assertTrue(false, "tryFromEpochMillis at the upper bound is Some")
+  }
+  match tryFromEpochMillis(0 - 9223372036854i64) {
+    case Some(_) -> assertTrue(true, "tryFromEpochMillis at the lower bound is Some")
+    case None -> assertTrue(false, "tryFromEpochMillis at the lower bound is Some")
+  }
+  match tryFromEpochMillis(9223372036855i64) {
+    case Some(_) -> assertTrue(false, "tryFromEpochMillis just past the upper bound is None")
+    case None -> assertTrue(true, "tryFromEpochMillis just past the upper bound is None")
+  }
+  match tryFromEpochMillis(0 - 9223372036855i64) {
+    case Some(_) -> assertTrue(false, "tryFromEpochMillis just past the lower bound is None")
+    case None -> assertTrue(true, "tryFromEpochMillis just past the lower bound is None")
+  }
+  match tryFromEpochSeconds(9223372036i64) {
+    case Some(_) -> assertTrue(true, "tryFromEpochSeconds at the upper bound is Some")
+    case None -> assertTrue(false, "tryFromEpochSeconds at the upper bound is Some")
+  }
+  match tryFromEpochSeconds(9223372037i64) {
+    case Some(_) -> assertTrue(false, "tryFromEpochSeconds just past the upper bound is None")
+    case None -> assertTrue(true, "tryFromEpochSeconds just past the upper bound is None")
+  }
+  assertPanics("fromEpochMillis panics just past the upper bound", callFromEpochMillisOutOfRange)
+}
+
 func main(): Unit {
   testNowReturnsPositiveEpoch()
   testMonotonicNanosNonDecreasing()
@@ -140,5 +183,6 @@ func main(): Unit {
   testDurationConstructors()
   testCalendarArithmetic()
   testParseRoundTrip()
+  testTryFromEpochMillisBounds()
   println("time: ok")
 }

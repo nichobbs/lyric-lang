@@ -11,6 +11,7 @@
 //! All times are UTC unless stated otherwise.  The wrappers
 //! deliberately avoid local-time conversion to keep behaviour
 //! reproducible across machines.
+@runtime_checked
 package Std.Time
 
 import Std.Core
@@ -47,29 +48,52 @@ pub func parseOptInstant(s: in String): Option[Instant] {
 
 // =====================================================================
 // Duration constructors (in fractional milliseconds, seconds, etc.).
+//
+// Bounds match the tightest of the three kernel twins' representable
+// range: native stores a `Duration` as a signed 64-bit nanosecond count
+// (~292 years), tighter than .NET's `TimeSpan` (100 ns ticks) or the
+// JVM's `java.time.Duration` (seconds + nanos).  The JVM host would
+// otherwise map `NaN` to a zero duration and saturate huge magnitudes
+// instead of throwing like .NET and native (#7252), so `n == n` (the
+// self-inequality idiom for "not NaN") is required here too.
 // =====================================================================
+@pure
 @stable(since = "1.0")
-pub func millis(n: in Double): Duration {
+pub func millis(n: in Double): Duration
+  requires: n == n and n >= -9223372036854.775807 and n <= 9223372036854.775807
+{
   hostMillis(n)
 }
 
+@pure
 @stable(since = "1.0")
-pub func seconds(n: in Double): Duration {
+pub func seconds(n: in Double): Duration
+  requires: n == n and n >= -9223372036.854775807 and n <= 9223372036.854775807
+{
   hostSeconds(n)
 }
 
+@pure
 @stable(since = "1.0")
-pub func minutes(n: in Double): Duration {
+pub func minutes(n: in Double): Duration
+  requires: n == n and n >= -153722867.28091294 and n <= 153722867.28091294
+{
   hostMinutes(n)
 }
 
+@pure
 @stable(since = "1.0")
-pub func hours(n: in Double): Duration {
+pub func hours(n: in Double): Duration
+  requires: n == n and n >= -2562047.7880152157 and n <= 2562047.7880152157
+{
   hostHours(n)
 }
 
+@pure
 @stable(since = "1.0")
-pub func days(n: in Double): Duration {
+pub func days(n: in Double): Duration
+  requires: n == n and n >= -106751.99116730064 and n <= 106751.99116730064
+{
   hostDays(n)
 }
 
@@ -110,13 +134,20 @@ pub func totalSeconds(d: in Duration): Double {
 // (e.g. Jan 31 + 1 month → Feb 28 / 29) — that's a safer default
 // than naive 30-day-per-month addition.  Returns the new `Instant`.
 // =====================================================================
+// `months`/`years` bounds match .NET's `DateTime.AddMonths`/`AddYears`,
+// which throw `ArgumentOutOfRangeException` outside these ranges before
+// even attempting the calendar arithmetic.
 @stable(since = "1.0")
-pub func addMonths(t: in Instant, n: in Int): Instant {
+pub func addMonths(t: in Instant, n: in Int): Instant
+  requires: n >= -120000 and n <= 120000
+{
   hostAddMonths(t, n)
 }
 
 @stable(since = "1.0")
-pub func addYears(t: in Instant, n: in Int): Instant {
+pub func addYears(t: in Instant, n: in Int): Instant
+  requires: n >= -10000 and n <= 10000
+{
   hostAddYears(t, n)
 }
 
@@ -145,17 +176,50 @@ func dtoUtcDateTime(d: in DateTimeOffset): Instant {
   hostDtoUtcDateTime(d)
 }
 
+// The common range every target's `Instant` representation can hold: the
+// tightest bound is native's signed 64-bit nanosecond count (~292 years
+// either side of the epoch, #5216) — far narrower than .NET's DateTime
+// (years 1..9999) or java.time.Instant's (~±1e9 years).  `fromEpochMillis`/
+// `fromEpochSeconds` panic outside it (matching .NET/native's own
+// out-of-range behaviour); `tryFromEpochMillis`/`tryFromEpochSeconds` give
+// the exception-free Option form.
 /// Construct an `Instant` from a Unix epoch-millis value.  Lyric-side
 /// composes the two BCL calls so callers see a single helper.
 @stable(since = "1.0")
-pub func fromEpochMillis(n: in Long): Instant {
+pub func fromEpochMillis(n: in Long): Instant
+  requires: n >= -9223372036854i64 and n <= 9223372036854i64
+{
   dtoUtcDateTime(dtoFromEpochMillis(n))
 }
 
 /// Construct an `Instant` from a Unix epoch-seconds value.
 @stable(since = "1.0")
-pub func fromEpochSeconds(n: in Long): Instant {
+pub func fromEpochSeconds(n: in Long): Instant
+  requires: n >= -9223372036i64 and n <= 9223372036i64
+{
   dtoUtcDateTime(dtoFromEpochSeconds(n))
+}
+
+/// `fromEpochMillis`, but `None` instead of a panic when `n` is outside
+/// the common representable range (~292 years either side of the epoch).
+@experimental
+pub func tryFromEpochMillis(n: in Long): Option[Instant] {
+  if n < -9223372036854i64 or n > 9223372036854i64 {
+    None
+  } else {
+    Some(value = fromEpochMillis(n))
+  }
+}
+
+/// `fromEpochSeconds`, but `None` instead of a panic when `n` is outside
+/// the common representable range (~292 years either side of the epoch).
+@experimental
+pub func tryFromEpochSeconds(n: in Long): Option[Instant] {
+  if n < -9223372036i64 or n > 9223372036i64 {
+    None
+  } else {
+    Some(value = fromEpochSeconds(n))
+  }
 }
 
 // =====================================================================

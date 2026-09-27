@@ -48,13 +48,16 @@ pub func hostStringFromCodepoint(cp: in Int): String {
 
 // Pure-Lyric UTF-8 encoder (JVM path).  `enc` is a sentinel and is unused.
 // Mirrors the original encoding.l accumulator path.  Surrogate pairs are
-// encoded as the corresponding 4-byte supplementary-plane sequence.
+// encoded as the corresponding 4-byte supplementary-plane sequence; a lone
+// surrogate (either half, unpaired) is replaced with U+FFFD (EF BF BD) —
+// matching .NET's `Encoding.UTF8` fallback behaviour so the two targets
+// agree on this input shape (#7252; previously this path emitted WTF-8).
 pub func hostEncodeUtf8(enc: in String, s: in String): slice[Byte] {
   // A string with no lone surrogate encodes identically through the JDK's
   // own UTF-8 encoder, which fills a byte[] directly instead of boxing each
   // byte into a List (#7271). The JDK would replace a lone surrogate with
-  // '?', so those strings keep the WTF-8 loop below (the documented JVM
-  // behaviour, std/encoding.l).
+  // '?', so those strings keep the loop below (the documented, now
+  // .NET-matching, JVM behaviour, std/encoding.l).
   if not hasLoneSurrogate(s) {
     return s.getBytes("UTF-8")
   }
@@ -73,11 +76,19 @@ pub func hostEncodeUtf8(enc: in String, s: in String): slice[Byte] {
         result.add(128 + cp % 64)
         i += 2
       } else {
-        result.add(224 + cu / 4096)
-        result.add(128 + (cu / 64) % 64)
-        result.add(128 + cu % 64)
+        // Lone high surrogate: U+FFFD.
+        result.add(239)
+        result.add(191)
+        result.add(189)
         i += 1
       }
+    } else if cu >= 55296 and cu <= 57343 {
+      // Lone surrogate (a high surrogate at the end of the string, or any
+      // low surrogate not preceded by a matching high one): U+FFFD.
+      result.add(239)
+      result.add(191)
+      result.add(189)
+      i += 1
     } else if cu <= 127 {
       result.add(cu)
       i += 1
