@@ -32321,20 +32321,19 @@ func lowerProtectedMsil(
         val entryFctx = makeFuncCtxMsil(pkgName, typeFqn, ed.name, 1 + edParams.count, retTy)
         // Reserve slot 0 for the implicit `this` receiver (no name binding).
         entryFctx.slotTicker.add(0)
-        var epi = 0
-        while epi < edParams.count {
-          val p = edParams[epi]
-          // Body tracking is CTX-aware so a collection param is operated on
-          // concretely (same fix as `lowerImplMethodMsil` — a non-ctx `List[Int]`
-          // tracked as `MObject` emits `List<object>` ops on a real `List<int32>`
-          // and segfaults).  The signature (`pTypes` above) stays erased.
-          val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
-          val slot = entryFctx.slotTicker.count  // 1, 2, … (slot 0 = this)
-          entryFctx.slots.add(p.name, slot)
-          entryFctx.types.add(p.name, paramTy)
-          entryFctx.slotTicker.add(0)
-          epi = epi + 1
-        }
+        // #7550: route through the shared `registerParamsMsil` helper — the
+        // same one `lowerImplMethodMsil`/`lowerRecordMethodMsil` use — so a
+        // non-receiver `other: in Self` parameter gets its CODEGEN-INTERNAL
+        // body type narrowed to `MClass(typeFqn)` (the entry's own concrete
+        // protected type, exactly what a checker-accepted `Self` argument
+        // always is) instead of the erased `object` a bare `typeExprToMsilCtx`
+        // call would track.  Without this, `other.field` inside the entry
+        // body fell through to the package-wide, field-NAME-only fallback
+        // (#6421's class of bug).  The emitted SIGNATURE (`pTypes` above)
+        // is unaffected — this only changes which field/method lookup table
+        // a later use of the parameter consults.
+        val noGenericsEntry: List[String] = newList()
+        registerParamsMsil(cctx, entryFctx, edParams, pkgName, typeFqn, noGenericsEntry)
         // Desugar bare field references in the body to EMember(ESelf, fieldName)
         // so lowerExprMsil/lowerStmtMsil can emit ldarg.0 + ldfld/stfld.
         val desugaredEntryBody = desugarProtectedFuncBody(fieldNames, ed.body)

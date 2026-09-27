@@ -1688,6 +1688,13 @@ func lowerProtectedMethod(
   val realParams = stripLeadingSelfParam(params)
   val paramTypes = holderAwareParamTypes(realParams, pkgName, true, noTps, externTypes)
   setupInstanceParamSlotsAndHolders(ctxSelf, insns, realParams, pkgName, noTps, externTypes)
+  // #7550: a non-receiver `other: in Self` parameter of a moved impl method
+  // (now one of `className`'s own entries) refers to `className` itself —
+  // narrow it with a real `checkcast` so field/method access through it
+  // resolves, mirroring `lowerRecordMethod`/`lowerImplMethod` (#6426). The
+  // JVM verifier is a mandatory load-time gate (unlike MSIL's bookkeeping-
+  // only fix), so this real bytecode is required, not optional.
+  emitSelfParamChecksJvm(ctxSelf, insns, realParams, className)
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = flags, name = name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }

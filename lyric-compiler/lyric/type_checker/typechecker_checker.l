@@ -2738,15 +2738,17 @@ func findProtectedDeclByTypeId(tbl: in SymbolTable, tid: in TypeId): Option[Prot
 // #7457: `impl Iface for P` where `P` is a protected type.  The contract
 // elaborator moves each impl method into `P` as an `entry` member, so it runs
 // under the instance lock, notifies barrier waiters and re-checks `P`'s
-// invariants like every other member (§7.5).  Shapes that move cannot
-// represent are rejected here rather than miscompiled:
+// invariants like every other member (§7.5).  An impl method's signature may
+// mention `Self` freely (#7550): the elaborator keeps `Self` in the moved
+// entry's signature unsubstituted, so MSIL/JVM erase it to `object`/`Object`
+// exactly as they erase the interface slot itself — no signature mismatch
+// ever arises. Shapes that move cannot represent are rejected here rather
+// than miscompiled:
 //   - T0136: the impl is declared in a different package than `P` (the
 //     methods must land in `P`'s own class);
 //   - T0136: `P` or the impl is generic;
 //   - T0136: the impl target is not spelled as `P` itself (an alias of `P`
 //     would hide the target from the move, which matches on the name);
-//   - T0136: an impl method's signature mentions `Self` (the moved entry
-//     would not match the interface slot's erased signature, #7550);
 //   - T0136: an impl method has the same name as one of `P`'s own
 //     `entry`/`func` members, or as a method of an earlier impl for `P`
 //     (both would become the same locked method);
@@ -2806,16 +2808,7 @@ func checkImplOnProtected(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
         match decl.members[i] {
           case IMplFunc(fn) -> {
             checkProtectedFuncShape(diag, pd.name, fn)
-            if funcSignatureMentionsSelf(fn) {
-              diag.add(
-                errorDiagnostic(
-                  "T0136",
-                  "impl method '" + fn.name + "' of '" + ifaceName + "' for protected type '" + pd.name +
-                    "' mentions 'Self' in its signature, which is not yet supported on a protected type (#7550)",
-                  fn.span
-                )
-              )
-            } else if protectedDeclaresMember(pd, fn.name) {
+            if protectedDeclaresMember(pd, fn.name) {
               diag.add(
                 errorDiagnostic(
                   "T0136",
@@ -2850,55 +2843,6 @@ func checkImplOnProtected(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
         i = i + 1
       }
     }
-  }
-}
-
-func funcSignatureMentionsSelf(fn: in FunctionDecl): Bool {
-  var i = 0
-  while i < fn.params.count {
-    if typeExprMentionsSelf(fn.params[i].ty) {
-      return true
-    }
-    i = i + 1
-  }
-  match fn.ret {
-    case Some(r) -> typeExprMentionsSelf(r)
-    case None -> false
-  }
-}
-
-func typeExprListMentionsSelf(tys: in List[TypeExpr]): Bool {
-  var i = 0
-  while i < tys.count {
-    if typeExprMentionsSelf(tys[i]) {
-      return true
-    }
-    i = i + 1
-  }
-  false
-}
-
-func typeExprMentionsSelf(te: in TypeExpr): Bool {
-  match te.kind {
-    case TSelf -> true
-    case TParen(inner) -> typeExprMentionsSelf(inner)
-    case TGenericApp(_, args) -> {
-      var i = 0
-      while i < args.count {
-        match args[i] {
-          case TAType(t) -> if typeExprMentionsSelf(t) { return true }
-          case TAValue(_) -> ()
-        }
-        i = i + 1
-      }
-      false
-    }
-    case TArray(_, elem) -> typeExprMentionsSelf(elem)
-    case TSlice(elem) -> typeExprMentionsSelf(elem)
-    case TTuple(ts) -> typeExprListMentionsSelf(ts)
-    case TNullable(inner) -> typeExprMentionsSelf(inner)
-    case TFunction(ps, r) -> typeExprListMentionsSelf(ps) or typeExprMentionsSelf(r)
-    case _ -> false
   }
 }
 

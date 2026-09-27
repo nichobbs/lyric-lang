@@ -5512,11 +5512,18 @@ test "two impls for a protected type with a shared method name are T0136 (#7547)
   assertTrue(not hasDiagCode(parseCheck(okSrc), "T0136"), "disjoint method names are accepted")
 }
 
-test "Self in an impl method signature on a protected type is T0136 (#7550)" {
+// #7550: `Self` in an impl method signature on a protected type is accepted
+// — the contract elaborator keeps `Self` in the moved entry's signature
+// unsubstituted, so MSIL/JVM erase it to `object`/`Object` exactly as they
+// erase the interface slot; no T0136 rejection is needed.  (Previously
+// rejected; see the removed test this replaces.)
+test "Self in an impl method signature on a protected type is accepted (#7550)" {
   val topSrc = "package P\ninterface M {\n  func merge(other: in Self): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl M for C {\n  func merge(other: in Self): Int {\n    n\n  }\n}\n"
-  assertTrue(hasDiagCode(parseCheck(topSrc), "T0136"), "Self parameter")
-  val nestedSrc = "package P\nimport Std.Collections\ninterface M {\n  func pool(): List[Self]\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl M for C {\n  func pool(): List[Self] {\n    newList()\n  }\n}\n"
-  assertTrue(hasDiagCode(parseCheck(nestedSrc), "T0136"), "Self nested in a return type")
+  assertTrue(not hasDiagCode(parseCheck(topSrc), "T0136"), "Self parameter")
+  val retSrc = "package P\ninterface M2 {\n  func fresh(): Self\n}\nprotected type C2 {\n  var n: Int = 0\n}\nimpl M2 for C2 {\n  func fresh(): Self {\n    self\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(retSrc), "T0136"), "Self return")
+  val nestedSrc = "package P\nimport Std.Collections\ninterface M3 {\n  func pool(): List[Self]\n}\nprotected type C3 {\n  var n: Int = 0\n}\nimpl M3 for C3 {\n  func pool(): List[Self] {\n    newList()\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(nestedSrc), "T0136"), "Self nested in a return type")
 }
 
 test "an impl for an alias of a protected type is T0136 (#7547)" {
