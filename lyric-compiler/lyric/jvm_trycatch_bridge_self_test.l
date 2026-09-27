@@ -151,32 +151,30 @@ test "generic fn: try/catch where every arm yields the type param still compiles
 // re-emits it verbatim as a structured diagnostic (no J008 double-wrap, no
 // raw stack trace).
 //
-// The repro is a field read through a distinct type over a record held in a
-// generic record (`b.item.n` with `b: Box[Wid]`, `type Wid = Widget`).  The
-// type checker records a receiver's class only for records, unions, opaque
-// and protected types (`SymbolTable.memberRecvClasses`): a distinct type has
-// no class of its own to narrow to, so the JVM backend still sees `b.item`
-// as erased `Object` and refuses.  Earlier repros (a `Self`-typed impl
-// parameter, a generic-union payload reached through a parameter, a field,
-// then `h.wrap.box`) each stopped reaching the refusal as the backend
-// learned to type them; the last compiles since #7378 narrows an erased
-// receiver to the class the type checker resolved.
+// The repro is a member read on an extern-typed value held in a generic
+// record (`b.item.capacityField` with `b: Box[JSb]`).  The type checker
+// records a receiver's class only for Lyric records, unions, opaque,
+// protected and distinct types (`SymbolTable.memberRecvClasses`), and leaves
+// an extern type's members to codegen, so the JVM backend still sees
+// `b.item` as erased `Object` and refuses.  Earlier repros each stopped
+// reaching the refusal as the backend or checker learned to type them: a
+// `Self`-typed impl parameter, a generic-union payload reached through a
+// parameter, a field, `h.wrap.box` (compiles since #7378), and a distinct type
+// in a generic record (T0113 since #7439).
 test "erased-receiver member access aborts codegen under error[J007] with a package-qualified span (#6422/#6426)" {
   val dir = freshTempDir("erased-receiver-j007")
   val outPath = Path.join(dir, "ErasedRecv.jar")
-  val source = "package ErasedRecv.App\n" + "\n" + "record Widget {\n" + "  n: Int\n" + "}\n" + "\n" +
-    "type Wid = Widget\n" +
-    "\n" +
+  val source = "package ErasedRecv.App\n" + "\n" + "extern type JSb = \"java.lang.StringBuilder\"\n" + "\n" +
     "record Box[T] {\n" +
     "  item: T\n" +
     "}\n" +
     "\n" +
-    "func get(b: in Box[Wid]): Int {\n" +
-    "  b.item.n\n" +
+    "func get(b: in Box[JSb]): Int {\n" +
+    "  b.item.capacityField\n" +
     "}\n" +
     "\n" +
     "func main(): Unit {\n" +
-    "  println(get(Box(item = Wid.from(Widget(n = 3)))))\n" +
+    "  println(get(Box(item = JSb.new())))\n" +
     "}\n"
   val noStdlib: List[String] = newList()
   var panicked = false

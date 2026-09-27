@@ -20,6 +20,11 @@
 //!    union case, and the enum test was skipped), hijacking every later arm.
 //!    A scrutinee known to be the enum now decides first.
 //!
+//! 4. Distinct types.  `b.item.value` with `b: Box[Tagged]`, `type Tagged =
+//!    Entry`, resolved `.value` against an unrelated opaque type's `value`
+//!    field through the bundle-wide by-name fallback; distinct types are now
+//!    recorded receiver classes too (#7439).
+//!
 //! Cross-package forms of the same bugs (a constructor resolved through a
 //! selective import, a dependency's own `@cfg` features) are covered by
 //! `emitter_project_self_test.l`.
@@ -71,6 +76,8 @@ record Entry {
 record Info {
   text: String
 }
+
+type Tagged = Entry
 
 enum Level {
   case Info
@@ -139,4 +146,10 @@ test "an enum case sharing its name with a record is still a case test" {
   assertEqual(levelName(Level.Warn), "warn", "Warn is not swallowed by the Info arm")
   assertEqual(levelName(Level.Fail), "fail", "Fail")
   assertEqual(Info(text = "t").text, "t", "the record Info still constructs")
+}
+
+test "value of a distinct type held in a generic record reads the underlying record" {
+  val b: Box[Tagged] = Box(item = Tagged.from(Entry(owner = "lin", hits = 7)))
+  assertEqual(b.item.value.owner, "lin", "b.item.value.owner")
+  assertEqualInt(b.item.value.hits, 7, "b.item.value.hits")
 }

@@ -1792,7 +1792,16 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       }
     }
     case ETypeApp(fn, targs) -> inferTypeAppValueTE(state, env, fn, targs)
-    case EMember(recv, name) -> inferMemberTE(state, env, recv, name)
+    // A field read Mono cannot resolve itself (a restored package's record)
+    // falls back to the type checker's recorded type, as a call does (#7441).
+    case EMember(recv, name) -> match inferMemberTE(state, env, recv, name) {
+      case Some(te) -> Some(value = te)
+      case None -> if state.callResultTypes.count > 0 and state.originScope[state.originScope.count - 1] == "" {
+        mapGet(state.callResultTypes, recordCopySiteKey(expr.span))
+      } else {
+        None
+      }
+    }
     // `self` in an impl / interface method body — its type is seeded into
     // `env` under the reserved "self" key by the Phase-2 IImpl / IInterface
     // rewrite, so `self.field` projections resolve (#1727).

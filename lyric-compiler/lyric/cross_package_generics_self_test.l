@@ -974,3 +974,50 @@ test "a restored range subtype renders as its value (D-progress-968)" {
   assertEqualInt(captured.exitCode, 0, "cprange_restored: exit 0 (stderr=" + captured.stderr + ")")
   assertEqual(Str.trim(captured.stdout), "5000 5000 5000", "cprange_restored: restored range renders by value")
 }
+
+// #7441: a generic stdlib call whose argument is a field chain on a restored
+// package's records (`mapKeys(o.inner.m)`).  Mono cannot see the restored
+// record's fields, so it rejected the call (M0004) — or, in compilers that
+// predate that diagnostic, instantiated it over `Object` and failed with an
+// `InvalidCastException` at run time.  It now infers the type arguments from
+// the type checker's recorded type of the field read.
+test "generic call over a restored package's record field chain infers its type arguments (#7441)" {
+  val tmpDir = freshTempDir("cpgen-fieldchain")
+  val producerSrc = "package CPGenFieldChain.Lib\n" + "\n" + "pub record Inner {\n" + "  m: Map[String, String]\n" +
+    "}\n" +
+    "\n" +
+    "pub record Outer {\n" +
+    "  inner: Inner\n" +
+    "}\n" +
+    "\n" +
+    "pub func make(): Outer {\n" +
+    "  val m: Map[String, String] = newMap()\n" +
+    "  m.add(\"a\", \"1\")\n" +
+    "  m.add(\"b\", \"22\")\n" +
+    "  return Outer(inner = Inner(m = m))\n" +
+    "}\n"
+  val producerDll = buildDll(tmpDir, "CPGenFieldChain.Lib", producerSrc, "CPGenFieldChain.Lib")
+  val consumerSrc = "package CPGenFieldChain.App\n" + "\n" + "import CPGenFieldChain.Lib\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  val o = make()\n" +
+    "  var total = 0\n" +
+    "  for k in mapKeys(o.inner.m) {\n" +
+    "    match mapGet(o.inner.m, k) {\n" +
+    "      case Some(v) -> { total = total + v.length }\n" +
+    "      case None -> ()\n" +
+    "    }\n" +
+    "  }\n" +
+    "  println(total)\n" +
+    "}\n"
+  val captured = buildAndRunConsumerWithStdlib(
+    tmpDir,
+    "CPGenFieldChain.App",
+    consumerSrc,
+    "CPGenFieldChain.App",
+    "CPGenFieldChain.Lib",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_fieldchain: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "3", "cpgen_fieldchain: the values' lengths summed")
+}
