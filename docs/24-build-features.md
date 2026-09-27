@@ -245,6 +245,10 @@ breaking the grammar:
   type-check errors deep inside).
 - Whole-file gating via a `@cfg(...)` immediately after a module-doc
   `//!` comment, before the `package` line.
+- `test`, `property`, and `fixture` items in a `@test_module` file.  An
+  erased `test`/`property` is absent from the `lyric test` run — it gets
+  no TAP line and is not counted in the `1..N` plan — rather than being
+  reported as skipped (#7481; see `docs/24-test-runner-plan.md` §2.1).
 
 In v1, gating **inside** items (statement-level, expression-level,
 field-level) is not supported. If a function body needs to vary, write

@@ -642,17 +642,16 @@ func parseErrors(diags: in List[Diagnostic]): List[Diagnostic] {
   acc
 }
 
-// `synthesize`/`synthesizeNative`/`synthesizeWithProperties` check file-level
-// `@cfg` gating against an EMPTY active/declared feature set (#6868) — the
-// same set `lyric test` uses downstream whenever a manifest contributes no
-// features for this file's compile (the common no-manifest case, and the
-// compiler-package-linked test path, which always compiles with empty
-// active/declared regardless of any nearby manifest).  A caller that has
-// real manifest-resolved features in hand (the manifest-driven single-file
-// and project test paths in `cli_test.l`) should call `synthesizeFor`
-// directly with them instead, so the pre-emission gating check agrees with
-// what `Cfg.applyCfgErasure` will actually see once `Emitter.emitProject`
-// runs.
+// `synthesize`/`synthesizeNative`/`synthesizeWithProperties` check file- and
+// item-level `@cfg` gating (#6868, #7481) against an EMPTY active/declared
+// feature set with no `target.<name>` pseudo-feature, so every
+// `@cfg(target = ...)` item counts as gated out.  `lyric test` itself never
+// uses these wrappers: every real compile erases with at least the target
+// pseudo-feature, so `cli_test.l` calls `synthesizeFor` directly with the
+// exact set the eventual compile will use (manifest-resolved features, or
+// the empty set the compiler-package-linked path always compiles with,
+// plus the target), keeping the pre-emission gating check in agreement with
+// what `Cfg.applyCfgErasure` will actually see.
 func noFeatures(): List[String] {
   newList()
 }
@@ -703,11 +702,13 @@ pub func synthesizeWithPropertiesConfig(
 
 // `active`/`declared` are the feature set the eventual compile will use
 // (D045 `[features]`, #6868) — pass whatever `Cfg.applyCfgErasure` will
-// actually be called with downstream, not the raw manifest defaults, so a
-// file-level `@cfg` is gated here iff it would be gated during real
-// erasure.  Exposed (not `pub` before #6868) so `cli_test.l` can thread
-// manifest-resolved features through instead of going via one of the
-// fixed-feature wrappers above.
+// actually be called with downstream (including the `target.<name>`
+// pseudo-feature, which only the caller knows), not the raw manifest
+// defaults, so a file-level `@cfg` is gated here — and a `@cfg`-gated
+// `test`/`property` item is left out of the synthesized `main` and the TAP
+// plan (#7481) — iff real erasure would drop it.  Exposed (not `pub` before
+// #6868) so `cli_test.l` can thread manifest-resolved features through
+// instead of going via one of the fixed-feature wrappers above.
 pub func synthesizeFor(
   source: in String,
   filter: in Option[String],
@@ -833,6 +834,14 @@ pub func synthesizeFor(
       sb = sb + source.substring(cursor, gap)
     }
     cursor = e
+    // #7481: the rewritten source still carries each item's `@cfg` (so the
+    // downstream `Cfg.applyCfgErasure` pass sees it and reports F0012/F0013
+    // exactly as for any other item), but an item that pass WILL erase must
+    // not get a slot in the synthesized `main` — otherwise `main` calls a
+    // function that no longer exists (T0020) and the TAP plan counts a test
+    // that can never run.  `active`/`declared` are the same feature set the
+    // eventual compile erases against (see `synthesizeFor`'s doc comment).
+    val cfgGated = isCfgGatedOut(active, declared, it.annotations)
     match it.kind {
       case ITest(t) -> {
         // #5609 item 4: preserve any annotation prefix (e.g. `@cfg(...)`)
@@ -850,7 +859,9 @@ pub func synthesizeFor(
         val fname = "__lyric_test_" + toString(testIdx)
         testIdx = testIdx + 1
         sb = sb + "\nfunc " + fname + "(): Unit " + bodyText
-        tests.add(TestSlot(funcName = fname, title = t.title))
+        if not cfgGated {
+          tests.add(TestSlot(funcName = fname, title = t.title))
+        }
       }
       case IProperty(p) -> {
         if runProperties {
@@ -866,14 +877,18 @@ pub func synthesizeFor(
             case Ok(driverCode) -> {
               val fname = "__lyric_prop_" + toString(propIdx)
               sb = sb + "\n" + driverCode
-              tests.add(TestSlot(funcName = fname, title = "property: " + p.title))
+              if not cfgGated {
+                tests.add(TestSlot(funcName = fname, title = "property: " + p.title))
+              }
             }
             case Err(reason) -> {
-              skipped.add(SkipSlot(title = p.title, reason = "property: " + reason))
+              if not cfgGated {
+                skipped.add(SkipSlot(title = p.title, reason = "property: " + reason))
+              }
             }
           }
           propIdx = propIdx + 1
-        } else {
+        } else if not cfgGated {
           skipped.add(SkipSlot(title = p.title, reason = "property: not implemented in v1"))
         }
       }

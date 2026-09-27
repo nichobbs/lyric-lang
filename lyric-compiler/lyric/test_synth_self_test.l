@@ -121,15 +121,121 @@ func testFileLevelTargetCfgSynthesisesWhenTargetMatches(): Unit {
   }
 }
 
+// #7481: the annotation stays on the synthesized func (so the downstream
+// erasure pass still sees it — and still reports F0012/F0013 for it), but a
+// test that erasure WILL drop gets no slot in the synthesized `main`: before
+// the fix `main` still called `__lyric_test_0` after erasure removed it, a
+// T0020 "unknown name" compile error, and the TAP plan counted it.
 func testSynthesisesAnnotatedCfgTest(): Unit {
   match synthesize(annotatedCfgTestSource(), Some(value = "")) {
     case Synthesised(rewritten, n, sk) -> {
-      assertEqualInt(n, 2, "both tests detected (synthesis itself doesn't erase — cfg erasure is a later pipeline stage)")
-      assertEqualInt(sk, 0, "no skips")
-      assertTrue(
-        Str.contains(rewritten, "@cfg(feature = \"exp\")\nfunc __lyric_test_0(): Unit"),
-        "cfg annotation preserved directly before the synthesized func, so the later erasure pass can see and act on it"
+      assertEqualInt(n, 1, "only the ungated test is runnable while feature 'exp' is inactive")
+      assertEqualInt(sk, 0, "a gated test is absent, not skipped")
+      val annAt = Str.indexOfRaw(rewritten, "@cfg(feature = \"exp\")")
+      val fnAt = Str.indexOfRaw(rewritten, "func __lyric_test_0(): Unit")
+      assertTrue(annAt >= 0 and fnAt > annAt, "cfg annotation kept ahead of the synthesized func")
+      val annEnd = annAt + "@cfg(feature = \"exp\")".length
+      assertEqual(
+        Str.trim(Str.substring(rewritten, annEnd, fnAt - annEnd)),
+        "",
+        "only whitespace between the annotation and the synthesized func, so the later erasure pass sees it on that func"
       )
+      assertTrue(not Str.contains(rewritten, "    __lyric_test_0()"), "main never calls the erased test's function")
+      assertTrue(Str.contains(rewritten, "    __lyric_test_1()"), "main calls the ungated test's function")
+      assertTrue(Str.contains(rewritten, "println(\"1..1\")"), "TAP plan counts only the ungated test")
+      assertTrue(Str.contains(rewritten, "ok 1 - b"), "the ungated test is numbered 1")
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
+func testAnnotatedCfgTestRunsWhenFeatureActive(): Unit {
+  match synthesizeFor(annotatedCfgTestSource(), None, false, false, propertyRunConfigFromOverrides(None, None), singletonFeatureList("exp"), emptyFeatureList()) {
+    case Synthesised(rewritten, n, sk) -> {
+      assertEqualInt(n, 2, "both tests runnable once feature 'exp' is active")
+      assertEqualInt(sk, 0, "no skips")
+      assertTrue(Str.contains(rewritten, "    __lyric_test_0()"), "main calls the gated test")
+      assertTrue(Str.contains(rewritten, "println(\"1..2\")"), "TAP plan counts both tests")
+      assertTrue(Str.contains(rewritten, "ok 1 - a"), "gated test numbered 1")
+      assertTrue(Str.contains(rewritten, "ok 2 - b"), "ungated test numbered 2")
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
+// One test per target: exactly one survives for a given `target.<name>`
+// pseudo-feature, and the TAP numbering stays contiguous.
+func targetGatedTestsSource(): String {
+  "@test_module\npackage P\n\nimport Std.Testing\n\n@cfg(target = \"dotnet\")\ntest \"on dotnet\" { assertTrue(true, \"d\") }\n@cfg(target = \"jvm\")\ntest \"on jvm\" { assertTrue(true, \"j\") }\ntest \"anywhere\" { assertTrue(true, \"a\") }\n"
+}
+
+func testTargetGatedTestsSelectOnePerTarget(): Unit {
+  match synthesizeFor(targetGatedTestsSource(), None, false, false, propertyRunConfigFromOverrides(None, None), singletonFeatureList("target.jvm"), emptyFeatureList()) {
+    case Synthesised(rewritten, n, _) -> {
+      assertEqualInt(n, 2, "jvm test plus the ungated test")
+      assertTrue(not Str.contains(rewritten, "    __lyric_test_0()"), "dotnet test not called on jvm")
+      assertTrue(Str.contains(rewritten, "ok 1 - on jvm"), "jvm test numbered 1")
+      assertTrue(Str.contains(rewritten, "ok 2 - anywhere"), "ungated test numbered 2")
+      assertTrue(Str.contains(rewritten, "println(\"1..2\")"), "TAP plan 1..2")
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+  match synthesizeFor(targetGatedTestsSource(), None, false, false, propertyRunConfigFromOverrides(None, None), singletonFeatureList("target.dotnet"), emptyFeatureList()) {
+    case Synthesised(rewritten, n, _) -> {
+      assertEqualInt(n, 2, "dotnet test plus the ungated test")
+      assertTrue(not Str.contains(rewritten, "    __lyric_test_1()"), "jvm test not called on dotnet")
+      assertTrue(Str.contains(rewritten, "ok 1 - on dotnet"), "dotnet test numbered 1")
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
+// A gated test is absent from the run, so `--filter` must not report it as
+// a filter skip either.
+func testGatedTestNotReportedAsFilterSkip(): Unit {
+  match synthesize(annotatedCfgTestSource(), Some(value = "zzz")) {
+    case Synthesised(rewritten, n, _) -> {
+      assertEqualInt(n, 1, "only the ungated test is in the run")
+      assertTrue(Str.contains(rewritten, "# skip 1 - b (filter)"), "ungated test filtered out")
+      assertTrue(not Str.contains(rewritten, " - a (filter)"), "gated test never mentioned")
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
+// `property` items: an inactive `@cfg` removes the property from the run
+// both as a real driver (`--properties`) and as a v1 `# skip` line.
+func gatedPropertySource(): String {
+  "@test_module\npackage P\n\nimport Std.Testing\n\ntest \"unit\" { assertTrue(true, \"x\") }\n@cfg(feature = \"exp\")\nproperty \"gated prop\" forall (n: Int) { assertTrue(true, \"x\") }\n"
+}
+
+func testGatedPropertyAbsentWithoutProperties(): Unit {
+  match synthesize(gatedPropertySource(), Some(value = "")) {
+    case Synthesised(rewritten, n, sk) -> {
+      assertEqualInt(n, 1, "one runnable test")
+      assertEqualInt(sk, 0, "the gated property is not reported as a skip")
+      assertTrue(not Str.contains(rewritten, "gated prop"), "gated property absent from main")
+      assertTrue(Str.contains(rewritten, "println(\"1..1\")"), "TAP plan 1..1")
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
+func testGatedPropertyAbsentWithProperties(): Unit {
+  val cfg = propertyRunConfigFromOverrides(None, None)
+  match synthesizeWithPropertiesConfig(gatedPropertySource(), Some(value = ""), cfg, emptyFeatureList(), emptyFeatureList()) {
+    case Synthesised(rewritten, n, sk) -> {
+      assertEqualInt(n, 1, "the gated property driver is not in the run")
+      assertEqualInt(sk, 0, "no skips")
+      assertTrue(not Str.contains(rewritten, "    __lyric_prop_0()"), "main never calls the erased property driver")
+      assertTrue(Str.contains(rewritten, "@cfg(feature = \"exp\")"), "driver keeps its @cfg for the erasure pass")
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+  match synthesizeWithPropertiesConfig(gatedPropertySource(), Some(value = ""), cfg, singletonFeatureList("exp"), emptyFeatureList()) {
+    case Synthesised(rewritten, n, _) -> {
+      assertEqualInt(n, 2, "test plus the property driver once 'exp' is active")
+      assertTrue(Str.contains(rewritten, "    __lyric_prop_0()"), "main calls the property driver")
     }
     case _ -> panic("expected Synthesised outcome")
   }
@@ -423,6 +529,30 @@ test "file-level @cfg(target = ...) gates when the target pseudo-feature is abse
 
 test "file-level @cfg(target = ...) synthesises normally when the target pseudo-feature matches (#7189)" {
   testFileLevelTargetCfgSynthesisesWhenTargetMatches()
+}
+
+test "item-level @cfg test is left out of the runner when inactive (#7481)" {
+  testSynthesisesAnnotatedCfgTest()
+}
+
+test "item-level @cfg test runs when its feature is active (#7481)" {
+  testAnnotatedCfgTestRunsWhenFeatureActive()
+}
+
+test "item-level @cfg(target = ...) tests select one per target (#7481)" {
+  testTargetGatedTestsSelectOnePerTarget()
+}
+
+test "gated test is not reported as a filter skip (#7481)" {
+  testGatedTestNotReportedAsFilterSkip()
+}
+
+test "gated property is absent without --properties (#7481)" {
+  testGatedPropertyAbsentWithoutProperties()
+}
+
+test "gated property driver is absent with --properties unless active (#7481)" {
+  testGatedPropertyAbsentWithProperties()
 }
 
 test "listEntries enumerates entries" {
