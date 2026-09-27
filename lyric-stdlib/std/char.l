@@ -186,12 +186,17 @@ pub func isAscii(c: in Char): Bool {
   Host.hostCharToInt(c) <= 127
 }
 
+// `isNone[Int](result)` names the type argument explicitly: the
+// monomorphizer does not yet infer it from `result` inside a contract
+// clause (#7466).
 /// The decimal value of an ASCII digit '0'..'9' (code points 48..57), or
 /// `None` for other chars. Uses integer subtraction so the prover can verify
 /// the range directly.
 @pure
 @stable(since = "1.0")
-pub func digitValue(c: in Char): Option[Int] {
+pub func digitValue(c: in Char): Option[Int]
+  ensures: isNone[Int](result) or (unwrapOr(result, 0 - 1) >= 0 and unwrapOr(result, 0 - 1) <= 9)
+{
   val cp = Host.hostCharToInt(c)
   if cp >= 48 and cp <= 57 {
     Some(value = cp - 48)
@@ -204,7 +209,9 @@ pub func digitValue(c: in Char): Option[Int] {
 /// or `None` for any other character.
 @pure
 @stable(since = "1.0")
-pub func hexDigitValue(c: in Char): Option[Int] {
+pub func hexDigitValue(c: in Char): Option[Int]
+  ensures: isNone[Int](result) or (unwrapOr(result, 0 - 1) >= 0 and unwrapOr(result, 0 - 1) <= 15)
+{
   // '0'..'9' = 48..57, 'a'..'f' = 97..102, 'A'..'F' = 65..70.
   val cp = Host.hostCharToInt(c)
   if cp >= 48 and cp <= 57 {
@@ -274,7 +281,9 @@ pub func isAsciiWhiteSpace(c: in Char): Bool {
 /// are returned unchanged.
 @pure
 @stable(since = "1.0")
-pub func asciiToLower(c: in Char): Char {
+pub func asciiToLower(c: in Char): Char
+  ensures: not isAscii(c) or isAscii(result)
+{
   if isAsciiUpper(c) {
     Host.hostIntToChar(Host.hostCharToInt(c) + 32)
   } else {
@@ -286,7 +295,9 @@ pub func asciiToLower(c: in Char): Char {
 /// are returned unchanged.
 @pure
 @stable(since = "1.0")
-pub func asciiToUpper(c: in Char): Char {
+pub func asciiToUpper(c: in Char): Char
+  ensures: not isAscii(c) or isAscii(result)
+{
   if isAsciiLower(c) {
     Host.hostIntToChar(Host.hostCharToInt(c) - 32)
   } else {

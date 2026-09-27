@@ -50,7 +50,7 @@ pub func toHexStringUpper(n: in Int): String {
 @pure
 @stable(since = "1.0")
 pub func formatFixed(x: in Double, decimals: in Int): String
-  requires: decimals >= 0
+  requires: decimals >= 0 and decimals <= 100
 {
   Host.hostDoubleToString(x, "F" + ("" + decimals), Host.hostInvariantCulture())
 }
@@ -63,7 +63,9 @@ pub func formatFixed(x: in Double, decimals: in Int): String
 /// Example: `padLeft("42", 5, '0')` → "00042".
 @pure
 @stable(since = "1.0")
-pub func padLeft(s: in String, width: in Int, ch: in Char): String {
+pub func padLeft(s: in String, width: in Int, ch: in Char): String
+  ensures: (s.length >= width and result.length == s.length) or (s.length < width and result.length == width)
+{
   val len = s.length
   if len >= width {
     return s
@@ -84,7 +86,9 @@ pub func padLeft(s: in String, width: in Int, ch: in Char): String {
 /// Example: `padRight("hi", 5, '.')` → "hi...".
 @pure
 @stable(since = "1.0")
-pub func padRight(s: in String, width: in Int, ch: in Char): String {
+pub func padRight(s: in String, width: in Int, ch: in Char): String
+  ensures: (s.length >= width and result.length == s.length) or (s.length < width and result.length == width)
+{
   val len = s.length
   if len >= width {
     return s
@@ -104,11 +108,18 @@ pub func padRight(s: in String, width: in Int, ch: in Char): String {
 // Composite helpers — pure Lyric, no new host calls.
 // =====================================================================
 /// Left-pad the decimal representation of `n` with zeros to at least
-/// `width` characters.  Example: `zeroPad(7, 3)` → "007".
+/// `width` characters.  Sign-aware: the '-' stays in front, so the zeros
+/// pad the digits, not the sign.  Examples: `zeroPad(7, 3)` → "007",
+/// `zeroPad(-7, 3)` → "-07".
 @pure
 @stable(since = "1.0")
 pub func zeroPad(n: in Int, width: in Int): String {
-  padLeft("" + n, width, '0')
+  if n < 0 {
+    val s = "" + n
+    "-" + padLeft(s.substring(1), width - 1, '0')
+  } else {
+    padLeft("" + n, width, '0')
+  }
 }
 
 /// Left-pad the lowercase hex representation of `n` with zeros to at

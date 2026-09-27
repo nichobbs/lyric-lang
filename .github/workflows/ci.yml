@@ -7222,7 +7222,7 @@ jobs:
           for suite in \
             core_tests iter_tests encoding_tests regex_safe_tests rest_tests parse_tests \
             process_capture_tests process_tests format_tests json_tests \
-            collections_tests char_tests math_tests hash_tests \
+            collections_tests char_tests math_tests hash_tests random_tests \
             errors_tests environment_tests string_tests string_methods_tests \
             regex_tests yaml_tests testing_tests testing_property_tests \
             mocking_tests xml_tests \
@@ -7265,6 +7265,18 @@ jobs:
           fi
           "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_tests.l
           "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_map_tests.l
+
+      # Std.Random on JVM: wide nextIntRange must not overflow (#7252).
+      - name: Std.Random suite on JVM (random_tests.l)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/random_tests.l
 
       # Std.Process on JVM: capture, exit codes, stdin, timeouts, and `run`
       # (inherited stdio). The suite could not compile on JVM while it

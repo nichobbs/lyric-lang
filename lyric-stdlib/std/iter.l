@@ -5,6 +5,7 @@
 //! (`map`, `filter`, `take`, `drop`, `concat`).  Allocating helpers
 //! build a `List[T]` via the generic FFI in `Std.Collections`, then
 //! return `list.toArray()` so the caller sees `slice[T]`.
+@runtime_checked
 package Std.Iter
 
 import Std.Core
@@ -92,7 +93,9 @@ pub func find[T](xs: in slice[T], pred: in (T) -> Bool): Option[T] {
 /// Map each element through `f`, collecting the results into a fresh
 /// slice.  `mapTo([1, 2, 3], { n: Int -> n * 2 }) == [2, 4, 6]`.
 @stable(since = "1.0")
-pub func map[T, U](xs: in slice[T], f: in (T) -> U): slice[U] {
+pub func map[T, U](xs: in slice[T], f: in (T) -> U): slice[U]
+  ensures: result.length == xs.length
+{
   val acc: List[U] = newListWithCapacity(xs.length)
   for x in xs {
     acc.add(f(x))
@@ -102,7 +105,9 @@ pub func map[T, U](xs: in slice[T], f: in (T) -> U): slice[U] {
 
 /// Keep only the elements that satisfy `pred`.
 @stable(since = "1.0")
-pub func filter[T](xs: in slice[T], pred: in (T) -> Bool): slice[T] {
+pub func filter[T](xs: in slice[T], pred: in (T) -> Bool): slice[T]
+  ensures: result.length <= xs.length
+{
   val acc: List[T] = newList()
   for x in xs {
     if pred(x) {
@@ -112,12 +117,13 @@ pub func filter[T](xs: in slice[T], pred: in (T) -> Bool): slice[T] {
   return acc.toArray()
 }
 
-/// First `n` elements, or fewer if `xs.length < n`.  Negative `n`
-/// returns the empty slice (the inner counter never reaches a
-/// negative threshold).
+/// First `n` elements, or fewer if `xs.length < n`.
 @stable(since = "1.0")
-pub func take[T](xs: in slice[T], n: in Int): slice[T] {
-  val count = if n <= 0 { 0 } else if n < xs.length { n } else { xs.length }
+pub func take[T](xs: in slice[T], n: in Int): slice[T]
+  requires: n >= 0
+  ensures: (n <= xs.length and result.length == n) or (n > xs.length and result.length == xs.length)
+{
+  val count = if n < xs.length { n } else { xs.length }
   val acc: List[T] = newListWithCapacity(count)
   var i = 0
   while i < count {
@@ -127,11 +133,13 @@ pub func take[T](xs: in slice[T], n: in Int): slice[T] {
   return acc.toArray()
 }
 
-/// Skip the first `n` elements.  Negative `n` returns a copy of the
-/// whole slice.
+/// Skip the first `n` elements.
 @stable(since = "1.0")
-pub func drop[T](xs: in slice[T], n: in Int): slice[T] {
-  val start = if n <= 0 { 0 } else if n < xs.length { n } else { xs.length }
+pub func drop[T](xs: in slice[T], n: in Int): slice[T]
+  requires: n >= 0
+  ensures: (n <= xs.length and result.length == xs.length - n) or (n > xs.length and result.length == 0)
+{
+  val start = if n < xs.length { n } else { xs.length }
   val acc: List[T] = newListWithCapacity(xs.length - start)
   var i = start
   while i < xs.length {
@@ -145,7 +153,9 @@ pub func drop[T](xs: in slice[T], n: in Int): slice[T] {
 /// call it in a loop to append one element at a time: that is quadratic.
 /// Accumulate into a `List[T]` with `add` and call `toArray()` once instead.
 @stable(since = "1.0")
-pub func concat[T](a: in slice[T], b: in slice[T]): slice[T] {
+pub func concat[T](a: in slice[T], b: in slice[T]): slice[T]
+  ensures: result.length == a.length + b.length
+{
   val acc: List[T] = newListWithCapacity(a.length + b.length)
   for x in a {
     acc.add(x)
@@ -253,7 +263,9 @@ pub func maxLong(xs: in slice[Long]): Option[Long] {
 
 /// Reverse a `slice[T]` into a fresh slice; the original is unchanged.
 @stable(since = "1.0")
-pub func reverse[T](xs: in slice[T]): slice[T] {
+pub func reverse[T](xs: in slice[T]): slice[T]
+  ensures: result.length == xs.length
+{
   val acc: List[T] = newListWithCapacity(xs.length)
   val n: Int = xs.length
   var i: Int = 0

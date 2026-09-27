@@ -34,7 +34,9 @@ pub func makeRandom(seed: in Int): Random {
 
 /// Random non-negative integer.
 @stable(since = "1.0")
-pub func nextInt(rng: in Random): Int {
+pub func nextInt(rng: in Random): Int
+  ensures: result >= 0
+{
   hostNextInt(rng)
 }
 
@@ -42,6 +44,7 @@ pub func nextInt(rng: in Random): Int {
 @stable(since = "1.0")
 pub func nextIntBelow(rng: in Random, max: in Int): Int
   requires: max > 0
+  ensures: result >= 0 and result < max
 {
   hostNextIntBelow(rng, max)
 }
@@ -52,6 +55,7 @@ pub func nextIntBelow(rng: in Random, max: in Int): Int
 @stable(since = "1.0")
 pub func nextIntRange(rng: in Random, min: in Int, max: in Int): Int
   requires: min < max
+  ensures: result >= min and result < max
 {
   hostNextIntRange(rng, min, max)
 }
@@ -64,7 +68,9 @@ pub func nextLong(rng: in Random): Long {
 
 /// Random double in [0.0, 1.0).
 @stable(since = "1.0")
-pub func nextDouble(rng: in Random): Double {
+pub func nextDouble(rng: in Random): Double
+  ensures: result >= 0.0 and result < 1.0
+{
   hostNextDouble(rng)
 }
 

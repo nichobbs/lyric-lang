@@ -44,6 +44,11 @@ func testZeroPad(): Unit {
   assertEqual(zeroPad(42, 2), "42", "zeroPad exact width")
   assertEqual(zeroPad(100, 2), "100", "zeroPad overflow")
   assertEqual(zeroPad(0, 4), "0000", "zeroPad zero")
+  // #7252: the sign must stay in front of the padded digits, not be
+  // treated as just another character to zero-pad around.
+  assertEqual(zeroPad(-7, 3), "-07", "zeroPad negative")
+  assertEqual(zeroPad(-42, 2), "-42", "zeroPad negative exact width")
+  assertEqual(zeroPad(-100, 2), "-100", "zeroPad negative overflow")
 }
 
 func testHexPad(): Unit {
@@ -57,10 +62,21 @@ func testHexPadUpper(): Unit {
   assertEqual(hexPadUpper(0, 2), "00", "hexPadUpper 0 width 2")
 }
 
+// Named helpers for assertPanics (block-bodied lambdas `() -> { ... }` are
+// refused by `lyric fmt`, #7151).
+func callFormatFixedTooManyDecimals(): Unit {
+  val ignored = formatFixed(1.0, 101)
+}
+
+func testFormatFixedRejectsTooManyDecimals(): Unit {
+  assertPanics("formatFixed(x, 101) violates decimals <= 100", callFormatFixedTooManyDecimals)
+}
+
 func main(): Unit {
   testToHexString()
   testToHexStringUpper()
   testFormatFixed()
+  testFormatFixedRejectsTooManyDecimals()
   testPadLeft()
   testPadRight()
   testZeroPad()

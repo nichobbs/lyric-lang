@@ -112,6 +112,7 @@ pub func plistIsEmpty[T](lst: in PersistentList[T]): Bool {
 }
 
 /// Number of elements.  O(1).
+@pure
 @experimental
 pub func plistLength[T](lst: in PersistentList[T]): Int {
   match lst {
@@ -142,7 +143,9 @@ pub func plistTail[T](lst: in PersistentList[T]): Option[PersistentList[T]] {
 /// Prepend `x` to `lst`, returning a new list that shares `lst` as its tail.
 /// `lst` itself is untouched.  O(1).
 @experimental
-pub func plistCons[T](x: in T, lst: in PersistentList[T]): PersistentList[T] {
+pub func plistCons[T](x: in T, lst: in PersistentList[T]): PersistentList[T]
+  ensures: plistLength(result) == plistLength(lst) + 1
+{
   PLCons(head = x, tail = lst, size = plistLength(lst) + 1)
 }
 
@@ -302,7 +305,9 @@ pub func pmapContainsKey[K, V](m: in slice[MapEntry[K, V]], key: in K, eq: in (K
 @experimental
 pub func pmapInsert[K, V](
   m: in slice[MapEntry[K, V]], key: in K, value: in V, eq: in (K, K) -> Bool
-): slice[MapEntry[K, V]] {
+): slice[MapEntry[K, V]]
+  ensures: result.length == m.length or result.length == m.length + 1
+{
   val acc: List[MapEntry[K, V]] = newList()
   var i = 0
   var replaced = false
@@ -325,7 +330,9 @@ pub func pmapInsert[K, V](
 /// new map.  A `key` with no matching entry returns `m` unchanged
 /// (documented no-op).  O(n): rebuilds the slice.
 @experimental
-pub func pmapDelete[K, V](m: in slice[MapEntry[K, V]], key: in K, eq: in (K, K) -> Bool): slice[MapEntry[K, V]] {
+pub func pmapDelete[K, V](m: in slice[MapEntry[K, V]], key: in K, eq: in (K, K) -> Bool): slice[MapEntry[K, V]]
+  ensures: result.length == m.length or result.length == m.length - 1
+{
   val acc: List[MapEntry[K, V]] = newList()
   var i = 0
   var removed = false

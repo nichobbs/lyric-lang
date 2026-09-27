@@ -33,10 +33,14 @@ pub func hostSecureNextInt(max: in Int): Int {
 }
 
 /// Cryptographically strong random integer in [min, max).
-/// min must be strictly less than max (a non-positive `max - min` throws
-/// IllegalArgumentException from the JDK call itself).
+/// min must be strictly less than max.
+///
+/// Computed via Long (#7252) so a wide range cannot overflow the Int32
+/// `max - min` subtraction the way `min + nextInt(max - min)` used to.
 pub func hostSecureNextIntRange(min: in Int, max: in Int): Int {
-  min + sharedSecureRandom.nextInt(max - min)
+  val range: Long = max.toLong() - min.toLong()
+  val r: Long = sharedSecureRandom.nextLong().and(9223372036854775807i64) % range;
+  (min.toLong() + r).toInt()
 }
 
 // Fill the buffer's backing byte[] in place. Handing `nextBytes` the array

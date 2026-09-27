@@ -6,6 +6,7 @@
 package Std.Encoding.Tests
 
 import Std.Core
+import Std.Char
 import Std.Encoding
 import Std.Testing
 
@@ -34,6 +35,26 @@ func testBase64Empty(): Unit {
 func testBase64Invalid(): Unit {
   val bad = tryDecodeBase64("not!valid@base64#")
   assertTrue(isNone(bad), "invalid base64 returns None")
+}
+
+// #7252: reject non-canonical padding bits — the unused low bits of the
+// last data symbol before "=" padding must be zero, or the string is a
+// malleable (non-unique) encoding of the same bytes.
+func testBase64RejectsNonCanonicalPadding(): Unit {
+  // "SGVsbG9//w==" encodes 1 byte with two '=': only the top 4 bits of the
+  // second symbol are used ("SGVsbG9//w==" here isn't it — build directly).
+  // Canonical single-byte encoding of 0xFF is "/w==" (c0='/'=63, c1='w'=48;
+  // low 4 bits of c1, 48 % 16 == 0, so this is canonical and must decode).
+  assertTrue(isSome(tryDecodeBase64("/w==")), "canonical one-byte padding decodes")
+  // Flip c1 to a symbol whose low 4 bits are non-zero ('x' = 49, encodes
+  // the same top 2 bits as 'w' but with a non-zero low nibble): non-canonical.
+  assertTrue(isNone(tryDecodeBase64("/x==")), "non-canonical one-'=' padding is rejected")
+
+  // Two-byte encoding of [0xFF, 0xFF] is "//8=" (c0='/', c1='/', c2='8'=60);
+  // the low 2 bits of c2 (60 % 4 == 0) are unused and must be zero.
+  assertTrue(isSome(tryDecodeBase64("//8=")), "canonical two-'=' padding decodes")
+  // '9' = 61 has the same top 4 bits as '8' = 60 but a non-zero low bit.
+  assertTrue(isNone(tryDecodeBase64("//9=")), "non-canonical two-byte padding is rejected")
 }
 
 func testHexRoundTrip(): Unit {
@@ -84,28 +105,48 @@ func testUtf8Invalid(): Unit {
   assertTrue(isNone(bad), "invalid utf8 byte returns None")
 }
 
+// #7252: a lone (unpaired) UTF-16 surrogate now encodes to U+FFFD
+// (EF BF BD) identically on every target, rather than diverging (.NET's
+// `Encoding.UTF8` already replaced with U+FFFD; the JVM accumulator used
+// to emit raw WTF-8 instead).
+func testUtf8LoneSurrogateReplacedWithFFFD(): Unit {
+  val loneHigh = "" + Char.fromInt(55296)
+  // U+D800, unpaired.
+  val highBytes = encodeUtf8(loneHigh)
+  assertEqualInt(highBytes.length, 3, "lone high surrogate encodes to 3 bytes")
+  assertEqualInt(highBytes[0].toInt(), 239, "U+FFFD byte 0")
+  assertEqualInt(highBytes[1].toInt(), 191, "U+FFFD byte 1")
+  assertEqualInt(highBytes[2].toInt(), 189, "U+FFFD byte 2")
+
+  val loneLow = "" + Char.fromInt(56320)
+  // U+DC00, unpaired.
+  val lowBytes = encodeUtf8(loneLow)
+  assertEqualInt(lowBytes.length, 3, "lone low surrogate encodes to 3 bytes")
+  assertEqualInt(lowBytes[0].toInt(), 239, "U+FFFD byte 0 (low)")
+  assertEqualInt(lowBytes[1].toInt(), 191, "U+FFFD byte 1 (low)")
+  assertEqualInt(lowBytes[2].toInt(), 189, "U+FFFD byte 2 (low)")
+}
+
 func testCodepointToStringValid(): Unit {
   assertEqual(codepointToString(65), "A", "codepointToString ASCII")
   assertEqual(codepointToString(128512), "😀", "codepointToString astral (U+1F600 GRINNING FACE)")
 }
 
-// #7031: codepointToString must reject an invalid Unicode scalar value
-// rather than silently diverging per-target (native's kernel twin, unlike
-// .NET's and JVM's, performed no validation at all before this fix).
+// #7031/#7252: codepointToString must reject an invalid Unicode scalar
+// value rather than silently diverging per-target (native's kernel twin,
+// unlike .NET's and JVM's, performed no validation at all before this
+// fix).  The rejection is now a `requires:` precondition (a
+// `PreconditionViolated` Bug) rather than a hand-rolled panic.
 func testCodepointToStringRejectsInvalid(): Unit {
-  assertPanicsWith(
-    "negative code point panics",
-    "not a valid Unicode scalar value",
-    { -> val ignored = codepointToString(-1) }
-  )
+  assertPanicsWith("negative code point panics", "PreconditionViolated", { -> val ignored = codepointToString(-1) })
   assertPanicsWith(
     "code point above U+10FFFF panics",
-    "not a valid Unicode scalar value",
+    "PreconditionViolated",
     { -> val ignored = codepointToString(1114112) }
   )
   assertPanicsWith(
     "lone surrogate code point panics",
-    "not a valid Unicode scalar value",
+    "PreconditionViolated",
     { -> val ignored = codepointToString(55296) }
   )
 }

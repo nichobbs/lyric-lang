@@ -13,6 +13,7 @@
 //! clashing with the identically-named BCL dispatch calls (`add`, `remove`,
 //! `contains`) that appear in the function bodies as receiver calls on the
 //! extern type.
+@runtime_checked
 package Std.Set
 
 import Std.Core
@@ -69,14 +70,18 @@ pub func setFromSlice[T](xs: in slice[T]): Set[T] {
 /// is determined by the BCL's internal bucket traversal and should not be
 /// relied upon across calls.
 @stable(since = "1.0")
-pub func setElements[T](s: in Set[T]): slice[T] {
+pub func setElements[T](s: in Set[T]): slice[T]
+  ensures: result.length == s.count
+{
   setToSlice(s)
 }
 
 /// Collect all elements of `s` into a new slice.  Iterates via the
 /// IEnumerable for-loop and accumulates into a `List[T]` sized to the set.
 @stable(since = "1.0")
-pub func setToSlice[T](s: in Set[T]): slice[T] {
+pub func setToSlice[T](s: in Set[T]): slice[T]
+  ensures: result.length == s.count
+{
   val result: List[T] = newListWithCapacity(s.count)
   for item in s {
     result.add(item)

@@ -24,11 +24,12 @@
 //!
 //! Lone-surrogate behaviour: a Lyric String may contain isolated UTF-16
 //! surrogates (U+D800..U+DFFF) that do not form a valid surrogate pair.
-//! encodeUtf8 does not validate its input for this case; the resulting
-//! byte sequence is platform-specific (.NET replaces lone surrogates with
-//! U+FFFD; the JVM accumulator encodes them as WTF-8 3-byte sequences).
-//! Callers that need portable round-trip behaviour should reject lone
-//! surrogates before encoding.
+//! encodeUtf8 does not validate its input for this case, but a lone
+//! surrogate is replaced with U+FFFD on every target (.NET's
+//! `Encoding.UTF8` fallback and the JVM accumulator both emit the same
+//! replacement byte sequence), so the output no longer diverges across
+//! targets for this input shape.
+@runtime_checked
 package Std.Encoding
 
 import Std.Core
@@ -48,7 +49,9 @@ import Std.String
 /// receivers, not `String`), while `.substring` is a plain method call
 /// that works identically on every target.
 @stable(since = "1.0")
-pub func encodeHex(bytes: in slice[Byte]): String {
+pub func encodeHex(bytes: in slice[Byte]): String
+  ensures: result.length == bytes.length * 2
+{
   val digits = "0123456789ABCDEF"
   val sb = StringBuilder.new()
   var i = 0
@@ -141,7 +144,9 @@ func base64CodeUnitValue(cp: in Int): Int {
 /// Uses `String.substring` rather than `BASE64_ALPHA[idx]` bracket
 /// indexing — see `encodeHex`'s header for why.
 @stable(since = "1.0")
-pub func encodeBase64(bytes: in slice[Byte]): String {
+pub func encodeBase64(bytes: in slice[Byte]): String
+  ensures: result.length == (bytes.length + 2) / 3 * 4
+{
   val BASE64_ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
   val sb = StringBuilder.new()
   val len = bytes.length
@@ -208,6 +213,12 @@ pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
       if i + 4 != len {
         return None
       }
+      // Canonical encoding: with two trailing '=' only 4 of c1's 6 bits are
+      // used (byte0 = c0<<2 | c1>>4); the unused low 4 bits must be zero, or
+      // the input is a non-canonical (malleable) encoding of the same bytes.
+      if c1 % 16 != 0 {
+        return None
+      }
     } else {
       val c2 = base64CodeUnitValue(cp2)
       if c2 < 0 {
@@ -216,6 +227,12 @@ pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
       if cp3 == 61 {
         // '='
         if i + 4 != len {
+          return None
+        }
+        // Canonical encoding: with one trailing '=' only 2 of c2's 6 bits
+        // are used (byte1 = c1%16<<4 | c2>>2); the unused low 2 bits must be
+        // zero.
+        if c2 % 4 != 0 {
           return None
         }
       } else {
@@ -267,10 +284,9 @@ pub func encodeUtf8(s: in String): slice[Byte] {
 /// three different divergent ones.
 @pure
 @stable(since = "1.0")
-pub func codepointToString(cp: in Int): String {
-  if cp < 0 or cp > 1114111 or (cp >= 55296 and cp <= 57343) {
-    panic("Std.Encoding.codepointToString: not a valid Unicode scalar value: " + toString(cp))
-  }
+pub func codepointToString(cp: in Int): String
+  requires: cp >= 0 and cp <= 1114111 and (cp < 55296 or cp > 57343)
+{
   hostStringFromCodepoint(cp)
 }
 

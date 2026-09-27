@@ -7,6 +7,7 @@
 //! see that function's doc comment.  Returns uppercase hex strings so the
 //! output is filesystem-safe and matches the wire format used by NuGet
 //! signing manifests.
+@runtime_checked
 package Std.Hash
 
 import Std.Core
@@ -23,21 +24,27 @@ import Std.HashHost
 /// merely proves the peer echoed a nonce it was handed in plaintext over the
 /// same connection), so SHA-1's weaknesses are irrelevant to that use.
 @stable(since = "1.0")
-pub func sha1OfBytes(bytes: in slice[Byte]): String {
+pub func sha1OfBytes(bytes: in slice[Byte]): String
+  ensures: result.length == 40
+{
   hostBytesToHex(hostSha1Bytes(bytes))
 }
 
 /// Compute the SHA-256 of `bytes` and return the digest as an uppercase
 /// 64-character hex string.
 @stable(since = "1.0")
-pub func sha256OfBytes(bytes: in slice[Byte]): String {
+pub func sha256OfBytes(bytes: in slice[Byte]): String
+  ensures: result.length == 64
+{
   hostBytesToHex(hostSha256Bytes(bytes))
 }
 
 /// Compute the SHA-512 of `bytes` and return the digest as an uppercase
 /// 128-character hex string.
 @stable(since = "1.0")
-pub func sha512OfBytes(bytes: in slice[Byte]): String {
+pub func sha512OfBytes(bytes: in slice[Byte]): String
+  ensures: result.length == 128
+{
   hostBytesToHex(hostSha512Bytes(bytes))
 }
 

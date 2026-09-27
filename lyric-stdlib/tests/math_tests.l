@@ -44,6 +44,49 @@ func testSignInt(): Unit {
   assertEqualInt(signInt(0), 0, "signInt zero")
 }
 
+// #7252: signDouble(NaN) must return 0 rather than throw — NaN has no
+// sign, and the JVM/native hosts already returned 0 for it while .NET's
+// `Math.Sign(double)` used to throw. Shared code now checks first.
+func testSignDoubleNaN(): Unit {
+  val nan = 0.0 / 0.0
+  assertEqualInt(signDouble(nan), 0, "signDouble(NaN) is 0")
+  assertEqualInt(signDouble(5.0), 1, "signDouble positive")
+  assertEqualInt(signDouble(-5.0), -1, "signDouble negative")
+  assertEqualInt(signDouble(0.0), 0, "signDouble zero")
+}
+
+// #7252: longToInt round-trips a value that fits Int, and its own
+// `requires:` rejects one that doesn't (matching the panic the BCL/JVM
+// hosts already raised for an out-of-range value).
+//
+// Called qualified (`Math.longToInt`, not bare `longToInt`): both backends
+// still lower a BARE `longToInt` to an unchecked truncating conversion that
+// never reaches Std.Math's function or its contract (#7465).
+func callLongToIntOverflow(): Unit {
+  val ignored = Math.longToInt(9223372036854775807i64)
+}
+
+func testLongToIntBounds(): Unit {
+  assertEqualInt(Math.longToInt(2147483647i64), 2147483647, "longToInt max")
+  assertEqualInt(Math.longToInt(-2147483648i64), -2147483648, "longToInt min")
+  assertPanics("longToInt rejects a value outside Int range", callLongToIntOverflow)
+}
+
+// #7252: absInt/absLong reject Int.MinValue/Long.MinValue, whose negation
+// overflows rather than silently returning a negative "absolute value".
+func callAbsIntMinValue(): Unit {
+  val ignored = absInt(-2147483648)
+}
+
+func callAbsLongMinValue(): Unit {
+  val ignored = absLong(-9223372036854775808i64)
+}
+
+func testAbsRejectsMinValue(): Unit {
+  assertPanics("absInt rejects Int.MinValue", callAbsIntMinValue)
+  assertPanics("absLong rejects Long.MinValue", callAbsLongMinValue)
+}
+
 func testDoubleOps(): Unit {
   // sqrt(4.0) = 2.0 — exact in IEEE 754
   val s = sqrt(4.0)
@@ -66,6 +109,9 @@ func main(): Unit {
   testGcd()
   testLcm()
   testSignInt()
+  testSignDoubleNaN()
+  testLongToIntBounds()
+  testAbsRejectsMinValue()
   testDoubleOps()
   println("math: ok")
 }
