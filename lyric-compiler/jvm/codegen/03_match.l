@@ -53,11 +53,21 @@ func jvmRefClassName(tyOpt: in Option[JvmType]): Option[String] {
 
 // Resolve a method-call receiver expression to the JVM class whose
 // `<class>#<method>` sig registry entry (with `retGenericArgs`) describes the
-// call.  Only a bare local/parameter reference (its static type is in
-// `ctx.types`) or `self` (`ctx.selfClass`) is resolved; a more complex receiver
-// yields None, degrading the payload to the safe boxed path (#4933).
+// call.  A bare local/parameter reference (its static type is in
+// `ctx.types`) and `self` (`ctx.selfClass`) resolve directly; a chained
+// `recv.field` or `recv[i]` receiver (#7337) recurses one level at a time —
+// resolve the INNER receiver's class first, then step through a field read
+// (`fieldClassOf`, via `ctx.caseFields`) or an index read
+// (`indexedElemTypeOverride`, the SAME narrowing an actual `EIndex` codegen
+// site already applies) to the next class in the chain. Mirrors what real
+// codegen (`lowerExpr`) already computes step-by-step while emitting
+// bytecode for the SAME chain — this is that same narrowing, done ahead of
+// codegen, purely to answer "what class does this expression have". Any
+// other receiver shape yields None, degrading the payload to the safe boxed
+// path (#4933).
 func receiverClassOf(ctx: in FuncCtx, recv: in Expr): Option[String] {
   match recv.kind {
+    case EParen(inner) -> receiverClassOf(ctx, inner)
     case EPath(p) -> {
       if p.segments.count == 1 {
         jvmRefClassName(mapGet(ctx.types, p.segments[0]))
@@ -66,7 +76,43 @@ func receiverClassOf(ctx: in FuncCtx, recv: in Expr): Option[String] {
       }
     }
     case ESelf -> ctx.selfClass
+    case EMember(inner, fieldName) -> {
+      match receiverClassOf(ctx, inner) {
+        case Some(cls) -> fieldClassOf(ctx, cls, fieldName)
+        case None -> None
+      }
+    }
+    case EIndex(base, _) -> {
+      match indexedElemTypeOverride(ctx, base, true) {
+        case JRef(cls) -> if cls == "java/lang/Object" { None } else { Some(value = cls) }
+        case _ -> None
+      }
+    }
     case _ -> None
+  }
+}
+
+// A record/case field's OWN declared CLASS (as opposed to `fieldGenericArgsOf`'s
+// generic instantiation args) — `caseFields[cls]`'s `JvmCaseField.ty` is
+// already the field's precise, non-erased class for any field whose declared
+// type isn't itself the enclosing generic type's own type parameter
+// (`JvmCaseField.paramIdx == -1`, the common case for a plain concrete-typed
+// field like `dynamodb: DynamoDbStreamRecordDetail`), so no extra resolution
+// is needed here — just read it back. `None` for an erased (`paramIdx >= 0`)
+// field, an unknown field, or an unknown class (#7337).
+func fieldClassOf(ctx: in FuncCtx, cls: in String, fieldName: in String): Option[String] {
+  match mapGet(ctx.caseFields, cls) {
+    case Some(flds) -> {
+      var i = 0
+      while i < flds.count {
+        if flds[i].name == fieldName {
+          return match flds[i].ty { case JRef(c) -> Some(value = c); case _ -> None }
+        }
+        i = i + 1
+      }
+      None
+    }
+    case None -> None
   }
 }
 
@@ -105,6 +151,152 @@ func fieldGenericArgsOf(ctx: in FuncCtx, recv: in Expr, fieldName: in String): L
     }
     case None -> newList()
   }
+}
+
+// Map each call argument to the declared parameter NAME it binds to — a
+// positional argument binds to `paramNames[i]` by position, a named argument
+// binds to its own spelled-out name regardless of position — so a lookup by
+// declared name works whether the call site used positional or named args
+// (#7337). A positional argument past the end of `paramNames` (arity
+// mismatch — shouldn't happen post-type-check) is silently dropped.
+func buildArgsByParamName(callArgs: in List[CallArg], paramNames: in List[String]): Map[String, Expr] {
+  val result: Map[String, Expr] = newMap()
+  var i = 0
+  var posIdx = 0
+  while i < callArgs.count {
+    match callArgs[i] {
+      case CAPositional(e) -> {
+        if posIdx < paramNames.count {
+          result.add(paramNames[posIdx], e)
+        }
+        posIdx = posIdx + 1
+      }
+      case CANamed(name, e, _) -> result.add(name, e)
+    }
+    i = i + 1
+  }
+  result
+}
+
+// Unify one declared parameter's TypeExpr shape against the matching call
+// ARGUMENT's own recovered instantiation (`scrutineeGenericArgs`), solving
+// for any of `ownTypeParams` the declared shape exposes positionally.
+// Handles exactly the shapes a container-accessor free function like
+// `mapGet[K, V](m: in Map[K, V], key: in K): Option[V]` declares its
+// parameters with (#7337):
+//   - `Map[K, V]` / any two-type-arg `TGenericApp` — the argument's own
+//     generic args (e.g. a `Map[String, DynamoDbAttributeValue]`-typed
+//     field's recorded `[String, DynamoDbAttributeValue]`) are read
+//     POSITIONALLY: `args[j]`'s bare type-param name (if any) solves to
+//     `argGa[j]`.
+//   - `slice[T]` / `List[T]` — `TSlice`'s single element, matched against
+//     the argument's single recovered element arg.
+// A declared shape this doesn't recognise (a bare type-param parameter
+// itself, e.g. `key: in K`, or a deeper nesting) is silently skipped — safe,
+// since `inferGenericReturnArgsFromCallArgs` only needs to solve the type
+// params the RETURN type actually references, and bails to the erased
+// fallback itself if one of those never gets solved.
+func unifyDeclParamWithArg(
+  ctx: in FuncCtx,
+  declTy: in TypeExpr,
+  argExpr: in Expr,
+  ownTypeParams: in List[String],
+  subst: in Map[String, TypeExpr],
+): Unit {
+  match declTy.kind {
+    case TParen(inner) -> unifyDeclParamWithArg(ctx, inner, argExpr, ownTypeParams, subst)
+    case TGenericApp(_, args) -> {
+      val argGa = scrutineeGenericArgs(ctx, argExpr)
+      var j = 0
+      while j < args.count and j < argGa.count {
+        match args[j] {
+          case TAType(ty) -> {
+            match ty.kind {
+              case TRef(p) -> {
+                if p.segments.count == 1 and listContainsStr(ownTypeParams, p.segments[0]) and not subst.containsKey(p.segments[0]) {
+                  subst.add(p.segments[0], argGa[j])
+                }
+              }
+              case _ -> ()
+            }
+          }
+          case TAValue(_) -> ()
+        }
+        j = j + 1
+      }
+    }
+    case TSlice(elem) -> {
+      match elem.kind {
+        case TRef(p) -> {
+          if p.segments.count == 1 and listContainsStr(ownTypeParams, p.segments[0]) and not subst.containsKey(p.segments[0]) {
+            val argGa = scrutineeGenericArgs(ctx, argExpr)
+            if argGa.count >= 1 {
+              subst.add(p.segments[0], argGa[0])
+            }
+          }
+        }
+        case _ -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Recover a generic function's DECLARED return-type generic args from the
+// CALL SITE's own arguments, when the declared return mentions the
+// function's own type parameter(s) — the case `returnTypeGenericArgsFiltered`
+// deliberately bails on at registration time (#7337, `JvmFuncSig.
+// declRetTypeExprRaw`'s doc comment). Empty (the safe "stay erased" default)
+// when `sig` isn't a free-function registration (`ownTypeParams` empty), the
+// declared return isn't a generic instantiation at all, or unification
+// leaves some referenced type param unsolved.
+func inferGenericReturnArgsFromCallArgs(ctx: in FuncCtx, sig: in JvmFuncSig, callArgs: in List[CallArg]): List[TypeExpr] {
+  if sig.ownTypeParams.count == 0 {
+    return newList()
+  }
+  val rawRetArgs = returnTypeGenericArgs(sig.declRetTypeExprRaw)
+  if rawRetArgs.count == 0 {
+    return newList()
+  }
+  val argsByName = buildArgsByParamName(callArgs, sig.paramNames)
+  val subst: Map[String, TypeExpr] = newMap()
+  var i = 0
+  while i < sig.declParamTypeExprs.count and i < sig.paramNames.count {
+    match mapGet(argsByName, sig.paramNames[i]) {
+      case Some(argExpr) -> unifyDeclParamWithArg(ctx, sig.declParamTypeExprs[i], argExpr, sig.ownTypeParams, subst)
+      case None -> ()
+    }
+    i = i + 1
+  }
+  val result: List[TypeExpr] = newList()
+  var j = 0
+  while j < rawRetArgs.count {
+    val raw = rawRetArgs[j]
+    match raw.kind {
+      case TRef(p) -> {
+        if p.segments.count == 1 and listContainsStr(sig.ownTypeParams, p.segments[0]) {
+          match mapGet(subst, p.segments[0]) {
+            case Some(concrete) -> result.add(concrete)
+            case None -> return newList()
+          }
+        } else {
+          result.add(eagerlyResolveGenericArg(raw, sig.owner, sig.declRetExternTypes))
+        }
+      }
+      case _ -> {
+        // A nested own-type-param reference (`Option[List[V]]`) isn't
+        // resolved positionally by `unifyDeclParamWithArg` above — stay at
+        // the safe erased fallback rather than eagerly-resolve `V` into a
+        // bogus in-package class guess.
+        if containsTypeParam(raw, sig.ownTypeParams) {
+          return newList()
+        }
+        result.add(eagerlyResolveGenericArg(raw, sig.owner, sig.declRetExternTypes))
+      }
+    }
+    j = j + 1
+  }
+  result
 }
 
 // Recover the scrutinee's generic instantiation arguments so a constructor
@@ -170,7 +362,30 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
         // against that wrong package's type.  `resolveGeneralFuncSig`
         // mirrors the actual call site's own (already qualifier-aware)
         // resolution in `lowerGeneralStaticCall`, so both agree.
-        case EPath(path) -> funcSigRetGenericArgs(resolveGeneralFuncSig(ctx, lastSegment(path), path, callArgs.count))
+        case EPath(path) -> {
+          val sigOpt = resolveGeneralFuncSig(ctx, lastSegment(path), path, callArgs.count)
+          val declared = funcSigRetGenericArgs(sigOpt)
+          // A generic function's declared return-type args are its own
+          // type PARAMETERS when they mention them at all (`func mapGet[K,
+          // V](m: in Map[K, V], key: in K): Option[V]` -> the declared `V`
+          // isn't a resolved type), so `funcSigRetGenericArgs` already came
+          // back empty for exactly this shape (`returnTypeGenericArgsFiltered`
+          // bailed at registration). Recover the substitution the CALL
+          // SITE's own arguments imply instead (#7337): e.g. `mapGet(m,
+          // key)`'s first argument `m`'s own recovered instantiation
+          // (`Map[String, DynamoDbAttributeValue]`) tells us `V` =
+          // `DynamoDbAttributeValue` for THIS call, letting `match
+          // mapGet(...) { case Some(attr) -> attr.field }` bind `attr` to
+          // its real record class instead of staying erased `Object`.
+          if declared.count > 0 {
+            declared
+          } else {
+            match sigOpt {
+              case Some(sig) -> inferGenericReturnArgsFromCallArgs(ctx, sig, callArgs)
+              case None -> newList()
+            }
+          }
+        }
         // `recv.method(...)` — an in-body / `impl` method registers under
         // `<receiverClass>#<method>` with its `retGenericArgs`; resolve the
         // receiver's class (local/param/`self`) to find it, else stay boxed.

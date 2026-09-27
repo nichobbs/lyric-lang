@@ -136,6 +136,39 @@ pub record JvmFuncSig {
   // complete `ctx.ctors` registry (`recordParamClassOf`'s lookup). Empty
   // everywhere else. No default, same rule as the fields above.
   recordRetHead: List[String]
+  // This function's OWN generic type-parameter names (`func mapGet[K, V](…)`
+  // -> `["K", "V"]`), empty for a non-generic function or any non-free-
+  // function sig kind (#7337). Lets `Jvm.Codegen.inferGenericReturnArgsFromCallArgs`
+  // recognise which bare `TRef`s inside `declRetTypeExprRaw`/`declParamTypeExprs`
+  // name the function's own type parameters, as opposed to a genuine
+  // concrete/imported type sharing the same short name.
+  ownTypeParams: List[String]
+  // The RAW (un-erased, un-pre-resolved) declared parameter TypeExprs,
+  // index-aligned with `paramNames` — empty for any sig kind other than the
+  // free-function registration (#7337). `returnTypeGenericArgsFiltered`
+  // already discards a generic function's OWN-type-param return args
+  // (`Option[V]` -> `[]`) at REGISTRATION time, since the substitution the
+  // caller's actual arguments imply isn't visible from the declared
+  // signature alone. `inferGenericReturnArgsFromCallArgs` recovers it at the
+  // CALL SITE instead: unify each of these declared param shapes
+  // (`Map[K, V]`, `slice[T]`, …) against the matching call argument's own
+  // recovered instantiation (`Jvm.Codegen.scrutineeGenericArgs`) to solve for
+  // `K`/`V`/`T`, then substitute into `declRetTypeExprRaw`.
+  declParamTypeExprs: List[TypeExpr]
+  // The RAW (un-filtered, un-pre-resolved) declared return TypeExpr this
+  // sig's `retGenericArgs` was filtered from — `None` for any sig kind other
+  // than the free-function registration, or when the declared return isn't a
+  // generic instantiation at all (#7337). Fed to `returnTypeGenericArgs` at
+  // the call site to recover the exact (possibly own-type-param-bearing) arg
+  // shapes `inferGenericReturnArgsFromCallArgs` then substitutes.
+  declRetTypeExprRaw: Option[TypeExpr]
+  // The declaring file's own `externTypes` map, threaded through so a
+  // substituted return arg that ISN'T one of `ownTypeParams` (e.g. the
+  // `String` in `Result[V, String]`) can still be eagerly resolved against
+  // the DECLARING file's context, exactly as `retGenericArgs` itself is at
+  // registration time (#7337). Empty for any sig kind other than the
+  // free-function registration.
+  declRetExternTypes: Map[String, String]
 }
 
 // One field of a union case class, in declaration order.  A match binding
@@ -2516,7 +2549,11 @@ pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFun
                 // A module-val read is `EMember`, never `ECall` — never
                 // consulted by `isUnsignedExpr`'s `ECall` arm.
                 retIsUnsigned = false,
-                recordRetHead = newList()
+                recordRetHead = newList(),
+                ownTypeParams = newList(),
+                declParamTypeExprs = newList(),
+                declRetTypeExprRaw = None,
+                declRetExternTypes = newMap()
               )
             )
           }

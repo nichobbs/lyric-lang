@@ -719,22 +719,58 @@ func withRecvClasses(seed: in Map[String, String], recvClasses: in Map[String, S
   merged
 }
 
-func externSeedForFile(
-  file: in SourceFile, extPkgNames: in List[String], extPkgMaps: in List[Map[String, String]]
-): Map[String, String] {
-  val seed: Map[String, String] = newMap()
-  // Build the file's import set once, then make a single pass over the
-  // package list — O(imports + packages) instead of the previous
-  // O(imports × packages) nested scan (#4667).
+// The TRANSITIVE closure of package names `file` can reach through imports —
+// its own imports, then each of THOSE packages' own imports, and so on —
+// not just its direct ones (#7357). A file that writes `import Std.Time`
+// but never `import Std.TimeHost` (the package that actually declares
+// `extern type Instant`) still sees `Instant` through `Std.Time`'s own
+// re-export; `Std.TimeHost` must count as "wanted" too, or the bare-key
+// lookup below never finds it. Each newly-discovered package is visited
+// exactly once (via `wanted` itself doubling as the visited-set), so an
+// import cycle between packages can never loop this.
+func transitiveWantedPkgs(file: in SourceFile, pkgImportNames: in Map[String, List[String]]): Map[String, Bool] {
   val wanted: Map[String, Bool] = newMap()
+  val queue: List[String] = newList()
   var ii = 0
   while ii < file.imports.count {
     val dn = dottedPath(file.imports[ii].path)
     if not wanted.containsKey(dn) {
       wanted.add(dn, true)
+      queue.add(dn)
     }
     ii = ii + 1
   }
+  var qi = 0
+  while qi < queue.count {
+    match mapGet(pkgImportNames, queue[qi]) {
+      case Some(theirImports) -> {
+        var k = 0
+        while k < theirImports.count {
+          if not wanted.containsKey(theirImports[k]) {
+            wanted.add(theirImports[k], true)
+            queue.add(theirImports[k])
+          }
+          k = k + 1
+        }
+      }
+      case None -> ()
+    }
+    qi = qi + 1
+  }
+  wanted
+}
+
+func externSeedForFile(
+  file: in SourceFile,
+  extPkgNames: in List[String],
+  extPkgMaps: in List[Map[String, String]],
+  pkgImportNames: in Map[String, List[String]],
+): Map[String, String] {
+  val seed: Map[String, String] = newMap()
+  // Build the file's TRANSITIVE import closure once, then make a single
+  // pass over the package list — O(imports + packages) instead of the
+  // previous O(imports × packages) nested scan (#4667).
+  val wanted = transitiveWantedPkgs(file, pkgImportNames)
   var pi = 0
   while pi < extPkgNames.count {
     val isWanted = wanted.containsKey(extPkgNames[pi])
@@ -1288,7 +1324,11 @@ func collectDeriveFreeSigs(
             // bare single-segment `ECall(EPath, …)` in practice, but cheap
             // and correct to compute here regardless.
             retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
-            recordRetHead = newList()
+            recordRetHead = newList(),
+            ownTypeParams = newList(),
+            declParamTypeExprs = newList(),
+            declRetTypeExprRaw = None,
+            declRetExternTypes = newMap()
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1318,7 +1358,10 @@ func isAspectWovenName(name: in String): Bool {
 // so both keys must resolve to the same descriptor).  First-wins guard,
 // matching `collectFileSigs`.
 func collectWovenSigsMatching(
-  file: in SourceFile, into: in Map[String, JvmFuncSig], matchName: in (String) -> Bool
+  file: in SourceFile,
+  into: in Map[String, JvmFuncSig],
+  matchName: in (String) -> Bool,
+  externTypes: in Map[String, String],
 ): Unit {
   val owner = pkgJvmOwner(file.packageDecl.path)
   var i = 0
@@ -1330,11 +1373,21 @@ func collectWovenSigsMatching(
           val paramNames: List[String] = newList()
           var pi = 0
           while pi < decl.params.count {
-            params.add(typeExprToJvm(decl.params[pi].ty, owner))
+            // #7357: a QUALIFIED param type (`Lambda.LambdaContext`, the row-
+            // constrained B'-mode args-record field's declared type,
+            // `docs/56`) previously erased through the plain `typeExprToJvm`
+            // (no `externTypes` at all) straight to the "same package" guess
+            // — dropping the qualifier entirely, since that function's `TRef`
+            // arm resolves only by `lastSegment`. `typeExprToJvmExtern`
+            // checks the qualified/bare extern-type maps FIRST (falling back
+            // to the same `typeExprToJvm` guess when neither has an entry),
+            // fixing both a qualified reference and a bare cross-package one
+            // this file's `externSeedForFile` seed (now transitive) resolves.
+            params.add(typeExprToJvmExtern(decl.params[pi].ty, owner, externTypes))
             paramNames.add(decl.params[pi].name)
             pi = pi + 1
           }
-          val ret = match decl.ret { case Some(te) -> typeExprToJvm(te, owner); case None -> JVoid }
+          val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
           val sig = JvmFuncSig(
             owner = owner,
             params = params,
@@ -1344,9 +1397,8 @@ func collectWovenSigsMatching(
             paramModes = newList(),
             isIface = false,
             retGenericArgs = returnTypeGenericArgs(decl.ret),
-            // No `externTypes` available in this shared woven-sig path (aspect
-            // target/wrapper and B'-mode specialisations); a closure-returning
-            // woven function keeps the pre-fix Object-erased invoke result.
+            // A closure-returning woven function keeps the pre-fix
+            // Object-erased invoke result (no special-casing added here).
             closureRetTy = None,
             recordRetClass = None,
             // Aspect/B'-mode-woven free functions: no Self-return
@@ -1361,7 +1413,11 @@ func collectWovenSigsMatching(
             // function's own declared return, which keeps the original
             // function's type (the weaver/mono renaming never changes it).
             retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
-            recordRetHead = newList()
+            recordRetHead = newList(),
+            ownTypeParams = newList(),
+            declParamTypeExprs = newList(),
+            declRetTypeExprRaw = None,
+            declRetExternTypes = newMap()
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1392,8 +1448,10 @@ func collectWovenSigsMatching(
 // parameter positionally) and avoids the stage-0 bootstrap
 // `List[Option[Expr]]` `.add()` miscompile (same rationale as
 // `collectDeriveFreeSigs`).
-func collectAspectWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
-  collectWovenSigsMatching(file, into, { name -> isAspectWovenName(name) })
+func collectAspectWovenSigs(
+  file: in SourceFile, into: in Map[String, JvmFuncSig], externTypes: in Map[String, String]
+): Unit {
+  collectWovenSigsMatching(file, into, { name -> isAspectWovenName(name) }, externTypes)
 }
 
 // Detect a B'-mode shape-keyed specialised function name (docs/55 §3.2):
@@ -1414,8 +1472,10 @@ func isBModeSpecializedName(name: in String): Bool {
 // `collectAspectWovenSigs` applies for #3402.  The specialised function is
 // called by BARE name (unqualified, same-package), so both the bare and the
 // qualified `owner/name` key are registered, mirroring `collectAspectWovenSigs`.
-func collectBModeWovenSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
-  collectWovenSigsMatching(file, into, { name -> isBModeSpecializedName(name) })
+func collectBModeWovenSigs(
+  file: in SourceFile, into: in Map[String, JvmFuncSig], externTypes: in Map[String, String]
+): Unit {
+  collectWovenSigsMatching(file, into, { name -> isBModeSpecializedName(name) }, externTypes)
 }
 
 // Detect a monomorphizer-specialised function name.  `Lyric.Mono` mangles a
@@ -1528,7 +1588,11 @@ func collectMonoSpecializedSigs(
             // The specialised copy of an imported generic returns the declaring
             // package's generic record; the call site resolves its class through
             // the complete constructor registry (`narrowStaticCallResult`).
-            recordRetHead = recordRetHeadOf(decl.ret)
+            recordRetHead = recordRetHeadOf(decl.ret),
+            ownTypeParams = newList(),
+            declParamTypeExprs = newList(),
+            declRetTypeExprRaw = None,
+            declRetExternTypes = newMap()
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -2113,8 +2177,25 @@ pub func compileProjectToJarBundledWithRestored(
   // Extern-type map per parsed package (parallel lists), so signatures and
   // descriptors written against an imported extern type resolve through
   // `externSeedForFile` (e.g. `Std.Time`'s `Instant` from `Std.TimeHost`).
+  //
+  // `pkgImportNames` records each package's OWN import list alongside it
+  // (#7357): `externSeedForFile`'s bare-key visibility check needs the
+  // TRANSITIVE closure of a consumer's imports, not just its own direct
+  // ones — a file that writes `import Std.Time` (never `import
+  // Std.TimeHost`, the package that actually declares `extern type Instant
+  // = "java.time.Instant"`) or `import Std.Json` (never `import
+  // Std.JsonHost`, which declares the plain record `JsonElement` re-exported
+  // through it) has no DIRECT import naming the declaring package, so the
+  // bare name resolved to neither `externTypes` nor `ctx.ctors`'s
+  // owner-scoped tier — falling through to the "declared in my own package"
+  // guess (`<consumer pkg>/Instant` / `<consumer pkg>/JsonElement`), a
+  // nonexistent class (`NoClassDefFoundError` at class-load, hit by a plain
+  // function parameter, a lambda parameter, or a `Lyric.Mono`-specialised
+  // generic function's substituted parameter type — see
+  // `transitiveWantedPkgs`).
   val extPkgNames: List[String] = newList()
   val extPkgMaps: List[Map[String, String]] = newList()
+  val pkgImportNames: Map[String, List[String]] = newMap()
   extPkgNames.add(dottedPath(userFile.packageDecl.path))
   val userExtMap = collectExternTypesFromFile(userFile)
   // Also expose each package's non-generic declared Lyric types (dotted
@@ -2122,12 +2203,17 @@ pub func compileProjectToJarBundledWithRestored(
   // class — extern declarations win on name collision (registered first).
   collectFileDeclaredTypeFqns(userFile, userExtMap)
   extPkgMaps.add(userExtMap)
+  pkgImportNames.add(dottedPath(userFile.packageDecl.path), collectImportNames(userFile.imports))
   var xi = 0
   while xi < stdlibFiles.count {
-    extPkgNames.add(dottedPath(stdlibFiles[xi].packageDecl.path))
+    val xpn = dottedPath(stdlibFiles[xi].packageDecl.path)
+    extPkgNames.add(xpn)
     val xExtMap = collectExternTypesFromFile(stdlibFiles[xi])
     collectFileDeclaredTypeFqns(stdlibFiles[xi], xExtMap)
     extPkgMaps.add(xExtMap)
+    if not pkgImportNames.containsKey(xpn) {
+      pkgImportNames.add(xpn, collectImportNames(stdlibFiles[xi].imports))
+    }
     xi = xi + 1
   }
   // #6668: a restored dependency (#3094) is a real OWNING package too — its
@@ -2145,10 +2231,14 @@ pub func compileProjectToJarBundledWithRestored(
   var rpi0 = 0
   while rpi0 < restoredArtifacts.count {
     val raFile = restoredArtifacts[rpi0].source
-    extPkgNames.add(restoredArtifacts[rpi0].packageName)
+    val rapn = restoredArtifacts[rpi0].packageName
+    extPkgNames.add(rapn)
     val raExtMap = collectExternTypesFromFile(raFile)
     collectFileDeclaredTypeFqns(raFile, raExtMap)
     extPkgMaps.add(raExtMap)
+    if not pkgImportNames.containsKey(rapn) {
+      pkgImportNames.add(rapn, collectImportNames(raFile.imports))
+    }
     rpi0 = rpi0 + 1
   }
 
@@ -2203,14 +2293,19 @@ pub func compileProjectToJarBundledWithRestored(
   // Build the cross-package call registry across the user file and *every*
   // stdlib file (resolution is cheap and harmless for packages we don't bundle).
   val registry: Map[String, JvmFuncSig] = newMap()
-  collectFileSigsSeeded(userFile, registry, externSeedForFile(userFile, extPkgNames, extPkgMaps), ctorReg)
+  collectFileSigsSeeded(
+    userFile,
+    registry,
+    externSeedForFile(userFile, extPkgNames, extPkgMaps, pkgImportNames),
+    ctorReg
+  )
   val caseReg: Map[String, List[JvmCaseField]] = newMap()
   // Field types resolve through own + imported extern types so a field like
   // `FileStat.modifiedAt: FileTime` registers the real JVM class.
   collectFileCasesExtern(
     userFile,
     caseReg,
-    ownAwareExternTypes(userFile, externSeedForFile(userFile, extPkgNames, extPkgMaps))
+    ownAwareExternTypes(userFile, externSeedForFile(userFile, extPkgNames, extPkgMaps, pkgImportNames))
   )
   // #3044: complete @projectable pre-scan across the whole compilation, so
   // nested-view substitution / tryInto() eligibility see every projectable
@@ -2220,11 +2315,16 @@ pub func compileProjectToJarBundledWithRestored(
   collectFileProjectables(userFile, allProjFqns)
   var ri = 0
   while ri < stdlibFiles.count {
-    collectFileSigsSeeded(stdlibFiles[ri], registry, externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps), ctorReg)
+    collectFileSigsSeeded(
+      stdlibFiles[ri],
+      registry,
+      externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps, pkgImportNames),
+      ctorReg
+    )
     collectFileCasesExtern(
       stdlibFiles[ri],
       caseReg,
-      ownAwareExternTypes(stdlibFiles[ri], externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps))
+      ownAwareExternTypes(stdlibFiles[ri], externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps, pkgImportNames))
     )
     collectFileProjectables(stdlibFiles[ri], allProjFqns)
     ri = ri + 1
@@ -2252,8 +2352,12 @@ pub func compileProjectToJarBundledWithRestored(
     // and every stdlib file use — an empty seed here left the restored
     // file's OWN signatures unable to resolve types from sibling restored
     // packages, extern kernels, or stdlib.
-    collectFileSigsSeeded(rf, registry, externSeedForFile(rf, extPkgNames, extPkgMaps), ctorReg)
-    collectFileCasesExtern(rf, caseReg, ownAwareExternTypes(rf, externSeedForFile(rf, extPkgNames, extPkgMaps)))
+    collectFileSigsSeeded(rf, registry, externSeedForFile(rf, extPkgNames, extPkgMaps, pkgImportNames), ctorReg)
+    collectFileCasesExtern(
+      rf,
+      caseReg,
+      ownAwareExternTypes(rf, externSeedForFile(rf, extPkgNames, extPkgMaps, pkgImportNames))
+    )
     collectFileProjectables(rf, allProjFqns)
     val rPkgItems: List[Item] = newList()
     var rii = 0
@@ -2632,19 +2736,19 @@ pub func compileProjectToJarBundledWithRestored(
       // Use the narrow `collectDeriveFreeSigs` (only `.`-named items) rather
       // than the full `collectFileSigs` to avoid the stage-0 bootstrap
       // List[Option[Expr]] miscompile on paramDefaults.add().
-      collectDeriveFreeSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps))
+      collectDeriveFreeSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames))
       // Register aspect-weave-synthesised targets / wrappers (`__aspect_*`)
       // from the post-weave file so the `proceed(args)` call resolves to the
       // real descriptor instead of the `(…)Object` guess (#3402, JVM analogue).
-      collectAspectWovenSigs(f, registry)
+      collectAspectWovenSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames))
       // Register B'-mode shape-keyed specialised functions (`__lyric_bmode_*`,
       // docs/55) from the post-weave file so a per-match wrapper's call to the
       // shared specialised function resolves to the real descriptor (#4600).
-      collectBModeWovenSigs(f, registry)
+      collectBModeWovenSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames))
       // Register monomorphizer-specialised copies (`mapKeys__String__Int`, …)
       // from the post-mono file so their call sites resolve to the real
       // descriptor (#3229; the #3676 map-iteration symptom).
-      collectMonoSpecializedSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps), ctorReg)
+      collectMonoSpecializedSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames), ctorReg)
       // Register weaver-synthesised record fields (`__LyricBModeCallContext`,
       // `__LyricBModeCfg_*`, `__LyricBModeArgs_*`, docs/55/56) from the
       // post-weave file: `caseReg` above was built from the pre-weave
@@ -2653,7 +2757,7 @@ pub func compileProjectToJarBundledWithRestored(
       // panics with "has no known field or member" (#4600).
       // `collectFileCasesExtern` first-wins-guards on `into.containsKey`, so
       // re-running it over the whole post-weave file is a safe additive scan.
-      collectFileCasesExtern(f, caseReg, externSeedForFile(f, extPkgNames, extPkgMaps))
+      collectFileCasesExtern(f, caseReg, externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames))
       // Register the SAME weaver-synthesised records as constructable types
       // (`new + invokespecial <init>` instead of the plain-function-call
       // guess) — `ctorReg` above was ALSO built from the pre-weave `userFile`
@@ -2683,7 +2787,7 @@ pub func compileProjectToJarBundledWithRestored(
         autoFfi,
         allProjFqns,
         allClasses,
-        withRecvClasses(externSeedForFile(f, extPkgNames, extPkgMaps), userRecvClasses),
+        withRecvClasses(externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames), userRecvClasses),
         userFileName,
         unsafeFieldLockNames
       )
@@ -2745,10 +2849,10 @@ pub func compileProjectToJarBundledWithRestored(
       val siblingRecvClasses: Map[String, String] = newMap()
       match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses) {
         case Some(ff) -> {
-          collectAspectWovenSigs(ff, registry)
-          collectBModeWovenSigs(ff, registry)
-          collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps), ctorReg)
-          collectFileCasesExtern(ff, caseReg, externSeedForFile(ff, extPkgNames, extPkgMaps))
+          collectAspectWovenSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames))
+          collectBModeWovenSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames))
+          collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames), ctorReg)
+          collectFileCasesExtern(ff, caseReg, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames))
           collectFileCtors(ff, ctorReg)
           // #4994: only the project's OWN packages get a contract resource —
           // a merely-referenced stdlib package (isProjectPkg == false) never
@@ -2777,7 +2881,7 @@ pub func compileProjectToJarBundledWithRestored(
             autoFfi,
             allProjFqns,
             allClasses,
-            withRecvClasses(externSeedForFile(ff, extPkgNames, extPkgMaps), siblingRecvClasses),
+            withRecvClasses(externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames), siblingRecvClasses),
             bundledFileName,
             unsafeFieldLockNames
           )
