@@ -727,6 +727,61 @@ test "Std.Process piped API and spawn-failure messages on native (ASan) (#6887)"
   assertEqualInt(r.exitCode, 42, "Std.Process piped API on native")
 }
 
+// #7451: pipedReadLineWithin on native (lyric-rt's poll(2)-bounded
+// lyric_process_piped_read_line_within): a silent child times out, a line
+// written afterwards is returned by the next read, and end of stream is
+// reported once the child exits.
+test "Std.Process pipedReadLineWithin on native (ASan) (#7451)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process\n" +
+    "func main(): Int {\n" +
+    "  val noArgs: List[String] = newList()\n" +
+    "  match spawnPiped(\"/bin/cat\", noArgs) {\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "    case Ok(p) -> {\n" +
+    "      match pipedReadLineWithin(p, 100) {\n" +
+    "        case Ok(PipedTimedOut) -> {\n" +
+    "        }\n" +
+    "        case _ -> {\n" +
+    "          return 2\n" +
+    "        }\n" +
+    "      }\n" +
+    "      match pipedWriteLine(p, \"late\") {\n" +
+    "        case Err(_) -> {\n" +
+    "          return 3\n" +
+    "        }\n" +
+    "        case Ok(_) -> {\n" +
+    "        }\n" +
+    "      }\n" +
+    "      match pipedReadLineWithin(p, 5000) {\n" +
+    "        case Ok(PipedLine(line)) -> {\n" +
+    "          if line != \"late\" {\n" +
+    "            return 4\n" +
+    "          }\n" +
+    "        }\n" +
+    "        case _ -> {\n" +
+    "          return 5\n" +
+    "        }\n" +
+    "      }\n" +
+    "      pipedCloseStdin(p)\n" +
+    "      match pipedReadLineWithin(p, 5000) {\n" +
+    "        case Ok(PipedEndOfStream) -> {\n" +
+    "        }\n" +
+    "        case _ -> {\n" +
+    "          return 6\n" +
+    "        }\n" +
+    "      }\n" +
+    "      pipedWaitExit(p, 5000)\n" +
+    "      pipedClose(p)\n" +
+    "    }\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "pipedReadLineWithin on native")
+}
+
 // String.replace lowers to lyric-rt's lyric_string_replace (#6888): ordinal,
 // left to right, non-overlapping; an empty search string leaves the input
 // unchanged on native (see the runtime's own comment for why).

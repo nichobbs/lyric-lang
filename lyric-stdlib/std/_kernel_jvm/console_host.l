@@ -15,13 +15,26 @@
 //! buffered reader per call would buffer-and-discard lookahead bytes
 //! between consecutive reads.
 //!
+//! The stdin byte reader (`hostOpenStdin` / `hostStdinReadResult` /
+//! `hostStdinReadWithinResult`, #7451) reads raw bytes from `System.in`. A
+//! bounded read runs the blocking `InputStream.read()` on a
+//! virtual thread (`Thread.startVirtualThread` with a record implementing
+//! `Runnable`, so it never keeps the JVM alive) and waits with
+//! `Thread.join(long)`. A timed-out read stays outstanding on the handle and
+//! the next read of either kind joins it, so bytes that arrive after a
+//! deadline are delivered, in order, by the next read. `available()` polling
+//! (the piped-process kernel's technique) is not used here: it cannot tell
+//! end of stream from "nothing yet".
+//!
 //! Internal: prefer Std.Console for application code.  Import this kernel
 //! module only when exact byte-level control is required (e.g. the LSP
 //! Content-Length framing reader).
-@axiom("java.lang.System.{out,err,in} and java.io.BufferedReader conform to their documented JVM contracts")
+@axiom("java.lang.System.{out,err,in}, java.io.BufferedReader and java.lang.Thread conform to their documented JVM contracts")
 package Std.ConsoleHost
 
 import Std.Core
+import Std.Collections
+import Std.Math
 
 extern type JSystem = "java.lang.System"
 
@@ -67,4 +80,174 @@ pub func hostReadLineOpt(): Option[String] {
 pub func hostConsoleErrorWriteLine(text: in String): Unit {
   val e = JSystem.err
   e.println(text)
+}
+
+// ── Stdin byte reader (#7451) ────────────────────────────────────────────────
+extern type JInputStream = "java.io.InputStream"
+
+extern type JRunnable = "java.lang.Runnable"
+
+extern type JThread = "java.lang.Thread"
+
+extern type JBAOS = "java.io.ByteArrayOutputStream"
+
+extern type JAtomicBoolean = "java.util.concurrent.atomic.AtomicBoolean"
+
+// Upper bound on the bytes one read returns.
+val stdinChunkMax: Int = 65536
+
+// Tail-position forms: a discarded auto-FFI instance call whose receiver is a
+// parameter emits no invoke on this backend (#5379).
+func atomicBoolSet(a: in JAtomicBoolean, v: in Bool): Unit {
+  a.set(v)
+}
+
+func atomicBoolGet(a: in JAtomicBoolean): Bool {
+  a.get()
+}
+
+func threadJoinMs(t: in JThread, ms: in Long): Unit {
+  t.join(ms)
+}
+
+func baosWriteByte(acc: in JBAOS, b: in Int): Unit {
+  acc.write(b)
+}
+
+func baosWriteBytes(acc: in JBAOS, bytes: in slice[Byte]): Unit {
+  acc.write(bytes)
+}
+
+// One blocking read: the first byte (`read()` blocks until one arrives or the
+// stream ends), then whatever else is already available without blocking.
+// Returned arrays come from the JDK (`readNBytes`, `toByteArray`) rather than
+// a caller-owned buffer filled through `read(byte[], int, int)`, whose writes
+// the auto-FFI array marshalling does not propagate back. Empty at end of
+// stream.
+func readChunk(s: in JInputStream): slice[Byte] {
+  val first = s.read()
+  if first < 0 {
+    val empty: slice[Byte] = []
+    return empty
+  }
+  val acc: JBAOS = JBAOS.new()
+  baosWriteByte(acc, first)
+  val avail = s.available()
+  if avail > 0 {
+    val want = if avail < stdinChunkMax - 1 { avail } else { stdinChunkMax - 1 }
+    baosWriteBytes(acc, s.readNBytes(want))
+  }
+  acc.toByteArray()
+}
+
+// One `readChunk` run on a virtual thread. The chunk (or the failure message)
+// is recorded before `done` is set.
+record StdinReadJob {
+  stream: JInputStream
+  done: JAtomicBoolean
+  chunks: List[slice[Byte]]
+  errors: List[String]
+}
+
+impl JRunnable for StdinReadJob {
+  func run(): Unit {
+    try {
+      self.chunks.add(readChunk(self.stream))
+    } catch Bug as b {
+      self.errors.add(b.message)
+    }
+    atomicBoolSet(self.done, true)
+  }
+}
+
+func startJob(job: in StdinReadJob): JThread {
+  JThread.startVirtualThread(job)
+}
+
+/// Raw-byte reader over this process's standard input.
+pub record StdinHandle {
+  stream: JInputStream
+  // The outstanding background read (zero or one of each).
+  jobs: List[StdinReadJob]
+  threads: List[JThread]
+}
+
+/// Outcome of one stdin read.
+pub union HostStdinRead {
+  case HostStdinBytes(bytes: slice[Byte])
+  case HostStdinEof
+  case HostStdinTimedOut
+}
+
+pub func hostOpenStdin(): StdinHandle {
+  StdinHandle(stream = JSystem.in, jobs = newList(), threads = newList())
+}
+
+func stdinReadOf(bytes: in slice[Byte]): HostStdinRead {
+  if bytes.length == 0 {
+    HostStdinEof
+  } else {
+    HostStdinBytes(bytes = bytes)
+  }
+}
+
+func startStdinRead(h: in StdinHandle): Unit {
+  if h.jobs.count > 0 {
+    return
+  }
+  val job = StdinReadJob(stream = h.stream, done = JAtomicBoolean.new(false), chunks = newList(), errors = newList())
+  h.jobs.add(job)
+  h.threads.add(startJob(job))
+}
+
+// Wait up to `ms` (negative: without a bound) for the outstanding read;
+// `None` on timeout, leaving it outstanding.
+func joinStdinRead(h: in StdinHandle, ms: in Int): Option[Result[HostStdinRead, String]] {
+  val job = h.jobs[0]
+  val t = h.threads[0]
+  if ms < 0 {
+    threadJoinMs(t, 0i64)
+  } else if ms > 0 {
+    threadJoinMs(t, ms.toLong())
+  }
+  if not atomicBoolGet(job.done) {
+    return None
+  }
+  h.jobs.clear()
+  h.threads.clear()
+  if job.errors.count > 0 {
+    Some(value = Err(error = job.errors[0]))
+  } else {
+    Some(value = Ok(value = stdinReadOf(job.chunks[0])))
+  }
+}
+
+/// Block until stdin yields at least one byte or reaches end of stream.
+/// Never `HostStdinTimedOut`.
+pub func hostStdinReadResult(h: in StdinHandle): Result[HostStdinRead, String] {
+  try {
+    if h.jobs.count > 0 {
+      match joinStdinRead(h, 0 - 1) {
+        case Some(r) -> r
+        case None -> Err(error = "background stdin read did not complete")
+      }
+    } else {
+      Ok(value = stdinReadOf(readChunk(h.stream)))
+    }
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+/// Like `hostStdinReadResult`, but waits at most `timeoutMs` milliseconds.
+pub func hostStdinReadWithinResult(h: in StdinHandle, timeoutMs: in Int): Result[HostStdinRead, String] {
+  try {
+    startStdinRead(h)
+    match joinStdinRead(h, timeoutMs) {
+      case Some(r) -> r
+      case None -> Ok(value = HostStdinTimedOut)
+    }
+  } catch Bug as b {
+    Err(error = b.message)
+  }
 }

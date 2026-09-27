@@ -5871,32 +5871,13 @@ jobs:
           out="$(java -jar "$work/task_ambient_jvm_tests.jar")"
           echo "$out" | tail -3
           grep -q "task ambient jvm tests: ok" <<< "$out" || { echo "::error::Std.Task ambient-slot JVM suite did not report success"; exit 1; }
-      # lyric-storage suite on JVM (band J6, #1444/#2669) — the first
-      # multi-package ecosystem manifest on --target jvm: multi-package JVM
-      # project build, @cfg dotnet/jvm kernel split, Storage.Kernel.Jvm, and
-      # the Std.Json JVM kernel under the sidecar reads.
-      - name: lyric-storage suite on JVM (lyric test --target jvm --features jvm)
+      # Pure-Lyric ecosystem suites on JVM: storage, resilience, jsonrpc,
+      # mcp, health (coverage notes in the script).
+      - name: Ecosystem suites on JVM (storage, resilience, jsonrpc, mcp, health)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --manifest lyric-storage/lyric.toml --target jvm --no-default-features --features jvm
-      # lyric-resilience suite on JVM (#5037) — pins the real
-      # Resilience.Kernel.Jvm circuit-breaker/retry kernel (java.util.
-      # concurrent.ConcurrentHashMap + per-entry ReentrantLock, replacing
-      # the previous always-false/no-op stub) against the same
-      # resilience_tests.l the .NET target already runs.
-      - name: lyric-resilience suite on JVM (lyric test --target jvm --features jvm)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --manifest lyric-resilience/lyric.toml --target jvm --no-default-features --features jvm
-      # lyric-health on JVM: the `@cfg(feature = "jvm")` arm of
-      # runCheckIsolated (panic isolation; timeout gap #7461).
-      - name: lyric-health suite on JVM (lyric test --target jvm --features jvm)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --manifest lyric-health/lyric.toml --target jvm --no-default-features --features jvm
+        run: bash scripts/ci/jvm-ecosystem-suites.sh
       # lyric-lambda suite on JVM (#7337, #7357); needs Undertow Maven-restored.
       - name: lyric-lambda suite on JVM (lyric test --target jvm --features jvm)
         if: ${{ !cancelled() }}
@@ -6181,7 +6162,7 @@ jobs:
       # and drives 5 cases (single-line echo, multi-line ordering,
       # pipedCloseStdin clean exit with final buffered line, nonexistent-
       # executable rejection, post-EOF None), matching the coverage of
-      # lyric-mcp/tests/mcp_stdio_process_tests.l's dotnet-only suite.
+      # lyric-mcp/tests/mcp_stdio_process_tests.l.
       # Proves the byte-level available()-polled rewrite of
       # std/_kernel_jvm/process_piped_host.l's read side actually works —
       # the previous BufferedReader.readLine()-based version was unreliable.
@@ -6797,9 +6778,8 @@ jobs:
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-otel/lyric.toml
 
-      # lyric-jsonrpc is tier-0 (pure Lyric, no deps). dotnet-target runs —
-      # the JVM gaps are tracked (#6123, #6124, #6136). Guards the
-      # published Lyric.JsonRpc package (#6156).
+      # lyric-jsonrpc is tier-0 (pure Lyric, no deps); its JVM run is in
+      # compiler-self-tests-jvm. Guards the published package (#6156).
       - name: Run tests (jsonrpc)
         if: matrix.id == 'jsonrpc'
         run: |
@@ -7208,6 +7188,7 @@ jobs:
             echo "--- lyric run lyric-stdlib/tests/$suite.l"
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done
+          bash scripts/ci/console-stdin-test.sh "$lyric_bin"
 
       # Std.Collections.Persistent (List ops + PersistentMap ops) on JVM
       # (#684, #6577 review follow-up; #6708 for the map suite): the module
@@ -7268,6 +7249,7 @@ jobs:
             exit 1
           fi
           "$lyric_bin" run --target jvm lyric-stdlib/tests/process_tests.l
+          bash scripts/ci/console-stdin-test.sh "$lyric_bin" --target jvm
 
       # Std.Hash on JVM (#7245): SHA-256 digests and HMAC-SHA-256 back the
       # lyric-mcp sealed requestState, so the RFC 4231 vectors run on both

@@ -98,6 +98,75 @@ pub func readAll(): Result[String, IOError] {
   }
 }
 
+// ── Raw stdin bytes with bounded waits (#7451) ──────────────────────────────
+/// A byte-level reader over this process's standard input, for protocols
+/// that frame their own messages (JSON-RPC over stdio) and must not block
+/// without a bound waiting for a peer. It reads stdin directly: do not mix it
+/// with `readLine`/`readAll`, and open at most one per process.
+///
+/// Available on `--target dotnet` and `--target jvm`. Native console input
+/// is not available yet (see `_kernel_native/console_host.l`).
+@stable(since = "1.2")
+pub record StdinReader {
+  handle: StdinHandle
+}
+
+/// Outcome of `readStdinWithin`: the bytes read (never empty), clean end of
+/// stream, or nothing within the timeout.
+@stable(since = "1.2")
+pub union StdinChunk {
+  case StdinBytes(bytes: slice[Byte])
+  case StdinEnd
+  case StdinTimedOut
+}
+
+/// Open a byte-level reader over standard input.
+@stable(since = "1.2")
+pub func openStdinReader(): StdinReader {
+  StdinReader(handle = hostOpenStdin())
+}
+
+// A host failure is an `IoError`, per this module's input policy.
+func stdinChunkOf(r: in Result[HostStdinRead, String]): Result[StdinChunk, IOError] {
+  match r {
+    case Err(e) -> Err(error = IoError(path = "stdin", message = e))
+    case Ok(read) -> match read {
+      case HostStdinBytes(bytes) -> Ok(value = StdinBytes(bytes = bytes))
+      case HostStdinEof -> Ok(value = StdinEnd)
+      case HostStdinTimedOut -> Ok(value = StdinTimedOut)
+    }
+  }
+}
+
+/// Block until stdin yields at least one byte (`Some`) or reaches end of
+/// stream (`None`).
+///
+/// # Errors
+/// - `IoError("stdin", message)`: host read failure.
+@stable(since = "1.2")
+pub func readStdin(r: in StdinReader): Result[Option[slice[Byte]], IOError] {
+  match stdinChunkOf(hostStdinReadResult(r.handle)) {
+    case Err(e) -> Err(error = e)
+    case Ok(chunk) -> match chunk {
+      case StdinBytes(bytes) -> Ok(value = Some(value = bytes))
+      case _ -> Ok(value = None)
+    }
+  }
+}
+
+/// Wait at most `timeoutMs` milliseconds for stdin to yield bytes. A read
+/// that times out loses nothing: bytes that arrive after the deadline are
+/// returned, in order, by the next `readStdin`/`readStdinWithin`.
+///
+/// # Errors
+/// - `IoError("stdin", message)`: host read failure.
+@stable(since = "1.2")
+pub func readStdinWithin(r: in StdinReader, timeoutMs: in Int): Result[StdinChunk, IOError]
+  requires: timeoutMs >= 0
+{
+  stdinChunkOf(hostStdinReadWithinResult(r.handle, timeoutMs))
+}
+
 // Future: foreground(color), background(color), reset, bold, dim,
 // italic, and capability checks such as isColorSupported. These belong
 // behind an explicit terminal capability API rather than ad hoc escape

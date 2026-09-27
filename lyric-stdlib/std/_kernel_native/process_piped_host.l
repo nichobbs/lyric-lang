@@ -66,6 +66,8 @@ extern func rtPipedSpawn(path: NativePtr[Byte], args: NativePtr[Byte]): Long = "
 
 extern func rtPipedReadLine(p: Long, outLine: NativePtr[String]): Int = "lyric_process_piped_read_line"
 
+extern func rtPipedReadLineWithin(p: Long, outLine: NativePtr[String], timeoutMs: Int): Int = "lyric_process_piped_read_line_within"
+
 extern func rtPipedWriteLine(p: Long, line: String): Int = "lyric_process_piped_write_line"
 
 extern func rtPipedIsAlive(p: Long): Int = "lyric_process_piped_is_alive"
@@ -124,6 +126,28 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
     Some(value = line)
   } else {
     None
+  }
+}
+
+/// Outcome of a bounded read (`hostPipedReadLineWithinResult`).
+pub union HostPipedRead {
+  case HostPipedLine(line: String)
+  case HostPipedEof
+  case HostPipedTimedOut
+}
+
+// lyric-rt's bounded read: 1 line, 0 end of stream, 2 timed out (a partial
+// line stays buffered in the handle for the next read, #7451).
+@unsafe_ffi
+func pipedReadLineWithin(p: in PipedHandle, timeoutMs: in Int): HostPipedRead {
+  var line: String = ""
+  val rc = rtPipedReadLineWithin(p.raw, nativeAddrOf(line), timeoutMs)
+  if rc == 1 {
+    HostPipedLine(line = line)
+  } else if rc == 2 {
+    HostPipedTimedOut
+  } else {
+    HostPipedEof
   }
 }
 
@@ -208,6 +232,12 @@ pub func hostSpawnPipedResult(fileName: in String, args: in List[String]): Resul
 // treated as end of stream), so this seam never produces Err on native.
 pub func hostPipedReadLineResult(p: in PipedHandle): Result[Option[String], String] {
   Ok(value = hostPipedReadLineOpt(p))
+}
+
+/// Read one line, waiting at most `timeoutMs` milliseconds. Like
+/// `hostPipedReadLineResult`, never `Err` on this target.
+pub func hostPipedReadLineWithinResult(p: in PipedHandle, timeoutMs: in Int): Result[HostPipedRead, String] {
+  Ok(value = pipedReadLineWithin(p, timeoutMs))
 }
 
 pub func hostPipedWriteLineResult(p: in PipedHandle, line: in String): Result[Unit, String] {

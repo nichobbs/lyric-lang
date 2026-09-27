@@ -707,6 +707,9 @@ void lyric_process_free(void* op);
  * already-reaped pid fails with ECHILD). */
 void* lyric_process_piped_spawn(const char* path, LyricList* args);
 int32_t lyric_process_piped_read_line(void* p, LyricString** out_line);
+/* read_line bounded by `timeout_ms` (negative: no bound): 1 line, 0 end of
+ * stream, 2 timed out with any partial line kept buffered (issue #7451). */
+int32_t lyric_process_piped_read_line_within(void* p, LyricString** out_line, int32_t timeout_ms);
 int32_t lyric_process_piped_write_line(void* p, LyricString* line);
 int32_t lyric_process_piped_is_alive(void* p);
 int32_t lyric_process_piped_kill(void* p);

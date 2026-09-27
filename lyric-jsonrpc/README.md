@@ -11,25 +11,20 @@ this library implements; `lyric-mcp` (a follow-on track) builds the Model
 Context Protocol client/server on top of this library.
 
 > **Status**: `@experimental`. All three packages compile and have full
-> test coverage. `.NET` is fully green (79/79 tests). JVM has real,
-> precisely-diagnosed gaps in the self-hosted compiler (68/79 tests) — see
-> "Platform parity" and "Known upstream issues" below before depending on
-> the JVM target for this library.
+> test coverage, green on both `.NET` and the JVM (CI runs the suites on
+> both targets).
 
 ## Platform parity
 
 | Package | `.NET` | JVM |
 |---|---|---|
-| `JsonRpc.Json` (parser, writer, accessors) | 46/46 tests | 46/46 tests |
-| `JsonRpc` (envelope, `RpcPeer`) | 18/18 tests | 14/18 tests — see below |
-| `JsonRpc.Stdio` (NDJSON, Content-Length) | 15/15 tests | 8/15 tests — see below |
+| `JsonRpc.Json` (parser, writer, accessors) | 48/48 tests | 48/48 tests |
+| `JsonRpc` (envelope, `RpcPeer`, call deadlines) | 31/31 tests | 31/31 tests |
+| `JsonRpc.Stdio` (NDJSON, Content-Length, byte-level framing) | 30/30 tests | 30/30 tests |
 
-The JSON value model (`JsonRpc.Json`) is fully cross-target: every parse,
-write, escape, depth-limit, and duplicate-key test passes identically on
-both backends. The gaps are entirely in the self-hosted **JVM** backend's
-handling of specific `while`-loop / interface-dispatch / union-nesting
-shapes that the peer and framing logic happen to need; none are gaps in
-this library's own design or in the MSIL backend.
+The production stdio transports read stdin through `Std.Console`'s
+`StdinReader`, which bounds a wait on `dotnet` and `jvm`; `--target
+native` has no console input yet (see `_kernel_native/console_host.l`).
 
 ## Known upstream issues
 
@@ -134,9 +129,12 @@ see the referenced file/function for the in-code repro notes.
    function's NOTE comment. This closed most, but not all, of the
    downstream test failures (see below).
 
-### Remaining JVM-only test failures (not yet root-caused to a single fix)
+### Formerly JVM-only test failures (no longer reproduce)
 
-Tracked as [#6123](https://github.com/nichobbs/lyric-lang/issues/6123) (JsonRpcTests cluster) and [#6124](https://github.com/nichobbs/lyric-lang/issues/6124) (StdioTests cluster).
+The two clusters below no longer reproduce: every `JsonRpcTests` and
+`StdioTests` case passes under `--target jvm` with the current compiler,
+and CI runs both suites on the JVM (#7451). The notes are kept for the
+history of #6123/#6124. Tracked as [#6123](https://github.com/nichobbs/lyric-lang/issues/6123) (JsonRpcTests cluster) and [#6124](https://github.com/nichobbs/lyric-lang/issues/6124) (StdioTests cluster).
 
 After applying the workarounds above, four `JsonRpc` tests and seven
 `JsonRpc.Stdio` tests still fail **only** on `--target jvm` (`.NET` is
@@ -191,8 +189,8 @@ re-deriving them.
 | Package | Purpose |
 |---|---|
 | `JsonRpc.Json` | Strict RFC 8259 JSON value model: `JsonValue` union, `parseValue`/`writeValue`, accessor helpers (`getField`, `asString`, ...) |
-| `JsonRpc` | JSON-RPC 2.0 envelope types, standard error codes, `RpcHandler`/`RpcTransport` interfaces, `RpcPeer` (`runLoop`/`call`/`notify`) |
-| `JsonRpc.Stdio` | NDJSON and Content-Length stdio framings over `Std.Console`/`Std.ConsoleHost` |
+| `JsonRpc` | JSON-RPC 2.0 envelope types, standard error codes, `RpcHandler`/`RpcTransport` interfaces, `RpcPeer` (`runLoop`/`call`/`callWithin`/`notify`) |
+| `JsonRpc.Stdio` | NDJSON and Content-Length stdio framings over stdin/stdout, byte-level, with bounded receives |
 
 ## Installation
 
@@ -243,9 +241,15 @@ LSP-style `Content-Length: N\r\n\r\n` framing instead.
 ### Calling out (client side)
 
 ```lyric
-match call(peer, "tools/list", None) {
+// `call` waits at most the peer's call timeout (60 s unless set with
+// newPeerWithTimeout / setCallTimeout); `callWithin` takes one per call.
+match callWithin(peer, "tools/list", None, 5000) {
   case Ok(result) -> // JsonValue response
-  case Err(e) -> println("rpc error " + e.code.toString() + ": " + e.message)
+  case Err(e) -> if isTimeoutError(e) {
+    println("no answer within 5 s")
+  } else {
+    println("rpc error " + e.code.toString() + ": " + e.message)
+  }
 }
 
 // Fire-and-forget:
@@ -338,16 +342,31 @@ pub interface RpcHandler {
   func onNotification(method: in String, params: in Option[JsonValue]): Unit
 }
 
+pub union ReceiveOutcome { case RpcMessage(text: String); case RpcEndOfStream; case RpcTimedOut }
+
 pub interface RpcTransport {
   func receive(): Result[Option[String], String]   // None = clean EOF
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String]
   func send(payload: in String): Result[Unit, String]
   func close(): Unit
 }
 
+pub val requestTimedOut: Int = -32001
+pub val defaultCallTimeoutMs: Int = 60000
+pub val maxCallTimeoutMs: Int = 86400000     // 24 h
+pub func isValidCallTimeout(timeoutMs: in Int): Bool   // 1 ..= maxCallTimeoutMs
+pub func isTimeoutError(e: in RpcError): Bool
+
 pub func newPeer(transport: in RpcTransport, handler: in RpcHandler): RpcPeer
+pub func newPeerWithTimeout(transport: in RpcTransport, handler: in RpcHandler, callTimeoutMs: in Int): RpcPeer
+  requires: isValidCallTimeout(callTimeoutMs)
+pub func setCallTimeout(peer: inout RpcPeer, callTimeoutMs: in Int): Unit
+  requires: isValidCallTimeout(callTimeoutMs)
 pub func runLoop(peer: inout RpcPeer): Result[Unit, String]
 pub func call(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]
   requires: isValidOutboundMethod(method)
+pub func callWithin(peer: inout RpcPeer, method: in String, params: in Option[JsonValue], timeoutMs: in Int): Result[JsonValue, RpcError]
+  requires: isValidOutboundMethod(method) and isValidCallTimeout(timeoutMs)
 pub func notify(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[Unit, String]
   requires: isValidOutboundMethod(method)
 ```
@@ -363,6 +382,26 @@ iteration (or the next `call`, which drains the queue first) — the same
 discipline LSP servers use. If more than `maxPendingMessages` messages
 queue up while one `call` waits, that `call` fails with `internalError`
 and the queued messages stay queued for `runLoop`.
+
+### Deadlines
+
+No call waits forever (#7451). `call` applies the peer's call timeout —
+`defaultCallTimeoutMs` (60 s, the MCP SDKs' default request timeout) for
+a peer from `newPeer`, or whatever `newPeerWithTimeout`/`setCallTimeout`
+set — and `callWithin` takes one per call; both accept 1 ms to 24 h. The
+deadline is fixed when the request goes out: each wait on the transport
+(`RpcTransport.receiveWithin`) gets only the time left, and requests or
+notifications that arrive meanwhile are queued without extending it. When
+it passes, the call returns a local `RpcError` with code `requestTimedOut`
+(`-32001`, the implementation-defined server-error range; `data` carries
+`{"timeoutMs": N}`), which `isTimeoutError` recognizes. Nothing is sent to
+the peer. Ids are never reused, so if the response turns up later it
+matches no call: `runLoop` and later calls drop it like any unsolicited
+response, and it is never handed to a different call.
+
+A transport's `receiveWithin` must not lose data on a timeout — the
+built-in transports keep a partly received message buffered and return it
+whole on the next receive.
 
 Build application errors with `applicationError`, whose precondition
 keeps them out of the range JSON-RPC 2.0 §5.1 reserves for protocol
@@ -391,21 +430,43 @@ proven in a real deployment.
 ```lyric
 pub func newNdjsonTransport(): NdjsonTransport               // one JSON message per '\n'-terminated line
 pub func newContentLengthTransport(): ContentLengthTransport // "Content-Length: N\r\n\r\n" + N bytes
+
+// The same transports over any byte stream and writer (sans-IO):
+pub func newNdjsonTransportOver(source: in ByteSource, writer: in LineWriter): NdjsonTransport
+pub func newContentLengthTransportOver(source: in ByteSource, writer: in StringWriter): ContentLengthTransport
+
+pub interface ByteSource {
+  func read(): Result[Option[slice[Byte]], String]           // None = end of stream
+  func readWithin(timeoutMs: in Int): Result[ByteRead, String]
+}
+pub func ndjsonReceiveFrom / ndjsonReceiveWithinFrom / clReceiveFrom / clReceiveWithinFrom
+pub func ndjsonAcceptLine(line: in String): Result[String, String]   // the 16 MiB line limit
 ```
 
-Both frame over `Std.Console`/`Std.ConsoleHost` — the same seam
-`lsp.l` reads today. `ContentLengthTransport` is byte-accurate on UTF-8:
-`Std.ConsoleHost.hostConsoleRead()` returns UTF-16 code units, not bytes,
-so the body reader tracks UTF-8 byte length incrementally per code unit
-(or per surrogate pair, when a code unit is one half of one) rather than
-naively reading N *characters* — the exact gap `lsp.l`'s own module doc
-flags as a known limitation of its hand-rolled framing.
+Inbound framing is byte-level. The stdin transports read raw bytes
+through `Std.Console`'s `StdinReader` (they own stdin — don't mix them
+with `Std.Console.readLine`) into a `FrameBuffer`, and cut a frame at each
+`\n` byte (NDJSON; a `\r` before it is dropped) or after exactly the
+declared body bytes (Content-Length). A frame is decoded as UTF-8 only once
+it is complete, so the Content-Length count is exact by construction and
+invalid UTF-8 is a framing error. `receiveWithin` gives each wait for more
+bytes only the time left before its deadline; on a timeout the bytes read
+so far stay in the `FrameBuffer`, so a message that straddles the deadline
+is returned whole by the next receive.
 
-The framing math itself is implemented sans-IO, parameterized over the
-`CharReader`/`LineReader`/`StringWriter`/`LineWriter` interfaces (see
-"Known upstream issues" #3 for why these are interfaces and not function
-values) — `tests/stdio_tests.l` drives it against in-memory
-implementations, no real pipe required.
+The older character- and line-level cores (`clReceiveVia`/
+`ndjsonReceiveVia` over `CharReader`/`LineReader`, plus `clSendVia`/
+`ndjsonSendVia`) remain for framing other streams — `lyric-mcp`'s piped
+client transport reuses `ndjsonReceiveVia` — and `clReceiveVia` still
+counts UTF-8 bytes per UTF-16 code unit (or surrogate pair) for an exact
+body read.
+
+The framing math is implemented sans-IO, parameterized over the
+`ByteSource`/`CharReader`/`LineReader`/`StringWriter`/`LineWriter`
+interfaces (see "Known upstream issues" #3 for why these are interfaces
+and not function values) — `tests/stdio_tests.l` drives it against
+in-memory implementations, including silent sources that time out
+mid-frame, with no real pipe required.
 
 ## Package layout
 

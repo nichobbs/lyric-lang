@@ -152,6 +152,38 @@ pub func pipedReadLine(p: in PipedProcess): Result[Option[String], String] {
   hostPipedReadLineResult(p.handle)
 }
 
+/// Outcome of `pipedReadLineWithin`: one line of the child's stdout
+/// (excluding the trailing newline), clean end of stream (the child closed
+/// its stdout or exited), or no complete line within the timeout.
+@stable(since = "1.2")
+pub union PipedReadOutcome {
+  case PipedLine(line: String)
+  case PipedEndOfStream
+  case PipedTimedOut
+}
+
+/// Like `pipedReadLine`, but waits at most `timeoutMs` milliseconds for a
+/// complete line; `0` returns only a line that is already available.
+///
+/// A read that times out loses nothing: bytes of an incomplete line stay
+/// buffered, and a line that arrives after the deadline is returned, in
+/// order, by the next `pipedReadLine` or `pipedReadLineWithin`. The child is
+/// not signalled; pair a timeout with `pipedKill` when the child should be
+/// abandoned.
+@stable(since = "1.2")
+pub func pipedReadLineWithin(p: in PipedProcess, timeoutMs: in Int): Result[PipedReadOutcome, String]
+  requires: timeoutMs >= 0
+{
+  match hostPipedReadLineWithinResult(p.handle, timeoutMs) {
+    case Err(e) -> Err(error = e)
+    case Ok(outcome) -> match outcome {
+      case HostPipedLine(line) -> Ok(value = PipedLine(line = line))
+      case HostPipedEof -> Ok(value = PipedEndOfStream)
+      case HostPipedTimedOut -> Ok(value = PipedTimedOut)
+    }
+  }
+}
+
 /// Write one line to the child's stdin. A trailing newline is appended and
 /// the write is flushed immediately.
 @stable(since = "1.0")

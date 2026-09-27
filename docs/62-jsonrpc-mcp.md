@@ -3,7 +3,9 @@
 Status: specced in D129. lyric-jsonrpc, lyric-mcp (stdio transport),
 the stdlib seams, and the lyric-ws dotnet backend (#778) are implemented;
 streamable HTTP (§5.3 milestone 2) and the open questions remain. JVM
-gaps are tracked in #6118–#6124, #6127, #6133–#6136. First consumer:
+gaps are tracked in #6118–#6124, #6127, #6133–#6136; the lyric-jsonrpc
+and lyric-mcp suites pass on the JVM and run there in CI since #7451,
+which also added call deadlines (§3, D-progress-1007). First consumer:
 `nichobbs/cloud-agents`' in-container permission-callback MCP server
 (see that repo's `docs/phase6-mcp-callbacks.md`). This sketch is the
 agreed build spec for three coordinated tracks; each track lands as its
@@ -122,18 +124,43 @@ pub interface RpcHandler {
   func onNotification(method: in String, params: in Option[JsonValue]): Unit
 }
 
+pub union ReceiveOutcome { case RpcMessage(text: String); case RpcEndOfStream; case RpcTimedOut }
+
 pub interface RpcTransport {
   /// Block until the next complete message arrives. None ⇒ clean EOF.
   func receive(): Result[Option[String], String]
+  /// Wait at most timeoutMs for the next complete message; a timeout loses
+  /// nothing (a partly received message stays buffered). (#7451)
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String]
   func send(payload: in String): Result[Unit, String]
   func close(): Unit
 }
 
 pub record RpcPeer { ... }   // constructed over an RpcTransport + RpcHandler
+pub func newPeer(transport: in RpcTransport, handler: in RpcHandler): RpcPeer          // call timeout 60 s
+pub func newPeerWithTimeout(transport: in RpcTransport, handler: in RpcHandler, callTimeoutMs: in Int): RpcPeer
+pub func setCallTimeout(peer: inout RpcPeer, callTimeoutMs: in Int): Unit
 pub func runLoop(peer: inout RpcPeer): Result[Unit, String]
 pub func call(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]
+pub func callWithin(peer: inout RpcPeer, method: in String, params: in Option[JsonValue], timeoutMs: in Int): Result[JsonValue, RpcError]
 pub func notify(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[Unit, String]
 ```
+
+**Call deadlines (#7451, D-progress-1007).** Every outbound call is
+bounded. `call` applies the peer's call timeout (`defaultCallTimeoutMs`
+= 60 000 ms, the MCP SDKs' default request timeout, unless changed with
+`newPeerWithTimeout`/`setCallTimeout`); `callWithin` takes one per call.
+Timeouts range over 1 ms to `maxCallTimeoutMs` (24 h), enforced by
+`requires: isValidCallTimeout(...)`. The deadline is fixed when the
+request is sent: each wait gives `receiveWithin` only the time left, and
+inbound requests/notifications queued meanwhile do not extend it. When it
+passes, the call fails with a local `RpcError` of code `requestTimedOut`
+(`-32001`, in JSON-RPC's implementation-defined server-error range, as
+the MCP SDKs use it) whose `data` carries `timeoutMs`; `isTimeoutError`
+tests for it. Nothing is sent to the peer — JSON-RPC 2.0 has no
+cancellation. The request id is never reused, so a response that arrives
+after its call timed out matches no pending call: `runLoop` and later
+calls drop it as an unsolicited response rather than mis-delivering it.
 
 Dispatch model v1: single-threaded. `runLoop` reads a message,
 dispatches to the handler, writes the response, repeats. `call` issued
@@ -167,10 +194,22 @@ Two framings, one module:
 - `ContentLengthFraming` — `Content-Length: N\r\n\r\n` + N bytes
   (the LSP framing), byte-accurate on UTF-8.
 
-Both implement `RpcTransport` over `Std.Console` /
-`Std.ConsoleHost` primitives (the same seam `lsp.l` reads today).
-Loopback pipe tests cover framing round-trips including multi-byte
-UTF-8 payloads and split reads.
+Both implement `RpcTransport` over this process's stdin/stdout. Inbound
+framing is byte-level (#7451): the transports read raw stdin bytes
+through a `ByteSource` seam — in production `Std.Console`'s
+`StdinReader`, whose `readStdinWithin` bounds the wait on `dotnet`
+(`Task.Run` + `Task.Wait(int)`) and `jvm` (a virtual thread +
+`Thread.join(long)`) — into a `FrameBuffer`, and cut a frame at each
+`\n` byte (NDJSON) or after exactly the declared body bytes
+(Content-Length), decoding UTF-8 only once a frame is complete. So
+`receiveWithin` can give up at its deadline without losing or splitting a
+message: the bytes read so far stay in the `FrameBuffer`, and the next
+receive returns the message whole. The client side of the MCP stdio
+transport (`Mcp.Stdio`, §5.2) frames a child process's piped stdout
+instead, bounded by `Std.Process.pipedReadLineWithin` on all three
+targets. In-memory `ByteSource`/`CharReader`/`LineReader` stand-ins
+cover framing round-trips including multi-byte UTF-8 payloads, split
+reads, and timeouts that fall mid-frame.
 
 ## 5. `lyric-mcp` — protocol layer
 
@@ -227,7 +266,17 @@ pub func connectStdio(command: in String, args: in List[String]): Result[McpClie
 pub func listTools(client: inout McpClient): Result[List[McpToolInfo], String]
 pub func callTool(client: inout McpClient, name: in String, args: in Option[JsonValue]): Result[McpToolResult, String]
 pub func listResources / readResource / listPrompts / getPrompt / ping / disconnect
+pub func setClientCallTimeout(client: inout McpClient, timeoutMs: in Int): Unit      // #7451
+pub func callToolWithin / callResumableToolWithin / resumeToolCallWithin               // per-call timeout
 ```
+
+Every client operation is bounded by the client's call timeout (the
+`JsonRpc` peer's, 60 s unless `setClientCallTimeout` changes it); the
+tool-call operations, which a slow tool can legitimately stretch, also
+take a per-call timeout through their `...Within` forms. Over the stdio
+transport the wait is `Std.Process.pipedReadLineWithin`, so a server
+process that never answers ends the call at its deadline (#7451); the
+timed-out response, if it ever arrives, is dropped.
 
 `connectStdio` needs child-process pipes with **long-lived
 bidirectional stdio** — `Std.Process.runCapture` (batch, write-then-

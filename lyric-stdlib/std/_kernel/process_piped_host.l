@@ -16,8 +16,18 @@
 //! spawned server's diagnostic/log output goes straight to this process's
 //! own stderr instead of needing a dedicated drain loop.
 //!
+//! **Bounded reads (#7451).** `StreamReader.ReadLine()` has no timeout, so
+//! `hostPipedReadLineWithinResult` runs the blocking `ReadLine()` on a
+//! thread-pool thread (`Task.Run(Action)`) and waits for it with
+//! `Task.Wait(int)`, which returns `false` on timeout instead of throwing.
+//! A read that times out is not abandoned: its `Task` stays on the handle
+//! (`inflight`), and the next read of either kind joins it first, so a line
+//! that arrives after the deadline is delivered by the next read rather than
+//! lost or read out of order. At most one background read is outstanding per
+//! handle.
+//!
 //! Internal: only Std.Process should import this.
-@axiom("System.Diagnostics.Process piped stdin/stdout conforms to its documented .NET contracts")
+@axiom("System.Diagnostics.Process piped stdin/stdout and System.Threading.Tasks.Task.Run/Wait conform to their documented .NET contracts")
 package Std.ProcessPipedHost
 
 import Std.Core
@@ -33,6 +43,18 @@ extern type Proc = "System.Diagnostics.Process"
 extern type ProcWriter = "System.IO.StreamWriter"
 
 extern type ProcReader = "System.IO.StreamReader"
+
+extern type Task = "System.Threading.Tasks.Task"
+
+@externStatic
+@externTarget("System.Threading.Tasks.Task.Run")
+func taskRun(work: in () -> Unit): Task = ()
+
+// `Task.Wait(int)`: `true` once the task completed, `false` when `ms` elapsed
+// first. `-1` (`Timeout.Infinite`) waits without a bound.
+func taskWaitMs(t: in Task, ms: in Int): Bool {
+  t.Wait(ms)
+}
 
 // ── ProcessStartInfo setup ─────────────────────────────────────────────────
 func newPsi(): Psi {
@@ -123,6 +145,21 @@ pub record PipedHandle {
   proc: Proc
   writer: ProcWriter
   reader: ProcReader
+  // The outstanding background `ReadLine()` (zero or one element) and the
+  // result it recorded once complete: `readKind` is 0 for a line (text in
+  // `readText`), 1 for end of stream, 2 for a read failure (message in
+  // `readText`). Written only by the background task before it completes and
+  // read only after `taskWaitMs` observed completion.
+  inflight: List[Task]
+  readKind: List[Int]
+  readText: List[String]
+}
+
+/// Outcome of a bounded read (`hostPipedReadLineWithinResult`).
+pub union HostPipedRead {
+  case HostPipedLine(line: String)
+  case HostPipedEof
+  case HostPipedTimedOut
 }
 
 /// Spawn `fileName` with a pre-formed `arguments` string (see
@@ -142,7 +179,7 @@ pub func hostSpawnPiped(fileName: in String, arguments: in String): PipedHandle 
   val w = procStdinWriter(proc)
   writerSetAutoFlush(w, true)
   val r = procStdoutReader(proc)
-  PipedHandle(proc = proc, writer = w, reader = r)
+  PipedHandle(proc = proc, writer = w, reader = r, inflight = newList(), readKind = newList(), readText = newList())
 }
 
 // Option seam avoiding `case null`'s catch-all miscompile (#4775); NUL-marker
@@ -233,9 +270,86 @@ pub func hostSpawnPipedResult(fileName: in String, args: in List[String]): Resul
   }
 }
 
+// An unbounded read first joins a background read left outstanding by a
+// timed-out `hostPipedReadLineWithinResult`, so lines stay in order.
 pub func hostPipedReadLineResult(p: in PipedHandle): Result[Option[String], String] {
   try {
-    Ok(value = hostPipedReadLineOpt(p))
+    if p.inflight.count > 0 {
+      match joinBackgroundRead(p, 0 - 1) {
+        case None -> Err(error = "background read did not complete")
+        case Some(r) -> match r {
+          case Err(e) -> Err(error = e)
+          case Ok(outcome) -> match outcome {
+            case HostPipedLine(line) -> Ok(value = Some(value = line))
+            case HostPipedEof -> Ok(value = None)
+            case HostPipedTimedOut -> Err(error = "background read did not complete")
+          }
+        }
+      }
+    } else {
+      Ok(value = hostPipedReadLineOpt(p))
+    }
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+// Start the background `ReadLine()` unless one is already outstanding.
+func ensureBackgroundRead(p: in PipedHandle): Unit {
+  if p.inflight.count > 0 {
+    return
+  }
+  val h = p
+  val work: () -> Unit = { ->
+    try {
+      match hostPipedReadLineOpt(h) {
+        case Some(line) -> {
+          h.readText.add(line)
+          h.readKind.add(0)
+        }
+        case None -> {
+          h.readText.add("")
+          h.readKind.add(1)
+        }
+      }
+    } catch Bug as b {
+      h.readText.add(b.message)
+      h.readKind.add(2)
+    }
+  }
+  p.inflight.add(taskRun(work))
+}
+
+// Wait up to `ms` (`-1`: without a bound) for the outstanding background
+// read. `None` on timeout (the read stays outstanding); otherwise the read's
+// result, and the handle is ready for the next read.
+func joinBackgroundRead(p: in PipedHandle, ms: in Int): Option[Result[HostPipedRead, String]] {
+  if not taskWaitMs(p.inflight[0], ms) {
+    return None
+  }
+  val kind = p.readKind[0]
+  val text = p.readText[0]
+  p.inflight.clear()
+  p.readKind.clear()
+  p.readText.clear()
+  if kind == 0 {
+    Some(value = Ok(value = HostPipedLine(line = text)))
+  } else if kind == 1 {
+    Some(value = Ok(value = HostPipedEof))
+  } else {
+    Some(value = Err(error = text))
+  }
+}
+
+/// Read one line, waiting at most `timeoutMs` milliseconds (see the module
+/// doc for how a timed-out read is resumed).
+pub func hostPipedReadLineWithinResult(p: in PipedHandle, timeoutMs: in Int): Result[HostPipedRead, String] {
+  try {
+    ensureBackgroundRead(p)
+    match joinBackgroundRead(p, timeoutMs) {
+      case None -> Ok(value = HostPipedTimedOut)
+      case Some(r) -> r
+    }
   } catch Bug as b {
     Err(error = b.message)
   }

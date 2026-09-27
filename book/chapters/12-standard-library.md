@@ -22,11 +22,11 @@ Here is the full module inventory:
 | `Std.Char` | `isLetter`, `isDigit`, `isWhiteSpace`, `toUpper`, `toLower`, `digitValue`, `toInt`, `fromInt`, `tryFromInt` |
 | `Std.Errors` | `ParseError`, `IOError`, `HttpError` |
 | `Std.File` | `readText`, `writeText`, `readBytes`, `writeBytes`, `fileExists`, `createDir` |
-| `Std.Console` | `print`, `println`, `error`, `readLine`, `readAll` |
+| `Std.Console` | `print`, `println`, `error`, `readLine`, `readAll`; `openStdinReader`, `readStdin`, `readStdinWithin` (raw stdin bytes with a bounded wait) |
 | `Std.Directory` | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `delete` |
 | `Std.Path` | Pure path helpers: `join`, `joinWithin` (rejects absolute, drive-qualified and `..` components, for untrusted input), `extension`, `basename`, `dirname`, `isAbsolute` |
 | `Std.Environment` | `getVar`, `getVarOrDefault`, `setVar`, `args`, `exitCode`, `isWindows` |
-| `Std.Process` | `run`, `runChecked`, `runCapture`, `runCaptureWithInput`, `ProcessResult` |
+| `Std.Process` | `run`, `runChecked`, `runCapture`, `runCaptureWithInput`, `ProcessResult`; long-lived piped children: `spawnPiped`, `pipedReadLine`, `pipedReadLineWithin` (bounded wait), `pipedWriteLine`, `pipedKill` |
 | `Std.App` | Application entry: `run(main: func Unit): Int`, `withConfig`, `Config` |
 | `Std.Log` | Structured logging: `LogLevel`, `Logger` interface, `debug`, `info`, `warn`, `error` |
 | `Std.Logging` *(service library — not in `stdlib/std/`)* | Named loggers with six levels, structured fields, JSON output, aspect templates — chapter 23; provided by the `lyric-logging` package, not the built-in stdlib |

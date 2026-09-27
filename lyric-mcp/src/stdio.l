@@ -8,7 +8,9 @@
 //! built the same sans-IO way `JsonRpc.Stdio` is: it implements the
 //! `LineReader`/`LineWriter` seams over `Std.Process.PipedProcess` and
 //! reuses `JsonRpc.Stdio.ndjsonReceiveVia`/`ndjsonSendVia` for the actual
-//! framing rather than re-implementing it.
+//! framing rather than re-implementing it. `receiveWithin` (#7451) reads
+//! through `Std.Process.pipedReadLineWithin`, so a client call to a server
+//! that never answers ends at its deadline.
 @runtime_checked
 package Mcp.Stdio
 
@@ -56,6 +58,23 @@ pub record PipedNdjsonTransport {
 impl RpcTransport for PipedNdjsonTransport {
   func receive(): Result[Option[String], String] {
     ndjsonReceiveVia(PipedLineReader(proc = self.proc))
+  }
+
+  // A timed-out read leaves any partial line buffered in the child's piped
+  // handle (`Std.Process.pipedReadLineWithin`), so the next receive returns
+  // it whole.
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String] {
+    match pipedReadLineWithin(self.proc, timeoutMs) {
+      case Err(e) -> Err(error = "child stdout: " + e)
+      case Ok(outcome) -> match outcome {
+        case PipedLine(line) -> match ndjsonAcceptLine(line) {
+          case Ok(accepted) -> Ok(value = RpcMessage(text = accepted))
+          case Err(e) -> Err(error = e)
+        }
+        case PipedEndOfStream -> Ok(value = RpcEndOfStream)
+        case PipedTimedOut -> Ok(value = RpcTimedOut)
+      }
+    }
   }
 
   func send(payload: in String): Result[Unit, String] {
