@@ -362,20 +362,25 @@ must understand it disables both chain and hostname verification together
 ```
 
 **BCL surface**: `System.Environment` (GetEnvironmentVariable,
-GetEnvironmentVariables, CurrentDirectory, ProcessId, Exit), backing
-`Std.Environment`; plus
+SetEnvironmentVariable, GetEnvironmentVariables, CurrentDirectory,
+ProcessId, Exit), backing `Std.Environment`; plus
 `System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory`
 (returns the path of the .NET runtime directory, used by the self-hosted
 CLI to locate reference assemblies for `lyric run`/`lyric build`).
 
 **Gap**: Environment variables are observable external process state;
 their values are non-deterministic at the point where the Lyric program
-calls them.  The runtime directory is process-stable but installation-
-dependent and opaque to the prover.
+calls them. `SetEnvironmentVariable` mutates that same external state —
+verified (#7546) to set the variable to an empty string for an empty
+`value`, never to remove it, so there is no unset path through
+`Std.Environment.setVar` on any target. The runtime directory is
+process-stable but installation-dependent and opaque to the prover.
 
-**Caller obligation**: None for reads.  `Environment.Exit` terminates
-the process; it is a non-returning call that the prover treats as
-unreachable beyond the call site.
+**Caller obligation**: None for reads. `SetEnvironmentVariable` is a
+process-wide, cross-thread-visible side effect the prover cannot order
+against concurrent readers. `Environment.Exit` terminates the process; it
+is a non-returning call that the prover treats as unreachable beyond the
+call site.
 
 **Review**: Stable.
 
@@ -770,7 +775,7 @@ JVM target — each file selects a Java BCL extern surface that the
 `@cfg(feature = "jvm")` predicate routes to when compiling
 `--target jvm`.  20 files currently carry `@axiom(...)` annotations
 covering operations on `java.lang.{String,Math,Character,System}`,
-`java.util.{ArrayList,HashMap,Random,UUID,regex.Pattern}`,
+`java.util.{ArrayList,HashMap,Random,UUID,regex.Pattern,concurrent.ConcurrentHashMap}`,
 `java.io.{File,FileInputStream,FileOutputStream,Files}`,
 `java.net.{URI,http.HttpClient}`,
 `javax.net.ssl.{SSLContext,SSLParameters,TrustManagerFactory,KeyManagerFactory}`,
@@ -1000,7 +1005,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
 | `jvm` | `Std.ConsoleHost` | `console_host.l` | java.lang.System.{out,err,in}, java.io.BufferedReader and java.lang.Thread conform to their documented JVM contracts |
 | `jvm` | `Std.EncodingHost` | `encoding_host.l` | JVM List[Byte].toArray() produces a properly typed byte array and java.lang.String.getBytes(\"UTF-8\") conforms to its documented JVM contract; pure-Lyric accumulators are safe on JVM |
-| `jvm` | `Std.EnvironmentHost` | `environment_host.l` | java.lang.System operations conform to their documented JVM contracts |
+| `jvm` | `Std.EnvironmentHost` | `environment_host.l` | java.lang.System and java.util.concurrent.ConcurrentHashMap operations conform to their documented JVM contracts |
 | `jvm` | `Std.FileHost` | `file_host.l` | java.io.File / FileInputStream / FileOutputStream conform to their documented JVM contracts |
 | `jvm` | `Std.FormatHost` | `format_host.l` | java.math.BigDecimal, java.lang.Integer, and java.util.Locale conform to their documented JVM contracts |
 | `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-1\") and getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-1/SHA-256/SHA-512 semantics and are pure functions of their input bytes; update() over java.io.FileInputStream.readNBytes chunks digests the file's current contents |

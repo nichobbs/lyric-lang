@@ -584,18 +584,16 @@ Q-UI-010 by D138.
 
 ## JVM stdlib portability questions
 
-**Q-JVM-001 (open):** `Std.Environment.setVar` is marked `@stable(since = "1.0")` but
-its JVM implementation (`lyric-stdlib/std/_kernel_jvm/environment_host.l`) is a
-silent no-op — the JVM platform has no portable `setenv` equivalent, and the
-`lyric` CLI always runs on .NET.  Two sub-questions:
-
-1. Should `@stable` be deferred until the JVM behaviour is defined (either a real
-   implementation or a documented first-class limitation)?
-2. Should calling `setVar` in a JVM-targeted compilation emit a compile-time note
-   so callers are not silently surprised?
-
-The function works correctly on .NET; the stability question is purely about the
-cross-platform contract.  Tracked in review issue #3534.
+**Q-JVM-001 (resolved by D-progress-1010):** `Std.Environment.setVar` was
+marked `@stable(since = "1.0")` while its JVM implementation
+(`lyric-stdlib/std/_kernel_jvm/environment_host.l`) was a silent no-op — the
+JVM platform has no portable `setenv` equivalent, and callers who set a
+variable before calling library code silently saw the old value. `setVar`
+now keeps its `@stable` status: it is backed by a process-wide overlay on
+JVM (`envOverlay`, consulted by `getVar` and copied onto every
+spawned `Std.Process` child's environment) that is observably equivalent to
+the real environment-block mutation `setVar` performs on dotnet and native.
+See D-progress-1010 and issue #7546.
 
 ---
 

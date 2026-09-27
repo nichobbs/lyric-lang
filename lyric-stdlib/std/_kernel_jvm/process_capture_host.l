@@ -32,6 +32,11 @@
 //!   * Output byte arrays are converted to Strings via
 //!     `ByteArrayOutputStream.toString("UTF-8")`.
 //!
+//!   * `runCmd` applies the `Std.EnvironmentHost` setVar overlay (#7546) to
+//!     the child's environment before `start()`, matching the .NET and
+//!     native kernels where `setVar` mutates the real process environment
+//!     block that a spawned child already inherits.
+//!
 //! Internal: only Std.ProcessCapture should import this.
 @axiom("java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics")
 package Std.ProcessCaptureHost
@@ -39,9 +44,14 @@ package Std.ProcessCaptureHost
 import Std.Core
 import Std.Collections
 import Std.ProcessArgs
+import Std.EnvironmentHost
 
 // ── JDK extern types ──────────────────────────────────────────────────────────
 extern type JProcessBuilder = "java.lang.ProcessBuilder"
+
+// `ProcessBuilder.environment()`'s real return type — see
+// `_kernel_jvm/process_host.l`'s identical declaration.
+extern type JEnvMap[K, V] = "java.util.Map"
 
 extern type JProcess = "java.lang.Process"
 
@@ -159,9 +169,17 @@ func runImpl(
   runCmd(parseArgString(executable, arguments), stdinContent, timeoutMs)
 }
 
+// Copy the `Std.EnvironmentHost` setVar overlay onto `pb`'s environment map
+// — see `_kernel_jvm/process_host.l`'s identical helper.
+func applyEnvOverlay(pb: in JProcessBuilder): Unit {
+  val env: JEnvMap[String, String] = pb.environment()
+  hostForEachOverlayVar({ k, v -> val _ = env.put(k, v); () })
+}
+
 // Run the already-tokenised command line `cmdList` (executable first).
 func runCmd(cmdList: in List[String], stdinContent: in String, timeoutMs: in Int): ProcessCaptureResult {
   val pb = JProcessBuilder.new(cmdList)
+  applyEnvOverlay(pb)
   val proc = pb.start()
 
   // Feed stdin from its own virtual thread while this thread drains the

@@ -440,7 +440,7 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.Stream` (`stream.l`) | `@stable` | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` interfaces. |
 | `Std.Log` (`log.l`) | `@stable` | `LogLevel`, `LogField`, `Logger`, `log`/`debug`/`info`/`warn`/`error`. |
 | `Std.Path` (`path.l`) | `@stable` | `join`, `joinWithin` (confining join for untrusted components), `extension`, `basename`, `dirname`, `isAbsolute`, `isRelative`. |
-| `Std.Environment` (`environment.l`) | `@stable` | `getVar`, `getVarOrDefault`, `args`, `exitCode`. |
+| `Std.Environment` (`environment.l`) | `@stable` | `getVar`, `getVarOrDefault`, `setVar`, `args`, `exitCode`. `setVar` is real on all three targets (#7546): dotnet/native mutate the real process environment block, JVM backs it with a process-wide overlay that `getVar` and a spawned `Std.Process` child both observe. |
 | `Std.App` (`app.l`) | `@stable` | `Config`, `run`, `withConfig`, `Config.path`, `Config.rawText`. |
 | `Std.Json` (`json.l`) | `@stable` | `parseJson`, `rootElement`, `getProperty`, `tryGetProperty`, scalar getters, `encodeString`. `@runtime_checked`: `getProperty` and the `get*` getters require `hasProperty` / `isJson*` (#7251). |
 | `Std.Time` — core (`time.l`) | `@stable` | `now`, `zeroDuration`, duration constructors, `since`, `plus`, `totalMillis`/`Seconds`, `addMonths`/`Years`/`Days`, `fromEpochMillis`/`Seconds`, `parseOptInstant`, comparison/arithmetic helpers, `toIsoString`. |

@@ -67,6 +67,11 @@
 //! file's header for the full rationale). `deadlineNanos` is an absolute
 //! `nanoTime()` instant, or negative for no bound.
 //!
+//! `buildProcessBuilder` applies the `Std.EnvironmentHost` setVar overlay
+//! (#7546) to the child's environment before `start()`, matching the .NET
+//! and native kernels where `setVar` mutates the real process environment
+//! block that a spawned child already inherits.
+//!
 //! Internal: only Std.Process should import this.
 @axiom("java.lang.ProcessBuilder + java.lang.Process piped stdin/stdout conform to their documented JVM contracts")
 package Std.ProcessPipedHost
@@ -78,9 +83,14 @@ import Std.Encoding
 import Std.ProcessCaptureHost
 import Std.Errors
 import Std.ProcessArgs
+import Std.EnvironmentHost
 
 // ── JDK extern types ──────────────────────────────────────────────────────────
 extern type JProcessBuilder = "java.lang.ProcessBuilder"
+
+// `ProcessBuilder.environment()`'s real return type — see
+// `_kernel_jvm/process_host.l`'s identical declaration.
+extern type JEnvMap[K, V] = "java.util.Map"
 
 extern type JRedirect = "java.lang.ProcessBuilder$Redirect"
 
@@ -109,6 +119,8 @@ func nanoTime(): Long {
 // ── Process construction ──────────────────────────────────────────────────────
 func buildProcessBuilder(cmd: in List[String]): JProcessBuilder {
   val pb = JProcessBuilder.new(cmd)
+  val env: JEnvMap[String, String] = pb.environment()
+  hostForEachOverlayVar({ k, v -> val _ = env.put(k, v); () })
   val withErrInherit: JProcessBuilder = pb.redirectError(JRedirect.INHERIT)
   withErrInherit
 }

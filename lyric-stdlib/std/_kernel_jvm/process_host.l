@@ -16,6 +16,14 @@
 //! Provides the same Std.ProcessHost package surface as _kernel/process_host.l
 //! so that Std.Process can import Std.ProcessHost on both targets without change.
 //!
+//! `hostSpawn` applies the `Std.EnvironmentHost` setVar overlay (#7546) to
+//! the child's environment before `start()` — see
+//! `_kernel_jvm/environment_host.l`'s module header — so a spawned child
+//! observes the same variables `Std.Environment.getVar` reports in this
+//! process, matching the .NET and native kernels (there, `setVar` mutates
+//! the real process environment block that a spawned child already
+//! inherits via `UseShellExecute = false` / `setenv(3)`).
+//!
 //! Internal: only Std.Process should import this.
 @axiom("java.lang.Process and java.lang.ProcessBuilder conform to their documented JVM contracts")
 package Std.ProcessHost
@@ -25,11 +33,25 @@ import Std.Collections
 import Std.ProcessCaptureHost
 import Std.Errors
 import Std.ProcessArgs
+import Std.EnvironmentHost
 
 // An opaque handle to a running child process.
 extern type ProcessHandle = "java.lang.Process"
 
 extern type JProcessBuilder = "java.lang.ProcessBuilder"
+
+// `ProcessBuilder.environment()`'s real return type is a `Map<String,
+// String>` view backed by the builder (a JDK-internal `ProcessEnvironment`
+// subtype on POSIX); typed as the generic `java.util.Map` contract here
+// since only `put` is used.
+extern type JEnvMap[K, V] = "java.util.Map"
+
+// Copy the `Std.EnvironmentHost` setVar overlay onto `pb`'s environment map
+// (see the module header).
+func applyEnvOverlay(pb: in JProcessBuilder): Unit {
+  val env: JEnvMap[String, String] = pb.environment()
+  hostForEachOverlayVar({ k, v -> val _ = env.put(k, v); () })
+}
 
 // Spawn a child process.  `fileName` is the executable path or name;
 // `arguments` is a space-separated, `Std.Process.buildArgString`-formatted
@@ -43,7 +65,9 @@ extern type JProcessBuilder = "java.lang.ProcessBuilder"
 // Panics (Bug) if the executable cannot be found or the OS rejects the spawn.
 pub func hostSpawn(fileName: in String, arguments: in String): ProcessHandle {
   val cmd = parseArgString(fileName, arguments)
-  JProcessBuilder.new(cmd).inheritIO().start()
+  val pb = JProcessBuilder.new(cmd)
+  applyEnvOverlay(pb)
+  pb.inheritIO().start()
 }
 
 // Block the calling thread until the process exits.  Backed by
