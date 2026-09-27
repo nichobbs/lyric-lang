@@ -7,7 +7,7 @@ package resolves only when the file's imports make it visible:
   the packages `P` imports whole.
 - `import P.{f, T}` makes only `f` and `T` visible (and `T`'s cases, when it
   is a union or enum). Renaming a listed name, `import P.{f as g}`, is the
-  new error T0137 until #7564 implements it.
+  new error T0138 until #7564 implements it.
 - `import P as Q` makes no name visible bare; write `Q.f`.
 - `Option`, `Result` and their cases are the prelude.
 

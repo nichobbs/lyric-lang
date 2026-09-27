@@ -31,7 +31,7 @@ only when the file's imports make it visible:
    aliased imports reach no further.
 2. **Selective import** (`import P.{f, T}`): only the listed names (a case
    may be listed itself), plus the cases of a listed union or enum type.
-   Renaming a listed name (`import P.{f as g}`) is **T0137**: nothing binds
+   Renaming a listed name (`import P.{f as g}`) is **T0138**: nothing binds
    the new name yet, so the form is rejected rather than half-supported
    (#7557, follow-up #7564).
 3. **Aliased import** (`import P as Q`): no name bare; `Q.f` as before.

@@ -4952,15 +4952,15 @@ test "a bare call reports a mismatch against the direct import, not a transitive
   assertEqualInt(diagCount(checkWithImportedPackages(parse(okSrc).file, packages)), 0, "parse(\"5\") is PkgPd's")
 }
 
-// #7557: `import P.{f as g}` is not supported; it is T0137 rather than a
+// #7557: `import P.{f as g}` is not supported; it is T0138 rather than a
 // name that silently fails to resolve.
-test "renaming a selectively imported name is T0137" {
+test "renaming a selectively imported name is T0138" {
   val src = "package App\nimport PkgY.{fromY as g}\nfunc f(): Int { 1 }\n"
   val cr = checkWithImportedPackages(parse(src).file, importRulePackages())
-  assertEqualInt(countDiagCode(cr, "T0137"), 1, "fromY as g: T0137")
+  assertEqualInt(countDiagCode(cr, "T0138"), 1, "fromY as g: T0138")
   assertTrue(
-    diagMessageFor(cr, "T0137").contains("import PkgY.{fromY}"),
-    "the message says how to import it: " + diagMessageFor(cr, "T0137")
+    diagMessageFor(cr, "T0138").contains("import PkgY.{fromY}"),
+    "the message says how to import it: " + diagMessageFor(cr, "T0138")
   )
 }
 
@@ -6302,7 +6302,7 @@ func libGeoPointPackages(): List[ImportedPackage] {
   val pkgGeo = parse("package Lib.Geo\npub record Point {\n  x: Int\n  y: Int\n}\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "Lib.Geo", items = pkgGeo.file.items, imports = collectImportNames(pkgGeo.file.imports))
+    ImportedPackage(name = "Lib.Geo", items = pkgGeo.file.items, imports = collectImportNames(pkgGeo.file.imports), wholeImports = collectWholeImportNames(pkgGeo.file.imports))
   )
   packages
 }
@@ -6329,7 +6329,7 @@ func privatePointPackages(): List[ImportedPackage] {
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "PkgPriv", items = pkgPriv.file.items, imports = collectImportNames(pkgPriv.file.imports))
+    ImportedPackage(name = "PkgPriv", items = pkgPriv.file.items, imports = collectImportNames(pkgPriv.file.imports), wholeImports = collectWholeImportNames(pkgPriv.file.imports))
   )
   packages
 }

@@ -3479,7 +3479,7 @@ func installImportRule(
             match items[k].asAlias {
               case Some(renamed) -> diag.add(
                 errorDiagnostic(
-                  "T0137",
+                  "T0138",
                   "renaming a selectively imported name is not supported: '" + items[k].name + " as " +
                     renamed +
                     "'; write 'import " +
