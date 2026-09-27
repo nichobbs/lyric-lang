@@ -841,7 +841,7 @@ pub func synthesizeFor(
     // function that no longer exists (T0020) and the TAP plan counts a test
     // that can never run.  `active`/`declared` are the same feature set the
     // eventual compile erases against (see `synthesizeFor`'s doc comment).
-    val cfgGated = isCfgGatedOut(active, declared, it.annotations)
+    val cfgGated = isItemCfgGatedOut(active, declared, it.annotations)
     match it.kind {
       case ITest(t) -> {
         // #5609 item 4: preserve any annotation prefix (e.g. `@cfg(...)`)

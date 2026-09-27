@@ -24,3 +24,11 @@ output_assembly = "Lyric.GeneratorSdk.dll"
 [project.tests]
 "Lyric.GeneratorSdk.Tests" = "tests/generator_sdk_tests.l"
 
+# The SDK is pure Lyric over Std.* and has no target-specific code; the
+# features exist so the target-selection flags CI passes (see
+# scripts/ci/jvm-ecosystem-suites.sh) are checked against a declared set.
+[features]
+default = ["dotnet"]
+dotnet  = []
+jvm     = []
+

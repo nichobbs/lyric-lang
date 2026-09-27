@@ -12,7 +12,7 @@ the same problem, both with a real `--properties` driver and with the v1
 
 The fix: synthesis now decides each `test`/`property` item's gating with
 the same predicate erasure uses. The new
-`Lyric.Cfg.isCfgGatedOut(active, declared, annotations)` is item-level;
+`Lyric.Cfg.isItemCfgGatedOut(active, declared, annotations)` is item-level;
 `isFileCfgGatedOut` now delegates to it. Synthesis runs it against the
 feature set the compile will erase with, which is already passed to
 `synthesizeFor` for the file-level check (#6868), plus the `target.<name>`
@@ -39,7 +39,7 @@ Verified by:
   without `--properties`. The existing `#5609` annotation-preservation case
   was never registered as a `test`; it is now registered and its assertion
   corrected.
-- a `cfg_self_test.l` case showing `isCfgGatedOut` agrees with
+- a `cfg_self_test.l` case showing `isItemCfgGatedOut` agrees with
   `applyCfgErasure` item by item.
 - `cfg_single_file_self_test.l`, which CI runs on both targets: two
   target-gated `test` items (one runs per target) and one test gated by a

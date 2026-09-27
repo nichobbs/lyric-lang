@@ -50,23 +50,6 @@ func protectedImplTarget(decl: in ImplDecl, protectedNames: in Map[String, Bool]
 }
 
 func implMethodAsEntry(fn: in FunctionDecl, body: in FunctionBody, extra: in List[ContractClause]): EntryDecl {
-  val params: List[Param] = newList()
-  var i = 0
-  while i < fn.params.count {
-    val p = fn.params[i]
-    params.add(
-      Param(
-        mode = p.mode,
-        modeExplicit = p.modeExplicit,
-        name = p.name,
-        ty = p.ty,
-        dflt = p.dflt,
-        annotations = p.annotations,
-        span = p.span
-      )
-    )
-    i = i + 1
-  }
   val contracts: List[ContractClause] = newList()
   var c = 0
   while c < extra.count {
@@ -83,7 +66,7 @@ func implMethodAsEntry(fn: in FunctionDecl, body: in FunctionBody, extra: in Lis
     annotations = fn.annotations,
     visibility = fn.visibility,
     name = fn.name,
-    params = params,
+    params = fn.params,
     ret = fn.ret,
     contracts = contracts,
     body = body,
