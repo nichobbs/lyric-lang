@@ -5,7 +5,8 @@
 # in `Jvm.Codegen`/`Jvm.Bridge`, plus the JVM half of dual-target runtime
 # tests whose dotnet half runs in `compiler-self-tests-batch.sh` (e.g.
 # closure_var_capture_self_test.l, #7460; the protected-type interface impl
-# tests, #7457), through one `lyric test` invocation per file.
+# tests, #7457; bare_func_ref_self_test.l, #7586), through one `lyric test`
+# invocation per file.
 #
 #   bash scripts/ci/jvm-generics-self-tests-batch.sh
 #
@@ -41,6 +42,7 @@ for t in \
   lyric-compiler/jvm/cross_package_type_resolution_jvm_self_test.l \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
+  lyric-compiler/lyric/bare_func_ref_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_contracts_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
