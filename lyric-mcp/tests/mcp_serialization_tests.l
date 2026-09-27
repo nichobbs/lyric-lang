@@ -16,8 +16,20 @@ package Mcp.McpSerializationTests
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.String
 import JsonRpc.Json
 import Mcp
+
+// Decode a `tools/call` result the test expects to be well formed.
+func decodedOutcome(v: in JsonValue): McpToolCallOutcome {
+  match decodeToolCallOutcome(v) {
+    case Ok(o) -> o
+    case Err(e) -> {
+      assertTrue(false, "decodeToolCallOutcome failed: " + e)
+      ToolResult(value = toolErrorResult(e))
+    }
+  }
+}
 
 // ── Test-only handler doubles (never invoked here — only used to satisfy
 // McpToolDef/McpResourceDef/McpPromptDef's mandatory `handler` field so
@@ -160,14 +172,24 @@ test "decodeInitializeResult: parses protocolVersion and serverInfo" {
 test "decodeInitializeParams: requires protocolVersion" {
   match parseValue("{\"clientInfo\":{\"name\":\"c\",\"version\":\"1\"}}") {
     case Err(e) -> assertTrue(false, "fixture failed to parse: " + e.message())
-    case Ok(v) -> match decodeInitializeParams(Some(value = v)) { case Some(_) -> assertTrue(false, "expected None when protocolVersion is missing"); case None -> () }
+    case Ok(v) -> match decodeInitializeParams(Some(value = v)) {
+      case Some(_) -> assertTrue(false, "expected None when protocolVersion is missing")
+      case None -> ()
+    }
   }
 }
 
 test "decodeInitializeParams: decodes protocolVersion and clientInfo" {
   match parseValue("{\"protocolVersion\":\"2025-06-18\",\"clientInfo\":{\"name\":\"c\",\"version\":\"1.2.3\"}}") {
     case Err(e) -> assertTrue(false, "fixture failed to parse: " + e.message())
-    case Ok(v) -> match decodeInitializeParams(Some(value = v)) { case None -> assertTrue(false, "expected Some"); case Some(p) -> { assertEqual(p.protocolVersion, "2025-06-18", "protocolVersion"); assertEqual(p.clientInfo.name, "c", "clientInfo.name"); assertEqual(p.clientInfo.version, "1.2.3", "clientInfo.version") } }
+    case Ok(v) -> match decodeInitializeParams(Some(value = v)) {
+      case None -> assertTrue(false, "expected Some")
+      case Some(p) -> {
+        assertEqual(p.protocolVersion, "2025-06-18", "protocolVersion")
+        assertEqual(p.clientInfo.name, "c", "clientInfo.name")
+        assertEqual(p.clientInfo.version, "1.2.3", "clientInfo.version")
+      }
+    }
   }
 }
 
@@ -313,17 +335,133 @@ test "encodeToolCallOutcome / decodeToolCallOutcome: InputRequired round-trips (
     "{\"resultType\":\"input_required\",\"inputRequests\":{\"confirm\":true},\"requestState\":\"opaque-token-123\"}",
     "InputRequired outcome shape"
   )
-  match decodeToolCallOutcome(encoded) {
+  match decodedOutcome(encoded) {
     case InputRequired(decoded) -> assertEqual(decoded.requestState, "opaque-token-123", "requestState round-trip")
     case ToolResult(_) -> assertTrue(false, "expected InputRequired to decode back to InputRequired")
   }
 }
 
 test "decodeToolCallOutcome: a plain result with no resultType decodes as ToolResult" {
-  match decodeToolCallOutcome(JObject(fields = [JsonField(name = "content", value = JArray(items = newList())), JsonField(name = "isError", value = JBool(value = false))])) {
+  match decodedOutcome(JObject(fields = [JsonField(name = "content", value = JArray(items = newList())), JsonField(name = "isError", value = JBool(value = false))])) {
     case ToolResult(r) -> assertFalse(r.isError, "decoded as a plain ToolResult")
     case InputRequired(_) -> assertTrue(false, "expected ToolResult")
   }
+}
+
+test "decodeToolCallOutcome: input_required without a usable requestState is Err" {
+  val missing = JObject(fields = [JsonField(name = "resultType", value = JString(value = "input_required"))])
+  assertTrue(isErr(decodeToolCallOutcome(missing)), "missing requestState")
+  val empty = JObject(
+    fields = [
+      JsonField(name = "resultType", value = JString(value = "input_required")),
+      JsonField(name = "requestState", value = JString(value = ""))
+    ]
+  )
+  assertTrue(isErr(decodeToolCallOutcome(empty)), "empty requestState")
+  val oversized = JObject(
+    fields = [
+      JsonField(name = "resultType", value = JString(value = "input_required")),
+      JsonField(
+        name = "requestState",
+        value = JString(value = repeat("x", maxRequestStateLength + 1))
+      )
+    ]
+  )
+  assertTrue(isErr(decodeToolCallOutcome(oversized)), "oversized requestState")
+  val numeric = JObject(
+    fields = [
+      JsonField(name = "resultType", value = JString(value = "input_required")),
+      JsonField(name = "requestState", value = JInt(value = 7i64))
+    ]
+  )
+  assertTrue(isErr(decodeToolCallOutcome(numeric)), "non-string requestState")
+}
+
+test "McpInputRequired: an empty requestState violates the invariant" {
+  assertPanics("empty requestState", () -> buildEmptyInputRequired())
+}
+
+func buildEmptyInputRequired(): Unit {
+  val ir = McpInputRequired(inputRequests = JNull, requestState = "")
+}
+
+test "negotiateProtocolVersion always answers a supported version" {
+  assertTrue(isSupportedProtocolVersion(negotiateProtocolVersion("1999-01-01")), "unsupported request")
+  assertEqual(negotiateProtocolVersion(protocolVersionLegacy), protocolVersionLegacy, "legacy echoed")
+}
+
+// ── Sealed request state ─────────────────────────────────────────────────────
+func testKey(fill: in Int): slice[Byte] {
+  val bytes: List[Byte] = newList()
+  var i = 0
+  while i < 32 {
+    bytes.add((fill + i).and(255).toByte())
+    i = i + 1
+  }
+  bytes.toArray()
+}
+
+func sealOrFail(key: in slice[Byte], tool: in String, payload: in String, expires: in Long): String {
+  match sealRequestState(key, tool, payload, expires) {
+    case Ok(t) -> t
+    case Err(e) -> {
+      assertTrue(false, "seal failed: " + e)
+      ""
+    }
+  }
+}
+
+test "sealRequestState / openRequestState: round-trip before expiry" {
+  val token = sealOrFail(testKey(1), "confirm_delete", "delete:/tmp/x", 2000i64)
+  assertTrue(token.startsWith("v1."), "versioned token")
+  match openRequestState(testKey(1), "confirm_delete", token, 1999i64) {
+    case Ok(p) -> assertEqual(p, "delete:/tmp/x", "payload recovered")
+    case Err(e) -> assertTrue(false, "open failed: " + e)
+  }
+  match openRequestState(testKey(1), "t", sealOrFail(testKey(1), "t", "", 5i64), 1i64) {
+    case Ok(p) -> assertEqual(p, "", "empty payload round-trips")
+    case Err(e) -> assertTrue(false, "open of an empty payload failed: " + e)
+  }
+}
+
+test "openRequestState: expiry, other tool, other key and tampering are rejected" {
+  val token = sealOrFail(testKey(1), "confirm_delete", "delete:/tmp/x", 2000i64)
+  assertTrue(isErr(openRequestState(testKey(1), "confirm_delete", token, 2000i64)), "expired at the deadline")
+  assertTrue(isErr(openRequestState(testKey(1), "other_tool", token, 1000i64)), "bound to the tool name")
+  assertTrue(isErr(openRequestState(testKey(2), "confirm_delete", token, 1000i64)), "bound to the key")
+  val parts = split(token, ".")
+  val otherPayload = sealOrFail(testKey(1), "confirm_delete", "delete:/", 2000i64)
+  val swapped = "v1." + split(otherPayload, ".")[1] + "." + parts[2] + "." + parts[3]
+  assertTrue(isErr(openRequestState(testKey(1), "confirm_delete", swapped, 1000i64)), "payload swapped")
+  val extended = "v1." + parts[1] + ".9999999999999." + parts[3]
+  assertTrue(isErr(openRequestState(testKey(1), "confirm_delete", extended, 1000i64)), "expiry extended")
+  val flipped = parts[3].substring(0, parts[3].length - 1) + (if parts[3].endsWith("0") { "1" } else { "0" })
+  val badMac = "v1." + parts[1] + "." + parts[2] + "." + flipped
+  assertTrue(isErr(openRequestState(testKey(1), "confirm_delete", badMac, 1000i64)), "MAC altered")
+}
+
+test "openRequestState: malformed tokens are rejected, not panics" {
+  val key = testKey(1)
+  assertTrue(isErr(openRequestState(key, "t", "", 1i64)), "empty")
+  assertTrue(isErr(openRequestState(key, "t", "delete:/tmp/x", 1i64)), "an unsealed legacy state")
+  assertTrue(isErr(openRequestState(key, "t", "v1.a.b.c", 1i64)), "non-numeric expiry")
+  assertTrue(isErr(openRequestState(key, "t", "v1.YQ==.5.zz", 1i64)), "non-hex MAC")
+  assertTrue(isErr(openRequestState(key, "t", "v2.YQ==.5.00", 1i64)), "unknown version")
+  assertTrue(isErr(openRequestState(key, "t", "v1.YQ==.5.00.extra", 1i64)), "extra segment")
+  assertTrue(isErr(openRequestState(key, "t", repeat("x", maxRequestStateLength + 1), 1i64)), "oversized")
+}
+
+test "sealRequestState: a payload too large for one token is Err" {
+  assertTrue(isErr(sealRequestState(testKey(1), "t", repeat("x", maxRequestStateLength), 5i64)), "oversized")
+}
+
+test "sealRequestState: a short key violates the precondition" {
+  assertPanics("16-byte key", () -> sealWithShortKey())
+}
+
+func sealWithShortKey(): Unit {
+  val short: slice[Byte] = [1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8, 12u8, 13u8, 14u8, 15u8, 16u8]
+  val r = sealRequestState(short, "t", "p", 5i64)
 }
 
 test "decodeToolResult: unrecognized content type is dropped, not fatal" {

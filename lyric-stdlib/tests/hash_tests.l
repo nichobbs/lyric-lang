@@ -158,6 +158,62 @@ func testSha512OfFileStreamsChunks(): Unit {
   assertFileDigestMatchesBytes(0, "empty file")
 }
 
+func hexBytes(hex: in String): slice[Byte] {
+  match tryDecodeHex(hex) {
+    case Some(b) -> b
+    case None -> panic("bad hex in test vector: " + hex)
+  }
+}
+
+func repeatByte(v: in Int, n: in Int): slice[Byte] {
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < n {
+    acc.add(v.toByte())
+    i = i + 1
+  }
+  acc.toArray()
+}
+
+// RFC 4231 HMAC-SHA-256 test cases 1, 2, 4 and 6 (6 has a key longer than
+// the 64-byte block, which must be hashed first).
+func testHmacSha256Rfc4231(): Unit {
+  assertEqual(
+    encodeHex(hmacSha256(repeatByte(0x0b, 20), encodeUtf8("Hi There"))),
+    "B0344C61D8DB38535CA8AFCEAF0BF12B881DC200C9833DA726E9376C2E32CFF7",
+    "RFC 4231 case 1"
+  )
+  assertEqual(
+    encodeHex(hmacSha256(encodeUtf8("Jefe"), encodeUtf8("what do ya want for nothing?"))),
+    "5BDCC146BF60754E6A042426089575C75A003F089D2739839DEC58B964EC3843",
+    "RFC 4231 case 2"
+  )
+  assertEqual(
+    encodeHex(hmacSha256(hexBytes("0102030405060708090A0B0C0D0E0F10111213141516171819"), repeatByte(0xcd, 50))),
+    "82558A389A443C0EA4CC819899F2083A85F0FAA3E578F8077A2E3FF46729665B",
+    "RFC 4231 case 4"
+  )
+  assertEqual(
+    encodeHex(hmacSha256(repeatByte(0xaa, 131), encodeUtf8("Test Using Larger Than Block-Size Key - Hash Key First"))),
+    "60E431591EE0B67F0D8A26AACBF5B77F8E0BC6213728C5140546040F0EE37F54",
+    "RFC 4231 case 6 (key longer than the block)"
+  )
+}
+
+func testSha256Digest(): Unit {
+  assertEqual(encodeHex(sha256Digest(bytesAbc())), sha256Abc(), "raw digest matches the hex form")
+  assertEqualInt(sha256Digest(bytesAbc()).length, 32, "32 bytes")
+}
+
+func testConstantTimeEquals(): Unit {
+  val a = hexBytes("00112233")
+  assertTrue(constantTimeEquals(a, hexBytes("00112233")), "equal bytes")
+  assertTrue(not constantTimeEquals(a, hexBytes("00112234")), "last byte differs")
+  assertTrue(not constantTimeEquals(a, hexBytes("80112233")), "first byte differs")
+  assertTrue(not constantTimeEquals(a, hexBytes("001122")), "different lengths")
+  assertTrue(constantTimeEquals(hexBytes(""), hexBytes("")), "two empty slices")
+}
+
 func main(): Int {
   testSha1OfBytesKnownVector()
   testSha1OfBytesEmpty()
@@ -169,6 +225,9 @@ func main(): Int {
   testSha512OfFileNotFound()
   testSha512OfFileKnownVector()
   testSha512OfFileStreamsChunks()
+  testSha256Digest()
+  testHmacSha256Rfc4231()
+  testConstantTimeEquals()
   println("hash tests: ok")
   return 0
 }

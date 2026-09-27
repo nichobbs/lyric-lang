@@ -83,12 +83,16 @@ pub union JsonParseError {
 @stable(since = "0.1")
 pub func JsonParseError.message(e: in JsonParseError): String {
   match e {
-    case UnexpectedChar(pos, expected) -> "unexpected character at position " + pos.toString() + "; expected " + expected
-    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + pos.toString() + "; expected " + expected
+    case UnexpectedChar(pos, expected) -> "unexpected character at position " + pos.toString() + "; expected " +
+      expected
+    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + pos.toString() + "; expected " +
+      expected
     case InvalidNumber(pos, raw) -> "invalid number at position " + pos.toString() + ": '" + raw + "'"
     case InvalidEscape(pos, detail) -> "invalid escape sequence at position " + pos.toString() + ": " + detail
     case LoneSurrogate(pos, code) -> "lone UTF-16 surrogate \\u" + hex4(code) + " at position " + pos.toString()
-    case DepthExceeded(pos, limit) -> "document too deeply nested at position " + pos.toString() + " (max depth " + limit.toString() + ")"
+    case DepthExceeded(pos, limit) -> "document too deeply nested at position " + pos.toString() + " (max depth " +
+      limit.toString() +
+      ")"
     case TrailingContent(pos) -> "trailing content after JSON value at position " + pos.toString()
     case EmptyInput -> "empty input"
   }
@@ -344,7 +348,10 @@ func jParseNumber(st: inout JState): Result[JsonValue, JsonParseError] {
     // matches Std.Yaml's number classification convention.
     match parseOptLong(raw) {
       case Some(n) -> Ok(value = JInt(value = n))
-      case None -> match parseOptDouble(raw) { case Some(f) -> Ok(value = JFloat(value = f)); case None -> Err(error = InvalidNumber(pos = startPos, raw = raw)) }
+      case None -> match parseOptDouble(raw) {
+        case Some(f) -> Ok(value = JFloat(value = f))
+        case None -> Err(error = InvalidNumber(pos = startPos, raw = raw))
+      }
     }
   }
 }
@@ -363,7 +370,7 @@ func jParseArray(st: inout JState, depth: in Int): Result[JsonValue, JsonParseEr
   var err: JsonParseError = EmptyInput
   var done = false
   while ok and not done {
-    match jParseValue(st, depth + 1) {
+    match jParseValue(st, depth) {
       case Err(e) -> {
         ok = false
         err = e
@@ -420,7 +427,7 @@ func jParseObject(st: inout JState, depth: in Int): Result[JsonValue, JsonParseE
             err = UnexpectedChar(pos = st.pos, expected = "':' after object key")
           } else {
             jSkipWs(st)
-            match jParseValue(st, depth + 1) {
+            match jParseValue(st, depth) {
               case Err(e) -> {
                 ok = false
                 err = e
@@ -450,10 +457,9 @@ func jParseObject(st: inout JState, depth: in Int): Result[JsonValue, JsonParseE
   }
 }
 
+// `depth` is the number of enclosing arrays/objects; entering a container
+// is the only step that increments it, so `maxDepth` bounds nesting exactly.
 func jParseValue(st: inout JState, depth: in Int): Result[JsonValue, JsonParseError] {
-  if depth > st.maxDepth {
-    return Err(error = DepthExceeded(pos = st.pos, limit = st.maxDepth))
-  }
   jSkipWs(st)
   if jAtEnd(st) {
     return Err(error = UnexpectedEof(pos = st.pos, expected = "a value"))
@@ -495,9 +501,14 @@ pub func parseValue(src: in String): Result[JsonValue, JsonParseError] {
   parseValueWithDepthLimit(src, defaultMaxDepth)
 }
 
-/// As `parseValue`, with an explicit maximum array/object nesting depth.
+/// As `parseValue`, with an explicit maximum array/object nesting depth:
+/// a document nested exactly `maxDepth` containers deep parses, one level
+/// deeper is `DepthExceeded`. The limit is capped at 1024 so a caller cannot
+/// accidentally configure away the stack-exhaustion guard.
 @stable(since = "0.1")
-pub func parseValueWithDepthLimit(src: in String, maxDepth: in Int): Result[JsonValue, JsonParseError] {
+pub func parseValueWithDepthLimit(src: in String, maxDepth: in Int): Result[JsonValue, JsonParseError]
+  requires: maxDepth >= 1 and maxDepth <= 1024
+{
   var st = JState(src = src, pos = 0, maxDepth = maxDepth)
   jSkipWs(st)
   if jAtEnd(st) {

@@ -302,8 +302,10 @@ JSON superset):
 - Object keys must be double-quoted strings.
 - Duplicate object keys are preserved on parse (not rejected); `getField`
   and friends resolve them last-wins, matching `JSON.parse`'s convention.
-- The default recursion depth limit is 128 (`defaultMaxDepth`),
-  configurable via `parseValueWithDepthLimit`.
+- The default recursion depth limit is 128 (`defaultMaxDepth`) nested
+  arrays/objects, configurable via `parseValueWithDepthLimit` to any value
+  in 1..1024. Each container counts once: a document exactly `maxDepth`
+  containers deep parses, one more is `DepthExceeded`.
 
 `i64` integers round-trip exactly; an integer literal beyond `Long` range
 (or written with a fractional part or an exponent) is classified `JFloat`
@@ -324,6 +326,13 @@ pub val methodNotFound: Int = -32601
 pub val invalidParams: Int = -32602
 pub val internalError: Int = -32603
 
+pub func isReservedErrorCode(code: in Int): Bool          // -32768..-32000
+pub func applicationError(code: in Int, message: in String, data: in Option[JsonValue]): RpcError
+  requires: not isReservedErrorCode(code)
+pub func isValidOutboundMethod(method: in String): Bool   // non-empty, not "rpc."
+pub val maxBatchSize: Int = 1024
+pub val maxPendingMessages: Int = 4096
+
 pub interface RpcHandler {
   func onRequest(method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]
   func onNotification(method: in String, params: in Option[JsonValue]): Unit
@@ -338,7 +347,9 @@ pub interface RpcTransport {
 pub func newPeer(transport: in RpcTransport, handler: in RpcHandler): RpcPeer
 pub func runLoop(peer: inout RpcPeer): Result[Unit, String]
 pub func call(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]
+  requires: isValidOutboundMethod(method)
 pub func notify(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[Unit, String]
+  requires: isValidOutboundMethod(method)
 ```
 
 The peer is symmetric — JSON-RPC has no client/server asymmetry, and MCP
@@ -349,17 +360,25 @@ inside a handler (an outbound request mid-dispatch) reads the transport
 inline until the matching response id arrives; any request/notification
 that arrives interleaved is queued and dispatched by the next `runLoop`
 iteration (or the next `call`, which drains the queue first) — the same
-discipline LSP servers use.
+discipline LSP servers use. If more than `maxPendingMessages` messages
+queue up while one `call` waits, that `call` fails with `internalError`
+and the queued messages stay queued for `runLoop`.
+
+Build application errors with `applicationError`, whose precondition
+keeps them out of the range JSON-RPC 2.0 §5.1 reserves for protocol
+errors. A peer-supplied error `code` outside the `Int` range decodes as
+`internalError` rather than being truncated.
 
 Batch requests (JSON-RPC 2.0 §6) are supported: an array envelope maps
 over dispatch, order-preserving; notifications are skipped in the
-response array; an empty batch is `-32600 Invalid Request`; a batch whose
+response array; an empty batch, or one longer than `maxBatchSize`, is a
+single `-32600 Invalid Request`; a batch whose
 every element is a notification produces no response at all (per spec,
 not even an empty array).
 
 Handler panics (a `Bug` raised inside `onRequest`/`onNotification`) are
 caught at the dispatch boundary — `onRequest` panics map to `-32603
-Internal error`; `onNotification` panics are discarded (no response is
+Internal error` (the panic message itself is never sent to the peer); `onNotification` panics are discarded (no response is
 ever possible for a notification). Neither kills `runLoop`.
 
 The LSP server (`lyric-compiler/lyric/lsp.l`) is **not** migrated onto

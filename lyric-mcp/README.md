@@ -318,27 +318,40 @@ func main(): Unit {
 ### A resumable tool (permission-prompt pattern, docs/64 §3.1)
 
 ```lyric
+import Std.Time
+
+// `stateKey` is 32+ random bytes that never leave the server (load it from
+// a secret store; rotating it invalidates every outstanding token).
 record DeleteFileHandler {
+  stateKey: slice[Byte]
 }
 
 impl McpResumableToolHandler for DeleteFileHandler {
   func call(args: in Option[JsonValue]): Result[McpToolCallOutcome, String] {
     val path = match args { case Some(a) -> match getString(a, "path") { case Some(p) -> p; case None -> "" }; case None -> "" }
-    val inputRequests = JObject(fields = [JsonField(name = "confirm", value = JBool(value = true))])
-    Ok(value = InputRequired(value = McpInputRequired(inputRequests = inputRequests, requestState = "delete:" + path)))
+    // Bind the pending action to this tool and a five-minute deadline.
+    match sealRequestState(self.stateKey, "delete_file", path, nowEpochMillis() + 300000i64) {
+      case Err(e) -> Err(error = e)
+      case Ok(token) -> {
+        val inputRequests = JObject(fields = [JsonField(name = "confirm", value = JBool(value = true))])
+        Ok(value = InputRequired(value = McpInputRequired(inputRequests = inputRequests, requestState = token)))
+      }
+    }
   }
 
   func resume(requestState: in String, inputResponses: in JsonValue): Result[McpToolCallOutcome, String] {
-    // SECURITY: requestState is an unauthenticated, unvalidated opaque
-    // echo token — a peer can call resume directly with a fabricated
-    // one, skipping call entirely. A real handler must re-authorize the
-    // requestState-encoded target (here, the path) before acting, not
-    // just check inputResponses.confirm.
-    val confirmed = match getBool(inputResponses, "confirm") { case Some(b) -> b; case None -> false }
-    if confirmed {
-      Ok(value = ToolResult(value = toolTextResult("deleted")))
-    } else {
-      Ok(value = ToolResult(value = toolErrorResult("not confirmed")))
+    // A peer can send any requestState it likes; only a token this server
+    // sealed, for this tool, before its deadline gets past here.
+    match openRequestState(self.stateKey, "delete_file", requestState, nowEpochMillis()) {
+      case Err(e) -> Ok(value = ToolResult(value = toolErrorResult("invalid requestState: " + e)))
+      case Ok(path) -> {
+        val confirmed = match getBool(inputResponses, "confirm") { case Some(b) -> b; case None -> false }
+        if confirmed {
+          Ok(value = ToolResult(value = toolTextResult("deleted " + path)))
+        } else {
+          Ok(value = ToolResult(value = toolErrorResult("not confirmed")))
+        }
+      }
     }
   }
 }
@@ -348,14 +361,23 @@ impl McpResumableToolHandler for DeleteFileHandler {
 // the same tools/call method and appear together in tools/list.
 ```
 
-`requestState` above (`"delete:" + path`) is an opaque echo token, not a
-capability or authorization credential — nothing in the protocol binds
-it to the peer that received it, so a client could fabricate a
-`requestState` and call `resume` directly without ever having gone
-through `call`. A resumable handler with a security-sensitive `resume`
-(deleting a file, as here) must perform its own authorization check
-inside `resume` itself; don't treat the round trip as a substitute for
-that check.
+`requestState` travels through the peer, which can fabricate, alter or
+replay it: `Mcp.Server` only checks that it is 1 to
+`maxRequestStateLength` (8192) characters before routing to `resume`.
+`sealRequestState(key, toolName, payload, expiresAtEpochMillis)` produces
+`v1.<base64 payload>.<expiry>.<hex HMAC-SHA-256>`, and
+`openRequestState(key, toolName, token, nowEpochMillis)` returns the
+payload only when the MAC matches (compared in constant time) for the same
+key and tool name and the deadline has not passed. The payload is
+authenticated, not encrypted, so keep secrets out of it. Sealing does not
+stop the same peer from replaying a live token before it expires; a tool
+whose action must happen at most once should also record the tokens it
+has consumed. A handler whose `requestState` carries nothing
+security-relevant can still use a plain string.
+
+On the client side, `callResumableTool`/`resumeToolCall` return `Err` for
+an `input_required` result whose `requestState` is missing, not a string,
+empty or longer than `maxRequestStateLength`.
 
 ### Connecting to a server (client, `.NET` only — see "Known JVM gaps")
 

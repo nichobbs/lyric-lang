@@ -740,7 +740,7 @@ output_assembly = "myapp.dll"
 | `Std.Math` | Numeric utilities | `absDouble`, `minPairDouble`, `maxPairDouble`, `sqrt`, `pow`, `floor`, `ceiling` |
 | `Std.Random` | Pseudo-random values | `nextInt`, `nextDouble`, `nextBool` |
 | `Std.SecureRandom` | Cryptographically-strong randomness | `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
-| `Std.Hash` | Cryptographic hashing | `sha256OfBytes`, `sha512OfBytes`, `sha512OfFile` |
+| `Std.Hash` | Cryptographic hashing and MACs | `sha256OfBytes`, `sha256Digest`, `sha512OfBytes`, `sha512OfFile`, `hmacSha256`, `constantTimeEquals` |
 | `Std.Char` | Unicode character utilities | `isLetter`, `isDigit`, `isWhiteSpace`, `isUpper`, `isLower`, `toUpper`, `toLower`, `toInt`, `fromInt`, `digitValue`, `hexDigitValue` |
 | `Std.Format` | Number and string formatting | `toHexString`, `toHexStringUpper`, `formatFixed`, `zeroPad`, `hexPad`, `padLeft`, `padRight` |
 | `Std.Encoding` | Byte-level encoding | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8` |

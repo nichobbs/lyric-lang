@@ -38,7 +38,7 @@ Here is the full module inventory:
 | `Std.Math` | `absDouble`, `sqrt`, `pow`, `minPairDouble`, `maxPairDouble`, `floor`, `ceiling` |
 | `Std.Random` | seeded RNG: `makeRandom`, `nextInt`, `nextDouble` |
 | `Std.SecureRandom` | CSPRNG: `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
-| `Std.Hash` | SHA-512: `sha512OfBytes(slice[Byte]) -> String`, `sha512OfFile(path) -> Result[String, String]` |
+| `Std.Hash` | SHA-512: `sha512OfBytes(slice[Byte]) -> String`, `sha512OfFile(path) -> Result[String, String]`; raw SHA-256 `sha256Digest`; `hmacSha256(key, message) -> slice[Byte]` and `constantTimeEquals(a, b)` for comparing MAC tags |
 | `Std.Encoding` | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `encodeUtf8` |
 | `Std.Uuid` | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Time` | `Instant`, `Duration`, `now`, ISO 8601 parsing |

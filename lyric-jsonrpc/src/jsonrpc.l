@@ -14,7 +14,8 @@
 //!
 //! Batch requests (JSON-RPC 2.0 §6) are supported: an array envelope maps
 //! over dispatch, order-preserving, notifications are skipped in the
-//! response array, and an empty batch is `-32600 Invalid Request`.
+//! response array, and an empty batch is `-32600 Invalid Request`. A batch
+//! longer than `maxBatchSize` is rejected whole with one `-32600` response.
 package JsonRpc
 
 import Std.Core
@@ -73,6 +74,43 @@ pub val invalidParams: Int = -32602
 
 @stable(since = "0.1")
 pub val internalError: Int = -32603
+
+/// True when `code` lies in -32768..-32000, the range JSON-RPC 2.0 §5.1
+/// reserves for predefined errors. Application errors must stay outside it.
+@pure
+pub func isReservedErrorCode(code: in Int): Bool {
+  code >= -32768 and code <= -32000
+}
+
+/// An application-defined error. The precondition keeps handlers from
+/// passing off their own failures as protocol errors (a reserved code such
+/// as `-32601` would tell the peer the method does not exist).
+@stable(since = "0.2")
+pub func applicationError(code: in Int, message: in String, data: in Option[JsonValue]): RpcError
+  requires: not isReservedErrorCode(code)
+{
+  RpcError(code = code, message = message, data = data)
+}
+
+/// True when `method` may be sent by `call`/`notify`: non-empty and not in
+/// the `rpc.` namespace, which JSON-RPC 2.0 §4 reserves for rpc-internal
+/// methods and extensions.
+@pure
+pub func isValidOutboundMethod(method: in String): Bool {
+  method.length > 0 and not method.startsWith("rpc.")
+}
+
+/// Upper bound on the number of elements in an inbound batch. A larger batch
+/// is answered with a single `-32600 Invalid Request` instead of being
+/// dispatched element by element.
+@stable(since = "0.2")
+pub val maxBatchSize: Int = 1024
+
+/// Upper bound on the inbound requests/notifications `call` will queue while
+/// it waits for its own response. A peer that floods past it fails the
+/// pending `call` rather than growing the queue without limit.
+@stable(since = "0.2")
+pub val maxPendingMessages: Int = 4096
 
 // ── Handler / transport interfaces ──────────────────────────────────────────
 @stable(since = "0.1")
@@ -236,8 +274,13 @@ pub func encodeResponse(resp: in RpcResponse): JsonValue {
   }
 }
 
+// The peer's `code` is untrusted: a value outside the Int range is mapped to
+// `internalError` rather than truncated into an unrelated code.
 func decodeErrorFromJson(v: in JsonValue): RpcError {
-  val code = match getInt(v, "code") { case Some(n) -> n.toInt(); case None -> internalError }
+  val code = match getInt(v, "code") {
+    case Some(n) -> if n >= -2147483648i64 and n <= 2147483647i64 { n.toInt() } else { internalError }
+    case None -> internalError
+  }
   val msg = match getString(v, "message") { case Some(s) -> s; case None -> "" }
   RpcError(code = code, message = msg, data = getField(v, "data"))
 }
@@ -257,7 +300,9 @@ func dispatchRequest(handler: in RpcHandler, id: in RpcId, method: in String, pa
   val outcome: Result[JsonValue, RpcError] = try {
     handler.onRequest(method, params)
   } catch Bug as b {
-    Err(error = RpcError(code = internalError, message = "Internal error: " + b.message, data = None))
+    // The panic message can carry internal state (paths, values, stack
+    // context); it is never sent to the peer.
+    Err(error = RpcError(code = internalError, message = "Internal error", data = None))
   }
   match outcome {
     case Ok(v) -> RpcSuccess(id = id, value = v)
@@ -269,7 +314,64 @@ func dispatchAsRequestOrNotification(peer: inout RpcPeer, v: in JsonValue): Opti
   match getField(v, "method") {
     case None -> None
     // unreachable: caller only invokes this branch when hasField(v, "method")
-    case Some(methodVal) -> match methodVal { case JString(method) -> { val paramsOpt = getField(v, "params"); val paramsValid = match paramsOpt { case None -> true; case Some(p) -> isValidParamsShape(p) }; if not paramsValid { Some(value = encodeResponse(RpcFailure(id = extractIdOrNull(v), error = RpcError(code = invalidRequest, message = "Invalid Request: \"params\" must be an array or object", data = None)))) } else { match getField(v, "id") { case None -> { dispatchNotification(peer.handler, method, paramsOpt); None }; case Some(idv) -> match decodeIdOpt(idv) { case None -> Some(value = encodeResponse(RpcFailure(id = NullId, error = RpcError(code = invalidRequest, message = "Invalid Request: \"id\" must be a string, number, or null", data = None)))); case Some(rid) -> Some(value = encodeResponse(dispatchRequest(peer.handler, rid, method, paramsOpt))) } } } }; case _ -> Some(value = encodeResponse(RpcFailure(id = extractIdOrNull(v), error = RpcError(code = invalidRequest, message = "Invalid Request: \"method\" must be a string", data = None)))) }
+    case Some(methodVal) -> match methodVal {
+      case JString(method) -> {
+        val paramsOpt = getField(v, "params")
+        val paramsValid = match paramsOpt { case None -> true; case Some(p) -> isValidParamsShape(p) }
+        if not paramsValid {
+          Some(
+            value = encodeResponse(
+              RpcFailure(
+                id = extractIdOrNull(v),
+                error = RpcError(
+                  code = invalidRequest,
+                  message = "Invalid Request: \"params\" must be an array or object",
+                  data = None
+                )
+              )
+            )
+          )
+        } else {
+          match getField(v, "id") {
+            case None -> {
+              dispatchNotification(peer.handler, method, paramsOpt)
+              None
+            }
+            case Some(idv) -> match decodeIdOpt(idv) {
+              case None -> Some(
+                value = encodeResponse(
+                  RpcFailure(
+                    id = NullId,
+                    error = RpcError(
+                      code = invalidRequest,
+                      message = "Invalid Request: \"id\" must be a string, number, or null",
+                      data = None
+                    )
+                  )
+                )
+              )
+              case Some(rid) -> Some(
+                value = encodeResponse(
+                  dispatchRequest(peer.handler, rid, method, paramsOpt)
+                )
+              )
+            }
+          }
+        }
+      }
+      case _ -> Some(
+        value = encodeResponse(
+          RpcFailure(
+            id = extractIdOrNull(v),
+            error = RpcError(
+              code = invalidRequest,
+              message = "Invalid Request: \"method\" must be a string",
+              data = None
+            )
+          )
+        )
+      )
+    }
   }
 }
 
@@ -310,7 +412,18 @@ func dispatchSingle(peer: inout RpcPeer, v: in JsonValue): Option[JsonValue] {
         )
       }
     }
-    case _ -> Some(value = encodeResponse(RpcFailure(id = NullId, error = RpcError(code = invalidRequest, message = "Invalid Request: expected a JSON object", data = None))))
+    case _ -> Some(
+      value = encodeResponse(
+        RpcFailure(
+          id = NullId,
+          error = RpcError(
+            code = invalidRequest,
+            message = "Invalid Request: expected a JSON object",
+            data = None
+          )
+        )
+      )
+    )
   }
 }
 
@@ -326,6 +439,20 @@ func dispatchTopLevel(peer: inout RpcPeer, v: in JsonValue): Option[JsonValue] {
             RpcFailure(
               id = NullId,
               error = RpcError(code = invalidRequest, message = "Invalid Request: empty batch", data = None)
+            )
+          )
+        )
+      } else if items.count > maxBatchSize {
+        Some(
+          value = encodeResponse(
+            RpcFailure(
+              id = NullId,
+              error = RpcError(
+                code = invalidRequest,
+                message = "Invalid Request: batch of " + items.count.toString() + " exceeds the limit of " +
+                  maxBatchSize.toString(),
+                data = None
+              )
             )
           )
         )
@@ -365,7 +492,20 @@ func classifyForCall(v: in JsonValue, waitId: in RpcId): CallItemOutcome {
       } else if hasField(v, "result") or hasField(v, "error") {
         match getField(v, "id") {
           case None -> CallIgnore
-          case Some(idv) -> match decodeIdOpt(idv) { case None -> CallIgnore; case Some(rid) -> { if idEquals(rid, waitId) { if hasField(v, "result") { CallMatch(r = Ok(value = unwrapOption(getField(v, "result")))) } else { CallMatch(r = Err(error = decodeErrorFromJson(unwrapOption(getField(v, "error"))))) } } else { CallIgnore } } }
+          case Some(idv) -> match decodeIdOpt(idv) {
+            case None -> CallIgnore
+            case Some(rid) -> {
+              if idEquals(rid, waitId) {
+                if hasField(v, "result") {
+                  CallMatch(r = Ok(value = unwrapOption(getField(v, "result"))))
+                } else {
+                  CallMatch(r = Err(error = decodeErrorFromJson(unwrapOption(getField(v, "error")))))
+                }
+              } else {
+                CallIgnore
+              }
+            }
+          }
         }
       } else {
         CallIgnore
@@ -392,7 +532,14 @@ func handleDuringCall(peer: inout RpcPeer, v: in JsonValue, waitId: in RpcId): O
       }
       found
     }
-    case _ -> match classifyForCall(v, waitId) { case CallMatch(r) -> Some(value = r); case CallQueue -> { peer.pendingQueue.add(v); None }; case CallIgnore -> None }
+    case _ -> match classifyForCall(v, waitId) {
+      case CallMatch(r) -> Some(value = r)
+      case CallQueue -> {
+        peer.pendingQueue.add(v)
+        None
+      }
+      case CallIgnore -> None
+    }
   }
 }
 
@@ -453,7 +600,32 @@ pub func runLoop(peer: inout RpcPeer): Result[Unit, String] {
           running = false
           outcome = Err(error = e)
         }
-        case Ok(opt) -> match opt { case None -> { running = false }; case Some(text) -> { val respOpt = match parseValue(text) { case Err(e) -> Some(value = encodeResponse(RpcFailure(id = NullId, error = RpcError(code = parseError, message = "Parse error: " + e.message(), data = None)))); case Ok(parsed) -> dispatchTopLevel(peer, parsed) }; match respOpt { case None -> (); case Some(r) -> trySend(peer, r, running, outcome) } } }
+        case Ok(opt) -> match opt {
+          case None -> {
+            running = false
+          }
+          case Some(text) -> {
+            val respOpt = match parseValue(text) {
+              case Err(e) -> Some(
+                value = encodeResponse(
+                  RpcFailure(
+                    id = NullId,
+                    error = RpcError(
+                      code = parseError,
+                      message = "Parse error: " + e.message(),
+                      data = None
+                    )
+                  )
+                )
+              )
+              case Ok(parsed) -> dispatchTopLevel(peer, parsed)
+            }
+            match respOpt {
+              case None -> ()
+              case Some(r) -> trySend(peer, r, running, outcome)
+            }
+          }
+        }
       }
     }
   }
@@ -463,9 +635,12 @@ pub func runLoop(peer: inout RpcPeer): Result[Unit, String] {
 /// Issue an outbound request and block until its response arrives. Any
 /// requests/notifications the peer sends while we wait are queued for
 /// `runLoop` (or the next `call()`) to dispatch afterwards — see the
-/// module doc.
+/// module doc. If the queue grows past `maxPendingMessages` the call fails
+/// with `internalError`; the queued messages stay queued for `runLoop`.
 @stable(since = "0.1")
-pub func call(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError] {
+pub func call(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]
+  requires: isValidOutboundMethod(method)
+{
   val id = allocateId(peer)
   val reqObj = encodeRequestObject(Some(value = id), method, params)
   match peer.transport.send(writeValue(reqObj)) {
@@ -492,18 +667,82 @@ pub func call(peer: inout RpcPeer, method: in String, params: in Option[JsonValu
         )
         waiting = false
       }
-      case Ok(opt) -> match opt { case None -> { settled = Some(value = Err(error = RpcError(code = internalError, message = "transport closed while awaiting response to '" + method + "'", data = None))); waiting = false }; case Some(text) -> { match parseValue(text) { case Err(e) -> { settled = Some(value = Err(error = RpcError(code = internalError, message = "malformed message while awaiting response to '" + method + "': " + e.message(), data = None))); waiting = false }; case Ok(v) -> { val found = handleDuringCall(peer, v, id); match found { case None -> (); case Some(r) -> { settled = Some(value = r); waiting = false } } } } } }
+      case Ok(opt) -> match opt {
+        case None -> {
+          settled = Some(
+            value = Err(
+              error = RpcError(
+                code = internalError,
+                message = "transport closed while awaiting response to '" + method + "'",
+                data = None
+              )
+            )
+          )
+          waiting = false
+        }
+        case Some(text) -> {
+          match parseValue(text) {
+            case Err(e) -> {
+              settled = Some(
+                value = Err(
+                  error = RpcError(
+                    code = internalError,
+                    message = "malformed message while awaiting response to '" + method + "': " +
+                      e.message(),
+                    data = None
+                  )
+                )
+              )
+              waiting = false
+            }
+            case Ok(v) -> {
+              val found = handleDuringCall(peer, v, id)
+              match found {
+                case None -> {
+                  if peer.pendingQueue.count > maxPendingMessages {
+                    settled = Some(
+                      value = Err(
+                        error = RpcError(
+                          code = internalError,
+                          message = "more than " + maxPendingMessages.toString() +
+                            " unanswered inbound messages queued while awaiting response to '" +
+                            method +
+                            "'",
+                          data = None
+                        )
+                      )
+                    )
+                    waiting = false
+                  }
+                }
+                case Some(r) -> {
+                  settled = Some(value = r)
+                  waiting = false
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
   match settled {
     case Some(r) -> r
-    case None -> Err(error = RpcError(code = internalError, message = "internal error: call() loop exited without a result", data = None))
+    case None -> Err(
+      error = RpcError(
+        code = internalError,
+        message = "internal error: call() loop exited without a result",
+        data = None
+      )
+    )
   }
 }
 
 /// Send a notification (no response is ever expected).
 @stable(since = "0.1")
-pub func notify(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[Unit, String] {
+pub func notify(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[Unit, String]
+  requires: isValidOutboundMethod(method)
+{
   val reqObj = encodeRequestObject(None, method, params)
   peer.transport.send(writeValue(reqObj))
 }

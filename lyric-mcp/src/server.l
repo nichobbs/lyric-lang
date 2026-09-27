@@ -69,7 +69,9 @@ pub record McpServer {
 /// here — every request the server can answer, it can answer starting
 /// from the very first message.
 @stable(since = "0.1")
-pub func newServer(info: in McpImplementation): McpServer {
+pub func newServer(info: in McpImplementation): McpServer
+  requires: info.name.length > 0
+{
   McpServer(info = info, tools = newList(), resumableTools = newList(), resources = newList(), prompts = newList())
 }
 
@@ -295,7 +297,16 @@ func dispatchResumableTool(
             data = None
           )
         )
-        case Some(state) -> {
+        case Some(state) -> if state.length == 0 or state.length > maxRequestStateLength {
+          Err(
+            error = RpcError(
+              code = invalidParamsCode(),
+              message = "invalid params: 'requestState' must be 1 to " + maxRequestStateLength.toString() +
+                " characters",
+              data = None
+            )
+          )
+        } else {
           val inputResponses = match getField(p, "inputResponses") {
             case Some(v) -> v
             case None -> JObject(fields = newList())
