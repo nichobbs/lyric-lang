@@ -138,11 +138,9 @@ pub record PipedProcess {
 /// Returns `Err(IOError)` if the executable cannot be started.
 @stable(since = "1.0")
 pub func spawnPiped(executable: in String, args: in List[String]): Result[PipedProcess, IOError] {
-  return try {
-    val arguments = buildArgString(args)
-    Ok(value = PipedProcess(handle = hostSpawnPiped(executable, arguments)))
-  } catch Bug as b {
-    Err(error = IoError(path = executable, message = b.message))
+  match hostSpawnPipedResult(executable, args) {
+    case Ok(h) -> Ok(value = PipedProcess(handle = h))
+    case Err(e) -> Err(error = e)
   }
 }
 
@@ -151,23 +149,14 @@ pub func spawnPiped(executable: in String, args: in List[String]): Result[PipedP
 /// its stdout).
 @stable(since = "1.0")
 pub func pipedReadLine(p: in PipedProcess): Result[Option[String], String] {
-  return try {
-    Ok(value = hostPipedReadLineOpt(p.handle))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  hostPipedReadLineResult(p.handle)
 }
 
 /// Write one line to the child's stdin. A trailing newline is appended and
 /// the write is flushed immediately.
 @stable(since = "1.0")
 pub func pipedWriteLine(p: in PipedProcess, line: in String): Result[Unit, String] {
-  return try {
-    hostPipedWriteLine(p.handle, line)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  hostPipedWriteLineResult(p.handle, line)
 }
 
 /// True while the child process has not yet exited.

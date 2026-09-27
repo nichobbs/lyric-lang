@@ -220,6 +220,23 @@ test "put round-trips through get" {
   )
 }
 
+test "put reports a write failure as Err when the object path is a directory" {
+  // `dir/inner.txt` makes `dir` a directory inside the bucket, so writing
+  // the object `dir` fails in `Std.File.writeBytes` (PUT_ERROR) rather than
+  // at the key-safety gate.
+  val bRes = freshBucket()
+  assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(
+    isOk[StorageMetadata, StorageError](put(bucket, "dir/inner.txt", "aGVsbG8=", "text/plain")),
+    "put of the nested key must succeed"
+  )
+  assertTrue(
+    isErr[StorageMetadata, StorageError](put(bucket, "dir", "aGVsbG8=", "text/plain")),
+    "put onto a path that is a directory must fail"
+  )
+}
+
 test "exists returns Ok(false) for absent key" {
   val bRes = freshBucket()
   assertTrue(isOk[StorageBucket, StorageError](bRes), "fresh bucket must connect")

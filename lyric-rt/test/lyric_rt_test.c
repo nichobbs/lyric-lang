@@ -9,6 +9,7 @@
 
 #include "lyric_rt.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
@@ -1746,6 +1747,10 @@ static void test_process_run_inherited(void) {
     int32_t code3 = -99;
     CHECK(lyric_process_run_inherited("/nonexistent-lyric-rt-test-exe", NULL, &code3) == -1);
     CHECK(code3 == -99);
+    CHECK(lyric_process_last_spawn_errno() == ENOENT);
+    LyricString* msg = lyric_process_errno_message(ENOENT);
+    CHECK(lyric_string_len(msg) > 0);
+    lyric_release(msg);
 
     /* A signal-terminated child reports 128 + signal number. */
     LyricList* kargs = lyric_list_new(2);
@@ -2381,17 +2386,12 @@ static void test_process_piped_kill(void) {
 }
 
 static void test_process_piped_spawn_failure(void) {
-    /* A nonexistent executable: spawn_piped's fork succeeds but execvp
-     * fails inside the child (exit 127) -- NOT a NULL handle, same
-     * "spawn failure is only a pipe/fork failure, never an execvp
-     * failure" contract lyric_process_run documents. */
+    /* A nonexistent executable: execvp fails inside the child, which
+     * reports it over the exec-failure pipe, so spawn returns NULL (the
+     * managed twins' Process.Start / ProcessBuilder.start throw here). */
     void* p = lyric_process_piped_spawn("/nonexistent-lyric-rt-piped-exe", NULL);
-    CHECK(p != NULL);
-    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
-    CHECK(lyric_process_piped_exit_code(p) == 127);
-    LyricString* got = NULL;
-    CHECK(lyric_process_piped_read_line(p, &got) == 0); /* no output, clean EOF */
-    lyric_process_piped_close(p);
+    CHECK(p == NULL);
+    CHECK(lyric_process_last_spawn_errno() == ENOENT);
 }
 
 static void test_process_piped_stderr_inherited(void) {

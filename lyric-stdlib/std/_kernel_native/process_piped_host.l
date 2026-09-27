@@ -23,63 +23,28 @@
 //! `_kernel_native/tcp_host.l`'s identical `Conn.tlsConnHandle` idiom,
 //! not a new pattern.
 //!
-//! ## Argument parsing: re-materializing argv from `Std.Process`'s quoted string
+//! ## Argument handling
 //!
-//! `Std.Process.spawnPiped` builds `arguments` via `buildArgString`
-//! (space-separated `"..."` tokens with `\"`/`\\` escaping) and calls
-//! `hostSpawnPiped(fileName, arguments)` — the SAME two-string signature
-//! on every target, since that call site is shared, target-independent
-//! code. The dotnet twin hands that string straight to
-//! `ProcessStartInfo.Arguments`, which the OS/CLR re-parses; native's
-//! `fork`+`execvp` needs a real argv array with NO shell involved
-//! (`lyric_process.c`'s own header: "no shell is ever invoked"), so
-//! `parseArgString` below re-materializes the list, reusing the SAME
-//! token-scanning algorithm `_kernel_jvm/process_capture_host.l`'s own
-//! `parseArgString` already uses to solve the identical problem for
-//! `ProcessBuilder`'s `List<String>` constructor (both targets need a
-//! real list; only dotnet's `ProcessStartInfo.Arguments` accepts the
-//! joined string directly). Unlike the JVM version, this one does NOT
-//! prepend the executable to the returned list: `rtPipedSpawn` (like
-//! `_kernel_native/process_capture_host.l`'s `rtProcessRun`) takes the
-//! executable path as its OWN separate `path` parameter and builds
-//! `argv[0]` from it directly — `ProcessBuilder`'s constructor is what
-//! needs argv[0] folded into the same list, not `lyric_process.c`'s
-//! `execvp`.
+//! `Std.Process.spawnPiped` passes its argument list straight to
+//! `hostSpawnPipedResult`, which hands it to `rtPipedSpawn` as argv (no
+//! shell, no quoting). `hostSpawnPiped`'s string form, shared with the
+//! managed twins, splits a `Std.ProcessArgs`-joined string back into a
+//! list with `argvSplit`.
 //!
-//! ## Disclosed gap: `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine`
-//! are NOT reachable through this kernel on `--target native` today
+//! ## `Std.Process` reaches this kernel through Result seams
 //!
-//! This file's own `hostSpawnPiped`/`hostPipedReadLineOpt`/
-//! `hostPipedWriteLine`/etc. are genuinely correct and fully exercised
-//! against a real `cat` child (`llvm_stdlib_self_test.l`'s
-//! `Std.ProcessPipedHost` case) — but the SHARED, target-independent
-//! `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine` (the API a
-//! caller would actually use, e.g. `lyric-mcp`'s stdio transport) wrap
-//! their host call in `try { } catch Bug as b { }`, and
-//! `Lyric.LlvmCodegen` unconditionally rejects `STry` for `--target
-//! native` (D-N-003: "no unwinding") the instant any native build
-//! reaches one of those three functions — a real, pre-existing,
-//! independently-tracked compiler gap (not something this kernel could
-//! work around; #4752's own Result-seam precedent for `runCapture` is
-//! the template a follow-up would use to fix it). Two further,
-//! independently-discovered blockers sit on the SAME shared call path:
-//! `Std.Process.buildArgString` (called by `spawnPiped` before it ever
-//! reaches this kernel) uses `String.replace`, which has no native
-//! codegen lowering yet either; and this file's OWN first draft of
-//! `parseArgString` used `argStr[i]` bracket indexing (mirroring the JVM
-//! twin verbatim), which also has no native lowering (issue #6237) — the
-//! shipped version above uses `.substring(i, 1)` instead, so THIS
-//! blocker is already fixed here. See `docs/03-decision-log.md`
-//! D-progress-909 for the full investigation (including the exact
-//! compile-time panic each gap produces), issue #6887 (the
-//! `try/catch`-on-native blocker) and issue #6888 (the
-//! `String.replace`-on-native blocker).
+//! `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine` call the
+//! `host*Result` seams at the end of this file rather than wrapping the
+//! throwing entry points in `try`/`catch`, which `--target native` cannot
+//! lower (D-N-003; issue #6887). The managed twins hold the `try`/`catch`
+//! in their own copies of the seams.
 @axiom("fork/execvp piped child stdio via lyric-rt conforms to its documented contract")
 package Std.ProcessPipedHost
 
 import Std.Core
 import Std.Collections
 import Std.ProcessArgs
+import Std.Errors
 
 extern func toC(s: String): NativePtr[Byte] = "lyric_string_to_cstring"
 
@@ -114,6 +79,22 @@ extern func rtPipedCloseStdin(p: Long): Int = "lyric_process_piped_close_stdin"
 
 extern func rtPipedClose(p: Long): Unit = "lyric_process_piped_close"
 
+extern func rtLastSpawnErrno(): Int = "lyric_process_last_spawn_errno"
+
+extern func rtErrnoMessage(e: Int): String = "lyric_process_errno_message"
+
+// The reason the child could not be started, as the OS reports it (e.g.
+// "No such file or directory" for a missing executable), matching the
+// managed twins, whose IoError carries the host exception's message.
+func spawnFailureMessage(): String {
+  val e = rtLastSpawnErrno()
+  if e == 0 {
+    "the process could not be started"
+  } else {
+    "the process could not be started: " + rtErrnoMessage(e)
+  }
+}
+
 // ── Public handle + entry points ────────────────────────────────────────────
 /// Opaque handle to a running child process with piped stdin/stdout. See
 /// the module header for why this is a `Long`, not a `NativePtr[Byte]`.
@@ -128,12 +109,11 @@ pub record PipedHandle {
 
 /// Spawn `fileName` with a pre-formed `arguments` string (see
 /// `Std.Process.buildArgString`), redirecting stdin and stdout; stderr is
-/// inherited (see module header). Panics if the OS spawn itself fails
-/// (pipe/fork failure) — `Std.Process.spawnPiped` catches this and maps it
-/// to `IOError`. An `execvp` failure inside the child (e.g. `fileName` not
-/// found) is NOT a spawn failure: it surfaces as exit code 127 once the
-/// child is observed to exit, matching shell convention and
-/// `_kernel_native/process_capture_host.l`'s identical contract.
+/// inherited (see module header). Panics if the child cannot be started,
+/// including an `execvp` failure such as `fileName` not found (lyric-rt
+/// reports it over a CLOEXEC pipe). `Std.Process.spawnPiped` uses
+/// `hostSpawnPipedResult` instead, which reports the same failure as an
+/// `IoError`.
 @unsafe_ffi
 pub func hostSpawnPiped(fileName: in String, arguments: in String): PipedHandle {
   val args = parseArgString(arguments)
@@ -219,4 +199,37 @@ pub func hostPipedClose(p: in PipedHandle): Unit {
   }
   p.closed = true
   rtPipedClose(p.raw)
+}
+
+// ── Result seams for Std.Process (#6887) ─────────────────────────────────────
+// The managed twins catch their host's exceptions here; this target has no
+// unwinding (D-N-003), so each seam reports lyric-rt's return code instead.
+// A child that cannot be started, including an execvp failure such as a
+// missing executable, is an IoError on every target (lyric-rt reports the
+// exec failure over a CLOEXEC pipe).
+@unsafe_ffi
+pub func hostSpawnPipedResult(fileName: in String, args: in List[String]): Result[PipedHandle, IOError] {
+  val c = toC(fileName)
+  val raw = rtPipedSpawn(c, args)
+  freeC(c)
+  if raw == 0i64 {
+    Err(error = IoError(path = fileName, message = spawnFailureMessage()))
+  } else {
+    Ok(value = PipedHandle(raw = raw, closed = false))
+  }
+}
+
+// lyric-rt reads only report a line or end of stream (a hard read error is
+// treated as end of stream), so this seam never produces Err on native.
+pub func hostPipedReadLineResult(p: in PipedHandle): Result[Option[String], String] {
+  Ok(value = hostPipedReadLineOpt(p))
+}
+
+pub func hostPipedWriteLineResult(p: in PipedHandle, line: in String): Result[Unit, String] {
+  val rc = rtPipedWriteLine(p.raw, line)
+  if rc == 0 {
+    Ok(value = ())
+  } else {
+    Err(error = "write to piped child's stdin failed (broken pipe)")
+  }
 }

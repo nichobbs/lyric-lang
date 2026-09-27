@@ -450,18 +450,43 @@ int32_t lyric_process_run(const char* path, LyricList* args,
  * the executable cannot be started: the child writes errno to a CLOEXEC
  * pipe only if execvp returns, so the parent reads EOF on success and 4
  * bytes on failure. */
+/* errno of the most recent failed start on this thread, for
+ * lyric_process_run_inherited and lyric_process_piped_spawn (0 when the
+ * cause is unknown). */
+static _Thread_local int32_t last_spawn_errno = 0;
+
+int32_t lyric_process_last_spawn_errno(void) {
+    return last_spawn_errno;
+}
+
+/* strerror's text for `e`, copied under a lock: strerror's buffer is not
+ * guaranteed thread-safe, and strerror_r's signature differs between the
+ * XSI and GNU variants. */
+LyricString* lyric_process_errno_message(int32_t e) {
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&lock);
+    const char* m = strerror((int)e);
+    LyricString* out = lyric_string_from_literal((const uint8_t*)m, (int64_t)strlen(m));
+    pthread_mutex_unlock(&lock);
+    return out;
+}
+
 static int32_t status_to_exit_code(int status);
 
 int32_t lyric_process_run_inherited(const char* path, LyricList* args,
                                     int32_t* out_exit_code) {
     int errpipe[2];
-    if (pipe_cloexec(errpipe) != 0) return -1;
+    if (pipe_cloexec(errpipe) != 0) {
+        last_spawn_errno = errno;
+        return -1;
+    }
 
     int64_t nargs = args ? lyric_list_len(args) : 0;
     char** argv = (char**)malloc((size_t)(nargs + 2) * sizeof(char*));
     if (!argv) {
         close(errpipe[0]);
         close(errpipe[1]);
+        last_spawn_errno = ENOMEM;
         return -1;
     }
     argv[0] = (char*)path; /* borrowed: never freed below */
@@ -472,6 +497,7 @@ int32_t lyric_process_run_inherited(const char* path, LyricList* args,
     argv[nargs + 1] = NULL;
 
     pid_t pid = fork();
+    int fork_errno = errno;
     if (pid == 0) {
         /* Child: only async-signal-safe calls until exec or _exit. */
         close(errpipe[0]);
@@ -489,6 +515,7 @@ int32_t lyric_process_run_inherited(const char* path, LyricList* args,
     close(errpipe[1]);
     if (pid < 0) {
         close(errpipe[0]);
+        last_spawn_errno = fork_errno;
         return -1;
     }
 
@@ -504,8 +531,14 @@ int32_t lyric_process_run_inherited(const char* path, LyricList* args,
     do {
         w = waitpid(pid, &status, 0);
     } while (w < 0 && errno == EINTR);
-    if (w < 0) return -1;
-    if (n == (ssize_t)sizeof child_errno) return -1; /* exec failed */
+    if (w < 0) {
+        last_spawn_errno = errno;
+        return -1;
+    }
+    if (n == (ssize_t)sizeof child_errno) { /* exec failed */
+        last_spawn_errno = child_errno;
+        return -1;
+    }
 
     *out_exit_code = status_to_exit_code(status);
     return 0;
@@ -726,10 +759,27 @@ void lyric_process_free(void* raw) {
 static pid_t spawn_piped(const char* path, LyricList* args, int* out_rd, int* in_wr) {
     int out_pipe[2];
     int in_pipe[2];
-    if (pipe_cloexec(out_pipe) != 0) return -1;
+    if (pipe_cloexec(out_pipe) != 0) {
+        last_spawn_errno = errno;
+        return -1;
+    }
     if (pipe_cloexec(in_pipe) != 0) {
+        last_spawn_errno = errno;
         close(out_pipe[0]);
         close(out_pipe[1]);
+        return -1;
+    }
+    /* Exec-failure report channel: the child writes errno here only if
+     * execvp returns, so the parent reads EOF on success and can report a
+     * missing executable as a spawn failure, as the managed twins do
+     * (Process.Start / ProcessBuilder.start throw). */
+    int err_pipe[2];
+    if (pipe_cloexec(err_pipe) != 0) {
+        last_spawn_errno = errno;
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(in_pipe[0]);
+        close(in_pipe[1]);
         return -1;
     }
 #if defined(__APPLE__)
@@ -743,10 +793,13 @@ static pid_t spawn_piped(const char* path, LyricList* args, int* out_rd, int* in
     int64_t nargs = args ? lyric_list_len(args) : 0;
     char** argv = (char**)malloc((size_t)(nargs + 2) * sizeof(char*));
     if (!argv) {
+        last_spawn_errno = ENOMEM;
         close(out_pipe[0]);
         close(out_pipe[1]);
         close(in_pipe[0]);
         close(in_pipe[1]);
+        close(err_pipe[0]);
+        close(err_pipe[1]);
         return -1;
     }
     argv[0] = (char*)path; /* borrowed: never freed below */
@@ -758,12 +811,15 @@ static pid_t spawn_piped(const char* path, LyricList* args, int* out_rd, int* in
 
     pid_t pid = fork();
     if (pid < 0) {
+        last_spawn_errno = errno;
         for (int64_t i = 0; i < nargs; i++) lyric_cstring_free(argv[i + 1]);
         free(argv);
         close(out_pipe[0]);
         close(out_pipe[1]);
         close(in_pipe[0]);
         close(in_pipe[1]);
+        close(err_pipe[0]);
+        close(err_pipe[1]);
         return -1;
     }
 
@@ -778,6 +834,13 @@ static pid_t spawn_piped(const char* path, LyricList* args, int* out_rd, int* in
         if (setpgid(0, 0) < 0) _exit(126);
         close(out_pipe[0]);
         close(in_pipe[1]);
+        close(err_pipe[0]);
+        int err_wr = err_pipe[1];
+        if (err_wr < 3) {
+            err_wr = fcntl(err_wr, F_DUPFD_CLOEXEC, 3);
+            if (err_wr < 0) _exit(126);
+            close(err_pipe[1]);
+        }
         int in_src = in_pipe[0];
         int out_src = out_pipe[1];
         if (in_src < 3) {
@@ -795,7 +858,12 @@ static pid_t spawn_piped(const char* path, LyricList* args, int* out_rd, int* in
         close(in_src);
         close(out_src);
         execvp(path, argv);
-        _exit(127); /* execvp failed (e.g. path not found) */
+        int e = errno;
+        ssize_t wr;
+        do {
+            wr = write(err_wr, &e, sizeof e);
+        } while (wr < 0 && errno == EINTR);
+        _exit(127);
     }
 
     /* Parent: mirror the child's setpgid (see spawn_capture's identical
@@ -803,8 +871,27 @@ static pid_t spawn_piped(const char* path, LyricList* args, int* out_rd, int* in
     (void)setpgid(pid, pid);
     close(out_pipe[1]);
     close(in_pipe[0]);
+    close(err_pipe[1]);
     for (int64_t i = 0; i < nargs; i++) lyric_cstring_free(argv[i + 1]);
     free(argv);
+    int child_errno = 0;
+    ssize_t n;
+    do {
+        n = read(err_pipe[0], &child_errno, sizeof child_errno);
+    } while (n < 0 && errno == EINTR);
+    close(err_pipe[0]);
+    if (n == (ssize_t)sizeof child_errno) {
+        /* exec failed: reap the child and report a spawn failure. */
+        last_spawn_errno = child_errno;
+        close(out_pipe[0]);
+        close(in_pipe[1]);
+        int status;
+        pid_t w;
+        do {
+            w = waitpid(pid, &status, 0);
+        } while (w < 0 && errno == EINTR);
+        return -1;
+    }
     *out_rd = out_pipe[0];
     *in_wr = in_pipe[1];
     return pid;
