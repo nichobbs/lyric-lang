@@ -34826,6 +34826,24 @@ func genericMemberSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Ms
   }
 }
 
+// Convert a closed generic instantiation's own type arguments to `SigType`s,
+// recursing via `argTyToSig`.  None if any argument type isn't describable —
+// the caller (a `MGenericInst`/`MValueTypeGenericInst` arm of `argTyToSig`
+// itself) then also returns `None`, same "caller falls back" contract as
+// every other arm here.
+func argTyListToSig(typeArgs: in List[MsilType]): Option[List[Mdr.SigType]] {
+  val sigArgs: List[Mdr.SigType] = newList()
+  var i = 0
+  while i < typeArgs.count {
+    match argTyToSig(typeArgs[i]) {
+      case Some(s) -> sigArgs.add(s)
+      case None -> return None
+    }
+    i = i + 1
+  }
+  Some(value = sigArgs)
+}
+
 // Map a lowered argument's MsilType to the `SigType` used for overload
 // resolution: primitives by element byte, value/class externs by FQN.  None for
 // argument types the metadata path can't describe (caller falls back).
@@ -34866,6 +34884,30 @@ func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
     }
     case MConcreteMap(_, _) -> {
       return Some(value = Mdr.mkNamedSig("System.Collections.Generic.Dictionary`2", false))
+    }
+    // A real closed generic instantiation over an extern type (e.g.
+    // `List<SslApplicationProtocol>`, recovered from erasure by
+    // `externTargetBracketGenericInstMsil` / D-progress-999) — as opposed to
+    // Lyric's own object-erased `List[T]`/`Map[K,V]` above. Recurse into
+    // `typeArgs` so the resulting `STNamedGenericInst` carries real per-
+    // position type arguments the scorer can structurally match exactly
+    // (`Mdr.scoreSigType`'s own `STNamedGenericInst` arm), not just the base
+    // arity FQN. Without this arm, `argTyToSig` returned `None` for any
+    // `MGenericInst`/`MValueTypeGenericInst` argument (it fell through to
+    // `externRefFqn`, which only handles `MValueTypeRef`/`MClassRef`), so the
+    // auto-FFI direct property-assignment/method-call path could never
+    // describe such a value for overload lookup at all (#7444).
+    case MGenericInst(_, headFqn, typeArgs) -> {
+      return match argTyListToSig(typeArgs) {
+        case Some(sigArgs) -> Some(value = Mdr.mkNamedGenericInstSig(headFqn, false, sigArgs))
+        case None -> None
+      }
+    }
+    case MValueTypeGenericInst(_, headFqn, typeArgs) -> {
+      return match argTyListToSig(typeArgs) {
+        case Some(sigArgs) -> Some(value = Mdr.mkNamedGenericInstSig(headFqn, true, sigArgs))
+        case None -> None
+      }
     }
     case _ -> ()
   }
@@ -35063,6 +35105,27 @@ func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.
           }
         }
         case _ -> None
+      }
+    }
+    case None -> ()
+  }
+  // A closed generic-instantiation parameter (`List<SslApplicationProtocol>`,
+  // as opposed to `List[T]`'s own object-erased base-arity FQN): CLR generics
+  // are invariant, so — mirroring the `STSzArray` check just above — no
+  // coercion is possible or needed beyond confirming the argument is an
+  // EXACT structural match (score 3, `Mdr.scoreSigType`'s own
+  // `STNamedGenericInst` arm) for the same reason a plain extern-type
+  // argument below needs none: a value type passes by value, a reference
+  // type by reference, with no cast or box in either case. Without this arm,
+  // `autoFfiValidateParams`/`externSetterCoercion` (which both call this
+  // function) returned `None` for the exact same "the scorer found a real
+  // match but the emitter can't act on it" reason `argTyToSig` used to, so a
+  // scored match here was unreachable no matter what (#7444).
+  match Mdr.sigNamedGenericInstParts(paramSig) {
+    case Some(_) -> {
+      return match argTyToSig(argTy) {
+        case Some(argSig) -> if Mdr.scoreSigType(argSig, paramSig) == 3 { Some(value = acc) } else { None }
+        case None -> None
       }
     }
     case None -> ()
@@ -35685,13 +35748,26 @@ func tryExternInstanceGetterMsil(
 // StringContent value assigned to an HttpContent-typed property; the
 // castclass narrows the stack type so the IL verifies, and a genuinely wrong
 // runtime type fails with a clear InvalidCastException).
+//
+// A closed generic-instantiation parameter (`List<SslApplicationProtocol>`)
+// needs this fallback too, for a DIFFERENT reason than the plain-FQN case:
+// `argCoercionInsns` only succeeds there when the assigned value's OWN
+// tracked type is ALREADY the identical `MGenericInst`/`MValueTypeGenericInst`
+// — but a value produced by an untyped local binding (`val l = newProtoList()`,
+// no annotation) or any other erasure-producing path is tracked as plain
+// `MObject` even though its real runtime type is the correct closed
+// instantiation (the general `typeExprToMsilCtx` erasure convention every
+// OTHER caller relies on, D-progress-999's own decision doc). `MCastclassGeneric`
+// (not `MCastclassByName`, which only builds a plain non-generic TypeRef
+// token) builds the real closed TypeSpec so the narrowing check is genuine,
+// not dropped (#7444).
 func externSetterCoercion(
   cctx: in CodegenCtx, valueTy: in MsilType, paramSig: in Mdr.SigType, paramMsil: in MsilType
 ): Option[List[MInsn]] {
   match argCoercionInsns(cctx, valueTy, paramSig) {
     case Some(c) -> Some(value = c)
     case None -> {
-      val paramIsRef = match paramMsil { case MClassRef(_, _) -> true; case _ -> false }
+      val paramIsRef = match paramMsil { case MClassRef(_, _) -> true; case MGenericInst(_, _, _) -> true; case _ -> false }
       val valueIsRef = match valueTy {
         case MObject -> true
         case MClass(_) -> true
@@ -35706,7 +35782,10 @@ func externSetterCoercion(
       }
       if paramIsRef and valueIsRef {
         val acc: List[MInsn] = newList()
-        acc.add(MCastclassByName(className = externRefFqn(paramMsil)))
+        match paramMsil {
+          case MGenericInst(_, headFqn, typeArgs) -> acc.add(MCastclassGeneric(className = headFqn, typeArgs = typeArgs))
+          case _ -> acc.add(MCastclassByName(className = externRefFqn(paramMsil)))
+        }
         Some(value = acc)
       } else {
         None
