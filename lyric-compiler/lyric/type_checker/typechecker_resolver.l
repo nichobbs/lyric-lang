@@ -299,6 +299,66 @@ func resolveAliasPath(
   TyError
 }
 
+// #7548: type-position counterpart of `checkQualifiedPackageRef`
+// (typechecker_exprs.l) — a multi-segment TYPE path's qualifier names a
+// package exactly the way a qualified expression path does (docs/01
+// §9.2), so a qualifier outside the file's import closure (directly or
+// transitively via `qualifiedPkgReachable`) is T0020 here too, with the
+// same message shape and the same `Std.Core`/same-package exemptions.
+// Only fires when the qualifier is a package the checker actually loaded
+// (`symTablePackageHasAnySymbol`/an `extern package` block), mirroring the
+// expression-position guard against a deferred host path (`System.Console`).
+//
+// Privacy (T0097) is NOT this function's job: `symbolToType` already calls
+// `checkImportedVisibility` for every type symbol this path resolves to
+// (single- and multi-segment alike — see the `#1957`/`visibility multi
+// segment private type rejected` test), so adding a second T0097 site here
+// would double-report. Type-expr grammar also has no `Scope`: a `TypeExpr`
+// path is always a dotted type name, never a local's own field chain, so
+// this needs only the reachability test, not
+// `checkQualifiedPackageRef`'s scope-root / local-shadow guard.
+func checkQualifiedTypePackageRef(
+  tbl: in SymbolTable,
+  pkgSegs: in List[String],
+  member: in String,
+  span: in Span,
+  diag: in List[Diagnostic],
+): Bool {
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 or pkgSegs.count == 0 {
+    return false
+  }
+  val pkg = modulePathJoin(pkgSegs)
+  if pkg == curPkg or pkg == "Std.Core" {
+    return false
+  }
+  if not (symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)) {
+    return false
+  }
+  // #7499 parity: a package-private type is T0097, never T0020, whether or
+  // not its declaring package is imported — adding an import cannot make a
+  // private type nameable. Checked before reachability (mirroring
+  // `checkUnimportedTypeReceiver`'s ordering), leaving the actual T0097 to
+  // the normal `symbolToType` → `checkImportedVisibility` flow below so it
+  // fires exactly once instead of being pre-empted by a T0020 here.
+  match symTableTryFindInPackage(tbl, pkg, member) {
+    case Some(sym) -> if symbolIsType(sym) and symbolIsPackagePrivateBinding(sym) { return false }
+    case None -> ()
+  }
+  if not qualifiedPkgReachable(tbl, curPkg, pkg) {
+    addDiagnosticOnce(
+      diag,
+      errorDiagnostic(
+        "T0020",
+        "unknown name '" + pkg + "." + member + "' (package " + pkg + " is not imported; add `import " + pkg + "`)",
+        span
+      )
+    )
+    return true
+  }
+  false
+}
+
 func resolveTypePath(
   tbl: in SymbolTable,
   ctx: in GenericContext,
@@ -385,6 +445,13 @@ func resolveTypePath(
     osi = osi + 1
   }
   val ownerPkg = modulePathJoin(ownerSegs)
+  // #7548: an unimported qualifier is T0020 before any lookup — otherwise a
+  // package the checker "knows" only because `Lyric.Pipeline` preloaded
+  // every stdlib package's signatures (D-progress-1011) would resolve
+  // silently here just as it did for the expression-position case.
+  if checkQualifiedTypePackageRef(tbl, ownerSegs, last, span, diag) {
+    return TyError
+  }
   val defaultPick = symTableTryFindOne(tbl, last)
   val defaultPickMatchesOwner = match defaultPick {
     case Some(pref) -> symbolIsType(pref) and pref.originPackage == ownerPkg

@@ -4846,6 +4846,192 @@ test "same-package private type receiver resolves cleanly (#7499)" {
   assertEqualInt(diagCount(parseCheck(src)), 0, "a private type used inside its own package: no diagnostic")
 }
 
+// #7548: the #7495/#7499 rules (qualified references need a reachable
+// import; a package-private type is T0097 regardless) apply to TYPE
+// POSITION the same way they already apply to a qualified expression path
+// — a parameter/field/return type, not just a call receiver.
+test "unimported package-qualified type in param position is T0020 (#7548)" {
+  val src = "package App\nfunc f(w: in Lib.Rest.Widget): Unit {}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libRestPackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "unimported Lib.Rest.Widget param type is exactly one T0020")
+  val msg = diagMessageFor(cr, "T0020")
+  assertTrue(msg.contains("Lib.Rest.Widget"), "T0020 names the qualified type: " + msg)
+  assertTrue(msg.contains("import Lib.Rest"), "T0020 suggests the fix: " + msg)
+}
+
+test "unimported package-qualified type in return position is T0020 (#7548)" {
+  val src = "package App\nfunc f(): Lib.Rest.Widget { panic(\"unreachable\") }\n"
+  val cr = checkWithImportedPackages(parse(src).file, libRestPackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "unimported Lib.Rest.Widget return type is exactly one T0020")
+}
+
+test "unimported package-qualified type as a generic type argument is T0020 (#7548)" {
+  val src = "package App\nfunc f(xs: in List[Lib.Rest.Widget]): Unit {}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libRestPackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "unimported Lib.Rest.Widget generic arg is exactly one T0020")
+}
+
+test "imported package-qualified type position resolves cleanly (#7548)" {
+  val src = "package App\nimport Lib.Rest\nfunc f(w: in Lib.Rest.Widget): Lib.Rest.Widget { w }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, libRestPackages()), "T0020"),
+    0,
+    "qualified type position into an imported package: no T0020"
+  )
+}
+
+test "package-qualified type position reachable only transitively resolves cleanly (#7548)" {
+  val src = "package App\nimport Lib.Wrap\nfunc f(w: in Lib.Rest.Widget): Unit {}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, libRestPackages()), "T0020"),
+    0,
+    "Lib.Rest is reachable through Lib.Wrap's own import (kernel/host idiom): no T0020"
+  )
+}
+
+test "package-qualified Std.Core type position needs no import (#7548)" {
+  val pkgCore = parse("package Std.Core\npub record Thing {\n  x: Int\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Std.Core", items = pkgCore.file.items, imports = collectImportNames(pkgCore.file.imports))
+  )
+  val src = "package App\nfunc f(t: in Std.Core.Thing): Unit {}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0020"),
+    0,
+    "Std.Core is the implicit prelude in type position too: no T0020"
+  )
+}
+
+test "unimported three-segment package-qualified type position is T0020 (#7548)" {
+  val src = "package App\nfunc f(w: in Lib.Net.Rest.Widget): Unit {}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libNetRestPackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "unimported Lib.Net.Rest.Widget type position is exactly one T0020")
+  assertTrue(diagMessageFor(cr, "T0020").contains("import Lib.Net.Rest"), "T0020 suggests `import Lib.Net.Rest`")
+}
+
+test "imported three-segment package-qualified type position resolves cleanly (#7548)" {
+  val src = "package App\nimport Lib.Net.Rest\nfunc f(w: in Lib.Net.Rest.Widget): Unit {}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, libNetRestPackages()), "T0020"),
+    0,
+    "imported three-segment type position: no T0020"
+  )
+}
+
+// A package-private type used in type position is T0097 (never T0020),
+// whether or not its declaring package is imported — mirroring the
+// call-receiver rule (#7499) but for a plain type reference. This also
+// pins that the checker does not DOUBLE-report: `symbolToType` already
+// calls `checkImportedVisibility` for every type this path resolves to.
+test "package-qualified private type in type position is exactly one T0097 (#7548)" {
+  val src = "package App\nimport PkgPriv\nfunc f(w: in PkgPriv.Widget): Unit {}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privateWidgetPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "PkgPriv.Widget in type position is exactly one T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "not T0020: an import cannot fix a private type")
+}
+
+test "package-qualified private type in type position without the import is still T0097 (#7548)" {
+  val src = "package App\nfunc f(w: in PkgPriv.Widget): Unit {}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privateWidgetPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "unimported PkgPriv.Widget in type position: T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "unimported private type in type position: T0097 wins over T0020")
+}
+
+test "same-package type position resolves cleanly (#7548)" {
+  val src = "package App\nopaque type Widget {\n  name: String\n}\nfunc f(w: in Widget): Unit {}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "a private type used in its own package's type position: no diagnostic")
+}
+
+// #7548: the same rules for PATTERN HEADS — `unionCaseSymbolForScrutinee`'s
+// tier A/B qualifier check (#6287 Phase B) validates a qualified pattern
+// head STRUCTURALLY against the scrutinee's own union, but `Lyric.Pipeline`
+// preloads every stdlib package's signatures whatever the file imports
+// (D-progress-1011), so a structural match alone doesn't mean the union's
+// own package is reachable. A realistic program can't get a scrutinee of an
+// unreachable type without ALSO naming that package somewhere reachable
+// (typing the parameter/return that produces it) — so a qualified,
+// unimported pattern head fires T0020 both there and in the pattern itself,
+// which this pins down as a combined regression (unlike the type-position
+// tests above, which isolate a single T0020).
+func libRestKindPackages(): List[ImportedPackage] {
+  val pkgRest = parse("package Lib.Rest\npub union Kind {\n  case A(x: Int)\n  case B\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Lib.Rest", items = pkgRest.file.items, imports = collectImportNames(pkgRest.file.imports))
+  )
+  packages
+}
+
+test "unimported package-qualified pattern head is T0020 (#7548)" {
+  val src = "package App\nfunc f(k: in Lib.Rest.Kind): Int {\n  match k {\n    case Lib.Rest.Kind.A(x) -> x\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libRestKindPackages())
+  assertTrue(countDiagCode(cr, "T0020") >= 1, "unimported Lib.Rest.Kind.A pattern head fires T0020")
+  val msg = diagMessageFor(cr, "T0020")
+  assertTrue(msg.contains("Lib.Rest"), "T0020 names the unreachable package: " + msg)
+  assertTrue(msg.contains("import Lib.Rest"), "T0020 suggests the fix: " + msg)
+}
+
+test "imported package-qualified pattern head resolves cleanly (#7548)" {
+  val src = "package App\nimport Lib.Rest\nfunc f(k: in Lib.Rest.Kind): Int {\n  match k {\n    case Lib.Rest.Kind.A(x) -> x\n    case _ -> 0\n  }\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, libRestKindPackages()), "T0020"),
+    0,
+    "imported package-qualified pattern head: no T0020"
+  )
+}
+
+// The isolated pattern-only counterpart: a `pub` wrapper function CAN
+// legally return a package-private type with no diagnostic at its own
+// declaration OR at a bare (unqualified) call site — visibility is
+// enforced at the use site that NAMES the type (docs/01 §3.1) — so
+// matching that call's result with an explicitly-qualified pattern head is
+// the first point a private union's case gets named, and is where T0097
+// must fire.
+func privateKindPackages(): List[ImportedPackage] {
+  val pkgPriv = parse(
+    "package PkgPriv\nunion Kind {\n  case A(x: Int)\n  case B\n}\npub func mkKind(): Kind {\n  Kind.A(x = 1)\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "PkgPriv", items = pkgPriv.file.items, imports = collectImportNames(pkgPriv.file.imports))
+  )
+  packages
+}
+
+test "package-private union case in a qualified pattern head is T0097 (#7548)" {
+  val src = "package App\nimport PkgPriv\nfunc f(): Int {\n  match mkKind() {\n    case PkgPriv.Kind.A(x) -> x\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privateKindPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "PkgPriv.Kind.A(...) pattern head is exactly one T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "not T0020: an import cannot fix a private type's case")
+  assertTrue(
+    diagMessageFor(cr, "T0097").contains("'A'"),
+    "T0097 names the private union's case: " + diagMessageFor(cr, "T0097")
+  )
+}
+
+// #6700 regression guard: the unresolvable-scrutinee fallback (an unknown
+// scrutinee, so tier A/B above never runs at all) must still not fire a
+// spurious diagnostic from this new check — it is entered only from inside
+// the tier A/B success branches.
+test "qualified pattern head against an unresolvable scrutinee has no T0020 for the pattern (#7548)" {
+  // `undefinedScrutinee` is itself an unknown identifier and fires its OWN
+  // (unrelated) T0020 — the point of this test is that the PATTERN doesn't
+  // ALSO fire one for `Lib.Rest`, since it never reaches the tier A/B
+  // branches this new check lives in.
+  val src = "package App\nfunc f(): Int {\n  match undefinedScrutinee {\n    case Lib.Rest.Kind.A(x) -> x\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libRestKindPackages())
+  var sawPkgDiag = false
+  var i = 0
+  while i < cr.diagnostics.count {
+    if cr.diagnostics[i].code == "T0020" and cr.diagnostics[i].message.contains("Lib.Rest") {
+      sawPkgDiag = true
+    }
+    i = i + 1
+  }
+  assertTrue(not sawPkgDiag, "an unresolvable scrutinee never reaches the tier A/B branches this check lives in")
+}
+
 // #6700: `unionCaseSymbolForScrutinee`'s fallback (reached when the scrutinee
 // type doesn't resolve — here, an unknown identifier types as `TyError`, so
 // the DKUnionCase/DKEnumCase scrutinee-based tiers above never fire) must NOT
