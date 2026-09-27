@@ -417,6 +417,10 @@ func unparenthesized(e: in Expr): Expr {
 /// one tree all backends consume — keeps the MSIL async-SM pre-scan and
 /// emission in lockstep by construction.
 ///
+/// `typeIndex` (#7496) says which package declares each type name, for the
+/// A0047 row-type check; build it with `pipeTypeOwnerIndex` from every
+/// package the type checker sees, plus the build's own packages.
+///
 /// `extraRecordDecls` (#6702) is a cross-file/cross-package record list —
 /// the caller's own `monoRecordDecls` — threaded into the await-hoist's
 /// `HoistEngine` invocation so an `impl` block's target type resolves its
@@ -425,11 +429,12 @@ func unparenthesized(e: in Expr): Expr {
 pub func pipeWeave(
   file: in SourceFile,
   templates: in Map[String, CollectedTemplate],
+  typeIndex: in TypeOwnerIndex,
   pkgLabel: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
   extraRecordDecls: in List[RecordDecl],
 ): Option[SourceFile] {
-  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates)
+  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates, typeIndex)
   if gate(pkgLabel, origins, weaveRes.diagnostics) {
     return None
   }
@@ -453,9 +458,29 @@ pub func pipeMiddleEnd(
   opts: in MiddleEndOptions,
 ): Option[SourceFile] {
   match pipeCheckAndMono(file0, importedPkgs, deriveImports, monoGenFuncs, monoIfaceDecls, monoRecordDecls, opts) {
-    case Some(monoFile) -> pipeWeave(monoFile, templates, opts.pkgLabel, opts.lineOrigins, monoRecordDecls)
+    case Some(monoFile) -> pipeWeave(
+      monoFile,
+      templates,
+      pipeTypeOwnerIndex(importedPkgs),
+      opts.pkgLabel,
+      opts.lineOrigins,
+      monoRecordDecls
+    )
     case None -> None
   }
+}
+
+/// The weaver's type-owner index (#7496) over `pkgs` — the same per-package
+/// item lists the type checker resolves against, so a type name resolves to
+/// the package that actually declares it.  Callers add packages the list
+/// does not carry (a project's own packages, path-dependency template
+/// sources) with `Weaver.typeOwnerIndexAddFile`.
+pub func pipeTypeOwnerIndex(pkgs: in List[ImportedPackage]): TypeOwnerIndex {
+  val ix = Weaver.newTypeOwnerIndex()
+  for p in pkgs {
+    Weaver.typeOwnerIndexAddPackage(ix, p.name, p.items, p.imports)
+  }
+  ix
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

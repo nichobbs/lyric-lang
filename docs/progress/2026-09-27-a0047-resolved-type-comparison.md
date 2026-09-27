@@ -12,49 +12,67 @@ declared `func guardedHandler(ctx: in LambdaContext)` — the unqualified
 spelling, valid because the consumer file has `import Lambda` — falsely
 rejected with A0047, even though both spellings name the same type.
 
-Fixed by resolving each side's type expression against its own file's
-imports before comparing (`Lyric.Weaver.a0047CanonicalTypeKey` and its
-helpers, `lyric-compiler/lyric/weaver/weaver.l`): a multi-segment path is
-already package-qualified unless its first segment names an
-`import X as A` alias in scope (expanded to `X`'s own path first); a bare
-single-segment name is resolved against a selector import
-(`import Pkg.{Foo}` / `import Pkg.{Foo as Bar}`) first, then against every
-selector-less import (`import Pkg`, aliased or not — both bring `Pkg`'s
-public names into unqualified scope), and falls back to the bare name
-itself when no import resolves it (a same-package local type, or a
-no-import-needed prelude type such as `String`/`List`/`Option` — this
-preserves the pre-fix comparison for that case instead of guessing an
-owning package, which would make every cross-package `List[...]` /
-`Option[...]` row-clause field spuriously mismatch). Resolution recurses
-through generic arguments, slices, arrays, tuples, nullable types, and
-function types, so `List[LambdaContext]` matches
-`List[Lambda.LambdaContext]` element-wise. A bare name that resolves to
-two or more distinct packages across a file's imports is genuinely
-ambiguous and resolves to a sentinel that can never equal a real
-fully-qualified name, so the check fails closed to A0047 rather than risk
-accepting two different types that merely share a short name (`A.Ctx` vs.
-`B.Ctx`).
+Fixed by resolving each type name to the package that DECLARES it and
+comparing the resolved names (`a0047TypeExprEqual` and its helpers in
+`lyric-compiler/lyric/weaver/weaver.l`). The comparison walks both types in
+parallel through generic arguments, slices, arrays, tuples, nullable types,
+and function types, so `List[LambdaContext]` matches
+`List[Lambda.LambdaContext]` element-wise.
 
-The row clause's declared type is normalised against the TEMPLATE's own
-declaring package's imports, not the consumer's: `Lyric.Weaver.CollectedTemplate`
-now carries the declaring file's `imports` (threaded through
-`collectAspectTemplates`'s six production call sites in
-`lyric-compiler/msil/bridge.l` and `lyric-compiler/jvm/bridge.l`, plus the
-self-test's), and `resolveFromInstances` returns the origin
-`CollectedTemplate` for every resolved `from`-instance (keyed by the
-consumer's aspect name) alongside the rewritten items, so
-`buildBModeCallSite`'s row-type check can look up the right import context
-per aspect. A `from`-instance with no recorded origin (the row clause was
-declared directly in the same file being woven) falls back to that file's
-own imports for both sides, which is correct since template and consumer
-are the same file in that case.
+Which package declares a name is not something the weaver can guess from
+imports alone: a first version of this fix treated a bare name as any of
+`Pkg.Name` for every whole-package import plus its bare spelling, so a row
+clause `ctx: LambdaContext` under `import Lambda` matched a consumer's
+`ctx: in LambdaContext` under an unrelated `import Timer` whose package
+declares a different `LambdaContext` (review finding #7496). The weaver now
+takes a type-owner index (`Lyric.Weaver.TypeOwnerIndex`: short type name ->
+declaring packages, and each package's own imports), which
+`Lyric.Pipeline.pipeTypeOwnerIndex` builds from the same `ImportedPackage`
+lists the type checker resolves against. `pipeWeave` and
+`Weaver.weaveFileWithDiagsAndTemplates` take the index; `pipeMiddleEnd` (the
+JVM and native bridges) builds it from its `importedPkgs`; the MSIL
+single-file path builds it from the stdlib packages, and the MSIL project
+path from the stdlib and restored packages plus every bundle package and
+path-dependency template source (`Weaver.typeOwnerIndexAddFile`).
 
-Five new weaver self-tests in `lyric-compiler/lyric/weaver_self_test.l`
-cover: an unqualified consumer spelling accepted, a qualified spelling
-accepted, an aliased-import spelling accepted, the same short name
-resolved from a different package still rejected, and generic-argument
-normalisation (`List[LambdaContext]` vs. `List[Lambda.LambdaContext]`).
+A bare name resolves by the first rule that applies: a selector import
+naming it (resolved as the qualified name); a primitive; a type the file's
+own package declares; the one declaring package imported directly; the
+`Std.Core` prelude; the one declaring package reachable through the imports'
+own imports (so `List`, declared in `Std.CollectionsHost`, resolves through
+`import Std.Collections`); and the only declaring package anywhere when
+every package reachable from the file is indexed (`List` with no import). A
+qualified `P.N` (after `import P as A` alias expansion) resolves to `P`, or
+to the one declaring package reachable from `P` (`Std.Collections.List` is
+`Std.CollectionsHost.List`), or stays as written. A name these rules cannot
+pin to one package (unindexed, declared by two direct imports, several
+reachable owners, or a lone owner behind an unindexed package) fails closed
+to `<own package>.N`: two packages' same short name never compare equal,
+while same-package references and identical qualified spellings still
+match. Callers with no index (`weaveFile`, `weaveFileWithDiags`, used by
+the verifier) get only those two.
+
+The row clause's declared type resolves in the TEMPLATE's own file:
+`Lyric.Weaver.CollectedTemplate` carries an `A0047Scope` (declaring package,
+imports, and the type names that file declares), filled by
+`collectAspectTemplates` at every call site in `lyric-compiler/msil/bridge.l`
+and `lyric-compiler/jvm/bridge.l`. `resolveFromInstances` returns the origin
+template for every resolved `from`-instance (keyed by the consumer's aspect
+name), looked up once per aspect and reused for both the rewrite and the
+origin map, so `buildBModeCallSite` resolves each side in its own file. A row
+clause declared in the woven file itself resolves both sides in that file.
+
+Weaver self-tests in `lyric-compiler/lyric/weaver_self_test.l` build a
+fixture index from package sources (`makeTypeIndex`) and cover: an
+unqualified consumer spelling accepted, a qualified spelling accepted, an
+aliased-import spelling accepted, the same short name from a different
+package rejected, generic-argument resolution, the #7496 case (bare
+`LambdaContext` under `import Lambda` vs. under `import Timer`) rejected, the
+same bare name under the same import accepted, bare `List` with and without
+`import Std.Collections` on either side accepted, `Std.Collections.List`
+resolved through the re-export, a same-package bare type on both sides
+accepted, and an unindexed short name in two packages rejected.
 `lyric-lambda/tests/lambda_aspect_weaving_tests.l`'s `guardedHandler` /
-`misconfiguredHandler` now declare `ctx: in LambdaContext` (unqualified)
+`misconfiguredHandler` declare `ctx: in LambdaContext` (unqualified)
 instead of the `Lambda.LambdaContext` workaround, exercising the fix
 end-to-end against the real `Lambda.Aspects.DeadlineGuard` template.

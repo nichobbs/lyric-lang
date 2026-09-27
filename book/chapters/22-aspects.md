@@ -258,6 +258,12 @@ in the shipped `Auth.Aspects.ValidateKey` example); a mismatched or
 missing field surfaces as an **A0047** weave-time diagnostic naming
 the aspect, the matched function, and the offending field, rather
 than a confusing error deep inside the shared specialised function.
+"Same-typed" means the same declared type, not the same spelling: the
+row clause's type is resolved in the template's own file and the
+parameter's in yours, so `ctx: in LambdaContext` under `import Lambda`
+satisfies a row clause written `ctx: Lambda.LambdaContext`, while a
+`LambdaContext` that your imports resolve to some other package does
+not.
 
 The rest of the aspect system works end-to-end: write an aspect in a package, publish it, consume it in another package, and the compiler weaves it over the matched functions at build time. Aspect templates (`pub aspect` without `matches:`), pointcut predicates (`annotated:`, `visibility:`, `signature: returns`), composition ordering (`wraps:` / `inside:`), and the `except name in { … }` exclusion clause are all fully shipped.
 

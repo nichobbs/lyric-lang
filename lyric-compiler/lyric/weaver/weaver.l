@@ -2666,8 +2666,10 @@ func weaveItemsCore(
   packagePath: in String,
   imports: in List[ImportDecl],
   templateOrigins: in Map[String, CollectedTemplate],
+  typeIndex: in TypeOwnerIndex,
 ): WeaveResult {
   val weaveDiags: List[WeaveDiagEntry] = newList()
+  val consumerScope = A0047Scope(pkg = packagePath, imports = imports, localTypes = a0047LocalTypeNames(items))
   val collected = collectActiveAspects(items)
   if collected.count == 0 {
     val noAspectItems: List[Item] = newList()
@@ -2834,8 +2836,9 @@ func weaveItemsCore(
                 info.argsRecordName,
                 info.argsRowFields,
                 weaveDiags,
-                imports,
-                mapGet(templateOrigins, aspect.name)
+                consumerScope,
+                mapGet(templateOrigins, aspect.name),
+                typeIndex
               )
             } else {
               buildWrapper(fn, aspect, callTarget, site)
@@ -2890,7 +2893,7 @@ func weaveItemsCore(
 pub func weaveItems(items: in List[Item]): List[Item] {
   val noImports: List[ImportDecl] = newList()
   val noOrigins: Map[String, CollectedTemplate] = newMap()
-  weaveItemsCore(items, "", noImports, noOrigins).items
+  weaveItemsCore(items, "", noImports, noOrigins, newTypeOwnerIndex()).items
 }
 
 /// As `weaveItems` but also returns weave-time diagnostics.  Same
@@ -2900,7 +2903,7 @@ pub func weaveItems(items: in List[Item]): List[Item] {
 pub func weaveItemsWithDiags(items: in List[Item], packagePath: in String): WeaveResult {
   val noImports: List[ImportDecl] = newList()
   val noOrigins: Map[String, CollectedTemplate] = newMap()
-  weaveItemsCore(items, packagePath, noImports, noOrigins)
+  weaveItemsCore(items, packagePath, noImports, noOrigins, newTypeOwnerIndex())
 }
 
 /// Weave aspect wrappers into a SourceFile.  Identity-op when the
@@ -2914,7 +2917,7 @@ pub func weaveFile(file: in SourceFile): SourceFile {
   // pre-scan looks for) are dropped by the weave itself (#1298).
   val file0 = injectWeaveImports(file)
   val noOrigins: Map[String, CollectedTemplate] = newMap()
-  val newItems = weaveItemsCore(file0.items, packagePathString(file0), file0.imports, noOrigins).items
+  val newItems = weaveItemsCore(file0.items, packagePathString(file0), file0.imports, noOrigins, newTypeOwnerIndex()).items
   SourceFile(
     moduleDoc = file0.moduleDoc,
     fileAnnotations = file0.fileAnnotations,
@@ -2942,10 +2945,13 @@ pub record WeaveFileResult {
 /// specialisation of the general multi-package weave.  `resolveFromInstances`
 /// short-circuits to identity when there are no `from`-instances (and, when
 /// there are, an empty map leaves every `from`-instance to be dropped by the
-/// standard weave exactly as before), so this is behaviour-preserving.
+/// standard weave exactly as before), so this is behaviour-preserving.  The
+/// type-owner index is empty too, so the A0047 row-type check resolves only
+/// same-package and identically-spelled qualified names (see the A0047
+/// section below).
 pub func weaveFileWithDiags(file: in SourceFile): WeaveFileResult {
   val noTemplates: Map[String, CollectedTemplate] = newMap()
-  weaveFileWithDiagsAndTemplates(file, noTemplates)
+  weaveFileWithDiagsAndTemplates(file, noTemplates, newTypeOwnerIndex())
 }
 
 /// One `pub aspect` template collected by `collectAspectTemplates`, paired
@@ -2963,18 +2969,20 @@ pub func weaveFileWithDiags(file: in SourceFile): WeaveFileResult {
 pub record CollectedTemplate {
   decl: AspectDecl
   isInlineTemplate: Bool
-  /// The template's OWN declaring package and imports (#7336) — a
-  /// `where TArgs has { ... }` row clause is written in the TEMPLATE's
-  /// package context, which may differ from the consumer's, so the A0047
-  /// row-type check normalises the row clause's types against `imports`
-  /// rather than against the consumer's own imports. `pkgName` is kept
-  /// alongside for provenance (it is the FQN's package half); the
-  /// normaliser itself never guesses an owning package for a bare name
-  /// neither side's imports resolve, since doing so would make a
-  /// no-import-needed prelude type (`List[...]`, `Option[...]`, ...)
-  /// used unqualified in two different packages spuriously mismatch.
-  pkgName: String
+  /// The template's own declaring file (#7336): a `where TArgs has { ... }`
+  /// row clause is written in the template's package, which may differ
+  /// from the consumer's, so the A0047 row-type check resolves the row
+  /// clause's types against this scope rather than the consumer's.
+  nameScope: A0047Scope
+}
+
+/// Where a bare type name in an A0047 row-type comparison resolves from:
+/// the declaring file's package, its imports, and the type names that
+/// package declares in that file.
+pub record A0047Scope {
+  pkg: String
   imports: List[ImportDecl]
+  localTypes: List[String]
 }
 
 /// Collect all `pub` aspect declarations that carry an `around` body from
@@ -2990,6 +2998,7 @@ pub func collectAspectTemplates(
   imports: in List[ImportDecl],
   dest: in Map[String, CollectedTemplate],
 ): Unit {
+  val nameScope = A0047Scope(pkg = pkgName, imports = imports, localTypes = a0047LocalTypeNames(items))
   var i = 0
   while i < items.count {
     val it = items[i]
@@ -3001,10 +3010,7 @@ pub func collectAspectTemplates(
             if isPub {
               val fqn = pkgName + "." + decl.name
               if not dest.containsKey(fqn) {
-                dest.add(
-                  fqn,
-                  CollectedTemplate(decl = decl, isInlineTemplate = itemHasInlineTemplate(it), pkgName = pkgName, imports = imports)
-                )
+                dest.add(fqn, CollectedTemplate(decl = decl, isInlineTemplate = itemHasInlineTemplate(it), nameScope = nameScope))
               }
             }
           }
@@ -3172,8 +3178,8 @@ func lookupFromTemplate(
   }
 }
 
-/// Pre-process a `from`-instance aspect: when its template is found in
-/// `templates`, replace it with a synthesised concrete aspect that takes the
+/// Replace a `from`-instance aspect whose template `tpl` resolved (see
+/// `fromInstanceTemplate`) with a synthesised concrete aspect that takes the
 /// template's `around` / `contracts` and the instance's `matches` /
 /// `exceptNames` / `wraps` / `inside`. The effective `config` is the
 /// template's defaults with the instance's `config { }` entries overlaid
@@ -3183,69 +3189,61 @@ func lookupFromTemplate(
 /// `collectAspectTemplates` time — not re-derived from body content, since
 /// a B'-mode template whose body reads `args.<field>` without the
 /// annotation must fail closed with A0046 rather than be silently
-/// auto-promoted to C-mode; docs/55 §5 Phase 1). An unresolved `from`
-/// reference (template absent from `templates`) is passed through
-/// unchanged so the caller can decide whether to emit a diagnostic.
-func resolveFromInstanceItem(
-  it: in Item,
-  instDecl: in AspectDecl,
-  templates: in Map[String, CollectedTemplate],
-  pkgName: in String,
-): Item {
-  match instDecl.around {
-    case Some(_) -> it
-    case None -> {
-      match instDecl.from {
-        case None -> it
-        case Some(fromPath) -> {
-          val fqn = resolveFromPath(fromPath)
-          match lookupFromTemplate(templates, fqn, pkgName) {
-            case None -> it
-            case Some(tpl) -> {
-              val tplDecl = tpl.decl
-              val instCfg = instDecl.config
-              val effectiveConfig = mergeAspectConfig(tplDecl.config, instCfg)
-              val effective = AspectDecl(
-                name = instDecl.name,
-                from = instDecl.from,
-                config = effectiveConfig,
-                matches = instDecl.matches,
-                exceptNames = instDecl.exceptNames,
-                around = tplDecl.around,
-                contracts = tplDecl.contracts,
-                wraps = instDecl.wraps,
-                inside = instDecl.inside,
-                span = instDecl.span
-              )
-              // Propagate the template's `@inline_template` marker — lost
-              // during `collectAspectTemplates` (which historically stored
-              // only the decl) — so the resolved aspect's `args.<field>`
-              // references are rewritten to the matched function's
-              // parameters (#3543).
-              val baseAnns = it.annotations
-              val finalAnns = if tpl.isInlineTemplate and not annotationsHaveInlineTemplate(baseAnns) {
-                val merged: List[Annotation] = newList()
-                var ai = 0
-                while ai < baseAnns.count {
-                  merged.add(baseAnns[ai])
-                  ai = ai + 1
-                }
-                merged.add(mkInlineTemplateAnnotation(it.span))
-                merged
-              } else {
-                baseAnns
-              }
-              Item(
-                docComments = it.docComments,
-                annotations = finalAnns,
-                visibility = it.visibility,
-                kind = IAspect(decl = effective),
-                span = it.span
-              )
-            }
-          }
-        }
-      }
+/// auto-promoted to C-mode; docs/55 §5 Phase 1). `resolveFromInstances`
+/// passes an unresolved `from` reference through unchanged.
+func resolveFromInstanceItem(it: in Item, instDecl: in AspectDecl, tpl: in CollectedTemplate): Item {
+  val tplDecl = tpl.decl
+  val instCfg = instDecl.config
+  val effectiveConfig = mergeAspectConfig(tplDecl.config, instCfg)
+  val effective = AspectDecl(
+    name = instDecl.name,
+    from = instDecl.from,
+    config = effectiveConfig,
+    matches = instDecl.matches,
+    exceptNames = instDecl.exceptNames,
+    around = tplDecl.around,
+    contracts = tplDecl.contracts,
+    wraps = instDecl.wraps,
+    inside = instDecl.inside,
+    span = instDecl.span
+  )
+  // Propagate the template's `@inline_template` marker — lost
+  // during `collectAspectTemplates` (which historically stored
+  // only the decl) — so the resolved aspect's `args.<field>`
+  // references are rewritten to the matched function's
+  // parameters (#3543).
+  val baseAnns = it.annotations
+  val finalAnns = if tpl.isInlineTemplate and not annotationsHaveInlineTemplate(baseAnns) {
+    val merged: List[Annotation] = newList()
+    var ai = 0
+    while ai < baseAnns.count {
+      merged.add(baseAnns[ai])
+      ai = ai + 1
+    }
+    merged.add(mkInlineTemplateAnnotation(it.span))
+    merged
+  } else {
+    baseAnns
+  }
+  Item(
+    docComments = it.docComments,
+    annotations = finalAnns,
+    visibility = it.visibility,
+    kind = IAspect(decl = effective),
+    span = it.span
+  )
+}
+
+/// The template a `from`-instance (`from` path, no `around` body of its
+/// own) resolves to in `templates`, or `None` for any other aspect.
+func fromInstanceTemplate(
+  decl: in AspectDecl, templates: in Map[String, CollectedTemplate], pkgName: in String
+): Option[CollectedTemplate] {
+  match decl.around {
+    case Some(_) -> None
+    case None -> match decl.from {
+      case None -> None
+      case Some(fromPath) -> lookupFromTemplate(templates, resolveFromPath(fromPath), pkgName)
     }
   }
 }
@@ -3297,22 +3295,14 @@ func resolveFromInstances(
   while j < items.count {
     val it = items[j]
     match it.kind {
-      case IAspect(aDecl) -> {
-        result.add(resolveFromInstanceItem(it, aDecl, templates, pkgName))
-        match aDecl.around {
-          case Some(_) -> ()
-          // a resolved from-instance; not an inline `around` body itself
-          case None -> match aDecl.from {
-            case None -> ()
-            case Some(fromPath) -> {
-              val fqn = resolveFromPath(fromPath)
-              match lookupFromTemplate(templates, fqn, pkgName) {
-                case Some(tpl) -> if not origins.containsKey(aDecl.name) { origins.add(aDecl.name, tpl) }
-                case None -> ()
-              }
-            }
+      case IAspect(aDecl) -> match fromInstanceTemplate(aDecl, templates, pkgName) {
+        case Some(tpl) -> {
+          result.add(resolveFromInstanceItem(it, aDecl, tpl))
+          if not origins.containsKey(aDecl.name) {
+            origins.add(aDecl.name, tpl)
           }
         }
+        case None -> result.add(it)
       }
       case _ -> result.add(it)
     }
@@ -3713,7 +3703,7 @@ func bmodeTypeArgListKey(args: in List[TypeArg]): String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// docs/56 / #7336 — A0047 row-type resolution.
+// docs/56 / #7336 / #7496 — A0047 row-type resolution.
 //
 // `bmodeTypeExprKey` above is a MANGLING for specialisation-shape keys: it
 // joins a `TRef`'s written segments verbatim and is deliberately spelling-
@@ -3724,31 +3714,113 @@ func bmodeTypeArgListKey(args: in List[TypeArg]): String {
 // while two spellings that happen to share a short name but name
 // different packages must not.
 //
-// `a0047TypeExprEqual` walks both sides' `TypeExpr` trees in parallel
-// (rather than reducing each side to one canonical string first) because a
-// single-segment name has no ONE right resolution without a real symbol
-// table: it might be a same-package local type, a no-import-needed
-// prelude type (`List`, `Option`, ...), or brought into scope by any of
-// several whole-package imports, and a file may have imports unrelated to
-// the name in question. Reducing to one committed string per side (e.g.
-// always qualifying by the file's only bare import) is unsound — a `List`
-// used unqualified in a file that also happens to `import Lambda` for an
-// unrelated reason must not be forced to "Lambda.List". Instead, each bare
-// name expands to the SET of `Pkg.Name` strings it could plausibly denote
-// (its own bare spelling, any selector-import match, and one candidate
-// per whole-package import), and two bare names are equal iff their
-// candidate sets intersect — so a match only requires that the ONE real
-// resolution be common to both sets, not that a single a-priori guess be
-// exactly right in isolation, and an unrelated import contributes an
-// extra candidate that simply never intersects anything.
+// `a0047TypeExprEqual` walks both sides' `TypeExpr` trees in parallel and
+// resolves each leaf name to ONE `Pkg.Name` string against its own file's
+// `A0047Scope` and the build's `TypeOwnerIndex` (which package declares
+// each type name, and what each package imports); two leaves are equal
+// iff they resolve to the same string.  A bare name resolves by the first
+// rule that applies:
+//   1. a selector import naming it (`import Pkg.{Foo}`, `{Foo as Bar}`,
+//      `import extern Ns.Foo`), resolved as the qualified `Pkg.Foo`;
+//   2. a built-in primitive (`Int`, `String`, ...), which stays bare;
+//   3. a type the file's own package declares;
+//   4. the one declaring package the file imports directly;
+//   5. `Std.Core`, the implicit prelude (`Option`, `Result`);
+//   6. the one declaring package reachable through the imports' own
+//      imports (the stdlib kernel/host re-export idiom: `List` is declared
+//      in `Std.CollectionsHost` and reached via `import Std.Collections`);
+//   7. the only declaring package anywhere, when every package reachable
+//      from the file is known to the index (the type checker's permissive
+//      last tier, e.g. `List` used with no import at all).
+// A qualified `P.N` (after `import P as A` alias expansion) resolves to `P`
+// when `P` declares `N`, else to the one declaring package reachable from
+// `P` (a re-export), else stays `P.N` as written.
+//
+// Anything else — a name the index has no owner for, two direct imports
+// declaring it, several reachable owners, an owner behind a package the
+// index does not know — FAILS CLOSED to `<own package>.N`.  That string is
+// distinct per package, so the same short name written in two different
+// packages never compares equal unless both resolve to the same real
+// owner, while a same-package reference on both sides (e.g. a row clause
+// declared in the consumer's own file, or a type declared by another file
+// of that package) and identical fully-qualified spellings still match.
+// Callers with no index (`weaveFile`, `weaveFileWithDiags` — the verifier)
+// get only these fail-closed and same-package rules.
 // ─────────────────────────────────────────────────────────────────────────────
+/// Which package declares each type name, and which packages each package
+/// imports: what the A0047 row-type check needs to resolve a written type
+/// name to its declaring package (#7496).  The bridges build it from every
+/// package the type checker sees — stdlib, restored dependencies, and the
+/// build's own packages (`Lyric.Pipeline.pipeTypeOwnerIndex`).
+pub record TypeOwnerIndex {
+  /// Short type name -> the dotted packages that declare a type of that name.
+  owners: Map[String, List[String]]
+  /// Dotted package -> the dotted packages it imports.
+  pkgImports: Map[String, List[String]]
+}
+
+pub func newTypeOwnerIndex(): TypeOwnerIndex {
+  val owners: Map[String, List[String]] = newMap()
+  val pkgImports: Map[String, List[String]] = newMap()
+  TypeOwnerIndex(owners = owners, pkgImports = pkgImports)
+}
+
+/// Record package `pkg`'s type declarations (from `items`) and its imports
+/// (dotted package names, as `Lyric.TypeChecker.ImportedPackage.imports`
+/// spells them).  Adding the same package again (another of its files)
+/// merges.
+pub func typeOwnerIndexAddPackage(
+  ix: in TypeOwnerIndex, pkg: in String, items: in List[Item], imports: in List[String]
+): Unit {
+  if not ix.pkgImports.containsKey(pkg) {
+    val fresh: List[String] = newList()
+    ix.pkgImports.add(pkg, fresh)
+  }
+  match mapGet(ix.pkgImports, pkg) {
+    case Some(known) -> {
+      for imp in imports {
+        if not a0047ListHas(known, imp) {
+          known.add(imp)
+        }
+      }
+    }
+    case None -> ()
+  }
+  for name in a0047LocalTypeNames(items) {
+    if not ix.owners.containsKey(name) {
+      val fresh: List[String] = newList()
+      ix.owners.add(name, fresh)
+    }
+    match mapGet(ix.owners, name) {
+      case Some(pkgs) -> if not a0047ListHas(pkgs, pkg) { pkgs.add(pkg) }
+      case None -> ()
+    }
+  }
+}
+
+/// `typeOwnerIndexAddPackage` for one parsed file: its package, its type
+/// declarations and its (non-`extern`) imports.
+pub func typeOwnerIndexAddFile(ix: in TypeOwnerIndex, file: in SourceFile): Unit {
+  val imports: List[String] = newList()
+  for imp in file.imports {
+    if not imp.isExtern {
+      imports.add(segmentsJoin(imp.path.segments))
+    }
+  }
+  typeOwnerIndexAddPackage(ix, packagePathString(file), file.items, imports)
+}
+
 /// Structural equality of two `TypeExpr`s for the A0047 row-type check:
 /// both trees are walked in parallel, so a nested reference (e.g.
 /// `List[LambdaContext]`) is compared element-wise, and each leaf path is
-/// resolved against its OWN file's imports (`aImports` for `a`, `bImports`
-/// for `b`) via `a0047PathsEqual`.
+/// resolved against its OWN file's scope (`aScope` for `a`, `bScope` for
+/// `b`) via `a0047ResolvePath`.
 func a0047TypeExprEqual(
-  a0: in TypeExpr, aImports: in List[ImportDecl], b0: in TypeExpr, bImports: in List[ImportDecl]
+  a0: in TypeExpr,
+  aScope: in A0047Scope,
+  b0: in TypeExpr,
+  bScope: in A0047Scope,
+  ix: in TypeOwnerIndex,
 ): Bool {
   val a = a0047UnwrapParen(a0)
   val b = a0047UnwrapParen(b0)
@@ -3758,47 +3830,49 @@ func a0047TypeExprEqual(
     case TSelf -> match b.kind { case TSelf -> true; case _ -> false }
     case TError -> match b.kind { case TError -> true; case _ -> false }
     case TRef(pa) -> match b.kind {
-      case TRef(pb) -> a0047PathsEqual(pa.segments, aImports, pb.segments, bImports)
+      case TRef(pb) -> a0047PathsEqual(pa.segments, aScope, pb.segments, bScope, ix)
       case _ -> false
     }
     case TGenericApp(ha, argsA) -> match b.kind {
       case TGenericApp(hb, argsB) -> a0047PathsEqual(
         ha.segments,
-        aImports,
+        aScope,
         hb.segments,
-        bImports
+        bScope,
+        ix
       ) and
         a0047TypeArgListsEqual(
           argsA,
-          aImports,
+          aScope,
           argsB,
-          bImports
+          bScope,
+          ix
         )
       case _ -> false
     }
     case TSlice(ea) -> match b.kind {
-      case TSlice(eb) -> a0047TypeExprEqual(ea, aImports, eb, bImports)
+      case TSlice(eb) -> a0047TypeExprEqual(ea, aScope, eb, bScope, ix)
       case _ -> false
     }
     case TNullable(ia) -> match b.kind {
-      case TNullable(ib) -> a0047TypeExprEqual(ia, aImports, ib, bImports)
+      case TNullable(ib) -> a0047TypeExprEqual(ia, aScope, ib, bScope, ix)
       case _ -> false
     }
     case TArray(_, ea) -> match b.kind {
-      case TArray(_, eb) -> a0047TypeExprEqual(ea, aImports, eb, bImports)
+      case TArray(_, eb) -> a0047TypeExprEqual(ea, aScope, eb, bScope, ix)
       case _ -> false
     }
     case TTuple(tsa) -> match b.kind {
-      case TTuple(tsb) -> a0047TypeExprListsEqual(tsa, aImports, tsb, bImports)
+      case TTuple(tsb) -> a0047TypeExprListsEqual(tsa, aScope, tsb, bScope, ix)
       case _ -> false
     }
     case TFunction(psa, ra) -> match b.kind {
-      case TFunction(psb, rb) -> a0047TypeExprListsEqual(psa, aImports, psb, bImports) and
-        a0047TypeExprEqual(ra, aImports, rb, bImports)
+      case TFunction(psb, rb) -> a0047TypeExprListsEqual(psa, aScope, psb, bScope, ix) and
+        a0047TypeExprEqual(ra, aScope, rb, bScope, ix)
       case _ -> false
     }
     case TRefined(pa, _) -> match b.kind {
-      case TRefined(pb, _) -> a0047PathsEqual(pa.segments, aImports, pb.segments, bImports)
+      case TRefined(pb, _) -> a0047PathsEqual(pa.segments, aScope, pb.segments, bScope, ix)
       case _ -> false
     }
     case TParen(_) -> panic("a0047TypeExprEqual: a0047UnwrapParen left a TParen")
@@ -3814,16 +3888,17 @@ func a0047UnwrapParen(te: in TypeExpr): TypeExpr {
 
 func a0047TypeExprListsEqual(
   a: in List[TypeExpr],
-  aImports: in List[ImportDecl],
+  aScope: in A0047Scope,
   b: in List[TypeExpr],
-  bImports: in List[ImportDecl],
+  bScope: in A0047Scope,
+  ix: in TypeOwnerIndex,
 ): Bool {
   if a.count != b.count {
     return false
   }
   var i = 0
   while i < a.count {
-    if not a0047TypeExprEqual(a[i], aImports, b[i], bImports) {
+    if not a0047TypeExprEqual(a[i], aScope, b[i], bScope, ix) {
       return false
     }
     i = i + 1
@@ -3833,16 +3908,17 @@ func a0047TypeExprListsEqual(
 
 func a0047TypeArgListsEqual(
   a: in List[TypeArg],
-  aImports: in List[ImportDecl],
+  aScope: in A0047Scope,
   b: in List[TypeArg],
-  bImports: in List[ImportDecl],
+  bScope: in A0047Scope,
+  ix: in TypeOwnerIndex,
 ): Bool {
   if a.count != b.count {
     return false
   }
   var i = 0
   while i < a.count {
-    if not a0047TypeArgEqual(a[i], aImports, b[i], bImports) {
+    if not a0047TypeArgEqual(a[i], aScope, b[i], bScope, ix) {
       return false
     }
     i = i + 1
@@ -3850,98 +3926,63 @@ func a0047TypeArgListsEqual(
   true
 }
 
-// A `TAValue` (const-generic value argument) has no `TypeExpr` to compare
+// A value type argument (`TAValue`, e.g. an array length) isn't compared
 // structurally; treat any two value arguments as equal, matching
 // `bmodeTypeArgListKey`'s pre-#7336 mangling (which reduced every value
 // argument to the same "v" fragment regardless of its expression).
-func a0047TypeArgEqual(a: in TypeArg, aImports: in List[ImportDecl], b: in TypeArg, bImports: in List[ImportDecl]): Bool {
+func a0047TypeArgEqual(
+  a: in TypeArg, aScope: in A0047Scope, b: in TypeArg, bScope: in A0047Scope, ix: in TypeOwnerIndex
+): Bool {
   match a {
     case TAType(ea) -> match b {
-      case TAType(eb) -> a0047TypeExprEqual(ea, aImports, eb, bImports)
+      case TAType(eb) -> a0047TypeExprEqual(ea, aScope, eb, bScope, ix)
       case TAValue(_) -> false
     }
     case TAValue(_) -> match b { case TAValue(_) -> true; case TAType(_) -> false }
   }
 }
 
-/// Equality of two written paths (as carried by `TRef`/`TGenericApp`'s
-/// head / `TRefined`'s underlying): each side's candidate set of
-/// `Pkg.Name` resolutions (`a0047PathCandidates`) must share at least one
-/// string.
 func a0047PathsEqual(
   segsA: in List[String],
-  importsA: in List[ImportDecl],
+  scopeA: in A0047Scope,
   segsB: in List[String],
-  importsB: in List[ImportDecl],
+  scopeB: in A0047Scope,
+  ix: in TypeOwnerIndex,
 ): Bool {
-  a0047SetsIntersect(a0047PathCandidates(segsA, importsA), a0047PathCandidates(segsB, importsB))
+  a0047ResolvePath(segsA, scopeA, ix) == a0047ResolvePath(segsB, scopeB, ix)
 }
 
-func a0047SetsIntersect(a: in List[String], b: in List[String]): Bool {
-  var i = 0
-  while i < a.count {
-    var j = 0
-    while j < b.count {
-      if a[i] == b[j] {
-        return true
-      }
-      j = j + 1
-    }
-    i = i + 1
-  }
-  false
-}
-
-/// The candidate `Pkg.Name` resolutions a written path could denote. A
-/// multi-segment path is already package-qualified — a single, fixed
-/// candidate — unless its first segment names an `import X as A` alias in
-/// scope, in which case the alias expands to `X`'s own path first
-/// (docs/56). A single-segment (bare) name instead expands to every
-/// plausible resolution (see the section header above): its own bare
-/// spelling, any selector-import match (`import Pkg.{Foo}` /
-/// `import Pkg.{Foo as Bar}`), and one `Pkg.<name>` candidate per
-/// selector-less import (`import Pkg`, aliased or not — docs/01 §9.2 /
-/// the `Lyric.AliasRewriter` "import X as A ≡ import X, references
-/// collapsed to bare" equivalence — both bring `Pkg`'s public names into
-/// unqualified scope).
-func a0047PathCandidates(segments: in List[String], imports: in List[ImportDecl]): List[String] {
+/// The `Pkg.Name` a written type path denotes (rules in the section header).
+func a0047ResolvePath(segments: in List[String], nameScope: in A0047Scope, ix: in TypeOwnerIndex): String {
   if segments.count == 0 {
-    val none: List[String] = newList()
-    return none
+    return ""
   }
   if segments.count == 1 {
-    return a0047BareNameCandidates(segments[0], imports)
+    return a0047ResolveBare(segments[0], nameScope, ix)
   }
-  match a0047AliasTarget(segments[0], imports) {
-    case None -> {
-      val fixed: List[String] = newList()
-      fixed.add(segmentsJoin(segments))
-      fixed
-    }
+  val last = segments.count - 1
+  val prefix: List[String] = newList()
+  match a0047AliasTarget(segments[0], nameScope.imports) {
     case Some(target) -> {
-      val expanded: List[String] = newList()
-      var ei = 0
-      while ei < target.count {
-        expanded.add(target[ei])
-        ei = ei + 1
+      for seg in target {
+        prefix.add(seg)
       }
-      var si = 1
-      while si < segments.count {
-        expanded.add(segments[si])
-        si = si + 1
-      }
-      a0047PathCandidates(expanded, imports)
     }
+    case None -> prefix.add(segments[0])
   }
+  var si = 1
+  while si < last {
+    prefix.add(segments[si])
+    si = si + 1
+  }
+  a0047ResolveQualified(segmentsJoin(prefix), segments[last], ix)
 }
 
-// The import whose `as <alias>` matches `alias`, if any — its own
-// (un-aliased) path segments.
 func a0047AliasTarget(alias: in String, imports: in List[ImportDecl]): Option[List[String]] {
   var i = 0
   while i < imports.count {
     match imports[i].asAlias {
-      case Some(a) -> if a == alias { return Some(value = imports[i].path.segments) }
+      case Some(a) -> if a == alias and not imports[i].isExtern { return Some(value = imports[i].path.segments) }
       case None -> ()
     }
     i = i + 1
@@ -3949,57 +3990,231 @@ func a0047AliasTarget(alias: in String, imports: in List[ImportDecl]): Option[Li
   None
 }
 
-func a0047BareNameCandidates(name: in String, imports: in List[ImportDecl]): List[String] {
-  val cands: List[String] = newList()
-  cands.add(name)
-  var i = 0
-  while i < imports.count {
-    val imp = imports[i]
-    match imp.selector {
-      case Some(sel) -> a0047CollectSelectorMatches(sel, name, imp.path, cands)
-      case None -> cands.add(segmentsJoin(imp.path.segments) + "." + name)
-    }
-    i = i + 1
+/// `pkg.name` resolved through re-exports: `pkg` itself when it declares
+/// `name`, else the one declaring package reachable from `pkg`'s imports,
+/// else the spelling as written.
+func a0047ResolveQualified(pkg: in String, name: in String, ix: in TypeOwnerIndex): String {
+  val literal = pkg + "." + name
+  val owners = a0047Owners(ix, name)
+  if owners.count == 0 or a0047ListHas(owners, pkg) {
+    return literal
   }
-  a0047Dedup(cands)
+  val roots: List[String] = newList()
+  roots.add(pkg)
+  val reached = a0047Intersect(owners, a0047Reachable(roots, ix).pkgs)
+  if reached.count == 1 {
+    return reached[0] + "." + name
+  }
+  literal
+}
+
+func a0047ResolveBare(name: in String, nameScope: in A0047Scope, ix: in TypeOwnerIndex): String {
+  val selected: List[String] = newList()
+  for imp in nameScope.imports {
+    match imp.selector {
+      case Some(sel) -> a0047CollectSelectorMatches(sel, name, imp, ix, selected)
+      case None -> if imp.isExtern and a0047ExternImportNames(imp, name) { selected.add(segmentsJoin(imp.path.segments)) }
+    }
+  }
+  val own = a0047Qualify(nameScope.pkg, name)
+  if selected.count > 0 {
+    if a0047AllSame(selected) {
+      return selected[0]
+    }
+    return own
+  }
+  if a0047IsPrimitive(name) {
+    return name
+  }
+  val owners = a0047Owners(ix, name)
+  if a0047ListHas(nameScope.localTypes, name) or a0047ListHas(owners, nameScope.pkg) or owners.count == 0 {
+    return own
+  }
+  val direct: List[String] = newList()
+  for imp in nameScope.imports {
+    match imp.selector {
+      case Some(_) -> ()
+      case None -> if not imp.isExtern { direct.add(segmentsJoin(imp.path.segments)) }
+    }
+  }
+  val directOwners = a0047Intersect(owners, direct)
+  if directOwners.count == 1 {
+    return directOwners[0] + "." + name
+  }
+  if directOwners.count > 1 {
+    return own
+  }
+  if a0047ListHas(owners, "Std.Core") {
+    return "Std.Core." + name
+  }
+  direct.add("Std.Core")
+  val reach = a0047Reachable(direct, ix)
+  val reached = a0047Intersect(owners, reach.pkgs)
+  if reached.count == 1 {
+    return reached[0] + "." + name
+  }
+  if reached.count == 0 and owners.count == 1 and not reach.hasUnknown {
+    return owners[0] + "." + name
+  }
+  own
+}
+
+/// The built-in primitive type names (`Lyric.TypeChecker.primFromString`'s
+/// set; importing the type checker here would clash with the weaver's own
+/// declarations).
+func a0047IsPrimitive(name: in String): Bool {
+  name == "Bool" or name == "Byte" or name == "Int" or name == "Long" or name == "UInt" or name == "ULong" or
+    name == "Nat" or
+    name == "Float" or
+    name == "Double" or
+    name == "Char" or
+    name == "String" or
+    name == "Unit" or
+    name == "Never"
+}
+
+/// True when the selector-less `import extern Ns.Type` (or
+/// `import extern Ns.Type as Alias`) brings `name` into scope.
+func a0047ExternImportNames(imp: in ImportDecl, name: in String): Bool {
+  match imp.asAlias {
+    case Some(a) -> a == name
+    case None -> imp.path.segments.count > 0 and imp.path.segments[imp.path.segments.count - 1] == name
+  }
 }
 
 func a0047CollectSelectorMatches(
-  sel: in ImportSelector, name: in String, pkgPath: in ModulePath, dest: in List[String]
+  sel: in ImportSelector,
+  name: in String,
+  imp: in ImportDecl,
+  ix: in TypeOwnerIndex,
+  dest: in List[String],
 ): Unit {
   match sel {
-    case ISSingle(item) -> a0047MaybeAddSelectorMatch(item, name, pkgPath, dest)
+    case ISSingle(item) -> a0047MaybeAddSelectorMatch(item, name, imp, ix, dest)
     case ISGroup(items) -> {
-      var i = 0
-      while i < items.count {
-        a0047MaybeAddSelectorMatch(items[i], name, pkgPath, dest)
-        i = i + 1
+      for item in items {
+        a0047MaybeAddSelectorMatch(item, name, imp, ix, dest)
       }
     }
   }
 }
 
 func a0047MaybeAddSelectorMatch(
-  item: in ImportItem, name: in String, pkgPath: in ModulePath, dest: in List[String]
+  item: in ImportItem,
+  name: in String,
+  imp: in ImportDecl,
+  ix: in TypeOwnerIndex,
+  dest: in List[String],
 ): Unit {
   val isMatch = match item.asAlias { case Some(a) -> a == name; case None -> item.name == name }
   if isMatch {
-    dest.add(segmentsJoin(pkgPath.segments) + "." + item.name)
+    val pkg = segmentsJoin(imp.path.segments)
+    dest.add(if imp.isExtern { pkg + "." + item.name } else { a0047ResolveQualified(pkg, item.name, ix) })
   }
 }
 
-func a0047Dedup(xs: in List[String]): List[String] {
-  val seen: Map[String, Bool] = newMap()
-  val deduped: List[String] = newList()
-  var i = 0
-  while i < xs.count {
-    if not seen.containsKey(xs[i]) {
-      seen.add(xs[i], true)
-      deduped.add(xs[i])
-    }
-    i = i + 1
+/// The packages reachable from `roots` through the index's per-package
+/// import lists (`roots` included), and whether any of them is a package
+/// the index has no entry for (so it might declare anything).
+record A0047Reach {
+  pkgs: List[String]
+  hasUnknown: Bool
+}
+
+func a0047Reachable(roots: in List[String], ix: in TypeOwnerIndex): A0047Reach {
+  val seen: List[String] = newList()
+  val work: List[String] = newList()
+  for r in roots {
+    work.add(r)
   }
-  deduped
+  var unknown = false
+  var wi = 0
+  while wi < work.count {
+    val p = work[wi]
+    if not a0047ListHas(seen, p) {
+      seen.add(p)
+      match mapGet(ix.pkgImports, p) {
+        case Some(deps) -> {
+          for d in deps {
+            work.add(d)
+          }
+        }
+        case None -> {
+          unknown = true
+        }
+      }
+    }
+    wi = wi + 1
+  }
+  A0047Reach(pkgs = seen, hasUnknown = unknown)
+}
+
+func a0047Owners(ix: in TypeOwnerIndex, name: in String): List[String] {
+  match mapGet(ix.owners, name) {
+    case Some(pkgs) -> pkgs
+    case None -> {
+      val none: List[String] = newList()
+      none
+    }
+  }
+}
+
+/// The elements of `xs` that `ys` also contains, in `xs` order.
+func a0047Intersect(xs: in List[String], ys: in List[String]): List[String] {
+  val both: List[String] = newList()
+  for x in xs {
+    if a0047ListHas(ys, x) {
+      both.add(x)
+    }
+  }
+  both
+}
+
+func a0047AllSame(xs: in List[String]): Bool {
+  for x in xs {
+    if x != xs[0] {
+      return false
+    }
+  }
+  true
+}
+
+func a0047ListHas(xs: in List[String], x: in String): Bool {
+  for y in xs {
+    if y == x {
+      return true
+    }
+  }
+  false
+}
+
+func a0047Qualify(pkg: in String, name: in String): String {
+  if pkg.length == 0 {
+    name
+  } else {
+    pkg + "." + name
+  }
+}
+
+/// The names of the types `items` declares.
+func a0047LocalTypeNames(items: in List[Item]): List[String] {
+  val names: List[String] = newList()
+  for it in items {
+    match it.kind {
+      case ITypeAlias(d) -> names.add(d.name)
+      case IDistinctType(d) -> names.add(d.name)
+      case IRecord(d) -> names.add(d.name)
+      case IExposedRec(d) -> names.add(d.name)
+      case IUnion(d) -> names.add(d.name)
+      case IEnum(d) -> names.add(d.name)
+      case IOpaque(d) -> names.add(d.name)
+      case IProtected(d) -> names.add(d.name)
+      case IInterface(d) -> names.add(d.name)
+      case IExternType(d) -> names.add(d.name)
+      case _ -> ()
+    }
+  }
+  names
 }
 
 /// Length-prefix `s` as `<decimal length>x<s>`.  Concatenating
@@ -4475,8 +4690,9 @@ func buildBModeCallSite(
   argsRecordName: in Option[String],
   argsRowFields: in List[ArgsRowField],
   weaveDiags: in List[WeaveDiagEntry],
-  consumerImports: in List[ImportDecl],
+  consumerScope: in A0047Scope,
   templateOrigin: in Option[CollectedTemplate],
+  typeIndex: in TypeOwnerIndex,
 ): FunctionDecl {
   val qualified = if site.packagePath.length > 0 { site.packagePath + "." + fn.name } else { fn.name }
   val annNames: List[String] = newList()
@@ -4571,8 +4787,8 @@ func buildBModeCallSite(
             // the TEMPLATE's own imports (`templateOrigin`, `None` when
             // the row clause was declared directly in this same file, in
             // which case it shares the consumer's own imports).
-            val templateImports = match templateOrigin { case Some(tpl) -> tpl.imports; case None -> consumerImports }
-            if a0047TypeExprEqual(p.ty, consumerImports, rf.ty, templateImports) {
+            val templateScope = match templateOrigin { case Some(tpl) -> tpl.nameScope; case None -> consumerScope }
+            if a0047TypeExprEqual(p.ty, consumerScope, rf.ty, templateScope, typeIndex) {
               argFields.add(mkNamedArg(rf.name, singleSegPathExpr(rf.name)))
             } else {
               addWeaveDiagOnce(weaveDiags, WDArgsRowTypeMismatch, aspect.name, fn.name, rf.name, fn.span)
@@ -4712,9 +4928,13 @@ func collectBModeArgsFieldDiags(items: in List[Item]): List[Diagnostic] {
 /// values (template `around` + instance `matches`/`config` overrides).
 /// Unresolved `from` references emit A0045 diagnostics; the standard weave
 /// then drops them (they have no `around` body) so codegen sees only resolved
-/// aspects.
+/// aspects.  `typeIndex` tells the A0047 row-type check which package
+/// declares each type name (#7496); build it from every package the type
+/// checker sees (`Lyric.Pipeline.pipeTypeOwnerIndex`).
 pub func weaveFileWithDiagsAndTemplates(
-  file: in SourceFile, templates: in Map[String, CollectedTemplate]
+  file: in SourceFile,
+  templates: in Map[String, CollectedTemplate],
+  typeIndex: in TypeOwnerIndex,
 ): WeaveFileResult {
   val file0 = injectWeaveImports(file)
   val pkgPath = packagePathString(file0)
@@ -4727,7 +4947,7 @@ pub func weaveFileWithDiagsAndTemplates(
     rangeDiags.add(d)
   }
   val bmodeArgsDiags = collectBModeArgsFieldDiags(resolvedItems)
-  val wr = weaveItemsCore(resolvedItems, pkgPath, file0.imports, resolvedFI.origins)
+  val wr = weaveItemsCore(resolvedItems, pkgPath, file0.imports, resolvedFI.origins, typeIndex)
   val allDiags: List[Diagnostic] = newList()
   var ui = 0
   while ui < unresolvedDiags.count {

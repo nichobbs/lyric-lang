@@ -1499,7 +1499,37 @@ func makeTemplates(src: in String, pkgName: in String): Map[String, CollectedTem
 
 func weaveWithTemplates(consumeSrc: in String, templates: in Map[String, CollectedTemplate]): WeaveFileResult {
   val pr = parse(consumeSrc)
-  weaveFileWithDiagsAndTemplates(pr.file, templates)
+  weaveFileWithDiagsAndTemplates(pr.file, templates, fixtureTypeIndex())
+}
+
+// The type-owner index the A0047 row-type check resolves names against
+// (#7496), built from package sources the way the bridges build it from
+// every package the type checker sees.
+func makeTypeIndex(srcs: in List[String]): TypeOwnerIndex {
+  val ix = newTypeOwnerIndex()
+  for src in srcs {
+    typeOwnerIndexAddFile(ix, parse(src).file)
+  }
+  ix
+}
+
+// A stand-in for the real build's index: the stdlib's `Option` (the
+// `Std.Core` prelude) and its kernel/host re-export of `List`, plus the
+// packages the A0047 tests import. `Lambda` and `Timer` both declare a
+// `LambdaContext`; `A` and `B` both declare a `Ctx`.
+func fixtureTypeIndex(): TypeOwnerIndex {
+  val srcs: List[String] = newList()
+  srcs.add("package Std.Core\n" + "pub union Option[T] {\n  case Some(value: T)\n  case None\n}\n")
+  srcs.add(
+    "package Std.CollectionsHost\n" + "import Std.Core\n" +
+      "extern type List[T] = \"System.Collections.Generic.List`1\"\n"
+  )
+  srcs.add("package Std.Collections\n" + "import Std.Core\n" + "import Std.CollectionsHost\n")
+  srcs.add("package Lambda\n" + "pub record LambdaContext {\n  requestId: String\n}\n")
+  srcs.add("package Timer\n" + "pub record LambdaContext {\n  deadline: Int\n}\n")
+  srcs.add("package A\n" + "pub record Ctx {\n  a: Int\n}\n")
+  srcs.add("package B\n" + "pub record Ctx {\n  b: Int\n}\n")
+  makeTypeIndex(srcs)
 }
 
 test "collectAspectTemplates collects pub aspect with around" {
@@ -1793,6 +1823,139 @@ test "A0047 normalises generic type arguments recursively" {
     not diagsHaveCode(wr.diagnostics, "A0047"),
     "'List[LambdaContext]' resolves element-wise to 'List[Lambda.LambdaContext]'"
   )
+}
+
+// #7496 — a bare name resolves to the package that DECLARES it, not merely
+// to every package the file imports.  Both the row clause and the parameter
+// spell `LambdaContext` unqualified, but `import Lambda` and `import Timer`
+// bring in two different types of that name.
+test "A0047 rejects the same bare name declared by the two sides' different imports" {
+  val tplSrc = "package Lib.Aspects\n" + "import Lambda\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ctx: LambdaContext } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "import Timer\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(ctx: in LambdaContext): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(
+    diagsHaveCode(wr.diagnostics, "A0047"),
+    "'LambdaContext' under 'import Timer' is Timer.LambdaContext, not the row clause's Lambda.LambdaContext"
+  )
+}
+
+test "A0047 accepts the same bare name when both sides import its declaring package" {
+  val tplSrc = "package Lib.Aspects\n" + "import Lambda\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ctx: LambdaContext } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "import Lambda\n" + "import A\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(ctx: in LambdaContext): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(
+    not diagsHaveCode(wr.diagnostics, "A0047"),
+    "both sides' 'LambdaContext' resolve to Lambda.LambdaContext; the unrelated 'import A' does not interfere"
+  )
+}
+
+// `List` is declared in `Std.CollectionsHost` and reached via
+// `import Std.Collections` (the kernel/host re-export idiom) or, with no
+// import at all, as the only `List` any package declares.
+test "A0047 matches a bare List whether or not the template imports Std.Collections" {
+  val tplSrc = "package Lib.Aspects\n" + "import Std.Collections\n" + "import Lambda\n" + "pub aspect Guard {\n" +
+    "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ids: List[Int] } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" + "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(ids: in List[Int]): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(
+    not diagsHaveCode(wr.diagnostics, "A0047"),
+    "'List' with and without 'import Std.Collections' both resolve to Std.CollectionsHost.List"
+  )
+}
+
+test "A0047 matches a bare List whether or not the consumer imports Std.Collections" {
+  val tplSrc = "package Lib.Aspects\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ids: List[Option[Int]] } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "import Std.Collections\n" + "import Timer\n" +
+    "aspect MyGuard from Lib.Aspects.Guard {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(ids: in List[Option[Int]]): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(
+    not diagsHaveCode(wr.diagnostics, "A0047"),
+    "'List' resolves to Std.CollectionsHost.List on both sides; 'Option' is the Std.Core prelude on both"
+  )
+}
+
+test "A0047 resolves a qualified spelling through the package's re-export" {
+  val tplSrc = "package Lib.Aspects\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ids: List[Int] } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "import Std.Collections\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(ids: in Std.Collections.List[Int]): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(
+    not diagsHaveCode(wr.diagnostics, "A0047"),
+    "'Std.Collections.List' is the Std.CollectionsHost.List that Std.Collections imports"
+  )
+}
+
+// A type declared by the template's own package and used unqualified by a
+// consumer in that SAME package (another file of it) matches, even though the
+// index knows nothing about the package.
+test "A0047 matches a same-package bare type on both sides" {
+  val tplSrc = "package App\n" + "pub record Session {\n  id: Int\n}\n" + "pub aspect Guard {\n" +
+    "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { s: Session } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "App")
+  val consumeSrc = "package App\n" + "aspect MyGuard from Guard {\n" + "  matches: name like \"handle*\"\n" + "}\n" +
+    "func handleOne(s: in Session): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0047"), "'Session' is App.Session on both sides")
+}
+
+// A name no indexed package declares resolves to the writing file's own
+// package, so the same unknown short name in two different packages fails
+// closed instead of matching on spelling.
+test "A0047 fails closed on a bare name the index has no owner for" {
+  val tplSrc = "package Lib.Aspects\n" + "import Mystery\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { m: Thing } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "import Mystery\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(m: in Thing): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0047"), "an unindexed 'Thing' cannot be shown to be one type")
 }
 
 // A C-mode (`@inline_template`) resolved from-instance is unaffected by
