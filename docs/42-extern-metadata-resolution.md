@@ -750,6 +750,14 @@ User-visible, production-quality (no placeholder dumps):
   than adding a separate constant-pool reader.  The auto-FFI overload scorer
   (`findBestMethod` / `findBestConstructor`) doubles as the signature validator,
   consistent with the auto-FFI pipeline already shipping in Phase 3c JVM.
+- **Q-MD-006** — Generic-instantiation resolution at the FFI boundary is
+  split across several independently-erasing conversion sites (a
+  bracket-suffixed extern-type alias at a non-receiver parameter/return
+  position, the strongly-typed-delegate ABI's contravariance against the
+  generic-declaring-type erasure convention, and named-delegate
+  construction), not one mechanism. See `docs/66-ffi-generic-instantiation-
+  boundary.md` for the full scoping (four independent gaps, one shipped) and
+  per-gap design direction.
 
 ---
 

@@ -22314,10 +22314,16 @@ func substituteDeclaringVarMsil(t: in MsilType, objArgs: in List[MsilType]): Msi
 }
 
 // Map a CLR type-argument FQN to the MsilType used as a closed TypeSpec arg.
-// BCL primitives map to their value types; everything else interns a class
-// TypeRef so the closed instantiation matches the runtime object exactly (e.g.
-// `Task`1<String>`, not the `<object>` erasure that fails a generic-invariant
-// receiver `castclass`).
+// BCL primitives map to their value types; a non-primitive value-type FQN
+// (e.g. `System.Net.Security.SslApplicationProtocol`, a struct) must intern a
+// VALUETYPE TypeRef, not a CLASS one — ECMA-335 §II.23.2.12 requires each
+// GENERICINST argument's own CLASS/VALUETYPE tag to match the argument type's
+// real kind, and a struct tagged CLASS here mismatches at load with
+// `TypeLoadException: ... due to value type mismatch` even though the rest of
+// the blob (TypeRef, arg count) is byte-correct. Everything else (an
+// unrecognised reference type) interns a class TypeRef so the closed
+// instantiation matches the runtime object exactly (e.g. `Task`1<String>`, not
+// the `<object>` erasure that fails a generic-invariant receiver `castclass`).
 func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
   if fqn == "System.String" {
     MString
@@ -22336,7 +22342,74 @@ func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
   } else {
     ensureMetadataIndex(cctx)
     val refRow = internFfiTypeRefNested(cctx, fqn)
-    MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn)
+    if Mdr.isValueTypeFqn(cctx.metadataVtypeSet, fqn) {
+      MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn)
+    } else {
+      MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn)
+    }
+  }
+}
+
+// Resolve a `@externTarget` parameter/return type expression that names a
+// CLOSED generic-instantiation extern-type alias (e.g. `extern type ProtoList
+// = "System.Collections.Generic.List`1[System.Net.Security.
+// SslApplicationProtocol]"`) to its real `MGenericInst`/`MValueTypeGenericInst`
+// instead of the `MObject` erasure `typeExprToMsilCtx`'s `TRef` branch applies
+// to every other use of a bracket-suffixed extern-type alias.
+//
+// That erasure is correct when the alias is used as the RECEIVER of its own
+// generic-declaring-type member call: `emitGenericExternMember` routes around
+// it entirely, re-deriving the real TypeSpec from the `@externTarget` target
+// string itself. But a bracket-suffixed alias used as a PARAMETER or RETURN
+// type of an unrelated (non-generic-declaring) `@externTarget` member — e.g.
+// `SslServerAuthenticationOptions.set_ApplicationProtocols(List<
+// SslApplicationProtocol>)` — never reaches that path, so the erased `MObject`
+// flows straight into the MemberRef signature and the call can never bind
+// (#6029 Gap A). This helper recovers the real closed instantiation for
+// exactly that shape, scoped to `@externTarget` signatures only (mirroring the
+// existing `TFunction` special case in `emitExternTargetBody`) so the general
+// erasure convention every other `typeExprToMsilCtx` caller relies on
+// (locals, fields, non-`@externTarget` functions, generic-declaring-type
+// receivers) is completely untouched.
+//
+// None when `te` isn't a bare single-segment extern-type-alias reference, the
+// alias resolves to a Lyric-internal package (never bracket-erased in the
+// first place), or its CLR FQN carries no bracket suffix (nothing to
+// recover) — the caller falls back to the ordinary `typeExprToMsilCtx`
+// conversion in every such case.
+func externTargetBracketGenericInstMsil(cctx: in CodegenCtx, te: in TypeExpr): Option[MsilType] {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count != 1 {
+        return None
+      }
+      match mapGet(cctx.externTypeNames, path.segments[0]) {
+        case Some(clrFqn) -> {
+          if startsWith(clrFqn, "Lyric.") or not contains(clrFqn, "[") {
+            None
+          } else {
+            ensureMetadataIndex(cctx)
+            val cleanFqn = stripBracketSuffix(clrFqn)
+            val concreteArgFqns = parseBracketArgFqns(clrFqn)
+            val isValType = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, cleanFqn)
+            val giRefRow = internFfiTypeRefNested(cctx, cleanFqn)
+            val typeArgs: List[MsilType] = newList()
+            var i = 0
+            while i < concreteArgFqns.count {
+              typeArgs.add(argFqnToMsil(cctx, concreteArgFqns[i]))
+              i = i + 1
+            }
+            if isValType {
+              Some(value = MValueTypeGenericInst(typeRefCode = tdrTypeRef(giRefRow), headFqn = cleanFqn, typeArgs = typeArgs))
+            } else {
+              Some(value = MGenericInst(typeRefCode = tdrTypeRef(giRefRow), headFqn = cleanFqn, typeArgs = typeArgs))
+            }
+          }
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
   }
 }
 
@@ -23588,7 +23661,17 @@ func emitExternTargetBody(
             }
             buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy)
           }
-          case _ -> typeExprToMsilGenBodyOrCtx(cctx, decl.params[pi].ty, pkgName, declGenerics)
+          // A bracket-suffixed extern-type-alias parameter (`List<
+          // SslApplicationProtocol>`-shaped, #6029 Gap A) needs its real closed
+          // GENERICINST — the shared `typeExprToMsilCtx` erasure to `MObject`
+          // is correct for a generic-declaring-type's own RECEIVER (handled by
+          // `emitGenericExternMember` instead) but loses the type entirely for
+          // an unrelated method's argument. Bounded to `@externTarget`
+          // parameters only, mirroring the `TFunction` case above.
+          case _ -> match externTargetBracketGenericInstMsil(cctx, decl.params[pi].ty) {
+            case Some(gi) -> gi
+            case None -> typeExprToMsilGenBodyOrCtx(cctx, decl.params[pi].ty, pkgName, declGenerics)
+          }
         }
         val finalTy = if isByrefMode(decl.params[pi].mode) { MByRef(inner = baseTy) } else { baseTy }
         paramTypes.add(finalTy)
@@ -23597,7 +23680,15 @@ func emitExternTargetBody(
       val retTy = match decl.ret {
         case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te, pkgName) {
           case Some(rt) -> rt
-          case None -> typeExprToMsilGenBodyOrCtx(cctx, te, pkgName, declGenerics)
+          case None -> match externTargetBracketGenericInstMsil(cctx, te) {
+            case Some(gi) -> gi
+            case None -> typeExprToMsilGenBodyOrCtx(
+              cctx,
+              te,
+              pkgName,
+              declGenerics
+            )
+          }
         }
         case None -> MVoid
       }

@@ -1,0 +1,97 @@
+# D-progress-994 — Recover closed generic instantiation at an `@externTarget` parameter/return position instead of erasing to `object` (#6029)
+
+**Status:** shipped
+
+## Context
+
+`Msil.Codegen.typeExprToMsilCtx`'s `TRef` branch erases any bracket-suffixed
+extern-type alias (`extern type ProtoList = "System.Collections.Generic.
+List\`1[System.Net.Security.SslApplicationProtocol]"` — a closed generic
+instantiation) straight to `MObject`. The justifying comment says member
+calls on it route through `emitGenericExternMember`, which is true only when
+the alias is the **receiver** of its own generic-declaring-type member call.
+`SslServerAuthenticationOptions.set_ApplicationProtocols(List<
+SslApplicationProtocol>)` takes the alias as a **parameter** of an unrelated,
+non-generic-declaring method — `emitGenericExternMember` never runs for that
+call (its dispatch is gated on the call target's own declaring-type name, not
+on any parameter type), so the erased `MObject` flowed straight into the
+`@externTarget` MemberRef signature and the call could never bind
+(`MissingMethodException` at run time, confirmed against the real BCL API by
+three independent investigating sessions before this one, tracked as #6029).
+
+A second, independent bug compounded it: `argFqnToMsil` (used to convert a
+bracket suffix's own type-argument FQNs to `MsilType` for TypeSpec
+construction) unconditionally tagged any non-primitive argument as
+`MClassRef` — wrong for a value-type argument (`SslApplicationProtocol` is a
+struct). ECMA-335 §II.23.2.12 requires a GENERICINST type argument's own
+CLASS/VALUETYPE tag to match its real CLR kind; the wrong tag loads with
+`TypeLoadException` even once the erasure bug above is fixed.
+
+## Decision
+
+Ship the smallest of the four independently-scoped gaps this investigation
+found (see `docs/66-ffi-generic-instantiation-boundary.md` for the full
+scoping of all four and the three that remain unshipped) at production
+quality:
+
+1. Fix `argFqnToMsil` to check `Mdr.isValueTypeFqn` and return
+   `MValueTypeRef` for a struct argument instead of unconditionally
+   `MClassRef`.
+2. Add `externTargetBracketGenericInstMsil`, a narrowly-scoped helper that
+   recovers the real `MGenericInst`/`MValueTypeGenericInst` for a
+   bracket-suffixed extern-type alias used as an `@externTarget`
+   parameter or return type — reusing the exact `stripBracketSuffix` /
+   `parseBracketArgFqns` / `argFqnToMsil` / `internFfiTypeRefNested`
+   building blocks `emitGenericExternMember` already uses for the
+   receiver-position case. Wired into `emitExternTargetBody`'s
+   parameter-type loop and return-type computation as an extra match arm,
+   scoped to `@externTarget` signatures only (mirroring the existing
+   `TFunction` special case's scope, D122) — the general erasure
+   convention every other `typeExprToMsilCtx` caller depends on (locals,
+   fields, non-`@externTarget` functions, generic-declaring-type
+   receivers) is untouched.
+
+As a side effect this also closes what #6029 called "Gap C" for free:
+`emitGenericExternMember`'s existing `r.isCtor` branch already had a
+mechanism (`retArgs`) to infer a ctor's real type arguments from a matching
+`MGenericInst`/`MValueTypeGenericInst` **return** type — it simply never
+received one, since the return type was always the `MObject` erasure before
+this fix. No new construction-side code was needed for a ctor whose own
+`@externTarget` string carries no bracket suffix (`newList()` inferring
+`List<SslApplicationProtocol>` purely from its declared `ProtoList` return
+type — the exact shape #6029 originally reported).
+
+## Scope explicitly not covered
+
+The auto-FFI **direct** property-assignment sugar (`opts.
+ApplicationProtocols = list`, no `@externTarget` wrapper) still panics
+(`panicExternSetterUnresolved`): it resolves the setter via
+`Mdr.resolveExtern`, which needs `argTyToSig` to describe an `MGenericInst`/
+`MValueTypeGenericInst` value as a `SigType` (no arm exists today — only
+Lyric's own `List[T]`/`Map[K,V]` are special-cased, by their base arity name,
+discarding the instantiation's own type argument), and `Mdr.scoreSigType`'s
+`STNamedGenericInst` arm deliberately rejects (`-1`) any **closed**
+instantiation today, pending a genuine structural-match arm (a blanket-accept
+there previously caused a real regression, D-progress-934). This is real,
+separately-scoped follow-up work, filed as its own issue rather than folded
+into this PR — a smaller, fully-finished slice beats a half-finished larger
+one (CLAUDE.md's production-readiness standard).
+
+## Verification
+
+New self-test `lyric-compiler/lyric/generic_extern_param_self_test.l`,
+mirroring #6029's own repro almost verbatim (`SslServerAuthenticationOptions`
++ `List<SslApplicationProtocol>`, ctor with no bracket suffix on its own
+target string): constructs the list, sets it through the real setter, reads
+it back through the real getter, and asserts the round-tripped `Count`.
+Exercises both the parameter-position fix (Gap A) and the return-position
+fix (Gap C) in one program. Existing FFI/generic-extern self-tests
+(`auto_ffi_self_test`, `generic_extern_self_test`,
+`generic_extern_methodspec_self_test`,
+`generic_extern_valuetype_instance_self_test`, `typed_ffi_delegate_self_test`,
+`async_extern_self_test`, `extern_enum_flags_self_test`,
+`extern_option_self_test`, `ffi_iface_impl_self_test`,
+`import_extern_self_test`, `typechecker_extern_dedup_self_test`) all pass
+unchanged after this fix — confirmed byte-identical output for
+`generic_extern_valuetype_instance_self_test`'s two expected-decline
+diagnostics against the pre-fix build.
