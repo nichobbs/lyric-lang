@@ -125,6 +125,27 @@ record GeneratorResponse {
 | `additionalImports` | Import statements to prepend (e.g., `"import Std.Json"`). Deduplicated with existing imports. |
 | `diagnostics` | Errors, warnings, and info messages reported by the generator |
 
+### Parsing a subprocess response: `parseResponse`
+
+`parseResponse(json: in String): Result[GeneratorResponse, String]` deserializes
+the JSON a generator subprocess writes to stdout. Each `additionalImports`
+entry must be exactly a single `import <QualifiedName>` or
+`import extern <QualifiedName>` statement, optionally followed by
+`as <Identifier>` — `parseResponse` returns `Err` for any entry that isn't
+(a missing `import ` prefix, a malformed qualified name, or extra text such
+as an embedded newline or `;`-separated second statement). A generator
+subprocess is untrusted, and every `additionalImports` entry is spliced
+verbatim into the compiled program's source, so this rejects an entry that
+could otherwise inject arbitrary source disguised as an import line.
+
+`diagnostics` entries are fully deserialized (severity, message, and an
+optional `code`) — previously they were dropped unconditionally, so a
+generator's `Error`-severity diagnostics never reached the caller.
+
+`parseResponse` is otherwise lenient: a missing or malformed top-level
+field (including an unparseable request overall) degrades to an
+empty/default value rather than failing.
+
 ## Type descriptors
 
 ### `TypeDescriptor`
@@ -137,8 +158,16 @@ record TypeDescriptor {
   typeParams: slice[String]           // ["T", "E"] for generic types
   fields: slice[FieldDescriptor]      // empty for unions and interfaces
   annotations: slice[AnnotationDescriptor]
+  invariant: name.length > 0
 }
 ```
+
+`name` must be non-empty; constructing a `TypeDescriptor` with an empty name
+panics. `runGenerator`'s own request deserialization checks this explicitly
+before construction (a missing `typeDescriptor` block, or an unrecognized
+`kind`, used to silently fall through to an empty-named `Record` rather than
+failing): a malformed request now exits with code 1 and a clear message on
+stderr instead.
 
 ### `ItemKind`
 

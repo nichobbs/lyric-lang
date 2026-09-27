@@ -134,6 +134,13 @@ Automatically creates a subsegment for every matched function, capturing timing 
 2. On success: annotate with `outcome = "success"`, close, and continue
 3. On exception/error: annotate with `outcome = "error"`, capture exception details, close, and re-raise
 
+The subsegment is closed with `defer`, so it is ended on every exit path from the
+wrapped call — including a panic propagating out of `proceed()` — not only the
+normal `Ok`/`Err` return paths. On `.NET`/`jvm` this matters because the SDK's
+current-entity tracking is ambient/thread-local: without `defer`, a panicking
+call would leave its subsegment open and later subsegments on the same call
+stack would nest under the dead one instead of the parent segment.
+
 ```lyric
 import AwsXRay
 
@@ -162,8 +169,12 @@ This is what the `Tracing` aspect's `around` advice calls internally.
 
 ```lyric
 pub func beginSubsegment(name: in String): SubsegmentHandle
+  requires: name.length > 0
+  requires: name.length <= 200
 pub func endSubsegment(handle: in SubsegmentHandle): Unit
 ```
+
+`name` must be non-empty and at most 200 characters (X-Ray's own subsegment-name limit); violating either panics.
 
 ```lyric
 import AwsXRay
@@ -197,9 +208,25 @@ pub func annotate(
   key: in String,
   value: in String
 ): Unit
+  requires: isValidAnnotationKey(key)
+  requires: value.length > 0
 ```
 
 Annotations are **indexed** and appear as facets in the X-Ray console for filtering and faceting. Use for operationally important dimensions: `user_id`, `status`, `cache_hit`, etc.
+
+`key` must satisfy `isValidAnnotationKey` — X-Ray annotation keys may contain only
+ASCII letters, digits and underscores, and must be 1–500 characters; X-Ray silently
+drops any annotation whose key doesn't match this shape, so `annotate` panics up
+front instead:
+
+```lyric
+pub func isValidAnnotationKey(key: in String): Bool
+```
+
+Both the key and the value are additionally passed through an internal sanitizer
+(`sanitizeAnnotation`, exposed as `pub` for testing) that strips structured-log /
+HTML injection characters and caps the encoded form at X-Ray's 1024-byte limit,
+never truncating between a UTF-16 high and low surrogate.
 
 ### `metadata(handle, key, value)`
 

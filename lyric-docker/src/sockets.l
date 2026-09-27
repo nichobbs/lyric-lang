@@ -74,3 +74,22 @@ pub func parseUnixSocketUrl(url: in String): Option[String] {
     None
   }
 }
+
+/// Parse a `tcp://` DOCKER_HOST URL to extract the `host:port` for
+/// `Lyric.Docker.makeDockerClientTcp`.
+///
+/// - `tcp://127.0.0.1:2375` -> `Some("127.0.0.1:2375")`
+/// - Any other scheme (`unix://`, `npipe://`, ...) or no scheme -> `None`
+///
+/// Returns `Some` for a malformed tail too (e.g. `tcp://` alone yields
+/// `Some("")`) rather than `None`: a caller that sees `tcp://` at all must
+/// route to the TCP client (which validates and panics on a bad `host:port`
+/// via its own `requires:` clauses) instead of silently falling back to a
+/// Unix socket the user never asked for.
+pub func parseTcpDockerHost(url: in String): Option[String] {
+  val prefix = "tcp://"
+  if not url.startsWith(prefix) {
+    return None
+  }
+  Some(value = url.substring(prefix.length))
+}

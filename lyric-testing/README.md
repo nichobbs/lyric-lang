@@ -127,36 +127,63 @@ Testing.assertTrue(Flags.isEnabled(testCtx.flagStore, "newFeature"))
 Advance the test clock for time-dependent code:
 
 ```lyric
-Testing.advance(clock: inout TestClock, duration: in Duration)
+Testing.advance(clock: inout TestClock, ms: in Long)
   -> Unit
+  requires: ms >= 0i64
+  requires: ms <= 9223372036854775807i64 - now(clock)
+  ensures: now(clock) == old(now(clock)) + ms
 
 Testing.now(clock: in TestClock)
-  -> Instant
+  -> Long
 ```
+
+`TestClock` is opaque: `currentEpochMs` can only move forward through
+`advance`, which requires `ms >= 0` (time cannot move backwards) and rejects
+an `ms` that would overflow `Long`. Earlier, `currentEpochMs` was a public
+mutable field, so a test could set the clock to an arbitrary (including
+negative) value directly, bypassing `advance`'s precondition entirely.
 
 Example:
 
 ```lyric
 val testCtx = Testing.newTestContext()
-val before = Testing.now(testCtx.testClock)
+val before = Testing.now(testCtx.clock)
 
-Testing.advance(testCtx.testClock, Duration.seconds(10))
+Testing.advance(testCtx.clock, 10000)
 
-val after = Testing.now(testCtx.testClock)
-Testing.assertTrue(after > before)
+val after = Testing.now(testCtx.clock)
+Testing.assertTrue(after > before, "clock moved forward")
 ```
 
 ## Storage mock helpers
 
+`MockStorageBucket` implements `Storage.StorageBucket` directly (`put`,
+`get`, `delete`, `list`, `presignedUrl`, `exists`), mirroring the real
+`StorageBucket` interface's own preconditions on every method call —
+including calls made directly on the interface (`bucket.list(...)`,
+`bucket.presignedUrl(...)`), not only through the `Storage.list`/
+`Storage.presignedUrl` convenience wrappers:
+
+- every key (or, for `list`, a non-empty prefix) is validated with
+  `Storage.isSafeKey`/`isSafePrefix`, same as every real backend;
+- `list(prefix, continuationToken, maxKeys)` requires `1 <= maxKeys <= 1000`
+  and pages by `maxKeys`, returning a continuation token on a truncated page;
+- `presignedUrl(key, expiresInSeconds)` requires
+  `1 <= expiresInSeconds <= 604800` (7 days).
+
+A violation panics rather than silently succeeding — previously the mock
+dropped both preconditions and paging entirely (see `docs/57` and #7242).
+
+## Cache mock helpers
+
+`MockCacheStore` implements `Cache.CacheStore`. `set(key, value, ttlSeconds)`
+requires `ttlSeconds >= 0` (a negative TTL panics), matching the real
+`CacheStore` interface's own precondition — TTL values are otherwise
+accepted but not enforced; the mock never expires entries.
+
 ```lyric
-Testing.putString(bucket: inout MockStorageBucket, key: in String, value: in String)
-  -> Result[Unit, StorageError]
-
-Testing.getString(bucket: inout MockStorageBucket, key: in String)
-  -> Result[Option[String], StorageError]
-
-Testing.deleteKey(bucket: inout MockStorageBucket, key: in String)
-  -> Result[Unit, StorageError]
+Testing.cacheSize(store: in MockCacheStore)
+  -> Int
 ```
 
 ## Message queue mock helpers

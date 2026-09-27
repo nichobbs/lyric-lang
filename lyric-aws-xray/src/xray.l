@@ -325,6 +325,7 @@ func kernel_currentSubsegment(): SubsegmentHandle {
 @stable(since = "0.1")
 pub func beginSubsegment(name: in String): SubsegmentHandle
   requires: name.length > 0
+  requires: name.length <= 200
 {
   return kernel_beginSubsegment(name)
 }
@@ -334,6 +335,28 @@ pub func beginSubsegment(name: in String): SubsegmentHandle
 @stable(since = "0.1")
 pub func endSubsegment(handle: in SubsegmentHandle): Unit {
   kernel_endSubsegment(handle)
+}
+
+/// True when `key` is a valid X-Ray annotation key: 1-500 characters, every
+/// character alphanumeric (ASCII) or underscore. X-Ray silently drops
+/// annotations whose key does not match this shape, so `annotate` requires
+/// it up front rather than failing invisibly at the SDK boundary.
+@pure
+@stable(since = "0.1")
+pub func isValidAnnotationKey(key: in String): Bool {
+  if key.length == 0 or key.length > 500 {
+    return false
+  }
+  var i = 0
+  var ok = true
+  while i < key.length and ok {
+    val c = key[i]
+    if not (Ch.isAsciiLetterOrDigit(c) or c == '_') {
+      ok = false
+    }
+    i = i + 1
+  }
+  return ok
 }
 
 // ─── Helpers available inside wrapped handlers ────────────────────────────────
@@ -352,7 +375,7 @@ pub func currentSubsegment(): SubsegmentHandle {
 @cfg(feature = "local")
 @stable(since = "0.1")
 pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String): Unit
-  requires: key.length > 0
+  requires: isValidAnnotationKey(key)
   requires: value.length > 0
 {
 }
@@ -360,7 +383,7 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
 @cfg(feature = "aws")
 @stable(since = "0.1")
 pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String): Unit
-  requires: key.length > 0
+  requires: isValidAnnotationKey(key)
   requires: value.length > 0
 {
   kernel_addAnnotation(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
@@ -369,7 +392,7 @@ pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String)
 @cfg(feature = "jvm")
 @stable(since = "0.1")
 pub func annotate(handle: in SubsegmentHandle, key: in String, value: in String): Unit
-  requires: key.length > 0
+  requires: isValidAnnotationKey(key)
   requires: value.length > 0
 {
   kernel_addAnnotation(handle, sanitizeAnnotation(key), sanitizeAnnotation(value))
@@ -433,6 +456,12 @@ pub aspect Tracing {
       ret = call.proceed()
     } else {
       val seg = kernel_beginSubsegment(call.qualifiedName)
+      // Runs however the call exits, a panic included, so a panicking
+      // handler never leaves a dangling subsegment for later subsegments
+      // to nest under.
+      defer {
+        kernel_endSubsegment(seg)
+      }
       ret = call.proceed()
       match ret {
         case Err(e) -> {
@@ -440,7 +469,6 @@ pub aspect Tracing {
         }
         case _ -> ()
       }
-      kernel_endSubsegment(seg)
     }
   }
 }
@@ -459,10 +487,13 @@ func utf8CharBytes(c: in Char): Int {
   }
 }
 
-// CWE-117 defense: replace structured-log / HTML injection chars and cap below X-Ray's 1024-byte limit.
-// Truncation is by UTF-8 byte count (not character count) so multi-byte characters
-// cannot push the encoded form over the limit.  Single forward pass: O(n).
-func sanitizeAnnotation(s: in String): String {
+/// CWE-117 defense: replace structured-log / HTML injection chars and cap below X-Ray's
+/// 1024-byte limit. Truncation is by UTF-8 byte count (not character count) so multi-byte
+/// characters cannot push the encoded form over the limit, and the cut never falls between
+/// a high and a low surrogate. Single forward pass: O(n). Exposed (`pub`) so it can be
+/// unit-tested directly; used internally by `annotate`/`metadata`/`Tracing`.
+@stable(since = "0.1")
+pub func sanitizeAnnotation(s: in String): String {
   val a = s.replace("\r", " ").replace("\n", " ").replace("\u{0000}", " ").replace("\t", " ")
   val b = a.replace("<", "_").replace(">", "_")
   // Single forward pass: accumulate byte count and stop at the 1024-byte limit.
@@ -483,5 +514,15 @@ func sanitizeAnnotation(s: in String): String {
   if charCount == b.length {
     return b
   }
-  b.substring(0, charCount)
+  // If the char just before the cut is a high surrogate, its low-surrogate
+  // partner didn't make the byte budget: drop the orphaned high surrogate
+  // too rather than emitting a split pair.
+  var cut = charCount
+  if cut > 0 {
+    val lastCode = Ch.toInt(b[cut - 1])
+    if lastCode >= 0xD800 and lastCode <= 0xDBFF {
+      cut = cut - 1
+    }
+  }
+  b.substring(0, cut)
 }
