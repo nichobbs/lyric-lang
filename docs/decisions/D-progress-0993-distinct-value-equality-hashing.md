@@ -50,9 +50,16 @@ which rejects `==` between them.
 
 ## Tests
 
-`distinct_ops_self_test.l` adds a `Map`-key case for `Long`-, `Int`-,
-`Double`- and `String`-backed distinct types. It runs on dotnet, JVM and
-native.
+- `distinct_ops_self_test.l` adds a `Map`-key case for `Long`-, `Int`-,
+  `Double`- and `String`-backed distinct types, and `==` inside a generic
+  function instantiated with a distinct type. It runs on dotnet, JVM and
+  native.
+- `distinct_collections_self_test.l` covers `List.contains` on dotnet and
+  the JVM. Native `List.contains` on a non-`String` element fails codegen
+  (#7429).
+- `lyric-stdlib/tests/set_tests.l` covers `Set` membership and
+  de-duplication of distinct values. `Std.Set` does not run on the JVM
+  (#7312).
 
 ## Docs
 

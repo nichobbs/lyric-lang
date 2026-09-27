@@ -37,6 +37,8 @@ record Account {
 
 func sameUser(a: in UserId, b: in UserId): Bool = a == b
 
+func sameValue[T](a: in T, b: in T): Bool = a == b
+
 func otherUser(a: in UserId, b: in UserId): Bool = a != b
 
 func total(a: in Cents, b: in Cents): Cents = a + b
@@ -138,4 +140,11 @@ test "a distinct value works as a Map key" {
   byEmail.add(Email.from("a@example.com"), 1)
   assertTrue(byEmail.containsKey(Email.from("a@" + "example.com")), "String-backed key found by an equal value")
   assertTrue(not byEmail.containsKey(Email.from("b@example.com")), "a different String-backed key is not found")
+}
+
+// #7375: `==` inside a generic function instantiated with a distinct type
+// compares underlying values.
+test "generic == compares distinct values by value" {
+  assertTrue(sameValue(UserId.from(4i64), UserId.from(4i64)), "equal values")
+  assertTrue(not sameValue(UserId.from(4i64), UserId.from(5i64)), "different values")
 }

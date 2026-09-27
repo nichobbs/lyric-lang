@@ -3713,7 +3713,11 @@ func distinctRangeDesc(d: in MDistinctType): String {
 // throwing — emitted only when `Std.Core.Result` is imported), and an inherent
 // `toInt`/`toLong`/… projection back to the underlying primitive.
 //
-// Method emission order is fixed — `.ctor`, `from`, `tryFrom`, `toX` — and the
+// It also overrides `Equals(object)` / `GetHashCode()` by the underlying value
+// so a distinct value works as a collection key (#7375).
+//
+// Method emission order is fixed — `.ctor`, `from`, `tryFrom`, `toX`,
+// `Equals`, `GetHashCode` — and the
 // codegen pass-1 token budget (`addPackageTokens`, IDistinctType arm) reserves
 // MethodDef rows in exactly this order so call sites resolve to the right token.
 pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {

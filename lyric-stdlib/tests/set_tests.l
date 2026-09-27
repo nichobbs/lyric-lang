@@ -1,7 +1,8 @@
 //! stdlib/tests/set_tests.l — Tests for Std.Set.
 //!
 //! Covers: construction, membership, removal, size, fromSlice, setElements,
-//! setUnion, setIntersection, setDifference, setIsSubset, setEquals.
+//! setUnion, setIntersection, setDifference, setIsSubset, setEquals, and
+//! distinct-type elements (#7375).
 //! Since sets have unordered iteration, tests rely on setContains and setSize
 //! rather than positional element checks.
 package Std.Set.Tests
@@ -10,6 +11,18 @@ import Std.Core
 import Std.Set
 import Std.CollectionsHost
 import Std.Testing
+
+type UserId = Long
+
+// #7375: a distinct value is found by an equal value built separately.
+func testDistinctElements(): Unit {
+  val s: Set[UserId] = newSet()
+  setAdd(s, UserId.from(2i64))
+  assertTrue(setContains(s, UserId.from(2i64)), "distinct element found by an equal value")
+  assertTrue(not setContains(s, UserId.from(3i64)), "a different distinct element is not found")
+  setAdd(s, UserId.from(2i64))
+  assertEqualInt(setSize(s), 1, "adding an equal distinct value does not grow the set")
+}
 
 func testEmpty(): Unit {
   val s: Set[Int] = newSet()
@@ -132,5 +145,6 @@ func main(): Unit {
   testDifference()
   testSubset()
   testEquals()
+  testDistinctElements()
   println("set: ok")
 }
