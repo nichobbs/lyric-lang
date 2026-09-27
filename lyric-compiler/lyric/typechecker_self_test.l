@@ -5655,3 +5655,99 @@ test "chained String host methods still type-check end to end" {
   val src = "package P\nfunc f(s: in String): Bool { s.trim().toLower().startsWith(\"a\") }\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "chained calls resolve real types at each step")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7584: record-pattern head validation.  `PRecord`'s own `head: ModulePath`
+// used to be discarded entirely by both `bindPatternTyped` and
+// `checkConstRefPattern` — fields were resolved purely from the scrutinee's
+// own type, so a head naming a different record, a union case, an
+// unimported package, or a package-private type type-checked silently.
+// Mirrors the #7548 tests just above for `PConstructor` pattern heads
+// (`unionCaseSymbolForScrutinee`), but for `checkRecordPatternHead`.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a bare record-pattern head matching the scrutinee resolves cleanly (#7584)" {
+  val src = "package P\nrecord Point {\n  x: Int\n  y: Int\n}\nfunc f(p: in Point): Int {\n  match p {\n    case Point { x = a, y = b } -> a + b\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0137"), 0, "bare Point head against a Point scrutinee: no T0137")
+}
+
+test "a record-pattern head naming a different record than the scrutinee is T0137 (#7584)" {
+  val src = "package P\nrecord Point {\n  x: Int\n  y: Int\n}\nrecord Blob {\n  z: Int\n}\nfunc f(p: in Point): Int {\n  match p {\n    case Blob { z = a } -> a\n    case _ -> 0\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0137"), 1, "Blob head against a Point scrutinee: exactly one T0137")
+  assertTrue(
+    diagMessageFor(cr, "T0137").contains("Blob"),
+    "T0137 names the mismatched head: " + diagMessageFor(cr, "T0137")
+  )
+}
+
+test "a record-pattern head naming a union case (not a record) is T0137 (#7584)" {
+  val src = "package P\nrecord Point {\n  x: Int\n  y: Int\n}\nunion Kind {\n  case A(x: Int)\n}\nfunc f(p: in Point): Int {\n  match p {\n    case A { x = a } -> a\n    case _ -> 0\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0137"), 1, "a union-case head against a record scrutinee: exactly one T0137")
+}
+
+test "a bare record-pattern head against a generic record instantiation resolves cleanly (#7584)" {
+  val src = "package P\nrecord Box[T] {\n  value: T\n}\nfunc f(b: in Box[Int]): Int {\n  match b {\n    case Box { value } -> value\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0137"), 0, "bare Box head against a Box[Int] scrutinee: no T0137")
+}
+
+test "record-pattern head against an unresolvable scrutinee has no T0137 (#7584)" {
+  // `undefinedScrutinee` is itself an unknown identifier and fires its OWN
+  // (unrelated) diagnostic — the point of this test is that the pattern
+  // head check never ALSO fires T0137, since an unresolved (`TyError`)
+  // scrutinee never reaches the `TyUser` branch `checkRecordPatternHead`
+  // lives in.
+  val src = "package P\nrecord Point {\n  x: Int\n  y: Int\n}\nfunc f(): Int {\n  match undefinedScrutinee {\n    case Point { x = a, y = b } -> a + b\n    case _ -> 0\n  }\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(src), "T0137"),
+    0,
+    "an unresolvable scrutinee never reaches the record-pattern head check"
+  )
+}
+
+func libGeoPointPackages(): List[ImportedPackage] {
+  val pkgGeo = parse("package Lib.Geo\npub record Point {\n  x: Int\n  y: Int\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "Lib.Geo", items = pkgGeo.file.items, imports = collectImportNames(pkgGeo.file.imports))
+  )
+  packages
+}
+
+test "unimported package-qualified record-pattern head is T0020 (#7584)" {
+  val src = "package App\nfunc f(p: in Lib.Geo.Point): Int {\n  match p {\n    case Lib.Geo.Point { x = a, y = b } -> a + b\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libGeoPointPackages())
+  assertTrue(countDiagCode(cr, "T0020") >= 1, "unimported Lib.Geo.Point record-pattern head fires T0020")
+  val msg = diagMessageFor(cr, "T0020")
+  assertTrue(msg.contains("Lib.Geo"), "T0020 names the unreachable package: " + msg)
+  assertTrue(msg.contains("import Lib.Geo"), "T0020 suggests the fix: " + msg)
+}
+
+test "imported package-qualified record-pattern head resolves cleanly (#7584)" {
+  val src = "package App\nimport Lib.Geo\nfunc f(p: in Lib.Geo.Point): Int {\n  match p {\n    case Lib.Geo.Point { x = a, y = b } -> a + b\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libGeoPointPackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "imported package-qualified record-pattern head: no T0020")
+  assertEqualInt(countDiagCode(cr, "T0137"), 0, "imported package-qualified record-pattern head: no T0137")
+}
+
+func privatePointPackages(): List[ImportedPackage] {
+  val pkgPriv = parse(
+    "package PkgPriv\nrecord Point {\n  x: Int\n  y: Int\n}\npub func mkPoint(): Point {\n  Point(x = 1, y = 2)\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "PkgPriv", items = pkgPriv.file.items, imports = collectImportNames(pkgPriv.file.imports))
+  )
+  packages
+}
+
+test "package-private record in a qualified pattern head is T0097 (#7584)" {
+  val src = "package App\nimport PkgPriv\nfunc f(): Int {\n  match mkPoint() {\n    case PkgPriv.Point { x = a, y = b } -> a + b\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privatePointPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "PkgPriv.Point {...} pattern head is exactly one T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "not T0020: an import cannot fix a private type")
+  assertTrue(
+    diagMessageFor(cr, "T0097").contains("'Point'"),
+    "T0097 names the private record: " + diagMessageFor(cr, "T0097")
+  )
+}

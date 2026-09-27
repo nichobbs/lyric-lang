@@ -1315,7 +1315,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0090` | Range bounds are inverted or produce an empty range |
 | `T0091` | `range` applied to a non-numeric underlying type |
 | `T0093` | Range bound expression cannot be evaluated at compile time |
-| `T0097` | Package-private symbol referenced from another package, including a package-private type used as a `Type.method(...)` receiver, a type-position reference (`val w: Pkg.Widget`), or a private union/enum's case in a qualified pattern head — whether or not the declaring package is imported (mark it `pub` or `internal`) |
+| `T0097` | Package-private symbol referenced from another package, including a package-private type used as a `Type.method(...)` receiver, a type-position reference (`val w: Pkg.Widget`), a private union/enum's case in a qualified pattern head, or a private record in a qualified record-pattern head — whether or not the declaring package is imported (mark it `pub` or `internal`) |
 | `T0098` | `impl` is missing an abstract interface method |
 | `T0099` | `impl` method parameter arity does not match the interface declaration |
 | `T0100` | Opaque type constructed outside its declaring package |
@@ -1346,6 +1346,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0134` | A compound assignment (`+=`, `-=`, ...) to a distinct type has a target that is not a variable or field path (`xs[i] += y`). The assignment is rewritten to `x = T.from(x.value op y.value)`, which evaluates the target twice; write it out explicitly. |
 | `T0135` | A protected type's `func` member, or a method of an `impl` for a protected type, is `async` or declares its own type parameters. Every `entry` and `func` (and every such impl method) runs under the instance lock, which cannot be held across an `await` or taken by a method-generic member. |
 | `T0136` | An `impl Iface for P`, where `P` is a protected type, that cannot become part of `P`: the impl is declared in another package than `P`, its target names `P` through an `alias`, `P` or the impl is generic, or an impl method has the same name as one of `P`'s own `entry`/`func` members or as a method of another impl for `P`. An impl method on a protected type is itself a locked member of the type, so move the body into the impl or rename the member. (An impl method's signature mentioning `Self` is accepted on `--target dotnet`/`--target jvm` since #7550; `--target native` cannot yet lower any `Self`-mentioning interface method at all, for a record or a protected type.) |
+| `T0137` | A record pattern's own head (`case Head { field = pat, … } -> …`) does not name the scrutinee's own record: a different record, a union/enum case, an unresolved name, or (for a qualified head) the right record's simple name under the wrong package qualifier. The record-pattern counterpart of `T0129`'s union/enum-case check. Not checked when the scrutinee's type is unknown or open (a type variable, `Self`, a nullable). A qualified head naming the right record under an unreachable package is `T0020`, and one naming a package-private record is `T0097` (checked first), instead of `T0137`. |
 
 ### Type checker warnings (W-series)
 
