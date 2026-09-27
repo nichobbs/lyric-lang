@@ -759,7 +759,9 @@ func jsonDecodeScalarExpr(elemVarName: in String, typeName: in String): Expr {
 // `Std.Json.enumerateArray(__e)` that decodes and appends each element,
 // followed by `restExpr` — used as the `Some(__e)` arm body for a
 // `slice[ElemTy]`-typed field.
-func jsonSliceDecodeBlock(fieldName: in String, elemTy: in TypeExpr, restExpr: in Expr): Block {
+func jsonSliceDecodeBlock(
+  fieldName: in String, elemTy: in TypeExpr, restExpr: in Expr, jsonTypes: in Map[String, Bool]
+): Block {
   val elemTypeName = jsonTypeNameOf(elemTy)
   val stmts: List[Statement] = newList()
   stmts.add(stmtLocal(fieldName, Some(sliceTypeRef(elemTy)), mkExpr(EList(exprs = newList()), sp())))
@@ -775,8 +777,8 @@ func jsonSliceDecodeBlock(fieldName: in String, elemTy: in TypeExpr, restExpr: i
       )
     )
   } else {
-    // Nested record element: recursively parse via its own `fromJson` from
-    // the element's raw JSON text. Decoded via match-as-statement: the `Err`
+    // Nested record element: decoded from the element itself by
+    // `jsonNestedDecodeCall`. Decoded via match-as-statement: the `Err`
     // arm returns out of the whole `fromJson` function immediately; the `Ok`
     // arm appends the decoded element and falls through to the next
     // iteration. `slice[T].append` is non-mutating (returns a new slice,
@@ -798,7 +800,7 @@ func jsonSliceDecodeBlock(fieldName: in String, elemTy: in TypeExpr, restExpr: i
       blockOf(oneStmtList(stmtReturn(call1("Err", pathExpr("__json_em")))))
     )
     val decodeMatch = mkMatchExpr(
-      methodCall1(pathExpr(elemTypeName), "fromJson", jsonCall1("getRawText", pathExpr("__json_elem"))),
+      jsonNestedDecodeCall(elemTypeName, "__json_elem", jsonTypes),
       matchArmPair(returnErrArm, appendArm)
     )
     loopStmts.add(stmtExprOnly(decodeMatch))
@@ -815,6 +817,22 @@ func jsonSliceDecodeBlock(fieldName: in String, elemTy: in TypeExpr, restExpr: i
   blockValue(stmts, restExpr)
 }
 
+// The `Result[TypeName, String]`-typed decode of a nested record held in the
+// `JsonElement` local `elemVarName` (#7347). A type known to have a
+// `fromJsonElement` (see `collectJsonElementTypes`) decodes straight from the
+// element, sharing the outer `fromJson`'s one parsed document. Any other type
+// is decoded through its `fromJson(String)` from the element's raw text: that
+// is the one entry point a hand-written decoder is guaranteed to have, so a
+// nested type whose decoder this pass cannot see keeps working.
+func jsonNestedDecodeCall(typeName: in String, elemVarName: in String, jsonTypes: in Map[String, Bool]): Expr {
+  val hasElementDecoder = match mapGet(jsonTypes, typeName) { case Some(b) -> b; case None -> false }
+  if hasElementDecoder {
+    methodCall1(pathExpr(typeName), "fromJsonElement", pathExpr(elemVarName))
+  } else {
+    methodCall1(pathExpr(typeName), "fromJson", jsonCall1("getRawText", pathExpr(elemVarName)))
+  }
+}
+
 func matchArmPair(a: in MatchArm, b: in MatchArm): List[MatchArm] {
   val arms: List[MatchArm] = newList()
   arms.add(a)
@@ -824,9 +842,11 @@ func matchArmPair(a: in MatchArm, b: in MatchArm): List[MatchArm] {
 
 // Build the `Some(__e) -> { ... }` arm body for one field, ending with
 // `restExpr` (the rest of the field chain, or the final `Ok(...)` construction).
-func jsonFieldDecodeBlock(fieldName: in String, ty: in TypeExpr, restExpr: in Expr): Block {
+func jsonFieldDecodeBlock(
+  fieldName: in String, ty: in TypeExpr, restExpr: in Expr, jsonTypes: in Map[String, Bool]
+): Block {
   match ty.kind {
-    case TSlice(elem) -> jsonSliceDecodeBlock(fieldName, elem, restExpr)
+    case TSlice(elem) -> jsonSliceDecodeBlock(fieldName, elem, restExpr, jsonTypes)
     case _ -> {
       val typeName = jsonTypeNameOf(ty)
       val getter = jsonScalarGetterFor(typeName)
@@ -836,18 +856,12 @@ func jsonFieldDecodeBlock(fieldName: in String, ty: in TypeExpr, restExpr: in Ex
         stmts.add(stmtVal(fieldName, None, jsonDecodeScalarExpr("__e", typeName)))
         blockValue(stmts, restExpr)
       } else {
-        // Nested record: `TypeName.fromJson(Std.Json.getRawText(__e))` returns
+        // Nested record: `jsonNestedDecodeCall` returns
         // `Result[TypeName, String]`; unwrap via a nested match, propagating a
         // decode failure with an early `Err(...)` return.
         val okArm = mkArmBlock(ctorPat("Ok", oneList(bindingPat(fieldName))), blockValue(newList(), restExpr))
         val errArm = mkArm(ctorPat("Err", oneList(bindingPat("__json_em"))), call1("Err", pathExpr("__json_em")))
-        blockValue(
-          newList(),
-          mkMatchExpr(
-            methodCall1(pathExpr(typeName), "fromJson", jsonCall1("getRawText", pathExpr("__e"))),
-            matchArmPair(errArm, okArm)
-          )
-        )
+        blockValue(newList(), mkMatchExpr(jsonNestedDecodeCall(typeName, "__e", jsonTypes), matchArmPair(errArm, okArm)))
       }
     }
   }
@@ -889,14 +903,16 @@ func jsonFieldTypeSupported(ty: in TypeExpr): Bool {
 // Recursively build: for each field, `match Std.Json.tryGetProperty(__root,
 // "name") { None -> Err(...); Some(__e) -> <decode field, then recurse> }`,
 // bottoming out at `jsonFinalOkExpr` once every field is bound.
-func jsonBuildFieldChain(typeName: in String, fields: in List[FieldDecl], idx: in Int): Expr {
+func jsonBuildFieldChain(
+  typeName: in String, fields: in List[FieldDecl], idx: in Int, jsonTypes: in Map[String, Bool]
+): Expr {
   if idx >= fields.count {
     return jsonFinalOkExpr(typeName, fields)
   }
   val f = fields[idx]
-  val rest = jsonBuildFieldChain(typeName, fields, idx + 1)
+  val rest = jsonBuildFieldChain(typeName, fields, idx + 1, jsonTypes)
   val decodeBlock = if jsonFieldTypeSupported(f.ty) {
-    jsonFieldDecodeBlock(f.name, f.ty, rest)
+    jsonFieldDecodeBlock(f.name, f.ty, rest, jsonTypes)
   } else {
     // D0002: @generate(Json) fromJson can't decode this field's type —
     // either its shape has no name to build a `TypeName.fromJson(...)` call
@@ -921,7 +937,62 @@ func jsonBuildFieldChain(typeName: in String, fields: in List[FieldDecl], idx: i
   mkMatchExpr(jsonCall2("tryGetProperty", pathExpr("__root"), strLit(f.name)), matchArmPair(noneArm, someArm))
 }
 
+// `Std.JsonHost.JsonElement`, the type `Std.Json` hands out, named by its
+// declaring package: a bare `JsonElement` would bind to a same-named type of
+// the user's own, and the JVM backend resolves a bare name only through a
+// file's direct imports, which `Std.JsonHost` never is (#7357).
+func jsonElementTypeRef(): TypeExpr {
+  val segs: List[String] = newList()
+  segs.add("Std")
+  segs.add("JsonHost")
+  segs.add("JsonElement")
+  mkType(TRef(path = ModulePath(segments = segs, span = sp())), sp())
+}
+
+func jsonResultTypeOf(typeName: in String): TypeExpr {
+  mkType(
+    TGenericApp(head = ModulePath(segments = oneStrList("Result"), span = sp()), args = resultTypeArgs(typeName)),
+    sp()
+  )
+}
+
+// `pub func TypeName.fromJsonElement(elem: in JsonElement): Result[TypeName, String]`
+//
+// Decodes every field from `elem`, which belongs to a document the caller
+// owns and disposes (#7347). Nested `@generate(Json)` records and slice
+// elements are decoded from their child elements by the same entry point, so
+// one `fromJson` call parses its body exactly once however deep the records
+// nest. A non-object `elem` has no properties: the first field reports
+// `missing field`, as a non-object body always has.
+func synthesizeFromJsonElementRecord(
+  typeName: in String,
+  decl: in RecordDecl,
+  vis: in Option[Visibility],
+  jsonTypes: in Map[String, Bool],
+): Item {
+  val fields = collectFields(decl)
+  val stmts: List[Statement] = newList()
+  stmts.add(stmtVal("__root", None, pathExpr("elem")))
+  val body = blockStmtsReturn(stmts, jsonBuildFieldChain(typeName, fields, 0, jsonTypes))
+  val params: List[Param] = newList()
+  params.add(makeParam("elem", jsonElementTypeRef()))
+  funcItem(makeFuncDecl(typeName + ".fromJsonElement", params, jsonResultTypeOf(typeName), body, vis), vis)
+}
+
+// `fromJsonElement` for a type whose `fromJson(String)` is hand-written:
+// forward the element's raw text to it, so every decode of the type — top
+// level or nested — runs the author's decoder.
+func synthesizeFromJsonElementViaFromJson(typeName: in String, vis: in Option[Visibility]): Item {
+  val body = blockReturn(methodCall1(pathExpr(typeName), "fromJson", jsonCall1("getRawText", pathExpr("elem"))))
+  val params: List[Param] = newList()
+  params.add(makeParam("elem", jsonElementTypeRef()))
+  funcItem(makeFuncDecl(typeName + ".fromJsonElement", params, jsonResultTypeOf(typeName), body, vis), vis)
+}
+
 // `pub func TypeName.fromJson(json: in String): Result[TypeName, String]`
+//
+// Parses `json` once, decodes through `TypeName.fromJsonElement` and disposes
+// the document when that returns (#7347).
 //
 // #7098: non-JSON input must produce `Err(...)`, not crash. `parseJson`
 // (a thin `hostParseJson` trampoline) throws the host's raw
@@ -933,16 +1004,17 @@ func jsonBuildFieldChain(typeName: in String, fields: in List[FieldDecl], idx: i
 // Ok(hostParseJson(s)) } catch Bug as b { Err(b.message) }` wrapper) —
 // the same defect class fixed for `Lyric.ContractMeta`'s JSON readers,
 // which never call the raw throwing parser either.
-func synthesizeFromJsonRecord(typeName: in String, decl: in RecordDecl, vis: in Option[Visibility]): Item {
-  val fields = collectFields(decl)
+func synthesizeFromJsonRecord(typeName: in String, vis: in Option[Visibility]): Item {
   val okStmts: List[Statement] = newList()
   okStmts.add(
     mkStmt(SDefer(body = blockOf(oneStmtList(stmtExprOnly(jsonCall1("disposeJson", pathExpr("__doc")))))), sp())
   )
-  okStmts.add(stmtVal("__root", None, jsonCall1("rootElement", pathExpr("__doc"))))
   val okArm = mkArmBlock(
     ctorPat("Ok", oneList(bindingPat("__doc"))),
-    blockValue(okStmts, jsonBuildFieldChain(typeName, fields, 0))
+    blockValue(
+      okStmts,
+      methodCall1(pathExpr(typeName), "fromJsonElement", jsonCall1("rootElement", pathExpr("__doc")))
+    )
   )
   val errArm = mkArm(ctorPat("Err", oneList(bindingPat("__json_perr"))), call1("Err", pathExpr("__json_perr")))
   val parseMatch = mkMatchExpr(jsonCall1("tryParseJson", pathExpr("json")), matchArmPair(errArm, okArm))
@@ -950,14 +1022,87 @@ func synthesizeFromJsonRecord(typeName: in String, decl: in RecordDecl, vis: in 
   val body = blockStmtsReturn(stmts, parseMatch)
   val params: List[Param] = newList()
   params.add(makeParam("json", typeRef("String")))
-  val retTy = mkType(
-    TGenericApp(
-      head = ModulePath(segments = oneStrList("Result"), span = sp()),
-      args = resultTypeArgs(typeName)
-    ),
-    sp()
-  )
-  funcItem(makeFuncDecl(typeName + ".fromJson", params, retTy, body, vis), vis)
+  funcItem(makeFuncDecl(typeName + ".fromJson", params, jsonResultTypeOf(typeName), body, vis), vis)
+}
+
+// Synthesise the `@generate(Json)` trio for one record. `fromJsonElement`
+// holds the decoder and `fromJson` wraps it; a hand-written function of either
+// name is kept, and a hand-written `fromJson` without a hand-written
+// `fromJsonElement` gets a forwarding one, so nested decodes of the type still
+// reach the author's decoder.
+func deriveJsonRecord(
+  typeName: in String,
+  decl: in RecordDecl,
+  vis: in Option[Visibility],
+  existingItems: in List[Item],
+  synths: inout List[Item],
+  jsonTypes: in Map[String, Bool],
+) {
+  addIfNew(synths, existingItems, synthesizeToJsonRecord(typeName, decl, vis), typeName + ".toJson")
+  val elementName = typeName + ".fromJsonElement"
+  if not funcAlreadyExists(existingItems, elementName) and not funcAlreadyExists(synths, elementName) {
+    if funcAlreadyExists(existingItems, typeName + ".fromJson") {
+      synths.add(synthesizeFromJsonElementViaFromJson(typeName, vis))
+    } else {
+      synths.add(synthesizeFromJsonElementRecord(typeName, decl, vis, jsonTypes))
+    }
+  }
+  addIfNew(synths, existingItems, synthesizeFromJsonRecord(typeName, vis), typeName + ".fromJson")
+}
+
+// Names of the record types a synthesised decoder may call
+// `TypeName.fromJsonElement` on (`true`): `@generate(Json)` records, which
+// this pass gives one, and types with a hand-written `fromJsonElement`. Any
+// other record maps to `false`.
+func collectJsonElementTypes(items: in List[Item], into: in Map[String, Bool]) {
+  var i = 0
+  while i < items.count {
+    val item = items[i]
+    match item.kind {
+      case IRecord(decl) -> {
+        into[decl.name] = hasGenerateMarker(item.annotations, "Json")
+      }
+      case IExposedRec(decl) -> {
+        into[decl.name] = hasGenerateMarker(item.annotations, "Json")
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  val suffix = ".fromJsonElement"
+  var j = 0
+  while j < items.count {
+    match items[j].kind {
+      case IFunc(decl) -> {
+        if strEndsWith(decl.name, suffix) {
+          into[decl.name.substring(0, decl.name.length - suffix.length)] = true
+        }
+      }
+      case _ -> ()
+    }
+    j = j + 1
+  }
+}
+
+// `collectJsonElementTypes` over this file, then over the imported packages
+// for names this file does not declare: a local record shadows an imported
+// namesake.
+func jsonElementTypesFor(fileItems: in List[Item], importedItems: in List[Item]): Map[String, Bool] {
+  val own: Map[String, Bool] = newMap()
+  collectJsonElementTypes(fileItems, own)
+  val imported: Map[String, Bool] = newMap()
+  collectJsonElementTypes(importedItems, imported)
+  for k in mapKeys(imported) {
+    if not own.containsKey(k) {
+      match mapGet(imported, k) {
+        case Some(v) -> {
+          own[k] = v
+        }
+        case None -> ()
+      }
+    }
+  }
+  own
 }
 
 func oneStrList(s: in String): List[String] {
@@ -1397,7 +1542,11 @@ func addIfNew(synths: inout List[Item], existingItems: in List[Item], candidate:
 }
 
 func deriveItem(
-  item: in Item, existingItems: in List[Item], synths: inout List[Item], distincts: in Map[String, String]
+  item: in Item,
+  existingItems: in List[Item],
+  synths: inout List[Item],
+  distincts: in Map[String, String],
+  jsonTypes: in Map[String, Bool],
 ) {
   val anns = item.annotations
   // Synthesised helpers inherit the parent item's visibility so that
@@ -1421,8 +1570,7 @@ func deriveItem(
         addIfNew(synths, existingItems, synthesizeOrdRecord(decl.name, decl, vis, distincts), decl.name + ".compare")
       }
       if hasGenerateMarker(anns, "Json") {
-        addIfNew(synths, existingItems, synthesizeToJsonRecord(decl.name, decl, vis), decl.name + ".toJson")
-        addIfNew(synths, existingItems, synthesizeFromJsonRecord(decl.name, decl, vis), decl.name + ".fromJson")
+        deriveJsonRecord(decl.name, decl, vis, existingItems, synths, jsonTypes)
       }
     }
     case IExposedRec(decl) -> {
@@ -1439,8 +1587,7 @@ func deriveItem(
         addIfNew(synths, existingItems, synthesizeOrdRecord(decl.name, decl, vis, distincts), decl.name + ".compare")
       }
       if hasGenerateMarker(anns, "Json") {
-        addIfNew(synths, existingItems, synthesizeToJsonRecord(decl.name, decl, vis), decl.name + ".toJson")
-        addIfNew(synths, existingItems, synthesizeFromJsonRecord(decl.name, decl, vis), decl.name + ".fromJson")
+        deriveJsonRecord(decl.name, decl, vis, existingItems, synths, jsonTypes)
       }
     }
     case IDistinctType(decl) -> {
@@ -1568,15 +1715,17 @@ pub func deriveFile(file: in SourceFile): SourceFile {
 /// pre-existing codegen defect that affects hand-written methods too and is
 /// orthogonal to this AST transform (tracked in #3353).
 func synthsUseJson(
-  // True if any synthesised item is a `.fromJson`/`.toJson` helper — both are
-  // always added together by `deriveItem`, so checking one name suffix suffices.
+  // True if any synthesised item is a `@generate(Json)` decoder. Every
+  // `@generate(Json)` record gets a `.fromJsonElement` (synthesised unless
+  // hand-written), and one that is hand-written leaves `.fromJson` to this
+  // pass, so the two suffixes cover every record that calls `Std.Json`.
   synths: in List[Item],
 ): Bool {
   var i = 0
   while i < synths.count {
     match synths[i].kind {
       case IFunc(decl) -> {
-        if strEndsWith(decl.name, ".fromJson") {
+        if strEndsWith(decl.name, ".fromJson") or strEndsWith(decl.name, ".fromJsonElement") {
           return true
         }
       }
@@ -1629,10 +1778,11 @@ pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]
   val distincts: Map[String, String] = newMap()
   collectDistinctsFromItems(file.items, distincts)
   collectDistinctsFromItems(importedItems, distincts)
+  val jsonTypes = jsonElementTypesFor(file.items, importedItems)
   val synths: List[Item] = newList()
   var i = 0
   while i < file.items.count {
-    deriveItem(file.items[i], file.items, synths, distincts)
+    deriveItem(file.items[i], file.items, synths, distincts, jsonTypes)
     i = i + 1
   }
   if synths.count == 0 {

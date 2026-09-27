@@ -130,6 +130,13 @@ jobs:
             --runs "$RUNS" --warmup "$WARMUP" \
             | tee bench-results/bench_string.txt
 
+      - name: bench — JSON decoding
+        continue-on-error: true
+        run: |
+          "$LYRIC_BIN" bench benchmarks/bench_json.l \
+            --runs "$RUNS" --warmup "$WARMUP" \
+            | tee bench-results/bench_json.txt
+
       # ── Generate HTML report ─────────────────────────────────────────────────
 
       - name: Generate HTML report
@@ -139,6 +146,7 @@ jobs:
             bench-results/bench_collections.txt \
             bench-results/bench_contracts.txt \
             bench-results/bench_string.txt \
+            bench-results/bench_json.txt \
             --output bench-results/report.html \
             --title "Lyric Performance Report" \
             --git-sha "${{ github.sha }}" \

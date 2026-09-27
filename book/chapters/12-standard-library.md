@@ -314,7 +314,20 @@ func main(): Unit {
 
 `toJson` is a static method on the type, not a method on an instance — `Order.toJson(order)`, not `order.toJson()`. This is because the compiler generates the function into the type's namespace, and calling it as a static makes the generated nature explicit.
 
-Nested records work if each nested type is also `@generate(Json)`. `Option[T]` fields round-trip as `null` in JSON. Slices of primitives and slices of `@generate(Json)` records both work. What does not work: `Map[K, V]` with non-`String` keys (JSON object keys must be strings), `opaque` types (their representation is not visible), and types with `inout` or `out` fields (those are parameter modes, not field modifiers).
+Nested records work if each nested type is also `@generate(Json)`. The derived `fromJson` cannot decode `Option[T]`, `Result[T, E]`, tuple or `Float` fields: the compiler reports D0002 and decoding that record always fails, so give such a type a hand-written `fromJson` or restructure the field. Slices of primitives and slices of `@generate(Json)` records both work. What does not work: `Map[K, V]` with non-`String` keys (JSON object keys must be strings), `opaque` types (their representation is not visible), and types with `inout` or `out` fields (those are parameter modes, not field modifiers).
+
+`fromJson` parses the body once. Each generated type also gets `fromJsonElement(elem: JsonElement): Result[T, String]`, which decodes from an element of a document you already hold, and nested records and slice elements are decoded that way, straight from their child elements. A document you parse yourself is yours to dispose:
+
+```lyric
+val doc = parseJson(body)
+defer { disposeJson(doc) }
+match Order.fromJsonElement(getProperty(rootElement(doc), "order")) {
+  case Ok(parsed) -> println(parsed.id)
+  case Err(e)     -> println("bad order: " + e)
+}
+```
+
+If you write `fromJson` yourself, the generated `fromJsonElement` hands the element's text to your `fromJson`, so records that nest your type still use your decoder.
 
 If you need to serialise an opaque type across a boundary, the idiomatic pattern is to project it to an `exposed record` first, then derive JSON on the exposed form. Example 5 in `docs/02-worked-examples.md` shows this pattern with `RawConfig` and `AppConfig`.
 

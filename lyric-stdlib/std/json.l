@@ -42,8 +42,8 @@ pub func tryParseJson(s: in String): Result[JsonDoc, String] {
 
 /// Release the unmanaged memory held by a `JsonDoc`.  Call this when you
 /// are done walking the document — typically via `defer { disposeJson(doc) }`.
-/// The `lyricJsonGet*` helpers do this automatically; only needed for code
-/// that calls `parseJson` directly.
+/// The `lyricJsonGet*` helpers and `@generate(Json)`'s `fromJson` do this
+/// automatically; only needed for code that calls `parseJson` directly.
 @stable(since = "1.0")
 pub func disposeJson(d: in JsonDoc): Unit {
   hostDisposeJson(d)
@@ -314,9 +314,11 @@ pub func propertyValue(prop: in JsonProperty): JsonElement {
 }
 
 // =====================================================================
-// fromJson scalar field readers — used by @generate(Json) synthesised stubs.
-// Each re-parses the JSON string and walks to the named property. The body
-// is untrusted, so every reader fails closed: malformed JSON, a non-object
+// One-field readers over a JSON string (`Std.Rest`'s `jsonString`/
+// `jsonInt`/`jsonBool`). Each parses the whole string, so reading several
+// fields should parse once with `tryParseJson` and walk the elements
+// instead; `@generate(Json)` decoders do that (#7347). The body is
+// untrusted, so every reader fails closed: malformed JSON, a non-object
 // root, a missing property or a value of the wrong kind or range all return
 // `false` with a default `value`, never a host exception (#7251).
 // =====================================================================

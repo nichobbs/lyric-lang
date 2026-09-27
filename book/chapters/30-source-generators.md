@@ -42,7 +42,7 @@ After synthesis, the type gains `toJson`, `fromJson` (from the built-in), and `t
 
 | Name | What it generates |
 |------|-------------------|
-| `Json` | `toJson(self): String` and `fromJson(s: String): Result[T, String]` |
+| `Json` | `toJson(self): String`, `fromJson(s: String): Result[T, String]`, and `fromJsonElement(elem: JsonElement): Result[T, String]` |
 | `Sql` | Column mappers and `INSERT`/`SELECT` query builders (Phase 2) |
 | `Proto` | `toProto(self): slice[Byte]` and `fromProto(bytes: slice[Byte]): Option[T]` (Phase 2) |
 | `Equals` | Structural `==` / `!=` — auto-applied on `record` and `union` types |
