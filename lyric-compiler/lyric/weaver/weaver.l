@@ -3015,7 +3015,21 @@ func mergeAspectConfig(tplCfg: in List[ConfigField], instCfg: in List[ConfigFiel
   while i < tplCfg.count {
     val tf = tplCfg[i]
     match configFieldByName(instCfg, tf.name) {
-      case Some(ov) -> result.add(ov)
+      // An override supplies a value; a template field declared as a range
+      // keeps its range, so the merged value is checked against it (#7229).
+      case Some(ov) -> match tf.ty.kind {
+        case TRefined(_, _) -> result.add(
+          ConfigField(
+            docComments = ov.docComments,
+            annotations = ov.annotations,
+            name = ov.name,
+            ty = tf.ty,
+            default = ov.default,
+            span = ov.span
+          )
+        )
+        case _ -> result.add(ov)
+      }
       case None -> result.add(tf)
     }
     i = i + 1
@@ -3253,6 +3267,50 @@ func resolveFromInstances(
 /// Some(path)` and `around: None` whose template was not found in the
 /// supplied template map.  A missing template is a silent no-op without
 /// this diagnostic, which violates the production-readiness standard.
+/// G0010 for a `from`-instance whose `config { }` value lies outside the
+/// range the template declares for that field (#7229).  The merge keeps the
+/// template's refined type on an overridden field, so the check sees it.  An
+/// aspect's own fields are checked by the type checker.
+func collectFromConfigRangeDiags(items: in List[Item]): List[Diagnostic] {
+  val diags: List[Diagnostic] = newList()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IAspect(decl) -> match decl.from {
+        case Some(_) -> {
+          var fi = 0
+          while fi < decl.config.count {
+            val f = decl.config[fi]
+            match f.ty.kind {
+              case TRefined(_, rb) -> match f.default {
+                case Some(d) -> {
+                  val v = foldLiteralBound(d)
+                  if v.ok and not literalInRange(v, rb) {
+                    diags.add(
+                      errorDiagnostic(
+                        "G0010",
+                        "config value for '" + decl.name + "." + f.name + "' is outside the template field's range",
+                        d.span
+                      )
+                    )
+                  }
+                }
+                case None -> ()
+              }
+              case _ -> ()
+            }
+            fi = fi + 1
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  diags
+}
+
 func collectUnresolvedFromDiags(items: in List[Item]): List[Diagnostic] {
   val diags: List[Diagnostic] = newList()
   var i = 0
@@ -4264,6 +4322,7 @@ pub func weaveFileWithDiagsAndTemplates(
   val pkgPath = packagePathString(file0)
   val resolvedItems = resolveFromInstances(file0.items, templates, pkgPath)
   val unresolvedDiags = collectUnresolvedFromDiags(resolvedItems)
+  val rangeDiags = collectFromConfigRangeDiags(resolvedItems)
   val bmodeArgsDiags = collectBModeArgsFieldDiags(resolvedItems)
   val wr = weaveItemsCore(resolvedItems, pkgPath)
   val allDiags: List[Diagnostic] = newList()
@@ -4271,6 +4330,11 @@ pub func weaveFileWithDiagsAndTemplates(
   while ui < unresolvedDiags.count {
     allDiags.add(unresolvedDiags[ui])
     ui = ui + 1
+  }
+  var ri = 0
+  while ri < rangeDiags.count {
+    allDiags.add(rangeDiags[ri])
+    ri = ri + 1
   }
   var bi = 0
   while bi < bmodeArgsDiags.count {

@@ -90,6 +90,70 @@ pub union RangeBound {
   case RBUpperOpen(lo: Expr)
 }
 
+/// A range bound folded to a number: a numeric literal, optionally negated
+/// (`ok` is false for anything else).  Used where a range must be checked
+/// against constants, such as a `config` field's refinement (#7229).
+pub record LiteralBound {
+  pub ok: Bool
+  pub isFloat: Bool
+  pub l: Long
+  pub d: Double
+}
+
+pub func foldLiteralBound(e: in Expr): LiteralBound {
+  val none = LiteralBound(ok = false, isFloat = false, l = 0i64, d = 0.0)
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(v, _, _) -> LiteralBound(ok = true, isFloat = false, l = v, d = v.toDouble())
+      case LFloat(v, _, _) -> LiteralBound(ok = true, isFloat = true, l = 0i64, d = v)
+      case _ -> none
+    }
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> {
+        val b = foldLiteralBound(inner)
+        if b.ok {
+          LiteralBound(ok = true, isFloat = b.isFloat, l = 0i64 - b.l, d = 0.0 - b.d)
+        } else {
+          none
+        }
+      }
+      case _ -> none
+    }
+    case _ -> none
+  }
+}
+
+/// `x < b` (`strict`) or `x <= b`, comparing as floating point when either
+/// side is.
+pub func literalBoundBelow(x: in LiteralBound, b: in LiteralBound, strict: in Bool): Bool {
+  if x.isFloat or b.isFloat {
+    if strict {
+      x.d < b.d
+    } else {
+      x.d <= b.d
+    }
+  } else {
+    if strict {
+      x.l < b.l
+    } else {
+      x.l <= b.l
+    }
+  }
+}
+
+/// Whether the folded value `v` lies inside `rb`.  Every bound of `rb` must
+/// fold (callers check that first).
+pub func literalInRange(v: in LiteralBound, rb: in RangeBound): Bool {
+  match rb {
+    case RBClosed(lo, hi) -> literalBoundBelow(foldLiteralBound(lo), v, false) and
+      literalBoundBelow(v, foldLiteralBound(hi), false)
+    case RBHalfOpen(lo, hi, _) -> literalBoundBelow(foldLiteralBound(lo), v, false) and
+      literalBoundBelow(v, foldLiteralBound(hi), true)
+    case RBLowerOpen(hi) -> literalBoundBelow(v, foldLiteralBound(hi), false)
+    case RBUpperOpen(lo) -> literalBoundBelow(foldLiteralBound(lo), v, false)
+  }
+}
+
 pub union TypeArg {
   case TAType(ty: TypeExpr)
   case TAValue(expr: Expr)

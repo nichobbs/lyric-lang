@@ -488,8 +488,19 @@ record ConfigInstance {
 /// Types legal for a config field (docs/25 §3, v1 self-hosted subset —
 /// mirrors `checkConfigBlock`'s G0009 set).
 func configTypeAllowedWE(t: in TypeExpr): Bool {
-  val n = match t.kind { case TRef(path) -> lastSegmentWE(path); case _ -> "" }
-  n == "Bool" or n == "Int" or n == "Long" or n == "Float" or n == "Double" or n == "String"
+  match t.kind {
+    case TRef(path) -> {
+      val n = lastSegmentWE(path)
+      n == "Bool" or n == "Int" or n == "Long" or n == "Float" or n == "Double" or n == "String"
+    }
+    // A range of a numeric type (#7229); `checkConfigBlock` validates the
+    // bounds once the template becomes a config block.
+    case TRefined(path, _) -> {
+      val n = lastSegmentWE(path)
+      n == "Int" or n == "Long" or n == "Float" or n == "Double"
+    }
+    case _ -> false
+  }
 }
 
 /// Validate a `pub config` template declaration's fields (the analogue of
@@ -504,7 +515,7 @@ func validateConfigTemplateDecl(diags: in List[Diagnostic], decl: in ConfigDecl)
         errorDiagnostic(
           "W0014",
           "config template '" + decl.name + "' field '" + f.name +
-            "' has a type not allowed in a config template; allowed types: Bool, Int, Long, Float, Double, String",
+            "' has a type not allowed in a config template; allowed types: Bool, Int, Long, Float, Double, String, and a range of Int, Long, Float or Double",
           f.ty.span
         )
       )

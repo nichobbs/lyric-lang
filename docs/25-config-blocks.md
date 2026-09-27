@@ -19,7 +19,8 @@ toggles.  Independently useful for application-level configuration.
 > **v1 scope note.** The first implementation ships a deliberately
 > narrow subset of the design below: module-scope `config Name { ... }`
 > blocks; field types limited to `Bool`, `Int`, `Long`, `Float` /
-> `Double`, and `String` (no range subtypes, enums, or lists in v1;
+> `Double`, and `String`, plus inline ranges of the numeric types
+> (`Int range 1 ..= 65535`, #7229; no enums or lists yet;
 > `Long`/`Float`/`Double` added in #2993 — `Float`/`Double` env values
 > parse with `InvariantCulture`, so the accepted format does not vary
 > with host locale); literal defaults only (no imported-constant
@@ -30,8 +31,14 @@ toggles.  Independently useful for application-level configuration.
 > Unsupported field types are rejected at compile time with `G0009`,
 > non-literal or kind-mismatched defaults with `G0010`, and duplicate
 > field names with `G0013` (all enforced by the self-hosted type
-> checker).  Lists, ranges, enums, `via`, and `@sensitive` behaviour
-> are deferred to v1.1; the design below describes the full target.
+> checker).  A range field (#7229, D-progress-995) takes `lo ..= hi`,
+> `lo ..< hi`, `lo ..` or `..= hi` on `Int`/`Long`/`Float`/`Double` with
+> numeric-literal bounds (`G0009` otherwise, and for an empty range); its
+> default must lie inside the range (`G0010`); an env value outside it,
+> including `NaN` for a floating field, stops startup with exit 78
+> (`G0004`) on dotnet and the JVM.  Lists, enums, `via`, and `@sensitive`
+> behaviour are deferred to v1.1; the design below describes the full
+> target.
 
 ---
 
@@ -140,7 +147,7 @@ cleanly from a single environment-variable string:
 | `Long` | base-10 signed long | `LIMIT=1099511627776` |
 | `Float` / `Double` | IEEE-754 round-trip parse, `InvariantCulture`-pinned (host locale never changes the accepted format) | `RATE=0.25` |
 | `String` | the raw env-var content, unmodified | `HOST=app.example.com` |
-| Range subtype (e.g. `Int range 0 ..= 65535`) | parsed as base type, then range-checked | `PORT=8080` |
+| Range of a numeric type (e.g. `Int range 0 ..= 65535`, `Long range 1 ..`) | parsed as base type, then range-checked; `NaN` is outside every floating range | `PORT=8080` |
 | Simple enum (closed sum type, no payloads) | case name, exact match | `LEVEL=Info` |
 | `[T]` where `T` is one of the above | comma-separated, `\,` escapes a literal comma, empty string → `[]` | `EXCLUDE=foo,bar,baz` |
 
@@ -339,8 +346,8 @@ initialisation, separate fail-fast scope.
 | `G0004` | Field value parses but fails range / enum check (runtime, exit code 78). |
 | `G0005` | List field has unbalanced backslash escape (runtime, exit code 78). |
 | `G0008` | Historical: `pub config` rejected outright. Superseded by D121 — `pub config` now declares a config template (§12); `pub` on an *instantiation* is `W0013`. |
-| `G0009` | Disallowed type in `config` field (v1 allows `Bool`, `Int`, `Long`, `Float`, `Double`, `String`). |
-| `G0010` | Field default is not a compile-time literal constant of the declared type. |
+| `G0009` | Disallowed type in `config` field (v1 allows `Bool`, `Int`, `Long`, `Float`, `Double`, `String`, and a range of `Int`/`Long`/`Float`/`Double`), or a malformed range: a bound that is not a numeric literal, a bound that does not fit the field type, or an empty range. |
+| `G0010` | Field default is not a compile-time literal constant of the declared type, or lies outside the field's range.  For an aspect `config { }`, also a `from`-instance value outside the template field's range. |
 | `G0011` | `via "..."` value is not upper-snake. |
 | `G0012` | Two config blocks in the same package share a name. |
 | `G0013` | Field name collision within a single block. |

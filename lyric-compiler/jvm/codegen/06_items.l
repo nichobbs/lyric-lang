@@ -5331,6 +5331,85 @@ record JvmRangeBoundVal {
   d: Double
 }
 
+// The folded bounds of a range-refined config field (#7229) — mirrors
+// `Msil.Codegen.configFieldRange`, including the range text in the G0004
+// message.
+record JvmConfigFieldRange {
+  hasMin: Bool
+  hasMax: Bool
+  upperExclusive: Bool
+  minI: Long
+  maxI: Long
+  minF: Double
+  maxF: Double
+  desc: String
+}
+
+func jvmRangeBoundText(b: in JvmRangeBoundVal): String {
+  if b.isFloat {
+    b.d.toString()
+  } else {
+    b.l.toString()
+  }
+}
+
+func configFieldRangeJvm(te: in TypeExpr): JvmConfigFieldRange {
+  val none = JvmConfigFieldRange(
+    hasMin = false,
+    hasMax = false,
+    upperExclusive = false,
+    minI = 0i64,
+    maxI = 0i64,
+    minF = 0.0,
+    maxF = 0.0,
+    desc = ""
+  )
+  match te.kind {
+    case TRefined(_, rb) -> {
+      val zero = JvmRangeBoundVal(ok = true, isFloat = false, l = 0i64, d = 0.0)
+      val (lo, hi, hasMin, hasMax, excl) = match rb {
+        case RBClosed(loE, hiE) -> (
+          foldRangeBoundJvm(loE),
+          foldRangeBoundJvm(hiE),
+          true,
+          true,
+          false
+        )
+        case RBHalfOpen(loE, hiE, _) -> (
+          foldRangeBoundJvm(loE),
+          foldRangeBoundJvm(hiE),
+          true,
+          true,
+          true
+        )
+        case RBLowerOpen(hiE) -> (zero, foldRangeBoundJvm(hiE), false, true, false)
+        case RBUpperOpen(loE) -> (foldRangeBoundJvm(loE), zero, true, false, false)
+      }
+      if not lo.ok or not hi.ok {
+        panic("Jvm.Codegen ICE: config range bound is not a literal — the type checker (G0009) should have rejected this")
+      }
+      val desc = if hasMin and hasMax {
+        "[" + jvmRangeBoundText(lo) + ", " + jvmRangeBoundText(hi) + (if excl { ")" } else { "]" })
+      } else if hasMin {
+        "(at least " + jvmRangeBoundText(lo) + ")"
+      } else {
+        "(at most " + jvmRangeBoundText(hi) + ")"
+      }
+      JvmConfigFieldRange(
+        hasMin = hasMin,
+        hasMax = hasMax,
+        upperExclusive = excl,
+        minI = lo.l,
+        maxI = hi.l,
+        minF = if lo.isFloat { lo.d } else { lo.l.toDouble() },
+        maxF = if hi.isFloat { hi.d } else { hi.l.toDouble() },
+        desc = desc
+      )
+    }
+    case _ -> none
+  }
+}
+
 func foldRangeBoundJvm(e: in Expr): JvmRangeBoundVal {
   val failVal = JvmRangeBoundVal(ok = false, isFloat = false, l = 0i64, d = 0.0)
   match e.kind {
@@ -7098,6 +7177,7 @@ pub func codegenPackageWithSigsSeeded(
             } else {
               "error: required config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is not set"
             }
+            val cr = configFieldRangeJvm(cf.ty)
             cfgFields.add(
               LConfigField(
                 name = cf.name,
@@ -7105,7 +7185,19 @@ pub func codegenPackageWithSigsSeeded(
                 envVarName = envVarName,
                 hasDefault = hasDefault,
                 defaultInsns = defaultInsnsList,
-                requiredErrMsg = requiredMsg
+                requiredErrMsg = requiredMsg,
+                hasMin = cr.hasMin,
+                hasMax = cr.hasMax,
+                upperExclusive = cr.upperExclusive,
+                minI = cr.minI,
+                maxI = cr.maxI,
+                minF = cr.minF,
+                maxF = cr.maxF,
+                rangeErrMsg = if cr.hasMin or cr.hasMax {
+                  "error: config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is outside its range " + cr.desc
+                } else {
+                  ""
+                }
               )
             )
             cfi = cfi + 1

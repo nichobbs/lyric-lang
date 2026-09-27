@@ -200,3 +200,114 @@ test "required field with no default and no env var exits 78 (subprocess, jvm)" 
       ")"
   )
 }
+
+// #7229: range-refined config fields.  The fixture reads two ranged fields;
+// each run sets their env vars through `env` so the child sees exactly the
+// value under test.  An out-of-range or NaN value must abort in the static
+// initializer with exit 78 (G0004) before `main` prints anything.
+func rangedFixtureSource(): String {
+  "package ConfigRangeFixture\n\n" + "config Limits {\n" + "  port: Int range 1 ..= 65535 = 8080\n" +
+    "  ratio: Double range 0.0 ..< 1.0 = 0.5\n" +
+    "}\n\n" +
+    "func main(): Unit {\n" +
+    "  println(\"port=\" + toString(Limits.port))\n" +
+    "  println(\"ratio=\" + toString(Limits.ratio))\n" +
+    "}\n"
+}
+
+func emitRangedFixture(dir: in String, target: in Emitter.CompileTarget, outName: in String): String {
+  val outPath = Path.join(dir, outName)
+  val srcs: List[String] = newList()
+  srcs.add(rangedFixtureSource())
+  val paths: List[String] = newList()
+  paths.add("")
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(Emitter.ProjectPackage(name = "ConfigRangeFixture", sources = srcs, paths = paths))
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = "ConfigRangeFixture",
+    outputPath = outPath,
+    target = target,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList()
+  )
+  match Emitter.emitProject(req).outputPath {
+    case None -> panic("ranged config fixture: emitProject produced no output (diagnostics on stderr)")
+    case Some(_) -> ()
+  }
+  outPath
+}
+
+// Run `runner args…` under `env <assignments>` and return the capture.
+func runRangedFixture(
+  assignments: in List[String], runner: in String, runnerArgs: in List[String]
+): Capture.CaptureResult {
+  val args: List[String] = newList()
+  for a in assignments.toArray() {
+    args.add(a)
+  }
+  args.add(runner)
+  for a in runnerArgs.toArray() {
+    args.add(a)
+  }
+  val captured = Capture.runCaptureWithDiagnostics("env", args, "")
+  println("ranged fixture stdout: " + captured.stdout)
+  println("ranged fixture stderr: " + captured.stderr)
+  captured
+}
+
+func assertRangedFixtureRuns(label: in String, runner: in String, runnerArgs: in List[String]): Unit {
+  val portVar = "LYRIC_CONFIG_CONFIGRANGEFIXTURE_LIMITS_PORT="
+  val ratioVar = "LYRIC_CONFIG_CONFIGRANGEFIXTURE_LIMITS_RATIO="
+
+  val outOfRange: List[String] = newList()
+  outOfRange.add(portVar + "70000")
+  val bad = runRangedFixture(outOfRange, runner, runnerArgs)
+  assertEqualInt(bad.exitCode, 78, label + ": an out-of-range Int exits 78 (stderr=" + bad.stderr + ")")
+  assertTrue(bad.stderr.contains("Limits.port"), label + ": the message names the field")
+  assertTrue(bad.stderr.contains("[1, 65535]"), label + ": the message gives the range")
+  assertTrue(not bad.stdout.contains("port="), label + ": main does not run")
+
+  val inRange: List[String] = newList()
+  inRange.add(portVar + "443")
+  val good = runRangedFixture(inRange, runner, runnerArgs)
+  assertEqualInt(good.exitCode, 0, label + ": an in-range Int starts (stderr=" + good.stderr + ")")
+  assertTrue(good.stdout.contains("port=443"), label + ": the env value is used")
+  assertTrue(good.stdout.contains("ratio=0.5"), label + ": the in-range default is used")
+
+  val nanRatio: List[String] = newList()
+  nanRatio.add(ratioVar + "NaN")
+  val nan = runRangedFixture(nanRatio, runner, runnerArgs)
+  assertEqualInt(nan.exitCode, 78, label + ": NaN is outside a Double range (stderr=" + nan.stderr + ")")
+  assertTrue(nan.stderr.contains("Limits.ratio"), label + ": the NaN message names the field")
+}
+
+test "range-refined config fields are checked at startup (subprocess, dotnet)" {
+  val dir = freshTempDir("ranged-dotnet")
+  defer {
+    cleanupDir(dir)
+  }
+  val dllPath = emitRangedFixture(dir, Emitter.Dotnet, "ConfigRangeFixture.dll")
+  writeRuntimeConfigBeside(dllPath)
+  val runnerArgs: List[String] = newList()
+  runnerArgs.add("exec")
+  runnerArgs.add(dllPath)
+  assertRangedFixtureRuns("dotnet", "dotnet", runnerArgs)
+}
+
+test "range-refined config fields are checked at startup (subprocess, jvm)" {
+  val dir = freshTempDir("ranged-jvm")
+  defer {
+    cleanupDir(dir)
+  }
+  val jarPath = emitRangedFixture(dir, Emitter.Jvm, "ConfigRangeFixture.jar")
+  val runnerArgs: List[String] = newList()
+  runnerArgs.add("-jar")
+  runnerArgs.add(jarPath)
+  assertRangedFixtureRuns("jvm", "java", runnerArgs)
+}

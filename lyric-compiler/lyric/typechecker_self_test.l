@@ -3265,6 +3265,35 @@ test "config default literal guard" {
   assertEqualInt(diagCount(parseCheck(widen)), 0, "config: Int literal widens to Long/Float/Double")
 }
 
+// #7229: a config field may be a range of Int / Long / Float / Double with
+// literal, non-empty bounds; its default must lie inside the range.
+test "config range fields" {
+  val ok = "package P\nconfig R1 { port: Int range 1 ..= 65535 = 8080; ttl: Long range 1 .. = 60; ratio: Double range 0.0 ..< 1.0 = 0.5; cap: Int range ..= 100; neg: Int range -10 ..= -1 = -5 }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "config: range fields with in-range defaults accepted")
+  val outside = "package P\nconfig R2 { port: Int range 1 ..= 65535 = 0 }\n"
+  assertTrue(hasDiagCode(parseCheck(outside), "G0010"), "config: default below the range is G0010")
+  val exclusive = "package P\nconfig R3 { ratio: Double range 0.0 ..< 1.0 = 1.0 }\n"
+  assertTrue(hasDiagCode(parseCheck(exclusive), "G0010"), "config: default at an exclusive upper bound is G0010")
+  val nonLit = "package P\nval lo = 1\nconfig R4 { port: Int range lo ..= 10 }\n"
+  assertTrue(hasDiagCode(parseCheck(nonLit), "G0009"), "config: a non-literal bound is G0009")
+  val empty = "package P\nconfig R5 { n: Int range 10 ..= 1 }\n"
+  assertTrue(hasDiagCode(parseCheck(empty), "G0009"), "config: an empty range is G0009")
+  val floatBound = "package P\nconfig R6 { n: Int range 0 ..= 1.5 }\n"
+  assertTrue(hasDiagCode(parseCheck(floatBound), "G0009"), "config: a float bound on an Int field is G0009")
+  val wide = "package P\nconfig R7 { n: Int range 0 ..= 3000000000 }\n"
+  assertTrue(hasDiagCode(parseCheck(wide), "G0009"), "config: an Int bound outside Int is G0009")
+  val str = "package P\nconfig R8 { s: String range 1 ..= 2 }\n"
+  assertTrue(hasDiagCode(parseCheck(str), "G0009"), "config: a range of String is G0009")
+}
+
+// #7229: an aspect's own ranged config field is checked like a config block's.
+test "aspect config range fields" {
+  val bad = "package P\naspect Twice {\n  matches: name in { work }\n  config {\n    times: Int range 1 ..= 5 = 9\n  }\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\nfunc work(x: in Int): Int = x\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "G0010"), "aspect config: default outside the range is G0010")
+  val ok = "package P\naspect Twice {\n  matches: name in { work }\n  config {\n    times: Int range 1 ..= 5 = 2\n  }\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\nfunc work(x: in Int): Int = x\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "G0010"), "aspect config: in-range default accepted")
+}
+
 test "config duplicate field" {
   val dup = "package P\nconfig S7 { p: Int = 1; p: Int = 2 }\n"
   assertTrue(hasDiagCode(parseCheck(dup), "G0013"), "config: duplicate field rejected with G0013")

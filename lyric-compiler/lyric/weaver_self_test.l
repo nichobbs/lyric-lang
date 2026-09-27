@@ -1449,8 +1449,7 @@ test "config.<field> referenced only inside a for-loop range bound still materia
 }
 
 test "call.<field> referenced only inside a forall(...) where/body still materialises its prelude local" {
-  val src = "package P\n" + "aspect Trace {\n" + "  matches: name like \"handle*\"\n" +
-    "  around(args) -> ret {\n" +
+  val src = "package P\n" + "aspect Trace {\n" + "  matches: name like \"handle*\"\n" + "  around(args) -> ret {\n" +
     "    val ok = forall(i: Int) where i < 10 implies call.shortName.length > 0\n" +
     "    proceed(args)\n" +
     "  }\n" +
@@ -1460,7 +1459,11 @@ test "call.<field> referenced only inside a forall(...) where/body still materia
   val wrapper = firstFunction(woven, "handleX")
   val body = functionBody(wrapper)
   val sn = findValInit(body, "__lyric_call_shortName")
-  assertEqual(literalStringValue(sn), "handleX", "call.shortName reachable only via forall's body still materialises __lyric_call_shortName")
+  assertEqual(
+    literalStringValue(sn),
+    "handleX",
+    "call.shortName reachable only via forall's body still materialises __lyric_call_shortName"
+  )
 }
 
 test "non-template aspects leave args.<field> alone" {
@@ -1885,4 +1888,32 @@ test "weaveFileWithDiagsAndTemplates also weaves inline aspects (no from)" {
   val wrapper = firstFunction(wr.file, "doWork")
   val body = functionBody(wrapper)
   assertTrue(bodyDefinesLocal(body, "__inline"), "inline around body injected: var __inline defined")
+}
+
+// #7229: a template's range-refined config field keeps its range when an
+// instance overrides the value, so an out-of-range override is G0010 and an
+// in-range one is accepted.
+test "from-instance config override is checked against the template field's range" {
+  val tplSrc = "package Lib.Rate\n" + "pub aspect Limit {\n" + "  config {\n" +
+    "    perMinute: Int range 1 ..= 1000 = 60\n" +
+    "  }\n" +
+    "  matches: name like \"*\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val __cap = perMinute\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Rate")
+  val badSrc = "package App\n" + "aspect MyLimit from Lib.Rate.Limit {\n" + "  matches: name like \"doWork\"\n" +
+    "  config { perMinute: Int = 0 }\n" +
+    "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val bad = weaveWithTemplates(badSrc, templates)
+  assertTrue(diagsHaveCode(bad.diagnostics, "G0010"), "override below the template's range is G0010")
+  val okSrc = "package App\n" + "aspect MyLimit from Lib.Rate.Limit {\n" + "  matches: name like \"doWork\"\n" +
+    "  config { perMinute: Int = 500 }\n" +
+    "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val ok = weaveWithTemplates(okSrc, templates)
+  assertTrue(not diagsHaveCode(ok.diagnostics, "G0010"), "override inside the template's range is accepted")
 }

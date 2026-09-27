@@ -19,7 +19,8 @@ Each field in a `config` block declares:
 - A type (any primitive or `String`).
 - An optional range constraint for numeric fields.
 - An optional default value.  Fields without a default are *required*; the
-  process panics at startup if a required field's env var is absent.
+  process stops at startup with exit code 78 if a required field's env var is
+  absent.
 
 ## Environment variable naming
 
@@ -75,7 +76,9 @@ suppressed.
 
 ## Range constraints
 
-Numeric fields accept `range <lo> ..= <hi>` to restrict the valid domain:
+`Int`, `Long`, `Float` and `Double` fields accept a range to restrict the valid
+domain: `lo ..= hi`, `lo ..< hi`, `lo ..` (at least `lo`) or `..= hi` (at most
+`hi`).  The bounds must be numeric literals:
 
 ```lyric
 config Cache {
@@ -84,8 +87,22 @@ config Cache {
 }
 ```
 
-The range is enforced at startup: a value outside the range is treated as
-a missing required field (process panics with a descriptive message).
+The range is enforced at startup.  If the env var holds a value outside the
+range, the process stops before `main` runs with exit code 78 (G0004) and a
+message naming the field, its env var and the range:
+
+```
+error: config field Cache.ttlSeconds (env var LYRIC_CONFIG_APP_CACHE_TTLSECONDS) is outside its range [0, 86400]
+```
+
+`NaN` is outside every `Float` or `Double` range.  A default outside the range
+is a compile error (G0010), and so is a malformed range: a bound that is not a
+literal, an empty range, or a range on a non-numeric field (G0009).
+
+An aspect's `config { }` fields may be ranges too.  Their values are fixed at
+compile time, so a value outside the range, whether the template's default or
+an instance's override, is a compile error (G0010).  An instance overriding a
+ranged template field is checked against the template's range.
 
 ## Library config blocks
 

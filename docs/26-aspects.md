@@ -710,7 +710,12 @@ per §6):
    load. A `config { }` field may be referenced either qualified
    (`config.minLen`) or by its bare name (`minLen`); both lower to the
    same materialised constant. The bare form is what the first-party
-   aspect libraries use. A bare reference is resolved to the config
+   aspect libraries use. A config field may be a numeric range
+   (`perMinute: Int range 1 ..= 1000 = 60`); since aspect config values
+   are compile-time literals, a template default or an instance's override
+   outside the range is `G0010` at compile time, and an instance overriding
+   a ranged template field is checked against the template's range
+   (#7229). A bare reference is resolved to the config
    field only when it does not name a parameter of the matched function
    (parameters shadow like-named config fields; use the qualified
    `config.<field>` form to disambiguate). **Note:** local variable
