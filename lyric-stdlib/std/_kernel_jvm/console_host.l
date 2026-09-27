@@ -140,7 +140,7 @@ func readChunk(s: in JInputStream): slice[Byte] {
   acc.toByteArray()
 }
 
-// One `readChunk` run on a virtual thread. The chunk (or the failure message)
+// One `readChunk` run on a daemon thread. The chunk (or the failure message)
 // is recorded before `done` is set.
 record StdinReadJob {
   stream: JInputStream
