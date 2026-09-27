@@ -5043,7 +5043,12 @@ test "s.substring(start, count) with a wrong argument type is T0043" {
   assertTrue(hasDiagCode(parseCheck(src), "T0043"), "substring's start must be Int")
 }
 
-test "s.substring() result used as Int is T0043 (return type known)" {
+test "a user member named substring keeps its full arity" {
+  val src = "package P\nrecord R { substring: (Int, Int, Int) -> String }\nfunc f(r: in R): String {\n  r.substring(1, 2)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0042"), "the optional-count rule applies only to String receivers")
+}
+
+test "s.substring(start) result used as Int is T0043 (return type known)" {
   val src = "package P\nfunc wantInt(x: in Int): Int { x }\nfunc f(s: in String): Int { wantInt(s.substring(0)) }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0043"), "substring returns String, not Int")
 }

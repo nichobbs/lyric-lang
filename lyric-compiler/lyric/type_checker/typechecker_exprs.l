@@ -4095,13 +4095,22 @@ func ctorResultType(sym: in Symbol): Type {
 
 // How many trailing parameters of a codegen builtin's signature may be
 // omitted at a call: `assert`'s message.  Zero for every other callee.
-func builtinOptionalTrailingArgs(fn: in Expr): Int {
+func builtinOptionalTrailingArgs(fn: in Expr, recvTy: in Option[Type]): Int {
   match fn.kind {
     case EPath(p) -> if p.segments.count == 1 and p.segments[0] == "assert" { 1 } else { 0 }
     // #7335: `s.substring(start)` / `s.substring(start, count)` — the second
-    // `Int` param `stringHostMethodType` declares is optional.
-    case EMember(_, mname) -> if mname == "substring" { 1 } else { 0 }
+    // `Int` param `stringHostMethodType` declares is optional.  Only for a
+    // `String` receiver: a user member that happens to be named `substring`
+    // keeps its full arity.
+    case EMember(_, mname) -> if mname == "substring" and isStringReceiver(recvTy) { 1 } else { 0 }
     case _ -> 0
+  }
+}
+
+func isStringReceiver(recvTy: in Option[Type]): Bool {
+  match recvTy {
+    case Some(t) -> match t { case TyPrim(p) -> match p { case PtString -> true; case _ -> false }; case _ -> false }
+    case None -> false
   }
 }
 
@@ -6388,7 +6397,7 @@ func inferExprCore(
                   }
                   match fnT {
                     case TyFunction(paramTypes, ret, _) -> {
-                      val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn)
+                      val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
                       if argTypes.count > paramTypes.count or argTypes.count < minArgs {
                         val expectedMsg = if minArgs == paramTypes.count {
                           toString(paramTypes.count) + " argument(s)"

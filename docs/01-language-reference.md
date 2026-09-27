@@ -1984,6 +1984,7 @@ form with the import in scope call the explicit
 | `s.trimStart()` | `String` | leading whitespace removed |
 | `s.trimEnd()` | `String` | trailing whitespace removed |
 | `s.replace(old, new)` | `String` | all occurrences |
+| `s.split(sep)` | `slice[String]` | pieces between occurrences of `sep`; `[s]` when absent |
 | `s.indexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | first index; `None` / `-1` if absent; ordinal |
 | `s.lastIndexOf(sub)` | `Option[Int]` with `import Std.String` (either form); else `Int` | last index; `None` / `-1` if absent; ordinal |
 | `s.contains(sub)` | `Bool` | |
