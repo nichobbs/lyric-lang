@@ -904,7 +904,7 @@ compiler.
 | `A0044` | `config.<field>` references a `config { }` field declared without a literal default.  Env-var resolution per §8 is not yet wired; until it lands, the field must have a literal default to be referenced from the aspect body.  Surfaced at weave time to replace the confusing downstream "config not declared" type error. |
 | `A0045` | `aspect … from Pkg.Template` template not found in the build.  The `from` path could not be resolved from the available packages; the instance is silently dropped (no weaving).  Ensure the template package is listed in `[dependencies]` in `lyric.toml`. |
 | `A0046` | A `from`-instance resolves to a B′-mode template (no `@inline_template`) whose body references `args.<field>` outside of what a `where TArgs has { ... }` row clause declares (docs/56 / D115) — B′-mode `args` is opaque by default (docs/27 §6.1.1). Mark the template `@inline_template` to opt into C-mode field access, declare the field(s) in a row clause, or remove the reference. |
-| `A0047` | A row-constrained B′-mode template's `where TArgs has { field: Type, ... }` clause is not satisfied by a specific matched function: either it has no parameter named `field` at all, or it has one whose type doesn't match (docs/56 / D115) — the message distinguishes the two cases. Weaving still proceeds with that field omitted from the args-record construction, so the type-checker also flags the incomplete record literal. |
+| `A0047` | A row-constrained B′-mode template's `where TArgs has { field: Type, ... }` clause is not satisfied by a specific matched function: either it has no parameter named `field` at all, or it has one whose type doesn't match (docs/56 / D115) — the message distinguishes the two cases. The type comparison resolves each side's spelling against its own file's imports before comparing (#7336), so a bare name under a whole-package import, its fully-qualified form, and an aliased-import spelling are all accepted as the same type; an ambiguous or genuinely different type (even one sharing a short name) still fails closed. Weaving still proceeds with that field omitted from the args-record construction, so the type-checker also flags the incomplete record literal. |
 | `A0048` | A `from`-instance's `config { }` field declares its own range (`perMinute: Int range 1 ..= 2000 = 500`). The instance supplies values only; write the base type, and a ranged template field keeps the template's range (#7229). |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
@@ -1309,6 +1309,27 @@ downstream error inside the shared specialised function. A row clause only
 ever widens what `args.<field>` a B′-mode template may read — it never
 requires the matched function's parameter list to be *exactly* the declared
 fields; unrelated parameters are simply ignored.
+
+The type comparison is against the RESOLVED type, not the raw spelling
+(#7336): a row clause written `where TArgs has { ctx: Lambda.LambdaContext }`
+is satisfied by a matched function parameter spelled `ctx: in LambdaContext`
+when the consumer's file has `import Lambda` in scope (a whole-package
+import brings `LambdaContext` into unqualified scope, per §9.2 of the
+language reference), by `ctx: in Lambda.LambdaContext` (identical spelling),
+and by `ctx: in L.LambdaContext` under `import Lambda as L`. Both the row
+clause's declared type and the matched function's parameter type are
+normalised against their OWN file's imports — the template's declaring
+package for the former, the consumer's for the latter — recursively through
+generic arguments, slices, arrays, tuples, nullable types, and function
+types (so `List[LambdaContext]` matches `List[Lambda.LambdaContext]` the
+same way). A bare name that resolves to two or more distinct packages across
+a file's imports is ambiguous and is conservatively treated as never
+matching, so a genuinely different type that merely shares a short name
+(`A.Ctx` vs. `B.Ctx`) still fails closed to `A0047` rather than risk a false
+accept. A bare name that no import resolves at all (a same-package local
+type, or a no-import-needed prelude type such as `String`/`List`/`Option`)
+compares by its bare spelling on both sides, matching the pre-#7336
+behaviour for that case.
 
 ---
 

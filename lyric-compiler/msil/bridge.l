@@ -354,7 +354,7 @@ pub func compileToMsilWithVersion(
   // single-file build, not just multi-package project builds with a path
   // dependency.
   val singleFileTemplates: Map[String, CollectedTemplate] = newMap()
-  Weaver.collectAspectTemplates(file.items, pkgName, singleFileTemplates)
+  Weaver.collectAspectTemplates(file.items, pkgName, file.imports, singleFileTemplates)
   // #6826 fast-follow: label with the real on-disk `path` (already in
   // scope, and already used by the parse phase above), matching every
   // other phase's attribution for a single-file build — a weave-time
@@ -1207,7 +1207,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   val allTemplates: Map[String, CollectedTemplate] = newMap()
   var tpi = 0
   while tpi < perPkgFiles.count {
-    Weaver.collectAspectTemplates(perPkgFiles[tpi].items, perPkgNames[tpi], allTemplates)
+    Weaver.collectAspectTemplates(perPkgFiles[tpi].items, perPkgNames[tpi], perPkgFiles[tpi].imports, allTemplates)
     tpi = tpi + 1
   }
   // Also collect templates from path-dependency source packages (#3498 partial fix).
@@ -1230,7 +1230,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // every cross-package aspect error path (caught when the T0115
     // ldnull backstop made the class loud).
     val dtRewritten = Aliases.rewriteFile(dtParseRes.file)
-    Weaver.collectAspectTemplates(dtRewritten.items, dtPkg.name, allTemplates)
+    Weaver.collectAspectTemplates(dtRewritten.items, dtPkg.name, dtRewritten.imports, allTemplates)
     dti = dti + 1
   }
 

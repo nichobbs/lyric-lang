@@ -1493,7 +1493,7 @@ test "non-template aspects leave args.<field> alone" {
 func makeTemplates(src: in String, pkgName: in String): Map[String, CollectedTemplate] {
   val pr = parse(src)
   val dest: Map[String, CollectedTemplate] = newMap()
-  collectAspectTemplates(pr.file.items, pkgName, dest)
+  collectAspectTemplates(pr.file.items, pkgName, pr.file.imports, dest)
   dest
 }
 
@@ -1699,6 +1699,99 @@ test "B'-mode row-constrained template emits A0047 for a type mismatch" {
   assertTrue(
     not Str.contains(msg, "has no parameter named"),
     "A0047 type-mismatch message must not claim a missing parameter"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7336 — A0047 compares RESOLVED types, not spellings.  The template's row
+// clause names `Lambda.LambdaContext`; the consumer's matched function may
+// spell the same type unqualified (via a whole-package `import Lambda`),
+// qualified, or through an aliased import, and must not be rejected merely
+// because the raw text differs.
+// ─────────────────────────────────────────────────────────────────────────────
+test "A0047 accepts an unqualified consumer spelling resolved via a whole-package import" {
+  val tplSrc = "package Lib.Aspects\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ctx: Lambda.LambdaContext } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "import Lambda\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(ctx: in LambdaContext): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(
+    not diagsHaveCode(wr.diagnostics, "A0047"),
+    "unqualified 'LambdaContext' under 'import Lambda' resolves to the same type as 'Lambda.LambdaContext'"
+  )
+}
+
+test "A0047 accepts a fully-qualified consumer spelling matching the row clause" {
+  val tplSrc = "package Lib.Aspects\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ctx: Lambda.LambdaContext } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" + "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(ctx: in Lambda.LambdaContext): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0047"), "identical qualified spelling on both sides matches")
+}
+
+test "A0047 accepts a consumer spelling resolved through an aliased import" {
+  val tplSrc = "package Lib.Aspects\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ctx: Lambda.LambdaContext } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "import Lambda as L\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(ctx: in L.LambdaContext): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(
+    not diagsHaveCode(wr.diagnostics, "A0047"),
+    "'L.LambdaContext' under 'import Lambda as L' resolves to 'Lambda.LambdaContext'"
+  )
+}
+
+test "A0047 still rejects the same short name resolved from a different package" {
+  val tplSrc = "package Lib.Aspects\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ctx: A.Ctx } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "import B\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(ctx: in Ctx): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(
+    diagsHaveCode(wr.diagnostics, "A0047"),
+    "'Ctx' resolved via 'import B' (B.Ctx) must not be accepted for a row clause declaring 'A.Ctx'"
+  )
+}
+
+test "A0047 normalises generic type arguments recursively" {
+  val tplSrc = "package Lib.Aspects\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ctxList: List[Lambda.LambdaContext] } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val consumeSrc = "package App\n" + "import Lambda\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleOne(ctxList: in List[LambdaContext]): Int { 1 }\n"
+  val wr = weaveWithTemplates(consumeSrc, templates)
+  assertTrue(
+    not diagsHaveCode(wr.diagnostics, "A0047"),
+    "'List[LambdaContext]' resolves element-wise to 'List[Lambda.LambdaContext]'"
   )
 }
 
