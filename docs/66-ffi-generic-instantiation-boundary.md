@@ -203,6 +203,14 @@ PR's scope alongside everything else, and — per CLAUDE.md's standard — a
 smaller, fully-finished slice (the explicit `@externTarget` path) beats a
 half-finished larger one.
 
+Also not covered: a parameter/return type that reaches the bracket-suffixed
+alias only through an `alias Foo = ProtoList` indirection rather than a
+direct reference. `externTargetBracketGenericInstMsil` only consults
+`cctx.externTypeNames`, not `cctx.aliasTargets`, so an indirected reference
+falls through to the pre-existing `MObject` erasure — not a regression (the
+old bug simply persists one level of indirection away), just a narrower
+recovery than the general erasure convention's own alias-chain following.
+
 ## 6. `#5624` — not part of this family
 
 `#5624` bundles four items under the same tracking label as the six issues

@@ -22374,16 +22374,35 @@ func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
 //
 // None when `te` isn't a bare single-segment extern-type-alias reference, the
 // alias resolves to a Lyric-internal package (never bracket-erased in the
-// first place), or its CLR FQN carries no bracket suffix (nothing to
-// recover) — the caller falls back to the ordinary `typeExprToMsilCtx`
-// conversion in every such case.
-func externTargetBracketGenericInstMsil(cctx: in CodegenCtx, te: in TypeExpr): Option[MsilType] {
+// first place), its CLR FQN carries no bracket suffix (nothing to recover),
+// or the bare name is shadowed by an active generic type parameter or an
+// in-scope local Lyric type of the same name — the caller falls back to the
+// ordinary `typeExprToMsilCtx` conversion (which already applies both
+// shadowing checks correctly) in every such case.
+//
+// `cctx.externTypeNames` is bundle-global, not package-scoped (its own
+// comments say so), so a same-named local generic parameter or Lyric type in
+// ONE package can collide with an unrelated package's bracket-suffixed
+// extern-type alias elsewhere in the same compiled bundle. Skipping these two
+// guards — the exact ones `typeExprToMsilCtx`'s `TRef` branch already applies
+// to this same map, for this same reason (`cctx.pbGenerics`; `#6041`'s
+// `hasLyricTypeCandidateInScope`) — would let this helper resolve to the
+// wrong type before the correctly-guarded fallback path ever got a chance,
+// a silent miscompile rather than a build error.
+func externTargetBracketGenericInstMsil(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): Option[MsilType] {
   match te.kind {
     case TRef(path) -> {
       if path.segments.count != 1 {
         return None
       }
-      match mapGet(cctx.externTypeNames, path.segments[0]) {
+      val seg = path.segments[0]
+      if nameListContains(cctx.pbGenerics, seg) {
+        return None
+      }
+      if hasLyricTypeCandidateInScope(cctx, pkgName, seg) {
+        return None
+      }
+      match mapGet(cctx.externTypeNames, seg) {
         case Some(clrFqn) -> {
           if startsWith(clrFqn, "Lyric.") or not contains(clrFqn, "[") {
             None
@@ -23668,7 +23687,7 @@ func emitExternTargetBody(
           // `emitGenericExternMember` instead) but loses the type entirely for
           // an unrelated method's argument. Bounded to `@externTarget`
           // parameters only, mirroring the `TFunction` case above.
-          case _ -> match externTargetBracketGenericInstMsil(cctx, decl.params[pi].ty) {
+          case _ -> match externTargetBracketGenericInstMsil(cctx, decl.params[pi].ty, pkgName) {
             case Some(gi) -> gi
             case None -> typeExprToMsilGenBodyOrCtx(cctx, decl.params[pi].ty, pkgName, declGenerics)
           }
@@ -23680,7 +23699,7 @@ func emitExternTargetBody(
       val retTy = match decl.ret {
         case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te, pkgName) {
           case Some(rt) -> rt
-          case None -> match externTargetBracketGenericInstMsil(cctx, te) {
+          case None -> match externTargetBracketGenericInstMsil(cctx, te, pkgName) {
             case Some(gi) -> gi
             case None -> typeExprToMsilGenBodyOrCtx(
               cctx,
