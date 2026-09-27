@@ -202,7 +202,14 @@ pub func runRestoreWithRetry(restoreArgs: in List[String], label: in String): In
     val captureResult = try {
       ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", effectiveArgs, "", 300000)
     } catch Bug as b {
-      CaptureResult(stdout = "", stderr = b.message, stdoutBytes = [], stderrBytes = [], exitCode = -1, timedOut = false)
+      ProcessCapture.CaptureResult(
+        stdout = "",
+        stderr = b.message,
+        stdoutBytes = [],
+        stderrBytes = [],
+        exitCode = -1,
+        timedOut = false
+      )
     }
     if not Str.isEmpty(captureResult.stdout) {
       Console.print(captureResult.stdout)
@@ -477,7 +484,7 @@ pub func resolveProjectSources(manifestArg: in Option[String]): ProjectSourcesRe
 // lock read/parse failure so a fresh restore corrects a corrupt lock.  The
 // lock is resolved at the workspace root when one is found, else beside the
 // manifest, matching `runRestore`'s own lock placement.
-func lockNeedsRestore(mfPath: in String, manifest: in Manifest): Bool {
+func lockNeedsRestore(mfPath: in String, manifest: in Mf.Manifest): Bool {
   if manifest.deps.count == 0 {
     return false
   }

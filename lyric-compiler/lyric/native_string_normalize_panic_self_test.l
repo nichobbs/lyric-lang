@@ -73,7 +73,7 @@ func attemptCompile(source: in String, stem: in String): CompileOutcome {
 test "s.isNormalized() panics at native compile time instead of self-recursing (#7304)" {
   val dir = Path.join(tempBase(), "lyric-native-normalize-panic-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val source = "package NativeIsNormalizedRepro\n" + "import Std.String\n" + "func main(): Unit {\n" +
     "  val s = \"cafe\"\n" +
     "  val _ = s.isNormalized()\n" +
@@ -89,7 +89,7 @@ test "s.isNormalized() panics at native compile time instead of self-recursing (
 test "s.normalize() panics at native compile time instead of self-recursing (#7304)" {
   val dir = Path.join(tempBase(), "lyric-native-normalize-panic-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val source = "package NativeNormalizeRepro\n" + "import Std.String\n" + "func main(): Unit {\n" +
     "  val s = \"cafe\"\n" +
     "  val _ = s.normalize()\n" +
@@ -105,7 +105,7 @@ test "s.normalize() panics at native compile time instead of self-recursing (#73
 test "other native String methods unaffected by the isNormalized/normalize guard (#7304)" {
   val dir = Path.join(tempBase(), "lyric-native-normalize-panic-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val source = "package NativeStringUnaffectedRepro\n" + "func main(): Unit {\n" + "  val s = \"  hi  \"\n" +
     "  val _ = s.trim()\n" +
     "  val _ = s.toLower()\n" +

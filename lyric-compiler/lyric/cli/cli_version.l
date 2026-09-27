@@ -185,7 +185,7 @@ func updateVersionInFile(filePath: in String, newVersion: in String): Int {
   }
   val manifest = match Mf.parseManifest(text, filePath) {
     case Err(e) -> {
-      printErr("version: cannot parse " + filePath + ": " + ManifestError.message(e))
+      printErr("version: cannot parse " + filePath + ": " + Mf.ManifestError.message(e))
       return 1
     }
     case Ok(m) -> m
@@ -260,7 +260,10 @@ func cmdVersionWorkspace(newVersion: in String, startDir: in String): Int {
     }
     val ver = match File.readText(mfPath) {
       case Err(_) -> "(read error)"
-      case Ok(t) -> match Mf.parseManifest(t, mfPath) { case Err(_) -> "(parse error)"; case Ok(m) -> m.packageSection.version }
+      case Ok(t) -> match Mf.parseManifest(t, mfPath) {
+        case Err(_) -> "(parse error)"
+        case Ok(m) -> m.packageSection.version
+      }
     }
     Console.println("  " + member.name + " " + ver)
     if firstVersion.length == 0 {
@@ -362,7 +365,7 @@ pub func cmdVersion(argv: in slice[String]): Int {
   }
   match Mf.parseManifest(text, mfPath) {
     case Err(e) -> {
-      printErr("version: cannot parse " + mfPath + ": " + ManifestError.message(e))
+      printErr("version: cannot parse " + mfPath + ": " + Mf.ManifestError.message(e))
       return 1
     }
     case Ok(m) -> {

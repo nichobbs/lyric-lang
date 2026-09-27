@@ -443,7 +443,7 @@ test "withProfileDefine: a user define still wins under last-wins (#6267)" {
 func parseTestManifest(toml: in String): Mf.Manifest {
   match Mf.parseManifest(toml, "test.toml") {
     case Ok(m) -> m
-    case Err(e) -> panic("test manifest failed to parse: " + ManifestError.message(e))
+    case Err(e) -> panic("test manifest failed to parse: " + Mf.ManifestError.message(e))
   }
 }
 

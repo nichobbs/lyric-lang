@@ -75,8 +75,8 @@ func emitTestPlainOrProject(
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
 ): NonNativeEmitOutcome {
-  val tgt = if targetJvm { Jvm } else { Dotnet }
-  val req = EmitRequest(
+  val tgt = if targetJvm { Emitter.Jvm } else { Emitter.Dotnet }
+  val req = Emitter.EmitRequest(
     source = rewritten,
     assemblyName = stem,
     outputPath = outPath,
@@ -96,14 +96,16 @@ func emitTestPlainOrProject(
 // config to merge — triple/opt/extra_libs use the emitter's own defaults
 // (host triple, `-O2`, none), exactly like `lyric build <file.l> --target
 // native` with no CLI knobs and no manifest.
-func emitTestNative(rewritten: in String, stem: in String, outPath: in String, sourcePath: in String): EmitResult {
+func emitTestNative(
+  rewritten: in String, stem: in String, outPath: in String, sourcePath: in String
+): Emitter.EmitResult {
   val noLibs: List[String] = newList()
   Emitter.emitNative(
-    EmitRequest(
+    Emitter.EmitRequest(
       source = rewritten,
       assemblyName = stem,
       outputPath = outPath,
-      target = Native,
+      target = Emitter.Native,
       packageVersion = "",
       defines = newList(),
       path = sourcePath
@@ -122,7 +124,7 @@ func emitTestLinked(
   outPath: in String,
   compilerDlls: in List[String],
   sourcePath: in String,
-): EmitResult {
+): Emitter.EmitResult {
   val testSrcs: List[String] = newList()
   testSrcs.add(rewritten)
   val testPaths: List[String] = newList()
@@ -133,18 +135,18 @@ func emitTestLinked(
   // (#2564).
   val rawPkgName = firstPackageNameOf(rewritten)
   val testPkgName = if rawPkgName.length > 0 { rawPkgName } else { stem }
-  val testPkgs: List[ProjectPackage] = newList()
-  testPkgs.add(ProjectPackage(name = testPkgName, sources = testSrcs, paths = testPaths))
+  val testPkgs: List[Emitter.ProjectPackage] = newList()
+  testPkgs.add(Emitter.ProjectPackage(name = testPkgName, sources = testSrcs, paths = testPaths))
   val activeF: List[String] = newList()
   val declaredF: List[String] = newList()
-  val noDepTemplateSrcs: List[ProjectPackage] = newList()
+  val noDepTemplateSrcs: List[Emitter.ProjectPackage] = newList()
   val emptyNugetPaths: List[String] = newList()
   Emitter.emitProject(
-    EmitProjectRequest(
+    Emitter.EmitProjectRequest(
       packages = testPkgs,
       assemblyName = stem,
       outputPath = outPath,
-      target = Dotnet,
+      target = Emitter.Dotnet,
       restoredDllPaths = compilerDlls,
       activeFeatures = activeF,
       declaredFeatures = declaredF,
@@ -649,7 +651,13 @@ func cmdTest(argv: in slice[String]): Int {
   val cfgEmptyActive: List[String] = newList()
   val cfgEmptyDeclared: List[String] = newList()
   val cfgNoManifestOverride: Option[String] = None
-  val cfgTestTarget: CompileTarget = if targetJvm { Jvm } else if targetNative { Native } else { Dotnet }
+  val cfgTestTarget: Emitter.CompileTarget = if targetJvm {
+    Emitter.Jvm
+  } else if targetNative {
+    Emitter.Native
+  } else {
+    Emitter.Dotnet
+  }
   val (cfgActive, cfgDeclared) = if targetNative {
     (cfgEmptyActive, cfgEmptyDeclared)
   } else {
@@ -995,7 +1003,7 @@ func resolveDepDllPath(tomlPath: in String, ext: in String): Result[DepDllInfo, 
   }
   val mf = match Mf.parseManifest(mfText, tomlPath) {
     case Ok(m) -> m
-    case Err(e) -> return Err(error = "malformed lyric.toml at '" + tomlPath + "': " + ManifestError.message(e))
+    case Err(e) -> return Err(error = "malformed lyric.toml at '" + tomlPath + "': " + Mf.ManifestError.message(e))
   }
   val pkgName = mf.packageSection.name
   val dllName = match mf.project {
@@ -1012,7 +1020,7 @@ func cmdTestManifest(
   targetJvm: in Bool,
   failFast: in Bool,
   runProperties: in Bool,
-  propCfg: in PropertyRunConfig,
+  propCfg: in TestSynth.PropertyRunConfig,
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
@@ -1024,14 +1032,14 @@ func cmdTestManifest(
       return 1
     }
   }
-  val manifest: Manifest = match Mf.parseManifest(mfText, mfPath) {
+  val manifest: Mf.Manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m
     case Err(e) -> {
-      printErr("test: " + ManifestError.message(e))
+      printErr("test: " + Mf.ManifestError.message(e))
       return 1
     }
   }
-  val proj: ProjectSection = match manifest.project {
+  val proj: Mf.ProjectSection = match manifest.project {
     case Some(p) -> p
     case None -> {
       printErr("test: " + mfPath + " has no [project] section")
@@ -1144,7 +1152,7 @@ func cmdTestManifest(
   }
 
   val testExt = if targetJvm { ".jar" } else { ".dll" }
-  val testTarget: CompileTarget = if targetJvm { Jvm } else { Dotnet }
+  val testTarget: Emitter.CompileTarget = if targetJvm { Emitter.Jvm } else { Emitter.Dotnet }
 
   // Resolve active feature set from manifest defaults + CLI flags via the
   // same shared resolver `lyric build` uses (D045, #5571): `--all-features`
@@ -1174,7 +1182,7 @@ func cmdTestManifest(
   val cfgActiveWithTarget = Cfg.withTargetFeature(activeFeatures, targetFeatureName(testTarget))
 
   // Build ProjectPackage entries from [project.packages], matching buildProject.
-  val libPkgs: List[ProjectPackage] = newList()
+  val libPkgs: List[Emitter.ProjectPackage] = newList()
   var hadFatal = false
   var pi = 0
   while pi < proj.packages.count {
@@ -1306,7 +1314,7 @@ func cmdTestManifest(
         libPaths.add(singleFilePkgPath)
         lpi += 1
       }
-      libPkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = libPaths))
+      libPkgs.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = libPaths))
     }
     pi += 1
   }
@@ -1416,7 +1424,7 @@ func cmdTestManifest(
           }
           case Err(e) -> {
             Console.println(
-              "test: warning: cannot parse manifest at '" + dfsToml + "': " + ManifestError.message(e) +
+              "test: warning: cannot parse manifest at '" + dfsToml + "': " + Mf.ManifestError.message(e) +
                 "; transitive deps may be missing from build order"
             )
           }
@@ -1488,7 +1496,7 @@ func cmdTestManifest(
     wi += 1
   }
   val depBinDirs: List[String] = newList()
-  val depTemplatePkgsList: List[ProjectPackage] = newList()
+  val depTemplatePkgsList: List[Emitter.ProjectPackage] = newList()
   // The `@cfg` features each bundled dependency package is erased with
   // (`collectDepPackageFeatures`, #7378).
   val depPackageFeatures: List[Pipe.PackageFeatureSet] = newList()
@@ -1591,7 +1599,7 @@ func cmdTestManifest(
                           }
                         }
                         if srcList.count > 0 {
-                          depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList, paths = srcPathList))
+                          depTemplatePkgsList.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = srcPathList))
                         }
                         pki += 1
                       }
@@ -1812,7 +1820,7 @@ func cmdTestManifest(
     // the project contains more than one `package` declaration.
     // Add the test package FIRST so its synthesized main() is recorded as the
     // entry point by the first-wins semantics in addPackageTokens (#2885).
-    val allPkgs: List[ProjectPackage] = newList()
+    val allPkgs: List[Emitter.ProjectPackage] = newList()
     val testSrcs: List[String] = newList()
     testSrcs.add(rewritten)
     val testPaths: List[String] = newList()
@@ -1821,7 +1829,7 @@ func cmdTestManifest(
     // manifest-relative whenever the manifest names the test with a
     // relative path.
     testPaths.add(abs)
-    allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs, paths = testPaths))
+    allPkgs.add(Emitter.ProjectPackage(name = testEntry.name, sources = testSrcs, paths = testPaths))
     var si = 0
     while si < libPkgs.count {
       allPkgs.add(libPkgs[si])
@@ -1830,7 +1838,7 @@ func cmdTestManifest(
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + testExt)
 
-    val projReq = EmitProjectRequest(
+    val projReq = Emitter.EmitProjectRequest(
       packages = allPkgs,
       assemblyName = asmStem,
       outputPath = outPath,

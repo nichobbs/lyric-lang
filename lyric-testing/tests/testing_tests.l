@@ -56,35 +56,35 @@ func makeMqMsg(id: in String): Mq.Message {
 test "newTestContext creates context with all fields initialized" {
   val ctx = Testing.newTestContext()
   // Verify all fields are present and have sane defaults.
-  assertEqualInt(Testing.sentCount(ctx.mail), 0, "mail: initial count")
-  assertEqualInt(Testing.publishedCount(ctx.queue), 0, "queue: initial count")
-  assertEqualInt(Testing.now(ctx.clock).toInt(), 0, "clock: starts at 0")
+  StdTesting.assertEqualInt(Testing.sentCount(ctx.mail), 0, "mail: initial count")
+  StdTesting.assertEqualInt(Testing.publishedCount(ctx.queue), 0, "queue: initial count")
+  StdTesting.assertEqualInt(Testing.now(ctx.clock).toInt(), 0, "clock: starts at 0")
 }
 
 // ─── TestClock ────────────────────────────────────────────────────────────────
 test "TestClock starts at 0" {
   val ctx = Testing.newTestContext()
-  assertEqualInt(Testing.now(ctx.clock).toInt(), 0, "initial epoch ms is 0")
+  StdTesting.assertEqualInt(Testing.now(ctx.clock).toInt(), 0, "initial epoch ms is 0")
 }
 
 test "advance moves clock forward by given ms" {
   val ctx = Testing.newTestContext()
   Testing.advance(ctx.clock, 1000)
-  assertEqualInt(Testing.now(ctx.clock).toInt(), 1000, "after 1000ms advance")
+  StdTesting.assertEqualInt(Testing.now(ctx.clock).toInt(), 1000, "after 1000ms advance")
 }
 
 test "advance accumulates across multiple calls" {
   val ctx = Testing.newTestContext()
   Testing.advance(ctx.clock, 500)
   Testing.advance(ctx.clock, 250)
-  assertEqualInt(Testing.now(ctx.clock).toInt(), 750, "500 + 250 = 750ms")
+  StdTesting.assertEqualInt(Testing.now(ctx.clock).toInt(), 750, "500 + 250 = 750ms")
 }
 
 test "advance by 0 is a no-op" {
   val ctx = Testing.newTestContext()
   Testing.advance(ctx.clock, 1000)
   Testing.advance(ctx.clock, 0)
-  assertEqualInt(Testing.now(ctx.clock).toInt(), 1000, "advance(0) leaves clock unchanged")
+  StdTesting.assertEqualInt(Testing.now(ctx.clock).toInt(), 1000, "advance(0) leaves clock unchanged")
 }
 
 func advanceByNegativeMs(): Unit {
@@ -93,7 +93,7 @@ func advanceByNegativeMs(): Unit {
 }
 
 test "advance panics on a negative ms (time cannot move backwards)" {
-  assertPanics("advance(-1)", advanceByNegativeMs)
+  StdTesting.assertPanics("advance(-1)", advanceByNegativeMs)
 }
 
 func advanceByAmountThatWouldOverflow(): Unit {
@@ -103,7 +103,7 @@ func advanceByAmountThatWouldOverflow(): Unit {
 }
 
 test "advance panics rather than overflowing Long" {
-  assertPanics("advance amounts that together overflow Long.MAX", advanceByAmountThatWouldOverflow)
+  StdTesting.assertPanics("advance amounts that together overflow Long.MAX", advanceByAmountThatWouldOverflow)
 }
 
 // ─── MockMailSender ───────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ test "MockMailSender: sentCount increments after send" {
   val ctx = Testing.newTestContext()
   val msg = makeEmailMsg()
   ctx.mail.send(msg)
-  assertEqualInt(Testing.sentCount(ctx.mail), 1, "count after one send")
+  StdTesting.assertEqualInt(Testing.sentCount(ctx.mail), 1, "count after one send")
 }
 
 // #5507: the mock must honor the MailSender.send contract (#5499) — reject a
@@ -130,9 +130,13 @@ test "MockMailSender: rejects a CRLF-injected subject and does not record it" {
   val ctx = Testing.newTestContext()
   match ctx.mail.send(makeInjectedEmailMsg()) {
     case Ok(_) -> Testing.assertTrue(false, "an injected message must be rejected, not sent")
-    case Err(e) -> assertEqual(e.code, "HEADER_INJECTION", "injected message short-circuits with HEADER_INJECTION")
+    case Err(e) -> StdTesting.assertEqual(
+      e.code,
+      "HEADER_INJECTION",
+      "injected message short-circuits with HEADER_INJECTION"
+    )
   }
-  assertEqualInt(Testing.sentCount(ctx.mail), 0, "a rejected message must not be recorded as sent")
+  StdTesting.assertEqualInt(Testing.sentCount(ctx.mail), 0, "a rejected message must not be recorded as sent")
 }
 
 test "MockMailSender: a clean message still sends after a rejected one" {
@@ -145,7 +149,11 @@ test "MockMailSender: a clean message still sends after a rejected one" {
     case Err(_) -> ()
   }
   ctx.mail.send(makeEmailMsg())
-  assertEqualInt(Testing.sentCount(ctx.mail), 1, "only the clean message is recorded; the rejected one is not")
+  StdTesting.assertEqualInt(
+    Testing.sentCount(ctx.mail),
+    1,
+    "only the clean message is recorded; the rejected one is not"
+  )
 }
 
 test "MockMailSender: lastSent returns None when no emails sent" {
@@ -172,7 +180,7 @@ test "MockMailSender: sentCount is accurate after multiple sends" {
   ctx.mail.send(msg)
   ctx.mail.send(msg)
   ctx.mail.send(msg)
-  assertEqualInt(Testing.sentCount(ctx.mail), 3, "count after three sends")
+  StdTesting.assertEqualInt(Testing.sentCount(ctx.mail), 3, "count after three sends")
 }
 
 test "MockMailSender: clearSent resets count to 0" {
@@ -181,7 +189,7 @@ test "MockMailSender: clearSent resets count to 0" {
   ctx.mail.send(msg)
   ctx.mail.send(msg)
   Testing.clearSent(ctx.mail)
-  assertEqualInt(Testing.sentCount(ctx.mail), 0, "count after clearSent")
+  StdTesting.assertEqualInt(Testing.sentCount(ctx.mail), 0, "count after clearSent")
 }
 
 test "MockMailSender: lastSent is None after clearSent" {
@@ -266,7 +274,7 @@ func presignedUrlWithZeroExpiry(): Unit {
 }
 
 test "MockStorageBucket: presignedUrl panics on expiresInSeconds < 1 (called directly on the interface)" {
-  assertPanics("presignedUrl(key, 0)", presignedUrlWithZeroExpiry)
+  StdTesting.assertPanics("presignedUrl(key, 0)", presignedUrlWithZeroExpiry)
 }
 
 func presignedUrlWithTooLongExpiry(): Unit {
@@ -275,7 +283,7 @@ func presignedUrlWithTooLongExpiry(): Unit {
 }
 
 test "MockStorageBucket: presignedUrl panics on expiresInSeconds > 604800 (called directly on the interface)" {
-  assertPanics("presignedUrl(key, 604801)", presignedUrlWithTooLongExpiry)
+  StdTesting.assertPanics("presignedUrl(key, 604801)", presignedUrlWithTooLongExpiry)
 }
 
 func listWithZeroMaxKeys(): Unit {
@@ -284,7 +292,7 @@ func listWithZeroMaxKeys(): Unit {
 }
 
 test "MockStorageBucket: list panics on maxKeys < 1 (called directly on the interface)" {
-  assertPanics("list(\"\", \"\", 0)", listWithZeroMaxKeys)
+  StdTesting.assertPanics("list(\"\", \"\", 0)", listWithZeroMaxKeys)
 }
 
 func listWithTooManyMaxKeys(): Unit {
@@ -293,7 +301,7 @@ func listWithTooManyMaxKeys(): Unit {
 }
 
 test "MockStorageBucket: list panics on maxKeys > 1000 (called directly on the interface)" {
-  assertPanics("list(\"\", \"\", 1001)", listWithTooManyMaxKeys)
+  StdTesting.assertPanics("list(\"\", \"\", 1001)", listWithTooManyMaxKeys)
 }
 
 test "MockStorageBucket: list with prefix filters correctly" {
@@ -303,7 +311,7 @@ test "MockStorageBucket: list with prefix filters correctly" {
   Storage.put(ctx.storage, "docs/c.pdf", "data3", "application/pdf")
   match Storage.list(ctx.storage, "images/") {
     case Err(e) -> Testing.assertTrue(false, "list() must succeed: " + e.message)
-    case Ok(res) -> assertEqualInt(res.entries.length, 2, "only image/ entries listed")
+    case Ok(res) -> StdTesting.assertEqualInt(res.entries.length, 2, "only image/ entries listed")
   }
 }
 
@@ -341,14 +349,14 @@ test "MockStorageBucket: list pages by maxKeys (#7242)" {
   match ctx.storage.list("p/", "", 2) {
     case Err(e) -> Testing.assertTrue(false, "list() must succeed: " + e.message)
     case Ok(first) -> {
-      assertEqualInt(first.entries.length, 2, "first page holds maxKeys entries")
+      StdTesting.assertEqualInt(first.entries.length, 2, "first page holds maxKeys entries")
       Testing.assertTrue(first.isTruncated, "first page is truncated")
       match first.nextContinuationToken {
         case None -> Testing.assertTrue(false, "a truncated page carries a continuation token")
         case Some(token) -> match ctx.storage.list("p/", token, 2) {
           case Err(e) -> Testing.assertTrue(false, "second page must succeed: " + e.message)
           case Ok(second) -> {
-            assertEqualInt(second.entries.length, 1, "second page holds the rest")
+            StdTesting.assertEqualInt(second.entries.length, 1, "second page holds the rest")
             Testing.assertEq(second.entries[0].key, "p/3", "continues after the token")
             Testing.assertFalse(second.isTruncated, "last page is not truncated")
           }
@@ -375,7 +383,7 @@ test "MockStorageBucket: list pages in key order like the real backends (#7333)"
         case Some(token) -> match ctx.storage.list("p/", token, 2) {
           case Err(e) -> Testing.assertTrue(false, "second page must succeed: " + e.message)
           case Ok(second) -> {
-            assertEqualInt(second.entries.length, 1, "keys after the token are still listed")
+            StdTesting.assertEqualInt(second.entries.length, 1, "keys after the token are still listed")
             Testing.assertEq(second.entries[0].key, "p/3", "resumes by order, not by finding the token")
           }
         }
@@ -392,7 +400,7 @@ test "MockMessageQueue: publish returns Ok and increments count" {
     case Err(e) -> Testing.assertTrue(false, "publish() must return Ok: " + e)
     case Ok(_) -> ()
   }
-  assertEqualInt(Testing.publishedCount(ctx.queue), 1, "count after one publish")
+  StdTesting.assertEqualInt(Testing.publishedCount(ctx.queue), 1, "count after one publish")
 }
 
 test "MockMessageQueue: publishBatch publishes all messages" {
@@ -402,7 +410,7 @@ test "MockMessageQueue: publishBatch publishes all messages" {
     case Err(e) -> Testing.assertTrue(false, "publishBatch() must return Ok: " + e)
     case Ok(_) -> ()
   }
-  assertEqualInt(Testing.publishedCount(ctx.queue), 3, "count after batch of 3")
+  StdTesting.assertEqualInt(Testing.publishedCount(ctx.queue), 3, "count after batch of 3")
 }
 
 test "MockMessageQueue: lastPublished returns None when nothing published" {
@@ -476,7 +484,7 @@ test "MockDbConnection: query returns Ok and increments queryCount" {
     case Err(e) -> Testing.assertTrue(false, "query() must return Ok: " + e.message)
     case Ok(_) -> ()
   }
-  assertEqualInt(ctx.db.queryCount, 1, "queryCount after one query")
+  StdTesting.assertEqualInt(ctx.db.queryCount, 1, "queryCount after one query")
 }
 
 test "MockDbConnection: execute returns Ok and increments executeCount" {
@@ -485,7 +493,7 @@ test "MockDbConnection: execute returns Ok and increments executeCount" {
     case Err(e) -> Testing.assertTrue(false, "execute() must return Ok: " + e.message)
     case Ok(_) -> ()
   }
-  assertEqualInt(ctx.db.executeCount, 1, "executeCount after one execute")
+  StdTesting.assertEqualInt(ctx.db.executeCount, 1, "executeCount after one execute")
 }
 
 test "MockDbConnection: transaction commits and rolls back independently (#5133)" {
@@ -508,7 +516,7 @@ test "MockDbConnection: transaction commits and rolls back independently (#5133)
     }
     case Err(_) -> Testing.assertTrue(false, "transaction() must return Ok")
   }
-  assertEqualInt(Testing.txCount(ctx.db), 2, "two independent transactions were begun")
+  StdTesting.assertEqualInt(Testing.txCount(ctx.db), 2, "two independent transactions were begun")
 }
 
 test "MockDbConnection: transaction's query/execute work on the extracted interface value" {
@@ -576,7 +584,7 @@ func mockCacheSetWithNegativeTtl(): Unit {
 }
 
 test "MockCacheStore: set panics on a negative ttlSeconds" {
-  assertPanics("cache.set(key, value, -1)", mockCacheSetWithNegativeTtl)
+  StdTesting.assertPanics("cache.set(key, value, -1)", mockCacheSetWithNegativeTtl)
 }
 
 test "MockCacheStore: set accepts ttlSeconds = 0 (no expiry)" {

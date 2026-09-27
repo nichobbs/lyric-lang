@@ -55,8 +55,8 @@ func runBenchOnSource(
         case Err(_) -> ()
       }
 
-      val benchTarget: CompileTarget = if targetJvm { Jvm } else { Dotnet }
-      val req = EmitRequest(
+      val benchTarget: Emitter.CompileTarget = if targetJvm { Emitter.Jvm } else { Emitter.Dotnet }
+      val req = Emitter.EmitRequest(
         source = rewritten,
         assemblyName = stem,
         outputPath = outPath,

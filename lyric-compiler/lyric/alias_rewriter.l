@@ -596,7 +596,18 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
       val w = match whereExpr { case Some(x) -> Some(value = rewriteExpr(aliases, x)); case None -> whereExpr }
       return Expr(kind = EExists(binders = binders, whereExpr = w, body = rewriteExpr(aliases, body)), span = e.span)
     }
-    case ELambda(lambdaParams, body) -> return Expr(kind = ELambda(lambdaParams = lambdaParams, body = rewriteBlock(aliases, body)), span = e.span)
+    case ELambda(lambdaParams, body) -> {
+      val params2: List[LambdaParam] = newList()
+      var li = 0
+      while li < lambdaParams.count {
+        val lp = lambdaParams[li]
+        params2.add(
+          LambdaParam(name = lp.name, ty = rewriteOptType(aliases, lp.ty), span = lp.span, parenthesized = lp.parenthesized)
+        )
+        li = li + 1
+      }
+      return Expr(kind = ELambda(lambdaParams = params2, body = rewriteBlock(aliases, body)), span = e.span)
+    }
     case ECall(fn, args) -> {
       val args2: List[CallArg] = newList()
       var i = 0
@@ -1463,22 +1474,17 @@ func rewriteConstraintRef(aliases: in List[String], cr: in ConstraintRef): Const
 // (#1860).  Rewrite each bound's constraint list; the bound's own type-param
 // name is a binder, not an alias reference, so it is left untouched.
 //
-// Unlike every other position, an aliased `where` bound collapses to the
-// trait's *bare* name rather than the fully-qualified path: the type checker
-// resolves `where` constraints by bare interface name and rejects qualified
-// constraint paths outright (T0051), so a qualified rewrite would turn a
-// resolvable aliased bound into a hard error (#1874).
+// Like every other position, an aliased `where` bound becomes the trait's
+// package-qualified path (`Std.Log.Logger`), which the type checker resolves
+// in that package.  It used to collapse to the bare name (#1874), which a
+// file's import rule hides when the package is only imported through an alias
+// (docs/01 §9.2, D141).
 func rewriteWhereConstraintRef(aliases: in List[String], cr: in ConstraintRef): ConstraintRef {
   val as2: List[TypeArg] = newList()
   var i = 0
   while i < cr.args.count {
     as2.add(rewriteTypeArg(aliases, cr.args[i]))
     i = i + 1
-  }
-  if cr.head.segments.count >= 2 and aliasContains(aliases, cr.head.segments[0]) {
-    val segs: List[String] = newList()
-    segs.add(cr.head.segments[cr.head.segments.count - 1])
-    return ConstraintRef(head = ModulePath(segments = segs, span = cr.head.span), args = as2, span = cr.span)
   }
   ConstraintRef(head = rewritePath(aliases, cr.head), args = as2, span = cr.span)
 }

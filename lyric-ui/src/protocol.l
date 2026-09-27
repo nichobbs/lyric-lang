@@ -34,6 +34,7 @@ import Std.Core
 import JsonRpc.Json.{JsonValue, JsonField, JNull, JBool, JInt, JString, JArray, JObject, parseValue, writeValue, getString, getInt, getArray, asInt, asString, JsonParseError}
 import Ui.Core.{Prop}
 import Ui.Diff.{WireNode, WElement, WText, WEmpty, Patch, Replace, Insert, Remove, Move, SetProp, RemoveProp, SetText, SetEvents}
+import Std.Collections
 
 /// The protocol version the TypeScript runtime must match.
 pub val protocolVersion: Int = 2

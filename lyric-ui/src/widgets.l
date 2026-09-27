@@ -10,6 +10,7 @@ package Ui.Widgets
 
 import Std.Core
 import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, OnInput, OnChange, OnSubmit, Prop, WidgetKind}
+import Std.Collections
 
 // ─── Low-level constructors ───────────────────────────────────────────────────
 /// A general element.  Prefer the typed builders below.

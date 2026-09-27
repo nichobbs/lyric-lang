@@ -107,7 +107,9 @@ pub record ResolvedAxes {
 // (from either surface) survives to `resolveAxesChecked`'s `shapeTargetError`
 // check below, which raises `F0043` instead of silently upgrading it.
 func resolveShapeAxis(
-  cliShape: in Option[BuildShape], section: in Option[Mf.BuildSection], target: in CompileTarget
+  cliShape: in Option[BuildShape],
+  section: in Option[Mf.BuildSection],
+  target: in Emitter.CompileTarget,
 ): BuildShape {
   match cliShape {
     case Some(s) -> return s
@@ -122,7 +124,7 @@ func resolveShapeAxis(
     case None -> ()
   }
   match target {
-    case Native -> SAot
+    case Emitter.Native -> SAot
     case _ -> SPortable
   }
 }
@@ -143,7 +145,7 @@ pub func resolveBuildAxes(
   cliShape: in Option[BuildShape],
   cliProfile: in Option[BuildProfile],
   manifestOpt: in Option[String],
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
 ): Result[ResolvedAxes, String] {
   val section = readBuildSection(manifestOpt)
   val shape = resolveShapeAxis(cliShape, section, target)
@@ -159,8 +161,8 @@ pub func resolveBuildAxes(
 pub func resolveBuildAxesFromManifest(
   cliShape: in Option[BuildShape],
   cliProfile: in Option[BuildProfile],
-  manifest: in Option[Manifest],
-  target: in CompileTarget,
+  manifest: in Option[Mf.Manifest],
+  target: in Emitter.CompileTarget,
 ): Result[ResolvedAxes, String] {
   // Explicitly typed `absent` (rather than a bare `None` arm) sidesteps a
   // match fall-through type-inference quirk (W0004/#1663): an untyped
@@ -175,7 +177,7 @@ pub func resolveBuildAxesFromManifest(
 
 // Shared compatibility-check tail of `resolveBuildAxes`/`resolveBuildAxesFromManifest`.
 func resolveAxesChecked(
-  shape: in BuildShape, profile: in BuildProfile, target: in CompileTarget
+  shape: in BuildShape, profile: in BuildProfile, target: in Emitter.CompileTarget
 ): Result[ResolvedAxes, String] {
   match shapeTargetError(shape, target) {
     case Some(msg) -> return Err(error = msg)
@@ -194,9 +196,9 @@ func resolveAxesChecked(
 // native's shape is always `aot` (portable/standalone are `F0043` there) and
 // `--rid` still does nothing, because native cross-compiles via `--triple`.
 // Pointing at `--shape aot` would send the user in a circle.
-pub func ridNoEffectWarning(target: in CompileTarget): String {
+pub func ridNoEffectWarning(target: in Emitter.CompileTarget): String {
   match target {
-    case Native -> "build: warning: --rid has no effect on --target native; use --triple to select the target platform"
+    case Emitter.Native -> "build: warning: --rid has no effect on --target native; use --triple to select the target platform"
     case _ -> "build: warning: --rid has no effect without --shape aot or --shape standalone"
   }
 }
@@ -249,7 +251,7 @@ func manifestDeclaresBuildDefines(mfPath: in String): Bool {
 // Manifest-value variant of `manifestDeclaresBuildDefines`: same predicate,
 // but against an already-parsed manifest instead of re-reading/re-parsing
 // `mfPath` (#6193).
-func manifestDeclaresBuildDefinesValue(manifest: in Manifest): Bool {
+func manifestDeclaresBuildDefinesValue(manifest: in Mf.Manifest): Bool {
   Mf.getManifestBuildDefines(manifest).count > 0
 }
 
@@ -278,7 +280,7 @@ pub func manifestDefinesUnsupportedMsg(mfPath: in String, reason: in String): St
 pub func manifestDefineGateError(
   mfHasDefines: in Bool,
   shape: in BuildShape,
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
   mfPath: in String,
 ): Option[String] {
   if not mfHasDefines {
@@ -314,7 +316,7 @@ func resolveNativeConfig(manifestPath: in Option[String]): Result[Option[Mf.Nati
     case Some(p) -> match File.readText(p) {
       case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e))
       case Ok(mfText) -> match Mf.parseManifest(mfText, p) {
-        case Err(me) -> Err(error = "build: " + ManifestError.message(me))
+        case Err(me) -> Err(error = "build: " + Mf.ManifestError.message(me))
         case Ok(m) -> Ok(value = m.native)
       }
     }
@@ -350,14 +352,14 @@ func resolveNativeConfig(manifestPath: in Option[String]): Result[Option[Mf.Nati
 pub func resolveNativeOptDefault(
   cliOpt: in String,
   manifestPath: in Option[String],
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
   profile: in BuildProfile,
 ): String {
   if cliOpt != "" {
     return cliOpt
   }
   match target {
-    case Native -> ()
+    case Emitter.Native -> ()
     case _ -> return cliOpt
   }
   match resolveNativeConfig(manifestPath) {
@@ -427,7 +429,7 @@ pub func defineBuildGateError(
   targetConsumable: in Bool,
   watch: in Bool,
   shape: in BuildShape,
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
   shapeManifestPath: in String,
 ): Option[String] {
   if not hasDefines {
@@ -481,7 +483,7 @@ pub func filterExtraRefs(files: in List[String], artifactBase: in String, ext: i
 // resolution scans the raw TOML text directly rather than the parsed
 // `Manifest` — see `Mf.readFeatureDefaultsFromToml`).
 record LoadedManifest {
-  manifest: Manifest
+  manifest: Mf.Manifest
   mfPath: String
   mfText: String
 }
@@ -494,7 +496,7 @@ record LoadedManifest {
 // that now compiles against a workspace/path dependency would fail at
 // `dotnet exec` time with a missing-assembly error (D123).
 record NonNativeEmitOutcome {
-  emitResult: EmitResult
+  emitResult: Emitter.EmitResult
   restoredDlls: List[String]
   nugetThirdPartyPaths: List[String]
   nativeAssetPaths: List[String]
@@ -536,7 +538,7 @@ func loadManifestForSingleFileBuild(
     case Some(p) -> match File.readText(p) {
       case Err(e) -> Err(error = "build: cannot read manifest " + p + ": " + IOError.message(e))
       case Ok(mfText) -> match Mf.parseManifest(mfText, p) {
-        case Err(me) -> Err(error = "build: " + ManifestError.message(me))
+        case Err(me) -> Err(error = "build: " + Mf.ManifestError.message(me))
         case Ok(m) -> Ok(
           value = Some(
             value = LoadedManifest(
@@ -627,12 +629,12 @@ func isReservedHeadPackage(name: in String): Bool {
 }
 
 func collectImportedOwnPackages(
-  proj: in ProjectSection,
+  proj: in Mf.ProjectSection,
   mfDir: in String,
   mfPath: in String,
   source: in String,
   ownPkgName: in String,
-): Option[List[ProjectPackage]] {
+): Option[List[Emitter.ProjectPackage]] {
   val needed = importedPackageNames(source)
   // Never include a manifest entry carrying the source's own package name:
   // building one of the project's own package files directly (`lyric build
@@ -641,7 +643,7 @@ func collectImportedOwnPackages(
   // package is a compile error.
   val included: List[String] = newList()
   included.add(ownPkgName)
-  val result: List[ProjectPackage] = newList()
+  val result: List[Emitter.ProjectPackage] = newList()
   var hadFatal = false
   var changed = true
   while changed and not hadFatal {
@@ -656,7 +658,7 @@ func collectImportedOwnPackages(
             included.add(pkgEntry.name)
             changed = true
             if pkgSources.count > 0 {
-              result.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = pkgRead.paths))
+              result.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = pkgRead.paths))
               var si = 0
               while si < pkgSources.count {
                 val innerNames = importedPackageNames(pkgSources[si])
@@ -680,13 +682,13 @@ func collectImportedOwnPackages(
     }
   }
   if hadFatal {
-    val noPkgs: Option[List[ProjectPackage]] = None
+    val noPkgs: Option[List[Emitter.ProjectPackage]] = None
     return noPkgs
   }
   Some(value = result)
 }
 
-func noContributionOutcome(req: in EmitRequest): NonNativeEmitOutcome {
+func noContributionOutcome(req: in Emitter.EmitRequest): NonNativeEmitOutcome {
   NonNativeEmitOutcome(
     emitResult = Emitter.emit(req),
     restoredDlls = newList(),
@@ -699,7 +701,7 @@ func failedEmitOutcome(msg: in String): NonNativeEmitOutcome {
   printErr(msg)
   val noDiags: List[Diagnostic] = newList()
   NonNativeEmitOutcome(
-    emitResult = EmitResult(outputPath = None, diagnostics = noDiags),
+    emitResult = Emitter.EmitResult(outputPath = None, diagnostics = noDiags),
     restoredDlls = newList(),
     nugetThirdPartyPaths = newList(),
     nativeAssetPaths = newList()
@@ -739,7 +741,7 @@ func failedEmitOutcome(msg: in String): NonNativeEmitOutcome {
 // compiling without it: single-file mode never triggers an implicit
 // restore (a deliberate, conservative default — see the decision log).
 func emitSingleFileOrProject(
-  req: in EmitRequest,
+  req: in Emitter.EmitRequest,
   sourcePath: in String,
   manifestPath: in Option[String],
   cliFeatures: in List[String],
@@ -786,7 +788,7 @@ func emitSingleFileOrProject(
   val pkgNameRaw = Release.packageNameOf(req.source)
   val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }
 
-  val noOwnPkgs: List[ProjectPackage] = newList()
+  val noOwnPkgs: List[Emitter.ProjectPackage] = newList()
   val ownPkgs = match lm.manifest.project {
     case Some(proj) -> match collectImportedOwnPackages(proj, Path.dirname(lm.mfPath), lm.mfPath, req.source, pkgName) {
       case Some(ps) -> ps
@@ -799,7 +801,7 @@ func emitSingleFileOrProject(
   }
 
   val hasMavenEntries = match lm.manifest.maven { case Some(m) -> m.entries.count > 0; case None -> false }
-  val jvmNeedsMaven = match req.target { case Jvm -> hasMavenEntries; case _ -> false }
+  val jvmNeedsMaven = match req.target { case Emitter.Jvm -> hasMavenEntries; case _ -> false }
 
   val hasContribution = resolvedDeps.restoredDlls.count > 0 or resolvedDeps.nugetThirdPartyPaths.count > 0 or
     resolvedDeps.nativeAssetPaths.count > 0 or
@@ -822,12 +824,12 @@ func emitSingleFileOrProject(
   srcs.add(req.source)
   val ownPaths: List[String] = newList()
   ownPaths.add(sourcePath)
-  val pkgs: List[ProjectPackage] = newList()
+  val pkgs: List[Emitter.ProjectPackage] = newList()
   // The source's own package goes FIRST: the JVM bundled compile takes
   // `packages[0].name` as the bundle's entry package, and the MSIL entry
   // scan is first-wins (#2885) — same ordering convention as `cmdTest`'s
   // test-package-first layout.
-  pkgs.add(ProjectPackage(name = pkgName, sources = srcs, paths = ownPaths))
+  pkgs.add(Emitter.ProjectPackage(name = pkgName, sources = srcs, paths = ownPaths))
   var opi = 0
   while opi < ownPkgs.count {
     pkgs.add(ownPkgs[opi])
@@ -840,7 +842,7 @@ func emitSingleFileOrProject(
   // `resolveManifestDependencies` never populates for Jvm (#6136, #6697) —
   // see that function's comment for the full rationale.
   match req.target {
-    case Jvm -> {
+    case Emitter.Jvm -> {
       var jdpi = 0
       while jdpi < resolvedDeps.depTemplateSrcs.count {
         pkgs.add(resolvedDeps.depTemplateSrcs[jdpi])
@@ -850,7 +852,7 @@ func emitSingleFileOrProject(
     case _ -> ()
   }
 
-  val projReq = EmitProjectRequest(
+  val projReq = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = req.assemblyName,
     outputPath = req.outputPath,
@@ -867,7 +869,7 @@ func emitSingleFileOrProject(
 
   var mavenSaved: Option[String] = None
   match req.target {
-    case Jvm -> {
+    case Emitter.Jvm -> {
       val injection = injectMavenClasspathForJvm(Path.dirname(lm.mfPath), lm.manifest)
       mavenSaved = injection.savedFfiJars
     }
@@ -892,7 +894,7 @@ func emitSingleFileOrProject(
 // restored member DLLs on MSIL, bundled member sources on JVM (#6136
 // parity).  No manifest means no features / own-packages / NuGet / Maven
 // contribution — those axes stay empty.
-func emitSingleFileWithWorkspaceMembers(req: in EmitRequest, sourcePath: in String): NonNativeEmitOutcome {
+func emitSingleFileWithWorkspaceMembers(req: in Emitter.EmitRequest, sourcePath: in String): NonNativeEmitOutcome {
   val absSource = if Path.isAbsolute(sourcePath) {
     sourcePath
   } else {
@@ -917,13 +919,13 @@ func emitSingleFileWithWorkspaceMembers(req: in EmitRequest, sourcePath: in Stri
   srcs.add(req.source)
   val ownPaths: List[String] = newList()
   ownPaths.add(sourcePath)
-  val pkgs: List[ProjectPackage] = newList()
-  pkgs.add(ProjectPackage(name = pkgName, sources = srcs, paths = ownPaths))
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(Emitter.ProjectPackage(name = pkgName, sources = srcs, paths = ownPaths))
   // JVM parity with the manifest leg: member packages ride the bundled
   // compile — the JVM leg below deliberately never forwards `wsDeps.restoredDlls`
   // into `EmitProjectRequest.restoredDllPaths` (#6136, #6697).
   match req.target {
-    case Jvm -> {
+    case Emitter.Jvm -> {
       var wj = 0
       while wj < wsDeps.depTemplateSrcs.count {
         pkgs.add(wsDeps.depTemplateSrcs[wj])
@@ -941,12 +943,15 @@ func emitSingleFileWithWorkspaceMembers(req: in EmitRequest, sourcePath: in Stri
   // `restoredDllPaths` here would hit the same JAR-parse hard-fail in
   // `emitProjectJvmInProcess` that the manifest leg's fix
   // (`resolveManifestDependencies`) addresses.
-  val projReq = EmitProjectRequest(
+  val projReq = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = req.assemblyName,
     outputPath = req.outputPath,
     target = req.target,
-    restoredDllPaths = match req.target { case Jvm -> noRestoredDlls; case _ -> wsDeps.restoredDlls },
+    restoredDllPaths = match req.target {
+      case Emitter.Jvm -> noRestoredDlls
+      case _ -> wsDeps.restoredDlls
+    },
     activeFeatures = noFeatures,
     declaredFeatures = noFeatures,
     packageVersion = req.packageVersion,
@@ -971,7 +976,10 @@ func emitSingleFileWithWorkspaceMembers(req: in EmitRequest, sourcePath: in Stri
 // `pub` so `cli_build_self_test.l` can drive the stdlib/restored-dep
 // colocation behavior directly against a temp source file (#4127).
 pub func buildOne(
-  sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]
+  sourcePath: in String,
+  outPath: in String,
+  target: in Emitter.CompileTarget,
+  manifestPath: in Option[String],
 ): Int {
   buildOneNative(sourcePath, outPath, target, manifestPath, "", "")
 }
@@ -985,7 +993,7 @@ pub func buildOne(
 pub func buildOneNative(
   sourcePath: in String,
   outPath: in String,
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
   manifestPath: in Option[String],
   nativeTriple: in String,
   nativeOpt: in String,
@@ -1009,7 +1017,7 @@ pub func buildOneNative(
 pub func buildOneNativeWithFeatures(
   sourcePath: in String,
   outPath: in String,
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
   manifestPath: in Option[String],
   nativeTriple: in String,
   nativeOpt: in String,
@@ -1046,7 +1054,7 @@ pub func buildOneNativeWithFeatures(
 
   val outBase = Path.basename(outPath)
   val asmName = stemOf(outBase, 4)  // strip ".dll"
-  val req = EmitRequest(
+  val req = Emitter.EmitRequest(
     source = source,
     assemblyName = asmName,
     outputPath = outPath,
@@ -1060,7 +1068,7 @@ pub func buildOneNativeWithFeatures(
   // #4631; see cli_run.l's runTarget note).
   var isNativeTarget = false
   match target {
-    case Native -> {
+    case Emitter.Native -> {
       isNativeTarget = true
     }
     case _ -> ()
@@ -1137,7 +1145,7 @@ pub func buildOneNativeWithFeatures(
   // a JVM build produces a self-contained runnable JAR, so emitting one there
   // would leave stray .NET tooling cruft next to the JAR.
   match target {
-    case Dotnet -> {
+    case Emitter.Dotnet -> {
       writeRuntimeConfig(outPath)
       // A runnable program (declares a zero-arg `main`) needs its managed
       // dependencies beside the output to run standalone — `dotnet exec` (and a
@@ -1160,8 +1168,8 @@ pub func buildOneNativeWithFeatures(
         copyNugetNativeAssetsBeside(outPath, resolvedNativePaths)
       }
     }
-    case Jvm -> ()
-    case Native -> ()
+    case Emitter.Jvm -> ()
+    case Emitter.Native -> ()
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
   Console.println("built " + outPath + " in " + Format.formatFixed(elapsedMs, 0) + "ms")
@@ -1175,7 +1183,7 @@ func cmdBuild(argv: in slice[String]): Int {
   var force = false
   var explicitOut: Option[String] = None
   var manifestArg: Option[String] = None
-  var target: CompileTarget = Dotnet
+  var target: Emitter.CompileTarget = Emitter.Dotnet
   // `--target native` knobs (D-N-001): LLVM triple + clang -O level.
   var tripleArg = ""
   var optArg = ""
@@ -1336,11 +1344,11 @@ func cmdBuild(argv: in slice[String]): Int {
       if i + 1 < argv.length {
         val t = argv[i + 1]
         if t == "jvm" {
-          target = Jvm
+          target = Emitter.Jvm
         } else if t == "native" {
-          target = Native
+          target = Emitter.Native
         } else {
-          target = Dotnet
+          target = Emitter.Dotnet
         }
         i += 2
       } else {
@@ -1471,13 +1479,13 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
       match target {
-        case Native -> {
+        case Emitter.Native -> {
           printErr("build: --release-from-dll does not apply to --target native")
           return 1
         }
         case _ -> ()
       }
-      val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
+      val releaseTarget = match target { case Emitter.Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
       // On `--target jvm` the prebuilt input is a bundled JAR and the extra
       // references are classpath JARs, not managed DLLs.
       val refsExt = outputExt(target, "lib")
@@ -1528,7 +1536,11 @@ func cmdBuild(argv: in slice[String]): Int {
   // The `--define` gate itself now runs *after* the shape axis is resolved
   // (docs/63 §5.3), inside each branch below — it keys off the packaging shape,
   // which can come from the manifest, not off the `--release` flag.
-  val consumableTarget = match target { case Dotnet -> true; case Jvm -> true; case Native -> true }
+  val consumableTarget = match target {
+    case Emitter.Dotnet -> true
+    case Emitter.Jvm -> true
+    case Emitter.Native -> true
+  }
   // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
   // at all (discover the nearest lyric.toml by walking up from the cwd).
   if positional.count == 0 {
@@ -1549,7 +1561,7 @@ func cmdBuild(argv: in slice[String]): Int {
     // diagnostic still surfaces below, from whichever build call ends up
     // re-parsing it for real.
     val mfText = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> "" }
-    val manifestValOpt: Option[Manifest] = match Mf.parseManifest(mfText, mfPath) {
+    val manifestValOpt: Option[Mf.Manifest] = match Mf.parseManifest(mfText, mfPath) {
       case Ok(m) -> Some(value = m)
       case Err(_) -> None
     }
@@ -1854,7 +1866,7 @@ func profileOnlyDefines(profile: in BuildProfile): List[String] {
 func buildReleaseSingle(
   sourcePath: in String,
   explicitOut: in Option[String],
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
   ridArg: in Option[String],
   manifestArg: in Option[String],
   profile: in BuildProfile,
@@ -1864,7 +1876,7 @@ func buildReleaseSingle(
   // function. It is NOT because the CLI rejects `--release --target native`:
   // that combination is valid and simply sets the profile (native is AOT by
   // construction). Do not re-add a rejection on that basis.
-  val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
+  val releaseTarget = match target { case Emitter.Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
 
   // Reject an unbuildable JVM release request (bad/cross-target `--rid`,
   // unsupported host) BEFORE the managed build, so a bad flag costs nothing
@@ -1950,7 +1962,7 @@ func buildReleaseSingle(
 func buildReleaseProject(
   mfPath: in String,
   explicitOut: in Option[String],
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
   ridArg: in Option[String],
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
@@ -1964,7 +1976,7 @@ func buildReleaseProject(
   // function. It is NOT because the CLI rejects `--release --target native`:
   // that combination is valid and simply sets the profile (native is AOT by
   // construction). Do not re-add a rejection on that basis.
-  val releaseTarget = match target { case Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
+  val releaseTarget = match target { case Emitter.Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
 
   // Reject an unbuildable JVM release request (bad/cross-target `--rid`,
   // unsupported host) BEFORE the managed build, so a bad flag costs nothing
@@ -1992,7 +2004,7 @@ func buildReleaseProject(
   val manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m
     case Err(e) -> {
-      printErr("build: " + ManifestError.message(e))
+      printErr("build: " + Mf.ManifestError.message(e))
       return 1
     }
   }
@@ -2181,7 +2193,7 @@ func buildReleaseProject(
   // `buildProject` has just written beside the staging JAR as
   // `module-path.txt`.
   val extraRefs: List[String] = match target {
-    case Jvm -> stagedMavenClasspath(stagingDir)
+    case Emitter.Jvm -> stagedMavenClasspath(stagingDir)
     case _ -> {
       val refs: List[String] = newList()
       var rdi = 0
@@ -2211,7 +2223,7 @@ func buildReleaseProject(
   // runtime assets at startup (#5783). No-op on JVM: native assets are
   // resolved from `[nuget]`, a .NET-only concept.
   match target {
-    case Jvm -> ()
+    case Emitter.Jvm -> ()
     case _ -> {
       if releaseExit == 0 {
         copyNugetNativeAssetsBeside(outNative, resolved.nativeAssetPaths)
@@ -2418,7 +2430,7 @@ func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, m
 pub func buildProject(
   mfPath: in String,
   explicitOut: in Option[String],
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
@@ -2450,7 +2462,7 @@ pub func buildProject(
 pub func buildProjectWithNativeFlags(
   mfPath: in String,
   explicitOut: in Option[String],
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
@@ -2468,10 +2480,10 @@ pub func buildProjectWithNativeFlags(
       return 1
     }
   }
-  val manifest: Manifest = match Mf.parseManifest(mfText, mfPath) {
+  val manifest: Mf.Manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m
     case Err(e) -> {
-      printErr("build: " + ManifestError.message(e))
+      printErr("build: " + Mf.ManifestError.message(e))
       return 1
     }
   }
@@ -2502,9 +2514,9 @@ pub func buildProjectWithNativeFlags(
 pub func buildProjectFromManifest(
   mfPath: in String,
   mfText: in String,
-  manifest: in Manifest,
+  manifest: in Mf.Manifest,
   explicitOut: in Option[String],
-  target: in CompileTarget,
+  target: in Emitter.CompileTarget,
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
@@ -2516,7 +2528,7 @@ pub func buildProjectFromManifest(
   nativeOpt: in String,
 ): Int {
   val buildStart = Time.now()
-  val proj: ProjectSection = match manifest.project {
+  val proj: Mf.ProjectSection = match manifest.project {
     case Some(p) -> p
     case None -> {
       printErr("build: " + mfPath + " has no [project] section")
@@ -2561,7 +2573,7 @@ pub func buildProjectFromManifest(
   // (the staging DLL step).  Only meaningful for the Dotnet target
   // (Jvm treats `kind` as a no-op).
   match target {
-    case Dotnet -> {
+    case Emitter.Dotnet -> {
       if buildKind == "bundle" {
         printErr(
           mfPath +
@@ -2570,8 +2582,8 @@ pub func buildProjectFromManifest(
         return 1
       }
     }
-    case Jvm -> ()
-    case Native -> ()
+    case Emitter.Jvm -> ()
+    case Emitter.Native -> ()
   }
   val outPath = match explicitOut {
     case Some(o) -> o
@@ -2607,7 +2619,7 @@ pub func buildProjectFromManifest(
   // `proj.packages` directly rather than this filtered `pkgs` list, so a
   // shared test-only fixture stays importable from `[project.tests]`/a
   // manifest-local single-file build without ever reaching this bundle.
-  val pkgs: List[ProjectPackage] = newList()
+  val pkgs: List[Emitter.ProjectPackage] = newList()
   var hadFatal = false
   var pi = 0
   while pi < proj.packages.count {
@@ -2616,7 +2628,7 @@ pub func buildProjectFromManifest(
       match readProjectPackageSources(pkgEntry, mfDir, mfPath) {
         case Some(pkgRead) -> {
           if pkgRead.sources.count > 0 {
-            pkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgRead.sources, paths = pkgRead.paths))
+            pkgs.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgRead.sources, paths = pkgRead.paths))
           }
         }
         case None -> {
@@ -2668,7 +2680,7 @@ pub func buildProjectFromManifest(
   // there, the dep is already resolved through `restoredDlls`, and compiling
   // its source a second time into the SAME bundle would double-declare it.
   match target {
-    case Jvm -> {
+    case Emitter.Jvm -> {
       var jdpi = 0
       while jdpi < depTemplatePkgsList.count {
         pkgs.add(depTemplatePkgsList[jdpi])
@@ -2679,7 +2691,7 @@ pub func buildProjectFromManifest(
   }
 
   val asmName = stemOf(Path.basename(outPath), 4)
-  val projReq = EmitProjectRequest(
+  val projReq = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = asmName,
     outputPath = outPath,
@@ -2715,13 +2727,13 @@ pub func buildProjectFromManifest(
   var mavenJarColonSep = ""
   var savedFfiJars: Option[String] = None
   match target {
-    case Native -> ()
-    case Jvm -> {
+    case Emitter.Native -> ()
+    case Emitter.Jvm -> {
       val injection = injectMavenClasspathForJvm(mfDir, manifest)
       mavenJarColonSep = injection.classpathColonSep
       savedFfiJars = injection.savedFfiJars
     }
-    case Dotnet -> ()
+    case Emitter.Dotnet -> ()
   }
 
   // `--target native` project builds (#6809): resolve the project's own
@@ -2738,7 +2750,7 @@ pub func buildProjectFromManifest(
   // single-file path.
   var isNativeTarget = false
   match target {
-    case Native -> {
+    case Emitter.Native -> {
       isNativeTarget = true
     }
     case _ -> ()
@@ -2800,7 +2812,7 @@ pub func buildProjectFromManifest(
   }
 
   match target {
-    case Dotnet -> {
+    case Emitter.Dotnet -> {
       writeRuntimeConfig(outPath)
       // Co-locate the stdlib bundle, restored (workspace/path/Lyric-package
       // NuGet) dependencies, and genuine third-party NuGet assemblies beside
@@ -2825,7 +2837,7 @@ pub func buildProjectFromManifest(
         }
       }
     }
-    case Jvm -> {
+    case Emitter.Jvm -> {
       // Always written (even empty) so `$(cat bin/module-path.txt)` (book
       // ch14) never hits a missing-file shell error — only its *contents*
       // depend on whether Maven deps were declared and restored (#3559).
@@ -2837,7 +2849,7 @@ pub func buildProjectFromManifest(
     }
     // A native build produces a self-contained POSIX binary directly (no
     // runtimeconfig.json / module-path.txt companion artifact needed).
-    case Native -> ()
+    case Emitter.Native -> ()
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
   Console.println(
@@ -2850,7 +2862,10 @@ pub func buildProjectFromManifest(
 // Mirrors the extension logic in buildProject so runProjectOnce finds the file.
 // `buildKind` comes from the manifest's [build] section, default "lib".
 func projectBinOutputPath(
-  mfDir: in String, proj: in ProjectSection, target: in CompileTarget, buildKind: in String
+  mfDir: in String,
+  proj: in Mf.ProjectSection,
+  target: in Emitter.CompileTarget,
+  buildKind: in String,
 ): String {
   val ext = outputExt(target, buildKind)
   val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
@@ -2872,7 +2887,7 @@ func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
   val manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m
     case Err(e) -> {
-      printErr("cannot parse manifest: " + ManifestError.message(e))
+      printErr("cannot parse manifest: " + Mf.ManifestError.message(e))
       return (paths, true)
     }
   }

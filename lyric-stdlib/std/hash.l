@@ -12,6 +12,7 @@ package Std.Hash
 
 import Std.Core
 import Std.HashHost
+import Std.Collections
 
 /// Compute the SHA-1 of `bytes` and return the digest as an uppercase
 /// 40-character hex string.

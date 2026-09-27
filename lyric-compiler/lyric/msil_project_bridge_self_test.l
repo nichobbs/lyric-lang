@@ -2556,7 +2556,8 @@ test "qualified generic type argument resolves to the exact package named, not s
   packages.add(
     mkPkg(
       "Main6689",
-      "package Main6689\n" + "import Pkg6689B\n" + "import Pkg6689A\n" + "\n" + "func main(): Unit {\n" +
+      "package Main6689\nimport Std.Collections\n" + "import Pkg6689B\n" + "import Pkg6689A\n" + "\n" +
+        "func main(): Unit {\n" +
         "  val xs: List[Pkg6689A.Item] = newList()\n" +
         "  xs.add(Pkg6689A.mkA(1))\n" +
         "  println(xs[0].x)\n" +
@@ -2591,7 +2592,8 @@ test "qualified generic type argument in a record field resolves to the exact pa
   packages.add(
     mkPkg(
       "Pkg6689Wrapper",
-      "package Pkg6689Wrapper\n" + "import Pkg6689C\n" + "\n" + "pub record Wrapper {\n" + "  items: List[Item]\n" +
+      "package Pkg6689Wrapper\nimport Std.Collections\n" + "import Pkg6689C\n" + "\n" + "pub record Wrapper {\n" +
+        "  items: List[Item]\n" +
         "}\n"
     )
   )

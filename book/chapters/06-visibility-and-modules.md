@@ -83,15 +83,24 @@ A record-pattern head must also actually name the record being matched: `case Bl
 Names from other packages are not in scope until you import them:
 
 ```lyric
+import Money                           // the whole package
 import Money.{Amount, Cents}           // named imports
-import Time.Instant                    // single name
-import std.collections.{Map, Set}
-import std.collections as Coll         // alias the entire package
+import Std.Collections as Coll         // alias the entire package
 ```
 
-When you use the `as` form, you access its names through the alias: `Coll.Map`, `Coll.Set`. When you use the named form, the names are in scope directly.
+Each form decides which names you can write bare:
 
-The one exception is `Option` and `Result`: they come from `Std.Core` but are visible everywhere without an explicit import — an implicit prelude, the same way they behave in most languages that have them. Every other name needs an import, directly or transitively (importing a package that itself imports another one brings that other package's names into scope too — the pattern the standard library's own kernel modules use). A type referenced without a reachable import, including in `Type.method(...)` call position, is a compile error naming the type and the package to import. Spelling the package out does not get around this: `Std.Rest.RestClient.create(url)` in a file that never imports `Std.Rest` (directly or through another import) is the same error, pointing at the missing `import Std.Rest`.
+- `import Money` brings every public name of `Money` into scope, along with the names of each package `Money` itself imports (the pattern the standard library's kernel modules use: `Std.Collections` imports `Std.CollectionsHost`, which declares `List`).
+- `import Money.{Amount, Cents}` brings only `Amount` and `Cents`. Naming a union or enum type brings its cases too, so `case Square(n) ->` works after `import Shapes.{Shape}`.
+- `import Std.Collections as Coll` brings nothing bare; you write `Coll.newList()`.
+
+Any package you import can also be named by its full path, `Money.Amount`, whatever the form. A dotted path always names a package, so `import Time.Instant` imports a package called `Time.Instant`; to pick `Instant` out of `Time`, write `import Time.{Instant}`.
+
+The one exception is `Option` and `Result`: they come from `Std.Core` but are visible everywhere without an explicit import, together with `Some`, `None`, `Ok` and `Err`. Every other name needs an import. Spelling the package out does not get around this: `Std.Rest.RestClient.create(url)` in a file that does not import `Std.Rest` (directly or through a whole import) is a compile error pointing at the missing `import Std.Rest`. Using a name that exists but that your imports do not bring in is a compile error that says where the name lives and how to import it:
+
+```
+error[T0020]: unknown name 'trim' (declared in Std.String, imported as Str; write Str.trim)
+```
 
 There are no wildcard imports. `import Money.*` is a compile error. Every imported name must be written explicitly:
 

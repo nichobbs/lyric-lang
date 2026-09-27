@@ -3313,13 +3313,11 @@ pub func ownAwareExternTypes(file: in SourceFile, externSeed: in Map[String, Str
 // than to whichever package registered the name first (#7378):
 // `~ctor-import~<local>` -> `<pkg>::<Name>` for each selectively imported
 // name (`import Forms.{OutOfRange}`), which decides first, and `~ctor-pkgs~`
-// -> the comma-separated JVM paths of every imported package.  The type
-// checker makes each imported package's names visible bare whatever the
-// import form (selective, aliased or whole; docs/01 §9.2 asks for only the
-// listed names, #7463), so codegen counts every one or a bare name the
-// checker accepted could bind to another package's same-named case.  The
-// `~` keys name no type, so type lookups never see them; see
-// `ctorClassFromImports`.
+// -> the comma-separated JVM paths of the packages imported whole.  These are
+// the names the type checker lets a bare reference mean (docs/01 §9.2,
+// #7463): an aliased package's names are reached qualified, a selective
+// import's unlisted names not at all.  The `~` keys name no type, so type
+// lookups never see them; see `ctorClassFromImports`.
 func addCtorImportScope(file: in SourceFile, into: in Map[String, String]): Unit {
   var wholePkgs = ""
   for imp in file.imports {
@@ -3346,9 +3344,13 @@ func addCtorImportScope(file: in SourceFile, into: in Map[String, String]): Unit
           into.add(key, pkgPath + "::" + item.name)
         }
       }
-      case None -> ()
+      case None -> match imp.asAlias {
+        case Some(_) -> ()
+        case None -> {
+          wholePkgs = if wholePkgs.length == 0 { pkgPath } else { wholePkgs + "," + pkgPath }
+        }
+      }
     }
-    wholePkgs = if wholePkgs.length == 0 { pkgPath } else { wholePkgs + "," + pkgPath }
   }
   if into.containsKey("~ctor-pkgs~") {
     into.remove("~ctor-pkgs~")
@@ -5062,8 +5064,9 @@ pub func collectFileCasesExtern(
 // Reserved keys recording, per package, what a specialised copy of one of its
 // generics needs to resolve its bare type names in the package's own scope
 // (D-progress-967): `~generic~<Name>` for each generic type it declares,
-// `~import~<Pkg>` for each package it imports, and `~selimport~<local>` ->
-// `<Pkg>::<Name>` for each name it imports selectively (D139).  `externSeedForFile` seeds them bundle-wide as
+// `~import~<Pkg>` for each package it imports, `~wimport~<Pkg>` for each it
+// imports whole, and `~selimport~<local>` -> `<Pkg>::<Name>` for each name it
+// imports selectively (D139).  `externSeedForFile` seeds them bundle-wide as
 // `<Pkg>.~generic~<Name>` / `<Pkg>.~import~<Imported>` / ... like any
 // package-qualified key; no type is ever named this way, so the bare keys are
 // inert.  See `originScopedExternTypes`.
@@ -5112,7 +5115,14 @@ func collectOriginScopeMarkers(file: in SourceFile, into: in Map[String, String]
             }
           }
         }
-        case None -> ()
+        case None -> match imp.asAlias {
+          case Some(_) -> ()
+          case None -> {
+            if not into.containsKey("~wimport~" + dn) {
+              into.add("~wimport~" + dn, dn)
+            }
+          }
+        }
       }
     }
     ii = ii + 1
@@ -5136,7 +5146,8 @@ pub func originScopedExternTypes(
   // being generated; the specialised copy's body was written elsewhere, so
   // its spans do not refer to them and its bare constructor names resolve
   // in the origin package's scope: the origin itself, the names it imports
-  // selectively, then the packages it imports (see `ctorClassFromImports`).
+  // selectively, then the packages it imports whole (see
+  // `ctorClassFromImports`).
   val view: Map[String, String] = newMap()
   for k in mapKeys(externTypes) {
     if k.startsWith("~recv~") or k.startsWith("~ctor-") {
@@ -5148,13 +5159,14 @@ pub func originScopedExternTypes(
     }
   }
   val importPrefix = origin + ".~import~"
+  val wholePrefix = origin + ".~wimport~"
   val selPrefix = origin + ".~selimport~"
   var originImports = ""
   for ik in mapKeys(externTypes) {
     if ik.startsWith(importPrefix) {
-      val imported = ik.substring(importPrefix.length)
-      overlayPackageTypesJvm(view, externTypes, imported)
-      val importedPath = imported.replace(".", "/")
+      overlayPackageTypesJvm(view, externTypes, ik.substring(importPrefix.length))
+    } else if ik.startsWith(wholePrefix) {
+      val importedPath = ik.substring(wholePrefix.length).replace(".", "/")
       originImports = if originImports.length == 0 { importedPath } else { originImports + "," + importedPath }
     } else if ik.startsWith(selPrefix) {
       match mapGet(externTypes, ik) {

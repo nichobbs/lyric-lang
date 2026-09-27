@@ -2389,7 +2389,11 @@ pub func compileProjectToJarBundledWithRestored(
       rii = rii + 1
     }
     importedPkgs.add(
-      ImportedPackage(name = synArt.packageName, items = rPkgItems, imports = collectImportNames(rf.imports))
+      ImportedPackage(
+        name = synArt.packageName,
+        items = rPkgItems,
+        imports = pipeRestoredImportNames(rf, synArt.contract.imports)
+      )
     )
     if not restoredJarPathsSeen.containsKey(synArt.dllPath) {
       restoredJarPathsSeen.add(synArt.dllPath, true)

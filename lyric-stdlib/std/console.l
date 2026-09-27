@@ -8,6 +8,7 @@
 package Std.Console
 
 import Std.Core
+import Std.Collections
 import Std.Errors
 import Std.ConsoleHost
 import Std.String as Str

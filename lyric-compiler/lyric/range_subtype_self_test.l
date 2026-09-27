@@ -48,6 +48,7 @@
 package Lyric.RangeSubtypeSelfTest
 
 import Std.Core
+import Std.Console
 import Std.Testing
 
 // ─────────────────────────────────────────────────────────────────────────────

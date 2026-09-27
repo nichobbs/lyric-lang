@@ -179,10 +179,10 @@ func cmdPublish(argv: in slice[String]): Int {
     }
   }
 
-  val manifest: Manifest = match Mf.parseManifest(mfText, mfPath) {
+  val manifest: Mf.Manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m
     case Err(e) -> {
-      printErr("publish: " + ManifestError.message(e))
+      printErr("publish: " + Mf.ManifestError.message(e))
       return 1
     }
   }
@@ -212,7 +212,7 @@ func cmdPublish(argv: in slice[String]): Int {
     di += 1
   }
 
-  val pkg: PackageSection = manifest.packageSection
+  val pkg: Mf.PackageSection = manifest.packageSection
   val effectiveVersion = match packageVersionArg { case Some(v) -> v; case None -> pkg.version }
   val mfDir = Path.dirname(mfPath)
   val dllPath = match dllOverride {
@@ -277,7 +277,7 @@ func cmdPublish(argv: in slice[String]): Int {
         }
         match Mf.parseManifest(memberText, memberToml) {
           case Err(e) -> {
-            printErr("publish: cannot parse workspace member manifest: " + ManifestError.message(e))
+            printErr("publish: cannot parse workspace member manifest: " + Mf.ManifestError.message(e))
             return 1
           }
           case Ok(mf) -> match packageVersionArg { case Some(v) -> v; case None -> mf.packageSection.version }

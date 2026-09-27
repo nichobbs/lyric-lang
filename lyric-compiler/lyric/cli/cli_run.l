@@ -21,7 +21,7 @@ import Lyric.Discovery as Disc
 // `cli_run_native_self_test.l` can drive the `--target native` project-run
 // path directly (#6815 item 3a), mirroring `cli_build.l`'s `buildProject`
 // (#5819's same "pub for self-test seam" precedent).
-pub func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in CompileTarget): Int {
+pub func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Emitter.CompileTarget): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(t) -> t
     case Err(e) -> {
@@ -32,7 +32,7 @@ pub func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in
   val manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m
     case Err(e) -> {
-      printErr("run: " + ManifestError.message(e))
+      printErr("run: " + Mf.ManifestError.message(e))
       return 1
     }
   }
@@ -55,7 +55,7 @@ pub func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in
     return 1
   }
   match target {
-    case Native -> {
+    case Emitter.Native -> {
       // `buildProject` above already produced a real native executable at
       // `outPath` (extensionless — `outputExt(Native, _)` — the binary IS
       // the artifact); run it directly, mirroring `runOnce`'s single-file
@@ -72,7 +72,7 @@ pub func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in
         }
       }
     }
-    case Jvm -> {
+    case Emitter.Jvm -> {
       val execArgs: List[String] = newList()
       execArgs.add("-jar")
       execArgs.add(outPath)
@@ -87,7 +87,7 @@ pub func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in
         }
       }
     }
-    case Dotnet -> {
+    case Emitter.Dotnet -> {
       // `buildProject` (called above) already co-locates the stdlib bundle
       // and every restored/NuGet dependency beside `outPath` unconditional
       // on `buildKind` (#5066) — no separate copy needed here.
@@ -171,16 +171,16 @@ val WATCH_POLL_MS: Int = 400
 // — `BuildProj` used to carry neither field at all, so they were silently
 // dropped under `--watch` even when explicitly passed).
 pub union WatchAction {
-  case RunFile(sourcePath: String, userArgs: List[String], target: CompileTarget)
-  case RunProj(mfPath: String, userArgs: List[String], target: CompileTarget)
-  case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool, pkgVer: Option[String], profile: BuildProfile, nativeTriple: String, nativeOpt: String)
-  case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String], nativeTriple: String, nativeOpt: String, feats: List[String], noDef: Bool, allF: Bool, profile: BuildProfile)
+  case RunFile(sourcePath: String, userArgs: List[String], target: Emitter.CompileTarget)
+  case RunProj(mfPath: String, userArgs: List[String], target: Emitter.CompileTarget)
+  case BuildProj(mfPath: String, outArg: Option[String], target: Emitter.CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool, pkgVer: Option[String], profile: BuildProfile, nativeTriple: String, nativeOpt: String)
+  case BuildFile(sourcePath: String, outArg: String, target: Emitter.CompileTarget, manifest: Option[String], nativeTriple: String, nativeOpt: String, feats: List[String], noDef: Bool, allF: Bool, profile: BuildProfile)
 }
 
 // Build the program once and execute it.  Target-aware: Dotnet runs via
 // `dotnet exec`, Jvm runs via `java -jar`.  Extracted from cmdRun so the
 // watch loop can re-run it.
-func runOnce(sourcePath: in String, userArgs: in List[String], target: in CompileTarget): Int {
+func runOnce(sourcePath: in String, userArgs: in List[String], target: in Emitter.CompileTarget): Int {
   val srcDir = Path.dirname(sourcePath)
   val stem = stemOf(Path.basename(sourcePath), 2)
   // var-mutation shape: a value-position match over CompileTarget
@@ -188,13 +188,13 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Compil
   // note).
   var outExt = ""
   match target {
-    case Jvm -> {
+    case Emitter.Jvm -> {
       outExt = ".jar"
     }
-    case Dotnet -> {
+    case Emitter.Dotnet -> {
       outExt = ".dll"
     }
-    case Native -> {
+    case Emitter.Native -> {
       outExt = ""
     }
   }
@@ -206,7 +206,7 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Compil
   }
 
   match target {
-    case Jvm -> {
+    case Emitter.Jvm -> {
       val execArgs: List[String] = newList()
       execArgs.add("-jar")
       execArgs.add(outPath)
@@ -221,7 +221,7 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Compil
         }
       }
     }
-    case Dotnet -> {
+    case Emitter.Dotnet -> {
       // Co-locate the fully-compiled stdlib runtime assemblies beside the output
       // so a program using real stdlib `pub func`s resolves them under `dotnet exec`.
       copyRuntimeDepsBeside(outPath, findCompiledLibDir())
@@ -239,7 +239,7 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Compil
         }
       }
     }
-    case Native -> {
+    case Emitter.Native -> {
       // A native build IS the executable; run it directly.
       val execArgs: List[String] = newList()
       for a in userArgs.toArray() {
@@ -405,16 +405,16 @@ func cmdRun(argv: in slice[String]): Int {
   }
 
   // var-mutation shape: val/match/if with nested if mis-lowers under the stage-0 emitter.
-  var runTarget: CompileTarget = Dotnet
+  var runTarget: Emitter.CompileTarget = Emitter.Dotnet
   match targetArg {
     case None -> ()
     case Some(t) -> {
       if t == "jvm" {
-        runTarget = Jvm
+        runTarget = Emitter.Jvm
       } else if t == "native" {
-        runTarget = Native
+        runTarget = Emitter.Native
       } else if t == "dotnet" {
-        runTarget = Dotnet
+        runTarget = Emitter.Dotnet
       } else {
         printErr("run: unknown target '" + t + "' — expected dotnet, jvm, or native")
         return 1
@@ -425,7 +425,7 @@ func cmdRun(argv: in slice[String]): Int {
   // Dev-loop guard: warn once if the compiled stdlib bundle is older than the
   // stdlib source (a no-op outside a source tree / for a fresh bundle).
   match runTarget {
-    case Dotnet -> warnIfStdlibBundleStale(findCompiledLibDir())
+    case Emitter.Dotnet -> warnIfStdlibBundleStale(findCompiledLibDir())
     case _ -> ()
   }
 

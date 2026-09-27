@@ -108,15 +108,15 @@ func boxedTag(b: in Boxed): Int {
 // ── Where-bound descent (#1860 / #1874): `where T: Log.Logger` references the
 //    trait through the `Std.Log as Log` alias; without `rewriteWhereBound` the
 //    bound's ConstraintRef head would survive as the bare alias and fail
-//    resolution (and a qualified rewrite would trip the type checker's T0051
-//    "qualified constraint paths not yet supported").  `Std.Log` is used
+//    resolution.  The rewrite gives the package-qualified `Std.Log.Logger`,
+//    which the type checker resolves in `Std.Log` (D141).  `Std.Log` is used
 //    rather than `Std.Stream` because its per-package runtime assembly is in
 //    the staged stdlib set the in-process `lyric test` path can load. ─────────
 record ProbeLogger {
 }
 
 impl Log.Logger for ProbeLogger {
-  func log(level: in LogLevel, msg: in String, fields: in slice[LogField]): Unit {
+  func log(level: in Log.LogLevel, msg: in String, fields: in slice[Log.LogField]): Unit {
     ()
   }
 }
@@ -124,7 +124,7 @@ impl Log.Logger for ProbeLogger {
 func logAndReport[T](x: in T): Int
   where T: Log.Logger
 {
-  x.log(Info, "where-bound probe", [])
+  x.log(Log.Info, "where-bound probe", [])
   7
 }
 

@@ -760,7 +760,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       ImportedPackage(
         name = segmentsToString(restoredArtifacts[ri0].source.packageDecl.path.segments),
         items = rItems,
-        imports = collectImportNames(restoredArtifacts[ri0].source.imports)
+        imports = pipeRestoredImportNames(restoredArtifacts[ri0].source, restoredArtifacts[ri0].contract.imports)
       )
     )
     ri0 = ri0 + 1

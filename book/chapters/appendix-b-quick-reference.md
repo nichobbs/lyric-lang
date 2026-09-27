@@ -622,16 +622,16 @@ ensures: old(account.balance) - amount == account.balance
 ```lyric
 package Account                              // file declaration; must match directory name
 
-import Money.{Amount, Cents}                 // named imports from Lyric packages
-import Time.Instant                          // single name
-import Std.Collections as Coll              // alias
+import Money                                 // whole package: every name bare
+import Money.{Amount, Cents}                 // only the listed names bare
+import Std.Collections as Coll              // alias: names written Coll.x
 pub use Money.Amount                         // re-export (facade pattern)
 
 import extern System.Net.Http.{HttpClient}   // named imports from external (host) packages
 pub use extern Docker.DotNet.{DockerClient}  // re-export external type
 ```
 
-Wildcard imports (`import Foo.*`) are not permitted. External type imports (those with `extern` keyword) require a selector group `{ ... }` and are scoped to the importing package.
+Wildcard imports (`import Foo.*`) are not permitted. A bare name must come from the current package, the `Option`/`Result` prelude, a whole import (or a package it imports), or a selective import's list; otherwise it is T0020 with an import hint. External type imports (those with `extern` keyword) require a selector group `{ ... }` and are scoped to the importing package.
 
 ### Test modules
 

@@ -6,6 +6,7 @@
 @runtime_checked
 package Std.Path
 
+import Std.Collections
 import Std.PathHost
 import Std.Errors
 

@@ -94,7 +94,7 @@ pub func main(argv: in slice[String]): Int {
     }
     val entryPath = argv[1]
     val outDir = argv[2]
-    val tgt = if argv.length >= 5 and argv[3] == "--target" and argv[4] == "jvm" { Jvm } else { Dotnet }
+    val tgt = if argv.length >= 5 and argv[3] == "--target" and argv[4] == "jvm" { Emitter.Jvm } else { Emitter.Dotnet }
     match File.readText(entryPath) {
       case Err(e) -> {
         printErr("perpackage: cannot read " + entryPath + ": " + IOError.message(e))
@@ -147,7 +147,7 @@ pub func main(argv: in slice[String]): Int {
         return 1
       }
       case Ok(entrySrc) -> {
-        val res = Emitter.emitCompilerBundle(entrySrc, outPath, Dotnet)
+        val res = Emitter.emitCompilerBundle(entrySrc, outPath, Emitter.Dotnet)
         var hadError = false
         for d in res.diagnostics.toArray() {
           printDiag(d)
@@ -185,7 +185,7 @@ pub func main(argv: in slice[String]): Int {
     val specPath = argv[1]
     val outPath = argv[3]
     val targetStr = argv[5]
-    val tgt = if targetStr == "jvm" { Jvm } else { Dotnet }
+    val tgt = if targetStr == "jvm" { Emitter.Jvm } else { Emitter.Dotnet }
 
     match File.readText(specPath) {
       case Err(e) -> {

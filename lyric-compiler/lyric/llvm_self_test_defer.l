@@ -55,7 +55,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   }
   val dir = Path.join(tempBase(), "lyric-llvm-defer-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   if sanitize {
     flags.add("-fsanitize=address")

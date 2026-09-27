@@ -834,7 +834,8 @@ test "cross-package generic calling a sibling package by name inside a closure (
 // at `Long` rather than at the `Int` of its literal fallback.
 test "qualified restored calls widen Int arguments and type generics from their results (D-progress-969)" {
   val tmpDir = freshTempDir("cplong-qualified")
-  val producerSrc = "package CpLong.Parse\n" + "\n" + "pub func span(lo: in Long, hi: in Long): Long { hi - lo }\n" +
+  val producerSrc = "package CpLong.Parse\nimport Std.Collections\n" + "\n" +
+    "pub func span(lo: in Long, hi: in Long): Long { hi - lo }\n" +
     "\n" +
     "pub func longOr(raw: in String): Result[Long, String] {\n" +
     "  if raw == \"big\" { Ok(value = 5000000000i64) } else { Err(error = \"bad\") }\n" +
@@ -879,13 +880,15 @@ test "an annotated local in a specialised generic keeps its type across packages
     "  case Wrap(label: String, inner: View[Msg])\n" +
     "  case Click(msg: Msg)\n" +
     "}\n"
-  val widgetsSrc = "package CpView.Widgets\n" + "\n" + "import CpView.Core.{View, Wrap, Click}\n" + "\n" +
+  val widgetsSrc = "package CpView.Widgets\nimport Std.Collections\n" + "\n" +
+    "import CpView.Core.{View, Wrap, Click}\n" +
+    "\n" +
     "pub func field[Msg](label: in String, errors: in List[String], inner: in View[Msg]): View[Msg] {\n" +
     "  Wrap(label = label, inner = inner)\n" +
     "}\n" +
     "\n" +
     "pub func textInput[Msg](v: in String, f: in (String) -> Msg): View[Msg] { Click(msg = f(v)) }\n"
-  val formsSrc = "package CpView.Forms\n" + "\n" + "import CpView.Core.{View}\n" +
+  val formsSrc = "package CpView.Forms\nimport Std.Collections\n" + "\n" + "import CpView.Core.{View}\n" +
     "import CpView.Widgets.{field, textInput}\n" +
     "\n" +
     "pub func fieldView[Msg](flag: in Bool, v: in String, onEdit: in (String, String) -> Msg): View[Msg] {\n" +
@@ -983,7 +986,8 @@ test "a restored range subtype renders as its value (D-progress-968)" {
 // the type checker's recorded type of the field read.
 test "generic call over a restored package's record field chain infers its type arguments (#7441)" {
   val tmpDir = freshTempDir("cpgen-fieldchain")
-  val producerSrc = "package CPGenFieldChain.Lib\n" + "\n" + "pub record Inner {\n" + "  m: Map[String, String]\n" +
+  val producerSrc = "package CPGenFieldChain.Lib\nimport Std.Collections\n" + "\n" + "pub record Inner {\n" +
+    "  m: Map[String, String]\n" +
     "}\n" +
     "\n" +
     "pub record Outer {\n" +

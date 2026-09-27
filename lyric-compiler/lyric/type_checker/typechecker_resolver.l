@@ -408,7 +408,7 @@ func resolveTypePath(
         return symbolToType(tbl, ctx, diag, sym, args, span)
       }
       case None -> {
-        diag.add(errorDiagnostic("T0010", "unknown type name '" + name + "'", span))
+        diag.add(errorDiagnostic("T0010", "unknown type name '" + name + "'" + symTableHiddenImportHint(tbl, name), span))
         return TyError
       }
     }

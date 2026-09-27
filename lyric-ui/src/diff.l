@@ -16,6 +16,7 @@ package Ui.Diff
 
 import Std.Core
 import Ui.Core.{View, Element, Text, Empty, Handler, Prop, WidgetKind, kindName, eventName, lookupProp}
+import Std.Collections
 
 // ─── Wire nodes ───────────────────────────────────────────────────────────────
 /// The handler-free projection of a `View`: what a host needs to render a

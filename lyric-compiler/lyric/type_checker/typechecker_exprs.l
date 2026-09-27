@@ -951,6 +951,11 @@ func checkUnimportedTypeReceiver(
       )
     }
     case None -> {
+      // Hidden by the file's import rule (docs/01 §9.2).
+      val hint = symTableHiddenImportHint(tbl, name)
+      if hint.length > 0 {
+        diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + hint, span))
+      }
     }
   }
 }
@@ -3648,6 +3653,12 @@ func resolveExprPath(
           }
         }
         case None -> {
+          // The only functions of this name are hidden by the import rule.
+          val hint = symTableHiddenImportHint(tbl, name)
+          if hint.length > 0 {
+            diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + hint, span))
+            return TyError
+          }
         }
       }
       val pts: List[Type] = newList()
@@ -3708,7 +3719,7 @@ func resolveExprPath(
       }
     }
     case None -> {
-      diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'", span))
+      diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + symTableHiddenImportHint(tbl, name), span))
     }
   }
   TyError
@@ -5766,7 +5777,7 @@ func checkBoundsSatisfied(
             if isKnownDeriveMarker(cname) {
               satisfied = hasDerive(tbl, cname, concreteTy)
             } else {
-              match symTableTryFindOne(tbl, cname) {
+              match constraintInterfaceSym(tbl, cname) {
                 case Some(ifaceSym) -> match ifaceSym.kind {
                   case DKInterface(ifaceId, _) -> match typeIdOfType(concreteTy) {
                     case Some(concreteId) -> {
@@ -5848,6 +5859,33 @@ func caseFieldTypesInstantiated(
 // `PBinding`, but if the name resolves to a nullary union/enum *case* it is a
 // constructor pattern, not a fresh variable — it must NOT bind a local (which
 // would shadow the constructor in the arm body, e.g. `case None -> None`).
+// Whether the scrutinee's own union or enum declares a case `name`.  A bare
+// case pattern resolves against the scrutinee's type whatever the file's
+// imports make visible (docs/01 §9.2): matching a value of an aliased
+// package's enum still writes `case Dotnet ->`, never a fresh binding.
+func scrutineeHasCaseNamed(tbl: in SymbolTable, ty: in Type, name: in String): Bool {
+  match unrefine(ty) {
+    case TyUser(sid, _, _) -> {
+      val cands = symTableTryFindAll(tbl, name)
+      var i = 0
+      while i < cands.count {
+        val parent = match cands[i].kind {
+          case DKUnionCase(pid, _) -> Some(value = pid)
+          case DKEnumCase(pid, _) -> Some(value = pid)
+          case _ -> None
+        }
+        match parent {
+          case Some(pid) -> if typeIdEq(pid, sid) { return true }
+          case None -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
 func isConstructorPatternName(tbl: in SymbolTable, name: in String): Bool {
   match symTableTryFindOne(tbl, name) {
     case Some(sym) -> match sym.kind { case DKUnionCase(_, _) -> true; case DKEnumCase(_, _) -> true; case _ -> false }
@@ -6112,7 +6150,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
         )
       }
       if name != "_" {
-        if isConstructorPatternName(tbl, name) {
+        if isConstructorPatternName(tbl, name) or scrutineeHasCaseNamed(tbl, ty, name) {
           // #6287: a bare nullary-case pattern (`case Halt ->`, no parens)
           // ambiguous across imported packages must be qualified — UNLESS
           // the scrutinee is a known concrete type (`TyUser`).  Matching
@@ -7830,7 +7868,19 @@ func findDirectSig(
       // legacy fallback — using it before the arity key would misfire as T0042
       // every time a 3-arg call hits a bare key registered for the 2-arg
       // overload, so it stays second.
-      val primary = match mapGet(sigs, arityKey) { case Some(s) -> Some(value = s); case None -> mapGet(sigs, name) }
+      val bare = path.segments.count == 1
+      val primaryAny = match mapGet(sigs, arityKey) { case Some(s) -> Some(value = s); case None -> mapGet(sigs, name) }
+      // A bare call sees only the functions its file's imports make visible
+      // (docs/01 §9.2); a hidden primary defers to a visible overload, or to
+      // the `ECall` arm's unknown-name report.
+      val primary = match primaryAny {
+        case Some(s) -> if not bare or symTableBareFuncVisible(tbl, s.originPackage, name) {
+          primaryAny
+        } else {
+          None
+        }
+        case None -> None
+      }
       // Preserve shadowing and the common case: if the primary's params match
       // the arguments, use it.  Only when it does *not* match do we consult the
       // overload candidates — this is the disambiguation for #1488 category C.
@@ -7849,12 +7899,25 @@ func findDirectSig(
       // slice[String])` over `Std.Path.join(String, String)`.
       val candidates = gatherOverloadCandidates(sigs, arityKey)
       var ci = 0
+      var firstVisible: Option[ResolvedSignature] = None
       while ci < candidates.count {
         val cand = candidates[ci]
-        if paramsMatchArgs(tbl, cand.params, argTypes) {
-          return Some(value = cand)
+        if not bare or symTableBareFuncVisible(tbl, cand.originPackage, name) {
+          if paramsMatchArgs(tbl, cand.params, argTypes) {
+            return Some(value = cand)
+          }
+          match firstVisible {
+            case None -> {
+              firstVisible = Some(value = cand)
+            }
+            case Some(_) -> ()
+          }
         }
         ci = ci + 1
+      }
+      match primaryAny {
+        case Some(_) -> match primary { case None -> return firstVisible; case Some(_) -> () }
+        case None -> ()
       }
       // No candidate matched the arguments — fall back to the primary so the
       // `ECall` arm still reports any T0042/T0043 against the historical

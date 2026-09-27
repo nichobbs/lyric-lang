@@ -181,7 +181,7 @@ func compileAndRun(source: in String): RunOutcome {
   }
   val dir = Path.join(tempBase(), "lyric-llvm-enumcase-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val llPath = stem + ".ll"
   match File.writeText(llPath, ll) {
     case Ok(_) -> {
@@ -223,7 +223,7 @@ func compileAndRunBundled(source: in String): RunOutcome {
   }
   val dir = Path.join(tempBase(), "lyric-llvm-enumcase-bundled-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val noFlags: List[String] = newList()
   if not compileToNativeWithFlags(source, stem, stdlib, "", "0", noFlags, newList(), "") {
     panic("native compilation failed for a bundled enum-case-resolve self-test program")

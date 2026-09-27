@@ -833,7 +833,8 @@ test "interface subtyping cross package sound" {
   val packages: List[ImportedPackage] = newList()
   packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
   packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
-  val src = "package App\nimport PkgA\nrecord Hello { x: Int }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = wantB(Hello(x = 1))\n}\n"
+  // Only `wantB` is imported from PkgB, so the bare `Greeter` means PkgA's.
+  val src = "package App\nimport PkgA\nimport PkgB.{wantB}\nrecord Hello { x: Int }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = wantB(Hello(x = 1))\n}\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
   assertTrue(
     hasDiagCode(cr, "T0043"),
@@ -4510,37 +4511,99 @@ test "local declaration shadows an ambiguous import collision, no T0123" {
   )
 }
 
-// #6287's "reject unimported resolution" item (a name from a package never
-// imported, even transitively, must not silently resolve) was ATTEMPTED as a
-// tier-3 restriction on `symTableTryFindOne` but reverted: a full audit build
-// of `lyric-stdlib/lyric.full.toml` and every ecosystem `lyric.toml` surfaced
-// `Option`/`Result` (`Std.Core`) referenced across wide swaths of the stdlib
-// with no `import Std.Core` at all — an implicit-prelude reliance far
-// broader than the kernel/host re-export idiom below, and not a bounded
-// change for this issue (see `symTableTryFindOne`'s doc comment for the full
-// writeup).  This test pins the CURRENT (unchanged) behaviour: a name from a
-// package that is part of the same multi-file build, but not on any import
-// path from the consumer, still resolves via last-registered-wins — a
-// deliberate scope decision, not an oversight; it is the tracked residual
-// gap from this issue (#6703).
-test "bare name from an unrelated sibling package still resolves (residual #6287 scope decision)" {
+// docs/01 §9.2 (#7463, closing #6703): a bare name resolves only through the
+// file's own imports.  A whole import (`import P`) makes every name of `P`
+// visible, and transitively the names of the packages `P` imports; a
+// selective import (`import P.{f}`) only the listed names; an aliased import
+// (`import P as Q`) none, since they are reached as `Q.f`.  A name that exists
+// but is hidden this way is T0020 with a hint saying how to import it.
+func importRulePackages(): List[ImportedPackage] {
   val pkgX = parse("package PkgX\npub func siblingHelper(): Int { 1 }\n")
-  val pkgY = parse("package PkgY\npub func fromY(): Int { 2 }\n")
+  val pkgY = parse("package PkgY\npub func fromY(): Int { 2 }\npub func otherY(): Int { 3 }\npub val LIMIT: Int = 4\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(ImportedPackage(name = "PkgX", items = pkgX.file.items, imports = collectImportNames(pkgX.file.imports)))
   packages.add(ImportedPackage(name = "PkgY", items = pkgY.file.items, imports = collectImportNames(pkgY.file.imports)))
+  packages
+}
+
+test "a bare name from a package the file never imports is T0020 with an import hint (#6703)" {
   val src = "package App\nimport PkgY\nfunc f(): Int { siblingHelper() }\n"
+  val cr = checkWithImportedPackages(parse(src).file, importRulePackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "siblingHelper (PkgX, never imported): T0020")
+  assertTrue(
+    diagMessageFor(cr, "T0020").contains("declared in PkgX; add import PkgX or import PkgX.{siblingHelper}"),
+    "the hint names the declaring package: " + diagMessageFor(cr, "T0020")
+  )
+  val okSrc = "package App\nimport PkgY\nfunc f(): Int { fromY() }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(okSrc).file, importRulePackages())),
+    0,
+    "fromY (imported whole) resolves"
+  )
+}
+
+test "a selective import makes only its listed names visible bare" {
+  val src = "package App\nimport PkgY.{fromY}\nfunc f(): Int { fromY() }\nfunc g(): Int { otherY() }\nfunc h(): Int { LIMIT }\n"
+  val cr = checkWithImportedPackages(parse(src).file, importRulePackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 2, "otherY and LIMIT are not listed: T0020 twice, fromY resolves")
+  assertTrue(
+    diagMessageFor(cr, "T0020").contains("import PkgY.{"),
+    "the hint suggests listing the name: " + diagMessageFor(cr, "T0020")
+  )
+}
+
+test "an aliased import makes no name visible bare; the qualified form resolves" {
+  val src = "package App\nimport PkgY as Y\nfunc f(): Int { fromY() }\n"
+  val cr = checkWithImportedPackages(parse(src).file, importRulePackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "bare fromY through an aliased import: T0020")
+  assertTrue(
+    diagMessageFor(cr, "T0020").contains("imported as Y; write Y.fromY"),
+    "the hint names the alias: " + diagMessageFor(cr, "T0020")
+  )
+  // The alias rewriter turns `Y.fromY()` into this package-qualified call.
+  val qualSrc = "package App\nimport PkgY as Y\nfunc f(): Int { PkgY.fromY() }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(qualSrc).file, importRulePackages())),
+    0,
+    "PkgY.fromY resolves"
+  )
+}
+
+test "a name hidden by an aliased import does not make a whole import's name ambiguous" {
+  val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
+  val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  val src = "package App\nimport PkgA as A\nimport PkgB\nfunc f(): String { GREETING }\n"
+  assertEqualInt(diagCount(checkWithImportedPackages(parse(src).file, packages)), 0, "GREETING means PkgB's: no T0123")
+}
+
+test "a selectively imported union type makes its cases visible in patterns and constructors" {
+  val lib = parse(
+    "package PkgS\npub union Shape {\n  case Square(side: Int)\n  case Dot\n}\npub func unit(): Shape { Dot }\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgS", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  val src = "package App\nimport PkgS.{Shape}\nfunc side(s: in Shape): Int {\n  match s {\n    case Square(n) -> n\n    case Dot -> 0\n  }\n}\nfunc mk(): Shape { Square(side = 2) }\n"
   assertEqualInt(
     diagCount(checkWithImportedPackages(parse(src).file, packages)),
     0,
-    "siblingHelper (PkgX, never imported by App or PkgY) still resolves — tracked residual gap (#6703), not a regression"
+    "Square and Dot resolve through Shape"
   )
-  // Control: a name PkgY directly imports resolves cleanly too.
-  val okSrc = "package App\nimport PkgY\nfunc f(): Int { fromY() }\n"
+}
+
+test "a bare case pattern resolves through the scrutinee's type behind an aliased import" {
+  val lib = parse("package PkgE\npub enum Colour {\n  case Red\n  case Green\n}\npub func pick(): Colour { Red }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgE", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  val src = "package App\nimport PkgE as E\nfunc code(c: in PkgE.Colour): Int {\n  match c {\n    case Red -> 1\n    case Green -> 2\n  }\n}\n"
+  assertEqualInt(diagCount(checkWithImportedPackages(parse(src).file, packages)), 0, "Red and Green are Colour's cases")
+  val exprSrc = "package App\nimport PkgE as E\nfunc mk(): PkgE.Colour { Red }\n"
   assertEqualInt(
-    diagCount(checkWithImportedPackages(parse(okSrc).file, packages)),
-    0,
-    "fromY (PkgY, directly imported by App): resolves cleanly"
+    countDiagCode(checkWithImportedPackages(parse(exprSrc).file, packages), "T0020"),
+    1,
+    "a hidden case in an expression is T0020"
   )
 }
 
@@ -4549,9 +4612,7 @@ test "bare name from an unrelated sibling package still resolves (residual #6287
 // `List`/`Map`) depends on TRANSITIVE reachability: a consumer that only
 // imports the wrapper package (`PkgWrap`) must still resolve a name declared
 // by the wrapper's own import (`PkgHost`), even though the consumer never
-// names `PkgHost` in its own `import` list.  Reject-unimported-resolution
-// must not break this — only a package with NO import path at all (see the
-// test above) is out of scope.
+// names `PkgHost` in its own `import` list (docs/01 §9.2).
 test "bare name reachable only via a transitive import still resolves (kernel/host idiom)" {
   val pkgHost = parse("package PkgHost\npub func hostFn(): Int { 42 }\n")
   val pkgWrap = parse("package PkgWrap\nimport PkgHost\npub func wrapFn(): Int { hostFn() }\n")

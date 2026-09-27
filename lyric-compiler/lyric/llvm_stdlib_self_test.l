@@ -47,7 +47,7 @@ func compileAndRunNative(source: in String): RunOutcome {
   }
   val dir = Path.join(tempBase(), "lyric-llvm-stdlib-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags, newList(), "") {
@@ -834,26 +834,26 @@ test "Std.Time seams: epoch, monotonic, sleep (ASan)" {
 
 test "Std.Uuid seams: v4 generation, formatting, four parse forms (ASan)" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Uuid\n" + "func main(): Int {\n" +
-    "  val a = uuidToString(newUuid())\n" +
-    "  val b = uuidToString(newUuid())\n" +
+    "  val a = Uuid.uuidToString(Uuid.newUuid())\n" +
+    "  val b = Uuid.uuidToString(Uuid.newUuid())\n" +
     "  if a.length != 36 or b.length != 36 {\n    return 1\n  }\n" +
     "  if a == b {\n    return 2\n  }\n" +
     "  if a.substring(8, 1) != \"-\" or a.substring(13, 1) != \"-\" or a.substring(18, 1) != \"-\" or a.substring(23, 1) != \"-\" {\n    return 3\n  }\n" +
     "  if a.substring(14, 1) != \"4\" {\n    return 4\n  }\n" +
     "  val variant = a.substring(19, 1)\n" +
     "  if variant != \"8\" and variant != \"9\" and variant != \"a\" and variant != \"b\" {\n    return 5\n  }\n" +
-    "  if uuidToString(nilUuid()) != \"00000000-0000-0000-0000-000000000000\" {\n    return 6\n  }\n" +
+    "  if Uuid.uuidToString(nilUuid()) != \"00000000-0000-0000-0000-000000000000\" {\n    return 6\n  }\n" +
     "  match parseUuidOpt(a) {\n" +
-    "    case Some(u) -> {\n      if uuidToString(u) != a {\n        return 7\n      }\n    }\n" +
+    "    case Some(u) -> {\n      if Uuid.uuidToString(u) != a {\n        return 7\n      }\n    }\n" +
     "    case None -> {\n      return 8\n    }\n" +
     "  }\n" +
     "  val d = \"550e8400-e29b-41d4-a716-446655440000\"\n" +
     "  match parseUuidOpt(\"{550E8400-E29B-41D4-A716-446655440000}\") {\n" +
-    "    case Some(u2) -> {\n      if uuidToString(u2) != d {\n        return 9\n      }\n    }\n" +
+    "    case Some(u2) -> {\n      if Uuid.uuidToString(u2) != d {\n        return 9\n      }\n    }\n" +
     "    case None -> {\n      return 10\n    }\n" +
     "  }\n" +
     "  match parseUuidOpt(\"550e8400e29b41d4a716446655440000\") {\n" +
-    "    case Some(u3) -> {\n      if uuidToString(u3) != d {\n        return 11\n      }\n    }\n" +
+    "    case Some(u3) -> {\n      if Uuid.uuidToString(u3) != d {\n        return 11\n      }\n    }\n" +
     "    case None -> {\n      return 12\n    }\n" +
     "  }\n" +
     "  match parseUuidOpt(\"(\" + d + \")\") {\n" +

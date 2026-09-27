@@ -46,7 +46,7 @@ func cmdUpdate(argv: in slice[String]): Int {
 
   val mfDir = Path.dirname(mfPath)
 
-  val wsCtx: Option[WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
+  val wsCtx: Option[Ws.WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
   val lockPath = match wsCtx {
     case Some(ctx) -> Path.join(ctx.rootDir, "lyric.lock")
     case None -> Path.join(mfDir, "lyric.lock")
@@ -100,7 +100,7 @@ func cmdDeps(argv: in slice[String]): Int {
 
   val mfDir = Path.dirname(mfPath)
 
-  val wsCtx: Option[WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
+  val wsCtx: Option[Ws.WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
   val lockPath = match wsCtx {
     case Some(ctx) -> Path.join(ctx.rootDir, "lyric.lock")
     case None -> Path.join(mfDir, "lyric.lock")
