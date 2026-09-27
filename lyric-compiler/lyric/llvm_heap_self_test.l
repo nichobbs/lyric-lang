@@ -695,6 +695,48 @@ test "arc: a top-level function passed as a value becomes a closure and is leak-
   assertEqualInt(r.exitCode, 52, "function values: 5-char result and 2 short strings")
 }
 
+test "arc: a lambda passed to a generic function takes its type from the bound parameters (#7282)" {
+  // `sumBy(xs, { x -> ... })` types the lambda from `T` bound by `xs`;
+  // `applyFirst({ s -> ... }, "abc")` needs the later argument to bind `T`,
+  // so the lambda is lowered after it.
+  val src = "package T\n" + "func sumBy[T](xs: in List[T], f: in (T) -> Int): Int {\n" + "  var n = 0\n" +
+    "  for x in xs {\n" +
+    "    n = n + f(x)\n" +
+    "  }\n" +
+    "  n\n" +
+    "}\n" +
+    "func applyFirst[T](f: in (T) -> Int, x: in T): Int {\n" +
+    "  f(x)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val xs: List[String] = newList()\n" +
+    "  xs.add(\"ab\")\n" +
+    "  xs.add(\"cde\")\n" +
+    "  val suffix = \"!\"\n" +
+    "  sumBy(xs, { s -> (s + suffix).length }) * 10 + applyFirst({ s -> s.length }, \"abc\")\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 73, "lambdas typed from generic parameters")
+}
+
+test "arc: a generic record binds its type arguments through a Map field (#7413)" {
+  // `Index(entries = m, hits = 0)` has no bare `K`/`V` field; the type
+  // arguments come from the `Map[K, V]` field's key and value types.
+  val src = "package T\n" + "record Index[K, V] {\n" + "  entries: Map[K, V]\n" + "  hits: Int\n" + "}\n" +
+    "func size[K, V](ix: in Index[K, V]): Int {\n" +
+    "  ix.entries.count + ix.hits\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val m: Map[String, Int] = newMap()\n" +
+    "  m[\"a\"] = 1\n" +
+    "  m[\"b\"] = 2\n" +
+    "  val ix = Index(entries = m, hits = 40)\n" +
+    "  size(ix)\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 42, "record type arguments bound from a Map field")
+}
+
 test "two-param generic union constructs via expected types" {
   val src = "package T\n" + "union Res[T, E] {\n" + "  case Good(v: T)\n" + "  case Bad(err: E)\n" + "}\n" +
     "func parse(n: in Int): Res[Int, String] {\n" +

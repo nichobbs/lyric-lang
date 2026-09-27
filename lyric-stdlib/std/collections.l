@@ -87,12 +87,7 @@ pub func mapValues[K, V](m: in Map[K, V]): List[V] {
 /// Call `action(key, value)` for every entry in `m`.
 @stable(since = "1.0")
 pub func mapForEach[K, V](m: in Map[K, V], action: in (K, V) -> Unit): Unit {
-  for k in dictGetKeys(m) {
-    match mapGet(m, k) {
-      case Some(v) -> action(k, v)
-      case None -> ()
-    }
-  }
+  dictForEachEntry(m, action)
 }
 
 /// Copy every entry from `src` into `dst`, overwriting existing keys.
@@ -112,12 +107,7 @@ pub func mapPutAll[K, V](dst: in Map[K, V], src: in Map[K, V]): Unit {
 @stable(since = "1.0")
 pub func mapEntries[K, V](m: in Map[K, V]): List[MapEntry[K, V]] {
   val result: List[MapEntry[K, V]] = newListWithCapacity(m.count)
-  for k in dictGetKeys(m) {
-    match mapGet(m, k) {
-      case Some(v) -> result.add(MapEntry(key = k, value = v))
-      case None -> ()
-    }
-  }
+  dictForEachEntry(m, { k, v -> result.add(MapEntry(key = k, value = v)) })
   result
 }
 

@@ -110,3 +110,7 @@ echo "Native bare longToInt precondition check (--target native) passed"
 "$lyric_bin" run --target native lyric-stdlib/tests/collections_persistent_tests.l
 "$lyric_bin" run --target native lyric-stdlib/tests/collections_persistent_map_tests.l
 echo "Native Std.Collections.Persistent suites (--target native) passed"
+# Std.Collections on native, including mapForEach/mapEntries over the
+# kernel's lookup-free entry walk (#7282).
+"$lyric_bin" run --target native lyric-stdlib/tests/collections_tests.l
+echo "Native Std.Collections suite (--target native) passed"

@@ -11,10 +11,10 @@
 //! derive operations share the untouched suffix (#7280);
 //! `testPlistLargeBuildAndWalk` would not finish if cons or tail copied.
 //!
-//! `PersistentMap[K, V]` (#684, #6570) ships in the same module but is
-//! tested separately in `collections_persistent_map_tests.l` — dotnet-only
-//! for now, see that file's header for why.  Set operations remain a
-//! stretch goal, not shipped in this module.
+//! `PersistentMap[K, V]` (#684, #6570) ships in the same module and is
+//! tested separately in `collections_persistent_map_tests.l`. Both suites run
+//! on dotnet, JVM and native.  Set operations remain a stretch goal, not
+//! shipped in this module.
 package Std.Collections.Persistent.Tests
 
 import Std.Core

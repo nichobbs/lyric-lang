@@ -1687,25 +1687,39 @@ func bindLocal(ctx: in Ctx, insns: in List[NInsn], name: in String, v: in NVal):
 /// several arities is ambiguous without an expected type and is rejected.
 func functionRefAsClosure(ctx: in Ctx, insns: in List[NInsn], name: in String): Option[NVal] {
   val selfPrefix = if ctx.curPkg.count > 0 { ctx.curPkg[0] + "." + name } else { name }
+  // Every registered arity of the name: the package's own function first,
+  // then a bare (imported) one, as `lowerCall` resolves calls.
   var found: Option[NFuncSig] = None
   var matches = 0
-  var arity = 0
-  while arity <= 16 {
-    var sigOpt = mapGet(ctx.sigs, selfPrefix + "/" + arity.toString())
-    match sigOpt {
-      case Some(_) -> ()
-      case None -> {
-        sigOpt = mapGet(ctx.sigs, name + "/" + arity.toString())
+  var selfMatches = 0
+  for key in mapKeys(ctx.sigs) {
+    val slash = Str.lastIndexOfRaw(key, "/")
+    if slash > 0 {
+      val stem = Str.substring(key, 0, slash)
+      if stem == selfPrefix {
+        match mapGet(ctx.sigs, key) {
+          case Some(sg) -> {
+            if selfMatches == 0 {
+              found = Some(value = sg)
+              matches = 0
+            }
+            selfMatches = selfMatches + 1
+          }
+          case None -> ()
+        }
+      } else if stem == name and selfMatches == 0 {
+        match mapGet(ctx.sigs, key) {
+          case Some(sg) -> {
+            found = Some(value = sg)
+            matches = matches + 1
+          }
+          case None -> ()
+        }
       }
     }
-    match sigOpt {
-      case Some(sg) -> {
-        found = Some(value = sg)
-        matches = matches + 1
-      }
-      case None -> ()
-    }
-    arity = arity + 1
+  }
+  if selfMatches > 0 {
+    matches = selfMatches
   }
   if matches > 1 {
     panic(
@@ -7091,6 +7105,102 @@ func unifyTyArg(
 /// type-argument tuple from the argument types, instantiate the
 /// function (lowered once per tuple, cached), and emit the call.
 /// `preVals` are already-lowered leading arguments (the UFCS receiver).
+func isLambdaExpr(e: in Expr): Bool {
+  match e.kind {
+    case ELambda(_, _) -> true
+    case EParen(inner) -> isLambdaExpr(inner)
+    case _ -> false
+  }
+}
+
+/// The closure type parameter `pi` of generic function `fd` takes, under the
+/// type arguments bound by the already-lowered arguments before position
+/// `pi` (lambda placeholders, typed `NVoid`, bind nothing). None when a type
+/// parameter the parameter mentions is still unbound.
+func lambdaParamWant(
+  ctx: in Ctx, fd: in FunctionDecl, pi: in Int, rawVals: in List[NVal], paramNames: in List[String]
+): Option[NType] {
+  if pi >= fd.params.count {
+    return None
+  }
+  val boundNames: List[String] = newList()
+  val boundTys: List[NType] = newList()
+  var j = 0
+  while j < rawVals.count and j < pi {
+    match rawVals[j].ty {
+      case NVoid -> ()
+      case _ -> unifyTyArg(ctx, fd.params[j].ty, rawVals[j].ty, paramNames, boundNames, boundTys)
+    }
+    j = j + 1
+  }
+  if teMentionsUnbound(fd.params[pi].ty, paramNames, boundNames) {
+    return None
+  }
+  typeToNEnvOpt(ctx, fd.params[pi].ty, boundNames, boundTys)
+}
+
+/// As `lambdaParamWant`, but binding from every lowered argument (used for
+/// a lambda deferred past the arguments after it).
+func lambdaParamWantAt(
+  ctx: in Ctx, fd: in FunctionDecl, pi: in Int, rawVals: in List[NVal], paramNames: in List[String]
+): Option[NType] {
+  val boundNames: List[String] = newList()
+  val boundTys: List[NType] = newList()
+  var j = 0
+  while j < rawVals.count {
+    match rawVals[j].ty {
+      case NVoid -> ()
+      case _ -> unifyTyArg(ctx, fd.params[j].ty, rawVals[j].ty, paramNames, boundNames, boundTys)
+    }
+    j = j + 1
+  }
+  if teMentionsUnbound(fd.params[pi].ty, paramNames, boundNames) {
+    return None
+  }
+  typeToNEnvOpt(ctx, fd.params[pi].ty, boundNames, boundTys)
+}
+
+/// Whether `te` names a type parameter from `paramNames` absent from `bound`.
+func teMentionsUnbound(te: in TypeExpr, paramNames: in List[String], bound: in List[String]): Bool {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        val nm = path.segments[0]
+        return envIndexOf(paramNames, nm) >= 0 and envIndexOf(bound, nm) < 0
+      }
+      false
+    }
+    case TGenericApp(_, targs) -> {
+      var i = 0
+      while i < targs.count {
+        match targs[i] {
+          case TAType(inner) -> {
+            if teMentionsUnbound(inner, paramNames, bound) {
+              return true
+            }
+          }
+          case TAValue(_) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TSlice(inner) -> teMentionsUnbound(inner, paramNames, bound)
+    case TParen(inner) -> teMentionsUnbound(inner, paramNames, bound)
+    case TFunction(params, ret) -> {
+      var i = 0
+      while i < params.count {
+        if teMentionsUnbound(params[i], paramNames, bound) {
+          return true
+        }
+        i = i + 1
+      }
+      teMentionsUnbound(ret, paramNames, bound)
+    }
+    case _ -> false
+  }
+}
+
 func lowerGenericFnCall(
   ctx: in Ctx,
   insns: in List[NInsn],
@@ -7141,6 +7251,8 @@ func lowerGenericFnCall(
   }
   // Lower per parameter order.
   val rawVals: List[NVal] = newList()
+  val deferredLambdas: List[Int] = newList()
+  val deferredLambdaExprs: List[Expr] = newList()
   var pi = 0
   while pi < nParams {
     if pi < preVals.count {
@@ -7160,9 +7272,42 @@ func lowerGenericFnCall(
             "'"
         )
       }
-      rawVals.add(lowerExpr(ctx, insns, argExpr[found]))
+      val ax = argExpr[found]
+      if isLambdaExpr(ax) {
+        // A lambda needs its function type before it can be lowered. Take
+        // it from the parameter type under the type arguments the earlier
+        // arguments bind (`mapForEach(m, { k, v -> ... })`); only when a
+        // later argument is needed is the lambda deferred past it (#7282).
+        match lambdaParamWant(ctx, fd, pi, rawVals, genericParamNamesOf(fd.generics)) {
+          case Some(w) -> rawVals.add(lowerExprExpecting(ctx, insns, ax, w))
+          case None -> {
+            deferredLambdas.add(pi)
+            deferredLambdaExprs.add(ax)
+            rawVals.add(NVal(ty = NVoid, value = NUndef(ty = NVoid)))
+          }
+        }
+      } else {
+        rawVals.add(lowerExpr(ctx, insns, ax))
+      }
     }
     pi = pi + 1
+  }
+  var dli = 0
+  while dli < deferredLambdas.count {
+    val dpi = deferredLambdas[dli]
+    match lambdaParamWantAt(ctx, fd, dpi, rawVals, genericParamNamesOf(fd.generics)) {
+      case Some(w) -> {
+        rawVals[dpi] = lowerExprExpecting(ctx, insns, deferredLambdaExprs[dli], w)
+      }
+      case None -> panic(
+        "Lyric.LlvmCodegen: cannot infer the function type of the lambda passed as parameter '" +
+          fd.params[dpi].name +
+          "' of generic function '" +
+          fd.name +
+          "'; annotate the lambda's parameters or bind it to a typed val"
+      )
+    }
+    dli = dli + 1
   }
   // Infer type args.
   val paramNames = genericParamNamesOf(fd.generics)
