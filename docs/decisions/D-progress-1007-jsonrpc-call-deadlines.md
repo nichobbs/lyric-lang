@@ -70,9 +70,11 @@ bound.
    - `Std.Console.openStdinReader` / `readStdin` / `readStdinWithin`
      (public union `StdinChunk`): raw stdin bytes with a bounded wait.
      dotnet: `Stream.Read` on `Console.OpenStandardInput()` behind
-     `Task.Run` + `Task.Wait(int)`. JVM: a virtual thread
-     (`Thread.startVirtualThread` with a record implementing `Runnable`,
-     so it never keeps the JVM alive) joined with `Thread.join(long)`;
+     `Task.Run` + `Task.Wait(int)`. JVM: a daemon platform
+     thread (`new Thread(Runnable)` over a record implementing `Runnable`,
+     `setDaemon(true)` so it never keeps the JVM alive; not a virtual thread,
+     since a read blocked on `System.in` would pin its carrier and
+     `startVirtualThread` needs JDK 21) joined with `Thread.join(long)`;
      `available()` polling is not used because it cannot tell end of
      stream from silence. Native has no console input yet (existing gap,
      `_kernel_native/console_host.l`), so this API is dotnet/JVM.

@@ -18,8 +18,8 @@
 //! The stdin byte reader (`hostOpenStdin` / `hostStdinReadResult` /
 //! `hostStdinReadWithinResult`, #7451) reads raw bytes from `System.in`. A
 //! bounded read runs the blocking `InputStream.read()` on a
-//! virtual thread (`Thread.startVirtualThread` with a record implementing
-//! `Runnable`, so it never keeps the JVM alive) and waits with
+//! daemon platform thread (`new Thread(Runnable)` over a record implementing
+//! `Runnable`, marked daemon so it never keeps the JVM alive) and waits with
 //! `Thread.join(long)`. A timed-out read stays outstanding on the handle and
 //! the next read of either kind joins it, so bytes that arrive after a
 //! deadline are delivered, in order, by the next read. `available()` polling
@@ -160,8 +160,23 @@ impl JRunnable for StdinReadJob {
   }
 }
 
+func threadSetDaemon(t: in JThread, on: in Bool): Unit {
+  t.setDaemon(on)
+}
+
+func threadStart(t: in JThread): Unit {
+  t.start()
+}
+
+// A platform daemon thread, not a virtual one: a read blocked on
+// `System.in` pins a virtual thread's carrier, and `Thread(Runnable)` /
+// `setDaemon` / `start` exist on every JDK the compiler may resolve
+// against, where `Thread.startVirtualThread` needs JDK 21.
 func startJob(job: in StdinReadJob): JThread {
-  JThread.startVirtualThread(job)
+  val t = JThread.new(job)
+  threadSetDaemon(t, true)
+  threadStart(t)
+  t
 }
 
 /// Raw-byte reader over this process's standard input.

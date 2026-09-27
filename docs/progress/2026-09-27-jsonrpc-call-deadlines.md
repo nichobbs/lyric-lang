@@ -16,7 +16,7 @@ carry them:
   JVM (deadline in the polling loop) and native (lyric-rt
   `lyric_process_piped_read_line_within`, `poll(2)`).
 - `Std.Console.openStdinReader` / `readStdin` / `readStdinWithin` — raw
-  stdin bytes with a bounded wait, dotnet and JVM (a virtual thread joined
+  stdin bytes with a bounded wait, dotnet and JVM (a daemon thread joined
   with a timeout).
 
 `JsonRpc.Stdio`'s stdio transports now frame bytes through a `ByteSource`

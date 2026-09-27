@@ -198,7 +198,7 @@ Both implement `RpcTransport` over this process's stdin/stdout. Inbound
 framing is byte-level (#7451): the transports read raw stdin bytes
 through a `ByteSource` seam — in production `Std.Console`'s
 `StdinReader`, whose `readStdinWithin` bounds the wait on `dotnet`
-(`Task.Run` + `Task.Wait(int)`) and `jvm` (a virtual thread +
+(`Task.Run` + `Task.Wait(int)`) and `jvm` (a daemon thread +
 `Thread.join(long)`) — into a `FrameBuffer`, and cut a frame at each
 `\n` byte (NDJSON) or after exactly the declared body bytes
 (Content-Length), decoding UTF-8 only once a frame is complete. So
