@@ -26,12 +26,12 @@
 //!
 //!   aspect PriceLookupCache from Cache.Aspects.FunctionCache {
 //!     matches: name like "fetchExchangeRates*"
-//!     config { ttlSeconds: Int range 0 ..= 31536000 = 60 }
+//!     config { ttlSeconds: Int = 60 }
 //!   }
 //!
 //!   aspect ProductCache from Cache.Aspects.ItemCache {
 //!     matches: name like "loadProduct*"
-//!     config { ttlSeconds: Int range 0 ..= 31536000 = 120, keyPrefix: String = "product:" }
+//!     config { ttlSeconds: Int = 120, keyPrefix: String = "product:" }
 //!   }
 //!
 //! See docs/03-decision-log.md D055, docs/57-stdlib-ecosystem-library-review.md

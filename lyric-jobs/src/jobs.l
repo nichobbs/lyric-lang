@@ -278,34 +278,122 @@ pub func cronExprToQuartz(c: in CronExpr): Result[String, String] {
   return Ok("0 " + c.minuteField + " " + c.hourField + " " + quartzDom + " " + c.monthField + " " + quartzDow)
 }
 
-// Renumber every digit run in a Unix day-of-week field (0-7, Sunday=0/7) to
-// Quartz's 1-7 (Sunday=1): quartz = (unix % 7) + 1 (0->1, 1->2, ..., 6->7, 7->1).
-// Non-digit characters (*, -, /, ,) pass through unchanged.
+// Convert a validated Unix day-of-week field (0-7, Sunday=0/7) to a Quartz
+// day-of-week field (1-7, Sunday=1).
+//
+// Rather than renumbering each list entry's text independently (which
+// mishandles a step's own digits and a range spanning both Sunday spellings,
+// e.g. `0-7`), every entry is EXPANDED to the set of raw Unix day values it
+// covers, each value is mapped to its Quartz day (`unix == 0 or unix == 7`
+// both land on Quartz `1`), and the resulting set is deduplicated and
+// rendered in ascending Quartz order — either a comma list, or `*` when the
+// set covers every day of the week.
 func convertDowFieldToQuartz(field: in String): String {
-  var result = ""
-  var i = 0
-  val n = field.length
-  while i < n {
-    if isAsciiDigit(field[i]) {
-      var numStr = ""
-      while i < n and isAsciiDigit(field[i]) {
-        numStr = numStr + field[i].toString()
-        i = i + 1
-      }
-      match parseOptInt(numStr) {
-        case Some(unixVal) -> {
-          result = result + ((unixVal % 7) + 1).toString()
+  var d1 = false
+  var d2 = false
+  var d3 = false
+  var d4 = false
+  var d5 = false
+  var d6 = false
+  var d7 = false
+  val items = splitStr(field, ",")
+  var idx = 0
+  while idx < items.length {
+    val item = items[idx]
+    val slashParts = splitStr(item, "/")
+    val base = slashParts[0]
+    var step = 1
+    if slashParts.length == 2 {
+      match parseOptInt(slashParts[1]) {
+        case Some(s) -> {
+          step = s
         }
-        case None -> {
-          result = result + numStr
-        }    // unreachable: field is already validated
+        case None -> ()    // unreachable: field is already validated
       }
-    } else {
-      result = result + field[i].toString()
-      i = i + 1
     }
+    var lo = 0
+    var hi = 7
+    if base != "*" {
+      val dashParts = splitStr(base, "-")
+      if dashParts.length == 1 {
+        match parseOptInt(dashParts[0]) {
+          case Some(v) -> {
+            lo = v
+            hi = v
+          }
+          case None -> ()    // unreachable: field is already validated
+        }
+      } else {
+        match parseOptInt(dashParts[0]) {
+          case Some(v) -> {
+            lo = v
+          }
+          case None -> ()    // unreachable: field is already validated
+        }
+        match parseOptInt(dashParts[1]) {
+          case Some(v) -> {
+            hi = v
+          }
+          case None -> ()    // unreachable: field is already validated
+        }
+      }
+    }
+    var u = lo
+    while u <= hi {
+      val q = if u == 0 or u == 7 { 1 } else { u + 1 }
+      if q == 1 {
+        d1 = true
+      } else if q == 2 {
+        d2 = true
+      } else if q == 3 {
+        d3 = true
+      } else if q == 4 {
+        d4 = true
+      } else if q == 5 {
+        d5 = true
+      } else if q == 6 {
+        d6 = true
+      } else {
+        d7 = true
+      }
+      u = u + step
+    }
+    idx = idx + 1
+  }
+  if d1 and d2 and d3 and d4 and d5 and d6 and d7 {
+    return "*"
+  }
+  var result = ""
+  if d1 {
+    result = appendDowDigit(result, "1")
+  }
+  if d2 {
+    result = appendDowDigit(result, "2")
+  }
+  if d3 {
+    result = appendDowDigit(result, "3")
+  }
+  if d4 {
+    result = appendDowDigit(result, "4")
+  }
+  if d5 {
+    result = appendDowDigit(result, "5")
+  }
+  if d6 {
+    result = appendDowDigit(result, "6")
+  }
+  if d7 {
+    result = appendDowDigit(result, "7")
   }
   return result
+}
+
+// Append `digit` to the comma-separated accumulator `acc`.
+func appendDowDigit(acc: in String, digit: in String): String {
+  if acc.length == 0 {
+    return digit
+  }
+  return acc + "," + digit
 }
 
 // Validate one comma-separated cron field against [minV, maxV].
@@ -335,6 +423,9 @@ func validateCronItem(item: in String, fieldName: in String, minV: in Int, maxV:
     return Err("cron: " + fieldName + " field entry '" + item + "' has more than one '/'")
   }
   if slashParts.length == 2 {
+    if not isAllAsciiDigits(slashParts[1]) {
+      return Err("cron: " + fieldName + " field step '" + slashParts[1] + "' is not a valid integer")
+    }
     match parseOptInt(slashParts[1]) {
       case None -> return Err("cron: " + fieldName + " field step '" + slashParts[1] + "' is not a valid integer")
       case Some(step) -> {
@@ -386,8 +477,31 @@ func validateCronRangeOrNumber(base: in String, fieldName: in String, minV: in I
   }
 }
 
-// Validate `numStr` as a bare integer within [minV, maxV].
+// True when `s` is non-empty and every character is an ASCII digit (0-9);
+// rejects a leading `+`/`-` and any embedded whitespace that `parseOptInt`
+// would otherwise silently tolerate.
+func isAllAsciiDigits(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    if not isAsciiDigit(s[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+// Validate `numStr` as a bare integer within [minV, maxV]. Every character
+// must be an ASCII digit — `parseOptInt` alone also accepts a leading `+`
+// and surrounding whitespace, which cron numbers (bare, range-endpoint, or
+// step) must not.
 func validateCronNumber(numStr: in String, fieldName: in String, minV: in Int, maxV: in Int): Result[Unit, String] {
+  if not isAllAsciiDigits(numStr) {
+    return Err("cron: " + fieldName + " field value '" + numStr + "' is not a valid integer")
+  }
   match parseOptInt(numStr) {
     case None -> return Err("cron: " + fieldName + " field value '" + numStr + "' is not a valid integer")
     case Some(n) -> {

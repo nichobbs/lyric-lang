@@ -41,7 +41,9 @@
 package Mail
 
 import Std.Core
+import Std.Char
 import Std.Collections
+import Std.Format
 import Std.String
 import Std.Parse
 import Std.Environment as Env
@@ -161,43 +163,98 @@ pub val maxTotalAttachmentBytes: Int = 26214400
 // trailing `=` pad characters subtract from that. Good enough for a size-cap
 // check — exact to within 2 bytes — without paying for (or depending on a
 // target-specific kernel for) a real base64 decode just to measure size.
-func approxBase64DecodedLength(s: in String): Int {
+//
+// Computed in `Long`, not `Int` (#7468): `s.length * 3` overflows a 32-bit
+// `Int` for any string longer than ~715M characters, which would wrap
+// negative and let an oversized attachment slip past the `maxTotalAttachmentBytes`
+// cap. `(len / 4) * 3` (rather than `len * 3 / 4`) also avoids overflowing on
+// the multiply for very long inputs.
+func approxBase64DecodedLength(s: in String): Long {
   if s.length == 0 {
-    return 0
+    return 0i64
   }
-  var padding = 0
+  var padding: Long = 0i64
   if s.length >= 1 and s[s.length - 1] == '=' {
-    padding = 1
+    padding = 1i64
   }
   if s.length >= 2 and s[s.length - 2] == '=' {
-    padding = 2
+    padding = 2i64
   }
-  return (s.length * 3) / 4 - padding
+  val len = s.length.toLong()
+  return (len / 4i64) * 3i64 - padding
 }
 
 // Sum of every attachment's approximate decoded size, in bytes.
-func totalAttachmentBytes(attachments: in slice[Attachment]): Int {
-  var total = 0
+//
+// Short-circuits as soon as the running total exceeds
+// `maxTotalAttachmentBytes` (#7468): both avoids letting a `Long` total wrap
+// on a pathological number of huge attachments and avoids doing more work
+// than needed once the cap is already known to be exceeded.
+func totalAttachmentBytes(attachments: in slice[Attachment]): Long {
+  var total: Long = 0i64
+  val cap = maxTotalAttachmentBytes.toLong()
   var i = 0
   while i < attachments.length {
     total = total + approxBase64DecodedLength(attachments[i].dataBase64)
+    if total > cap {
+      return total
+    }
     i = i + 1
   }
   return total
 }
 
-// Non-empty and contains '@' — the minimal shape check that catches the
-// silently-skipped-recipient bug (#7254): an address failing this is
-// rejected with a structured `Err` rather than silently dropped from the
-// recipient list a partial send goes out to.
+// Exactly one '@', a non-empty local part, and a non-empty domain part
+// containing no whitespace, CR, or LF — the minimal shape check that
+// catches the silently-skipped-recipient bug (#7254). An address failing
+// this is rejected with a structured `Err` rather than silently dropped
+// from the recipient list a partial send goes out to.
+//
+// Previously this only checked for the presence of `@` anywhere in the
+// string, which let through implausible shapes like `@`, `a@`, `@b`, and
+// `a@b@c` (#7476 suggestion 5).
 func isPlausibleAddress(address: in String): Bool {
-  return address.length > 0 and containsAtSign(address)
+  val atIndex = findAtSignIndex(address)
+  match atIndex {
+    case None -> false
+    case Some(i) -> {
+      val localPart = address.substring(0, i)
+      val domainPart = address.substring(i + 1, address.length - i - 1)
+      if localPart.length == 0 or domainPart.length == 0 {
+        false
+      } else if containsAtSign(domainPart) {
+        // More than one '@' in the address (rejects "a@b@c").
+        false
+      } else {
+        not containsWhitespaceOrNewline(domainPart)
+      }
+    }
+  }
 }
 
-func containsAtSign(s: in String): Bool {
+func findAtSignIndex(s: in String): Option[Int] {
   var i = 0
   while i < s.length {
     if s[i] == '@' {
+      return Some(value = i)
+    }
+    i = i + 1
+  }
+  return None
+}
+
+func containsAtSign(s: in String): Bool {
+  match findAtSignIndex(s) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func containsWhitespaceOrNewline(s: in String): Bool {
+  var i = 0
+  while i < s.length {
+    val ch = s[i]
+    if ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n' {
       return true
     }
     i = i + 1
@@ -205,13 +262,14 @@ func containsAtSign(s: in String): Bool {
   return false
 }
 
-// Reject a recipient list containing an implausible address instead of
-// silently skipping it (#7254): a partial send is worse than a rejected one,
-// since the caller has no signal that some recipients never received the
-// message. Checks `to`/`cc`/`bcc` only — `from`/`replyTo` are not silently
-// skipped today (the BCL `MailAddress` constructor already throws
-// `FormatException` on a malformed address, which the caller sees as
-// `Err(code = "SEND_ERROR")`).
+// Reject a recipient list (or `replyTo`) containing an implausible address
+// instead of silently skipping it: a partial send is worse than a rejected
+// one, since the caller has no signal that some recipients never received
+// the message (#7254), and an implausible `replyTo` was previously dropped
+// entirely rather than validated like `to`/`cc`/`bcc` (#7476 suggestion 4).
+// `from` is not checked here — the BCL `MailAddress` constructor already
+// throws `FormatException` on a malformed `from`, which the caller sees as
+// `Err(code = "SEND_ERROR")`.
 func validateRecipientAddresses(msg: in EmailMessage): Option[MailError] {
   var i = 0
   while i < msg.to.length {
@@ -233,6 +291,12 @@ func validateRecipientAddresses(msg: in EmailMessage): Option[MailError] {
       return Some(value = MailError(message = "bcc[" + ("" + bi) + "] has an invalid address", code = "INVALID_ADDRESS"))
     }
     bi = bi + 1
+  }
+  match msg.replyTo {
+    case None -> ()
+    case Some(rt) -> if not isPlausibleAddress(rt.address) {
+      return Some(value = MailError(message = "replyTo has an invalid address", code = "INVALID_ADDRESS"))
+    }
   }
   return None
 }
@@ -284,7 +348,7 @@ impl MailSender for NativeSender {
     }
     // Reject an oversized attachment payload before dispatch (#7254) — mirrors
     // the same check in the Mail.send wrapper.
-    if totalAttachmentBytes(msg.attachments) > maxTotalAttachmentBytes {
+    if totalAttachmentBytes(msg.attachments) > maxTotalAttachmentBytes.toLong() {
       return Err(
         MailError(message = "total attachment size exceeds maxTotalAttachmentBytes", code = "ATTACHMENTS_TOO_LARGE")
       )
@@ -371,12 +435,20 @@ impl MailSender for NativeSender {
 // Mail binding yet (see its module header), so every `connectSmtp()` call on
 // this target currently returns `Err(code = "NOT_IMPLEMENTED")` before a
 // `NativeSenderJvm` is ever constructed.
+//
+// Gated on both `jvm` AND `smtp` (#7476 suggestion 6): every method this
+// record's `impl` calls into (`Mail.Kernel.Jvm.connectSmtp`/`send`/`close`)
+// is itself gated on `feature = "smtp"`, so a `jvm` build without `smtp`
+// active must erase this record and its `impl` too, or the call sites below
+// would be left referencing erased symbols.
 @cfg(feature = "jvm")
+@cfg(feature = "smtp")
 record NativeSenderJvm {
   handle: Int
 }
 
 @cfg(feature = "jvm")
+@cfg(feature = "smtp")
 impl MailSender for NativeSenderJvm {
   func send(msg: in EmailMessage): Result[Unit, MailError] {
     match validateNoInjection(msg) {
@@ -390,7 +462,7 @@ impl MailSender for NativeSenderJvm {
       case Some(e) -> return Err(e)
       case None -> ()
     }
-    if totalAttachmentBytes(msg.attachments) > maxTotalAttachmentBytes {
+    if totalAttachmentBytes(msg.attachments) > maxTotalAttachmentBytes.toLong() {
       return Err(
         MailError(message = "total attachment size exceeds maxTotalAttachmentBytes", code = "ATTACHMENTS_TOO_LARGE")
       )
@@ -410,9 +482,16 @@ impl MailSender for NativeSenderJvm {
 // Field names and shape match `EmailMessage` directly (address/displayName
 // pairs for from/to/cc/bcc/replyTo; filename/contentType/dataBase64 triples
 // for attachments) — a schema the module header on `Mail.Kernel.Jvm`
-// documents. Escaping reuses the same CR/LF/NUL rejection `validateNoInjection`
-// already guarantees on every field this touches, plus `"`/`\` JSON escaping.
+// documents.
+//
+// Escapes `"` and `\`, plus every character below U+0020 as `\uXXXX`
+// (`\n`/`\r`/`\t` use the short forms). `validateNoInjection` only rejects
+// CR/LF/NUL — it does not cover every control character, and it never
+// touches `textBody`/`htmlBody` at all, so a multi-line body (or any other
+// control character in a field this function touches) must still be escaped
+// here to produce valid JSON (#7476).
 @cfg(feature = "jvm")
+@cfg(feature = "smtp")
 func jsonEscape(s: in String): String {
   var buf = ""
   var i = 0
@@ -422,6 +501,14 @@ func jsonEscape(s: in String): String {
       buf = buf + "\\\""
     } else if ch == '\\' {
       buf = buf + "\\\\"
+    } else if ch == '\n' {
+      buf = buf + "\\n"
+    } else if ch == '\r' {
+      buf = buf + "\\r"
+    } else if ch == '\t' {
+      buf = buf + "\\t"
+    } else if Std.Char.toInt(ch) < 0x20 {
+      buf = buf + "\\u00" + Std.Format.hexPad(Std.Char.toInt(ch), 2)
     } else {
       buf = buf + ch.toString()
     }
@@ -431,11 +518,13 @@ func jsonEscape(s: in String): String {
 }
 
 @cfg(feature = "jvm")
+@cfg(feature = "smtp")
 func addressToJson(addr: in EmailAddress): String {
   return "{\"address\":\"" + jsonEscape(addr.address) + "\",\"displayName\":\"" + jsonEscape(addr.displayName) + "\"}"
 }
 
 @cfg(feature = "jvm")
+@cfg(feature = "smtp")
 func addressListToJson(addrs: in slice[EmailAddress]): String {
   var buf = "["
   var i = 0
@@ -450,6 +539,7 @@ func addressListToJson(addrs: in slice[EmailAddress]): String {
 }
 
 @cfg(feature = "jvm")
+@cfg(feature = "smtp")
 func attachmentToJson(att: in Attachment): String {
   return "{\"filename\":\"" + jsonEscape(att.filename) + "\",\"contentType\":\"" + jsonEscape(att.contentType) +
     "\",\"dataBase64\":\"" +
@@ -458,6 +548,7 @@ func attachmentToJson(att: in Attachment): String {
 }
 
 @cfg(feature = "jvm")
+@cfg(feature = "smtp")
 func attachmentListToJson(attachments: in slice[Attachment]): String {
   var buf = "["
   var i = 0
@@ -471,8 +562,15 @@ func attachmentListToJson(attachments: in slice[Attachment]): String {
   return buf + "]"
 }
 
+// `pub` (but not `@stable`, so excluded from the tracked public-API surface —
+// see the `MailSenderStub` doc comment above for the same reasoning) so
+// `Mail.MailTests` can assert on its output directly: the escaping and
+// field-carry-through (e.g. `displayName`) this function performs are
+// otherwise only observable by a live JVM SMTP transport, which the test
+// suite does not have (#7476 suggestion 8).
 @cfg(feature = "jvm")
-func messageToJson(msg: in EmailMessage): String {
+@cfg(feature = "smtp")
+pub func messageToJson(msg: in EmailMessage): String {
   val replyToJson = match msg.replyTo { case Some(addr) -> addressToJson(addr); case None -> "null" }
   return "{\"from\":" + addressToJson(msg.from) + ",\"to\":" + addressListToJson(msg.to) + ",\"cc\":" +
     addressListToJson(msg.cc) +
@@ -524,10 +622,11 @@ pub func validateSmtpConfig(port: in Int, timeoutMs: in Int): Option[MailError] 
 
 /// Open an SMTP connection using environment variable config.
 /// Requires the `smtp` feature to be active (`[features] smtp = []`).
-/// Config is read from LYRIC_CONFIG_SMTP_* env vars.  Rejects an
-/// out-of-range `LYRIC_CONFIG_SMTP_PORT` (must be 1..65535) or
-/// `LYRIC_CONFIG_SMTP_TIMEOUTMS` (must be >= 1) with `Err(code =
-/// "INVALID_CONFIG")` before attempting a connection.
+/// Config is read from LYRIC_CONFIG_SMTP_* env vars.  Rejects a
+/// non-numeric, or a numeric but out-of-range, `LYRIC_CONFIG_SMTP_PORT`
+/// (must be 1..65535) or `LYRIC_CONFIG_SMTP_TIMEOUTMS` (must be >= 1) with
+/// `Err(code = "INVALID_CONFIG")`, naming the offending variable, before
+/// attempting a connection.
 @stable(since = "0.1")
 @cfg(feature = "smtp")
 pub func connectSmtp(): Result[MailSender, MailError] {
@@ -537,9 +636,21 @@ pub func connectSmtp(): Result[MailSender, MailError] {
   val password = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_PASSWORD", "")
   val useTlsStr = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_USETLS", "true")
   val toMs = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_TIMEOUTMS", "30000")
-  val port = match parseOptInt(portStr) { case Some(n) -> n; case None -> 587 }
+  // An unparsable value is a genuine operator typo, not "unset" — an unset
+  // var never reaches `parseOptInt` at all (`getVarOrDefault` already
+  // substituted a parseable default above). Report it by name rather than
+  // silently falling back to the default (#7476 suggestion 3).
+  val port = match parseOptInt(portStr) {
+    case Some(n) -> n
+    case None -> return Err(MailError(message = "LYRIC_CONFIG_SMTP_PORT is not a valid integer: " + portStr, code = "INVALID_CONFIG"))
+  }
   val useTls = useTlsStr != "false"
-  val timeoutMs = match parseOptInt(toMs) { case Some(n) -> n; case None -> 30000 }
+  val timeoutMs = match parseOptInt(toMs) {
+    case Some(n) -> n
+    case None -> return Err(
+      MailError(message = "LYRIC_CONFIG_SMTP_TIMEOUTMS is not a valid integer: " + toMs, code = "INVALID_CONFIG")
+    )
+  }
   match validateSmtpConfig(port, timeoutMs) {
     case Some(e) -> return Err(e)
     case None -> ()
@@ -570,7 +681,11 @@ func connectSmtpNative(
   }
 }
 
+// Gated on both `jvm` AND `smtp` (#7476 suggestion 6) — see the note on
+// `NativeSenderJvm` above: this function references `NativeSenderJvm` and
+// `MailKernelJvm.connectSmtp`, both `smtp`-gated, so it must be too.
 @cfg(feature = "jvm")
+@cfg(feature = "smtp")
 func connectSmtpNative(
   host: in String,
   port: in Int,
@@ -657,7 +772,7 @@ pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailErr
     case None -> ()
   }
   // Reject an oversized total attachment payload before dispatch (#7254).
-  if totalAttachmentBytes(msg.attachments) > maxTotalAttachmentBytes {
+  if totalAttachmentBytes(msg.attachments) > maxTotalAttachmentBytes.toLong() {
     return Err(
       MailError(message = "total attachment size exceeds maxTotalAttachmentBytes", code = "ATTACHMENTS_TOO_LARGE")
     )

@@ -135,7 +135,7 @@ process instead (D118):
 |---|---|
 | No recipients (`to` is empty) | `NO_RECIPIENTS` |
 | A CR/LF/NUL character anywhere that could inject MIME headers (CWE-93) | `HEADER_INJECTION` |
-| A `to`/`cc`/`bcc` recipient whose address is empty or has no `@` | `INVALID_ADDRESS` |
+| A `to`/`cc`/`bcc`/`replyTo` address that is empty, has no `@` (or more than one), or has an empty local or domain part | `INVALID_ADDRESS` |
 | Total decoded attachment size over `Mail.maxTotalAttachmentBytes` (25 MiB) | `ATTACHMENTS_TOO_LARGE` |
 
 Before #7254, an implausible recipient address was silently dropped from
@@ -156,11 +156,11 @@ there is no config record passed to `connectSmtp()`/`connectSes()`/
 | Env var | Default | Meaning |
 |---|---|---|
 | `LYRIC_CONFIG_SMTP_HOST` | `localhost` | SMTP server hostname |
-| `LYRIC_CONFIG_SMTP_PORT` | `587` | SMTP server port — must be `1..65535`, else `Err(code = "INVALID_CONFIG")` |
+| `LYRIC_CONFIG_SMTP_PORT` | `587` | SMTP server port — must be an integer in `1..65535`, else `Err(code = "INVALID_CONFIG")` |
 | `LYRIC_CONFIG_SMTP_USERNAME` | `""` | SMTP authentication user |
 | `LYRIC_CONFIG_SMTP_PASSWORD` | `""` | SMTP authentication password |
 | `LYRIC_CONFIG_SMTP_USETLS` | `true` | Enable TLS/STARTTLS |
-| `LYRIC_CONFIG_SMTP_TIMEOUTMS` | `30000` | Connection timeout in ms — must be `>= 1`, else `Err(code = "INVALID_CONFIG")` |
+| `LYRIC_CONFIG_SMTP_TIMEOUTMS` | `30000` | Connection timeout in ms — must be an integer `>= 1`, else `Err(code = "INVALID_CONFIG")` |
 
 ### Sender (`LYRIC_CONFIG_SENDER_*`)
 

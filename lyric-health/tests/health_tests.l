@@ -59,6 +59,26 @@ func addReadinessCheckWithTimeoutNegative(): Unit {
   val _ = Health.addReadinessCheckWithTimeout(Health.create(), "db", { -> passingCheck() }, -1)
 }
 
+// ─── HealthCheck / HealthRegistry invariants (direct construction) ────────────
+func constructHealthCheckWithEmptyName(): Unit {
+  val _ = HealthCheck(name = "", group = Liveness, handler = { -> passingCheck() }, timeoutMs = 1000)
+}
+
+func constructHealthCheckWithTimeoutZero(): Unit {
+  val _ = HealthCheck(name = "self", group = Liveness, handler = { -> passingCheck() }, timeoutMs = 0)
+}
+
+func constructHealthCheckWithTimeoutNegativeOne(): Unit {
+  val _ = HealthCheck(name = "self", group = Liveness, handler = { -> passingCheck() }, timeoutMs = -1)
+}
+
+func constructHealthRegistryWithDuplicateNames(): Unit {
+  val a = HealthCheck(name = "dup", group = Liveness, handler = { -> passingCheck() }, timeoutMs = 1000)
+  val b = HealthCheck(name = "dup", group = Readiness, handler = { -> passingCheck() }, timeoutMs = 1000)
+  val checks: slice[HealthCheck] = [a, b]
+  val _ = HealthRegistry(checks = checks)
+}
+
 // ─── create ───────────────────────────────────────────────────────────────────
 test "create returns an empty registry with no checks" {
   val registry = Health.create()
@@ -310,6 +330,23 @@ test "addReadinessCheckWithTimeout panics on a negative timeoutMs" {
 test "addLivenessCheckWithTimeout accepts timeoutMs == 1 (boundary)" {
   val registry = Health.addLivenessCheckWithTimeout(Health.create(), "self", { -> passingCheck() }, 1)
   assertEqualInt(registry.checks[0].timeoutMs, 1, "timeoutMs boundary value stored")
+}
+
+// ─── HealthCheck / HealthRegistry invariants: direct construction ─────────────
+test "constructing a HealthCheck directly with an empty name violates the invariant" {
+  assertPanics("empty name", constructHealthCheckWithEmptyName)
+}
+
+test "constructing a HealthCheck directly with timeoutMs == 0 violates the invariant" {
+  assertPanics("timeoutMs == 0", constructHealthCheckWithTimeoutZero)
+}
+
+test "constructing a HealthCheck directly with timeoutMs == -1 violates the invariant" {
+  assertPanics("timeoutMs == -1", constructHealthCheckWithTimeoutNegativeOne)
+}
+
+test "constructing a HealthRegistry directly with duplicate check names violates the invariant" {
+  assertPanics("duplicate names", constructHealthRegistryWithDuplicateNames)
 }
 
 test "addLivenessCheck stores defaultCheckTimeoutMs" {

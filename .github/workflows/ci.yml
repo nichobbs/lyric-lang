@@ -5930,6 +5930,23 @@ jobs:
           fi
           export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
           .bootstrap/stage2/bin/lyric test --manifest lyric-resilience/lyric.toml --target jvm --no-default-features --features jvm
+      # lyric-health suite on JVM (#7467 review finding) — pins the
+      # `@cfg(feature = "jvm")` arm of `runCheckIsolated` (panic isolation
+      # without the dotnet target's preemptive Task.Wait bound; see
+      # README.md "Fault isolation and timeouts") against the same
+      # health_tests.l the .NET target already runs.
+      - name: lyric-health suite on JVM (lyric test --target jvm --features jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
+            echo "::error::stage 2 binary missing; skipping health JVM suite"
+            exit 1
+          fi
+          export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
+          .bootstrap/stage2/bin/lyric test --manifest lyric-health/lyric.toml --target jvm --no-default-features --features jvm
       # lyric-aws-secrets suite on JVM (#7033) — pins the real
       # SecretsManagerClient/SsmClient bindings (secrets_kernel_jvm.l)
       # against the actual AWS SDK for Java v2 JARs: classifySecretsError/

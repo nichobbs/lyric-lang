@@ -64,6 +64,7 @@ package Health
 import Std.Core
 import Std.Char
 import Std.Iter
+import Std.Log
 import Health.Kernel.Net as HealthKernelNet
 
 // ─── Check vocabulary ─────────────────────────────────────────────────────────
@@ -126,6 +127,13 @@ pub record HealthCheck {
   group: CheckGroup
   handler: () -> CheckStatus
   timeoutMs: Int
+
+  // Direct construction (bypassing `addLivenessCheck`/`addReadinessCheck`
+  // and their `*WithTimeout` variants) is otherwise able to build a check
+  // with an empty name or a `timeoutMs` that `runCheckIsolated` cannot
+  // safely pass to `Task.Wait` on `--target dotnet`: `-1` means wait
+  // forever there, and `-2` throws outside the isolation boundary.
+  invariant: name.length > 0 and timeoutMs >= 1
 }
 
 /// The default per-check execution budget in milliseconds, used by
@@ -157,6 +165,12 @@ pub val timeoutEnforced: Bool = false
 @stable(since = "0.1")
 pub record HealthRegistry {
   checks: slice[HealthCheck]
+
+  // Two checks sharing a name would collide into one JSON key in the
+  // response body (module header); `hasCheckNamed`/the `add*Check`
+  // functions already enforce this on the builder path, but a directly
+  // constructed registry must not be able to bypass it.
+  invariant: allNamesUnique(checks)
 }
 
 /// Create an empty registry.
@@ -182,6 +196,26 @@ pub func hasCheckNamed(registry: in HealthRegistry, name: in String): Bool {
     i = i + 1
   }
   return false
+}
+
+// True iff no two checks in `checks` share a name (the `HealthRegistry`
+// invariant's uniqueness check). Takes the raw `slice[HealthCheck]` rather
+// than a `HealthRegistry` so it can run inside that very record's own
+// `invariant:` clause.
+@pure
+func allNamesUnique(checks: in slice[HealthCheck]): Bool {
+  var i = 0
+  while i < checks.length {
+    var j = i + 1
+    while j < checks.length {
+      if checks[i].name == checks[j].name {
+        return false
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  return true
 }
 
 /// Register a liveness check with the default execution budget
@@ -306,6 +340,7 @@ record GroupRun {
 record CheckRunBox {
   var status: CheckStatus
   var panicked: Bool
+  var panicMessage: String
 }
 
 // `--target dotnet`: run `check.handler` on a BCL thread-pool thread
@@ -318,10 +353,12 @@ record CheckRunBox {
 // handler is caught on the background thread itself, so it never escapes as
 // an unobserved faulted-task exception; the caller only ever sees the
 // generic "check panicked" detail below — never the panic's own message,
-// which would otherwise leak into the HTTP response body.
+// which would otherwise leak into the HTTP response body. The message is
+// not discarded outright, though: it is logged server-side via `Std.Log`
+// below, for operators to see without exposing it to `/health/*` callers.
 @cfg(feature = "dotnet")
 func runCheckIsolated(check: in HealthCheck): CheckStatus {
-  val box = CheckRunBox(status = fail(""), panicked = false)
+  val box = CheckRunBox(status = fail(""), panicked = false, panicMessage = "")
   val handler = check.handler
   val action: () -> Unit = { ->
     try {
@@ -329,6 +366,7 @@ func runCheckIsolated(check: in HealthCheck): CheckStatus {
       box.status = result
     } catch Bug as b {
       box.panicked = true
+      box.panicMessage = b.message
     }
   }
   val t = HealthKernelNet.runAction(action)
@@ -337,6 +375,7 @@ func runCheckIsolated(check: in HealthCheck): CheckStatus {
     return fail("check \"" + check.name + "\" timed out after " + ("" + check.timeoutMs) + "ms")
   }
   if box.panicked {
+    error("health check \"" + check.name + "\" panicked: " + box.panicMessage)
     return fail("check panicked")
   }
   return box.status
@@ -366,6 +405,7 @@ func runCheckIsolated(check: in HealthCheck): CheckStatus {
     val result: CheckStatus = handler()
     return result
   } catch Bug as b {
+    error("health check \"" + check.name + "\" panicked: " + b.message)
     return fail("check panicked")
   }
 }

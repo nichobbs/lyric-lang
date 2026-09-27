@@ -12,9 +12,7 @@ Internationalization with placeholder substitution and locale fallback.
 `I18n`'s public API (`src/i18n.l`) needs no platform-specific kernel at
 all: `Std.File`/`Std.Json` are already cross-platform (`Std.Json`'s
 JVM backend was rewritten to pure Lyric in D-progress-555). Verified
-against `tests/i18n_tests.l` on both targets: 48/48 pass on both
-`--target dotnet` and `--target jvm` (the earlier #5439 JVM-only
-`ClassCastException` in `availableLocales()` no longer reproduces).
+against `tests/i18n_tests.l` on both targets.
 `translate`/`translateWith`/`hasKey`/`fromJson`/`loadFromPath` are all
 confirmed working on JVM. `--target jvm` test runs also print benign
 false-positive "unknown name" diagnostics for cross-package `Std.*`
@@ -33,14 +31,14 @@ ever crossing a function boundary.
 `I18n.Kernel` is a separate, standalone handle-based entry point
 (`loadStore`/`translate`/`hasKey`/`availableLocalesJson`/
 `parseTranslationsJson`) for consumers that want that specific
-contract. It used to be a split `I18n.Kernel.Net`/`I18n.Kernel.Jvm`
-pair of `extern package`-based scaffolding — a confirmed no-op FFI
-mechanism (#5324) — that `i18n.l` never actually imported; it's now a
-single, ungated, pure-Lyric package over `Std.File`/`Std.Json`/
-`Std.Collections` (no platform split needed since the logic has no
-platform-specific behavior at all), real and tested on both targets
-(see `tests/i18n_kernel_tests.l`, 10 cases, and
+contract. It is a single, ungated, pure-Lyric package over
+`Std.File`/`Std.Json`/`Std.Collections` (no platform split needed since
+the logic has no platform-specific behavior at all), real and tested on
+both targets (see `tests/i18n_kernel_tests.l` and
 `docs/03-decision-log.md` D-progress-628).
+
+**Note (#7458):** `I18nKernelTests` is a known pre-existing failure on
+`--target jvm`; it is not related to the `I18n` package covered below.
 
 ## Packages
 
@@ -53,68 +51,57 @@ platform-specific behavior at all), real and tested on both targets
 
 ```lyric
 import I18n
+import Std.Collections
 
-val translations = {
-  "en": {
-    "greeting": "Hello, {name}!",
-    "farewell": "Goodbye"
-  },
-  "es": {
-    "greeting": "Hola, {name}!",
-    "farewell": "Adiós"
-  }
-}
+val translationsJson = "{\"en\": {\"greeting\": \"Hello, {name}!\", \"farewell\": \"Goodbye\"}, " +
+  "\"es\": {\"greeting\": \"Hola, {name}!\", \"farewell\": \"Adiós\"}}"
 
-val store = I18n.fromJson(translations)
+val store = I18n.fromJson(translationsJson)?
+val locale = I18n.makeLocale("en-US")
 
-match I18n.translate(store, "greeting", "en") {
-  case Some(msg) -> println(msg)          // "Hello, {name}!"
-  case None      -> println("missing key")
-}
+println(I18n.translateLocale(store, "greeting", locale))  // "Hello, {name}!" (no vars → placeholder unsubstituted)
 
-val greeted = I18n.translateWithVars(store, "greeting", "en", ["name": "Alice"])
-// Returns: "Hello, Alice!"
+var vars: Map[String, String] = newMap()
+vars.add("name", "Alice")
+println(I18n.translateWithLocale(store, "greeting", locale, vars))  // "Hello, Alice!"
 ```
 
 ## TranslationStore interface
 
-`TranslationStore` is a pluggable interface so you can implement custom
-loading strategies:
+`TranslationStore` is a pluggable interface (`src/i18n.l`); the shipped
+implementation is `InProcessTranslationStore`, obtained via
+`I18n.inProcess()`, `I18n.fromJson(json)`, or `I18n.loadFromPath(path)`:
 
 ```lyric
 pub interface TranslationStore {
-  func get(key: in String, locale: in String): Option[String]
-  func availableLocales(): slice[String]
-  func hasKey(key: in String, locale: in String): Bool
+  func translate(key: in String, locale: in Locale): String
+  func translateWith(key: in String, locale: in Locale, vars: in Map[String, String]): String
+  func availableLocales(): slice[Locale]
+  func hasKey(key: in String, locale: in Locale): Bool
 }
 ```
-
-The v1 implementations are `InProcessTranslationStore` (in-memory from JSON)
-and `NativeTranslationStore` (file-backed).
 
 ## Placeholder substitution
 
 Translation values support `{varName}` placeholders:
 
 ```lyric
-val translations = {
-  "en": {
-    "welcome": "Welcome back, {username}! You have {count} messages."
-  }
-}
+import I18n
+import Std.Collections
 
-val store = I18n.fromJson(translations)
+val translationsJson = "{\"en\": {\"welcome\": \"Welcome back, {username}! You have {count} messages.\"}}"
+val store = I18n.fromJson(translationsJson)?
+val loc = I18n.makeLocale("en")
 
-val result = I18n.translateWithVars(
-  store,
-  "welcome",
-  "en",
-  ["username": "bob", "count": "3"]
-)
+var vars: Map[String, String] = newMap()
+vars.add("username", "bob")
+vars.add("count", "3")
+
+val result = I18n.translateWithLocale(store, "welcome", loc, vars)
 // Returns: "Welcome back, bob! You have 3 messages."
 ```
 
-Missing placeholders in the vars map leave the `{varName}` unchanged.
+Missing placeholder keys in the vars map leave the `{varName}` unchanged.
 Extra vars in the map are ignored. If the substituted output would exceed
 `I18n.maxSubstitutionOutputLength` characters (1 MiB), `translateWith`
 returns the un-substituted template unchanged instead — a documented part
@@ -123,8 +110,8 @@ of the contract, not a silent internal fallback.
 ## Locale parsing
 
 `Locale` is opaque: the only ways to build one are `I18n.makeLocale(tag)`
-(panics on a malformed tag) and `I18n.parseLocale(tag)` (returns
-`Option[Locale]`); the only way to read one back apart is the
+(panics via `requires:` on a malformed tag) and `I18n.parseLocale(tag)`
+(returns `Option[Locale]`); the only way to read one back apart is the
 `Locale.language`/`Locale.script`/`Locale.region` accessors. Both parse a
 BCP 47 `language[-script][-region]` tag, accept `_` as well as `-` as the
 subtag separator, and normalise casing (language lowercase, script
@@ -148,14 +135,32 @@ match I18n.parseLocale("zh-hant-tw") {
 I18n.localeKey(loc)  // "en-US"
 ```
 
+`Locale`'s invariants enforce both subtag length and character class:
+`language` is 2 or 3 lowercase ASCII letters; `script`, when present, is
+one uppercase ASCII letter followed by three lowercase ASCII letters
+(e.g. `"Hant"`); `region`, when present, is either 2 uppercase ASCII
+letters or 3 ASCII digits (a UN M49 numeric region). Every `Locale` built
+via `makeLocale`/`parseLocale` already satisfies this; the invariant
+exists so no other construction path can produce one that doesn't.
+
 ## fromJson error handling
 
-`I18n.fromJson` never throws. It returns `Err(I18nError)` for malformed
-JSON, a non-object root, or a translation value that isn't a JSON string
-(naming the offending key), and for a locale or translation key containing
-`|` (the flat store's internal compound-key separator — rejecting it up
-front means two distinct `(locale, key)` pairs can never collide on the
-same stored entry):
+`I18n.fromJson` parses a translations JSON object shaped
+`{ "<locale>": { "<key>": "<value>" } }` and never throws. It returns
+`Err(I18nError)` for:
+
+| `code` | When |
+|---|---|
+| `PARSE_ERROR` | The input is not well-formed JSON |
+| `INVALID_ROOT` | The JSON root is not an object |
+| `INVALID_LOCALE_KEY` | A top-level key does not parse as a BCP 47 tag (`I18n.parseLocale`) |
+| `DUPLICATE_LOCALE` | Two top-level keys canonicalise to the same locale (e.g. `"en_US"` and `"EN-us"`) |
+| `INVALID_KEY` | A translation key contains `\|` (the flat store's internal compound-key separator) |
+| `INVALID_VALUE` | A translation value is not a JSON string (names the offending key) |
+
+Each top-level locale key is stored under its *canonical* `I18n.localeKey`
+form (not the raw JSON key), so `"en_US"`, `"EN-us"`, and `"en-US"` are all
+equivalent and looked up identically by `translate`/`translateWith`/`hasKey`:
 
 ```lyric
 match I18n.fromJson(json) {
@@ -166,95 +171,81 @@ match I18n.fromJson(json) {
 
 ## Locale fallback
 
-Locale lookup follows a fallback chain. For example, requesting "en-GB":
+`translate`/`translateWith`/`hasKey` follow a two-step fallback chain. For
+example, requesting `"greeting"` for the locale `"en-GB"`:
 
-1. Try exact match: `"en-GB"`
-2. Fall back to language: `"en"`
-3. Fall back to default: `""`
+1. Try the exact locale key: `"en-GB"`
+2. Fall back to the language-only key: `"en"`
+3. If neither is found, `translate`/`translateWith` return the key itself
+   unchanged (`hasKey` returns `false`)
 
 ```lyric
-val translations = {
-  "": { "default": "Default message" },
-  "en": { "greeting": "Hello" },
-  "en-GB": { "greeting": "Howdy" }
-}
+import I18n
+import Std.Collections
 
-val store = I18n.fromJson(translations)
+val store = I18n.fromJson("{\"en\": {\"greeting\": \"Hello\"}, \"en-GB\": {\"greeting\": \"Howdy\"}}")?
 
-I18n.translate(store, "greeting", "en-GB")  // Some("Howdy")
-I18n.translate(store, "greeting", "en")     // Some("Hello")
-I18n.translate(store, "default", "fr")      // Some("Default message")
+I18n.translateLocale(store, "greeting", I18n.makeLocale("en-GB"))  // "Howdy" (exact match)
+I18n.translateLocale(store, "greeting", I18n.makeLocale("en-US"))  // "Hello" (falls back to "en")
+I18n.translateLocale(store, "missing", I18n.makeLocale("en"))      // "missing" (key itself, final fallback)
 ```
+
+`translate`/`translateWithLocale` (module-level convenience functions)
+use `I18n.defaultLocale()` (`"en"`) when no locale is given explicitly.
 
 ## API reference
 
 ```lyric
-I18n.fromJson(data: in Map[String, Map[String, String]])
-  -> TranslationStore
+// Locale
+I18n.makeLocale(tag: in String): Locale
+I18n.parseLocale(tag: in String): Option[Locale]
+I18n.localeKey(locale: in Locale): String
+I18n.defaultLocale(): Locale
+Locale.language(locale: in Locale): String
+Locale.script(locale: in Locale): String
+Locale.region(locale: in Locale): String
 
-I18n.loadNative(path: in String)
-  -> Result[TranslationStore, IoError]
+// Store construction
+I18n.inProcess(): InProcessTranslationStore
+I18n.fromJson(json: in String): Result[InProcessTranslationStore, I18nError]
+I18n.loadFromPath(path: in String): Result[InProcessTranslationStore, I18nError]
 
-I18n.translate(store: in TranslationStore, key: in String, locale: in String)
-  -> Option[String]
+// TranslationStore interface methods
+store.translate(key: in String, locale: in Locale): String
+store.translateWith(key: in String, locale: in Locale, vars: in Map[String, String]): String
+store.availableLocales(): slice[Locale]
+store.hasKey(key: in String, locale: in Locale): Bool
 
-I18n.translateWithVars(store: in TranslationStore, key: in String,
-                      locale: in String, vars: in Map[String, String])
-  -> String
+// Module-level convenience functions (use I18n.defaultLocale() when no locale is given)
+I18n.translate(store: in TranslationStore, key: in String): String
+I18n.translateLocale(store: in TranslationStore, key: in String, locale: in Locale): String
+I18n.translateWith(store: in TranslationStore, key: in String, vars: in Map[String, String]): String
+I18n.translateWithLocale(store: in TranslationStore, key: in String, locale: in Locale, vars: in Map[String, String]): String
 
-I18n.availableLocales(store: in TranslationStore)
-  -> slice[String]
-
-I18n.hasKey(store: in TranslationStore, key: in String, locale: in String)
-  -> Bool
-
-I18n.parseLocale(localeStr: in String)
-  -> ParsedLocale
-
-I18n.localeToString(locale: in ParsedLocale)
-  -> String
+I18n.maxSubstitutionOutputLength: Int
 ```
-
-## Configuration
-
-Config block for locale defaults:
-
-```lyric
-pub record I18nConfig {
-  defaultLocale: String
-  translationsPath: String
-}
-```
-
-Environment variable defaults (env prefix `LYRIC_CONFIG_I18N_`):
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `DEFAULTLOCALE` | `"en"` | Default fallback locale |
-| `TRANSLATIONSPATH` | `"translations/"` | Path to translation JSON files |
 
 ## File-backed store
 
-Load translations from disk using `NativeTranslationStore`:
+Load translations from a JSON file on disk using `loadFromPath`:
 
 ```lyric
 import I18n
 
-val store = I18n.loadNative("./translations")?
+val store = I18n.loadFromPath("./translations/all.json")?
 
-val greeting = I18n.translate(store, "greeting", "en")
+val greeting = I18n.translate(store, "greeting")
 ```
 
-File structure:
+The file is the same JSON shape `fromJson` expects — a single object
+keyed by locale, e.g.:
 
+```json
+{
+  "en": { "greeting": "Hello", "farewell": "Goodbye" },
+  "fr": { "greeting": "Bonjour", "farewell": "Au revoir" }
+}
 ```
-translations/
-  en.json
-  es.json
-  fr.json
-```
-
-Each file is a flat JSON object: `{ "key1": "value1", "key2": "value2" }`
 
 ## Decision log
 

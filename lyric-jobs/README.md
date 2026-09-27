@@ -251,7 +251,14 @@ day-of-month/day-of-week disambiguation rule applied (Quartz requires
 exactly one of the two to be `?`; whichever Unix field is `*` becomes `?`,
 and if both are `*` day-of-week becomes `?`) and Unix's `0-7`
 (Sunday=`0`/`7`) day-of-week numbering renumbered to Quartz's `1-7`
-(Sunday=`1`). `Err` when *both* day-of-month and day-of-week are restricted
+(Sunday=`1`). A restricted day-of-week field is never renumbered
+digit-by-digit in place (that mishandles a step's own digits and a range
+spanning both Unix Sunday spellings, e.g. `0-7`); instead it is expanded to
+the explicit set of Unix day values it covers, each value is mapped to its
+Quartz day, and the result is rendered as a deduplicated, ascending Quartz
+list (`*/2` becomes `1,3,5,7`, not `*/3`) — or as `*` when the set covers
+every day of the week (`0-7`, `0-6`, and `1-7` all become `*`). `Err` when
+*both* day-of-month and day-of-week are restricted
 (not representable as a single Quartz expression — Quartz has no OR
 semantics between the two the way Unix cron does). `Jobs`'s own JVM dispatch
 path applies this conversion automatically before calling into

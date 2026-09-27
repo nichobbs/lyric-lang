@@ -52,9 +52,9 @@ pub opaque type Locale {
   script: String    // Titlecase, e.g. "Hant" — always empty or 4 letters
   region: String    // uppercase, e.g. "US", "GB", or 3 digits (UN M49) — always empty, 2 letters, or 3 digits
 
-  invariant: language.length == 2 or language.length == 3
-  invariant: script.length == 0 or script.length == 4
-  invariant: region.length == 0 or region.length == 2 or region.length == 3
+  invariant: (language.length == 2 or language.length == 3) and isLowercaseAsciiLetters(language)
+  invariant: script.length == 0 or isTitlecaseAsciiScript(script)
+  invariant: region.length == 0 or isUppercaseAsciiLetterRegion(region) or isDigitRegion(region)
 }
 
 /// Read the language subtag back off a `Locale` (opaque field accessor).
@@ -198,9 +198,16 @@ pub func inProcess(): InProcessTranslationStore {
 /// Expected JSON format:
 ///   { "en": { "key": "value", ... }, "fr": { "key": "valeur", ... }, ... }
 ///
-/// Never throws: malformed JSON, a non-object root, or a translation value
-/// that is not a JSON string all return `Err` (naming the offending key for
-/// the last case) instead of raising a `Bug`.
+/// Each top-level key must parse as a BCP 47 tag (`parseLocale`); it is
+/// stored under its *canonical* `localeKey` form, so `"en_US"`, `"EN-us"`,
+/// and `"en-US"` all land in the same bucket. This keeps storage consistent
+/// with lookup: `translate`/`hasKey` always look up `localeKey(locale)`.
+///
+/// Never throws: malformed JSON, a non-object root, a locale key that is not
+/// a well-formed BCP 47 tag, two locale keys that canonicalise to the same
+/// locale, or a translation value that is not a JSON string all return
+/// `Err` (naming the offending key, where applicable) instead of raising a
+/// `Bug`.
 @stable(since = "0.1")
 pub func fromJson(json: in String): Result[InProcessTranslationStore, I18nError] {
   // The whole tree walk lives in this one function, rather than delegating
@@ -230,46 +237,64 @@ pub func fromJson(json: in String): Result[InProcessTranslationStore, I18nError]
         val localeProp = objectCurrent(outerEn)
         val lk = propertyName(localeProp)
         val localeVal = propertyValue(localeProp)
-        if lk.contains("|") {
-          return Err(I18nError(message = "Locale key \"" + lk + "\" must not contain '|'", code = "INVALID_LOCALE_KEY"))
-        }
-        if valueKind(localeVal) == 1 {
-          var innerEn = enumerateObject(localeVal)
-          while objectMoveNext(innerEn) {
-            val tkeyProp = objectCurrent(innerEn)
-            val tkey = propertyName(tkeyProp)
-            if tkey.contains("|") {
-              return Err(I18nError(message = "Translation key \"" + tkey + "\" must not contain '|'", code = "INVALID_KEY"))
-            }
-            val tvalElem = propertyValue(tkeyProp)
-            if not isJsonString(tvalElem) {
-              return Err(
-                I18nError(
-                  message = "Translation value for key \"" + tkey + "\" in locale \"" + lk + "\" is not a string",
-                  code = "INVALID_VALUE"
+        match parseLocale(lk) {
+          case None -> {
+            return Err(I18nError(message = "Locale key \"" + lk + "\" is not a valid BCP 47 tag", code = "INVALID_LOCALE_KEY"))
+          }
+          case Some(loc) -> {
+            // Store under the canonical locale key, not the raw JSON key: two
+            // JSON keys that canonicalise to the same locale (e.g. "en_US"
+            // and "EN-us") must land in the same bucket, matching
+            // `translate`/`hasKey`, which always look up `localeKey(locale)`.
+            val canonicalKey = localeKey(loc)
+            if valueKind(localeVal) == 1 {
+              // Two distinct JSON keys canonicalising to the same locale
+              // would otherwise silently merge into one bucket (last-write
+              // wins) instead of surfacing the ambiguity to the caller.
+              var dup: Bool = false
+              var ki: Int = 0
+              while ki < keys.count {
+                if keys[ki] == canonicalKey {
+                  dup = true
+                }
+                ki = ki + 1
+              }
+              if dup {
+                return Err(
+                  I18nError(
+                    message = "Locale key \"" + lk + "\" duplicates already-registered locale \"" + canonicalKey + "\"",
+                    code = "DUPLICATE_LOCALE"
+                  )
                 )
-              )
+              }
+              var innerEn = enumerateObject(localeVal)
+              while objectMoveNext(innerEn) {
+                val tkeyProp = objectCurrent(innerEn)
+                val tkey = propertyName(tkeyProp)
+                if tkey.contains("|") {
+                  return Err(I18nError(message = "Translation key \"" + tkey + "\" must not contain '|'", code = "INVALID_KEY"))
+                }
+                val tvalElem = propertyValue(tkeyProp)
+                if not isJsonString(tvalElem) {
+                  return Err(
+                    I18nError(
+                      message = "Translation value for key \"" + tkey + "\" in locale \"" + lk + "\" is not a string",
+                      code = "INVALID_VALUE"
+                    )
+                  )
+                }
+                val tval = getString(tvalElem)
+                val compound = canonicalKey + "|" + tkey
+                if not m.containsKey(compound) {
+                  m.add(compound, tval)
+                }
+              }
+              // A locale-value entry that isn't itself an object is silently
+              // skipped (unchanged from the pre-existing behaviour;
+              // `fromJson`'s documented error cases don't cover it), so
+              // `keys` only grows for entries that reach here.
+              keys.add(canonicalKey)
             }
-            val tval = getString(tvalElem)
-            val compound = lk + "|" + tkey
-            if not m.containsKey(compound) {
-              m.add(compound, tval)
-            }
-          }
-          // Track locale keys (without duplicates). A locale-value entry
-          // that isn't itself an object is silently skipped (unchanged from
-          // the pre-existing behaviour; `fromJson`'s three documented error
-          // cases don't cover it).
-          var found: Bool = false
-          var ki: Int = 0
-          while ki < keys.count {
-            if keys[ki] == lk {
-              found = true
-            }
-            ki = ki + 1
-          }
-          if not found {
-            keys.add(lk)
           }
         }
       }
@@ -436,6 +461,61 @@ func isValidLocaleTag(tag: in String): Bool {
     case Some(_) -> true
     case None -> false
   }
+}
+
+// True iff every character of `s` is a lowercase ASCII letter (the
+// `Locale.language` invariant's character-class check).
+@pure
+func isLowercaseAsciiLetters(s: in String): Bool {
+  var i = 0
+  while i < s.length {
+    if not isAsciiLower(s[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+// True iff `s` is exactly 4 characters, an uppercase ASCII letter followed
+// by three lowercase ASCII letters (the `Locale.script` invariant's
+// character-class check, e.g. "Hant").
+@pure
+func isTitlecaseAsciiScript(s: in String): Bool {
+  if s.length != 4 {
+    return false
+  }
+  if not isAsciiUpper(s[0]) {
+    return false
+  }
+  var i = 1
+  while i < 4 {
+    if not isAsciiLower(s[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+// True iff `s` is exactly 2 uppercase ASCII letters (the `Locale.region`
+// invariant's letter-region character-class check, e.g. "US").
+@pure
+func isUppercaseAsciiLetterRegion(s: in String): Bool {
+  if s.length != 2 {
+    return false
+  }
+  return isAsciiUpper(s[0]) and isAsciiUpper(s[1])
+}
+
+// True iff `s` is exactly 3 ASCII digits (the `Locale.region` invariant's
+// UN M49 numeric-region character-class check, e.g. "419").
+@pure
+func isDigitRegion(s: in String): Bool {
+  if s.length != 3 {
+    return false
+  }
+  return isAsciiDigit(s[0]) and isAsciiDigit(s[1]) and isAsciiDigit(s[2])
 }
 
 // True iff `s` is non-empty and every character is an ASCII letter.

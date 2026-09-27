@@ -462,7 +462,7 @@ test "cronExprToQuartz: a day-of-week range and list renumber every endpoint" {
     case Ok(cron) -> {
       match Jobs.cronExprToQuartz(cron) {
         case Err(e) -> assertTrue(false, "expected a convertible expression: " + e)
-        case Ok(q) -> assertEqual(q, "0 0 9 ? * 2-6", "Mon-Fri (1-5) becomes Quartz 2-6")
+        case Ok(q) -> assertEqual(q, "0 0 9 ? * 2,3,4,5,6", "Mon-Fri (1-5) becomes Quartz 2,3,4,5,6")
       }
     }
   }
@@ -474,6 +474,188 @@ test "cronExprToQuartz: a day-of-week range and list renumber every endpoint" {
         case Ok(q) -> assertEqual(q, "0 0 9 ? * 1,7", "Sun,Sat (0,6) becomes Quartz 1,7")
       }
     }
+  }
+}
+
+// ─── cronExprToQuartz: exhaustive day-of-week coverage (#7472, #7473) ───────────
+// Renumbering must not touch a step's own digits (`*/2`, `1-5/2`), and a
+// range spanning both Unix Sunday spellings (`0-7` and friends) must cover
+// the whole week rather than collapsing to a single day.
+test "cronExprToQuartz: every single Unix day-of-week value renumbers to its Quartz day" {
+  match Jobs.parseCron("0 0 * * 0") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 1", "0 (Sun) -> 1")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+  match Jobs.parseCron("0 0 * * 1") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 2", "1 (Mon) -> 2")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+  match Jobs.parseCron("0 0 * * 2") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 3", "2 (Tue) -> 3")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+  match Jobs.parseCron("0 0 * * 3") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 4", "3 (Wed) -> 4")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+  match Jobs.parseCron("0 0 * * 4") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 5", "4 (Thu) -> 5")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+  match Jobs.parseCron("0 0 * * 5") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 6", "5 (Fri) -> 6")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+  match Jobs.parseCron("0 0 * * 6") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 7", "6 (Sat) -> 7")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+  match Jobs.parseCron("0 0 * * 7") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 1", "7 (Sun) -> 1")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+}
+
+test "cronExprToQuartz: '0-7' (every day) becomes '*', not a single-day collapse" {
+  match Jobs.parseCron("0 0 * * 0-7") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * *", "0-7 spans the whole week")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+  match Jobs.parseCron("0 0 * * 0-6") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(
+        q,
+        "0 0 0 ? * *",
+        "0-6 also spans the whole week (0 already covers Sunday)"
+      )
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+  match Jobs.parseCron("0 0 * * 1-7") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(
+        q,
+        "0 0 0 ? * *",
+        "1-7 also spans the whole week (7 covers Sunday at the end)"
+      )
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+}
+
+test "cronExprToQuartz: '5-7' wraps Fri-Sat-Sun without collapsing to Quartz '1-1'" {
+  match Jobs.parseCron("0 0 * * 5-7") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(
+        q,
+        "0 0 0 ? * 1,6,7",
+        "Fri,Sat,Sun (5,6,7) -> Quartz 6,7,1, sorted ascending"
+      )
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+}
+
+test "cronExprToQuartz: '*/2' steps over Unix day numbers, not renumbered digits" {
+  match Jobs.parseCron("0 0 * * */2") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 1,3,5,7", "0,2,4,6 -> Quartz 1,3,5,7 (not '*/3')")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+}
+
+test "cronExprToQuartz: '1-5/2' steps within the range before renumbering" {
+  match Jobs.parseCron("0 0 * * 1-5/2") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 2,4,6", "1,3,5 -> Quartz 2,4,6 (not '2-6/3')")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+}
+
+test "cronExprToQuartz: '0-7/3' steps across both Sunday spellings" {
+  match Jobs.parseCron("0 0 * * 0-7/3") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(q, "0 0 0 ? * 1,4,7", "0,3,6 -> Quartz 1,4,7")
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+}
+
+test "cronExprToQuartz: a comma list mixing both Sunday spellings dedupes" {
+  match Jobs.parseCron("0 0 * * 0,7,3") {
+    case Ok(cron) -> match Jobs.cronExprToQuartz(cron) {
+      case Ok(q) -> assertEqual(
+        q,
+        "0 0 0 ? * 1,4",
+        "0 and 7 both mean Sunday (Quartz 1); deduped against 3 -> Quartz 4"
+      )
+      case Err(e) -> assertTrue(false, e)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+}
+
+// ─── parseCron: reject non-digit cron numbers (#7474) ───────────────────────────
+test "parseCron: rejects a leading '+' on a bare field value" {
+  match Jobs.parseCron("+5 * * * *") {
+    case Ok(_) -> assertTrue(false, "'+5' must not parse as a valid minute value")
+    case Err(e) -> assertTrue(e.contains("minute"), "error names the offending field")
+  }
+}
+
+test "parseCron: rejects a leading '+' on a range endpoint" {
+  match Jobs.parseCron("0 0 * * +1-5") {
+    case Ok(_) -> assertTrue(false, "'+1-5' must not parse as a valid day-of-week range")
+    case Err(e) -> assertTrue(e.contains("day-of-week"), "error names the offending field")
+  }
+}
+
+test "parseCron: rejects a leading '+' on a step" {
+  match Jobs.parseCron("*/+2 * * * *") {
+    case Ok(_) -> assertTrue(false, "'*/+2' must not parse as a valid step")
+    case Err(e) -> assertTrue(e.contains("minute"), "error names the offending field")
+  }
+}
+
+test "parseCron: rejects a field value with embedded whitespace" {
+  match Jobs.parseCron("5\t * * * *") {
+    case Ok(_) -> assertTrue(false, "a tab embedded in a field value must not parse as a valid integer")
+    case Err(e) -> assertTrue(e.contains("minute"), "error names the offending field")
   }
 }
 
