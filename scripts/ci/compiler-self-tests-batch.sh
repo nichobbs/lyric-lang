@@ -112,6 +112,15 @@ for t in \
   bash scripts/ci-retry-on-signal.sh "$lyric_bin" test "$t"
   ran="$ran $t"
 done
+# #7481: `@cfg` on individual `test`/`property` items, end to end through the
+# CLI (manifest + single-file, dotnet + jvm; this job has Java 21).  Sharded
+# like one more corpus entry so exactly one shard runs it.
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/cfg-gated-test-items-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/cfg-gated-test-items-e2e.sh
+  ran="$ran cfg-gated-test-items-e2e"
+fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2
   exit 1

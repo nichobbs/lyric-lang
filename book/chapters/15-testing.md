@@ -345,6 +345,30 @@ Exit codes follow the convention: 0 for all passing, non-zero for any failure. T
 
 Skipped counts reflect property test inputs that were discarded due to `where` guards. They are not failures.
 
+### Tests for one target or feature
+
+A `test` (or `property`, or `fixture`) can be gated with `@cfg`, exactly like a function. When the feature or target is not active for the run, the test is left out entirely — it is not reported as skipped and is not counted in the `1..N` plan — so its body can use code that only exists under that feature:
+
+```lyric
+@cfg(feature = "redis")
+func redisRoundTrip(): Bool {
+  // ... talks to a real Redis server; only compiled under `redis`
+  true
+}
+
+@cfg(feature = "redis")
+test "sessions round-trip through Redis" {
+  assertTrue(redisRoundTrip(), "round trip")
+}
+
+@cfg(target = "jvm")
+test "runs only on the JVM" {
+  assertTrue(true, "jvm")
+}
+```
+
+`lyric test --features redis` runs the first test (and `redisRoundTrip` exists only in that build); `lyric test --target jvm` runs the second.
+
 ## Exercises
 
 1. **Username validator**

@@ -119,9 +119,22 @@ lyric test --manifest <lyric.toml> [--filter <substring>] [--list]
   file-level erasure (correctly, since it can't distinguish the
   synthesized `main()` from user items) dropped the entry point along
   with everything else, and the resulting zero-item assembly crashed at
-  run time instead. Item-level `@cfg` on an individual `test { }` is
-  unaffected either way — the annotation is preserved onto the
-  synthesized function, so only that one test is erased.
+  run time instead.
+* An individual `test`, `property`, or `fixture` item may carry its own
+  `@cfg(feature = "X")` / `@cfg(target = "X")`. When the predicate is
+  false for the build (the same active feature set, plus the
+  `target.<name>` pseudo-feature, that erasure uses) the item is simply
+  absent: it does not run, prints no `ok`/`not ok`/`# skip` line, and is
+  not counted in the `1..N` plan, so a file whose only other test runs
+  reports `1..1`. `Lyric.TestSynth` generates the runner's `main` before
+  erasure, so it decides each `test`/`property` item's gating with the
+  same predicate (`Lyric.Cfg.isCfgGatedOut`) and leaves erased items out
+  of `main`; the annotation still stays on the synthesized function, so
+  erasure removes it and reports `F0012`/`F0013` for it like any other
+  item. Before #7481, `main` still called the erased function, a
+  `T0020 unknown name '__lyric_test_N'` compile error that failed the
+  whole file. A gated item's body may therefore reference symbols that
+  exist only under its feature.
 
 #### 2.2 Output
 

@@ -223,3 +223,27 @@ test "withTargetFeature appends the pseudo-feature" {
   assertEqualInt(extended.count, 2, "cfg_target: output carries base + pseudo-feature")
   assertEqual(extended[1], "target.jvm", "cfg_target: pseudo-feature spelling")
 }
+
+// `isCfgGatedOut` (#7481) must agree item-for-item with `applyCfgErasure`:
+// `lyric test` uses it to keep a `@cfg`-gated `test` out of the synthesized
+// runner, and any disagreement is either a call to an erased function (T0020)
+// or a silently dropped test.  A malformed predicate is kept, as in erasure.
+test "isCfgGatedOut agrees with applyCfgErasure per item" {
+  val src = "package P\n" + "@cfg(feature = \"alpha\")\n" + "pub func a(): Int { 1 }\n" + "@cfg(target = \"jvm\")\n" +
+    "pub func b(): Int { 2 }\n" +
+    "@cfg(\"malformed\")\n" +
+    "pub func c(): Int { 3 }\n" +
+    "pub func d(): Int { 4 }\n"
+  val sf = parseOk(src)
+  val active = withTargetFeature(emptyFeatures(), "dotnet")
+  assertTrue(isCfgGatedOut(active, emptyFeatures(), sf.items[0].annotations), "inactive feature is gated out")
+  assertTrue(isCfgGatedOut(active, emptyFeatures(), sf.items[1].annotations), "other target is gated out")
+  assertFalse(isCfgGatedOut(active, emptyFeatures(), sf.items[2].annotations), "malformed predicate is kept")
+  assertFalse(isCfgGatedOut(active, emptyFeatures(), sf.items[3].annotations), "unannotated item is kept")
+  assertEqualInt(applyCfgErasure(active, emptyFeatures(), sf).file.items.count, 2, "erasure keeps exactly c and d")
+
+  val jvmAlpha = withTargetFeature(singletonList("alpha"), "jvm")
+  assertFalse(isCfgGatedOut(jvmAlpha, emptyFeatures(), sf.items[0].annotations), "active feature is kept")
+  assertFalse(isCfgGatedOut(jvmAlpha, emptyFeatures(), sf.items[1].annotations), "matching target is kept")
+  assertEqualInt(applyCfgErasure(jvmAlpha, emptyFeatures(), sf).file.items.count, 4, "erasure keeps every item")
+}

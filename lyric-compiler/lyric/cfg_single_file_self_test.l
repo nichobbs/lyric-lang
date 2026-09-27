@@ -50,3 +50,25 @@ test "target pseudo-feature selects exactly one variant" {
   val tag = targetTag()
   assertTrue(tag == "dotnet" or tag == "jvm", "surviving targetTag names a real target: " + tag)
 }
+
+// #7481: `@cfg` directly on `test` items.  `Lyric.TestSynth` generates the
+// runner's `main` before erasure runs; an erased test used to stay in `main`
+// as a call to a function erasure had removed (T0020 "unknown name"), so this
+// module failed to compile on every target.  Exactly one of the two
+// target-gated tests below runs per target, and the never-active one would
+// not even type-check if it survived.
+@cfg(target = "dotnet")
+test "dotnet-gated test runs only on dotnet" {
+  assertEqual(targetTag(), "dotnet", "dotnet-gated test ran on another target")
+}
+
+@cfg(target = "jvm")
+test "jvm-gated test runs only on jvm" {
+  assertEqual(targetTag(), "jvm", "jvm-gated test ran on another target")
+}
+
+@cfg(feature = "cfg_single_file_never_active")
+test "never-active feature-gated test is absent" {
+  val x: CfgSingleFileMissingType = gatedByFeature(0)
+  assertTrue(false, "a test gated by a never-active feature ran")
+}

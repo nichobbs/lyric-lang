@@ -675,34 +675,42 @@ func cmdTest(argv: in slice[String]): Int {
   // (this was reachable: `lyric-mcp/tests/mcp_stdio_process_tests.l` uses
   // exactly this pattern and is run in CI via `lyric test --manifest`).
   val cfgActiveWithTarget = Cfg.withTargetFeature(cfgActive, targetFeatureName(cfgTestTarget))
-  // KNOWN GAP (PR #7182 review): whether the real compile below ends up on
-  // `emitTestLinked` (which ALWAYS uses empty active/declared, regardless of
-  // any manifest — see that function's own doc comment) instead of the
-  // `cfgActive`/`cfgDeclared` resolved just above is only decided further
-  // down, from `Emitter.compilerClosureDllPaths(rewritten, ...)` — which
-  // needs the REWRITTEN source `synthesizeFor` is about to produce, so it
-  // cannot be known here without either duplicating that resolution's
-  // filesystem-dependent logic or restructuring synthesis to run twice.
-  // `emitTestLinked` is only ever chosen for `@test_module` files that
-  // import `Lyric.*` compiler-internal packages (i.e. the compiler's own
-  // self-tests) and reference something needing the linked closure; no such
-  // file anywhere in this repo combines that with a manifest-driven
-  // file-level `@cfg`, so this gap is currently unreachable, not merely
-  // untested. If a future test hits it, this pre-check would use manifest
-  // features while the real compile uses empty ones, reintroducing the
-  // #6868 crash for that one case — resolve by moving `compilerClosureDllPaths`
-  // ahead of this block (on `source`, not `rewritten` — it only needs the
-  // import list) rather than adding another heuristic here.
+  // #2364 Stage 5: a @test_module that imports `Lyric.*` compiler packages
+  // links the already-compiled compiler DLLs as restored deps (via
+  // `emitProject`) rather than recompiling them from source (the retired
+  // `LYRIC_LOAD_COMPILER` path).  The closure → DLL mapping is computed by
+  // `Emitter.compilerClosureDllPaths`; an empty result (no compiler imports,
+  // or JVM/native target) keeps the plain single-file `emit`.  It is
+  // resolved from the ORIGINAL source, ahead of synthesis: the closure only
+  // depends on the file's `Lyric.*` imports, which synthesis never adds
+  // (it injects `Std.*` imports only), and knowing the emit path up front
+  // lets synthesis gate `@cfg` items against the feature set that path
+  // really erases with — `emitTestLinked` always compiles with empty
+  // active/declared regardless of any manifest (#7481; previously a
+  // documented gap from the PR #7182 review, since the closure was computed
+  // from the rewritten source after synthesis).
+  val testLibDir = if targetJvm or targetNative { "" } else { findCompiledLibDir() }
+  val closureResult = if targetJvm or targetNative {
+    Emitter.CompilerClosureResult(dlls = newList(), missingPackages = newList())
+  } else {
+    Emitter.compilerClosureDllPaths(source, testLibDir)
+  }
+  val compilerDlls: List[String] = closureResult.dlls
+  val (synthActive, synthDeclared) = if compilerDlls.count > 0 {
+    (Cfg.withTargetFeature(cfgEmptyActive, targetFeatureName(cfgTestTarget)), cfgEmptyDeclared)
+  } else {
+    (cfgActiveWithTarget, cfgDeclared)
+  }
   // `propCfg` (computed above from `--property-trials`/`--seed`, always via
   // the same-package `propertyRunConfigFromOverrides` per #7203) is unused
   // by `synthesizeFor` whenever `runProperties` is false, but is still a
   // valid value to pass in every branch below.
   val synthResult = if targetNative {
-    TestSynth.synthesizeFor(source, filterArg, true, false, propCfg, cfgActiveWithTarget, cfgDeclared)
+    TestSynth.synthesizeFor(source, filterArg, true, false, propCfg, synthActive, synthDeclared)
   } else if runProperties {
-    TestSynth.synthesizeFor(source, filterArg, false, true, propCfg, cfgActiveWithTarget, cfgDeclared)
+    TestSynth.synthesizeFor(source, filterArg, false, true, propCfg, synthActive, synthDeclared)
   } else {
-    TestSynth.synthesizeFor(source, filterArg, false, false, propCfg, cfgActiveWithTarget, cfgDeclared)
+    TestSynth.synthesizeFor(source, filterArg, false, false, propCfg, synthActive, synthDeclared)
   }
   match synthResult {
     case NoTestModule(span) -> {
@@ -731,21 +739,9 @@ func cmdTest(argv: in slice[String]): Int {
         case Err(_) -> ()
       }
 
-      // #2364 Stage 5: a @test_module that imports `Lyric.*` compiler packages
-      // links the already-compiled compiler DLLs as restored deps (via
-      // `emitProject`) rather than recompiling them from source (the retired
-      // `LYRIC_LOAD_COMPILER` path).  The closure → DLL mapping is computed by
-      // `Emitter.compilerClosureDllPaths`; an empty result (no compiler imports,
-      // or JVM/native target) keeps the plain single-file `emit`.  The emit
-      // itself is delegated to small helpers so this function body stays
-      // simple (the F# stage-0 segment compiler chokes on a large
-      // record-valued if-expression).
-      val testLibDir = if targetJvm or targetNative { "" } else { findCompiledLibDir() }
-      val closureResult = if targetJvm or targetNative {
-        Emitter.CompilerClosureResult(dlls = newList(), missingPackages = newList())
-      } else {
-        Emitter.compilerClosureDllPaths(rewritten, testLibDir)
-      }
+      // The compiler-DLL closure (`closureResult`/`compilerDlls`) was
+      // resolved before synthesis, above.  The emit itself is delegated to
+      // small helpers so this function body stays simple.
       // #6628: fail loudly, naming the gap, instead of silently linking (or
       // silently recompiling against) an incomplete closure — a stale/
       // partially-staged compiler-DLL set previously produced wrong runtime
@@ -761,7 +757,6 @@ func cmdTest(argv: in slice[String]): Int {
         )
         return 1
       }
-      val compilerDlls: List[String] = closureResult.dlls
       var manifestRestoredDlls: List[String] = newList()
       var manifestNugetPaths: List[String] = newList()
       var manifestNativePaths: List[String] = newList()
