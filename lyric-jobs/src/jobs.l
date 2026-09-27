@@ -58,6 +58,7 @@ import Std.Environment
 import Std.Char
 import Jobs.Kernel.Net as KernelNet
 import Jobs.Kernel.Jvm as KernelJvm
+import Std.String as Str
 
 // ─── Platform kernel dispatch ─────────────────────────────────────────────────
 // `Jobs.Kernel.Net` / `Jobs.Kernel.Jvm` are imported aliased (rather than
@@ -486,7 +487,7 @@ func isAllAsciiDigits(s: in String): Bool {
   }
   var i = 0
   while i < s.length {
-    if not isAsciiDigit(s[i]) {
+    if not isAsciiDigit(Str.charAtOrReplacement(s, i)) {
       return false
     }
     i = i + 1
@@ -1209,7 +1210,7 @@ func indexOfFrom(s: in String, needle: in String, from: in Int): Int {
   if from >= s.length {
     return -1
   }
-  val rel = s.substring(from, s.length - from).indexOf(needle)
+  val rel = Str.indexOfRaw(s.substring(from, s.length - from), needle)
   if rel < 0 {
     return -1
   }
@@ -1217,13 +1218,9 @@ func indexOfFrom(s: in String, needle: in String, from: in Int): Int {
 }
 
 // Split `s` on single-character separator `sep` (used by the cron-field
-// parser below). Implemented locally against the built-in `String` methods
-// rather than pulling in `Std.String.split`: that module's free functions
-// (`indexOf`, `split`, ...) share names with, but not signatures/semantics
-// with, the built-in `String` methods this file already calls via dot
-// syntax elsewhere (e.g. `json.indexOf(needle)` returning `Int`, not
-// `Std.String.indexOf`'s `Option[Int]`) — importing it, even aliased,
-// changed those call sites' resolved return type and broke the build.
+// parser below). With `Std.String` imported, `s.indexOf(x)` is
+// `Std.String.indexOf`'s `Option[Int]` form (#6496), so the `Int` searches in
+// this file spell `Str.indexOfRaw` explicitly.
 func splitStr(s: in String, sep: in String): slice[String] {
   val parts: List[String] = newList()
   var partStart = 0
@@ -1287,7 +1284,7 @@ func findObjectEnd(json: in String, start: in Int): Int {
   var depth: Int = 0
   var i: Int = start
   while i < json.length {
-    val ch = json[i]
+    val ch = Str.charAtOrReplacement(json, i)
     if ch == '{' {
       depth = depth + 1
     } else if ch == '}' {
@@ -1306,7 +1303,7 @@ func jsonEscapeStr(s: in String): String {
   var result = ""
   var i = 0
   while i < s.length {
-    val ch = s[i].toString()
+    val ch = Str.substring(s, i, 1)
     if ch == "\\" {
       result = result + "\\\\"
     } else if ch == "\"" {
@@ -1328,7 +1325,7 @@ func jsonEscapeStr(s: in String): String {
 // Extract a string field from a JSON object literal (simple, no nesting).
 func jsonExtractString(json: in String, field: in String): String {
   val needle = "\"" + field + "\":"
-  val start = json.indexOf(needle)
+  val start = Str.indexOfRaw(json, needle)
   if start < 0 {
     return ""
   }
@@ -1347,18 +1344,18 @@ func jsonExtractString(json: in String, field: in String): String {
 // Extract a Long field from a JSON object literal.
 func jsonExtractLong(json: in String, field: in String): Long {
   val needle = "\"" + field + "\":"
-  val start = json.indexOf(needle)
+  val start = Str.indexOfRaw(json, needle)
   if start < 0 {
     return 0i64
   }
   val afterColon = start + needle.length
   var i: Int = afterColon
-  while i < json.length and json[i] == ' ' {
+  while i < json.length and Str.charAtOrReplacement(json, i) == ' ' {
     i = i + 1
   }
   var numStr: String = ""
-  while i < json.length and json[i] != ',' and json[i] != '}' {
-    numStr = numStr + json[i].toString()
+  while i < json.length and Str.charAtOrReplacement(json, i) != ',' and Str.charAtOrReplacement(json, i) != '}' {
+    numStr = numStr + Str.substring(json, i, 1)
     i = i + 1
   }
   match parseOptLong(numStr.trim()) {

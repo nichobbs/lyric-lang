@@ -41,6 +41,8 @@
 @axiom("java.math.BigDecimal, java.lang.Integer, and java.util.Locale conform to their documented JVM contracts")
 package Std.FormatHost
 
+import Std.String as Str
+
 extern type CultureInfo = "java.util.Locale"
 
 extern type JBigDecimal = "java.math.BigDecimal"
@@ -75,7 +77,7 @@ func formatPrecision(fmt: in String): Int {
   var v = 0
   var i = 1
   while i < fmt.length {
-    val c = fmt[i]
+    val c = Str.charAtOrReplacement(fmt, i)
     if c < '0' or c > '9' {
       panic(
         "Std.FormatHost (JVM): malformed format specifier \"" + fmt +
@@ -159,7 +161,7 @@ pub func hostIntToString(n: in Int, fmt: in String): String {
   if fmt.length == 0 {
     return "" + n
   }
-  val spec = fmt[0]
+  val spec = Str.charAtOrReplacement(fmt, 0)
   if spec == 'x' {
     return zeroPadTo(jdkToHexString(n), formatPrecision(fmt))
   }
@@ -199,7 +201,7 @@ pub func hostIntToString(n: in Int, fmt: in String): String {
 /// sign-preserving for negative zero, "NaN"/"Infinity"/"-Infinity"
 /// non-finite spellings).  Any other specifier panics.
 pub func hostDoubleToString(x: in Double, fmt: in String, culture: in CultureInfo): String {
-  if fmt.length == 0 or (fmt[0] != 'F' and fmt[0] != 'f') {
+  if fmt.length == 0 or (Str.charAtOrReplacement(fmt, 0) != 'F' and Str.charAtOrReplacement(fmt, 0) != 'f') {
     panic(
       "Std.FormatHost (JVM): unsupported Double format specifier \"" + fmt + "\" — supported: F/f with optional precision"
     )

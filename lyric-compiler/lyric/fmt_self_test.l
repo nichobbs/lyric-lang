@@ -39,6 +39,23 @@ test "import extern with selector group round trips" {
   )
 }
 
+// D-progress-1006: supplementary-plane characters are two UTF-16 code units
+// and neither half is a `Char`, so the lexer and formatter read code units
+// (never `s[i]`) wherever source text can hold them.  An emoji in a string
+// literal, a line comment, a block comment and a doc comment survives a
+// format round trip byte for byte.
+test "astral characters in literals and comments round trip" {
+  val src = "package P\n\n// note 😀\n/// greets 🎉\nfunc f(): String {\n  /* 🚀 */\n  \"hi 😀 there\"\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "astral text: round-trips")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "\"hi 😀 there\""), "astral text: string literal intact")
+  assertTrue(Str.contains(once, "// note 😀"), "astral text: line comment intact")
+  assertTrue(Str.contains(once, "/// greets 🎉"), "astral text: doc comment intact")
+  assertTrue(Str.contains(once, "🚀"), "astral text: block comment intact")
+  assertEqual(format(parse(once)), once, "astral text: idempotent")
+}
+
 test "pub use extern with selector group round trips" {
   val src = "package P\n\npub use extern Foo.Bar.{ Baz }\n"
   val c = formatSourceChecked(src)

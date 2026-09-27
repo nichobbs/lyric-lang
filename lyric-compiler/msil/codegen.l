@@ -7998,6 +7998,123 @@ func isNumericMsil(ty: in MsilType): Bool {
   }
 }
 
+func isStringMsil(ty: in MsilType): Bool {
+  match ty {
+    case MString -> true
+    case _ -> false
+  }
+}
+
+// The MemberRef token for `System.<typeName>::.ctor(string)`, interned once
+// per assembly so repeated checks share a single TypeRef/MemberRef row.
+func systemExcCtorTokenMsil(cctx: in CodegenCtx, typeName: in String): Int {
+  val key = "lyric_sysexc_ctor_" + typeName
+  match mapGet(cctx.lctx.memberRefRowByKey, key) {
+    case Some(row) -> 0x0A000000 + row
+    case None -> {
+      val tr = internFfiTypeRef(cctx, "System.Runtime", "System", typeName)
+      val ps: List[MsilType] = newList()
+      ps.add(MString)
+      val row = ctxAddMemberRef(cctx.lctx, tr, ".ctor", key, buildInstanceMethodSig(ps, MVoid))
+      cctx.lctx.memberRefRowByKey.add(key, row)
+      0x0A000000 + row
+    }
+  }
+}
+
+// With an int32 code unit on the stack, throw `new <exc>(msg)` when it lies
+// in the surrogate range U+D800..U+DFFF; otherwise leave it on the stack.
+// One unsigned compare: `(uint)(c - 0xD800) < 0x800`.
+func emitSurrogateGuardMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  excCtor: in Int,
+  msg: in String,
+): Unit {
+  val okL = freshLabelMsil(fctx)
+  insns.add(MDup)
+  insns.add(MLdcI4(v = 55296))
+  insns.add(MSub)
+  insns.add(MLdcI4(v = 2048))
+  insns.add(MClt_Un)
+  insns.add(MBrFalse(label = okL))
+  insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg)))
+  insns.add(MNewobj(ctorToken = excCtor))
+  insns.add(MThrow)
+  insns.add(MLabel(id = okL))
+}
+
+// `.toChar()` (D-progress-1006): a checked narrowing.  The receiver value is
+// on the stack; a `Byte` or `Char` is always a valid BMP scalar, while an
+// `Int`/`Long`/`Double` is range-checked (truncating a `Double` toward zero
+// first, NaN failing) and then surrogate-checked, throwing
+// `OverflowException` — what a checked narrowing conversion throws on .NET.
+func emitCheckedToCharMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
+  val needsCheck = match recvTy { case MInt -> true; case MLong -> true; case MDouble -> true; case _ -> false }
+  if needsCheck {
+    emitRangeCheckedToCharMsil(cctx, fctx, insns, recvTy)
+  } else {
+    insns.add(MConvU2)
+  }
+}
+
+func emitRangeCheckedToCharMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
+  val excCtor = systemExcCtorTokenMsil(cctx, "OverflowException")
+  val msgTok = ctxInternUs(cctx.lctx, toCharRangeMessage())
+  val okL = freshLabelMsil(fctx)
+  val failWideL = freshLabelMsil(fctx)
+  val failIntL = freshLabelMsil(fctx)
+  match recvTy {
+    case MLong -> {
+      insns.add(MDup)
+      insns.add(MLdcI8(v = 65535i64))
+      insns.add(MCgt_Un)
+      insns.add(MBrTrue(label = failWideL))
+      insns.add(MConvI4)
+    }
+    case MDouble -> {
+      insns.add(MDup)
+      insns.add(MLdcR8(v = 0.0 - 1.0))
+      insns.add(MCgt)
+      insns.add(MBrFalse(label = failWideL))
+      insns.add(MDup)
+      insns.add(MLdcR8(v = 65536.0))
+      insns.add(MClt)
+      insns.add(MBrFalse(label = failWideL))
+      insns.add(MConvI4)
+    }
+    case _ -> {
+      insns.add(MDup)
+      insns.add(MLdcI4(v = 65535))
+      insns.add(MCgt_Un)
+      insns.add(MBrTrue(label = failIntL))
+    }
+  }
+  insns.add(MDup)
+  insns.add(MLdcI4(v = 55296))
+  insns.add(MSub)
+  insns.add(MLdcI4(v = 2048))
+  insns.add(MClt_Un)
+  insns.add(MBrTrue(label = failIntL))
+  insns.add(MConvU2)
+  insns.add(MBr(label = okL))
+  match recvTy {
+    case MInt -> ()
+    case _ -> {
+      insns.add(MLabel(id = failWideL))
+      insns.add(MLdStr(token = msgTok))
+      insns.add(MNewobj(ctorToken = excCtor))
+      insns.add(MThrow)
+    }
+  }
+  insns.add(MLabel(id = failIntL))
+  insns.add(MLdStr(token = msgTok))
+  insns.add(MNewobj(ctorToken = excCtor))
+  insns.add(MThrow)
+  insns.add(MLabel(id = okL))
+}
+
 // Cross-package call resolution helper (#1183 Phase 2).  Walks `imports`
 // — the dotted-name list of packages imported by the calling site's
 // package — and returns the first `<imp>.<funcName>` key that exists in
@@ -10795,11 +10912,21 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
         match recvTy {
           case MString -> {
-            // String.get_Chars(int32): char — push index then callvirt.
+            // String.get_Chars(int32): char — push index then callvirt.  A
+            // surrogate half is not a `Char` (docs/01 §2.1), so a unit in
+            // U+D800..U+DFFF fails like an out-of-range index does
+            // (D-progress-1006); `s.codeUnitAt(i)` is the raw accessor.
             if indices.count > 0 {
               lowerExprMsil(cctx, fctx, insns, indices[0])
             }
             insns.add(MCallvirt(methodToken = cctx.tokStringGetChars))
+            emitSurrogateGuardMsil(
+              cctx,
+              fctx,
+              insns,
+              systemExcCtorTokenMsil(cctx, "IndexOutOfRangeException"),
+              stringIndexSurrogateMessage()
+            )
             MChar
           }
           case MMapOf(_, valTy) -> {
@@ -19300,6 +19427,13 @@ func lowerMethodCallMsil(
       insns.add(MThrow)
       MArray(elemTy = MString)
     }
+  } else if memberName == "codeUnitAt" and args.count == 1 and isStringMsil(recvTy) {
+    // `s.codeUnitAt(i)`: the raw UTF-16 code unit as an `Int`, surrogates
+    // included (D-progress-1006).  `get_Chars` already yields an int32 on the
+    // evaluation stack, so no conversion is needed.
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MCallvirt(methodToken = cctx.tokStringGetChars))
+    MInt
   } else if memberName == "toLower" and args.count == 0 {
     insns.add(MCallvirt(methodToken = cctx.tokStringToLower))
     MString
@@ -19334,7 +19468,7 @@ func lowerMethodCallMsil(
       insns.add(MConvU1)
       MByte
     } else if memberName == "toChar" {
-      insns.add(MConvU2)
+      emitCheckedToCharMsil(cctx, fctx, insns, recvTy)
       MChar
     } else if memberName == "toLong" {
       insns.add(MConvI8)
@@ -19358,7 +19492,7 @@ func lowerMethodCallMsil(
         // #7099: every String method name this backend implements (the
         // `contains`/`toString`/`substring`/`replace`/`isNormalized`/
         // `normalize`/`trim`/`trimStart`/`trimEnd`/`indexOf`/`lastIndexOf`/
-        // `startsWith`/`endsWith`/`split`/`toLower`/`toUpper` branches above,
+        // `startsWith`/`endsWith`/`split`/`codeUnitAt`/`toLower`/`toUpper` branches above,
         // plus `length`/`isEmpty` via field-style `EMember` access) has
         // already been tried and missed by the time this branch runs, so a
         // String receiver landing here names a method that never exists —
@@ -22471,7 +22605,7 @@ func genericArityOfName(simpleName: in String): Int {
   var n = 0
   var i = bt + 1
   while i < simpleName.length {
-    val d = decimalDigitValue(simpleName[i])
+    val d = decimalDigitValue(String.charAtOrReplacement(simpleName, i))
     if d >= 0 {
       n = n * 10 + d
     }
@@ -30168,7 +30302,7 @@ pub func lowerRecordMethodMsil(
 pub func simpleNameOfQualifiedMsil(qualified: in String): String {
   var i = qualified.length - 1
   while i >= 0 {
-    if qualified[i] == '.' {
+    if String.charAtOrReplacement(qualified, i) == '.' {
       return qualified.substring(i + 1, qualified.length - i - 1)
     }
     i = i - 1
@@ -31073,7 +31207,7 @@ func globMatchMsil(glob: in String, name: in String): Bool {
   var gi = 0
   var ni = 0
   while gi < glob.length and ni < name.length {
-    val gc = glob[gi]
+    val gc = String.charAtOrReplacement(glob, gi)
     if gc == '*' {
       // Consume the star then try each remaining position in name.
       gi = gi + 1
@@ -31090,7 +31224,7 @@ func globMatchMsil(glob: in String, name: in String): Bool {
     } else if gc == '?' {
       gi = gi + 1
       ni = ni + 1
-    } else if gc == name[ni] {
+    } else if String.codeUnitAt(glob, gi) == String.codeUnitAt(name, ni) {
       gi = gi + 1
       ni = ni + 1
     } else {
@@ -31098,7 +31232,7 @@ func globMatchMsil(glob: in String, name: in String): Bool {
     }
   }
   // Consume trailing stars.
-  while gi < glob.length and glob[gi] == '*' {
+  while gi < glob.length and String.charAtOrReplacement(glob, gi) == '*' {
     gi = gi + 1
   }
   gi >= glob.length and ni >= name.length
@@ -38824,7 +38958,7 @@ func registerUnionCases(cctx: in CodegenCtx, packageName: in String, unionName: 
       return
     }
     var j = nameStart
-    while j < repr.length and isIdentChar(repr[j]) {
+    while j < repr.length and isIdentChar(String.charAtOrReplacement(repr, j)) {
       j = j + 1
     }
     if j > nameStart {

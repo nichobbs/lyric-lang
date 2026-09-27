@@ -827,12 +827,12 @@ pub func extractMavenJarPaths(jsonOutput: in String): List[String] {
     // document rather than as this key — and is skipped rather than
     // misparsed.
     var idx = 0
-    if idx < piece.length and piece[idx] == ':' {
+    if idx < piece.length and Str.charAtOrReplacement(piece, idx) == ':' {
       idx += 1
-      while idx < piece.length and Ch.isAsciiWhiteSpace(piece[idx]) {
+      while idx < piece.length and Ch.isAsciiWhiteSpace(Str.charAtOrReplacement(piece, idx)) {
         idx += 1
       }
-      if idx < piece.length and piece[idx] == '"' {
+      if idx < piece.length and Str.charAtOrReplacement(piece, idx) == '"' {
         idx += 1
         val afterOpenQuote = piece.substring(idx, piece.length - idx)
         match Str.indexOf(afterOpenQuote, "\"") {

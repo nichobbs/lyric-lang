@@ -156,6 +156,7 @@ package Std.HttpEngine.H2Conn
 import Std.Core
 import Std.Collections
 import Std.Char as Ch
+import Std.String as Str
 import Std.HttpEngine
 import Std.HttpEngine.H2Frame
 import Std.HttpEngine.Hpack
@@ -1726,10 +1727,13 @@ func isConnectionSpecificField(name: in String): Bool {
     name == "upgrade"
 }
 
-// Header strings are Latin-1 octets (Std.HttpEngine.Hpack), so each char's
-// code is the octet value.
+// The code unit at `i`.  Header strings decoded from the wire are Latin-1
+// octets (Std.HttpEngine.Hpack), so a unit is the octet value; a header an
+// application supplies may hold any text, and every check here only accepts
+// ASCII, so reading raw units (never a `Char`, which a surrogate half is
+// not) classifies it correctly on every target.
 func charCodeAt(s: in String, i: in Int): Int {
-  Ch.toInt(s[i])
+  Str.codeUnitAt(s, i)
 }
 
 func handlePushPromise(state: inout H2Connection, events: in List[H2Event], outb: in List[Byte]): Unit {

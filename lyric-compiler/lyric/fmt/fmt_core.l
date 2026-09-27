@@ -214,7 +214,10 @@ pub func escapeStr(s: in String): String {
   var acc = ""
   var i = 0
   while i < s.length {
-    val c = s[i]
+    // A supplementary-plane character (an emoji) is two UTF-16 units, neither
+    // of which is a `Char`: the scan reads them as U+FFFD (no escape applies)
+    // and copies the raw units in the final branch.
+    val c = Str.charAtOrReplacement(s, i)
     if c == '"' {
       acc = acc + "\\\""
     } else if c == '\\' {
@@ -225,12 +228,12 @@ pub func escapeStr(s: in String): String {
       acc = acc + "\\r"
     } else if c == '\t' {
       acc = acc + "\\t"
-    } else if c == '$' and i + 1 < s.length and s[i + 1] == '{' {
+    } else if c == '$' and i + 1 < s.length and Str.charAtOrReplacement(s, i + 1) == '{' {
       acc = acc + "\\$"
     } else if charIsControl(c) {
       acc = acc + "\\u{" + uHex4(charCodepoint(c)) + "}"
     } else {
-      acc = acc + charToStr(c)
+      acc = acc + Str.substring(s, i, 1)
     }
     i = i + 1
   }

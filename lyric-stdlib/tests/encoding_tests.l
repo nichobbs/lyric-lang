@@ -108,11 +108,11 @@ func testUtf8Invalid(): Unit {
 // #7252: a lone (unpaired) UTF-16 surrogate now encodes to U+FFFD
 // (EF BF BD) identically on every target, rather than diverging (.NET's
 // `Encoding.UTF8` already replaced with U+FFFD; the JVM accumulator used
-// to emit raw WTF-8 instead).  The lone surrogates are built with the
-// unchecked `Int.toChar()` numeric conversion: `Char.fromInt` rejects
-// surrogate code units, since a `Char` is a BMP scalar value.
+// to emit raw WTF-8 instead).  The lone surrogates are cut out of an emoji's
+// surrogate pair with `substring`: a surrogate half is not a `Char`, so
+// neither `Char.fromInt` nor `.toChar()` can produce one (D-progress-1006).
 func testUtf8LoneSurrogateReplacedWithFFFD(): Unit {
-  val loneHigh = "" + 55296.toChar()
+  val loneHigh = "😀".substring(0, 1)
   // U+D800, unpaired.
   val highBytes = encodeUtf8(loneHigh)
   assertEqualInt(highBytes.length, 3, "lone high surrogate encodes to 3 bytes")
@@ -120,7 +120,7 @@ func testUtf8LoneSurrogateReplacedWithFFFD(): Unit {
   assertEqualInt(highBytes[1].toInt(), 191, "U+FFFD byte 1")
   assertEqualInt(highBytes[2].toInt(), 189, "U+FFFD byte 2")
 
-  val loneLow = "" + 56320.toChar()
+  val loneLow = "😀".substring(1, 1)
   // U+DC00, unpaired.
   val lowBytes = encodeUtf8(loneLow)
   assertEqualInt(lowBytes.length, 3, "lone low surrogate encodes to 3 bytes")

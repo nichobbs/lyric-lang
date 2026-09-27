@@ -13,6 +13,7 @@ import Std.Errors
 import Std.HttpHost as HostHttp
 import Std.Task
 import Std.Tls
+import Std.String as Str
 
 // ---------------------------------------------------------------------------
 // HTTP request and response types.
@@ -834,7 +835,7 @@ pub func Url.tryFrom(raw: in String): Result[Url, HttpError] {
 pub func isHttpUrlShape(raw: in String): Bool {
   var i = 0
   while i < raw.length {
-    val c = raw[i]
+    val c = Str.charAtOrReplacement(raw, i)
     if c <= ' ' or c == '\u{007f}' {
       return false
     }
@@ -849,19 +850,23 @@ pub func isHttpUrlShape(raw: in String): Bool {
     return false
   }
   var authorityEnd = start
-  while authorityEnd < raw.length and raw[authorityEnd] != '/' and raw[authorityEnd] != '?' and raw[authorityEnd] != '#' {
+  while authorityEnd < raw.length and not isUrlAuthorityEnd(Str.charAtOrReplacement(raw, authorityEnd)) {
     authorityEnd = authorityEnd + 1
   }
   // The host follows the last `@` of the authority, if any.
   var hostStart = start
   var k = start
   while k < authorityEnd {
-    if raw[k] == '@' {
+    if Str.charAtOrReplacement(raw, k) == '@' {
       hostStart = k + 1
     }
     k = k + 1
   }
-  hostStart < authorityEnd and raw[hostStart] != ':'
+  hostStart < authorityEnd and Str.charAtOrReplacement(raw, hostStart) != ':'
+}
+
+func isUrlAuthorityEnd(c: in Char): Bool {
+  c == '/' or c == '?' or c == '#'
 }
 
 /// Return the original string value for a validated URL.
@@ -931,7 +936,7 @@ func isHeaderNameToken(name: in String): Bool {
   }
   var i = 0
   while i < name.length {
-    val c = name[i]
+    val c = Str.charAtOrReplacement(name, i)
     val ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '!' or c == '#' or
       c == '$' or
       c == '%' or
@@ -959,7 +964,7 @@ func isHeaderNameToken(name: in String): Bool {
 func isHeaderValueSafe(value: in String): Bool {
   var i = 0
   while i < value.length {
-    val c = value[i]
+    val c = Str.charAtOrReplacement(value, i)
     if (c < ' ' and c != '\t') or c == '\u{007f}' {
       return false
     }

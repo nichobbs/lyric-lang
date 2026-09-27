@@ -339,7 +339,7 @@ func jsonEscapeString(s: in String): String {
   var acc = "\""
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = Str.charAtOrReplacement(s, i)
     if c == '"' {
       acc = acc + "\\\""
     } else if c == '\\' {
@@ -351,7 +351,7 @@ func jsonEscapeString(s: in String): String {
     } else if c == '\t' {
       acc = acc + "\\t"
     } else {
-      acc = acc + c.toString()
+      acc = acc + Str.substring(s, i, 1)
     }
     i = i + 1
   }

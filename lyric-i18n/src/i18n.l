@@ -34,6 +34,7 @@ import Std.Collections
 import Std.Char
 import Std.Json
 import Std.File as File
+import Std.String as Str
 
 // ─── Locale type ──────────────────────────────────────────────────────────────
 /// A BCP 47 locale identifier: a primary language subtag, an optional script
@@ -485,7 +486,7 @@ func isValidLocaleTag(tag: in String): Bool {
 func isLowercaseAsciiLetters(s: in String): Bool {
   var i = 0
   while i < s.length {
-    if not isAsciiLower(s[i]) {
+    if not isAsciiLower(Str.charAtOrReplacement(s, i)) {
       return false
     }
     i = i + 1
@@ -501,12 +502,12 @@ func isTitlecaseAsciiScript(s: in String): Bool {
   if s.length != 4 {
     return false
   }
-  if not isAsciiUpper(s[0]) {
+  if not isAsciiUpper(Str.charAtOrReplacement(s, 0)) {
     return false
   }
   var i = 1
   while i < 4 {
-    if not isAsciiLower(s[i]) {
+    if not isAsciiLower(Str.charAtOrReplacement(s, i)) {
       return false
     }
     i = i + 1
@@ -521,7 +522,7 @@ func isUppercaseAsciiLetterRegion(s: in String): Bool {
   if s.length != 2 {
     return false
   }
-  return isAsciiUpper(s[0]) and isAsciiUpper(s[1])
+  return isAsciiUpper(Str.charAtOrReplacement(s, 0)) and isAsciiUpper(Str.charAtOrReplacement(s, 1))
 }
 
 // True iff `s` is exactly 3 ASCII digits (the `Locale.region` invariant's
@@ -531,7 +532,8 @@ func isDigitRegion(s: in String): Bool {
   if s.length != 3 {
     return false
   }
-  return isAsciiDigit(s[0]) and isAsciiDigit(s[1]) and isAsciiDigit(s[2])
+  return isAsciiDigit(Str.charAtOrReplacement(s, 0)) and isAsciiDigit(Str.charAtOrReplacement(s, 1)) and
+    isAsciiDigit(Str.charAtOrReplacement(s, 2))
 }
 
 // True iff `s` is non-empty and every character is an ASCII letter.
@@ -541,7 +543,7 @@ func isAsciiAlphaOnly(s: in String): Bool {
   }
   var i = 0
   while i < s.length {
-    if not isAsciiLetter(s[i]) {
+    if not isAsciiLetter(Str.charAtOrReplacement(s, i)) {
       return false
     }
     i = i + 1
@@ -556,7 +558,7 @@ func isAsciiDigitOnly(s: in String): Bool {
   }
   var i = 0
   while i < s.length {
-    if not isAsciiDigit(s[i]) {
+    if not isAsciiDigit(Str.charAtOrReplacement(s, i)) {
       return false
     }
     i = i + 1

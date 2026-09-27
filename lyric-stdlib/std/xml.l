@@ -72,7 +72,7 @@ func xAtEnd(st: in XmlState): Bool {
 
 func xPeek(st: in XmlState): Option[Char] {
   if st.pos < st.src.length {
-    Some(value = st.src[st.pos])
+    Some(value = charAtOrReplacement(st.src, st.pos))
   } else {
     None
   }
@@ -81,20 +81,20 @@ func xPeek(st: in XmlState): Option[Char] {
 func xPeekAt(st: in XmlState, offset: in Int): Option[Char] {
   val i = st.pos + offset
   if i >= 0 and i < st.src.length {
-    Some(value = st.src[i])
+    Some(value = charAtOrReplacement(st.src, i))
   } else {
     None
   }
 }
 
 func xSkipWs(st: inout XmlState): Unit {
-  while st.pos < st.src.length and isWhiteSpace(st.src[st.pos]) {
+  while st.pos < st.src.length and isWhiteSpace(charAtOrReplacement(st.src, st.pos)) {
     st.pos = st.pos + 1
   }
 }
 
 func xEat(st: inout XmlState, c: in Char): Bool {
-  if st.pos < st.src.length and st.src[st.pos] == c {
+  if st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == c {
     st.pos = st.pos + 1
     true
   } else {
@@ -110,7 +110,7 @@ func xStartsWith(st: in XmlState, s: in String): Bool {
   }
   var k = 0
   while k < s.length {
-    if st.src[st.pos + k] != s[k] {
+    if codeUnitAt(st.src, st.pos + k) != codeUnitAt(s, k) {
       return false
     }
     k += 1
@@ -140,13 +140,13 @@ func xParseName(st: inout XmlState): Option[String] {
   if xAtEnd(st) {
     return None
   }
-  val c = st.src[st.pos]
+  val c = charAtOrReplacement(st.src, st.pos)
   if not xIsNameStart(c) {
     return None
   }
   val start = st.pos
   st.pos = st.pos + 1
-  while st.pos < st.src.length and xIsNameContinue(st.src[st.pos]) {
+  while st.pos < st.src.length and xIsNameContinue(charAtOrReplacement(st.src, st.pos)) {
     st.pos = st.pos + 1
   }
   Some(value = st.src.substring(start, st.pos - start))
@@ -216,19 +216,19 @@ func xParseEntity(st: inout XmlState): Result[String, XmlError] {
   if xAtEnd(st) {
     return Err(error = UnexpectedEof(pos = st.pos, expected = "entity reference"))
   }
-  if st.src[st.pos] == '#' {
+  if charAtOrReplacement(st.src, st.pos) == '#' {
     st.pos = st.pos + 1
     if xAtEnd(st) {
       return Err(error = UnexpectedEof(pos = st.pos, expected = "numeric entity"))
     }
-    if st.src[st.pos] == 'x' or st.src[st.pos] == 'X' {
+    if charAtOrReplacement(st.src, st.pos) == 'x' or charAtOrReplacement(st.src, st.pos) == 'X' {
       // Hex: &#xNNN; or &#XNNN;
       st.pos = st.pos + 1
       var value = 0
       var digits = 0
       var scanning = true
       while scanning and st.pos < st.src.length {
-        val d = xParseHexDigit(st.src[st.pos])
+        val d = xParseHexDigit(charAtOrReplacement(st.src, st.pos))
         if d >= 0 {
           value = value * 16 + d
           // Clamp above the max Unicode code point so a long entity cannot
@@ -256,7 +256,7 @@ func xParseEntity(st: inout XmlState): Result[String, XmlError] {
       var digits = 0
       var scanning = true
       while scanning and st.pos < st.src.length {
-        val c = st.src[st.pos]
+        val c = charAtOrReplacement(st.src, st.pos)
         if c >= '0' and c <= '9' {
           value = value * 10 + toInt(c) - toInt('0')
           // Clamp above the max Unicode code point to prevent Int overflow
@@ -308,7 +308,7 @@ func xCollectText(st: inout XmlState, hasStop: in Bool, stopCh: in Char): Result
   var runStart = st.pos
   var scanning = true
   while scanning and st.pos < st.src.length {
-    val c = st.src[st.pos]
+    val c = charAtOrReplacement(st.src, st.pos)
     val isStop = if c == '<' { true } else { hasStop and c == stopCh }
     if isStop {
       scanning = false
@@ -344,7 +344,7 @@ func xParseAttrValue(st: inout XmlState): Result[String, XmlError] {
   if xAtEnd(st) {
     return Err(error = UnexpectedEof(pos = st.pos, expected = "attribute value"))
   }
-  val quote = st.src[st.pos]
+  val quote = charAtOrReplacement(st.src, st.pos)
   if quote != '"' and quote != '\'' {
     return Err(error = UnexpectedChar(pos = st.pos, expected = "quote to start attribute value"))
   }
@@ -367,7 +367,7 @@ func xParseAttrs(st: inout XmlState): Result[List[XmlAttr], XmlError] {
   var ok = true
   var err: XmlError = InvalidDocument(message = "")
   xSkipWs(st)
-  while ok and st.pos < st.src.length and st.src[st.pos] != '>' and not xStartsWith(st, "/>") {
+  while ok and st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) != '>' and not xStartsWith(st, "/>") {
     match xParseName(st) {
       case None -> {
         ok = false
@@ -448,7 +448,7 @@ func xSkipToGt(st: inout XmlState): Result[Unit, XmlError] {
   var depth = 0
   var found = false
   while not found and not xAtEnd(st) {
-    val c = st.src[st.pos]
+    val c = charAtOrReplacement(st.src, st.pos)
     if c == '<' {
       depth += 1
       st.pos = st.pos + 1
@@ -538,7 +538,7 @@ func xParseContent(st: inout XmlState, expectedTag: in String, depth: in Int): R
   var err: XmlError = InvalidDocument(message = "")
   var done = false
   while ok and not done and not xAtEnd(st) {
-    if st.src[st.pos] == '<' {
+    if charAtOrReplacement(st.src, st.pos) == '<' {
       if xStartsWith(st, "</") {
         // Closing tag — verify it matches and consume it.
         done = true

@@ -269,7 +269,7 @@ func constSignature(c: in ConstDecl): String {
 // ─── Doc comment rendering ────────────────────────────────────────────────────
 func docText(d: in DocComment): String {
   val s = d.text
-  if s.length > 0 and s[0] == ' ' {
+  if Str.startsWith(s, " ") {
     Str.substring(s, 1, s.length - 1)
   } else {
     s

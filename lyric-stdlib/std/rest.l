@@ -11,6 +11,7 @@ import Std.Core
 import Std.Errors
 import Std.Http
 import Std.Json
+import Std.String as Str
 
 // ---------------------------------------------------------------------------
 // RestError — all failures a REST call can produce.
@@ -133,8 +134,8 @@ func fullUrl(client: in RestClient, path: in String): Result[String, RestError] 
   if not isSafeRelativePath(path) {
     return Err(error = Http(error = InvalidUrl(url = base + path)))
   }
-  val baseEndsSlash = base[base.length - 1] == '/'
-  val pathStartsSlash = path[0] == '/'
+  val baseEndsSlash = base.endsWith("/")
+  val pathStartsSlash = path.startsWith("/")
   if baseEndsSlash and pathStartsSlash {
     return Ok(value = base + path.substring(1, path.length - 1))
   }
@@ -153,7 +154,8 @@ func isSafeRelativePath(path: in String): Bool {
   var pathEnd = path.length
   var i = 0
   while i < path.length {
-    if path[i] == '?' or path[i] == '#' {
+    val c = Str.charAtOrReplacement(path, i)
+    if c == '?' or c == '#' {
       pathEnd = i
       i = path.length
     } else {
@@ -186,10 +188,14 @@ func isSafeRelativePath(path: in String): Bool {
 // The length of the segment separator at `j` (the path end counts as one of
 // length 1), or 0: `/`, `\`, or a percent-encoded `%2f`/`%5c`.
 func separatorLengthAt(path: in String, j: in Int, pathEnd: in Int): Int {
-  if j == pathEnd or path[j] == '/' or path[j] == '\\' {
+  if j == pathEnd {
     return 1
   }
-  if path[j] == '%' and j + 3 <= pathEnd {
+  val c = Str.charAtOrReplacement(path, j)
+  if c == '/' or c == '\\' {
+    return 1
+  }
+  if c == '%' and j + 3 <= pathEnd {
     val code = path.substring(j, 3).toLower()
     if code == "%2f" or code == "%5c" {
       return 3

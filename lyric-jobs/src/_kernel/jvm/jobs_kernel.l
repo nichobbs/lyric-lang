@@ -193,7 +193,7 @@ func jobJsonStr(s: in String): String {
   var r = "\""
   var i = 0
   while i < s.length {
-    val code = toInt(s[i])
+    val code = s.codeUnitAt(i)
     if code == 34 {
       r = r + "\\\""
     } else if code == 92 {
@@ -205,7 +205,7 @@ func jobJsonStr(s: in String): String {
     } else if code == 9 {
       r = r + "\\t"
     } else {
-      r = r + s[i].toString()
+      r = r + s.substring(i, 1)
     }
     i = i + 1
   }

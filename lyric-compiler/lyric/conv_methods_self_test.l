@@ -20,6 +20,10 @@
 //! on MSIL; `i2l`/`l2i`/`d2i`/`l2d`/… on the JVM, with `.toByte()` using `& 0xFF`
 //! masking rather than the *signed* `i2b` so the unsigned-`Byte` result matches
 //! MSIL's `conv.u1` — so every assertion below is valid on both targets.
+//! `.toChar()` from an `Int`/`Long`/`Double` is additionally checked
+//! (D-progress-1006): a value that is not a BMP scalar fails instead of
+//! narrowing — inline IL on MSIL, the `__lyricToChar`/`__lyricToCharD`
+//! helpers on the JVM.
 //!
 //! The receiver is always bound to a `val` first: a bare-literal receiver such
 //! as `42.toLong()` would lex the `42.` as the start of a float.
@@ -153,4 +157,52 @@ test "conversions chain" {
   assertEqualInt(x.toLong().toInt(), 1000, "1000.toLong().toInt() == 1000")
   // 1000 -> Byte (1000 & 0xFF == 232) -> Int
   assertEqualInt(x.toByte().toInt(), 232, "1000.toByte().toInt() == 232")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `.toChar()` is a checked conversion (D-progress-1006): a `Char` is a BMP
+// scalar value (docs/01 §2.1), so a value outside 0..65535 or in the UTF-16
+// surrogate range 55296..57343 fails rather than narrowing silently.
+// MSIL: inline range + surrogate check, `OverflowException`.
+// JVM:  the `__lyricToChar`/`__lyricToCharD` helpers, `ArithmeticException`.
+// ─────────────────────────────────────────────────────────────────────────────
+test "toChar accepts every BMP scalar value" {
+  val lo: Int = 0
+  assertEqualInt(lo.toChar().toInt(), 0, "0.toChar()")
+  val belowSurr: Int = 55295
+  assertEqualInt(belowSurr.toChar().toInt(), 55295, "0xD7FF.toChar()")
+  val aboveSurr: Int = 57344
+  assertEqualInt(aboveSurr.toChar().toInt(), 57344, "0xE000.toChar()")
+  val top: Int = 65535
+  assertEqualInt(top.toChar().toInt(), 65535, "0xFFFF.toChar()")
+  val l: Long = 66i64
+  assertEqualInt(l.toChar().toInt(), 66, "Long 66.toChar()")
+  val d: Double = 67.9
+  assertEqualInt(d.toChar().toInt(), 67, "Double 67.9.toChar() truncates toward zero")
+  val nearZero: Double = 0.0 - 0.5
+  assertEqualInt(nearZero.toChar().toInt(), 0, "Double -0.5.toChar() truncates to 0")
+}
+
+test "toChar rejects surrogates" {
+  val hi: Int = 55296
+  assertPanicsWith("0xD800.toChar()", "surrogate", { -> val _ = hi.toChar() })
+  val lo: Int = 57343
+  assertPanicsWith("0xDFFF.toChar()", "surrogate", { -> val _ = lo.toChar() })
+  val l: Long = 56320i64
+  assertPanics("Long 0xDC00.toChar()", { -> val _ = l.toChar() })
+  val d: Double = 55296.0
+  assertPanics("Double 55296.0.toChar()", { -> val _ = d.toChar() })
+}
+
+test "toChar rejects values outside 0..65535" {
+  val neg: Int = 0 - 1
+  assertPanicsWith("(-1).toChar()", "out of range", { -> val _ = neg.toChar() })
+  val big: Int = 65536
+  assertPanics("65536.toChar()", { -> val _ = big.toChar() })
+  val huge: Long = 4294967361i64
+  assertPanics("Long 2^32+65 .toChar() does not wrap to 'A'", { -> val _ = huge.toChar() })
+  val nan: Double = 0.0 / 0.0
+  assertPanics("NaN.toChar()", { -> val _ = nan.toChar() })
+  val dbig: Double = 65536.0
+  assertPanics("65536.0.toChar()", { -> val _ = dbig.toChar() })
 }

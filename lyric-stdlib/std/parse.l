@@ -20,6 +20,7 @@ package Std.Parse
 
 import Std.Core
 import Std.Errors
+import Std.String as Str
 // Import CharHost directly rather than Std.Char to avoid transitively
 // re-exporting Std.Char's toLower/toUpper into modules that import Std.Parse.
 import Std.CharHost as ParseCharHost
@@ -53,17 +54,17 @@ pub func parseOptInt(s: in String): Option[Int] {
     return None
   }
   var i = 0
-  while i < len and isParseWhiteSpace(s[i]) {
+  while i < len and isParseWhiteSpace(Str.charAtOrReplacement(s, i)) {
     i += 1
   }
   if i == len {
     return None
   }
   var negative = false
-  if s[i] == '-' {
+  if Str.charAtOrReplacement(s, i) == '-' {
     negative = true
     i += 1
-  } else if s[i] == '+' {
+  } else if Str.charAtOrReplacement(s, i) == '+' {
     i += 1
   }
   if i == len {
@@ -73,10 +74,10 @@ pub func parseOptInt(s: in String): Option[Int] {
   var acc = 0
   var hasDigits = false
   while i < len {
-    val cp = ParseCharHost.hostCharToInt(s[i])
+    val cp = ParseCharHost.hostCharToInt(Str.charAtOrReplacement(s, i))
     if cp < 48 or cp > 57 {
       // Non-digit: must be trailing whitespace only, then end of string.
-      while i < len and isParseWhiteSpace(s[i]) {
+      while i < len and isParseWhiteSpace(Str.charAtOrReplacement(s, i)) {
         i += 1
       }
       if i != len {
@@ -118,17 +119,17 @@ pub func parseOptLong(s: in String): Option[Long] {
     return None
   }
   var i = 0
-  while i < len and isParseWhiteSpace(s[i]) {
+  while i < len and isParseWhiteSpace(Str.charAtOrReplacement(s, i)) {
     i += 1
   }
   if i == len {
     return None
   }
   var negative = false
-  if s[i] == '-' {
+  if Str.charAtOrReplacement(s, i) == '-' {
     negative = true
     i += 1
-  } else if s[i] == '+' {
+  } else if Str.charAtOrReplacement(s, i) == '+' {
     i += 1
   }
   if i == len {
@@ -139,9 +140,9 @@ pub func parseOptLong(s: in String): Option[Long] {
   var acc = 0i64
   var hasDigits = false
   while i < len {
-    val cp = ParseCharHost.hostCharToInt(s[i])
+    val cp = ParseCharHost.hostCharToInt(Str.charAtOrReplacement(s, i))
     if cp < 48 or cp > 57 {
-      while i < len and isParseWhiteSpace(s[i]) {
+      while i < len and isParseWhiteSpace(Str.charAtOrReplacement(s, i)) {
         i += 1
       }
       if i != len {

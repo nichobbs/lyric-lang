@@ -25,13 +25,13 @@ pub func hostGetUtf8Enc(): String {
   "utf-8"
 }
 
-// Returns the UTF-16 code-unit integer value of `s[i]`.  Trivial on JVM
-// (String indexing is fully supported); exists so `Std.Encoding` can call
-// one cross-target primitive instead of `s[i]` directly — the native twin
-// (`_kernel_native/encoding_host.l`) cannot support `s[i]` at all (its
-// `String` is a UTF-8 byte buffer; see that file's header for why).
+// Returns the UTF-16 code unit at `i` as an `Int` (`s.codeUnitAt(i)`,
+// surrogate halves included — `s[i]` rejects those, since a surrogate half is
+// not a `Char`, and the input here is untrusted text).  `Std.Encoding` calls
+// this one cross-target primitive; the native twin
+// (`_kernel_native/encoding_host.l`) reads a UTF-8 byte instead.
 pub func hostCharCodeAt(s: in String, i: in Int): Int {
-  toInt(s[i])
+  s.codeUnitAt(i)
 }
 
 // Returns the String representation of a full Unicode scalar value
@@ -65,9 +65,9 @@ pub func hostEncodeUtf8(enc: in String, s: in String): slice[Byte] {
   val len = s.length
   var i = 0
   while i < len {
-    val cu = toInt(s[i])
+    val cu = s.codeUnitAt(i)
     if cu >= 55296 and cu <= 56319 and i + 1 < len {
-      val cu2 = toInt(s[i + 1])
+      val cu2 = s.codeUnitAt(i + 1)
       if cu2 >= 56320 and cu2 <= 57343 {
         val cp = 65536 + (cu - 55296) * 1024 + (cu2 - 56320)
         result.add(240 + cp / 262144)
@@ -112,12 +112,12 @@ func hasLoneSurrogate(s: in String): Bool {
   val len = s.length
   var i = 0
   while i < len {
-    val cu = toInt(s[i])
+    val cu = s.codeUnitAt(i)
     if cu >= 55296 and cu <= 56319 {
       if i + 1 >= len {
         return true
       }
-      val cu2 = toInt(s[i + 1])
+      val cu2 = s.codeUnitAt(i + 1)
       if cu2 < 56320 or cu2 > 57343 {
         return true
       }

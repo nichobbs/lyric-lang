@@ -2090,7 +2090,7 @@ func isAllDigits(s: in String): Bool {
   }
   var i = 0
   while i < s.length {
-    if not Ch.isDigit(s[i]) {
+    if not Ch.isDigit(Str.charAtOrReplacement(s, i)) {
       return false
     }
     i = i + 1
@@ -2102,7 +2102,7 @@ func isAllDigits(s: in String): Bool {
 // Used by `dirVersionGreater` so TFM monikers compare numerically (#1813).
 func stripLeadingAlpha(s: in String): String {
   var i = 0
-  while i < s.length and not Ch.isDigit(s[i]) {
+  while i < s.length and not Ch.isDigit(Str.charAtOrReplacement(s, i)) {
     i = i + 1
   }
   if i == 0 {

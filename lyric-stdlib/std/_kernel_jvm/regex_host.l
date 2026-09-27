@@ -137,7 +137,11 @@ impl JCharSequence for DeadlineChars {
         panic(timeoutMessage(self.op, self.timeoutMs))
       }
     }
-    self.text[index]
+    // `CharSequence.charAt` hands the regex engine raw UTF-16 units, surrogate
+    // halves included, so this reads through `String.charAt` directly rather
+    // than `self.text[index]` (which rejects a surrogate half, not being a
+    // `Char`, D-progress-1006). The unit only ever flows back to the JDK.
+    self.text.charAt(index)
   }
 
   // Group and replacement extraction copy out a plain `String`; the engine

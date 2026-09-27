@@ -802,3 +802,58 @@ test "full package header" {
   assertEqual(tokenKindAt(r, 2), "punct", "full: . punct")
   assertEqual(punctNameAt(r, 2), ".", "full: dot")
 }
+
+// D-progress-1006 — supplementary-plane characters typed directly into the
+// source.  They are UTF-16 surrogate pairs, and a surrogate half is not a
+// `Char`, so the lexer reads code units rather than indexing `source[i]`
+// (which would fail on the first half).  These cases pin that literal
+// emoji in every text-carrying position lex cleanly and round-trip intact.
+func docTextAt(lr: in LexResult, i: in Int): String {
+  match tokenAt(lr, i).token {
+    case TDocComment(t) -> t
+    case _ -> "<not doc>"
+  }
+}
+
+test "literal emoji in a string literal round-trips" {
+  val r = lex("\"a😀b\"")
+  assertEqualInt(diagCount(r), 0, "emoji-str: no diagnostics")
+  assertEqual(stringValueAt(r, 0), "a😀b", "emoji-str: text intact")
+  assertEqualInt(stringValueAt(r, 0).length, 4, "emoji-str: surrogate pair kept (4 code units)")
+}
+
+test "literal emoji in interpolated, triple and raw strings round-trip" {
+  val interp = lex("\"😀\${x}🎉\"")
+  assertEqualInt(diagCount(interp), 0, "emoji-interp: no diagnostics")
+  assertEqual(stringPartAt(interp, 1), "😀", "emoji-interp: leading chunk")
+  val triple = lex("\"\"\"line 😀\nnext\"\"\"")
+  assertEqualInt(diagCount(triple), 0, "emoji-triple: no diagnostics")
+  assertEqual(tripleStringAt(triple, 0), "line 😀\nnext", "emoji-triple: body intact")
+  val raw = lex("r#\"😀\"#")
+  assertEqualInt(diagCount(raw), 0, "emoji-raw: no diagnostics")
+  assertEqual(rawStringAt(raw, 0), "😀", "emoji-raw: body intact")
+}
+
+test "literal emoji in comments is skipped" {
+  val r = lex("// 😀 line comment\n/* 🎉 block */ x")
+  assertEqualInt(diagCount(r), 0, "emoji-comment: no diagnostics")
+  assertEqual(identNameAt(r, 0), "x", "emoji-comment: ident after comments")
+  val d = lex("/// doc 😀\nfunc f() {}")
+  assertEqualInt(diagCount(d), 0, "emoji-doc: no diagnostics")
+  assertEqual(docTextAt(d, 0), "doc 😀", "emoji-doc: doc text intact")
+}
+
+test "literal emoji in a char literal is L0022" {
+  val r = lex("'😀'")
+  assertEqualInt(diagCount(r), 1, "emoji-char: one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0022", "emoji-char: L0022")
+  assertEqualInt(charCodepointAt(r, 0), 0xFFFD, "emoji-char: U+FFFD substituted")
+}
+
+test "a stray emoji is one unexpected character" {
+  val r = lex("x 😀 y")
+  assertEqualInt(diagCount(r), 1, "emoji-stray: one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0030", "emoji-stray: L0030")
+  assertEqual(r.diagnostics[0].message, "unexpected character '😀'", "emoji-stray: whole character reported")
+  assertEqual(identNameAt(r, 1), "y", "emoji-stray: lexing resumes")
+}

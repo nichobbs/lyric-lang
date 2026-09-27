@@ -68,6 +68,7 @@ import Std.Char
 import Std.Encoding
 import Std.Environment
 import Std.Parse
+import Std.String as Str
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 /// Error returned by SearchClient operations.
@@ -563,10 +564,10 @@ func unsafePathSegment(path: in String): Option[String] {
   if path == "/" {
     return None
   }
-  var start = if path.length > 0 and path[0] == '/' { 1 } else { 0 }
+  var start = if path.length > 0 and Str.charAtOrReplacement(path, 0) == '/' { 1 } else { 0 }
   var i = start
   while i <= path.length {
-    if i == path.length or path[i] == '/' {
+    if i == path.length or Str.charAtOrReplacement(path, i) == '/' {
       val segment = path.substring(start, i - start)
       if segment.length == 0 or segment == "." or segment == ".." {
         return Some(value = segment)
@@ -584,22 +585,27 @@ func unsafePathSegment(path: in String): Option[String] {
 /// contain characters unsafe in a URL path segment.
 pub func pathEscape(s: in String): String {
   var result = ""
-  var i = 0
-  while i < s.length {
-    val c = s[i]
-    if isAsciiLetterOrDigit(c) or c == '-' or c == '_' or c == '.' or c == '~' {
-      result = result + c.toString()
+  // Walks Unicode scalar values, so a supplementary-plane character is
+  // percent-encoded as its whole 4-byte UTF-8 sequence rather than as two
+  // unpaired surrogate halves.
+  for cp in Str.codePoints(s) {
+    val text = codepointToString(cp)
+    if cp < 128 and isUnreservedPathChar(Str.charAtOrReplacement(text, 0)) {
+      result = result + text
     } else {
-      val bytes = encodeUtf8(c.toString())
+      val bytes = encodeUtf8(text)
       var j = 0
       while j < bytes.length {
         result = result + "%" + encodeHex([bytes[j]])
         j = j + 1
       }
     }
-    i = i + 1
   }
   return result
+}
+
+func isUnreservedPathChar(c: in Char): Bool {
+  isAsciiLetterOrDigit(c) or c == '-' or c == '_' or c == '.' or c == '~'
 }
 
 /// Convert a JSON scalar element to a String for storage in a
@@ -681,8 +687,8 @@ func joinUrl(baseUrl: in String, path: in String): String {
     return baseUrl
   }
   val lastBase = baseUrl.length - 1
-  val baseEndsSlash = baseUrl[lastBase] == '/'
-  val pathStartsSlash = path[0] == '/'
+  val baseEndsSlash = Str.charAtOrReplacement(baseUrl, lastBase) == '/'
+  val pathStartsSlash = Str.charAtOrReplacement(path, 0) == '/'
   if baseEndsSlash and pathStartsSlash {
     return baseUrl + path.substring(1, path.length - 1)
   }

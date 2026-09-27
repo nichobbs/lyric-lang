@@ -155,6 +155,21 @@ val none = tryFromInt(55296)              // None: U+D800 is a surrogate
 val grin = codepointToString(128512)      // "😀", U+1F600
 ```
 
+Because an emoji is two UTF-16 code units and neither half is a `Char`, indexing a string never hands you half of one. `s[i]` gives the `Char` at code-unit index `i` and fails — like an out-of-range index — when the unit there is a surrogate half. Pick the view that fits the job:
+
+```lyric
+import Std.String
+
+val s = "a😀"
+val a = s[0]                               // 'a'
+val unit = s.codeUnitAt(1)                 // 55357 (0xD83D): the raw UTF-16 unit
+val cp = codePointAt(s, 1)                 // 128512: the whole scalar value
+val cps = codePoints(s)                    // [97, 128512]
+val safe = charAt(s, 1)                    // None: no Char starts there
+```
+
+A `String` is not iterable — `for c in s` is a compile error — so walk its characters with `for cp in codePoints(s)`. A scanner that looks for ASCII delimiters in arbitrary text can use `charAtOrReplacement(s, i)`, which reads a surrogate half as U+FFFD, and copy the text between delimiters with `substring`, which keeps emoji intact. `n.toChar()` is checked the same way: it fails on a surrogate or out-of-range value, and `tryFromInt(n)` is the non-panicking form.
+
 ## §12.4 `Std.Collections`
 
 ```lyric

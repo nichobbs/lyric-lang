@@ -1495,11 +1495,13 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/stdlib_builders_self_test.l
-      - name: String bounds self-test (native lyric test)
+      - name: String bounds + code-point self-tests (native lyric test)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/string_bounds_self_test.l
+        run: |
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/string_bounds_self_test.l
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/string_code_points_self_test.l
 
       # Ordinal string search (#7260) and locale-neutral case conversion
       # (#7261).  The case test runs under a Turkish culture, where the old
@@ -4256,7 +4258,9 @@ jobs:
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/string_bounds_self_test.l
+        run: |
+          bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/string_bounds_self_test.l
+          bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/string_code_points_self_test.l
 
       # JVM halves of the ordinal-search (#7260) and case-locale (#7261) tests.
       - name: String ordinal self-test on JVM (native lyric test --target jvm)

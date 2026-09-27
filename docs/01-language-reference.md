@@ -114,7 +114,7 @@ r"C:\path\to\file"
 r#"contains "quotes""#         // hash delimiters for embedded quotes
 ```
 
-**Character literals**: `'a'`, `'\n'`, `'\u{20AC}'`. Single UTF-16 code unit (BMP scalar, U+0000–U+FFFF excluding the surrogate range U+D800–U+DFFF). Non-BMP code points require a string literal; use `"\u{1F600}"` to embed emoji.
+**Character literals**: `'a'`, `'\n'`, `'\u{20AC}'`. Single UTF-16 code unit (BMP scalar, U+0000–U+FFFF excluding the surrogate range U+D800–U+DFFF). Non-BMP code points require a string literal; use `"\u{1F600}"` (or the character itself, `"😀"`) to embed emoji. A `\u{…}` escape in the surrogate range is **L0023** in any literal; a non-BMP escape or a non-BMP character typed directly into a char literal (`'\u{1F600}'`, `'😀'`) is **L0022**. Supplementary-plane characters are otherwise ordinary source text: string literals, comments and doc comments may contain them verbatim, and a stray one outside a literal is a single **L0030** "unexpected character" diagnostic.
 
 **Boolean literals**: `true`, `false`.
 
@@ -165,7 +165,14 @@ Stringifying a `Double` (`.toString()`, the free `toString(x)` function, string 
 
 Stringifying a `Bool` (the same four call sites — `.toString()`, `toString(x)`, string interpolation, `+` concatenation) always renders lowercase `true`/`false`, matching the language's own `Bool` literals and `Std.Json`: `true.toString()` is `"true"`, never `"True"`. This is normalized identically on both backends — .NET's default `Boolean.ToString()` would otherwise render `"True"`/`"False"` on `--target dotnet` while Java's `String.valueOf(boolean)` already renders lowercase on `--target jvm`; the MSIL backend pins lowercase at every stringification call site to match (#5552).
 
-A `Char` value is a BMP scalar value, not a lone surrogate. `Std.Char.fromInt(n)` enforces this with a `requires:` precondition (`n` in `0..=0xFFFF`, outside `0xD800..=0xDFFF`); `Std.Char.tryFromInt(n)` returns `None` for the same inputs. A supplementary-plane code point has no `Char`; `Std.Encoding.codepointToString(cp)` builds its `String` (a surrogate pair in UTF-16 terms). **Not yet enforced everywhere:** string indexing `s[i]` (§12.1), string iteration and the unchecked `Int.toChar()` conversion can still yield a surrogate half (#7505).
+A `Char` value is a BMP scalar value, never a lone surrogate, and every way of obtaining one enforces it (D-progress-1003, D-progress-1006):
+
+- `Std.Char.fromInt(n)` has a `requires:` precondition (`n` in `0..=0xFFFF`, outside `0xD800..=0xDFFF`); `Std.Char.tryFromInt(n)` returns `None` for the same inputs.
+- `.toChar()` on an `Int`, `Long` or `Double` is a checked conversion that fails on the same inputs (§4.1, "Numeric / character conversions").
+- `s[i]` fails when the code unit at `i` is a surrogate half, the same class of failure as an out-of-range index (§12.1). `s.codeUnitAt(i)` reads the raw unit as an `Int`, and `Std.String.codePointAt`/`codePoints` decode whole scalar values.
+- A `String` is not iterable (`for c in s` is **T0126**); iterate `Std.String.codePoints(s)` instead.
+
+A supplementary-plane code point has no `Char`; `Std.Encoding.codepointToString(cp)` builds its `String` (a surrogate pair in UTF-16 terms).
 
 ### 2.2 Range subtypes
 
@@ -687,7 +694,7 @@ Lyric adopts the **Swift operator precedence table** as its base, with the follo
 - Bitwise operators are not symbolic — use `.and()`, `.or()`, `.xor()`, `.shl()`, `.shr()` methods on integer types. This sidesteps the C-family precedence trap with `&` and `==`.
   - `.shl(n: Int)` — logical left shift by `n` bits.  Equivalent to multiplication by `2^n`; high bits are discarded.
   - `.shr(n: Int)` — **arithmetic** right shift on signed integer types (`Byte`, `Int`, `Long`).  Sign bit is replicated into the vacated high bits, so negative inputs stay negative (`-1.shr(1) == -1`).  Unsigned types (`UInt`, `ULong`) get **logical** right shift (zero-extended).  This matches the .NET runtime's distinction between `>>` on `int` (arithmetic) and `int.UnsignedRightShift` / `>>>` introduced in .NET 7.  Protobuf zigzag encoders rely on this signed/unsigned split — see lyric-proto #361 for the RFC vector tests that pin the behaviour.
-- **Numeric / character conversions are explicit, except lossless widening** — Lyric performs no implicit narrowing, and widens implicitly only along the lossless chains `Byte < Int < Long`, `Byte < UInt < ULong` and `Float < Double`: an arithmetic or ordering (`<`, `<=`, `>`, `>=`) operand pair of two such types has the wider type (`i + l` with `i: Int`, `l: Long` is a `Long`, and `i < l` compares at 64 bits, on every target, a `UInt` zero-extending; #7350, #7382), while `==`/`!=` still require identical types (`T0032`), and a narrower value may initialise or be passed where a wider one of the same chain is declared.  `Char`, and conversions between chains (`Int` to `Double`, `Int` to `UInt`), are always explicit.  The numeric and character primitives `Byte`, `Int`, `Long`, `Double`, and `Char` carry the conversion methods `.toByte()`, `.toInt()`, `.toLong()`, `.toChar()`, and `.toDouble()`, each yielding the named target type.  Widening (`Int.toLong()`, `Int.toDouble()`) is lossless; narrowing (`Long.toInt()`, `Double.toInt()`) truncates toward zero, and `.toByte()` reduces modulo 256 to the **unsigned** `0..255` range (`Byte` is unsigned).  These are the surface form for mixing widths — e.g. summing a `slice[Byte]` element into an `Int` accumulator is `acc + b.toInt()`, never `acc + b`.  The methods never fail; for a checked narrowing use `Std.Math.longToInt`, whose `requires:` rejects a value outside `Int`.  Conversion *functions* such as `longToInt` and `intToLong` are ordinary library functions, not built-ins: a bare call resolves through the normal scope rules (a declaration in the current package, then an import), exactly like any other name (#7465).  (Conversion methods on the unsigned integers `UInt`/`ULong`/`Nat` are not yet implemented — both targets now have a real erased representation for `UInt`/`ULong` (#6756/#6661/#6695) and unsigned-aware comparison/division/stringification for a bare scalar of either type (#6748/#6754 on `--target jvm`, #6913 on `--target dotnet`), so this is a remaining method-surface gap rather than a missing backend representation or unsigned-aware codegen; tracked separately (no issue filed yet). `.toFloat()` is separately reserved pending backend support for `Float`. Calling a conversion method on `String`/`Bool`/`Unit` is a `T0103` error.)
+- **Numeric / character conversions are explicit, except lossless widening** — Lyric performs no implicit narrowing, and widens implicitly only along the lossless chains `Byte < Int < Long`, `Byte < UInt < ULong` and `Float < Double`: an arithmetic or ordering (`<`, `<=`, `>`, `>=`) operand pair of two such types has the wider type (`i + l` with `i: Int`, `l: Long` is a `Long`, and `i < l` compares at 64 bits, on every target, a `UInt` zero-extending; #7350, #7382), while `==`/`!=` still require identical types (`T0032`), and a narrower value may initialise or be passed where a wider one of the same chain is declared.  `Char`, and conversions between chains (`Int` to `Double`, `Int` to `UInt`), are always explicit.  The numeric and character primitives `Byte`, `Int`, `Long`, `Double`, and `Char` carry the conversion methods `.toByte()`, `.toInt()`, `.toLong()`, `.toChar()`, and `.toDouble()`, each yielding the named target type.  Widening (`Int.toLong()`, `Int.toDouble()`) is lossless; narrowing (`Long.toInt()`, `Double.toInt()`) truncates toward zero, and `.toByte()` reduces modulo 256 to the **unsigned** `0..255` range (`Byte` is unsigned).  These are the surface form for mixing widths — e.g. summing a `slice[Byte]` element into an `Int` accumulator is `acc + b.toInt()`, never `acc + b`.  `.toChar()` is the one **checked** conversion method: a `Char` is a BMP scalar value (§2.1), so on an `Int`, `Long` or `Double` receiver (a `Double` truncated toward zero first) it fails at runtime unless the value is in `0..65535` and outside the surrogate range `55296..57343` — NaN included — with the message `toChar: value out of range [0, 65535] or in the UTF-16 surrogate range [55296, 57343]` (`OverflowException` on .NET, `ArithmeticException` on the JVM, a `lyric_panic_msg` abort on native).  A `Byte` or `Char` receiver cannot fail, and `Std.Char.tryFromInt(n)` is the non-panicking form (D-progress-1006).  The other methods never fail; for a checked narrowing use `Std.Math.longToInt`, whose `requires:` rejects a value outside `Int`.  Conversion *functions* such as `longToInt` and `intToLong` are ordinary library functions, not built-ins: a bare call resolves through the normal scope rules (a declaration in the current package, then an import), exactly like any other name (#7465).  (Conversion methods on the unsigned integers `UInt`/`ULong`/`Nat` are not yet implemented — both targets now have a real erased representation for `UInt`/`ULong` (#6756/#6661/#6695) and unsigned-aware comparison/division/stringification for a bare scalar of either type (#6748/#6754 on `--target jvm`, #6913 on `--target dotnet`), so this is a remaining method-surface gap rather than a missing backend representation or unsigned-aware codegen; tracked separately (no issue filed yet). `.toFloat()` is separately reserved pending backend support for `Float`. Calling a conversion method on `String`/`Bool`/`Unit` is a `T0103` error.)
 - Chained comparisons follow **Rust's rule**: `a < b < c` is a parse error, not `(a < b) < c`. Comparison operators do not associate.
 - The ternary `?:` operator does not exist. Use `if expr then a else b`.
 - The `?` operator (error propagation) has its own precedence level immediately above postfix.
@@ -800,10 +807,14 @@ foreign collection, e.g. `extern type JHttpStringCollection[T] = "java.util.Coll
 Iterating over a Lyric-native single-type-parameter generic that merely
 happens to have one type parameter but isn't a collection, such as
 `Option[T]`, is a compile error (**T0126**), not a silent runtime failure
-(#6720). Other unrecognized shapes (a non-generic type, or a generic with
-zero or two-or-more type parameters that isn't `Map[K, V]`'s key/value
-collections) are not yet covered by a dedicated diagnostic and remain
-tracked separately.
+(#6720). A `String` is not iterable either (**T0126**, D-progress-1006): its
+elements would have to be UTF-16 code units, and a surrogate half is not a
+`Char` (§2.1). Iterate `Std.String.codePoints(s)` (Unicode scalar values as
+`Int`) or loop over indices with `s.codeUnitAt(i)` (§12.1). Other
+unrecognized shapes (a non-generic type, or a generic with zero or
+two-or-more type parameters that isn't `Map[K, V]`'s key/value collections)
+are not yet covered by a dedicated diagnostic and remain tracked
+separately.
 
 `do ... while` does not exist. Use `while true { ... if cond { break } }`.
 
@@ -1986,7 +1997,8 @@ form with the import in scope call the explicit
 | Form | Result | Notes |
 |---|---|---|
 | `s.length` | `Int` | code-unit count |
-| `s[i]` | `Char` | code unit at index `i` |
+| `s[i]` | `Char` | the character at code-unit index `i`; fails if that unit is a surrogate half (see below) |
+| `s.codeUnitAt(i)` | `Int` | the raw code unit at index `i`, surrogate halves included (UTF-16 unit on .NET/JVM, UTF-8 byte on native) |
 | `s.substring(start)` | `String` | from `start` to end |
 | `s.substring(start, count)` | `String` | `count` units from `start` |
 | `s.trim()` | `String` | leading/trailing whitespace removed |
@@ -2026,6 +2038,36 @@ String `==` / `!=` compare by value (not reference identity). An empty-string
 check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a
 method-syntax form.
 
+**Code units, characters and code points (D-progress-1006).** `s.length` and
+every index count code units. A `Char` is a BMP scalar value (§2.1), so a
+supplementary-plane character such as an emoji — two UTF-16 code units, a
+surrogate pair — has no `Char`, and neither half of the pair is one:
+
+- `s[i]` yields the `Char` at `i`, and fails when the unit there is a
+  surrogate half: `IndexOutOfRangeException` on .NET and
+  `StringIndexOutOfBoundsException` on the JVM (what an out-of-range `i`
+  throws), with the message `string index: the code unit at this index is a
+  UTF-16 surrogate, which is not a Char; use s.codeUnitAt(i) or
+  Std.String.codePointAt(s, i)`. It never yields a surrogate `Char`.
+- `s.codeUnitAt(i)` is the raw accessor, for code that genuinely works in
+  code units (encoders, hashing, protocol parsers).
+- `Std.String` supplies the decoding and non-failing views:
+
+| Form | Result | Notes |
+|---|---|---|
+| `codeUnitAt(s, i)` | `Int` | free-function form of `s.codeUnitAt(i)`; `requires: 0 <= i < s.length` |
+| `codePointAt(s, i)` | `Int` | the scalar value whose encoding starts at `i`: a surrogate pair decodes to its supplementary-plane value; a lone or trailing surrogate (or, on native, a byte that does not start a well-formed UTF-8 sequence) is U+FFFD |
+| `codePoints(s)` | `slice[Int]` | every scalar value in order, ill-formed units becoming U+FFFD — how to walk a string's characters |
+| `charAt(s, i)` | `Option[Char]` | `None` out of bounds or where `s[i]` would fail |
+| `first(s)` / `last(s)` | `Option[Char]` | `charAt` of the first / last code unit |
+| `charAtOrReplacement(s, i)` | `Char` | `charAt`, with U+FFFD for `None` inside the bounds — for scanners that dispatch on ASCII/BMP syntax and copy the text between delimiters with `substring` |
+
+A `String` is not iterable: `for c in s` is a **T0126** error naming these
+two views (`for cp in Std.String.codePoints(s)`, or an index loop over
+`s.codeUnitAt(i)`). Every `codePointAt`/`codePoints` result is a scalar value
+`Std.Encoding.codepointToString` accepts, so decoding and re-encoding a string
+round-trips.
+
 **`--target native` coverage note (#6588, #6778, #6755, #6240, #6779,
 #6237):** the eleven methods `.trim()`/`.trimStart()`/`.trimEnd()`/
 `.replace()`/`.toLower()`/`.toUpper()`/`.indexOf()`/`.lastIndexOf()`/
@@ -2054,15 +2096,18 @@ byte offsets into the UTF-8 representation rather than the UTF-16
 code-unit offsets `.length`/`s[i]` use on dotnet/JVM (D-N-006) — a
 pre-existing target divergence, unrelated to these methods.
 
-**`s[i]` on `--target native` (#6237):** `i` is a byte offset (matching
-`.length`/`.substring`'s existing byte-indexed model), but the character
-produced is the full Unicode scalar value decoded via UTF-8 iteration
-starting at that offset — never a raw byte — so `s[i]` still always
-yields a genuine `Char`. For ASCII text (where byte offset and codepoint
-index coincide) this matches dotnet/JVM element-for-element; for
-non-ASCII text a caller must still iterate by codepoint-start byte
-offsets, exactly as `.substring` already requires. An out-of-range byte
-offset panics, mirroring `.substring`'s bounds check. `String + Char`
+**`s[i]` on `--target native` (#6237, D-progress-1006):** `i` is a byte
+offset (matching `.length`/`.substring`'s existing byte-indexed model), and
+the character produced is the BMP scalar value decoded via UTF-8 starting at
+that offset — never a raw byte. For ASCII text (where byte offset and
+codepoint index coincide) this matches dotnet/JVM element-for-element; for
+non-ASCII text a caller must iterate by codepoint-start byte offsets, exactly
+as `.substring` already requires. An out-of-range offset panics, mirroring
+`.substring`'s bounds check, and so does an offset that does not start the
+well-formed encoding of a BMP character — a continuation byte, a
+supplementary-plane character (which has no `Char`) or an encoded surrogate
+— the native counterpart of the managed targets' surrogate-half failure.
+`s.codeUnitAt(i)` returns the byte at `i`. `String + Char`
 concatenation and `Char.toString()` are also implemented for
 `--target native`, converting the `Char` via the same UTF-8 encoder
 `s[i]`'s decode inverts (`lyric_string_from_char`). Every `String`

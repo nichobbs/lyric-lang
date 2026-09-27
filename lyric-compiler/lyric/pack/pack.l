@@ -25,7 +25,7 @@ pub func sanitisedPackageName(raw: in String): String {
   var s = ""
   var i = 0
   while i < raw.length {
-    val c = raw[i]
+    val c = Str.charAtOrReplacement(raw, i)
     if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '.' or c == '_' or c == '-' {
       s = s + ("" + c)
     }

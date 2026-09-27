@@ -955,13 +955,16 @@ static void test_list_slice_oob_aborts(void) {
 
 /* `s[i]` (#6237) out-of-bounds must panic, mirroring `lyric_string_byte_at`'s
  * existing bounds check; forked so the abort leaves no residue in the
- * parent (same pattern as `run_forked_slice_oob`). */
-static void run_forked_char_at_oob(int64_t idx) {
+ * parent (same pattern as `run_forked_slice_oob`).  D-progress-1006: an
+ * offset that does not start a BMP character (a continuation byte, a
+ * supplementary-plane sequence, a CESU-encoded surrogate) panics the same
+ * way, since no `Char` can hold it. */
+static void run_forked_char_at_abort(const char* bytes, int64_t n, int64_t idx) {
     pid_t pid = fork();
     CHECK(pid >= 0);
     if (pid == 0) {
         if (!freopen("/dev/null", "w", stderr)) _exit(9);
-        LyricString* s = lyric_string_from_literal((const uint8_t*)"hi", 2);
+        LyricString* s = lyric_string_from_literal((const uint8_t*)bytes, n);
         int32_t bad = lyric_string_char_at(s, idx);
         (void)bad;
         _exit(0); /* not reached */
@@ -972,9 +975,21 @@ static void run_forked_char_at_oob(int64_t idx) {
 }
 
 static void test_string_char_at_oob_aborts(void) {
-    run_forked_char_at_oob(-1); /* idx < 0 */
-    run_forked_char_at_oob(2);  /* idx == len */
-    run_forked_char_at_oob(99); /* idx > len */
+    run_forked_char_at_abort("hi", 2, -1); /* idx < 0 */
+    run_forked_char_at_abort("hi", 2, 2);  /* idx == len */
+    run_forked_char_at_abort("hi", 2, 99); /* idx > len */
+}
+
+static void test_string_char_at_non_bmp_aborts(void) {
+    run_forked_char_at_abort("a\xF0\x9F\x98\x80", 5, 1); /* U+1F600 */
+    run_forked_char_at_abort("h\xC3\xA9", 3, 2);           /* continuation byte */
+    run_forked_char_at_abort("\xED\xA0\x80", 3, 0);        /* CESU surrogate U+D800 */
+    /* The BMP neighbours still decode. */
+    LyricString* s = lyric_string_from_literal((const uint8_t*)"a\xF0\x9F\x98\x80\xEF\xBF\xBF", 8);
+    CHECK(lyric_string_char_at(s, 0) == 'a');
+    CHECK(lyric_string_char_at(s, 5) == 0xFFFF);
+    CHECK(lyric_string_byte_at(s, 1) == 0xF0);
+    lyric_release(s);
 }
 
 static void test_read_bytes(void) {
@@ -2934,6 +2949,7 @@ int main(void) {
     test_list_bulk_builders();
     test_list_slice_oob_aborts();
     test_string_char_at_oob_aborts();
+    test_string_char_at_non_bmp_aborts();
     test_read_bytes();
     test_write_bytes();
     test_dir_list2();

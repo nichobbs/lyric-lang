@@ -707,7 +707,7 @@ pub func isCookieToken(name: in String): Bool {
   val separators = "()<>@,;:\\\"/[]?={} \t"
   var i = 0
   while i < name.length {
-    val c = name[i]
+    val c = charAtOrReplacement(name, i)
     if c <= ' ' or c >= '\u{007f}' or separators.contains(c.toString()) {
       return false
     }
@@ -744,7 +744,7 @@ pub func isValidSessionId(sessionId: in String): Bool {
   }
   var i = 0
   while i < sessionId.length {
-    val c = sessionId[i]
+    val c = charAtOrReplacement(sessionId, i)
     val ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '-' or c == '_'
     if not ok {
       return false
@@ -774,9 +774,9 @@ func sanitizeCookieToken(s: in String): String {
   var acc = ""
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = charAtOrReplacement(s, i)
     if c != '\r' and c != '\n' and c != '\u{0000}' and c != ';' {
-      acc = acc + ("" + c)
+      acc = acc + s.substring(i, 1)
     }
     i = i + 1
   }

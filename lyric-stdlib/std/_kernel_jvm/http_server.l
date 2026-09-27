@@ -512,7 +512,7 @@ func parsePort(text: in String, prefix: in String): Int {
   var value = 0
   var i = 0
   while i < text.length {
-    val c = text[i]
+    val c = charAtOrReplacement(text, i)
     if not isDigit(c) {
       panic("Std.HttpServer: invalid listener prefix '" + prefix + "': non-numeric port '" + text + "'")
     }
@@ -545,7 +545,7 @@ func parsePrefix(prefix: in String): ParsedPrefix {
   var slashAt = 0 - 1
   var i = 0
   while i < rest.length and slashAt < 0 {
-    if rest[i] == '/' {
+    if rest.codeUnitAt(i) == '/'.toInt() {
       slashAt = i
     }
     i = i + 1
@@ -555,7 +555,7 @@ func parsePrefix(prefix: in String): ParsedPrefix {
   var colonAt = 0 - 1
   var j = 0
   while j < hostPort.length {
-    if hostPort[j] == ':' {
+    if hostPort.codeUnitAt(j) == ':'.toInt() {
       colonAt = j
     }
     j = j + 1
@@ -799,6 +799,14 @@ func hexDigitValue(c: in Char): Int {
   cp - 65 + 10
 }
 
+// A `%XX` escape (two hex digits) starts at `i`.  Reads code units, so any
+// text around the escapes — supplementary-plane characters included — is
+// passed over rather than indexed as a `Char`.
+func isPercentEscapeAt(s: in String, i: in Int): Bool {
+  i + 2 < s.length and s.codeUnitAt(i) == 37 and isHexDigit(charAtOrReplacement(s, i + 1)) and
+    isHexDigit(charAtOrReplacement(s, i + 2))
+}
+
 /// Percent-decode a URL-encoded string (query/path segment values),
 /// matching `Uri.UnescapeDataString`: `%XX` runs decode as UTF-8 byte
 /// sequences (a multi-byte code point spans consecutive `%XX` escapes,
@@ -810,10 +818,10 @@ pub func urlDecode(s: in String): String {
   var litStart = 0
   var i = 0
   while i < len {
-    if s[i] == '%' and i + 2 < len and isHexDigit(s[i + 1]) and isHexDigit(s[i + 2]) {
+    if isPercentEscapeAt(s, i) {
       sb.append(s.substring(litStart, i - litStart))
       val bytes: List[Byte] = newList()
-      while i + 2 < len and s[i] == '%' and isHexDigit(s[i + 1]) and isHexDigit(s[i + 2]) {
+      while isPercentEscapeAt(s, i) {
         bytes.add(hexDigitValue(s[i + 1]) * 16 + hexDigitValue(s[i + 2]))
         i = i + 3
       }

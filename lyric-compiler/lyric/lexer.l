@@ -43,6 +43,7 @@ import Std.Collections
 import Std.String as Str
 import Std.UnicodeHost
 import Std.CharHost as CharHost
+import Std.Encoding as Encoding
 import Std.Parse
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -756,13 +757,33 @@ func isAtEnd(state: in LexerState): Bool {
   state.pos >= state.source.length
 }
 
+/// The `Char` the cursor logic sees for the code unit at `i`.  Source text
+/// may hold supplementary-plane characters (emoji in a string literal or a
+/// comment), stored as UTF-16 surrogate pairs; a surrogate half is not a
+/// `Char` (docs/01 §2.1, D-progress-1006), so each half reads as U+FFFD
+/// here.  No token dispatch keys on U+FFFD, and every path that copies
+/// source text into a token (string bodies, doc comments, raw strings)
+/// copies the raw units with `advanceRaw` instead of re-encoding this
+/// stand-in, so the pair survives intact.
+@pure
+func cursorCharAt(source: in String, i: in Int): Char {
+  Str.charAtOrReplacement(source, i)
+}
+
+/// True when the code unit at `i` is a UTF-16 surrogate half.
+@pure
+func isSurrogateUnitAt(source: in String, i: in Int): Bool {
+  val u = Str.codeUnitAt(source, i)
+  u >= 55296 and u <= 57343
+}
+
 /// Peek the current character.  Returns `' '` (space) at end-of-input
 /// to keep predicate code branchless — the caller already gates on
 /// `isAtEnd` before consuming.
 @pure
 func peek(state: in LexerState): Char {
   if state.pos < state.source.length {
-    state.source[state.pos]
+    cursorCharAt(state.source, state.pos)
   } else {
     ' '
   }
@@ -772,7 +793,7 @@ func peek(state: in LexerState): Char {
 func peekAt(state: in LexerState, offset: in Int): Char {
   val i = state.pos + offset
   if i >= 0 and i < state.source.length {
-    state.source[i]
+    cursorCharAt(state.source, i)
   } else {
     ' '
   }
@@ -780,7 +801,7 @@ func peekAt(state: in LexerState, offset: in Int): Char {
 
 /// Read one character and advance the cursor.  Updates line/column.
 func advance(state: inout LexerState): Char {
-  val c = state.source[state.pos]
+  val c = cursorCharAt(state.source, state.pos)
   state.pos = state.pos + 1
   if c == '\n' {
     state.line = state.line + 1
@@ -789,6 +810,15 @@ func advance(state: inout LexerState): Char {
     state.column = state.column + 1
   }
   return c
+}
+
+/// Consume one code unit and return it verbatim as a one-unit String —
+/// a surrogate half included, so consecutive calls rebuild a surrogate
+/// pair exactly.  The content-capturing counterpart of `advance`.
+func advanceRaw(state: inout LexerState): String {
+  val text = Str.substring(state.source, state.pos, 1)
+  advance(state)
+  text
 }
 
 @pure
@@ -1114,8 +1144,7 @@ func consumeLineToString(state: inout LexerState): String {
   // for the trailing newline (it becomes a normal newline-trivia event).
   var buf = ""
   while not isAtEnd(state) and peek(state) != '\n' {
-    val c = advance(state)
-    buf = buf + charToString(c)
+    buf = buf + advanceRaw(state)
   }
   buf
 }
@@ -1127,7 +1156,7 @@ func emitDocComment(state: inout LexerState, startP: in Position): Unit {
   advance(state)
   val raw = consumeLineToString(state)
   // The bootstrap lexer trims a single leading space; replicate it.
-  val text = if raw.length > 0 and raw[0] == ' ' { Str.substring(raw, 1, raw.length - 1) } else { raw }
+  val text = if Str.startsWith(raw, " ") { Str.substring(raw, 1, raw.length - 1) } else { raw }
   emit(state, TDocComment(text = text), startP)
 }
 
@@ -1136,7 +1165,7 @@ func emitModuleDocComment(state: inout LexerState, startP: in Position): Unit {
   advance(state)
   advance(state)
   val raw = consumeLineToString(state)
-  val text = if raw.length > 0 and raw[0] == ' ' { Str.substring(raw, 1, raw.length - 1) } else { raw }
+  val text = if Str.startsWith(raw, " ") { Str.substring(raw, 1, raw.length - 1) } else { raw }
   emit(state, TModuleDocComment(text = text), startP)
 }
 
@@ -1654,6 +1683,20 @@ func decodeEscape(c: in Char): Option[Char] {
   }
 }
 
+// The runtime failure texts for the `Char` invariant (docs/01 §2.1: a
+// `Char` is a BMP scalar value, never a surrogate half), shared by the
+// MSIL, JVM and native backends so every target reports the same thing
+// (D-progress-1006).  `s[i]` on a surrogate unit:
+pub func stringIndexSurrogateMessage(): String {
+  "string index: the code unit at this index is a UTF-16 surrogate, which is not a Char; " +
+    "use s.codeUnitAt(i) or Std.String.codePointAt(s, i)"
+}
+
+// `.toChar()` on a value that is not a BMP scalar value:
+pub func toCharRangeMessage(): String {
+  "toChar: value out of range [0, 65535] or in the UTF-16 surrogate range [55296, 57343]"
+}
+
 // Convert a BMP scalar value (UTF-16 code unit, 0..0xFFFF) to a Char.
 // Rejects the surrogate range (0xD800..0xDFFF): surrogate code points
 // are not valid Unicode scalar values (Unicode §3.9).
@@ -1671,17 +1714,14 @@ func charCodepoint(c: in Char): Int {
   CharHost.hostCharToInt(c)
 }
 
-/// Convert a non-BMP Unicode scalar (0x10000..0x10FFFF) to its UTF-16
-/// surrogate-pair encoding as a two-code-unit String.
+/// Convert a non-BMP Unicode scalar (0x10000..0x10FFFF) to its String
+/// encoding (a UTF-16 surrogate pair).  Goes through
+/// `Std.Encoding.codepointToString` rather than building two surrogate
+/// `Char`s, which the `Char` invariant forbids (D-progress-1006).
 /// Caller must ensure `v` is in the non-BMP range.
 @pure
 func nonBmpToSurrPairString(v: in Long): String {
-  val cpPrime = v - 65536i64
-  val highOffset = cpPrime / 1024i64
-  val lowOffset = cpPrime - highOffset * 1024i64
-  val highChar = CharHost.hostIntToChar(55296 + highOffset.toInt())
-  val lowChar = CharHost.hostIntToChar(56320 + lowOffset.toInt())
-  charToString(highChar) + charToString(lowChar)
+  Encoding.codepointToString(v.toInt())
 }
 
 /// Consume one escape-sequence body just past the opening backslash,
@@ -1689,6 +1729,18 @@ func nonBmpToSurrPairString(v: in Long): String {
 /// on error).  Non-BMP `\u{…}` escapes are rejected with L0022.
 func lexEscape(state: inout LexerState, startP: in Position): Char {
   if isAtEnd(state) {
+    return '\u{fffd}'
+  }
+  if isSurrogateUnitAt(state.source, state.pos) {
+    // `'\😀'`: whatever the escape, a supplementary-plane character cannot
+    // be a `Char`.
+    consumeSurrogatePair(state)
+    recordError(
+      state,
+      "L0022",
+      "non-BMP character (>U+FFFF) cannot appear in a char literal; use a string literal",
+      makeSpan(startP, currentPosition(state))
+    )
     return '\u{fffd}'
   }
   val c = advance(state)
@@ -1707,6 +1759,11 @@ func lexEscape(state: inout LexerState, startP: in Position): Char {
 func lexEscapeString(state: inout LexerState, startP: in Position): String {
   if isAtEnd(state) {
     return "�"
+  }
+  if isSurrogateUnitAt(state.source, state.pos) {
+    // A backslash before a supplementary-plane character is not a recognised
+    // escape; like any other it yields the character itself, kept whole.
+    return consumeSurrogatePair(state)
   }
   val c = advance(state)
   if c == 'u' {
@@ -1895,9 +1952,37 @@ func readCharLiteralBody(state: inout LexerState, startP: in Position): Char {
   if peek(state) == '\\' {
     advance(state)    // consume the backslash
     lexEscape(state, startP)
+  } else if isSurrogateUnitAt(state.source, state.pos) {
+    // A supplementary-plane character typed directly into a char literal
+    // (`'😀'`): it is two UTF-16 code units, and a `Char` holds one BMP
+    // scalar value.  Consume the whole pair so the closing quote is found.
+    consumeSurrogatePair(state)
+    recordError(
+      state,
+      "L0022",
+      "non-BMP character (>U+FFFF) cannot appear in a char literal; use a string literal",
+      makeSpan(startP, currentPosition(state))
+    )
+    '\u{fffd}'
   } else {
     advance(state)
   }
+}
+
+/// Consume the surrogate unit at the cursor, and its low-surrogate partner
+/// when the unit is a high surrogate followed by one.  Returns the consumed
+/// source text.
+func consumeSurrogatePair(state: inout LexerState): String {
+  val startOffset = state.pos
+  val hi = Str.codeUnitAt(state.source, state.pos)
+  advance(state)
+  if hi <= 56319 and not isAtEnd(state) {
+    val lo = Str.codeUnitAt(state.source, state.pos)
+    if lo >= 56320 and lo <= 57343 {
+      advance(state)
+    }
+  }
+  sourceSlice(state, startOffset, state.pos)
 }
 
 func lexStringLiteral(state: inout LexerState): Unit {
@@ -1922,7 +2007,7 @@ func lexStringLiteral(state: inout LexerState): Unit {
       )
       terminated = true
     } else {
-      buf = buf + charToString(advance(state))
+      buf = buf + advanceRaw(state)
     }
   }
   if not terminated {
@@ -1950,7 +2035,7 @@ func hasInterpolation(state: in LexerState): Bool {
     if i >= state.source.length {
       stopped = true
     } else {
-      val c = state.source[i]
+      val c = cursorCharAt(state.source, i)
       if c == '"' {
         stopped = true
       } else if c == '\n' {
@@ -1958,7 +2043,7 @@ func hasInterpolation(state: in LexerState): Bool {
       } else if c == '\\' {
         // Skip the backslash and the next char (the escape body).
         i = i + 2
-      } else if c == '$' and i + 1 < state.source.length and state.source[i + 1] == '{' {
+      } else if c == '$' and i + 1 < state.source.length and cursorCharAt(state.source, i + 1) == '{' {
         result = true
         stopped = true
       } else {
@@ -2009,7 +2094,7 @@ func lexStringChunk(state: inout LexerState, stringStart: in Position): Unit {
         advance(state)    // consume the backslash
         buf = buf + lexEscapeString(state, chunkStart)
       } else {
-        buf = buf + charToString(advance(state))
+        buf = buf + advanceRaw(state)
       }
     }
   }
@@ -2060,7 +2145,7 @@ func lexTripleString(state: inout LexerState): Unit {
       advance(state)
       buf = buf + lexEscapeString(state, startP)
     } else {
-      buf = buf + charToString(advance(state))
+      buf = buf + advanceRaw(state)
     }
   }
   if not terminated {
@@ -2111,10 +2196,10 @@ func lexRawString(state: inout LexerState): Unit {
         }
         terminated = true
       } else {
-        buf = buf + charToString(advance(state))
+        buf = buf + advanceRaw(state)
       }
     } else {
-      buf = buf + charToString(advance(state))
+      buf = buf + advanceRaw(state)
     }
   }
   if not terminated {
@@ -2248,13 +2333,14 @@ func lexPunct(state: inout LexerState): Unit {
       }
     }
     case None -> {
-      val c = advance(state)
-      recordError(
-        state,
-        "L0030",
-        "unexpected character '" + charToString(c) + "'",
-        makeSpan(startP, currentPosition(state))
-      )
+      // A supplementary-plane character is reported whole, not as two
+      // unexpected surrogate halves.
+      val text = if isSurrogateUnitAt(state.source, state.pos) {
+        consumeSurrogatePair(state)
+      } else {
+        charToString(advance(state))
+      }
+      recordError(state, "L0030", "unexpected character '" + text + "'", makeSpan(startP, currentPosition(state)))
     }
   }
 }

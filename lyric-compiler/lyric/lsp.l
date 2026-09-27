@@ -24,6 +24,7 @@ import Std.Collections
 import Std.Json
 import Std.Char
 import Std.Encoding
+import Std.String as Str
 import Std.Parse
 import Std.ConsoleHost
 import Std.FileHost
@@ -122,8 +123,7 @@ func readLspFrame(): Option[String] {
     } else if line.length == 0 {
       headerDone = true
     } else {
-      val colon = line.indexOf(":")
-      // BCL String.IndexOf → Int
+      val colon = Str.indexOfRaw(line, ":")
       if colon > 0 {
         val key = line.substring(0, colon).trim()
         // BCL Substring / Trim
@@ -647,7 +647,7 @@ func identAtLine(line: in String, zeroCol: in Int): Option[String] {
   var start = zeroCol
   var scanning = true
   while scanning and start > 0 {
-    val c = line[start - 1]
+    val c = Str.charAtOrReplacement(line, start - 1)
     // BCL String indexer → Char
     if isIdChar(c) {
       start = start - 1
@@ -658,7 +658,7 @@ func identAtLine(line: in String, zeroCol: in Int): Option[String] {
   var stopPos = zeroCol
   var scanning2 = true
   while scanning2 and stopPos < line.length {
-    val c = line[stopPos]
+    val c = Str.charAtOrReplacement(line, stopPos)
     if isIdChar(c) {
       stopPos = stopPos + 1
     } else {
@@ -673,7 +673,7 @@ func identAtLine(line: in String, zeroCol: in Int): Option[String] {
   if ident.length == 0 {
     return None
   }
-  val first = ident[0]
+  val first = Str.charAtOrReplacement(ident, 0)
   if isLetter(first) or first == '_' {
     Some(value = ident)
   } else {
@@ -699,7 +699,7 @@ func callContextAt(text: in String, offset: in Int): Option[String] {
   var found = -1
   var loop = true
   while loop and i >= 0 {
-    val c = text[i]
+    val c = Str.charAtOrReplacement(text, i)
     if c == ')' or c == ']' {
       depth = depth + 1
     } else if c == '(' or c == '[' {
@@ -717,18 +717,18 @@ func callContextAt(text: in String, offset: in Int): Option[String] {
   }
   // Trim whitespace to find identifier end.
   var j = found - 1
-  while j >= 0 and (text[j] == ' ' or text[j] == '\t') {
+  while j >= 0 and (Str.charAtOrReplacement(text, j) == ' ' or Str.charAtOrReplacement(text, j) == '\t') {
     j = j - 1
   }
   val endJ = j + 1
-  while j >= 0 and isIdChar(text[j]) {
+  while j >= 0 and isIdChar(Str.charAtOrReplacement(text, j)) {
     j = j - 1
   }
   val funcName = text.substring(j + 1, endJ - (j + 1))
   if funcName.length == 0 {
     return None
   }
-  if isDigit(funcName[0]) {
+  if isDigit(Str.charAtOrReplacement(funcName, 0)) {
     return None
   }
   Some(value = funcName)
@@ -961,8 +961,8 @@ func occurrences(text: in String, name: in String): List[Span] {
     var ci = 0
     while ci <= line.length - name.length {
       if line.substring(ci, name.length) == name {
-        val before = ci == 0 or not isIdChar(line[ci - 1])
-        val after = ci + name.length >= line.length or not isIdChar(line[ci + name.length])
+        val before = ci == 0 or not isIdChar(Str.charAtOrReplacement(line, ci - 1))
+        val after = ci + name.length >= line.length or not isIdChar(Str.charAtOrReplacement(line, ci + name.length))
         if before and after {
           val sp = Span(
             startPos = Position(offset = 0, line = li + 1, column = ci + 1),
@@ -1356,7 +1356,7 @@ func callParamIndexAt(text: in String, offset: in Int): Int {
   var found = -1
   var loop = true
   while loop and i >= 0 {
-    val c = text[i]
+    val c = Str.charAtOrReplacement(text, i)
     if c == ')' or c == ']' {
       depth = depth + 1
     } else if c == '(' or c == '[' {
@@ -1376,7 +1376,7 @@ func callParamIndexAt(text: in String, offset: in Int): Int {
   var j = found + 1
   var d2 = 0
   while j < offset {
-    val c = text[j]
+    val c = Str.charAtOrReplacement(text, j)
     if c == '(' or c == '[' {
       d2 = d2 + 1
     } else if c == ')' or c == ']' {
@@ -1800,7 +1800,7 @@ func offsetToLspPosJson(source: in String, offset: in Int): String {
   var i = 0
   val n = if offset < source.length { offset } else { source.length }
   while i < n {
-    if source[i] == '\n' {
+    if Str.charAtOrReplacement(source, i) == '\n' {
       line = line + 1
       col = 0
     } else {
@@ -1824,7 +1824,7 @@ func implCloseBraceRange(source: in String, decl: in ImplDecl): String {
   val endOff = decl.span.endPos.offset
   var braceOff = if endOff > 0 { endOff - 1 } else { 0 }
   var startOff = braceOff
-  while startOff > 0 and (source[startOff - 1] == ' ' or source[startOff - 1] == '\t') {
+  while startOff > 0 and (Str.charAtOrReplacement(source, startOff - 1) == ' ' or Str.charAtOrReplacement(source, startOff - 1) == '\t') {
     startOff = startOff - 1
   }
   val fs: List[String] = newList()
@@ -1840,11 +1840,11 @@ func implCloseBraceRange(source: in String, decl: in ImplDecl): String {
 func implBodyIndent(source: in String, decl: in ImplDecl): String {
   val braceOff = if decl.span.endPos.offset > 0 { decl.span.endPos.offset - 1 } else { 0 }
   var lineStart = braceOff
-  while lineStart > 0 and source[lineStart - 1] != '\n' {
+  while lineStart > 0 and Str.charAtOrReplacement(source, lineStart - 1) != '\n' {
     lineStart = lineStart - 1
   }
   var p = lineStart
-  while p < braceOff and (source[p] == ' ' or source[p] == '\t') {
+  while p < braceOff and (Str.charAtOrReplacement(source, p) == ' ' or Str.charAtOrReplacement(source, p) == '\t') {
     p = p + 1
   }
   source.substring(lineStart, p - lineStart)

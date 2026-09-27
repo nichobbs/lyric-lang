@@ -11,6 +11,7 @@ import Std.String
 import Lyric.Parser
 import Lyric.BareFuncRef as BareFuncRef
 import Lyric.ModeChecker
+import Lyric.Lexer as Lex
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
@@ -43,7 +44,7 @@ func makeFuncCtx(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
   // #6393: see `FuncCtx.aliasTargets`.
   aliasTargets: in Map[String, TypeExpr],
@@ -82,7 +83,7 @@ func makeFuncCtx(
     configFieldTypes = configFieldTypes,
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
-    usesLyricCount = usesLyricCount,
+    usedRuntimeHelpers = usedRuntimeHelpers,
     importsStdString = importsStdString,
     holderArraySlot = newMap(),
     holderElemType = newMap(),
@@ -137,7 +138,7 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     configFieldTypes = ctx.configFieldTypes,
     opaqueTypes = ctx.opaqueTypes,
     closureAcc = ctx.closureAcc,
-    usesLyricCount = ctx.usesLyricCount,
+    usedRuntimeHelpers = ctx.usedRuntimeHelpers,
     importsStdString = ctx.importsStdString,
     holderArraySlot = ctx.holderArraySlot,
     holderElemType = ctx.holderElemType,
@@ -175,7 +176,7 @@ func makeFuncCtxForGenerator(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
@@ -213,7 +214,7 @@ func makeFuncCtxForGenerator(
     configFieldTypes = configFieldTypes,
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
-    usesLyricCount = usesLyricCount,
+    usedRuntimeHelpers = usedRuntimeHelpers,
     importsStdString = importsStdString,
     holderArraySlot = newMap(),
     holderElemType = newMap(),
@@ -255,7 +256,7 @@ func makeFuncCtxInstance(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
@@ -293,7 +294,7 @@ func makeFuncCtxInstance(
     configFieldTypes = configFieldTypes,
     opaqueTypes = opaqueTypes,
     closureAcc = closureAcc,
-    usesLyricCount = usesLyricCount,
+    usedRuntimeHelpers = usedRuntimeHelpers,
     importsStdString = importsStdString,
     holderArraySlot = newMap(),
     holderElemType = newMap(),
@@ -951,7 +952,7 @@ pub func lowerFunc(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
   // #6393: same-file `alias X = ...` table — see `Lyric.BareFuncRef`'s
   // module doc §2 and `codegenPackageWithSigsSeeded`'s `aliasTargets`.
@@ -971,7 +972,7 @@ pub func lowerFunc(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount,
+    usedRuntimeHelpers,
     importsStdString,
     aliasTargets
   )
@@ -990,7 +991,7 @@ func lowerFuncScoped(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
   aliasTargets: in Map[String, TypeExpr],
 ): LFunc {
@@ -1014,7 +1015,7 @@ func lowerFuncScoped(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount,
+    usedRuntimeHelpers,
     importsStdString,
     aliasTargets
   )
@@ -1379,7 +1380,7 @@ pub func lowerRecord(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
   // #6393: same-file `alias X = ...` table — see `Lyric.BareFuncRef`'s
   // module doc §2.  A function-type-aliased field (`record Holder { h:
@@ -1488,7 +1489,7 @@ pub func lowerRecord(
                 configFieldTypes,
                 opaqueTypes,
                 closureAcc,
-                usesLyricCount,
+                usedRuntimeHelpers,
                 importsStdString
               )
             )
@@ -1651,7 +1652,7 @@ func lowerProtectedMethod(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
 ): LFunc {
   val retTy = match retOpt { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
@@ -1672,7 +1673,7 @@ func lowerProtectedMethod(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount,
+    usedRuntimeHelpers,
     importsStdString
   )
   val insns: List[LInsn] = newList()
@@ -1731,7 +1732,7 @@ func lowerRecordMethod(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
 ): LFunc {
   // Extern/import-resolving on ret + params (#5610): the registered
@@ -1757,7 +1758,7 @@ func lowerRecordMethod(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount,
+    usedRuntimeHelpers,
     importsStdString
   )
   val insns: List[LInsn] = newList()
@@ -1910,7 +1911,7 @@ func lowerImplMethod(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
   isExternIface: in Bool,
 ): LFunc {
@@ -1949,7 +1950,7 @@ func lowerImplMethod(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount,
+    usedRuntimeHelpers,
     importsStdString
   )
   val insns: List[LInsn] = newList()
@@ -1996,7 +1997,7 @@ func buildProtected(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
   implementsIfaces: in List[String],
 ): LPackageItem {
@@ -2054,7 +2055,7 @@ func buildProtected(
             configFieldTypes,
             opaqueTypes,
             closureAcc,
-            usesLyricCount,
+            usedRuntimeHelpers,
             importsStdString
           )
         )
@@ -2080,7 +2081,7 @@ func buildProtected(
                 configFieldTypes,
                 opaqueTypes,
                 closureAcc,
-                usesLyricCount,
+                usedRuntimeHelpers,
                 importsStdString
               )
             )
@@ -2475,7 +2476,7 @@ func buildWire(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
 ): LWire {
   val className = pkgName + "/" + decl.name
@@ -2542,7 +2543,7 @@ func buildWire(
           configFieldTypes,
           opaqueTypes,
           closureAcc,
-          usesLyricCount,
+          usedRuntimeHelpers,
           importsStdString,
           initInsns,
           init,
@@ -2569,7 +2570,7 @@ func buildWire(
           configFieldTypes,
           opaqueTypes,
           closureAcc,
-          usesLyricCount,
+          usedRuntimeHelpers,
           importsStdString,
           initInsns,
           init,
@@ -2599,7 +2600,7 @@ func buildWire(
           configFieldTypes,
           opaqueTypes,
           closureAcc,
-          usesLyricCount,
+          usedRuntimeHelpers,
           importsStdString,
           initInsns,
           provider,
@@ -2646,7 +2647,7 @@ func lowerWireBindingInit(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
   insns: in List[LInsn],
   init: in Expr,
@@ -2686,7 +2687,7 @@ func lowerWireBindingInit(
       configFieldTypes,
       opaqueTypes,
       closureAcc,
-      usesLyricCount,
+      usedRuntimeHelpers,
       importsStdString,
       noAliasTargets
     )
@@ -2924,7 +2925,7 @@ func lowerGeneratorBody(
   configFieldTypes: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
   closureAcc: in List[LClosure],
-  usesLyricCount: in List[Bool],
+  usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
@@ -2943,7 +2944,7 @@ func lowerGeneratorBody(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount,
+    usedRuntimeHelpers,
     importsStdString
   )
 
@@ -6121,6 +6122,111 @@ func findLoweredModuleVal(cache: in List[LoweredModuleVal], name: in String): Op
 // interrupts a joining thread — the deferred JEP 505 sibling-cancel-on-first-fault
 // follow-up (D120) is what would introduce interruption, and it will add the
 // handler alongside the cancel wiring (tracked in #5192).
+// ─────────────────────────────────────────────────────────────────────────────
+// Checked `Char` helpers (D-progress-1006).  A `Char` is a BMP scalar value,
+// never a surrogate half (docs/01 §2.1), so `s[i]` and `.toChar()` carry a
+// check.  Each is a lazily-emitted static helper (see `usedRuntimeHelpers`)
+// rather than inline branches, so the call site stays branch-free whatever
+// is already on the operand stack — the same reason `__lyricCount` is one.
+// ─────────────────────────────────────────────────────────────────────────────
+// Append `throw new <cls>(msg)` to `insns`.
+func emitJvmThrowWithMessage(insns: in List[LInsn], cls: in String, msg: in String): Unit {
+  insns.add(LNew(className = cls))
+  insns.add(LDup)
+  insns.add(LPushString(s = msg))
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/String"))
+  insns.add(LInvokespecial(owner = cls, name = "<init>", params = ps, ret = JVoid))
+  insns.add(LAthrow)
+}
+
+// `static char __lyricCharAt(String s, int i)`: `s.charAt(i)`, throwing
+// `StringIndexOutOfBoundsException` — the exception an out-of-range `i`
+// already raises — when the unit is a surrogate.
+func makeCharAtHelperFunc(): LFunc {
+  val insns: List[LInsn] = newList()
+  insns.add(LAload(slot = 0))
+  insns.add(LIload(slot = 1))
+  val caPs: List[JvmType] = newList()
+  caPs.add(JInt)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "charAt", params = caPs, ret = JChar))
+  insns.add(LIstore(slot = 2))
+  insns.add(LIload(slot = 2))
+  insns.add(LIconst(v = 55296))
+  insns.add(LIfIcmplt(label = "__ca_ok"))
+  insns.add(LIload(slot = 2))
+  insns.add(LIconst(v = 57343))
+  insns.add(LIfIcmpgt(label = "__ca_ok"))
+  emitJvmThrowWithMessage(insns, "java/lang/StringIndexOutOfBoundsException", Lex.stringIndexSurrogateMessage())
+  insns.add(LLabel(name = "__ca_ok"))
+  insns.add(LIload(slot = 2))
+  insns.add(LIreturn)
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/String"))
+  ps.add(JInt)
+  LFunc(flags = 0x0009, name = "__lyricCharAt", params = ps, ret = JChar, insns = insns, maxStack = 4, maxLocals = 3)
+}
+
+// `static char __lyricToChar(long v)`: `.toChar()` from an `Int`/`Long`,
+// throwing `ArithmeticException` (the JDK's checked-narrowing failure, as in
+// `Math.toIntExact`) unless `v` is a BMP scalar value.
+func makeToCharHelperFunc(): LFunc {
+  val insns: List[LInsn] = newList()
+  insns.add(LLload(slot = 0))
+  insns.add(LLconst(v = 0i64))
+  insns.add(LLcmp)
+  insns.add(LIflt(label = "__tc_fail"))
+  insns.add(LLload(slot = 0))
+  insns.add(LLconst(v = 65535i64))
+  insns.add(LLcmp)
+  insns.add(LIfgt(label = "__tc_fail"))
+  insns.add(LLload(slot = 0))
+  insns.add(LLconst(v = 55296i64))
+  insns.add(LLcmp)
+  insns.add(LIflt(label = "__tc_ok"))
+  insns.add(LLload(slot = 0))
+  insns.add(LLconst(v = 57343i64))
+  insns.add(LLcmp)
+  insns.add(LIfle(label = "__tc_fail"))
+  insns.add(LLabel(name = "__tc_ok"))
+  insns.add(LLload(slot = 0))
+  insns.add(LL2i)
+  insns.add(LI2c)
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__tc_fail"))
+  emitJvmThrowWithMessage(insns, "java/lang/ArithmeticException", Lex.toCharRangeMessage())
+  val ps: List[JvmType] = newList()
+  ps.add(JLong)
+  LFunc(flags = 0x0009, name = "__lyricToChar", params = ps, ret = JChar, insns = insns, maxStack = 4, maxLocals = 2)
+}
+
+// `static char __lyricToCharD(double d)`: `.toChar()` from a `Double` —
+// truncate toward zero, then the `__lyricToChar` check.  The range test runs
+// on the double first so NaN and values beyond `long` fail rather than
+// saturating into range.
+func makeToCharDoubleHelperFunc(pkgName: in String): LFunc {
+  val insns: List[LInsn] = newList()
+  insns.add(LDload(slot = 0))
+  insns.add(LDconst(v = 0.0 - 1.0))
+  insns.add(LDcmpl)
+  insns.add(LIfle(label = "__tcd_fail"))
+  insns.add(LDload(slot = 0))
+  insns.add(LDconst(v = 65536.0))
+  insns.add(LDcmpg)
+  insns.add(LIfge(label = "__tcd_fail"))
+  insns.add(LDload(slot = 0))
+  insns.add(LD2l)
+  val lps: List[JvmType] = newList()
+  lps.add(JLong)
+  insns.add(LInvokestatic(owner = pkgName, name = "__lyricToChar", params = lps, ret = JChar))
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__tcd_fail"))
+  emitJvmThrowWithMessage(insns, "java/lang/ArithmeticException", Lex.toCharRangeMessage())
+  val ps: List[JvmType] = newList()
+  ps.add(JDouble)
+  LFunc(flags = 0x0009, name = "__lyricToCharD", params = ps, ret = JChar, insns = insns, maxStack = 4, maxLocals = 2)
+}
+
 func makeAwaitHelperFunc(): LFunc {
   val futureTy = JRef(className = "java/util/concurrent/Future")
   val objTy = JRef(className = "java/lang/Object")
@@ -6683,7 +6789,7 @@ pub func codegenPackageWithSigsSeeded(
   // `invokestatic __lyricCount`).  Threaded through every FuncCtx of the
   // package alongside `closureAcc`; checked below to decide whether the
   // helper method is worth emitting at all.
-  val usesLyricCount: List[Bool] = newList()
+  val usedRuntimeHelpers: List[String] = newList()
   val valInitCtx = makeFuncCtx(
     pkgName,
     funcsClass,
@@ -6697,7 +6803,7 @@ pub func codegenPackageWithSigsSeeded(
     configFieldTypes,
     opaqueTypes,
     closureAcc,
-    usesLyricCount,
+    usedRuntimeHelpers,
     importsStdString,
     aliasTargets
   )
@@ -6760,7 +6866,7 @@ pub func codegenPackageWithSigsSeeded(
                   configFieldTypes,
                   opaqueTypes,
                   closureAcc,
-                  usesLyricCount,
+                  usedRuntimeHelpers,
                   importsStdString,
                   isExternIfaceHere
                 )
@@ -6800,7 +6906,7 @@ pub func codegenPackageWithSigsSeeded(
             configFieldTypes,
             opaqueTypes,
             closureAcc,
-            usesLyricCount,
+            usedRuntimeHelpers,
             importsStdString
           )
           val genParams: List[LGenParam] = newList()
@@ -6841,7 +6947,7 @@ pub func codegenPackageWithSigsSeeded(
               configFieldTypes,
               opaqueTypes,
               closureAcc,
-              usesLyricCount,
+              usedRuntimeHelpers,
               importsStdString,
               aliasTargets
             )
@@ -6885,7 +6991,7 @@ pub func codegenPackageWithSigsSeeded(
           configFieldTypes,
           opaqueTypes,
           closureAcc,
-          usesLyricCount,
+          usedRuntimeHelpers,
           importsStdString,
           aliasTargets,
           unsafeFieldLockNames,
@@ -6945,7 +7051,7 @@ pub func codegenPackageWithSigsSeeded(
           configFieldTypes,
           opaqueTypes,
           closureAcc,
-          usesLyricCount,
+          usedRuntimeHelpers,
           importsStdString,
           aliasTargets,
           unsafeFieldLockNames,
@@ -7103,7 +7209,7 @@ pub func codegenPackageWithSigsSeeded(
             configFieldTypes,
             opaqueTypes,
             closureAcc,
-            usesLyricCount,
+            usedRuntimeHelpers,
             importsStdString,
             protIfaces
           )
@@ -7169,7 +7275,7 @@ pub func codegenPackageWithSigsSeeded(
                   configFieldTypes,
                   opaqueTypes,
                   closureAcc,
-                  usesLyricCount,
+                  usedRuntimeHelpers,
                   importsStdString,
                   // A Lyric `interface`'s own default-method body is never an
                   // extern-interface impl (#5931's `implTypeExprToJvm`
@@ -7211,7 +7317,7 @@ pub func codegenPackageWithSigsSeeded(
               configFieldTypes,
               opaqueTypes,
               closureAcc,
-              usesLyricCount,
+              usedRuntimeHelpers,
               importsStdString
             )
           )
@@ -7430,11 +7536,11 @@ pub func codegenPackageWithSigsSeeded(
   // StackMapTable declares an empty stack at every branch target).  A
   // static call is branch-free at the call site; the helper's own frames
   // start from an empty stack.  Every arm returns directly, so there is
-  // no join.  Lazily emitted (#4803): `usesLyricCount` is only non-empty
+  // no join.  Lazily emitted (#4803): `usedRuntimeHelpers` only names it
   // when some function in this package actually emitted a call to it
   // (`02_exprs.l`'s erased-receiver `.count`/`.length` dispatch), so a
   // package that never exercises that path carries no dead ~40-byte helper.
-  if usesLyricCount.count > 0 {
+  if runtimeHelperUsed(usedRuntimeHelpers, "__lyricCount") {
     val lcInsns: List[LInsn] = newList()
     lcInsns.add(LAload(slot = 0))
     lcInsns.add(LInstanceof(className = "java/util/Collection"))
@@ -7484,6 +7590,17 @@ pub func codegenPackageWithSigsSeeded(
         maxLocals = 1
       )
     )
+  }
+
+  // Checked `Char` helpers (D-progress-1006), each only when called.
+  if runtimeHelperUsed(usedRuntimeHelpers, "__lyricCharAt") {
+    fns.add(makeCharAtHelperFunc())
+  }
+  if runtimeHelperUsed(usedRuntimeHelpers, "__lyricToChar") or runtimeHelperUsed(usedRuntimeHelpers, "__lyricToCharD") {
+    fns.add(makeToCharHelperFunc())
+  }
+  if runtimeHelperUsed(usedRuntimeHelpers, "__lyricToCharD") {
+    fns.add(makeToCharDoubleHelperFunc(funcsClass))
   }
 
   // `__lyricUnwrapOr(Object, Object)Object` — Std.Core's generic

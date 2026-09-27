@@ -66,6 +66,8 @@ echo "Native string_builder_self_test.l (--target native) passed"
 echo "Native string_ordinal_self_test.l (--target native) passed"
 "$lyric_bin" test lyric-compiler/lyric/string_case_locale_self_test.l --target native
 echo "Native string_case_locale_self_test.l (--target native) passed"
+"$lyric_bin" test lyric-compiler/lyric/string_code_points_self_test.l --target native
+echo "Native string_code_points_self_test.l (--target native) passed"
 "$lyric_bin" test lyric-compiler/lyric/slice_fastpath_self_test.l --target native
 echo "Native slice_fastpath_self_test.l (--target native) passed"
 # Integer literal ranges (#7346) and mixed-width arithmetic widening (#7350).

@@ -115,7 +115,7 @@ pub func splitTypeFqn(typeFqn: in String): TypeFqnSplit {
   var splitAt = -1
   var i = 0
   while i < typeFqn.length {
-    val c = typeFqn[i]
+    val c = Str.charAtOrReplacement(typeFqn, i)
     if c == '[' {
       depth = depth + 1
     } else if c == ']' {

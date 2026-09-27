@@ -100,7 +100,7 @@ func escapeForLiteral(s: in String): String {
   var acc = ""
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = Str.charAtOrReplacement(s, i)
     if c == '"' {
       acc = acc + "\\\""
     } else if c == '\\' {
@@ -112,7 +112,9 @@ func escapeForLiteral(s: in String): String {
     } else if c == '\t' {
       acc = acc + "\\t"
     } else {
-      acc = acc + ("" + c)
+      // The raw code unit, so a supplementary-plane character (an emoji in
+      // a test name) is copied intact rather than as U+FFFD.
+      acc = acc + Str.substring(s, i, 1)
     }
     i = i + 1
   }

@@ -18,7 +18,6 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 // before Path so Path.join/2 wins over Str.join/2
-import Std.Char as Char
 import Std.File as File
 import Std.Path as Path
 import Std.Directory as Dir
@@ -70,27 +69,28 @@ pub func urlToHash(url: in String): String {
 
   // Strip leading hyphens from prefix.
   var trimmed = prefix
-  while trimmed.length > 0 and trimmed[0] == '-' {
+  while Str.startsWith(trimmed, "-") {
     trimmed = Str.substring(trimmed, 1, trimmed.length - 1)
   }
   // Strip trailing hyphens.
-  while trimmed.length > 0 and trimmed[trimmed.length - 1] == '-' {
+  while Str.endsWith(trimmed, "-") {
     trimmed = Str.substring(trimmed, 0, trimmed.length - 1)
   }
 
   // DJB2-style hash over the original URL for collision avoidance.
-  // Char.toInt is clamped to 0..127 so the accumulator stays within Int.MAX
-  // regardless of non-ASCII characters in IDN hostnames.
+  // Each UTF-16 code unit is clamped to 0..127 so the accumulator stays
+  // within Int.MAX regardless of non-ASCII characters in IDN hostnames; code
+  // units (not `Char`s) so a supplementary-plane character cannot fail.
   var h = 5381
   var ui = 0
   while ui < url.length {
-    h = (h % 65000000) * 33 + (Char.toInt(url[ui]) % 128)
+    h = (h % 65000000) * 33 + (Str.codeUnitAt(url, ui) % 128)
     ui += 1
   }
-  // Use the `toString` builtin, NOT `Str.fromInt`: this file imports both
-  // Std.String and Std.Char, and the F# emitter's qualified-name resolution
-  // mis-resolves `Str.fromInt` to `Std.Char.fromInt` (whose `requires n<=65535`
-  // panics for the ~2-billion DJB2 hash — the original crash; #2082).
+  // Use the `toString` builtin, NOT `Str.fromInt`: with Std.Char also
+  // imported, the F# emitter's qualified-name resolution once mis-resolved
+  // `Str.fromInt` to `Std.Char.fromInt` (whose `requires n<=65535` panics for
+  // the ~2-billion DJB2 hash — the original crash; #2082).
   trimmed + "-" + toString(h)
 }
 

@@ -28,6 +28,8 @@
 @axiom("java.io.File.separatorChar and java.io.File.getParent conform to their documented JVM contracts")
 package Std.PathHost
 
+import Std.String as Str
+
 extern type JFile = "java.io.File"
 
 // Platform primary separator ('/' on POSIX, '\' on Windows).
@@ -66,23 +68,23 @@ func rootLength(path: in String): Int {
     return 0
   }
   if not isWindows() {
-    if path[0] == '/' {
+    if Str.charAtOrReplacement(path, 0) == '/' {
       return 1
     }
     return 0
   }
-  if isSep(path[0]) {
-    if len >= 2 and isSep(path[1]) {
+  if isSep(Str.charAtOrReplacement(path, 0)) {
+    if len >= 2 and isSep(Str.charAtOrReplacement(path, 1)) {
       // UNC \\server\share: the root spans the server and share components.
       var i = 2
       var seenComponents = 0
       while i < len {
-        if isSep(path[i]) {
+        if isSep(Str.charAtOrReplacement(path, i)) {
           seenComponents += 1
           if seenComponents == 2 {
             return i
           }
-          while i < len and isSep(path[i]) {
+          while i < len and isSep(Str.charAtOrReplacement(path, i)) {
             i += 1
           }
         } else {
@@ -93,8 +95,8 @@ func rootLength(path: in String): Int {
     }
     return 1
   }
-  if len >= 2 and path[1] == ':' {
-    if len >= 3 and isSep(path[2]) {
+  if len >= 2 and Str.charAtOrReplacement(path, 1) == ':' {
+    if len >= 3 and isSep(Str.charAtOrReplacement(path, 2)) {
       return 3
     }
     return 2
@@ -116,7 +118,7 @@ pub func hostPathCombine(base: in String, relative: in String): String {
   if hostPathIsRooted(relative) {
     return relative
   }
-  val last = base[base.length - 1]
+  val last = Str.charAtOrReplacement(base, base.length - 1)
   if isSep(last) or (isWindows() and last == ':') {
     return base + relative
   }
@@ -129,7 +131,7 @@ pub func hostPathCombine(base: in String, relative: in String): String {
 pub func hostPathGetExtension(path: in String): String {
   var i = path.length - 1
   while i >= 0 {
-    val c = path[i]
+    val c = Str.charAtOrReplacement(path, i)
     if c == '.' {
       if i == path.length - 1 {
         return ""
@@ -149,7 +151,7 @@ pub func hostPathGetExtension(path: in String): String {
 pub func hostPathGetFileName(path: in String): String {
   var i = path.length - 1
   while i >= 0 {
-    val c = path[i]
+    val c = Str.charAtOrReplacement(path, i)
     if isSep(c) or (isWindows() and c == ':') {
       return path.substring(i + 1, path.length - i - 1)
     }
@@ -171,7 +173,7 @@ pub func hostPathGetDirectoryName(path: in String): String? {
     return nullString()
   }
   var i = path.length - 1
-  while i >= root and not isSep(path[i]) {
+  while i >= root and not isSep(Str.charAtOrReplacement(path, i)) {
     i = i - 1
   }
   if i < root {
@@ -179,7 +181,7 @@ pub func hostPathGetDirectoryName(path: in String): String? {
     return path.substring(0, root)
   }
   var cut = i
-  while cut > root and isSep(path[cut - 1]) {
+  while cut > root and isSep(Str.charAtOrReplacement(path, cut - 1)) {
     cut = cut - 1
   }
   path.substring(0, cut)
@@ -192,8 +194,8 @@ pub func hostPathIsRooted(path: in String): Bool {
   if path.length == 0 {
     return false
   }
-  if isSep(path[0]) {
+  if isSep(Str.charAtOrReplacement(path, 0)) {
     return true
   }
-  isWindows() and path.length >= 2 and path[1] == ':'
+  isWindows() and path.length >= 2 and Str.charAtOrReplacement(path, 1) == ':'
 }

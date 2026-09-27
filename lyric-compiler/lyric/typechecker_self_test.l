@@ -3377,6 +3377,29 @@ test "for over a non-iterable Lyric-native single-param generic record emits T01
   assertTrue(hasDiagCode(parseCheck(src), "T0126"), "for over Wrap[T] (non-iterable record): T0126")
 }
 
+// D-progress-1006: a `String` is not iterable — its elements would have to be
+// UTF-16 code units, and a surrogate half is not a `Char` — so `for c in s`
+// is T0126 with a message naming the code-point and code-unit views (before,
+// it type-checked as `TyError` and failed at runtime on both backends).
+test "for over a String emits T0126 naming codePoints" {
+  val src = "package P\nfunc f(s: in String): Unit {\n  for c in s {\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0126"), "for over String: T0126")
+  assertTrue(Str.contains(diagMessageFor(cr, "T0126"), "codePoints"), "T0126 names Std.String.codePoints")
+}
+
+test "for over a String-yielding async generator does not emit T0126" {
+  val src = "package P\nasync func words(): String {\n  yield \"a\"\n}\nfunc f(): Unit {\n  for w in words() {\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0126"), "generator call iterates its yields, not a String")
+}
+
+test "s.codeUnitAt types as Int and checks its argument" {
+  val ok = "package P\nfunc f(s: in String): Int {\n  s.codeUnitAt(0) + 1\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0043"), "codeUnitAt(Int): Int")
+  val bad = "package P\nfunc f(s: in String): Int {\n  s.codeUnitAt(\"0\")\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0043"), "codeUnitAt(String): T0043")
+}
+
 test "for over an extern single-param generic collection does not emit T0126" {
   val src = "package P\nextern type Set[T] = \"System.Collections.Generic.HashSet`1\"\nfunc f(xs: in Set[String]): Int {\n  var n = 0\n  for s in xs {\n    n = n + s.length\n  }\n  n\n}\n"
   assertTrue(

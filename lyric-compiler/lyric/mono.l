@@ -75,7 +75,6 @@ package Lyric.Mono
 import Std.Core
 import Std.Collections
 import Std.String as Str
-import Std.Char as Ch
 import Lyric.Lexer
 import Lyric.Parser
 
@@ -668,13 +667,14 @@ func valueExprKey(e: in Expr): String {
 // length` collided for any two equal-length strings (and across the
 // triple/raw variants), so the second distinct value reused the first's
 // specialisation via `seenSpecs` — baking the wrong constant into the
-// emitted IL.  Encode the length plus every code point so distinct strings
-// always produce distinct, identifier-safe keys.
+// emitted IL.  Encode the length plus every UTF-16 code unit (surrogate
+// halves of an emoji included — read as units, not `Char`s) so distinct
+// strings always produce distinct, identifier-safe keys.
 func stringLitKey(s: in String): String {
   var acc = "s" + toString(s.length)
   var i = 0
   while i < s.length {
-    acc = acc + "_" + toString(Ch.toInt(s[i]))
+    acc = acc + "_" + toString(Str.codeUnitAt(s, i))
     i = i + 1
   }
   acc
