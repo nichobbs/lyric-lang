@@ -55,7 +55,7 @@ pub func valueOf(a: in Amount): Cents
 }
 ```
 
-The annotation changes what the compiler does with `requires:` and `ensures:` clauses: instead of generating runtime assertion code, the compiler feeds them to the VC generator, which produces SMT formulae that must be discharged before the package can be compiled.
+The annotation makes `requires:` and `ensures:` clauses proof obligations as well as runtime checks. `lyric prove` feeds them to the VC generator, which produces SMT formulae the solver must discharge, and fails on any it cannot. `lyric build` does not run the prover, so it still compiles every clause into a runtime check (a quantifier, which has no runtime form, is checked only by `lyric prove`); run `lyric prove` in CI to get the static guarantee.
 
 There is one new constraint on your call graph: a `@proof_required` package may only call:
 
