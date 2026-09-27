@@ -29,10 +29,12 @@ extern func rtLastSpawnErrno(): Int = "lyric_process_last_spawn_errno"
 
 extern func rtErrnoMessage(e: Int): String = "lyric_process_errno_message"
 
-// The reason the child could not be started, as the OS reports it (e.g.
-// "No such file or directory" for a missing executable), matching the
-// managed twins, whose IoError carries the host exception's message.
-func spawnFailureMessage(): String {
+// The reason the most recent start on this thread failed, as the OS reports
+// it (e.g. "No such file or directory" for a missing executable), matching
+// the managed twins, whose IoError carries the host exception's message.
+// Also used by `_kernel_native/process_piped_host.l`, whose spawn records
+// the errno through the same lyric-rt seam.
+pub func hostSpawnFailureMessage(): String {
   val e = rtLastSpawnErrno()
   if e == 0 {
     "the process could not be started"
@@ -53,6 +55,6 @@ pub func hostRunInheritedResult(executable: in String, args: in List[String]): R
   if rc == 0 {
     Ok(value = code)
   } else {
-    Err(error = IoError(path = executable, message = spawnFailureMessage()))
+    Err(error = IoError(path = executable, message = hostSpawnFailureMessage()))
   }
 }

@@ -3,26 +3,18 @@
 //! Covers: successful stdout capture, non-zero exit code, stderr capture,
 //! stdin passthrough via `runCaptureWithInput`, and timeout enforcement.
 //! All subprocess invocations use `sh -c "..."` and are therefore
-//! POSIX-only.  On Windows the body of `main` short-circuits to
-//! `exit 0` (with an informational println) so the file remains a
-//! no-op there instead of breaking the harness with `sh: not found`.
-//! Windows-compatible fixtures (`cmd /c` equivalents, or a portable
-//! helper executable) are tracked in #1116.
+//! POSIX-only.  On Windows (`Std.Environment.isWindows()`) the body of
+//! `main` returns 0 with an informational println, so the file is a no-op
+//! there instead of failing with `sh: not found`; Windows fixtures were
+//! declined in #1116.
 package Std.Process.Tests
 
 import Std.Core
 import Std.Collections
+import Std.Environment
 import Std.Errors
 import Std.Process
 import Std.Testing
-
-// Cross-platform OS gate — wraps `System.OperatingSystem.IsWindows()`
-// directly so the test file doesn't depend on a non-existent
-// `Std.Os` module.  The extern lives here (not in a stdlib package)
-// because there is no good public home for platform-detection yet
-// and this is the only consumer.  See #1116 for the proper module.
-@externTarget("System.OperatingSystem.IsWindows")
-func runningOnWindows(): Bool = ()
 
 func makeShArgs(cmd: in String): List[String] {
   val args: List[String] = newList()
@@ -137,12 +129,10 @@ func testNegativeTimeoutRejected(): Unit {
 }
 
 func main(): Int {
-  if runningOnWindows() {
+  if isWindows() {
     // Every test below uses `sh -c "..."`, which is not present on a
-    // stock Windows runner.  Skip-with-ok so the harness still
-    // observes a success token, and surface the skip reason so the
-    // gap (#1116) shows up in CI logs.
-    println("process_tests: skipped on Windows pending cross-platform fixtures (#1116) — ok")
+    // stock Windows runner.
+    println("process_tests: skipped on Windows (the fixtures use sh) — ok")
     return 0
   }
   testCaptureStdout()

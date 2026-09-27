@@ -7261,6 +7261,21 @@ jobs:
           "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_tests.l
           "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_map_tests.l
 
+      # Std.Process on JVM: capture, exit codes, stdin, timeouts, and `run`
+      # (inherited stdio). The suite could not compile on JVM while it
+      # declared its own .NET-only `@externTarget` platform check; it now
+      # uses `Std.Environment.isWindows()`. Shares the Java 21 setup step above.
+      - name: Std.Process suite on JVM (process_tests.l)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping process_tests JVM run"
+            exit 1
+          fi
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/process_tests.l
+
       # Std.RegexSafe cross-package union-case/function collision on JVM
       # (#5976): `regex_safe_tests.l` imports both `Std.Regex as Re` and
       # `Std.RegexSafe as Rx`, which each declare a same-simple-name

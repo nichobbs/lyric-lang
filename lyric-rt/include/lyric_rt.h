@@ -523,6 +523,9 @@ int32_t lyric_env_get_ok(const char* name, LyricString** out);
  * on success, -1 on failure. */
 int32_t lyric_env_set(const char* name, const char* value);
 
+/* 1 when this runtime was built for Windows, else 0 (compile-time). */
+int32_t lyric_env_is_windows(void);
+
 /* getcwd(3) wrapper.  Returns a fresh rc=1 LyricString, or NULL on
  * failure. */
 LyricString* lyric_env_cwd(void);
@@ -698,7 +701,8 @@ void lyric_process_free(void* op);
  * partial line is returned once more, then this reports "no more lines"
  * every subsequent call), or a hard read error occurs. write_line
  * blocks until the whole line + a trailing '\n' is accepted by the
- * pipe. is_alive/wait_exit/exit_code share one WNOHANG-then-blocking
+ * pipe, returning 0, -2 if stdin was already closed, or -1 if the write
+ * failed (broken pipe). is_alive/wait_exit/exit_code share one WNOHANG-then-blocking
  * reap state (cached once observed, since a second waitpid on an
  * already-reaped pid fails with ECHILD). */
 void* lyric_process_piped_spawn(const char* path, LyricList* args);

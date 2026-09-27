@@ -456,6 +456,14 @@ int32_t lyric_env_set(const char* name, const char* value) {
     return setenv(name, value, 1) == 0 ? 0 : -1;
 }
 
+int32_t lyric_env_is_windows(void) {
+#if defined(_WIN32)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 LyricString* lyric_env_cwd(void) {
     size_t cap = 256;
     char* buf = (char*)malloc(cap);

@@ -131,3 +131,10 @@ pub func hostGetCommandLineArgs(): slice[String] {
 pub func hostExit(code: in Int): Never {
   JSystem.exit(code)
 }
+
+// True when the JVM reports a Windows host.  `os.name` is a standard system
+// property set at JVM startup ("Windows 11", "Windows Server 2022", ...).
+pub func hostIsWindows(): Bool {
+  val name = JSystem.getProperty("os.name") ?? ""
+  name.startsWith("Windows")
+}

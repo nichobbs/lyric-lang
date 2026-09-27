@@ -276,6 +276,7 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
    - `Environment.getVarOrDefault(key: in String, default: in String): String` ✅
    - `Environment.args(): slice[String]` ✅
    - `Environment.exitCode(code: in Int): Never` ✅
+   - `Environment.isWindows(): Bool` ✅ (`@experimental`): platform check for choosing platform-specific behaviour
 
 2. **Time and scheduling**
    - `Clock` interface (trait for injecting time in tests) ✅

@@ -45,6 +45,7 @@ import Std.Core
 import Std.Collections
 import Std.ProcessArgs
 import Std.Errors
+import Std.ProcessHost
 
 extern func toC(s: String): NativePtr[Byte] = "lyric_string_to_cstring"
 
@@ -78,22 +79,6 @@ extern func rtPipedExitCode(p: Long): Int = "lyric_process_piped_exit_code"
 extern func rtPipedCloseStdin(p: Long): Int = "lyric_process_piped_close_stdin"
 
 extern func rtPipedClose(p: Long): Unit = "lyric_process_piped_close"
-
-extern func rtLastSpawnErrno(): Int = "lyric_process_last_spawn_errno"
-
-extern func rtErrnoMessage(e: Int): String = "lyric_process_errno_message"
-
-// The reason the child could not be started, as the OS reports it (e.g.
-// "No such file or directory" for a missing executable), matching the
-// managed twins, whose IoError carries the host exception's message.
-func spawnFailureMessage(): String {
-  val e = rtLastSpawnErrno()
-  if e == 0 {
-    "the process could not be started"
-  } else {
-    "the process could not be started: " + rtErrnoMessage(e)
-  }
-}
 
 // ── Public handle + entry points ────────────────────────────────────────────
 /// Opaque handle to a running child process with piped stdin/stdout. See
@@ -151,7 +136,7 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
 pub func hostPipedWriteLine(p: in PipedHandle, line: in String): Unit {
   val rc = rtPipedWriteLine(p.raw, line)
   if rc != 0 {
-    panic("Std.ProcessPipedHost: write to piped child's stdin failed (broken pipe)")
+    panic("Std.ProcessPipedHost: " + pipedWriteFailureMessage(rc))
   }
 }
 
@@ -213,7 +198,7 @@ pub func hostSpawnPipedResult(fileName: in String, args: in List[String]): Resul
   val raw = rtPipedSpawn(c, args)
   freeC(c)
   if raw == 0i64 {
-    Err(error = IoError(path = fileName, message = spawnFailureMessage()))
+    Err(error = IoError(path = fileName, message = hostSpawnFailureMessage()))
   } else {
     Ok(value = PipedHandle(raw = raw, closed = false))
   }
@@ -230,6 +215,16 @@ pub func hostPipedWriteLineResult(p: in PipedHandle, line: in String): Result[Un
   if rc == 0 {
     Ok(value = ())
   } else {
-    Err(error = "write to piped child's stdin failed (broken pipe)")
+    Err(error = pipedWriteFailureMessage(rc))
+  }
+}
+
+// lyric-rt's write result: -2 when stdin was already closed, -1 when the
+// write itself failed.
+func pipedWriteFailureMessage(rc: in Int): String {
+  if rc == 0 - 2 {
+    "cannot write to the piped child: its stdin is already closed"
+  } else {
+    "write to the piped child's stdin failed (broken pipe)"
   }
 }

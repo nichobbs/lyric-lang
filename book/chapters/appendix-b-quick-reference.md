@@ -763,7 +763,7 @@ output_assembly = "myapp.dll"
 | `Std.App` | Application entry and config | `run(main: func Unit): Int`, `withConfig`, `Config` (opaque), `Config.path`, `Config.rawText` |
 | `Std.Console` | Console I/O | `print`, `println`, `error`, `readLine`, `readAll` |
 | `Std.Directory` | Directory operations | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `enumerateDirectories`, `delete`, `deleteRecursive` |
-| `Std.Environment` | Process environment | `getVar`, `getVarOrDefault`, `args`, `exitCode` |
+| `Std.Environment` | Process environment | `getVar`, `getVarOrDefault`, `args`, `exitCode`, `isWindows` |
 | `Std.Log` | Structured logging | `LogLevel` enum, `Logger` interface, `LogField`, `log`, `debug`, `info`, `warn`, `error`, `field` |
 | `Std.Path` | Pure path manipulation | `join`, `extension`, `basename`, `dirname`, `isAbsolute`, `isRelative` |
 | `Std.BuildInfo` | Build metadata (docs/60) | `BuildInfo` record; the compiler synthesizes `buildInfo(): BuildInfo` into any file that imports it |
