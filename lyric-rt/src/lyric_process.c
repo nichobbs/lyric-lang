@@ -967,6 +967,26 @@ static int piped_wait_readable(int fd, int64_t deadline_ns) {
     }
 }
 
+/* Non-blocking readiness check: 1 when a read on `fd` would not block
+ * (data, end of stream or an error to report), 0 otherwise. */
+static int piped_ready_now(int fd) {
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    int rc;
+    do {
+        rc = poll(&pfd, 1, 0);
+    } while (rc < 0 && errno == EINTR);
+    return rc != 0;
+}
+
+/* Once the deadline has passed, a bounded read still takes bytes that are
+ * already in the pipe, so a zero or expired budget returns a line the child
+ * has already written (#7523). Draining is capped at one default pipe's
+ * worth so a child that keeps writing cannot stretch the wait. */
+#define PIPED_LATE_DRAIN_MAX 65536
+
 /* lyric_process_piped_read_line with a bound: waits at most `timeout_ms`
  * milliseconds (a negative value waits without one) for a complete line.
  * Returns 1 with *out_line set on a line, 0 at end of stream, 2 on timeout
@@ -976,6 +996,8 @@ static int piped_wait_readable(int fd, int64_t deadline_ns) {
 int32_t lyric_process_piped_read_line_within(void* raw, LyricString** out_line, int32_t timeout_ms) {
     LyricPipedProc* p = (LyricPipedProc*)raw;
     int64_t deadline_ns = timeout_ms < 0 ? -1 : lyric_monotonic_nanos() + (int64_t)timeout_ms * 1000000;
+    int64_t late_bytes = 0;
+    int past_deadline = 0;
     for (;;) {
         /* Resume the newline search where the previous call stopped, and
          * return lines by advancing line_head instead of memmoving the tail
@@ -1019,7 +1041,10 @@ int32_t lyric_process_piped_read_line_within(void* raw, LyricString** out_line, 
             p->linebuf.len = rest;
             p->line_head = 0;
         }
-        if (deadline_ns >= 0 && !piped_wait_readable(p->stdout_rd, deadline_ns)) return 2;
+        if (deadline_ns >= 0 && !piped_wait_readable(p->stdout_rd, deadline_ns)) {
+            if (late_bytes >= PIPED_LATE_DRAIN_MAX || !piped_ready_now(p->stdout_rd)) return 2;
+            past_deadline = 1;
+        }
         uint8_t chunk[4096];
         ssize_t n;
         do {
@@ -1027,6 +1052,7 @@ int32_t lyric_process_piped_read_line_within(void* raw, LyricString** out_line, 
         } while (n < 0 && errno == EINTR);
         if (n > 0) {
             procbuf_append(&p->linebuf, chunk, n);
+            if (past_deadline) late_bytes += n;
             continue;
         }
         /* EOF (n == 0) or a hard read error: no more bytes will ever

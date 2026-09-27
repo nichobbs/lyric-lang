@@ -2377,6 +2377,31 @@ static void test_process_piped_read_line_within(void) {
     lyric_release(whole);
     CHECK(lyric_process_piped_wait_exit(q, 5000) == 1);
     lyric_process_piped_close(q);
+
+    /* #7523: a zero budget still returns a line that is already sitting in
+     * the pipe, and a zero budget with nothing written still times out. */
+    void* r = lyric_process_piped_spawn("/bin/cat", NULL);
+    CHECK(r != NULL);
+    LyricString* ready = mk_str("ready");
+    CHECK(lyric_process_piped_write_line(r, ready) == 0);
+    lyric_release(ready);
+    LyricString* got0 = NULL;
+    int rc0 = 2;
+    for (int i = 0; i < 500 && rc0 == 2; i++) {
+        rc0 = lyric_process_piped_read_line_within(r, &got0, 0);
+        if (rc0 == 2) usleep(10000);
+    }
+    CHECK(rc0 == 1);
+    if (rc0 == 1) {
+        CHECK(lyric_string_len(got0) == 5);
+        CHECK(memcmp(LYRIC_STRING_DATA(got0), "ready", 5) == 0);
+        lyric_release(got0);
+    }
+    LyricString* empty = NULL;
+    CHECK(lyric_process_piped_read_line_within(r, &empty, 0) == 2);
+    CHECK(lyric_process_piped_close_stdin(r) == 0);
+    CHECK(lyric_process_piped_wait_exit(r, 5000) == 1);
+    lyric_process_piped_close(r);
 }
 
 static void test_process_piped_burst_in_order(void) {
