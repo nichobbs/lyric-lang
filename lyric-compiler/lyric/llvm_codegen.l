@@ -1687,39 +1687,40 @@ func bindLocal(ctx: in Ctx, insns: in List[NInsn], name: in String, v: in NVal):
 /// several arities is ambiguous without an expected type and is rejected.
 func functionRefAsClosure(ctx: in Ctx, insns: in List[NInsn], name: in String): Option[NVal] {
   val selfPrefix = if ctx.curPkg.count > 0 { ctx.curPkg[0] + "." + name } else { name }
-  // Every registered arity of the name: the package's own function first,
-  // then a bare (imported) one, as `lowerCall` resolves calls.
-  var found: Option[NFuncSig] = None
-  var matches = 0
-  var selfMatches = 0
+  // One signature per registered arity of the name: at each arity the
+  // package's own function shadows a bare (imported) one, as `lowerCall`
+  // resolves calls. Two arities, whichever package they come from, are an
+  // overload a function value cannot choose between (#7527).
+  val selfByArity: Map[String, NFuncSig] = newMap()
+  val bareByArity: Map[String, NFuncSig] = newMap()
   for key in mapKeys(ctx.sigs) {
     val slash = Str.lastIndexOfRaw(key, "/")
     if slash > 0 {
       val stem = Str.substring(key, 0, slash)
-      if stem == selfPrefix {
-        match mapGet(ctx.sigs, key) {
-          case Some(sg) -> {
-            if selfMatches == 0 {
-              found = Some(value = sg)
-              matches = 0
-            }
-            selfMatches = selfMatches + 1
+      val arityKey = Str.substring(key, slash + 1, key.length - slash - 1)
+      match mapGet(ctx.sigs, key) {
+        case Some(sg) -> {
+          if stem == selfPrefix {
+            selfByArity[arityKey] = sg
+          } else if stem == name {
+            bareByArity[arityKey] = sg
           }
-          case None -> ()
         }
-      } else if stem == name and selfMatches == 0 {
-        match mapGet(ctx.sigs, key) {
-          case Some(sg) -> {
-            found = Some(value = sg)
-            matches = matches + 1
-          }
-          case None -> ()
-        }
+        case None -> ()
       }
     }
   }
-  if selfMatches > 0 {
-    matches = selfMatches
+  var found: Option[NFuncSig] = None
+  var matches = 0
+  for ak in mapKeys(selfByArity) {
+    found = mapGet(selfByArity, ak)
+    matches = matches + 1
+  }
+  for ak in mapKeys(bareByArity) {
+    if not selfByArity.containsKey(ak) {
+      found = mapGet(bareByArity, ak)
+      matches = matches + 1
+    }
   }
   if matches > 1 {
     panic(
@@ -7253,6 +7254,7 @@ func lowerGenericFnCall(
   val rawVals: List[NVal] = newList()
   val deferredLambdas: List[Int] = newList()
   val deferredLambdaExprs: List[Expr] = newList()
+  val fnTyParamNames = genericParamNamesOf(fd.generics)
   var pi = 0
   while pi < nParams {
     if pi < preVals.count {
@@ -7278,7 +7280,7 @@ func lowerGenericFnCall(
         // it from the parameter type under the type arguments the earlier
         // arguments bind (`mapForEach(m, { k, v -> ... })`); only when a
         // later argument is needed is the lambda deferred past it (#7282).
-        match lambdaParamWant(ctx, fd, pi, rawVals, genericParamNamesOf(fd.generics)) {
+        match lambdaParamWant(ctx, fd, pi, rawVals, fnTyParamNames) {
           case Some(w) -> rawVals.add(lowerExprExpecting(ctx, insns, ax, w))
           case None -> {
             deferredLambdas.add(pi)
@@ -7292,25 +7294,49 @@ func lowerGenericFnCall(
     }
     pi = pi + 1
   }
+  // Deferred lambdas resolve in passes: one lowered lambda can bind a type
+  // parameter another lambda's type needs.
+  val pending: List[Int] = newList()
   var dli = 0
   while dli < deferredLambdas.count {
-    val dpi = deferredLambdas[dli]
-    match lambdaParamWantAt(ctx, fd, dpi, rawVals, genericParamNamesOf(fd.generics)) {
-      case Some(w) -> {
-        rawVals[dpi] = lowerExprExpecting(ctx, insns, deferredLambdaExprs[dli], w)
-      }
-      case None -> panic(
-        "Lyric.LlvmCodegen: cannot infer the function type of the lambda passed as parameter '" +
-          fd.params[dpi].name +
-          "' of generic function '" +
-          fd.name +
-          "'; annotate the lambda's parameters or bind it to a typed val"
-      )
-    }
+    pending.add(dli)
     dli = dli + 1
   }
+  var progressed = true
+  while pending.count > 0 and progressed {
+    progressed = false
+    val still: List[Int] = newList()
+    var pk = 0
+    while pk < pending.count {
+      val di = pending[pk]
+      val dpi = deferredLambdas[di]
+      match lambdaParamWantAt(ctx, fd, dpi, rawVals, fnTyParamNames) {
+        case Some(w) -> {
+          rawVals[dpi] = lowerExprExpecting(ctx, insns, deferredLambdaExprs[di], w)
+          progressed = true
+        }
+        case None -> still.add(di)
+      }
+      pk = pk + 1
+    }
+    pending.clear()
+    var sk = 0
+    while sk < still.count {
+      pending.add(still[sk])
+      sk = sk + 1
+    }
+  }
+  if pending.count > 0 {
+    val dpi = deferredLambdas[pending[0]]
+    panic(
+      "Lyric.LlvmCodegen: cannot infer the function type of the lambda passed as parameter '" + fd.params[dpi].name +
+        "' of generic function '" +
+        fd.name +
+        "'; annotate the lambda's parameters or bind it to a typed val"
+    )
+  }
   // Infer type args.
-  val paramNames = genericParamNamesOf(fd.generics)
+  val paramNames = fnTyParamNames
   val boundNames: List[String] = newList()
   val boundTys: List[NType] = newList()
   var pi2 = 0

@@ -705,6 +705,9 @@ test "arc: a lambda passed to a generic function takes its type from the bound p
     "  }\n" +
     "  n\n" +
     "}\n" +
+    "func twoFirst[T](f: in (T) -> T, g: in (T) -> Int, x: in T): Int {\n" +
+    "  g(f(x))\n" +
+    "}\n" +
     "func applyFirst[T](f: in (T) -> Int, x: in T): Int {\n" +
     "  f(x)\n" +
     "}\n" +
@@ -713,7 +716,8 @@ test "arc: a lambda passed to a generic function takes its type from the bound p
     "  xs.add(\"ab\")\n" +
     "  xs.add(\"cde\")\n" +
     "  val suffix = \"!\"\n" +
-    "  sumBy(xs, { s -> (s + suffix).length }) * 10 + applyFirst({ s -> s.length }, \"abc\")\n" +
+    "  sumBy(xs, { s -> (s + suffix).length }) * 10 + applyFirst({ s -> s.length }, \"abc\") +\n" +
+    "    twoFirst({ s -> s + s }, { s -> s.length }, \"xy\") - 4\n" +
     "}\n"
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 73, "lambdas typed from generic parameters")
