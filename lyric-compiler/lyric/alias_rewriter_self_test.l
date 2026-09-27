@@ -474,6 +474,26 @@ test "multi-segment package type receiver Foo.Bar.Widget.create() collapses its 
   }
 }
 
+test "three-segment package type receiver A.B.C.Widget.create() collapses its receiver (#7495)" {
+  val src = "package Test\nimport A.B.C\nfunc f(): Int {\n  A.B.C.Widget.create()\n}\n"
+  match calleeOfFirstStmt(rewriteFile(parse(src).file)) {
+    case Some(fn) -> match fn.kind {
+      case EMember(recv, m) -> {
+        assertEqual(m, "create", "the call's own member name is kept")
+        match recv.kind {
+          case EPath(p) -> {
+            assertEqualInt(p.segments.count, 4, "receiver is the flat A.B.C.Widget path")
+            assertEqual(p.segments[3], "Widget", "receiver ends at the type name")
+          }
+          case _ -> assertTrue(false, "receiver is still a nested EMember chain")
+        }
+      }
+      case _ -> assertTrue(false, "callee is not an EMember on the collapsed receiver")
+    }
+    case None -> assertTrue(false, "first statement is not a call")
+  }
+}
+
 test "unimported multi-segment package receiver is left untouched (#7495)" {
   val src = "package Test\nfunc f(): Int {\n  Foo.Bar.Widget.create()\n}\n"
   match calleeOfFirstStmt(rewriteFile(parse(src).file)) {

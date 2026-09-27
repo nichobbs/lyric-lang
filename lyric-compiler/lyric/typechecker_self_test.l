@@ -4734,6 +4734,63 @@ test "local whose field chain spells a package name is not a package reference (
   )
 }
 
+// The same checks for a three-segment package (`Lib.Net.Rest`): nothing in
+// them depends on the package path's length, and these pin that down.
+func libNetRestPackages(): List[ImportedPackage] {
+  val pkgRest = parse(
+    "package Lib.Net.Rest\npub opaque type Widget {\n  name: String\n}\npub func Widget.create(name: in String): Widget {\n  Widget(name = name)\n}\npub func ping(): Int { 1 }\n"
+  )
+  val pkgPriv = parse(
+    "package Lib.Net.Priv\nopaque type Gadget {\n  name: String\n}\npub func Gadget.create(name: in String): Gadget {\n  Gadget(name = name)\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Lib.Net.Rest",
+      items = pkgRest.file.items,
+      imports = collectImportNames(pkgRest.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "Lib.Net.Priv",
+      items = pkgPriv.file.items,
+      imports = collectImportNames(pkgPriv.file.imports)
+    )
+  )
+  packages
+}
+
+test "unimported three-segment package-qualified references are T0020 (#7495)" {
+  val src = "package App\nfunc f(): Int {\n  val w = Lib.Net.Rest.Widget.create(\"x\")\n  Lib.Net.Rest.ping()\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libNetRestPackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 2, "each unimported Lib.Net.Rest reference is one T0020")
+  assertTrue(diagMessageFor(cr, "T0020").contains("import Lib.Net.Rest"), "T0020 suggests `import Lib.Net.Rest`")
+}
+
+test "imported three-segment package-qualified references resolve cleanly (#7495)" {
+  val src = "package App\nimport Lib.Net.Rest\nfunc f(): Int {\n  val w = Lib.Net.Rest.Widget.create(\"x\")\n  Lib.Net.Rest.ping()\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, libNetRestPackages()), "T0020"),
+    0,
+    "raw AST: no T0020"
+  )
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(rewriteFile(parse(src).file), libNetRestPackages()), "T0020"),
+    0,
+    "alias-rewritten: no T0020"
+  )
+}
+
+test "three-segment package-qualified private type receiver is T0097 (#7499)" {
+  val src = "package App\nimport Lib.Net.Priv\nfunc f(): Unit {\n  val g = Lib.Net.Priv.Gadget.create(\"x\")\n}\n"
+  val raw = checkWithImportedPackages(parse(src).file, libNetRestPackages())
+  assertEqualInt(countDiagCode(raw, "T0097"), 1, "raw AST: exactly one T0097")
+  assertEqualInt(countDiagCode(raw, "T0020"), 0, "raw AST: not T0020")
+  val rewritten = checkWithImportedPackages(rewriteFile(parse(src).file), libNetRestPackages())
+  assertEqualInt(countDiagCode(rewritten, "T0097"), 1, "alias-rewritten: exactly one T0097")
+}
+
 // #7499: a `pub func Widget.create(...)` on a package-private `Widget` is not
 // callable from another package: the receiver type is not nameable there, so
 // the call is T0097 (adding an import cannot fix it), never T0020.
