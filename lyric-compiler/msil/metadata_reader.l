@@ -2632,6 +2632,30 @@ func numericRank(elemByte: in Int): Int {
   }
 }
 
+// Whether `args` and `params` (a closed generic instantiation's own type
+// arguments on each side) are pairwise an EXACT match (`scoreSigType == 3`
+// for every position). CLR generic type arguments are invariant — just like
+// `STSzArray`'s element-type check above, `List<object>` is not assignable
+// where `List<int>` is expected and vice versa — so a widening/boxing match
+// on a type argument (e.g. an `Int` argument against an `object`-typed
+// argument slot, which would ordinarily score 2) is NOT good enough here;
+// only an exact structural match on every argument counts, mirroring
+// `STSzArray`'s own invariance handling rather than a plain top-level
+// argument-to-parameter conversion. #7444.
+func sigNamedGenericInstArgsExact(args: in List[SigType], params: in List[SigType]): Bool {
+  if args.count != params.count {
+    return false
+  }
+  var i = 0
+  while i < args.count {
+    if scoreSigType(args[i], params[i]) != 3 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
 // Score tiers (highest to lowest, `-1` reserved everywhere as the universal
 // "no match" sentinel — never repurpose it as a weak-but-admissible value):
 // 3 = exact match; 2 = widening/object-accepts-anything/Extends-chain upcast;
@@ -2747,7 +2771,34 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     // correct exact-match overload — caught by a full-rebuild bisection
     // reproducing `auto_ffi_self_test.l`'s inherited-member Extends-chain
     // regression test.
-    case STNamedGenericInst(_, _, args) -> if sigArgsContainOpenGeneric(args) { 0 } else { -1 }
+    //
+    // A genuinely concrete parameter (no open VAR/MVAR) is not blanket-
+    // rejected either, though: when `arg` is ALSO a closed `STNamedGenericInst`
+    // of the exact same head type (same FQN, same value/reference kind, same
+    // arity) with every type argument an EXACT structural match
+    // (`sigNamedGenericInstArgsExact`), this is a real, unambiguous exact
+    // match — e.g. a `List<SslApplicationProtocol>`-typed argument against a
+    // `List<SslApplicationProtocol>`-typed parameter — and must score at the
+    // top tier (3) like any other exact match, or the auto-FFI direct
+    // property-assignment/method-call path can never resolve a setter or
+    // method whose parameter is a closed generic instantiation (#7444).
+    // Anything short of that (different head type, different arity, or any
+    // non-exact type argument) is a genuine structural mismatch and stays
+    // rejected (-1) — this never revisits the D-progress-934 `ValueTask`
+    // collision, which lives entirely in the `sigArgsContainOpenGeneric`
+    // branch above (a wrapped-VAR parameter never reaches this branch at all).
+    case STNamedGenericInst(pfqn, pvt, pargs) -> if sigArgsContainOpenGeneric(pargs) {
+      0
+    } else {
+      match arg {
+        case STNamedGenericInst(afqn, avt, aargs) -> if afqn == pfqn and avt == pvt and sigNamedGenericInstArgsExact(aargs, pargs) {
+          3
+        } else {
+          -1
+        }
+        case _ -> -1
+      }
+    }
     case _ -> -1
   }
 }

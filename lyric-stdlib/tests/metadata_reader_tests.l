@@ -952,6 +952,17 @@ func expectedClrValueTypes(): List[String] {
   xs.add("System.Text.Json.JsonElement+ArrayEnumerator")
   xs.add("System.Text.Json.JsonElement+ObjectEnumerator")
   xs.add("System.Net.Security.SslApplicationProtocol")
+  xs.add("System.Double")
+  xs.add("System.Char")
+  xs.add("System.StringComparison")
+  xs.add("System.Net.Sockets.AddressFamily")
+  xs.add("System.Net.Sockets.SocketType")
+  xs.add("System.Net.Sockets.ProtocolType")
+  xs.add("System.Net.Http.HttpVersionPolicy")
+  xs.add("System.Net.Security.SslPolicyErrors")
+  xs.add("System.Security.Authentication.SslProtocols")
+  xs.add("System.Security.Cryptography.X509Certificates.X509ChainTrustMode")
+  xs.add("System.Security.Cryptography.X509Certificates.X509RevocationMode")
   xs
 }
 

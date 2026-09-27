@@ -63,6 +63,7 @@ for t in \
   lyric-compiler/lyric/generic_extern_self_test.l \
   lyric-compiler/lyric/generic_extern_methodspec_self_test.l \
   lyric-compiler/lyric/generic_extern_param_self_test.l \
+  lyric-compiler/lyric/auto_ffi_generic_setter_self_test.l \
   lyric-compiler/lyric/enum_msil_self_test.l \
   lyric-compiler/lyric/contract_meta_self_test.l \
   lyric-compiler/lyric/annotation_meta_emit_self_test.l \

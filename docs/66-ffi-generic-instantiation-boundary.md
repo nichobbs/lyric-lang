@@ -6,7 +6,10 @@ CLAUDE.md's "Exploratory sketches" convention). Linked from
 `docs/50-ffi-delegates-proposal.md`'s open-scope note. A first concrete slice
 (parameter/return-position closed-generic-instantiation binding for
 `@externTarget` — §5 "Gap 1a") shipped alongside this doc; see the PR this
-doc was introduced in._
+doc was introduced in. Gap 1a's own follow-up, the auto-FFI direct-
+assignment sugar for the same shape, shipped in D-progress-1005 (`#7444`,
+see §5's "What this does *not* fix" subsection for the update). Gaps 1b/2/3
+(§7) remain open.
 
 ## 1. Why this doc exists
 
@@ -182,6 +185,15 @@ pre-existing, already-tested machinery; no new construction-side code was
 needed.
 
 ### What this does *not* fix
+
+_Update: the auto-FFI direct-assignment gap described in this subsection
+shipped in D-progress-1005 (#7444) — `argTyToSig` gained the `MGenericInst`/
+`MValueTypeGenericInst` arms this subsection predicted, `Mdr.scoreSigType`
+gained the structural match arm, and (a fourth gap this subsection did not
+anticipate) `externSetterCoercion`'s `castclass` fallback needed
+`MCastclassGeneric` instead of `MCastclassByName` for the common untyped-
+local case. See that decision doc for the full breakdown. The paragraph
+below is kept as the original scoping record._
 
 The auto-FFI **direct** property-assignment sugar (`opts.
 ApplicationProtocols = list`, no `@externTarget` wrapper) still panics
