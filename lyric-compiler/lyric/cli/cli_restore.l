@@ -852,11 +852,171 @@ pub func extractMavenJarPaths(jsonOutput: in String): List[String] {
   paths
 }
 
-// Download Maven JARs declared in manifest.maven and write their paths to
+// The `[maven]` artifacts a JVM build of `manifest` needs: its own entries
+// plus those of every workspace and path dependency it reaches, transitively
+// (docs/38 §4, D073).  A library declares its native boundary once and its
+// consumers need not repeat it: `lyric-ui` gets Undertow through `lyric-web`
+// and `lyric-ws` (#7378).  The nearest declaration of a `group:artifact`
+// wins (the manifest itself, then its direct dependencies, and so on,
+// breadth first, as Maven mediates versions); a farther one naming another
+// version is reported and ignored.  Repositories are the union of every
+// declaration's; the Java version is the manifest's own.  A registry or git
+// dependency contributes nothing here: it has no local manifest to read.
+func collectTransitiveMaven(manifest: in Manifest, mfDir: in String): MavenSection {
+  val entries: List[MavenEntry] = newList()
+  val entryOwners: List[String] = newList()
+  val repositories: List[String] = newList()
+  val rootName = manifest.packageSection.name
+  addMavenDeclarations(manifest, rootName, entries, entryOwners, repositories)
+  val wsCtx: Option[WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
+  val visited: List[String] = newList()
+  visited.add(canonicalDir(mfDir))
+  val queue: List[String] = newList()
+  enqueueLocalDeps(manifest, mfDir, wsCtx, visited, queue)
+  var qi = 0
+  while qi < queue.count {
+    val depDir = queue[qi]
+    qi += 1
+    val depToml = Path.join(depDir, "lyric.toml")
+    match File.readText(depToml) {
+      case Err(_) -> ()
+      case Ok(depText) -> match Mf.parseManifest(depText, depToml) {
+        case Err(_) -> ()
+        case Ok(depMf) -> {
+          addMavenDeclarations(depMf, depMf.packageSection.name, entries, entryOwners, repositories)
+          enqueueLocalDeps(depMf, depDir, wsCtx, visited, queue)
+        }
+      }
+    }
+  }
+  if repositories.count == 0 {
+    repositories.add("central")
+  }
+  val javaVersion = match manifest.maven { case Some(m) -> m.javaVersion; case None -> None }
+  MavenSection(entries = entries, repositories = repositories, javaVersion = javaVersion)
+}
+
+func addMavenDeclarations(
+  mf: in Manifest,
+  owner: in String,
+  entries: in List[MavenEntry],
+  entryOwners: in List[String],
+  repositories: in List[String],
+): Unit {
+  match mf.maven {
+    case None -> ()
+    case Some(m) -> {
+      for e in m.entries {
+        var existing = -1
+        var ei = 0
+        while ei < entries.count {
+          if entries[ei].group == e.group and entries[ei].artifact == e.artifact {
+            existing = ei
+          }
+          ei += 1
+        }
+        if existing < 0 {
+          entries.add(e)
+          entryOwners.add(owner)
+        } else if entries[existing].version != e.version {
+          Console.println(
+            "restore: note: " + e.group + ":" + e.artifact + " " + e.version + " (from " + owner + ") overridden by " +
+              entries[existing].version +
+              " (from " +
+              entryOwners[existing] +
+              ")"
+          )
+        }
+      }
+      for r in m.repositories {
+        var have = false
+        for known in repositories {
+          if known == r {
+            have = true
+          }
+        }
+        if not have {
+          repositories.add(r)
+        }
+      }
+    }
+  }
+}
+
+// `dir` with `.` and `..` segments resolved, so one dependency reached along
+// two relative routes (`../lyric-web`, `lyric-ws/../lyric-web`) is visited
+// once and a dependency cycle ends.
+func canonicalDir(dir: in String): String {
+  val parts: List[String] = newList()
+  for seg in Str.split(dir, "/") {
+    if seg == ".." {
+      if parts.count > 0 and parts[parts.count - 1] != ".." and parts[parts.count - 1].length > 0 {
+        parts.removeAt(parts.count - 1)
+      } else {
+        parts.add(seg)
+      }
+    } else if seg != "." and not (seg.length == 0 and parts.count > 0) {
+      parts.add(seg)
+    }
+  }
+  var joined = ""
+  var pi = 0
+  while pi < parts.count {
+    joined = if pi == 0 { parts[pi] } else { joined + "/" + parts[pi] }
+    pi += 1
+  }
+  if joined.length == 0 {
+    "."
+  } else if dir.startsWith("/") and not joined.startsWith("/") {
+    "/" + joined
+  } else {
+    joined
+  }
+}
+
+// Append the directories of `mf`'s workspace and path dependencies that have
+// not been visited yet.
+func enqueueLocalDeps(
+  mf: in Manifest,
+  mfDir: in String,
+  wsCtx: in Option[WorkspaceContext],
+  visited: in List[String],
+  queue: in List[String],
+): Unit {
+  for dep in mf.deps {
+    val dir = match dep.source {
+      case Path(rel) -> if Path.isAbsolute(rel) { rel } else { Path.join(mfDir, rel) }
+      case Workspace(_) -> match wsCtx {
+        case Some(ctx) -> match Ws.resolveDep(dep.name, ctx) {
+          case Some(d) -> d
+          case None -> ""
+        }
+        case None -> ""
+      }
+      case _ -> ""
+    }
+    if dir.length > 0 {
+      val full = canonicalDir(dir)
+      var seen = false
+      for v in visited {
+        if v == full {
+          seen = true
+        }
+      }
+      if not seen {
+        visited.add(full)
+        queue.add(full)
+      }
+    }
+  }
+}
+
+// Download the Maven JARs a JVM build of the manifest needs (its own and its
+// local dependencies', `collectTransitiveMaven`) and write their paths to
 // <mfDir>/target/restore/jvm-classpath.txt (one path per line).
-// Returns 0 on success, 1 on error.  No-op when no [maven] section is present.
+// Returns 0 on success, 1 on error.  No-op when nothing declares [maven].
 func restoreMavenJars(manifest: in Manifest, mfDir: in String): Int {
-  val maven = match manifest.maven { case None -> return 0; case Some(m) -> m }
+  val maven = collectTransitiveMaven(manifest, mfDir)
   if maven.entries.count == 0 {
     return 0
   }

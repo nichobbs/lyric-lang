@@ -151,70 +151,32 @@ test "generic fn: try/catch where every arm yields the type param still compiles
 // re-emits it verbatim as a structured diagnostic (no J008 double-wrap, no
 // raw stack trace).
 //
-// This test's repro USED TO BE a checker-legal (#6417) non-receiver
-// `Self`-typed impl param (`other: in Self`) whose field was read — but
-// #6426 shipped real `checkcast` emission for exactly that shape
-// (`emitSelfParamChecksJvm`, `jvm/codegen/06_items.l`), so it no longer
-// panics and had to be replaced (documented in D-progress-755) with a
-// match binding on a user-defined GENERIC UNION's payload, reached through a
-// bare function PARAMETER (`b: Box[Widget]`, matched directly).
-// `#5956` then taught `scrutineeGenericArgs` to recover a bare-parameter
-// scrutinee's own `TGenericApp` annotation too
-// (`recordParamGenericArgs`, `jvm/codegen/03_match.l`), so that repro
-// stopped panicking — confirmed by reverting `recordParamGenericArgs`
-// locally and observing this test fail exactly as it started failing in CI
-// once #5956 shipped, then restoring it and observing `w.n` compile clean.
-//
-// Replaced again (this time via a RECORD FIELD read as the match
-// scrutinee, `h.box`, rather than a bare parameter/local name) with a shape
-// `scrutineeGenericArgs` still leaves erased: it only recognises
-// `EParen`/`EAwait`/`EList`/`ECall`/a single-segment `EPath` as its
-// top-level scrutinee shape (`jvm/codegen/03_match.l`) — a bare `EMember`
-// field read used directly as a match scrutinee falls through its final
-// `case _ -> newList()` arm and stays boxed `Object`, so `w.n` inside the
-// match arm still hits the J007 refusal (verified directly against
-// `./bin/lyric build --target jvm` on this exact source). This is the same
-// panic FAMILY #6347/#6357 report against a real generic-collection-element
-// read; the underlying non-List/slice generic-payload gap stays open
-// (untouched by this file).
-//
-// Replaced a THIRD time (#6957): `scrutineeGenericArgs` gained a top-level
-// `EMember` arm (`fieldGenericArgsOf`, `jvm/codegen/03_match.l`) that
-// resolves a plain field read's own declared generic instantiation when
-// the field's RECEIVER is itself a bare local/parameter/`self`
-// (`receiverClassOf`'s only resolvable shapes) — exactly `h.box`'s shape,
-// so it stopped panicking too (mirrors the identical fix applied to
-// `emitter_project_self_test.l`'s sibling #6422 test). Nested one level
-// deeper — `h.wrap.box`, where the field's own receiver (`h.wrap`) is
-// itself an `EMember`, not a bare `EPath` — so `receiverClassOf` returns
-// `None` for it and the repro stays genuinely unresolvable (verified
-// directly against `./bin/lyric build --target jvm` on this exact source).
+// The repro is a field read through a distinct type over a record held in a
+// generic record (`b.item.n` with `b: Box[Wid]`, `type Wid = Widget`).  The
+// type checker records a receiver's class only for records, unions, opaque
+// and protected types (`SymbolTable.memberRecvClasses`): a distinct type has
+// no class of its own to narrow to, so the JVM backend still sees `b.item`
+// as erased `Object` and refuses.  Earlier repros (a `Self`-typed impl
+// parameter, a generic-union payload reached through a parameter, a field,
+// then `h.wrap.box`) each stopped reaching the refusal as the backend
+// learned to type them; the last compiles since #7378 narrows an erased
+// receiver to the class the type checker resolved.
 test "erased-receiver member access aborts codegen under error[J007] with a package-qualified span (#6422/#6426)" {
   val dir = freshTempDir("erased-receiver-j007")
   val outPath = Path.join(dir, "ErasedRecv.jar")
   val source = "package ErasedRecv.App\n" + "\n" + "record Widget {\n" + "  n: Int\n" + "}\n" + "\n" +
-    "union Box[T] {\n" +
-    "  case Full(value: T)\n" +
-    "  case Empty\n" +
+    "type Wid = Widget\n" +
+    "\n" +
+    "record Box[T] {\n" +
+    "  item: T\n" +
     "}\n" +
     "\n" +
-    "record Wrap {\n" +
-    "  box: Box[Widget]\n" +
-    "}\n" +
-    "\n" +
-    "record Holder {\n" +
-    "  wrap: Wrap\n" +
-    "}\n" +
-    "\n" +
-    "func unwrap(h: Holder): Int {\n" +
-    "  match h.wrap.box {\n" +
-    "    case Full(w) -> w.n\n" +
-    "    case Empty -> 0\n" +
-    "  }\n" +
+    "func get(b: in Box[Wid]): Int {\n" +
+    "  b.item.n\n" +
     "}\n" +
     "\n" +
     "func main(): Unit {\n" +
-    "  println(unwrap(Holder(wrap = Wrap(box = Full(value = Widget(n = 40))))))\n" +
+    "  println(get(Box(item = Wid.from(Widget(n = 3)))))\n" +
     "}\n"
   val noStdlib: List[String] = newList()
   var panicked = false
@@ -228,7 +190,7 @@ test "erased-receiver member access aborts codegen under error[J007] with a pack
   cleanup(dir)
   assertTrue(
     panicked,
-    "field access through an erased (statically Object) generic-union-payload receiver must abort JVM codegen"
+    "field access through an erased (statically Object) receiver the checker records no class for must abort JVM codegen"
   )
   assertTrue(
     Str.contains(caughtMessage, "error[J007]: ErasedRecv.App:"),

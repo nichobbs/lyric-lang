@@ -100,7 +100,8 @@ func buildJar(tmpDir: in String, pkgName: in String, source: in String, jarName:
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -135,7 +136,8 @@ func buildAndRunConsumer(
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {

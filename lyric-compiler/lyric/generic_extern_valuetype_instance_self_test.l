@@ -147,7 +147,8 @@ test "instance-method extern on a value-type generic-declaring type fails the bu
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   var threw = false
   var produced = false
@@ -240,7 +241,8 @@ test "async extern wrapper over a generic BCL method (Task.FromResult<T>) compil
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val res = Emitter.emitProject(req)
   var diagText = ""
@@ -321,7 +323,8 @@ test "generic-declaring-type member with its own method-level generic fails the 
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   var threw = false
   var produced = false

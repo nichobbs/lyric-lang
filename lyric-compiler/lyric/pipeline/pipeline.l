@@ -83,6 +83,17 @@ import Lyric.DiagnosticUtil as DiagUtil
 /// lowering is a synchronous stub with no suspend point at all (docs/44),
 /// so the same diagnostic would be a spurious platform-parity regression
 /// there — see `lowerPropagateFile`'s doc.
+/// The `@cfg` feature set one package of a build is erased with, when it
+/// differs from the build's own.  A dependency compiled from source into the
+/// consumer's bundle (the JVM target has no restored-binary form of a
+/// workspace or path dependency) keeps the features its own manifest
+/// resolves to, exactly as a separately built dependency does (#7378).
+pub record PackageFeatureSet {
+  packageName: String
+  active: List[String]
+  declared: List[String]
+}
+
 pub record MiddleEndOptions {
   tcFatal: Bool
   tcReport: Bool
@@ -96,6 +107,11 @@ pub record MiddleEndOptions {
   /// consumer could not lower.  Pass an empty list; the pipeline appends one
   /// file per `pipeCheckAndMono` call.
   checkedSourceOut: List[SourceFile]
+  /// Receives the type checker's `memberRecvClasses` for the file
+  /// (receiver span key -> `Pkg.Name`): the JVM backend narrows a generic
+  /// receiver it sees as `Object` with it (#7378).  Backends that keep
+  /// generic types pass a map and ignore it.
+  memberRecvClassesOut: Map[String, String]
 }
 
 // Report `diags` (package-labelled when `pkgLabel` is non-empty, further
@@ -275,6 +291,19 @@ pub func pipeCheckAndMono(
     return None
   }
   opts.checkedSourceOut.add(copyRes.file)
+  // Bound to an annotated local: MSIL instantiates `mapKeys` over `Object`
+  // when its argument is a cross-package field chain (#7441).
+  val recvClasses: Map[String, String] = tcRes.symbols.memberRecvClasses
+  for rk in mapKeys(recvClasses) {
+    match mapGet(recvClasses, rk) {
+      case Some(cls) -> {
+        if not opts.memberRecvClassesOut.containsKey(rk) {
+          opts.memberRecvClassesOut.add(rk, cls)
+        }
+      }
+      case None -> ()
+    }
+  }
   // Route every construction of an invariant-bearing type through its
   // checker (#7222).  After `.copy` desugaring, so a copy's constructor call
   // is covered too; after `checkedSourceOut` is captured, so generic bodies

@@ -898,6 +898,31 @@ func lowerBuiltinMonadAccessorJvm(
   None
 }
 
+// A field-access or method-call receiver that lowered to erased `Object` (an element of a
+// generic container, a generic call's result, a match binding of a generic
+// payload), narrowed to the class the type checker resolved for it
+// (`SymbolTable.memberRecvClasses`, seeded into `ctx.externTypes` as
+// `~recv~<span key>` by `Jvm.Bridge.withRecvClasses`).  Without this the
+// member read below has no class to resolve against and fails J007 (#7378).
+// A receiver the checker recorded nothing for is left as it is.
+func narrowErasedReceiverJvm(ctx: in FuncCtx, insns: in List[LInsn], recv: in Expr, ty: in JvmType): JvmType {
+  match ty {
+    case JRef(cls) -> {
+      if cls != "java/lang/Object" {
+        return ty
+      }
+      match mapGet(ctx.externTypes, "~recv~" + recordCopySiteKey(recv.span)) {
+        case Some(target) -> {
+          insns.add(LCheckcast(className = target))
+          JRef(className = target)
+        }
+        case None -> ty
+      }
+    }
+    case _ -> ty
+  }
+}
+
 // Lower a single expression.  Pushes exactly one value onto the operand
 // stack (or nothing for JVoid).  Returns the JvmType of the pushed value.
 pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmType {
@@ -1824,7 +1849,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         }
         case None -> ()
       }
-      val recvTy = lowerExpr(ctx, insns, recv)
+      val recvTy = narrowErasedReceiverJvm(ctx, insns, recv, lowerExpr(ctx, insns, recv))
       match recvTy {
         case JRef(cls) -> {
           match lowerBuiltinMonadAccessorJvm(ctx, insns, cls, memberName) {

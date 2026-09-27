@@ -291,6 +291,8 @@ func processWithNewFlow(order: in Order): Unit {
 | lyric-db | stable | planned | D056 |
 | lyric-health | stable | planned | D057 |
 | lyric-logging | stable | planned | D054 |
+| lyric-forms | experimental | experimental | D137; see Chapter 31 |
+| lyric-ui | experimental | experimental | D137, D139; see Chapter 31 |
 
 > **Note:** `lyric-jobs`, `lyric-ws`, `lyric-session`, `lyric-auth`, `lyric-resilience`,
 > `lyric-validation`, `lyric-testing`, `lyric-cache`, `lyric-db`, `lyric-health`, and

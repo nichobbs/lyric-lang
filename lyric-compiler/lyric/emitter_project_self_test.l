@@ -35,6 +35,7 @@ import Std.Environment as Environment
 import Lyric.Emitter as Emitter
 import Lyric.Parser as Parser
 import Lyric.ImplDefaults as ImplDefaults
+import Lyric.Pipeline as Pipe
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 func tempBase(): String {
@@ -115,7 +116,8 @@ func runEmitProjectOpts(
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -173,7 +175,49 @@ func runEmitProjectJvmOpts(
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
+  )
+  val result = Emitter.emitProject(req)
+  match result.outputPath {
+    case None -> {
+      cleanup(dir)
+      panic(label + ": emitProject (jvm) produced no output (diagnostics on stderr)")
+    }
+    case Some(_) -> ()
+  }
+  val args: List[String] = newList()
+  args.add("-jar")
+  args.add(jarPath)
+  val captured = Capture.runCaptureWithDiagnostics("java", args, "")
+  cleanup(dir)
+  captured
+}
+
+// As `runEmitProjectJvmOpts`, erasing the packages named in `pkgFeatures`
+// with their own `@cfg` features (`EmitProjectRequest.packageFeatures`) and
+// every other package with none.
+func runEmitProjectJvmPkgFeatures(
+  label: in String,
+  projectPkgs: in List[Emitter.ProjectPackage],
+  assemblyName: in String,
+  pkgFeatures: in List[Pipe.PackageFeatureSet],
+): Capture.CaptureResult {
+  val dir = freshTempDir(label)
+  val jarPath = Path.join(dir, assemblyName + ".jar")
+  val req = Emitter.EmitProjectRequest(
+    packages = projectPkgs,
+    assemblyName = assemblyName,
+    outputPath = jarPath,
+    target = Emitter.Jvm,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList(),
+    packageFeatures = pkgFeatures
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -662,7 +706,8 @@ test "per-package isolation implicit leak rejected" {
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -828,7 +873,8 @@ test "restored dep wiring no crash" {
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -871,7 +917,8 @@ test "emitProject subprocess fallback on restored dep" {
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -1015,82 +1062,33 @@ test "emitProject cross-package impl of an imported interface (qualified)" {
 
 // #6422/#6428 review: the containment mechanism itself — `Lyric.Emitter`'s
 // `try`/`catch` around its `JvmBridge` call sites (`jvmBridgePanicDiagnostic`)
-// — must convert a JVM codegen-refusal `Bug` (here the `error[J007]`
-// erased-receiver guard) into a normal `EmitResult` failure: NO exception
-// escapes `emit`, `outputPath` is `None`, and a diagnostic is carried. This
-// is what keeps `lyric test`'s per-file loop from aborting the whole process
-// on one file's codegen refusal (#6357).  The bridge-side message/code
-// contract is covered separately by `jvm_trycatch_bridge_self_test.l`, which
-// calls `Jvm.Bridge` directly and asserts the THROW — the two tests pin the
-// two halves of the design (bridge throws; emitter contains).
+// — must convert a JVM codegen-refusal `Bug` into a normal `EmitResult`
+// failure: NO exception escapes `emit`, `outputPath` is `None`, and a
+// diagnostic is carried. This is what keeps `lyric test`'s per-file loop from
+// aborting the whole process on one file's codegen refusal (#6357).  The
+// bridge-side message/code contract is covered separately by
+// `jvm_trycatch_bridge_self_test.l`, which calls `Jvm.Bridge` directly and
+// asserts the THROW — the two tests pin the two halves of the design (bridge
+// throws; emitter contains).
 //
-// This test's repro USED TO BE a checker-legal (#6417) non-receiver
-// `Self`-typed impl param (`other: in Self`) whose field was read — #6426
-// shipped real `checkcast` emission for that shape, so it stopped panicking
-// and this repro was replaced (D-progress-755) with a match binding on a
-// user-defined generic union's payload (a function PARAMETER typed
-// `Box[Widget]`, matched directly). #5956 then taught `scrutineeGenericArgs`
-// to recover a bare-parameter scrutinee's own `TGenericApp` annotation
-// (`recordParamGenericArgs`, `jvm/codegen/03_match.l`), so that repro
-// stopped panicking too — confirmed by reverting `recordParamGenericArgs`
-// locally and observing this test fail exactly as CI did, then restoring it
-// and observing the case-payload `w.n` read compile clean.
-//
-// Replaced again with a shape `scrutineeGenericArgs` still leaves erased:
-// the SAME union payload, but reached through a RECORD FIELD read
-// (`h.box`) rather than a bare parameter/local name. `scrutineeGenericArgs`
-// only recognises `EParen`/`EAwait`/`EList`/`ECall`/a single-segment
-// `EPath` as its top-level scrutinee shape (`jvm/codegen/03_match.l`); a
-// bare `EMember` field read used directly as a match scrutinee falls
-// through its final `case _ -> newList()` arm and stays boxed `Object`, so
-// `w.n` inside the match arm still hits the J007 refusal (verified directly
-// against `./bin/lyric build --target jvm` on this exact source).
-//
-// Replaced a THIRD time (#6957): `scrutineeGenericArgs` gained a top-level
-// `EMember` arm (`fieldGenericArgsOf`) that resolves a plain field read's
-// own declared generic instantiation — but only when the field's RECEIVER
-// is itself a bare local/parameter/`self` (`receiverClassOf`'s only
-// resolvable shapes). `h.box` is exactly that shape, so it stopped
-// panicking too (confirmed: reverting #6957's `EMember` arm locally
-// reproduces this test's failure with the two-level repro below unchanged
-// to one level, restoring it passes). The repro now nests one level
-// deeper — `h.wrap.box`, where the field's own receiver (`h.wrap`) is
-// itself an `EMember`, not a bare `EPath` — so `receiverClassOf` returns
-// `None` for it and `fieldGenericArgsOf` falls through to its safe
-// `newList()` default, keeping `w.n` erased and the J007 refusal reachable
-// (verified directly against `./bin/lyric build --target jvm` on this
-// exact source).
+// The refusal used is J009: a field the type checker leaves to codegen (an
+// extern JDK type's members are resolved from JDK metadata) that the JDK
+// class does not have.  The J007 erased-receiver repros this test used
+// before stopped reaching codegen as each shape was fixed; the last,
+// `match h.wrap.box { case Full(w) -> w.n }`, compiles since the JVM backend
+// narrows an erased receiver to the class the type checker resolved (#7378).
 test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure, not a thrown exception (#6422)" {
-  val dir = freshTempDir("jvm-contain-j007")
-  val source = "package ContainJ007.App\n" + "\n" + "record Widget {\n" + "  n: Int\n" + "}\n" + "\n" +
-    "union Box[T] {\n" +
-    "  case Full(value: T)\n" +
-    "  case Empty\n" +
-    "}\n" +
-    "\n" +
-    "record Wrap {\n" +
-    "  box: Box[Widget]\n" +
-    "}\n" +
-    "\n" +
-    "record Holder {\n" +
-    "  wrap: Wrap\n" +
-    "}\n" +
-    "\n" +
-    "func unwrap(h: Holder): Int {\n" +
-    "  match h.wrap.box {\n" +
-    "    case Full(w) -> w.n\n" +
-    "    case Empty -> 0\n" +
-    "  }\n" +
-    "}\n" +
-    "\n" +
+  val dir = freshTempDir("jvm-contain-j009")
+  val source = "package ContainJ009.App\n" + "\n" + "extern type JSb = \"java.lang.StringBuilder\"\n" + "\n" +
     "func main(): Unit {\n" +
-    "  println(unwrap(Holder(wrap = Wrap(box = Full(value = Widget(n = 40))))))\n" +
+    "  val sb = JSb.new()\n" +
+    "  println(sb.capacityField)\n" +
     "}\n"
   val noDefines: List[String] = newList()
   val req = Emitter.EmitRequest(
     source = source,
-    assemblyName = "ContainJ007",
-    outputPath = Path.join(dir, "ContainJ007.jar"),
+    assemblyName = "ContainJ009",
+    outputPath = Path.join(dir, "ContainJ009.jar"),
     target = Emitter.Jvm,
     packageVersion = "",
     defines = noDefines,
@@ -1123,33 +1121,33 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     cdi = cdi + 1
   }
   assertTrue(
-    Str.contains(diagText, "J007"),
-    "the contained refusal carries its J007 code in EmitResult.diagnostics (got: " + diagText + ")"
+    Str.contains(diagText, "J009"),
+    "the contained refusal carries its J009 code in EmitResult.diagnostics (got: " + diagText + ")"
   )
   // #6464: the diagnostic's span carries the REAL `line:col` the panic
-  // message embeds (`ContainJ007.App:22:21` — the `w` receiver of `w.n` in
-  // `case Full(w) -> w.n`), not the synthetic file-start point span every
+  // message embeds (`ContainJ009.App:7:11` — the `sb` receiver of
+  // `sb.capacityField`), not the synthetic file-start point span every
   // contained panic used to get.
-  var j007Idx = -1
+  var j009Idx = -1
   var sdi = 0
   while sdi < result.diagnostics.count {
-    if result.diagnostics[sdi].code == "J007" {
-      j007Idx = sdi
+    if result.diagnostics[sdi].code == "J009" {
+      j009Idx = sdi
     }
     sdi = sdi + 1
   }
-  assertTrue(j007Idx >= 0, "a J007 diagnostic is present in the result")
-  if j007Idx >= 0 {
-    val sp = result.diagnostics[j007Idx].span
+  assertTrue(j009Idx >= 0, "a J009 diagnostic is present in the result")
+  if j009Idx >= 0 {
+    val sp = result.diagnostics[j009Idx].span
     assertEqualInt(
       sp.startPos.line,
-      22,
-      "J007 span points at the real source line (got: " + toString(sp.startPos.line) + ")"
+      7,
+      "J009 span points at the real source line (got: " + toString(sp.startPos.line) + ")"
     )
     assertEqualInt(
       sp.startPos.column,
-      21,
-      "J007 span points at the real source column (got: " + toString(sp.startPos.column) + ")"
+      11,
+      "J009 span points at the real source column (got: " + toString(sp.startPos.column) + ")"
     )
   }
 }
@@ -1467,7 +1465,8 @@ test "emitProject depTemplateSrcs: from-instance aspect resolved against a dep-p
     packageVersion = "",
     depTemplateSrcs = depTemplates,
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val result = Emitter.emitProject(req)
 
@@ -2161,7 +2160,8 @@ func emitProjectFails(label: in String, pkgs: in List[Emitter.ProjectPackage], a
     packageVersion = "",
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
-    defines = newList()
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures()
   )
   val failed = match Emitter.emitProject(req).outputPath { case None -> true; case Some(_) -> false }
   cleanup(dir)
@@ -2495,4 +2495,92 @@ test "emitProject a generic record field names its own package's type (JVM)" {
   val result = runEmitProjectJvmOpts("emitproj-gfscope-jvm", genericFieldScopePkgs(), "EPGf")
   assertEqualInt(result.exitCode, 0, "generic field scope JVM: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "42", "generic field scope JVM: output")
+}
+
+// A dependency compiled into a JVM bundle keeps its own `@cfg` features
+// (#7378): `Lib`'s `jvm` variant survives although the consuming package
+// declares no features, as lyric-web's `jvm` kernel must in a lyric-ui build.
+test "emitProject erases a dependency with its own features (JVM)" {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPFeat.App",
+      "package EPFeat.App\n" + "\n" + "import EPFeat.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  println(kernelName())\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPFeat.Lib",
+      "package EPFeat.Lib\n" + "\n" + "@cfg(feature = \"dotnet\")\n" + "pub func kernelName(): String { \"dotnet\" }\n" +
+        "\n" +
+        "@cfg(feature = \"jvm\")\n" +
+        "pub func kernelName(): String { \"jvm\" }\n"
+    )
+  )
+  val libActive: List[String] = newList()
+  libActive.add("jvm")
+  val libDeclared: List[String] = newList()
+  libDeclared.add("dotnet")
+  libDeclared.add("jvm")
+  val feats: List[Pipe.PackageFeatureSet] = newList()
+  feats.add(Pipe.PackageFeatureSet(packageName = "EPFeat.Lib", active = libActive, declared = libDeclared))
+  val result = runEmitProjectJvmPkgFeatures("emitproj-pkgfeat-jvm", pkgs, "EPFeat", feats)
+  assertEqualInt(result.exitCode, 0, "per-package features JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "jvm", "per-package features JVM: the dependency's jvm variant")
+}
+
+// A bare constructor resolves through the file's own imports (#7378): the
+// `OutOfRange` a package imports from `EPCtor.Errors` is built, not
+// `Std.Errors.ParseError.OutOfRange`, which the JVM bundle registered first
+// (a `ClassCastException` at run time).  MSIL resolves constructors through
+// the type checker's symbols and never had this failure.
+func ctorImportPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPCtor.App",
+      "package EPCtor.App\n" + "\n" + "import Std.Core\n" + "import EPCtor.Check\n" + "\n" + "func main(): Unit {\n" +
+        "  println(describe(\"42\"))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPCtor.Errors",
+      "package EPCtor.Errors\n" + "\n" + "pub union FieldError {\n" + "  case Required(field: String)\n" +
+        "  case OutOfRange(field: String, min: Long, max: Long)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPCtor.Check",
+      "package EPCtor.Check\n" + "\n" + "import Std.Core\n" + "import Std.Parse as P\n" +
+        "import EPCtor.Errors.{FieldError, Required, OutOfRange}\n" +
+        "\n" +
+        "pub func inRange(field: in String, raw: in String): Result[Long, FieldError] {\n" +
+        "  return match P.parseOptLong(raw) {\n" +
+        "    case None -> Err(error = Required(field = field))\n" +
+        "    case Some(v) -> if v > 10 { Err(error = OutOfRange(field = field, min = 0, max = 10)) } else { Ok(value = v) }\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "pub func describe(raw: in String): String {\n" +
+        "  return match inRange(\"n\", raw) {\n" +
+        "    case Ok(v) -> \"ok \" + v.toString()\n" +
+        "    case Err(OutOfRange(f, lo, hi)) -> f + \" not in \" + lo.toString() + \"..\" + hi.toString()\n" +
+        "    case Err(_) -> \"required\"\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a bare constructor resolves through a selective import (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-ctorimport-jvm", ctorImportPkgs(), "EPCtor")
+  assertEqualInt(result.exitCode, 0, "ctor import JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "n not in 0..10", "ctor import JVM: output")
 }

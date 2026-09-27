@@ -32,6 +32,7 @@ import Std.Uuid
 import Std.Testing
 import Lyric.Cli as Cli
 import Lyric.Emitter as Emitter
+import Lyric.Pipeline as Pipe
 import Lyric.Manifest as Mf
 import Lyric.RestoredPackages as RP
 
@@ -1416,13 +1417,15 @@ test "buildProject: a preResolvedDeps sentinel's hadWorkspaceError is honored, n
     "package PreResolvedSentinelApp.Main\n\nfunc main(): Unit {\n  println(1)\n}\n"
   )
 
+  val noPkgFeatures: List[Pipe.PackageFeatureSet] = newList()
   val sentinel = Cli.ResolvedManifestDeps(
     restoredDlls = newList(),
     depTemplateSrcs = newList(),
     nugetThirdPartyPaths = newList(),
     nativeAssetPaths = newList(),
     hadWorkspaceError = true,
-    hadUnbuiltLocalDep = false
+    hadUnbuiltLocalDep = false,
+    depPackageFeatures = noPkgFeatures
   )
   val noCliFeatures: List[String] = newList()
   val exitCode = Cli.buildProject(

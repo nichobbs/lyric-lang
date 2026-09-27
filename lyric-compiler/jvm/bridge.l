@@ -383,20 +383,23 @@ pub func compileToJar(
   // suspend point — F0045's CLR-verifier-suspend-in-protected-region
   // hazard does not apply here, so it must never fire on this target.
   val optsCheckedOut: List[SourceFile] = newList()
+  val recvClasses: Map[String, String] = newMap()
   val opts = MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
     pkgLabel = "",
     lineOrigins = noOrigins,
     awaitInTryIsHazard = false,
-    checkedSourceOut = optsCheckedOut
+    checkedSourceOut = optsCheckedOut,
+    memberRecvClassesOut = recvClasses
   )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts) {
     case Some(f) -> f
     case None -> return false
   }
 
-  val pkg = codegenPackage(file)
+  val noSeed: Map[String, String] = newMap()
+  val pkg = codegenPackage(file, withRecvClasses(noSeed, recvClasses))
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
 
@@ -519,6 +522,7 @@ func runMiddleEnd(
   pkgLabel: in String,
   lineOrigins: in List[DiagUtil.MergedLineOrigin],
   checkedOut: in List[SourceFile],
+  recvClassesOut: in Map[String, String],
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   // #7198: see the other `MiddleEndOptions` construction site in this file.
@@ -528,7 +532,8 @@ func runMiddleEnd(
     pkgLabel = pkgLabel,
     lineOrigins = lineOrigins,
     awaitInTryIsHazard = false,
-    checkedSourceOut = checkedOut
+    checkedSourceOut = checkedOut,
+    memberRecvClassesOut = recvClassesOut
   )
   pipeMiddleEnd(
     file0,
@@ -690,6 +695,30 @@ func collectStdlibNonGenericFuncsJvm(files: in List[SourceFile]): List[FunctionD
 // imports so signatures written against imported extern types (e.g.
 // `Std.Time.now(): Instant` with `Instant` declared in `Std.TimeHost`)
 // resolve to the real JVM class instead of `<pkg>/<Alias>`.
+// `seed` plus the type checker's field-access receiver classes for the file
+// being generated, as `~recv~<span key>` -> JVM class (`Ui/Host/SessionEntry`).
+// `Jvm.Codegen.narrowErasedReceiverJvm` reads them; the `~` prefix keeps them
+// out of every type-name lookup (#7378).
+func withRecvClasses(seed: in Map[String, String], recvClasses: in Map[String, String]): Map[String, String] {
+  if recvClasses.count == 0 {
+    return seed
+  }
+  val merged: Map[String, String] = newMap()
+  for k in mapKeys(seed) {
+    match mapGet(seed, k) {
+      case Some(v) -> merged.add(k, v)
+      case None -> ()
+    }
+  }
+  for rk in mapKeys(recvClasses) {
+    match mapGet(recvClasses, rk) {
+      case Some(dotted) -> merged.add("~recv~" + rk, dotted.replace(".", "/"))
+      case None -> ()
+    }
+  }
+  merged
+}
+
 func externSeedForFile(
   file: in SourceFile, extPkgNames: in List[String], extPkgMaps: in List[Map[String, String]]
 ): Map[String, String] {
@@ -1629,8 +1658,15 @@ pub func compileToJarBundledWithRestored(
     packageVersion,
     restoredArtifacts,
     onePaths,
-    oneOrigins
+    oneOrigins,
+    noPackageFeatureSets()
   )
+}
+
+// No per-package feature overrides: every package uses the build's features.
+func noPackageFeatureSets(): List[PackageFeatureSet] {
+  val none: List[PackageFeatureSet] = newList()
+  none
 }
 
 // True when the file declares a top-level `func main` — the project entry
@@ -1701,7 +1737,8 @@ pub func compileProjectToJarBundledWithFeatures(
     packageVersion,
     noRestored,
     pkgPaths,
-    noOriginsByPkg
+    noOriginsByPkg,
+    noPackageFeatureSets()
   )
 }
 
@@ -1752,6 +1789,10 @@ pub func compileProjectToJarBundledWithRestored(
   // merged-blob line numbers back to their real on-disk file and line.
   // Empty (or an empty inner list) means no translation for that package.
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  // The `@cfg` features each package is erased with, parallel to `pkgSrcs`
+  // by index; a package past the end uses `activeFeatures` /
+  // `declaredFeatures` (see `PackageFeatureSet`).
+  pkgFeatures: in List[PackageFeatureSet],
 ): Bool {
   if pkgSrcs.count == 0 {
     Console.error("error[J001]: JVM project build received no packages")
@@ -1789,7 +1830,9 @@ pub func compileProjectToJarBundledWithRestored(
     } else {
       newList()
     }
-    val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", activeFeatures, declaredFeatures, jvmProjDefines, psiPath, psiOrigins) {
+    val psiActive = if psi < pkgFeatures.count { pkgFeatures[psi].active } else { activeFeatures }
+    val psiDeclared = if psi < pkgFeatures.count { pkgFeatures[psi].declared } else { declaredFeatures }
+    val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", psiActive, psiDeclared, jvmProjDefines, psiPath, psiOrigins) {
       case Some(f) -> f
       case None -> return false
     }
@@ -2572,7 +2615,8 @@ pub func compileProjectToJarBundledWithRestored(
   // The type-checked, `.copy`-desugared user file: contract metadata takes
   // generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val userChecked: List[SourceFile] = newList()
-  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked) {
+  val userRecvClasses: Map[String, String] = newMap()
+  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -2634,7 +2678,7 @@ pub func compileProjectToJarBundledWithRestored(
         autoFfi,
         allProjFqns,
         allClasses,
-        externSeedForFile(f, extPkgNames, extPkgMaps),
+        withRecvClasses(externSeedForFile(f, extPkgNames, extPkgMaps), userRecvClasses),
         userFileName,
         unsafeFieldLockNames
       )
@@ -2693,7 +2737,8 @@ pub func compileProjectToJarBundledWithRestored(
     }
     val ok = try {
       val siblingChecked: List[SourceFile] = newList()
-      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked) {
+      val siblingRecvClasses: Map[String, String] = newMap()
+      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses) {
         case Some(ff) -> {
           collectAspectWovenSigs(ff, registry)
           collectBModeWovenSigs(ff, registry)
@@ -2727,7 +2772,7 @@ pub func compileProjectToJarBundledWithRestored(
             autoFfi,
             allProjFqns,
             allClasses,
-            externSeedForFile(ff, extPkgNames, extPkgMaps),
+            withRecvClasses(externSeedForFile(ff, extPkgNames, extPkgMaps), siblingRecvClasses),
             bundledFileName,
             unsafeFieldLockNames
           )

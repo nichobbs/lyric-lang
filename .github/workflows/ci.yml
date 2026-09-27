@@ -6096,6 +6096,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/lyric-web-undertow-jvm-smoke.sh
+      - name: UI library suites on JVM (#7378)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/ui-jvm-suites.sh
       # lyric-ws Undertow smoke on JVM (#7243): the Origin policy (403 for a
       # cross-origin handshake, 101 for same-origin / no Origin / a listed
       # origin), handshake headers reaching onOpen, and a text round trip

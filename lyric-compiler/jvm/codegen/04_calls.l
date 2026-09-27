@@ -4224,7 +4224,10 @@ func lowerMethodCall(
       case None -> ()
     }
   }
-  val recvTy = lowerExpr(ctx, insns, recv)
+  // An erased receiver narrows to the type checker's class for it, so the
+  // method, extension and function-field resolution below sees the real
+  // record instead of `Object` (#7378).
+  val recvTy = narrowErasedReceiverJvm(ctx, insns, recv, lowerExpr(ctx, insns, recv))
   // `shr` is arithmetic (ISHR/LSHR — sign-replicating); Lyric's Int/Long/
   // Byte are signed and the JVM backend has no unsigned integer type, so the
   // logical-shift opcodes (IUSHR/LUSHR) are not reachable here.  Byte uses

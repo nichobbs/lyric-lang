@@ -597,6 +597,21 @@ func jvmSimpleName(cls: in String): String {
 // boxed scrutinee).  A scrutinee of any OTHER known class (String, a record)
 // is never an enum test, so a variable binding that happens to share a name
 // with some enum's case keeps binding.
+// Test the scrutinee against enum variant `name`'s singleton, jumping to
+// `failLabel` when it is a different variant.
+func emitEnumCaseTest(
+  insns: in List[LInsn],
+  scrutSlot: in Int,
+  scrutTy: in JvmType,
+  ecls: in String,
+  name: in String,
+  failLabel: in String,
+): Unit {
+  emitLoad(insns, scrutSlot, scrutTy)
+  insns.add(LGetstatic(owner = ecls, name = name, t = JRef(className = ecls)))
+  insns.add(LIfAcmpne(label = failLabel))
+}
+
 func enumPatternClass(ctx: in FuncCtx, scrutTy: in JvmType, caseName: in String): Option[String] {
   match scrutTy {
     case JRef(cls) -> {
@@ -989,27 +1004,43 @@ func lowerPatternTest(
           // Resolved scrutinee-type-first (#5982) so two same-package unions
           // sharing a nullary case name disambiguate to the union actually
           // being matched, not whichever registered the bare name first.
-          match resolveBareCaseClassJvm(ctx, name, scrutTy) {
-            case Some(cls) -> {
-              if jvmClassIsUnionCase(cls) {
-                emitLoad(insns, scrutSlot, scrutTy)
-                insns.add(LInstanceof(className = cls))
-                insns.add(LIfeq(label = failLabel))
-              }
+          // `case Debug ->` over an enum scrutinee also parses as a binding;
+          // when the name is a registered variant of the scrutinee's enum,
+          // test identity against the variant's singleton field instead of
+          // catch-all binding (docs/59 §4.4 — mirrors the MSIL
+          // enumCaseOrdinals-first PBinding path).  A scrutinee statically
+          // known to BE that enum decides it before any union-case lookup,
+          // and a bare-name hit that is not a union case (a record of the
+          // same name elsewhere in the bundle) never suppresses the enum
+          // test: either used to leave `case Info ->` compiled as a
+          // catch-all that hijacked every later arm (#7378).
+          val scrutEnum: Option[String] = match scrutTy {
+            case JRef(sc) -> if sc == "java/lang/Object" {
+              None
+            } else {
+              enumVariantClassByFullClass(ctx, sc.replace("/", "."), name)
             }
+            case _ -> None
+          }
+          match scrutEnum {
+            case Some(ecls) -> emitEnumCaseTest(insns, scrutSlot, scrutTy, ecls, name, failLabel)
             case None -> {
-              // `case Debug ->` over an enum scrutinee also parses as a
-              // binding; when the name is a registered variant of the
-              // scrutinee's enum, test identity against the variant's
-              // singleton field instead of catch-all binding (docs/59 §4.4 —
-              // mirrors the MSIL enumCaseOrdinals-first PBinding path).
-              match enumPatternClass(ctx, scrutTy, name) {
-                case Some(ecls) -> {
+              val unionCase: Option[String] = match resolveBareCaseClassJvm(ctx, name, scrutTy) {
+                case Some(cls) -> if jvmClassIsUnionCase(cls) { Some(value = cls) } else { None }
+                case None -> None
+              }
+              match unionCase {
+                case Some(cls) -> {
                   emitLoad(insns, scrutSlot, scrutTy)
-                  insns.add(LGetstatic(owner = ecls, name = name, t = JRef(className = ecls)))
-                  insns.add(LIfAcmpne(label = failLabel))
+                  insns.add(LInstanceof(className = cls))
+                  insns.add(LIfeq(label = failLabel))
                 }
-                case None -> ()
+                case None -> {
+                  match enumPatternClass(ctx, scrutTy, name) {
+                    case Some(ecls) -> emitEnumCaseTest(insns, scrutSlot, scrutTy, ecls, name, failLabel)
+                    case None -> ()
+                  }
+                }
               }
             }
           }
@@ -1738,6 +1769,12 @@ func bindCaseField(
   fty: in JvmType,
   concreteTy: in JvmType,
   concreteTypeExprOpt: in Option[TypeExpr],
+  // The field's own declared instantiation args (`JvmCaseField.genericArgs`,
+  // pre-resolved in the declaring package), used when the field is not a
+  // type-parameter payload: a `props: List[Prop]` field bound by a match
+  // records `[Prop]` so `for p in props { p.name }` narrows each element
+  // instead of failing J007 on an `Object` receiver (#7378).
+  declaredArgs: in List[TypeExpr],
   subPat: in Pattern,
 ): Unit {
   match subPat.kind {
@@ -1814,7 +1851,15 @@ func bindCaseField(
             case _ -> ()
           }
         }
-        case None -> ()
+        case None -> {
+          if declaredArgs.count > 0 {
+            recordVarGenericArgsScopeUndo(ctx, fname)
+            if ctx.varGenericArgs.containsKey(fname) {
+              ctx.varGenericArgs.remove(fname)
+            }
+            ctx.varGenericArgs.add(fname, declaredArgs)
+          }
+        }
       }
       match innerOpt {
         case Some(inner) -> lowerPatternBind(ctx, insns, inner, fSlot, boundTy, newList())
@@ -1976,11 +2021,13 @@ func lowerPatternBind(
           // type and the payload stays boxed `Object`.
           var concreteTy: JvmType = JRef(className = "java/lang/Object")
           var concreteTypeExprOpt: Option[TypeExpr] = None
+          var declaredArgs: List[TypeExpr] = newList()
           match caseInfo {
             case Some(flds) -> {
               if fi < flds.count {
                 realName = flds[fi].name
                 fty = flds[fi].ty
+                declaredArgs = flds[fi].genericArgs
                 concreteTy = fty
                 val pIdx = flds[fi].paramIdx
                 if pIdx >= 0 and pIdx < scrutTypeArgs.count {
@@ -1991,7 +2038,18 @@ func lowerPatternBind(
             }
             case None -> ()
           }
-          bindCaseField(ctx, insns, castSlot, caseClass, realName, fty, concreteTy, concreteTypeExprOpt, fields[fi])
+          bindCaseField(
+            ctx,
+            insns,
+            castSlot,
+            caseClass,
+            realName,
+            fty,
+            concreteTy,
+            concreteTypeExprOpt,
+            declaredArgs,
+            fields[fi]
+          )
           fi = fi + 1
         }
         insns.add(LNop)
@@ -2020,12 +2078,14 @@ func lowerPatternBind(
             var fty: JvmType = JRef(className = "java/lang/Object")
             var concreteTy: JvmType = JRef(className = "java/lang/Object")
             var concreteTypeExprOpt: Option[TypeExpr] = None
+            var declaredArgs: List[TypeExpr] = newList()
             match caseInfo {
               case Some(flds) -> {
                 var ffi = 0
                 while ffi < flds.count {
                   if flds[ffi].name == fieldName {
                     fty = flds[ffi].ty
+                    declaredArgs = flds[ffi].genericArgs
                     concreteTy = fty
                     val pIdx = flds[ffi].paramIdx
                     if pIdx >= 0 and pIdx < scrutTypeArgs.count {
@@ -2048,6 +2108,7 @@ func lowerPatternBind(
                 fty,
                 concreteTy,
                 concreteTypeExprOpt,
+                declaredArgs,
                 subPat
               )
               case RPFShort(_, _) -> {
@@ -2056,7 +2117,7 @@ func lowerPatternBind(
                 // instead of a raw getfield, so the shorthand form gets the same
                 // concrete-type resolution the named form does.
                 val subPat = Pattern(kind = PBinding(name = fieldName, inner = None), span = fieldSpan)
-                bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, concreteTy, concreteTypeExprOpt, subPat)
+                bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, concreteTy, concreteTypeExprOpt, declaredArgs, subPat)
               }
             }
             fi = fi + 1

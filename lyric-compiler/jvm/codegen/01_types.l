@@ -2075,10 +2075,67 @@ pub func emitHolderElemStore(insns: in List[LInsn], elemTy: in JvmType): Unit {
 // declaration (`<pkg>::<name>` scoped key) over the bundle-global
 // first-wins bare entry — see `addCtorKeys`.
 pub func ctorClassFor(ctx: in FuncCtx, name: in String): Option[String] {
-  match mapGet(ctx.ctors, ctx.pkgName + "::" + name) {
-    case Some(cls) -> Some(value = cls)
-    case None -> mapGet(ctx.ctors, name)
+  match mapGet(ctx.ctors, ctorHomePkg(ctx) + "::" + name) {
+    case Some(cls) -> return Some(value = cls)
+    case None -> ()
   }
+  match ctorClassFromImports(ctx, name) {
+    case Some(cls) -> return Some(value = cls)
+    case None -> ()
+  }
+  mapGet(ctx.ctors, name)
+}
+
+// The constructor a bare `name` means through the current file's imports
+// (recorded by `addCtorImportScope`, or by `originScopedExternTypes` for a
+// specialised copy of another package's generic): a selectively imported
+// name, then the one imported package that declares it.  `None` when the imports
+// do not decide it (no importing package declares it, or two do), leaving the
+// bundle-wide bare-name fallback.  Without this tier a bare `OutOfRange(...)`
+// in a package importing `Forms.{OutOfRange}` built whichever package's
+// `OutOfRange` registered first (`Std.Errors.ParseError`), a
+// ClassCastException at run time (#7378).
+// The package whose declarations a bare constructor name means first: the
+// package being generated, or, inside a specialised copy of another
+// package's generic, the package that generic was written in
+// (`originScopedExternTypes`).
+func ctorHomePkg(ctx: in FuncCtx): String {
+  return match mapGet(ctx.externTypes, "~ctor-own~") { case Some(own) -> own; case None -> ctx.pkgName }
+}
+
+func ctorClassFromImports(ctx: in FuncCtx, name: in String): Option[String] {
+  match mapGet(ctx.externTypes, "~ctor-import~" + name) {
+    case Some(scopedKey) -> {
+      match mapGet(ctx.ctors, scopedKey) {
+        case Some(cls) -> return Some(value = cls)
+        case None -> ()
+      }
+    }
+    case None -> ()
+  }
+  val pkgs = match mapGet(ctx.externTypes, "~ctor-pkgs~") { case Some(v) -> v; case None -> "" }
+  if pkgs.length == 0 {
+    return None
+  }
+  var found: Option[String] = None
+  for p in split(pkgs, ",") {
+    match mapGet(ctx.ctors, p + "::" + name) {
+      case Some(cls) -> {
+        match found {
+          case Some(prev) -> {
+            if prev != cls {
+              return None
+            }
+          }
+          case None -> {
+            found = Some(value = cls)
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+  found
 }
 
 // As `ctorClassFor`, but consulting `ctx.ctorExpectStack`'s top entry (the
@@ -2088,7 +2145,7 @@ pub func ctorClassFor(ctx: in FuncCtx, name: in String): Option[String] {
 // the one the call actually expects (#5976).  Still tries the current
 // package's own declaration first, exactly like `ctorClassFor`.
 pub func ctorClassForExpecting(ctx: in FuncCtx, name: in String): Option[String] {
-  match mapGet(ctx.ctors, ctx.pkgName + "::" + name) {
+  match mapGet(ctx.ctors, ctorHomePkg(ctx) + "::" + name) {
     case Some(cls) -> return Some(value = cls)
     case None -> ()
   }
@@ -2100,6 +2157,10 @@ pub func ctorClassForExpecting(ctx: in FuncCtx, name: in String): Option[String]
         case None -> ()
       }
     }
+  }
+  match ctorClassFromImports(ctx, name) {
+    case Some(cls3) -> return Some(value = cls3)
+    case None -> ()
   }
   mapGet(ctx.ctors, name)
 }

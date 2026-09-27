@@ -25,6 +25,7 @@ import Lyric.Manifest as Mf
 import Lyric.Workspace as Ws
 import Lyric.Release as Release
 import Lyric.Emitter as Emitter
+import Lyric.Pipeline as Pipe
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public API
@@ -320,6 +321,109 @@ func collectDepTemplateSources(
               }
             }
           }
+        }
+      }
+    }
+  }
+}
+
+/// Record the `@cfg` feature set every package of the dependency at `depDir`
+/// is compiled with when its source is bundled into the consumer's build
+/// (the JVM target, which has no restored form of a workspace or path
+/// dependency): the dependency's own `[features]` resolution, composed the
+/// way `buildWorkspaceDep` composes it for a separately built dependency
+/// (#5571) — its defaults unless `noDefaultFeatures`, plus the root's
+/// explicit `cliFeatures`, normalized to `target`.  Without it the
+/// dependency was erased with the consumer's features, so a dependency whose
+/// target kernels sit behind `@cfg(feature = "jvm")` lost them (#7378).
+func collectDepPackageFeatures(
+  depDir: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  target: in Emitter.CompileTarget,
+  into: in List[Pipe.PackageFeatureSet],
+): Unit {
+  val depToml = Path.join(depDir, "lyric.toml")
+  match File.readText(depToml) {
+    case Err(_) -> ()
+    case Ok(depMfText) -> {
+      match Mf.parseManifest(depMfText, depToml) {
+        case Err(_) -> ()
+        case Ok(depMf) -> {
+          match depMf.project {
+            case None -> ()
+            case Some(proj) -> {
+              val (active, declared) = resolveManifestFeatures(depMfText, depToml, cliFeatures, noDefaultFeatures, false, target)
+              for pkgEntry in proj.packages {
+                var known = false
+                for existing in into {
+                  if existing.packageName == pkgEntry.name {
+                    known = true
+                  }
+                }
+                if not known {
+                  into.add(Pipe.PackageFeatureSet(packageName = pkgEntry.name, active = active, declared = declared))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Collect the source packages, and their feature sets, of every workspace
+/// and path dependency `manifest` reaches transitively whose packages are not
+/// in `pkgs` yet.  The JVM target has no restored form of a workspace or path
+/// dependency, so a bundle compiles each one from source — its dependencies'
+/// dependencies included, or a call from `lyric-web` into
+/// `lyric-resilience` has nothing to resolve against in a `lyric-ui` build
+/// (#7378).  Registry and git dependencies have no local manifest and are
+/// not walked.
+func collectTransitiveDepSources(
+  manifest: in Mf.Manifest,
+  mfDir: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  target: in Emitter.CompileTarget,
+  pkgs: in List[ProjectPackage],
+  features: in List[Pipe.PackageFeatureSet],
+): Unit {
+  val wsCtx: Option[WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
+  val visited: List[String] = newList()
+  visited.add(canonicalDir(mfDir))
+  val queue: List[String] = newList()
+  enqueueLocalDeps(manifest, mfDir, wsCtx, visited, queue)
+  var qi = 0
+  while qi < queue.count {
+    val depDir = queue[qi]
+    qi += 1
+    val depToml = Path.join(depDir, "lyric.toml")
+    match File.readText(depToml) {
+      case Err(_) -> ()
+      case Ok(depText) -> match Mf.parseManifest(depText, depToml) {
+        case Err(_) -> ()
+        case Ok(depMf) -> {
+          val collected = match depMf.project {
+            case Some(proj) -> {
+              var any = false
+              for pe in proj.packages {
+                for have in pkgs {
+                  if have.name == pe.name {
+                    any = true
+                  }
+                }
+              }
+              any
+            }
+            case None -> true
+          }
+          if not collected {
+            collectDepTemplateSources(depDir, depMf.packageSection.name, pkgs)
+            collectDepPackageFeatures(depDir, cliFeatures, noDefaultFeatures, target, features)
+          }
+          enqueueLocalDeps(depMf, depDir, wsCtx, visited, queue)
         }
       }
     }
@@ -745,6 +849,10 @@ pub record ResolvedManifestDeps {
   /// single-file synthetic project request treats it as fatal per D123's
   /// "fail loud instead of silently degrading" conservative default.
   hadUnbuiltLocalDep: Bool
+  /// The `@cfg` features each `depTemplateSrcs` package is compiled with
+  /// when bundled from source (`collectDepPackageFeatures`); pass as
+  /// `EmitProjectRequest.packageFeatures`.
+  depPackageFeatures: List[Pipe.PackageFeatureSet]
 }
 
 /// Resolve every dependency a manifest declares — workspace deps (built
@@ -770,6 +878,7 @@ pub func resolveManifestDependencies(
   val mfDir = Path.dirname(mfPath)
   val restoredDlls: List[String] = newList()
   val depTemplatePkgsList: List[ProjectPackage] = newList()
+  val depPackageFeatures: List[Pipe.PackageFeatureSet] = newList()
   val seenDeps: List[String] = newList()
   var hadUnbuiltLocalDep = false
 
@@ -781,7 +890,8 @@ pub func resolveManifestDependencies(
       nugetThirdPartyPaths = newList(),
       nativeAssetPaths = newList(),
       hadWorkspaceError = true,
-      hadUnbuiltLocalDep = false
+      hadUnbuiltLocalDep = false,
+      depPackageFeatures = depPackageFeatures
     )
   }
   var wdi = 0
@@ -883,6 +993,7 @@ pub func resolveManifestDependencies(
                   // now-symbol-less dependency hits an unresolved-reference type error.
                   // Both are exercised by
                   // `jvm_path_dependency_self_test.l`'s "unreadable source" tests.
+                  collectDepPackageFeatures(depDir, cliFeatures, noDefaultFeatures, target, depPackageFeatures)
                   match depMf.project {
                     case Some(proj) -> {
                       var pki = 0
@@ -966,7 +1077,10 @@ pub func resolveManifestDependencies(
           case Some(wsCtx) -> {
             match Ws.resolveDep(dep.name, wsCtx) {
               case None -> ()
-              case Some(depDir) -> collectDepTemplateSources(depDir, dep.name, depTemplatePkgsList)
+              case Some(depDir) -> {
+                collectDepTemplateSources(depDir, dep.name, depTemplatePkgsList)
+                collectDepPackageFeatures(depDir, cliFeatures, noDefaultFeatures, target, depPackageFeatures)
+              }
             }
           }
         }
@@ -1006,6 +1120,18 @@ pub func resolveManifestDependencies(
     }
   }
   val nativeAssetPaths = allNugetAssets.nativePaths
+  match target {
+    case Jvm -> collectTransitiveDepSources(
+      manifest,
+      mfDir,
+      cliFeatures,
+      noDefaultFeatures,
+      target,
+      depTemplatePkgsList,
+      depPackageFeatures
+    )
+    case _ -> ()
+  }
 
   ResolvedManifestDeps(
     restoredDlls = restoredDlls,
@@ -1013,7 +1139,8 @@ pub func resolveManifestDependencies(
     nugetThirdPartyPaths = nugetThirdPartyPaths,
     nativeAssetPaths = nativeAssetPaths,
     hadWorkspaceError = false,
-    hadUnbuiltLocalDep = hadUnbuiltLocalDep
+    hadUnbuiltLocalDep = hadUnbuiltLocalDep,
+    depPackageFeatures = depPackageFeatures
   )
 }
 
@@ -1111,10 +1238,19 @@ pub record WorkspaceImportDeps {
   /// the build must fail loudly (with the member named in stderr) rather than
   /// compile the import leniently into runtime-invalid code.
   hadUnbuiltMember: Bool
+  /// The `@cfg` features each `depTemplateSrcs` package is compiled with
+  /// when bundled from source (`collectDepPackageFeatures`).
+  depPackageFeatures: List[Pipe.PackageFeatureSet]
 }
 
 func emptyWorkspaceImportDeps(): WorkspaceImportDeps {
-  WorkspaceImportDeps(restoredDlls = newList(), depTemplateSrcs = newList(), hadUnbuiltMember = false)
+  val noFeatures: List[Pipe.PackageFeatureSet] = newList()
+  WorkspaceImportDeps(
+    restoredDlls = newList(),
+    depTemplateSrcs = newList(),
+    hadUnbuiltMember = false,
+    depPackageFeatures = noFeatures
+  )
 }
 
 /// True for package heads that resolve through the compiler / stdlib
@@ -1200,6 +1336,9 @@ pub func resolveWorkspaceImportDeps(
   val ctx = match Ws.findWorkspaceRoot(sourceDir) { case None -> return emptyWorkspaceImportDeps(); case Some(c) -> c }
   val restored: List[String] = newList()
   val templates: List[ProjectPackage] = newList()
+  val memberFeatures: List[Pipe.PackageFeatureSet] = newList()
+  // A single-file build takes no `--features` for its workspace members.
+  val noCliFeatures: List[String] = newList()
   var hadUnbuilt = false
   val seen: List[String] = newList()
   var ai = 0
@@ -1277,6 +1416,7 @@ pub func resolveWorkspaceImportDeps(
               // compiled straight into the bundle by the caller (#6771).
               seen.add(member.name)
               collectDepTemplateSources(member.dir, member.name, templates)
+              collectDepPackageFeatures(member.dir, noCliFeatures, false, target, memberFeatures)
             }
           }
         }
@@ -1284,5 +1424,10 @@ pub func resolveWorkspaceImportDeps(
     }
     ii += 1
   }
-  WorkspaceImportDeps(restoredDlls = restored, depTemplateSrcs = templates, hadUnbuiltMember = hadUnbuilt)
+  WorkspaceImportDeps(
+    restoredDlls = restored,
+    depTemplateSrcs = templates,
+    hadUnbuiltMember = hadUnbuilt,
+    depPackageFeatures = memberFeatures
+  )
 }

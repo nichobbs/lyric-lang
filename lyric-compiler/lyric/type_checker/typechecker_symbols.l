@@ -259,6 +259,14 @@ pub record SymbolTable {
   /// `recordCopySites`: evidence for `Lyric.Mono`, which cannot see the
   /// signatures of other packages' non-generic functions (D-progress-969).
   callResultTypes: Map[String, TypeExpr]
+  /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
+  /// opaque or protected type each field-access or method-call receiver
+  /// has, keyed like
+  /// `recordCopySites` by the receiver's span.  The JVM backend erases
+  /// generics, so a receiver read out of a generic container or a generic
+  /// call is statically `Object` there; this is the type it narrows to
+  /// (#7378).
+  memberRecvClasses: Map[String, String]
   /// The first symbol declaring each type id, keyed by the id, filled lazily
   /// by `symTableTypeSymbolOf` as symbols are appended.
   typeSymbolsById: Map[String, Symbol]
@@ -323,6 +331,7 @@ pub func newSymbolTable(): SymbolTable {
     funcRefCallees = newMap(),
     argConversionSites = newMap(),
     callResultTypes = newMap(),
+    memberRecvClasses = newMap(),
     typeSymbolsById = newMap(),
     typeSymbolsIndexed = newList(),
     distinctOpSites = newMap(),
