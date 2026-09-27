@@ -1,4 +1,4 @@
-# D-progress-997 — Recover closed generic instantiation at an `@externTarget` parameter/return position instead of erasing to `object` (#6029)
+# D-progress-998 — Recover closed generic instantiation at an `@externTarget` parameter/return position instead of erasing to `object` (#6029)
 
 **Status:** shipped
 
@@ -60,6 +60,52 @@ this fix. No new construction-side code was needed for a ctor whose own
 `@externTarget` string carries no bracket suffix (`newList()` inferring
 `List<SslApplicationProtocol>` purely from its declared `ProtoList` return
 type — the exact shape #6029 originally reported).
+
+## Follow-up: SDK-less fallback and stdlib migration (review round 2)
+
+Two REQUIRED findings from `claude-review`'s second pass:
+
+1. `argFqnToMsil` and `externTargetBracketGenericInstMsil` consulted only the
+   metadata-derived `cctx.metadataVtypeSet` to decide VALUETYPE vs. CLASS —
+   correct with a reference pack on disk, but silently wrong in an SDK-less
+   build (an empty vtypeSet), reproducing the exact mistagging bug this fix
+   exists to prevent. Fixed by falling back to the same hardcoded
+   `Msil.Ffi.clrIsValueType` closed set `externValueTypeMsil` already
+   consults for the identical reason, and added
+   `System.Net.Security.SslApplicationProtocol` to that list (and its
+   `expectedClrValueTypes()` mirror in `metadata_reader_tests.l`) since it is
+   now the first value-typed GENERICINST *argument* the fallback needs to
+   cover, not just a bare parameter/return/field type.
+2. `_kernel/tcp_host.l`'s `setApplicationProtocols` used a reflection-based
+   workaround for exactly this fix's target shape
+   (`SslServerAuthenticationOptions.set_ApplicationProtocols(List<
+   SslApplicationProtocol>)`), and #6029's own body said to remove it once
+   the emitter could encode the real signature. Migrated it to a direct
+   `@externTarget`-wrapped `List<SslApplicationProtocol>` construction +
+   setter (mirroring this PR's own self-test), deleting the ~90 lines of
+   `Type`/`Activator`/`IList`/`PropertyInfo` reflection plumbing that existed
+   only for this one call site. Verified end-to-end against the real ALPN
+   negotiation path (`tcp_host_tls_tests.l`, `http_server_dotnet_tests.l`,
+   `dotnet_h2_smoke.l` — all three exercise a real TLS handshake / HTTP-2
+   `curl` round trip, not just a compile check).
+
+One SUGGESTION not acted on: `externTargetBracketGenericInstMsil` requires a
+bare single-segment `TRef` (`path.segments.count == 1`), so a bracket-suffixed
+alias reached through a qualified/cross-package path still falls back to the
+`MObject` erasure rather than this fix's recovery — narrower than
+`typeExprToMsilCtx`'s own `externTypeNames` lookup, which resolves via
+`lastSegmentMsil(path)` regardless of segment count. No known real-world
+`@externTarget` signature hits this today (every existing kernel/ecosystem
+consumer, `tcp_host.l`'s new migration included, uses a bare unqualified
+alias name), so it is left as a documented gap rather than widened
+speculatively.
+
+Validating the `clrIsValueType`/`expectedClrValueTypes()` addition against the
+manual (not CI-wired) `testClrValueTypeAudit` in `metadata_reader_tests.l`
+confirmed `SslApplicationProtocol` itself introduces no drift, but surfaced
+pre-existing, unrelated drift for other `_kernel/` enum externs
+(`SslProtocols`, `X509ChainTrustMode`) that predates this PR — filed as #7488
+rather than folded in here.
 
 ## Scope explicitly not covered
 

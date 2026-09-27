@@ -22375,7 +22375,12 @@ func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
   } else {
     ensureMetadataIndex(cctx)
     val refRow = internFfiTypeRefNested(cctx, fqn)
-    if Mdr.isValueTypeFqn(cctx.metadataVtypeSet, fqn) {
+    // Fall back to the hardcoded `clrIsValueType` list when no reference pack
+    // is on disk, mirroring `externValueTypeMsil`'s identical fallback — an
+    // SDK-less build has an empty `metadataVtypeSet`, which would otherwise
+    // silently mistag every value-type argument as `MClassRef` and reproduce
+    // the exact TypeLoadException this function exists to prevent (#7484).
+    if Mdr.isValueTypeFqn(cctx.metadataVtypeSet, fqn) or clrIsValueType(fqn) {
       MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn)
     } else {
       MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn)
@@ -22455,7 +22460,11 @@ func externTargetBracketGenericInstMsil(
             ensureMetadataIndex(cctx)
             val cleanFqn = stripBracketSuffix(clrFqn)
             val concreteArgFqns = parseBracketArgFqns(clrFqn)
-            val isValType = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, cleanFqn)
+            // Same SDK-less fallback as `argFqnToMsil` (#7484): an empty
+            // metadata vtypeSet must not silently mistag a value-type
+            // generic-declaring type (e.g. a hypothetical `ValueTask`1[...]`
+            // alias) as a reference type.
+            val isValType = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, cleanFqn) or clrIsValueType(cleanFqn)
             val giRefRow = internFfiTypeRefNested(cctx, cleanFqn)
             val typeArgs: List[MsilType] = newList()
             var i = 0

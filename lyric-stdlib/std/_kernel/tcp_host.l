@@ -204,8 +204,8 @@ func clientSetSendTimeout(c: in TcpClient, ms: in Int): Unit = ()
 // back `hostRemoteAddress` (used by `lyric-ws`'s dotnet WebSocket kernel to
 // populate `onOpen`'s `remoteAddress` callback argument — docs/62 §6). The
 // base-`Object.ToString()` hint on the derived `EndPoint`-typed value is the
-// same pattern `optionsRuntimeType`/`chainPolicyCustomTrustStore` below use
-// for a base-method-on-derived-receiver call.
+// same pattern `chainPolicyCustomTrustStore` below uses for a
+// base-method-on-derived-receiver call.
 @externTarget("System.Net.Sockets.TcpClient.get_Client")
 func clientSocket(c: in TcpClient): Socket = ()
 
@@ -311,124 +311,53 @@ func optionsSetChainPolicy(o: in SslServerAuthOptions, p: in X509ChainPolicy): U
 @externTarget("System.Security.Authentication.SslProtocols.Tls13")
 func sslProtocolsTls13(): SslProtocols = ()
 
-// ALPN protocol list is set through reflection, not a direct
-// `options.ApplicationProtocols = list` assignment or an
-// `@externTarget("set_ApplicationProtocols")` wrapper. The property type is
-// `List<SslApplicationProtocol>` — a generic instantiation over an extern
-// *value type* — and the self-hosted MSIL emitter cannot encode that generic
-// argument in a MemberRef signature: the `@externTarget` hint path degrades
-// the setter's parameter to `System.Object` (so the emitted MemberRef binds
-// no real method → `MissingMethodException` at run time), and the auto-FFI
-// property-assignment path panics the emitter outright
-// (`panicExternSetterUnresolved`: "has a getter but no accessible setter",
-// because the generic-typed setter never resolves from reference metadata).
-// Filed as #6029. The reflection bridge below builds the
-// genuine `List<SslApplicationProtocol>` and assigns it entirely through
-// non-generic reflection APIs (`Type`/`Activator`/`IList`/`PropertyInfo`) —
-// the same "reach the capability through a non-generic seam" tactic
-// `_kernel/http_host.l` uses (its non-generic `IEnumerator` header walk) and
-// the JVM server test's reflection helpers use. Remove once the emitter can
-// encode a generic-`List<ExternValueType>` member signature.
-extern type NetObject = "System.Object"
+// ALPN protocol list is now set through a direct `List<SslApplicationProtocol>`
+// construction and the real `set_ApplicationProtocols` setter — a bracket-
+// suffixed extern-type alias used as an `@externTarget` parameter type,
+// exactly the shape D-progress-997 (#6029) fixed: the self-hosted MSIL
+// emitter previously erased that generic instantiation to `System.Object` at
+// a parameter/return position (`MissingMethodException` at run time), and the
+// auto-FFI property-assignment path still panics outright
+// (`panicExternSetterUnresolved`) — the `@externTarget`-wrapper form used
+// here sidesteps that separately-tracked gap (#7444). This replaces the
+// previous reflection bridge (`Type`/`Activator`/`IList`/`PropertyInfo`),
+// removed now that the emitter encodes the generic signature directly.
+extern type ApplicationProtocolList = "System.Collections.Generic.List`1[System.Net.Security.SslApplicationProtocol]"
 
-extern type NetType = "System.Type"
-
-extern type NetActivator = "System.Activator"
-
-extern type IList = "System.Collections.IList"
-
-extern type PropertyInfo = "System.Reflection.PropertyInfo"
-
-// `NetFieldInfo`, not `FieldInfo`: the self-hosted MSIL codegen registers
-// every `extern type` alias in one bundle-global, package-unscoped name table
-// that is consulted before the package-scoped type resolver, so a bare alias
-// named `FieldInfo` here would hijack the compiler's own
-// `Jvm.Classfile.FieldInfo` Lyric record (in `lyric-compiler/jvm/classfile.l`)
-// during the shared stage-1 build — its `.name` field access then mis-resolves
-// to `System.Reflection.FieldInfo.get_name` and hard-crashes codegen (#6041,
-// the underlying `externTypeNames` scoping defect). The `Net`-prefix (matching
-// `NetObject`/`NetType`/`NetActivator` above) keeps the alias collision-free;
-// the CLR type it binds is unchanged.
-extern type NetFieldInfo = "System.Reflection.FieldInfo"
-
-@externStatic
-@externTarget("System.Type.GetType")
-func typeGetType(name: in String): NetType = ()
-
-// `Activator.CreateInstance(Type)` returns `System.Object` at the BCL
-// boundary; the runtime object here is the just-constructed
-// `List<SslApplicationProtocol>`, which implements the non-generic `IList`,
-// so the wrapper is declared to return `IList`. Hint-less on purpose: the
-// strict `@externStatic` return-type check would reject the object->IList
-// widening, while the calling convention still defaults (correctly) to
-// static.
-@externTarget("System.Activator.CreateInstance")
-func activatorCreateIList(t: in NetType): IList = ()
-
-// `System.Object.GetType()` on the derived receiver — the base-method-on-
-// derived pattern used throughout this file.
-@externInstance
-@externTarget("System.Object.GetType")
-func optionsRuntimeType(o: in SslServerAuthOptions): NetType = ()
+@externTarget("System.Collections.Generic.List`1..ctor")
+func newApplicationProtocolList(): ApplicationProtocolList = ()
 
 @externInstance
-@externTarget("System.Type.GetProperty")
-func typeGetProperty(t: in NetType, name: in String): PropertyInfo = ()
+@externTarget("System.Collections.Generic.List`1[System.Net.Security.SslApplicationProtocol].Add")
+func applicationProtocolListAdd(l: in ApplicationProtocolList, item: in SslApplicationProtocol): Unit = ()
 
 @externInstance
-@externTarget("System.Type.GetField")
-func typeGetField(t: in NetType, name: in String): NetFieldInfo = ()
-
-// `FieldInfo.GetValue(obj)` returns the field value already boxed to
-// `object`. For a STATIC field the `obj` argument is ignored, so passing any
-// non-null reference (here `opts`) works — this dodges the need for a null
-// literal (which Lyric FFI has no direct form for) AND boxes the value-type
-// `SslApplicationProtocol` field for free, sidestepping the
-// unboxed-value-type-into-an-`object`-parameter `InvalidProgramException`
-// that a direct `IList.Add(sslApplicationProtocolValue)` hits.
-@externInstance
-@externTarget("System.Reflection.FieldInfo.GetValue")
-func fieldGetValueBoxed(f: in NetFieldInfo, ignoredForStaticField: in SslServerAuthOptions): NetObject = ()
-
-@externInstance
-@externTarget("System.Collections.IList.Add")
-func ilistAddBoxed(l: in IList, item: in NetObject): Int = ()
-
-@externInstance
-@externTarget("System.Reflection.PropertyInfo.SetValue")
-func propertySetValue(p: in PropertyInfo, obj: in SslServerAuthOptions, value: in IList): Unit = ()
-
-// Assembly-qualified: `SslApplicationProtocol` lives in `System.Net.Security`,
-// so a bare name resolves to null through `Type.GetType`.
-val sslAppProtoTypeName: String = "System.Net.Security.SslApplicationProtocol, System.Net.Security"
-
-val appProtoListTypeName: String = "System.Collections.Generic.List`1[[System.Net.Security.SslApplicationProtocol, System.Net.Security]]"
+@externTarget("System.Net.Security.SslServerAuthenticationOptions.set_ApplicationProtocols")
+func optionsSetApplicationProtocols(o: in SslServerAuthOptions, protocols: in ApplicationProtocolList): Unit = ()
 
 // Build a genuine `List<SslApplicationProtocol>` holding `h2` (first, so it is
-// the server's ALPN preference) and `http/1.1`, and assign it to
-// `options.ApplicationProtocols` via reflection (see the block comment above
-// for why the direct paths are unavailable). Both `Http2` and `Http11` are
-// static *fields* of struct type; read each boxed through `FieldInfo.GetValue`
-// so it flows into `IList.Add(object)` as a reference. Advertising `h2` here is
-// the ALPN half of docs/61 §6.4 phase 4.4 (issue #5889): a peer that offers h2
-// negotiates HTTP/2 (the server assembly selects the h2 FSM on the `hostAlpn`
-// result), and a peer that offers only `http/1.1` (or no ALPN) falls back to
-// HTTP/1.1.
+// the server's ALPN preference) and `http/1.1`, and assign it directly to
+// `options.ApplicationProtocols`. `sslAppProtoOf` (below) already constructs
+// the identical value the BCL's `Http2`/`Http11` static fields hold (its own
+// doc comment explains why the ctor and the field agree) and is already used
+// this way for comparison in `computeAlpn` below, so reusing it here needs no
+// new construction path. Advertising `h2` here is the ALPN half of docs/61
+// §6.4 phase 4.4 (issue #5889): a peer that offers h2 negotiates HTTP/2 (the
+// server assembly selects the h2 FSM on the `hostAlpn` result), and a peer
+// that offers only `http/1.1` (or no ALPN) falls back to HTTP/1.1.
 func setApplicationProtocols(opts: in SslServerAuthOptions): Unit {
-  val protoType = typeGetType(sslAppProtoTypeName)
-  val http2Boxed = fieldGetValueBoxed(typeGetField(protoType, "Http2"), opts)
-  val http11Boxed = fieldGetValueBoxed(typeGetField(protoType, "Http11"), opts)
-  val list = activatorCreateIList(typeGetType(appProtoListTypeName))
-  val _ = ilistAddBoxed(list, http2Boxed)
-  val _ = ilistAddBoxed(list, http11Boxed)
-  propertySetValue(typeGetProperty(optionsRuntimeType(opts), "ApplicationProtocols"), opts, list)
+  val list = newApplicationProtocolList()
+  applicationProtocolListAdd(list, sslAppProtoOf("h2"))
+  applicationProtocolListAdd(list, sslAppProtoOf("http/1.1"))
+  optionsSetApplicationProtocols(opts, list)
 }
 
 // `Http11`/`Http2` are static *fields*, not properties, so a `get_*` target
 // does not exist and a hint-less field target mis-emits the FieldRef type;
 // the `SslApplicationProtocol(string)` constructor yields the identical
-// value (the field is defined as exactly this) and binds cleanly. Used only
-// to compare against the negotiated protocol below.
+// value (the field is defined as exactly this) and binds cleanly. Used both
+// to build the advertised ALPN list (`setApplicationProtocols` above) and to
+// compare against the negotiated protocol (`computeAlpn` below).
 @externTarget("System.Net.Security.SslApplicationProtocol..ctor")
 func sslAppProtoOf(name: in String): SslApplicationProtocol = ()
 
