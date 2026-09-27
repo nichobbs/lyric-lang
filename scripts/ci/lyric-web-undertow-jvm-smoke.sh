@@ -24,7 +24,7 @@ if [ ! -x "$lyric_bin" ]; then
   exit 1
 fi
 # Serialized against ci.yml's other `make maven-resolver` callers in the
-# same compiler-self-tests-jvm job (the lyric-aws-secrets JVM suite and the
+# same compiler-self-tests-jvm-b job (the lyric-aws-secrets JVM suite and the
 # JVM auto-FFI bridge self-test) — this step runs `background: true`, so
 # without coordination two concurrent `mvn package` builds could race into
 # the same resolver/target/ output directory (#7108 follow-up).
