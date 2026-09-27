@@ -222,6 +222,23 @@ test "inProcessWithCapacity(1): each new key evicts the only existing entry" {
   }
 }
 
+// ─── maxEntries invariant ──────────────────────────────────────────────────────
+func triggerInProcessWithCapacityZero(): Unit {
+  val _ = Cache.inProcessWithCapacity(0)
+}
+
+func triggerInProcessWithCapacityNegative(): Unit {
+  val _ = Cache.inProcessWithCapacity(0 - 5)
+}
+
+test "inProcessWithCapacity(0) violates the maxEntries >= 1 precondition" {
+  assertPanics("maxEntries = 0", triggerInProcessWithCapacityZero)
+}
+
+test "inProcessWithCapacity with a negative capacity violates the maxEntries >= 1 precondition" {
+  assertPanics("maxEntries = -5", triggerInProcessWithCapacityNegative)
+}
+
 test "inProcessWithCapacity: overwriting an existing key does not inflate count" {
   // With capacity 2, writing the same key twice must not trigger eviction
   // (the store has at most 2 distinct keys at any time).

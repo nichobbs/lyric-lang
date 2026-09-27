@@ -60,12 +60,15 @@ import Cache
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled    Bool — master switch (default: true)
-///   ttlSeconds Int  — how long a cached result is reused (default: 300)
+///   ttlSeconds Int  — how long a cached result is reused, 0..=31536000
+///                     seconds (up to one year; 0 means no expiry, as for
+///                     `Cache.setWithTtl`, with entries still bounded by the
+///                     store's FIFO capacity) (default: 300).
 @stable(since = "0.1")
 pub aspect FunctionCache {
   config {
     enabled: Bool = true
-    ttlSeconds: Int = 300
+    ttlSeconds: Int range 0 ..= 31536000 = 300
   }
   around(call) -> ret {
     if not enabled {
@@ -121,13 +124,15 @@ val functionCacheStore: CacheStore = Cache.inProcess()
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled    Bool   — master switch (default: true)
-///   ttlSeconds Int    — how long a cached result is reused (default: 300)
+///   ttlSeconds Int    — how long a cached result is reused, 0..=31536000
+///                       seconds (up to one year; 0 means no expiry)
+///                       (default: 300)
 ///   keyPrefix  String — prepended to every cacheKey (default: "")
 @stable(since = "0.1")
 pub aspect ItemCache {
   config {
     enabled: Bool = true
-    ttlSeconds: Int = 300
+    ttlSeconds: Int range 0 ..= 31536000 = 300
     keyPrefix: String = ""
   }
   // No `requires: args.cacheKey != ""`: `cacheKey` is caller-/client-supplied,

@@ -3,13 +3,16 @@
 //! Covers: registry construction, function-reference registration via
 //! addLivenessCheck / addReadinessCheck, runChecks execution (passing,
 //! failing, and mixed registries), liveness/readiness group filtering,
-//! the JSON response shape (including escaping), and the
-//! runLiveness / runReadiness handler-result mapping.
+//! the JSON response shape (including escaping), the
+//! runLiveness / runReadiness handler-result mapping, duplicate/empty
+//! name and timeoutMs registration preconditions, panic isolation, and
+//! (on `--target dotnet`) the bounded-wait timeout enforcement.
 @test_module
 package Health.HealthTests
 
 import Std.Core
 import Std.Testing
+import Std.Time
 import Health
 
 func passingCheck(): CheckStatus {
@@ -18,6 +21,62 @@ func passingCheck(): CheckStatus {
 
 func failingCheck(): CheckStatus {
   return Health.fail("connection refused")
+}
+
+func panickingCheck(): CheckStatus {
+  panic("boom: internal check state corrupted")
+}
+
+func slowCheck(): CheckStatus {
+  sleepMillis(500)
+  return Health.pass()
+}
+
+// ─── Named helpers for assertPanics (no block-bodied lambdas, #7151) ──────────
+func addLivenessCheckWithEmptyName(): Unit {
+  val _ = Health.addLivenessCheck(Health.create(), "", { -> passingCheck() })
+}
+
+func addReadinessCheckWithEmptyName(): Unit {
+  val _ = Health.addReadinessCheck(Health.create(), "", { -> passingCheck() })
+}
+
+func addLivenessCheckWithDuplicateName(): Unit {
+  val registry = Health.addLivenessCheck(Health.create(), "dup", { -> passingCheck() })
+  val _ = Health.addLivenessCheck(registry, "dup", { -> passingCheck() })
+}
+
+func addReadinessCheckWithNameAlreadyUsedByLiveness(): Unit {
+  val registry = Health.addLivenessCheck(Health.create(), "shared", { -> passingCheck() })
+  val _ = Health.addReadinessCheck(registry, "shared", { -> passingCheck() })
+}
+
+func addLivenessCheckWithTimeoutZero(): Unit {
+  val _ = Health.addLivenessCheckWithTimeout(Health.create(), "self", { -> passingCheck() }, 0)
+}
+
+func addReadinessCheckWithTimeoutNegative(): Unit {
+  val _ = Health.addReadinessCheckWithTimeout(Health.create(), "db", { -> passingCheck() }, -1)
+}
+
+// ─── HealthCheck / HealthRegistry invariants (direct construction) ────────────
+func constructHealthCheckWithEmptyName(): Unit {
+  val _ = HealthCheck(name = "", group = Liveness, handler = { -> passingCheck() }, timeoutMs = 1000)
+}
+
+func constructHealthCheckWithTimeoutZero(): Unit {
+  val _ = HealthCheck(name = "self", group = Liveness, handler = { -> passingCheck() }, timeoutMs = 0)
+}
+
+func constructHealthCheckWithTimeoutNegativeOne(): Unit {
+  val _ = HealthCheck(name = "self", group = Liveness, handler = { -> passingCheck() }, timeoutMs = -1)
+}
+
+func constructHealthRegistryWithDuplicateNames(): Unit {
+  val a = HealthCheck(name = "dup", group = Liveness, handler = { -> passingCheck() }, timeoutMs = 1000)
+  val b = HealthCheck(name = "dup", group = Readiness, handler = { -> passingCheck() }, timeoutMs = 1000)
+  val checks: slice[HealthCheck] = [a, b]
+  val _ = HealthRegistry(checks = checks)
 }
 
 // ─── create ───────────────────────────────────────────────────────────────────
@@ -179,7 +238,11 @@ test "runChecks escapes control characters in names and details (RFC 8259)" {
 test "runLiveness returns Ok with the JSON body when healthy" {
   val registry = Health.addLivenessCheck(Health.create(), "self", { -> passingCheck() })
   match Health.runLiveness(registry) {
-    case Ok(body) -> assertEqual(body, "{\"status\":\"ok\",\"checks\":{\"self\":{\"status\":\"ok\",\"detail\":\"\"}}}", "Ok body")
+    case Ok(body) -> assertEqual(
+      body,
+      "{\"status\":\"ok\",\"checks\":{\"self\":{\"status\":\"ok\",\"detail\":\"\"}}}",
+      "Ok body"
+    )
     case Err(_) -> assertTrue(false, "expected Ok from a healthy registry")
   }
 }
@@ -207,7 +270,11 @@ test "runLiveness returns Err naming failing checks when degraded" {
 test "runReadiness returns Ok with the JSON body when ready" {
   val registry = Health.addReadinessCheck(Health.create(), "db", { -> passingCheck() })
   match Health.runReadiness(registry) {
-    case Ok(body) -> assertEqual(body, "{\"status\":\"ok\",\"checks\":{\"db\":{\"status\":\"ok\",\"detail\":\"\"}}}", "Ok body")
+    case Ok(body) -> assertEqual(
+      body,
+      "{\"status\":\"ok\",\"checks\":{\"db\":{\"status\":\"ok\",\"detail\":\"\"}}}",
+      "Ok body"
+    )
     case Err(_) -> assertTrue(false, "expected Ok from a ready registry")
   }
 }
@@ -220,4 +287,124 @@ test "runLiveness ignores readiness failures" {
     case Ok(_) -> ()
     case Err(_) -> assertTrue(false, "liveness must not see readiness failures")
   }
+}
+
+// ─── hasCheckNamed ─────────────────────────────────────────────────────────────
+test "hasCheckNamed is false on an empty registry" {
+  assertFalse(Health.hasCheckNamed(Health.create(), "self"), "empty registry has no named checks")
+}
+
+test "hasCheckNamed is true after registering that name, false for another" {
+  val registry = Health.addLivenessCheck(Health.create(), "self", { -> passingCheck() })
+  assertTrue(Health.hasCheckNamed(registry, "self"), "registered name is found")
+  assertFalse(Health.hasCheckNamed(registry, "other"), "unregistered name is not found")
+}
+
+// ─── Registration preconditions: empty name ───────────────────────────────────
+test "addLivenessCheck panics on an empty name" {
+  assertPanics("empty liveness check name", addLivenessCheckWithEmptyName)
+}
+
+test "addReadinessCheck panics on an empty name" {
+  assertPanics("empty readiness check name", addReadinessCheckWithEmptyName)
+}
+
+// ─── Registration preconditions: duplicate name ───────────────────────────────
+test "addLivenessCheck panics on a name already registered in the same group" {
+  assertPanics("duplicate liveness check name", addLivenessCheckWithDuplicateName)
+}
+
+test "addReadinessCheck panics on a name already registered as a liveness check" {
+  assertPanics("name already used by a liveness check", addReadinessCheckWithNameAlreadyUsedByLiveness)
+}
+
+// ─── Registration preconditions: timeoutMs ────────────────────────────────────
+test "addLivenessCheckWithTimeout panics on timeoutMs == 0" {
+  assertPanics("timeoutMs must be >= 1", addLivenessCheckWithTimeoutZero)
+}
+
+test "addReadinessCheckWithTimeout panics on a negative timeoutMs" {
+  assertPanics("negative timeoutMs", addReadinessCheckWithTimeoutNegative)
+}
+
+test "addLivenessCheckWithTimeout accepts timeoutMs == 1 (boundary)" {
+  val registry = Health.addLivenessCheckWithTimeout(Health.create(), "self", { -> passingCheck() }, 1)
+  assertEqualInt(registry.checks[0].timeoutMs, 1, "timeoutMs boundary value stored")
+}
+
+// ─── HealthCheck / HealthRegistry invariants: direct construction ─────────────
+test "constructing a HealthCheck directly with an empty name violates the invariant" {
+  assertPanics("empty name", constructHealthCheckWithEmptyName)
+}
+
+test "constructing a HealthCheck directly with timeoutMs == 0 violates the invariant" {
+  assertPanics("timeoutMs == 0", constructHealthCheckWithTimeoutZero)
+}
+
+test "constructing a HealthCheck directly with timeoutMs == -1 violates the invariant" {
+  assertPanics("timeoutMs == -1", constructHealthCheckWithTimeoutNegativeOne)
+}
+
+test "constructing a HealthRegistry directly with duplicate check names violates the invariant" {
+  assertPanics("duplicate names", constructHealthRegistryWithDuplicateNames)
+}
+
+test "addLivenessCheck stores defaultCheckTimeoutMs" {
+  val registry = Health.addLivenessCheck(Health.create(), "self", { -> passingCheck() })
+  assertEqualInt(registry.checks[0].timeoutMs, Health.defaultCheckTimeoutMs, "default timeout used")
+}
+
+// ─── Panic isolation ───────────────────────────────────────────────────────────
+test "runChecks isolates a panicking check as unhealthy with a generic message" {
+  val registry = Health.addLivenessCheck(Health.create(), "flaky", { -> panickingCheck() })
+  val report = Health.runChecks(registry, Liveness)
+  assertFalse(report.healthy, "a panicking check reports degraded")
+  assertEqual(
+    report.body,
+    "{\"status\":\"degraded\",\"checks\":{\"flaky\":{\"status\":\"fail\",\"detail\":\"check panicked\"}}}",
+    "panic is reported with a generic detail, never the panic's own message"
+  )
+}
+
+test "runChecks isolates a panicking check alongside a passing one" {
+  var registry = Health.create()
+  registry = Health.addReadinessCheck(registry, "ok", { -> passingCheck() })
+  registry = Health.addReadinessCheck(registry, "flaky", { -> panickingCheck() })
+  val report = Health.runChecks(registry, Readiness)
+  assertFalse(report.healthy, "one panicking check degrades the whole group")
+  assertEqual(
+    report.body,
+    "{\"status\":\"degraded\",\"checks\":{" + "\"ok\":{\"status\":\"ok\",\"detail\":\"\"}," +
+      "\"flaky\":{\"status\":\"fail\",\"detail\":\"check panicked\"}}}",
+    "the passing check still ran and reported correctly"
+  )
+}
+
+// ─── Bounded-wait timeout enforcement ──────────────────────────────────────────
+// `Health.timeoutEnforced` reflects whether `timeoutMs` is actually a
+// preemptive bound on this target: true on `--target dotnet`
+// (`Health.Kernel.Net`'s real `Task.Wait(int)`), false on `--target jvm`
+// (no existing facility to preemptively bound an arbitrary check's
+// execution time — see `runCheckIsolated`'s `@cfg(feature = "jvm")` arm and
+// README.md "Platform parity"). This test asserts each target's real,
+// documented behaviour rather than picking one and skipping the other.
+test "runChecks honors timeoutMs exactly as much as this target enforces it" {
+  val registry = Health.addLivenessCheckWithTimeout(Health.create(), "slow", { -> slowCheck() }, 50)
+  val report = Health.runChecks(registry, Liveness)
+  if timeoutEnforced {
+    assertFalse(report.healthy, "a check exceeding its timeoutMs reports degraded on this target")
+    assertEqual(
+      report.body,
+      "{\"status\":\"degraded\",\"checks\":{\"slow\":{\"status\":\"fail\",\"detail\":\"check \\\"slow\\\" timed out after 50ms\"}}}",
+      "timed-out check reports the timeout detail, not the eventual pass()"
+    )
+  } else {
+    assertTrue(report.healthy, "without enforcement, the slow check still runs to completion and passes")
+  }
+}
+
+test "runChecks does not time out a check that finishes within its budget" {
+  val registry = Health.addLivenessCheckWithTimeout(Health.create(), "fast", { -> passingCheck() }, 5000)
+  val report = Health.runChecks(registry, Liveness)
+  assertTrue(report.healthy, "a check well within its timeoutMs is not falsely reported as timed out")
 }

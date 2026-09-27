@@ -29,6 +29,18 @@ import Std.Core
 import Flags
 import Flags.Registry as FlagsRegistry
 
+// Fail fast on an empty `flagName` config value, before the wrapped call
+// runs: a `FlagGated`/`FlagVariant` instantiation whose `flagName` was left
+// (or set) empty would otherwise silently resolve every call via
+// `defaultOnMissing` (`FlagGated`) or never match any variant
+// (`FlagVariant`) with no indication anything was misconfigured. Mirrors
+// `Resilience.checkRetryConfig`'s "no-op body, `requires:`-only" idiom for a
+// runtime-checked-at-first-use aspect config precondition.
+func checkFlagName(flagName: in String): Unit
+  requires: flagName.length > 0
+{
+}
+
 // ─── FlagGated ────────────────────────────────────────────────────────────────
 /// Short-circuit execution of the matched function when a named flag is disabled.
 ///
@@ -60,6 +72,7 @@ pub aspect FlagGated {
     if not enabled {
       ret = call.proceed()
     } else {
+      checkFlagName(flagName)
       val flagEnabled = FlagsRegistry.checkFlag(flagName, defaultOnMissing)
       if flagEnabled {
         ret = call.proceed()
@@ -90,6 +103,7 @@ pub aspect FlagVariant {
     variant: String
   }
   around(call) -> ret {
+    checkFlagName(flagName)
     // Stub: always proceeds. Variant-specific routing is deferred to a follow-up stage.
     ret = call.proceed()
   }

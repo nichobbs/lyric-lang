@@ -43,6 +43,17 @@ The v1 implementation is `InProcessCacheStore` (in-memory, single-process).
 Implement `CacheStore` for Redis, Memcached, or any other backend and pass
 the implementation to your own aspect body or helper functions.
 
+`InProcessCacheStore` is **not thread-safe**. It is a plain mutable record,
+not a `protected type`: an isolated repro confirmed that
+`impl <interface> for <protected type>` compiles on both backends but fails
+at runtime on both (`--target dotnet`: `System.TypeLoadException`;
+`--target jvm`: `NoSuchMethodError`) — the interface's dispatch method is
+never linked to the protected type's own `entry`/`func` members by either
+backend. Since `InProcessCacheStore` must keep implementing `CacheStore`,
+converting it is not possible until that backend gap closes. Multi-threaded
+services should use a Redis-backed store or guard access with an external
+mutex; see the WARNING in `src/cache.l`, lyric-lang #411, and #7457 for the backend gap.
+
 ## In-process store
 
 `Cache.inProcess()` creates a store using runtime config defaults:
@@ -52,8 +63,14 @@ the implementation to your own aspect body or helper functions.
 | `LYRIC_CONFIG_CACHE_DEFAULTS_TTLSECONDS` | `300` | Default TTL in seconds (0 = no expiry) |
 | `LYRIC_CONFIG_CACHE_DEFAULTS_MAXENTRIES` | `10000` | LRU eviction threshold |
 
-`Cache.inProcessWithCapacity(n)` creates a store with a specific max-entry limit,
-using the config default TTL.
+`Cache.inProcessWithCapacity(n)` creates a store with a specific max-entry limit
+(`n >= 1`; there is no "0 or negative means unbounded" mode — use a large
+explicit `n`, e.g. `Int.maxValue`, for an effectively unbounded store), using
+the config default TTL.
+
+`InProcessCacheStore` carries an invariant — `maxEntries >= 1` and
+`insertionOrder.count == valueMap.count` — enforced at construction and
+re-checked after every mutating operation (`set`/`delete`/`clear`).
 
 ## API reference
 
@@ -92,7 +109,7 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `ttlSeconds` | `Int` | `300` | Cache TTL; 0 = no expiry |
+| `ttlSeconds` | `Int range 0 ..= 31536000` | `300` | Cache TTL in seconds, up to 1 year; `0` means no expiry, as for `Cache.setWithTtl` (entries stay bounded by the store's FIFO capacity). An out-of-range default or override is a compile-time `G0010`. |
 
 ### ItemCache
 
@@ -127,7 +144,7 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `ttlSeconds` | `Int` | `300` | Cache TTL; 0 = no expiry |
+| `ttlSeconds` | `Int range 0 ..= 31536000` | `300` | Cache TTL in seconds, up to 1 year; `0` means no expiry. |
 | `keyPrefix` | `String` | `""` | Prefix prepended to each key |
 
 ## Decision log

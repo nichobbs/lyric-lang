@@ -5922,14 +5922,14 @@ jobs:
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -x .bootstrap/stage2/bin/lyric ]; then
-            echo "::error::stage 2 binary missing; skipping resilience JVM suite"
-            exit 1
-          fi
-          export LYRIC_STDLIB_BIN="$PWD/.bootstrap/stage2/lib"
-          .bootstrap/stage2/bin/lyric test --manifest lyric-resilience/lyric.toml --target jvm --no-default-features --features jvm
+        run: bash scripts/ci/self-test.sh --manifest lyric-resilience/lyric.toml --target jvm --no-default-features --features jvm
+      # lyric-health on JVM: the `@cfg(feature = "jvm")` arm of
+      # runCheckIsolated (panic isolation; timeout gap #7461).
+      - name: lyric-health suite on JVM (lyric test --target jvm --features jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --manifest lyric-health/lyric.toml --target jvm --no-default-features --features jvm
       # lyric-aws-secrets suite on JVM (#7033) — pins the real
       # SecretsManagerClient/SsmClient bindings (secrets_kernel_jvm.l)
       # against the actual AWS SDK for Java v2 JARs: classifySecretsError/

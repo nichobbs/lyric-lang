@@ -67,12 +67,16 @@ pub func getStringFlag(name: in String, defaultValue: in String): String {
 
 /// Register (or overwrite) a Bool flag in the process-global registry.
 @stable(since = "0.1")
-pub func registerBoolFlag(name: in String, value: in Bool): Unit {
+pub func registerBoolFlag(name: in String, value: in Bool): Unit
+  requires: name.length > 0
+{
   globalRegistry.boolMap[name] = value
 }
 
 /// Register (or overwrite) a String flag in the process-global registry.
 @stable(since = "0.1")
-pub func registerStringFlag(name: in String, value: in String): Unit {
+pub func registerStringFlag(name: in String, value: in String): Unit
+  requires: name.length > 0
+{
   globalRegistry.stringMap[name] = value
 }

@@ -20,22 +20,61 @@
 //!   vars.add("name", "Alice")
 //!   println(I18n.translateWithLocale(store, "greeting", locale, vars))
 //!
+//! `Locale` is opaque: `makeLocale`/`parseLocale` are the only ways to build
+//! one, and `Locale.language`/`Locale.script`/`Locale.region` are the only
+//! way to read one back apart, so every `Locale` in existence is guaranteed
+//! normalised and structurally valid.
+//!
 //! See docs/03-decision-log.md and lyric-i18n/README.md.
 @runtime_checked
 package I18n
 
 import Std.Core
 import Std.Collections
+import Std.Char
 import Std.Json
 import Std.File as File
 
 // ─── Locale type ──────────────────────────────────────────────────────────────
-/// A BCP 47 locale identifier split into language and region components.
-/// The `region` field is empty for language-only tags such as "en".
+/// A BCP 47 locale identifier: a primary language subtag, an optional script
+/// subtag, and an optional region subtag. `script`/`region` are empty when
+/// absent from the tag (e.g. "en" has both empty; "en-US" has an empty
+/// `script`).
+///
+/// Opaque: build one with `makeLocale`/`parseLocale` (which normalise
+/// casing and validate shape), read one back with the `Locale.language`/
+/// `Locale.script`/`Locale.region` accessors below. This guarantees every
+/// `Locale` value satisfies the invariant, so downstream code (compound-key
+/// construction, `localeKey`) never has to re-validate.
 @stable(since = "0.1")
-pub record Locale {
-  language: String    // e.g. "en", "fr", "zh"
-  region: String    // e.g. "US", "GB" — may be empty
+pub opaque type Locale {
+  language: String    // lowercase, e.g. "en", "fr", "zh" — always 2 or 3 letters
+  script: String    // Titlecase, e.g. "Hant" — always empty or 4 letters
+  region: String    // uppercase, e.g. "US", "GB", or 3 digits (UN M49) — always empty, 2 letters, or 3 digits
+
+  invariant: (language.length == 2 or language.length == 3) and isLowercaseAsciiLetters(language)
+  invariant: script.length == 0 or isTitlecaseAsciiScript(script)
+  invariant: region.length == 0 or isUppercaseAsciiLetterRegion(region) or isDigitRegion(region)
+}
+
+/// Read the language subtag back off a `Locale` (opaque field accessor).
+@stable(since = "0.2")
+pub func Locale.language(locale: in Locale): String {
+  locale.language
+}
+
+/// Read the script subtag back off a `Locale` (opaque field accessor).
+/// Empty when the locale has no script subtag.
+@stable(since = "0.2")
+pub func Locale.script(locale: in Locale): String {
+  locale.script
+}
+
+/// Read the region subtag back off a `Locale` (opaque field accessor).
+/// Empty when the locale has no region subtag.
+@stable(since = "0.2")
+pub func Locale.region(locale: in Locale): String {
+  locale.region
 }
 
 // ─── Error type ───────────────────────────────────────────────────────────────
@@ -59,6 +98,8 @@ pub interface TranslationStore {
 
   /// Return the translation for `key` in `locale` with `{varName}` placeholders
   /// substituted from `vars`.  Missing placeholder keys are left unchanged.
+  /// If the substituted output would exceed `maxSubstitutionOutputLength`
+  /// characters, returns the un-substituted template unchanged instead.
   func translateWith(key: in String, locale: in Locale, vars: in Map[String, String]): String
     requires: key.length > 0
 
@@ -111,10 +152,17 @@ impl TranslationStore for InProcessTranslationStore {
   }
 
   func availableLocales(): slice[Locale] {
+    // `localeKeys` holds raw top-level JSON keys, which are untrusted input
+    // and not guaranteed to be well-formed BCP 47 tags; skip any that don't
+    // parse rather than constructing an invalid `Locale` (impossible now
+    // that `Locale` is opaque and invariant-checked) or panicking.
     val result: List[Locale] = newList()
     var i: Int = 0
     while i < self.localeKeys.count {
-      result.add(parseLocaleKey(self.localeKeys[i]))
+      match parseLocale(self.localeKeys[i]) {
+        case Some(loc) -> result.add(loc)
+        case None -> ()
+      }
       i = i + 1
     }
     return result.toArray()
@@ -149,10 +197,110 @@ pub func inProcess(): InProcessTranslationStore {
 ///
 /// Expected JSON format:
 ///   { "en": { "key": "value", ... }, "fr": { "key": "valeur", ... }, ... }
+///
+/// Each top-level key must parse as a BCP 47 tag (`parseLocale`); it is
+/// stored under its *canonical* `localeKey` form, so `"en_US"`, `"EN-us"`,
+/// and `"en-US"` all land in the same bucket. This keeps storage consistent
+/// with lookup: `translate`/`hasKey` always look up `localeKey(locale)`.
+///
+/// Never throws: malformed JSON, a non-object root, a locale key that is not
+/// a well-formed BCP 47 tag, two locale keys that canonicalise to the same
+/// locale, or a translation value that is not a JSON string all return
+/// `Err` (naming the offending key, where applicable) instead of raising a
+/// `Bug`.
 @stable(since = "0.1")
 pub func fromJson(json: in String): Result[InProcessTranslationStore, I18nError] {
-  val store = buildStoreFromObject(json)
-  return Ok(store)
+  // The whole tree walk lives in this one function, rather than delegating
+  // to a helper that takes a `JsonElement`/`JsonDoc` parameter: passing
+  // either type across a function boundary inside a *consumer* package
+  // (not `Std.Json` itself) fails at runtime on the self-hosted JVM backend
+  // (`NoClassDefFoundError: <ThisPackage>/JsonElement` — confirmed with an
+  // isolated repro; it looks for the type in the caller's own package
+  // instead of the imported one). Keeping every `JsonElement`/`JsonProperty`
+  // value local to this function's body sidesteps that gap.
+  match tryParseJson(json) {
+    case Err(msg) -> return Err(I18nError(message = "Malformed translations JSON: " + msg, code = "PARSE_ERROR"))
+    case Ok(doc) -> {
+      defer {
+        disposeJson(doc)
+      }
+      val root = rootElement(doc)
+      if valueKind(root) != 1 {
+        return Err(
+          I18nError(message = "Translations JSON root must be an object, e.g. {\"en\": {...}}", code = "INVALID_ROOT")
+        )
+      }
+      var m: Map[String, String] = newMap()
+      var keys: List[String] = newList()
+      var outerEn = enumerateObject(root)
+      while objectMoveNext(outerEn) {
+        val localeProp = objectCurrent(outerEn)
+        val lk = propertyName(localeProp)
+        val localeVal = propertyValue(localeProp)
+        match parseLocale(lk) {
+          case None -> {
+            return Err(I18nError(message = "Locale key \"" + lk + "\" is not a valid BCP 47 tag", code = "INVALID_LOCALE_KEY"))
+          }
+          case Some(loc) -> {
+            // Store under the canonical locale key, not the raw JSON key: two
+            // JSON keys that canonicalise to the same locale (e.g. "en_US"
+            // and "EN-us") must land in the same bucket, matching
+            // `translate`/`hasKey`, which always look up `localeKey(locale)`.
+            val canonicalKey = localeKey(loc)
+            if valueKind(localeVal) == 1 {
+              // Two distinct JSON keys canonicalising to the same locale
+              // would otherwise silently merge into one bucket (last-write
+              // wins) instead of surfacing the ambiguity to the caller.
+              var dup: Bool = false
+              var ki: Int = 0
+              while ki < keys.count {
+                if keys[ki] == canonicalKey {
+                  dup = true
+                }
+                ki = ki + 1
+              }
+              if dup {
+                return Err(
+                  I18nError(
+                    message = "Locale key \"" + lk + "\" duplicates already-registered locale \"" + canonicalKey + "\"",
+                    code = "DUPLICATE_LOCALE"
+                  )
+                )
+              }
+              var innerEn = enumerateObject(localeVal)
+              while objectMoveNext(innerEn) {
+                val tkeyProp = objectCurrent(innerEn)
+                val tkey = propertyName(tkeyProp)
+                if tkey.contains("|") {
+                  return Err(I18nError(message = "Translation key \"" + tkey + "\" must not contain '|'", code = "INVALID_KEY"))
+                }
+                val tvalElem = propertyValue(tkeyProp)
+                if not isJsonString(tvalElem) {
+                  return Err(
+                    I18nError(
+                      message = "Translation value for key \"" + tkey + "\" in locale \"" + lk + "\" is not a string",
+                      code = "INVALID_VALUE"
+                    )
+                  )
+                }
+                val tval = getString(tvalElem)
+                val compound = canonicalKey + "|" + tkey
+                if not m.containsKey(compound) {
+                  m.add(compound, tval)
+                }
+              }
+              // A locale-value entry that isn't itself an object is silently
+              // skipped (unchanged from the pre-existing behaviour;
+              // `fromJson`'s documented error cases don't cover it), so
+              // `keys` only grows for entries that reach here.
+              keys.add(canonicalKey)
+            }
+          }
+        }
+      }
+      return Ok(value = InProcessTranslationStore(translations = m, localeKeys = keys))
+    }
+  }
 }
 
 /// Load translations from `path` and return an in-process store.
@@ -208,57 +356,221 @@ pub func translateWithLocale(
   return store.translateWith(key, locale, vars)
 }
 
-/// Parse a BCP 47 tag string into a `Locale`.
-/// "en-US" → Locale(language = "en", region = "US")
-/// "en"    → Locale(language = "en", region = "")
+/// Parse a BCP 47 tag string into a `Locale`, normalising and validating it.
+/// A validating constructor: panics (via `requires:`) if `tag` is not a
+/// well-formed `language[-script][-region]` tag — use `parseLocale` instead
+/// for untrusted input.
+/// "en-US"     → language "en", region "US"
+/// "en"        → language "en", no script, no region
+/// "zh-Hant-TW"→ language "zh", script "Hant", region "TW"
+/// "en_us"     → normalised to language "en", region "US" (accepts `_`,
+///               normalises case, same as "en-US")
 @stable(since = "0.1")
-pub func makeLocale(tag: in String): Locale {
-  return parseLocaleKey(tag)
+pub func makeLocale(tag: in String): Locale
+  requires: isValidLocaleTag(tag)
+{
+  match parseLocale(tag) {
+    case Some(loc) -> loc
+    case None -> panic("unreachable: makeLocale's requires: already validated the tag")
+  }
+}
+
+/// Parse a BCP 47 `language[-script][-region]` tag string into a `Locale`,
+/// or `None` if it is not well-formed. Accepts `_` as a subtag separator
+/// (e.g. "en_US") in addition to `-`, and normalises casing: language
+/// lowercase, script Titlecase, region uppercase (or left as-is for a
+/// 3-digit UN M49 region code).
+/// "en-US"      → Some(language "en", region "US")
+/// "en"         → Some(language "en")
+/// "zh-Hant-TW" → Some(language "zh", script "Hant", region "TW")
+/// "en_us"      → Some(language "en", region "US")
+/// "e"          → None (language subtag too short)
+/// "en-USA"     → None (region subtag is neither 2 letters nor 3 digits)
+@stable(since = "0.2")
+pub func parseLocale(tag: in String): Option[Locale] {
+  val normalized = tag.replace("_", "-")
+  val parts = normalized.split("-")
+  if parts.length < 1 {
+    return None
+  }
+  val langPart = parts[0]
+  if not isAsciiAlphaOnly(langPart) or (langPart.length != 2 and langPart.length != 3) {
+    return None
+  }
+  val language = langPart.toLower()
+
+  var script = ""
+  var region = ""
+  var idx = 1
+
+  if idx < parts.length and parts[idx].length == 4 and isAsciiAlphaOnly(parts[idx]) {
+    script = titleCaseAscii(parts[idx])
+    idx = idx + 1
+  }
+
+  if idx < parts.length {
+    val regionPart = parts[idx]
+    if regionPart.length == 2 and isAsciiAlphaOnly(regionPart) {
+      region = regionPart.toUpper()
+      idx = idx + 1
+    } else if regionPart.length == 3 and isAsciiDigitOnly(regionPart) {
+      region = regionPart
+      idx = idx + 1
+    } else {
+      return None
+    }
+  }
+
+  if idx != parts.length {
+    // Leftover subtags (variants, extensions, ...) — not supported.
+    return None
+  }
+
+  return Some(value = Locale(language = language, script = script, region = region))
 }
 
 /// Convert a `Locale` back to its BCP 47 key string.
-/// Returns "en-US" when region is non-empty, "en" otherwise.
+/// "en" → "en"; "en-US" → "en-US"; "zh-Hant-TW" → "zh-Hant-TW".
 @stable(since = "0.1")
 pub func localeKey(locale: in Locale): String {
-  if locale.region.length > 0 {
-    return locale.language + "-" + locale.region
-  } else {
-    return locale.language
+  var key = locale.language
+  if locale.script.length > 0 {
+    key = key + "-" + locale.script
   }
+  if locale.region.length > 0 {
+    key = key + "-" + locale.region
+  }
+  return key
 }
 
 /// Return the default locale ("en").
 @stable(since = "0.1")
 pub func defaultLocale(): Locale {
-  return parseLocaleKey("en")
+  return makeLocale("en")
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
-// Parse a BCP 47 locale key string into a Locale.
-// "en-US" → Locale(language = "en", region = "US"); "en" → Locale(language = "en", region = "")
-func parseLocaleKey(key: in String): Locale {
-  var i: Int = 0
-  while i < key.length and key.substring(i, 1) != "-" {
-    i = i + 1
-  }
-  if i >= key.length {
-    return Locale(language = key, region = "")
-  } else {
-    val lang = key.substring(0, i)
-    val region = key.substring(i + 1, key.length - i - 1)
-    return Locale(language = lang, region = region)
+// True when `tag` is a well-formed BCP 47 `language[-script][-region]` tag
+// (`makeLocale`'s `requires:` predicate). `@pure` is required for any
+// function called from a `requires:`/`ensures:` clause (§6.3); `parseLocale`
+// itself does no I/O or mutation, so this is honest, not just a compiler
+// workaround.
+@pure
+func isValidLocaleTag(tag: in String): Bool {
+  match parseLocale(tag) {
+    case Some(_) -> true
+    case None -> false
   }
 }
 
-// Maximum output length for substitutePlaceholders (1 MiB).
-// Prevents unbounded output when a substitution value is very large.
-val maxSubstOutputLength: Int = 1048576
+// True iff every character of `s` is a lowercase ASCII letter (the
+// `Locale.language` invariant's character-class check).
+@pure
+func isLowercaseAsciiLetters(s: in String): Bool {
+  var i = 0
+  while i < s.length {
+    if not isAsciiLower(s[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+// True iff `s` is exactly 4 characters, an uppercase ASCII letter followed
+// by three lowercase ASCII letters (the `Locale.script` invariant's
+// character-class check, e.g. "Hant").
+@pure
+func isTitlecaseAsciiScript(s: in String): Bool {
+  if s.length != 4 {
+    return false
+  }
+  if not isAsciiUpper(s[0]) {
+    return false
+  }
+  var i = 1
+  while i < 4 {
+    if not isAsciiLower(s[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+// True iff `s` is exactly 2 uppercase ASCII letters (the `Locale.region`
+// invariant's letter-region character-class check, e.g. "US").
+@pure
+func isUppercaseAsciiLetterRegion(s: in String): Bool {
+  if s.length != 2 {
+    return false
+  }
+  return isAsciiUpper(s[0]) and isAsciiUpper(s[1])
+}
+
+// True iff `s` is exactly 3 ASCII digits (the `Locale.region` invariant's
+// UN M49 numeric-region character-class check, e.g. "419").
+@pure
+func isDigitRegion(s: in String): Bool {
+  if s.length != 3 {
+    return false
+  }
+  return isAsciiDigit(s[0]) and isAsciiDigit(s[1]) and isAsciiDigit(s[2])
+}
+
+// True iff `s` is non-empty and every character is an ASCII letter.
+func isAsciiAlphaOnly(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    if not isAsciiLetter(s[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+// True iff `s` is non-empty and every character is an ASCII digit.
+func isAsciiDigitOnly(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    if not isAsciiDigit(s[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+// Titlecase an ASCII alphabetic subtag: first letter upper, the rest lower
+// (e.g. "hant" / "HANT" / "Hant" all become "Hant").
+func titleCaseAscii(s: in String): String {
+  return s.substring(0, 1).toUpper() + s.substring(1, s.length - 1).toLower()
+}
+
+/// Maximum output length, in characters, that `translateWith`/
+/// `translateWithLocale` (and the `TranslationStore.translateWith` interface
+/// method) will produce by substituting `{varName}` placeholders. If
+/// substitution would exceed this, the raw un-substituted template is
+/// returned unchanged instead — a documented, honest part of the public
+/// contract (not a silent internal fallback), so callers who need to detect
+/// that case can compare their template against the returned string, or
+/// simply keep their inputs well under this bound.
+@stable(since = "0.2")
+pub val maxSubstitutionOutputLength: Int = 1048576
 
 // Substitute {varName} placeholders in `template` using values from `vars`.
 // Unknown placeholder keys are left unchanged in the output.
 // Substitution values are inserted verbatim; they are NOT re-scanned for
 // further placeholders.  Returns `template` unchanged if the expanded output
-// would exceed `maxSubstOutputLength` characters.
+// would exceed `maxSubstitutionOutputLength` characters — see that
+// constant's doc comment; this is a documented part of the public contract.
 func substitutePlaceholders(template: in String, vars: in Map[String, String]): String {
   var buf: String = ""
   var i: Int = 0
@@ -282,7 +594,7 @@ func substitutePlaceholders(template: in String, vars: in Map[String, String]): 
         // `translate`).  An unknown placeholder is left verbatim.
         if vars.containsKey(varName) {
           val value = vars[varName]
-          if buf.length + value.length > maxSubstOutputLength {
+          if buf.length + value.length > maxSubstitutionOutputLength {
             return template
           }
           buf = buf + value
@@ -297,48 +609,4 @@ func substitutePlaceholders(template: in String, vars: in Map[String, String]): 
     }
   }
   return buf
-}
-
-// Build an InProcessTranslationStore by directly parsing the translations JSON object.
-// Expected format: { "en": { "key": "value", ... }, "fr": { ... }, ... }
-// Keys in the flat map are compound: "<localeKey>|<translationKey>".
-func buildStoreFromObject(json: in String): InProcessTranslationStore {
-  var m: Map[String, String] = newMap()
-  var keys: List[String] = newList()
-  val doc = parseJson(json)
-  val root = rootElement(doc)
-  if valueKind(root) != 1 {
-    return InProcessTranslationStore(translations = m, localeKeys = keys)
-  }
-  var outerEn = enumerateObject(root)
-  while objectMoveNext(outerEn) {
-    val localeProp = objectCurrent(outerEn)
-    val lk = propertyName(localeProp)
-    val localeVal = propertyValue(localeProp)
-    if valueKind(localeVal) == 1 {
-      var innerEn = enumerateObject(localeVal)
-      while objectMoveNext(innerEn) {
-        val tkeyProp = objectCurrent(innerEn)
-        val tkey = propertyName(tkeyProp)
-        val tval = getString(propertyValue(tkeyProp))
-        val compound = lk + "|" + tkey
-        if not m.containsKey(compound) {
-          m.add(compound, tval)
-        }
-      }
-      // Track locale keys (without duplicates).
-      var found: Bool = false
-      var ki: Int = 0
-      while ki < keys.count {
-        if keys[ki] == lk {
-          found = true
-        }
-        ki = ki + 1
-      }
-      if not found {
-        keys.add(lk)
-      }
-    }
-  }
-  return InProcessTranslationStore(translations = m, localeKeys = keys)
 }

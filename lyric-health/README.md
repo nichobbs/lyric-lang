@@ -107,6 +107,43 @@ every check passes, or `Err(message)` naming the failing checks when
 degraded — map the `Err` case to `Web.serviceUnavailable(message)` (503)
 in your route adapter, as the Quick start example above does.
 
+## Fault isolation and timeouts
+
+Every check runs through `Health.runCheckIsolated` (internal), which:
+
+- **Catches a panic.** If a check's handler panics, `runChecks` reports
+  that check as unhealthy with the generic detail `"check panicked"` —
+  the panic's own message is never included in the HTTP response body
+  (it would otherwise leak internal error text to callers of
+  `/health/live` / `/health/ready`). A panicking check never turns the
+  whole endpoint into an unhandled 500, and it never stops the remaining
+  checks in the group from running.
+- **Bounds execution time**, on `--target dotnet` only. Each `HealthCheck`
+  carries a `timeoutMs` budget (`defaultCheckTimeoutMs` = 5000 unless
+  overridden via `addLivenessCheckWithTimeout` /
+  `addReadinessCheckWithTimeout`). On `--target dotnet`, the handler runs
+  on a background thread (`Health.Kernel.Net`, a real BCL
+  `Task.Run`/`Task.Wait(int)` bound) and the calling thread returns after
+  at most `timeoutMs`, reporting the check unhealthy with a
+  `"timed out after <timeoutMs>ms"` detail if the handler hasn't finished
+  by then.
+
+  **On `--target jvm`, `timeoutMs` is validated but not enforced.** There
+  is currently no existing Lyric facility to preemptively bound an
+  arbitrary check closure's execution time on the JVM backend: a Lyric
+  closure has no bridge to any JDK functional interface
+  (`Runnable`/`Callable`) outside the compiler's own `spawn`/`scope { }`
+  keyword codegen (see `lyric-stdlib/std/_kernel_jvm/task.l`'s module
+  header, which documents this after empirically verifying it), and even
+  that keyword codegen's `scope { }` join and `await` have no
+  bounded/timeout variant to race against. A hanging check therefore
+  still hangs `runLiveness`/`runReadiness` on `--target jvm`; only panic
+  isolation is real there. Query `Health.timeoutEnforced` (`true` on
+  `--target dotnet`, `false` on `--target jvm`) if a caller needs to know
+  which guarantee applies. Bringing JVM to parity needs a genuine
+  Callable/Future auto-FFI bridge for arbitrary Lyric closures — tracked in #7461,
+  as a follow-up, not silently faked here.
+
 ## Check groups
 
 | Group | Meaning |
@@ -131,7 +168,10 @@ assembly where dispatch is exact).
 ```lyric
 Health.create(): HealthRegistry
 Health.addLivenessCheck(registry, name, handler): HealthRegistry
+Health.addLivenessCheckWithTimeout(registry, name, handler, timeoutMs): HealthRegistry
 Health.addReadinessCheck(registry, name, handler): HealthRegistry
+Health.addReadinessCheckWithTimeout(registry, name, handler, timeoutMs): HealthRegistry
+Health.hasCheckNamed(registry, name): Bool
 Health.pass(): CheckStatus
 Health.fail(detail): CheckStatus
 Health.runChecks(registry, group): HealthReport
@@ -139,11 +179,20 @@ Health.runLiveness(registry): Result[String, String]
 Health.runReadiness(registry): Result[String, String]
 Health.isLiveness(group): Bool
 Health.isReadiness(group): Bool
+Health.defaultCheckTimeoutMs: Int
+Health.timeoutEnforced: Bool
 ```
 
 All builder functions are pure and return a new registry; chain them as
 needed.  `runChecks` invokes each registered handler in the requested
-group exactly once, in registration order.
+group exactly once, in registration order, isolated per "Fault isolation
+and timeouts" above.
+
+`addLivenessCheck`/`addReadinessCheck` (and their `*WithTimeout` variants)
+require a non-empty `name` and reject registering a name that already
+exists anywhere in the registry (`Health.hasCheckNamed`) — two checks
+sharing a name would collide into one JSON key in the response body. The
+`*WithTimeout` variants additionally require `timeoutMs >= 1`.
 
 ## Decision log
 
