@@ -2082,6 +2082,79 @@ test "known String methods still compile and run correctly (#7099 regression gua
   )
 }
 
+// #7422: an unknown method on a List/Map/Set receiver used to compile to a
+// runtime-throw stub (the JVM already rejected it at build time, J008). Like
+// the String case (#7099), `compileProjectToMsil` now panics at build time.
+test "unknown method call on a List receiver panics at build time, not silently (#7422)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "UnknownListMethod.Bad",
+      "package UnknownListMethod.Bad\n" + "import Std.Collections\n" + "func main(): Unit {\n" +
+        "  val acc: List[Int] = newList()\n" +
+        "  val more: slice[Int] = [1, 2]\n" +
+        "  acc.addRange(more)\n" +
+        "}\n"
+    )
+  )
+  val dir = freshTempDir("unknown_list_method")
+  val dllPath = Path.join(dir, "UnknownListMethod.dll")
+  val stdlibSources = Emitter.findStdlibSources()
+  var panicked = false
+  var panicMsg = ""
+  try {
+    compileProjectToMsil(packages, "UnknownListMethod", dllPath, stdlibSources)
+  } catch Bug as b {
+    panicked = true
+    panicMsg = b.message
+  }
+  cleanup(dir)
+  assertTrue(panicked, "unknown List method: compileProjectToMsil panics instead of returning (#7422)")
+  assertTrue(
+    Str.contains(panicMsg, "no method 'addRange' on type 'List'"),
+    "unknown List method: panic names the method and receiver type (got: " + panicMsg + ")"
+  )
+}
+
+// #7422: an `@externInstance` binding to a member of `List`1`/`Dictionary`2`
+// whose receiver is a concrete Lyric `List[E]`/`Map[K, V]` must cast the
+// receiver to its real closed instantiation (`List<byte>`), not the
+// `<object,...>` erasure, which threw InvalidCastException on entry.
+test "extern instance members of List`1 and Dictionary`2 bind on concrete receivers (#7422)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "GenericExternRecv.App",
+      "package GenericExternRecv.App\n" + "import Std.Collections\n" + "@externInstance\n" +
+        "@externTarget(\"System.Collections.Generic.List`1.AddRange\")\n" +
+        "func listAddRangeBytes(l: in List[Byte], items: in slice[Byte]): Unit = ()\n" +
+        "@externInstance\n" +
+        "@externTarget(\"System.Collections.Generic.Dictionary`2.TryAdd\")\n" +
+        "func dictTryAdd(m: in Map[String, Int], k: in String, v: in Int): Bool = ()\n" +
+        "func main(): Unit {\n" +
+        "  val acc: List[Byte] = newList()\n" +
+        "  acc.add(1u8)\n" +
+        "  val more: slice[Byte] = [2u8, 3u8, 250u8]\n" +
+        "  listAddRangeBytes(acc, more)\n" +
+        "  listAddRangeBytes(acc, more)\n" +
+        "  println(toString(acc.count))\n" +
+        "  println(toString(acc[3].toInt()))\n" +
+        "  val m: Map[String, Int] = newMap()\n" +
+        "  println(toString(dictTryAdd(m, \"a\", 7)))\n" +
+        "  println(toString(dictTryAdd(m, \"a\", 8)))\n" +
+        "  println(toString(m.count))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("generic-extern-recv", packages, "GenericExternRecv")
+  assertEqualInt(result.exitCode, 0, "generic extern receiver: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "7\n250\ntrue\nfalse\n1",
+    "generic extern receiver: AddRange appends in order, TryAdd reports the duplicate"
+  )
+}
+
 // #6390 regression: a MemberRefParent coded-index column (used by
 // MemberRef.class, ECMA-335 §II.24.2.6 tag table 3) switches from a 2-byte
 // to a 4-byte wire width the moment the largest table in its tag family

@@ -19066,6 +19066,11 @@ func lowerMethodCallMsil(
             "intrinsic — check for a typo or an unimplemented method)"
         )
       }
+      case MListOf(_) -> panicUnknownCollectionMethodMsil(memberName, "List")
+      case MConcreteList(_) -> panicUnknownCollectionMethodMsil(memberName, "List")
+      case MMapOf(_, _) -> panicUnknownCollectionMethodMsil(memberName, "Map")
+      case MConcreteMap(_, _) -> panicUnknownCollectionMethodMsil(memberName, "Map")
+      case MSetOf(_) -> panicUnknownCollectionMethodMsil(memberName, "Set")
       case _ -> {
         // Unrecognised method on this receiver.  Previously this popped the
         // receiver/args and pushed `null` — a silent miscompile: the call appeared
@@ -19085,6 +19090,19 @@ func lowerMethodCallMsil(
       }
     }
   }
+}
+
+// A `List`/`Map`/`Set` receiver reaching the unknown-method fallback names a
+// method no collection intrinsic or kernel binding implements (e.g.
+// `list.addRange(xs)`); like the `String` case (#7099), fail the build rather
+// than emit a stub that throws only when the call runs. The JVM backend
+// already rejects the same call at build time (J008), so this also keeps the
+// two targets in agreement (#7422).
+func panicUnknownCollectionMethodMsil(memberName: in String, typeName: in String): MsilType {
+  panic(
+    "Msil.Codegen: no method '" + memberName + "' on type '" + typeName + "' at this call site (no matching Std." +
+      "Collections function, collection intrinsic, or extern binding — check for a typo or an unimplemented method)"
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22764,6 +22782,25 @@ func emitGenericExternMember(
             case MGenericInst(_, headFqn, targs) -> {
               if headFqn == cleanFqn and targs.count == arity {
                 retArgs = Some(value = targs)
+              }
+            }
+            // A Lyric `List[E]`/`Map[K, V]` receiver with a concrete runtime
+            // instance is a real `List`1<E>`/`Dictionary`2<K,V>`, not the
+            // `<object,…>` erasure: casting it to the erased TypeSpec throws
+            // InvalidCastException on entry (#7422).
+            case MConcreteList(elemTy) -> {
+              if cleanFqn == "System.Collections.Generic.List`1" {
+                val la: List[MsilType] = newList()
+                la.add(elemTy)
+                retArgs = Some(value = la)
+              }
+            }
+            case MConcreteMap(keyTy, valTy) -> {
+              if cleanFqn == "System.Collections.Generic.Dictionary`2" {
+                val ma: List[MsilType] = newList()
+                ma.add(keyTy)
+                ma.add(valTy)
+                retArgs = Some(value = ma)
               }
             }
             case _ -> ()

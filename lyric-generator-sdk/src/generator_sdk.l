@@ -657,7 +657,7 @@ func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
         if taPos >= 0 {
           var mTaPos = taPos
           val taList = parseJsonStringArray(ftContent, mTaPos)
-          ftTypeArgs = taList.toSlice()
+          ftTypeArgs = taList.toArray()
         }
       }
       if fName != "" {
@@ -679,7 +679,7 @@ func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
     }
     skipJsonWhitespace(fieldsContent, pos)
   }
-  result.toSlice()
+  result.toArray()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -694,24 +694,16 @@ func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
 // `runGenerator` reads the JSON request from stdin, deserialises it into a
 // GeneratorRequest, calls `generate`, and writes the GeneratorResponse JSON
 // to stdout.  Exit code 0 = success; 1 = parse failure (message on stderr).
-pub func runGenerator(generate: (GeneratorRequest) -> GeneratorResponse): Int {
-  val json = match Console.readAll() {
-    case Ok(s) -> s
-    case Err(e) -> {
-      Console.error("GeneratorSdk: failed to read request from stdin: " + e.message())
-      return 1
-    }
-  }
+/// Decode the compiler's request JSON (the inverse of `serializeRequest`).
+/// `runGenerator` reads it from stdin; exposed so generators and tests can
+/// decode a request without a subprocess round trip.
+pub func parseRequest(json: in String): Result[GeneratorRequest, String] {
   val version = match jsonGetString(json, "schemaVersion") {
-    case None -> {
-      Console.error("GeneratorSdk: missing schemaVersion in request")
-      return 1
-    }
+    case None -> return Err(error = "missing schemaVersion in request")
     case Some(v) -> v
   }
   if version != "1" {
-    Console.error("GeneratorSdk: unsupported schemaVersion " + version)
-    return 1
+    return Err(error = "unsupported schemaVersion " + version)
   }
 
   val generatorArg = unwrapOr(jsonGetString(json, "generatorArg"), "")
@@ -748,7 +740,7 @@ pub func runGenerator(generate: (GeneratorRequest) -> GeneratorResponse): Int {
     if tpPos >= 0 {
       var mTpPos = tpPos
       val tpList = parseJsonStringArray(tdContent, mTpPos)
-      tdTypeParams = tpList.toSlice()
+      tdTypeParams = tpList.toArray()
     }
 
     // fields
@@ -765,11 +757,10 @@ pub func runGenerator(generate: (GeneratorRequest) -> GeneratorResponse): Int {
   // silently fall through to an empty-named `Record` here rather than
   // failing the build with a message naming the actual problem. Check
   // explicitly (rather than letting the invariant panic escape as an
-  // uncaught `Bug`) so the failure is a clean exit code with a clear
-  // stderr message, matching every other malformed-request check above.
+  // uncaught `Bug`) so the failure is a clean `Err` naming the problem,
+  // matching every other malformed-request check above.
   if tdName.length == 0 {
-    Console.error("GeneratorSdk: malformed request: missing or empty typeDescriptor.name")
-    return 1
+    return Err(error = "malformed request: missing or empty typeDescriptor.name")
   }
 
   val td = TypeDescriptor(
@@ -781,12 +772,31 @@ pub func runGenerator(generate: (GeneratorRequest) -> GeneratorResponse): Int {
     annotations = []
   )
 
-  val req = GeneratorRequest(
-    generatorArg = generatorArg,
-    typeDescriptor = td,
-    packageName = pkgName,
-    sourceFile = srcFile
+  Ok(
+    value = GeneratorRequest(
+      generatorArg = generatorArg,
+      typeDescriptor = td,
+      packageName = pkgName,
+      sourceFile = srcFile
+    )
   )
+}
+
+pub func runGenerator(generate: (GeneratorRequest) -> GeneratorResponse): Int {
+  val json = match Console.readAll() {
+    case Ok(s) -> s
+    case Err(e) -> {
+      Console.error("GeneratorSdk: failed to read request from stdin: " + e.message())
+      return 1
+    }
+  }
+  val req = match parseRequest(json) {
+    case Ok(r) -> r
+    case Err(msg) -> {
+      Console.error("GeneratorSdk: " + msg)
+      return 1
+    }
+  }
 
   val resp = generate(req)
 

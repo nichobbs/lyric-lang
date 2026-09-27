@@ -146,6 +146,19 @@ generator's `Error`-severity diagnostics never reached the caller.
 field (including an unparseable request overall) degrades to an
 empty/default value rather than failing.
 
+### Decoding a request: `parseRequest`
+
+```lyric
+pub func parseRequest(json: in String): Result[GeneratorRequest, String]
+```
+
+`parseRequest` is the inverse of `serializeRequest`, and is what
+`runGenerator` uses to decode the request it reads from stdin. It returns
+`Err` for an unsupported `schemaVersion` or a missing
+`typeDescriptor.name`; `runGenerator` prints that message prefixed with
+`GeneratorSdk:` and exits with code 1. Call it directly to decode a request
+in a test without a subprocess round trip.
+
 ## Type descriptors
 
 ### `TypeDescriptor`
@@ -163,7 +176,7 @@ record TypeDescriptor {
 ```
 
 `name` must be non-empty; constructing a `TypeDescriptor` with an empty name
-panics. `runGenerator`'s own request deserialization checks this explicitly
+panics. `parseRequest` (and so `runGenerator`) checks this explicitly
 before construction (a missing `typeDescriptor` block, or an unrecognized
 `kind`, used to silently fall through to an empty-named `Record` rather than
 failing): a malformed request now exits with code 1 and a clear message on
