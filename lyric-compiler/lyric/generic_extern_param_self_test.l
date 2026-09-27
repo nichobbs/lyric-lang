@@ -34,6 +34,18 @@
 //! erasure fix above (it affects any bracket-suffixed extern-type alias whose
 //! own type argument is a struct, in any position).
 //!
+//! A second case below covers a real regression found while validating this
+//! fix against `lyric-aws-secrets`: `parseBracketArgFqns` (reused by
+//! `externTargetBracketGenericInstMsil` to read an alias's own bracket
+//! suffix) had a latent bug for the .NET reflection "double-bracket"
+//! assembly-qualified generic-argument form (`Type`2[[Arg1],[Arg2]]`, as
+//! opposed to the plain `Type`2[Arg1,Arg2]` form) — every existing caller
+//! had only ever fed it the plain form, so parsing `[System.String]` kept
+//! the literal brackets in the extracted FQN, interning a bogus TypeRef
+//! that faulted with `TypeLoadException: Could not load type
+//! '[System.String]'`. `normalizeGenericArgToken` strips the extra wrapping
+//! (and an optional inner assembly-qualification suffix after a comma).
+//!
 //! Run by native `lyric test` (compiles in-process through the self-hosted
 //! Msil.Bridge and asserts every runtime value).  Imports only `Std.*`.
 //!
@@ -74,4 +86,28 @@ test "generic-collection-of-extern-value-type parameter binds on a non-generic-d
   setProtos(o, l)
   val back = getProtos(o)
   assertEqualInt(protoListCount(back), 0, "round-tripped ApplicationProtocols starts empty")
+}
+
+// The .NET reflection "double-bracket" generic-argument form
+// (`Type`2[[Arg1],[Arg2]]`), as opposed to the plain `Type`2[Arg1,Arg2]`
+// form every other case in this file uses. Core BCL reference types only
+// (both args are `String`), so this doesn't need a NuGet-restored assembly
+// to exercise the parsing bug.
+extern type StrStrMap = "System.Collections.Generic.Dictionary`2[[System.String],[System.String]]"
+
+@externTarget("System.Collections.Generic.Dictionary`2..ctor")
+func newStrStrMap(): StrStrMap = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.Dictionary`2.set_Item")
+func strStrMapSet(m: in StrStrMap, key: in String, value: in String): Unit = ()
+
+@externTarget("System.Collections.Generic.Dictionary`2[[System.String],[System.String]].get_Count")
+func strStrMapCount(m: in StrStrMap): Int = ()
+
+test "double-bracket generic-argument form parses to a real type, not a literal '[Arg]' TypeRef" {
+  val m = newStrStrMap()
+  strStrMapSet(m, "a", "1")
+  strStrMapSet(m, "b", "2")
+  assertEqualInt(strStrMapCount(m), 2, "both entries land in a real Dictionary<string, string>")
 }

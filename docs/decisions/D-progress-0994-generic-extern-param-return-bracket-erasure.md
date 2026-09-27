@@ -77,6 +77,36 @@ separately-scoped follow-up work, filed as its own issue rather than folded
 into this PR — a smaller, fully-finished slice beats a half-finished larger
 one (CLAUDE.md's production-readiness standard).
 
+## Follow-up: `parseBracketArgFqns` double-bracket format bug (found in CI)
+
+Validating this fix against `lyric-aws-secrets` (`--features aws`) surfaced a
+real regression: `SmClientCache`/`SsmClientCache` (`_kernel/
+secrets_kernel_aws.l`) are bracket-suffixed extern-type aliases used as
+`@externTarget` parameter/return types — exactly this fix's target shape —
+but written in the .NET reflection "double-bracket" assembly-qualified
+generic-argument form (`Type`2[[Arg1],[Arg2]]`) rather than the plain form
+(`Type`2[Arg1,Arg2]`) every other existing caller of `parseBracketArgFqns`
+had fed it. Before this fix's erasure recovery, that string was never
+actually parsed into individual type arguments (only checked for "does it
+contain `[` at all," to decide whether to erase); after, `parseBracketArgFqns`
+kept the literal wrapping brackets in each extracted FQN (`"[System.String]"`
+instead of `"System.String"`), interning a bogus TypeRef that faulted at
+load with `TypeLoadException: Could not load type '[System.String]'`
+(surfacing as a `TypeInitializationException` on the static field initializer
+that first constructed one of these caches).
+
+Confirmed via a worktree comparison against the unmodified pre-fix compiler
+that this exact repro shape was never previously exercised (the erasure
+convention short-circuited it), not a regression already present on `main`.
+
+Fixed `parseBracketArgFqns` itself (not just this fix's own helper) to
+normalise each comma-split argument token through a new
+`normalizeGenericArgToken`: strips one layer of wrapping `[...]` and, if an
+assembly-qualification suffix follows a comma inside it, keeps only the FQN
+before that comma. This is a general correctness fix to already-shipped,
+pre-existing parsing code (also used by `emitGenericExternMember`'s own
+explicit-bracket-suffix ctor path), not scoped narrowly to the new helper.
+
 ## Verification
 
 New self-test `lyric-compiler/lyric/generic_extern_param_self_test.l`,

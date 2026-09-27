@@ -22224,12 +22224,45 @@ func stripBracketSuffix(name: in String): String {
   }
 }
 
+// Normalise one comma-split generic-instantiation argument token to a bare
+// FQN. Handles both the plain form (`System.String`) and the .NET reflection
+// "double-bracket" assembly-qualified form (`[System.String]`, or with an
+// assembly suffix, `[System.String, mscorlib, Version=...]` — the form
+// `Type.AssemblyQualifiedName` produces for a generic argument from a
+// different assembly than the declaring type, and the form
+// `lyric-aws-secrets`'s `SmClientCache`/`SsmClientCache` bracket-suffixed
+// extern-type aliases use, e.g. `ConcurrentDictionary`2[[System.String],
+// [Amazon.SecretsManager.AmazonSecretsManagerClient]]`). Without unwrapping,
+// a token like `[System.String]` is passed to `argFqnToMsil` verbatim,
+// bracket characters and all, which cannot resolve to any real metadata type
+// and interns a bogus TypeRef named literally `[System.String]` — the
+// resulting instantiation blob loads with `TypeLoadException: Could not load
+// type '[System.String]'`. Silently a latent bug until this fix's own
+// `externTargetBracketGenericInstMsil` (#6029) started parsing a
+// double-bracket-form alias for the first time — every existing caller of
+// `parseBracketArgFqns` had only ever fed it the plain, single-bracket form.
+func normalizeGenericArgToken(raw: in String): String {
+  val t = raw.trim()
+  if t.length >= 2 and t.substring(0, 1) == "[" and t.substring(t.length - 1, 1) == "]" {
+    val inner = t.substring(1, t.length - 2)
+    val commaIdx = String.indexOfRaw(inner, ",")
+    if commaIdx < 0 {
+      inner.trim()
+    } else {
+      inner.substring(0, commaIdx).trim()
+    }
+  } else {
+    t
+  }
+}
+
 // Parse the concrete type-argument FQNs out of a bracketed generic instantiation
-// suffix: `Task`1[System.String]` -> ["System.String"].  Returns an empty list
-// when there is no `[...]`.  Tracks `[`/`]` nesting depth (#4044), so a nested
-// closed-generic arg (e.g. `Dictionary`2[String,Int32]` inside
-// `Tuple`2[Dictionary`2[String,Int32],Boolean]`) is returned as one element
-// rather than split apart at its own internal comma.
+// suffix: `Task`1[System.String]` -> ["System.String"]. Also accepts the
+// double-bracket assembly-qualified form (see `normalizeGenericArgToken`).
+// Returns an empty list when there is no `[...]`. Tracks `[`/`]` nesting
+// depth (#4044), so a nested closed-generic arg (e.g. `Dictionary`2[String,
+// Int32]` inside `Tuple`2[Dictionary`2[String,Int32],Boolean]`) is returned
+// as one element rather than split apart at its own internal comma.
 pub func parseBracketArgFqns(name: in String): List[String] {
   val acc: List[String] = newList()
   val br = String.indexOfRaw(name, "[")
@@ -22258,7 +22291,7 @@ pub func parseBracketArgFqns(name: in String): List[String] {
       depth = depth - 1
       cur = cur + ch
     } else if ch == "," and depth == 0 {
-      val t = cur.trim()
+      val t = normalizeGenericArgToken(cur)
       if t.length > 0 {
         acc.add(t)
       }
@@ -22268,7 +22301,7 @@ pub func parseBracketArgFqns(name: in String): List[String] {
     }
     i = i + 1
   }
-  val tail = cur.trim()
+  val tail = normalizeGenericArgToken(cur)
   if tail.length > 0 {
     acc.add(tail)
   }
