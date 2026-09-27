@@ -635,6 +635,24 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
   result
 }
 
+// `symTableTryFindAll` narrowed to the symbols a bare `name` may mean under
+// the current scope's import rule (docs/01 §9.2); every match when no rule
+// applies.
+pub func symTableTryFindAllVisible(tbl: in SymbolTable, name: in String): List[Symbol] {
+  val curPkg = symTableScopePkg(tbl)
+  val ruled = curPkg.length > 0 and symTableImportRuleApplies(tbl, curPkg)
+  val result: List[Symbol] = newList()
+  var i = 0
+  while i < tbl.symbols.count {
+    val s = tbl.symbols[i]
+    if s.name == name and (not ruled or symTableImportVisible(tbl, curPkg, s)) {
+      result.add(s)
+    }
+    i = i + 1
+  }
+  result
+}
+
 // Resolve `name` to a single symbol, honouring the current resolution scope.
 // Preference, highest first: (1) current package, (2) an imported package,
 // (3) any match (last-registered-wins).  A single newest-to-oldest pass keeps
@@ -921,18 +939,37 @@ pub func symTableAmbiguousImportPackages(tbl: in SymbolTable, name: in String): 
     }
   }
   // A candidate the import rule hides cannot be meant by a bare reference.
+  // Under the rule a package reached only through a whole import's own
+  // imports is as visible as a direct one, so two such packages collide too;
+  // a directly imported candidate still shadows every transitive one, as it
+  // does in `symTableTryFindOne`.
   val ruled = curPkg.length > 0 and symTableImportRuleApplies(tbl, curPkg)
+  val transitive: List[String] = newList()
   val seen: Map[String, Bool] = newMap()
   var i = 0
   while i < tbl.symbols.count {
     val s = tbl.symbols[i]
-    if s.name == name and s.originPackage != curPkg and symIsCrossPackageVisible(s) and symTableScopeAllows(tbl, s.originPackage) and (not ruled or symTableImportVisible(tbl, curPkg, s)) {
+    if s.name == name and s.originPackage != curPkg and symIsCrossPackageVisible(s) and (not ruled or symTableImportVisible(tbl, curPkg, s)) {
       if not seen.containsKey(s.originPackage) {
-        seen.add(s.originPackage, true)
-        pkgs.add(s.originPackage)
+        if symTableScopeAllows(tbl, s.originPackage) {
+          seen.add(s.originPackage, true)
+          pkgs.add(s.originPackage)
+        } else if ruled and s.originPackage.length > 0 {
+          seen.add(s.originPackage, true)
+          transitive.add(s.originPackage)
+        }
       }
     }
     i = i + 1
   }
-  pkgs
+  if pkgs.count > 0 {
+    return pkgs
+  }
+  transitive
+}
+
+// Whether `pkg` is one of the current scope's direct imports, as opposed to
+// a package it reaches through a whole import's own imports.
+pub func symTableIsDirectImport(tbl: in SymbolTable, pkg: in String): Bool {
+  symTableScopeAllows(tbl, pkg)
 }

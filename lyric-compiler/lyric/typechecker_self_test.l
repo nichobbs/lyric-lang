@@ -831,8 +831,22 @@ test "interface subtyping cross package sound" {
     "package PkgB\npub interface Greeter {\n  func greet(): String\n}\npub func wantB(g: in Greeter): String { \"\" }\n"
   )
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   // Only `wantB` is imported from PkgB, so the bare `Greeter` means PkgA's.
   val src = "package App\nimport PkgA\nimport PkgB.{wantB}\nrecord Hello { x: Int }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = wantB(Hello(x = 1))\n}\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
@@ -853,8 +867,22 @@ test "qualified union case constructor honours package qualifier" {
   )
   val pkgB = parse("package PkgB\npub union Signal {\n  case Ping(label: String)\n  case Halt\n}\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   // Qualified to PkgA — must construct PkgA's Signal and satisfy wantA.
   val okSrc = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  wantA(PkgA.Ping(code = 7))\n}\n"
   assertEqualInt(
@@ -904,8 +932,22 @@ test "qualified union case pattern head validates against the scrutinee's own un
   )
   val pkgB = parse("package PkgB\npub union Signal {\n  case Ping(label: String)\n  case Halt\n}\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   // A PkgA-typed scrutinee matched with an explicitly PkgB-qualified
   // pattern head must be rejected — PkgB never declares the union being
   // matched.
@@ -949,7 +991,14 @@ test "qualified union case pattern head validates against the scrutinee's own un
 test "qualified record constructor validates field argument types" {
   val pkgR = parse("package PkgR\npub record Widget {\n  pub name: String\n  pub count: Int\n}\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgR", items = pkgR.file.items, imports = collectImportNames(pkgR.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgR",
+      items = pkgR.file.items,
+      imports = collectImportNames(pkgR.file.imports),
+      wholeImports = collectWholeImportNames(pkgR.file.imports)
+    )
+  )
   // Wrong-typed `name` field (Int where String is declared) through a
   // qualified constructor call must be rejected with T0104 — pre-fix this
   // fell through to the lenient generic call-type path and type-checked clean.
@@ -2075,8 +2124,22 @@ test "scoped resolution no cross package type collision" {
   val pkgA = regexErrorPkgA()
   val pkgB = regexErrorPkgB()
   val imports: List[ImportedPackage] = newList()
-  imports.add(ImportedPackage(name = "Pa", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  imports.add(ImportedPackage(name = "Pb", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  imports.add(
+    ImportedPackage(
+      name = "Pa",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  imports.add(
+    ImportedPackage(
+      name = "Pb",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   val app = parse("package App\nfunc main(): Int { 0 }\n")
   val cr = checkWithImportedPackages(app.file, imports)
 
@@ -2130,9 +2193,30 @@ test "imported package signature prefers its declared import" {
   val pkgC = parse("package Pc\npub union Payload { case FromC }\n")
   val pkgA = parse("package Pa\nimport Pb\npub func mk(): Payload { FromB }\n")
   val imports: List[ImportedPackage] = newList()
-  imports.add(ImportedPackage(name = "Pa", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  imports.add(ImportedPackage(name = "Pb", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
-  imports.add(ImportedPackage(name = "Pc", items = pkgC.file.items, imports = collectImportNames(pkgC.file.imports)))
+  imports.add(
+    ImportedPackage(
+      name = "Pa",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  imports.add(
+    ImportedPackage(
+      name = "Pb",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
+  imports.add(
+    ImportedPackage(
+      name = "Pc",
+      items = pkgC.file.items,
+      imports = collectImportNames(pkgC.file.imports),
+      wholeImports = collectWholeImportNames(pkgC.file.imports)
+    )
+  )
   val app = parse("package App\nfunc main(): Int { 0 }\n")
   val cr = checkWithImportedPackages(app.file, imports)
   val idMk = sigReturnUserId(cr, "mk")
@@ -2156,7 +2240,12 @@ test "cross package impl satisfies interface at argument position" {
   )
   val imports: List[ImportedPackage] = newList()
   imports.add(
-    ImportedPackage(name = "Acme", items = pkgAcme.file.items, imports = collectImportNames(pkgAcme.file.imports))
+    ImportedPackage(
+      name = "Acme",
+      items = pkgAcme.file.items,
+      imports = collectImportNames(pkgAcme.file.imports),
+      wholeImports = collectWholeImportNames(pkgAcme.file.imports)
+    )
   )
   val app = parse("package App\nimport Acme\nfunc run(): Int { lookup(mkStore(), \"k\") }\n")
   val cr = checkWithImportedPackages(app.file, imports)
@@ -2357,7 +2446,14 @@ test "interface subtyping cross package acceptance" {
     "package PkgA\npub interface Greeter {\n  func greet(): String\n}\npub func useG(g: in Greeter): String { \"\" }\n"
   )
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
   val src = "package App\nimport PkgA\nrecord Hello { x: Int }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = useG(Hello(x = 1))\n}\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
   assertTrue(
@@ -3017,7 +3113,14 @@ test "alias rhs value type arg emits T0109" {
 test "alias target prefers current package over import" {
   val dep = parse("package Q\npub record Random {\n  q: Int\n}\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "Q", items = dep.file.items, imports = collectImportNames(dep.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "Q",
+      items = dep.file.items,
+      imports = collectImportNames(dep.file.imports),
+      wholeImports = collectWholeImportNames(dep.file.imports)
+    )
+  )
   val src = "package P\nimport Q\nrecord Random {\n  x: Int\n}\nalias R = Random\nfunc f(): R { Random(x = 1) }\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
   assertEqualInt(diagCount(cr), 0, "alias target: current-package Random wins over imported Q.Random")
@@ -3420,7 +3523,8 @@ test "for over a cross-package imported extern single-param generic collection d
     ImportedPackage(
       name = "Web.Kernel",
       items = pkgKernel.file.items,
-      imports = collectImportNames(pkgKernel.file.imports)
+      imports = collectImportNames(pkgKernel.file.imports),
+      wholeImports = collectWholeImportNames(pkgKernel.file.imports)
     )
   )
   val app = parse(
@@ -3743,7 +3847,8 @@ test "unknown qualified name on a known package is T0020, not silently swallowed
   val pkg = ImportedPackage(
     name = "Std.Char",
     items = importedItemsOf("package Std.Char\npub func isUpper(c: in Char): Bool { true }\n"),
-    imports = newList()
+    imports = newList(),
+    wholeImports = newList()
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(pkg)
@@ -3765,7 +3870,8 @@ test "unknown qualified name on a 3-segment package is T0020 (#6361 deep-chain c
   val pkg = ImportedPackage(
     name = "CloudAgents.Kernel.SessionStore",
     items = importedItemsOf("package CloudAgents.Kernel.SessionStore\npub func getSessions(): Int { 1 }\n"),
-    imports = newList()
+    imports = newList(),
+    wholeImports = newList()
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(pkg)
@@ -3783,7 +3889,8 @@ test "correctly-spelled qualified name on a known package has no T0020 (#6361 re
   val pkg = ImportedPackage(
     name = "Std.Char",
     items = importedItemsOf("package Std.Char\npub func isUpper(c: in Char): Bool { true }\n"),
-    imports = newList()
+    imports = newList(),
+    wholeImports = newList()
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(pkg)
@@ -3816,7 +3923,7 @@ test "qualified call into a cross-package extern-package-block member has no T00
     "}\n"
   val kernelItems: List[Item] = newList()
   pipeAddCrossPackageItems(parse(kernelSrc).file, kernelItems)
-  val pkg = ImportedPackage(name = "Lib.Kernel", items = kernelItems, imports = newList())
+  val pkg = ImportedPackage(name = "Lib.Kernel", items = kernelItems, imports = newList(), wholeImports = newList())
   val packages: List[ImportedPackage] = newList()
   packages.add(pkg)
   val src = "package App\nimport Lib.Kernel\nfunc consume(): Int { Lib.Kernel.doThing() }\n"
@@ -3843,7 +3950,7 @@ test "typo'd qualified call into an all-extern-package-block package is T0020 (#
     "}\n"
   val kernelItems: List[Item] = newList()
   pipeAddCrossPackageItems(parse(kernelSrc).file, kernelItems)
-  val pkg = ImportedPackage(name = "Lib.OnlyExtern", items = kernelItems, imports = newList())
+  val pkg = ImportedPackage(name = "Lib.OnlyExtern", items = kernelItems, imports = newList(), wholeImports = newList())
   val packages: List[ImportedPackage] = newList()
   packages.add(pkg)
   val src = "package App\nimport Lib.OnlyExtern\nfunc consume(): Int { Lib.OnlyExtern.doThingTypo() }\n"
@@ -3862,7 +3969,7 @@ test "correctly-spelled qualified call into an all-extern-package-block package 
     "}\n"
   val kernelItems: List[Item] = newList()
   pipeAddCrossPackageItems(parse(kernelSrc).file, kernelItems)
-  val pkg = ImportedPackage(name = "Lib.OnlyExtern", items = kernelItems, imports = newList())
+  val pkg = ImportedPackage(name = "Lib.OnlyExtern", items = kernelItems, imports = newList(), wholeImports = newList())
   val packages: List[ImportedPackage] = newList()
   packages.add(pkg)
   val src = "package App\nimport Lib.OnlyExtern\nfunc consume(): Int { Lib.OnlyExtern.doThing() }\n"
@@ -4426,8 +4533,22 @@ test "bare val name ambiguous across two imported packages is T0123" {
   val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
   val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): String { GREETING }\n"
   assertEqualInt(
     countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
@@ -4445,8 +4566,22 @@ test "bare union case constructor call ambiguous across two imported packages is
   val pkgA = parse("package PkgA\npub union Signal {\n  case Ping(code: Int)\n  case Halt\n}\n")
   val pkgB = parse("package PkgB\npub union Signal {\n  case Ping(label: String)\n  case Halt\n}\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  val s = Ping(code = 1)\n  0\n}\n"
   assertEqualInt(
     countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
@@ -4466,8 +4601,22 @@ test "bare function name ambiguous across two imported packages is T0123" {
   val pkgA = parse("package PkgA\npub func helper(): Int { 1 }\n")
   val pkgB = parse("package PkgB\npub func helper(): Int { 2 }\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int { helper() }\n"
   assertEqualInt(
     countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
@@ -4483,8 +4632,22 @@ test "bare val name imported from only one package is not ambiguous" {
   val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
   val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   val src = "package App\nimport PkgA\nfunc f(): String { GREETING }\n"
   assertEqualInt(
     diagCount(checkWithImportedPackages(parse(src).file, packages)),
@@ -4501,8 +4664,22 @@ test "local declaration shadows an ambiguous import collision, no T0123" {
   val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
   val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   val src = "package App\nimport PkgA\nimport PkgB\nval GREETING: String = \"local\"\nfunc f(): String { GREETING }\n"
   assertEqualInt(
     diagCount(checkWithImportedPackages(parse(src).file, packages)),
@@ -4521,8 +4698,22 @@ func importRulePackages(): List[ImportedPackage] {
   val pkgX = parse("package PkgX\npub func siblingHelper(): Int { 1 }\n")
   val pkgY = parse("package PkgY\npub func fromY(): Int { 2 }\npub func otherY(): Int { 3 }\npub val LIMIT: Int = 4\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgX", items = pkgX.file.items, imports = collectImportNames(pkgX.file.imports)))
-  packages.add(ImportedPackage(name = "PkgY", items = pkgY.file.items, imports = collectImportNames(pkgY.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgX",
+      items = pkgX.file.items,
+      imports = collectImportNames(pkgX.file.imports),
+      wholeImports = collectWholeImportNames(pkgX.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgY",
+      items = pkgY.file.items,
+      imports = collectImportNames(pkgY.file.imports),
+      wholeImports = collectWholeImportNames(pkgY.file.imports)
+    )
+  )
   packages
 }
 
@@ -4573,8 +4764,22 @@ test "a name hidden by an aliased import does not make a whole import's name amb
   val pkgA = parse("package PkgA\npub val GREETING: String = \"hi from A\"\n")
   val pkgB = parse("package PkgB\npub val GREETING: String = \"hi from B\"\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   val src = "package App\nimport PkgA as A\nimport PkgB\nfunc f(): String { GREETING }\n"
   assertEqualInt(diagCount(checkWithImportedPackages(parse(src).file, packages)), 0, "GREETING means PkgB's: no T0123")
 }
@@ -4584,7 +4789,14 @@ test "a selectively imported union type makes its cases visible in patterns and 
     "package PkgS\npub union Shape {\n  case Square(side: Int)\n  case Dot\n}\npub func unit(): Shape { Dot }\n"
   )
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgS", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgS",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
   val src = "package App\nimport PkgS.{Shape}\nfunc side(s: in Shape): Int {\n  match s {\n    case Square(n) -> n\n    case Dot -> 0\n  }\n}\nfunc mk(): Shape { Square(side = 2) }\n"
   assertEqualInt(
     diagCount(checkWithImportedPackages(parse(src).file, packages)),
@@ -4596,7 +4808,14 @@ test "a selectively imported union type makes its cases visible in patterns and 
 test "a bare case pattern resolves through the scrutinee's type behind an aliased import" {
   val lib = parse("package PkgE\npub enum Colour {\n  case Red\n  case Green\n}\npub func pick(): Colour { Red }\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgE", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgE",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
   val src = "package App\nimport PkgE as E\nfunc code(c: in PkgE.Colour): Int {\n  match c {\n    case Red -> 1\n    case Green -> 2\n  }\n}\n"
   assertEqualInt(diagCount(checkWithImportedPackages(parse(src).file, packages)), 0, "Red and Green are Colour's cases")
   val exprSrc = "package App\nimport PkgE as E\nfunc mk(): PkgE.Colour { Red }\n"
@@ -4618,16 +4837,184 @@ test "bare name reachable only via a transitive import still resolves (kernel/ho
   val pkgWrap = parse("package PkgWrap\nimport PkgHost\npub func wrapFn(): Int { hostFn() }\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "PkgHost", items = pkgHost.file.items, imports = collectImportNames(pkgHost.file.imports))
+    ImportedPackage(
+      name = "PkgHost",
+      items = pkgHost.file.items,
+      imports = collectImportNames(pkgHost.file.imports),
+      wholeImports = collectWholeImportNames(pkgHost.file.imports)
+    )
   )
   packages.add(
-    ImportedPackage(name = "PkgWrap", items = pkgWrap.file.items, imports = collectImportNames(pkgWrap.file.imports))
+    ImportedPackage(
+      name = "PkgWrap",
+      items = pkgWrap.file.items,
+      imports = collectImportNames(pkgWrap.file.imports),
+      wholeImports = collectWholeImportNames(pkgWrap.file.imports)
+    )
   )
   val src = "package App\nimport PkgWrap\nfunc f(): Int { hostFn() }\n"
   assertEqualInt(
     diagCount(checkWithImportedPackages(parse(src).file, packages)),
     0,
     "hostFn (PkgHost) resolves transitively through PkgWrap's own import of PkgHost, even though App never imports PkgHost directly"
+  )
+}
+
+func rulePkg(name: in String, src: in String): ImportedPackage {
+  val f = parse(src).file
+  ImportedPackage(
+    name = name,
+    items = f.items,
+    imports = collectImportNames(f.imports),
+    wholeImports = collectWholeImportNames(f.imports)
+  )
+}
+
+// #7555: only a whole import reaches further.  A package's selective or
+// aliased imports are its own business; a file that imports it whole does
+// not see those packages' names.
+test "transitive visibility follows only the intermediate package's whole imports" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(rulePkg("PkgH1", "package PkgH1\npub func viaAlias(): Int { 1 }\n"))
+  packages.add(rulePkg("PkgH2", "package PkgH2\npub func listed(): Int { 2 }\npub func unlisted(): Int { 3 }\n"))
+  packages.add(
+    rulePkg(
+      "PkgMid",
+      "package PkgMid\nimport PkgH1 as H\nimport PkgH2.{listed}\npub func mid(): Int { H.viaAlias() + listed() }\n"
+    )
+  )
+  val aliasSrc = "package App\nimport PkgMid\nfunc f(): Int { viaAlias() }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(aliasSrc).file, packages), "T0020"),
+    1,
+    "PkgMid imports PkgH1 only through an alias: viaAlias is not visible"
+  )
+  val selSrc = "package App\nimport PkgMid\nfunc f(): Int { listed() + unlisted() }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(selSrc).file, packages), "T0020"),
+    2,
+    "PkgMid imports PkgH2 selectively: neither name reaches App"
+  )
+}
+
+// #7556: two packages reached only transitively collide like two direct
+// imports; a direct import still shadows every transitive candidate.
+test "a bare name declared by two transitively reached packages is T0123" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(rulePkg("PkgC", "package PkgC\npub func foo(): Int { 1 }\n"))
+  packages.add(rulePkg("PkgD", "package PkgD\npub func foo(): Int { 2 }\n"))
+  packages.add(rulePkg("PkgTa", "package PkgTa\nimport PkgC\npub func useA(): Int { foo() }\n"))
+  packages.add(rulePkg("PkgTb", "package PkgTb\nimport PkgD\npub func useB(): Int { foo() }\n"))
+  val src = "package App\nimport PkgTa\nimport PkgTb\nfunc run(): Int { foo() }\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertEqualInt(countDiagCode(cr, "T0123"), 1, "foo is reached through PkgTa and PkgTb: T0123")
+  assertTrue(
+    diagMessageFor(cr, "T0123").contains("reached through this file's imports"),
+    "the message says the packages are reached transitively: " + diagMessageFor(cr, "T0123")
+  )
+  val directSrc = "package App\nimport PkgTa\nimport PkgD\nfunc run(): Int { foo() }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(directSrc).file, packages)),
+    0,
+    "a direct import of PkgD shadows PkgC's transitive foo"
+  )
+}
+
+// #7557: `import P.{f as g}` is not supported; it is T0137 rather than a
+// name that silently fails to resolve.
+test "renaming a selectively imported name is T0137" {
+  val src = "package App\nimport PkgY.{fromY as g}\nfunc f(): Int { 1 }\n"
+  val cr = checkWithImportedPackages(parse(src).file, importRulePackages())
+  assertEqualInt(countDiagCode(cr, "T0137"), 1, "fromY as g: T0137")
+  assertTrue(
+    diagMessageFor(cr, "T0137").contains("import PkgY.{fromY}"),
+    "the message says how to import it: " + diagMessageFor(cr, "T0137")
+  )
+}
+
+// #7552: the `sigs` slots keep one function per name, first registered; when
+// the import rule hides it, a bare reference takes the visible declaration,
+// generic or of another arity, rather than typing against the hidden one.
+test "a bare call types against the visible function, not a hidden first-registered one" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    rulePkg(
+      "PkgHid",
+      "package PkgHid\npub func pick(x: in Int): String { \"hidden\" }\npub func arity(x: in Int): Int { x }\n"
+    )
+  )
+  packages.add(
+    rulePkg(
+      "PkgVis",
+      "package PkgVis\npub func pick[T](x: in T): T { x }\npub func arity(x: in Int, y: in Int): Int { x + y }\n"
+    )
+  )
+  val okSrc = "package App\nimport PkgHid as H\nimport PkgVis\nfunc f(): Int { pick(5) }\nfunc g(): Int { arity(1, 2) }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(okSrc).file, packages)),
+    0,
+    "pick is PkgVis's generic, arity PkgVis's two-argument function"
+  )
+  val badSrc = "package App\nimport PkgHid as H\nimport PkgVis\nfunc f(): String { pick(5) }\n"
+  assertTrue(
+    diagCount(checkWithImportedPackages(parse(badSrc).file, packages)) > 0,
+    "pick(5) is an Int through PkgVis, not PkgHid's String"
+  )
+  val aritySrc = "package App\nimport PkgHid as H\nimport PkgVis\nfunc g(): Int { arity(1) }\n"
+  assertTrue(
+    diagCount(checkWithImportedPackages(parse(aritySrc).file, packages)) > 0,
+    "no visible one-argument arity: PkgHid's is hidden"
+  )
+}
+
+// #7553: an alias target and a type-position name resolve only through what
+// the file may name bare, and a qualified alias target in its own package.
+test "type resolution fallbacks honour the import rule" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(rulePkg("PkgTa1", "package PkgTa1\npub record Thing {\n  a: Int\n}\n"))
+  packages.add(rulePkg("PkgTb1", "package PkgTb1\npub record Thing {\n  b: Int\n}\n"))
+  val hiddenSrc = "package App\nimport PkgTa1 as PA\nalias X = Thing\nfunc f(t: in X): Int { 1 }\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(parse(hiddenSrc).file, packages), "T0010"),
+    "alias X = Thing with Thing hidden behind an alias: T0010"
+  )
+  val qualSrc = "package App\nimport PkgTa1 as PA\nimport PkgTb1\nalias X = PkgTa1.Thing\nfunc f(t: in X): Int { t.a }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(qualSrc).file, packages)),
+    0,
+    "alias X = PkgTa1.Thing is PkgTa1's Thing (field a), not the visible PkgTb1.Thing"
+  )
+  val clash: List[ImportedPackage] = newList()
+  clash.add(rulePkg("PkgTok", "package PkgTok\npub union Tok {\n  case Token\n}\n"))
+  clash.add(rulePkg("PkgRec", "package PkgRec\npub record Token {\n  n: Int\n}\n"))
+  val clashSrc = "package App\nimport PkgTok\nimport PkgRec as R\nfunc f(t: in Token): Int { 1 }\n"
+  val clashCr = checkWithImportedPackages(parse(clashSrc).file, clash)
+  assertTrue(
+    hasDiagCode(clashCr, "T0010") or hasDiagCode(clashCr, "T0013"),
+    "Token in type position is PkgTok's case, not the hidden PkgRec.Token"
+  )
+}
+
+// #7554: a selectively imported val's and record's own types are written in
+// the declaring package's scope; the importing file need not list them.
+test "a selectively imported val and record resolve their types in the declaring package" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    rulePkg(
+      "PkgIn",
+      "package PkgIn\npub record Inner {\n  n: Int\n}\npub record Rec {\n  field: Inner\n}\npub val defaultInner: Inner = Inner(n = 1)\npub func makeInner(): Inner { Inner(n = 2) }\npub val inferred = makeInner()\n"
+    )
+  )
+  val okSrc = "package App\nimport PkgIn.{Rec, defaultInner, inferred}\nfunc f(r: in Rec): Int { r.field.n }\nfunc g(): Int { defaultInner.n + inferred.n }\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(parse(okSrc).file, packages)),
+    0,
+    "Inner and makeInner are PkgIn's own names"
+  )
+  val badSrc = "package App\nimport PkgIn.{Rec}\nfunc f(r: in Rec): String { r.field.n }\n"
+  assertTrue(
+    diagCount(checkWithImportedPackages(parse(badSrc).file, packages)) > 0,
+    "r.field is a typed Inner, so returning its Int as a String is an error"
   )
 }
 
@@ -4649,7 +5036,12 @@ test "unimported stdlib-shaped type as call receiver is T0020 (#7345)" {
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "PkgRest", items = pkgRest.file.items, imports = collectImportNames(pkgRest.file.imports))
+    ImportedPackage(
+      name = "PkgRest",
+      items = pkgRest.file.items,
+      imports = collectImportNames(pkgRest.file.imports),
+      wholeImports = collectWholeImportNames(pkgRest.file.imports)
+    )
   )
   val src = "package App\nfunc f(): Unit {\n  val w = Widget.create(\"x\")\n}\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
@@ -4668,7 +5060,12 @@ test "imported stdlib-shaped type as call receiver resolves cleanly (#7345)" {
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "PkgRest", items = pkgRest.file.items, imports = collectImportNames(pkgRest.file.imports))
+    ImportedPackage(
+      name = "PkgRest",
+      items = pkgRest.file.items,
+      imports = collectImportNames(pkgRest.file.imports),
+      wholeImports = collectWholeImportNames(pkgRest.file.imports)
+    )
   )
   val src = "package App\nimport PkgRest\nfunc f(): Unit {\n  val w = Widget.create(\"x\")\n}\n"
   assertEqualInt(
@@ -4689,10 +5086,20 @@ test "type receiver reachable only via a transitive import resolves cleanly (#73
   val pkgWrap = parse("package PkgWrap\nimport PkgRest\npub func wrapFn(): Int { 1 }\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "PkgRest", items = pkgRest.file.items, imports = collectImportNames(pkgRest.file.imports))
+    ImportedPackage(
+      name = "PkgRest",
+      items = pkgRest.file.items,
+      imports = collectImportNames(pkgRest.file.imports),
+      wholeImports = collectWholeImportNames(pkgRest.file.imports)
+    )
   )
   packages.add(
-    ImportedPackage(name = "PkgWrap", items = pkgWrap.file.items, imports = collectImportNames(pkgWrap.file.imports))
+    ImportedPackage(
+      name = "PkgWrap",
+      items = pkgWrap.file.items,
+      imports = collectImportNames(pkgWrap.file.imports),
+      wholeImports = collectWholeImportNames(pkgWrap.file.imports)
+    )
   )
   val src = "package App\nimport PkgWrap\nfunc f(): Unit {\n  val w = Widget.create(\"x\")\n}\n"
   assertEqualInt(
@@ -5107,8 +5514,22 @@ test "qualified pattern head against an unresolvable scrutinee is not T0123 (#67
   val pkgA = parse("package PkgA\npub union Signal {\n  case Ping(code: Int)\n  case Halt\n}\n")
   val pkgB = parse("package PkgB\npub union Signal {\n  case Ping(label: String)\n  case Halt\n}\n")
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items, imports = collectImportNames(pkgA.file.imports)))
-  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items, imports = collectImportNames(pkgB.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
   val src = "package App\nimport PkgA\nimport PkgB\nfunc f(): Int {\n  match undefinedScrutinee {\n    case PkgA.Ping(n) -> n\n    case _ -> 0\n  }\n}\n"
   assertEqualInt(
     countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0123"),
@@ -5143,7 +5564,14 @@ test "constructing a qualified cross-package union by its type name is T0125, no
     "package Lib\npub union DbError {\n  case OpenFailed(message: String)\n  case ExecFailed(sql: String, message: String)\n}\n"
   )
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "Lib", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
   val src = "package App\nimport Lib\nfunc f(): Lib.DbError { Lib.DbError(message = \"x\") }\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
   assertTrue(hasDiagCode(cr, "T0125"), "qualified union-by-type-name construction fires T0125")
@@ -5219,13 +5647,19 @@ test "qualified function value prefers the imported package among same-suffix pa
   val otherBar = parse("package Other.Bar\npub func parse(s: in String): Int { 2 }\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "Lib.Bar", items = libBar.file.items, imports = collectImportNames(libBar.file.imports))
+    ImportedPackage(
+      name = "Lib.Bar",
+      items = libBar.file.items,
+      imports = collectImportNames(libBar.file.imports),
+      wholeImports = collectWholeImportNames(libBar.file.imports)
+    )
   )
   packages.add(
     ImportedPackage(
       name = "Other.Bar",
       items = otherBar.file.items,
-      imports = collectImportNames(otherBar.file.imports)
+      imports = collectImportNames(otherBar.file.imports),
+      wholeImports = collectWholeImportNames(otherBar.file.imports)
     )
   )
   val src = "package App\nimport Lib.Bar\nfunc g(): Int {\n  val f: (String) -> Int = Bar.parse\n  f(\"x\")\n}\n"
@@ -5263,7 +5697,14 @@ test "a function value naming an unrepresentable cross-package function is T0128
     "package Lib\npub func bump(n: inout Int): Unit { n = n + 1 }\npub async func fetch(s: in String): Int { 1 }\npub func ident[T](x: in T): T { x }\npub func plain(s: in String): Int { 2 }\n"
   )
   val packages: List[ImportedPackage] = newList()
-  packages.add(ImportedPackage(name = "Lib", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
   val inoutSrc = "package App\nimport Lib\nfunc g(): Unit {\n  val f = Lib.bump\n}\n"
   assertTrue(
     hasDiagCode(checkWithImportedPackages(rewriteFile(parse(inoutSrc).file), packages), "T0128"),
@@ -5320,7 +5761,12 @@ test "overloaded function value is T0123, bare and qualified" {
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "Ovl.Other", items = other.file.items, imports = collectImportNames(other.file.imports))
+    ImportedPackage(
+      name = "Ovl.Other",
+      items = other.file.items,
+      imports = collectImportNames(other.file.imports),
+      wholeImports = collectWholeImportNames(other.file.imports)
+    )
   )
   val bareSrc = "package Ovl.App\nimport Ovl.Other.{pad}\nfunc g(): Unit {\n  val f: (String) -> String = pad\n}\n"
   assertTrue(
@@ -5343,9 +5789,21 @@ test "a function value over an extern type whose name the use site reuses is T01
   val lib = parse("package Lib\nimport Std.UuidHost\npub func show(u: in Uuid): String { \"\" }\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "Std.UuidHost", items = host.file.items, imports = collectImportNames(host.file.imports))
+    ImportedPackage(
+      name = "Std.UuidHost",
+      items = host.file.items,
+      imports = collectImportNames(host.file.imports),
+      wholeImports = collectWholeImportNames(host.file.imports)
+    )
   )
-  packages.add(ImportedPackage(name = "Lib", items = lib.file.items, imports = collectImportNames(lib.file.imports)))
+  packages.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
   val clash = "package App\nimport Lib\nrecord Uuid {\n  n: Int\n}\nfunc g(): Unit {\n  val f = Lib.show\n}\n"
   assertTrue(
     hasDiagCode(checkWithImportedPackages(rewriteFile(parse(clash).file), packages), "T0128"),

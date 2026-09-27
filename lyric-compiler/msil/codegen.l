@@ -34,6 +34,7 @@ import Std.String as String
 import Lyric.Parser
 import Lyric.Lexer
 import Lyric.RestoredPackages
+import Lyric.ContractMeta as Meta
 import Lyric.Weaver as Weaver
 import Lyric.BareFuncRef as BareFuncRef
 import Msil.Lowering
@@ -642,8 +643,13 @@ pub record CodegenCtx {
   // import's is T0123.  See `bareImportsOfMsil`.
   pkgBareImports: Map[String, List[String]]
   // `pkgBareImports` completed with the transitive closure of each package's
-  // whole imports (their own imports, any form), computed on first use.
+  // whole imports (their own whole imports), computed on first use.
   pkgBareClosure: Map[String, List[String]]
+  // `<pkg>|<name>` for each extern type a package's own files declare
+  // (`extern type`, `import extern`).  Like the type checker, such a name
+  // wins over a Lyric type reached only transitively, though not over the
+  // package's own or a directly imported one.
+  pkgLocalExterns: Map[String, Bool]
   // The whole imports alone, the roots of that closure.
   pkgWholeImports: Map[String, List[String]]
   // `<pkg>|<imported>|<name>` for each name a selective import lists; an
@@ -2232,6 +2238,7 @@ pub func newCodegenCtx(
     pkgImports = newMap(),
     pkgBareImports = newMap(),
     pkgBareClosure = newMap(),
+    pkgLocalExterns = newMap(),
     pkgWholeImports = newMap(),
     pkgSelectedNames = newMap(),
     pkgSelectivePkgs = newMap(),
@@ -3393,6 +3400,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   cctx.pkgImports.add(pkgName, importedDottedNames)
   if not cctx.pkgBareImports.containsKey(pkgName) {
     cctx.pkgBareImports.add(pkgName, bareImportOrderMsil(file.imports, false))
+    if cctx.pkgWholeImports.containsKey(pkgName) {
+      cctx.pkgWholeImports.remove(pkgName)
+    }
     cctx.pkgWholeImports.add(pkgName, bareImportOrderMsil(file.imports, true))
     recordSelectiveImportsMsil(cctx, pkgName, file.imports)
   }
@@ -7433,23 +7443,28 @@ func hasLyricTypeCandidateInScope(cctx: in CodegenCtx, pkgName: in String, seg: 
       if cands.contains(ownFqn) {
         return true
       }
-      match bareImportsOfMsil(cctx, pkgName) {
-        case Some(imports) -> {
-          var i = 0
-          while i < cands.count {
-            val fqn = cands[i]
-            if fqn.length > seg.length + 1 {
-              val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
-              if imports.contains(pkgPart) {
-                return true
-              }
-            }
-            i = i + 1
-          }
-          false
+      // The package's own extern of this name outranks a Lyric type it
+      // reaches only transitively, as in the type checker (docs/01 §9.2).
+      val imports = if cctx.pkgLocalExterns.containsKey(pkgName + "|" + seg) {
+        match mapGet(cctx.pkgBareImports, pkgName) {
+          case Some(direct) -> direct
+          case None -> newList()
         }
-        case None -> false
+      } else {
+        bareImportListForNameMsil(cctx, pkgName, seg)
       }
+      var i = 0
+      while i < cands.count {
+        val fqn = cands[i]
+        if fqn.length > seg.length + 1 {
+          val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
+          if imports.contains(pkgPart) and bareImportAdmitsMsil(cctx, pkgName, pkgPart, seg, "") {
+            return true
+          }
+        }
+        i = i + 1
+      }
+      false
     }
     case None -> false
   }
@@ -13443,7 +13458,7 @@ func genericNullaryCaseParentMsil(cctx: in CodegenCtx, fctx: in FuncCtx, e: in E
       if cctx.constValues.containsKey(fctx.pkgName + "/" + name) or cctx.constValues.containsKey(name) or cctx.enumCaseOrdinals.containsKey(name) {
         return ""
       }
-      val qualifier = if path.segments.count >= 2 { path.segments[path.segments.count - 2] } else { "" }
+      val qualifier = qualifierOfPathMsil(path.segments)
       val localKey = fctx.pkgName + "." + name
       val ctorKey = if cctx.recordCtorTokens.containsKey(localKey) {
         localKey
@@ -14055,7 +14070,9 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
               case Some(parentFqn) -> lastDottedSegmentMsil(parentFqn)
               case None -> ""
             }
-            if bareImportAdmitsMsil(cctx, currentPkg, imps[ii], lastDottedSegmentMsil(candidates[j]), unionName) {
+            // A selective import lists the case by its own name
+            // (`import A.{Square}`), not the `Shape_Square` class name.
+            if bareImportAdmitsMsil(cctx, currentPkg, imps[ii], caseSimpleNameMsil(candidates[j], unionName), unionName) {
               return candidates[j]
             }
           }
@@ -14160,6 +14177,18 @@ func findBundleFqnByName(cctx: in CodegenCtx, currentPkg: in String, funcName: i
   }
 }
 
+// The source name of the case a `<pkg>.<Union>_<Case>` constructor FQN
+// declares, given its union's simple name.
+func caseSimpleNameMsil(caseFqn: in String, unionName: in String): String {
+  val last = lastDottedSegmentMsil(caseFqn)
+  val pfx = unionName + "_"
+  if unionName.length > 0 and startsWith(last, pfx) {
+    last.substring(pfx.length, last.length - pfx.length)
+  } else {
+    last
+  }
+}
+
 // The dotted qualifier of a qualified path (every segment but the last), or
 // "" for a bare name.
 func qualifierOfPathMsil(segments: in List[String]): String {
@@ -14177,11 +14206,13 @@ func qualifierOfPathMsil(segments: in List[String]): String {
 
 // Qualifier-aware variant: `qualifier` is everything a qualified case
 // reference writes before the case name, dotted (`Color` in `Color.Same`,
-// `EPAx.Marks` in the alias-rewritten `MA.Square`).  Prefers the candidate
-// whose parent union is named by its last segment, then the one declared in
-// the package it names; the type checker resolves a package-qualified case
-// in that package whatever the file's bare-name scope (docs/01 §9.2).
-// Falls back to `pickCaseFqnByScope` when no candidate matches.
+// `Pkg.Color` in `Pkg.Color.Same`, `EPAx.Marks` in the alias-rewritten
+// `MA.Square`).  Prefers, in order, the candidate whose parent union is the
+// qualifier itself, the one declared in the package the qualifier names (the
+// type checker resolves a package-qualified case there whatever the file's
+// bare-name scope, docs/01 §9.2), and only then one whose parent union's
+// simple name is the qualifier's last segment.  Falls back to
+// `pickCaseFqnByScope` when no candidate matches.
 func pickCaseFqnByQualifier(
   cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in List[String], qualifier: in String
 ): String {
@@ -14189,36 +14220,29 @@ func pickCaseFqnByQualifier(
     return candidates[0]
   }
   if qualifier.length > 0 {
-    var i = 0
-    while i < candidates.count {
-      match mapGet(cctx.caseParentUnion, candidates[i]) {
-        case Some(parentFqn) -> {
-          val dotIdx = String.lastIndexOfRaw(parentFqn, ".")
-          val parentSimple = if dotIdx >= 0 {
-            parentFqn.substring(dotIdx + 1, parentFqn.length - dotIdx - 1)
-          } else {
-            parentFqn
+    var tier = 0
+    while tier < 3 {
+      var i = 0
+      while i < candidates.count {
+        match mapGet(cctx.caseParentUnion, candidates[i]) {
+          case Some(parentFqn) -> {
+            val dotIdx = String.lastIndexOfRaw(parentFqn, ".")
+            val matched = if tier == 0 {
+              parentFqn == qualifier
+            } else if tier == 1 {
+              dotIdx > 0 and parentFqn.substring(0, dotIdx) == qualifier
+            } else {
+              lastDottedSegmentMsil(parentFqn) == lastDottedSegmentMsil(qualifier)
+            }
+            if matched {
+              return candidates[i]
+            }
           }
-          if parentSimple == lastDottedSegmentMsil(qualifier) {
-            return candidates[i]
-          }
+          case None -> ()
         }
-        case None -> ()
+        i = i + 1
       }
-      i = i + 1
-    }
-    var pi = 0
-    while pi < candidates.count {
-      match mapGet(cctx.caseParentUnion, candidates[pi]) {
-        case Some(parentFqn) -> {
-          val dotIdx = String.lastIndexOfRaw(parentFqn, ".")
-          if dotIdx > 0 and parentFqn.substring(0, dotIdx) == qualifier {
-            return candidates[pi]
-          }
-        }
-        case None -> ()
-      }
-      pi = pi + 1
+      tier = tier + 1
     }
   }
   // No qualifier (or no qualifier match): before falling back to import-order
@@ -16289,7 +16313,7 @@ func bareImportsOfMsil(cctx: in CodegenCtx, pkg: in String): Option[List[String]
       }
       var qi = 0
       while qi < queue.count {
-        match mapGet(cctx.pkgImports, queue[qi]) {
+        match wholeImportsOfReachedMsil(cctx, queue[qi]) {
           case Some(reached) -> {
             for r in reached {
               if r != pkg and not closure.contains(r) {
@@ -16364,7 +16388,7 @@ func wholeClosureMsil(cctx: in CodegenCtx, pkg: in String): List[String] {
   }
   var qi = 0
   while qi < closure.count {
-    match mapGet(cctx.pkgImports, closure[qi]) {
+    match wholeImportsOfReachedMsil(cctx, closure[qi]) {
       case Some(reached) -> {
         for r in reached {
           if r != pkg and not closure.contains(r) {
@@ -16378,6 +16402,52 @@ func wholeClosureMsil(cctx: in CodegenCtx, pkg: in String): List[String] {
   }
   cctx.pkgWholeClosure.add(pkg, closure)
   closure
+}
+
+// A restored package's bare-name imports from the forms its contract records
+// (`Contract.wholeImports`, `Contract.selectedImports`), as
+// `bareImportOrderMsil` and `recordSelectiveImportsMsil` derive them from a
+// source file's imports.
+func recordRestoredBareImportsMsil(
+  cctx: in CodegenCtx,
+  pkg: in String,
+  whole: in List[String],
+  selected: in List[String],
+): Unit {
+  val bare: List[String] = newList()
+  for w in whole {
+    if not bare.contains(w) {
+      bare.add(w)
+    }
+  }
+  for entry in selected {
+    val sep = String.indexOfRaw(entry, "::")
+    if sep > 0 {
+      val imported = entry.substring(0, sep)
+      if not bare.contains(imported) {
+        bare.add(imported)
+      }
+      val pkgKey = pkg + "|" + imported
+      if not cctx.pkgSelectivePkgs.containsKey(pkgKey) {
+        cctx.pkgSelectivePkgs.add(pkgKey, true)
+      }
+      val nameKey = pkgKey + "|" + entry.substring(sep + 2)
+      if not cctx.pkgSelectedNames.containsKey(nameKey) {
+        cctx.pkgSelectedNames.add(nameKey, true)
+      }
+    }
+  }
+  cctx.pkgBareImports.add(pkg, bare)
+}
+
+// The packages `pkg` imports whole, through which a whole import of `pkg`
+// reaches further (docs/01 §9.2).  A package with no recorded import forms
+// (a contract written before `wholeImports` existed) counts every import.
+func wholeImportsOfReachedMsil(cctx: in CodegenCtx, pkg: in String): Option[List[String]] {
+  match mapGet(cctx.pkgWholeImports, pkg) {
+    case Some(whole) -> Some(value = whole)
+    case None -> mapGet(cctx.pkgImports, pkg)
+  }
 }
 
 // Whether a bare reference in `pkg` can mean `name` (or, for a union case,
@@ -18858,10 +18928,11 @@ func lowerMethodCallMsil(
     // fallback `lowerBuiltinOrStaticCallMsil` uses for bare calls, extended to a
     // qualified receiver.  Without it the call mis-routes to value method-dispatch
     // (an "unsupported method" runtime throw).
-    val importedQualFqn = match mapGet(cctx.pkgImports, fctx.pkgName) {
-      case Some(imps) -> findImportedFqn(cctx, imps, callFqn)
-      case None -> ""
-    }
+    // The receiver type is named bare, so only the imports that make it
+    // visible bare count (docs/01 §9.2).
+    val recvDot = String.indexOfRaw(callFqn, ".")
+    val recvTypeName = if recvDot > 0 { callFqn.substring(0, recvDot) } else { callFqn }
+    val importedQualFqn = findImportedFqn(cctx, bareImportListForNameMsil(cctx, fctx.pkgName, recvTypeName), callFqn)
     if importedQualFqn.length > 0 {
       val impSegs = split(importedQualFqn, ".")
       val impPathSegs: List[String] = newList()
@@ -25948,14 +26019,11 @@ func resolveQualifiedFreeCallRetTypePB(
     }
   }
   candidates.add(pkgName + "." + lastSeg)
-  match mapGet(cctx.pkgImports, pkgName) {
-    case Some(imps) -> {
-      val imp = findImportedFqn(cctx, imps, lastSeg)
-      if imp.length > 0 {
-        candidates.add(imp)
-      }
-    }
-    case None -> ()
+  // A bare callee through the imports that make it visible bare, in the
+  // order emission resolves it (docs/01 §9.2); an aliased import never.
+  val bareImp = findImportedFqn(cctx, bareImportListForNameMsil(cctx, pkgName, lastSeg), lastSeg)
+  if bareImp.length > 0 {
+    candidates.add(bareImp)
   }
   var result = MObject
   var ci = 0
@@ -26267,14 +26335,9 @@ func inferCallReturnTypePB(
                 case None -> ()
               }
               candidates.add(pkgName + "." + field)
-              match mapGet(cctx.pkgImports, pkgName) {
-                case Some(imps) -> {
-                  val imp = findImportedFqn(cctx, imps, field)
-                  if imp.length > 0 {
-                    candidates.add(imp)
-                  }
-                }
-                case None -> ()
+              val bareImp = findImportedFqn(cctx, bareImportListForNameMsil(cctx, pkgName, field), field)
+              if bareImp.length > 0 {
+                candidates.add(bareImp)
               }
               var result = MObject
               var ci = 0
@@ -35288,10 +35351,12 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
 // Populate cctx.externTypeNames from IExternType items in the file.
 // Called from addPackageTokens before the IFunc pre-scan.
 func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
+  val filePkg = joinSegsMsil(file.packageDecl.path.segments, ".")
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IExternType(decl) -> {
+        recordLocalExternMsil(cctx, filePkg, decl.name)
         // Guard against a duplicate key: a user file may declare the same
         // extern (e.g. `extern type TimeSpan = "System.TimeSpan"`) that the
         // stdlib kernel already registered into `externTypeNames` (which now
@@ -35325,6 +35390,7 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
             val item = items[j]
             val clrName = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
             val aliasName = match item.asAlias { case Some(aliasName) -> aliasName; case _ -> item.name }
+            recordLocalExternMsil(cctx, filePkg, aliasName)
             if not cctx.externTypeNames.containsKey(aliasName) {
               cctx.externTypeNames.add(aliasName, clrName)
             }
@@ -35334,6 +35400,7 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
         case Some(ISSingle(item)) -> {
           val clrName = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
           val aliasName = match item.asAlias { case Some(aliasName) -> aliasName; case _ -> item.name }
+          recordLocalExternMsil(cctx, filePkg, aliasName)
           if not cctx.externTypeNames.containsKey(aliasName) {
             cctx.externTypeNames.add(aliasName, clrName)
           }
@@ -35342,6 +35409,7 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
           val clrName = baseNamespace
           val typeName = imp.path.segments[imp.path.segments.count - 1]
           val aliasName = unwrapOr(imp.asAlias, typeName)
+          recordLocalExternMsil(cctx, filePkg, aliasName)
           if not cctx.externTypeNames.containsKey(aliasName) {
             cctx.externTypeNames.add(aliasName, clrName)
           }
@@ -35349,6 +35417,13 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
       }
     }
     k = k + 1
+  }
+}
+
+func recordLocalExternMsil(cctx: in CodegenCtx, pkg: in String, name: in String): Unit {
+  val key = pkg + "|" + name
+  if not cctx.pkgLocalExterns.containsKey(key) {
+    cctx.pkgLocalExterns.add(key, true)
   }
 }
 
@@ -39295,7 +39370,9 @@ func isIdentChar(c: in Char): Bool {
 // `pub union Maybe { case Some(v: Int), case None }`.  Case names
 // follow the literal `case ` keyword and are terminated by `(`, ` `,
 // `,`, or `}`.
-func registerUnionCases(cctx: in CodegenCtx, packageName: in String, unionName: in String, decl: in ContractDecl): Unit {
+func registerUnionCases(
+  cctx: in CodegenCtx, packageName: in String, unionName: in String, decl: in Meta.ContractDecl
+): Unit {
   val repr = decl.repr
   val needle = "case "
   var idx = 0
@@ -39355,7 +39432,7 @@ func registerUnionCases(cctx: in CodegenCtx, packageName: in String, unionName: 
 // different unions are all stored and disambiguated at lookup sites via
 // `pickCaseFqnByScope` / `pickCaseFqnByScrutinee`).
 func registerRestoredTypeDecl(
-  cctx: in CodegenCtx, packageName: in String, decl: in ContractDecl, asmRefRow: in Int
+  cctx: in CodegenCtx, packageName: in String, decl: in Meta.ContractDecl, asmRefRow: in Int
 ): Unit {
   val typeName = decl.name
   val typeFqn = packageName + "." + typeName
@@ -40775,6 +40852,12 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     if not cctx.pkgImports.containsKey(art.packageName) {
       cctx.pkgImports.add(art.packageName, art.contract.imports)
     }
+    if not cctx.pkgWholeImports.containsKey(art.packageName) {
+      cctx.pkgWholeImports.add(art.packageName, art.contract.wholeImports)
+    }
+    if not cctx.pkgBareImports.containsKey(art.packageName) {
+      recordRestoredBareImportsMsil(cctx, art.packageName, art.contract.wholeImports, art.contract.selectedImports)
+    }
     var di = 0
     while di < art.contract.decls.count {
       val decl = art.contract.decls[di]
@@ -40885,6 +40968,8 @@ pub record StdlibPkg {
   /// same-named sibling type through its declared imports (tier 2) instead of
   /// last-registered-wins (#2282).
   imports: List[String]
+  /// The subset of `imports` the package imports whole (docs/01 §9.2).
+  wholeImports: List[String]
   /// Private (non-`pub`) generic funcs with a body, kept separate from
   /// `items` (whose pub-only filter `registerStdlibArtifactTokens` depends
   /// on for token registration) purely so `Msil.Bridge.collectStdlibGenericFuncs`
@@ -40937,6 +41022,9 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
     // imports it whole reaches through them (docs/01 §9.2, `bareImportsOfMsil`).
     if not cctx.pkgImports.containsKey(pkg.name) {
       cctx.pkgImports.add(pkg.name, pkg.imports)
+    }
+    if not cctx.pkgWholeImports.containsKey(pkg.name) {
+      cctx.pkgWholeImports.add(pkg.name, pkg.wholeImports)
     }
     var iia = 0
     while iia < pkg.items.count {

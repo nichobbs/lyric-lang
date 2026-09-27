@@ -1898,12 +1898,20 @@ func fieldsOfRecord(tbl: in SymbolTable, tid: in TypeId): List[FieldEntry] {
     match tbl.symbols[i].kind {
       case DKRecord(did, rd) -> {
         if typeIdEq(did, tid) {
+          // Field types name the declaring package's own types, resolved in
+          // its scope whatever the reading file imports (docs/01 §9.2).
+          val saved = enterDeclaringScopeIfForeign(tbl, tbl.symbols[i])
           extractRecordFields(tbl, rd, result)
+          restoreScope(tbl, saved)
         }
       }
       case DKExposedRec(did, rd) -> {
         if typeIdEq(did, tid) {
+          // Field types name the declaring package's own types, resolved in
+          // its scope whatever the reading file imports (docs/01 §9.2).
+          val saved = enterDeclaringScopeIfForeign(tbl, tbl.symbols[i])
           extractRecordFields(tbl, rd, result)
+          restoreScope(tbl, saved)
         }
       }
       case _ -> {
@@ -3597,7 +3605,11 @@ func resolveExprPath(
     case None -> {
     }
   }
-  match mapGet(sigs, name) {
+  val bareSig = match mapGet(sigs, name) {
+    case Some(first) -> visibleBareSig(tbl, sigs, name, first)
+    case None -> None
+  }
+  match bareSig {
     case Some(sig) -> {
       // #6652: `sigs`'s first-in-wins insertion policy for imported functions
       // (typechecker_checker.l, "Sig-map insertion policy") means a bare
@@ -3692,15 +3704,22 @@ func resolveExprPath(
           // The enclosing ECall arm re-infers with actual arg types and wins.
           return inferUnionCaseConstruction(tbl, diag, sym, newList(), newList(), span, false)
         }
+        // A val's or const's declared type, and an untyped val's initializer,
+        // are written in the declaring package's scope, not the reading
+        // file's (docs/01 §9.2: `import P.{v}` need not also list `v`'s type).
         case DKConst(cd) -> {
           val ctx = newGenericContext()
-          return resolveType(tbl, ctx, diag, cd.ty)
+          val saved = enterDeclaringScopeIfForeign(tbl, sym)
+          val t = resolveType(tbl, ctx, diag, cd.ty)
+          restoreScope(tbl, saved)
+          return t
         }
         case DKVal(vd) -> {
-          match vd.ty {
+          val saved = enterDeclaringScopeIfForeign(tbl, sym)
+          val t = match vd.ty {
             case Some(te) -> {
               val ctx = newGenericContext()
-              return resolveType(tbl, ctx, diag, te)
+              resolveType(tbl, ctx, diag, te)
             }
             case None -> {
               // Infer against an empty scope to avoid the caller's local bindings
@@ -3708,9 +3727,11 @@ func resolveExprPath(
               val noRte: Option[TypeExpr] = None
               val noSelfFields: Map[String, Type] = newMap()
               val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
-              return inferExpr(emptyScope, tbl, sigs, diag, vd.init)
+              inferExpr(emptyScope, tbl, sigs, diag, vd.init)
             }
           }
+          restoreScope(tbl, saved)
+          return t
         }
         case _ -> {
         }
@@ -3721,6 +3742,52 @@ func resolveExprPath(
     }
   }
   TyError
+}
+
+// The functions named `name` a bare reference may mean under the file's
+// import rule, in registration order; `arity` < 0 takes every arity.
+func visibleBareFuncSigs(
+  tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], name: in String, arity: in Int
+): List[ResolvedSignature] {
+  val all = gatherOverloadCandidates(sigs, byNameSigKey(name))
+  val acc: List[ResolvedSignature] = newList()
+  var i = 0
+  while i < all.count {
+    val cand = all[i]
+    if (arity < 0 or cand.params.count == arity) and symTableBareFuncVisible(tbl, cand.originPackage, name) {
+      acc.add(cand)
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// The signature a bare `name` denotes: `first` (the `sigs[name]` slot) when
+// the import rule lets it be named bare, otherwise a visible function of that
+// name (the current package's first), or `None` when every one is hidden.
+func visibleBareSig(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  name: in String,
+  first: in ResolvedSignature,
+): Option[ResolvedSignature] {
+  if symTableBareFuncVisible(tbl, first.originPackage, name) {
+    return Some(value = first)
+  }
+  val visible = visibleBareFuncSigs(tbl, sigs, name, -1)
+  val curPkg = symTableScopePkg(tbl)
+  var i = 0
+  while i < visible.count {
+    if visible[i].originPackage == curPkg {
+      return Some(value = visible[i])
+    }
+    i = i + 1
+  }
+  if visible.count > 0 {
+    Some(value = visible[0])
+  } else {
+    None
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4311,6 +4378,22 @@ func enterDeclaringScope(tbl: in SymbolTable, sym: in Symbol): SavedScope {
   val savedPkg = if tbl.scopePkg.count > 0 { tbl.scopePkg[0] } else { "" }
   symTableSetScope(tbl, sym.originPackage, symTablePackageImportsOf(tbl, sym.originPackage))
   SavedScope(pkg = savedPkg, imports = savedImports)
+}
+
+// `enterDeclaringScope` for a symbol declared in another package; for one
+// of the current package (or with no package context) the scope is kept.
+func enterDeclaringScopeIfForeign(tbl: in SymbolTable, sym: in Symbol): SavedScope {
+  val cur = symTableScopePkg(tbl)
+  if sym.originPackage.length > 0 and sym.originPackage != cur {
+    return enterDeclaringScope(tbl, sym)
+  }
+  val savedImports: List[String] = newList()
+  var i = 0
+  while i < tbl.scopeImports.count {
+    savedImports.add(tbl.scopeImports[i])
+    i = i + 1
+  }
+  SavedScope(pkg = cur, imports = savedImports)
 }
 
 func restoreScope(tbl: in SymbolTable, saved: in SavedScope): Unit {
@@ -7912,6 +7995,22 @@ func findDirectSig(
           }
         }
         ci = ci + 1
+      }
+      if bare {
+        match firstVisible {
+          case None -> {
+            // The visible declaration may be generic (no overload slot) or
+            // the only one of this arity while a hidden one holds the slots.
+            val visible = visibleBareFuncSigs(tbl, sigs, name, arity)
+            if visible.count > 0 {
+              match primary {
+                case None -> return Some(value = visible[0])
+                case Some(_) -> ()
+              }
+            }
+          }
+          case Some(_) -> ()
+        }
       }
       match primaryAny {
         case Some(_) -> match primary { case None -> return firstVisible; case Some(_) -> () }

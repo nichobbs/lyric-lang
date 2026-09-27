@@ -3374,16 +3374,17 @@ func replaceCtorScopeKey(into: in Map[String, String], key: in String, value: in
   into.add(key, value)
 }
 
-// The JVM paths of the packages `whole` reaches through their own imports,
+// The JVM paths of the packages `whole` reaches through their own whole imports,
 // transitively, excluding `whole` itself: read from the bundle-wide
-// `<Pkg>.~import~<Imported>` markers (`collectOriginScopeMarkers`).
-func transitiveImportPathsJvm(markers: in Map[String, String], whole: in List[String]): String {
+// `<Pkg>.~wimport~<Imported>` markers (`collectOriginScopeMarkers`): only
+// whole imports reach further (docs/01 §9.2, D141).
+pub func transitiveImportPathsJvm(markers: in Map[String, String], whole: in List[String]): String {
   val importsOf: Map[String, List[String]] = newMap()
   for k in mapKeys(markers) {
-    val idx = String.indexOfRaw(k, ".~import~")
+    val idx = String.indexOfRaw(k, ".~wimport~")
     if idx > 0 {
       val owner = k.substring(0, idx)
-      val imported = k.substring(idx + 9)
+      val imported = k.substring(idx + 10)
       match mapGet(importsOf, owner) {
         case Some(lst) -> lst.add(imported)
         case None -> {

@@ -46,6 +46,7 @@
 @cfg(feature = "jvm")
 package Storage.Kernel.Jvm
 
+import Std.Collections
 import Std.Core
 
 // ── JDK extern types ──────────────────────────────────────────────────────────

@@ -313,7 +313,8 @@ pub func compileToJar(
       ImportedPackage(
         name = dottedPath(stdPrInv.packageDecl.path),
         items = pkgItems,
-        imports = collectImportNames(stdPrInv.imports)
+        imports = collectImportNames(stdPrInv.imports),
+        wholeImports = collectWholeImportNames(stdPrInv.imports)
       )
     )
     stdlibFiles.add(stdPrInv)
@@ -325,8 +326,8 @@ pub func compileToJar(
   // `injectWeaveImports` (JVM-only: ensures `import Std.Time` is present
   // before any import-driven resolution when an aspect references
   // `call.elapsed`, #1298 — the weave itself runs inside `pipeMiddleEnd`).
-  val weWires: Map[String, CollectedWireTemplate] = newMap()
-  val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  val weWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
+  val weConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
   WireExpand.collectWireTemplates(cfgFile.items, dottedPath(cfgFile.packageDecl.path), weWires, weConfigs)
   val file0 = resolveTypeAliases(
     match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, true, "", noLegacyOrigins) {
@@ -377,7 +378,7 @@ pub func compileToJar(
   }
   val importedItems = flattenImportedItems(importedPkgs)
   val noDeriveImports: List[Item] = newList()
-  val noTemplates: Map[String, CollectedTemplate] = newMap()
+  val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   // #7198: JVM's `async func` lowering is a synchronous stub with no
   // suspend point — F0045's CLR-verifier-suspend-in-protected-region
@@ -517,7 +518,7 @@ func runMiddleEnd(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
   stdlibGenFuncs: in List[FunctionDecl],
-  templates: in Map[String, CollectedTemplate],
+  templates: in Map[String, Weaver.CollectedTemplate],
   tcFatalUserPkg: in Bool,
   pkgLabel: in String,
   lineOrigins: in List[DiagUtil.MergedLineOrigin],
@@ -760,6 +761,37 @@ func transitiveWantedPkgs(file: in SourceFile, pkgImportNames: in Map[String, Li
   wanted
 }
 
+// The origin-scope markers `collectOriginScopeMarkers` records from a source
+// file's imports, from a restored package's recorded import lists instead:
+// `~import~<Pkg>` for each import, `~wimport~<Pkg>` for each whole one, and
+// `~selimport~<name>` -> `<Pkg>::<name>` for each selectively imported name.
+func addRestoredImportMarkersJvm(
+  into: in Map[String, String],
+  imports: in List[String],
+  whole: in List[String],
+  selected: in List[String],
+): Unit {
+  for dn in imports {
+    if not into.containsKey("~import~" + dn) {
+      into.add("~import~" + dn, dn)
+    }
+  }
+  for dn in whole {
+    if not into.containsKey("~wimport~" + dn) {
+      into.add("~wimport~" + dn, dn)
+    }
+  }
+  for entry in selected {
+    val sep = Str.indexOfRaw(entry, "::")
+    if sep > 0 {
+      val local = entry.substring(sep + 2)
+      if not into.containsKey("~selimport~" + local) {
+        into.add("~selimport~" + local, entry)
+      }
+    }
+  }
+}
+
 func externSeedForFile(
   file: in SourceFile,
   extPkgNames: in List[String],
@@ -828,17 +860,54 @@ func externSeedForFile(
 // unqualified call in every file to whichever package registered first —
 // the #2535 collision class.  Qualified (`owner/name`) and instance
 // (`class#method`) keys are copied unchanged.
-func importAwareRegistry(file: in SourceFile, registry: in Map[String, JvmFuncSig]): Map[String, JvmFuncSig] {
-  val owners: List[String] = newList()
+func importAwareRegistry(
+  file: in SourceFile, registry: in Map[String, JvmFuncSig], externSeed: in Map[String, String]
+): Map[String, JvmFuncSig] {
+  // The bare names the file may use, in the checker's order (docs/01 §9.2,
+  // D141), lowest priority first so a later pass wins: the packages its
+  // whole imports reach transitively, then its whole imports and the names
+  // its selective imports list, then its own package.  An aliased import
+  // re-points nothing; its names are written qualified.
+  val wholeDotted: List[String] = newList()
+  val wholeOwners: List[String] = newList()
+  val selectedOwners: List[String] = newList()
+  val selectedNames: Map[String, Bool] = newMap()
   var ii = 0
   while ii < file.imports.count {
-    if not file.imports[ii].isExtern {
-      owners.add(pkgJvmOwner(file.imports[ii].path))
+    val imp = file.imports[ii]
+    if not imp.isExtern {
+      val owner = pkgJvmOwner(imp.path)
+      match imp.selector {
+        case Some(sel) -> {
+          val items: List[ImportItem] = match sel {
+            case ISSingle(item) -> {
+              val one: List[ImportItem] = newList()
+              one.add(item)
+              one
+            }
+            case ISGroup(group) -> group
+          }
+          for item in items {
+            if not selectedOwners.contains(owner) {
+              selectedOwners.add(owner)
+            }
+            val key = owner + "|" + item.name
+            if not selectedNames.containsKey(key) {
+              selectedNames.add(key, true)
+            }
+          }
+        }
+        case None -> match imp.asAlias {
+          case Some(_) -> ()
+          case None -> {
+            wholeDotted.add(dottedPath(imp.path))
+            wholeOwners.add(owner)
+          }
+        }
+      }
     }
     ii = ii + 1
   }
-  // Own package last, so in-file definitions win over any import.
-  owners.add(pkgJvmOwner(file.packageDecl.path))
   val overlay: Map[String, JvmFuncSig] = newMap()
   for k in mapKeys(registry) {
     match mapGet(registry, k) {
@@ -846,26 +915,76 @@ func importAwareRegistry(file: in SourceFile, registry: in Map[String, JvmFuncSi
       case None -> ()
     }
   }
-  var oi = 0
-  while oi < owners.count {
-    val pfx = owners[oi] + "/"
-    for k2 in mapKeys(registry) {
-      if Str.startsWith(k2, pfx) {
-        val bare = k2.substring(pfx.length, k2.length - pfx.length)
-        if bare.length > 0 and not Str.contains(bare, "/") and not Str.contains(bare, "#") and not Str.contains(bare, ".") {
-          match mapGet(registry, k2) {
-            case Some(sig2) -> {
+  val transitive = transitiveImportPathsJvm(externSeed, wholeDotted)
+  if transitive.length > 0 {
+    for tp in Str.split(transitive, ",") {
+      if not wholeOwners.contains(tp) {
+        overlayOwnerNamesJvm(overlay, registry, tp, selectedNames, false)
+      }
+    }
+  }
+  for sel in selectedOwners {
+    if not wholeOwners.contains(sel) {
+      overlayOwnerNamesJvm(overlay, registry, sel, selectedNames, true)
+    }
+  }
+  for w in wholeOwners {
+    overlayOwnerNamesJvm(overlay, registry, w, selectedNames, false)
+  }
+  // Own package last, so in-file definitions win over any import.
+  overlayOwnerNamesJvm(overlay, registry, pkgJvmOwner(file.packageDecl.path), selectedNames, false)
+  overlay
+}
+
+// Whether the bare registry key `bare` of `owner` names something a
+// selective import of `owner` lists: a function (`name`, `name@<arity>`), a
+// `val:`-style prefixed name, or a case (`enumcase:<Case>`) listed itself or
+// through its enum (the declaring class `sig.owner` names it).
+func selectedBareKeyJvm(
+  owner: in String, bare: in String, sig: in JvmFuncSig, selectedNames: in Map[String, Bool]
+): Bool {
+  val colon = Str.indexOfRaw(bare, ":")
+  val unprefixed = if colon >= 0 { bare.substring(colon + 1, bare.length - colon - 1) } else { bare }
+  val at = Str.indexOfRaw(unprefixed, "@")
+  val name = if at > 0 { unprefixed.substring(0, at) } else { unprefixed }
+  if selectedNames.containsKey(owner + "|" + name) {
+    return true
+  }
+  if Str.startsWith(bare, "enumcase:") {
+    val slash = Str.lastIndexOfRaw(sig.owner, "/")
+    val enumName = if slash >= 0 { sig.owner.substring(slash + 1, sig.owner.length - slash - 1) } else { sig.owner }
+    return selectedNames.containsKey(owner + "|" + enumName)
+  }
+  false
+}
+
+// Re-point the bare keys of `owner`'s functions (`name`, `name@<arity>`) in
+// `overlay` at `owner`'s declarations; with `onlySelected`, only the names
+// `selectedNames` lists for it (`<owner>|<name>`).
+func overlayOwnerNamesJvm(
+  overlay: in Map[String, JvmFuncSig],
+  registry: in Map[String, JvmFuncSig],
+  owner: in String,
+  selectedNames: in Map[String, Bool],
+  onlySelected: in Bool,
+): Unit {
+  val pfx = owner + "/"
+  for k2 in mapKeys(registry) {
+    if Str.startsWith(k2, pfx) {
+      val bare = k2.substring(pfx.length, k2.length - pfx.length)
+      if bare.length > 0 and not Str.contains(bare, "/") and not Str.contains(bare, "#") and not Str.contains(bare, ".") {
+        match mapGet(registry, k2) {
+          case Some(sig2) -> {
+            if not onlySelected or selectedBareKeyJvm(owner, bare, sig2, selectedNames) {
               overlay.remove(bare)
               overlay.add(bare, sig2)
             }
-            case None -> ()
           }
+          case None -> ()
         }
       }
     }
-    oi = oi + 1
   }
-  overlay
 }
 
 // True when `acc` already carries a `BuiltClass` named `name` — used to
@@ -952,7 +1071,7 @@ func codegenPackageInto(
   // passes `runMiddleEnd`'s result straight through.
   val pkg = codegenPackageWithSigsSeeded(
     file,
-    importAwareRegistry(file, registry),
+    importAwareRegistry(file, registry, externSeed),
     caseReg,
     ctorReg,
     autoFfi,
@@ -1955,8 +2074,8 @@ pub func compileProjectToJarBundledWithRestored(
   // (rewriteWireDecl's #6316 include-alias exclusion makes this safe
   // against the expansion-first ordering concern).  The files EXPANDED
   // below stay the un-rewritten originals.
-  val weWires: Map[String, CollectedWireTemplate] = newMap()
-  val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  val weWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
+  val weConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
   var wti = 0
   while wti < userFiles.count {
     WireExpand.collectWireTemplates(
@@ -2051,7 +2170,12 @@ pub func compileProjectToJarBundledWithRestored(
     uei = uei + 1
   }
   importedPkgs.add(
-    ImportedPackage(name = userEntryPkgName, items = userEntryItems, imports = collectImportNames(userFile.imports))
+    ImportedPackage(
+      name = userEntryPkgName,
+      items = userEntryItems,
+      imports = collectImportNames(userFile.imports),
+      wholeImports = collectWholeImportNames(userFile.imports)
+    )
   )
   val stdlibFiles: List[SourceFile] = newList()
   val stdlibByPkg: Map[String, SourceFile] = newMap()
@@ -2101,7 +2225,14 @@ pub func compileProjectToJarBundledWithRestored(
       ii = ii + 1
     }
     val pn = dottedPath(prFile.packageDecl.path)
-    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems, imports = collectImportNames(prFile.imports)))
+    importedPkgs.add(
+      ImportedPackage(
+        name = pn,
+        items = pkgItems,
+        imports = collectImportNames(prFile.imports),
+        wholeImports = collectWholeImportNames(prFile.imports)
+      )
+    )
     stdlibFiles.add(prFile)
     if pn.length > 0 {
       // #5932: a package can be assembled from MORE THAN ONE bundled source
@@ -2185,7 +2316,14 @@ pub func compileProjectToJarBundledWithRestored(
         }
         sii = sii + 1
       }
-      importedPkgs.add(ImportedPackage(name = spn, items = sItems, imports = collectImportNames(sf.imports)))
+      importedPkgs.add(
+        ImportedPackage(
+          name = spn,
+          items = sItems,
+          imports = collectImportNames(sf.imports),
+          wholeImports = collectWholeImportNames(sf.imports)
+        )
+      )
       stdlibFiles.add(sf)
       if spn.length > 0 and not stdlibByPkg.containsKey(spn) {
         stdlibByPkg.add(spn, sf)
@@ -2256,9 +2394,19 @@ pub func compileProjectToJarBundledWithRestored(
     extPkgNames.add(rapn)
     val raExtMap = collectExternTypesFromFile(raFile)
     collectFileDeclaredTypeFqns(raFile, raExtMap)
+    // The synthesised source keeps no imports; the contract records them,
+    // with their forms, for the origin-scope markers a specialised copy of
+    // this package's generics resolves through (docs/01 §9.2, D141).
+    val raContract = restoredArtifacts[rpi0].contract
+    addRestoredImportMarkersJvm(
+      raExtMap,
+      pipeRestoredImportNames(raFile, raContract.imports),
+      pipeRestoredWholeImportNames(raFile, raContract.wholeImports),
+      raContract.selectedImports
+    )
     extPkgMaps.add(raExtMap)
     if not pkgImportNames.containsKey(rapn) {
-      pkgImportNames.add(rapn, collectImportNames(raFile.imports))
+      pkgImportNames.add(rapn, pipeRestoredImportNames(raFile, raContract.imports))
     }
     rpi0 = rpi0 + 1
   }
@@ -2392,7 +2540,8 @@ pub func compileProjectToJarBundledWithRestored(
       ImportedPackage(
         name = synArt.packageName,
         items = rPkgItems,
-        imports = pipeRestoredImportNames(rf, synArt.contract.imports)
+        imports = pipeRestoredImportNames(rf, synArt.contract.imports),
+        wholeImports = pipeRestoredWholeImportNames(rf, synArt.contract.wholeImports)
       )
     )
     if not restoredJarPathsSeen.containsKey(synArt.dllPath) {
@@ -2499,7 +2648,11 @@ pub func compileProjectToJarBundledWithRestored(
   // #2535) can resolve to a different owner here than codegen resolves it
   // to, marking the wrong package "reachable" and shipping a JAR missing
   // the class actually invoked at runtime (#6767).
-  val userRegistry = importAwareRegistry(userFile, registry)
+  val userRegistry = importAwareRegistry(
+    userFile,
+    registry,
+    externSeedForFile(userFile, extPkgNames, extPkgMaps, pkgImportNames)
+  )
   var gi = 0
   while gi < userFile.items.count {
     match userFile.items[gi].kind {
@@ -2555,7 +2708,7 @@ pub func compileProjectToJarBundledWithRestored(
   while bgi < toBundle.count {
     val bf = toBundle[bgi]
     val bOwner = pkgJvmOwner(bf.packageDecl.path)
-    val bfRegistry = importAwareRegistry(bf, registry)
+    val bfRegistry = importAwareRegistry(bf, registry, externSeedForFile(bf, extPkgNames, extPkgMaps, pkgImportNames))
     var bii = 0
     while bii < bf.items.count {
       match bf.items[bii].kind {
@@ -2700,7 +2853,7 @@ pub func compileProjectToJarBundledWithRestored(
   // Collect cross-package aspect templates from every file in the bundle before
   // the weave loop so that from-instance aspects in any package can resolve
   // their template body (#3414; parity with the MSIL bridge).
-  val allTemplates: Map[String, CollectedTemplate] = newMap()
+  val allTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   Weaver.collectAspectTemplates(userFile.items, dottedPath(userFile.packageDecl.path), userFile.imports, allTemplates)
   var ati = 0
   while ati < toBundle.count {

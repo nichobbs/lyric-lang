@@ -90,8 +90,8 @@ import Std.Collections as Coll         // alias the entire package
 
 Each form decides which names you can write bare:
 
-- `import Money` brings every public name of `Money` into scope, along with the names of each package `Money` itself imports (the pattern the standard library's kernel modules use: `Std.Collections` imports `Std.CollectionsHost`, which declares `List`).
-- `import Money.{Amount, Cents}` brings only `Amount` and `Cents`. Naming a union or enum type brings its cases too, so `case Square(n) ->` works after `import Shapes.{Shape}`.
+- `import Money` brings every public name of `Money` into scope, along with the names of each package `Money` itself imports whole (the pattern the standard library's kernel modules use: `Std.Collections` imports `Std.CollectionsHost`, which declares `List`). What `Money` imports selectively or through an alias stays `Money`'s business.
+- `import Money.{Amount, Cents}` brings only `Amount` and `Cents`. Naming a union or enum type brings its cases too, so `case Square(n) ->` works after `import Shapes.{Shape}`. A listed name cannot be renamed (`{Amount as Amt}` is error T0137); alias the whole package instead.
 - `import Std.Collections as Coll` brings nothing bare; you write `Coll.newList()`.
 
 Any package you import can also be named by its full path, `Money.Amount`, whatever the form. A dotted path always names a package, so `import Time.Instant` imports a package called `Time.Instant`; to pick `Instant` out of `Time`, write `import Time.{Instant}`.

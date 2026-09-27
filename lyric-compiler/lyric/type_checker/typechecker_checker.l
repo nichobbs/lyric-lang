@@ -1082,6 +1082,13 @@ pub func registerOverloadCandidate(
   }
 }
 
+// The `sigs` slot prefix under which every function named `name` is
+// registered (see `addSigsFromItems`).  It holds no `/`, so it never reads as
+// an arity key.
+pub func byNameSigKey(name: in String): String {
+  "~fn~" + name
+}
+
 // Gather every overload candidate registered for `arityKey` (the indexed
 // `arityKey@0…` slots written by `registerOverloadCandidate`), stopping at the
 // first gap.  Returns the candidates in registration order.
@@ -1177,6 +1184,12 @@ func addSigsFromItems(
         if sg.generics.count == 0 {
           registerOverloadCandidate(sigs, arityKey, sg)
         }
+        // Every function of this name, generic or not, whichever package
+        // declares it: the `name` and `arityKey` slots keep only one, which
+        // the file's import rule may hide (docs/01 §9.2), so a bare
+        // reference picks its visible declaration from here
+        // (`visibleBareFuncSigs`).
+        registerOverloadCandidate(sigs, byNameSigKey(decl.name), sg)
       }
       case _ -> {
       }
@@ -3346,6 +3359,11 @@ pub record ImportedPackage {
   /// are resolved, so a same-named type exported by two sibling packages binds
   /// to the one THIS package imports instead of last-registered-wins (#2282).
   imports: List[String]
+  /// The subset of `imports` this package imports whole (`import P`, not
+  /// selective or aliased).  A file that imports this package whole sees
+  /// these packages' names bare too (docs/01 §9.2, D141); the others it
+  /// does not.
+  wholeImports: List[String]
 }
 
 func dottedPackageName(path: in ModulePath): String {
@@ -3368,14 +3386,40 @@ pub func collectImportNames(imports: in List[ImportDecl]): List[String] {
   names
 }
 
+// The dotted names of the packages `imports` imports whole: neither
+// selective (`import P.{f}`) nor aliased (`import P as Q`), nor extern.
+pub func collectWholeImportNames(imports: in List[ImportDecl]): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    if not imp.isExtern and isWholeImportForm(imp) {
+      val pkg = dottedPackageName(imp.path)
+      if not names.contains(pkg) {
+        names.add(pkg)
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
+func isWholeImportForm(imp: in ImportDecl): Bool {
+  match imp.selector {
+    case Some(_) -> false
+    case None -> match imp.asAlias { case Some(_) -> false; case None -> true }
+  }
+}
+
 // Install the docs/01 §9.2 import rule for the file being checked (#7463):
 // a whole import (`import P`) makes every name of `P` visible bare, and so,
-// transitively, do the imports `P` itself declares (the kernel/host
+// transitively, do the packages `P` itself imports whole (the kernel/host
 // re-export idiom); a selective import (`import P.{f, T}`) makes only the
 // listed names visible; an aliased import (`import P as Q`) makes none
 // visible bare, since they are reached as `Q.f`.
 func installImportRule(
   tbl: in SymbolTable,
+  diag: in List[Diagnostic],
   userPkg: in String,
   imports: in List[ImportDecl],
   importedPackages: in List[ImportedPackage],
@@ -3404,7 +3448,25 @@ func installImportRule(
           while k < items.count {
             names.add(pkg + "|" + items[k].name)
             match items[k].asAlias {
-              case Some(renamed) -> names.add(pkg + "|" + renamed)
+              case Some(renamed) -> diag.add(
+                errorDiagnostic(
+                  "T0137",
+                  "renaming a selectively imported name is not supported: '" + items[k].name + " as " +
+                    renamed +
+                    "'; write 'import " +
+                    pkg +
+                    ".{" +
+                    items[k].name +
+                    "}' and use '" +
+                    items[k].name +
+                    "', or 'import " +
+                    pkg +
+                    " as Q' and write 'Q." +
+                    items[k].name +
+                    "'",
+                  items[k].span
+                )
+              )
               case None -> ()
             }
             k = k + 1
@@ -3431,7 +3493,7 @@ func installImportRule(
     var p = 0
     while p < importedPackages.count {
       if importedPackages[p].name == whole[w] {
-        val deps = importedPackages[p].imports
+        val deps = importedPackages[p].wholeImports
         var d = 0
         while d < deps.count {
           if not seen.containsKey(deps[d]) {
@@ -3678,7 +3740,7 @@ func checkWithImportedPackagesCore(
   // its bare names under the file's import rule.
   symTableSetScope(tbl, userPkg, userImports)
   symTableRegisterPackageImports(tbl, userPkg, userImports)
-  installImportRule(tbl, userPkg, file.imports, importedPackages)
+  installImportRule(tbl, diag, userPkg, file.imports, importedPackages)
   addSigsFromItems(tbl, diag, sigs, file.items, false, userPkg)
   registerImplsFromItems(tbl, newGenericContext(), implDiag, file.items)
   addMethodSigsFromItems(tbl, file.items, userPkg)
@@ -3892,7 +3954,7 @@ func checkExternBoundaryLeaks(tbl: in SymbolTable, diag: in List[Diagnostic], it
 pub func checkWithImports(file: in SourceFile, importedItems: in List[Item]): CheckResult {
   val packages: List[ImportedPackage] = newList()
   val noImports: List[String] = newList()
-  packages.add(ImportedPackage(name = "", items = importedItems, imports = noImports))
+  packages.add(ImportedPackage(name = "", items = importedItems, imports = noImports, wholeImports = noImports))
   checkWithImportedPackages(file, packages)
 }
 

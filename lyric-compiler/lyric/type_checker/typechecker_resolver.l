@@ -241,6 +241,12 @@ func resolveAliasPath(
     case None -> {
     }
   }
+  // A qualified target (`alias X = PA.Thing`, rewritten to `PkgA.Thing`)
+  // names its package: resolve there, never through a same-named type the
+  // file sees bare.
+  if path.segments.count > 1 {
+    return resolveQualifiedAliasPath(tbl, ctx, diag, path, depth, args, span)
+  }
   // Scope-priority first (#2611): `symTableTryFindOne` honours the current
   // resolution scope (current package > imports > any), so an alias target
   // sharing its name with a type from another package resolves to the
@@ -261,7 +267,8 @@ func resolveAliasPath(
     case None -> {
     }
   }
-  val all = symTableTryFindAll(tbl, last)
+  // Only what the file's import rule lets it name bare (docs/01 §9.2).
+  val all = symTableTryFindAllVisible(tbl, last)
   // Then, any concrete type (record / union / extern type / …).
   var i = 0
   while i < all.count {
@@ -294,6 +301,10 @@ func resolveAliasPath(
       }
     }
     j = j + 1
+  }
+  if all.count == 0 {
+    diag.add(errorDiagnostic("T0010", "unknown type name '" + last + "'" + symTableHiddenImportHint(tbl, last), span))
+    return TyError
   }
   diag.add(errorDiagnostic("T0013", "'" + last + "' is not a type", span))
   TyError
@@ -359,6 +370,70 @@ func checkQualifiedTypePackageRef(
   false
 }
 
+// An alias target qualified by its package: a type, or a chained alias,
+// declared by that package; the trailing segment alone never resolves it
+// elsewhere.  A package that re-exports the name through its own imports (the
+// kernel/host idiom) is followed like `resolveTypePath`'s qualified arm.
+func resolveQualifiedAliasPath(
+  tbl: in SymbolTable,
+  ctx: in GenericContext,
+  diag: in List[Diagnostic],
+  path: in ModulePath,
+  depth: in Int,
+  args: in List[Type],
+  span: in Span,
+): Type {
+  val last = path.segments[path.segments.count - 1]
+  val ownerSegs: List[String] = newList()
+  var i = 0
+  while i < path.segments.count - 1 {
+    ownerSegs.add(path.segments[i])
+    i = i + 1
+  }
+  val ownerPkg = modulePathJoin(ownerSegs)
+  val owners: List[String] = newList()
+  owners.add(ownerPkg)
+  match mapGet(tbl.packageImports, ownerPkg) {
+    case Some(reexported) -> {
+      for r in reexported {
+        owners.add(r)
+      }
+    }
+    case None -> ()
+  }
+  for owner in owners {
+    match symTableTryFindInPackage(tbl, owner, last) {
+      case Some(sym) -> {
+        match concreteAliasTarget(sym, args, span, diag) {
+          case Some(t) -> return t
+          case None -> ()
+        }
+        match sym.kind {
+          case DKTypeAlias(d2) -> {
+            if depth >= 64 {
+              diag.add(
+                errorDiagnostic("T0017", "type alias '" + d2.name + "' is part of a cycle and does not resolve to a type", span)
+              )
+              return TyError
+            }
+            return resolveAliasRhs(tbl, ctx, diag, d2, depth + 1, args, span)
+          }
+          case _ -> ()
+        }
+      }
+      case None -> ()
+    }
+  }
+  diag.add(
+    errorDiagnostic(
+      "T0014",
+      "unknown qualified type '" + modulePathJoin(path.segments) + "' ('" + last + "' not found in " + ownerPkg + ")",
+      span
+    )
+  )
+  TyError
+}
+
 func resolveTypePath(
   tbl: in SymbolTable,
   ctx: in GenericContext,
@@ -397,7 +472,7 @@ func resolveTypePath(
         // type position a *type* symbol of the same name must win, so
         // scan the full candidate set before reporting T0013 — mirrors
         // `resolveAliasPath`'s concrete-type-first preference.
-        val all = symTableTryFindAll(tbl, name)
+        val all = symTableTryFindAllVisible(tbl, name)
         var ti = 0
         while ti < all.count {
           if symbolIsType(all[ti]) {
@@ -571,7 +646,14 @@ pub func checkBareNameAmbiguity(tbl: in SymbolTable, diag: in List[Diagnostic], 
       errorDiagnostic(
         "T0123",
         "'" + name + "' is ambiguous: it is declared by " + joinPackageNames(pkgs) +
-          ", all imported here — qualify the reference (e.g. '" +
+          (
+            if symTableIsDirectImport(tbl, pkgs[0]) {
+              ", all imported here"
+            } else {
+              ", all reached through this file's imports"
+            }
+          ) +
+          " — qualify the reference (e.g. '" +
           pkgs[0] +
           "." +
           name +

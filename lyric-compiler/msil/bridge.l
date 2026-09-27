@@ -201,7 +201,12 @@ pub func compileToMsilWithVersion(
   var spi = 0
   while spi < stdlibPkgs.count {
     importedPkgs.add(
-      ImportedPackage(name = stdlibPkgs[spi].name, items = stdlibPkgs[spi].items, imports = stdlibPkgs[spi].imports)
+      ImportedPackage(
+        name = stdlibPkgs[spi].name,
+        items = stdlibPkgs[spi].items,
+        imports = stdlibPkgs[spi].imports,
+        wholeImports = stdlibPkgs[spi].wholeImports
+      )
     )
     spi = spi + 1
   }
@@ -215,8 +220,8 @@ pub func compileToMsilWithVersion(
   // import-independently (docs/59 §5.4 asymmetry, documented intentional
   // in D-progress-642).  Single-file compile: templates resolve within
   // this file's package.
-  val weWires: Map[String, CollectedWireTemplate] = newMap()
-  val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  val weWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
+  val weConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
   WireExpand.collectWireTemplates(
     cfgFile.items,
     segmentsToString(cfgFile.packageDecl.path.segments),
@@ -353,7 +358,7 @@ pub func compileToMsilWithVersion(
   // from-instances (docs/55) resolve identically on both targets for a
   // single-file build, not just multi-package project builds with a path
   // dependency.
-  val singleFileTemplates: Map[String, CollectedTemplate] = newMap()
+  val singleFileTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   Weaver.collectAspectTemplates(file.items, pkgName, file.imports, singleFileTemplates)
   // #6826 fast-follow: label with the real on-disk `path` (already in
   // scope, and already used by the parse phase above), matching every
@@ -748,7 +753,12 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   var sbi = 0
   while sbi < stdlibPkgs.count {
     baseImportedPkgs.add(
-      ImportedPackage(name = stdlibPkgs[sbi].name, items = stdlibPkgs[sbi].items, imports = stdlibPkgs[sbi].imports)
+      ImportedPackage(
+        name = stdlibPkgs[sbi].name,
+        items = stdlibPkgs[sbi].items,
+        imports = stdlibPkgs[sbi].imports,
+        wholeImports = stdlibPkgs[sbi].wholeImports
+      )
     )
     sbi = sbi + 1
   }
@@ -760,7 +770,11 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       ImportedPackage(
         name = segmentsToString(restoredArtifacts[ri0].source.packageDecl.path.segments),
         items = rItems,
-        imports = pipeRestoredImportNames(restoredArtifacts[ri0].source, restoredArtifacts[ri0].contract.imports)
+        imports = pipeRestoredImportNames(restoredArtifacts[ri0].source, restoredArtifacts[ri0].contract.imports),
+        wholeImports = pipeRestoredWholeImportNames(
+          restoredArtifacts[ri0].source,
+          restoredArtifacts[ri0].contract.wholeImports
+        )
       )
     )
     ri0 = ri0 + 1
@@ -829,8 +843,8 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // bodies are preserved for the expander.  The files EXPANDED below stay
   // the un-rewritten originals — only the collected template decls are
   // taken from the rewritten copies.
-  val weWires: Map[String, CollectedWireTemplate] = newMap()
-  val weConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  val weWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
+  val weConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
   var wti = 0
   while wti < parsedPkgs.count {
     val wpp: ParsedUserPkg = parsedPkgs[wti]
@@ -1207,7 +1221,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // are collected; same-package private aspects are intentionally excluded
   // (#3414 / D050).  The accumulation is a direct `dest.add` walk — no
   // Map-iteration primitives needed.
-  val allTemplates: Map[String, CollectedTemplate] = newMap()
+  val allTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   // #7496: which package declares each type name, for the A0047 row-type
   // check — the stdlib and restored packages every package type-checked
   // against, plus every bundle package and path-dependency template source.
@@ -1611,6 +1625,7 @@ func addBundleClosurePackages(
   // `ImportedPackage` so its signatures resolve through tier 2 (#2282), and
   // reused below as the recursion frontier.
   val depNames: List[String] = newList()
+  var wholeNames: List[String] = newList()
   match mapGet(inBundleImports, pkgName) {
     case Some(deps) -> {
       var di = 0
@@ -1618,11 +1633,14 @@ func addBundleClosurePackages(
         depNames.add(segmentsToString(deps[di].path.segments))
         di = di + 1
       }
+      wholeNames = collectWholeImportNames(deps)
     }
     case None -> ()
   }
   match mapGet(inBundleItems, pkgName) {
-    case Some(items) -> acc.add(ImportedPackage(name = pkgName, items = items, imports = depNames))
+    case Some(items) -> acc.add(
+      ImportedPackage(name = pkgName, items = items, imports = depNames, wholeImports = wholeNames)
+    )
     case None -> return
   }
   var ii = 0
@@ -1732,6 +1750,7 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
         name = pkgName,
         items = items,
         imports = collectImportNames(stdPrInv.imports),
+        wholeImports = collectWholeImportNames(stdPrInv.imports),
         privateGenericItems = privateGenericItems
       )
     )

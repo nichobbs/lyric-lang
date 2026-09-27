@@ -4,9 +4,10 @@ The type checker now enforces docs/01 §9.2 (D141). A bare name from another
 package resolves only when the file's imports make it visible:
 
 - `import P` makes every name of `P` visible, and transitively the names of
-  the packages `P` imports.
+  the packages `P` imports whole.
 - `import P.{f, T}` makes only `f` and `T` visible (and `T`'s cases, when it
-  is a union or enum).
+  is a union or enum). Renaming a listed name, `import P.{f as g}`, is the
+  new error T0137 until #7564 implements it.
 - `import P as Q` makes no name visible bare; write `Q.f`.
 - `Option`, `Result` and their cases are the prelude.
 
@@ -41,3 +42,17 @@ package, selectively imported union cases, and case patterns behind an
 aliased import. `emitter_project_self_test.l`'s specialised-constructor test
 now uses a whole import, and a new case checks on both targets that a bare
 constructor ignores an aliased import's same-named case.
+
+A second review round tightened the rule and its backends. Contract metadata
+now records each package's import forms (`wholeImports`, `selectedImports`),
+so the transitive step follows only whole imports everywhere, restored
+dependencies included. Two packages reached only transitively that declare
+the same bare name are T0123. A bare call types against the visible
+declaration when the first-registered one is hidden (generic or of another
+arity); the resolver's alias and type-position fallbacks respect the rule;
+an imported val's type and a record's field types resolve in their own
+package. On the backends, JVM bare calls and enum cases use the same tiers
+as constructors, the MSIL resolver admits a selectively listed case name,
+prefers the qualifier's own package for a qualified case, and the async
+pre-scan agrees with emission. New tests cover each case in
+`typechecker_self_test.l` and, on both targets, `emitter_project_self_test.l`.

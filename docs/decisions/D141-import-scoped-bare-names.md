@@ -2,6 +2,8 @@
 
 **Status:** accepted, implemented
 
+Supersedes D140 (its JVM constructor scope counted every import form).
+
 Resolves #7463 and #6703. Follows D140, which made JVM constructor scope
 mirror a checker that was wider than the language reference.
 
@@ -16,7 +18,7 @@ import exposed every name of its package, an aliased import exposed them
 bare as well as through the alias, and a name from a package the file never
 imported still resolved (#6703; an earlier attempt to close that in #6287 was
 reverted because of the undeclared `Std.Core` prelude, since addressed by
-D-progress-0902's `import Std.Core` sweep and the §9.1 prelude text).
+D-progress-0902's `import Std.Core` sweep and the §9.2 prelude text).
 
 ## Decision
 
@@ -24,11 +26,14 @@ A bare name used in a file resolves to a declaration from another package
 only when the file's imports make it visible:
 
 1. **Whole import** (`import P`): every name of `P`, and transitively every
-   name of each package `P` imports (the kernel/host idiom:
-   `Std.Collections` imports `Std.CollectionsHost`).
-2. **Selective import** (`import P.{f, T}`): only the listed names, plus the
-   cases of a listed union or enum type. An item renamed with `as` is
-   visible under both names.
+   name of each package `P` imports whole (the kernel/host idiom:
+   `Std.Collections` imports `Std.CollectionsHost`). `P`'s own selective and
+   aliased imports reach no further.
+2. **Selective import** (`import P.{f, T}`): only the listed names (a case
+   may be listed itself), plus the cases of a listed union or enum type.
+   Renaming a listed name (`import P.{f as g}`) is **T0137**: nothing binds
+   the new name yet, so the form is rejected rather than half-supported
+   (#7557, follow-up #7564).
 3. **Aliased import** (`import P as Q`): no name bare; `Q.f` as before.
 4. **Prelude**: `Option` and `Result` from `Std.Core`, with their cases.
 
@@ -40,36 +45,61 @@ A name that exists but is hidden is **T0020** (**T0010** in type position)
 with a hint: `(declared in P; add import P or import P.{f})`, `(declared in
 P, imported as Q; write Q.f)`, or, for a kernel host package, `(declared in
 Std.CollectionsHost; add import Std.Collections)`. A hidden name is never a
-candidate for the T0123 ambiguity check.
+candidate for the T0123 ambiguity check. A directly imported declaration
+shadows one reached only transitively; two packages reached only
+transitively that declare the same bare name are T0123, like two direct
+imports (#7556).
 
 The rule applies to the file being checked. An imported package's own
-signatures are resolved without it: they were checked under the rule when
-that package was compiled.
+declarations are resolved in that package's scope: its signatures, the
+declared types of its vals and consts (and an untyped val's initializer), and
+its records' field types. `import P.{v}` need not also list the type of `v`
+(#7554).
 
 ## Implementation
 
+- `ImportedPackage.wholeImports`, `Contract.wholeImports` and
+  `Contract.selectedImports` record each package's import forms, so the
+  transitive step follows only whole imports on the checker and both
+  backends, restored dependencies included. A contract written before these
+  keys existed reads its `imports` as whole (#7555, #7558).
 - `SymbolTable` carries the rule (`importRulePkg`, `importVisiblePkgs`,
   `importVisibleNames`, `importAliases`), installed by
   `installImportRule` in `checkWithImportedPackagesCore`.
 - `symTableTryFindOne` and `symTableAmbiguousImportPackages` skip hidden
   candidates; `findDirectSig` filters bare function candidates with
   `symTableBareFuncVisible`, since functions resolve through the signature
-  map.
+  map. Every function signature, generic included, is also listed under
+  `~fn~<name>`, so when the first-registered signature for a name is hidden
+  a bare reference types against the visible one (`visibleBareSig`, #7552).
+  The resolver's fallback scans for an alias target or a type-position name
+  see only visible symbols, and a package-qualified alias target resolves in
+  that package (`resolveQualifiedAliasPath`, #7553).
 - The JVM constructor scope counts whole imports only (`~ctor-pkgs~`,
   reversing D140's "every import form"); a selective import resolves its
   listed names and the cases of a listed union (`~ctor-import~`,
   `~ctor-sel~`); the packages the whole imports reach come last
-  (`~ctor-tpkgs~`).  Specialised copies of another package's generics get
+  (`~ctor-tpkgs~`).  Bare function calls and enum cases follow the same
+  tiers (`importAwareRegistry`: transitive packages, then whole imports and
+  selectively listed names, then the file's own package; #7551).
+  Specialised copies of another package's generics get
   the same keys for their origin package (`~wimport~`, `~selimport~`).
 - The MSIL backend's bare-name resolvers (union cases, types, free
   functions) search in the checker's order: whole imports and selective
   imports first, then the packages the whole imports reach; aliased imports
   are left out (`CodegenCtx.pkgBareImports`, `bareImportsOfMsil`).  A
-  selectively imported package admits only its listed names, and a union's
-  cases when the union is listed (`bareImportAdmitsMsil`).  A type is taken
+  selectively imported package admits only its listed names (a case by its
+  own name, #7560), and a union's cases when the union is listed
+  (`bareImportAdmitsMsil`). The async pre-scan resolves an awaited bare call
+  through the same list as emission (#7562). A package's own `extern type`
+  or `import extern` name outranks a Lyric type of that name reached only
+  transitively, as in the checker (`pkgLocalExterns`), so `import Std.Uuid`
+  (which imports `Std.String` whole) leaves `import extern
+  System.Text.{StringBuilder}` naming the BCL type.  A type is taken
   from a direct import before a transitive one.  A qualified case
-  (`MA.Square`, rewritten to `EPAx.Marks.Square`) prefers the case declared
-  in the package its qualifier names.
+  (`MA.Square`, rewritten to `EPAx.Marks.Square`) prefers a union the
+  qualifier names exactly, then the package it names, and only then a union
+  whose simple name is its last segment (#7561).
 - MSIL enum case ordinals follow the declared type: a qualified annotation
   (`val m: B.Mode`) records `EPEn.B::Mode`, so a bare `case Fast ->` over it
   resolves in that package; a simple name is looked up through the bare

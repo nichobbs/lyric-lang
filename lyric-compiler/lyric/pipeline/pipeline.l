@@ -650,10 +650,20 @@ func funcValueLambdaTypes(sites: in Map[String, FuncRefSite]): Map[String, TypeE
 
 /// The packages a restored dependency imports: those its synthesised source
 /// declares plus those its contract records (the synthesised source keeps
-/// only what its declarations need).  The type checker follows them for the
-/// transitive visibility of a consumer's whole import (docs/01 §9.2).
+/// only what its declarations need).
 pub func pipeRestoredImportNames(source: in SourceFile, contractImports: in List[String]): List[String] {
-  val names = collectImportNames(source.imports)
+  mergeImportNames(collectImportNames(source.imports), contractImports)
+}
+
+/// The packages a restored dependency imports whole, from its synthesised
+/// source and its contract (`Contract.wholeImports`).  The type checker
+/// follows them for the transitive visibility of a consumer's whole import
+/// (docs/01 §9.2, D141).
+pub func pipeRestoredWholeImportNames(source: in SourceFile, contractWholeImports: in List[String]): List[String] {
+  mergeImportNames(collectWholeImportNames(source.imports), contractWholeImports)
+}
+
+func mergeImportNames(names: in List[String], contractImports: in List[String]): List[String] {
   var i = 0
   while i < contractImports.count {
     var seen = false
