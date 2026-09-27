@@ -14,6 +14,7 @@ import Std.Core
 import Forms.{FormSchema, FieldSpec, FieldError, FieldPath, InputKind, errorsFor, messageOf, rootPath, child}
 import Ui.Core.{View}
 import Ui.Widgets.{field, textInput, textArea, numberInput, checkbox, select, SelectChoice, NumberBounds, InputOpts, inputOpts}
+import Std.Collections
 
 /// One field view per schema entry, in schema order.  `valueOf` returns the
 /// draft text for a field name; `onEdit` builds the message for an edit of

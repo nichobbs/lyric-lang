@@ -14,6 +14,7 @@
 package Ui.Core
 
 import Std.Core
+import Std.Collections
 
 // ─── Widgets ──────────────────────────────────────────────────────────────────
 /// The closed set of semantic widgets every host implements (docs/65 §7.1).

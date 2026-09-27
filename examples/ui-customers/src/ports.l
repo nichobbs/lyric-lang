@@ -7,6 +7,7 @@ package Customers.Ports
 
 import Std.Core
 import Customers.Domain.{Customer, CustomerId}
+import Std.Collections
 
 pub interface CustomerRepository {
   async func find(id: in CustomerId): Result[Customer, String]

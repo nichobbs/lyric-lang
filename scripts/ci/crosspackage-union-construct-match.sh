@@ -19,6 +19,7 @@ output_assembly = "Lyric.UDep.dll"
 TOML
 cat > "$work/udep/src/udep.l" <<'LYR'
 package UDep
+import Std.Collections
 pub union Payload {
   case Items(vals: List[Int])
   case Empty

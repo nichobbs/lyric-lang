@@ -1,0 +1,164 @@
+# D141 — Bare names resolve only through the file's imports (docs/01 §9.2)
+
+**Status:** accepted, implemented
+
+Supersedes D140 (its JVM constructor scope counted every import form).
+
+Resolves #7463 and #6703. Follows D140, which made JVM constructor scope
+mirror a checker that was wider than the language reference.
+
+## Context
+
+docs/01 §9.2 lists three import forms (whole, selective `import P.{f}`,
+aliased `import P as Q`) and says every imported name is explicit. The type
+checker did not enforce any of it. `symTableTryFindOne` resolved a bare name
+in three tiers: the current package, any imported package whatever the import
+form, then any loaded package at all (last-registered-wins). So a selective
+import exposed every name of its package, an aliased import exposed them
+bare as well as through the alias, and a name from a package the file never
+imported still resolved (#6703; an earlier attempt to close that in #6287 was
+reverted because of the undeclared `Std.Core` prelude, since addressed by
+D-progress-0902's `import Std.Core` sweep and the §9.2 prelude text).
+
+## Decision
+
+A bare name used in a file resolves to a declaration from another package
+only when the file's imports make it visible:
+
+1. **Whole import** (`import P`): every name of `P`, and transitively every
+   name of each package `P` imports whole (the kernel/host idiom:
+   `Std.Collections` imports `Std.CollectionsHost`). `P`'s own selective and
+   aliased imports reach no further.
+2. **Selective import** (`import P.{f, T}`): only the listed names (a case
+   may be listed itself), plus the cases of a listed union or enum type.
+   Renaming a listed name (`import P.{f as g}`) is **T0138**: nothing binds
+   the new name yet, so the form is rejected rather than half-supported
+   (#7557, follow-up #7564).
+3. **Aliased import** (`import P as Q`): no name bare; `Q.f` as before.
+4. **Prelude**: `Option` and `Result` from `Std.Core`, with their cases.
+
+A pattern names a case of the scrutinee's own type whatever the imports: a
+match over an aliased package's enum still writes `case Dotnet ->`. Before
+this rule a hidden case name would have parsed as a fresh binding.
+
+A name that exists but is hidden is **T0020** (**T0010** in type position)
+with a hint: `(declared in P; add import P or import P.{f})`, `(declared in
+P, imported as Q; write Q.f)`, or, for a kernel host package, `(declared in
+Std.CollectionsHost; add import Std.Collections)`. A hidden name is never a
+candidate for the T0123 ambiguity check. A directly imported declaration
+shadows one reached only transitively; two packages reached only
+transitively that declare the same bare name are T0123, like two direct
+imports (#7556).
+
+The rule applies to the file being checked. An imported package's own
+declarations are resolved in that package's scope: its signatures, the
+declared types of its vals and consts (and an untyped val's initializer), and
+its records' field types. `import P.{v}` need not also list the type of `v`
+(#7554).
+
+## Implementation
+
+- `ImportedPackage.wholeImports`, `Contract.wholeImports` and
+  `Contract.selectedImports` record each package's import forms, so the
+  transitive step follows only whole imports on the checker and both
+  backends, restored dependencies included. A contract written before these
+  keys existed reads its `imports` as whole (#7555, #7558).
+- `SymbolTable` carries the rule (`importRulePkg`, `importVisiblePkgs`,
+  `importVisibleNames`, `importAliases`), installed by
+  `installImportRule` in `checkWithImportedPackagesCore`.
+- `symTableTryFindOne` and `symTableAmbiguousImportPackages` skip hidden
+  candidates; `findDirectSig` filters bare function candidates with
+  `symTableBareFuncVisible`, since functions resolve through the signature
+  map. Every function signature, generic included, is also listed under
+  `~fn~<name>`, so when the first-registered signature for a name is hidden
+  a bare reference types against the visible one (`visibleBareSig`, #7552).
+  A bare call takes its function from the lowest tier that has a match, as
+  every other bare name does: the current package, then a direct import,
+  then a package reached only transitively (`symTableBareFuncTier`, #7567);
+  another package's package-private function is never a candidate.  The
+  lowest tier that declares the name and arity decides: when none of its
+  functions matches the arguments, the call reports the mismatch there
+  rather than binding a matching function of a higher tier, which the
+  backends' name-and-arity lookups could not follow (#7579).
+  The resolver's fallback scans for an alias target or a type-position name
+  see only visible symbols, and a package-qualified alias target resolves in
+  that package (`resolveQualifiedAliasPath`, #7553).
+- The JVM constructor scope counts whole imports only (`~ctor-pkgs~`,
+  reversing D140's "every import form"); a selective import resolves its
+  listed names and the cases of a listed union (`~ctor-import~`,
+  `~ctor-sel~`); the packages the whole imports reach come last
+  (`~ctor-tpkgs~`).  Bare function calls and enum cases follow the same
+  tiers (`importAwareRegistry`: transitive packages, then whole imports and
+  selectively listed names, then the file's own package; #7551).
+  Another package's package-private function or enum never takes a bare key
+  (per-arity `~private~` markers, so a private overload does not hide a
+  public one of another arity; #7568, #7580).
+  Specialised copies of another package's generics get
+  the same keys for their origin package (`~wimport~`, `~selimport~`).
+- The MSIL backend's bare-name resolvers (union cases, types, free
+  functions) search in the checker's order: whole imports and selective
+  imports first, then the packages the whole imports reach; aliased imports
+  are left out (`CodegenCtx.pkgBareImports`, `bareImportsOfMsil`).  A
+  selectively imported package admits only its listed names (a case by its
+  own name, #7560), and a union's cases when the union is listed
+  (`bareImportAdmitsMsil`). A bare call is looked up in the direct imports
+  before the transitive ones, so a return-type hint never reaches past a
+  direct import (`findBareImportedFqnMsil`, #7570), and a specialised copy
+  of a generic resolves its bare calls the same way in its origin package
+  (#7569). The async pre-scan resolves an awaited bare call through the same
+  lookup as emission (#7562). Every bundle package records its imports in
+  the pre-pass before any is tokenised, and cached import closures are
+  dropped whenever a package registers its imports, since packages register
+  in bundle order, not dependency order (#7571, #7582). Stdlib packages get
+  the same bare-import tables from `StdlibPkg`'s whole and selected imports,
+  so a specialised copy of a stdlib generic never resolves through an
+  aliased import (#7581). A package's own `extern type`
+  or `import extern` name outranks a Lyric type of that name reached only
+  transitively, as in the checker (`pkgLocalExterns`), so `import Std.Uuid`
+  (which imports `Std.String` whole) leaves `import extern
+  System.Text.{StringBuilder}` naming the BCL type.  A type is taken
+  from a direct import before a transitive one.  A qualified case
+  (`MA.Square`, rewritten to `EPAx.Marks.Square`) prefers a union the
+  qualifier names exactly, then the package it names, then the union of
+  that simple name the file sees bare, and only then any union of that name
+  (#7561).
+- MSIL enum case ordinals follow the declared type: a qualified annotation
+  (`val m: B.Mode`) records `EPEn.B::Mode`, so a bare `case Fast ->` over it
+  resolves in that package; a simple name is looked up through the bare
+  imports, then every import (an enum reached through an alias is still
+  named by its annotation).
+- An `impl` of another package's interface checks the interface's method
+  signatures resolved in the interface's own package, not in the
+  implementing file's scope.
+- `Lyric.AliasRewriter` now rewrites alias-qualified lambda parameter types
+  (`{ c: TlsHost.CertHandle -> ... }`), which only resolved before through
+  the permissive tier.
+- A `where` constraint written through an alias (`where T: Log.Logger`) no
+  longer collapses to the bare `Logger` (#1874), which the rule hides; it
+  becomes `Std.Log.Logger` and the checker resolves it in that package.
+  Resolved bounds record each interface constraint package-qualified, so a
+  call site checks it against the declaring package's interface whatever the
+  caller imports.
+- The restored-dependency packages handed to the checker carry the imports
+  their contract records (`Contract.imports`), not only those of the
+  synthesised source, so the transitive rule reaches through a restored
+  library (`import Grpc` reaches `Grpc.Types`).
+
+## Consequences
+
+Tree-wide, the rule needed:
+
+- Stdlib: `import Std.Collections` in `path.l`, `console.l` and `hash.l`;
+  alias-qualified names in `_kernel/http_server.l` and the regex tests.
+- Compiler: about 210 alias-qualified references in `Lyric.Cli`,
+  `Lyric.Emitter`, `Lyric.Pipeline` and `Lyric.Discovery` (including
+  `Mf.ManifestError.message(...)`, which the unimported-receiver check now
+  reports), and imports added to the programs embedded in the project-level
+  self-tests.
+- Ecosystem: `lyric-i18n` (`File.readText`), `lyric-web` (`import
+  Std.Iter`), `lyric-forms`, `lyric-ui` and `examples/ui-customers` (`import
+  Std.Collections`), and `lyric-testing`'s tests (`StdTesting.` names).
+
+The reverted-harsher-rule caveat in docs/01's T0123 paragraph is gone.
+#7512 records a separate gap found on the way: a package-qualified call does
+not report an argument that fails an interface parameter.

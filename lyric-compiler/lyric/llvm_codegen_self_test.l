@@ -83,7 +83,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   }
   val dir = Path.join(tempBase(), "lyric-llvm-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val llPath = stem + ".ll"
   match File.writeText(llPath, ll) {
     case Ok(_) -> {
@@ -146,7 +146,7 @@ func compileAndRunBundle(sources: in List[String]): RunOutcome {
   }
   val dir = Path.join(tempBase(), "lyric-llvm-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "b_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "b_" + Uuid.uuidToString(Uuid.newUuid()))
   val llPath = stem + ".ll"
   match File.writeText(llPath, ll) {
     case Ok(_) -> {

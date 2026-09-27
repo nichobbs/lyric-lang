@@ -84,6 +84,8 @@ func mkContract(name: in String, decls: in List[Meta.ContractDecl]): Meta.Contra
     decls = decls,
     dependencies = newList(),
     imports = newList(),
+    wholeImports = newList(),
+    selectedImports = newList(),
     contractHash = ""
   )
 }

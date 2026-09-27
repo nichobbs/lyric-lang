@@ -402,8 +402,8 @@ pub func compileToNativeWithFlags(
   // does not expand docs/58 wire/config templates or synthesise
   // `@stubbable` stubs yet — the `false` flags make that gap explicit
   // (docs/59 §9.2 divergence flag) instead of an invisible omission.
-  val noWires: Map[String, CollectedWireTemplate] = newMap()
-  val noConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
+  val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
   val userFile0 = match pipeExpandAndRewrite(cfgFile, noWires, noConfigs, false, false, false, path, noOrigins) {
     case Some(f) -> f
     case None -> return false
@@ -431,7 +431,14 @@ pub func compileToNativeWithFlags(
       ii = ii + 1
     }
     val pn = dottedPath(stdFile.packageDecl.path)
-    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems, imports = collectImportNames(stdFile.imports)))
+    importedPkgs.add(
+      ImportedPackage(
+        name = pn,
+        items = pkgItems,
+        imports = collectImportNames(stdFile.imports),
+        wholeImports = collectWholeImportNames(stdFile.imports)
+      )
+    )
     if pn.length > 0 and not stdlibByPkg.containsKey(pn) {
       stdlibByPkg.add(pn, stdFile)
     }
@@ -455,7 +462,7 @@ pub func compileToNativeWithFlags(
   val importedItemsForMono = flattenImportedItems(importedPkgs)
   val noImportedGenFuncs: List[FunctionDecl] = newList()
   val noDeriveImports: List[Item] = newList()
-  val noTemplates: Map[String, CollectedTemplate] = newMap()
+  val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   val noSingleFileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   // #7198: native's `async func` lowering is a real LLVM coroutine with a
   // genuine suspend point (docs/01 §"native" section), so F0045's guard
@@ -747,8 +754,8 @@ pub func compileProjectToNativeWithFlags(
   // Pre-typecheck rewrite chain: alias rewrite only, matching the
   // single-source path (docs/59 §9.2 divergence flag — no wire/config
   // template expansion or `@stubbable` synthesis on native yet).
-  val noWires: Map[String, CollectedWireTemplate] = newMap()
-  val noConfigs: Map[String, CollectedConfigTemplate] = newMap()
+  val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
+  val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
   val ownFiles0: List[SourceFile] = newList()
   var owi = 0
   while owi < cfgFiles.count {
@@ -782,7 +789,14 @@ pub func compileProjectToNativeWithFlags(
       ii = ii + 1
     }
     val pn = dottedPath(stdFile.packageDecl.path)
-    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems, imports = collectImportNames(stdFile.imports)))
+    importedPkgs.add(
+      ImportedPackage(
+        name = pn,
+        items = pkgItems,
+        imports = collectImportNames(stdFile.imports),
+        wholeImports = collectWholeImportNames(stdFile.imports)
+      )
+    )
     if pn.length > 0 and not stdlibByPkg.containsKey(pn) {
       stdlibByPkg.add(pn, stdFile)
     }
@@ -814,7 +828,14 @@ pub func compileProjectToNativeWithFlags(
       ii = ii + 1
     }
     val pn = dottedPath(f.packageDecl.path)
-    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems, imports = collectImportNames(f.imports)))
+    importedPkgs.add(
+      ImportedPackage(
+        name = pn,
+        items = pkgItems,
+        imports = collectImportNames(f.imports),
+        wholeImports = collectWholeImportNames(f.imports)
+      )
+    )
     oipi = oipi + 1
   }
 
@@ -822,7 +843,7 @@ pub func compileProjectToNativeWithFlags(
   val ownFiles: List[SourceFile] = newList()
   val noImportedGenFuncs: List[FunctionDecl] = newList()
   val noDeriveImports: List[Item] = newList()
-  val noTemplates: Map[String, CollectedTemplate] = newMap()
+  val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   val importedItemsForMono = flattenImportedItems(importedPkgs)
   val importedInterfaceDecls = pipeInterfaceDecls(importedItemsForMono)
   val importedRecordDecls = pipeRecordDecls(importedItemsForMono)

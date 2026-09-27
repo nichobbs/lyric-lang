@@ -326,7 +326,7 @@ pub func loadFromPath(path: in String): Result[InProcessTranslationStore, I18nEr
   // Pattern-match the Result directly rather than the generic `isErr` /
   // `unwrapResultOr` free functions, which the self-hosted MSIL backend does
   // not yet resolve across packages (see `translate`).
-  match readText(path) {
+  match File.readText(path) {
     case Ok(json) -> {
       return fromJson(json)
     }

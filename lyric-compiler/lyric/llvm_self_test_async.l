@@ -99,7 +99,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   }
   val dir = Path.join(tempBase(), "lyric-llvm-async-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val llPath = stem + ".ll"
   match File.writeText(llPath, ll) {
     case Ok(_) -> {
@@ -151,7 +151,7 @@ func compileAndRunBundledWith(source: in String, sanitize: in Bool): RunOutcome 
   }
   val dir = Path.join(tempBase(), "lyric-llvm-async-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   if sanitize {
     flags.add("-fsanitize=address")
@@ -507,7 +507,7 @@ test "F0045 (#7198): a direct async call's ? inside try/catch of an async func i
   }
   val dir = Path.join(tempBase(), "lyric-llvm-async-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val noFlags: List[String] = newList()
   val noDefines: List[String] = newList()
   val ok = compileToNativeWithFlags(src, stem, stdlib, "", "0", noFlags, noDefines, "")

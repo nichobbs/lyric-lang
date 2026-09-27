@@ -34,6 +34,7 @@ import Std.String as String
 import Lyric.Parser
 import Lyric.Lexer
 import Lyric.RestoredPackages
+import Lyric.ContractMeta as Meta
 import Lyric.Weaver as Weaver
 import Lyric.BareFuncRef as BareFuncRef
 import Msil.Lowering
@@ -633,6 +634,33 @@ pub record CodegenCtx {
   // `lowerBuiltinOrStaticCallMsil` can fall back to each imported package's
   // FQN-keyed funcs when a bare call doesn't match the current package.
   pkgImports: Map[String, List[String]]
+  // The imports whose names a bare reference in `pkgName` can mean, in
+  // preference order (docs/01 §9.2, D141): whole imports, then the packages
+  // of selective imports; aliased imports never, their names are written
+  // qualified.  Every name the type checker accepts resolves correctly
+  // against this order: a selectively imported package's unlisted names are
+  // rejected before codegen, and a listed one colliding with a whole
+  // import's is T0123.  See `bareImportsOfMsil`.
+  pkgBareImports: Map[String, List[String]]
+  // `pkgBareImports` completed with the transitive closure of each package's
+  // whole imports (their own whole imports), computed on first use.
+  pkgBareClosure: Map[String, List[String]]
+  // `<pkg>|<name>` for each extern type a package's own files declare
+  // (`extern type`, `import extern`).  Like the type checker, such a name
+  // wins over a Lyric type reached only transitively, though not over the
+  // package's own or a directly imported one.
+  pkgLocalExterns: Map[String, Bool]
+  // The whole imports alone, the roots of that closure.
+  pkgWholeImports: Map[String, List[String]]
+  // `<pkg>|<imported>|<name>` for each name a selective import lists; an
+  // imported package `pkg` reaches only selectively admits just these names
+  // bare (see `bareImportAdmitsMsil`).
+  pkgSelectedNames: Map[String, Bool]
+  // `<pkg>|<imported>` for each package `pkg` imports selectively.
+  pkgSelectivePkgs: Map[String, Bool]
+  // The whole imports' transitive closure alone (every name of these
+  // packages is visible bare), computed on first use.
+  pkgWholeClosure: Map[String, List[String]]
   // Per-package import aliases (`import Std.String as Str`).  Keyed by
   // `<pkgName>/<alias>` → the real dotted package name (`Std.String`), so an
   // alias-qualified call (`Str.split(..)`) parsed as `EMember(EPath["Str"], …)`
@@ -2208,6 +2236,13 @@ pub func newCodegenCtx(
     nextFieldDefRow = newList(),
     mainEntryToken = newList(),
     pkgImports = newMap(),
+    pkgBareImports = newMap(),
+    pkgBareClosure = newMap(),
+    pkgLocalExterns = newMap(),
+    pkgWholeImports = newMap(),
+    pkgSelectedNames = newMap(),
+    pkgSelectivePkgs = newMap(),
+    pkgWholeClosure = newMap(),
     pkgImportAliases = newMap(),
     unionCaseCtorByName = newMap(),
     caseParentUnion = newMap(),
@@ -2557,6 +2592,17 @@ pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
 func resolveEnumCaseOrdinalByScope(
   cctx: in CodegenCtx, fctx: in FuncCtx, typeName: in String, caseName: in String
 ): Option[Int] {
+  // A `<declPkg>::<Enum>` hint (a qualified annotation, `enumHintOfTypeExprMsil`)
+  // names the declaring package outright.
+  val sepIdx = String.indexOfRaw(typeName, "::")
+  if sepIdx >= 0 {
+    val declPkg = typeName.substring(0, sepIdx)
+    val simple = typeName.substring(sepIdx + 2, typeName.length - sepIdx - 2)
+    return match mapGet(cctx.enumCaseOrdinalsByPkgType, declPkg + "::" + simple + "." + caseName) {
+      case Some(o) -> Some(value = o)
+      case None -> resolveEnumCaseOrdinalByScope(cctx, fctx, simple, caseName)
+    }
+  }
   val tn = typeName + "." + caseName
   match mapGet(cctx.enumTypeCaseDeclarers, tn) {
     case None -> mapGet(cctx.enumCaseOrdinals, tn)
@@ -2568,20 +2614,7 @@ func resolveEnumCaseOrdinalByScope(
         if listContains(declarers, currentPkg) {
           mapGet(cctx.enumCaseOrdinalsByPkgType, currentPkg + "::" + tn)
         } else {
-          val viaImport = match mapGet(cctx.pkgImports, currentPkg) {
-            case Some(imps) -> {
-              var ii = 0
-              var found = ""
-              while ii < imps.count and found.length == 0 {
-                if listContains(declarers, imps[ii]) {
-                  found = imps[ii]
-                }
-                ii = ii + 1
-              }
-              found
-            }
-            case None -> ""
-          }
+          val viaImport = enumDeclarerViaImportsMsil(cctx, currentPkg, typeName, declarers)
           if viaImport.length > 0 {
             mapGet(cctx.enumCaseOrdinalsByPkgType, viaImport + "::" + tn)
           } else {
@@ -2591,6 +2624,31 @@ func resolveEnumCaseOrdinalByScope(
       }
     }
   }
+}
+
+// The package among `declarers` that `pkg` reaches enum `typeName` through:
+// the imports that make the name visible bare first (docs/01 §9.2), then any
+// other import, aliased ones included, since an enum reached through
+// `import P as Q` is still named by a `Q.Enum` annotation; "" when none is.
+func enumDeclarerViaImportsMsil(
+  cctx: in CodegenCtx, pkg: in String, typeName: in String, declarers: in List[String]
+): String {
+  for imp in bareImportListForNameMsil(cctx, pkg, typeName) {
+    if listContains(declarers, imp) {
+      return imp
+    }
+  }
+  match mapGet(cctx.pkgImports, pkg) {
+    case Some(imps) -> {
+      for imp in imps {
+        if listContains(declarers, imp) {
+          return imp
+        }
+      }
+    }
+    case None -> ()
+  }
+  ""
 }
 
 // Resolve which package's enum type `typeName` is visible from `fromPkg`
@@ -2617,20 +2675,7 @@ func resolveEnumTypeDeclPkg(cctx: in CodegenCtx, fromPkg: in String, typeName: i
       } else if listContains(declarers, fromPkg) {
         fromPkg
       } else {
-        val viaImport = match mapGet(cctx.pkgImports, fromPkg) {
-          case Some(imps) -> {
-            var ii = 0
-            var found = ""
-            while ii < imps.count and found.length == 0 {
-              if listContains(declarers, imps[ii]) {
-                found = imps[ii]
-              }
-              ii = ii + 1
-            }
-            found
-          }
-          case None -> ""
-        }
+        val viaImport = enumDeclarerViaImportsMsil(cctx, fromPkg, typeName, declarers)
         if viaImport.length > 0 {
           viaImport
         } else {
@@ -3115,6 +3160,63 @@ func registerWireStaticMsil(
   }
 }
 
+// Stash `pkgName`'s import edges so call-site resolution can walk them
+// (#1183 Phase 2), with the forms the bare-name resolvers follow (docs/01
+// §9.2).  The bridge calls this for every bundle package before any is
+// tokenised (`preRegisterPackageTypeNames`), so a package's signatures never
+// resolve against a transitive closure cut short by a dependency that
+// registers later in bundle order (#7582); `addPackageTokens` calls it again
+// for the single-file path.
+pub func recordPackageImportsMsil(cctx: in CodegenCtx, pkgName: in String, imports: in List[ImportDecl]): Unit {
+  // The alias-as suffix (`import X.Y as Z`) is ignored here; the codegen
+  // falls back to the source package's FQN whatever rebinding the type
+  // checker applied.
+  val importedDottedNames: List[String] = newList()
+  var mi = 0
+  while mi < imports.count {
+    val imp = imports[mi]
+    val impDotted = joinSegsMsil(imp.path.segments, ".")
+    importedDottedNames.add(impDotted)
+    // Record the `as Alias` rebinding so an alias-qualified free-function call
+    // (`Str.split(..)` for `import Std.String as Str`) resolves to the real
+    // package FQN in `lowerMethodCallMsil`'s static-call fast path.
+    match imp.asAlias {
+      case Some(al) -> {
+        val aliasKey = pkgName + "/" + al
+        if not cctx.pkgImportAliases.containsKey(aliasKey) {
+          cctx.pkgImportAliases.add(aliasKey, impDotted)
+        }
+      }
+      case None -> ()
+    }
+    mi = mi + 1
+  }
+  if cctx.pkgImports.containsKey(pkgName) {
+    cctx.pkgImports.remove(pkgName)
+  }
+  cctx.pkgImports.add(pkgName, importedDottedNames)
+  invalidateImportClosuresMsil(cctx)
+  // A package registers more than once (the pre-pass, then each of its
+  // files, whose imports the weaver may have extended with `import
+  // Std.Time`): each registration adds the imports not already recorded.
+  mergeImportListMsil(cctx.pkgBareImports, pkgName, bareImportOrderMsil(imports, false))
+  mergeImportListMsil(cctx.pkgWholeImports, pkgName, bareImportOrderMsil(imports, true))
+  recordSelectiveImportsMsil(cctx, pkgName, imports)
+}
+
+func mergeImportListMsil(into: in Map[String, List[String]], pkgName: in String, added: in List[String]): Unit {
+  match mapGet(into, pkgName) {
+    case Some(existing) -> {
+      for a in added {
+        if not existing.contains(a) {
+          existing.add(a)
+        }
+      }
+    }
+    case None -> into.add(pkgName, added)
+  }
+}
+
 /// Register `file`'s type names (`typeFqnByName` / `typeFqnCandidates`) and
 /// its generic record/union arities (`genericTypeArity`) ahead of the
 /// per-package `addPackageTokens` pass, exactly as that pass would for the
@@ -3127,6 +3229,7 @@ func registerWireStaticMsil(
 /// Registering the same names in the same order keeps every first-wins
 /// resolution identical; `addPackageTokens` re-registers them idempotently.
 pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
+  recordPackageImportsMsil(cctx, pkgName, file.imports)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -3324,32 +3427,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   // `preSeedBundleAsyncRetTypesMsil` seeding).
   pbSeedTypeInfoItemsMsil(cctx, pkgName, file.items)
 
-  // Stash this package's import edges so call-site resolution can walk
-  // them (#1183 Phase 2).  Each import contributes its dotted path; the
-  // alias-as suffix (`import X.Y as Z`) is ignored — the codegen falls back
-  // to the source package's FQN regardless of any rebinding the typechecker
-  // already applied.
-  val importedDottedNames: List[String] = newList()
-  var mi = 0
-  while mi < file.imports.count {
-    val imp = file.imports[mi]
-    val impDotted = joinSegsMsil(imp.path.segments, ".")
-    importedDottedNames.add(impDotted)
-    // Record the `as Alias` rebinding so an alias-qualified free-function call
-    // (`Str.split(..)` for `import Std.String as Str`) resolves to the real
-    // package FQN in `lowerMethodCallMsil`'s static-call fast path.
-    match imp.asAlias {
-      case Some(al) -> {
-        val aliasKey = pkgName + "/" + al
-        if not cctx.pkgImportAliases.containsKey(aliasKey) {
-          cctx.pkgImportAliases.add(aliasKey, impDotted)
-        }
-      }
-      case None -> ()
-    }
-    mi = mi + 1
-  }
-  cctx.pkgImports.add(pkgName, importedDottedNames)
+  recordPackageImportsMsil(cctx, pkgName, file.imports)
 
   // Resume row numbering from where the previous package's pre-scan left off
   // (#1183 — multi-package compilation).  For a single-package compile via
@@ -7289,21 +7367,32 @@ func originScopedTypeFqnMsil(cctx: in CodegenCtx, pkgName: in String, seg: in St
   if cands.contains(ownFqn) {
     return ownFqn
   }
-  match mapGet(cctx.pkgImports, origin) {
-    case Some(imports) -> {
-      var i = cands.count - 1
-      while i >= 0 {
-        val fqn = cands[i]
-        if fqn.length > seg.length + 1 {
-          val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
-          if imports.contains(pkgPart) {
-            return fqn
-          }
-        }
-        i = i - 1
+  importScopedCandMsil(cctx, origin, seg, cands)
+}
+
+// The newest candidate for `seg` declared by a package `pkg` imports: its
+// direct imports first, then the packages they reach transitively, the
+// order the type checker's resolution tiers give them (docs/01 §9.2); ""
+// when none is.
+func importScopedCandMsil(cctx: in CodegenCtx, pkg: in String, seg: in String, cands: in List[String]): String {
+  val first = newestCandInMsil(cands, seg, directBareImportsForNameMsil(cctx, pkg, seg))
+  if first.length > 0 {
+    return first
+  }
+  newestCandInMsil(cands, seg, bareImportListForNameMsil(cctx, pkg, seg))
+}
+
+func newestCandInMsil(cands: in List[String], seg: in String, imports: in List[String]): String {
+  var i = cands.count - 1
+  while i >= 0 {
+    val fqn = cands[i]
+    if fqn.length > seg.length + 1 {
+      val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
+      if imports.contains(pkgPart) {
+        return fqn
       }
     }
-    case None -> ()
+    i = i - 1
   }
   ""
 }
@@ -7331,22 +7420,9 @@ func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): St
       if cands.contains(ownFqn) {
         return ownFqn
       }
-      match mapGet(cctx.pkgImports, pkgName) {
-        case Some(imports) -> {
-          var i = cands.count - 1
-          while i >= 0 {
-            val fqn = cands[i]
-            if fqn.length > seg.length + 1 {
-              val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
-              if imports.contains(pkgPart) {
-                return fqn
-              }
-            }
-            i = i - 1
-          }
-        }
-        case None -> {
-        }
+      val importedFqn = importScopedCandMsil(cctx, pkgName, seg, cands)
+      if importedFqn.length > 0 {
+        return importedFqn
       }
       cands[cands.count - 1]
     }
@@ -7379,23 +7455,28 @@ func hasLyricTypeCandidateInScope(cctx: in CodegenCtx, pkgName: in String, seg: 
       if cands.contains(ownFqn) {
         return true
       }
-      match mapGet(cctx.pkgImports, pkgName) {
-        case Some(imports) -> {
-          var i = 0
-          while i < cands.count {
-            val fqn = cands[i]
-            if fqn.length > seg.length + 1 {
-              val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
-              if imports.contains(pkgPart) {
-                return true
-              }
-            }
-            i = i + 1
-          }
-          false
+      // The package's own extern of this name outranks a Lyric type it
+      // reaches only transitively, as in the type checker (docs/01 §9.2).
+      val imports = if cctx.pkgLocalExterns.containsKey(pkgName + "|" + seg) {
+        match mapGet(cctx.pkgBareImports, pkgName) {
+          case Some(direct) -> direct
+          case None -> newList()
         }
-        case None -> false
+      } else {
+        bareImportListForNameMsil(cctx, pkgName, seg)
       }
+      var i = 0
+      while i < cands.count {
+        val fqn = cands[i]
+        if fqn.length > seg.length + 1 {
+          val pkgPart = fqn.substring(0, fqn.length - seg.length - 1)
+          if imports.contains(pkgPart) and bareImportAdmitsMsil(cctx, pkgName, pkgPart, seg, "") {
+            return true
+          }
+        }
+        i = i + 1
+      }
+      false
     }
     case None -> false
   }
@@ -8597,6 +8678,23 @@ func popCollExpect(fctx: in FuncCtx): Unit {
 // `typeExprToMsilCtx`'s own enum branch) to a registered enum type, or ""
 // otherwise.  Kept in sync with `typeExprToMsilCtx`'s TRef arm — both must
 // agree on which TypeExprs name an enum.
+// A local's or parameter's enum-type hint: `<declPkg>::<Enum>` when the
+// annotation names its package (`B.Mode`, rewritten to `EB.Mode`), so a bare
+// case pattern over it resolves in that package whatever else declares a
+// `Mode`; otherwise the simple name (`enumSimpleNameOfTypeExprMsil`).
+func enumHintOfTypeExprMsil(cctx: in CodegenCtx, te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> if path.segments.count >= 2 {
+      val simple = path.segments[path.segments.count - 1]
+      if cctx.enumTypeNames.containsKey(simple) {
+        return qualifierOfPathMsil(path.segments) + "::" + simple
+      }
+    }
+    case _ -> ()
+  }
+  enumSimpleNameOfTypeExprMsil(cctx, te)
+}
+
 func enumSimpleNameOfTypeExprMsil(cctx: in CodegenCtx, te: in TypeExpr): String {
   match te.kind {
     case TRef(path) -> {
@@ -9869,7 +9967,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // For qualified paths (`Color.Same`), the penultimate segment
               // names the parent union — prefer the matching candidate
               // so same-named cases across two unions disambiguate (#3349).
-              val pathQualifier = if path.segments.count >= 2 { path.segments[path.segments.count - 2] } else { "" }
+              val pathQualifier = qualifierOfPathMsil(path.segments)
               val localCtorKey = fctx.pkgName + "." + name
               val ctorKey = if cctx.recordCtorTokens.containsKey(localCtorKey) {
                 localCtorKey
@@ -13372,7 +13470,7 @@ func genericNullaryCaseParentMsil(cctx: in CodegenCtx, fctx: in FuncCtx, e: in E
       if cctx.constValues.containsKey(fctx.pkgName + "/" + name) or cctx.constValues.containsKey(name) or cctx.enumCaseOrdinals.containsKey(name) {
         return ""
       }
-      val qualifier = if path.segments.count >= 2 { path.segments[path.segments.count - 2] } else { "" }
+      val qualifier = qualifierOfPathMsil(path.segments)
       val localKey = fctx.pkgName + "." + name
       val ctorKey = if cctx.recordCtorTokens.containsKey(localKey) {
         localKey
@@ -13972,7 +14070,7 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
     }
     i = i + 1
   }
-  match mapGet(cctx.pkgImports, currentPkg) {
+  match bareImportsOfMsil(cctx, currentPkg) {
     case Some(imps) -> {
       var ii = 0
       while ii < imps.count {
@@ -13980,7 +14078,15 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
         var j = 0
         while j < candidates.count {
           if startsWith(candidates[j], prefix2) {
-            return candidates[j]
+            val unionName = match mapGet(cctx.caseParentUnion, candidates[j]) {
+              case Some(parentFqn) -> lastDottedSegmentMsil(parentFqn)
+              case None -> ""
+            }
+            // A selective import lists the case by its own name
+            // (`import A.{Square}`), not the `Shape_Square` class name.
+            if bareImportAdmitsMsil(cctx, currentPkg, imps[ii], caseSimpleNameMsil(candidates[j], unionName), unionName) {
+              return candidates[j]
+            }
           }
           j = j + 1
         }
@@ -14061,7 +14167,7 @@ func findBundleFqnByName(cctx: in CodegenCtx, currentPkg: in String, funcName: i
         }
         i = i + 1
       }
-      match mapGet(cctx.pkgImports, currentPkg) {
+      match bareImportsForNameMsil(cctx, currentPkg, funcName) {
         case Some(imps) -> {
           var ii = 0
           while ii < imps.count {
@@ -14083,11 +14189,43 @@ func findBundleFqnByName(cctx: in CodegenCtx, currentPkg: in String, funcName: i
   }
 }
 
-// Qualifier-aware variant: when a case is written as `UnionName.CaseName`
-// (path.segments.count >= 2), `qualifier` is the penultimate segment
-// (e.g. `"Color"` in `Color.Same`).  Prefers the candidate whose
-// parent-union FQN ends with `.qualifier` (or equals `qualifier`).
-// Falls back to `pickCaseFqnByScope` when no candidate matches.
+// The source name of the case a `<pkg>.<Union>_<Case>` constructor FQN
+// declares, given its union's simple name.
+func caseSimpleNameMsil(caseFqn: in String, unionName: in String): String {
+  val last = lastDottedSegmentMsil(caseFqn)
+  val pfx = unionName + "_"
+  if unionName.length > 0 and startsWith(last, pfx) {
+    last.substring(pfx.length, last.length - pfx.length)
+  } else {
+    last
+  }
+}
+
+// The dotted qualifier of a qualified path (every segment but the last), or
+// "" for a bare name.
+func qualifierOfPathMsil(segments: in List[String]): String {
+  if segments.count < 2 {
+    return ""
+  }
+  val quals: List[String] = newList()
+  var i = 0
+  while i < segments.count - 1 {
+    quals.add(segments[i])
+    i = i + 1
+  }
+  joinSegsMsil(quals, ".")
+}
+
+// Qualifier-aware variant: `qualifier` is everything a qualified case
+// reference writes before the case name, dotted (`Color` in `Color.Same`,
+// `Pkg.Color` in `Pkg.Color.Same`, `EPAx.Marks` in the alias-rewritten
+// `MA.Square`).  Prefers, in order, the candidate whose parent union is the
+// qualifier itself, the one declared in the package the qualifier names (the
+// type checker resolves a package-qualified case there whatever the file's
+// bare-name scope, docs/01 §9.2), then the union of that simple name the
+// file sees bare (its own package's, then its imports'), and only then any
+// union of that simple name.  Falls back to
+// `pickCaseFqnByScope` when no candidate matches.
 func pickCaseFqnByQualifier(
   cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in List[String], qualifier: in String
 ): String {
@@ -14095,23 +14233,49 @@ func pickCaseFqnByQualifier(
     return candidates[0]
   }
   if qualifier.length > 0 {
-    var i = 0
-    while i < candidates.count {
-      match mapGet(cctx.caseParentUnion, candidates[i]) {
-        case Some(parentFqn) -> {
-          val dotIdx = String.lastIndexOfRaw(parentFqn, ".")
-          val parentSimple = if dotIdx >= 0 {
-            parentFqn.substring(dotIdx + 1, parentFqn.length - dotIdx - 1)
-          } else {
-            parentFqn
-          }
-          if parentSimple == qualifier {
-            return candidates[i]
+    // A bare union name (`Shape.Square`) names the union the file sees bare:
+    // its own package's, then its imports' in the checker's order.
+    val unionName = lastDottedSegmentMsil(qualifier)
+    val scopeOrder: List[String] = newList()
+    scopeOrder.add(fctx.pkgName)
+    for imp in bareImportListForNameMsil(cctx, fctx.pkgName, unionName) {
+      scopeOrder.add(imp)
+    }
+    var tier = 0
+    while tier < 4 {
+      if tier == 2 {
+        for scopePkg in scopeOrder {
+          for cand in candidates {
+            match mapGet(cctx.caseParentUnion, cand) {
+              case Some(parentFqn) -> if parentFqn == scopePkg + "." + unionName { return cand }
+              case None -> ()
+            }
           }
         }
-        case None -> ()
+        tier = tier + 1
+        continue
       }
-      i = i + 1
+      var i = 0
+      while i < candidates.count {
+        match mapGet(cctx.caseParentUnion, candidates[i]) {
+          case Some(parentFqn) -> {
+            val dotIdx = String.lastIndexOfRaw(parentFqn, ".")
+            val matched = if tier == 0 {
+              parentFqn == qualifier
+            } else if tier == 1 {
+              dotIdx > 0 and parentFqn.substring(0, dotIdx) == qualifier
+            } else {
+              lastDottedSegmentMsil(parentFqn) == unionName
+            }
+            if matched {
+              return candidates[i]
+            }
+          }
+          case None -> ()
+        }
+        i = i + 1
+      }
+      tier = tier + 1
     }
   }
   // No qualifier (or no qualifier match): before falling back to import-order
@@ -16148,10 +16312,312 @@ func originScopedFqnMsil(
   if cctx.funcTokens.containsKey(own) {
     return own
   }
-  match mapGet(cctx.pkgImports, fctx.originPkg) {
-    case Some(imps) -> findImportedFqnWithHint(cctx, imps, funcName, arity, retHint)
-    case None -> ""
+  findBareImportedFqnMsil(cctx, fctx.originPkg, funcName, arity, retHint)
+}
+
+// The function a bare `funcName` in `pkg` resolves to through its imports
+// (docs/01 §9.2): the imports that admit the name, directly imported ones
+// first, so a return-type hint (`findImportedFqnWithHint`) chooses among a
+// tier's candidates but never reaches past a direct import to a package
+// reached only transitively.  "" when no import declares it.
+func findBareImportedFqnMsil(
+  cctx: in CodegenCtx,
+  pkg: in String,
+  funcName: in String,
+  arity: in Int,
+  retHint: in MsilType,
+): String {
+  val direct = findImportedFqnWithHint(
+    cctx,
+    directBareImportsForNameMsil(cctx, pkg, funcName),
+    funcName,
+    arity,
+    retHint
+  )
+  if direct.length > 0 {
+    return direct
   }
+  findImportedFqnWithHint(cctx, bareImportListForNameMsil(cctx, pkg, funcName), funcName, arity, retHint)
+}
+
+// `pkg`'s direct imports that admit `name` bare: whole imports and the
+// selective imports that list it (aliased imports never).
+func directBareImportsForNameMsil(cctx: in CodegenCtx, pkg: in String, name: in String): List[String] {
+  val direct = match mapGet(cctx.pkgBareImports, pkg) {
+    case Some(imps) -> imps
+    case None -> match mapGet(cctx.pkgImports, pkg) { case Some(imps) -> imps; case None -> newList() }
+  }
+  val admitted: List[String] = newList()
+  for d in direct {
+    if bareImportAdmitsMsil(cctx, pkg, d, name, "") {
+      admitted.add(d)
+    }
+  }
+  admitted
+}
+
+// `pkg`'s imports in bare-name preference order: its whole and selective
+// imports (`pkgBareImports`), then the packages its whole imports reach
+// transitively, as the type checker's visibility rule has it.  A package
+// with no source in this bundle (a restored dependency) uses the imports its
+// contract records.
+func bareImportsOfMsil(cctx: in CodegenCtx, pkg: in String): Option[List[String]] {
+  match mapGet(cctx.pkgBareClosure, pkg) {
+    case Some(done) -> return Some(value = done)
+    case None -> ()
+  }
+  match mapGet(cctx.pkgBareImports, pkg) {
+    case None -> mapGet(cctx.pkgImports, pkg)
+    case Some(direct) -> {
+      val closure: List[String] = newList()
+      for d in direct {
+        closure.add(d)
+      }
+      val queue: List[String] = newList()
+      match mapGet(cctx.pkgWholeImports, pkg) {
+        case Some(whole) -> {
+          for w in whole {
+            queue.add(w)
+          }
+        }
+        case None -> ()
+      }
+      var qi = 0
+      while qi < queue.count {
+        match wholeImportsOfReachedMsil(cctx, queue[qi]) {
+          case Some(reached) -> {
+            for r in reached {
+              if r != pkg and not closure.contains(r) {
+                closure.add(r)
+                queue.add(r)
+              }
+            }
+          }
+          case None -> ()
+        }
+        qi = qi + 1
+      }
+      cctx.pkgBareClosure.add(pkg, closure)
+      Some(value = closure)
+    }
+  }
+}
+
+func recordSelectiveImportsMsil(cctx: in CodegenCtx, pkg: in String, imports: in List[ImportDecl]): Unit {
+  for imp in imports {
+    if imp.isExtern {
+      continue
+    }
+    match imp.asAlias {
+      case Some(_) -> continue
+      case None -> ()
+    }
+    match imp.selector {
+      case Some(sel) -> {
+        val dotted = joinSegsMsil(imp.path.segments, ".")
+        val pkgKey = pkg + "|" + dotted
+        if not cctx.pkgSelectivePkgs.containsKey(pkgKey) {
+          cctx.pkgSelectivePkgs.add(pkgKey, true)
+        }
+        val items: List[ImportItem] = match sel {
+          case ISSingle(item) -> {
+            val one: List[ImportItem] = newList()
+            one.add(item)
+            one
+          }
+          case ISGroup(group) -> group
+        }
+        for item in items {
+          val key = pkgKey + "|" + item.name
+          if not cctx.pkgSelectedNames.containsKey(key) {
+            cctx.pkgSelectedNames.add(key, true)
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+}
+
+// The packages whose every name `pkg` sees bare: its whole imports and the
+// packages they reach transitively.
+func wholeClosureMsil(cctx: in CodegenCtx, pkg: in String): List[String] {
+  match mapGet(cctx.pkgWholeClosure, pkg) {
+    case Some(done) -> return done
+    case None -> ()
+  }
+  val closure: List[String] = newList()
+  match mapGet(cctx.pkgWholeImports, pkg) {
+    case Some(whole) -> {
+      for w in whole {
+        if not closure.contains(w) {
+          closure.add(w)
+        }
+      }
+    }
+    case None -> ()
+  }
+  var qi = 0
+  while qi < closure.count {
+    match wholeImportsOfReachedMsil(cctx, closure[qi]) {
+      case Some(reached) -> {
+        for r in reached {
+          if r != pkg and not closure.contains(r) {
+            closure.add(r)
+          }
+        }
+      }
+      case None -> ()
+    }
+    qi = qi + 1
+  }
+  cctx.pkgWholeClosure.add(pkg, closure)
+  closure
+}
+
+// The bare-name imports of a package with no source in the bundle (a
+// restored dependency's contract, `Contract.wholeImports`/`selectedImports`,
+// or a stdlib package's `StdlibPkg` lists), as `bareImportOrderMsil` and
+// `recordSelectiveImportsMsil` derive them from a source file's imports.
+func recordRestoredBareImportsMsil(
+  cctx: in CodegenCtx,
+  pkg: in String,
+  whole: in List[String],
+  selected: in List[String],
+): Unit {
+  val bare: List[String] = newList()
+  for w in whole {
+    if not bare.contains(w) {
+      bare.add(w)
+    }
+  }
+  for entry in selected {
+    val sep = String.indexOfRaw(entry, "::")
+    if sep > 0 {
+      val imported = entry.substring(0, sep)
+      if not bare.contains(imported) {
+        bare.add(imported)
+      }
+      val pkgKey = pkg + "|" + imported
+      if not cctx.pkgSelectivePkgs.containsKey(pkgKey) {
+        cctx.pkgSelectivePkgs.add(pkgKey, true)
+      }
+      val nameKey = pkgKey + "|" + entry.substring(sep + 2)
+      if not cctx.pkgSelectedNames.containsKey(nameKey) {
+        cctx.pkgSelectedNames.add(nameKey, true)
+      }
+    }
+  }
+  cctx.pkgBareImports.add(pkg, bare)
+}
+
+// Drop every cached import closure (`pkgBareClosure`, `pkgWholeClosure`).
+// Packages register in bundle order, not dependency order, so a closure
+// computed before a package it reaches recorded its own imports would be
+// short; each registration invalidates them and the next lookup recomputes.
+func invalidateImportClosuresMsil(cctx: in CodegenCtx): Unit {
+  val bareKeys: List[String] = newList()
+  for k in mapKeys(cctx.pkgBareClosure) {
+    bareKeys.add(k)
+  }
+  for k in bareKeys {
+    cctx.pkgBareClosure.remove(k)
+  }
+  val wholeKeys: List[String] = newList()
+  for k in mapKeys(cctx.pkgWholeClosure) {
+    wholeKeys.add(k)
+  }
+  for k in wholeKeys {
+    cctx.pkgWholeClosure.remove(k)
+  }
+}
+
+// The packages `pkg` imports whole, through which a whole import of `pkg`
+// reaches further (docs/01 §9.2).  A package with no recorded import forms
+// (a contract written before `wholeImports` existed) counts every import.
+func wholeImportsOfReachedMsil(cctx: in CodegenCtx, pkg: in String): Option[List[String]] {
+  match mapGet(cctx.pkgWholeImports, pkg) {
+    case Some(whole) -> Some(value = whole)
+    case None -> mapGet(cctx.pkgImports, pkg)
+  }
+}
+
+// Whether a bare reference in `pkg` can mean `name` (or, for a union case,
+// `altName`, its union) as declared by `imported`, one of the packages
+// `bareImportsOfMsil` lists: always, unless `pkg` reaches `imported` only
+// through a selective import that lists neither (docs/01 §9.2, D141).
+func bareImportAdmitsMsil(
+  cctx: in CodegenCtx, pkg: in String, imported: in String, name: in String, altName: in String
+): Bool {
+  val pkgKey = pkg + "|" + imported
+  if not cctx.pkgSelectivePkgs.containsKey(pkgKey) {
+    return true
+  }
+  if wholeClosureMsil(cctx, pkg).contains(imported) {
+    return true
+  }
+  cctx.pkgSelectedNames.containsKey(pkgKey + "|" + name) or
+    (altName.length > 0 and cctx.pkgSelectedNames.containsKey(pkgKey + "|" + altName))
+}
+
+func bareImportListForNameMsil(cctx: in CodegenCtx, pkg: in String, name: in String): List[String] {
+  match bareImportsForNameMsil(cctx, pkg, name) {
+    case Some(imps) -> imps
+    case None -> newList()
+  }
+}
+
+// `bareImportsOfMsil` narrowed to the imports that admit `name` bare.
+func bareImportsForNameMsil(cctx: in CodegenCtx, pkg: in String, name: in String): Option[List[String]] {
+  match bareImportsOfMsil(cctx, pkg) {
+    case Some(imps) -> {
+      val admitted: List[String] = newList()
+      for imp in imps {
+        if bareImportAdmitsMsil(cctx, pkg, imp, name, "") {
+          admitted.add(imp)
+        }
+      }
+      Some(value = admitted)
+    }
+    case None -> None
+  }
+}
+
+func bareImportListMsil(cctx: in CodegenCtx, pkg: in String): List[String] {
+  match bareImportsOfMsil(cctx, pkg) {
+    case Some(imps) -> imps
+    case None -> newList()
+  }
+}
+
+// Whole imports then selective imports' packages (or, with `wholeOnly`, the
+// whole imports alone); aliased and extern imports are left out.
+func bareImportOrderMsil(imports: in List[ImportDecl], wholeOnly: in Bool): List[String] {
+  val whole: List[String] = newList()
+  val selective: List[String] = newList()
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    if not imp.isExtern {
+      val dotted = joinSegsMsil(imp.path.segments, ".")
+      match imp.asAlias {
+        case Some(_) -> ()
+        case None -> match imp.selector {
+          case Some(_) -> if not selective.contains(dotted) { selective.add(dotted) }
+          case None -> if not whole.contains(dotted) { whole.add(dotted) }
+        }
+      }
+    }
+    i = i + 1
+  }
+  if not wholeOnly {
+    for sel in selective {
+      if not whole.contains(sel) {
+        whole.add(sel)
+      }
+    }
+  }
+  whole
 }
 
 // The imports whose dotted path a qualified callee's qualifier names: the
@@ -16998,9 +17464,6 @@ func lowerBuiltinOrStaticCallMsil(
     //      (which leaves args on the stack without a newobj, causing a
     //      stack-height mismatch that the JIT reports as InvalidProgramException).
     val localCtorKey = fctx.pkgName + "." + funcName
-    // For qualified calls like `Color.CaseName(...)` the qualifier names
-    // the parent union; prefer the matching candidate (#3349).
-    val callQualifier = if path.segments.count >= 2 { path.segments[path.segments.count - 2] } else { "" }
     // An EXPLICITLY qualified constructor call (`Pkg.Sub.Type(...)`) names its
     // declaring package directly in the call syntax — try that full dotted
     // path FIRST, independent of whether `fctx.pkgName` imports it. Mirrors
@@ -17023,7 +17486,9 @@ func lowerBuiltinOrStaticCallMsil(
       fullQualifiedCtorKey
     } else {
       match mapGet(cctx.unionCaseCtorByName, funcName) {
-        case Some(candidates) -> pickCaseFqnByQualifier(cctx, fctx, candidates, callQualifier)
+        // A qualified call (`Color.CaseName(...)`, `Pkg.CaseName(...)`)
+        // prefers the case its qualifier names (#3349).
+        case Some(candidates) -> pickCaseFqnByQualifier(cctx, fctx, candidates, qualifierOfPathMsil(path.segments))
         case None -> {
           // Cross-package record: resolve the simple name to its FQN with the
           // import-aware scope-tier resolver (mirrors the type checker), NOT the
@@ -17327,7 +17792,7 @@ func lowerBuiltinOrStaticCallMsil(
               case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
                 findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
               } else {
-                findImportedFqnWithHint(cctx, imps, funcName, args.count, importRetHint)
+                findBareImportedFqnMsil(cctx, fctx.pkgName, funcName, args.count, importRetHint)
               }
               case None -> ""
             }
@@ -18549,10 +19014,11 @@ func lowerMethodCallMsil(
     // fallback `lowerBuiltinOrStaticCallMsil` uses for bare calls, extended to a
     // qualified receiver.  Without it the call mis-routes to value method-dispatch
     // (an "unsupported method" runtime throw).
-    val importedQualFqn = match mapGet(cctx.pkgImports, fctx.pkgName) {
-      case Some(imps) -> findImportedFqn(cctx, imps, callFqn)
-      case None -> ""
-    }
+    // The receiver type is named bare, so only the imports that make it
+    // visible bare count (docs/01 §9.2).
+    val recvDot = String.indexOfRaw(callFqn, ".")
+    val recvTypeName = if recvDot > 0 { callFqn.substring(0, recvDot) } else { callFqn }
+    val importedQualFqn = findImportedFqn(cctx, bareImportListForNameMsil(cctx, fctx.pkgName, recvTypeName), callFqn)
     if importedQualFqn.length > 0 {
       val impSegs = split(importedQualFqn, ".")
       val impPathSegs: List[String] = newList()
@@ -20611,7 +21077,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // #5995: this binding's declared enum type (if any), so a bare-case
           // init (`val v: HttpVersion = Http11`) resolves against it instead
           // of colliding with another in-bundle enum's same-named case.
-          val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
+          val annoEnumName = match tyOpt { case Some(te) -> enumHintOfTypeExprMsil(cctx, te); case None -> "" }
           // Establish a fresh hint scope from this binding's annotation: a
           // generic annotation (`val m: Option[List[String]] = None`) threads its
           // concrete args so a nullary `None` instantiates closed (#2362), and
@@ -20678,7 +21144,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // #6877: see the matching LBVal comment above.
           registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, tyOpt, init)
           // #5995: see the matching LBVal comment above.
-          val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
+          val annoEnumName = match tyOpt { case Some(te) -> enumHintOfTypeExprMsil(cctx, te); case None -> "" }
           // Fresh hint scope from the annotation (see LBVal above).
           val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
           pushEnumHintMsil(fctx, annoEnumName)
@@ -20781,7 +21247,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // through the cell so the closure and this scope share the location.
           val isHoisted = nameListContains(fctx.hoistedVarNames, name)
           // #5995: see the matching LBVal comment above.
-          val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
+          val annoEnumName = match tyOpt { case Some(te) -> enumHintOfTypeExprMsil(cctx, te); case None -> "" }
           if annoEnumName.length > 0 {
             registerVarEnumTypeMsil(fctx, name, annoEnumName)
           }
@@ -25639,14 +26105,11 @@ func resolveQualifiedFreeCallRetTypePB(
     }
   }
   candidates.add(pkgName + "." + lastSeg)
-  match mapGet(cctx.pkgImports, pkgName) {
-    case Some(imps) -> {
-      val imp = findImportedFqn(cctx, imps, lastSeg)
-      if imp.length > 0 {
-        candidates.add(imp)
-      }
-    }
-    case None -> ()
+  // A bare callee through the imports that make it visible bare, in the
+  // order emission resolves it (docs/01 §9.2); an aliased import never.
+  val bareImp = findBareImportedFqnMsil(cctx, pkgName, lastSeg, cnt, MObject)
+  if bareImp.length > 0 {
+    candidates.add(bareImp)
   }
   var result = MObject
   var ci = 0
@@ -25958,14 +26421,9 @@ func inferCallReturnTypePB(
                 case None -> ()
               }
               candidates.add(pkgName + "." + field)
-              match mapGet(cctx.pkgImports, pkgName) {
-                case Some(imps) -> {
-                  val imp = findImportedFqn(cctx, imps, field)
-                  if imp.length > 0 {
-                    candidates.add(imp)
-                  }
-                }
-                case None -> ()
+              val bareImp = findBareImportedFqnMsil(cctx, pkgName, field, cnt, MObject)
+              if bareImp.length > 0 {
+                candidates.add(bareImp)
               }
               var result = MObject
               var ci = 0
@@ -29709,7 +30167,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     }
     // #5995: record this param's declared enum type (if any) — see the
     // matching comment in registerParamsMsil.
-    val paramEnumName = enumSimpleNameOfTypeExprMsil(cctx, p.ty)
+    val paramEnumName = enumHintOfTypeExprMsil(cctx, p.ty)
     if paramEnumName.length > 0 {
       registerVarEnumTypeMsil(fctx, p.name, paramEnumName)
     }
@@ -30056,7 +30514,7 @@ func registerParamsMsil(
     // #5995: record this param's declared enum type (if any) so a bare
     // `match p { case Http11 -> }` scrutinee scopes its case lookup instead
     // of colliding with another in-bundle enum's same-named case.
-    val paramEnumName = enumSimpleNameOfTypeExprMsil(cctx, p.ty)
+    val paramEnumName = enumHintOfTypeExprMsil(cctx, p.ty)
     if paramEnumName.length > 0 {
       registerVarEnumTypeMsil(fctx, p.name, paramEnumName)
     }
@@ -34979,10 +35437,12 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
 // Populate cctx.externTypeNames from IExternType items in the file.
 // Called from addPackageTokens before the IFunc pre-scan.
 func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
+  val filePkg = joinSegsMsil(file.packageDecl.path.segments, ".")
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IExternType(decl) -> {
+        recordLocalExternMsil(cctx, filePkg, decl.name)
         // Guard against a duplicate key: a user file may declare the same
         // extern (e.g. `extern type TimeSpan = "System.TimeSpan"`) that the
         // stdlib kernel already registered into `externTypeNames` (which now
@@ -35016,6 +35476,7 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
             val item = items[j]
             val clrName = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
             val aliasName = match item.asAlias { case Some(aliasName) -> aliasName; case _ -> item.name }
+            recordLocalExternMsil(cctx, filePkg, aliasName)
             if not cctx.externTypeNames.containsKey(aliasName) {
               cctx.externTypeNames.add(aliasName, clrName)
             }
@@ -35025,6 +35486,7 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
         case Some(ISSingle(item)) -> {
           val clrName = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
           val aliasName = match item.asAlias { case Some(aliasName) -> aliasName; case _ -> item.name }
+          recordLocalExternMsil(cctx, filePkg, aliasName)
           if not cctx.externTypeNames.containsKey(aliasName) {
             cctx.externTypeNames.add(aliasName, clrName)
           }
@@ -35033,6 +35495,7 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
           val clrName = baseNamespace
           val typeName = imp.path.segments[imp.path.segments.count - 1]
           val aliasName = unwrapOr(imp.asAlias, typeName)
+          recordLocalExternMsil(cctx, filePkg, aliasName)
           if not cctx.externTypeNames.containsKey(aliasName) {
             cctx.externTypeNames.add(aliasName, clrName)
           }
@@ -35040,6 +35503,13 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
       }
     }
     k = k + 1
+  }
+}
+
+func recordLocalExternMsil(cctx: in CodegenCtx, pkg: in String, name: in String): Unit {
+  val key = pkg + "|" + name
+  if not cctx.pkgLocalExterns.containsKey(key) {
+    cctx.pkgLocalExterns.add(key, true)
   }
 }
 
@@ -38986,7 +39456,9 @@ func isIdentChar(c: in Char): Bool {
 // `pub union Maybe { case Some(v: Int), case None }`.  Case names
 // follow the literal `case ` keyword and are terminated by `(`, ` `,
 // `,`, or `}`.
-func registerUnionCases(cctx: in CodegenCtx, packageName: in String, unionName: in String, decl: in ContractDecl): Unit {
+func registerUnionCases(
+  cctx: in CodegenCtx, packageName: in String, unionName: in String, decl: in Meta.ContractDecl
+): Unit {
   val repr = decl.repr
   val needle = "case "
   var idx = 0
@@ -39046,7 +39518,7 @@ func registerUnionCases(cctx: in CodegenCtx, packageName: in String, unionName: 
 // different unions are all stored and disambiguated at lookup sites via
 // `pickCaseFqnByScope` / `pickCaseFqnByScrutinee`).
 func registerRestoredTypeDecl(
-  cctx: in CodegenCtx, packageName: in String, decl: in ContractDecl, asmRefRow: in Int
+  cctx: in CodegenCtx, packageName: in String, decl: in Meta.ContractDecl, asmRefRow: in Int
 ): Unit {
   val typeName = decl.name
   val typeFqn = packageName + "." + typeName
@@ -40466,6 +40938,13 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     if not cctx.pkgImports.containsKey(art.packageName) {
       cctx.pkgImports.add(art.packageName, art.contract.imports)
     }
+    if not cctx.pkgWholeImports.containsKey(art.packageName) {
+      invalidateImportClosuresMsil(cctx)
+      cctx.pkgWholeImports.add(art.packageName, art.contract.wholeImports)
+    }
+    if not cctx.pkgBareImports.containsKey(art.packageName) {
+      recordRestoredBareImportsMsil(cctx, art.packageName, art.contract.wholeImports, art.contract.selectedImports)
+    }
     var di = 0
     while di < art.contract.decls.count {
       val decl = art.contract.decls[di]
@@ -40576,6 +41055,10 @@ pub record StdlibPkg {
   /// same-named sibling type through its declared imports (tier 2) instead of
   /// last-registered-wins (#2282).
   imports: List[String]
+  /// The subset of `imports` the package imports whole (docs/01 §9.2).
+  wholeImports: List[String]
+  /// `<package>::<name>` for each name the package imports selectively.
+  selectedImports: List[String]
   /// Private (non-`pub`) generic funcs with a body, kept separate from
   /// `items` (whose pub-only filter `registerStdlibArtifactTokens` depends
   /// on for token registration) purely so `Msil.Bridge.collectStdlibGenericFuncs`
@@ -40624,6 +41107,21 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
   while pia < pkgs.count {
     val pkg: StdlibPkg = pkgs[pia]
     val asmRefRow = ensureStdlibAssemblyRef(cctx, pkg.name)
+    // The package's own imports: the bare-name closure of a package that
+    // imports it whole reaches through them (docs/01 §9.2, `bareImportsOfMsil`).
+    if not cctx.pkgImports.containsKey(pkg.name) {
+      cctx.pkgImports.add(pkg.name, pkg.imports)
+    }
+    if not cctx.pkgWholeImports.containsKey(pkg.name) {
+      invalidateImportClosuresMsil(cctx)
+      cctx.pkgWholeImports.add(pkg.name, pkg.wholeImports)
+    }
+    // Its bare-name imports, so a specialised copy of one of its generics
+    // resolves bare calls as the checker did in the package (docs/01 §9.2,
+    // #7581): aliased imports never, the transitive tier last.
+    if not cctx.pkgBareImports.containsKey(pkg.name) {
+      recordRestoredBareImportsMsil(cctx, pkg.name, pkg.wholeImports, pkg.selectedImports)
+    }
     var iia = 0
     while iia < pkg.items.count {
       val it: Item = pkg.items[iia]

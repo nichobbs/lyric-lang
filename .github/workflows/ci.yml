@@ -7989,6 +7989,7 @@ jobs:
           work="$(mktemp -d)"
           cat > "$work/uc.l" <<'LYR'
           package UC
+          import Std.Collections
           import Std.Console as Console
           record Box { tags: List[Int] }
           union Shape {

@@ -214,8 +214,8 @@ pub func pipeParseAndErase(
 /// behaviour unchanged.
 pub func pipeExpandAndRewrite(
   file: in SourceFile,
-  weWires: in Map[String, CollectedWireTemplate],
-  weConfigs: in Map[String, CollectedConfigTemplate],
+  weWires: in Map[String, WireExpand.CollectedWireTemplate],
+  weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
   runWireExpand: in Bool,
   runStubbable: in Bool,
   injectWeave: in Bool,
@@ -428,8 +428,8 @@ func unparenthesized(e: in Expr): Expr {
 /// record declared in this SAME file already resolves without it.
 pub func pipeWeave(
   file: in SourceFile,
-  templates: in Map[String, CollectedTemplate],
-  typeIndex: in TypeOwnerIndex,
+  templates: in Map[String, Weaver.CollectedTemplate],
+  typeIndex: in Weaver.TypeOwnerIndex,
   pkgLabel: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
   extraRecordDecls: in List[RecordDecl],
@@ -454,7 +454,7 @@ pub func pipeMiddleEnd(
   monoGenFuncs: in List[FunctionDecl],
   monoIfaceDecls: in List[InterfaceDecl],
   monoRecordDecls: in List[RecordDecl],
-  templates: in Map[String, CollectedTemplate],
+  templates: in Map[String, Weaver.CollectedTemplate],
   opts: in MiddleEndOptions,
 ): Option[SourceFile] {
   match pipeCheckAndMono(file0, importedPkgs, deriveImports, monoGenFuncs, monoIfaceDecls, monoRecordDecls, opts) {
@@ -475,7 +475,7 @@ pub func pipeMiddleEnd(
 /// the package that actually declares it.  Callers add packages the list
 /// does not carry (a project's own packages, path-dependency template
 /// sources) with `Weaver.typeOwnerIndexAddFile`.
-pub func pipeTypeOwnerIndex(pkgs: in List[ImportedPackage]): TypeOwnerIndex {
+pub func pipeTypeOwnerIndex(pkgs: in List[ImportedPackage]): Weaver.TypeOwnerIndex {
   val ix = Weaver.newTypeOwnerIndex()
   for p in pkgs {
     Weaver.typeOwnerIndexAddPackage(ix, p.name, p.items, p.imports)
@@ -646,6 +646,40 @@ func funcValueLambdaTypes(sites: in Map[String, FuncRefSite]): Map[String, TypeE
     i = i + 1
   }
   types
+}
+
+/// The packages a restored dependency imports: those its synthesised source
+/// declares plus those its contract records (the synthesised source keeps
+/// only what its declarations need).
+pub func pipeRestoredImportNames(source: in SourceFile, contractImports: in List[String]): List[String] {
+  mergeImportNames(collectImportNames(source.imports), contractImports)
+}
+
+/// The packages a restored dependency imports whole, from its synthesised
+/// source and its contract (`Contract.wholeImports`).  The type checker
+/// follows them for the transitive visibility of a consumer's whole import
+/// (docs/01 §9.2, D141).
+pub func pipeRestoredWholeImportNames(source: in SourceFile, contractWholeImports: in List[String]): List[String] {
+  mergeImportNames(collectWholeImportNames(source.imports), contractWholeImports)
+}
+
+func mergeImportNames(names: in List[String], contractImports: in List[String]): List[String] {
+  var i = 0
+  while i < contractImports.count {
+    var seen = false
+    var j = 0
+    while j < names.count {
+      if names[j] == contractImports[i] {
+        seen = true
+      }
+      j = j + 1
+    }
+    if not seen {
+      names.add(contractImports[i])
+    }
+    i = i + 1
+  }
+  names
 }
 
 /// A restored package's items with qualified calls in their bodies resolved

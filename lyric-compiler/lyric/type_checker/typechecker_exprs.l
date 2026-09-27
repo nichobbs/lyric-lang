@@ -893,17 +893,15 @@ func symTableImportReachable(tbl: in SymbolTable, startPkg: in String, target: i
 // (`Std.Rest.RestClient`) silently degraded to a backend-specific runtime
 // failure instead of a compile-time error (#7345).
 //
-// Firing only when the symbol is a TYPE, is declared by a different package
-// than the current scope, is not reachable through the import closure (see
-// `symTableImportReachable`), and is not part of the implicit `Std.Core`
-// prelude (docs/01 §9.2 — `Option`/`Result` are referenced tree-wide with no
-// `import Std.Core` at all, predating any scoped-resolution tiering, #6287)
-// keeps this additive: every call this checker already accepted
-// (same-package, imported, transitively re-exported, or `Std.Core`) is
-// untouched. A check with no package scope set at all (`curPkg == ""` — a
-// synthesised contract-surface check or the flat `checkWithImports` shim,
-// #6287's "historical last-registered-wins" mode) never diagnoses: it has no
-// import list to test reachability against.
+// Under the file's import rule (docs/01 §9.2, D141) `symTableTryFindOne`
+// already hides a name the imports do not make visible, so the usual report
+// comes from the `None` arm: the name exists but is hidden, and the T0020
+// carries `symTableHiddenImportHint`'s advice.  The `Some` arm covers a scope
+// with no import rule installed (an imported package's own signatures): it
+// still reports a type declared by another package that the import closure
+// cannot reach (`symTableImportReachable`), `Std.Core` excepted.  A check
+// with no package scope at all (`curPkg == ""`, the flat `checkWithImports`
+// shim) never diagnoses: it has no import list to test against.
 func checkUnimportedTypeReceiver(
   tbl: in SymbolTable,
   sc: in Scope,
@@ -951,6 +949,18 @@ func checkUnimportedTypeReceiver(
       )
     }
     case None -> {
+      // Hidden by the file's import rule (docs/01 §9.2).  A package-private
+      // type stays T0097 (#7499): no import would make it nameable.
+      for cand in symTableTryFindAll(tbl, name) {
+        if symbolIsType(cand) and cand.originPackage != curPkg and symbolIsPackagePrivateBinding(cand) {
+          checkImportedVisibility(cand, span, diag)
+          return
+        }
+      }
+      val hint = symTableHiddenImportHint(tbl, name)
+      if hint.length > 0 {
+        diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + hint, span))
+      }
     }
   }
 }
@@ -1895,12 +1905,20 @@ func fieldsOfRecord(tbl: in SymbolTable, tid: in TypeId): List[FieldEntry] {
     match tbl.symbols[i].kind {
       case DKRecord(did, rd) -> {
         if typeIdEq(did, tid) {
+          // Field types name the declaring package's own types, resolved in
+          // its scope whatever the reading file imports (docs/01 §9.2).
+          val saved = enterDeclaringScopeIfForeign(tbl, tbl.symbols[i])
           extractRecordFields(tbl, rd, result)
+          restoreScope(tbl, saved)
         }
       }
       case DKExposedRec(did, rd) -> {
         if typeIdEq(did, tid) {
+          // Field types name the declaring package's own types, resolved in
+          // its scope whatever the reading file imports (docs/01 §9.2).
+          val saved = enterDeclaringScopeIfForeign(tbl, tbl.symbols[i])
           extractRecordFields(tbl, rd, result)
+          restoreScope(tbl, saved)
         }
       }
       case _ -> {
@@ -3594,7 +3612,11 @@ func resolveExprPath(
     case None -> {
     }
   }
-  match mapGet(sigs, name) {
+  val bareSig = match mapGet(sigs, name) {
+    case Some(first) -> visibleBareSig(tbl, sigs, name, first)
+    case None -> None
+  }
+  match bareSig {
     case Some(sig) -> {
       // #6652: `sigs`'s first-in-wins insertion policy for imported functions
       // (typechecker_checker.l, "Sig-map insertion policy") means a bare
@@ -3648,6 +3670,12 @@ func resolveExprPath(
           }
         }
         case None -> {
+          // The only functions of this name are hidden by the import rule.
+          val hint = symTableHiddenImportHint(tbl, name)
+          if hint.length > 0 {
+            diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + hint, span))
+            return TyError
+          }
         }
       }
       val pts: List[Type] = newList()
@@ -3683,15 +3711,22 @@ func resolveExprPath(
           // The enclosing ECall arm re-infers with actual arg types and wins.
           return inferUnionCaseConstruction(tbl, diag, sym, newList(), newList(), span, false)
         }
+        // A val's or const's declared type, and an untyped val's initializer,
+        // are written in the declaring package's scope, not the reading
+        // file's (docs/01 §9.2: `import P.{v}` need not also list `v`'s type).
         case DKConst(cd) -> {
           val ctx = newGenericContext()
-          return resolveType(tbl, ctx, diag, cd.ty)
+          val saved = enterDeclaringScopeIfForeign(tbl, sym)
+          val t = resolveType(tbl, ctx, diag, cd.ty)
+          restoreScope(tbl, saved)
+          return t
         }
         case DKVal(vd) -> {
-          match vd.ty {
+          val saved = enterDeclaringScopeIfForeign(tbl, sym)
+          val t = match vd.ty {
             case Some(te) -> {
               val ctx = newGenericContext()
-              return resolveType(tbl, ctx, diag, te)
+              resolveType(tbl, ctx, diag, te)
             }
             case None -> {
               // Infer against an empty scope to avoid the caller's local bindings
@@ -3699,19 +3734,137 @@ func resolveExprPath(
               val noRte: Option[TypeExpr] = None
               val noSelfFields: Map[String, Type] = newMap()
               val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
-              return inferExpr(emptyScope, tbl, sigs, diag, vd.init)
+              inferExpr(emptyScope, tbl, sigs, diag, vd.init)
             }
           }
+          restoreScope(tbl, saved)
+          return t
         }
         case _ -> {
         }
       }
     }
     case None -> {
-      diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'", span))
+      diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + symTableHiddenImportHint(tbl, name), span))
     }
   }
   TyError
+}
+
+// The functions named `name` a bare reference may mean under the file's
+// import rule, in registration order; `arity` < 0 takes every arity.
+func visibleBareFuncSigs(
+  tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], name: in String, arity: in Int
+): List[ResolvedSignature] {
+  val all = gatherOverloadCandidates(sigs, byNameSigKey(name))
+  val acc: List[ResolvedSignature] = newList()
+  var i = 0
+  while i < all.count {
+    val cand = all[i]
+    if (arity < 0 or cand.params.count == arity) and symTableBareFuncTier(tbl, cand.originPackage, name) >= 0 {
+      acc.add(cand)
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// The function a bare call `name(args)` of `arity` binds: the lowest
+// resolution tier (`symTableBareFuncTier`) that declares a visible function
+// of that name and arity decides, as for every other bare name; within it,
+// `primary` first, then non-generic overloads, then generic ones, the first
+// whose params match `argTypes`.  When none in that tier matches, its first
+// candidate is returned so the call reports the mismatch there: a matching
+// function of a higher tier never answers instead, which the backends'
+// name-and-arity lookups could not follow.  `None` when no visible function
+// of the name and arity exists.
+func tieredBareSig(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  name: in String,
+  arity: in Int,
+  argTypes: in List[Type],
+  primary: in Option[ResolvedSignature],
+): Option[ResolvedSignature] {
+  val visible = visibleBareFuncSigs(tbl, sigs, name, arity)
+  if visible.count == 0 {
+    return None
+  }
+  val tiers: List[Int] = newList()
+  var tier = 3
+  for v in visible {
+    val t = symTableBareFuncTier(tbl, v.originPackage, name)
+    tiers.add(t)
+    if t >= 0 and t < tier {
+      tier = t
+    }
+  }
+  val primaryInTier = match primary {
+    case Some(p) -> p.params.count == arity and
+      symTableBareFuncTier(tbl, p.originPackage, name) == tier
+    case None -> false
+  }
+  match primary {
+    case Some(p) -> if primaryInTier and paramsMatchArgs(tbl, p.params, argTypes) { return primary }
+    case None -> ()
+  }
+  var pass = 0
+  while pass < 2 {
+    var i = 0
+    while i < visible.count {
+      val cand = visible[i]
+      val isGeneric = cand.generics.count > 0
+      if (pass == 0) != isGeneric and tiers[i] == tier and paramsMatchArgs(tbl, cand.params, argTypes) {
+        return Some(value = cand)
+      }
+      i = i + 1
+    }
+    pass = pass + 1
+  }
+  if primaryInTier {
+    return primary
+  }
+  var j = 0
+  while j < visible.count {
+    if tiers[j] == tier {
+      return Some(value = visible[j])
+    }
+    j = j + 1
+  }
+  None
+}
+
+// The signature a bare `name` denotes: the visible function of that name in
+// the lowest resolution tier (`symTableBareFuncTier`), `first` (the
+// `sigs[name]` slot) winning within its tier; `None` when every one is
+// hidden.
+func visibleBareSig(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  name: in String,
+  first: in ResolvedSignature,
+): Option[ResolvedSignature] {
+  val visible = visibleBareFuncSigs(tbl, sigs, name, -1)
+  val firstTier = symTableBareFuncTier(tbl, first.originPackage, name)
+  val tiers: List[Int] = newList()
+  for v in visible {
+    tiers.add(symTableBareFuncTier(tbl, v.originPackage, name))
+  }
+  var tier = 0
+  while tier <= 2 {
+    if firstTier == tier {
+      return Some(value = first)
+    }
+    var i = 0
+    while i < visible.count {
+      if tiers[i] == tier {
+        return Some(value = visible[i])
+      }
+      i = i + 1
+    }
+    tier = tier + 1
+  }
+  None
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4302,6 +4455,22 @@ func enterDeclaringScope(tbl: in SymbolTable, sym: in Symbol): SavedScope {
   val savedPkg = if tbl.scopePkg.count > 0 { tbl.scopePkg[0] } else { "" }
   symTableSetScope(tbl, sym.originPackage, symTablePackageImportsOf(tbl, sym.originPackage))
   SavedScope(pkg = savedPkg, imports = savedImports)
+}
+
+// `enterDeclaringScope` for a symbol declared in another package; for one
+// of the current package (or with no package context) the scope is kept.
+func enterDeclaringScopeIfForeign(tbl: in SymbolTable, sym: in Symbol): SavedScope {
+  val cur = symTableScopePkg(tbl)
+  if sym.originPackage.length > 0 and sym.originPackage != cur {
+    return enterDeclaringScope(tbl, sym)
+  }
+  val savedImports: List[String] = newList()
+  var i = 0
+  while i < tbl.scopeImports.count {
+    savedImports.add(tbl.scopeImports[i])
+    i = i + 1
+  }
+  SavedScope(pkg = cur, imports = savedImports)
 }
 
 func restoreScope(tbl: in SymbolTable, saved: in SavedScope): Unit {
@@ -5766,7 +5935,7 @@ func checkBoundsSatisfied(
             if isKnownDeriveMarker(cname) {
               satisfied = hasDerive(tbl, cname, concreteTy)
             } else {
-              match symTableTryFindOne(tbl, cname) {
+              match constraintInterfaceSym(tbl, cname) {
                 case Some(ifaceSym) -> match ifaceSym.kind {
                   case DKInterface(ifaceId, _) -> match typeIdOfType(concreteTy) {
                     case Some(concreteId) -> {
@@ -5848,6 +6017,33 @@ func caseFieldTypesInstantiated(
 // `PBinding`, but if the name resolves to a nullary union/enum *case* it is a
 // constructor pattern, not a fresh variable — it must NOT bind a local (which
 // would shadow the constructor in the arm body, e.g. `case None -> None`).
+// Whether the scrutinee's own union or enum declares a case `name`.  A bare
+// case pattern resolves against the scrutinee's type whatever the file's
+// imports make visible (docs/01 §9.2): matching a value of an aliased
+// package's enum still writes `case Dotnet ->`, never a fresh binding.
+func scrutineeHasCaseNamed(tbl: in SymbolTable, ty: in Type, name: in String): Bool {
+  match unrefine(ty) {
+    case TyUser(sid, _, _) -> {
+      val cands = symTableTryFindAll(tbl, name)
+      var i = 0
+      while i < cands.count {
+        val parent = match cands[i].kind {
+          case DKUnionCase(pid, _) -> Some(value = pid)
+          case DKEnumCase(pid, _) -> Some(value = pid)
+          case _ -> None
+        }
+        match parent {
+          case Some(pid) -> if typeIdEq(pid, sid) { return true }
+          case None -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
 func isConstructorPatternName(tbl: in SymbolTable, name: in String): Bool {
   match symTableTryFindOne(tbl, name) {
     case Some(sym) -> match sym.kind { case DKUnionCase(_, _) -> true; case DKEnumCase(_, _) -> true; case _ -> false }
@@ -6112,7 +6308,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
         )
       }
       if name != "_" {
-        if isConstructorPatternName(tbl, name) {
+        if isConstructorPatternName(tbl, name) or scrutineeHasCaseNamed(tbl, ty, name) {
           // #6287: a bare nullary-case pattern (`case Halt ->`, no parens)
           // ambiguous across imported packages must be qualified — UNLESS
           // the scrutinee is a known concrete type (`TyUser`).  Matching
@@ -7830,7 +8026,29 @@ func findDirectSig(
       // legacy fallback — using it before the arity key would misfire as T0042
       // every time a 3-arg call hits a bare key registered for the 2-arg
       // overload, so it stays second.
-      val primary = match mapGet(sigs, arityKey) { case Some(s) -> Some(value = s); case None -> mapGet(sigs, name) }
+      val bare = path.segments.count == 1
+      val primaryAny = match mapGet(sigs, arityKey) { case Some(s) -> Some(value = s); case None -> mapGet(sigs, name) }
+      // A bare call sees only the functions its file's imports make visible
+      // (docs/01 §9.2); a hidden primary defers to a visible overload, or to
+      // the `ECall` arm's unknown-name report.
+      val primary = match primaryAny {
+        case Some(s) -> if not bare or symTableBareFuncVisible(tbl, s.originPackage, name) {
+          primaryAny
+        } else {
+          None
+        }
+        case None -> None
+      }
+      // A direct import's function shadows one reached only transitively, as
+      // for every other bare name (docs/01 §9.2): take the first of the
+      // lowest tier whose params match before the historical first-registered
+      // order below, which knows no tiers.
+      if bare {
+        match tieredBareSig(tbl, sigs, name, arity, argTypes, primary) {
+          case Some(s) -> return Some(value = s)
+          case None -> ()
+        }
+      }
       // Preserve shadowing and the common case: if the primary's params match
       // the arguments, use it.  Only when it does *not* match do we consult the
       // overload candidates — this is the disambiguation for #1488 category C.
@@ -7849,12 +8067,41 @@ func findDirectSig(
       // slice[String])` over `Std.Path.join(String, String)`.
       val candidates = gatherOverloadCandidates(sigs, arityKey)
       var ci = 0
+      var firstVisible: Option[ResolvedSignature] = None
       while ci < candidates.count {
         val cand = candidates[ci]
-        if paramsMatchArgs(tbl, cand.params, argTypes) {
-          return Some(value = cand)
+        if not bare or symTableBareFuncVisible(tbl, cand.originPackage, name) {
+          if paramsMatchArgs(tbl, cand.params, argTypes) {
+            return Some(value = cand)
+          }
+          match firstVisible {
+            case None -> {
+              firstVisible = Some(value = cand)
+            }
+            case Some(_) -> ()
+          }
         }
         ci = ci + 1
+      }
+      if bare {
+        match firstVisible {
+          case None -> {
+            // The visible declaration may be generic (no overload slot) or
+            // the only one of this arity while a hidden one holds the slots.
+            val visible = visibleBareFuncSigs(tbl, sigs, name, arity)
+            if visible.count > 0 {
+              match primary {
+                case None -> return Some(value = visible[0])
+                case Some(_) -> ()
+              }
+            }
+          }
+          case Some(_) -> ()
+        }
+      }
+      match primaryAny {
+        case Some(_) -> match primary { case None -> return firstVisible; case Some(_) -> () }
+        case None -> ()
       }
       // No candidate matched the arguments — fall back to the primary so the
       // `ECall` arm still reports any T0042/T0043 against the historical

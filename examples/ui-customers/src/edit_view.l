@@ -15,6 +15,7 @@ import Ui.Widgets
 import Ui.Forms
 import Customers.Domain.{CustomerField, customerSchema, customerDraftValue, customerFieldNamed, CustomerDraft}
 import Customers.Edit.Logic.{Model, Msg, Status, Loading, Editing, Saving, LoadFailed, FieldEdited, SaveClicked, CancelClicked, RetryClicked}
+import Std.Collections
 
 pub func view(m: in Model): View[Msg] {
   return match m.status {
@@ -30,10 +31,7 @@ pub func view(m: in Model): View[Msg] {
 }
 
 func editor(m: in Model): View[Msg] {
-  val saving = match m.status {
-    case Saving -> true
-    case _ -> false
-  }
+  val saving = match m.status { case Saving -> true; case _ -> false }
   val body: List[View[Msg]] = newList()
   match m.saveError {
     case Some(e) -> body.add(Widgets.banner("error", "Save failed: " + e))
@@ -64,10 +62,7 @@ func editor(m: in Model): View[Msg] {
 }
 
 func valueOf(d: in CustomerDraft, name: in String): String {
-  return match customerFieldNamed(name) {
-    case Some(f) -> customerDraftValue(d, f)
-    case None -> ""
-  }
+  return match customerFieldNamed(name) { case Some(f) -> customerDraftValue(d, f); case None -> "" }
 }
 
 // Schema field names always come from `customerSchema()`, so an unknown

@@ -151,7 +151,7 @@ func buildAndRunConsumer(
 }
 
 func producerSource(pkg: in String): String {
-  "package " + pkg + "\n" + "\n" + "pub func collectBytes(): List[slice[Byte]] {\n" +
+  "package " + pkg + "\n" + "\n" + "import Std.Collections\n" + "\n" + "pub func collectBytes(): List[slice[Byte]] {\n" +
     "  val result: List[slice[Byte]] = newList()\n" +
     "  val a: List[Byte] = newList()\n" +
     "  a.add(1)\n" +

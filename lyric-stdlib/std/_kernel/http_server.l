@@ -398,7 +398,7 @@ record H2RequestLine {
 // the connection's lifetime.
 record H2ConnState {
   conn: Conn
-  var h2: H2Connection
+  var h2: H2.H2Connection
   accums: Map[Int, H2ReqAccum]
   queue: ConcurrentQueue[HttpContext]
   available: Semaphore
@@ -1103,7 +1103,7 @@ func extractH2Request(headers: in List[HeaderField]): H2RequestLine {
 // caller's processing loop to drain (which is also how a flow-control pump
 // surfaces a concurrently-opened stream — it is appended and processed after
 // the in-flight response completes).
-func h2Feed(state: in H2ConnState, bytes: in slice[Byte], work: in List[H2Event]): Unit {
+func h2Feed(state: in H2ConnState, bytes: in slice[Byte], work: in List[H2.H2Event]): Unit {
   if H2.isFailed(state.h2) {
     return
   }
@@ -1124,9 +1124,9 @@ func h2Feed(state: in H2ConnState, bytes: in slice[Byte], work: in List[H2Event]
 // more bytes and feeds them so a peer `WINDOW_UPDATE` is applied. Any request
 // events read here are appended to `work` (never dropped) and dispatched after
 // the current response finishes.
-func pumpForWindow(state: in H2ConnState, streamId: in Int, work: in List[H2Event]): Unit {
+func pumpForWindow(state: in H2ConnState, streamId: in Int, work: in List[H2.H2Event]): Unit {
   var tries = 0
-  while maxSendableOnStream(state.h2, streamId) <= 0 and tries < 256 and not H2.isFailed(state.h2) {
+  while H2.maxSendableOnStream(state.h2, streamId) <= 0 and tries < 256 and not H2.isFailed(state.h2) {
     match hostRead(state.conn, 65536) {
       case Err(_) -> {
         return
@@ -1151,14 +1151,14 @@ func sendH2Body(
   streamId: in Int,
   body: in slice[Byte],
   endStream: in Bool,
-  work: in List[H2Event],
+  work: in List[H2.H2Event],
 ): Bool {
   var off = 0
   while off < body.length and not H2.isFailed(state.h2) {
-    var sendable = maxSendableOnStream(state.h2, streamId)
+    var sendable = H2.maxSendableOnStream(state.h2, streamId)
     if sendable <= 0 {
       pumpForWindow(state, streamId, work)
-      sendable = maxSendableOnStream(state.h2, streamId)
+      sendable = H2.maxSendableOnStream(state.h2, streamId)
       if sendable <= 0 {
         // No window granted after a bounded pump (peer never sent WINDOW_UPDATE
         // and did not close): stop. The connection's next read returns EOF/err
@@ -1167,12 +1167,12 @@ func sendH2Body(
         return false
       }
     }
-    val frameCap = minIntH2(peerMaxFrameSize(state.h2), sendable)
+    val frameCap = minIntH2(H2.peerMaxFrameSize(state.h2), sendable)
     val chunkLen = minIntH2(frameCap, body.length - off)
     val isLast = endStream and off + chunkLen == body.length
     // A slice that fits one frame is framed as-is, without a sub-slice copy.
     val chunk = if off == 0 and chunkLen == body.length { body } else { body.slice(off, off + chunkLen) }
-    match sendData(state.h2, streamId, chunk, isLast) {
+    match H2.sendData(state.h2, streamId, chunk, isLast) {
       case Ok(bytes) -> {
         val _ = hostWrite(state.conn, bytes)
         off = off + chunkLen
@@ -1188,7 +1188,7 @@ func sendH2Body(
 // Serialize the response the puller placed in `exchange` back onto the wire:
 // HPACK-encode the response headers (`:status` + lowercased fields, RFC 9113
 // §8.2 / §8.3.2), then frame the body as flow-controlled DATA.
-func sendH2Response(state: in H2ConnState, exchange: in H2Exchange, work: in List[H2Event]): Unit {
+func sendH2Response(state: in H2ConnState, exchange: in H2Exchange, work: in List[H2.H2Event]): Unit {
   if H2.isFailed(state.h2) {
     return
   }
@@ -1201,7 +1201,7 @@ func sendH2Response(state: in H2ConnState, exchange: in H2Exchange, work: in Lis
   headers.add(HeaderField(name = "content-length", value = toString(exchange.bodyLength)))
   appendH2ExtraHeaders(headers, exchange.extra)
   val endOnHeaders = exchange.bodyLength == 0
-  match encodeResponseHeaders(state.h2, streamId, headers, endOnHeaders) {
+  match H2.encodeResponseHeaders(state.h2, streamId, headers, endOnHeaders) {
     case Err(_) -> {
       // The response headers could not be HPACK-encoded: rather than silently
       // dropping the response and leaving the stream hanging, reset it with
@@ -1257,7 +1257,7 @@ func appendH2ExtraHeaders(headers: in List[HeaderField], extra: in Map[String, S
 // Dispatch a fully-received request stream: build an `HttpContext` (h2 mailbox
 // attached), hand it to the pull queue, block until the puller responds, then
 // serialize the response and forget the stream.
-func dispatchH2Stream(state: in H2ConnState, streamId: in Int, work: in List[H2Event]): Unit {
+func dispatchH2Stream(state: in H2ConnState, streamId: in Int, work: in List[H2.H2Event]): Unit {
   match mapGet(state.accums, streamId) {
     case None -> ()
     case Some(accum) -> {
@@ -1297,7 +1297,7 @@ func onH2Headers(
   streamId: in Int,
   headers: in List[HeaderField],
   endStream: in Bool,
-  work: in List[H2Event],
+  work: in List[H2.H2Event],
 ): Unit {
   if isRejectedStream(state, streamId) {
     // Terminal rejection (over `maxBodyBytes`, #6144): a trailer HEADERS block
@@ -1338,13 +1338,13 @@ func topUpReceiveWindows(state: in H2ConnState, streamId: in Int, topUpStream: i
   val connInitial = H2.h2InitialWindow()
   val connWindow = H2.connectionReceiveWindow(state.h2)
   if connWindow <= connInitial / 2 {
-    frames = frames.concat(grantConnectionWindow(state.h2, connInitial - connWindow))
+    frames = frames.concat(H2.grantConnectionWindow(state.h2, connInitial - connWindow))
   }
   if topUpStream {
     val streamInitial = state.h2.localSettings.initialWindowSize
     val streamWindow = H2.streamReceiveWindow(state.h2, streamId)
     if streamWindow <= streamInitial / 2 and streamWindow < streamInitial {
-      frames = frames.concat(grantStreamWindow(state.h2, streamId, streamInitial - streamWindow))
+      frames = frames.concat(H2.grantStreamWindow(state.h2, streamId, streamInitial - streamWindow))
     }
   }
   if frames.length > 0 {
@@ -1360,7 +1360,7 @@ func sendH2Reject413(state: in H2ConnState, streamId: in Int): Unit {
   val headers: List[HeaderField] = newList()
   headers.add(HeaderField(name = ":status", value = "413"))
   headers.add(HeaderField(name = "content-length", value = "0"))
-  match encodeResponseHeaders(state.h2, streamId, headers, true) {
+  match H2.encodeResponseHeaders(state.h2, streamId, headers, true) {
     case Err(_) -> {
       // The 413 headers could not be HPACK-encoded: rather than silently
       // dropping the response and leaving the stream hanging, reset it with
@@ -1380,7 +1380,11 @@ func sendH2Reject413(state: in H2ConnState, streamId: in Int): Unit {
 }
 
 func onH2Data(
-  state: in H2ConnState, streamId: in Int, data: in slice[Byte], endStream: in Bool, work: in List[H2Event]
+  state: in H2ConnState,
+  streamId: in Int,
+  data: in slice[Byte],
+  endStream: in Bool,
+  work: in List[H2.H2Event],
 ): Unit {
   if isRejectedStream(state, streamId) {
     // Dropped bytes still give back connection-level window so the other
@@ -1417,7 +1421,7 @@ func onH2Data(
   }
 }
 
-func processH2Event(state: in H2ConnState, ev: in H2Event, work: in List[H2Event]): Unit {
+func processH2Event(state: in H2ConnState, ev: in H2.H2Event, work: in List[H2.H2Event]): Unit {
   match ev {
     case H2NeedMore -> ()
     case H2SettingsReceived(_) -> ()
@@ -1445,7 +1449,7 @@ func processH2Event(state: in H2ConnState, ev: in H2Event, work: in List[H2Event
 }
 
 func processH2Batch(state: in H2ConnState, bytes: in slice[Byte]): Unit {
-  val work: List[H2Event] = newList()
+  val work: List[H2.H2Event] = newList()
   h2Feed(state, bytes, work)
   var i = 0
   while i < work.count and state.open and not H2.isFailed(state.h2) {
@@ -1477,8 +1481,8 @@ func processH2Connection(
     hostClose(conn)
     val _ = semRelease(connLimit)
   }
-  val h2 = newServerConnection(h2DefaultServerSettings())
-  val _ = hostWrite(conn, serverInitialFrame(h2))
+  val h2 = H2.newServerConnection(H2.h2DefaultServerSettings())
+  val _ = hostWrite(conn, H2.serverInitialFrame(h2))
   val state = H2ConnState(
     conn = conn,
     h2 = h2,

@@ -1537,13 +1537,13 @@ func orderedCompilerClosure(reg: in CompilerRegistry, testSource: in String): Li
 // (they are programs, not library packages, and the module under test
 // is added separately by the caller).  Returns an empty list if the
 // directory cannot be read or `Lyric.Lexer` is absent.
-func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[ProjectPackagePayload] {
+func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[MsilBridge.ProjectPackagePayload] {
   val reg = scanCompilerRegistry(compilerDir)
   val ordered = orderedCompilerClosure(reg, testSource)
 
   // Materialise a payload per package in dependency order — optional
   // file-level annotation, `package <name>`, import preamble, bodies.
-  val payloads: List[ProjectPackagePayload] = newList()
+  val payloads: List[MsilBridge.ProjectPackagePayload] = newList()
   var ni = 0
   while ni < ordered.count {
     val name = ordered[ni]
@@ -1559,7 +1559,7 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
       si = si + 1
     }
     val combined = header + Str.joinList("\n", reg.imports[ridx]) + "\n" + bodies
-    payloads.add(ProjectPackagePayload(name = name, source = combined))
+    payloads.add(MsilBridge.ProjectPackagePayload(name = name, source = combined))
     ni = ni + 1
   }
   payloads
@@ -1646,8 +1646,8 @@ pub func locateStdlibDir(): String {
 // function only ever runs for `--target dotnet` — no target parameter is
 // threaded.  When JVM per-package emit is implemented, the kernel selection here
 // must become target-aware (skip `_kernel/`, keep `_kernel_jvm/`).
-func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[ProjectPackagePayload] {
-  val empty: List[ProjectPackagePayload] = newList()
+func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[MsilBridge.ProjectPackagePayload] {
+  val empty: List[MsilBridge.ProjectPackagePayload] = newList()
   val files = match File.listFilesRecursive(stdlibDir) { case Ok(fs) -> fs; case Err(_) -> return empty }
 
   val regNames: List[String] = newList()
@@ -1781,7 +1781,7 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
     fi2 = fi2 + 1
   }
 
-  val payloads: List[ProjectPackagePayload] = newList()
+  val payloads: List[MsilBridge.ProjectPackagePayload] = newList()
   var ni = 0
   while ni < ordered.count {
     val name = ordered[ni]
@@ -1789,7 +1789,7 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
     val ann = regAnnotations[ridx]
     val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
     val combined = header + Str.joinList("\n", regImports[ridx]) + "\n" + regBodies[ridx]
-    payloads.add(ProjectPackagePayload(name = name, source = combined))
+    payloads.add(MsilBridge.ProjectPackagePayload(name = name, source = combined))
     ni = ni + 1
   }
   payloads
@@ -1813,7 +1813,7 @@ func locateCompilerDir(): String {
 // compiler packages themselves depend on (not just the driver's direct ones).
 // Only the import lines matter — `loadStdlibPayloads` reads imports off the
 // entry, nothing else.
-func stdlibEntryImports(entrySource: in String, compilerPayloads: in List[ProjectPackagePayload]): String {
+func stdlibEntryImports(entrySource: in String, compilerPayloads: in List[MsilBridge.ProjectPackagePayload]): String {
   val lines: List[String] = newList()
   collectImportLines(entrySource, lines)
   var i = 0
@@ -1942,7 +1942,7 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
   // Compiler-package closure of the entry (empty when the entry imports no
   // compiler package, or the compiler source tree is unavailable).
   val compilerDir = locateCompilerDir()
-  val compilerPayloads: List[ProjectPackagePayload] = newList()
+  val compilerPayloads: List[MsilBridge.ProjectPackagePayload] = newList()
   if compilerDir.length > 0 {
     val cps = loadCompilerPayloads(compilerDir, entrySource)
     var cpi = 0
@@ -2525,7 +2525,7 @@ func collectCaseNames(repr: in String): List[String] {
   names
 }
 
-func siblingTypeDecls(arts: in List[RestoredArtifact], selfPkg: in String): List[Meta.ContractDecl] {
+func siblingTypeDecls(arts: in List[RP.RestoredArtifact], selfPkg: in String): List[Meta.ContractDecl] {
   val acc: List[Meta.ContractDecl] = newList()
   val seen: List[String] = newList()
   // Seed the seen-set with every name `selfPkg` declares so they are never
@@ -2593,7 +2593,7 @@ func siblingTypeDecls(arts: in List[RestoredArtifact], selfPkg: in String): List
 // for any caller that bypasses the pre-merge.  Diagnostics from the bridge
 // land on stderr (same path as `compileToMsil`).
 func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUtil.PackageLineOrigins]): EmitResult {
-  val payloads: List[ProjectPackagePayload] = newList()
+  val payloads: List[MsilBridge.ProjectPackagePayload] = newList()
   // #6610: parallel on-disk source path per package, matching
   // `emitProjectJvmInProcess`'s `pkgPaths` — a single-file package's real
   // path survives `emitProject`'s pre-merge (its `mergedPaths` comment);
@@ -2605,7 +2605,7 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
   while pi < req.packages.count {
     val pkg = req.packages[pi]
     payloads.add(
-      ProjectPackagePayload(
+      MsilBridge.ProjectPackagePayload(
         name = pkg.name,
         source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)
       )
@@ -2635,7 +2635,7 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
   // bundled DLL yields one per contained package).  Defer synthesis so
   // we can first gather the union of all packages' type declarations —
   // the cross-DLL preamble.
-  val allArts: List[RestoredArtifact] = newList()
+  val allArts: List[RP.RestoredArtifact] = newList()
   var ri = 0
   while ri < req.restoredDllPaths.count {
     val depEntry = req.restoredDllPaths[ri]
@@ -2661,7 +2661,7 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
   // isolation.  The stored source still carries only own decls
   // (synthesiseArtifact strips the preamble), so the bundle's item pool
   // registers each type exactly once.
-  val restoredArtifacts: List[SynthesisedArtifact] = newList()
+  val restoredArtifacts: List[RP.SynthesisedArtifact] = newList()
   var si2 = 0
   while si2 < allArts.count {
     val art = allArts[si2]
@@ -2673,12 +2673,12 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
     si2 = si2 + 1
   }
 
-  val depTemplatePkgs: List[ProjectPackagePayload] = newList()
+  val depTemplatePkgs: List[MsilBridge.ProjectPackagePayload] = newList()
   var dtpi = 0
   while dtpi < req.depTemplateSrcs.count {
     val pkg = req.depTemplateSrcs[dtpi]
     depTemplatePkgs.add(
-      ProjectPackagePayload(
+      MsilBridge.ProjectPackagePayload(
         name = pkg.name,
         source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)
       )
@@ -2920,7 +2920,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[Dia
   // shared ZIP central-directory reader) instead of `Msil.MetadataReader`;
   // everything downstream (`synthesiseArtifact`, `siblingTypeDecls`) is
   // shared with the MSIL path unchanged.
-  val allArtsJvm: List[RestoredArtifact] = newList()
+  val allArtsJvm: List[RP.RestoredArtifact] = newList()
   var jri = 0
   while jri < req.restoredDllPaths.count {
     val jDepEntry = req.restoredDllPaths[jri]
@@ -2938,7 +2938,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[Dia
     }
     jri = jri + 1
   }
-  val restoredArtifactsJvm: List[SynthesisedArtifact] = newList()
+  val restoredArtifactsJvm: List[RP.SynthesisedArtifact] = newList()
   var jsi = 0
   while jsi < allArtsJvm.count {
     val jArt = allArtsJvm[jsi]
@@ -3292,16 +3292,16 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
       if compilerPayloads.count > 0 {
         val testPkgName = extractPackageName(req.source)
         val pkgName = if testPkgName.length > 0 { testPkgName } else { req.assemblyName }
-        val allPayloads: List[ProjectPackagePayload] = newList()
+        val allPayloads: List[MsilBridge.ProjectPackagePayload] = newList()
         var ci = 0
         while ci < compilerPayloads.count {
           allPayloads.add(compilerPayloads[ci])
           ci = ci + 1
         }
-        allPayloads.add(ProjectPackagePayload(name = pkgName, source = req.source))
+        allPayloads.add(MsilBridge.ProjectPackagePayload(name = pkgName, source = req.source))
         val noFeatures: List[String] = newList()
-        val noArtifacts: List[SynthesisedArtifact] = newList()
-        val noDepTemplatePkgsPerPkg: List[ProjectPackagePayload] = newList()
+        val noArtifacts: List[RP.SynthesisedArtifact] = newList()
+        val noDepTemplatePkgsPerPkg: List[MsilBridge.ProjectPackagePayload] = newList()
         val emptyNugetPaths: List[String] = newList()
         // #6610: parallel path per `allPayloads` entry — "" for the bundled
         // compiler packages (no single on-disk path in this dev-tooling

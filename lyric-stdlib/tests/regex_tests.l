@@ -19,7 +19,10 @@ func testTryCompileOk(): Unit {
 func testTryCompileInvalidPattern(): Unit {
   match Re.tryCompile("(unclosed") {
     case Ok(_) -> assertTrue(false, "tryCompile('(unclosed') should fail")
-    case Err(e) -> match e { case InvalidPattern(_) -> (); case TimedOut(_) -> assertTrue(false, "invalid pattern should not be TimedOut") }
+    case Err(e) -> match e {
+      case InvalidPattern(_) -> ()
+      case TimedOut(_) -> assertTrue(false, "invalid pattern should not be TimedOut")
+    }
   }
 }
 
@@ -38,14 +41,20 @@ func testIsMatchNoMatch(): Unit {
 func testTryIsMatchSuccess(): Unit {
   match Re.tryCompile("h.llo") {
     case Err(_) -> assertTrue(false, "tryCompile failed")
-    case Ok(r) -> match Re.tryIsMatch(r, "hello world") { case Ok(b) -> assertTrue(b, "h.llo should match 'hello world'"); case Err(_) -> assertTrue(false, "tryIsMatch should not error on benign pattern") }
+    case Ok(r) -> match Re.tryIsMatch(r, "hello world") {
+      case Ok(b) -> assertTrue(b, "h.llo should match 'hello world'")
+      case Err(_) -> assertTrue(false, "tryIsMatch should not error on benign pattern")
+    }
   }
 }
 
 func testTryIsMatchNoMatch(): Unit {
   match Re.tryCompile("xyz") {
     case Err(_) -> assertTrue(false, "tryCompile failed")
-    case Ok(r) -> match Re.tryIsMatch(r, "hello world") { case Ok(b) -> assertTrue(not b, "xyz should not match 'hello world'"); case Err(_) -> assertTrue(false, "tryIsMatch should not error on benign pattern") }
+    case Ok(r) -> match Re.tryIsMatch(r, "hello world") {
+      case Ok(b) -> assertTrue(not b, "xyz should not match 'hello world'")
+      case Err(_) -> assertTrue(false, "tryIsMatch should not error on benign pattern")
+    }
   }
 }
 
@@ -59,7 +68,10 @@ func testReplaceAll(): Unit {
 func testTryReplaceSuccess(): Unit {
   match Re.tryCompile("foo") {
     case Err(_) -> assertTrue(false, "tryCompile failed")
-    case Ok(r) -> match Re.tryReplace(r, "foofoo", "bar") { case Ok(s) -> assertTrue(s == "barbar", "tryReplace produced 'barbar'"); case Err(_) -> assertTrue(false, "tryReplace should not error") }
+    case Ok(r) -> match Re.tryReplace(r, "foofoo", "bar") {
+      case Ok(s) -> assertTrue(s == "barbar", "tryReplace produced 'barbar'")
+      case Err(_) -> assertTrue(false, "tryReplace should not error")
+    }
   }
 }
 
@@ -76,7 +88,7 @@ func testErrorMessageTimedOut(): Unit {
 }
 
 func testErrorMessageInvalidPattern(): Unit {
-  val msg = Re.errorMessage(InvalidPattern(message = "bad syntax"))
+  val msg = Re.errorMessage(Re.InvalidPattern(message = "bad syntax"))
   assertTrue(msg == "invalid regex pattern: bad syntax", "InvalidPattern renders")
 }
 

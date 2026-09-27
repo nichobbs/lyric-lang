@@ -206,7 +206,7 @@ test "a file's own declared type is not shadowed by a same-named type it imports
   pkgSrcs.add(
     "package XPkgApp\n" + "\n" + "import SafePkg as Safe\n" + "\n" + "func main(): Int {\n" +
       "  println(Safe.errorMessage(TimedOut(message = \"x\")))\n" +
-      "  println(Safe.errorMessage(SafeBug(message = \"y\")))\n" +
+      "  println(Safe.errorMessage(Safe.SafeBug(message = \"y\")))\n" +
       "  0\n" +
       "}\n"
   )
@@ -265,9 +265,9 @@ test "aliased calls into two same-simple-name colliding packages each resolve to
     "package AliasedConsumerApp\n" + "\n" + "import RegexLikePkg as Re\n" + "import RegexSafeLikePkg as Rx\n" + "\n" +
       "func main(): Int {\n" +
       "  println(Rx.errorMessage(TimedOut(message = \"a\")))\n" +
-      "  println(Rx.errorMessage(XBug(message = \"b\")))\n" +
+      "  println(Rx.errorMessage(Rx.XBug(message = \"b\")))\n" +
       "  println(Re.errorMessage(TimedOut(message = \"c\")))\n" +
-      "  println(Re.errorMessage(InvalidX(message = \"d\")))\n" +
+      "  println(Re.errorMessage(Re.InvalidX(message = \"d\")))\n" +
       "  0\n" +
       "}\n"
   )
@@ -606,8 +606,9 @@ test "bundle-wide bare-call fallback never selects a package-private function (J
   pkgSrcs.add("package XPriv.Priv\n" + "\n" + "func helper(x: in Int): Int {\n" + "  0 - 999\n" + "}\n")
   pkgSrcs.add("package XPriv.Sub\n" + "\n" + "pub func helper(x: in Int): Int {\n" + "  x\n" + "}\n")
   pkgSrcs.add(
-    "package XPriv.Facade\n" + "\n" + "import XPriv.Sub\n" + "\n" +
-      "pub func facadeFn(): Int {\n" + "  XPriv.Sub.helper(x = 0)\n" + "}\n"
+    "package XPriv.Facade\n" + "\n" + "import XPriv.Sub\n" + "\n" + "pub func facadeFn(): Int {\n" +
+      "  XPriv.Sub.helper(x = 0)\n" +
+      "}\n"
   )
   pkgSrcs.add(
     "package XPriv.App\n" + "\n" + "import XPriv.Facade\n" + "\n" + "func main(): Int {\n" +
@@ -658,8 +659,9 @@ test "qualified call to another package's function is not hijacked by the caller
   val pkgSrcs: List[String] = newList()
   pkgSrcs.add("package XScoped.Other\n" + "\n" + "pub func helper(x: in Int): Int {\n" + "  x\n" + "}\n")
   pkgSrcs.add(
-    "package XScoped.App\n" + "\n" + "import XScoped.Other\n" + "\n" +
-      "func helper(x: in Int): Int {\n" + "  0 - 999\n" + "}\n" + "\n" +
+    "package XScoped.App\n" + "\n" + "import XScoped.Other\n" + "\n" + "func helper(x: in Int): Int {\n" + "  0 - 999\n" +
+      "}\n" +
+      "\n" +
       "func main(): Int {\n" +
       "  println(XScoped.Other.helper(x = 42))\n" +
       "  0\n" +

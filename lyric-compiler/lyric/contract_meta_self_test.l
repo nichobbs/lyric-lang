@@ -36,6 +36,8 @@ func unwrapOrFail(opt: in Option[Contract], label: in String): Contract {
         decls = newList(),
         dependencies = newList(),
         imports = newList(),
+        wholeImports = newList(),
+        selectedImports = newList(),
         contractHash = ""
       )
     }
@@ -460,6 +462,8 @@ func testContractToJsonRoundTrip(): Unit {
     decls = decls,
     dependencies = newList(),
     imports = newList(),
+    wholeImports = newList(),
+    selectedImports = newList(),
     contractHash = ""
   )
 
@@ -525,6 +529,8 @@ func testContractToJsonOmitsDefaults(): Unit {
     decls = decls,
     dependencies = newList(),
     imports = newList(),
+    wholeImports = newList(),
+    selectedImports = newList(),
     contractHash = ""
   )
   val json = contractToJson(c)
@@ -1054,6 +1060,32 @@ test "escapeJson basic" {
 
 test "contractToJson round-trip" {
   testContractToJsonRoundTrip()
+}
+
+// docs/01 §9.2 (D141, #7555, #7558): a contract records its package's import
+// forms, so a consumer's whole import reaches only the packages it imports
+// whole, and a restored generic body sees its selective imports.
+test "a contract records its whole and selective imports and round-trips them" {
+  val src = "package P\n\nimport Q\nimport R.{f, T}\nimport S as Z\n\npub func g(): Int { 1 }\n"
+  val c = buildContractFromFile(parse(src).file, "1.0.0")
+  assertEqualInt(c.imports.count, 3, "every import is listed")
+  assertEqualInt(c.wholeImports.count, 1, "one whole import")
+  assertEqual(c.wholeImports[0], "Q", "Q is imported whole")
+  assertEqualInt(c.selectedImports.count, 2, "two selectively imported names")
+  assertEqual(c.selectedImports[0], "R::f", "R::f")
+  assertEqual(c.selectedImports[1], "R::T", "R::T")
+  val parsed = unwrapOrFail(parseFromJson(contractToJson(c)), "import forms")
+  assertEqualInt(parsed.wholeImports.count, 1, "wholeImports round-trips")
+  assertEqual(parsed.wholeImports[0], "Q", "wholeImports[0] round-trips")
+  assertEqualInt(parsed.selectedImports.count, 2, "selectedImports round-trips")
+  assertEqual(parsed.selectedImports[1], "R::T", "selectedImports[1] round-trips")
+}
+
+test "a contract without wholeImports reads its imports as whole" {
+  val json = "{\"packageName\": \"Old\", \"version\": \"1.0.0\", \"imports\": [\"A\", \"B\"], \"decls\": []}"
+  val parsed = unwrapOrFail(parseFromJson(json), "legacy imports")
+  assertEqualInt(parsed.wholeImports.count, 2, "both imports count as whole")
+  assertEqualInt(parsed.selectedImports.count, 0, "no selective imports recorded")
 }
 
 test "contractToJson omits defaults" {

@@ -66,7 +66,7 @@ func compileAndRunProject(packages: in List[NativeSourcePackage]): RunOutcome {
   }
   val dir = Path.join(tempBase(), "lyric-llvm-project-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
@@ -95,7 +95,7 @@ func compileAndRunProjectWithFeatures(
   }
   val dir = Path.join(tempBase(), "lyric-llvm-project-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noDeclared: List[String] = newList()
@@ -379,7 +379,7 @@ test "a genuinely multi-file [project.packages] entry merges through Emitter.emi
   }
   val dir = Path.join(tempBase(), "lyric-llvm-project-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val noLibs: List[String] = newList()
   val noDefines: List[String] = newList()
   val noFeatures: List[String] = newList()
@@ -415,7 +415,7 @@ test "project build injects the manifest's [package].version as the well-known v
   }
   val dir = Path.join(tempBase(), "lyric-llvm-project-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
@@ -550,7 +550,7 @@ test "project build with no packages fails loudly rather than compiling an empty
   val stdlib = findStdlibSourcesNative()
   val dir = Path.join(tempBase(), "lyric-llvm-project-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val noFlags: List[String] = newList()
   val noFeatures: List[String] = newList()
   val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
@@ -615,7 +615,7 @@ test "native project build: `?` used inside a bundled STDLIB-CLOSURE package (no
   )
   val dir = Path.join(tempBase(), "lyric-llvm-project-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()

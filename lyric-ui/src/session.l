@@ -29,6 +29,7 @@ import Std.Core
 import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, Prop, WidgetKind, Step, UiEffect, Navigate, Back, Confirm, Notify, toastLevelName, eventName, fire, mapView, childrenOf}
 import Ui.Diff.{Patch, SetProp, diff, replaceAll, keyOf}
 import Ui.Protocol.{Event, NodeRef, At, Keyed, ValueEcho, refsKey, pathKey}
+import Std.Collections
 
 // ─── Program ──────────────────────────────────────────────────────────────────
 /// What a session runs: the screen's pure functions, and how to recognise

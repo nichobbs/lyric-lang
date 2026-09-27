@@ -270,26 +270,12 @@ test "bare call to a facade-transitive function resolves bundle-wide" {
   )
 }
 
-// Issue #6849: the MULTI-candidate path of the bundle-wide fallback — two
-// packages (`SubA`, `SubB`) each declare `pub func helper`, and `App` imports
-// ONLY the facade that imports both, then calls `helper` bare. Neither
-// declarer is `App`'s own package nor a DIRECT import of it, so codegen's
-// local-FQN and direct-import tiers both miss and `findBundleFqnByName` runs
-// with `candidates.count > 1` — the branch the single-declarer test above
-// never reaches. This pins that a bare call with multiple bundle-wide
-// declarers still resolves (no T0123 panic) and runs, exercising the count>1
-// path.
-//
-// It deliberately does NOT assert WHICH declarer wins: both `helper`s return
-// their argument, so the result is 42 regardless. `findBundleFqnByName`'s
-// own-package and direct-import tie-break tiers are not reachable through this
-// call site (an own-package declarer resolves earlier via `localFqn`/
-// `funcTokens`; a directly-imported declarer resolves earlier via
-// `findImportedFqn`), so the only reachable multi-candidate case is two
-// mutually-unimported transitive declarers, whose winner is the pre-existing
-// first-vs-last-registered imprecision tracked under #4424 — pinning a
-// specific winner here would cement behavior that issue may change.
-test "bare call with multiple bundle-wide declarers resolves without panic" {
+// Two packages the app reaches only transitively (through `XMulti.Facade`'s
+// whole imports) both declare a `pub helper`: a bare `helper(...)` is
+// ambiguous, T0123, like two direct imports (docs/01 §9.2, D141, #7556).
+// Before that rule the call compiled and codegen picked a declarer by
+// registration order.
+test "bare call with two transitively reached declarers is T0123" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(mkPkg("XMulti.SubA", "package XMulti.SubA\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
   packages.add(mkPkg("XMulti.SubB", "package XMulti.SubB\n" + "\n" + "pub func helper(x: in Int): Int { x }\n"))
@@ -308,9 +294,11 @@ test "bare call with multiple bundle-wide declarers resolves without panic" {
         "}\n"
     )
   )
-  val result = compileAndRun("xmulti", packages, "XMulti")
-  assertEqualInt(result.exitCode, 0, "bare_call_multi_declarer_resolves: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "42", "bare_call_multi_declarer_resolves: stdout matches expected")
+  val noFeatures: List[String] = newList()
+  assertTrue(
+    not compileAndGetSucceeded("xmulti", packages, "XMulti", noFeatures, noFeatures),
+    "two transitive declarers: the build fails with T0123"
+  )
 }
 
 // Issue #6851: the bundle-wide fallback must NEVER select a package-private
@@ -358,9 +346,11 @@ test "bundle-wide fallback never selects a package-private function (#6851)" {
 // (`XNest.App`) — a DIFFERENT package whose name merely starts with
 // `XNest.App.`. It declares a `pub helper` returning -999; `XNest.Deep`
 // declares the intended `pub helper` returning its argument and is registered
-// FIRST (so it is `candidates[0]`). `App` imports only `Facade` (which imports
-// both), so neither declarer is App's own package or a direct import — the
-// call reaches `findBundleFqnByName` with both candidates. A prefix-based
+// FIRST (so it is `candidates[0]`). `App` imports only `Facade`, which imports
+// `Deep` whole and `Inner` through an alias, so `helper` is `Deep`'s for the
+// type checker (docs/01 §9.2); neither declarer is App's own package or a
+// direct import, so the call reaches `findBundleFqnByName` with both
+// candidates. A prefix-based
 // tier-1 test (`startsWith(cand, "XNest.App.")`) would wrongly classify
 // `XNest.App.Inner.helper` as "same package" and emit the -999 call; the exact
 // test (`cand == "XNest.App.helper"`) correctly skips it, falling through to
@@ -376,8 +366,8 @@ test "bundle-wide tie-break keys on exact package identity, not a name prefix (#
   packages.add(
     mkPkg(
       "XNest.Facade",
-      "package XNest.Facade\n" + "import XNest.Deep\n" + "import XNest.App.Inner\n" + "\n" +
-        "pub func facadeFn(): Int { XNest.Deep.helper(0) + XNest.App.Inner.helper(0) }\n"
+      "package XNest.Facade\n" + "import XNest.Deep\n" + "import XNest.App.Inner as Inner\n" + "\n" +
+        "pub func facadeFn(): Int { XNest.Deep.helper(0) + Inner.helper(0) }\n"
     )
   )
   packages.add(
@@ -2556,7 +2546,8 @@ test "qualified generic type argument resolves to the exact package named, not s
   packages.add(
     mkPkg(
       "Main6689",
-      "package Main6689\n" + "import Pkg6689B\n" + "import Pkg6689A\n" + "\n" + "func main(): Unit {\n" +
+      "package Main6689\nimport Std.Collections\n" + "import Pkg6689B\n" + "import Pkg6689A\n" + "\n" +
+        "func main(): Unit {\n" +
         "  val xs: List[Pkg6689A.Item] = newList()\n" +
         "  xs.add(Pkg6689A.mkA(1))\n" +
         "  println(xs[0].x)\n" +
@@ -2591,7 +2582,8 @@ test "qualified generic type argument in a record field resolves to the exact pa
   packages.add(
     mkPkg(
       "Pkg6689Wrapper",
-      "package Pkg6689Wrapper\n" + "import Pkg6689C\n" + "\n" + "pub record Wrapper {\n" + "  items: List[Item]\n" +
+      "package Pkg6689Wrapper\nimport Std.Collections\n" + "import Pkg6689C\n" + "\n" + "pub record Wrapper {\n" +
+        "  items: List[Item]\n" +
         "}\n"
     )
   )

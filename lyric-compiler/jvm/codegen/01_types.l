@@ -2147,7 +2147,89 @@ func ctorClassFromImports(ctx: in FuncCtx, name: in String): Option[String] {
     }
     case None -> ()
   }
-  val pkgs = match mapGet(ctx.externTypes, "~ctor-pkgs~") { case Some(v) -> v; case None -> "" }
+  // A case of a union the file imports selectively (`import P.{Shape}`,
+  // then `Square(...)`): its class is registered as `<pkg>::Shape$Square`.
+  val sel = match mapGet(ctx.externTypes, "~ctor-sel~") { case Some(v) -> v; case None -> "" }
+  if sel.length > 0 {
+    for entry in split(sel, ",") {
+      val bar = String.indexOfRaw(entry, "|")
+      if bar > 0 {
+        match mapGet(ctx.ctors, entry.substring(0, bar) + "::" + entry.substring(bar + 1) + "$" + name) {
+          case Some(cls) -> return Some(value = cls)
+          case None -> ()
+        }
+      }
+    }
+  }
+  match uniqueCtorInPkgsJvm(ctx, "~ctor-pkgs~", name) {
+    case Some(cls) -> return Some(value = cls)
+    case None -> ()
+  }
+  uniqueCtorInPkgsJvm(ctx, "~ctor-tpkgs~", name)
+}
+
+// The case class a union-qualified case (`Shape.Square`, or the
+// package-qualified `Pkg.Shape.Square`) names: in the named package when
+// there is one, otherwise the `Shape` the file sees bare (its own package's,
+// a selectively imported one, then its whole imports' and the packages they
+// reach), as the type checker resolves it (docs/01 §9.2).  Falls back to
+// the bundle-wide `<Union>$<Case>` registration.
+pub func unionQualifiedCaseClassJvm(ctx: in FuncCtx, segs: in List[String], caseName: in String): Option[String] {
+  if segs.count == 0 {
+    return None
+  }
+  val unionName = segs[segs.count - 1]
+  val suffix = "::" + unionName + "$" + caseName
+  if segs.count > 1 {
+    var pkgPath = ""
+    var i = 0
+    while i < segs.count - 1 {
+      pkgPath = if pkgPath.length == 0 { segs[i] } else { pkgPath + "/" + segs[i] }
+      i = i + 1
+    }
+    match mapGet(ctx.ctors, pkgPath + suffix) {
+      case Some(cls) -> return Some(value = cls)
+      case None -> ()
+    }
+  } else {
+    match mapGet(ctx.ctors, ctorHomePkg(ctx) + suffix) {
+      case Some(cls) -> return Some(value = cls)
+      case None -> ()
+    }
+    val sel = match mapGet(ctx.externTypes, "~ctor-sel~") { case Some(v) -> v; case None -> "" }
+    if sel.length > 0 {
+      for entry in split(sel, ",") {
+        val bar = String.indexOfRaw(entry, "|")
+        if bar > 0 and entry.substring(bar + 1) == unionName {
+          match mapGet(ctx.ctors, entry.substring(0, bar) + suffix) {
+            case Some(cls) -> return Some(value = cls)
+            case None -> ()
+          }
+        }
+      }
+    }
+    val scopeKeys: List[String] = newList()
+    scopeKeys.add("~ctor-pkgs~")
+    scopeKeys.add("~ctor-tpkgs~")
+    for key in scopeKeys {
+      val pkgs = match mapGet(ctx.externTypes, key) { case Some(v) -> v; case None -> "" }
+      if pkgs.length > 0 {
+        for p in split(pkgs, ",") {
+          match mapGet(ctx.ctors, p + suffix) {
+            case Some(cls) -> return Some(value = cls)
+            case None -> ()
+          }
+        }
+      }
+    }
+  }
+  mapGet(ctx.ctors, unionName + "$" + caseName)
+}
+
+// The one class the packages listed under scope key `key` register for
+// constructor `name`; None when none does or two disagree.
+func uniqueCtorInPkgsJvm(ctx: in FuncCtx, key: in String, name: in String): Option[String] {
+  val pkgs = match mapGet(ctx.externTypes, key) { case Some(v) -> v; case None -> "" }
   if pkgs.length == 0 {
     return None
   }
@@ -2485,8 +2567,7 @@ pub func tryQualifiedUnionCaseValueJvm(ctx: in FuncCtx, expr: in Expr): Option[S
         case Some(_) -> return None
         case None -> ()
       }
-      val unionTy = segs[segs.count - 1]
-      mapGet(ctx.ctors, unionTy + "$" + memberName)
+      unionQualifiedCaseClassJvm(ctx, segs, memberName)
     }
     case _ -> None
   }

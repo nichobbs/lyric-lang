@@ -78,6 +78,7 @@ import Std.File
 import Std.Encoding as Enc
 import Web.Kernel.Runtime as HttpKernel
 import Web.OpenApi
+import Std.Iter
 
 // Canonical-path resolution for the static-files path-traversal guard
 // (`withinRoot`), target-split: these BCL/JDK externs previously sat

@@ -53,7 +53,7 @@ func cmdCheck(argv: in slice[String]): Int {
     }
   }
 
-  val checkTarget: CompileTarget = if targetJvm { Jvm } else { Dotnet }
+  val checkTarget: Emitter.CompileTarget = if targetJvm { Emitter.Jvm } else { Emitter.Dotnet }
   val checkExt = if targetJvm { ".jar" } else { ".dll" }
 
   // Project-mode: type-check all packages without producing a usable bin/ artifact.
@@ -67,7 +67,13 @@ func cmdCheck(argv: in slice[String]): Int {
     }
     val checkOutDir = Path.join(Path.dirname(mfPath), ".lyric-check")
     val manifest = match File.readText(mfPath) {
-      case Ok(t) -> match Mf.parseManifest(t, mfPath) { case Ok(m) -> m; case Err(e) -> { printErr("check: " + ManifestError.message(e)); return 1 } }
+      case Ok(t) -> match Mf.parseManifest(t, mfPath) {
+        case Ok(m) -> m
+        case Err(e) -> {
+          printErr("check: " + Mf.ManifestError.message(e))
+          return 1
+        }
+      }
       case Err(e) -> {
         printErr("check: " + IOError.message(e))
         return 1
@@ -108,7 +114,7 @@ func cmdCheck(argv: in slice[String]): Int {
       case Err(_) -> ()
     }
 
-    val req = EmitRequest(
+    val req = Emitter.EmitRequest(
       source = source,
       assemblyName = stem,
       outputPath = outPath,

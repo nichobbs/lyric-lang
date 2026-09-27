@@ -25,7 +25,7 @@ import Lyric.Lockfile as LF
 // ─────────────────────────────────────────────────────────────────────────────
 // Emit the <PackageReference> elements for a manifest's registry Lyric deps +
 // all [nuget] entries.  Used in the generated restore csproj.
-func buildRestoreCsproj(manifest: in Manifest, target: in String): String {
+func buildRestoreCsproj(manifest: in Mf.Manifest, target: in String): String {
   var refs = ""
   var di = 0
   while di < manifest.deps.count {
@@ -158,7 +158,7 @@ func cmdInit(argv: in slice[String]): Int {
     }
   }
 
-  Init.runInit(InitOptions(dir = dir, nameOverride = nameOverride, isLib = isLib, force = force))
+  Init.runInit(Init.InitOptions(dir = dir, nameOverride = nameOverride, isLib = isLib, force = force))
 }
 
 // Whether a TOML line defines the bare key `key` (its left-of-`=` token,
@@ -414,7 +414,7 @@ func cmdRemove(argv: in slice[String]): Int {
   match Mf.parseManifest(updated, mfPath) {
     case Ok(_) -> ()
     case Err(e) -> {
-      printErr("remove: refusing to write — resulting manifest is invalid: " + ManifestError.message(e))
+      printErr("remove: refusing to write — resulting manifest is invalid: " + Mf.ManifestError.message(e))
       return 1
     }
   }
@@ -673,7 +673,7 @@ func cmdAdd(argv: in slice[String]): Int {
   match Mf.parseManifest(updated, mfPath) {
     case Ok(_) -> ()
     case Err(e) -> {
-      printErr("add: refusing to write — resulting manifest is invalid: " + ManifestError.message(e))
+      printErr("add: refusing to write — resulting manifest is invalid: " + Mf.ManifestError.message(e))
       return 1
     }
   }
@@ -765,7 +765,7 @@ func findMavenResolverJar(): Option[String] {
 }
 
 // Build the JSON request body for lyric-resolver.jar's stdin protocol.
-pub func buildMavenResolverRequest(maven: in MavenSection, cacheDir: in String, outputDir: in String): String {
+pub func buildMavenResolverRequest(maven: in Mf.MavenSection, cacheDir: in String, outputDir: in String): String {
   var coords = "["
   var ci = 0
   while ci < maven.entries.count {
@@ -862,13 +862,13 @@ pub func extractMavenJarPaths(jsonOutput: in String): List[String] {
 // version is reported and ignored.  Repositories are the union of every
 // declaration's; the Java version is the manifest's own.  A registry or git
 // dependency contributes nothing here: it has no local manifest to read.
-func collectTransitiveMaven(manifest: in Manifest, mfDir: in String): MavenSection {
-  val entries: List[MavenEntry] = newList()
+func collectTransitiveMaven(manifest: in Mf.Manifest, mfDir: in String): Mf.MavenSection {
+  val entries: List[Mf.MavenEntry] = newList()
   val entryOwners: List[String] = newList()
   val repositories: List[String] = newList()
   val rootName = manifest.packageSection.name
   addMavenDeclarations(manifest, rootName, entries, entryOwners, repositories)
-  val wsCtx: Option[WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
+  val wsCtx: Option[Ws.WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
   val visited: List[String] = newList()
   visited.add(canonicalDir(mfDir))
   val queue: List[String] = newList()
@@ -893,13 +893,13 @@ func collectTransitiveMaven(manifest: in Manifest, mfDir: in String): MavenSecti
     repositories.add("central")
   }
   val javaVersion = match manifest.maven { case Some(m) -> m.javaVersion; case None -> None }
-  MavenSection(entries = entries, repositories = repositories, javaVersion = javaVersion)
+  Mf.MavenSection(entries = entries, repositories = repositories, javaVersion = javaVersion)
 }
 
 func addMavenDeclarations(
-  mf: in Manifest,
+  mf: in Mf.Manifest,
   owner: in String,
-  entries: in List[MavenEntry],
+  entries: in List[Mf.MavenEntry],
   entryOwners: in List[String],
   repositories: in List[String],
 ): Unit {
@@ -977,9 +977,9 @@ func canonicalDir(dir: in String): String {
 // Append the directories of `mf`'s workspace and path dependencies that have
 // not been visited yet.
 func enqueueLocalDeps(
-  mf: in Manifest,
+  mf: in Mf.Manifest,
   mfDir: in String,
-  wsCtx: in Option[WorkspaceContext],
+  wsCtx: in Option[Ws.WorkspaceContext],
   visited: in List[String],
   queue: in List[String],
 ): Unit {
@@ -1015,7 +1015,7 @@ func enqueueLocalDeps(
 // local dependencies', `collectTransitiveMaven`) and write their paths to
 // <mfDir>/target/restore/jvm-classpath.txt (one path per line).
 // Returns 0 on success, 1 on error.  No-op when nothing declares [maven].
-func restoreMavenJars(manifest: in Manifest, mfDir: in String): Int {
+func restoreMavenJars(manifest: in Mf.Manifest, mfDir: in String): Int {
   val maven = collectTransitiveMaven(manifest, mfDir)
   if maven.entries.count == 0 {
     return 0
@@ -1106,10 +1106,10 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
     }
   }
 
-  val manifest: Manifest = match Mf.parseManifest(mfText, mfPath) {
+  val manifest: Mf.Manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m
     case Err(e) -> {
-      printErr("restore: " + ManifestError.message(e))
+      printErr("restore: " + Mf.ManifestError.message(e))
       return 1
     }
   }
@@ -1118,7 +1118,7 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
   val pkgName = manifest.packageSection.name
 
   // Find workspace context (if any) for resolving workspace/path deps.
-  val wsCtx: Option[WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
+  val wsCtx: Option[Ws.WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
 
   // Read existing lock file (if present).
   val lockPath = match wsCtx {

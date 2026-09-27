@@ -682,9 +682,9 @@ func isKnownDeriveMarker(name: in String): Bool {
 }
 
 func isInterfaceSym(tbl: in SymbolTable, name: in String): Bool {
-  match symTableTryFindOne(tbl, name) {
+  match constraintInterfaceSym(tbl, name) {
     case None -> false
-    case Some(sym) -> match sym.kind { case DKInterface(_, _) -> true; case _ -> false }
+    case Some(_) -> true
   }
 }
 
@@ -720,13 +720,16 @@ func checkWhereClause(
         var j = 0
         while j < bound.constraints.count {
           val cr = bound.constraints[j]
-          if cr.head.segments.count == 1 {
-            val cname = cr.head.segments[0]
-            if not isKnownDeriveMarker(cname) and not isInterfaceSym(tbl, cname) {
-              diag.add(errorDiagnostic("T0051", "unknown constraint '" + cname + "' in 'where' clause", cr.span))
-            }
-          } else {
-            diag.add(errorDiagnostic("T0051", "qualified constraint paths not yet supported in 'where' clause", cr.span))
+          val cname = modulePathJoin(cr.head.segments)
+          val known = if cr.head.segments.count == 1 { isKnownDeriveMarker(cname) } else { false }
+          if not known and not isInterfaceSym(tbl, cname) {
+            diag.add(
+              errorDiagnostic(
+                "T0051",
+                "unknown constraint '" + cname + "' in 'where' clause" + symTableHiddenImportHint(tbl, cname),
+                cr.span
+              )
+            )
           }
           j = j + 1
         }
@@ -758,7 +761,10 @@ func extractGenericNames(gps: in Option[GenericParams]): List[String] {
   names
 }
 
-func resolveBounds(wc: in Option[WhereClause]): List[ResolvedBound] {
+// Each constraint is recorded package-qualified when it names an interface
+// (resolved here, in the declaring package's scope), so a caller checks it
+// against the same interface whatever the caller imports.
+func resolveBounds(tbl: in SymbolTable, wc: in Option[WhereClause]): List[ResolvedBound] {
   val result: List[ResolvedBound] = newList()
   match wc {
     case None -> {
@@ -771,8 +777,14 @@ func resolveBounds(wc: in Option[WhereClause]): List[ResolvedBound] {
         var j = 0
         while j < b.constraints.count {
           val cr = b.constraints[j]
-          if cr.head.segments.count == 1 {
-            constraints.add(cr.head.segments[0])
+          val written = modulePathJoin(cr.head.segments)
+          match constraintInterfaceSym(tbl, written) {
+            case Some(iface) -> if iface.originPackage.length > 0 {
+              constraints.add(iface.originPackage + "." + iface.name)
+            } else {
+              constraints.add(written)
+            }
+            case None -> constraints.add(written)
           }
           j = j + 1
         }
@@ -992,7 +1004,7 @@ func resolveFunctionSig(
 
   checkWhereClause(tbl, diag, genericNames, fn.whereClause)
 
-  val bounds = resolveBounds(fn.whereClause)
+  val bounds = resolveBounds(tbl, fn.whereClause)
 
   val params: List[ResolvedParam] = newList()
   var i = 0
@@ -1068,6 +1080,13 @@ pub func registerOverloadCandidate(
       i = i + 1
     }
   }
+}
+
+// The `sigs` slot prefix under which every function named `name` is
+// registered (see `addSigsFromItems`).  It holds no `/`, so it never reads as
+// an arity key.
+pub func byNameSigKey(name: in String): String {
+  "~fn~" + name
 }
 
 // Gather every overload candidate registered for `arityKey` (the indexed
@@ -1165,6 +1184,12 @@ func addSigsFromItems(
         if sg.generics.count == 0 {
           registerOverloadCandidate(sigs, arityKey, sg)
         }
+        // Every function of this name, generic or not, whichever package
+        // declares it: the `name` and `arityKey` slots keep only one, which
+        // the file's import rule may hide (docs/01 §9.2), so a bare
+        // reference picks its visible declaration from here
+        // (`visibleBareFuncSigs`).
+        registerOverloadCandidate(sigs, byNameSigKey(decl.name), sg)
       }
       case _ -> {
       }
@@ -1594,13 +1619,59 @@ func findImplMethod(decl: in ImplDecl, name: in String): Option[FunctionDecl] {
 // Cross-package interfaces not found in the local symbol table are silently
 // skipped — cross-package conformance is enforced by the restoring package's
 // own type-check pass.
+// `te`, written in the declaration of interface `iface`, resolved in the
+// interface's declaring package.
+func resolveIfaceType(
+  tbl: in SymbolTable,
+  iface: in Option[Symbol],
+  ctx: in GenericContext,
+  diag: in List[Diagnostic],
+  te: in TypeExpr,
+): Type {
+  match iface {
+    case Some(isym) -> if isym.originPackage.length > 0 {
+      val saved = enterDeclaringScope(tbl, isym)
+      val t = resolveType(tbl, ctx, diag, te)
+      restoreScope(tbl, saved)
+      return t
+    }
+    case None -> ()
+  }
+  resolveType(tbl, ctx, diag, te)
+}
+
+func listTake(xs: in List[String], n: in Int): List[String] {
+  val taken: List[String] = newList()
+  var i = 0
+  while i < n and i < xs.count {
+    taken.add(xs[i])
+    i = i + 1
+  }
+  taken
+}
+
 func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in ImplDecl): Unit {
   val segs = decl.iface.head.segments
   if segs.count == 0 {
     return
   }
   val ifaceName = segs[segs.count - 1]
-  match findInterfaceDecl(tbl, ifaceName) {
+  // The interface the impl names, qualified or bare; its own signature types
+  // resolve in its declaring package, not in the implementing file's scope
+  // (whose import rule need not make them visible, docs/01 §9.2).
+  val ifaceSym = if segs.count > 1 {
+    symTableTryFindInPackage(tbl, modulePathJoin(listTake(segs, segs.count - 1)), ifaceName)
+  } else {
+    symTableTryFindOne(tbl, ifaceName)
+  }
+  val found = match ifaceSym {
+    case Some(isym) -> match isym.kind {
+      case DKInterface(_, d) -> Some(value = d)
+      case _ -> findInterfaceDecl(tbl, ifaceName)
+    }
+    case None -> findInterfaceDecl(tbl, ifaceName)
+  }
+  match found {
     case None -> {
     }
     case Some(ifaceDecl) -> {
@@ -1634,7 +1705,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   val ictx = newGenericContext()
                   var pi = 0
                   while pi < sig.params.count {
-                    val ifacePTy = substitutesSelf(resolveType(tbl, ictx, diag, sig.params[pi].ty), selfTy)
+                    val ifacePTy = substitutesSelf(resolveIfaceType(tbl, ifaceSym, ictx, diag, sig.params[pi].ty), selfTy)
                     val implPTy = substitutesSelf(resolveType(tbl, ictx, diag, fn.params[pi].ty), selfTy)
                     if not argSatisfiesParam(tbl, ifacePTy, implPTy) {
                       diag.add(
@@ -1654,7 +1725,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   val ifaceRetTy = substitutesSelf(
                     match sig.ret {
                       case None -> TyPrim(pt = PtUnit)
-                      case Some(te) -> resolveType(tbl, ictx, diag, te)
+                      case Some(te) -> resolveIfaceType(tbl, ifaceSym, ictx, diag, te)
                     },
                     selfTy
                   )
@@ -3288,6 +3359,11 @@ pub record ImportedPackage {
   /// are resolved, so a same-named type exported by two sibling packages binds
   /// to the one THIS package imports instead of last-registered-wins (#2282).
   imports: List[String]
+  /// The subset of `imports` this package imports whole (`import P`, not
+  /// selective or aliased).  A file that imports this package whole sees
+  /// these packages' names bare too (docs/01 §9.2, D141); the others it
+  /// does not.
+  wholeImports: List[String]
 }
 
 func dottedPackageName(path: in ModulePath): String {
@@ -3308,6 +3384,159 @@ pub func collectImportNames(imports: in List[ImportDecl]): List[String] {
     i = i + 1
   }
   names
+}
+
+// The dotted names of the packages `imports` imports whole: neither
+// selective (`import P.{f}`) nor aliased (`import P as Q`), nor extern.
+pub func collectWholeImportNames(imports: in List[ImportDecl]): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    if not imp.isExtern and isWholeImportForm(imp) {
+      val pkg = dottedPackageName(imp.path)
+      if not names.contains(pkg) {
+        names.add(pkg)
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
+// `<package>::<name>` for each name `imports` imports selectively.
+pub func collectSelectedImportNames(imports: in List[ImportDecl]): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    if not imp.isExtern {
+      match imp.selector {
+        case Some(sel) -> {
+          val items: List[ImportItem] = match sel {
+            case ISGroup(group) -> group
+            case ISSingle(one) -> {
+              val single: List[ImportItem] = newList()
+              single.add(one)
+              single
+            }
+          }
+          for item in items {
+            names.add(dottedPackageName(imp.path) + "::" + item.name)
+          }
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  names
+}
+
+func isWholeImportForm(imp: in ImportDecl): Bool {
+  match imp.selector {
+    case Some(_) -> false
+    case None -> match imp.asAlias { case Some(_) -> false; case None -> true }
+  }
+}
+
+// Install the docs/01 §9.2 import rule for the file being checked (#7463):
+// a whole import (`import P`) makes every name of `P` visible bare, and so,
+// transitively, do the packages `P` itself imports whole (the kernel/host
+// re-export idiom); a selective import (`import P.{f, T}`) makes only the
+// listed names visible; an aliased import (`import P as Q`) makes none
+// visible bare, since they are reached as `Q.f`.
+func installImportRule(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  userPkg: in String,
+  imports: in List[ImportDecl],
+  importedPackages: in List[ImportedPackage],
+): Unit {
+  val whole: List[String] = newList()
+  val seen: Map[String, Bool] = newMap()
+  val names: List[String] = newList()
+  val aliasPkgs: List[String] = newList()
+  val aliasNames: List[String] = newList()
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    if not imp.isExtern {
+      val pkg = dottedPackageName(imp.path)
+      match imp.selector {
+        case Some(sel) -> {
+          val items = match sel {
+            case ISGroup(group) -> group
+            case ISSingle(one) -> {
+              val single: List[ImportItem] = newList()
+              single.add(one)
+              single
+            }
+          }
+          var k = 0
+          while k < items.count {
+            names.add(pkg + "|" + items[k].name)
+            match items[k].asAlias {
+              case Some(renamed) -> diag.add(
+                errorDiagnostic(
+                  "T0138",
+                  "renaming a selectively imported name is not supported: '" + items[k].name + " as " +
+                    renamed +
+                    "'; write 'import " +
+                    pkg +
+                    ".{" +
+                    items[k].name +
+                    "}' and use '" +
+                    items[k].name +
+                    "', or 'import " +
+                    pkg +
+                    " as Q' and write 'Q." +
+                    items[k].name +
+                    "'",
+                  items[k].span
+                )
+              )
+              case None -> ()
+            }
+            k = k + 1
+          }
+        }
+        case None -> match imp.asAlias {
+          case Some(alias) -> {
+            aliasPkgs.add(pkg)
+            aliasNames.add(alias)
+          }
+          case None -> {
+            if not seen.containsKey(pkg) {
+              seen.add(pkg, true)
+              whole.add(pkg)
+            }
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+  var w = 0
+  while w < whole.count {
+    var p = 0
+    while p < importedPackages.count {
+      if importedPackages[p].name == whole[w] {
+        val deps = importedPackages[p].wholeImports
+        var d = 0
+        while d < deps.count {
+          if not seen.containsKey(deps[d]) {
+            seen.add(deps[d], true)
+            whole.add(deps[d])
+          }
+          d = d + 1
+        }
+      }
+      p = p + 1
+    }
+    w = w + 1
+  }
+  symTableSetImportRule(tbl, userPkg, whole, names, aliasPkgs, aliasNames)
 }
 
 // Register external types from `import extern` declarations (D105, Phase 2a).
@@ -3536,9 +3765,11 @@ func checkWithImportedPackagesCore(
     sp = sp + 1
   }
 
-  // User signatures + bodies resolve under the user package's scope.
+  // User signatures + bodies resolve under the user package's scope, and
+  // its bare names under the file's import rule.
   symTableSetScope(tbl, userPkg, userImports)
   symTableRegisterPackageImports(tbl, userPkg, userImports)
+  installImportRule(tbl, diag, userPkg, file.imports, importedPackages)
   addSigsFromItems(tbl, diag, sigs, file.items, false, userPkg)
   registerImplsFromItems(tbl, newGenericContext(), implDiag, file.items)
   addMethodSigsFromItems(tbl, file.items, userPkg)
@@ -3752,7 +3983,7 @@ func checkExternBoundaryLeaks(tbl: in SymbolTable, diag: in List[Diagnostic], it
 pub func checkWithImports(file: in SourceFile, importedItems: in List[Item]): CheckResult {
   val packages: List[ImportedPackage] = newList()
   val noImports: List[String] = newList()
-  packages.add(ImportedPackage(name = "", items = importedItems, imports = noImports))
+  packages.add(ImportedPackage(name = "", items = importedItems, imports = noImports, wholeImports = noImports))
   checkWithImportedPackages(file, packages)
 }
 

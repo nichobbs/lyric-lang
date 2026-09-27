@@ -40,7 +40,7 @@ pub union FindManifestResult {
   /// manifest: silently adopting a grandparent's config while ignoring a
   /// real error in the nearest candidate would be worse than reporting "no
   /// manifest found".
-  case FoundBrokenManifest(path: String, error: ManifestError)
+  case FoundBrokenManifest(path: String, error: Mf.ManifestError)
   /// No lyric.toml (broken or otherwise) was found before the filesystem root.
   case NoManifestFound
 }
@@ -119,8 +119,9 @@ pub func findNearestManifestDetailed(startDir: in String): FindManifestResult {
 /// Canonical user-facing warning for a `FoundBrokenManifest` outcome (#5858):
 /// every auto-discovery call site prints the same message, so it lives here
 /// beside the union rather than being rebuilt per-caller.
-pub func brokenManifestWarning(path: in String, error: in ManifestError): String {
-  "warning: ignoring lyric.toml at '" + path + "': " + ManifestError.message(error) + " (treating as no manifest found)"
+pub func brokenManifestWarning(path: in String, error: in Mf.ManifestError): String {
+  "warning: ignoring lyric.toml at '" + path + "': " + Mf.ManifestError.message(error) +
+    " (treating as no manifest found)"
 }
 
 /// Backward-compatible `Option[String]` view of `findNearestManifestDetailed`

@@ -16,7 +16,7 @@ func testErrorMessageTimedOut(): Unit {
 }
 
 func testErrorMessageRegexBug(): Unit {
-  val msg = Rx.errorMessage(RegexBug(message = "y"))
+  val msg = Rx.errorMessage(Rx.RegexBug(message = "y"))
   assertTrue(msg == "regex error: y", "RegexBug renders")
 }
 
@@ -30,21 +30,30 @@ func testCompileOk(): Unit {
 func testCompileInvalid(): Unit {
   match Rx.tryCompile("(unclosed") {
     case Ok(_) -> assertTrue(false, "tryCompile('(unclosed') should fail")
-    case Err(e) -> match e { case RegexBug(_) -> (); case TimedOut(_) -> assertTrue(false, "invalid pattern should not be a timeout") }
+    case Err(e) -> match e {
+      case RegexBug(_) -> ()
+      case TimedOut(_) -> assertTrue(false, "invalid pattern should not be a timeout")
+    }
   }
 }
 
 func testIsMatchSuccess(): Unit {
   match Rx.tryCompile("h.llo") {
     case Err(_) -> assertTrue(false, "tryCompile failed")
-    case Ok(r) -> match Rx.tryIsMatch(r, "hello world") { case Ok(b) -> assertTrue(b, "h.llo matches 'hello world'"); case Err(_) -> assertTrue(false, "tryIsMatch should not error on a benign pattern") }
+    case Ok(r) -> match Rx.tryIsMatch(r, "hello world") {
+      case Ok(b) -> assertTrue(b, "h.llo matches 'hello world'")
+      case Err(_) -> assertTrue(false, "tryIsMatch should not error on a benign pattern")
+    }
   }
 }
 
 func testReplaceSuccess(): Unit {
   match Rx.tryCompile("foo") {
     case Err(_) -> assertTrue(false, "tryCompile failed")
-    case Ok(r) -> match Rx.tryReplace(r, "foofoo", "bar") { case Ok(s) -> assertTrue(s == "barbar", "replace produced 'barbar'"); case Err(_) -> assertTrue(false, "replace should not error") }
+    case Ok(r) -> match Rx.tryReplace(r, "foofoo", "bar") {
+      case Ok(s) -> assertTrue(s == "barbar", "replace produced 'barbar'")
+      case Err(_) -> assertTrue(false, "replace should not error")
+    }
   }
 }
 

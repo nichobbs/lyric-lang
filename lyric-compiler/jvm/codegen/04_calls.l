@@ -4133,7 +4133,7 @@ func lowerMethodCall(
       // the union's name into `externTypes`, so the call was looked up as a
       // static JDK method and panicked (J008).  A real extern type never
       // registers a `<Type>$<member>` case constructor.
-      match mapGet(ctx.ctors, lastSegment(path) + "$" + memberName) {
+      match unionQualifiedCaseClassJvm(ctx, path.segments, memberName) {
         case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
         case None -> ()
       }
@@ -4206,8 +4206,7 @@ func lowerMethodCall(
         // `collectFileCtors` `IUnion` branch already registers every case
         // under the union-name-qualified key `<Union>$<Case>` (#4802) —
         // reuse that single registry lookup instead of adding a new one.
-        val unionTy = qualSegs[qualSegs.count - 1]
-        match mapGet(ctx.ctors, unionTy + "$" + memberName) {
+        match unionQualifiedCaseClassJvm(ctx, qualSegs, memberName) {
           case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
           case None -> ()
         }

@@ -211,7 +211,7 @@ test "buildWorkspaceDeps: tuple's Option element round-trips without crashing on
   }
   val manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m
-    case Err(e) -> panic("cannot parse " + mfPath + ": " + ManifestError.message(e))
+    case Err(e) -> panic("cannot parse " + mfPath + ": " + Mf.ManifestError.message(e))
   }
 
   val directIsWorkspace = isSomeWs(Ws.findWorkspaceRoot(Path.dirname(mfPath)))
@@ -344,7 +344,7 @@ test "injectMavenClasspathForJvm: no classpath file and no [maven] entries is a 
   val mfPath = Path.join(mfDir, "lyric.toml")
   val manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m
-    case Err(e) -> panic("cannot parse fixture manifest: " + ManifestError.message(e))
+    case Err(e) -> panic("cannot parse fixture manifest: " + Mf.ManifestError.message(e))
   }
   val injection = Cli.injectMavenClasspathForJvm(mfDir, manifest)
   match injection.savedFfiJars {
@@ -369,7 +369,7 @@ test "injectMavenClasspathForJvm: existing classpath file injects LYRIC_FFI_JARS
   val mfPath = Path.join(mfDir, "lyric.toml")
   val manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m
-    case Err(e) -> panic("cannot parse fixture manifest: " + ManifestError.message(e))
+    case Err(e) -> panic("cannot parse fixture manifest: " + Mf.ManifestError.message(e))
   }
 
   // Normalized to the underlying value (defaulting absent to ""), matching
@@ -481,7 +481,7 @@ test "resolveManifestDependencies: a { workspace = true } dependency's source is
   }
   val consumerManifest = match Mf.parseManifest(consumerMfText, consumerMfPath) {
     case Ok(m) -> m
-    case Err(e) -> panic("cannot parse consumer manifest: " + ManifestError.message(e))
+    case Err(e) -> panic("cannot parse consumer manifest: " + Mf.ManifestError.message(e))
   }
 
   val noFeatures: List[String] = newList()

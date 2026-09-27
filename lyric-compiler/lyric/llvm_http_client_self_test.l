@@ -113,7 +113,7 @@ func compileAndRunNative(source: in String): RunOutcome {
   }
   val dir = Path.join(tempBase(), "lyric-llvm-http-client-selftest")
   val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + uuidToString(newUuid()))
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags, newList(), "") {

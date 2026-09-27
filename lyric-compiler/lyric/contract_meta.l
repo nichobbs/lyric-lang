@@ -371,6 +371,14 @@ pub record Contract {
   /// scope, not the consumer's (D-progress-946).  Optional in the JSON form
   /// (absent means empty), so older contracts still parse.
   imports: List[String]
+  /// The subset of `imports` the package imports whole (`import P`), whose
+  /// names a consumer that imports this package whole also sees bare
+  /// (docs/01 §9.2, D141).  A contract written before the key existed reads
+  /// it as `imports`, the rule's behaviour before it told the forms apart.
+  wholeImports: List[String]
+  /// The names the package imports selectively, one `<package>::<name>`
+  /// entry per listed name (`import P.{f, T}` gives `P::f` and `P::T`).
+  selectedImports: List[String]
   /// SHA256 hash of this contract's JSON (format v3+; absent in v1-v2).
   contractHash: String
   // JsonValueKind ordinals (matches `System.Text.Json.JsonValueKind`):
@@ -557,6 +565,11 @@ func parseFromRoot(root: in JsonElement): Option[Contract] {
       decls = decls,
       dependencies = getDependencies(root),
       imports = getStrArray(root, "imports"),
+      wholeImports = match tryGetProperty(root, "wholeImports") {
+        case Some(_) -> getStrArray(root, "wholeImports")
+        case None -> getStrArray(root, "imports")
+      },
+      selectedImports = getStrArray(root, "selectedImports"),
       contractHash = getStr(root, "contractHash", "")
     )
   )
@@ -760,6 +773,10 @@ pub func contractToJson(c: in Contract): String {
 
   if c.imports.count > 0 {
     sb = sb + "  \"imports\": " + renderStringArray(c.imports) + ",\n"
+    sb = sb + "  \"wholeImports\": " + renderStringArray(c.wholeImports) + ",\n"
+    if c.selectedImports.count > 0 {
+      sb = sb + "  \"selectedImports\": " + renderStringArray(c.selectedImports) + ",\n"
+    }
   }
 
   sb = sb + "  \"decls\": [\n"
@@ -1812,8 +1829,57 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     decls = decls,
     dependencies = newList(),
     imports = contractImportsOf(file),
+    wholeImports = contractWholeImportsOf(file),
+    selectedImports = contractSelectedImportsOf(file),
     contractHash = ""
   )
+}
+
+// The dotted paths of the packages `file` imports whole.
+func contractWholeImportsOf(file: in SourceFile): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < file.imports.count {
+    val imp = file.imports[i]
+    val whole = match imp.selector {
+      case Some(_) -> false
+      case None -> match imp.asAlias { case Some(_) -> false; case None -> true }
+    }
+    if not imp.isExtern and whole {
+      acc.add(joinDots(imp.path.segments))
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// `<package>::<name>` for each name `file` imports selectively.
+func contractSelectedImportsOf(file: in SourceFile): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < file.imports.count {
+    val imp = file.imports[i]
+    if not imp.isExtern {
+      match imp.selector {
+        case Some(sel) -> {
+          val items: List[ImportItem] = match sel {
+            case ISGroup(group) -> group
+            case ISSingle(one) -> {
+              val single: List[ImportItem] = newList()
+              single.add(one)
+              single
+            }
+          }
+          for item in items {
+            acc.add(joinDots(imp.path.segments) + "::" + item.name)
+          }
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  acc
 }
 
 // The dotted paths of `file`'s package imports (`import extern` excluded).

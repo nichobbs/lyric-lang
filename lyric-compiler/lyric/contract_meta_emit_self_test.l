@@ -39,6 +39,8 @@ func testEmitSimpleContract(): Unit {
     decls = [decl],
     dependencies = [],
     imports = [],
+    wholeImports = [],
+    selectedImports = [],
     contractHash = ""
   )
 
@@ -78,6 +80,8 @@ func testHashConsistency(): Unit {
     decls = [decl],
     dependencies = [],
     imports = [],
+    wholeImports = [],
+    selectedImports = [],
     contractHash = ""
   )
 
@@ -89,6 +93,8 @@ func testHashConsistency(): Unit {
     decls = [decl],
     dependencies = [],
     imports = [],
+    wholeImports = [],
+    selectedImports = [],
     contractHash = ""
   )
 

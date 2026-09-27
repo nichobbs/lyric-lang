@@ -1657,7 +1657,8 @@ func importedGenericsPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPGen.Core",
-      "package EPGen.Core\n" + "\n" + "import EPGen.Util.{twice}\n" + "\n" + "pub union Node[M] {\n" +
+      "package EPGen.Core\nimport Std.Collections\n" + "\n" + "import EPGen.Util.{twice}\n" + "\n" +
+        "pub union Node[M] {\n" +
         "  case Leaf(label: String)\n" +
         "  case Act(label: String, msg: M)\n" +
         "}\n" +
@@ -1694,7 +1695,10 @@ func importedGenericsPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPGen.App",
-      "package EPGen.App\n" + "\n" + "import EPGen.Core as C\n" + "\n" + "union Msg {\n" + "  case Go\n" + "}\n" + "\n" +
+      "package EPGen.App\nimport Std.Collections\n" + "\n" + "import EPGen.Core as C\n" + "\n" + "union Msg {\n" +
+        "  case Go\n" +
+        "}\n" +
+        "\n" +
         "func main(): Unit {\n" +
         "  val xs: List[C.Node[Msg]] = newList()\n" +
         "  xs.add(C.leaf(\"a\"))\n" +
@@ -1733,7 +1737,8 @@ func genericResultPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPRes.App",
-      "package EPRes.App\n" + "\n" + "import EPRes.Lib.{tally, pairOf}\n" + "\n" + "record LocalPair[T] {\n" +
+      "package EPRes.App\nimport Std.Collections\n" + "\n" + "import EPRes.Lib.{tally, pairOf}\n" + "\n" +
+        "record LocalPair[T] {\n" +
         "  first: T\n" +
         "  n: Int\n" +
         "}\n" +
@@ -1751,7 +1756,10 @@ func genericResultPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPRes.Lib",
-      "package EPRes.Lib\n" + "\n" + "pub record Tally[T] {\n" + "  items: List[T]\n" + "  count: Int\n" + "}\n" + "\n" +
+      "package EPRes.Lib\nimport Std.Collections\n" + "\n" + "pub record Tally[T] {\n" + "  items: List[T]\n" +
+        "  count: Int\n" +
+        "}\n" +
+        "\n" +
         "pub record Pair[T] {\n" +
         "  first: T\n" +
         "  n: Int\n" +
@@ -1795,7 +1803,7 @@ func genericFieldFnPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPFx.App",
-      "package EPFx.App\n" + "\n" +
+      "package EPFx.App\nimport Std.Collections\n" + "\n" +
         "import EPFx.Core.{Effect, Go, Stay, Found, Hit, Miss, Program, describe, describeFn}\n" +
         "\n" +
         "union Msg {\n" +
@@ -1827,7 +1835,10 @@ func genericFieldFnPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPFx.Core",
-      "package EPFx.Core\n" + "\n" + "pub union Found[T] {\n" + "  case Hit(v: T)\n" + "  case Miss\n" + "}\n" + "\n" +
+      "package EPFx.Core\nimport Std.Collections\n" + "\n" + "pub union Found[T] {\n" + "  case Hit(v: T)\n" +
+        "  case Miss\n" +
+        "}\n" +
+        "\n" +
         "pub union Effect[Msg] {\n" +
         "  case Go(url: String)\n" +
         "  case Stay\n" +
@@ -1911,7 +1922,8 @@ func genericHandlerPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPHd.App",
-      "package EPHd.App\n" + "\n" + "import EPHd.Core.{Handler, OnClick, OnInput, inputHandlers, clickHandlers}\n" +
+      "package EPHd.App\nimport Std.Collections\n" + "\n" +
+        "import EPHd.Core.{Handler, OnClick, OnInput, inputHandlers, clickHandlers}\n" +
         "\n" +
         "union Msg {\n" +
         "  case Typed(s: String)\n" +
@@ -1941,7 +1953,7 @@ func genericHandlerPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPHd.Core",
-      "package EPHd.Core\n" + "\n" + "pub union Handler[Msg] {\n" + "  case OnClick(msg: Msg)\n" +
+      "package EPHd.Core\nimport Std.Collections\n" + "\n" + "pub union Handler[Msg] {\n" + "  case OnClick(msg: Msg)\n" +
         "  case OnInput(toMsg: (String) -> Msg)\n" +
         "}\n" +
         "\n" +
@@ -1984,7 +1996,8 @@ func ownOverloadPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPOv.App",
-      "package EPOv.App\n" + "\n" + "import EPOv.Core.{Box, Full, Empty, Hit, Miss, findFirst}\n" +
+      "package EPOv.App\nimport Std.Collections\n" + "\n" +
+        "import EPOv.Core.{Box, Full, Empty, Hit, Miss, findFirst}\n" +
         "import EPOv.Other\n" +
         "\n" +
         "func main(): Unit {\n" +
@@ -2004,7 +2017,8 @@ func ownOverloadPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPOv.Core",
-      "package EPOv.Core\n" + "\n" + "pub enum Kind {\n" + "  case A\n" + "  case B\n" + "}\n" + "\n" +
+      "package EPOv.Core\nimport Std.Collections\n" + "\n" + "pub enum Kind {\n" + "  case A\n" + "  case B\n" + "}\n" +
+        "\n" +
         "pub union Box[T] {\n" +
         "  case Full(value: T, children: List[Box[T]])\n" +
         "  case Empty\n" +
@@ -2034,7 +2048,8 @@ func ownOverloadPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPOv.Other",
-      "package EPOv.Other\n" + "\n" + "pub func findAll(node: in String, tag: in String): List[String] {\n" +
+      "package EPOv.Other\nimport Std.Collections\n" + "\n" +
+        "pub func findAll(node: in String, tag: in String): List[String] {\n" +
         "  val acc: List[String] = newList()\n" +
         "  acc.add(node + tag)\n" +
         "  return acc\n" +
@@ -2585,13 +2600,12 @@ test "emitProject a bare constructor resolves through a selective import (JVM)" 
   assertEqual(Str.trim(result.stdout), "n not in 0..10", "ctor import JVM: output")
 }
 
-// A bare constructor resolves through the declaring package's imports in
-// every import form the type checker counts — here an aliased one — both in
-// a package's own code and in a specialised copy of its generic compiled
-// into another package (D139).  `EPSg.Other`, registered first and never
-// imported by `EPSg.Lib`, also declares `Square`; before this both forms
-// bound to its case.  Each constructor is bound to an unannotated local so
-// no expected type steers it.
+// A bare constructor resolves through the declaring package's whole imports,
+// both in a package's own code and in a specialised copy of its generic
+// compiled into another package (D139, docs/01 §9.2).  `EPSg.Other`,
+// registered first and never imported by `EPSg.Lib`, also declares `Square`;
+// before this both forms bound to its case.  Each constructor is bound to an
+// unannotated local so no expected type steers it.
 func specialisedCtorScopePkgs(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(
@@ -2626,12 +2640,12 @@ func specialisedCtorScopePkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPSg.Lib",
-      "package EPSg.Lib\n" + "\n" + "import EPSg.Shapes as S\n" + "\n" + "pub func wrap[T](x: in T): S.Shape {\n" +
+      "package EPSg.Lib\n" + "\n" + "import EPSg.Shapes\n" + "\n" + "pub func wrap[T](x: in T): Shape {\n" +
         "  val made = Square(side = 4)\n" +
         "  made\n" +
         "}\n" +
         "\n" +
-        "pub func direct(): S.Shape {\n" +
+        "pub func direct(): Shape {\n" +
         "  val made = Square(side = 5)\n" +
         "  made\n" +
         "}\n"
@@ -2640,14 +2654,679 @@ func specialisedCtorScopePkgs(): List[Emitter.ProjectPackage] {
   pkgs
 }
 
-test "emitProject a bare constructor resolves through an aliased import, directly and specialised (JVM)" {
+test "emitProject a bare constructor resolves through a whole import, directly and specialised (JVM)" {
   val result = runEmitProjectJvmOpts("emitproj-sgctor-jvm", specialisedCtorScopePkgs(), "EPSg")
-  assertEqualInt(result.exitCode, 0, "aliased-import ctor JVM: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "4\n5", "aliased-import ctor JVM: output")
+  assertEqualInt(result.exitCode, 0, "whole-import ctor JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "4\n5", "whole-import ctor JVM: output")
 }
 
-test "emitProject a bare constructor resolves through an aliased import, directly and specialised (MSIL)" {
+test "emitProject a bare constructor resolves through a whole import, directly and specialised (MSIL)" {
   val result = runEmitProject("emitproj-sgctor", specialisedCtorScopePkgs(), "EPSg")
-  assertEqualInt(result.exitCode, 0, "aliased-import ctor MSIL: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "4\n5", "aliased-import ctor MSIL: output")
+  assertEqualInt(result.exitCode, 0, "whole-import ctor MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "4\n5", "whole-import ctor MSIL: output")
+}
+
+// A bare constructor means the whole import's case even when an aliased
+// import declares the same name (docs/01 §9.2, D141): `Square` below is
+// `EPAx.Shapes.Square`, and `EPAx.Marks.Square`, registered first, is reached
+// only as `MA.Square`.  Both targets must agree with the type checker.
+func aliasedCtorCollisionPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPAx.Marks",
+      "package EPAx.Marks\n" + "\n" + "pub union Mark {\n" + "  case Square(n: Int)\n" + "  case Blank\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPAx.Shapes",
+      "package EPAx.Shapes\n" + "\n" + "pub union Shape {\n" + "  case Square(side: Int)\n" + "  case Dot\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPAx.App",
+      "package EPAx.App\n" + "\n" + "import EPAx.Marks as MA\n" + "import EPAx.Shapes\n" + "\n" +
+        "func sideOf(s: in Shape): Int {\n" +
+        "  match s {\n" +
+        "    case Square(n) -> n\n" +
+        "    case Dot -> 0\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func markOf(m: in MA.Mark): Int {\n" +
+        "  match m {\n" +
+        "    case Square(n) -> n\n" +
+        "    case Blank -> 0\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val s = Square(side = 3)\n" +
+        "  val m = MA.Square(n = 4)\n" +
+        "  println(sideOf(s))\n" +
+        "  println(markOf(m))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a bare constructor ignores an aliased import's same-named case (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-aliasctor-jvm", aliasedCtorCollisionPkgs(), "EPAx")
+  assertEqualInt(result.exitCode, 0, "aliased ctor collision JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "3\n4", "aliased ctor collision JVM: output")
+}
+
+test "emitProject a bare constructor ignores an aliased import's same-named case (MSIL)" {
+  val result = runEmitProject("emitproj-aliasctor", aliasedCtorCollisionPkgs(), "EPAx")
+  assertEqualInt(result.exitCode, 0, "aliased ctor collision MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "3\n4", "aliased ctor collision MSIL: output")
+}
+
+// A bare case of a union listed in a selective import resolves in that
+// package (docs/01 §9.2, D141, #7537): `EPSu.Marks`, registered first, also
+// declares a case `Square`.
+func selectiveUnionCtorPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPSu.Marks",
+      "package EPSu.Marks\n" + "\n" + "pub union Mark {\n" + "  case Square(n: Int)\n" + "  case Blank\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSu.Shapes",
+      "package EPSu.Shapes\n" + "\n" + "pub union Shape {\n" + "  case Square(side: Int)\n" + "  case Dot\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSu.App",
+      "package EPSu.App\n" + "\n" + "import EPSu.Shapes.{Shape}\n" + "\n" + "func sideOf(s: in Shape): Int {\n" +
+        "  match s {\n" +
+        "    case Square(n) -> n\n" +
+        "    case Dot -> 0\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val s = Square(side = 3)\n" +
+        "  println(sideOf(s))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a bare case of a selectively imported union resolves in its package (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-selunion-jvm", selectiveUnionCtorPkgs(), "EPSu")
+  assertEqualInt(result.exitCode, 0, "selunion JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "3", "selunion JVM: output")
+}
+
+test "emitProject a bare case of a selectively imported union resolves in its package (MSIL)" {
+  val result = runEmitProject("emitproj-selunion", selectiveUnionCtorPkgs(), "EPSu")
+  assertEqualInt(result.exitCode, 0, "selunion MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "3", "selunion MSIL: output")
+}
+
+// Enum case ordinals follow the scrutinee's declared type (#7538): `EPEn.C`,
+// registered first, declares a `Mode` with the opposite case order; the
+// value is typed through an aliased import, and a whole import of `EPEn.C`
+// makes its own `Mode` the bare one.
+func aliasedEnumOrdinalPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg("EPEn.C", "package EPEn.C\n" + "\n" + "pub enum Mode {\n" + "  case Fast\n" + "  case Slow\n" + "}\n")
+  )
+  pkgs.add(
+    mkProjectPkg("EPEn.B", "package EPEn.B\n" + "\n" + "pub enum Mode {\n" + "  case Slow\n" + "  case Fast\n" + "}\n")
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPEn.App",
+      "package EPEn.App\n" + "\n" + "import EPEn.B as B\n" + "import EPEn.C\n" + "\n" +
+        "func code(m: in B.Mode): Int {\n" +
+        "  match m {\n" +
+        "    case Fast -> 1\n" +
+        "    case _ -> 2\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val m: B.Mode = B.Fast\n" +
+        "  println(code(m))\n" +
+        "  val local: B.Mode = B.Slow\n" +
+        "  println(match local { case Fast -> 1; case _ -> 2 })\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject enum case ordinals follow an aliased import's declared type (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-aliasenum-jvm", aliasedEnumOrdinalPkgs(), "EPEn")
+  assertEqualInt(result.exitCode, 0, "aliasenum JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n2", "aliasenum JVM: output")
+}
+
+test "emitProject enum case ordinals follow an aliased import's declared type (MSIL)" {
+  val result = runEmitProject("emitproj-aliasenum", aliasedEnumOrdinalPkgs(), "EPEn")
+  assertEqualInt(result.exitCode, 0, "aliasenum MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n2", "aliasenum MSIL: output")
+}
+
+// A selective import admits only its listed names (#7539): `EPSt.A` is
+// imported for `foo` alone, so the bare `Widget` is `EPSt.H`'s, reached
+// transitively through the whole import of `EPSt.W`.
+func selectiveVsTransitivePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPSt.A",
+      "package EPSt.A\n" + "\n" + "pub record Widget {\n" + "  tag: String\n" + "}\n" + "\n" + "pub func foo(): Int {\n" +
+        "  7\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(mkProjectPkg("EPSt.H", "package EPSt.H\n" + "\n" + "pub record Widget {\n" + "  id: Int\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPSt.W",
+      "package EPSt.W\n" + "\n" + "import EPSt.H\n" + "\n" + "pub func idOf(w: in Widget): Int {\n" + "  w.id\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSt.App",
+      "package EPSt.App\n" + "\n" + "import EPSt.A.{foo}\n" + "import EPSt.W\n" + "\n" + "func main(): Unit {\n" +
+        "  val w = Widget(id = 5)\n" +
+        "  println(idOf(w))\n" +
+        "  println(foo())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a selective import's unlisted name leaves a transitive name bare (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-seltrans-jvm", selectiveVsTransitivePkgs(), "EPSt")
+  assertEqualInt(result.exitCode, 0, "seltrans JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "5\n7", "seltrans JVM: output")
+}
+
+test "emitProject a selective import's unlisted name leaves a transitive name bare (MSIL)" {
+  val result = runEmitProject("emitproj-seltrans", selectiveVsTransitivePkgs(), "EPSt")
+  assertEqualInt(result.exitCode, 0, "seltrans MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "5\n7", "seltrans MSIL: output")
+}
+
+// A bare call binds to the function its file's imports make visible (docs/01
+// §9.2, D141, #7551): `EPFn.B` is imported selectively for `g` only and
+// `EPFn.C` through an alias, so a bare `f` is `EPFn.A.f` even though both
+// later imports declare an `f` too.
+func bareFuncCollisionPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("EPFn.A", "package EPFn.A\n" + "\n" + "pub func f(): Int {\n" + "  1\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPFn.B",
+      "package EPFn.B\n" + "\n" + "pub func f(): Int {\n" + "  2\n" + "}\n" + "\n" + "pub func g(): Int {\n" + "  20\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(mkProjectPkg("EPFn.C", "package EPFn.C\n" + "\n" + "pub func f(): Int {\n" + "  3\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPFn.App",
+      "package EPFn.App\n" + "\n" + "import EPFn.A\n" + "import EPFn.B.{g}\n" + "import EPFn.C as Cq\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  println(f())\n" +
+        "  println(g())\n" +
+        "  println(Cq.f())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a bare call ignores selective and aliased imports that do not list it (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-barefn-jvm", bareFuncCollisionPkgs(), "EPFn")
+  assertEqualInt(result.exitCode, 0, "barefn JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n20\n3", "barefn JVM: output")
+}
+
+test "emitProject a bare call ignores selective and aliased imports that do not list it (MSIL)" {
+  val result = runEmitProject("emitproj-barefn", bareFuncCollisionPkgs(), "EPFn")
+  assertEqualInt(result.exitCode, 0, "barefn MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n20\n3", "barefn MSIL: output")
+}
+
+// A selective import may list a case itself (#7560): `Square` here is
+// `EPCs.A`'s, not the nullary `Square` of `EPCs.D`, which the whole import of
+// `EPCs.C` reaches only transitively.
+func selectiveCaseNamePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPCs.D",
+      "package EPCs.D\n" + "\n" + "pub union Box {\n" + "  case Square\n" + "  case Round\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPCs.C",
+      "package EPCs.C\n" + "\n" + "import EPCs.D\n" + "\n" + "pub func boxed(): Box {\n" + "  Round\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPCs.A",
+      "package EPCs.A\n" + "\n" + "pub union Shape {\n" + "  case Square(side: Int)\n" + "}\n" + "\n" +
+        "pub func sideOf(s: in Shape): Int {\n" +
+        "  match s {\n" +
+        "    case Square(n) -> n\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPCs.App",
+      "package EPCs.App\n" + "\n" + "import EPCs.A.{Square, sideOf}\n" + "import EPCs.C\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  println(sideOf(Square(side = 4)))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a selectively imported case name resolves in its package (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-selcase-jvm", selectiveCaseNamePkgs(), "EPCs")
+  assertEqualInt(result.exitCode, 0, "selcase JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "4", "selcase JVM: output")
+}
+
+test "emitProject a selectively imported case name resolves in its package (MSIL)" {
+  val result = runEmitProject("emitproj-selcase", selectiveCaseNamePkgs(), "EPCs")
+  assertEqualInt(result.exitCode, 0, "selcase MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "4", "selcase MSIL: output")
+}
+
+// A qualified case resolves in the package its qualifier names before a
+// union that merely shares the qualifier's last segment (#7561):
+// `MQ.Square` is `EPQc.Marks`'s, not the case of `EPQc.Other`'s union
+// `Marks`.
+func qualifiedCasePackagePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPQc.Other",
+      "package EPQc.Other\n" + "\n" + "pub union Marks {\n" + "  case Square\n" + "  case Plain\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPQc.Marks",
+      "package EPQc.Marks\n" + "\n" + "pub union Shape {\n" + "  case Square(side: Int)\n" + "  case Dot\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPQc.App",
+      "package EPQc.App\n" + "\n" + "import EPQc.Marks as MQ\n" + "import EPQc.Other\n" + "\n" +
+        "func sideOf(s: in MQ.Shape): Int {\n" +
+        "  match s {\n" +
+        "    case MQ.Square(n) -> n\n" +
+        "    case MQ.Dot -> 0\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  println(sideOf(MQ.Square(side = 6)))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a qualified case resolves in the package its qualifier names (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-qualcase-jvm", qualifiedCasePackagePkgs(), "EPQc")
+  assertEqualInt(result.exitCode, 0, "qualcase JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "6", "qualcase JVM: output")
+}
+
+test "emitProject a qualified case resolves in the package its qualifier names (MSIL)" {
+  val result = runEmitProject("emitproj-qualcase", qualifiedCasePackagePkgs(), "EPQc")
+  assertEqualInt(result.exitCode, 0, "qualcase MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "6", "qualcase MSIL: output")
+}
+
+// An awaited bare call resolves the same way in the async pre-scan as in
+// emission (#7562): `load` is `EPAw.S`'s (a String), not the aliased
+// `EPAw.P`'s (an Int).
+func asyncBareCallPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("EPAw.P", "package EPAw.P\n" + "\n" + "pub async func load(): Int {\n" + "  1\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg("EPAw.S", "package EPAw.S\n" + "\n" + "pub async func load(): String {\n" + "  \"from S\"\n" + "}\n")
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPAw.App",
+      "package EPAw.App\n" + "\n" + "import EPAw.P as Q\n" + "import EPAw.S.{load}\n" + "\n" +
+        "async func run(): String {\n" +
+        "  val v = await load()\n" +
+        "  v + \"!\"\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  println(await run())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject an awaited bare call ignores an aliased import in the async pre-scan (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-asyncbare-jvm", asyncBareCallPkgs(), "EPAw")
+  assertEqualInt(result.exitCode, 0, "asyncbare JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "from S!", "asyncbare JVM: output")
+}
+
+test "emitProject an awaited bare call ignores an aliased import in the async pre-scan (MSIL)" {
+  val result = runEmitProject("emitproj-asyncbare", asyncBareCallPkgs(), "EPAw")
+  assertEqualInt(result.exitCode, 0, "asyncbare MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "from S!", "asyncbare MSIL: output")
+}
+
+// A directly imported function shadows one reached only transitively, even
+// when the transitive one registered first (#7567, #7570): `foo` is
+// `EPDt.D`'s.
+func directOverTransitiveCallPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("EPDt.C", "package EPDt.C\n" + "\n" + "pub func foo(): Int {\n" + "  1\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPDt.T",
+      "package EPDt.T\n" + "\n" + "import EPDt.C\n" + "\n" + "pub func viaT(): Int {\n" + "  foo()\n" + "}\n"
+    )
+  )
+  pkgs.add(mkProjectPkg("EPDt.D", "package EPDt.D\n" + "\n" + "pub func foo(): String {\n" + "  \"direct\"\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPDt.App",
+      "package EPDt.App\n" + "\n" + "import EPDt.T\n" + "import EPDt.D\n" + "\n" + "func main(): Unit {\n" +
+        "  println(foo())\n" +
+        "  println(viaT())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a direct import's function shadows a transitive one (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-directcall-jvm", directOverTransitiveCallPkgs(), "EPDt")
+  assertEqualInt(result.exitCode, 0, "directcall JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "direct\n1", "directcall JVM: output")
+}
+
+test "emitProject a direct import's function shadows a transitive one (MSIL)" {
+  val result = runEmitProject("emitproj-directcall", directOverTransitiveCallPkgs(), "EPDt")
+  assertEqualInt(result.exitCode, 0, "directcall MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "direct\n1", "directcall MSIL: output")
+}
+
+// Another package's package-private function never answers a bare call
+// (#7568): `helper` is `EPPv.V`'s, not the private one in `EPPv.W`.
+func privateHelperPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg("EPPv.V", "package EPPv.V\n" + "\n" + "pub func helper(x: in Int): Int {\n" + "  x + 1\n" + "}\n")
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPPv.W",
+      "package EPPv.W\n" + "\n" + "func helper(x: in Int): Int {\n" + "  x + 2\n" + "}\n" + "\n" +
+        "pub func useW(): Int {\n" +
+        "  helper(0)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPPv.App",
+      "package EPPv.App\n" + "\n" + "import EPPv.V\n" + "import EPPv.W\n" + "\n" + "func main(): Unit {\n" +
+        "  println(helper(1))\n" +
+        "  println(useW())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a bare call never binds another package's private function (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-privhelper-jvm", privateHelperPkgs(), "EPPv")
+  assertEqualInt(result.exitCode, 0, "privhelper JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2\n2", "privhelper JVM: output")
+}
+
+test "emitProject a bare call never binds another package's private function (MSIL)" {
+  val result = runEmitProject("emitproj-privhelper", privateHelperPkgs(), "EPPv")
+  assertEqualInt(result.exitCode, 0, "privhelper MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2\n2", "privhelper MSIL: output")
+}
+
+// A bare call inside a specialised copy of another package's generic
+// resolves as in that package (#7569): `EPOg.Origin` imports `EPOg.P` only
+// for `g`, so `f` there is `EPOg.H`'s, reached through `EPOg.W`.
+func originScopedCallPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPOg.P",
+      "package EPOg.P\n" + "\n" + "pub func f(): Int {\n" + "  1\n" + "}\n" + "\n" + "pub func g(): Int {\n" + "  99\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(mkProjectPkg("EPOg.H", "package EPOg.H\n" + "\n" + "pub func f(): Int {\n" + "  2\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPOg.W",
+      "package EPOg.W\n" + "\n" + "import EPOg.H\n" + "\n" + "pub func w(): Int {\n" + "  0\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPOg.Origin",
+      "package EPOg.Origin\n" + "\n" + "import EPOg.P.{g}\n" + "import EPOg.W\n" + "\n" +
+        "pub func wrap[T](x: in T): Int {\n" +
+        "  f() + g()\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPOg.App",
+      "package EPOg.App\n" + "\n" + "import EPOg.Origin\n" + "\n" + "func main(): Unit {\n" + "  println(wrap(1))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a specialised generic's bare call honours its package's selective import (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-origincall-jvm", originScopedCallPkgs(), "EPOg")
+  assertEqualInt(result.exitCode, 0, "origincall JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "101", "origincall JVM: output")
+}
+
+test "emitProject a specialised generic's bare call honours its package's selective import (MSIL)" {
+  val result = runEmitProject("emitproj-origincall", originScopedCallPkgs(), "EPOg")
+  assertEqualInt(result.exitCode, 0, "origincall MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "101", "origincall MSIL: output")
+}
+
+// The entry package registers first, before the packages it reaches (#7571):
+// `f` is found through `EPEo.Mid`'s whole import of `EPEo.Base`.
+func entryFirstChainPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPEo.App",
+      "package EPEo.App\n" + "\n" + "import EPEo.Mid\n" + "\n" + "func main(): Unit {\n" + "  println(f() + mid())\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPEo.Mid",
+      "package EPEo.Mid\n" + "\n" + "import EPEo.Base\n" + "\n" + "pub func mid(): Int {\n" + "  f() * 10\n" + "}\n"
+    )
+  )
+  pkgs.add(mkProjectPkg("EPEo.Base", "package EPEo.Base\n" + "\n" + "pub func f(): Int {\n" + "  4\n" + "}\n"))
+  pkgs
+}
+
+test "emitProject a transitive name resolves when the entry package registers first (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-entryfirst-jvm", entryFirstChainPkgs(), "EPEo")
+  assertEqualInt(result.exitCode, 0, "entryfirst JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "44", "entryfirst JVM: output")
+}
+
+test "emitProject a transitive name resolves when the entry package registers first (MSIL)" {
+  val result = runEmitProject("emitproj-entryfirst", entryFirstChainPkgs(), "EPEo")
+  assertEqualInt(result.exitCode, 0, "entryfirst MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "44", "entryfirst MSIL: output")
+}
+
+// A case qualified by a bare union name resolves to the union the file sees
+// bare (#7561): `Shape.Square` is `EPUq.A`'s; `EPUq.B`, imported only through
+// an alias and registered first, declares a `Shape` with a `Square` too.
+func unionQualifiedCasePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPUq.B",
+      "package EPUq.B\n" + "\n" + "pub union Shape {\n" + "  case Square(label: String)\n" + "  case Other\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPUq.A",
+      "package EPUq.A\n" + "\n" + "pub union Shape {\n" + "  case Square(side: Int)\n" + "  case Dot\n" + "}\n" + "\n" +
+        "pub func sideOf(s: in Shape): Int {\n" +
+        "  match s {\n" +
+        "    case Square(n) -> n\n" +
+        "    case Dot -> 0\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPUq.App",
+      "package EPUq.App\n" + "\n" + "import EPUq.B as BB\n" + "import EPUq.A\n" + "\n" + "func main(): Unit {\n" +
+        "  println(sideOf(Shape.Square(side = 8)))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a union-qualified case resolves to the union the file sees bare (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-unionqual-jvm", unionQualifiedCasePkgs(), "EPUq")
+  assertEqualInt(result.exitCode, 0, "unionqual JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "8", "unionqual JVM: output")
+}
+
+test "emitProject a union-qualified case resolves to the union the file sees bare (MSIL)" {
+  val result = runEmitProject("emitproj-unionqual", unionQualifiedCasePkgs(), "EPUq")
+  assertEqualInt(result.exitCode, 0, "unionqual MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "8", "unionqual MSIL: output")
+}
+
+// A package-private overload hides only its own arity (#7580): `EPPo.P`'s
+// public one-argument `f` still answers a bare call, not `EPPo.Q`'s, which
+// registered first.
+func privateOverloadPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("EPPo.Q", "package EPPo.Q\n" + "\n" + "pub func f(x: in Int): Int {\n" + "  0 - 999\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPPo.P",
+      "package EPPo.P\n" + "\n" + "pub func f(x: in Int): Int {\n" + "  x\n" + "}\n" + "\n" +
+        "func f(x: in Int, y: in Int): Int {\n" +
+        "  x + y\n" +
+        "}\n" +
+        "\n" +
+        "pub func g(): Int {\n" +
+        "  f(1, 1)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPPo.App",
+      "package EPPo.App\n" + "\n" + "import EPPo.P\n" + "\n" + "func main(): Unit {\n" + "  println(f(1))\n" +
+        "  println(g())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a private overload hides only its own arity (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-privoverload-jvm", privateOverloadPkgs(), "EPPo")
+  assertEqualInt(result.exitCode, 0, "privoverload JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n2", "privoverload JVM: output")
+}
+
+test "emitProject a private overload hides only its own arity (MSIL)" {
+  val result = runEmitProject("emitproj-privoverload", privateOverloadPkgs(), "EPPo")
+  assertEqualInt(result.exitCode, 0, "privoverload MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n2", "privoverload MSIL: output")
+}
+
+// A type reached through a chain of whole imports resolves in the package
+// the chain reaches even when the entry package registers first and an
+// unrelated package declaring the same name registers last (#7582).
+func entryFirstTypePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPEt.App",
+      "package EPEt.App\n" + "\n" + "import EPEt.B\n" + "\n" + "func make(): Item {\n" + "  Item(label = \"c\")\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  println(make().label)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPEt.B",
+      "package EPEt.B\n" + "\n" + "import EPEt.C\n" + "\n" + "pub func b(): Int {\n" + "  0\n" + "}\n"
+    )
+  )
+  pkgs.add(mkProjectPkg("EPEt.C", "package EPEt.C\n" + "\n" + "pub record Item {\n" + "  label: String\n" + "}\n"))
+  pkgs.add(mkProjectPkg("EPEt.E", "package EPEt.E\n" + "\n" + "pub record Item {\n" + "  count: Int\n" + "}\n"))
+  pkgs
+}
+
+test "emitProject a transitive type resolves when the entry package registers first (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-entrytype-jvm", entryFirstTypePkgs(), "EPEt")
+  assertEqualInt(result.exitCode, 0, "entrytype JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "c", "entrytype JVM: output")
+}
+
+test "emitProject a transitive type resolves when the entry package registers first (MSIL)" {
+  val result = runEmitProject("emitproj-entrytype", entryFirstTypePkgs(), "EPEt")
+  assertEqualInt(result.exitCode, 0, "entrytype MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "c", "entrytype MSIL: output")
 }

@@ -477,7 +477,7 @@ test "resolveManifestDependencies: a path dependency's unreadable source is fata
   }
   val appManifest = match Mf.parseManifest(appMfText, appMfPath) {
     case Ok(m) -> m
-    case Err(e) -> panic("cannot parse appBroken manifest: " + ManifestError.message(e))
+    case Err(e) -> panic("cannot parse appBroken manifest: " + Mf.ManifestError.message(e))
   }
 
   val noFeatures: List[String] = newList()

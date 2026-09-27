@@ -237,6 +237,9 @@ pub record SymbolTable {
   /// imports, so a caller that transitively imports an unrelated same-named
   /// `Item` from package B silently picks B's `Item` instead of A's.
   packageImports: Map[String, List[String]]
+  /// `<pkg>|<name>` -> whether `pkg` exports a function `name` to other
+  /// packages (`symTablePackageExportsFunc`), filled on first use.
+  funcExportCache: Map[String, Bool]
   /// Every validated record `.copy(...)` call, keyed by `recordCopySiteKey`
   /// of the call expression's span (see `Lyric.Parser.RecordCopySite`).
   recordCopySites: Map[String, RecordCopySite]
@@ -286,6 +289,20 @@ pub record SymbolTable {
   /// A compound assignment (`c += d`) whose target is distinct-typed, keyed
   /// by the statement's span, mapped to `<T>.from`.
   distinctCompoundSites: Map[String, String]
+  /// The package whose bare-name lookups obey its file's import list
+  /// (docs/01 §9.2, #7463), boxed as a 0/1-element list; empty = no
+  /// restriction.  Set for the file being checked only: an imported
+  /// package's signatures were checked under the same rule when that
+  /// package was itself compiled.
+  importRulePkg: List[String]
+  /// Packages whose every name is visible bare under `importRulePkg`: its
+  /// whole imports (no selector, no alias) and, transitively, each reached
+  /// package's own imports.
+  importVisiblePkgs: Map[String, Bool]
+  /// `<package>|<name>` for each name a selective import lists.
+  importVisibleNames: Map[String, Bool]
+  /// `<package>` -> the alias an `import P as Q` gives it.
+  importAliases: Map[String, String]
 }
 
 pub record ImplPair {
@@ -327,6 +344,7 @@ pub func newSymbolTable(): SymbolTable {
     symbolPackages = newMap(),
     symbolPackageMembers = newMap(),
     packageImports = newMap(),
+    funcExportCache = newMap(),
     recordCopySites = newMap(),
     invariantCtorSites = newMap(),
     funcRefSites = newMap(),
@@ -337,7 +355,11 @@ pub func newSymbolTable(): SymbolTable {
     typeSymbolsById = newMap(),
     typeSymbolsIndexed = newList(),
     distinctOpSites = newMap(),
-    distinctCompoundSites = newMap()
+    distinctCompoundSites = newMap(),
+    importRulePkg = newList(),
+    importVisiblePkgs = newMap(),
+    importVisibleNames = newMap(),
+    importAliases = newMap()
   )
 }
 
@@ -617,6 +639,24 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
   result
 }
 
+// `symTableTryFindAll` narrowed to the symbols a bare `name` may mean under
+// the current scope's import rule (docs/01 §9.2); every match when no rule
+// applies.
+pub func symTableTryFindAllVisible(tbl: in SymbolTable, name: in String): List[Symbol] {
+  val curPkg = symTableScopePkg(tbl)
+  val ruled = curPkg.length > 0 and symTableImportRuleApplies(tbl, curPkg)
+  val result: List[Symbol] = newList()
+  var i = 0
+  while i < tbl.symbols.count {
+    val s = tbl.symbols[i]
+    if s.name == name and (not ruled or symTableImportVisible(tbl, curPkg, s)) {
+      result.add(s)
+    }
+    i = i + 1
+  }
+  result
+}
+
 // Resolve `name` to a single symbol, honouring the current resolution scope.
 // Preference, highest first: (1) current package, (2) an imported package,
 // (3) any match (last-registered-wins).  A single newest-to-oldest pass keeps
@@ -624,37 +664,23 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
 // scope set every symbol's `originPackage` is empty, so only tier 3 fires —
 // byte-for-byte the historical behaviour.
 //
-// #6287 (reject-unimported resolution): a tier-3 restriction to
-// package-less (`originPackage == ""`) symbols was ATTEMPTED and reverted.
-// The stdlib's kernel/host re-export idiom (`Std.Collections` importing
-// `Std.CollectionsHost`, which declares `List`/`Map`) would need
-// `scopeImports` widened to its transitive closure to keep resolving under
-// such a restriction — but a full stdlib+ecosystem audit build surfaced a
-// second, much broader reliance even that widening does not cover:
-// `Option`/`Result` (`Std.Core`) are referenced across wide swaths of
-// `lyric-stdlib/std/` and the ecosystem with NO `import Std.Core` at all
-// (no explicit or transitive import path), i.e. treated as an implicit
-// prelude that predates any scoped-resolution tiering. Tightening tier 3 to
-// reject that is not a bounded, auditable fix for this issue — it would
-// require either auditing/adding `import Std.Core` across an unknown-sized
-// slice of the tree, or inventing a real prelude-injection mechanism.
-// Tier 3 stays fully permissive, unchanged; only the bare-name AMBIGUITY
-// diagnostic (`checkBareNameAmbiguity`, scoped to tier-2 imported-package
-// matches only, which does not touch tier 3 at all) ships from this issue's
-// "reject unimported" investigation. Tracked as a follow-up in #6703 (a
-// concrete two-option remediation plan: audit+widen imports tree-wide, or
-// a scoped Std.Core prelude exception). See docs/03-decision-log.md for
-// the full writeup.
+// Under the import rule of the file being checked (`symTableSetImportRule`,
+// docs/01 §9.2, D141) a candidate from another package counts only when the
+// file's imports make it visible bare, so tiers 2 and 3 never reach a name
+// that is unimported, behind an alias, or left out of a selective import
+// (#7463, #6703).  Internal lookups outside that scope (an imported
+// package's own signatures) stay unrestricted.
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
   val curPkg = symTableScopePkg(tbl)
   val hasScope = curPkg.length > 0
   val hasImports = tbl.scopeImports.count > 0
+  val ruled = hasScope and symTableImportRuleApplies(tbl, curPkg)
   var best2: Option[Symbol] = None
   var best3: Option[Symbol] = None
   var i = tbl.symbols.count - 1
   while i >= 0 {
     val s = tbl.symbols[i]
-    if s.name == name {
+    if s.name == name and (not ruled or symTableImportVisible(tbl, curPkg, s)) {
       if hasScope and s.originPackage == curPkg {
         return Some(value = s)
       }
@@ -680,6 +706,257 @@ pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol
   match best2 {
     case Some(_) -> best2
     case None -> best3
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4b. Import visibility (docs/01 §9.2, #7463).
+// ─────────────────────────────────────────────────────────────────────────────
+// Record the import rule for `pkg`: `whole` are its whole imports, already
+// widened to their transitive closure; `names` are `<package>|<name>` keys of
+// selectively imported names; `aliases` pairs each aliased package with its
+// alias.  From here on a bare lookup under `pkg`'s scope sees only these.
+pub func symTableSetImportRule(
+  tbl: in SymbolTable,
+  pkg: in String,
+  whole: in List[String],
+  names: in List[String],
+  aliasPkgs: in List[String],
+  aliasNames: in List[String],
+): Unit {
+  while tbl.importRulePkg.count > 0 {
+    tbl.importRulePkg.removeAt(tbl.importRulePkg.count - 1)
+  }
+  tbl.importRulePkg.add(pkg)
+  var i = 0
+  while i < whole.count {
+    if not tbl.importVisiblePkgs.containsKey(whole[i]) {
+      tbl.importVisiblePkgs.add(whole[i], true)
+    }
+    i = i + 1
+  }
+  var j = 0
+  while j < names.count {
+    if not tbl.importVisibleNames.containsKey(names[j]) {
+      tbl.importVisibleNames.add(names[j], true)
+    }
+    j = j + 1
+  }
+  var k = 0
+  while k < aliasPkgs.count and k < aliasNames.count {
+    if not tbl.importAliases.containsKey(aliasPkgs[k]) {
+      tbl.importAliases.add(aliasPkgs[k], aliasNames[k])
+    }
+    k = k + 1
+  }
+}
+
+func symTableImportRuleApplies(tbl: in SymbolTable, pkg: in String): Bool {
+  tbl.importRulePkg.count > 0 and tbl.importRulePkg[0] == pkg
+}
+
+// The implicit prelude: `Option` and `Result` from `Std.Core`, with their cases.
+func isPreludeName(name: in String): Bool {
+  name == "Option" or name == "Result"
+}
+
+// The name of the type a union or enum case belongs to, for a case symbol;
+// "" for any other symbol.
+func caseParentName(tbl: in SymbolTable, sym: in Symbol): String {
+  match sym.kind {
+    case DKUnionCase(pid, _) -> typeNameOfId(tbl, pid)
+    case DKEnumCase(pid, _) -> typeNameOfId(tbl, pid)
+    case _ -> ""
+  }
+}
+
+func typeNameOfId(tbl: in SymbolTable, tid: in TypeId): String {
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(parent) -> parent.name
+    case None -> ""
+  }
+}
+
+// Whether `sym` may be named bare from package `curPkg` under its import
+// rule.  A case is visible when its type is: `import P.{Color}` makes
+// `case Red ->` resolve.
+func symTableImportVisible(tbl: in SymbolTable, curPkg: in String, sym: in Symbol): Bool {
+  val origin = sym.originPackage
+  if origin.length == 0 or origin == curPkg or tbl.importVisiblePkgs.containsKey(origin) {
+    return true
+  }
+  if tbl.importVisibleNames.containsKey(origin + "|" + sym.name) {
+    return true
+  }
+  val parent = caseParentName(tbl, sym)
+  if origin == "Std.Core" {
+    val preludeName = if parent.length > 0 { parent } else { sym.name }
+    if isPreludeName(preludeName) {
+      return true
+    }
+  }
+  parent.length > 0 and tbl.importVisibleNames.containsKey(origin + "|" + parent)
+}
+
+// Whether a function `name` declared in `origin` may be called bare under
+// the current scope's import rule (functions resolve through the signature
+// map, not a `Symbol`, so this is the by-name form of the rule).
+pub func symTableBareFuncVisible(tbl: in SymbolTable, origin: in String, name: in String): Bool {
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
+    return true
+  }
+  origin.length == 0 or origin == curPkg or tbl.importVisiblePkgs.containsKey(origin) or
+    tbl.importVisibleNames.containsKey(origin + "|" + name)
+}
+
+// The resolution tier of a function `name` declared in `origin` for a bare
+// reference under the current scope, as `symTableTryFindOne` orders other
+// names: 0 for the current package (or no import rule), 1 for a direct
+// import, 2 for a package reached only transitively or the prelude, and -1
+// when the import rule hides it.  A lower tier shadows a higher one.
+pub func symTableBareFuncTier(tbl: in SymbolTable, origin: in String, name: in String): Int {
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) or origin.length == 0 or origin == curPkg {
+    return 0
+  }
+  if not symTableBareFuncVisible(tbl, origin, name) or not symTablePackageExportsFunc(tbl, origin, name) {
+    return -1
+  }
+  if symTableScopeAllows(tbl, origin) {
+    1
+  } else {
+    2
+  }
+}
+
+// Whether package `pkg`'s functions named `name` include one another package
+// may call (`pub` or `internal`); a name whose declarations there are all
+// package-private is never a bare-call candidate outside the package.  A
+// signature with no function symbol behind it (a synthesised one) counts.
+func symTablePackageExportsFunc(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
+  val key = pkg + "|" + name
+  match mapGet(tbl.funcExportCache, key) {
+    case Some(known) -> return known
+    case None -> ()
+  }
+  val exported = scanPackageExportsFunc(tbl, pkg, name)
+  tbl.funcExportCache.add(key, exported)
+  exported
+}
+
+func scanPackageExportsFunc(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
+  var sawFunc = false
+  var i = 0
+  while i < tbl.symbols.count {
+    val s = tbl.symbols[i]
+    if s.name == name and s.originPackage == pkg {
+      match s.kind {
+        case DKFunc(_) -> {
+          if symIsCrossPackageVisible(s) {
+            return true
+          }
+          sawFunc = true
+        }
+        case _ -> ()
+      }
+    }
+    i = i + 1
+  }
+  not sawFunc
+}
+
+// When a bare `name` failed to resolve only because the import rule hides
+// it, the hint that says how to import it (with a leading space); otherwise
+// "".  Used by the unknown-name diagnostics.
+pub func symTableHiddenImportHint(tbl: in SymbolTable, name: in String): String {
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
+    return ""
+  }
+  // Extern types carry no visibility, so the second pass accepts any
+  // declaration from another package.
+  var pass = 0
+  while pass < 2 {
+    val hint = hiddenImportHintPass(tbl, curPkg, name, pass == 0)
+    if hint.length > 0 {
+      return hint
+    }
+    pass = pass + 1
+  }
+  ""
+}
+
+// The package a file imports to reach `pkg`: for the kernel host naming
+// convention (`Std.XHost` behind `Std.X`) the public package when it is
+// loaded and imports the host, otherwise `pkg` itself.
+func publicPackageOf(tbl: in SymbolTable, pkg: in String): String {
+  if not pkg.endsWith("Host") {
+    return pkg
+  }
+  val home = pkg.substring(0, pkg.length - 4)
+  match mapGet(tbl.packageImports, home) {
+    case Some(imports) -> {
+      var i = 0
+      while i < imports.count {
+        if imports[i] == pkg {
+          return home
+        }
+        i = i + 1
+      }
+      pkg
+    }
+    case None -> pkg
+  }
+}
+
+func hiddenImportHintPass(tbl: in SymbolTable, curPkg: in String, name: in String, visibleOnly: Bool): String {
+  var i = tbl.symbols.count - 1
+  while i >= 0 {
+    val s = tbl.symbols[i]
+    if s.name == name and s.originPackage.length > 0 and s.originPackage != curPkg and (not visibleOnly or symIsCrossPackageVisible(s)) and not symTableImportVisible(tbl, curPkg, s) {
+      val origin = s.originPackage
+      match mapGet(tbl.importAliases, origin) {
+        case Some(alias) -> {
+          return " (declared in " + origin + ", imported as " + alias + "; write " + alias + "." + name + ")"
+        }
+        case None -> ()
+      }
+      val parentName = caseParentName(tbl, s)
+      val shown = if parentName.length > 0 { parentName } else { name }
+      // A kernel host package (`Std.CollectionsHost`) is imported through
+      // its public package (`Std.Collections`), whose whole import reaches it.
+      val home = publicPackageOf(tbl, origin)
+      if home != origin {
+        return " (declared in " + origin + "; add import " + home + ")"
+      }
+      return " (declared in " + origin + "; add import " + origin + " or import " + origin + ".{" + shown + "})"
+    }
+    i = i - 1
+  }
+  ""
+}
+
+// The interface a `where` constraint names: a bare name resolves in scope, a
+// package-qualified one (`Std.Log.Logger`, also what an aliased
+// `Log.Logger` becomes) in that package.
+pub func constraintInterfaceSym(tbl: in SymbolTable, name: in String): Option[Symbol] {
+  var dot = -1
+  var i = 0
+  while i < name.length {
+    if name.substring(i, 1) == "." {
+      dot = i
+    }
+    i = i + 1
+  }
+  val found = if dot > 0 {
+    symTableTryFindInPackage(tbl, name.substring(0, dot), name.substring(dot + 1))
+  } else {
+    symTableTryFindOne(tbl, name)
+  }
+  match found {
+    case Some(sym) -> match sym.kind { case DKInterface(_, _) -> found; case _ -> None }
+    case None -> None
   }
 }
 
@@ -721,17 +998,38 @@ pub func symTableAmbiguousImportPackages(tbl: in SymbolTable, name: in String): 
       ci = ci + 1
     }
   }
+  // A candidate the import rule hides cannot be meant by a bare reference.
+  // Under the rule a package reached only through a whole import's own
+  // imports is as visible as a direct one, so two such packages collide too;
+  // a directly imported candidate still shadows every transitive one, as it
+  // does in `symTableTryFindOne`.
+  val ruled = curPkg.length > 0 and symTableImportRuleApplies(tbl, curPkg)
+  val transitive: List[String] = newList()
   val seen: Map[String, Bool] = newMap()
   var i = 0
   while i < tbl.symbols.count {
     val s = tbl.symbols[i]
-    if s.name == name and s.originPackage != curPkg and symIsCrossPackageVisible(s) and symTableScopeAllows(tbl, s.originPackage) {
+    if s.name == name and s.originPackage != curPkg and symIsCrossPackageVisible(s) and (not ruled or symTableImportVisible(tbl, curPkg, s)) {
       if not seen.containsKey(s.originPackage) {
-        seen.add(s.originPackage, true)
-        pkgs.add(s.originPackage)
+        if symTableScopeAllows(tbl, s.originPackage) {
+          seen.add(s.originPackage, true)
+          pkgs.add(s.originPackage)
+        } else if ruled and s.originPackage.length > 0 {
+          seen.add(s.originPackage, true)
+          transitive.add(s.originPackage)
+        }
       }
     }
     i = i + 1
   }
-  pkgs
+  if pkgs.count > 0 {
+    return pkgs
+  }
+  transitive
+}
+
+// Whether `pkg` is one of the current scope's direct imports, as opposed to
+// a package it reaches through a whole import's own imports.
+pub func symTableIsDirectImport(tbl: in SymbolTable, pkg: in String): Bool {
+  symTableScopeAllows(tbl, pkg)
 }

@@ -11,6 +11,7 @@ import Std.Core
 import Forms.{FieldError}
 import Ui.Core.{Step, UiEffect, Navigate, Confirm, Notify, ToastLevel, stay, step1, stepAll}
 import Customers.Domain.{Customer, CustomerId, CustomerDraft, CustomerField, emptyCustomerDraft, toCustomerDraft, setCustomerField, validateCustomer}
+import Std.Collections
 
 pub union Status {
   case Loading

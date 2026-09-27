@@ -100,10 +100,10 @@ pub func buildWorkspaceDeps(
   // unconditionally, matching Jvm, until resolving dependency source into
   // the native bundle is designed (tracked in #6815 item 1).
   match target {
-    case Jvm -> {
+    case Emitter.Jvm -> {
       return (result, false, wsCtxOpt)
     }
-    case Native -> {
+    case Emitter.Native -> {
       return (result, false, wsCtxOpt)
     }
     case _ -> ()
@@ -264,7 +264,9 @@ pub func collectTransitiveDepDlls(
 /// unbuilt-dep diagnostics already cover the fatal cases; this is purely an
 /// additive source of symbols/templates for cross-package resolution.
 func collectDepTemplateSources(
-  depDir: in String, depName: in String, depTemplatePkgsList: in List[ProjectPackage]
+  depDir: in String,
+  depName: in String,
+  depTemplatePkgsList: in List[Emitter.ProjectPackage],
 ): Unit {
   val depToml = Path.join(depDir, "lyric.toml")
   match File.readText(depToml) {
@@ -315,7 +317,7 @@ func collectDepTemplateSources(
                   }
                 }
                 if srcList.count > 0 {
-                  depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList, paths = pathList))
+                  depTemplatePkgsList.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = pathList))
                 }
                 pki += 1
               }
@@ -387,10 +389,10 @@ func collectTransitiveDepSources(
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   target: in Emitter.CompileTarget,
-  pkgs: in List[ProjectPackage],
+  pkgs: in List[Emitter.ProjectPackage],
   features: in List[Pipe.PackageFeatureSet],
 ): Unit {
-  val wsCtx: Option[WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
+  val wsCtx: Option[Ws.WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
   val visited: List[String] = newList()
   visited.add(canonicalDir(mfDir))
   val queue: List[String] = newList()
@@ -469,7 +471,7 @@ func buildWorkspaceDep(
   }
 
   val depMf = match Mf.parseManifest(depMfText, depToml) {
-    case Err(e) -> return Err(error = "malformed lyric.toml: " + ManifestError.message(e))
+    case Err(e) -> return Err(error = "malformed lyric.toml: " + Mf.ManifestError.message(e))
     case Ok(m) -> m
   }
 
@@ -724,13 +726,13 @@ pub func targetFeatureName(target: in Emitter.CompileTarget): String {
   // see cli_run.l's runTarget note).
   var name = "dotnet"
   match target {
-    case Jvm -> {
+    case Emitter.Jvm -> {
       name = "jvm"
     }
-    case Native -> {
+    case Emitter.Native -> {
       name = "native"
     }
-    case Dotnet -> ()
+    case Emitter.Dotnet -> ()
   }
   name
 }
@@ -826,7 +828,7 @@ pub record ResolvedManifestDeps {
   /// Source packages from path dependencies, for cross-package aspect
   /// template resolution (#3498) — appendable directly to
   /// `EmitProjectRequest.depTemplateSrcs`.
-  depTemplateSrcs: List[ProjectPackage]
+  depTemplateSrcs: List[Emitter.ProjectPackage]
   /// Genuine third-party NuGet assembly paths (not Lyric packages) —
   /// appendable directly to `EmitProjectRequest.nugetAssemblyPaths`.
   nugetThirdPartyPaths: List[String]
@@ -869,7 +871,7 @@ pub record ResolvedManifestDeps {
 /// a restore: a dependency that isn't already built is reported via
 /// `hadUnbuiltLocalDep` / the printed message, not fetched.
 pub func resolveManifestDependencies(
-  manifest: in Manifest,
+  manifest: in Mf.Manifest,
   mfPath: in String,
   target: in Emitter.CompileTarget,
   cliFeatures: in List[String],
@@ -877,7 +879,7 @@ pub func resolveManifestDependencies(
 ): ResolvedManifestDeps {
   val mfDir = Path.dirname(mfPath)
   val restoredDlls: List[String] = newList()
-  val depTemplatePkgsList: List[ProjectPackage] = newList()
+  val depTemplatePkgsList: List[Emitter.ProjectPackage] = newList()
   val depPackageFeatures: List[Pipe.PackageFeatureSet] = newList()
   val seenDeps: List[String] = newList()
   var hadUnbuiltLocalDep = false
@@ -942,7 +944,7 @@ pub func resolveManifestDependencies(
                   // native), so Native inherits Dotnet's "DLL matters"
                   // behavior rather than silently absorbing whatever the Jvm
                   // case does as targets are added later.
-                  val dllMatters = match target { case Jvm -> false; case Native -> true; case _ -> true }
+                  val dllMatters = match target { case Emitter.Jvm -> false; case Emitter.Native -> true; case _ -> true }
                   // #6697: `dllMatters` also gates whether an EXISTING `.dll`
                   // is added to `restoredDlls` at all — not just whether a
                   // MISSING one is fatal. `bin/<name>.dll` here is always an
@@ -1035,7 +1037,7 @@ pub func resolveManifestDependencies(
                           }
                         }
                         if srcList.count > 0 {
-                          depTemplatePkgsList.add(ProjectPackage(name = pkgEntry.name, sources = srcList, paths = pathList))
+                          depTemplatePkgsList.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = pathList))
                         }
                         pki += 1
                       }
@@ -1044,7 +1046,7 @@ pub func resolveManifestDependencies(
                   }
                 }
                 case Err(e) -> {
-                  printErr("build: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                  printErr("build: local dep '" + dep.name + "': malformed lyric.toml: " + Mf.ManifestError.message(e))
                   hadUnbuiltLocalDep = true
                 }
               }
@@ -1106,7 +1108,7 @@ pub func resolveManifestDependencies(
   // assembly resolution is not yet supported on the JVM target" W0006
   // warning (`Lyric.Emitter`) rather than silently vanishing or crashing.
   match target {
-    case Jvm -> {
+    case Emitter.Jvm -> {
       for entry in nugetLyricEntries {
         val tabPos = Str.indexOfRaw(entry, "\t")
         val entryPath = if tabPos >= 0 { entry.substring(tabPos + 1, entry.length - tabPos - 1) } else { entry }
@@ -1121,7 +1123,7 @@ pub func resolveManifestDependencies(
   }
   val nativeAssetPaths = allNugetAssets.nativePaths
   match target {
-    case Jvm -> collectTransitiveDepSources(
+    case Emitter.Jvm -> collectTransitiveDepSources(
       manifest,
       mfDir,
       cliFeatures,
@@ -1161,7 +1163,7 @@ pub record MavenClasspathInjection {
 /// (mirroring the historical `buildProject` behavior — an unrestored Maven
 /// dependency surfaces as a normal downstream typecheck/link error, not a
 /// hard stop here) and silent when it doesn't.
-pub func injectMavenClasspathForJvm(mfDir: in String, manifest: in Manifest): MavenClasspathInjection {
+pub func injectMavenClasspathForJvm(mfDir: in String, manifest: in Mf.Manifest): MavenClasspathInjection {
   var mavenJarColonSep = ""
   val classpathFile = Path.join(Path.join(Path.join(mfDir, "target"), "restore"), "jvm-classpath.txt")
   match File.readText(classpathFile) {
@@ -1233,7 +1235,7 @@ pub record WorkspaceImportDeps {
   restoredDlls: List[String]
   /// The matched members' source packages, for cross-package aspect/wire
   /// template collection (same shape as `ResolvedManifestDeps.depTemplateSrcs`).
-  depTemplateSrcs: List[ProjectPackage]
+  depTemplateSrcs: List[Emitter.ProjectPackage]
   /// True when an import matched a workspace member whose DLL is not built —
   /// the build must fail loudly (with the member named in stderr) rather than
   /// compile the import leniently into runtime-invalid code.
@@ -1335,7 +1337,7 @@ pub func resolveWorkspaceImportDeps(
 ): WorkspaceImportDeps {
   val ctx = match Ws.findWorkspaceRoot(sourceDir) { case None -> return emptyWorkspaceImportDeps(); case Some(c) -> c }
   val restored: List[String] = newList()
-  val templates: List[ProjectPackage] = newList()
+  val templates: List[Emitter.ProjectPackage] = newList()
   val memberFeatures: List[Pipe.PackageFeatureSet] = newList()
   // A single-file build takes no `--features` for its workspace members.
   val noCliFeatures: List[String] = newList()
@@ -1346,7 +1348,7 @@ pub func resolveWorkspaceImportDeps(
     seen.add(alreadySeen[ai])
     ai += 1
   }
-  val dllMatters = match target { case Jvm -> false; case _ -> true }
+  val dllMatters = match target { case Emitter.Jvm -> false; case _ -> true }
   val importNames = importedPackageNames(sourceText)
   // Lazily built on the first fallback-eligible import: exact member-name
   // matches never need it, and most single-file builds import nothing that
