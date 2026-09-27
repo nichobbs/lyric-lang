@@ -44,7 +44,8 @@ A config field may be an inline range of `Int`, `Long`, `Float` or
   - The type checker checks an aspect's own ranged fields the same way.
   - When a `from`-instance overrides a ranged template field, the weaver's
     merge keeps the template's range. `collectFromConfigRangeDiags` then
-    reports an out-of-range value as G0010.
+    reports an out-of-range value as G0010. An instance field that declares
+    its own range is A0048, matching W0012 for config-template overrides.
 - The literal folding and range membership helpers (`foldLiteralBound`,
   `literalInRange`) live in `Lyric.Parser`, so the type checker and the
   weaver share them.

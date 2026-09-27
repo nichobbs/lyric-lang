@@ -905,6 +905,7 @@ compiler.
 | `A0045` | `aspect … from Pkg.Template` template not found in the build.  The `from` path could not be resolved from the available packages; the instance is silently dropped (no weaving).  Ensure the template package is listed in `[dependencies]` in `lyric.toml`. |
 | `A0046` | A `from`-instance resolves to a B′-mode template (no `@inline_template`) whose body references `args.<field>` outside of what a `where TArgs has { ... }` row clause declares (docs/56 / D115) — B′-mode `args` is opaque by default (docs/27 §6.1.1). Mark the template `@inline_template` to opt into C-mode field access, declare the field(s) in a row clause, or remove the reference. |
 | `A0047` | A row-constrained B′-mode template's `where TArgs has { field: Type, ... }` clause is not satisfied by a specific matched function: either it has no parameter named `field` at all, or it has one whose type doesn't match (docs/56 / D115) — the message distinguishes the two cases. Weaving still proceeds with that field omitted from the args-record construction, so the type-checker also flags the incomplete record literal. |
+| `A0048` | A `from`-instance's `config { }` field declares its own range (`perMinute: Int range 1 ..= 2000 = 500`). The instance supplies values only; write the base type, and a ranged template field keeps the template's range (#7229). |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
 fields naming the aspect that introduced the failing clause (§5.3).

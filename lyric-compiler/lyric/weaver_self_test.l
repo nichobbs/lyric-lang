@@ -1917,3 +1917,22 @@ test "from-instance config override is checked against the template field's rang
   val ok = weaveWithTemplates(okSrc, templates)
   assertTrue(not diagsHaveCode(ok.diagnostics, "G0010"), "override inside the template's range is accepted")
 }
+
+test "from-instance config field that declares its own range is A0048" {
+  val tplSrc = "package Lib.Rate\n" + "pub aspect Limit {\n" + "  config {\n" +
+    "    perMinute: Int range 1 ..= 1000 = 60\n" +
+    "  }\n" +
+    "  matches: name like \"*\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val __cap = perMinute\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Rate")
+  val src = "package App\n" + "aspect MyLimit from Lib.Rate.Limit {\n" + "  matches: name like \"doWork\"\n" +
+    "  config { perMinute: Int range 1 ..= 2000 = 1500 }\n" +
+    "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val res = weaveWithTemplates(src, templates)
+  assertTrue(diagsHaveCode(res.diagnostics, "A0048"), "a range on the instance is rejected, not silently dropped")
+}

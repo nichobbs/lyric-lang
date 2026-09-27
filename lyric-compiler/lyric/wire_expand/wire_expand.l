@@ -600,14 +600,17 @@ func materializeConfigInstance(
         // field keeps the template's range, which the checker enforces on
         // the merged default (G0010).
         if isRefinedWE(ov.ty) {
+          val applies = if isRefinedWE(tmpl.fields[ti].ty) {
+            " and the range from template '" + tmpl.name + "' applies"
+          } else {
+            "; template '" + tmpl.name + "' declares this field without a range"
+          }
           diags.add(
             errorDiagnostic(
               "W0012",
               "config override '" + localName + "." + ov.name + "' must not declare a range; write the base type " +
                 configBaseTypeStrWE(ov.ty) +
-                " and the range from template '" +
-                tmpl.name +
-                "' applies",
+                applies,
               ov.span
             )
           )

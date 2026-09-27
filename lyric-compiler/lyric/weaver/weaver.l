@@ -3262,11 +3262,44 @@ func resolveFromInstances(
   result
 }
 
-/// Emit A0045 diagnostics for any `from`-instance aspects that remain
-/// unresolved after `resolveFromInstances` — i.e., aspects with `from:
-/// Some(path)` and `around: None` whose template was not found in the
-/// supplied template map.  A missing template is a silent no-op without
-/// this diagnostic, which violates the production-readiness standard.
+/// A0048 for a `from`-instance `config { }` field that declares its own
+/// range (#7229).  The instance supplies values only; a ranged template
+/// field keeps the template's range, so a range written on the instance
+/// would otherwise be discarded without notice.  Runs on the items before
+/// `resolveFromInstances` merges the instance into its template.
+func collectFromConfigOwnRangeDiags(items: in List[Item]): List[Diagnostic] {
+  val diags: List[Diagnostic] = newList()
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IAspect(decl) -> match decl.from {
+        case Some(_) -> {
+          var fi = 0
+          while fi < decl.config.count {
+            val f = decl.config[fi]
+            match f.ty.kind {
+              case TRefined(_, _) -> diags.add(
+                errorDiagnostic(
+                  "A0048",
+                  "config field '" + decl.name + "." + f.name +
+                    "' of a `from` instance must not declare a range; write the base type and the template's declaration applies",
+                  f.ty.span
+                )
+              )
+              case _ -> ()
+            }
+            fi = fi + 1
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  diags
+}
+
 /// G0010 for a `from`-instance whose `config { }` value lies outside the
 /// range the template declares for that field (#7229).  The merge keeps the
 /// template's refined type on an overridden field, so the check sees it.  An
@@ -3311,6 +3344,11 @@ func collectFromConfigRangeDiags(items: in List[Item]): List[Diagnostic] {
   diags
 }
 
+/// Emit A0045 diagnostics for any `from`-instance aspects that remain
+/// unresolved after `resolveFromInstances` — i.e., aspects with `from:
+/// Some(path)` and `around: None` whose template was not found in the
+/// supplied template map.  A missing template is a silent no-op without
+/// this diagnostic, which violates the production-readiness standard.
 func collectUnresolvedFromDiags(items: in List[Item]): List[Diagnostic] {
   val diags: List[Diagnostic] = newList()
   var i = 0
@@ -4320,9 +4358,13 @@ pub func weaveFileWithDiagsAndTemplates(
 ): WeaveFileResult {
   val file0 = injectWeaveImports(file)
   val pkgPath = packagePathString(file0)
+  val ownRangeDiags = collectFromConfigOwnRangeDiags(file0.items)
   val resolvedItems = resolveFromInstances(file0.items, templates, pkgPath)
   val unresolvedDiags = collectUnresolvedFromDiags(resolvedItems)
   val rangeDiags = collectFromConfigRangeDiags(resolvedItems)
+  for d in ownRangeDiags {
+    rangeDiags.add(d)
+  }
   val bmodeArgsDiags = collectBModeArgsFieldDiags(resolvedItems)
   val wr = weaveItemsCore(resolvedItems, pkgPath)
   val allDiags: List[Diagnostic] = newList()
