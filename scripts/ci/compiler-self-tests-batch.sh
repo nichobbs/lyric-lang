@@ -122,6 +122,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/cfg-gated-test-items-e2e.sh
   ran="$ran cfg-gated-test-items-e2e"
 fi
+# #7548: package-qualified distinct-factory call (`Pkg.Type.tryFrom(x)`),
+# both targets (this job already has Java 21, same as cfg-gated-test-items-e2e.sh).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/distinct-factory-import-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/distinct-factory-import-e2e.sh
+  ran="$ran distinct-factory-import-e2e"
+fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2
   exit 1

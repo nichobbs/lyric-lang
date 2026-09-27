@@ -1283,7 +1283,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0015` | Integer literal out of range for the declared integer type (an inline range-refined type, or a plain `Byte`/`Int`/`UInt`/`Long`/`ULong`/`Nat` binding) |
 | `T0016` | Non-exhaustive `match` (uncovered union/enum case, `Bool`, or scalar without `_`) |
 | `T0017` | Type alias is part of a cycle and does not resolve to a type |
-| `T0020` | Unknown name (undefined variable or function), including a type or package-qualified path whose package is not reachable from the file's imports (add the `import` it names) |
+| `T0020` | Unknown name (undefined variable or function), including a type or package-qualified path whose package is not reachable from the file's imports (add the `import` it names) — the same check covers a qualified path in TYPE position (`val c: Pkg.Sub.Type`, a parameter/field/return type, or a generic type argument) and a qualified PATTERN head (`case Pkg.Sub.Kind.A -> ...`) |
 | `T0030` | Arithmetic on a non-numeric type, or on a distinct type without the operator's `derives` marker (including a compound assignment such as `+=` without `Add`) |
 | `T0031` | Arithmetic operands have mismatched types |
 | `T0032` | Equality operands have mismatched types |
@@ -1315,7 +1315,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0090` | Range bounds are inverted or produce an empty range |
 | `T0091` | `range` applied to a non-numeric underlying type |
 | `T0093` | Range bound expression cannot be evaluated at compile time |
-| `T0097` | Package-private symbol referenced from another package, including a package-private type used as a `Type.method(...)` receiver (mark it `pub` or `internal`) |
+| `T0097` | Package-private symbol referenced from another package, including a package-private type used as a `Type.method(...)` receiver, a type-position reference (`val w: Pkg.Widget`), or a private union/enum's case in a qualified pattern head — whether or not the declaring package is imported (mark it `pub` or `internal`) |
 | `T0098` | `impl` is missing an abstract interface method |
 | `T0099` | `impl` method parameter arity does not match the interface declaration |
 | `T0100` | Opaque type constructed outside its declaring package |

@@ -68,6 +68,10 @@ Outside the `Account` package, callers use `makeCustomer`. Inside it, they can u
 
 The constructor must hang off something callers can name. A type-associated function such as `pub func Ledger.open(...)` on a package-private `Ledger` compiles, but from another package `Ledger.open(...)` is a visibility error (T0097) — the caller cannot name `Ledger`, and importing the package does not change that. Mark the type `pub` (or `internal`) if the function is meant to be called from outside.
 
+The same rule holds wherever else you might name `Ledger` from outside its package: a type annotation (`val l: Other.Ledger`), and a qualified pattern head matching one of its cases if `Ledger` were a union or enum instead. Both are T0097, not T0020 — an `import` fixes "package not imported," never "type not visible."
+
+Qualifying a package doesn't sidestep the import rule either. `Other.Ledger.open(...)` still needs `import Other` even though `Ledger` is spelled out in full — and the same goes for naming `Other.Ledger` in a type position or matching `Other.Kind.Case` in a pattern head. Each is T0020 if `Other` isn't reachable from your file's own imports.
+
 ::: sidebar
 **Why not classes with access modifiers?** Class-based languages put visibility on each member and rely on developers to get it right per-field. Records in Lyric are structurally transparent by default inside their package and can be selectively exposed outside. The key difference is that the *construction* rule is automatic: if you expose a partial record, the compiler requires a constructor function without any extra annotation. You cannot accidentally expose a private field through direct construction.
 :::

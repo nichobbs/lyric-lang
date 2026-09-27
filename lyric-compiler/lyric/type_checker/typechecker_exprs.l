@@ -973,6 +973,53 @@ func symbolIsPackagePrivateBinding(sym: in Symbol): Bool {
   }
 }
 
+// #7548: is `pkg` nameable from `curPkg` — either a direct import
+// (`symTableScopeAllows`) or transitively reachable through the imported
+// packages' own imports (`symTableImportReachable`, #7345's kernel/host
+// re-export walk)? Shared by every package-qualified reachability check
+// (expression paths, type paths, pattern heads) so the two-clause OR isn't
+// re-typed at each call site.
+func qualifiedPkgReachable(tbl: in SymbolTable, curPkg: in String, pkg: in String): Bool {
+  symTableScopeAllows(tbl, pkg) or symTableImportReachable(tbl, curPkg, pkg)
+}
+
+// #7548: T0020 reporter for a qualified reference whose ACTUAL declaring
+// package the caller already knows by other means (rather than by
+// splitting the reference's own segments into a package prefix — see
+// `unionCaseSymbolForScrutinee`, whose caller this exists for: a pattern
+// head is always flattened to one `EPath` regardless of depth, and the
+// package/type-name boundary within `Pkg.Sub.Union.Case` is only knowable
+// once the scrutinee's own union/enum has told us which segments are
+// which — `checkQualifiedPackageRef`'s "everything but the last segment is
+// the package" assumption does not hold for a pattern head the way it
+// does for `Pkg.Sub.func(...)`). Same reachability test, `Std.Core`/
+// same-package exemptions, and message shape as every other T0020 site
+// here.
+func reportUnimportedQualifiedPackage(
+  tbl: in SymbolTable,
+  curPkg: in String,
+  pkg: in String,
+  member: in String,
+  span: in Span,
+  diag: in List[Diagnostic],
+): Bool {
+  if curPkg.length == 0 or pkg.length == 0 or pkg == curPkg or pkg == "Std.Core" {
+    return false
+  }
+  if not qualifiedPkgReachable(tbl, curPkg, pkg) {
+    addDiagnosticOnce(
+      diag,
+      errorDiagnostic(
+        "T0020",
+        "unknown name '" + pkg + "." + member + "' (package " + pkg + " is not imported; add `import " + pkg + "`)",
+        span
+      )
+    )
+    return true
+  }
+  false
+}
+
 // Add `d` unless an identical diagnostic (code, message, span) is already
 // present: the package-qualified checks below run from both the call-callee
 // and the plain member-access paths, which can reach the same node.
@@ -1042,7 +1089,7 @@ func checkQualifiedPackageRef(
     }
     case None -> ()
   }
-  if not (symTableScopeAllows(tbl, pkg) or symTableImportReachable(tbl, curPkg, pkg)) {
+  if not qualifiedPkgReachable(tbl, curPkg, pkg) {
     addDiagnosticOnce(
       diag,
       errorDiagnostic(
@@ -4993,6 +5040,24 @@ func unionCaseSymbolForScrutinee(
                     )
                     return None
                   }
+                  // #7548: a package-private union's case is T0097 (never
+                  // T0020) whether or not its package is imported — mirrors
+                  // `checkUnimportedTypeReceiver`'s ordering (privacy before
+                  // reachability) for the receiver-call form.
+                  if symbolIsPackagePrivateBinding(scrCands[sci]) {
+                    checkImportedVisibility(scrCands[sci], fn.span, diag)
+                    return None
+                  }
+                  // The qualifier matches the scrutinee's own union
+                  // structurally (tier A/B above), but `Lyric.Pipeline`
+                  // preloads every stdlib package's signatures whatever the
+                  // file imports (D-progress-1011), so that match alone
+                  // doesn't mean the union's OWN package is reachable from
+                  // this file's imports. Same T0020 a qualified expression
+                  // path into an unimported package gets.
+                  if reportUnimportedQualifiedPackage(tbl, symTableScopePkg(tbl), scrCands[sci].originPackage, scrCaseName, fn.span, diag) {
+                    return None
+                  }
                 }
                 return Some(value = scrCands[sci])
               }
@@ -5043,6 +5108,14 @@ func unionCaseSymbolForScrutinee(
                         fn.span
                       )
                     )
+                    return None
+                  }
+                  // #7548: see the DKUnionCase arm's identical comments above.
+                  if symbolIsPackagePrivateBinding(scrCands[sci]) {
+                    checkImportedVisibility(scrCands[sci], fn.span, diag)
+                    return None
+                  }
+                  if reportUnimportedQualifiedPackage(tbl, symTableScopePkg(tbl), scrCands[sci].originPackage, scrCaseName, fn.span, diag) {
                     return None
                   }
                 }
