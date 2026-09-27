@@ -2,7 +2,10 @@
 # ---------------------------------------------------------------------------
 # jvm-generics-self-tests-batch.sh — run a batch of `--target jvm` self-tests
 # covering erased/generic-parameter and cross-package-type resolution gaps
-# in `Jvm.Codegen`/`Jvm.Bridge`, through one `lyric test` invocation per file.
+# in `Jvm.Codegen`/`Jvm.Bridge`, plus the JVM half of dual-target runtime
+# tests whose dotnet half runs in `compiler-self-tests-batch.sh` (e.g.
+# closure_var_capture_self_test.l, #7460), through one `lyric test`
+# invocation per file.
 #
 #   bash scripts/ci/jvm-generics-self-tests-batch.sh
 #
@@ -36,7 +39,8 @@ for t in \
   lyric-compiler/jvm/generic_element_field_read_jvm_self_test.l \
   lyric-compiler/jvm/generic_free_func_return_jvm_self_test.l \
   lyric-compiler/jvm/cross_package_type_resolution_jvm_self_test.l \
-  lyric-compiler/lyric/tuple_nullary_case_self_test.l ; do
+  lyric-compiler/lyric/tuple_nullary_case_self_test.l \
+  lyric-compiler/lyric/closure_var_capture_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"
