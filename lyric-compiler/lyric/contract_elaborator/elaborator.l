@@ -98,15 +98,6 @@ func functionIsAxiom(fn: in FunctionDecl): Bool {
   hasSimpleAnnotation("axiom", fn.annotations)
 }
 
-// True when the file carries `@proof_required` (with or without a modifier).
-// In @proof_required files, contract clauses are SMT obligations consumed by
-// `lyric prove` — they must NOT be lowered to runtime assert() calls by the
-// elaborator.  The verifier reads the original clauses directly from
-// fn.contracts, so the SourceFile is returned unchanged.
-func fileIsProofRequired(file: in SourceFile): Bool {
-  hasSimpleAnnotation("proof_required", file.fileAnnotations)
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Synthetic-name counter.  The elaborator threads a `RenameCounter`
 //     through each function so generated locals in nested scopes do not
@@ -3170,30 +3161,13 @@ pub func elaborateFileWithInterfaces(file: in SourceFile, importedIfaces: in Lis
   val canonFile = canonicalizeFileUnitAliases(file)
   val ifaces = interfaceTable(canonFile, importedIfaces)
   val newItems: List[Item] = newList()
-  val isProofRequired = fileIsProofRequired(canonFile)
+  // `@proof_required` files are elaborated like any other: `lyric build`
+  // does not run the prover, so an obligation it has not discharged keeps
+  // its runtime check (#7227).  `lyric prove` reads the source clauses, which
+  // `fn.contracts` still carries.
   var i = 0
   while i < canonFile.items.count {
-    if isProofRequired {
-      // @proof_required files: contract clauses are SMT obligations for `lyric prove`,
-      // not runtime assertions.  Reconstruct Item wrappers without calling
-      // elaborateFunction so no runtime assert() calls are injected.
-      // The verifier reads the original clauses from fn.contracts unchanged.
-      val it = canonFile.items[i]
-      match it.kind {
-        case IFunc(fn) -> newItems.add(
-          Item(
-            docComments = it.docComments,
-            annotations = it.annotations,
-            visibility = it.visibility,
-            kind = IFunc(decl = fn),
-            span = it.span
-          )
-        )
-        case _ -> newItems.add(it)
-      }
-    } else {
-      newItems.add(elaborateItem(canonFile.items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path)))
-    }
+    newItems.add(elaborateItem(canonFile.items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path)))
     i = i + 1
   }
   SourceFile(

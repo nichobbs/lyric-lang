@@ -257,13 +257,11 @@ test "multiple ensures" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §8b. @proof_required files are reconstructed without contract injection —
-// contracts are SMT obligations only, not runtime assertions.
+// §8b. @proof_required files keep their runtime checks (#7227): `lyric build`
+// does not run the prover, so a clause only it could discharge must still be
+// checked at runtime.
 // ─────────────────────────────────────────────────────────────────────────────
-test "proof_required file skipped entirely" {
-  // A @proof_required function with requires+ensures must NOT have runtime
-  // asserts injected — the elaborator reconstructs the SourceFile but skips
-  // calling elaborateFunction for IFunc items.
+test "proof_required file keeps runtime checks" {
   val src = "@proof_required\n" + "package P\n" + "import Std.Core\n" + "pub func f(x: in Bool): Bool\n" +
     "  requires: x\n" +
     "  ensures: result == true\n" +
@@ -272,23 +270,19 @@ test "proof_required file skipped entirely" {
     "}\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
-  // Body should contain exactly the original `return true` — no synthetic
-  // let-binding or assert call injected by the elaborator.
   match fn.body {
     case None -> assertTrue(false, "proof_required: function body disappeared")
     case Some(body) -> {
       match body {
         case FBBlock(blk) -> {
-          // Original body: single `return true` statement — no assert or let injected.
-          assertEqualInt(blk.statements.count, 1, "proof_required: body has exactly 1 stmt (no elaboration)")
-          assertTrue(not isAssertCall(blk.statements[0]), "proof_required: stmt[0] is not an injected assert")
-          assertTrue(not isLetBinding(blk.statements[0]), "proof_required: stmt[0] is not a synthetic let-binding")
+          assertTrue(blk.statements.count > 1, "proof_required: contracts lowered into the body")
+          assertTrue(isAssertCall(blk.statements[0]), "proof_required: stmt[0] is the requires assert")
         }
         case FBExpr(_) -> assertTrue(false, "proof_required: unexpected FBExpr body")
       }
     }
   }
-  // Original contract clauses must be preserved for lyric prove.
+  // The source clauses stay on the declaration for `lyric prove`.
   assertEqualInt(fn.contracts.count, 2, "proof_required: both contracts preserved")
 }
 

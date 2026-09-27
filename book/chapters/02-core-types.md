@@ -52,7 +52,7 @@ val next: Int = age.toInt() + 1     // explicit conversion back to Int
 val bad: Int  = age + 1             // compile error: Age + Int is not defined
 ```
 
-Two construction paths exist: `tryFrom` returns `Result[Age, ContractViolation]` and lets you handle the out-of-range case; `from` panics immediately if the value falls outside the range. In `@proof_required` modules the compiler discharges the range obligation statically and the runtime check is elided entirely. Chapter 8 covers that in detail. For now, `tryFrom` and the `?` propagation operator are the idiomatic construction pattern.
+Two construction paths exist: `tryFrom` returns `Result[Age, ContractViolation]` and lets you handle the out-of-range case; `from` panics immediately if the value falls outside the range. In `@proof_required` modules `lyric prove` discharges the range obligation statically; the build still keeps the runtime check. Chapter 8 covers that in detail. For now, `tryFrom` and the `?` propagation operator are the idiomatic construction pattern.
 
 The range syntax has four forms:
 
@@ -74,7 +74,7 @@ The standard pattern in Java or C# is a constructor or factory method that check
 
 With a range subtype, the constraint is in the type name. An `Age` is, by definition, between 0 and 150. A function that takes an `Age` does not need to re-validate. A caller that constructs an `Age` has to handle the `tryFrom` `Result` at the boundary — one explicit validation at the entry point, then structural correctness everywhere else. The value is *valid by type*. That is a different, stronger claim than "this value was validated by code I can't see from here."
 
-The proof system (Chapter 11) makes this even stronger: in a `@proof_required` module, the SMT solver verifies that the range obligation is discharged, and the runtime check disappears entirely. Dynamic validation can't give you that.
+The proof system (Chapter 11) makes this even stronger: in a `@proof_required` module, `lyric prove` has the SMT solver verify that the range obligation holds on every path, before the program runs. Dynamic validation can't give you that.
 :::
 
 The `derives` clause (covered in §2.3) applies to range subtypes too. `type Cents = Long range 0 ..= 1_000_000_000_00 derives Add, Sub, Compare` enables addition, subtraction, and comparison directly on `Cents` values — you can add two `Cents` values together and get a `Cents` back. You cannot multiply them; that's not in `derives`, and `Cents * Cents` would be dimensionally meaningless anyway.

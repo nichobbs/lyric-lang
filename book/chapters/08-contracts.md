@@ -23,7 +23,7 @@ func divide(n: in Int, d: in Int): Int
 
 The `requires: d != 0` clause is the precondition: the caller is not allowed to call `divide` with a zero denominator. The `ensures: result * d + (n % d) == n` clause is the postcondition: the function promises that integer division satisfies the division algorithm. `result` in an `ensures:` clause refers to the return value.
 
-Neither clause is decoration. In `@runtime_checked` mode — the default — the `requires:` clause is evaluated on entry, and a failing check raises a `PreconditionViolated` bug with a message that includes the function name and the violated condition. The `ensures:` clause runs on return. In `@proof_required` mode, the compiler hands both clauses to an SMT solver before the program ever runs, and rejects the compilation if any obligation cannot be proved.
+Neither clause is decoration. In `@runtime_checked` mode — the default — the `requires:` clause is evaluated on entry, and a failing check raises a `PreconditionViolated` bug with a message that includes the function name and the violated condition. The `ensures:` clause runs on return. In `@proof_required` mode, `lyric prove` hands both clauses to an SMT solver before the program ever runs, and fails if any obligation cannot be proved. `lyric build` still compiles the clauses into runtime checks, so a package that has not been proved yet is never left unchecked.
 
 ## §8.2 `requires:` — preconditions
 
@@ -175,7 +175,7 @@ package Transfer
 
 **`@runtime_checked`** is the default. Contracts are evaluated at runtime and produce bugs if violated. This is the mode you develop in: fast feedback, precise error messages, argument values captured at the violation point. It costs runtime overhead proportional to contract complexity, which is usually negligible.
 
-**`@proof_required`** requires the compiler to statically discharge every contract obligation before the package can be compiled. The SMT solver verifies that no execution of the code could violate a contract. If it cannot prove an obligation, the compilation fails with a counterexample. A `@proof_required` package can only call other `@proof_required` packages or `@axiom` extern boundaries — calling `@runtime_checked` code would make the proof unsound, because the proof system cannot reason about code whose contracts are only checked at runtime.
+**`@proof_required`** requires every contract obligation to be discharged statically. `lyric prove` has the SMT solver verify that no execution of the code could violate a contract; if it cannot prove an obligation, it fails with a counterexample. Run it alongside `lyric build` (for example in CI): the build keeps runtime checks for every clause, whether or not the package has been proved. A `@proof_required` package can only call other `@proof_required` packages or `@axiom` extern boundaries — calling `@runtime_checked` code would make the proof unsound, because the proof system cannot reason about code whose contracts are only checked at runtime.
 
 Chapters 16 and 17 cover both modes in depth. For most of the code you write, `@runtime_checked` is the right choice. `@proof_required` is for the packages where the stakes are high enough to justify the additional constraint on what you can call.
 
