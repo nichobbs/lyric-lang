@@ -402,17 +402,13 @@ Postcondition violations include `result` in the counterexample. All violations 
 | Annotation | Behaviour |
 |-----------|-----------|
 | `@runtime_checked` | Default. Contracts evaluated at runtime. |
-| `@runtime_checked(release_contracts = full)` | Full checking in release builds (financial/safety-critical). |
-| `@proof_required` | SMT-backed static proof before compilation. `lyric prove`. |
+| `@proof_required` | SMT-backed static proof with `lyric prove`; `lyric build` still checks every clause at runtime. |
 
 ### Debug vs release
 
-| Contract | Debug | Release |
-|----------|-------|---------|
-| `requires:` on `pub` functions | checked | **always checked** |
-| `requires:` on non-`pub` functions | checked | elided |
-| `ensures:` | checked | elided (use `--release-contracts` flag to keep) |
-| Range subtype bounds | checked | **always checked** |
+Contracts (`requires:`, `ensures:`, `invariant:`) and range-subtype bounds
+are checked in every build profile; `--release` removes none of them
+(language reference §6.4).
 
 ### `@proof_required`
 
@@ -421,7 +417,7 @@ Postcondition violations include `result` in the counterexample. All violations 
 package Money
 ```
 
-- Compiler feeds contracts to Z3 SMT solver. Rejects build if any obligation cannot be proved.
+- `lyric prove` feeds contracts to the SMT solver and fails if any obligation cannot be proved. `lyric build` does not run the prover and keeps every clause as a runtime check (D-progress-994).
 - May **only call**: other `@proof_required` packages, primitives, `@axiom` extern boundaries.
 - Calling `@runtime_checked` code is a **compile error** (V0002) — proof would be unsound.
 - `@runtime_checked` packages can call `@proof_required` freely.

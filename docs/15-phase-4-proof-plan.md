@@ -117,9 +117,9 @@ Non-goals (deferred to Phase 4 polish or later):
    │  └──────────────────────┬───────────────────────────┘    │
    └────────────────────────┬┴───────────────────────────────┘
                             ▼
-                Continue to MSIL emission as in M1.4,
-                with proof-required clauses *elided*
-                from runtime asserter (§10).
+                `lyric build` continues to MSIL emission
+                as in M1.4; every clause stays a runtime
+                assert (§10, D-progress-994).
 ```
 
 The Lyric-VC IR (§6) is the load-bearing intermediate representation:
@@ -639,8 +639,8 @@ M4.1/M4.2/M4.3.
 
 **Exit criteria:**
 
-- `Money.make` (`08-...md` §13.2) verifies: VC discharged, no
-  runtime asserts emitted in `--release`.
+- `Money.make` (`08-...md` §13.2) verifies: VC discharged.  (The
+  build still emits its runtime asserts in every profile; see §10.)
 - `Transfer.execute`'s conservation property
   (`08-...md` §13.3) verifies *given* hand-written postconditions on
   `debit`/`credit`. Both helpers are themselves proof-required and
