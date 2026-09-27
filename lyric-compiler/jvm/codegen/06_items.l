@@ -5749,7 +5749,7 @@ func emitConfigDefaultLiteralJvm(fieldTy: in JvmType, lit: in Literal, neg: in B
       val v = if neg { 0i64 - v0 } else { v0 }
       match fieldTy {
         case JInt -> {
-          insns.add(LIconst(v = longToInt(v)))
+          insns.add(LIconst(v = v.toInt()))
           true
         }
         case JLong -> {

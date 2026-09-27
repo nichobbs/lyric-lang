@@ -194,7 +194,7 @@ func runCmd(cmdList: in List[String], stdinContent: in String, timeoutMs: in Int
   val stderrBuf = JBAOS.new()
 
   val startMs = currentTimeMillis()
-  val timeoutMsL = intToLong(timeoutMs)
+  val timeoutMsL = timeoutMs.toLong()
   var timedOut = false
 
   // Poll until the child exits, draining both pipes each iteration.
@@ -206,7 +206,7 @@ func runCmd(cmdList: in List[String], stdinContent: in String, timeoutMs: in Int
       timedOut = true
       proc.destroyForcibly()
     }
-    JThread.sleep(intToLong(1))
+    JThread.sleep(1i64)
   }
 
   // Final drain after the child exits (last bytes may arrive after isAlive → false).
@@ -215,7 +215,7 @@ func runCmd(cmdList: in List[String], stdinContent: in String, timeoutMs: in Int
   // The child has exited (or been killed), so its stdin pipe is closed and
   // the writer thread finishes promptly; the bound only guards a stalled
   // scheduler.
-  stdinWriter.join(intToLong(5000))
+  stdinWriter.join(5000i64)
 
   val exitCode = if timedOut { -2 } else { try { proc.exitValue() } catch Bug as _ { -1 } }
 

@@ -688,7 +688,7 @@ func parseLong(s: in String): Result[Long, String] {
       return Err("parse_error")
     }
     val d = toInt(s[i]) - toInt('0')
-    acc = acc * 10i64 + intToLong(d)
+    acc = acc * 10i64 + d.toLong()
     i = i + 1
   }
   Ok(acc)

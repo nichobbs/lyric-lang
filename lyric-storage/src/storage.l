@@ -531,7 +531,7 @@ impl StorageBucket for LocalBucket {
         // Persist the sidecar metadata for round-trippable userMeta /
         // contentType / etag / lastModified.
         val etag = computeEtag(bytes)
-        val contentLength = intToLong(bytes.length)
+        val contentLength = bytes.length.toLong()
         val lastModified = nowIso8601()
         // `userMeta` is always empty here — the `USER_META_UNSUPPORTED`
         // guard at the top of `put` rejects non-empty maps before any
@@ -550,7 +550,7 @@ impl StorageBucket for LocalBucket {
         return Ok(
           StorageMetadata(
             contentType = contentType,
-            contentLength = intToLong(bytes.length),
+            contentLength = bytes.length.toLong(),
             etag = etag,
             lastModified = lastModified,
             userMeta = userMeta
@@ -580,7 +580,7 @@ impl StorageBucket for LocalBucket {
           case Err(e) -> return Err(StorageError(message = "cannot read object '" + key + "': " + IOError.message(e), code = "GET_ERROR"))
         }
         val dataBase64 = hostToBase64(bytes)
-        match readSidecar(fullPath, intToLong(bytes.length)) {
+        match readSidecar(fullPath, bytes.length.toLong()) {
           case Err(e) -> Err(e)
           case Ok(meta) -> Ok(StorageObject(bucket = self.bucketName, key = key, metadata = meta, dataBase64 = dataBase64))
         }
@@ -854,7 +854,7 @@ func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntr
   match resolveLocalPath(bucket, relKey) {
     case Err(e) -> Err(e)
     case Ok(fullPath) -> {
-      var contentLength: Long = intToLong(0)
+      var contentLength: Long = 0i64
       var etag = ""
       var lastModified = ""
       val sidecar = metaSidecarPath(fullPath)

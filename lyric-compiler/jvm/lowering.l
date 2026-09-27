@@ -3731,7 +3731,7 @@ func emitJvmDistinctBoundsToFail(asm: in MethodAssembler, d: in LDistinctType, f
     // `Msil.Lowering.emitDistinctBoundsToFail`'s `case _` I4 fallback.
     case _ -> {
       emitIload(asm, 0)
-      emitPushInt(asm, longToInt(d.minI))
+      emitPushInt(asm, d.minI.toInt())
       if d.isUnsigned {
         emitInvokestatic(asm, poolMethodref(asm.pool, "java/lang/Integer", "compareUnsigned", "(II)I"))
         emitIflt(asm, failLabel)
@@ -3739,7 +3739,7 @@ func emitJvmDistinctBoundsToFail(asm: in MethodAssembler, d: in LDistinctType, f
         emitIfIcmplt(asm, failLabel)
       }
       emitIload(asm, 0)
-      emitPushInt(asm, longToInt(d.maxI))
+      emitPushInt(asm, d.maxI.toInt())
       if d.isUnsigned {
         emitInvokestatic(asm, poolMethodref(asm.pool, "java/lang/Integer", "compareUnsigned", "(II)I"))
         if d.upperExclusive {
@@ -7047,7 +7047,7 @@ func emitConfigRangeCheckJvm(
     insns.add(LGetstatic(owner = className, name = f.name, t = f.fieldType))
     match f.fieldType {
       case JInt -> {
-        insns.add(LIconst(v = longToInt(f.minI)))
+        insns.add(LIconst(v = f.minI.toInt()))
         insns.add(LIfIcmplt(label = failLabel))
       }
       case JLong -> {
@@ -7071,7 +7071,7 @@ func emitConfigRangeCheckJvm(
     insns.add(LGetstatic(owner = className, name = f.name, t = f.fieldType))
     match f.fieldType {
       case JInt -> {
-        insns.add(LIconst(v = longToInt(f.maxI)))
+        insns.add(LIconst(v = f.maxI.toInt()))
         if f.upperExclusive {
           insns.add(LIfIcmpge(label = failLabel))
         } else {

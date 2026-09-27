@@ -174,7 +174,7 @@ pub func makeCancelSource(): CancellationTokenSource {
 /// `deadlineMs == 0` "no deadline" sentinel used by `isCancelled` below is
 /// not a practical concern.
 pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource {
-  val deadlineNanos = JSystem.nanoTime() + intToLong(ms) * 1000000i64
+  val deadlineNanos = JSystem.nanoTime() + ms.toLong() * 1000000i64
   CancellationTokenSource(flag = JAtomicBoolean.new(false), deadlineMs = deadlineNanos)
 }
 
@@ -235,7 +235,7 @@ func sleepChunkMs(): Int {
 
 /// `Thread.sleep(ms)` — non-cancellable.
 pub func delay(ms: in Int): Task {
-  JThread.sleep(intToLong(ms))
+  JThread.sleep(ms.toLong())
   Task(done = true)
 }
 
@@ -248,7 +248,7 @@ pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
   while remaining > 0 {
     throwIfCancelled(token)
     val step = if remaining < chunk { remaining } else { chunk }
-    JThread.sleep(intToLong(step))
+    JThread.sleep(step.toLong())
     remaining = remaining - step
   }
   throwIfCancelled(token)

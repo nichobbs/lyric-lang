@@ -3613,7 +3613,7 @@ pub func int32BitsOfUnsignedMsil(v: in Long): Int {
   val m = v % 4294967296i64
   val u = if m < 0i64 { m + 4294967296i64 } else { m }
   val signed = if u >= 2147483648i64 { u - 4294967296i64 } else { u }
-  longToInt(signed)
+  signed.toInt()
 }
 
 // Emit the range bounds test for a distinct type into `mb`, branching to
@@ -3646,7 +3646,7 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
       case MInt -> if d.isUnsigned {
         emitLdc_I4(mb, int32BitsOfUnsignedMsil(d.minI))
       } else {
-        emitLdc_I4(mb, longToInt(d.minI))
+        emitLdc_I4(mb, d.minI.toInt())
       }
       case _ -> emitLdc_I8(mb, d.minI)
     }
@@ -3670,7 +3670,7 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
       case MInt -> if d.isUnsigned {
         emitLdc_I4(mb, int32BitsOfUnsignedMsil(d.maxI))
       } else {
-        emitLdc_I4(mb, longToInt(d.maxI))
+        emitLdc_I4(mb, d.maxI.toInt())
       }
       case _ -> emitLdc_I8(mb, d.maxI)
     }
@@ -4060,7 +4060,7 @@ pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
   val skipMinL = mbNewLabel(mbCtor)
   emitLdarg(mbCtor, 1)
   match r.inner {
-    case MInt -> emitLdc_I4(mbCtor, longToInt(r.minVal))
+    case MInt -> emitLdc_I4(mbCtor, r.minVal.toInt())
     case _ -> emitLdc_I8(mbCtor, r.minVal)
   }
   emitClt(mbCtor)
@@ -4075,7 +4075,7 @@ pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
   val skipMaxL = mbNewLabel(mbCtor)
   emitLdarg(mbCtor, 1)
   match r.inner {
-    case MInt -> emitLdc_I4(mbCtor, longToInt(r.maxVal))
+    case MInt -> emitLdc_I4(mbCtor, r.maxVal.toInt())
     case _ -> emitLdc_I8(mbCtor, r.maxVal)
   }
   emitCgt(mbCtor)
@@ -5975,7 +5975,7 @@ func emitConfigRangeCheckMsil(
 
 func pushConfigBoundMsil(insns: in List[MInsn], ty: in MsilType, i: in Long, d: in Double): Unit {
   match ty {
-    case MInt -> insns.add(MLdcI4(v = longToInt(i)))
+    case MInt -> insns.add(MLdcI4(v = i.toInt()))
     case MLong -> insns.add(MLdcI8(v = i))
     case _ -> insns.add(MLdcR8(v = d))
   }

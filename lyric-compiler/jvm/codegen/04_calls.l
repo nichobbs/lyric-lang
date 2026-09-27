@@ -1003,28 +1003,6 @@ func reorderAndFillJvmArgs(sig: in JvmFuncSig, args: in List[CallArg]): List[Cal
   ordered
 }
 
-// #6712: true when `path` is a QUALIFIED call site (2+ segments, e.g.
-// `Std.Math.longToInt` or an already-alias-resolved `Math.longToInt`) that
-// resolves to a real, registered function via `resolveGeneralFuncSig`.
-// Mirrors `Msil.Codegen.hasQualifiedFuncOverrideMsil`'s intent: a handful of
-// `lowerBuiltinOrStaticCall` intrinsics (currently `longToInt`/`intToLong`)
-// share a bare name with a genuine `Std.*` function that has its own real
-// (possibly panic-on-overflow) `@externTarget` contract — a BARE call to
-// that name (used internally by the self-hosted compiler's own source,
-// e.g. `lexer.l`'s unrelated `longToInt` helper) should still hit the fast
-// intrinsic path, but a QUALIFIED call naming the real function must not be
-// silently overridden by it.
-func hasQualifiedFuncOverrideJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int): Bool {
-  if path.segments.count < 2 {
-    false
-  } else {
-    match resolveGeneralFuncSig(ctx, funcName, path, argc) {
-      case Some(_) -> true
-      case None -> false
-    }
-  }
-}
-
 // Lower a builtin or static function call.
 func lowerBuiltinOrStaticCall(
   ctx: in FuncCtx,
@@ -1285,7 +1263,7 @@ func lowerBuiltinOrStaticCall(
     // lowered directly to a `getstatic` read of the argv holder class the
     // entry-point wrapper populates (`Jvm.Codegen`'s `hasMain` synthesis in
     // `06_items.l`, `LPRuntimeArgsHolder` in `Jvm.Lowering`).  Mirrors the
-    // `intToLong`/`stringToUtf8Bytes` bare-name compiler-intrinsic
+    // `stringToUtf8Bytes` bare-name compiler-intrinsic
     // convention already used in this dispatcher.
     //
     // #6587: the field is only populated once the entry-point wrapper's
@@ -1361,36 +1339,6 @@ func lowerBuiltinOrStaticCall(
       JVoid
     }
     JRef(className = "java/lang/String")
-  } else if (not hasQualifiedFuncOverrideJvm(ctx, funcName, path, args.count)) and funcName == "longToInt" {
-    // #6712: only intercept a BARE `longToInt` call (a self-hosted-compiler
-    // convention used internally — e.g. `lexer.l`'s own unrelated
-    // `longToInt` helper — that always wants unchecked `l2i` truncation).
-    // A QUALIFIED call site (`Std.Math.longToInt` / an aliased
-    // `Math.longToInt`) that resolves to the real, registered
-    // `Std.Math.longToInt` function must fall through to the general call
-    // path instead, so it actually reaches `Host.hostLongToInt`
-    // (`@externTarget("java.lang.Math.toIntExact")`, panics on overflow —
-    // the documented contract) rather than silently truncating.
-    if args.count > 0 {
-      lowerCallArg(ctx, insns, args[0])
-    }
-    insns.add(LL2i)
-    JInt
-  } else if (not hasQualifiedFuncOverrideJvm(ctx, funcName, path, args.count)) and funcName == "intToLong" {
-    // #6712: same qualified-call-site guard as `longToInt` above, for
-    // consistency (a qualified `Std.Math.intToLong` should reach the real
-    // `Host.hostIntToLong`, even though `i2l` widening can never overflow).
-    if args.count > 0 {
-      lowerCallArg(ctx, insns, args[0])
-    }
-    insns.add(LI2l)
-    JLong
-  } else if funcName == "intToDouble" {
-    if args.count > 0 {
-      lowerCallArg(ctx, insns, args[0])
-    }
-    insns.add(LI2d)
-    JDouble
   } else if funcName == "charToString" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])

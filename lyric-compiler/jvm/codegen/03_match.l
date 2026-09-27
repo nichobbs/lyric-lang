@@ -1302,7 +1302,7 @@ func lowerPatternTest(
               insns.add(LCheckcast(className = "java/lang/Integer"))
               insns.add(LUnboxInt)
             }
-            insns.add(LIconst(v = longToInt(v)))
+            insns.add(LIconst(v = v.toInt()))
             insns.add(LIfIcmpne(label = failLabel))
           }
         }

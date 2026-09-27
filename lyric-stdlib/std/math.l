@@ -391,9 +391,7 @@ pub func intToLong(n: in Int): Long {
 /// violates the precondition.  Callers must range-check before calling if
 /// the value may be out of range.
 ///
-/// Call it qualified (`Math.longToInt(n)`): a bare `longToInt(n)` is still
-/// lowered by both backends to an unchecked truncating conversion that
-/// never reaches this function (#7465).
+/// For an intentional wrap-around to the low 32 bits, use `n.toInt()`.
 @stable(since = "1.0")
 pub func longToInt(n: in Long): Int
   requires: n >= -2147483648i64 and n <= 2147483647i64

@@ -11,7 +11,7 @@
 //!   • Record types with fields
 //!   • Union types (lowered to sealed-union IR)
 //!   • Basic builtin calls: println, print, panic, toString, assert, newList,
-//!     newMap, mapGet, default, format1..format3, intToLong, longToInt, charToInt
+//!     newMap, mapGet, default, format1..format3
 //!   • Interpolated strings via String.Concat chains
 //!   • Match expressions with literal and binding patterns
 //!   • Constructor calls and field access
@@ -9480,7 +9480,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
             case _ -> {
               if v >= -2147483648i64 and v <= 2147483647i64 {
-                insns.add(MLdcI4(v = longToInt(v)))
+                insns.add(MLdcI4(v = v.toInt()))
                 MInt
               } else {
                 insns.add(MLdcI8(v = v))
@@ -14013,7 +14013,7 @@ func lowerPatternTestMsil(
           if isLongLit {
             insns.add(MLdcI8(v = v))
           } else {
-            val i4v = match suffix { case U32 -> int32BitsOfUnsignedMsil(v); case _ -> longToInt(v) }
+            val i4v = match suffix { case U32 -> int32BitsOfUnsignedMsil(v); case _ -> v.toInt() }
             insns.add(MLdcI4(v = i4v))
           }
           insns.add(MCeq)
@@ -16168,30 +16168,6 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdStr(token = emptyTok))
     }
     MString
-  } else if (not hasQualifiedOverride) and funcName == "intToLong" {
-    if args.count > 0 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-    }
-    insns.add(MConvI8)
-    MLong
-  } else if (not hasQualifiedOverride) and funcName == "longToInt" {
-    if args.count > 0 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-    }
-    insns.add(MConvI4)
-    MInt
-  } else if (not hasQualifiedOverride) and funcName == "charToInt" {
-    if args.count > 0 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-    }
-    // Char is I4 in MSIL; no conversion needed.
-    MInt
-  } else if (not hasQualifiedOverride) and funcName == "intToDouble" {
-    if args.count > 0 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-    }
-    insns.add(MConvR8)
-    MDouble
   } else if (not hasQualifiedOverride) and funcName == "default" {
     // `default()` must yield the zero value of the *expected* type, not a bare
     // `ldnull`.  For a primitive target (`var slot: Int = default()`, the
@@ -16202,7 +16178,7 @@ func lowerBuiltinOrStaticCallMsil(
     val defWant = collExpectTop(fctx)
     match defWant {
       case MLong -> {
-        insns.add(MLdcI8(v = intToLong(0)))
+        insns.add(MLdcI8(v = 0i64))
         MLong
       }
       case MDouble -> {
@@ -20340,7 +20316,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     insns.add(MDup)
                     // Push default value (0 for int/long, 0.0 for double, false for bool, null for object)
                     match ty {
-                      case MLong -> insns.add(MLdcI8(v = intToLong(0)))
+                      case MLong -> insns.add(MLdcI8(v = 0i64))
                       case MDouble -> insns.add(MLdcR8(v = 0.0))
                       case MBool -> insns.add(MLdcI4(v = 0))
                       case MObject -> insns.add(MLdNull)
@@ -20354,7 +20330,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     insns.add(MDup)
                     match ty {
                       case MLong -> {
-                        insns.add(MLdcI8(v = intToLong(0)))
+                        insns.add(MLdcI8(v = 0i64))
                       }
                       case MDouble -> {
                         insns.add(MLdcR8(v = 0.0))
@@ -20376,7 +20352,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 markUnsignedSlotMsil(fctx, slot, isUnsignedAnnotationMsil(tyOpt))
                 match ty {
                   case MLong -> {
-                    insns.add(MLdcI8(v = intToLong(0)))
+                    insns.add(MLdcI8(v = 0i64))
                     emitStoreSlot(insns, slot, fctx.paramCount)
                   }
                   case MDouble -> {
@@ -37443,7 +37419,7 @@ func emitConfigDefaultLiteralMsil(
       val v = if neg { 0i64 - v0 } else { v0 }
       match fieldTy {
         case MInt -> {
-          insns.add(MLdcI4(v = longToInt(v)))
+          insns.add(MLdcI4(v = v.toInt()))
           true
         }
         case MLong -> {
@@ -39673,7 +39649,7 @@ func foldConstInitToInt(cctx: in CodegenCtx, pkgName: in String, init: in Expr):
             ", outside Int; rebuild that package with this compiler"
         )
       }
-      return longToInt(v)
+      return v.toInt()
     }
     case None -> ()
   }
