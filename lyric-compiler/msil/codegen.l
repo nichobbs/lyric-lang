@@ -646,6 +646,15 @@ pub record CodegenCtx {
   pkgBareClosure: Map[String, List[String]]
   // The whole imports alone, the roots of that closure.
   pkgWholeImports: Map[String, List[String]]
+  // `<pkg>|<imported>|<name>` for each name a selective import lists; an
+  // imported package `pkg` reaches only selectively admits just these names
+  // bare (see `bareImportAdmitsMsil`).
+  pkgSelectedNames: Map[String, Bool]
+  // `<pkg>|<imported>` for each package `pkg` imports selectively.
+  pkgSelectivePkgs: Map[String, Bool]
+  // The whole imports' transitive closure alone (every name of these
+  // packages is visible bare), computed on first use.
+  pkgWholeClosure: Map[String, List[String]]
   // Per-package import aliases (`import Std.String as Str`).  Keyed by
   // `<pkgName>/<alias>` → the real dotted package name (`Std.String`), so an
   // alias-qualified call (`Str.split(..)`) parsed as `EMember(EPath["Str"], …)`
@@ -2224,6 +2233,9 @@ pub func newCodegenCtx(
     pkgBareImports = newMap(),
     pkgBareClosure = newMap(),
     pkgWholeImports = newMap(),
+    pkgSelectedNames = newMap(),
+    pkgSelectivePkgs = newMap(),
+    pkgWholeClosure = newMap(),
     pkgImportAliases = newMap(),
     unionCaseCtorByName = newMap(),
     caseParentUnion = newMap(),
@@ -2573,6 +2585,17 @@ pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
 func resolveEnumCaseOrdinalByScope(
   cctx: in CodegenCtx, fctx: in FuncCtx, typeName: in String, caseName: in String
 ): Option[Int] {
+  // A `<declPkg>::<Enum>` hint (a qualified annotation, `enumHintOfTypeExprMsil`)
+  // names the declaring package outright.
+  val sepIdx = String.indexOfRaw(typeName, "::")
+  if sepIdx >= 0 {
+    val declPkg = typeName.substring(0, sepIdx)
+    val simple = typeName.substring(sepIdx + 2, typeName.length - sepIdx - 2)
+    return match mapGet(cctx.enumCaseOrdinalsByPkgType, declPkg + "::" + simple + "." + caseName) {
+      case Some(o) -> Some(value = o)
+      case None -> resolveEnumCaseOrdinalByScope(cctx, fctx, simple, caseName)
+    }
+  }
   val tn = typeName + "." + caseName
   match mapGet(cctx.enumTypeCaseDeclarers, tn) {
     case None -> mapGet(cctx.enumCaseOrdinals, tn)
@@ -2584,20 +2607,7 @@ func resolveEnumCaseOrdinalByScope(
         if listContains(declarers, currentPkg) {
           mapGet(cctx.enumCaseOrdinalsByPkgType, currentPkg + "::" + tn)
         } else {
-          val viaImport = match bareImportsOfMsil(cctx, currentPkg) {
-            case Some(imps) -> {
-              var ii = 0
-              var found = ""
-              while ii < imps.count and found.length == 0 {
-                if listContains(declarers, imps[ii]) {
-                  found = imps[ii]
-                }
-                ii = ii + 1
-              }
-              found
-            }
-            case None -> ""
-          }
+          val viaImport = enumDeclarerViaImportsMsil(cctx, currentPkg, typeName, declarers)
           if viaImport.length > 0 {
             mapGet(cctx.enumCaseOrdinalsByPkgType, viaImport + "::" + tn)
           } else {
@@ -2607,6 +2617,31 @@ func resolveEnumCaseOrdinalByScope(
       }
     }
   }
+}
+
+// The package among `declarers` that `pkg` reaches enum `typeName` through:
+// the imports that make the name visible bare first (docs/01 §9.2), then any
+// other import, aliased ones included, since an enum reached through
+// `import P as Q` is still named by a `Q.Enum` annotation; "" when none is.
+func enumDeclarerViaImportsMsil(
+  cctx: in CodegenCtx, pkg: in String, typeName: in String, declarers: in List[String]
+): String {
+  for imp in bareImportListForNameMsil(cctx, pkg, typeName) {
+    if listContains(declarers, imp) {
+      return imp
+    }
+  }
+  match mapGet(cctx.pkgImports, pkg) {
+    case Some(imps) -> {
+      for imp in imps {
+        if listContains(declarers, imp) {
+          return imp
+        }
+      }
+    }
+    case None -> ()
+  }
+  ""
 }
 
 // Resolve which package's enum type `typeName` is visible from `fromPkg`
@@ -2633,20 +2668,7 @@ func resolveEnumTypeDeclPkg(cctx: in CodegenCtx, fromPkg: in String, typeName: i
       } else if listContains(declarers, fromPkg) {
         fromPkg
       } else {
-        val viaImport = match bareImportsOfMsil(cctx, fromPkg) {
-          case Some(imps) -> {
-            var ii = 0
-            var found = ""
-            while ii < imps.count and found.length == 0 {
-              if listContains(declarers, imps[ii]) {
-                found = imps[ii]
-              }
-              ii = ii + 1
-            }
-            found
-          }
-          case None -> ""
-        }
+        val viaImport = enumDeclarerViaImportsMsil(cctx, fromPkg, typeName, declarers)
         if viaImport.length > 0 {
           viaImport
         } else {
@@ -3369,6 +3391,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   if not cctx.pkgBareImports.containsKey(pkgName) {
     cctx.pkgBareImports.add(pkgName, bareImportOrderMsil(file.imports, false))
     cctx.pkgWholeImports.add(pkgName, bareImportOrderMsil(file.imports, true))
+    recordSelectiveImportsMsil(cctx, pkgName, file.imports)
   }
 
   // Resume row numbering from where the previous package's pre-scan left off
@@ -7321,11 +7344,17 @@ func importScopedCandMsil(cctx: in CodegenCtx, pkg: in String, seg: in String, c
     case Some(imps) -> imps
     case None -> match mapGet(cctx.pkgImports, pkg) { case Some(imps) -> imps; case None -> newList() }
   }
-  val first = newestCandInMsil(cands, seg, direct)
+  val admittedDirect: List[String] = newList()
+  for d in direct {
+    if bareImportAdmitsMsil(cctx, pkg, d, seg, "") {
+      admittedDirect.add(d)
+    }
+  }
+  val first = newestCandInMsil(cands, seg, admittedDirect)
   if first.length > 0 {
     return first
   }
-  newestCandInMsil(cands, seg, bareImportListMsil(cctx, pkg))
+  newestCandInMsil(cands, seg, bareImportListForNameMsil(cctx, pkg, seg))
 }
 
 func newestCandInMsil(cands: in List[String], seg: in String, imports: in List[String]): String {
@@ -8619,6 +8648,23 @@ func popCollExpect(fctx: in FuncCtx): Unit {
 // `typeExprToMsilCtx`'s own enum branch) to a registered enum type, or ""
 // otherwise.  Kept in sync with `typeExprToMsilCtx`'s TRef arm — both must
 // agree on which TypeExprs name an enum.
+// A local's or parameter's enum-type hint: `<declPkg>::<Enum>` when the
+// annotation names its package (`B.Mode`, rewritten to `EB.Mode`), so a bare
+// case pattern over it resolves in that package whatever else declares a
+// `Mode`; otherwise the simple name (`enumSimpleNameOfTypeExprMsil`).
+func enumHintOfTypeExprMsil(cctx: in CodegenCtx, te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> if path.segments.count >= 2 {
+      val simple = path.segments[path.segments.count - 1]
+      if cctx.enumTypeNames.containsKey(simple) {
+        return qualifierOfPathMsil(path.segments) + "::" + simple
+      }
+    }
+    case _ -> ()
+  }
+  enumSimpleNameOfTypeExprMsil(cctx, te)
+}
+
 func enumSimpleNameOfTypeExprMsil(cctx: in CodegenCtx, te: in TypeExpr): String {
   match te.kind {
     case TRef(path) -> {
@@ -14002,7 +14048,13 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
         var j = 0
         while j < candidates.count {
           if startsWith(candidates[j], prefix2) {
-            return candidates[j]
+            val unionName = match mapGet(cctx.caseParentUnion, candidates[j]) {
+              case Some(parentFqn) -> lastDottedSegmentMsil(parentFqn)
+              case None -> ""
+            }
+            if bareImportAdmitsMsil(cctx, currentPkg, imps[ii], lastDottedSegmentMsil(candidates[j]), unionName) {
+              return candidates[j]
+            }
           }
           j = j + 1
         }
@@ -14083,7 +14135,7 @@ func findBundleFqnByName(cctx: in CodegenCtx, currentPkg: in String, funcName: i
         }
         i = i + 1
       }
-      match bareImportsOfMsil(cctx, currentPkg) {
+      match bareImportsForNameMsil(cctx, currentPkg, funcName) {
         case Some(imps) -> {
           var ii = 0
           while ii < imps.count {
@@ -16253,6 +16305,119 @@ func bareImportsOfMsil(cctx: in CodegenCtx, pkg: in String): Option[List[String]
   }
 }
 
+func recordSelectiveImportsMsil(cctx: in CodegenCtx, pkg: in String, imports: in List[ImportDecl]): Unit {
+  for imp in imports {
+    if imp.isExtern {
+      continue
+    }
+    match imp.asAlias {
+      case Some(_) -> continue
+      case None -> ()
+    }
+    match imp.selector {
+      case Some(sel) -> {
+        val dotted = joinSegsMsil(imp.path.segments, ".")
+        val pkgKey = pkg + "|" + dotted
+        if not cctx.pkgSelectivePkgs.containsKey(pkgKey) {
+          cctx.pkgSelectivePkgs.add(pkgKey, true)
+        }
+        val items: List[ImportItem] = match sel {
+          case ISSingle(item) -> {
+            val one: List[ImportItem] = newList()
+            one.add(item)
+            one
+          }
+          case ISGroup(group) -> group
+        }
+        for item in items {
+          val key = pkgKey + "|" + item.name
+          if not cctx.pkgSelectedNames.containsKey(key) {
+            cctx.pkgSelectedNames.add(key, true)
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+}
+
+// The packages whose every name `pkg` sees bare: its whole imports and the
+// packages they reach transitively.
+func wholeClosureMsil(cctx: in CodegenCtx, pkg: in String): List[String] {
+  match mapGet(cctx.pkgWholeClosure, pkg) {
+    case Some(done) -> return done
+    case None -> ()
+  }
+  val closure: List[String] = newList()
+  match mapGet(cctx.pkgWholeImports, pkg) {
+    case Some(whole) -> {
+      for w in whole {
+        if not closure.contains(w) {
+          closure.add(w)
+        }
+      }
+    }
+    case None -> ()
+  }
+  var qi = 0
+  while qi < closure.count {
+    match mapGet(cctx.pkgImports, closure[qi]) {
+      case Some(reached) -> {
+        for r in reached {
+          if r != pkg and not closure.contains(r) {
+            closure.add(r)
+          }
+        }
+      }
+      case None -> ()
+    }
+    qi = qi + 1
+  }
+  cctx.pkgWholeClosure.add(pkg, closure)
+  closure
+}
+
+// Whether a bare reference in `pkg` can mean `name` (or, for a union case,
+// `altName`, its union) as declared by `imported`, one of the packages
+// `bareImportsOfMsil` lists: always, unless `pkg` reaches `imported` only
+// through a selective import that lists neither (docs/01 §9.2, D141).
+func bareImportAdmitsMsil(
+  cctx: in CodegenCtx, pkg: in String, imported: in String, name: in String, altName: in String
+): Bool {
+  val pkgKey = pkg + "|" + imported
+  if not cctx.pkgSelectivePkgs.containsKey(pkgKey) {
+    return true
+  }
+  if wholeClosureMsil(cctx, pkg).contains(imported) {
+    return true
+  }
+  cctx.pkgSelectedNames.containsKey(pkgKey + "|" + name) or
+    (altName.length > 0 and cctx.pkgSelectedNames.containsKey(pkgKey + "|" + altName))
+}
+
+func bareImportListForNameMsil(cctx: in CodegenCtx, pkg: in String, name: in String): List[String] {
+  match bareImportsForNameMsil(cctx, pkg, name) {
+    case Some(imps) -> imps
+    case None -> newList()
+  }
+}
+
+// `bareImportsOfMsil` narrowed to the imports that admit `name` bare.
+func bareImportsForNameMsil(cctx: in CodegenCtx, pkg: in String, name: in String): Option[List[String]] {
+  match bareImportsOfMsil(cctx, pkg) {
+    case Some(imps) -> {
+      val admitted: List[String] = newList()
+      for imp in imps {
+        if bareImportAdmitsMsil(cctx, pkg, imp, name, "") {
+          admitted.add(imp)
+        }
+      }
+      Some(value = admitted)
+    }
+    case None -> None
+  }
+}
+
 func bareImportListMsil(cctx: in CodegenCtx, pkg: in String): List[String] {
   match bareImportsOfMsil(cctx, pkg) {
     case Some(imps) -> imps
@@ -17462,7 +17627,13 @@ func lowerBuiltinOrStaticCallMsil(
               case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
                 findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
               } else {
-                findImportedFqnWithHint(cctx, bareImportListMsil(cctx, fctx.pkgName), funcName, args.count, importRetHint)
+                findImportedFqnWithHint(
+                  cctx,
+                  bareImportListForNameMsil(cctx, fctx.pkgName, funcName),
+                  funcName,
+                  args.count,
+                  importRetHint
+                )
               }
               case None -> ""
             }
@@ -20746,7 +20917,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // #5995: this binding's declared enum type (if any), so a bare-case
           // init (`val v: HttpVersion = Http11`) resolves against it instead
           // of colliding with another in-bundle enum's same-named case.
-          val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
+          val annoEnumName = match tyOpt { case Some(te) -> enumHintOfTypeExprMsil(cctx, te); case None -> "" }
           // Establish a fresh hint scope from this binding's annotation: a
           // generic annotation (`val m: Option[List[String]] = None`) threads its
           // concrete args so a nullary `None` instantiates closed (#2362), and
@@ -20813,7 +20984,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // #6877: see the matching LBVal comment above.
           registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, tyOpt, init)
           // #5995: see the matching LBVal comment above.
-          val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
+          val annoEnumName = match tyOpt { case Some(te) -> enumHintOfTypeExprMsil(cctx, te); case None -> "" }
           // Fresh hint scope from the annotation (see LBVal above).
           val savedAnnoHint = pushAnnoHintTyArgs(fctx, annoTy)
           pushEnumHintMsil(fctx, annoEnumName)
@@ -20916,7 +21087,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // through the cell so the closure and this scope share the location.
           val isHoisted = nameListContains(fctx.hoistedVarNames, name)
           // #5995: see the matching LBVal comment above.
-          val annoEnumName = match tyOpt { case Some(te) -> enumSimpleNameOfTypeExprMsil(cctx, te); case None -> "" }
+          val annoEnumName = match tyOpt { case Some(te) -> enumHintOfTypeExprMsil(cctx, te); case None -> "" }
           if annoEnumName.length > 0 {
             registerVarEnumTypeMsil(fctx, name, annoEnumName)
           }
@@ -29844,7 +30015,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     }
     // #5995: record this param's declared enum type (if any) — see the
     // matching comment in registerParamsMsil.
-    val paramEnumName = enumSimpleNameOfTypeExprMsil(cctx, p.ty)
+    val paramEnumName = enumHintOfTypeExprMsil(cctx, p.ty)
     if paramEnumName.length > 0 {
       registerVarEnumTypeMsil(fctx, p.name, paramEnumName)
     }
@@ -30191,7 +30362,7 @@ func registerParamsMsil(
     // #5995: record this param's declared enum type (if any) so a bare
     // `match p { case Http11 -> }` scrutinee scopes its case lookup instead
     // of colliding with another in-bundle enum's same-named case.
-    val paramEnumName = enumSimpleNameOfTypeExprMsil(cctx, p.ty)
+    val paramEnumName = enumHintOfTypeExprMsil(cctx, p.ty)
     if paramEnumName.length > 0 {
       registerVarEnumTypeMsil(fctx, p.name, paramEnumName)
     }

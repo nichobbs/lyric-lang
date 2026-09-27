@@ -893,17 +893,15 @@ func symTableImportReachable(tbl: in SymbolTable, startPkg: in String, target: i
 // (`Std.Rest.RestClient`) silently degraded to a backend-specific runtime
 // failure instead of a compile-time error (#7345).
 //
-// Firing only when the symbol is a TYPE, is declared by a different package
-// than the current scope, is not reachable through the import closure (see
-// `symTableImportReachable`), and is not part of the implicit `Std.Core`
-// prelude (docs/01 §9.2 — `Option`/`Result` are referenced tree-wide with no
-// `import Std.Core` at all, predating any scoped-resolution tiering, #6287)
-// keeps this additive: every call this checker already accepted
-// (same-package, imported, transitively re-exported, or `Std.Core`) is
-// untouched. A check with no package scope set at all (`curPkg == ""` — a
-// synthesised contract-surface check or the flat `checkWithImports` shim,
-// #6287's "historical last-registered-wins" mode) never diagnoses: it has no
-// import list to test reachability against.
+// Under the file's import rule (docs/01 §9.2, D141) `symTableTryFindOne`
+// already hides a name the imports do not make visible, so the usual report
+// comes from the `None` arm: the name exists but is hidden, and the T0020
+// carries `symTableHiddenImportHint`'s advice.  The `Some` arm covers a scope
+// with no import rule installed (an imported package's own signatures): it
+// still reports a type declared by another package that the import closure
+// cannot reach (`symTableImportReachable`), `Std.Core` excepted.  A check
+// with no package scope at all (`curPkg == ""`, the flat `checkWithImports`
+// shim) never diagnoses: it has no import list to test against.
 func checkUnimportedTypeReceiver(
   tbl: in SymbolTable,
   sc: in Scope,

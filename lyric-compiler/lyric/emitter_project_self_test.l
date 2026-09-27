@@ -2724,3 +2724,142 @@ test "emitProject a bare constructor ignores an aliased import's same-named case
   assertEqualInt(result.exitCode, 0, "aliased ctor collision MSIL: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "3\n4", "aliased ctor collision MSIL: output")
 }
+
+// A bare case of a union listed in a selective import resolves in that
+// package (docs/01 §9.2, D141, #7537): `EPSu.Marks`, registered first, also
+// declares a case `Square`.
+func selectiveUnionCtorPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPSu.Marks",
+      "package EPSu.Marks\n" + "\n" + "pub union Mark {\n" + "  case Square(n: Int)\n" + "  case Blank\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSu.Shapes",
+      "package EPSu.Shapes\n" + "\n" + "pub union Shape {\n" + "  case Square(side: Int)\n" + "  case Dot\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSu.App",
+      "package EPSu.App\n" + "\n" + "import EPSu.Shapes.{Shape}\n" + "\n" + "func sideOf(s: in Shape): Int {\n" +
+        "  match s {\n" +
+        "    case Square(n) -> n\n" +
+        "    case Dot -> 0\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val s = Square(side = 3)\n" +
+        "  println(sideOf(s))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a bare case of a selectively imported union resolves in its package (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-selunion-jvm", selectiveUnionCtorPkgs(), "EPSu")
+  assertEqualInt(result.exitCode, 0, "selunion JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "3", "selunion JVM: output")
+}
+
+test "emitProject a bare case of a selectively imported union resolves in its package (MSIL)" {
+  val result = runEmitProject("emitproj-selunion", selectiveUnionCtorPkgs(), "EPSu")
+  assertEqualInt(result.exitCode, 0, "selunion MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "3", "selunion MSIL: output")
+}
+
+// Enum case ordinals follow the scrutinee's declared type (#7538): `EPEn.C`,
+// registered first, declares a `Mode` with the opposite case order; the
+// value is typed through an aliased import, and a whole import of `EPEn.C`
+// makes its own `Mode` the bare one.
+func aliasedEnumOrdinalPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg("EPEn.C", "package EPEn.C\n" + "\n" + "pub enum Mode {\n" + "  case Fast\n" + "  case Slow\n" + "}\n")
+  )
+  pkgs.add(
+    mkProjectPkg("EPEn.B", "package EPEn.B\n" + "\n" + "pub enum Mode {\n" + "  case Slow\n" + "  case Fast\n" + "}\n")
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPEn.App",
+      "package EPEn.App\n" + "\n" + "import EPEn.B as B\n" + "import EPEn.C\n" + "\n" +
+        "func code(m: in B.Mode): Int {\n" +
+        "  match m {\n" +
+        "    case Fast -> 1\n" +
+        "    case _ -> 2\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val m: B.Mode = B.Fast\n" +
+        "  println(code(m))\n" +
+        "  val local: B.Mode = B.Slow\n" +
+        "  println(match local { case Fast -> 1; case _ -> 2 })\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject enum case ordinals follow an aliased import's declared type (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-aliasenum-jvm", aliasedEnumOrdinalPkgs(), "EPEn")
+  assertEqualInt(result.exitCode, 0, "aliasenum JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n2", "aliasenum JVM: output")
+}
+
+test "emitProject enum case ordinals follow an aliased import's declared type (MSIL)" {
+  val result = runEmitProject("emitproj-aliasenum", aliasedEnumOrdinalPkgs(), "EPEn")
+  assertEqualInt(result.exitCode, 0, "aliasenum MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n2", "aliasenum MSIL: output")
+}
+
+// A selective import admits only its listed names (#7539): `EPSt.A` is
+// imported for `foo` alone, so the bare `Widget` is `EPSt.H`'s, reached
+// transitively through the whole import of `EPSt.W`.
+func selectiveVsTransitivePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPSt.A",
+      "package EPSt.A\n" + "\n" + "pub record Widget {\n" + "  tag: String\n" + "}\n" + "\n" + "pub func foo(): Int {\n" +
+        "  7\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(mkProjectPkg("EPSt.H", "package EPSt.H\n" + "\n" + "pub record Widget {\n" + "  id: Int\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPSt.W",
+      "package EPSt.W\n" + "\n" + "import EPSt.H\n" + "\n" + "pub func idOf(w: in Widget): Int {\n" + "  w.id\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSt.App",
+      "package EPSt.App\n" + "\n" + "import EPSt.A.{foo}\n" + "import EPSt.W\n" + "\n" + "func main(): Unit {\n" +
+        "  val w = Widget(id = 5)\n" +
+        "  println(idOf(w))\n" +
+        "  println(foo())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a selective import's unlisted name leaves a transitive name bare (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-seltrans-jvm", selectiveVsTransitivePkgs(), "EPSt")
+  assertEqualInt(result.exitCode, 0, "seltrans JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "5\n7", "seltrans JVM: output")
+}
+
+test "emitProject a selective import's unlisted name leaves a transitive name bare (MSIL)" {
+  val result = runEmitProject("emitproj-seltrans", selectiveVsTransitivePkgs(), "EPSt")
+  assertEqualInt(result.exitCode, 0, "seltrans MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "5\n7", "seltrans MSIL: output")
+}

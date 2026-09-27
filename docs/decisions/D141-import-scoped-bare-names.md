@@ -55,18 +55,26 @@ that package was compiled.
   candidates; `findDirectSig` filters bare function candidates with
   `symTableBareFuncVisible`, since functions resolve through the signature
   map.
-- The JVM constructor scope (`~ctor-pkgs~`, and `~wimport~` for specialised
-  copies of another package's generics) counts whole imports only,
-  reversing D140's "every import form" to match the checker again.
-- The MSIL backend's bare-name resolvers (union cases, types, enums, free
-  functions) use a per-package list in the checker's order: whole imports,
-  then selective imports' packages, then the packages the whole imports
-  reach; aliased imports are left out (`CodegenCtx.pkgBareImports`,
-  `bareImportsOfMsil`).  A type is taken from a direct import before a
-  transitive one, as the checker's tiers have it.  A qualified case
+- The JVM constructor scope counts whole imports only (`~ctor-pkgs~`,
+  reversing D140's "every import form"); a selective import resolves its
+  listed names and the cases of a listed union (`~ctor-import~`,
+  `~ctor-sel~`); the packages the whole imports reach come last
+  (`~ctor-tpkgs~`).  Specialised copies of another package's generics get
+  the same keys for their origin package (`~wimport~`, `~selimport~`).
+- The MSIL backend's bare-name resolvers (union cases, types, free
+  functions) search in the checker's order: whole imports and selective
+  imports first, then the packages the whole imports reach; aliased imports
+  are left out (`CodegenCtx.pkgBareImports`, `bareImportsOfMsil`).  A
+  selectively imported package admits only its listed names, and a union's
+  cases when the union is listed (`bareImportAdmitsMsil`).  A type is taken
+  from a direct import before a transitive one.  A qualified case
   (`MA.Square`, rewritten to `EPAx.Marks.Square`) prefers the case declared
-  in the package its qualifier names, not only one whose union the last
-  segment names.
+  in the package its qualifier names.
+- MSIL enum case ordinals follow the declared type: a qualified annotation
+  (`val m: B.Mode`) records `EPEn.B::Mode`, so a bare `case Fast ->` over it
+  resolves in that package; a simple name is looked up through the bare
+  imports, then every import (an enum reached through an alias is still
+  named by its annotation).
 - An `impl` of another package's interface checks the interface's method
   signatures resolved in the interface's own package, not in the
   implementing file's scope.

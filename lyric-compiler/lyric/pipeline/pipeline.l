@@ -648,20 +648,11 @@ func funcValueLambdaTypes(sites: in Map[String, FuncRefSite]): Map[String, TypeE
   types
 }
 
-/// A restored package's items with qualified calls in their bodies resolved
-/// as in the package's own build (D-progress-966).  Generic bodies are stored
-/// as source after alias rewriting, so a call to a sibling package reads
-/// `Ui.Session.start(...)`; re-parsed, that is a member chain on a value.
-/// Re-running the alias rewriter with the package's recorded `imports` in
-/// scope collapses it back into the qualified call it was.
-pub func pipeRestoredImportNames(
-  // The packages a restored dependency imports: those its synthesised source
-  // declares plus those its contract records (the synthesised source keeps
-  // only what its declarations need).  The type checker follows them for the
-  // transitive visibility of a consumer's whole import (docs/01 §9.2).
-  source: in SourceFile,
-  contractImports: in List[String],
-): List[String] {
+/// The packages a restored dependency imports: those its synthesised source
+/// declares plus those its contract records (the synthesised source keeps
+/// only what its declarations need).  The type checker follows them for the
+/// transitive visibility of a consumer's whole import (docs/01 §9.2).
+pub func pipeRestoredImportNames(source: in SourceFile, contractImports: in List[String]): List[String] {
   val names = collectImportNames(source.imports)
   var i = 0
   while i < contractImports.count {
@@ -681,6 +672,12 @@ pub func pipeRestoredImportNames(
   names
 }
 
+/// A restored package's items with qualified calls in their bodies resolved
+/// as in the package's own build (D-progress-966).  Generic bodies are stored
+/// as source after alias rewriting, so a call to a sibling package reads
+/// `Ui.Session.start(...)`; re-parsed, that is a member chain on a value.
+/// Re-running the alias rewriter with the package's recorded `imports` in
+/// scope collapses it back into the qualified call it was.
 pub func pipeRestoredItemsWithImports(source: in SourceFile, imports: in List[String]): List[Item] {
   if imports.count == 0 {
     return source.items

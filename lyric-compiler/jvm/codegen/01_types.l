@@ -2147,7 +2147,31 @@ func ctorClassFromImports(ctx: in FuncCtx, name: in String): Option[String] {
     }
     case None -> ()
   }
-  val pkgs = match mapGet(ctx.externTypes, "~ctor-pkgs~") { case Some(v) -> v; case None -> "" }
+  // A case of a union the file imports selectively (`import P.{Shape}`,
+  // then `Square(...)`): its class is registered as `<pkg>::Shape$Square`.
+  val sel = match mapGet(ctx.externTypes, "~ctor-sel~") { case Some(v) -> v; case None -> "" }
+  if sel.length > 0 {
+    for entry in split(sel, ",") {
+      val bar = String.indexOfRaw(entry, "|")
+      if bar > 0 {
+        match mapGet(ctx.ctors, entry.substring(0, bar) + "::" + entry.substring(bar + 1) + "$" + name) {
+          case Some(cls) -> return Some(value = cls)
+          case None -> ()
+        }
+      }
+    }
+  }
+  match uniqueCtorInPkgsJvm(ctx, "~ctor-pkgs~", name) {
+    case Some(cls) -> return Some(value = cls)
+    case None -> ()
+  }
+  uniqueCtorInPkgsJvm(ctx, "~ctor-tpkgs~", name)
+}
+
+// The one class the packages listed under scope key `key` register for
+// constructor `name`; None when none does or two disagree.
+func uniqueCtorInPkgsJvm(ctx: in FuncCtx, key: in String, name: in String): Option[String] {
+  val pkgs = match mapGet(ctx.externTypes, key) { case Some(v) -> v; case None -> "" }
   if pkgs.length == 0 {
     return None
   }

@@ -3310,16 +3310,23 @@ pub func ownAwareExternTypes(file: in SourceFile, externSeed: in Map[String, Str
 
 // Records which constructor names `file`'s imports bring into scope, so a
 // bare constructor call resolves the way the type checker resolved it rather
-// than to whichever package registered the name first (#7378):
-// `~ctor-import~<local>` -> `<pkg>::<Name>` for each selectively imported
-// name (`import Forms.{OutOfRange}`), which decides first, and `~ctor-pkgs~`
-// -> the comma-separated JVM paths of the packages imported whole.  These are
-// the names the type checker lets a bare reference mean (docs/01 §9.2,
-// #7463): an aliased package's names are reached qualified, a selective
-// import's unlisted names not at all.  The `~` keys name no type, so type
-// lookups never see them; see `ctorClassFromImports`.
+// than to whichever package registered the name first (#7378), following
+// docs/01 §9.2 (D141):
+// - `~ctor-import~<local>` -> `<pkg>::<Name>` for each selectively imported
+//   name (`import Forms.{OutOfRange}`), which decides first;
+// - `~ctor-sel~` -> comma-separated `<pkg>|<Name>` for the same names, so a
+//   case of a listed union (`import Shapes.{Shape}` then `Square(...)`)
+//   resolves in that package;
+// - `~ctor-pkgs~` -> the JVM paths of the packages imported whole;
+// - `~ctor-tpkgs~` -> the packages those reach transitively, consulted last,
+//   as the checker ranks a transitive name below a direct one.
+// An aliased package's names are reached qualified, a selective import's
+// unlisted names not at all.  The `~` keys name no type, so type lookups
+// never see them; see `ctorClassFromImports`.
 func addCtorImportScope(file: in SourceFile, into: in Map[String, String]): Unit {
   var wholePkgs = ""
+  var selected = ""
+  val wholeDotted: List[String] = newList()
   for imp in file.imports {
     if imp.isExtern {
       continue
@@ -3342,20 +3349,73 @@ func addCtorImportScope(file: in SourceFile, into: in Map[String, String]): Unit
             into.remove(key)
           }
           into.add(key, pkgPath + "::" + item.name)
+          val entry = pkgPath + "|" + item.name
+          selected = if selected.length == 0 { entry } else { selected + "," + entry }
         }
       }
       case None -> match imp.asAlias {
         case Some(_) -> ()
         case None -> {
           wholePkgs = if wholePkgs.length == 0 { pkgPath } else { wholePkgs + "," + pkgPath }
+          wholeDotted.add(dottedPathOfSegments(imp.path.segments))
         }
       }
     }
   }
-  if into.containsKey("~ctor-pkgs~") {
-    into.remove("~ctor-pkgs~")
+  replaceCtorScopeKey(into, "~ctor-pkgs~", wholePkgs)
+  replaceCtorScopeKey(into, "~ctor-sel~", selected)
+  replaceCtorScopeKey(into, "~ctor-tpkgs~", transitiveImportPathsJvm(into, wholeDotted))
+}
+
+func replaceCtorScopeKey(into: in Map[String, String], key: in String, value: in String): Unit {
+  if into.containsKey(key) {
+    into.remove(key)
   }
-  into.add("~ctor-pkgs~", wholePkgs)
+  into.add(key, value)
+}
+
+// The JVM paths of the packages `whole` reaches through their own imports,
+// transitively, excluding `whole` itself: read from the bundle-wide
+// `<Pkg>.~import~<Imported>` markers (`collectOriginScopeMarkers`).
+func transitiveImportPathsJvm(markers: in Map[String, String], whole: in List[String]): String {
+  val importsOf: Map[String, List[String]] = newMap()
+  for k in mapKeys(markers) {
+    val idx = String.indexOfRaw(k, ".~import~")
+    if idx > 0 {
+      val owner = k.substring(0, idx)
+      val imported = k.substring(idx + 9)
+      match mapGet(importsOf, owner) {
+        case Some(lst) -> lst.add(imported)
+        case None -> {
+          val lst: List[String] = newList()
+          lst.add(imported)
+          importsOf.add(owner, lst)
+        }
+      }
+    }
+  }
+  val seen: List[String] = newList()
+  for w in whole {
+    seen.add(w)
+  }
+  var paths = ""
+  var qi = 0
+  while qi < seen.count {
+    match mapGet(importsOf, seen[qi]) {
+      case Some(lst) -> {
+        for r in lst {
+          if not seen.contains(r) {
+            seen.add(r)
+            val path = r.replace(".", "/")
+            paths = if paths.length == 0 { path } else { paths + "," + path }
+          }
+        }
+      }
+      case None -> ()
+    }
+    qi = qi + 1
+  }
+  paths
 }
 
 // As `collectFileSigs`, but resolving extern-type aliases against the file's
@@ -5162,11 +5222,15 @@ pub func originScopedExternTypes(
   val wholePrefix = origin + ".~wimport~"
   val selPrefix = origin + ".~selimport~"
   var originImports = ""
+  var originSelected = ""
+  val originWhole: List[String] = newList()
   for ik in mapKeys(externTypes) {
     if ik.startsWith(importPrefix) {
       overlayPackageTypesJvm(view, externTypes, ik.substring(importPrefix.length))
     } else if ik.startsWith(wholePrefix) {
-      val importedPath = ik.substring(wholePrefix.length).replace(".", "/")
+      val importedDotted = ik.substring(wholePrefix.length)
+      originWhole.add(importedDotted)
+      val importedPath = importedDotted.replace(".", "/")
       originImports = if originImports.length == 0 { importedPath } else { originImports + "," + importedPath }
     } else if ik.startsWith(selPrefix) {
       match mapGet(externTypes, ik) {
@@ -5175,6 +5239,8 @@ pub func originScopedExternTypes(
           if sep > 0 {
             val pkgPath = scopedDotted.substring(0, sep).replace(".", "/")
             view.add("~ctor-import~" + ik.substring(selPrefix.length), pkgPath + scopedDotted.substring(sep))
+            val entry = pkgPath + "|" + scopedDotted.substring(sep + 2)
+            originSelected = if originSelected.length == 0 { entry } else { originSelected + "," + entry }
           }
         }
         case None -> ()
@@ -5183,6 +5249,8 @@ pub func originScopedExternTypes(
   }
   view.add("~ctor-own~", origin.replace(".", "/"))
   view.add("~ctor-pkgs~", originImports)
+  view.add("~ctor-sel~", originSelected)
+  view.add("~ctor-tpkgs~", transitiveImportPathsJvm(externTypes, originWhole))
   overlayPackageTypesJvm(view, externTypes, origin)
   view
 }
