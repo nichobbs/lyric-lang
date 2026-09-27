@@ -22384,19 +22384,31 @@ func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
 // comments say so), so a same-named local generic parameter or Lyric type in
 // ONE package can collide with an unrelated package's bracket-suffixed
 // extern-type alias elsewhere in the same compiled bundle. Skipping these two
-// guards — the exact ones `typeExprToMsilCtx`'s `TRef` branch already applies
-// to this same map, for this same reason (`cctx.pbGenerics`; `#6041`'s
+// guards — the same ones `typeExprToMsilCtx`'s `TRef` branch applies for the
+// same reason (an active generic type parameter; `#6041`'s
 // `hasLyricTypeCandidateInScope`) — would let this helper resolve to the
 // wrong type before the correctly-guarded fallback path ever got a chance,
 // a silent miscompile rather than a build error.
-func externTargetBracketGenericInstMsil(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): Option[MsilType] {
+//
+// The generic-parameter check takes the CALLER's own `declGenerics` (the
+// current function's `genericNamesOf(decl.generics)`), not `cctx.pbGenerics`
+// — that field is populated exclusively inside the self-contained async
+// pre-scan `collectAwaitTypesPhaseBMsil` and is stale/empty at every other
+// call site, `emitExternTargetBody` included; consulting it here would have
+// made the guard permanently dead code (#7456).
+func externTargetBracketGenericInstMsil(
+  cctx: in CodegenCtx,
+  te: in TypeExpr,
+  pkgName: in String,
+  declGenerics: in List[String],
+): Option[MsilType] {
   match te.kind {
     case TRef(path) -> {
       if path.segments.count != 1 {
         return None
       }
       val seg = path.segments[0]
-      if nameListContains(cctx.pbGenerics, seg) {
+      if nameListContains(declGenerics, seg) {
         return None
       }
       if hasLyricTypeCandidateInScope(cctx, pkgName, seg) {
@@ -23687,7 +23699,7 @@ func emitExternTargetBody(
           // `emitGenericExternMember` instead) but loses the type entirely for
           // an unrelated method's argument. Bounded to `@externTarget`
           // parameters only, mirroring the `TFunction` case above.
-          case _ -> match externTargetBracketGenericInstMsil(cctx, decl.params[pi].ty, pkgName) {
+          case _ -> match externTargetBracketGenericInstMsil(cctx, decl.params[pi].ty, pkgName, declGenerics) {
             case Some(gi) -> gi
             case None -> typeExprToMsilGenBodyOrCtx(cctx, decl.params[pi].ty, pkgName, declGenerics)
           }
@@ -23699,7 +23711,7 @@ func emitExternTargetBody(
       val retTy = match decl.ret {
         case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te, pkgName) {
           case Some(rt) -> rt
-          case None -> match externTargetBracketGenericInstMsil(cctx, te, pkgName) {
+          case None -> match externTargetBracketGenericInstMsil(cctx, te, pkgName, declGenerics) {
             case Some(gi) -> gi
             case None -> typeExprToMsilGenBodyOrCtx(
               cctx,
@@ -23720,12 +23732,15 @@ func emitExternTargetBody(
       // return stays `object` (assignable from the reference type on `ret`).
       val ffiRetTy = match decl.ret {
         case Some(te) -> match te.kind {
-          case TNullable(inner) -> typeExprToMsilGenBodyOrCtx(
-            cctx,
-            inner,
-            pkgName,
-            declGenerics
-          )
+          case TNullable(inner) -> match externTargetBracketGenericInstMsil(cctx, inner, pkgName, declGenerics) {
+            case Some(gi) -> gi
+            case None -> typeExprToMsilGenBodyOrCtx(
+              cctx,
+              inner,
+              pkgName,
+              declGenerics
+            )
+          }
           case _ -> retTy
         }
         case None -> MVoid

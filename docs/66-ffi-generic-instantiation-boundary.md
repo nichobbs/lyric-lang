@@ -211,6 +211,18 @@ falls through to the pre-existing `MObject` erasure — not a regression (the
 old bug simply persists one level of indirection away), just a narrower
 recovery than the general erasure convention's own alias-chain following.
 
+Finally: even with the parameter now correctly typed via this fix,
+`argTyToSig` (`lyric-compiler/msil/codegen.l`) still has no arm for
+`MGenericInst`/`MValueTypeGenericInst`, so it returns `None` for such a
+parameter. This means `emitExternTargetBody`'s F0015 explicit-static
+signature-verification pre-check and `emitGenericExternMember`'s own
+scored-resolution path both silently skip/degrade for a call involving such
+a parameter, falling back to the pre-existing unscored path (harmless today,
+since that's exactly the path this fix's own signature construction already
+relies on) — but verification coverage for this shape doesn't yet exist.
+Closing it is the same `argTyToSig`/`scoreSigType` extension `#7444` already
+tracks for the auto-FFI direct-assignment gap; no separate issue needed.
+
 ## 6. `#5624` — not part of this family
 
 `#5624` bundles four items under the same tracking label as the six issues
