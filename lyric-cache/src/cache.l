@@ -5,9 +5,18 @@
 //!
 //! WARNING (thread safety): `InProcessCacheStore` is NOT thread-safe.  Concurrent
 //! access from multiple threads produces undefined behaviour (lost updates,
-//! torn reads).  Until the `protected type` weaver ships, multi-threaded
-//! services should use a Redis-backed store (`Lyric.Cache.Redis`) or guard
-//! access with an external mutex.  See lyric-lang #411.
+//! torn reads).  It is a plain mutable record, not a `protected type`: an
+//! isolated repro confirmed that `impl <interface> for <protected type>`
+//! compiles on both backends but fails at RUNTIME on both — `--target dotnet`
+//! raises `System.TypeLoadException: Method '...' does not have an
+//! implementation`, `--target jvm` raises `NoSuchMethodError` for the same
+//! forwarding method — because the interface-dispatch method the `impl`
+//! block declares is never linked to the protected type's own `entry`/`func`
+//! members by either backend.  `InProcessCacheStore` must keep implementing
+//! `CacheStore` (its whole public surface depends on that), so converting it
+//! is not possible until that gap closes.  Multi-threaded services should use
+//! a Redis-backed store (`Lyric.Cache.Redis`) or guard access with an
+//! external mutex.  See lyric-lang #411; the backend gap is #7457.
 //!
 //! `CacheStore` is the public interface for the backing store.  Implement it
 //! to plug in Redis, Memcached, or any other remote store.  `InProcessCacheStore`
@@ -130,7 +139,11 @@ pub interface CacheStore {
 //
 // Eviction is by whichever bound is hit first:
 //   - FIFO capacity: when `maxEntries` is reached the entry inserted first
-//     (among keys not yet deleted) is removed.
+//     (among keys not yet deleted) is removed. `maxEntries` is always
+//     positive — see the invariant below — so this bound is always active;
+//     there is no "unbounded" mode. A store that should hold effectively
+//     unlimited entries can be created with a large explicit
+//     `inProcessWithCapacity(n)`, e.g. `Int.maxValue`.
 //   - TTL expiry: a key set with `ttlSeconds > 0` is treated as absent by
 //     `get` once `clock.nowMillis()` passes its recorded expiry timestamp,
 //     and is evicted from all three backing collections at that point.
@@ -146,6 +159,14 @@ pub interface CacheStore {
 //     `Cache.inProcessWithClock()` accepts a caller-supplied `Clock` so TTL
 //     expiry can be driven deterministically instead of via a real
 //     `sleepMillis` wait.
+//
+// Invariant: `maxEntries >= 1` (no magic "0 or negative means unbounded"
+// sentinel — every public factory already enforces this) and
+// `insertionOrder.count == valueMap.count` (the FIFO order tracks exactly
+// the live key set, no more, no fewer). The compiler checks a record's
+// invariant at construction (D-progress-958) but not yet after a field
+// mutation (#7222 tracks that), so every mutating operation below
+// (`set`/`evictKey`/`clear`) re-verifies it explicitly via `checkInvariant`.
 @stable(since = "0.1")
 pub record InProcessCacheStore {
   var valueMap: Map[String, String]  // key → cached value
@@ -153,6 +174,21 @@ pub record InProcessCacheStore {
   var insertionOrder: List[String]         // keys in FIFO insertion order; oldest first
   var expiryMap: Map[String, Long]  // key → expiry epoch millis; absent means no expiry
   clock: Clock  // clock seam; defaults to SystemClock
+
+  invariant: maxEntries >= 1
+  invariant: insertionOrder.count == valueMap.count
+}
+
+// Re-verify `InProcessCacheStore`'s invariant (see above) after a mutating
+// operation. Kept as explicit runtime asserts, mirroring the record's own
+// `invariant:` clauses, rather than relying on construction-time checking
+// alone (#7222).
+func checkInvariant(store: in InProcessCacheStore): Unit {
+  assert(store.maxEntries >= 1, "InProcessCacheStore invariant violated: maxEntries must be >= 1")
+  assert(
+    store.insertionOrder.count == store.valueMap.count,
+    "InProcessCacheStore invariant violated: insertionOrder.count must equal valueMap.count"
+  )
 }
 
 // Remove `key` from all three backing collections of `store`. Shared by
@@ -177,6 +213,7 @@ func evictKey(store: in InProcessCacheStore, key: in String): Unit {
   if found >= 0 {
     store.insertionOrder.removeAt(found)
   }
+  checkInvariant(store)
 }
 
 impl CacheStore for InProcessCacheStore {
@@ -197,9 +234,9 @@ impl CacheStore for InProcessCacheStore {
   func set(key: in String, value: in String, ttlSeconds: in Int): Unit {
     val isNew = not self.valueMap.containsKey(key)
     // FIFO capacity bound: before inserting a *new* key into a full store,
-    // evict the oldest (front of the insertion order).  `maxEntries <= 0`
-    // disables the bound.
-    if isNew and self.maxEntries > 0 and self.insertionOrder.count >= self.maxEntries {
+    // evict the oldest (front of the insertion order). `maxEntries` is
+    // always >= 1 (the record's invariant), so this bound is always active.
+    if isNew and self.insertionOrder.count >= self.maxEntries {
       val oldest = self.insertionOrder[0]
       self.valueMap.remove(oldest)
       self.expiryMap.remove(oldest)
@@ -216,6 +253,7 @@ impl CacheStore for InProcessCacheStore {
       // permanent again; drop the stale expiry entry.
       self.expiryMap.remove(key)
     }
+    checkInvariant(self)
   }
 
   func delete(key: in String): Unit {
@@ -230,6 +268,7 @@ impl CacheStore for InProcessCacheStore {
     self.valueMap = newMap()
     self.insertionOrder = newList()
     self.expiryMap = newMap()
+    checkInvariant(self)
   }
 }
 

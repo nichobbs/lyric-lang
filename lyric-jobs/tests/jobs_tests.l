@@ -11,6 +11,506 @@ import Std.Core
 import Std.Testing
 import Jobs
 
+// ─── Test handlers for runNext retry/timeout coverage ────────────────────────
+// Module-level `Counter` state (not a field on the handler record itself):
+// `handler.handle` is called through `handler: in JobHandler`, so a handler
+// record's own fields cannot be mutated from inside `handle` — the same
+// idiom `jobs_aspect_weaving_tests.l` already uses for its target functions.
+record Counter {
+  var count: Int = 0
+}
+
+val retrySuccessCalls: Counter = Counter()
+
+val retryExhaustCalls: Counter = Counter()
+
+val retryPanicCalls: Counter = Counter()
+
+val timeoutOverrunCalls: Counter = Counter()
+
+record SucceedOnSecondAttemptHandler {
+}
+
+impl JobHandler for SucceedOnSecondAttemptHandler {
+  func handle(spec: in JobSpec): Result[String, JobError] {
+    retrySuccessCalls.count = retrySuccessCalls.count + 1
+    if retrySuccessCalls.count < 2 {
+      return Err(JobError(message = "transient failure", code = "T"))
+    }
+    return Ok("succeeded on attempt " + retrySuccessCalls.count.toString())
+  }
+}
+
+record AlwaysFailHandler {
+}
+
+impl JobHandler for AlwaysFailHandler {
+  func handle(spec: in JobSpec): Result[String, JobError] {
+    retryExhaustCalls.count = retryExhaustCalls.count + 1
+    return Err(JobError(message = "persistent failure", code = "P"))
+  }
+}
+
+record AlwaysPanicHandler {
+}
+
+impl JobHandler for AlwaysPanicHandler {
+  func handle(spec: in JobSpec): Result[String, JobError] {
+    retryPanicCalls.count = retryPanicCalls.count + 1
+    panic("handler exploded")
+  }
+}
+
+record SlowHandler {
+}
+
+impl JobHandler for SlowHandler {
+  func handle(spec: in JobSpec): Result[String, JobError] {
+    timeoutOverrunCalls.count = timeoutOverrunCalls.count + 1
+    Jobs.sleepMs(50)
+    return Ok("finished too slowly")
+  }
+}
+
+// ─── JobSpec / JobResult invariant violations ────────────────────────────────
+// Named helper functions (not inline lambdas: a block-bodied `() -> { ... }`
+// lambda is refused by `lyric fmt`, #7151) passed directly to `assertPanics`.
+func makeJobSpecEmptyId(): Unit {
+  val _ = JobSpec(id = "", name = "job", payload = "", maxAttempts = 1, timeoutMs = 1000, scheduledAt = 0i64)
+}
+
+func makeJobSpecEmptyName(): Unit {
+  val _ = JobSpec(id = "job-1", name = "", payload = "", maxAttempts = 1, timeoutMs = 1000, scheduledAt = 0i64)
+}
+
+func makeJobSpecZeroMaxAttempts(): Unit {
+  val _ = JobSpec(id = "job-1", name = "job", payload = "", maxAttempts = 0, timeoutMs = 1000, scheduledAt = 0i64)
+}
+
+func makeJobSpecZeroTimeoutMs(): Unit {
+  val _ = JobSpec(id = "job-1", name = "job", payload = "", maxAttempts = 1, timeoutMs = 0, scheduledAt = 0i64)
+}
+
+func makeJobSpecNegativeScheduledAt(): Unit {
+  val _ = JobSpec(id = "job-1", name = "job", payload = "", maxAttempts = 1, timeoutMs = 1000, scheduledAt = -1i64)
+}
+
+func makeJobResultFinishedBeforeStarted(): Unit {
+  val _ = JobResult(
+    jobId = "job-1",
+    status = JobStatus.Failed,
+    output = "",
+    error = "boom",
+    startedAt = 1000i64,
+    finishedAt = 500i64
+  )
+}
+
+test "JobSpec: empty id violates the invariant" {
+  assertPanics("empty id", makeJobSpecEmptyId)
+}
+
+test "JobSpec: empty name violates the invariant" {
+  assertPanics("empty name", makeJobSpecEmptyName)
+}
+
+test "JobSpec: maxAttempts below 1 violates the invariant" {
+  assertPanics("zero maxAttempts", makeJobSpecZeroMaxAttempts)
+}
+
+test "JobSpec: timeoutMs below 1 violates the invariant" {
+  assertPanics("zero timeoutMs", makeJobSpecZeroTimeoutMs)
+}
+
+test "JobSpec: negative scheduledAt violates the invariant" {
+  assertPanics("negative scheduledAt", makeJobSpecNegativeScheduledAt)
+}
+
+test "JobResult: finishedAt before startedAt violates the invariant" {
+  assertPanics("finishedAt < startedAt", makeJobResultFinishedBeforeStarted)
+}
+
+// ─── runNext: retries ─────────────────────────────────────────────────────────
+test "runNext: a handler failing once then succeeding is retried and reports 2 attempts" {
+  retrySuccessCalls.count = 0
+  val scheduler = Jobs.inProcess()
+  match scheduler.enqueue("succeed-second", "{}", 3, 30000) {
+    case Err(e) -> assertTrue(false, "enqueue must succeed: " + e)
+    case Ok(jobId) -> {
+      match Jobs.runNext(scheduler, SucceedOnSecondAttemptHandler()) {
+        case Err(e) -> assertTrue(false, "runNext must succeed: " + e)
+        case Ok(result) -> {
+          match result.status {
+            case JobStatus.Succeeded -> ()
+            case _ -> assertTrue(false, "expected Succeeded after the retry")
+          }
+          assertEqual(result.output, "succeeded on attempt 2", "output reflects the successful attempt")
+        }
+      }
+      assertEqualInt(Jobs.attemptCount(scheduler, jobId), 2, "exactly two attempts were run")
+    }
+  }
+}
+
+test "runNext: a handler that always fails is retried up to maxAttempts then reports Failed" {
+  retryExhaustCalls.count = 0
+  val scheduler = Jobs.inProcess()
+  match scheduler.enqueue("always-fail", "{}", 3, 30000) {
+    case Err(e) -> assertTrue(false, "enqueue must succeed: " + e)
+    case Ok(jobId) -> {
+      match Jobs.runNext(scheduler, AlwaysFailHandler()) {
+        case Err(e) -> assertTrue(false, "runNext must succeed: " + e)
+        case Ok(result) -> {
+          match result.status {
+            case JobStatus.Failed -> ()
+            case _ -> assertTrue(false, "expected Failed after exhausting all attempts")
+          }
+          assertEqual(result.error, "persistent failure", "the last attempt's error is reported")
+        }
+      }
+      assertEqualInt(Jobs.attemptCount(scheduler, jobId), 3, "all three attempts were run")
+      assertEqualInt(retryExhaustCalls.count, 3, "the handler itself ran exactly three times")
+    }
+  }
+}
+
+test "runNext: a handler that always panics is retried up to maxAttempts and counted as failed" {
+  retryPanicCalls.count = 0
+  val scheduler = Jobs.inProcess()
+  match scheduler.enqueue("always-panic", "{}", 3, 30000) {
+    case Err(e) -> assertTrue(false, "enqueue must succeed: " + e)
+    case Ok(jobId) -> {
+      match Jobs.runNext(scheduler, AlwaysPanicHandler()) {
+        case Err(e) -> assertTrue(false, "runNext must succeed: " + e)
+        case Ok(result) -> {
+          match result.status {
+            case JobStatus.Failed -> ()
+            case _ -> assertTrue(false, "expected Failed after every attempt panicked")
+          }
+          assertTrue(result.error.contains("handler panicked"), "the error names the panic, not a raw crash")
+          assertTrue(result.error.contains("handler exploded"), "the error carries the panic message")
+        }
+      }
+      assertEqualInt(Jobs.attemptCount(scheduler, jobId), 3, "a panic still counts as an attempt, retried like an Err")
+      assertEqualInt(retryPanicCalls.count, 3, "the handler ran exactly three times despite panicking every time")
+    }
+  }
+}
+
+// ─── runNext: timeoutMs overrun ───────────────────────────────────────────────
+test "runNext: a handler that overruns timeoutMs is counted as a failed attempt even though it returned Ok" {
+  timeoutOverrunCalls.count = 0
+  val scheduler = Jobs.inProcess()
+  match scheduler.enqueue("too-slow", "{}", 1, 10) {
+    case Err(e) -> assertTrue(false, "enqueue must succeed: " + e)
+    case Ok(jobId) -> {
+      match Jobs.runNext(scheduler, SlowHandler()) {
+        case Err(e) -> assertTrue(false, "runNext must succeed: " + e)
+        case Ok(result) -> {
+          match result.status {
+            case JobStatus.Failed -> ()
+            case _ -> assertTrue(false, "an overrun attempt must be reported as Failed, not Succeeded")
+          }
+          assertTrue(result.error.contains("exceeded timeoutMs"), "the error names the overrun")
+        }
+      }
+      assertEqualInt(Jobs.attemptCount(scheduler, jobId), 1, "the single configured attempt ran exactly once")
+      assertEqualInt(timeoutOverrunCalls.count, 1, "the handler itself ran exactly once")
+    }
+  }
+}
+
+test "runNext: a handler that always overruns timeoutMs is retried like any other failure" {
+  timeoutOverrunCalls.count = 0
+  val scheduler = Jobs.inProcess()
+  match scheduler.enqueue("too-slow-retried", "{}", 2, 10) {
+    case Err(e) -> assertTrue(false, "enqueue must succeed: " + e)
+    case Ok(jobId) -> {
+      match Jobs.runNext(scheduler, SlowHandler()) {
+        case Err(e) -> assertTrue(false, "runNext must succeed: " + e)
+        case Ok(result) -> {
+          match result.status {
+            case JobStatus.Failed -> ()
+            case _ -> assertTrue(false, "every attempt overran, so the final status must be Failed")
+          }
+        }
+      }
+      assertEqualInt(Jobs.attemptCount(scheduler, jobId), 2, "both configured attempts ran")
+      assertEqualInt(timeoutOverrunCalls.count, 2, "the handler ran exactly twice")
+    }
+  }
+}
+
+// ─── schedule: payload injection ──────────────────────────────────────────────
+test "schedule: a payload crafted to inject a cron key stays inside the payload JSON string" {
+  val scheduler = Jobs.inProcess()
+  val maliciousPayload = "oops\",\"cron\":\"* * * * *\",\"payload\":\"gotcha"
+  match scheduler.schedule("injection-attempt", maliciousPayload, "*/5 * * * *", 3, 30000) {
+    case Err(e) -> assertTrue(false, "schedule must succeed: " + e)
+    case Ok(_) -> {
+      val stored = scheduler.queue[0].payload
+      assertTrue(
+        stored.contains("\"cron\":\"*/5 * * * *\""),
+        "the legitimate cron field is present, unmodified, and still the real schedule"
+      )
+      assertTrue(
+        not stored.contains("\"cron\":\"* * * * *\""),
+        "the injected cron-shaped text must not appear as a second, unescaped JSON key"
+      )
+      assertTrue(
+        stored.contains(jsonEscapedMaliciousPayload()),
+        "the malicious payload text survives verbatim, but only inside the escaped payload string"
+      )
+    }
+  }
+}
+
+// The malicious payload's expected JSON-string-escaped form: only `"` needs
+// escaping here (no backslashes, newlines, or tabs in the payload text).
+func jsonEscapedMaliciousPayload(): String {
+  return "oops\\\",\\\"cron\\\":\\\"* * * * *\\\",\\\"payload\\\":\\\"gotcha"
+}
+
+// ─── parseCron ─────────────────────────────────────────────────────────────────
+test "parseCron: a plain 5-field expression parses and round-trips" {
+  match Jobs.parseCron("*/15 9-17 1,15 * 1-5") {
+    case Err(e) -> assertTrue(false, "expected a valid cron expression: " + e)
+    case Ok(cron) -> assertEqual(Jobs.cronExprToString(cron), "*/15 9-17 1,15 * 1-5", "canonical string round-trips")
+  }
+}
+
+test "parseCron: every field defaulted to '*' parses" {
+  match Jobs.parseCron("* * * * *") {
+    case Err(e) -> assertTrue(false, "expected a valid cron expression: " + e)
+    case Ok(cron) -> assertEqual(Jobs.cronExprToString(cron), "* * * * *", "canonical string round-trips")
+  }
+}
+
+test "parseCron: rejects a field count other than 5" {
+  match Jobs.parseCron("* * * *") {
+    case Ok(_) -> assertTrue(false, "4 fields must be rejected")
+    case Err(e) -> assertTrue(e.contains("5 space-separated fields"), "error names the field-count requirement")
+  }
+}
+
+test "parseCron: rejects a minute value out of range" {
+  match Jobs.parseCron("60 * * * *") {
+    case Ok(_) -> assertTrue(false, "minute 60 is out of range [0,59]")
+    case Err(e) -> assertTrue(e.contains("minute"), "error names the offending field")
+  }
+}
+
+test "parseCron: rejects an hour value out of range" {
+  match Jobs.parseCron("0 24 * * *") {
+    case Ok(_) -> assertTrue(false, "hour 24 is out of range [0,23]")
+    case Err(e) -> assertTrue(e.contains("hour"), "error names the offending field")
+  }
+}
+
+test "parseCron: rejects a day-of-month value out of range" {
+  match Jobs.parseCron("0 0 32 * *") {
+    case Ok(_) -> assertTrue(false, "day-of-month 32 is out of range [1,31]")
+    case Err(e) -> assertTrue(e.contains("day-of-month"), "error names the offending field")
+  }
+}
+
+test "parseCron: rejects a month value out of range" {
+  match Jobs.parseCron("0 0 1 13 *") {
+    case Ok(_) -> assertTrue(false, "month 13 is out of range [1,12]")
+    case Err(e) -> assertTrue(e.contains("month"), "error names the offending field")
+  }
+}
+
+test "parseCron: rejects a day-of-week value out of range" {
+  match Jobs.parseCron("0 0 1 1 8") {
+    case Ok(_) -> assertTrue(false, "day-of-week 8 is out of range [0,7]")
+    case Err(e) -> assertTrue(e.contains("day-of-week"), "error names the offending field")
+  }
+}
+
+test "parseCron: accepts an inclusive range" {
+  match Jobs.parseCron("0 9-17 * * *") {
+    case Err(e) -> assertTrue(false, "9-17 is a valid hour range: " + e)
+    case Ok(_) -> ()
+  }
+}
+
+test "parseCron: rejects a range with start greater than end" {
+  match Jobs.parseCron("0 17-9 * * *") {
+    case Ok(_) -> assertTrue(false, "17-9 has start greater than end")
+    case Err(e) -> assertTrue(e.contains("hour"), "error names the offending field")
+  }
+}
+
+test "parseCron: accepts a comma-separated list" {
+  match Jobs.parseCron("0,15,30,45 * * * *") {
+    case Err(e) -> assertTrue(false, "a comma list of valid minutes must parse: " + e)
+    case Ok(_) -> ()
+  }
+}
+
+test "parseCron: rejects an empty list entry" {
+  match Jobs.parseCron("0,,30 * * * *") {
+    case Ok(_) -> assertTrue(false, "a double comma leaves an empty list entry")
+    case Err(e) -> assertTrue(e.contains("empty"), "error names the empty entry")
+  }
+}
+
+test "parseCron: accepts a '*/n' step" {
+  match Jobs.parseCron("*/5 * * * *") {
+    case Err(e) -> assertTrue(false, "*/5 is a valid step: " + e)
+    case Ok(_) -> ()
+  }
+}
+
+test "parseCron: accepts an 'a-b/n' step" {
+  match Jobs.parseCron("1-30/5 * * * *") {
+    case Err(e) -> assertTrue(false, "1-30/5 is a valid range step: " + e)
+    case Ok(_) -> ()
+  }
+}
+
+test "parseCron: rejects a step of 0" {
+  match Jobs.parseCron("*/0 * * * *") {
+    case Ok(_) -> assertTrue(false, "a step of 0 is meaningless")
+    case Err(e) -> assertTrue(e.contains("minute"), "error names the offending field")
+  }
+}
+
+test "parseCron: rejects a non-numeric step" {
+  match Jobs.parseCron("*/x * * * *") {
+    case Ok(_) -> assertTrue(false, "'x' is not a valid step")
+    case Err(e) -> assertTrue(e.contains("minute"), "error names the offending field")
+  }
+}
+
+test "parseCron: rejects a non-numeric field value" {
+  match Jobs.parseCron("abc * * * *") {
+    case Ok(_) -> assertTrue(false, "'abc' is not a valid minute value")
+    case Err(e) -> assertTrue(e.contains("minute"), "error names the offending field")
+  }
+}
+
+test "parseCron: rejects an empty field" {
+  match Jobs.parseCron("  * * * *") {
+    case Ok(_) -> assertTrue(false, "a leading double space produces an empty field")
+    case Err(e) -> assertTrue(e.contains("field"), "error mentions the malformed field")
+  }
+}
+
+// ─── cronExprToQuartz ──────────────────────────────────────────────────────────
+test "cronExprToQuartz: unrestricted day-of-week converts to Quartz '?'" {
+  match Jobs.parseCron("5 10 15 * *") {
+    case Err(e) -> assertTrue(false, "expected a valid cron: " + e)
+    case Ok(cron) -> {
+      match Jobs.cronExprToQuartz(cron) {
+        case Err(e) -> assertTrue(false, "expected a convertible expression: " + e)
+        case Ok(q) -> assertEqual(q, "0 5 10 15 * ?", "day-of-month passes through; day-of-week becomes '?'")
+      }
+    }
+  }
+}
+
+test "cronExprToQuartz: unrestricted day-of-month converts to Quartz '?' and renumbers day-of-week" {
+  match Jobs.parseCron("0 9 * * 1") {
+    case Err(e) -> assertTrue(false, "expected a valid cron: " + e)
+    case Ok(cron) -> {
+      match Jobs.cronExprToQuartz(cron) {
+        case Err(e) -> assertTrue(false, "expected a convertible expression: " + e)
+        case Ok(q) -> assertEqual(q, "0 0 9 ? * 2", "Unix Monday (1) becomes Quartz 2")
+      }
+    }
+  }
+}
+
+test "cronExprToQuartz: both fields unrestricted maps day-of-week to '?'" {
+  match Jobs.parseCron("* * * * *") {
+    case Err(e) -> assertTrue(false, "expected a valid cron: " + e)
+    case Ok(cron) -> {
+      match Jobs.cronExprToQuartz(cron) {
+        case Err(e) -> assertTrue(false, "expected a convertible expression: " + e)
+        case Ok(q) -> assertEqual(q, "0 * * * * ?", "day-of-month stays '*'; day-of-week becomes '?'")
+      }
+    }
+  }
+}
+
+test "cronExprToQuartz: both Unix Sunday spellings (0 and 7) renumber to Quartz 1" {
+  match Jobs.parseCron("0 0 * * 0") {
+    case Err(e) -> assertTrue(false, "expected a valid cron: " + e)
+    case Ok(cronZero) -> {
+      match Jobs.cronExprToQuartz(cronZero) {
+        case Err(e) -> assertTrue(false, "expected a convertible expression: " + e)
+        case Ok(q) -> assertEqual(q, "0 0 0 ? * 1", "Unix Sunday=0 becomes Quartz 1")
+      }
+    }
+  }
+  match Jobs.parseCron("0 0 * * 7") {
+    case Err(e) -> assertTrue(false, "expected a valid cron: " + e)
+    case Ok(cronSeven) -> {
+      match Jobs.cronExprToQuartz(cronSeven) {
+        case Err(e) -> assertTrue(false, "expected a convertible expression: " + e)
+        case Ok(q) -> assertEqual(q, "0 0 0 ? * 1", "Unix Sunday=7 becomes Quartz 1")
+      }
+    }
+  }
+}
+
+test "cronExprToQuartz: a day-of-week range and list renumber every endpoint" {
+  match Jobs.parseCron("0 9 * * 1-5") {
+    case Err(e) -> assertTrue(false, "expected a valid cron: " + e)
+    case Ok(cron) -> {
+      match Jobs.cronExprToQuartz(cron) {
+        case Err(e) -> assertTrue(false, "expected a convertible expression: " + e)
+        case Ok(q) -> assertEqual(q, "0 0 9 ? * 2-6", "Mon-Fri (1-5) becomes Quartz 2-6")
+      }
+    }
+  }
+  match Jobs.parseCron("0 9 * * 0,6") {
+    case Err(e) -> assertTrue(false, "expected a valid cron: " + e)
+    case Ok(cron) -> {
+      match Jobs.cronExprToQuartz(cron) {
+        case Err(e) -> assertTrue(false, "expected a convertible expression: " + e)
+        case Ok(q) -> assertEqual(q, "0 0 9 ? * 1,7", "Sun,Sat (0,6) becomes Quartz 1,7")
+      }
+    }
+  }
+}
+
+test "cronExprToQuartz: both day-of-month and day-of-week restricted is rejected" {
+  match Jobs.parseCron("0 9 15 * 1") {
+    case Err(e) -> assertTrue(false, "expected a valid cron: " + e)
+    case Ok(cron) -> {
+      match Jobs.cronExprToQuartz(cron) {
+        case Ok(q) -> assertTrue(false, "both fields restricted is not representable in Quartz, got: " + q)
+        case Err(e) -> assertTrue(e.contains("day-of-month"), "error names the ambiguity")
+      }
+    }
+  }
+}
+
+// ─── schedule / scheduleCron: the String-taking API still works ─────────────
+test "schedule: an invalid cron expression is rejected rather than forwarded" {
+  val scheduler = Jobs.inProcess()
+  match Jobs.schedule(scheduler, "bad-cron-job", "{}", "not a cron") {
+    case Ok(_) -> assertTrue(false, "an invalid cron expression must not schedule successfully")
+    case Err(e) -> assertTrue(e.contains("cron"), "error identifies this as a cron problem")
+  }
+}
+
+test "scheduleCron: schedules using an already-validated CronExpr" {
+  val scheduler = Jobs.inProcess()
+  match Jobs.parseCron("0 3 * * *") {
+    case Err(e) -> assertTrue(false, "expected a valid cron: " + e)
+    case Ok(cron) -> {
+      match Jobs.scheduleCron(scheduler, "nightly-job", "{}", cron) {
+        case Err(e) -> assertTrue(false, "scheduleCron must succeed: " + e)
+        case Ok(jobId) -> assertTrue(jobId.length > 0, "scheduleCron returns a non-empty job ID")
+      }
+    }
+  }
+}
+
 // ─── JobStatus ───────────────────────────────────────────────────────────────
 test "JobStatus.Pending: can be matched" {
   val s = JobStatus.Pending

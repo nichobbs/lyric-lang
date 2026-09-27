@@ -121,6 +121,43 @@ test "FlagGated aspect: enabled=false on the aspect itself always proceeds, igno
   assertEqualInt(masterOffHandlerCalls.count, 1, "the handler body ran exactly once")
 }
 
+// ─── Empty flagName is a misconfiguration, caught at first use ─────────────
+aspect EmptyNameGate from Flags.Aspects.FlagGated {
+  matches: name like "emptyNameHandler*"
+  config {
+    flagName: String = ""
+  }
+}
+
+pub func emptyNameHandler(): Result[String, String] {
+  return Ok("ran")
+}
+
+func callEmptyNameHandler(): Unit {
+  val _ = emptyNameHandler()
+}
+
+test "FlagGated aspect: an empty flagName panics at first use instead of silently resolving via defaultOnMissing" {
+  assertPanics("FlagGated with an empty flagName", callEmptyNameHandler)
+}
+
+// ─── Registry registration preconditions ───────────────────────────────────
+func registerBoolFlagWithEmptyName(): Unit {
+  FlagsRegistry.registerBoolFlag("", true)
+}
+
+func registerStringFlagWithEmptyName(): Unit {
+  FlagsRegistry.registerStringFlag("", "x")
+}
+
+test "Flags.Registry.registerBoolFlag panics on an empty name" {
+  assertPanics("registerBoolFlag empty name", registerBoolFlagWithEmptyName)
+}
+
+test "Flags.Registry.registerStringFlag panics on an empty name" {
+  assertPanics("registerStringFlag empty name", registerStringFlagWithEmptyName)
+}
+
 // ─── Registry API directly ───────────────────────────────────────────────────
 test "Flags.Registry: registerStringFlag/getStringFlag round-trip a String value" {
   FlagsRegistry.registerStringFlag("theme", "dark")

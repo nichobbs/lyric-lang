@@ -1066,7 +1066,8 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `lyric-jobs/README.md`**; `JobHandler`/`JobScheduler` interfaces;
   `InProcessJobScheduler` for tests; `Retryable` and `Timed` aspects.
 - `lyric-mail/` — `lyric-mail` library: email sending (`Lyric.Mail`).
-  SMTP (MailKit), Amazon SES, and SendGrid providers; typed
+  SMTP via `System.Net.Mail` on `dotnet` — **Amazon SES and SendGrid, and
+  every provider on `jvm`, return `NOT_IMPLEMENTED` (#7462)**; typed
   `EmailMessage`/`EmailAddress`/`Attachment`; `sendSimple`/`sendHtml`
   helpers.
 - `lyric-storage/` — `lyric-storage` library: object storage
@@ -1109,8 +1110,13 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `lyric-search/README.md`**; `SearchClient` interface with index/search/
   suggest/delete/createIndex.
 - `lyric-feature-flags/` — `lyric-feature-flags` library: runtime feature
-  toggles (`Lyric.Flags`). In-process and remote (HTTP polling) stores;
-  `FlagGated` aspect; `getBool`/`getString`/`getInt` typed accessors.
+  toggles (`Lyric.Flags`). Only an in-process `FlagStore` (`InProcessFlagStore`)
+  ships — **there is no remote (HTTP-polling) store**; a prior revision
+  declared one (`Flags.connectRemote()`/`NativeFlagStore`) via `extern
+  package`, which never resolves to a real binding on either backend
+  (issue #5324) and was removed, see `lyric-feature-flags/README.md`.
+  `FlagGated`/`FlagVariant` aspects; `getBool`/`getString`/`getInt` typed
+  accessors.
 - `lyric-i18n/` — `lyric-i18n` library: internationalization (`Lyric.I18n`).
   `TranslationStore` interface; `{placeholder}` variable substitution;
   locale fallback chain; JSON-based translation loading; BCP 47 locale

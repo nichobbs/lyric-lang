@@ -12,15 +12,23 @@ Internationalization with placeholder substitution and locale fallback.
 `I18n`'s public API (`src/i18n.l`) needs no platform-specific kernel at
 all: `Std.File`/`Std.Json` are already cross-platform (`Std.Json`'s
 JVM backend was rewritten to pure Lyric in D-progress-555). Verified
-against `tests/i18n_tests.l` on both targets: 25/25 pass on
-`--target dotnet`; 24/25 pass on `--target jvm`, with one genuine
-JVM-only `ClassCastException` in `availableLocales()` tracked in #5439
-(a `slice[Record]`-from-`List.toArray()` erasure gap in the JVM
-backend, not specific to this library). `translate`/`translateWith`/
-`hasKey`/`fromJson`/`loadFromPath` are all confirmed working on JVM.
-`--target jvm` test runs also print benign false-positive "unknown
-name" diagnostics for cross-package `Std.*` calls that resolve and run
-correctly — tracked separately in #5440, does not affect correctness.
+against `tests/i18n_tests.l` on both targets: 48/48 pass on both
+`--target dotnet` and `--target jvm` (the earlier #5439 JVM-only
+`ClassCastException` in `availableLocales()` no longer reproduces).
+`translate`/`translateWith`/`hasKey`/`fromJson`/`loadFromPath` are all
+confirmed working on JVM. `--target jvm` test runs also print benign
+false-positive "unknown name" diagnostics for cross-package `Std.*`
+calls that resolve and run correctly — tracked separately in #5440,
+does not affect correctness.
+
+One gap this surfaced: passing a `JsonElement`/`JsonDoc` (from
+`Std.Json`) as the parameter type of a function declared in *this*
+package fails at runtime on the self-hosted JVM backend
+(`NoClassDefFoundError`, confirmed with an isolated repro — it resolves
+the type against the caller's own package instead of the imported
+one). `fromJson` avoids the pattern rather than working around it: its
+whole JSON tree walk lives in one function body, with no such value
+ever crossing a function boundary.
 
 `I18n.Kernel` is a separate, standalone handle-based entry point
 (`loadStore`/`translate`/`hasKey`/`availableLocalesJson`/
@@ -107,7 +115,54 @@ val result = I18n.translateWithVars(
 ```
 
 Missing placeholders in the vars map leave the `{varName}` unchanged.
-Extra vars in the map are ignored.
+Extra vars in the map are ignored. If the substituted output would exceed
+`I18n.maxSubstitutionOutputLength` characters (1 MiB), `translateWith`
+returns the un-substituted template unchanged instead — a documented part
+of the contract, not a silent internal fallback.
+
+## Locale parsing
+
+`Locale` is opaque: the only ways to build one are `I18n.makeLocale(tag)`
+(panics on a malformed tag) and `I18n.parseLocale(tag)` (returns
+`Option[Locale]`); the only way to read one back apart is the
+`Locale.language`/`Locale.script`/`Locale.region` accessors. Both parse a
+BCP 47 `language[-script][-region]` tag, accept `_` as well as `-` as the
+subtag separator, and normalise casing (language lowercase, script
+Titlecase, region uppercase — a 3-digit UN M49 region code is left as-is):
+
+```lyric
+import I18n
+
+val loc = I18n.makeLocale("en-US")
+// I18n.makeLocale panics if the tag doesn't parse; use parseLocale for
+// untrusted input instead:
+match I18n.parseLocale("zh-hant-tw") {
+  case Some(loc) -> {
+    Locale.language(loc)  // "zh"
+    Locale.script(loc)    // "Hant"
+    Locale.region(loc)    // "TW"
+  }
+  case None -> println("not a valid BCP 47 tag")
+}
+
+I18n.localeKey(loc)  // "en-US"
+```
+
+## fromJson error handling
+
+`I18n.fromJson` never throws. It returns `Err(I18nError)` for malformed
+JSON, a non-object root, or a translation value that isn't a JSON string
+(naming the offending key), and for a locale or translation key containing
+`|` (the flat store's internal compound-key separator — rejecting it up
+front means two distinct `(locale, key)` pairs can never collide on the
+same stored entry):
+
+```lyric
+match I18n.fromJson(json) {
+  case Ok(store) -> ...
+  case Err(e) -> println(e.code + ": " + e.message)
+}
+```
 
 ## Locale fallback
 

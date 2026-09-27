@@ -13,14 +13,20 @@ output_assembly = "Mail.dll"
 [project.packages]
 "Mail"            = "src/mail.l"
 "Mail.Kernel.Net" = "src/_kernel/net/mail_kernel.l"
+"Mail.Kernel.Jvm" = "src/_kernel/jvm/mail_kernel.l"
 
 [project.tests]
 "Mail.MailTests" = "tests/mail_tests.l"
 
 [features]
-smtp     = []   # SMTP via System.Net.Mail (MailKit on .NET)
-ses      = []   # Amazon SES (AWSSDK.SimpleEmail on .NET)
-sendgrid = []   # SendGrid (SendGrid .NET library)
+default  = ["dotnet", "smtp", "ses", "sendgrid"]
+# Platform kernel selection (D-N-013 target normalization swaps these
+# automatically per `--target`; see docs/24-build-features.md §2.3).
+dotnet   = []
+jvm      = []
+smtp     = []   # SMTP via System.Net.Mail (MailKit on .NET); not yet implemented on jvm
+ses      = []   # Amazon SES (AWSSDK.SimpleEmail on .NET); not yet implemented on either target
+sendgrid = []   # SendGrid (SendGrid .NET library); not yet implemented on either target
 
 [nuget]
 # feature = "smtp" — SMTP client for .NET

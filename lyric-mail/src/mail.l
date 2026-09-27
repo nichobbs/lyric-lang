@@ -43,10 +43,10 @@ package Mail
 import Std.Core
 import Std.Collections
 import Std.String
+import Std.Parse
 import Std.Environment as Env
 import Mail.Kernel.Net as MailKernel
-import extern System.Net.{NetworkCredential}
-import extern System.Net.Mail.{SmtpClient, MailMessage, MailAddress, MailAddressCollection, Attachment as BclAttachment, AttachmentCollection}
+import Mail.Kernel.Jvm as MailKernelJvm
 
 // ─── Address and attachment types ────────────────────────────────────────────
 /// An email address with an optional display name.
@@ -147,13 +147,109 @@ impl MailSender for MailSenderStub {
   }
 }
 
-// ─── Native sender wrapper (internal) ────────────────────────────────────────
-// The SmtpClient is held directly as an opaque extern type — no integer
-// handle registry needed (Gap 1: BCL reference type storage via extern type).
-record NativeSender {
-  client: SmtpClient
+// The total decoded size of every attachment on one message, in bytes, above
+// which `Mail.send` rejects the message with `Err` rather than dispatching a
+// partially-oversized payload to the provider. 25 MiB matches common SMTP
+// relay / provider caps (e.g. Amazon SES's default 40 MB *encoded* limit, of
+// which base64 overhead accounts for roughly a third).
+@stable(since = "0.1")
+pub val maxTotalAttachmentBytes: Int = 26214400
+
+// 25 * 1024 * 1024
+// Approximate the decoded byte length of a base64 string without actually
+// decoding it: each 4 input characters encode 3 output bytes, and up to two
+// trailing `=` pad characters subtract from that. Good enough for a size-cap
+// check — exact to within 2 bytes — without paying for (or depending on a
+// target-specific kernel for) a real base64 decode just to measure size.
+func approxBase64DecodedLength(s: in String): Int {
+  if s.length == 0 {
+    return 0
+  }
+  var padding = 0
+  if s.length >= 1 and s[s.length - 1] == '=' {
+    padding = 1
+  }
+  if s.length >= 2 and s[s.length - 2] == '=' {
+    padding = 2
+  }
+  return (s.length * 3) / 4 - padding
 }
 
+// Sum of every attachment's approximate decoded size, in bytes.
+func totalAttachmentBytes(attachments: in slice[Attachment]): Int {
+  var total = 0
+  var i = 0
+  while i < attachments.length {
+    total = total + approxBase64DecodedLength(attachments[i].dataBase64)
+    i = i + 1
+  }
+  return total
+}
+
+// Non-empty and contains '@' — the minimal shape check that catches the
+// silently-skipped-recipient bug (#7254): an address failing this is
+// rejected with a structured `Err` rather than silently dropped from the
+// recipient list a partial send goes out to.
+func isPlausibleAddress(address: in String): Bool {
+  return address.length > 0 and containsAtSign(address)
+}
+
+func containsAtSign(s: in String): Bool {
+  var i = 0
+  while i < s.length {
+    if s[i] == '@' {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+// Reject a recipient list containing an implausible address instead of
+// silently skipping it (#7254): a partial send is worse than a rejected one,
+// since the caller has no signal that some recipients never received the
+// message. Checks `to`/`cc`/`bcc` only — `from`/`replyTo` are not silently
+// skipped today (the BCL `MailAddress` constructor already throws
+// `FormatException` on a malformed address, which the caller sees as
+// `Err(code = "SEND_ERROR")`).
+func validateRecipientAddresses(msg: in EmailMessage): Option[MailError] {
+  var i = 0
+  while i < msg.to.length {
+    if not isPlausibleAddress(msg.to[i].address) {
+      return Some(value = MailError(message = "to[" + ("" + i) + "] has an invalid address", code = "INVALID_ADDRESS"))
+    }
+    i = i + 1
+  }
+  var ci = 0
+  while ci < msg.cc.length {
+    if not isPlausibleAddress(msg.cc[ci].address) {
+      return Some(value = MailError(message = "cc[" + ("" + ci) + "] has an invalid address", code = "INVALID_ADDRESS"))
+    }
+    ci = ci + 1
+  }
+  var bi = 0
+  while bi < msg.bcc.length {
+    if not isPlausibleAddress(msg.bcc[bi].address) {
+      return Some(value = MailError(message = "bcc[" + ("" + bi) + "] has an invalid address", code = "INVALID_ADDRESS"))
+    }
+    bi = bi + 1
+  }
+  return None
+}
+
+// ─── Native sender wrapper (internal, --target dotnet) ───────────────────────
+// The SmtpClient is held directly as an opaque extern type — no integer
+// handle registry needed (Gap 1: BCL reference type storage via extern type).
+// The extern types themselves live in `Mail.Kernel.Net` (externs are allowed
+// only in kernel files); this package consumes them qualified through that
+// import, exactly like `KMailAddressCollection`/`KMailAddress` already do
+// inside the kernel itself.
+@cfg(feature = "dotnet")
+record NativeSender {
+  client: MailKernel.SmtpClient
+}
+
+@cfg(feature = "dotnet")
 impl MailSender for NativeSender {
   /// Build a `MailMessage` from `msg` and dispatch it through the
   /// SMTP client.  Recipients (`to`, `cc`, `bcc`), `replyTo`, and
@@ -179,43 +275,51 @@ impl MailSender for NativeSender {
     if msg.to.length == 0 {
       return Err(MailError(message = "message has no recipients", code = "NO_RECIPIENTS"))
     }
+    // Reject any recipient with an implausible address on the direct-send path
+    // too (#7254) — mirrors the same check in the Mail.send wrapper, instead of
+    // silently skipping it below and sending to a partial recipient list.
+    match validateRecipientAddresses(msg) {
+      case Some(e) -> return Err(e)
+      case None -> ()
+    }
+    // Reject an oversized attachment payload before dispatch (#7254) — mirrors
+    // the same check in the Mail.send wrapper.
+    if totalAttachmentBytes(msg.attachments) > maxTotalAttachmentBytes {
+      return Err(
+        MailError(message = "total attachment size exceeds maxTotalAttachmentBytes", code = "ATTACHMENTS_TOO_LARGE")
+      )
+    }
     try {
-      val mailMsg = MailMessage.new()
-      val fromAddr = MailAddress.new(msg.from.address)
+      val mailMsg = MailKernel.MailMessage.new()
+      val fromAddr = MailKernel.MailAddress.new(msg.from.address, msg.from.displayName)
       mailMsg.set_From(fromAddr)
       mailMsg.set_Subject(msg.subject)
       val toCollection = mailMsg.get_To()
       var i = 0
       while i < msg.to.length {
-        if msg.to[i].address.length > 0 {
-          val addr = MailAddress.new(msg.to[i].address)
-          MailKernel.mailAddressCollectionAdd(toCollection, addr)
-        }
+        val addr = MailKernel.MailAddress.new(msg.to[i].address, msg.to[i].displayName)
+        MailKernel.mailAddressCollectionAdd(toCollection, addr)
         i = i + 1
       }
       val ccCollection = mailMsg.get_CC()
       var ci = 0
       while ci < msg.cc.length {
-        if msg.cc[ci].address.length > 0 {
-          val addr = MailAddress.new(msg.cc[ci].address)
-          MailKernel.mailAddressCollectionAdd(ccCollection, addr)
-        }
+        val addr = MailKernel.MailAddress.new(msg.cc[ci].address, msg.cc[ci].displayName)
+        MailKernel.mailAddressCollectionAdd(ccCollection, addr)
         ci = ci + 1
       }
       val bccCollection = mailMsg.get_Bcc()
       var bi = 0
       while bi < msg.bcc.length {
-        if msg.bcc[bi].address.length > 0 {
-          val addr = MailAddress.new(msg.bcc[bi].address)
-          MailKernel.mailAddressCollectionAdd(bccCollection, addr)
-        }
+        val addr = MailKernel.MailAddress.new(msg.bcc[bi].address, msg.bcc[bi].displayName)
+        MailKernel.mailAddressCollectionAdd(bccCollection, addr)
         bi = bi + 1
       }
       match msg.replyTo {
         case Some(rt) -> {
           if rt.address.length > 0 {
             val replyToList = mailMsg.get_ReplyToList()
-            val rtAddr = MailAddress.new(rt.address)
+            val rtAddr = MailKernel.MailAddress.new(rt.address, rt.displayName)
             MailKernel.mailAddressCollectionAdd(replyToList, rtAddr)
           }
         }
@@ -260,6 +364,133 @@ impl MailSender for NativeSender {
   }
 }
 
+// ─── Native sender wrapper (internal, --target jvm) ───────────────────────────
+// `handle` is the opaque Int connection handle `Mail.Kernel.Jvm.connectSmtp`
+// hands back. Genuinely wired into `connectSmtp` (#7254) — `send`/`close`
+// really do call into `Mail.Kernel.Jvm` — but that kernel has no real Jakarta
+// Mail binding yet (see its module header), so every `connectSmtp()` call on
+// this target currently returns `Err(code = "NOT_IMPLEMENTED")` before a
+// `NativeSenderJvm` is ever constructed.
+@cfg(feature = "jvm")
+record NativeSenderJvm {
+  handle: Int
+}
+
+@cfg(feature = "jvm")
+impl MailSender for NativeSenderJvm {
+  func send(msg: in EmailMessage): Result[Unit, MailError] {
+    match validateNoInjection(msg) {
+      case Some(e) -> return Err(e)
+      case None -> ()
+    }
+    if msg.to.length == 0 {
+      return Err(MailError(message = "message has no recipients", code = "NO_RECIPIENTS"))
+    }
+    match validateRecipientAddresses(msg) {
+      case Some(e) -> return Err(e)
+      case None -> ()
+    }
+    if totalAttachmentBytes(msg.attachments) > maxTotalAttachmentBytes {
+      return Err(
+        MailError(message = "total attachment size exceeds maxTotalAttachmentBytes", code = "ATTACHMENTS_TOO_LARGE")
+      )
+    }
+    match MailKernelJvm.send(self.handle, messageToJson(msg)) {
+      case Ok(_) -> Ok(())
+      case Err(m) -> Err(MailError(message = m, code = "SEND_ERROR"))
+    }
+  }
+
+  func close(): Unit {
+    MailKernelJvm.close(self.handle)
+  }
+}
+
+// JSON-encode `msg` for `Mail.Kernel.Jvm.send`'s `messageJson` parameter.
+// Field names and shape match `EmailMessage` directly (address/displayName
+// pairs for from/to/cc/bcc/replyTo; filename/contentType/dataBase64 triples
+// for attachments) — a schema the module header on `Mail.Kernel.Jvm`
+// documents. Escaping reuses the same CR/LF/NUL rejection `validateNoInjection`
+// already guarantees on every field this touches, plus `"`/`\` JSON escaping.
+@cfg(feature = "jvm")
+func jsonEscape(s: in String): String {
+  var buf = ""
+  var i = 0
+  while i < s.length {
+    val ch = s[i]
+    if ch == '"' {
+      buf = buf + "\\\""
+    } else if ch == '\\' {
+      buf = buf + "\\\\"
+    } else {
+      buf = buf + ch.toString()
+    }
+    i = i + 1
+  }
+  return buf
+}
+
+@cfg(feature = "jvm")
+func addressToJson(addr: in EmailAddress): String {
+  return "{\"address\":\"" + jsonEscape(addr.address) + "\",\"displayName\":\"" + jsonEscape(addr.displayName) + "\"}"
+}
+
+@cfg(feature = "jvm")
+func addressListToJson(addrs: in slice[EmailAddress]): String {
+  var buf = "["
+  var i = 0
+  while i < addrs.length {
+    if i > 0 {
+      buf = buf + ","
+    }
+    buf = buf + addressToJson(addrs[i])
+    i = i + 1
+  }
+  return buf + "]"
+}
+
+@cfg(feature = "jvm")
+func attachmentToJson(att: in Attachment): String {
+  return "{\"filename\":\"" + jsonEscape(att.filename) + "\",\"contentType\":\"" + jsonEscape(att.contentType) +
+    "\",\"dataBase64\":\"" +
+    jsonEscape(att.dataBase64) +
+    "\"}"
+}
+
+@cfg(feature = "jvm")
+func attachmentListToJson(attachments: in slice[Attachment]): String {
+  var buf = "["
+  var i = 0
+  while i < attachments.length {
+    if i > 0 {
+      buf = buf + ","
+    }
+    buf = buf + attachmentToJson(attachments[i])
+    i = i + 1
+  }
+  return buf + "]"
+}
+
+@cfg(feature = "jvm")
+func messageToJson(msg: in EmailMessage): String {
+  val replyToJson = match msg.replyTo { case Some(addr) -> addressToJson(addr); case None -> "null" }
+  return "{\"from\":" + addressToJson(msg.from) + ",\"to\":" + addressListToJson(msg.to) + ",\"cc\":" +
+    addressListToJson(msg.cc) +
+    ",\"bcc\":" +
+    addressListToJson(msg.bcc) +
+    ",\"subject\":\"" +
+    jsonEscape(msg.subject) +
+    "\",\"textBody\":\"" +
+    jsonEscape(msg.textBody) +
+    "\",\"htmlBody\":\"" +
+    jsonEscape(msg.htmlBody) +
+    "\",\"attachments\":" +
+    attachmentListToJson(msg.attachments) +
+    ",\"replyTo\":" +
+    replyToJson +
+    "}"
+}
+
 // ─── Config (env-var backed) ──────────────────────────────────────────────────
 //
 // Config blocks are declared here for documentation purposes.
@@ -270,9 +501,33 @@ impl MailSender for NativeSender {
 // SES: LYRIC_CONFIG_SES_REGION, LYRIC_CONFIG_SES_ACCESSKEY, LYRIC_CONFIG_SES_SECRETKEY
 // SendGrid: LYRIC_CONFIG_SENDGRIDMAIL_APIKEY
 // ─── Factory functions ────────────────────────────────────────────────────────
+/// SMTP port must be a valid TCP port; timeoutMs must be positive. Both are
+/// parsed from env vars by `connectSmtp`, so an operator typo (an
+/// out-of-range port, a negative timeout) is rejected with a clear Err
+/// rather than passed through to `SmtpClient.new`/`.set_Timeout` uninspected
+/// (#7254). `pub` so it is directly unit-testable without needing to mutate
+/// process env vars — `Std.Environment.setVar` is a documented no-op on
+/// `--target jvm` (`Std.EnvironmentHost.hostSetEnvironmentVariable`; the JVM
+/// has no supported way to mutate `System.getenv()`), so an env-var-driven
+/// test of this logic would only exercise the default config on that
+/// target.
+@stable(since = "0.1")
+pub func validateSmtpConfig(port: in Int, timeoutMs: in Int): Option[MailError] {
+  if port < 1 or port > 65535 {
+    return Some(value = MailError(message = "SMTP port out of range 1..65535: " + ("" + port), code = "INVALID_CONFIG"))
+  }
+  if timeoutMs < 1 {
+    return Some(value = MailError(message = "SMTP timeoutMs must be >= 1: " + ("" + timeoutMs), code = "INVALID_CONFIG"))
+  }
+  return None
+}
+
 /// Open an SMTP connection using environment variable config.
 /// Requires the `smtp` feature to be active (`[features] smtp = []`).
-/// Config is read from LYRIC_CONFIG_SMTP_* env vars.
+/// Config is read from LYRIC_CONFIG_SMTP_* env vars.  Rejects an
+/// out-of-range `LYRIC_CONFIG_SMTP_PORT` (must be 1..65535) or
+/// `LYRIC_CONFIG_SMTP_TIMEOUTMS` (must be >= 1) with `Err(code =
+/// "INVALID_CONFIG")` before attempting a connection.
 @stable(since = "0.1")
 @cfg(feature = "smtp")
 pub func connectSmtp(): Result[MailSender, MailError] {
@@ -282,16 +537,32 @@ pub func connectSmtp(): Result[MailSender, MailError] {
   val password = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_PASSWORD", "")
   val useTlsStr = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_USETLS", "true")
   val toMs = Env.getVarOrDefault("LYRIC_CONFIG_SMTP_TIMEOUTMS", "30000")
-  val port = match parseInt(portStr) { case Some(n) -> n; case None -> 587 }
+  val port = match parseOptInt(portStr) { case Some(n) -> n; case None -> 587 }
   val useTls = useTlsStr != "false"
-  val timeoutMs = match parseInt(toMs) { case Some(n) -> n; case None -> 30000 }
+  val timeoutMs = match parseOptInt(toMs) { case Some(n) -> n; case None -> 30000 }
+  match validateSmtpConfig(port, timeoutMs) {
+    case Some(e) -> return Err(e)
+    case None -> ()
+  }
+  return connectSmtpNative(host, port, username, password, useTls, timeoutMs)
+}
+
+@cfg(feature = "dotnet")
+func connectSmtpNative(
+  host: in String,
+  port: in Int,
+  username: in String,
+  password: in String,
+  useTls: in Bool,
+  timeoutMs: in Int,
+): Result[MailSender, MailError] {
   try {
-    val client = SmtpClient.new(host, port)
+    val client = MailKernel.SmtpClient.new(host, port)
     client.set_EnableSsl(useTls)
     client.set_Timeout(timeoutMs)
     if username.length > 0 {
-      val cred = NetworkCredential.new(username, password)
-      client.set_Credentials(cred)
+      val cred = MailKernel.NetworkCredential.new(username, password)
+      MailKernel.setCredentials(client, cred)
     }
     Ok(NativeSender(client = client))
   } catch Exception as e {
@@ -299,22 +570,65 @@ pub func connectSmtp(): Result[MailSender, MailError] {
   }
 }
 
+@cfg(feature = "jvm")
+func connectSmtpNative(
+  host: in String,
+  port: in Int,
+  username: in String,
+  password: in String,
+  useTls: in Bool,
+  timeoutMs: in Int,
+): Result[MailSender, MailError] {
+  match MailKernelJvm.connectSmtp(host, port, username, password, useTls, timeoutMs) {
+    case Ok(handle) -> Ok(NativeSenderJvm(handle = handle))
+    case Err(msg) -> Err(MailError(message = msg, code = "NOT_IMPLEMENTED"))
+  }
+}
+
+// Read a required (non-empty) env var config field, or an Err naming which
+// one was missing. Shared by connectSes/connectSendGrid so the same
+// precondition holds identically on every target (#7254) — neither provider
+// is implemented on any target yet, but a caller that mistypes/omits a
+// required credential should see that named, not a generic
+// "not implemented".
+func requireEnvVar(envVar: in String, fieldDescription: in String): Result[String, MailError] {
+  val v = Env.getVarOrDefault(envVar, "")
+  if v.length == 0 {
+    return Err(MailError(message = fieldDescription + " is required (set " + envVar + ")", code = "INVALID_CONFIG"))
+  }
+  return Ok(v)
+}
+
 /// Open an Amazon SES client.
 /// Requires the `ses` feature to be active (`[features] ses = []`).
-/// Config is read from LYRIC_CONFIG_SES_* env vars (region, accessKey, secretKey).
+/// Config is read from LYRIC_CONFIG_SES_* env vars (region, accessKey,
+/// secretKey) — `region` must be non-empty, enforced identically on every
+/// target (#7254). Not yet implemented on any target: always returns
+/// `Err(code = "NOT_IMPLEMENTED")` once config validation passes (#7462).
 @stable(since = "0.1")
 @cfg(feature = "ses")
 pub func connectSes(): Result[MailSender, MailError] {
-  Err(MailError(message = "Amazon SES not yet implemented (#733 follow-up)", code = "NOT_IMPLEMENTED"))
+  val region = match requireEnvVar("LYRIC_CONFIG_SES_REGION", "SES region") {
+    case Ok(v) -> v
+    case Err(e) -> return Err(e)
+  }
+  Err(MailError(message = "Amazon SES not yet implemented (#7462)", code = "NOT_IMPLEMENTED"))
 }
 
 /// Open a SendGrid client.
 /// Requires the `sendgrid` feature to be active (`[features] sendgrid = []`).
-/// Config is read from LYRIC_CONFIG_SENDGRIDMAIL_APIKEY env var.
+/// Config is read from LYRIC_CONFIG_SENDGRIDMAIL_APIKEY env var — `apiKey`
+/// must be non-empty, enforced identically on every target (#7254). Not yet
+/// implemented on any target: always returns `Err(code = "NOT_IMPLEMENTED")`
+/// once config validation passes (#7462).
 @stable(since = "0.1")
 @cfg(feature = "sendgrid")
 pub func connectSendGrid(): Result[MailSender, MailError] {
-  Err(MailError(message = "SendGrid not yet implemented (#733 follow-up)", code = "NOT_IMPLEMENTED"))
+  val apiKey = match requireEnvVar("LYRIC_CONFIG_SENDGRIDMAIL_APIKEY", "SendGrid apiKey") {
+    case Ok(v) -> v
+    case Err(e) -> return Err(e)
+  }
+  Err(MailError(message = "SendGrid not yet implemented (#7462)", code = "NOT_IMPLEMENTED"))
 }
 
 // ─── Convenience functions ────────────────────────────────────────────────────
@@ -335,6 +649,18 @@ pub func send(sender: in MailSender, msg: in EmailMessage): Result[Unit, MailErr
   // with a structured Err; an empty subject/body is a valid email.
   if msg.to.length == 0 {
     return Err(MailError(message = "message has no recipients", code = "NO_RECIPIENTS"))
+  }
+  // Reject an implausible recipient address instead of the underlying
+  // MailSender silently skipping it and sending to a partial list (#7254).
+  match validateRecipientAddresses(msg) {
+    case Some(e) -> return Err(e)
+    case None -> ()
+  }
+  // Reject an oversized total attachment payload before dispatch (#7254).
+  if totalAttachmentBytes(msg.attachments) > maxTotalAttachmentBytes {
+    return Err(
+      MailError(message = "total attachment size exceeds maxTotalAttachmentBytes", code = "ATTACHMENTS_TOO_LARGE")
+    )
   }
   // Header-injection is enforced here (and again in the MailSender.send
   // implementation) via a structured Err — NOT a `requires:` clause.  Every
@@ -505,7 +831,14 @@ pub func validateNoInjection(msg: in EmailMessage): Option[MailError] {
   }
   match msg.replyTo {
     case None -> ()
-    case Some(addr) -> if containsHeaderInjection(addr.address) or containsHeaderInjection(addr.displayName) { return Some(value = MailError(message = "replyTo contains CR/LF/NUL — header injection rejected", code = "HEADER_INJECTION")) }
+    case Some(addr) -> if containsHeaderInjection(addr.address) or containsHeaderInjection(addr.displayName) {
+      return Some(
+        value = MailError(
+          message = "replyTo contains CR/LF/NUL — header injection rejected",
+          code = "HEADER_INJECTION"
+        )
+      )
+    }
   }
   var ai = 0
   while ai < msg.attachments.length {

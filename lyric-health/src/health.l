@@ -64,6 +64,7 @@ package Health
 import Std.Core
 import Std.Char
 import Std.Iter
+import Health.Kernel.Net as HealthKernelNet
 
 // ─── Check vocabulary ─────────────────────────────────────────────────────────
 /// The group a health check belongs to.
@@ -115,15 +116,39 @@ pub func fail(detail: in String): CheckStatus {
   return CheckStatus(healthy = false, detail = detail)
 }
 
-/// A registered health check: a name, the group it belongs to, and the
-/// check function itself.  The handler is stored as a function reference
-/// and invoked directly by `runChecks` — no reflection, no name lookup.
+/// A registered health check: a name, the group it belongs to, the check
+/// function itself, and its execution budget in milliseconds.  The
+/// handler is stored as a function reference and invoked directly by
+/// `runChecks` — no reflection, no name lookup.
 @stable(since = "0.1")
 pub record HealthCheck {
   name: String
   group: CheckGroup
   handler: () -> CheckStatus
+  timeoutMs: Int
 }
+
+/// The default per-check execution budget in milliseconds, used by
+/// `addLivenessCheck`/`addReadinessCheck`.  Use
+/// `addLivenessCheckWithTimeout`/`addReadinessCheckWithTimeout` to
+/// override it for a specific check.
+@stable(since = "0.1")
+pub val defaultCheckTimeoutMs: Int = 5000
+
+/// True when `timeoutMs` is actually enforced with a preemptive bound on
+/// this target (`--target dotnet`, via `Health.Kernel.Net`'s real
+/// `Task.Wait(int)`); false when it is validated but not enforced
+/// (`--target jvm` — see `runCheckIsolated`'s `@cfg(feature = "jvm")` arm
+/// and README.md "Platform parity" for why).  Exposed so callers and
+/// tests can assert on the target-specific behaviour without needing
+/// their own target detection.
+@stable(since = "0.1")
+@cfg(feature = "dotnet")
+pub val timeoutEnforced: Bool = true
+
+@stable(since = "0.1")
+@cfg(feature = "jvm")
+pub val timeoutEnforced: Bool = false
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 /// An immutable collection of health checks.  Build with `Health.create()`,
@@ -141,27 +166,89 @@ pub func create(): HealthRegistry {
   return HealthRegistry(checks = empty)
 }
 
-/// Register a liveness check.
+/// True when `registry` already has a check (of either group) registered
+/// under `name`.  Health-check names key the JSON response object (module
+/// header), so two checks sharing a name would silently collide into one
+/// JSON key; `addLivenessCheck`/`addReadinessCheck` reject that with a
+/// `requires:` clause built on this helper.
+@stable(since = "0.1")
+@pure
+pub func hasCheckNamed(registry: in HealthRegistry, name: in String): Bool {
+  var i = 0
+  while i < registry.checks.length {
+    if registry.checks[i].name == name {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+/// Register a liveness check with the default execution budget
+/// (`defaultCheckTimeoutMs`).
 ///
 /// `handler` returns `pass()` when the process is healthy and
 /// `fail(detail)` when it should be restarted.
 @stable(since = "0.1")
 pub func addLivenessCheck(registry: in HealthRegistry, name: in String, handler: in () -> CheckStatus): HealthRegistry
   requires: name.length > 0
+  requires: not hasCheckNamed(registry, name)
 {
-  val check = HealthCheck(name = name, group = Liveness, handler = handler)
+  return addLivenessCheckWithTimeout(registry, name, handler, defaultCheckTimeoutMs)
+}
+
+/// Register a liveness check with an explicit per-check execution budget.
+///
+/// `handler` returns `pass()` when the process is healthy and
+/// `fail(detail)` when it should be restarted.  If `handler` panics, or
+/// does not return within `timeoutMs`, the check is reported unhealthy
+/// with a generic message rather than propagating the panic or hanging
+/// the caller (subject to `runCheckIsolated`'s per-target enforcement —
+/// see its `@cfg(feature = "jvm")` arm for the one target-specific
+/// limitation).
+@stable(since = "0.1")
+pub func addLivenessCheckWithTimeout(
+  registry: in HealthRegistry,
+  name: in String,
+  handler: in () -> CheckStatus,
+  timeoutMs: in Int,
+): HealthRegistry
+  requires: name.length > 0
+  requires: not hasCheckNamed(registry, name)
+  requires: timeoutMs >= 1
+{
+  val check = HealthCheck(name = name, group = Liveness, handler = handler, timeoutMs = timeoutMs)
   return HealthRegistry(checks = concat(registry.checks, [check]))
 }
 
-/// Register a readiness check.
+/// Register a readiness check with the default execution budget
+/// (`defaultCheckTimeoutMs`).
 ///
 /// `handler` returns `pass()` when the process is ready for traffic and
 /// `fail(detail)` when it should be removed from the load balancer.
 @stable(since = "0.1")
 pub func addReadinessCheck(registry: in HealthRegistry, name: in String, handler: in () -> CheckStatus): HealthRegistry
   requires: name.length > 0
+  requires: not hasCheckNamed(registry, name)
 {
-  val check = HealthCheck(name = name, group = Readiness, handler = handler)
+  return addReadinessCheckWithTimeout(registry, name, handler, defaultCheckTimeoutMs)
+}
+
+/// Register a readiness check with an explicit per-check execution
+/// budget.  See `addLivenessCheckWithTimeout` for the panic/timeout
+/// contract.
+@stable(since = "0.1")
+pub func addReadinessCheckWithTimeout(
+  registry: in HealthRegistry,
+  name: in String,
+  handler: in () -> CheckStatus,
+  timeoutMs: in Int,
+): HealthRegistry
+  requires: name.length > 0
+  requires: not hasCheckNamed(registry, name)
+  requires: timeoutMs >= 1
+{
+  val check = HealthCheck(name = name, group = Readiness, handler = handler, timeoutMs = timeoutMs)
   return HealthRegistry(checks = concat(registry.checks, [check]))
 }
 
@@ -211,6 +298,78 @@ record GroupRun {
   failing: String
 }
 
+// ─── Isolated check execution ─────────────────────────────────────────────────
+// A mutable cross-thread result cell for the `--target dotnet` runner below:
+// `Health.Kernel.Net.runAction`'s closure writes into it from a thread-pool
+// thread, and the calling thread reads it back after `waitTask` returns.
+@cfg(feature = "dotnet")
+record CheckRunBox {
+  var status: CheckStatus
+  var panicked: Bool
+}
+
+// `--target dotnet`: run `check.handler` on a BCL thread-pool thread
+// (`Health.Kernel.Net.runAction`, a real `Task.Run(Action)`) and block the
+// calling thread for at most `check.timeoutMs` (`Health.Kernel.Net.waitTask`,
+// a real `Task.Wait(int)` — returns `false` on timeout instead of throwing,
+// so a hanging check genuinely stops blocking the caller after the budget
+// elapses; the background action itself is left running, since neither the
+// BCL nor this API has a way to forcibly abort it).  A panic inside the
+// handler is caught on the background thread itself, so it never escapes as
+// an unobserved faulted-task exception; the caller only ever sees the
+// generic "check panicked" detail below — never the panic's own message,
+// which would otherwise leak into the HTTP response body.
+@cfg(feature = "dotnet")
+func runCheckIsolated(check: in HealthCheck): CheckStatus {
+  val box = CheckRunBox(status = fail(""), panicked = false)
+  val handler = check.handler
+  val action: () -> Unit = { ->
+    try {
+      val result: CheckStatus = handler()
+      box.status = result
+    } catch Bug as b {
+      box.panicked = true
+    }
+  }
+  val t = HealthKernelNet.runAction(action)
+  val completed = HealthKernelNet.waitTask(t, check.timeoutMs)
+  if not completed {
+    return fail("check \"" + check.name + "\" timed out after " + ("" + check.timeoutMs) + "ms")
+  }
+  if box.panicked {
+    return fail("check panicked")
+  }
+  return box.status
+}
+
+// `--target jvm`: no preemptive, worker-bounded timeout is possible on this
+// target with existing facilities. A Lyric closure has no bridge to any JDK
+// functional interface (`Runnable`/`Callable`) outside the compiler's own
+// `spawn`/`scope { }` keyword codegen — see
+// lyric-stdlib/std/_kernel_jvm/task.l's module header, which documents this
+// gap after empirically verifying it while building `Std.Task`'s own JVM
+// kernel.  Even that keyword codegen doesn't help here: `scope { }`'s join
+// is an unconditional full wait with no bounded/"whichever finishes first"
+// variant, and `await` takes no timeout parameter either.  Checking elapsed
+// time only *after* `handler()` returns would not actually bound the call —
+// the caller would already have blocked for the full duration — so that is
+// deliberately not done here; it would fake enforcement rather than provide
+// it.  `check.timeoutMs` is still validated at registration (`requires:
+// timeoutMs >= 1`) for cross-target API consistency, but is not enforced on
+// this target: a hanging check still hangs `runLiveness`/`runReadiness` on
+// `--target jvm` (#7461).  See README.md "Platform parity". Panic isolation is real
+// on this target — a panicking handler is always caught here.
+@cfg(feature = "jvm")
+func runCheckIsolated(check: in HealthCheck): CheckStatus {
+  val handler = check.handler
+  try {
+    val result: CheckStatus = handler()
+    return result
+  } catch Bug as b {
+    return fail("check panicked")
+  }
+}
+
 func runGroup(registry: in HealthRegistry, group: in CheckGroup): GroupRun {
   var allHealthy = true
   var checksJson = ""
@@ -220,8 +379,7 @@ func runGroup(registry: in HealthRegistry, group: in CheckGroup): GroupRun {
   while i < registry.checks.length {
     val check = registry.checks[i]
     if sameGroup(check.group, group) {
-      val handler = check.handler
-      val status = handler()
+      val status: CheckStatus = runCheckIsolated(check)
       if not status.healthy {
         allHealthy = false
         if failing.length > 0 {

@@ -7,23 +7,23 @@ Runtime feature flag toggles for safe rollouts, A/B testing, and kill switches.
 The in-process flag store (`InProcessFlagStore`), `Flags.Registry`, and the
 `FlagGated` / `FlagVariant` aspects are pure Lyric — no BCL/JDK extern
 boundary is involved — so their *source* has no platform-specific code.
-However, `--target jvm` verification (done for the first time while
-addressing PR #5414 review finding #5436 — this library's JVM claim had
-never actually been tested) found that most of the `FlagStore` surface is
-currently broken on JVM by pre-existing JVM backend compiler bugs unrelated
-to this library's own logic:
+`--target jvm` verification (first done while addressing PR #5414 review
+finding #5436) originally found several JVM backend compiler bugs unrelated
+to this library's own logic; those upstream bugs (#5442, #5441, the
+B′-mode aspect-weaver `NoSuchMethodError`) have since been fixed, and
+`lyric test --target jvm --manifest lyric-feature-flags/lyric.toml` now
+passes every test across both test files, matching `dotnet`:
 
-| Feature                              | `dotnet`  | `jvm`                                                |
-|---------------------------------------|-----------|-------------------------------------------------------|
-| `Flags.Registry` (raw map API)        | Available | Available — verified directly (`registerStringFlag`/`getStringFlag`) |
-| `InProcessFlagStore` / `FlagValue` union (`isEnabled`, `getValue`, `getBool`, `getString`, `getInt`, `listFlags`, `fromEntries`) | Available (33/33 tests pass) | **Broken** — a JVM backend bug misresolves the `FlagValue` union's `value` field accessor to an unrelated stdlib type (`Std.Http.Url`), crashing with `NoClassDefFoundError` on any populated store. Tracked in #5442. |
-| `getFloat` / `FlagValue.FlagFloat`    | Available | **Broken** — any JVM program containing a `Float`-typed value used via construction or `match` crashes the *compiler itself* (`Convert.ToSingle` `MissingMethodException`). Tracked in #5441 (not specific to this library). |
-| `FlagGated` aspect                    | Available (5/5 tests pass) | **Broken** — a pre-existing B′-mode aspect-weaver JVM codegen bug (`__LyricBModeCallContext` `NoSuchMethodError`) affects every aspect-templated library on JVM, not just this one. |
+| Feature                              | `dotnet`  | `jvm`     |
+|---------------------------------------|-----------|-----------|
+| `Flags.Registry` (raw map API)        | Available | Available |
+| `InProcessFlagStore` / `FlagValue` union (`isEnabled`, `getValue`, `getBool`, `getString`, `getInt`, `listFlags`, `fromEntries`) | Available | Available |
+| `getFloat` / `FlagValue.FlagFloat`    | Available | Available |
+| `FlagGated` / `FlagVariant` aspects   | Available | Available |
 | Remote (HTTP-polling) store           | Not implemented — see "Remote flag store" below | Not implemented |
 
-In short: **this library's JVM support is not usable today** for anything
-beyond the raw `Flags.Registry` map API. The `dotnet` target is fully
-verified and working (42/42 tests across both test files).
+The `dotnet` and `jvm` targets are both fully verified and working (45/45
+tests across both test files, on each target).
 
 A previous revision of this library declared a remote HTTP-polling client
 (`Flags.connectRemote()` / `NativeFlagStore`) via `extern package`, which
@@ -181,11 +181,27 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 | `flagName` | `String` | *(required)* | Feature flag name to check |
 | `defaultOnMissing` | `Bool` | `false` | Value to use when flag is absent |
 
+An instantiation whose `flagName` is left (or set) empty is a
+misconfiguration: it would otherwise silently resolve every call via
+`defaultOnMissing`, with no indication anything was wrong. This is caught at
+first use — the first call through the woven handler panics with a clear
+message — rather than at compile time, since aspect `config { }` values are
+not currently checkable at aspect-instantiation time; see `checkFlagName` in
+`flags_aspects.l`.
+
 ### FlagVariant
 
 **Experimental stub.** Always proceeds unconditionally. Full A/B variant routing
 (read flagName, compare to variant, short-circuit on mismatch) is deferred to a
-follow-up stage.
+follow-up stage. Like `FlagGated`, an empty `flagName` panics at first use.
+
+## Registration preconditions
+
+`Flags.Registry.registerBoolFlag(name, value)` and
+`Flags.Registry.registerStringFlag(name, value)` both require a non-empty
+`name` (`requires: name.length > 0`) — registering under an empty name is
+rejected at the registration call site rather than silently stored under a
+key nothing can ever look up by intent.
 
 ## Decision log
 

@@ -1,6 +1,8 @@
 //! tests/mail_tests.l — test suite for the Mail package (pure Lyric surface).
 //! Covers: makeAddress, makeAddressWithName, makeAttachment, EmailAddress,
-//! Attachment, MailError, and EmailMessage construction.
+//! Attachment, MailError, and EmailMessage construction; recipient-address
+//! validation, the attachment-size cap, and SES/SendGrid config
+//! preconditions added in #7254.
 //! Factory functions that require kernel connections (connectSmtp, etc.) are
 //! not exercised here; the pure-Lyric construction helpers are the focus.
 @test_module
@@ -8,6 +10,7 @@ package Mail.MailTests
 
 import Std.Core
 import Std.Testing
+import Std.String
 import Mail
 
 // ─── makeAddress ──────────────────────────────────────────────────────────────
@@ -496,5 +499,253 @@ test "Mail.validateNoInjection returns None for a clean message" {
   match Mail.validateNoInjection(msg) {
     case Some(e) -> assertTrue(false, "a clean message must not be flagged: " + e.message)
     case None -> assertTrue(true, "clean message passes")
+  }
+}
+
+// ─── Recipient address validation (#7254) ────────────────────────────────────
+// An empty or "@"-less recipient address must be rejected with a structured
+// Err, not silently skipped and sent to a partial recipient list.
+test "Mail.send rejects a `to` recipient with an empty address" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Subject",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "INVALID_ADDRESS", "empty to address: code is INVALID_ADDRESS")
+      assertEqualInt(sender.callCount, 0, "empty to address: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "empty to address: expected Err but got Ok")
+  }
+}
+
+test "Mail.send rejects a `to` recipient whose address has no @" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "not-an-address", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Subject",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> assertEqual(e.code, "INVALID_ADDRESS", "no-@ to address: code is INVALID_ADDRESS")
+    case Ok(_) -> assertTrue(false, "no-@ to address: expected Err but got Ok")
+  }
+}
+
+test "Mail.send rejects a `cc` recipient with an empty address, even with a valid `to`" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "good@example.com", displayName = "")],
+    cc = [EmailAddress(address = "", displayName = "")],
+    bcc = [],
+    subject = "Subject",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "INVALID_ADDRESS", "empty cc address: code is INVALID_ADDRESS")
+      assertEqualInt(sender.callCount, 0, "a partial send never reaches the sender")
+    }
+    case Ok(_) -> assertTrue(false, "empty cc address: expected Err but got Ok")
+  }
+}
+
+test "Mail.send rejects a `bcc` recipient with an empty address" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "good@example.com", displayName = "")],
+    cc = [],
+    bcc = [EmailAddress(address = "", displayName = "")],
+    subject = "Subject",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> assertEqual(e.code, "INVALID_ADDRESS", "empty bcc address: code is INVALID_ADDRESS")
+    case Ok(_) -> assertTrue(false, "empty bcc address: expected Err but got Ok")
+  }
+}
+
+test "Mail.send accepts a message whose recipients all have plausible addresses" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "a@example.com", displayName = "")],
+    cc = [EmailAddress(address = "b@example.com", displayName = "")],
+    bcc = [EmailAddress(address = "c@example.com", displayName = "")],
+    subject = "Subject",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Ok(_) -> assertEqualInt(sender.callCount, 1, "all-plausible recipients: sender.send called once")
+    case Err(e) -> assertTrue(false, "all-plausible recipients should succeed, got Err: " + e.message)
+  }
+}
+
+// ─── Attachment size cap (#7254) ─────────────────────────────────────────────
+test "Mail.send rejects a message whose total attachment size exceeds maxTotalAttachmentBytes" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  // ~26 MiB of base64 payload (over the 25 MiB cap): 4 base64 chars decode to
+  // 3 bytes, so ~35,000,000 chars decodes to ~26.25 MiB.
+  val hugeBase64 = repeat("AAAA", 8750000)
+  val att = Mail.makeAttachment("huge.bin", "application/octet-stream", hugeBase64)
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Subject",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [att],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Err(e) -> {
+      assertEqual(e.code, "ATTACHMENTS_TOO_LARGE", "oversized attachment: code is ATTACHMENTS_TOO_LARGE")
+      assertEqualInt(sender.callCount, 0, "oversized attachment: sender.send never called")
+    }
+    case Ok(_) -> assertTrue(false, "oversized attachment: expected Err but got Ok")
+  }
+}
+
+test "Mail.send accepts a message whose total attachment size is within maxTotalAttachmentBytes" {
+  var sender = Mail.MailSenderStub(callCount = 0)
+  val att = Mail.makeAttachment("small.bin", "application/octet-stream", "SGVsbG8=")
+  val msg = EmailMessage(
+    from = EmailAddress(address = "s@example.com", displayName = ""),
+    to = [EmailAddress(address = "r@example.com", displayName = "")],
+    cc = [],
+    bcc = [],
+    subject = "Subject",
+    textBody = "body",
+    htmlBody = "",
+    attachments = [att],
+    replyTo = None
+  )
+  match Mail.send(sender, msg) {
+    case Ok(_) -> assertEqualInt(sender.callCount, 1, "small attachment: sender.send called once")
+    case Err(e) -> assertTrue(false, "small attachment should succeed, got Err: " + e.message)
+  }
+}
+
+// ─── SES / SendGrid config preconditions (#7254) ─────────────────────────────
+// Neither provider is implemented on any target yet, but a missing/empty
+// required credential must be reported as such — not masked by a generic
+// "not implemented" — identically on every target.
+test "Mail.connectSes returns Err naming the missing LYRIC_CONFIG_SES_REGION" {
+  match Mail.connectSes() {
+    case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "missing SES region: code is INVALID_CONFIG")
+    case Ok(_) -> assertTrue(false, "SES with no region configured should not connect")
+  }
+}
+
+test "Mail.connectSendGrid returns Err naming the missing LYRIC_CONFIG_SENDGRIDMAIL_APIKEY" {
+  match Mail.connectSendGrid() {
+    case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "missing SendGrid apiKey: code is INVALID_CONFIG")
+    case Ok(_) -> assertTrue(false, "SendGrid with no apiKey configured should not connect")
+  }
+}
+
+// ─── connectSmtp port/timeout validation (#7254) ─────────────────────────────
+// Tested directly against `Mail.validateSmtpConfig`, not by round-tripping
+// through `Std.Environment.setVar` + `Mail.connectSmtp()`: `setVar` is a
+// documented no-op on `--target jvm` (see `validateSmtpConfig`'s doc
+// comment), so an env-var-driven test of this validation logic would only
+// ever see the default config on that target. Calling the pure validator
+// directly makes the same assertions hold identically on both targets.
+test "Mail.validateSmtpConfig rejects a port above 65535" {
+  match Mail.validateSmtpConfig(70000, 30000) {
+    case Some(e) -> assertEqual(e.code, "INVALID_CONFIG", "port above range: code is INVALID_CONFIG")
+    case None -> assertTrue(false, "port 70000 should be rejected")
+  }
+}
+
+test "Mail.validateSmtpConfig rejects a port of 0" {
+  match Mail.validateSmtpConfig(0, 30000) {
+    case Some(e) -> assertEqual(e.code, "INVALID_CONFIG", "port 0: code is INVALID_CONFIG")
+    case None -> assertTrue(false, "port 0 should be rejected")
+  }
+}
+
+test "Mail.validateSmtpConfig rejects a negative port" {
+  match Mail.validateSmtpConfig(-1, 30000) {
+    case Some(e) -> assertEqual(e.code, "INVALID_CONFIG", "negative port: code is INVALID_CONFIG")
+    case None -> assertTrue(false, "a negative port should be rejected")
+  }
+}
+
+test "Mail.validateSmtpConfig accepts the port boundaries 1 and 65535" {
+  match Mail.validateSmtpConfig(1, 30000) {
+    case None -> assertTrue(true, "port 1 is valid")
+    case Some(e) -> assertTrue(false, "port 1 should be valid, got Err: " + e.message)
+  }
+  match Mail.validateSmtpConfig(65535, 30000) {
+    case None -> assertTrue(true, "port 65535 is valid")
+    case Some(e) -> assertTrue(false, "port 65535 should be valid, got Err: " + e.message)
+  }
+}
+
+test "Mail.validateSmtpConfig rejects a zero timeoutMs" {
+  match Mail.validateSmtpConfig(587, 0) {
+    case Some(e) -> assertEqual(e.code, "INVALID_CONFIG", "timeoutMs 0: code is INVALID_CONFIG")
+    case None -> assertTrue(false, "timeoutMs 0 should be rejected")
+  }
+}
+
+test "Mail.validateSmtpConfig rejects a negative timeoutMs" {
+  match Mail.validateSmtpConfig(587, -100) {
+    case Some(e) -> assertEqual(e.code, "INVALID_CONFIG", "negative timeoutMs: code is INVALID_CONFIG")
+    case None -> assertTrue(false, "a negative timeoutMs should be rejected")
+  }
+}
+
+test "Mail.validateSmtpConfig accepts an in-range port and positive timeoutMs" {
+  match Mail.validateSmtpConfig(587, 30000) {
+    case None -> assertTrue(true, "587/30000 is valid config")
+    case Some(e) -> assertTrue(false, "in-range config should be valid, got Err: " + e.message)
+  }
+}
+
+// ─── connectSmtp is reachable on every target (#7254) ────────────────────────
+// Before #7254, `--target jvm` failed to *compile* `Mail` at all (the
+// package unconditionally imported `System.Net.Mail` externs). This asserts
+// the weaker, always-true-across-targets property that `connectSmtp()`
+// with in-range default config produces some `Result` — on `--target
+// dotnet` a real `NativeSender` (`Ok`, closed immediately below); on
+// `--target jvm` a structured `Err(code = "NOT_IMPLEMENTED")` from
+// `Mail.Kernel.Jvm` (not a compile failure, and not a silent no-op).
+test "Mail.connectSmtp is reachable and returns a well-formed Result on this target" {
+  match Mail.connectSmtp() {
+    case Ok(sender) -> sender.close()
+    case Err(e) -> assertEqual(
+      e.code,
+      "NOT_IMPLEMENTED",
+      "the only expected failure mode is JVM's not-yet-implemented kernel"
+    )
   }
 }
