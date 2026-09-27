@@ -7209,7 +7209,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: Std.Collections.Persistent suite on JVM
+      # collections_tests.l covers mapForEach/mapEntries, which the JVM kernel
+      # backs with its own entrySet() walk (#7282).
+      - name: Std.Collections + Std.Collections.Persistent suites on JVM
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -7218,6 +7220,7 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping"
             exit 1
           fi
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_tests.l
           "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_tests.l
           "$lyric_bin" run --target jvm lyric-stdlib/tests/collections_persistent_map_tests.l
 

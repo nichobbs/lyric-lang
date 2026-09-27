@@ -77,3 +77,19 @@ pub func dictGetKeys[K, V](m: in Map[K, V]): MapKeyCollection[K, V] = ()
 @externTarget("System.Collections.Generic.Dictionary`2.get_Values")
 @externInstance
 pub func dictGetValues[K, V](m: in Map[K, V]): MapValueCollection[K, V] = ()
+
+/// Call `action(key, value)` for every entry of `m`, with no lookup per key
+/// (#7282). `Dictionary.Keys` and `.Values` enumerate in the same order (a
+/// documented .NET guarantee), and on native both snapshots walk the same
+/// table slots, so the values snapshot lines up with the keys.
+pub func dictForEachEntry[K, V](m: in Map[K, V], action: in (K, V) -> Unit): Unit {
+  val vs: List[V] = newListWithCapacity(m.count)
+  for v in dictGetValues(m) {
+    vs.add(v)
+  }
+  var i = 0
+  for k in dictGetKeys(m) {
+    action(k, vs[i])
+    i = i + 1
+  }
+}

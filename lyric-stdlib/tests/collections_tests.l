@@ -99,6 +99,70 @@ func testMapIntKeys(): Unit {
   }
 }
 
+// mapForEach and mapEntries pair every key with its own value, with no
+// lookup per key (#7282): the kernel walks entries directly.
+func testMapForEachPairsKeysWithValues(): Unit {
+  val m: Map[String, Int] = newMap()
+  var i = 0
+  while i < 500 {
+    m["k" + toString(i)] = i * 3
+    i = i + 1
+  }
+  // Captured lists (not reassigned vars) so the test also runs on native,
+  // whose closures capture by value.
+  val seen: List[Int] = newList()
+  val mismatched: List[String] = newList()
+  mapForEach(m, { k: String, v: Int -> seen.add(v); if "k" + toString(v / 3) != k { mismatched.add(k) } })
+  assertEqualInt(seen.count, 500, "mapForEach visits every entry once")
+  assertEqualInt(mismatched.count, 0, "mapForEach pairs each key with its own value")
+  var total = 0
+  var si = 0
+  while si < seen.count {
+    total = total + seen[si]
+    si = si + 1
+  }
+  assertEqualInt(total, 3 * (499 * 500 / 2), "mapForEach sees every value")
+  val empty: Map[String, Int] = newMap()
+  val none: List[Int] = newList()
+  mapForEach(empty, { k: String, v: Int -> none.add(v) })
+  assertEqualInt(none.count, 0, "mapForEach on an empty map calls nothing")
+}
+
+func testMapEntriesPairsKeysWithValues(): Unit {
+  val m: Map[Int, String] = newMap()
+  var i = 0
+  while i < 300 {
+    m[i] = "v" + toString(i)
+    i = i + 1
+  }
+  val es = mapEntries(m)
+  assertEqualInt(es.count, 300, "mapEntries returns every entry")
+  var mismatched = 0
+  var j = 0
+  while j < es.count {
+    if es[j].value != "v" + toString(es[j].key) {
+      mismatched = mismatched + 1
+    }
+    j = j + 1
+  }
+  assertEqualInt(mismatched, 0, "mapEntries pairs each key with its own value")
+}
+
+func testMapPutAllCopiesAndOverwrites(): Unit {
+  val dst: Map[String, Int] = newMap()
+  dst["a"] = 1
+  dst["b"] = 2
+  val src: Map[String, Int] = newMap()
+  src["b"] = 20
+  src["c"] = 30
+  mapPutAll(dst, src)
+  assertEqualInt(dst.count, 3, "mapPutAll adds the new key")
+  assertEqualInt(unwrapOr(mapGet(dst, "a"), 0), 1, "mapPutAll keeps a key src lacks")
+  assertEqualInt(unwrapOr(mapGet(dst, "b"), 0), 20, "mapPutAll overwrites a shared key")
+  assertEqualInt(unwrapOr(mapGet(dst, "c"), 0), 30, "mapPutAll copies src's value")
+  assertEqualInt(src.count, 2, "mapPutAll leaves src unchanged")
+}
+
 func main(): Unit {
   testListConstruction()
   testListAddAndAccess()
@@ -109,5 +173,8 @@ func main(): Unit {
   testMapAddAndContainsKey()
   testMapGet()
   testMapIntKeys()
+  testMapForEachPairsKeysWithValues()
+  testMapEntriesPairsKeysWithValues()
+  testMapPutAllCopiesAndOverwrites()
   println("collections_tests: ok")
 }

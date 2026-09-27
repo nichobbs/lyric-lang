@@ -2116,6 +2116,47 @@ test "unknown method call on a List receiver panics at build time, not silently 
   )
 }
 
+// The same build error for Map and Set receivers (#7422).
+test "unknown method call on a Map or Set receiver panics at build time (#7422)" {
+  val cases: List[String] = newList()
+  cases.add("  val m: Map[String, Int] = newMap()\n  m.mergeAll(m)\n")
+  cases.add("  val s: Set[Int] = newSet()\n  s.unionWith(s)\n")
+  val expected: List[String] = newList()
+  expected.add("no method 'mergeAll' on type 'Map'")
+  expected.add("no method 'unionWith' on type 'Set'")
+  var ci = 0
+  while ci < cases.count {
+    val packages: List[ProjectPackagePayload] = newList()
+    packages.add(
+      mkPkg(
+        "UnknownCollMethod.Bad",
+        "package UnknownCollMethod.Bad\n" + "import Std.Collections\n" + "import Std.CollectionsHost\n" +
+          "func main(): Unit {\n" +
+          cases[ci] +
+          "}\n"
+      )
+    )
+    val dir = freshTempDir("unknown_coll_method")
+    val dllPath = Path.join(dir, "UnknownCollMethod.dll")
+    val stdlibSources = Emitter.findStdlibSources()
+    var panicked = false
+    var panicMsg = ""
+    try {
+      compileProjectToMsil(packages, "UnknownCollMethod", dllPath, stdlibSources)
+    } catch Bug as b {
+      panicked = true
+      panicMsg = b.message
+    }
+    cleanup(dir)
+    assertTrue(panicked, "unknown collection method: build panics (" + expected[ci] + ")")
+    assertTrue(
+      Str.contains(panicMsg, expected[ci]),
+      "unknown collection method: names method and type (got: " + panicMsg + ")"
+    )
+    ci = ci + 1
+  }
+}
+
 // #7422: an `@externInstance` binding to a member of `List`1`/`Dictionary`2`
 // whose receiver is a concrete Lyric `List[E]`/`Map[K, V]` must cast the
 // receiver to its real closed instantiation (`List<byte>`), not the

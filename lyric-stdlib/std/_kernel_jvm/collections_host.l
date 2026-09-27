@@ -68,6 +68,21 @@ pub func dictGetValues[K, V](m: in Map[K, V]): MapValueCollection[K, V] {
   m.values()
 }
 
+extern type JvmMapEntryIterator = "java.util.Iterator"
+
+extern type JvmMapEntry = "java.util.Map$Entry"
+
+/// Call `action(key, value)` for every entry of `m`, with no lookup per key
+/// (#7282). Walks `entrySet()`: `HashMap` does not promise that `keySet()`
+/// and `values()` iterate in the same order.
+pub func dictForEachEntry[K, V](m: in Map[K, V], action: in (K, V) -> Unit): Unit {
+  val it: JvmMapEntryIterator = m.entrySet().iterator()
+  while it.hasNext() {
+    val e: JvmMapEntry = it.next()
+    action(e.getKey(), e.getValue())
+  }
+}
+
 // =====================================================================
 // Set[T] — alias over java.util.HashSet.
 //

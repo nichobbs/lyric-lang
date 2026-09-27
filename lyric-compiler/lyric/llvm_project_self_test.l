@@ -314,6 +314,39 @@ test "two-package project: same-bare-name interfaces from different packages pan
   )
 }
 
+test "a function value whose name has a local and an imported overload at different arities is rejected (#7527)" {
+  // `pick` is `Proj7.App.pick(a)` locally and `Proj7.Lib.pick(a, b)` by
+  // import. A local function shadows an import only at its own arity, so
+  // passing `pick` as a value is ambiguous and must not silently pick the
+  // local one.
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj7.Lib",
+      path = "",
+      source = "package Proj7.Lib\n" + "pub func pick(a: in Int, b: in Int): Int {\n" + "  a + b\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj7.App",
+      path = "",
+      source = "package Proj7.App\n" + "import Proj7.Lib\n" + "func pick(a: in Int): Int {\n" + "  a\n" + "}\n" +
+        "func apply(f: in (Int) -> Int, x: in Int): Int {\n" +
+        "  f(x)\n" +
+        "}\n" +
+        "func main(): Int {\n" +
+        "  apply(pick, 3)\n" +
+        "}\n"
+    )
+  )
+  assertPanicsWith(
+    "a function value overloaded by arity across a local and an imported function must fail to compile",
+    "is overloaded by arity",
+    { -> val _ = compileAndRunProject(pkgs) }
+  )
+}
+
 test "a genuinely multi-file [project.packages] entry merges through Emitter.emitNativeProject" {
   // Exercises the `Emitter.emitNativeProject` -> `mergePackageSources` path
   // directly (every other case in this file calls
