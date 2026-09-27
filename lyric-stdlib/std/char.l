@@ -205,9 +205,10 @@ pub func isAscii(c: in Char): Bool {
   Host.hostCharToInt(c) <= 127
 }
 
-// `isNone[Int](result)` names the type argument explicitly: the
-// monomorphizer does not yet infer it from `result` inside a contract
-// clause (#7466).
+// `isNone[Int](result)` names the type argument explicitly: the stage-0
+// seed compiler that builds the stdlib cannot infer it from `result` inside a
+// contract clause (#7466, fixed in the compiler itself; the seed predates the
+// fix).
 /// The decimal value of an ASCII digit '0'..'9' (code points 48..57), or
 /// `None` for other chars. Uses integer subtraction so the prover can verify
 /// the range directly.
