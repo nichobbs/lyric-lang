@@ -5082,6 +5082,57 @@ test "an async or method-generic protected func is T0135 (#7384)" {
   assertTrue(not hasDiagCode(parseCheck(okSrc), "T0135"), "a plain func is accepted")
 }
 
+// #7457: an impl method on a protected type becomes one of the type's locked
+// members, so it sees the fields like an entry does and inherits the
+// protected-func shape rules; shapes the move cannot represent are T0136.
+test "an impl method on a protected type sees the type's fields (#7457)" {
+  val src = "package P\ninterface Counter {\n  func bump(by: in Int): Int\n  func current(): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl Counter for C {\n  func bump(by: in Int): Int {\n    n = n + by\n    n\n  }\n  func current(): Int {\n    self.n\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0020"), "bare and self. field references resolve")
+  assertTrue(not hasDiagCode(cr, "T0136"), "a non-clashing impl is accepted")
+}
+
+test "an impl method that clashes with a protected member is T0136 (#7457)" {
+  val src = "package P\ninterface Store {\n  func get(): Int\n}\nprotected type C {\n  var n: Int = 0\n  func get(): Int {\n    n\n  }\n}\nimpl Store for C {\n  func get(): Int {\n    self.get()\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0136"), "impl get clashes with the member get")
+}
+
+test "two impls for a protected type with a shared method name are T0136 (#7547)" {
+  val src = "package P\ninterface Reader {\n  func get(): Int\n}\ninterface Source {\n  func get(): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl Reader for C {\n  func get(): Int {\n    n\n  }\n}\nimpl Source for C {\n  func get(): Int {\n    n + 1\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0136"), "Source.get clashes with Reader.get")
+  val okSrc = "package P\ninterface Reader {\n  func get(): Int\n}\ninterface Source {\n  func next(): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl Reader for C {\n  func get(): Int {\n    n\n  }\n}\nimpl Source for C {\n  func next(): Int {\n    n + 1\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(okSrc), "T0136"), "disjoint method names are accepted")
+}
+
+test "Self in an impl method signature on a protected type is T0136 (#7550)" {
+  val topSrc = "package P\ninterface M {\n  func merge(other: in Self): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl M for C {\n  func merge(other: in Self): Int {\n    n\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(topSrc), "T0136"), "Self parameter")
+  val nestedSrc = "package P\nimport Std.Collections\ninterface M {\n  func pool(): List[Self]\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl M for C {\n  func pool(): List[Self] {\n    newList()\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(nestedSrc), "T0136"), "Self nested in a return type")
+}
+
+test "an impl for an alias of a protected type is T0136 (#7547)" {
+  val src = "package P\ninterface Store {\n  func size(): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nalias D = C\nimpl Store for D {\n  func size(): Int {\n    n\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0136"), "the target must name C directly")
+}
+
+test "an impl for a generic protected type is T0136 (#7457)" {
+  val src = "package P\ninterface Store {\n  func size(): Int\n}\nprotected type C[T] {\n  var n: Int = 0\n}\nimpl[T] Store for C[T] {\n  func size(): Int {\n    n\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0136"), "generic protected target")
+}
+
+test "an async impl method on a protected type is T0135 (#7457)" {
+  val src = "package P\ninterface Store {\n  async func size(): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl Store for C {\n  async func size(): Int {\n    n\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0135"), "async impl method runs under the lock")
+}
+
+test "an impl for a record is not subject to the protected rules (#7457)" {
+  val src = "package P\ninterface Store {\n  func get(): Int\n}\nrecord R {\n  n: Int\n}\nimpl Store for R {\n  func get(): Int {\n    n\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0136"), "record target")
+  assertTrue(not hasDiagCode(cr, "T0135"), "record target")
+}
+
 test "built-in members in a clause are not calls to check" {
   val src = "package P\nfunc f(xs: in List[Int], s: in String): Int\n  requires: xs.count > 0 and s.length > 0\n{\n  xs[0]\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "count/length")

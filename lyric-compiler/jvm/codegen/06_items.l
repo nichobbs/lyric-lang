@@ -1998,6 +1998,7 @@ func buildProtected(
   closureAcc: in List[LClosure],
   usesLyricCount: in List[Bool],
   importsStdString: in Bool,
+  implementsIfaces: in List[String],
 ): LPackageItem {
   val className = pkgName + "/" + decl.name
   val fields: List[LField] = newList()
@@ -2091,7 +2092,9 @@ func buildProtected(
     }
     mi = mi + 1
   }
-  LPRecord(rec = LRecord(className = className, fields = fields, methods = methods, implementsIfaces = newList()))
+  LPRecord(
+    rec = LRecord(className = className, fields = fields, methods = methods, implementsIfaces = implementsIfaces)
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7074,7 +7077,19 @@ pub func codegenPackageWithSigsSeeded(
         // / helper `func` becomes an instance method whose bare field
         // references resolve through `selfClass` (slot 0 = `this`).  Each
         // member is a `synchronized` method, so entries are mutually
-        // exclusive (#7363).
+        // exclusive (#7363).  An `impl Iface for <this type>` block's methods
+        // were moved into the type as entries by the contract elaborator
+        // (#7457), so the impl entry carries no methods of its own — only
+        // the `implements` clause is taken from it.
+        val protIfaces: List[String] = newList()
+        val protClassName = pkgName + "/" + decl.name
+        var pei = 0
+        while pei < implEntries.count {
+          if implEntries[pei].targetClass == protClassName {
+            protIfaces.add(implEntries[pei].ifaceClass)
+          }
+          pei = pei + 1
+        }
         items.add(
           buildProtected(
             decl,
@@ -7089,7 +7104,8 @@ pub func codegenPackageWithSigsSeeded(
             opaqueTypes,
             closureAcc,
             usesLyricCount,
-            importsStdString
+            importsStdString,
+            protIfaces
           )
         )
       }

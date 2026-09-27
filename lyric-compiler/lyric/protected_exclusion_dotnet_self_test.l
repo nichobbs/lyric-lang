@@ -181,3 +181,69 @@ test "expression-bodied Unit protected members run (#7400)" {
   t.viaVoidCall()
   assertTrue(t.value() == 2, "two bumps through the expression-bodied func (got " + toString(t.value()) + ")")
 }
+
+// #7457: an interface method implemented for a protected type is a locked
+// member too.  Concurrent calls through the interface must not lose updates,
+// and one that opens a barrier must wake the member waiting on it.
+pub interface Bumper {
+  func bumpOnce(): Unit
+  func openGate(): Unit
+}
+
+protected type Shared {
+  var hits: Int = 0
+  var isOpen: Bool = false
+  entry passWhenOpen(): Int
+    when: isOpen
+  {
+    hits
+  }
+  func hitCount(): Int = hits
+}
+
+impl Bumper for Shared {
+  func bumpOnce(): Unit {
+    val cur = hits
+    var spin = 0
+    while spin < 200 {
+      spin = spin + 1
+    }
+    hits = cur + 1
+  }
+  func openGate(): Unit {
+    isOpen = true
+  }
+}
+
+func ifaceBumpMany(b: in Bumper): Unit {
+  var i = 0
+  while i < 2000 {
+    b.bumpOnce()
+    i = i + 1
+  }
+}
+
+test "interface methods implemented for a protected type are exclusive (#7457)" {
+  val s = Shared()
+  val t1 = taskRun({ -> ifaceBumpMany(s) })
+  val t2 = taskRun({ -> ifaceBumpMany(s) })
+  val t3 = taskRun({ -> ifaceBumpMany(s) })
+  val t4 = taskRun({ -> ifaceBumpMany(s) })
+  taskWait(t1)
+  taskWait(t2)
+  taskWait(t3)
+  taskWait(t4)
+  assertTrue(s.hitCount() == 8000, "4 x 2000 increments through the interface (got " + toString(s.hitCount()) + ")")
+}
+
+func openVia(b: in Bumper): Unit {
+  b.openGate()
+}
+
+test "an interface method that opens a barrier wakes the waiter (#7457)" {
+  val s = Shared()
+  val w = taskRun({ -> assertTrue(s.passWhenOpen() == 0, "barrier released") })
+  openVia(s)
+  taskWait(w)
+  assertTrue(s.hitCount() == 0, "no bumps")
+}

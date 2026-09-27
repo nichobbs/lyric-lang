@@ -37732,7 +37732,7 @@ pub func validateExternImplConformanceMsil(cctx: in CodegenCtx, file: in SourceF
       case IImpl(decl) -> {
         if implIfaceIsExternalClr(cctx, decl, pkgName) {
           val ifaceFqn = implIfaceNameMsil(cctx, decl, pkgName)
-          validateOneExternImplMsil(cctx, decl, pkgName, ifaceFqn)
+          validateOneExternImplMsil(cctx, protectedImplForValidationMsil(decl, file), pkgName, ifaceFqn)
         }
       }
       case _ -> {
@@ -37740,6 +37740,73 @@ pub func validateExternImplConformanceMsil(cctx: in CodegenCtx, file: in SourceF
     }
     i = i + 1
   }
+}
+
+// #7457: the contract elaborator moves the methods of an `impl` for a
+// protected type into that type as `entry` members, leaving the impl block
+// empty.  Validate such an impl against the protected type's members, which
+// is where the implementing methods now live; any other impl is returned
+// unchanged.
+func protectedImplForValidationMsil(decl: in ImplDecl, file: in SourceFile): ImplDecl {
+  val targetName = match decl.target.kind {
+    case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+    case _ -> ""
+  }
+  if targetName == "" {
+    return decl
+  }
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IProtected(pd) -> {
+        if pd.name == targetName {
+          val members: List[ImplMember] = newList()
+          var k = 0
+          while k < decl.members.count {
+            members.add(decl.members[k])
+            k = k + 1
+          }
+          var m = 0
+          while m < pd.members.count {
+            match pd.members[m] {
+              case PMEntry(ed) -> members.add(
+                IMplFunc(
+                  fn = FunctionDecl(
+                    docComments = ed.docComments,
+                    annotations = ed.annotations,
+                    visibility = ed.visibility,
+                    isAsync = false,
+                    name = ed.name,
+                    generics = None,
+                    params = ed.params,
+                    ret = ed.ret,
+                    whereClause = None,
+                    contracts = ed.contracts,
+                    body = Some(value = ed.body),
+                    span = ed.span
+                  )
+                )
+              )
+              case PMFunc(fn) -> members.add(IMplFunc(fn = fn))
+              case _ -> ()
+            }
+            m = m + 1
+          }
+          return ImplDecl(
+            generics = decl.generics,
+            iface = decl.iface,
+            target = decl.target,
+            whereClause = decl.whereClause,
+            members = members,
+            span = decl.span
+          )
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  decl
 }
 
 // Append any pre-collected impl methods whose target matches `targetFqn` to

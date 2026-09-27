@@ -1344,7 +1344,8 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0132` | A contract clause has the wrong type: `requires:`, `ensures:`, `when:` and loop `invariant:` must be `Bool`. Clauses are checked in the function's scope, with `result` typed as the declared return type. |
 | `T0133` | A contract clause or loop invariant calls a function that is not `@pure`. Mark the callee `@pure` if it has no side effects (the compiler trusts the annotation), or move the check into the body. |
 | `T0134` | A compound assignment (`+=`, `-=`, ...) to a distinct type has a target that is not a variable or field path (`xs[i] += y`). The assignment is rewritten to `x = T.from(x.value op y.value)`, which evaluates the target twice; write it out explicitly. |
-| `T0135` | A protected type's `func` member is `async` or declares its own type parameters. Every `entry` and `func` runs under the instance lock, which cannot be held across an `await` or taken by a method-generic member. |
+| `T0135` | A protected type's `func` member, or a method of an `impl` for a protected type, is `async` or declares its own type parameters. Every `entry` and `func` (and every such impl method) runs under the instance lock, which cannot be held across an `await` or taken by a method-generic member. |
+| `T0136` | An `impl Iface for P`, where `P` is a protected type, that cannot become part of `P`: the impl is declared in another package than `P`, its target names `P` through an `alias`, `P` or the impl is generic, or an impl method has the same name as one of `P`'s own `entry`/`func` members or as a method of another impl for `P`, or its signature mentions `Self` (not yet supported, #7550). An impl method on a protected type is itself a locked member of the type, so move the body into the impl or rename the member. |
 
 ### Type checker warnings (W-series)
 

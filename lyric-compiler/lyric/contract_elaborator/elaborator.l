@@ -3165,9 +3165,11 @@ pub func elaborateFileWithInterfaces(file: in SourceFile, importedIfaces: in Lis
   // does not run the prover, so an obligation it has not discharged keeps
   // its runtime check (#7227).  `lyric prove` reads the source clauses, which
   // `fn.contracts` still carries.
+  // #7457: impl methods for a protected type become its locked entries.
+  val items = mergeProtectedImpls(canonFile.items, ifaces)
   var i = 0
-  while i < canonFile.items.count {
-    newItems.add(elaborateItem(canonFile.items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path)))
+  while i < items.count {
+    newItems.add(elaborateItem(items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path)))
     i = i + 1
   }
   SourceFile(
