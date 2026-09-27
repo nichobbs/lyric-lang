@@ -29,6 +29,7 @@ import JsonRpc.Json
 import JsonRpc
 import JsonRpc.Stdio
 import Mcp
+import Std.String as Str
 
 // Same-package accessors standing in for a real self-hosted `--target
 // dotnet` compiler bug found while building this library (filed upstream
@@ -126,7 +127,7 @@ pub func isValidToolName(name: in String): Bool {
   }
   var i = 0
   while i < name.length {
-    val c = Ch.toInt(name[i])
+    val c = Ch.toInt(Str.charAtOrReplacement(name, i))
     val ok = (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or (c >= 48 and c <= 57) or c == 95 or c == 45 or c == 46
     if not ok {
       return false

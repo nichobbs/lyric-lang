@@ -112,7 +112,7 @@ func webJsonStr(s: in String): String {
   var r = "\""
   var i = 0
   while i < s.length {
-    val code = toInt(s[i])
+    val code = codeUnitAt(s, i)
     if code == 34 {
       r = r + "\\\""
     } else if code == 92 {
@@ -124,7 +124,7 @@ func webJsonStr(s: in String): String {
     } else if code == 9 {
       r = r + "\\t"
     } else {
-      r = r + s[i].toString()
+      r = r + s.substring(i, 1)
     }
     i = i + 1
   }
@@ -421,7 +421,7 @@ pub func isHeaderToken(name: in String): Bool {
   }
   var i = 0
   while i < name.length {
-    val c = name[i]
+    val c = charAtOrReplacement(name, i)
     if c <= ' ' or c >= '\u{007f}' or "\"(),/:;<=>?@[\\]{}".contains(c.toString()) {
       return false
     }
@@ -438,7 +438,7 @@ pub func isHeaderToken(name: in String): Bool {
 pub func isSafeHeaderValue(value: in String): Bool {
   var i = 0
   while i < value.length {
-    val c = value[i]
+    val c = charAtOrReplacement(value, i)
     if (c < ' ' and c != '\t') or c == '\u{007f}' {
       return false
     }
@@ -673,11 +673,11 @@ func escapeForInlineScript(jsonQuoted: in String): String {
   var r = ""
   var i = 0
   while i < jsonQuoted.length {
-    if jsonQuoted[i] == '<' and i + 1 < jsonQuoted.length and jsonQuoted[i + 1] == '/' {
+    if charAtOrReplacement(jsonQuoted, i) == '<' and i + 1 < jsonQuoted.length and charAtOrReplacement(jsonQuoted, i + 1) == '/' {
       r = r + "<\\/"
       i = i + 2
     } else {
-      r = r + jsonQuoted[i].toString()
+      r = r + jsonQuoted.substring(i, 1)
       i = i + 1
     }
   }

@@ -39,6 +39,7 @@ import Std.Char
 import Std.Encoding
 import Std.Parse
 import Std.Math
+import Std.String as Str
 
 // ── Data model ──────────────────────────────────────────────────────────────
 @stable(since = "0.1")
@@ -112,7 +113,7 @@ func jAtEnd(st: in JState): Bool {
 }
 
 func jEat(st: inout JState, c: in Char): Bool {
-  if st.pos < st.src.length and st.src[st.pos] == c {
+  if st.pos < st.src.length and Str.charAtOrReplacement(st.src, st.pos) == c {
     st.pos = st.pos + 1
     true
   } else {
@@ -125,7 +126,7 @@ func jIsWs(c: in Char): Bool {
 }
 
 func jSkipWs(st: inout JState): Unit {
-  while st.pos < st.src.length and jIsWs(st.src[st.pos]) {
+  while st.pos < st.src.length and jIsWs(Str.charAtOrReplacement(st.src, st.pos)) {
     st.pos = st.pos + 1
   }
 }
@@ -157,7 +158,7 @@ func hex4(n: in Int): String {
   var shift = 12
   while shift >= 0 {
     val d = n.shr(shift).and(15)
-    result = result + "" + hexDigits[d]
+    result = result + "" + Str.charAtOrReplacement(hexDigits, d)
     shift = shift - 4
   }
   result
@@ -174,7 +175,7 @@ func jParseUnicode4(st: inout JState): Result[Int, JsonParseError] {
     if jAtEnd(st) {
       return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
     }
-    val d = jHexDigit(st.src[st.pos])
+    val d = jHexDigit(Str.charAtOrReplacement(st.src, st.pos))
     if d < 0 {
       return Err(error = InvalidEscape(pos = st.pos, detail = "invalid hex digit in \\uXXXX"))
     }
@@ -202,7 +203,7 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
       err = UnexpectedEof(pos = st.pos, expected = "'\"' to close string")
     } else {
       val startCharPos = st.pos
-      val c = st.src[st.pos]
+      val c = Str.charAtOrReplacement(st.src, st.pos)
       if c == '"' {
         if pendingHigh >= 0 {
           ok = false
@@ -217,7 +218,7 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
           ok = false
           err = UnexpectedEof(pos = st.pos, expected = "escape character")
         } else {
-          val esc = st.src[st.pos]
+          val esc = Str.charAtOrReplacement(st.src, st.pos)
           if esc == 'u' {
             st.pos = st.pos + 1
             match jParseUnicode4(st) {
@@ -268,7 +269,7 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
               result = result + "\u{000c}"
             } else {
               ok = false
-              err = InvalidEscape(pos = startCharPos, detail = "\\" + ("" + esc))
+              err = InvalidEscape(pos = startCharPos, detail = "\\" + Str.substring(st.src, startCharPos + 1, 1))
             }
           }
         }
@@ -282,7 +283,9 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
         ok = false
         err = LoneSurrogate(pos = pendingHighPos, code = pendingHigh)
       } else {
-        result = result + "" + c
+        // The raw code unit, so unescaped supplementary-plane text (whose
+        // surrogate halves read as U+FFFD in `c`) is kept intact.
+        result = result + Str.substring(st.src, st.pos, 1)
         st.pos = st.pos + 1
       }
     }
@@ -297,43 +300,43 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
 // ── Number parsing (strict RFC 8259 grammar) ────────────────────────────────
 func jParseNumber(st: inout JState): Result[JsonValue, JsonParseError] {
   val startPos = st.pos
-  if st.pos < st.src.length and st.src[st.pos] == '-' {
+  if st.pos < st.src.length and Str.charAtOrReplacement(st.src, st.pos) == '-' {
     st.pos = st.pos + 1
   }
-  if jAtEnd(st) or not (st.src[st.pos] >= '0' and st.src[st.pos] <= '9') {
+  if jAtEnd(st) or not (Str.charAtOrReplacement(st.src, st.pos) >= '0' and Str.charAtOrReplacement(st.src, st.pos) <= '9') {
     return Err(error = UnexpectedChar(pos = st.pos, expected = "digit in number"))
   }
-  if st.src[st.pos] == '0' {
+  if Str.charAtOrReplacement(st.src, st.pos) == '0' {
     st.pos = st.pos + 1
-    if not jAtEnd(st) and st.src[st.pos] >= '0' and st.src[st.pos] <= '9' {
+    if not jAtEnd(st) and Str.charAtOrReplacement(st.src, st.pos) >= '0' and Str.charAtOrReplacement(st.src, st.pos) <= '9' {
       return Err(error = InvalidNumber(pos = startPos, raw = st.src.substring(startPos, st.pos + 1 - startPos)))
     }
   } else {
-    while not jAtEnd(st) and st.src[st.pos] >= '0' and st.src[st.pos] <= '9' {
+    while not jAtEnd(st) and Str.charAtOrReplacement(st.src, st.pos) >= '0' and Str.charAtOrReplacement(st.src, st.pos) <= '9' {
       st.pos = st.pos + 1
     }
   }
   var isFloat = false
-  if not jAtEnd(st) and st.src[st.pos] == '.' {
+  if not jAtEnd(st) and Str.charAtOrReplacement(st.src, st.pos) == '.' {
     isFloat = true
     st.pos = st.pos + 1
-    if jAtEnd(st) or not (st.src[st.pos] >= '0' and st.src[st.pos] <= '9') {
+    if jAtEnd(st) or not (Str.charAtOrReplacement(st.src, st.pos) >= '0' and Str.charAtOrReplacement(st.src, st.pos) <= '9') {
       return Err(error = InvalidNumber(pos = startPos, raw = st.src.substring(startPos, st.pos - startPos)))
     }
-    while not jAtEnd(st) and st.src[st.pos] >= '0' and st.src[st.pos] <= '9' {
+    while not jAtEnd(st) and Str.charAtOrReplacement(st.src, st.pos) >= '0' and Str.charAtOrReplacement(st.src, st.pos) <= '9' {
       st.pos = st.pos + 1
     }
   }
-  if not jAtEnd(st) and (st.src[st.pos] == 'e' or st.src[st.pos] == 'E') {
+  if not jAtEnd(st) and (Str.charAtOrReplacement(st.src, st.pos) == 'e' or Str.charAtOrReplacement(st.src, st.pos) == 'E') {
     isFloat = true
     st.pos = st.pos + 1
-    if not jAtEnd(st) and (st.src[st.pos] == '+' or st.src[st.pos] == '-') {
+    if not jAtEnd(st) and (Str.charAtOrReplacement(st.src, st.pos) == '+' or Str.charAtOrReplacement(st.src, st.pos) == '-') {
       st.pos = st.pos + 1
     }
-    if jAtEnd(st) or not (st.src[st.pos] >= '0' and st.src[st.pos] <= '9') {
+    if jAtEnd(st) or not (Str.charAtOrReplacement(st.src, st.pos) >= '0' and Str.charAtOrReplacement(st.src, st.pos) <= '9') {
       return Err(error = InvalidNumber(pos = startPos, raw = st.src.substring(startPos, st.pos - startPos)))
     }
-    while not jAtEnd(st) and st.src[st.pos] >= '0' and st.src[st.pos] <= '9' {
+    while not jAtEnd(st) and Str.charAtOrReplacement(st.src, st.pos) >= '0' and Str.charAtOrReplacement(st.src, st.pos) <= '9' {
       st.pos = st.pos + 1
     }
   }
@@ -411,7 +414,7 @@ func jParseObject(st: inout JState, depth: in Int): Result[JsonValue, JsonParseE
   var done = false
   while ok and not done {
     jSkipWs(st)
-    if jAtEnd(st) or st.src[st.pos] != '"' {
+    if jAtEnd(st) or Str.charAtOrReplacement(st.src, st.pos) != '"' {
       ok = false
       err = UnexpectedChar(pos = st.pos, expected = "'\"' to start object key")
     } else {
@@ -465,7 +468,7 @@ func jParseValue(st: inout JState, depth: in Int): Result[JsonValue, JsonParseEr
   if jAtEnd(st) {
     return Err(error = UnexpectedEof(pos = st.pos, expected = "a value"))
   }
-  val c = st.src[st.pos]
+  val c = Str.charAtOrReplacement(st.src, st.pos)
   if c == '"' {
     st.pos = st.pos + 1
     match jParseStringBody(st) {
@@ -533,7 +536,7 @@ func writeJsonString(s: in String): String {
   var result = "\""
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = Str.charAtOrReplacement(s, i)
     val code = toInt(c)
     if c == '"' {
       result = result + "\\\""
@@ -552,7 +555,7 @@ func writeJsonString(s: in String): String {
     } else if code < 0x20 {
       result = result + "\\u" + hex4(code)
     } else {
-      result = result + "" + c
+      result = result + Str.substring(s, i, 1)
     }
     i = i + 1
   }

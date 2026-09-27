@@ -31,6 +31,16 @@ pub record HostStringBuilder {
   parts: List[String]
 }
 
+// The code unit at `index` (D-progress-1006): see `Std.String.codeUnitAt`.
+pub func hostCodeUnitAt(s: in String, index: in Int): Int {
+  s.codeUnitAt(index)
+}
+
+// Strings are UTF-8 on native (D-N-006), so a code unit is a byte.
+pub func hostCodeUnitsAreUtf8(): Bool {
+  true
+}
+
 pub func hostNewBuilder(): HostStringBuilder {
   HostStringBuilder(parts = newList())
 }

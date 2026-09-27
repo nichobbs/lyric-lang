@@ -56,6 +56,7 @@ import Std.Http
 import Std.Json
 import Std.Task
 import Std.Char
+import Std.String as Str
 
 val msTaskPollIntervalMs: Int = 50
 
@@ -111,13 +112,13 @@ pub func msQuote(v: in String): String {
   var escaped = ""
   var i = 0
   while i < v.length {
-    val c = v[i]
+    val c = Str.charAtOrReplacement(v, i)
     if c == '\\' {
       escaped = escaped + "\\\\"
     } else if c == '\'' {
       escaped = escaped + "\\'"
     } else {
-      escaped = escaped + c.toString()
+      escaped = escaped + v.substring(i, 1)
     }
     i = i + 1
   }
@@ -137,7 +138,7 @@ func msIsSafeFieldName(field: in String): Bool {
   }
   var i = 0
   while i < field.length {
-    val c = field[i]
+    val c = Str.charAtOrReplacement(field, i)
     if not (isAsciiLetterOrDigit(c) or c == '_' or c == '.' or c == '-') {
       return false
     }

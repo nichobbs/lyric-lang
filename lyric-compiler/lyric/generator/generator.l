@@ -58,14 +58,14 @@ func charToString(c: in Char): String {
 
 // Skip whitespace (spaces and tabs only — not newlines).
 func skipWs(src: in String, pos: inout Int): Unit {
-  while pos < src.length and (src[pos] == ' ' or src[pos] == '\t') {
+  while pos < src.length and (Str.charAtOrReplacement(src, pos) == ' ' or Str.charAtOrReplacement(src, pos) == '\t') {
     pos += 1
   }
 }
 
 // Skip whitespace including newlines.
 func skipWsAll(src: in String, pos: inout Int): Unit {
-  while pos < src.length and (src[pos] == ' ' or src[pos] == '\t' or src[pos] == '\n' or src[pos] == '\r') {
+  while pos < src.length and (Str.charAtOrReplacement(src, pos) == ' ' or Str.charAtOrReplacement(src, pos) == '\t' or Str.charAtOrReplacement(src, pos) == '\n' or Str.charAtOrReplacement(src, pos) == '\r') {
     pos += 1
   }
 }
@@ -73,8 +73,8 @@ func skipWsAll(src: in String, pos: inout Int): Unit {
 // Read an identifier (letters, digits, underscores) starting at `pos`.
 func readIdent(src: in String, pos: inout Int): String {
   var id = ""
-  while pos < src.length and charIsIdent(src[pos]) {
-    id = id + charToString(src[pos])
+  while pos < src.length and charIsIdent(Str.charAtOrReplacement(src, pos)) {
+    id = id + Str.substring(src, pos, 1)
     pos += 1
   }
   id
@@ -83,8 +83,8 @@ func readIdent(src: in String, pos: inout Int): String {
 // Read a dotted identifier (e.g. "Proto.Derive", "MyOrg.MyPkg.Generator").
 func readDottedIdent(src: in String, pos: inout Int): String {
   var result = ""
-  while pos < src.length and (charIsIdent(src[pos]) or src[pos] == '.') {
-    result = result + charToString(src[pos])
+  while pos < src.length and (charIsIdent(Str.charAtOrReplacement(src, pos)) or Str.charAtOrReplacement(src, pos) == '.') {
+    result = result + Str.substring(src, pos, 1)
     pos += 1
   }
   result
@@ -97,7 +97,7 @@ func matchAt(src: in String, pos: in Int, needle: in String): Bool {
   }
   var i = 0
   while i < needle.length {
-    if src[pos + i] != needle[i] {
+    if Str.codeUnitAt(src, pos + i) != Str.codeUnitAt(needle, i) {
       return false
     }
     i += 1
@@ -111,14 +111,14 @@ func extractPackageName(src: in String): String {
   while i < src.length {
     if matchAt(src, i, "package") {
       val afterKw = i + 7
-      if afterKw < src.length and (src[afterKw] == ' ' or src[afterKw] == '\t') {
+      if afterKw < src.length and (Str.charAtOrReplacement(src, afterKw) == ' ' or Str.charAtOrReplacement(src, afterKw) == '\t') {
         var pos = afterKw
         skipWs(src, pos)
         return readDottedIdent(src, pos)
       }
     }
     // Skip to next line
-    while i < src.length and src[i] != '\n' {
+    while i < src.length and Str.charAtOrReplacement(src, i) != '\n' {
       i += 1
     }
     i += 1
@@ -131,7 +131,7 @@ func skipBlockComment(src: in String, pos: inout Int): Unit {
   pos += 2
   // skip /*
   while pos + 1 < src.length {
-    if src[pos] == '*' and src[pos + 1] == '/' {
+    if Str.charAtOrReplacement(src, pos) == '*' and Str.charAtOrReplacement(src, pos + 1) == '/' {
       pos += 2
       return ()
     }
@@ -141,7 +141,7 @@ func skipBlockComment(src: in String, pos: inout Int): Unit {
 
 // Skip a line comment `// ...` up to but not including the newline.
 func skipLineComment(src: in String, pos: inout Int): Unit {
-  while pos < src.length and src[pos] != '\n' {
+  while pos < src.length and Str.charAtOrReplacement(src, pos) != '\n' {
     pos += 1
   }
 }
@@ -155,7 +155,7 @@ func readBracedBlock(src: in String, pos: inout Int): String {
   var depth = 1
   var content = ""
   while pos < src.length and depth > 0 {
-    val c = src[pos]
+    val c = Str.charAtOrReplacement(src, pos)
     if c == '{' {
       depth += 1
       content = content + charToString(c)
@@ -166,25 +166,26 @@ func readBracedBlock(src: in String, pos: inout Int): String {
         content = content + charToString(c)
       }
       pos += 1
-    } else if c == '/' and pos + 1 < src.length and src[pos + 1] == '*' {
+    } else if c == '/' and pos + 1 < src.length and Str.charAtOrReplacement(src, pos + 1) == '*' {
       val start = pos
       skipBlockComment(src, pos)
       // preserve comment text in content
       var ci = start
       while ci < pos {
-        content = content + charToString(src[ci])
+        content = content + Str.substring(src, ci, 1)
         ci += 1
       }
-    } else if c == '/' and pos + 1 < src.length and src[pos + 1] == '/' {
+    } else if c == '/' and pos + 1 < src.length and Str.charAtOrReplacement(src, pos + 1) == '/' {
       val start = pos
       skipLineComment(src, pos)
       var ci = start
       while ci < pos {
-        content = content + charToString(src[ci])
+        content = content + Str.substring(src, ci, 1)
         ci += 1
       }
     } else {
-      content = content + charToString(c)
+      // The raw code unit: `c` is U+FFFD for a surrogate half.
+      content = content + Str.substring(src, pos, 1)
       pos += 1
     }
   }
@@ -202,12 +203,12 @@ pub func scanDirectives(src: in String, packageName: in String): List[GenerateDi
   var i = 0
   while i < src.length {
     // Skip line comments
-    if src[i] == '/' and i + 1 < src.length and src[i + 1] == '/' {
+    if Str.charAtOrReplacement(src, i) == '/' and i + 1 < src.length and Str.charAtOrReplacement(src, i + 1) == '/' {
       skipLineComment(src, i)
-    } else if src[i] == '/' and i + 1 < src.length and src[i + 1] == '*' {
+    } else if Str.charAtOrReplacement(src, i) == '/' and i + 1 < src.length and Str.charAtOrReplacement(src, i + 1) == '*' {
       // Skip block comments
       skipBlockComment(src, i)
-    } else if src[i] == '"' {
+    } else if Str.charAtOrReplacement(src, i) == '"' {
       // Skip double-quoted string literals (including \" escapes).  Triple-
       // quoted (`"""..."""`) and raw (`r"..."`) string literals are NOT
       // skipped today — a `@generate(X.Y)` embedded in either form would
@@ -219,10 +220,10 @@ pub func scanDirectives(src: in String, packageName: in String): List[GenerateDi
       // surfaces a real false positive) the scanner gains a triple-quoted
       // arm and the same `\\` escape treatment.
       i = i + 1
-      while i < src.length and src[i] != '"' {
+      while i < src.length and Str.charAtOrReplacement(src, i) != '"' {
         // Skip escaped character (\", \\, etc.) so a closing-`"`
         // is not consumed inside the escape pair.
-        if src[i] == '\\' and i + 1 < src.length {
+        if Str.charAtOrReplacement(src, i) == '\\' and i + 1 < src.length {
           i = i + 2
         } else {
           i = i + 1
@@ -232,13 +233,13 @@ pub func scanDirectives(src: in String, packageName: in String): List[GenerateDi
         i = i + 1
       }
       // consume closing `"`
-    } else if src[i] == '@' and matchAt(src, i + 1, "generate(") {
+    } else if Str.charAtOrReplacement(src, i) == '@' and matchAt(src, i + 1, "generate(") {
       // Look for @generate(
       var pos = i + 10
       // past "@generate("
       val arg = readDottedIdent(src, pos)
       // Skip closing ) if present
-      if pos < src.length and src[pos] == ')' {
+      if pos < src.length and Str.charAtOrReplacement(src, pos) == ')' {
         pos += 1
       }
       // Only custom generators (dotted names) go through this pipeline
@@ -246,18 +247,18 @@ pub func scanDirectives(src: in String, packageName: in String): List[GenerateDi
         // Skip whitespace and look for the type declaration
         skipWsAll(src, pos)
         // Optional extra annotations between @generate(...) and the type decl
-        while pos < src.length and src[pos] == '@' {
+        while pos < src.length and Str.charAtOrReplacement(src, pos) == '@' {
           pos += 1
-          while pos < src.length and charIsIdent(src[pos]) {
+          while pos < src.length and charIsIdent(Str.charAtOrReplacement(src, pos)) {
             pos += 1
           }
-          if pos < src.length and src[pos] == '(' {
+          if pos < src.length and Str.charAtOrReplacement(src, pos) == '(' {
             var depth = 1
             pos += 1
             while pos < src.length and depth > 0 {
-              if src[pos] == '(' {
+              if Str.charAtOrReplacement(src, pos) == '(' {
                 depth += 1
-              } else if src[pos] == ')' {
+              } else if Str.charAtOrReplacement(src, pos) == ')' {
                 depth -= 1
               }
               pos += 1
@@ -297,10 +298,10 @@ pub func scanDirectives(src: in String, packageName: in String): List[GenerateDi
         }
         if typeName != "" {
           // Skip to opening brace
-          while pos < src.length and src[pos] != '{' and src[pos] != '\n' {
+          while pos < src.length and Str.charAtOrReplacement(src, pos) != '{' and Str.charAtOrReplacement(src, pos) != '\n' {
             pos += 1
           }
-          if pos < src.length and src[pos] == '{' {
+          if pos < src.length and Str.charAtOrReplacement(src, pos) == '{' {
             rawFields = readBracedBlock(src, pos)
           }
           results.add(
@@ -336,27 +337,27 @@ func parseFields(block: in String): List[StringPair] {
       return fields
     }
     // Skip comments
-    if block[i] == '/' and i + 1 < block.length and block[i + 1] == '/' {
+    if Str.charAtOrReplacement(block, i) == '/' and i + 1 < block.length and Str.charAtOrReplacement(block, i + 1) == '/' {
       skipLineComment(block, i)
-    } else if block[i] == '/' and i + 1 < block.length and block[i + 1] == '*' {
+    } else if Str.charAtOrReplacement(block, i) == '/' and i + 1 < block.length and Str.charAtOrReplacement(block, i + 1) == '*' {
       skipBlockComment(block, i)
-    } else if charIsIdentStart(block[i]) {
+    } else if charIsIdentStart(Str.charAtOrReplacement(block, i)) {
       // Read field name
       val name = readIdent(block, i)
       skipWs(block, i)
-      if i < block.length and block[i] == ':' {
+      if i < block.length and Str.charAtOrReplacement(block, i) == ':' {
         i += 1
         skipWs(block, i)
         // Read type text up to newline, comma, or closing brace
         var typeText = ""
-        while i < block.length and block[i] != '\n' and block[i] != ',' and block[i] != '}' {
-          typeText = typeText + charToString(block[i])
+        while i < block.length and Str.charAtOrReplacement(block, i) != '\n' and Str.charAtOrReplacement(block, i) != ',' and Str.charAtOrReplacement(block, i) != '}' {
+          typeText = typeText + Str.substring(block, i, 1)
           i += 1
         }
         fields.add(StringPair(first = name, second = Str.trim(typeText)))
       } else {
         // Not a field — skip to next line
-        while i < block.length and block[i] != '\n' {
+        while i < block.length and Str.charAtOrReplacement(block, i) != '\n' {
           i += 1
         }
       }
@@ -426,7 +427,7 @@ func jsonEscape(s: in String): String {
   var buf = ""
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = Str.charAtOrReplacement(s, i)
     if c == '"' {
       buf = buf + "\\\""
     } else if c == '\\' {
@@ -438,7 +439,7 @@ func jsonEscape(s: in String): String {
     } else if c == '\t' {
       buf = buf + "\\t"
     } else {
-      buf = buf + charToString(c)
+      buf = buf + Str.substring(s, i, 1)
     }
     i += 1
   }
@@ -454,7 +455,7 @@ func splitTopLevelTypeArgs(s: in String): List[String] {
   var depth = 0
   var start = 0
   while i < s.length {
-    val c = s[i]
+    val c = Str.charAtOrReplacement(s, i)
     if c == '[' {
       depth = depth + 1
     } else if c == ']' {
@@ -550,7 +551,7 @@ func buildRequestJson(dir: in GenerateDirective, sourceFile: in String): String 
 // §4. Generator response parsing
 // ─────────────────────────────────────────────────────────────────────────────
 func skipJsonWs(src: in String, pos: inout Int): Unit {
-  while pos < src.length and (src[pos] == ' ' or src[pos] == '\t' or src[pos] == '\n' or src[pos] == '\r') {
+  while pos < src.length and (Str.charAtOrReplacement(src, pos) == ' ' or Str.charAtOrReplacement(src, pos) == '\t' or Str.charAtOrReplacement(src, pos) == '\n' or Str.charAtOrReplacement(src, pos) == '\r') {
     pos += 1
   }
 }
@@ -559,10 +560,10 @@ func parseJsonStringValue(src: in String, pos: inout Int): String {
   pos += 1
   // skip opening "
   var s = ""
-  while pos < src.length and src[pos] != '"' {
-    if src[pos] == '\\' and pos + 1 < src.length {
+  while pos < src.length and Str.charAtOrReplacement(src, pos) != '"' {
+    if Str.charAtOrReplacement(src, pos) == '\\' and pos + 1 < src.length {
       pos += 1
-      val esc = src[pos]
+      val esc = Str.charAtOrReplacement(src, pos)
       if esc == 'n' {
         s = s + "\n"
       } else if esc == 't' {
@@ -574,10 +575,10 @@ func parseJsonStringValue(src: in String, pos: inout Int): String {
       } else if esc == '\\' {
         s = s + "\\"
       } else {
-        s = s + "\\" + charToString(esc)
+        s = s + "\\" + Str.substring(src, pos, 1)
       }
     } else {
-      s = s + charToString(src[pos])
+      s = s + Str.substring(src, pos, 1)
     }
     pos += 1
   }
@@ -596,7 +597,7 @@ func jsonGetString(json: in String, key: in String): Option[String] {
     var ok = true
     var k = 0
     while k < needle.length {
-      if json[i + k] != needle[k] {
+      if Str.codeUnitAt(json, i + k) != Str.codeUnitAt(needle, k) {
         ok = false
       }
       k += 1
@@ -604,10 +605,10 @@ func jsonGetString(json: in String, key: in String): Option[String] {
     if ok {
       var pos = i + needle.length
       skipJsonWs(json, pos)
-      if pos < json.length and json[pos] == ':' {
+      if pos < json.length and Str.charAtOrReplacement(json, pos) == ':' {
         pos += 1
         skipJsonWs(json, pos)
-        if pos < json.length and json[pos] == '"' {
+        if pos < json.length and Str.charAtOrReplacement(json, pos) == '"' {
           val s = parseJsonStringValue(json, pos)
           return Some(value = s)
         }
@@ -623,14 +624,14 @@ func parseJsonStringArray(json: in String, pos: inout Int): List[String] {
   pos += 1
   // skip [
   skipJsonWs(json, pos)
-  while pos < json.length and json[pos] != ']' {
-    if json[pos] == '"' {
+  while pos < json.length and Str.charAtOrReplacement(json, pos) != ']' {
+    if Str.charAtOrReplacement(json, pos) == '"' {
       items.add(parseJsonStringValue(json, pos))
     } else {
       pos += 1
     }
     skipJsonWs(json, pos)
-    if pos < json.length and json[pos] == ',' {
+    if pos < json.length and Str.charAtOrReplacement(json, pos) == ',' {
       pos += 1
     }
     skipJsonWs(json, pos)
@@ -648,7 +649,7 @@ func isGeneratorIdentifier(s: in String): Bool {
   }
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = Str.charAtOrReplacement(s, i)
     val letter = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_'
     val digit = c >= '0' and c <= '9'
     if not letter and not (digit and i > 0) {
@@ -725,7 +726,7 @@ pub func parseResponseJson(
     var ok = true
     var m = 0
     while m < imKey.length {
-      if json[ki + m] != imKey[m] {
+      if Str.codeUnitAt(json, ki + m) != Str.codeUnitAt(imKey, m) {
         ok = false
       }
       m += 1
@@ -733,10 +734,10 @@ pub func parseResponseJson(
     if ok {
       var pos = ki + imKey.length
       skipJsonWs(json, pos)
-      if pos < json.length and json[pos] == ':' {
+      if pos < json.length and Str.charAtOrReplacement(json, pos) == ':' {
         pos += 1
         skipJsonWs(json, pos)
-        if pos < json.length and json[pos] == '[' {
+        if pos < json.length and Str.charAtOrReplacement(json, pos) == '[' {
           val items = parseJsonStringArray(json, pos)
           var ii = 0
           while ii < items.count {
@@ -910,7 +911,7 @@ func resolveGeneratorDll(manifestPath: in String, generatorPkg: in String): Resu
   var dirName = ""
   var i = 0
   while i < generatorPkg.length {
-    val c = generatorPkg[i]
+    val c = Str.charAtOrReplacement(generatorPkg, i)
     if c == '.' {
       dirName = dirName + "-"
     } else if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_' {
@@ -1034,7 +1035,7 @@ pub func preprocess(source: in String, manifestPath: in String, sourceFilePath: 
       if matchAt(augmented, i, pkgLine) {
         // Find the end of this line ('end' is a keyword — use 'lineEnd').
         var lineEnd = i + pkgLine.length
-        while lineEnd < augmented.length and augmented[lineEnd] != '\n' {
+        while lineEnd < augmented.length and Str.charAtOrReplacement(augmented, lineEnd) != '\n' {
           lineEnd += 1
         }
         if lineEnd < augmented.length {

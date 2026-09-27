@@ -123,7 +123,7 @@ pub func notBlank(value: in String, field: in String): slice[ValidationError] {
   }
   var i = 0
   while i < value.length {
-    val ch: Char = value[i]
+    val ch: Char = charAtOrReplacement(value, i)
     if not Char.isWhiteSpace(ch) {
       return []
     }
@@ -206,15 +206,15 @@ pub func email(value: in String, field: in String): slice[ValidationError] {
   // Reject CRLF/NUL — header injection guard.
   var k = 0
   while k < value.length {
-    val ch: Char = value[k]
+    val ch: Char = charAtOrReplacement(value, k)
     if ch == '\r' or ch == '\n' or ch == '\u{0000}' {
       return badEmail
     }
     k = k + 1
   }
   // Reject leading/trailing whitespace.
-  val first: Char = value[0]
-  val last: Char = value[value.length - 1]
+  val first: Char = charAtOrReplacement(value, 0)
+  val last: Char = charAtOrReplacement(value, value.length - 1)
   if Char.isWhiteSpace(first) or Char.isWhiteSpace(last) {
     return badEmail
   }
@@ -223,7 +223,7 @@ pub func email(value: in String, field: in String): slice[ValidationError] {
   var atIndex = -1
   var i = 0
   while i < value.length {
-    if value[i] == '@' {
+    if charAtOrReplacement(value, i) == '@' {
       atCount = atCount + 1
       atIndex = i
     }
@@ -237,15 +237,15 @@ pub func email(value: in String, field: in String): slice[ValidationError] {
   if atIndex == 0 {
     return badEmail
   }
-  val localFirst: Char = value[0]
-  val localLast: Char = value[atIndex - 1]
+  val localFirst: Char = charAtOrReplacement(value, 0)
+  val localLast: Char = charAtOrReplacement(value, atIndex - 1)
   if localFirst == '.' or localLast == '.' {
     return badEmail
   }
   var localPrevDot = false
   var li = 0
   while li < atIndex {
-    val ch: Char = value[li]
+    val ch: Char = charAtOrReplacement(value, li)
     if ch == '.' {
       if localPrevDot {
         return badEmail
@@ -261,8 +261,8 @@ pub func email(value: in String, field: in String): slice[ValidationError] {
   if domainStart >= value.length {
     return badEmail
   }
-  val domainFirstCh: Char = value[domainStart]
-  val domainLastCh: Char = value[value.length - 1]
+  val domainFirstCh: Char = charAtOrReplacement(value, domainStart)
+  val domainLastCh: Char = charAtOrReplacement(value, value.length - 1)
   if domainFirstCh == '.' or domainLastCh == '.' {
     return badEmail
   }
@@ -271,7 +271,7 @@ pub func email(value: in String, field: in String): slice[ValidationError] {
   var prevWasDot = false
   var j = domainStart
   while j < value.length {
-    val ch: Char = value[j]
+    val ch: Char = charAtOrReplacement(value, j)
     if ch == '.' {
       dotCount = dotCount + 1
       if prevWasDot {
@@ -320,7 +320,7 @@ pub func url(value: in String, field: in String): slice[ValidationError] {
 pub func isHttpUrl(value: in String): Bool {
   var i = 0
   while i < value.length {
-    val c = value[i]
+    val c = charAtOrReplacement(value, i)
     if c <= ' ' or c == '\u{007f}' {
       return false
     }
@@ -335,7 +335,7 @@ pub func isHttpUrl(value: in String): Bool {
     return false
   }
   var authorityEnd = 0
-  while authorityEnd < rest.length and rest[authorityEnd] != '/' and rest[authorityEnd] != '?' and rest[authorityEnd] != '#' {
+  while authorityEnd < rest.length and charAtOrReplacement(rest, authorityEnd) != '/' and charAtOrReplacement(rest, authorityEnd) != '?' and charAtOrReplacement(rest, authorityEnd) != '#' {
     authorityEnd = authorityEnd + 1
   }
   val authority = rest.substring(0, authorityEnd)
@@ -366,7 +366,7 @@ pub func isHttpUrl(value: in String): Bool {
   }
   var j = 0
   while j < host.length {
-    val c = host[j]
+    val c = charAtOrReplacement(host, j)
     val ok = Char.isLetterOrDigit(c) or c == '-' or c == '.'
     if not ok {
       return false
@@ -383,7 +383,7 @@ func isValidPort(text: in String): Bool {
   var n = 0
   var i = 0
   while i < text.length {
-    val c = text[i]
+    val c = charAtOrReplacement(text, i)
     if c < '0' or c > '9' {
       return false
     }

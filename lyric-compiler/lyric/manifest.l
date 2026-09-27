@@ -347,14 +347,23 @@ func isAtEnd(c: in Cursor): Bool {
   c.pos >= c.text.length
 }
 
+// The cursor reads `Char`s through `Str.charAtOrReplacement`: manifest text
+// may hold supplementary-plane characters (a `description` with an emoji),
+// whose surrogate halves are not `Char`s and read as U+FFFD here.  Text that
+// is copied into a value goes through `peekRaw`, which keeps the raw units.
 func peek(c: in Cursor): Char {
-  c.text[c.pos]
+  Str.charAtOrReplacement(c.text, c.pos)
+}
+
+// The code unit at the cursor, verbatim, as a one-unit String.
+func peekRaw(c: in Cursor): String {
+  Str.substring(c.text, c.pos, 1)
 }
 
 func peekAt(c: in Cursor, offset: in Int): Char {
   val idx = c.pos + offset
   if idx < c.text.length {
-    c.text[idx]
+    Str.charAtOrReplacement(c.text, idx)
   } else {
     '\u{0000}'
   }
@@ -362,7 +371,7 @@ func peekAt(c: in Cursor, offset: in Int): Char {
 
 func skipOne(c: inout Cursor): Unit {
   if not isAtEnd(c) {
-    val ch = c.text[c.pos]
+    val ch = peek(c)
     c.pos = c.pos + 1
     if ch == '\n' {
       c.line = c.line + 1
@@ -437,6 +446,7 @@ func parseQuotedString(c: inout Cursor, filePath: in String): Result[String, Man
         return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col, message = "unterminated escape"))
       }
       val esc = peek(c)
+      val escRaw = peekRaw(c)
       skipOne(c)
       if esc == 'n' {
         s = s + "\n"
@@ -449,10 +459,10 @@ func parseQuotedString(c: inout Cursor, filePath: in String): Result[String, Man
       } else if esc == '\\' {
         s = s + "\\"
       } else {
-        s = s + "\\" + charToString(esc)
+        s = s + "\\" + escRaw
       }
     } else {
-      s = s + charToString(ch)
+      s = s + peekRaw(c)
       skipOne(c)
     }
   }
@@ -694,7 +704,7 @@ func parseSectionHeader(c: inout Cursor, filePath: in String): Result[String, Ma
   skipOne(c)  // consume `[`
   var section = ""
   while not isAtEnd(c) and peek(c) != ']' and peek(c) != '\n' {
-    section = section + charToString(peek(c))
+    section = section + peekRaw(c)
     skipOne(c)
   }
   if isAtEnd(c) or peek(c) == '\n' {

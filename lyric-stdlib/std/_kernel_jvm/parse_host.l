@@ -42,7 +42,7 @@ pub func hostTryParseDouble(s: in String, value: out Double): Bool {
   if Str.contains(t, "x") or Str.contains(t, "X") {
     return false
   }
-  val last = t[t.length - 1]
+  val last = Str.charAtOrReplacement(t, t.length - 1)
   if last == 'd' or last == 'D' or last == 'f' or last == 'F' {
     return false
   }
@@ -68,7 +68,7 @@ pub func hostTryParseDouble(s: in String, value: out Double): Bool {
 func isJdkDecimalFloat(t: in String): Bool {
   val n = t.length
   var i = 0
-  if i < n and (t[i] == '+' or t[i] == '-') {
+  if i < n and (Str.charAtOrReplacement(t, i) == '+' or Str.charAtOrReplacement(t, i) == '-') {
     i = i + 1
   }
   val rest = t.substring(i, n - i)
@@ -76,13 +76,13 @@ func isJdkDecimalFloat(t: in String): Bool {
     return true
   }
   var digits = 0
-  while i < n and isAsciiDigit(t[i]) {
+  while i < n and isAsciiDigit(Str.charAtOrReplacement(t, i)) {
     i = i + 1
     digits = digits + 1
   }
-  if i < n and t[i] == '.' {
+  if i < n and Str.charAtOrReplacement(t, i) == '.' {
     i = i + 1
-    while i < n and isAsciiDigit(t[i]) {
+    while i < n and isAsciiDigit(Str.charAtOrReplacement(t, i)) {
       i = i + 1
       digits = digits + 1
     }
@@ -90,13 +90,13 @@ func isJdkDecimalFloat(t: in String): Bool {
   if digits == 0 {
     return false
   }
-  if i < n and (t[i] == 'e' or t[i] == 'E') {
+  if i < n and (Str.charAtOrReplacement(t, i) == 'e' or Str.charAtOrReplacement(t, i) == 'E') {
     i = i + 1
-    if i < n and (t[i] == '+' or t[i] == '-') {
+    if i < n and (Str.charAtOrReplacement(t, i) == '+' or Str.charAtOrReplacement(t, i) == '-') {
       i = i + 1
     }
     var expDigits = 0
-    while i < n and isAsciiDigit(t[i]) {
+    while i < n and isAsciiDigit(Str.charAtOrReplacement(t, i)) {
       i = i + 1
       expDigits = expDigits + 1
     }

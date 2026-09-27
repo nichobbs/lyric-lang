@@ -125,13 +125,13 @@ pub func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool
 func cfgIsInLineComment(s: in String, pos: in Int): Bool {
   // Walk back to the start of the current physical line.
   var lineStart = pos
-  while lineStart > 0 and s[lineStart - 1] != '\n' {
+  while lineStart > 0 and Str.codeUnitAt(s, lineStart - 1) != 10 {
     lineStart = lineStart - 1
   }
   // Look for "//" in [lineStart, pos).
   var i = lineStart
   while i + 1 < pos {
-    if s[i] == '/' and s[i + 1] == '/' {
+    if Str.codeUnitAt(s, i) == 47 and Str.codeUnitAt(s, i + 1) == 47 {
       return true
     }
     i = i + 1

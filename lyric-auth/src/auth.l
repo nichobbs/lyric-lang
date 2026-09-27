@@ -171,7 +171,7 @@ func makeJwtError(code: in String): JwtError {
 func indexOfCharAfter(s: in String, ch: in Char, pos: in Int): Int {
   var i = pos
   while i < s.length {
-    if s[i] == ch {
+    if charAtOrReplacement(s, i) == ch {
       return i
     }
     i = i + 1
@@ -508,7 +508,7 @@ pub func rolesContain(allowedRoles: in String, role: in String): Bool {
   var i: Int = 0
   while i <= allowedRoles.length {
     val atEnd = i == allowedRoles.length
-    val atComma = not atEnd and (allowedRoles[i] == ',')
+    val atComma = not atEnd and (charAtOrReplacement(allowedRoles, i) == ',')
     if atEnd or atComma {
       val candidate = allowedRoles.substring(start, i - start).trim()
       if candidate.length > 0 and candidate == role {

@@ -205,19 +205,20 @@ static int utf8_decode_at(const uint8_t* data, int64_t len, int64_t i, uint32_t*
     return 1;
 }
 
-/* `s[i]` bracket indexing (#6237).  `i` is a BYTE offset — consistent with
- * this runtime's existing byte-indexed `.length`/`.substring` model
- * (D-N-006) — but the character returned is the full Unicode scalar value
- * decoded starting at that byte offset via genuine UTF-8 iteration, not
- * the raw byte at that offset: `native/plan/03-type-mapping.md` is
- * explicit that "converting between Char and a position in a string
- * buffer requires UTF-8 iteration, not byte indexing" (native's `Char` is
- * a full Unicode scalar value, unlike dotnet/JVM's UTF-16 code unit — see
- * that doc's `Char` note).  A byte offset that lands on a malformed or
- * truncated UTF-8 sequence (including a continuation byte mid-sequence)
- * decodes to that raw byte's value, mirroring `.trim()`/`.toLower()`'s
- * existing lenient handling of invalid encoding elsewhere in this file —
- * only an out-of-range offset panics. */
+/* `s[i]` bracket indexing (#6237, D-progress-1006).  `i` is a BYTE offset —
+ * consistent with this runtime's byte-indexed `.length`/`.substring` model
+ * (D-N-006) — and the result is the Unicode scalar value encoded by the
+ * well-formed UTF-8 sequence that starts at that offset, not the raw byte
+ * (`native/plan/03-type-mapping.md`: converting between Char and a string
+ * position requires UTF-8 iteration).  A `Char` is a BMP scalar value on
+ * every target (docs/01 §2.1), so this panics — as an out-of-range offset
+ * does — when the offset does not start a well-formed sequence (a
+ * continuation byte or malformed/truncated input), when the sequence encodes
+ * a supplementary-plane scalar (which needs no Char, but a String or code
+ * point: `Std.String.codePointAt`), or when it encodes a surrogate code
+ * point (only reachable through ill-formed CESU-style input).  The failure
+ * text mirrors the managed targets' `stringIndexSurrogateMessage`, adjusted
+ * for byte offsets. */
 int32_t lyric_string_char_at(LyricString* s, int64_t idx) {
     int64_t len = s ? s->len : 0;
     if (!s || idx < 0 || idx >= len) {
@@ -226,6 +227,11 @@ int32_t lyric_string_char_at(LyricString* s, int64_t idx) {
     uint32_t cp;
     int valid;
     utf8_decode_at(LYRIC_STRING_DATA(s), len, idx, &cp, &valid);
+    if (!valid || cp > 0xFFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+        lyric_panic_msg("string index: the byte offset does not start a BMP character, which is all a Char "
+                        "can hold; use s.codeUnitAt(i) or Std.String.codePointAt(s, i)",
+                        "lyric_string.c", __LINE__);
+    }
     return (int32_t)cp;
 }
 

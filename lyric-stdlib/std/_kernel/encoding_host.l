@@ -12,6 +12,7 @@
 package Std.EncodingHost
 
 import Std.Char
+import Std.String as Str
 
 // Opaque handle for the BCL System.Text.Encoding type.
 extern type Enc = "System.Text.Encoding"
@@ -25,8 +26,9 @@ pub func hostGetUtf8Enc(): Enc {
   Enc.UTF8
 }
 
-// Returns the UTF-16 code-unit integer value of `s[i]`.  Trivial on .NET
-// (String indexing is fully supported); exists so `Std.Encoding`'s
+// Returns the UTF-16 code unit at `i` as an `Int` (`Std.String.codeUnitAt`,
+// surrogate halves included — `s[i]` would reject those, since a surrogate
+// half is not a `Char`, and the input here is untrusted text); exists so `Std.Encoding`'s
 // alphabet-walking loops (tryDecodeHex/tryDecodeBase64/encodeHex/
 // encodeBase64) can call one cross-target primitive instead of `s[i]`
 // directly — the native twin (`_kernel_native/encoding_host.l`) cannot
@@ -35,7 +37,7 @@ pub func hostGetUtf8Enc(): Enc {
 // surface exists precisely for the native twin's sake even though this
 // (.NET) implementation is a one-line passthrough.
 pub func hostCharCodeAt(s: in String, i: in Int): Int {
-  toInt(s[i])
+  Str.codeUnitAt(s, i)
 }
 
 // Returns the String representation of a full Unicode scalar value

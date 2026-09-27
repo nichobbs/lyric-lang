@@ -402,45 +402,223 @@ pub func fromInt(n: in Int): String {
 // ---------------------------------------------------------------------------
 // Character access.
 // ---------------------------------------------------------------------------
-// The postconditions below name the Option type argument explicitly
-// (`isNone[Char](result)`): the monomorphizer does not yet infer it from
-// `result` inside a contract clause (#7466).
-// Get the character at a given index, or None if out of bounds.
+// A `Char` is a BMP scalar value, never a UTF-16 surrogate half (docs/01
+// §2.1). `s[i]` therefore fails on an index holding a surrogate; these
+// accessors are the non-failing `Char` views (`None` there) plus the two
+// views that can see every position: raw code units and Unicode scalar
+// values (code points). Indices and `s.length` count code units: UTF-16
+// units on .NET and the JVM, UTF-8 bytes on native (D-N-006).
+//
+// The `Option[Char]` postconditions below go through the non-generic
+// `noChar`: the monomorphizer does not yet infer `isNone`'s type argument
+// from `result` inside a contract clause (#7466), and `--target native` does
+// not yet lower the explicit `noChar(result)` spelling.
+@pure
+func noChar(o: in Option[Char]): Bool {
+  match o {
+    case Some(_) -> false
+    case None -> true
+  }
+}
+
+/// The code unit at `index` as an `Int`: a UTF-16 unit (0..65535, surrogate
+/// halves included) on .NET and the JVM, a UTF-8 byte (0..255) on native.
+/// The free-function form of `s.codeUnitAt(index)`.
+@pure
+@stable(since = "1.0")
+pub func codeUnitAt(s: in String, index: in Int): Int
+  requires: index >= 0 and index < s.length
+{
+  SH.hostCodeUnitAt(s, index)
+}
+
+/// The Unicode scalar value (code point) whose encoding starts at code-unit
+/// index `index`. A UTF-16 surrogate pair decodes to its supplementary-plane
+/// scalar (`codePointAt("\u{1F600}", 0)` is `0x1F600`); on native a UTF-8
+/// sequence decodes the same way. An index that does not start a well-formed
+/// encoding — a lone or trailing surrogate, or a malformed UTF-8 byte —
+/// yields U+FFFD REPLACEMENT CHARACTER, so the result is always a scalar
+/// value that `Std.Encoding.codepointToString` accepts.
+@pure
+@stable(since = "1.0")
+pub func codePointAt(s: in String, index: in Int): Int
+  requires: index >= 0 and index < s.length
+  ensures: result >= 0 and result <= 1114111 and (result < 55296 or result > 57343)
+{
+  val (cp, _) = decodeCodePointAt(s, index)
+  cp
+}
+
+/// Every Unicode scalar value of `s`, in order, decoded as `codePointAt`
+/// does: each ill-formed code unit becomes one U+FFFD. This is how to walk a
+/// string's characters — a `String` is not itself iterable:
+///
+/// ```lyric
+/// for cp in codePoints(s) {
+///   ...
+/// }
+/// ```
+@pure
+@stable(since = "1.0")
+pub func codePoints(s: in String): slice[Int] {
+  val points: List[Int] = newList()
+  var i = 0
+  while i < s.length {
+    val (cp, width) = decodeCodePointAt(s, i)
+    points.add(cp)
+    i = i + width
+  }
+  points.toArray()
+}
+
+// The scalar value starting at `index` and the number of code units it
+// occupies; (U+FFFD, 1) when `index` does not start a well-formed encoding.
+@pure
+func decodeCodePointAt(s: in String, index: in Int): (Int, Int) {
+  if SH.hostCodeUnitsAreUtf8() {
+    decodeUtf8At(s, index)
+  } else {
+    decodeUtf16At(s, index)
+  }
+}
+
+@pure
+func decodeUtf16At(s: in String, index: in Int): (Int, Int) {
+  val u = SH.hostCodeUnitAt(s, index)
+  if u < 55296 or u > 57343 {
+    return (u, 1)
+  }
+  if u <= 56319 and index + 1 < s.length {
+    val lo = SH.hostCodeUnitAt(s, index + 1)
+    if lo >= 56320 and lo <= 57343 {
+      return (65536 + (u - 55296) * 1024 + (lo - 56320), 2)
+    }
+  };
+  (65533, 1)
+}
+
+// Strict UTF-8 (Unicode §3.9, Table 3-7): no overlong forms, no encoded
+// surrogates, nothing above U+10FFFF.
+@pure
+func decodeUtf8At(s: in String, index: in Int): (Int, Int) {
+  val b0 = SH.hostCodeUnitAt(s, index)
+  if b0 < 128 {
+    return (b0, 1)
+  }
+  val n = s.length
+  if b0 >= 194 and b0 <= 223 {
+    if index + 1 < n {
+      val b1 = SH.hostCodeUnitAt(s, index + 1)
+      if isContinuationByte(b1) {
+        return ((b0 - 192) * 64 + (b1 - 128), 2)
+      }
+    }
+    return (65533, 1)
+  }
+  if b0 >= 224 and b0 <= 239 {
+    if index + 2 < n {
+      val b1 = SH.hostCodeUnitAt(s, index + 1)
+      val b2 = SH.hostCodeUnitAt(s, index + 2)
+      val lo1 = if b0 == 224 { 160 } else { 128 }
+      val hi1 = if b0 == 237 { 159 } else { 191 }
+      if b1 >= lo1 and b1 <= hi1 and isContinuationByte(b2) {
+        return ((b0 - 224) * 4096 + (b1 - 128) * 64 + (b2 - 128), 3)
+      }
+    }
+    return (65533, 1)
+  }
+  if b0 >= 240 and b0 <= 244 {
+    if index + 3 < n {
+      val b1 = SH.hostCodeUnitAt(s, index + 1)
+      val b2 = SH.hostCodeUnitAt(s, index + 2)
+      val b3 = SH.hostCodeUnitAt(s, index + 3)
+      val lo1 = if b0 == 240 { 144 } else { 128 }
+      val hi1 = if b0 == 244 { 143 } else { 191 }
+      if b1 >= lo1 and b1 <= hi1 and isContinuationByte(b2) and isContinuationByte(b3) {
+        return ((b0 - 240) * 262144 + (b1 - 128) * 4096 + (b2 - 128) * 64 + (b3 - 128), 4)
+      }
+    }
+    return (65533, 1)
+  };
+  (65533, 1)
+}
+
+@pure
+func isContinuationByte(b: in Int): Bool {
+  b >= 128 and b <= 191
+}
+
+// The code unit at `index` is a `Char` on its own: a UTF-16 unit outside the
+// surrogate range, or (native) a byte that starts the well-formed encoding of
+// a BMP scalar value.  A UTF-8 decode of width 1 that yields U+FFFD is the
+// decoder's stand-in for an ill-formed byte (a real U+FFFD takes 3 bytes).
+@pure
+func isCharBoundaryUnit(s: in String, index: in Int): Bool {
+  if SH.hostCodeUnitsAreUtf8() {
+    val (cp, width) = decodeUtf8At(s, index)
+    cp <= 65535 and not (cp == 65533 and width == 1)
+  } else {
+    val u = SH.hostCodeUnitAt(s, index)
+    u < 55296 or u > 57343
+  }
+}
+
+// The character at `index`, or `None` when `index` is out of bounds or the
+// code unit there is not a `Char` on its own (a surrogate half on
+// .NET/JVM; not the start of a BMP character's encoding on native) — the
+// non-failing counterpart of `s[index]`.
 @pure
 @stable(since = "1.0")
 pub func charAt(s: in String, index: in Int): Option[Char]
-  ensures: (index >= 0 and index < s.length) or isNone[Char](result)
-  ensures: (index < 0 or index >= s.length) or isSome[Char](result)
+  ensures: (index >= 0 and index < s.length) or noChar(result)
 {
-  if index >= 0 and index < s.length {
+  // Bound with its type: `--target native` cannot infer `None`'s type
+  // argument from the declared return type once the `ensures` clause has
+  // been lowered.
+  val found: Option[Char] = if index >= 0 and index < s.length and isCharBoundaryUnit(s, index) {
     Some(value = s[index])
   } else {
     None
   }
+  found
 }
 
-// Get the first character, or None if the string is empty.
+/// The character at `index`, or U+FFFD REPLACEMENT CHARACTER wherever
+/// `charAt` would give `None` (a surrogate half on .NET/JVM; a byte that
+/// does not start a BMP character on native). For scanners that dispatch on
+/// ASCII or BMP syntax — delimiters, digits, whitespace — over text that may
+/// contain supplementary-plane characters: no delimiter is U+FFFD, so the
+/// scan steps over such characters one code unit at a time, and copying the
+/// text between delimiters with `substring` keeps them intact.
+@pure
+@stable(since = "1.0")
+pub func charAtOrReplacement(s: in String, index: in Int): Char
+  requires: index >= 0 and index < s.length
+{
+  if isCharBoundaryUnit(s, index) {
+    s[index]
+  } else {
+    '\u{fffd}'
+  }
+}
+
+// The first character, or `None` if the string is empty or starts with a
+// code unit that is not a `Char` (see `charAt`).
 @pure
 @stable(since = "1.0")
 pub func first(s: in String): Option[Char]
-  ensures: (s.length > 0 and isSome[Char](result)) or (s.length == 0 and isNone[Char](result))
+  ensures: s.length > 0 or noChar(result)
 {
-  if s.length > 0 {
-    Some(value = s[0])
-  } else {
-    None
-  }
+  charAt(s, 0)
 }
 
-// Get the last character, or None if the string is empty.
+// The last code unit as a character, or `None` if the string is empty or
+// that unit is not a `Char` (the trailing half of a surrogate pair on
+// .NET/JVM, the last byte of a multi-byte sequence on native).
 @pure
 @stable(since = "1.0")
 pub func last(s: in String): Option[Char]
-  ensures: (s.length > 0 and isSome[Char](result)) or (s.length == 0 and isNone[Char](result))
+  ensures: s.length > 0 or noChar(result)
 {
-  if s.length > 0 {
-    Some(value = s[s.length - 1])
-  } else {
-    None
-  }
+  charAt(s, s.length - 1)
 }

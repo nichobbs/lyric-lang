@@ -6504,7 +6504,7 @@ func parseJavaFeatureVersion(text: in String): Int {
   var sawDigit = false
   var done = false
   while i < text.length and not done {
-    val d = asciiDigit(text[i])
+    val d = asciiDigit(Str.charAtOrReplacement(text, i))
     if d < 0 {
       done = true
     } else {
@@ -6528,11 +6528,11 @@ func parseJavaVersionFromOutput(output: in String): Int {
   var i = 0
   val len = output.length
   // Skip the first token (e.g. "java" or "openjdk")
-  while i < len and output[i] != ' ' {
+  while i < len and Str.charAtOrReplacement(output, i) != ' ' {
     i = i + 1
   }
   // Skip whitespace between tokens
-  while i < len and output[i] == ' ' {
+  while i < len and Str.charAtOrReplacement(output, i) == ' ' {
     i = i + 1
   }
   // Parse the leading decimal integer of the version string
@@ -6540,7 +6540,7 @@ func parseJavaVersionFromOutput(output: in String): Int {
   var sawDigit = false
   var done = false
   while i < len and not done {
-    val d = asciiDigit(output[i])
+    val d = asciiDigit(Str.charAtOrReplacement(output, i))
     if d < 0 {
       done = true
     } else {

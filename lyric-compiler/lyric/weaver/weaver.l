@@ -66,7 +66,6 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.ContractElaborator as CE
-import Std.Char as Char
 import Std.String as Str
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,7 +82,9 @@ func globMatchAt(glob: in String, gi: in Int, name: in String, ni: in Int): Bool
   if gi == glob.length {
     return false
   }
-  val g = glob[gi]
+  // Globs and names are compared code unit by code unit (a surrogate half is
+  // not a `Char`, so neither string is indexed as one).
+  val g = Str.charAtOrReplacement(glob, gi)
   if g == '*' {
     var k = ni
     while k <= name.length {
@@ -105,20 +106,19 @@ func globMatchAt(glob: in String, gi: in Int, name: in String, ni: in Int): Bool
     var found = false
     var closed = false
     while j < glob.length and not closed {
-      val c = glob[j]
+      val c = Str.charAtOrReplacement(glob, j)
       if c == ']' {
         closed = true
-      } else if j + 2 < glob.length and glob[j + 1] == '-' and glob[j + 2] != ']' {
+      } else if j + 2 < glob.length and Str.charAtOrReplacement(glob, j + 1) == '-' and Str.charAtOrReplacement(glob, j + 2) != ']' {
         if ni < name.length {
-          val nc = name[ni]
-          val ncI = Char.toInt(nc)
-          if ncI >= Char.toInt(c) and ncI <= Char.toInt(glob[j + 2]) {
+          val ncI = Str.codeUnitAt(name, ni)
+          if ncI >= Str.codeUnitAt(glob, j) and ncI <= Str.codeUnitAt(glob, j + 2) {
             found = true
           }
         }
         j = j + 3
       } else {
-        if ni < name.length and c == name[ni] {
+        if ni < name.length and Str.codeUnitAt(glob, j) == Str.codeUnitAt(name, ni) {
           found = true
         }
         j = j + 1
@@ -132,7 +132,7 @@ func globMatchAt(glob: in String, gi: in Int, name: in String, ni: in Int): Bool
   if ni >= name.length {
     return false
   }
-  if g != name[ni] {
+  if Str.codeUnitAt(glob, gi) != Str.codeUnitAt(name, ni) {
     return false
   }
   globMatchAt(glob, gi + 1, name, ni + 1)

@@ -13,6 +13,7 @@ package Lyric.CliSuggest
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 
 // The set of command names eligible for did-you-mean suggestions.  Kept in
 // sync with cli.l's dispatcher (minus the editor-only `lsp`).
@@ -69,7 +70,7 @@ pub func editDistance(a: in String, b: in String): Int {
     cur.add(i)
     var k = 1
     while k <= m {
-      val cost = if a[i - 1] == b[k - 1] { 0 } else { 1 }
+      val cost = if Str.codeUnitAt(a, i - 1) == Str.codeUnitAt(b, k - 1) { 0 } else { 1 }
       val del = prev[k] + 1
       val ins = cur[k - 1] + 1
       val sub = prev[k - 1] + cost

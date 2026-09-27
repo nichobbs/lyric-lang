@@ -459,7 +459,7 @@ func parsePort(text: in String, prefix: in String): Int {
   var value = 0
   var i = 0
   while i < text.length {
-    val c = text[i]
+    val c = charAtOrReplacement(text, i)
     if not isDigit(c) {
       panic("Std.HttpServer: invalid listener prefix '" + prefix + "': non-numeric port '" + text + "'")
     }
@@ -491,7 +491,7 @@ func parsePrefix(prefix: in String): ParsedPrefix {
   var slashAt = 0 - 1
   var i = 0
   while i < rest.length and slashAt < 0 {
-    if rest[i] == '/' {
+    if charAtOrReplacement(rest, i) == '/' {
       slashAt = i
     }
     i = i + 1
@@ -500,7 +500,7 @@ func parsePrefix(prefix: in String): ParsedPrefix {
   var colonAt = 0 - 1
   var j = 0
   while j < hostPort.length {
-    if hostPort[j] == ':' {
+    if charAtOrReplacement(hostPort, j) == ':' {
       colonAt = j
     }
     j = j + 1
@@ -917,11 +917,12 @@ func asciiLower(s: in String): String {
   val sb = StringBuilder.new()
   var i = 0
   while i < s.length {
-    val cp = toInt(s[i])
+    val cp = codeUnitAt(s, i)
     if cp >= 65 and cp <= 90 {
       sb.appendChar(Std.Char.fromInt(cp + 32))
     } else {
-      sb.appendChar(s[i])
+      // Copied as a raw code unit: a surrogate half is not a `Char`.
+      sb.append(s.substring(i, 1))
     }
     i = i + 1
   }
@@ -1081,7 +1082,7 @@ func extractH2Request(headers: in List[HeaderField]): H2RequestLine {
       target = h.value
     } else if h.name == ":authority" {
       authority = h.value
-    } else if h.name.length > 0 and h.name[0] == ':' {
+    } else if h.name.startsWith(":") {
       // Any other pseudo-header (`:scheme`, or an unknown one): not a real
       // request header, drop it.
       ()
@@ -1646,7 +1647,7 @@ pub func requestQuery(c: in HttpContext): String {
 func queryStart(target: in String): Int {
   var i = 0
   while i < target.length {
-    if target[i] == '?' {
+    if codeUnitAt(target, i) == 63 {
       return i
     }
     i = i + 1
@@ -1715,6 +1716,14 @@ func hexDigitValue(c: in Char): Int {
   }
 }
 
+// A `%XX` escape (two hex digits) starts at `i`.  Reads code units, so any
+// text around the escapes — supplementary-plane characters included — is
+// passed over rather than indexed as a `Char`.
+func isPercentEscapeAt(s: in String, i: in Int): Bool {
+  i + 2 < s.length and codeUnitAt(s, i) == 37 and isHexDigit(charAtOrReplacement(s, i + 1)) and
+    isHexDigit(charAtOrReplacement(s, i + 2))
+}
+
 /// Percent-decode a URL-encoded string (query/path segment values): `%XX` runs
 /// decode as UTF-8 byte sequences (a multi-byte code point spans consecutive
 /// `%XX` escapes, so a whole run is collected before decoding), `+` is NOT
@@ -1725,11 +1734,11 @@ pub func urlDecode(s: in String): String {
   var litStart = 0
   var i = 0
   while i < len {
-    if s[i] == '%' and i + 2 < len and isHexDigit(s[i + 1]) and isHexDigit(s[i + 2]) {
+    if isPercentEscapeAt(s, i) {
       sb.append(s.substring(litStart, i - litStart))
       val runStart = i
       val bytes: List[Byte] = newList()
-      while i + 2 < len and s[i] == '%' and isHexDigit(s[i + 1]) and isHexDigit(s[i + 2]) {
+      while isPercentEscapeAt(s, i) {
         bytes.add((hexDigitValue(s[i + 1]) * 16 + hexDigitValue(s[i + 2])).toByte())
         i = i + 3
       }
@@ -1757,7 +1766,7 @@ pub func urlDecode(s: in String): String {
 func responseHeaderSafe(s: in String): Bool {
   var i = 0
   while i < s.length {
-    val cp = toInt(s[i])
+    val cp = codeUnitAt(s, i)
     if not ((cp >= 32 and cp <= 126) or cp == 9) {
       return false
     }

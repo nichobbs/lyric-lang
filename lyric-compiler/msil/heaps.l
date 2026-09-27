@@ -25,6 +25,7 @@ import Std.Core
 import Std.Collections
 import Std.Char
 import Std.Encoding as Enc
+import Std.String as Str
 
 // ── Compressed unsigned integer (ECMA-335 §II.23.2) ──────────────────────────
 // Encodes an unsigned integer into 1, 2, or 4 bytes for blob/US length prefixes.
@@ -149,7 +150,7 @@ pub func internUs(h: in UsHeap, s: in String): Int {
       var hasHigh = false
       var i = 0
       while i < n {
-        val cu = toInt(s[i])
+        val cu = Str.codeUnitAt(s, i)
         bufU1(h.buf, cu % 256)
         bufU1(h.buf, cu / 256)
         if cu >= 128 {

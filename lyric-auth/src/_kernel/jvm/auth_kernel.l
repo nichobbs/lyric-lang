@@ -177,14 +177,14 @@ pub func tryFromBase64Url(seg: in String, result: out slice[Byte]): Bool {
   val acc: List[Byte] = newList()
   var i = 0
   while i < len {
-    val c0 = base64Val(padded[i])
-    val c1 = base64Val(padded[i + 1])
+    val c0 = base64Val(charAtOrReplacement(padded, i))
+    val c1 = base64Val(charAtOrReplacement(padded, i + 1))
     if c0 < 0 or c1 < 0 {
       result = []
       return false
     }
-    val ch2 = padded[i + 2]
-    val ch3 = padded[i + 3]
+    val ch2 = charAtOrReplacement(padded, i + 2)
+    val ch3 = charAtOrReplacement(padded, i + 3)
     if ch2 == '=' {
       if ch3 != '=' or i + 4 != len {
         result = []
@@ -267,7 +267,7 @@ func decodeJsonEscapes(s: in String): String {
   var acc = ""
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = charAtOrReplacement(s, i)
     if c != '\\' {
       acc = acc + substring(s, i, 1)
       i = i + 1
@@ -278,7 +278,7 @@ func decodeJsonEscapes(s: in String): String {
         acc = acc + "�"
         i = i + 1
       } else {
-        val esc = s[i + 1]
+        val esc = charAtOrReplacement(s, i + 1)
         if esc == '"' {
           acc = acc + "\""
           i = i + 2
@@ -309,10 +309,10 @@ func decodeJsonEscapes(s: in String): String {
             acc = acc + "�"
             i = s.length
           } else {
-            val h0 = hexDigit(s[i + 2])
-            val h1 = hexDigit(s[i + 3])
-            val h2 = hexDigit(s[i + 4])
-            val h3 = hexDigit(s[i + 5])
+            val h0 = hexDigit(charAtOrReplacement(s, i + 2))
+            val h1 = hexDigit(charAtOrReplacement(s, i + 3))
+            val h2 = hexDigit(charAtOrReplacement(s, i + 4))
+            val h3 = hexDigit(charAtOrReplacement(s, i + 5))
             if h0 < 0 or h1 < 0 or h2 < 0 or h3 < 0 {
               acc = acc + "�"
               i = i + 2  // skip past \u, retry on the bad nibble
@@ -322,11 +322,11 @@ func decodeJsonEscapes(s: in String): String {
               // 0xD800 = 55296, 0xDBFF = 56319, 0xDC00 = 56320, 0xDFFF = 57343.
               if cp >= 55296 and cp <= 56319 {
                 // High surrogate — expect \uLLLL low surrogate next.
-                if i + 11 < s.length and s[i + 6] == '\\' and s[i + 7] == 'u' {
-                  val l0 = hexDigit(s[i + 8])
-                  val l1 = hexDigit(s[i + 9])
-                  val l2 = hexDigit(s[i + 10])
-                  val l3 = hexDigit(s[i + 11])
+                if i + 11 < s.length and charAtOrReplacement(s, i + 6) == '\\' and charAtOrReplacement(s, i + 7) == 'u' {
+                  val l0 = hexDigit(charAtOrReplacement(s, i + 8))
+                  val l1 = hexDigit(charAtOrReplacement(s, i + 9))
+                  val l2 = hexDigit(charAtOrReplacement(s, i + 10))
+                  val l3 = hexDigit(charAtOrReplacement(s, i + 11))
                   if l0 < 0 or l1 < 0 or l2 < 0 or l3 < 0 {
                     acc = acc + "�"
                     i = i + 6
@@ -380,12 +380,12 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
   if quotePos < 0 or quotePos >= json.length {
     return -1
   }
-  if json[quotePos] != '"' {
+  if charAtOrReplacement(json, quotePos) != '"' {
     return -1
   }
   var i = quotePos + 1
   while i < json.length {
-    val c = json[i]
+    val c = charAtOrReplacement(json, i)
     if c == '"' {
       return i
     }
@@ -460,7 +460,7 @@ func isJsonWs(c: in Char): Bool {
 
 func jsonSkipWs(json: in String, i: in Int): Int {
   var p = i
-  while p < json.length and isJsonWs(json[p]) {
+  while p < json.length and isJsonWs(charAtOrReplacement(json, p)) {
     p = p + 1
   }
   p
@@ -482,33 +482,33 @@ func jsonParseString(json: in String, i: in Int): Option[JsonParse] {
 // text — callers needing the numeric value re-parse it via `parseLong`.
 func jsonParseNumber(json: in String, i: in Int): Option[JsonParse] {
   var p = i
-  if p < json.length and json[p] == '-' {
+  if p < json.length and charAtOrReplacement(json, p) == '-' {
     p = p + 1
   }
   val intStart = p
-  while p < json.length and isDigit(json[p]) {
+  while p < json.length and isDigit(charAtOrReplacement(json, p)) {
     p = p + 1
   }
   if p == intStart {
     return None
   }
-  if p < json.length and json[p] == '.' {
+  if p < json.length and charAtOrReplacement(json, p) == '.' {
     p = p + 1
     val fracStart = p
-    while p < json.length and isDigit(json[p]) {
+    while p < json.length and isDigit(charAtOrReplacement(json, p)) {
       p = p + 1
     }
     if p == fracStart {
       return None
     }
   }
-  if p < json.length and (json[p] == 'e' or json[p] == 'E') {
+  if p < json.length and (charAtOrReplacement(json, p) == 'e' or charAtOrReplacement(json, p) == 'E') {
     p = p + 1
-    if p < json.length and (json[p] == '+' or json[p] == '-') {
+    if p < json.length and (charAtOrReplacement(json, p) == '+' or charAtOrReplacement(json, p) == '-') {
       p = p + 1
     }
     val expStart = p
-    while p < json.length and isDigit(json[p]) {
+    while p < json.length and isDigit(charAtOrReplacement(json, p)) {
       p = p + 1
     }
     if p == expStart {
@@ -547,7 +547,7 @@ func jsonParseArray(json: in String, i: in Int, depth: in Int): Option[JsonParse
   }
   var p = jsonSkipWs(json, i + 1)
   val items: List[JsonValue] = newList()
-  if p < json.length and json[p] == ']' {
+  if p < json.length and charAtOrReplacement(json, p) == ']' {
     return Some(value = JsonParse(value = JVArray(items = items), next = p + 1))
   }
   while true {
@@ -561,9 +561,9 @@ func jsonParseArray(json: in String, i: in Int, depth: in Int): Option[JsonParse
     if p >= json.length {
       return None
     }
-    if json[p] == ',' {
+    if charAtOrReplacement(json, p) == ',' {
       p = jsonSkipWs(json, p + 1)
-    } else if json[p] == ']' {
+    } else if charAtOrReplacement(json, p) == ']' {
       return Some(value = JsonParse(value = JVArray(items = items), next = p + 1))
     } else {
       return None
@@ -577,11 +577,11 @@ func jsonParseObject(json: in String, i: in Int, depth: in Int): Option[JsonPars
   }
   var p = jsonSkipWs(json, i + 1)
   val fields: List[JsonField] = newList()
-  if p < json.length and json[p] == '}' {
+  if p < json.length and charAtOrReplacement(json, p) == '}' {
     return Some(value = JsonParse(value = JVObject(fields = fields), next = p + 1))
   }
   while true {
-    if p >= json.length or json[p] != '"' {
+    if p >= json.length or charAtOrReplacement(json, p) != '"' {
       return None
     }
     match jsonParseString(json, p) {
@@ -592,7 +592,7 @@ func jsonParseObject(json: in String, i: in Int, depth: in Int): Option[JsonPars
           case _ -> ""  // unreachable: jsonParseString only produces JVString
         }
         val afterKey = jsonSkipWs(json, pk.next)
-        if afterKey >= json.length or json[afterKey] != ':' {
+        if afterKey >= json.length or charAtOrReplacement(json, afterKey) != ':' {
           return None
         }
         match jsonParseValue(json, afterKey + 1, depth + 1) {
@@ -607,9 +607,9 @@ func jsonParseObject(json: in String, i: in Int, depth: in Int): Option[JsonPars
     if p >= json.length {
       return None
     }
-    if json[p] == ',' {
+    if charAtOrReplacement(json, p) == ',' {
       p = jsonSkipWs(json, p + 1)
-    } else if json[p] == '}' {
+    } else if charAtOrReplacement(json, p) == '}' {
       return Some(value = JsonParse(value = JVObject(fields = fields), next = p + 1))
     } else {
       return None
@@ -622,7 +622,7 @@ func jsonParseValue(json: in String, i0: in Int, depth: in Int): Option[JsonPars
   if i >= json.length {
     return None
   }
-  val c = json[i]
+  val c = charAtOrReplacement(json, i)
   if c == '"' {
     jsonParseString(json, i)
   } else if c == '{' {
@@ -649,7 +649,7 @@ func jsonParseValue(json: in String, i0: in Int, depth: in Int): Option[JsonPars
 // the closing `}`.
 func parseJsonObjectTopLevel(json: in String): Option[List[JsonField]] {
   val start = jsonSkipWs(json, 0)
-  if start >= json.length or json[start] != '{' {
+  if start >= json.length or charAtOrReplacement(json, start) != '{' {
     return None
   }
   match jsonParseObject(json, start, 0) {
@@ -802,10 +802,10 @@ func parseLong(s: in String): Result[Long, String] {
   var acc: Long = 0i64
   var i = 0
   while i < s.length {
-    if not isDigit(s[i]) {
+    if not isDigit(charAtOrReplacement(s, i)) {
       return Err("parse_error")
     }
-    val d = toInt(s[i]) - toInt('0')
+    val d = toInt(charAtOrReplacement(s, i)) - toInt('0')
     acc = acc * 10i64 + d.toLong()
     i = i + 1
   }
@@ -858,7 +858,7 @@ func algListContains(list: in String, alg: in String): Bool {
   var i: Int = 0
   while i <= list.length {
     val atEnd = i == list.length
-    val atComma = not atEnd and list[i] == ','
+    val atComma = not atEnd and charAtOrReplacement(list, i) == ','
     if atEnd or atComma {
       val count = i - start
       if count > 0 {

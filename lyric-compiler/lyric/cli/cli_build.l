@@ -382,9 +382,9 @@ pub func validatePackageVersionArg(v: in String): Option[String] {
   if Str.isEmpty(Str.trim(v)) {
     return Some(value = "--package-version requires a non-empty value")
   }
-  if v.length > 1 and (v[0] == 'v' or v[0] == 'V') and Ch.isAsciiDigit(v[1]) {
+  if v.length > 1 and (Str.startsWith(v, "v") or Str.startsWith(v, "V")) and Ch.isAsciiDigit(Str.charAtOrReplacement(v, 1)) {
     return Some(
-      value = "--package-version '" + v + "' has a leading '" + ("" + v[0]) +
+      value = "--package-version '" + v + "' has a leading '" + Str.substring(v, 0, 1) +
         "' prefix, which NuGet SemVer2 does not accept — use '" +
         Str.substring(v, 1, v.length - 1) +
         "' instead"

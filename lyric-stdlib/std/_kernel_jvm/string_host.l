@@ -12,6 +12,16 @@ package Std.StringHost
 
 extern type HostStringBuilder = "java.lang.StringBuilder"
 
+// The code unit at `index` (D-progress-1006): see `Std.String.codeUnitAt`.
+pub func hostCodeUnitAt(s: in String, index: in Int): Int {
+  s.codeUnitAt(index)
+}
+
+// Strings are UTF-16 on the JVM, so a code unit is a UTF-16 unit.
+pub func hostCodeUnitsAreUtf8(): Bool {
+  false
+}
+
 pub func hostNewBuilder(): HostStringBuilder {
   HostStringBuilder.new()
 }
@@ -46,12 +56,12 @@ pub func hostAsciiCaseCompare(a: in String, b: in String): Int {
   var same = a.length == b.length
   var i = 0
   while i < a.length {
-    val ca = a[i].toInt()
+    val ca = a.codeUnitAt(i)
     if ca > 127 {
       return 0 - 1
     }
     if same {
-      val cb = b[i].toInt()
+      val cb = b.codeUnitAt(i)
       if cb > 127 {
         return 0 - 1
       }
@@ -65,7 +75,7 @@ pub func hostAsciiCaseCompare(a: in String, b: in String): Int {
   }
   var j = 0
   while j < b.length {
-    if b[j].toInt() > 127 {
+    if b.codeUnitAt(j) > 127 {
       return 0 - 1
     }
     j = j + 1

@@ -22,7 +22,7 @@ func jsonEsc(s: in String): String {
   var r = ""
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = Str.charAtOrReplacement(s, i)
     if c == '"' {
       r = r + "\\\""
     } else if c == '\\' {
@@ -34,7 +34,7 @@ func jsonEsc(s: in String): String {
     } else if c == '\t' {
       r = r + "\\t"
     } else {
-      r = r + ("" + c)
+      r = r + Str.substring(s, i, 1)
     }
     i = i + 1
   }

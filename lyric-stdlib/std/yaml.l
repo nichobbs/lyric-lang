@@ -78,7 +78,7 @@ func yAtEnd(st: in YamlState): Bool {
 
 func yPeek(st: in YamlState): Option[Char] {
   if st.pos < st.src.length {
-    Some(value = st.src[st.pos])
+    Some(value = charAtOrReplacement(st.src, st.pos))
   } else {
     None
   }
@@ -87,7 +87,7 @@ func yPeek(st: in YamlState): Option[Char] {
 func yPeekAt(st: in YamlState, offset: in Int): Option[Char] {
   val i = st.pos + offset
   if i >= 0 and i < st.src.length {
-    Some(value = st.src[i])
+    Some(value = charAtOrReplacement(st.src, i))
   } else {
     None
   }
@@ -96,13 +96,13 @@ func yPeekAt(st: in YamlState, offset: in Int): Option[Char] {
 // True when the character `offset` positions ahead is an ASCII digit.
 // Reads the character by direct bounds-checked index rather than matching
 // `yPeekAt`'s `Option[Char]`: the rest of this scanner uses the same
-// `st.src[i]`-under-a-length-guard idiom, and a `match` over `Option[Char]`
+// `charAtOrReplacement(st.src, i)`-under-a-length-guard idiom, and a `match` over `Option[Char]`
 // hits the generic-Option stdlib-bundle mis-compile this PR's XML fix
 // (D-progress-638) was reworked to avoid.
 func yIsDigitAt(st: in YamlState, offset: in Int): Bool {
   val i = st.pos + offset
   if i >= 0 and i < st.src.length {
-    val ch = st.src[i]
+    val ch = charAtOrReplacement(st.src, i)
     ch >= '0' and ch <= '9'
   } else {
     false
@@ -110,7 +110,7 @@ func yIsDigitAt(st: in YamlState, offset: in Int): Bool {
 }
 
 func yEat(st: inout YamlState, c: in Char): Bool {
-  if st.pos < st.src.length and st.src[st.pos] == c {
+  if st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == c {
     st.pos = st.pos + 1
     true
   } else {
@@ -119,7 +119,7 @@ func yEat(st: inout YamlState, c: in Char): Bool {
 }
 
 func ySkipWs(st: inout YamlState): Unit {
-  while st.pos < st.src.length and isWhiteSpace(st.src[st.pos]) {
+  while st.pos < st.src.length and isWhiteSpace(charAtOrReplacement(st.src, st.pos)) {
     st.pos = st.pos + 1
   }
 }
@@ -132,7 +132,7 @@ func yStartsWith(st: in YamlState, s: in String): Bool {
   }
   var k = 0
   while k < s.length {
-    if st.src[st.pos + k] != s[k] {
+    if codeUnitAt(st.src, st.pos + k) != codeUnitAt(s, k) {
       return false
     }
     k += 1
@@ -153,7 +153,7 @@ func yEatStr(st: inout YamlState, s: in String): Bool {
 func ySkipSpaces(st: inout YamlState): Unit {
   var scanning = true
   while scanning and st.pos < st.src.length {
-    val c = st.src[st.pos]
+    val c = charAtOrReplacement(st.src, st.pos)
     if c == ' ' or c == '\t' {
       st.pos = st.pos + 1
     } else {
@@ -165,11 +165,11 @@ func ySkipSpaces(st: inout YamlState): Unit {
 // Count the column indent of the current line (0-based leading space count).
 func yCurrentIndent(st: in YamlState): Int {
   var lineStart = st.pos
-  while lineStart > 0 and st.src[lineStart - 1] != '\n' {
+  while lineStart > 0 and charAtOrReplacement(st.src, lineStart - 1) != '\n' {
     lineStart -= 1
   }
   var indent = 0
-  while lineStart + indent < st.pos and st.src[lineStart + indent] == ' ' {
+  while lineStart + indent < st.pos and charAtOrReplacement(st.src, lineStart + indent) == ' ' {
     indent += 1
   }
   indent
@@ -181,11 +181,11 @@ func ySkipBlankAndComment(st: inout YamlState): Unit {
   var scanning = true
   while scanning and st.pos < st.src.length {
     ySkipSpaces(st)
-    if st.pos < st.src.length and st.src[st.pos] == '#' {
-      while st.pos < st.src.length and st.src[st.pos] != '\n' {
+    if st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == '#' {
+      while st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) != '\n' {
         st.pos = st.pos + 1
       }
-    } else if st.pos < st.src.length and st.src[st.pos] == '\n' {
+    } else if st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == '\n' {
       st.pos = st.pos + 1
     } else {
       scanning = false
@@ -214,7 +214,7 @@ func yParseUnicode4(st: inout YamlState): Result[Int, YamlError] {
     if yAtEnd(st) {
       return Err(error = UnexpectedEof(pos = st.pos, expected = "4 hex digits in \\uXXXX"))
     }
-    val d = yParseHexDigit(st.src[st.pos])
+    val d = yParseHexDigit(charAtOrReplacement(st.src, st.pos))
     if d < 0 {
       return Err(error = UnexpectedChar(pos = st.pos, expected = "hex digit in \\uXXXX"))
     }
@@ -261,7 +261,7 @@ func yParseDoubleQuoted(st: inout YamlState): Result[String, YamlError] {
   var err: YamlError = InvalidDocument(message = "")
   var done = false
   while ok and not done and not yAtEnd(st) {
-    val c = st.src[st.pos]
+    val c = charAtOrReplacement(st.src, st.pos)
     if c == '"' {
       sb.append(st.src.substring(runStart, st.pos - runStart))
       st.pos = st.pos + 1
@@ -273,7 +273,7 @@ func yParseDoubleQuoted(st: inout YamlState): Result[String, YamlError] {
         ok = false
         err = UnexpectedEof(pos = st.pos, expected = "escape character")
       } else {
-        val esc = st.src[st.pos]
+        val esc = charAtOrReplacement(st.src, st.pos)
         st.pos = st.pos + 1
         if esc == '"' {
           sb.append("\"")
@@ -327,10 +327,10 @@ func yParseSingleQuoted(st: inout YamlState): Result[String, YamlError] {
   var runStart = st.pos
   var done = false
   while not done and not yAtEnd(st) {
-    if st.src[st.pos] == '\'' {
+    if charAtOrReplacement(st.src, st.pos) == '\'' {
       sb.append(st.src.substring(runStart, st.pos - runStart))
       st.pos = st.pos + 1
-      if st.pos < st.src.length and st.src[st.pos] == '\'' {
+      if st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == '\'' {
         sb.append("'")
         st.pos = st.pos + 1
         runStart = st.pos
@@ -367,11 +367,11 @@ func yInterpretScalar(raw: in String): YamlValue {
     YBool(value = false)
   } else {
     // Try integer parse (simple: optional '-', then digits)
-    val start = if t.length > 0 and t[0] == '-' { 1 } else { 0 }
+    val start = if t.startsWith("-") { 1 } else { 0 }
     var allDigits = t.length > start
     var di = start
     while di < t.length and allDigits {
-      if not isDigit(t[di]) {
+      if not isDigit(charAtOrReplacement(t, di)) {
         allDigits = false
       }
       di += 1
@@ -396,30 +396,30 @@ func yInterpretScalar(raw: in String): YamlValue {
 // ── Number parsing (JSON-style) ────────────────────────────────────────────────
 func yParseNumber(st: inout YamlState): Result[YamlValue, YamlError] {
   val startPos = st.pos
-  if st.pos < st.src.length and st.src[st.pos] == '-' {
+  if st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == '-' {
     st.pos = st.pos + 1
   }
-  if yAtEnd(st) or not isDigit(st.src[st.pos]) {
+  if yAtEnd(st) or not isDigit(charAtOrReplacement(st.src, st.pos)) {
     return Err(error = UnexpectedChar(pos = st.pos, expected = "digit in number"))
   }
-  while st.pos < st.src.length and isDigit(st.src[st.pos]) {
+  while st.pos < st.src.length and isDigit(charAtOrReplacement(st.src, st.pos)) {
     st.pos = st.pos + 1
   }
   var isFloat = false
-  if st.pos < st.src.length and st.src[st.pos] == '.' {
+  if st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == '.' {
     isFloat = true
     st.pos = st.pos + 1
-    while st.pos < st.src.length and isDigit(st.src[st.pos]) {
+    while st.pos < st.src.length and isDigit(charAtOrReplacement(st.src, st.pos)) {
       st.pos = st.pos + 1
     }
   }
-  if st.pos < st.src.length and (st.src[st.pos] == 'e' or st.src[st.pos] == 'E') {
+  if st.pos < st.src.length and (charAtOrReplacement(st.src, st.pos) == 'e' or charAtOrReplacement(st.src, st.pos) == 'E') {
     isFloat = true
     st.pos = st.pos + 1
-    if st.pos < st.src.length and (st.src[st.pos] == '+' or st.src[st.pos] == '-') {
+    if st.pos < st.src.length and (charAtOrReplacement(st.src, st.pos) == '+' or charAtOrReplacement(st.src, st.pos) == '-') {
       st.pos = st.pos + 1
     }
-    while st.pos < st.src.length and isDigit(st.src[st.pos]) {
+    while st.pos < st.src.length and isDigit(charAtOrReplacement(st.src, st.pos)) {
       st.pos = st.pos + 1
     }
   }
@@ -504,10 +504,10 @@ func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErr
     val keyStartPos = st.pos
     // Key: JSON requires quoted string; YAML flow allows unquoted.
     var keyResult: Result[String, YamlError] = Err(error = InvalidDocument(message = "no key"))
-    if st.pos < st.src.length and st.src[st.pos] == '"' {
+    if st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == '"' {
       st.pos = st.pos + 1
       keyResult = yParseDoubleQuoted(st)
-    } else if not st.isJson and st.pos < st.src.length and st.src[st.pos] == '\'' {
+    } else if not st.isJson and st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == '\'' {
       st.pos = st.pos + 1
       match yParseSingleQuoted(st) {
         case Err(e) -> {
@@ -522,7 +522,7 @@ func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErr
       val kStart = st.pos
       var scanning = true
       while scanning and st.pos < st.src.length {
-        val c = st.src[st.pos]
+        val c = charAtOrReplacement(st.src, st.pos)
         if c == ':' or c == '}' or c == '\n' {
           scanning = false
         } else {
@@ -598,7 +598,7 @@ func yParseValue(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErro
       case None -> ()
     }
   }
-  val c = st.src[st.pos]
+  val c = charAtOrReplacement(st.src, st.pos)
   if c == '"' {
     st.pos = st.pos + 1
     match yParseDoubleQuoted(st) {
@@ -638,7 +638,7 @@ func yParseValue(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErro
     val scalarStart = st.pos
     var scanning = true
     while scanning and st.pos < st.src.length {
-      val sc = st.src[st.pos]
+      val sc = charAtOrReplacement(st.src, st.pos)
       if sc == '\n' or sc == '\r' or sc == ',' or sc == ']' or sc == '}' or sc == '#' {
         scanning = false
       } else {
@@ -670,13 +670,13 @@ func yParseBlockSequence(st: inout YamlState, seqIndent: in Int, depth: in Int):
       val indent = yCurrentIndent(st)
       if indent < seqIndent {
         done = true
-      } else if indent == seqIndent and (yStartsWith(st, "- ") or yStartsWith(st, "-\n") or (yAtEnd(st) == false and st.src[st.pos] == '-' and st.pos + 1 >= st.src.length)) {
+      } else if indent == seqIndent and (yStartsWith(st, "- ") or yStartsWith(st, "-\n") or (yAtEnd(st) == false and charAtOrReplacement(st.src, st.pos) == '-' and st.pos + 1 >= st.src.length)) {
         st.pos = st.pos + 1  // consume "-"
-        if st.pos < st.src.length and st.src[st.pos] == ' ' {
+        if st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == ' ' {
           st.pos = st.pos + 1  // consume the space
         }
         // Inline content on the same line, or block content on next line(s)
-        if yAtEnd(st) or st.src[st.pos] == '\n' or st.src[st.pos] == '\r' {
+        if yAtEnd(st) or charAtOrReplacement(st.src, st.pos) == '\n' or charAtOrReplacement(st.src, st.pos) == '\r' {
           match yParseBlockNode(st, seqIndent + 1, depth + 1) {
             case Err(e) -> {
               ok = false
@@ -696,7 +696,7 @@ func yParseBlockSequence(st: inout YamlState, seqIndent: in Int, depth: in Int):
             case Ok(v) -> {
               items.add(v)
               // Skip the rest of the line
-              while st.pos < st.src.length and st.src[st.pos] != '\n' and st.src[st.pos] != '\r' {
+              while st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) != '\n' and charAtOrReplacement(st.src, st.pos) != '\r' {
                 st.pos = st.pos + 1
               }
             }
@@ -739,8 +739,8 @@ func yParseBlockMapping(st: inout YamlState, mapIndent: in Int, depth: in Int): 
         var colonFound = false
         var scanning = true
         while scanning and st.pos < st.src.length {
-          val kc = st.src[st.pos]
-          if kc == ':' and (st.pos + 1 >= st.src.length or st.src[st.pos + 1] == ' ' or st.src[st.pos + 1] == '\n') {
+          val kc = charAtOrReplacement(st.src, st.pos)
+          if kc == ':' and (st.pos + 1 >= st.src.length or charAtOrReplacement(st.src, st.pos + 1) == ' ' or charAtOrReplacement(st.src, st.pos + 1) == '\n') {
             colonFound = true
             scanning = false
           } else if kc == '\n' {
@@ -760,7 +760,7 @@ func yParseBlockMapping(st: inout YamlState, mapIndent: in Int, depth: in Int): 
             seenKeys.add(rawKey, true)
             st.pos = st.pos + 1  // consume ':'
             ySkipSpaces(st)
-            if st.pos < st.src.length and st.src[st.pos] == '\n' {
+            if st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) == '\n' {
               // Block value on next line(s)
               match yParseBlockNode(st, mapIndent + 1, depth + 1) {
                 case Err(e) -> {
@@ -781,7 +781,7 @@ func yParseBlockMapping(st: inout YamlState, mapIndent: in Int, depth: in Int): 
                 case Ok(v) -> {
                   pairs.add(YamlPair(key = rawKey, value = v))
                   // Skip to end of line
-                  while st.pos < st.src.length and st.src[st.pos] != '\n' {
+                  while st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) != '\n' {
                     st.pos = st.pos + 1
                   }
                 }
@@ -817,7 +817,7 @@ func yParseBlockNode(st: inout YamlState, minIndent: in Int, depth: in Int): Res
     case Some(e) -> return Err(error = e)
     case None -> ()
   }
-  val c = st.src[st.pos]
+  val c = charAtOrReplacement(st.src, st.pos)
   // Flow nodes inline
   if c == '[' or c == '{' or c == '"' or c == '\'' {
     yParseValue(st, depth + 1)
@@ -830,10 +830,10 @@ func yParseBlockNode(st: inout YamlState, minIndent: in Int, depth: in Int): Res
     var lineEnd = lineStart
     var scanning = true
     while scanning and lineEnd < st.src.length {
-      val lc = st.src[lineEnd]
+      val lc = charAtOrReplacement(st.src, lineEnd)
       if lc == '\n' {
         scanning = false
-      } else if lc == ':' and (lineEnd + 1 >= st.src.length or st.src[lineEnd + 1] == ' ' or st.src[lineEnd + 1] == '\n') {
+      } else if lc == ':' and (lineEnd + 1 >= st.src.length or charAtOrReplacement(st.src, lineEnd + 1) == ' ' or charAtOrReplacement(st.src, lineEnd + 1) == '\n') {
         colonPos = lineEnd
         scanning = false
       } else {
@@ -846,8 +846,8 @@ func yParseBlockNode(st: inout YamlState, minIndent: in Int, depth: in Int): Res
       // Plain scalar (rest of line)
       val scStart = st.pos
       var scEnd = st.pos
-      while scEnd < st.src.length and st.src[scEnd] != '\n' {
-        if st.src[scEnd] == '#' {
+      while scEnd < st.src.length and charAtOrReplacement(st.src, scEnd) != '\n' {
+        if charAtOrReplacement(st.src, scEnd) == '#' {
           scEnd = st.src.length  // break sentinel
         } else {
           scEnd = scEnd + 1
@@ -905,12 +905,12 @@ pub func parseYaml(src: in String): Result[YamlValue, YamlError] {
   match yCheckUnsupported(st) {
     case Some(e) -> Err(error = e)
     case None -> {
-      val c = st.src[st.pos]
+      val c = charAtOrReplacement(st.src, st.pos)
       // Use flow mode for explicit flow starts and plain numbers; '-' is only
       // a number prefix when immediately followed by a digit (not "- " which
       // starts a block sequence entry).
       val nextIsDigit = if st.pos + 1 < st.src.length {
-        val nc = st.src[st.pos + 1]
+        val nc = charAtOrReplacement(st.src, st.pos + 1)
         nc >= '0' and nc <= '9'
       } else {
         false

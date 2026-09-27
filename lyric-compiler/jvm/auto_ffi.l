@@ -139,7 +139,7 @@ pub func splitPathListOn(s: in String, isWin: in Bool): List[String] {
   var start = 0
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = Str.charAtOrReplacement(s, i)
     if c == sep {
       if i > start {
         parts.add(s.substring(start, i - start))
@@ -370,15 +370,15 @@ pub func loadClass(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
 pub func parseDescriptorParams(descriptor: in String): List[String] {
   val params: List[String] = newList()
   val len = descriptor.length
-  if len < 2 or descriptor[0] != '(' {
+  if len < 2 or Str.charAtOrReplacement(descriptor, 0) != '(' {
     return params
   }
   var i = 1
-  while i < len and descriptor[i] != ')' {
-    val ch = descriptor[i]
+  while i < len and Str.charAtOrReplacement(descriptor, i) != ')' {
+    val ch = Str.charAtOrReplacement(descriptor, i)
     if ch == 'L' {
       var j = i + 1
-      while j < len and descriptor[j] != ';' {
+      while j < len and Str.charAtOrReplacement(descriptor, j) != ';' {
         j = j + 1
       }
       // Include the full "L...;" form: start=i, count=j-i+1
@@ -391,11 +391,11 @@ pub func parseDescriptorParams(descriptor: in String): List[String] {
       // FieldType grammar allows unbounded array-dimension nesting) plus the
       // element type.
       val start = i
-      while i < len and descriptor[i] == '[' {
+      while i < len and Str.charAtOrReplacement(descriptor, i) == '[' {
         i = i + 1
       }
-      if i < len and descriptor[i] == 'L' {
-        while i < len and descriptor[i] != ';' {
+      if i < len and Str.charAtOrReplacement(descriptor, i) == 'L' {
+        while i < len and Str.charAtOrReplacement(descriptor, i) != ';' {
           i = i + 1
         }
         i = i + 1

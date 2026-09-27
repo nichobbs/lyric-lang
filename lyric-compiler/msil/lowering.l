@@ -4358,7 +4358,7 @@ pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   var lastDot = -1
   var di = 0
   while di < boundary {
-    if fqn[di] == '.' {
+    if Str.charAtOrReplacement(fqn, di) == '.' {
       lastDot = di
     }
     di = di + 1
@@ -4413,7 +4413,7 @@ pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
 func nsBoundaryLimit(fqn: in String): Int {
   var i = 0
   while i < fqn.length {
-    if fqn[i] == '<' {
+    if Str.charAtOrReplacement(fqn, i) == '<' {
       return i
     }
     i = i + 1
@@ -4434,7 +4434,7 @@ pub func findTypeRefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   var lastDot = -1
   var di = 0
   while di < boundary {
-    if fqn[di] == '.' {
+    if Str.charAtOrReplacement(fqn, di) == '.' {
       lastDot = di
     }
     di = di + 1

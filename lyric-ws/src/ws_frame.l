@@ -26,6 +26,7 @@ package Ws.Frame
 import Std.Core
 import Std.Collections
 import Std.Encoding
+import Std.String as Str
 
 // =============================================================================
 // §1. Opcodes (RFC 6455 §11.7).
@@ -561,19 +562,21 @@ pub func fitCloseReason(reason: in String): String {
   if encodeUtf8(reason).length <= maxCloseReasonBytes {
     return reason
   }
+  // Whole Unicode scalar values, so the cut never splits a surrogate pair.
   var acc = ""
   var used = 0
-  var i = 0
+  val cps = Str.codePoints(reason)
+  var k = 0
   var done = false
-  while i < reason.length and not done {
-    val ch = reason[i].toString()
+  while k < cps.length and not done {
+    val ch = codepointToString(cps[k])
     val n = encodeUtf8(ch).length
     if used + n > maxCloseReasonBytes {
       done = true
     } else {
       acc = acc + ch
       used = used + n
-      i = i + 1
+      k = k + 1
     }
   }
   acc

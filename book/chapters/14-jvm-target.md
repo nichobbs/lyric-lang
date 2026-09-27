@@ -70,7 +70,7 @@ Every `pub` type and `pub func` in a Lyric package is visible from Java. The nam
 | `Long`       | `long` / `Long`            |                                          |
 | `Float`      | `float` / `Float`          |                                          |
 | `Double`     | `double` / `Double`        |                                          |
-| `Char`       | `int` (Unicode code point) | not `char`; see §14.2.2                  |
+| `Char`       | `char`                     | always a BMP scalar; see §14.2.2         |
 | `String`     | `java.lang.String`         |                                          |
 | `Unit`       | `void` / `java.lang.Void`  | `Void` in generic position               |
 | `record T`   | Java record `T`            | `equals`, `hashCode`, `toString` auto-generated |
@@ -78,13 +78,9 @@ Every `pub` type and `pub func` in a Lyric package is visible from Java. The nam
 | `union U`    | sealed interface `U`       | each `case C` is a record `implements U` |
 | `List[T]`    | `java.util.List<T>`        | concrete type subject to finalisation    |
 
-### §14.2.2 `Char` is a code point
+### §14.2.2 `Char` is a BMP scalar
 
-Lyric `Char` is a Unicode scalar value (not a UTF-16 code unit). It maps to `int` on the JVM. There is no implicit conversion to Java `char`. Use `String.codePointAt` / `String.codePointCount` to go between Lyric `Char` values and Java `String`.
-
-::: note
-**Planned surface.** A conversion helper `Char.toUtf16Pair(c): (Char, Char?)` for code that genuinely needs surrogate pairs is planned for `lyric.std.text.unicode` but has not yet shipped.
-:::
+Lyric `Char` is a BMP Unicode scalar value: one UTF-16 code unit that is not a surrogate half. It is a Java `char` on the JVM, and every way of producing one keeps that invariant — `s[i]` throws `StringIndexOutOfBoundsException` on a surrogate unit and `.toChar()` throws `ArithmeticException` on a surrogate or out-of-range value (both through small static helpers the compiler emits into the package class). A supplementary-plane character is reached as a code point: `Std.String.codePointAt` / `codePoints` return `Int` scalar values, and `s.codeUnitAt(i)` is the raw `String.charAt` unit as an `Int`.
 
 ### §14.2.3 Records and opaque types
 

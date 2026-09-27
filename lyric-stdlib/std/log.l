@@ -50,7 +50,7 @@ func appendEscapedLogValue(sb: in StringBuilder, s: in String, quoted: in Bool):
   var runStart = 0
   var i = 0
   while i < s.length {
-    val ch: Char = s[i]
+    val ch: Char = charAtOrReplacement(s, i)
     val esc = if ch == '\\' {
       "\\\\"
     } else if ch == '\t' {
@@ -115,7 +115,7 @@ func appendEscapedLogMessage(sb: in StringBuilder, s: in String): Unit {
   var runStart = 0
   var i = 0
   while i < s.length {
-    val ch: Char = s[i]
+    val ch: Char = charAtOrReplacement(s, i)
     val esc = if ch == '\\' { "\\\\" } else if isLineBreakOrControl(ch) { controlEscape(ch) } else { "" }
     if esc.length > 0 {
       sb.append(s.substring(runStart, i - runStart))

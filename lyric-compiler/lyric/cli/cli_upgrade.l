@@ -157,7 +157,7 @@ func runNugetUpgrade(version: in Option[String], isDryRun: in Bool): Int {
 // what a caller would type via `lyric upgrade --version 0.4.6`).
 // `pub` so `cli_upgrade_self_test.l` can exercise it without network I/O.
 pub func stripLeadingV(v: in String): String {
-  if v.length > 0 and (v[0] == 'v' or v[0] == 'V') {
+  if Str.startsWith(v, "v") or Str.startsWith(v, "V") {
     v.substring(1)
   } else {
     v

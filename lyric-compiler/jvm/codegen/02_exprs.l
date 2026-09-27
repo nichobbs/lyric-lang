@@ -1995,7 +1995,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                         val lcPs: List[JvmType] = newList()
                         lcPs.add(JRef(className = "java/lang/Object"))
                         insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricCount", params = lcPs, ret = JInt))
-                        ctx.usesLyricCount.add(true)
+                        markRuntimeHelper(ctx, "__lyricCount")
                         JInt
                       } else {
                         // The RECEIVER itself used to become the "field value"
@@ -2406,10 +2406,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // the ArrayList.get path below emits an invokevirtual against
               // the wrong class and fails verification (surfaced by
               // Std.String.charAt on --target jvm).
+              // The static `__lyricCharAt` helper rejects a surrogate unit
+              // (D-progress-1006): a surrogate half is not a `Char`.
               lowerExpr(ctx, insns, indices[0])
               val caPs: List[JvmType] = newList()
+              caPs.add(JRef(className = "java/lang/String"))
               caPs.add(JInt)
-              insns.add(LInvokevirtual(owner = "java/lang/String", name = "charAt", params = caPs, ret = JChar))
+              insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricCharAt", params = caPs, ret = JChar))
+              markRuntimeHelper(ctx, "__lyricCharAt")
               JChar
             } else if idxCls == "java/util/HashMap" {
               // `m[k]` on a Map[K, V] → `HashMap.get(Object)` (#1707/m-5). The
@@ -4714,7 +4718,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     ctx.configFieldTypes,
     ctx.opaqueTypes,
     ctx.closureAcc,
-    ctx.usesLyricCount,
+    ctx.usedRuntimeHelpers,
     ctx.importsStdString,
     ctx.aliasTargets
   )
@@ -5185,7 +5189,7 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
     ctx.configFieldTypes,
     ctx.opaqueTypes,
     ctx.closureAcc,
-    ctx.usesLyricCount,
+    ctx.usedRuntimeHelpers,
     ctx.importsStdString,
     ctx.aliasTargets
   )

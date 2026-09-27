@@ -342,7 +342,7 @@ func appendEncodedString(sb: in StringBuilder, s: in String): Unit {
   var runStart = 0
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = charAtOrReplacement(s, i)
     val esc = if c == '"' {
       "\\\""
     } else if c == '\\' {

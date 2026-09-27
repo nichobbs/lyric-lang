@@ -2703,6 +2703,39 @@ func lowerStringPredicateCall(
   NVal(ty = NI1, value = NLocal(name = dest))
 }
 
+/// An `i1` that is true when the integer `x` (of width `ty`) is not a BMP
+/// scalar value: `x >u 0xFFFF`, or `(x - 0xD800) <u 0x800` (a surrogate).
+func toCharBadI(ctx: in Ctx, insns: in List[NInsn], x: in NValue, ty: in NType): NValue {
+  val over = freshTmp(ctx)
+  insns.add(NICmp(dest = over, pred = IUgt, ty = ty, a = x, b = NLitInt(v = 65535i64, ty = ty)))
+  val off = freshTmp(ctx)
+  insns.add(NSub(dest = off, ty = ty, a = x, b = NLitInt(v = 55296i64, ty = ty)))
+  val surr = freshTmp(ctx)
+  insns.add(NICmp(dest = surr, pred = IUlt, ty = ty, a = NLocal(name = off), b = NLitInt(v = 2048i64, ty = ty)))
+  val bad = freshTmp(ctx)
+  insns.add(NOr(dest = bad, ty = NI1, a = NLocal(name = over), b = NLocal(name = surr)))
+  NLocal(name = bad)
+}
+
+/// Branch to a `lyric_panic_msg` trap carrying the shared `.toChar()` failure
+/// text when `bad` holds.
+func emitToCharRangeTrap(ctx: in Ctx, insns: in List[NInsn], bad: in NValue, line: in Int): Unit {
+  val trapL = freshLabel(ctx, "tochar.trap")
+  val okL = freshLabel(ctx, "tochar.ok")
+  insns.add(NCondBr(cond = bad, thenLabel = trapL, elseLabel = okL))
+  insns.add(NLabel(name = trapL))
+  emitPanicRaw(ctx, insns, toCharRangeMessage(), line)
+  insns.add(NBr(label = okL))
+  insns.add(NLabel(name = okL))
+}
+
+/// `.toChar()` on an `i32`: trap unless it is a BMP scalar value, else the
+/// value itself (native's `Char` is the scalar as an `i32`).
+func lowerCheckedToCharI32(ctx: in Ctx, insns: in List[NInsn], x: in NValue, line: in Int): NVal {
+  emitToCharRangeTrap(ctx, insns, toCharBadI(ctx, insns, x, NI32), line)
+  NVal(ty = NI32, value = x)
+}
+
 /// Scalar method-call receivers: `.and/.or/.xor/.shl/.shr`, the
 /// conversion family, `.toString()`, and String's `.substring`/`.trim`/
 /// `.trimStart`/`.trimEnd`/`.replace`/`.toLower`/`.toUpper`/`.indexOf`/
@@ -2721,6 +2754,24 @@ func lowerScalarMethodCall(
   if isStringNType(v.ty) {
     if name == "toString" and args.count == 0 {
       return Some(value = v)
+    }
+    if name == "codeUnitAt" and args.count == 1 {
+      // `s.codeUnitAt(i)` (D-progress-1006): this target's strings are UTF-8,
+      // so the code unit at byte offset `i` is a byte, zero-extended to Int.
+      // Out-of-range panics in `lyric_string_byte_at`, like `s[i]`.
+      val cuIdx = lowerPositionalArg(ctx, insns, args, 0)
+      val cuIdxW = freshTmp(ctx)
+      insns.add(NSExt(dest = cuIdxW, fromTy = NI32, value = cuIdx.value, toTy = NI64))
+      val cuByte = callRuntime(
+        ctx,
+        insns,
+        "lyric_string_byte_at",
+        NI8,
+        arg2(lyricStringNType(), v.value, NI64, NLocal(name = cuIdxW))
+      )
+      val cuDest = freshTmp(ctx)
+      insns.add(NZExt(dest = cuDest, fromTy = NI8, value = cuByte.value, toTy = NI32))
+      return Some(value = NVal(ty = NI32, value = NLocal(name = cuDest)))
     }
     if name == "substring" and args.count == 2 {
       val a0 = lowerPositionalArg(ctx, insns, args, 0)
@@ -2955,8 +3006,33 @@ func lowerScalarMethodCall(
     }
   }
   if name == "toChar" and args.count == 0 {
+    // Checked narrowing (D-progress-1006): a `Char` is a BMP scalar value,
+    // never a surrogate (docs/01 §2.1).  `Char` itself also erases to NI32
+    // here; its check always passes.
     match v.ty {
-      case NI32 -> return Some(value = v)
+      case NI32 -> return Some(value = lowerCheckedToCharI32(ctx, insns, v.value, line))
+      case NI64 -> {
+        emitToCharRangeTrap(ctx, insns, toCharBadI(ctx, insns, v.value, NI64), line)
+        val dest = freshTmp(ctx)
+        insns.add(NTrunc(dest = dest, fromTy = NI64, value = v.value, toTy = NI32))
+        return Some(value = NVal(ty = NI32, value = NLocal(name = dest)))
+      }
+      case NDouble -> {
+        // `-1.0 < d < 65536.0` (ordered, so NaN fails) before truncating
+        // toward zero, then the surrogate check on the integer.
+        val gtLo = freshTmp(ctx)
+        insns.add(NFCmp(dest = gtLo, pred = FOgt, a = v.value, b = NLitFloat(v = 0.0 - 1.0)))
+        val ltHi = freshTmp(ctx)
+        insns.add(NFCmp(dest = ltHi, pred = FOlt, a = v.value, b = NLitFloat(v = 65536.0)))
+        val inRange = freshTmp(ctx)
+        insns.add(NAnd(dest = inRange, ty = NI1, a = NLocal(name = gtLo), b = NLocal(name = ltHi)))
+        val bad = freshTmp(ctx)
+        insns.add(NXor(dest = bad, ty = NI1, a = NLocal(name = inRange), b = NLitInt(v = 1i64, ty = NI1)))
+        emitToCharRangeTrap(ctx, insns, NLocal(name = bad), line)
+        val iv = freshTmp(ctx)
+        insns.add(NFPToSI(dest = iv, fromTy = NDouble, value = v.value, toTy = NI32))
+        return Some(value = lowerCheckedToCharI32(ctx, insns, NLocal(name = iv), line))
+      }
       case NI8 -> {
         val dest = freshTmp(ctx)
         insns.add(NZExt(dest = dest, fromTy = NI8, value = v.value, toTy = NI32))
@@ -10647,6 +10723,7 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl2("lyric_string_concat", sTy, sTy, sTy))
   decls.add(mkDecl1("lyric_string_len", NI64, sTy))
   decls.add(mkDecl2("lyric_string_char_at", NI32, sTy, NI64))
+  decls.add(mkDecl2("lyric_string_byte_at", NI8, sTy, NI64))
   decls.add(mkDecl2("lyric_string_eq", NI32, sTy, sTy))
   // Same signature as `Std.ConsoleHost.consoleWriteLineFd` (Lyric `Int` fd),
   // which this declaration shadows when the kernel is also bundled.

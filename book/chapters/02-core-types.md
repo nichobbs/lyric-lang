@@ -19,7 +19,7 @@ Lyric has a conventional set of primitive types, with two entries worth a closer
 | `Nat` | Non-negative 64-bit integer | `0 ..= 2^63 - 1` |
 | `Float` | 32-bit IEEE 754 floating-point | Per IEEE 754-2019 |
 | `Double` | 64-bit IEEE 754 floating-point | Per IEEE 754-2019 |
-| `Char` | Unicode scalar value | Per Unicode 15+ |
+| `Char` | BMP Unicode scalar value (one UTF-16 code unit) | U+0000..U+FFFF, excluding surrogates U+D800..U+DFFF |
 | `String` | Immutable UTF-8 string | Unbounded |
 | `Unit` | The unit type | Single value: `()` |
 | `Never` | The bottom type | Uninhabited — no values exist |

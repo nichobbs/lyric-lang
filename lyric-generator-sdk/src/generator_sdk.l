@@ -113,7 +113,7 @@ func parseHex4(hex: in String): Option[Int] {
   var value = 0
   var i = 0
   while i < 4 {
-    match Ch.hexDigitValue(hex[i]) {
+    match Ch.hexDigitValue(Str.charAtOrReplacement(hex, i)) {
       case Some(d) -> {
         value = value * 16 + d
       }
@@ -127,7 +127,7 @@ func parseHex4(hex: in String): Option[Int] {
 // The code unit of a `\uXXXX` low-surrogate escape (U+DC00..U+DFFF)
 // starting at `at` (the backslash), or `None` if there is none there.
 func lowSurrogateEscapeAt(src: in String, at: in Int): Option[Int] {
-  if at + 5 >= src.length or src[at] != '\\' or src[at + 1] != 'u' {
+  if at + 5 >= src.length or Str.charAtOrReplacement(src, at) != '\\' or Str.charAtOrReplacement(src, at + 1) != 'u' {
     return None
   }
   match parseHex4(src.substring(at + 2, 4)) {
@@ -150,10 +150,10 @@ func lowSurrogateEscapeAt(src: in String, at: in Int): Option[Int] {
 func parseJsonString(src: in String, pos: inout Int): String {
   pos += 1  // skip opening "
   var s = ""
-  while pos < src.length and src[pos] != '"' {
-    if src[pos] == '\\' and pos + 1 < src.length {
+  while pos < src.length and Str.charAtOrReplacement(src, pos) != '"' {
+    if Str.charAtOrReplacement(src, pos) == '\\' and pos + 1 < src.length {
       pos += 1
-      val esc = src[pos]
+      val esc = Str.charAtOrReplacement(src, pos)
       if esc == 'n' {
         s = s + "\n"
       } else if esc == 't' {
@@ -197,10 +197,10 @@ func parseJsonString(src: in String, pos: inout Int): String {
           }
         }
       } else {
-        s = s + "\\" + charToString(esc)
+        s = s + "\\" + Str.substring(src, pos, 1)
       }
     } else {
-      s = s + charToString(src[pos])
+      s = s + Str.substring(src, pos, 1)
     }
     pos += 1
   }
@@ -215,7 +215,7 @@ func charToString(c: in Char): String {
 }
 
 func skipJsonWhitespace(src: in String, pos: inout Int): Unit {
-  while pos < src.length and (src[pos] == ' ' or src[pos] == '\t' or src[pos] == '\n' or src[pos] == '\r') {
+  while pos < src.length and (Str.charAtOrReplacement(src, pos) == ' ' or Str.charAtOrReplacement(src, pos) == '\t' or Str.charAtOrReplacement(src, pos) == '\n' or Str.charAtOrReplacement(src, pos) == '\r') {
     pos += 1
   }
 }
@@ -230,7 +230,7 @@ func jsonGetString(json: in String, key: in String): Option[String] {
       var ok = true
       var k = 0
       while k < needle.length {
-        if json[i + k] != needle[k] {
+        if Str.codeUnitAt(json, i + k) != Str.codeUnitAt(needle, k) {
           ok = false
         }
         k += 1
@@ -238,10 +238,10 @@ func jsonGetString(json: in String, key: in String): Option[String] {
       if ok {
         var pos = i + needle.length
         skipJsonWhitespace(json, pos)
-        if pos < json.length and json[pos] == ':' {
+        if pos < json.length and Str.charAtOrReplacement(json, pos) == ':' {
           pos += 1
           skipJsonWhitespace(json, pos)
-          if pos < json.length and json[pos] == '"' {
+          if pos < json.length and Str.charAtOrReplacement(json, pos) == '"' {
             val s = parseJsonString(json, pos)
             return Some(value = s)
           }
@@ -258,14 +258,14 @@ func parseJsonStringArray(src: in String, pos: inout Int): List[String] {
   val items: List[String] = newList()
   pos += 1  // skip [
   skipJsonWhitespace(src, pos)
-  while pos < src.length and src[pos] != ']' {
-    if src[pos] == '"' {
+  while pos < src.length and Str.charAtOrReplacement(src, pos) != ']' {
+    if Str.charAtOrReplacement(src, pos) == '"' {
       items.add(parseJsonString(src, pos))
     } else {
       pos += 1
     }
     skipJsonWhitespace(src, pos)
-    if pos < src.length and src[pos] == ',' {
+    if pos < src.length and Str.charAtOrReplacement(src, pos) == ',' {
       pos += 1
     }
     skipJsonWhitespace(src, pos)
@@ -281,7 +281,7 @@ func jsonEscape(s: in String): String {
   var acc = ""
   var i = 0
   while i < s.length {
-    val c = s[i]
+    val c = Str.charAtOrReplacement(s, i)
     if c == '"' {
       acc = acc + "\\\""
     } else if c == '\\' {
@@ -293,7 +293,7 @@ func jsonEscape(s: in String): String {
     } else if c == '\t' {
       acc = acc + "\\t"
     } else {
-      acc = acc + charToString(c)
+      acc = acc + Str.substring(s, i, 1)
     }
     i += 1
   }
@@ -433,7 +433,7 @@ func isValidIdentifier(s: in String): Bool {
   var i = 0
   var ok = true
   while i < s.length and ok {
-    if not isValidIdentifierChar(s[i], i == 0) {
+    if not isValidIdentifierChar(Str.charAtOrReplacement(s, i), i == 0) {
       ok = false
     }
     i += 1
@@ -505,7 +505,7 @@ func parseGeneratorDiagnostics(diagContent: in String): slice[GeneratorDiagnosti
   var pos = 0
   skipJsonWhitespace(diagContent, pos)
   while pos < diagContent.length {
-    if diagContent[pos] == '{' {
+    if Str.charAtOrReplacement(diagContent, pos) == '{' {
       val objContent = extractJsonBlock(diagContent, pos)
       val sevStr = unwrapOr(jsonGetString(objContent, "severity"), "Error")
       val message = unwrapOr(jsonGetString(objContent, "message"), "")
@@ -516,7 +516,7 @@ func parseGeneratorDiagnostics(diagContent: in String): slice[GeneratorDiagnosti
       pos += 1
     }
     skipJsonWhitespace(diagContent, pos)
-    if pos < diagContent.length and diagContent[pos] == ',' {
+    if pos < diagContent.length and Str.charAtOrReplacement(diagContent, pos) == ',' {
       pos += 1
     }
     skipJsonWhitespace(diagContent, pos)
@@ -583,7 +583,7 @@ func extractJsonBlock(src: in String, pos: inout Int): String {
   var depth = 1
   var content = ""
   while pos < src.length and depth > 0 {
-    val c = src[pos]
+    val c = Str.charAtOrReplacement(src, pos)
     if (c == '{') or (c == '[') {
       depth += 1
       content = content + charToString(c)
@@ -597,12 +597,12 @@ func extractJsonBlock(src: in String, pos: inout Int): String {
     } else if c == '"' {
       content = content + "\""
       pos += 1
-      while pos < src.length and src[pos] != '"' {
-        if src[pos] == '\\' and pos + 1 < src.length {
-          content = content + charToString(src[pos]) + charToString(src[pos + 1])
+      while pos < src.length and Str.charAtOrReplacement(src, pos) != '"' {
+        if Str.charAtOrReplacement(src, pos) == '\\' and pos + 1 < src.length {
+          content = content + Str.substring(src, pos, 1) + Str.substring(src, pos + 1, 1)
           pos += 2
         } else {
-          content = content + charToString(src[pos])
+          content = content + Str.substring(src, pos, 1)
           pos += 1
         }
       }
@@ -611,7 +611,7 @@ func extractJsonBlock(src: in String, pos: inout Int): String {
         pos += 1
       }
     } else {
-      content = content + charToString(c)
+      content = content + Str.substring(src, pos, 1)
       pos += 1
     }
   }
@@ -628,7 +628,7 @@ func jsonFindBlock(json: in String, key: in String): Int {
       var ok = true
       var k = 0
       while k < needle.length {
-        if json[i + k] != needle[k] {
+        if Str.codeUnitAt(json, i + k) != Str.codeUnitAt(needle, k) {
           ok = false
         }
         k += 1
@@ -636,10 +636,10 @@ func jsonFindBlock(json: in String, key: in String): Int {
       if ok {
         var pos = i + needle.length
         skipJsonWhitespace(json, pos)
-        if pos < json.length and json[pos] == ':' {
+        if pos < json.length and Str.charAtOrReplacement(json, pos) == ':' {
           pos += 1
           skipJsonWhitespace(json, pos)
-          if pos < json.length and ((json[pos] == '{') or (json[pos] == '[')) {
+          if pos < json.length and ((Str.charAtOrReplacement(json, pos) == '{') or (Str.charAtOrReplacement(json, pos) == '[')) {
             return pos
           }
         }
@@ -657,7 +657,7 @@ func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
   var pos = 0
   skipJsonWhitespace(fieldsContent, pos)
   while pos < fieldsContent.length {
-    if fieldsContent[pos] == '{' {
+    if Str.charAtOrReplacement(fieldsContent, pos) == '{' {
       val objContent = extractJsonBlock(fieldsContent, pos)
       val fName = unwrapOr(jsonGetString(objContent, "name"), "")
       // Parse the nested fieldType object
@@ -704,7 +704,7 @@ func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
       pos += 1
     }
     skipJsonWhitespace(fieldsContent, pos)
-    if pos < fieldsContent.length and fieldsContent[pos] == ',' {
+    if pos < fieldsContent.length and Str.charAtOrReplacement(fieldsContent, pos) == ',' {
       pos += 1
     }
     skipJsonWhitespace(fieldsContent, pos)

@@ -33,7 +33,7 @@ impl CharReader for CharSource {
     val text = self.text
     val pos = self.pos
     if pos < text.length {
-      val c = toInt(text[pos])
+      val c = text.codeUnitAt(pos)
       self.pos = pos + 1
       c
     } else {
@@ -596,7 +596,7 @@ func codeUnitSource(prefix: in String, middle: in slice[Int], suffix: in String)
 func addCodeUnits(units: in List[Int], s: in String): Unit {
   var i = 0
   while i < s.length {
-    units.add(toInt(s[i]))
+    units.add(s.codeUnitAt(i))
     i = i + 1
   }
 }

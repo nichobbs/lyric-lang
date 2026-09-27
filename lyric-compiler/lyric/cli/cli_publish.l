@@ -159,7 +159,13 @@ func cmdPublish(argv: in slice[String]): Int {
   }
 
   match packageVersionArg {
-    case Some(v) -> match validatePackageVersionArg(v) { case Some(msg) -> { printErr("publish: " + msg); return 1 }; case None -> () }
+    case Some(v) -> match validatePackageVersionArg(v) {
+      case Some(msg) -> {
+        printErr("publish: " + msg)
+        return 1
+      }
+      case None -> ()
+    }
     case None -> ()
   }
 
@@ -183,7 +189,9 @@ func cmdPublish(argv: in slice[String]): Int {
 
   // Warn when [workspace.overrides] are present — these should not ship.
   match manifest.workspace {
-    case Some(ws) -> if ws.overrides.count > 0 { printErr("publish: warning: [workspace.overrides] is non-empty — override entries should not be committed") }
+    case Some(ws) -> if ws.overrides.count > 0 {
+      printErr("publish: warning: [workspace.overrides] is non-empty — override entries should not be committed")
+    }
     case None -> ()
   }
 
@@ -192,7 +200,13 @@ func cmdPublish(argv: in slice[String]): Int {
   while di < manifest.deps.count {
     val dep = manifest.deps[di]
     match dep.source {
-      case Git(_, refKind, refValue, _) -> if refKind == "branch" { printErr("publish: dep '" + dep.name + "' uses git branch '" + refValue + "' — mutable refs are not allowed in published packages"); return 1 }
+      case Git(_, refKind, refValue, _) -> if refKind == "branch" {
+        printErr(
+          "publish: dep '" + dep.name + "' uses git branch '" + refValue +
+            "' — mutable refs are not allowed in published packages"
+        )
+        return 1
+      }
       case _ -> ()
     }
     di += 1
@@ -205,7 +219,10 @@ func cmdPublish(argv: in slice[String]): Int {
     case Some(d) -> d
     case None -> {
       val defaultDllName = match manifest.project {
-        case Some(proj) -> match proj.outputAssembly { case Some(asm) -> asm; case None -> pkg.name + ".dll" }
+        case Some(proj) -> match proj.outputAssembly {
+          case Some(asm) -> asm
+          case None -> pkg.name + ".dll"
+        }
         case None -> pkg.name + ".dll"
       }
       Path.join(Path.join(mfDir, "bin"), defaultDllName)
@@ -404,7 +421,13 @@ func cmdPublish(argv: in slice[String]): Int {
   // Determine push registry and API key.
   val pushRegistry = match registryUrl {
     case Some(url) -> url
-    case None -> match manifest.registry { case Some(rc) -> match rc.dotnet { case Some(url) -> url; case None -> "https://api.nuget.org/v3/index.json" }; case None -> "https://api.nuget.org/v3/index.json" }
+    case None -> match manifest.registry {
+      case Some(rc) -> match rc.dotnet {
+        case Some(url) -> url
+        case None -> "https://api.nuget.org/v3/index.json"
+      }
+      case None -> "https://api.nuget.org/v3/index.json"
+    }
   }
 
   val pushKey = match apiKey {
@@ -554,7 +577,7 @@ func percentEncodeQuery(q: in String): String {
   var r = ""
   var qi = 0
   while qi < q.length {
-    val c = q[qi]
+    val c = Str.charAtOrReplacement(q, qi)
     if c == ' ' {
       r = r + "%20"
     } else if c == '%' {
@@ -570,7 +593,7 @@ func percentEncodeQuery(q: in String): String {
     } else if c == '?' {
       r = r + "%3F"
     } else {
-      r = r + ("" + c)
+      r = r + Str.substring(q, qi, 1)
     }
     qi += 1
   }
@@ -588,7 +611,7 @@ func jsonStringAt(json: in String, startPos: in Int): (String, Int) {
   var j = startPos
   var escaping = false
   while j < json.length {
-    val c = json[j]
+    val c = Str.charAtOrReplacement(json, j)
     if escaping {
       if c == 'n' {
         s = s + "\n"
@@ -601,7 +624,7 @@ func jsonStringAt(json: in String, startPos: in Int): (String, Int) {
       } else if c == 'f' {
         s = s + "\u{000c}"
       } else {
-        s = s + ("" + c)
+        s = s + Str.substring(json, j, 1)
       }
       escaping = false
     } else if c == '\\' {
@@ -609,7 +632,7 @@ func jsonStringAt(json: in String, startPos: in Int): (String, Int) {
     } else if c == '"' {
       return (s, j + 1)
     } else {
-      s = s + ("" + c)
+      s = s + Str.substring(json, j, 1)
     }
     j += 1
   };

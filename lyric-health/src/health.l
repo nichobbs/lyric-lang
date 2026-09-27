@@ -66,6 +66,7 @@ import Std.Char
 import Std.Iter
 import Std.Log
 import Health.Kernel.Net as HealthKernelNet
+import Std.String as Str
 
 // ─── Check vocabulary ─────────────────────────────────────────────────────────
 /// The group a health check belongs to.
@@ -475,7 +476,7 @@ func checkJson(status: in CheckStatus): String {
 // The lowercase hex digit for a value in 0..15.
 func hexDigit(n: in Int): String {
   val digits = "0123456789abcdef"
-  return digits[n].toString()
+  return Str.charAtOrReplacement(digits, n).toString()
 }
 
 // Escape special characters for JSON string embedding.  Per RFC 8259
@@ -486,7 +487,7 @@ func jsonEscape(s: in String): String {
   var buf: String = ""
   var i: Int = 0
   while i < s.length {
-    val ch = s[i]
+    val ch = Str.charAtOrReplacement(s, i)
     if ch == '"' {
       buf = buf + "\\\""
     } else if ch == '\\' {
@@ -505,7 +506,7 @@ func jsonEscape(s: in String): String {
       val code = toInt(ch)
       buf = buf + "\\u00" + hexDigit(code / 16) + hexDigit(code % 16)
     } else {
-      buf = buf + ch.toString()
+      buf = buf + Str.substring(s, i, 1)
     }
     i = i + 1
   }

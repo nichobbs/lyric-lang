@@ -8,11 +8,13 @@
 //! type parameter to `Object`) used to be emitted unconditionally into every
 //! package's functions class (~40 bytes of dead code for the many packages
 //! that never take this path).  The fix threads a package-shared
-//! `usesLyricCount: List[Bool]` flag through every `FuncCtx` (mirroring
-//! `closureAcc`'s existing threading discipline): the erased-receiver
-//! `.count`/`.length` call site appends a marker when it actually emits the
-//! `invokestatic __lyricCount` call, and `codegenPackageWithSigsSeeded` only
-//! adds the helper method when that list is non-empty.
+//! `usedRuntimeHelpers: List[String]` set through every `FuncCtx`
+//! (mirroring `closureAcc`'s existing threading discipline; originally a
+//! `usesLyricCount: List[Bool]` flag, generalised for the checked-`Char`
+//! helpers in D-progress-1006): the erased-receiver `.count`/`.length` call
+//! site records `__lyricCount` when it actually emits the `invokestatic
+//! __lyricCount` call, and `codegenPackageWithSigsSeeded` only adds the
+//! helper method when that name is recorded.
 //!
 //! This test exercises the CORRECTNESS side of the fix (the helper must
 //! still work exactly as before when the package genuinely needs it): it is
@@ -20,7 +22,7 @@
 //! calls it from within a single-file `@test_module` (that would need a
 //! second, separately-compiled package with no `.count`/`.length` erased
 //! dispatch at all, to inspect via reflection) — see the code review finding
-//! and `codegenPackageWithSigsSeeded`'s `usesLyricCount.count > 0` gate for
+//! and `codegenPackageWithSigsSeeded`'s `runtimeHelperUsed(..., "__lyricCount")` gate for
 //! that half of the fix.
 //!
 //! Covers every erased-receiver branch the helper's runtime-class dispatch

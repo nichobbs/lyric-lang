@@ -180,7 +180,7 @@ func isPlausibleIpv6Literal(s: in String): Bool {
   var ok = true
   var hasColon = false
   while i < len and ok {
-    val c = s[i]
+    val c = charAtOrReplacement(s, i)
     if c == ':' {
       hasColon = true
     } else if not (isHexDigitChar(c) or c == '.') {
@@ -204,13 +204,14 @@ func isPlausibleHostLiteral(s: in String): Bool {
   var i = 0
   var ok = true
   while i < len and ok {
-    val c = s[i]
+    val c = charAtOrReplacement(s, i)
     if not (Std.Char.isAsciiLetterOrDigit(c) or c == '.' or c == '-') {
       ok = false
     }
     i = i + 1
   }
-  ok and Std.Char.isAsciiLetterOrDigit(s[0]) and Std.Char.isAsciiLetterOrDigit(s[len - 1])
+  ok and Std.Char.isAsciiLetterOrDigit(charAtOrReplacement(s, 0)) and
+    Std.Char.isAsciiLetterOrDigit(charAtOrReplacement(s, len - 1))
 }
 
 /// True when `s` is 1-5 ASCII digits spelling an integer in `1..=65535`.
@@ -224,7 +225,7 @@ func isValidPortDigits(s: in String): Bool {
   var value = 0
   var ok = true
   while i < len and ok {
-    val c = s[i]
+    val c = charAtOrReplacement(s, i)
     if c < '0' or c > '9' {
       ok = false
     } else {
@@ -246,11 +247,11 @@ pub func isHostPort(hostPort: in String): Bool {
   if len == 0 {
     return false
   }
-  if hostPort[0] == '[' {
+  if charAtOrReplacement(hostPort, 0) == '[' {
     match Std.String.indexOf(hostPort, "]") {
       case None -> false
       case Some(closeIdx) -> {
-        if closeIdx <= 1 or closeIdx + 1 >= len or hostPort[closeIdx + 1] != ':' {
+        if closeIdx <= 1 or closeIdx + 1 >= len or charAtOrReplacement(hostPort, closeIdx + 1) != ':' {
           false
         } else {
           isPlausibleIpv6Literal(hostPort.substring(1, closeIdx - 1)) and
@@ -437,7 +438,7 @@ func jsonEscapeValue(s: in String): String {
   var i = 0
   while i < s.length {
     val c = s.substring(i, 1)
-    val code = Std.Char.toInt(s[i])
+    val code = Std.Char.toInt(charAtOrReplacement(s, i))
     if c == "\"" {
       parts.add("\\\"")
     } else if c == "\\" {
@@ -570,7 +571,7 @@ func parseHex4Digits(hex: in String): Option[Int] {
   var value = 0
   var i = 0
   while i < 4 {
-    match Std.Char.hexDigitValue(hex[i]) {
+    match Std.Char.hexDigitValue(charAtOrReplacement(hex, i)) {
       case Some(d) -> {
         value = value * 16 + d
       }
@@ -710,7 +711,7 @@ func indexOfFrom(s: in String, target: in String, from: in Int): Int {
     var j = 0
     var matched = true
     while j < tLen {
-      if s[i + j] != target[j] {
+      if codeUnitAt(s, i + j) != codeUnitAt(target, j) {
         matched = false
         j = tLen
       } else {
@@ -1024,7 +1025,7 @@ func isHexContainerId(s: in String): Bool {
   var i = 0
   var ok = true
   while i < len and ok {
-    val c = s[i]
+    val c = charAtOrReplacement(s, i)
     if not ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f')) {
       ok = false
     }
@@ -1039,13 +1040,13 @@ func isHexContainerId(s: in String): Bool {
 @pure
 func isContainerNameShape(s: in String): Bool {
   val len = s.length
-  if len < 2 or not Std.Char.isAsciiLetterOrDigit(s[0]) {
+  if len < 2 or not Std.Char.isAsciiLetterOrDigit(charAtOrReplacement(s, 0)) {
     return false
   }
   var i = 1
   var ok = true
   while i < len and ok {
-    val c = s[i]
+    val c = charAtOrReplacement(s, i)
     if not (Std.Char.isAsciiLetterOrDigit(c) or c == '_' or c == '.' or c == '-') {
       ok = false
     }

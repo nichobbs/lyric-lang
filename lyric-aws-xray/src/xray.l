@@ -43,6 +43,7 @@ package AwsXRay
 
 import Std.Core
 import Std.Char as Ch
+import Std.String as Str
 
 // ─── SubsegmentHandle ─────────────────────────────────────────────────────────
 /// An active X-Ray subsegment.
@@ -350,7 +351,7 @@ pub func isValidAnnotationKey(key: in String): Bool {
   var i = 0
   var ok = true
   while i < key.length and ok {
-    val c = key[i]
+    val c = Str.charAtOrReplacement(key, i)
     if not (Ch.isAsciiLetterOrDigit(c) or c == '_') {
       ok = false
     }
@@ -473,11 +474,11 @@ pub aspect Tracing {
   }
 }
 
-// Return the number of UTF-8 bytes needed to encode a single BMP Char.
-// Surrogate halves (U+D800–U+DFFF) are counted as 3 bytes each — they
-// are technically invalid in UTF-8 but this is a conservative safe bound.
-func utf8CharBytes(c: in Char): Int {
-  val code = Ch.toInt(c)
+// Return the number of UTF-8 bytes needed to encode one UTF-16 code unit.
+// Surrogate halves (U+D800–U+DFFF) are counted as 3 bytes each — a pair
+// really takes 4, so this is a conservative safe bound.  Takes the raw unit
+// (`Str.codeUnitAt`): a surrogate half is not a `Char`.
+func utf8UnitBytes(code: in Int): Int {
   if code < 0x80 {
     1
   } else if code < 0x800 {
@@ -502,7 +503,7 @@ pub func sanitizeAnnotation(s: in String): String {
   var i = 0
   var stop = false
   while i < b.length and not stop {
-    val bytes = utf8CharBytes(b[i])
+    val bytes = utf8UnitBytes(Str.codeUnitAt(b, i))
     if byteCount + bytes > 1024 {
       stop = true
     } else {
@@ -519,7 +520,7 @@ pub func sanitizeAnnotation(s: in String): String {
   // too rather than emitting a split pair.
   var cut = charCount
   if cut > 0 {
-    val lastCode = Ch.toInt(b[cut - 1])
+    val lastCode = Str.codeUnitAt(b, cut - 1)
     if lastCode >= 0xD800 and lastCode <= 0xDBFF {
       cut = cut - 1
     }

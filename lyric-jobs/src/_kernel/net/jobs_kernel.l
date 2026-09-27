@@ -31,6 +31,7 @@ import Std.Core
 import Std.Time
 import Std.Uuid
 import Std.Char
+import Std.String as Str
 
 // ─── BCL threading and identity (always available) ────────────────────────────
 pub func nowMs(): Long {
@@ -104,7 +105,7 @@ func jobJsonStr(s: in String): String {
   var r = "\""
   var i = 0
   while i < s.length {
-    val code = toInt(s[i])
+    val code = toInt(Str.charAtOrReplacement(s, i))
     if code == 34 {
       r = r + "\\\""
     } else if code == 92 {
@@ -116,7 +117,7 @@ func jobJsonStr(s: in String): String {
     } else if code == 9 {
       r = r + "\\t"
     } else {
-      r = r + s[i].toString()
+      r = r + Str.substring(s, i, 1)
     }
     i = i + 1
   }

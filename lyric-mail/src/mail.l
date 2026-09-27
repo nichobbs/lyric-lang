@@ -174,10 +174,10 @@ func approxBase64DecodedLength(s: in String): Long {
     return 0i64
   }
   var padding: Long = 0i64
-  if s.length >= 1 and s[s.length - 1] == '=' {
+  if s.length >= 1 and charAtOrReplacement(s, s.length - 1) == '=' {
     padding = 1i64
   }
-  if s.length >= 2 and s[s.length - 2] == '=' {
+  if s.length >= 2 and charAtOrReplacement(s, s.length - 2) == '=' {
     padding = 2i64
   }
   val len = s.length.toLong()
@@ -235,7 +235,7 @@ func isPlausibleAddress(address: in String): Bool {
 func findAtSignIndex(s: in String): Option[Int] {
   var i = 0
   while i < s.length {
-    if s[i] == '@' {
+    if charAtOrReplacement(s, i) == '@' {
       return Some(value = i)
     }
     i = i + 1
@@ -253,7 +253,7 @@ func containsAtSign(s: in String): Bool {
 func containsWhitespaceOrNewline(s: in String): Bool {
   var i = 0
   while i < s.length {
-    val ch = s[i]
+    val ch = charAtOrReplacement(s, i)
     if ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n' {
       return true
     }
@@ -496,7 +496,7 @@ func jsonEscape(s: in String): String {
   var buf = ""
   var i = 0
   while i < s.length {
-    val ch = s[i]
+    val ch = charAtOrReplacement(s, i)
     if ch == '"' {
       buf = buf + "\\\""
     } else if ch == '\\' {
@@ -510,7 +510,7 @@ func jsonEscape(s: in String): String {
     } else if Std.Char.toInt(ch) < 0x20 {
       buf = buf + "\\u00" + Std.Format.hexPad(Std.Char.toInt(ch), 2)
     } else {
-      buf = buf + ch.toString()
+      buf = buf + s.substring(i, 1)
     }
     i = i + 1
   }
@@ -872,7 +872,7 @@ func buildMessage(
 func containsHeaderInjection(s: in String): Bool {
   var i = 0
   while i < s.length {
-    val ch = s[i]
+    val ch = charAtOrReplacement(s, i)
     if ch == '\r' or ch == '\n' or ch == '\u{0000}' {
       return true
     }

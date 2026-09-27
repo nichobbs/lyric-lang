@@ -9,7 +9,7 @@
 //! scan never has to re-slice the remainder (#7257, #7258).
 //!
 //! Internal: only Std.String should import this.
-@axiom("System.Text.StringBuilder, String.IndexOf(string, int, StringComparison) and String.CompareOrdinal(string, string) conform to their documented .NET contracts")
+@axiom("System.Text.StringBuilder, String.IndexOf(string, int, StringComparison), String.CompareOrdinal(string, string) and String.get_Chars(int) conform to their documented .NET contracts")
 package Std.StringHost
 
 extern type HostStringBuilder = "System.Text.StringBuilder"
@@ -25,6 +25,24 @@ func netCompareOrdinal(a: in String, b: in String): Int = ()
 @externInstance
 @externTarget("System.String.IndexOf")
 func netIndexOfFrom(s: in String, value: in String, startIndex: in Int, comparison: in StringComparison): Int = ()
+
+@externInstance
+@externTarget("System.String.get_Chars")
+func netCharAt(s: in String, index: in Int): Char = ()
+
+// The UTF-16 code unit at `index`, surrogate halves included (D-progress-1006).
+// The BCL hands the unit back as a `char`; it is widened to `Int` before it
+// leaves this function because a surrogate half is not a valid Lyric `Char`
+// (docs/01 §2.1). Out-of-range `index` throws IndexOutOfRangeException, as
+// `s[i]` does.
+pub func hostCodeUnitAt(s: in String, index: in Int): Int {
+  netCharAt(s, index).toInt()
+}
+
+// Strings are UTF-16 on .NET, so a code unit is a UTF-16 unit.
+pub func hostCodeUnitsAreUtf8(): Bool {
+  false
+}
 
 pub func hostNewBuilder(): HostStringBuilder {
   HostStringBuilder.new()
@@ -58,12 +76,12 @@ pub func hostAsciiCaseCompare(a: in String, b: in String): Int {
   var same = a.length == b.length
   var i = 0
   while i < a.length {
-    val ca = a[i].toInt()
+    val ca = hostCodeUnitAt(a, i)
     if ca > 127 {
       return 0 - 1
     }
     if same {
-      val cb = b[i].toInt()
+      val cb = hostCodeUnitAt(b, i)
       if cb > 127 {
         return 0 - 1
       }
@@ -77,7 +95,7 @@ pub func hostAsciiCaseCompare(a: in String, b: in String): Int {
   }
   var j = 0
   while j < b.length {
-    if b[j].toInt() > 127 {
+    if hostCodeUnitAt(b, j) > 127 {
       return 0 - 1
     }
     j = j + 1

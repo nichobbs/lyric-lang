@@ -536,19 +536,19 @@ pub func format(parsed: in ParseResult): String {
 @pure
 func promoteModuleComment(line: in String): String {
   var i = 0
-  while i < line.length and (line[i] == ' ' or line[i] == '\t') {
+  while i < line.length and (Str.charAtOrReplacement(line, i) == ' ' or Str.charAtOrReplacement(line, i) == '\t') {
     i = i + 1
   }
   // Must begin with `//`; otherwise (block-comment body, blank) leave as-is.
-  if i + 1 >= line.length or line[i] != '/' or line[i + 1] != '/' {
+  if i + 1 >= line.length or Str.charAtOrReplacement(line, i) != '/' or Str.charAtOrReplacement(line, i + 1) != '/' {
     return line
   }
   val ws = Str.substring(line, 0, i)
   var j = i
-  while j < line.length and line[j] == '/' {
+  while j < line.length and Str.charAtOrReplacement(line, j) == '/' {
     j = j + 1
   }
-  if j < line.length and line[j] == '!' {
+  if j < line.length and Str.charAtOrReplacement(line, j) == '!' {
     j = j + 1
   }
   val rest = Str.substring(line, j, line.length - j)
@@ -713,7 +713,11 @@ func codeTokens(source: in String): List[String] {
         case TString(s) -> "str:" + s
         case TStringPart(s) -> "spart:" + s
         case TChar(cp) -> "char:" + toString(cp)
-        case _ -> if en > st and st >= 0 and en <= source.length { Str.substring(source, st, en - st) } else { tokenKindTag(t.token) }
+        case _ -> if en > st and st >= 0 and en <= source.length {
+          Str.substring(source, st, en - st)
+        } else {
+          tokenKindTag(t.token)
+        }
       }
       if text != "," {
         acc.add(text)
@@ -784,10 +788,18 @@ pub func fmtCheckText(c: in FmtCheck): String {
 pub func fmtCheckMessage(c: in FmtCheck): String {
   match c {
     case FmtOk(_) -> ""
-    case FmtInputParseError(ds) -> "fmt skipped — source has " + toString(ds.count) + " parse error(s); not safe to reformat:\n" + diagsMessage(ds)
-    case FmtOutputParseError(ds) -> "fmt aborted — formatter output does not parse (" + toString(ds.count) + " error(s)); file left unchanged (formatter bug):\n" + diagsMessage(ds)
-    case FmtCommentLoss(dropped) -> "fmt aborted — would drop " + toString(dropped.count) + " comment(s); file left unchanged:\n" + droppedMessage(dropped)
-    case FmtStructureChanged(detail) -> "fmt aborted — formatting would change the code-token sequence " + "(formatter bug); file left unchanged:\n  " + detail
+    case FmtInputParseError(ds) -> "fmt skipped — source has " + toString(ds.count) +
+      " parse error(s); not safe to reformat:\n" +
+      diagsMessage(ds)
+    case FmtOutputParseError(ds) -> "fmt aborted — formatter output does not parse (" + toString(ds.count) +
+      " error(s)); file left unchanged (formatter bug):\n" +
+      diagsMessage(ds)
+    case FmtCommentLoss(dropped) -> "fmt aborted — would drop " + toString(dropped.count) +
+      " comment(s); file left unchanged:\n" +
+      droppedMessage(dropped)
+    case FmtStructureChanged(detail) -> "fmt aborted — formatting would change the code-token sequence " +
+      "(formatter bug); file left unchanged:\n  " +
+      detail
   }
 }
 
@@ -829,10 +841,10 @@ func normComment(raw: in String): String {
     }
   } else {
     var k = 0
-    while k < s.length and s[k] == '/' {
+    while k < s.length and Str.charAtOrReplacement(s, k) == '/' {
       k = k + 1
     }
-    if k < s.length and s[k] == '!' {
+    if k < s.length and Str.charAtOrReplacement(s, k) == '!' {
       k = k + 1
     }
     s = Str.substring(s, k, s.length - k)

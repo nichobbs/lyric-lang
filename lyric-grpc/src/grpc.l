@@ -43,6 +43,7 @@ import Std.Core
 import Std.Collections
 import Std.Iter
 import Std.Char as Ch
+import Std.String as Str
 
 // ─── Client: default options ──────────────────────────────────────────────────
 /// Default call options: no deadline, no metadata.
@@ -96,7 +97,7 @@ pub func isValidMetadataKey(k: in String): Bool {
   }
   var i = 0
   while i < k.length {
-    val c = Ch.toInt(k[i])
+    val c = Ch.toInt(Str.charAtOrReplacement(k, i))
     val ok = (c >= 97 and c <= 122) or (c >= 48 and c <= 57) or c == 95 or c == 45 or c == 46
     if not ok {
       return false
@@ -116,7 +117,7 @@ pub func isValidMetadataValue(k: in String, v: in String): Bool {
   }
   var i = 0
   while i < v.length {
-    val c = Ch.toInt(v[i])
+    val c = Ch.toInt(Str.charAtOrReplacement(v, i))
     if c < 32 or c > 126 {
       return false
     }
@@ -129,7 +130,7 @@ func percentEncodeMetadata(s: in String): String {
   var buf: String = ""
   var i = 0
   while i < s.length {
-    val ch = s[i].toString()
+    val ch = Str.substring(s, i, 1)
     if ch == "%" {
       buf = buf + "%25"
     } else if ch == "," {

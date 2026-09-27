@@ -126,17 +126,12 @@ func unquote(raw: in String, lineNum: in Int): Result[String, String] {
   if t.length < 2 {
     return Err(error = "line " + Str.fromInt(lineNum) + ": expected quoted string, got: " + t)
   }
-  if t[0] != '"' or t[t.length - 1] != '"' {
+  if not Str.startsWith(t, "\"") or not Str.endsWith(t, "\"") {
     return Err(error = "line " + Str.fromInt(lineNum) + ": value must be double-quoted: " + t)
   }
-  // Strip first and last characters (the quotes).
-  var content = ""
-  var i = 1
-  while i < t.length - 1 {
-    content = content + "" + t[i]
-    i += 1
-  }
-  Ok(value = content)
+  // Strip the quotes; the content is copied as-is, any supplementary-plane
+  // characters (e.g. in a path) included.
+  Ok(value = Str.substring(t, 1, t.length - 2))
 }
 
 // Flush an in-progress [[package]] block, if any, into pkgs.

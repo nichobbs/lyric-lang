@@ -538,6 +538,32 @@ pub func checkStatement(
                 TyError
               }
             }
+            case TyPrim(iterPt) -> {
+              match iterPt {
+                case PtString -> if forIterIsGeneratorCall(sigs, iter) {
+                  // An `async func g(): String` generator types its call as its
+                  // element type; iterating it is iterating the generator, which
+                  // keeps the lenient element type every generator gets here.
+                  TyError
+                } else {
+                  // D-progress-1006: a `String` is not iterable.  Its elements
+                  // would have to be UTF-16 code units, and a surrogate half is
+                  // not a `Char` (docs/01 §2.1) -- so name the two explicit
+                  // views instead of letting codegen fail at runtime.
+                  diag.add(
+                    errorDiagnostic(
+                      "T0126",
+                      "cannot iterate over 'String' directly: iterate its Unicode scalar values with " +
+                        "`for cp in Std.String.codePoints(s)` (each an `Int`), or index code units with " +
+                        "`s.codeUnitAt(i)` for `i` in `0 ..< s.length`",
+                      iter.span
+                    )
+                  )
+                  TyError
+                }
+                case _ -> TyError
+              }
+            }
             case _ -> TyError
           }
         }
@@ -1556,4 +1582,28 @@ pub func checkFunctionBody(
     }
   }
   checkOutDefiniteAssignment(diag, fn, sig)
+}
+
+// True when a `for` iterates a call to a yield-bearing `async func` (a
+// generator): its call types as the declared element type, so a `String`
+// generator's call looks like a `String` here (D-progress-1006's T0126 must
+// not fire on it).
+func forIterIsGeneratorCall(sigs: in Map[String, ResolvedSignature], iter: in Expr): Bool {
+  match iter.kind {
+    case ECall(fn, args) -> {
+      val name = match fn.kind {
+        case EPath(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }
+        case EMember(_, m) -> m
+        case _ -> ""
+      }
+      if name.length == 0 {
+        return false
+      }
+      match mapGet(sigs, name + "/" + toString(args.count)) {
+        case Some(s) -> s.isGenerator
+        case None -> match mapGet(sigs, name) { case Some(s2) -> s2.isGenerator; case None -> false }
+      }
+    }
+    case _ -> false
+  }
 }

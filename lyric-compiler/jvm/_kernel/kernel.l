@@ -13,6 +13,7 @@ package Jvm.Kernel
 import Std.Core
 import Std.Collections
 import Std.Char
+import Std.String as Str
 // BCL externs for float/double bit pattern extraction.
 import extern System.{Single}
 
@@ -191,7 +192,7 @@ pub func writerU8(w: in ByteWriter, v: in Long): Unit {
 pub func writerModifiedUtf8(w: in ByteWriter, s: in String): Unit {
   var i = 0
   while i < s.length {
-    val c = toInt(s[i])
+    val c = Str.codeUnitAt(s, i)
     if c == 0 {
       writerByte(w, 192)
       writerByte(w, 128)
@@ -204,7 +205,7 @@ pub func writerModifiedUtf8(w: in ByteWriter, s: in String): Unit {
       writerByte(w, 128 + (c % 64))
       i = i + 1
     } else if c >= 55296 and c <= 56319 and i + 1 < s.length {
-      val low = toInt(s[i + 1])
+      val low = Str.codeUnitAt(s, i + 1)
       if low >= 56320 and low <= 57343 {
         writerByte(w, 224 + (c / 4096))
         writerByte(w, 128 + ((c / 64) % 64))
@@ -235,7 +236,7 @@ pub func modifiedUtf8Length(w: in ByteWriter, s: in String): Int {
   var n = 0
   var i = 0
   while i < s.length {
-    val c = toInt(s[i])
+    val c = Str.codeUnitAt(s, i)
     if c == 0 {
       n = n + 2
       i = i + 1
@@ -246,7 +247,7 @@ pub func modifiedUtf8Length(w: in ByteWriter, s: in String): Int {
       n = n + 2
       i = i + 1
     } else if c >= 55296 and c <= 56319 and i + 1 < s.length {
-      val low = toInt(s[i + 1])
+      val low = Str.codeUnitAt(s, i + 1)
       if low >= 56320 and low <= 57343 {
         n = n + 6
         i = i + 2

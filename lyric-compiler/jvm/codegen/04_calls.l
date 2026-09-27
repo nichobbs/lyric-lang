@@ -1432,9 +1432,9 @@ func descStrToJvmType(desc: String): JvmType {
     JShort
   } else if desc == "V" {
     JVoid
-  } else if desc.length > 0 and desc[0] == '[' {
+  } else if desc.startsWith("[") {
     JArray(elem = descStrToJvmType(desc.substring(1, desc.length - 1)))
-  } else if desc.length > 1 and desc[0] == 'L' {
+  } else if desc.length > 1 and desc.startsWith("L") {
     JRef(className = desc.substring(1, desc.length - 2))
   } else {
     JRef(className = "java/lang/Object")
@@ -1446,7 +1446,7 @@ func returnDescFromMethodDesc(descriptor: String): String {
   val len = descriptor.length
   var i = 0
   while i < len {
-    if descriptor[i] == ')' {
+    if charAtOrReplacement(descriptor, i) == ')' {
       if i + 1 < len {
         return descriptor.substring(i + 1, len - i - 1)
       }
@@ -4230,8 +4230,33 @@ func lowerMethodCall(
       insns.add(LIand)
       return JByte
     } else if memberName == "toChar" {
-      emitToIntJvm(insns, recvTy)
-      insns.add(LI2c)
+      // Checked narrowing (D-progress-1006): an `Int`/`Long`/`Double` must be
+      // a BMP scalar value; a `Byte`/`Char` always is.
+      match recvTy {
+        case JDouble -> {
+          val tcdPs: List[JvmType] = newList()
+          tcdPs.add(JDouble)
+          insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricToCharD", params = tcdPs, ret = JChar))
+          markRuntimeHelper(ctx, "__lyricToCharD")
+        }
+        case JLong -> {
+          val tclPs: List[JvmType] = newList()
+          tclPs.add(JLong)
+          insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricToChar", params = tclPs, ret = JChar))
+          markRuntimeHelper(ctx, "__lyricToChar")
+        }
+        case JInt -> {
+          insns.add(LI2l)
+          val tciPs: List[JvmType] = newList()
+          tciPs.add(JLong)
+          insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricToChar", params = tciPs, ret = JChar))
+          markRuntimeHelper(ctx, "__lyricToChar")
+        }
+        case _ -> {
+          emitToIntJvm(insns, recvTy)
+          insns.add(LI2c)
+        }
+      }
       return JChar
     } else {
       emitToIntJvm(insns, recvTy)
@@ -4300,6 +4325,16 @@ func lowerMethodCall(
   // precise descriptor here.  `contains` takes a CharSequence (a String arg is
   // assignable); `startsWith`/`endsWith` take a String.
   val isStringRecv = match recvTy { case JRef(c) -> c == "java/lang/String"; case _ -> false }
+  // `s.codeUnitAt(i)`: the raw UTF-16 unit as an `Int`, surrogates included
+  // (D-progress-1006) — `charAt` without the `s[i]` surrogate check.
+  if isStringRecv and args.count == 1 and memberName == "codeUnitAt" {
+    val cuTy = lowerCallArg(ctx, insns, args[0])
+    coerceArgTo(insns, cuTy, JInt)
+    val cuPs: List[JvmType] = newList()
+    cuPs.add(JInt)
+    insns.add(LInvokevirtual(owner = "java/lang/String", name = "charAt", params = cuPs, ret = JChar))
+    return JInt
+  }
   if isStringRecv and args.count == 1 and (memberName == "contains" or memberName == "startsWith" or memberName == "endsWith") {
     lowerCallArg(ctx, insns, args[0])
     val ps: List[JvmType] = newList()

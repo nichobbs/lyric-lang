@@ -53,12 +53,12 @@ pub func derivePackageName(raw: in String): Result[String, String] {
     case None -> ()
   }
   // already uppercase, or not an ASCII letter (validated below)
-  if not Char.isLetter(name[0]) {
+  if not Char.isLetter(Str.charAtOrReplacement(name, 0)) {
     return Err(error = "package name must start with a letter (got '" + raw + "'); pass --name <Name>")
   }
   var i = 0
   while i < Str.length(name) {
-    if not Char.isLetterOrDigit(name[i]) {
+    if not Char.isLetterOrDigit(Str.charAtOrReplacement(name, i)) {
       return Err(error = "package name may contain only letters and digits (got '" + raw + "'); pass --name <Name>")
     }
     i += 1

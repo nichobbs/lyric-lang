@@ -506,7 +506,7 @@ pub func eagerlyResolveGenericArgs(
 pub func jvmClassIsUnionCase(cls: in String): Bool {
   var i = 0
   while i < cls.length {
-    if cls[i] == '$' {
+    if charAtOrReplacement(cls, i) == '$' {
       return true
     }
     i = i + 1
@@ -519,7 +519,7 @@ pub func jvmClassIsUnionCase(cls: in String): Bool {
 pub func jvmUnionBaseClass(cls: in String): String {
   var i = 0
   while i < cls.length {
-    if cls[i] == '$' {
+    if charAtOrReplacement(cls, i) == '$' {
       return cls.substring(0, i)
     }
     i = i + 1
@@ -655,15 +655,15 @@ pub record FuncCtx {
   // lambdas append to the same list) and overwrites it with the finished
   // closure.
   closureAcc: List[LClosure]
-  // Lazy-emission flag for the synthesised `__lyricCount(Object)I` helper
-  // (#4803): empty until the erased-receiver `.count`/`.length` dispatch path
-  // (`02_exprs.l`) actually emits a call to it, at which point a marker is
-  // appended.  `codegenPackageWithSigsSeeded` only adds the helper method to
-  // the package's functions class when this is non-empty, avoiding ~40 bytes
-  // of dead code per package class that never calls `.count`/`.length` on an
-  // erased receiver.  The same list object is threaded through every `FuncCtx`
-  // of the package, mirroring `closureAcc`.
-  usesLyricCount: List[Bool]
+  // Lazy-emission set for the synthesised per-package static helpers (#4803):
+  // the names of the helpers (`__lyricCount`, `__lyricCharAt`,
+  // `__lyricToChar`, `__lyricToCharD`) some function in the package actually
+  // emitted a call to, recorded via `markRuntimeHelper`.
+  // `codegenPackageWithSigsSeeded` only adds a helper method to the package's
+  // functions class when its name is present, so a package that never needs
+  // one carries no dead code.  The same list object is threaded through every
+  // `FuncCtx` of the package, mirroring `closureAcc`.
+  usedRuntimeHelpers: List[String]
   // `out`/`inout` parameter holder bindings (#1763), keyed by the parameter's
   // *value* slot (the slot `ctx.slots` maps the parameter name to after the
   // entry-prologue unwrap).  An assignment to a value slot present in
@@ -1608,7 +1608,7 @@ func joinSegsDotted(segs: in List[String]): String {
 pub func stripClrAritySuffix(fqn: in String): String {
   var i = 0
   while i < fqn.length {
-    if fqn[i] == '`' {
+    if charAtOrReplacement(fqn, i) == '`' {
       return fqn.substring(0, i)
     }
     i = i + 1
@@ -2638,4 +2638,23 @@ pub func emitStoreLocalWriteThrough(ctx: in FuncCtx, insns: in List[LInsn], slot
     }
     case None -> ()
   }
+}
+
+// Record that this package's code calls the synthesised static helper `name`
+// (see `FuncCtx.usedRuntimeHelpers`); idempotent.
+func markRuntimeHelper(ctx: in FuncCtx, name: in String): Unit {
+  if not runtimeHelperUsed(ctx.usedRuntimeHelpers, name) {
+    ctx.usedRuntimeHelpers.add(name)
+  }
+}
+
+func runtimeHelperUsed(used: in List[String], name: in String): Bool {
+  var i = 0
+  while i < used.count {
+    if used[i] == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
 }

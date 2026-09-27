@@ -5,6 +5,7 @@ package Lyric.Lint
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 
@@ -35,11 +36,11 @@ func isAsciiDigit(c: in Char): Bool {
 }
 
 func startsUpper(s: in String): Bool {
-  s.length > 0 and isAsciiUpper(s[0])
+  s.length > 0 and isAsciiUpper(Str.charAtOrReplacement(s, 0))
 }
 
 func startsLower(s: in String): Bool {
-  s.length > 0 and isAsciiLower(s[0])
+  s.length > 0 and isAsciiLower(Str.charAtOrReplacement(s, 0))
 }
 
 func isUpperSnake(s: in String): Bool {
@@ -49,7 +50,7 @@ func isUpperSnake(s: in String): Bool {
   var i = 0
   var ok = true
   while i < s.length and ok {
-    val c = s[i]
+    val c = Str.charAtOrReplacement(s, i)
     if not (isAsciiUpper(c) or isAsciiDigit(c) or c == '_') {
       ok = false
     }
@@ -114,14 +115,14 @@ func checkDocTodos(docs: in List[DocComment]): List[LintDiag] {
     var found = false
     var j = 0
     while j + 3 < docText.length and not found {
-      if (docText[j] == 'T' or docText[j] == 't') and (docText[j + 1] == 'O' or docText[j + 1] == 'o') and (docText[j + 2] == 'D' or docText[j + 2] == 'd') and (docText[j + 3] == 'O' or docText[j + 3] == 'o') {
+      if (Str.charAtOrReplacement(docText, j) == 'T' or Str.charAtOrReplacement(docText, j) == 't') and (Str.charAtOrReplacement(docText, j + 1) == 'O' or Str.charAtOrReplacement(docText, j + 1) == 'o') and (Str.charAtOrReplacement(docText, j + 2) == 'D' or Str.charAtOrReplacement(docText, j + 2) == 'd') and (Str.charAtOrReplacement(docText, j + 3) == 'O' or Str.charAtOrReplacement(docText, j + 3) == 'o') {
         found = true
       }
       j = j + 1
     }
     var j2 = 0
     while j2 + 4 < docText.length and not found {
-      if (docText[j2] == 'F' or docText[j2] == 'f') and (docText[j2 + 1] == 'I' or docText[j2 + 1] == 'i') and (docText[j2 + 2] == 'X' or docText[j2 + 2] == 'x') and (docText[j2 + 3] == 'M' or docText[j2 + 3] == 'm') and (docText[j2 + 4] == 'E' or docText[j2 + 4] == 'e') {
+      if (Str.charAtOrReplacement(docText, j2) == 'F' or Str.charAtOrReplacement(docText, j2) == 'f') and (Str.charAtOrReplacement(docText, j2 + 1) == 'I' or Str.charAtOrReplacement(docText, j2 + 1) == 'i') and (Str.charAtOrReplacement(docText, j2 + 2) == 'X' or Str.charAtOrReplacement(docText, j2 + 2) == 'x') and (Str.charAtOrReplacement(docText, j2 + 3) == 'M' or Str.charAtOrReplacement(docText, j2 + 3) == 'm') and (Str.charAtOrReplacement(docText, j2 + 4) == 'E' or Str.charAtOrReplacement(docText, j2 + 4) == 'e') {
         found = true
       }
       j2 = j2 + 1

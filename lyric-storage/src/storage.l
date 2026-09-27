@@ -141,7 +141,7 @@ pub func isSafeKey(key: in String): Bool {
   }
   var ci = 0
   while ci < key.length {
-    val c = key[ci]
+    val c = Str.charAtOrReplacement(key, ci)
     if c < ' ' or c == '\u{007f}' {
       return false
     }
@@ -167,7 +167,7 @@ pub func isSafeKey(key: in String): Bool {
   if n.length == 0 {
     return false
   }
-  if n[0] == '/' {
+  if Str.charAtOrReplacement(n, 0) == '/' {
     return false
   }
   if storageKeyHasDotDot(n) {
@@ -186,7 +186,7 @@ pub func isSafeKey(key: in String): Bool {
     // Windows strips a trailing `.` or space from every path segment, so
     // `photo.jpg.meta.json ` would write the `photo.jpg` sidecar and `a/foo.`
     // would alias `a/foo` (#7327).  This also covers `.` and `..`.
-    val last = seg[seg.length - 1]
+    val last = Str.charAtOrReplacement(seg, seg.length - 1)
     if last == '.' or last == ' ' {
       return false
     }
@@ -209,7 +209,7 @@ func isWindowsDeviceName(seg: in String): Bool {
     return true
   }
   if stem.length == 4 and (Str.startsWith(stem, "COM") or Str.startsWith(stem, "LPT")) {
-    val d = stem[3]
+    val d = Str.charAtOrReplacement(stem, 3)
     return d >= '1' and d <= '9'
   }
   false
@@ -445,7 +445,7 @@ func createDirIfMissing(path: in String): Result[Unit, StorageError] {
 func parentDir(path: in String): String {
   var i = path.length - 1
   while i >= 0 {
-    val c = path[i]
+    val c = Str.charAtOrReplacement(path, i)
     if c == '/' or c == '\\' {
       return Str.substring(path, 0, i)
     }
@@ -813,7 +813,7 @@ func walkDirectoryForKeys(dir: in String, relPrefix: in String, acc: in List[Str
 func basenameOf(path: in String): String {
   var i = path.length - 1
   while i >= 0 {
-    val c = path[i]
+    val c = Str.charAtOrReplacement(path, i)
     if c == '/' or c == '\\' {
       return Str.substring(path, i + 1, path.length - i - 1)
     }

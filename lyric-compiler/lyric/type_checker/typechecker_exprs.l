@@ -2166,6 +2166,14 @@ func stringHostMethodType(name: in String): Option[Type] {
     ps.add(strT)
     return Some(value = TyFunction(params = ps, ret = boolT, isAsync = false))
   }
+  if name == "codeUnitAt" {
+    // `s.codeUnitAt(i)`: the raw code unit at index `i` as an `Int` (a UTF-16
+    // unit on .NET/JVM, a UTF-8 byte on native) -- the one accessor that can
+    // observe a surrogate half, which `s[i]: Char` rejects (D-progress-1006).
+    val ps: List[Type] = newList()
+    ps.add(intT)
+    return Some(value = TyFunction(params = ps, ret = intT, isAsync = false))
+  }
   if name == "split" {
     // `Std.String.split(s, sep): slice[String]` (`lyric-stdlib/std/string.l`)
     // — the one implementation both backends' method-syntax `.split(sep)`
