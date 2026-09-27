@@ -618,19 +618,23 @@ their inputs. `Std.Hash.sha512OfFile` converts a read failure into `Err`.
 ### `Std.StringHost` — `lyric-stdlib/std/_kernel/string_host.l`, `lyric-stdlib/std/_kernel_jvm/string_host.l`
 
 ```
-@axiom("System.Text.StringBuilder, String.IndexOf(string, int, StringComparison) and String.CompareOrdinal(string, string) conform to their documented .NET contracts")
+@axiom("System.Text.StringBuilder, String.IndexOf(string, int, StringComparison), String.CompareOrdinal(string, string) and String.get_Chars(int) conform to their documented .NET contracts")
 @axiom("java.lang.StringBuilder, String.indexOf(String, int) and String.compareTo(String) conform to their documented JVM contracts")
 ```
 
 **Host surface**: `System.Text.StringBuilder` (constructor, `Append(string)`,
 `Append(char)`, `ToString`), `String.IndexOf(string, int,
-StringComparison.Ordinal)` and `String.CompareOrdinal(string, string)` on
-.NET; `java.lang.StringBuilder` (constructor, `append(String)`,
+StringComparison.Ordinal)`, `String.CompareOrdinal(string, string)` and
+`String.get_Chars(int)` (`hostCodeUnitAt`, the raw UTF-16 code unit behind
+`Std.String.codeUnitAt`/`codePointAt`, D-progress-1006) on .NET;
+`java.lang.StringBuilder` (constructor, `append(String)`,
 `append(char)`, `toString`), `String.indexOf(String, int)` and
 `String.compareTo(String)` on the JVM. The native twin binds
 `lyric_string_concat_list` / `lyric_string_index_of_from` /
 `lyric_string_ascii_case_compare` / `lyric_string_cmp`, covered by the
-`lyric-rt` C unit tests.
+`lyric-rt` C unit tests. On the JVM and native, `hostCodeUnitAt` is the
+built-in `s.codeUnitAt(i)` (`String.charAt` / `lyric_string_byte_at`), so it
+adds no host surface there.
 
 **Gap**: the axiom assumes the builder's result is the in-order
 concatenation of every appended piece and that the search and comparison
@@ -975,7 +979,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.RandomHost` | `random_host.l` | System.Random conforms to its documented .NET contracts; the Shared property returns a thread-safe shared instance (documented since .NET 6) |
 | `dotnet` | `Std.RegexHost` | `regex_host.l` | System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts |
 | `dotnet` | `Std.SecureRandomHost` | `secure_random_host.l` | System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output |
-| `dotnet` | `Std.StringHost` | `string_host.l` | System.Text.StringBuilder, String.IndexOf(string, int, StringComparison) and String.CompareOrdinal(string, string) conform to their documented .NET contracts |
+| `dotnet` | `Std.StringHost` | `string_host.l` | System.Text.StringBuilder, String.IndexOf(string, int, StringComparison), String.CompareOrdinal(string, string) and String.get_Chars(int) conform to their documented .NET contracts |
 | `dotnet` | `Std.TcpHost` | `tcp_host.l` | System.Net.Sockets and System.Net.Security operations conform to their documented .NET contracts |
 | `dotnet` | `Std.TimeHost` | `time_host.l` | System.DateTime / System.TimeSpan / System.DateTimeOffset / System.Threading.Thread conform to their documented .NET contracts |
 | `dotnet` | `Std.TlsHost` | `tls_host.l` | System.Security.Cryptography.X509Certificates operations conform to their documented .NET contracts |
