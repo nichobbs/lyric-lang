@@ -2898,75 +2898,18 @@ func configFieldTypeName(te: in TypeExpr): String {
   }
 }
 
-// G0009 for a malformed range refinement on a config field: the bounds must
-// be numeric literals (the runtime check compares against constants) and the
-// range must not be empty.  Returns the range when it is well formed, so the
+// G0009 for a malformed range refinement on a config field (see
+// `configRangeProblem`).  Returns the range when it is well formed, so the
 // caller can check the default against it (G0010).
-func rangeLowerExpr(rb: in RangeBound): Option[Expr] {
-  match rb {
-    case RBClosed(lo, _) -> Some(value = lo)
-    case RBHalfOpen(lo, _, _) -> Some(value = lo)
-    case RBLowerOpen(_) -> None
-    case RBUpperOpen(lo) -> Some(value = lo)
-  }
-}
-
-func rangeUpperExpr(rb: in RangeBound): Option[Expr] {
-  match rb {
-    case RBClosed(_, hi) -> Some(value = hi)
-    case RBHalfOpen(_, hi, _) -> Some(value = hi)
-    case RBLowerOpen(hi) -> Some(value = hi)
-    case RBUpperOpen(_) -> None
-  }
-}
-
 func checkConfigFieldRange(diag: in List[Diagnostic], cd: in ConfigDecl, f: in ConfigField): Option[RangeBound] {
   match f.ty.kind {
     case TRefined(_, rb) -> {
-      val loE = rangeLowerExpr(rb)
-      val hiE = rangeUpperExpr(rb)
-      var ok = true
-      val lo = match loE {
-        case Some(e) -> foldLiteralBound(e)
-        case None -> LiteralBound(ok = true, isFloat = false, l = 0i64, d = 0.0)
-      }
-      val hi = match hiE {
-        case Some(e) -> foldLiteralBound(e)
-        case None -> LiteralBound(ok = true, isFloat = false, l = 0i64, d = 0.0)
-      }
-      if not lo.ok or not hi.ok {
-        ok = false
-        diag.add(
-          errorDiagnostic(
-            "G0009",
-            "config field '" + cd.name + "." + f.name + "' has a range bound that is not a numeric literal",
-            f.ty.span
-          )
-        )
-      } else if not configBoundsFitType(configFieldTypeName(f.ty), lo, hi) {
-        ok = false
-        diag.add(
-          errorDiagnostic(
-            "G0009",
-            "config field '" + cd.name + "." + f.name + "' has a range bound that does not fit " + configFieldTypeName(f.ty),
-            f.ty.span
-          )
-        )
-      } else {
-        val bothBounds = match loE {
-          case Some(_) -> match hiE { case Some(_) -> true; case None -> false }
-          case None -> false
-        }
-        val halfOpen = match rb { case RBHalfOpen(_, _, _) -> true; case _ -> false }
-        if bothBounds and not literalBoundBelow(lo, hi, halfOpen) {
-          ok = false
-          diag.add(errorDiagnostic("G0009", "config field '" + cd.name + "." + f.name + "' has an empty range", f.ty.span))
-        }
-      }
-      if ok {
-        Some(value = rb)
-      } else {
+      val problem = configRangeProblem(configFieldTypeName(f.ty), rb)
+      if problem.length > 0 {
+        diag.add(errorDiagnostic("G0009", "config field '" + cd.name + "." + f.name + "' " + problem, f.ty.span))
         None
+      } else {
+        Some(value = rb)
       }
     }
     case _ -> None
@@ -3008,20 +2951,6 @@ func checkAspectConfigRanges(diag: in List[Diagnostic], decl: in AspectDecl): Un
 
 // An integer field takes integer bounds within its own range; a floating
 // field takes either.
-func configBoundsFitType(tyName: in String, lo: in LiteralBound, hi: in LiteralBound): Bool {
-  if tyName == "Float" or tyName == "Double" {
-    return true
-  }
-  if lo.isFloat or hi.isFloat {
-    return false
-  }
-  if tyName == "Int" {
-    val minInt = 0i64 - 2147483648i64
-    return lo.l >= minInt and lo.l <= 2147483647i64 and hi.l >= minInt and hi.l <= 2147483647i64
-  }
-  true
-}
-
 // Whether a literal default can initialise a config field of type `tyName`.
 // Int literals widen to Long / Float / Double; Float literals fit Float /
 // Double; everything else must match exactly.

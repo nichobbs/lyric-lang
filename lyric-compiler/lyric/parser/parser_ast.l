@@ -157,6 +157,78 @@ pub func literalInRange(v: in LiteralBound, rb: in RangeBound): Bool {
   }
 }
 
+/// The lower bound of a range refinement, when it has one.
+pub func rangeLowerExpr(rb: in RangeBound): Option[Expr] {
+  match rb {
+    case RBClosed(lo, _) -> Some(value = lo)
+    case RBHalfOpen(lo, _, _) -> Some(value = lo)
+    case RBLowerOpen(_) -> None
+    case RBUpperOpen(lo) -> Some(value = lo)
+  }
+}
+
+/// The upper bound of a range refinement, when it has one.
+pub func rangeUpperExpr(rb: in RangeBound): Option[Expr] {
+  match rb {
+    case RBClosed(_, hi) -> Some(value = hi)
+    case RBHalfOpen(_, hi, _) -> Some(value = hi)
+    case RBLowerOpen(hi) -> Some(value = hi)
+    case RBUpperOpen(_) -> None
+  }
+}
+
+/// Whether folded bounds `lo`/`hi` can be compared against a value of the
+/// numeric type `tyName`: floating bounds only on Float/Double, integer
+/// bounds on Int only within Int's width.
+pub func literalBoundsFitType(tyName: in String, lo: in LiteralBound, hi: in LiteralBound): Bool {
+  if tyName == "Float" or tyName == "Double" {
+    return true
+  }
+  if tyName != "Int" and tyName != "Long" {
+    return false
+  }
+  if lo.isFloat or hi.isFloat {
+    return false
+  }
+  if tyName == "Int" {
+    val minInt = 0i64 - 2147483648i64
+    return lo.l >= minInt and lo.l <= 2147483647i64 and hi.l >= minInt and hi.l <= 2147483647i64
+  }
+  true
+}
+
+/// Why a range refinement on a config field of base type `tyName` is
+/// malformed (#7229), or `""` when it is well formed: the base type must be
+/// Int, Long, Float or Double, the bounds numeric literals that fit it, and
+/// the range non-empty.  Shared by the type checker (config blocks, aspect
+/// config) and `Lyric.WireExpand` (config templates), which report it as
+/// G0009.
+pub func configRangeProblem(tyName: in String, rb: in RangeBound): String {
+  if tyName != "Int" and tyName != "Long" and tyName != "Float" and tyName != "Double" {
+    return "has a range on type " + tyName + "; a range is allowed only on Int, Long, Float or Double"
+  }
+  val zero = LiteralBound(ok = true, isFloat = false, l = 0i64, d = 0.0)
+  val loE = rangeLowerExpr(rb)
+  val hiE = rangeUpperExpr(rb)
+  val lo = match loE { case Some(e) -> foldLiteralBound(e); case None -> zero }
+  val hi = match hiE { case Some(e) -> foldLiteralBound(e); case None -> zero }
+  if not lo.ok or not hi.ok {
+    return "has a range bound that is not a numeric literal"
+  }
+  if not literalBoundsFitType(tyName, lo, hi) {
+    return "has a range bound that does not fit " + tyName
+  }
+  val bothBounds = match loE {
+    case Some(_) -> match hiE { case Some(_) -> true; case None -> false }
+    case None -> false
+  }
+  val halfOpen = match rb { case RBHalfOpen(_, _, _) -> true; case _ -> false }
+  if bothBounds and not literalBoundBelow(lo, hi, halfOpen) {
+    return "has an empty range"
+  }
+  ""
+}
+
 pub union TypeArg {
   case TAType(ty: TypeExpr)
   case TAValue(expr: Expr)

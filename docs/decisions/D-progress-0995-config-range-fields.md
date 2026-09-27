@@ -29,6 +29,13 @@ A config field may be an inline range of `Int`, `Long`, `Float` or
     base type (`port: Int = 9090`) and keeps the template's range, so the
     merged default is checked (G0010) and the env value is checked at
     startup (G0004). An override that declares its own range is W0012.
+  - A `pub config` template's own ranges and defaults are checked at its
+    declaration (G0009/G0010, #7459), so a library that only declares a
+    template catches them in its own build. An instantiation does not
+    repeat a fault the template already reported. The validation is one
+    shared function, `configRangeProblem` in `Lyric.Parser`, used by the
+    type checker and `Lyric.WireExpand` alike; it also rejects a range on
+    a non-numeric aspect config field.
 - **Runtime, dotnet and the JVM:**
   - After a field is stored, the static initializer (`.cctor` /
     `<clinit>`) reads it back and compares it with each present bound.

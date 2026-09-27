@@ -3292,6 +3292,8 @@ test "aspect config range fields" {
   assertTrue(hasDiagCode(parseCheck(bad), "G0010"), "aspect config: default outside the range is G0010")
   val ok = "package P\naspect Twice {\n  matches: name in { work }\n  config {\n    times: Int range 1 ..= 5 = 2\n  }\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\nfunc work(x: in Int): Int = x\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "G0010"), "aspect config: in-range default accepted")
+  val str = "package P\naspect Twice {\n  matches: name in { work }\n  config {\n    s: String range 1 ..= 2 = \"a\"\n  }\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\nfunc work(x: in Int): Int = x\n"
+  assertTrue(hasDiagCode(parseCheck(str), "G0009"), "aspect config: a range of String is G0009")
 }
 
 test "config duplicate field" {

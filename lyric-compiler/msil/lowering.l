@@ -5934,9 +5934,9 @@ func emitConfigRangeCheckMsil(
   f: in MConfigField,
   fieldTok: in Int,
   failLabel: in Int,
+  okLabel: in Int,
   configToks: in ConfigTokens,
 ): Unit {
-  val okLabel = failLabel + 1000000
   val isFloat = match f.fieldType { case MDouble -> true; case _ -> false }
   if f.hasMin {
     insns.add(MLdsfld(fieldToken = fieldTok))
@@ -6072,7 +6072,10 @@ func lowerMConfig(
       cctorInsns.add(MStsfld(fieldToken = fieldTok))
       cctorInsns.add(MLabel(id = doneLabel))
       if f.hasMin or f.hasMax {
-        emitConfigRangeCheckMsil(cctorInsns, f, fieldTok, 2 * fields.count + ci, configToks)
+        // Labels: 2ci / 2ci+1 are the field's parse/done labels, then one
+        // fail label and one ok label per field in two further disjoint
+        // blocks of `fields.count`.
+        emitConfigRangeCheckMsil(cctorInsns, f, fieldTok, 2 * fields.count + ci, 3 * fields.count + ci, configToks)
       }
 
       ci = ci + 1
