@@ -337,7 +337,7 @@ async func sendAndReadBodyWithTimeout(
   failMsg: in String,
   timeoutSec: in Int,
 ): Result[String, DockerError]
-  requires: timeoutSec > 0
+  requires: timeoutSec > 0 and timeoutSec <= 2147483
 {
   val src = Std.Task.makeCancelSourceTimeout(timeoutSec * 1000)
   val token = Std.Task.sourceToken(src)
@@ -1150,7 +1150,7 @@ pub async func startContainer(client: in DockerClient, containerId: in Container
 pub async func waitContainer(
   client: in DockerClient, containerId: in ContainerId, timeoutSec: in Int
 ): Result[Int, DockerError]
-  requires: timeoutSec > 0
+  requires: timeoutSec > 0 and timeoutSec <= 2147483
 {
   val urlStr = client.apiBase + "/containers/" + containerId.value + "/wait"
   val url = resolveDockerUrl(urlStr)?
@@ -1208,10 +1208,9 @@ pub async func removeContainer(client: in DockerClient, containerId: in Containe
 /// Maximum total decoded bytes `demultiplexDockerStream` accumulates before
 /// giving up with `Err`. Docker's own frame-size field is bounded only by the
 /// remaining input buffer, so a very large (or maliciously crafted) response
-/// could otherwise drive unbounded memory use.
+/// could otherwise drive unbounded memory use. 64 MiB.
 val maxDemultiplexedStreamBytes: Int = 67108864
 
-// 64 MiB
 /// Demultiplex a raw Docker multiplexed stream into a UTF-8 String.
 /// Accepts the raw bytes of a multiplexed stream and decodes combined stdout/stderr.
 ///
@@ -1250,10 +1249,7 @@ pub func demultiplexDockerStream(bytes: in slice[Byte]): Result[String, String] 
       size_b1.toInt().toLong() * 256i64 +
       size_b0.toInt().toLong()
 
-    if sizeL < 0i64 {
-      failed = true
-      errMsg = "Demultiplexed Docker stream ends with a truncated frame"
-    } else if streamType != 1u8 and streamType != 2u8 {
+    if streamType != 1u8 and streamType != 2u8 {
       failed = true
       errMsg = "Demultiplexed Docker stream contains an unrecognized stream type"
     } else if outBytes.count.toLong() + sizeL > maxDemultiplexedStreamBytes.toLong() {

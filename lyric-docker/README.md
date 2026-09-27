@@ -187,7 +187,7 @@ source compatibility.
 
 #### `waitContainer`/`stopContainer` timeouts
 
-Both take `timeoutSec: in Int` with `requires: timeoutSec > 0`.
+Both take `timeoutSec: in Int` with `requires: timeoutSec > 0`; `waitContainer` also requires `timeoutSec <= 2147483` (the cancellation timer is in milliseconds).
 
 - `stopContainer`'s `timeoutSec` is Docker's own graceful-stop grace period
   (the `/stop` endpoint's `t` query parameter): Docker sends SIGTERM, waits
