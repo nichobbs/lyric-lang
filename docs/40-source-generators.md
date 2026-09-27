@@ -300,6 +300,7 @@ exposed record Order { ... }                      // original
 // From built-in Json generator:
 pub func Order.toJson(self): String { ... }
 pub func Order.fromJson(s: in String): Result[Order, String] { ... }
+pub func Order.fromJsonElement(elem: in JsonElement): Result[Order, String] { ... }
 
 // From custom Proto.Derive generator:
 pub func Order.toProto(self): slice[Byte] { ... }

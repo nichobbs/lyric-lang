@@ -156,6 +156,41 @@ func countMethodCallsInBlock(body: in Block, methodName: in String): Int {
       case SDefer(deferBody) -> {
         n = n + countMethodCallsInBlock(deferBody, methodName)
       }
+      case SWhile(_, cond, loopBody) -> {
+        n = n + countMethodCalls(cond, methodName)
+        n = n + countMethodCallsInBlock(loopBody, methodName)
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  n
+}
+
+// The body of the synthesised function `name` in `src` after `deriveFile`.
+func derivedBody(src: in String, name: in String): Option[Expr] {
+  findFuncBodyLastReturn(deriveFile(parse(src).file), name)
+}
+
+// Occurrences of `.methodName(...)` in the synthesised function `name`, or
+// -1 when `deriveFile` did not synthesise it.
+func derivedCallCount(src: in String, name: in String, methodName: in String): Int {
+  match derivedBody(src, name) {
+    case Some(body) -> countMethodCalls(body, methodName)
+    case None -> -1
+  }
+}
+
+func countFuncsNamed(sf: in SourceFile, name: in String): Int {
+  var n = 0
+  var i = 0
+  while i < sf.items.count {
+    match sf.items[i].kind {
+      case IFunc(decl) -> {
+        if decl.name == name {
+          n = n + 1
+        }
+      }
       case _ -> ()
     }
     i = i + 1
@@ -295,8 +330,8 @@ func findFuncBody(sf: in SourceFile, name: in String): Option[Expr] {
 }
 
 // Like `findFuncBody`, but for multi-statement bodies (e.g. synthesised
-// `fromJson`, whose body is `__doc`/`defer`/`__root` prelude statements
-// followed by a final `SReturn`) — returns the *last* statement's return
+// `fromJsonElement`, whose body is a `__root` prelude statement followed by
+// a final `SReturn`) — returns the *last* statement's return
 // expression rather than assuming it's the first statement.
 func findFuncBodyLastReturn(sf: in SourceFile, name: in String): Option[Expr] {
   var i = 0
@@ -369,9 +404,73 @@ test "generate json record" {
   val src = "package P\n@generate(Json)\nrecord Point { x: Int; y: Int }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
-  assertEqualInt(sf.items.count, 3, "json-rec: 1 record + 2 synths (toJson, fromJson)")
+  assertEqualInt(sf.items.count, 4, "json-rec: 1 record + 3 synths (toJson, fromJsonElement, fromJson)")
   assertTrue(parseDeriveAndFindFunc(src, "Point.toJson"), "json-rec: Point.toJson synthesised")
+  assertTrue(parseDeriveAndFindFunc(src, "Point.fromJsonElement"), "json-rec: Point.fromJsonElement synthesised")
   assertTrue(parseDeriveAndFindFunc(src, "Point.fromJson"), "json-rec: Point.fromJson synthesised")
+  // `fromJson` parses once and hands the root element to `fromJsonElement` (#7347).
+  assertEqualInt(
+    derivedCallCount(src, "Point.fromJson", "fromJsonElement"),
+    1,
+    "json-rec: fromJson wraps fromJsonElement"
+  )
+  val sf2 = deriveFile(sf)
+  assertEqualInt(sf2.items.count, sf.items.count, "json-rec: a second deriveFile adds nothing")
+}
+
+// #7347: a nested `@generate(Json)` record, as a field or a slice element,
+// is decoded from its child element through `fromJsonElement`, never by
+// re-parsing the element's raw text through `fromJson`.
+test "generate json nested record decodes from the element" {
+  val src = "package P\n@generate(Json)\nrecord A { x: Int }\n@generate(Json)\nrecord B { a: A; xs: slice[A] }\n"
+  assertEqualInt(derivedCallCount(src, "B.fromJsonElement", "fromJsonElement"), 2, "json-nested: field + element")
+  assertEqualInt(derivedCallCount(src, "B.fromJsonElement", "fromJson"), 0, "json-nested: no fromJson round-trip")
+}
+
+// A nested type this pass cannot see a `fromJsonElement` for (no
+// `@generate(Json)`, so any decoder is hand-written) is still decoded
+// through its `fromJson(String)`.
+test "generate json nested record without generate uses fromJson" {
+  val src = "package P\nrecord C { x: Int }\n@generate(Json)\nrecord D { c: C; cs: slice[C] }\n"
+  assertEqualInt(derivedCallCount(src, "D.fromJsonElement", "fromJson"), 2, "json-plain-nested: fromJson per use")
+  assertEqualInt(derivedCallCount(src, "D.fromJsonElement", "fromJsonElement"), 0, "json-plain-nested: no element call")
+}
+
+// A hand-written `fromJson` on a `@generate(Json)` record is kept, and the
+// synthesised `fromJsonElement` forwards to it, so a record nesting this one
+// still runs the author's decoder.
+test "generate json hand written fromJson is kept and forwarded to" {
+  val src = "package P\n@generate(Json)\nrecord E { x: Int }\nfunc E.fromJson(json: in String): Result[E, String] { Err(\"no\") }\n"
+  val sf = deriveFile(parse(src).file)
+  assertEqualInt(countFuncsNamed(sf, "E.fromJson"), 1, "json-handwritten: fromJson not re-synthesised")
+  assertEqualInt(countFuncsNamed(sf, "E.fromJsonElement"), 1, "json-handwritten: fromJsonElement synthesised")
+  assertEqualInt(derivedCallCount(src, "E.fromJsonElement", "fromJson"), 1, "json-handwritten: forwards to fromJson")
+}
+
+// A hand-written `fromJsonElement` is kept, and the synthesised `fromJson`
+// and nesting records call it.
+test "generate json hand written fromJsonElement is kept" {
+  val src = "package P\n@generate(Json)\nrecord G { x: Int }\nfunc G.fromJsonElement(elem: in JsonElement): Result[G, String] { Err(\"no\") }\n@generate(Json)\nrecord H { g: G }\n"
+  val sf = deriveFile(parse(src).file)
+  assertEqualInt(countFuncsNamed(sf, "G.fromJsonElement"), 1, "json-handwritten-elem: not re-synthesised")
+  assertEqualInt(derivedCallCount(src, "G.fromJson", "fromJsonElement"), 1, "json-handwritten-elem: fromJson calls it")
+  assertEqualInt(derivedCallCount(src, "H.fromJsonElement", "fromJsonElement"), 1, "json-handwritten-elem: H calls it")
+}
+
+// A `@generate(Json)` record from an imported package decodes through its
+// `fromJsonElement`; a same-file record of the same name shadows it.
+test "generate json imported record" {
+  val imported = parse("package Q\n@generate(Json)\npub record Pt { x: Int }\n").file.items
+  val src = "package P\nimport Q\n@generate(Json)\nrecord Line { a: Pt }\n"
+  match findFuncBodyLastReturn(deriveFileWithImports(parse(src).file, imported), "Line.fromJsonElement") {
+    case Some(body) -> assertEqualInt(countMethodCalls(body, "fromJsonElement"), 1, "json-imported: element call")
+    case None -> assertTrue(false, "json-imported: Line.fromJsonElement not synthesised")
+  }
+  val shadowed = "package P\nimport Q\nrecord Pt { x: Int }\n@generate(Json)\nrecord Line { a: Pt }\n"
+  match findFuncBodyLastReturn(deriveFileWithImports(parse(shadowed).file, imported), "Line.fromJsonElement") {
+    case Some(body) -> assertEqualInt(countMethodCalls(body, "fromJson"), 1, "json-imported: local namesake wins")
+    case None -> assertTrue(false, "json-imported: shadowed Line.fromJsonElement not synthesised")
+  }
 }
 
 // Regression for #992: the synthesised `toJson` for a record with a
@@ -404,12 +503,12 @@ test "generate json record byte char scalars" {
   val pr = parse(src)
   val sf = deriveFile(pr.file)
   assertTrue(parseDeriveAndFindFunc(src, "Flags.fromJson"), "json-bytechar: Flags.fromJson synthesised")
-  match findFuncBodyLastReturn(sf, "Flags.fromJson") {
+  match findFuncBodyLastReturn(sf, "Flags.fromJsonElement") {
     case Some(body) -> {
       assertEqualInt(countMethodCalls(body, "fromJson"), 0, "json-bytechar: no nested-record fromJson call for Byte/Char")
       assertEqualInt(countMethodCalls(body, "toByte"), 1, "json-bytechar: Byte field decoded via .toByte()")
     }
-    case None -> assertTrue(false, "json-bytechar: Flags.fromJson body not found")
+    case None -> assertTrue(false, "json-bytechar: Flags.fromJsonElement body not found")
   }
   match findFuncBody(sf, "Flags.toJson") {
     case Some(body) -> {
@@ -435,11 +534,11 @@ test "generate json record unsupported generic field reports D0002" {
   val pr = parse(src)
   val sf = deriveFile(pr.file)
   assertTrue(parseDeriveAndFindFunc(src, "Wrapper.fromJson"), "json-d0002: Wrapper.fromJson still synthesised")
-  match findFuncBodyLastReturn(sf, "Wrapper.fromJson") {
+  match findFuncBodyLastReturn(sf, "Wrapper.fromJsonElement") {
     case Some(body) -> {
       assertEqualInt(countMethodCalls(body, "fromJson"), 0, "json-d0002: no broken fromJson call for the unsupported field")
     }
-    case None -> assertTrue(false, "json-d0002: Wrapper.fromJson body not found")
+    case None -> assertTrue(false, "json-d0002: Wrapper.fromJsonElement body not found")
   }
 }
 
@@ -455,7 +554,7 @@ test "generate json record float field reports D0002" {
   val pr = parse(src)
   val sf = deriveFile(pr.file)
   assertTrue(parseDeriveAndFindFunc(src, "Reading.fromJson"), "json-float: Reading.fromJson still synthesised")
-  match findFuncBodyLastReturn(sf, "Reading.fromJson") {
+  match findFuncBodyLastReturn(sf, "Reading.fromJsonElement") {
     case Some(body) -> {
       assertEqualInt(
         countLocalBindingsNamed(body, "value"),
@@ -463,7 +562,7 @@ test "generate json record float field reports D0002" {
         "json-float: no `val value = Std.Json.getDouble(...)` bound against the Float field (#5733)"
       )
     }
-    case None -> assertTrue(false, "json-float: Reading.fromJson body not found")
+    case None -> assertTrue(false, "json-float: Reading.fromJsonElement body not found")
   }
   // toJson is unaffected — Float.toString() needs no conversion.
   assertTrue(parseDeriveAndFindFunc(src, "Reading.toJson"), "json-float: Reading.toJson still synthesised")

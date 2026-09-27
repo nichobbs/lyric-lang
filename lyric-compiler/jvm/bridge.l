@@ -1319,10 +1319,7 @@ func collectDeriveFreeSigs(
             recordRetClass = None,
             // Derive-synthesized free functions never return `Self`.
             retIsSelf = false,
-            // #6754 (finding 1.2a): computed from the real declared return —
-            // registered under the qualified key only, so unreachable from a
-            // bare single-segment `ECall(EPath, …)` in practice, but cheap
-            // and correct to compute here regardless.
+            // #6754 (finding 1.2a): computed from the real declared return.
             retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
             recordRetHead = newList(),
             ownTypeParams = newList(),
@@ -1333,6 +1330,30 @@ func collectDeriveFreeSigs(
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
             into.add(qkey, sig)
+          }
+          // The keys `collectFileSigs` gives a hand-written dot-named
+          // function, so `Point.fromJson(s)` resolves through the static
+          // `Type.member(...)` path to this descriptor wherever it is called
+          // — in a value-producing `if`/`match` arm too (#7347; the
+          // qualified key alone left such a call typed as void, and the
+          // join's stack depths disagreed).
+          val akey = qkey + "@" + toString(decl.params.count)
+          if not into.containsKey(akey) {
+            into.add(akey, sig)
+          }
+          val scopedKey = owner + "::" + decl.name
+          if not into.containsKey(scopedKey) {
+            into.add(scopedKey, sig)
+          }
+          val scopedAkey = scopedKey + "@" + toString(decl.params.count)
+          if not into.containsKey(scopedAkey) {
+            into.add(scopedAkey, sig)
+          }
+          // Bare key only for a helper callable from another package, as
+          // `collectFileSigs` does (#6853).
+          val bundleCallable = match decl.visibility { case Some(_) -> true; case None -> false }
+          if bundleCallable and not into.containsKey(decl.name) {
+            into.add(decl.name, sig)
           }
         }
       }
