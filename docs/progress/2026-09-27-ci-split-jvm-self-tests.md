@@ -1,4 +1,4 @@
-# CI: JVM self-tests split across two jobs (#PR)
+# CI: JVM self-tests split across two jobs (#7589)
 
 `compiler-self-tests-jvm` ran about 10 minutes of JVM self-tests on one
 runner and set the pace of every CI run after the stage-2 move
