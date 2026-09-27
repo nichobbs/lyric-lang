@@ -194,7 +194,7 @@ println(toString(plistLength(b)))                          // 4
 
 `plistCons`, `plistHead`, `plistTail`, `plistLength` and `plistIsEmpty` are O(1). `plistLookup`, `plistInsert` and `plistDelete` are O(index): they copy only the nodes before the index. `plistToList`/`plistFromList` convert to and from `Std.Collections.List[T]` in O(n). Use a `slice[T]` when you need O(1) indexed access (D-progress-980).
 
-Pure Lyric, no BCL/JDK extern boundary, so the List ops work identically on `--target dotnet` and `--target jvm` and contracts/proofs apply throughout, per D038. (`--target native` cannot yet infer the element type of `plistEmpty()` from context, #7413.)
+Pure Lyric, no BCL/JDK extern boundary, so the List and Map ops work identically on `--target dotnet`, `--target jvm` and `--target native`, and contracts/proofs apply throughout, per D038.
 
 The same module also ships a persistent `Map[K, V]` (#6570), following the same bare-value representation: a `PersistentMap[K, V]` is a bare `slice[MapEntry[K, V]]` — a persistent association list, keyed by a caller-supplied equality predicate rather than a hash or ordering (Lyric has no generic `Eq`/`Ord` interface to dispatch on):
 

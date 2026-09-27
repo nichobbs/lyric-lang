@@ -346,6 +346,11 @@ record Ctx {
   genericFnPkg: Map[String, String]
   fnInstCache: Map[String, NFnInst]
   instMeta: Map[String, NInstInfo]
+  // One-shot expected type for the call `lowerExprExpecting` is about to
+  // lower (0 or 1 element). `lowerCallEx` takes it on entry, before any
+  // argument is lowered, so only that call's own generic instantiation can
+  // use it to bind type parameters that appear only in its return type (#7413).
+  pendingCallRetWant: List[NType]
   // Per-function type-parameter environment (set when lowering a
   // generic function instantiation; consulted by typeToN).
   fnTyEnvNames: List[String]
@@ -1674,6 +1679,84 @@ func bindLocal(ctx: in Ctx, insns: in List[NInsn], name: in String, v: in NVal):
   }
 }
 
+/// A top-level (non-generic) function named as a value, e.g. `intEq` passed
+/// to a `(Int, Int) -> Bool` parameter: lowered as the closure
+/// `{ (a, b) -> intEq(a, b) }` over the function's own signature, which the
+/// MSIL/JVM backends express as a delegate/method reference (#7413). None
+/// when no function of that name is in scope; a name with overloads of
+/// several arities is ambiguous without an expected type and is rejected.
+func functionRefAsClosure(ctx: in Ctx, insns: in List[NInsn], name: in String): Option[NVal] {
+  val selfPrefix = if ctx.curPkg.count > 0 { ctx.curPkg[0] + "." + name } else { name }
+  var found: Option[NFuncSig] = None
+  var matches = 0
+  var arity = 0
+  while arity <= 16 {
+    var sigOpt = mapGet(ctx.sigs, selfPrefix + "/" + arity.toString())
+    match sigOpt {
+      case Some(_) -> ()
+      case None -> {
+        sigOpt = mapGet(ctx.sigs, name + "/" + arity.toString())
+      }
+    }
+    match sigOpt {
+      case Some(sg) -> {
+        found = Some(value = sg)
+        matches = matches + 1
+      }
+      case None -> ()
+    }
+    arity = arity + 1
+  }
+  if matches > 1 {
+    panic(
+      "Lyric.LlvmCodegen: function '" + name + "' is overloaded by arity and cannot be passed as a value for " +
+        "--target native; wrap it in a lambda that fixes the arity"
+    )
+  }
+  val sig = match found { case Some(sg) -> sg; case None -> return None }
+  if sig.isAsync {
+    panic("Lyric.LlvmCodegen: async function '" + name + "' cannot be passed as a value for --target native")
+  }
+  val zp = Position(offset = 0, line = 0, column = 0)
+  val sp = Span(startPos = zp, endPos = zp)
+  val lps: List[LambdaParam] = newList()
+  val callArgs: List[CallArg] = newList()
+  val pTys: List[NType] = newList()
+  var i = 0
+  while i < sig.paramNames.count {
+    match sig.paramModes[i] {
+      case PMIn -> ()
+      case _ -> panic(
+        "Lyric.LlvmCodegen: function '" + name +
+          "' has an out/inout parameter and cannot be passed as a value for " +
+          "--target native"
+      )
+    }
+    val pn = "__fnref_" + i.toString()
+    val pty = sig.paramTys[i]
+    lps.add(LambdaParam(name = pn, ty = Some(value = pty), span = sp))
+    val argSegs: List[String] = newList()
+    argSegs.add(pn)
+    callArgs.add(CAPositional(expr = Expr(kind = EPath(path = ModulePath(segments = argSegs, span = sp)), span = sp)))
+    pTys.add(typeToN(ctx, pty))
+    i = i + 1
+  }
+  val fnSegs: List[String] = newList()
+  fnSegs.add(name)
+  val callExpr = Expr(
+    kind = ECall(
+      fn = Expr(kind = EPath(path = ModulePath(segments = fnSegs, span = sp)), span = sp),
+      args = callArgs
+    ),
+    span = sp
+  )
+  val stmts: List[Statement] = newList()
+  stmts.add(Statement(kind = SExpr(expr = callExpr), span = sp))
+  val retTy = match sig.retTy { case Some(te) -> typeToN(ctx, te); case None -> NVoid }
+  val want = closureNType(ctx, pTys, retTy)
+  Some(value = lowerLambda(ctx, insns, lps, Block(statements = stmts, span = sp), want))
+}
+
 func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
   val ty = match mapGet(ctx.varTypes, name) {
     case Some(t) -> t
@@ -1691,10 +1774,16 @@ func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
         case None -> {
           match mapGet(ctx.moduleVals, name) {
             case Some(mv) -> return lowerModuleVal(ctx, insns, mv)
-            case None -> panic(
-              "Lyric.LlvmCodegen: unknown name '" + name +
-                "' (non-local references other than module-level val/const are not yet supported for --target native)"
-            )
+            case None -> {
+              match functionRefAsClosure(ctx, insns, name) {
+                case Some(fv) -> return fv
+                case None -> panic(
+                  "Lyric.LlvmCodegen: unknown name '" + name +
+                    "' (non-local references other than module-level val/const and top-level functions are not " +
+                    "yet supported for --target native)"
+                )
+              }
+            }
           }
         }
       }
@@ -3318,6 +3407,11 @@ func lowerCallEx(
   line: in Int,
   wantTask: in Bool,
 ): NVal {
+  var retWant: Option[NType] = None
+  if ctx.pendingCallRetWant.count > 0 {
+    retWant = Some(value = ctx.pendingCallRetWant[0])
+    ctx.pendingCallRetWant.clear()
+  }
   // Builtins first.
   match fnExpr.kind {
     case EPath(path) -> {
@@ -3449,7 +3543,7 @@ func lowerCallEx(
         // falling back to the receiver's method space when no
         // package-qualified match exists — mirror that order here (#6841,
         // #6842) before committing to the local-receiver interpretation.
-        match tryLowerQualifiedCallee(ctx, insns, fnExpr, args, line, wantTask) {
+        match tryLowerQualifiedCallee(ctx, insns, fnExpr, args, line, wantTask, retWant) {
           case Some(v) -> return v
           case None -> {
           }
@@ -3592,12 +3686,12 @@ func lowerCallEx(
       // Generic functions instantiate per call site (N3.1).
       val noPre: List[NVal] = newList()
       if ctx.genericFnDefs.containsKey(ctx.curPkg[0] + "." + key) {
-        return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + key, noPre, args, line, wantTask)
+        return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + key, noPre, args, line, wantTask, retWant)
       }
       if ctx.genericFnDefs.containsKey(key) {
-        return lowerGenericFnCall(ctx, insns, key, noPre, args, line, wantTask)
+        return lowerGenericFnCall(ctx, insns, key, noPre, args, line, wantTask, retWant)
       }
-      lowerConstructCall(ctx, insns, fnExpr, args, key, line)
+      lowerConstructCall(ctx, insns, fnExpr, args, key, line, retWant)
     }
   }
 }
@@ -3678,6 +3772,7 @@ func tryLowerQualifiedCallee(
   args: in List[CallArg],
   line: in Int,
   wantTask: in Bool,
+  retWant: in Option[NType],
 ): Option[NVal] {
   val segs = match flattenMemberPathSegs(fnExpr) { case Some(s) -> s; case None -> return None }
   if segs.count < 2 {
@@ -3701,12 +3796,12 @@ func tryLowerQualifiedCallee(
   }
   val noPre: List[NVal] = newList()
   if ctx.genericFnDefs.containsKey(selfKey) {
-    return Some(value = lowerGenericFnCall(ctx, insns, selfKey, noPre, args, line, wantTask))
+    return Some(value = lowerGenericFnCall(ctx, insns, selfKey, noPre, args, line, wantTask, retWant))
   }
   if ctx.genericFnDefs.containsKey(key) {
-    return Some(value = lowerGenericFnCall(ctx, insns, key, noPre, args, line, wantTask))
+    return Some(value = lowerGenericFnCall(ctx, insns, key, noPre, args, line, wantTask, retWant))
   }
-  tryLowerConstruct(ctx, insns, plainName, args, line)
+  tryLowerConstruct(ctx, insns, plainName, args, line, retWant)
 }
 
 /// Constructor-call fallback for `lowerCall`: record construction,
@@ -3718,6 +3813,7 @@ func lowerConstructCall(
   args: in List[CallArg],
   key: in String,
   line: in Int,
+  retWant: in Option[NType],
 ): NVal {
   val inner = match fnExpr.kind { case ETypeApp(f, _) -> f; case _ -> fnExpr }
   val name = match flattenMemberPathSegs(inner) { case Some(segs) -> modulePathJoin(segs); case None -> "" }
@@ -3749,6 +3845,36 @@ func lowerConstructCall(
         )
       }
     }
+    // Prelude `println(x)` (a codegen builtin taking any value, as on the
+    // MSIL and JVM backends): a program need not import `Std.Console` to
+    // use it, so it lowers straight to the runtime's line write rather
+    // than resolving through a bundled package (#7413).
+    if name == "println" and args.count == 1 {
+      val pv = lowerPositionalArg(ctx, insns, args, 0)
+      val text = if isStringNType(pv.ty) {
+        pv
+      } else {
+        val noMethodArgs: List[CallArg] = newList()
+        val pExpr: Option[Expr] = match args[0] {
+          case CAPositional(ex) -> Some(value = ex)
+          case CANamed(_, value, _) -> Some(value = value)
+        }
+        match lowerScalarMethodCall(ctx, insns, pv, "toString", noMethodArgs, line, pExpr) {
+          case Some(sv) -> sv
+          case None -> panic(
+            "Lyric.LlvmCodegen: println(x) on a value of this type is not yet supported for --target native; " +
+              "pass a String or a scalar"
+          )
+        }
+      }
+      return callRuntime(
+        ctx,
+        insns,
+        "lyric_console_write_line",
+        NVoid,
+        arg2(NI64, NLitInt(v = 1i64, ty = NI64), text.ty, text.value)
+      )
+    }
     if name == "NativeWeak" and args.count == 1 {
       val target = lowerPositionalArg(ctx, insns, args, 0)
       if not isRefNType(target.ty) {
@@ -3767,7 +3893,7 @@ func lowerConstructCall(
       registerTemp(ctx, weakVal)
       return weakVal
     }
-    match tryLowerConstruct(ctx, insns, name, args, line) {
+    match tryLowerConstruct(ctx, insns, name, args, line, retWant) {
       case Some(v) -> return v
       case None -> {
       }
@@ -3787,7 +3913,12 @@ func lowerConstructCall(
 /// / distinct-type construction registries.  `None` when `name` matches
 /// none of them.
 func tryLowerConstruct(
-  ctx: in Ctx, insns: in List[NInsn], name: in String, args: in List[CallArg], line: in Int
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  name: in String,
+  args: in List[CallArg],
+  line: in Int,
+  retWant: in Option[NType],
 ): Option[NVal] {
   match mapGet(ctx.recordDefs, name) {
     case Some(ri) -> {
@@ -3822,7 +3953,7 @@ func tryLowerConstruct(
     }
   }
   if ctx.genericRecordDefs.containsKey(name) {
-    return Some(value = lowerGenericRecordConstruct(ctx, insns, genericQualifiedKey(ctx, name), args))
+    return Some(value = lowerGenericRecordConstruct(ctx, insns, genericQualifiedKey(ctx, name), args, retWant))
   }
   match mapGet(ctx.distinctDefs, name) {
     case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, name, di, args, line))
@@ -3959,10 +4090,10 @@ func lowerUfcsCall(
       val pre: List[NVal] = newList()
       pre.add(recv)
       if ctx.genericFnDefs.containsKey(ctx.curPkg[0] + "." + name + "/" + arity) {
-        return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + name + "/" + arity, pre, args, line, wantTask)
+        return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + name + "/" + arity, pre, args, line, wantTask, None)
       }
       if ctx.genericFnDefs.containsKey(name + "/" + arity) {
-        return lowerGenericFnCall(ctx, insns, name + "/" + arity, pre, args, line, wantTask)
+        return lowerGenericFnCall(ctx, insns, name + "/" + arity, pre, args, line, wantTask, None)
       }
     }
   }
@@ -6726,7 +6857,13 @@ func lowerGenericCaseConstruct(
 /// Lower a generic record constructor call (`Box(item = x, tag = 2)`):
 /// infer the type args from directly-param-typed fields, instantiate,
 /// construct.
-func lowerGenericRecordConstruct(ctx: in Ctx, insns: in List[NInsn], gkey: in String, args: in List[CallArg]): NVal {
+func lowerGenericRecordConstruct(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  gkey: in String,
+  args: in List[CallArg],
+  retWant: in Option[NType],
+): NVal {
   val rd = mustGetGenericRecord(ctx, gkey)
   val fields = recFieldsOf(rd)
   val argFieldIdx: List[Int] = newList()
@@ -6784,33 +6921,51 @@ func lowerGenericRecordConstruct(ctx: in Ctx, insns: in List[NInsn], gkey: in St
     }
     fi2 = fi2 + 1
   }
+  // Bind each type parameter from the field values (a bare `T` field, or
+  // one nested in a generic instantiation such as `rest:
+  // PersistentList[T]`), then from the expected type at the construction
+  // site for any parameter no field determines (#7413).
   val envNames = genericParamNamesOf(rd.generics)
+  val boundNames: List[String] = newList()
+  val boundTys: List[NType] = newList()
+  var ufi = 0
+  while ufi < fields.count {
+    unifyTyArg(ctx, fields[ufi].ty, rawVals[ufi].ty, envNames, boundNames, boundTys)
+    ufi = ufi + 1
+  }
+  if boundNames.count < envNames.count {
+    match retWant {
+      case Some(w) -> {
+        val selfArgs: List[TypeArg] = newList()
+        var sai = 0
+        while sai < envNames.count {
+          val tpSegs: List[String] = newList()
+          tpSegs.add(envNames[sai])
+          selfArgs.add(TAType(ty = TypeExpr(kind = TRef(path = ModulePath(segments = tpSegs, span = rd.span)), span = rd.span)))
+          sai = sai + 1
+        }
+        val headSegs: List[String] = newList()
+        headSegs.add(rd.name)
+        val selfTy = TypeExpr(
+          kind = TGenericApp(head = ModulePath(segments = headSegs, span = rd.span), args = selfArgs),
+          span = rd.span
+        )
+        unifyTyArg(ctx, selfTy, w, envNames, boundNames, boundTys)
+      }
+      case None -> ()
+    }
+  }
   val envTys: List[NType] = newList()
   var pi = 0
   while pi < envNames.count {
-    var found = false
-    var fj = 0
-    while fj < fields.count {
-      if not found {
-        match fields[fj].ty.kind {
-          case TRef(path) -> {
-            if path.segments.count == 1 and path.segments[0] == envNames[pi] {
-              envTys.add(rawVals[fj].ty)
-              found = true
-            }
-          }
-          case _ -> {
-          }
-        }
-      }
-      fj = fj + 1
-    }
-    if not found {
+    val bi = envIndexOf(boundNames, envNames[pi])
+    if bi < 0 {
       panic(
         "Lyric.LlvmCodegen: cannot infer type argument '" + envNames[pi] + "' for record '" + rd.name +
           "' from its constructor arguments; annotate the binding or pass the value through a typed position"
       )
     }
+    envTys.add(boundTys[bi])
     pi = pi + 1
   }
   val ri = match instantiateGenericRecordOpt(ctx, genericQualifiedKey(ctx, gkey), envTys) {
@@ -6839,6 +6994,20 @@ func mustGetGenericFn(ctx: in Ctx, key: in String): FunctionDecl {
 
 /// Structural unification of a declared (possibly parameterised) type
 /// against a concrete argument NType, extending bound(Names|Tys).
+func unifyTypeArgWith(
+  ctx: in Ctx,
+  ta: in TypeArg,
+  argTy: in NType,
+  paramNames: in List[String],
+  boundNames: in List[String],
+  boundTys: in List[NType],
+): Unit {
+  match ta {
+    case TAType(inner) -> unifyTyArg(ctx, inner, argTy, paramNames, boundNames, boundTys)
+    case TAValue(_) -> ()
+  }
+}
+
 func unifyTyArg(
   ctx: in Ctx,
   declTe: in TypeExpr,
@@ -6877,6 +7046,24 @@ func unifyTyArg(
                   }
                 }
                 case None -> {
+                  // Built-in collections carry their element types in
+                  // side tables rather than `instMeta` (#7413).
+                  val headName = modulePathJoin(head.segments)
+                  if headName == "List" and targs.count == 1 {
+                    match listElemOfType(ctx, argTy) {
+                      case Some(et) -> unifyTypeArgWith(ctx, targs[0], et, paramNames, boundNames, boundTys)
+                      case None -> ()
+                    }
+                  } else if headName == "Map" and targs.count == 2 {
+                    match mapKeyOfType(ctx, argTy) {
+                      case Some(kt) -> unifyTypeArgWith(ctx, targs[0], kt, paramNames, boundNames, boundTys)
+                      case None -> ()
+                    }
+                    match mapValOfType(ctx, argTy) {
+                      case Some(vt) -> unifyTypeArgWith(ctx, targs[1], vt, paramNames, boundNames, boundTys)
+                      case None -> ()
+                    }
+                  }
                 }
               }
             }
@@ -6886,6 +7073,12 @@ func unifyTyArg(
         }
         case _ -> {
         }
+      }
+    }
+    case TSlice(elemTe) -> {
+      match listElemOfType(ctx, argTy) {
+        case Some(et) -> unifyTyArg(ctx, elemTe, et, paramNames, boundNames, boundTys)
+        case None -> ()
       }
     }
     case TParen(inner) -> unifyTyArg(ctx, inner, argTy, paramNames, boundNames, boundTys)
@@ -6906,6 +7099,7 @@ func lowerGenericFnCall(
   args: in List[CallArg],
   line: in Int,
   wantTask: in Bool,
+  retWant: in Option[NType],
 ): NVal {
   val fd = mustGetGenericFn(ctx, gkey)
   val pkg = match mapGet(ctx.genericFnPkg, gkey) { case Some(pk) -> pk; case None -> ctx.curPkg[0] }
@@ -6978,6 +7172,18 @@ func lowerGenericFnCall(
   while pi2 < nParams {
     unifyTyArg(ctx, fd.params[pi2].ty, rawVals[pi2].ty, paramNames, boundNames, boundTys)
     pi2 = pi2 + 1
+  }
+  // A type parameter that appears only in the return type (`plistEmpty[T]():
+  // PersistentList[T]`) binds from the expected type at the call site; the
+  // arguments stay authoritative for every parameter they already bound.
+  if boundNames.count < paramNames.count {
+    match retWant {
+      case Some(w) -> match fd.ret {
+        case Some(rte) -> unifyTyArg(ctx, rte, w, paramNames, boundNames, boundTys)
+        case None -> ()
+      }
+      case None -> ()
+    }
   }
   val envTys: List[NType] = newList()
   var ti = 0
@@ -7784,6 +7990,13 @@ func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in
       return coerceUnlessDiverged(ctx, insns, lowerBlockValueW(ctx, insns, block, w3), want)
     }
     case EParen(inner) -> return lowerExprExpecting(ctx, insns, inner, want)
+    case ECall(_, _) -> {
+      ctx.pendingCallRetWant.clear()
+      ctx.pendingCallRetWant.add(want)
+      val callV = lowerExpr(ctx, insns, e)
+      ctx.pendingCallRetWant.clear()
+      return coerceUnlessDiverged(ctx, insns, callV, want)
+    }
     case _ -> {
     }
   }
@@ -8614,9 +8827,14 @@ func emitPatternTest(
           }
           case PWildcard -> {
           }
-          case _ -> panic(
-            "Lyric.LlvmCodegen: only bindings and wildcards are supported inside tuple patterns for --target native"
-          )
+          case _ -> {
+            // A refutable element (`case (Some(a), Some(b))`): test the
+            // field in place, continuing to the next element on success.
+            val nextL = freshLabel(ctx, "match.tuple")
+            val fv = lowerRecordFieldLoad(ctx, insns, ri, sv, ri.fieldNames[pi])
+            emitPatternTest(ctx, insns, fv, sub, nextL, failLabel, bindNames, bindVals, "")
+            insns.add(NLabel(name = nextL))
+          }
         }
         pi = pi + 1
       }
@@ -9705,6 +9923,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     instMeta = mod.instMeta,
     fnTyEnvNames = newList(),
     fnTyEnvTys = newList(),
+    pendingCallRetWant = newList(),
     closureSigs = mod.closureSigs,
     trampolines = mod.trampolines,
     weakTargets = mod.weakTargets,
@@ -10258,6 +10477,9 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_string_len", NI64, sTy))
   decls.add(mkDecl2("lyric_string_char_at", NI32, sTy, NI64))
   decls.add(mkDecl2("lyric_string_eq", NI32, sTy, sTy))
+  // Same signature as `Std.ConsoleHost.consoleWriteLineFd` (Lyric `Int` fd),
+  // which this declaration shadows when the kernel is also bundled.
+  decls.add(mkDecl2("lyric_console_write_line", NVoid, NI64, sTy))
   decls.add(mkDecl2("lyric_string_cmp", NI32, sTy, sTy))
   decls.add(mkDecl1("lyric_string_from_int", sTy, NI64))
   decls.add(mkDecl1("lyric_string_from_float", sTy, NDouble))
@@ -10598,6 +10820,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     instMeta = emptyInstMeta,
     fnTyEnvNames = newList(),
     fnTyEnvTys = newList(),
+    pendingCallRetWant = newList(),
     closureSigs = emptyClosureSigs,
     trampolines = newMap(),
     weakTargets = emptyWeakTargets,

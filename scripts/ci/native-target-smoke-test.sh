@@ -104,3 +104,9 @@ if [ "$lti_rc" -eq 0 ] \
   exit 1
 fi
 echo "Native bare longToInt precondition check (--target native) passed"
+# Std.Collections.Persistent on native (#7413): zero-argument generic calls
+# typed by the expected type, refutable tuple-element patterns, prelude
+# println, and top-level functions passed as values.
+"$lyric_bin" run --target native lyric-stdlib/tests/collections_persistent_tests.l
+"$lyric_bin" run --target native lyric-stdlib/tests/collections_persistent_map_tests.l
+echo "Native Std.Collections.Persistent suites (--target native) passed"

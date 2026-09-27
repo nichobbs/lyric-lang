@@ -607,6 +607,94 @@ test "arc: a self-referential generic union (cons list) instantiates and is leak
   assertEqualInt(r.exitCode, 42, "cons list of 40 strings")
 }
 
+test "a zero-argument generic call takes its type argument from the expected type (#7413)" {
+  // `chainEnd[T]()` mentions `T` only in its return type, so the arguments
+  // bind nothing; the expected type at the call site (a function's declared
+  // return, an annotated `val`, a non-generic parameter) supplies it.
+  val src = "package T\n" + "union Chain[T] {\n" + "  case End\n" + "  case Link(head: T, tail: Chain[T])\n" + "}\n" +
+    "func chainEnd[T](): Chain[T] {\n" +
+    "  End\n" +
+    "}\n" +
+    "func cons[T](x: in T, c: in Chain[T]): Chain[T] {\n" +
+    "  Link(head = x, tail = c)\n" +
+    "}\n" +
+    "func size[T](c: in Chain[T]): Int {\n" +
+    "  match c {\n" +
+    "    case End -> 0\n" +
+    "    case Link(_, t) -> 1 + size(t)\n" +
+    "  }\n" +
+    "}\n" +
+    "func emptyInts(): Chain[Int] {\n" +
+    "  chainEnd()\n" +
+    "}\n" +
+    "func countStrings(c: in Chain[String]): Int {\n" +
+    "  size(c)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val words: Chain[String] = chainEnd()\n" +
+    "  val two = cons(\"b\", cons(\"a\", words))\n" +
+    "  val ints = cons(7, emptyInts())\n" +
+    "  countStrings(two) * 10 + size(ints) + countStrings(chainEnd())\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 21, "zero-argument generic calls instantiate from the expected type")
+}
+
+test "arc: refutable patterns inside a tuple pattern test each element and are leak-free" {
+  // `case (Some(a), Some(b))` tests each tuple element in turn; a failing
+  // element falls through to the next arm. Before this, native accepted
+  // only bindings and wildcards inside a tuple pattern.
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "func pick(a: in Option[String], b: in Option[String]): Int {\n" +
+    "  match (a, b) {\n" +
+    "    case (Some(x), Some(y)) -> x.length + y.length\n" +
+    "    case (Some(x), None) -> 100 + x.length\n" +
+    "    case (None, Some(\"q\")) -> 50\n" +
+    "    case (None, _) -> 7\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val s: Option[String] = Some(\"abc\")\n" +
+    "  val t: Option[String] = Some(\"de\")\n" +
+    "  val n: Option[String] = None\n" +
+    "  val q: Option[String] = Some(\"q\")\n" +
+    "  pick(s, t) + pick(s, n) - 100 + pick(n, q) - 50 + pick(n, t) - 7 + pick(n, n) - 7 + 30\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 38, "tuple element patterns select the right arm")
+}
+
+test "arc: a top-level function passed as a value becomes a closure and is leak-free (#7413)" {
+  // `applyTwice(prefix, ...)` passes the function `prefix` where a
+  // `(String) -> String` is expected; native lowers it as the closure
+  // `{ (s) -> prefix(s) }`.
+  val src = "package T\n" + "func prefix(s: in String): String {\n" + "  \"ab\" + s\n" + "}\n" +
+    "func isShort(s: in String): Bool {\n" +
+    "  s.length < 4\n" +
+    "}\n" +
+    "func applyTwice(f: in (String) -> String, s: in String): String {\n" +
+    "  f(f(s))\n" +
+    "}\n" +
+    "func count[T](xs: in List[T], keep: in (T) -> Bool): Int {\n" +
+    "  var n = 0\n" +
+    "  for x in xs {\n" +
+    "    if keep(x) {\n" +
+    "      n = n + 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "  n\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val xs: List[String] = newList()\n" +
+    "  xs.add(\"a\")\n" +
+    "  xs.add(\"abcdef\")\n" +
+    "  xs.add(\"xyz\")\n" +
+    "  applyTwice(prefix, \"c\").length * 10 + count(xs, isShort)\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 52, "function values: 5-char result and 2 short strings")
+}
+
 test "two-param generic union constructs via expected types" {
   val src = "package T\n" + "union Res[T, E] {\n" + "  case Good(v: T)\n" + "  case Bad(err: E)\n" + "}\n" +
     "func parse(n: in Int): Res[Int, String] {\n" +
