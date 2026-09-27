@@ -4,7 +4,7 @@
 # stub with a thin `dotnet lyric.dll` launcher shim (#7025, #6788).
 #
 # A self-hosted runner of a different CPU architecture than the GitHub-hosted
-# runner that built the `build-artifacts`/`stage2-artifacts` upload gets
+# runner that built the `build-artifacts` upload gets
 # "cannot execute binary file: Exec format error" trying to run the native
 # apphost stub directly. `dotnet build` (unlike `dotnet publish
 # -p:PublishAot=true`) always produces a portable managed `lyric.dll` beside

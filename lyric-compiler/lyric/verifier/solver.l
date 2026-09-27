@@ -16,6 +16,7 @@ import Std.String
 import Std.File
 import Std.ProcessCapture
 import Std.VerifierEnvHost
+import Std.Environment as Env
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Solver outcome.
@@ -441,7 +442,7 @@ func getEnv(name: in String): String {
 }
 
 func isWindows(): Bool {
-  hostIsWindows()
+  Env.isWindows()
 }
 
 func pathJoin(dir: in String, file: in String): String {
