@@ -1153,6 +1153,49 @@ func localAnnotatedJvmType(ctx: in FuncCtx, te: in TypeExpr): JvmType {
   }
 }
 
+// An un-annotated binding of a list literal (`val xs = [1, 2, 3]`) holds a
+// `slice[T]` (the type checker's `EList` type), so it is stored in the erased
+// slice representation, `Object[]`, exactly as the annotated
+// `val xs: slice[Int] = [1, 2, 3]` is; the element type is recorded from the
+// literal by `recordVarGenericArgs`.  Without this the local stayed the
+// literal's construction-time `ArrayList`, and slice operations on it
+// (`.append`, `.concat`, `.slice`) fell through to `ArrayList` auto-FFI
+// (#7524).  `initTy` is the already-lowered initialiser on the stack; the
+// returned type is what it is on the stack afterwards.
+func unannotatedSliceLiteralBinding(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  init: in Expr,
+  initTy: in JvmType,
+  tyOpt: in Option[TypeExpr],
+): JvmType {
+  match tyOpt {
+    case Some(_) -> return initTy
+    case None -> ()
+  }
+  if not isListLiteralExpr(init) {
+    return initTy
+  }
+  match initTy {
+    case JRef(cls) -> if cls == "java/util/ArrayList" {
+      val sliceTy = JArray(elem = JRef(className = "java/lang/Object"))
+      coerceValueTo(ctx, insns, initTy, sliceTy)
+      sliceTy
+    } else {
+      initTy
+    }
+    case _ -> initTy
+  }
+}
+
+func isListLiteralExpr(e: in Expr): Bool {
+  match e.kind {
+    case EList(_) -> true
+    case EParen(inner) -> isListLiteralExpr(inner)
+    case _ -> false
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Statement lowering.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1193,7 +1236,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             case None -> JVoid
           }
           pushCtorExpect(ctx, annEnumHintTy)
-          val initTy = lowerExpr(ctx, insns, init)
+          val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerExpr(ctx, insns, init), tyOpt)
           popCtorExpect(ctx)
           lowerLocalPatBind(ctx, insns, pat, initTy, tyOpt)
           // A simple `val r = <expr>` records `r`'s generic args so a later
@@ -1228,7 +1271,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           } else {
             // #5995: see the matching LBVal comment above.
             pushCtorExpect(ctx, annTy)
-            val initTy = lowerExpr(ctx, insns, init)
+            val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerExpr(ctx, insns, init), tyOpt)
             popCtorExpect(ctx)
             val ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
             // `coerceValueTo` boxes a primitive array into an annotated
@@ -1264,7 +1307,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               } else {
                 // #5995: see the matching LBVal comment above.
                 pushCtorExpect(ctx, annTy)
-                val initTy = lowerExpr(ctx, insns, init)
+                val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerExpr(ctx, insns, init), tyOpt)
                 popCtorExpect(ctx)
                 ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
                 // `coerceValueTo` boxes a primitive array into an annotated

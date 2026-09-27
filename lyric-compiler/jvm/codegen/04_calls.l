@@ -3997,6 +3997,70 @@ func lowerSliceSliceJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmTy
   JArray(elem = e)
 }
 
+// The dot-named function (`func Url.tryFrom(...)`, or the `from`/`tryFrom`
+// synthesized for a distinct or range-subtype type) a package-qualified
+// `<pkg segments>.<Type>.<member>` receiver names, looked up under the
+// declaring package's own keys: `<pkg>/<Type>.<member>[@argc]` for a
+// hand-written function, `<pkg>::<Type>.<member>` for a synthesized one
+// (06_items.l).  `None` unless the receiver has at least a package segment
+// and a type segment, or when its first segment is a local (a value chain).
+func qualifiedDotNamedSigJvm(ctx: in FuncCtx, recv: in Expr, memberName: in String, argc: in Int): Option[JvmFuncSig] {
+  val segs = flattenPathExprSegsJvm(recv)
+  if segs.count < 2 {
+    return None
+  }
+  match lookupSlot(ctx, segs[0]) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val pkgSegs: List[String] = newList()
+  var i = 0
+  while i < segs.count - 1 {
+    pkgSegs.add(segs[i])
+    i = i + 1
+  }
+  val owner = joinSegments(pkgSegs, "/")
+  val dotName = segs[segs.count - 1] + "." + memberName
+  val argcSuffix = "@" + toString(argc)
+  val qkey = owner + "/" + dotName
+  match mapGet(ctx.funcSigs, qkey + argcSuffix) {
+    case Some(sig) -> return Some(value = sig)
+    case None -> ()
+  }
+  match mapGet(ctx.funcSigs, qkey) {
+    case Some(sig) -> return Some(value = sig)
+    case None -> ()
+  }
+  val scopedKey = owner + "::" + dotName
+  match mapGet(ctx.funcSigs, scopedKey + argcSuffix) {
+    case Some(sig) -> return Some(value = sig)
+    case None -> ()
+  }
+  mapGet(ctx.funcSigs, scopedKey)
+}
+
+// A static call to a dot-named function: arguments coerced to the declared
+// parameters, then `invokestatic` of the member name (`lowerFunc` strips the
+// `Type.` prefix from the JVM method name).
+func lowerDotNamedStaticCall(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  sig: in JvmFuncSig,
+  memberName: in String,
+  args: in List[CallArg],
+): JvmType {
+  var wi = 0
+  while wi < args.count {
+    val aTy = lowerCallArg(ctx, insns, args[wi])
+    if wi < sig.params.count {
+      coerceArgToCtx(ctx, insns, aTy, sig.params[wi])
+    }
+    wi = wi + 1
+  }
+  insns.add(LInvokestatic(owner = sig.owner, name = memberName, params = sig.params, ret = sig.ret))
+  sig.ret
+}
+
 func lowerMethodCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -4004,6 +4068,14 @@ func lowerMethodCall(
   memberName: in String,
   args: in List[CallArg],
 ): JvmType {
+  // A package-qualified type-associated call (`Std.Http.Url.tryFrom(s)`,
+  // `Lyric.Docker.ContainerId.tryFrom(s)`) resolves through the declaring
+  // package's own dot-named registration, before anything below can
+  // evaluate the package prefix as a value (#7478).
+  match qualifiedDotNamedSigJvm(ctx, recv, memberName, args.count) {
+    case Some(qsig) -> return lowerDotNamedStaticCall(ctx, insns, qsig, memberName, args)
+    case None -> ()
+  }
   // Auto-FFI: a call whose receiver is an extern-type name (e.g. `JMath` for
   // `extern type JMath = "java.lang.Math"`) is a static method on the Java
   // class, not an instance dispatch.  `A.b(args)` parses as
@@ -4042,18 +4114,7 @@ func lowerMethodCall(
       val scopedDotSig = mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey)
       val dotSig = match scopedDotSig { case Some(_) -> scopedDotSig; case None -> mapGet(ctx.funcSigs, distinctDotKey) }
       match dotSig {
-        case Some(sig) -> {
-          var wi = 0
-          while wi < args.count {
-            val aTy = lowerCallArg(ctx, insns, args[wi])
-            if wi < sig.params.count {
-              coerceArgToCtx(ctx, insns, aTy, sig.params[wi])
-            }
-            wi = wi + 1
-          }
-          insns.add(LInvokestatic(owner = sig.owner, name = memberName, params = sig.params, ret = sig.ret))
-          return sig.ret
-        }
+        case Some(sig) -> return lowerDotNamedStaticCall(ctx, insns, sig, memberName, args)
         case None -> ()
       }
       // A Lyric union-case construction qualified by an IMPORTED union
@@ -4478,6 +4539,53 @@ func lowerMethodCall(
     insns.add(LInvokevirtual(owner = "java/lang/String", name = memberName, params = ps1, ret = JInt))
     return JInt
   }
+  // `s.split(sep)` splits on the LITERAL separator (docs/01 §12.1,
+  // `Std.String.split`): `[s]` for an empty separator, and empty parts kept
+  // at both ends and between adjacent separators.  `java.lang.String.split`
+  // takes a regular expression and drops trailing empty parts, so the
+  // auto-FFI pass-through split `"Std.Json"` on `.` into no parts at all.
+  // Lowered as `sep.isEmpty() ? new String[] { s } :
+  // s.split(Pattern.quote(sep), -1)`, which is exactly that contract.
+  if isStringRecv and args.count == 1 and memberName == "split" {
+    val strTy = JRef(className = "java/lang/String")
+    val resTy = JArray(elem = strTy)
+    val splitSrcSlot = allocSlot(ctx, "__split_src_" + freshLabel(ctx), strTy)
+    emitStore(insns, splitSrcSlot, strTy)
+    val sepTy = lowerCallArg(ctx, insns, args[0])
+    coerceArgTo(insns, sepTy, strTy)
+    val splitSepSlot = allocSlot(ctx, "__split_sep_" + freshLabel(ctx), strTy)
+    emitStore(insns, splitSepSlot, strTy)
+    val splitResSlot = allocSlot(ctx, "__split_res_" + freshLabel(ctx), resTy)
+    val splitRegexL = "__split_regex_" + freshLabel(ctx)
+    val splitEndL = "__split_end_" + freshLabel(ctx)
+    val noPs: List[JvmType] = newList()
+    emitLoad(insns, splitSepSlot, strTy)
+    insns.add(LInvokevirtual(owner = "java/lang/String", name = "isEmpty", params = noPs, ret = JBoolean))
+    insns.add(LIfeq(label = splitRegexL))
+    insns.add(LIconst(v = 1))
+    insns.add(LAnewarray(className = "java/lang/String"))
+    insns.add(LDup)
+    insns.add(LIconst(v = 0))
+    emitLoad(insns, splitSrcSlot, strTy)
+    insns.add(LAastore)
+    emitStore(insns, splitResSlot, resTy)
+    insns.add(LGoto(label = splitEndL))
+    insns.add(LLabel(name = splitRegexL))
+    emitLoad(insns, splitSrcSlot, strTy)
+    emitLoad(insns, splitSepSlot, strTy)
+    val quotePs: List[JvmType] = newList()
+    quotePs.add(strTy)
+    insns.add(LInvokestatic(owner = "java/util/regex/Pattern", name = "quote", params = quotePs, ret = strTy))
+    insns.add(LIconst(v = -1))
+    val splitPs: List[JvmType] = newList()
+    splitPs.add(strTy)
+    splitPs.add(JInt)
+    insns.add(LInvokevirtual(owner = "java/lang/String", name = "split", params = splitPs, ret = resTy))
+    emitStore(insns, splitResSlot, resTy)
+    insns.add(LLabel(name = splitEndL))
+    emitLoad(insns, splitResSlot, resTy)
+    return resTy
+  }
   if isStringRecv and args.count == 2 and memberName == "replace" {
     lowerCallArg(ctx, insns, args[0])
     lowerCallArg(ctx, insns, args[1])
@@ -4703,6 +4811,10 @@ func lowerMethodCall(
         return lowerSliceConcatJvm(ctx, insns, recvTy, args)
       } else if memberName == "slice" and args.count == 2 {
         return lowerSliceSliceJvm(ctx, insns, recvTy, args)
+      } else if memberName == "toArray" and args.count == 0 {
+        // A slice is already an array: `.toArray()` yields the receiver
+        // itself, as MSIL's `toArray` does for an `MArray` receiver (#7480).
+        return recvTy
       }
     }
     case _ -> ()
@@ -4878,9 +4990,12 @@ func lowerMethodCall(
       // the enclosing expression was silently corrupted (docs/59 §4.4).
       // Fail loud at compile time.
       val posMc = recv.span.startPos
+      val recvKind = match recvTy { case JArray(_) -> "a slice"; case _ -> "a primitive-typed" }
       panic(
         "Jvm.Codegen: " + toString(posMc.line) + ":" + toString(posMc.column) + ": method '" + memberName +
-          "' cannot be called on a primitive-typed receiver"
+          "' cannot be called on " +
+          recvKind +
+          " receiver"
       )
     }
   }
