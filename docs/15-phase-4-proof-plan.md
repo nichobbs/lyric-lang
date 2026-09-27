@@ -36,7 +36,8 @@ Ship the SMT-backed verifier that the operational semantics in
 `docs/08-contract-semantics.md` §10 *describes*. Concretely:
 
 1. Make `@proof_required` modules produce compile-time verification
-   conditions instead of runtime asserts.
+   conditions for `lyric prove`.  (A build still emits their runtime
+   asserts; see §10.)
 2. Discharge those VCs with Z3 (D033) over the decidable fragment
    (`08-contract-semantics.md` §11).
 3. Report counterexamples for failed proofs in a form a working
@@ -564,25 +565,25 @@ particular model — the analogue of `dafny verify /printDischarge`.
 
 ## 10. Interaction with runtime asserter
 
-`@proof_required` modules under M1.4 today emit runtime asserts
-*and* parse contracts (D035). Phase 4 reverses the first half:
+`@proof_required` modules emit runtime asserts *and* carry their parsed
+contracts (D035).  This plan originally had Phase 4 drop the runtime
+asserts once the verifier shipped, with `--release` emitting an assembly
+with no contract checks (SPARK's `Pre => Static`).  That did not happen:
+`lyric build` never runs the verifier, so dropping the asserts left an
+unproved `@proof_required` package with no contract checking at all.
+D-progress-994 (#7227) therefore keeps them:
 
-| Mode                                     | Runtime asserts emitted? | VC obligations? |
-|------------------------------------------|--------------------------|-----------------|
-| `@runtime_checked`                       | yes                      | no              |
-| `@proof_required`                        | no                       | yes             |
-| `@proof_required(unsafe_blocks_allowed)` | no, except inside `unsafe { … }` | yes |
-| `@proof_required(checked_arithmetic)`    | no                       | yes (with overflow VCs) |
-| `@axiom`                                 | n/a (no body)            | no              |
+| Mode                                     | Runtime asserts emitted by `lyric build`? | VC obligations for `lyric prove`? |
+|------------------------------------------|-------------------------------------------|-----------------------------------|
+| `@runtime_checked`                       | yes                                       | no                                |
+| `@proof_required`                        | yes, except quantifier conjuncts          | yes                               |
+| `@proof_required(unsafe_blocks_allowed)` | yes, except quantifier conjuncts          | yes, except inside `unsafe { … }` |
+| `@proof_required(checked_arithmetic)`    | yes, except quantifier conjuncts          | yes (with overflow VCs)           |
+| `@axiom`                                 | n/a (no body)                             | no                                |
 
-A `lyric build --release` of a proof-required package emits an
-*assembly with no contract checks*, exactly the way SPARK's
-`Pre => Static` works. The contract is in the metadata, not in
-the IL. This is the speedup story for `@proof_required`: the
-contracts are not free-standing assertions any more.
-
-A `lyric build --debug` of the same package emits the runtime
-asserts anyway, *belt and braces*. Useful during proof-debugging.
+Every build profile keeps the asserts; `--release` does not remove
+contract checks (language reference §6.4).  Eliding the assert for each
+obligation the verifier discharges during the build is tracked in #7431.
 
 ---
 
