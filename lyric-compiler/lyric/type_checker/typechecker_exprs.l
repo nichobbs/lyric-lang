@@ -5162,6 +5162,106 @@ func unionCaseSymbolForScrutinee(
   unionCaseSymbolOf(tbl, fn)
 }
 
+// #7584: `PRecord`'s own `head: ModulePath` (`case Pkg.Point { x = a } -> …` —
+// grammar §8 spells a record pattern with a `{`, but the parser dispatches on
+// that brace alone with no check that `head` names a record at all, let
+// alone THIS scrutinee's record) used to be discarded entirely: both
+// `bindPatternTyped` and `checkConstRefPattern` resolved fields purely from
+// the scrutinee's own type, silently ignoring a head naming a different
+// record, an unimported package, or a package-private type. Mirrors
+// `unionCaseSymbolForScrutinee`'s qualifier handling for `PConstructor`
+// (#6287 Phase B / #7548), but simpler: a record has no separate
+// "case name" layer the way a union case has a parent union name, so the
+// head's last segment is the record's own simple name and every segment
+// before it must be exactly that record's declaring package (no tier B).
+// Reports T0137 for a head that does not name the scrutinee's own record —
+// wrong record, wrong package-qualifier text, or a head that resolves to
+// something else entirely (a union case, a function, nothing) — then
+// (only for a qualified head, mirroring #7548's ordering) T0097 for a
+// package-private record before T0020 for one whose package isn't
+// reachable from this file's imports. A bare head that already resolves to
+// the scrutinee's own record needs neither check: its package must already
+// be reachable, since the scrutinee itself could only have been typed as
+// that record by importing it. An unresolved/unknown scrutinee (`TyError`,
+// a type variable, `Self`, …) is left alone here — already diagnosed (or
+// not yet resolvable) elsewhere, so this never cascades a second error onto
+// an already-broken scrutinee.
+func checkRecordPatternHead(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  head: in ModulePath,
+  span: in Span,
+  scrutineeTy: in Type,
+): Unit {
+  match unrefine(scrutineeTy) {
+    case TyUser(sid, sname, _) -> {
+      val segs = head.segments
+      if segs.count == 0 {
+        return
+      }
+      val recName = segs[segs.count - 1]
+      val cands = symTableTryFindAll(tbl, recName)
+      var ci = cands.count - 1
+      while ci >= 0 {
+        val isRecordHit = match cands[ci].kind {
+          case DKRecord(did, _) -> typeIdEq(did, sid)
+          case DKExposedRec(did, _) -> typeIdEq(did, sid)
+          case _ -> false
+        }
+        if isRecordHit {
+          if segs.count >= 2 {
+            val quals: List[String] = newList()
+            var qi = 0
+            while qi < segs.count - 1 {
+              quals.add(segs[qi])
+              qi = qi + 1
+            }
+            val fullQual = modulePathJoin(quals)
+            if cands[ci].originPackage != fullQual {
+              diag.add(
+                errorDiagnostic(
+                  "T0137",
+                  "record pattern qualifier '" + fullQual + "' does not match the scrutinee's own record '" +
+                    cands[ci].originPackage +
+                    "." +
+                    recName +
+                    "' — this pattern is matched against a value of that record, not '" +
+                    fullQual +
+                    "'",
+                  span
+                )
+              )
+              return
+            }
+            // #7584: same ordering as #7548's union-case checks — privacy
+            // (T0097) before reachability (T0020), so an unimported private
+            // record still gets T0097.
+            if symbolIsPackagePrivateBinding(cands[ci]) {
+              checkImportedVisibility(cands[ci], span, diag)
+              return
+            }
+            if reportUnimportedQualifiedPackage(tbl, symTableScopePkg(tbl), cands[ci].originPackage, recName, span, diag) {
+              return
+            }
+          }
+          return
+        }
+        ci = ci - 1
+      }
+      diag.add(
+        errorDiagnostic(
+          "T0137",
+          "record pattern head '" + modulePathJoin(segs) + "' does not match the scrutinee's own record type '" + sname +
+            "'",
+          span
+        )
+      )
+    }
+    case _ -> {
+    }
+  }
+}
+
 // A union- or enum-case pattern can only match a value of the union or enum
 // that declares the case.  `unionCaseSymbolForScrutinee` falls back to a
 // name-based lookup when the scrutinee's own type has no such case, so
@@ -5924,6 +6024,13 @@ func checkConstRefPattern(
       }
     }
     case PRecord(_, fields, _) -> {
+      // #7584: unlike `PConstructor`'s `unionCaseSymbolForScrutinee` call
+      // (which resolves the field TYPES this arm needs), `checkRecordPatternHead`
+      // has no effect on field resolution here — `recFields` below is
+      // resolved purely from `scrutineeTy`, independent of the head — so
+      // there is nothing to gain calling it a second time.
+      // `bindPatternTyped`'s call is the sole owner of this pattern's
+      // T0137/T0097/T0020 diagnostics.
       val recFields: List[FieldEntry] = match unrefine(scrutineeTy) {
         case TyUser(tid, _, targs) -> fieldsOfRecordInstantiated(tbl, tid, targs)
         case _ -> newList()
@@ -6060,7 +6167,13 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
         i = i + 1
       }
     }
-    case PRecord(_, fields, _) -> {
+    case PRecord(head, fields, _) -> {
+      // #7584: validate the head before resolving fields — the owning call
+      // for this pattern's T0137/T0097/T0020 diagnostics (mirrors
+      // `PConstructor`'s `unionCaseSymbolForScrutinee` call being the
+      // "owner" per the #6540 comment on `checkConstRefPattern`'s own
+      // `PConstructor` arm below).
+      checkRecordPatternHead(tbl, diag, head, pat.span, ty)
       // Resolve the record's declared field types from the scrutinee type so a
       // bound field carries its real type (e.g. `Point{x = a}` types `a` as
       // `Int`) rather than `TyError`.
