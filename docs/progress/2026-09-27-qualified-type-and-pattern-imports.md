@@ -27,9 +27,9 @@ three-segment package, WITH the import present, runs correctly on both
 someVal`, `Lib.Net.Rest.Kind.A`, all via a `[project.packages]` manifest
 build). WITHOUT the import, the same reference is a pre-existing,
 orthogonal MSIL/JVM parity gap in the multi-package project-build bridge
-(dotnet silently accepts it, JVM correctly rejects it with T0020) — left
-open; see D-progress-1012's "Scope" section. Record-pattern heads (which
-have no existing head validation of any kind) are also left open.
+(dotnet silently accepts it, JVM correctly rejects it with T0020) — tracked
+in #7583; see D-progress-1012's "Scope" section. Record-pattern heads (which
+have no existing head validation of any kind) are tracked in #7584.
 
 Also added (requested during review): a runtime regression test for a
 package-qualified distinct-type/range-subtype factory call

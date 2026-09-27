@@ -82,8 +82,8 @@ covered: both places that type-check a `PRecord` pattern (`bindPatternTyped`,
 `checkConstRefPattern`) discard the head entirely and resolve fields purely
 from the scrutinee's type — there is no existing validation of the head at
 all, qualified or not, import-reachable or not. Adding one is a separate,
-larger structural-validation feature, not an import-reachability fix; left
-for a follow-up.
+larger structural-validation feature, not an import-reachability fix;
+tracked in #7584.
 
 A pre-existing, orthogonal gap was found while verifying the value-read half
 of #7548 (`Lib.Net.Rest.someVal`/`Lib.Net.Rest.Kind.A` with no call): for a
@@ -96,7 +96,7 @@ list harness this fix's own self-tests use resolves both cases identically
 (confirmed: every #7495/#7499/#7548 self-test passes), so the divergence is
 specific to how the MSIL project-build bridge assembles or consumes that
 pipeline for a multi-package, single-assembly-output project — not to
-anything `checkQualifiedPackageRef`/`resolveExprPath` do. Left open: the
+anything `checkQualifiedPackageRef`/`resolveExprPath` do. Tracked in #7583: the
 root cause needs its own investigation of the MSIL project-build path,
 which is a materially different piece of machinery from the type-checker
 fix this entry covers, and risks regressing existing project builds if
