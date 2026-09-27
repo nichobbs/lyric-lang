@@ -35,7 +35,8 @@ for t in \
   lyric-compiler/jvm/generic_param_field_read_jvm_self_test.l \
   lyric-compiler/jvm/generic_element_field_read_jvm_self_test.l \
   lyric-compiler/jvm/generic_free_func_return_jvm_self_test.l \
-  lyric-compiler/jvm/cross_package_type_resolution_jvm_self_test.l ; do
+  lyric-compiler/jvm/cross_package_type_resolution_jvm_self_test.l \
+  lyric-compiler/lyric/tuple_nullary_case_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"

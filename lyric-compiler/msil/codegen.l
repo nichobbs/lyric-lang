@@ -5671,6 +5671,14 @@ pub record FuncCtx {
   // construction (e.g. `return None`) to infer the concrete type argument T
   // when no arg is present (e.g. None in parseDigits(): Option[Long] → T=Long).
   declaredRetTy: MsilType
+  // Nesting depth of tuple elements being lowered without an annotated
+  // expected type (#7455).  While positive, a construction with no
+  // `contextHintTyArgs` does NOT borrow `declaredRetTy`'s type arguments: a
+  // tuple element is never the function's return value, so the fallback would
+  // mis-type it (`Option_Some<string>` around a `Box` in an
+  // `Option[String]`-returning function).  A `return` inside the element
+  // resets it to 0 for its own value.
+  var retHintFallbackOff: Int
   // Transient type-arg hint set by local variable declarations with a generic
   // type annotation (e.g. `var x: Option[Int] = None`).  Populated just before
   // lowering the init expression and cleared immediately after, so nullary
@@ -9119,7 +9127,7 @@ func lowerNullaryCaseValueMsil(
       nullCtxTyArgs.add(fctx.contextHintTyArgs[hi])
       hi = hi + 1
     }
-  } else {
+  } else if fctx.retHintFallbackOff == 0 {
     match fctx.declaredRetTy {
       case MGenericInst(_, _, retArgTys) -> {
         var rti = 0
@@ -10557,7 +10565,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           restoreHintTyArgs(fctx, eteSavedHint)
           t
         } else {
-          lowerExprMsil(cctx, fctx, insns, exprs[etei])
+          lowerTupleElemUnhintedMsil(cctx, fctx, insns, exprs[etei])
         }
         eteElemTys.add(eteTy)
         boxIfNeededMsil(cctx, insns, eteTy)
@@ -12311,10 +12319,37 @@ func lowerIfExprMsil(
       // allocates its own (higher-numbered) replacements.
       val preThenSlotCount = fctx.slotTicker.count
       val thenInsns: List[MInsn] = newList()
-      var thenTy = lowerExprOrBlockMsil(cctx, fctx, thenInsns, thenBranch)
+      var thenTy: MsilType = MVoid
       var elseInsns: List[MInsn] = newList()
-      var elseTy = lowerBranchWithSiblingHintMsil(cctx, fctx, elseInsns, elseBranch, thenTy)
-      if not isConcreteCollTy(thenTy) and msilHeadFqnMsil(thenTy) != "Std.Core.Option" and (isConcreteCollTy(elseTy) or msilHeadFqnMsil(elseTy) == "Std.Core.Option") {
+      var elseTy: MsilType = MVoid
+      val tupleValued = match tupleBranchElemsMsil(thenBranch) {
+        case Some(_) -> true
+        case None -> match tupleBranchElemsMsil(elseBranch) { case Some(_) -> true; case None -> false }
+      }
+      if tupleValued {
+        // A tuple-valued `if`: a bare generic nullary element (`None`) in one
+        // branch takes its type arguments from the same position in the other
+        // branch, resolved once both are lowered (#7455, see `TupleHoleMsil`).
+        val ifHoles: List[TupleHoleMsil] = newList()
+        thenTy = lowerBranchCollectingTupleHolesMsil(cctx, fctx, thenInsns, thenBranch, 0, ifHoles)
+        elseTy = lowerBranchCollectingTupleHolesMsil(cctx, fctx, elseInsns, elseBranch, 1, ifHoles)
+        val ifBufs: List[List[MInsn]] = newList()
+        ifBufs.add(thenInsns)
+        ifBufs.add(elseInsns)
+        val ifTys: List[MsilType] = newList()
+        ifTys.add(thenTy)
+        ifTys.add(elseTy)
+        val ifRets: List[Bool] = newList()
+        ifRets.add(endsWithReturnMsil(thenInsns) or armEndsInLoopJumpMsil(thenInsns))
+        ifRets.add(endsWithReturnMsil(elseInsns) or armEndsInLoopJumpMsil(elseInsns))
+        fillTupleHolesMsil(cctx, fctx, ifBufs, ifTys, ifRets, ifHoles)
+        thenTy = ifTys[0]
+        elseTy = ifTys[1]
+      } else {
+        thenTy = lowerExprOrBlockMsil(cctx, fctx, thenInsns, thenBranch)
+        elseTy = lowerBranchWithSiblingHintMsil(cctx, fctx, elseInsns, elseBranch, thenTy)
+      }
+      if (not tupleValued) and not isConcreteCollTy(thenTy) and msilHeadFqnMsil(thenTy) != "Std.Core.Option" and (isConcreteCollTy(elseTy) or msilHeadFqnMsil(elseTy) == "Std.Core.Option") {
         while thenInsns.count > 0 {
           thenInsns.removeAt(thenInsns.count - 1)
         }
@@ -13253,6 +13288,359 @@ func inferScrutineeEnumHintMsil(fctx: in FuncCtx, e: in Expr): String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Tuple-valued branches: deferred generic nullary-case elements (#7455).
+//
+// A bare generic nullary case (`None`) carries no type argument of its own; a
+// tuple element has no construction hint either (only an annotated tuple
+// context pushes one onto `collExpect`, #4965).  So in
+//   val (lo, hi) = match s { case A(a) -> (Some(a), None); case B(b) -> (None, Some(b)) }
+// each `None` erased to `Option_None<object>` while the sibling `Some` built
+// `Option_Some<Box>`, and the destructuring `castclass Option<Box>` threw
+// `InvalidCastException` (or ilverify rejected the join with StackUnexpected).
+// The type argument is only known once EVERY branch's tuple element types are
+// known — including branches lowered after the `None`, so a forward-only hint
+// like `lowerMatchExprMsil`'s running canon cannot recover it.
+//
+// Instead, a branch whose value is a tuple literal records each bare generic
+// nullary element as a hole (its instruction offset in the branch buffer) and
+// emits nothing for it; once every branch is lowered, `fillTupleHolesMsil`
+// takes the element type at the same tuple position from the sibling branches
+// and splices the closed construction into the hole.  Only side-effect-free,
+// scope-independent `EPath` constructions are deferred, so lowering one after
+// its branch's scope has closed is equivalent to lowering it in place.
+// ─────────────────────────────────────────────────────────────────────────────
+record TupleHoleMsil {
+  branch: Int
+  insnIndex: Int
+  path: List[Int]
+  parentFqn: String
+  expr: Expr
+}
+
+// The parent union FQN when `e` is a bare path naming a GENERIC nullary union
+// case (`None`, `Option.None`, an in-bundle `Nothing` of `Maybe[T]`), or "" when
+// it names anything else (a local, a constant, an enum case, a non-generic case)
+// — mirrors the resolution order of `lowerExprMsil`'s `EPath` arm.
+func genericNullaryCaseParentMsil(cctx: in CodegenCtx, fctx: in FuncCtx, e: in Expr): String {
+  match e.kind {
+    case EParen(inner) -> genericNullaryCaseParentMsil(cctx, fctx, inner)
+    case EPath(path) -> {
+      val name = lastSegmentMsil(path)
+      if fctx.slots.containsKey(name) or fctx.types.containsKey(name) or fctx.hoistedCellSlot.containsKey(name) or fctx.captureNameToIndex.containsKey(name) {
+        return ""
+      }
+      if cctx.constValues.containsKey(fctx.pkgName + "/" + name) or cctx.constValues.containsKey(name) or cctx.enumCaseOrdinals.containsKey(name) {
+        return ""
+      }
+      val qualifier = if path.segments.count >= 2 { path.segments[path.segments.count - 2] } else { "" }
+      val localKey = fctx.pkgName + "." + name
+      val ctorKey = if cctx.recordCtorTokens.containsKey(localKey) {
+        localKey
+      } else {
+        match mapGet(cctx.unionCaseCtorByName, name) {
+          case Some(cands) -> pickCaseFqnByQualifier(cctx, fctx, cands, qualifier)
+          case None -> ""
+        }
+      }
+      if ctorKey.length == 0 or not cctx.recordCtorTokens.containsKey(ctorKey) {
+        return ""
+      }
+      val parentFqn = match mapGet(cctx.caseParentUnion, ctorKey) { case Some(p) -> p; case None -> return "" }
+      val nStdlib = match mapGet(cctx.caseTypeParamCount, ctorKey) { case Some(n) -> n; case None -> 0 }
+      val nInBundle = match mapGet(cctx.genericTypeArity, ctorKey) { case Some(n) -> n; case None -> 0 }
+      if nStdlib > 0 or nInBundle > 0 {
+        parentFqn
+      } else {
+        ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
+// The tuple literal a branch body yields: a bare `( … )`, or the trailing
+// `( … )` of a `defer`-free block (a `defer` routes the value through
+// try/finally, see `blockTrailingExprMsil`).
+func tupleBranchElemsMsil(body: in ExprOrBlock): Option[List[Expr]] {
+  val tail: Option[Expr] = match body {
+    case EOBExpr(e) -> Some(value = e)
+    case EOBBlock(blk) -> blockTrailingExprMsil(blk)
+  }
+  match tail {
+    case Some(e) -> match e.kind { case ETuple(exprs) -> Some(value = exprs); case _ -> None }
+    case None -> None
+  }
+}
+
+// Lower one branch (match arm body / if branch) of a multi-branch expression,
+// deferring the bare generic nullary elements of a tuple-literal value into
+// `holes` (see `TupleHoleMsil`).  Anything else — and a tuple lowered under an
+// annotated tuple context, whose `collExpect` entry already types every
+// element — lowers exactly as `lowerExprOrBlockMsil` would.
+func lowerBranchCollectingTupleHolesMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  body: in ExprOrBlock,
+  branch: in Int,
+  holes: in List[TupleHoleMsil],
+): MsilType {
+  val elemsOpt = tupleBranchElemsMsil(body)
+  val exprs: List[Expr] = match elemsOpt {
+    case Some(xs) -> xs
+    case None -> return lowerExprOrBlockMsil(cctx, fctx, insns, body)
+  }
+  val annotated = match collExpectTop(fctx) { case MTuple(elems) -> elems.count == exprs.count; case _ -> false }
+  if annotated {
+    return lowerExprOrBlockMsil(cctx, fctx, insns, body)
+  }
+  match body {
+    case EOBExpr(_) -> lowerTupleCollectingHolesMsil(cctx, fctx, insns, exprs, branch, newList(), holes)
+    case EOBBlock(blk) -> {
+      // Same scope and hint discipline as `lowerBlockExprMsil` →
+      // `lowerStmtsExprFromMsil`'s defer-free path: the intermediate
+      // statements see no construction hint; the trailing tuple is the value.
+      val blockScope = enterBlockScopeMsil(fctx)
+      val savedBlockHint = pushAnnoHintTyArgs(fctx, MObject)
+      pushCollExpect(fctx, MObject)
+      var si = 0
+      while si < blk.statements.count - 1 {
+        lowerStmtMsil(cctx, fctx, insns, blk.statements[si])
+        si = si + 1
+      }
+      popCollExpect(fctx)
+      restoreHintTyArgs(fctx, savedBlockHint)
+      val ty = lowerTupleCollectingHolesMsil(cctx, fctx, insns, exprs, branch, newList(), holes)
+      exitBlockScopeMsil(fctx, blockScope)
+      ty
+    }
+  }
+}
+
+// `lowerExprMsil`'s `ETuple` lowering (no annotated context) with hole
+// recording: a bare generic nullary element emits nothing and records its
+// offset; a nested tuple literal recurses so its own holes are found too.
+func lowerTupleCollectingHolesMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  exprs: in List[Expr],
+  branch: in Int,
+  path: in List[Int],
+  holes: in List[TupleHoleMsil],
+): MsilType {
+  insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+  val elemTys: List[MsilType] = newList()
+  var i = 0
+  while i < exprs.count {
+    insns.add(MDup)
+    val elemPath: List[Int] = newList()
+    var pi = 0
+    while pi < path.count {
+      elemPath.add(path[pi])
+      pi = pi + 1
+    }
+    elemPath.add(i)
+    val parentFqn = genericNullaryCaseParentMsil(cctx, fctx, exprs[i])
+    val ty = if parentFqn.length > 0 {
+      holes.add(
+        TupleHoleMsil(branch = branch, insnIndex = insns.count, path = elemPath, parentFqn = parentFqn, expr = exprs[i])
+      )
+      MObject
+    } else {
+      match exprs[i].kind {
+        case ETuple(sub) -> lowerTupleCollectingHolesMsil(cctx, fctx, insns, sub, branch, elemPath, holes)
+        case _ -> lowerTupleElemUnhintedMsil(cctx, fctx, insns, exprs[i])
+      }
+    }
+    elemTys.add(ty)
+    boxIfNeededMsil(cctx, insns, ty)
+    insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+    i = i + 1
+  }
+  MTuple(elems = elemTys)
+}
+
+// Lower a tuple element that has no annotated expected type.  A tuple element
+// is its own construction context: the enclosing construction hint belongs to
+// the WHOLE expression (a function's `Option[String]` return type, a `val x:
+// Option[T]` annotation), never to an element of a tuple nested inside it.
+// Letting it leak built `Option_Some<string>` around a `Box` payload for a
+// `(Some(b), 1)` element inside an `Option[String]`-returning function —
+// unverifiable IL (StackUnexpected) and an `InvalidCastException` at the
+// destructuring site (#7455).
+func lowerTupleElemUnhintedMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], e: in Expr): MsilType {
+  val saved = pushAnnoHintTyArgs(fctx, MObject)
+  pushCollExpect(fctx, MObject)
+  fctx.retHintFallbackOff = fctx.retHintFallbackOff + 1
+  val t = lowerExprMsil(cctx, fctx, insns, e)
+  fctx.retHintFallbackOff = fctx.retHintFallbackOff - 1
+  popCollExpect(fctx)
+  restoreHintTyArgs(fctx, saved)
+  t
+}
+
+// The element type at `path[depth..]` inside nested `MTuple`s, or `MObject`
+// when `t` is not a tuple of that shape.
+func tupleElemTypeAtPathMsil(t: in MsilType, path: in List[Int], depth: in Int): MsilType {
+  if depth >= path.count {
+    return t
+  }
+  match t {
+    case MTuple(elems) -> {
+      val k = path[depth]
+      if k < elems.count {
+        tupleElemTypeAtPathMsil(elems[k], path, depth + 1)
+      } else {
+        MObject
+      }
+    }
+    case _ -> MObject
+  }
+}
+
+// `t` with the element at `path[depth..]` replaced by `newTy`.
+func withTupleElemTypeAtPathMsil(t: in MsilType, path: in List[Int], depth: in Int, newTy: in MsilType): MsilType {
+  if depth >= path.count {
+    return newTy
+  }
+  match t {
+    case MTuple(elems) -> {
+      val replaced: List[MsilType] = newList()
+      var i = 0
+      while i < elems.count {
+        if i == path[depth] {
+          replaced.add(withTupleElemTypeAtPathMsil(elems[i], path, depth + 1, newTy))
+        } else {
+          replaced.add(elems[i])
+        }
+        i = i + 1
+      }
+      MTuple(elems = replaced)
+    }
+    case _ -> t
+  }
+}
+
+// Resolve and splice every hole recorded by `lowerBranchCollectingTupleHolesMsil`
+// across the branches `buffers`/`tys` (fall-through flags in `rets`).  Each
+// hole takes the type arguments of the most concrete same-union element at the
+// same tuple position in a sibling branch that falls through to the join; with
+// none (every branch has `None` there) it lowers as any other unhinted tuple
+// element (`lowerTupleElemUnhintedMsil`).  `tys` is updated in place with each
+// filled element's real type.
+func fillTupleHolesMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  buffers: in List[List[MInsn]],
+  tys: in List[MsilType],
+  rets: in List[Bool],
+  holes: in List[TupleHoleMsil],
+): Unit {
+  if holes.count == 0 {
+    return
+  }
+  // Resolve every hole against the PRE-fill branch types (a hole's own
+  // position reads `MObject` in its branch, so holes never feed each other).
+  val fills: List[List[MInsn]] = newList()
+  val fillTys: List[MsilType] = newList()
+  var h = 0
+  while h < holes.count {
+    val hole = holes[h]
+    val wantHead = stripGenericArity(hole.parentFqn)
+    var bestArgs: List[MsilType] = newList()
+    var bestConc = 0
+    var b = 0
+    while b < tys.count {
+      if b != hole.branch and not rets[b] {
+        val cand = tupleElemTypeAtPathMsil(tys[b], hole.path, 0)
+        if msilHeadFqnMsil(cand) == wantHead {
+          val candArgs = genericArgsOfMsil(cand)
+          val cc = countConcreteArgsMsil(candArgs)
+          if cc > bestConc {
+            bestConc = cc
+            bestArgs = candArgs
+          }
+        }
+      }
+      b = b + 1
+    }
+    val buf: List[MInsn] = newList()
+    val t = if bestConc > 0 {
+      val saved = pushHintArgsDirectMsil(fctx, bestArgs)
+      val filled = lowerExprMsil(cctx, fctx, buf, hole.expr)
+      restoreHintTyArgs(fctx, saved)
+      filled
+    } else {
+      lowerTupleElemUnhintedMsil(cctx, fctx, buf, hole.expr)
+    }
+    fills.add(buf)
+    fillTys.add(t)
+    h = h + 1
+  }
+  // Splice each branch's holes in recording (= ascending offset) order and
+  // patch the branch's tuple type.
+  val newTys: List[MsilType] = newList()
+  var br = 0
+  while br < buffers.count {
+    val target = buffers[br]
+    var brTy = tys[br]
+    var hasHole = false
+    var hc = 0
+    while hc < holes.count {
+      if holes[hc].branch == br {
+        hasHole = true
+      }
+      hc = hc + 1
+    }
+    if hasHole {
+      val prior: List[MInsn] = newList()
+      var oi = 0
+      while oi < target.count {
+        prior.add(target[oi])
+        oi = oi + 1
+      }
+      while target.count > 0 {
+        target.removeAt(target.count - 1)
+      }
+      var pos = 0
+      var hs = 0
+      while hs < holes.count {
+        val hole = holes[hs]
+        if hole.branch == br {
+          while pos < hole.insnIndex {
+            target.add(prior[pos])
+            pos = pos + 1
+          }
+          val fill = fills[hs]
+          var fi = 0
+          while fi < fill.count {
+            target.add(fill[fi])
+            fi = fi + 1
+          }
+          brTy = withTupleElemTypeAtPathMsil(brTy, hole.path, 0, fillTys[hs])
+        }
+        hs = hs + 1
+      }
+      while pos < prior.count {
+        target.add(prior[pos])
+        pos = pos + 1
+      }
+    }
+    newTys.add(brTy)
+    br = br + 1
+  }
+  while tys.count > 0 {
+    tys.removeAt(tys.count - 1)
+  }
+  var ti = 0
+  while ti < newTys.count {
+    tys.add(newTys[ti])
+    ti = ti + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §5e. Match expression lowering.
 //      Bootstrap-grade: literal, binding, constructor, and wildcard patterns.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -13335,6 +13723,9 @@ func lowerMatchExprMsil(
   // sibling is lowered with that type pushed onto `collExpect` so it builds the
   // matching concrete collection rather than the erased `List<object>` (#3920).
   var runningCollCanon: MsilType = MObject
+  // Bare generic nullary elements of tuple-valued arms, resolved against the
+  // sibling arms once all are lowered (#7455, see `TupleHoleMsil`).
+  val tupleHoles: List[TupleHoleMsil] = newList()
   var i = 0
   while i < arms.count {
     val arm = arms[i]
@@ -13372,7 +13763,7 @@ func lowerMatchExprMsil(
       popCollExpect(fctx)
       t
     } else {
-      lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+      lowerBranchCollectingTupleHolesMsil(cctx, fctx, armInsns, arm.body, i, tupleHoles)
     }
     val ret = endsWithReturnMsil(armInsns) or armEndsInLoopJumpMsil(armInsns)
     // Track the most-concrete collection type of a fall-through arm so a bare
@@ -13410,6 +13801,7 @@ func lowerMatchExprMsil(
     armRets.add(ret)
     i = i + 1
   }
+  fillTupleHolesMsil(cctx, fctx, armBuffers, armTys, armRets, tupleHoles)
 
   // The match value type is the common type of the arms that actually FALL
   // THROUGH to `afterL`.  Arms ending in `return` / `throw` exit the method and
@@ -16643,7 +17035,7 @@ func lowerBuiltinOrStaticCallMsil(
             case _ -> ""
           }
           val ctorParentHead = ctorParentHeadFqn(cctx, ctorKey)
-          if retHead.length > 0 and retHead == ctorParentHead {
+          if retHead.length > 0 and retHead == ctorParentHead and fctx.retHintFallbackOff == 0 {
             match fctx.declaredRetTy {
               case MGenericInst(_, _, retArgTys) -> {
                 var rci = 0
@@ -20439,6 +20831,8 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           case Some(e) -> {
             pushCollExpect(fctx, fctx.declaredRetTy)
             val savedRetHint1 = pushRetHintTyArgs(fctx, fctx.declaredRetTy)
+            val savedFallbackOff1 = fctx.retHintFallbackOff
+            fctx.retHintFallbackOff = 0
             // #5995: a bare-case return (`return Http11`) resolves against
             // THIS function's own declared enum return type.
             pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
@@ -20446,6 +20840,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             val retExprTy1 = lowerExprMsil(cctx, fctx, insns, e)
             popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedRetHint1)
+            fctx.retHintFallbackOff = savedFallbackOff1
             popCollExpect(fctx)
             // A void/Unit function with `return <expr>` (commonly `return ()`):
             // the expression runs for side effects but produces no return value.
@@ -20507,12 +20902,15 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           case Some(e) -> {
             pushCollExpect(fctx, fctx.declaredRetTy)
             val savedRetHint2 = pushRetHintTyArgs(fctx, fctx.declaredRetTy)
+            val savedFallbackOff2 = fctx.retHintFallbackOff
+            fctx.retHintFallbackOff = 0
             // #5995: see the matching comment on the protected-region arm above.
             pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
             seedLambdaLiteralVoidRetMsil(cctx, fctx, e, fctx.declaredRetTy)
             val retExprTy2 = lowerExprMsil(cctx, fctx, insns, e)
             popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedRetHint2)
+            fctx.retHintFallbackOff = savedFallbackOff2
             popCollExpect(fctx)
             // A void/Unit function with `return <expr>` (commonly `return ()`):
             // the expression runs for side effects, but its value must not remain
@@ -21183,6 +21581,7 @@ func makeFuncCtxMsil(
     epilogueUsed = epilogueUsed,
     yieldSlots = yieldSlots,
     declaredRetTy = declaredRetTy,
+    retHintFallbackOff = 0,
     contextHintTyArgs = contextHintTyArgs,
     collExpect = collExpect,
     byrefSlotTypes = byrefSlotTypes,
