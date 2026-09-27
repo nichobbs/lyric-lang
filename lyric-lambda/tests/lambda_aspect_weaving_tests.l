@@ -37,11 +37,16 @@ func contextWithRemaining(remainingMs: in Long): LambdaContext {
   )
 }
 
-pub func guardedHandler(ctx: in Lambda.LambdaContext): Result[String, LambdaError] {
+// Written with the unqualified spelling (`LambdaContext`, not
+// `Lambda.LambdaContext`) deliberately: `Lambda.Aspects.DeadlineGuard`'s
+// row clause declares `where TArgs has { ctx: Lambda.LambdaContext }`, and
+// the A0047 row-type check must resolve this unqualified spelling (visible
+// here via the plain `import Lambda` above) to the same type (#7336).
+pub func guardedHandler(ctx: in LambdaContext): Result[String, LambdaError] {
   return Ok(value = "ran")
 }
 
-pub func misconfiguredHandler(ctx: in Lambda.LambdaContext): Result[String, LambdaError] {
+pub func misconfiguredHandler(ctx: in LambdaContext): Result[String, LambdaError] {
   return Ok(value = "ran")
 }
 

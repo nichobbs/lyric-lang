@@ -2572,11 +2572,11 @@ pub func compileProjectToJarBundledWithRestored(
   // the weave loop so that from-instance aspects in any package can resolve
   // their template body (#3414; parity with the MSIL bridge).
   val allTemplates: Map[String, CollectedTemplate] = newMap()
-  Weaver.collectAspectTemplates(userFile.items, dottedPath(userFile.packageDecl.path), allTemplates)
+  Weaver.collectAspectTemplates(userFile.items, dottedPath(userFile.packageDecl.path), userFile.imports, allTemplates)
   var ati = 0
   while ati < toBundle.count {
     val tf = toBundle[ati]
-    Weaver.collectAspectTemplates(tf.items, dottedPath(tf.packageDecl.path), allTemplates)
+    Weaver.collectAspectTemplates(tf.items, dottedPath(tf.packageDecl.path), tf.imports, allTemplates)
     ati = ati + 1
   }
   // Collect templates from path-dependency source files passed by the caller
@@ -2593,7 +2593,12 @@ pub func compileProjectToJarBundledWithRestored(
     // depTemplatePkgs loop and with every in-bundle file (rewritten via
     // `pipeExpandAndRewrite` before collection).
     val dtRewritten = Aliases.rewriteFile(dtPr.file)
-    Weaver.collectAspectTemplates(dtRewritten.items, dottedPath(dtRewritten.packageDecl.path), allTemplates)
+    Weaver.collectAspectTemplates(
+      dtRewritten.items,
+      dottedPath(dtRewritten.packageDecl.path),
+      dtRewritten.imports,
+      allTemplates
+    )
     dti = dti + 1
   }
 

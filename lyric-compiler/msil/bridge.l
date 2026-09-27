@@ -354,7 +354,7 @@ pub func compileToMsilWithVersion(
   // single-file build, not just multi-package project builds with a path
   // dependency.
   val singleFileTemplates: Map[String, CollectedTemplate] = newMap()
-  Weaver.collectAspectTemplates(file.items, pkgName, singleFileTemplates)
+  Weaver.collectAspectTemplates(file.items, pkgName, file.imports, singleFileTemplates)
   // #6826 fast-follow: label with the real on-disk `path` (already in
   // scope, and already used by the parse phase above), matching every
   // other phase's attribution for a single-file build — a weave-time
@@ -364,7 +364,10 @@ pub func compileToMsilWithVersion(
   // #6702: `stdlibRecs` is the same cross-file record list already threaded
   // into `pipeCheckAndMono` above, reused here so an `impl` block targeting
   // a stdlib record resolves its target's own fields in the await-hoist.
-  val weavedFile = match pipeWeave(file, singleFileTemplates, path, noWeaveOrigins, stdlibRecs) {
+  // #7496: the A0047 row-type check resolves type names against the same
+  // stdlib packages the type checker saw.
+  val weaveTypeIndex = pipeTypeOwnerIndex(importedPkgs)
+  val weavedFile = match pipeWeave(file, singleFileTemplates, weaveTypeIndex, path, noWeaveOrigins, stdlibRecs) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1205,9 +1208,14 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // (#3414 / D050).  The accumulation is a direct `dest.add` walk — no
   // Map-iteration primitives needed.
   val allTemplates: Map[String, CollectedTemplate] = newMap()
+  // #7496: which package declares each type name, for the A0047 row-type
+  // check — the stdlib and restored packages every package type-checked
+  // against, plus every bundle package and path-dependency template source.
+  val weaveTypeIndex = pipeTypeOwnerIndex(baseImportedPkgs)
   var tpi = 0
   while tpi < perPkgFiles.count {
-    Weaver.collectAspectTemplates(perPkgFiles[tpi].items, perPkgNames[tpi], allTemplates)
+    Weaver.collectAspectTemplates(perPkgFiles[tpi].items, perPkgNames[tpi], perPkgFiles[tpi].imports, allTemplates)
+    Weaver.typeOwnerIndexAddFile(weaveTypeIndex, perPkgFiles[tpi])
     tpi = tpi + 1
   }
   // Also collect templates from path-dependency source packages (#3498 partial fix).
@@ -1230,7 +1238,8 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // every cross-package aspect error path (caught when the T0115
     // ldnull backstop made the class loud).
     val dtRewritten = Aliases.rewriteFile(dtParseRes.file)
-    Weaver.collectAspectTemplates(dtRewritten.items, dtPkg.name, allTemplates)
+    Weaver.collectAspectTemplates(dtRewritten.items, dtPkg.name, dtRewritten.imports, allTemplates)
+    Weaver.typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)
     dti = dti + 1
   }
 
@@ -1272,7 +1281,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // so a bundle package's `impl` block targeting a record declared in a
     // DIFFERENT package resolves its target's own fields in the
     // await-hoist.
-    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, parsedPkgs[li].label, parsedPkgs[li].origins, allImportedRecordDecls) {
+    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].origins, allImportedRecordDecls) {
       case Some(f) -> f
       case None -> return false
     }
