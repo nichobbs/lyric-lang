@@ -50,12 +50,59 @@
 //! this gets a message pointing at the real problem. See
 //! `env_args_ordering_jvm_main.l` for the standalone repro that exercises
 //! the panic path.
-@axiom("java.lang.System operations conform to their documented JVM contracts")
+//!
+//! **setVar / getVar (issue #7546):** the JVM exposes no `setenv(3)`
+//! equivalent without unsafe reflection, so `hostSetEnvironmentVariable`
+//! cannot touch the real process environment block the way the .NET
+//! kernel's `System.Environment.SetEnvironmentVariable` does.  Instead this
+//! kernel keeps a process-wide overlay, `envOverlay` (a `ConcurrentHashMap
+//! <String, String>`), that every `setVar` call writes into. `hostGetVarOpt`
+//! checks `envOverlay.containsKey` first — a present key wins even when its
+//! value is `""`, so an overlaid empty value is distinguishable from "not
+//! overlaid" — before falling back to the real `System.getenv`, so the
+//! overlay wins over — and can mask — any real OS-inherited variable for
+//! the lifetime of this process. `envOverlay` is a `ConcurrentHashMap` so
+//! `setVar` is safe to call from multiple threads (matching `.NET`'s
+//! thread-safe `SetEnvironmentVariable`). `Std.ProcessHost` /
+//! `Std.ProcessCaptureHost` / `Std.ProcessPipedHost` copy the overlay onto
+//! each spawned child's `ProcessBuilder.environment()` map (via
+//! `hostForEachOverlayVar` below) so a child process observes the same
+//! variables `getVar` would report in this process, matching the .NET and
+//! native kernels (there, `setVar` mutates the real process environment
+//! block that a spawned child already inherits).
+//!
+//! **Empty value (verified against the real BCL, #7546):** `System
+//! .Environment.SetEnvironmentVariable(key, "")` on .NET sets the variable
+//! to an empty string — it does NOT remove it (the two-argument overload
+//! has no way to pass a null value from Lyric's non-nullable `String`
+//! parameter). `hostGetVarOpt("k")` after `setVar("k", "")` therefore
+//! returns `Some(value = "")` here too, exactly like the real `getenv`
+//! would for a real, present-but-empty OS variable — there is no portable
+//! way to UNSET a variable through this function on any target.
+@axiom("java.lang.System and java.util.concurrent.ConcurrentHashMap operations conform to their documented JVM contracts")
 package Std.EnvironmentHost
 
 import Std.Core
 
 extern type JSystem = "java.lang.System"
+
+// Process-wide setVar overlay (see the module header).  Declared as a
+// generic extern type over `java.util.concurrent.ConcurrentHashMap`
+// (the JVM has no reified generics, so `Jvm.Codegen.typeExprToJvmExtern`
+// erases this to the raw `ConcurrentHashMap` class — same pattern as
+// `lyric-web`'s `JvmConcurrentDict[K, V]`, #5458).
+extern type JvmConcurrentMap[K, V] = "java.util.concurrent.ConcurrentHashMap"
+
+@externTarget("java.util.concurrent.ConcurrentHashMap.<init>")
+func newConcurrentMap[K, V](): JvmConcurrentMap[K, V] = ()
+
+extern type JvmMapEntryIterator = "java.util.Iterator"
+
+extern type JvmMapEntry = "java.util.Map$Entry"
+
+// Values `setVar` has set for this process (present key = observed override,
+// including an overridden EMPTY value — see the module header).
+val envOverlay: JvmConcurrentMap[String, String] = newConcurrentMap[String, String]()
 
 // .NET's `System.AppContext.BaseDirectory` (the entry-ASSEMBLY's own
 // directory, for resolving resources packaged alongside the binary) has no
@@ -90,11 +137,12 @@ pub func hostRuntimeIdentifier(): String {
   ""
 }
 
-// SetEnvironmentVariable has no portable JVM equivalent (the JVM exposes no
-// `setenv(3)` equivalent without unsafe reflection).  This is a no-op stub
-// so JVM programs that import Std.Environment still compile.
+// Sets a process-local overlay entry — see the module header.  Always
+// records `value` (even `""`) into `envOverlay`; there is no unset path,
+// matching the real, BCL-verified `System.Environment
+// .SetEnvironmentVariable(string, string)` contract.
 pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
-  ()
+  val _ = envOverlay.put(key, value)
 }
 
 // Option seam — the exception-free surface every kernel twin implements
@@ -106,7 +154,17 @@ pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
 // detected via `??` with a NUL-string marker: POSIX and Windows
 // environment blocks are NUL-delimited, so no real value can ever equal
 // "\0".
+//
+// Checks the `setVar` overlay (module header) before falling back to the
+// real `System.getenv`: `envOverlay.containsKey` (not just a non-empty
+// `get`) so an overlaid EMPTY value is still reported as present, matching
+// the .NET kernel where `setVar` mutates the real environment block that
+// `GetEnvironmentVariable` reads from directly.
 pub func hostGetVarOpt(key: in String): Option[String] {
+  if envOverlay.containsKey(key) {
+    val overlaid = envOverlay.get(key) ?? ""
+    return Some(value = overlaid)
+  }
   try {
     val v = JSystem.getenv(key) ?? "\u{0000}"
     if v == "\u{0000}" {
@@ -116,6 +174,19 @@ pub func hostGetVarOpt(key: in String): Option[String] {
     }
   } catch Bug as _ {
     None
+  }
+}
+
+// Apply `action(key, value)` for every `setVar`-overridden variable in the
+// overlay.  Used by `Std.ProcessHost` / `Std.ProcessCaptureHost` /
+// `Std.ProcessPipedHost` to copy the overlay onto a spawned child's
+// `ProcessBuilder.environment()` map before `start()` (see the module
+// header).
+pub func hostForEachOverlayVar(action: in (String, String) -> Unit): Unit {
+  val it: JvmMapEntryIterator = envOverlay.entrySet().iterator()
+  while it.hasNext() {
+    val e: JvmMapEntry = it.next()
+    action(e.getKey(), e.getValue())
   }
 }
 

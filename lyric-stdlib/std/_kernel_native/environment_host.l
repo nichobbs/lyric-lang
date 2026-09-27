@@ -73,8 +73,11 @@ pub func hostGetVarOpt(key: in String): Option[String] {
 @unsafe_ffi
 pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
   // setenv(3) failures (EINVAL on an empty or '='-containing name,
-  // ENOMEM) are absorbed to keep the managed twin's Unit surface; the
-  // JVM twin is a documented no-op for the same reason.
+  // ENOMEM) are absorbed to keep the managed twin's Unit surface — a
+  // BCL-verified behaviour (#7546): `System.Environment
+  // .SetEnvironmentVariable(key, "")` on .NET sets the variable to an
+  // empty string, it does NOT remove it, and neither does this twin nor
+  // the JVM kernel's overlay.
   val ck = toC(key)
   val cv = toC(value)
   val _ignored = rtEnvSet(ck, cv)

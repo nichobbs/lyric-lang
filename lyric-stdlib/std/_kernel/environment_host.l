@@ -68,10 +68,15 @@ pub func hostRuntimeIdentifier(): String {
   NetRuntimeInfo.RuntimeIdentifier
 }
 
-// Set (or unset) a process-level environment variable.  Wraps
+// Set a process-level environment variable.  Wraps
 // `System.Environment.SetEnvironmentVariable(string, string)`.  The new
 // value is visible to `GetEnvironmentVariable` in the same process and
-// is inherited by any child processes spawned afterwards.
+// is inherited by any child processes spawned afterwards.  An empty
+// `value` sets the variable to an empty string — verified against the
+// real BCL (#7546): the two-argument overload has no way to remove a
+// variable from a non-nullable `String` value, so `getVar` afterwards
+// still reports `Ok("")`, not `Err(KeyNotFound)`.  The JVM and native
+// kernel twins match this exactly.
 pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
   NetEnvironment.SetEnvironmentVariable(key, value)
 }

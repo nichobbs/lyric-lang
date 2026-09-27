@@ -123,6 +123,27 @@ test "tryFrom is Ok in range and Err with the range message outside" {
   }
 }
 
+// #7546: `Type.from`/`Type.tryFrom` qualified by the file's OWN package
+// name (`Lyric.DistinctOpsSelfTest.Cents.tryFrom(...)`, redundant but legal
+// self-qualification) resolves exactly like the bare unqualified form.
+// Before the fix this failed to compile on dotnet with `error[T0115]:
+// cannot resolve qualified reference 'Lyric.DistinctOpsSelfTest.Cents'` —
+// the receiver parses as a nested `EMember` chain, not the single-segment
+// `EPath` the distinct-factory resolution only checked.
+test "package-qualified Type.from/tryFrom resolves the same as unqualified" {
+  val c = Lyric.DistinctOpsSelfTest.Cents.from(15i64)
+  assertEqual(toString(c), "15", "qualified Cents.from")
+  match Lyric.DistinctOpsSelfTest.Cents.tryFrom(5i64) {
+    case Ok(v) -> assertEqual(toString(v), "5", "qualified Cents.tryFrom in range")
+    case Err(_) -> assertTrue(false, "5 is in range")
+  }
+  match Lyric.DistinctOpsSelfTest.Cents.tryFrom(-1i64) {
+    case Ok(_) -> assertTrue(false, "-1 is below the range")
+    case Err(msg) -> assertEqual(msg, "Cents.tryFrom: value out of range [0, 100000]", "qualified error text")
+  }
+  assertTrue(Lyric.DistinctOpsSelfTest.UserId.from(9i64) == UserId.from(9i64), "qualified and unqualified from agree")
+}
+
 // #7375: a Map keyed by a distinct type finds a key built separately from the
 // one it was stored under, on every underlying kind.
 test "a distinct value works as a Map key" {

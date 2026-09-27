@@ -18303,6 +18303,58 @@ func recordHasMethodMsil(cctx: in CodegenCtx, cls: in String, memberName: in Str
     cctx.methodTokens.containsKey(cls + "/" + memberName + "/" + toString(arity))
 }
 
+// Distinct/range-subtype static factories (#1501): `Type.from(x)` and
+// `Type.tryFrom(x)` are static calls on a type NAME, so they cannot route
+// through instance dispatch (which would first evaluate the type name as a
+// value and emit invalid IL). `distFqn` is the type's resolved FQN
+// (`cctx.typeFqnByName`, looked up by the caller); returns `None` when
+// `memberName` names neither factory or the type has no such factory
+// registered (e.g. `tryFrom` when `Result` isn't imported).
+func tryLowerDistinctFactoryCallMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  distFqn: in String,
+  memberName: in String,
+  args: in List[CallArg],
+): Option[MsilType] {
+  if memberName == "from" {
+    match mapGet(cctx.distinctFromTokens, distFqn) {
+      case Some(tok) -> {
+        if args.count > 0 {
+          // Widen to the underlying type (`CustomerId.from(7)` over
+          // `Long`): the literal lowers as `int32`.
+          val fromArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+          match mapGet(cctx.fieldMsilTypes, distFqn + "/value") {
+            case Some(underTy) -> coerceCallArgMsil(cctx, insns, fromArgTy, underTy)
+            case None -> ()
+          }
+        }
+        insns.add(MCall(methodToken = tok))
+        return Some(value = MClass(className = distFqn))
+      }
+      case None -> ()
+    }
+  }
+  if memberName == "tryFrom" {
+    match mapGet(cctx.distinctTryFromTokens, distFqn) {
+      case Some(tok) -> {
+        if args.count > 0 {
+          val tryArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+          match mapGet(cctx.fieldMsilTypes, distFqn + "/value") {
+            case Some(underTy) -> coerceCallArgMsil(cctx, insns, tryArgTy, underTy)
+            case None -> ()
+          }
+        }
+        insns.add(MCall(methodToken = tok))
+        return Some(value = match mapGet(cctx.distinctTryFromRetTypes, distFqn) { case Some(rt) -> rt; case None -> MObject })
+      }
+      case None -> ()
+    }
+  }
+  None
+}
+
 func lowerMethodCallMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -18311,6 +18363,38 @@ func lowerMethodCallMsil(
   memberName: in String,
   args: in List[CallArg],
 ): MsilType {
+  // #7546: a package-qualified distinct/range-subtype static factory call
+  // (`Lyric.Pkg.Port.tryFrom(n)` inside package `Lyric.Pkg`, or
+  // `Std.Http.Url.tryFrom(s)` through an import) parses its receiver as a
+  // nested `EMember` chain, not the single-segment `EPath` the branch below
+  // requires — only a bare `Port.tryFrom(n)` reaches it directly. Without
+  // this, the qualifying prefix falls through to generic value evaluation
+  // and fails at compile time (`error[T0115]: cannot resolve qualified
+  // reference`), even though the exact same call unqualified resolves fine.
+  // Flatten the chain (handles both `EPath` and `EMember`, `flattenPathExprSegs`
+  // is the same helper the free-function fallback below uses) and retry the
+  // factory resolution against its last segment — but ONLY when the WHOLE
+  // flattened chain equals the resolved type's own FQN exactly, so a real
+  // value's field-access chain that merely happens to end in a distinct
+  // type's bare name (e.g. `config.section.Port`) can never misfire: its
+  // prefix (`config.section`) will never equal `Port`'s real declaring
+  // package. Also bails whenever the chain starts at a real local variable,
+  // matching the JVM analogue's guard (`qualifiedDotNamedSigJvm`, #7478).
+  val distinctQualSegs = flattenPathExprSegs(recv)
+  if distinctQualSegs.count >= 2 and not (fctx.slots.containsKey(distinctQualSegs[0]) or fctx.hoistedCellSlot.containsKey(distinctQualSegs[0]) or fctx.captureNameToIndex.containsKey(distinctQualSegs[0])) {
+    val distinctQualRecvName = distinctQualSegs[distinctQualSegs.count - 1]
+    match mapGet(cctx.typeFqnByName, distinctQualRecvName) {
+      case Some(distFqn) -> {
+        if distFqn == joinSegsMsil(distinctQualSegs, ".") {
+          match tryLowerDistinctFactoryCallMsil(cctx, fctx, insns, distFqn, memberName, args) {
+            case Some(ty) -> return ty
+            case None -> ()
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
   // Auto-FFI: if the receiver is an EPath whose name maps to an extern CLR type,
   // emit a direct callvirt to the CLR method rather than a stub.
   match recv.kind {
@@ -18340,39 +18424,9 @@ func lowerMethodCallMsil(
       if not recvIsLocal {
         match mapGet(cctx.typeFqnByName, recvName) {
           case Some(distFqn) -> {
-            if memberName == "from" {
-              match mapGet(cctx.distinctFromTokens, distFqn) {
-                case Some(tok) -> {
-                  if args.count > 0 {
-                    // Widen to the underlying type (`CustomerId.from(7)` over
-                    // `Long`): the literal lowers as `int32`.
-                    val fromArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
-                    match mapGet(cctx.fieldMsilTypes, distFqn + "/value") {
-                      case Some(underTy) -> coerceCallArgMsil(cctx, insns, fromArgTy, underTy)
-                      case None -> ()
-                    }
-                  }
-                  insns.add(MCall(methodToken = tok))
-                  return MClass(className = distFqn)
-                }
-                case None -> ()
-              }
-            }
-            if memberName == "tryFrom" {
-              match mapGet(cctx.distinctTryFromTokens, distFqn) {
-                case Some(tok) -> {
-                  if args.count > 0 {
-                    val tryArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
-                    match mapGet(cctx.fieldMsilTypes, distFqn + "/value") {
-                      case Some(underTy) -> coerceCallArgMsil(cctx, insns, tryArgTy, underTy)
-                      case None -> ()
-                    }
-                  }
-                  insns.add(MCall(methodToken = tok))
-                  return match mapGet(cctx.distinctTryFromRetTypes, distFqn) { case Some(rt) -> rt; case None -> MObject }
-                }
-                case None -> ()
-              }
+            match tryLowerDistinctFactoryCallMsil(cctx, fctx, insns, distFqn, memberName, args) {
+              case Some(ty) -> return ty
+              case None -> ()
             }
           }
           case None -> ()
