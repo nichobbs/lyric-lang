@@ -19,6 +19,7 @@ output_assembly = "Lyric.RDep3.dll"
 TOML
 cat > "$work/dep/src/rdep.l" <<'LYR'
 package RDep3
+import Std.Collections
 pub record Box { tags: List[Int]; name: String }
 pub func describe(b: in Box): String { toString(b.tags.count) + ":" + b.name }
 LYR

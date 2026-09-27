@@ -13,6 +13,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cat > "$work/s4.l" <<'LYR'
 package S4
+import Std.Collections
 import Std.Sort as Sort
 import Std.Console as Console
 func main(): Unit {

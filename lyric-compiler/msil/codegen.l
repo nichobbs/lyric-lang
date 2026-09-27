@@ -3387,6 +3387,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     }
     mi = mi + 1
   }
+  if cctx.pkgImports.containsKey(pkgName) {
+    cctx.pkgImports.remove(pkgName)
+  }
   cctx.pkgImports.add(pkgName, importedDottedNames)
   if not cctx.pkgBareImports.containsKey(pkgName) {
     cctx.pkgBareImports.add(pkgName, bareImportOrderMsil(file.imports, false))
@@ -40930,6 +40933,11 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
   while pia < pkgs.count {
     val pkg: StdlibPkg = pkgs[pia]
     val asmRefRow = ensureStdlibAssemblyRef(cctx, pkg.name)
+    // The package's own imports: the bare-name closure of a package that
+    // imports it whole reaches through them (docs/01 §9.2, `bareImportsOfMsil`).
+    if not cctx.pkgImports.containsKey(pkg.name) {
+      cctx.pkgImports.add(pkg.name, pkg.imports)
+    }
     var iia = 0
     while iia < pkg.items.count {
       val it: Item = pkg.items[iia]

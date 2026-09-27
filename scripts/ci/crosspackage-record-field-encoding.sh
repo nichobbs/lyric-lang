@@ -19,6 +19,7 @@ output_assembly = "Lyric.RecDep.dll"
 TOML
 cat > "$work/dep/src/recdep.l" <<'LYR'
 package RecDep
+import Std.Collections
 pub record Item { v: Int }
 pub record Rec { ints: List[Int]; items: List[Item]; name: String }
 pub func mkRec(): Rec { Rec(ints = [1, 2, 3], items = [Item(v = 9)], name = "hi") }

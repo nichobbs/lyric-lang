@@ -738,20 +738,20 @@ func isPreludeName(name: in String): Bool {
   name == "Option" or name == "Result"
 }
 
-// The type a union or enum case belongs to, for a case symbol; `None` for
-// any other symbol.
-func caseParentName(tbl: in SymbolTable, sym: in Symbol): Option[String] {
-  val parentId = match sym.kind {
-    case DKUnionCase(pid, _) -> Some(value = pid)
-    case DKEnumCase(pid, _) -> Some(value = pid)
-    case _ -> None
+// The name of the type a union or enum case belongs to, for a case symbol;
+// "" for any other symbol.
+func caseParentName(tbl: in SymbolTable, sym: in Symbol): String {
+  match sym.kind {
+    case DKUnionCase(pid, _) -> typeNameOfId(tbl, pid)
+    case DKEnumCase(pid, _) -> typeNameOfId(tbl, pid)
+    case _ -> ""
   }
-  match parentId {
-    case Some(pid) -> match symTableTypeSymbolOf(tbl, pid) {
-      case Some(parent) -> Some(value = parent.name)
-      case None -> None
-    }
-    case None -> None
+}
+
+func typeNameOfId(tbl: in SymbolTable, tid: in TypeId): String {
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(parent) -> parent.name
+    case None -> ""
   }
 }
 
@@ -768,15 +768,12 @@ func symTableImportVisible(tbl: in SymbolTable, curPkg: in String, sym: in Symbo
   }
   val parent = caseParentName(tbl, sym)
   if origin == "Std.Core" {
-    val preludeName = match parent { case Some(pn) -> pn; case None -> sym.name }
+    val preludeName = if parent.length > 0 { parent } else { sym.name }
     if isPreludeName(preludeName) {
       return true
     }
   }
-  match parent {
-    case Some(pn) -> tbl.importVisibleNames.containsKey(origin + "|" + pn)
-    case None -> false
-  }
+  parent.length > 0 and tbl.importVisibleNames.containsKey(origin + "|" + parent)
 }
 
 // Whether a function `name` declared in `origin` may be called bare under
@@ -847,7 +844,8 @@ func hiddenImportHintPass(tbl: in SymbolTable, curPkg: in String, name: in Strin
         }
         case None -> ()
       }
-      val shown = match caseParentName(tbl, s) { case Some(pn) -> pn; case None -> name }
+      val parentName = caseParentName(tbl, s)
+      val shown = if parentName.length > 0 { parentName } else { name }
       // A kernel host package (`Std.CollectionsHost`) is imported through
       // its public package (`Std.Collections`), whose whole import reaches it.
       val home = publicPackageOf(tbl, origin)
