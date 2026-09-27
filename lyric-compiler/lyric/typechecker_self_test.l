@@ -5097,6 +5097,25 @@ test "an impl method that clashes with a protected member is T0136 (#7457)" {
   assertTrue(hasDiagCode(parseCheck(src), "T0136"), "impl get clashes with the member get")
 }
 
+test "two impls for a protected type with a shared method name are T0136 (#7547)" {
+  val src = "package P\ninterface Reader {\n  func get(): Int\n}\ninterface Source {\n  func get(): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl Reader for C {\n  func get(): Int {\n    n\n  }\n}\nimpl Source for C {\n  func get(): Int {\n    n + 1\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0136"), "Source.get clashes with Reader.get")
+  val okSrc = "package P\ninterface Reader {\n  func get(): Int\n}\ninterface Source {\n  func next(): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl Reader for C {\n  func get(): Int {\n    n\n  }\n}\nimpl Source for C {\n  func next(): Int {\n    n + 1\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(okSrc), "T0136"), "disjoint method names are accepted")
+}
+
+test "Self in an impl method signature on a protected type is T0136 (#7550)" {
+  val topSrc = "package P\ninterface M {\n  func merge(other: in Self): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl M for C {\n  func merge(other: in Self): Int {\n    n\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(topSrc), "T0136"), "Self parameter")
+  val nestedSrc = "package P\nimport Std.Collections\ninterface M {\n  func pool(): List[Self]\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl M for C {\n  func pool(): List[Self] {\n    newList()\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(nestedSrc), "T0136"), "Self nested in a return type")
+}
+
+test "an impl for an alias of a protected type is T0136 (#7547)" {
+  val src = "package P\ninterface Store {\n  func size(): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nalias D = C\nimpl Store for D {\n  func size(): Int {\n    n\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0136"), "the target must name C directly")
+}
+
 test "an impl for a generic protected type is T0136 (#7457)" {
   val src = "package P\ninterface Store {\n  func size(): Int\n}\nprotected type C[T] {\n  var n: Int = 0\n}\nimpl[T] Store for C[T] {\n  func size(): Int {\n    n\n  }\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0136"), "generic protected target")

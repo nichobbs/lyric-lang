@@ -19,8 +19,13 @@ called a sibling member (allowed by §7.5, reentrant on the CLR and JVM)
 deadlocked on native.
 
 New diagnostic **T0136**: an impl for a protected type declared in another
-package, an impl for a generic protected type, or an impl method named like
-one of `P`'s own members. An `async` or method-generic impl method is T0135.
+package, an impl whose target names `P` through an `alias`, an impl for a
+generic protected type, or an impl method named like one of `P`'s own members
+or like a method of another impl for `P` (#7547). An `async` or
+method-generic impl method is T0135. An impl method whose signature mentions
+`Self` anywhere is also T0136: both backends erase `Self` to `Object` in the
+interface slot, and a moved entry has no path yet to keep that erased
+signature while typing its body concretely (#7550).
 
 Tests: `lyric-compiler/lyric/protected_iface_impl_self_test.l` (dotnet batch,
 JVM generics batch, native batch) and

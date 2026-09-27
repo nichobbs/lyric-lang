@@ -18,8 +18,11 @@
 //!
 //! The type checker (`checkImplOnProtected`, T0135/T0136) has already
 //! rejected the shapes this move cannot represent: an impl in another
-//! package than `P`, a generic `P` or impl, an `async` or method-generic
-//! impl method, and an impl method named like one of `P`'s own members.
+//! package than `P`, a target spelled other than `P` itself, a generic `P`
+//! or impl, an `async` or method-generic impl method, and an impl method
+//! named like one of `P`'s own members or a method of another impl for `P`,
+//! and an impl method whose signature mentions `Self` (#7550), so moved
+//! signatures are copied unchanged.
 package Lyric.ContractElaborator
 
 import Std.Core
@@ -46,25 +49,7 @@ func protectedImplTarget(decl: in ImplDecl, protectedNames: in Map[String, Bool]
   }
 }
 
-func protectedSelfTypeRef(name: in String, sp: in Span): TypeExpr {
-  val segs: List[String] = newList()
-  segs.add(name)
-  TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = sp)), span = sp)
-}
-
-// `Self` in an impl signature names the target; inside the protected type
-// there is no `Self` binding, so spell it out.
-func substProtectedSelf(te: in TypeExpr, name: in String): TypeExpr {
-  match te.kind {
-    case TSelf -> protectedSelfTypeRef(name, te.span)
-    case TParen(inner) -> TypeExpr(kind = TParen(inner = substProtectedSelf(inner, name)), span = te.span)
-    case _ -> te
-  }
-}
-
-func implMethodAsEntry(
-  fn: in FunctionDecl, body: in FunctionBody, extra: in List[ContractClause], target: in String
-): EntryDecl {
+func implMethodAsEntry(fn: in FunctionDecl, body: in FunctionBody, extra: in List[ContractClause]): EntryDecl {
   val params: List[Param] = newList()
   var i = 0
   while i < fn.params.count {
@@ -74,17 +59,13 @@ func implMethodAsEntry(
         mode = p.mode,
         modeExplicit = p.modeExplicit,
         name = p.name,
-        ty = substProtectedSelf(p.ty, target),
+        ty = p.ty,
         dflt = p.dflt,
         annotations = p.annotations,
         span = p.span
       )
     )
     i = i + 1
-  }
-  val ret: Option[TypeExpr] = match fn.ret {
-    case Some(r) -> Some(value = substProtectedSelf(r, target))
-    case None -> None
   }
   val contracts: List[ContractClause] = newList()
   var c = 0
@@ -103,7 +84,7 @@ func implMethodAsEntry(
     visibility = fn.visibility,
     name = fn.name,
     params = params,
-    ret = ret,
+    ret = fn.ret,
     contracts = contracts,
     body = body,
     span = fn.span
@@ -158,7 +139,7 @@ pub func mergeProtectedImpls(items: in List[Item], ifaces: in Map[String, Interf
                     case None -> newList()
                   }
                   movedOwners.add(target)
-                  moved.add(PMEntry(entryDecl = implMethodAsEntry(fn, body, extra, target)))
+                  moved.add(PMEntry(entryDecl = implMethodAsEntry(fn, body, extra)))
                 }
                 case None -> kept.add(decl.members[m])
               }

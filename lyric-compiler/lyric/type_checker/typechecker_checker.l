@@ -2743,8 +2743,13 @@ func findProtectedDeclByTypeId(tbl: in SymbolTable, tid: in TypeId): Option[Prot
 //   - T0136: the impl is declared in a different package than `P` (the
 //     methods must land in `P`'s own class);
 //   - T0136: `P` or the impl is generic;
+//   - T0136: the impl target is not spelled as `P` itself (an alias of `P`
+//     would hide the target from the move, which matches on the name);
+//   - T0136: an impl method's signature mentions `Self` (the moved entry
+//     would not match the interface slot's erased signature, #7550);
 //   - T0136: an impl method has the same name as one of `P`'s own
-//     `entry`/`func` members (both would become the same locked method);
+//     `entry`/`func` members, or as a method of an earlier impl for `P`
+//     (both would become the same locked method);
 //   - T0135: an impl method is `async` or declares its own type parameters,
 //     exactly as for a protected `func`.
 func checkImplOnProtected(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in ImplDecl, items: in List[Item]): Unit {
@@ -2772,6 +2777,17 @@ func checkImplOnProtected(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
         )
         return
       }
+      if not implTargetNamesProtected(decl, pd.name) {
+        diag.add(
+          errorDiagnostic(
+            "T0136",
+            "impl of '" + ifaceName + "' for protected type '" + pd.name + "' must name '" + pd.name +
+              "' directly as its target, not through an alias",
+            decl.span
+          )
+        )
+        return
+      }
       val implGeneric = match decl.generics { case Some(_) -> true; case None -> false }
       val targetGeneric = match pd.generics { case Some(_) -> true; case None -> false }
       if implGeneric or targetGeneric {
@@ -2790,7 +2806,16 @@ func checkImplOnProtected(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
         match decl.members[i] {
           case IMplFunc(fn) -> {
             checkProtectedFuncShape(diag, pd.name, fn)
-            if protectedDeclaresMember(pd, fn.name) {
+            if funcSignatureMentionsSelf(fn) {
+              diag.add(
+                errorDiagnostic(
+                  "T0136",
+                  "impl method '" + fn.name + "' of '" + ifaceName + "' for protected type '" + pd.name +
+                    "' mentions 'Self' in its signature, which is not yet supported on a protected type (#7550)",
+                  fn.span
+                )
+              )
+            } else if protectedDeclaresMember(pd, fn.name) {
               diag.add(
                 errorDiagnostic(
                   "T0136",
@@ -2800,6 +2825,24 @@ func checkImplOnProtected(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   fn.span
                 )
               )
+            } else {
+              match earlierProtectedImplWithMethod(items, decl, pd.name, fn.name) {
+                case Some(otherIface) -> diag.add(
+                  errorDiagnostic(
+                    "T0136",
+                    "impl method '" + fn.name + "' of '" + ifaceName + "' clashes with method '" + fn.name +
+                      "' of the impl of '" +
+                      otherIface +
+                      "' for protected type '" +
+                      pd.name +
+                      "'; both would become the same locked member of '" +
+                      pd.name +
+                      "', so rename one of the interface methods",
+                    fn.span
+                  )
+                )
+                case None -> ()
+              }
             }
           }
           case _ -> ()
@@ -2808,6 +2851,105 @@ func checkImplOnProtected(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
       }
     }
   }
+}
+
+func funcSignatureMentionsSelf(fn: in FunctionDecl): Bool {
+  var i = 0
+  while i < fn.params.count {
+    if typeExprMentionsSelf(fn.params[i].ty) {
+      return true
+    }
+    i = i + 1
+  }
+  match fn.ret {
+    case Some(r) -> typeExprMentionsSelf(r)
+    case None -> false
+  }
+}
+
+func typeExprListMentionsSelf(tys: in List[TypeExpr]): Bool {
+  var i = 0
+  while i < tys.count {
+    if typeExprMentionsSelf(tys[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func typeExprMentionsSelf(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSelf -> true
+    case TParen(inner) -> typeExprMentionsSelf(inner)
+    case TGenericApp(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(t) -> if typeExprMentionsSelf(t) { return true }
+          case TAValue(_) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TArray(_, elem) -> typeExprMentionsSelf(elem)
+    case TSlice(elem) -> typeExprMentionsSelf(elem)
+    case TTuple(ts) -> typeExprListMentionsSelf(ts)
+    case TNullable(inner) -> typeExprMentionsSelf(inner)
+    case TFunction(ps, r) -> typeExprListMentionsSelf(ps) or typeExprMentionsSelf(r)
+    case _ -> false
+  }
+}
+
+func implTargetNamesProtected(decl: in ImplDecl, name: in String): Bool {
+  match decl.target.kind {
+    case TRef(path) -> path.segments.count == 1 and path.segments[0] == name
+    case _ -> false
+  }
+}
+
+func implIfaceName(decl: in ImplDecl): String {
+  val segs = decl.iface.head.segments
+  if segs.count == 0 {
+    ""
+  } else {
+    segs[segs.count - 1]
+  }
+}
+
+// The interface of an impl for protected type `name`, declared in `items`
+// before `decl`, that already has a method called `method`.
+func earlierProtectedImplWithMethod(
+  items: in List[Item], decl: in ImplDecl, name: in String, method: in String
+): Option[String] {
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IImpl(other) -> {
+        if other.span.startPos.offset == decl.span.startPos.offset and other.span.endPos.offset == decl.span.endPos.offset {
+          return None
+        }
+        if implTargetNamesProtected(other, name) {
+          var m = 0
+          while m < other.members.count {
+            match other.members[m] {
+              case IMplFunc(fn) -> {
+                if fn.name == method {
+                  return Some(value = implIfaceName(other))
+                }
+              }
+              case _ -> ()
+            }
+            m = m + 1
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
 }
 
 func itemsDeclareProtected(items: in List[Item], name: in String): Bool {
