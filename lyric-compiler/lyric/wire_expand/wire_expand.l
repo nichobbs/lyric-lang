@@ -166,7 +166,23 @@ func typeToStrWE(t: in TypeExpr): String {
       s + ")"
     }
     case TNullable(inner) -> typeToStrWE(inner) + "?"
+    case TRefined(path, _) -> dottedPathWE(path) + " range …"
     case _ -> "<type>"
+  }
+}
+
+/// A config field's type with any range refinement stripped (#7229).
+func configBaseTypeStrWE(t: in TypeExpr): String {
+  match t.kind {
+    case TRefined(path, _) -> dottedPathWE(path)
+    case _ -> typeToStrWE(t)
+  }
+}
+
+func isRefinedWE(t: in TypeExpr): Bool {
+  match t.kind {
+    case TRefined(_, _) -> true
+    case _ -> false
   }
 }
 
@@ -561,8 +577,9 @@ func configTemplateRecordItem(templateItem: in Item, decl: in ConfigDecl): Item 
 
 /// Merge a config-template instantiation over its template: template fields
 /// in template order; an overridden field keeps the template's declared
-/// type and takes the instantiation's default.  Emits W0011 (unknown
-/// field) and W0012 (type mismatch) for bad overrides.
+/// type, including any range, and takes the instantiation's default.  Emits
+/// W0011 (unknown field) and W0012 (type mismatch, or an override that
+/// declares its own range) for bad overrides.
 func materializeConfigInstance(
   diags: in List[Diagnostic],
   localName: in String,
@@ -579,14 +596,29 @@ func materializeConfigInstance(
     while ti < tmpl.fields.count {
       if tmpl.fields[ti].name == ov.name {
         found = true
-        if typeToStrWE(tmpl.fields[ti].ty) != typeToStrWE(ov.ty) {
+        // An override restates only the base type; a ranged template
+        // field keeps the template's range, which the checker enforces on
+        // the merged default (G0010).
+        if isRefinedWE(ov.ty) {
+          diags.add(
+            errorDiagnostic(
+              "W0012",
+              "config override '" + localName + "." + ov.name + "' must not declare a range; write the base type " +
+                configBaseTypeStrWE(ov.ty) +
+                " and the range from template '" +
+                tmpl.name +
+                "' applies",
+              ov.span
+            )
+          )
+        } else if configBaseTypeStrWE(tmpl.fields[ti].ty) != typeToStrWE(ov.ty) {
           diags.add(
             errorDiagnostic(
               "W0012",
               "config override '" + localName + "." + ov.name + "' declares type " + typeToStrWE(ov.ty) + " but template '" +
                 tmpl.name +
                 "' declares " +
-                typeToStrWE(tmpl.fields[ti].ty),
+                configBaseTypeStrWE(tmpl.fields[ti].ty),
               ov.span
             )
           )

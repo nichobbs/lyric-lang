@@ -505,7 +505,10 @@ from the **local** name (`LYRIC_CONFIG_<PKG>_ASSETS_<FIELD>`, §5), the
 same startup semantics (§4–§6). Overrides are validated against the
 template: an unknown field is `W0011`, a type mismatch `W0012`, `pub`
 on an instantiation `W0013`, an unresolvable template `W0010`, a
-template field outside the §3 type set `W0014`.
+template field outside the §3 type set `W0014`. An override of a ranged template field
+(#7229) restates only the base type, `port: Int = 9090`, and inherits
+the template's range; the merged default must lie inside it (`G0010`),
+and an override that declares a range of its own is `W0012`.
 
 Inside a `wire` graph, an instantiation is additionally usable as a
 *value* of the template's record type (`Web.create(staticFiles:

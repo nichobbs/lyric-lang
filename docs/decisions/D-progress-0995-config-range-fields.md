@@ -24,7 +24,11 @@ A config field may be an inline range of `Int`, `Long`, `Float` or
     field takes integer bounds within its own width. The range must not be
     empty. Anything else is G0009.
   - A default must lie inside the range, otherwise G0010.
-  - Config templates (docs/58) accept the same field types.
+  - Config templates (docs/58) accept the same field types. An
+    instantiation overriding a ranged template field restates only the
+    base type (`port: Int = 9090`) and keeps the template's range, so the
+    merged default is checked (G0010) and the env value is checked at
+    startup (G0004). An override that declares its own range is W0012.
 - **Runtime, dotnet and the JVM:**
   - After a field is stored, the static initializer (`.cctor` /
     `<clinit>`) reads it back and compares it with each present bound.

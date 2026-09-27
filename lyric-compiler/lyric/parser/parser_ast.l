@@ -112,6 +112,9 @@ pub func foldLiteralBound(e: in Expr): LiteralBound {
       case PreNeg -> {
         val b = foldLiteralBound(inner)
         if b.ok {
+          // The lexer accepts `9223372036854775808` only under a unary minus
+          // and carries it as Long.MinValue; the wrapping negation below maps
+          // that back to Long.MinValue, which is the value the user wrote.
           LiteralBound(ok = true, isFloat = b.isFloat, l = 0i64 - b.l, d = 0.0 - b.d)
         } else {
           none

@@ -201,17 +201,23 @@ test "required field with no default and no env var exits 78 (subprocess, jvm)" 
   )
 }
 
-// #7229: range-refined config fields.  The fixture reads two ranged fields;
+// #7229: range-refined config fields.  The fixture reads one ranged field of
+// each numeric type (Int, Long, Float, Double), since each has its own
+// comparison lowering on both backends;
 // each run sets their env vars through `env` so the child sees exactly the
 // value under test.  An out-of-range or NaN value must abort in the static
 // initializer with exit 78 (G0004) before `main` prints anything.
 func rangedFixtureSource(): String {
   "package ConfigRangeFixture\n\n" + "config Limits {\n" + "  port: Int range 1 ..= 65535 = 8080\n" +
     "  ratio: Double range 0.0 ..< 1.0 = 0.5\n" +
+    "  quota: Long range 1 ..= 10000000000 = 5000000000i64\n" +
+    "  scale: Float range 0.5 ..= 2.0 = 1.0f32\n" +
     "}\n\n" +
     "func main(): Unit {\n" +
     "  println(\"port=\" + toString(Limits.port))\n" +
     "  println(\"ratio=\" + toString(Limits.ratio))\n" +
+    "  println(\"quota=\" + toString(Limits.quota))\n" +
+    "  println(\"scale=\" + toString(Limits.scale))\n" +
     "}\n"
 }
 
@@ -285,6 +291,33 @@ func assertRangedFixtureRuns(label: in String, runner: in String, runnerArgs: in
   val nan = runRangedFixture(nanRatio, runner, runnerArgs)
   assertEqualInt(nan.exitCode, 78, label + ": NaN is outside a Double range (stderr=" + nan.stderr + ")")
   assertTrue(nan.stderr.contains("Limits.ratio"), label + ": the NaN message names the field")
+
+  val quotaVar = "LYRIC_CONFIG_CONFIGRANGEFIXTURE_LIMITS_QUOTA="
+  val scaleVar = "LYRIC_CONFIG_CONFIGRANGEFIXTURE_LIMITS_SCALE="
+
+  val bigQuota: List[String] = newList()
+  bigQuota.add(quotaVar + "10000000001")
+  val q = runRangedFixture(bigQuota, runner, runnerArgs)
+  assertEqualInt(q.exitCode, 78, label + ": a Long above its bound exits 78 (stderr=" + q.stderr + ")")
+  assertTrue(q.stderr.contains("Limits.quota"), label + ": the Long message names the field")
+
+  val okQuota: List[String] = newList()
+  okQuota.add(quotaVar + "10000000000")
+  okQuota.add(scaleVar + "2.0")
+  val q2 = runRangedFixture(okQuota, runner, runnerArgs)
+  assertEqualInt(q2.exitCode, 0, label + ": inclusive Long and Float bounds start (stderr=" + q2.stderr + ")")
+  assertTrue(q2.stdout.contains("quota=10000000000"), label + ": the Long env value is used")
+
+  val lowScale: List[String] = newList()
+  lowScale.add(scaleVar + "0.25")
+  val sc = runRangedFixture(lowScale, runner, runnerArgs)
+  assertEqualInt(sc.exitCode, 78, label + ": a Float below its bound exits 78 (stderr=" + sc.stderr + ")")
+  assertTrue(sc.stderr.contains("Limits.scale"), label + ": the Float message names the field")
+
+  val nanScale: List[String] = newList()
+  nanScale.add(scaleVar + "NaN")
+  val sn = runRangedFixture(nanScale, runner, runnerArgs)
+  assertEqualInt(sn.exitCode, 78, label + ": NaN is outside a Float range (stderr=" + sn.stderr + ")")
 }
 
 test "range-refined config fields are checked at startup (subprocess, dotnet)" {
