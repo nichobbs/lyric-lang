@@ -38,16 +38,16 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Runner pools (self-hosted opt-in).  The eight long-running jobs
+# Runner pools (self-hosted opt-in).  The nine long-running jobs
 # (compiler-self-tests-core, compiler-self-tests-dotnet-a/-b,
-# compiler-self-tests-jvm,
+# compiler-self-tests-jvm/-jvm-b,
 # numbered-backend-self-tests, stdlib-builds, native-backend-self-tests,
 # build-stage2) read their `runs-on` from repository variables so they can be
 # moved to a self-hosted machine without a commit; every other job stays on
 # GitHub-hosted `ubuntu-latest` (macos-aot-smoke on `macos-latest`).
 # build-stage2 builds and runs its stage-2 binary in the same job, so it
 # hands no artifact to another job and needs no cross-architecture wrapper.
-#   CI_HEAVY_RUNNER   a single runner label for the seven managed-runtime
+#   CI_HEAVY_RUNNER   a single runner label for the eight managed-runtime
 #                     jobs, e.g. `self-hosted` (a JSON list would need
 #                     fromJSON, so give the machine one distinctive label).
 #   CI_NATIVE_RUNNER  optional override for native-backend-self-tests, which
@@ -3863,8 +3863,9 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    # has_jvm_changes (not has_core_changes): this job is the JVM-specific
-    # compiler self-test suite, and it also carries the only JVM-kernel
+    # has_jvm_changes (not has_core_changes): this job and
+    # compiler-self-tests-jvm-b are the JVM-specific compiler self-test
+    # suite, and -b also carries the only JVM-kernel
     # coverage for lyric-web/storage/resilience/auth (folded into
     # has_jvm_changes for exactly that reason — has_core_changes alone
     # would silently skip that coverage on a PR confined to just one of
@@ -5381,6 +5382,49 @@ jobs:
       - name: Wait for parallel tests (JVM batch 2)
         wait-all: true
 
+      - name: Fail job if any batch failed
+        if: ${{ !cancelled() }}
+        run: |
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "::error::compiler-self-tests-jvm (first half): one or more self-test batches failed above (see the failing step for details)"
+            exit 1
+          fi
+
+  compiler-self-tests-jvm-b:
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    needs: [build]
+    permissions:
+      contents: read
+    # Second half of the JVM self-test suite, split from
+    # compiler-self-tests-jvm at its batch-2 barrier so the two halves run
+    # on separate runners (each ~5 min instead of ~10 min in one job).
+    # Same has_jvm_changes gate and setup as compiler-self-tests-jvm.
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_changes == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Set up Java 21 (for JVM emitter tests)
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        # Wraps the downloaded stub in a dotnet-invoking shim; see the
+        # runner-pools comment near the top of this file for why.
+        run: |
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
+
       - name: Control-flow terminator self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -6420,7 +6464,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           if [ "${{ job.status }}" != "success" ]; then
-            echo "::error::compiler-self-tests-jvm: one or more self-test batches failed above (see the failing step for details)"
+            echo "::error::compiler-self-tests-jvm-b: one or more self-test batches failed above (see the failing step for details)"
             exit 1
           fi
 
@@ -8371,7 +8415,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-core, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, numbered-backend-self-tests, ecosystem-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required, resolver-build]
+    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-core, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, compiler-self-tests-jvm-b, numbered-backend-self-tests, ecosystem-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required, resolver-build]
     if: always()
     permissions:
       contents: read
