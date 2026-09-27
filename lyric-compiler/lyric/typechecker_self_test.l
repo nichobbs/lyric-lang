@@ -4547,6 +4547,83 @@ test "bare name reachable only via a transitive import still resolves (kernel/ho
   )
 }
 
+// #7345: a dotted type-associated-function call (docs/49) on a type declared
+// by a stdlib/ecosystem package the file never imports — `RestClient.create(
+// "...")` with no `import Std.Rest` — used to type-check with no diagnostic
+// at all and fail only at run time (MSIL: "unsupported method 'create' on
+// the receiver type…"; JVM: `NoClassDefFoundError`).  `RestClient` resolves
+// permissively (tier 3 of `symTableTryFindOne`, #6287) to the `Widget`-shaped
+// symbol below regardless of import, and the checker's existing leniency for
+// a bare uppercase call receiver (it is a type name, never a value; codegen
+// owns the actual dispatch) discarded any diagnostic from that lookup. This
+// pins the fix: the receiver names a real type, but one declared by a
+// package that is not reachable from `App`'s own import closure, so it must
+// be flagged (T0020) rather than silently deferred to codegen.
+test "unimported stdlib-shaped type as call receiver is T0020 (#7345)" {
+  val pkgRest = parse(
+    "package PkgRest\npub opaque type Widget {\n  name: String\n}\npub func Widget.create(name: in String): Widget {\n  Widget(name = name)\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "PkgRest", items = pkgRest.file.items, imports = collectImportNames(pkgRest.file.imports))
+  )
+  val src = "package App\nfunc f(): Unit {\n  val w = Widget.create(\"x\")\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "unimported Widget.create(...) is exactly one T0020")
+  val msg = diagMessageFor(cr, "T0020")
+  assertTrue(msg.contains("Widget"), "T0020 names the unresolved type: " + msg)
+  assertTrue(msg.contains("PkgRest"), "T0020 names the declaring package: " + msg)
+  assertTrue(msg.contains("import PkgRest"), "T0020 suggests the fix: " + msg)
+}
+
+// Control: once `App` imports `PkgRest`, the same call resolves cleanly —
+// this fix is purely additive for the out-of-scope case above.
+test "imported stdlib-shaped type as call receiver resolves cleanly (#7345)" {
+  val pkgRest = parse(
+    "package PkgRest\npub opaque type Widget {\n  name: String\n}\npub func Widget.create(name: in String): Widget {\n  Widget(name = name)\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "PkgRest", items = pkgRest.file.items, imports = collectImportNames(pkgRest.file.imports))
+  )
+  val src = "package App\nimport PkgRest\nfunc f(): Unit {\n  val w = Widget.create(\"x\")\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0020"),
+    0,
+    "Widget.create(...) with `import PkgRest`: no T0020"
+  )
+}
+
+// The kernel/host re-export idiom (#6287, mirrored above for a bare
+// function name) must keep working for a type-receiver call too: a type
+// declared only in a package reached TRANSITIVELY (through the directly
+// imported package's own `import`) resolves without a diagnostic.
+test "type receiver reachable only via a transitive import resolves cleanly (#7345)" {
+  val pkgRest = parse(
+    "package PkgRest\npub opaque type Widget {\n  name: String\n}\npub func Widget.create(name: in String): Widget {\n  Widget(name = name)\n}\n"
+  )
+  val pkgWrap = parse("package PkgWrap\nimport PkgRest\npub func wrapFn(): Int { 1 }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(name = "PkgRest", items = pkgRest.file.items, imports = collectImportNames(pkgRest.file.imports))
+  )
+  packages.add(
+    ImportedPackage(name = "PkgWrap", items = pkgWrap.file.items, imports = collectImportNames(pkgWrap.file.imports))
+  )
+  val src = "package App\nimport PkgWrap\nfunc f(): Unit {\n  val w = Widget.create(\"x\")\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, packages), "T0020"),
+    0,
+    "Widget (PkgRest) resolves transitively through PkgWrap's own import of PkgRest"
+  )
+}
+
+// A type declared in the SAME package as the call site needs no import.
+test "same-package type as call receiver resolves cleanly (#7345)" {
+  val src = "package App\npub opaque type Widget {\n  name: String\n}\npub func Widget.create(name: in String): Widget {\n  Widget(name = name)\n}\nfunc f(): Unit {\n  val w = Widget.create(\"x\")\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "Widget declared in the same package as its use: no diagnostic")
+}
+
 // #6700: `unionCaseSymbolForScrutinee`'s fallback (reached when the scrutinee
 // type doesn't resolve — here, an unknown identifier types as `TyError`, so
 // the DKUnionCase/DKEnumCase scrutinee-based tiers above never fire) must NOT

@@ -83,6 +83,8 @@ import std.collections as Coll         // alias the entire package
 
 When you use the `as` form, you access its names through the alias: `Coll.Map`, `Coll.Set`. When you use the named form, the names are in scope directly.
 
+The one exception is `Option` and `Result`: they come from `Std.Core` but are visible everywhere without an explicit import — an implicit prelude, the same way they behave in most languages that have them. Every other name needs an import, directly or transitively (importing a package that itself imports another one brings that other package's names into scope too — the pattern the standard library's own kernel modules use). A type referenced without a reachable import, including in `Type.method(...)` call position, is a compile error naming the type and the package to import.
+
 There are no wildcard imports. `import Money.*` is a compile error. Every imported name must be written explicitly:
 
 ```lyric
