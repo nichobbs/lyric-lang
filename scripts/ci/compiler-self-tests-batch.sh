@@ -62,6 +62,7 @@ for t in \
   lyric-compiler/lyric/union_case_collision_self_test.l \
   lyric-compiler/lyric/generic_extern_self_test.l \
   lyric-compiler/lyric/generic_extern_methodspec_self_test.l \
+  lyric-compiler/lyric/generic_extern_param_self_test.l \
   lyric-compiler/lyric/enum_msil_self_test.l \
   lyric-compiler/lyric/contract_meta_self_test.l \
   lyric-compiler/lyric/annotation_meta_emit_self_test.l \

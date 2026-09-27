@@ -176,7 +176,14 @@ pub func clrAssemblyResolvable(typeFqn: in String): Bool {
 // `_kernel/` externs by the `clr value-type audit` test in
 // `lyric-stdlib/tests/metadata_reader_tests.l` (#1802): any kernel extern
 // whose metadata says "value type" but is missing here (or vice versa)
-// fails that test in CI.
+// fails that test when run manually (not currently wired into CI, see the
+// test file's own header).
+//
+// `System.Net.Security.SslApplicationProtocol` is also a GENERICINST type
+// *argument* (`List<SslApplicationProtocol>`, `_kernel/tcp_host.l`), not
+// just a bare parameter/return/field type like the rest of this list —
+// `argFqnToMsil` and `externTargetBracketGenericInstMsil` (codegen.l) fall
+// back to this same list for that shape in an SDK-less build (#7484).
 pub func clrIsValueType(typeFqn: in String): Bool {
   typeFqn == "System.Guid" or typeFqn == "System.DateTime" or typeFqn == "System.TimeSpan" or
     typeFqn == "System.DateTimeOffset" or
@@ -187,7 +194,8 @@ pub func clrIsValueType(typeFqn: in String): Bool {
     typeFqn == "System.Text.Json.JsonEncodedText" or
     typeFqn == "System.Text.Json.JsonProperty" or
     typeFqn == "System.Text.Json.JsonElement+ArrayEnumerator" or
-    typeFqn == "System.Text.Json.JsonElement+ObjectEnumerator"
+    typeFqn == "System.Text.Json.JsonElement+ObjectEnumerator" or
+    typeFqn == "System.Net.Security.SslApplicationProtocol"
 }
 
 // ── Resolver ─────────────────────────────────────────────────────────────────

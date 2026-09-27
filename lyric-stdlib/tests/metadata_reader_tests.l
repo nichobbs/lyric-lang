@@ -951,6 +951,7 @@ func expectedClrValueTypes(): List[String] {
   // for SDK-less builds.
   xs.add("System.Text.Json.JsonElement+ArrayEnumerator")
   xs.add("System.Text.Json.JsonElement+ObjectEnumerator")
+  xs.add("System.Net.Security.SslApplicationProtocol")
   xs
 }
 

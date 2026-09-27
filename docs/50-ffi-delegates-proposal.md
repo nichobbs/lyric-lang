@@ -31,6 +31,13 @@ value-type receiver instantiation (e.g. `Action`1<Int32>`) exposed a second
 bug where `emitGenericExternMember` still unconditionally boxed a
 value-type argument meant for a `!0`-typed BCL parameter, correct only for
 the erased-`<object>` case. See #5853._
+`docs/66-ffi-generic-instantiation-boundary.md` §7 "Gap 2" scopes the
+remaining general-delegate-ABI gap this proposal's "below" section describes:
+a contravariance mismatch when a `TFunction` argument's strongly-typed
+delegate meets `emitGenericExternMember`'s erased-`<object,…>` generic-
+declaring-type convention in the same call (`#5525`/`#5800`), and the
+delegate-ctor builders' Func/Action-only construction, never a named BCL
+delegate type (`#5947`). Design direction there, not implemented yet._
 
 Provide a way to pass Lyric lambdas or method references to .NET methods expecting strongly typed delegates via auto FFI.
 

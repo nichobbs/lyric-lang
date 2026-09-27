@@ -22224,12 +22224,45 @@ func stripBracketSuffix(name: in String): String {
   }
 }
 
+// Normalise one comma-split generic-instantiation argument token to a bare
+// FQN. Handles both the plain form (`System.String`) and the .NET reflection
+// "double-bracket" assembly-qualified form (`[System.String]`, or with an
+// assembly suffix, `[System.String, mscorlib, Version=...]` — the form
+// `Type.AssemblyQualifiedName` produces for a generic argument from a
+// different assembly than the declaring type, and the form
+// `lyric-aws-secrets`'s `SmClientCache`/`SsmClientCache` bracket-suffixed
+// extern-type aliases use, e.g. `ConcurrentDictionary`2[[System.String],
+// [Amazon.SecretsManager.AmazonSecretsManagerClient]]`). Without unwrapping,
+// a token like `[System.String]` is passed to `argFqnToMsil` verbatim,
+// bracket characters and all, which cannot resolve to any real metadata type
+// and interns a bogus TypeRef named literally `[System.String]` — the
+// resulting instantiation blob loads with `TypeLoadException: Could not load
+// type '[System.String]'`. Silently a latent bug until this fix's own
+// `externTargetBracketGenericInstMsil` (#6029) started parsing a
+// double-bracket-form alias for the first time — every existing caller of
+// `parseBracketArgFqns` had only ever fed it the plain, single-bracket form.
+func normalizeGenericArgToken(raw: in String): String {
+  val t = raw.trim()
+  if t.length >= 2 and t.substring(0, 1) == "[" and t.substring(t.length - 1, 1) == "]" {
+    val inner = t.substring(1, t.length - 2)
+    val commaIdx = String.indexOfRaw(inner, ",")
+    if commaIdx < 0 {
+      inner.trim()
+    } else {
+      inner.substring(0, commaIdx).trim()
+    }
+  } else {
+    t
+  }
+}
+
 // Parse the concrete type-argument FQNs out of a bracketed generic instantiation
-// suffix: `Task`1[System.String]` -> ["System.String"].  Returns an empty list
-// when there is no `[...]`.  Tracks `[`/`]` nesting depth (#4044), so a nested
-// closed-generic arg (e.g. `Dictionary`2[String,Int32]` inside
-// `Tuple`2[Dictionary`2[String,Int32],Boolean]`) is returned as one element
-// rather than split apart at its own internal comma.
+// suffix: `Task`1[System.String]` -> ["System.String"]. Also accepts the
+// double-bracket assembly-qualified form (see `normalizeGenericArgToken`).
+// Returns an empty list when there is no `[...]`. Tracks `[`/`]` nesting
+// depth (#4044), so a nested closed-generic arg (e.g. `Dictionary`2[String,
+// Int32]` inside `Tuple`2[Dictionary`2[String,Int32],Boolean]`) is returned
+// as one element rather than split apart at its own internal comma.
 pub func parseBracketArgFqns(name: in String): List[String] {
   val acc: List[String] = newList()
   val br = String.indexOfRaw(name, "[")
@@ -22258,7 +22291,7 @@ pub func parseBracketArgFqns(name: in String): List[String] {
       depth = depth - 1
       cur = cur + ch
     } else if ch == "," and depth == 0 {
-      val t = cur.trim()
+      val t = normalizeGenericArgToken(cur)
       if t.length > 0 {
         acc.add(t)
       }
@@ -22268,7 +22301,7 @@ pub func parseBracketArgFqns(name: in String): List[String] {
     }
     i = i + 1
   }
-  val tail = cur.trim()
+  val tail = normalizeGenericArgToken(cur)
   if tail.length > 0 {
     acc.add(tail)
   }
@@ -22314,10 +22347,16 @@ func substituteDeclaringVarMsil(t: in MsilType, objArgs: in List[MsilType]): Msi
 }
 
 // Map a CLR type-argument FQN to the MsilType used as a closed TypeSpec arg.
-// BCL primitives map to their value types; everything else interns a class
-// TypeRef so the closed instantiation matches the runtime object exactly (e.g.
-// `Task`1<String>`, not the `<object>` erasure that fails a generic-invariant
-// receiver `castclass`).
+// BCL primitives map to their value types; a non-primitive value-type FQN
+// (e.g. `System.Net.Security.SslApplicationProtocol`, a struct) must intern a
+// VALUETYPE TypeRef, not a CLASS one — ECMA-335 §II.23.2.12 requires each
+// GENERICINST argument's own CLASS/VALUETYPE tag to match the argument type's
+// real kind, and a struct tagged CLASS here mismatches at load with
+// `TypeLoadException: ... due to value type mismatch` even though the rest of
+// the blob (TypeRef, arg count) is byte-correct. Everything else (an
+// unrecognised reference type) interns a class TypeRef so the closed
+// instantiation matches the runtime object exactly (e.g. `Task`1<String>`, not
+// the `<object>` erasure that fails a generic-invariant receiver `castclass`).
 func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
   if fqn == "System.String" {
     MString
@@ -22336,7 +22375,114 @@ func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
   } else {
     ensureMetadataIndex(cctx)
     val refRow = internFfiTypeRefNested(cctx, fqn)
-    MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn)
+    // Fall back to the hardcoded `clrIsValueType` list when no reference pack
+    // is on disk, mirroring `externValueTypeMsil`'s identical fallback — an
+    // SDK-less build has an empty `metadataVtypeSet`, which would otherwise
+    // silently mistag every value-type argument as `MClassRef` and reproduce
+    // the exact TypeLoadException this function exists to prevent (#7484).
+    if Mdr.isValueTypeFqn(cctx.metadataVtypeSet, fqn) or clrIsValueType(fqn) {
+      MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn)
+    } else {
+      MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn)
+    }
+  }
+}
+
+// Resolve a `@externTarget` parameter/return type expression that names a
+// CLOSED generic-instantiation extern-type alias (e.g. `extern type ProtoList
+// = "System.Collections.Generic.List`1[System.Net.Security.
+// SslApplicationProtocol]"`) to its real `MGenericInst`/`MValueTypeGenericInst`
+// instead of the `MObject` erasure `typeExprToMsilCtx`'s `TRef` branch applies
+// to every other use of a bracket-suffixed extern-type alias.
+//
+// That erasure is correct when the alias is used as the RECEIVER of its own
+// generic-declaring-type member call: `emitGenericExternMember` routes around
+// it entirely, re-deriving the real TypeSpec from the `@externTarget` target
+// string itself. But a bracket-suffixed alias used as a PARAMETER or RETURN
+// type of an unrelated (non-generic-declaring) `@externTarget` member — e.g.
+// `SslServerAuthenticationOptions.set_ApplicationProtocols(List<
+// SslApplicationProtocol>)` — never reaches that path, so the erased `MObject`
+// flows straight into the MemberRef signature and the call can never bind
+// (#6029 Gap A). This helper recovers the real closed instantiation for
+// exactly that shape, scoped to `@externTarget` signatures only (mirroring the
+// existing `TFunction` special case in `emitExternTargetBody`) so the general
+// erasure convention every other `typeExprToMsilCtx` caller relies on
+// (locals, fields, non-`@externTarget` functions, generic-declaring-type
+// receivers) is completely untouched.
+//
+// None when `te` isn't a bare single-segment extern-type-alias reference, the
+// alias resolves to a Lyric-internal package (never bracket-erased in the
+// first place), its CLR FQN carries no bracket suffix (nothing to recover),
+// or the bare name is shadowed by an active generic type parameter or an
+// in-scope local Lyric type of the same name — the caller falls back to the
+// ordinary `typeExprToMsilCtx` conversion (which already applies both
+// shadowing checks correctly) in every such case.
+//
+// `cctx.externTypeNames` is bundle-global, not package-scoped (its own
+// comments say so), so a same-named local generic parameter or Lyric type in
+// ONE package can collide with an unrelated package's bracket-suffixed
+// extern-type alias elsewhere in the same compiled bundle. Skipping these two
+// guards — the same ones `typeExprToMsilCtx`'s `TRef` branch applies for the
+// same reason (an active generic type parameter; `#6041`'s
+// `hasLyricTypeCandidateInScope`) — would let this helper resolve to the
+// wrong type before the correctly-guarded fallback path ever got a chance,
+// a silent miscompile rather than a build error.
+//
+// The generic-parameter check takes the CALLER's own `declGenerics` (the
+// current function's `genericNamesOf(decl.generics)`), not `cctx.pbGenerics`
+// — that field is populated exclusively inside the self-contained async
+// pre-scan `collectAwaitTypesPhaseBMsil` and is stale/empty at every other
+// call site, `emitExternTargetBody` included; consulting it here would have
+// made the guard permanently dead code (#7456).
+func externTargetBracketGenericInstMsil(
+  cctx: in CodegenCtx,
+  te: in TypeExpr,
+  pkgName: in String,
+  declGenerics: in List[String],
+): Option[MsilType] {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count != 1 {
+        return None
+      }
+      val seg = path.segments[0]
+      if nameListContains(declGenerics, seg) {
+        return None
+      }
+      if hasLyricTypeCandidateInScope(cctx, pkgName, seg) {
+        return None
+      }
+      match mapGet(cctx.externTypeNames, seg) {
+        case Some(clrFqn) -> {
+          if startsWith(clrFqn, "Lyric.") or not contains(clrFqn, "[") {
+            None
+          } else {
+            ensureMetadataIndex(cctx)
+            val cleanFqn = stripBracketSuffix(clrFqn)
+            val concreteArgFqns = parseBracketArgFqns(clrFqn)
+            // Same SDK-less fallback as `argFqnToMsil` (#7484): an empty
+            // metadata vtypeSet must not silently mistag a value-type
+            // generic-declaring type (e.g. a hypothetical `ValueTask`1[...]`
+            // alias) as a reference type.
+            val isValType = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, cleanFqn) or clrIsValueType(cleanFqn)
+            val giRefRow = internFfiTypeRefNested(cctx, cleanFqn)
+            val typeArgs: List[MsilType] = newList()
+            var i = 0
+            while i < concreteArgFqns.count {
+              typeArgs.add(argFqnToMsil(cctx, concreteArgFqns[i]))
+              i = i + 1
+            }
+            if isValType {
+              Some(value = MValueTypeGenericInst(typeRefCode = tdrTypeRef(giRefRow), headFqn = cleanFqn, typeArgs = typeArgs))
+            } else {
+              Some(value = MGenericInst(typeRefCode = tdrTypeRef(giRefRow), headFqn = cleanFqn, typeArgs = typeArgs))
+            }
+          }
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
   }
 }
 
@@ -23588,7 +23734,17 @@ func emitExternTargetBody(
             }
             buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy)
           }
-          case _ -> typeExprToMsilGenBodyOrCtx(cctx, decl.params[pi].ty, pkgName, declGenerics)
+          // A bracket-suffixed extern-type-alias parameter (`List<
+          // SslApplicationProtocol>`-shaped, #6029 Gap A) needs its real closed
+          // GENERICINST — the shared `typeExprToMsilCtx` erasure to `MObject`
+          // is correct for a generic-declaring-type's own RECEIVER (handled by
+          // `emitGenericExternMember` instead) but loses the type entirely for
+          // an unrelated method's argument. Bounded to `@externTarget`
+          // parameters only, mirroring the `TFunction` case above.
+          case _ -> match externTargetBracketGenericInstMsil(cctx, decl.params[pi].ty, pkgName, declGenerics) {
+            case Some(gi) -> gi
+            case None -> typeExprToMsilGenBodyOrCtx(cctx, decl.params[pi].ty, pkgName, declGenerics)
+          }
         }
         val finalTy = if isByrefMode(decl.params[pi].mode) { MByRef(inner = baseTy) } else { baseTy }
         paramTypes.add(finalTy)
@@ -23597,7 +23753,15 @@ func emitExternTargetBody(
       val retTy = match decl.ret {
         case Some(te) -> match resolveValueTaskGenericMsilType(cctx, te, pkgName) {
           case Some(rt) -> rt
-          case None -> typeExprToMsilGenBodyOrCtx(cctx, te, pkgName, declGenerics)
+          case None -> match externTargetBracketGenericInstMsil(cctx, te, pkgName, declGenerics) {
+            case Some(gi) -> gi
+            case None -> typeExprToMsilGenBodyOrCtx(
+              cctx,
+              te,
+              pkgName,
+              declGenerics
+            )
+          }
         }
         case None -> MVoid
       }
@@ -23610,12 +23774,15 @@ func emitExternTargetBody(
       // return stays `object` (assignable from the reference type on `ret`).
       val ffiRetTy = match decl.ret {
         case Some(te) -> match te.kind {
-          case TNullable(inner) -> typeExprToMsilGenBodyOrCtx(
-            cctx,
-            inner,
-            pkgName,
-            declGenerics
-          )
+          case TNullable(inner) -> match externTargetBracketGenericInstMsil(cctx, inner, pkgName, declGenerics) {
+            case Some(gi) -> gi
+            case None -> typeExprToMsilGenBodyOrCtx(
+              cctx,
+              inner,
+              pkgName,
+              declGenerics
+            )
+          }
           case _ -> retTy
         }
         case None -> MVoid
