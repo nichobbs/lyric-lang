@@ -48,6 +48,7 @@
 package JsonRpc.Stdio
 
 import Std.Core
+import Std.Collections
 import Std.Console
 import Std.ConsoleHost
 import Std.Encoding
@@ -540,9 +541,20 @@ pub func newContentLengthTransport(): ContentLengthTransport {
 /// Bytes read from a `ByteSource` that no complete frame has consumed yet.
 /// A transport keeps one for its whole life, so bytes read before a
 /// `receiveWithin` timeout are still there for the next receive.
+///
+/// `bytes` is a `List[Byte]`, not a `slice[Byte]` (#7520 review): `slice[Byte]` is
+/// immutable (`.append`/`.concat` each return a fresh copy — §2.7), so
+/// growing one byte-chunk at a time by re-concatenating the whole pending
+/// buffer on every `appendBytes` call is O(pending size) per append, i.e.
+/// O(message size²) to accumulate one large message split across many small
+/// reads. `List[Byte].add` is the same amortized-O(1)-per-element growable
+/// array every other byte accumulator in the stdlib already builds on
+/// (`Std.Encoding.encodeUtf8`, `Std.Hash`, `Std.Http`'s H2 framer), so
+/// appending a chunk of `n` bytes costs amortized O(n), and a full message
+/// costs O(message size) regardless of how many reads it arrived in.
 @stable(since = "0.2")
 pub record FrameBuffer {
-  var bytes: slice[Byte]
+  var bytes: List[Byte]
   // Read cursor: bytes before `pos` belong to frames already returned.
   var pos: Int
   // Bytes from `pos` already scanned for a newline without finding one, so
@@ -553,24 +565,47 @@ pub record FrameBuffer {
 
 @stable(since = "0.2")
 pub func newFrameBuffer(): FrameBuffer {
-  val empty: slice[Byte] = []
+  val empty: List[Byte] = newList()
   FrameBuffer(bytes = empty, pos = 0, scanned = 0, ended = false)
 }
 
 func pendingBytes(fb: in FrameBuffer): Int {
-  fb.bytes.length - fb.pos
+  fb.bytes.count - fb.pos
 }
 
-// Append `more`, dropping the consumed prefix while copying anyway.
+// Append `more`. Drops the consumed prefix first (once per frame boundary
+// crossed, not once per append) so a long-lived connection's buffer does
+// not grow without bound; the append itself is `List.add` per byte, which
+// is amortized O(1) each — see the FrameBuffer doc comment.
 func appendBytes(fb: in FrameBuffer, more: in slice[Byte]): Unit {
-  if pendingBytes(fb) == 0 {
-    fb.bytes = more
-  } else if fb.pos == 0 {
-    fb.bytes = fb.bytes.concat(more)
-  } else {
-    fb.bytes = fb.bytes.slice(fb.pos, fb.bytes.length).concat(more)
+  if fb.pos > 0 {
+    val compacted: List[Byte] = newList()
+    var i = fb.pos
+    while i < fb.bytes.count {
+      compacted.add(fb.bytes[i])
+      i = i + 1
+    }
+    fb.bytes = compacted
+    fb.pos = 0
   }
-  fb.pos = 0
+  var j = 0
+  while j < more.length {
+    fb.bytes.add(more[j])
+    j = j + 1
+  }
+}
+
+// Materialize `bytes[start, endExclusive)` as a `slice[Byte]` — the one
+// place per completed frame (not per append) that copies out of the
+// `List[Byte]` accumulator, for `tryDecodeUtf8` and header-line text.
+func listByteSlice(bytes: in List[Byte], start: in Int, endExclusive: in Int): slice[Byte] {
+  val acc: List[Byte] = newList()
+  var i = start
+  while i < endExclusive {
+    acc.add(bytes[i])
+    i = i + 1
+  }
+  acc.toArray()
 }
 
 func consumeTo(fb: in FrameBuffer, newPos: in Int): Unit {
@@ -586,8 +621,8 @@ union FrameStep {
   case FrameFailed(message: String)
 }
 
-func decodeFrame(bytes: in slice[Byte], start: in Int, endExclusive: in Int, framing: in String): FrameStep {
-  match tryDecodeUtf8(bytes.slice(start, endExclusive)) {
+func decodeFrame(bytes: in List[Byte], start: in Int, endExclusive: in Int, framing: in String): FrameStep {
+  match tryDecodeUtf8(listByteSlice(bytes, start, endExclusive)) {
     case Some(text) -> FrameReady(text = text)
     case None -> FrameFailed(message = framing + " framing: message is not valid UTF-8")
   }
@@ -596,10 +631,20 @@ func decodeFrame(bytes: in slice[Byte], start: in Int, endExclusive: in Int, fra
 // NDJSON: the next `\n`-terminated line (a `\r` before the `\n` is
 // dropped). At end of stream a final unterminated line is still a message,
 // matching `Std.Console.readLine`.
+//
+// The EOF-terminated tail (below) is checked against `MAX_MESSAGE_BYTES`
+// with the exact same bound as the `\n`-terminated line above it (#7520 review):
+// an earlier version only capped how much could accumulate while still
+// waiting for a delimiter (`pendingBytes(fb) > MAX_MESSAGE_BYTES + 1`,
+// which allows exactly one more pending byte than a `\n`-terminated line
+// is ever allowed to have, since that check runs before the terminator is
+// known to be a `\n` or EOF), so an EOF-terminated final line could be
+// exactly `MAX_MESSAGE_BYTES + 1` bytes and slip through where the
+// `\n`-terminated path would have rejected it.
 func ndjsonStep(fb: in FrameBuffer): FrameStep {
   val bytes = fb.bytes
   var i = fb.pos + fb.scanned
-  while i < bytes.length {
+  while i < bytes.count {
     if bytes[i] == 10u8 {
       val start = fb.pos
       var cut = i
@@ -614,7 +659,7 @@ func ndjsonStep(fb: in FrameBuffer): FrameStep {
     }
     i = i + 1
   }
-  fb.scanned = bytes.length - fb.pos
+  fb.scanned = bytes.count - fb.pos
   if pendingBytes(fb) > MAX_MESSAGE_BYTES + 1 {
     return FrameFailed(message = ndjsonTooLong())
   }
@@ -625,11 +670,14 @@ func ndjsonStep(fb: in FrameBuffer): FrameStep {
     return FrameEnd
   }
   val start = fb.pos
-  var cut = bytes.length
+  var cut = bytes.count
   if bytes[cut - 1] == 13u8 {
     cut = cut - 1
   }
-  consumeTo(fb, bytes.length)
+  consumeTo(fb, bytes.count)
+  if cut - start > MAX_MESSAGE_BYTES {
+    return FrameFailed(message = ndjsonTooLong())
+  }
   decodeFrame(bytes, start, cut, "NDJSON")
 }
 
@@ -649,7 +697,7 @@ func clStep(fb: in FrameBuffer): FrameStep {
   var lines = 0
   var contentLength = 0 - 1
   var bodyStart = 0 - 1
-  while bodyStart < 0 and i < bytes.length {
+  while bodyStart < 0 and i < bytes.count {
     if bytes[i] == 10u8 {
       val line = headerLineText(bytes, lineStart, i)
       if line.length == 0 {
@@ -676,7 +724,7 @@ func clStep(fb: in FrameBuffer): FrameStep {
     }
     i = i + 1
   }
-  if bodyStart >= 0 and bytes.length - bodyStart >= contentLength {
+  if bodyStart >= 0 and bytes.count - bodyStart >= contentLength {
     consumeTo(fb, bodyStart + contentLength)
     return decodeFrame(bytes, bodyStart, bodyStart + contentLength, "Content-Length")
   }
@@ -691,7 +739,7 @@ func clStep(fb: in FrameBuffer): FrameStep {
   } else {
     FrameFailed(
       message = "Content-Length framing: unexpected end of stream reading the message body (" +
-        (bytes.length - bodyStart).toString() +
+        (bytes.count - bodyStart).toString() +
         " of " +
         contentLength.toString() +
         " bytes)"
@@ -702,8 +750,8 @@ func clStep(fb: in FrameBuffer): FrameStep {
 // A header line's text with every `\r` removed. Header bytes outside ASCII
 // decode as UTF-8; an invalid line decodes as "?", which `clApplyHeaderLine`
 // ignores like any header without a colon.
-func headerLineText(bytes: in slice[Byte], start: in Int, endExclusive: in Int): String {
-  match tryDecodeUtf8(bytes.slice(start, endExclusive)) {
+func headerLineText(bytes: in List[Byte], start: in Int, endExclusive: in Int): String {
+  match tryDecodeUtf8(listByteSlice(bytes, start, endExclusive)) {
     case Some(text) -> text.replace("\r", "")
     case None -> "?"
   }

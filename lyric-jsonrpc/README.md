@@ -369,6 +369,7 @@ pub func callWithin(peer: inout RpcPeer, method: in String, params: in Option[Js
   requires: isValidOutboundMethod(method) and isValidCallTimeout(timeoutMs)
 pub func notify(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[Unit, String]
   requires: isValidOutboundMethod(method)
+pub func drainPendingQueue(peer: inout RpcPeer): Result[Unit, String]
 ```
 
 The peer is symmetric — JSON-RPC has no client/server asymmetry, and MCP
@@ -383,6 +384,13 @@ discipline LSP servers use. If more than `maxPendingMessages` messages
 queue up while one `call` waits, that `call` fails with `internalError`
 and the queued messages stay queued for `runLoop`.
 
+A caller whose peer never runs `runLoop` — a pure request/response client
+like `Mcp.Client` — must drain that queue some other way, or entries left
+by one call accumulate across every later call toward
+`maxPendingMessages`. `drainPendingQueue(peer)` dispatches (or discards,
+for a notification) every currently-queued entry exactly as `runLoop`
+would; call it after each `call`/`callWithin` returns.
+
 ### Deadlines
 
 No call waits forever (#7451). `call` applies the peer's call timeout —
@@ -394,7 +402,11 @@ deadline is fixed when the request goes out: each wait on the transport
 notifications that arrive meanwhile are queued without extending it. When
 it passes, the call returns a local `RpcError` with code `requestTimedOut`
 (`-32001`, the implementation-defined server-error range; `data` carries
-`{"timeoutMs": N}`), which `isTimeoutError` recognizes. Nothing is sent to
+`{"timeoutMs": N}`), which `isTimeoutError` recognizes. `isTimeoutError`
+matches the wire-level `-32001` code alone: a peer can legitimately send
+its own `-32001` failure for an unrelated reason, and this does not
+distinguish that from a local deadline (#7522 tracks typed `Mcp.Client`
+errors that would). Nothing is sent to
 the peer. Ids are never reused, so if the response turns up later it
 matches no call: `runLoop` and later calls drop it like any unsolicited
 response, and it is never handed to a different call.
@@ -452,7 +464,13 @@ it is complete, so the Content-Length count is exact by construction and
 invalid UTF-8 is a framing error. `receiveWithin` gives each wait for more
 bytes only the time left before its deadline; on a timeout the bytes read
 so far stay in the `FrameBuffer`, so a message that straddles the deadline
-is returned whole by the next receive.
+is returned whole by the next receive. `FrameBuffer.bytes` is a
+`List[Byte]`, not a `slice[Byte]`: since `slice[T]` is immutable,
+re-concatenating the whole pending buffer on every append would cost
+O(message size²) to accumulate one large message split across many small
+reads; `List[Byte].add` is amortised O(1) per byte, so a chunk of size n
+costs amortised O(n). An EOF-terminated final NDJSON line is capped at the
+same 16 MiB `MAX_MESSAGE_BYTES` bound a `\n`-terminated line is.
 
 The older character- and line-level cores (`clReceiveVia`/
 `ndjsonReceiveVia` over `CharReader`/`LineReader`, plus `clSendVia`/

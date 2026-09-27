@@ -446,11 +446,46 @@ test "NDJSON bytes: a silent peer times out, and a line straddling the timeout i
 test "NDJSON bytes: invalid UTF-8 is a framing error" {
   val src = chunkSource(newList(), true)
   val buffer = newFrameBuffer()
-  val bad: slice[Byte] = [123u8, 255u8, 125u8, 10u8]
+  val bad: List[Byte] = newList()
+  bad.add(123u8)
+  bad.add(255u8)
+  bad.add(125u8)
+  bad.add(10u8)
   buffer.bytes = bad
   match ndjsonReceiveFrom(src, buffer) {
     case Err(e) -> assertTrue(e.contains("UTF-8"), "names the encoding problem")
     case Ok(_) -> assertTrue(false, "expected a framing error")
+  }
+}
+
+// #7520 review: an EOF-terminated final line must be rejected at exactly the same
+// size bound (> MAX_MESSAGE_BYTES) as a `\n`-terminated one. An earlier
+// version only capped how much could accumulate while still waiting for a
+// delimiter (`MAX_MESSAGE_BYTES + 1` pending bytes), so an EOF-terminated
+// line of exactly `MAX_MESSAGE_BYTES + 1` bytes slipped through uncaught
+// where the `\n`-terminated path would have rejected it.
+test "NDJSON bytes: an EOF-terminated final line obeys the same 16 MiB limit as a newline-terminated line" {
+  var big = "a"
+  while big.length < 16777217 {
+    big = big + big
+  }
+  val overLimit = big.substring(0, 16777217)
+  val chunksOver: List[String] = newList()
+  chunksOver.add(overLimit)
+  match ndjsonReceiveFrom(chunkSource(chunksOver, true), newFrameBuffer()) {
+    case Ok(_) -> assertTrue(
+      false,
+      "an EOF-terminated line of MAX_MESSAGE_BYTES + 1 bytes must be rejected, same as a \\n-terminated one"
+    )
+    case Err(e) -> assertTrue(e.contains("exceeds"), "names the size limit")
+  }
+
+  val atLimit = big.substring(0, 16777216)
+  val chunksAt: List[String] = newList()
+  chunksAt.add(atLimit)
+  match ndjsonReceiveFrom(chunkSource(chunksAt, true), newFrameBuffer()) {
+    case Ok(Some(m)) -> assertEqualInt(m.length, 16777216, "a line of exactly MAX_MESSAGE_BYTES is accepted")
+    case _ -> assertTrue(false, "expected the at-limit EOF-terminated line to be accepted")
   }
 }
 

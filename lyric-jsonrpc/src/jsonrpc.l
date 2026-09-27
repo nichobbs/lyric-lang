@@ -137,7 +137,17 @@ pub func isValidCallTimeout(timeoutMs: in Int): Bool {
   timeoutMs >= 1 and timeoutMs <= maxCallTimeoutMs
 }
 
-/// True when `e` is the local failure of a call whose deadline passed.
+/// True when `e.code == requestTimedOut` (`-32001`). This is a **heuristic
+/// match on the wire-level error code, not a marker distinguishing a local
+/// deadline from a remote failure**: `-32001` lies in JSON-RPC 2.0 §5.1's
+/// implementation-defined server-error range, so nothing stops a remote
+/// peer from legitimately sending its own `-32001` `RpcFailure` for a
+/// reason that has nothing to do with this call's deadline — this function
+/// cannot tell the two apart, and returns `true` for both. Typed
+/// `Mcp.Client` errors that would carry this distinction natively are
+/// tracked separately (#7522); until then, treat a `true` result as "the
+/// peer reported (or we locally assigned) code `-32001`", not as proof the
+/// local deadline actually passed.
 @pure
 pub func isTimeoutError(e: in RpcError): Bool {
   e.code == requestTimedOut
@@ -711,6 +721,41 @@ pub func runLoop(peer: inout RpcPeer): Result[Unit, String] {
           }
         }
       }
+    }
+  }
+  outcome
+}
+
+/// Dispatch or discard every message a `call`/`callWithin` in progress
+/// queued while waiting for its own response (module doc, "Dispatch
+/// model"). `runLoop` drains this queue itself, one entry per outer-loop
+/// iteration, before reading the next message from the transport — but a
+/// caller whose peer never runs `runLoop` (a request/response client such
+/// as `Mcp.Client`, which only ever calls `call`/`callWithin`) must drain
+/// it some other way, or entries left by one call sit there until a later
+/// call queues enough more to hit `maxPendingMessages`, after which every
+/// call fails (#7520 review). Call this after each `call`/`callWithin` returns.
+///
+/// Each queued entry is dispatched exactly as `runLoop` would dispatch it:
+/// a request gets the handler's real answer sent back (for a peer with no
+/// handler for inbound requests, that is ordinarily a `-32601 Method not
+/// found` `RpcFailure`, not a dropped message — a queued request is not
+/// the same as an unsolicited response, and JSON-RPC 2.0 requires every
+/// request to get *some* response); a notification is dispatched to the
+/// handler and never gets a response, matching JSON-RPC 2.0 §4.1's "the
+/// Client MUST NOT expect a Response". Returns the first transport-send
+/// failure encountered, if any, leaving any remaining queued entries
+/// undrained (the same failure `runLoop` would hit and stop on).
+@stable(since = "0.2")
+pub func drainPendingQueue(peer: inout RpcPeer): Result[Unit, String] {
+  var running = true
+  var outcome: Result[Unit, String] = Ok(value = ())
+  while running and peer.pendingQueue.count > 0 {
+    val v = peer.pendingQueue[0]
+    peer.pendingQueue.removeAt(0)
+    match dispatchTopLevel(peer, v) {
+      case None -> ()
+      case Some(r) -> trySend(peer, r, running, outcome)
     }
   }
   outcome

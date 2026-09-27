@@ -8,8 +8,13 @@
 //! The stdin byte reader (`hostOpenStdin` / `hostStdinReadResult` /
 //! `hostStdinReadWithinResult`, #7451) reads raw bytes from
 //! `Console.OpenStandardInput()`. A bounded read runs the blocking
-//! `Stream.Read` on a thread-pool thread (`Task.Run(Action)`) and waits for it
-//! with `Task.Wait(int)`, which returns `false` on timeout. A timed-out read
+//! `Stream.Read` on its own long-running thread
+//! (`Task.Factory.StartNew(Action, TaskCreationOptions.LongRunning)`, #7520 review
+//! — plain `Task.Run` schedules on the shared thread-pool queue, where pool
+//! pressure from unrelated work can delay the blocking read from even
+//! starting, which then makes a short `Task.Wait(ms)` report a spurious
+//! timeout even though nothing is actually stuck) and waits for it with
+//! `Task.Wait(int)`, which returns `false` on timeout. A timed-out read
 //! stays outstanding on the handle and the next read of either kind joins it,
 //! so bytes that arrive after a deadline are delivered, in order, by the next
 //! read.
@@ -17,7 +22,7 @@
 //! Internal: prefer Std.Console (print/println/readLine) for application code.
 //! Import this kernel module only when exact byte-level control is required
 //! (e.g. the LSP Content-Length framing reader).
-@axiom("System.Console operations and System.Threading.Tasks.Task.Run/Wait conform to their documented .NET contracts")
+@axiom("System.Console operations and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts")
 package Std.ConsoleHost
 
 import Std.Core
@@ -79,9 +84,29 @@ extern type MemStream = "System.IO.MemoryStream"
 
 extern type Task = "System.Threading.Tasks.Task"
 
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
+extern type TaskFactory = "System.Threading.Tasks.TaskFactory"
+
+extern type TaskCreationOptions = "System.Threading.Tasks.TaskCreationOptions"
+
+// `Task.Factory` is a static property; `Task.LongRunning` is a static field
+// (the same auto-FFI field-read path already used for `Duration.Zero` /
+// `Instant.UtcNow` in `_kernel/time_host.l`).
+func taskFactory(): TaskFactory {
+  Task.Factory
+}
+
+// stays @externTarget: auto-FFI's reference-assembly overload scoring
+// cannot match `StartNew` against a `() -> Unit` lambda argument — the same
+// reason `_kernel/process_piped_host.l` keeps an explicit wrapper for it.
+@externInstance
+@externTarget("System.Threading.Tasks.TaskFactory.StartNew")
+func taskFactoryStartNew(f: in TaskFactory, work: in () -> Unit, options: in TaskCreationOptions): Task = ()
+
+// Each blocking read gets its own dedicated thread instead of a thread-pool
+// slot (#7520 review — see the module doc for why plain `Task.Run` is unsafe here).
+func taskRun(work: in () -> Unit): Task {
+  taskFactoryStartNew(taskFactory(), work, TaskCreationOptions.LongRunning)
+}
 
 // `Task.Wait(int)`: `true` once the task completed, `false` when `ms` elapsed
 // first. `-1` (`Timeout.Infinite`) waits without a bound.

@@ -157,10 +157,25 @@ inbound requests/notifications queued meanwhile do not extend it. When it
 passes, the call fails with a local `RpcError` of code `requestTimedOut`
 (`-32001`, in JSON-RPC's implementation-defined server-error range, as
 the MCP SDKs use it) whose `data` carries `timeoutMs`; `isTimeoutError`
-tests for it. Nothing is sent to the peer — JSON-RPC 2.0 has no
+tests for it — this is a match on the wire-level `-32001` code alone,
+not a local-vs-remote marker: a peer can legitimately send its own
+`-32001` failure for an unrelated reason, and `isTimeoutError` cannot
+tell the two apart (#7522 tracks typed `Mcp.Client` errors that would).
+Nothing is sent to the peer — JSON-RPC 2.0 has no
 cancellation. The request id is never reused, so a response that arrives
 after its call timed out matches no pending call: `runLoop` and later
 calls drop it as an unsolicited response rather than mis-delivering it.
+
+`call`/`callWithin` queue any request/notification the peer sends while
+they wait, in `RpcPeer.pendingQueue`, for a later `runLoop` to dispatch —
+past `maxPendingMessages` (4096) queued, the in-progress call itself
+fails rather than growing the queue without limit. A caller whose peer
+never runs `runLoop` (`Mcp.Client`, which only ever calls
+`call`/`callWithin`) must drain that queue some other way, or entries
+left by one call accumulate toward the limit across every later call
+(#7520 review); `JsonRpc.drainPendingQueue(peer)` dispatches or discards every
+queued entry exactly as `runLoop` would, and `Mcp.Client` calls it after
+every operation (§5.2).
 
 Dispatch model v1: single-threaded. `runLoop` reads a message,
 dispatches to the handler, writes the response, repeats. `call` issued
@@ -197,19 +212,28 @@ Two framings, one module:
 Both implement `RpcTransport` over this process's stdin/stdout. Inbound
 framing is byte-level (#7451): the transports read raw stdin bytes
 through a `ByteSource` seam — in production `Std.Console`'s
-`StdinReader`, whose `readStdinWithin` bounds the wait on `dotnet`
-(`Task.Run` + `Task.Wait(int)`) and `jvm` (a daemon thread +
-`Thread.join(long)`) — into a `FrameBuffer`, and cut a frame at each
-`\n` byte (NDJSON) or after exactly the declared body bytes
-(Content-Length), decoding UTF-8 only once a frame is complete. So
-`receiveWithin` can give up at its deadline without losing or splitting a
-message: the bytes read so far stay in the `FrameBuffer`, and the next
-receive returns the message whole. The client side of the MCP stdio
-transport (`Mcp.Stdio`, §5.2) frames a child process's piped stdout
-instead, bounded by `Std.Process.pipedReadLineWithin` on all three
-targets. In-memory `ByteSource`/`CharReader`/`LineReader` stand-ins
-cover framing round-trips including multi-byte UTF-8 payloads, split
-reads, and timeouts that fall mid-frame.
+`StdinReader`, whose `readStdinWithin` bounds the wait on `dotnet` (a
+dedicated `Task.Factory.StartNew(..., TaskCreationOptions.LongRunning)`
+thread + `Task.Wait(int)`, not the shared thread-pool `Task.Run`, which
+under pool pressure could delay the read enough to report a spurious
+timeout — #7520 review) and `jvm` (a daemon platform thread + `Thread.join(long)`)
+— into a `FrameBuffer`, and cut a frame at each `\n` byte (NDJSON) or after
+exactly the declared body bytes (Content-Length), decoding UTF-8 only once
+a frame is complete. `FrameBuffer.bytes` is a `List[Byte]` (amortised-O(1)
+append), not a `slice[Byte]` — accumulating one large message split across
+many small reads costs O(message size) total, not O(message size²)
+(#7520 review). So `receiveWithin` can give up at its deadline without losing or
+splitting a message: the bytes read so far stay in the `FrameBuffer`, and
+the next receive returns the message whole. An EOF-terminated final NDJSON
+line is capped at the same `MAX_MESSAGE_BYTES` (16 MiB) bound a
+`\n`-terminated line is. The client side of the MCP stdio transport
+(`Mcp.Stdio`, §5.2) frames a child process's piped stdout instead, bounded
+by `Std.Process.pipedReadLineWithin` on all three targets — the `jvm`
+kernel's deadline arithmetic runs on `System.nanoTime()` (monotonic), not
+`System.currentTimeMillis()` (#7520 review). In-memory
+`ByteSource`/`CharReader`/`LineReader` stand-ins cover framing round-trips
+including multi-byte UTF-8 payloads, split reads, and timeouts that fall
+mid-frame.
 
 ## 5. `lyric-mcp` — protocol layer
 
@@ -277,6 +301,19 @@ take a per-call timeout through their `...Within` forms. Over the stdio
 transport the wait is `Std.Process.pipedReadLineWithin`, so a server
 process that never answers ends the call at its deadline (#7451); the
 timed-out response, if it ever arrives, is dropped.
+
+`McpClient` never runs `JsonRpc.runLoop` — every operation is a plain
+`call`/`callWithin` round trip through a `NullHandler` (sampling/
+elicitation are out of scope, docs/64 §1). A server-sent
+request/notification the client sees interleaved with a call's own
+response is queued (`RpcPeer.pendingQueue`, §3), so every operation
+drains it right after its `callWithin` returns
+(`JsonRpc.drainPendingQueue`) — otherwise entries left by one call would
+accumulate across later calls toward `maxPendingMessages` and every
+later call would start failing (#7520 review). A queued request gets the
+ordinary dispatched answer sent back (`NullHandler` refuses every
+method, so ordinarily `-32601 Method not found`); a queued notification
+is dropped.
 
 `connectStdio` needs child-process pipes with **long-lived
 bidirectional stdio** — `Std.Process.runCapture` (batch, write-then-
