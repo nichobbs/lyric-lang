@@ -172,7 +172,7 @@ impl Counter for Tally {
 }
 ```
 
-Code that holds a `Counter` gets the lock without knowing a protected type is behind it. The impl must live in the same package as the protected type, and an impl method cannot reuse the name of one of the type's own `entry` or `func` members, or of a method in another impl for the same type, and its signature cannot yet mention `Self` (T0136).
+Code that holds a `Counter` gets the lock without knowing a protected type is behind it. The impl must live in the same package as the protected type, and an impl method cannot reuse the name of one of the type's own `entry` or `func` members, or of a method in another impl for the same type (T0136). Its signature may freely mention `Self` (`func merge(other: in Self): Int`, `func fresh(): Self`) on `--target dotnet` and `--target jvm`: the moved entry keeps `Self` unsubstituted, so both targets erase it exactly as they erase the interface slot, and a call result narrows back to the concrete type. `--target native` cannot yet lower any `Self`-mentioning interface method, for a record or a protected type alike — a separate, pre-existing gap.
 
 Here is the token-bucket rate limiter from the worked examples. The `acquire` entry shows the barrier pattern in a realistic setting:
 

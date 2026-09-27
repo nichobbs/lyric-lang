@@ -20,9 +20,11 @@
 //! rejected the shapes this move cannot represent: an impl in another
 //! package than `P`, a target spelled other than `P` itself, a generic `P`
 //! or impl, an `async` or method-generic impl method, and an impl method
-//! named like one of `P`'s own members or a method of another impl for `P`,
-//! and an impl method whose signature mentions `Self` (#7550), so moved
-//! signatures are copied unchanged.
+//! named like one of `P`'s own members or a method of another impl for `P`.
+//! An impl method's signature may mention `Self` (#7550): moved signatures
+//! are copied UNCHANGED (never substituted), so MSIL/JVM's erasure of a raw
+//! `Self` to `object`/`Object` produces the identical descriptor for the
+//! moved entry and the interface slot it satisfies.
 package Lyric.ContractElaborator
 
 import Std.Core
