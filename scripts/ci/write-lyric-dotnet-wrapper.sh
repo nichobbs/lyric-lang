@@ -21,9 +21,10 @@
 # wrapper script (#7052).
 #
 # Was duplicated byte-identically across 14 call sites in ci.yml (#7026,
-# #7041) before this extraction (#7042); every call site now just does:
-#   lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-#   bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
+# #7041) before this extraction (#7042). Most jobs now reach it through the
+# `.github/actions/lyric-test-setup` composite action; the rest call it as:
+#   bash scripts/ci/write-lyric-dotnet-wrapper.sh \
+#     "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
 # ---------------------------------------------------------------------------
 set -euo pipefail
 

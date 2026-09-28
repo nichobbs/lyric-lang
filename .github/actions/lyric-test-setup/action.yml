@@ -1,0 +1,45 @@
+name: Lyric test-job setup
+description: >-
+  Set up .NET (and optionally Java 21), download the `build` job's
+  `build-artifacts`, and replace the downloaded `lyric` apphost stub with a
+  `dotnet lyric.dll` wrapper, so the job can run `lyric` on any runner.
+
+# The job must check out the repository first: a local composite action is
+# read from the checkout, so `actions/checkout` cannot move in here.
+#
+# The wrapper step replaces the downloaded apphost stub with a thin
+# `dotnet lyric.dll` launcher; see scripts/ci/write-lyric-dotnet-wrapper.sh
+# and the runner-pools comment at the top of .github/workflows/ci.yml for why
+# (#7025: a runner of a different CPU architecture than the one that built
+# the artifact cannot exec the native stub).
+
+inputs:
+  java:
+    description: Also install Temurin Java 21 (for JVM-target tests).
+    required: false
+    default: 'false'
+  build-config:
+    description: The build configuration the `build` job published under.
+    required: false
+    default: Debug
+
+runs:
+  using: composite
+  steps:
+    - name: Set up .NET (uses bootstrap/global.json)
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      with:
+        global-json-file: bootstrap/global.json
+    - name: Set up Java 21
+      if: inputs.java == 'true'
+      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
+      with:
+        distribution: temurin
+        java-version: '21'
+    - name: Download build artifacts
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      with:
+        name: build-artifacts
+    - name: Restore executable permissions
+      shell: bash
+      run: bash scripts/ci/write-lyric-dotnet-wrapper.sh "bootstrap/src/Lyric.Cli.Aot/bin/${{ inputs.build-config }}/net10.0/lyric"

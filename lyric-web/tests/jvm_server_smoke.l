@@ -52,7 +52,7 @@
 //!   curl -s -o /dev/null -w '%{http_code}' http://localhost:8099/nope
 //!
 //! **Wired into CI**: the `lyric-web Undertow smoke on JVM` step of the
-//! `compiler-self-tests-jvm` job runs `make maven-resolver`, restores this
+//! `compiler-self-tests-jvm-b` job runs `make maven-resolver`, restores this
 //! manifest (a single-file jvm build reads the restored
 //! `target/restore/jvm-classpath.txt`, and the bundle jar's manifest
 //! `Class-Path` carries the restored Undertow jar paths so `java -jar`
