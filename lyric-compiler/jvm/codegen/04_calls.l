@@ -1003,6 +1003,52 @@ func reorderAndFillJvmArgs(sig: in JvmFuncSig, args: in List[CallArg]): List[Cal
   ordered
 }
 
+// The reserved language built-ins (T0140: not redeclarable outside
+// `Std.*`) that have no ordinary Lyric signature at all, mirroring
+// `isReservedIntrinsicNameMsil` (`msil/codegen.l`) minus the names with no
+// JVM intrinsic dispatch of their own (`__lyric_protected_*` is handled
+// unconditionally above `hasFuncOverrideJvm`'s only call site).  A `Std.*`
+// package's own same-named function (`Std.Console.println`, String-only)
+// is always a genuinely different function from the intrinsic, never a
+// redundant reimplementation of it — see `hasFuncOverrideJvm` below.
+func isReservedIntrinsicNameJvm(name: in String): Bool {
+  name == "println" or name == "print" or name == "panic" or name == "assert" or name == "toString" or name == "default" or
+    name == "format1" or
+    name == "format2" or
+    name == "format3" or
+    name == "format4" or
+    name == "hashCode"
+}
+
+// Whether `funcName`/`path` names a genuine registered user function that
+// must win over the compiler's own same-named intrinsic (#7508).  Mirrors
+// `hasFuncOverrideMsil` (`msil/codegen.l`): resolves through the SAME
+// registry (`resolveGeneralFuncSig`) a normal (non-intrinsic) call would
+// use.  For a RESERVED name (`isReservedIntrinsicNameJvm`), a qualified
+// (2+-segment) path always overrides — any match is a genuinely different
+// function, never the intrinsic itself (mirrors MSIL's #5084
+// `Std.Http.Url.toString` fix).  For every OTHER name — bare OR qualified —
+// only a resolution to a NON-`Std`-owned declaration overrides:
+// `Std.CollectionsHost.newMap()` qualified is the exact same construction
+// the intrinsic emits (D-progress-1004's audit: "the intercept implements
+// the same-named stdlib kernel function with the same semantics"), and
+// routing it through the general call registry instead resolves against
+// the erased-generic kernel extern's real (non-intrinsic-shaped) signature,
+// which does not link (`NoSuchMethodError`) — the fast intrinsic path is
+// both correct and required for it.
+func hasFuncOverrideJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int): Bool {
+  match resolveGeneralFuncSig(ctx, funcName, path, argc) {
+    case Some(sig) -> {
+      if path.segments.count >= 2 and isReservedIntrinsicNameJvm(funcName) {
+        true
+      } else {
+        not (sig.owner == "Std" or sig.owner.startsWith("Std/"))
+      }
+    }
+    case None -> false
+  }
+}
+
 // Lower a builtin or static function call.
 func lowerBuiltinOrStaticCall(
   ctx: in FuncCtx,
@@ -1011,7 +1057,8 @@ func lowerBuiltinOrStaticCall(
   path: in ModulePath,
   args: in List[CallArg],
 ): JvmType {
-  if funcName == "println" {
+  val hasOverride = hasFuncOverrideJvm(ctx, funcName, path, args.count)
+  if (not hasOverride) and funcName == "println" {
     // Lower the argument BEFORE pushing the PrintStream receiver: a branchy
     // sub-expression (a comparison, an if-expression) inside the argument
     // lands branch targets, and the StackMapTable declares an empty operand
@@ -1050,7 +1097,7 @@ func lowerBuiltinOrStaticCall(
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = emptyPs, ret = JVoid))
     }
     JVoid
-  } else if funcName == "print" {
+  } else if (not hasOverride) and funcName == "print" {
     // Same receiver-after-argument discipline as println above.
     if args.count > 0 {
       val rawTy = normalizeDistinctPrintArg(
@@ -1076,7 +1123,7 @@ func lowerBuiltinOrStaticCall(
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = emptyPs2, ret = JVoid))
     }
     JVoid
-  } else if funcName == "panic" {
+  } else if (not hasOverride) and funcName == "panic" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
     } else {
@@ -1085,7 +1132,7 @@ func lowerBuiltinOrStaticCall(
     }
     emitPanicFromStack(ctx, insns)
     JVoid
-  } else if funcName == "toString" {
+  } else if (not hasOverride) and funcName == "toString" {
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
       // #6748: a `UInt`/`ULong` argument. Boxing + `Object.toString()` (the
@@ -1129,7 +1176,7 @@ func lowerBuiltinOrStaticCall(
       insns.add(LPushString(s = ""))
     }
     JRef(className = "java/lang/String")
-  } else if funcName == "hashCode" {
+  } else if (not hasOverride) and funcName == "hashCode" {
     // Free-function `hashCode(x)` form, synthesized by `Lyric.Derives`'
     // `hashBodyForFields` for every `@derive(Hash)` field — mirrors MSIL's
     // `funcName == "hashCode"` arm (`msil/codegen.l`): box a primitive, then
@@ -1151,7 +1198,7 @@ func lowerBuiltinOrStaticCall(
       insns.add(LIconst(v = 0))
     }
     JInt
-  } else if funcName == "assert" {
+  } else if (not hasOverride) and funcName == "assert" {
     if args.count > 0 {
       val afterAssertL = freshLabel(ctx)
       lowerCallArg(ctx, insns, args[0])
@@ -1167,19 +1214,19 @@ func lowerBuiltinOrStaticCall(
       insns.add(LLabel(name = afterAssertL))
     }
     JVoid
-  } else if funcName == "newList" {
+  } else if (not hasOverride) and funcName == "newList" {
     insns.add(LNew(className = "java/util/ArrayList"))
     insns.add(LDup)
     val nlPs: List[JvmType] = newList()
     insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = nlPs, ret = JVoid))
     JRef(className = "java/util/ArrayList")
-  } else if funcName == "newMap" {
+  } else if (not hasOverride) and funcName == "newMap" {
     insns.add(LNew(className = "java/util/HashMap"))
     insns.add(LDup)
     val nmPs: List[JvmType] = newList()
     insns.add(LInvokespecial(owner = "java/util/HashMap", name = "<init>", params = nmPs, ret = JVoid))
     JRef(className = "java/util/HashMap")
-  } else if funcName == "newListWithCapacity" {
+  } else if (not hasOverride) and funcName == "newListWithCapacity" {
     // Generic `@externTarget` kernel funcs are not emitted as methods (they
     // are excluded from monomorphization and have no non-generic body), so
     // like `newList`/`newMap` this is an intrinsic: ArrayList(int).
@@ -1202,7 +1249,7 @@ func lowerBuiltinOrStaticCall(
       insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = ncPs0, ret = JVoid))
     }
     JRef(className = "java/util/ArrayList")
-  } else if funcName == "mapGet" {
+  } else if (not hasOverride) and funcName == "mapGet" {
     // mapGet(map, key) → Option[V]: a containsKey-gated Some/None construction
     // (#3229 / #3676).  The previous lowering returned the raw `HashMap.get`
     // value — never an Option, so every `case Some(...)` match on a mapGet
@@ -1256,7 +1303,7 @@ func lowerBuiltinOrStaticCall(
       insns.add(LAconstNull)
       JRef(className = "java/lang/Object")
     }
-  } else if funcName == "hostGetCommandLineArgs" {
+  } else if (not hasOverride) and funcName == "hostGetCommandLineArgs" {
     // #5377: `Std.EnvironmentHost.hostGetCommandLineArgs`'s real Lyric body
     // (`_kernel_jvm/environment_host.l`) panics — it is never actually
     // invoked at runtime because every call site is intercepted here and
@@ -1303,10 +1350,10 @@ func lowerBuiltinOrStaticCall(
     val target = if funcName == "__lyric_protected_wait" { "wait" } else { "notifyAll" }
     insns.add(LInvokevirtual(owner = "java/lang/Object", name = target, params = noPs, ret = JVoid))
     JVoid
-  } else if funcName == "default" {
+  } else if (not hasOverride) and funcName == "default" {
     insns.add(LAconstNull)
     JRef(className = "java/lang/Object")
-  } else if funcName == "format1" {
+  } else if (not hasOverride) and funcName == "format1" {
     // format1(template, arg1): String — simplified to first arg.
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
@@ -1315,7 +1362,7 @@ func lowerBuiltinOrStaticCall(
       JVoid
     }
     JRef(className = "java/lang/String")
-  } else if funcName == "format2" {
+  } else if (not hasOverride) and funcName == "format2" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
     } else {
@@ -1323,7 +1370,7 @@ func lowerBuiltinOrStaticCall(
       JVoid
     }
     JRef(className = "java/lang/String")
-  } else if funcName == "format3" {
+  } else if (not hasOverride) and funcName == "format3" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
     } else {
@@ -1331,7 +1378,7 @@ func lowerBuiltinOrStaticCall(
       JVoid
     }
     JRef(className = "java/lang/String")
-  } else if funcName == "format4" {
+  } else if (not hasOverride) and funcName == "format4" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
     } else {
@@ -1339,7 +1386,7 @@ func lowerBuiltinOrStaticCall(
       JVoid
     }
     JRef(className = "java/lang/String")
-  } else if funcName == "charToString" {
+  } else if (not hasOverride) and funcName == "charToString" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
     }
@@ -1355,7 +1402,7 @@ func lowerBuiltinOrStaticCall(
       )
     )
     JRef(className = "java/lang/String")
-  } else if funcName == "stringToUtf8Bytes" {
+  } else if (not hasOverride) and funcName == "stringToUtf8Bytes" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
     }
@@ -1370,7 +1417,7 @@ func lowerBuiltinOrStaticCall(
     subPs.add(JRef(className = "java/nio/charset/Charset"))
     insns.add(LInvokevirtual(owner = "java/lang/String", name = "getBytes", params = subPs, ret = JArray(elem = JByte)))
     JArray(elem = JByte)
-  } else if funcName == "catch" {
+  } else if (not hasOverride) and funcName == "catch" {
     // Std.Jvm.catch intrinsic: macroexpand to inline try-catch when the
     // argument is a zero-parameter lambda literal.  See lowerCatchIntrinsic.
     if args.count > 0 {

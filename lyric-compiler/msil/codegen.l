@@ -17015,23 +17015,77 @@ func rangeBoundTypeMsil(e: in Expr): MsilType {
   }
 }
 
-// Whether `path` is an explicitly-qualified call (2+ segments, e.g.
-// `Url.toString`) that names a genuine registered user function — a
-// dotted D037 in-type function, not the compiler's own bare-name
-// intrinsic of the same simple name.  A bare unqualified call (`toString(x)`,
-// 1 segment) is always the intrinsic and never hits this.  Guards every
-// intrinsic branch below so a user type's own `toString`/`panic`/`assert`/…
-// function is never silently shadowed by the same-named global builtin
-// (#5084 follow-up: `Std.Http.Url.toString` was being resolved to
-// `Object.ToString()` because the intrinsic branch matched on the bare
-// last path segment before any user-function lookup ran).
-func hasQualifiedFuncOverrideMsil(cctx: in CodegenCtx, path: in ModulePath, argc: in Int): Bool {
-  if path.segments.count < 2 {
-    false
-  } else {
+// The reserved language built-ins (T0140: not redeclarable outside
+// `Std.*`) that have no ordinary Lyric signature at all — `println`'s
+// argument is polymorphic over any type, `panic` returns `Never`, … — so a
+// `Std.*` package's own same-named function (e.g. `Std.Console.println`,
+// String-only) is ALWAYS a genuinely different function from the intrinsic,
+// never a redundant reimplementation of it.  Kept in sync with
+// `isReservedBuiltinFuncName` (`typechecker_checker.l`) minus the two names
+// with no MSIL intrinsic dispatch (`expect`, `__lyric_protected_*` are
+// handled unconditionally above `hasFuncOverrideMsil`'s only call site).
+func isReservedIntrinsicNameMsil(name: in String): Bool {
+  name == "println" or name == "print" or name == "panic" or name == "assert" or name == "toString" or name == "default" or
+    name == "format1" or
+    name == "format2" or
+    name == "format3" or
+    name == "format4" or
+    name == "hashCode"
+}
+
+// Whether `funcName`/`path` names a genuine registered user function that
+// must win over the compiler's own same-named intrinsic (#7508).  Two
+// shapes:
+//   - An explicitly-qualified call (2+ segments, e.g. `Url.toString`) that
+//     names a registered function.  For a RESERVED name
+//     (`isReservedIntrinsicNameMsil`) any match wins — a dotted D037
+//     in-type function, or a `Std.*` package's own distinctly-typed
+//     reimplementation, is never the intrinsic itself (#5084 follow-up:
+//     `Std.Http.Url.toString` was being resolved to `Object.ToString()`
+//     because the intrinsic branch matched on the bare last path segment
+//     before any user-function lookup ran).  For every OTHER name, only a
+//     NON-`Std`-qualified match wins — `Std.CollectionsHost.newMap()`
+//     qualified is the exact same construction the intrinsic emits
+//     (D-progress-1004's audit), so routing it through the normal
+//     cross-package call registry instead would be pure overhead (and,
+//     for an erased-generic kernel extern with no genuinely callable
+//     concrete signature, can misresolve).
+//   - A bare unqualified call (1 segment) that the type checker's own
+//     bare-name resolution (docs/01 §9.2, D141) resolves to a declaration
+//     in THIS package, or to a package this file bare-imports — as long as
+//     that package isn't `Std`/`Std.*`.  A reserved language builtin
+//     cannot be redeclared outside `Std.*` (T0140), so this bare tier never
+//     needs the reserved-name distinction the qualified tier does.
+func hasFuncOverrideMsil(
+  cctx: in CodegenCtx, fctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
+): Bool {
+  if path.segments.count >= 2 {
     val qualifiedFqn = joinSegsMsil(path.segments, ".")
-    cctx.funcTokens.containsKey(qualifiedFqn) or cctx.funcTokens.containsKey(qualifiedFqn + "/" + toString(argc))
+    val found = cctx.funcTokens.containsKey(qualifiedFqn) or
+      cctx.funcTokens.containsKey(qualifiedFqn + "/" + toString(argc))
+    if not found {
+      return false
+    }
+    if isReservedIntrinsicNameMsil(funcName) {
+      return true
+    }
+    val qualifier = joinSegsMsil(prefixSegsMsil(path.segments), ".")
+    return not (qualifier == "Std" or qualifier.startsWith("Std."))
   }
+  val samePkgKey = fctx.pkgName + "." + funcName
+  if cctx.funcTokens.containsKey(samePkgKey) or cctx.funcTokens.containsKey(samePkgKey + "/" + toString(argc)) {
+    return true
+  }
+  for imp in bareImportListForNameMsil(cctx, fctx.pkgName, funcName) {
+    if imp == "Std" or imp.startsWith("Std.") {
+      continue
+    }
+    val impKey = imp + "." + funcName
+    if cctx.funcTokens.containsKey(impKey) or cctx.funcTokens.containsKey(impKey + "/" + toString(argc)) {
+      return true
+    }
+  }
+  false
 }
 
 // The `when:` barrier intrinsics the contract elaborator inserts into
@@ -17072,7 +17126,7 @@ func lowerBuiltinOrStaticCallMsil(
   path: in ModulePath,
   args: in List[CallArg],
 ): MsilType {
-  val hasQualifiedOverride = hasQualifiedFuncOverrideMsil(cctx, path, args.count)
+  val hasQualifiedOverride = hasFuncOverrideMsil(cctx, fctx, funcName, path, args.count)
   if funcName == "__lyric_protected_wait" or funcName == "__lyric_protected_notify" {
     return lowerProtectedIntrinsicMsil(cctx, insns, funcName)
   }
@@ -19198,7 +19252,7 @@ func lowerMethodCallMsil(
     // `samePkgFqn` deliberately keeps the trailing method segment (it is
     // `pkgName + "." + callFqn`, and `callFqn` already ends with
     // `memberName`): `lowerBuiltinOrStaticCallMsil`'s override/funcTokens
-    // lookups (see `hasQualifiedFuncOverrideMsil`) join every `path.segments`
+    // lookups (see `hasFuncOverrideMsil`) join every `path.segments`
     // entry and match against the full `<pkg>.<Type>.<method>` funcTokens
     // key, ignoring the separately-passed `memberName` — so the path must
     // carry the method segment itself, unlike a plain type path (#4896).
@@ -19214,7 +19268,7 @@ func lowerMethodCallMsil(
       // assignment, and codegen does not insert an array->List conversion —
       // constructing `ModulePath` directly from the array crashes at
       // runtime with `InvalidCastException: String[] -> List<String>` (hit
-      // by `Msil.Codegen.hasQualifiedFuncOverrideMsil`, which reads
+      // by `Msil.Codegen.hasFuncOverrideMsil`, which reads
       // `path.segments` as a real `List<String>`). This explicit copy loop
       // is a required slice[String] -> List[String] conversion — do not
       // remove it.
