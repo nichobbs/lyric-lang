@@ -1185,19 +1185,9 @@ func lowerFuncScoped(
   // `TypeName$member` via `jvmDotMethodName` instead — every call site that
   // resolves a dot-named function computes the exact same name from the same
   // (typeName, memberName) pair, so the two sides always agree.
-  var jvmFuncName = decl.name
-  match lastIndexOf(decl.name, ".") {
-    case Some(dotIdx) -> {
-      val typeName = decl.name.substring(0, dotIdx)
-      val memberName = decl.name.substring(dotIdx + 1, decl.name.length - dotIdx - 1)
-      jvmFuncName = jvmDotMethodName(typeName, memberName)
-    }
-    case None -> ()
-  }
-
   LFunc(
     flags = 0x0009,
-    name = jvmFuncName,
+    name = jvmDotMethodNameFromDeclName(decl.name),
     params = paramTypes,
     ret = retTy,
     insns = insns,

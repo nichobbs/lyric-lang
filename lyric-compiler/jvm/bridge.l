@@ -394,7 +394,7 @@ pub func compileToJar(
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = recvClasses
   )
-  val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts) {
+  val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts, None) {
     case Some(f) -> f
     case None -> return false
   }
@@ -514,6 +514,10 @@ func dottedPath(path: in ModulePath): String {
 // which owns the pass order; this bridge's per-target choices are the
 // derive-with-imports project semantics and the stdlib-advisory type
 // check.
+// `typeIndex` (#7497): the project build's own precomputed
+// `Weaver.TypeOwnerIndex` — see `pipeMiddleEnd`'s doc comment. `None` builds
+// it fresh from `importedPkgs` for this call alone (unused by either current
+// caller, kept for parity with `pipeMiddleEnd`'s own on-demand fallback).
 func runMiddleEnd(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
@@ -524,6 +528,7 @@ func runMiddleEnd(
   lineOrigins: in List[DiagUtil.MergedLineOrigin],
   checkedOut: in List[SourceFile],
   recvClassesOut: in Map[String, String],
+  typeIndex: in Option[Weaver.TypeOwnerIndex],
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   // #7198: see the other `MiddleEndOptions` construction site in this file.
@@ -544,7 +549,8 @@ func runMiddleEnd(
     pipeInterfaceDecls(importedItems),
     pipeRecordDecls(importedItems),
     templates,
-    opts
+    opts,
+    typeIndex
   )
 }
 
@@ -850,6 +856,51 @@ func externSeedForFile(
     pi = pi + 1
   }
   seed
+}
+
+// A cache key for `externSeedForFileCached`: `externSeedForFile`'s result
+// depends only on `file.imports` (given a fixed `extPkgNames`/`extPkgMaps`/
+// `pkgImportNames` triple — `transitiveWantedPkgs` walks nothing else), so
+// the file's own import-dotted-path list, in declaration order, is a sound
+// cache key: two files with the identical import list always produce the
+// identical seed, and a file whose import list changed (e.g. the weave's
+// `addStdTimeImport`, #1298) gets its own key and a fresh computation.
+func importsCacheKey(imports: in List[ImportDecl]): String {
+  var key = ""
+  var i = 0
+  while i < imports.count {
+    key = key + dottedPath(imports[i].path) + "|"
+    i = i + 1
+  }
+  key
+}
+
+// #7503: memoised wrapper over `externSeedForFile`. Its per-file BFS
+// (`transitiveWantedPkgs`) was being repeated up to six times per file by
+// `compileProjectToJarBundledWithRestored`'s per-package collectors
+// (`collectDeriveFreeSigs`, `collectAspectWovenSigs`, `collectBModeWovenSigs`,
+// `collectMonoSpecializedSigs`, `collectFileCasesExtern`, `withRecvClasses`'s
+// own seed argument) plus the #7644 derive pre-pass loop — all for the
+// SAME file. Callers pass one `cache` map that lives for the whole bundled
+// build; see `importsCacheKey`'s doc comment for why keying on import
+// content (not package name or file identity) is safe across the
+// pre-middle-end and post-middle-end calls both make.
+func externSeedForFileCached(
+  file: in SourceFile,
+  extPkgNames: in List[String],
+  extPkgMaps: in List[Map[String, String]],
+  pkgImportNames: in Map[String, List[String]],
+  cache: in Map[String, Map[String, String]],
+): Map[String, String] {
+  val key = importsCacheKey(file.imports)
+  match mapGet(cache, key) {
+    case Some(seed) -> seed
+    case None -> {
+      val seed = externSeedForFile(file, extPkgNames, extPkgMaps, pkgImportNames)
+      cache.add(key, seed)
+      seed
+    }
+  }
 }
 
 // Import-aware view of the cross-package registry for one file: bare-name
@@ -2507,6 +2558,14 @@ pub func compileProjectToJarBundledWithRestored(
     aliasPass = aliasPass + 1
   }
 
+  // #7503: `extPkgNames`/`extPkgMaps`/`pkgImportNames` are all final as of
+  // here (the alias-reexport pass above only mutates VALUES inside the
+  // existing `extPkgMaps` entries, never the parallel lists' lengths), so
+  // `externSeedForFile`'s result for a given file's import list is stable
+  // for the rest of this function — cache it (`externSeedForFileCached`)
+  // instead of recomputing the same BFS per file up to six times.
+  val externSeedCache: Map[String, Map[String, String]] = newMap()
+
   // #6929: collect every file's CONSTRUCTOR registrations first, across the
   // whole bundle (user + stdlib + restored), before any `collectFileSigsSeeded`
   // call — so `recordRetClassOfBundle`'s fallback (a function's return type
@@ -2534,7 +2593,7 @@ pub func compileProjectToJarBundledWithRestored(
   collectFileSigsSeeded(
     userFile,
     registry,
-    externSeedForFile(userFile, extPkgNames, extPkgMaps, pkgImportNames),
+    externSeedForFileCached(userFile, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
     ctorReg
   )
   val caseReg: Map[String, List[JvmCaseField]] = newMap()
@@ -2543,7 +2602,10 @@ pub func compileProjectToJarBundledWithRestored(
   collectFileCasesExtern(
     userFile,
     caseReg,
-    ownAwareExternTypes(userFile, externSeedForFile(userFile, extPkgNames, extPkgMaps, pkgImportNames))
+    ownAwareExternTypes(
+      userFile,
+      externSeedForFileCached(userFile, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+    )
   )
   // #3044: complete @projectable pre-scan across the whole compilation, so
   // nested-view substitution / tryInto() eligibility see every projectable
@@ -2556,13 +2618,16 @@ pub func compileProjectToJarBundledWithRestored(
     collectFileSigsSeeded(
       stdlibFiles[ri],
       registry,
-      externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps, pkgImportNames),
+      externSeedForFileCached(stdlibFiles[ri], extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
       ctorReg
     )
     collectFileCasesExtern(
       stdlibFiles[ri],
       caseReg,
-      ownAwareExternTypes(stdlibFiles[ri], externSeedForFile(stdlibFiles[ri], extPkgNames, extPkgMaps, pkgImportNames))
+      ownAwareExternTypes(
+        stdlibFiles[ri],
+        externSeedForFileCached(stdlibFiles[ri], extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+      )
     )
     collectFileProjectables(stdlibFiles[ri], allProjFqns)
     ri = ri + 1
@@ -2590,11 +2655,16 @@ pub func compileProjectToJarBundledWithRestored(
     // and every stdlib file use — an empty seed here left the restored
     // file's OWN signatures unable to resolve types from sibling restored
     // packages, extern kernels, or stdlib.
-    collectFileSigsSeeded(rf, registry, externSeedForFile(rf, extPkgNames, extPkgMaps, pkgImportNames), ctorReg)
+    collectFileSigsSeeded(
+      rf,
+      registry,
+      externSeedForFileCached(rf, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+      ctorReg
+    )
     collectFileCasesExtern(
       rf,
       caseReg,
-      ownAwareExternTypes(rf, externSeedForFile(rf, extPkgNames, extPkgMaps, pkgImportNames))
+      ownAwareExternTypes(rf, externSeedForFileCached(rf, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache))
     )
     collectFileProjectables(rf, allProjFqns)
     val rPkgItems: List[Item] = newList()
@@ -2732,7 +2802,7 @@ pub func compileProjectToJarBundledWithRestored(
     collectDeriveFreeSigs(
       Derives.deriveFile(toBundle[dpi]),
       registry,
-      externSeedForFile(toBundle[dpi], extPkgNames, extPkgMaps, pkgImportNames)
+      externSeedForFileCached(toBundle[dpi], extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
     )
     dpi = dpi + 1
   }
@@ -2772,7 +2842,7 @@ pub func compileProjectToJarBundledWithRestored(
   val userRegistry = importAwareRegistry(
     userFile,
     registry,
-    externSeedForFile(userFile, extPkgNames, extPkgMaps, pkgImportNames)
+    externSeedForFileCached(userFile, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
   )
   var gi = 0
   while gi < userFile.items.count {
@@ -2829,7 +2899,11 @@ pub func compileProjectToJarBundledWithRestored(
   while bgi < toBundle.count {
     val bf = toBundle[bgi]
     val bOwner = pkgJvmOwner(bf.packageDecl.path)
-    val bfRegistry = importAwareRegistry(bf, registry, externSeedForFile(bf, extPkgNames, extPkgMaps, pkgImportNames))
+    val bfRegistry = importAwareRegistry(
+      bf,
+      registry,
+      externSeedForFileCached(bf, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+    )
     var bii = 0
     while bii < bf.items.count {
       match bf.items[bii].kind {
@@ -2976,6 +3050,20 @@ pub func compileProjectToJarBundledWithRestored(
   // their template body (#3414; parity with the MSIL bridge).
   val allTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   Weaver.collectAspectTemplates(userFile.items, dottedPath(userFile.packageDecl.path), userFile.imports, allTemplates)
+  // #7497: which package declares each type name, for the A0047 row-type
+  // check (docs/56) — built ONCE here (over the now-final `importedPkgs`,
+  // which already carries the entry package, every stdlib file, every
+  // sibling project package, and every restored artifact — a superset of
+  // the MSIL project path's `baseImportedPkgs` (stdlib + restored only),
+  // which is why that path must separately `typeOwnerIndexAddFile` its own
+  // bundle packages and this one does not need to) and reused for every
+  // per-package `runMiddleEnd` call below, instead of `pipeMiddleEnd`
+  // rebuilding an identical index from `importedPkgs` on each call — see
+  // `pipeMiddleEnd`'s doc comment (mirrors `Msil.Bridge`'s `weaveTypeIndex`).
+  // The one thing `importedPkgs` does NOT carry that `Msil.Bridge` also
+  // indexes: path-dependency template sources (`depTemplateSrcs`, below) —
+  // added the same way MSIL adds its `depTemplatePkgs`.
+  val weaveTypeIndex = pipeTypeOwnerIndex(importedPkgs)
   var ati = 0
   while ati < toBundle.count {
     val tf = toBundle[ati]
@@ -3002,6 +3090,14 @@ pub func compileProjectToJarBundledWithRestored(
       dtRewritten.imports,
       allTemplates
     )
+    // #7497: a path-dependency template's row-typed `args` (docs/56) can
+    // reference a type declared only in the dependency's own package —
+    // `importedPkgs` never carries a path dependency's source (it is not a
+    // bundled stdlib/sibling/restored package), so without this the A0047
+    // check sees that type as "unknown owner" instead of resolving it to
+    // the dependency's package — parity with `Msil.Bridge`'s matching
+    // `typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)` call.
+    Weaver.typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)
     dti = dti + 1
   }
 
@@ -3024,7 +3120,7 @@ pub func compileProjectToJarBundledWithRestored(
   // generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val userChecked: List[SourceFile] = newList()
   val userRecvClasses: Map[String, String] = newMap()
-  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses) {
+  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses, Some(value = weaveTypeIndex)) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -3035,19 +3131,36 @@ pub func compileProjectToJarBundledWithRestored(
       // Use the narrow `collectDeriveFreeSigs` (only `.`-named items) rather
       // than the full `collectFileSigs` to avoid the stage-0 bootstrap
       // List[Option[Expr]] miscompile on paramDefaults.add().
-      collectDeriveFreeSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames))
+      collectDeriveFreeSigs(
+        f,
+        registry,
+        externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+      )
       // Register aspect-weave-synthesised targets / wrappers (`__aspect_*`)
       // from the post-weave file so the `proceed(args)` call resolves to the
       // real descriptor instead of the `(…)Object` guess (#3402, JVM analogue).
-      collectAspectWovenSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames))
+      collectAspectWovenSigs(
+        f,
+        registry,
+        externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+      )
       // Register B'-mode shape-keyed specialised functions (`__lyric_bmode_*`,
       // docs/55) from the post-weave file so a per-match wrapper's call to the
       // shared specialised function resolves to the real descriptor (#4600).
-      collectBModeWovenSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames))
+      collectBModeWovenSigs(
+        f,
+        registry,
+        externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+      )
       // Register monomorphizer-specialised copies (`mapKeys__String__Int`, …)
       // from the post-mono file so their call sites resolve to the real
       // descriptor (#3229; the #3676 map-iteration symptom).
-      collectMonoSpecializedSigs(f, registry, externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames), ctorReg)
+      collectMonoSpecializedSigs(
+        f,
+        registry,
+        externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+        ctorReg
+      )
       // Register weaver-synthesised record fields (`__LyricBModeCallContext`,
       // `__LyricBModeCfg_*`, `__LyricBModeArgs_*`, docs/55/56) from the
       // post-weave file: `caseReg` above was built from the pre-weave
@@ -3056,7 +3169,11 @@ pub func compileProjectToJarBundledWithRestored(
       // panics with "has no known field or member" (#4600).
       // `collectFileCasesExtern` first-wins-guards on `into.containsKey`, so
       // re-running it over the whole post-weave file is a safe additive scan.
-      collectFileCasesExtern(f, caseReg, externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames))
+      collectFileCasesExtern(
+        f,
+        caseReg,
+        externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+      )
       // Register the SAME weaver-synthesised records as constructable types
       // (`new + invokespecial <init>` instead of the plain-function-call
       // guess) — `ctorReg` above was ALSO built from the pre-weave `userFile`
@@ -3086,7 +3203,10 @@ pub func compileProjectToJarBundledWithRestored(
         autoFfi,
         allProjFqns,
         allClasses,
-        withRecvClasses(externSeedForFile(f, extPkgNames, extPkgMaps, pkgImportNames), userRecvClasses),
+        withRecvClasses(
+          externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+          userRecvClasses
+        ),
         userFileName,
         unsafeFieldLockNames
       )
@@ -3146,7 +3266,7 @@ pub func compileProjectToJarBundledWithRestored(
     val ok = try {
       val siblingChecked: List[SourceFile] = newList()
       val siblingRecvClasses: Map[String, String] = newMap()
-      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses) {
+      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, Some(value = weaveTypeIndex)) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.
@@ -3158,11 +3278,32 @@ pub func compileProjectToJarBundledWithRestored(
           // functions fell through to the erased `(…)Object` auto-FFI
           // guess (`auto-FFI: class '<pkg>.<Type>' not found`) instead of
           // resolving through the registered static call.
-          collectDeriveFreeSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames))
-          collectAspectWovenSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames))
-          collectBModeWovenSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames))
-          collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames), ctorReg)
-          collectFileCasesExtern(ff, caseReg, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames))
+          collectDeriveFreeSigs(
+            ff,
+            registry,
+            externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+          )
+          collectAspectWovenSigs(
+            ff,
+            registry,
+            externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+          )
+          collectBModeWovenSigs(
+            ff,
+            registry,
+            externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+          )
+          collectMonoSpecializedSigs(
+            ff,
+            registry,
+            externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+            ctorReg
+          )
+          collectFileCasesExtern(
+            ff,
+            caseReg,
+            externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+          )
           collectFileCtors(ff, ctorReg)
           // #4994: only the project's OWN packages get a contract resource —
           // a merely-referenced stdlib package (isProjectPkg == false) never
@@ -3191,7 +3332,10 @@ pub func compileProjectToJarBundledWithRestored(
             autoFfi,
             allProjFqns,
             allClasses,
-            withRecvClasses(externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames), siblingRecvClasses),
+            withRecvClasses(
+              externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+              siblingRecvClasses
+            ),
             bundledFileName,
             unsafeFieldLockNames
           )

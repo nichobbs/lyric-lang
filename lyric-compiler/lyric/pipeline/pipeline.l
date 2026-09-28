@@ -447,6 +447,18 @@ pub func pipeWeave(
 /// file before any package weaves) call the two halves directly — the
 /// split points are these same functions, so the ordering authority is
 /// not forked.
+///
+/// `typeIndex` (#7497) lets a project-build caller thread in a
+/// `TypeOwnerIndex` it already built ONCE for the whole build (over
+/// `importedPkgs` plus whatever `Weaver.typeOwnerIndexAddFile` calls the
+/// caller made for packages `importedPkgs` doesn't carry — its own bundle
+/// packages, path-dependency template sources) instead of rebuilding an
+/// identical index from `importedPkgs` on every one of this function's
+/// per-package calls (the MSIL project path already builds it once before
+/// its weave loop — see `Msil.Bridge`'s `weaveTypeIndex` — this mirrors
+/// that).  `None` keeps the previous on-demand behaviour: build it fresh
+/// from `importedPkgs` for THIS call only.  Every single-file caller (and
+/// the native bridge) passes `None`.
 pub func pipeMiddleEnd(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
@@ -456,12 +468,13 @@ pub func pipeMiddleEnd(
   monoRecordDecls: in List[RecordDecl],
   templates: in Map[String, Weaver.CollectedTemplate],
   opts: in MiddleEndOptions,
+  typeIndex: in Option[Weaver.TypeOwnerIndex],
 ): Option[SourceFile] {
   match pipeCheckAndMono(file0, importedPkgs, deriveImports, monoGenFuncs, monoIfaceDecls, monoRecordDecls, opts) {
     case Some(monoFile) -> pipeWeave(
       monoFile,
       templates,
-      pipeTypeOwnerIndex(importedPkgs),
+      match typeIndex { case Some(ix) -> ix; case None -> pipeTypeOwnerIndex(importedPkgs) },
       opts.pkgLabel,
       opts.lineOrigins,
       monoRecordDecls
