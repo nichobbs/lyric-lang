@@ -2091,6 +2091,16 @@ func isNeverType(t: in Type): Bool {
 // `isValuePosition` instead of a hardcoded `true`; the `EOBExpr` arm needs
 // the same forwarding since `inferExpr`'s own generic `EIf`/`EMatch` cases
 // hardcode `true` for use OUTSIDE this chaining context.
+// #7696: `tailExpected` is the enclosing FUNCTION's declared return type when
+// this `if`/`match` arm is genuinely part of the function's return-value
+// chain (threaded from `checkFunctionBody`/`checkBlock`'s own trailing-
+// statement dispatch), or `TyError` ("no expectation") for every other use of
+// an `if`/`match` as an ordinary subexpression (a binding initialiser, a call
+// argument, …) — those must keep inferring a bracket-literal arm as `slice[T]`
+// exactly as before, since typing it against an unrelated caller's return
+// type would silently disagree with codegen (which has no such caller
+// context to consult for an unannotated position).  See the matching
+// `inferIfExpr`/`inferMatchExpr`/`checkBlock` comments for the full chain.
 pub func inferExprOrBlock(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -2098,6 +2108,7 @@ pub func inferExprOrBlock(
   diag: in List[Diagnostic],
   eob: in ExprOrBlock,
   isValuePosition: in Bool,
+  tailExpected: in Type,
 ): Type {
   match eob {
     case EOBExpr(ex) -> match ex.kind {
@@ -2110,7 +2121,8 @@ pub func inferExprOrBlock(
         cond,
         thenBranch,
         elseBranch,
-        isValuePosition
+        isValuePosition,
+        tailExpected
       )
       case EMatch(scrutinee, arms) -> inferMatchExpr(
         sc,
@@ -2120,9 +2132,17 @@ pub func inferExprOrBlock(
         ex,
         scrutinee,
         arms,
-        isValuePosition
+        isValuePosition,
+        tailExpected
       )
-      case _ -> inferExpr(sc, tbl, sigs, diag, ex)
+      // #7696: an arm's bare-expr body (`case A -> [1, 2, 3]`, or the
+      // then-form `if c then [1, 2, 3] else [4, 5, 6]`) is exactly the
+      // "trailing/implicit value of a block body" case for the arm itself —
+      // `inferExprExpected` degrades to plain `inferExpr` whenever
+      // `tailExpected` is `TyError`, so this is a strict superset of the old
+      // unconditional `inferExpr` call, never a behaviour change for a
+      // non-tail arm.
+      case _ -> inferExprExpected(sc, tbl, sigs, diag, ex, tailExpected)
     }
     case EOBBlock(bl) -> checkBlock(
       sc,
@@ -2133,7 +2153,8 @@ pub func inferExprOrBlock(
       sc.returnTyExpr,
       diag,
       bl,
-      isValuePosition
+      isValuePosition,
+      tailExpected
     )
   }
 }
@@ -6576,6 +6597,9 @@ func pat2fnExpr(head: in ModulePath, span: in Span): Expr {
 // invoke it directly for a statement-position `if` (`SExpr` case), passing
 // the enclosing block's actual value-position instead of the `inferExpr`
 // dispatch's implicit "always value position" default.
+// #7696: `tailExpected` — see `inferExprOrBlock`'s header comment — is the
+// declared return type to type a branch's bracket literal against when this
+// `if` is genuinely the function's tail value, or `TyError` otherwise.
 func inferIfExpr(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -6586,6 +6610,7 @@ func inferIfExpr(
   thenBranch: in ExprOrBlock,
   elseBranch: in Option[ExprOrBlock],
   isValuePosition: in Bool,
+  tailExpected: in Type,
 ): Type {
   val condT = inferExpr(sc, tbl, sigs, diag, cond)
   match condT {
@@ -6612,11 +6637,11 @@ func inferIfExpr(
   // type it accordingly (statement position), or a discarded branch
   // mismatch spuriously fires T0067 one level down (#6730).
   val thenIsValuePosition = isValuePosition and (match elseBranch { case Some(_) -> true; case None -> false })
-  val tt = inferExprOrBlock(sc, tbl, sigs, diag, thenBranch, thenIsValuePosition)
+  val tt = inferExprOrBlock(sc, tbl, sigs, diag, thenBranch, thenIsValuePosition, tailExpected)
   match elseBranch {
     case None -> TyPrim(pt = PtUnit)
     case Some(eb) -> {
-      val et = inferExprOrBlock(sc, tbl, sigs, diag, eb, isValuePosition)
+      val et = inferExprOrBlock(sc, tbl, sigs, diag, eb, isValuePosition, tailExpected)
       unifyBranchTypes(tt, et, e.span, diag, isValuePosition)
     }
   }
@@ -6625,6 +6650,7 @@ func inferIfExpr(
 // #3362: extracted from `inferExpr`'s `EMatch` case for the same reason as
 // `inferIfExpr` above — `checkBlock` needs to pass the real value-position
 // for a statement-position `match`.
+// #7696: `tailExpected` — see `inferExprOrBlock`'s header comment.
 func inferMatchExpr(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -6634,6 +6660,7 @@ func inferMatchExpr(
   scrutinee: in Expr,
   arms: in List[MatchArm],
   isValuePosition: in Bool,
+  tailExpected: in Type,
 ): Type {
   val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
   checkMatchExhaustive(tbl, diag, st, arms, e.span)
@@ -6679,7 +6706,7 @@ func inferMatchExpr(
       case None -> {
       }
     }
-    val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body, isValuePosition)
+    val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body, isValuePosition, tailExpected)
     val armSpan = match arms[ai].body { case EOBExpr(ae) -> ae.span; case EOBBlock(ab) -> ab.span }
     scopePop(sc)
     acc = unifyBranchTypes(acc, bt, armSpan, diag, isValuePosition)
@@ -7421,19 +7448,57 @@ func inferExprCore(
     // a plain `inferExpr` dispatch, which always means the result is wanted
     // as a value (a statement-position `if` is special-cased directly in
     // `checkBlock`'s `SExpr` arm — #3362) — pass `true` for `isValuePosition`.
-    case EIf(cond, thenBranch, elseBranch, _) -> inferIfExpr(sc, tbl, sigs, diag, e, cond, thenBranch, elseBranch, true)
+    // #7696: `TyError` for `tailExpected` — this `if`/`match`/block is an
+    // ordinary subexpression (a binding initialiser, a call argument, …),
+    // not necessarily the enclosing function's own tail value, so a bracket
+    // literal inside it must keep inferring as `slice[T]` exactly as before
+    // (see `inferExprOrBlock`'s header comment).
+    case EIf(cond, thenBranch, elseBranch, _) -> inferIfExpr(
+      sc,
+      tbl,
+      sigs,
+      diag,
+      e,
+      cond,
+      thenBranch,
+      elseBranch,
+      true,
+      TyError
+    )
     // Reached only via a plain `inferExpr` dispatch (see the `EIf` case
     // above) — always value position (#3362).
-    case EMatch(scrutinee, arms) -> inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, true)
+    case EMatch(scrutinee, arms) -> inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, true, TyError)
     // A value-position brace block / `unsafe { … }` has the type of its trailing
     // expression (or `Unit` if it ends in a statement, or `Never` if it diverges)
     // — `checkBlock` walks the statements (binding locals) and returns that type.
     // sc.genericNames / sc.returnTy / sc.returnTyExpr are passed explicitly here
     // because checkBlock still carries them as standalone parameters (follow-up:
     // remove them once all branch forms are wired and checkBlock can read them
-    // from sc directly).
-    case EBlock(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, sc.returnTyExpr, diag, blk, true)
-    case EUnsafe(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, sc.returnTyExpr, diag, blk, true)
+    // from sc directly). `TyError` for `tailExpected`: see the `EIf` case above.
+    case EBlock(blk) -> checkBlock(
+      sc,
+      tbl,
+      sigs,
+      sc.genericNames,
+      sc.returnTy,
+      sc.returnTyExpr,
+      diag,
+      blk,
+      true,
+      TyError
+    )
+    case EUnsafe(blk) -> checkBlock(
+      sc,
+      tbl,
+      sigs,
+      sc.genericNames,
+      sc.returnTy,
+      sc.returnTyExpr,
+      diag,
+      blk,
+      true,
+      TyError
+    )
     case ETry(_) -> TyError
     // EForall/EExists: quantifier expressions used in contracts.  Bind the
     // quantified variables into a fresh scope, infer the optional `where`
@@ -7572,7 +7637,10 @@ func inferLambda(
   }
   val bodyValuePos = match expectedReturn { case Some(rt) -> not isUnitType(rt); case None -> false }
   val noLambdaRte: Option[TypeExpr] = None
-  val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, bodyValuePos)
+  // #7696: `tailExpected` is `TyError` here too — a lambda body's own return
+  // type is out of this entry's scope (it is inferred from `bodyTy` below,
+  // not declared), so a literal inside it keeps inferring as `slice[T]`.
+  val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, bodyValuePos, TyError)
   scopePop(sc)
   TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
 }
@@ -7751,15 +7819,21 @@ pub func inferExprExpected(
     // `List[T]` is expected (see `argSatisfiesParam`).
     case EList(elems) -> match unrefine(expected) {
       case TyUser(eid, ename, eargs) -> {
-        // Name-based, matching `listLiteralArgSatisfiesParam` below (used at
-        // call-argument and constructor-field positions) rather than
-        // `stdCollectionsListTypeId`'s id-based stdlib-only match: unlike
-        // `.toList()` (#7665, which must resolve to one specific codegen
-        // implementation across packages), a literal is built fresh at its
-        // own use site against WHATEVER `List[T]` the enclosing scope
-        // resolves — the stdlib's or a same-named local shadow — so both
-        // spellings must agree on what counts as "a List".
-        if ename == "List" and eargs.count == 1 {
+        // #7696: id-based, matching `.toList()`'s own resolution
+        // (`stdCollectionsListTypeId`, #7665) rather than the bare name —
+        // an EARLIER revision of this arm matched any type named "List" by
+        // NAME alone, which meant a package's own unrelated `record List[T]`
+        // (not the stdlib collection) also intercepted a bracket literal
+        // here, and codegen (`collExpectTop`/`MConcreteList` on MSIL, the
+        // ArrayList-by-default JVM path) unconditionally builds the GENUINE
+        // stdlib collection regardless of what the checker resolved "List"
+        // to — exactly the same checker/codegen split #7665 fixed for
+        // `.toList()`. A literal is built fresh at its own use site, so
+        // (unlike `.toList()`) there is no cross-package identity to
+        // preserve; it just must always be the REAL `Std.CollectionsHost.List`
+        // codegen actually constructs, never a same-named local shadow.
+        val isStdList = match stdCollectionsListTypeId(tbl) { case Some(sid) -> typeIdEq(sid, eid); case None -> false }
+        if isStdList and eargs.count == 1 {
           val elemTy = eargs[0]
           var li = 0
           while li < elems.count {
@@ -8016,9 +8090,17 @@ func listLiteralArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: 
     return false
   }
   match argTy {
+    // #7696: id-based (`stdCollectionsListTypeId`), matching the
+    // `inferExprExpected` `EList` arm above — see its header comment. A
+    // package's own unrelated `record List[T]` field must NOT accept a
+    // bracket literal here either, for the same reason: this codepath
+    // exists specifically because codegen builds the GENUINE stdlib
+    // collection at this argument's use site, regardless of what a
+    // same-named local type happens to resolve to.
     case TySlice(elemTy) -> match unrefine(fieldTy) {
-      case TyUser(_, pName, pArgs) -> {
-        if pName == "List" and pArgs.count == 1 {
+      case TyUser(pid, _, pArgs) -> {
+        val isStdList = match stdCollectionsListTypeId(tbl) { case Some(sid) -> typeIdEq(sid, pid); case None -> false }
+        if isStdList and pArgs.count == 1 {
           match unrefine(elemTy) {
             case TyError -> true
             case _ -> argSatisfiesParam(tbl, pArgs[0], elemTy)

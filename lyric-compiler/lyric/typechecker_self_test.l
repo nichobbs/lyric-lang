@@ -97,6 +97,35 @@ func parseCheckAliasResolved(src: in String): CheckResult {
   check(resolved)
 }
 
+// #7665: `slice[T].toList()`'s result type must always be the genuine
+// stdlib `List[T]` `lowerSliceToListMsil` (`Msil.Codegen`) actually
+// constructs at runtime, never a same-named local type — resolving `List`
+// by a bare, shadowable name lookup let a local `record List` intercept
+// the type-checker's resolution while codegen still built a real BCL
+// `List<E>` regardless, so a `val` binding with an incompatible declared
+// type silently accepted it (via `typeEquiv`'s `TyError`-equals-anything
+// rule) instead of failing to compile, then crashed with
+// `InvalidCastException` at runtime.  `stdCollectionsListTypeId` fixes
+// this by resolving `List` through its owning package
+// (`Std.CollectionsHost`) rather than by name, mirroring
+// `isStdCoreMonadType`'s precedent for `Std.Core.Result`/`Option`. #7696
+// reuses this same fake-stdlib-package harness for the bracket-literal
+// (`[...]`) direct-List-typing arms, which switched to the identical
+// id-based resolution (see the "list literal ..." tests below).
+func stdCollectionsHostPackages(): List[ImportedPackage] {
+  val pkg = parse("package Std.CollectionsHost\nextern type List[T] = \"System.Collections.Generic.List`1\"\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Std.CollectionsHost",
+      items = pkg.file.items,
+      imports = collectImportNames(pkg.file.imports),
+      wholeImports = collectWholeImportNames(pkg.file.imports)
+    )
+  )
+  packages
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2803,20 +2832,29 @@ test "long in int ctor field rejected" {
 }
 
 test "slice literal in list ctor field ok" {
-  // Declare a local generic `List` so the field type resolves in the bare
-  // `check()` harness (which registers no stdlib items) — the literal-
-  // typed-as-List rule keys on the type NAME (`pName == "List"` in
-  // `listLiteralArgSatisfiesParam`), so a resolved local `List` exercises it
-  // the same way the stdlib's does. This keeps the strict zero-diagnostics
-  // assertion meaningful: with the field type resolved, the ctor-argument
-  // check runs for real instead of vacuously matching a TyError field
-  // (#3190). #7545: a bracket LITERAL still types directly as `List[Int]`
-  // here (`listLiteralArgSatisfiesParam`) — this is not the old blanket
-  // "slice satisfies List" rule, which #7545 removed; see the "slice VALUE"
-  // tests below for what that removal actually changed.
+  // #7696: the literal-typed-as-List rule now keys on `List`'s TypeId
+  // (`stdCollectionsListTypeId`), not its bare name — so this needs the
+  // GENUINE `Std.CollectionsHost.List` in scope (`stdCollectionsHostPackages`)
+  // rather than a locally-declared same-named record. See the "user record
+  // named List" test below for what changed.
+  val src = "package P\nimport Std.CollectionsHost\nrecord R { items: List[Int] }\nfunc f(): R { R(items = [1, 2, 3]) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "a list literal types directly as List[Int] in a ctor field")
+}
+
+// #7696: a package's own unrelated `record List[T]` (never importing the
+// real `Std.CollectionsHost.List`) must NOT get list-literal typing — before
+// the id-based fix above, this test's bracket literal type-checked
+// vacuously AND codegen would have built a genuine BCL `List<T>`/`ArrayList`
+// at the construction site regardless, ignoring the user's own record
+// entirely (the same checker/codegen split #7665 fixed for `.toList()`).
+test "a user record named List does not accept a bracket literal as if it were Std List (#7696)" {
   val src = "package P\nrecord List[T] { }\nrecord R { items: List[Int] }\nfunc f(): R { R(items = [1, 2, 3]) }\n"
   val cr = parseCheck(src)
-  assertEqualInt(diagCount(cr), 0, "a list literal types directly as List[Int] in a ctor field")
+  assertTrue(
+    hasDiagCode(cr, "T0104"),
+    "a bracket literal does not construct an arbitrary same-named user record via ctor-field typing"
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2852,13 +2890,19 @@ test "slice-typed val rejected against a List[T]-annotated binding" {
   assertTrue(hasDiagCode(cr, "T0060"), "a slice[Int] value does not satisfy a List[Int]-annotated val binding")
 }
 
+// #7696: this source raises TWO independent diagnostics — the `var ys:
+// List[Int] = xs` initialiser is the VAR-binding check (T0061, not the
+// val-binding T0060 this test originally asserted; `ys` is declared `var`),
+// and the subsequent `ys = xs` plain assignment is separately rejected by
+// the assignment check (T0063). Pinned precisely (both codes, and that
+// T0060 — which cannot fire for a `var` binding — never does) rather than an
+// "either" disjunction, so a future regression in either check is caught.
 test "slice-typed value rejected on assignment to a List[T]-typed var" {
   val src = "package P\nrecord List[T] { }\nfunc f(xs: in slice[Int]): Unit { var ys: List[Int] = xs; ys = xs }\n"
   val cr = parseCheck(src)
-  assertTrue(
-    hasDiagCode(cr, "T0060") or hasDiagCode(cr, "T0063"),
-    "a slice[Int] value does not satisfy a List[Int]-typed assignment target"
-  )
+  assertTrue(hasDiagCode(cr, "T0061"), "the `var ys: List[Int] = xs` initialiser is rejected by the var-binding check")
+  assertTrue(hasDiagCode(cr, "T0063"), "the subsequent `ys = xs` assignment is independently rejected too")
+  assertTrue(not hasDiagCode(cr, "T0060"), "T0060 is the val-binding code; this source never binds with val/let")
 }
 
 test "slice-typed value rejected against a List[T] declared return type" {
@@ -2867,13 +2911,62 @@ test "slice-typed value rejected against a List[T] declared return type" {
   assertTrue(hasDiagCode(cr, "T0070"), "a slice[Int] value does not satisfy a List[Int] declared return type")
 }
 
-test "a list literal in List[T] return position still needs .toList() (pre-existing, unchanged by #7545)" {
-  val src = "package P\nrecord List[T] { }\nfunc f(): List[Int] { [1, 2, 3] }\n"
-  val cr = parseCheck(src)
-  assertTrue(
-    hasDiagCode(cr, "T0070"),
-    "a bare list literal in return position was never covered by the slice-satisfies-List exemption"
-  )
+// #7696: return position now matches every other List[T]-expected position
+// (docs/decisions/D-progress-1026-return-position-list-literals.md) — a
+// bracket literal as the block's trailing/implicit value types directly as
+// List[Int], same as a `val`/ctor-field/call-argument literal already did.
+// This supersedes the old "still needs .toList()" pre-#7696 behaviour this
+// test used to pin.
+test "a list literal in List[T] return position (block trailing value) types directly as List[T] (#7696)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(): List[Int] { [1, 2, 3] }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "the block's trailing bracket literal types directly as List[Int]")
+}
+
+test "a list literal in List[T] return position (explicit `return`) types directly as List[T] (#7696)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(): List[Int] { return [1, 2, 3] }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "`return [1, 2, 3]` against a declared List[Int] return type type-checks")
+}
+
+test "a list literal in List[T] return position (expression-bodied function) types directly as List[T] (#7696)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(): List[Int] = [1, 2]\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "an expression-bodied function's literal body types directly as List[Int]")
+}
+
+test "a list literal in List[T] return position (if arm) types directly as List[T] (#7696)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(c: in Bool): List[Int] {\n  if c { [1, 2, 3] } else { [4, 5, 6] }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "both if-arms' bracket literals type directly as List[Int]")
+}
+
+test "a list literal in List[T] return position (match arm, bare-expr body) types directly as List[T] (#7696)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(c: in Bool): List[Int] {\n  match c {\n    case true -> [1, 2, 3]\n    case false -> [4, 5, 6]\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "both bare-expr match-arm bracket literals type directly as List[Int]")
+}
+
+// A `slice[T]` VALUE (not a literal) must still be rejected at every one of
+// the return-position forms above — #7696 only extends the LITERAL's
+// direct-List-typing to return position; it does not resurrect #7545's
+// removed slice-satisfies-List exemption for a genuine value.
+test "a slice VALUE is still rejected via explicit `return` against a List[T] return type (#7696)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(xs: in slice[Int]): List[Int] { return xs }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertTrue(hasDiagCode(cr, "T0065"), "a slice[Int] value passed to `return` does not satisfy a List[Int] return type")
+}
+
+test "a slice VALUE is still rejected in an expression-bodied function against a List[T] return type (#7696)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(xs: in slice[Int]): List[Int] = xs\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertTrue(hasDiagCode(cr, "T0070"), "a slice[Int] value does not satisfy an expression-bodied List[Int] return type")
+}
+
+test "a slice VALUE is still rejected in an if return-position arm against a List[T] return type (#7696)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(c: in Bool, xs: in slice[Int]): List[Int] {\n  if c { xs } else { xs }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertTrue(hasDiagCode(cr, "T0070"), "a slice[Int] if-arm value does not satisfy a List[Int] return type")
 }
 
 test "slice/List mismatch diagnostics suggest the explicit conversion" {
@@ -2889,14 +2982,14 @@ test ".toList() bridges a slice value into a List[T] parameter" {
 }
 
 test "a list literal in a plain (non-ctor) call argument still types as List[T]" {
-  val src = "package P\nrecord List[T] { }\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(): Int { g([1, 2, 3]) }\n"
-  val cr = parseCheck(src)
+  val src = "package P\nimport Std.CollectionsHost\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(): Int { g([1, 2, 3]) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
   assertEqualInt(diagCount(cr), 0, "a bracket literal call argument types directly as List[Int]")
 }
 
 test "a list literal in a List[T]-annotated val binding still type-checks" {
-  val src = "package P\nrecord List[T] { }\nfunc f(): Unit { val xs: List[Int] = [1, 2, 3] }\n"
-  val cr = parseCheck(src)
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(): Unit { val xs: List[Int] = [1, 2, 3] }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
   assertEqualInt(diagCount(cr), 0, "a bracket literal binding initialiser types directly as List[Int]")
 }
 
@@ -6795,32 +6888,6 @@ test "record-pattern head with the right record name but the wrong qualifier is 
     diagMessageFor(cr, "T0137").contains("Wrong"),
     "T0137 names the wrong qualifier: " + diagMessageFor(cr, "T0137")
   )
-}
-
-// #7665: `slice[T].toList()`'s result type must always be the genuine
-// stdlib `List[T]` `lowerSliceToListMsil` (`Msil.Codegen`) actually
-// constructs at runtime, never a same-named local type — resolving `List`
-// by a bare, shadowable name lookup let a local `record List` intercept
-// the type-checker's resolution while codegen still built a real BCL
-// `List<E>` regardless, so a `val` binding with an incompatible declared
-// type silently accepted it (via `typeEquiv`'s `TyError`-equals-anything
-// rule) instead of failing to compile, then crashed with
-// `InvalidCastException` at runtime.  `stdCollectionsListTypeId` fixes
-// this by resolving `List` through its owning package
-// (`Std.CollectionsHost`) rather than by name, mirroring
-// `isStdCoreMonadType`'s precedent for `Std.Core.Result`/`Option`.
-func stdCollectionsHostPackages(): List[ImportedPackage] {
-  val pkg = parse("package Std.CollectionsHost\nextern type List[T] = \"System.Collections.Generic.List`1\"\n")
-  val packages: List[ImportedPackage] = newList()
-  packages.add(
-    ImportedPackage(
-      name = "Std.CollectionsHost",
-      items = pkg.file.items,
-      imports = collectImportNames(pkg.file.imports),
-      wholeImports = collectWholeImportNames(pkg.file.imports)
-    )
-  )
-  packages
 }
 
 test "slice.toList() resolves the genuine stdlib List even with a local shadow (#7665)" {
