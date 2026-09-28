@@ -147,6 +147,15 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/project-package-import-reachability-e2e.sh
   ran="$ran project-package-import-reachability-e2e"
 fi
+# #7502: a @generate(Json) record's derive-synthesised `fromJson` called
+# from a DIFFERENT project package, on both targets (this job has Java 21,
+# same precedent as the e2e scripts above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/derive-json-cross-package-jvm-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/derive-json-cross-package-jvm-e2e.sh
+  ran="$ran derive-json-cross-package-jvm-e2e"
+fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2
   exit 1

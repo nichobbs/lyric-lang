@@ -7267,6 +7267,15 @@ jobs:
           fi
           "$lyric_bin" run --target jvm lyric-stdlib/tests/hash_tests.l
 
+      # `@generate(Json)` nested-record decoding on JVM (#7501, #7502):
+      # two records' derived `fromJson`/`fromJsonElement` on one package
+      # class, and a call to another package's derive-synthesised function.
+      # Shares the Java 21 setup step above; logic lives in the script
+      # (ci.yml is near its size ceiling, scripts/ci/check-workflow-size.sh).
+      - name: Std.Json @generate nested-record suite on JVM (json_generate_tests.l)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/json-generate-jvm-test.sh
+
       # Std.RegexSafe cross-package union-case/function collision on JVM
       # (#5976): `regex_safe_tests.l` imports both `Std.Regex as Re` and
       # `Std.RegexSafe as Rx`, which each declare a same-simple-name

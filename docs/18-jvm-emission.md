@@ -919,6 +919,52 @@ identical to the MSIL emission's "overload pair" strategy except
 generalised.  Same 32-overload cap as §5.5; over the cap the
 back-end refuses to emit and the front-end recommends a builder.
 
+### 11.6 Dot-named (type-associated) functions and name mangling
+
+A dot-named function — `func TypeName.member(...)`, written by hand or
+synthesised by `@derive`/`@generate` — lowers to a `public static`
+method on the declaring package's shared host class (§11.1), exactly
+like a plain `func`. Unlike MSIL, where the classfile-agnostic PE
+format keeps the full `"TypeName.member"` spelling as the method
+name, the JVM classfile format (JVMS §4.2.2) forbids a literal `.` in
+an unqualified method name — so the compiler mangles it.
+
+Every dot-named function that lives on the shared host class gets the
+name `TypeName$member` (the same `$`-separator convention already used
+for a union case's nested class name, `Type$Case`, §8.1). Mangling in
+every same-named-member case — not only on an actual collision — keeps
+the scheme simple and collision-proof: without it, two different types
+declaring the same member name with the same parameter list (most
+commonly two `@generate(Json)` records, whose synthesised
+`fromJson`/`fromJsonElement` share one descriptor each) collide on one
+bare method name and descriptor, and the class fails to load
+(`java.lang.ClassFormatError: Duplicate method name ... with
+signature`).
+
+A **synthesised per-type static** is the one exception: a
+distinct/range-subtype's `from`/`tryFrom` conversion and a `wire`
+factory's static accessor are *also* looked up through the dot-named
+call-resolution path (`Type.tryFrom(x)`, `AppWire.bootstrap()`), but
+each lives on its OWN dedicated class (`<package>/<TypeName>`, or the
+wire's own generated class) rather than the shared host class — so
+there is nothing to disambiguate, and these keep their plain member
+name (`from`, `tryFrom`, the wire accessor's own name) unmangled.
+
+The two cases are told apart at REGISTRATION time, never guessed at a
+call site: `JvmFuncSig.jvmMethodName` records the exact classfile
+method name a call site must `invoke*`, set once by whichever
+construction site minted the signature. Comparing a call site's
+resolved `owner`/receiver class name against some locally-reconstructed
+"expected owner" to decide whether to mangle was tried and rejected — a
+package whose own last dotted path segment happens to be spelled the
+same as a type it declares (e.g. package `P.Widget` declaring `record
+Widget`) makes that comparison genuinely ambiguous for the single-
+segment unqualified call form, a silent-miscompile risk this project's
+production-readiness standard does not accept. See D-progress-1020 for
+the full design and
+`lyric-compiler/jvm/dot_named_mangle_owner_match_jvm_self_test.l` for
+the regression test pinning that exact shape.
+
 
 ## 12. Compile-time constants
 

@@ -1175,15 +1175,22 @@ func lowerFuncScoped(
   val noTypeParams: List[String] = newList()
   val paramTypes = holderAwareParamTypes(resolvedParams, pkgName, false, noTypeParams, externTypes)
 
-  // Synthesised @derive names like "Point.equals" carry a "TypeName." prefix
-  // that JVMS §4.2.2 forbids in unqualified method names.  Strip everything up
-  // to and including the last dot so the classfile method name is just the
-  // short member name ("equals").  The call site in lowerMethodCall uses the
-  // plain Lyric memberName as the invokestatic target — both sides must agree.
+  // A dot-named function ("Point.equals", "Point.fromJson" — hand-written or
+  // synthesised by `@derive`/`@generate`) carries a "TypeName." prefix that
+  // JVMS §4.2.2 forbids in an unqualified method name, AND every dot-named
+  // function in a package shares that package's single host class as its
+  // `owner` — two different types' same-named members would collide on one
+  // bare method name and descriptor if the prefix were simply stripped
+  // (`ClassFormatError: Duplicate method name`, #7501). Mangle it into
+  // `TypeName$member` via `jvmDotMethodName` instead — every call site that
+  // resolves a dot-named function computes the exact same name from the same
+  // (typeName, memberName) pair, so the two sides always agree.
   var jvmFuncName = decl.name
   match lastIndexOf(decl.name, ".") {
     case Some(dotIdx) -> {
-      jvmFuncName = decl.name.substring(dotIdx + 1, decl.name.length - dotIdx - 1)
+      val typeName = decl.name.substring(0, dotIdx)
+      val memberName = decl.name.substring(dotIdx + 1, decl.name.length - dotIdx - 1)
+      jvmFuncName = jvmDotMethodName(typeName, memberName)
     }
     case None -> ()
   }
@@ -3469,7 +3476,11 @@ func registerFnFieldSig(
           ownTypeParams = newList(),
           declParamTypeExprs = newList(),
           declRetTypeExprRaw = None,
-          declRetExternTypes = newMap()
+          declRetExternTypes = newMap(),
+          // Never `invoke*`'d by name — the call site reads the field's
+          // VALUE then invokes it through the lambda interface (D-progress-
+          // 952). Recorded for symmetry only.
+          jvmMethodName = fieldName
         )
       )
     }
@@ -3673,7 +3684,11 @@ pub func collectFileSigsSeeded(
           // function's own type params, only `resolvedRet` (the actual
           // declared return) is.
           declRetTypeExprRaw = if decl.isAsync and funcBodyContainsYield(decl) { None } else { resolvedRet },
-          declRetExternTypes = fnExternTypes
+          declRetExternTypes = fnExternTypes,
+          // A no-op (returns `decl.name` unchanged) for a plain free
+          // function; mangles a dot-named function's name into
+          // `TypeName$member` — see `jvmDotMethodName`'s doc comment (#7501).
+          jvmMethodName = jvmDotMethodNameFromDeclName(decl.name)
         )
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -3956,7 +3971,10 @@ pub func collectFileSigsSeeded(
           ownTypeParams = newList(),
           declParamTypeExprs = newList(),
           declRetTypeExprRaw = None,
-          declRetExternTypes = newMap()
+          declRetExternTypes = newMap(),
+          // Lives on `distClass`, its OWN dedicated class — nothing to
+          // mangle against (#7501).
+          jvmMethodName = "from"
         )
         if not into.containsKey(fromKey) {
           into.add(fromKey, fromSig)
@@ -3995,7 +4013,10 @@ pub func collectFileSigsSeeded(
           ownTypeParams = newList(),
           declParamTypeExprs = newList(),
           declRetTypeExprRaw = None,
-          declRetExternTypes = newMap()
+          declRetExternTypes = newMap(),
+          // Lives on `distClass`, its OWN dedicated class — nothing to
+          // mangle against (#7501).
+          jvmMethodName = "tryFrom"
         )
         if not into.containsKey(tryFromKey) {
           into.add(tryFromKey, tryFromSig)
@@ -4103,7 +4124,11 @@ pub func collectFileSigsSeeded(
                       ownTypeParams = newList(),
                       declParamTypeExprs = newList(),
                       declRetTypeExprRaw = None,
-                      declRetExternTypes = newMap()
+                      declRetExternTypes = newMap(),
+                      // The call site (02_exprs.l) derives the accessor name
+                      // itself, as `"$" + memberName`, so this is unused —
+                      // recorded for symmetry/documentation only.
+                      jvmMethodName = "$" + f.name
                     )
                   )
                 }
@@ -4198,7 +4223,9 @@ pub func collectFileSigsSeeded(
                   ownTypeParams = newList(),
                   declParamTypeExprs = newList(),
                   declRetTypeExprRaw = None,
-                  declRetExternTypes = newMap()
+                  declRetExternTypes = newMap(),
+                  // `getstatic`, never `invoke*` — recorded for symmetry.
+                  jvmMethodName = vname
                 )
                 val vqkey = owner + "/val:" + vname
                 if not into.containsKey(vqkey) {
@@ -4259,7 +4286,9 @@ pub func collectFileSigsSeeded(
             ownTypeParams = newList(),
             declParamTypeExprs = newList(),
             declRetTypeExprRaw = None,
-            declRetExternTypes = newMap()
+            declRetExternTypes = newMap(),
+            // `getstatic`, never `invoke*` — recorded for symmetry.
+            jvmMethodName = ecn
           )
           // #6683: each tier below gets its OWN key prefix (`enumty:` /
           // `enumfull:` / `enumpkg:`) so a type-scoped, package-scoped, or
@@ -4456,7 +4485,10 @@ func registerInstanceSigErased(
         ownTypeParams = newList(),
         declParamTypeExprs = newList(),
         declRetTypeExprRaw = None,
-        declRetExternTypes = newMap()
+        declRetExternTypes = newMap(),
+        // `invokevirtual`/`invokeinterface` under its own plain name —
+        // never a dot-named registrant, nothing to mangle.
+        jvmMethodName = methodName
       )
     )
   }
@@ -4519,7 +4551,10 @@ func registerInstanceSigImplExtern(
         ownTypeParams = newList(),
         declParamTypeExprs = newList(),
         declRetTypeExprRaw = None,
-        declRetExternTypes = newMap()
+        declRetExternTypes = newMap(),
+        // `invokevirtual`/`invokeinterface` under its own plain name —
+        // never a dot-named registrant, nothing to mangle.
+        jvmMethodName = methodName
       )
     )
   }
@@ -4645,7 +4680,10 @@ func registerFieldElemSig(
       ownTypeParams = newList(),
       declParamTypeExprs = newList(),
       declRetTypeExprRaw = None,
-      declRetExternTypes = newMap()
+      declRetExternTypes = newMap(),
+      // A pseudo-key entry consulted only for its `.ret`/generic-arg
+      // fields, never `invoke*`'d — recorded for symmetry.
+      jvmMethodName = fieldName
     )
   )
 }
@@ -4746,7 +4784,10 @@ func registerIfaceSig(
         ownTypeParams = newList(),
         declParamTypeExprs = newList(),
         declRetTypeExprRaw = None,
-        declRetExternTypes = newMap()
+        declRetExternTypes = newMap(),
+        // `invokeinterface` under its own plain name — never a dot-named
+        // registrant, nothing to mangle.
+        jvmMethodName = methodName
       )
     )
   }
@@ -4787,7 +4828,10 @@ func registerStaticWireSig(
         ownTypeParams = newList(),
         declParamTypeExprs = newList(),
         declRetTypeExprRaw = None,
-        declRetExternTypes = newMap()
+        declRetExternTypes = newMap(),
+        // Lives on `wireClass`, its OWN dedicated class — nothing to
+        // mangle against (#7501).
+        jvmMethodName = methodName
       )
     )
   }
@@ -6089,7 +6133,10 @@ pub func registerProjectableViews(
                 ownTypeParams = newList(),
                 declParamTypeExprs = newList(),
                 declRetTypeExprRaw = None,
-                declRetExternTypes = newMap()
+                declRetExternTypes = newMap(),
+                // `invokevirtual` under its own plain name — never a
+                // dot-named registrant, nothing to mangle.
+                jvmMethodName = "toView"
               )
             )
           }
@@ -6119,7 +6166,10 @@ pub func registerProjectableViews(
                   ownTypeParams = newList(),
                   declParamTypeExprs = newList(),
                   declRetTypeExprRaw = None,
-                  declRetExternTypes = newMap()
+                  declRetExternTypes = newMap(),
+                  // `invokevirtual` under its own plain name — never a
+                  // dot-named registrant, nothing to mangle.
+                  jvmMethodName = "tryInto"
                 )
               )
             }
