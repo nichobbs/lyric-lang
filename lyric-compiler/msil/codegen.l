@@ -35762,6 +35762,189 @@ func collectRecordLambdasBfsMsil(
   }
 }
 
+// Collect the DIRECT lambdas of one top-level item (a lambda nested inside
+// another lambda's body is deferred, never recursed into) in the order
+// `lowerExprMsil` reaches them while lowering that item.  Shared by
+// `liftLambdasMsil` (which assigns the `__lambda_<i>` indices) and
+// `computeLambdaBasesMsil` (which replays the same walk so codegen can
+// re-anchor its ticker per item, #7693) — one walker, so the two can never
+// disagree on how many lambdas an item owns.
+func collectItemLambdasBfsMsil(
+  item: in Item, ticker: in List[Int], synths: in List[Item], deferred: in List[Block]
+): Unit {
+  match item.kind {
+    case IFunc(decl) -> {
+      match decl.body {
+        case Some(body) -> {
+          match body {
+            case FBBlock(block) -> {
+              var si = 0
+              while si < block.statements.count {
+                collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                si = si + 1
+              }
+            }
+            case FBExpr(e) -> {
+              collectLambdasBfsExpr(e, ticker, synths, deferred)
+            }
+          }
+        }
+        case None -> {
+        }
+      }
+    }
+    case IVal(decl) -> {
+      collectLambdasBfsExpr(decl.init, ticker, synths, deferred)
+    }
+    case IConst(decl) -> {
+      collectLambdasBfsExpr(decl.init, ticker, synths, deferred)
+    }
+    case IRecord(decl) -> collectRecordLambdasBfsMsil(decl, ticker, synths, deferred)
+    // An `exposed record` wraps the identical `RecordDecl` shape as a plain
+    // `IRecord` (D-progress-944) — its body methods need the same BFS
+    // lambda collection so a lambda literal inside one isn't silently left
+    // with no lifted token (#6533 follow-up audit).
+    case IExposedRec(decl) -> collectRecordLambdasBfsMsil(decl, ticker, synths, deferred)
+    case IInterface(decl) -> {
+      // Default interface method bodies (`IMFunc`), lowered by
+      // `codegenMPackage`'s `IInterface` arm through `lowerImplMethodMsil` in
+      // member order: a lambda inside one needs a lifted token like any other
+      // method body's.
+      var mi = 0
+      while mi < decl.members.count {
+        match decl.members[mi] {
+          case IMFunc(fn) -> {
+            match fn.body {
+              case Some(body) -> {
+                match body {
+                  case FBBlock(block) -> {
+                    var si = 0
+                    while si < block.statements.count {
+                      collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                      si = si + 1
+                    }
+                  }
+                  case FBExpr(e) -> {
+                    collectLambdasBfsExpr(e, ticker, synths, deferred)
+                  }
+                }
+              }
+              case None -> {
+              }
+            }
+          }
+          case _ -> {
+          }
+        }
+        mi = mi + 1
+      }
+    }
+    case IImpl(decl) -> {
+      // Walk impl-block method bodies (#6119: `impl` methods were never
+      // scanned, so a lambda literal inside one had no lifted token,
+      // crashing codegen with "lambda token missing").
+      var mi = 0
+      while mi < decl.members.count {
+        match decl.members[mi] {
+          case IMplFunc(fn) -> {
+            match fn.body {
+              case Some(body) -> {
+                match body {
+                  case FBBlock(block) -> {
+                    var si = 0
+                    while si < block.statements.count {
+                      collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                      si = si + 1
+                    }
+                  }
+                  case FBExpr(e) -> {
+                    collectLambdasBfsExpr(e, ticker, synths, deferred)
+                  }
+                }
+              }
+              case None -> {
+              }
+            }
+          }
+          case _ -> {
+          }
+        }
+        mi = mi + 1
+      }
+    }
+    case IProtected(decl) -> {
+      // Walk protected-type member bodies (#6119 follow-up): both `PMFunc`
+      // (lowered via `lowerImplMethodMsil`, same self-capture shape as
+      // `IImpl`) and `PMEntry` (lowered via `lowerProtectedMsil` directly)
+      // were never scanned by this pre-pass, hitting the same "lambda
+      // token missing" panic.
+      //
+      // Bare field references in a protected member body are `EPath([name])`
+      // at parse time; `lowerProtectedMsil` rewrites them to
+      // `EMember(ESelf, name)` via `desugarProtectedFuncDecl`/
+      // `desugarProtectedFuncBody` — a SEPARATE, later pass over its own
+      // copy of the body — before actually lowering. If this pre-pass
+      // walked (and synthesized the lifted `__lambda_*` IFunc from) the
+      // RAW pre-desugar body instead, the lifted function's body would
+      // still contain the bare `EPath(["n"])` reference: not a real
+      // parameter, not a real capture (only the call-site's OWN desugared
+      // copy has the `ESelf` node the capture-name collector recognizes),
+      // so it would silently resolve to nothing meaningful instead of the
+      // captured field — a silent wrong-value miscompile, not a crash.
+      // Desugaring here first, exactly like `lowerProtectedMsil` does,
+      // keeps the synthesized lambda body byte-for-byte consistent with
+      // what the call site's own (independently, but identically,
+      // desugared) `ELambda` node captures.
+      val fieldNames = makeProtectedFieldNames(decl)
+      var mi = 0
+      while mi < decl.members.count {
+        match decl.members[mi] {
+          case PMFunc(fn) -> {
+            val desugaredFn = desugarProtectedFuncDecl(fieldNames, fn)
+            match desugaredFn.body {
+              case Some(body) -> {
+                match body {
+                  case FBBlock(block) -> {
+                    var si = 0
+                    while si < block.statements.count {
+                      collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                      si = si + 1
+                    }
+                  }
+                  case FBExpr(e) -> {
+                    collectLambdasBfsExpr(e, ticker, synths, deferred)
+                  }
+                }
+              }
+              case None -> {
+              }
+            }
+          }
+          case PMEntry(entryDecl) -> {
+            match desugarProtectedFuncBody(fieldNames, entryDecl.body) {
+              case FBBlock(block) -> {
+                var si = 0
+                while si < block.statements.count {
+                  collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
+                  si = si + 1
+                }
+              }
+              case FBExpr(e) -> {
+                collectLambdasBfsExpr(e, ticker, synths, deferred)
+              }
+            }
+          }
+          case _ -> {
+          }
+        }
+        mi = mi + 1
+      }
+    }
+    case _ -> {
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
 // items in breadth-first order so lambda indices match the codegen traversal.
@@ -35825,143 +36008,7 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   // Each ELambda body is pushed to `deferred` rather than recursed into.
   var i = 0
   while i < file.items.count {
-    match file.items[i].kind {
-      case IFunc(decl) -> {
-        match decl.body {
-          case Some(body) -> {
-            match body {
-              case FBBlock(block) -> {
-                var si = 0
-                while si < block.statements.count {
-                  collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
-                  si = si + 1
-                }
-              }
-              case FBExpr(e) -> {
-                collectLambdasBfsExpr(e, ticker, synths, deferred)
-              }
-            }
-          }
-          case None -> {
-          }
-        }
-      }
-      case IVal(decl) -> {
-        collectLambdasBfsExpr(decl.init, ticker, synths, deferred)
-      }
-      case IConst(decl) -> {
-        collectLambdasBfsExpr(decl.init, ticker, synths, deferred)
-      }
-      case IRecord(decl) -> collectRecordLambdasBfsMsil(decl, ticker, synths, deferred)
-      // An `exposed record` wraps the identical `RecordDecl` shape as a plain
-      // `IRecord` (D-progress-944) — its body methods need the same BFS
-      // lambda collection so a lambda literal inside one isn't silently left
-      // with no lifted token (#6533 follow-up audit).
-      case IExposedRec(decl) -> collectRecordLambdasBfsMsil(decl, ticker, synths, deferred)
-      case IImpl(decl) -> {
-        // Walk impl-block method bodies (#6119: `impl` methods were never
-        // scanned, so a lambda literal inside one had no lifted token,
-        // crashing codegen with "lambda token missing").
-        var mi = 0
-        while mi < decl.members.count {
-          match decl.members[mi] {
-            case IMplFunc(fn) -> {
-              match fn.body {
-                case Some(body) -> {
-                  match body {
-                    case FBBlock(block) -> {
-                      var si = 0
-                      while si < block.statements.count {
-                        collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
-                        si = si + 1
-                      }
-                    }
-                    case FBExpr(e) -> {
-                      collectLambdasBfsExpr(e, ticker, synths, deferred)
-                    }
-                  }
-                }
-                case None -> {
-                }
-              }
-            }
-            case _ -> {
-            }
-          }
-          mi = mi + 1
-        }
-      }
-      case IProtected(decl) -> {
-        // Walk protected-type member bodies (#6119 follow-up): both `PMFunc`
-        // (lowered via `lowerImplMethodMsil`, same self-capture shape as
-        // `IImpl`) and `PMEntry` (lowered via `lowerProtectedMsil` directly)
-        // were never scanned by this pre-pass, hitting the same "lambda
-        // token missing" panic.
-        //
-        // Bare field references in a protected member body are `EPath([name])`
-        // at parse time; `lowerProtectedMsil` rewrites them to
-        // `EMember(ESelf, name)` via `desugarProtectedFuncDecl`/
-        // `desugarProtectedFuncBody` — a SEPARATE, later pass over its own
-        // copy of the body — before actually lowering. If this pre-pass
-        // walked (and synthesized the lifted `__lambda_*` IFunc from) the
-        // RAW pre-desugar body instead, the lifted function's body would
-        // still contain the bare `EPath(["n"])` reference: not a real
-        // parameter, not a real capture (only the call-site's OWN desugared
-        // copy has the `ESelf` node the capture-name collector recognizes),
-        // so it would silently resolve to nothing meaningful instead of the
-        // captured field — a silent wrong-value miscompile, not a crash.
-        // Desugaring here first, exactly like `lowerProtectedMsil` does,
-        // keeps the synthesized lambda body byte-for-byte consistent with
-        // what the call site's own (independently, but identically,
-        // desugared) `ELambda` node captures.
-        val fieldNames = makeProtectedFieldNames(decl)
-        var mi = 0
-        while mi < decl.members.count {
-          match decl.members[mi] {
-            case PMFunc(fn) -> {
-              val desugaredFn = desugarProtectedFuncDecl(fieldNames, fn)
-              match desugaredFn.body {
-                case Some(body) -> {
-                  match body {
-                    case FBBlock(block) -> {
-                      var si = 0
-                      while si < block.statements.count {
-                        collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
-                        si = si + 1
-                      }
-                    }
-                    case FBExpr(e) -> {
-                      collectLambdasBfsExpr(e, ticker, synths, deferred)
-                    }
-                  }
-                }
-                case None -> {
-                }
-              }
-            }
-            case PMEntry(entryDecl) -> {
-              match desugarProtectedFuncBody(fieldNames, entryDecl.body) {
-                case FBBlock(block) -> {
-                  var si = 0
-                  while si < block.statements.count {
-                    collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
-                    si = si + 1
-                  }
-                }
-                case FBExpr(e) -> {
-                  collectLambdasBfsExpr(e, ticker, synths, deferred)
-                }
-              }
-            }
-            case _ -> {
-            }
-          }
-          mi = mi + 1
-        }
-      }
-      case _ -> {
-      }
-    }
+    collectItemLambdasBfsMsil(file.items[i], ticker, synths, deferred)
     // A lambda lifted out of a specialised copy of another package's generic
     // keeps that package's type scope (D-progress-967).
     val itemOrigin = match file.items[i].kind { case IFunc(fd) -> originPkgOf(fd.annotations); case _ -> "" }
@@ -36012,6 +36059,55 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
     items = newItems,
     span = file.span
   )
+}
+
+// Per-item starting `__lambda_<i>` index for a `liftLambdasMsil` output:
+// `bases[k]` is the ticker value at which item `k`'s direct lambdas were
+// numbered.  `codegenMPackage` does not lower items strictly in file order —
+// `collectImplEntriesMsil` lowers every top-level `impl` block's methods
+// before the main per-item loop reaches the records and functions declared
+// ahead of them — so a single running `cctx.lambdaTicker` handed the impl
+// method's lambda the index `liftLambdasMsil` gave an EARLIER item's lambda,
+// binding each `ELambda` site to another lambda's lifted body and captures
+// (T0115 "cannot resolve name ... in <pkg>.__lambda_<n>", #7693).  Codegen
+// instead re-anchors the ticker to `bases[k]` before lowering item `k`
+// (`alignLambdaTickerMsil`), so an item's lambdas get the indices the lift
+// assigned them whatever order the items are lowered in.  The lifted
+// `__lambda_<i>` items themselves are appended in deferred-FIFO order and
+// their bodies ARE the deferred blocks, so walking them here reproduces the
+// lift's nested-lambda numbering too.
+func computeLambdaBasesMsil(file: in SourceFile): List[Int] {
+  val bases: List[Int] = newList()
+  val ticker: List[Int] = newList()
+  val synths: List[Item] = newList()
+  val deferred: List[Block] = newList()
+  var i = 0
+  while i < file.items.count {
+    bases.add(ticker.count)
+    collectItemLambdasBfsMsil(file.items[i], ticker, synths, deferred)
+    i = i + 1
+  }
+  bases
+}
+
+// Re-anchor `cctx.lambdaTicker` (only its `.count` is meaningful) to the
+// lift-assigned starting index of item `itemIdx` (see
+// `computeLambdaBasesMsil`).  A no-op when codegen is already in step, which
+// is every item lowered in file order.
+func alignLambdaTickerMsil(cctx: in CodegenCtx, bases: in List[Int], itemIdx: in Int): Unit {
+  if itemIdx >= bases.count {
+    panic(
+      "Msil.Codegen: internal error — lambda base index " + toString(itemIdx) + " out of range (" + toString(bases.count) +
+        " items); codegenMPackage lowered a file other than the one its lambda bases were computed from"
+    )
+  }
+  val target = bases[itemIdx]
+  if cctx.lambdaTicker.count > target {
+    cctx.lambdaTicker.clear()
+  }
+  while cctx.lambdaTicker.count < target {
+    cctx.lambdaTicker.add(0)
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -38331,11 +38427,16 @@ func buildExternIfaceMethodRowsMsil(
 // `lowerMImpl`'s `findTypeRefRowByName` lookup finds it — an `impl` block
 // is otherwise the only place an external interface can be named without
 // any method call having already created the row.
-pub func collectImplEntriesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
+pub func collectImplEntriesMsil(
+  cctx: in CodegenCtx, file: in SourceFile, pkgName: in String, lambdaBases: in List[Int]
+): Unit {
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IImpl(decl) -> {
+        // This pre-pass runs ahead of the main per-item loop, so lower this
+        // impl's lambdas at the indices the lift gave them (#7693).
+        alignLambdaTickerMsil(cctx, lambdaBases, i)
         val targetName = implTargetNameMsil(decl, pkgName)
         val ifaceName = implIfaceNameMsil(cctx, decl, pkgName)
         val isExternal = implIfaceIsExternalClr(cctx, decl, pkgName)
@@ -39364,7 +39465,8 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // per later package, emitting duplicate InterfaceImpl metadata rows (one
   // extra per subsequent package; 4-package lyric-mq carried each impl 4×).
   val implEntriesStart = cctx.implEntries.count
-  collectImplEntriesMsil(cctx, weavedFile, pkgName)
+  val lambdaBases = computeLambdaBasesMsil(weavedFile)
+  collectImplEntriesMsil(cctx, weavedFile, pkgName, lambdaBases)
 
   // ── D105 Phase 2: external-interface impl conformance validation ──────────
   // Runs AFTER collectImplEntriesMsil so the TypeRef row is already reserved
@@ -39376,6 +39478,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   var i = 0
   while i < weavedFile.items.count {
     val item = weavedFile.items[i]
+    alignLambdaTickerMsil(cctx, lambdaBases, i)
     match item.kind {
       case IRecord(decl) -> {
         val baseRec = lowerRecordMsil(cctx, decl, pkgName)
