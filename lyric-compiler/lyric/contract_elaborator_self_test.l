@@ -1345,8 +1345,10 @@ test "contractsEnabled = false omits ensures: asserts but preserves function exe
   // are gated by contractsEnabled is in aspect_weave_self_test.l test 15, which
   // runs real woven code and verifies aspect-composed ensures clauses fire when
   // contractsEnabled=true (the default for @test_module). The contractsEnabled=false
-  // case for aspect-composed contracts is verified by the verifier's weaver+elaborator
-  // integration (#7701).
+  // case for aspect-composed contracts is verified by the standalone runtime test
+  // examples/contracts-gating-test/, which applies an aspect with ensures: to a
+  // function violating that contract and verifies it executes without assertion
+  // when compiled with [contracts] enabled = false in the manifest (#7701).
   val src = "package P\nfunc f(x: in Int): Int\n  ensures: result > 0\n{ x + 1 }\n"
   val enabledFile = parseAndElaborateWithContracts(src, true)
   val disabledFile = parseAndElaborateWithContracts(src, false)

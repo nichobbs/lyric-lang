@@ -434,7 +434,8 @@ test "aspect's own ensures: clause is woven and enforced at runtime" {
   // If the ensure were violated (result < 100), the woven function would panic
   // with a ContractViolation at runtime. The contractsEnabled=true path is tested
   // here (the default for @test_module); the contractsEnabled=false path is
-  // verified separately in contract_elaborator_self_test.l by invoking the weaver
-  // and elaborator with contracts disabled (#7701).
+  // verified by the standalone runtime test examples/contracts-gating-test/,
+  // which demonstrates that aspect-composed contracts are omitted when compiled
+  // with [contracts] enabled = false in the manifest (#7701).
   assertEqualInt(ensureTarget(), 150, "aspect-composed ensure (result >= 100) is enforced and passes")
 }

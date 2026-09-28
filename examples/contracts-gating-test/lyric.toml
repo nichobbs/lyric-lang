@@ -1,0 +1,14 @@
+[package]
+name = "contracts-gating-test"
+version = "0.1.0"
+description = "Test that aspect-composed requires:/ensures: clauses are gated by [contracts] enabled = false"
+
+[project]
+output = "single"
+output_assembly = "contracts-gating-test.dll"
+
+[project.packages]
+"contracts_gating_test" = "src/main.l"
+
+[contracts]
+enabled = false
