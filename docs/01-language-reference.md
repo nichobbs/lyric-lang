@@ -373,6 +373,8 @@ val sub = xs.slice(start, end)       // new slice, the half-open sub-range [star
 
 `xs.toList()` returns a shallow-copied `List[T]` holding `xs`'s elements — the round-trip shuttle back from `List[T].toArray()` — `--target dotnet` and `--target native` only; `--target jvm` does not implement it yet (tracked in #7662).
 
+`slice[T]` and `List[T]` have distinct runtime representations on every target (a real array vs. `List<T>`/`ArrayList`), so the conversion between them is always the explicit `.toList()` / `.toArray()` pair above — never implicit. A `slice[T]`-typed value (a variable, a call result, …) is rejected (**T0043**/**T0060**–**T0063**/**T0065**/**T0070**/**T0104**, depending on the position) wherever a `List[T]` is expected, and vice versa. The one exception is a bracket literal (`[...]`) used directly where a `List[T]` is expected — as a binding's initialiser, a constructor field argument, or an ordinary call argument — which types (and is built) as `List[T]` there, with no `.toList()` needed, since a literal's runtime shape is decided by the surrounding expected type, not fixed in advance like a value's is (D-progress-1025).
+
 ### 2.8 Opaque types
 
 ```

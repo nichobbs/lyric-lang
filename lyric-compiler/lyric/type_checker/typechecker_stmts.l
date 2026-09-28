@@ -251,7 +251,8 @@ pub func checkStatement(
             diag.add(
               errorDiagnostic(
                 "T0060",
-                "val binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType),
+                "val binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType) +
+                  sliceListConversionHint(declT, initType),
                 stmt.span
               )
             )
@@ -278,7 +279,8 @@ pub func checkStatement(
                 diag.add(
                   errorDiagnostic(
                     "T0061",
-                    "var binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType),
+                    "var binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType) +
+                      sliceListConversionHint(declT, initType),
                     stmt.span
                   )
                 )
@@ -317,7 +319,8 @@ pub func checkStatement(
             diag.add(
               errorDiagnostic(
                 "T0062",
-                "let binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType),
+                "let binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType) +
+                  sliceListConversionHint(declT, initType),
                 stmt.span
               )
             )
@@ -330,7 +333,7 @@ pub func checkStatement(
 
     case SAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
-      val valueType = inferExpr(sc, tbl, sigs, diag, value)
+      val valueType = inferExprExpected(sc, tbl, sigs, diag, value, targetType)
       // `s += <rhs>` onto a String plain-variable target accepts any RHS type
       // (mirroring binary `+`); field/indexed String targets stay strict.  See
       // `isStringPlusVarAssign` (typechecker_exprs.l) for the full rationale
@@ -373,7 +376,8 @@ pub func checkStatement(
         diag.add(
           errorDiagnostic(
             "T0063",
-            "assigned value of type " + renderType(valueType) + " does not match target of type " + renderType(targetType),
+            "assigned value of type " + renderType(valueType) + " does not match target of type " + renderType(targetType) +
+              sliceListConversionHint(targetType, valueType),
             stmt.span
           )
         )
@@ -416,7 +420,8 @@ pub func checkStatement(
             errorDiagnostic(
               "T0065",
               "returned value of type " + renderType(t) + " does not match declared return type " +
-                renderOptTypeExpr(returnTyExpr, returnTy),
+                renderOptTypeExpr(returnTyExpr, returnTy) +
+                sliceListConversionHint(returnTy, t),
               stmt.span
             )
           )
@@ -1528,7 +1533,8 @@ pub func checkFunctionBody(
           diag.add(
             errorDiagnostic(
               "T0070",
-              "function body has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr,
+              "function body has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr +
+                sliceListConversionHint(sig.returnTy, bodyType),
               fn.span
             )
           )
@@ -1573,7 +1579,8 @@ pub func checkFunctionBody(
             errorDiagnostic(
               "T0070",
               "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " +
-                declaredReturnTyStr,
+                declaredReturnTyStr +
+                sliceListConversionHint(sig.returnTy, bodyType),
               fn.span
             )
           )
