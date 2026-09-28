@@ -49,8 +49,10 @@ pub func nextIntBelow(rng: in Random, max: in Int): Int
   hostNextIntBelow(rng, max)
 }
 
-/// Random integer in `[min, max)`.  `min` must be below `max`: the .NET and
-/// JVM hosts disagree on an empty range (.NET returns `min`, the JVM throws),
+/// Random integer in `[min, max)`, exactly uniform (every integer in range
+/// is equally likely; the host does not reduce a wider draw with `%`, which
+/// would bias low values).  `min` must be below `max`: the .NET and JVM
+/// hosts disagree on an empty range (.NET returns `min`, the JVM throws),
 /// so it is a precondition on both (#7251).
 @stable(since = "1.0")
 pub func nextIntRange(rng: in Random, min: in Int, max: in Int): Int

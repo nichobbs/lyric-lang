@@ -22,7 +22,13 @@ pub func secureNextInt(max: in Int): Int
   hostSecureNextInt(max)
 }
 
-/// Cryptographically strong random integer in [min, max).
+/// Cryptographically strong random integer in [min, max), exactly uniform:
+/// every integer in range is equally likely to be returned.  Both hosts
+/// draw from a rejection-sampling algorithm bounded to the requested range
+/// rather than reducing a wider draw with `%`, which would bias low values
+/// toward `range / 2^N` of the underlying draw's width — this guarantee is
+/// load-bearing for security-sensitive draws (tokens, OTP digits) where
+/// even a small bias is a real distinguishing weakness.
 /// min must be strictly less than max.
 @stable(since = "1.0")
 pub func secureNextIntRange(min: in Int, max: in Int): Int

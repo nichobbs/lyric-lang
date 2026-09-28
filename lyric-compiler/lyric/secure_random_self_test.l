@@ -4,6 +4,20 @@
 //! `ByteBuffer.allocate(n).array()` instead of boxing `n` zeros through an
 //! `ArrayList` (#7283); these cases pin the observable contract.
 //!
+//! #7487: `secureNextIntRange` on the JVM used to reduce a 63-bit draw with
+//! `%`, which is biased by roughly `range / 2^63` — negligible in magnitude,
+//! but a real weakness for the security-sensitive draws (tokens, OTP
+//! digits) `Std.SecureRandom` documents exact uniformity for. The kernel now
+//! delegates to `RandomGenerator.nextInt(origin, bound)`'s unbiased
+//! rejection algorithm on the JVM (`RandomNumberGenerator.GetInt32` was
+//! already unbiased on dotnet). The full-domain, single-value-range, and
+//! invalid-range cases below are deterministic boundary/contract checks,
+//! not a statistical uniformity test — a chi-square test would need a large
+//! sample to keep its false-failure probability low and could still flake
+//! occasionally, while a modulo-biased draw is still always in bounds, so
+//! bounds checks alone are what a broken reduction would actually violate
+//! (an out-of-range or panic-free-on-an-invalid-range result).
+//!
 //!   lyric test --target dotnet lyric-compiler/lyric/secure_random_self_test.l
 //!   lyric test --target jvm    lyric-compiler/lyric/secure_random_self_test.l
 @test_module
@@ -43,4 +57,34 @@ test "secureNextInt and secureNextIntRange stay in range" {
     i = i + 1
   }
   assertTrue(ok, "all draws in range")
+}
+
+test "secureNextIntRange stays in bounds over the full Int domain" {
+  var i = 0
+  var ok = true
+  while i < 200 {
+    val v = secureNextIntRange(-2147483648, 2147483647)
+    if v < -2147483648 or v >= 2147483647 {
+      ok = false
+    }
+    i = i + 1
+  }
+  assertTrue(ok, "all draws stay within [Int.MinValue, Int.MaxValue)")
+}
+
+test "secureNextIntRange on a single-value range always returns that value" {
+  var i = 0
+  var ok = true
+  while i < 20 {
+    if secureNextIntRange(5, 6) != 5 {
+      ok = false
+    }
+    i = i + 1
+  }
+  assertTrue(ok, "secureNextIntRange(5, 6) always returns 5")
+}
+
+test "secureNextIntRange panics on an invalid range" {
+  assertPanics("secureNextIntRange(5, 5) panics on an empty range", { -> val ignored = secureNextIntRange(5, 5) })
+  assertPanics("secureNextIntRange(5, 3) panics on an inverted range", { -> val ignored = secureNextIntRange(5, 3) })
 }

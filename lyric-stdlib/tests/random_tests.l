@@ -1,9 +1,20 @@
 //! stdlib/tests/random_tests.l — Tests for Std.Random.
 //!
 //! Covers the basic range contracts (#7252) added to `nextInt`,
-//! `nextIntBelow`, `nextIntRange`, and `nextDouble`, plus the JVM
-//! kernel's Long-computed `nextIntRange` no longer overflowing on a wide
-//! `[min, max)` range.
+//! `nextIntBelow`, `nextIntRange`, and `nextDouble`, the JVM kernel's
+//! wide-range `nextIntRange` no longer overflowing (#7252), the full
+//! `Int` domain and single-value-range edge cases, and the `min < max`
+//! contract violation (#7487).
+//!
+//! #7487: the JVM kernel used to compute `nextIntRange` as
+//! `min + (rng.nextLong().and(Long.MaxValue) % range)`, which is modulo
+//! reduction of a 63-bit value and is biased by roughly `range / 2^63` —
+//! negligible for `Std.Random`, but this file's job is bounds/contract
+//! coverage, not statistics: a deterministic bound check over many draws
+//! (rather than a chi-square uniformity test, which would need a huge
+//! sample to bound its false-failure rate near zero and would still
+//! occasionally flake) is what actually pins the fix, since the modulo
+//! bug produced values that were still always in bounds.
 package Std.Random.Tests
 
 import Std.Core
@@ -55,6 +66,38 @@ func testNextIntRangeWideRange(): Unit {
   }
 }
 
+// The full Int32 domain as a single range: min = Int.MinValue,
+// max = Int.MaxValue. Regression coverage for #7487's exact-uniformity fix
+// alongside #7252's overflow fix — both need this boundary to stay in
+// bounds without panicking.
+func testNextIntRangeFullIntDomain(): Unit {
+  val rng = makeRandom(7)
+  var i = 0
+  while i < 20 {
+    val v = nextIntRange(rng, -2147483648, 2147483647)
+    assertTrue(v >= -2147483648 and v < 2147483647, "nextIntRange over the full Int domain stays in bounds")
+    i = i + 1
+  }
+}
+
+// A single-value range ([5, 6)) has exactly one possible outcome.
+func testNextIntRangeSingleValue(): Unit {
+  val rng = makeRandom(7)
+  var i = 0
+  while i < 20 {
+    assertEqualInt(nextIntRange(rng, 5, 6), 5, "nextIntRange(rng, 5, 6) always returns 5")
+    i = i + 1
+  }
+}
+
+// min >= max violates nextIntRange's documented `requires: min < max`
+// contract and must panic, not silently return a wrong value.
+func testNextIntRangeInvalidRangePanics(): Unit {
+  val rng = makeRandom(7)
+  assertPanics("nextIntRange(rng, 5, 5) panics on an empty range", { -> val ignored = nextIntRange(rng, 5, 5) })
+  assertPanics("nextIntRange(rng, 5, 3) panics on an inverted range", { -> val ignored = nextIntRange(rng, 5, 3) })
+}
+
 func testNextDoubleRange(): Unit {
   val rng = makeRandom(42)
   var i = 0
@@ -70,6 +113,9 @@ func main(): Unit {
   testNextIntBelowRange()
   testNextIntRangeBasic()
   testNextIntRangeWideRange()
+  testNextIntRangeFullIntDomain()
+  testNextIntRangeSingleValue()
+  testNextIntRangeInvalidRangePanics()
   testNextDoubleRange()
   println("random: ok")
 }
