@@ -6302,7 +6302,34 @@ func libGeoPointPackages(): List[ImportedPackage] {
   val pkgGeo = parse("package Lib.Geo\npub record Point {\n  x: Int\n  y: Int\n}\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "Lib.Geo", items = pkgGeo.file.items, imports = collectImportNames(pkgGeo.file.imports), wholeImports = collectWholeImportNames(pkgGeo.file.imports))
+    ImportedPackage(
+      name = "Lib.Geo",
+      items = pkgGeo.file.items,
+      imports = collectImportNames(pkgGeo.file.imports),
+      wholeImports = collectWholeImportNames(pkgGeo.file.imports)
+    )
+  )
+  packages
+}
+
+// #7591: like `libGeoPointPackages`, but `Point`'s call-site accessor is a
+// `pub` wrapper function (`mkGeoPoint`), so a consumer never has to write
+// `Lib.Geo.Point` anywhere at all — the type is genuinely never named,
+// mirroring the exact shape from the issue's repro (a `pub` function
+// returning a package-private OR (as here) public type from another
+// package, with no import needed to see it via a bare pattern head).
+func libGeoPointWrapperPackages(): List[ImportedPackage] {
+  val pkgGeo = parse(
+    "package Lib.Geo\npub record Point {\n  x: Int\n  y: Int\n}\npub func mkGeoPoint(): Point {\n  Point(x = 1, y = 2)\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Lib.Geo",
+      items = pkgGeo.file.items,
+      imports = collectImportNames(pkgGeo.file.imports),
+      wholeImports = collectWholeImportNames(pkgGeo.file.imports)
+    )
   )
   packages
 }
@@ -6329,7 +6356,12 @@ func privatePointPackages(): List[ImportedPackage] {
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(
-    ImportedPackage(name = "PkgPriv", items = pkgPriv.file.items, imports = collectImportNames(pkgPriv.file.imports), wholeImports = collectWholeImportNames(pkgPriv.file.imports))
+    ImportedPackage(
+      name = "PkgPriv",
+      items = pkgPriv.file.items,
+      imports = collectImportNames(pkgPriv.file.imports),
+      wholeImports = collectWholeImportNames(pkgPriv.file.imports)
+    )
   )
   packages
 }
@@ -6342,5 +6374,147 @@ test "package-private record in a qualified pattern head is T0097 (#7584)" {
   assertTrue(
     diagMessageFor(cr, "T0097").contains("'Point'"),
     "T0097 names the private record: " + diagMessageFor(cr, "T0097")
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7591: a BARE pattern head (no package qualifier at all) that names
+// another package's package-private record/union/enum case must be T0097,
+// exactly like the qualified form above. Before this fix, the privacy check
+// in `checkRecordPatternHead` and `unionCaseSymbolForScrutinee` lived only
+// inside the `segs.count >= 2` / `flatSegs.count >= 2` branch, so a `pub`
+// wrapper function returning a package-private type — the caller never
+// names the type at all — let a bare pattern head silently name it with no
+// diagnostic. A same-package private type, and a public type from another
+// package, are unaffected: the fix adds only the privacy check, not a
+// reachability (T0020) check, for the bare form — D141 already resolves a
+// bare pattern head through the scrutinee's own type whatever the file's
+// imports, so a bare head's package is reachable by construction once it is
+// not private.
+// ─────────────────────────────────────────────────────────────────────────────
+test "bare pattern head naming another package's private record is T0097 (#7591)" {
+  val src = "package App\nimport PkgPriv\nfunc f(): Int {\n  match mkPoint() {\n    case Point { x = a, y = _ } -> a\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privatePointPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "bare Point {...} pattern head is exactly one T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "not T0020: an import cannot fix a private type")
+  assertTrue(
+    diagMessageFor(cr, "T0097").contains("'Point'"),
+    "T0097 names the private record: " + diagMessageFor(cr, "T0097")
+  )
+}
+
+test "bare pattern head naming another package's private union case is T0097 (#7591)" {
+  val src = "package App\nimport PkgPriv\nfunc f(): Int {\n  match mkKind() {\n    case A(x) -> x\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privateKindPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "bare A(...) pattern head is exactly one T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "not T0020: an import cannot fix a private type's case")
+  assertTrue(
+    diagMessageFor(cr, "T0097").contains("'A'"),
+    "T0097 names the private union's case: " + diagMessageFor(cr, "T0097")
+  )
+}
+
+// #7591: a bare NULLARY case pattern (`case B ->`, no parens) parses as a
+// `PBinding` and is disambiguated to a case constructor by
+// `checkBareCasePatternScrutinee` — an entirely different code path from
+// `unionCaseSymbolForScrutinee`'s `PConstructor` handling that the
+// `case A(x) ->` test just above exercises. Needs its own privacy check.
+func privateKindBPackages(): List[ImportedPackage] {
+  val pkgPriv = parse(
+    "package PkgPriv\nunion Kind {\n  case A(x: Int)\n  case B\n}\npub func mkKindB(): Kind {\n  Kind.B\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "PkgPriv",
+      items = pkgPriv.file.items,
+      imports = collectImportNames(pkgPriv.file.imports),
+      wholeImports = collectWholeImportNames(pkgPriv.file.imports)
+    )
+  )
+  packages
+}
+
+test "bare NULLARY pattern head naming another package's private union case is T0097 (#7591)" {
+  val src = "package App\nimport PkgPriv\nfunc f(): Int {\n  match mkKindB() {\n    case B -> 1\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privateKindBPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "bare nullary B pattern head is exactly one T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "not T0020: an import cannot fix a private type's case")
+  assertTrue(
+    diagMessageFor(cr, "T0097").contains("'B'"),
+    "T0097 names the private union's case: " + diagMessageFor(cr, "T0097")
+  )
+}
+
+func privateStatusPackages(): List[ImportedPackage] {
+  val pkgPriv = parse(
+    "package PkgPriv\nenum Status { case Active; case Done }\npub func mkStatus(): Status {\n  Active\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "PkgPriv",
+      items = pkgPriv.file.items,
+      imports = collectImportNames(pkgPriv.file.imports),
+      wholeImports = collectWholeImportNames(pkgPriv.file.imports)
+    )
+  )
+  packages
+}
+
+test "bare pattern head naming another package's private enum case is T0097 (#7591)" {
+  val src = "package App\nimport PkgPriv\nfunc f(): Int {\n  match mkStatus() {\n    case Active -> 1\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, privateStatusPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "bare Active pattern head is exactly one T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "not T0020: an import cannot fix a private type's case")
+  assertTrue(
+    diagMessageFor(cr, "T0097").contains("'Active'"),
+    "T0097 names the private enum's case: " + diagMessageFor(cr, "T0097")
+  )
+}
+
+test "bare pattern head naming a SAME-package private record has no T0097 (#7591)" {
+  val src = "package P\nrecord Point {\n  x: Int\n  y: Int\n}\nfunc mkPoint(): Point {\n  Point(x = 1, y = 2)\n}\nfunc f(): Int {\n  match mkPoint() {\n    case Point { x = a, y = _ } -> a\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0097"), 0, "same-package private record: no T0097")
+}
+
+test "bare pattern head naming a SAME-package private union case has no T0097 (#7591)" {
+  val src = "package P\nunion Kind {\n  case A(x: Int)\n  case B\n}\nfunc mkKind(): Kind {\n  Kind.A(x = 1)\n}\nfunc f(): Int {\n  match mkKind() {\n    case A(x) -> x\n    case B -> 0\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0097"), 0, "same-package private union case: no T0097")
+}
+
+test "bare pattern head naming a SAME-package private enum case has no T0097 (#7591)" {
+  val src = "package P\nenum Status { case Active; case Done }\nfunc mkStatus(): Status {\n  Active\n}\nfunc f(): Int {\n  match mkStatus() {\n    case Active -> 1\n    case Done -> 0\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0097"), 0, "same-package private enum case: no T0097")
+}
+
+test "bare pattern head naming a public record from another package has no diagnostics (#7591)" {
+  // `App` never writes `Lib.Geo.Point` anywhere — `mkGeoPoint()` is called
+  // bare (through the whole `import Lib.Geo`) and the pattern head is bare
+  // too, mirroring the issue's exact shape but for a PUBLIC record: a bare
+  // head naming a public type from another package must stay clean, with
+  // no T0097 (it isn't private) and no T0020 (D141: a bare pattern head
+  // resolves through the scrutinee's own type regardless of import).
+  val src = "package App\nimport Lib.Geo\nfunc f(): Int {\n  match mkGeoPoint() {\n    case Point { x = a, y = b } -> a + b\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libGeoPointWrapperPackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 0, "public record, bare head: no T0097")
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "public record, bare head: no T0020")
+  assertEqualInt(countDiagCode(cr, "T0137"), 0, "public record, bare head: no T0137")
+}
+
+// The "right record name, wrong qualifier" branch of `checkRecordPatternHead`
+// (T0137, the qualifier text does not equal the record's own `originPackage`)
+// had no self-test (#7591, raised in review of #7590/#7584).
+test "record-pattern head with the right record name but the wrong qualifier is T0137 (#7591)" {
+  val src = "package App\nimport Lib.Geo\nfunc f(p: in Lib.Geo.Point): Int {\n  match p {\n    case Wrong.Point { x = a, y = b } -> a + b\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libGeoPointPackages())
+  assertEqualInt(
+    countDiagCode(cr, "T0137"),
+    1,
+    "Wrong.Point head against a reachable Lib.Geo.Point scrutinee: exactly one T0137"
+  )
+  assertTrue(
+    diagMessageFor(cr, "T0137").contains("Wrong"),
+    "T0137 names the wrong qualifier: " + diagMessageFor(cr, "T0137")
   )
 }

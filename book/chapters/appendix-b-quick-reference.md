@@ -1315,7 +1315,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0090` | Range bounds are inverted or produce an empty range |
 | `T0091` | `range` applied to a non-numeric underlying type |
 | `T0093` | Range bound expression cannot be evaluated at compile time |
-| `T0097` | Package-private symbol referenced from another package, including a package-private type used as a `Type.method(...)` receiver, a type-position reference (`val w: Pkg.Widget`), a private union/enum's case in a qualified pattern head, or a private record in a qualified record-pattern head — whether or not the declaring package is imported (mark it `pub` or `internal`) |
+| `T0097` | Package-private symbol referenced from another package, including a package-private type used as a `Type.method(...)` receiver, a type-position reference (`val w: Pkg.Widget`), a private union/enum's case in a pattern head, or a private record in a record-pattern head — qualified or bare — whether or not the declaring package is imported (mark it `pub` or `internal`) |
 | `T0098` | `impl` is missing an abstract interface method |
 | `T0099` | `impl` method parameter arity does not match the interface declaration |
 | `T0100` | Opaque type constructed outside its declaring package |
