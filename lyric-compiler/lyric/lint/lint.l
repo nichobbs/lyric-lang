@@ -1,6 +1,6 @@
 //! lint/lint.l — self-hosted `lyric lint` style and quality checker.
 //! Mirrors compiler/src/Lyric.Cli/Lint.fs (Phase 5 §M5.3 shim elimination).
-//! Five AST-only rules: L001-L005.
+//! Six AST-only rules: L001-L005, L007 (#7549; L006 retired, docs/01 §14.6).
 package Lyric.Lint
 
 import Std.Core
@@ -181,32 +181,475 @@ func appendDiags(target: in List[LintDiag], src: in List[LintDiag]) {
   }
 }
 
+// ─── L007 — package-private type in a pub signature (#7549) ──────────────────
+//
+// docs/01 §3.1 enforces visibility at use sites (T0097): a `pub`/`internal`
+// item whose signature names a package-private (unmarked) type from the same
+// package compiles fine at the declaration but every use of that item from
+// another package fails.  This rule flags the declaration instead.
+//
+// Scope: lint is AST-only, single-file (docs/01 §13.8), so this rule only
+// sees type declarations in the SAME file as the item it is checking — a
+// package-private type declared in a sibling file of a split multi-file
+// package (docs/19) is not visible to this pass and will not be flagged
+// (package-wide registry for manifest lints: #7607).
+// Cross-package private types are out of scope entirely: those already fail
+// T0097 at every use site regardless of this rule.
+//
+// A type name is "private" here iff it is declared with no `pub`/`internal`
+// modifier (Visibility == None) — the exact same tier T0097 rejects (docs/01
+// §3.1: `pub` and `internal` are both visible cross-package within a
+// project; only the unmarked tier is package-private). A `pub`/`internal`
+// type alias whose right-hand side names a private type is private too (the
+// alias is transparent, so naming the alias does not make the underlying
+// type constructible from outside). Extern types (`extern type` / `extern
+// package` members) are never registered as local type declarations, so a
+// reference to one is never flagged — they are FFI host bindings, exempt
+// from these visibility tiers per docs/01 §3.1.
+record LintTypeDecl {
+  name: String
+  isPrivate: Bool
+  // Set only for a type-alias declaration: its right-hand-side type, so a
+  // reference to the alias can be chased through to its underlying type.
+  aliasRhs: Option[TypeExpr]
+}
+
+func buildTypeRegistry(file: in SourceFile): List[LintTypeDecl] {
+  val regs: List[LintTypeDecl] = newList()
+  var i = 0
+  while i < file.items.count {
+    val item = file.items[i]
+    val isPriv = match item.visibility { case None -> true; case Some(_) -> false }
+    match item.kind {
+      case IRecord(rd) -> regs.add(LintTypeDecl(name = rd.name, isPrivate = isPriv, aliasRhs = None))
+      case IExposedRec(rd) -> regs.add(LintTypeDecl(name = rd.name, isPrivate = isPriv, aliasRhs = None))
+      case IUnion(ud) -> regs.add(LintTypeDecl(name = ud.name, isPrivate = isPriv, aliasRhs = None))
+      case IEnum(ed) -> regs.add(LintTypeDecl(name = ed.name, isPrivate = isPriv, aliasRhs = None))
+      case IOpaque(od) -> regs.add(LintTypeDecl(name = od.name, isPrivate = isPriv, aliasRhs = None))
+      case IProtected(pd) -> regs.add(LintTypeDecl(name = pd.name, isPrivate = isPriv, aliasRhs = None))
+      case IDistinctType(dt) -> regs.add(LintTypeDecl(name = dt.name, isPrivate = isPriv, aliasRhs = None))
+      case IInterface(id) -> regs.add(LintTypeDecl(name = id.name, isPrivate = isPriv, aliasRhs = None))
+      case ITypeAlias(ta) -> regs.add(LintTypeDecl(name = ta.name, isPrivate = isPriv, aliasRhs = Some(value = ta.rhs)))
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  regs
+}
+
+func findTypeDecl(regs: in List[LintTypeDecl], name: in String): Option[LintTypeDecl] {
+  var i = 0
+  while i < regs.count {
+    if regs[i].name == name {
+      return Some(value = regs[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Chases a same-file type name through alias indirection (`alias X =
+// PrivateType`) to decide whether it ultimately names a private type.  A
+// name not declared in this file (imported, or declared in a sibling file of
+// the same package) is never treated as private — this pass has no
+// visibility into it (see the scope note above).
+func isPrivateTypeName(regs: in List[LintTypeDecl], name: in String, depth: in Int): Bool {
+  if depth > 8 {
+    return false
+  }
+  match findTypeDecl(regs, name) {
+    case None -> false
+    case Some(decl) -> {
+      if decl.isPrivate {
+        true
+      } else {
+        match decl.aliasRhs {
+          case None -> false
+          case Some(rhs) -> {
+            match rhs.kind {
+              case TRef(path) -> {
+                if path.segments.count == 1 {
+                  isPrivateTypeName(regs, path.segments[0], depth + 1)
+                } else {
+                  false
+                }
+              }
+              case _ -> false
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+func genericParamNames(gp: in Option[GenericParams]): List[String] {
+  val names: List[String] = newList()
+  match gp {
+    case None -> ()
+    case Some(g) -> {
+      var i = 0
+      while i < g.params.count {
+        match g.params[i] {
+          case GPType(n, _) -> names.add(n)
+          case GPValue(n, _, _) -> names.add(n)
+        }
+        i = i + 1
+      }
+    }
+  }
+  names
+}
+
+func containsName(names: in List[String], n: in String): Bool {
+  var i = 0
+  var found = false
+  while i < names.count and not found {
+    if names[i] == n {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+func mergeNames(a: in List[String], b: in List[String]): List[String] {
+  val merged: List[String] = newList()
+  var i = 0
+  while i < a.count {
+    merged.add(a[i])
+    i = i + 1
+  }
+  var j = 0
+  while j < b.count {
+    merged.add(b[j])
+    j = j + 1
+  }
+  merged
+}
+
+// Recursively collects every same-file private type name a `TypeExpr`
+// mentions — including inside array/slice/tuple/nullable/function-type
+// shapes and generic arguments — skipping names that are in-scope generic
+// parameters rather than concrete type references.
+func collectPrivateTypes(ty: in TypeExpr, regs: in List[LintTypeDecl], generics: in List[String], acc: in List[String]) {
+  match ty.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        val nm = path.segments[0]
+        if not containsName(generics, nm) and isPrivateTypeName(regs, nm, 0) {
+          acc.add(nm)
+        }
+      }
+    }
+    case TGenericApp(head, args) -> {
+      if head.segments.count == 1 {
+        val nm = head.segments[0]
+        if not containsName(generics, nm) and isPrivateTypeName(regs, nm, 0) {
+          acc.add(nm)
+        }
+      }
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(t) -> collectPrivateTypes(t, regs, generics, acc)
+          case TAValue(_) -> ()
+        }
+        i = i + 1
+      }
+    }
+    case TArray(_, element) -> collectPrivateTypes(element, regs, generics, acc)
+    case TSlice(element) -> collectPrivateTypes(element, regs, generics, acc)
+    case TRefined(underlying, _) -> {
+      if underlying.segments.count == 1 {
+        val nm = underlying.segments[0]
+        if not containsName(generics, nm) and isPrivateTypeName(regs, nm, 0) {
+          acc.add(nm)
+        }
+      }
+    }
+    case TTuple(types) -> {
+      var i = 0
+      while i < types.count {
+        collectPrivateTypes(types[i], regs, generics, acc)
+        i = i + 1
+      }
+    }
+    case TNullable(inner) -> collectPrivateTypes(inner, regs, generics, acc)
+    case TFunction(parameters, retTy) -> {
+      var i = 0
+      while i < parameters.count {
+        collectPrivateTypes(parameters[i], regs, generics, acc)
+        i = i + 1
+      }
+      collectPrivateTypes(retTy, regs, generics, acc)
+    }
+    case TParen(inner) -> collectPrivateTypes(inner, regs, generics, acc)
+    case _ -> ()
+  }
+}
+
+func privacyMessage(itemLabel: in String, posDesc: in String, name: in String): String {
+  itemLabel + " " + posDesc + " references package-private type '" + name + "' from the same package — mark '" + name +
+    "' pub or internal, or make " +
+    itemLabel +
+    " non-pub"
+}
+
+func checkTypePrivacy(
+  regs: in List[LintTypeDecl],
+  generics: in List[String],
+  ty: in TypeExpr,
+  itemLabel: in String,
+  posDesc: in String,
+  sp: in Span,
+): List[LintDiag] {
+  val names: List[String] = newList()
+  collectPrivateTypes(ty, regs, generics, names)
+  val acc: List[LintDiag] = newList()
+  var i = 0
+  while i < names.count {
+    acc.add(lintWarning("L007", privacyMessage(itemLabel, posDesc, names[i]), sp))
+    i = i + 1
+  }
+  acc
+}
+
+func checkBareNamePrivacy(
+  regs: in List[LintTypeDecl],
+  generics: in List[String],
+  name: in String,
+  itemLabel: in String,
+  posDesc: in String,
+  sp: in Span,
+): List[LintDiag] {
+  val acc: List[LintDiag] = newList()
+  if not containsName(generics, name) and isPrivateTypeName(regs, name, 0) {
+    acc.add(lintWarning("L007", privacyMessage(itemLabel, posDesc, name), sp))
+  }
+  acc
+}
+
+// The receiver of a dotted type-associated function (`pub func Widget.create(...)`)
+// is the first `.`-separated segment of `fn.name`; `None` for an ordinary
+// (non-dotted) function name.
+func funcReceiverName(name: in String): Option[String] {
+  match Str.indexOf(name, ".") {
+    case Some(idx) -> Some(value = Str.substring(name, 0, idx))
+    case None -> None
+  }
+}
+
+func paramTypeIsBareName(ty: in TypeExpr, name: in String): Bool {
+  match ty.kind {
+    case TRef(path) -> path.segments.count == 1 and path.segments[0] == name
+    case _ -> false
+  }
+}
+
+// Checks a function's full signature (receiver, parameters, return type)
+// for package-private same-file types.  `receiverName`, when present, is
+// checked as its own position and — when a leading self-shaped parameter
+// repeats the same bare type name — that one parameter is skipped so the
+// same private type is not reported twice for one function.
+func checkFunctionSignaturePrivacy(
+  regs: in List[LintTypeDecl],
+  outerGenerics: in List[String],
+  fn: in FunctionDecl,
+  receiverName: in Option[String],
+  itemLabel: in String,
+): List[LintDiag] {
+  val acc: List[LintDiag] = newList()
+  val generics = mergeNames(outerGenerics, genericParamNames(fn.generics))
+  var skipParamIdx = -1
+  match receiverName {
+    case Some(r) -> {
+      appendDiags(acc, checkBareNamePrivacy(regs, generics, r, itemLabel, "receiver '" + r + "'", fn.span))
+      if fn.params.count > 0 and paramTypeIsBareName(fn.params[0].ty, r) {
+        skipParamIdx = 0
+      }
+    }
+    case None -> ()
+  }
+  var pi = 0
+  while pi < fn.params.count {
+    if pi != skipParamIdx {
+      val p = fn.params[pi]
+      appendDiags(acc, checkTypePrivacy(regs, generics, p.ty, itemLabel, "parameter '" + p.name + "'", p.span))
+    }
+    pi = pi + 1
+  }
+  match fn.ret {
+    case Some(rt) -> appendDiags(acc, checkTypePrivacy(regs, generics, rt, itemLabel, "return type", rt.span))
+    case None -> ()
+  }
+  acc
+}
+
+// A `pub func` member declared inside a `protected type` body (a record
+// body cannot carry its own `pub`/`internal` modifier on a method — the
+// grammar has no dispatch for it, so record-body methods take whatever
+// visibility they always parse to, `None`, and never reach this check)
+// always has an implicit receiver — the enclosing protected type — even
+// though `fn.name` carries no dotted prefix there, so the receiver check
+// always runs with the enclosing type's name rather than deriving it from
+// `fn.name`.
+func checkInBodyMethodPrivacy(
+  regs: in List[LintTypeDecl],
+  outerGenerics: in List[String],
+  fn: in FunctionDecl,
+  enclosingName: in String,
+  itemLabel: in String,
+): List[LintDiag] {
+  checkFunctionSignaturePrivacy(regs, outerGenerics, fn, Some(value = enclosingName), itemLabel)
+}
+
+func checkFunctionSigPrivacy(
+  regs: in List[LintTypeDecl],
+  outerGenerics: in List[String],
+  sig: in FunctionSig,
+  itemLabel: in String,
+): List[LintDiag] {
+  val acc: List[LintDiag] = newList()
+  val generics = mergeNames(outerGenerics, genericParamNames(sig.generics))
+  var pi = 0
+  while pi < sig.params.count {
+    val p = sig.params[pi]
+    appendDiags(acc, checkTypePrivacy(regs, generics, p.ty, itemLabel, "parameter '" + p.name + "'", p.span))
+    pi = pi + 1
+  }
+  match sig.ret {
+    case Some(rt) -> appendDiags(acc, checkTypePrivacy(regs, generics, rt, itemLabel, "return type", rt.span))
+    case None -> ()
+  }
+  acc
+}
+
+func checkEntrySignaturePrivacy(
+  regs: in List[LintTypeDecl],
+  outerGenerics: in List[String],
+  ed: in EntryDecl,
+  receiverName: in String,
+  itemLabel: in String,
+): List[LintDiag] {
+  val acc: List[LintDiag] = newList()
+  appendDiags(
+    acc,
+    checkBareNamePrivacy(regs, outerGenerics, receiverName, itemLabel, "receiver '" + receiverName + "'", ed.span)
+  )
+  var pi = 0
+  while pi < ed.params.count {
+    val p = ed.params[pi]
+    appendDiags(acc, checkTypePrivacy(regs, outerGenerics, p.ty, itemLabel, "parameter '" + p.name + "'", p.span))
+    pi = pi + 1
+  }
+  match ed.ret {
+    case Some(rt) -> appendDiags(acc, checkTypePrivacy(regs, outerGenerics, rt, itemLabel, "return type", rt.span))
+    case None -> ()
+  }
+  acc
+}
+
+func checkRecordFieldsPrivacy(regs: in List[LintTypeDecl], rd: in RecordDecl, itemLabel: in String): List[LintDiag] {
+  val acc: List[LintDiag] = newList()
+  val generics = genericParamNames(rd.generics)
+  var mi = 0
+  while mi < rd.members.count {
+    match rd.members[mi] {
+      case RMField(f) -> {
+        match f.visibility {
+          case Some(_) -> {
+            appendDiags(acc, checkTypePrivacy(regs, generics, f.ty, itemLabel, "field '" + f.name + "'", f.span))
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    mi = mi + 1
+  }
+  acc
+}
+
+func checkUnionCasesPrivacy(regs: in List[LintTypeDecl], ud: in UnionDecl, itemLabel: in String): List[LintDiag] {
+  val acc: List[LintDiag] = newList()
+  val generics = genericParamNames(ud.generics)
+  var ci = 0
+  while ci < ud.cases.count {
+    val c = ud.cases[ci]
+    var fi = 0
+    while fi < c.fields.count {
+      match c.fields[fi] {
+        case UFNamed(fname, fty, fsp) -> {
+          appendDiags(acc, checkTypePrivacy(regs, generics, fty, itemLabel, "case '" + c.name + "' field '" + fname + "'", fsp))
+        }
+        case UFPos(fty, fsp) -> {
+          appendDiags(acc, checkTypePrivacy(regs, generics, fty, itemLabel, "case '" + c.name + "' payload", fsp))
+        }
+      }
+      fi = fi + 1
+    }
+    ci = ci + 1
+  }
+  acc
+}
+
+func patternBindingName(p: in Pattern): Option[String] {
+  match p.kind {
+    case PBinding(n, _) -> Some(value = n)
+    case PParen(inner) -> patternBindingName(inner)
+    case _ -> None
+  }
+}
+
 // ─── Item walker ──────────────────────────────────────────────────────────────
-func checkItem(item: in Item, isRuntimeChecked: in Bool): List[LintDiag] {
+func checkItem(item: in Item, isRuntimeChecked: in Bool, regs: in List[LintTypeDecl]): List[LintDiag] {
   val acc: List[LintDiag] = newList()
   val vis = item.visibility
   val docs = item.docComments
+  val noGenerics: List[String] = newList()
   match item.kind {
     case IFunc(fn) -> {
       appendDiags(acc, checkFuncName(fn.name, fn.span))
       appendDiags(acc, checkPubDoc(vis, docs, fn.name, "func", item.span))
       appendDiags(acc, checkDocTodos(docs))
       appendDiags(acc, checkPubContract(vis, fn, isRuntimeChecked))
+      match vis {
+        case Some(_) -> {
+          appendDiags(
+            acc,
+            checkFunctionSignaturePrivacy(regs, noGenerics, fn, funcReceiverName(fn.name), "pub func '" + fn.name + "'")
+          )
+        }
+        case None -> ()
+      }
     }
     case IRecord(rd) -> {
       appendDiags(acc, checkTypeName(rd.name, rd.span))
       appendDiags(acc, checkPubDoc(vis, docs, rd.name, "record", item.span))
       appendDiags(acc, checkDocTodos(docs))
+      match vis {
+        case Some(_) -> appendDiags(acc, checkRecordFieldsPrivacy(regs, rd, "pub record '" + rd.name + "'"))
+        case None -> ()
+      }
     }
     case IExposedRec(rd) -> {
       appendDiags(acc, checkTypeName(rd.name, rd.span))
       appendDiags(acc, checkPubDoc(vis, docs, rd.name, "exposed record", item.span))
       appendDiags(acc, checkDocTodos(docs))
+      match vis {
+        case Some(_) -> appendDiags(acc, checkRecordFieldsPrivacy(regs, rd, "pub exposed record '" + rd.name + "'"))
+        case None -> ()
+      }
     }
     case IUnion(ud) -> {
       appendDiags(acc, checkTypeName(ud.name, ud.span))
       appendDiags(acc, checkPubDoc(vis, docs, ud.name, "union", item.span))
       appendDiags(acc, checkDocTodos(docs))
+      match vis {
+        case Some(_) -> appendDiags(acc, checkUnionCasesPrivacy(regs, ud, "pub union '" + ud.name + "'"))
+        case None -> ()
+      }
     }
     case IEnum(ed) -> {
       appendDiags(acc, checkTypeName(ed.name, ed.span))
@@ -229,10 +672,34 @@ func checkItem(item: in Item, isRuntimeChecked: in Bool): List[LintDiag] {
             appendDiags(acc, checkFuncName(ed.name, ed.span))
             appendDiags(acc, checkPubDoc(ed.visibility, ed.docComments, ed.name, "entry", ed.span))
             appendDiags(acc, checkDocTodos(ed.docComments))
+            match ed.visibility {
+              case Some(_) -> {
+                appendDiags(
+                  acc,
+                  checkEntrySignaturePrivacy(
+                    regs,
+                    noGenerics,
+                    ed,
+                    pd.name,
+                    "pub protected type '" + pd.name + "' entry '" + ed.name + "'"
+                  )
+                )
+              }
+              case None -> ()
+            }
           }
           case PMFunc(fn) -> {
             appendDiags(acc, checkFuncName(fn.name, fn.span))
             appendDiags(acc, checkDocTodos(fn.docComments))
+            match fn.visibility {
+              case Some(_) -> {
+                appendDiags(
+                  acc,
+                  checkInBodyMethodPrivacy(regs, noGenerics, fn, pd.name, "pub func '" + pd.name + "." + fn.name + "'")
+                )
+              }
+              case None -> ()
+            }
           }
           case _ -> ()
         }
@@ -243,15 +710,40 @@ func checkItem(item: in Item, isRuntimeChecked: in Bool): List[LintDiag] {
       appendDiags(acc, checkTypeName(id.name, id.span))
       appendDiags(acc, checkPubDoc(vis, docs, id.name, "interface", item.span))
       appendDiags(acc, checkDocTodos(docs))
+      val ifaceGenerics = genericParamNames(id.generics)
       var mi = 0
       while mi < id.members.count {
         match id.members[mi] {
           case IMSig(sg) -> {
             appendDiags(acc, checkFuncName(sg.name, sg.span))
+            match vis {
+              case Some(_) -> {
+                appendDiags(
+                  acc,
+                  checkFunctionSigPrivacy(regs, ifaceGenerics, sg, "pub interface '" + id.name + "' method '" + sg.name + "'")
+                )
+              }
+              case None -> ()
+            }
           }
           case IMFunc(fn) -> {
             appendDiags(acc, checkFuncName(fn.name, fn.span))
             appendDiags(acc, checkDocTodos(fn.docComments))
+            match vis {
+              case Some(_) -> {
+                appendDiags(
+                  acc,
+                  checkFunctionSignaturePrivacy(
+                    regs,
+                    ifaceGenerics,
+                    fn,
+                    None,
+                    "pub interface '" + id.name + "' method '" + fn.name + "'"
+                  )
+                )
+              }
+              case None -> ()
+            }
           }
           case IMAssoc(_) -> ()
         }
@@ -289,6 +781,27 @@ func checkItem(item: in Item, isRuntimeChecked: in Bool): List[LintDiag] {
       }
       appendDiags(acc, checkPubDoc(vis, docs, cd.name, "const", item.span))
       appendDiags(acc, checkDocTodos(docs))
+      match vis {
+        case Some(_) -> {
+          appendDiags(acc, checkTypePrivacy(regs, noGenerics, cd.ty, "pub const '" + cd.name + "'", "type", cd.span))
+        }
+        case None -> ()
+      }
+    }
+    case IVal(vd) -> {
+      appendDiags(acc, checkDocTodos(docs))
+      match vis {
+        case Some(_) -> {
+          val valName = match patternBindingName(vd.pattern) { case Some(n) -> n; case None -> "val" }
+          match vd.ty {
+            case Some(ty) -> {
+              appendDiags(acc, checkTypePrivacy(regs, noGenerics, ty, "pub val '" + valName + "'", "type", ty.span))
+            }
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
     }
     case _ -> {
       appendDiags(acc, checkDocTodos(docs))
@@ -336,10 +849,11 @@ pub func lint(source: in String): List[LintDiag] {
     }
     ai = ai + 1
   }
+  val regs = buildTypeRegistry(file)
   val acc: List[LintDiag] = newList()
   var i = 0
   while i < file.items.count {
-    appendDiags(acc, checkItem(file.items[i], isRuntimeChecked))
+    appendDiags(acc, checkItem(file.items[i], isRuntimeChecked, regs))
     i = i + 1
   }
   sortDiags(acc)

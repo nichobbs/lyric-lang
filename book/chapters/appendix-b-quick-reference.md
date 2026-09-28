@@ -1140,7 +1140,8 @@ lyric lint                             # project mode: lint every [project.packa
                                        # or "K file(s) clean"
 lyric lint --manifest <lyric.toml>     # project mode: override manifest discovery
 # Codes: L001 PascalCase types, L002 camelCase funcs, L003 missing pub doc,
-#        L004 TODO/FIXME in doc, L005 pub func without contracts
+#        L004 TODO/FIXME in doc, L005 pub func without contracts,
+#        L007 package-private type in a pub signature
 # Exit codes: 0 = clean, 1 = errors (or warnings with --error-on-warning)
 
 # Documentation
@@ -1270,6 +1271,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `L003` | warning | `pub` item has no doc comment (`///`) |
 | `L004` | warning | Doc comment contains `TODO` or `FIXME` |
 | `L005` | warning | `pub func` with a block body has no `requires:`/`ensures:` contracts |
+| `L007` | warning | `pub`/`internal` item's signature names a package-private type from the same file (receiver, parameter, return, field, union case payload, interface method, `pub val` type) |
 
 ### Type checker (T-series)
 

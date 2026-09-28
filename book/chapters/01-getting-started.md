@@ -451,7 +451,7 @@ Core commands you will use constantly:
 
 `lyric fmt` walks the parser's red/green concrete syntax tree, so **all comments are preserved**: `///` and `//!` doc comments, `//` line comments, and `/* … */` block comments — at item, member, statement, and nested-block boundaries.  Intentional blank lines are also preserved (collapsed to at most one blank per spot, Black-style).
 
-`lyric lint` catches five categories of issue without needing a full compile: PascalCase for types (L001), camelCase for functions (L002), missing doc comments on `pub` items (L003), TODO/FIXME in doc comments (L004), and `pub func` with a block body but no contracts (L005). L001/L002 are errors; L003–L005 are warnings that become errors under `--error-on-warning`. In project mode, lint prints a summary at the end: `"K file(s) clean"` or `"N error(s), M warning(s) in K file(s)"`.
+`lyric lint` catches six categories of issue without needing a full compile: PascalCase for types (L001), camelCase for functions (L002), missing doc comments on `pub` items (L003), TODO/FIXME in doc comments (L004), `pub func` with a block body but no contracts (L005), and a `pub`/`internal` item's signature naming a package-private type from the same file (L007 — a receiver, parameter, return type, `pub`/`internal` field, union case payload, interface method, or `pub val` type; unusable from another package even though it compiles at its own declaration, docs/01 §3.1). L001/L002 are errors; L003–L005 and L007 are warnings that become errors under `--error-on-warning`. In project mode, lint prints a summary at the end: `"K file(s) clean"` or `"N error(s), M warning(s) in K file(s)"`.
 
 ## Your first error message
 
