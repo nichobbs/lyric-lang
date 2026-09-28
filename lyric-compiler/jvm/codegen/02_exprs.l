@@ -4722,6 +4722,12 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     ctx.importsStdString,
     ctx.aliasTargets
   )
+  // #7694: the lambda body is its own function scope, so a `var` it declares
+  // and a closure nested inside it mutates must be hoisted to a heap cell just
+  // like one in a top-level function body.  `makeFuncCtx` starts
+  // `hoistedVarNames` empty, so without this the nested closure captured the
+  // var by value and its writes never reached the enclosing lambda's slot.
+  runClosureCapturePrePassJvm(bodyCtx, Some(value = FBBlock(block = body)))
   // Propagate the enclosing scope's recorded generic instantiations into the
   // closure body so a captured var-bound `match`/`?` scrutinee still unboxes its
   // erased payload inside the lambda (#4945) — otherwise the payload stays boxed
@@ -5193,6 +5199,10 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
     ctx.importsStdString,
     ctx.aliasTargets
   )
+  // #7694: same as `lowerLambda` — a `var` declared inside the spawned
+  // expression (e.g. a block operand) and mutated by a closure nested in it
+  // must be hoisted in this fresh body ctx.
+  runClosureCapturePrePassJvm(bodyCtx, Some(value = FBExpr(expr = inner)))
   // Carry the enclosing scope's recorded generic instantiations so a captured
   // var-bound `match`/`?` scrutinee still unboxes its erased payload (#4945).
   for vk in mapKeys(ctx.varGenericArgs) {

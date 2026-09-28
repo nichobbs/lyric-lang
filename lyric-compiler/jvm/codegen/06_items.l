@@ -788,7 +788,13 @@ pub func setupInstanceParamSlotsAndHolders(
 func runClosureCapturePrePassJvm(ctx: in FuncCtx, body: in Option[FunctionBody]): Unit {
   val mutableVars: Map[String, Bool] = newMap()
   match body {
-    case Some(b) -> match b { case FBBlock(blk) -> collectMutableVarsBlock(blk, mutableVars); case FBExpr(_) -> () }
+    case Some(b) -> match b {
+      case FBBlock(blk) -> collectMutableVarsBlock(blk, mutableVars)
+      // #7694: an expression body (an `= expr` function, or a `spawn` operand)
+      // can still declare a `var` inside a nested block (an `if`/`match` arm,
+      // `EBlock`) that a closure in the same body captures.
+      case FBExpr(e) -> collectMutableVarsExpr(e, mutableVars)
+    }
     case None -> ()
   }
   val inLambdaNames: List[String] = newList()
