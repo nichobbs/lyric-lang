@@ -32,11 +32,12 @@ Pure-Lyric Protocol Buffer (proto3) wire-format encoder and decoder for [Lyric](
 ```lyric
 import Proto
 import Std.Core
+import Std.Encoding
 
 // Construct fields using helper functions and union cases
 val fields = [
   Proto.VarField(1, 42i64),              // field 1: varint (42)
-  Proto.stringField(2, "hello".bytes()), // field 2: string ("hello")
+  Proto.stringField(2, Encoding.encodeUtf8("hello")), // field 2: string ("hello")
 ]
 
 // Encode the message
@@ -276,11 +277,12 @@ This library is commonly used with `lyric-grpc` for payload framing and with Ope
 ```lyric
 import Proto
 import Std.Core
+import Std.Encoding
 
 // Construct a protobuf message from fields
 val fields = [
   Proto.VarField(1, 42i64),
-  Proto.stringField(2, "message".bytes()),
+  Proto.stringField(2, Encoding.encodeUtf8("message")),
 ]
 
 val payload = Proto.encodeMessage(fields)
