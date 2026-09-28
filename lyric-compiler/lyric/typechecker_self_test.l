@@ -41,6 +41,20 @@ func hasDiagCode(cr: in CheckResult, code: in String): Bool {
   false
 }
 
+// #7545: true when some diagnostic's message contains `needle` — used to
+// assert on the slice/List conversion-hint suffix (`sliceListConversionHint`)
+// without pinning the whole message string.
+func diagMessagesContain(cr: in CheckResult, needle: in String): Bool {
+  var i = 0
+  while i < cr.diagnostics.count {
+    if Str.contains(cr.diagnostics[i].message, needle) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // #6540: how many diagnostics carry `code` — used where a fix's whole point
 // is that a diagnostic fires EXACTLY ONCE per site (a redundant emission
 // path duplicating it would still pass a bare `hasDiagCode` check).
@@ -2790,15 +2804,106 @@ test "long in int ctor field rejected" {
 
 test "slice literal in list ctor field ok" {
   // Declare a local generic `List` so the field type resolves in the bare
-  // `check()` harness (which registers no stdlib items) — the slice-
-  // satisfies-List rule keys on the type NAME, so a resolved local `List`
-  // exercises it the same way the stdlib's does.  This keeps the strict
-  // zero-diagnostics assertion meaningful: with the field type resolved,
-  // the ctor-argument check runs for real instead of vacuously matching a
-  // TyError field (#3190).
+  // `check()` harness (which registers no stdlib items) — the literal-
+  // typed-as-List rule keys on the type NAME (`pName == "List"` in
+  // `listLiteralArgSatisfiesParam`), so a resolved local `List` exercises it
+  // the same way the stdlib's does. This keeps the strict zero-diagnostics
+  // assertion meaningful: with the field type resolved, the ctor-argument
+  // check runs for real instead of vacuously matching a TyError field
+  // (#3190). #7545: a bracket LITERAL still types directly as `List[Int]`
+  // here (`listLiteralArgSatisfiesParam`) — this is not the old blanket
+  // "slice satisfies List" rule, which #7545 removed; see the "slice VALUE"
+  // tests below for what that removal actually changed.
   val src = "package P\nrecord List[T] { }\nrecord R { items: List[Int] }\nfunc f(): R { R(items = [1, 2, 3]) }\n"
   val cr = parseCheck(src)
-  assertEqualInt(diagCount(cr), 0, "slice[Int] satisfies List[Int] in ctor field")
+  assertEqualInt(diagCount(cr), 0, "a list literal types directly as List[Int] in a ctor field")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7545: `slice[T]` and `List[T]` have distinct runtime representations on
+// every backend and are no longer mutually assignable — only the explicit
+// `.toList()`/`.toArray()` conversion (docs/01 §2.7) bridges them. A bracket
+// LITERAL used directly where a `List[T]` is expected is the one exception
+// (it is typed as `List[T]` up front, never as `slice[T]`), since both
+// backends' own literal codegen already builds whichever representation the
+// context calls for.
+// ─────────────────────────────────────────────────────────────────────────────
+test "slice VALUE (not a literal) rejected as a List ctor field argument" {
+  val src = "package P\nrecord List[T] { }\nrecord R { items: List[Int] }\nfunc f(xs: in slice[Int]): R { R(items = xs) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0104"), "a slice[Int]-typed parameter does not satisfy a List[Int] ctor field")
+}
+
+test "slice VALUE (not a literal) rejected as a List call argument" {
+  val src = "package P\nrecord List[T] { }\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(xs: in slice[Int]): Int { g(xs) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0043"), "a slice[Int]-typed argument does not satisfy a List[Int] parameter")
+}
+
+test "List VALUE rejected as a slice call argument (reverse direction)" {
+  val src = "package P\nrecord List[T] { }\nfunc g(xs: in slice[Int]): Int { 0 }\nfunc f(xs: in List[Int]): Int { g(xs) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0043"), "a List[Int]-typed argument does not satisfy a slice[Int] parameter")
+}
+
+test "slice-typed val rejected against a List[T]-annotated binding" {
+  val src = "package P\nrecord List[T] { }\nfunc f(xs: in slice[Int]): Unit { val ys: List[Int] = xs }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0060"), "a slice[Int] value does not satisfy a List[Int]-annotated val binding")
+}
+
+test "slice-typed value rejected on assignment to a List[T]-typed var" {
+  val src = "package P\nrecord List[T] { }\nfunc f(xs: in slice[Int]): Unit { var ys: List[Int] = xs; ys = xs }\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0060") or hasDiagCode(cr, "T0063"),
+    "a slice[Int] value does not satisfy a List[Int]-typed assignment target"
+  )
+}
+
+test "slice-typed value rejected against a List[T] declared return type" {
+  val src = "package P\nrecord List[T] { }\nfunc f(xs: in slice[Int]): List[Int] { xs }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0070"), "a slice[Int] value does not satisfy a List[Int] declared return type")
+}
+
+test "a list literal in List[T] return position still needs .toList() (pre-existing, unchanged by #7545)" {
+  val src = "package P\nrecord List[T] { }\nfunc f(): List[Int] { [1, 2, 3] }\n"
+  val cr = parseCheck(src)
+  assertTrue(
+    hasDiagCode(cr, "T0070"),
+    "a bare list literal in return position was never covered by the slice-satisfies-List exemption"
+  )
+}
+
+test "slice/List mismatch diagnostics suggest the explicit conversion" {
+  val src = "package P\nrecord List[T] { }\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(xs: in slice[Int]): Int { g(xs) }\n"
+  val cr = parseCheck(src)
+  assertTrue(diagMessagesContain(cr, ".toList()"), "the T0043 message suggests .toList()")
+}
+
+test ".toList() bridges a slice value into a List[T] parameter" {
+  val src = "package P\nrecord List[T] { }\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(xs: in slice[Int]): Int { g(xs.toList()) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, ".toList() converts slice[Int] to List[Int] at a call argument")
+}
+
+test "a list literal in a plain (non-ctor) call argument still types as List[T]" {
+  val src = "package P\nrecord List[T] { }\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(): Int { g([1, 2, 3]) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "a bracket literal call argument types directly as List[Int]")
+}
+
+test "a list literal in a List[T]-annotated val binding still type-checks" {
+  val src = "package P\nrecord List[T] { }\nfunc f(): Unit { val xs: List[Int] = [1, 2, 3] }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "a bracket literal binding initialiser types directly as List[Int]")
+}
+
+test "an empty list literal still satisfies a List[T] ctor field" {
+  val src = "package P\nrecord List[T] { }\nrecord R { items: List[Int] }\nfunc f(): R { R(items = []) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "[] still satisfies a List[Int] ctor field")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

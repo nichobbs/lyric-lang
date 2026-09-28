@@ -2890,7 +2890,8 @@ func checkRecordCopy(
               diag.add(
                 errorDiagnostic(
                   "T0104",
-                  "argument for field '" + nm + "' has type " + renderType(got) + " but field expects " + renderType(want),
+                  "argument for field '" + nm + "' has type " + renderType(got) + " but field expects " + renderType(want) +
+                    sliceListConversionHint(want, got),
                   valE.span
                 )
               )
@@ -4859,16 +4860,17 @@ func inferConstructionExpected(
     while i < args.count {
       val argTy = if i < argTypes.count { argTypes[i] } else { TyError }
       match args[i] {
-        case CANamed(nm, _, asp) -> {
+        case CANamed(nm, valE, asp) -> {
           if not fieldHasName(fields, nm) {
             diag.add(errorDiagnostic("T0101", "'" + sym.name + "' has no field '" + nm + "'", asp))
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, nm, fieldTypeByName(fields, nm))
-            if not argSatisfiesParam(tbl, fieldTy, argTy) {
+            if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
               diag.add(
                 errorDiagnostic(
                   "T0104",
-                  "argument for field '" + nm + "' has type " + renderType(argTy) + " but field expects " + renderType(fieldTy),
+                  "argument for field '" + nm + "' has type " + renderType(argTy) + " but field expects " + renderType(fieldTy) +
+                    sliceListConversionHint(fieldTy, argTy),
                   asp
                 )
               )
@@ -4887,14 +4889,15 @@ func inferConstructionExpected(
             )
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, fields[posIdx].name, fields[posIdx].ty)
-            if not argSatisfiesParam(tbl, fieldTy, argTy) {
+            if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
               diag.add(
                 errorDiagnostic(
                   "T0104",
                   "positional argument " + toString(posIdx + 1) + " has type " + renderType(argTy) + " but field '" +
                     fields[posIdx].name +
                     "' expects " +
-                    renderType(fieldTy),
+                    renderType(fieldTy) +
+                    sliceListConversionHint(fieldTy, argTy),
                   ae.span
                 )
               )
@@ -4933,16 +4936,17 @@ func inferConstructionExpected(
   while i < args.count {
     val argTy = if i < argTypes.count { argTypes[i] } else { TyError }
     match args[i] {
-      case CANamed(nm, _, asp) -> {
+      case CANamed(nm, valE, asp) -> {
         if not fieldHasName(fields, nm) {
           diag.add(errorDiagnostic("T0101", "'" + sym.name + "' has no field '" + nm + "'", asp))
         } else {
           val fieldTy = fieldTypeByName(fields, nm)
-          if not argSatisfiesParam(tbl, fieldTy, argTy) {
+          if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
             diag.add(
               errorDiagnostic(
                 "T0104",
-                "argument for field '" + nm + "' has type " + renderType(argTy) + " but field expects " + renderType(fieldTy),
+                "argument for field '" + nm + "' has type " + renderType(argTy) + " but field expects " + renderType(fieldTy) +
+                  sliceListConversionHint(fieldTy, argTy),
                 asp
               )
             )
@@ -4961,14 +4965,15 @@ func inferConstructionExpected(
           )
         } else {
           val fieldTy = fields[posIdx].ty
-          if not argSatisfiesParam(tbl, fieldTy, argTy) {
+          if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
             diag.add(
               errorDiagnostic(
                 "T0104",
                 "positional argument " + toString(posIdx + 1) + " has type " + renderType(argTy) + " but field '" +
                   fields[posIdx].name +
                   "' expects " +
-                  renderType(fieldTy),
+                  renderType(fieldTy) +
+                  sliceListConversionHint(fieldTy, argTy),
                 ae.span
               )
             )
@@ -7193,11 +7198,14 @@ func inferExprCore(
                       } else {
                         var k = 0
                         while k < argTypes.count {
-                          if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) {
+                          val kLiteralOk = k < args.count and
+                            listLiteralArgSatisfiesParam(tbl, paramTypes[k], argTypes[k], callArgExpr(args[k]))
+                          if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) and not kLiteralOk {
                             diag.add(
                               errorDiagnostic(
                                 "T0043",
-                                "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]),
+                                "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]) +
+                                  sliceListConversionHint(paramTypes[k], argTypes[k]),
                                 e.span
                               )
                             )
@@ -7479,13 +7487,14 @@ func inferExprCore(
     // and the immutability of the target exactly as the statement path does.
     case EAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
-      val valueType = inferExpr(sc, tbl, sigs, diag, value)
+      val valueType = inferExprExpected(sc, tbl, sigs, diag, value, targetType)
       val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
       if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(
             "T0063",
-            "assigned value of type " + renderType(valueType) + " does not match target of type " + renderType(targetType),
+            "assigned value of type " + renderType(valueType) + " does not match target of type " + renderType(targetType) +
+              sliceListConversionHint(targetType, valueType),
             e.span
           )
         )
@@ -7724,6 +7733,56 @@ pub func inferExprExpected(
       }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }
+    // #7545: a bracket literal (`[...]`) always type-checks as `slice[T]`
+    // (docs/01 §2.7) when inferred on its own, but the two collection kinds
+    // have distinct runtime representations (`T[]`/array vs `List<T>` on
+    // dotnet, a real array vs `ArrayList` on the JVM) and neither backend's
+    // codegen converts one into the other implicitly at a call/return
+    // boundary — only a literal `EList` node itself is representation-
+    // agnostic, since each backend's own literal-lowering already consults
+    // the surrounding expected type to build the right runtime value
+    // (`collExpectTop`/`MConcreteList` on MSIL, the ArrayList-by-default JVM
+    // path). So when the expected type is the stdlib `List[T]`, the literal
+    // is typed (and its elements checked) directly against `List[T]` here,
+    // instead of falling through to the slice-typed `inferExpr` path — this
+    // is what lets `val xs: List[Int] = [1, 2, 3]` type-check without an
+    // explicit `.toList()`, while a genuine `slice[T]`-typed VALUE (a
+    // variable, a call result, …) is no longer silently accepted where a
+    // `List[T]` is expected (see `argSatisfiesParam`).
+    case EList(elems) -> match unrefine(expected) {
+      case TyUser(eid, ename, eargs) -> {
+        // Name-based, matching `listLiteralArgSatisfiesParam` below (used at
+        // call-argument and constructor-field positions) rather than
+        // `stdCollectionsListTypeId`'s id-based stdlib-only match: unlike
+        // `.toList()` (#7665, which must resolve to one specific codegen
+        // implementation across packages), a literal is built fresh at its
+        // own use site against WHATEVER `List[T]` the enclosing scope
+        // resolves — the stdlib's or a same-named local shadow — so both
+        // spellings must agree on what counts as "a List".
+        if ename == "List" and eargs.count == 1 {
+          val elemTy = eargs[0]
+          var li = 0
+          while li < elems.count {
+            val et = inferExprExpected(sc, tbl, sigs, diag, elems[li], elemTy)
+            if not argSatisfiesParam(tbl, elemTy, et) {
+              diag.add(
+                errorDiagnostic(
+                  "T0041",
+                  "list literal element has type " + renderType(et) + " but List[" + renderType(elemTy) + "] expects " +
+                    renderType(elemTy),
+                  elems[li].span
+                )
+              )
+            }
+            li = li + 1
+          }
+          TyUser(id = eid, name = ename, args = eargs)
+        } else {
+          inferExpr(sc, tbl, sigs, diag, e)
+        }
+      }
+      case _ -> inferExpr(sc, tbl, sigs, diag, e)
+    }
     case _ -> inferExpr(sc, tbl, sigs, diag, e)
   }
 }
@@ -7819,11 +7878,12 @@ func checkCallArgsAgainstSig(
       val ai = srcIdx[k]
       if ai >= 0 {
         val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
-        if not argSatisfiesParam(tbl, p.ty, argTy) {
+        if not argSatisfiesParam(tbl, p.ty, argTy) and not listLiteralArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
           diag.add(
             errorDiagnostic(
               "T0043",
-              "argument type " + renderType(argTy) + " does not match parameter type " + renderOptTypeExpr(p.tyExpr, p.ty),
+              "argument type " + renderType(argTy) + " does not match parameter type " + renderOptTypeExpr(p.tyExpr, p.ty) +
+                sliceListConversionHint(p.ty, argTy),
               span
             )
           )
@@ -7933,6 +7993,72 @@ func paramsMatchArgs(tbl: in SymbolTable, params: in List[ResolvedParam], argTyp
   true
 }
 
+// #7545: a bracket literal (`[...]`) passed directly as a constructor field
+// argument (`R(items = [1, 2, 3])`) is, like a `List[T]`-annotated binding's
+// initialiser, representation-agnostic — the backends' own `EList` codegen
+// consults the field's declared type, not the checker's `TySlice` inference
+// (see the `inferExprExpected` `EList` arm above for the full rationale).
+// `inferConstruction`/`inferConstructionExpected` have no `sc`/`sigs` to
+// re-run `inferExprExpected` with, so this reuses the ALREADY-inferred
+// slice element type instead: `argTy` is `TySlice(elemTy)` (the type
+// `inferExprCore`'s `EList` arm already gave the literal, `elemTy` its
+// first element's type — homogeneity across elements is separately
+// enforced by that arm's own T0041 check) and `fieldTy` is `List[pElem]`
+// with `elemTy` assignable to `pElem` (or `elemTy` is `TyError`, the
+// empty-literal `[]` case). Gated on the argument EXPRESSION itself being
+// an `EList` node — never on `argTy` alone — so a genuine `slice[T]`-typed
+// VALUE (a variable, a call result, …) still cannot satisfy a `List[T]`
+// field; only the literal can, exactly matching what codegen actually
+// builds.
+func listLiteralArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: in Type, argExpr: in Expr): Bool {
+  val isLiteral = match argExpr.kind { case EList(_) -> true; case _ -> false }
+  if not isLiteral {
+    return false
+  }
+  match argTy {
+    case TySlice(elemTy) -> match unrefine(fieldTy) {
+      case TyUser(_, pName, pArgs) -> {
+        if pName == "List" and pArgs.count == 1 {
+          match unrefine(elemTy) {
+            case TyError -> true
+            case _ -> argSatisfiesParam(tbl, pArgs[0], elemTy)
+          }
+        } else {
+          false
+        }
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+// #7545: when a type mismatch is specifically a `slice[T]`/`List[T]`
+// mix-up, the diagnostic points at the explicit conversion (docs/01 §2.7)
+// rather than leaving the reader to guess. Returns "" for every other
+// mismatch, so callers can always append the result to their message.
+pub func sliceListConversionHint(expected: in Type, actual: in Type): String {
+  match unrefine(actual) {
+    case TySlice(_) -> match unrefine(expected) {
+      case TyUser(_, eName, eArgs) -> if eName == "List" and eArgs.count == 1 {
+        " (use .toList() to convert the slice to a List)"
+      } else {
+        ""
+      }
+      case _ -> ""
+    }
+    case TyUser(_, aName, aArgs) -> if aName == "List" and aArgs.count == 1 {
+      match unrefine(expected) {
+        case TySlice(_) -> " (use .toArray() to convert the List to a slice)"
+        case _ -> ""
+      }
+    } else {
+      ""
+    }
+    case _ -> ""
+  }
+}
+
 // True when an argument of type `argTy` is acceptable for a parameter of type
 // `paramTy` — either `typeEquiv` (the usual case), or interface subtyping
 // (#1488): `argTy` is a user type `T` and `paramTy` is an interface `I` with a
@@ -7952,14 +8078,31 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
     case None -> {
     }
   }
-  // slice[T] satisfies List[T]: the emitter treats the two as the same
-  // runtime type; `[...]` literals type as TySlice but may be used wherever
-  // a List[T] field or parameter is expected.
+  // #7545: `slice[T]` and `List[T]` are distinct types with distinct runtime
+  // representations on every backend (a real array vs `List<T>`/`ArrayList`;
+  // docs/01 §2.7 documents the conversion as the explicit `.toList()` /
+  // `.toArray()` pair, never implicit), so a genuine `slice[T]`-typed VALUE
+  // no longer satisfies a `List[T]` parameter/field/binding here.
+  //
+  // The one narrow exception is the empty-list-literal sentinel
+  // `TySlice(TyError)` — the type `inferExprCore`'s `EList` arm gives `[]`
+  // when it has no surrounding expected type to consult (no element to
+  // infer a concrete element type from). Both backends' `EList` literal
+  // codegen build the representation the CONTEXT calls for regardless of
+  // this placeholder type (MSIL's `collExpectTop`/`MConcreteList`, the JVM's
+  // ArrayList-by-default path), so accepting it here is representation-safe
+  // — unlike a concrete-element slice, which could only reach this arm as a
+  // real value, never as a literal (a non-empty `[...]` literal assigned
+  // directly to a `List[T]`-expected binding is typed as `List[T]` up front
+  // by `inferExprExpected`'s own `EList` arm, so it never reaches this
+  // fallback either).
   match argTy {
-    case TySlice(elemTy) -> match paramTy {
-      case TyUser(_, pName, pArgs) -> {
-        if pName == "List" and pArgs.count == 1 and typeEquiv(pArgs[0], elemTy) {
+    case TySlice(elemTy) -> match unrefine(elemTy) {
+      case TyError -> match paramTy {
+        case TyUser(_, pName, pArgs) -> if pName == "List" and pArgs.count == 1 {
           return true
+        }
+        case _ -> {
         }
       }
       case _ -> {
