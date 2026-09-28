@@ -131,6 +131,17 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/distinct-factory-import-e2e.sh
   ran="$ran distinct-factory-import-e2e"
 fi
+# #7583: an unimported qualified reference into another PROJECT package
+# (value read / type annotation / call) must report T0020 on BOTH targets in
+# a multi-package manifest build, and the imported forms must still build
+# and run correctly (this job has Java 21, same precedent as the two e2e
+# scripts above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/project-package-import-reachability-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/project-package-import-reachability-e2e.sh
+  ran="$ran project-package-import-reachability-e2e"
+fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2
   exit 1

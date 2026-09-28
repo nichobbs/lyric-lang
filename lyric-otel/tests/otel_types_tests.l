@@ -9,6 +9,7 @@ package OTel.OTelTypesTests
 import Std.Core
 import Std.Testing
 import OTel.Types
+import OTel
 
 // ─── SpanKind ─────────────────────────────────────────────────────────────────
 test "SpanKind.Internal: can be matched" {

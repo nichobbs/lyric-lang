@@ -1046,13 +1046,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   var ti = 0
   while ti < parsedPkgs.count {
     val pp: ParsedUserPkg = parsedPkgs[ti]
-    val importedPkgs = perPackageImportedPackages(
-      baseImportedPkgs,
-      pp.file.imports,
-      inBundleItems,
-      inBundleImports,
-      baseNames
-    )
+    val importedPkgs = perPackageImportedPackages(baseImportedPkgs, inBundleItems, inBundleImports, baseNames)
 
     // Middle end through mono (`Lyric.Pipeline` owns the order); the
     // weave runs in Phase 3 below, after aspect templates are collected
@@ -1573,12 +1567,18 @@ pub func compileProjectToMsilWithRestoredEncoded(
 // imported items partitioned by their declaring package, so the scope-aware
 // type checker resolves each package's signatures against its own
 // declarations instead of one flat last-registered-wins table.
-// `baseImportedPkgs` (stdlib + restored deps) are always in scope; the
-// in-bundle import closure rooted at `importList` is appended, one
-// `ImportedPackage` per reachable in-bundle package.
+// `baseImportedPkgs` (stdlib + restored deps) are always in scope, and every
+// in-bundle project package is appended too, not only those in this
+// package's own import closure (#7583). Registration is not visibility: a
+// bare name resolves only through the file's own import rule (D141), and a
+// qualified reference into a registered package the file does not import is
+// T0020 (`checkQualifiedPackageRef`, D-progress-1011/1012). That check can
+// only fire for a package whose symbols are registered, so walking the
+// import closure here let an unimported qualified reference into a sibling
+// project package resolve silently on dotnet while the JVM, whose project
+// path already registers every project package (#6024), rejected it.
 func perPackageImportedPackages(
   baseImportedPkgs: in List[ImportedPackage],
-  importList: in List[ImportDecl],
   inBundleItems: in Map[String, List[Item]],
   inBundleImports: in Map[String, List[ImportDecl]],
   baseNames: in Map[String, Bool],
@@ -1589,65 +1589,37 @@ func perPackageImportedPackages(
     result.add(baseImportedPkgs[bi])
     bi = bi + 1
   }
-  val visited: Map[String, Bool] = newMap()
-  var ii = 0
-  while ii < importList.count {
-    val imp: ImportDecl = importList[ii]
-    val depName = segmentsToString(imp.path.segments)
-    addBundleClosurePackages(depName, inBundleItems, inBundleImports, visited, baseNames, result)
-    ii = ii + 1
+  val names = mapKeys(inBundleItems)
+  var ni = 0
+  while ni < names.count {
+    val pkgName = names[ni]
+    // Already in `baseImportedPkgs` (the #1435 double-registration guard).
+    if not baseNames.containsKey(pkgName) {
+      // Dotted names of this package's own imports, so its signatures
+      // resolve through tier 2 (#2282), and its whole imports (D141).
+      val depNames: List[String] = newList()
+      var wholeNames: List[String] = newList()
+      match mapGet(inBundleImports, pkgName) {
+        case Some(deps) -> {
+          var di = 0
+          while di < deps.count {
+            depNames.add(segmentsToString(deps[di].path.segments))
+            di = di + 1
+          }
+          wholeNames = collectWholeImportNames(deps)
+        }
+        case None -> ()
+      }
+      match mapGet(inBundleItems, pkgName) {
+        case Some(items) -> result.add(
+          ImportedPackage(name = pkgName, items = items, imports = depNames, wholeImports = wholeNames)
+        )
+        case None -> ()
+      }
+    }
+    ni = ni + 1
   }
   result
-}
-
-// Walk the transitive in-bundle import closure rooted at `pkgName`, appending
-// each reachable in-bundle package as its own `ImportedPackage` to `acc`.
-// Visited packages are tracked to avoid infinite loops on cyclic imports
-// (which the typechecker / module system already rejects, but this helper
-// stays defensive in case a future relaxation lands).  `baseNames` packages
-// are skipped because their items are already in `baseImportedPkgs`.
-func addBundleClosurePackages(
-  pkgName: in String,
-  inBundleItems: in Map[String, List[Item]],
-  inBundleImports: in Map[String, List[ImportDecl]],
-  visited: in Map[String, Bool],
-  baseNames: in Map[String, Bool],
-  acc: in List[ImportedPackage],
-): Unit {
-  if visited.containsKey(pkgName) {
-    return
-  }
-  if baseNames.containsKey(pkgName) {
-    return
-  }
-  visited.add(pkgName, true)
-  // Dotted names of this package's own imports: threaded into the
-  // `ImportedPackage` so its signatures resolve through tier 2 (#2282), and
-  // reused below as the recursion frontier.
-  val depNames: List[String] = newList()
-  var wholeNames: List[String] = newList()
-  match mapGet(inBundleImports, pkgName) {
-    case Some(deps) -> {
-      var di = 0
-      while di < deps.count {
-        depNames.add(segmentsToString(deps[di].path.segments))
-        di = di + 1
-      }
-      wholeNames = collectWholeImportNames(deps)
-    }
-    case None -> ()
-  }
-  match mapGet(inBundleItems, pkgName) {
-    case Some(items) -> acc.add(
-      ImportedPackage(name = pkgName, items = items, imports = depNames, wholeImports = wholeNames)
-    )
-    case None -> return
-  }
-  var ii = 0
-  while ii < depNames.count {
-    addBundleClosurePackages(depNames[ii], inBundleItems, inBundleImports, visited, baseNames, acc)
-    ii = ii + 1
-  }
 }
 
 // Return true if `diags` contains any error-severity entry.  Used to
