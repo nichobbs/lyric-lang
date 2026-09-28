@@ -38,12 +38,11 @@ pre-pass.
 
 Covered by the new dual-target `nested_lambda_var_capture_self_test.l`,
 wired into `compiler-self-tests-batch.sh` (dotnet) and
-`jvm-generics-self-tests-batch.sh` (jvm). It has eight cases: top-level
+`jvm-generics-self-tests-batch.sh` (jvm). It has nine cases: top-level
 single and multiple mutations, three lambdas deep, a middle lambda's `var`,
-an expression-bodied function, a `spawn` operand, a record method, and a
-protected-type entry. Before the fix, the JVM run returned the
-pre-mutation value in every case. On dotnet all eight passed before and
-after. The impl-method variant was
-verified in an isolated file on both targets. It is kept out of the shared
-test file because an impl-method closure next to any other closure in one
-file desyncs MSIL lambda numbering (#7693).
+an expression-bodied function, a `spawn` operand, a record method, an impl
+method (called through the interface), and a protected-type entry. Before
+the fix, the JVM run returned the pre-mutation value in every case. On
+dotnet all cases pass before and after; the impl-method case sits in the
+same file as the other closures, which is the layout #7693 (fixed in #7712)
+used to desync on MSIL.

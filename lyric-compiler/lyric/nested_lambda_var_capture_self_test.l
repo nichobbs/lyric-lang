@@ -20,19 +20,14 @@
 //! Covered here on both targets so the two stay in lockstep.
 //!
 //! Variants: the outer lambda inside a top-level function, a record method,
-//! and a protected-type entry; several mutations; a closure three lambdas
-//! deep mutating a `var` of the outermost lambda; and a `var` declared in a
-//! middle lambda mutated by the innermost one; a `var` inside a `spawn`
-//! operand; and a `var` inside a branch block of an expression-bodied
-//! function (`runClosureCapturePrePassJvm` skipped mutable-var collection for
-//! `= expr` bodies, which the `spawn` fix made reachable too).
-//!
-//! The top-level `impl <Iface> for <Record>` method variant is not in this
-//! file: an impl-method closure plus any other closure in one file desyncs
-//! MSIL lambda numbering (#7693, fix in flight), which on `--target dotnet`
-//! silently swaps which lifted lambda body each call site runs. The same
-//! nested-lambda shape inside an impl method was verified in isolation on
-//! both targets; fold it in here once #7693 lands.
+//! a top-level `impl <Iface> for <Record>` method, and a protected-type
+//! entry; several mutations; a closure three lambdas deep mutating a `var` of
+//! the outermost lambda; and a `var` declared in a middle lambda mutated by
+//! the innermost one; a `var` inside a `spawn` operand; and a `var` inside a
+//! branch block of an expression-bodied function (`runClosureCapturePrePassJvm`
+//! skipped mutable-var collection for `= expr` bodies, which the `spawn` fix
+//! made reachable too). The impl-method case shares the file with the other
+//! closures on purpose: that layout is what #7693 desynced on MSIL.
 //!
 //! Every closure-call result is bound with an explicit `Int` annotation to
 //! stay clear of the unrelated MSIL unannotated-closure-result bug (#7711).
@@ -105,6 +100,22 @@ record Counter {
   }
 }
 
+interface Runner {
+  func go(): Int
+}
+
+record Stepper {
+  k: Int
+}
+
+impl Runner for Stepper {
+  func go(): Int {
+    val outer = { -> var x = self.k; val inner = { -> x = x + 10 }; inner(); val r: Int = x; r }
+    val v: Int = outer()
+    return v
+  }
+}
+
 protected type Tally {
   var total: Int = 0
   entry add(k: in Int): Int {
@@ -141,6 +152,11 @@ test "spawn operand: closure mutates a var declared in the spawned expression" {
 
 test "record method: nested closure mutates a var of its enclosing lambda" {
   assertEqualInt(Counter(base = 5).run(), 7, "x after two increments from base 5")
+}
+
+test "impl method: nested closure mutates a var of its enclosing lambda" {
+  val runner: Runner = Stepper(k = 1)
+  assertEqualInt(runner.go(), 11, "impl method")
 }
 
 test "protected-type entry: nested closure mutates a var of its enclosing lambda" {
