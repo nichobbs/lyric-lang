@@ -38,3 +38,33 @@ echo "$out" | grep -qx "hello-aot" || { echo "::error::native AOT smoke test did
 echo "$out" | grep -qx "profile=release" || { echo "::error::--release --aot build did not inject build_profile=release (#5852 M1h); got: '$out'"; exit 1; }
 echo "OK: native AOT binary produced and executed correctly (hello-aot + build_profile=release)." >> "$GITHUB_STEP_SUMMARY"
 
+# Regression guard for #7514: `./bin/lyric test --manifest <multi-package
+# manifest with a path dependency>` was reported to fail with T0010/T0020
+# through the AOT entry-point binary while the managed `dotnet lyric.dll`
+# entry point passed the same suite. The two entry points share the exact
+# same compiled DLLs and path-discovery code, so nothing here distinguishes
+# them beyond the launcher — but this job's `lyric-test-setup` composite
+# action unconditionally overwrites the downloaded $lyric_bin artifact with
+# a `dotnet lyric.dll` shell wrapper (scripts/ci/write-lyric-dotnet-wrapper.sh,
+# #7025), so by this point in the job $lyric_bin is NOT the real apphost —
+# running the guard against it as-is would silently exercise the exact
+# `dotnet lyric.dll` path the issue says already passes, proving nothing.
+# Rebuild it: `dotnet build` of an exe project always regenerates a genuine
+# native apphost stub (this is exactly what `make lyric`'s `aot` target and
+# a developer's `./bin/lyric` are), overwriting the wrapper script in place.
+# The stage-1 DLLs this job already has (checked above) make this a
+# ~1-2s relink, no NuGet/ILCompiler work.
+dotnet build bootstrap/src/Lyric.Cli.Aot --configuration "$BUILD_CONFIG" --no-incremental
+if head -c 2 "$lyric_bin" | grep -q '#!'; then
+  echo "::error::$lyric_bin is still a shell wrapper after rebuild; #7514 regression guard would not exercise the real AOT apphost"
+  exit 1
+fi
+for manifest in lyric-jsonrpc/lyric.toml lyric-mcp/lyric.toml; do
+  echo "=== real AOT apphost: lyric test --manifest $manifest ==="
+  if ! "$lyric_bin" test --manifest "$manifest"; then
+    echo "::error::#7514 regression: '$lyric_bin test --manifest $manifest' failed through the real AOT apphost entry point"
+    exit 1
+  fi
+done
+echo "OK: real AOT apphost (not the dotnet-lyric.dll wrapper) ran lyric-jsonrpc + lyric-mcp (path-dependency manifest) tests cleanly (#7514 regression guard)." >> "$GITHUB_STEP_SUMMARY"
+
