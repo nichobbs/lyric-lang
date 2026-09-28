@@ -288,6 +288,7 @@ pub func compileToMsilWithVersion(
     pkgLabel = path,
     lineOrigins = noSingleFileOrigins,
     awaitInTryIsHazard = true,
+    contractsEnabled = true,
     checkedSourceOut = singleFileOptsCheckedOut,
     memberRecvClassesOut = singleFileOptsRecvOut
   )
@@ -1069,6 +1070,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       pkgLabel = pp.label,
       lineOrigins = pp.origins,
       awaitInTryIsHazard = true,
+      contractsEnabled = true,
       checkedSourceOut = projOptsCheckedOut,
       memberRecvClassesOut = projOptsRecvOut
     )

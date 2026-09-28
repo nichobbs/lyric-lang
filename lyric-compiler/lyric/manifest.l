@@ -269,6 +269,15 @@ pub record BuildSection {
   profileDeclared: Bool
 }
 
+/// `[contracts]` table (docs/63 Q-BP-009): whether runtime contract checks
+/// (`requires:`, `ensures:`, `invariant:`) are emitted in compiled output.
+/// Default is true (checks enabled). All fields are optional; missing keys
+/// use their defaults.
+pub record ContractsSection {
+  /// Whether runtime contract checks are enabled. Default true.
+  enabled: Bool
+}
+
 /// Parsed form of a virtual workspace root (`lyric.toml` with `[workspace]`
 /// but no `[package]`).
 pub record WorkspaceRoot {
@@ -294,6 +303,8 @@ pub record Manifest {
   registry: Option[RegistryConfig]
   /// Non-None when this manifest also declares a `[native]` table (N6.4).
   native: Option[NativeConfig]
+  /// Non-None when this manifest also declares a `[contracts]` table.
+  contracts: Option[ContractsSection]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1000,6 +1011,15 @@ func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], Manife
   }
 }
 
+/// Assemble the `[contracts]` table.
+func assembleContracts(entries: in List[Entry]): Result[Option[ContractsSection], ManifestError] {
+  if not hasSection(entries, "contracts") {
+    return Ok(value = None)
+  }
+  val enabled = findBool(entries, "contracts", "enabled", true)
+  Ok(value = Some(value = ContractsSection(enabled = enabled)))
+}
+
 /// `[build] kind` — what the artifact *is*. `"aot"` is rejected outright
 /// (`F0042`, docs/63 §6): it was a packaging mode misfiled as an artifact
 /// kind, and silently remapping it to `shape = "aot"` would let a manifest
@@ -1562,21 +1582,27 @@ pub func parseManifest(text: in String, filePath: in String): Result[Manifest, M
                     case Err(e) -> Err(
                       error = e
                     )
-                    case Ok(nativeOpt) -> Ok(
-                      value = Manifest(
-                        filePath = filePath,
-                        packageSection = pkg,
-                        project = project,
-                        deps = deps,
-                        nuget = nuget,
-                        maven = mavenOpt,
-                        features = featuresOpt,
-                        build = buildOpt,
-                        workspace = ws,
-                        registry = reg,
-                        native = nativeOpt
+                    case Ok(nativeOpt) -> match assembleContracts(entries) {
+                      case Err(e) -> Err(
+                        error = e
                       )
-                    )
+                      case Ok(contractsOpt) -> Ok(
+                        value = Manifest(
+                          filePath = filePath,
+                          packageSection = pkg,
+                          project = project,
+                          deps = deps,
+                          nuget = nuget,
+                          maven = mavenOpt,
+                          features = featuresOpt,
+                          build = buildOpt,
+                          workspace = ws,
+                          registry = reg,
+                          native = nativeOpt,
+                          contracts = contractsOpt
+                        )
+                      )
+                    }
                   }
                 }
               }

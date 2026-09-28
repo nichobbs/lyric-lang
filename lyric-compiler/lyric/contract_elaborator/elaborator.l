@@ -2098,6 +2098,7 @@ func elaborateTopLevelStmt(
   counter: inout RenameCounter,
   acc: in List[Statement],
   isVoidReturn: in Bool,
+  contractsEnabled: in Bool = true,
 ): Unit {
   match s.kind {
     case SReturn(valOpt) -> {
@@ -2240,6 +2241,7 @@ func elaborateFunctionBody(
   body0: in Block,
   counter: inout RenameCounter,
   isVoidReturn: in Bool,
+  contractsEnabled: in Bool = true,
 ): Block {
   // Inline range refinements (#7226): refined parameters are checked first,
   // before any `requires:` that may rely on them; a refined return type is
@@ -2311,18 +2313,21 @@ func elaborateFunctionBody(
   // (1) Prepend requires asserts, each at its own clause's span rather than
   //     at the body's — a failing `requires:` should report the line the user
   //     wrote it on, not the function's opening brace (docs/63 band B1).
-  var ri = 0
-  while ri < requiresExprs.count {
-    val rc = requiresExprs[ri]
-    outs.add(mkAssertCall(rc.expr, rc.message, rc.span))
-    ri = ri + 1
+  //     Skipped when contractsEnabled is false (docs/63 Q-BP-009).
+  if contractsEnabled {
+    var ri = 0
+    while ri < requiresExprs.count {
+      val rc = requiresExprs[ri]
+      outs.add(mkAssertCall(rc.expr, rc.message, rc.span))
+      ri = ri + 1
+    }
   }
 
   // (2) / (3) / (4): walk top-level statements.
   var si = 0
   while si < body.statements.count {
     val isLast = si == body.statements.count - 1
-    elaborateTopLevelStmt(body.statements[si], isLast, rewrittenEnsures, counter, outs, isVoidReturn)
+    elaborateTopLevelStmt(body.statements[si], isLast, rewrittenEnsures, counter, outs, isVoidReturn, contractsEnabled)
     si = si + 1
   }
 
@@ -3069,9 +3074,9 @@ func sameSpan(a: in Span, b: in Span): Bool {
 // Elaborate `fn` with `extra` clauses prepended to its own, then restore the
 // source-level clause list so contract metadata and the verifier see only
 // what the author wrote on this declaration.
-func elaborateFunctionWith(fn: in FunctionDecl, extra: in List[ContractClause], owner: in String): FunctionDecl {
+func elaborateFunctionWith(fn: in FunctionDecl, extra: in List[ContractClause], owner: in String, contractsEnabled: in Bool = true): FunctionDecl {
   if extra.count == 0 {
-    return elaborateFunctionOwned(fn, owner)
+    return elaborateFunctionOwned(fn, owner, contractsEnabled)
   }
   val merged: List[ContractClause] = newList()
   var i = 0
@@ -3084,7 +3089,7 @@ func elaborateFunctionWith(fn: in FunctionDecl, extra: in List[ContractClause], 
     merged.add(fn.contracts[j])
     j = j + 1
   }
-  val acc = elaborateFunctionOwned(withContracts(fn, merged), owner)
+  val acc = elaborateFunctionOwned(withContracts(fn, merged), owner, contractsEnabled)
   withContracts(acc, fn.contracts)
 }
 
@@ -3114,12 +3119,12 @@ func qualify(pkg: in String, name: in String): String {
   }
 }
 
-func elaborateRecordDecl(decl: in RecordDecl, pkg: in String): RecordDecl {
+func elaborateRecordDecl(decl: in RecordDecl, pkg: in String, contractsEnabled: in Bool = true): RecordDecl {
   val members: List[RecordMember] = newList()
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
-      case RMFunc(fn) -> members.add(RMFunc(fn = elaborateFunctionOwned(fn, qualify(pkg, decl.name + "." + fn.name))))
+      case RMFunc(fn) -> members.add(RMFunc(fn = elaborateFunctionOwned(fn, qualify(pkg, decl.name + "." + fn.name), contractsEnabled)))
       case other -> members.add(other)
     }
     i = i + 1
@@ -3133,7 +3138,7 @@ func elaborateRecordDecl(decl: in RecordDecl, pkg: in String): RecordDecl {
   )
 }
 
-func elaborateImplDecl(decl: in ImplDecl, ifaces: in Map[String, InterfaceDecl], pkg: in String): ImplDecl {
+func elaborateImplDecl(decl: in ImplDecl, ifaces: in Map[String, InterfaceDecl], pkg: in String, contractsEnabled: in Bool = true): ImplDecl {
   val segs = decl.iface.head.segments
   val ifaceOpt: Option[InterfaceDecl] = if segs.count == 0 { None } else { mapGet(ifaces, segs[segs.count - 1]) }
   val members: List[ImplMember] = newList()
@@ -3148,7 +3153,7 @@ func elaborateImplDecl(decl: in ImplDecl, ifaces: in Map[String, InterfaceDecl],
           }
           case None -> newList()
         }
-        members.add(IMplFunc(fn = elaborateFunctionWith(fn, extra, qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name))))
+        members.add(IMplFunc(fn = elaborateFunctionWith(fn, extra, qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name), contractsEnabled)))
       }
       case other -> members.add(other)
     }
@@ -3174,16 +3179,16 @@ func withKind(it: in Item, kind: in ItemKind): Item {
   )
 }
 
-func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in String): Item {
+func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in String, contractsEnabled: in Bool = true): Item {
   match it.kind {
-    case IRecord(decl) -> withKind(it, IRecord(decl = elaborateRecordDecl(decl, pkg)))
-    case IExposedRec(decl) -> withKind(it, IExposedRec(decl = elaborateRecordDecl(decl, pkg)))
-    case IImpl(decl) -> withKind(it, IImpl(decl = elaborateImplDecl(decl, ifaces, pkg)))
+    case IRecord(decl) -> withKind(it, IRecord(decl = elaborateRecordDecl(decl, pkg, contractsEnabled)))
+    case IExposedRec(decl) -> withKind(it, IExposedRec(decl = elaborateRecordDecl(decl, pkg, contractsEnabled)))
+    case IImpl(decl) -> withKind(it, IImpl(decl = elaborateImplDecl(decl, ifaces, pkg, contractsEnabled)))
     case IFunc(fn) -> Item(
       docComments = it.docComments,
       annotations = it.annotations,
       visibility = it.visibility,
-      kind = IFunc(decl = elaborateFunctionOwned(fn, qualify(pkg, fn.name))),
+      kind = IFunc(decl = elaborateFunctionOwned(fn, qualify(pkg, fn.name), contractsEnabled)),
       span = it.span
     )
     case IProtected(decl) -> {
@@ -3202,7 +3207,7 @@ func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in S
       mi = 0
       while mi < decl.members.count {
         val withBarriers = applyBarrierProtocol(decl.members[mi], anyBarrier)
-        newMembers.add(elaborateProtectedMember(withBarriers, invariants, qualify(pkg, decl.name)))
+        newMembers.add(elaborateProtectedMember(withBarriers, invariants, qualify(pkg, decl.name), contractsEnabled))
         mi = mi + 1
       }
       Item(
@@ -3232,7 +3237,7 @@ pub func elaborateFile(file: in SourceFile): SourceFile {
 /// `elaborateFile`, additionally resolving `impl` blocks against interfaces
 /// declared in other packages (`importedIfaces`) so their method contracts
 /// are enforced on the implementation (#7223).
-pub func elaborateFileWithInterfaces(file: in SourceFile, importedIfaces: in List[InterfaceDecl]): SourceFile {
+pub func elaborateFileWithInterfaces(file: in SourceFile, importedIfaces: in List[InterfaceDecl], contractsEnabled: in Bool = true): SourceFile {
   val canonFile = canonicalizeFileUnitAliases(file)
   val ifaces = interfaceTable(canonFile, importedIfaces)
   val newItems: List[Item] = newList()
@@ -3244,7 +3249,7 @@ pub func elaborateFileWithInterfaces(file: in SourceFile, importedIfaces: in Lis
   val items = mergeProtectedImpls(canonFile.items, ifaces)
   var i = 0
   while i < items.count {
-    newItems.add(elaborateItem(items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path)))
+    newItems.add(elaborateItem(items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path), contractsEnabled))
     i = i + 1
   }
   SourceFile(
