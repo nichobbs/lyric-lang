@@ -1304,24 +1304,44 @@ test "contractsEnabled = false preserves protected-type invariants" {
   assertTrue(found, "protected-invariant-preserved: entry body contains assert for invariant")
 }
 
-test "contractsEnabled = false does not affect requires: on function returning range-refined type" {
-  // Range-refined return types are handled at the backend level (code generation),
-  // not by the elaborator. The elaborator's contractsEnabled flag only affects
-  // user-level requires:/ensures: checks, not the system-level range validation
-  // that backends emit. This test verifies that functions returning range-refined
-  // types still elaborate correctly when contractsEnabled=false.
-  val src = "package P\ntype Age = Int range 0..=150\nfunc createAge(x: in Int): Age\n  requires: x >= 0\n{ x }\n"
+test "contractsEnabled = false omits requires: but preserves range-check asserts on return type" {
+  // Range-refined return types (inline refinements like `Int range 0..=150`) are
+  // handled by the elaborator's elaborateFunctionBody, which calls returnRangeChecks()
+  // unconditionally (elaborator.l line 2332). Range checks are system-level checks
+  // that always run, regardless of contractsEnabled. User-level requires:/ensures:
+  // are gated by contractsEnabled (see elaborator.l lines 2327-2351).
+  // This test verifies that requires: is dropped when contractsEnabled=false,
+  // while return-range-check asserts survive (lines 2407-2418 vs 2347-2351).
+  val src = "package P\nfunc f(x: in Int): Int range 0..=150\n  requires: x >= 0\n{ x }\n"
   val enabledFile = parseAndElaborateWithContracts(src, true)
   val disabledFile = parseAndElaborateWithContracts(src, false)
-  val enabledFn = firstFunction(enabledFile, "createAge")
-  val disabledFn = firstFunction(disabledFile, "createAge")
+  val enabledFn = firstFunction(enabledFile, "f")
+  val disabledFn = firstFunction(disabledFile, "f")
   val enabledBlk = bodyBlockOf(enabledFn)
   val disabledBlk = bodyBlockOf(disabledFn)
-  // When contractsEnabled=true, an assert for requires: should exist.
-  // When contractsEnabled=false, it should be omitted.
-  // Just verify both elaborate without error.
-  assertTrue(enabledBlk.statements.count >= 1, "enabled elaborates")
-  assertTrue(disabledBlk.statements.count >= 1, "disabled elaborates")
+  // When contractsEnabled=true: user-level requires: assert + range-check assert.
+  // When contractsEnabled=false: only range-check assert (requires: dropped).
+  // Count asserts in both cases.
+  var enabledAsserts = 0
+  var disabledAsserts = 0
+  var i = 0
+  while i < enabledBlk.statements.count {
+    if isAssertCall(enabledBlk.statements[i]) {
+      enabledAsserts = enabledAsserts + 1
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < disabledBlk.statements.count {
+    if isAssertCall(disabledBlk.statements[i]) {
+      disabledAsserts = disabledAsserts + 1
+    }
+    i = i + 1
+  }
+  // enabled: requires assert + range-check assert = 2 asserts
+  assertEqualInt(enabledAsserts, 2, "range-gating: enabled has both requires and range-check asserts")
+  // disabled: only range-check assert, requires is dropped = 1 assert
+  assertEqualInt(disabledAsserts, 1, "range-gating: disabled has only range-check assert (requires dropped)")
 }
 
 test "ensures: asserts come before range-check asserts in assertion order (#7708)" {
