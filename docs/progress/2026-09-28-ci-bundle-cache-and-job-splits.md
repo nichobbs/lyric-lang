@@ -9,8 +9,8 @@ compiler bundle).
   `actions/cache` before staging it. The key hashes exactly what the bundle
   is built from: the stage-1 DLLs (whose bytes already reflect the stage-0
   seed release and every compiler/stdlib source), the compiler and stdlib
-  `.l` sources, `scripts/stage-selfhosted-compiler.sh` and
-  `bootstrap/global.json`. Stage 1 is deterministic for a given seed and
+  `.l` sources, the `Lyric.Cli.Aot` launcher's source,
+  `scripts/stage-selfhosted-compiler.sh` and `bootstrap/global.json`. Stage 1 is deterministic for a given seed and
   source tree (checked locally: two `make stage1-fast` builds are
   byte-identical), so a PR that changes none of those (docs, ecosystem
   libraries, CI) skips staging; any other change misses and stages as

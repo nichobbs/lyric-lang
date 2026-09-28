@@ -89,6 +89,8 @@ nunit-*.xml
 # scripts/manual-test.sh output and 3-stage bootstrap workdir
 .manual-test-report/
 .bootstrap/
+# CI-only: the compiler-bundle cache staging directory (ci.yml, build job)
+.ci-cache/
 
 # `make lyric` symlink to the AOT entry-point binary
 /bin/
