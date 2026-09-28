@@ -1,4 +1,4 @@
-# CI: shared test-job setup action, compiler bundle staged once and in the background (#PR)
+# CI: shared test-job setup action, compiler bundle staged once and in the background (#7609)
 
 Three changes to `.github/workflows/ci.yml`, following the JVM split
 (2026-09-27-ci-split-jvm-self-tests.md):
