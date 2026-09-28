@@ -30629,19 +30629,11 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     pi = pi + 1
   }
 
-  // By-reference closure capture pre-pass (#1479 v2): collect every name used
-  // inside a lambda in this body.  A `var` local in this set is hoisted to a
-  // heap cell at its declaration so the closure shares the mutable location.
-  match decl.body {
-    case Some(FBBlock(blk)) -> {
-      collectInLambdaNamesBlock(blk, fctx.hoistedVarNames)
-    }
-    case Some(FBExpr(e)) -> {
-      collectInLambdaNamesExpr(e, fctx.hoistedVarNames)
-    }
-    case None -> {
-    }
-  }
+  // By-reference closure capture pre-pass (#1479 v2, shared via
+  // `runClosureCapturePrePassMsil` — #7690): collect every name used inside a
+  // lambda in this body.  A `var` local in this set is hoisted to a heap cell
+  // at its declaration so the closure shares the mutable location.
+  runClosureCapturePrePassMsil(fctx, decl.body)
 
   // Reserve the function epilogue label up-front so a `return` inside a
   // protected region can `leave` to it (see SReturn / #1477).  The epilogue
@@ -31011,6 +31003,13 @@ pub func lowerImplMethodMsil(
   val noGenericsImpl: List[String] = newList()
   registerParamsMsil(cctx, fctx, implRealParams, pkgName, targetTypeName, noGenericsImpl)
 
+  // By-reference closure capture pre-pass (#1479 v2 / #7690) — see
+  // `runClosureCapturePrePassMsil`.  `lowerFuncMsilScoped` ran this for
+  // top-level functions and lifted lambdas, but an impl method never did,
+  // so a closure inside one that mutated a captured `var` hit the
+  // `hoistedVarNames`-miss invariant panic.
+  runClosureCapturePrePassMsil(fctx, decl.body)
+
   // Reserve the epilogue label so a `return` inside a protected region can
   // `leave` to it (see SReturn / #1477).
   fctx.epilogueLabel = freshLabelMsil(fctx)
@@ -31193,6 +31192,12 @@ pub func lowerRecordMethodMsil(
   val insns: List[MInsn] = newList()
 
   registerParamsMsil(cctx, fctx, realParams, pkgName, targetTypeName, generics)
+
+  // By-reference closure capture pre-pass (#1479 v2 / #7690) — see
+  // `runClosureCapturePrePassMsil`.  A record in-body method never ran this,
+  // so a closure inside one that mutated a captured `var` hit the
+  // `hoistedVarNames`-miss invariant panic (the original #7690 repro).
+  runClosureCapturePrePassMsil(fctx, decl.body)
 
   fctx.epilogueLabel = freshLabelMsil(fctx)
 
@@ -33217,6 +33222,14 @@ func lowerProtectedMsil(
         // Desugar bare field references in the body to EMember(ESelf, fieldName)
         // so lowerExprMsil/lowerStmtMsil can emit ldarg.0 + ldfld/stfld.
         val desugaredEntryBody = desugarProtectedFuncBody(fieldNames, ed.body)
+        // By-reference closure capture pre-pass (#1479 v2 / #7690) — see
+        // `runClosureCapturePrePassMsil`.  A protected-type `entry` built its
+        // `FuncCtx` directly (not via `lowerFuncMsilScoped`/`lowerImplMethodMsil`)
+        // and never ran this, so a closure inside an entry body that mutated a
+        // captured `var` hit the `hoistedVarNames`-miss invariant panic.  Runs
+        // against the desugared body (post field-reference rewrite) since that
+        // is the exact AST `lowerBlockExprMsil`/`lowerExprMsil` below lower.
+        runClosureCapturePrePassMsil(entryFctx, Some(value = desugaredEntryBody))
         val entryInsns: List[MInsn] = newList()
 
         // Monitor.Enter(this): acquire the per-instance lock.
@@ -34927,6 +34940,31 @@ func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
       collectInLambdaNamesExpr(rhs, acc)
     }
     case _ -> {
+    }
+  }
+}
+
+// Shared by-reference closure capture pre-pass entry point (#7690): every
+// codegen path that builds a `FuncCtx` for a body containing statements
+// (top-level/lifted-lambda functions via `lowerFuncMsilScoped`, record
+// methods, impl methods, and protected-type entries) must run this before
+// lowering the body, or a closure inside it that mutates a captured `var`
+// hits the `hoistedVarNames`-miss invariant panic in `SAssign`/`ELambda`
+// lowering (a `var` never hoisted to a heap cell writes straight to its own
+// stack slot instead of the cell the closure shares).  Centralised here so
+// every call site stays in lockstep instead of re-copying the two-arm
+// `FBBlock`/`FBExpr` match (#1479 v2 originally only wired this into
+// `lowerFuncMsilScoped`, missing `lowerImplMethodMsil`/`lowerRecordMethodMsil`
+// and the protected-type entry path entirely).
+func runClosureCapturePrePassMsil(fctx: in FuncCtx, body: in Option[FunctionBody]): Unit {
+  match body {
+    case Some(FBBlock(blk)) -> {
+      collectInLambdaNamesBlock(blk, fctx.hoistedVarNames)
+    }
+    case Some(FBExpr(e)) -> {
+      collectInLambdaNamesExpr(e, fctx.hoistedVarNames)
+    }
+    case None -> {
     }
   }
 }

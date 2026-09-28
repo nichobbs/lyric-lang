@@ -90,6 +90,8 @@ for t in \
   lyric-compiler/lyric/verifier_self_test.l \
   lyric-compiler/lyric/closure_correctness_self_test.l \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
+  lyric-compiler/lyric/method_closure_var_capture_self_test.l \
+  lyric-compiler/lyric/impl_method_closure_var_capture_self_test.l \
   lyric-compiler/lyric/generic_record_var_field_self_test.l \
   lyric-compiler/lyric/func_val_local_rettype_self_test.l \
   lyric-compiler/lyric/extern_delegate_value_dotnet_self_test.l \

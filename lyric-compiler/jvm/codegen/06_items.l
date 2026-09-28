@@ -759,30 +759,46 @@ pub func setupInstanceParamSlotsAndHolders(
   }
 }
 
-// Compute the pre-pass set of `var` names referenced inside lambdas
-// in the function body.  These must be hoisted to heap cells for by-ref capture.
-func computeHoistedVarNamesJvm(decl: in FunctionDecl, mutableVars: in Map[String, Bool]): List[String] {
+// Shared by-reference closure capture pre-pass entry point (#7690) — the JVM
+// analog of MSIL's `runClosureCapturePrePassMsil`.  Every codegen path that
+// builds a `FuncCtx` for a body containing statements must run this before
+// lowering the body: it walks `body` for every `var` declaration and every
+// name referenced inside a nested lambda, and populates `ctx.hoistedVarNames`
+// with their intersection — the set of mutable locals a closure in this body
+// actually captures, which must be hoisted to a heap cell (`emitCellLoadJvm`
+// / `emitCellAssignJvm`) rather than a plain local slot so the closure and
+// the enclosing scope share one mutable location.  Before this was
+// centralised, `lowerFuncScoped` (top-level functions and lifted lambdas)
+// ran an inline copy of this pre-pass while `lowerRecordMethod`,
+// `lowerImplMethod`, and `lowerProtectedMethod` (all built via
+// `makeFuncCtxInstance`, whose `hoistedVarNames` starts and stayed empty)
+// never did — a closure in a record/impl method or a protected-type entry
+// that mutated a captured `var` silently wrote to the method's own local
+// slot instead of the shared cell, a wrong-value miscompile with no
+// diagnostic (unlike MSIL, which panics on the same gap via its
+// `hoistedVarNames`-miss invariant check).
+func runClosureCapturePrePassJvm(ctx: in FuncCtx, body: in Option[FunctionBody]): Unit {
+  val mutableVars: Map[String, Bool] = newMap()
+  match body {
+    case Some(b) -> match b { case FBBlock(blk) -> collectMutableVarsBlock(blk, mutableVars); case FBExpr(_) -> () }
+    case None -> ()
+  }
   val inLambdaNames: List[String] = newList()
-  match decl.body {
-    case Some(body) -> {
-      match body {
-        case FBBlock(blk) -> collectInLambdaNamesBlock(blk, inLambdaNames)
-        case FBExpr(e) -> collectInLambdaNamesExpr(e, inLambdaNames)
-      }
+  match body {
+    case Some(b) -> match b {
+      case FBBlock(blk) -> collectInLambdaNamesBlock(blk, inLambdaNames)
+      case FBExpr(e) -> collectInLambdaNamesExpr(e, inLambdaNames)
     }
     case None -> ()
   }
-  // Keep only the names that are `var` declarations in this function.
-  val hoisted: List[String] = newList()
   var i = 0
   while i < inLambdaNames.count {
     val nm = inLambdaNames[i]
-    if mutableVars.containsKey(nm) and not nameInList(hoisted, nm) {
-      hoisted.add(nm)
+    if mutableVars.containsKey(nm) and not nameInList(ctx.hoistedVarNames, nm) {
+      ctx.hoistedVarNames.add(nm)
     }
     i = i + 1
   }
-  hoisted
 }
 
 // Collect all `var` declarations in a function body.  Mirrors the
@@ -1021,23 +1037,9 @@ func lowerFuncScoped(
   )
 
   // Hoisting pre-pass: detect `var` bindings referenced inside lambdas.
-  // These must be hoisted to heap cells for by-ref capture (epic #1877 Stage 2).
-  val mutableVars: Map[String, Bool] = newMap()
-  match decl.body {
-    case Some(body) -> {
-      match body {
-        case FBBlock(blk) -> collectMutableVarsBlock(blk, mutableVars)
-        case FBExpr(_) -> ()
-      }
-    }
-    case None -> ()
-  }
-  val hoistedVars = computeHoistedVarNamesJvm(decl, mutableVars)
-  var hvi = 0
-  while hvi < hoistedVars.count {
-    ctx.hoistedVarNames.add(hoistedVars[hvi])
-    hvi = hvi + 1
-  }
+  // These must be hoisted to heap cells for by-ref capture (epic #1877 Stage
+  // 2 / #7690) — see `runClosureCapturePrePassJvm`.
+  runClosureCapturePrePassJvm(ctx, decl.body)
   val insns: List[LInsn] = newList()
 
   // Allocate slots for parameters and set up any `out`/`inout` holder bindings;
@@ -1692,6 +1694,10 @@ func lowerProtectedMethod(
   // JVM verifier is a mandatory load-time gate (unlike MSIL's bookkeeping-
   // only fix), so this real bytecode is required, not optional.
   emitSelfParamChecksJvm(ctxSelf, insns, realParams, className)
+  // #7690: see `runClosureCapturePrePassJvm` — `makeFuncCtxInstance` never
+  // populates `hoistedVarNames`, so a closure here that mutates a captured
+  // `var` must have this pre-pass run explicitly before body lowering.
+  runClosureCapturePrePassJvm(ctxSelf, Some(value = body))
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = flags, name = name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
@@ -1774,6 +1780,10 @@ func lowerRecordMethod(
   // access through it resolves instead of hitting the erased-`Object`
   // fallback.
   emitSelfParamChecksJvm(ctxSelf, insns, filteredParams, className)
+  // #7690: see `runClosureCapturePrePassJvm` — `makeFuncCtxInstance` never
+  // populates `hoistedVarNames`, so a closure here that mutates a captured
+  // `var` must have this pre-pass run explicitly before body lowering.
+  runClosureCapturePrePassJvm(ctxSelf, Some(value = body))
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
@@ -1978,6 +1988,10 @@ func lowerImplMethod(
   // through it resolves instead of hitting the erased-`Object` fallback
   // (`error[J007]`).
   emitSelfParamChecksJvm(ctxSelf, insns, implRealParams, targetClass)
+  // #7690: see `runClosureCapturePrePassJvm` — `makeFuncCtxInstance` never
+  // populates `hoistedVarNames`, so a closure here that mutates a captured
+  // `var` must have this pre-pass run explicitly before body lowering.
+  runClosureCapturePrePassJvm(ctxSelf, Some(value = body))
   lowerInstanceMethodBody(ctxSelf, insns, body, retTy)
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
