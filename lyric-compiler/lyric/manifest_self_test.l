@@ -1132,11 +1132,23 @@ test "[contracts] section defaults to enabled when absent" {
   }
 }
 
-test "[contracts] enabled defaults to true when field absent" {
+test "[contracts] enabled = true when explicitly set" {
   val toml = "[package]\nname = \"test-pkg\"\nversion = \"1.0.0\"\n[contracts]\nenabled = true\n"
   val m = parseOk(toml)
   match m.contracts {
     case Some(cs) -> assertTrue(cs.enabled, "[contracts] enabled = true when explicitly set")
     case None -> panic("[contracts] section should be present when fields are present")
+  }
+}
+
+test "[contracts] enabled defaults to true when field absent" {
+  val toml = "[package]\nname = \"test-pkg\"\nversion = \"1.0.0\"\n[contracts]\n"
+  val m = parseOk(toml)
+  match m.contracts {
+    case Some(cs) -> assertTrue(
+      cs.enabled,
+      "[contracts] enabled defaults to true when [contracts] section present but enabled field absent"
+    )
+    case None -> panic("[contracts] section should be present when it appears in TOML")
   }
 }
