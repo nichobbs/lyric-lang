@@ -480,7 +480,9 @@ func waitTaskMs(t: in Task, timeoutMs: in Int): Bool = ()
 /// `runWithin[T]` builds on — kept `pub` (rather than the raw
 /// `Task.Run`/`Task.Wait` primitives above) so a generic function's
 /// per-caller specialisation only ever needs one exported name.
-pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool {
+pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
+  requires: timeoutMs >= 0
+{
   val t = taskRunWithCancel(action, noCancellation())
   return waitTaskMs(t, timeoutMs)
 }

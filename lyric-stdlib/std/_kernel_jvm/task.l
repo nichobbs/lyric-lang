@@ -551,7 +551,9 @@ func runWithinThreadStart(t: in JThread): Unit {
 /// means "wait forever," not "don't wait," on the JDK — so a zero
 /// budget is implemented as an immediate, un-joined check of whether
 /// `action` happened to already finish.
-pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool {
+pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
+  requires: timeoutMs >= 0
+{
   val done: JAtomicBoolean = JAtomicBoolean.new(false)
   val job = RunWithinJob(action = action, done = done)
   val t: JThread = JThread.new(job)

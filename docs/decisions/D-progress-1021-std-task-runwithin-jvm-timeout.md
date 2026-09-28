@@ -106,9 +106,7 @@ dedicated generic record. This is a genuine, narrow gap in generic
 monomorphisation of `var`-field assignment inside a generic function —
 not specific to `Std.Task`, to closures, or to either target — and is
 called out here as a finding (tracked in #7663), not fixed as part of this change (out of
-scope for #7461, which only needed a *working* `runWithin`). No issue
-was filed for it as part of this session; a follow-up should file one
-citing this entry's repro.
+scope for #7461, which only needed a *working* `runWithin`).
 
 ### `lyric-health` migration
 
