@@ -746,6 +746,17 @@ pub union MInsn {
   // declaration and faulted with MissingFieldException / ClassCastException
   // at runtime (#4870, #6231).
   case MLdfldGeneric(baseClassName: String, typeArgs: List[MsilType], fieldName: String, fieldMsilType: MsilType)
+  // stfld analog of MLdfldGeneric (#7663): stores through the same closed
+  // GENERICINST TypeSpec / TypeSpec-parented MemberRef, but the write-side
+  // codegen (`lowerAssignExprMsil`'s EMember arm) previously handled only
+  // `MClass`/`MClassRef` receivers and silently dropped the value (pop the
+  // receiver, pop the value, emit nothing) whenever the receiver was a
+  // generic record instance (`MGenericInst`/`MGenericInstByName`) — a `var`
+  // field write through a generic record binding was a no-op miscompile on
+  // every target that reached this path.  Mirrors `MLdfldGeneric`'s
+  // TypeSpec/MemberRef construction exactly; only the emitted opcode
+  // differs (`stfld` instead of `ldfld`).
+  case MStfldGeneric(baseClassName: String, typeArgs: List[MsilType], fieldName: String, fieldMsilType: MsilType)
   // callvirt on an instance method of a generic type instantiation (#6442).
   // Mirrors `MLdfldGeneric`'s TypeSpec/MemberRef construction exactly, but
   // for a method instead of a field: ECMA-335 §III.4.21 forbids a bare
@@ -2470,6 +2481,49 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         }
       }
       emitLdfld(mb, tok)
+    }
+    case MStfldGeneric(baseName, typeArgs, fieldName, fieldMsilType) -> {
+      // stfld analog of MLdfldGeneric (#7663) — identical TypeSpec/MemberRef
+      // construction, only the emitted opcode differs.  See the case
+      // declaration's comment for why this exists.
+      val fieldSigS = buildFieldSigWithCtx(fieldMsilType, ctx)
+      var taKeyS = ""
+      var taiS = 0
+      while taiS < typeArgs.count {
+        taKeyS = taKeyS + msilTypeKey(typeArgs[taiS])
+        taKeyS = taKeyS + ","
+        taiS = taiS + 1
+      }
+      val defRowS = findTypeDefRowByName(ctx, baseName)
+      val tokS = if defRowS > 0 {
+        val codedIdxS = tdrTypeDef(defRowS)
+        val tsKeyS = "typespec_stfld_def_" + baseName + "_" + taKeyS
+        val blobS = buildGenericInstBlobWithCtx(ctx, codedIdxS, typeArgs)
+        val tsRowS = ctxAddTypeSpec(ctx, tsKeyS, blobS)
+        val mrKeyS = "mr_stfld_def_" + baseName + "_" + taKeyS + "_" + fieldName
+        val mrRowS = ctxAddMemberRefForTypeSpec(ctx, tsRowS, fieldName, mrKeyS, fieldSigS)
+        0x0A000000 + mrRowS
+      } else {
+        val refRowS = findTypeRefRowByName(ctx, baseName)
+        if refRowS > 0 {
+          val codedIdxS = tdrTypeRef(refRowS)
+          val tsKeyS = "typespec_stfld_ref_" + baseName + "_" + taKeyS
+          val blobS = buildGenericInstBlobWithCtx(ctx, codedIdxS, typeArgs)
+          val tsRowS = ctxAddTypeSpec(ctx, tsKeyS, blobS)
+          val mrKeyS = "mr_stfld_ref_" + baseName + "_" + taKeyS + "_" + fieldName
+          val mrRowS = ctxAddMemberRefForTypeSpec(ctx, tsRowS, fieldName, mrKeyS, fieldSigS)
+          0x0A000000 + mrRowS
+        } else {
+          // Same rationale as `MLdfldGeneric`'s panic arm: emitting no
+          // instruction here would leave a mismatched stack, so fail loudly
+          // at the cause instead of producing unverifiable IL.
+          panic(
+            "Msil.Lowering: MStfldGeneric could not resolve TypeDef/TypeRef for '" + baseName + "' (field '" + fieldName +
+              "') — check for a missing restored-package registration"
+          )
+        }
+      }
+      emitStfld(mb, tokS)
     }
     case MCallvirtGeneric(baseName, typeArgs, methodName, paramTypes, retType) -> {
       // Build a closed GENERICINST TypeSpec and a TypeSpec-parented MemberRef,
