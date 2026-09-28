@@ -13208,6 +13208,115 @@ func lowerAssignExprMsil(
           // metadata.  The receiver is already on the stack.
           emitExternInstancePropertySetMsil(cctx, fctx, insns, extInstFqn, memberName, op, value)
         }
+        // #7663: field write on a generic record instance receiver
+        // (`box.value = other` where `box: MyBox[T]`).  Before this fix
+        // neither generic-instantiation receiver type was handled here — both
+        // fell through to the `case _` default below, which lowers the value
+        // for its side effects and then pops BOTH the value and the receiver,
+        // silently dropping the write.  Every read-side field access already
+        // special-cases these two receiver kinds (see the matching `EMember`
+        // read arms above) via `MCastclassGeneric` + `MLdfldGeneric`; these
+        // write arms mirror that exactly, substituting `MStfldGeneric` for
+        // the final store (added alongside `MLdfldGeneric` in lowering.l).
+        case MGenericInst(_, headFqn, typeArgs) -> {
+          // Cross-assembly generic instantiation (e.g. `MapEntry<String,Int>`).
+          val key = headFqn + "/" + memberName
+          val vi = match mapGet(cctx.fieldVarIndices, key) { case Some(v) -> v; case None -> -1 }
+          val hasFld = cctx.fieldVarIndices.containsKey(key) or cctx.fieldSigBytes.containsKey(key) or
+            cctx.fieldTokens.containsKey(key)
+          if hasFld {
+            // `fMTy` is the field's OPEN declared type — the FieldSig blob
+            // built inside MStfldGeneric's lowering must byte-match the
+            // FieldDef declaration (mirrors the read-side MLdfldGeneric
+            // comment, #4870/#6231).  `concreteTy` is this instantiation's
+            // substituted type, used to build/coerce the stored value.
+            val fMTy: MsilType = if vi >= 0 {
+              MTypeVar(index = vi)
+            } else {
+              match mapGet(cctx.fieldMsilTypes, key) {
+                case Some(t) -> t
+                case None -> MObject
+              }
+            }
+            val concreteTy: MsilType = if vi >= 0 {
+              if vi < typeArgs.count {
+                typeArgs[vi]
+              } else {
+                MObject
+              }
+            } else {
+              match mapGet(cctx.fieldMsilTypes, key) {
+                case Some(fty) -> substituteTypeVarsMsil(fty, typeArgs)
+                case None -> MObject
+              }
+            }
+            insns.add(MCastclassGeneric(className = headFqn, typeArgs = typeArgs))
+            match op {
+              case AssEq -> {
+                pushCollExpect(fctx, concreteTy)
+                val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                popCollExpect(fctx)
+                insns.add(MStfldGeneric(baseClassName = headFqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
+              }
+              case _ -> {
+                insns.add(MDup)  // recv, recv
+                insns.add(MLdfldGeneric(baseClassName = headFqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
+                emitCompoundCombineMsil(cctx, fctx, insns, op, concreteTy, value)
+                insns.add(MStfldGeneric(baseClassName = headFqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
+              }
+            }
+          } else {
+            lowerExprMsil(cctx, fctx, insns, value)
+            insns.add(MPop)
+            insns.add(MPop)
+          }
+        }
+        case MGenericInstByName(fqn, typeArgs) -> {
+          // In-bundle generic record instance (e.g. `MyBox<Int>`, #2362).
+          val key = stripGenericArity(fqn) + "/" + memberName
+          val vi = match mapGet(cctx.fieldVarIndices, key) { case Some(v) -> v; case None -> -1 }
+          val fMTy: MsilType = if vi >= 0 {
+            MTypeVar(index = vi)
+          } else {
+            match mapGet(cctx.fieldMsilTypes, key) {
+              case Some(t) -> t
+              case None -> MObject
+            }
+          }
+          if cctx.fieldSigBytes.containsKey(key) {
+            val concreteTy: MsilType = if vi >= 0 {
+              if vi < typeArgs.count {
+                typeArgs[vi]
+              } else {
+                MObject
+              }
+            } else {
+              match mapGet(cctx.fieldMsilTypes, key) {
+                case Some(fty) -> substituteTypeVarsMsil(fty, typeArgs)
+                case None -> MObject
+              }
+            }
+            insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
+            match op {
+              case AssEq -> {
+                pushCollExpect(fctx, concreteTy)
+                val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                popCollExpect(fctx)
+                insns.add(MStfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
+              }
+              case _ -> {
+                insns.add(MDup)  // recv, recv
+                insns.add(MLdfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
+                emitCompoundCombineMsil(cctx, fctx, insns, op, concreteTy, value)
+                insns.add(MStfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
+              }
+            }
+          } else {
+            lowerExprMsil(cctx, fctx, insns, value)
+            insns.add(MPop)
+            insns.add(MPop)
+          }
+        }
         case _ -> {
           lowerExprMsil(cctx, fctx, insns, value)
           insns.add(MPop)
@@ -22410,6 +22519,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MListOp(op, _) -> listOpStackDelta(op)
     case MDictOp(op, _, _) -> dictOpStackDelta(op)
     case MLdfldGeneric(_, _, _, _) -> 0
+    case MStfldGeneric(_, _, _, _) -> -2
     case MCallvirtGeneric(_, _, _, _, _) -> 1
     case MNewobjGenericCase(_, _, _) -> 1
     case MNewobjGenericByName(_, _, _) -> 1

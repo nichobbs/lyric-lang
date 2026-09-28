@@ -394,20 +394,33 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               // the RHS is lowered against an empty operand stack exactly
               // like the AssEq case above, then reload [current, rhs] for
               // the combine and [recv, combined] for the store.
+              //
+              // A field whose declared type is a bare type parameter
+              // (`record Box[T] { var value: T }`) is stored as erased
+              // `Object`; combine at the receiver's instantiation of that
+              // parameter (`Box[Int]` -> `int`) and re-box for the store
+              // (#7663).
+              val combTy = genericFieldCombineType(ctx, recv, cls, fieldName, fty)
               emitLoad(insns, recvSlot, recvTy)
               emitFieldLoadOpaqueAware(ctx, insns, cls, fieldName, fty)
-              val curSlot = allocSlot(ctx, "__fassign_cur_" + freshLabel(ctx), fty)
-              emitStore(insns, curSlot, fty)
+              if combTy != fty {
+                coerceArgTo(insns, fty, combTy)
+              }
+              val curSlot = allocSlot(ctx, "__fassign_cur_" + freshLabel(ctx), combTy)
+              emitStore(insns, curSlot, combTy)
               val vTy = lowerExpr(ctx, insns, value)
               val vSlot = allocSlot(ctx, "__fassign_v_" + freshLabel(ctx), vTy)
               emitStore(insns, vSlot, vTy)
-              emitLoad(insns, curSlot, fty)
+              emitLoad(insns, curSlot, combTy)
               emitLoad(insns, vSlot, vTy)
-              emitCompoundCombineJvm(ctx, insns, op, fty, vTy, isUnsignedExpr(ctx, value))
-              val combSlot = allocSlot(ctx, "__fassign_comb_" + freshLabel(ctx), fty)
-              emitStore(insns, combSlot, fty)
+              emitCompoundCombineJvm(ctx, insns, op, combTy, vTy, isUnsignedExpr(ctx, value))
+              val combSlot = allocSlot(ctx, "__fassign_comb_" + freshLabel(ctx), combTy)
+              emitStore(insns, combSlot, combTy)
               emitLoad(insns, recvSlot, recvTy)
-              emitLoad(insns, combSlot, fty)
+              emitLoad(insns, combSlot, combTy)
+              if combTy != fty {
+                boxIfNeeded(insns, combTy)
+              }
               emitFieldStoreOpaqueAware(ctx, insns, cls, fieldName, fty)
             }
           }
@@ -3060,5 +3073,38 @@ func catchClassJvm(typeName: in String): String {
     "java/lang/Throwable"
   } else {
     lyricNameToJvm(typeName)
+  }
+}
+
+// The type a compound assignment to `recv.fieldName` combines at. For a
+// field declared as a bare type parameter (`paramIdx >= 0`, stored as
+// erased `Object`) this is the receiver's own instantiation of that
+// parameter, from the same `scrutineeGenericArgs` resolution match-payload
+// unboxing uses; otherwise, or when the instantiation is unknown, the
+// field's declared type `fty`.
+func genericFieldCombineType(
+  ctx: in FuncCtx, recv: in Expr, cls: in String, fieldName: in String, fty: in JvmType
+): JvmType {
+  val fldsOpt: Option[List[JvmCaseField]] = mapGet(ctx.caseFields, cls)
+  match fldsOpt {
+    case Some(flds) -> {
+      var i = 0
+      while i < flds.count {
+        if flds[i].name == fieldName {
+          val pIdx = flds[i].paramIdx
+          if pIdx < 0 {
+            return fty
+          }
+          val args = scrutineeGenericArgs(ctx, recv)
+          if pIdx >= args.count {
+            return fty
+          }
+          return match resolveConcreteTypeExpr(ctx, args[pIdx]) { case JVoid -> fty; case JArray(_) -> fty; case t -> t }
+        }
+        i = i + 1
+      }
+      fty
+    }
+    case None -> fty
   }
 }

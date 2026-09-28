@@ -313,6 +313,80 @@ func inferGenericReturnArgsFromCallArgs(ctx: in FuncCtx, sig: in JvmFuncSig, cal
 //     (#4933).
 // An `EParen` wrapper is unwrapped; anything else yields an empty list, so the
 // payload stays boxed (the pre-#4877 behaviour).
+// Recover a generic RECORD constructor call's instantiation from its own
+// field arguments (`MyBox(value = seed)` with `seed: Int` -> `[Int]`), so an
+// unannotated binding (`val box = MyBox(value = seed)`) records the same
+// args an explicit `MyBox[Int]` annotation would (#7663). A record ctor is
+// never a registered `JvmFuncSig`, so the `ECall` arm has nothing else to
+// recover from. Each type parameter is solved from a field declared as that
+// bare parameter (`JvmCaseField.paramIdx`) whose argument has a simple,
+// statically known type; empty (stay erased) when any parameter is left
+// unsolved, when an argument is unsigned (`UInt`/`ULong` erase to the same
+// JVM type as their signed twins, so the recovered name would be wrong), or
+// for a union case (`Ok(v)` cannot solve `Result`'s `E`).
+func genericRecordCtorArgs(ctx: in FuncCtx, name: in String, callArgs: in List[CallArg]): List[TypeExpr] {
+  val cls = match ctorClassFor(ctx, name) { case Some(c) -> c; case None -> return newList() }
+  if cls.contains("$") {
+    return newList()
+  }
+  val flds = match mapGet(ctx.caseFields, cls) { case Some(f) -> f; case None -> return newList() }
+  val names: List[String] = newList()
+  var arity = 0
+  var i = 0
+  while i < flds.count {
+    names.add(flds[i].name)
+    if flds[i].paramIdx + 1 > arity {
+      arity = flds[i].paramIdx + 1
+    }
+    i = i + 1
+  }
+  if arity == 0 {
+    return newList()
+  }
+  val byName = buildArgsByParamName(callArgs, names)
+  val solved: Map[Int, TypeExpr] = newMap()
+  var k = 0
+  while k < flds.count {
+    val pIdx = flds[k].paramIdx
+    if pIdx >= 0 and not solved.containsKey(pIdx) {
+      match mapGet(byName, flds[k].name) {
+        case Some(argExpr) -> {
+          if isUnsignedExpr(ctx, argExpr) {
+            return newList()
+          }
+          val single: List[Expr] = newList()
+          single.add(argExpr)
+          match inferHomogeneousListElemTypeJvm(ctx, single) {
+            case Some(t) -> {
+              match builtinTypeNameForJvmElem(t) {
+                case Some(nm) -> {
+                  val segs: List[String] = newList()
+                  segs.add(nm)
+                  solved.add(pIdx, TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = argExpr.span)), span = argExpr.span))
+                }
+                case None -> ()
+              }
+            }
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+    k = k + 1
+  }
+  val result: List[TypeExpr] = newList()
+  var j = 0
+  while j < arity {
+    match mapGet(solved, j) {
+      case Some(te) -> result.add(te)
+      case None -> return newList()
+    }
+    j = j + 1
+  }
+  result
+}
+
 func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
   match scrutinee.kind {
     case EParen(inner) -> scrutineeGenericArgs(ctx, inner)
@@ -382,7 +456,7 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
           } else {
             match sigOpt {
               case Some(sig) -> inferGenericReturnArgsFromCallArgs(ctx, sig, callArgs)
-              case None -> newList()
+              case None -> genericRecordCtorArgs(ctx, lastSegment(path), callArgs)
             }
           }
         }
