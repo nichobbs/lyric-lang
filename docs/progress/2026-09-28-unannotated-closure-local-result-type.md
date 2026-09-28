@@ -49,3 +49,8 @@ targets (`scripts/ci/compiler-self-tests-batch.sh` and
 
 Before the fix, the tail, return, bound, nested, `Long`, `Double` and
 `Option[Int]` cases fail on dotnet.
+
+Not covered: a function value bound where no annotation can go, such as a
+`for` loop variable or a `match` pattern binding, still returns the boxed
+reference on dotnet. Fixing that needs the checker's result type at each
+function-value call site; it is tracked in #7716.
