@@ -32,15 +32,20 @@ pub func hostSecureNextInt(max: in Int): Int {
   sharedSecureRandom.nextInt(max)
 }
 
-/// Cryptographically strong random integer in [min, max).
+/// Cryptographically strong random integer in [min, max), exactly uniform.
 /// min must be strictly less than max.
 ///
-/// Computed via Long (#7252) so a wide range cannot overflow the Int32
-/// `max - min` subtraction the way `min + nextInt(max - min)` used to.
+/// `SecureRandom extends Random`, so it too implements
+/// `java.util.random.RandomGenerator` (JDK 17+) and inherits its default
+/// `nextInt(origin, bound)` — an unbiased rejection algorithm, not modulo
+/// reduction — without overriding it (#7487). Security-sensitive draws
+/// (tokens, OTP digits) need this exact uniformity: a modulo-reduced draw
+/// is biased by roughly `range / 2^63`, and this also widens internally so
+/// a wide range (`min` near `Int.MinValue`, `max` near `Int.MaxValue`)
+/// cannot overflow the Int32 `max - min` subtraction the way
+/// `min + nextInt(max - min)` used to (#7252).
 pub func hostSecureNextIntRange(min: in Int, max: in Int): Int {
-  val range: Long = max.toLong() - min.toLong()
-  val r: Long = sharedSecureRandom.nextLong().and(9223372036854775807i64) % range;
-  (min.toLong() + r).toInt()
+  sharedSecureRandom.nextInt(min, max)
 }
 
 // Fill the buffer's backing byte[] in place. Handing `nextBytes` the array

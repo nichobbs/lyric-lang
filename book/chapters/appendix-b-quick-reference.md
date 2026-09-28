@@ -736,7 +736,7 @@ output_assembly = "myapp.dll"
 | `Std.File` | File system | `readText`, `writeText`, `readBytes`, `writeBytes` (`slice[Byte]`), `fileExists`, `createDir` |
 | `Std.Collections` | Generic growable containers | `List[T]` (`add`, `[]`, `count`), `Map[K,V]` (`[]`, `containsKey`, `remove`) |
 | `Std.Set` | Hash set | `Set[T]`, `setContains`, `setAdd`, `setRemove`, `setSize`, `setFromSlice`, `setUnion`, `setIntersection`, `setDifference` |
-| `Std.Sort` | Stable sort | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings` |
+| `Std.Sort` | Stable sort | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings`, `isAscendingInts`, `isAscendingLongs`, `isAscendingStrings` |
 | `Std.Math` | Numeric utilities | `absDouble`, `minPairDouble`, `maxPairDouble`, `sqrt`, `pow`, `floor`, `ceiling` |
 | `Std.Random` | Pseudo-random values | `nextInt`, `nextDouble`, `nextBool` |
 | `Std.SecureRandom` | Cryptographically-strong randomness | `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |

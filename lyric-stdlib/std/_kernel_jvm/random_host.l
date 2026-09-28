@@ -14,11 +14,16 @@
 //! the consumer in `std/random.l` does `import Std.RandomHost` regardless
 //! of target.
 //!
-//! nextIntRange routes through a Lyric-level shim because java.util.Random
-//! only exposes `nextInt(bound)` (i.e. [0, bound)); [min, max) is
-//! synthesised as `min + nextInt(max - min)` — a non-positive `max - min`
-//! throws `IllegalArgumentException` from the JDK call itself, matching
-//! the .NET kernel's "min >= max panics at the boundary" contract.
+//! `Random` implements `java.util.random.RandomGenerator` (JDK 17+), whose
+//! default `nextInt(int origin, int bound)` method `hostNextIntRange` calls
+//! directly — it is exactly uniform over `[origin, bound)` (an unbiased
+//! rejection algorithm, not modulo reduction), handles the full `Int` domain
+//! (`origin = Int.MinValue`, `bound = Int.MaxValue`) without overflowing,
+//! and throws `IllegalArgumentException` when `origin >= bound`, matching
+//! the .NET kernel's "min >= max panics at the boundary" contract. `Random`
+//! itself does not override this default, so it dispatches through the
+//! resolved `RandomGenerator` default method (auto-FFI walks the JDK
+//! interface chain to find it; see `Jvm.AutoFfi.findBestInstanceMethod`).
 @axiom("java.util.Random conforms to its documented JDK contracts")
 package Std.RandomHost
 
@@ -51,17 +56,18 @@ pub func hostNextIntBelow(rng: in Random, max: in Int): Int {
   rng.nextInt(max)
 }
 
-/// Random integer in `[min, max)`. `min >= max` panics at the JDK boundary.
+/// Random integer in `[min, max)`, exactly uniform. `min >= max` panics at
+/// the JDK boundary.
 ///
-/// Computed via Long so a wide range (e.g. `min` near `Int.MinValue` and
-/// `max` near `Int.MaxValue`) cannot overflow the Int32 `max - min`
-/// subtraction that used to feed `nextInt(bound)` directly (#7252) — that
-/// overflow could wrap to a negative bound and throw
-/// `IllegalArgumentException` even though `min < max` held.
+/// Delegates to `RandomGenerator.nextInt(origin, bound)` (#7487) rather than
+/// computing `min + nextInt(max - min)` or reducing a wide draw with `%`:
+/// the JDK's default implementation is exactly uniform and internally
+/// widens to avoid the Int32 `max - min` overflow that a wide range (e.g.
+/// `min` near `Int.MinValue` and `max` near `Int.MaxValue`) used to hit
+/// feeding `nextInt(bound)` directly (#7252), so no manual overflow
+/// handling is needed here either.
 pub func hostNextIntRange(rng: in Random, min: in Int, max: in Int): Int {
-  val range: Long = max.toLong() - min.toLong()
-  val r: Long = rng.nextLong().and(9223372036854775807i64) % range;
-  (min.toLong() + r).toInt()
+  rng.nextInt(min, max)
 }
 
 pub func hostNextLong(rng: in Random): Long {
