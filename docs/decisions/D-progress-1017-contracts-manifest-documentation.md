@@ -17,13 +17,13 @@ enabled = true   # default: true
 
 When `enabled = false`, the compiler:
 - Parses and type-checks all contract clauses normally
-- Does NOT synthesize runtime `assert(...)` statements for user-level `requires:`/`ensures:`/`invariant:` clauses
+- Does NOT synthesize runtime `assert(...)` statements for user-level `requires:`/`ensures:` clauses
 - Still synthesizes runtime checks for system-level structural invariants: parameter range checks, return-type range checks, protected-type invariants, and loop invariants
 
 The reason for this split:
 
-- **User-level checks** (`requires:`/`ensures:`/`invariant:`) are assertions about the *application's* state and the contract the function author intended. In production after offline verification, they may be disabled for performance.
-- **System-level checks** (range subtypes, protected-type invariants) enforce Lyric's *type safety* guarantees. These must always run, regardless of `contractsEnabled`, or the type system would be unsound.
+- **User-level checks** (`requires:`/`ensures:`) are assertions about the *application's* state and the contract the function author intended. In production after offline verification, they may be disabled for performance.
+- **System-level checks** (range subtypes, protected-type invariants, loop invariants) enforce Lyric's *type safety* guarantees. These must always run, regardless of `contractsEnabled`, or the type system would be unsound.
 
 Language reference documentation (§3.7) and book chapter examples make this distinction explicit. Proof obligations for `lyric prove` are unaffected by the manifest setting.
 

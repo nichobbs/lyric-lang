@@ -374,7 +374,7 @@ pub func compileToMsilWithVersion(
   // #7496: the A0047 row-type check resolves type names against the same
   // stdlib packages the type checker saw.
   val weaveTypeIndex = pipeTypeOwnerIndex(importedPkgs)
-  val weavedFile = match pipeWeave(file, singleFileTemplates, weaveTypeIndex, path, noWeaveOrigins, stdlibRecs) {
+  val weavedFile = match pipeWeave(file, singleFileTemplates, weaveTypeIndex, path, noWeaveOrigins, stdlibRecs, singleFileOpts.contractsEnabled) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1300,7 +1300,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // so a bundle package's `impl` block targeting a record declared in a
     // DIFFERENT package resolves its target's own fields in the
     // await-hoist.
-    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].origins, allImportedRecordDecls) {
+    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].origins, allImportedRecordDecls, contractsEnabled) {
       case Some(f) -> f
       case None -> return false
     }

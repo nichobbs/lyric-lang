@@ -449,8 +449,9 @@ pub func pipeWeave(
   pkgLabel: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
   extraRecordDecls: in List[RecordDecl],
+  contractsEnabled: in Bool = true,
 ): Option[SourceFile] {
-  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates, typeIndex)
+  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates, typeIndex, contractsEnabled)
   if gate(pkgLabel, origins, weaveRes.diagnostics) {
     return None
   }
@@ -493,7 +494,8 @@ pub func pipeMiddleEnd(
       match typeIndex { case Some(ix) -> ix; case None -> pipeTypeOwnerIndex(importedPkgs) },
       opts.pkgLabel,
       opts.lineOrigins,
-      monoRecordDecls
+      monoRecordDecls,
+      opts.contractsEnabled
     )
     case None -> None
   }

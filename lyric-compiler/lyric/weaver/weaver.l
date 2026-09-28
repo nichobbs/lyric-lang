@@ -943,6 +943,7 @@ func elaborateWrapperBodyForAspectContracts(
   body: in Block,
   aspectOnlyContracts: in List[ContractClause],
   span: in Span,
+  contractsEnabled: in Bool = true,
 ): Block {
   if aspectOnlyContracts.count == 0 {
     return body
@@ -961,7 +962,7 @@ func elaborateWrapperBodyForAspectContracts(
     body = Some(value = FBBlock(block = body)),
     span = span
   )
-  val elaborated = CE.elaborateFunction(forElaboration)
+  val elaborated = CE.elaborateFunctionOwned(forElaboration, "__lyric_wrapper_elaborate", contractsEnabled)
   match elaborated.body {
     case Some(fb) -> {
       match fb {
@@ -1873,7 +1874,11 @@ func buildCallPrelude(
 }
 
 func buildWrapper(
-  originalFn: in FunctionDecl, aspect: in AspectDecl, callTargetName: in String, site: in WeaveSite
+  originalFn: in FunctionDecl,
+  aspect: in AspectDecl,
+  callTargetName: in String,
+  site: in WeaveSite,
+  contractsEnabled: in Bool = true,
 ): FunctionDecl {
   // `around` presence is verified by the caller.
   val around = match aspect.around {
@@ -2040,7 +2045,8 @@ func buildWrapper(
     originalFn.ret,
     finalBody,
     rewrittenAspectContracts,
-    originalFn.span
+    originalFn.span,
+    contractsEnabled
   )
 
   FunctionDecl(
@@ -2667,6 +2673,7 @@ func weaveItemsCore(
   imports: in List[ImportDecl],
   templateOrigins: in Map[String, CollectedTemplate],
   typeIndex: in TypeOwnerIndex,
+  contractsEnabled: in Bool = true,
 ): WeaveResult {
   val weaveDiags: List[WeaveDiagEntry] = newList()
   val consumerScope = A0047Scope(pkg = packagePath, imports = imports, localTypes = a0047LocalTypeNames(items))
@@ -2838,10 +2845,11 @@ func weaveItemsCore(
                 weaveDiags,
                 consumerScope,
                 mapGet(templateOrigins, aspect.name),
-                typeIndex
+                typeIndex,
+                contractsEnabled
               )
             } else {
-              buildWrapper(fn, aspect, callTarget, site)
+              buildWrapper(fn, aspect, callTarget, site, contractsEnabled)
             }
             val wrapper = FunctionDecl(
               docComments = wrapper0.docComments,
@@ -4693,6 +4701,7 @@ func buildBModeCallSite(
   consumerScope: in A0047Scope,
   templateOrigin: in Option[CollectedTemplate],
   typeIndex: in TypeOwnerIndex,
+  contractsEnabled: in Bool = true,
 ): FunctionDecl {
   val qualified = if site.packagePath.length > 0 { site.packagePath + "." + fn.name } else { fn.name }
   val annNames: List[String] = newList()
@@ -4867,7 +4876,8 @@ func buildBModeCallSite(
     fn.ret,
     rawBody,
     rewrittenBModeAspectContracts,
-    fn.span
+    fn.span,
+    contractsEnabled
   )
 
   FunctionDecl(
@@ -4935,6 +4945,7 @@ pub func weaveFileWithDiagsAndTemplates(
   file: in SourceFile,
   templates: in Map[String, CollectedTemplate],
   typeIndex: in TypeOwnerIndex,
+  contractsEnabled: in Bool = true,
 ): WeaveFileResult {
   val file0 = injectWeaveImports(file)
   val pkgPath = packagePathString(file0)
@@ -4947,7 +4958,7 @@ pub func weaveFileWithDiagsAndTemplates(
     rangeDiags.add(d)
   }
   val bmodeArgsDiags = collectBModeArgsFieldDiags(resolvedItems)
-  val wr = weaveItemsCore(resolvedItems, pkgPath, file0.imports, resolvedFI.origins, typeIndex)
+  val wr = weaveItemsCore(resolvedItems, pkgPath, file0.imports, resolvedFI.origins, typeIndex, contractsEnabled)
   val allDiags: List[Diagnostic] = newList()
   var ui = 0
   while ui < unresolvedDiags.count {
