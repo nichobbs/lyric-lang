@@ -195,9 +195,16 @@ batches and rejects inbound ones (the 2025-06-18 MCP revision removed
 batch support).
 
 The LSP server is **not** migrated onto `JsonRpc` in v1 — it predates
-the library, works, and its Content-Length framing carries a documented
-UTF-8-length caveat; migration is Q-RPC-002 (do it once `JsonRpc.Stdio`
-is proven, delete the hand-rolled framing in `lsp.l`).
+the library and works; migration is Q-RPC-002 (do it once `JsonRpc.Stdio`
+is proven, delete the hand-rolled framing in `lsp.l`). Its own
+Content-Length framing no longer carries the UTF-8-length caveat this
+paragraph used to note here: `lsp.l`'s hand-rolled framing measured
+Content-Length in `String.length` (UTF-16 code units) instead of UTF-8
+bytes, corrupting the stream on any non-ASCII content; #7510 rewrote it
+to the same byte-exact discipline described below — `lspEncodeFrame`/
+`lspScanFrame` are pure functions over `slice[Byte]`, driven against real
+stdio by `lspReadFrame`/`writeLspFrame` through `Std.Console`'s
+`StdinReader`/`writeStdoutBytes` (#7451).
 
 ## 4. `JsonRpc.Stdio` — framing
 

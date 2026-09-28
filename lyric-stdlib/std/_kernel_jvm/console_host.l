@@ -62,6 +62,25 @@ pub func hostConsoleWriteLine(text: in String): Unit {
   o.println(text)
 }
 
+// ── Raw stdout byte writer ────────────────────────────────────────────────
+// Writes bytes verbatim to stdout with no text encoding applied — for
+// callers that frame their own wire protocol (e.g. the LSP Content-Length
+// writer, #7510) and must control their exact output bytes rather than
+// going through `PrintStream`'s char-encoding-based `print`/`println`.
+func printStreamWriteBytes(o: in JPrintStream, bytes: in slice[Byte]): Unit {
+  o.write(bytes)
+}
+
+func printStreamFlush(o: in JPrintStream): Unit {
+  o.flush()
+}
+
+pub func hostConsoleWriteBytes(bytes: in slice[Byte]): Unit {
+  val o = JSystem.out
+  printStreamWriteBytes(o, bytes)
+  printStreamFlush(o)
+}
+
 /// Read a line from stdin; null at EOF (mapped to None by Std.Console).
 pub func hostConsoleReadLine(): String? {
   stdinReader.readLine()

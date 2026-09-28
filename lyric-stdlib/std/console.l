@@ -168,6 +168,19 @@ pub func readStdinWithin(r: in StdinReader, timeoutMs: in Int): Result[StdinChun
   stdinChunkOf(hostStdinReadWithinResult(r.handle, timeoutMs))
 }
 
+/// Write raw bytes to stdout exactly as given — no text encoding is
+/// applied. Pairs with `openStdinReader`/`readStdin` for protocols that
+/// frame their own messages over stdio (JSON-RPC's `Content-Length`
+/// framing, whose length is defined in UTF-8 bytes, not `String.length`
+/// UTF-16 code units — #7510) and must control their exact output bytes
+/// rather than going through `print`/`println`'s text writer, which could
+/// re-encode. Best-effort, like `print`/`println`: output failures are not
+/// surfaced here (see this module's header for the input/output policy).
+@stable(since = "1.2")
+pub func writeStdoutBytes(bytes: in slice[Byte]): Unit {
+  hostConsoleWriteBytes(bytes)
+}
+
 // Future: foreground(color), background(color), reset, bold, dim,
 // italic, and capability checks such as isColorSupported. These belong
 // behind an explicit terminal capability API rather than ad hoc escape

@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <time.h>
@@ -46,6 +47,18 @@ void lyric_console_write(int32_t fd, LyricString* s) {
 void lyric_console_write_newline(int32_t fd) {
     static const uint8_t nl = '\n';
     write_all(fd, &nl, 1);
+}
+
+void lyric_console_write_bytes(int32_t fd, LyricList* data) {
+    int64_t len = data ? data->len : 0;
+    if (len <= 0) return;
+    uint8_t* buf = (uint8_t*)malloc((size_t)len);
+    if (!buf) return; /* best-effort: console output never panics */
+    for (int64_t i = 0; i < len; i++) {
+        buf[i] = (uint8_t)(data->data[i] & 0xff);
+    }
+    write_all(fd, buf, len);
+    free(buf);
 }
 
 void lyric_console_write_line(int32_t fd, LyricString* s) {

@@ -122,6 +122,29 @@ func openStandardInput(): Stream {
 @externTarget("System.IO.Stream.Read")
 func streamReadInto(s: in Stream, buffer: in slice[Byte], offset: in Int, count: in Int): Int = ()
 
+// ── Raw stdout byte writer ────────────────────────────────────────────────
+// Writes bytes verbatim to stdout with no text encoding applied — for
+// callers that frame their own wire protocol (e.g. the LSP Content-Length
+// writer, #7510) and must control their exact output bytes rather than
+// going through `Console.Write`'s `TextWriter`, which could re-encode.
+func openStandardOutput(): Stream {
+  NetConsole.OpenStandardOutput()
+}
+
+@externInstance
+@externTarget("System.IO.Stream.Write")
+func streamWriteBytes(s: in Stream, buffer: in slice[Byte], offset: in Int, count: in Int): Unit = ()
+
+@externInstance
+@externTarget("System.IO.Stream.Flush")
+func streamFlush(s: in Stream): Unit = ()
+
+pub func hostConsoleWriteBytes(bytes: in slice[Byte]): Unit {
+  val s = openStandardOutput()
+  streamWriteBytes(s, bytes, 0, bytes.length)
+  streamFlush(s)
+}
+
 // A zero-filled `byte[n]`: `MemoryStream(int capacity)`'s publicly visible
 // backing buffer (the `_kernel/tcp_host.l` idiom).
 @externTarget("System.IO.MemoryStream..ctor")

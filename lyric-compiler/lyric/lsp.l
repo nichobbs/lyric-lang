@@ -12,11 +12,12 @@
 //! processes one JSON-RPC message and returns a list of outbound JSON
 //! strings.  `lspRunLoop()` drives the stdin→dispatch→stdout loop.
 //!
-//! Known limitation: Content-Length is measured in UTF-8 bytes but
-//! Console.Read() returns UTF-16 code units.  For the ASCII-heavy JSON
-//! that normal LSP traffic contains the counts are identical; high-Unicode
-//! source names would cause a short read on the message body.  A proper
-//! binary reader would require a new kernel extern.
+//! Framing (`§2` below) is byte-exact per the LSP base protocol:
+//! `Content-Length` is the UTF-8 byte length of the body, not
+//! `String.length` (UTF-16 code units) — #7510. `lspEncodeFrame` and
+//! `lspScanFrame` are pure functions over `slice[Byte]` with no I/O, driven
+//! against real stdin/stdout by `lspReadFrame`/`writeLspFrame` through
+//! `Std.Console`'s byte-level `StdinReader`/`writeStdoutBytes` (#7451).
 package Lyric.Lsp
 
 import Std.Core
@@ -24,9 +25,10 @@ import Std.Collections
 import Std.Json
 import Std.Char
 import Std.Encoding
+import Std.Errors
 import Std.String as Str
 import Std.Parse
-import Std.ConsoleHost
+import Std.Console
 import Std.FileHost
 import Lyric.Lexer
 import Lyric.Parser
@@ -94,106 +96,251 @@ pub func lspInit(): LspState {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §2. JSON-RPC framing.
+// §2. JSON-RPC framing (Content-Length, UTF-8 byte-exact per the LSP base
+// protocol — https://microsoft.github.io/language-server-protocol/specification/#headerPart).
 // ─────────────────────────────────────────────────────────────────────────────
-func readLspFrame(): Option[String] {
-  var contentLength = -1
-  var headerDone = false
-  var eof = false
-  while not headerDone and not eof {
-    var line = ""
-    var lineHigh = -1
-    var lineDone = false
-    while not lineDone and not eof {
-      val c = hostConsoleRead()
-      // System.Console.Read() — UTF-16 code unit or -1
-      if c < 0 {
-        eof = true
-      } else if c == 10 {
-        line = lspFlushCodeUnits(line, lineHigh)
-        lineDone = true
-      } else if c == 13 {
-        // LF
-      } else {
-        // CR — skip
-        line = lspAppendCodeUnit(line, lineHigh, c)
+// Content-Length is defined as the number of UTF-8-encoded BYTES in the
+// body, never `String.length` (UTF-16 code units on the managed targets).
+// `lspEncodeFrame`/`lspScanFrame` below are pure functions over
+// `slice[Byte]` — no stdin/stdout involved — so they are unit-tested
+// directly in `lsp_self_test.l`; `lspStdinOpen`/`lspReadFrame`/
+// `writeLspFrame` drive them against the process's real stdio through
+// `Std.Console`'s byte-level `StdinReader`/`writeStdoutBytes` (#7451).
+/// Encode one outbound LSP message: a `Content-Length` header carrying the
+/// UTF-8 byte length of `json`, a blank line, then `json` itself as UTF-8
+/// bytes. Pure — no I/O.
+pub func lspEncodeFrame(json: in String): slice[Byte] {
+  val bodyBytes = encodeUtf8(json)
+  val header = "Content-Length: " + ("" + bodyBytes.length) + "\r\n\r\n"
+  val acc: List[Byte] = newList()
+  lspAppendBytes(acc, encodeUtf8(header))
+  lspAppendBytes(acc, bodyBytes)
+  acc.toArray()
+}
+
+func lspAppendBytes(acc: in List[Byte], s: in slice[Byte]): Unit {
+  var i = 0
+  while i < s.length {
+    acc.add(s[i])
+    i = i + 1
+  }
+}
+
+/// Outcome of scanning a byte buffer for the next complete LSP frame.
+pub union LspFrameScan {
+  // Not enough bytes buffered yet; read more from the peer.
+  case LspScanNeedMore
+  // The header block is malformed, or missing/invalid Content-Length.
+  case LspScanBadHeader(message: String)
+  // A complete frame: `body` is the message's raw UTF-8 bytes; `consumed`
+  // is how many bytes of the input buffer (header block + blank line +
+  // body) it occupies, so the caller can drop them and keep any bytes
+  // buffered past the frame boundary for the next scan.
+  case LspScanFrame(body: slice[Byte], consumed: Int)
+}
+
+// Guards against unbounded buffering from a peer that never sends the
+// blank line terminating the header block.
+val lspMaxHeaderBytes: Int = 65536
+
+// Largest accepted message body, the same 16 MiB cap `JsonRpc.Stdio`'s
+// `ContentLengthTransport` applies. Checked before any arithmetic on the
+// parsed length, so a `Content-Length` near `Int` max is a bad header
+// rather than an overflow panic, and a hostile length cannot make the
+// reader buffer without bound.
+val lspMaxBodyBytes: Int = 16777216
+
+// Index of the first byte of the first "\r\n\r\n" in `buf`, or -1.
+func lspFindHeaderEnd(buf: in slice[Byte]): Int {
+  var i = 0
+  val stop = buf.length - 4
+  while i <= stop {
+    if buf[i] == 13 and buf[i + 1] == 10 and buf[i + 2] == 13 and buf[i + 3] == 10 {
+      return i
+    }
+    i = i + 1
+  }
+  0 - 1
+}
+
+// The Content-Length value from a decoded header block (its lines joined
+// by "\r\n", with the trailing blank line already stripped). Other header
+// fields (e.g. an LSP client's optional `Content-Type`) are accepted and
+// ignored, per the base protocol.
+func lspParseContentLength(headerText: in String): Result[Int, String] {
+  val lines = Str.split(headerText, "\r\n")
+  var found: Option[Int] = None
+  var i = 0
+  while i < lines.length {
+    val line = lines[i]
+    if line.length > 0 {
+      val colon = Str.indexOfRaw(line, ":")
+      if colon <= 0 {
+        return Err(error = "malformed LSP header line: " + line)
+      }
+      val key = line.substring(0, colon).trim()
+      val value = line.substring(colon + 1, line.length - colon - 1).trim()
+      if key.toLower() == "content-length" {
+        match parseOptInt(value) {
+          case None -> return Err(error = "Content-Length header is not an integer: '" + value + "'")
+          case Some(n) -> {
+            if n < 0 {
+              return Err(error = "Content-Length header is negative: '" + value + "'")
+            }
+            if n > lspMaxBodyBytes {
+              return Err(error = "Content-Length " + value + " exceeds the " + ("" + lspMaxBodyBytes) + "-byte message limit")
+            }
+            found = Some(value = n)
+          }
+        }
       }
     }
-    if eof {
-    } else if line.length == 0 {
-      headerDone = true
-    } else {
-      val colon = Str.indexOfRaw(line, ":")
-      if colon > 0 {
-        val key = line.substring(0, colon).trim()
-        // BCL Substring / Trim
-        val value = line.substring(colon + 1, line.length - colon - 1).trim()
-        if key.toLower() == "content-length" {
-          match parseOptInt(value) {
-            case None -> {
+    i = i + 1
+  }
+  match found {
+    case Some(n) -> Ok(value = n)
+    case None -> Err(error = "missing Content-Length header")
+  }
+}
+
+/// Scan `buf` for one complete LSP frame. Pure: no I/O, so this and
+/// `lspEncodeFrame` are unit-testable without real stdin/stdout.
+pub func lspScanFrame(buf: in slice[Byte]): LspFrameScan {
+  val headerEnd = lspFindHeaderEnd(buf)
+  if headerEnd < 0 {
+    if buf.length > lspMaxHeaderBytes {
+      return LspScanBadHeader(
+        message = "LSP header block exceeds " + ("" + lspMaxHeaderBytes) + " bytes with no terminating blank line"
+      )
+    }
+    return LspScanNeedMore
+  }
+  val headerBytes = buf.slice(0, headerEnd)
+  match tryDecodeUtf8(headerBytes) {
+    case None -> LspScanBadHeader(message = "LSP header block is not valid UTF-8")
+    case Some(headerText) -> match lspParseContentLength(headerText) {
+      case Err(msg) -> LspScanBadHeader(message = msg)
+      case Ok(contentLength) -> {
+        val bodyStart = headerEnd + 4
+        val need = bodyStart + contentLength
+        if buf.length < need {
+          LspScanNeedMore
+        } else {
+          LspScanFrame(body = buf.slice(bodyStart, need), consumed = need)
+        }
+      }
+    }
+  }
+}
+
+/// Decode a frame body's raw bytes to the JSON text `lspHandle` expects.
+/// `None` if the body is not valid UTF-8.
+pub func lspDecodeFrameBody(bytes: in slice[Byte]): Option[String] {
+  tryDecodeUtf8(bytes)
+}
+
+// ── Driving the pure scanner against a byte source ──────────────────────────
+/// Outcome of reading one LSP message.
+pub union LspReadOutcome {
+  case LspReadFrame(json: String)
+  case LspReadEof
+  case LspReadError(message: String)
+}
+
+/// One read: its outcome plus the bytes buffered past the frame it
+/// consumed, which belong to the next read and are never dropped.
+pub record LspReadStep {
+  buf: slice[Byte]
+  outcome: LspReadOutcome
+}
+
+/// Where `lspReadFrameVia` pulls more bytes from. `read` blocks until at
+/// least one byte arrives (`Ok(Some(bytes))`), the input ends (`Ok(None)`),
+/// or the read fails (`Err(message)`). An interface rather than a closure
+/// parameter, the same seam `JsonRpc.Stdio.ByteSource` uses.
+pub interface LspByteSource {
+  func read(): Result[Option[slice[Byte]], String]
+}
+
+/// Read the next complete LSP message, starting from the bytes already in
+/// `buf` and pulling more from `src` as needed. A clean end of input is
+/// only valid strictly between frames: input ending mid-frame is a
+/// truncated stream and is reported as `LspReadError`, not swallowed. The
+/// byte source is a parameter so this state machine is testable without
+/// real stdin; `lspReadFrame` binds it to stdin.
+pub func lspReadFrameVia(buf: in slice[Byte], src: in LspByteSource): LspReadStep {
+  var cur = buf
+  while true {
+    match lspScanFrame(cur) {
+      case LspScanFrame(body, consumed) -> {
+        val rest = cur.slice(consumed, cur.length)
+        return match lspDecodeFrameBody(body) {
+          case Some(json) -> LspReadStep(buf = rest, outcome = LspReadFrame(json = json))
+          case None -> LspReadStep(buf = rest, outcome = LspReadError(message = "LSP message body is not valid UTF-8"))
+        }
+      }
+      case LspScanBadHeader(message) -> {
+        return LspReadStep(buf = cur, outcome = LspReadError(message = message))
+      }
+      case LspScanNeedMore -> {
+        match src.read() {
+          case Err(message) -> return LspReadStep(buf = cur, outcome = LspReadError(message = message))
+          case Ok(None) -> {
+            if cur.length > 0 {
+              return LspReadStep(
+                buf = cur,
+                outcome = LspReadError(
+                  message = "stdin closed with a truncated LSP frame (" + ("" + cur.length) + " bytes buffered)"
+                )
+              )
             }
-            case Some(n) -> {
-              contentLength = n
-            }
+            return LspReadStep(buf = cur, outcome = LspReadEof)
+          }
+          case Ok(Some(bytes)) -> {
+            cur = cur.concat(bytes)
           }
         }
       }
     }
   }
-  if eof or contentLength < 0 {
-    return None
-  }
-  var body = ""
-  var bodyHigh = -1
-  var rem = contentLength
-  while rem > 0 {
-    val c = hostConsoleRead()
-    if c < 0 {
-      return Some(value = lspFlushCodeUnits(body, bodyHigh))
-    }
-    body = lspAppendCodeUnit(body, bodyHigh, c)
-    rem = rem - 1
-  }
-  Some(value = lspFlushCodeUnits(body, bodyHigh))
+  LspReadStep(buf = cur, outcome = LspReadEof)
 }
 
-// Append UTF-16 code unit `c` (from `System.Console.Read`) to `acc`.  A high
-// surrogate waits in `pendingHigh` (-1 when none) for its low surrogate, and
-// the pair appends one supplementary-plane code point.  A `Char` is a BMP
-// scalar value, so an unpaired surrogate appends U+FFFD instead (#7252).
-pub func lspAppendCodeUnit(acc: in String, pendingHigh: inout Int, c: in Int): String {
-  var text = acc
-  if pendingHigh >= 0 {
-    val high = pendingHigh
-    pendingHigh = -1
-    if c >= 0xDC00 and c <= 0xDFFF {
-      return text + codepointToString(0x10000 + (high - 0xD800) * 0x400 + (c - 0xDC00))
+// Real stdin as an `LspByteSource`.
+record LspStdinSource {
+  reader: StdinReader
+}
+
+impl LspByteSource for LspStdinSource {
+  func read(): Result[Option[slice[Byte]], String] {
+    match readStdin(self.reader) {
+      case Err(e) -> Err(error = e.message())
+      case Ok(chunk) -> Ok(value = chunk)
     }
-    text = text + "�"
-  }
-  if c >= 0xD800 and c <= 0xDBFF {
-    pendingHigh = c
-    text
-  } else if c >= 0xDC00 and c <= 0xDFFF {
-    text + "�"
-  } else {
-    text + codepointToString(c)
   }
 }
 
-// `acc` with a still-unpaired high surrogate (see `lspAppendCodeUnit`) flushed
-// as U+FFFD.
-pub func lspFlushCodeUnits(acc: in String, pendingHigh: in Int): String {
-  if pendingHigh >= 0 {
-    acc + "�"
-  } else {
-    acc
-  }
+// Byte-buffered stdin cursor for the run loop: `buf` holds bytes read from
+// the peer that have not yet been consumed into a complete frame.
+record LspStdin {
+  src: LspStdinSource
+  var buf: slice[Byte]
+}
+
+func lspStdinOpen(): LspStdin {
+  val empty: slice[Byte] = []
+  LspStdin(src = LspStdinSource(reader = openStdinReader()), buf = empty)
+}
+
+// Read the next message from real stdin, advancing `s.buf`.
+func lspReadFrame(s: in LspStdin): LspReadOutcome {
+  val step = lspReadFrameVia(s.buf, s.src)
+  s.buf = step.buf
+  step.outcome
 }
 
 func writeLspFrame(json: in String): Unit {
-  val header = "Content-Length: " + ("" + json.length) + "\r\n\r\n"
-  hostConsoleWrite(header + json)
+  writeStdoutBytes(lspEncodeFrame(json))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2187,13 +2334,18 @@ pub func lspBuildWorkspaceIndex(dir: in String): Map[String, String] {
 // ─────────────────────────────────────────────────────────────────────────────
 pub func lspRunLoop(): Unit {
   val state = lspInit()
+  val stdin = lspStdinOpen()
   var keepGoing = true
   while keepGoing {
-    match readLspFrame() {
-      case None -> {
+    match lspReadFrame(stdin) {
+      case LspReadEof -> {
         keepGoing = false
       }
-      case Some(json) -> {
+      case LspReadError(message) -> {
+        error("lsp: " + message)
+        keepGoing = false
+      }
+      case LspReadFrame(json) -> {
         val responses = lspHandle(state, json)
         var i = 0
         while i < responses.count {
