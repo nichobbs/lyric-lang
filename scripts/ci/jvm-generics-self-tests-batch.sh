@@ -40,6 +40,8 @@ for t in \
   lyric-compiler/jvm/generic_element_field_read_jvm_self_test.l \
   lyric-compiler/jvm/generic_free_func_return_jvm_self_test.l \
   lyric-compiler/jvm/cross_package_type_resolution_jvm_self_test.l \
+  lyric-compiler/jvm/derive_dot_name_mangle_jvm_self_test.l \
+  lyric-compiler/jvm/dot_named_mangle_owner_match_jvm_self_test.l \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
   lyric-compiler/lyric/bare_func_ref_self_test.l \

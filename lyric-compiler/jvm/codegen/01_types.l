@@ -169,6 +169,31 @@ pub record JvmFuncSig {
   // registration time (#7337). Empty for any sig kind other than the
   // free-function registration.
   declRetExternTypes: Map[String, String]
+  // The EXACT classfile method name a call site must `invokestatic`/
+  // `invokevirtual`/`invokeinterface` to reach this function (#7501). Set
+  // once, at registration time, by whichever code minted this sig's actual
+  // emitted method — never recomputed or guessed at a call site. For a
+  // dot-named function (`func TypeName.member(...)`, hand-written or
+  // `@derive`/`@generate`-synthesised) that shares its package's host class
+  // with every other function, this is `jvmDotMethodName(TypeName, member)`
+  // (`TypeName$member`) — the mangle that keeps two different types'
+  // same-named members from colliding on one bare name and descriptor
+  // (`ClassFormatError: Duplicate method name`). For a plain free function,
+  // or a synthesised PER-TYPE static that already lives on its own
+  // dedicated class (a distinct/range-subtype's `from`/`tryFrom`, a wire
+  // factory's accessor) with nothing to disambiguate against, this is just
+  // the bare name the function is actually emitted under. Comparing a call
+  // site's resolved `sig.owner` against some locally-reconstructed "expected
+  // owner" to DECIDE whether to mangle is exactly the bug this field
+  // replaces: `owner`/simple-class-name comparisons are usually right but
+  // not always (a package whose own last path segment happens to spell the
+  // same as a type it declares, which ALSO has a same-simple-name dot-named
+  // function reachable only through the unqualified single-segment call
+  // form, is a genuine — if narrow — false positive), and a call site must
+  // never guess at something the DEFINITION SITE already knows for certain.
+  // No default per the JVM-codegen no-defaulted-field rule (see `isIface`
+  // above) — passed explicitly at every construction site.
+  jvmMethodName: String
 }
 
 // One field of a union case class, in declaration order.  A match binding
@@ -1172,6 +1197,48 @@ func lastSegment(path: in ModulePath): String {
     return ""
   }
   path.segments[n - 1]
+}
+
+// The JVM classfile method name for a dot-named function (`func
+// TypeName.member(...)`, written by hand or synthesised by `@generate`/
+// `@derive`) — every such function is emitted as a STATIC method on the
+// declaring package's shared host class, so two different types' same-named
+// members (`Point.fromJson`/`Color.fromJson`, or two hand-written
+// `A.create`/`B.create` with identical parameter lists) would otherwise
+// collide on one bare method name and descriptor (`ClassFormatError:
+// Duplicate method name`, #7501). Mangling the type into the name — JVMS
+// §4.2.2 forbids a literal `.` in an unqualified name, so `$` is used
+// instead, matching this backend's existing union-case-class convention
+// (`Type$Case`, `lowerFuncScoped`'s companion doc comment) — keeps every
+// dot-named function's classfile name unique per (type, member) pair.
+//
+// Called ONLY at registration time (`lowerFuncScoped`'s own definition-site
+// computation, and every `JvmFuncSig` construction site that registers a
+// dot-named IFunc — `collectFileSigsSeeded`'s `IFunc` arm,
+// `collectDeriveFreeSigs`), which is also where the result is stashed as
+// `JvmFuncSig.jvmMethodName` — see that field's own doc comment for why a
+// CALL SITE must never recompute or guess this name (a synthesised per-type
+// static that shares this exact `TypeName.member` lookup shape, but lives
+// on its own dedicated class, is never mangled, and only the registration
+// site reliably knows which case it is).
+pub func jvmDotMethodName(typeName: in String, memberName: in String): String {
+  typeName + "$" + memberName
+}
+
+// As `jvmDotMethodName`, but taking an already-dotted `decl.name`
+// ("TypeName.member") and splitting it at the last `.` first. Returns
+// `declName` unchanged when it carries no dot (a defensive fallback — every
+// call site here is already gated on a dot being present, e.g.
+// `isDeriveFreeName`/`lastIndexOf(decl.name, ".") -> Some(_)`).
+pub func jvmDotMethodNameFromDeclName(declName: in String): String {
+  match lastIndexOf(declName, ".") {
+    case Some(dotIdx) -> {
+      val typeName = declName.substring(0, dotIdx)
+      val memberName = declName.substring(dotIdx + 1, declName.length - dotIdx - 1)
+      jvmDotMethodName(typeName, memberName)
+    }
+    case None -> declName
+  }
 }
 
 // Join path segments with a separator.
@@ -2634,7 +2701,9 @@ pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFun
                 ownTypeParams = newList(),
                 declParamTypeExprs = newList(),
                 declRetTypeExprRaw = None,
-                declRetExternTypes = newMap()
+                declRetExternTypes = newMap(),
+                // `getstatic`, never `invoke*` — recorded for symmetry.
+                jvmMethodName = memberName
               )
             )
           }

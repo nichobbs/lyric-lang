@@ -4049,13 +4049,16 @@ func qualifiedDotNamedSigJvm(ctx: in FuncCtx, recv: in Expr, memberName: in Stri
 }
 
 // A static call to a dot-named function: arguments coerced to the declared
-// parameters, then `invokestatic` of the member name (`lowerFunc` strips the
-// `Type.` prefix from the JVM method name).
+// parameters, then `invokestatic` of `jvmName` — the exact classfile method
+// name each caller resolved (either the bare member name, for a synthesised
+// per-type static on its own dedicated class, or the `Type$member` mangle,
+// for a dot-named function sharing its package's host class; see the two
+// call sites' own doc comments, #7501).
 func lowerDotNamedStaticCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
   sig: in JvmFuncSig,
-  memberName: in String,
+  jvmName: in String,
   args: in List[CallArg],
 ): JvmType {
   var wi = 0
@@ -4066,7 +4069,7 @@ func lowerDotNamedStaticCall(
     }
     wi = wi + 1
   }
-  insns.add(LInvokestatic(owner = sig.owner, name = memberName, params = sig.params, ret = sig.ret))
+  insns.add(LInvokestatic(owner = sig.owner, name = jvmName, params = sig.params, ret = sig.ret))
   sig.ret
 }
 
@@ -4082,7 +4085,13 @@ func lowerMethodCall(
   // package's own dot-named registration, before anything below can
   // evaluate the package prefix as a value (#7478).
   match qualifiedDotNamedSigJvm(ctx, recv, memberName, args.count) {
-    case Some(qsig) -> return lowerDotNamedStaticCall(ctx, insns, qsig, memberName, args)
+    // `qsig.jvmMethodName` is the exact classfile name set at REGISTRATION
+    // time (`JvmFuncSig.jvmMethodName`'s own doc comment) — `TypeName$member`
+    // for a dot-named function sharing its package's host class (#7501), or
+    // the plain member name for a synthesised per-type static (`Type.from`/
+    // `Type.tryFrom`, a wire factory's accessor) that already lives on its
+    // own dedicated, collision-free class. Never recomputed or guessed here.
+    case Some(qsig) -> return lowerDotNamedStaticCall(ctx, insns, qsig, qsig.jvmMethodName, args)
     case None -> ()
   }
   // Auto-FFI: a call whose receiver is an extern-type name (e.g. `JMath` for
@@ -4123,7 +4132,10 @@ func lowerMethodCall(
       val scopedDotSig = mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey)
       val dotSig = match scopedDotSig { case Some(_) -> scopedDotSig; case None -> mapGet(ctx.funcSigs, distinctDotKey) }
       match dotSig {
-        case Some(sig) -> return lowerDotNamedStaticCall(ctx, insns, sig, memberName, args)
+        // Same disambiguation as `qualifiedDotNamedSigJvm`'s caller above
+        // (#7501): `sig.jvmMethodName` is the exact classfile name the
+        // REGISTRATION site set — never recomputed or guessed here.
+        case Some(sig) -> return lowerDotNamedStaticCall(ctx, insns, sig, sig.jvmMethodName, args)
         case None -> ()
       }
       // A Lyric union-case construction qualified by an IMPORTED union
@@ -4896,10 +4908,15 @@ func lowerMethodCall(
       // Synthesized free functions callable as instance methods (#1507):
       // @derive(Equals/Hash/Show/Ord) appends free functions TypeName.method(self, args...)
       // registered in funcSigs as `cls + "." + memberName` (matching the qkey in
-      // collectFileSigs: owner + "/" + decl.name).  The receiver is already on the stack
-      // as arg 0 (self); the remaining args correspond to sig.params[1..].
-      // lowerFunc strips the "TypeName." prefix from decl.name (JVMS §4.2.2 forbids dots
-      // in unqualified names), so the JVM classfile method name is just memberName.
+      // collectFileSigs: owner + "/" + decl.name — `cls` IS `owner + "/" +
+      // TypeName`, so this key format can only ever match that registration,
+      // never a synthesised per-type static's bare/scoped key, #7501).  The
+      // receiver is already on the stack as arg 0 (self); the remaining args
+      // correspond to sig.params[1..].  `sig.jvmMethodName` is the exact
+      // classfile name the REGISTRATION site set (`TypeName$member` — JVMS
+      // §4.2.2 forbids dots in unqualified names, and the bare member name
+      // alone would collide with another type's same-named derived method on
+      // the same package host class) — never recomputed or guessed here.
       match mapGet(ctx.funcSigs, cls + "." + memberName) {
         case Some(sig) -> {
           var ai = 0
@@ -4910,7 +4927,7 @@ func lowerMethodCall(
             }
             ai = ai + 1
           }
-          insns.add(LInvokestatic(owner = sig.owner, name = memberName, params = sig.params, ret = sig.ret))
+          insns.add(LInvokestatic(owner = sig.owner, name = sig.jvmMethodName, params = sig.params, ret = sig.ret))
           return sig.ret
         }
         case None -> ()

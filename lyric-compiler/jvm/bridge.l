@@ -1443,7 +1443,17 @@ func collectDeriveFreeSigs(
             paramDefaults = newList(),
             paramModes = newList(),
             isIface = false,
-            retGenericArgs = returnTypeGenericArgs(decl.ret),
+            // Eagerly resolved against the DECLARING file's own package/extern
+            // scope (`Jvm.Codegen.eagerlyResolveGenericArg`), exactly like the
+            // plain free-function registration in `collectFileSigsSeeded`
+            // (06_items.l) — otherwise a bare `TRef` naming e.g. the record
+            // itself (`Result[TypeName, String]`'s `TypeName`) is left
+            // unresolved, and a CONSUMER package's call site (`Person.
+            // fromJson(body)` where `Person` lives in another package, #7502)
+            // has no declaring-file context left to re-resolve it against, so
+            // the Ok payload stays erased `Object` unless the caller adds an
+            // explicit type annotation.
+            retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgs(decl.ret), owner, externTypes),
             // Derive-synthesized free functions (`Point.equals`, `Color.show`)
             // never return a closure by construction — nothing to recover.
             closureRetTy = None,
@@ -1456,7 +1466,12 @@ func collectDeriveFreeSigs(
             ownTypeParams = newList(),
             declParamTypeExprs = newList(),
             declRetTypeExprRaw = None,
-            declRetExternTypes = newMap()
+            declRetExternTypes = newMap(),
+            // Always dot-named here (`isDeriveFreeName` gate above) — mangled
+            // into `TypeName$member` so it doesn't collide with another
+            // type's same-named derived member on this package's shared
+            // host class (#7501).
+            jvmMethodName = jvmDotMethodNameFromDeclName(decl.name)
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1581,7 +1596,11 @@ func collectWovenSigsMatching(
             ownTypeParams = newList(),
             declParamTypeExprs = newList(),
             declRetTypeExprRaw = None,
-            declRetExternTypes = newMap()
+            declRetExternTypes = newMap(),
+            // `matchName` only ever matches `__aspect_*`/B'-mode-synthesised
+            // names, never a dotted `TypeName.member` — always bare, matching
+            // the unqualified `ECall(EPath, …)` this sig is invoked through.
+            jvmMethodName = decl.name
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -1756,7 +1775,16 @@ func collectMonoSpecializedSigs(
             ownTypeParams = newList(),
             declParamTypeExprs = newList(),
             declRetTypeExprRaw = None,
-            declRetExternTypes = newMap()
+            declRetExternTypes = newMap(),
+            // `Lyric.Mono.specFuncName` appends `__<Args>` to `base` (the
+            // original `decl.name`) unconditionally — a specialisation of a
+            // GENERIC dot-named function (`func Type.method[T](...)`) keeps
+            // its `"TypeName."` prefix, becoming e.g. `"Type.method__Int"`
+            // (both a `.` AND a `__` infix), which `lowerFuncScoped` mangles
+            // the exact same way as any other dot-named `decl.name` (#7501).
+            // A specialisation of a plain generic free function has no dot
+            // to begin with, so this is a no-op for the common case.
+            jvmMethodName = jvmDotMethodNameFromDeclName(decl.name)
           )
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
@@ -2682,6 +2710,33 @@ pub func compileProjectToJarBundledWithRestored(
     }
   }
 
+  // #7502: pre-register every bundled/sibling package's own derive-
+  // synthesised dot-named signatures (`Point.fromJson`, `Point.equals`, …)
+  // BEFORE the user's own package is codegen'd below — `codegenPackageInto`
+  // for `userFile` (a few hundred lines down) runs strictly BEFORE the
+  // `toBundle` compile loop that otherwise registers these (the loop this
+  // very fix's sibling-package `collectDeriveFreeSigs` call lives in, at
+  // the bottom of this function), so a CALL FROM the user's own entry
+  // package into a sibling's `@generate`/`@derive` function — the exact
+  // shape of a multi-package project calling a library's `T.fromJson(...)`
+  // — still fell through to the erased auto-FFI guess without this. Plain
+  // `Derives.deriveFile` (not the full `runMiddleEnd` pipeline) is enough
+  // here: a synthesised dot-named function's declared signature comes
+  // straight from its OWN record's field types, needing no cross-package
+  // type-check context — only the LATER real compile (the `toBundle` loop)
+  // needs the full pipeline, for the function BODY's bytecode. First-wins
+  // registration (`collectDeriveFreeSigs`'s own `into.containsKey` guards)
+  // makes running it again there, on the post-middle-end file, a no-op.
+  var dpi = 0
+  while dpi < toBundle.count {
+    collectDeriveFreeSigs(
+      Derives.deriveFile(toBundle[dpi]),
+      registry,
+      externSeedForFile(toBundle[dpi], extPkgNames, extPkgMaps, pkgImportNames)
+    )
+    dpi = dpi + 1
+  }
+
   // ── Call-reachability fixpoint (J1 B-6, #2664) ──────────────────────────
   // Build a function-level call graph over the user package plus every bundled
   // package: each function's canonical key (`owner/name`) maps to the keys of
@@ -3093,6 +3148,17 @@ pub func compileProjectToJarBundledWithRestored(
       val siblingRecvClasses: Map[String, String] = newMap()
       match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses) {
         case Some(ff) -> {
+          // #7502: register THIS bundled/sibling package's own
+          // derive-synthesised free functions (`Point.fromJson`, `Point.
+          // equals`, …) too — `collectFileSigsSeeded` ran earlier on the
+          // PRE-derive `toBundle[bi]` source and therefore missed them
+          // (same #3139 rationale `collectDeriveFreeSigs`'s call for the
+          // user's own file, above, documents), so a call from a DIFFERENT
+          // package to one of this package's `@derive`/`@generate`
+          // functions fell through to the erased `(…)Object` auto-FFI
+          // guess (`auto-FFI: class '<pkg>.<Type>' not found`) instead of
+          // resolving through the registered static call.
+          collectDeriveFreeSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames))
           collectAspectWovenSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames))
           collectBModeWovenSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames))
           collectMonoSpecializedSigs(ff, registry, externSeedForFile(ff, extPkgNames, extPkgMaps, pkgImportNames), ctorReg)

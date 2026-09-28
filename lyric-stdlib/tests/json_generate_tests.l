@@ -3,9 +3,11 @@
 //! A synthesised `fromJson` parses its body once and decodes nested records
 //! and slice elements through `fromJsonElement` from the same document. These
 //! cases pin the decoded values and the exact `Err` text for every rejection
-//! path. CI runs them on `--target dotnet`; on `--target jvm` a package with
-//! two `@generate(Json)` records does not load yet (both `fromJson` methods
-//! get the same JVM name and descriptor, see D-progress-1002).
+//! path. CI runs them on `--target dotnet` (in this file's own loop) and on
+//! `--target jvm` (scripts/ci/json-generate-jvm-test.sh — a package with two
+//! `@generate(Json)` records failed to load there until the JVM backend
+//! mangled a dot-named function's classfile name with its declaring type,
+//! see D-progress-1002, #7501, #7502).
 package Std.Json.GenerateTests
 
 import Std.Core
