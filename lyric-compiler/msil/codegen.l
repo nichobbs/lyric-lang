@@ -8196,6 +8196,70 @@ func emitRangeCheckedToCharMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in
   insns.add(MLabel(id = okL))
 }
 
+// `.toNat()` (#2050/Band 4): a checked widen-to-`Nat` (erased to `int64`,
+// same as `.toLong()`). `Byte`/`Char` receivers are always non-negative by
+// construction (Byte is unsigned 0..255, Char is a BMP scalar 0..65535) so
+// they skip the check and just widen. `Int`/`Long`/`Double` are range-checked
+// for negativity (a truncated-toward-zero `Double` is checked against its
+// original, untruncated value so a fractional value like `-0.5` still fails)
+// before widening, throwing `OverflowException` — the same exception type
+// `.toChar()`'s checked narrowing throws on .NET — on failure.
+func emitCheckedToNatMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
+  match recvTy {
+    case MByte -> insns.add(MConvI8)
+    case MChar -> insns.add(MConvI8)
+    case _ -> {
+      val excCtor = systemExcCtorTokenMsil(cctx, "OverflowException")
+      val msgTok = ctxInternUs(cctx.lctx, toNatRangeMessage())
+      val okL = freshLabelMsil(fctx)
+      val failL = freshLabelMsil(fctx)
+      match recvTy {
+        case MDouble -> {
+          // The value is truncated toward zero below (matching .toInt()/
+          // .toLong()'s narrowing semantics), so -0.5 truncates to a valid
+          // Nat (0) — the bound is an EXCLUSIVE -1.0, not 0.0, exactly
+          // mirroring emitRangeCheckedToCharMsil's Double branch. `cgt`
+          // against -1.0 is false (unordered) for NaN too, taking the same
+          // failure branch a genuinely-too-negative value takes.
+          insns.add(MDup)
+          insns.add(MLdcR8(v = 0.0 - 1.0))
+          insns.add(MCgt)
+          insns.add(MBrFalse(label = failL))
+          insns.add(MBr(label = okL))
+        }
+        case MLong -> {
+          insns.add(MDup)
+          insns.add(MLdcI8(v = 0i64))
+          insns.add(MClt)
+          insns.add(MBrTrue(label = failL))
+          insns.add(MBr(label = okL))
+        }
+        case _ -> {
+          insns.add(MDup)
+          insns.add(MLdcI4(v = 0))
+          insns.add(MClt)
+          insns.add(MBrTrue(label = failL))
+          insns.add(MBr(label = okL))
+        }
+      }
+      insns.add(MLabel(id = failL))
+      insns.add(MLdStr(token = msgTok))
+      insns.add(MNewobj(ctorToken = excCtor))
+      insns.add(MThrow)
+      insns.add(MLabel(id = okL))
+      match recvTy {
+        case MDouble -> insns.add(MConvI8)
+        case MLong -> ()
+        case _ -> insns.add(MConvI8)
+      }
+    }
+  }
+}
+
+func toNatRangeMessage(): String {
+  "toNat: value must be non-negative"
+}
+
 // Cross-package call resolution helper (#1183 Phase 2).  Walks `imports`
 // — the dotted-name list of packages imported by the calling site's
 // package — and returns the first `<imp>.<funcName>` key that exists in
@@ -18649,6 +18713,55 @@ func lowerSliceSliceMsil(
   }
 }
 
+// `xs.toList()` (#2050 gotcha): a genuine `List[T]` holding a shallow copy of
+// `xs`'s elements, the round-trip shuttle back from `List[T].toArray()`
+// (typechecker_exprs.l's `inferMemberBase` gives this call a real `List`
+// `TypeId`, so the result binds wherever a `List[T]` is expected). Unlike
+// `.append`/`.concat`/`.slice` above, the destination is always a genuine
+// `MConcreteList(e)` — never the legacy erased `List<object>` fallback —
+// because the type checker already requires `List` to resolve to a concrete
+// type symbol before this call type-checks at all, so `arrayElemTokenOpt`
+// having no token for `e` (record/union elements) does not need a fallback
+// path here the way the array-literal / array-producing slice ops do.
+func lowerSliceToListMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], recvTy: in MsilType): MsilType {
+  val recvSlot = allocSlotMsil(fctx, "__slicetolist_recv_" + toString(fctx.slotTicker.count), recvTy)
+  emitStoreSlot(insns, recvSlot, fctx.paramCount)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  emitListCastRecv(cctx, insns, recvTy)
+  emitListGetCount(cctx, insns, recvTy)
+  val cntSlot = allocSlotMsil(fctx, "__slicetolist_cnt_" + toString(fctx.slotTicker.count), MInt)
+  emitStoreSlot(insns, cntSlot, fctx.paramCount)
+  val e = match recvTy { case MArray(ee) -> ee; case _ -> MObject }
+  insns.add(MListOp(op = LoCtor, elemTy = e))
+  val newSlot = allocSlotMsil(fctx, "__slicetolist_new_" + toString(fctx.slotTicker.count), MConcreteList(elemTy = e))
+  emitStoreSlot(insns, newSlot, fctx.paramCount)
+  val iSlot = allocSlotMsil(fctx, "__slicetolist_i_" + toString(fctx.slotTicker.count), MInt)
+  insns.add(MLdcI4(v = 0))
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
+  val loopL = freshLabelMsil(fctx)
+  val afterL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = loopL))
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  emitLoadSlot(insns, cntSlot, fctx.paramCount)
+  insns.add(MClt)
+  insns.add(MBrFalse(label = afterL))
+  emitLoadSlot(insns, newSlot, fctx.paramCount)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  emitListCastRecv(cctx, insns, recvTy)
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  emitListGetItem(cctx, insns, recvTy)
+  castObjectToMsil(cctx, insns, e)
+  insns.add(MListOp(op = LoAdd, elemTy = e))
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  insns.add(MLdcI4(v = 1))
+  insns.add(MAdd)
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
+  insns.add(MBr(label = loopL))
+  insns.add(MLabel(id = afterL))
+  emitLoadSlot(insns, newSlot, fctx.paramCount)
+  MConcreteList(elemTy = e)
+}
+
 // A `Self`-declared return substituted against the CALL SITE's own known
 // concrete receiver class (#6434/#6435, the MSIL analog of JVM's
 // `narrowSelfCallResult`, #6431/D-progress-756).  `cctx.methodRetTypes[key]`
@@ -19978,12 +20091,14 @@ func lowerMethodCallMsil(
       insns.add(MShr)
     }
     recvTy
-  } else if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble") and args.count == 0 and isNumericMsil(recvTy) {
-    // Numeric / character primitive conversion intrinsics (#1901).  The receiver
-    // value is already on the stack; emit the CLI `conv.*` opcode for the target
-    // width.  These are the surface conversions for moving between Lyric's
-    // numeric primitives (e.g. `slice[Byte]` element -> `Int` for arithmetic),
-    // replacing the legacy free-function forms (`intToLong`/`longToInt`).
+  } else if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble" or memberName == "toNat") and args.count == 0 and isNumericMsil(recvTy) {
+    // Numeric / character primitive conversion intrinsics (#1901, toNat added
+    // for #2050/Band 4's Int/Long/Byte/Char/Double -> Nat direction).  The
+    // receiver value is already on the stack; emit the CLI `conv.*` opcode for
+    // the target width.  These are the surface conversions for moving between
+    // Lyric's numeric primitives (e.g. `slice[Byte]` element -> `Int` for
+    // arithmetic), replacing the legacy free-function forms
+    // (`intToLong`/`longToInt`).
     if memberName == "toByte" {
       insns.add(MConvU1)
       MByte
@@ -19996,6 +20111,16 @@ func lowerMethodCallMsil(
     } else if memberName == "toDouble" {
       insns.add(MConvR8)
       MDouble
+    } else if memberName == "toNat" {
+      // `Nat` erases to the same `int64` as `Long` (see typeExprToMsilCtx's
+      // "Nat" arm), so this widens/truncates exactly like `.toLong()` — but
+      // checked: Nat's invariant is non-negative, so a negative Byte/Int/
+      // Long/Double receiver value throws `OverflowException` rather than
+      // silently producing an out-of-invariant Nat. Byte and Char receivers
+      // can never be negative (Byte is unsigned 0..255; Char is a BMP scalar
+      // 0..65535) so they skip the check.
+      emitCheckedToNatMsil(cctx, fctx, insns, recvTy)
+      MLong
     } else {
       insns.add(MConvI4)
       MInt
@@ -20006,6 +20131,8 @@ func lowerMethodCallMsil(
     lowerSliceConcatMsil(cctx, fctx, insns, recvTy, args)
   } else if memberName == "slice" and args.count == 2 and isSliceRecvMsil(recvTy) {
     lowerSliceSliceMsil(cctx, fctx, insns, recvTy, args)
+  } else if memberName == "toList" and args.count == 0 and isSliceRecvMsil(recvTy) {
+    lowerSliceToListMsil(cctx, fctx, insns, recvTy)
   } else {
     match recvTy {
       case MString -> {
