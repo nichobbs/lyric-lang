@@ -1,4 +1,4 @@
-# CI: JVM ecosystem suites run three at a time (#PR)
+# CI: JVM ecosystem suites run three at a time (#7612)
 
 `scripts/ci/jvm-ecosystem-suites.sh` ran its seven `--target jvm` library
 suites (storage, resilience, jsonrpc, mcp, health, generator-sdk, web) one
