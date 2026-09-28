@@ -27,30 +27,18 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
 
 failed=""
 for lib in storage resilience jsonrpc mcp health generator-sdk web; do
   echo "=== lyric-$lib (--target jvm) ==="
+  # `web` needs its Maven dependency restored first; the shared helper
+  # installs mvn if missing, builds the resolver under the same lock as the
+  # other Maven call sites (#7108), restores, then runs the suite.
+  runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
   if [ "$lib" = "web" ]; then
-    # Same lock as ci.yml's other `make maven-resolver` callers (the
-    # lyric-web Undertow smoke step, the JVM auto-FFI bridge self-test) —
-    # avoids two concurrent `mvn package` builds racing into the same
-    # resolver/target/ output directory (#7108 follow-up).
-    if ! flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'; then
-      echo "::error::make maven-resolver failed; cannot restore lyric-web's Undertow dependency"
-      failed="$failed lyric-web"
-      continue
-    fi
-    export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
-    if [ ! -x "$lyric_bin" ] || ! "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"; then
-      echo "::error::lyric restore --manifest lyric-web/lyric.toml failed"
-      failed="$failed lyric-web"
-      continue
-    fi
+    runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
   fi
-  if ! bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml" --target jvm --no-default-features --features jvm; then
+  if ! "${runner[@]}" --target jvm --no-default-features --features jvm; then
     echo "::error::lyric-$lib suite failed on --target jvm"
     failed="$failed lyric-$lib"
   fi

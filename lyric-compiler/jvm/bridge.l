@@ -1894,8 +1894,8 @@ pub func compileToJarBundledWithRestored(
 // True when `file` declares at least one `config { }` block (bare, or a
 // `config X from Template { }` materialisation — `Lyric.WireExpand` fully
 // expands the latter into a plain `IConfig` item on the CONSUMING file
-// before this bridge ever sees it, docs/58).  Used by
-// `configBlockNeedsEnvironmentHost` below (#7594).
+// before this bridge ever sees it, docs/58).  Used to force
+// `Std.EnvironmentHost` into the bundle (#7594).
 func fileHasConfigBlock(file: in SourceFile): Bool {
   var i = 0
   while i < file.items.count {

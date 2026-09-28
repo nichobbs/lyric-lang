@@ -7278,11 +7278,15 @@ func lowerFuncsToClass(
 // gives for free on `--target dotnet` (there it mutates the real process
 // environment block `Environment.GetEnvironmentVariable` reads from
 // directly; the JVM has no `setenv(3)` equivalent, hence the overlay).
+// Unlike `hostGetVarOpt`, which reports an overlaid "" as `Some("")`, the
+// shared `isEmpty` check after the merge treats an empty value from EITHER
+// source as absent: config fields fall back to their default on "" by
+// design (#6204), the same rule the MSIL `.cctor`'s `IsNullOrEmpty` applies.
 // `Jvm.Bridge`'s bundler forces `Std.EnvironmentHost` into the reachable
 // package set whenever a compilation unit has an `IConfig` item (see
-// `configBlockNeedsEnvironmentHost` at its call site) so this `getstatic`
-// always resolves at runtime, even for a file that never itself imports
-// `Std.Environment`.
+// `fileHasConfigBlock` at its call site) so this `getstatic` always
+// resolves at runtime, even for a file that never itself imports
+// `Std.Environment` (`config_block_no_env_import_self_test.l`).
 //
 // One shared local slot (`tmp`, always slot 0 — `<clinit>` has no `this` and
 // no params) is reused sequentially across every field: safe because

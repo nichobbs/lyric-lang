@@ -35,8 +35,9 @@
 //! and `Jvm.Bridge` to force `Std.EnvironmentHost` into the JVM bundle
 //! whenever a compilation unit has a `config { }` block (or the `getstatic`
 //! this needs dangles for a file that never itself imports
-//! `Std.Environment`) — see `configSetVarOverlaySelfTest` below, the
-//! regression pin for both halves of that fix, on both targets.
+//! `Std.Environment`). The `setVar` case below pins the overlay half on
+//! both targets; this file imports `Std.Environment`, so the bundling half
+//! is pinned separately by `config_block_no_env_import_self_test.l`.
 //!
 //! The REQUIRED field and the plain env-override cases below still read env
 //! vars the harness exports into the process environment BEFORE `lyric
