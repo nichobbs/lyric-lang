@@ -22,18 +22,31 @@
 //! since template materialisation and the wire "config-instance-as-value"
 //! rewrite are outside #3228's scope.
 //!
-//! ── Why no `Std.Environment.setVar` here ──────────────────────────────────
-//! `config_templates_self_test.l` sets its env-var overrides at runtime via
-//! `Env.setVar`. That works on `--target dotnet` (the CLR supports real
-//! `SetEnvironmentVariable`), but `Std.Environment.setVar` is a DOCUMENTED
-//! no-op on `--target jvm` (`lyric-stdlib/std/_kernel_jvm/environment_host.l`
-//! `hostSetEnvironmentVariable`: "SetEnvironmentVariable has no portable JVM
-//! equivalent... This is a no-op stub") — a pre-existing, unrelated JVM
-//! stdlib limitation, not something #3228 touches. So the REQUIRED field and
-//! the env-override cases here read env vars the harness exports into the
-//! process environment BEFORE `lyric test` runs (inherited by the `java`
-//! subprocess `--target jvm` shells out to), not vars set from inside the
-//! test body. Export before running EITHER target:
+//! ── `Std.Environment.setVar` and the REQUIRED/env-override cases ─────────
+//! `Std.Environment.setVar` used to be a documented no-op on `--target jvm`
+//! (`hostSetEnvironmentVariable`: "SetEnvironmentVariable has no portable
+//! JVM equivalent... This is a no-op stub"); #7577 gave it a process-wide
+//! overlay (`Std.EnvironmentHost.envOverlay`) that `Std.Environment.getVar`
+//! consults, but a `config { }` block's `<clinit>` read `System.getenv`
+//! directly on `--target jvm`, bypassing that overlay entirely (#7594) — so
+//! `Env.setVar` still had no observable effect on a config field's value
+//! there.  #7594 fixed `Jvm.Lowering.lowerConfigBlock` to check the overlay
+//! first (mirroring `hostGetVarOpt`'s own logic, inlined as raw bytecode)
+//! and `Jvm.Bridge` to force `Std.EnvironmentHost` into the JVM bundle
+//! whenever a compilation unit has a `config { }` block (or the `getstatic`
+//! this needs dangles for a file that never itself imports
+//! `Std.Environment`). The `setVar` case below pins the overlay half on
+//! both targets; this file imports `Std.Environment`, so the bundling half
+//! is pinned separately by `config_block_no_env_import_self_test.l`.
+//!
+//! The REQUIRED field and the plain env-override cases below still read env
+//! vars the harness exports into the process environment BEFORE `lyric
+//! test` runs (inherited by the `java` subprocess `--target jvm` shells out
+//! to), not vars set from inside the test body — this exercises the
+//! `System.getenv`/`GetEnvironmentVariable` FALLBACK path (an env var the
+//! overlay was never told about), which is just as load-bearing a case as
+//! the overlay path itself and needs no `Env.setVar` to exercise. Export
+//! before running EITHER target:
 //!
 //!   export LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_PORT=9090
 //!   export LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_OVERRIDES_LIMIT=4294967296
@@ -72,6 +85,7 @@
 package Lyric.ConfigBlockSelfTest
 
 import Std.Core
+import Std.Environment as Env
 import Std.Testing
 
 config Defaults {
@@ -104,6 +118,18 @@ config EmptyOverride {
   host: String = "default-host"
 }
 
+// #7594: `Env.setVar` set at RUNTIME (not exported into the process before
+// `lyric test` runs, unlike `Overrides`/`Required`/`EmptyOverride` above)
+// must be observed by a config field's env read on BOTH targets. Its own
+// config block, so no earlier method touching `SetVarOverride` could run
+// its `<clinit>`/static initializer before the `setVar` call below —
+// exactly the same "set and read in separate test methods, no earlier
+// reference" discipline `config_templates_self_test.l` /
+// `webtls_config_tests.l` use for their own env-override cases.
+config SetVarOverride {
+  host: String = "default-setvar-host"
+}
+
 test "defaulted fields read back their declared defaults" {
   assertEqualInt(Defaults.port, 8080, "Int default")
   assertEqualLong(Defaults.limit, 1099511627776, "Long default")
@@ -129,4 +155,13 @@ test "required field satisfied by env var reads back the set value" {
 
 test "env var explicitly set to empty string falls back to the declared default" {
   assertEqual(EmptyOverride.host, "default-host", "empty-string env var must not win over the default")
+}
+
+test "set the SetVarOverride env override before SetVarOverride is first touched" {
+  Env.setVar("LYRIC_CONFIG_LYRIC_CONFIGBLOCKSELFTEST_SETVAROVERRIDE_HOST", "from-setvar")
+  assertTrue(true, "env override set for the paired read below")
+}
+
+test "Env.setVar's overlay is observed by a config block field, on both targets (#7594)" {
+  assertEqual(SetVarOverride.host, "from-setvar", "setVar's overlay wins over the declared default")
 }

@@ -1043,10 +1043,13 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // takes generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val perPkgChecked: List[SourceFile] = newList()
   val perPkgNames: List[String] = newList()
+  // Every package sees the same registered set (#7583): build it, and its
+  // flat item view, once rather than per package.
+  val importedPkgs = perPackageImportedPackages(baseImportedPkgs, inBundleItems, inBundleImports, baseNames)
+  val importedItems = flattenImportedItems(importedPkgs)
   var ti = 0
   while ti < parsedPkgs.count {
     val pp: ParsedUserPkg = parsedPkgs[ti]
-    val importedPkgs = perPackageImportedPackages(baseImportedPkgs, inBundleItems, inBundleImports, baseNames)
 
     // Middle end through mono (`Lyric.Pipeline` owns the order); the
     // weave runs in Phase 3 below, after aspect templates are collected
@@ -1069,7 +1072,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       checkedSourceOut = projOptsCheckedOut,
       memberRecvClassesOut = projOptsRecvOut
     )
-    val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, flattenImportedItems(importedPkgs), allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
+    val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, importedItems, allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f
       case None -> return false
     }

@@ -305,9 +305,8 @@ pub func monotonicNanos(): Long {
 /// immediately.  Synchronous (unlike `Std.Task.delay`, which is awaitable);
 /// intended for simple poll loops such as `lyric run/build --watch`.
 ///
-/// Note: the JVM runtime binding is a Phase 6 deliverable; calling this function
-/// from a JVM-target program will fail at runtime until the JVM host shims ship
-/// (tracked under the JVM production-readiness plan, docs/44).
+/// Implemented on `dotnet` (`Thread.Sleep`), `jvm` (`Thread.sleep`), and
+/// native (`lyric_rt`) — works on every target.
 pub func sleepMillis(ms: in Int): Unit {
   if ms <= 0 {
     return

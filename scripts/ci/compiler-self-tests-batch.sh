@@ -54,6 +54,7 @@ for t in \
   lyric-compiler/lyric/result_generic_specialization_self_test.l \
   lyric-compiler/lyric/alias_impl_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
+  lyric-compiler/lyric/config_block_no_env_import_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_contracts_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/quantifier_ident_self_test.l \

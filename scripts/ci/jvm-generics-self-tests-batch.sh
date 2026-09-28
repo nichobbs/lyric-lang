@@ -44,6 +44,7 @@ for t in \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
   lyric-compiler/lyric/bare_func_ref_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
+  lyric-compiler/lyric/config_block_no_env_import_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_contracts_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/contract_generic_call_self_test.l \

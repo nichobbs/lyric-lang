@@ -212,10 +212,14 @@ affected by this constraint — `.new(args)` is safe to use there today.
   **including** the `org.quartz.Scheduler` binding this document's
   original text above called "genuine FFI, not a stub"; that claim should
   be re-verified against this finding, not taken at face value), `lyric-ws`
-  (JVM), `lyric-feature-flags`, `lyric-web` (JVM), `lyric-grpc`,
+  (JVM), `lyric-feature-flags`, `lyric-grpc`,
   `lyric-otel`, `lyric-aws-secrets`, `lyric-auth` (JVM), `lyric-aws-xray`,
   and `lyric-session` (JVM, `redis` feature) — none independently verified
-  as part of this pass. `Std.Json`'s JVM kernel was already migrated off
+  as part of this pass. `lyric-web` (JVM) was independently checked and
+  does NOT use this pattern — `Web.Kernel.Runtime`'s JVM kernel
+  (`src/_kernel/jvm/web_kernel.l`) uses `extern type` + auto-FFI
+  throughout, no bare `extern package`; its full manifest test suite
+  passes on `--target jvm` (#7578). `Std.Json`'s JVM kernel was already migrated off
   this exact pattern (D-progress-555) after discovering it produced
   `NoClassDefFoundError`/`VerifyError` at runtime; that migration is the
   template for the real fix (either implement `extern package` codegen in

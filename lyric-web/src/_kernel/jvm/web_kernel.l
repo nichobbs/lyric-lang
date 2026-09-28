@@ -38,6 +38,7 @@ import Std.Core
 import Resilience
 import Std.Collections
 import Std.Console as Console
+import Std.Time
 import Std.Tls
 import Std.HttpServer
 import Std.HttpEngine
@@ -264,6 +265,77 @@ impl JHttpHandler for LyricUndertowHandler {
   }
 }
 
+// ─── Worker loop (issue #5359's JVM twin, issue #7578) ──────────────────────
+// `_kernel/net/web_kernel.l`'s `startWorkerLoop` runs each registered
+// `Worker` forever on a fire-and-forget `Task.Run`; this mirrors it with a
+// fire-and-forget virtual thread (`Executors.newVirtualThreadPerTaskExecutor`)
+// instead — Undertow already runs its own XNIO I/O/worker pool, so a plain
+// unbounded virtual-thread-per-worker executor composes the same way the
+// `.NET` kernel's thread-pool task does, without competing with Undertow's
+// own pools for platform threads.
+//
+// A Lyric closure cannot be handed to an arbitrary JDK functional interface
+// directly (the strongly-typed-delegate FFI, docs/50, is scoped to
+// `@externTarget` function parameters) — `WorkerLoopRunnable` implements the
+// real `java.lang.Runnable` via `impl` instead, the same pattern
+// `LyricUndertowHandler` above uses for `HttpHandler`.
+extern type JRunnable = "java.lang.Runnable"
+
+extern type JExecutorService = "java.util.concurrent.ExecutorService"
+
+@externStatic
+@externTarget("java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor")
+func newVirtualThreadPerTaskExecutor(): JExecutorService = ()
+
+// One process-wide executor for every registered worker across every
+// `Web.serve`/`serveTls` call in this process — mirrors the `.NET` kernel's
+// shared `Task.Run` thread-pool dispatch.
+val workerExecutor: JExecutorService = newVirtualThreadPerTaskExecutor()
+
+record WorkerLoopRunnable {
+  intervalMs: Int
+  handler: Web.Worker
+}
+
+impl JRunnable for WorkerLoopRunnable {
+  // Each `tick()` is crash-isolated (#6935), mirroring `_kernel/net/
+  // web_kernel.l`'s `startWorkerLoop` loop body exactly: a failing tick is
+  // logged and the loop keeps going on its next interval, instead of
+  // silently and permanently stopping (this loop's `Future` is never
+  // observed, so an uncaught exception would otherwise vanish).
+  func run(): Unit {
+    while true {
+      Time.sleepMillis(self.intervalMs)
+      try {
+        self.handler.tick()
+      } catch Bug as e {
+        Console.error("[lyric-web] worker tick failed: " + e.message)
+      }
+    }
+  }
+}
+
+/// Start `worker.tick()` running forever on a background virtual thread,
+/// once every `intervalMs`.  Fire-and-forget: the submitted task's `Future`
+/// is deliberately discarded — `Web.serve`'s Undertow listener runs for the
+/// life of the process, so there is nothing to join.
+pub func startWorkerLoop(intervalMs: in Int, handler: in Web.Worker): Unit {
+  val runnable: JRunnable = WorkerLoopRunnable(intervalMs = intervalMs, handler = handler)
+  val _ = workerExecutor.submit(runnable)
+}
+
+// Fire every registered worker once, in the background — mirrors `web.l`'s
+// dotnet-only `startWorkers` (called from its `serve`/`serveStreaming`),
+// which cannot itself be shared across targets: it is defined
+// `@cfg(feature = "dotnet")` because it calls `HttpKernel.startWorkerLoop`
+// with dotnet's `Task`-returning signature.  `serve`/`serveTls` below call
+// this JVM-native twin directly instead.
+func startJvmWorkers(router: in Web.Router): Unit {
+  for w in router.workers {
+    startWorkerLoop(w.intervalMs, w.handler)
+  }
+}
+
 /// Start the Undertow HTTP server and block the calling thread forever
 /// (until the JVM process is terminated externally — SIGTERM/SIGINT).
 /// Undertow's own XNIO I/O and worker threads handle concurrent requests;
@@ -277,6 +349,7 @@ pub func serve(host: in String, port: in Int, router: in Web.Router): Unit
   val handler: JHttpHandler = LyricUndertowHandler(router = router)
   val server: JUndertow = JUndertow.builder().addHttpListener(port, host).setHandler(handler).build()
   server.start()
+  startJvmWorkers(router)
   val latch = JCountDownLatch.new(1)
   latchAwaitForever(latch)
 }
@@ -343,6 +416,7 @@ pub func serveTls(host: in String, port: in Int, tls: in TlsServerConfig, router
   val _handler = builder.setHandler(handler)
   val server: JUndertow = builder.build()
   server.start()
+  startJvmWorkers(router)
   val latch = JCountDownLatch.new(1)
   latchAwaitForever(latch)
 }

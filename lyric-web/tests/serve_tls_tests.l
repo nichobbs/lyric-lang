@@ -1,26 +1,34 @@
-//! tests/serve_tls_tests.l — dotnet end-to-end + target-neutral tests for
+//! tests/serve_tls_tests.l — end-to-end + target-neutral tests for
 //! lyric-web's TLS server surface (docs/61 §6.3, phase 3.4 of epic #5874,
-//! issue #5885).
+//! issue #5885).  Runs on both `--target dotnet` and `--target jvm`
+//! (#7578); the socket round trip (including mTLS) exercises real
+//! backend-specific TLS termination on each.
 //!
-//! Since phase 3.4, `Web.serveTls` terminates TLS for real on `--target
-//! dotnet` via `Std.HttpServer.startListenerTls` (the pure-Lyric sans-IO
+//! On `--target dotnet`, `Web.serveTls` terminates TLS for real via
+//! `Std.HttpServer.startListenerTls` (the pure-Lyric sans-IO
 //! `Std.HttpEngine` over the `Std.TcpHost` `TcpListener`/`SslStream`
-//! transport that replaced `HttpListener`).  This suite drives a REAL
-//! `Web.serveTls` listener with the REAL Lyric HTTPS client
-//! (`HttpClientBuilder`, #5877) in-process and asserts the round trip,
-//! including mTLS (dotnet supports it; the JVM Undertow listener does not
-//! yet — that path is exercised by `tests/jvm_server_smoke.l`).
+//! transport that replaced `HttpListener`).  On `--target jvm`, it
+//! delegates to `Web.Kernel.Runtime`'s Undertow binding, which terminates
+//! TLS (and mTLS, issue #6017) via a real `javax.net.ssl.SSLContext`.  This
+//! suite drives a REAL `Web.serveTls` listener with the REAL Lyric HTTPS
+//! client (`HttpClientBuilder`, #5877) in-process and asserts the round
+//! trip on whichever target it is compiled for.
 //!
-//! dotnet-only e2e: the in-process loopback needs the blocking `Web.serveTls`
-//! accept loop and the client to run on separate OS threads (Lyric `spawn` is
-//! degenerate-synchronous on `--target dotnet`, D119/D120), so the server runs
-//! on a `System.Threading.Tasks.Task`.  Declaring those `extern`s in a test
-//! file mirrors `stdlib/tests/tcp_host_tls_tests.l` — a documented test-only
-//! exception to the `_kernel/`-only extern rule for driving the opposite side
-//! of a real protocol.  `Web.serveTls` blocks forever once bound, so each
-//! server task is started and left running (the bounded client poll below
-//! tolerates the async bind); the test process reclaims the threads/ports on
-//! exit.  Distinct ports per test keep the listeners independent.
+//! Starting the server differs by target: on `dotnet`, the in-process
+//! loopback needs the blocking `Web.serveTls` accept loop and the client to
+//! run on separate OS threads (Lyric `spawn` is degenerate-synchronous on
+//! `--target dotnet`, D119/D120), so the server runs on a
+//! `System.Threading.Tasks.Task` — declaring that `extern` in a test file
+//! mirrors `stdlib/tests/tcp_host_tls_tests.l`, a documented test-only
+//! exception to the `_kernel/`-only extern rule for driving the opposite
+//! side of a real protocol.  On `jvm`, `Web.Kernel.Runtime.serveTls`'s
+//! `server.start()` returns immediately (Undertow's own XNIO I/O/worker
+//! pool serves concurrently), so no background task is needed at all.
+//! Either way `Web.serveTls` never returns in normal operation once bound,
+//! so each server is started and left running (the bounded client poll
+//! below tolerates the async dotnet bind); the test process reclaims the
+//! threads/ports on exit.  Distinct ports per test keep the listeners
+//! independent.
 //!
 //! The target-neutral surface (`ServeTlsError.message`, the `WebTls` config
 //! template + its env-var override, and `tlsServerConfigFromWebTls`'s success
@@ -35,6 +43,7 @@ import Std.Tls
 import Std.Http
 import Std.File
 import Std.Environment as Env
+import Std.Time as Time
 import Web
 import Std.Testing
 
@@ -216,15 +225,13 @@ BYr/w9ucuC11rYllBCEkxQ==
 // real concurrency `spawn` cannot on this target (see the module header). The
 // Lyric `() -> Unit` closure binds to `System.Action` through the D122 delegate
 // bridge, exactly as the transport-kernel test `tcp_host_tls_tests.l` does.
+@cfg(feature = "dotnet")
 extern type Task = "System.Threading.Tasks.Task"
 
+@cfg(feature = "dotnet")
 @externStatic
 @externTarget("System.Threading.Tasks.Task.Run")
 func taskRun(work: in () -> Unit): Task = ()
-
-@externStatic
-@externTarget("System.Threading.Thread.Sleep")
-func threadSleep(ms: in Int): Unit = ()
 
 func fixtureConfig(): Std.Tls.TlsServerConfig {
   match Identity.fromPem(certPem, keyPem) {
@@ -263,16 +270,17 @@ impl Web.Handler for HelloHandler {
   }
 }
 
-// Start `Web.serveTls` on a background task and drive it with the real Lyric
-// HTTPS client (`client`, which trusts the fixture cert) in a bounded poll:
-// the server binds asynchronously on its task, so the GET is retried until the
-// socket accepts, up to a total budget.  The first successful response ends the
-// loop and its (status, body) is returned; an exhausted budget returns
-// `(0, "")`.
+// Start `Web.serveTls` and drive it with the real Lyric HTTPS client
+// (`client`, which trusts the fixture cert) in a bounded poll: the server
+// may bind asynchronously (dotnet's background task), so the GET is
+// retried until the socket accepts, up to a total budget.  The first
+// successful response ends the loop and its (status, body) is returned; an
+// exhausted budget returns `(0, "")`.
 // Run `Web.serveTls` (which blocks forever once bound) — invoked on a
-// background `Task.Run` by `serveAndGet`.  A named function (rather than an
-// inline closure body) keeps the `taskRun` closure a single call, mirroring
-// `tcp_host_tls_tests.l`'s `taskRun({ -> plainEchoServer(...) })` shape.
+// background `Task.Run` by `serveAndGet` on `dotnet`.  A named function
+// (rather than an inline closure body) keeps the `taskRun` closure a single
+// call, mirroring `tcp_host_tls_tests.l`'s `taskRun({ -> plainEchoServer(...) })`
+// shape.
 func runServeTlsBg(r: in Web.Router, port: in Int, tls: in Std.Tls.TlsServerConfig): Unit {
   match Web.serveTls(r, "127.0.0.1", port, tls) {
     case Ok(_) -> ()
@@ -280,16 +288,60 @@ func runServeTlsBg(r: in Web.Router, port: in Int, tls: in Std.Tls.TlsServerConf
   }
 }
 
+// `Web.serveTls` blocks the calling thread forever once bound, on EITHER
+// target (same `CountDownLatch`-behind-an-async-`server.start()` shape as
+// plain `Web.serve` — see `worker_dispatch_tests.l`'s matching comment for
+// the full reasoning), so both targets need their own background-thread
+// primitive.
+@cfg(feature = "dotnet")
+func startTlsServerForTest(r: in Web.Router, port: in Int, tls: in Std.Tls.TlsServerConfig): Unit {
+  val _ = taskRun({ -> runServeTlsBg(r, port, tls) })
+}
+
+@cfg(feature = "jvm")
+extern type JRunnable = "java.lang.Runnable"
+
+@cfg(feature = "jvm")
+extern type JExecutorService = "java.util.concurrent.ExecutorService"
+
+@cfg(feature = "jvm")
+@externStatic
+@externTarget("java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor")
+func newVirtualThreadPerTaskExecutor(): JExecutorService = ()
+
+@cfg(feature = "jvm")
+val testTlsServerExecutor: JExecutorService = newVirtualThreadPerTaskExecutor()
+
+@cfg(feature = "jvm")
+record TestTlsServerRunnable {
+  r: Web.Router
+  port: Int
+  tls: Std.Tls.TlsServerConfig
+}
+
+@cfg(feature = "jvm")
+impl JRunnable for TestTlsServerRunnable {
+  func run(): Unit {
+    runServeTlsBg(self.r, self.port, self.tls)
+  }
+}
+
+@cfg(feature = "jvm")
+func startTlsServerForTest(r: in Web.Router, port: in Int, tls: in Std.Tls.TlsServerConfig): Unit {
+  val runnable: JRunnable = TestTlsServerRunnable(r = r, port = port, tls = tls)
+  val _ = testTlsServerExecutor.submit(runnable)
+}
+
 func serveAndGet(tls: in Std.Tls.TlsServerConfig, port: in Int, client: in HttpClient): (Int, String) {
   val r = greetRouter()
-  val _ = taskRun({ -> runServeTlsBg(r, port, tls) })
+  startTlsServerForTest(r, port, tls)
   val url = "https://localhost:" + port.toString() + "/hello/Ada"
   var attempt = 0
   var status = 0
   var body = ""
   var done = false
   while attempt < 40 and not done {
-    threadSleep(50)
+    Time.sleepMillis(50)
     match await client.get(url) {
       case Ok(resp) -> {
         status = HttpResponse.statusCode(resp)
@@ -347,7 +399,12 @@ test "serveTls rejects a mutual-TLS misconfiguration (requireClientCert without 
   val badCfg = TlsServerConfig(identity = id, minVersion = Tls12, clientCa = None, requireClientCert = true)
   match Web.serveTls(greetRouter(), "127.0.0.1", 18933, badCfg) {
     case Ok(_) -> panic("expected Err for requireClientCert without clientCa")
-    case Err(e) -> match e { case ServerTlsUnsupported(msg) -> assertTrue(msg.contains("requireClientCert") or msg.contains("clientCa"), "message names the mutual-TLS misconfiguration: " + msg) }
+    case Err(e) -> match e {
+      case ServerTlsUnsupported(msg) -> assertTrue(
+        msg.contains("requireClientCert") or msg.contains("clientCa"),
+        "message names the mutual-TLS misconfiguration: " + msg
+      )
+    }
   }
 }
 
@@ -399,6 +456,11 @@ test "tlsServerConfigFromWebTls reports a missing cert file as CertFileNotFound"
   )
   match tlsServerConfigFromWebTls(cfg) {
     case Ok(_) -> panic("expected Err for a missing cert file")
-    case Err(e) -> match e { case CertFileNotFound(_) -> assertTrue(true, "missing file surfaces as CertFileNotFound"); case PemMalformed(_, _) -> panic("expected CertFileNotFound, got PemMalformed"); case KeyMismatch(_, _) -> panic("expected CertFileNotFound, got KeyMismatch"); case Unsupported(_, _) -> panic("expected CertFileNotFound, got Unsupported") }
+    case Err(e) -> match e {
+      case CertFileNotFound(_) -> assertTrue(true, "missing file surfaces as CertFileNotFound")
+      case PemMalformed(_, _) -> panic("expected CertFileNotFound, got PemMalformed")
+      case KeyMismatch(_, _) -> panic("expected CertFileNotFound, got KeyMismatch")
+      case Unsupported(_, _) -> panic("expected CertFileNotFound, got Unsupported")
+    }
   }
 }
