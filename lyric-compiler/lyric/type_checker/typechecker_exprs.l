@@ -1082,6 +1082,23 @@ func checkQualifiedPackageRef(
   if not (symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)) {
     return
   }
+  // `member` may be the next segment of a deeper package path rather than a
+  // member of `pkg`: the member-access walk visits `Pkg.Sub` inside
+  // `Pkg.Sub.value`, and when the parent `Pkg` is itself a loaded package
+  // (a project's root package once every project package is registered,
+  // #7583) that inner node would otherwise be reported as `Pkg` unimported
+  // even though the file imports `Pkg.Sub`.  The enclosing node checks the
+  // real package `Pkg.Sub`.  Only when `Pkg` declares no symbol of that name,
+  // so a genuine member reference is still checked.
+  val deeperPkg = pkg + "." + member
+  if symTablePackageHasAnySymbol(tbl, deeperPkg) or symTablePackageHasAnyExternBlockMember(tbl, deeperPkg) {
+    match symTableTryFindInPackage(tbl, pkg, member) {
+      case Some(_) -> ()
+      case None -> {
+        return
+      }
+    }
+  }
   match scopeTryFind(sc, pkgSegs[0]) {
     case Some(_) -> {
       return

@@ -250,8 +250,95 @@ expect_ok_and_run_coll() {
 expect_ok_and_run_coll "bare-name collision resolves to the imported sibling (A)" "A" 1
 expect_ok_and_run_coll "bare-name collision resolves to the imported sibling (B)" "B" 2
 
+# --- #7614: a qualified value read through a sub-package of the root ------
+#
+# Once every project package is registered (#7583), the member-access walk
+# visited the inner `App.Lib` of `App.Lib.limit` and checked it as member
+# `Lib` of the ROOT package `App` (which has symbols of its own and is not
+# imported by `App.User`), so an IMPORTED qualified value read reported
+# T0020 "package App is not imported". Qualified calls were unaffected. The
+# unimported form must still report T0020, naming `App.Lib`.
+
+mkdir -p "$work/nest/src"
+cat > "$work/nest/lyric.toml" <<'TOML'
+[package]
+name = "NestedQualifiedVal"
+version = "0.1.0"
+
+[project]
+name = "NestedQualifiedVal"
+output = "single"
+output_assembly = "NestedQualifiedVal.dll"
+
+[project.packages]
+"App" = "src/main.l"
+"App.Lib" = "src/lib.l"
+"App.User" = "src/user.l"
+TOML
+cat > "$work/nest/src/lib.l" <<'LYRIC'
+package App.Lib
+
+pub val limit: Int = 5
+
+pub func twice(x: in Int): Int {
+  x * 2
+}
+LYRIC
+cat > "$work/nest/src/main.l" <<'LYRIC'
+package App
+
+import App.User
+
+pub func rootHelper(): Int {
+  1
+}
+
+func main(): Int {
+  App.User.useIt() + rootHelper()
+}
+LYRIC
+
+# write_nest_user <import line, or empty for the unimported form>
+write_nest_user() {
+  cat > "$work/nest/src/user.l" <<LYRIC
+package App.User
+
+$1
+
+pub func useIt(): Int {
+  App.Lib.twice(App.Lib.limit) + App.Lib.limit
+}
+LYRIC
+}
+
+write_nest_user "import App.Lib"
+for target in dotnet jvm; do
+  out="$work/out.txt"
+  "$lyric_bin" run --target "$target" --manifest "$work/nest/lyric.toml" > "$out" 2>&1 && rc=0 || rc=$?
+  if [ "$rc" -ne 16 ]; then
+    echo "FAIL [imported qualified value via a sub-package of the root, $target]: expected exit 16, got $rc" >&2
+    cat "$out" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok   [imported qualified value via a sub-package of the root, $target]: built and ran, exit $rc"
+  fi
+done
+
+write_nest_user ""
+for target in dotnet jvm; do
+  out="$work/out.txt"
+  "$lyric_bin" build --target "$target" --manifest "$work/nest/lyric.toml" -o "$work/out.dll" > "$out" 2>&1 && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ] || ! grep -q "T0020.*package App\.Lib is not imported" "$out"; then
+    echo "FAIL [unimported qualified value via a sub-package of the root, $target]: expected T0020 naming App.Lib" >&2
+    cat "$out" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok   [unimported qualified value via a sub-package of the root, $target]: T0020 names App.Lib"
+  fi
+done
+
 if [ "$failures" -ne 0 ]; then
-  echo "::error::$failures project-package-import-reachability e2e case(s) failed (#7583/#7592)" >&2
+  echo "::error::$failures project-package-import-reachability e2e case(s) failed (#7583/#7592/#7614)" >&2
   exit 1
 fi
-echo "project-package-import-reachability e2e passed: unimported qualified project-package references report T0020 on both dotnet and jvm project builds, imported ones still build and run correctly (#7583), and a bare-name collision between two sibling packages resolves to the one the consumer actually imports on both targets (#7592)"
+echo "project-package-import-reachability e2e passed: unimported qualified project-package references report T0020 on both dotnet and jvm project builds, imported ones still build and run correctly (#7583), and a bare-name collision between two sibling packages resolves to the one the consumer actually imports on both targets (#7592), and an imported qualified value read through a sub-package of the root package builds and runs (#7614)"
