@@ -2959,7 +2959,7 @@ func elaborateProtectedMember(
         )
       }
     }
-    case PMFunc(fn) -> PMFunc(fn = elaborateFunctionOwned(fn, typeName + "." + fn.name, true))
+    case PMFunc(fn) -> PMFunc(fn = elaborateFunctionOwned(fn, typeName + "." + fn.name, contractsEnabled))
     case other -> other
   }
 }
