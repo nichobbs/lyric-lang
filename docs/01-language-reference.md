@@ -562,6 +562,8 @@ Visibility is enforced at use sites: referencing a package-private declaration (
 
 A public function that exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature emits a warning (**W0006**): these are host implementation-detail structs whose FFI boundary is meant to stay in the `_kernel/` layer. A kernel file that *declares* the extern type locally is exempt; the fix for a consumer is to wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`). Top-level domain extern types (e.g. `JsonElement` itself) are deliberately re-exposable and are not flagged.
 
+Because the check above is enforced at use sites, `lyric lint` (§13.8) flags the declaration-time symptom directly: **L007** warns when a `pub`/`internal` item's signature — a receiver, parameter, return type, `pub`/`internal` record or exposed-record field, union case payload, interface method signature, or `pub val` type, including through a generic argument or a transparent `alias` — names a package-private (unmarked) type declared in the same file. The item compiles at its declaration either way; L007 exists so the author sees the "unusable from another package" problem before a consumer hits T0097.
+
 ```
 pub type AccountId = Long range 0 ..= MAX_ACCOUNT_ID
 pub func openAccount(owner: in CustomerId): AccountId
@@ -2351,6 +2353,9 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 | `L003` | warning | `pub` items should have a doc comment (`///`). |
 | `L004` | warning | Doc comments must not contain `TODO` or `FIXME`. |
 | `L005` | warning | `pub func` with a block body should declare at least one `requires:` or `ensures:` contract. Expression-body stubs are excluded. |
+| `L007` | warning | A `pub`/`internal` item's signature (receiver, parameter, return type, `pub`/`internal` field, union case payload, interface method, or `pub val` type) names a package-private type declared in the same file (#7549). `L006` is retired (§14.6) and not reused. |
+
+`L007` is single-file (per §"Diagnostic codes" above, `lyric lint` works entirely from the parsed AST): it only sees type declarations in the file it is linting, so a package-private type declared in a *sibling* file of a split multi-file package (§3.4) is not visible to this rule. Cross-package private types are unaffected either way — those already fail T0097 (§3.1) at every use site. A package-wide registry for `lyric lint --manifest` is tracked in #7607.
 
 **Flags:**
 

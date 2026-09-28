@@ -6,9 +6,9 @@ import Std.Collections
 
 // ─── Domain types ──────────────────────────────────────────────────────────
 
-type UserId  = Long derives Compare, Hash, Equals
-type OrderId = Long derives Compare, Hash, Equals
-type Cents   = Long range 0 ..= 100_000_000_000 derives Add, Sub, Compare
+pub type UserId  = Long derives Compare, Hash, Equals
+pub type OrderId = Long derives Compare, Hash, Equals
+pub type Cents   = Long range 0 ..= 100_000_000_000 derives Add, Sub, Compare
 
 // ─── Records ────────────────────────────────────────────────────────────────
 

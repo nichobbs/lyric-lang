@@ -72,26 +72,26 @@ record OtherRec {
   value: String
 }
 
-pub func unboxInt(b: in Box[Int]): Int {
+func unboxInt(b: in Box[Int]): Int {
   b.value
 }
 
-pub func unboxString(b: in Box[String]): String {
+func unboxString(b: in Box[String]): String {
   b.value
 }
 
 // Two generic-record parameters of the SAME instantiation in the same
 // function: each must resolve against its own bind-site slot independently
 // (the narrow-and-rebind prologue runs once per parameter).
-pub func firstBoxValue(a: in Box[Int], b: in Box[Int]): Int {
+func firstBoxValue(a: in Box[Int], b: in Box[Int]): Int {
   a.value
 }
 
-pub func secondBoxValue(a: in Box[Int], b: in Box[Int]): Int {
+func secondBoxValue(a: in Box[Int], b: in Box[Int]): Int {
   b.value
 }
 
-pub func describeOther(o: in OtherRec): String {
+func describeOther(o: in OtherRec): String {
   o.value
 }
 
@@ -140,7 +140,7 @@ record Holder {
   }
 }
 
-pub func readHolderBoxValue(h: in Holder): Int {
+func readHolderBoxValue(h: in Holder): Int {
   h.box.value
 }
 
