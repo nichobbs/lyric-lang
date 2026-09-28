@@ -530,6 +530,7 @@ func runMiddleEnd(
   checkedOut: in List[SourceFile],
   recvClassesOut: in Map[String, String],
   typeIndex: in Option[Weaver.TypeOwnerIndex],
+  contractsEnabled: in Bool = true,
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   // #7198: see the other `MiddleEndOptions` construction site in this file.
@@ -539,7 +540,7 @@ func runMiddleEnd(
     pkgLabel = pkgLabel,
     lineOrigins = lineOrigins,
     awaitInTryIsHazard = false,
-    contractsEnabled = true,
+    contractsEnabled = contractsEnabled,
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut
   )
@@ -3127,7 +3128,7 @@ pub func compileProjectToJarBundledWithRestored(
   // generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val userChecked: List[SourceFile] = newList()
   val userRecvClasses: Map[String, String] = newMap()
-  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses, Some(value = weaveTypeIndex)) {
+  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses, Some(value = weaveTypeIndex), contractsEnabled) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -3273,7 +3274,7 @@ pub func compileProjectToJarBundledWithRestored(
     val ok = try {
       val siblingChecked: List[SourceFile] = newList()
       val siblingRecvClasses: Map[String, String] = newMap()
-      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, Some(value = weaveTypeIndex)) {
+      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, Some(value = weaveTypeIndex), contractsEnabled) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.
