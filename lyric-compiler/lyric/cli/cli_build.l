@@ -852,7 +852,8 @@ func emitSingleFileOrProject(
     case _ -> ()
   }
 
-  val projReq = Emitter.EmitProjectRequest(
+  val contractsEnabled = match lm.manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
+  val projReq = EmitProjectRequest(
     packages = pkgs,
     assemblyName = req.assemblyName,
     outputPath = req.outputPath,
@@ -864,7 +865,8 @@ func emitSingleFileOrProject(
     depTemplateSrcs = resolvedDeps.depTemplateSrcs,
     nugetAssemblyPaths = resolvedDeps.nugetThirdPartyPaths,
     defines = req.defines,
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = contractsEnabled
   )
 
   var mavenSaved: Option[String] = None
@@ -958,7 +960,8 @@ func emitSingleFileWithWorkspaceMembers(req: in Emitter.EmitRequest, sourcePath:
     depTemplateSrcs = wsDeps.depTemplateSrcs,
     nugetAssemblyPaths = noNuget,
     defines = req.defines,
-    packageFeatures = wsDeps.depPackageFeatures
+    packageFeatures = wsDeps.depPackageFeatures,
+    contractsEnabled = true
   )
   val emitResult = Emitter.emitProject(projReq)
   NonNativeEmitOutcome(
@@ -2785,7 +2788,8 @@ pub func buildProjectFromManifest(
       projReq.defines,
       activeFeatures,
       mfDeclared,
-      projReq.packageVersion
+      projReq.packageVersion,
+      projReq.contractsEnabled
     )
   } else {
     Emitter.emitProject(projReq)

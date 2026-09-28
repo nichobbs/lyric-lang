@@ -179,6 +179,10 @@ pub record EmitProjectRequest {
   /// (#7378).  Pass `Emitter.noPackageFeatures()` when every package uses
   /// the request's features.
   packageFeatures: List[Pipe.PackageFeatureSet]
+  /// Whether contracts (requires/ensures/invariant) are enabled for runtime
+  /// checking. Read from manifest `[contracts].enabled` or defaults to true
+  /// (docs/63 B0 / B1 phase).
+  contractsEnabled: Bool
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1874,7 +1878,8 @@ func emitPerPackagePackage(
     depTemplateSrcs = noDepTemplateSrcs,
     nugetAssemblyPaths = emptyNugetPaths,
     defines = newList(),
-    packageFeatures = noPackageFeatures()
+    packageFeatures = noPackageFeatures(),
+    contractsEnabled = true
   )
   val res = emitProject(req)
   match res.outputPath {
@@ -2112,7 +2117,8 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
     depTemplateSrcs = noDepTemplateSrcs,
     nugetAssemblyPaths = emptyNugetPaths,
     defines = newList(),
-    packageFeatures = noPackageFeatures()
+    packageFeatures = noPackageFeatures(),
+    contractsEnabled = true
   )
   emitProject(req)
 }
@@ -2426,7 +2432,8 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     depTemplateSrcs = req.depTemplateSrcs,
     nugetAssemblyPaths = req.nugetAssemblyPaths,
     defines = req.defines,
-    packageFeatures = req.packageFeatures
+    packageFeatures = req.packageFeatures,
+    contractsEnabled = req.contractsEnabled
   )
 
   match req.target {
@@ -2701,7 +2708,8 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
       depTemplatePkgs,
       req.defines,
       sourcePaths,
-      pkgOrigins
+      pkgOrigins,
+      req.contractsEnabled
     )
   } catch Bug as b {
     panicDiags.add(msilBridgePanicDiagnostic(b.message))
@@ -3060,7 +3068,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[Dia
       req.packageVersion,
       restoredArtifactsJvm,
       singlePkgPath,
-      singlePkgOrigins
+      singlePkgOrigins,
+      req.contractsEnabled
     )
   } catch Bug as b {
     diags.add(jvmBridgePanicDiagnostic(b.message))
@@ -3137,7 +3146,8 @@ func emitNativeInProcess(
       optLevel,
       clangFlags,
       req.defines,
-      req.path
+      req.path,
+      req.contractsEnabled
     )
   } catch Bug as b {
     diags.add(nativeBridgePanicDiagnostic(b.message))
@@ -3177,6 +3187,7 @@ pub func emitNativeProject(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   packageVersion: in String,
+  contractsEnabled: in Bool,
 ): EmitResult {
   val outDir = Path.dirname(outputPath)
   if Str.isNotEmpty(outDir) {
@@ -3232,7 +3243,8 @@ pub func emitNativeProject(
       activeFeatures,
       declaredFeatures,
       packageVersion,
-      nativeOrigins
+      nativeOrigins,
+      contractsEnabled
     )
   } catch Bug as b {
     projDiags.add(nativeBridgePanicDiagnostic(b.message))
@@ -3281,7 +3293,8 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
       noDepTemplateSrcsJvm,
       req.defines,
       req.packageVersion,
-      req.path
+      req.path,
+      true
     )
   } catch Bug as b {
     jvmPanicDiags.add(jvmBridgePanicDiagnostic(b.message))
@@ -3399,7 +3412,8 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
       stdlibSources,
       req.packageVersion,
       req.defines,
-      req.path
+      req.path,
+      req.contractsEnabled
     )
   } catch Bug as b {
     panicDiags.add(msilBridgePanicDiagnostic(b.message))

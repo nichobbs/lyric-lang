@@ -166,6 +166,7 @@ pub func compileToMsilWithVersion(
   packageVersion: in String,
   defines: in List[String],
   path: in String,
+  contractsEnabled: in Bool,
 ): Bool {
   // Parse + `@cfg` erasure with an empty active set (plus the
   // `target.dotnet` pseudo-feature, D-N-013) — the same semantics a
@@ -288,7 +289,7 @@ pub func compileToMsilWithVersion(
     pkgLabel = path,
     lineOrigins = noSingleFileOrigins,
     awaitInTryIsHazard = true,
-    contractsEnabled = true,
+    contractsEnabled = contractsEnabled,
     checkedSourceOut = singleFileOptsCheckedOut,
     memberRecvClassesOut = singleFileOptsRecvOut
   )
@@ -665,6 +666,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   defines: in List[String],
   paths: in List[String],
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  contractsEnabled: in Bool,
 ): Bool {
   val noDiagOut: List[Diagnostic] = newList()
   compileProjectToMsilWithRestoredAndVersionDiag(
@@ -681,7 +683,8 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     defines,
     paths,
     originsByPkg,
-    noDiagOut
+    noDiagOut,
+    contractsEnabled
   )
 }
 
@@ -721,6 +724,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // inner list) means no translation for that package — the pre-#6282
   // behaviour (`paths[i]` labels every diagnostic verbatim).
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  contractsEnabled: in Bool,
   outDiagnostics: in List[Diagnostic],
 ): Bool {
   if packages.count == 0 {
@@ -1070,7 +1074,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       pkgLabel = pp.label,
       lineOrigins = pp.origins,
       awaitInTryIsHazard = true,
-      contractsEnabled = true,
+      contractsEnabled = contractsEnabled,
       checkedSourceOut = projOptsCheckedOut,
       memberRecvClassesOut = projOptsRecvOut
     )

@@ -385,6 +385,7 @@ pub func compileToNativeWithFlags(
   extraClangFlags: in List[String],
   defines: in List[String],
   path: in String,
+  contractsEnabled: in Bool,
 ): Bool {
   // Parse + `@cfg` erasure with the `target.native` pseudo-feature
   // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
@@ -476,7 +477,7 @@ pub func compileToNativeWithFlags(
     pkgLabel = path,
     lineOrigins = noSingleFileOrigins,
     awaitInTryIsHazard = true,
-    contractsEnabled = true,
+    contractsEnabled = contractsEnabled,
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = optsRecvOut
   )
@@ -711,6 +712,7 @@ pub func compileProjectToNativeWithFlags(
   // valid; missing entries resolve to no translation, matching the JVM
   // bridge's own out-of-range fallback.
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  contractsEnabled: in Bool,
 ): Bool {
   if packages.count == 0 {
     Console.error("error[N0005]: native project build received no packages")
@@ -865,7 +867,7 @@ pub func compileProjectToNativeWithFlags(
       pkgLabel = nativePkgLabelAt(packages, mei),
       lineOrigins = nativePkgOriginsAt(originsByPkg, mei),
       awaitInTryIsHazard = true,
-      contractsEnabled = true,
+      contractsEnabled = contractsEnabled,
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut
     )
