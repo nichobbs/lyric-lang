@@ -49,7 +49,8 @@ for t in \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_nested_self_test.l \
   lyric-compiler/lyric/contract_generic_call_self_test.l \
-  lyric-compiler/jvm/static_type_recovery_jvm_self_test.l ; do
+  lyric-compiler/jvm/static_type_recovery_jvm_self_test.l \
+  lyric-compiler/jvm/propagate_dot_named_bind_jvm_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"

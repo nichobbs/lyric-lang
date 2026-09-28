@@ -108,6 +108,7 @@ for t in \
   lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l \
   lyric-compiler/lyric/jvm_impl_extern_class_self_test.l \
   lyric-compiler/jvm/static_type_recovery_jvm_self_test.l \
+  lyric-compiler/jvm/propagate_dot_named_bind_jvm_self_test.l \
   lyric-compiler/lyric/lsp_self_test.l \
   lyric-compiler/lyric/doc_self_test.l ; do
   idx=$((idx + 1))
