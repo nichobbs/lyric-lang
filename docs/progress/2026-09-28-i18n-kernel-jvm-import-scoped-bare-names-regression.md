@@ -49,25 +49,26 @@ did not add coverage for a same-named function belonging to a package the
 consumer never imports at all (only "two direct imports" and "two
 transitively-reached imports" collision shapes had self-tests).
 
-Added `lyric-compiler/lyric/typechecker_self_test.l` test "a same-named
-function declared only by a never-imported sibling package never wins
-(#7458)": two `ImportedPackage`s (`PkgRecSibling`/`PkgStrDirect`) declare
-`loadPath(path: in String)` with different `Result` success types; a
-consumer imports only `PkgStrDirect` and matches the bare call's `Ok`
-payload into a `String`-declared `val`. `PkgRecSibling` is registered
-FIRST in the `List[ImportedPackage]` passed to
-`checkWithImportedPackages` (the pre-D141 registration-order-dependent
-failure mode), so this pins that the never-imported sibling's candidate
-never wins regardless of registration order. Verified this test would
-have failed pre-D141: reverting `typechecker_checker.l` /
-`typechecker_exprs.l` / `typechecker_symbols.l` /
-`typechecker_resolver.l` / `pipeline.l` to their pre-D141
-(`331e5447`) state, an isolated copy of this test (built and run
-standalone against those reverted files, sidestepping D141's
-touches elsewhere in the compiler tree that the full self-test file
-now also depends on) reproduces `diagCount(cr) == 0` failing —
-`text` bound to `PkgRecSibling`'s `Store` type, exactly the original
-`I18nKernelTests` symptom.
+Added two `lyric-compiler/lyric/typechecker_self_test.l` tests. In both,
+two `ImportedPackage`s (`PkgRecSibling`/`PkgStrDirect`) declare
+`loadPath(path: in String)` with different `Result` success types
+(`Store` and `String`), and `PkgRecSibling` is registered FIRST in the
+list passed to `checkWithImportedPackages` (the pre-D141
+registration-order-dependent failure mode). `Result` comes from a shared
+`PkgRes7458` package, because `checkWithImportedPackages` has no implicit
+prelude.
+- "a same-named function declared only by a never-imported sibling
+  package never wins (#7458)": the consumer imports only `PkgStrDirect`
+  and binds the bare call's `Ok` payload to a `String` `val`, with no
+  diagnostics.
+- "control: importing the Store-returning package makes the same binding
+  T0060": the same consumer importing `PkgRecSibling` reports T0060. This
+  shows the first test can fail, so it would catch the bare call binding
+  the wrong package's `loadPath`.
+
+The first version of the test omitted `Result`, so both signatures
+degraded to the error type and it passed whatever the resolution picked;
+the review of #7653 caught this (#7655).
 
 Added `lyric-i18n` to `scripts/ci/jvm-ecosystem-suites.sh` (the `libs`
 array and the header's per-suite coverage comment) so the full

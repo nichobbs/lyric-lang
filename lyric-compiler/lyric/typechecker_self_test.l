@@ -4950,23 +4950,45 @@ test "a bare call binds a direct import's function over a transitive one" {
 // directly-imported one, so `text` in `case Ok(text) -> …` bound to the
 // wrong package's success type and a `val textStr: String = text` binding
 // failed with T0060 on `--target jvm` alone.
-test "a same-named function declared only by a never-imported sibling package never wins (#7458)" {
+// `checkWithImportedPackages` has no implicit prelude, so `Result` comes
+// from a shared package. Without it both signatures would degrade to the
+// error type and the binding below would type-check whichever function won
+// (#7655); the control case proves the check can fail.
+func resultPkgFor7458(): ImportedPackage {
+  rulePkg("PkgRes7458", "package PkgRes7458\npub union Result[T, E] { case Ok(value: T); case Err(error: E) }\n")
+}
+
+func loadPathPackagesFor7458(): List[ImportedPackage] {
   val pkgRec = rulePkg(
     "PkgRecSibling",
-    "package PkgRecSibling\npub record Store { x: Int }\npub func loadPath(path: in String): Result[Store, String] { Ok(value = Store(x = 1)) }\n"
+    "package PkgRecSibling\nimport PkgRes7458\npub record Store { x: Int }\npub func loadPath(path: in String): Result[Store, String] { Ok(value = Store(x = 1)) }\n"
   )
   val pkgStr = rulePkg(
     "PkgStrDirect",
-    "package PkgStrDirect\npub func loadPath(path: in String): Result[String, String] { Ok(value = path) }\n"
+    "package PkgStrDirect\nimport PkgRes7458\npub func loadPath(path: in String): Result[String, String] { Ok(value = path) }\n"
   )
   val packages: List[ImportedPackage] = newList()
+  packages.add(resultPkgFor7458())
   // `PkgRecSibling` registers FIRST — the never-imported sibling — so a
   // registration-order-dependent fallback (the pre-D141 bug) would pick it.
   packages.add(pkgRec)
   packages.add(pkgStr)
-  val src = "package App\nimport PkgStrDirect\nfunc f(path: in String): String {\n  match loadPath(path) {\n    case Ok(text) -> {\n      val textStr: String = text\n      textStr\n    }\n    case Err(_) -> \"\"\n  }\n}\n"
-  val cr = checkWithImportedPackages(parse(src).file, packages)
+  packages
+}
+
+func loadPathConsumerFor7458(importPkg: in String): String {
+  "package App\nimport PkgRes7458\nimport " + importPkg +
+    "\nfunc f(path: in String): String {\n  match loadPath(path) {\n    case Ok(text) -> {\n      val textStr: String = text\n      textStr\n    }\n    case Err(_) -> \"\"\n  }\n}\n"
+}
+
+test "a same-named function declared only by a never-imported sibling package never wins (#7458)" {
+  val cr = checkWithImportedPackages(parse(loadPathConsumerFor7458("PkgStrDirect")).file, loadPathPackagesFor7458())
   assertEqualInt(diagCount(cr), 0, "loadPath means PkgStrDirect's (the only import): no T0060 binding text to String")
+}
+
+test "control: importing the Store-returning package makes the same binding T0060 (#7458, #7655)" {
+  val cr = checkWithImportedPackages(parse(loadPathConsumerFor7458("PkgRecSibling")).file, loadPathPackagesFor7458())
+  assertTrue(hasDiagCode(cr, "T0060"), "text is a Store here, so binding it to String is T0060")
 }
 
 // #7579: the lowest tier that declares the name decides; a matching
