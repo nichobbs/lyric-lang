@@ -435,8 +435,23 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
             } else {
               match qualifiedDotNamedSigJvm(ctx, recv, memberName, callArgs.count) {
                 case Some(qsig) -> qsig.retGenericArgs
+                // Same precedence as `lowerMethodCall`'s dot-named dispatch
+                // (#6664): the calling package's own scoped key first, then
+                // the bundle-wide bare key.  A package-private
+                // `func Person.parse(...)` registers ONLY the scoped key (the
+                // bare key is reserved for `pub`/`internal`, #6853), so a
+                // bare-only lookup left `match Person.parse(s) { case Ok(p) ->
+                // p.name }` — and the `?` form, which `Lyric.Propagate`
+                // rewrites into the same match — with `p` erased to `Object`
+                // (J007).
                 case None -> match recv.kind {
-                  case EPath(p) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, lastSegment(p) + "." + memberName))
+                  case EPath(p) -> {
+                    val dotKey = lastSegment(p) + "." + memberName
+                    match mapGet(ctx.funcSigs, ctx.pkgName + "::" + dotKey) {
+                      case Some(ssig) -> ssig.retGenericArgs
+                      case None -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, dotKey))
+                    }
+                  }
                   case _ -> newList()
                 }
               }
