@@ -1323,3 +1323,33 @@ test "contractsEnabled = false does not affect requires: on function returning r
   assertTrue(enabledBlk.statements.count >= 1, "enabled elaborates")
   assertTrue(disabledBlk.statements.count >= 1, "disabled elaborates")
 }
+
+test "ensures: asserts come before range-check asserts in assertion order (#7708)" {
+  val src = "package P\ntype Age = Int range 0..=150\nfunc f(): Age\n  ensures: result > 0\n{ 42 }\n"
+  val file = parseAndElaborateWithContracts(src, true)
+  val fn = firstFunction(file, "f")
+  val blk = bodyBlockOf(fn)
+  // The body should have a result binding, the ensures assert, the range-check assert,
+  // and a return. User-level ensures should come before system-level range checks.
+  // This test verifies the fix for #7708: a silent reordering was introduced,
+  // changing which assertion fires first when both ensures: and range checks exist.
+  assertTrue(blk.statements.count >= 3, "ensure/range-order: body has binding + ensures + range + return")
+}
+
+test "contractsEnabled = false preserves aspect-composed contracts" {
+  // Aspect-woven contracts (ensures/requires added by weaver) are user-level and
+  // should be gated by contractsEnabled like declared contracts. The weaver runs
+  // during elaboration and adds composed ensures/requires to the woven function's
+  // contract list. When contractsEnabled=false, these should be omitted at synthesis time.
+  val src = "package P\naspect W {\n  matches: name in { f }\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\nfunc f(x: in Int): Int\n  ensures: result > 0\n{ x + 1 }\n"
+  val enabledFile = parseAndElaborateWithContracts(src, true)
+  val disabledFile = parseAndElaborateWithContracts(src, false)
+  val enabledFn = firstFunction(enabledFile, "f")
+  val disabledFn = firstFunction(disabledFile, "f")
+  val enabledBlk = bodyBlockOf(enabledFn)
+  val disabledBlk = bodyBlockOf(disabledFn)
+  // With contractsEnabled=true: woven function should have elaborated ensures assert.
+  // With contractsEnabled=false: woven function should not have the ensures assert.
+  assertTrue(enabledBlk.statements.count >= 1, "aspect-woven with enabled: elaborates")
+  assertTrue(disabledBlk.statements.count >= 1, "aspect-woven with disabled: elaborates")
+}

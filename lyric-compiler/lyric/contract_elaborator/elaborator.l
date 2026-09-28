@@ -2334,12 +2334,8 @@ func elaborateFunctionBody(
 
   // Build combined ensures lists for the old() rewrite pass, separating
   // system-level checks (always run) from user-level clauses (gated by contractsEnabled).
+  // Preserve main's assertion order: user-level ensures first (#7708), then system checks.
   val allEnsures: List[SpannedExpr] = newList()
-  var rri = 0
-  while rri < retRanges.count {
-    allEnsures.add(retRanges[rri])
-    rri = rri + 1
-  }
   // Only include user-level ensures when contractsEnabled is true (#7649).
   if contractsEnabled {
     var dei = 0
@@ -2347,6 +2343,11 @@ func elaborateFunctionBody(
       allEnsures.add(declaredEnsures[dei])
       dei = dei + 1
     }
+  }
+  var rri = 0
+  while rri < retRanges.count {
+    allEnsures.add(retRanges[rri])
+    rri = rri + 1
   }
   var ti = 0
   while ti < typeInvariants.count {
