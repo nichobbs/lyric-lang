@@ -1,4 +1,4 @@
-# CI: cached compiler bundle, reproducibility check and heavy JVM suites in their own jobs (#PR)
+# CI: cached compiler bundle, reproducibility check and heavy JVM suites in their own jobs (#7638)
 
 Follows 2026-09-28-ci-parallel-jvm-ecosystem-suites.md. After it, the
 longest jobs were `stdlib-builds` (8.2 min), `compiler-self-tests-jvm-b`
