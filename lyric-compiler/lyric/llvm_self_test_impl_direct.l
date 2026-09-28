@@ -15,18 +15,19 @@
 //! ordinary UFCS lookup already finds.
 //!
 //! Fix: `registerImplDirectMethods` indexes every non-generic `impl I for
-//! R` method under `<bare R>.<method>/<arity>` -> its `ctx.sigs` key, in
-//! the SAME units/impls/members order the type checker's own
-//! `symTableAddImpl`/`methodCandidatesFor` walk `tbl.impls` — so a
-//! same-named method on two interfaces implemented by the same record
-//! resolves to whichever `impl` is declared FIRST in source order,
-//! exactly like the checker's own first-match selection (records have no
-//! ambiguity diagnostic for this, unlike protected types' `T0136`).
-//! `lowerUfcsCall` consults this index after every "own type" lookup (so
-//! a record-body method or dot-named D037 function of the same name still
-//! wins) and before the bare `name/arity` fallback (so an UNRELATED
-//! same-named free function never shadows a real impl method, and vice
-//! versa — the two live under disjoint `ctx.sigs` keys regardless).
+//! R` method under `<pkg>.<R>.<method>/<arity>` -> its `ctx.sigs` key
+//! (PACKAGE-QUALIFIED, #7627 review follow-up — a bare record name would
+//! alias two same-named records declared in different packages of a
+//! multi-package native bundle to whichever package's impl happened to
+//! register first), in the SAME units/impls/members order the type
+//! checker's own `symTableAddImpl`/`methodCandidatesFor` walk `tbl.impls`.
+//! `lowerUfcsCall` consults this index before the bare `curPkg + "." +
+//! name` fallback (so an UNRELATED same-named free function never shadows
+//! a real impl method) and after no own-body method claims the name (a
+//! record can no longer declare both an own-body method and a same-named
+//! impl method at all — the type checker rejects that shape as T0139,
+//! #7626 review follow-up, the same way it already rejected the
+//! protected-type analog as T0136).
 //!
 //! A `Self`-returning impl method needs no special handling when called
 //! directly: `collectImplMethods`/`implMethodToFn` already substitutes
@@ -56,6 +57,8 @@ import Lyric.LlvmIr
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
 import Lyric.LlvmBridge
+import Lyric.Emitter
+import Lyric.DiagnosticUtil as DiagUtil
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness (mirrors llvm_self_test_self_iface.l's ASan-capable variant).
@@ -150,6 +153,30 @@ func compileAndRunAsan(source: in String): RunOutcome {
   compileAndRunWith(source, true)
 }
 
+// Multi-package project harness (mirrors llvm_project_self_test.l), used
+// only by the #7627 cross-package aliasing regression below — the rest of
+// this file's tests are single-package (`compileAndRun`/`compileAndRunAsan`).
+func compileAndRunProject(packages: in List[NativeSourcePackage]): RunOutcome {
+  val stdlib = findStdlibSourcesNative()
+  if stdlib.count == 0 {
+    panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
+  }
+  val dir = Path.join(tempBase(), "lyric-llvm-impl-direct-project-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
+  val noFlags: List[String] = newList()
+  val noFeatures: List[String] = newList()
+  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", noFlags, newList(), noFeatures, noFeatures, "", noOriginsByPkg) {
+    panic("native project compilation failed")
+  }
+  val noArgs: List[String] = newList()
+  match Process.runCapture(stem, noArgs, 60000) {
+    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Err(e) -> panic("binary could not be started: " + e)
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Plain return, direct call on a concrete record receiver.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -189,20 +216,6 @@ test "a Self-returning impl method direct call yields a concrete value, chainabl
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Two interfaces declaring the same method name on the same record: the
-// FIRST-declared impl wins, matching the type checker's own tie-break
-// (methodCandidatesFor walks tbl.impls in declaration order; records have
-// no ambiguity diagnostic for this, unlike protected types' T0136).
-// ─────────────────────────────────────────────────────────────────────────────
-val twoIfaceSrc: String = "package T\n" + "interface Shape {\n" + "  func area(): Int\n" + "}\n" + "interface Other {\n" + "  func area(): Int\n" + "}\n" + "record Square {\n" + "  side: Int\n" + "}\n" + "impl Shape for Square {\n" + "  func area(): Int {\n" + "    self.side * self.side\n" + "  }\n" + "}\n" + "impl Other for Square {\n" + "  func area(): Int {\n" + "    100\n" + "  }\n" + "}\n"
-
-test "two interfaces declaring the same method name: the first-declared impl wins the direct call" {
-  val src = twoIfaceSrc + "func main(): Int {\n" + "  val sq = Square(side = 4)\n" + "  sq.area()\n" + "}\n"
-  val r = compileAndRun(src)
-  assertEqualInt(r.exitCode, 16, "Shape's impl (declared first) wins, not Other's (100)")
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // A free function sharing a name with an impl method: the two never
 // collide (disjoint ctx.sigs keys — the impl method's own name is
 // qualified by both the record and the interface).
@@ -219,4 +232,66 @@ test "a free function with the same name as an impl method resolves independentl
     "}\n"
   val r = compileAndRun(src)
   assertEqualInt(r.exitCode, 24, "16 (Square.area(), method call) + 8 (area(5), plain call) -- no cross-talk")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Two packages each declare a record with the SAME bare name ("Widget"),
+// each implementing its own interface's same-named method ("value") with a
+// DIFFERENT body (#7627): a bare-name-keyed index would alias whichever
+// package registered first, so both packages' `.value()` calls would
+// silently return the SAME (wrong, for one of them) result. Package-
+// qualified keys keep them independent. `A`'s formula (n+1) and `B`'s
+// (n+2) are chosen so an aliasing bug is numerically visible in the sum.
+// ─────────────────────────────────────────────────────────────────────────────
+test "two packages with a same-named record and same-named impl method resolve independently (#7627)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj7.A",
+      path = "",
+      source = "package Proj7.A\n" + "interface AIfc {\n" + "  func value(): Int\n" + "}\n" + "pub record Widget {\n" +
+        "  n: Int\n" +
+        "}\n" +
+        "impl AIfc for Widget {\n" +
+        "  func value(): Int {\n" +
+        "    self.n + 1\n" +
+        "  }\n" +
+        "}\n" +
+        "pub func run(): Int {\n" +
+        "  Widget(n = 10).value()\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj7.B",
+      path = "",
+      source = "package Proj7.B\n" + "interface BIfc {\n" + "  func value(): Int\n" + "}\n" + "pub record Widget {\n" +
+        "  n: Int\n" +
+        "}\n" +
+        "impl BIfc for Widget {\n" +
+        "  func value(): Int {\n" +
+        "    self.n + 2\n" +
+        "  }\n" +
+        "}\n" +
+        "pub func run(): Int {\n" +
+        "  Widget(n = 10).value()\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj7.App",
+      path = "",
+      source = "package Proj7.App\n" + "import Proj7.A\n" + "import Proj7.B\n" + "func main(): Int {\n" +
+        "  Proj7.A.run() + Proj7.B.run()\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(
+    outcome.exitCode,
+    23,
+    "10+1 (Proj7.A.Widget.value()) + 10+2 (Proj7.B.Widget.value()) = 23 -- no cross-package aliasing"
+  )
 }

@@ -2967,6 +2967,159 @@ func earlierProtectedImplWithMethod(
   None
 }
 
+// True when a record or exposed record named `targetName` declares an
+// own-body (D037) method called `method` among `items`.
+func recordDeclaresOwnBodyMethod(items: in List[Item], targetName: in String, method: in String): Bool {
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IRecord(decl) -> if decl.name == targetName and recordBodyDeclaresMethod(decl, method) { return true }
+      case IExposedRec(decl) -> if decl.name == targetName and recordBodyDeclaresMethod(decl, method) { return true }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+func recordBodyDeclaresMethod(decl: in RecordDecl, method: in String): Bool {
+  var m = 0
+  while m < decl.members.count {
+    match decl.members[m] {
+      case RMFunc(fn) -> if fn.name == method { return true }
+      case _ -> ()
+    }
+    m = m + 1
+  }
+  false
+}
+
+// The interface of an impl for the type named `targetName`, declared in
+// `items` before `decl`, that already has a method called `method`.
+// Generalizes `earlierProtectedImplWithMethod` (whose own-package,
+// non-generic, non-aliased restrictions are specific to the
+// contract-elaborator move protected types need) to any impl target:
+// matched by the RESOLVED type name rather than raw target-AST text, so a
+// `type X = R; impl I for X` alias still matches an `impl J for R` for the
+// same underlying `R`.
+func earlierImplWithMethodForTarget(
+  tbl: in SymbolTable,
+  items: in List[Item],
+  decl: in ImplDecl,
+  targetName: in String,
+  method: in String,
+): Option[String] {
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IImpl(other) -> {
+        if other.span.startPos.offset == decl.span.startPos.offset and other.span.endPos.offset == decl.span.endPos.offset {
+          return None
+        }
+        val scratch: List[Diagnostic] = newList()
+        val octx = declGenericContext(other.generics)
+        val otherTy = resolveType(tbl, octx, scratch, other.target)
+        if simpleTypeNameOf(otherTy) == targetName {
+          var m = 0
+          while m < other.members.count {
+            match other.members[m] {
+              case IMplFunc(fn) -> if fn.name == method { return Some(value = implIfaceName(other)) }
+              case _ -> ()
+            }
+            m = m + 1
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+// #7626/#7627 review follow-ups: no backend can compile a non-protected
+// impl target (record, exposed record, union, opaque type) that declares
+// the same method name reachable twice directly on it — MSIL/JVM both
+// fail codegen with a duplicate-member error, and the native backend
+// (#7600) has no ambiguity diagnostic to fall back on and would silently
+// resolve to whichever tier its direct-call index happens to check first.
+// Protected types already reject this shape as T0136
+// (`checkImplOnProtected`, whose message explains the CONTRACT ELABORATOR
+// consequence of moving impl methods into a locked member); this
+// generalizes the same "duplicate method name on a shared target"
+// detection — reusing `earlierProtectedImplWithMethod`'s pattern via
+// `earlierImplWithMethodForTarget` above — to every other target, under a
+// new code, T0139, since T0136's protected-only wording does not apply
+// here. Detects two shapes:
+//   - an impl method whose name matches one of the target's own
+//     record-body (D037) methods (#7626);
+//   - an impl method whose name matches a method of an EARLIER impl
+//     (possibly of a different interface) for the same target.
+// Both checks are AST-based over `items` (the file currently being
+// checked), so a record's own-body methods and its `impl` blocks need to
+// be visible in the same file/package to be caught here — the realistic
+// case, since both are ordinarily declared alongside the record itself.
+func checkImplMethodNameConflicts(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  decl: in ImplDecl,
+  items: in List[Item],
+): Unit {
+  val scratch: List[Diagnostic] = newList()
+  val ctx = declGenericContext(decl.generics)
+  val targetTy = resolveType(tbl, ctx, scratch, decl.target)
+  val pdOpt: Option[ProtectedTypeDecl] = match typeIdOfType(targetTy) {
+    case Some(tid) -> findProtectedDeclByTypeId(tbl, tid)
+    case None -> None
+  }
+  match pdOpt {
+    case Some(_) -> ()
+    case None -> {
+      val targetName = simpleTypeNameOf(targetTy)
+      if targetName.length > 0 {
+        val ifaceName = implIfaceName(decl)
+        var i = 0
+        while i < decl.members.count {
+          match decl.members[i] {
+            case IMplFunc(fn) -> {
+              if recordDeclaresOwnBodyMethod(items, targetName, fn.name) {
+                diag.add(
+                  errorDiagnostic(
+                    "T0139",
+                    "impl method '" + fn.name + "' of '" + ifaceName + "' has the same name as the own method '" + fn.name + "' of '" +
+                      targetName +
+                      "'; rename the impl method or the record's own method to disambiguate",
+                    fn.span
+                  )
+                )
+              } else {
+                match earlierImplWithMethodForTarget(tbl, items, decl, targetName, fn.name) {
+                  case Some(otherIface) -> diag.add(
+                    errorDiagnostic(
+                      "T0139",
+                      "impl method '" + fn.name + "' of '" + ifaceName + "' has the same name as method '" +
+                        fn.name +
+                        "' of the impl of '" +
+                        otherIface +
+                        "' for '" +
+                        targetName +
+                        "'; rename one of the interface methods to disambiguate",
+                      fn.span
+                    )
+                  )
+                  case None -> ()
+                }
+              }
+            }
+            case _ -> ()
+          }
+          i = i + 1
+        }
+      }
+    }
+  }
+}
+
 func itemsDeclareProtected(items: in List[Item], name: in String): Bool {
   var i = 0
   while i < items.count {
@@ -3811,6 +3964,7 @@ func checkWithImportedPackagesCore(
       case IImpl(decl) -> {
         checkImplConformance(tbl, diag, decl)
         checkImplOnProtected(tbl, diag, decl, file.items)
+        checkImplMethodNameConflicts(tbl, diag, decl, file.items)
         checkImplMemberBodies(tbl, sigs, diag, decl)
       }
       case IProtected(decl) -> checkProtectedMemberBodies(tbl, sigs, diag, decl)

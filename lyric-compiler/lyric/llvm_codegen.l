@@ -398,17 +398,28 @@ record Ctx {
   ifaceInfos: Map[String, NIfaceInfo]
   ifaceBareNameOwners: Map[String, String]
   ifaceVtables: Map[String, String]
-  // Direct-receiver impl-method resolution (#7600): maps
-  // `<bare recordName>.<methodName>/<arity>` to the `ctx.sigs` key of the
-  // collision-free impl-method symbol (`implMethodName`) a call through the
-  // CONCRETE record receiver resolves to.  Populated by
-  // `registerImplDirectMethods` in the same unit/impl/member order the type
-  // checker's own `tbl.impls` builds up (`methodCandidatesFor`), so the
-  // first-declared `impl` wins a same-named-method tie the same way the
-  // checker's first-match selection does. Record own-body methods are never
-  // entered here (they resolve through the earlier bare-name lookup tiers in
-  // `lowerUfcsCall`, which already run first) — this map exists only for
-  // names that resolve NOWHERE except a matching `impl`.
+  // Direct-receiver impl-method resolution (#7600, review follow-up
+  // #7627). Maps the receiver's PACKAGE-QUALIFIED
+  // `<pkg>.<Record>.<methodName>/<arity>` (matching `tyName` — the same
+  // qualification every other `lowerUfcsCall` tier already uses) to the
+  // `ctx.sigs` key of the collision-free impl-method symbol
+  // (`implMethodName`) a call through the CONCRETE record receiver
+  // resolves to. A bare (unqualified) record name would alias two
+  // same-named records in different packages of a multi-package native
+  // bundle to whichever package's impl happened to register first
+  // (#7627). Populated by `registerImplDirectMethods` in the same
+  // unit/impl/member order the type checker's own `tbl.impls` builds up
+  // (`methodCandidatesFor`), so the first-declared `impl` wins a
+  // same-named-method tie the same way the checker's first-match
+  // selection does. A record's own-body method can never collide with an
+  // impl method of the same name any more — the type checker rejects
+  // that shape as T0139 (#7626) — so this map holds impl methods only,
+  // and this has to run BEFORE the bare `curPkg + "." + name` lookup in
+  // `lowerUfcsCall`: that lookup matches ANY same-arity function in the
+  // current package regardless of its receiver type (it does not verify
+  // the match is actually a method of THIS record), so an unrelated free
+  // function sharing the impl method's bare name and arity would
+  // otherwise shadow it.
   implDirectMethods: Map[String, String]
   // Protected-type record irNames (N3.4): marks which `recordDefs` entries
   // are protected types (a trailing `__mutex: i8*` field, construction
@@ -681,7 +692,7 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
           return ctx.fnTyEnvTys[envIdx]
         }
       }
-      val joined = modulePathJoin(path.segments)
+      val joined = qualifiedPathJoin(ctx, path)
       val n = lastSeg(path)
       match lookupHeapType(ctx, joined, n) {
         case Some(t) -> return t
@@ -751,7 +762,7 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
           return Some(value = ctx.fnTyEnvTys[envIdx])
         }
       }
-      val joined = modulePathJoin(path.segments)
+      val joined = qualifiedPathJoin(ctx, path)
       val n = lastSeg(path)
       match lookupHeapType(ctx, joined, n) {
         case Some(t) -> return Some(value = t)
@@ -804,6 +815,27 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
     case TUnit -> Some(value = NVoid)
     case TParen(inner) -> typeToNOpt(ctx, inner)
     case _ -> None
+  }
+}
+
+/// `modulePathJoin(path.segments)`, except a single-segment (unqualified)
+/// path is qualified with the CALLER's OWN `ctx.curPkg[0]` instead of
+/// being left bare (#7627). An unqualified type reference such as `self:
+/// Widget` or `Widget(n = 10)` always means the record named `Widget` IN
+/// THE CURRENT PACKAGE — `modulePathJoin` alone returns just `"Widget"`
+/// for a one-segment path, which is indistinguishable from the GLOBAL
+/// bare `"Widget"` key every package's `Widget` record also registers
+/// (`addRecKey`'s "first-wins shadowing across packages" fallback slot);
+/// `lookupHeapType(ctx, joined, bare)` tries `joined` first, so passing
+/// the truly qualified name here means the caller's OWN package's
+/// `Widget` is always preferred, and the plain bare key is only ever
+/// reached as a last resort (kept for forms this function does not
+/// itself qualify, e.g. a name synthesised without any package context).
+func qualifiedPathJoin(ctx: in Ctx, path: in ModulePath): String {
+  if path.segments.count == 1 and ctx.curPkg.count > 0 {
+    ctx.curPkg[0] + "." + path.segments[0]
+  } else {
+    modulePathJoin(path.segments)
   }
 }
 
@@ -4102,6 +4134,37 @@ func lowerConstructCall(
 /// against the record / union-case / generic-record / generic-union-case
 /// / distinct-type construction registries.  `None` when `name` matches
 /// none of them.
+/// Looks up `m` under the caller's OWN package-qualified spelling of
+/// `bareOrDotted` first, falling back to the bare (unqualified) key only
+/// when the caller's own package never registered one. `addRecKey` /
+/// `replaceRecKey` (and the analogous case-ref / distinct-type
+/// registration sites) add BOTH a `<pkg>.<name>` key and a bare `<name>`
+/// key for every record/case/distinct-type declaration, so that a
+/// same-package unqualified reference resolves without the caller having
+/// to know its own package. But the bare key is a single GLOBAL slot
+/// shared by every package in the bundle — `addRecKey`'s "first-wins
+/// shadowing across packages" rule means whichever package's declaration
+/// happens to be collected FIRST wins the bare key for every OTHER
+/// package's unqualified references too (#7627): two packages each
+/// declaring `record Widget { ... }` collide on the bare `"Widget"` key,
+/// so a construct call inside the package that registered SECOND
+/// silently builds the FIRST package's `Widget`. Qualifying with the
+/// caller's own `ctx.curPkg[0]` first closes that: every legitimate
+/// same-package reference already has a `<pkg>.<name>` entry (added
+/// alongside the bare one at the same declaration site), so this can
+/// never regress an existing resolution — it only ever prefers the
+/// caller's own declaration over a same-named stranger's.
+func curPkgQualifiedGet[T](ctx: in Ctx, m: in Map[String, T], bareOrDotted: in String): Option[T] {
+  if ctx.curPkg.count > 0 {
+    match mapGet(m, ctx.curPkg[0] + "." + bareOrDotted) {
+      case Some(v) -> return Some(value = v)
+      case None -> {
+      }
+    }
+  }
+  mapGet(m, bareOrDotted)
+}
+
 func tryLowerConstruct(
   ctx: in Ctx,
   insns: in List[NInsn],
@@ -4110,7 +4173,7 @@ func tryLowerConstruct(
   line: in Int,
   retWant: in Option[NType],
 ): Option[NVal] {
-  match mapGet(ctx.recordDefs, name) {
+  match curPkgQualifiedGet(ctx, ctx.recordDefs, name) {
     case Some(ri) -> {
       if ctx.protectedRecNames.containsKey(ri.irName) {
         return Some(value = lowerProtectedConstructArgs(ctx, insns, ri, args))
@@ -4120,7 +4183,7 @@ func tryLowerConstruct(
     case None -> {
     }
   }
-  match mapGet(ctx.caseRefs, name) {
+  match curPkgQualifiedGet(ctx, ctx.caseRefs, name) {
     case Some(cref) -> {
       val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
         case Some(u) -> u
@@ -4145,7 +4208,7 @@ func tryLowerConstruct(
   if ctx.genericRecordDefs.containsKey(name) {
     return Some(value = lowerGenericRecordConstruct(ctx, insns, genericQualifiedKey(ctx, name), args, retWant))
   }
-  match mapGet(ctx.distinctDefs, name) {
+  match curPkgQualifiedGet(ctx, ctx.distinctDefs, name) {
     case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, name, di, args, line))
     case None -> {
     }
@@ -4153,7 +4216,7 @@ func tryLowerConstruct(
   // `X.from(v)` (language reference §2.3) and the older `X.From(v)`.
   if Str.endsWith(name, ".from") or Str.endsWith(name, ".From") {
     val baseName = Str.substring(name, 0, name.length - 5)
-    match mapGet(ctx.distinctDefs, baseName) {
+    match curPkgQualifiedGet(ctx, ctx.distinctDefs, baseName) {
       case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, baseName, di, args, line))
       case None -> {
       }
@@ -4161,7 +4224,7 @@ func tryLowerConstruct(
   }
   if Str.endsWith(name, ".tryFrom") {
     val baseName = Str.substring(name, 0, name.length - 8)
-    match mapGet(ctx.distinctDefs, baseName) {
+    match curPkgQualifiedGet(ctx, ctx.distinctDefs, baseName) {
       case Some(di) -> return Some(value = lowerDistinctTryFrom(ctx, insns, baseName, di, args, line))
       case None -> {
       }
@@ -4214,29 +4277,26 @@ func lowerUfcsCall(
     }
   }
   val arity = (args.count + 1).toString()
-  // #7600: `.<name>(...)` on a CONCRETE record receiver — try an `impl I
+  // `.<name>(...)` on a CONCRETE record receiver — try an `impl I
   // for R` method FIRST, via the index `registerImplDirectMethods` built
-  // from every impl's bare `<record>.<method>/<arity>`. This has to run
-  // BEFORE the bare `curPkg + "." + name` lookup below: that lookup
-  // matches ANY same-arity function in the current package regardless of
-  // its receiver type (it does not verify the match is actually a method
-  // of THIS record), so an unrelated free function sharing the impl
-  // method's bare name and arity would otherwise shadow it. An impl
-  // method's own key (`<Record>.<Iface>.<method>`) is collision-free by
-  // construction, so trying it first can never steal a match that
-  // belongs to a genuinely different function.
+  // from every impl's PACKAGE-QUALIFIED `<pkg>.<record>.<method>/<arity>`
+  // (#7627). This has to run BEFORE the bare `curPkg + "." + name`
+  // lookup below: that lookup matches ANY same-arity function in the
+  // current package regardless of its receiver type (it does not verify
+  // the match is actually a method of THIS record), so an unrelated free
+  // function sharing the impl method's bare name and arity would
+  // otherwise shadow it (#7600). A record's own-body method can never
+  // share a name with one of its impl methods any more — the type
+  // checker rejects that shape as T0139 (#7626) — so trying the impl
+  // index first can never steal a match that belongs to a genuinely
+  // different function: an impl method's own key is collision-free by
+  // construction (package + record + method).
   var sigOpt: Option[NFuncSig] = None
   match recv.ty {
     case NPtr(pointee) -> {
       match pointee {
         case NStruct(tyName, _) -> {
-          val implDotIdx = lastDotIndex(tyName)
-          val bareTyNameForImpl = if implDotIdx > 0 {
-            Str.substring(tyName, implDotIdx + 1, tyName.length - implDotIdx - 1)
-          } else {
-            tyName
-          }
-          match mapGet(ctx.implDirectMethods, bareTyNameForImpl + "." + name + "/" + arity) {
+          match mapGet(ctx.implDirectMethods, tyName + "." + name + "/" + arity) {
             case Some(sigKey) -> {
               sigOpt = mapGet(ctx.sigs, sigKey)
             }
@@ -13256,21 +13316,26 @@ func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
 }
 
 /// Index every non-generic `impl I for R` method under
-/// `<bare R>.<method>/<arity>` -> its collision-free `ctx.sigs` key
+/// `<pkg>.<R>.<method>/<arity>` (PACKAGE-QUALIFIED, #7627 — a bare record
+/// name would alias two same-named records in different packages in a
+/// multi-package native bundle) -> its collision-free `ctx.sigs` key
 /// (`implMethodName`, #7600), so a call on the CONCRETE record receiver can
 /// find it (`lowerUfcsCall` has no other lookup that reaches the
 /// `<Record>.<Iface>.<method>` name `collectImplMethods` gives it). Walked in
 /// the same units/impls/members order the type checker's `symTableAddImpl` +
 /// `methodCandidatesFor` build and consult `tbl.impls`, and `addSig`-style
-/// first-wins on a duplicate key, so two interfaces declaring the same
-/// method name on the same record resolve to whichever `impl` appears
-/// first in source order — exactly the checker's own tie-break (docs/59
-/// records no ambiguity diagnostic for this case on records; only
-/// protected types diagnose it, T0136). Protected-type impls never reach
-/// here: the contract elaborator moves them into the type's own entries
-/// before codegen sees the `IImpl` item (#7457) — `protectedRecNames` is
-/// still consulted defensively in case a future caller feeds this function
-/// units before that elaboration runs.
+/// first-wins on a duplicate key. In practice a duplicate key never
+/// reaches this pass any more: the type checker now rejects both a
+/// record's own-body method sharing a name with one of its impl methods
+/// and two impls of the same target sharing a method name (T0139), the
+/// same way it already rejects the protected-type analog (T0136) —
+/// #7626/#7627's review follow-ups. The first-wins tie-break below is
+/// therefore a defensive fallback only, kept in case a caller ever feeds
+/// this function units that bypassed the checker. Protected-type impls
+/// never reach here regardless: the contract elaborator moves them into
+/// the type's own entries before codegen sees the `IImpl` item (#7457) —
+/// `protectedRecNames` is still consulted defensively in case a future
+/// caller feeds this function units before that elaboration runs.
 func registerImplDirectMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
   var ua = 0
   while ua < units.count {
@@ -13298,7 +13363,7 @@ func registerImplDirectMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
                         case None -> {
                           if not fn.isAsync {
                             val arity = (fn.params.count + 1).toString()
-                            val key = recordName + "." + fn.name + "/" + arity
+                            val key = u.pkgName + "." + recordName + "." + fn.name + "/" + arity
                             val sigKey = u.pkgName + "." + implMethodName(recordName, ifaceName, fn.name) + "/" + arity
                             if not ctx.implDirectMethods.containsKey(key) {
                               ctx.implDirectMethods.add(key, sigKey)

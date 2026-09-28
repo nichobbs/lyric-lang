@@ -633,3 +633,58 @@ test "native project build: `?` used inside a bundled STDLIB-CLOSURE package (no
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Two packages each declare a SAME-BARE-NAME record with DIFFERENT field
+// layouts, no `impl` involved at all (#7627 general case). Root cause: an
+// unqualified type reference (`self: Widget`, `Widget(n = 10)`) resolved
+// through a single GLOBAL bare-name slot in `ctx.recordDefs` /
+// `lookupHeapType` (`addRecKey`'s documented "first-wins shadowing across
+// packages" fallback) instead of the CALLER's own package first — so a
+// bare reference in the package that registered its `Widget` SECOND
+// silently built the FIRST package's struct layout. If aliased, this
+// reads or writes the wrong fields (or the wrong count of them) through
+// the wrong layout, not just an impl dispatch that reaches the wrong
+// method. `Rec` in `Proj7B.A` has ONE field; `Rec` in `Proj7B.B` has TWO —
+// chosen so a layout alias would misread `b.y` as garbage/other-field data
+// rather than merely returning a plausible-looking wrong constant.
+// ─────────────────────────────────────────────────────────────────────────────
+test "two packages with a same-named record and different field layouts resolve independently, no impl (#7627)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj7B.A",
+      path = "",
+      source = "package Proj7B.A\n" + "pub record Rec {\n" + "  x: Int\n" + "}\n" + "pub func run(): Int {\n" +
+        "  val r = Rec(x = 5)\n" +
+        "  r.x\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj7B.B",
+      path = "",
+      source = "package Proj7B.B\n" + "pub record Rec {\n" + "  x: Int\n" + "  y: Int\n" + "}\n" +
+        "pub func run(): Int {\n" +
+        "  val r = Rec(x = 100, y = 7)\n" +
+        "  r.x + r.y\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj7B.App",
+      path = "",
+      source = "package Proj7B.App\n" + "import Proj7B.A\n" + "import Proj7B.B\n" + "func main(): Int {\n" +
+        "  Proj7B.A.run() + Proj7B.B.run()\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(
+    outcome.exitCode,
+    112,
+    "5 (Proj7B.A.Rec, 1 field) + 107 (Proj7B.B.Rec, 2 fields: 100+7) = 112 -- no cross-package layout aliasing"
+  )
+}
