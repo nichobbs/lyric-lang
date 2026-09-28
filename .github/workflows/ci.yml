@@ -38,16 +38,16 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Runner pools (self-hosted opt-in).  The nine long-running jobs
+# Runner pools (self-hosted opt-in).  The eleven long-running jobs
 # (compiler-self-tests-core, compiler-self-tests-dotnet-a/-b,
-# compiler-self-tests-jvm/-jvm-b,
+# compiler-self-tests-jvm/-jvm-b/-jvm-c, stdlib-reproducible-emit,
 # numbered-backend-self-tests, stdlib-builds, native-backend-self-tests,
 # build-stage2) read their `runs-on` from repository variables so they can be
 # moved to a self-hosted machine without a commit; every other job stays on
 # GitHub-hosted `ubuntu-latest` (macos-aot-smoke on `macos-latest`).
 # build-stage2 builds and runs its stage-2 binary in the same job, so it
 # hands no artifact to another job and needs no cross-architecture wrapper.
-#   CI_HEAVY_RUNNER   a single runner label for the eight managed-runtime
+#   CI_HEAVY_RUNNER   a single runner label for the ten managed-runtime
 #                     jobs, e.g. `self-hosted` (a JSON list would need
 #                     fromJSON, so give the machine one distinctive label).
 #   CI_NATIVE_RUNNER  optional override for native-backend-self-tests, which
@@ -217,12 +217,42 @@ jobs:
       # assembly — sidestepping the per-package cross-package emission corruption
       # (docs/41 §R7) that mis-parses even `package P`.  The bundle also carries
       # each package's `pub val` constants (the original #3086 reason for staging).
-      # It only needs the AOT binary, so it runs in the background (~3.5 min)
-      # while the example, BuildInfo and proof steps below use the same binary.
-      # Nothing below reads `selfhosted/` (check_assembly_refs.sh globs only the
-      # top level of .bootstrap/stage1), and the upload waits for it.
-      - name: Stage self-hosted compiler bundle
+      #
+      # Staging takes ~3.5 min, so the bundle is cached. It is a function of
+      # the compiler that emits it (the stage-1 DLLs, whose bytes already
+      # reflect the stage-0 seed release and every compiler/stdlib source,
+      # and the Lyric.Cli.Aot launcher that runs them, with the
+      # Directory.Build.props it is built under), the compiler sources
+      # it compiles, the staging script and the .NET SDK, so the key hashes
+      # exactly those. Stage 1 is deterministic for a
+      # given seed and source tree, so a PR that leaves them alone (docs,
+      # ecosystem libraries, CI) hits the cache; anything else misses and
+      # stages as before. A miss can never serve a stale bundle.
+      - name: Restore the cached compiler bundle
+        id: bundle-cache
         if: steps.changes.outputs.has_code_changes == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .ci-cache/compiler-bundle
+          key: compiler-bundle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bootstrap/stage1/*.dll', 'lyric-compiler/**/*.l', 'lyric-stdlib/**/*.l', 'scripts/stage-selfhosted-compiler.sh', 'bootstrap/global.json', 'bootstrap/Directory.Build.props', 'bootstrap/src/Lyric.Cli.Aot/*.cs', 'bootstrap/src/Lyric.Cli.Aot/*.csproj') }}
+
+      - name: Install the cached compiler bundle
+        if: steps.changes.outputs.has_code_changes == 'true' && steps.bundle-cache.outputs.cache-hit == 'true'
+        run: |
+          set -euo pipefail
+          bin_dir="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0"
+          for dir in "$bin_dir" .bootstrap/stage1; do
+            mkdir -p "$dir/selfhosted"
+            cp -f .ci-cache/compiler-bundle/Lyric.Compiler.dll "$dir/selfhosted/"
+          done
+
+      # On a cache miss the bundle is staged in the background (it only needs
+      # the AOT binary) while the example, BuildInfo and proof steps below use
+      # the same binary. Nothing below reads `selfhosted/`
+      # (check_assembly_refs.sh globs only the top level of .bootstrap/stage1),
+      # and the upload waits for it.
+      - name: Stage self-hosted compiler bundle
+        if: steps.changes.outputs.has_code_changes == 'true' && steps.bundle-cache.outputs.cache-hit != 'true'
         background: true
         working-directory: ${{ github.workspace }}
         run: |
@@ -319,6 +349,19 @@ jobs:
       # "Stage self-hosted compiler bundle" step above before the upload.
       - name: Wait for the compiler bundle
         wait-all: true
+
+      - name: Collect the compiler bundle for the cache
+        if: steps.changes.outputs.has_code_changes == 'true' && steps.bundle-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-cache/compiler-bundle
+          cp -f "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/selfhosted/Lyric.Compiler.dll" .ci-cache/compiler-bundle/
+      - name: Upload the compiler bundle cache entry
+        if: steps.changes.outputs.has_code_changes == 'true' && steps.bundle-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .ci-cache/compiler-bundle
+          key: ${{ steps.bundle-cache.outputs.cache-primary-key }}
 
       - name: Upload build artifacts
         if: steps.changes.outputs.has_code_changes == 'true'
@@ -3751,9 +3794,9 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    # has_jvm_changes (not has_core_changes): this job and
-    # compiler-self-tests-jvm-b are the JVM-specific compiler self-test
-    # suite, and -b also carries the only JVM-kernel
+    # has_jvm_changes (not has_core_changes): this job,
+    # compiler-self-tests-jvm-b and -c are the JVM-specific compiler
+    # self-test suite, and -c also carries the only JVM-kernel
     # coverage for lyric-web/storage/resilience/auth (folded into
     # has_jvm_changes for exactly that reason — has_core_changes alone
     # would silently skip that coverage on a PR confined to just one of
@@ -5758,201 +5801,6 @@ jobs:
           out="$(java -jar "$work/task_ambient_jvm_tests.jar")"
           echo "$out" | tail -3
           grep -q "task ambient jvm tests: ok" <<< "$out" || { echo "::error::Std.Task ambient-slot JVM suite did not report success"; exit 1; }
-      # Ecosystem suites on JVM: storage, resilience, jsonrpc, mcp, health,
-      # generator-sdk, web (coverage notes in the script; web restores its
-      # own Undertow Maven dependency first).
-      - name: Ecosystem suites on JVM (scripts/ci/jvm-ecosystem-suites.sh)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/jvm-ecosystem-suites.sh
-      # lyric-lambda suite on JVM (#7337, #7357); needs Undertow Maven-restored.
-      - name: lyric-lambda suite on JVM (lyric test --target jvm --features jvm)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/manifest-jvm-maven-test.sh lyric-lambda/lyric.toml --target jvm --no-default-features --features jvm
-      # lyric-aws-secrets suite on JVM (#7033) — pins the real
-      # SecretsManagerClient/SsmClient bindings (secrets_kernel_jvm.l)
-      # against the actual AWS SDK for Java v2 JARs: classifySecretsError/
-      # classifyParameterError and extractSecretField's panic-to-Result
-      # fixes (#6875, #6979) now have automated regression coverage instead
-      # of having been exercised once, manually, in a sandbox session.
-      #
-      # `--features jvm` needs the AWS SDK for Java v2 classpath resolved
-      # from lyric-aws-secrets's `[maven]` deps (`target/restore/
-      # jvm-classpath.txt`) before the JVM emitter's auto-FFI resolution can
-      # find `software.amazon.awssdk.services.secretsmanager.
-      # SecretsManagerClient` — without a prior `lyric restore` this failed
-      # with `error[J002]: ... class ... not found in JDK jmods or
-      # LYRIC_FFI_JARS`. This step is `background: true` with no ordering
-      # guarantee relative to the later "Install Maven (self-hosted runners
-      # only)" / "JVM auto-FFI bridge self-test" steps, so — mirroring the
-      # #6790 fix for the same race on the lyric-web Undertow classpath —
-      # make it self-contained: install Maven if missing, build the
-      # resolver, and restore before running the test, instead of depending
-      # on timing against unrelated steps elsewhere in this job.
-      #
-      # #7108: the conditional `apt-get install maven` below can run at the
-      # same moment as the "Install Maven (self-hosted runners only)" step
-      # on a self-hosted runner, with no coordination between the two —
-      # a dpkg-lock race. Both now serialize through the same `flock` on a
-      # shared lock file so only one process installs at a time; the other
-      # waits, then finds `mvn` already present (or performs a harmless
-      # redundant install/update). `make maven-resolver` itself is
-      # similarly serialized (this job's third concurrent caller alongside
-      # "lyric-web Undertow smoke on JVM" and "JVM auto-FFI bridge
-      # self-test") to avoid two `mvn package` builds racing into the same
-      # `resolver/target/` output directory.
-      #
-      # `lyric-aws-secrets` is by far the largest Maven dependency set of
-      # any restore in this job (41 AWS SDK for Java artifacts, vs. 7 for
-      # lyric-auth/lyric-resilience/lyric-web) and the first CI consumer to
-      # ever exercise it — on this job's self-hosted runner, downloading
-      # all 41 artifacts has twice exceeded `lyric restore`'s hardcoded
-      # 300s internal timeout (`cli_restore.l`) with no other diagnostic,
-      # while every other (smaller) Maven restore in the same run completed
-      # in seconds. Retry up to 3 attempts specifically on that timeout
-      # message (never on a genuine restore error, which fails immediately
-      # with its own message) rather than widening the shared, repo-wide
-      # 300s constant every other manifest's restore also uses.
-      - name: lyric-aws-secrets suite on JVM (lyric test --target jvm --features jvm)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if ! command -v mvn >/dev/null 2>&1; then
-            sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
-            flock /tmp/lyric-ci-apt-maven.lock -c 'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven'
-          fi
-          flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
-          export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-aws-secrets JVM suite"
-            exit 1
-          fi
-          restore_ok=0
-          for attempt in 1 2 3; do
-            if restore_out="$("$lyric_bin" restore --manifest lyric-aws-secrets/lyric.toml 2>&1)"; then
-              echo "$restore_out"
-              restore_ok=1
-              break
-            fi
-            echo "$restore_out"
-            if [[ "$restore_out" != *"Maven resolver timed out"* ]]; then
-              echo "::error::lyric-aws-secrets restore failed for a reason other than the known timeout; not retrying"
-              exit 1
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "::warning::lyric-aws-secrets Maven restore timed out (attempt $attempt/3); retrying"
-            fi
-          done
-          if [ "$restore_ok" -ne 1 ]; then
-            echo "::error::lyric-aws-secrets Maven restore timed out on all 3 attempts"
-            exit 1
-          fi
-          bash scripts/ci/self-test.sh --manifest lyric-aws-secrets/lyric.toml --target jvm --no-default-features --features jvm
-      # lyric-auth manifest build on JVM with NO feature flags (#5571) — the
-      # regression pin for target-normalized feature resolution: a plain
-      # `--target jvm` build of a `default = ["dotnet"]` platform-split
-      # manifest must swap in the declared `jvm` feature and compile
-      # Auth.Kernel.Jvm, not the `@cfg(feature = "dotnet")` kernel (which
-      # fails JVM codegen with J002 on its BCL externs).  This was the
-      # failure mode of #5571's workspace-dependency chain; the same
-      # resolver now backs root and dependency builds, so pinning the
-      # flag-less root build pins the propagation rule too (the end-to-end
-      # lyric-web Undertow smoke, tests/jvm_server_smoke.l, is wired as its
-      # own step below now that #5610/#5444/#5458 landed).
-      - name: lyric-auth manifest build on JVM without feature flags (#5571)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-auth JVM feature-resolution build"
-            exit 1
-          fi
-          rm -rf lyric-auth/bin
-          "$lyric_bin" build --manifest lyric-auth/lyric.toml --target jvm
-          if [ ! -f lyric-auth/bin/Lyric.Auth.dll ]; then
-            echo "::error::lyric-auth JVM build produced no artifact"
-            exit 1
-          fi
-          # The artifact must be a JAR (zip magic), i.e. the JVM bundle —
-          # proof the build went through the JVM pipeline with the jvm
-          # kernel selected rather than dying in Auth.Kernel.Net (J002).
-          head -c 2 lyric-auth/bin/Lyric.Auth.dll | grep -q 'PK' || {
-            echo "::error::lyric-auth JVM artifact is not a JAR"
-            exit 1
-          }
-          # A JVM bundle at the dotnet artifact path would poison later
-          # dotnet builds of dependents; drop it now that it is asserted.
-          rm -rf lyric-auth/bin
-          echo "lyric-auth JVM feature-resolution build ran (no --features flags)" >> "$GITHUB_STEP_SUMMARY"
-      # lyric-auth security regression suite on JVM (#6583) — until this,
-      # `Auth.Kernel.Jvm`'s structural JSON claim parser (JWT header/payload
-      # parsing, algorithm pinning per RFC 8725 §3.1, claim validation —
-      # authentication-critical) was only ever COMPILED on `--target jvm`
-      # (the build step above), never actually EXECUTED there: the 38-case
-      # `auth_security_tests.l` suite ran exclusively on `--target dotnet`
-      # (the "Run tests (auth)" step in the ecosystem-tests matrix job).
-      # Runs the full manifest test suite (both `auth_security_tests.l` and
-      # `auth_aspect_weaving_tests.l`) on `--target jvm` — the whole suite
-      # passes cleanly on this target with no compiler-level gap found, so
-      # no curated subset was needed. Plain `--target jvm` (no explicit
-      # `--features jvm`), matching the build step above and pinning the
-      # same #5571 target-normalized feature-resolution path for the test
-      # runner.
-      - name: lyric-auth security regression suite on JVM (lyric test --target jvm, #6583)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-auth JVM security suite"
-            exit 1
-          fi
-          "$lyric_bin" test --manifest lyric-auth/lyric.toml --target jvm
-      # lyric-web Undertow end-to-end smoke on JVM (#5610/#5444/#5458): builds
-      # tests/jvm_server_smoke.l single-file (bundling the imported Web +
-      # Web.Kernel.Runtime project packages with their workspace deps and
-      # target-normalized features, #5571), starts the real Undertow listener
-      # under java, and asserts all four endpoints — path param, header echo
-      # through HeaderMap, request-body echo, and 404.  This is also the
-      # regression pin for cross-package impl-method parameter registration
-      # (#5610): a two-package bundled compile where an impl method takes
-      # another package's record cannot be expressed in a single-file
-      # self-test, so this smoke IS that test.  Needs the Maven resolver jar
-      # and a lyric-web restore first: a single-file jvm build reads the
-      # restored lyric-web/target/restore/jvm-classpath.txt (NOT
-      # module-path.txt), and the bundle jar's manifest Class-Path carries
-      # the restored Undertow jar paths, so `java -jar` needs no -cp.
-      - name: lyric-web Undertow smoke on JVM (tests/jvm_server_smoke.l)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/lyric-web-undertow-jvm-smoke.sh
-      - name: UI library suites on JVM (#7378)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/ui-jvm-suites.sh
-      # lyric-ws Undertow smoke on JVM (#7243): the Origin policy (403 for a
-      # cross-origin handshake, 101 for same-origin / no Origin / a listed
-      # origin), handshake headers reaching onOpen, and a text round trip
-      # through the receive listener.  Std.TcpHost has no JVM kernel, so the
-      # dotnet loopback tests cannot cover this target.
-      - name: lyric-ws Undertow smoke on JVM (tests/ws_jvm_origin_smoke.l)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/lyric-ws-undertow-jvm-smoke.sh
       # Map-iteration self-test on JVM (#3676, #3229) — pins the completed
       # `_kernel_jvm/collections_host.l` kernel (dictGetKeys/dictGetValues
       # views, pure-Lyric tryGetValue) AND the post-mono signature
@@ -6251,13 +6099,13 @@ jobs:
       # needs lyric-web's Maven deps restored first (the Undertow classpath
       # its JVM auto-FFI resolution reads from
       # `lyric-web/target/restore/jvm-classpath.txt`). The "lyric-web
-      # Undertow smoke on JVM" step above also restores this, but it runs
+      # Undertow smoke on JVM" step (now in compiler-self-tests-jvm-c, on
+      # another runner) also restores it; when both ran in this job it was
       # `background: true` with no ordering guarantee relative to this
-      # (non-background) step — the race lost on the first real CI run
+      # (non-background) step, and the race was lost on the first real CI run
       # after this step landed, failing test 12 with "class
       # 'io.undertow.util.HttpString' not found" (#6790). Restoring here
-      # too makes this step self-contained instead of depending on timing
-      # against an unrelated background job; `lyric restore` is idempotent
+      # keeps this step self-contained; `lyric restore` is idempotent
       # so re-running it after (or concurrently with) the smoke step's own
       # restore is harmless.
       - name: JVM auto-FFI bridge self-test (native lyric test)
@@ -6321,6 +6169,240 @@ jobs:
   # machine it is now ~4-5 s for msil files and ~5-60 s for jvm files (msil:
   # 83 files in ~1m40s wall, jvm: 131 files in ~5m wall), so each set runs
   # as a single job. `--shard` stays available if a set outgrows that.
+  compiler-self-tests-jvm-c:
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    needs: [build]
+    permissions:
+      contents: read
+    # The heavy ecosystem and library JVM suites (Maven-backed lambda,
+    # aws-secrets and web, the Undertow smokes, the UI suites), split from
+    # compiler-self-tests-jvm-b's last batch, where running them together
+    # on one 4-vCPU runner made each wait on CPU. Same has_jvm_changes gate
+    # and setup as compiler-self-tests-jvm.
+    if: needs.build.outputs.has_code_changes == 'true' && needs.build.outputs.has_jvm_changes == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: ./.github/actions/lyric-test-setup
+        with:
+          java: 'true'
+          build-config: ${{ env.BUILD_CONFIG }}
+
+      # Ecosystem suites on JVM: storage, resilience, jsonrpc, mcp, health,
+      # generator-sdk, web (coverage notes in the script; web restores its
+      # own Undertow Maven dependency first).
+      - name: Ecosystem suites on JVM (scripts/ci/jvm-ecosystem-suites.sh)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/jvm-ecosystem-suites.sh
+
+      # lyric-lambda suite on JVM (#7337, #7357); needs Undertow Maven-restored.
+      - name: lyric-lambda suite on JVM (lyric test --target jvm --features jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/manifest-jvm-maven-test.sh lyric-lambda/lyric.toml --target jvm --no-default-features --features jvm
+
+      # lyric-aws-secrets suite on JVM (#7033) — pins the real
+      # SecretsManagerClient/SsmClient bindings (secrets_kernel_jvm.l)
+      # against the actual AWS SDK for Java v2 JARs: classifySecretsError/
+      # classifyParameterError and extractSecretField's panic-to-Result
+      # fixes (#6875, #6979) now have automated regression coverage instead
+      # of having been exercised once, manually, in a sandbox session.
+      #
+      # `--features jvm` needs the AWS SDK for Java v2 classpath resolved
+      # from lyric-aws-secrets's `[maven]` deps (`target/restore/
+      # jvm-classpath.txt`) before the JVM emitter's auto-FFI resolution can
+      # find `software.amazon.awssdk.services.secretsmanager.
+      # SecretsManagerClient` — without a prior `lyric restore` this failed
+      # with `error[J002]: ... class ... not found in JDK jmods or
+      # LYRIC_FFI_JARS`. This step is `background: true` with no ordering
+      # guarantee relative to the other steps in this job, so — mirroring the
+      # #6790 fix for the same race on the lyric-web Undertow classpath —
+      # make it self-contained: install Maven if missing, build the
+      # resolver, and restore before running the test, instead of depending
+      # on timing against unrelated steps.
+      #
+      # #7108: the conditional `apt-get install maven` below can run at the
+      # same moment as another step's install on the same runner, with no
+      # coordination between them — a dpkg-lock race. Every such install
+      # serializes through the same `flock` on a shared lock file so only one
+      # process installs at a time; the others wait, then find `mvn` already
+      # present (or perform a harmless redundant install/update).
+      # `make maven-resolver` is similarly serialized — its other concurrent
+      # callers in this job are the ecosystem suites' `web`, lyric-lambda,
+      # the lyric-web and lyric-ws Undertow smokes and the UI suites — so two
+      # `mvn package` builds never race into the same `resolver/target/`
+      # output directory.
+      #
+      # `lyric-aws-secrets` is by far the largest Maven dependency set of
+      # any restore in this job (41 AWS SDK for Java artifacts, vs. 7 for
+      # lyric-auth/lyric-resilience/lyric-web) and the first CI consumer to
+      # ever exercise it — on this job's self-hosted runner, downloading
+      # all 41 artifacts has twice exceeded `lyric restore`'s hardcoded
+      # 300s internal timeout (`cli_restore.l`) with no other diagnostic,
+      # while every other (smaller) Maven restore in the same run completed
+      # in seconds. Retry up to 3 attempts specifically on that timeout
+      # message (never on a genuine restore error, which fails immediately
+      # with its own message) rather than widening the shared, repo-wide
+      # 300s constant every other manifest's restore also uses.
+      - name: lyric-aws-secrets suite on JVM (lyric test --target jvm --features jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if ! command -v mvn >/dev/null 2>&1; then
+            sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+            flock /tmp/lyric-ci-apt-maven.lock -c 'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven'
+          fi
+          flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
+          export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-aws-secrets JVM suite"
+            exit 1
+          fi
+          restore_ok=0
+          for attempt in 1 2 3; do
+            if restore_out="$("$lyric_bin" restore --manifest lyric-aws-secrets/lyric.toml 2>&1)"; then
+              echo "$restore_out"
+              restore_ok=1
+              break
+            fi
+            echo "$restore_out"
+            if [[ "$restore_out" != *"Maven resolver timed out"* ]]; then
+              echo "::error::lyric-aws-secrets restore failed for a reason other than the known timeout; not retrying"
+              exit 1
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::lyric-aws-secrets Maven restore timed out (attempt $attempt/3); retrying"
+            fi
+          done
+          if [ "$restore_ok" -ne 1 ]; then
+            echo "::error::lyric-aws-secrets Maven restore timed out on all 3 attempts"
+            exit 1
+          fi
+          bash scripts/ci/self-test.sh --manifest lyric-aws-secrets/lyric.toml --target jvm --no-default-features --features jvm
+
+      # lyric-auth manifest build on JVM with NO feature flags (#5571) — the
+      # regression pin for target-normalized feature resolution: a plain
+      # `--target jvm` build of a `default = ["dotnet"]` platform-split
+      # manifest must swap in the declared `jvm` feature and compile
+      # Auth.Kernel.Jvm, not the `@cfg(feature = "dotnet")` kernel (which
+      # fails JVM codegen with J002 on its BCL externs).  This was the
+      # failure mode of #5571's workspace-dependency chain; the same
+      # resolver now backs root and dependency builds, so pinning the
+      # flag-less root build pins the propagation rule too (the end-to-end
+      # lyric-web Undertow smoke, tests/jvm_server_smoke.l, is wired as its
+      # own step below now that #5610/#5444/#5458 landed).
+      - name: lyric-auth manifest build on JVM without feature flags (#5571)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-auth JVM feature-resolution build"
+            exit 1
+          fi
+          rm -rf lyric-auth/bin
+          "$lyric_bin" build --manifest lyric-auth/lyric.toml --target jvm
+          if [ ! -f lyric-auth/bin/Lyric.Auth.dll ]; then
+            echo "::error::lyric-auth JVM build produced no artifact"
+            exit 1
+          fi
+          # The artifact must be a JAR (zip magic), i.e. the JVM bundle —
+          # proof the build went through the JVM pipeline with the jvm
+          # kernel selected rather than dying in Auth.Kernel.Net (J002).
+          head -c 2 lyric-auth/bin/Lyric.Auth.dll | grep -q 'PK' || {
+            echo "::error::lyric-auth JVM artifact is not a JAR"
+            exit 1
+          }
+          # A JVM bundle at the dotnet artifact path would poison later
+          # dotnet builds of dependents; drop it now that it is asserted.
+          rm -rf lyric-auth/bin
+          echo "lyric-auth JVM feature-resolution build ran (no --features flags)" >> "$GITHUB_STEP_SUMMARY"
+
+      # lyric-auth security regression suite on JVM (#6583) — until this,
+      # `Auth.Kernel.Jvm`'s structural JSON claim parser (JWT header/payload
+      # parsing, algorithm pinning per RFC 8725 §3.1, claim validation —
+      # authentication-critical) was only ever COMPILED on `--target jvm`
+      # (the build step above), never actually EXECUTED there: the 38-case
+      # `auth_security_tests.l` suite ran exclusively on `--target dotnet`
+      # (the "Run tests (auth)" step in the ecosystem-tests matrix job).
+      # Runs the full manifest test suite (both `auth_security_tests.l` and
+      # `auth_aspect_weaving_tests.l`) on `--target jvm` — the whole suite
+      # passes cleanly on this target with no compiler-level gap found, so
+      # no curated subset was needed. Plain `--target jvm` (no explicit
+      # `--features jvm`), matching the build step above and pinning the
+      # same #5571 target-normalized feature-resolution path for the test
+      # runner.
+      - name: lyric-auth security regression suite on JVM (lyric test --target jvm, #6583)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-auth JVM security suite"
+            exit 1
+          fi
+          "$lyric_bin" test --manifest lyric-auth/lyric.toml --target jvm
+
+      # lyric-web Undertow end-to-end smoke on JVM (#5610/#5444/#5458): builds
+      # tests/jvm_server_smoke.l single-file (bundling the imported Web +
+      # Web.Kernel.Runtime project packages with their workspace deps and
+      # target-normalized features, #5571), starts the real Undertow listener
+      # under java, and asserts all four endpoints — path param, header echo
+      # through HeaderMap, request-body echo, and 404.  This is also the
+      # regression pin for cross-package impl-method parameter registration
+      # (#5610): a two-package bundled compile where an impl method takes
+      # another package's record cannot be expressed in a single-file
+      # self-test, so this smoke IS that test.  Needs the Maven resolver jar
+      # and a lyric-web restore first: a single-file jvm build reads the
+      # restored lyric-web/target/restore/jvm-classpath.txt (NOT
+      # module-path.txt), and the bundle jar's manifest Class-Path carries
+      # the restored Undertow jar paths, so `java -jar` needs no -cp.
+      - name: lyric-web Undertow smoke on JVM (tests/jvm_server_smoke.l)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/lyric-web-undertow-jvm-smoke.sh
+
+      - name: UI library suites on JVM (#7378)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/ui-jvm-suites.sh
+
+      # lyric-ws Undertow smoke on JVM (#7243): the Origin policy (403 for a
+      # cross-origin handshake, 101 for same-origin / no Origin / a listed
+      # origin), handshake headers reaching onOpen, and a text round trip
+      # through the receive listener.  Std.TcpHost has no JVM kernel, so the
+      # dotnet loopback tests cannot cover this target.
+      - name: lyric-ws Undertow smoke on JVM (tests/ws_jvm_origin_smoke.l)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/lyric-ws-undertow-jvm-smoke.sh
+
+      - name: Wait for the ecosystem and library suites
+        wait-all: true
+
+      - name: Fail job if any suite failed
+        if: ${{ !cancelled() }}
+        run: |
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "::error::compiler-self-tests-jvm-c: one or more suites failed above (see the failing step for details)"
+            exit 1
+          fi
+
   numbered-backend-self-tests:
     # A shard whose set has no relevant changes skips every step at step level
     # (below) but still needs a runner. Send those no-op shards to
@@ -6786,6 +6868,58 @@ jobs:
         if: matrix.id == 'testing'
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-testing/lyric.toml
+
+  # Trust-anchor reproducibility gate, split out of stdlib-builds (where it
+  # was the longest step, ~3 min, run after everything else) so it runs on
+  # its own runner in parallel with the rest of CI. Both corpora build into
+  # separate temp directories (verify-reproducible-emit.sh's mktemp), so they
+  # run concurrently.
+  stdlib-reproducible-emit:
+    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: ./.github/actions/lyric-test-setup
+        with:
+          build-config: ${{ env.BUILD_CONFIG }}
+      # Trust-anchor reproducibility gate (Q-dist-001 prerequisite): the
+      # self-hosted MSIL emitter must be byte-for-byte reproducible.  Build each
+      # corpus twice and assert an exact `cmp` (no normalization — the
+      # self-hosted backend fixes the Module MVID and zeroes the PE timestamp,
+      # so identical sources MUST produce identical bytes).  A regression here
+      # means the shipped binary is no longer reproducible.
+      #
+      #   (i)  the full stdlib bundle, and
+      #   (ii) the WHOLE Lyric.Cli compiler closure (every Lyric.* / Msil.* /
+      #        Jvm.* package + its stdlib import closure) — the strongest
+      #        property available today: the entire self-hosted compiler emits
+      #        byte-identically run-to-run.
+      - name: Verify reproducible self-hosted emit (full stdlib bundle)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/verify-reproducible-emit.sh manifest "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" lyric-stdlib/lyric.full.toml
+      - name: Verify reproducible self-hosted emit (whole compiler closure)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/verify-reproducible-emit.sh closure "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+      - name: Wait for both reproducibility checks
+        wait-all: true
+      - name: Fail job if either check failed
+        if: ${{ !cancelled() }}
+        run: |
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "::error::stdlib-reproducible-emit: a reproducibility check failed above (see the failing step for details)"
+            exit 1
+          fi
 
   # Stdlib and ecosystem-library builds — runs in parallel with ecosystem-tests.
   stdlib-builds:
@@ -7318,26 +7452,6 @@ jobs:
             exit 1
           fi
           "$lyric_bin" run lyric-stdlib/tests/task_tests.l
-
-      # Trust-anchor reproducibility gate (Q-dist-001 prerequisite): the
-      # self-hosted MSIL emitter must be byte-for-byte reproducible.  Build each
-      # corpus twice and assert an exact `cmp` (no normalization — the
-      # self-hosted backend fixes the Module MVID and zeroes the PE timestamp,
-      # so identical sources MUST produce identical bytes).  A regression here
-      # means the shipped binary is no longer reproducible.
-      #
-      #   (i)  the full stdlib bundle, and
-      #   (ii) the WHOLE Lyric.Cli compiler closure (every Lyric.* / Msil.* /
-      #        Jvm.* package + its stdlib import closure) — the strongest
-      #        property available today: the entire self-hosted compiler emits
-      #        byte-identically run-to-run.
-      - name: Verify reproducible self-hosted emit (byte-identical double-build)
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          ./scripts/verify-reproducible-emit.sh manifest "$lyric_bin" lyric-stdlib/lyric.full.toml
-          ./scripts/verify-reproducible-emit.sh closure  "$lyric_bin"
 
       # Multi-file example packages — builds each showcase service in
       # examples/{rbac,ledger,jobqueue,product-catalog} end-to-end via
@@ -8209,7 +8323,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-core, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, compiler-self-tests-jvm-b, numbered-backend-self-tests, ecosystem-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required, resolver-build]
+    needs: [build, build-stage2, test-bootstrap, compiler-self-tests-core, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, native-backend-self-tests, aot-smoke, macos-aot-smoke, compiler-self-tests-jvm, compiler-self-tests-jvm-b, compiler-self-tests-jvm-c, numbered-backend-self-tests, ecosystem-tests, stdlib-builds, stdlib-reproducible-emit, crosspackage-and-codegen-tests, e2e-cli-tests, ilverify-required, resolver-build]
     if: always()
     permissions:
       contents: read
