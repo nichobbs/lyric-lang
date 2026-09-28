@@ -822,7 +822,20 @@ func emitSingleFileOrProject(
     jvmNeedsMaven
 
   if not hasContribution {
-    return noContributionOutcome(req)
+    // #7650: if the manifest has a [contracts] table, use that value even though
+    // we're taking the no-contribution path.
+    val contractsEnabled = match lm.manifest.contracts { case Some(cs) -> cs.enabled; case None -> req.contractsEnabled }
+    val reqWithContracts = Emitter.EmitRequest(
+      source = req.source,
+      assemblyName = req.assemblyName,
+      outputPath = req.outputPath,
+      target = req.target,
+      packageVersion = req.packageVersion,
+      defines = req.defines,
+      path = req.path,
+      contractsEnabled = contractsEnabled
+    )
+    return noContributionOutcome(reqWithContracts)
   }
 
   // docs/60 (#5852 phase C): this single-file build routed to the project path

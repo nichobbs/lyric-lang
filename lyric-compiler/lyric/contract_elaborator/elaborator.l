@@ -1379,10 +1379,9 @@ func appendEnsuresAsserts(
   if ensuresExprs.count == 0 {
     return
   }
-  // NOTE: contractsEnabled parameter is kept for backward compatibility but
-  // is now ignored (#7645 over-gating fix). System-level checks (return-range
-  // checks, protected-type invariants) must always run; only user-level
-  // requires:/ensures: are gated elsewhere during collection.
+  // User-level ensures: clauses are filtered out at collection time when
+  // contractsEnabled is false (docs/63 Q-BP-009, #7649); system-level
+  // checks (return-range, protected-type invariants) always appear here.
   var i = 0
   while i < ensuresExprs.count {
     val ec = ensuresExprs[i]
@@ -1411,10 +1410,9 @@ func appendEnsuresAssertsNoResult(
   if ensuresExprs.count == 0 {
     return
   }
-  // NOTE: contractsEnabled parameter is kept for backward compatibility but
-  // is now ignored (#7645 over-gating fix). System-level checks (return-range
-  // checks, protected-type invariants) must always run; only user-level
-  // requires:/ensures: are gated elsewhere during collection.
+  // User-level ensures: clauses are filtered out at collection time when
+  // contractsEnabled is false (docs/63 Q-BP-009, #7649); system-level
+  // checks (return-range, protected-type invariants) always appear here.
   val needUnit = anyHaveResultSpanned(ensuresExprs)
   val dummyName = "__lyric_result_unit"
   if needUnit {
@@ -2334,18 +2332,21 @@ func elaborateFunctionBody(
   val retRanges = returnRangeChecks(ret, owner)
   val declaredEnsures = collectEnsures(contracts, owner)
 
-  // Build combined ensures lists for the old() rewrite pass, but track
-  // which are system vs user for gating.
+  // Build combined ensures lists for the old() rewrite pass, separating
+  // system-level checks (always run) from user-level clauses (gated by contractsEnabled).
   val allEnsures: List[SpannedExpr] = newList()
   var rri = 0
   while rri < retRanges.count {
     allEnsures.add(retRanges[rri])
     rri = rri + 1
   }
-  var dei = 0
-  while dei < declaredEnsures.count {
-    allEnsures.add(declaredEnsures[dei])
-    dei = dei + 1
+  // Only include user-level ensures when contractsEnabled is true (#7649).
+  if contractsEnabled {
+    var dei = 0
+    while dei < declaredEnsures.count {
+      allEnsures.add(declaredEnsures[dei])
+      dei = dei + 1
+    }
   }
   var ti = 0
   while ti < typeInvariants.count {
