@@ -21,24 +21,55 @@
 # Replaces one ci.yml step per library (ci.yml is at its size ceiling,
 # scripts/ci/check-workflow-size.sh). Every suite runs even after a failure;
 # the script fails if any did.
+#
+# The suites are independent (each builds into its own library directory;
+# `web`'s Maven resolver build is serialized by manifest-jvm-maven-test.sh's
+# lock), so they run LYRIC_JVM_SUITE_JOBS at a time (default 3). Run one after
+# another they were the longest step of compiler-self-tests-jvm-b. Each
+# suite's output goes to its own log, printed in suite order afterwards so the
+# CI log stays readable.
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+max_jobs="${LYRIC_JVM_SUITE_JOBS:-3}"
+libs=(storage resilience jsonrpc mcp health generator-sdk web)
+log_dir="$(mktemp -d)"
+trap 'rm -rf "$log_dir"' EXIT
 
-failed=""
-for lib in storage resilience jsonrpc mcp health generator-sdk web; do
-  echo "=== lyric-$lib (--target jvm) ==="
+run_suite() {
+  local lib="$1"
   # `web` needs its Maven dependency restored first; the shared helper
   # installs mvn if missing, builds the resolver under the same lock as the
   # other Maven call sites (#7108), restores, then runs the suite.
-  runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
+  local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
   if [ "$lib" = "web" ]; then
     runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
   fi
-  if ! "${runner[@]}" --target jvm --no-default-features --features jvm; then
+  "${runner[@]}" --target jvm --no-default-features --features jvm \
+    > "$log_dir/$lib.log" 2>&1
+  echo $? > "$log_dir/$lib.rc"
+}
+
+running=0
+for lib in "${libs[@]}"; do
+  if [ "$running" -ge "$max_jobs" ]; then
+    wait -n
+    running=$((running - 1))
+  fi
+  run_suite "$lib" &
+  running=$((running + 1))
+done
+wait
+
+failed=""
+for lib in "${libs[@]}"; do
+  echo "=== lyric-$lib (--target jvm) ==="
+  cat "$log_dir/$lib.log"
+  rc="$(cat "$log_dir/$lib.rc" 2>/dev/null || echo 1)"
+  if [ "$rc" != "0" ]; then
     echo "::error::lyric-$lib suite failed on --target jvm"
     failed="$failed lyric-$lib"
   fi
