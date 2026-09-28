@@ -200,3 +200,12 @@ runtime values on both `--target dotnet` and `--target jvm`. Wired into
   — new dual-target self-test.
 - `scripts/ci/compiler-self-tests-batch.sh`,
   `scripts/ci/jvm-generics-self-tests-batch.sh` — wired the new test in.
+
+## Review follow-up (#7692)
+
+`lowerStmtMsil`'s no-initializer `var` arm stored an `int32 0` for any type
+it did not special-case; a real type parameter (`MTypeVar`/`MMethodTypeVar`)
+now goes through `pushDefaultValueMsil`, which also gained the matching
+`MMethodTypeVar` (MVAR) arm. The motivating shape, `var x: T` inside a
+generic record method, does not reach that arm yet: the annotation resolves
+`T` as a class on both backends (#7695), and that fix adds its test.
