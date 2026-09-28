@@ -1236,3 +1236,70 @@ test "contractsEnabled = false omits multiple requires: asserts in sequence" {
   assertTrue(enabledAsserts > 0, "contractsEnabled true: at least one assert for requires:")
   assertEqualInt(disabledAsserts, 0, "contractsEnabled false: no asserts for requires:")
 }
+
+test "contractsEnabled = true includes ensures: asserts" {
+  val src = "package P\nfunc f(): Int\n  ensures: result >= 0\n{ 7 }\n"
+  val file = parseAndElaborateWithContracts(src, true)
+  val fn = firstFunction(file, "f")
+  val blk = bodyBlockOf(fn)
+  // With contractsEnabled=true: [let __lyric_result_0 = 7, assert(...), trailing].
+  assertEqualInt(blk.statements.count, 3, "ensures enabled: 3 stmts (let + assert + trailing)")
+  assertTrue(isAssertCall(blk.statements[1]), "ensures enabled: stmt[1] is assert for ensures:")
+}
+
+test "contractsEnabled = false omits ensures: asserts" {
+  val src = "package P\nfunc f(): Int\n  ensures: result >= 0\n{ 7 }\n"
+  val file = parseAndElaborateWithContracts(src, false)
+  val fn = firstFunction(file, "f")
+  val blk = bodyBlockOf(fn)
+  // With contractsEnabled=false, no result binding or ensures assert is synthesized.
+  // The body remains unchanged: [trailing SExpr(7)].
+  assertEqualInt(blk.statements.count, 1, "ensures disabled: 1 stmt (trailing only)")
+  assertTrue(not isAssertCall(blk.statements[0]), "ensures disabled: no assert for ensures:")
+}
+
+test "contractsEnabled = false preserves loop invariants" {
+  val src = "package P\nfunc f(): Unit {\n  var i = 0\n  while i < 10\n    invariant: i >= 0\n  { i = i + 1 }\n}\n"
+  val file = parseAndElaborateWithContracts(src, false)
+  val fn = firstFunction(file, "f")
+  val blk = bodyBlockOf(fn)
+  // System-level invariants are NOT gated: the loop body must still have the assert.
+  var found = false
+  var i = 0
+  while i < blk.statements.count {
+    match blk.statements[i].kind {
+      case SWhile(_, _, body) -> {
+        assertTrue(body.statements.count >= 2, "loop-invariant-preserved: loop body has assert + user stmt")
+        assertTrue(isAssertCall(body.statements[0]), "loop-invariant-preserved: loop body[0] is assert")
+        found = true
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  assertTrue(found, "loop-invariant-preserved: loop found in body")
+}
+
+test "contractsEnabled = false preserves protected-type invariants" {
+  val src = "package P\nprotected type Q {\n  var count: Int\n  invariant: count >= 0\n  entry add(x: in Int): Int { x + 1 }\n}\n"
+  val file = parseAndElaborateWithContracts(src, false)
+  val decl = firstProtected(file, "Q")
+  val ed = firstEntry(decl, "add")
+  val blk = entryBodyBlock(ed)
+  // System-level invariants are NOT gated: the entry body must still have the assert
+  // for the protected invariant (as an ensures clause).
+  // After elaboration with contractsEnabled=false but invariant preserved:
+  // [let __lyric_result_0 = x + 1, assert(count >= 0), trailing]
+  assertTrue(blk.statements.count >= 2, "protected-invariant-preserved: body has assert + other stmts")
+  // Find the assert — it may be at any position due to other rewrites, but must exist.
+  var found = false
+  var i = 0
+  while i < blk.statements.count {
+    if isAssertCall(blk.statements[i]) {
+      found = true
+    }
+    i = i + 1
+  }
+  assertTrue(found, "protected-invariant-preserved: entry body contains assert for invariant")
+}

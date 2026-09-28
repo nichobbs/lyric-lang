@@ -984,7 +984,7 @@ func emitSingleFileWithWorkspaceMembers(req: in Emitter.EmitRequest, sourcePath:
     nugetAssemblyPaths = noNuget,
     defines = req.defines,
     packageFeatures = wsDeps.depPackageFeatures,
-    contractsEnabled = true
+    contractsEnabled = req.contractsEnabled
   )
   val emitResult = Emitter.emitProject(projReq)
   NonNativeEmitOutcome(
