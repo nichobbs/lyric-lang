@@ -17,6 +17,9 @@
 #   generator-sdk  slice `.toArray()`, literal `String.split` (#7480, #7511)
 #   web         Web.Kernel.Runtime's Undertow server, dispatch, aspects,
 #               worker loop, TLS/mTLS round trip (#7578)
+#   i18n        I18n.Kernel handle-based translation store, cross-package
+#               bare-name resolution between the `I18n` and `I18n.Kernel`
+#               sibling packages (#7458)
 #
 # Replaces one ci.yml step per library (ci.yml is at its size ceiling,
 # scripts/ci/check-workflow-size.sh). Every suite runs even after a failure;
@@ -39,7 +42,7 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience jsonrpc mcp health generator-sdk web)
+libs=(storage resilience jsonrpc mcp health generator-sdk web i18n)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 

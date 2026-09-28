@@ -24,7 +24,7 @@ One gap this surfaced: passing a `JsonElement`/`JsonDoc` (from
 package fails at runtime on the self-hosted JVM backend
 (`NoClassDefFoundError`, confirmed with an isolated repro — it resolves
 the type against the caller's own package instead of the imported
-one). `fromJson` avoids the pattern rather than working around it: its
+one; tracked in #7652). `fromJson` avoids the pattern rather than working around it: its
 whole JSON tree walk lives in one function body, with no such value
 ever crossing a function boundary.
 
@@ -36,9 +36,6 @@ contract. It is a single, ungated, pure-Lyric package over
 the logic has no platform-specific behavior at all), real and tested on
 both targets (see `tests/i18n_kernel_tests.l` and
 `docs/03-decision-log.md` D-progress-628).
-
-**Note (#7458):** `I18nKernelTests` is a known pre-existing failure on
-`--target jvm`; it is not related to the `I18n` package covered below.
 
 ## Packages
 
