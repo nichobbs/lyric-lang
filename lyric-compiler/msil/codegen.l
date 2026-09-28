@@ -5907,6 +5907,24 @@ pub record FuncCtx {
   // `isUnsignedExprMsil`'s own doc comment.
   unsignedSlots: Map[Int, Bool]
   var generics: List[String]
+  // #7695: the ENCLOSING generic type's own type-parameter names (a generic
+  // record/union method's `Box[T]` -> `["T"]`) — DISTINCT from `generics`
+  // above, which names a generic FUNCTION's own type params and erases a
+  // body reference to `MObject` (`typeExprToMsilGenBody`, correct there: a
+  // top-level generic function's `T` is never reified as a real CLR generic
+  // parameter). A generic RECORD's own `T` IS reified (the method signature
+  // and `self.<field>` reads already use `MTypeVar`, #6442), so a body
+  // annotation naming it must resolve the SAME way — `typeExprToMsilBodyCtx`
+  // prefers this field (via `typeExprToMsilG`) over `generics` when both are
+  // non-empty. Without it, `var x: T` inside `Box[T]`'s own method fell
+  // through to the plain in-package-class guess (`MClass("<pkg>.T")`),
+  // producing a `!0`-vs-`object` local/field mismatch `ilverify` flags as
+  // `StackUnexpected` (the method's own params/`self.value` were already
+  // correct — only body-local annotations were missed). Set by
+  // `lowerRecordMethodMsil`; empty everywhere else (top-level functions,
+  // impl methods — no generic-target-type support there yet, a separate,
+  // larger gap — lambdas, generators).
+  var reifiedGenerics: List[String]
   // Cross-package enum case-name collision fix (#5995).  A Lyric enum lowers
   // to a bare Int ordinal (no distinguishing CLR type), so two in-bundle
   // enums sharing a case name (`Http11` in both `Std.Http.HttpVersion` and an
@@ -7677,7 +7695,16 @@ func isUnsignedExprMsil(fctx: in FuncCtx, e: in Expr): Bool {
 }
 
 pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in TypeExpr): MsilType {
-  if fctx.generics.count > 0 {
+  // #7695: a generic record/union method's own reified type parameters
+  // (`fctx.reifiedGenerics`) take priority over `fctx.generics` (a generic
+  // FUNCTION's erased-to-MObject params) — the two are mutually exclusive in
+  // practice (a record/union method never also carries function-level
+  // generics), but reifiedGenerics is the one that must resolve to the
+  // real `MTypeVar` VAR form via `typeExprToMsilG`, matching the method's
+  // own signature and `self.<field>` reads.
+  if fctx.reifiedGenerics.count > 0 {
+    typeExprToMsilG(cctx, te, fctx.pkgName, fctx.reifiedGenerics)
+  } else if fctx.generics.count > 0 {
     typeExprToMsilGenBody(cctx, te, fctx.pkgName, fctx.generics)
   } else {
     typeExprToMsilCtx(cctx, te, fctx.pkgName)
@@ -8400,9 +8427,30 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
 }
 
 // Box a value type on the stack.  Does nothing for reference types.
+//
+// #7695: `MTypeVar` (a real in-bundle generic type parameter, e.g. a hoisted
+// closure-capture cell's `T`-typed element) is handled BEFORE the
+// `isValueType` check, not folded into it: `isValueType` answers "is this
+// CONCRETE MsilType a value type", which is unknowable for an open `T` at
+// codegen time (`T` may be instantiated with either a reference or a value
+// type at each call site) — the universally-correct move is `box` against a
+// TypeSpec encoding the bare VAR element (ECMA-335 §II.23.2.12): a real box
+// for a value-type instantiation, a no-op reference copy for a reference-type
+// one. Mirrors `boxForUnionEqualityMsil`'s identical idiom (used there for a
+// generic union case's own field, boxed for `Object.Equals`/`GetHashCode`
+// dispatch) and `pushDefaultValueMsil`'s `MTypeVar` arm (`initobj` via the
+// same TypeSpec form).
 func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
-  if isValueType(ty) {
-    insns.add(MBox(typeToken = boxTypeRef(cctx, ty)))
+  match ty {
+    case MTypeVar(idx) -> {
+      val w = bufNew()
+      bufU1(w, 0x13)  // ELEMENT_TYPE_VAR
+      bufU1(w, idx)
+      val blob = bufToList(w)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, "ts_box_if_needed_var_" + toString(idx), blob)
+      insns.add(MBox(typeToken = 0x1B000000 + tsRow))
+    }
+    case _ -> if isValueType(ty) { insns.add(MBox(typeToken = boxTypeRef(cctx, ty))) }
   }
 }
 
@@ -8668,18 +8716,37 @@ func emitCellElemStoreMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: i
 // constructor that expects the instantiated payload type — e.g. `mapGet` on a
 // `Map[String, Int]` must `unbox.any int32` before the `Option_Some<int>` ctor.
 func castObjectToMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
-  if isValueType(ty) {
-    insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, ty)))
-  } else {
-    match ty {
-      case MString -> insns.add(MCastclassByName(className = "System.String"))
-      case MClass(c) -> insns.add(MCastclassByName(className = c))
-      case MGenericInst(_, headFqn, tas) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
-      // Concrete collections: narrow an `object` back to the closed
-      // generic TypeSpec (e.g. a nested `List[List[Foo]]` element read).
-      case MConcreteList(e) -> insns.add(MListOp(op = LoCastclass, elemTy = e))
-      case MConcreteMap(k, v) -> insns.add(MDictOp(op = DoCastclass, keyTy = k, valTy = v))
-      case _ -> {
+  match ty {
+    // #7695: as `boxIfNeededMsil`'s matching `MTypeVar` arm — `unbox.any`
+    // against a bare-VAR TypeSpec is the universally-correct narrowing back
+    // out of an `object`-erased slot (a hoisted closure-capture cell) for an
+    // open `T`, regardless of whether `T` turns out to be a reference or
+    // value type at the call site (ECMA-335 §III.4.32 `unbox.any` is defined
+    // for both). Left unhandled, an `object` value read back into a `!0`-
+    // typed slot skipped the narrowing cast entirely — a `T`-instantiated-
+    // with-a-value-type read left a boxed object on the stack where the
+    // verifier expects the unboxed value type, `ilverify` STACKUNEXPECTED.
+    case MTypeVar(idx) -> {
+      val w = bufNew()
+      bufU1(w, 0x13)  // ELEMENT_TYPE_VAR
+      bufU1(w, idx)
+      val blob = bufToList(w)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, "ts_cast_obj_var_" + toString(idx), blob)
+      insns.add(MUnboxAny(typeToken = 0x1B000000 + tsRow))
+    }
+    case _ -> if isValueType(ty) {
+      insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, ty)))
+    } else {
+      match ty {
+        case MString -> insns.add(MCastclassByName(className = "System.String"))
+        case MClass(c) -> insns.add(MCastclassByName(className = c))
+        case MGenericInst(_, headFqn, tas) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
+        // Concrete collections: narrow an `object` back to the closed
+        // generic TypeSpec (e.g. a nested `List[List[Foo]]` element read).
+        case MConcreteList(e) -> insns.add(MListOp(op = LoCastclass, elemTy = e))
+        case MConcreteMap(k, v) -> insns.add(MDictOp(op = DoCastclass, keyTy = k, valTy = v))
+        case _ -> {
+        }
       }
     }
   }
@@ -9941,7 +10008,13 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     insns.add(MLdcI4(v = 0))
                     emitCellElemLoadMsil(cctx, insns, capTy)
                   } else {
-                    // Non-cell capture field is already typed as capTy, no cast/unbox needed.
+                    // Non-cell capture field is already typed as capTy, no
+                    // cast/unbox needed. #7695: `capTy` here is this LIFTED
+                    // LAMBDA's own (already-erased) `captureNameToType`
+                    // entry — never a bare `MTypeVar` — so no `!0` narrowing
+                    // is needed or valid inside a lambda body; see the
+                    // erasure at its population site (`lowerFuncMsil`'s
+                    // capture-registration loop) for why.
                   }
                   return capTy
                 }
@@ -11641,9 +11714,23 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     // slot 0 legitimately is the receiver.
                     insns.add(MLdarg(slot = 0))
                   } else {
-                    // Local capture: load the value (no boxing — closure field type matches capture type)
+                    // Local capture: load the value. Ordinarily the closure
+                    // field type matches the capture type exactly (no
+                    // boxing) — but a captured value whose LOGICAL type is a
+                    // real generic type parameter (`MTypeVar`, e.g. a
+                    // `T`-typed param captured inside a generic record
+                    // method) has its field erased to `MObject` above
+                    // (#7695), so box it here to match.
                     match mapGet(fctx.slots, capName) {
-                      case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                      case Some(s) -> {
+                        emitLoadVarMsil(fctx, insns, s)
+                        val capLocalTy = match mapGet(fctx.types, capName) { case Some(t) -> t; case None -> MObject }
+                        match capLocalTy {
+                          case MTypeVar(_) -> boxIfNeededMsil(cctx, insns, capLocalTy)
+                          case _ -> {
+                          }
+                        }
+                      }
                       case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
                     }
                   }
@@ -22454,6 +22541,7 @@ func makeFuncCtxMsil(
     byteSlots = newMap(),
     unsignedSlots = newMap(),
     generics = newList(),
+    reifiedGenerics = newList(),
     varEnumTypes = newMap(),
     enumHint = newList(),
     declaredRetEnumTy = "",
@@ -30501,13 +30589,33 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     var cni = 0
     while cni < lambdaCaps.count {
       fctx.captureNameToIndex.add(lambdaCaps[cni], cni)
-      fctx.captureNameToType.add(
-        lambdaCaps[cni],
-        match (if cni < lambdaCapTys.count { Some(value = lambdaCapTys[cni]) } else { None }) {
-          case Some(t) -> t
-          case None -> MObject
-        }
-      )
+      val rawCapTy = match (if cni < lambdaCapTys.count { Some(value = lambdaCapTys[cni]) } else { None }) {
+        case Some(t) -> t
+        case None -> MObject
+      }
+      // #7695: a captured value whose LOGICAL type back in the enclosing
+      // generic record/union method is a real (open) type parameter
+      // (`MTypeVar`) must erase to `MObject` HERE — inside this lifted
+      // `__lambda_*`'s own `FuncCtx`. The lambda is lifted to the
+      // package-level host class (`Program`/`<pkg>`), never nested inside
+      // the generic `TypeDef` that declares `T` (#1877 Phase 2's Uniform
+      // Func ABI lifts every closure the same way regardless of its
+      // enclosing method), so an `ELEMENT_TYPE_VAR` reference inside the
+      // lambda body names a generic parameter position that does not exist
+      // on its own (non-generic) owner type — `box`/`unbox.any !0` there is
+      // malformed metadata (`BadImageFormatException` at JIT time, not a
+      // verifier-catchable error). The closure-class FIELD is already
+      // erased to `Object` for this exact reason (see
+      // `synthesizeClosureClassMsil`'s matching `MTypeVar` arm); this keeps
+      // `captureNameToType` — and everything downstream that reads it
+      // (`EPath`'s capture-read arm, `emitCellAssignMsil`'s `elemTy`) —
+      // consistent with that erased field, so the lambda body never
+      // constructs a bare-VAR TypeSpec at all. The ENCLOSING method's own
+      // `fctx.hoistedCellType`/`fctx.types` (read at the capture-STORE call
+      // site, which runs in the enclosing method's real generic scope) keep
+      // the real `MTypeVar` unchanged — only this LAMBDA-local copy erases.
+      val capTy = match rawCapTy { case MTypeVar(_) -> MObject; case _ -> rawCapTy }
+      fctx.captureNameToType.add(lambdaCaps[cni], capTy)
       // A by-reference capture: `__caps[cni]` or `__caps.__fi` holds the hoisted `var`'s cell.
       if nameListContains(capCells, lambdaCaps[cni]) {
         fctx.captureCellNames.add(lambdaCaps[cni])
@@ -31187,6 +31295,11 @@ pub func lowerRecordMethodMsil(
       "self",
       MGenericInstByName(headFqn = genericBacktickFqn(targetTypeName, generics.count), typeArgs = selfOpenArgs)
     )
+    // #7695: see `FuncCtx.reifiedGenerics` — a body-local `val`/`var`/`let`
+    // annotation naming `T` must resolve to the same `MTypeVar` VAR form the
+    // signature/`self` field reads above just set up, not fall through to a
+    // bogus in-package class guess.
+    fctx.reifiedGenerics = generics
   }
 
   val insns: List[MInsn] = newList()
@@ -31828,10 +31941,25 @@ func synthesizeClosureClassMsil(
     val fieldType = if isCell {
       cellArrayTyMsil(if fi < capTypes.count { capTypes[fi] } else { MObject })
     } else {
-      if fi < capTypes.count {
-        capTypes[fi]
-      } else {
-        MObject
+      val rawTy = if fi < capTypes.count { capTypes[fi] } else { MObject }
+      match rawTy {
+        // #7695: a BY-VALUE capture of a real (open) generic type parameter
+        // (e.g. a `T`-typed param captured immutably by a closure inside a
+        // generic record method) cannot keep its bare `MTypeVar` as the
+        // field's declared type: `__Closure_<i>` is not itself a generic
+        // TypeDef, so a field typed `!0` there names a generic parameter
+        // with no enclosing scope — `TypeLoadException: has a field of an
+        // illegal type`. Erase to `MObject` instead, boxing at the
+        // capture-STORE site (`MNewobjByName`/`MStfldByName`, which runs in
+        // the enclosing method's real generic scope, where `!0` is valid).
+        // No unbox is needed on the read side: the LAMBDA's own copy of the
+        // capture's logical type (`captureNameToType`, populated in
+        // `lowerFuncMsilScoped`) is erased to `MObject` the same way, so the
+        // `EPath` capture-read arm never sees a bare `MTypeVar` to narrow —
+        // see that erasure's own comment for why the lambda body can never
+        // use `!0` at all (it has no enclosing generic TypeDef).
+        case MTypeVar(_) -> MObject
+        case _ -> rawTy
       }
     }
     fields.add(MField(flags = 0x0006, name = fieldName, fieldType = fieldType))

@@ -1144,7 +1144,14 @@ func localAnnotatedJvmType(ctx: in FuncCtx, te: in TypeExpr): JvmType {
   match resolved.kind {
     case TFunction(_, _) -> JRef(className = lambdaIfaceName())
     case _ -> {
-      val erased = typeExprToJvmExtern(resolved, ctx.pkgName, ctx.externTypes)
+      // #7695: a bare reference to the enclosing generic type's OWN
+      // parameter (`var x: T` inside a `Box[T]` method) must erase to
+      // `Object` via `ctx.typeParams` — same as the method's own
+      // params/return already do (`lowerRecordMethod`) — instead of
+      // resolving through the typeParams-blind `typeExprToJvmExtern`,
+      // which treats `T` as an unqualified in-package class reference
+      // (`<pkg>/T`) and crashes with `NoClassDefFoundError` at run time.
+      val erased = typeExprToJvmErasedExtern(resolved, ctx.pkgName, ctx.typeParams, ctx.externTypes)
       // A generic-record annotation (`val b: Box[String] = f(...)`) would
       // otherwise erase to `Object`, and every field read on the local would
       // hit the erased-receiver path (J007, or `__lyricCount` casting the
@@ -1240,10 +1247,14 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // #5995: a bare-case init (`val v: HttpVersion = Http11`) resolves
           // against the annotation's declared enum type — reuses the
           // existing #5976 call-argument expect-stack mechanism.
+          // #7695: typeParams-aware too (see `localAnnotatedJvmType`) so a
+          // `val v: T = …` inside a generic method doesn't compute a bogus
+          // `<pkg>/T` hint key from the same erasure gap.
           val annEnumHintTy = match tyOpt {
-            case Some(te) -> typeExprToJvmExtern(
+            case Some(te) -> typeExprToJvmErasedExtern(
               BareFuncRef.resolveFuncTypeAliasOrSelf(ctx.aliasTargets, te),
               ctx.pkgName,
+              ctx.typeParams,
               ctx.externTypes
             )
             case None -> JVoid
@@ -1259,12 +1270,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // (docs/59 §4.3 #5439 class).
           match pat.kind {
             case PBinding(nm, _) -> {
-              recordVarGenericArgs(ctx, nm, init, tyOpt)
+              recordVarGenericArgs(ctx, nm, init, tyOpt, ctx.typeParams)
               recordFuncValRetType(ctx, nm, init)
               recordAnnotatedFuncValRetType(ctx, nm, tyOpt)
               recordSpawnResultType(ctx, nm, init)
               match tyOpt {
-                case Some(te) -> recordDeclaredElemType(ctx, nm, te, newList())
+                case Some(te) -> recordDeclaredElemType(ctx, nm, te, ctx.typeParams)
                 case None -> ()
               }
               // #6748: a `val x: UInt/ULong = …` binding needs unsigned-aware
@@ -1292,12 +1303,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             coerceValueTo(ctx, insns, initTy, ty)
             val slot = allocSlot(ctx, name, ty)
             emitStore(insns, slot, ty)
-            recordVarGenericArgs(ctx, name, init, tyOpt)
+            recordVarGenericArgs(ctx, name, init, tyOpt, ctx.typeParams)
             recordFuncValRetType(ctx, name, init)
             recordAnnotatedFuncValRetType(ctx, name, tyOpt)
             recordSpawnResultType(ctx, name, init)
             match tyOpt {
-              case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
+              case Some(te) -> recordDeclaredElemType(ctx, name, te, ctx.typeParams)
               case None -> ()
             }
             // #6748: see the matching `LBVal` note above.
@@ -1356,12 +1367,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // across reassignments, so recording at the initialiser is stable.
               // An explicit `slice[Elem]`/`List[Elem]` annotation overrides them
               // with the declared element type (docs/59 §4.3 #5439 class).
-              recordVarGenericArgs(ctx, name, init, tyOpt)
+              recordVarGenericArgs(ctx, name, init, tyOpt, ctx.typeParams)
               recordFuncValRetType(ctx, name, init)
               recordAnnotatedFuncValRetType(ctx, name, tyOpt)
               recordSpawnResultType(ctx, name, init)
               match tyOpt {
-                case Some(te) -> recordDeclaredElemType(ctx, name, te, newList())
+                case Some(te) -> recordDeclaredElemType(ctx, name, te, ctx.typeParams)
                 case None -> ()
               }
               // #6748: see the matching `LBVal` note above.
@@ -1374,7 +1385,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // see `FuncCtx.aliasTargets`.
               val ty = match tyOpt { case Some(te) -> localAnnotatedJvmType(ctx, te); case None -> JInt }
               match tyOpt {
-                case Some(te2) -> recordDeclaredElemType(ctx, name, te2, newList())
+                case Some(te2) -> recordDeclaredElemType(ctx, name, te2, ctx.typeParams)
                 case None -> ()
               }
               // #6748: see the matching `LBVal` note above.

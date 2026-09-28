@@ -582,7 +582,36 @@ func annotationGenericArgs(te: in TypeExpr): List[TypeExpr] {
 // union case value the annotation doesn't cover.  Remove-then-add keeps a
 // shadowing inner binding from inheriting an outer binding's stale args;
 // only non-empty arg lists are stored.
-func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr, tyOpt: in Option[TypeExpr]): Unit {
+// #7695: as `returnTypeGenericArgsFiltered`'s bail guard — an annotation
+// naming the enclosing generic record/union method's OWN type parameter
+// (`val xs: List[T] = ...` inside `Box[T]`) has nothing concrete to narrow
+// to: recording it verbatim (as the pre-fix `annotationGenericArgs` callers
+// below did, unconditionally) lets a later indexed/match read resolve `T` as
+// a bogus in-package class and crash with `NoClassDefFoundError` the first
+// time it runs. Bails to `newList()` (leaving the payload erased-`Object`,
+// the safe fallback) when ANY recovered arg mentions one of `typeParams`.
+func annotationGenericArgsFiltered(te: in TypeExpr, typeParams: in List[String]): List[TypeExpr] {
+  val raw = annotationGenericArgs(te)
+  if typeParams.count == 0 {
+    return raw
+  }
+  var i = 0
+  while i < raw.count {
+    if containsTypeParam(raw[i], typeParams) {
+      return newList()
+    }
+    i = i + 1
+  }
+  raw
+}
+
+func recordVarGenericArgs(
+  ctx: in FuncCtx,
+  name: in String,
+  init: in Expr,
+  tyOpt: in Option[TypeExpr],
+  typeParams: in List[String],
+): Unit {
   // Prefer the INITIALISER-derived args when they resolve: for a real `func`
   // call (`squareAsResult(): Result[Shape, String]`), `scrutineeGenericArgs`
   // recovers them from the callee's registered `JvmFuncSig.retGenericArgs`,
@@ -604,7 +633,7 @@ func recordVarGenericArgs(ctx: in FuncCtx, name: in String, init: in Expr, tyOpt
     fromInit
   } else {
     match tyOpt {
-      case Some(te) -> annotationGenericArgs(te)
+      case Some(te) -> annotationGenericArgsFiltered(te, typeParams)
       case None -> newList()
     }
   }

@@ -49,8 +49,12 @@
 //!
 //! The generic-record-method case (a closure capturing `var x: T` inside a
 //! generic record method) is not covered here: inside a generic record
-//! method the annotation `var x: T` resolves `T` as a class on both
-//! backends, tracked in #7695, and that fix adds the case.
+//! method the annotation `var x: T` resolved `T` as a class on both
+//! backends (#7695). Fixed in #7695; the case (`Box[T].captureThenReturn`,
+//! instantiated with a value type, a reference type, and an in-bundle
+//! record) is covered in `generic_method_body_typevar_self_test.l` instead,
+//! alongside the sibling body-local-annotation shapes (`val`, `List[T]`,
+//! `Option[T]`) #7695 also fixed.
 @test_module
 package Lyric.MethodClosureVarCaptureSelfTest
 

@@ -103,7 +103,8 @@ func makeFuncCtx(
     aliasTargets = aliasTargets,
     unsignedVars = newMap(),
     unsignedUndo = newList(),
-    varGenericArgsUndo = newList()
+    varGenericArgsUndo = newList(),
+    typeParams = newList()
   )
 }
 
@@ -158,7 +159,8 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     aliasTargets = ctx.aliasTargets,
     unsignedVars = ctx.unsignedVars,
     unsignedUndo = ctx.unsignedUndo,
-    varGenericArgsUndo = ctx.varGenericArgsUndo
+    varGenericArgsUndo = ctx.varGenericArgsUndo,
+    typeParams = ctx.typeParams
   )
 }
 
@@ -236,7 +238,8 @@ func makeFuncCtxForGenerator(
     aliasTargets = newMap(),
     unsignedVars = newMap(),
     unsignedUndo = newList(),
-    varGenericArgsUndo = newList()
+    varGenericArgsUndo = newList(),
+    typeParams = newList()
   )
 }
 
@@ -258,6 +261,10 @@ func makeFuncCtxInstance(
   closureAcc: in List[LClosure],
   usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
+  // #7695: the enclosing generic type's own type-parameter names, threaded
+  // through to `FuncCtx.typeParams` — see that field's doc comment. Empty
+  // (`newList()`) for a non-generic-method call site.
+  typeParams: in List[String],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -317,7 +324,8 @@ func makeFuncCtxInstance(
     aliasTargets = newMap(),
     unsignedVars = newMap(),
     unsignedUndo = newList(),
-    varGenericArgsUndo = newList()
+    varGenericArgsUndo = newList(),
+    typeParams = typeParams
   )
 }
 
@@ -1673,7 +1681,8 @@ func lowerProtectedMethod(
     opaqueTypes,
     closureAcc,
     usedRuntimeHelpers,
-    importsStdString
+    importsStdString,
+    newList()
   )
   val insns: List[LInsn] = newList()
   val noTps: List[String] = newList()
@@ -1769,7 +1778,8 @@ func lowerRecordMethod(
     opaqueTypes,
     closureAcc,
     usedRuntimeHelpers,
-    importsStdString
+    importsStdString,
+    typeParams
   )
   val insns: List[LInsn] = newList()
   val filteredParams = stripLeadingSelfParam(fn.params)
@@ -1966,7 +1976,8 @@ func lowerImplMethod(
     opaqueTypes,
     closureAcc,
     usedRuntimeHelpers,
-    importsStdString
+    importsStdString,
+    newList()
   )
   val insns: List[LInsn] = newList()
   val noTpsImpl: List[String] = newList()
