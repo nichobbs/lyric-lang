@@ -25,7 +25,7 @@
 # The suites are independent (each builds into its own library directory;
 # `web`'s Maven resolver build is serialized by manifest-jvm-maven-test.sh's
 # lock), so they run LYRIC_JVM_SUITE_JOBS at a time (default 3). Run one after
-# another they were the longest step of compiler-self-tests-jvm-b. Each
+# another they were the longest step of the JVM self-test jobs. Each
 # suite's output goes to its own log, printed in suite order afterwards so the
 # CI log stays readable.
 # ---------------------------------------------------------------------------
@@ -35,6 +35,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 max_jobs="${LYRIC_JVM_SUITE_JOBS:-3}"
+if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
+  exit 1
+fi
 libs=(storage resilience jsonrpc mcp health generator-sdk web)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
@@ -59,6 +63,9 @@ for lib in "${libs[@]}"; do
     wait -n
     running=$((running - 1))
   fi
+  # A start line per suite, so a hung suite is visible while the step runs;
+  # the full output is printed in suite order once every suite has finished.
+  echo "--- starting lyric-$lib (--target jvm)"
   run_suite "$lib" &
   running=$((running + 1))
 done
