@@ -198,3 +198,108 @@ test "scanFrame: a negative Content-Length is a bad header" {
     case _ -> assertTrue(false, "a negative Content-Length must be rejected")
   }
 }
+
+test "scanFrame: a Content-Length above the 16 MiB cap is a bad header, not an overflow panic" {
+  val bytes = encodeUtf8("Content-Length: 2147483647\r\n\r\n")
+  match lspScanFrame(bytes) {
+    case LspScanBadHeader(message) -> assertTrue(Str.contains(message, "limit"), "error names the message limit")
+    case _ -> assertTrue(false, "an over-limit Content-Length must be rejected")
+  }
+}
+
+test "scanFrame: a Content-Length too large for Int is a bad header" {
+  val bytes = encodeUtf8("Content-Length: 99999999999999\r\n\r\n")
+  match lspScanFrame(bytes) {
+    case LspScanBadHeader(message) -> assertTrue(Str.contains(message, "Content-Length"), "error names the bad header")
+    case _ -> assertTrue(false, "an out-of-range Content-Length must be rejected")
+  }
+}
+
+// A scripted byte source for `lspReadFrameVia`: hands out `chunks` in
+// order, then end of input.
+record ChunkSource {
+  chunks: List[slice[Byte]]
+  var next: Int
+}
+
+impl LspByteSource for ChunkSource {
+  func read(): Result[Option[slice[Byte]], String] {
+    if self.next >= self.chunks.count {
+      return Ok(value = None)
+    }
+    val chunk = self.chunks[self.next]
+    self.next = self.next + 1
+    Ok(value = Some(value = chunk))
+  }
+}
+
+record FailingSource {
+  message: String
+}
+
+impl LspByteSource for FailingSource {
+  func read(): Result[Option[slice[Byte]], String] {
+    Err(error = self.message)
+  }
+}
+
+func sourceOf(parts: in List[String]): ChunkSource {
+  val chunks: List[slice[Byte]] = newList()
+  var i = 0
+  while i < parts.count {
+    chunks.add(encodeUtf8(parts[i]))
+    i = i + 1
+  }
+  ChunkSource(chunks = chunks, next = 0)
+}
+
+test "readFrameVia: a frame split across chunks is reassembled, then clean EOF" {
+  val parts: List[String] = newList()
+  parts.add("Content-Len")
+  parts.add("gth: 7\r\n\r\n{\"a\"")
+  parts.add(":1}")
+  val src = sourceOf(parts)
+  val empty: slice[Byte] = []
+  val first = lspReadFrameVia(empty, src)
+  match first.outcome {
+    case LspReadFrame(json) -> assertEqual(json, "{\"a\":1}", "reassembled body")
+    case _ -> assertTrue(false, "expected a frame")
+  }
+  val second = lspReadFrameVia(first.buf, src)
+  match second.outcome {
+    case LspReadEof -> assertTrue(true, "clean EOF between frames")
+    case _ -> assertTrue(false, "expected EOF after the only frame")
+  }
+}
+
+test "readFrameVia: input ending mid-frame is a truncation error, not EOF" {
+  val parts: List[String] = newList()
+  parts.add("Content-Length: 10\r\n\r\n{\"a\"")
+  val src = sourceOf(parts)
+  val empty: slice[Byte] = []
+  match lspReadFrameVia(empty, src).outcome {
+    case LspReadError(message) -> assertTrue(Str.contains(message, "truncated"), "error names the truncation")
+    case _ -> assertTrue(false, "a mid-frame EOF must be an error")
+  }
+}
+
+test "readFrameVia: bytes past one frame are kept for the next read" {
+  val parts: List[String] = newList()
+  parts.add("Content-Length: 2\r\n\r\n{}Content-Length: 2\r\n\r\n[]")
+  val src = sourceOf(parts)
+  val empty: slice[Byte] = []
+  val first = lspReadFrameVia(empty, src)
+  val second = lspReadFrameVia(first.buf, src)
+  match second.outcome {
+    case LspReadFrame(json) -> assertEqual(json, "[]", "second frame from buffered bytes")
+    case _ -> assertTrue(false, "expected the second frame")
+  }
+}
+
+test "readFrameVia: a read failure is reported as an error" {
+  val empty: slice[Byte] = []
+  match lspReadFrameVia(empty, FailingSource(message = "boom")).outcome {
+    case LspReadError(message) -> assertEqual(message, "boom", "read error propagates")
+    case _ -> assertTrue(false, "expected the read error")
+  }
+}

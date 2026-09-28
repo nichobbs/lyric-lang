@@ -26,7 +26,11 @@ end of the pipe stopped short or read into the next frame's header.
   `lspReadFrame` drives it against real stdin through
   `Std.Console`'s byte-level `StdinReader` (#7451), buffering unconsumed
   bytes across calls so two back-to-back frames split at exactly the right
-  boundary. A missing/non-numeric/negative `Content-Length`, an oversized
+  boundary. A missing/non-numeric/negative `Content-Length`, one above the
+  16 MiB message limit (the same cap `JsonRpc.Stdio`'s
+  `ContentLengthTransport` applies; checked before any arithmetic on the
+  length, so `Content-Length: 2147483647` is a bad header rather than an
+  `Int` overflow panic), an oversized
   header block with no terminating blank line, and a non-UTF-8 body/header
   are all reported as `LspReadError(message)` (logged to stderr, the loop
   then exits cleanly) instead of panicking or hanging. A stream that
@@ -37,9 +41,11 @@ end of the pipe stopped short or read into the next frame's header.
 - The framing logic is deliberately split into pure functions
   (`lspEncodeFrame`, `lspScanFrame`, `lspDecodeFrameBody`) over
   `slice[Byte]`/`String` with no I/O, so it is unit-tested directly with
-  no real stdin/stdout, and a thin stateful layer
-  (`LspStdin`/`lspReadFrame`) that drives them against
-  `Std.Console`'s `StdinReader`.
+  no real stdin/stdout. `lspReadFrameVia(buf, src)` is the read state
+  machine over an `LspByteSource` interface (the same seam
+  `JsonRpc.Stdio.ByteSource` uses), so its end-of-input and truncation
+  handling is tested with scripted sources; the package-private
+  `LspStdin`/`lspReadFrame` bind it to `Std.Console`'s `StdinReader`.
 - The former UTF-16-code-unit surrogate-pair handling
   (`lspAppendCodeUnit`/`lspFlushCodeUnits`, added for #7252 as a narrower
   fix within the old code-unit reader) is now dead code and removed along
@@ -81,13 +87,16 @@ import dropped, now unused).
 
 ## Tests
 
-- `lyric-compiler/lyric/lsp_self_test.l`: 9 new cases — ASCII, a BMP
+- `lyric-compiler/lyric/lsp_self_test.l`: 16 new cases — ASCII, a BMP
   character (é, 2 UTF-8 bytes vs. 1 UTF-16 unit), a supplementary-plane
   character (😀, 4 UTF-8 bytes vs. 2 UTF-16 units), two back-to-back
   frames splitting at exactly the right boundary, a partial header, a
-  truncated body, a missing/non-numeric/negative `Content-Length` header —
-  all against the pure `lspEncodeFrame`/`lspScanFrame`/`lspDecodeFrameBody`
-  functions, no real stdin/stdout. Removed the 5 now-obsolete UTF-16
+  truncated body, a missing/non-numeric/negative `Content-Length` header,
+  one above the 16 MiB cap and one too large for `Int` — all against the
+  pure `lspEncodeFrame`/`lspScanFrame`/`lspDecodeFrameBody` functions — plus
+  `lspReadFrameVia` against scripted `LspByteSource`s: a frame split across
+  chunks then a clean EOF, input ending mid-frame (truncation error), bytes
+  past one frame kept for the next read, and a failed read. Removed the 5 now-obsolete UTF-16
   surrogate-decoding cases (`lspAppendCodeUnit`/`lspFlushCodeUnits` no
   longer exist).
 - `lyric-rt/test/lyric_rt_test.c`: `test_console_write_bytes` covers
@@ -108,7 +117,7 @@ import dropped, now unused).
   built `./bin/lyric` binary path portably across CI/sandbox layouts, and
   the pure-function unit tests already cover the exact byte-length
   semantics this bug was about.
-- Ran locally (this session): `lsp_self_test.l` (12/12); `lyric-jsonrpc`'s
+- Ran locally (this session): `lsp_self_test.l` (18/18); `lyric-jsonrpc`'s
   full suite (118 tests: json/jsonrpc/stdio) on `--target dotnet` and
   `--target jvm` (0 failed both); `lyric-mcp`'s full suite (43 tests,
   including `mcp_stdio_process_tests.l`'s real-subprocess NDJSON framing)

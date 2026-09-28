@@ -143,6 +143,13 @@ pub union LspFrameScan {
 // blank line terminating the header block.
 val lspMaxHeaderBytes: Int = 65536
 
+// Largest accepted message body, the same 16 MiB cap `JsonRpc.Stdio`'s
+// `ContentLengthTransport` applies. Checked before any arithmetic on the
+// parsed length, so a `Content-Length` near `Int` max is a bad header
+// rather than an overflow panic, and a hostile length cannot make the
+// reader buffer without bound.
+val lspMaxBodyBytes: Int = 16777216
+
 // Index of the first byte of the first "\r\n\r\n" in `buf`, or -1.
 func lspFindHeaderEnd(buf: in slice[Byte]): Int {
   var i = 0
@@ -179,6 +186,9 @@ func lspParseContentLength(headerText: in String): Result[Int, String] {
           case Some(n) -> {
             if n < 0 {
               return Err(error = "Content-Length header is negative: '" + value + "'")
+            }
+            if n > lspMaxBodyBytes {
+              return Err(error = "Content-Length " + value + " exceeds the " + ("" + lspMaxBodyBytes) + "-byte message limit")
             }
             found = Some(value = n)
           }
@@ -229,77 +239,104 @@ pub func lspDecodeFrameBody(bytes: in slice[Byte]): Option[String] {
   tryDecodeUtf8(bytes)
 }
 
-// ── Driving the pure scanner against real stdin ─────────────────────────────
-/// Byte-buffered stdin cursor for `lspReadFrame`: `buf` holds bytes read
-/// from the peer that have not yet been consumed into a complete frame.
-pub record LspStdin {
-  reader: StdinReader
-  var buf: slice[Byte]
-}
-
-pub func lspStdinOpen(): LspStdin {
-  val empty: slice[Byte] = []
-  LspStdin(reader = openStdinReader(), buf = empty)
-}
-
-/// Outcome of one `lspReadFrame` call.
+// ── Driving the pure scanner against a byte source ──────────────────────────
+/// Outcome of reading one LSP message.
 pub union LspReadOutcome {
   case LspReadFrame(json: String)
   case LspReadEof
   case LspReadError(message: String)
 }
 
-pub record LspReadResult {
-  stdin: LspStdin
+/// One read: its outcome plus the bytes buffered past the frame it
+/// consumed, which belong to the next read and are never dropped.
+pub record LspReadStep {
+  buf: slice[Byte]
   outcome: LspReadOutcome
 }
 
-/// Read the next complete LSP message from `s`, blocking on real stdin as
-/// needed. Returns the (possibly advanced) reader state alongside the
-/// outcome — bytes read past one frame's boundary are buffered for the
-/// next call, never dropped.
-pub func lspReadFrame(s: in LspStdin): LspReadResult {
-  var cur = s
+/// Where `lspReadFrameVia` pulls more bytes from. `read` blocks until at
+/// least one byte arrives (`Ok(Some(bytes))`), the input ends (`Ok(None)`),
+/// or the read fails (`Err(message)`). An interface rather than a closure
+/// parameter, the same seam `JsonRpc.Stdio.ByteSource` uses.
+pub interface LspByteSource {
+  func read(): Result[Option[slice[Byte]], String]
+}
+
+/// Read the next complete LSP message, starting from the bytes already in
+/// `buf` and pulling more from `src` as needed. A clean end of input is
+/// only valid strictly between frames: input ending mid-frame is a
+/// truncated stream and is reported as `LspReadError`, not swallowed. The
+/// byte source is a parameter so this state machine is testable without
+/// real stdin; `lspReadFrame` binds it to stdin.
+pub func lspReadFrameVia(buf: in slice[Byte], src: in LspByteSource): LspReadStep {
+  var cur = buf
   while true {
-    match lspScanFrame(cur.buf) {
+    match lspScanFrame(cur) {
       case LspScanFrame(body, consumed) -> {
-        cur.buf = cur.buf.slice(consumed, cur.buf.length)
+        val rest = cur.slice(consumed, cur.length)
         return match lspDecodeFrameBody(body) {
-          case Some(json) -> LspReadResult(stdin = cur, outcome = LspReadFrame(json = json))
-          case None -> LspReadResult(
-            stdin = cur,
-            outcome = LspReadError(message = "LSP message body is not valid UTF-8")
-          )
+          case Some(json) -> LspReadStep(buf = rest, outcome = LspReadFrame(json = json))
+          case None -> LspReadStep(buf = rest, outcome = LspReadError(message = "LSP message body is not valid UTF-8"))
         }
       }
       case LspScanBadHeader(message) -> {
-        return LspReadResult(stdin = cur, outcome = LspReadError(message = message))
+        return LspReadStep(buf = cur, outcome = LspReadError(message = message))
       }
       case LspScanNeedMore -> {
-        match readStdin(cur.reader) {
-          case Err(e) -> return LspReadResult(stdin = cur, outcome = LspReadError(message = e.message()))
+        match src.read() {
+          case Err(message) -> return LspReadStep(buf = cur, outcome = LspReadError(message = message))
           case Ok(None) -> {
-            // A clean EOF is only valid strictly between frames — stdin
-            // closing mid-frame is a truncated stream and is reported as
-            // an error rather than silently swallowed (#7510).
-            if cur.buf.length > 0 {
-              return LspReadResult(
-                stdin = cur,
+            if cur.length > 0 {
+              return LspReadStep(
+                buf = cur,
                 outcome = LspReadError(
-                  message = "stdin closed with a truncated LSP frame (" + ("" + cur.buf.length) +
-                    " bytes buffered)"
+                  message = "stdin closed with a truncated LSP frame (" + ("" + cur.length) + " bytes buffered)"
                 )
               )
             }
-            return LspReadResult(stdin = cur, outcome = LspReadEof)
+            return LspReadStep(buf = cur, outcome = LspReadEof)
           }
           case Ok(Some(bytes)) -> {
-            cur.buf = cur.buf.concat(bytes)
+            cur = cur.concat(bytes)
           }
         }
       }
     }
   }
+  LspReadStep(buf = cur, outcome = LspReadEof)
+}
+
+// Real stdin as an `LspByteSource`.
+record LspStdinSource {
+  reader: StdinReader
+}
+
+impl LspByteSource for LspStdinSource {
+  func read(): Result[Option[slice[Byte]], String] {
+    match readStdin(self.reader) {
+      case Err(e) -> Err(error = e.message())
+      case Ok(chunk) -> Ok(value = chunk)
+    }
+  }
+}
+
+// Byte-buffered stdin cursor for the run loop: `buf` holds bytes read from
+// the peer that have not yet been consumed into a complete frame.
+record LspStdin {
+  src: LspStdinSource
+  var buf: slice[Byte]
+}
+
+func lspStdinOpen(): LspStdin {
+  val empty: slice[Byte] = []
+  LspStdin(src = LspStdinSource(reader = openStdinReader()), buf = empty)
+}
+
+// Read the next message from real stdin, advancing `s.buf`.
+func lspReadFrame(s: in LspStdin): LspReadOutcome {
+  val step = lspReadFrameVia(s.buf, s.src)
+  s.buf = step.buf
+  step.outcome
 }
 
 func writeLspFrame(json: in String): Unit {
@@ -2297,12 +2334,10 @@ pub func lspBuildWorkspaceIndex(dir: in String): Map[String, String] {
 // ─────────────────────────────────────────────────────────────────────────────
 pub func lspRunLoop(): Unit {
   val state = lspInit()
-  var stdin = lspStdinOpen()
+  val stdin = lspStdinOpen()
   var keepGoing = true
   while keepGoing {
-    val result = lspReadFrame(stdin)
-    stdin = result.stdin
-    match result.outcome {
+    match lspReadFrame(stdin) {
       case LspReadEof -> {
         keepGoing = false
       }
