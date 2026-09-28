@@ -479,7 +479,7 @@ pub func compileToNativeWithFlags(
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = optsRecvOut
   )
-  val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts) {
+  val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
     case Some(f) -> f
     case None -> return false
   }
@@ -867,7 +867,7 @@ pub func compileProjectToNativeWithFlags(
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut
     )
-    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts) {
+    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
       case Some(f) -> f
       case None -> return false
     }

@@ -14,10 +14,7 @@ all: `Std.File`/`Std.Json` are already cross-platform (`Std.Json`'s
 JVM backend was rewritten to pure Lyric in D-progress-555). Verified
 against `tests/i18n_tests.l` on both targets.
 `translate`/`translateWith`/`hasKey`/`fromJson`/`loadFromPath` are all
-confirmed working on JVM. `--target jvm` test runs also print benign
-false-positive "unknown name" diagnostics for cross-package `Std.*`
-calls that resolve and run correctly — tracked separately in #5440,
-does not affect correctness.
+confirmed working on JVM.
 
 One gap this surfaced: passing a `JsonElement`/`JsonDoc` (from
 `Std.Json`) as the parameter type of a function declared in *this*

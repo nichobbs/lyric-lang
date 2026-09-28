@@ -14,12 +14,9 @@ output_assembly = "I18n.dll"
 "I18n"        = "src/i18n.l"
 "I18n.Kernel" = "src/i18n_kernel.l"
 
-# tests/i18n_tests.l: 25/25 pass on --target dotnet; 24/25 pass on
-# --target jvm (one genuine JVM-only ClassCastException in
-# availableLocales(), tracked in #5439; the JVM run also prints benign
-# false-positive "unknown name" diagnostics for cross-package Std.* calls,
-# tracked in #5440). The former #3719 blocker this comment used to cite is
-# closed and no longer applies.
+# tests/i18n_tests.l and tests/i18n_kernel_tests.l pass on both --target
+# dotnet and --target jvm; the JVM run is part of
+# scripts/ci/jvm-ecosystem-suites.sh.
 [project.tests]
 "I18n.I18nTests"       = "tests/i18n_tests.l"
 "I18n.I18nKernelTests" = "tests/i18n_kernel_tests.l"
