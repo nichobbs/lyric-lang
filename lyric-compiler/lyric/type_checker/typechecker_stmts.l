@@ -413,7 +413,11 @@ pub func checkStatement(
         }
       }
       case Some(e) -> {
-        val t = inferExpr(sc, tbl, sigs, diag, e)
+        // #7696: `return [1, 2, 3]` against a declared `List[T]` return type
+        // types the literal directly as `List[T]` here, the same as a
+        // `List[T]`-annotated binding's initialiser (docs/decisions/
+        // D-progress-1026-return-position-list-literals.md).
+        val t = inferExprExpected(sc, tbl, sigs, diag, e, returnTy)
         val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
         if not isNever and not typeAssignable(tbl, returnTy, t) {
           diag.add(
@@ -465,15 +469,15 @@ pub func checkStatement(
     }
 
     case SDefer(body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
     }
 
     case SScope(_, body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
     }
 
     case SLoop(_, body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
     }
 
     case SFor(_, pat, iter, body) -> {
@@ -593,7 +597,7 @@ pub func checkStatement(
       // but not `isNumericType`, so binding it raw would trip false T0030s on
       // arithmetic the where-bounds make valid.
       bindPattern(sc, pat, eraseTyVars(elemType))
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
       scopePop(sc)
     }
 
@@ -602,11 +606,11 @@ pub func checkStatement(
       if not typeEquiv(condT, TyPrim(pt = PtBool)) {
         diag.add(errorDiagnostic("T0066", "while-condition must be Bool (got " + renderType(condT) + ")", stmt.span))
       }
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
     }
 
     case STry(body, catches, finally_) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
       var i = 0
       while i < catches.count {
         val c = catches[i]
@@ -618,7 +622,7 @@ pub func checkStatement(
             scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
           }
         }
-        val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, false)
+        val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, false, TyError)
         scopePop(sc)
         i = i + 1
       }
@@ -626,7 +630,7 @@ pub func checkStatement(
         case None -> {
         }
         case Some(fb) -> {
-          val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false)
+          val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false, TyError)
         }
       }
     }
@@ -967,6 +971,21 @@ func checkTryHandlerType(
 // genuinely statement-position `try` may absorb a Unit handler beside a
 // non-Unit body.  Statement-position callers (loop / catch / finally bodies)
 // pass false.
+//
+// #7696: `tailExpected` is a SEPARATE signal from `returnTy` — `returnTy` is
+// always the enclosing function's declared return type (used for every
+// nested `return`'s T0065 check, regardless of nesting), while
+// `tailExpected` is the type to check a LITERAL trailing value against, and
+// is `TyError` ("no expectation") unless this block's own trailing value is
+// genuinely, structurally the enclosing function's return value (reached via
+// `checkFunctionBody`'s own top-level call, or a same-chain continuation:
+// a nested `{ }`/`unsafe { }`/`try`/`if`/`match` in tail position). A block
+// reached any other way (a loop/catch/finally body, an ordinary `{ }`
+// subexpression inside a binding initialiser, …) passes `TyError` so a
+// literal keeps inferring as `slice[T]` there, exactly as before — using the
+// caller's unrelated `returnTy` for this would let the checker accept a
+// literal's representation based on a type the codegen call site cannot see
+// (docs/decisions/D-progress-1026-return-position-list-literals.md).
 pub func checkBlock(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -977,6 +996,7 @@ pub func checkBlock(
   diag: in List[Diagnostic],
   blk: in Block,
   valuePos: in Bool,
+  tailExpected: in Type,
 ): Type {
   scopePush(sc)
   var lastExprType: Type = TyPrim(pt = PtUnit)
@@ -997,21 +1017,62 @@ pub func checkBlock(
         // block's trailing (consumed) expression.  All other expression
         // forms type via `inferExpr` (always value position — #3362).
         val isLast = i == blk.statements.count - 1
+        // #7696: this statement's own tail-expected type — `tailExpected`
+        // only when it is genuinely both value-position AND trailing, `TyError`
+        // otherwise, exactly like every other tail-chain continuation below.
+        val stmtTailExpected = if valuePos and isLast { tailExpected } else { TyError }
         match e.kind {
           case EBlock(innerBlk) -> {
-            lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, innerBlk, valuePos and isLast)
+            lastExprType = checkBlock(
+              sc,
+              tbl,
+              sigs,
+              genericNames,
+              returnTy,
+              returnTyExpr,
+              diag,
+              innerBlk,
+              valuePos and isLast,
+              stmtTailExpected
+            )
           }
           case EUnsafe(innerBlk) -> {
-            lastExprType = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, innerBlk, valuePos and isLast)
+            lastExprType = checkBlock(
+              sc,
+              tbl,
+              sigs,
+              genericNames,
+              returnTy,
+              returnTyExpr,
+              diag,
+              innerBlk,
+              valuePos and isLast,
+              stmtTailExpected
+            )
           }
           case EIf(cond, thenBranch, elseBranch, _) -> {
-            lastExprType = inferIfExpr(sc, tbl, sigs, diag, e, cond, thenBranch, elseBranch, valuePos and isLast)
+            lastExprType = inferIfExpr(
+              sc,
+              tbl,
+              sigs,
+              diag,
+              e,
+              cond,
+              thenBranch,
+              elseBranch,
+              valuePos and isLast,
+              stmtTailExpected
+            )
           }
           case EMatch(scrutinee, arms) -> {
-            lastExprType = inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, valuePos and isLast)
+            lastExprType = inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, valuePos and isLast, stmtTailExpected)
           }
           case _ -> {
-            lastExprType = inferExpr(sc, tbl, sigs, diag, e)
+            lastExprType = if valuePos and isLast {
+              inferExprExpected(sc, tbl, sigs, diag, e, tailExpected)
+            } else {
+              inferExpr(sc, tbl, sigs, diag, e)
+            }
           }
         }
       }
@@ -1021,7 +1082,22 @@ pub func checkBlock(
         // position *and* this is the trailing statement; otherwise the value is
         // discarded (#3262).
         val tryValuePos = valuePos and i == blk.statements.count - 1
-        var resultTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, tryValuePos)
+        // #7696: same "tail chain continues" reasoning as above — a
+        // value-position, trailing `try`'s own body/handler literal can still
+        // be the function's return value.
+        val tryTailExpected = if tryValuePos { tailExpected } else { TyError }
+        var resultTy = checkBlock(
+          sc,
+          tbl,
+          sigs,
+          genericNames,
+          returnTy,
+          returnTyExpr,
+          diag,
+          body,
+          tryValuePos,
+          tryTailExpected
+        )
         var ci = 0
         while ci < catches.count {
           val c = catches[ci]
@@ -1033,7 +1109,7 @@ pub func checkBlock(
               scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
             }
           }
-          val hTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, tryValuePos)
+          val hTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, tryValuePos, tryTailExpected)
           scopePop(sc)
           if typeEquiv(resultTy, TyPrim(pt = PtNever)) {
             resultTy = hTy
@@ -1052,7 +1128,7 @@ pub func checkBlock(
           }
           case Some(fb) -> {
             // The `finally` block's value is always discarded.
-            val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false)
+            val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false, TyError)
           }
         }
         lastExprType = resultTy
@@ -1067,7 +1143,7 @@ pub func checkBlock(
       // lets a trailing `scope` correctly propagate divergence to the
       // enclosing block instead of defaulting to `Unit`.
       case SScope(_, body) -> {
-        val bodyTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false)
+        val bodyTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
         val isNever = match bodyTy { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
         lastExprType = if isNever { bodyTy } else { TyPrim(pt = PtUnit) }
       }
@@ -1521,7 +1597,11 @@ pub func checkFunctionBody(
     }
     case Some(body) -> match body {
       case FBExpr(e) -> {
-        val bodyType = inferExpr(sc, tbl, sigs, diag, e)
+        // #7696: an expression-bodied function's body IS its return value —
+        // type a bracket literal directly against `sig.returnTy`, matching
+        // `return`/the block-body tail below (docs/decisions/
+        // D-progress-1026-return-position-list-literals.md).
+        val bodyType = inferExprExpected(sc, tbl, sigs, diag, e, sig.returnTy)
         val isNever = match bodyType {
           case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
           case _ -> false
@@ -1542,7 +1622,13 @@ pub func checkFunctionBody(
       }
       case FBBlock(blk) -> {
         val bodyValuePos = not isUnitType(sig.returnTy)
-        val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, fn.ret, diag, blk, bodyValuePos)
+        // #7696: `sig.returnTy` doubles as `tailExpected` here — this is the
+        // ROOT of the tail chain `checkBlock`/`inferIfExpr`/`inferMatchExpr`
+        // thread it through (see `checkBlock`'s header comment). Passing it
+        // unconditionally is safe even when `bodyValuePos` is false (a Unit
+        // return type never matches the `List[T]`-shaped gate those sites
+        // check for).
+        val bodyType = checkBlock(sc, tbl, sigs, sig.generics, sig.returnTy, fn.ret, diag, blk, bodyValuePos, sig.returnTy)
         val isNever = match bodyType {
           case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
           case _ -> false

@@ -88,6 +88,7 @@ for t in \
   lyric-compiler/lyric/cli_copydll_self_test.l \
   lyric-compiler/lyric/cli_publish_self_test.l \
   lyric-compiler/lyric/verifier_self_test.l \
+  lyric-compiler/lyric/return_list_literal_self_test.l \
   lyric-compiler/lyric/closure_correctness_self_test.l \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
   lyric-compiler/lyric/method_closure_var_capture_self_test.l \
