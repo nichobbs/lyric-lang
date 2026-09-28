@@ -1842,7 +1842,7 @@ func cmdTestManifest(
     val outPath = Path.join(testOutDir, asmStem + testExt)
 
     val testContractsEnabled = match manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
-    val projReq = EmitProjectRequest(
+    val projReq = Emitter.EmitProjectRequest(
       packages = allPkgs,
       assemblyName = asmStem,
       outputPath = outPath,

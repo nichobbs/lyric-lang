@@ -853,7 +853,7 @@ func emitSingleFileOrProject(
   }
 
   val contractsEnabled = match lm.manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
-  val projReq = EmitProjectRequest(
+  val projReq = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = req.assemblyName,
     outputPath = req.outputPath,
@@ -2696,7 +2696,7 @@ pub func buildProjectFromManifest(
 
   val asmName = stemOf(Path.basename(outPath), 4)
   val contractsEnabled = match manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
-  val projReq = EmitProjectRequest(
+  val projReq = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = asmName,
     outputPath = outPath,
