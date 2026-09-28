@@ -902,6 +902,22 @@ pub record FuncCtx {
   // no-defaulted-field rule; initialised `newList()` at every construction
   // site.
   unsignedUndo: List[UnsignedScopeUndo]
+  // #7695: the ENCLOSING generic type's own type-parameter names (a generic
+  // record/union method's `Box[T]` -> `["T"]`), consulted by
+  // `localAnnotatedJvmType` (`05_stmts.l`) so a BODY-local `val`/`var`/`let`
+  // annotation that bare-names one of them (`var x: T`, `val y: List[T]`)
+  // erases to `Object` — the same `typeExprToJvmErasedExtern` erasure
+  // `lowerRecordMethod` already applies to the method's own params/return —
+  // instead of resolving `T` as a nonexistent in-package class
+  // (`NoClassDefFoundError: <pkg>/T` at run time; the method's own
+  // params/return/fields were already correct, only body-local annotations
+  // were missed).  Empty for every non-generic-method context (top-level
+  // functions, non-generic methods, generators, wire-binding inits) — same
+  // "no reachable typeParams" default `aliasTargets` documents above.  No
+  // default per the JVM-codegen no-defaulted-field rule; initialised
+  // `newList()` at every construction site except `lowerRecordMethod`'s,
+  // which passes its own `typeParams` argument through.
+  typeParams: List[String]
 }
 
 // A saved lexical scope (general shadowing fix, #5191).  A `{ … }` block is a
