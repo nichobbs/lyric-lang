@@ -921,7 +921,9 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # unions, enums, distinct types,
                                        # tuples, match, generics (monomorphized), closures,
                                        # non-generic interfaces (impl I for Record, vtable
-                                       # dispatch), NativeWeak[T], slice[T], List/Map +
+                                       # dispatch on an interface-typed receiver, or direct
+                                       # resolution on the concrete record receiver),
+                                       # NativeWeak[T], slice[T], List/Map +
                                        # for/indexing (map keys String or scalar); non-generic
                                        # protected types (entry/func both lock a mutex buffer via
                                        # a lock/unlock wrapper); non-generator async func as a
@@ -1350,6 +1352,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0136` | An `impl Iface for P`, where `P` is a protected type, that cannot become part of `P`: the impl is declared in another package than `P`, its target names `P` through an `alias`, `P` or the impl is generic, or an impl method has the same name as one of `P`'s own `entry`/`func` members or as a method of another impl for `P`. An impl method on a protected type is itself a locked member of the type, so move the body into the impl or rename the member. (An impl method's signature mentioning a BARE `Self` is accepted on `--target dotnet`/`--target jvm` since #7550 and on `--target native` since #7585; `Self` nested inside a generic type argument, e.g. `List[Self]`, is accepted on `--target dotnet`/`--target jvm` but still rejected on `--target native` with `N0006`, tracked in #7603.) |
 | `T0137` | A record pattern's own head (`case Head { field = pat, … } -> …`) does not name the scrutinee's own record: a different record, a union/enum case, an unresolved name, or (for a qualified head) the right record's simple name under the wrong package qualifier. The record-pattern counterpart of `T0129`'s union/enum-case check. Not checked when the scrutinee's type is unknown or open (a type variable, `Self`, a nullable). A qualified head naming the right record under an unreachable package is `T0020`, and one naming a package-private record is `T0097` (checked first), instead of `T0137`. |
 | `T0138` | A selective import renames a listed name (`import P.{f as g}`). Renaming is not supported yet (#7564); write `import P.{f}` and use `f`, or `import P as Q` and write `Q.f`. |
+| `T0139` | An `impl` for a non-protected target (record, exposed record, union, or opaque type) declares a method whose name clashes with the target's own record-body (D037) method, or with a method of another `impl` for the same target. No backend can compile either shape (MSIL/JVM fail codegen with a duplicate-member error; native has no consistent tie-break); rename the impl method, the record's own method, or one of the two interface methods. The protected-type analog of this check is `T0136`. |
 
 ### Type checker warnings (W-series)
 

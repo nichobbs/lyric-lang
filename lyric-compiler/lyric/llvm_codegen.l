@@ -172,7 +172,16 @@ record NUnionCaseInfo {
 /// bare `Self`) so `lowerIfaceDispatch` knows to REBOX the erased result
 /// into a fresh interface value — a call through the interface receiver
 /// types the whole expression as the interface itself (T0113 receiver
-/// substitution), not the erased raw pointer.
+/// substitution), not the erased raw pointer. `methodParamIsSelf` (#7618
+/// review follow-up to #7616) is the per-parameter twin of
+/// `methodRetIsSelf`: `methodParamIsSelf[m][p]` is true exactly when
+/// parameter `p` of method `m` is a bare `Self` (erased in
+/// `methodParamTys[m][p]` to `i8*`, same as the return case) — the ONLY
+/// fact `lowerIfaceDispatch` may use to unbox an argument to the erased
+/// slot (`unboxToSelfSlot`). This is checked EXPLICITLY, never inferred
+/// from a parameter's erased type happening to be `i8*` (a real, unrelated
+/// `NativePtr[Byte]` parameter erases to the exact same `NType` and must
+/// NOT be treated as a `Self` slot).
 record NIfaceInfo {
   key: String
   irName: String
@@ -181,6 +190,7 @@ record NIfaceInfo {
   methodParamTys: List[List[NType]]
   methodRetTys: List[NType]
   methodRetIsSelf: List[Bool]
+  methodParamIsSelf: List[List[Bool]]
 }
 
 /// Registered (non-generic) union type: cases plus the payload area
@@ -388,6 +398,29 @@ record Ctx {
   ifaceInfos: Map[String, NIfaceInfo]
   ifaceBareNameOwners: Map[String, String]
   ifaceVtables: Map[String, String]
+  // Direct-receiver impl-method resolution (#7600, review follow-up
+  // #7627). Maps the receiver's PACKAGE-QUALIFIED
+  // `<pkg>.<Record>.<methodName>/<arity>` (matching `tyName` — the same
+  // qualification every other `lowerUfcsCall` tier already uses) to the
+  // `ctx.sigs` key of the collision-free impl-method symbol
+  // (`implMethodName`) a call through the CONCRETE record receiver
+  // resolves to. A bare (unqualified) record name would alias two
+  // same-named records in different packages of a multi-package native
+  // bundle to whichever package's impl happened to register first
+  // (#7627). Populated by `registerImplDirectMethods` in the same
+  // unit/impl/member order the type checker's own `tbl.impls` builds up
+  // (`methodCandidatesFor`), so the first-declared `impl` wins a
+  // same-named-method tie the same way the checker's first-match
+  // selection does. A record's own-body method can never collide with an
+  // impl method of the same name any more — the type checker rejects
+  // that shape as T0139 (#7626) — so this map holds impl methods only,
+  // and this has to run BEFORE the bare `curPkg + "." + name` lookup in
+  // `lowerUfcsCall`: that lookup matches ANY same-arity function in the
+  // current package regardless of its receiver type (it does not verify
+  // the match is actually a method of THIS record), so an unrelated free
+  // function sharing the impl method's bare name and arity would
+  // otherwise shadow it.
+  implDirectMethods: Map[String, String]
   // Protected-type record irNames (N3.4): marks which `recordDefs` entries
   // are protected types (a trailing `__mutex: i8*` field, construction
   // routes through `lowerProtectedConstructArgs`) rather than plain records.
@@ -659,7 +692,7 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
           return ctx.fnTyEnvTys[envIdx]
         }
       }
-      val joined = modulePathJoin(path.segments)
+      val joined = qualifiedPathJoin(ctx, path)
       val n = lastSeg(path)
       match lookupHeapType(ctx, joined, n) {
         case Some(t) -> return t
@@ -729,7 +762,7 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
           return Some(value = ctx.fnTyEnvTys[envIdx])
         }
       }
-      val joined = modulePathJoin(path.segments)
+      val joined = qualifiedPathJoin(ctx, path)
       val n = lastSeg(path)
       match lookupHeapType(ctx, joined, n) {
         case Some(t) -> return Some(value = t)
@@ -782,6 +815,27 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
     case TUnit -> Some(value = NVoid)
     case TParen(inner) -> typeToNOpt(ctx, inner)
     case _ -> None
+  }
+}
+
+/// `modulePathJoin(path.segments)`, except a single-segment (unqualified)
+/// path is qualified with the CALLER's OWN `ctx.curPkg[0]` instead of
+/// being left bare (#7627). An unqualified type reference such as `self:
+/// Widget` or `Widget(n = 10)` always means the record named `Widget` IN
+/// THE CURRENT PACKAGE — `modulePathJoin` alone returns just `"Widget"`
+/// for a one-segment path, which is indistinguishable from the GLOBAL
+/// bare `"Widget"` key every package's `Widget` record also registers
+/// (`addRecKey`'s "first-wins shadowing across packages" fallback slot);
+/// `lookupHeapType(ctx, joined, bare)` tries `joined` first, so passing
+/// the truly qualified name here means the caller's OWN package's
+/// `Widget` is always preferred, and the plain bare key is only ever
+/// reached as a last resort (kept for forms this function does not
+/// itself qualify, e.g. a name synthesised without any package context).
+func qualifiedPathJoin(ctx: in Ctx, path: in ModulePath): String {
+  if path.segments.count == 1 and ctx.curPkg.count > 0 {
+    ctx.curPkg[0] + "." + path.segments[0]
+  } else {
+    modulePathJoin(path.segments)
   }
 }
 
@@ -1067,17 +1121,6 @@ func isWeakNType(t: in NType): Bool {
 /// are not.  Weak values ARE refs (so the ownership machinery counts them);
 /// `emitRetain` / `emitRelease` dispatch to the weak-count runtime helpers
 /// for them.
-/// True for exactly `i8*` — the erased-`Self` slot type (#7585) and the
-/// generic "raw pointer" type used for FFI/box-obj bookkeeping. Distinct
-/// from `NativePtr[Byte]`, which lowers to the SAME `NType` but is only
-/// ever reachable through `_kernel_native/`/`@unsafe_ffi` code (N0100).
-func isRawI8PtrType(t: in NType): Bool {
-  match t {
-    case NPtr(pointee) -> match pointee { case NI8 -> true; case _ -> false }
-    case _ -> false
-  }
-}
-
 func isRefNType(t: in NType): Bool {
   match t {
     case NPtr(pointee) -> {
@@ -3472,45 +3515,6 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): N
     case None -> {
     }
   }
-  // #7585: unbox an interface value flowing into an erased-`Self` slot
-  // (a `Self`-typed parameter dispatched through the SAME interface
-  // receiver types the caller's argument as the interface itself —
-  // T0113 receiver substitution — but the vtable's erased slot expects
-  // the raw `i8*` object pointer, matching every other concrete impl's
-  // pointer-width receiver). Read-only extraction (a borrow, mode `in`
-  // per Rule 5) — no retain needed; the box itself stays alive for the
-  // call's duration since the caller still holds it.
-  if isRawI8PtrType(want) {
-    match ifaceBoxInfoOfType(ctx, v.ty) {
-      case Some(info) -> {
-        val structTy = ifaceBoxStructType(info)
-        val objSlot = freshTmp(ctx)
-        val objArgs: List[NArg] = newList()
-        objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-        objArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxObjSlot, ty = NI32)))
-        insns.add(NGEP(dest = objSlot, ty = structTy, ptr = v.value, indices = objArgs))
-        val objVal = freshTmp(ctx)
-        insns.add(NLoad(dest = objVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = objSlot)))
-        return NVal(ty = NPtr(pointee = NI8), value = NLocal(name = objVal))
-      }
-      case None -> {
-        // The checker accepts a CONCRETE record/protected-type value at a
-        // `Self`-substituted-to-the-interface parameter position too (the
-        // ordinary "concrete implementor flows into an interface-typed
-        // slot" upcast, `checkImplConformance`) — it just never got boxed
-        // because THIS slot's declared type is the erased `i8*`, not the
-        // interface box type `coerceTo`'s upcast branch above matches on.
-        // A plain bitcast is enough: the vtable-dispatched callee expects
-        // the SAME raw pointer-width representation either way, and this
-        // is a borrow (mode `in`, Rule 5) — no retain, no new box.
-        if isRefNType(v.ty) {
-          val dest = freshTmp(ctx)
-          insns.add(NBitcast(dest = dest, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
-          return NVal(ty = NPtr(pointee = NI8), value = NLocal(name = dest))
-        }
-      }
-    }
-  }
   match v.value {
     case NLitInt(litV, _) -> {
       if isIntNType(want) {
@@ -3546,6 +3550,64 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): N
     "Lyric.LlvmCodegen: cannot pass a '" + fromStr + "' where '" + wantStr +
       "' is expected (insert an explicit conversion)"
   )
+}
+
+/// Unbox a value flowing into an erased-`Self` interface-method PARAMETER
+/// slot (#7585, #7618 review follow-up to #7616): a `Self`-typed parameter
+/// dispatched through the SAME interface receiver types the caller's
+/// argument as the interface itself (T0113 receiver substitution), but the
+/// vtable's erased slot expects the raw `i8*` object pointer, matching
+/// every other concrete impl's pointer-width receiver. Read-only
+/// extraction (a borrow, mode `in` per Rule 5) — no retain needed; the box
+/// itself stays alive for the call's duration since the caller still holds
+/// it.
+///
+/// Callable ONLY from `lowerIfaceDispatch`, gated on `ii.methodParamIsSelf`
+/// — never from `coerceTo`'s general "adapt to declared type" path, and
+/// never inferred merely from `want` being `i8*` (a genuine, unrelated
+/// `NativePtr[Byte]` parameter erases to the exact same `NType`; passing a
+/// ref-typed value there is a real type error and must panic through
+/// `coerceTo`'s ordinary type-mismatch path instead of silently unboxing).
+func unboxToSelfSlot(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
+  match ifaceBoxInfoOfType(ctx, v.ty) {
+    case Some(info) -> {
+      val structTy = ifaceBoxStructType(info)
+      val objSlot = freshTmp(ctx)
+      val objArgs: List[NArg] = newList()
+      objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      objArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxObjSlot, ty = NI32)))
+      insns.add(NGEP(dest = objSlot, ty = structTy, ptr = v.value, indices = objArgs))
+      val objVal = freshTmp(ctx)
+      insns.add(NLoad(dest = objVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = objSlot)))
+      NVal(ty = NPtr(pointee = NI8), value = NLocal(name = objVal))
+    }
+    case None -> {
+      // The checker accepts a CONCRETE record/protected-type value at a
+      // `Self`-substituted-to-the-interface parameter position too (the
+      // ordinary "concrete implementor flows into an interface-typed
+      // slot" upcast, `checkImplConformance`) — it just never got boxed
+      // because THIS slot's declared type is the erased `i8*`, not the
+      // interface box type `coerceTo`'s upcast branch matches on. A plain
+      // bitcast is enough: the vtable-dispatched callee expects the SAME
+      // raw pointer-width representation either way, and this is a borrow
+      // (mode `in`, Rule 5) — no retain, no new box.
+      if isRefNType(v.ty) {
+        val dest = freshTmp(ctx)
+        insns.add(NBitcast(dest = dest, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+        NVal(ty = NPtr(pointee = NI8), value = NLocal(name = dest))
+      } else {
+        // Neither an interface box nor a ref type — the checker's own
+        // T0113 substitution guarantees a `Self`-through-interface
+        // argument is always one or the other, so reaching here is a
+        // compiler-invariant violation, not a user error.
+        panic(
+          "Lyric.LlvmCodegen: internal — unboxToSelfSlot: expected an interface-boxed or ref-typed value at a Self slot, got '" +
+            nTypeToIrString(v.ty) +
+            "'"
+        )
+      }
+    }
+  }
 }
 
 func longToDouble(v: in Long): Double {
@@ -4072,6 +4134,37 @@ func lowerConstructCall(
 /// against the record / union-case / generic-record / generic-union-case
 /// / distinct-type construction registries.  `None` when `name` matches
 /// none of them.
+/// Looks up `m` under the caller's OWN package-qualified spelling of
+/// `bareOrDotted` first, falling back to the bare (unqualified) key only
+/// when the caller's own package never registered one. `addRecKey` /
+/// `replaceRecKey` (and the analogous case-ref / distinct-type
+/// registration sites) add BOTH a `<pkg>.<name>` key and a bare `<name>`
+/// key for every record/case/distinct-type declaration, so that a
+/// same-package unqualified reference resolves without the caller having
+/// to know its own package. But the bare key is a single GLOBAL slot
+/// shared by every package in the bundle — `addRecKey`'s "first-wins
+/// shadowing across packages" rule means whichever package's declaration
+/// happens to be collected FIRST wins the bare key for every OTHER
+/// package's unqualified references too (#7627): two packages each
+/// declaring `record Widget { ... }` collide on the bare `"Widget"` key,
+/// so a construct call inside the package that registered SECOND
+/// silently builds the FIRST package's `Widget`. Qualifying with the
+/// caller's own `ctx.curPkg[0]` first closes that: every legitimate
+/// same-package reference already has a `<pkg>.<name>` entry (added
+/// alongside the bare one at the same declaration site), so this can
+/// never regress an existing resolution — it only ever prefers the
+/// caller's own declaration over a same-named stranger's.
+func curPkgQualifiedGet[T](ctx: in Ctx, m: in Map[String, T], bareOrDotted: in String): Option[T] {
+  if ctx.curPkg.count > 0 {
+    match mapGet(m, ctx.curPkg[0] + "." + bareOrDotted) {
+      case Some(v) -> return Some(value = v)
+      case None -> {
+      }
+    }
+  }
+  mapGet(m, bareOrDotted)
+}
+
 func tryLowerConstruct(
   ctx: in Ctx,
   insns: in List[NInsn],
@@ -4080,7 +4173,7 @@ func tryLowerConstruct(
   line: in Int,
   retWant: in Option[NType],
 ): Option[NVal] {
-  match mapGet(ctx.recordDefs, name) {
+  match curPkgQualifiedGet(ctx, ctx.recordDefs, name) {
     case Some(ri) -> {
       if ctx.protectedRecNames.containsKey(ri.irName) {
         return Some(value = lowerProtectedConstructArgs(ctx, insns, ri, args))
@@ -4090,7 +4183,7 @@ func tryLowerConstruct(
     case None -> {
     }
   }
-  match mapGet(ctx.caseRefs, name) {
+  match curPkgQualifiedGet(ctx, ctx.caseRefs, name) {
     case Some(cref) -> {
       val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
         case Some(u) -> u
@@ -4115,7 +4208,7 @@ func tryLowerConstruct(
   if ctx.genericRecordDefs.containsKey(name) {
     return Some(value = lowerGenericRecordConstruct(ctx, insns, genericQualifiedKey(ctx, name), args, retWant))
   }
-  match mapGet(ctx.distinctDefs, name) {
+  match curPkgQualifiedGet(ctx, ctx.distinctDefs, name) {
     case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, name, di, args, line))
     case None -> {
     }
@@ -4123,7 +4216,7 @@ func tryLowerConstruct(
   // `X.from(v)` (language reference §2.3) and the older `X.From(v)`.
   if Str.endsWith(name, ".from") or Str.endsWith(name, ".From") {
     val baseName = Str.substring(name, 0, name.length - 5)
-    match mapGet(ctx.distinctDefs, baseName) {
+    match curPkgQualifiedGet(ctx, ctx.distinctDefs, baseName) {
       case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, baseName, di, args, line))
       case None -> {
       }
@@ -4131,7 +4224,7 @@ func tryLowerConstruct(
   }
   if Str.endsWith(name, ".tryFrom") {
     val baseName = Str.substring(name, 0, name.length - 8)
-    match mapGet(ctx.distinctDefs, baseName) {
+    match curPkgQualifiedGet(ctx, ctx.distinctDefs, baseName) {
       case Some(di) -> return Some(value = lowerDistinctTryFrom(ctx, insns, baseName, di, args, line))
       case None -> {
       }
@@ -4184,7 +4277,47 @@ func lowerUfcsCall(
     }
   }
   val arity = (args.count + 1).toString()
-  var sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + name + "/" + arity)
+  // `.<name>(...)` on a CONCRETE record receiver — try an `impl I
+  // for R` method FIRST, via the index `registerImplDirectMethods` built
+  // from every impl's PACKAGE-QUALIFIED `<pkg>.<record>.<method>/<arity>`
+  // (#7627). This has to run BEFORE the bare `curPkg + "." + name`
+  // lookup below: that lookup matches ANY same-arity function in the
+  // current package regardless of its receiver type (it does not verify
+  // the match is actually a method of THIS record), so an unrelated free
+  // function sharing the impl method's bare name and arity would
+  // otherwise shadow it (#7600). A record's own-body method can never
+  // share a name with one of its impl methods any more — the type
+  // checker rejects that shape as T0139 (#7626) — so trying the impl
+  // index first can never steal a match that belongs to a genuinely
+  // different function: an impl method's own key is collision-free by
+  // construction (package + record + method).
+  var sigOpt: Option[NFuncSig] = None
+  match recv.ty {
+    case NPtr(pointee) -> {
+      match pointee {
+        case NStruct(tyName, _) -> {
+          match mapGet(ctx.implDirectMethods, tyName + "." + name + "/" + arity) {
+            case Some(sigKey) -> {
+              sigOpt = mapGet(ctx.sigs, sigKey)
+            }
+            case None -> {
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + name + "/" + arity)
+    }
+  }
   match sigOpt {
     case Some(_) -> {
     }
@@ -10249,6 +10382,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     ifaceInfos = mod.ifaceInfos,
     ifaceBareNameOwners = mod.ifaceBareNameOwners,
     ifaceVtables = mod.ifaceVtables,
+    implDirectMethods = mod.implDirectMethods,
     protectedRecNames = mod.protectedRecNames,
     scopeRefs = newList(),
     tempScopes = newList(),
@@ -11147,6 +11281,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     ifaceInfos = newMap(),
     ifaceBareNameOwners = newMap(),
     ifaceVtables = newMap(),
+    implDirectMethods = newMap(),
     protectedRecNames = newMap(),
     scopeRefs = newList(),
     tempScopes = newList(),
@@ -11178,6 +11313,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   registerHeapTypes(ctx, units, types, fns)
   registerInterfaceTypes(ctx, units, types, fns)
   registerImplVtables(ctx, units)
+  registerImplDirectMethods(ctx, units)
   registerProtectedMethods(ctx, units, fns)
   val externDecls: List[NFunc] = newList()
   val declaredExterns: Map[String, Bool] = newMap()
@@ -11563,6 +11699,35 @@ func typeExprHasNestedSelf(te: in TypeExpr): Bool {
   typeExprMentionsSelf(te) and not isBareSelfTypeExpr(te)
 }
 
+/// One nested-`Self` shape found in a signature: `where_` names the
+/// offending parameter/return for the message, `span` locates it.
+record NestedSelfShape {
+  where_: String
+  span: Span
+}
+
+/// Every nested-`Self` shape (`List[Self]`, ...) in `sig`'s params/return
+/// (#7618 review): the ONE traversal `registerInterfaceNames`'s panic path
+/// and `nativeSelfShapeDiagnostics`'s diagnostic path both walk, factored
+/// out so the two can never drift — each caller just picks what to DO with
+/// a found shape (panic immediately vs. collect an `N0006` `Diagnostic`).
+func nestedSelfShapesInSig(sig: in FunctionSig): List[NestedSelfShape] {
+  val acc: List[NestedSelfShape] = newList()
+  var pi = 0
+  while pi < sig.params.count {
+    if typeExprHasNestedSelf(sig.params[pi].ty) {
+      acc.add(NestedSelfShape(where_ = "parameter '" + sig.params[pi].name + "'", span = sig.params[pi].ty.span))
+    }
+    pi = pi + 1
+  }
+  match sig.ret {
+    case Some(r) -> if typeExprHasNestedSelf(r) { acc.add(NestedSelfShape(where_ = "return type", span = r.span)) }
+    case None -> {
+    }
+  }
+  acc
+}
+
 /// Shared message text for `N0006` (nested `Self`), used by both the
 /// structured `Diagnostic` `nativeSelfShapeDiagnostics` produces (the
 /// primary path — `Lyric.LlvmBridge` reports it and aborts the build
@@ -11627,23 +11792,11 @@ pub func nativeSelfShapeDiagnostics(units: in List[CodegenUnit]): List[Diagnosti
           var mi = 0
           while mi < sigs.count {
             val sig = sigs[mi]
-            var pi = 0
-            while pi < sig.params.count {
-              if typeExprHasNestedSelf(sig.params[pi].ty) {
-                diags.add(
-                  nestedSelfShapeDiagnostic(qualified, sig.name, "parameter '" + sig.params[pi].name + "'", sig.params[pi].ty.span)
-                )
-              }
-              pi = pi + 1
-            }
-            match sig.ret {
-              case Some(r) -> {
-                if typeExprHasNestedSelf(r) {
-                  diags.add(nestedSelfShapeDiagnostic(qualified, sig.name, "return type", r.span))
-                }
-              }
-              case None -> {
-              }
+            val shapes = nestedSelfShapesInSig(sig)
+            var si = 0
+            while si < shapes.count {
+              diags.add(nestedSelfShapeDiagnostic(qualified, sig.name, shapes[si].where_, shapes[si].span))
+              si = si + 1
             }
             mi = mi + 1
           }
@@ -12936,6 +13089,7 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
           val sigs = nonGenericSyncSigs(idecl)
           val mnames: List[String] = newList()
           val mretSelf: List[Bool] = newList()
+          val mparamSelf: List[List[Bool]] = newList()
           var mi = 0
           while mi < sigs.count {
             val sig = sigs[mi]
@@ -12945,19 +13099,32 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
             // ever calls `typeToN` on it — the vaguer "generic type not
             // supported" panic from deep inside `typeExprToNType` would
             // otherwise fire first and not name the interface/method.
+            // `nestedSelfShapesInSig` is the SAME traversal
+            // `nativeSelfShapeDiagnostics` uses (#7618 review: factored into
+            // one shared helper so the two can never drift) — this caller
+            // panics on each shape (the unreachable-once-the-bridge's-own
+            // pre-pass-runs-first defensive fallback), the other collects a
+            // structured `N0006` diagnostic per shape instead.
+            val shapes = nestedSelfShapesInSig(sig)
+            var si = 0
+            while si < shapes.count {
+              panicUnsupportedSelfShape(qualified, sig.name, shapes[si].where_, shapes[si].span)
+              si = si + 1
+            }
+            // #7618: record whether each parameter is a bare `Self` —
+            // `lowerIfaceDispatch` consults this explicitly, never the
+            // erased `i8*` shape, to decide whether to unbox an argument
+            // (a real `NativePtr[Byte]` parameter erases identically).
+            val paramSelf: List[Bool] = newList()
             var pi = 0
             while pi < sig.params.count {
-              if typeExprHasNestedSelf(sig.params[pi].ty) {
-                panicUnsupportedSelfShape(qualified, sig.name, "parameter '" + sig.params[pi].name + "'", sig.params[pi].ty.span)
-              }
+              paramSelf.add(isBareSelfTypeExpr(sig.params[pi].ty))
               pi = pi + 1
             }
+            mparamSelf.add(paramSelf)
             var retIsSelf = false
             match sig.ret {
               case Some(r) -> {
-                if typeExprHasNestedSelf(r) {
-                  panicUnsupportedSelfShape(qualified, sig.name, "return type", r.span)
-                }
                 retIsSelf = isBareSelfTypeExpr(r)
               }
               case None -> {
@@ -12973,7 +13140,8 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
             methodNames = mnames,
             methodParamTys = newList(),
             methodRetTys = newList(),
-            methodRetIsSelf = mretSelf
+            methodRetIsSelf = mretSelf,
+            methodParamIsSelf = mparamSelf
           )
           registerIfaceInfo(ctx, u.pkgName, idecl.name, info)
         }
@@ -13028,7 +13196,8 @@ func registerInterfaceTypes(
             methodNames = pre.methodNames,
             methodParamTys = pTys,
             methodRetTys = rTys,
-            methodRetIsSelf = pre.methodRetIsSelf
+            methodRetIsSelf = pre.methodRetIsSelf,
+            methodParamIsSelf = pre.methodParamIsSelf
           )
           registerIfaceInfo(ctx, u.pkgName, idecl.name, info)
           val vtFields: List[NType] = newList()
@@ -13134,6 +13303,79 @@ func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
                       }
                     }
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+      ii = ii + 1
+    }
+    ua = ua + 1
+  }
+}
+
+/// Index every non-generic `impl I for R` method under
+/// `<pkg>.<R>.<method>/<arity>` (PACKAGE-QUALIFIED, #7627 — a bare record
+/// name would alias two same-named records in different packages in a
+/// multi-package native bundle) -> its collision-free `ctx.sigs` key
+/// (`implMethodName`, #7600), so a call on the CONCRETE record receiver can
+/// find it (`lowerUfcsCall` has no other lookup that reaches the
+/// `<Record>.<Iface>.<method>` name `collectImplMethods` gives it). Walked in
+/// the same units/impls/members order the type checker's `symTableAddImpl` +
+/// `methodCandidatesFor` build and consult `tbl.impls`, and `addSig`-style
+/// first-wins on a duplicate key. In practice a duplicate key never
+/// reaches this pass any more: the type checker now rejects both a
+/// record's own-body method sharing a name with one of its impl methods
+/// and two impls of the same target sharing a method name (T0139), the
+/// same way it already rejects the protected-type analog (T0136) —
+/// #7626/#7627's review follow-ups. The first-wins tie-break below is
+/// therefore a defensive fallback only, kept in case a caller ever feeds
+/// this function units that bypassed the checker. Protected-type impls
+/// never reach here regardless: the contract elaborator moves them into
+/// the type's own entries before codegen sees the `IImpl` item (#7457) —
+/// `protectedRecNames` is still consulted defensively in case a future
+/// caller feeds this function units before that elaboration runs.
+func registerImplDirectMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
+  var ua = 0
+  while ua < units.count {
+    val u = units[ua]
+    var ii = 0
+    while ii < u.impls.count {
+      val decl = u.impls[ii]
+      match decl.generics {
+        case Some(_) -> {
+        }
+        case None -> {
+          match implTargetRecordName(decl.target) {
+            case None -> {
+            }
+            case Some(recordName) -> {
+              if not ctx.protectedRecNames.containsKey(u.pkgName + "." + recordName) {
+                val ifaceName = implIfaceName(decl.iface)
+                var mi = 0
+                while mi < decl.members.count {
+                  match decl.members[mi] {
+                    case IMplFunc(fn) -> {
+                      match fn.generics {
+                        case Some(_) -> {
+                        }
+                        case None -> {
+                          if not fn.isAsync {
+                            val arity = (fn.params.count + 1).toString()
+                            val key = u.pkgName + "." + recordName + "." + fn.name + "/" + arity
+                            val sigKey = u.pkgName + "." + implMethodName(recordName, ifaceName, fn.name) + "/" + arity
+                            if not ctx.implDirectMethods.containsKey(key) {
+                              ctx.implDirectMethods.add(key, sigKey)
+                            }
+                          }
+                        }
+                      }
+                    }
+                    case IMplAssoc(_) -> {
+                    }
+                  }
+                  mi = mi + 1
                 }
               }
             }
@@ -13275,12 +13517,25 @@ func lowerIfaceDispatch(
       toTy = NFnPtr(params = fnParamTys, ret = retTy)
     )
   )
-  // Build call args: obj first, then the coerced declared arguments.
+  // Build call args: obj first, then the coerced declared arguments. A
+  // parameter that is itself a bare `Self` (#7618) unboxes explicitly via
+  // `unboxToSelfSlot` — its own type-mismatch panic distinguishes it from
+  // a genuine `NativePtr[Byte]` parameter, which erases to the SAME `i8*`
+  // but must coerce (and, on a mismatch, fail) through the ordinary path.
+  val paramIsSelf = ii.methodParamIsSelf[slot]
   val callArgs: List[NArg] = newList()
   callArgs.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = objVal)))
   var ai = 0
   while ai < args.count {
-    val av = lowerCallArgExpecting(ctx, insns, args, ai, paramTys[ai])
+    val av = if paramIsSelf[ai] {
+      val raw = match args[ai] {
+        case CAPositional(ex) -> lowerExpr(ctx, insns, ex)
+        case CANamed(_, value, _) -> lowerExpr(ctx, insns, value)
+      }
+      unboxToSelfSlot(ctx, insns, raw)
+    } else {
+      lowerCallArgExpecting(ctx, insns, args, ai, paramTys[ai])
+    }
     callArgs.add(NArg(ty = paramTys[ai], value = av.value))
     ai = ai + 1
   }

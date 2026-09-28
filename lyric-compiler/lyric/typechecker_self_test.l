@@ -6141,6 +6141,43 @@ test "an impl for a record is not subject to the protected rules (#7457)" {
   assertTrue(not hasDiagCode(cr, "T0135"), "record target")
 }
 
+// #7626/#7627: no backend can compile a non-protected impl target that
+// declares the same method name reachable twice directly on it — MSIL/JVM
+// both fail codegen with a duplicate-member error, and native (#7600) has
+// no ambiguity diagnostic to fall back on. This generalizes the T0136
+// "duplicate method name on a shared target" detection (protected types)
+// to every other impl target under a new code, T0139.
+test "a record's own-body method and a same-named impl method are T0139 (#7626)" {
+  val src = "package P\ninterface Shape {\n  func area(): Int\n}\nrecord Square {\n  side: Int\n  func area(): Int {\n    self.side + 1\n  }\n}\nimpl Shape for Square {\n  func area(): Int {\n    100\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0139"), "impl area() clashes with the record's own area()")
+}
+
+test "two impls for a record with a shared method name are T0139 (#7627)" {
+  val src = "package P\ninterface Shape {\n  func area(): Int\n}\ninterface Other {\n  func area(): Int\n}\nrecord Square {\n  side: Int\n}\nimpl Shape for Square {\n  func area(): Int {\n    self.side * self.side\n  }\n}\nimpl Other for Square {\n  func area(): Int {\n    100\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0139"), "Other.area clashes with Shape.area")
+}
+
+test "an impl method with a distinct name from the record's own methods and other impls is accepted" {
+  val src = "package P\ninterface Shape {\n  func area(): Int\n}\ninterface Other {\n  func perimeter(): Int\n}\nrecord Square {\n  side: Int\n  func label(): String {\n    \"square\"\n  }\n}\nimpl Shape for Square {\n  func area(): Int {\n    self.side * self.side\n  }\n}\nimpl Other for Square {\n  func perimeter(): Int {\n    self.side * 4\n  }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0139"), "distinct names never clash")
+}
+
+test "protected types still report the clash as T0136, not T0139 (#7626/#7627)" {
+  val ownSrc = "package P\ninterface Store {\n  func get(): Int\n}\nprotected type C {\n  var n: Int = 0\n  func get(): Int {\n    n\n  }\n}\nimpl Store for C {\n  func get(): Int {\n    self.get()\n  }\n}\n"
+  val ownCr = parseCheck(ownSrc)
+  assertTrue(hasDiagCode(ownCr, "T0136"), "protected own-member clash is still T0136")
+  assertTrue(not hasDiagCode(ownCr, "T0139"), "not double-reported as T0139")
+  val twoImplSrc = "package P\ninterface Reader {\n  func get(): Int\n}\ninterface Source {\n  func get(): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl Reader for C {\n  func get(): Int {\n    n\n  }\n}\nimpl Source for C {\n  func get(): Int {\n    n + 1\n  }\n}\n"
+  val twoImplCr = parseCheck(twoImplSrc)
+  assertTrue(hasDiagCode(twoImplCr, "T0136"), "protected two-impl clash is still T0136")
+  assertTrue(not hasDiagCode(twoImplCr, "T0139"), "not double-reported as T0139")
+}
+
+test "a free function sharing an impl method's name is accepted (T0139 targets impl/own-body clashes only)" {
+  val src = "package P\ninterface Shape {\n  func area(): Int\n}\nrecord Square {\n  side: Int\n}\nimpl Shape for Square {\n  func area(): Int {\n    self.side * self.side\n  }\n}\nfunc area(x: in Int): Int {\n  x + 3\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0139"), "a free function is not a member of Square")
+}
+
 test "built-in members in a clause are not calls to check" {
   val src = "package P\nfunc f(xs: in List[Int], s: in String): Int\n  requires: xs.count > 0 and s.length > 0\n{\n  xs[0]\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "count/length")
