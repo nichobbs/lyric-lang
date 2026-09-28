@@ -46,7 +46,7 @@
 //! field it captured (no write through the closure at all) returns garbage
 //! on `--target dotnet` — confirmed pre-existing on `main` before this fix
 //! (the read path this file's fix does not touch) and out of scope for
-//! #7663. Filed separately; see this task's final report.
+//! #7663. Tracked in #7671.
 @test_module
 package Lyric.GenericRecordVarFieldSelfTest
 
@@ -127,4 +127,52 @@ func overwriteConcrete(seed: in Int, other: in Int): Int {
 
 test "generic record instantiated inside a NON-generic function still writes" {
   assertEqualInt(overwriteConcrete(1, 2), 2, "overwriteConcrete(1, 2)")
+}
+
+// ── Compound assignment (`dup` + `MLdfldGeneric` + combine +
+// `MStfldGeneric`) ────────────────────────────────────────────────────────
+func accumulateInt(seed: in Int): Int {
+  val box = MyBox(value = seed)
+  box.value += 5
+  box.value -= 2
+  box.value *= 3
+  box.value
+}
+
+func accumulateString(seed: in String): String {
+  var box = MyBox(value = seed)
+  box.value += "b"
+  box.value += "c"
+  box.value
+}
+
+func accumulateLong(seed: in Long): Long {
+  val box = MyBox(value = seed)
+  box.value += 5
+  box.value *= 2
+  box.value
+}
+
+func accumulateViaClosure(seed: in Int): Int {
+  val box = MyBox(value = seed)
+  val bump = { -> box.value += 10 }
+  bump()
+  bump()
+  box.value
+}
+
+test "generic record: compound Int assignments all take effect" {
+  assertEqualInt(accumulateInt(1), 12, "accumulateInt(1)")
+}
+
+test "generic record: compound Long assignments with an Int-literal operand" {
+  assertTrue(accumulateLong(1i64) == 12i64, "accumulateLong(1i64)")
+}
+
+test "generic record: compound String assignments all take effect" {
+  assertEqual(accumulateString("a"), "abc", "accumulateString(a)")
+}
+
+test "generic record: compound Int assignment through a captured closure" {
+  assertEqualInt(accumulateViaClosure(1), 21, "accumulateViaClosure(1)")
 }

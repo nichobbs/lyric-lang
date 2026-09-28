@@ -469,34 +469,9 @@ pub func hasAmbient(): Bool {
 // `millis` elapses, giving the preemptive enforcement `#7461` asks for.
 //
 // `T` never crosses the JDK boundary: `RunWithinJob`'s `action` field is
-// a plain `() -> Unit` closure that writes its result into a captured
-// `List[T]` (used as a one-slot mutable cell — see below for why NOT a
-// generic record), so the `Runnable` implementation itself stays
-// untyped in `T`.
-//
-// NOT a generic record with a `var T`-typed (or `var Option[T]`-typed)
-// field: a mutation to such a field, made through a value captured by a
-// closure inside a GENERIC function, is silently lost — the read after
-// the closure runs still sees the field's value from construction, on
-// both targets. Confirmed with a minimal standalone repro with no
-// closure, no timeout, and no `Runnable`/`Thread` involved at all:
-//
-//     record MyBox[T] { var value: T }
-//     func myFn[T](seed: in T, other: in T): T {
-//       val box: MyBox[T] = MyBox(value = seed)
-//       box.value = other
-//       return box.value  // returns `seed`, not `other`
-//     }
-//
-// `Std.Collections.List[T]`'s own mutation (`add`/indexing) does NOT
-// have this problem (confirmed with the same repro shape substituting a
-// `List[T]` for `MyBox[T]`), so `runWithin` uses a `List[T]` as its
-// one-slot result cell instead of a dedicated record type. This is a
-// genuine, narrow self-hosted compiler gap in generic-record `var`-field
-// assignment specialisation inside a generic function — not specific to
-// `Std.Task` or this target — tracked in #7663 rather than fixed
-// here (out of scope for #7461, which only needs a *working*
-// `runWithin`).
+// a plain `() -> Unit` closure that writes its result (or a panic
+// message) into a captured `List` used as a one-slot cell, so the
+// `Runnable` implementation itself stays untyped in `T`.
 // =====================================================================
 extern type JRunnable = "java.lang.Runnable"
 
