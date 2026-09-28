@@ -2443,6 +2443,47 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
     }
     case TyError -> TyError
     case _ -> {
+      // `slice[T].toList()` (#2050 gotcha, cloud-agents docs/lyric/gotchas.md):
+      // the round-trip shuttle back from `List[T].toArray()`.  Its result
+      // type is a genuine `List[elem]`, which — unlike `builtinMember`'s
+      // other slice methods, deliberately typed via structural `TySlice` to
+      // sidestep exactly this — needs `List`'s real `TypeId` for the checker
+      // to accept it where a `List[T]` is expected (a field, a `val`
+      // annotation, a call argument).  `builtinMember` has no `tbl` to look
+      // that TypeId up with, so it is handled here instead, resolving `List`
+      // through the same scope-visible name lookup `resolveTypePath` uses
+      // for an ordinary `List[T]` type annotation: if the current file has
+      // `Std.Collections` (or anything re-exporting `List`) in scope, this
+      // returns the same `TyUser` a `List[elem]` annotation would; otherwise
+      // it falls through to `builtinMember`'s `None` and `toList` fails as
+      // an unrecognised member, same as any other name a slice cannot
+      // resolve without `Std.Collections` imported.
+      match recv {
+        case TySlice(elem) -> {
+          if name == "toList" {
+            match symTableTryFindOne(tbl, "List") {
+              case Some(sym) -> {
+                if symbolIsType(sym) {
+                  match symbolTypeIdOpt(sym) {
+                    case Some(tid) -> {
+                      val noParams: List[Type] = newList()
+                      val targs: List[Type] = newList()
+                      targs.add(elem)
+                      return TyFunction(params = noParams, ret = TyUser(id = tid, name = "List", args = targs), isAsync = false)
+                    }
+                    case None -> {
+                    }
+                  }
+                }
+              }
+              case None -> {
+              }
+            }
+          }
+        }
+        case _ -> {
+        }
+      }
       // Strict String `.indexOf`/`.lastIndexOf` typing (#6496) and the rest
       // of the documented host-method surface (#7335) — consulted before
       // the generic builtin table because `.indexOf`/`.lastIndexOf`'s

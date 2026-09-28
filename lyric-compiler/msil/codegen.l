@@ -18713,6 +18713,55 @@ func lowerSliceSliceMsil(
   }
 }
 
+// `xs.toList()` (#2050 gotcha): a genuine `List[T]` holding a shallow copy of
+// `xs`'s elements, the round-trip shuttle back from `List[T].toArray()`
+// (typechecker_exprs.l's `inferMemberBase` gives this call a real `List`
+// `TypeId`, so the result binds wherever a `List[T]` is expected). Unlike
+// `.append`/`.concat`/`.slice` above, the destination is always a genuine
+// `MConcreteList(e)` — never the legacy erased `List<object>` fallback —
+// because the type checker already requires `List` to resolve to a concrete
+// type symbol before this call type-checks at all, so `arrayElemTokenOpt`
+// having no token for `e` (record/union elements) does not need a fallback
+// path here the way the array-literal / array-producing slice ops do.
+func lowerSliceToListMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], recvTy: in MsilType): MsilType {
+  val recvSlot = allocSlotMsil(fctx, "__slicetolist_recv_" + toString(fctx.slotTicker.count), recvTy)
+  emitStoreSlot(insns, recvSlot, fctx.paramCount)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  emitListCastRecv(cctx, insns, recvTy)
+  emitListGetCount(cctx, insns, recvTy)
+  val cntSlot = allocSlotMsil(fctx, "__slicetolist_cnt_" + toString(fctx.slotTicker.count), MInt)
+  emitStoreSlot(insns, cntSlot, fctx.paramCount)
+  val e = match recvTy { case MArray(ee) -> ee; case _ -> MObject }
+  insns.add(MListOp(op = LoCtor, elemTy = e))
+  val newSlot = allocSlotMsil(fctx, "__slicetolist_new_" + toString(fctx.slotTicker.count), MConcreteList(elemTy = e))
+  emitStoreSlot(insns, newSlot, fctx.paramCount)
+  val iSlot = allocSlotMsil(fctx, "__slicetolist_i_" + toString(fctx.slotTicker.count), MInt)
+  insns.add(MLdcI4(v = 0))
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
+  val loopL = freshLabelMsil(fctx)
+  val afterL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = loopL))
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  emitLoadSlot(insns, cntSlot, fctx.paramCount)
+  insns.add(MClt)
+  insns.add(MBrFalse(label = afterL))
+  emitLoadSlot(insns, newSlot, fctx.paramCount)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  emitListCastRecv(cctx, insns, recvTy)
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  emitListGetItem(cctx, insns, recvTy)
+  castObjectToMsil(cctx, insns, e)
+  insns.add(MListOp(op = LoAdd, elemTy = e))
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  insns.add(MLdcI4(v = 1))
+  insns.add(MAdd)
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
+  insns.add(MBr(label = loopL))
+  insns.add(MLabel(id = afterL))
+  emitLoadSlot(insns, newSlot, fctx.paramCount)
+  MConcreteList(elemTy = e)
+}
+
 // A `Self`-declared return substituted against the CALL SITE's own known
 // concrete receiver class (#6434/#6435, the MSIL analog of JVM's
 // `narrowSelfCallResult`, #6431/D-progress-756).  `cctx.methodRetTypes[key]`
@@ -20082,6 +20131,8 @@ func lowerMethodCallMsil(
     lowerSliceConcatMsil(cctx, fctx, insns, recvTy, args)
   } else if memberName == "slice" and args.count == 2 and isSliceRecvMsil(recvTy) {
     lowerSliceSliceMsil(cctx, fctx, insns, recvTy, args)
+  } else if memberName == "toList" and args.count == 0 and isSliceRecvMsil(recvTy) {
+    lowerSliceToListMsil(cctx, fctx, insns, recvTy)
   } else {
     match recvTy {
       case MString -> {

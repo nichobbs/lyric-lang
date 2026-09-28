@@ -49,14 +49,25 @@ the originating gotcha).
 
 ## Tests
 
-`lyric-compiler/lyric/conv_methods_self_test.l` gained two new cases
-(`toNat accepts every non-negative source value`, `toNat rejects negative
-source values`), covering all five receiver types plus the `0` boundary,
-the `-0.5`-truncates-to-`0` case, and NaN. Full suite: 22/22 pass
-(`lyric test lyric-compiler/lyric/conv_methods_self_test.l`). Manually
-verified end-to-end against a freshly built `./bin/lyric` with a standalone
-repro program exercising all five receiver types' success and failure
-paths before folding the cases into the self-test.
+New file `lyric-compiler/lyric/int_to_nat_self_test.l` (2 cases: `toNat
+accepts every non-negative source value`, `toNat rejects negative source
+values`), covering all five receiver types plus the `0` boundary, the
+`-0.5`-truncates-to-`0` case, and NaN — kept out of
+`conv_methods_self_test.l` deliberately: that file runs on BOTH
+`--target dotnet` and `--target jvm` in CI, and this fix is dotnet-only.
+`--target jvm` rejects `.toNat()` cleanly at BUILD time instead
+(`error[J008]: method 'toNat' cannot be called on a primitive-typed
+receiver` — `Jvm.Codegen` has no `toNat` arm), so folding the cases in
+there would fail the JVM CI leg with a build error, not just a test
+failure. Wired into `.github/workflows/ci.yml`'s
+small "BuildInfo dotnet batch" (`--target dotnet` only, alongside the
+`buildinfo_self_test.l`/`range_subtype_self_test.l` steps already reserved
+there to stay off the already-at-cap adjacent batches, #5933/#5967).
+2/2 pass (`lyric test lyric-compiler/lyric/int_to_nat_self_test.l`); the
+existing `conv_methods_self_test.l` suite (20/20) re-verified unchanged.
+Manually verified end-to-end against a freshly built `./bin/lyric` with a
+standalone repro program exercising all five receiver types' success and
+failure paths before folding the cases into the self-test.
 
 ## Docs
 

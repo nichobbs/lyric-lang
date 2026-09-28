@@ -1182,6 +1182,29 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/range_subtype_self_test.l
 
+      # `.toNat()` checked conversion (#2050 gotcha, cloud-agents
+      # docs/lyric/gotchas.md "Int.toNat() does not resolve at runtime").
+      # `--target dotnet` ONLY: `Jvm.Codegen`'s numeric-conversion dispatch
+      # has no `toNat` arm, a still-open tracked gap (see the file header).
+      # Placed in this small batch (not the adjacent already-at-cap ones,
+      # #5933/#5967) for the same reason the range-subtype step above is here.
+      - name: Int.toNat() checked-conversion self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"int-to-nat self-test ran: int_to_nat_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/int_to_nat_self_test.l"
+
+      # `slice[T].toList()` (#2050 gotcha, cloud-agents docs/lyric/gotchas.md
+      # "slice[Byte].toList() does not resolve at runtime") — the round-trip
+      # shuttle back from `List[T].toArray()`. `--target dotnet` ONLY:
+      # `Jvm.Codegen` has no `toList` arm either, a still-open tracked gap
+      # (`--target native` already had this — see the file header).
+      - name: slice.toList() self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"slice-to-list self-test ran: slice_to_list_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/slice_to_list_self_test.l"
+
       # Extra barrier (BuildInfo batch): keeps the BuildInfo steps (plus the
       # #6913 range-subtype dotnet leg added alongside them) off the
       # adjacent already-at-cap batches (#5933/#5967).
