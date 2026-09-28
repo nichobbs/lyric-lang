@@ -2669,12 +2669,12 @@ func isVoidReturnOpt(ret: in Option[TypeExpr]): Bool {
 }
 
 pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
-  elaborateFunctionOwned(fn, fn.name)
+  elaborateFunctionOwned(fn, fn.name, true)
 }
 
 /// `elaborateFunction`, naming the function `owner` in contract-violation
 /// messages (e.g. `Std.String.repeat`, `Box.scaled`).
-pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): FunctionDecl {
+pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String, contractsEnabled: in Bool = true): FunctionDecl {
   // @axiom functions have no body — nothing to elaborate.
   if functionIsAxiom(fn) {
     return fn
@@ -2717,7 +2717,8 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
           owner,
           blk,
           counter,
-          isVoid
+          isVoid,
+          contractsEnabled
         )
       )
       case FBExpr(e) -> FBBlock(
@@ -2729,7 +2730,8 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
           owner,
           wrapExprBody(e),
           counter,
-          isVoid
+          isVoid,
+          contractsEnabled
         )
       )
     }
@@ -2894,7 +2896,10 @@ func barrierWrappedBody(contracts: in List[ContractClause], body: in FunctionBod
 }
 
 func elaborateProtectedMember(
-  m: in ProtectedMember, invariants: in List[InvariantClause], typeName: in String
+  m: in ProtectedMember,
+  invariants: in List[InvariantClause],
+  typeName: in String,
+  contractsEnabled: in Bool = true,
 ): ProtectedMember {
   match m {
     case PMEntry(ed) -> {
@@ -2921,7 +2926,8 @@ func elaborateProtectedMember(
               owner,
               blk,
               counter,
-              isVoid
+              isVoid,
+              contractsEnabled
             )
           )
           case FBExpr(e) -> FBBlock(
@@ -2933,7 +2939,8 @@ func elaborateProtectedMember(
               owner,
               wrapExprBody(e),
               counter,
-              isVoid
+              isVoid,
+              contractsEnabled
             )
           )
         }
@@ -2952,7 +2959,7 @@ func elaborateProtectedMember(
         )
       }
     }
-    case PMFunc(fn) -> PMFunc(fn = elaborateFunctionOwned(fn, typeName + "." + fn.name))
+    case PMFunc(fn) -> PMFunc(fn = elaborateFunctionOwned(fn, typeName + "." + fn.name, true))
     case other -> other
   }
 }
@@ -3074,7 +3081,12 @@ func sameSpan(a: in Span, b: in Span): Bool {
 // Elaborate `fn` with `extra` clauses prepended to its own, then restore the
 // source-level clause list so contract metadata and the verifier see only
 // what the author wrote on this declaration.
-func elaborateFunctionWith(fn: in FunctionDecl, extra: in List[ContractClause], owner: in String, contractsEnabled: in Bool = true): FunctionDecl {
+func elaborateFunctionWith(
+  fn: in FunctionDecl,
+  extra: in List[ContractClause],
+  owner: in String,
+  contractsEnabled: in Bool = true,
+): FunctionDecl {
   if extra.count == 0 {
     return elaborateFunctionOwned(fn, owner, contractsEnabled)
   }
@@ -3124,7 +3136,11 @@ func elaborateRecordDecl(decl: in RecordDecl, pkg: in String, contractsEnabled: 
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
-      case RMFunc(fn) -> members.add(RMFunc(fn = elaborateFunctionOwned(fn, qualify(pkg, decl.name + "." + fn.name), contractsEnabled)))
+      case RMFunc(fn) -> members.add(
+        RMFunc(
+          fn = elaborateFunctionOwned(fn, qualify(pkg, decl.name + "." + fn.name), contractsEnabled)
+        )
+      )
       case other -> members.add(other)
     }
     i = i + 1
@@ -3138,7 +3154,12 @@ func elaborateRecordDecl(decl: in RecordDecl, pkg: in String, contractsEnabled: 
   )
 }
 
-func elaborateImplDecl(decl: in ImplDecl, ifaces: in Map[String, InterfaceDecl], pkg: in String, contractsEnabled: in Bool = true): ImplDecl {
+func elaborateImplDecl(
+  decl: in ImplDecl,
+  ifaces: in Map[String, InterfaceDecl],
+  pkg: in String,
+  contractsEnabled: in Bool = true,
+): ImplDecl {
   val segs = decl.iface.head.segments
   val ifaceOpt: Option[InterfaceDecl] = if segs.count == 0 { None } else { mapGet(ifaces, segs[segs.count - 1]) }
   val members: List[ImplMember] = newList()
@@ -3153,7 +3174,11 @@ func elaborateImplDecl(decl: in ImplDecl, ifaces: in Map[String, InterfaceDecl],
           }
           case None -> newList()
         }
-        members.add(IMplFunc(fn = elaborateFunctionWith(fn, extra, qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name), contractsEnabled)))
+        members.add(
+          IMplFunc(
+            fn = elaborateFunctionWith(fn, extra, qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name), contractsEnabled)
+          )
+        )
       }
       case other -> members.add(other)
     }
@@ -3179,7 +3204,9 @@ func withKind(it: in Item, kind: in ItemKind): Item {
   )
 }
 
-func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in String, contractsEnabled: in Bool = true): Item {
+func elaborateItem(
+  it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in String, contractsEnabled: in Bool = true
+): Item {
   match it.kind {
     case IRecord(decl) -> withKind(it, IRecord(decl = elaborateRecordDecl(decl, pkg, contractsEnabled)))
     case IExposedRec(decl) -> withKind(it, IExposedRec(decl = elaborateRecordDecl(decl, pkg, contractsEnabled)))
@@ -3231,13 +3258,17 @@ func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in S
 }
 
 pub func elaborateFile(file: in SourceFile): SourceFile {
-  elaborateFileWithInterfaces(file, newList())
+  elaborateFileWithInterfaces(file, newList(), true)
 }
 
 /// `elaborateFile`, additionally resolving `impl` blocks against interfaces
 /// declared in other packages (`importedIfaces`) so their method contracts
 /// are enforced on the implementation (#7223).
-pub func elaborateFileWithInterfaces(file: in SourceFile, importedIfaces: in List[InterfaceDecl], contractsEnabled: in Bool = true): SourceFile {
+pub func elaborateFileWithInterfaces(
+  file: in SourceFile,
+  importedIfaces: in List[InterfaceDecl],
+  contractsEnabled: in Bool = true,
+): SourceFile {
   val canonFile = canonicalizeFileUnitAliases(file)
   val ifaces = interfaceTable(canonFile, importedIfaces)
   val newItems: List[Item] = newList()
