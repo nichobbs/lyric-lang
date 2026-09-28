@@ -319,6 +319,7 @@ func registerItem(
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKExternType(id = tid, decl = decl), vis, span)
     }
     case IFunc(decl) -> {
+      checkReservedBuiltinFuncDecl(diag, isImported, originPkg, decl.name, span)
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFunc(decl = decl), vis, span)
     }
     case IExternFunc(decl) -> {
@@ -1216,6 +1217,65 @@ func isCodegenBuiltinName(name: in String): Bool {
     name == "assert" or
     name == "format1" or
     name == "format2"
+}
+
+// The bare names every backend's `lowerBuiltinOrStaticCall{Msil,}`/
+// `lowerCallEx` dispatcher intercepts UNCONDITIONALLY, before any name
+// resolution: true language built-ins with no ordinary Lyric signature
+// (`println`'s argument is polymorphic over any type, `panic` returns
+// `Never`, …), audited in D-progress-1004 (#7465/#7508) and never
+// redeclarable by a `func`/`pub func` outside `Std.*` — see
+// `checkReservedBuiltinFuncDecl`. Distinct from `isCodegenBuiltinName`
+// above (which only guards STDLIB IMPORTS from shadowing the polymorphic
+// checker type) and from the larger "stdlib kernel function with the same
+// semantics" intercept set (`newList`, `mapGet`, `tryGetValue`, `newSet`,
+// `dictGetKeys`, `dictGetValues`, `hostGetCommandLineArgs`,
+// `stringToUtf8Bytes`, `charToString`, `catch`, `newListWithCapacity`),
+// which a non-`Std` package MAY freely redeclare — the backends resolve a
+// bare/qualified call to that name against the real declaration instead of
+// the intrinsic (`hasFuncOverrideMsil`/`hasFuncOverrideJvm`/
+// `hasFuncOverrideNative`).
+func isReservedBuiltinFuncName(name: in String): Bool {
+  name == "println" or name == "print" or name == "panic" or name == "assert" or name == "toString" or name == "default" or
+    name == "expect" or
+    name == "format1" or
+    name == "format2" or
+    name == "format3" or
+    name == "format4" or
+    name == "hashCode" or
+    name == "__lyric_protected_wait" or
+    name == "__lyric_protected_notify"
+}
+
+func isStdOriginPkg(pkg: in String): Bool {
+  pkg == "Std" or pkg.startsWith("Std.")
+}
+
+// T0140 (#7508): a NON-`Std.*` package's own `func`/`pub func` declaration
+// named one of `isReservedBuiltinFuncName`'s reserved built-ins is rejected
+// at declaration time, rather than being silently captured by the same-named
+// backend intrinsic at every call site (the pre-fix behaviour) or, absent
+// the intrinsic, misdispatched by a hand-rolled per-call override check.
+// `Std.*` keeps the exemption every reserved name it legitimately
+// re-implements already relies on (e.g. `Std.Console.println`/`print`,
+// reachable only qualified — bare `println`/`print` always mean the
+// intrinsic, per `isCodegenBuiltinName`'s import-time skip above).
+func checkReservedBuiltinFuncDecl(
+  diag: in List[Diagnostic],
+  isImported: in Bool,
+  originPkg: in String,
+  name: in String,
+  span: in Span,
+): Unit {
+  if (not isImported) and isReservedBuiltinFuncName(name) and not isStdOriginPkg(originPkg) {
+    diag.add(
+      errorDiagnostic(
+        "T0140",
+        "'" + name + "' is a reserved built-in name and cannot be declared as a function; rename it",
+        span
+      )
+    )
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

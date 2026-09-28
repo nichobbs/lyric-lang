@@ -6218,6 +6218,38 @@ test "an impl method with a distinct name from the record's own methods and othe
   assertTrue(not hasDiagCode(parseCheck(src), "T0139"), "distinct names never clash")
 }
 
+// #7508: a non-`Std.*` package cannot redeclare one of the true
+// language-builtin names (`println`, `toString`, `panic`, `assert`,
+// `default`, `expect`, `format1`-`format4`, `hashCode`,
+// `__lyric_protected_wait`/`__lyric_protected_notify`) — every backend's
+// `lowerBuiltinOrStaticCall{Msil,}`/`lowerCallEx` dispatcher intercepts
+// these names unconditionally, so a same-named user declaration would be
+// silently uncallable rather than genuinely shadowing the builtin.
+test "a non-Std package declaring 'println' is T0140" {
+  val src = "package P\nfunc println(n: in Int): Unit {\n  ()\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0140"), "println is a reserved built-in name")
+}
+
+test "a non-Std package declaring 'toString' is T0140" {
+  val src = "package P\nfunc toString(n: in Int): String {\n  \"n\"\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0140"), "toString is a reserved built-in name")
+}
+
+test "a non-Std package declaring 'hashCode' is T0140" {
+  val src = "package P\nfunc hashCode(n: in Int): Int {\n  n\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0140"), "hashCode is a reserved built-in name")
+}
+
+test "a Std.* package may declare a reserved name" {
+  val src = "package Std.Foo\npub func println(s: in String): Unit {\n  ()\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0140"), "Std.* keeps the isCodegenBuiltinName-style exemption")
+}
+
+test "a non-Std package declaring a stdlib-kernel name like 'newList' is accepted (not reserved)" {
+  val src = "package P\nfunc newList(n: in Int): Int {\n  n\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0140"), "newList is not a reserved language builtin")
+}
+
 test "protected types still report the clash as T0136, not T0139 (#7626/#7627)" {
   val ownSrc = "package P\ninterface Store {\n  func get(): Int\n}\nprotected type C {\n  var n: Int = 0\n  func get(): Int {\n    n\n  }\n}\nimpl Store for C {\n  func get(): Int {\n    self.get()\n  }\n}\n"
   val ownCr = parseCheck(ownSrc)

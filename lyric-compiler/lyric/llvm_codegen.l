@@ -3614,6 +3614,27 @@ func longToDouble(v: in Long): Double {
   v.toDouble()
 }
 
+// Whether a bare call to `funcName` (with `argc` arguments) names a
+// registered, non-generic, NON-`Std`-owned function that must win over the
+// compiler's own same-named intrinsic (#7508).  Mirrors `hasFuncOverrideMsil`
+// (`msil/codegen.l`) and `hasFuncOverrideJvm` (`jvm/codegen/04_calls.l`):
+// `ctx.sigs` (`buildSigs`) already registers every non-generic function
+// under its bare `<name>/<arity>` key with the MAIN package's own
+// declarations registered first (so they shadow a same-named stdlib
+// function, matching source scoping) — the exact resolution order a
+// bare call goes through once it falls out of the intrinsic table below.
+// The stdlib functions these intrinsics implement (`newList`, `mapGet`, …)
+// are all GENERIC and so never appear in `ctx.sigs` at all (`buildSigs`
+// skips generic functions) — only a genuinely different, non-generic,
+// non-`Std` declaration can ever match here, so a `Std`-owned or absent
+// resolution always leaves the intrinsic path in place.
+func hasFuncOverrideNative(ctx: in Ctx, funcName: in String, argc: in Int): Bool {
+  match mapGet(ctx.sigs, funcName + "/" + argc.toString()) {
+    case Some(sig) -> not (sig.pkg == "Std" or sig.pkg.startsWith("Std."))
+    case None -> false
+  }
+}
+
 func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in List[CallArg], line: in Int): NVal {
   lowerCallEx(ctx, insns, fnExpr, args, line, false)
 }
@@ -3658,14 +3679,14 @@ func lowerCallEx(
           // checker's N0100 charge, like nativeAddrOf.
           return NVal(ty = NPtr(pointee = NI8), value = NLitNull(ty = NPtr(pointee = NI8)))
         }
-        if n == "mapGet" and args.count == 2 {
+        if n == "mapGet" and args.count == 2 and not hasFuncOverrideNative(ctx, n, args.count) {
           // Reserved Std.Collections accessor (N5.8): its pure-Lyric
           // body routes through an out-mode kernel call the native
           // backend does not lower.
           val m = lowerCallArgExpecting0Plain(ctx, insns, args)
           return lowerMapGetBuiltin(ctx, insns, m, args)
         }
-        if n == "dictGetKeys" and args.count == 1 {
+        if n == "dictGetKeys" and args.count == 1 and not hasFuncOverrideNative(ctx, n, args.count) {
           val m = lowerCallArgExpecting0Plain(ctx, insns, args)
           val kTy = match mapKeyOfType(ctx, m.ty) {
             case Some(t) -> t
@@ -3675,7 +3696,7 @@ func lowerCallEx(
           }
           return lowerMapSnapshotBuiltin(ctx, insns, m, "lyric_map_keys", kTy)
         }
-        if n == "dictGetValues" and args.count == 1 {
+        if n == "dictGetValues" and args.count == 1 and not hasFuncOverrideNative(ctx, n, args.count) {
           val m = lowerCallArgExpecting0Plain(ctx, insns, args)
           val vTy = match mapValOfType(ctx, m.ty) {
             case Some(t) -> t
@@ -3685,7 +3706,7 @@ func lowerCallEx(
           }
           return lowerMapSnapshotBuiltin(ctx, insns, m, "lyric_map_values", vTy)
         }
-        if n == "newList" or n == "newListWithCapacity" or n == "newMap" {
+        if (n == "newList" or n == "newListWithCapacity" or n == "newMap") and not hasFuncOverrideNative(ctx, n, args.count) {
           panic(
             "Lyric.LlvmCodegen: '" + n +
               "' needs its element types on --target native: annotate the binding (val xs: List[Int] = newList()) or pass explicit type arguments (newList[Int]())"
