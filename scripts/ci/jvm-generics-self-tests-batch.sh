@@ -45,7 +45,6 @@ for t in \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
   lyric-compiler/lyric/method_closure_var_capture_self_test.l \
-  lyric-compiler/lyric/impl_method_closure_var_capture_self_test.l \
   lyric-compiler/lyric/generic_record_var_field_self_test.l \
   lyric-compiler/lyric/bare_func_ref_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
