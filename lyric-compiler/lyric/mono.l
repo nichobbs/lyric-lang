@@ -272,6 +272,11 @@ record MonoState {
   /// fallback when `inferCallReturnTE` cannot see the callee's signature
   /// (another package's non-generic function).
   callResultTypes: Map[String, TypeExpr]
+  /// The checked function type of each unannotated function-valued local
+  /// binding (`SymbolTable.localFuncTypeSites`), keyed by `recordCopySiteKey`
+  /// of the initializer's span; `rewriteBinding` makes it the binding's
+  /// annotation (#7711).
+  localFuncTypeSites: Map[String, TypeExpr]
   /// Counter for the fresh locals a copy desugar binds (length = next id).
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
@@ -315,6 +320,7 @@ func newMonoState(
     argConversionSites = newMap(),
     lambdaTypes = newMap(),
     callResultTypes = newMap(),
+    localFuncTypeSites = newMap(),
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
@@ -4010,20 +4016,22 @@ func funcRefLambdaMono(site: in FuncRefSite, sp: in Span): Expr {
 /// could not lower.  Only items containing a site are rewritten, and no
 /// generic is registered, so nothing is specialised here.
 pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, RecordCopySite]): MonoResult {
-  desugarCheckedFile(file, sites, newMap(), newMap())
+  desugarCheckedFile(file, sites, newMap(), newMap(), newMap())
 }
 
 /// The post-type-check desugars: record `.copy(...)` calls (D-progress-948),
-/// cross-package function values (D-progress-963) and widened function-value
-/// call arguments (D-progress-964), each keyed by the type checker's span key.
+/// cross-package function values (D-progress-963), widened function-value
+/// call arguments (D-progress-964) and the annotations of unannotated
+/// function-valued locals (#7711), each keyed by the type checker's span key.
 pub func desugarCheckedFile(
   file: in SourceFile,
   sites: in Map[String, RecordCopySite],
   funcRefSites: in Map[String, FuncRefSite],
   argConversionSites: in Map[String, ArgConversionSite],
+  localFuncTypeSites: in Map[String, TypeExpr],
 ): MonoResult {
   val noRewrites: Map[String, String] = newMap()
-  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 {
+  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localFuncTypeSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
     return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags)
   }
@@ -4085,6 +4093,19 @@ pub func desugarCheckedFile(
       case None -> ()
     }
     cj = cj + 1
+  }
+  // Each recorded type carries its initializer's span (`recordLocalFuncType`).
+  val localKeys = mapKeys(localFuncTypeSites)
+  var li = 0
+  while li < localKeys.count {
+    match mapGet(localFuncTypeSites, localKeys[li]) {
+      case Some(te) -> {
+        state.localFuncTypeSites.add(localKeys[li], te)
+        offsets.add(te.span.startPos.offset)
+      }
+      case None -> ()
+    }
+    li = li + 1
   }
   val items: List[Item] = newList()
   var i = 0
@@ -6344,6 +6365,34 @@ func genericRecordCtorWithLambdaArgMono(state: in MonoState, init: in Expr): Boo
   }
 }
 
+// `binding` with its checked function type as the annotation, when it has
+// none and the type checker recorded one for its initializer (#7711).
+func checkedLocalFuncTypeMono(state: in MonoState, binding: in LocalBinding): Option[LocalBinding] {
+  match binding {
+    case LBVal(pat, None, init) -> match mapGet(state.localFuncTypeSites, recordCopySiteKey(init.span)) {
+      case Some(te) -> Some(value = LBVal(pat = pat, ty = Some(value = te), init = init))
+      case None -> None
+    }
+    case LBVar(name, None, Some(init)) -> match mapGet(state.localFuncTypeSites, recordCopySiteKey(init.span)) {
+      case Some(te) -> Some(
+        value = LBVar(
+          name = name,
+          ty = Some(value = te),
+          init = Some(value = init)
+        )
+      )
+      case None -> None
+    }
+    case LBLet(name, None, init) -> match mapGet(state.localFuncTypeSites, recordCopySiteKey(init.span)) {
+      case Some(te) -> Some(
+        value = LBLet(name = name, ty = Some(value = te), init = init)
+      )
+      case None -> None
+    }
+    case _ -> None
+  }
+}
+
 // #6698: every arm below rewrites `init`/`initOpt` against `env` BEFORE
 // this binding's own name is added to (or re-added to, for a shadowing
 // same-named binding) `env` — never after.  A shadowing binding whose
@@ -6360,6 +6409,12 @@ func genericRecordCtorWithLambdaArgMono(state: in MonoState, init: in Expr): Boo
 // an unannotated binding infers from the original `init` first and falls back
 // to the rewritten one.
 func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding: in LocalBinding): LocalBinding {
+  if state.localFuncTypeSites.count > 0 {
+    match checkedLocalFuncTypeMono(state, binding) {
+      case Some(annotated) -> return rewriteBinding(state, env, annotated)
+      case None -> ()
+    }
+  }
   match binding {
     case LBVal(pat, tyOpt, init) -> {
       match tyOpt {

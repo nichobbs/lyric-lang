@@ -235,11 +235,11 @@ pub func checkStatement(
     // unannotated bindings take the plain-inference path exactly as before.
     case SLocal(binding) -> match binding {
       case LBVal(pat, tyOpt, init) -> match tyOpt {
-        case None -> bindPattern(
-          sc,
-          pat,
-          inferExpr(sc, tbl, sigs, diag, init)
-        )
+        case None -> {
+          val initType = inferExpr(sc, tbl, sigs, diag, init)
+          recordLocalFuncType(tbl, init, initType)
+          bindPattern(sc, pat, initType)
+        }
         case Some(te) -> {
           val ctx = newGenericContext()
           gctxPush(ctx, genericNames)
@@ -263,7 +263,14 @@ pub func checkStatement(
       }
       case LBVar(name, tyOpt, initOpt) -> match tyOpt {
         case None -> {
-          val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }
+          val initType = match initOpt {
+            case None -> TyError
+            case Some(e) -> {
+              val t = inferExpr(sc, tbl, sigs, diag, e)
+              recordLocalFuncType(tbl, e, t)
+              t
+            }
+          }
           scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = true))
         }
         case Some(te) -> {
@@ -294,20 +301,11 @@ pub func checkStatement(
         }
       }
       case LBLet(name, tyOpt, init) -> match tyOpt {
-        case None -> scopeAdd(
-          sc,
-          LocalBinding(
-            name = name,
-            ty = inferExpr(
-              sc,
-              tbl,
-              sigs,
-              diag,
-              init
-            ),
-            isMutable = false
-          )
-        )
+        case None -> {
+          val initType = inferExpr(sc, tbl, sigs, diag, init)
+          recordLocalFuncType(tbl, init, initType)
+          scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = false))
+        }
         case Some(te) -> {
           val ctx = newGenericContext()
           gctxPush(ctx, genericNames)

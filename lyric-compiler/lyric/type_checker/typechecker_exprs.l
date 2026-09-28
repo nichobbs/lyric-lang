@@ -6755,6 +6755,36 @@ func recordResultTypeAt(tbl: in SymbolTable, t: in Type, sp: in Span): Unit {
   }
 }
 
+// Record the checked type of an unannotated local binding's function-valued
+// initializer (see `SymbolTable.localFuncTypeSites`).  An async function, one
+// that never returns, and a type with no source spelling (a type parameter,
+// an error) stay unrecorded: the binding keeps its inferred-only form.
+func recordLocalFuncType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit {
+  if isNoSourceSpan(init.span) {
+    return
+  }
+  match unrefine(t) {
+    case TyFunction(_, ret, isAsync) -> {
+      val diverges = match unrefine(ret) {
+        case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
+        case _ -> false
+      }
+      if isAsync or diverges {
+        return
+      }
+      val key = recordCopySiteKey(init.span)
+      if tbl.localFuncTypeSites.containsKey(key) {
+        return
+      }
+      match typeExprForRef(tbl, t, init.span) {
+        case Some(te) -> tbl.localFuncTypeSites.add(key, te)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
 // A non-call member read on a distinct type (docs/01 §2.3).  A distinct type
 // is nominal and does not expose its underlying type's members: `x.value`
 // reads the underlying value, and any other member is T0113, pointing at
