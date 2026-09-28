@@ -193,6 +193,28 @@ a `hostParseInstantOpt` Option seam all three kernel twins implement.
 Verified by a native ASan self-test with string goldens and
 target-neutral `time_tests.l` calendar coverage.
 
+A bare `Self` in an interface method signature works on native (D-progress-1016,
+#7585), for record and protected impls alike: it erases to a pointer-width
+raw pointer in the interface's own vtable slot signature — the SAME erased
+representation the box's own `obj` slot already uses — and substitutes to
+the concrete type in the moved/impl method's own signature before it ever
+reaches codegen. A `Self`-typed argument dispatched through the interface
+unboxes to the raw pointer at the call site; a `Self`-typed return reboxes
+the erased result into a fresh interface value reusing the receiver's own
+already-loaded vtable pointer. `Self` NESTED inside a generic type argument
+(`List[Self]`, `Option[Self]`) remains unsupported — native's generic types
+monomorphize per concrete type argument, and there is no call site to infer
+a type argument from at an interface declaration — and is reported by
+`Lyric.LlvmBridge` as `N0006`, a pre-pass over the file's interface
+declarations that runs BEFORE codegen and naming the interface, method, and
+source span, rather than a silent/ABI-inconsistent lowering or an internal
+panic. Verified end-to-end (record + protected
+impls, concrete + interface receivers, chained `Self`-returning calls, and
+an ASan-clean ARC check) by `llvm_self_test_self_iface.l`, and by
+`protected_iface_impl_self_type_self_test.l` now running on `--target
+native` too (its `List[Self]` case moved to
+`protected_iface_impl_self_type_nested_self_test.l`, dotnet/JVM only).
+
 ## Reading order
 
 1. `01-design-decisions.md` — all architectural decisions with rationale. Read

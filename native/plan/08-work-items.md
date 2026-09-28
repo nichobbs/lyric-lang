@@ -515,8 +515,17 @@ because the IR layer has no by-value-aggregate ABI — see D-N-016; ARC then
 falls out of the existing owned-temp/destructor machinery. Vtable slots hold
 the concrete method pointer directly (bitcast to `i8*` and back at the call
 site — no wrapper), and `obj` (as `i8*`) is passed as the receiver.
-Deferred: generic/default/`Self`/async interface methods, associated types,
-multiple inheritance, `impl` for non-record targets.
+Deferred: generic/default/async interface methods, associated types, multiple
+inheritance, `impl` for non-record targets. A BARE `Self` (parameter, return,
+or the implicit receiver's own type) SHIPPED for record and protected impls
+alike (#7585, D-progress-1016): it erases to a pointer-width raw
+pointer in the interface's own vtable slot signature, matching the box's own
+erased `obj` slot; a `Self`-typed argument dispatched through the interface
+unboxes to that raw pointer, and a `Self`-typed return reboxes into a fresh
+interface value reusing the receiver's own already-loaded vtable pointer.
+`Self` NESTED inside a generic type argument (`List[Self]`) remains
+deferred — reported by `Lyric.LlvmBridge` as `N0006` before codegen runs,
+instead of a silent, ABI-inconsistent lowering or an internal panic.
 
 **Depends on:** N2.1, N2.6
 
@@ -1713,9 +1722,13 @@ forced by reading the source first rather than assuming:
   general form with `Lyric.LlvmCodegen: interface method '.greet' on
   'T.Greeter' is not yet lowerable for --target native — only non-generic
   abstract interface methods dispatch through the vtable; default, generic,
-  async, and Self-returning interface methods are deferred (N3.2)`. This
-  compiler-level fix is out of this item's scope (a codegen change, not a
-  kernel-boundary one); `_kernel_native/http_host.l`'s own module header
+  async, and Self-returning interface methods are deferred (N3.2)`
+  (`HttpClient`'s gap here is its `async` methods, not `Self` — a bare
+  `Self`-mentioning interface method shipped for native in #7585/D-progress-1016,
+  so the quoted panic text is now stale on the Self-returning clause; async
+  interface dispatch remains the real, unrelated blocker for this kernel).
+  This compiler-level fix is out of this item's scope (a codegen change, not
+  a kernel-boundary one); `_kernel_native/http_host.l`'s own module header
   documents it in full. The kernel is therefore the real, substantive
   deliverable, called directly rather than through `Std.Http`'s
   interface-returning builder surface (`HttpClientBuilder.build()`,

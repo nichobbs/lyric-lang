@@ -57,6 +57,7 @@ for t in \
   lyric-compiler/lyric/config_block_no_env_import_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_contracts_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
+  lyric-compiler/lyric/protected_iface_impl_self_type_nested_self_test.l \
   lyric-compiler/lyric/quantifier_ident_self_test.l \
   lyric-compiler/lyric/range_subtype_self_test.l \
   lyric-compiler/lyric/fmt_self_test.l \

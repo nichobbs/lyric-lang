@@ -1345,7 +1345,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0133` | A contract clause or loop invariant calls a function that is not `@pure`. Mark the callee `@pure` if it has no side effects (the compiler trusts the annotation), or move the check into the body. |
 | `T0134` | A compound assignment (`+=`, `-=`, ...) to a distinct type has a target that is not a variable or field path (`xs[i] += y`). The assignment is rewritten to `x = T.from(x.value op y.value)`, which evaluates the target twice; write it out explicitly. |
 | `T0135` | A protected type's `func` member, or a method of an `impl` for a protected type, is `async` or declares its own type parameters. Every `entry` and `func` (and every such impl method) runs under the instance lock, which cannot be held across an `await` or taken by a method-generic member. |
-| `T0136` | An `impl Iface for P`, where `P` is a protected type, that cannot become part of `P`: the impl is declared in another package than `P`, its target names `P` through an `alias`, `P` or the impl is generic, or an impl method has the same name as one of `P`'s own `entry`/`func` members or as a method of another impl for `P`. An impl method on a protected type is itself a locked member of the type, so move the body into the impl or rename the member. (An impl method's signature mentioning `Self` is accepted on `--target dotnet`/`--target jvm` since #7550; `--target native` cannot yet lower any `Self`-mentioning interface method at all, for a record or a protected type.) |
+| `T0136` | An `impl Iface for P`, where `P` is a protected type, that cannot become part of `P`: the impl is declared in another package than `P`, its target names `P` through an `alias`, `P` or the impl is generic, or an impl method has the same name as one of `P`'s own `entry`/`func` members or as a method of another impl for `P`. An impl method on a protected type is itself a locked member of the type, so move the body into the impl or rename the member. (An impl method's signature mentioning a BARE `Self` is accepted on `--target dotnet`/`--target jvm` since #7550 and on `--target native` since #7585; `Self` nested inside a generic type argument, e.g. `List[Self]`, is accepted on `--target dotnet`/`--target jvm` but still rejected on `--target native` with `N0006`, tracked in #7603.) |
 | `T0137` | A record pattern's own head (`case Head { field = pat, … } -> …`) does not name the scrutinee's own record: a different record, a union/enum case, an unresolved name, or (for a qualified head) the right record's simple name under the wrong package qualifier. The record-pattern counterpart of `T0129`'s union/enum-case check. Not checked when the scrutinee's type is unknown or open (a type variable, `Self`, a nullable). A qualified head naming the right record under an unreachable package is `T0020`, and one naming a package-private record is `T0097` (checked first), instead of `T0137`. |
 | `T0138` | A selective import renames a listed name (`import P.{f as g}`). Renaming is not supported yet (#7564); write `import P.{f}` and use `f`, or `import P as Q` and write `Q.f`. |
 
@@ -1398,6 +1398,27 @@ profile/shape codes); see those docs for their own F-series ranges.
 | `F0024` | External-interface `impl` block: the `extern type` FQN does not resolve to any type in an indexed reference-pack or restored-dependency assembly (typically a typo); silently skipped only when the metadata index itself could not be populated (an SDK-less build). |
 | `F0025` | `try`/`catch` used as an expression, where a catch arm yields `Unit` while the try body (or an earlier catch arm) already established a value-producing result type — the MSIL backend cannot route an absent value through the shared result slot (type-checker gap #2042; the JVM backend rejects the same shape at check time with `J004`). |
 | `F0034` | External-interface `impl` block: the target resolves through `extern type` / `import extern`, but its .NET metadata is not an interface (e.g. `impl Math for Foo` against the class `System.Math`). Numbered `F0034`, not `F0020`, to avoid colliding with `propagate.l`'s pre-existing `F0020` (`?` used in a function returning neither `Result` nor `Option`) — see issue #6648. |
+
+### Native codegen / build diagnostics (N-series)
+
+Toolchain and (since #7585) compile-time-detectable codegen errors for
+`--target native`, reported by `Lyric.LlvmBridge` (`llvm_bridge.l`) to
+stderr as `error[N0XXX] line:col: message` and a non-zero exit — never an
+unhandled exception. `N0001`-`N0005` are toolchain/environment failures
+with no meaningful source span (`line:col` is omitted for these; they
+print as a bare `error[N0XXX]: message` line instead, mirroring the
+`B0001` project-build-failure line). `N0006` is a real source diagnostic
+with a span, reported by a pre-pass over the file's interface
+declarations that runs BEFORE codegen.
+
+| Code | Meaning |
+|---|---|
+| `N0001` | `clang` was not found on `PATH`. |
+| `N0002` | The generated LLVM IR (`.ll`) could not be written to disk. |
+| `N0003` | `lyric_rt.a` (the native runtime archive) was not found; set `LYRIC_RT_PATH` or run `make -C lyric-rt`. |
+| `N0004` | `clang` failed while compiling/linking the generated `.ll` file; its own stderr is included. |
+| `N0005` | A native project build received no packages to compile. |
+| `N0006` | An interface method's parameter or return type mentions `Self` NESTED inside a generic type argument (e.g. `List[Self]`, `Option[Self]`) — accepted on `--target dotnet`/`--target jvm`, but native's generic types monomorphize per concrete type argument and there is no call site to infer one from at an interface declaration. A BARE `Self` (a parameter, a return, or the implicit receiver's own type) is accepted on native too, since #7585 — only the nested shape is `N0006`. |
 
 ### Stability (S-series)
 
