@@ -405,9 +405,15 @@ func checkTypePrivacy(
   val names: List[String] = newList()
   collectPrivateTypes(ty, regs, generics, names)
   val acc: List[LintDiag] = newList()
+  // One warning per distinct private type in a position: `Map[K, K]`
+  // names `K` once as far as the author is concerned.
+  val seen: List[String] = newList()
   var i = 0
   while i < names.count {
-    acc.add(lintWarning("L007", privacyMessage(itemLabel, posDesc, names[i]), sp))
+    if not containsName(seen, names[i]) {
+      seen.add(names[i])
+      acc.add(lintWarning("L007", privacyMessage(itemLabel, posDesc, names[i]), sp))
+    }
     i = i + 1
   }
   acc
@@ -438,18 +444,11 @@ func funcReceiverName(name: in String): Option[String] {
   }
 }
 
-func paramTypeIsBareName(ty: in TypeExpr, name: in String): Bool {
-  match ty.kind {
-    case TRef(path) -> path.segments.count == 1 and path.segments[0] == name
-    case _ -> false
-  }
-}
-
 // Checks a function's full signature (receiver, parameters, return type)
 // for package-private same-file types.  `receiverName`, when present, is
-// checked as its own position and — when a leading self-shaped parameter
-// repeats the same bare type name — that one parameter is skipped so the
-// same private type is not reported twice for one function.
+// checked as its own position; once reported, the receiver's type is not
+// reported again for the same function (a self parameter, or a factory's
+// `Widget.new(): Widget` return).
 func checkFunctionSignaturePrivacy(
   regs: in List[LintTypeDecl],
   outerGenerics: in List[String],
@@ -458,23 +457,20 @@ func checkFunctionSignaturePrivacy(
   itemLabel: in String,
 ): List[LintDiag] {
   val acc: List[LintDiag] = newList()
-  val generics = mergeNames(outerGenerics, genericParamNames(fn.generics))
-  var skipParamIdx = -1
+  val base = mergeNames(outerGenerics, genericParamNames(fn.generics))
+  var generics = base
   match receiverName {
     case Some(r) -> {
-      appendDiags(acc, checkBareNamePrivacy(regs, generics, r, itemLabel, "receiver '" + r + "'", fn.span))
-      if fn.params.count > 0 and paramTypeIsBareName(fn.params[0].ty, r) {
-        skipParamIdx = 0
-      }
+      val rd = checkBareNamePrivacy(regs, base, r, itemLabel, "receiver '" + r + "'", fn.span)
+      appendDiags(acc, rd)
+      generics = withReportedReceiver(base, rd, r)
     }
     case None -> ()
   }
   var pi = 0
   while pi < fn.params.count {
-    if pi != skipParamIdx {
-      val p = fn.params[pi]
-      appendDiags(acc, checkTypePrivacy(regs, generics, p.ty, itemLabel, "parameter '" + p.name + "'", p.span))
-    }
+    val p = fn.params[pi]
+    appendDiags(acc, checkTypePrivacy(regs, generics, p.ty, itemLabel, "parameter '" + p.name + "'", p.span))
     pi = pi + 1
   }
   match fn.ret {
@@ -482,6 +478,18 @@ func checkFunctionSignaturePrivacy(
     case None -> ()
   }
   acc
+}
+
+// The exclusion set for a signature's remaining positions: once the
+// receiver itself has been reported, its name joins the set so the same
+// private type is not reported again for the same item.
+func withReportedReceiver(generics: in List[String], receiverDiags: in List[LintDiag], r: in String): List[String] {
+  if receiverDiags.count == 0 {
+    return generics
+  }
+  val one: List[String] = newList()
+  one.add(r)
+  mergeNames(generics, one)
 }
 
 // A `pub func` member declared inside a `protected type` body (a record
@@ -531,18 +539,24 @@ func checkEntrySignaturePrivacy(
   itemLabel: in String,
 ): List[LintDiag] {
   val acc: List[LintDiag] = newList()
-  appendDiags(
-    acc,
-    checkBareNamePrivacy(regs, outerGenerics, receiverName, itemLabel, "receiver '" + receiverName + "'", ed.span)
+  val rd = checkBareNamePrivacy(
+    regs,
+    outerGenerics,
+    receiverName,
+    itemLabel,
+    "receiver '" + receiverName + "'",
+    ed.span
   )
+  appendDiags(acc, rd)
+  val generics = withReportedReceiver(outerGenerics, rd, receiverName)
   var pi = 0
   while pi < ed.params.count {
     val p = ed.params[pi]
-    appendDiags(acc, checkTypePrivacy(regs, outerGenerics, p.ty, itemLabel, "parameter '" + p.name + "'", p.span))
+    appendDiags(acc, checkTypePrivacy(regs, generics, p.ty, itemLabel, "parameter '" + p.name + "'", p.span))
     pi = pi + 1
   }
   match ed.ret {
-    case Some(rt) -> appendDiags(acc, checkTypePrivacy(regs, outerGenerics, rt, itemLabel, "return type", rt.span))
+    case Some(rt) -> appendDiags(acc, checkTypePrivacy(regs, generics, rt, itemLabel, "return type", rt.span))
     case None -> ()
   }
   acc

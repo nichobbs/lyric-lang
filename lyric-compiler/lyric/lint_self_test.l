@@ -142,6 +142,20 @@ test "L007: generic protected type's own parameter is not a private type" {
   assertEqualInt(countCode(diags, "L007"), 0, "T is Box's generic parameter, not the private record T")
 }
 
+test "L007: a private receiver that is also the return type is reported once" {
+  val src = "package P\n" + "record Widget { n: Int }\n" + "pub func Widget.new(): Widget {\n" + "  Widget(n = 0)\n" +
+    "}\n"
+  val diags = lint(src)
+  assertEqualInt(countCode(diags, "L007"), 1, "one warning for the receiver, not a second for the return type")
+  assertTrue(anyMessageContains(diags, "L007", "receiver 'Widget'"), "the receiver position is the one reported")
+}
+
+test "L007: a private type named twice in one position is reported once" {
+  val src = "package P\n" + "record Key { n: Int }\n" + "pub func merge(m: in Map[Key, Key]): Unit {\n" + "}\n"
+  val diags = lint(src)
+  assertEqualInt(countCode(diags, "L007"), 1, "Map[Key, Key] is one warning for parameter 'm'")
+}
+
 test "L007: pub val with explicit type annotation names a private type" {
   val src = "package P\n" + "record Widget { x: Int }\n" + "pub val zero: Widget = Widget(x = 0)\n"
   val diags = lint(src)
