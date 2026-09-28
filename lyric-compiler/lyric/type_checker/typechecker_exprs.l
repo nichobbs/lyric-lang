@@ -5226,21 +5226,33 @@ func unionCaseSymbolForScrutinee(
                     )
                     return None
                   }
-                  // #7548: a package-private union's case is T0097 (never
-                  // T0020) whether or not its package is imported — mirrors
-                  // `checkUnimportedTypeReceiver`'s ordering (privacy before
-                  // reachability) for the receiver-call form.
-                  if symbolIsPackagePrivateBinding(scrCands[sci]) {
-                    checkImportedVisibility(scrCands[sci], fn.span, diag)
-                    return None
-                  }
+                }
+                // #7591: a package-private union's case is T0097 (never
+                // T0020) whether or not its package is imported, AND
+                // whether the head is qualified or bare — a `pub` wrapper
+                // function can return a package-private union with no
+                // diagnostic at its own call site (docs/01 §3.1 enforces
+                // visibility at the use site that NAMES the type), so a
+                // bare case-pattern head naming that private case is the
+                // first point it gets named. Mirrors
+                // `checkUnimportedTypeReceiver`'s ordering (privacy before
+                // reachability).
+                if symbolIsPackagePrivateBinding(scrCands[sci]) {
+                  checkImportedVisibility(scrCands[sci], fn.span, diag)
+                  return None
+                }
+                if flatSegs.count >= 2 {
                   // The qualifier matches the scrutinee's own union
                   // structurally (tier A/B above), but `Lyric.Pipeline`
                   // preloads every stdlib package's signatures whatever the
                   // file imports (D-progress-1011), so that match alone
                   // doesn't mean the union's OWN package is reachable from
                   // this file's imports. Same T0020 a qualified expression
-                  // path into an unimported package gets.
+                  // path into an unimported package gets. A bare head needs
+                  // no such check: D141 resolves a bare case-pattern head
+                  // through the scrutinee's own type whatever the imports,
+                  // so its package is reachable by construction once it is
+                  // not private.
                   if reportUnimportedQualifiedPackage(tbl, symTableScopePkg(tbl), scrCands[sci].originPackage, scrCaseName, fn.span, diag) {
                     return None
                   }
@@ -5296,11 +5308,14 @@ func unionCaseSymbolForScrutinee(
                     )
                     return None
                   }
-                  // #7548: see the DKUnionCase arm's identical comments above.
-                  if symbolIsPackagePrivateBinding(scrCands[sci]) {
-                    checkImportedVisibility(scrCands[sci], fn.span, diag)
-                    return None
-                  }
+                }
+                // #7591: see the DKUnionCase arm's identical comments above
+                // — privacy applies whether the head is qualified or bare.
+                if symbolIsPackagePrivateBinding(scrCands[sci]) {
+                  checkImportedVisibility(scrCands[sci], fn.span, diag)
+                  return None
+                }
+                if flatSegs.count >= 2 {
                   if reportUnimportedQualifiedPackage(tbl, symTableScopePkg(tbl), scrCands[sci].originPackage, scrCaseName, fn.span, diag) {
                     return None
                   }
@@ -5362,16 +5377,19 @@ func unionCaseSymbolForScrutinee(
 // before it must be exactly that record's declaring package (no tier B).
 // Reports T0137 for a head that does not name the scrutinee's own record —
 // wrong record, wrong package-qualifier text, or a head that resolves to
-// something else entirely (a union case, a function, nothing) — then
-// (only for a qualified head, mirroring #7548's ordering) T0097 for a
-// package-private record before T0020 for one whose package isn't
-// reachable from this file's imports. A bare head that already resolves to
-// the scrutinee's own record needs neither check: its package must already
-// be reachable, since the scrutinee itself could only have been typed as
-// that record by importing it. An unresolved/unknown scrutinee (`TyError`,
-// a type variable, `Self`, …) is left alone here — already diagnosed (or
-// not yet resolvable) elsewhere, so this never cascades a second error onto
-// an already-broken scrutinee.
+// something else entirely (a union case, a function, nothing) — then T0097
+// for a package-private record (whether the head is qualified or bare,
+// #7591: a `pub` wrapper function can return a package-private record with
+// no diagnostic at its own call site — docs/01 §3.1 enforces visibility at
+// the use site that NAMES the type — so a bare record-pattern head naming
+// that private record is the first point it gets named) before T0020, for a
+// qualified head only, for one whose package isn't reachable from this
+// file's imports. A bare head needs no reachability check: D141 resolves a
+// bare pattern head through the scrutinee's own type whatever the imports,
+// so its package is reachable by construction once it is not private. An
+// unresolved/unknown scrutinee (`TyError`, a type variable, `Self`, …) is
+// left alone here — already diagnosed (or not yet resolvable) elsewhere, so
+// this never cascades a second error onto an already-broken scrutinee.
 func checkRecordPatternHead(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -5419,13 +5437,16 @@ func checkRecordPatternHead(
               )
               return
             }
-            // #7584: same ordering as #7548's union-case checks — privacy
-            // (T0097) before reachability (T0020), so an unimported private
-            // record still gets T0097.
-            if symbolIsPackagePrivateBinding(cands[ci]) {
-              checkImportedVisibility(cands[ci], span, diag)
-              return
-            }
+          }
+          // #7591: privacy applies whether the head is qualified or bare —
+          // same ordering as #7548's union-case checks, privacy (T0097)
+          // before reachability (T0020), so an unimported private record
+          // still gets T0097.
+          if symbolIsPackagePrivateBinding(cands[ci]) {
+            checkImportedVisibility(cands[ci], span, diag)
+            return
+          }
+          if segs.count >= 2 {
             if reportUnimportedQualifiedPackage(tbl, symTableScopePkg(tbl), cands[ci].originPackage, recName, span, diag) {
               return
             }
@@ -5501,6 +5522,35 @@ func checkBareCasePatternScrutinee(
   span: in Span,
 ): Unit {
   val cands = symTableTryFindAll(tbl, name)
+  // #7591: a bare nullary-case pattern (`case Active ->`, no parens) is a
+  // `PBinding` disambiguated to a case constructor here, entirely outside
+  // `unionCaseSymbolForScrutinee`'s `PConstructor` path, so it needs its own
+  // privacy check: naming another package's package-private union/enum
+  // case, bare or not, is T0097.  The check must run on the scrutinee's OWN
+  // case (#7608): `caseParentMatchesScrutinee` accepts any same-named case
+  // when the scrutinee is an enum (there is no enum-decl index), so a
+  // public case of another enum could otherwise stand in for a private one,
+  // or a private one for a public scrutinee's.
+  match unrefine(scrutineeTy) {
+    case TyUser(sid, _, _) -> {
+      var e = 0
+      while e < cands.count {
+        val own = match cands[e].kind {
+          case DKUnionCase(pid, _) -> typeIdEq(pid, sid)
+          case DKEnumCase(pid, _) -> typeIdEq(pid, sid)
+          case _ -> false
+        }
+        if own {
+          if symbolIsPackagePrivateBinding(cands[e]) {
+            checkImportedVisibility(cands[e], span, diag)
+          }
+          return ()
+        }
+        e = e + 1
+      }
+    }
+    case _ -> ()
+  }
   var i = 0
   while i < cands.count {
     val cand = cands[i]
