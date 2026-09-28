@@ -16,4 +16,4 @@ When `enabled = false`, the compiler parses and type-checks all contract clauses
 - **Language reference** (§3.7): Added new section "Contract compilation — `[contracts]`" describing the table, its fields, defaults, and semantics. Cross-references the verification chapters (§6.4 and Chapter 17).
 - **Book chapters**: Added "Contract checking — `[contracts]`" subsection in chapter 01 (getting-started), positioned after "Build profile and output shape" to align with manifest configuration topics. Explains the table, examples, and use case (production optimization after formal verification).
 
-This documents D132's `[contracts] enabled` field implementation and closes issue #7640.
+This documents D-progress-1017's `[contracts] enabled` field implementation and closes issue #7640.

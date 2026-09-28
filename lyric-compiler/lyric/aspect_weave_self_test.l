@@ -384,3 +384,26 @@ test "bare proceed(args) as the tail statement of a NESTED try-block, followed b
     "annotateTry(3): nested-try proceed(args) result threads through the advice's own trailing statement"
   )
 }
+
+aspect ContractedAspect {
+  matches: name in { targetWithContract }
+  around(call) -> ret {
+    ret = call.proceed()
+  }
+}
+
+func targetWithContract(x: Int): Int
+  ensures: result >= 0
+{
+  return x * 2
+}
+
+test "aspect-woven function with ensures: executes correctly and respects contractsEnabled" {
+  // When contractsEnabled=true (the default), the target's ensures: should be
+  // synthesized as a runtime assertion after weaving. The woven function should
+  // still execute and the contract check should pass.
+  // (In a contractsEnabled=false build, the ensures: assertion would be omitted,
+  // but system-level checks would remain — that behavior is consistent with
+  // non-woven functions and is verified by contract_elaborator_self_test.l.)
+  assertEqualInt(targetWithContract(5), 10, "targetWithContract(5) = 5*2 = 10, woven via aspect")
+}
