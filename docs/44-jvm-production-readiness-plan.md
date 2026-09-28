@@ -512,10 +512,11 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   with the resolved classpath (`module-path.txt`) produced the correct output.
   The existing ecosystem libraries with `[maven]` tables (`lyric-web`,
   `lyric-grpc`, `lyric-mq`, `lyric-aws-secrets`, `lyric-aws-xray`,
-  `lyric-lambda`, `lyric-docker`) were not full-build-verified in this pass —
-  several (`lyric-web`) don't wire up their JVM kernel package yet, which is a
-  separate, unrelated gap (docs/44 J2/J3 JVM backend coverage), not a Maven
-  resolution issue.
+  `lyric-lambda`, `lyric-docker`) were not full-build-verified in this pass.
+  `lyric-web`'s gap is now closed (#7578): its JVM kernel package
+  (`Web.Kernel.Runtime`'s Undertow binding) wires up and its full manifest
+  test suite passes on `--target jvm`, wired into
+  `scripts/ci/jvm-ecosystem-suites.sh`. The others remain unverified here.
 
 ### J6 — stdlib JVM kernel parity (cross-platform stdlib actually works on JVM)
 - **M-9 (DONE):** added `_kernel_jvm/hash_host.l` (Java SHA-512 via

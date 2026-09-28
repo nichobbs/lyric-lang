@@ -53,14 +53,11 @@
 //!   LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS    — comma-separated header names
 //!   LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS     — preflight cache duration (default: 86400)
 //!
-//! Not yet implemented (tracked separately, not silently no-op'd):
-//!   - `Web.addWorker`'s registered `Worker` fires on `--target dotnet`
-//!     (issue #5359) via a real background `Task.Run`-backed loop; on
-//!     `--target jvm` it still only registers — the jvm `serve`/`serveTls`
-//!     path delegates entirely to `Web.Kernel.Runtime`'s Undertow binding,
-//!     which has no worker-dispatch twin yet (blocked on the pre-existing
-//!     JVM compile failures #5444/#5458 that already keep this library's
-//!     test suite from building on that target).
+//! `Web.addWorker`'s registered `Worker` fires on both targets: a real
+//! background `Task.Run`-backed loop on `--target dotnet` (issue #5359),
+//! and a `java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()`
+//! submission on `--target jvm` (issue #7578, `Web.Kernel.Runtime`'s
+//! `startWorkerLoop`/`WorkerLoopRunnable`).
 @runtime_checked
 package Web
 

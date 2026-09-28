@@ -10,16 +10,22 @@
 //!
 //! Kept in its own file — free of the `Web.serveTls` end-to-end tests'
 //! background-`Task.Run` closures — because module-level config-block emission
-//! (static fields + env-reading `.cctor`, dotnet-only, #3228) and closure-class
+//! (static fields + env-reading `.cctor`, #3228) and closure-class
 //! synthesis in the same package currently interact badly in the self-hosted
 //! MSIL backend (an `MNewobjByName could not resolve .ctor for '__Closure_0'`
 //! codegen abort, filed as #6096); separating the two is the clean fix here
 //! (the interaction itself is a separate codegen bug, not part of this TLS
 //! surface).
 //!
-//! dotnet-only: module-level config state emits only on `--target dotnet`
-//! (#3228); this suite runs via `lyric test --manifest lyric-web/lyric.toml`
-//! (default = dotnet).
+//! Runs on both `--target dotnet` and `--target jvm` (#7578): `config { }`
+//! blocks (and `config from` template materialisation, which desugars to
+//! the same block) emit on both targets (#3228), and `Env.setVar`'s override
+//! is observed by a config block's env read on both targets too (#7594 —
+//! `Jvm.Lowering.lowerConfigBlock`'s `<clinit>` now checks
+//! `Std.EnvironmentHost.envOverlay` before falling back to `System.getenv`,
+//! mirroring `Std.Environment.getVar`; `Jvm.Bridge` forces
+//! `Std.EnvironmentHost` into the JVM bundle whenever a compilation unit has
+//! a `config { }` block, so the reference always resolves).
 @test_module
 package Web.WebTlsConfigTests
 

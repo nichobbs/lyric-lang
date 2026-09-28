@@ -19,6 +19,7 @@ package Web.WorkerDispatchTests
 import Std.Core
 import Std.Http
 import Std.Parse
+import Std.Time as Time
 import Web
 import Std.Testing
 
@@ -98,21 +99,61 @@ func flakyWorkerRouter(): Web.Router {
   r
 }
 
-// Same background-server-thread pattern as `serve_crash_isolation_tests.l`
-// / `serve_tls_tests.l`: `Task.Run(Action)` gives real concurrency `spawn`
-// cannot on this target (D119/D120).
+// `Web.serve` blocks the calling thread forever once bound, on EITHER
+// target — on `dotnet` in its own accept loop, on `jvm` behind
+// `Web.Kernel.Runtime`'s `CountDownLatch.await()` (Undertow's own listener
+// binds asynchronously via `server.start()`, but the wrapping kernel call
+// still blocks so a real server process stays up) — so each target needs
+// its own background-thread primitive: real concurrency `spawn` cannot give
+// this on `dotnet` (degenerate-synchronous, D119/D120), and a Lyric closure
+// cannot be handed to an arbitrary JDK functional interface on `jvm` (the
+// strongly-typed-delegate FFI, docs/50, is scoped to `@externTarget`
+// function parameters) — same reasoning as `Web.Kernel.Runtime`'s own
+// `WorkerLoopRunnable` (`_kernel/jvm/web_kernel.l`).
+@cfg(feature = "dotnet")
 extern type Task = "System.Threading.Tasks.Task"
 
+@cfg(feature = "dotnet")
 @externStatic
 @externTarget("System.Threading.Tasks.Task.Run")
 func taskRun(work: in () -> Unit): Task = ()
 
-@externStatic
-@externTarget("System.Threading.Thread.Sleep")
-func threadSleep(ms: in Int): Unit = ()
+@cfg(feature = "dotnet")
+func startServerForTest(r: in Web.Router, port: in Int): Unit {
+  val _ = taskRun({ -> Web.serve(r, "127.0.0.1", port) })
+}
 
-func runServeBg(r: in Web.Router, port: in Int): Unit {
-  Web.serve(r, "127.0.0.1", port)
+@cfg(feature = "jvm")
+extern type JRunnable = "java.lang.Runnable"
+
+@cfg(feature = "jvm")
+extern type JExecutorService = "java.util.concurrent.ExecutorService"
+
+@cfg(feature = "jvm")
+@externStatic
+@externTarget("java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor")
+func newVirtualThreadPerTaskExecutor(): JExecutorService = ()
+
+@cfg(feature = "jvm")
+val testServerExecutor: JExecutorService = newVirtualThreadPerTaskExecutor()
+
+@cfg(feature = "jvm")
+record TestServerRunnable {
+  r: Web.Router
+  port: Int
+}
+
+@cfg(feature = "jvm")
+impl JRunnable for TestServerRunnable {
+  func run(): Unit {
+    Web.serve(self.r, "127.0.0.1", self.port)
+  }
+}
+
+@cfg(feature = "jvm")
+func startServerForTest(r: in Web.Router, port: in Int): Unit {
+  val runnable: JRunnable = TestServerRunnable(r = r, port = port)
+  val _ = testServerExecutor.submit(runnable)
 }
 
 func getTickCount(client: in HttpClient, url: in String, maxAttempts: in Int): Int {
@@ -120,7 +161,7 @@ func getTickCount(client: in HttpClient, url: in String, maxAttempts: in Int): I
   var value = -1
   var done = false
   while attempt < maxAttempts and not done {
-    threadSleep(30)
+    Time.sleepMillis(30)
     match await client.get(url) {
       case Ok(resp) -> {
         val body = match await HttpResponse.bodyText(resp) { case Ok(b) -> b; case Err(_) -> "" }
@@ -138,7 +179,7 @@ func getTickCount(client: in HttpClient, url: in String, maxAttempts: in Int): I
 test "addWorker's registered Worker actually fires on a real background loop" {
   val port = 18950
   val client = HttpClientBuilder.build(HttpClientBuilder.new())
-  val _ = taskRun({ -> runServeBg(workerRouter(), port) })
+  startServerForTest(workerRouter(), port)
 
   val ticksUrl = "http://127.0.0.1:" + port.toString() + "/ticks"
 
@@ -148,7 +189,7 @@ test "addWorker's registered Worker actually fires on a real background loop" {
   val first = getTickCount(client, ticksUrl, 60)
   assertTrue(first >= 0, "server did not come up in time")
 
-  threadSleep(200)
+  Time.sleepMillis(200)
   val second = getTickCount(client, ticksUrl, 5)
   assertTrue(second >= 0, "second /ticks request failed")
   assertTrue(second > first, "tick count did not increase — the worker is not firing on a real loop (#5359)")
@@ -157,7 +198,7 @@ test "addWorker's registered Worker actually fires on a real background loop" {
 test "a panicking tick is isolated: addWorker's loop survives a Bug and keeps ticking (#6935)" {
   val port = 18951
   val client = HttpClientBuilder.build(HttpClientBuilder.new())
-  val _ = taskRun({ -> runServeBg(flakyWorkerRouter(), port) })
+  startServerForTest(flakyWorkerRouter(), port)
 
   val flakyUrl = "http://127.0.0.1:" + port.toString() + "/flaky-ticks"
 
@@ -167,7 +208,7 @@ test "a panicking tick is isolated: addWorker's loop survives a Bug and keeps ti
   val first = getTickCount(client, flakyUrl, 60)
   assertTrue(first >= 0, "server did not come up in time")
 
-  threadSleep(200)
+  Time.sleepMillis(200)
   val second = getTickCount(client, flakyUrl, 5)
   assertTrue(second >= 0, "second /flaky-ticks request failed")
   assertTrue(second > first, "worker loop did not survive its first tick's panic and keep going (#6935)")

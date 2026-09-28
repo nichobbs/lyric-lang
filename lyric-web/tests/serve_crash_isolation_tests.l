@@ -30,6 +30,7 @@ package Web.ServeCrashIsolationTests
 
 import Std.Core
 import Std.Http
+import Std.Time as Time
 import Web
 import Std.Testing
 
@@ -58,22 +59,57 @@ func crashRouter(): Web.Router {
   r
 }
 
-// `Task.Run(Action)` on a background thread gives the in-process loopback
-// the real concurrency `spawn` cannot on this target (Lyric `spawn` is
-// degenerate-synchronous on `--target dotnet`, D119/D120) — same pattern
-// `serve_tls_tests.l` uses to drive `Web.serveTls`.
+// `Web.serve` blocks the calling thread forever once bound, on EITHER
+// target (see `worker_dispatch_tests.l`'s matching comment for the full
+// reasoning) — on `dotnet`, `Task.Run(Action)` gives the real concurrency
+// `spawn` cannot on this target (D119/D120); on `jvm`, a Lyric closure
+// cannot be handed to an arbitrary JDK functional interface directly, so a
+// record `impl`s the real `java.lang.Runnable` instead (mirroring
+// `Web.Kernel.Runtime`'s own `WorkerLoopRunnable`).
+@cfg(feature = "dotnet")
 extern type Task = "System.Threading.Tasks.Task"
 
+@cfg(feature = "dotnet")
 @externStatic
 @externTarget("System.Threading.Tasks.Task.Run")
 func taskRun(work: in () -> Unit): Task = ()
 
-@externStatic
-@externTarget("System.Threading.Thread.Sleep")
-func threadSleep(ms: in Int): Unit = ()
+@cfg(feature = "dotnet")
+func startServerForTest(r: in Web.Router, port: in Int): Unit {
+  val _ = taskRun({ -> Web.serve(r, "127.0.0.1", port) })
+}
 
-func runServeBg(r: in Web.Router, port: in Int): Unit {
-  Web.serve(r, "127.0.0.1", port)
+@cfg(feature = "jvm")
+extern type JRunnable = "java.lang.Runnable"
+
+@cfg(feature = "jvm")
+extern type JExecutorService = "java.util.concurrent.ExecutorService"
+
+@cfg(feature = "jvm")
+@externStatic
+@externTarget("java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor")
+func newVirtualThreadPerTaskExecutor(): JExecutorService = ()
+
+@cfg(feature = "jvm")
+val testServerExecutor: JExecutorService = newVirtualThreadPerTaskExecutor()
+
+@cfg(feature = "jvm")
+record TestServerRunnable {
+  r: Web.Router
+  port: Int
+}
+
+@cfg(feature = "jvm")
+impl JRunnable for TestServerRunnable {
+  func run(): Unit {
+    Web.serve(self.r, "127.0.0.1", self.port)
+  }
+}
+
+@cfg(feature = "jvm")
+func startServerForTest(r: in Web.Router, port: in Int): Unit {
+  val runnable: JRunnable = TestServerRunnable(r = r, port = port)
+  val _ = testServerExecutor.submit(runnable)
 }
 
 // Retry a GET against `url` until the listener accepts the connection (it
@@ -87,7 +123,7 @@ func pollGet(client: in HttpClient, url: in String, maxAttempts: in Int): (Int, 
   var body = ""
   var done = false
   while attempt < maxAttempts and not done {
-    threadSleep(50)
+    Time.sleepMillis(50)
     match await client.get(url) {
       case Ok(resp) -> {
         status = HttpResponse.statusCode(resp)
@@ -105,7 +141,7 @@ func pollGet(client: in HttpClient, url: in String, maxAttempts: in Int): (Int, 
 test "a handler panic is isolated to that request: serve() answers 500 and keeps serving" {
   val port = 18940
   val client = HttpClientBuilder.build(HttpClientBuilder.new())
-  val _ = taskRun({ -> runServeBg(crashRouter(), port) })
+  startServerForTest(crashRouter(), port)
 
   val healthUrl = "http://127.0.0.1:" + port.toString() + "/health"
   val crashUrl = "http://127.0.0.1:" + port.toString() + "/crash"
@@ -114,12 +150,20 @@ test "a handler panic is isolated to that request: serve() answers 500 and keeps
   assertEqualInt(healthStatus, 200, "server is up before the crash")
 
   match await client.get(crashUrl) {
-    case Ok(resp) -> assertEqualInt(HttpResponse.statusCode(resp), 500, "a panicking handler answers 500, not a dropped connection")
+    case Ok(resp) -> assertEqualInt(
+      HttpResponse.statusCode(resp),
+      500,
+      "a panicking handler answers 500, not a dropped connection"
+    )
     case Err(_) -> assertTrue(false, "handler panic broke the connection instead of answering 500 (#5261)")
   }
 
   match await client.get(healthUrl) {
-    case Ok(resp) -> assertEqualInt(HttpResponse.statusCode(resp), 200, "the server kept serving after the panic (#5261)")
+    case Ok(resp) -> assertEqualInt(
+      HttpResponse.statusCode(resp),
+      200,
+      "the server kept serving after the panic (#5261)"
+    )
     case Err(_) -> assertTrue(false, "server stopped serving after a single request's handler panic (#5261)")
   }
 }

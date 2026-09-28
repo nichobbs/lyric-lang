@@ -23,6 +23,7 @@ package Web.DispatchTests
 
 import Std.Core
 import Std.Collections
+import Std.Encoding
 import Std.Environment
 import Std.File
 import Std.Json
@@ -30,24 +31,17 @@ import Std.Testing
 import Web
 import Web.OpenApi as OpenApi
 
-// Explicit @externTarget bindings rather than auto-FFI-resolved
-// `Encoding.get_UTF8().GetString(bytes)` call syntax — see web.l's
-// `utf8Encoding`/`encodingGetBytes` comment (issue #5361's neighboring
-// finding: auto-FFI-resolved instance-method calls on a plain
-// `import extern`-declared type do not reliably resolve at runtime once
-// the calling package is linked as a restored dependency, which is how
-// `lyric test` links this test module against `Web`).
-extern type Encoding = "System.Text.Encoding"
-
-@externTarget("System.Text.Encoding.get_UTF8")
-func utf8Encoding(): Encoding = ()
-
-@externInstance
-@externTarget("System.Text.Encoding.GetString")
-func encodingGetString(e: in Encoding, bytes: in slice[Byte]): String = ()
-
+// Target-neutral (`Std.Encoding.tryDecodeUtf8` is pure Lyric, works on both
+// `dotnet` and `jvm`) — every fixture body decoded here is well-formed ASCII,
+// so `tryDecodeUtf8` always returns `Some`.  Previously used a hand-rolled
+// `@externTarget` binding against `System.Text.Encoding`, which compiled to
+// a JVM class file referencing the .NET BCL and crashed JVM codegen
+// (`J008: stackmap simulation underflow at utf8Encoding`, #7578).
 func decodeUtf8(bytes: in slice[Byte]): String {
-  return encodingGetString(utf8Encoding(), bytes)
+  match tryDecodeUtf8(bytes) {
+    case Some(s) -> s
+    case None -> panic("decodeUtf8: fixture bytes were not valid UTF-8")
+  }
 }
 
 func emptyParams(): Map[String, String] {

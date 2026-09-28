@@ -7235,8 +7235,19 @@ func lowerFuncsToClass(
 // synthesised `<clinit>`.  Mirrors `Msil.Lowering.lowerMConfig`'s per-field
 // control flow, translated to JVM bytecode:
 //
+//   getstatic Std/EnvironmentHost.envOverlay : ConcurrentHashMap
+//   ldc envVarName
+//   invokevirtual ConcurrentHashMap.containsKey(Object):boolean
+//   ifeq overlay_miss_i             ; stack empty at overlay_miss_i
+//   getstatic Std/EnvironmentHost.envOverlay
+//   ldc envVarName
+//   invokevirtual ConcurrentHashMap.get(Object):Object
+//   checkcast String
+//   goto overlay_done_i
+//   overlay_miss_i:
 //   ldc envVarName
 //   invokestatic System.getenv(String):String
+//   overlay_done_i:
 //   astore tmp                     ; LAstoreAs(tmp, "java/lang/String") — typed
 //                                   ; so the later invokevirtual verifies
 //   aload tmp
@@ -7259,6 +7270,20 @@ func lowerFuncsToClass(
 //                                   ; returns
 //   done_i:
 //
+// The overlay check (issue #7594) mirrors `Std.EnvironmentHost.hostGetVarOpt`
+// exactly — inlined as raw bytecode rather than calling it, since its
+// `Option[String]` return is awkward to unwrap at this low-level codegen
+// layer — so a `config { }` field observes the SAME `Std.Environment.setVar`
+// override on `--target jvm` that `System.Environment.SetEnvironmentVariable`
+// gives for free on `--target dotnet` (there it mutates the real process
+// environment block `Environment.GetEnvironmentVariable` reads from
+// directly; the JVM has no `setenv(3)` equivalent, hence the overlay).
+// `Jvm.Bridge`'s bundler forces `Std.EnvironmentHost` into the reachable
+// package set whenever a compilation unit has an `IConfig` item (see
+// `configBlockNeedsEnvironmentHost` at its call site) so this `getstatic`
+// always resolves at runtime, even for a file that never itself imports
+// `Std.Environment`.
+//
 // One shared local slot (`tmp`, always slot 0 — `<clinit>` has no `this` and
 // no params) is reused sequentially across every field: safe because
 // `<clinit>` executes strictly in field-declaration order and no two fields'
@@ -7269,6 +7294,8 @@ func lowerFuncsToClass(
 pub func lowerConfigBlock(ns: in String, blockName: in String, fields: in List[LConfigField], pool: in Pool): ClassFile {
   val className = ns + "/" + blockName
   val strTy = JRef(className = "java/lang/String")
+  val overlayTy = JRef(className = "java/util/concurrent/ConcurrentHashMap")
+  val objTy = JRef(className = "java/lang/Object")
   val cfFields: List[FieldInfo] = newList()
   val clinitInsns: List[LInsn] = newList()
   val tmpSlot = 0
@@ -7279,12 +7306,46 @@ pub func lowerConfigBlock(ns: in String, blockName: in String, fields: in List[L
     cfFields.add(makeFieldInfo(ACC_PUBLIC + ACC_STATIC + ACC_FINAL, f.name, typeDescriptor(f.fieldType), emptyAttrs))
     val absentLabel = "cfg_absent_" + fi
     val doneLabel = "cfg_done_" + fi
+    val overlayMissLabel = "cfg_overlay_miss_" + fi
+    val overlayDoneLabel = "cfg_overlay_done_" + fi
 
+    // Check Std.Environment's setVar overlay first (#7594); fall back to the
+    // real process environment when the key was never overlaid.
+    val containsKeyPs: List[JvmType] = newList()
+    containsKeyPs.add(objTy)
+    clinitInsns.add(LGetstatic(owner = "Std/EnvironmentHost", name = "envOverlay", t = overlayTy))
+    clinitInsns.add(LPushString(s = f.envVarName))
+    clinitInsns.add(
+      LInvokevirtual(
+        owner = "java/util/concurrent/ConcurrentHashMap",
+        name = "containsKey",
+        params = containsKeyPs,
+        ret = JBoolean
+      )
+    )
+    clinitInsns.add(LIfeq(label = overlayMissLabel))
+    val getPs: List[JvmType] = newList()
+    getPs.add(objTy)
+    clinitInsns.add(LGetstatic(owner = "Std/EnvironmentHost", name = "envOverlay", t = overlayTy))
+    clinitInsns.add(LPushString(s = f.envVarName))
+    clinitInsns.add(
+      LInvokevirtual(owner = "java/util/concurrent/ConcurrentHashMap", name = "get", params = getPs, ret = objTy)
+    )
+    clinitInsns.add(LCheckcast(className = "java/lang/String"))
+    // `astore`/`goto` INSIDE each branch, not after the merge label — every
+    // branch target must see an EMPTY operand stack (the invariant this
+    // whole file's StackMapTable computation assumes; see the header
+    // comment on `jvmToVerifier` above).  A value live across `overlay_done`
+    // would violate it.
+    clinitInsns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/String"))
+    clinitInsns.add(LGoto(label = overlayDoneLabel))
+    clinitInsns.add(LLabel(name = overlayMissLabel))
     val getenvPs: List[JvmType] = newList()
     getenvPs.add(strTy)
     clinitInsns.add(LPushString(s = f.envVarName))
     clinitInsns.add(LInvokestatic(owner = "java/lang/System", name = "getenv", params = getenvPs, ret = strTy))
     clinitInsns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/String"))
+    clinitInsns.add(LLabel(name = overlayDoneLabel))
     clinitInsns.add(LAload(slot = tmpSlot))
     clinitInsns.add(LIfnull(label = absentLabel))
     val isEmptyPs: List[JvmType] = newList()

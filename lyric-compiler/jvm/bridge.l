@@ -1891,6 +1891,23 @@ pub func compileToJarBundledWithRestored(
   )
 }
 
+// True when `file` declares at least one `config { }` block (bare, or a
+// `config X from Template { }` materialisation — `Lyric.WireExpand` fully
+// expands the latter into a plain `IConfig` item on the CONSUMING file
+// before this bridge ever sees it, docs/58).  Used by
+// `configBlockNeedsEnvironmentHost` below (#7594).
+func fileHasConfigBlock(file: in SourceFile): Bool {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IConfig(_) -> return true
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
 // No per-package feature overrides: every package uses the build's features.
 func noPackageFeatureSets(): List[PackageFeatureSet] {
   val none: List[PackageFeatureSet] = newList()
@@ -2603,6 +2620,31 @@ pub func compileProjectToJarBundledWithRestored(
   // (D-progress-968).
   if dottedPath(userFile.packageDecl.path) != "Std.Core" {
     worklist.add("Std.Core")
+  }
+  // `Std.EnvironmentHost` (#7594): every `config { }` block's generated JVM
+  // `<clinit>` reads `Std.EnvironmentHost.envOverlay` directly (mirroring
+  // `Std.Environment.setVar`'s overlay lookup), whether or not the
+  // declaring file itself imports `Std.Environment` — force it into the
+  // bundle whenever ANY project package or restored dependency declares a
+  // config block, or that `getstatic` dangles at runtime
+  // (`NoClassDefFoundError`).
+  var cbi = 0
+  var anyConfigBlock = false
+  while cbi < userFiles.count {
+    if fileHasConfigBlock(userFiles[cbi]) {
+      anyConfigBlock = true
+    }
+    cbi = cbi + 1
+  }
+  var cbri = 0
+  while cbri < restoredArtifacts.count {
+    if fileHasConfigBlock(restoredArtifacts[cbri].source) {
+      anyConfigBlock = true
+    }
+    cbri = cbri + 1
+  }
+  if anyConfigBlock {
+    worklist.add("Std.EnvironmentHost")
   }
   var rwi = 0
   while rwi < restoredArtifacts.count {
