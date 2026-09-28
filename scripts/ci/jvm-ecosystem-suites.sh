@@ -21,6 +21,18 @@
 #   i18n        I18n.Kernel handle-based translation store, cross-package
 #               bare-name resolution between the `I18n` and `I18n.Kernel`
 #               sibling packages (#7458)
+#   cache       InProcessCacheStore + FunctionCache/ItemCache aspect
+#               weaving, pure Lyric with no extern boundary (#7483)
+#   feature-flags  InProcessFlagStore, Flags.Registry, and the FlagGated/
+#               FlagVariant aspect templates; fixed the JVM backend's
+#               cross-package private-callee resolution gap the weaver's
+#               `around` advice splicing exposed (`checkFlagName`, #7483)
+#   mail        Mail's typed envelope, header-injection/attachment-size
+#               guards, and the real `System.Net.Mail`-backed SMTP
+#               transport's dotnet-only reachability, exercised with every
+#               provider feature active (`smtp,ses,sendgrid`) so the
+#               `NOT_IMPLEMENTED` provider paths are honestly asserted on
+#               `jvm` too (#7483)
 #
 # Replaces one ci.yml step per library (ci.yml is at its size ceiling,
 # scripts/ci/check-workflow-size.sh). Every suite runs even after a failure;
@@ -43,7 +55,7 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience jsonrpc mcp health generator-sdk web i18n)
+libs=(storage resilience jsonrpc mcp health generator-sdk web i18n cache feature-flags mail)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 
@@ -56,7 +68,16 @@ run_suite() {
   if [ "$lib" = "web" ]; then
     runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
   fi
-  "${runner[@]}" --target jvm --no-default-features --features jvm \
+  # `mail`'s provider backends (`smtp`/`ses`/`sendgrid`) are declared
+  # behind their own `[features]` flags, off by default under
+  # `--no-default-features`; activate all three so the suite exercises
+  # (and honestly asserts the `NOT_IMPLEMENTED` status of) every provider
+  # on this target, matching its `dotnet` default feature set.
+  local features="jvm"
+  if [ "$lib" = "mail" ]; then
+    features="jvm,smtp,ses,sendgrid"
+  fi
+  "${runner[@]}" --target jvm --no-default-features --features "$features" \
     > "$log_dir/$lib.log" 2>&1
   echo $? > "$log_dir/$lib.rc"
 }

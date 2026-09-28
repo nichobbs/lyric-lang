@@ -36,7 +36,20 @@ import Flags.Registry as FlagsRegistry
 // (`FlagVariant`) with no indication anything was misconfigured. Mirrors
 // `Resilience.checkRetryConfig`'s "no-op body, `requires:`-only" idiom for a
 // runtime-checked-at-first-use aspect config precondition.
-func checkFlagName(flagName: in String): Unit
+//
+// `pub`, not package-private (#7483): the weaver splices this aspect's
+// `around` advice body — including this call — into the consumer package
+// that instantiates `FlagGated`/`FlagVariant` (e.g. a test module in a
+// different package). The self-hosted JVM backend's codegen callee
+// resolver only has a registered static signature for a cross-package
+// callee when it is `pub` (a private function is fine when the call site
+// stays in `Flags.Aspects` itself, which is why this only surfaced once a
+// consumer package wove the aspect); MSIL's resolver tolerates the
+// private cross-package reference, so this was silently JVM-only broken
+// (`error[J008]: unresolved call to 'checkFlagName'`). `Resilience.
+// checkRetryConfig`, the idiom this mirrors, is already `pub` for the same
+// reason.
+pub func checkFlagName(flagName: in String): Unit
   requires: flagName.length > 0
 {
 }
