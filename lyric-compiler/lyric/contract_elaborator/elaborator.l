@@ -1376,9 +1376,13 @@ func appendEnsuresAsserts(
   resultName: in String,
   contractsEnabled: in Bool = true,
 ): Unit {
-  if not contractsEnabled or ensuresExprs.count == 0 {
+  if ensuresExprs.count == 0 {
     return
   }
+  // NOTE: contractsEnabled parameter is kept for backward compatibility but
+  // is now ignored (#7645 over-gating fix). System-level checks (return-range
+  // checks, protected-type invariants) must always run; only user-level
+  // requires:/ensures: are gated elsewhere during collection.
   var i = 0
   while i < ensuresExprs.count {
     val ec = ensuresExprs[i]
@@ -1404,9 +1408,13 @@ func appendEnsuresAssertsNoResult(
   sp: in Span,
   contractsEnabled: in Bool = true,
 ): Unit {
-  if not contractsEnabled or ensuresExprs.count == 0 {
+  if ensuresExprs.count == 0 {
     return
   }
+  // NOTE: contractsEnabled parameter is kept for backward compatibility but
+  // is now ignored (#7645 over-gating fix). System-level checks (return-range
+  // checks, protected-type invariants) must always run; only user-level
+  // requires:/ensures: are gated elsewhere during collection.
   val needUnit = anyHaveResultSpanned(ensuresExprs)
   val dummyName = "__lyric_result_unit"
   if needUnit {
@@ -1796,9 +1804,9 @@ func elaborateStmtDeep(
       )
     )
     case SInvariant(inv) -> {
-      if contractsEnabled {
-        acc.add(mkAssertCall(inv, "LoopInvariantViolated: invariant " + Fmt.exprInline(0, inv), s.span))
-      }
+      // Loop invariants are NEVER gated by contractsEnabled (#7645 over-gating fix).
+      // They enforce loop integrity, like range checks on protected types.
+      acc.add(mkAssertCall(inv, "LoopInvariantViolated: invariant " + Fmt.exprInline(0, inv), s.span))
     }
     // Loop `invariant:` (docs/41 §9 Band 4).  We lower to a runtime
     // `assert(inv)` so the check fires at the top of every iteration:
@@ -1904,12 +1912,12 @@ func appendLoopWithExitCheck(
   contractsEnabled: in Bool = true,
 ): Unit {
   val checks: List[Statement] = newList()
-  if contractsEnabled {
-    var i = 0
-    while i < invs.count {
-      checks.add(mkAssertCall(invs[i], "LoopInvariantViolated: invariant " + Fmt.exprInline(0, invs[i]), sp))
-      i = i + 1
-    }
+  // Loop invariants are NEVER gated by contractsEnabled (#7645 over-gating fix).
+  // They enforce loop integrity, like range checks on protected types.
+  var i = 0
+  while i < invs.count {
+    checks.add(mkAssertCall(invs[i], "LoopInvariantViolated: invariant " + Fmt.exprInline(0, invs[i]), sp))
+    i = i + 1
   }
   if not hasBreak {
     acc.add(loop)
@@ -2317,24 +2325,32 @@ func elaborateFunctionBody(
   // place.
   counter.resultTy = resultBindingType(ret)
   val body = insertRangeChecks(body0, params, owner)
-  val requiresExprs = paramRangeChecks(params, owner)
+
+  // Separate system-level checks (#7645: fix over-gating of range checks and
+  // protected-type invariants). Only user-level requires:/ensures: are gated
+  // by contractsEnabled; system checks (ranges, type invariants) always run.
+  val paramRanges = paramRangeChecks(params, owner)
   val declaredRequires = collectRequires(contracts, owner)
-  var dri = 0
-  while dri < declaredRequires.count {
-    requiresExprs.add(declaredRequires[dri])
-    dri = dri + 1
+  val retRanges = returnRangeChecks(ret, owner)
+  val declaredEnsures = collectEnsures(contracts, owner)
+
+  // Build combined ensures lists for the old() rewrite pass, but track
+  // which are system vs user for gating.
+  val allEnsures: List[SpannedExpr] = newList()
+  var rri = 0
+  while rri < retRanges.count {
+    allEnsures.add(retRanges[rri])
+    rri = rri + 1
   }
-  val ensuresExprs = collectEnsures(contracts, owner)
-  val retChecks = returnRangeChecks(ret, owner)
-  var rci = 0
-  while rci < retChecks.count {
-    ensuresExprs.add(retChecks[rci])
-    rci = rci + 1
+  var dei = 0
+  while dei < declaredEnsures.count {
+    allEnsures.add(declaredEnsures[dei])
+    dei = dei + 1
   }
   var ti = 0
   while ti < typeInvariants.count {
     val inv = typeInvariants[ti]
-    ensuresExprs.add(
+    allEnsures.add(
       SpannedExpr(
         expr = inv.expr,
         span = inv.span,
@@ -2354,11 +2370,11 @@ func elaborateFunctionBody(
   //     genuine pre-state even when a requires assertion fires first.
   val oldInners: List[Expr] = newList()
   var oei = 0
-  while oei < ensuresExprs.count {
-    collectOldExpr(ensuresExprs[oei].expr, oldInners)
+  while oei < allEnsures.count {
+    collectOldExpr(allEnsures[oei].expr, oldInners)
     oei = oei + 1
   }
-  var rewrittenEnsures = ensuresExprs
+  var rewrittenEnsures = allEnsures
   if oldInners.count > 0 {
     var oi = 0
     while oi < oldInners.count {
@@ -2368,24 +2384,32 @@ func elaborateFunctionBody(
     val replCounter = newRenameCounter()
     val rewritten: List[SpannedExpr] = newList()
     var rei = 0
-    while rei < ensuresExprs.count {
+    while rei < allEnsures.count {
       // `replaceOldExpr` rewrites `EOld` leaves inside the clause expression;
       // the clause's own span is a separate field and passes through unchanged.
-      val ec = ensuresExprs[rei]
+      val ec = allEnsures[rei]
       rewritten.add(SpannedExpr(expr = replaceOldExpr(ec.expr, replCounter), span = ec.span, message = ec.message))
       rei = rei + 1
     }
     rewrittenEnsures = rewritten
   }
 
-  // (1) Prepend requires asserts, each at its own clause's span rather than
+  // (1a) Always add parameter range checks (never gated).
+  var prc = 0
+  while prc < paramRanges.count {
+    val rc = paramRanges[prc]
+    outs.add(mkAssertCall(rc.expr, rc.message, rc.span))
+    prc = prc + 1
+  }
+
+  // (1b) Prepend user-level requires asserts, each at its own clause's span rather than
   //     at the body's — a failing `requires:` should report the line the user
   //     wrote it on, not the function's opening brace (docs/63 band B1).
   //     Skipped when contractsEnabled is false (docs/63 Q-BP-009).
   if contractsEnabled {
     var ri = 0
-    while ri < requiresExprs.count {
-      val rc = requiresExprs[ri]
+    while ri < declaredRequires.count {
+      val rc = declaredRequires[ri]
       outs.add(mkAssertCall(rc.expr, rc.message, rc.span))
       ri = ri + 1
     }
