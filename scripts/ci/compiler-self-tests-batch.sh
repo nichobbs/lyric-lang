@@ -111,7 +111,8 @@ for t in \
   lyric-compiler/jvm/static_type_recovery_jvm_self_test.l \
   lyric-compiler/jvm/propagate_dot_named_bind_jvm_self_test.l \
   lyric-compiler/lyric/lsp_self_test.l \
-  lyric-compiler/lyric/doc_self_test.l ; do
+  lyric-compiler/lyric/doc_self_test.l \
+  lyric-compiler/lyric/inbundle_generic_method_typevar_default_self_test.l ; do
   idx=$((idx + 1))
   if (( (idx - 1) % SHARD_N != SHARD_K - 1 )); then
     continue

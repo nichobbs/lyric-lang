@@ -2872,6 +2872,15 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
       // `object` where the concrete class was expected, #3943).  `bufMsilType`
       // writes ELEMENT_TYPE_CLASS + the carried TypeRef token.
       case MClassRef(_, _) -> bufMsilType(w, locals[i])
+      // A real (unerased) in-bundle generic type-parameter local (#7525):
+      // `elementTypeByte` alone gives only the VAR/MVAR prefix byte — the
+      // fallback `case other` arm below would emit it with no following
+      // index byte, truncating the LocalVarSig blob (`ilverify` "Unable to
+      // resolve token"; observed via `pushDefaultValueMsil`'s new `MTypeVar`
+      // arm allocating the first such local). `bufMsilType` writes the
+      // prefix AND the index byte together.
+      case MTypeVar(_) -> bufMsilType(w, locals[i])
+      case MMethodTypeVar(_) -> bufMsilType(w, locals[i])
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1
@@ -2958,6 +2967,9 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
         bufU1(w, 0x11)
         writeCompressedInt(w, typeRefCode)
       }
+      // See the matching comment in `buildLocalVarSig` (#7525).
+      case MTypeVar(_) -> bufMsilType(w, locals[i])
+      case MMethodTypeVar(_) -> bufMsilType(w, locals[i])
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1

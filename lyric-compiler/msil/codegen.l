@@ -6601,6 +6601,22 @@ func pushDefaultValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
       insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
       emitLoadSlot(insns, slot, fctx.paramCount)
     }
+    case MTypeVar(idx) -> {
+      // A real (unerased) in-bundle generic type parameter (#7525): `T` may be
+      // instantiated with a value type, so `ldnull` is invalid IL here (only
+      // legal for a type known to be a reference type). Mirrors
+      // `boxForUnionEqualityMsil`'s VAR-TypeSpec `box` idiom, but with
+      // `initobj` — universally correct for any instantiation of `T`.
+      val w = bufNew()
+      bufU1(w, 0x13)  // ELEMENT_TYPE_VAR
+      bufU1(w, idx)
+      val blob = bufToList(w)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, "ts_never_default_var_" + toString(idx), blob)
+      val slot = allocSlotMsil(fctx, "__never_default_" + toString(fctx.slotTicker.count), retTy)
+      insns.add(MLdloca(slot = slot - fctx.paramCount))
+      insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
+      emitLoadSlot(insns, slot, fctx.paramCount)
+    }
     case _ -> insns.add(MLdNull)
   }
 }
@@ -9885,17 +9901,26 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case None -> {
-          // Captured enclosing variable inside a lifted closure body (#1479, #1877 Phase 2).
-          // Phase 1: read from `object[] __caps` (slot 0) using array indexing.
-          // Phase 2: read from closure-class instance using typed field access.
-          // A by-reference capture (`captureCellNames`) holds an array cell.
+          // Captured enclosing variable inside a lifted closure body (#1479,
+          // #1877 Phase 2): read from the synthesised closure-class instance
+          // using typed field access. A by-reference capture
+          // (`captureCellNames`) holds an array cell.
+          //
+          // Every capturing lambda gets a closure class unconditionally (the
+          // single registration site pairs `lambdaCaptureNames.add` with
+          // `lambdaClosureClasses.add`, #1877 Phase 2 / D113) — so
+          // `fctx.captureNameToIndex` holding `name` guarantees
+          // `fctx.types["__caps"]` is `MClass(...)`. The pre-#1877-Phase-2
+          // `object[] __caps` array fallback this arm used to read from is
+          // therefore unreachable and was removed (#7525); a panic replaces
+          // it so a future regression in that invariant fails loudly instead
+          // of silently emitting an `ldelem.ref` against a closure-class
+          // instance.
           match mapGet(fctx.captureNameToIndex, name) {
             case Some(capIdx) -> {
-              // Check if __caps is a closure class (Phase 2) or array (Phase 1)
               val capsType = match mapGet(fctx.types, "__caps") { case Some(t) -> t; case None -> MObject }
               match capsType {
                 case MClass(closureClassName) -> {
-                  // Phase 2: load from closure class field __f<i>
                   emitLoadVarMsil(fctx, insns, 0)
                   val fieldName = "__f" + toString(capIdx)
                   insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = fieldName))
@@ -9904,23 +9929,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     insns.add(MLdcI4(v = 0))
                     emitCellElemLoadMsil(cctx, insns, capTy)
                   } else {
-                    // Phase 2: non-cell capture field is already typed as capTy, no cast/unbox needed
+                    // Non-cell capture field is already typed as capTy, no cast/unbox needed.
                   }
                   return capTy
                 }
                 case _ -> {
-                  // Phase 1: load from object[] __caps using array indexing
-                  emitLoadVarMsil(fctx, insns, 0)
-                  insns.add(MLdcI4(v = capIdx))
-                  insns.add(MLdelemRef)
-                  val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
-                  if nameListContains(fctx.captureCellNames, name) {
-                    insns.add(MLdcI4(v = 0))
-                    emitCellElemLoadMsil(cctx, insns, capTy)
-                  } else {
-                    castObjectToMsil(cctx, insns, capTy)
-                  }
-                  return capTy
+                  panic(
+                    "Msil.Codegen ICE: captured name '" + name +
+                      "' has a captureNameToIndex entry but __caps is not a closure class (#7525 invariant violated)"
+                  )
                 }
               }
             }
@@ -11280,9 +11297,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = "__f" + toString(capIdx)))
             }
             case _ -> {
-              emitLoadVarMsil(fctx, insns, 0)
-              insns.add(MLdcI4(v = capIdx))
-              insns.add(MLdelemRef)
+              // Unreachable (#7525): see the matching EPath-capture comment
+              // above — `fctx.captureNameToIndex` holding "self" guarantees
+              // `__caps` is a closure class.
+              panic(
+                "Msil.Codegen ICE: 'self' has a captureNameToIndex entry but __caps is not a closure class (#7525 invariant violated)"
+              )
             }
           }
           match mapGet(fctx.captureNameToType, "self") {
@@ -11574,23 +11594,22 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   val fieldName = "__f" + toString(capStI)
                   // Load the capture value
                   if fctx.captureNameToIndex.containsKey(capName) {
-                    // Outer-scope capture: load from parent's __caps (array or closure class).
-                    // Phase 1 parent: __caps is object[]; load __caps[parentIdx].
-                    // Phase 2 parent: __caps is closure class; lowerFuncMsil already registered
-                    // the parent as Phase 2, so capture reads here will use MLdfldByName.
+                    // Outer-scope capture: load from the parent's closure-class
+                    // instance via field access. Every capturing lambda gets a
+                    // closure class unconditionally (#1877 Phase 2 / D113), so
+                    // the parent's __caps is always MClass(...) here (#7525).
                     match mapGet(fctx.captureNameToIndex, capName) {
                       case Some(parentIdx) -> {
                         emitLoadVarMsil(fctx, insns, 0)
-                        // Determine if parent __caps is an array or closure class
                         match mapGet(fctx.types, "__caps") {
                           case Some(MClass(parentClosureClass)) -> {
-                            // Phase 2 parent: use field access
                             insns.add(MLdfldByName(ownerFqn = parentClosureClass, fieldName = "__f" + toString(parentIdx)))
                           }
                           case _ -> {
-                            // Phase 1 parent (object[] array): use array indexing
-                            insns.add(MLdcI4(v = parentIdx))
-                            insns.add(MLdelemRef)
+                            panic(
+                              "Msil.Codegen ICE: parent capture '" + capName +
+                                "' has a captureNameToIndex entry but __caps is not a closure class (#7525 invariant violated)"
+                            )
                           }
                         }
                       }
@@ -12878,7 +12897,9 @@ func lowerStmtsExprFromMsil(
 
 // Push a hoisted-`var` cell onto the stack (#1479 v2): either an enclosing-scope
 // cell at a local slot (`isCapture=false`, `idx`=slot) or a by-reference cell
-// captured into `object[] __caps` (`isCapture=true`, `idx`=capture index).
+// captured into the closure-class instance (`isCapture=true`, `idx`=capture
+// index) — every capturing lambda gets a closure class unconditionally
+// (#1877 Phase 2 / D113), so `__caps` is always `MClass(...)` here (#7525).
 func emitCellLoadMsil(fctx: in FuncCtx, insns: in List[MInsn], isCapture: in Bool, idx: in Int): Unit {
   if isCapture {
     val capsType = match mapGet(fctx.types, "__caps") { case Some(t) -> t; case None -> MObject }
@@ -12889,9 +12910,7 @@ func emitCellLoadMsil(fctx: in FuncCtx, insns: in List[MInsn], isCapture: in Boo
         insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = fieldName))
       }
       case _ -> {
-        emitLoadVarMsil(fctx, insns, 0)
-        insns.add(MLdcI4(v = idx))
-        insns.add(MLdelemRef)
+        panic("Msil.Codegen ICE: a captured hoisted-var cell's __caps is not a closure class (#7525 invariant violated)")
       }
     }
   } else {
@@ -13050,8 +13069,9 @@ func lowerAssignExprMsil(
           MVoid
         }
         case None -> {
-          // Write to a by-reference cell captured into `object[] __caps` (a
-          // hoisted enclosing `var` reassigned from inside the closure) — #1479 v2.
+          // Write to a by-reference cell captured into the closure-class
+          // instance (a hoisted enclosing `var` reassigned from inside the
+          // closure) — #1479 v2.
           match mapGet(fctx.captureNameToIndex, name) {
             case Some(capIdx) -> {
               if nameListContains(fctx.captureCellNames, name) {
@@ -30428,20 +30448,26 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
   // combined slot space but are NOT added to fctx.locals.
   val isLambdaFn = startsWith(decl.name, "__lambda_")
-  // Reserve slot 0 for `__caps` (Phase 1: object[] array, Phase 2: typed closure class instance).
-  // Register each captured name's field index + logical type so EPath reads resolve correctly (#1479, #1877 Phase 2).
+  // Reserve slot 0 for `__caps`, the closure-class instance carrying this
+  // lambda's captures (#1479, #1877 Phase 2). Register each captured name's
+  // field index + logical type so EPath reads resolve correctly.
   if hasCaps {
     val capsSlot = fctx.slotTicker.count
     fctx.slots.add("__caps", capsSlot)
-    // Phase 2 detection: check if this lambda has a closure class
+    // `hasCaps` (lambdaCaps.count > 0) is derived from `cctx.lambdaCaptureNames`,
+    // which the ELambda codegen site always populates together with
+    // `cctx.lambdaClosureClasses` (one `if caps.count > 0 { ... }` block, both
+    // `.add()`s) — so a closure class always exists here. The pre-#1877-Phase-2
+    // `object[] __caps` array fallback was removed (#7525); a panic replaces it.
     match mapGet(cctx.lambdaClosureClasses, qualifiedLambdaName) {
       case Some(closureRecord) -> {
-        // Phase 2: __caps is the closure class instance
         fctx.types.add("__caps", MClass(className = closureRecord.className))
       }
       case None -> {
-        // Phase 1: __caps is object[] array (fallback for lambdas without closure classes)
-        fctx.types.add("__caps", MArray(elemTy = MObject))
+        panic(
+          "Msil.Codegen ICE: lambda '" + qualifiedLambdaName +
+            "' has captures but no synthesised closure class (#7525 invariant violated)"
+        )
       }
     }
     fctx.slotTicker.add(0)
@@ -30712,12 +30738,17 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   // Capturing lambda: the leading `__caps` (closed-over target) is the
   // method's first parameter (#1479, #1877 Phase 2).
   if hasCaps {
+    // See the matching `fctx.types.add("__caps", ...)` comment above (#7525):
+    // a closure class always exists whenever `hasCaps` is true.
     match mapGet(cctx.lambdaClosureClasses, qualifiedLambdaName) {
       case Some(closureRecord) -> {
         paramTypes.add(MClass(className = closureRecord.className))
       }
       case None -> {
-        paramTypes.add(MArray(elemTy = MObject))
+        panic(
+          "Msil.Codegen ICE: lambda '" + qualifiedLambdaName +
+            "' has captures but no synthesised closure class (#7525 invariant violated)"
+        )
       }
     }
   }
