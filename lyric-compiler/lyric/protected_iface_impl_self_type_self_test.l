@@ -2,15 +2,31 @@
 //!
 //! `impl Iface for P` moves each impl method into `P` as a locked entry
 //! (`protected_iface_impl_self_test.l`, #7457).  When the interface method's
-//! signature mentions `Self` — as a parameter, a return, or nested inside a
-//! generic argument — the moved entry keeps `Self` UNSUBSTITUTED, so MSIL and
-//! JVM erase it to `object`/`Object` exactly as they erase the interface
-//! slot; no descriptor mismatch arises.  Runs on dotnet and the JVM only:
-//! `--target native` cannot yet lower a `Self`-mentioning interface method at
-//! all, for a record OR a protected type (`typeExprToNType`'s `TSelf` arm
-//! panics "this type form is not yet supported for --target native" at
-//! interface vtable-type registration) — a pre-existing, target-wide gap
-//! this feature does not attempt to close (tracked as a follow-up).
+//! signature mentions `Self` — as a bare parameter or return — the moved
+//! entry keeps `Self` UNSUBSTITUTED, so MSIL and JVM erase it to
+//! `object`/`Object` exactly as they erase the interface slot; no descriptor
+//! mismatch arises.
+//!
+//! Runs on dotnet, the JVM, AND `--target native` (#7585): native erases a
+//! bare `Self` in the interface's own vtable slot to a pointer-width `i8*`
+//! (D-progress-1016), and substitutes `Self` to the concrete protected type in the
+//! moved entry's own signature (`registerProtectedMember`) before it ever
+//! reaches `typeToN`, mirroring the record-impl substitution
+//! (`substSelfInFn`/`collectImplMethods`) that already worked pre-#7585.
+//! `Lyric.LlvmCodegen.llvm_self_test_self_iface.l` covers the same shapes
+//! directly against the native backend (including an ASan-clean ARC check);
+//! this file's own native run is the end-to-end proof through the full
+//! `Lyric.Pipeline` (contract elaborator + weaver) that
+//! `llvm_self_test_self_iface.l`'s narrower harness bypasses.
+//!
+//! `Self` NESTED inside a generic type argument (`List[Self]`) is a
+//! SEPARATE, still-unsupported native shape (`protected_iface_impl_self_type_nested_self_test.l`,
+//! dotnet/JVM only) — native's generic types monomorphize per concrete type
+//! argument, and there is no call site to infer `T = Self` from at an
+//! interface declaration, so that shape stays a proper `N0006` diagnostic
+//! reported by `Lyric.LlvmBridge` before codegen runs rather than a silent
+//! lowering or an internal panic; splitting it into its own file keeps
+//! THIS file's bare-`Self` cases runnable on native.
 @test_module
 package ProtectedIfaceImplSelfTypeSelfTest
 
@@ -71,39 +87,4 @@ test "a Self return narrows so the returned value's own members resolve, via the
   val a = Acc(n = 21)
   val f = a.fresh()
   assertTrue(f.n == 21, "fresh() via the concrete receiver exposes n directly")
-}
-
-// Nested `Self`: the elaborator's move copies the signature unchanged, so the
-// SAME erasure applies at any nesting depth — `List[Self]` erases to
-// `List<object>`/`List<Object>` on both the interface slot and the moved
-// entry, on both targets, with no special-casing needed. Whole-value use
-// (count, re-adding an element) exercises the signature match this feature
-// is actually about; per-element field access through the erased list slot
-// is a separate, pre-existing narrowing gap shared with ordinary record
-// impls (`isSelfTypeExprMsil`/`isSelfTypeExprJvm` only recognise a bare
-// (or paren-wrapped) `Self`, not one nested inside a generic argument) and
-// is out of scope here.
-pub interface Snapshot {
-  func snapshot(): List[Self]
-}
-
-protected type Ledger {
-  var n: Int = 0
-}
-
-impl Snapshot for Ledger {
-  func snapshot(): List[Self] {
-    val xs = newList()
-    xs.add(self)
-    xs
-  }
-}
-
-test "a Self nested in a List return compiles and round-trips the element count" {
-  val l = Ledger(n = 7)
-  val xs = l.snapshot()
-  assertTrue(xs.count == 1, "one element in the snapshot")
-  val s: Snapshot = l
-  val xs2 = s.snapshot()
-  assertTrue(xs2.count == 1, "same result through the interface binding")
 }

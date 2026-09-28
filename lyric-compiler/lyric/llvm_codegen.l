@@ -167,7 +167,12 @@ record NUnionCaseInfo {
 /// struct name (`__ifacevt.<mangled>`).  Methods are in IMSig declaration
 /// order — the vtable slot index.  `methodParamTys` excludes the implicit
 /// `self` receiver (arg 0 at the call site); `methodRetTys` is `NVoid` for
-/// a Unit return.
+/// a Unit return.  `methodRetIsSelf` (#7585, D-progress-1016) marks a bare-`Self`
+/// DECLARED return (erased in `methodRetTys` to `i8*` like every other
+/// bare `Self`) so `lowerIfaceDispatch` knows to REBOX the erased result
+/// into a fresh interface value — a call through the interface receiver
+/// types the whole expression as the interface itself (T0113 receiver
+/// substitution), not the erased raw pointer.
 record NIfaceInfo {
   key: String
   irName: String
@@ -175,6 +180,7 @@ record NIfaceInfo {
   methodNames: List[String]
   methodParamTys: List[List[NType]]
   methodRetTys: List[NType]
+  methodRetIsSelf: List[Bool]
 }
 
 /// Registered (non-generic) union type: cases plus the payload area
@@ -602,6 +608,19 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       panic("Lyric.LlvmCodegen: generic type '" + n + "' is not yet supported for --target native (Phase N1)")
     }
     case TUnit -> NVoid
+    // A bare `Self` reaching this fallback is always an INTERFACE's own
+    // declared method signature (#7585): a record/protected impl method's
+    // own `Self` is substituted to the concrete type before it ever reaches
+    // codegen (`substSelfInType`/`substSelfInFn`/`collectImplMethods`), so
+    // the only remaining caller is `registerInterfaceTypes` resolving the
+    // vtable slot's param/return types. Every implementer of `Self` on this
+    // backend (record or protected type) is a heap-boxed, pointer-width
+    // object (`03-type-mapping.md`), so erasing to a raw `i8*` — the SAME
+    // erased representation the interface box's own `obj` slot already
+    // uses — is ABI-compatible with any concrete impl's pointer type via
+    // the unchecked function-pointer bitcast `ifaceVtableInitStr` already
+    // performs for every vtable slot (see D-progress-1016).
+    case TSelf -> NPtr(pointee = NI8)
     case TParen(inner) -> typeExprToNType(inner)
     case TFunction(parameters, retTy) -> {
       // A raw C function-pointer type (N4.5): only meaningful in extern
@@ -1048,6 +1067,17 @@ func isWeakNType(t: in NType): Bool {
 /// are not.  Weak values ARE refs (so the ownership machinery counts them);
 /// `emitRetain` / `emitRelease` dispatch to the weak-count runtime helpers
 /// for them.
+/// True for exactly `i8*` — the erased-`Self` slot type (#7585) and the
+/// generic "raw pointer" type used for FFI/box-obj bookkeeping. Distinct
+/// from `NativePtr[Byte]`, which lowers to the SAME `NType` but is only
+/// ever reachable through `_kernel_native/`/`@unsafe_ffi` code (N0100).
+func isRawI8PtrType(t: in NType): Bool {
+  match t {
+    case NPtr(pointee) -> match pointee { case NI8 -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
 func isRefNType(t: in NType): Bool {
   match t {
     case NPtr(pointee) -> {
@@ -3442,6 +3472,45 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): N
     case None -> {
     }
   }
+  // #7585: unbox an interface value flowing into an erased-`Self` slot
+  // (a `Self`-typed parameter dispatched through the SAME interface
+  // receiver types the caller's argument as the interface itself —
+  // T0113 receiver substitution — but the vtable's erased slot expects
+  // the raw `i8*` object pointer, matching every other concrete impl's
+  // pointer-width receiver). Read-only extraction (a borrow, mode `in`
+  // per Rule 5) — no retain needed; the box itself stays alive for the
+  // call's duration since the caller still holds it.
+  if isRawI8PtrType(want) {
+    match ifaceBoxInfoOfType(ctx, v.ty) {
+      case Some(info) -> {
+        val structTy = ifaceBoxStructType(info)
+        val objSlot = freshTmp(ctx)
+        val objArgs: List[NArg] = newList()
+        objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+        objArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxObjSlot, ty = NI32)))
+        insns.add(NGEP(dest = objSlot, ty = structTy, ptr = v.value, indices = objArgs))
+        val objVal = freshTmp(ctx)
+        insns.add(NLoad(dest = objVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = objSlot)))
+        return NVal(ty = NPtr(pointee = NI8), value = NLocal(name = objVal))
+      }
+      case None -> {
+        // The checker accepts a CONCRETE record/protected-type value at a
+        // `Self`-substituted-to-the-interface parameter position too (the
+        // ordinary "concrete implementor flows into an interface-typed
+        // slot" upcast, `checkImplConformance`) — it just never got boxed
+        // because THIS slot's declared type is the erased `i8*`, not the
+        // interface box type `coerceTo`'s upcast branch above matches on.
+        // A plain bitcast is enough: the vtable-dispatched callee expects
+        // the SAME raw pointer-width representation either way, and this
+        // is a borrow (mode `in`, Rule 5) — no retain, no new box.
+        if isRefNType(v.ty) {
+          val dest = freshTmp(ctx)
+          insns.add(NBitcast(dest = dest, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+          return NVal(ty = NPtr(pointee = NI8), value = NLocal(name = dest))
+        }
+      }
+    }
+  }
   match v.value {
     case NLitInt(litV, _) -> {
       if isIntNType(want) {
@@ -4108,7 +4177,7 @@ func lowerUfcsCall(
       }
       panic(
         "Lyric.LlvmCodegen: interface method '." + name + "' on '" + info.key +
-          "' is not yet lowerable for --target native — only non-generic abstract interface methods dispatch through the vtable; default, generic, async, and Self-returning interface methods are deferred (N3.2)."
+          "' is not yet lowerable for --target native — only non-generic abstract interface methods dispatch through the vtable; default and generic interface methods are deferred (N3.2). (Self-returning and Self-parameter interface methods ARE supported, #7585.)"
       )
     }
     case None -> {
@@ -11425,6 +11494,168 @@ func selfTypeRef(recordName: in String, span: in Span): TypeExpr {
   TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = span)), span = span)
 }
 
+/// True for a bare `Self` (optionally paren-wrapped) — the only nesting
+/// depth `typeExprToNType`'s `TSelf` arm erases to `i8*` (#7585, D-progress-1016).
+func isBareSelfTypeExpr(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSelf -> true
+    case TParen(inner) -> isBareSelfTypeExpr(inner)
+    case _ -> false
+  }
+}
+
+/// True when `Self` appears anywhere in `te` — bare, paren-wrapped, or
+/// nested inside a generic argument, array/slice element, tuple field,
+/// function parameter/return, or nullable wrapper.
+func typeExprMentionsSelf(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSelf -> true
+    case TParen(inner) -> typeExprMentionsSelf(inner)
+    case TGenericApp(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(t) -> if typeExprMentionsSelf(t) { return true }
+          case TAValue(_) -> {
+          }
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TArray(_, element) -> typeExprMentionsSelf(element)
+    case TSlice(element) -> typeExprMentionsSelf(element)
+    case TTuple(types) -> {
+      var i = 0
+      while i < types.count {
+        if typeExprMentionsSelf(types[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TNullable(inner) -> typeExprMentionsSelf(inner)
+    case TFunction(parameters, retTy) -> {
+      var i = 0
+      while i < parameters.count {
+        if typeExprMentionsSelf(parameters[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      typeExprMentionsSelf(retTy)
+    }
+    case _ -> false
+  }
+}
+
+/// True when `Self` appears NESTED (inside a generic argument, array/slice
+/// element, tuple field, or function type) rather than bare — the shape
+/// native cannot erase uniformly (#7585): `List[Self]`/`Option[Self]`
+/// would need a monomorphized "List/Option of a pointer-width erased Self"
+/// instantiation per interface, which `Lyric.Mono`'s call-site-inferred
+/// generics (D-N-010) has no mechanism to synthesise from an interface
+/// declaration alone (there is no concrete call site to infer `T = Self`
+/// from). Callers reject this shape with a named diagnostic instead of
+/// falling into the vaguer generic-type-not-supported panic.
+func typeExprHasNestedSelf(te: in TypeExpr): Bool {
+  typeExprMentionsSelf(te) and not isBareSelfTypeExpr(te)
+}
+
+/// Shared message text for `N0006` (nested `Self`), used by both the
+/// structured `Diagnostic` `nativeSelfShapeDiagnostics` produces (the
+/// primary path — `Lyric.LlvmBridge` reports it and aborts the build
+/// BEFORE codegen ever runs, no exception, no stack trace) and the
+/// defensive fallback panic below (only reachable for a caller that
+/// invokes `codegenNativePackage`/`codegenNativeBundle` directly, without
+/// going through `Lyric.LlvmBridge`'s pre-pass — e.g. a self-test).
+func nestedSelfShapeMessage(ifaceName: in String, methodName: in String, where_: in String): String {
+  "interface '" + ifaceName + "' method '" + methodName + "' " + where_ +
+    " mentions 'Self' nested inside a generic type — --target native supports a bare 'Self' parameter/return (erased to a pointer, #7585) but not 'Self' nested inside a generic type argument (e.g. 'List[Self]'/'Option[Self]'); this shape is not yet supported for --target native"
+}
+
+/// `N0006`: `Self` nested inside a generic type argument in an interface
+/// method signature, for `--target native` (#7585). See
+/// `nativeSelfShapeDiagnostics` — the primary detection path, run as a
+/// pre-pass in `Lyric.LlvmBridge` before codegen.
+func nestedSelfShapeDiagnostic(
+  ifaceName: in String, methodName: in String, where_: in String, span: in Span
+): Diagnostic {
+  errorDiagnostic("N0006", nestedSelfShapeMessage(ifaceName, methodName, where_), span)
+}
+
+/// Defensive-only fallback: panics with the SAME message `N0006` reports,
+/// for a caller that lowers `units` directly (`codegenNativePackage`/
+/// `codegenNativeBundle`) without first running `nativeSelfShapeDiagnostics`
+/// through `Lyric.LlvmBridge`'s pre-pass. Never reached by `lyric build
+/// --target native` (the bridge's pre-pass catches every case first and
+/// aborts the build with a proper `error[N0006]` line, no exception).
+func panicUnsupportedSelfShape(ifaceName: in String, methodName: in String, where_: in String, span: in Span): Unit {
+  panic(
+    "Lyric.LlvmCodegen: [N0006] " + nestedSelfShapeMessage(ifaceName, methodName, where_) + " (at " +
+      span.startPos.line.toString() +
+      ":" +
+      span.startPos.column.toString() +
+      ")"
+  )
+}
+
+/// Pre-pass (#7585): every `Self`-nested-in-a-generic-type-argument shape
+/// across every non-generic interface in `units`, as `N0006` diagnostics —
+/// no panic, no exception. `Lyric.LlvmBridge`'s native entry points run
+/// this BEFORE calling into codegen (`registerInterfaceNames`'s own check,
+/// `panicUnsupportedSelfShape`, is an unreachable defensive fallback for
+/// bridge callers once this runs first) so `lyric build --target native`
+/// reports a normal `error[N0006] file:line:col: ...` line and exits
+/// non-zero, matching every other native pre-codegen diagnostic gate
+/// (mode-checker `N0100`, etc.) instead of an internal exception.
+pub func nativeSelfShapeDiagnostics(units: in List[CodegenUnit]): List[Diagnostic] {
+  val diags: List[Diagnostic] = newList()
+  var ua = 0
+  while ua < units.count {
+    val u = units[ua]
+    var ii = 0
+    while ii < u.interfaces.count {
+      val idecl = u.interfaces[ii]
+      match idecl.generics {
+        case Some(_) -> {
+        }
+        case None -> {
+          val qualified = u.pkgName + "." + idecl.name
+          val sigs = nonGenericSyncSigs(idecl)
+          var mi = 0
+          while mi < sigs.count {
+            val sig = sigs[mi]
+            var pi = 0
+            while pi < sig.params.count {
+              if typeExprHasNestedSelf(sig.params[pi].ty) {
+                diags.add(
+                  nestedSelfShapeDiagnostic(qualified, sig.name, "parameter '" + sig.params[pi].name + "'", sig.params[pi].ty.span)
+                )
+              }
+              pi = pi + 1
+            }
+            match sig.ret {
+              case Some(r) -> {
+                if typeExprHasNestedSelf(r) {
+                  diags.add(nestedSelfShapeDiagnostic(qualified, sig.name, "return type", r.span))
+                }
+              }
+              case None -> {
+              }
+            }
+            mi = mi + 1
+          }
+        }
+      }
+      ii = ii + 1
+    }
+    ua = ua + 1
+  }
+  diags
+}
+
 func substSelfInType(te: in TypeExpr, recordName: in String): TypeExpr {
   match te.kind {
     case TSelf -> selfTypeRef(recordName, te.span)
@@ -11856,20 +12087,30 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
           params.add(ed.params[pi])
           pi = pi + 1
         }
+        // #7585: an entry's own `Self`-typed params/return (e.g. `other: in
+        // Self`, `fresh(): Self`) are NOT substituted upstream the way a
+        // record impl method's are (`collectImplMethods`); substitute here
+        // so the inner function's declared signature — resolved via
+        // `typeToN` like any other function — is the concrete protected
+        // type, not a bare `TSelf` (which only the INTERFACE's own erased
+        // vtable slot signature should ever see).
         fns.add(
-          FunctionDecl(
-            docComments = ed.docComments,
-            annotations = ed.annotations,
-            visibility = None,
-            isAsync = false,
-            name = decl.name + "." + ed.name + ".__inner",
-            generics = None,
-            params = params,
-            ret = ed.ret,
-            whereClause = None,
-            contracts = newList(),
-            body = Some(value = desugarProtectedFuncBody(fieldNames, ed.body)),
-            span = ed.span
+          substSelfInFn(
+            FunctionDecl(
+              docComments = ed.docComments,
+              annotations = ed.annotations,
+              visibility = None,
+              isAsync = false,
+              name = decl.name + "." + ed.name + ".__inner",
+              generics = None,
+              params = params,
+              ret = ed.ret,
+              whereClause = None,
+              contracts = newList(),
+              body = Some(value = desugarProtectedFuncBody(fieldNames, ed.body)),
+              span = ed.span
+            ),
+            decl.name
           )
         )
       }
@@ -11890,20 +12131,24 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
                 case Some(b) -> Some(value = desugarProtectedFuncBody(fieldNames, b))
                 case None -> None
               }
+              // #7585: same `Self` substitution as the `PMEntry` arm above.
               fns.add(
-                FunctionDecl(
-                  docComments = fn.docComments,
-                  annotations = fn.annotations,
-                  visibility = fn.visibility,
-                  isAsync = fn.isAsync,
-                  name = decl.name + "." + fn.name + ".__inner",
-                  generics = fn.generics,
-                  params = params,
-                  ret = fn.ret,
-                  whereClause = fn.whereClause,
-                  contracts = fn.contracts,
-                  body = newBody,
-                  span = fn.span
+                substSelfInFn(
+                  FunctionDecl(
+                    docComments = fn.docComments,
+                    annotations = fn.annotations,
+                    visibility = fn.visibility,
+                    isAsync = fn.isAsync,
+                    name = decl.name + "." + fn.name + ".__inner",
+                    generics = fn.generics,
+                    params = params,
+                    ret = fn.ret,
+                    whereClause = fn.whereClause,
+                    contracts = fn.contracts,
+                    body = newBody,
+                    span = fn.span
+                  ),
+                  decl.name
                 )
               )
             }
@@ -12178,6 +12423,34 @@ func registerProtectedMember(
   ret: in Option[TypeExpr],
   fns: in List[NFunc],
 ): Unit {
+  // #7585: substitute `Self` in the member's OWN params/return to the
+  // concrete protected type BEFORE building this wrapper's registered
+  // signature — mirrors `collectImplMethods`/`implMethodToFn` for record
+  // impls. Every call site re-resolves a registered `NFuncSig.retTy`/
+  // param types via `typeToN`/`retTypeToN` fresh at each call
+  // (`lowerCallEx`, `lowerUfcsCall`), so storing the substituted TypeExprs
+  // here is what makes every later call site resolve the concrete type,
+  // not a bare `TSelf` (which only the INTERFACE's own erased vtable slot
+  // signature should ever see — that erasure is `typeExprToNType`'s
+  // `TSelf` arm, D-progress-1016).
+  val sParams: List[Param] = newList()
+  var spi = 0
+  while spi < params.count {
+    val p = params[spi]
+    sParams.add(
+      Param(
+        mode = p.mode,
+        modeExplicit = p.modeExplicit,
+        name = p.name,
+        ty = substSelfInType(p.ty, pd.name),
+        dflt = p.dflt,
+        annotations = p.annotations,
+        span = p.span
+      )
+    )
+    spi = spi + 1
+  }
+  val sRet = match ret { case Some(r) -> Some(value = substSelfInType(r, pd.name)); case None -> None }
   // Protected-type entry/method params are forwarded verbatim by the
   // hand-built lock/unlock wrapper below (no per-param slot machinery,
   // unlike `lowerFunctionEnv`); threading a by-ref pointer through that
@@ -12185,19 +12458,19 @@ func registerProtectedMember(
   // ABI mismatch between the wrapper and the inner function (N9.6 scope
   // cut — no shipped `protected type` method uses `out`/`inout` today).
   var mci = 0
-  while mci < params.count {
-    match params[mci].mode {
+  while mci < sParams.count {
+    match sParams[mci].mode {
       case PMIn -> {
       }
       case _ -> panic(
         "Lyric.LlvmCodegen: protected type '" + pd.name + "' method '" + methodName + "' declares '" +
-          params[mci].name +
+          sParams[mci].name +
           "' as out/inout, which is not yet supported for --target native on protected-type methods"
       )
     }
     mci = mci + 1
   }
-  val arity = 1 + params.count
+  val arity = 1 + sParams.count
   val wrapperIrName = pkg + "." + pd.name + "." + methodName
   val innerIrName = pkg + "." + pd.name + "." + methodName + ".__inner"
   val sigParamTys: List[TypeExpr] = newList()
@@ -12207,9 +12480,9 @@ func registerProtectedMember(
   val sigParamModes: List[ParamMode] = newList()
   sigParamModes.add(PMIn)
   var i = 0
-  while i < params.count {
-    sigParamTys.add(params[i].ty)
-    sigParamNames.add(params[i].name)
+  while i < sParams.count {
+    sigParamTys.add(sParams[i].ty)
+    sigParamNames.add(sParams[i].name)
     sigParamModes.add(PMIn)
     i = i + 1
   }
@@ -12219,19 +12492,19 @@ func registerProtectedMember(
     paramNames = sigParamNames,
     paramTys = sigParamTys,
     paramModes = sigParamModes,
-    retTy = ret,
+    retTy = sRet,
     isExternSym = false,
     isAsync = false
   )
   addSig(ctx.sigs, pkg + "." + methodName + "/" + arity.toString(), sig)
   addSig(ctx.sigs, methodName + "/" + arity.toString(), sig)
-  val retTyN = retTypeToN(ctx, ret)
+  val retTyN = retTypeToN(ctx, sRet)
   val paramTysN: List[NType] = newList()
   val paramNamesN: List[String] = newList()
   var j = 0
-  while j < params.count {
-    paramTysN.add(typeToN(ctx, params[j].ty))
-    paramNamesN.add(params[j].name)
+  while j < sParams.count {
+    paramTysN.add(typeToN(ctx, sParams[j].ty))
+    paramNamesN.add(sParams[j].name)
     j = j + 1
   }
   fns.add(synthProtectedWrapper(ctx, ri, selfTy, wrapperIrName, innerIrName, paramNamesN, paramTysN, retTyN))
@@ -12662,9 +12935,35 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
           val mangled = mangleIfaceName(qualified)
           val sigs = nonGenericSyncSigs(idecl)
           val mnames: List[String] = newList()
+          val mretSelf: List[Bool] = newList()
           var mi = 0
           while mi < sigs.count {
-            mnames.add(sigs[mi].name)
+            val sig = sigs[mi]
+            mnames.add(sig.name)
+            // #7585: reject a NESTED `Self` (`List[Self]`, `Option[Self]`,
+            // ...) with a named diagnostic here, in phase A, before phase B
+            // ever calls `typeToN` on it — the vaguer "generic type not
+            // supported" panic from deep inside `typeExprToNType` would
+            // otherwise fire first and not name the interface/method.
+            var pi = 0
+            while pi < sig.params.count {
+              if typeExprHasNestedSelf(sig.params[pi].ty) {
+                panicUnsupportedSelfShape(qualified, sig.name, "parameter '" + sig.params[pi].name + "'", sig.params[pi].ty.span)
+              }
+              pi = pi + 1
+            }
+            var retIsSelf = false
+            match sig.ret {
+              case Some(r) -> {
+                if typeExprHasNestedSelf(r) {
+                  panicUnsupportedSelfShape(qualified, sig.name, "return type", r.span)
+                }
+                retIsSelf = isBareSelfTypeExpr(r)
+              }
+              case None -> {
+              }
+            }
+            mretSelf.add(retIsSelf)
             mi = mi + 1
           }
           val info = NIfaceInfo(
@@ -12673,7 +12972,8 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
             vtName = "__ifacevt." + mangled,
             methodNames = mnames,
             methodParamTys = newList(),
-            methodRetTys = newList()
+            methodRetTys = newList(),
+            methodRetIsSelf = mretSelf
           )
           registerIfaceInfo(ctx, u.pkgName, idecl.name, info)
         }
@@ -12727,7 +13027,8 @@ func registerInterfaceTypes(
             vtName = pre.vtName,
             methodNames = pre.methodNames,
             methodParamTys = pTys,
-            methodRetTys = rTys
+            methodRetTys = rTys,
+            methodRetIsSelf = pre.methodRetIsSelf
           )
           registerIfaceInfo(ctx, u.pkgName, idecl.name, info)
           val vtFields: List[NType] = newList()
@@ -12878,6 +13179,46 @@ func buildIfaceBox(ctx: in Ctx, insns: in List[NInsn], v: in NVal, ii: in NIface
   boxVal
 }
 
+/// Rebox a `Self`-returning interface method's erased `i8*` result into a
+/// FRESH interface value (#7585): a call through an interface receiver
+/// types the whole call expression as the interface itself (T0113
+/// receiver substitution — `substituteMethodSig` in the shared type
+/// checker), not the erased raw pointer, so `lowerIfaceDispatch` must
+/// hand back a real `__iface.*` box, not the bare `i8*`.
+///
+/// Reuses the SAME vtable pointer `vtbl` already loaded from the
+/// receiver's own box — sound because the type checker only accepts a
+/// `Self`-declared return as exactly the callee impl's own target type
+/// (`checkImplConformance`), which is by construction the SAME concrete
+/// runtime type as the receiver, so its vtable for THIS interface is
+/// identical to the receiver's.
+///
+/// No extra retain: the called method already transferred a fresh rc=1
+/// ownership of `objI8` to this call site (Rule 6), and that ownership
+/// moves directly into the new box's `obj` slot — the box's own
+/// destructor (`synthIfaceBoxDtor`) is the one release that balances it.
+func reboxErasedSelfResult(ctx: in Ctx, insns: in List[NInsn], ii: in NIfaceInfo, objI8: in NVal, vtbl: in NVal): NVal {
+  val boxTy = ifaceBoxPtrType(ii)
+  val structTy = ifaceBoxStructType(ii)
+  val size = structSize(match structTy { case NStruct(_, f) -> f; case _ -> newList() })
+  val box = emitHeapAlloc(ctx, insns, boxTy, size, ifaceBoxDtorName(ii))
+  val objSlot = freshTmp(ctx)
+  val objArgs: List[NArg] = newList()
+  objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  objArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxObjSlot, ty = NI32)))
+  insns.add(NGEP(dest = objSlot, ty = structTy, ptr = NLocal(name = box), indices = objArgs))
+  insns.add(NStore(ty = NPtr(pointee = NI8), value = objI8.value, ptr = NLocal(name = objSlot)))
+  val vtSlot = freshTmp(ctx)
+  val vtArgs: List[NArg] = newList()
+  vtArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  vtArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxVtblSlot, ty = NI32)))
+  insns.add(NGEP(dest = vtSlot, ty = structTy, ptr = NLocal(name = box), indices = vtArgs))
+  insns.add(NStore(ty = NPtr(pointee = ifaceVtStructType(ii)), value = vtbl.value, ptr = NLocal(name = vtSlot)))
+  val boxVal = NVal(ty = boxTy, value = NLocal(name = box))
+  registerTemp(ctx, boxVal)
+  boxVal
+}
+
 /// Dispatch an interface method call: load `obj` and the vtable pointer,
 /// index the method slot, bitcast the raw pointer to the method's function
 /// type, and call with `obj` (as `i8*`) as the receiver.
@@ -12951,6 +13292,14 @@ func lowerIfaceDispatch(
     case _ -> {
       val dest = freshTmp(ctx)
       insns.add(NCall(dest = dest, retTy = retTy, fn = NLocal(name = fnTyped), args = callArgs))
+      // #7585: a `Self`-declared return dispatched through the interface
+      // types the call expression as the interface (T0113), not the
+      // erased raw pointer — rebox before handing the value back.
+      if ii.methodRetIsSelf[slot] {
+        val rawObj = NVal(ty = NPtr(pointee = NI8), value = NLocal(name = dest))
+        val vtblVal = NVal(ty = vtPtrTy, value = NLocal(name = vtbl))
+        return reboxErasedSelfResult(ctx, insns, ii, rawObj, vtblVal)
+      }
       val outV = NVal(ty = retTy, value = NLocal(name = dest))
       registerTemp(ctx, outV)
       outV

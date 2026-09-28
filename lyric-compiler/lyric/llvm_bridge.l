@@ -1252,6 +1252,18 @@ func linkAndEmitNative(
   optLevel: in String,
   extraClangFlags: in List[String],
 ): Bool {
+  // #7585: `Self` nested inside a generic type argument (`List[Self]`,
+  // `Option[Self]`) in an interface method signature has no uniform
+  // erased representation on native (unlike a bare `Self`, which erases
+  // to a pointer-width raw pointer) — report it as a proper `N0006`
+  // diagnostic and abort BEFORE codegen, exactly like the mode checker's
+  // own pre-codegen gates (`N0100`, above), instead of letting
+  // `Lyric.LlvmCodegen`'s internal (and here unreachable) defensive panic
+  // surface as an unhandled exception with a stack trace.
+  if DiagUtil.diagReportAndAbort(nativeSelfShapeDiagnostics(units)) {
+    return false
+  }
+
   // Resolve the target triple before codegen (the datalayout depends
   // on it).
   var effTriple = triple

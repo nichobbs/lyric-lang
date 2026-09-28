@@ -65,7 +65,8 @@ for t in \
   lyric-compiler/lyric/llvm_inout_self_test.l \
   lyric-compiler/lyric/llvm_project_self_test.l \
   lyric-compiler/lyric/cli_run_native_project_self_test.l \
-  lyric-compiler/lyric/native_string_normalize_panic_self_test.l ; do
+  lyric-compiler/lyric/native_string_normalize_panic_self_test.l \
+  lyric-compiler/lyric/llvm_self_test_self_iface.l ; do
   echo "=== $t ==="
   LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
 done
@@ -75,7 +76,8 @@ for t in \
   lyric-compiler/lyric/slice_fastpath_self_test.l \
   lyric-compiler/lyric/labelled_loops_self_test.l \
   lyric-compiler/lyric/distinct_ops_self_test.l \
-  lyric-compiler/lyric/protected_iface_impl_self_test.l ; do
+  lyric-compiler/lyric/protected_iface_impl_self_test.l \
+  lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done

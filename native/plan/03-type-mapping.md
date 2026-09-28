@@ -298,6 +298,25 @@ Interface dispatch:
 %result        = call i8* %speak_fn(i8* %obj_ptr)
 ```
 
+**`Self` in an interface method signature (D-progress-1016, #7585):** a BARE `Self`
+(a parameter, a return, or the implicit receiver's own type) erases to a
+pointer-width `i8*` in the interface's own vtable slot signature — the SAME
+erased type the box's own `obj` slot already uses, ABI-compatible with every
+concrete impl's pointer-width receiver via the SAME unchecked
+function-pointer bitcast the vtable init already performs for every slot.
+A `Self`-typed ARGUMENT dispatched through the interface (its checker
+static type is the interface itself) is unboxed to its raw `obj` pointer at
+the call site; a `Self`-typed RETURN reboxes the erased `i8*` result into a
+FRESH interface box, reusing the receiver's own already-loaded vtable
+pointer (sound because the checker only accepts a `Self`-declared return as
+exactly the callee impl's own target type). `Self` NESTED inside a generic
+type argument (`List[Self]`, `Option[Self]`) is a separate, unsupported
+shape — native's generics monomorphize per concrete type argument, and there
+is no call site to infer one from at an interface declaration — reported by
+`Lyric.LlvmBridge` as `N0006` (a normal `error[N0006] file:line:col: …` line
+naming the interface, method, and span, from a pre-pass BEFORE codegen runs)
+instead of a silent or ABI-inconsistent lowering, or an internal panic.
+
 ---
 
 ## Generics (after monomorphization)

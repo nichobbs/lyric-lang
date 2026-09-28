@@ -265,6 +265,26 @@ The fat pointer struct itself is never passed to `lyric_retain` or
 composition) does not apply to fat pointer values; Rule 8 supplies the
 complete ARC protocol for them.
 
+**`Self` at an interface call site (D-progress-1016, #7585)** extends Rule 8 with two
+narrower moves, both still expressed purely in terms of the box's `obj_ptr`:
+
+- **Unboxing a `Self`-typed argument:** reading `obj_ptr` out of an
+  already-boxed interface value to pass as the erased `i8*` slot argument is
+  a plain borrowed read (Rule 5) — no retain, no release; the box the value
+  came from stays alive for the call's duration. A not-yet-boxed CONCRETE
+  argument at the same slot (the ordinary "concrete implementor flows into
+  an interface-typed position" upcast, just without ever allocating a box
+  for it) is a plain bitcast to `i8*`, same borrow semantics.
+- **Reboxing a `Self`-typed return:** the called method already transferred
+  a fresh rc=1 ownership of its result to this call site (Rule 6); that
+  ownership moves DIRECTLY into a newly allocated box's `obj` slot with NO
+  additional retain, and the box's own destructor (the ordinary Rule-8
+  teardown) is the one release that balances it. The new box reuses the
+  SAME vtable pointer already loaded from the receiver's own box — sound
+  because the checker only accepts a `Self`-declared return as exactly the
+  callee impl's own target type, which is by construction the same concrete
+  runtime type as the receiver.
+
 ---
 
 ## ARC optimisation (Phase 2)
