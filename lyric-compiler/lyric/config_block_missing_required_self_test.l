@@ -127,7 +127,8 @@ test "required field with no default and no env var exits 78 (subprocess, dotnet
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -178,7 +179,8 @@ test "required field with no default and no env var exits 78 (subprocess, jvm)" 
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -241,7 +243,8 @@ func emitRangedFixture(dir: in String, target: in Emitter.CompileTarget, outName
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   match Emitter.emitProject(req).outputPath {
     case None -> panic("ranged config fixture: emitProject produced no output (diagnostics on stderr)")
