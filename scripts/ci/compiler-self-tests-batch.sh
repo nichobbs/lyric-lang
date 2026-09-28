@@ -74,6 +74,7 @@ for t in \
   lyric-compiler/lyric/contract_meta_self_test.l \
   lyric-compiler/lyric/annotation_meta_emit_self_test.l \
   lyric-compiler/lyric/restored_packages_self_test.l \
+  lyric-compiler/lyric/restored_stdlib_async_self_test.l \
   lyric-compiler/lyric/test_synth_self_test.l \
   lyric-compiler/lyric/manifest_self_test.l \
   lyric-compiler/lyric/cli_restore_self_test.l \

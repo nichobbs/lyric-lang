@@ -28,8 +28,9 @@
 //! the reconstructed `Std.Http` source, and asserts `sendAsync`'s `isAsync`
 //! flag survives the round-trip.
 //!
-//! Run via `LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/restored_stdlib_async_self_test.l`
-//! (imports `Lyric.Emitter`, a compiler package).
+//! Run via `lyric test lyric-compiler/lyric/restored_stdlib_async_self_test.l`
+//! (imports `Lyric.Emitter` and `Msil.Bridge`, compiler packages; in the CI
+//! batch `scripts/ci/compiler-self-tests-batch.sh`).
 @test_module
 package Lyric.RestoredStdlibAsyncSelfTest
 
@@ -37,8 +38,14 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.String as Str
+import Std.Errors
+import Std.File as File
+import Std.Path as Path
+import Std.Environment as Environment
+import Std.Uuid
 import Lyric.Emitter as Emitter
 import Lyric.Parser
+import Msil.Bridge
 
 // Find the reconstructed `Std.Http` source among every reconstructed stdlib
 // package source, or panic — a miss here means `Lyric.Stdlib.dll` could not
@@ -92,5 +99,57 @@ test "stdlib compiled-bundle fallback preserves async on Std.Http.HttpResponse.b
   assertTrue(
     bodyText.isAsync,
     "restored_stdlib_async: reconstructed Std.Http.HttpResponse.bodyText must carry isAsync = true"
+  )
+}
+
+// #7617: the reconstruction must keep each package's own imports. D141's
+// bare-name rule reaches `List`/`newList` through `Std.Collections`' whole
+// import of `Std.CollectionsHost`; the import-free reconstruction hid them,
+// so every release-installed build of a program using `List` failed.
+func hasWholeImport(file: in SourceFile, pkg: in String): Bool {
+  var i = 0
+  while i < file.imports.count {
+    val imp = file.imports[i]
+    val isWhole = match imp.selector { case None -> true; case Some(_) -> false }
+    val unaliased = match imp.asAlias { case None -> true; case Some(_) -> false }
+    if isWhole and unaliased and not imp.isExtern and modulePathJoin(imp.path.segments) == pkg {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+test "stdlib compiled-bundle fallback keeps Std.Collections' whole import of Std.CollectionsHost (#7617)" {
+  val sources = Emitter.stdlibSourcesFromCompiledBundle()
+  val coll = findReconstructedPackage(sources, "Std.Collections")
+  assertTrue(
+    hasWholeImport(coll, "Std.CollectionsHost"),
+    "restored_stdlib: reconstructed Std.Collections must import Std.CollectionsHost whole"
+  )
+}
+
+test "a program using List compiles against the compiled-bundle stdlib (#7617)" {
+  val sources = Emitter.stdlibSourcesFromCompiledBundle()
+  val tmp = Environment.getVarOrDefault(
+    "TMPDIR",
+    Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp"))
+  )
+  val dir = Path.join(tmp, "lyric-restored-stdlib-" + uuidToString(newUuid()))
+  match File.createDir(dir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create temp dir " + dir + ": " + IOError.message(e))
+  }
+  defer {
+    match File.deleteDirRecursive(dir) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+  }
+  val program = "package RestoredStdlibListRepro\n\nimport Std.Core\nimport Std.Collections\n\n" +
+    "func main(): Int {\n  val xs: List[String] = newList()\n  xs.add(\"a\")\n  xs.count\n}\n"
+  assertTrue(
+    compileToMsil(program, Path.join(dir, "RestoredStdlibListRepro.dll"), sources),
+    "restored_stdlib: `import Std.Collections` + List/newList must type-check against the compiled-bundle stdlib"
   )
 }

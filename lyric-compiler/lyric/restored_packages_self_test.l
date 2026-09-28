@@ -129,6 +129,54 @@ func testSynthesiseEmptyContract(): Unit {
   assertTrue(Str.contains(src, "package MyApp.Empty"), "synth_empty: emits package decl")
 }
 
+// #7617: the SDK stdlib rebuilt from `Lyric.Stdlib.dll` must keep each
+// package's own imports, or D141's transitive bare-name rule loses
+// `Std.Collections`' re-export of `Std.CollectionsHost`.
+func mkContractWithImports(name: in String, whole: in List[String], selected: in List[String]): Meta.Contract {
+  val c = mkContract(name, emptyDecls())
+  Meta.Contract(
+    packageName = c.packageName,
+    version = c.version,
+    level = c.level,
+    formatVersion = c.formatVersion,
+    decls = c.decls,
+    dependencies = c.dependencies,
+    imports = whole,
+    wholeImports = whole,
+    selectedImports = selected,
+    contractHash = c.contractHash
+  )
+}
+
+func testSynthesiseWithImportsRendersImports(): Unit {
+  val whole: List[String] = newList()
+  whole.add("Std.Core")
+  whole.add("App.Host")
+  val selected: List[String] = newList()
+  selected.add("App.Util::f")
+  selected.add("App.Util::T")
+  selected.add("App.Host::x")
+  val c = mkContractWithImports("App.Public", whole, selected)
+  val src = synthesiseSourceWithImports(c, emptyDecls())
+  assertTrue(Str.contains(src, "import Std.Core\n"), "synth_imports: whole import Std.Core rendered")
+  assertTrue(Str.contains(src, "import App.Host\n"), "synth_imports: whole import App.Host rendered")
+  assertTrue(Str.contains(src, "import App.Util.{f, T}\n"), "synth_imports: selective imports grouped per package")
+  assertFalse(Str.contains(src, "App.Host.{"), "synth_imports: no selective line for a package already imported whole")
+  val pr = parse(src)
+  assertEqualInt(pr.file.imports.count, 3, "synth_imports: reconstructed source parses with its three imports")
+}
+
+func testSynthesiseSourceStaysImportFree(): Unit {
+  val whole: List[String] = newList()
+  whole.add("App.Host")
+  val noSel: List[String] = newList()
+  val c = mkContractWithImports("App.Public", whole, noSel)
+  assertFalse(
+    Str.contains(synthesiseSource(c, emptyDecls()), "import "),
+    "synth_imports: plain synthesiseSource (standalone surface re-check) renders no imports"
+  )
+}
+
 // Function decls round-trip from `Repr` verbatim, plus a trailing newline.
 func testSynthesiseFunc(): Unit {
   val decls: List[Meta.ContractDecl] = newList()
@@ -602,6 +650,14 @@ test "synthesise empty contract" {
 
 test "synthesise func" {
   testSynthesiseFunc()
+}
+
+test "synthesise with imports renders whole and grouped selective imports (#7617)" {
+  testSynthesiseWithImportsRendersImports()
+}
+
+test "synthesise without imports stays import-free (#7617)" {
+  testSynthesiseSourceStaysImportFree()
 }
 
 test "synthesise func with body splices in" {

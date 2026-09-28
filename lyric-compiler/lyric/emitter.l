@@ -585,7 +585,7 @@ pub func stdlibSourcesFromCompiledBundle(): List[String] {
     case Ok(arts) -> {
       var i = 0
       while i < arts.count {
-        sources.add(RP.synthesiseSource(arts[i].contract, noPreamble))
+        sources.add(RP.synthesiseSourceWithImports(arts[i].contract, noPreamble))
         i = i + 1
       }
       sources
@@ -620,7 +620,7 @@ pub func stdlibSourcesFromCompiledBundleJvm(): List[String] {
     case Ok(arts) -> {
       var i = 0
       while i < arts.count {
-        sources.add(RP.synthesiseSource(arts[i].contract, noPreamble))
+        sources.add(RP.synthesiseSourceWithImports(arts[i].contract, noPreamble))
         i = i + 1
       }
       sources

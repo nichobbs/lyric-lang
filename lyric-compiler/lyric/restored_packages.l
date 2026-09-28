@@ -279,7 +279,82 @@ pub func synthesiseSource(contract: in Meta.Contract, preamble: in List[Meta.Con
 // package's case), although its own package type-checked it with its real
 // imports (D-progress-953).  The stored source keeps the bodies.
 func synthesiseSourceWith(contract: in Meta.Contract, preamble: in List[Meta.ContractDecl], withBodies: in Bool): String {
+  synthesiseSourceFull(contract, preamble, withBodies, false)
+}
+
+/// As `synthesiseSource`, but also renders the package's own imports from
+/// the contract (`wholeImports` as `import P`, `selectedImports` as
+/// `import P.{a, b}`).  For reconstructing a set of packages that are
+/// type-checked together — the SDK stdlib rebuilt from `Lyric.Stdlib.dll`
+/// when no stdlib source tree is present — where a package's imports decide
+/// which names its importers see bare (docs/01 §9.2, D141): without them
+/// `Std.Collections` stops re-exporting `Std.CollectionsHost`'s `List`/
+/// `newList` and every release-installed build of a program using them
+/// fails T0010/T0020 (#7617).  Aliased imports are not recorded in the
+/// contract and expose no bare names, so they are not rendered.
+@stable(since = "0.7")
+pub func synthesiseSourceWithImports(contract: in Meta.Contract, preamble: in List[Meta.ContractDecl]): String {
+  synthesiseSourceFull(contract, preamble, true, true)
+}
+
+// `import` lines for `contract`'s recorded whole and selective imports.
+// Selective entries are `<package>::<name>`, grouped per package in first-
+// seen order; a package also imported whole needs no selective line.
+func renderContractImports(contract: in Meta.Contract): String {
+  var sb = ""
+  var wi = 0
+  while wi < contract.wholeImports.count {
+    sb = sb + "import " + contract.wholeImports[wi] + "\n"
+    wi = wi + 1
+  }
+  val selPkgs: List[String] = newList()
+  val selNames: List[String] = newList()
+  var si = 0
+  while si < contract.selectedImports.count {
+    val entry = contract.selectedImports[si]
+    val sep = Str.indexOfRaw(entry, "::")
+    if sep > 0 {
+      val pkg = Str.substring(entry, 0, sep)
+      val name = Str.substring(entry, sep + 2, entry.length - sep - 2)
+      if not contract.wholeImports.contains(pkg) and name.length > 0 {
+        var k = 0
+        var found = false
+        while k < selPkgs.count and not found {
+          if selPkgs[k] == pkg {
+            selNames[k] = selNames[k] + ", " + name
+            found = true
+          }
+          k = k + 1
+        }
+        if not found {
+          selPkgs.add(pkg)
+          selNames.add(name)
+        }
+      }
+    }
+    si = si + 1
+  }
+  var pi = 0
+  while pi < selPkgs.count {
+    sb = sb + "import " + selPkgs[pi] + ".{" + selNames[pi] + "}\n"
+    pi = pi + 1
+  }
+  if sb.length > 0 {
+    sb = sb + "\n"
+  }
+  sb
+}
+
+func synthesiseSourceFull(
+  contract: in Meta.Contract,
+  preamble: in List[Meta.ContractDecl],
+  withBodies: in Bool,
+  withImports: in Bool,
+): String {
   var sb = "package " + contract.packageName + "\n\n"
+  if withImports {
+    sb = sb + renderContractImports(contract)
+  }
   // Preamble decls first — typically extern types / opaques from
   // sibling packages whose names appear in this package's signatures.
   var pi = 0
