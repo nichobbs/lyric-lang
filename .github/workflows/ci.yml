@@ -66,8 +66,10 @@ concurrency:
 # setup-java, passwordless sudo for `apt-get install z3`, and for the
 # native job clang/gcc/ASan).
 #
-# Every job that downloads the `build-artifacts` artifact's "Restore
-# executable permissions" step also replaces the downloaded `lyric` apphost
+# Every job that downloads the `build-artifacts` artifact (almost all of
+# them through the `.github/actions/lyric-test-setup` composite action) has a
+# "Restore executable permissions" step that also replaces the downloaded
+# `lyric` apphost
 # stub with a thin `dotnet lyric.dll` wrapper at the same path (#7025: a
 # self-hosted runner of a different CPU architecture than the GitHub-hosted
 # runner that built it gets "cannot execute binary file: Exec format error"
@@ -208,6 +210,27 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/aot-smoke-build.sh
+
+      # Stage the self-hosted compiler as a single Lyric.Compiler.dll bundle for
+      # the downstream compiler-self-tests-* jobs.  Each @test_module links the
+      # bundle as one restored dep, so its Lyric.* imports resolve inside ONE
+      # assembly — sidestepping the per-package cross-package emission corruption
+      # (docs/41 §R7) that mis-parses even `package P`.  The bundle also carries
+      # each package's `pub val` constants (the original #3086 reason for staging).
+      # It only needs the AOT binary, so it runs in the background (~3.5 min)
+      # while the example, BuildInfo and proof steps below use the same binary.
+      # Nothing below reads `selfhosted/` (check_assembly_refs.sh globs only the
+      # top level of .bootstrap/stage1), and the upload waits for it.
+      - name: Stage self-hosted compiler bundle
+        if: steps.changes.outputs.has_code_changes == 'true'
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          bin_dir="$(dirname "$lyric_bin")"
+          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$bin_dir" .bootstrap/stage1
+
       # NOTE: the self-hosted-emitter IL-validity check (`ilverify`) runs in
       # the standalone `ilverify-required` job below and is required by
       # `build-and-test` — it is a hard gate.  Developers run it on demand
@@ -292,20 +315,10 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         run: bash scripts/check_assembly_refs.sh .bootstrap/stage1
 
-      # Stage the self-hosted compiler as a single Lyric.Compiler.dll bundle for
-      # the downstream compiler-self-tests-* jobs.  Each @test_module links the
-      # bundle as one restored dep, so its Lyric.* imports resolve inside ONE
-      # assembly — sidestepping the per-package cross-package emission corruption
-      # (docs/41 §R7) that mis-parses even `package P`.  The bundle also carries
-      # each package's `pub val` constants (the original #3086 reason for staging).
-      - name: Stage self-hosted compiler bundle
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          bin_dir="$(dirname "$lyric_bin")"
-          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$bin_dir" .bootstrap/stage1
+      # No `if:` on a bare wait-all step (#7110): it drains the background
+      # "Stage self-hosted compiler bundle" step above before the upload.
+      - name: Wait for the compiler bundle
+        wait-all: true
 
       - name: Upload build artifacts
         if: steps.changes.outputs.has_code_changes == 'true'
@@ -639,20 +652,9 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
+          build-config: ${{ env.BUILD_CONFIG }}
       - name: ilverify self-hosted emitter IL (required gate, #3943)
         working-directory: ${{ github.workspace }}
         run: |
@@ -680,21 +682,9 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        shell: bash
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
+          build-config: ${{ env.BUILD_CONFIG }}
       - name: Install dotnet-ildasm tool
         run: dotnet tool install --tool-path .tools dotnet-ildasm || true
       - name: Measure MSIL BOX instructions (epic #1877 Stage 2+ zero-overhead gate)
@@ -722,25 +712,10 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Set up Java 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
+          java: 'true'
+          build-config: ${{ env.BUILD_CONFIG }}
       - name: Measure JVM boxing calls (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
         run: |
@@ -768,25 +743,10 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Set up Java 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
+          java: 'true'
+          build-config: ${{ env.BUILD_CONFIG }}
       - name: Assert JVM LineNumberTable correctness (docs/63 band B2)
         working-directory: ${{ github.workspace }}
         run: |
@@ -863,21 +823,10 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Set up Java 21 (jvm_lambda_iface_bundling_self_test.l runs `java -jar`, #6671)
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        run: bash scripts/ci/write-lyric-dotnet-wrapper.sh "bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          java: 'true'
+          build-config: ${{ env.BUILD_CONFIG }}
       - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
         run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
       - name: Compiler self-tests (native lyric test, shard ${{ matrix.shard }})
@@ -905,25 +854,10 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Set up Java 21 (jvm_lambda_iface_bundling_self_test.l's last case runs `java -jar` on this dotnet-target job — #6671)
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
+          java: 'true'
+          build-config: ${{ env.BUILD_CONFIG }}
       - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
         run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
 
@@ -2634,21 +2568,9 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
-
+          build-config: ${{ env.BUILD_CONFIG }}
       # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
       # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
       # programs compiled through parse -> codegen -> clang -> run), and
@@ -2863,26 +2785,10 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
-
+          java: 'true'
+          build-config: ${{ env.BUILD_CONFIG }}
       # source_path_diagnostics_self_test.l and jvm_sourcefile_attr_self_test.l
       # (below) spawn `./bin/lyric` as a subprocess, resolved relative to CWD
       # (repo root) -- the same `./bin/lyric` symlink `make lyric` creates for
@@ -2902,8 +2808,8 @@ jobs:
       # vs `Std.Stream.ByteWriter` resolved by codegen scope tiers).  M2b-M2d
       # import packages exporting module-level `pub val` constants, so
       # `compilerClosureDllPaths` links the self-hosted-emitted compiler DLLs
-      # staged under `<libdir>/selfhosted` by stage-selfhosted-compiler.sh —
-      # the F#-emitted stage-1 metadata omits `pub val` decls (#3086).
+      # staged under `<libdir>/selfhosted` by stage-selfhosted-compiler.sh,
+      # which carries their `pub val` decls (#3086).
       # lowering_token_self_test.l (#2473) covers the listTokensForLowering /
       # dictTokensForLowering cache hit/miss logic in Msil.Lowering; it rides
       # the same step because it imports `Msil.*` like M2a-M2d.
@@ -2912,16 +2818,11 @@ jobs:
       # plain `func main` program requiring LYRIC_LOAD_COMPILER=1 to
       # @test_module, so it now rides this step for the same reason.
       #
-      # INVARIANT: this step stages compiler DLLs into `<libdir>/selfhosted`
-      # while running as a `background: true` step alongside 22+ other
-      # concurrent steps in this job. That's only safe because no other
-      # concurrent step in compiler-self-tests-dotnet-b reads from that path.
-      # If you add a new `LYRIC_LOAD_COMPILER=1` (or otherwise
-      # selfhosted-compiler-dependent) background step to this job, it MUST
-      # either run after this step completes or stage its own copy --
-      # reading `<libdir>/selfhosted` concurrently with this step's staging
-      # write is a race with no failure signal (silently flaky, not a
-      # deterministic error).
+      # The compiler bundle these link is staged once by the `build` job's
+      # "Stage self-hosted compiler bundle" step and arrives with
+      # build-artifacts (under both `<libdir>/selfhosted` and
+      # `.bootstrap/stage1/selfhosted`); this step used to re-stage the same
+      # bundle itself, which took most of its ~4.5 min.
       - name: MSIL backend self-tests M2a-M2d (native lyric test)
         if: ${{ !cancelled() }}
         background: true
@@ -2937,7 +2838,6 @@ jobs:
             echo "::error::AOT binary not found at $lyric_bin; skipping MSIL backend self-tests"
             exit 1
           fi
-          bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
           ran=""
           for t in \
             lyric-compiler/msil/msil_self_test_m2a.l \
@@ -3679,21 +3579,9 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
-
+          build-config: ${{ env.BUILD_CONFIG }}
       # ILCompiler package cache — keyed on the .NET SDK version so the
       # ~200 MB compiler package is not re-downloaded on every run.
       # restore-keys fallback on the runner.os prefix so a SDK patch-version bump
@@ -3876,26 +3764,10 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Set up Java 21 (for JVM emitter tests)
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
-
+          java: 'true'
+          build-config: ${{ env.BUILD_CONFIG }}
       - name: Bitwise self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -5388,26 +5260,10 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Set up Java 21 (for JVM emitter tests)
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
-
+          java: 'true'
+          build-config: ${{ env.BUILD_CONFIG }}
       - name: Control-flow terminator self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -6656,28 +6512,17 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # LYRIC_CLI_PATH is computed here (step level, shell-expanding the
-        # real $BUILD_CONFIG env var) rather than in a job-level `env:` —
-        # the `env` context is not available when *defining* another
-        # `env:` key at the job level (the same pitfall that once made
-        # bench.yml fail validation with zero jobs dispatched, #6247).
-        # Written to $GITHUB_ENV so every later step in this job sees it
-        # as a real environment variable. Also wraps the downloaded stub
-        # in a dotnet-invoking shim; see the runner-pools comment near
-        # the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          echo "LYRIC_CLI_PATH=$lyric_bin" >> "$GITHUB_ENV"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
+          build-config: ${{ env.BUILD_CONFIG }}
+      - name: Export LYRIC_CLI_PATH
+        # Computed here (step level, shell-expanding the real $BUILD_CONFIG
+        # env var) rather than in a job-level `env:` — the `env` context is
+        # not available when *defining* another `env:` key at the job level
+        # (the same pitfall that once made bench.yml fail validation with
+        # zero jobs dispatched, #6247). Written to $GITHUB_ENV so every later
+        # step in this job sees it as a real environment variable.
+        run: echo "LYRIC_CLI_PATH=bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" >> "$GITHUB_ENV"
 
       - name: Stage stdlib DLLs + local-dep resolver setup
         run: bash scripts/ci/stage-stdlib-dlls-localdep-resolver.sh
@@ -6963,21 +6808,9 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
-
+          build-config: ${{ env.BUILD_CONFIG }}
       # Full self-hosted stdlib bundle (#2592, stage-2 milestone) — builds
       # the entire public Std.* surface through the self-hosted MSIL backend
       # via lyric-stdlib/lyric.full.toml.  The bootstrap lyric.toml is only
@@ -7543,21 +7376,9 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
-
+          build-config: ${{ env.BUILD_CONFIG }}
       # See compiler-self-tests-dotnet-a's "Parallel step execution" comment above
       # for how `background: true` / `wait-all: true` work.
       #
@@ -8142,21 +7963,9 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+      - uses: ./.github/actions/lyric-test-setup
         with:
-          global-json-file: bootstrap/global.json
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: build-artifacts
-      - name: Restore executable permissions
-        # Wraps the downloaded stub in a dotnet-invoking shim; see the
-        # runner-pools comment near the top of this file for why.
-        run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
-          bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
-
+          build-config: ${{ env.BUILD_CONFIG }}
       # clang and zlib1g-dev are required by the ILCompiler linker pass used by
       # `lyric build --release --aot` (the trampoline-elimination pipeline, #4139).
       # binutils provides ld.bfd, which release.l's buildLinkerArgsUnix passes
