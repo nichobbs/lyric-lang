@@ -921,7 +921,9 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # unions, enums, distinct types,
                                        # tuples, match, generics (monomorphized), closures,
                                        # non-generic interfaces (impl I for Record, vtable
-                                       # dispatch), NativeWeak[T], slice[T], List/Map +
+                                       # dispatch on an interface-typed receiver, or direct
+                                       # resolution on the concrete record receiver),
+                                       # NativeWeak[T], slice[T], List/Map +
                                        # for/indexing (map keys String or scalar); non-generic
                                        # protected types (entry/func both lock a mutex buffer via
                                        # a lock/unlock wrapper); non-generator async func as a

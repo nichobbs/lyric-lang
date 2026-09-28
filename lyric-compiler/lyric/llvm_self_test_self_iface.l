@@ -38,16 +38,18 @@
 //!
 //! Note: calling an ordinary (non-`Self`) `impl` method directly on a
 //! CONCRETE record receiver (`sq.area()` where `sq: Square`, not
-//! interface-typed) is a separate, PRE-EXISTING native gap unrelated to
-//! this feature — impl methods on a record are only reachable through an
-//! interface-typed receiver on `--target native` today (`collectImplMethods`
+//! interface-typed) was a separate, pre-existing native gap unrelated to
+//! this feature — impl methods on a record were only reachable through an
+//! interface-typed receiver on `--target native` (`collectImplMethods`
 //! registers them under the collision-free `<Record>.<Iface>.<method>` IR
-//! name, which ordinary UFCS resolution never looks up). Protected-type
-//! members are unaffected by that gap (`registerProtectedMember` always
-//! registers under the bare `<pkg>.<method>` name), so this file's
-//! concrete-receiver cases use a protected type; every record case here
-//! is exercised via an interface-typed receiver, matching every other
-//! record/interface test in `llvm_self_test_n3.l`.
+//! name, which ordinary UFCS resolution never looked up). Fixed in #7600
+//! (`registerImplDirectMethods`, `llvm_self_test_impl_direct.l`).
+//! Protected-type members were unaffected by that gap
+//! (`registerProtectedMember` always registers under the bare
+//! `<pkg>.<method>` name), so this file's concrete-receiver cases still use
+//! a protected type; every record case here is exercised via an
+//! interface-typed receiver, matching every other record/interface test in
+//! `llvm_self_test_n3.l`.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:

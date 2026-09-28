@@ -281,7 +281,8 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > front-end visibility rule, not a codegen difference), unions, enums,
 > distinct types (range-checked), and tuples; full pattern matching;
 > non-generic interfaces (`impl I for Record` dispatches through a
-> per-interface vtable) and non-generic protected types (`entry`/`func`
+> per-interface vtable on an interface-typed receiver, and resolves
+> directly on a concrete record receiver too) and non-generic protected types (`entry`/`func`
 > members lock a mutex around a desugared inner body); generic records,
 > unions, and functions (via call-site monomorphization); closures
 > (by-value captures); and
