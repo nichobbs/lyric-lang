@@ -98,7 +98,7 @@ pub record EmitRequest {
   /// Whether to synthesize runtime contract assertions (requires:/ensures:)
   /// during elaboration. Gated by `[contracts].enabled` in lyric.toml
   /// (docs/63 B0/B1 phase); defaults to true (current behavior).
-  contractsEnabled: Bool = true
+  contractsEnabled: Bool
 }
 
 pub record EmitResult {
@@ -186,7 +186,7 @@ pub record EmitProjectRequest {
   /// Whether contracts (requires/ensures/invariant) are enabled for runtime
   /// checking. Read from manifest `[contracts].enabled` or defaults to true
   /// (docs/63 B0 / B1 phase).
-  contractsEnabled: Bool = true
+  contractsEnabled: Bool
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
   // ─────────────────────────────────────────────────────────────────────────────
@@ -3299,7 +3299,7 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
       req.defines,
       req.packageVersion,
       req.path,
-      true
+      req.contractsEnabled
     )
   } catch Bug as b {
     jvmPanicDiags.add(jvmBridgePanicDiagnostic(b.message))
