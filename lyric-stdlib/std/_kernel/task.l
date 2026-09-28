@@ -426,3 +426,101 @@ pub func restoreToken(previous: in CancellationToken): Unit {
 pub func hasAmbient(): Bool {
   tokenCanBeCanceled(currentToken())
 }
+
+// =====================================================================
+// Bounded-wait single-closure execution (#7461, D-progress-1021).
+//
+// `runWithin` runs an arbitrary `() -> T` closure off the calling
+// thread and blocks the caller for at most `timeoutMs` — a real,
+// preemptive bound: the caller genuinely stops waiting once the
+// budget elapses even if the closure is still running.  Built
+// entirely on the same `Task.Run(Action)` / `Task.Wait(int)`
+// primitives `Health.Kernel.Net` (lyric-health) already used for its
+// own (now-retired) private timeout kernel; see this file's own
+// `taskRunWithCancel` for the delegate-bridging precedent.
+//
+// `T` never crosses the BCL boundary: the closure writes its result
+// into a captured `List[T]` (used as a one-slot mutable cell — see
+// below for why NOT a generic record), so the extern surface only
+// ever deals with `() -> Unit` and stays untyped in `T`.
+//
+// NOT a generic record with a `var T`-typed (or `var Option[T]`-typed)
+// field: a mutation to such a field, made through a value captured by a
+// closure inside a GENERIC function, is silently lost — the read after
+// the closure runs still sees the field's value from construction, on
+// both targets. Confirmed with a minimal standalone repro with no
+// closure, no timeout, and no `Task`/`Thread` involved at all:
+//
+//     record MyBox[T] { var value: T }
+//     func myFn[T](seed: in T, other: in T): T {
+//       val box: MyBox[T] = MyBox(value = seed)
+//       box.value = other
+//       return box.value  // returns `seed`, not `other`
+//     }
+//
+// `Std.Collections.List[T]`'s own mutation (`add`/indexing) does NOT
+// have this problem (confirmed with the same repro shape substituting a
+// `List[T]` for `MyBox[T]`), so `runWithin` uses a `List[T]` as its
+// one-slot result cell instead of a dedicated record type. This is a
+// genuine, narrow self-hosted compiler gap in generic-record `var`-field
+// assignment specialisation inside a generic function — not specific to
+// `Std.Task` — tracked in #7663 rather than fixed here (out of
+// scope for #7461, which only needs a *working* `runWithin`).
+// =====================================================================
+/// `Task.Wait(int)` — block the caller up to `timeoutMs` milliseconds;
+/// returns `false` on timeout instead of throwing.
+@axiom("System.Threading.Tasks.Task.Wait(int) — block the caller up to timeoutMs; returns false on timeout")
+@externInstance
+@externTarget("System.Threading.Tasks.Task.Wait")
+func waitTaskMs(t: in Task, timeoutMs: in Int): Bool = ()
+
+/// Run `action` off the calling thread and block for at most
+/// `timeoutMs` milliseconds; returns `true` when `action` completed
+/// within the budget, `false` on timeout. The non-generic engine
+/// `runWithin[T]` builds on — kept `pub` (rather than the raw
+/// `Task.Run`/`Task.Wait` primitives above) so a generic function's
+/// per-caller specialisation only ever needs one exported name.
+pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
+  requires: timeoutMs >= 0
+{
+  val t = taskRunWithCancel(action, noCancellation())
+  return waitTaskMs(t, timeoutMs)
+}
+
+/// Run `f` on a BCL thread-pool thread and block the calling thread
+/// for at most `timeoutMs` milliseconds.
+///
+/// Returns `Some(result)` when `f` completes within the budget, or
+/// `None` on timeout.  A timed-out computation keeps running in the
+/// background: neither this API nor the BCL has a way to forcibly
+/// abort it, so a slow `f` continues consuming a thread-pool thread
+/// after `runWithin` has already returned `None` to its caller.
+///
+/// A panic inside `f` is captured on the background thread and, once
+/// observed here (which only happens if it occurs before the
+/// deadline), is **re-raised on the calling thread** — `runWithin`
+/// itself panics with the same message, exactly as a direct call to
+/// `f()` would.  Panics are never swallowed; a caller that wants
+/// panic isolation on top of the timeout wraps the call in its own
+/// `try { ... } catch Bug as b { ... }` (the pattern `Health`'s
+/// `runCheckIsolated` uses).  A panic that occurs only after the
+/// deadline has already elapsed is unobservable — the same
+/// "keeps running in the background" caveat above.
+pub func runWithin[T](timeoutMs: in Int, f: in () -> T): Option[T]
+  requires: timeoutMs >= 0
+{
+  val results: List[T] = newList()
+  val panics: List[String] = newList()
+  val action: () -> Unit = { -> try { results.add(f()) } catch Bug as b { panics.add(b.message) } }
+  val completed = runActionWithin(action, timeoutMs)
+  if not completed {
+    return None
+  }
+  if panics.count > 0 {
+    panic(panics[0])
+  }
+  if results.count > 0 {
+    return Some(results[0])
+  }
+  return None
+}

@@ -7,10 +7,12 @@ description = "Liveness and readiness health-check endpoints for lyric-web servi
 
 [features]
 default = ["dotnet"]
-# BCL Task.Run/Task.Wait bounded-wait for check timeouts.
+# `Health` itself is now target-agnostic (#7461): `runCheckIsolated`'s
+# bounded-wait timeout is enforced on both targets via `Std.Task.runWithin`.
+# These flags are kept purely for CI target selection
+# (`--target jvm --no-default-features --features jvm`); no `@cfg` in this
+# package's own source branches on them any more.
 dotnet  = []
-# No preemptive bounded-wait facility exists on this target yet (see
-# Health.runCheckIsolated's @cfg(feature = "jvm") arm and README.md).
 jvm     = []
 
 [project]
@@ -19,8 +21,7 @@ output          = "single"
 output_assembly = "Health.dll"
 
 [project.packages]
-"Health"            = "src/health.l"
-"Health.Kernel.Net" = "src/_kernel/net/health_kernel.l"
+"Health" = "src/health.l"
 
 [project.tests]
 "Health.HealthTests" = "tests/health_tests.l"

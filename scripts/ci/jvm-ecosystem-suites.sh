@@ -13,7 +13,8 @@
 #   resilience  Resilience.Kernel.Jvm circuit breaker / retry (#5037)
 #   jsonrpc     call deadlines against silent and late peers (#7451)
 #   mcp         client timeouts over real child processes (#7451)
-#   health      runCheckIsolated's jvm arm, panic isolation (#7461)
+#   health      runCheckIsolated's bounded-wait timeout enforcement + panic
+#               isolation, both real on jvm now via Std.Task.runWithin (#7461)
 #   generator-sdk  slice `.toArray()`, literal `String.split` (#7480, #7511)
 #   web         Web.Kernel.Runtime's Undertow server, dispatch, aspects,
 #               worker loop, TLS/mTLS round trip (#7578)

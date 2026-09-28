@@ -881,7 +881,8 @@ All are provisional pending weaver integration.
 | `Std.HttpServer`         | `http_server.l`              | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| **Total**                |                              | **28** | **2**       |
+| `Std.Task`               | `task.l`                     | 1      | 0           |
+| **Total**                |                              | **29** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -920,8 +921,8 @@ recorded in the §19 baseline.
 
 ### Combined total
 
-.NET (28 stable + 2 provisional = 30) + JVM (24 stable + 0 provisional =
-24) = **54** `@axiom` annotations covering the entire extern boundary
+.NET (29 stable + 2 provisional = 31) + JVM (24 stable + 0 provisional =
+24) = **55** `@axiom` annotations covering the entire extern boundary
 across both targets.  `Std.StringHost` (both targets) joined the boundary
 with `Std.String.StringBuilder` and `indexOfFrom` (#7257, #7258).  `Std.TlsHost` (both targets) joined the boundary
 with the `Std.Tls` PEM certificate/key loading module (docs/61 phase 1,
@@ -996,6 +997,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.RegexHost` | `regex_host.l` | System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts |
 | `dotnet` | `Std.SecureRandomHost` | `secure_random_host.l` | System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output |
 | `dotnet` | `Std.StringHost` | `string_host.l` | System.Text.StringBuilder, String.IndexOf(string, int, StringComparison), String.CompareOrdinal(string, string) and String.get_Chars(int) conform to their documented .NET contracts |
+| `dotnet` | `Std.Task` | `task.l` | System.Threading.Tasks.Task.Wait(int) — block the caller up to timeoutMs; returns false on timeout |
 | `dotnet` | `Std.TcpHost` | `tcp_host.l` | System.Net.Sockets and System.Net.Security operations conform to their documented .NET contracts |
 | `dotnet` | `Std.TimeHost` | `time_host.l` | System.DateTime / System.TimeSpan / System.DateTimeOffset / System.Threading.Thread conform to their documented .NET contracts |
 | `dotnet` | `Std.TlsHost` | `tls_host.l` | System.Security.Cryptography.X509Certificates operations conform to their documented .NET contracts |
