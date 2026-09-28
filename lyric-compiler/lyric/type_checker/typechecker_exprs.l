@@ -2417,6 +2417,27 @@ func stringHostMethodType(name: in String): Option[Type] {
   None
 }
 
+// The canonical stdlib `List[T]`'s `TypeId`, resolved by owning package
+// rather than by its (shadowable) bare name — the same precedent
+// `isStdCoreMonadType` above sets for `Std.Core.Result`/`Option` ("a
+// same-simple-name Result/Option union declared OUTSIDE Std.Core must
+// never satisfy this check").  `extern type List[T]` is declared in
+// `Std.CollectionsHost` on BOTH targets (`lyric-stdlib/std/_kernel/
+// collections_host.l` for dotnet, the `_kernel_jvm` twin for JVM) and
+// `Std.Collections` re-exports it, so this is stable regardless of which
+// target compiled it. `symTableTryFindInPackage` scans by `originPackage`
+// directly, independent of the current file's own imports or any
+// same-named local shadow (#7665) — unlike a bare `symTableTryFindOne(tbl,
+// "List")`, which prefers a package-local type of the same name over the
+// stdlib one, per the shadowing rule documented at `typechecker_checker.l`'s
+// symbol-registration site.
+func stdCollectionsListTypeId(tbl: in SymbolTable): Option[TypeId] {
+  match symTableTryFindInPackage(tbl, "Std.CollectionsHost", "List") {
+    case Some(sym) -> symbolTypeIdOpt(sym)
+    case None -> None
+  }
+}
+
 // Field / builtin member typing only — no method-space consultation and no
 // unknown-member diagnostics.  The `ECall` arm uses this directly for a
 // member callee (methods are resolved arity-aware there); the plain `EMember`
@@ -2450,31 +2471,35 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
       // sidestep exactly this — needs `List`'s real `TypeId` for the checker
       // to accept it where a `List[T]` is expected (a field, a `val`
       // annotation, a call argument).  `builtinMember` has no `tbl` to look
-      // that TypeId up with, so it is handled here instead, resolving `List`
-      // through the same scope-visible name lookup `resolveTypePath` uses
-      // for an ordinary `List[T]` type annotation: if the current file has
-      // `Std.Collections` (or anything re-exporting `List`) in scope, this
-      // returns the same `TyUser` a `List[elem]` annotation would; otherwise
-      // it falls through to `builtinMember`'s `None` and `toList` fails as
-      // an unrecognised member, same as any other name a slice cannot
-      // resolve without `Std.Collections` imported.
+      // that TypeId up with, so it is handled here instead.
+      //
+      // #7665: an earlier revision resolved `List` via a bare, shadowable
+      // name lookup (`symTableTryFindOne(tbl, "List")`) — a package
+      // declaring its own type named `List` would shadow the stdlib one for
+      // that lookup, but `lowerSliceToListMsil` unconditionally constructs a
+      // genuine BCL `List<E>` at runtime regardless of what the checker
+      // resolved "List" to.  Worse, the shadowed case didn't even fail
+      // cleanly: the fallback (no match) returns `TyError`, and `typeEquiv`
+      // treats `TyError` as equal to anything, so a `val` binding with any
+      // declared type would silently accept it and crash with
+      // `InvalidCastException` at runtime instead of failing to compile.
+      // `stdCollectionsListTypeId` fixes both problems the same way
+      // `isStdCoreMonadType` above does for `Std.Core.Result`/`Option`:
+      // resolve the STDLIB's List by its OWN owning package
+      // (`Std.CollectionsHost`), never by a bare, shadowable name, so
+      // `.toList()` always type-checks as the genuine stdlib collection
+      // codegen actually builds — with no dependence on the current file's
+      // imports (`Lyric.Pipeline` preloads every stdlib package's
+      // signatures) and no shadow can ever intercept it.
       match recv {
         case TySlice(elem) -> {
           if name == "toList" {
-            match symTableTryFindOne(tbl, "List") {
-              case Some(sym) -> {
-                if symbolIsType(sym) {
-                  match symbolTypeIdOpt(sym) {
-                    case Some(tid) -> {
-                      val noParams: List[Type] = newList()
-                      val targs: List[Type] = newList()
-                      targs.add(elem)
-                      return TyFunction(params = noParams, ret = TyUser(id = tid, name = "List", args = targs), isAsync = false)
-                    }
-                    case None -> {
-                    }
-                  }
-                }
+            match stdCollectionsListTypeId(tbl) {
+              case Some(tid) -> {
+                val noParams: List[Type] = newList()
+                val targs: List[Type] = newList()
+                targs.add(elem)
+                return TyFunction(params = noParams, ret = TyUser(id = tid, name = "List", args = targs), isAsync = false)
               }
               case None -> {
               }

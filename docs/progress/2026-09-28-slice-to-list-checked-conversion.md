@@ -33,13 +33,31 @@ both a `lyric_list_copy`). `--target jvm` has no `toList` arm in
   which needs `List`'s actual `TypeId` to type-check wherever a `List[T]`
   is expected (a field, a `val` annotation, a call argument) —
   `builtinMember` has no `SymbolTable` to look that up with, so this case
-  lives in `inferMemberBase` instead, which does have `tbl`. It resolves
-  `List` through the exact same scope-visible name lookup
-  (`symTableTryFindOne` + `symbolTypeIdOpt`) `resolveTypePath` uses for an
-  ordinary `List[T]` type annotation — in practice this always succeeds,
-  since `Lyric.Pipeline` preloads every stdlib package's signatures
-  (D-progress-1011), so `List` resolves even without an explicit
-  `Std.Collections` import (confirmed empirically).
+  lives in `inferMemberBase` instead, which does have `tbl`.
+  - **Review round 2 (#7665) caught a real hole in the first cut**: it
+    resolved `List` via a bare, shadowable name lookup
+    (`symTableTryFindOne(tbl, "List")`). A package declaring its own type
+    named `List` shadows the stdlib one for that lookup, but
+    `lowerSliceToListMsil` unconditionally constructs a genuine BCL
+    `List<E>` at runtime regardless of what the checker resolved "List" to
+    — and the shadowed case didn't even fail cleanly: the no-match fallback
+    returns `TyError`, and `typeEquiv` treats `TyError` as equal to
+    anything, so a `val` binding with ANY declared type silently accepted
+    it and crashed with `InvalidCastException` at runtime instead of
+    failing to compile. Confirmed both the hole and the fix by hand: a
+    `record List { tag: Int }` in the same package as a `.toList()` call,
+    assigned to a mismatched `val` — before the fix this built and crashed
+    at runtime; after, it's a clean compile-time `T0060`.
+  - Fixed by resolving `List` through its OWN owning package
+    (`stdCollectionsListTypeId` → `symTableTryFindInPackage(tbl,
+    "Std.CollectionsHost", "List")`) instead of a bare name, mirroring the
+    established `isStdCoreMonadType` precedent this same file already uses
+    for `Std.Core.Result`/`Option` ("a same-simple-name Result/Option union
+    declared OUTSIDE Std.Core must never satisfy this check"). This also
+    means `.toList()` no longer depends on `Lyric.Pipeline`'s stdlib
+    preloading behavior being import-independent (an implementation detail
+    the first cut happened to lean on) — it now resolves the same way
+    regardless of the call site's own imports or any local shadow.
 - `codegen.l` gained `lowerSliceToListMsil`, wired into
   `lowerMethodCallMsil` alongside `append`/`concat`/`slice`. It builds a
   genuine `MConcreteList(e)` (never the legacy erased `List<object>`
@@ -68,6 +86,11 @@ Manually verified end-to-end against a freshly built `./bin/lyric` with a
 standalone repro exercising `Byte`/`Int`/`String` slices, mutation
 independence from the source slice, and (separately) that a call site with
 no explicit `Std.Collections` import still type-checks and runs correctly.
+Two new `typechecker_self_test.l` cases (583 total, up from 581) pin
+#7665's fix directly: a `.toList()` call in a package that shadows `List`
+with its own `record List` now produces exactly one `T0060` against a
+mismatched `val` binding (previously zero diagnostics), and the ordinary
+no-shadow case still type-checks with zero diagnostics.
 
 ## Docs
 

@@ -6659,3 +6659,50 @@ test "record-pattern head with the right record name but the wrong qualifier is 
     "T0137 names the wrong qualifier: " + diagMessageFor(cr, "T0137")
   )
 }
+
+// #7665: `slice[T].toList()`'s result type must always be the genuine
+// stdlib `List[T]` `lowerSliceToListMsil` (`Msil.Codegen`) actually
+// constructs at runtime, never a same-named local type — resolving `List`
+// by a bare, shadowable name lookup let a local `record List` intercept
+// the type-checker's resolution while codegen still built a real BCL
+// `List<E>` regardless, so a `val` binding with an incompatible declared
+// type silently accepted it (via `typeEquiv`'s `TyError`-equals-anything
+// rule) instead of failing to compile, then crashed with
+// `InvalidCastException` at runtime.  `stdCollectionsListTypeId` fixes
+// this by resolving `List` through its owning package
+// (`Std.CollectionsHost`) rather than by name, mirroring
+// `isStdCoreMonadType`'s precedent for `Std.Core.Result`/`Option`.
+func stdCollectionsHostPackages(): List[ImportedPackage] {
+  val pkg = parse("package Std.CollectionsHost\nextern type List[T] = \"System.Collections.Generic.List`1\"\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Std.CollectionsHost",
+      items = pkg.file.items,
+      imports = collectImportNames(pkg.file.imports),
+      wholeImports = collectWholeImportNames(pkg.file.imports)
+    )
+  )
+  packages
+}
+
+test "slice.toList() resolves the genuine stdlib List even with a local shadow (#7665)" {
+  // `App`'s own `record List` shadows the stdlib's `List` for an ordinary
+  // bare-name type reference (the DECLARED type of `lst` below resolves to
+  // this local record) — but `xs.toList()`'s inferred type must still be
+  // the genuine stdlib `List[Int]`, so the mismatch is now a compile-time
+  // T0060, not a silent accept.
+  val src = "package App\nimport Std.CollectionsHost\nrecord List {\n  tag: Int\n}\nfunc f(): Unit {\n  val xs: slice[Int] = [1, 2, 3]\n  val lst: List = xs.toList()\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(
+    countDiagCode(cr, "T0060"),
+    1,
+    "a local record List shadowing the stdlib List must not let .toList() silently satisfy it"
+  )
+}
+
+test "slice.toList() type-checks cleanly with no shadowing type in scope (#7665)" {
+  val src = "package App\nimport Std.CollectionsHost\nfunc f(): Unit {\n  val xs: slice[Int] = [1, 2, 3]\n  val lst: List[Int] = xs.toList()\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "no shadow, matching declared type: toList() must type-check clean")
+}
