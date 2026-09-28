@@ -3480,9 +3480,17 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
 
 /// Adapt a value to the declared type: integer literals retype freely;
 /// Int widens to Long implicitly at a declared-Long boundary (matching
-/// the managed backends' literal-friendly call sites).  Anything else
-/// must already match.
-func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): NVal {
+/// the managed backends' literal-friendly call sites); a wider non-literal
+/// int narrows to a declared-narrower boundary (#7452 — see the `NTrunc`
+/// branch below). Anything else must already match.
+///
+/// `atSpan`, when supplied by a caller that has a source `Expr` in hand
+/// (`lowerExprExpecting`), locates the terminal type-mismatch panic at the
+/// user's actual source position so `Lyric.Emitter.nativeBridgePanicDiagnostic`
+/// (#7452) can report a real `error[N0007] line:col: …` instead of pointing
+/// at file-start — mirroring `msilBridgePanicDiagnostic`'s `error[T0119]
+/// line:col: …` convention (`emitter.l`'s `parsePanicSpan`).
+func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, atSpan: in Option[Span] = None): NVal {
   val sameKind = nTypeToIrString(v.ty) == nTypeToIrString(want)
   if sameKind {
     return v
@@ -3536,6 +3544,24 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): N
     insns.add(NSExt(dest = dest, fromTy = NI32, value = v.value, toTy = NI64))
     return NVal(ty = NI64, value = NLocal(name = dest))
   }
+  // #7452: narrow a wider non-literal integer to a declared-narrower slot,
+  // the same `trunc` `.toByte()` emits explicitly (above). Reachable
+  // whenever the type checker admits an `Int`-typed argument at an
+  // unresolved generic parameter it never narrows itself — `List[Byte]`/
+  // `Map[K, Byte]`'s extern `add`/`set` are the concrete case (`typeEquiv`
+  // treats a bare `TyVar` as satisfied by any argument type,
+  // `typechecker_types.l`): `bytes.add((i * 31 + 7) % 256)` type-checks
+  // with an `Int` argument against the instantiated `Byte` element on every
+  // target. MSIL narrows implicitly (the CLR evaluation stack has no
+  // sub-`int32` width, so `List<byte>.Add` accepts the `int32` value as-is)
+  // and JVM emits `i2b`; LLVM IR has no such implicit narrowing — a
+  // mismatched SSA value width is a verifier error — so native must emit
+  // the `trunc` explicitly here too.
+  if (fromStr == "i64" and wantStr == "i32") or (fromStr == "i64" and wantStr == "i8") or (fromStr == "i32" and wantStr == "i8") {
+    val dest = freshTmp(ctx)
+    insns.add(NTrunc(dest = dest, fromTy = v.ty, value = v.value, toTy = want))
+    return NVal(ty = want, value = NLocal(name = dest))
+  }
   match taskElemOfType(ctx, v.ty) {
     case Some(_) -> {
       panic(
@@ -3546,10 +3572,33 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): N
     case None -> {
     }
   }
-  panic(
-    "Lyric.LlvmCodegen: cannot pass a '" + fromStr + "' where '" + wantStr +
-      "' is expected (insert an explicit conversion)"
-  )
+  // #7452: a genuinely incompatible mismatch (not a numeric narrowing) is
+  // still a hard codegen error, but is now reported as `N0007` instead of a
+  // bare untyped panic. With a real `atSpan` (the common case — every call
+  // through `lowerExprExpecting` has one), the message embeds
+  // `error[N0007] line:col: …`, matching `msilBridgePanicDiagnostic`'s
+  // `error[T0119] line:col: …` shape so `Lyric.Emitter.parsePanicSpan`
+  // recovers the real source position; `Lyric.Emitter.emitNativeInProcess`/
+  // `emitNativeProject` catch the panic (mirroring the MSIL/JVM in-process
+  // bridges) and turn it into a structured `Diagnostic`, never an unhandled
+  // exception. Without a span (a `coerceTo` call site that has none), the
+  // message carries no code — the emitter's generic fallback still wraps it
+  // under `N0007` with a synthetic point span, exactly like MSIL's `T0120`/
+  // JVM's `J008` fallback for an uncoded panic.
+  match atSpan {
+    case Some(sp) -> panic(
+      "error[N0007] " + sp.startPos.line.toString() + ":" + sp.startPos.column.toString() +
+        ": Lyric.LlvmCodegen: cannot pass a '" +
+        fromStr +
+        "' where '" +
+        wantStr +
+        "' is expected (insert an explicit conversion)"
+    )
+    case None -> panic(
+      "Lyric.LlvmCodegen: cannot pass a '" + fromStr + "' where '" + wantStr +
+        "' is expected (insert an explicit conversion)"
+    )
+  }
 }
 
 /// Unbox a value flowing into an erased-`Self` interface-method PARAMETER
@@ -8419,11 +8468,13 @@ func lowerClosureCall(
 /// coerces to anything in a well-typed program, so the NVoid value
 /// passes through untouched and the caller's slot scheme (lowerIf /
 /// lowerMatch) skips its store.
-func coerceUnlessDiverged(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType): NVal {
+func coerceUnlessDiverged(
+  ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, atSpan: in Option[Span] = None
+): NVal {
   if isVoidNType(v.ty) and not isVoidNType(want) {
     return v
   }
-  coerceTo(ctx, insns, v, want)
+  coerceTo(ctx, insns, v, want, atSpan)
 }
 
 func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in NType): NVal {
@@ -8449,15 +8500,27 @@ func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in
     }
     case EIf(cond, thenBranch, elseBranch, _) -> {
       val w1: Option[NType] = Some(value = want)
-      return coerceUnlessDiverged(ctx, insns, lowerIf(ctx, insns, cond, thenBranch, elseBranch, w1), want)
+      return coerceUnlessDiverged(
+        ctx,
+        insns,
+        lowerIf(ctx, insns, cond, thenBranch, elseBranch, w1),
+        want,
+        Some(value = e.span)
+      )
     }
     case EMatch(scrutinee, arms) -> {
       val w2: Option[NType] = Some(value = want)
-      return coerceUnlessDiverged(ctx, insns, lowerMatch(ctx, insns, scrutinee, arms, e.span.startPos.line, w2), want)
+      return coerceUnlessDiverged(
+        ctx,
+        insns,
+        lowerMatch(ctx, insns, scrutinee, arms, e.span.startPos.line, w2),
+        want,
+        Some(value = e.span)
+      )
     }
     case EBlock(block) -> {
       val w3: Option[NType] = Some(value = want)
-      return coerceUnlessDiverged(ctx, insns, lowerBlockValueW(ctx, insns, block, w3), want)
+      return coerceUnlessDiverged(ctx, insns, lowerBlockValueW(ctx, insns, block, w3), want, Some(value = e.span))
     }
     case EParen(inner) -> return lowerExprExpecting(ctx, insns, inner, want)
     case ECall(_, _) -> {
@@ -8465,12 +8528,12 @@ func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in
       ctx.pendingCallRetWant.add(want)
       val callV = lowerExpr(ctx, insns, e)
       ctx.pendingCallRetWant.clear()
-      return coerceUnlessDiverged(ctx, insns, callV, want)
+      return coerceUnlessDiverged(ctx, insns, callV, want, Some(value = e.span))
     }
     case _ -> {
     }
   }
-  coerceUnlessDiverged(ctx, insns, lowerExpr(ctx, insns, e), want)
+  coerceUnlessDiverged(ctx, insns, lowerExpr(ctx, insns, e), want, Some(value = e.span))
 }
 
 /// The (caseName, args) of `e` when it is a union-case construction

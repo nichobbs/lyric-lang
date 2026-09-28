@@ -1152,6 +1152,95 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
   }
 }
 
+// #7452: the native twin of the J009 containment test above — before this,
+// `emitNativeInProcess` had NO `try`/`catch` at all around its call into
+// `Lyric.LlvmBridge`/`Lyric.LlvmCodegen`, so a codegen-time panic (e.g.
+// `coerceTo`'s "cannot pass a 'X' where 'Y' is expected") surfaced as a raw
+// unhandled `System.Exception` with a full host stack trace, not a
+// contained `EmitResult` failure.
+//
+// The type checker treats an unresolved generic parameter as satisfied by
+// ANY argument type (`typeEquiv` on a bare `TyVar`, `typechecker_exprs.l`'s
+// `maybeUnknownMemberDiag` also declines to diagnose an extern-type member
+// call since `List[T]` is never "member complete"), so `xs.add("hello")`
+// against a `List[Int]` type-checks on every target with ZERO argument
+// validation at all — a genuinely incompatible (non-numeric) mismatch that
+// `coerceTo`'s new `#7452` narrowing cannot rescue, so it is the
+// constructible "genuinely mismatched call" this pins: a real `N0007`
+// codegen error, not a numeric-narrowing false positive.
+test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResult failure, not a thrown exception (#7452)" {
+  val dir = freshTempDir("native-contain-n0007")
+  val source = "package ContainN0007.App\n" + "\n" + "import Std.Core\n" + "import Std.Collections\n" + "\n" +
+    "func main(): Int {\n" +
+    "  val xs: List[Int] = newList()\n" +
+    "  xs.add(\"hello\")\n" +
+    "  0\n" +
+    "}\n"
+  val noDefines: List[String] = newList()
+  val req = Emitter.EmitRequest(
+    source = source,
+    assemblyName = "ContainN0007",
+    outputPath = Path.join(dir, "ContainN0007"),
+    target = Emitter.Native,
+    packageVersion = "",
+    defines = noDefines,
+    path = ""
+  )
+  var threw = false
+  val result = try {
+    Emitter.emit(req)
+  } catch Bug as b {
+    threw = true
+    Emitter.EmitResult(outputPath = None, diagnostics = newList())
+  }
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertFalse(threw, "the coerceTo type-mismatch Bug must be contained inside emit, never thrown to the caller")
+  match result.outputPath {
+    case None -> assertTrue(true, "no output artifact on a contained failure")
+    case Some(p) -> assertTrue(false, "emit must fail (got outputPath " + p + ")")
+  }
+  assertTrue(result.diagnostics.count > 0, "the contained failure carries a diagnostic for the CLI to render")
+  var diagText = ""
+  var ndi = 0
+  while ndi < result.diagnostics.count {
+    diagText = diagText + result.diagnostics[ndi].code + ": " + result.diagnostics[ndi].message + "\n"
+    ndi = ndi + 1
+  }
+  assertTrue(
+    Str.contains(diagText, "N0007"),
+    "the contained refusal carries its N0007 code in EmitResult.diagnostics (got: " + diagText + ")"
+  )
+  // The span points at the mismatched argument itself (the `"hello"`
+  // literal on line 8, column 10), not a synthetic file-start point span —
+  // `coerceTo`'s `atSpan` threads the real `Expr.span` through
+  // `lowerExprExpecting`/`coerceUnlessDiverged`.
+  var n0007Idx = -1
+  var nsi = 0
+  while nsi < result.diagnostics.count {
+    if result.diagnostics[nsi].code == "N0007" {
+      n0007Idx = nsi
+    }
+    nsi = nsi + 1
+  }
+  assertTrue(n0007Idx >= 0, "an N0007 diagnostic is present in the result")
+  if n0007Idx >= 0 {
+    val sp = result.diagnostics[n0007Idx].span
+    assertEqualInt(
+      sp.startPos.line,
+      8,
+      "N0007 span points at the real source line (got: " + toString(sp.startPos.line) + ")"
+    )
+    assertEqualInt(
+      sp.startPos.column,
+      10,
+      "N0007 span points at the real source column (got: " + toString(sp.startPos.column) + ")"
+    )
+  }
+}
+
 // #6464: direct unit coverage for `Emitter.parsePanicSpan` — the T0119
 // message shape (`error[T0119] <line>:<col>: <text>`, no dotted-package
 // prefix ahead of the location, unlike J007's `Pkg.File:line:col:`) has no

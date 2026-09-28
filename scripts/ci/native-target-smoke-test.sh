@@ -120,3 +120,6 @@ echo "Native Std.Collections suite (--target native) passed"
 # the exact UTF-8 encoding, byte-diffed against the process's real stdout.
 bash scripts/ci/console-stdout-bytes-test.sh "$lyric_bin" --target native
 echo "Native console-stdout-bytes-test (--target native) passed"
+# lyric-stdlib/tests/hash_tests.l does not run here yet: Std.Hash has no
+# native kernel and sha512OfFile's try/catch cannot lower on native
+# (D-N-003). Tracked in #7684, which adds it to this script.

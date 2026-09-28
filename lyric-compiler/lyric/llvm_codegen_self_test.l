@@ -370,6 +370,35 @@ test "byte unsigned shr, compare, div, mod" {
   assertEqualInt(r.exitCode, 83, "byte unsigned semantics")
 }
 
+// #7452: the type checker treats an unresolved generic parameter (`T` on
+// `List[T].add`) as satisfied by ANY argument type (`typeEquiv` on a bare
+// `TyVar`), so `List[Byte].add(someIntExpr)` type-checks on every target —
+// but only when `someIntExpr` is a non-literal `Int` expression does it
+// reach `coerceTo` with a real width mismatch: an `Int` LITERAL argument
+// retypes freely to `Byte` (`coerceTo`'s `NLitInt` arm, unconditional on
+// `--target native` too), so the regression needs arithmetic, not a bare
+// literal, exactly like `lyric-stdlib/tests/hash_tests.l`'s
+// `assertFileDigestMatchesBytes` (`bytes.add((i * 31 + 7) % 256)`). Before
+// the `coerceTo` `NTrunc` narrowing fix this panicked with "cannot pass a
+// 'i32' where 'i8' is expected".
+test "List[Byte].add narrows a non-literal Int argument, matching MSIL/JVM (#7452)" {
+  val src = "package T\n" + "import Std.Collections\n" + "func main(): Int {\n" +
+    "  val bytes: List[Byte] = newList()\n" +
+    "  var i = 0\n" +
+    "  while i < 300 {\n" +
+    "    bytes.add((i * 31 + 7) % 256)\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    // (199 * 31 + 7) % 256 == 32 (6176 mod 256), computed at Int width
+    // BEFORE narrowing — the readback (an explicit Byte->Int widen via
+    // `.toInt()`, unrelated to the narrowing itself) must round-trip the
+    // exact same value the source `Int` expression computed.
+    "  bytes[199].toInt()\n" +
+    "}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 32, "a truncated List[Byte] element round-trips the low 8 bits of (199*31+7)%256")
+}
+
 test "division by zero panics" {
   val src = "package T\n" + "func den(): Int {\n" + "  0\n" + "}\n" + "func main(): Int {\n" + "  7 / den()\n" + "}\n"
   val r = compileAndRun(src)

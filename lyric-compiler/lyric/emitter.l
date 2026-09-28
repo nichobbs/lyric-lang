@@ -2886,6 +2886,37 @@ func msilBridgePanicDiagnostic(message: in String): Diagnostic {
   }
 }
 
+// #7452: the native twin of `msilBridgePanicDiagnostic`/`jvmBridgePanicDiagnostic`
+// — before this, `emitNativeInProcess`/`emitNativeProject` called straight
+// into `Lyric.LlvmBridge`/`Lyric.LlvmCodegen` with NO `try`/`catch` at all
+// (unlike the MSIL/JVM in-process paths above, which have wrapped their
+// bridge calls since #6449/#6459), so a codegen-time panic (e.g. `Lyric.
+// LlvmCodegen.coerceTo`'s "cannot pass a 'i32' where 'i8' is expected") had
+// no boundary to become a structured diagnostic at and surfaced as a raw
+// unhandled `System.Exception` with a full host stack trace. This closes
+// that gap the same way: a message already carrying its own `error[N0NNN]`
+// code (e.g. `coerceTo`'s spanned `N0007`) prints verbatim and keeps its
+// code; anything else (an unspanned `coerceTo` mismatch, or any other
+// uncoded native codegen panic) wraps under the generic `N0007` fallback,
+// matching MSIL's `T0120`/JVM's `J008` catch-all convention. The span
+// carries the real `line:col` a message like `coerceTo`'s embeds
+// (`parsePanicSpan`); it falls back to the synthetic point span otherwise.
+func nativeBridgePanicDiagnostic(message: in String): Diagnostic {
+  val sp = spanForPanicMessage(message)
+  if message.startsWith("error[N0") {
+    Console.error(message)
+    val code = match Str.indexOf(message, "]") {
+      case Some(closeIdx) -> if closeIdx > 6 { Str.substring(message, 6, closeIdx - 6) } else { "N0007" }
+      case None -> "N0007"
+    }
+    errorDiagnostic(code, message, sp)
+  } else {
+    val text = "error[N0007]: native codegen failed: " + message
+    Console.error(text)
+    errorDiagnostic("N0007", text, sp)
+  }
+}
+
 func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUtil.PackageLineOrigins]): EmitResult {
   if req.packages.count == 0 {
     return failResult("no packages specified in project build")
@@ -3091,21 +3122,31 @@ func emitNativeInProcess(
   // Native `--define` is threaded and consumed (#5977 closed: list-literal
   // lowering + module-level `val` inlining make `@build_const`/`Std.BuildInfo`
   // work), so `req.defines` substitutes on a single-file native build.
-  val ok = LlvmBridge.compileToNativeWithFlags(
-    req.source,
-    req.outputPath,
-    stdlibSources,
-    triple,
-    optLevel,
-    clangFlags,
-    req.defines,
-    req.path
-  )
+  //
+  // #7452: wrapped in `try`/`catch`, mirroring `emitMsilInProcess`/
+  // `emitJvmInProcess` above — a codegen-time panic becomes a structured
+  // `Diagnostic` via `nativeBridgePanicDiagnostic` instead of an unhandled
+  // exception.
+  val diags: List[Diagnostic] = newList()
+  val ok = try {
+    LlvmBridge.compileToNativeWithFlags(
+      req.source,
+      req.outputPath,
+      stdlibSources,
+      triple,
+      optLevel,
+      clangFlags,
+      req.defines,
+      req.path
+    )
+  } catch Bug as b {
+    diags.add(nativeBridgePanicDiagnostic(b.message))
+    false
+  }
   if ok {
-    val okDiags: List[Diagnostic] = newList()
-    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
   } else {
-    failResult("native compilation failed (see stderr)")
+    failResultWith("native compilation failed (see stderr)", diags)
   }
 }
 
@@ -3177,24 +3218,30 @@ pub func emitNativeProject(
   for lib in extraLibs {
     clangFlags.add("-l" + lib)
   }
-  val ok = LlvmBridge.compileProjectToNativeWithFlags(
-    nativePkgs,
-    outputPath,
-    stdlibSources,
-    triple,
-    optLevel,
-    clangFlags,
-    defines,
-    activeFeatures,
-    declaredFeatures,
-    packageVersion,
-    nativeOrigins
-  )
+  // #7452: same `try`/`catch` boundary as `emitNativeInProcess` above.
+  val projDiags: List[Diagnostic] = newList()
+  val ok = try {
+    LlvmBridge.compileProjectToNativeWithFlags(
+      nativePkgs,
+      outputPath,
+      stdlibSources,
+      triple,
+      optLevel,
+      clangFlags,
+      defines,
+      activeFeatures,
+      declaredFeatures,
+      packageVersion,
+      nativeOrigins
+    )
+  } catch Bug as b {
+    projDiags.add(nativeBridgePanicDiagnostic(b.message))
+    false
+  }
   if ok {
-    val okDiags: List[Diagnostic] = newList()
-    EmitResult(outputPath = Some(value = outputPath), diagnostics = okDiags)
+    EmitResult(outputPath = Some(value = outputPath), diagnostics = projDiags)
   } else {
-    failResult("native project compilation failed (see stderr)")
+    failResultWith("native project compilation failed (see stderr)", projDiags)
   }
 }
 
