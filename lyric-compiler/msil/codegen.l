@@ -6617,6 +6617,18 @@ func pushDefaultValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
       insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
       emitLoadSlot(insns, slot, fctx.paramCount)
     }
+    case MMethodTypeVar(idx) -> {
+      // Same as `MTypeVar` for a method-level type parameter (`!!n`, MVAR).
+      val w = bufNew()
+      bufU1(w, 0x1E)  // ELEMENT_TYPE_MVAR
+      bufU1(w, idx)
+      val blob = bufToList(w)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, "ts_never_default_mvar_" + toString(idx), blob)
+      val slot = allocSlotMsil(fctx, "__never_default_" + toString(fctx.slotTicker.count), retTy)
+      insns.add(MLdloca(slot = slot - fctx.paramCount))
+      insns.add(MInitobj(typeToken = 0x1B000000 + tsRow))
+      emitLoadSlot(insns, slot, fctx.paramCount)
+    }
     case _ -> insns.add(MLdNull)
   }
 }
@@ -21625,6 +21637,17 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     emitStoreSlot(insns, slot, fctx.paramCount)
                   }
                   case MVoid -> {
+                  }
+                  // A real type parameter's default must be `default(T)`
+                  // (`initobj`), not an int32 0 stored into a `!0` local
+                  // (#7525, #7692).
+                  case MTypeVar(_) -> {
+                    pushDefaultValueMsil(cctx, fctx, insns, ty)
+                    emitStoreSlot(insns, slot, fctx.paramCount)
+                  }
+                  case MMethodTypeVar(_) -> {
+                    pushDefaultValueMsil(cctx, fctx, insns, ty)
+                    emitStoreSlot(insns, slot, fctx.paramCount)
                   }
                   case _ -> {
                     insns.add(MLdcI4(v = 0))
