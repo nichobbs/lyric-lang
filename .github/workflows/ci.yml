@@ -6220,24 +6220,23 @@ jobs:
       # SecretsManagerClient` — without a prior `lyric restore` this failed
       # with `error[J002]: ... class ... not found in JDK jmods or
       # LYRIC_FFI_JARS`. This step is `background: true` with no ordering
-      # guarantee relative to the later "Install Maven (self-hosted runners
-      # only)" / "JVM auto-FFI bridge self-test" steps, so — mirroring the
+      # guarantee relative to the other steps in this job, so — mirroring the
       # #6790 fix for the same race on the lyric-web Undertow classpath —
       # make it self-contained: install Maven if missing, build the
       # resolver, and restore before running the test, instead of depending
-      # on timing against unrelated steps elsewhere in this job.
+      # on timing against unrelated steps.
       #
       # #7108: the conditional `apt-get install maven` below can run at the
-      # same moment as the "Install Maven (self-hosted runners only)" step
-      # on a self-hosted runner, with no coordination between the two —
-      # a dpkg-lock race. Both now serialize through the same `flock` on a
-      # shared lock file so only one process installs at a time; the other
-      # waits, then finds `mvn` already present (or performs a harmless
-      # redundant install/update). `make maven-resolver` itself is
-      # similarly serialized (this job's third concurrent caller alongside
-      # "lyric-web Undertow smoke on JVM" and "JVM auto-FFI bridge
-      # self-test") to avoid two `mvn package` builds racing into the same
-      # `resolver/target/` output directory.
+      # same moment as another step's install on the same runner, with no
+      # coordination between them — a dpkg-lock race. Every such install
+      # serializes through the same `flock` on a shared lock file so only one
+      # process installs at a time; the others wait, then find `mvn` already
+      # present (or perform a harmless redundant install/update).
+      # `make maven-resolver` is similarly serialized — its other concurrent
+      # callers in this job are the ecosystem suites' `web`, lyric-lambda,
+      # the lyric-web and lyric-ws Undertow smokes and the UI suites — so two
+      # `mvn package` builds never race into the same `resolver/target/`
+      # output directory.
       #
       # `lyric-aws-secrets` is by far the largest Maven dependency set of
       # any restore in this job (41 AWS SDK for Java artifacts, vs. 7 for
