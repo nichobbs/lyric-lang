@@ -177,7 +177,8 @@ func runEmitProjectJvmOpts(
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -218,7 +219,8 @@ func runEmitProjectJvmPkgFeatures(
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = pkgFeatures
+    packageFeatures = pkgFeatures,
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -708,7 +710,8 @@ test "per-package isolation implicit leak rejected" {
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -875,7 +878,8 @@ test "restored dep wiring no crash" {
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -919,7 +923,8 @@ test "emitProject subprocess fallback on restored dep" {
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -1093,7 +1098,8 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
     target = Emitter.Jvm,
     packageVersion = "",
     defines = noDefines,
-    path = ""
+    path = "",
+    contractsEnabled = true
   )
   var threw = false
   val result = try {
@@ -1357,7 +1363,8 @@ test "unresolved diamond default conflict is rejected with T0117, not a backend 
     target = Emitter.Dotnet,
     packageVersion = "",
     defines = noDefines,
-    path = ""
+    path = "",
+    contractsEnabled = true
   )
   var threw = false
   val result = try {
@@ -1414,7 +1421,8 @@ test "unresolved diamond default conflict is rejected with T0117 on JVM too (#64
     target = Emitter.Jvm,
     packageVersion = "",
     defines = noDefines,
-    path = ""
+    path = "",
+    contractsEnabled = true
   )
   var threw = false
   val result = try {
@@ -1556,7 +1564,8 @@ test "emitProject depTemplateSrcs: from-instance aspect resolved against a dep-p
     depTemplateSrcs = depTemplates,
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
 
@@ -2266,7 +2275,8 @@ func emitProjectFails(label: in String, pkgs: in List[Emitter.ProjectPackage], a
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val failed = match Emitter.emitProject(req).outputPath { case None -> true; case Some(_) -> false }
   cleanup(dir)

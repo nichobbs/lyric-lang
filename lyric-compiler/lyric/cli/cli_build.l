@@ -69,6 +69,16 @@ func readBuildProfileFromManifest(manifestOpt: in Option[String]): BuildProfile 
   readBuildProfileFromSection(readBuildSection(manifestOpt))
 }
 
+func readContractsEnabledFromManifest(manifestOpt: in Option[String]): Bool {
+  val absent = true
+  val mfPath = match manifestOpt { case None -> return absent; case Some(p) -> p }
+  val mfText = match File.readText(mfPath) { case Err(_) -> return absent; case Ok(t) -> t }
+  match Mf.parseManifest(mfText, mfPath) {
+    case Err(_) -> absent
+    case Ok(mf) -> match mf.contracts { case Some(cs) -> cs.enabled; case None -> true }
+  }
+}
+
 // Manifest-value variants of the two helpers above: same default-on-absence
 // behavior, but read the `[build]` section straight out of an already-parsed
 // manifest instead of re-reading/re-parsing the file. Lets a caller who
@@ -1057,6 +1067,7 @@ pub func buildOneNativeWithFeatures(
 
   val outBase = Path.basename(outPath)
   val asmName = stemOf(outBase, 4)  // strip ".dll"
+  val contractsEnabled = readContractsEnabledFromManifest(manifestPath)
   val req = Emitter.EmitRequest(
     source = source,
     assemblyName = asmName,
@@ -1065,7 +1076,7 @@ pub func buildOneNativeWithFeatures(
     packageVersion = "",
     defines = cliDefines,
     path = sourcePath,
-    contractsEnabled = true
+    contractsEnabled = contractsEnabled
   )
 
   // var-mutation shape (stage-0 value-position-match lowering gap,
