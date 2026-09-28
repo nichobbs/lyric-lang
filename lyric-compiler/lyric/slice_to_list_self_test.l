@@ -19,7 +19,7 @@
 //! (`error[J008]: method 'toList' cannot be called on a slice receiver`) —
 //! `Jvm.Codegen`'s method dispatch (`04_calls.l`) has no `toList` arm, and
 //! rejects the call outright rather than deferring to a runtime throw the
-//! way the pre-fix MSIL backend did. A still-open, tracked gap, not
+//! way the pre-fix MSIL backend did. A still-open gap tracked in #7662, not
 //! silently skipped: see docs/01-language-reference.md and
 //! `docs/59-compiler-stdlib-deep-review.md`'s parity ethic. Run only via:
 //!
@@ -32,6 +32,11 @@ package Lyric.SliceToListSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+
+record Pair {
+  a: Int
+  b: String
+}
 
 test "toList on slice[Byte] preserves elements and is independently mutable" {
   val b: slice[Byte] = [1.toByte(), 2.toByte(), 3.toByte()]
@@ -77,4 +82,24 @@ test "toArray/toList round-trip" {
   assertEqualInt(roundTripped.count, 2, "round-tripped count")
   assertEqualInt(roundTripped[0], 7, "round-tripped element 0")
   assertEqualInt(roundTripped[1], 8, "round-tripped element 1")
+}
+
+// A record element type has no `arrayElemTokenOpt` array token, so
+// `.append`/`.concat` fall back to the legacy `List<object>` representation
+// for this element type (see `slice_ops_self_test.l`'s matching case).
+// `lowerSliceToListMsil`'s header comment claims it never needs that
+// fallback, because the type checker already requires `List` to resolve to
+// a concrete type symbol before `.toList()` type-checks at all — this pins
+// that claim against the one element type where the other slice ops do take
+// a different code path.
+test "toList on slice[Pair] (record element type)" {
+  val xs: slice[Pair] = [Pair(a = 1, b = "x"), Pair(a = 2, b = "y")]
+  val lst: List[Pair] = xs.toList()
+  assertEqualInt(lst.count, 2, "record-element list count")
+  val e0: Pair = lst[0]
+  val e1: Pair = lst[1]
+  assertEqualInt(e0.a, 1, "element 0 .a")
+  assertEqual(e0.b, "x", "element 0 .b")
+  assertEqualInt(e1.a, 2, "element 1 .a")
+  assertEqual(e1.b, "y", "element 1 .b")
 }

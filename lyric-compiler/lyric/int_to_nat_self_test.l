@@ -16,8 +16,8 @@
 //! primitive-typed receiver` — `Jvm.Codegen`'s numeric-conversion dispatch
 //! has no `toNat` arm either, and unlike the MSIL backend's pre-fix
 //! lenient/deferred dispatch, JVM codegen rejects the call outright rather
-//! than deferring to a runtime throw) — a still-open, tracked gap, NOT
-//! silently skipped: see docs/01-language-reference.md §4.1 and
+//! than deferring to a runtime throw) — a still-open gap tracked in #7661,
+//! NOT silently skipped: see docs/01-language-reference.md §4.1 and
 //! `docs/59-compiler-stdlib-deep-review.md`'s FFI/parity ethic. Run only via:
 //!
 //!   lyric test lyric-compiler/lyric/int_to_nat_self_test.l

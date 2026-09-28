@@ -22,7 +22,7 @@ Two independent gaps, one per compiler phase:
 `--target native` already implements this (`llvm_codegen.l`: `List` and
 `slice` share one runtime representation there, so `toList`/`toArray` are
 both a `lyric_list_copy`). `--target jvm` has no `toList` arm in
-`Jvm.Codegen`'s dispatch (`04_calls.l`) — a still-open, tracked gap.
+`Jvm.Codegen`'s dispatch (`04_calls.l`) — filed as #7662.
 
 ## Fix
 

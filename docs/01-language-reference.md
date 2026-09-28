@@ -371,7 +371,7 @@ val sub = xs.slice(start, end)       // new slice, the half-open sub-range [star
 
 `.slice(start, end)` panics if `start < 0`, `end < start`, or `end > xs.length` — the full range must satisfy `0 <= start <= end <= xs.length`.
 
-`xs.toList()` returns a shallow-copied `List[T]` holding `xs`'s elements — the round-trip shuttle back from `List[T].toArray()` (§Standard Library collections) — `--target dotnet` and `--target native` only; `--target jvm` does not implement it yet (tracked separately, no issue filed yet).
+`xs.toList()` returns a shallow-copied `List[T]` holding `xs`'s elements — the round-trip shuttle back from `List[T].toArray()` (§Standard Library collections) — `--target dotnet` and `--target native` only; `--target jvm` does not implement it yet (tracked in #7662).
 
 ### 2.8 Opaque types
 

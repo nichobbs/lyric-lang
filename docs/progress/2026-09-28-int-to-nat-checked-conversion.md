@@ -43,9 +43,14 @@ value would violate that invariant.
 This closes only the `X.toNat()` (target-side) gap. Conversion methods
 *called on* a `Nat`/`UInt`/`ULong` receiver, and conversions *targeting*
 `UInt`/`ULong`, remain unimplemented as their own intrinsic path — see
-`docs/01-language-reference.md` §4.1's updated parenthetical. JVM and native
-backends are unaffected by this change (MSIL-only, matching the scope of
-the originating gotcha).
+`docs/01-language-reference.md` §4.1's updated parenthetical. Codegen for
+`.toNat()` is MSIL-only, matching the scope of the originating gotcha.
+`numericConvTarget` is target-independent front-end code, though, so
+`.toNat()` now type-checks on `--target jvm` too — it just has no matching
+JVM codegen dispatch, so it fails cleanly at build time with `error[J008]`
+rather than compiling and crashing at runtime. Filed as #7661. `--target
+native` is unaffected (it never reaches this numeric-conversion dispatch
+path for `.toNat()` at all).
 
 ## Tests
 
