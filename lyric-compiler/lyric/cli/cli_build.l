@@ -69,9 +69,15 @@ func readBuildProfileFromManifest(manifestOpt: in Option[String]): BuildProfile 
   readBuildProfileFromSection(readBuildSection(manifestOpt))
 }
 
-func readContractsEnabledFromManifest(manifestOpt: in Option[String]): Bool {
+func readContractsEnabledFromManifest(manifestOpt: in Option[String], sourcePath: in String): Bool {
   val absent = true
-  val mfPath = match manifestOpt { case None -> return absent; case Some(p) -> p }
+  val mfPath = match manifestOpt {
+    case Some(p) -> p
+    case None -> match discoverManifestForSourceFile(sourcePath) {
+      case None -> return absent
+      case Some(discovered) -> discovered
+    }
+  }
   val mfText = match File.readText(mfPath) { case Err(_) -> return absent; case Ok(t) -> t }
   match Mf.parseManifest(mfText, mfPath) {
     case Err(_) -> absent
@@ -1080,7 +1086,7 @@ pub func buildOneNativeWithFeatures(
 
   val outBase = Path.basename(outPath)
   val asmName = stemOf(outBase, 4)  // strip ".dll"
-  val contractsEnabled = readContractsEnabledFromManifest(manifestPath)
+  val contractsEnabled = readContractsEnabledFromManifest(manifestPath, sourcePath)
   val req = Emitter.EmitRequest(
     source = source,
     assemblyName = asmName,
