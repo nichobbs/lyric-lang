@@ -1904,7 +1904,7 @@ pub func compileToJarBundledWithFeatures(
   defines: in List[String],
   packageVersion: in String,
   path: in String,
-  contractsEnabled: in Bool,
+  contractsEnabled: in Bool = true,
 ): Bool {
   val noRestored: List[SynthesisedArtifact] = newList()
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
@@ -1952,7 +1952,7 @@ pub func compileToJarBundledWithRestored(
   // `source` (#6282); empty when `source` is a single file (or its
   // provenance is unknown).
   origins: in List[DiagUtil.MergedLineOrigin],
-  contractsEnabled: in Bool,
+  contractsEnabled: in Bool = true,
 ): Bool {
   val one: List[String] = newList()
   one.add(source)
@@ -2126,7 +2126,7 @@ pub func compileProjectToJarBundledWithRestored(
   // by index; a package past the end uses `activeFeatures` /
   // `declaredFeatures` (see `PackageFeatureSet`).
   pkgFeatures: in List[PackageFeatureSet],
-  contractsEnabled: in Bool,
+  contractsEnabled: in Bool = true,
 ): Bool {
   if pkgSrcs.count == 0 {
     Console.error("error[J001]: JVM project build received no packages")

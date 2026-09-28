@@ -98,7 +98,7 @@ pub record EmitRequest {
   /// Whether to synthesize runtime contract assertions (requires:/ensures:)
   /// during elaboration. Gated by `[contracts].enabled` in lyric.toml
   /// (docs/63 B0/B1 phase); defaults to true (current behavior).
-  contractsEnabled: Bool
+  contractsEnabled: Bool = true
 }
 
 pub record EmitResult {
@@ -186,7 +186,7 @@ pub record EmitProjectRequest {
   /// Whether contracts (requires/ensures/invariant) are enabled for runtime
   /// checking. Read from manifest `[contracts].enabled` or defaults to true
   /// (docs/63 B0 / B1 phase).
-  contractsEnabled: Bool
+  contractsEnabled: Bool = true
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
   // ─────────────────────────────────────────────────────────────────────────────

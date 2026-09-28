@@ -166,7 +166,7 @@ pub func compileToMsilWithVersion(
   packageVersion: in String,
   defines: in List[String],
   path: in String,
-  contractsEnabled: in Bool,
+  contractsEnabled: in Bool = true,
 ): Bool {
   // Parse + `@cfg` erasure with an empty active set (plus the
   // `target.dotnet` pseudo-feature, D-N-013) — the same semantics a
@@ -668,7 +668,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   defines: in List[String],
   paths: in List[String],
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
-  contractsEnabled: in Bool,
+  contractsEnabled: in Bool = true,
 ): Bool {
   val noDiagOut: List[Diagnostic] = newList()
   compileProjectToMsilWithRestoredAndVersionDiag(
@@ -726,7 +726,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // inner list) means no translation for that package — the pre-#6282
   // behaviour (`paths[i]` labels every diagnostic verbatim).
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
-  contractsEnabled: in Bool,
+  contractsEnabled: in Bool = true,
   outDiagnostics: in List[Diagnostic],
 ): Bool {
   if packages.count == 0 {

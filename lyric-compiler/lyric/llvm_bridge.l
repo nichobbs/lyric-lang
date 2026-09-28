@@ -385,7 +385,7 @@ pub func compileToNativeWithFlags(
   extraClangFlags: in List[String],
   defines: in List[String],
   path: in String,
-  contractsEnabled: in Bool,
+  contractsEnabled: in Bool = true,
 ): Bool {
   // Parse + `@cfg` erasure with the `target.native` pseudo-feature
   // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
@@ -712,7 +712,7 @@ pub func compileProjectToNativeWithFlags(
   // valid; missing entries resolve to no translation, matching the JVM
   // bridge's own out-of-range fallback.
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
-  contractsEnabled: in Bool,
+  contractsEnabled: in Bool = true,
 ): Bool {
   if packages.count == 0 {
     Console.error("error[N0005]: native project build received no packages")
