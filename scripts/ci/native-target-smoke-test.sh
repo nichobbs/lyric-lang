@@ -116,3 +116,7 @@ echo "Native Std.Collections.Persistent suites (--target native) passed"
 # kernel's lookup-free entry walk (#7282).
 "$lyric_bin" run --target native lyric-stdlib/tests/collections_tests.l
 echo "Native Std.Collections suite (--target native) passed"
+# Std.Console.writeStdoutBytes on native (#7510): raw stdout bytes must be
+# the exact UTF-8 encoding, byte-diffed against the process's real stdout.
+bash scripts/ci/console-stdout-bytes-test.sh "$lyric_bin" --target native
+echo "Native console-stdout-bytes-test (--target native) passed"

@@ -50,7 +50,6 @@ package JsonRpc.Stdio
 import Std.Core
 import Std.Collections
 import Std.Console
-import Std.ConsoleHost
 import Std.Encoding
 import Std.Errors
 import Std.Parse
@@ -110,8 +109,14 @@ record HostStringWriter {
 }
 
 impl StringWriter for HostStringWriter {
+  // Writes UTF-8 bytes directly (`Std.Console.writeStdoutBytes`, #7510)
+  // rather than through `hostConsoleWrite`'s text writer: the framings
+  // above declare Content-Length as a UTF-8 byte count (`clSendVia`), so
+  // the bytes actually put on the wire must be that same UTF-8 encoding,
+  // not whatever encoding the platform console writer happens to default
+  // to.
   func write(s: in String): Unit {
-    hostConsoleWrite(s)
+    writeStdoutBytes(encodeUtf8(s))
   }
 }
 

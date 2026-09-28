@@ -19,6 +19,11 @@ extern func consoleWriteFd(fd: Int, s: String): Unit = "lyric_console_write"
 
 extern func consoleWriteLineFd(fd: Int, s: String): Unit = "lyric_console_write_line"
 
+// Raw bytes, no text encoding applied — for callers that frame their own
+// wire protocol over stdout (e.g. the LSP Content-Length writer, #7510) and
+// must control their exact output bytes.
+extern func consoleWriteBytesFd(fd: Int, bytes: slice[Byte]): Unit = "lyric_console_write_bytes"
+
 pub func hostConsoleWrite(text: in String): Unit {
   consoleWriteFd(1, text)
 }
@@ -28,6 +33,10 @@ pub func hostConsoleWrite(text: in String): Unit {
 // written, including to a harness reading a long-running program's pipe.
 pub func hostConsoleWriteLine(text: in String): Unit {
   consoleWriteLineFd(1, text)
+}
+
+pub func hostConsoleWriteBytes(bytes: in slice[Byte]): Unit {
+  consoleWriteBytesFd(1, bytes)
 }
 
 pub func hostConsoleErrorWrite(text: in String): Unit {

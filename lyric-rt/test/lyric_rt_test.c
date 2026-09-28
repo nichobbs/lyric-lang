@@ -1645,6 +1645,31 @@ static void test_console_write_line(void) {
     lyric_release(empty);
 }
 
+static void test_console_write_bytes(void) {
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    /* UTF-8 bytes for "a\xC3\xA9" (a, U+00E9) so this exercises non-ASCII
+     * bytes, not just a plain string round-trip (#7510). */
+    LyricList* bytes = lyric_list_new(3);
+    lyric_list_push(bytes, 'a');
+    lyric_list_push(bytes, 0xC3);
+    lyric_list_push(bytes, 0xA9);
+    lyric_console_write_bytes(fds[1], bytes);
+    lyric_console_write_bytes(fds[1], NULL);
+    LyricList* empty = lyric_list_new(0);
+    lyric_console_write_bytes(fds[1], empty);
+    close(fds[1]);
+    unsigned char buf[16];
+    ssize_t total = 0;
+    ssize_t n;
+    while ((n = read(fds[0], buf + total, sizeof buf - (size_t)total)) > 0) total += n;
+    close(fds[0]);
+    CHECK(total == 3);
+    CHECK(memcmp(buf, "a\xC3\xA9", 3) == 0);
+    lyric_release(bytes);
+    lyric_release(empty);
+}
+
 static void test_environment(void) {
     static const char* name = "LYRIC_RT_TEST_ENV_VAR_UNIQUE";
     CHECK(lyric_env_get(name) == NULL);
@@ -2965,6 +2990,7 @@ int main(void) {
     test_file_mtime();
     test_directories();
     test_console_write_line();
+    test_console_write_bytes();
     test_environment();
     test_process();
     test_process_closed_stdio();

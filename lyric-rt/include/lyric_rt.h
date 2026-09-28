@@ -307,6 +307,13 @@ void lyric_console_write_newline(int32_t fd);
  * partial write), so `println` costs one syscall. Best-effort like the two
  * above; NULL or empty `s` writes just the newline. */
 void lyric_console_write_line(int32_t fd, LyricString* s);
+/* Write raw bytes verbatim (no text encoding applied) to the file
+ * descriptor, retrying on EINTR/partial writes like the String writers
+ * above. For callers that frame their own wire protocol over stdout (e.g.
+ * the LSP Content-Length writer, #7510) and must not have their bytes
+ * reinterpreted or re-encoded by a text writer. NULL or empty `data` is a
+ * no-op. Best-effort, like the rest of this console boundary. */
+void lyric_console_write_bytes(int32_t fd, LyricList* data);
 
 /* ── Platform helpers (lyric_posix.c) ──────────────────────────────── */
 
