@@ -146,6 +146,76 @@ func testScopeWithNoChildrenCompletesImmediately(): Unit {
   disposeScope(sc)
 }
 
+// ─── runWithin (#7461, D-progress-1021) ────────────────────────────────────────
+// A real, preemptive per-target bound: `Task.Run`/`Task.Wait(int)` on
+// `--target dotnet`, a daemon `Thread` joined with `Thread.join(long)` on
+// `--target jvm`. Every case below is asserted identically on both targets.
+record RunWithinPoint {
+  x: Int
+  y: Int
+}
+
+func testRunWithinCompletesWithinBudget(): Unit {
+  val result = runWithin(5000, { -> 42 })
+  match result {
+    case Some(v) -> assertEqualInt(v, 42, "a fast closure completes and returns Some(result)")
+    case None -> assertTrue(false, "a fast closure must not time out")
+  }
+}
+
+func testRunWithinReturnsStringResult(): Unit {
+  val result = runWithin(5000, { -> "hello" })
+  match result {
+    case Some(v) -> assertEqual(v, "hello", "runWithin threads a String result through unchanged")
+    case None -> assertTrue(false, "a fast closure must not time out")
+  }
+}
+
+func testRunWithinReturnsRecordResult(): Unit {
+  val result = runWithin(5000, { -> RunWithinPoint(x = 1, y = 2) })
+  match result {
+    case Some(p) -> {
+      assertEqualInt(p.x, 1, "runWithin threads a record result's field x through unchanged")
+      assertEqualInt(p.y, 2, "runWithin threads a record result's field y through unchanged")
+    }
+    case None -> assertTrue(false, "a fast closure must not time out")
+  }
+}
+
+func testRunWithinTimesOutOnAHangingClosure(): Unit {
+  val result = runWithin(50, { -> sleepMillis(2000); 1 })
+  match result {
+    case Some(v) -> assertTrue(false, "a closure exceeding the budget must time out (got Some)")
+    case None -> assertTrue(true, "a closure exceeding the budget reports None on timeout")
+  }
+}
+
+// `timeoutMs == 0` must never call the JVM kernel's `Thread.join(0)`, whose
+// JDK semantics mean "wait forever," not "don't wait" — this asserts a zero
+// budget behaves as an immediate, un-joined check instead.
+func testRunWithinZeroTimeoutDoesNotWaitForever(): Unit {
+  val result = runWithin(0, { -> sleepMillis(2000); 1 })
+  match result {
+    case Some(v) -> assertTrue(false, "a zero budget must not wait for a slow closure (got Some)")
+    case None -> assertTrue(true, "a zero budget reports None immediately")
+  }
+}
+
+func panicIntoRunWithin(): Int {
+  panic("runWithin panic test: boom")
+}
+
+// A panic inside `f`, once observed before the deadline, is re-raised on the
+// calling thread — `runWithin` itself panics, exactly as a direct call to
+// `f()` would (panics are never silently swallowed).
+func testRunWithinPropagatesAPanicObservedBeforeTheDeadline(): Unit {
+  assertPanicsWith(
+    "a panic inside f propagates through runWithin when observed before the deadline",
+    "runWithin panic test: boom",
+    { -> val _ = runWithin(5000, panicIntoRunWithin) }
+  )
+}
+
 func main(): Int {
   testNoCancellationNeverCancelled()
   testInstallTokenFirstCallDoesNotCrash()
@@ -159,6 +229,12 @@ func main(): Int {
   testMakeCancelSourceTimeoutEventuallyCancels()
   testScopeNormalCompletionRunsEveryChild()
   testScopeWithNoChildrenCompletesImmediately()
+  testRunWithinCompletesWithinBudget()
+  testRunWithinReturnsStringResult()
+  testRunWithinReturnsRecordResult()
+  testRunWithinTimesOutOnAHangingClosure()
+  testRunWithinZeroTimeoutDoesNotWaitForever()
+  testRunWithinPropagatesAPanicObservedBeforeTheDeadline()
   println("task tests: ok")
   return 0
 }

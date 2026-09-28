@@ -118,31 +118,19 @@ Every check runs through `Health.runCheckIsolated` (internal), which:
   `/health/live` / `/health/ready`). A panicking check never turns the
   whole endpoint into an unhandled 500, and it never stops the remaining
   checks in the group from running.
-- **Bounds execution time**, on `--target dotnet` only. Each `HealthCheck`
-  carries a `timeoutMs` budget (`defaultCheckTimeoutMs` = 5000 unless
-  overridden via `addLivenessCheckWithTimeout` /
-  `addReadinessCheckWithTimeout`). On `--target dotnet`, the handler runs
-  on a background thread (`Health.Kernel.Net`, a real BCL
-  `Task.Run`/`Task.Wait(int)` bound) and the calling thread returns after
-  at most `timeoutMs`, reporting the check unhealthy with a
-  `"timed out after <timeoutMs>ms"` detail if the handler hasn't finished
-  by then.
-
-  **On `--target jvm`, `timeoutMs` is validated but not enforced.** There
-  is currently no existing Lyric facility to preemptively bound an
-  arbitrary check closure's execution time on the JVM backend: a Lyric
-  closure has no bridge to any JDK functional interface
-  (`Runnable`/`Callable`) outside the compiler's own `spawn`/`scope { }`
-  keyword codegen (see `lyric-stdlib/std/_kernel_jvm/task.l`'s module
-  header, which documents this after empirically verifying it), and even
-  that keyword codegen's `scope { }` join and `await` have no
-  bounded/timeout variant to race against. A hanging check therefore
-  still hangs `runLiveness`/`runReadiness` on `--target jvm`; only panic
-  isolation is real there. Query `Health.timeoutEnforced` (`true` on
-  `--target dotnet`, `false` on `--target jvm`) if a caller needs to know
-  which guarantee applies. Bringing JVM to parity needs a genuine
-  Callable/Future auto-FFI bridge for arbitrary Lyric closures — tracked in #7461,
-  as a follow-up, not silently faked here.
+- **Bounds execution time, on both targets.** Each `HealthCheck` carries a
+  `timeoutMs` budget (`defaultCheckTimeoutMs` = 5000 unless overridden via
+  `addLivenessCheckWithTimeout` / `addReadinessCheckWithTimeout`). The
+  handler runs off the calling thread via `Std.Task.runWithin`, which
+  blocks the caller for at most `timeoutMs` with a real, preemptive bound
+  on both targets — `Task.Run`/`Task.Wait(int)` on `--target dotnet`, a
+  daemon `Thread` joined with `Thread.join(long)` on `--target jvm` (#7461)
+  — reporting the check unhealthy with a `"timed out after <timeoutMs>ms"`
+  detail if the handler hasn't finished by then. On either target, a
+  timed-out handler keeps running in the background: neither the BCL nor
+  the JDK has a way to forcibly abort it. See `Std.Task.runWithin`'s own
+  doc comment (`lyric-stdlib/std/_kernel/task.l` /
+  `lyric-stdlib/std/_kernel_jvm/task.l`) for the full contract.
 
 ## Check groups
 
@@ -180,7 +168,6 @@ Health.runReadiness(registry): Result[String, String]
 Health.isLiveness(group): Bool
 Health.isReadiness(group): Bool
 Health.defaultCheckTimeoutMs: Int
-Health.timeoutEnforced: Bool
 ```
 
 All builder functions are pure and return a new registry; chain them as

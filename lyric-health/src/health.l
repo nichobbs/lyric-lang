@@ -65,7 +65,7 @@ import Std.Core
 import Std.Char
 import Std.Iter
 import Std.Log
-import Health.Kernel.Net as HealthKernelNet
+import Std.Task
 import Std.String as Str
 
 // ─── Check vocabulary ─────────────────────────────────────────────────────────
@@ -143,21 +143,6 @@ pub record HealthCheck {
 /// override it for a specific check.
 @stable(since = "0.1")
 pub val defaultCheckTimeoutMs: Int = 5000
-
-/// True when `timeoutMs` is actually enforced with a preemptive bound on
-/// this target (`--target dotnet`, via `Health.Kernel.Net`'s real
-/// `Task.Wait(int)`); false when it is validated but not enforced
-/// (`--target jvm` — see `runCheckIsolated`'s `@cfg(feature = "jvm")` arm
-/// and README.md "Platform parity" for why).  Exposed so callers and
-/// tests can assert on the target-specific behaviour without needing
-/// their own target detection.
-@stable(since = "0.1")
-@cfg(feature = "dotnet")
-pub val timeoutEnforced: Bool = true
-
-@stable(since = "0.1")
-@cfg(feature = "jvm")
-pub val timeoutEnforced: Bool = false
 
 // ─── Registry ─────────────────────────────────────────────────────────────────
 /// An immutable collection of health checks.  Build with `Health.create()`,
@@ -238,9 +223,8 @@ pub func addLivenessCheck(registry: in HealthRegistry, name: in String, handler:
 /// `fail(detail)` when it should be restarted.  If `handler` panics, or
 /// does not return within `timeoutMs`, the check is reported unhealthy
 /// with a generic message rather than propagating the panic or hanging
-/// the caller (subject to `runCheckIsolated`'s per-target enforcement —
-/// see its `@cfg(feature = "jvm")` arm for the one target-specific
-/// limitation).
+/// the caller (`runCheckIsolated` enforces the budget on both targets via
+/// `Std.Task.runWithin`).
 @stable(since = "0.1")
 pub func addLivenessCheckWithTimeout(
   registry: in HealthRegistry,
@@ -334,77 +318,28 @@ record GroupRun {
 }
 
 // ─── Isolated check execution ─────────────────────────────────────────────────
-// A mutable cross-thread result cell for the `--target dotnet` runner below:
-// `Health.Kernel.Net.runAction`'s closure writes into it from a thread-pool
-// thread, and the calling thread reads it back after `waitTask` returns.
-@cfg(feature = "dotnet")
-record CheckRunBox {
-  var status: CheckStatus
-  var panicked: Bool
-  var panicMessage: String
-}
-
-// `--target dotnet`: run `check.handler` on a BCL thread-pool thread
-// (`Health.Kernel.Net.runAction`, a real `Task.Run(Action)`) and block the
-// calling thread for at most `check.timeoutMs` (`Health.Kernel.Net.waitTask`,
-// a real `Task.Wait(int)` — returns `false` on timeout instead of throwing,
-// so a hanging check genuinely stops blocking the caller after the budget
-// elapses; the background action itself is left running, since neither the
-// BCL nor this API has a way to forcibly abort it).  A panic inside the
-// handler is caught on the background thread itself, so it never escapes as
-// an unobserved faulted-task exception; the caller only ever sees the
-// generic "check panicked" detail below — never the panic's own message,
-// which would otherwise leak into the HTTP response body. The message is
-// not discarded outright, though: it is logged server-side via `Std.Log`
-// below, for operators to see without exposing it to `/health/*` callers.
-@cfg(feature = "dotnet")
-func runCheckIsolated(check: in HealthCheck): CheckStatus {
-  val box = CheckRunBox(status = fail(""), panicked = false, panicMessage = "")
-  val handler = check.handler
-  val action: () -> Unit = { ->
-    try {
-      val result: CheckStatus = handler()
-      box.status = result
-    } catch Bug as b {
-      box.panicked = true
-      box.panicMessage = b.message
-    }
-  }
-  val t = HealthKernelNet.runAction(action)
-  val completed = HealthKernelNet.waitTask(t, check.timeoutMs)
-  if not completed {
-    return fail("check \"" + check.name + "\" timed out after " + ("" + check.timeoutMs) + "ms")
-  }
-  if box.panicked {
-    error("health check \"" + check.name + "\" panicked: " + box.panicMessage)
-    return fail("check panicked")
-  }
-  return box.status
-}
-
-// `--target jvm`: no preemptive, worker-bounded timeout is possible on this
-// target with existing facilities. A Lyric closure has no bridge to any JDK
-// functional interface (`Runnable`/`Callable`) outside the compiler's own
-// `spawn`/`scope { }` keyword codegen — see
-// lyric-stdlib/std/_kernel_jvm/task.l's module header, which documents this
-// gap after empirically verifying it while building `Std.Task`'s own JVM
-// kernel.  Even that keyword codegen doesn't help here: `scope { }`'s join
-// is an unconditional full wait with no bounded/"whichever finishes first"
-// variant, and `await` takes no timeout parameter either.  Checking elapsed
-// time only *after* `handler()` returns would not actually bound the call —
-// the caller would already have blocked for the full duration — so that is
-// deliberately not done here; it would fake enforcement rather than provide
-// it.  `check.timeoutMs` is still validated at registration (`requires:
-// timeoutMs >= 1`) for cross-target API consistency, but is not enforced on
-// this target: a hanging check still hangs `runLiveness`/`runReadiness` on
-// `--target jvm` (#7461).  See README.md "Platform parity". Panic isolation is real
-// on this target — a panicking handler is always caught here.
-@cfg(feature = "jvm")
+// Runs `check.handler` off the calling thread and blocks for at most
+// `check.timeoutMs` via `Std.Task.runWithin`, which enforces the budget with
+// a real preemptive bound on both `--target dotnet` (`Task.Run`/`Task.Wait`)
+// and `--target jvm` (a daemon `Thread` joined with `Thread.join(long)`,
+// #7461) — the background computation itself is left running past the
+// deadline on either target, since neither has a way to forcibly abort it.
+//
+// `runWithin` re-raises a panic captured inside `handler` on this thread
+// (once observed, i.e. only if it happens before the deadline), so it is
+// caught here exactly as a direct `handler()` call would be: the caller
+// only ever sees the generic "check panicked" detail below — never the
+// panic's own message, which would otherwise leak into the HTTP response
+// body. The message is not discarded outright, though: it is logged
+// server-side via `Std.Log`, for operators to see without exposing it to
+// `/health/*` callers.
 func runCheckIsolated(check: in HealthCheck): CheckStatus {
   val handler = check.handler
   try {
-    val result: CheckStatus = handler()
-    return result
+    match runWithin(check.timeoutMs, handler) {
+      case Some(status) -> return status
+      case None -> return fail("check \"" + check.name + "\" timed out after " + ("" + check.timeoutMs) + "ms")
+    }
   } catch Bug as b {
     error("health check \"" + check.name + "\" panicked: " + b.message)
     return fail("check panicked")

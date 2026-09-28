@@ -300,6 +300,9 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
    - `Task` / promise wrappers (lightweight over .NET Task) ✅ source shape
    - `protected type` examples around shared state
    - Cancellation token integration ✅ source shape
+   - `Task.runWithin[T](timeoutMs, f): Option[T]` — bounded-wait execution
+     of an arbitrary `() -> T` closure, with a real preemptive bound on
+     both `--target dotnet` and `--target jvm` (D-progress-1021, #7461)
 
 5. **Minimal app host**
    - `App.run(main: func Unit): Int` (entry point wrapper) ✅

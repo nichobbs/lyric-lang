@@ -6,7 +6,8 @@
 //! the JSON response shape (including escaping), the
 //! runLiveness / runReadiness handler-result mapping, duplicate/empty
 //! name and timeoutMs registration preconditions, panic isolation, and
-//! (on `--target dotnet`) the bounded-wait timeout enforcement.
+//! the bounded-wait timeout enforcement (real on both targets, #7461,
+//! via `Std.Task.runWithin`).
 @test_module
 package Health.HealthTests
 
@@ -381,26 +382,19 @@ test "runChecks isolates a panicking check alongside a passing one" {
 }
 
 // ─── Bounded-wait timeout enforcement ──────────────────────────────────────────
-// `Health.timeoutEnforced` reflects whether `timeoutMs` is actually a
-// preemptive bound on this target: true on `--target dotnet`
-// (`Health.Kernel.Net`'s real `Task.Wait(int)`), false on `--target jvm`
-// (no existing facility to preemptively bound an arbitrary check's
-// execution time — see `runCheckIsolated`'s `@cfg(feature = "jvm")` arm and
-// README.md "Platform parity"). This test asserts each target's real,
-// documented behaviour rather than picking one and skipping the other.
-test "runChecks honors timeoutMs exactly as much as this target enforces it" {
+// `Std.Task.runWithin` gives `timeoutMs` a real, preemptive bound on both
+// targets (#7461): `Task.Run`/`Task.Wait(int)` on `--target dotnet`, a
+// daemon `Thread` joined with `Thread.join(long)` on `--target jvm`. A
+// hanging (or merely slow) check is reported as timed out on both.
+test "runChecks honors timeoutMs on this target" {
   val registry = Health.addLivenessCheckWithTimeout(Health.create(), "slow", { -> slowCheck() }, 50)
   val report = Health.runChecks(registry, Liveness)
-  if timeoutEnforced {
-    assertFalse(report.healthy, "a check exceeding its timeoutMs reports degraded on this target")
-    assertEqual(
-      report.body,
-      "{\"status\":\"degraded\",\"checks\":{\"slow\":{\"status\":\"fail\",\"detail\":\"check \\\"slow\\\" timed out after 50ms\"}}}",
-      "timed-out check reports the timeout detail, not the eventual pass()"
-    )
-  } else {
-    assertTrue(report.healthy, "without enforcement, the slow check still runs to completion and passes")
-  }
+  assertFalse(report.healthy, "a check exceeding its timeoutMs reports degraded on this target")
+  assertEqual(
+    report.body,
+    "{\"status\":\"degraded\",\"checks\":{\"slow\":{\"status\":\"fail\",\"detail\":\"check \\\"slow\\\" timed out after 50ms\"}}}",
+    "timed-out check reports the timeout detail, not the eventual pass()"
+  )
 }
 
 test "runChecks does not time out a check that finishes within its budget" {

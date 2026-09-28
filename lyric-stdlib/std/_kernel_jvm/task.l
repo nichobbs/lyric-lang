@@ -449,3 +449,161 @@ pub func hasAmbient(): Bool {
   val v: JAtomicBoolean = __ambientSlot.get()
   not (v == __ambientNullProbe.get()) and not (v == __noCancellationFlag)
 }
+
+// =====================================================================
+// Bounded-wait single-closure execution (#7461, D-progress-1021).
+//
+// Unlike `scopeSpawn`/`awaitAll` above, `runWithin` does NOT go through
+// the `spawn`/`scope { }` keywords: their join is an unconditional full
+// wait with no bounded/timeout variant (module header), so they cannot
+// give a real preemptive bound. Instead this mirrors the daemon-thread
+// idiom `Std.ConsoleHost`'s bounded stdin reader already ships
+// (`_kernel_jvm/console_host.l`'s `StdinReadJob` / `startJob` /
+// `joinStdinRead`, #7451): a plain record implements `java.lang.Runnable`
+// via `impl` (the docs/51 FFI-interfaces mechanism — verified working on
+// this target by that same file), runs on a `new Thread(Runnable)`
+// (real concurrent execution, not the closure-to-JDK-functional-
+// interface bridge the module header says doesn't exist for a *generic*
+// stdlib API), and the calling thread bounds its wait with the real
+// `Thread.join(long millis)` — which genuinely stops blocking once
+// `millis` elapses, giving the preemptive enforcement `#7461` asks for.
+//
+// `T` never crosses the JDK boundary: `RunWithinJob`'s `action` field is
+// a plain `() -> Unit` closure that writes its result into a captured
+// `List[T]` (used as a one-slot mutable cell — see below for why NOT a
+// generic record), so the `Runnable` implementation itself stays
+// untyped in `T`.
+//
+// NOT a generic record with a `var T`-typed (or `var Option[T]`-typed)
+// field: a mutation to such a field, made through a value captured by a
+// closure inside a GENERIC function, is silently lost — the read after
+// the closure runs still sees the field's value from construction, on
+// both targets. Confirmed with a minimal standalone repro with no
+// closure, no timeout, and no `Runnable`/`Thread` involved at all:
+//
+//     record MyBox[T] { var value: T }
+//     func myFn[T](seed: in T, other: in T): T {
+//       val box: MyBox[T] = MyBox(value = seed)
+//       box.value = other
+//       return box.value  // returns `seed`, not `other`
+//     }
+//
+// `Std.Collections.List[T]`'s own mutation (`add`/indexing) does NOT
+// have this problem (confirmed with the same repro shape substituting a
+// `List[T]` for `MyBox[T]`), so `runWithin` uses a `List[T]` as its
+// one-slot result cell instead of a dedicated record type. This is a
+// genuine, narrow self-hosted compiler gap in generic-record `var`-field
+// assignment specialisation inside a generic function — not specific to
+// `Std.Task` or this target — tracked in #7663 rather than fixed
+// here (out of scope for #7461, which only needs a *working*
+// `runWithin`).
+// =====================================================================
+extern type JRunnable = "java.lang.Runnable"
+
+// One `action` run on a daemon thread; `done` flips only after `action`
+// (and therefore any `add` into its captured result `List`) has
+// returned, so a caller that observes `done == true` sees a fully
+// published result — no separate memory-visibility mechanism is needed
+// beyond `AtomicBoolean`'s own happens-before guarantee.
+record RunWithinJob {
+  action: () -> Unit
+  done: JAtomicBoolean
+}
+
+impl JRunnable for RunWithinJob {
+  func run(): Unit {
+    self.action()
+    runWithinDoneSet(self.done, true)
+  }
+}
+
+// Tail-position forms: a discarded auto-FFI instance call whose receiver
+// is a parameter emits no invoke on this backend (#5379) — same
+// workaround `_kernel_jvm/console_host.l`'s `atomicBoolSet`/
+// `threadJoinMs`/`threadSetDaemon`/`threadStart` already use.
+func runWithinDoneSet(a: in JAtomicBoolean, v: in Bool): Unit {
+  a.set(v)
+}
+
+func runWithinDoneGet(a: in JAtomicBoolean): Bool {
+  a.get()
+}
+
+func runWithinThreadJoinMs(t: in JThread, ms: in Long): Unit {
+  t.join(ms)
+}
+
+func runWithinThreadSetDaemon(t: in JThread, on: in Bool): Unit {
+  t.setDaemon(on)
+}
+
+func runWithinThreadStart(t: in JThread): Unit {
+  t.start()
+}
+
+/// Run `action` on a daemon platform thread and block the calling thread
+/// for at most `timeoutMs` milliseconds (`Thread.join(long)`); returns
+/// `true` when `action` completed within the budget, `false` on timeout.
+/// The non-generic engine `runWithin[T]` builds on — kept `pub` (rather
+/// than `RunWithinJob`/the raw `Thread` helpers above) so a generic
+/// function's per-caller specialisation only ever needs one exported
+/// name. `timeoutMs == 0` never calls `Thread.join(0)` — that overload
+/// means "wait forever," not "don't wait," on the JDK — so a zero
+/// budget is implemented as an immediate, un-joined check of whether
+/// `action` happened to already finish.
+pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool {
+  val done: JAtomicBoolean = JAtomicBoolean.new(false)
+  val job = RunWithinJob(action = action, done = done)
+  val t: JThread = JThread.new(job)
+  runWithinThreadSetDaemon(t, true)
+  runWithinThreadStart(t)
+  if timeoutMs > 0 {
+    runWithinThreadJoinMs(t, timeoutMs.toLong())
+  }
+  return runWithinDoneGet(done)
+}
+
+/// Run `f` on a daemon platform thread and block the calling thread for
+/// at most `timeoutMs` milliseconds (`Thread.join(long)`).
+///
+/// Returns `Some(result)` when `f` completes within the budget, or
+/// `None` on timeout. A timed-out computation keeps running in the
+/// background: there is no JDK API to forcibly abort a running thread,
+/// so a slow `f` continues running on its daemon thread after
+/// `runWithin` has already returned `None` to its caller (a daemon
+/// thread never keeps the JVM process alive on its own, but it is not
+/// killed either).
+///
+/// `timeoutMs == 0` never calls `Thread.join(0)` — that overload means
+/// "wait forever," not "don't wait," on the JDK — so a zero budget is
+/// implemented as an immediate, un-joined check of whether `f` happened
+/// to already finish.
+///
+/// A panic inside `f` is captured on the background thread and, once
+/// observed here (which only happens if it occurs before the deadline),
+/// is **re-raised on the calling thread** — `runWithin` itself panics
+/// with the same message, exactly as a direct call to `f()` would.
+/// Panics are never swallowed; a caller that wants panic isolation on
+/// top of the timeout wraps the call in its own
+/// `try { ... } catch Bug as b { ... }` (the pattern `Health`'s
+/// `runCheckIsolated` uses). A panic that occurs only after the deadline
+/// has already elapsed is unobservable — the same "keeps running in the
+/// background" caveat above.
+pub func runWithin[T](timeoutMs: in Int, f: in () -> T): Option[T]
+  requires: timeoutMs >= 0
+{
+  val results: List[T] = newList()
+  val panics: List[String] = newList()
+  val action: () -> Unit = { -> try { results.add(f()) } catch Bug as b { panics.add(b.message) } }
+  val completed = runActionWithin(action, timeoutMs)
+  if not completed {
+    return None
+  }
+  if panics.count > 0 {
+    panic(panics[0])
+  }
+  if results.count > 0 {
+    return Some(results[0])
+  }
+  return None
+}
