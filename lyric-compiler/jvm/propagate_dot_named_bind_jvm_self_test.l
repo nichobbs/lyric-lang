@@ -1,5 +1,5 @@
 //! propagate_dot_named_bind_jvm_self_test.l — executable regression test
-//! for an unannotated `val p = <call>?` whose bound value is then read
+//! (#7631) for an unannotated `val p = <call>?` whose bound value is then read
 //! through a field or method (`p.name`), on `--target jvm`.
 //!
 //! `?` never reaches JVM codegen: `Lyric.Propagate` rewrites

@@ -443,7 +443,7 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
                 // bare-only lookup left `match Person.parse(s) { case Ok(p) ->
                 // p.name }` — and the `?` form, which `Lyric.Propagate`
                 // rewrites into the same match — with `p` erased to `Object`
-                // (J007).
+                // (J007, #7631).
                 case None -> match recv.kind {
                   case EPath(p) -> {
                     val dotKey = lastSegment(p) + "." + memberName
