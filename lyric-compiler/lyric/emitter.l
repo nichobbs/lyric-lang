@@ -95,6 +95,10 @@ pub record EmitRequest {
   /// emit a `SourceFile` attribute. No default for the same cross-package
   /// construction-site reason as `defines` above.
   path: String
+  /// Whether to synthesize runtime contract assertions (requires:/ensures:)
+  /// during elaboration. Gated by `[contracts].enabled` in lyric.toml
+  /// (docs/63 B0/B1 phase); defaults to true (current behavior).
+  contractsEnabled: Bool
 }
 
 pub record EmitResult {
@@ -3029,7 +3033,8 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[Dia
         restoredArtifactsJvm,
         pkgPaths,
         pkgOrigins,
-        pkgFeatures
+        pkgFeatures,
+        req.contractsEnabled
       )
     } catch Bug as b {
       diags.add(jvmBridgePanicDiagnostic(b.message))
@@ -3389,7 +3394,8 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
             noDepTemplatePkgsPerPkg,
             req.defines,
             allPaths,
-            noOriginsByPkg
+            noOriginsByPkg,
+            true
           )
         } catch Bug as b {
           panicDiagsP.add(msilBridgePanicDiagnostic(b.message))

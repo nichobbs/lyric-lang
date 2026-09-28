@@ -1064,7 +1064,8 @@ pub func buildOneNativeWithFeatures(
     target = target,
     packageVersion = "",
     defines = cliDefines,
-    path = sourcePath
+    path = sourcePath,
+    contractsEnabled = true
   )
 
   // var-mutation shape (stage-0 value-position-match lowering gap,
@@ -2694,7 +2695,8 @@ pub func buildProjectFromManifest(
   }
 
   val asmName = stemOf(Path.basename(outPath), 4)
-  val projReq = Emitter.EmitProjectRequest(
+  val contractsEnabled = match manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
+  val projReq = EmitProjectRequest(
     packages = pkgs,
     assemblyName = asmName,
     outputPath = outPath,
@@ -2712,7 +2714,8 @@ pub func buildProjectFromManifest(
     // CLI wins over a manifest define of the same key, both over the well-known
     // `version` fallback the bridges prepend (decodeDefines is last-wins).
     defines = BD.withManifestDefines(Mf.getManifestBuildDefines(manifest), cliDefines),
-    packageFeatures = resolved.depPackageFeatures
+    packageFeatures = resolved.depPackageFeatures,
+    contractsEnabled = contractsEnabled
   )
 
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM

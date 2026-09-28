@@ -83,7 +83,8 @@ func emitTestPlainOrProject(
     target = tgt,
     packageVersion = "",
     defines = newList(),
-    path = sourcePath
+    path = sourcePath,
+    contractsEnabled = true
   )
   val noManifestOverride: Option[String] = None
   emitSingleFileOrProject(req, sourcePath, noManifestOverride, cliFeatures, noDefaultFeatures, allFeatures)
@@ -108,7 +109,8 @@ func emitTestNative(
       target = Emitter.Native,
       packageVersion = "",
       defines = newList(),
-      path = sourcePath
+      path = sourcePath,
+      contractsEnabled = true
     ),
     "",
     "",
@@ -154,7 +156,8 @@ func emitTestLinked(
       depTemplateSrcs = noDepTemplateSrcs,
       nugetAssemblyPaths = emptyNugetPaths,
       defines = newList(),
-      packageFeatures = Emitter.noPackageFeatures()
+      packageFeatures = Emitter.noPackageFeatures(),
+      contractsEnabled = true
     )
   )
 }
@@ -1838,7 +1841,8 @@ func cmdTestManifest(
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + testExt)
 
-    val projReq = Emitter.EmitProjectRequest(
+    val testContractsEnabled = match manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
+    val projReq = EmitProjectRequest(
       packages = allPkgs,
       assemblyName = asmStem,
       outputPath = outPath,
@@ -1850,7 +1854,8 @@ func cmdTestManifest(
       depTemplateSrcs = depTemplatePkgsList,
       nugetAssemblyPaths = nugetThirdPartyPaths,
       defines = newList(),
-      packageFeatures = depPackageFeatures
+      packageFeatures = depPackageFeatures,
+      contractsEnabled = testContractsEnabled
     )
     val result = Emitter.emitProject(projReq)
     var hadBuildError = false

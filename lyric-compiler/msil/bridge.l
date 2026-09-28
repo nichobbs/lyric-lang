@@ -90,7 +90,7 @@ func resolveTypeAliasesMsil(file: in SourceFile): SourceFile {
 /// `package` declaration in the source.
 pub func compileToMsil(source: in String, outputPath: in String, stdlibSources: in List[String]): Bool {
   val noDefines: List[String] = newList()
-  compileToMsilWithVersion(source, outputPath, stdlibSources, "", noDefines, "")
+  compileToMsilWithVersion(source, outputPath, stdlibSources, "", noDefines, "", true)
 }
 
 // Seed lctx.stdCoreResultOk2Row / stdCoreResultErr2Row / stdCoreResultRow from
@@ -598,6 +598,7 @@ pub func compileProjectToMsilWithFeaturesDiag(
     noDefines,
     noSourcePaths,
     noOriginsByPkg,
+    true,
     outDiagnostics
   )
 }
@@ -633,7 +634,8 @@ pub func compileProjectToMsilWithRestored(
     noDepTemplatePkgs,
     newList(),
     noSourcePaths,
-    noOriginsByPkg
+    noOriginsByPkg,
+    true
   )
 }
 
@@ -683,8 +685,8 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     defines,
     paths,
     originsByPkg,
-    noDiagOut,
-    contractsEnabled
+    contractsEnabled,
+    noDiagOut
   )
 }
 
@@ -1532,7 +1534,8 @@ pub func compileProjectToMsilWithRestoredEncoded(
     noDepTemplatePkgsEncoded,
     newList(),
     noSourcePathsEncoded,
-    noOriginsByPkgEncoded
+    noOriginsByPkgEncoded,
+    true
   )
 }
 

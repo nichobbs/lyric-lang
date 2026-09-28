@@ -365,7 +365,7 @@ pub func compileToNative(
 ): Bool {
   val noFlags: List[String] = newList()
   val noDefines: List[String] = newList()
-  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags, noDefines, "")
+  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags, noDefines, "", true)
 }
 
 /// `compileToNative` with extra clang driver flags (e.g.

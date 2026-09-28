@@ -113,7 +113,8 @@ func runScript(script: in String, dllFile: in String, verbose: in Bool): Unit {
     target = Emitter.Dotnet,
     packageVersion = "",
     defines = newList(),
-    path = ""
+    path = "",
+    contractsEnabled = true
   )
   val result = Emitter.emit(req)
 

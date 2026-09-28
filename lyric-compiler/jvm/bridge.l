@@ -1878,7 +1878,8 @@ pub func compileToJarBundled(
     noDepTemplateSrcs,
     noDefines,
     packageVersion,
-    ""
+    "",
+    true
   )
 }
 
@@ -2069,7 +2070,8 @@ pub func compileProjectToJarBundledWithFeatures(
     noRestored,
     pkgPaths,
     noOriginsByPkg,
-    noPackageFeatureSets()
+    noPackageFeatureSets(),
+    true
   )
 }
 
