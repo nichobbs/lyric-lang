@@ -2743,6 +2743,63 @@ func mainParamIsStringSlice(te: in TypeExpr): Bool {
   }
 }
 
+// Emit `System.setOut(new PrintStream(new FileOutputStream(FileDescriptor.<fd>), true, StandardCharsets.UTF_8))`
+// (or `setErr`) — see `emitConsoleUtf8Setup`'s doc for why this lives in the
+// JVM-main wrapper rather than `Std.ConsoleHost`.
+func emitSetUtf8Stream(insns: in List[LInsn], fdField: in String, setter: in String): Unit {
+  val psPs: List[JvmType] = newList()
+  psPs.add(JRef(className = "java/io/OutputStream"))
+  psPs.add(JBoolean)
+  psPs.add(JRef(className = "java/nio/charset/Charset"))
+  val fosPs: List[JvmType] = newList()
+  fosPs.add(JRef(className = "java/io/FileDescriptor"))
+  val setterPs: List[JvmType] = newList()
+  setterPs.add(JRef(className = "java/io/PrintStream"))
+  insns.add(LNew(className = "java/io/PrintStream"))
+  insns.add(LDup)
+  insns.add(LNew(className = "java/io/FileOutputStream"))
+  insns.add(LDup)
+  insns.add(
+    LGetstatic(owner = "java/io/FileDescriptor", name = fdField, t = JRef(className = "java/io/FileDescriptor"))
+  )
+  insns.add(LInvokespecial(owner = "java/io/FileOutputStream", name = "<init>", params = fosPs, ret = JVoid))
+  insns.add(LIconst(v = 1))
+  insns.add(
+    LGetstatic(
+      owner = "java/nio/charset/StandardCharsets",
+      name = "UTF_8",
+      t = JRef(className = "java/nio/charset/Charset")
+    )
+  )
+  insns.add(LInvokespecial(owner = "java/io/PrintStream", name = "<init>", params = psPs, ret = JVoid))
+  insns.add(LInvokestatic(owner = "java/lang/System", name = setter, params = setterPs, ret = JVoid))
+}
+
+// Replace `System.out`/`System.err` with `PrintStream`s hard-wired to UTF-8
+// (#7513): the JDK's default `System.out`/`err` encode through the platform
+// default charset, which is ASCII under a C/POSIX locale (common in
+// containers/CI), turning every non-ASCII `println`/`print`/`Std.Console
+// .error` byte into `?`. `--target dotnet` never has this problem (.NET's
+// console writers are UTF-8 regardless of locale), so this is JVM-only.
+//
+// Emitted once, as the very first instructions of the synthesized JVM
+// `public static void main(String[])` wrapper below — the sole entry point
+// per runnable JVM bundle (`hasMain`'s own doc comment) — rather than as a
+// per-call encoding fix in `println`/`print` codegen (`04_calls.l`) or in
+// `Std.ConsoleHost` (`console_host.l`). `println`/`print`'s builtin
+// lowering and `hostConsoleWrite{,Line}`/`hostConsoleErrorWriteLine`/
+// `hostConsoleWriteBytes` all read the `System.out`/`err` STATIC FIELD at
+// the point they run, so replacing the field once, before any of those
+// call sites can execute, fixes every text-output path with no change to
+// their own codegen — and keeps `hostConsoleWriteBytes`'s raw byte writes
+// on the exact same `PrintStream` instance as the text writers, so
+// interleaved text and byte output stay in wire order (the two already
+// share one field; this only changes what the field points at).
+func emitConsoleUtf8Setup(insns: in List[LInsn]): Unit {
+  emitSetUtf8Stream(insns, "out", "setOut")
+  emitSetUtf8Stream(insns, "err", "setErr")
+}
+
 // ── Async generator detection ─────────────────────────────────────────────────
 func exprContainsYield(e: in Expr): Bool {
   match e.kind {
@@ -7626,6 +7683,10 @@ pub func codegenPackageWithSigsSeeded(
     jvmMainParams.add(JArray(elem = JRef(className = "java/lang/String")))
     val jvmMainInsns: List[LInsn] = newList()
     val lyricMainPs: List[JvmType] = newList()
+    // #7513: rebind System.out/err to UTF-8 PrintStreams before any program
+    // code — including the argv stash below — can run. See
+    // `emitConsoleUtf8Setup`'s doc.
+    emitConsoleUtf8Setup(jvmMainInsns)
     // #5377: stash the incoming argv into the package-independent holder
     // class BEFORE any other program code runs, regardless of whether the
     // Lyric `main` itself declares an `argv` parameter — `Std.Environment

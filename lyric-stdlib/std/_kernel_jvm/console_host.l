@@ -29,6 +29,15 @@
 //! Internal: prefer Std.Console for application code.  Import this kernel
 //! module only when exact byte-level control is required (e.g. the LSP
 //! Content-Length framing reader).
+//!
+//! `System.out`/`System.err` are rebound to UTF-8 `PrintStream`s once, at
+//! process startup, in the synthesized JVM `main` wrapper (`#7513`,
+//! `Jvm.Codegen.emitConsoleUtf8Setup` in `lyric-compiler/jvm/codegen/06_items.l`)
+//! rather than in this file — that keeps `println`/`print`'s builtin
+//! bytecode lowering (which also reads the `System.out` static field
+//! directly) on the same UTF-8 stream with no codegen changes of its own.
+//! `stdinReader` below decodes explicitly as UTF-8 for the same reason: the
+//! JVM's platform-default charset is ASCII under a C/POSIX locale.
 @axiom("java.lang.System.{out,err,in}, java.io.BufferedReader and java.lang.Thread conform to their documented JVM contracts")
 package Std.ConsoleHost
 
@@ -44,8 +53,17 @@ extern type JBufferedReader = "java.io.BufferedReader"
 
 extern type JInputStreamReader = "java.io.InputStreamReader"
 
-// Process-shared stdin reader (see the module doc).
-val stdinReader: JBufferedReader = JBufferedReader.new(JInputStreamReader.new(JSystem.in))
+extern type JCharset = "java.nio.charset.Charset"
+
+extern type JStandardCharsets = "java.nio.charset.StandardCharsets"
+
+// Process-shared stdin reader (see the module doc). Decodes explicitly as
+// UTF-8 (#7513): `InputStreamReader(InputStream)` without a charset argument
+// decodes through the JVM's platform default charset, which is ASCII under a
+// C/POSIX locale (common in containers/CI) — every multi-byte `readLine()`
+// character beyond ASCII would come back mangled. `hostConsoleRead`'s
+// underlying `.read()` is likewise sourced from this same UTF-8 reader.
+val stdinReader: JBufferedReader = JBufferedReader.new(JInputStreamReader.new(JSystem.in, JStandardCharsets.UTF_8))
 
 /// Read a single UTF-16 code unit from stdin; -1 at EOF.
 pub func hostConsoleRead(): Int {
