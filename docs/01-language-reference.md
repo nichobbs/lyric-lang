@@ -695,6 +695,25 @@ not `"-lssl"`; a malformed entry (empty, containing space/tab/CR/LF, or
 keys is treated as absent (equivalent to declaring no `[native]` table at
 all), so every default applies.
 
+### 3.7 Contract compilation — `[contracts]`
+
+A project's `lyric.toml` may control compile-time contract behavior:
+
+```toml
+[contracts]
+enabled = true   # default: true
+```
+
+| key | Effect | Default |
+|---|---|---|
+| `enabled` | Whether runtime contract checks (`requires:`, `ensures:`, `invariant:`) are synthesized during compilation | `true` |
+
+When `enabled = true` (the default), every `requires:` and `ensures:` clause is compiled into a runtime `assert(...)` statement in the function body. Every `invariant:` declared on a `protected` type is checked on entry and exit of every method. In `@runtime_checked` modules (§6.4), these checks execute in every build profile.
+
+When `enabled = false`, contract clauses are parsed and type-checked (so errors in contract expressions are caught at compile time), but no runtime checks are synthesized. The original contract syntax is preserved in contract metadata and remains visible to the prover (`lyric prove`), so proof obligations are unaffected by this setting. This is useful for optimizing production builds where contract overhead is unacceptable and all contracts have been formally verified offline.
+
+A `[contracts]` table with no keys is treated as absent (equivalent to declaring no `[contracts]` table at all), so the default applies. The manifest setting applies to the entire project; contract enforcement is a project-level decision, not a per-package one. If a project needs a mix of checked and unchecked code, split it across distinct `lyric.toml` projects and control the setting per project.
+
 ## 4. Expressions
 
 ### 4.1 Operator precedence

@@ -204,6 +204,19 @@ and `--debug --aot` gives you a debuggable native binary.
 > `[build] kind = "aot"` is a hard error (`F0042`) rather than a silent
 > remap, so a manifest can never be quietly downgraded to a portable DLL.
 
+### Contract checking — `[contracts]`
+
+By default, all contracts (`requires:`, `ensures:`, `invariant:`) are synthesized as runtime assertions during compilation. You can disable this at the project level via `lyric.toml`:
+
+```toml
+[contracts]
+enabled = false   # default: true
+```
+
+When `enabled = false`, the compiler parses and type-checks all contract clauses (so errors in contract expressions are caught), but does not generate runtime checks. This is useful for production builds where contract overhead is unacceptable and all contracts have been formally verified offline. Proof obligations for `lyric prove` are unaffected by this setting.
+
+When `enabled = true` (the default), every `requires:` and `ensures:` clause is compiled into a runtime assertion. In `@runtime_checked` modules (§8 of the language reference), these checks execute in both debug and release builds. The setting applies to the entire project; if a project needs a mix of checked and unchecked code, split it across distinct `lyric.toml` projects.
+
 ### Native binaries — `lyric build --release --aot`
 
 For deployment, `lyric build --release --aot hello.l` produces a
