@@ -19,6 +19,11 @@ func parseAndElaborate(src: in String): SourceFile {
   elaborateFile(pr.file)
 }
 
+func parseAndElaborateWithContracts(src: in String, contractsEnabled: in Bool): SourceFile {
+  val pr = parse(src)
+  elaborateFileWithInterfaces(pr.file, newList(), contractsEnabled)
+}
+
 func firstFunction(file: in SourceFile, name: in String): FunctionDecl {
   var i = 0
   while i < file.items.count {
@@ -1177,4 +1182,57 @@ test "a range-refined return annotates the result binding with the underlying ty
   val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
   assertEqual(letName(blk.statements[0]), "__lyric_result_0", "annot-refined: stmt[0] is the result binding")
   assertEqual(letTypeHead(blk.statements[0]), "Int", "annot-refined: annotated with the underlying Int")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §N. Contract gating via `contractsEnabled` flag (docs/63 Q-BP-009).
+// ─────────────────────────────────────────────────────────────────────────────
+test "contractsEnabled = true includes requires: asserts (default)" {
+  val src = "package P\nfunc f(x: in Int): Int\n  requires: x > 0\n{ x + 1 }\n"
+  val file = parseAndElaborateWithContracts(src, true)
+  val fn = firstFunction(file, "f")
+  val blk = bodyBlockOf(fn)
+  // With contractsEnabled=true, an assert should be injected for the requires: clause.
+  assertTrue(blk.statements.count >= 1, "contractsEnabled true: body has asserts")
+  assertTrue(isAssertCall(blk.statements[0]), "contractsEnabled true: assert is injected for requires:")
+}
+
+test "contractsEnabled = false omits requires: asserts" {
+  val src = "package P\nfunc f(x: in Int): Int\n  requires: x > 0\n{ x + 1 }\n"
+  val file = parseAndElaborateWithContracts(src, false)
+  val fn = firstFunction(file, "f")
+  val blk = bodyBlockOf(fn)
+  // With contractsEnabled=false, the requires: assert should not be injected.
+  assertEqualInt(blk.statements.count, 1, "contractsEnabled false: body unchanged")
+  assertTrue(not isAssertCall(blk.statements[0]), "contractsEnabled false: no assert for requires:")
+}
+
+test "contractsEnabled = false omits multiple requires: asserts in sequence" {
+  val src = "package P\nfunc f(x: in Int, y: in Int): Int\n  requires: x > 0\n  requires: y > 0\n{ x + y }\n"
+  val enabledFile = parseAndElaborateWithContracts(src, true)
+  val disabledFile = parseAndElaborateWithContracts(src, false)
+  val enabledFn = firstFunction(enabledFile, "f")
+  val disabledFn = firstFunction(disabledFile, "f")
+  val enabledBlk = bodyBlockOf(enabledFn)
+  val disabledBlk = bodyBlockOf(disabledFn)
+  // With contractsEnabled=true, two asserts should be injected for the two requires: clauses.
+  // With contractsEnabled=false, no asserts should be injected.
+  var enabledAsserts = 0
+  var disabledAsserts = 0
+  var i = 0
+  while i < enabledBlk.statements.count {
+    if isAssertCall(enabledBlk.statements[i]) {
+      enabledAsserts = enabledAsserts + 1
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < disabledBlk.statements.count {
+    if isAssertCall(disabledBlk.statements[i]) {
+      disabledAsserts = disabledAsserts + 1
+    }
+    i = i + 1
+  }
+  assertTrue(enabledAsserts > 0, "contractsEnabled true: at least one assert for requires:")
+  assertEqualInt(disabledAsserts, 0, "contractsEnabled false: no asserts for requires:")
 }

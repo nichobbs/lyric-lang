@@ -1104,3 +1104,39 @@ test "largest in-range integer value accepted" {
   val m = parseOk("[package]\nname = \"x\"\nversion = \"1.0\"\nmaxint = 2147483647\n")
   assertEqual(m.packageSection.name, "x", "in-range integer value does not disturb parsing")
 }
+
+test "[contracts] section with enabled = true" {
+  val toml = "[package]\nname = \"test-pkg\"\nversion = \"1.0.0\"\n[contracts]\nenabled = true\n"
+  val m = parseOk(toml)
+  match m.contracts {
+    case Some(cs) -> assertTrue(cs.enabled, "[contracts] enabled = true is parsed correctly")
+    case None -> panic("[contracts] section should be present")
+  }
+}
+
+test "[contracts] section with enabled = false" {
+  val toml = "[package]\nname = \"test-pkg\"\nversion = \"1.0.0\"\n[contracts]\nenabled = false\n"
+  val m = parseOk(toml)
+  match m.contracts {
+    case Some(cs) -> assertTrue(not cs.enabled, "[contracts] enabled = false is parsed correctly")
+    case None -> panic("[contracts] section should be present")
+  }
+}
+
+test "[contracts] section defaults to enabled when absent" {
+  val toml = "[package]\nname = \"test-pkg\"\nversion = \"1.0.0\"\n"
+  val m = parseOk(toml)
+  match m.contracts {
+    case Some(_) -> panic("[contracts] section should not be present")
+    case None -> ()
+  }
+}
+
+test "[contracts] enabled defaults to true when field absent" {
+  val toml = "[package]\nname = \"test-pkg\"\nversion = \"1.0.0\"\n[contracts]\nenabled = true\n"
+  val m = parseOk(toml)
+  match m.contracts {
+    case Some(cs) -> assertTrue(cs.enabled, "[contracts] enabled = true when explicitly set")
+    case None -> panic("[contracts] section should be present when fields are present")
+  }
+}
