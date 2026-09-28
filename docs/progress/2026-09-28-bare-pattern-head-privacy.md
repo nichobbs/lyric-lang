@@ -107,3 +107,12 @@ against a reachable public `Lib.Geo.Point`, raised in the same review).
   (D-progress-1012 §Scope, D-progress-1015's own "bare head needs neither
   check" reasoning) using the exact mechanism those entries already
   established, rather than introducing a new design.
+
+**Review follow-up (#7608).** The bare nullary-case path first resolves the
+case that belongs to the scrutinee's own type by exact `TypeId`, and runs the
+privacy check on that symbol only. `caseParentMatchesScrutinee` accepts any
+same-named case when the scrutinee is an enum (there is no enum-decl index),
+so the first version could check a public case of an unrelated enum instead
+of the private one (missing T0097), or a private case of an unrelated enum
+for a public scrutinee (a false T0097). Two self-test cases cover both
+orders of the colliding packages.

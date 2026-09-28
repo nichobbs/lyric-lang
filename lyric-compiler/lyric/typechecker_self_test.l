@@ -6473,6 +6473,54 @@ test "bare pattern head naming another package's private enum case is T0097 (#75
   )
 }
 
+// #7608: an enum scrutinee's bare nullary case must be resolved against the
+// scrutinee's OWN enum before the privacy check runs. Another loaded package
+// declaring a public case with the same bare name (`Active` here) must not
+// stand in for the private one, whichever package the symbol table lists
+// first.
+func publicActivePackage(name: in String): ImportedPackage {
+  val pkg = parse("package " + name + "\npub enum Mode { case Active; case Idle }\n")
+  ImportedPackage(
+    name = name,
+    items = pkg.file.items,
+    imports = collectImportNames(pkg.file.imports),
+    wholeImports = collectWholeImportNames(pkg.file.imports)
+  )
+}
+
+func privateStatusWithPublicCollision(publicFirst: in Bool): List[ImportedPackage] {
+  val packages: List[ImportedPackage] = newList()
+  if publicFirst {
+    packages.add(publicActivePackage("PubModes"))
+  }
+  val priv = privateStatusPackages()
+  packages.add(priv[0])
+  if not publicFirst {
+    packages.add(publicActivePackage("PubModes"))
+  }
+  packages
+}
+
+test "bare private enum case is T0097 even when a public enum elsewhere has a same-named case (#7608)" {
+  val src = "package App\nimport PkgPriv\nimport PubModes\nfunc f(): Int {\n  match mkStatus() {\n    case Active -> 1\n    case _ -> 0\n  }\n}\n"
+  val before = checkWithImportedPackages(parse(src).file, privateStatusWithPublicCollision(true))
+  assertEqualInt(countDiagCode(before, "T0097"), 1, "public same-named case listed first: still one T0097")
+  val after = checkWithImportedPackages(parse(src).file, privateStatusWithPublicCollision(false))
+  assertEqualInt(countDiagCode(after, "T0097"), 1, "public same-named case listed last: still one T0097")
+  assertTrue(
+    diagMessageFor(before, "T0097").contains("'Active'"),
+    "T0097 names the private enum's case: " + diagMessageFor(before, "T0097")
+  )
+}
+
+test "bare case of a public enum is clean when a private enum elsewhere has a same-named case (#7608)" {
+  val src = "package App\nimport PkgPriv\nimport PubModes\nfunc g(m: in PubModes.Mode): Int {\n  match m {\n    case Active -> 1\n    case _ -> 0\n  }\n}\n"
+  val first = checkWithImportedPackages(parse(src).file, privateStatusWithPublicCollision(false))
+  assertEqualInt(countDiagCode(first, "T0097"), 0, "private same-named case listed first: no T0097")
+  val last = checkWithImportedPackages(parse(src).file, privateStatusWithPublicCollision(true))
+  assertEqualInt(countDiagCode(last, "T0097"), 0, "private same-named case listed last: no T0097")
+}
+
 test "bare pattern head naming a SAME-package private record has no T0097 (#7591)" {
   val src = "package P\nrecord Point {\n  x: Int\n  y: Int\n}\nfunc mkPoint(): Point {\n  Point(x = 1, y = 2)\n}\nfunc f(): Int {\n  match mkPoint() {\n    case Point { x = a, y = _ } -> a\n  }\n}\n"
   assertEqualInt(countDiagCode(parseCheck(src), "T0097"), 0, "same-package private record: no T0097")

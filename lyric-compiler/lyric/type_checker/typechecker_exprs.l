@@ -5505,25 +5505,44 @@ func checkBareCasePatternScrutinee(
   span: in Span,
 ): Unit {
   val cands = symTableTryFindAll(tbl, name)
+  // #7591: a bare nullary-case pattern (`case Active ->`, no parens) is a
+  // `PBinding` disambiguated to a case constructor here, entirely outside
+  // `unionCaseSymbolForScrutinee`'s `PConstructor` path, so it needs its own
+  // privacy check: naming another package's package-private union/enum
+  // case, bare or not, is T0097.  The check must run on the scrutinee's OWN
+  // case (#7608): `caseParentMatchesScrutinee` accepts any same-named case
+  // when the scrutinee is an enum (there is no enum-decl index), so a
+  // public case of another enum could otherwise stand in for a private one,
+  // or a private one for a public scrutinee's.
+  match unrefine(scrutineeTy) {
+    case TyUser(sid, _, _) -> {
+      var e = 0
+      while e < cands.count {
+        val own = match cands[e].kind {
+          case DKUnionCase(pid, _) -> typeIdEq(pid, sid)
+          case DKEnumCase(pid, _) -> typeIdEq(pid, sid)
+          case _ -> false
+        }
+        if own {
+          if symbolIsPackagePrivateBinding(cands[e]) {
+            checkImportedVisibility(cands[e], span, diag)
+          }
+          return ()
+        }
+        e = e + 1
+      }
+    }
+    case _ -> ()
+  }
   var i = 0
   while i < cands.count {
     val cand = cands[i]
-    val isCase = match cand.kind { case DKUnionCase(_, _) -> true; case DKEnumCase(_, _) -> true; case _ -> false }
     val belongs = match cand.kind {
       case DKUnionCase(pid, _) -> caseParentMatchesScrutinee(tbl, pid, scrutineeTy)
       case DKEnumCase(pid, _) -> caseParentMatchesScrutinee(tbl, pid, scrutineeTy)
       case _ -> true
     }
     if belongs {
-      // #7591: a bare nullary-case pattern (`case Active ->`, no parens)
-      // is a `PBinding` disambiguated to a case constructor here, entirely
-      // outside `unionCaseSymbolForScrutinee`'s `PConstructor` path — so it
-      // needs its own copy of the privacy check: naming another package's
-      // package-private union/enum case, bare or not, is T0097.
-      if isCase and symbolIsPackagePrivateBinding(cand) {
-        checkImportedVisibility(cand, span, diag)
-        return ()
-      }
       return ()
     }
     i = i + 1
