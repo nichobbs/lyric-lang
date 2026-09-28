@@ -46,6 +46,21 @@
 //! '[System.String]'`. `normalizeGenericArgToken` strips the extra wrapping
 //! (and an optional inner assembly-qualification suffix after a comma).
 //!
+//! A third group of cases below covers a regression the same helper
+//! introduced (#7610): it recognised a bracket-suffixed alias by a bare
+//! "contains `[`" test, so an ARRAY alias (`System.String[]`) was also
+//! re-encoded as a closed instantiation — a zero-argument `System.String<>`
+//! GENERICINST — in every `@externTarget` parameter and return position.
+//! Instance calls on such a receiver happened to survive once `argTyToSig`
+//! learned to describe generic instantiations (the receiver is dropped
+//! before overload scoring), but any scored array-alias argument (the static
+//! `Array.Copy` below) failed with F0015, and v0.7.0 failed every call with
+//! `MissingMethodException`. `isClosedGenericInstFqn` now requires a
+//! backtick-arity head, at least one type argument, and no trailing array
+//! rank specifier. The `Array.Copy` case is declared `@externStatic`, which
+//! also pins the F0015 pre-check: it must accept the erased `object`
+//! argument for `System.Array` the same way call emission does.
+//!
 //! Run by native `lyric test` (compiles in-process through the self-hosted
 //! Msil.Bridge and asserts every runtime value).  Imports only `Std.*`.
 //!
@@ -110,4 +125,54 @@ test "double-bracket generic-argument form parses to a real type, not a literal 
   strStrMapSet(m, "a", "1")
   strStrMapSet(m, "b", "2")
   assertEqualInt(strStrMapCount(m), 2, "both entries land in a real Dictionary<string, string>")
+}
+
+// An ARRAY extern-type alias also contains `[`, but is not a generic
+// instantiation (#7610). It must keep the plain `object` erasure so
+// metadata-direct resolution binds `System.Array`'s real `Object`/`Array`
+// parameters, as a receiver (SetValue/GetValue), a scored static argument
+// (Copy), and a return (CreateInstance).
+extern type ClrType = "System.Type"
+
+extern type StrArr = "System.String[]"
+
+@externTarget("System.Type.GetType")
+func clrTypeNamed(name: in String): ClrType = ()
+
+@externTarget("System.Array.CreateInstance")
+func newStrArr(elementType: in ClrType, length: in Int): StrArr = ()
+
+@externInstance
+@externTarget("System.Array.SetValue")
+func strArrSet(arr: in StrArr, value: in String, index: in Int): Unit = ()
+
+@externInstance
+@externTarget("System.Array.GetValue")
+func strArrGet(arr: in StrArr, index: in Int): String = ()
+
+@externInstance
+@externTarget("System.Array.get_Length")
+func strArrLength(arr: in StrArr): Int = ()
+
+@externStatic
+@externTarget("System.Array.Copy")
+func strArrCopy(src: in StrArr, srcIndex: in Int, dst: in StrArr, dstIndex: in Int, length: in Int): Unit = ()
+
+test "array extern alias binds as an instance receiver and a return, not as a generic instantiation (#7610)" {
+  val a = newStrArr(clrTypeNamed("System.String"), 3)
+  strArrSet(a, "x", 0)
+  strArrSet(a, "y", 2)
+  assertEqualInt(strArrLength(a), 3, "CreateInstance returns a real String[] of the requested length")
+  assertEqual(strArrGet(a, 0), "x", "SetValue/GetValue round-trip index 0")
+  assertEqual(strArrGet(a, 2), "y", "SetValue/GetValue round-trip index 2")
+}
+
+test "array extern alias binds as a scored static argument (#7610)" {
+  val src = newStrArr(clrTypeNamed("System.String"), 2)
+  strArrSet(src, "first", 0)
+  strArrSet(src, "second", 1)
+  val dst = newStrArr(clrTypeNamed("System.String"), 2)
+  strArrCopy(src, 0, dst, 0, 2)
+  assertEqual(strArrGet(dst, 0), "first", "Array.Copy copied index 0")
+  assertEqual(strArrGet(dst, 1), "second", "Array.Copy copied index 1")
 }

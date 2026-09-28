@@ -184,6 +184,17 @@ always the `MObject` erasure. Fixing the return-type erasure activates
 pre-existing, already-tested machinery; no new construction-side code was
 needed.
 
+_Correction (#7610): the helper originally recognised a bracket-suffixed alias
+by a bare "CLR FQN contains `[`" test, which also matches an **array** alias
+(`extern type StrArr = "System.String[]"`). Every `@externTarget` parameter or
+return typed as one was re-encoded as a zero-argument `System.String<>`
+GENERICINST: v0.7.0 failed such calls with `MissingMethodException`, and a
+scored array-alias argument (static `Array.Copy`) failed with F0015. The
+helper now goes through `isClosedGenericInstFqn`, which requires a backtick-
+arity head, at least one type argument, and no trailing array rank specifier,
+so array aliases keep the `object` erasure metadata-direct resolution upcasts
+correctly. Covered by `generic_extern_param_self_test.l`._
+
 ### What this does *not* fix
 
 _Update: the auto-FFI direct-assignment gap described in this subsection

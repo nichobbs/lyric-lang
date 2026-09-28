@@ -23165,6 +23165,50 @@ func stripBracketSuffix(name: in String): String {
   }
 }
 
+// Whether `fqn` names a CLOSED generic instantiation (`List`1[System.String]`,
+// `Dictionary`2[[System.String],[System.String]]`) rather than a CLR array
+// type (`System.String[]`, `System.Int32[,]`, `List`1[System.String][]`),
+// which also contains `[`.  An instantiation needs an arity-suffixed
+// (backtick) open-generic head before its first `[`, a bracket body with at
+// least one type argument, and no trailing array rank specifier.  Callers
+// that must not mistake an array alias for an instantiation use this rather
+// than a bare `contains(fqn, "[")` test (#7610: `System.String[]` was
+// re-encoded as a zero-argument `System.String<>` GENERICINST, so every
+// `@externTarget` taking a Lyric array alias failed to bind).
+func isClosedGenericInstFqn(fqn: in String): Bool {
+  val br = String.indexOfRaw(fqn, "[")
+  if br < 0 {
+    return false
+  }
+  if String.indexOfRaw(fqn.substring(0, br), "`") < 0 {
+    return false
+  }
+  if hasArrayRankSuffix(fqn) {
+    return false
+  }
+  parseBracketArgFqns(fqn).count > 0
+}
+
+// Whether `fqn` ends in an array rank specifier: a final `[...]` group whose
+// body is empty or only commas (`[]`, `[,]`, `[,,]`).
+func hasArrayRankSuffix(fqn: in String): Bool {
+  if fqn.length == 0 or fqn.substring(fqn.length - 1, 1) != "]" {
+    return false
+  }
+  val open = String.lastIndexOfRaw(fqn, "[")
+  if open < 0 {
+    return false
+  }
+  var i = open + 1
+  while i < fqn.length - 1 {
+    if fqn.substring(i, 1) != "," {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
 // Normalise one comma-split generic-instantiation argument token to a bare
 // FQN. Handles both the plain form (`System.String`) and the .NET reflection
 // "double-bracket" assembly-qualified form (`[System.String]`, or with an
@@ -23353,8 +23397,9 @@ func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
 //
 // None when `te` isn't a bare single-segment extern-type-alias reference, the
 // alias resolves to a Lyric-internal package (never bracket-erased in the
-// first place), its CLR FQN carries no bracket suffix (nothing to recover),
-// or the bare name is shadowed by an active generic type parameter or an
+// first place), its CLR FQN is not a closed generic instantiation (no bracket
+// suffix, or an array alias such as `System.String[]` — see
+// `isClosedGenericInstFqn`; nothing to recover), or the bare name is shadowed by an active generic type parameter or an
 // in-scope local Lyric type of the same name — the caller falls back to the
 // ordinary `typeExprToMsilCtx` conversion (which already applies both
 // shadowing checks correctly) in every such case.
@@ -23395,7 +23440,7 @@ func externTargetBracketGenericInstMsil(
       }
       match mapGet(cctx.externTypeNames, seg) {
         case Some(clrFqn) -> {
-          if startsWith(clrFqn, "Lyric.") or not contains(clrFqn, "[") {
+          if startsWith(clrFqn, "Lyric.") or not isClosedGenericInstFqn(clrFqn) {
             None
           } else {
             ensureMetadataIndex(cctx)
@@ -24069,6 +24114,25 @@ func emitExternOptionalDefault(
         msilTypeKeyStr(ty) +
         "); declare that parameter explicitly in the wrapper."
     )
+  }
+}
+
+// Whether the metadata-direct `@externTarget` resolver (the lenient scorer
+// `emitExternTargetBody` binds the call with) finds a STATIC overload of
+// `typeFqn.member` for `argSigs`.  Used by the F0015 explicit-static
+// pre-check so it never rejects a call the emission path would bind (#7610).
+func externTargetResolvesStaticLenient(
+  cctx: in CodegenCtx,
+  typeFqn: in String,
+  member: in String,
+  argSigs: in List[Mdr.SigType],
+): Bool {
+  match mapGet(cctx.metadataPathIndex, assemblyForTypeMsil(cctx, typeFqn)) {
+    case None -> false
+    case Some(asmPath) -> match Mdr.resolveExternMethodScoredCached(cctx.metadataParsedPaths, cctx.metadataParsedAssemblies, asmPath, typeFqn, member, argSigs) {
+      case Some(msig) -> not msig.hasThis
+      case None -> false
+    }
   }
 }
 
@@ -24841,13 +24905,26 @@ func emitExternTargetBody(
               // verification pre-check (an `@externTarget` with an explicit
               // static hint) spuriously fails with F0015 even though codegen
               // would have resolved and emitted the call correctly.
-              val verified = match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, r.memberName, verifySigs) {
+              val strictVerified = match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, r.memberName, verifySigs) {
                 case Some(_) -> true
                 case None -> match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, "get_" + r.memberName, verifySigs) {
                   case Some(_) -> true
                   case None -> false
                 }
               }
+              // The strict resolver is the auto-FFI scorer: it rejects an
+              // erased `object` argument (an array or closed-generic extern
+              // alias, `typeExprToMsilCtx`'s `MObject` erasure) for a named
+              // reference parameter such as `System.Array`.  The call itself
+              // is emitted through the metadata-direct pass below, which
+              // scores with `scoreSigTypeLenient` and binds that upcast, so
+              // a declared `@externStatic` wrapper over `Array.Copy(String[],
+              // …)` was rejected here although the unhinted spelling of the
+              // same wrapper binds and runs (#7610).  Accept whatever that
+              // pass would bind, provided it is a static method: a
+              // lenient-only match that resolves to an instance method is
+              // still a wrong declaration.
+              val verified = strictVerified or externTargetResolvesStaticLenient(cctx, resolvedFqn, r.memberName, verifySigs)
               match verified {
                 case true -> {
                 }
