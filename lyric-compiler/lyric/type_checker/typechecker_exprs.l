@@ -1837,7 +1837,14 @@ func monadAccessorShapeMismatchDiag(
 // etc.  The target primitive each one yields; `None` for any other name.
 // `toFloat` is intentionally absent — the MSIL backend has no R4 representation
 // distinct from `Double`, so a `Float` conversion is not offered until that
-// gap is closed (Band 4).
+// gap is closed (Band 4). `toNat` (#2050 / Band 4's Int/Long/Byte/Char/Double
+// -> Nat direction) is now implemented on `--target dotnet` as a CHECKED
+// conversion (Msil.Codegen.emitCheckedToNatMsil): `Nat` erases to the same
+// `int64` as `Long`, so this is really `.toLong()` plus a non-negative check,
+// mirroring how `.toChar()` is `.toInt()`/`.toLong()` plus a range check.
+// The reverse direction (`Nat` as a conversion-method RECEIVER, e.g. a
+// hypothetical `nat.toDouble()`) is a separate, still-open gap — see
+// isNumericOrCharType below.
 func numericConvTarget(name: in String): Option[PrimType] {
   if name == "toByte" {
     return Some(value = PtByte)
@@ -1854,17 +1861,26 @@ func numericConvTarget(name: in String): Option[PrimType] {
   if name == "toDouble" {
     return Some(value = PtDouble)
   }
+  if name == "toNat" {
+    return Some(value = PtNat)
+  }
   None
 }
 
 // A receiver type the numeric conversion methods accept.  Restricted to the
 // primitives the backend can actually represent and convert — `Byte`, `Int`,
 // `Long`, `Double`, `Char` — so the type checker never accepts a `.toX()` call
-// the codegen cannot lower.  The unsigned integers (`UInt`, `ULong`, `Nat`) have
-// no backend representation yet (no unsigned-integer support on either target),
-// and `Float` has no R4 representation distinct from `Double`; conversion
-// support for them is tracked in #2050 / Band 4 and must land with real backend
-// support, not a checker-only claim.
+// the codegen cannot lower. `Nat` itself is a valid conversion *target*
+// (`numericConvTarget`'s `toNat` arm above) but is deliberately NOT added to
+// this receiver whitelist: a `Nat`-typed value calling `.toDouble()`/
+// `.toByte()`/etc. still has no dedicated codegen support (it currently only
+// "works" for `.toInt()`/`.toLong()` by accident, since `Nat` and `Long`
+// share the same MSIL erasure and codegen dispatches on the erased type).
+// The other unsigned integers (`UInt`, `ULong`) have no backend representation
+// as a conversion-method receiver either, and `Float` has no R4 representation
+// distinct from `Double`; conversion support for all of these as a RECEIVER is
+// tracked in #2050 / Band 4 and must land with real backend support, not a
+// checker-only claim.
 func isNumericOrCharType(t: in Type): Bool {
   match unrefine(t) {
     case TyPrim(pt) -> match pt {

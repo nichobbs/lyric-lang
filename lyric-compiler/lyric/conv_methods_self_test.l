@@ -206,3 +206,37 @@ test "toChar rejects values outside 0..65535" {
   val dbig: Double = 65536.0
   assertPanics("65536.0.toChar()", { -> val _ = dbig.toChar() })
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `.toNat()` is a checked conversion, modeled on `.toChar()` above: `Nat` is
+// documented as a non-negative `Long` (docs/01 §2.1), so a negative source
+// value fails with `OverflowException` rather than reinterpreting its bits.
+// Every numeric/char receiver Band-1 already supports is covered here too.
+// ─────────────────────────────────────────────────────────────────────────────
+test "toNat accepts every non-negative source value" {
+  val i: Int = 5
+  assertEqualInt(i.toNat().toInt(), 5, "5.toNat()")
+  val zero: Int = 0
+  assertEqualInt(zero.toNat().toInt(), 0, "0.toNat() is valid (non-negative boundary)")
+  val b: Byte = 200.toByte()
+  assertEqualInt(b.toNat().toInt(), 200, "Byte(200).toNat()")
+  val c: Char = 65.toChar()
+  assertEqualInt(c.toNat().toInt(), 65, "Char(65).toNat()")
+  val l: Long = 123456789i64
+  assertEqualInt(l.toNat().toInt(), 123456789, "Long 123456789.toNat()")
+  val d: Double = 3.7
+  assertEqualInt(d.toNat().toInt(), 3, "3.7.toNat() truncates toward zero")
+  val negZero: Double = 0.0 - 0.5
+  assertEqualInt(negZero.toNat().toInt(), 0, "-0.5.toNat() truncates to 0, not rejected")
+}
+
+test "toNat rejects negative source values" {
+  val negInt: Int = 0 - 1
+  assertPanicsWith("(-1).toNat()", "non-negative", { -> val _ = negInt.toNat() })
+  val negLong: Long = 0i64 - 5i64
+  assertPanicsWith("Long -5.toNat()", "non-negative", { -> val _ = negLong.toNat() })
+  val negDouble: Double = 0.0 - 1.5
+  assertPanicsWith("(-1.5).toNat()", "non-negative", { -> val _ = negDouble.toNat() })
+  val nan: Double = 0.0 / 0.0
+  assertPanics("NaN.toNat()", { -> val _ = nan.toNat() })
+}
