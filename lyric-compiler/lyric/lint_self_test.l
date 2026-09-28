@@ -129,6 +129,19 @@ test "L007: protected type itself private makes a pub entry unusable (receiver p
   assertTrue(anyMessageContains(diags, "L007", "receiver 'Box'"), "message names the receiver")
 }
 
+// #7621: a generic protected type's own type parameter shadows a same-named
+// private type in its members' signatures, as for records, unions and
+// interfaces.
+test "L007: generic protected type's own parameter is not a private type" {
+  val src = "package P\n" + "record T { n: Int }\n" + "pub protected type Box[T] {\n" + "  var held: Option[T] = None\n" +
+    "  pub entry put(item: in T): Unit { held = Some(item) }\n" +
+    "  pub entry get(): Option[T] { held }\n" +
+    "  pub func peek(): Option[T] { held }\n" +
+    "}\n"
+  val diags = lint(src)
+  assertEqualInt(countCode(diags, "L007"), 0, "T is Box's generic parameter, not the private record T")
+}
+
 test "L007: pub val with explicit type annotation names a private type" {
   val src = "package P\n" + "record Widget { x: Int }\n" + "pub val zero: Widget = Widget(x = 0)\n"
   val diags = lint(src)

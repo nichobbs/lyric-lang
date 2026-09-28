@@ -391,9 +391,7 @@ func collectPrivateTypes(ty: in TypeExpr, regs: in List[LintTypeDecl], generics:
 
 func privacyMessage(itemLabel: in String, posDesc: in String, name: in String): String {
   itemLabel + " " + posDesc + " references package-private type '" + name + "' from the same package — mark '" + name +
-    "' pub or internal, or make " +
-    itemLabel +
-    " non-pub"
+    "' pub or internal, or remove this item's pub/internal modifier"
 }
 
 func checkTypePrivacy(
@@ -662,6 +660,9 @@ func checkItem(item: in Item, isRuntimeChecked: in Bool, regs: in List[LintTypeD
       appendDiags(acc, checkDocTodos(docs))
     }
     case IProtected(pd) -> {
+      // Members carry no generics of their own; the type's parameters
+      // shadow same-named private types in their signatures (#7621).
+      val protGenerics = genericParamNames(pd.generics)
       appendDiags(acc, checkTypeName(pd.name, pd.span))
       appendDiags(acc, checkPubDoc(vis, docs, pd.name, "protected type", item.span))
       appendDiags(acc, checkDocTodos(docs))
@@ -678,7 +679,7 @@ func checkItem(item: in Item, isRuntimeChecked: in Bool, regs: in List[LintTypeD
                   acc,
                   checkEntrySignaturePrivacy(
                     regs,
-                    noGenerics,
+                    protGenerics,
                     ed,
                     pd.name,
                     "pub protected type '" + pd.name + "' entry '" + ed.name + "'"
@@ -695,7 +696,7 @@ func checkItem(item: in Item, isRuntimeChecked: in Bool, regs: in List[LintTypeD
               case Some(_) -> {
                 appendDiags(
                   acc,
-                  checkInBodyMethodPrivacy(regs, noGenerics, fn, pd.name, "pub func '" + pd.name + "." + fn.name + "'")
+                  checkInBodyMethodPrivacy(regs, protGenerics, fn, pd.name, "pub func '" + pd.name + "." + fn.name + "'")
                 )
               }
               case None -> ()
