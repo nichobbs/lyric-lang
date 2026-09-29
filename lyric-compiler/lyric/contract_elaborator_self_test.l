@@ -1436,3 +1436,64 @@ test "contractsEnabled = false omits ensures: asserts but preserves function exe
   // but this is not strictly guaranteed by the elaborate logic, so we just verify
   // both execute. The weaver_self_test verifies actual contract firing.
 }
+
+// A Unit body that falls off after a non-expression statement still runs its
+// postcondition (#7747); one whose last statement never completes does not
+// get an unreachable check.
+test "Unit body ending in an assignment asserts ensures at the fall-off (#7747)" {
+  val src = "package P\n" + "func bump(x: inout Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "  x = x + 2\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "bump"))
+  assertEqualInt(blk.statements.count, 2, "fall-off: assignment then assert")
+  assertTrue(isAssertCall(blk.statements[1]), "fall-off: trailing assert")
+}
+
+test "empty Unit body asserts ensures (#7747)" {
+  val src = "package P\n" + "func f(x: in Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 1, "empty body: one assert")
+  assertTrue(isAssertCall(blk.statements[0]), "empty body: assert")
+}
+
+test "Unit body ending in a loop without break gets no fall-off assert (#7747)" {
+  val src = "package P\n" + "func f(x: inout Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "  do {\n" +
+    "    x = x + 1\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 1, "endless loop: nothing appended")
+}
+
+test "Unit body ending in a loop left by break asserts ensures (#7747)" {
+  val src = "package P\n" + "func f(x: inout Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "  do {\n" +
+    "    x = x + 1\n" +
+    "    if x > 5 { break }\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 2, "loop/break: loop then assert")
+  assertTrue(isAssertCall(blk.statements[1]), "loop/break: trailing assert")
+}
+
+// #7747 x #7595: the fall-off postcondition obeys `contractsEnabled` like
+// every other ensures site — a disabled user `ensures:` adds no check after a
+// trailing assignment, while a protected-type invariant (system-level, never
+// gated) is still checked there.
+test "contractsEnabled = false omits a fall-off ensures after a trailing assignment" {
+  val src = "package P\nfunc bump(x: inout Int): Unit\n  ensures: x > 0\n{\n  x = x + 1\n}\n"
+  val on = bodyBlockOf(firstFunction(parseAndElaborateWithContracts(src, true), "bump"))
+  val off = bodyBlockOf(firstFunction(parseAndElaborateWithContracts(src, false), "bump"))
+  assertTrue(
+    isAssertCall(on.statements[on.statements.count - 1]),
+    "enabled: the fall-off ensures follows the assignment"
+  )
+  assertEqualInt(off.statements.count, 1, "disabled: only the assignment remains")
+  assertTrue(not isAssertCall(off.statements[0]), "disabled: no fall-off ensures")
+}
+
+test "contractsEnabled = false still checks a protected invariant after a trailing assignment" {
+  val src = "package P\nprotected type Q {\n  var count: Int\n  invariant: count >= 0\n  entry bump(): Unit {\n    count = count + 1\n  }\n}\n"
+  val blk = entryBodyBlock(firstEntry(firstProtected(parseAndElaborateWithContracts(src, false), "Q"), "bump"))
+  assertTrue(blk.statements.count >= 2, "the invariant check follows the assignment")
+  assertTrue(isAssertCall(blk.statements[blk.statements.count - 1]), "the last statement is the invariant assert")
+}

@@ -16,7 +16,7 @@ package Account
 What this annotation enables:
 
 - **`requires:` clauses** are evaluated on entry to the function, in source order. The first clause that evaluates to `false` raises a `PreconditionViolated` bug immediately, before the function body runs.
-- **`ensures:` clauses** are evaluated just before the function returns, after the body has produced a value. The first clause that evaluates to `false` raises a `PostconditionViolated` bug.
+- **`ensures:` clauses** are evaluated just before the function returns, after the body has produced a value. That includes a `Unit` function that simply runs off the end of its body, whatever its last statement is (an assignment, a loop, `defer`, `try`), and an empty body. The first clause that evaluates to `false` raises a `PostconditionViolated` bug.
 - **`invariant:` clauses** on protected types are checked when each `entry` returns. On records and opaque types they are checked at every construction and `.copy(...)`; re-checking after in-place mutation at public boundaries is not implemented yet (#7222).
 - **Loop `invariant:` clauses** on `while` and `for` are checked at the start of every iteration and again when the loop finishes normally (condition false, iterator exhausted, or a body that never ran). Leaving through `break` skips the exit check.
 - **`forall` and `exists`** quantifiers are not evaluated at runtime: the `and`-part of the clause that contains one is skipped, with warning W0002 pointing at the quantifier, while the rest of the clause is still checked. The quantified part documents intent and feeds `lyric prove` but catches nothing at runtime (#7228). A quantifier outside a contract or `invariant:` clause is a compile error (P0344).
