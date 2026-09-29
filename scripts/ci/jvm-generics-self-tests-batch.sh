@@ -60,7 +60,8 @@ for t in \
   lyric-compiler/jvm/propagate_dot_named_bind_jvm_self_test.l \
   lyric-compiler/lyric/inbundle_generic_method_typevar_default_self_test.l \
   lyric-compiler/lyric/generic_method_body_typevar_self_test.l \
-  lyric-compiler/lyric/generator_closure_var_capture_self_test.l ; do
+  lyric-compiler/lyric/generator_closure_var_capture_self_test.l \
+  lyric-compiler/lyric/generator_for_loop_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"

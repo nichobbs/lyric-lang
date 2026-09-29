@@ -2211,7 +2211,12 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     case EYield(inner) -> {
       match ctx.genClass {
         case Some(_) -> {
-          lowerExpr(ctx, insns, inner)
+          // `lowerAsyncGenerator` boxes the yielded value by the generator's
+          // declared element type, so the operand must be exactly that type:
+          // an erased `Object` (an un-narrowed collection element, #7718)
+          // is unboxed / checkcast here instead of reaching a primitive box.
+          val yTy = lowerExpr(ctx, insns, inner)
+          coerceValueTo(ctx, insns, yTy, ctx.genElemTy)
           insns.add(LYield)
           JVoid
         }
