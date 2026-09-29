@@ -927,6 +927,14 @@ func hasSection(entries: in List[Entry], section: in String): Bool {
   false
 }
 
+// Check if a section header exists in the raw TOML text.
+// Simple approach: look for [sectionName] in the text.
+func hasSectionInText(text: in String, sectionName: in String): Bool {
+  val needle = "[" + sectionName + "]"
+  // Always look for the section in text
+  Str.contains(text, needle)
+}
+
 func assembleProject(entries: in List[Entry]): Option[ProjectSection] {
   if not hasSection(entries, "project") {
     return None
@@ -1012,12 +1020,24 @@ func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], Manife
 }
 
 /// Assemble the `[contracts]` table.
-func assembleContracts(entries: in List[Entry]): Result[Option[ContractsSection], ManifestError] {
-  if not hasSection(entries, "contracts") {
-    return Ok(value = None)
+func assembleContracts(text: in String, entries: in List[Entry]): Result[Option[ContractsSection], ManifestError] {
+  // Check if [contracts] section exists in the raw TOML, even if it has no key-value pairs
+  val needle = "[contracts]"
+  val found = Str.contains(text, needle)
+
+  // DEBUG: If [contracts] appears in text, always treat as present
+  if found {
+    val enabled = findBool(entries, "contracts", "enabled", true)
+    return Ok(value = Some(value = ContractsSection(enabled = enabled)))
   }
-  val enabled = findBool(entries, "contracts", "enabled", true)
-  Ok(value = Some(value = ContractsSection(enabled = enabled)))
+
+  // Also check hasSection as fallback (for backward compat)
+  if hasSection(entries, "contracts") {
+    val enabled = findBool(entries, "contracts", "enabled", true)
+    return Ok(value = Some(value = ContractsSection(enabled = enabled)))
+  }
+
+  Ok(value = None)
 }
 
 /// `[build] kind` — what the artifact *is*. `"aot"` is rejected outright
@@ -1582,7 +1602,7 @@ pub func parseManifest(text: in String, filePath: in String): Result[Manifest, M
                     case Err(e) -> Err(
                       error = e
                     )
-                    case Ok(nativeOpt) -> match assembleContracts(entries) {
+                    case Ok(nativeOpt) -> match assembleContracts(text, entries) {
                       case Err(e) -> Err(
                         error = e
                       )
