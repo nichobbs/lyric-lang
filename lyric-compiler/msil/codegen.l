@@ -8782,13 +8782,15 @@ func castObjectToMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilTyp
         case MString -> insns.add(MCastclassByName(className = "System.String"))
         case MClass(c) -> insns.add(MCastclassByName(className = c))
         case MGenericInst(_, headFqn, tas) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
-        // A by-name closed generic — an in-bundle generic type, or a `Func`
-        // delegate (a function-typed lambda parameter, read back out of its
-        // `object` signature slot, #7755).  An `Action` is skipped: a
-        // Unit-returning lambda is built as a `Func<..., object>`, so the value
-        // is not an `Action` and a cast would throw (see
-        // `castObjectToDelegateMsil`).
-        case MGenericInstByName(headFqn, tas) -> if not headFqn.startsWith("System.Action") {
+        // A `Func` delegate — a function-typed lambda parameter read back
+        // out of its `object` signature slot (#7755).  Every non-Unit lambda
+        // is built on the uniform `Func<object, ..., object>` ABI, so the
+        // value genuinely is that type.  Nothing else by-name is cast: an
+        // `Action` slot holds a `Func<..., object>` (a Unit lambda, see
+        // `castObjectToDelegateMsil`), and an in-bundle generic value may be
+        // an erased `Box<object>` construction (see
+        // `narrowObjectToDeclaredTypeMsil`).
+        case MGenericInstByName(headFqn, tas) -> if headFqn.startsWith("System.Func`") {
           insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
         }
         // Concrete collections: narrow an `object` back to the closed
@@ -11462,9 +11464,9 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               castObjectToMsil(cctx, insns, elem)
             } else {
               // `get_Item` returns `object`; narrow it to the element type the
-              // read is tracked as — a string, class, closed generic record or
-              // concrete collection (#7755).  An array-typed element (a nested
-              // slice) stays `object`: its run-time value may be `List`-backed.
+              // read is tracked as when that type has a single runtime
+              // representation (`narrowObjectToDeclaredTypeMsil`).  A generic,
+              // collection or array element stays `object` (#7755).
               narrowObjectToDeclaredTypeMsil(cctx, insns, MObject, elem)
             }
             elem
@@ -17550,28 +17552,30 @@ func isLyricDeclaredClassMsil(cctx: in CodegenCtx, fqn: in String): Bool {
 // branches are different concrete classes (`joinBranchTypeMsil` joins them to
 // `MObject`, #7752), from a boxed tuple element, a closure or HOF result, or
 // an erased slice element (#7755); storing it uncast into a typed return,
-// parameter, local or field is unverifiable IL.  Casts to `String`, a
-// concrete `List`/`Dictionary`, and a Lyric-declared class, interface or
-// closed generic (`isLyricDeclaredClassMsil` on the generic's head); host
-// types — `Func`/`Action` delegates included, which
-// `castObjectToDelegateMsil` owns — and value types (unboxed by the callers)
-// are left alone.  For a well-typed program the cast always succeeds.
+// parameter, local or field is unverifiable IL.
+//
+// A cast is emitted only where the declared type has exactly one runtime
+// representation, so it cannot fail for a well-typed program: `String`, and a
+// non-generic class or interface declared in Lyric source
+// (`isLyricDeclaredClassMsil`).  Everything else is left as `object`:
+//   - a closed generic (`Option[Foo]`, an in-bundle `Box[Int]`) or a concrete
+//     `List[Foo]`/`Map[K, V]`: a construction with no type hint (a bare
+//     `None`, an unannotated `newList()`) builds the erased `Option<object>` /
+//     `List<object>` instance, and CLR generics are invariant, so a cast to the
+//     declared instantiation would throw (#7755: `lyric-proto`'s
+//     `decodeMessage`).  Consumers of such values keep the erased-receiver
+//     path (`emitErasedCollRecvCastMsil`, the legacy object tokens);
+//   - host types, including `Func`/`Action` delegates (a Unit lambda is
+//     built as a `Func<..., object>`), which `castObjectToDelegateMsil` owns;
+//   - value types, unboxed by the callers.
 func narrowObjectToDeclaredTypeMsil(
   cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType
 ): Unit {
   match fromTy {
     case MObject -> match toTy {
       case MString -> insns.add(MCastclassByName(className = "System.String"))
-      case MClass(fqn) -> if isLyricDeclaredClassMsil(cctx, fqn) {
+      case MClass(fqn) -> if isLyricDeclaredClassMsil(cctx, fqn) and not cctx.genericTypeArity.containsKey(fqn) {
         insns.add(MCastclassByName(className = fqn))
-      }
-      case MConcreteList(e) -> insns.add(MListOp(op = LoCastclass, elemTy = e))
-      case MConcreteMap(k, v) -> insns.add(MDictOp(op = DoCastclass, keyTy = k, valTy = v))
-      case MGenericInst(_, head, targs) -> if isLyricDeclaredClassMsil(cctx, stripGenericArity(head)) {
-        insns.add(MCastclassGeneric(className = head, typeArgs = targs))
-      }
-      case MGenericInstByName(head, targs) -> if isLyricDeclaredClassMsil(cctx, stripGenericArity(head)) {
-        insns.add(MCastclassGeneric(className = head, typeArgs = targs))
       }
       case _ -> ()
     }

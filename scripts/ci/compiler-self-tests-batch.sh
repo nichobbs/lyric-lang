@@ -76,6 +76,7 @@ for t in \
   lyric-compiler/lyric/generator_dispose_self_test.l \
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l \
   lyric-compiler/lyric/erased_receiver_narrowing_dotnet_self_test.l \
+  lyric-compiler/lyric/unannotated_list_result_self_test.l \
   lyric-compiler/lyric/class_encoding_self_test.l \
   lyric-compiler/lyric/hof_type_propagation_self_test.l \
   lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \

@@ -351,7 +351,11 @@ func synthesiseSourceFull(
   withBodies: in Bool,
   withImports: in Bool,
 ): String {
-  var sb = "package " + contract.packageName + "\n\n"
+  // `@contract_source` marks the file as synthesised: carried generic bodies
+  // are post-`Lyric.Mono` and may contain block expressions, which the parser
+  // reads back as `EBlock` only in such a file (`ParseState.blockBraces`,
+  // #7755).
+  var sb = "@" + contractSourceAnnotationName() + "\npackage " + contract.packageName + "\n\n"
   if withImports {
     sb = sb + renderContractImports(contract)
   }

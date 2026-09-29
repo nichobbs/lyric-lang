@@ -1105,6 +1105,10 @@ func reprForFunc(fn: in FunctionDecl): String {
 // Mirrors `aspectBodyText`'s approach for `@inline_template` aspect
 // advice.  Returns `None` when the function has no body at all (an
 // `@axiom` signature — nothing to specialise from either way).
+// The body is the post-`Lyric.Mono` AST, so it may hold block expressions
+// (`EBlock`) from Mono's desugars; `Lyric.Fmt` prints those as an arrow-less
+// `{ … }`, which `Lyric.RestoredPackages`' synthesised source decodes back
+// into a block under its `@contract_source` annotation (#7755).
 func funcBodyText(fn: in FunctionDecl): Option[String] {
   match fn.body {
     case None -> None

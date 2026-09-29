@@ -18,6 +18,9 @@
 //!   - a `Self`-returning interface method's result used as a receiver and as
 //!     a typed argument.
 //!
+//! The converse — a value that must NOT be narrowed — is in
+//! `unannotated_list_result_self_test.l`.
+//!
 //! The `Set[T]` receiver cases are in
 //! `erased_receiver_narrowing_dotnet_self_test.l` (`Std.Set` is dotnet-only,
 //! #7312).

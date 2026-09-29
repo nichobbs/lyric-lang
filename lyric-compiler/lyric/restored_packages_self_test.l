@@ -254,6 +254,58 @@ func testSynthesiseFuncWithBodySplicesIn(): Unit {
   )
 }
 
+// A carried generic body is post-`Lyric.Mono`, so it may contain a block
+// EXPRESSION — #7716's desugar of a call through a function value is
+// `{ val __lyric_fv_0: (String) -> String = f; __lyric_fv_0(x) }`.  The
+// synthesised source is marked `@contract_source`, so the parser reads that
+// arrow-less brace block back as a block (`EBlock`), not as the
+// zero-parameter lambda it would be in hand-written source.  Decoded as a
+// lambda, the consumer's specialised copy passed a `Func<object>` thunk where
+// the call's result was expected (#7755: `examples/ui-customers`).
+func testSynthesisedBlockExpressionParsesAsBlock(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(
+    mkDeclWithBody(
+      "func",
+      "applyTo",
+      "pub func applyTo[T](f: in (String) -> String, x: in String, tag: in T): String",
+      "{ { val __lyric_fv_0: (String) -> String = f; __lyric_fv_0(x) } }"
+    )
+  )
+  val src = synthesiseSource(mkContract("MyApp.Apply", decls), emptyDecls())
+  assertTrue(Str.contains(src, "@contract_source\n"), "synth_block_expr: synthesised source is marked")
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "synth_block_expr: parses cleanly")
+  assertEqual(firstFuncBodyExprKind(pr.file), "block", "synth_block_expr: the arrow-less brace expression is a block")
+}
+
+// Hand-written source keeps its meaning: without `@contract_source`, an
+// arrow-less brace expression is still a zero-parameter lambda.
+func testUnmarkedBraceExpressionStaysLambda(): Unit {
+  val pr = parse("package P\n\nfunc f(): () -> Int {\n  { 1 }\n}\n")
+  assertEqual(firstFuncBodyExprKind(pr.file), "lambda", "unmarked_brace_expr: `{ 1 }` is a zero-parameter lambda")
+}
+
+// `"block"` / `"lambda"` / `"other"` for the single expression statement of
+// the first function body in `file`; `"none"` when there is none.
+func firstFuncBodyExprKind(file: in SourceFile): String {
+  for item in file.items {
+    match item.kind {
+      case IFunc(fd) -> match fd.body {
+        case Some(FBBlock(b)) -> if b.statements.count == 1 {
+          match b.statements[0].kind {
+            case SExpr(e) -> return match e.kind { case EBlock(_) -> "block"; case ELambda(_, _) -> "lambda"; case _ -> "other" }
+            case _ -> ()
+          }
+        }
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+  }
+  "none"
+}
+
 // A generic function with NO body in its contract decl (an `@axiom`
 // signature, or a not-yet-rebuilt v2-era library) still renders as a
 // bodyless head — `renderDecl` must not require a body to be present.
@@ -662,6 +714,14 @@ test "synthesise without imports stays import-free (#7617)" {
 
 test "synthesise func with body splices in" {
   testSynthesiseFuncWithBodySplicesIn()
+}
+
+test "a synthesised block expression parses back as a block (#7755)" {
+  testSynthesisedBlockExpressionParsesAsBlock()
+}
+
+test "an unmarked brace expression stays a zero-parameter lambda (#7755)" {
+  testUnmarkedBraceExpressionStaysLambda()
 }
 
 test "synthesise func without body stays bodyless" {

@@ -67,6 +67,18 @@ pub record ParseState {
   /// backends used to lower it as a constant (#7228).  Set with the same
   /// save/restore discipline as `inContractClauseExpr`.
   var quantifierAllowed: Bool
+  /// True while parsing a file that carries the `@contract_source` file
+  /// annotation — the Lyric source `Lyric.RestoredPackages` synthesises
+  /// from a compiled package's contract metadata.  In that file an
+  /// arrow-less brace expression `{ s1; s2 }` is a block EXPRESSION
+  /// (`EBlock`), not the zero-parameter lambda it is in hand-written
+  /// source.  The metadata carries post-`Lyric.Mono` generic bodies, whose
+  /// desugars (a call through a function value, #7716; a record `.copy`; a
+  /// tuple-pattern guard, #7728) produce block expressions, and
+  /// `Lyric.Fmt.exprInline` prints a block as `{ … }` while it always
+  /// prints a lambda with its arrow (`{ -> … }`, `{ x -> … }`, `() -> e`),
+  /// so the braces decode unambiguously (#7755).
+  var blockBraces: Bool
 }
 
 pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic]): ParseState {
@@ -78,7 +90,8 @@ pub func makeParseState(tokens: in List[SpannedToken], diags: in List[Diagnostic
     cstEvents = events,
     suppressArrowLambda = false,
     inContractClauseExpr = false,
-    quantifierAllowed = false
+    quantifierAllowed = false,
+    blockBraces = false
   )
 }
 
