@@ -5692,6 +5692,9 @@ pub record LazyGenCtx {
   // Each lowered statement's slot range, for naming the construct Pass 1
   // under-predicted when the field-count check fails.
   stmtSlotRanges: List[GenStmtSlotRangeMsil]
+  // The generator's declared element type: the type every `yield` operand is
+  // lowered against, as a `return` operand is against the declared return.
+  elemTy: MsilType
 }
 
 pub record GenStmtSlotRangeMsil {
@@ -11133,9 +11136,20 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         lgctx.nextYieldIndex.add(0)
         val resumeLabel = lgctx.resumeLabels[idx]
         lgctx.dispatchTargets.add(resumeLabel)
-        // this.__current = box(inner)
+        // this.__current = box(inner), with `inner` lowered against the
+        // element type as a `return` operand is against the declared return:
+        // a bare `yield None` in an `Option[Int]` generator must build the
+        // `Option<int>` case the consumer casts the element to, not an
+        // `Option<object>` one (#7750).  The declared-return fallback is off:
+        // this method's declared return is `MoveNext`'s, not the element's.
         insns.add(MLdarg(slot = 0))
+        pushCollExpect(fctx, lgctx.elemTy)
+        val savedYieldHint = pushRetHintTyArgs(fctx, lgctx.elemTy)
+        fctx.retHintFallbackOff = fctx.retHintFallbackOff + 1
         val eTy = lowerExprMsil(cctx, fctx, insns, inner)
+        fctx.retHintFallbackOff = fctx.retHintFallbackOff - 1
+        restoreHintTyArgs(fctx, savedYieldHint)
+        popCollExpect(fctx)
         boxIfNeededMsil(cctx, insns, eTy)
         insns.add(MStfldByName(ownerFqn = lgctx.genFqn, fieldName = "__current"))
         // this._state = idx  (0-based; switch(resumeLabels)[idx] dispatches here next call)
@@ -30771,7 +30785,8 @@ func synthesizeGeneratorMsil(
     dispatchTargets = newList(),
     disposeExitLabel = normalDoneL,
     handlerDepth = newList(),
-    stmtSlotRanges = newList()
+    stmtSlotRanges = newList(),
+    elemTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MObject }
   )
   mnFctx.lazyGenCtx.add(lgCtx)
 

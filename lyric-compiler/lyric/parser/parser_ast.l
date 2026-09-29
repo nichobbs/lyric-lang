@@ -1230,7 +1230,9 @@ pub record FuncValueCallSite {
 /// unless the backend can see the tuple's element types at that point (a
 /// `for` over a list, a tuple parameter, a nested tuple); `Lyric.Mono.
 /// desugarCheckedFile` binds the pattern position to a fresh name and the
-/// source name to a local annotated with this type (#7728, #7730).
+/// source name to a local annotated with this type (#7728, #7730).  The
+/// variable of a `for` over a generator is recorded the same way: the JVM
+/// reads each generated element back through an erased iterator (#7750).
 /// `rendered` identifies the type; two checked patterns sharing one source
 /// position (synthesized code) with different types are `conflicting` and
 /// left as written.

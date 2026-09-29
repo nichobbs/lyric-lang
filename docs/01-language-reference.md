@@ -1248,7 +1248,7 @@ process, D-N-003).
 
 ### 7.2 Async generators
 
-An `async func` whose body contains at least one `yield` expression is an *async generator*. Its return type must be a scalar element type `T`; the compiler infers the public signature as `IAsyncEnumerable[T]` (.NET) or `Iterable<T>` (JVM). The caller iterates with `for x in f(args) { … }`.
+An `async func` whose body contains at least one `yield` expression is an *async generator*. Its declared return type is its element type `T`; the compiler infers the public signature as `IAsyncEnumerable[T]` (.NET) or `Iterable<T>` (JVM). The caller iterates with `for x in f(args) { … }`, and `x` has type `T` whatever `T` is: a primitive, a record, a union, a tuple, or a type such as `List[Int]` or `Option[Int]`, which is then the element itself, not a collection the loop iterates (#7750).
 
 ```
 async func naturals(limit: in Int): Int {

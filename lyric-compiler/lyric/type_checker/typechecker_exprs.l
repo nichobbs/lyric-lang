@@ -6573,6 +6573,9 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
             val _ = checkBareNameAmbiguity(tbl, diag, name, pat.span)
           }
           checkBareCasePatternScrutinee(tbl, diag, name, ty, pat.span)
+          if scrutineeHasCaseNamed(tbl, ty, name) {
+            recordCasePatternUnion(tbl, pat.span, ty)
+          }
         } else {
           scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
         }
@@ -6591,6 +6594,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       val ftypes = match unionCaseSymbolForScrutinee(tbl, diag, pat2fnExpr(head, pat.span), ty) {
         case Some(caseSym) -> {
           if checkCasePatternScrutinee(tbl, diag, caseSym, ty, pat.span) {
+            recordCasePatternUnion(tbl, pat.span, ty)
             caseFieldTypesInstantiated(tbl, diag, caseSym, ty)
           } else {
             newList()
@@ -6638,9 +6642,20 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       }
     }
     case POr(patterns) -> {
-      // All alternatives bind the same names by language rule; process the first.
+      // All alternatives bind the same names by language rule; the first binds
+      // them.  The others are walked in a scope of their own, their
+      // diagnostics discarded, only so the case patterns they hold record the
+      // union they match (`recordCasePatternUnion`).
       if patterns.count > 0 {
         bindPatternTyped(sc, tbl, diag, patterns[0], ty)
+      }
+      var oi = 1
+      while oi < patterns.count {
+        val altDiag: List[Diagnostic] = newList()
+        scopePush(sc)
+        bindPatternTyped(sc, tbl, altDiag, patterns[oi], ty)
+        scopePop(sc)
+        oi = oi + 1
       }
     }
     case PParen(inner) -> {
@@ -6933,8 +6948,10 @@ func recordFuncValueCall(
 // Record the names a tuple pattern binds (see
 // `SymbolTable.tuplePatternBindingSites`).  `pat` is matched against a value
 // of type `ty`; `inTuple` is whether `pat` is an element of an enclosing tuple
-// pattern.  Only a name bound to a tuple element is recorded: any other name
-// is bound to a value whose type the backend already sees.  An or-pattern is
+// pattern, or the loop pattern of a `for` over a generator, whose elements
+// arrive just as erased (#7750).  Only a name bound to such an element is
+// recorded: any other name is bound to a value whose type the backend already
+// sees.  An or-pattern is
 // not entered, because every alternative must bind the same names, and a
 // nullary union-case name is a test rather than a binding.
 func recordTuplePatternBindings(tbl: in SymbolTable, pat: in Pattern, ty: in Type, inTuple: in Bool): Unit {
@@ -7110,6 +7127,28 @@ func distinctMemberType(
       None
     }
     case _ -> None
+  }
+}
+
+// Record the union a case pattern at `sp` matches: `ty`, the scrutinee type
+// the pattern was checked against (see `SymbolTable.memberRecvClasses`).  The
+// JVM backend erases a generic scrutinee (`Option[Int]`) to `Object`, so
+// without it a bare case name (`Some`, `None`) resolves by name through the
+// enclosing package first and picks a same-named case of a local union over
+// the scrutinee's own (#7761).
+func recordCasePatternUnion(tbl: in SymbolTable, sp: in Span, ty: in Type): Unit {
+  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return
+  }
+  match unrefine(ty) {
+    case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
+      case Some(sym) -> match sym.kind {
+        case DKUnion(_, _) -> recordMemberRecvClass(tbl, sp, ty)
+        case _ -> ()
+      }
+      case None -> ()
+    }
+    case _ -> ()
   }
 }
 
