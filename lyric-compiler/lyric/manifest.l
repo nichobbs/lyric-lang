@@ -932,13 +932,14 @@ func hasSection(entries: in List[Entry], section: in String): Bool {
 func hasSectionInText(text: in String, sectionName: in String): Bool {
   val lines = Str.split(text, "\n")
   val sectionHeader = "[" + sectionName + "]"
+  val headerLen = Str.length(sectionHeader)
   var i = 0
   while i < lines.count {
     val line = Str.trimStart(lines[i])
     if Str.startsWith(line, sectionHeader) {
       // Verify it's actually a section header: the text after [sectionName] should be
       // end-of-line, whitespace, or a comment (starting with #)
-      val afterHeader = Str.dropPrefix(line, Str.count(sectionHeader))
+      val afterHeader = if Str.length(line) > headerLen { Str.substring(line, headerLen) } else { "" }
       if Str.isEmpty(afterHeader) {
         return true
       }
