@@ -2015,6 +2015,10 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
   val body = Block(statements = stmts, span = joinSpans(startTok.span, endSpan))
   if hasArrow {
     mkExpr(ELambda(lambdaParams = lambdaParams, body = body), joinSpans(startTok.span, endSpan))
+  } else if st.blockBraces {
+    // Synthesised contract source: an arrow-less brace expression is a
+    // block expression (see `ParseState.blockBraces`).
+    mkExpr(EBlock(block = body), joinSpans(startTok.span, endSpan))
   } else {
     val emptyParams: List[LambdaParam] = newList()
     mkExpr(ELambda(lambdaParams = emptyParams, body = body), joinSpans(startTok.span, endSpan))

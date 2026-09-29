@@ -199,6 +199,7 @@ pub record CodegenCtx {
   tokSetObjAdd: Int  // HashSet<object>::Add(object): bool  callvirt
   tokSetObjContains: Int  // HashSet<object>::Contains(object): bool  callvirt
   tokSetObjRemove: Int  // HashSet<object>::Remove(object): bool  callvirt
+  tokSetObjTypeSpec: Int  // TypeSpec token for HashSet<object>  castclass
   tokDictObjContainsKey: Int  // Dictionary<object,object>::ContainsKey(object): bool  callvirt
   tokDictObjRemove: Int  // Dictionary<object,object>::Remove(object): bool  callvirt
   // Intra-package pre-computed tokens
@@ -2128,6 +2129,7 @@ pub func newCodegenCtx(
     tokSetObjAdd = tokSetObjAdd,
     tokSetObjContains = tokSetObjContains,
     tokSetObjRemove = tokSetObjRemove,
+    tokSetObjTypeSpec = 0x1B000000 + tsHashSetObj,
     tokDictObjContainsKey = tokDictObjContainsKey,
     tokDictObjRemove = tokDictObjRemove,
     recordCtorTokens = recCtorToks,
@@ -6614,16 +6616,16 @@ func coerceTrailingToRetMsil(
       }
       case _ -> if isValueType(valTy) { boxIfNeededMsil(cctx, insns, valTy) }
     }
-    // #7752: a value the verifier only knows as `object` — an `if`/`match`
-    // whose branches are different concrete classes, joined to `MObject` by
-    // `joinBranchTypeMsil` — returned where a Lyric class/interface is
-    // declared must be downcast (`downcastObjectToLyricClassMsil`);
-    // returning it uncast is unverifiable IL.
-    case MClass(_) -> match valTy {
+    // An `object`-typed value returned from a function that declares a
+    // reference type is narrowed to it (`narrowObjectToDeclaredTypeMsil`):
+    // an `if`/`match` over different concrete classes that
+    // `joinBranchTypeMsil` joined to `MObject` (#7752), a closure call's
+    // result or a boxed tuple element (#7755).  Returning it uncast is
+    // unverifiable IL.
+    case _ -> match valTy {
       case MVoid -> pushDefaultValueMsil(cctx, fctx, insns, retTy)
-      case _ -> downcastObjectToLyricClassMsil(cctx, insns, valTy, retTy)
+      case _ -> narrowObjectToDeclaredTypeMsil(cctx, insns, valTy, retTy)
     }
-    case _ -> match valTy { case MVoid -> pushDefaultValueMsil(cctx, fctx, insns, retTy); case _ -> {  } }
   }
 }
 
@@ -8780,6 +8782,17 @@ func castObjectToMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilTyp
         case MString -> insns.add(MCastclassByName(className = "System.String"))
         case MClass(c) -> insns.add(MCastclassByName(className = c))
         case MGenericInst(_, headFqn, tas) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
+        // A `Func` delegate — a function-typed lambda parameter read back
+        // out of its `object` signature slot (#7755).  Every non-Unit lambda
+        // is built on the uniform `Func<object, ..., object>` ABI, so the
+        // value genuinely is that type.  Nothing else by-name is cast: an
+        // `Action` slot holds a `Func<..., object>` (a Unit lambda, see
+        // `castObjectToDelegateMsil`), and an in-bundle generic value may be
+        // an erased `Box<object>` construction (see
+        // `narrowObjectToDeclaredTypeMsil`).
+        case MGenericInstByName(headFqn, tas) -> if headFqn.startsWith("System.Func`") {
+          insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
+        }
         // Concrete collections: narrow an `object` back to the closed
         // generic TypeSpec (e.g. a nested `List[List[Foo]]` element read).
         case MConcreteList(e) -> insns.add(MListOp(op = LoCastclass, elemTy = e))
@@ -9343,10 +9356,44 @@ func armBodyIsBareNewCollMsil(body: in ExprOrBlock): Bool {
 // structured `caseParentUnion` map populated at registration.  The split on the
 // last `_` is a defensive fallback for any unregistered key (registered cases
 // always hit the map).
+// Whether `ctorKey` names a union case class (`Pkg.Union_Case`) known to
+// `unionCaseCtorByName`, as opposed to a plain record.  The index is keyed by
+// the case's bare name, and either the union or the case name may itself
+// contain `_`, so every `_` split point of the last segment is tried.
+func isRegisteredUnionCaseKeyMsil(cctx: in CodegenCtx, ctorKey: in String): Bool {
+  val dot = String.lastIndexOfRaw(ctorKey, ".")
+  val last = if dot >= 0 { ctorKey.substring(dot + 1) } else { ctorKey }
+  var i = 0
+  while i < last.length {
+    if last.substring(i, 1) == "_" {
+      match mapGet(cctx.unionCaseCtorByName, last.substring(i + 1)) {
+        case Some(cands) -> {
+          if nameListContains(cands, ctorKey) {
+            return true
+          }
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
 func caseParentFqnMsil(cctx: in CodegenCtx, ctorKey: in String): String {
   match mapGet(cctx.caseParentUnion, ctorKey) {
     case Some(p) -> p
     case None -> {
+      // A plain record is its own construction result type.  The shared
+      // construction path reaches here for records as well as union cases,
+      // and a record has no `caseParentUnion` entry, so without this check the
+      // last-`_` split below turned any record whose FQN contains `_` into a
+      // nonexistent class (`Pkg.__LyricBModeCallContext` → `Pkg._`), which the
+      // LocalVarSig encoder then erased to `object` — an unverifiable
+      // `object`-typed local passed where the record was expected (#7755).
+      if not isRegisteredUnionCaseKeyMsil(cctx, ctorKey) {
+        return ctorKey
+      }
       // INVARIANT: every case-class key that reaches a construction site was
       // registered (in-bundle via `addPackageTokens`, restored via
       // `registerUnionCases` / `registerRestoredUnionCase`), so the map lookup
@@ -9381,7 +9428,35 @@ func emitListCastRecv(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in Msi
     // both, so cast through it rather than the `List<object>`-specific TypeSpec
     // (which faults on a real array — #2539).
     case MArray(_) -> insns.add(MCastclass(typeToken = cctx.tokIListCast))
+    case MSetOf(_) -> insns.add(MCastclass(typeToken = cctx.tokSetObjTypeSpec))
     case _ -> insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+  }
+}
+
+// Narrow a legacy ERASED collection receiver to the declaring type of the
+// `tokListObj*` / `tokSetObj*` / `tokDictObj*` member about to be called on
+// it (#7755).  `MListOf` / `MSetOf` / `MMapOf` — and element types that stay
+// on the residue `List<object>` path as a bare `MObject` (e.g.
+// `List[(Int, Int)]`) — serialise as `object` (0x1C) in every param, local,
+// field and return signature: that is the cross-assembly ABI, so a value
+// read back from any of those slots is `object` on the evaluation stack.  A
+// `callvirt` on a `List<object>` / `HashSet<object>` /
+// `Dictionary<object,object>` MemberRef then needs an explicit `castclass`
+// or the verifier rejects the receiver (`StackUnexpected: found object,
+// expected List`1<object>`).  Concrete collections, slices and every other
+// receiver shape carry their own typed dispatch and are left untouched.
+// Emit this immediately after the receiver is pushed, before any argument.
+func emitErasedCollRecvCastMsil(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType, isDict: in Bool): Unit {
+  match recvTy {
+    case MListOf(_) -> insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+    case MSetOf(_) -> insns.add(MCastclass(typeToken = cctx.tokSetObjTypeSpec))
+    case MMapOf(_, _) -> insns.add(MCastclass(typeToken = cctx.tokDictObjTypeSpec))
+    case MObject -> if isDict {
+      insns.add(MCastclass(typeToken = cctx.tokDictObjTypeSpec))
+    } else {
+      insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+    }
+    case _ -> ()
   }
 }
 
@@ -10642,6 +10717,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case MMapOf(_, _) -> {
               // Map[K, V] receiver: dispatch to Dictionary<object,object> members.
               if memberName == "count" {
+                emitErasedCollRecvCastMsil(cctx, insns, recvTy, true)
                 insns.add(MCallvirt(methodToken = cctx.tokDictObjGetCount))
                 MInt
               } else {
@@ -10661,6 +10737,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // METHOD CALLS (`ECall(EMember(...), args)`), lowered on a
               // different path, not this bare-EMember property read (#5711).
               if memberName == "count" {
+                emitErasedCollRecvCastMsil(cctx, insns, recvTy, false)
                 insns.add(MCallvirt(methodToken = cctx.tokSetObjGetCount))
                 MInt
               } else {
@@ -11385,20 +11462,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
             if isValueType(elem) {
               castObjectToMsil(cctx, insns, elem)
-              elem
             } else {
-              match elem {
-                case MString -> {
-                  insns.add(MCastclassByName(className = "System.String"))
-                  MString
-                }
-                case MClass(c) -> {
-                  insns.add(MCastclassByName(className = c))
-                  MClass(className = c)
-                }
-                case _ -> elem
-              }
+              // `get_Item` returns `object`; narrow it to the element type the
+              // read is tracked as when that type has a single runtime
+              // representation (`narrowObjectToDeclaredTypeMsil`).  A generic,
+              // collection or array element stays `object` (#7755).
+              narrowObjectToDeclaredTypeMsil(cctx, insns, MObject, elem)
             }
+            elem
           }
           case _ -> {
             // Read through the non-generic IList so an `object`-typed receiver works
@@ -13251,8 +13322,8 @@ func lowerAssignExprMsil(
                   val byrefValTy = lowerExprMsil(cctx, fctx, insns, value)
                   popCollExpect(fctx)
                   restoreHintTyArgs(fctx, savedH)
-                  // #7752: see `downcastObjectToLyricClassMsil`.
-                  downcastObjectToLyricClassMsil(cctx, insns, byrefValTy, elemTy)
+                  // #7752: see `narrowObjectToDeclaredTypeMsil`.
+                  narrowObjectToDeclaredTypeMsil(cctx, insns, byrefValTy, elemTy)
                 }
                 case Some(arith) -> {
                   insns.add(MDup)
@@ -13286,8 +13357,8 @@ func lowerAssignExprMsil(
               restoreHintTyArgs(fctx, savedH)
               // #7752: an `if`/`match` over different concrete classes yields a
               // verifier-`object` value; narrow it to the local's declared
-              // class/interface (`downcastObjectToLyricClassMsil`).
-              downcastObjectToLyricClassMsil(cctx, insns, assignValTy, ty)
+              // class/interface (`narrowObjectToDeclaredTypeMsil`).
+              narrowObjectToDeclaredTypeMsil(cctx, insns, assignValTy, ty)
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
               if fctx.phaseBCtx.count > 0 {
@@ -13344,8 +13415,8 @@ func lowerAssignExprMsil(
                 pushCollExpect(fctx, fldTy)
                 val selfFldValTy = lowerExprMsil(cctx, fctx, insns, value)
                 popCollExpect(fctx)
-                // #7752: see `downcastObjectToLyricClassMsil`.
-                downcastObjectToLyricClassMsil(cctx, insns, selfFldValTy, fldTy)
+                // #7752: see `narrowObjectToDeclaredTypeMsil`.
+                narrowObjectToDeclaredTypeMsil(cctx, insns, selfFldValTy, fldTy)
                 insns.add(MStfld(fieldToken = fldTok))
               }
               case _ -> {
@@ -13381,8 +13452,8 @@ func lowerAssignExprMsil(
               pushCollExpect(fctx, ty)
               val resultValTy = lowerExprMsil(cctx, fctx, insns, value)
               popCollExpect(fctx)
-              // #7752: see `downcastObjectToLyricClassMsil`.
-              downcastObjectToLyricClassMsil(cctx, insns, resultValTy, ty)
+              // #7752: see `narrowObjectToDeclaredTypeMsil`.
+              narrowObjectToDeclaredTypeMsil(cctx, insns, resultValTy, ty)
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
@@ -13448,8 +13519,8 @@ func lowerAssignExprMsil(
                   pushCollExpect(fctx, fldTyA)
                   val fldValTy = lowerExprMsil(cctx, fctx, insns, value)
                   popCollExpect(fctx)
-                  // #7752: see `downcastObjectToLyricClassMsil`.
-                  downcastObjectToLyricClassMsil(cctx, insns, fldValTy, fldTyA)
+                  // #7752: see `narrowObjectToDeclaredTypeMsil`.
+                  narrowObjectToDeclaredTypeMsil(cctx, insns, fldValTy, fldTyA)
                   insns.add(MStfld(fieldToken = tok))
                 }
                 case _ -> {
@@ -17460,9 +17531,11 @@ func castObjectToDelegateMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy
 
 // #7752: true when `fqn` is a type declared in Lyric source — a record,
 // union, interface, distinct, protected or projectable-view type registered
-// by `registerTypeFqnCandidate` — as opposed to a host class reached through
-// FFI (`System.Action`, an extern delegate, …) whose runtime value need not
-// be an instance of that class under the uniform lambda ABI.
+// by `registerTypeFqnCandidate` (in-bundle, stdlib or restored package) — as
+// opposed to a host class reached through FFI (`System.Action`, a `Func`
+// delegate, an extern class, …) whose runtime value need not be an instance
+// of that class under the uniform lambda ABI: a Unit-returning lambda is
+// built as a `Func<..., object>`, so a cast to `Action` would throw.
 func isLyricDeclaredClassMsil(cctx: in CodegenCtx, fqn: in String): Bool {
   val dot = String.lastIndexOfRaw(fqn, ".")
   val simple = if dot >= 0 { fqn.substring(dot + 1, fqn.length - dot - 1) } else { fqn }
@@ -17472,21 +17545,54 @@ func isLyricDeclaredClassMsil(cctx: in CodegenCtx, fqn: in String): Bool {
   }
 }
 
-// #7752: narrow a value the verifier only knows as `object` to the
-// Lyric-declared class/interface its consumer declares (`castclass`).  Such a
-// value comes from an `if`/`match` whose branches are different concrete
-// classes (`joinBranchTypeMsil` joins them to `MObject`), checked by the type
-// checker against that consumer's declared supertype; storing it uncast into
-// a `Greeter`-typed return, parameter, local or field is unverifiable IL.  For
-// a well-typed program the cast always succeeds.
-func downcastObjectToLyricClassMsil(
+// Narrow a value the verifier only knows as `object` to the reference type
+// its consumer declares (`castclass`) — the single narrowing policy for every
+// return, argument, binding, assignment, constructor-field, list-add and
+// slice-read consumer.  Such a value comes from an `if`/`match` whose
+// branches are different concrete classes (`joinBranchTypeMsil` joins them to
+// `MObject`, #7752), from a boxed tuple element, a closure or HOF result, or
+// an erased slice element (#7755); storing it uncast into a typed return,
+// parameter, local or field is unverifiable IL.
+//
+// A cast is emitted only where the declared type has exactly one runtime
+// representation, so it cannot fail for a well-typed program: `String`, and a
+// non-generic class or interface declared in Lyric source
+// (`isLyricDeclaredClassMsil`).  Everything else is left as `object`:
+//   - a closed generic (`Option[Foo]`, an in-bundle `Box[Int]`) or a concrete
+//     `List[Foo]`/`Map[K, V]`: a construction with no type hint (a bare
+//     `None`, an unannotated `newList()`) builds the erased `Option<object>` /
+//     `List<object>` instance, and CLR generics are invariant, so a cast to the
+//     declared instantiation would throw (#7755: `lyric-proto`'s
+//     `decodeMessage`).  Consumers of such values keep the erased-receiver
+//     path (`emitErasedCollRecvCastMsil`, the legacy object tokens);
+//   - host types, including `Func`/`Action` delegates (a Unit lambda is
+//     built as a `Func<..., object>`), which `castObjectToDelegateMsil` owns;
+//   - value types, unboxed by the callers.
+func narrowObjectToDeclaredTypeMsil(
   cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType
 ): Unit {
   match fromTy {
     case MObject -> match toTy {
-      case MClass(fqn) -> if isLyricDeclaredClassMsil(cctx, fqn) {
+      case MString -> insns.add(MCastclassByName(className = "System.String"))
+      case MClass(fqn) -> if isLyricDeclaredClassMsil(cctx, fqn) and not cctx.genericTypeArity.containsKey(fqn) {
         insns.add(MCastclassByName(className = fqn))
       }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
+// Widen a 32-bit integer on the stack (`Int`, `Byte`, `Char` — e.g. an
+// integer literal, which lowers to `ldc.i4`) with `conv.i8` when it lands in a
+// `Long` slot, parameter or field; storing an `int32` there is unverifiable IL
+// (`StackUnexpected: found Int32, expected Long`, #7755).
+func widenIntToLongMsil(insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
+  match toTy {
+    case MLong -> match fromTy {
+      case MInt -> insns.add(MConvI8)
+      case MByte -> insns.add(MConvI8)
+      case MChar -> insns.add(MConvI8)
       case _ -> ()
     }
     case _ -> ()
@@ -17511,8 +17617,13 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       // generic instantiations), so no 0x01000000 tag is added here.
       case MValueTypeRef(_, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
       case MValueTypeGenericInst(_, _, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
-      case MClass(_) -> downcastObjectToLyricClassMsil(cctx, insns, fromTy, toTy)
-      case _ -> castObjectToDelegateMsil(cctx, insns, fromTy, toTy)
+      // A reference target: `castObjectToDelegateMsil` owns `Func` delegate
+      // targets and `narrowObjectToDeclaredTypeMsil` every other one (it
+      // skips host types, delegates included), so at most one cast is emitted.
+      case _ -> {
+        castObjectToDelegateMsil(cctx, insns, fromTy, toTy)
+        narrowObjectToDeclaredTypeMsil(cctx, insns, fromTy, toTy)
+      }
     }
   } else {
     // NOTE: deliberately NO `toObj` box direction here. The standard
@@ -18406,7 +18517,7 @@ func lowerBuiltinOrStaticCallMsil(
             seedLambdaLiteralVoidRetMsil(cctx, fctx, callArgExpr(ctorArgs[ci]), innerHint)
             val lowered = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
             castObjectToDelegateMsil(cctx, insns, lowered, innerHint)
-            downcastObjectToLyricClassMsil(cctx, insns, lowered, innerHint)
+            narrowObjectToDeclaredTypeMsil(cctx, insns, lowered, innerHint)
             while fctx.contextHintTyArgs.count > 0 {
               fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
             }
@@ -18425,7 +18536,8 @@ func lowerBuiltinOrStaticCallMsil(
             val loweredC = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
             popCollExpect(fctx)
             castObjectToDelegateMsil(cctx, insns, loweredC, innerHint)
-            downcastObjectToLyricClassMsil(cctx, insns, loweredC, innerHint)
+            narrowObjectToDeclaredTypeMsil(cctx, insns, loweredC, innerHint)
+            widenIntToLongMsil(insns, loweredC, innerHint)
             loweredC
           }
           argTypes.add(at)
@@ -19016,7 +19128,7 @@ func lowerBuiltinOrStaticCallMsil(
               // receiver; for an interface DIM body it is the interface
               // itself, still a sound (if less precise) narrowing since MSIL
               // dispatches both through the same `callvirt`.
-              narrowSelfCallResultMsil(cctx, sibKey, fctx.className)
+              narrowSelfCallResultMsil(cctx, insns, sibKey, fctx.className)
             } else {
               // Cross-package call without a registered token: this used to
               // walk the args for side effects and yield MObject as a
@@ -19493,21 +19605,17 @@ func lowerSliceToListMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
 // up separately, mirroring `registerParamsMsil`'s non-receiver-`Self`-param
 // fix (#6421/D-progress-753) applied to the RETURN position instead.
 //
-// NO IL is emitted here (unlike JVM's `checkcast`-emitting counterpart): the
-// CLR JIT does not enforce CIL type-safety verification at load time for
-// ordinary trusted assemblies (D-progress-753's own finding), so a `callvirt`
-// against a virtual method resolved from a LATER, correctly-narrowed
-// `MClass(cls)` dispatch key dispatches through the object's REAL runtime
-// vtable regardless of the erased-`object` static descriptor the CALL that
-// produced the receiver used — the callee genuinely IS an instance of `cls`
-// whenever `sig`'s `Self` return type-checked (`checkImplConformance` only
-// ever accepts a `Self`-declared return as EXACTLY the impl/record's own
-// target type), so this narrowing can never desync from the real runtime
-// type. A subsequent field read through the narrowed receiver already emits
-// its own `MCastclassByName` at the FIELD-READ site (the pre-existing
-// `case MClass(cls) ->` arms in the `EMember` lowering), so no cast is needed
-// here either — this function only fixes which METHOD-DISPATCH/FIELD lookup
-// TABLE a later use of the call result consults, not the bytecode.
+// The narrowing is paired with a `castclass cls` on the call result (like
+// JVM's `checkcast`-emitting counterpart, #7755): the tracked type now says
+// `cls` while the call's erased descriptor left an `object` on the stack, so
+// without the cast a later `callvirt` on `cls`, an argument passed to a
+// `cls`-typed parameter, or a store into a `cls`-typed slot is unverifiable
+// IL (`StackUnexpected: found object, expected cls`).  The JIT happens to
+// dispatch correctly anyway (D-progress-753) — the callee genuinely IS an
+// instance of `cls` whenever `sig`'s `Self` return type-checked
+// (`checkImplConformance` only ever accepts a `Self`-declared return as
+// EXACTLY the impl/record's own target type) — so the cast never fails at
+// run time; it only makes the stack type explicit.
 // Unlike the JVM twin (`narrowSelfCallResult`, jvm/codegen/04_calls.l),
 // there is deliberately NO interface guard here (#6438 review): MSIL's
 // dispatch key IS the receiver's tracked static type's FQN, so an
@@ -19518,9 +19626,14 @@ func lowerSliceToListMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
 // The JVM twin needs its guard only because its `cls` is the DISPATCH
 // owner, which for `invokeinterface` is not a class the verifier will
 // accept in a checkcast against a class-typed slot.
-func narrowSelfCallResultMsil(cctx: in CodegenCtx, key: in String, cls: in String): MsilType {
+func narrowSelfCallResultMsil(cctx: in CodegenCtx, insns: in List[MInsn], key: in String, cls: in String): MsilType {
   val isSelf = match mapGet(cctx.methodRetIsSelf, key) { case Some(b) -> b; case None -> false }
   if isSelf {
+    // A generic class's bare TypeDef is its OPEN definition, not a valid
+    // cast target for a closed instance; its value keeps the erased slot.
+    if not cctx.genericTypeArity.containsKey(stripGenericArity(cls)) {
+      insns.add(MCastclassByName(className = cls))
+    }
     MClass(className = cls)
   } else {
     match mapGet(cctx.methodRetTypes, key) {
@@ -20102,6 +20215,7 @@ func lowerMethodCallMsil(
               if not paramIsValue {
                 boxIfNeededMsil(cctx, insns, aTy)
               }
+              widenIntToLongMsil(insns, aTy, paramTy)
             }
             i = i + 1
           }
@@ -20114,8 +20228,8 @@ func lowerMethodCallMsil(
           // A `Self`-declared return additionally narrows against `cls` — this
           // call site's own resolved receiver class — instead of staying
           // erased (#6434/#6435); see `narrowSelfCallResultMsil`'s doc comment
-          // for the soundness argument and why no `castclass` is emitted here.
-          return narrowSelfCallResultMsil(cctx, dispatchKey, cls)
+          // for the soundness argument and the `castclass` it emits.
+          return narrowSelfCallResultMsil(cctx, insns, dispatchKey, cls)
         }
         case None -> {
           // Synthesized free functions callable as instance methods (#1507):
@@ -20215,6 +20329,10 @@ func lowerMethodCallMsil(
         // chained call / member access re-hit the unsupported-method throw.
         val gRetIsSelf = match mapGet(cctx.methodRetIsSelf, gDispatchKey) { case Some(b) -> b; case None -> false }
         if gRetIsSelf {
+          // The erased descriptor left an `object`; narrow it to the closed
+          // instantiation the result is tracked as (#7755, see
+          // `narrowSelfCallResultMsil`).
+          insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
           return MGenericInstByName(headFqn = fqn, typeArgs = typeArgs)
         }
         // Narrow the reported result type to THIS call's concrete
@@ -20369,6 +20487,7 @@ func lowerMethodCallMsil(
     // representation.  Only applies to the single-value list-add shape
     // (`args.count == 1`); a two-arg `Dict.add(key, value)` call already has
     // its own key/value generic-arg hint above and is left untouched.
+    emitErasedCollRecvCastMsil(cctx, insns, recvTy, args.count >= 2)
     val addElemTy = if args.count == 1 {
       match recvTy {
         case MConcreteList(e) -> Some(value = e)
@@ -20406,6 +20525,13 @@ func lowerMethodCallMsil(
       // A concrete `List<int32>` / `Dictionary<…>` stores arguments unboxed via
       // the closed generic `!0` MemberRef; only the legacy `List<object>` boxes.
       collBoxIfNeeded(cctx, insns, aTy, recvTy)
+      // An `object`-typed argument (an element read off an erased slice, a
+      // closure result) added to a concrete `List<Foo>` is narrowed to the
+      // element type the closed `Add(!0)` expects (#7755).
+      match addElemTy {
+        case Some(e) -> narrowObjectToDeclaredTypeMsil(cctx, insns, aTy, e)
+        case None -> ()
+      }
       i = i + 1
     }
     if addHintsPushed {
@@ -20421,6 +20547,7 @@ func lowerMethodCallMsil(
     MVoid
   } else if memberName == "containsKey" {
     // Dictionary::ContainsKey(key): bool — concrete maps pass the key unboxed.
+    emitErasedCollRecvCastMsil(cctx, insns, recvTy, true)
     if args.count > 0 {
       val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
       collBoxIfNeeded(cctx, insns, aTy, recvTy)
@@ -20460,6 +20587,7 @@ func lowerMethodCallMsil(
         // to a runtime-throw stub matching the unknown-method catch-all
         // (formerly a silent `false` return — #1481 item 4 / #1799).
         if args.count == 1 {
+          emitErasedCollRecvCastMsil(cctx, insns, recvTy, false)
           val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
           collBoxIfNeeded(cctx, insns, aTy, recvTy)
           emitListContains(cctx, insns, recvTy)
@@ -20490,6 +20618,7 @@ func lowerMethodCallMsil(
     // false, so `delete()` / `destroy()` were silent no-ops — #1602/#1727.)
     match recvTy {
       case MMapOf(_, _) -> {
+        emitErasedCollRecvCastMsil(cctx, insns, recvTy, true)
         if args.count > 0 {
           val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
           boxIfNeededMsil(cctx, insns, aTy)
@@ -20510,6 +20639,7 @@ func lowerMethodCallMsil(
         // Was previously silently swallowed by the pop-only fallback below —
         // `setRemove` always returned `false` regardless of the item's real
         // presence.
+        emitErasedCollRecvCastMsil(cctx, insns, recvTy, false)
         if args.count > 0 {
           val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
           boxIfNeededMsil(cctx, insns, aTy)
@@ -20546,6 +20676,7 @@ func lowerMethodCallMsil(
     // a runtime-throw stub matching the unknown-method catch-all (formerly
     // a silent no-op — #1481 item 4 / #1799).
     if args.count == 1 {
+      emitErasedCollRecvCastMsil(cctx, insns, recvTy, false)
       lowerCallArgMsil(cctx, fctx, insns, args[0])
       emitListRemoveAt(cctx, insns, recvTy)
       MVoid
@@ -22183,10 +22314,14 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // value binds into the value-typed slot below — otherwise the raw
           // boxed reference is stored where an Int32/Int64/etc. is expected,
           // which the CLR does not verify against and silently corrupts the
-          // value at read time (#5519).
+          // value at read time (#5519).  A reference-typed annotation narrows
+          // the `object` instead (`narrowObjectToDeclaredTypeMsil`, e.g. the
+          // `val name: String = __lyric_tp_<n>` a tuple pattern desugars to,
+          // #7755); a `Long` annotation widens an `Int` init.
           if annoTy != MObject and initTy == MObject {
             coerceCallArgMsil(cctx, insns, initTy, annoTy)
           }
+          widenIntToLongMsil(insns, initTy, annoTy)
           popCollExpect(fctx)
           popEnumHintMsil(fctx)
           restoreHintTyArgs(fctx, savedAnnoHint)
@@ -22231,6 +22366,7 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           if annoTy != MObject and initTy == MObject {
             coerceCallArgMsil(cctx, insns, initTy, annoTy)
           }
+          widenIntToLongMsil(insns, initTy, annoTy)
           popCollExpect(fctx)
           popEnumHintMsil(fctx)
           restoreHintTyArgs(fctx, savedAnnoHint)
@@ -22344,6 +22480,7 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               if annoTy != MObject and initTy == MObject {
                 coerceCallArgMsil(cctx, insns, initTy, annoTy)
               }
+              widenIntToLongMsil(insns, initTy, annoTy)
               popCollExpect(fctx)
               popEnumHintMsil(fctx)
               restoreHintTyArgs(fctx, savedAnnoHint)
@@ -22381,32 +22518,14 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 // this ticket doesn't need to repeat) — see
                 // `FuncCtx.unsignedSlots`.
                 markUnsignedSlotMsil(fctx, slot, isUnsignedAnnotationMsil(tyOpt))
-                match ty {
-                  case MLong -> {
-                    insns.add(MLdcI8(v = 0i64))
-                    emitStoreSlot(insns, slot, fctx.paramCount)
-                  }
-                  case MDouble -> {
-                    insns.add(MLdcR8(v = 0.0))
-                    emitStoreSlot(insns, slot, fctx.paramCount)
-                  }
-                  case MVoid -> {
-                  }
-                  // A real type parameter's default must be `default(T)`
-                  // (`initobj`), not an int32 0 stored into a `!0` local
-                  // (#7525, #7692).
-                  case MTypeVar(_) -> {
-                    pushDefaultValueMsil(cctx, fctx, insns, ty)
-                    emitStoreSlot(insns, slot, fctx.paramCount)
-                  }
-                  case MMethodTypeVar(_) -> {
-                    pushDefaultValueMsil(cctx, fctx, insns, ty)
-                    emitStoreSlot(insns, slot, fctx.paramCount)
-                  }
-                  case _ -> {
-                    insns.add(MLdcI4(v = 0))
-                    emitStoreSlot(insns, slot, fctx.paramCount)
-                  }
+                // The declared type's own default — `ldnull` for a reference
+                // type, `initobj` for a struct or a real type parameter
+                // (#7525, #7692), the zero of the right width for a numeric.
+                // An int32 `0` stored into a reference- or struct-typed slot
+                // is unverifiable IL (#7755: the weaver's lifted `ret` slot).
+                if ty != MVoid {
+                  pushDefaultValueMsil(cctx, fctx, insns, ty)
+                  emitStoreSlot(insns, slot, fctx.paramCount)
                 }
                 if fctx.phaseBCtx.count > 0 and ty != MVoid {
                   phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
@@ -32198,6 +32317,49 @@ func registerParamsMsil(
   }
 }
 
+// Give each by-value non-receiver `Self` parameter a local of the concrete
+// target type (#7755).  `registerParamsMsil` tracks such a parameter as
+// `MClass(selfTypeName)` while the emitted signature keeps it `object` (the
+// interface slot's ABI), so every use of the raw argument would push an
+// `object` where the body's field reads, calls and stores expect the class —
+// unverifiable IL.  Copy the argument once in the prologue through
+// `castclass` into a class-typed local and bind the name to that local; the
+// cast never fails because the type checker guarantees the argument IS the
+// target type (see `registerParamsMsil`).  A generic target's bare TypeDef is
+// its open definition, not a cast target, and a byref (`inout`/`out`)
+// parameter must keep aliasing the caller's storage, so both are left as is.
+// Runs after every parameter slot is assigned, so the new locals follow them.
+func narrowSelfParamsMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  params: in List[Param],
+  selfTypeName: in String,
+): Unit {
+  if selfTypeName.length == 0 or cctx.genericTypeArity.containsKey(stripGenericArity(selfTypeName)) {
+    return ()
+  }
+  var pi = 0
+  while pi < params.count {
+    val p = params[pi]
+    if isSelfTypeExprMsil(p.ty) and not isByrefMode(p.mode) {
+      match mapGet(fctx.slots, p.name) {
+        case Some(argSlot) -> {
+          val selfTy = MClass(className = selfTypeName)
+          val localSlot = allocSlotMsil(fctx, "__self_param_" + p.name, selfTy)
+          emitLoadSlot(insns, argSlot, fctx.paramCount)
+          insns.add(MCastclassByName(className = selfTypeName))
+          emitStoreSlot(insns, localSlot, fctx.paramCount)
+          fctx.slots.remove(p.name)
+          fctx.slots.add(p.name, localSlot)
+        }
+        case None -> ()
+      }
+    }
+    pi = pi + 1
+  }
+}
+
 pub func lowerImplMethodMsil(
   cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String, targetTypeName: in String
 ): MFunc {
@@ -32242,6 +32404,7 @@ pub func lowerImplMethodMsil(
   // `List<int32>`, corrupts memory (different backing layout) and segfaults.
   val noGenericsImpl: List[String] = newList()
   registerParamsMsil(cctx, fctx, implRealParams, pkgName, targetTypeName, noGenericsImpl)
+  narrowSelfParamsMsil(cctx, fctx, insns, implRealParams, targetTypeName)
 
   // By-reference closure capture pre-pass (#1479 v2 / #7690) — see
   // `runClosureCapturePrePassMsil`.  `lowerFuncMsilScoped` ran this for
@@ -32437,6 +32600,7 @@ pub func lowerRecordMethodMsil(
   val insns: List[MInsn] = newList()
 
   registerParamsMsil(cctx, fctx, realParams, pkgName, targetTypeName, generics)
+  narrowSelfParamsMsil(cctx, fctx, insns, realParams, targetTypeName)
 
   // By-reference closure capture pre-pass (#1479 v2 / #7690) — see
   // `runClosureCapturePrePassMsil`.  A record in-body method never ran this,

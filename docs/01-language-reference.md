@@ -626,6 +626,8 @@ Downstream packages depend on the contract metadata for incremental compilation.
 
 Binary distribution publishes both artifacts together. The contract metadata is what consumers compile against; the assembly is what they link to and run.
 
+A generic function's contract entry also carries its body, so a consumer can specialise it. The body is recorded after the compiler's own desugaring, as Lyric text, and a consumer reads a package's metadata back as synthesised Lyric source. That source carries the file-level annotation `@contract_source`, under which an arrow-less brace expression `{ s1; s2 }` is a block expression rather than the zero-parameter lambda it is in hand-written source (a desugared body may contain block expressions, and synthesised lambdas are always written with their arrow). `@contract_source` is reserved for this synthesised source; it is not meant for hand-written files (#7755).
+
 ### 3.4 Optional split-file mode
 
 Projects may opt into split-file authoring at the project level (in `lyric.toml`):

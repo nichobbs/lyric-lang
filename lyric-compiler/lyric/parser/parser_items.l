@@ -4168,6 +4168,25 @@ func parseItems(st: inout ParseState): List[Item] {
 // ─────────────────────────────────────────────────────────────────────────────
 // Public entry point.
 // ─────────────────────────────────────────────────────────────────────────────
+/// The file-level annotation `Lyric.RestoredPackages` puts on the source it
+/// synthesises from contract metadata (`contractSourceAnnotationName`); it
+/// switches the parser into `ParseState.blockBraces` mode for that file.
+pub func contractSourceAnnotationName(): String {
+  "contract_source"
+}
+
+func hasContractSourceAnnotation(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == contractSourceAnnotationName() {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 pub func parse(source: in String): ParseResult {
   val lexResult = lex(source)
   var st = makeParseState(lexResult.tokens, lexResult.diagnostics)
@@ -4178,6 +4197,7 @@ pub func parse(source: in String): ParseResult {
   val startSpan = peekSpan(st)
   val moduleDoc = parseModuleDocComments(st)
   val fileAnnotations = parseFileLevelAnnotations(st)
+  st.blockBraces = hasContractSourceAnnotation(fileAnnotations)
   val packageDecl = parsePackageDecl(st)
   val imports = parseImports(st)
   val items = parseItems(st)

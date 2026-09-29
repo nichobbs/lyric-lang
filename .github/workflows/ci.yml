@@ -679,7 +679,8 @@ jobs:
   # build cannot (union match-arm type tracking, value-erased-to-object, list
   # element-type confusion).  Zero IL-validity errors reached at #3943; this
   # job now gates auto-merge so the emitter cannot regress silently.  Developers
-  # run the same check locally via `make ilverify`.
+  # run the same check locally via `make ilverify`.  The script also verifies
+  # the DLLs of consumer-side self-tests (generators, erased collections; #7755).
   #
   # NOTE (#4370): job id renamed from `ilverify-informational` to
   # `ilverify-required` — the old name implied a non-blocking/advisory check,
@@ -7547,10 +7548,11 @@ jobs:
       - uses: ./.github/actions/lyric-test-setup
         with:
           build-config: ${{ env.BUILD_CONFIG }}
+          java: 'true'
       # See compiler-self-tests-dotnet-a's "Parallel step execution" comment above
       # for how `background: true` / `wait-all: true` work.
       #
-      # Peak concurrency (#4486): this job currently launches 16 `background: true`
+      # Peak concurrency (#4486): this job currently launches 17 `background: true`
       # steps before its `wait-all: true` barrier, each running an in-process
       # self-hosted compilation.  CI has been green at this concurrency on the
       # standard `ubuntu-latest` runner; if a future addition here starts producing
@@ -8003,6 +8005,10 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/crosspackage-record-construct-in-consumer.sh
+      - name: Cross-package restored generic bodies and erased values (#7755)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/crosspackage-restored-generic-values.sh
       # Cross-package union construct+match (#2897).  A PRODUCER package exports a
       # union with a `List[Int]` payload case; the CONSUMER constructs a case and
       # matches it across an assembly boundary.  Verifies that union-case construction
