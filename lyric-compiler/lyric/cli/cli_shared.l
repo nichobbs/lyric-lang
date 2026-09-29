@@ -539,18 +539,6 @@ func outputExt(target: in Emitter.CompileTarget, kind: in String): String {
   }
 }
 
-// Apply the target-specific extension to an output_assembly base name,
-// preserving explicit .dll/.jar extensions for backward compatibility.
-// If the base name already ends with .dll or .jar, returns it unchanged;
-// otherwise, appends the target-specific extension from outputExt().
-func applyOutputExtension(base: in String, target: in Emitter.CompileTarget, kind: in String): String {
-  if Str.endsWith(base, ".dll") or Str.endsWith(base, ".jar") {
-    base
-  } else {
-    base + outputExt(target, kind)
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Build profile and shape (docs/63 §3) — two axes that `--release` used to
 // conflate, and that are independent of each other and of `--target`.

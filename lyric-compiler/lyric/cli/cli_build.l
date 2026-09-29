@@ -2158,9 +2158,10 @@ func buildReleaseProject(
   // Build to a staging directory so the production `bin/` output is untouched
   // by the intermediate managed artifact (a `.dll` for .NET AOT, a bundled
   // `.jar` for GraalVM native-image).
+  val ext = outputExt(target, "lib")
   val artifactBase = match proj.outputAssembly {
-    case Some(s) -> applyOutputExtension(s, target, "lib")
-    case None -> proj.name + outputExt(target, "lib")
+    case Some(s) -> s
+    case None -> proj.name + ext
   }
   val stagingDir = Path.join(mfDir, ".lyric-release")
   val stagingArtifact = Path.join(stagingDir, artifactBase)
@@ -2625,9 +2626,10 @@ pub func buildProjectFromManifest(
   val outPath = match explicitOut {
     case Some(o) -> o
     case None -> {
+      val ext = outputExt(target, buildKind)
       val stem = match proj.outputAssembly {
-        case Some(s) -> applyOutputExtension(s, target, buildKind)
-        case None -> proj.name + outputExt(target, buildKind)
+        case Some(s) -> s
+        case None -> proj.name + ext
       }
       Path.join(Path.join(mfDir, "bin"), stem)
     }
@@ -2909,9 +2911,10 @@ func projectBinOutputPath(
   target: in Emitter.CompileTarget,
   buildKind: in String,
 ): String {
+  val ext = outputExt(target, buildKind)
   val stem = match proj.outputAssembly {
-    case Some(s) -> applyOutputExtension(s, target, buildKind)
-    case None -> proj.name + outputExt(target, buildKind)
+    case Some(s) -> s
+    case None -> proj.name + ext
   }
   Path.join(Path.join(mfDir, "bin"), stem)
 }
