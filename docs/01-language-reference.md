@@ -803,9 +803,15 @@ val x = if cond then a else b
 When an `if`/`else` or `match` sits in a position with a **known expected
 type** — a function body's trailing value or expression body (the declared
 return type), a `return`, an annotated `val`/`var`/`let` initialiser, an
-assignment, a call argument (the selected parameter's type), or a record
-constructor field — each branch is **checked against that type** instead of
-the branches being unified with each other. The construct then has the
+assignment, a call argument (the selected parameter's type), or a field of a
+*non-generic* record constructor — each branch is **checked against that
+type** instead of the branches being unified with each other. A *generic*
+record constructor's fields supply no expected type — not even with explicit
+type arguments or an expected type for the construction itself — so an
+`if`/`match` there is unified bottom-up: `Box[Greeter](value = if c {
+English(name = "x") } else { French(name = "x") })` is **T0067**. Bind the
+branch value to an annotated local first (`val g: Greeter = if c { ... } else
+{ ... }`, then `Box(value = g)`). The construct then has the
 expected type as long as every branch that produces a value satisfies it
 (diverging branches are ignored as above). So branches of *different*
 concrete types are accepted whenever each one fits the position:
