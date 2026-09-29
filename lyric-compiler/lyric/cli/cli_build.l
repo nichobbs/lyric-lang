@@ -104,6 +104,15 @@ func readBuildProfileFromSection(section: in Option[Mf.BuildSection]): BuildProf
   }
 }
 
+// Extract contractsEnabled from a parsed manifest's [contracts] section, or fall back
+// to the provided default value (docs/63 Q-BP-009, #7649).
+func getContractsEnabled(contractsSection: in Option[Mf.ContractsSection], defaultValue: in Bool): Bool {
+  match contractsSection {
+    case Some(cs) -> cs.enabled
+    case None -> defaultValue
+  }
+}
+
 // The resolved build axes for one `lyric build` invocation (docs/63 §3).
 pub record ResolvedAxes {
   shape: BuildShape
@@ -830,7 +839,7 @@ func emitSingleFileOrProject(
   if not hasContribution {
     // #7650: if the manifest has a [contracts] table, use that value even though
     // we're taking the no-contribution path.
-    val contractsEnabled = match lm.manifest.contracts { case Some(cs) -> cs.enabled; case None -> req.contractsEnabled }
+    val contractsEnabled = getContractsEnabled(lm.manifest.contracts, req.contractsEnabled)
     val reqWithContracts = Emitter.EmitRequest(
       source = req.source,
       assemblyName = req.assemblyName,
@@ -881,7 +890,7 @@ func emitSingleFileOrProject(
     case _ -> ()
   }
 
-  val contractsEnabled = match lm.manifest.contracts { case Some(cs) -> cs.enabled; case None -> req.contractsEnabled }
+  val contractsEnabled = getContractsEnabled(lm.manifest.contracts, req.contractsEnabled)
   val projReq = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = req.assemblyName,

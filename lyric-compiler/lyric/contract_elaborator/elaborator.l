@@ -1370,18 +1370,18 @@ func collectEnsures(contracts: in List[ContractClause], owner: in String): List[
 // No `sp` parameter: this used to take the enclosing `return` statement's
 // span and stamp it on every assert, so a failing `ensures:` reported the
 // return site rather than the clause (docs/63 band B1).
+//
+// User-level ensures: clauses are filtered out at collection time when
+// contractsEnabled is false (docs/63 Q-BP-009, #7649); system-level
+// checks (return-range, protected-type invariants) always appear here.
 func appendEnsuresAsserts(
   acc: in List[Statement],
   ensuresExprs: in List[SpannedExpr],
   resultName: in String,
-  contractsEnabled: in Bool = true,
 ): Unit {
   if ensuresExprs.count == 0 {
     return
   }
-  // User-level ensures: clauses are filtered out at collection time when
-  // contractsEnabled is false (docs/63 Q-BP-009, #7649); system-level
-  // checks (return-range, protected-type invariants) always appear here.
   var i = 0
   while i < ensuresExprs.count {
     val ec = ensuresExprs[i]
@@ -1401,18 +1401,18 @@ func appendEnsuresAsserts(
 // synthetic `__lyric_result_unit` binding, which genuinely belongs to the
 // return site rather than to any one clause.  The asserts themselves are
 // anchored per clause.
+//
+// User-level ensures: clauses are filtered out at collection time when
+// contractsEnabled is false (docs/63 Q-BP-009, #7649); system-level
+// checks (return-range, protected-type invariants) always appear here.
 func appendEnsuresAssertsNoResult(
   acc: in List[Statement],
   ensuresExprs: in List[SpannedExpr],
   sp: in Span,
-  contractsEnabled: in Bool = true,
 ): Unit {
   if ensuresExprs.count == 0 {
     return
   }
-  // User-level ensures: clauses are filtered out at collection time when
-  // contractsEnabled is false (docs/63 Q-BP-009, #7649); system-level
-  // checks (return-range, protected-type invariants) always appear here.
   val needUnit = anyHaveResultSpanned(ensuresExprs)
   val dummyName = "__lyric_result_unit"
   if needUnit {
@@ -1437,7 +1437,6 @@ func rewriteReturnSome(
   counter: inout RenameCounter,
   sp: in Span,
   acc: in List[Statement],
-  contractsEnabled: in Bool = true,
 ): Unit {
   if ensuresExprs.count == 0 {
     acc.add(mkStmt(SReturn(value = Some(value = e)), sp))
@@ -1445,7 +1444,7 @@ func rewriteReturnSome(
   }
   val name = freshResultName(counter)
   acc.add(mkResultBinding(name, counter.resultTy, e, sp))
-  appendEnsuresAsserts(acc, ensuresExprs, name, contractsEnabled)
+  appendEnsuresAsserts(acc, ensuresExprs, name)
   acc.add(mkStmt(SReturn(value = Some(value = mkPath(name, sp))), sp))
 }
 
@@ -1460,7 +1459,6 @@ func rewriteTrailingSExpr(
   sp: in Span,
   acc: in List[Statement],
   isVoidReturn: in Bool,
-  contractsEnabled: in Bool = true,
 ): Unit {
   if ensuresExprs.count == 0 {
     // No ensures clauses, but we still need to descend through any
@@ -1471,7 +1469,7 @@ func rewriteTrailingSExpr(
     // actually reach the nested SInvariant — `elaborateExprDeep` is
     // the existing rewriter that recurses through EIf/EMatch into
     // the inner blocks).
-    val newE = elaborateExprDeep(e, ensuresExprs, counter, contractsEnabled)
+    val newE = elaborateExprDeep(e, ensuresExprs, counter)
     acc.add(mkStmt(SExpr(expr = newE), sp))
     return
   }
@@ -1482,9 +1480,9 @@ func rewriteTrailingSExpr(
   // substitution.  Protected-type invariant ensures are the typical case here:
   // they reference field names, never `result`.
   if isVoidReturn {
-    val newE = elaborateExprDeep(e, ensuresExprs, counter, contractsEnabled)
+    val newE = elaborateExprDeep(e, ensuresExprs, counter)
     acc.add(mkStmt(SExpr(expr = newE), sp))
-    appendEnsuresAssertsNoResult(acc, ensuresExprs, sp, contractsEnabled)
+    appendEnsuresAssertsNoResult(acc, ensuresExprs, sp)
     return
   }
   // The trailing expression may itself be an EMatch / EIf whose arms exit
@@ -1497,14 +1495,14 @@ func rewriteTrailingSExpr(
   // first so the nested SReturns are rewritten in place (per-arm let + assert
   // + return); if the resulting expression always exits, emit it directly
   // without the outer let-bind / assert / yield.
-  val newE = elaborateExprDeep(e, ensuresExprs, counter, contractsEnabled)
+  val newE = elaborateExprDeep(e, ensuresExprs, counter)
   if exprAlwaysExits(newE) {
     acc.add(mkStmt(SExpr(expr = newE), sp))
     return
   }
   val name = freshResultName(counter)
   acc.add(mkResultBinding(name, counter.resultTy, newE, sp))
-  appendEnsuresAsserts(acc, ensuresExprs, name, contractsEnabled)
+  appendEnsuresAsserts(acc, ensuresExprs, name)
   acc.add(mkStmt(SExpr(expr = mkPath(name, sp)), sp))
 }
 
@@ -1573,11 +1571,10 @@ func elaborateExprOrBlockDeep(
   eob: in ExprOrBlock,
   ensuresExprs: in List[SpannedExpr],
   counter: inout RenameCounter,
-  contractsEnabled: in Bool = true,
 ): ExprOrBlock {
   match eob {
-    case EOBBlock(body) -> EOBBlock(block = elaborateBlockDeep(body, ensuresExprs, counter, contractsEnabled))
-    case EOBExpr(e) -> EOBExpr(expr = elaborateExprDeep(e, ensuresExprs, counter, contractsEnabled))
+    case EOBBlock(body) -> EOBBlock(block = elaborateBlockDeep(body, ensuresExprs, counter))
+    case EOBExpr(e) -> EOBExpr(expr = elaborateExprDeep(e, ensuresExprs, counter))
   }
 }
 
@@ -1585,18 +1582,16 @@ func elaborateExprDeep(
   e: in Expr,
   ensuresExprs: in List[SpannedExpr],
   counter: inout RenameCounter,
-  contractsEnabled: in Bool = true,
 ): Expr {
   match e.kind {
     case EIf(cond, thenBranch, elseBranch, thenForm) -> {
-      val newThen = elaborateExprOrBlockDeep(thenBranch, ensuresExprs, counter, contractsEnabled)
+      val newThen = elaborateExprOrBlockDeep(thenBranch, ensuresExprs, counter)
       val newElse: Option[ExprOrBlock] = match elseBranch {
         case Some(eob) -> Some(
           value = elaborateExprOrBlockDeep(
             eob,
             ensuresExprs,
-            counter,
-            contractsEnabled
+            counter
           )
         )
         case None -> None
@@ -1612,7 +1607,7 @@ func elaborateExprDeep(
           MatchArm(
             pattern = arm.pattern,
             guard = arm.guard,
-            body = elaborateExprOrBlockDeep(arm.body, ensuresExprs, counter, contractsEnabled),
+            body = elaborateExprOrBlockDeep(arm.body, ensuresExprs, counter),
             span = arm.span
           )
         )
@@ -1623,13 +1618,13 @@ func elaborateExprDeep(
     // A value-producing block or `unsafe { }` can hold a `return` that exits
     // the enclosing function (#7224).  Lambdas are deliberately not entered:
     // a `return` there leaves the lambda, not the function.
-    case EBlock(blk) -> mkExpr(EBlock(block = elaborateBlockDeep(blk, ensuresExprs, counter, contractsEnabled)), e.span)
+    case EBlock(blk) -> mkExpr(EBlock(block = elaborateBlockDeep(blk, ensuresExprs, counter)), e.span)
     case EUnsafe(blk) -> mkExpr(
-      EUnsafe(block = elaborateBlockDeep(blk, ensuresExprs, counter, contractsEnabled)),
+      EUnsafe(block = elaborateBlockDeep(blk, ensuresExprs, counter)),
       e.span
     )
     case EParen(inner) -> mkExpr(
-      EParen(inner = elaborateExprDeep(inner, ensuresExprs, counter, contractsEnabled)),
+      EParen(inner = elaborateExprDeep(inner, ensuresExprs, counter)),
       e.span
     )
     case _ -> e
@@ -1643,23 +1638,22 @@ func elaborateBindingDeep(
   b: in LocalBinding,
   ensuresExprs: in List[SpannedExpr],
   counter: inout RenameCounter,
-  contractsEnabled: in Bool = true,
 ): LocalBinding {
   match b {
     case LBVal(pat, ty, init) -> LBVal(
       pat = pat,
       ty = ty,
-      init = elaborateExprDeep(init, ensuresExprs, counter, contractsEnabled)
+      init = elaborateExprDeep(init, ensuresExprs, counter)
     )
     case LBLet(n, ty, init) -> LBLet(
       name = n,
       ty = ty,
-      init = elaborateExprDeep(init, ensuresExprs, counter, contractsEnabled)
+      init = elaborateExprDeep(init, ensuresExprs, counter)
     )
     case LBVar(n, ty, initOpt) -> {
       val newInit: Option[Expr] = match initOpt {
         case Some(x) -> Some(
-          value = elaborateExprDeep(x, ensuresExprs, counter, contractsEnabled)
+          value = elaborateExprDeep(x, ensuresExprs, counter)
         )
         case None -> None
       }
@@ -1672,12 +1666,11 @@ func elaborateBlockDeep(
   block: in Block,
   ensuresExprs: in List[SpannedExpr],
   counter: inout RenameCounter,
-  contractsEnabled: in Bool = true,
 ): Block {
   val outs: List[Statement] = newList()
   var i = 0
   while i < block.statements.count {
-    elaborateStmtDeep(block.statements[i], ensuresExprs, counter, outs, contractsEnabled)
+    elaborateStmtDeep(block.statements[i], ensuresExprs, counter, outs)
     i = i + 1
   }
   Block(statements = outs, span = block.span)
@@ -1692,20 +1685,19 @@ func elaborateStmtDeep(
   ensuresExprs: in List[SpannedExpr],
   counter: inout RenameCounter,
   acc: in List[Statement],
-  contractsEnabled: in Bool = true,
 ): Unit {
   match s.kind {
     case SReturn(valOpt) -> {
       match valOpt {
-        case Some(e) -> rewriteReturnSome(e, ensuresExprs, counter, s.span, acc, contractsEnabled)
+        case Some(e) -> rewriteReturnSome(e, ensuresExprs, counter, s.span, acc)
         case None -> {
-          appendEnsuresAssertsNoResult(acc, ensuresExprs, s.span, contractsEnabled)
+          appendEnsuresAssertsNoResult(acc, ensuresExprs, s.span)
           acc.add(s)
         }
       }
     }
     case SExpr(e) -> {
-      val newE = elaborateExprDeep(e, ensuresExprs, counter, contractsEnabled)
+      val newE = elaborateExprDeep(e, ensuresExprs, counter)
       acc.add(mkStmt(SExpr(expr = newE), s.span))
     }
     case SLocal(binding) -> acc.add(
@@ -1716,14 +1708,14 @@ func elaborateStmtDeep(
         SAssign(
           target = target,
           op = op,
-          value = elaborateExprDeep(value, ensuresExprs, counter, contractsEnabled)
+          value = elaborateExprDeep(value, ensuresExprs, counter)
         ),
         s.span
       )
     )
     case SFor(label, pat, iter, body) -> {
       val loopInvs = exitCheckableInvariants(loopInvariantsOf(body), patternBoundNames(pat))
-      val newBody = elaborateBlockDeep(body, ensuresExprs, counter, contractsEnabled)
+      val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
       if loopInvs.count == 0 {
         acc.add(mkStmt(SFor(label = label, pat = pat, iter = iter, body = newBody), s.span))
       } else {
@@ -1736,14 +1728,13 @@ func elaborateStmtDeep(
           flag,
           scan.found,
           s.span,
-          acc,
-          contractsEnabled
+          acc
         )
       }
     }
     case SWhile(label, cond, body) -> {
       val loopInvs = loopInvariantsOf(body)
-      val newBody = elaborateBlockDeep(body, ensuresExprs, counter, contractsEnabled)
+      val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
       if loopInvs.count == 0 {
         acc.add(mkStmt(SWhile(label = label, cond = cond, body = newBody), s.span))
       } else {
@@ -1756,8 +1747,7 @@ func elaborateStmtDeep(
           flag,
           scan.found,
           s.span,
-          acc,
-          contractsEnabled
+          acc
         )
       }
     }
@@ -1765,13 +1755,13 @@ func elaborateStmtDeep(
       mkStmt(
         SLoop(
           label = label,
-          body = elaborateBlockDeep(body, ensuresExprs, counter, contractsEnabled)
+          body = elaborateBlockDeep(body, ensuresExprs, counter)
         ),
         s.span
       )
     )
     case STry(body, catches, finally_) -> {
-      val newBody = elaborateBlockDeep(body, ensuresExprs, counter, contractsEnabled)
+      val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
       val newCatches: List[CatchClause] = newList()
       var ci = 0
       while ci < catches.count {
@@ -1780,7 +1770,7 @@ func elaborateStmtDeep(
           CatchClause(
             typeName = c.typeName,
             bindName = c.bindName,
-            body = elaborateBlockDeep(c.body, ensuresExprs, counter, contractsEnabled),
+            body = elaborateBlockDeep(c.body, ensuresExprs, counter),
             span = c.span
           )
         )
@@ -1788,7 +1778,7 @@ func elaborateStmtDeep(
       }
       val newFinally = match finally_ {
         case None -> None
-        case Some(fb) -> Some(elaborateBlockDeep(fb, ensuresExprs, counter, contractsEnabled))
+        case Some(fb) -> Some(elaborateBlockDeep(fb, ensuresExprs, counter))
       }
       acc.add(mkStmt(STry(body = newBody, catches = newCatches, finally_ = newFinally), s.span))
     }
@@ -1796,7 +1786,7 @@ func elaborateStmtDeep(
       mkStmt(
         SScope(
           binding = label,
-          body = elaborateBlockDeep(body, ensuresExprs, counter, contractsEnabled)
+          body = elaborateBlockDeep(body, ensuresExprs, counter)
         ),
         s.span
       )
