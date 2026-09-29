@@ -1851,7 +1851,6 @@ func appendLoopWithExitCheck(
   hasBreak: in Bool,
   sp: in Span,
   acc: in List[Statement],
-  contractsEnabled: in Bool = true,
 ): Unit {
   val checks: List[Statement] = newList()
   // Loop invariants are NEVER gated by contractsEnabled (#7645 over-gating fix).
@@ -2116,7 +2115,6 @@ func elaborateTopLevelStmt(
   counter: inout RenameCounter,
   acc: in List[Statement],
   isVoidReturn: in Bool,
-  contractsEnabled: in Bool = true,
 ): Unit {
   match s.kind {
     case SReturn(valOpt) -> {
@@ -2365,7 +2363,7 @@ func elaborateFunctionBody(
   var si = 0
   while si < body.statements.count {
     val isLast = si == body.statements.count - 1
-    elaborateTopLevelStmt(body.statements[si], isLast, rewrittenEnsures, counter, outs, isVoidReturn, contractsEnabled)
+    elaborateTopLevelStmt(body.statements[si], isLast, rewrittenEnsures, counter, outs, isVoidReturn)
     si = si + 1
   }
 
