@@ -3,10 +3,11 @@
 //! Validates the bytecode shape that lowerAsyncGenerator emits for a generator
 //! function `doubles(a: int, b: int): int` that yields `a * 2` and `b * 2`:
 //!
-//!   1. Creates a generator class `Doubles$Gen` implementing Iterable+Iterator+Runnable.
-//!      run() executes the body on a virtual thread, communicating each yielded value
-//!      via a SynchronousQueue hand-off; hasNext() calls take() and checks against
-//!      a static _DONE_SENTINEL to detect exhaustion.
+//!   1. Creates a generator class `Doubles$Gen` implementing Iterable+Runnable plus
+//!      its consumer-facing `Doubles$Gen$Iter` Iterator.  run() executes the body on
+//!      a virtual thread started by the first pull; each yield is a SynchronousQueue
+//!      rendezvous (one value per hasNext()), and a static _DONE_SENTINEL marks
+//!      exhaustion (#7720).
 //!   2. Creates a host class `Doubles` with a static kickoff method `doubles(II)`.
 //!   3. Main calls `Doubles.doubles(10, 21)`, iterates via hasNext()/next(),
 //!      and prints each element.

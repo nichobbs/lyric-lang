@@ -5,7 +5,8 @@
 # in `Jvm.Codegen`/`Jvm.Bridge`, plus the JVM half of dual-target runtime
 # tests whose dotnet half runs in `compiler-self-tests-batch.sh` (e.g.
 # closure_var_capture_self_test.l, #7460; the protected-type interface impl
-# tests, #7457; bare_func_ref_self_test.l, #7586), through one `lyric test`
+# tests, #7457; bare_func_ref_self_test.l, #7586; async_generator_self_test.l,
+# #7720), through one `lyric test`
 # invocation per file.
 #
 #   bash scripts/ci/jvm-generics-self-tests-batch.sh
@@ -62,7 +63,9 @@ for t in \
   lyric-compiler/lyric/generic_method_body_typevar_self_test.l \
   lyric-compiler/lyric/generator_closure_var_capture_self_test.l \
   lyric-compiler/lyric/generator_for_loop_self_test.l \
-  lyric-compiler/lyric/tuple_pattern_binding_self_test.l ; do
+  lyric-compiler/lyric/tuple_pattern_binding_self_test.l \
+  lyric-compiler/lyric/async_generator_self_test.l \
+  lyric-compiler/jvm/generator_body_try_catch_jvm_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"

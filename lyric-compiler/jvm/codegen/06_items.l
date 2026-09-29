@@ -3059,8 +3059,9 @@ func lowerGeneratorBody(
   // #7715: see `runClosureCapturePrePassJvm` — `makeFuncCtxForGenerator`
   // starts `hoistedVarNames` empty, so a generator-body `var` that a nested
   // closure mutated got a plain slot and the closure wrote a by-value copy.
-  // The body runs to completion on its own producer thread, so the cell's
-  // local slot stays live across every `yield` with no extra handling.
+  // The body runs on its own producer thread (parked, not unwound, at each
+  // `yield`), so the cell's local slot stays live across every `yield` with
+  // no extra handling.
   runClosureCapturePrePassJvm(ctx, decl.body)
 
   // `out`/`inout` parameters on an async generator are not supported on the
