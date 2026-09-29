@@ -1586,7 +1586,30 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
       }
       TyPrim(pt = PtBool)
     }
-    case PreRef -> inner
+    case PreRef -> {
+      // `&` was reserved for a planned function-reference form (`&f`,
+      // see `Lyric.LlvmCodegen`'s matching native-target panic) but no
+      // backend implements it: MSIL silently passes the operand through
+      // unchanged (a no-op, not a reference), and native panics outright.
+      // Before this diagnostic, that MSIL no-op made `&` a landmine: `&`
+      // has no infix form (it's prefix-only, `docs/grammar.ebnf`'s
+      // `PrefixExpr`), so `x & y` parsed as `x` (a complete expression)
+      // followed by a silently re-entered, silently accepted `&y`
+      // statement — discarding `y` with no diagnostic anywhere
+      // (cloud-agents docs/lyric/gotchas.md's "& is NOT bitwise-and"
+      // entry). Rejecting `&<expr>` unconditionally, on every target,
+      // turns that silent data loss into a compile error at the `&`
+      // site itself instead of requiring a fix to statement-boundary
+      // parsing in general.
+      diag.add(
+        errorDiagnostic(
+          "T0141",
+          "'&' (function-reference syntax) is not implemented yet — pass a lambda instead, or use .and()/.or()/.xor()/.shl()/.shr() for bitwise operations",
+          span
+        )
+      )
+      inner
+    }
   }
 }
 
