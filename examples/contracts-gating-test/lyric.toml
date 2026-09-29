@@ -5,7 +5,7 @@ description = "Test that aspect-composed requires:/ensures: clauses are gated by
 
 [project]
 output = "single"
-output_assembly = "contracts-gating-test.dll"
+output_assembly = "contracts-gating-test"
 
 [project.packages]
 "contracts_gating_test" = "src/main.l"
