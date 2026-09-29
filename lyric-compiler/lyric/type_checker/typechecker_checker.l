@@ -4047,6 +4047,9 @@ func checkWithImportedPackagesCore(
   // consumer's emitted IL (#3943).  Wrap it in an opaque Lyric type instead.
   checkExternBoundaryLeaks(tbl, diag, file.items)
 
+  // T7: `old(...)` only inside `ensures:` (T0080, #7731).
+  checkOldPlacement(diag, file)
+
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
 }
 

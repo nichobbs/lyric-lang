@@ -69,7 +69,8 @@ import Lyric.DiagnosticUtil as DiagUtil
 
 /// Per-file middle-end knobs.  `tcFatal` gates the build on type-check
 /// diagnostics (MSIL); when false, `tcReport` controls whether the advisory
-/// diagnostics are echoed at all (JVM bundled stdlib packages pass false).
+/// diagnostics are echoed at all (JVM bundled stdlib packages pass false);
+/// a reported advisory check still gates on T0080 (misplaced `old(...)`).
 /// `pkgLabel` prefixes every gating diagnostic with the owning package name
 /// for multi-package builds; "" prints the bare diagnostic.  `lineOrigins`
 /// (#6282) resolves a multi-file package's merged-blob line numbers back to
@@ -275,9 +276,23 @@ pub func pipeCheckAndMono(
     if gate(opts.pkgLabel, opts.lineOrigins, tcRes.diagnostics) {
       return None
     }
-  } else {
-    if opts.tcReport {
-      DiagUtil.diagReport(tcRes.diagnostics)
+  } else if opts.tcReport {
+    // The check is advisory here, but T0080 (`old(...)` outside `ensures:`)
+    // is purely syntactic — no builtin-coverage gap can make it a false
+    // positive — and codegen has no lowering for a stray `old`, so it gates
+    // regardless (#7731).
+    val advisory: List[Diagnostic] = newList()
+    val misplacedOld: List[Diagnostic] = newList()
+    for d in tcRes.diagnostics {
+      if d.code == "T0080" {
+        misplacedOld.add(d)
+      } else {
+        advisory.add(d)
+      }
+    }
+    DiagUtil.diagReport(advisory)
+    if gate(opts.pkgLabel, opts.lineOrigins, misplacedOld) {
+      return None
     }
   }
 

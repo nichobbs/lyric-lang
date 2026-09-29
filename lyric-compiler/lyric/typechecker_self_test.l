@@ -6410,6 +6410,108 @@ test "old() and quantifiers in clauses type-check" {
   assertTrue(not hasDiagCode(parseCheck(src), "T0132"), "well-typed old/forall clauses")
 }
 
+// `old(...)` is valid only in an `ensures:` clause (T0080, #7731,
+// docs/08-contract-semantics.md §3, §4.4).
+test "old() in a function ensures clause is accepted" {
+  val src = "package P\nfunc bump(x: inout Int): Unit\n  ensures: x == old(x) + 1\n{\n  x = x + 1\n}\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  assertTrue(not hasDiagCode(parseCheck(src), "T0080"), "ensures is old()'s home")
+}
+
+test "old() inside a quantifier inside ensures is accepted" {
+  val src = "package P\nfunc f(xs: inout List[Int]): Unit\n  ensures: forall (i: Int) where i >= 0 and i < old(xs.count) { xs[i] >= 0 }\n{\n  xs.add(0)\n}\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  assertTrue(not hasDiagCode(parseCheck(src), "T0080"), "a quantifier inside ensures stays in ensures")
+}
+
+test "old() inside a lambda inside ensures is accepted" {
+  val src = "package P\nfunc apply(g: in (Int) -> Int): Int { g(0) }\nfunc f(x: in Int): Int\n  ensures: result == apply({ y: Int -> y + old(x) })\n{\n  x\n}\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  assertTrue(not hasDiagCode(parseCheck(src), "T0080"), "a lambda inside ensures stays in ensures")
+}
+
+test "old() in method, interface, protected and aspect ensures is accepted" {
+  val src = "package P\n" +
+    "record Ctr {\n  n: Int\n  func next(k: in Int): Int\n    ensures: result == old(k) + 1\n  {\n    k + 1\n  }\n}\n" +
+    "pub interface Stepper {\n  func step(x: in Int): Int\n    ensures: result > old(x)\n}\n" +
+    "protected type Acc {\n  var total: Int = 0\n  entry add(d: in Int): Int\n    ensures: result == old(d)\n  {\n    total = total + d\n    d\n  }\n}\n" +
+    "aspect Keep {\n  matches: name like \"keep*\"\n  ensures: args.v == old(args.v)\n  around(args) -> ret {\n    ret = proceed(args)\n  }\n}\n" +
+    "func keepOne(v: in Int): Int { v }\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  assertEqualInt(countDiagCode(parseCheck(src), "T0080"), 0, "every ensures: form admits old()")
+}
+
+test "old() in a function body is T0080" {
+  val src = "package P\nfunc f(x: in Int): Int {\n  old(x)\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0080"), "body old()")
+  assertTrue(diagMessagesContain(cr, "not in a function body"), "the message names the position")
+}
+
+test "old() in an expression-bodied function and a lambda is T0080" {
+  val src = "package P\nfunc f(x: in Int): Int = old(x)\nfunc g(x: in Int): Int {\n  val h = { y: Int -> y + old(x) }\n  h(1)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0080"), 2, "expression body and lambda body")
+}
+
+test "old() in a requires clause is T0080" {
+  val src = "package P\nfunc f(x: in Int): Int\n  requires: old(x) > 0\n{\n  x\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0080"), "requires old()")
+  assertTrue(diagMessagesContain(cr, "`requires:` clause"), "names requires:")
+}
+
+test "old() inside a quantifier inside requires is T0080" {
+  val src = "package P\nfunc f(xs: in List[Int]): Int\n  requires: forall (i: Int) where i >= 0 and i < xs.count { xs[i] >= old(xs[0]) }\n{\n  0\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0080"), "requires quantifier old()")
+}
+
+test "old() in a loop invariant is T0080" {
+  val src = "package P\nfunc f(n: in Int): Int {\n  var i = 0\n  while i < n\n    invariant: i >= old(n) - n\n  {\n    i = i + 1\n  }\n  i\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0080"), "loop invariant old()")
+  assertTrue(diagMessagesContain(cr, "loop `invariant:`"), "names the loop invariant")
+}
+
+test "old() in a type invariant is T0080" {
+  val src = "package P\nrecord R {\n  x: Int\n  invariant: x >= old(x)\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0080"), "record invariant old()")
+  assertTrue(diagMessagesContain(cr, "type `invariant:`"), "names the type invariant")
+}
+
+test "old() in a when barrier and an entry body is T0080" {
+  val src = "package P\nprotected type Slot {\n  var full: Bool = false\n  entry put(x: in Int): Unit\n    when: not old(full)\n  {\n    full = old(full)\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0080"), 2, "barrier and entry body")
+  assertTrue(diagMessagesContain(cr, "`when:` barrier"), "names the barrier")
+}
+
+test "old() in an aspect requires clause and around body is T0080" {
+  val src = "package P\naspect Guard {\n  matches: name like \"g*\"\n  requires: old(args.v) > 0\n  around(args) -> ret {\n    val o = old(1)\n    ret = proceed(args)\n  }\n}\nfunc gOne(v: in Int): Int { v }\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0080"), 2, "aspect requires and around body")
+}
+
+test "old() in a module val, a field default, a parameter default and a test is T0080" {
+  val src = "package P\nval k = old(1)\nrecord R {\n  x: Int = old(0)\n}\nfunc f(y: in Int = old(3)): Int { y }\ntest \"t\" {\n  val z = old(2)\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0080"), 4, "val, field default, parameter default and test body")
+  assertTrue(diagMessagesContain(cr, "a field default"), "names the field default")
+}
+
+test "nested old(old(x)) is T0080" {
+  val src = "package P\nfunc bump(x: inout Int): Unit\n  ensures: x == old(old(x)) + 1\n{\n  x = x + 1\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0080"), 1, "one nested old")
+  assertTrue(diagMessagesContain(cr, "nested inside another"), "names the nesting")
+}
+
+test "result inside old() is T0080" {
+  val src = "package P\nfunc f(x: in Int): Int\n  ensures: old(result) == x\n{\n  x\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0080"), "old(result)")
+  assertTrue(diagMessagesContain(cr, "`result` cannot appear inside"), "names result")
+}
+
 // A contract clause or loop invariant may call only @pure functions (T0133,
 // #7228, language reference §6.3).
 test "a clause calling a non-@pure function is T0133" {

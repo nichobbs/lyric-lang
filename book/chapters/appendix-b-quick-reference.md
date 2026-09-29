@@ -1317,6 +1317,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0071` | A const pattern (`case @NAME ->`) names a constant of generic type; const patterns must be monomorphic |
 | `T0072` | A const pattern (`case @NAME ->`) names something that is not defined, or is not a `val`/`const` |
 | `T0073` | `null` used in pattern position — Lyric has no null literal or null pattern; `case null -> ...` parses as an ordinary catch-all binding named `null`, not a null test |
+| `T0080` | `old(…)` outside an `ensures:` clause, nested inside another `old(…)`, or applied to an operand that mentions `result` |
 | `T0085` | `out`/`inout` argument (value-type) must be a mutable l-value |
 | `T0086` | `out` parameter is never assigned before the function returns |
 | `T0087` | Reassigning an immutable binding (`val`/`let` or an `in` parameter) |
