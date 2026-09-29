@@ -17623,6 +17623,44 @@ func widenIntToLongMsil(insns: in List[MInsn], fromTy: in MsilType, toTy: in Msi
   }
 }
 
+// The rank of a primitive numeric type in the order a value may be widened
+// along without loss (`Byte < Int < Long < Double`; `widenPrimToSlotMsil` is
+// the conversion); -1 for any other type.
+func primWidenRankMsil(t: in MsilType): Int {
+  match t {
+    case MByte -> 0
+    case MInt -> 1
+    case MLong -> 2
+    case MDouble -> 3
+    case _ -> -1
+  }
+}
+
+// True when `cand` is a strictly wider primitive numeric type than `prev`.
+func isWiderPrimMsil(prev: in MsilType, cand: in MsilType): Bool {
+  val pr = primWidenRankMsil(prev)
+  val cr = primWidenRankMsil(cand)
+  pr >= 0 and cr > pr
+}
+
+// Widen the primitive on top of the stack, of type `fromTy`, to the type of the
+// slot it is stored into, `slotTy`: `conv.i8` into a `Long` slot from `Byte`,
+// `Int` or `Char`; `conv.r8` into a `Double` slot from `Byte`, `Int` or `Long`.
+// A `Byte` bound for an `Int` slot is already an int32 on the stack.  Never
+// narrows: any other pair emits nothing.  Returns the value's type after the
+// conversion, which is what a boxing caller must box it as — a value stored
+// into an erased `object` slot (a `Set[Long]` element, a `List<object>`
+// element) boxed as `Int32` never equals the same number boxed as `Int64`, so
+// lookups miss and unboxing it as the slot's type throws (#7785).
+func widenPrimToSlotMsil(insns: in List[MInsn], fromTy: in MsilType, slotTy: in MsilType): MsilType {
+  match slotTy {
+    case MLong -> match fromTy { case MInt | MByte | MChar -> { insns.add(MConvI8); MLong }; case _ -> fromTy }
+    case MDouble -> match fromTy { case MInt | MByte | MLong -> { insns.add(MConvR8); MDouble }; case _ -> fromTy }
+    case MInt -> match fromTy { case MByte -> MInt; case _ -> fromTy }
+    case _ -> fromTy
+  }
+}
+
 func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
   val fromObj = match fromTy { case MObject -> true; case _ -> false }
   val toObj = match toTy { case MObject -> true; case _ -> false }
@@ -18477,8 +18515,12 @@ func lowerBuiltinOrStaticCallMsil(
             }
           }
         }
-        // Lower args, collecting their MSIL types for generic type inference.
+        // Lower args, collecting their MSIL types for generic type inference
+        // and where each argument's instructions end (`argEnds`), so a
+        // narrower argument can be widened in place once the instantiation is
+        // known (`widenGenericCtorArgsMsil`).
         val argTypes: List[MsilType] = newList()
+        val argEnds: List[Int] = newList()
         var ci = 0
         while ci < ctorArgs.count {
           // Hint this slot with its concrete inner type so nested payloads instantiate right (#1687).
@@ -18565,6 +18607,7 @@ func lowerBuiltinOrStaticCallMsil(
             loweredC
           }
           argTypes.add(at)
+          argEnds.add(insns.count)
           ci = ci + 1
         }
         // For generic stdlib union cases, build a TypeSpec-based newobj token
@@ -18582,6 +18625,7 @@ func lowerBuiltinOrStaticCallMsil(
         if genericTok > 0 {
           // MNewobjGenericCase already emitted to insns by buildGenericCaseCtorTok.
           if outParentTy.count > 0 {
+            widenGenericCtorArgsMsil(cctx, insns, ctorKey, argTypes, argEnds, genericArgsOfMsil(outParentTy[0]))
             outParentTy[0]
           } else {
             MObject
@@ -18594,6 +18638,7 @@ func lowerBuiltinOrStaticCallMsil(
           val inBundleGen = buildInBundleGenericCtorTok(cctx, ctorKey, argTypes, contextTyArgs, outResultTy, insns)
           if inBundleGen > 0 {
             // MNewobjGenericByName already emitted; result is the closed instance.
+            widenGenericCtorArgsMsil(cctx, insns, ctorKey, argTypes, argEnds, genericArgsOfMsil(outResultTy[0]))
             outResultTy[0]
           } else {
             // For nullary in-bundle union cases, load the singleton Instance field
@@ -43400,6 +43445,53 @@ func ctorParentHeadFqn(cctx: in CodegenCtx, ctorKey: in String): String {
   }
 }
 
+// The type parameter a generic record's / union case's constructor argument
+// `i` is declared as when its field type is a bare parameter (`a: T` -> the
+// index of `T`), or -1.  In-bundle types record the open constructor
+// parameters (`genericCtorParams`); cross-assembly cases the field's
+// type-parameter index (`fieldVarIndices`).
+func genericCtorArgTypeVarMsil(cctx: in CodegenCtx, ctorKey: in String, i: in Int, argCount: in Int): Int {
+  match mapGet(cctx.genericCtorParams, ctorKey) {
+    case Some(ps) -> if ps.count == argCount { return match ps[i] { case MTypeVar(ix) -> ix; case _ -> -1 } }
+    case None -> ()
+  }
+  match mapGet(cctx.fieldVarIndices, ctorKey + "/field" + toString(i)) {
+    case Some(v) -> v
+    case None -> -1
+  }
+}
+
+// Widen each argument of a generic constructor call bound to a bare type
+// parameter to that parameter's instantiation (`typeArgs`), in place: `argEnds`
+// holds the instruction index just past each argument's own code, so the
+// conversion lands before the next argument is pushed.  The instantiation is
+// inferred from the widest argument (never narrowed, #7794), so for
+// `Two(a = longCall(), b = 4)` the literal is converted with `conv.i8` rather
+// than the `Int64` argument being stored into an `Int32` field — the
+// truncation that read `3000000004` back as `-1294967292`.  Walks the
+// arguments last-first so each splice leaves the earlier indices valid.
+func widenGenericCtorArgsMsil(
+  cctx: in CodegenCtx,
+  insns: in List[MInsn],
+  ctorKey: in String,
+  argTypes: in List[MsilType],
+  argEnds: in List[Int],
+  typeArgs: in List[MsilType],
+): Unit {
+  var i = argTypes.count - 1
+  while i >= 0 {
+    val ix = genericCtorArgTypeVarMsil(cctx, ctorKey, i, argTypes.count)
+    if ix >= 0 and ix < typeArgs.count and i < argEnds.count {
+      val conv: List[MInsn] = newList()
+      widenPrimToSlotMsil(conv, argTypes[i], typeArgs[ix])
+      if conv.count > 0 {
+        spliceInsnsMsil(insns, argEnds[i], conv)
+      }
+    }
+    i = i - 1
+  }
+}
+
 // Returns 1 (and emits the newobj) when `ctorKey` is a registered in-bundle
 // generic record; 0 otherwise (so the caller falls back to the plain path).
 func buildInBundleGenericCtorTok(
@@ -43444,9 +43536,11 @@ func buildInBundleGenericCtorTok(
         val found = findNestedTypeVarArgMsil(ctorParams[i], argTypes[i], slot)
         match found {
           case MObject -> ()
-          case _ -> {
-            argFoundTy = found
-          }
+          // Never narrow (#7794): `Two(a = longCall(), b = 4)` pins `T` to
+          // `Long` whichever argument comes last; the narrower arguments are
+          // widened to it after the constructor's instantiation is known
+          // (`widenGenericCtorArgsMsil`).
+          case _ -> if not isWiderPrimMsil(found, argFoundTy) { argFoundTy = found }
         }
       }
       i = i + 1
@@ -43513,7 +43607,8 @@ func buildGenericCaseCtorTok(
     while fi < argTypes.count {
       val fldKey = ctorKey + "/field" + toString(fi)
       val vi = match mapGet(cctx.fieldVarIndices, fldKey) { case Some(v) -> v; case None -> -1 }
-      if vi == tpi {
+      // Never narrow (#7794): see `buildInBundleGenericCtorTok`.
+      if vi == tpi and not isWiderPrimMsil(argTypes[fi], argFoundTy) {
         argFoundTy = argTypes[fi]
       }
       fi = fi + 1

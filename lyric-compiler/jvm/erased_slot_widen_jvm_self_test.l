@@ -5,9 +5,6 @@
 //! both targets agree on.  The shapes here fail on `--target dotnet`
 //! for reasons in the MSIL backend, not in the JVM fix:
 //!
-//!   - `Two(a = longFromCall(), b = 4)` for `record Two[T] { a: T  b: T }`
-//!     reads `t.a + t.b` back as a wrong value (`-1294967292`, not
-//!     `3000000004`); the same arguments in the other order are correct;
 //!   - a `Set[Long]` element added as an `Int` (`s.add(5)`) is stored boxed
 //!     as `Int32`, so a lookup by a `Long` value misses (`s.contains(five)`
 //!     with `five: Long` is false), and `setContains(s, 6)` (the generic
@@ -31,11 +28,6 @@ import Std.Collections
 import Std.Set
 import Std.Testing
 
-pub record Two[T] {
-  a: T
-  b: T
-}
-
 pub record Holder {
   n: Long
 }
@@ -46,13 +38,6 @@ func longFromCall(): Long {
 
 func intFromCall(): Int {
   7
-}
-
-test "a record's wider call argument before a narrower literal (#7790)" {
-  val t = Two(a = longFromCall(), b = 4)
-  assertEqualLong(t.a + t.b, 3000000004, "call, then literal")
-  val a1: Long = t.a
-  assertEqualLong(a1, 3000000000, "wider value kept")
 }
 
 test "Set[Long] elements from calls, operations and field reads (#7790)" {

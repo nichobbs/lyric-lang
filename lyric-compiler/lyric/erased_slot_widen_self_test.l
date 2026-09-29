@@ -14,6 +14,9 @@
 //! missed.  The value is now widened and boxed as the slot's declared type.
 //! `Set[Long]`, `List[Long]` lookup and `List[Double]` shapes that `--target dotnet` does not yet
 //! pass are in `lyric-compiler/jvm/erased_slot_widen_jvm_self_test.l`.
+//! A generic record's instantiation is inferred from its widest argument
+//! and the narrower arguments are widened to it, whatever order they come
+//! in, on both targets (#7794).
 //!
 //! `m.remove(k)` is `Bool` (true iff the key was present) on every target;
 //! the JVM backend lowered it as `Unit`, so any use of the result failed
@@ -206,6 +209,69 @@ test "a record's arguments of two widths widen whatever their shape (#7790)" {
   val a6: Long = t6.a
   val b6: Long = t6.b
   assertEqualLong(a6 + b6, 19, "generic call argument")
+}
+
+pub record LongBox {
+  v: Long
+}
+
+func bigLong(): Long {
+  3000000000
+}
+
+test "a record's wider call argument before a narrower literal (#7790, #7794)" {
+  val t = Two(a = longFromCall(), b = 4)
+  assertEqualLong(t.a + t.b, 3000000004, "call, then literal")
+  val a1: Long = t.a
+  assertEqualLong(a1, 3000000000, "wider value kept")
+}
+
+test "a record's Long argument keeps its value next to a narrower one, in either order (#7794)" {
+  val big: Long = 1000000000
+  val n: Int = 5
+  val h = LongBox(v = bigLong())
+  // A call result, either side of an Int literal or an Int expression.
+  val c1 = Two(a = bigLong(), b = 4)
+  assertEqualLong(c1.a, 3000000000, "call, then literal: a")
+  assertEqualLong(c1.b, 4, "call, then literal: b")
+  val c2 = Two(a = 4, b = bigLong())
+  assertEqualLong(c2.a + c2.b, 3000000004, "literal, then call")
+  val c3 = Two(a = bigLong(), b = n)
+  assertEqualLong(c3.a + c3.b, 3000000005, "call, then Int expression")
+  val c4 = Two(a = n, b = bigLong())
+  assertEqualLong(c4.a + c4.b, 3000000005, "Int expression, then call")
+  // A binary operation.
+  val o1 = Two(a = big * 3, b = 4)
+  assertEqualLong(o1.a + o1.b, 3000000004, "binary operation, then literal")
+  val o2 = Two(a = 4, b = big * 3)
+  assertEqualLong(o2.a + o2.b, 3000000004, "literal, then binary operation")
+  val o3 = Two(a = big * 3, b = n + 1)
+  assertEqualLong(o3.a + o3.b, 3000000006, "binary operation, then Int operation")
+  // A field read.
+  val f1 = Two(a = h.v, b = 4)
+  assertEqualLong(f1.a + f1.b, 3000000004, "field read, then literal")
+  val f2 = Two(a = 4, b = h.v)
+  assertEqualLong(f2.a + f2.b, 3000000004, "literal, then field read")
+  val f3 = Two(a = h.v, b = n)
+  assertEqualLong(f3.a + f3.b, 3000000005, "field read, then Int expression")
+  val f4 = Two(a = n, b = h.v)
+  assertEqualLong(f4.a + f4.b, 3000000005, "Int expression, then field read")
+  // A negative value must stay negative (sign-extended, not truncated).
+  val neg = Two(a = 0 - bigLong(), b = 1)
+  assertEqualLong(neg.a + neg.b, -2999999999, "negative wider argument")
+}
+
+test "a generic call's Long argument keeps its value next to a narrower one, in either order (#7794)" {
+  val big: Long = 1000000000
+  val n: Int = 5
+  val h = LongBox(v = bigLong())
+  assertEqualLong(pick(bigLong(), 4, true), 3000000000, "call, then literal")
+  assertEqualLong(pick(4, bigLong(), false), 3000000000, "literal, then call")
+  assertEqualLong(pick(big * 3, n, true), 3000000000, "binary operation, then Int expression")
+  assertEqualLong(pick(n, big * 3, false), 3000000000, "Int expression, then binary operation")
+  assertEqualLong(pick(h.v, 4, true), 3000000000, "field read, then literal")
+  assertEqualLong(pick(4, h.v, false), 3000000000, "literal, then field read")
+  assertEqualLong(pick(h.v, n, false), 5, "field read, then Int expression chosen")
 }
 
 test "a generic call's arguments of two widths widen whatever their shape (#7790)" {
