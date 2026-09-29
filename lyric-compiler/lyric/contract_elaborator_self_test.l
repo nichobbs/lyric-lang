@@ -1549,6 +1549,116 @@ test "a trailing if whose branches end in while true or return is not result-bou
   assertEqualInt(blk.statements.count, 1, "divergent trailing if: emitted as-is")
 }
 
+// A trailing `if`/`match` in a `Unit` body whose every branch returns never
+// falls off: its returns check the postcondition, and nothing follows it
+// (#7764).
+test "Unit body ending in an if whose branches all return gets no fall-off assert (#7764)" {
+  val src = "package P\n" + "func f(x: inout Int, v: in Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "  x = v\n" +
+    "  if v > 0 {\n" +
+    "    return\n" +
+    "  } else {\n" +
+    "    return\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 2, "all-return if: assignment then the if, nothing appended")
+  assertFalse(isAssertCall(blk.statements[1]), "all-return if: last statement is the if")
+}
+
+test "Unit body ending in a match whose arms all return or loop forever gets no fall-off assert (#7764)" {
+  val src = "package P\n" + "func f(x: inout Int, v: in Int): Unit\n" + "  ensures: x == 100\n" + "{\n" +
+    "  match v {\n" +
+    "    case 0 -> { return }\n" +
+    "    case _ -> {\n" +
+    "      while true {\n" +
+    "        x = x + 1\n" +
+    "        if x >= v { return }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 1, "divergent match: nothing appended")
+}
+
+test "Unit body ending in an if with a branch that falls off still asserts ensures (#7764)" {
+  val src = "package P\n" + "func f(x: inout Int, v: in Int): Unit\n" + "  ensures: x == 100\n" + "{\n" +
+    "  if v > 0 {\n" +
+    "    return\n" +
+    "  } else {\n" +
+    "    x = v\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 2, "if with a fall-off branch: the if then the assert")
+  assertTrue(isAssertCall(blk.statements[1]), "if with a fall-off branch: trailing assert")
+}
+
+// A `while` condition that is a compile-time `true` spelled other than the
+// literal is the same unconditional loop (#7764).
+func constLoopSrc(decls: in String, cond: in String): String {
+  "package P\n" + decls + "func f(x: inout Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "  while " + cond + " {\n" +
+    "    x = x + 1\n" +
+    "    if x >= 100 { return }\n" +
+    "  }\n" +
+    "}\n"
+}
+
+func constLoopStmtCount(decls: in String, cond: in String): Int {
+  bodyBlockOf(firstFunction(parseAndElaborate(constLoopSrc(decls, cond)), "f")).statements.count
+}
+
+test "a while over a module val bound to true gets no fall-off assert (#7764)" {
+  assertEqualInt(constLoopStmtCount("val ALWAYS: Bool = true\n", "ALWAYS"), 1, "val ALWAYS")
+  assertEqualInt(constLoopStmtCount("val ALWAYS = (true)\n", "(ALWAYS)"), 1, "untyped val, parenthesised")
+  assertEqualInt(constLoopStmtCount("val A = true\nval B = A\n", "B"), 1, "val through val")
+}
+
+test "a while over a folded constant comparison or negation gets no fall-off assert (#7764)" {
+  assertEqualInt(constLoopStmtCount("", "1 == 1"), 1, "1 == 1")
+  assertEqualInt(constLoopStmtCount("", "not false"), 1, "not false")
+  assertEqualInt(constLoopStmtCount("val ONE = 1\n", "ONE == 1 and -2 < ONE"), 1, "int val comparison")
+  assertEqualInt(constLoopStmtCount("val OFF = false\n", "OFF != true or OFF"), 1, "Bool val inequality")
+  assertEqualInt(constLoopStmtCount("", "true or x > 0"), 1, "or short-circuits on a constant true")
+}
+
+test "a while over a non-constant condition keeps the fall-off assert (#7764)" {
+  assertEqualInt(constLoopStmtCount("", "x < 100"), 2, "parameter comparison")
+  assertEqualInt(constLoopStmtCount("val OFF = false\n", "not OFF and x < 100"), 2, "constant and non-constant")
+  assertEqualInt(constLoopStmtCount("val N = 1\n", "N + 1 == 2"), 2, "arithmetic is not folded")
+  assertEqualInt(constLoopStmtCount("", "1u32 < 2u32"), 2, "unsigned literals are not folded")
+  assertEqualInt(
+    constLoopStmtCount("val FLAG = compute()\nfunc compute(): Bool { true }\n", "FLAG"),
+    2,
+    "non-literal val"
+  )
+}
+
+test "a local var shadowing a constant module val is not folded (#7764)" {
+  val src = "package P\n" + "val K = true\n" + "func f(x: inout Int): Unit\n" + "  ensures: x >= 0\n" + "{\n" +
+    "  var K = true\n" +
+    "  while K {\n" +
+    "    x = x + 1\n" +
+    "    if x > 3 { K = false }\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 3, "shadowed K: var, loop, then the fall-off assert")
+  assertTrue(isAssertCall(blk.statements[2]), "shadowed K: trailing assert")
+}
+
+test "a parameter or pattern binding anywhere in the file blocks folding its name (#7764)" {
+  assertEqualInt(constLoopStmtCount("val K = true\nfunc g(K: Bool): Bool { K }\n", "K"), 2, "param K elsewhere")
+  assertEqualInt(
+    constLoopStmtCount(
+      "val K = true\nfunc h(o: Option[Bool]): Bool { match o { case Some(K) -> K; case None -> false } }\n",
+      "K"
+    ),
+    2,
+    "match binder K elsewhere"
+  )
+}
+
 // #7747 x #7595: the fall-off postcondition obeys `contractsEnabled` like
 // every other ensures site — a disabled user `ensures:` adds no check after a
 // trailing assignment, while a protected-type invariant (system-level, never

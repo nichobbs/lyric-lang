@@ -47,6 +47,7 @@ for t in \
   lyric-compiler/lyric/contract_elaborator_self_test.l \
   lyric-compiler/lyric/contract_generic_call_self_test.l \
   lyric-compiler/lyric/contract_fall_off_ensures_self_test.l \
+  lyric-compiler/lyric/module_val_destructure_self_test.l \
   lyric-compiler/lyric/cfg_self_test.l \
   lyric-compiler/lyric/cfg_single_file_self_test.l \
   lyric-compiler/lyric/lint_self_test.l \
