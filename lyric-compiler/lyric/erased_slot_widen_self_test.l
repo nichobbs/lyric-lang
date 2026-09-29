@@ -12,11 +12,19 @@
 //! `ClassCastException`.  A `Map[Long, V]` key boxed that way never compared
 //! equal to the same value boxed as `java.lang.Long`, so lookups silently
 //! missed.  The value is now widened and boxed as the slot's declared type.
-//! `Set[Long]`, `List[Long]` lookup and `List[Double]` shapes that `--target dotnet` does not yet
-//! pass are in `lyric-compiler/jvm/erased_slot_widen_jvm_self_test.l`.
-//! A generic record's instantiation is inferred from its widest argument
-//! and the narrower arguments are widened to it, whatever order they come
-//! in, on both targets (#7794).
+//!
+//! On `--target dotnet` generics are reified, but a `Set[T]` is an erased
+//! `HashSet<object>`, and the concrete `List<T>`/`Dictionary<K, V>` methods
+//! take the element type unboxed: an `Int` argument for a `Long` (or
+//! `Double`) element was boxed as `Int32` (a `Set[Long]` lookup by a `Long`
+//! missed, iterating it into a `Long` threw `InvalidCastException`) or
+//! pushed as an `int32` where the method takes an `int64`/`float64`
+//! (`InvalidProgramException`); `List.indexOf`/`lastIndexOf`/`remove(x)` were
+//! not lowered at all.  Every element, key and value argument is now widened
+//! to the slot's declared type before it is passed or boxed (#7785).  A
+//! generic record's instantiation is inferred from its widest argument and
+//! the narrower arguments are widened to it, whatever order they come in
+//! (#7794).
 //!
 //! `m.remove(k)` is `Bool` (true iff the key was present) on every target;
 //! the JVM backend lowered it as `Unit`, so any use of the result failed
@@ -31,6 +39,7 @@ package Lyric.ErasedSlotWidenSelfTest
 
 import Std.Core
 import Std.Collections
+import Std.Set
 import Std.Testing
 
 pub record Two[T] {
@@ -74,6 +83,10 @@ func sumLongs(xs: in List[Long]): Long {
 }
 
 func sevenInt(): Int {
+  7
+}
+
+func intFromCall(): Int {
   7
 }
 
@@ -315,4 +328,129 @@ test "Map.remove as a statement still removes (#7782)" {
   assertFalse(m.containsKey(1), "statement remove")
   assertTrue(m.containsKey(2), "other key kept")
   assertEqualInt(mapSize(m), 1, "size")
+}
+
+test "Set[Long] elements from calls, operations and field reads (#7790)" {
+  val big: Long = 10
+  val h = Holder(n = 40)
+  val s: Set[Long] = newSet()
+  setAdd(s, longFromCall())
+  setAdd(s, h.n + 1)
+  setAdd(s, intFromCall())
+  assertTrue(setContains(s, big * 300000000), "call")
+  assertTrue(setContains(s, 41), "field read plus literal")
+  assertTrue(setContains(s, intFromCall()), "Int call")
+  assertEqualInt(setSize(s), 3, "size")
+}
+
+test "Set[Long] membership with unsuffixed literals (#7782)" {
+  val s: Set[Long] = newSet()
+  s.add(5)
+  s.add(5)
+  val n: Int = 6
+  s.add(n)
+  assertEqualInt(setSize(s), 2, "dedup")
+  assertTrue(s.contains(5), "contains literal")
+  assertTrue(s.contains(6), "contains Int expr value")
+  var total: Long = 0
+  for v in s {
+    total = total + v
+  }
+  assertEqualLong(total, 11, "iterate")
+  assertTrue(s.remove(5), "remove literal")
+  assertFalse(s.contains(5), "removed")
+}
+
+test "Set[Long] elements added as Int are found by a Long value (#7782)" {
+  val s: Set[Long] = newSet()
+  s.add(5)
+  val n: Int = 6
+  s.add(n)
+  setAdd(s, 7)
+  val five: Long = 5
+  val six: Long = 6
+  val seven: Long = 7
+  assertTrue(s.contains(five), "added literal")
+  assertTrue(s.contains(six), "added Int expression")
+  assertTrue(setContains(s, seven), "added through setAdd")
+  assertTrue(setContains(s, 6), "setContains with an Int literal")
+  assertTrue(s.remove(five), "remove by Long")
+  assertFalse(s.contains(5), "removed")
+  assertEqualInt(setSize(s), 2, "size")
+}
+
+test "List[Long] lookups by an Int argument (#7782)" {
+  val xs: List[Long] = newList()
+  xs.add(5)
+  xs.add(3000000000)
+  assertTrue(xs.contains(5), "contains literal")
+  val n: Int = 5
+  assertTrue(xs.contains(n), "contains Int expression")
+  assertEqualInt(xs.indexOf(3000000000), 1, "indexOf")
+  assertEqualInt(xs.indexOf(n), 0, "indexOf Int expression")
+}
+
+test "List[Double] and Map[K, Double] store an Int argument as Double (#7782)" {
+  val xs: List[Double] = newList()
+  xs.add(1)
+  val n: Int = 2
+  xs.add(n)
+  val d: Double = xs[0] + xs[1]
+  assertTrue(d == 3.0, "list sum is 3.0")
+  val m: Map[String, Double] = newMap()
+  m["a"] = 4.0
+  m.add("b", n)
+  assertTrue(m["a"] + m["b"] == 6.0, "map sum is 6.0")
+}
+
+test "List[Long] remove and lastIndexOf take an Int argument as a Long element (#7785)" {
+  val xs: List[Long] = newList()
+  xs.add(5)
+  xs.add(3000000000)
+  xs.add(5)
+  assertEqualInt(xs.lastIndexOf(5), 2, "lastIndexOf literal")
+  val n: Int = 5
+  assertEqualInt(xs.lastIndexOf(n), 2, "lastIndexOf Int expression")
+  assertEqualInt(xs.indexOf(99), -1, "indexOf absent")
+  assertTrue(xs.remove(n), "remove Int expression")
+  assertEqualInt(xs.count, 2, "one removed")
+  assertEqualLong(xs[0], 3000000000, "first match removed")
+  assertTrue(xs.remove(3000000000), "remove Long literal")
+  assertFalse(xs.remove(99), "remove absent")
+  assertEqualInt(xs.count, 1, "size")
+}
+
+test "a Byte element of a Set[Int] or List[Int] is found by an Int value (#7785)" {
+  val b: Byte = 200.toByte()
+  val s: Set[Int] = newSet()
+  s.add(b)
+  assertTrue(s.contains(200), "Set contains")
+  var total = 0
+  for v in s {
+    total = total + v
+  }
+  assertEqualInt(total, 200, "Set iterate")
+  val xs: List[Int] = newList()
+  xs.add(b)
+  assertTrue(xs.contains(200), "List contains")
+  assertEqualInt(xs.indexOf(200), 0, "List indexOf")
+}
+
+test "Map[Long, V] reads, removes and probes with an Int key (#7785)" {
+  val m: Map[Long, Long] = newMap()
+  val n: Int = 3
+  m.add(n, n)
+  m[4] = 3000000000
+  val k3: Long = 3
+  assertTrue(m.containsKey(k3), "Long key present")
+  assertTrue(m.containsKey(n), "Int key present")
+  assertEqualLong(m[n] + m[4], 3000000003, "Int-key reads")
+  m[n] += 1
+  assertEqualLong(m[k3], 4, "compound assignment through an Int key")
+  match mapGet(m, n) {
+    case Some(v) -> assertEqualLong(v, 4, "mapGet Int key")
+    case None -> assertTrue(false, "mapGet Int key missed")
+  }
+  assertTrue(m.remove(n), "remove Int key")
+  assertFalse(m.containsKey(k3), "removed")
 }

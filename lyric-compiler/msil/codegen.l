@@ -9521,6 +9521,64 @@ func emitListContains(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in Msi
   }
 }
 
+// A `List[T]` receiver: a concrete `List<T>` or an erased `List<object>`.
+func isListRecvMsil(recvTy: in MsilType): Bool {
+  match recvTy {
+    case MConcreteList(_) | MListOf(_) -> true
+    case _ -> false
+  }
+}
+
+// `recv.<op>(item)` for a `List`1` method taking one element — `IndexOf`,
+// `LastIndexOf`, `Remove` — with the receiver already on the stack: the item is
+// widened to the list's element type, and boxed as it for an erased
+// `List<object>` receiver, whose operation binds to the `List<object>`
+// instantiation (#7785).
+func lowerListElemMethodMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  recvTy: in MsilType,
+  arg: in CallArg,
+  op: in ListOp,
+): Unit {
+  emitErasedCollRecvCastMsil(cctx, insns, recvTy, false)
+  val elemTy = collElemSlotTyMsil(recvTy)
+  pushCollExpect(fctx, elemTy)
+  val aTy = lowerCallArgMsil(cctx, fctx, insns, arg)
+  popCollExpect(fctx)
+  collSlotArgMsil(cctx, insns, aTy, elemTy, recvTy)
+  val opElemTy = match recvTy { case MConcreteList(e) -> e; case _ -> MObject }
+  insns.add(MListOp(op = op, elemTy = opElemTy))
+}
+
+// A `List[T]` element method called with the wrong number of arguments: the
+// checker rejects this, so reaching codegen is a compiler bug — evaluate the
+// arguments for their effects, drop them and the receiver, and throw.
+func panicListElemMethodArityMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  args: in List[CallArg],
+  memberName: in String,
+): Unit {
+  var i = 0
+  while i < args.count {
+    lowerCallArgMsil(cctx, fctx, insns, args[i])
+    insns.add(MPop)
+    i = i + 1
+  }
+  insns.add(MPop)
+  val msgTok = ctxInternUs(
+    cctx.lctx,
+    "Msil.Codegen: List." + memberName + " expects 1 argument, got " + toString(args.count) +
+      " (compiler bug: type checker should have validated arity)"
+  )
+  insns.add(MLdStr(token = msgTok))
+  insns.add(MNewobj(ctorToken = cctx.tokInvalidOpExceptionCtor))
+  insns.add(MThrow)
+}
+
 func emitListRemoveAt(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteList(e) -> insns.add(MListOp(op = LoRemoveAt, elemTy = e))
@@ -11062,7 +11120,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             pushCollExpect(fctx, e)
             val ceTy = lowerExprMsil(cctx, fctx, insns, exprs[celi])
             popCollExpect(fctx)
-            collBoxIfNeeded(cctx, insns, ceTy, MConcreteList(elemTy = e))
+            collSlotArgMsil(cctx, insns, ceTy, e, MConcreteList(elemTy = e))
             insns.add(MListOp(op = LoAdd, elemTy = e))
             celi = celi + 1
           }
@@ -11350,7 +11408,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             insns.add(MCastclass(typeToken = cctx.tokDictObjTypeSpec))
             if indices.count > 0 {
               val kTy = lowerExprMsil(cctx, fctx, insns, indices[0])
-              boxIfNeededMsil(cctx, insns, kTy)
+              collSlotArgMsil(cctx, insns, kTy, collElemSlotTyMsil(recvTy), recvTy)
             }
             insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem))
             // get_Item returns the boxed value (object).  For a value-type V the
@@ -11393,14 +11451,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             emitListGetItem(cctx, insns, recvTy)
             elemTy
           }
-          case MConcreteMap(_, valTy) -> {
+          case MConcreteMap(keyTy, valTy) -> {
             // Concrete Map[K, V] read: the key is passed unboxed (the
             // `get_Item(!0)` MemberRef binds to the concrete key type, ref or
-            // value) and `get_Item` returns the value typed (`!1` = valTy), so no
-            // box on the key and no unbox on the result.
+            // value), widened to it (`m[2]` on a `Map[Long, V]`, #7785), and
+            // `get_Item` returns the value typed (`!1` = valTy), so no box on the
+            // key and no unbox on the result.
             emitDictCastRecv(cctx, insns, recvTy)
             if indices.count > 0 {
-              lowerExprMsil(cctx, fctx, insns, indices[0])
+              widenPrimToSlotMsil(insns, lowerExprMsil(cctx, fctx, insns, indices[0]), keyTy)
             }
             emitDictGetItem(cctx, insns, recvTy)
             valTy
@@ -13715,9 +13774,9 @@ func lowerAssignExprMsil(
               case MMapOf(_, _) -> {
                 insns.add(MCastclass(typeToken = cctx.tokDictObjTypeSpec))
                 val kTy = lowerExprMsil(cctx, fctx, insns, indices[0])
-                boxIfNeededMsil(cctx, insns, kTy)
+                collSlotArgMsil(cctx, insns, kTy, collElemSlotTyMsil(recvTy), recvTy)
                 val vTy = lowerExprMsil(cctx, fctx, insns, value)
-                boxIfNeededMsil(cctx, insns, vTy)
+                collSlotArgMsil(cctx, insns, vTy, collValueSlotTyMsil(recvTy), recvTy)
                 insns.add(MCallvirt(methodToken = cctx.tokDictObjSetItem))
               }
               case MConcreteMap(mk, mv) -> {
@@ -13726,10 +13785,10 @@ func lowerAssignExprMsil(
                 // numeric widening (`m[k] = 4` on a `Map[String, Long]`) is
                 // applied first so the unboxed value matches `!1` (#7343).
                 emitDictCastRecv(cctx, insns, recvTy)
-                val kTy = lowerExprMsil(cctx, fctx, insns, indices[0])
+                val kTy = widenPrimToSlotMsil(insns, lowerExprMsil(cctx, fctx, insns, indices[0]), mk)
                 coerceCallArgMsil(cctx, insns, kTy, mk)
                 collBoxIfNeeded(cctx, insns, kTy, recvTy)
-                val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                val vTy = widenPrimToSlotMsil(insns, lowerExprMsil(cctx, fctx, insns, value), mv)
                 coerceCallArgMsil(cctx, insns, vTy, mv)
                 collBoxIfNeeded(cctx, insns, vTy, recvTy)
                 emitDictSetItem(cctx, insns, recvTy)
@@ -13740,7 +13799,7 @@ func lowerAssignExprMsil(
                 // on a `List[Long]`, #7343).
                 emitListCastRecv(cctx, insns, recvTy)
                 lowerExprMsil(cctx, fctx, insns, indices[0])
-                val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                val vTy = widenPrimToSlotMsil(insns, lowerExprMsil(cctx, fctx, insns, value), le)
                 coerceCallArgMsil(cctx, insns, vTy, le)
                 collBoxIfNeeded(cctx, insns, vTy, recvTy)
                 emitListSetItem(cctx, insns, recvTy)
@@ -13809,7 +13868,7 @@ func lowerAssignExprMsil(
                 // Stack for callvirt set_Item: this(List<object>), int32 index, !0 value.
                 insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
                 lowerExprMsil(cctx, fctx, insns, indices[0])
-                val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                val vTy = widenPrimToSlotMsil(insns, lowerExprMsil(cctx, fctx, insns, value), collElemSlotTyMsil(recvTy))
                 boxIfNeededMsil(cctx, insns, vTy)
                 insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
               }
@@ -13874,7 +13933,7 @@ func lowerAssignExprMsil(
             // Index/key: boxed for a legacy Map, raw for a List / concrete coll.
             val kRawTy = lowerExprMsil(cctx, fctx, insns, indices[0])
             if isMap {
-              collBoxIfNeeded(cctx, insns, kRawTy, recvTy)
+              collSlotArgMsil(cctx, insns, kRawTy, collElemSlotTyMsil(recvTy), recvTy)
             }
             val kSlot = allocSlotMsil(fctx, "__cidx_k_" + toString(fctx.slotTicker.count), ckTy)
             emitStoreSlot(insns, kSlot, fctx.paramCount)
@@ -17661,6 +17720,44 @@ func widenPrimToSlotMsil(insns: in List[MInsn], fromTy: in MsilType, slotTy: in 
   }
 }
 
+// The element type of a collection receiver (a `List`/`Set` element, a
+// `Map` key), or `MObject` when the receiver is not a tracked collection.
+func collElemSlotTyMsil(recvTy: in MsilType): MsilType {
+  match recvTy {
+    case MConcreteList(e) -> e
+    case MListOf(e) -> e
+    case MSetOf(e) -> e
+    case MConcreteMap(k, _) -> k
+    case MMapOf(k, _) -> k
+    case _ -> MObject
+  }
+}
+
+// The value type of a `Map` receiver, or `MObject` for any other receiver.
+func collValueSlotTyMsil(recvTy: in MsilType): MsilType {
+  match recvTy {
+    case MConcreteMap(_, v) -> v
+    case MMapOf(_, v) -> v
+    case _ -> MObject
+  }
+}
+
+// Pass the argument on top of the stack, of type `argTy`, to a collection
+// method's element/key/value parameter whose declared type is `slotTy`: widen
+// it to the slot's type (`widenPrimToSlotMsil`), then box it as that type when
+// the receiver is an erased `object` collection (`collBoxIfNeeded`).
+func collSlotArgMsil(
+  cctx: in CodegenCtx,
+  insns: in List[MInsn],
+  argTy: in MsilType,
+  slotTy: in MsilType,
+  recvTy: in MsilType,
+): MsilType {
+  val t = widenPrimToSlotMsil(insns, argTy, slotTy)
+  collBoxIfNeeded(cctx, insns, t, recvTy)
+  t
+}
+
 func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
   val fromObj = match fromTy { case MObject -> true; case _ -> false }
   val toObj = match toTy { case MObject -> true; case _ -> false }
@@ -18197,7 +18294,7 @@ func lowerBuiltinOrStaticCallMsil(
       val mapKeyTy = match mArgTy { case MConcreteMap(kt, _) -> kt; case _ -> MObject }
       val kSlot = allocSlotMsil(fctx, "__mapget_k_" + toString(fctx.slotTicker.count), mapKeyTy)
       val kArgTy = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      collBoxIfNeeded(cctx, insns, kArgTy, mArgTy)
+      collSlotArgMsil(cctx, insns, kArgTy, collElemSlotTyMsil(mArgTy), mArgTy)
       emitStoreSlot(insns, kSlot, fctx.paramCount)
 
       val elseL = freshLabelMsil(fctx)
@@ -18274,7 +18371,7 @@ func lowerBuiltinOrStaticCallMsil(
     val mapKeyTyTgv = match mArgTyTgv { case MConcreteMap(kt, _) -> kt; case _ -> MObject }
     val kSlotTgv = allocSlotMsil(fctx, "__tgv_k_" + toString(fctx.slotTicker.count), mapKeyTyTgv)
     val kArgTyTgv = lowerCallArgMsil(cctx, fctx, insns, args[1])
-    collBoxIfNeeded(cctx, insns, kArgTyTgv, mArgTyTgv)
+    collSlotArgMsil(cctx, insns, kArgTyTgv, collElemSlotTyMsil(mArgTyTgv), mArgTyTgv)
     emitStoreSlot(insns, kSlotTgv, fctx.paramCount)
     // The out slot's declared type is the cast target when an object dict's
     // `get_Item` yields `object`; fall back to the map's tracked value type.
@@ -20606,7 +20703,10 @@ func lowerMethodCallMsil(
       }
       // A concrete `List<int32>` / `Dictionary<…>` stores arguments unboxed via
       // the closed generic `!0` MemberRef; only the legacy `List<object>` boxes.
-      collBoxIfNeeded(cctx, insns, aTy, recvTy)
+      // Either way the value is first widened to the element/key/value type
+      // it is stored as (#7785).
+      val addArgSlotTy = if args.count >= 2 and i == 1 { collValueSlotTyMsil(recvTy) } else { collElemSlotTyMsil(recvTy) }
+      collSlotArgMsil(cctx, insns, aTy, addArgSlotTy, recvTy)
       // An `object`-typed argument (an element read off an erased slice, a
       // closure result) added to a concrete `List<Foo>` is narrowed to the
       // element type the closed `Add(!0)` expects (#7755).
@@ -20632,7 +20732,7 @@ func lowerMethodCallMsil(
     emitErasedCollRecvCastMsil(cctx, insns, recvTy, true)
     if args.count > 0 {
       val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
-      collBoxIfNeeded(cctx, insns, aTy, recvTy)
+      collSlotArgMsil(cctx, insns, aTy, collElemSlotTyMsil(recvTy), recvTy)
     }
     emitDictContainsKey(cctx, insns, recvTy)
     MBool
@@ -20671,7 +20771,7 @@ func lowerMethodCallMsil(
         if args.count == 1 {
           emitErasedCollRecvCastMsil(cctx, insns, recvTy, false)
           val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
-          collBoxIfNeeded(cctx, insns, aTy, recvTy)
+          collSlotArgMsil(cctx, insns, aTy, collElemSlotTyMsil(recvTy), recvTy)
           emitListContains(cctx, insns, recvTy)
         } else {
           var i = 0
@@ -20703,7 +20803,7 @@ func lowerMethodCallMsil(
         emitErasedCollRecvCastMsil(cctx, insns, recvTy, true)
         if args.count > 0 {
           val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
-          boxIfNeededMsil(cctx, insns, aTy)
+          collSlotArgMsil(cctx, insns, aTy, collElemSlotTyMsil(recvTy), recvTy)
         }
         insns.add(MCallvirt(methodToken = cctx.tokDictObjRemove))
         MBool
@@ -20711,7 +20811,7 @@ func lowerMethodCallMsil(
       case MConcreteMap(_, _) -> {
         if args.count > 0 {
           val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
-          collBoxIfNeeded(cctx, insns, aTy, recvTy)
+          collSlotArgMsil(cctx, insns, aTy, collElemSlotTyMsil(recvTy), recvTy)
         }
         emitDictRemove(cctx, insns, recvTy)
         MBool
@@ -20724,9 +20824,18 @@ func lowerMethodCallMsil(
         emitErasedCollRecvCastMsil(cctx, insns, recvTy, false)
         if args.count > 0 {
           val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
-          boxIfNeededMsil(cctx, insns, aTy)
+          collSlotArgMsil(cctx, insns, aTy, collElemSlotTyMsil(recvTy), recvTy)
         }
         insns.add(MCallvirt(methodToken = cctx.tokSetObjRemove))
+        MBool
+      }
+      // `xs.remove(item)` on a `List[T]` -> `List`1<T>::Remove(!0): bool,
+      // removing the first element equal to `item`.
+      case MConcreteList(_) | MListOf(_) -> if args.count == 1 {
+        lowerListElemMethodMsil(cctx, fctx, insns, recvTy, args[0], LoRemove)
+        MBool
+      } else {
+        panicListElemMethodArityMsil(cctx, fctx, insns, args, "remove")
         MBool
       }
       case _ -> {
@@ -20902,6 +21011,23 @@ func lowerMethodCallMsil(
     // String.TrimEnd(): string  — trims trailing whitespace.
     insns.add(MCallvirt(methodToken = cctx.tokStringTrimEnd))
     MString
+  } else if (memberName == "indexOf" or memberName == "lastIndexOf") and isListRecvMsil(recvTy) {
+    // `xs.indexOf(item)` / `xs.lastIndexOf(item)` on a `List[T]` ->
+    // `List`1<T>::IndexOf(!0)` / `LastIndexOf(!0)`: int32, -1 when absent.
+    // (The String arm below would bind `String.IndexOf` to the list receiver.)
+    if args.count == 1 {
+      lowerListElemMethodMsil(
+        cctx,
+        fctx,
+        insns,
+        recvTy,
+        args[0],
+        if memberName == "indexOf" { LoIndexOf } else { LoLastIndexOf }
+      )
+    } else {
+      panicListElemMethodArityMsil(cctx, fctx, insns, args, memberName)
+    }
+    MInt
   } else if (memberName == "indexOf" or memberName == "lastIndexOf") and args.count == 1 {
     // With `import Std.String` in the calling file, `.indexOf`/`.lastIndexOf`
     // are the UFCS spelling of the Std.String free functions returning
