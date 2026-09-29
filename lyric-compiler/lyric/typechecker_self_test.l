@@ -126,6 +126,78 @@ func stdCollectionsHostPackages(): List[ImportedPackage] {
   packages
 }
 
+// #7702: the type the checker recorded for the qualified/method call that
+// starts at `callText`'s first occurrence in `src` (`SymbolTable.callResultTypes`,
+// keyed by the call's `recordCopySiteKey`), rendered as `Head[Arg, ...]` with
+// every path joined by `.`; "" when no type was recorded. A call whose result
+// degraded to `TyError` records nothing, so a clean diagnostic count alone
+// cannot tell a genuinely resolved `.toList()` from a vacuous one, and this
+// can.
+func recordedCallType(cr: in CheckResult, src: in String, callText: in String): String {
+  val start = Str.indexOfRaw(src, callText)
+  if start < 0 {
+    return ""
+  }
+  val prefix = toString(start) + ":"
+  val keys = mapKeys(cr.symbols.callResultTypes)
+  var i = 0
+  while i < keys.count {
+    if Str.startsWith(keys[i], prefix) {
+      match mapGet(cr.symbols.callResultTypes, keys[i]) {
+        case Some(te) -> return typeExprText(te)
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  ""
+}
+
+func typeExprText(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> joinSegments(path.segments)
+    case TGenericApp(head, args) -> {
+      var s = joinSegments(head.segments) + "["
+      var i = 0
+      while i < args.count {
+        if i > 0 {
+          s = s + ", "
+        }
+        s = s + match args[i] { case TAType(ty) -> typeExprText(ty); case _ -> "?" }
+        i = i + 1
+      }
+      s + "]"
+    }
+    case TSlice(element) -> "slice[" + typeExprText(element) + "]"
+    case _ -> "?"
+  }
+}
+
+func joinSegments(segs: in List[String]): String {
+  var s = ""
+  var i = 0
+  while i < segs.count {
+    if i > 0 {
+      s = s + "."
+    }
+    s = s + segs[i]
+    i = i + 1
+  }
+  s
+}
+
+// #7702: the package whose type the bare name `name` resolves to in `cr`'s
+// symbol table ("" when unresolved). `callResultTypes` spells a type by its
+// bare name only when that name denotes the SAME type id at the use site, so
+// pairing a bare `List[...]` recording with this lookup pins the recorded type
+// to `Std.CollectionsHost`'s `List` by identity, not just by name.
+func bareTypeOrigin(cr: in CheckResult, name: in String): String {
+  match symTableTryFindOne(cr.symbols, name) {
+    case Some(sym) -> sym.originPackage
+    case None -> ""
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2975,10 +3047,37 @@ test "slice/List mismatch diagnostics suggest the explicit conversion" {
   assertTrue(diagMessagesContain(cr, ".toList()"), "the T0043 message suggests .toList()")
 }
 
+// #7702: `.toList()`'s result type is the stdlib `Std.CollectionsHost.List`,
+// which only exists with that package in scope. Under the bare `parseCheck`
+// harness (no stdlib) it degraded to `TyError`, which every parameter accepts,
+// so the zero-diagnostic assertion held vacuously. The recorded call type pins
+// the real resolution, and the negative case below would pass vacuously too if
+// it did not resolve.
 test ".toList() bridges a slice value into a List[T] parameter" {
-  val src = "package P\nrecord List[T] { }\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(xs: in slice[Int]): Int { g(xs.toList()) }\n"
-  val cr = parseCheck(src)
+  val src = "package P\nimport Std.CollectionsHost\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(xs: in slice[Int]): Int { g(xs.toList()) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
   assertEqualInt(diagCount(cr), 0, ".toList() converts slice[Int] to List[Int] at a call argument")
+  assertEqual(
+    recordedCallType(cr, src, "xs.toList()"),
+    "List[Int]",
+    "the .toList() argument resolves to List[Int], not TyError"
+  )
+  assertEqual(
+    bareTypeOrigin(cr, "List"),
+    "Std.CollectionsHost",
+    "the recorded List is the stdlib Std.CollectionsHost.List"
+  )
+}
+
+test ".toList() of a slice[String] is rejected by a List[Int] parameter (#7702)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(xs: in slice[String]): Int { g(xs.toList()) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "List[String] from .toList() does not satisfy a List[Int] parameter")
+  assertEqual(
+    recordedCallType(cr, src, "xs.toList()"),
+    "List[String]",
+    "the rejected argument is the resolved List[String], not TyError"
+  )
 }
 
 test "a list literal in a plain (non-ctor) call argument still types as List[T]" {
@@ -6909,6 +7008,12 @@ test "slice.toList() type-checks cleanly with no shadowing type in scope (#7665)
   val src = "package App\nimport Std.CollectionsHost\nfunc f(): Unit {\n  val xs: slice[Int] = [1, 2, 3]\n  val lst: List[Int] = xs.toList()\n}\n"
   val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
   assertEqualInt(diagCount(cr), 0, "no shadow, matching declared type: toList() must type-check clean")
+  assertEqual(
+    recordedCallType(cr, src, "xs.toList()"),
+    "List[Int]",
+    "the .toList() initialiser resolves to List[Int], not TyError (#7702)"
+  )
+  assertEqual(bareTypeOrigin(cr, "List"), "Std.CollectionsHost", "the recorded List is the stdlib one (#7702)")
 }
 
 // `&` (cloud-agents docs/lyric/gotchas.md "& is NOT bitwise-and"): neither
