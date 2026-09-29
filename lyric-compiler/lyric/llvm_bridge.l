@@ -506,7 +506,7 @@ pub func compileToNativeWithFlags(
         case Some(f) -> {
           // Contracts in bundled packages lower to runtime asserts the
           // same way the user file's do.
-          val stdElaborated = elaborateFile(f)
+          val stdElaborated = elaborateFileWithInterfaces(f, newList(), contractsEnabled)
           // `?`-propagation (#6954): a bundled Std.* package's own body can
           // use `?` just like the user file's, and `Lyric.LlvmCodegen`
           // cannot lower an un-rewritten `EPropagate` node — mirrors
@@ -905,7 +905,7 @@ pub func compileProjectToNativeWithFlags(
           // same desugar pass the own-project packages above already get.
           // `awaitInTryIsHazard = true`: native, like MSIL, keeps F0045's
           // guard enabled (#7198; see the `MiddleEndOptions` sites above).
-          val stdElaborated = elaborateFile(f)
+          val stdElaborated = elaborateFileWithInterfaces(f, newList(), contractsEnabled)
           val stdProp = lowerPropagateFile(stdElaborated, true)
           if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {
             return false
