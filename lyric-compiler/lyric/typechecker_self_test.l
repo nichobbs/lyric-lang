@@ -7226,3 +7226,37 @@ test "real bitwise methods are unaffected by the '&' rejection" {
   val src = "package P\nfunc f(x: in Int, y: in Int): Int {\n  x.and(y)\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0141"), ".and()/.or()/.xor()/.shl()/.shr() remain unaffected")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7729: T0142 — a generator cannot suspend inside a `catch`, `finally` or
+// `defer` body (§7.2); a `yield` in the protected `try` body itself is fine.
+// ─────────────────────────────────────────────────────────────────────────────
+test "yield inside a catch block is T0142 (#7729)" {
+  val src = "package P\nasync func g(): Int {\n  try {\n    yield 1\n  } catch Bug as e {\n    yield 2\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0142"), 1, "one T0142 for the catch block")
+  assertTrue(
+    diagMessageFor(cr, "T0142").contains("catch"),
+    "T0142 names the catch block: " + diagMessageFor(cr, "T0142")
+  )
+}
+
+test "yield inside a finally block is T0142 (#7729)" {
+  val src = "package P\nasync func g(): Int {\n  try {\n    yield 1\n  } finally {\n    if true {\n      yield 2\n    }\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0142"), 1, "one T0142 for the finally block")
+  assertTrue(
+    diagMessageFor(cr, "T0142").contains("finally"),
+    "T0142 names the finally block: " + diagMessageFor(cr, "T0142")
+  )
+}
+
+test "yield inside a defer block is T0142 (#7729)" {
+  val src = "package P\nasync func g(): Int {\n  defer {\n    yield 0\n  }\n  yield 1\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0142"), 1, "one T0142 for the defer block")
+}
+
+test "yield inside a try body with catch and finally is accepted (#7729)" {
+  val src = "package P\nasync func g(): Int {\n  try {\n    yield 1\n    try {\n      yield 2\n    } finally {\n      println(\"x\")\n    }\n  } catch Bug as e {\n    println(\"caught\")\n  } finally {\n    println(\"done\")\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0142"), 0, "no T0142 for yields in try bodies")
+}

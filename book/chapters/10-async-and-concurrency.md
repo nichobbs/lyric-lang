@@ -249,6 +249,23 @@ async func main(): Unit {
 
 Here `fetchPage` is awaited inside the generator — the generator suspends while the HTTP request is in flight, then resumes to yield the items one by one to the consumer.
 
+**Generators and `try`/`finally`.** A `yield` can sit inside a `match` arm or inside the body of a `try`. Suspending there does not run the `finally`; it runs once, when control finally leaves the `try`:
+
+```lyric
+async func lines(path: in String): String {
+  val f = openReader(path)
+  try {
+    while not f.atEnd() {
+      yield f.readLine()
+    }
+  } finally {
+    f.close()   // runs once, after the last line — not at every yield
+  }
+}
+```
+
+A consumer that stops early (`break`) disposes the generator on .NET, and a generator suspended inside a `try` then runs its pending `finally` and `defer` blocks, innermost first. The JVM backend does not do this yet: the producer thread of an abandoned generator is simply left parked. A `yield` inside a `catch`, `finally`, or `defer` block is a compile error (`T0142`), because those blocks run while an exception or an exit is in flight and cannot be suspended.
+
 **Implementation.** Generators are **always lazy** — the compiler synthesises a single suspending state machine that produces one value per pull, so `for x in gen() { … }` streams and an unbounded `while true { yield … }` generator works without exhausting memory:
 
 - *MSIL* — a combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class. `MoveNextAsync()` creates a fresh `TaskCompletionSource<bool>`, drives the state machine one step, and returns `ValueTask<bool>(tcs.Task)`. Each `yield` stores the value in `<>2__current`, signals `tcs.SetResult(true)`, and suspends; an `await` inside the body hooks its continuation via `AwaitUnsafeOnCompleted` and suspends. Local variables that live across a `yield` or `await` boundary are promoted to fields. Because the same state machine handles both, `await` *and* `yield` can appear in one body on MSIL — including a genuinely-suspending `await` between yields.

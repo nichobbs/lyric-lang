@@ -469,6 +469,7 @@ pub func checkStatement(
     }
 
     case SDefer(body) -> {
+      checkNoYieldInHandler(diag, body, "a `defer` block", stmt.span)
       val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
     }
 
@@ -628,6 +629,7 @@ pub func checkStatement(
             scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
           }
         }
+        checkNoYieldInHandler(diag, c.body, "a `catch` block", c.span)
         val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, false, TyError)
         scopePop(sc)
         i = i + 1
@@ -636,6 +638,7 @@ pub func checkStatement(
         case None -> {
         }
         case Some(fb) -> {
+          checkNoYieldInHandler(diag, fb, "a `finally` block", fb.span)
           val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false, TyError)
         }
       }
@@ -645,6 +648,24 @@ pub func checkStatement(
     }
     case SRule(_, _) -> {
     }
+  }
+}
+
+// T0142: a generator suspends at `yield` and resumes where it left off, but a
+// `catch`, `finally` or `defer` body runs while an exception or an exit is in
+// flight and cannot be suspended and re-entered (§7.2).  A `yield` in the
+// protected `try` body itself is fine.
+func checkNoYieldInHandler(diag: in List[Diagnostic], body: in Block, what: in String, sp: in Span): Unit {
+  if blockContainsYield(body) {
+    diag.add(
+      errorDiagnostic(
+        "T0142",
+        "`yield` cannot appear inside " + what +
+          ": a generator cannot suspend while a handler or deferred block is running. Move the `yield` " +
+          "into the `try` body, or record the value and yield it after the `try`",
+        sp
+      )
+    )
   }
 }
 
@@ -1115,6 +1136,7 @@ pub func checkBlock(
               scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
             }
           }
+          checkNoYieldInHandler(diag, c.body, "a `catch` block", c.span)
           val hTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, tryValuePos, tryTailExpected)
           scopePop(sc)
           if typeEquiv(resultTy, TyPrim(pt = PtNever)) {
@@ -1134,6 +1156,7 @@ pub func checkBlock(
           }
           case Some(fb) -> {
             // The `finally` block's value is always discarded.
+            checkNoYieldInHandler(diag, fb, "a `finally` block", fb.span)
             val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false, TyError)
           }
         }
