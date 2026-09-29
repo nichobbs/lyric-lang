@@ -31,22 +31,10 @@ func oldItem(diag: in List[Diagnostic], it: in Item): Unit {
     case IConst(decl) -> oldExpr(diag, "a `const` initializer", false, decl.init)
     case IVal(decl) -> oldExpr(diag, "a module-level `val` initializer", false, decl.init)
     case IFunc(decl) -> oldFunction(diag, decl)
-    case IDistinctType(decl) -> match decl.rangeClause {
-      case Some(rb) -> oldRange(diag, "a range subtype's bounds", false, rb)
-      case None -> ()
-    }
+    case IDistinctType(decl) -> oldDistinct(diag, decl)
     case IRecord(decl) -> oldRecord(diag, decl)
     case IExposedRec(decl) -> oldRecord(diag, decl)
-    case IOpaque(decl) -> {
-      var i = 0
-      while i < decl.members.count {
-        match decl.members[i] {
-          case OMField(fd) -> oldField(diag, fd)
-          case OMInvariant(inv) -> oldExpr(diag, "a type `invariant:`", false, inv.expr)
-        }
-        i = i + 1
-      }
-    }
+    case IOpaque(decl) -> oldOpaque(diag, decl)
     case IProtected(decl) -> {
       var i = 0
       while i < decl.members.count {
@@ -102,7 +90,10 @@ func oldItem(diag: in List[Diagnostic], it: in Item): Unit {
           case WMLocal(_, _, init, _) -> oldExpr(diag, "a wire binding", false, init)
           case WMContributes(_, _, init, _, _, _) -> oldExpr(diag, "a wire binding", false, init)
           case WMConfigInst(cd, _) -> oldConfig(diag, cd)
-          case _ -> ()
+          case WMInclude(_, _, adjustments, _, _) -> oldIncludeAdjustments(diag, adjustments)
+          case WMProvided(_, _, _) -> ()
+          case WMExpose(_, _) -> ()
+          case WMOverridable(_, _) -> ()
         }
         i = i + 1
       }
@@ -117,7 +108,11 @@ func oldItem(diag: in List[Diagnostic], it: in Item): Unit {
           }
           case EMRecord(rd) -> oldRecord(diag, rd)
           case EMExposedRec(rd) -> oldRecord(diag, rd)
-          case _ -> ()
+          case EMOpaque(od) -> oldOpaque(diag, od)
+          case EMDistinctType(dd) -> oldDistinct(diag, dd)
+          case EMUnion(_) -> ()
+          case EMEnum(_) -> ()
+          case EMTypeAlias(_) -> ()
         }
         i = i + 1
       }
@@ -136,7 +131,53 @@ func oldItem(diag: in List[Diagnostic], it: in Item): Unit {
         case None -> ()
       }
     }
-    case _ -> ()
+    case IExternFunc(decl) -> oldParams(diag, decl.params)
+    // No expression positions: union/enum cases and field types, type
+    // aliases, extern types and scope kinds carry only types and names.
+    case ITypeAlias(_) -> ()
+    case IUnion(_) -> ()
+    case IEnum(_) -> ()
+    case IScopeKind(_) -> ()
+    case IExternType(_) -> ()
+    case IError -> ()
+  }
+}
+
+func oldOpaque(diag: in List[Diagnostic], decl: in OpaqueTypeDecl): Unit {
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case OMField(fd) -> oldField(diag, fd)
+      case OMInvariant(inv) -> oldExpr(diag, "a type `invariant:`", false, inv.expr)
+    }
+    i = i + 1
+  }
+}
+
+func oldDistinct(diag: in List[Diagnostic], decl: in DistinctTypeDecl): Unit {
+  match decl.rangeClause {
+    case Some(rb) -> oldRange(diag, "a range subtype's bounds", false, rb)
+    case None -> ()
+  }
+}
+
+func oldIncludeAdjustments(diag: in List[Diagnostic], adjs: in List[IncludeAdjust]): Unit {
+  var i = 0
+  while i < adjs.count {
+    match adjs[i] {
+      case IAProvided(_, value, _) -> oldExpr(diag, "a wire `include` adjustment", false, value)
+      case IAReplace(_, value, _) -> oldExpr(diag, "a wire `include` adjustment", false, value)
+      case IAConfigOverride(_, fields, _) -> {
+        var j = 0
+        while j < fields.count {
+          oldExpr(diag, "a wire `include` adjustment", false, fields[j].value)
+          j = j + 1
+        }
+      }
+      case IARemove(_, _) -> ()
+      case IAReorder(_, _, _) -> ()
+    }
+    i = i + 1
   }
 }
 
@@ -236,7 +277,10 @@ func oldStmt(diag: in List[Diagnostic], pos: in String, inOld: in Bool, stmt: in
     // A loop invariant describes every iteration's head state, not the
     // function's entry state; a value it needs from entry is a `val` bound
     // before the loop.
-    case SInvariant(e) -> oldExpr(diag, if pos == "" { "" } else { "a loop `invariant:`" }, inOld, e)
+    // A loop invariant describes each iteration's head state, never the
+    // function's entry state, so it rejects `old` even when the loop sits in
+    // a lambda inside an `ensures:` clause.
+    case SInvariant(e) -> oldExpr(diag, "a loop `invariant:`", inOld, e)
     case SItem(it) -> oldItem(diag, it)
     case SAssign(t, _, v) -> {
       oldExpr(diag, pos, inOld, t)

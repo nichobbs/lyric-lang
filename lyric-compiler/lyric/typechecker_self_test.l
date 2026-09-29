@@ -6512,6 +6512,36 @@ test "result inside old() is T0080" {
   assertTrue(diagMessagesContain(cr, "`result` cannot appear inside"), "names result")
 }
 
+// #7749 review: extern and wire members carry expression positions too.
+test "old() in an extern func parameter default is T0080" {
+  val src = "package P\nextern func f(x: Int = old(1)): Int = \"f\"\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  assertTrue(hasDiagCode(parseCheck(src), "T0080"), "extern func parameter default")
+}
+
+test "old() in an extern package opaque field default and invariant is T0080" {
+  val src = "package P\n\nextern package Host.X {\n  pub opaque type Bar {\n    x: Int = old(1)\n    invariant: x > old(0)\n  }\n}\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  assertEqualInt(countDiagCode(parseCheck(src), "T0080"), 2, "opaque field default and invariant")
+}
+
+test "old() in an extern package range subtype bound is T0080" {
+  val src = "package P\n\nextern package Host.X {\n  pub type Age = Int range 0 ..= old(150)\n}\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  assertTrue(hasDiagCode(parseCheck(src), "T0080"), "extern range bound")
+}
+
+test "old() in a wire include adjustment is T0080" {
+  val src = "package P\n\nwire W {\n  include Some.Template {\n    someName = old(1)\n  }\n}\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  assertTrue(hasDiagCode(parseCheck(src), "T0080"), "include adjustment")
+}
+
+test "old() in a loop invariant inside an ensures lambda is T0080" {
+  val src = "package P\nfunc apply(g: in (Int) -> Int): Int { g(0) }\nfunc f(x: in Int): Int\n  ensures: result == apply({ y: Int ->\n    var i = 0\n    while i < y\n      invariant: i >= old(x) - x\n    {\n      i = i + 1\n    }\n    i\n  })\n{\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0080"), "a loop invariant never admits old(), even inside ensures")
+}
+
 // A contract clause or loop invariant may call only @pure functions (T0133,
 // #7228, language reference §6.3).
 test "a clause calling a non-@pure function is T0133" {
