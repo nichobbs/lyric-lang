@@ -198,7 +198,8 @@ pub func pipeParseAndErase(
 /// docs/58 wire/config-template expansion FIRST (so an include alias's
 /// qualified access is consumed by the expander, not collapsed by the
 /// import-alias rewriter when the alias name matches an imported package's
-/// last segment), then the import-alias rewrite, then `@stubbable` stub
+/// last segment), then module-level destructuring `val` desugaring (#7763),
+/// then the import-alias rewrite, then `@stubbable` stub
 /// synthesis, then same-file interface-default-method inheritance (#6433 —
 /// runs AFTER `@stubbable` so a synthesized `<Iface>Stub` impl also
 /// inherits any default methods, and unconditionally on every target: it is
@@ -235,6 +236,15 @@ pub func pipeExpandAndRewrite(
     }
     f = weRes.file
   }
+  // A destructuring module-level `val` becomes one `val` per bound name
+  // (#7763) before any pass indexes module values, so every backend and the
+  // checker see the same single-name items; a refutable pattern (T0144)
+  // gates here, whether or not the type check that follows is fatal.
+  val mvRes = desugarModuleValPatterns(f)
+  if gate(label, origins, mvRes.diagnostics) {
+    return None
+  }
+  f = mvRes.file
   f = Aliases.rewriteFile(f)
   if runStubbable {
     f = Stubbable.stubbableRewriteFile(f)
@@ -284,11 +294,12 @@ pub func pipeCheckAndMono(
     // The check is advisory here, but T0080 (`old(...)` outside `ensures:`)
     // is purely syntactic — no builtin-coverage gap can make it a false
     // positive — and codegen has no lowering for a stray `old`, so it gates
-    // regardless (#7731).
+    // regardless (#7731).  So does T0144: a module `val` pattern its
+    // initializer can never match has no lowering either (#7763).
     val advisory: List[Diagnostic] = newList()
     val misplacedOld: List[Diagnostic] = newList()
     for d in tcRes.diagnostics {
-      if d.code == "T0080" {
+      if d.code == "T0080" or d.code == "T0144" {
         misplacedOld.add(d)
       } else {
         advisory.add(d)
@@ -306,11 +317,13 @@ pub func pipeCheckAndMono(
   // type as the annotation (#7711), a call through a function value → a
   // call through a local of the callee's checked type (#7716), and a name a
   // tuple pattern binds → a local annotated with its element type (#7728),
+  // a value a destructuring module `val` binds → its checked type as the
+  // annotation (#7763),
   // while the type checker's span keys still
   // identify exactly one expression each (D-progress-948, 962, 963).
   val valueSites = funcValueSites(tcRes.symbols)
   val copyRes = desugarCheckedFile(
-    file0,
+    annotateModuleVals(file0, tcRes.symbols.moduleValTypes),
     tcRes.symbols.recordCopySites,
     valueSites,
     tcRes.symbols.argConversionSites,

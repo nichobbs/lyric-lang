@@ -58,6 +58,7 @@ for t in \
   lyric-compiler/lyric/protected_iface_impl_self_type_nested_self_test.l \
   lyric-compiler/lyric/contract_generic_call_self_test.l \
   lyric-compiler/lyric/contract_fall_off_ensures_self_test.l \
+  lyric-compiler/lyric/module_val_destructure_self_test.l \
   lyric-compiler/lyric/return_list_literal_self_test.l \
   lyric-compiler/lyric/compiler_bugs_3502_3505_3547_self_test.l \
   lyric-compiler/jvm/static_type_recovery_jvm_self_test.l \

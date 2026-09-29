@@ -249,6 +249,15 @@ func minMax(xs: in slice[Int]): (Int, Int)
 val (smallest, largest) = minMax([3, 1, 4, 1, 5, 9])
 ```
 
+The same destructuring works at module level, outside any function. Each name becomes a module value of the package, with the declaration's visibility:
+
+```lyric
+pub val (width, height): (Int, Int) = (640, 480)
+val (smallest, largest) = minMax([3, 1, 4, 1, 5, 9])   // minMax runs once
+```
+
+A module-level pattern must be irrefutable (names, `_`, and tuples of those), since there is nowhere for a failed match to go: `val Some(x) = lookup()` at module level is a compile error (`T0144`). Use a `match` inside a function for shapes that can fail.
+
 Use tuples sparingly. If you find yourself writing `(UserId, Instant, String)` and the meaning of each element is not immediately obvious at the call site, that is a signal that a named record would be clearer. The rule of thumb: tuples for small, local, and obvious groupings; records for anything that crosses function or package boundaries.
 
 ::: note

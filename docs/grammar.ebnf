@@ -445,6 +445,11 @@ AnnotationArg  =
 ConstDecl  = 'val' IDENT ':' Type '=' ConstExpr ;     (* SCREAMING_SNAKE by convention *)
 ValDecl    = 'val' Pattern [ ':' Type ] '=' Expr ;    (* module-level immutable binding *)
 
+(* A module-level 'val' Pattern must be irrefutable: a name, '_',
+ * 'name @ Pattern', a tuple of those, or any of these parenthesised.  Every
+ * name it binds is a module value; a refutable pattern is T0144 (enforced
+ * post-parse; reference §4.4, D144). *)
+
 
 (* ============================================================================
  *  §3.3 Type aliases and distinct types

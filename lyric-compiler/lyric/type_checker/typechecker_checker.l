@@ -3893,13 +3893,23 @@ pub func checkContractSurface(file: in SourceFile): CheckResult {
 }
 
 func checkWithImportedPackagesCore(
-  file: in SourceFile,
+  file0: in SourceFile,
   importedPackages: in List[ImportedPackage],
   validateDecls: in Bool,
 ): CheckResult {
   val diag: List[Diagnostic] = newList()
   val tbl = newSymbolTable()
   val ctr = newTypeIdCounter()
+
+  // A destructuring module-level `val` binds each of its names (#7763).  The
+  // compile pipeline has already desugared the file it passes here (so its
+  // backends see the same items), making this a no-op there; other callers
+  // (the language server, direct checks) get the same bindings and T0144.
+  val mvRes = desugarModuleValPatterns(file0)
+  val file = mvRes.file
+  for d in mvRes.diagnostics {
+    diag.add(d)
+  }
 
   val userPkg = dottedPackageName(file.packageDecl.path)
   val userImports = collectImportNames(file.imports)
@@ -3909,9 +3919,12 @@ func checkWithImportedPackagesCore(
   var p = 0
   while p < importedPackages.count {
     val ip = importedPackages[p]
+    // T0144 in another package is that package's own build error.
+    val ipDiag: List[Diagnostic] = newList()
+    val ipItems = desugarModuleValItems(ip.items, ipDiag)
     var ii = 0
-    while ii < ip.items.count {
-      registerItem(tbl, ctr, diag, true, ip.name, ip.items[ii])
+    while ii < ipItems.count {
+      registerItem(tbl, ctr, diag, true, ip.name, ipItems[ii])
       ii = ii + 1
     }
     p = p + 1
@@ -4049,6 +4062,7 @@ func checkWithImportedPackagesCore(
 
   // T7: `old(...)` only inside `ensures:` (T0080, #7731).
   checkOldPlacement(diag, file)
+  recordModuleValTypes(tbl, sigs, diag, file.items)
 
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
 }

@@ -7712,3 +7712,116 @@ test "String indexOf returns the stdlib Option even with a local union Option (#
   assertEqualInt(countDiagCode(cr, "T0060"), 1, "indexOf is Option[Int]: only the Option[String] binding fails")
   assertEqual(bareTypeOrigin(cr, "Option"), "Std.Core", "the Option is Std.Core's")
 }
+
+// ─── Module-level destructuring `val` (#7763) ─────────────────────────────────
+// The grammar's `ValDecl` takes a pattern; each name an irrefutable module
+// `val` pattern binds is a module value, and a refutable one is T0144.
+test "a module-level tuple val binds each name (#7763)" {
+  val src = "package P\nval (a, b) = (1, \"x\")\nfunc f(): Int { a }\nfunc g(): String { b }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "a and b resolve with their element types")
+  val bad = "package P\nval (a, b) = (1, \"x\")\nfunc f(): String { a }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "a is Int, not String")
+}
+
+test "a module-level tuple val over a call binds each name (#7763)" {
+  val src = "package P\nfunc pair(): (Int, String) { (1, \"x\") }\nval (n, s) = pair()\n" +
+    "func f(): Int { n }\nfunc g(): String { s }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "names projected out of the call's tuple")
+  val bad = "package P\nfunc pair(): (Int, String) { (1, \"x\") }\nval (n, s) = pair()\nfunc f(): Int { s }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "s is String, not Int")
+}
+
+test "nested, wildcard, @-binding and annotated module vals bind their names (#7763)" {
+  val src = "package P\nfunc pair(): (Int, Bool) { (1, true) }\n" + "val (a, (b, _)) = (1, (true, \"z\"))\n" +
+    "val whole @ (x, y) = pair()\n" +
+    "val (lo, hi): (Int, Long) = (1, 2)\n" +
+    "val (_, only) = pair()\n" +
+    "func f(): Int { a + x + lo }\nfunc g(): Bool { b and y and only }\nfunc h(): Long { hi }\n" +
+    "func k(): (Int, Bool) { whole }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "every bound name resolves with its type")
+}
+
+test "a refutable module val pattern is T0144 naming the form (#7763)" {
+  val ctor = parseCheck("package P\nval Some(x) = Some(1)\n")
+  assertTrue(hasDiagCode(ctor, "T0144"), "constructor pattern")
+  assertTrue(diagMessagesContain(ctor, "a constructor pattern"), "names the constructor form")
+  val tyTest = parseCheck("package P\nval n is Int = 3\n")
+  assertTrue(hasDiagCode(tyTest, "T0144"), "type-test pattern")
+  assertTrue(diagMessagesContain(tyTest, "a type-test pattern"), "names the type-test form")
+  assertTrue(diagMessagesContain(tyTest, "val <name>: <Type> = ..."), "suggests an annotation")
+  val nested = parseCheck("package P\nval (a, 0) = (1, 0)\n")
+  assertTrue(diagMessagesContain(nested, "a literal pattern"), "a refutable element inside a tuple")
+  assertEqualInt(countDiagCode(parseCheck("package P\nval (a, _) = (1, 0)\n"), "T0144"), 0, "irrefutable: no T0144")
+}
+
+test "a pub destructuring val is visible to an importing package (#7763)" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    rulePkg(
+      "Lib",
+      "package Lib\npub val (lo, hi): (Int, Int) = (1, 9)\npub val (name, _) = (\"n\", 0)\n" +
+        "pub func pair(): (Int, String) { (2, \"p\") }\npub val (pn, ps) = pair()\n"
+    )
+  )
+  val src = "package App\nimport Lib\nfunc f(): Int { lo + hi + pn }\nfunc g(): String { name + ps }\n"
+  assertEqualInt(diagCount(checkWithImportedPackages(parse(src).file, packages)), 0, "lo, hi, name, pn and ps resolve")
+  val bad = "package App\nimport Lib\nfunc f(): Int { ps }\n"
+  assertTrue(hasDiagCode(checkWithImportedPackages(parse(bad).file, packages), "T0070"), "ps is a String")
+}
+
+func itemValName(it: in Item): String {
+  match it.kind {
+    case IVal(vd) -> match vd.pattern.kind { case PBinding(n, None) -> n; case _ -> "<pattern>" }
+    case _ -> "<item>"
+  }
+}
+
+func itemIsPub(it: in Item): Bool {
+  match it.visibility {
+    case Some(VisPub(_)) -> true
+    case _ -> false
+  }
+}
+
+test "desugaring splits a tuple literal and projects anything else through one private temp (#7763)" {
+  val lit = desugarModuleValPatterns(parse("package P\npub val (a, b) = (1, 2)\n").file)
+  assertEqualInt(lit.file.items.count, 2, "tuple literal: one val per element, no temp")
+  assertEqual(itemValName(lit.file.items[0]), "a", "first element")
+  assertEqual(itemValName(lit.file.items[1]), "b", "second element")
+  assertTrue(itemIsPub(lit.file.items[1]), "keeps pub")
+  val call = desugarModuleValPatterns(
+    parse("package P\nfunc pair(): (Int, Int) { (1, 2) }\npub val (a, b) = pair()\n").file
+  )
+  assertEqualInt(call.file.items.count, 4, "call: the function, one temp, then a and b")
+  assertEqual(itemValName(call.file.items[1]), "__lyric_modval_0", "temp holds the value once")
+  assertTrue(itemIsPub(call.file.items[1]), "temp has the declaration's visibility")
+  assertEqual(itemValName(call.file.items[2]), "a", "a after the temp")
+  assertTrue(itemIsPub(call.file.items[3]), "b keeps pub")
+  val again = desugarModuleValPatterns(call.file)
+  assertEqualInt(again.file.items.count, 4, "idempotent")
+}
+
+test "a module val tuple pattern its initializer's type cannot match is T0144 (#7763)" {
+  val notTuple = parseCheck("package P\nfunc five(): Int { 5 }\nval (a, b) = five()\n")
+  assertEqualInt(countDiagCode(notTuple, "T0144"), 1, "tuple pattern over an Int, reported once")
+  assertTrue(
+    diagMessagesContain(notTuple, "2-element tuple pattern is bound to a value of type Int"),
+    "names the shapes"
+  )
+  val arity = parseCheck("package P\nval (a, b) = (1, 2, 3)\n")
+  assertEqualInt(countDiagCode(arity, "T0144"), 1, "arity mismatch")
+  val nested = parseCheck("package P\nval (a, (b, c)) = (1, 2)\n")
+  assertEqualInt(countDiagCode(nested, "T0144"), 1, "nested shape mismatch")
+}
+
+test "each projected module val is recorded with its checked type (#7763)" {
+  val cr = parseCheck("package P\nfunc pair(): (Int, String) { (1, \"x\") }\nval (n, s) = pair()\n")
+  assertEqualInt(diagCount(cr), 0, "checks cleanly")
+  assertTrue(cr.symbols.moduleValTypes.containsKey("n"), "n typed")
+  assertTrue(cr.symbols.moduleValTypes.containsKey("s"), "s typed")
+  assertTrue(cr.symbols.moduleValTypes.containsKey("__lyric_modval_0"), "temp typed")
+  match mapGet(cr.symbols.moduleValTypes, "s") {
+    case Some(te) -> assertEqual(typeExprText(te), "String", "s is a String")
+    case None -> assertTrue(false, "s has no recorded type")
+  }
+}

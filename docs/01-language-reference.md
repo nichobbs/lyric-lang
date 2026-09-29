@@ -950,6 +950,14 @@ let z: Int = expensive()    // lazy, evaluated on first use
 
 `val` is the default; mutability requires explicit `var`. Lazy bindings (`let`) are thread-safe — the standard library uses .NET's `Lazy<T>` semantics.
 
+A **module-level** `val` takes a pattern like a local one (grammar `ValDecl`), and every name the pattern binds is a module value of the package, with the declaration's visibility, doc comments and annotations:
+```
+val (lo, hi) = bounds()                 // lo and hi are module values
+pub val (width, height): (Int, Int) = (640, 480)
+val whole @ (first, _) = pair()
+```
+The pattern must be **irrefutable** — a name, `_`, `name @ <pattern>`, or a tuple of those, in any parentheses — because a module value has no failure path for an initializer that does not match. A refutable pattern (a constructor, record, literal, range, type-test, alternative or const pattern, at any depth) is a compile error (**T0144**) naming the form; write `val n: Int = 3`, not `val n is Int = 3`, to state a type. The initializer is evaluated once, in declaration order with the package's other module values: a tuple literal binds element by element (so `val (a, b) = (1, 2)` gives `a` and `b` literal initializers, which every target, including `--target native`, can use), and any other initializer is held in a compiler-private module value that each name is projected from. A tuple type annotation types each element (`lo: Int`, `hi: Long` for `val (lo, hi): (Int, Long) = ...`). A `pub` destructuring `val`'s names are imported like any other `pub val`'s — including the `--target jvm` rule that an importing package needs a type annotation on a `pub val` whose initializer is not a literal, which a tuple annotation on the destructuring `val` supplies for every name (D144).
+
 Type annotations are optional when inference can resolve the type. Function parameter types and return types are mandatory; `pub` declaration types are mandatory.
 
 **Immutability of `val` and `in` bindings is reference-level, not deep.**  A `val`
