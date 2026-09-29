@@ -109,6 +109,18 @@ func makeFuncCtx(
   )
 }
 
+// A closure body (a lambda's `invoke`, a spawned expression's `call`) is a
+// fresh `FuncCtx`, but a type annotation inside it still names the ENCLOSING
+// method's type parameters (`val z: T = …` in a lambda inside a `Box[T]`
+// method), which erase to `Object` there too (#7705).  Carry them over.
+func inheritTypeParams(bodyCtx: in FuncCtx, enclosing: in FuncCtx): Unit {
+  var i = 0
+  while i < enclosing.typeParams.count {
+    bodyCtx.typeParams.add(enclosing.typeParams[i])
+    i = i + 1
+  }
+}
+
 // Derive a wire-binding-init `FuncCtx` from a freshly-made one (#5013): every
 // field is carried through unchanged except `wireClassName`/`wireBindingTypes`,
 // so a bare-name reference anywhere inside the binding's init expression tree

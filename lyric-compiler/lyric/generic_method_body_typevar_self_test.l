@@ -1,6 +1,6 @@
 //! generic_method_body_typevar_self_test.l — dual-target runtime regression
 //! test for a BODY-local `val`/`var`/`let` type annotation naming the
-//! enclosing generic record/union's own type parameter (#7695).
+//! enclosing generic record/union's own type parameter (#7695, #7705).
 //!
 //! Inside a method of a generic record (`Box[T]`), the method's own
 //! params/return/`self.<field>` reads already resolve a bare `T` correctly
@@ -62,6 +62,19 @@
 //! `castObjectToMsil` needed for an open `MTypeVar` element (#7695), since
 //! `T` may be instantiated with a value type (`Int`) where the cell's
 //! storage erases to `object[]`.
+//!
+//! `Box[T].closureLocals` and `Box[T].tupleSecond`/`tupleFirst` cover the two
+//! remaining annotation sites #7705 found. An annotation declared INSIDE a
+//! closure body: the lifted closure is a separate function, so on jvm its
+//! fresh `FuncCtx` lacked the enclosing method's `typeParams`
+//! (`NoClassDefFoundError: <pkg>/T`), and on dotnet the lifted `__lambda_*`
+//! (a static method of the non-generic package class) resolved `T` as a
+//! nonexistent in-package class that only happened to encode as `object`;
+//! both now erase `T` to `object`/`Object` there. A tuple-pattern annotation
+//! `val (p, q): (T, T)`: jvm resolved each element typeParams-blind (the same
+//! `NoClassDefFoundError`), and dotnet's `typeExprToMsilG` had no tuple arm,
+//! so each element was `castclass`ed to the nonexistent class (dropped with
+//! W0003) and a boxed `Int` element was read back as a raw pointer.
 //!
 //! Every case below is instantiated with a value type (`Int`), a reference
 //! type (`String`), and an in-bundle record (`Pair`), per the issue's test
@@ -127,6 +140,26 @@ record Box[T] {
     val f = { -> x = other }
     f()
     x
+  }
+
+  // Annotations naming `T` declared INSIDE a closure body (#7705): a
+  // no-initialiser `var z: T` and a `List[T]` local.
+  func closureLocals(useOther: in Bool, other: in T): T {
+    var r: T = self.value
+    val f = { -> var z: T; if useOther { z = other } else { z = r }; val zs: List[T] = newList(); zs.add(z); r = zs[0] }
+    f()
+    r
+  }
+
+  // A tuple-pattern annotation naming `T` (#7705).
+  func tupleSecond(other: in T): T {
+    val (p, q): (T, T) = (self.value, other)
+    q
+  }
+
+  func tupleFirst(other: in T): T {
+    val (p, q): (T, T) = (self.value, other)
+    p
   }
 }
 
@@ -239,4 +272,42 @@ test "Box[Pair].captureThenReturn: closure captures and reassigns var x: T" {
   val r = b.captureThenReturn(other)
   assertEqualInt(r.a, 9, "captureThenReturn(other).a")
   assertEqual(r.b, "nine", "captureThenReturn(other).b")
+}
+
+test "Box[Int].closureLocals: var z: T and List[T] declared inside a closure" {
+  val b = Box(value = 1)
+  assertEqualInt(b.closureLocals(true, 2), 2, "closureLocals(true, 2)")
+  assertEqualInt(b.closureLocals(false, 2), 1, "closureLocals(false, 2)")
+}
+
+test "Box[String].closureLocals: var z: T and List[T] declared inside a closure" {
+  val b = Box(value = "mine")
+  assertEqual(b.closureLocals(true, "theirs"), "theirs", "closureLocals(true, theirs)")
+  assertEqual(b.closureLocals(false, "theirs"), "mine", "closureLocals(false, theirs)")
+}
+
+test "Box[Pair].closureLocals: var z: T and List[T] declared inside a closure" {
+  val b = Box(value = Pair(a = 1, b = "one"))
+  val r = b.closureLocals(true, Pair(a = 2, b = "two"))
+  assertEqualInt(r.a, 2, "closureLocals(true, other).a")
+  assertEqual(b.closureLocals(false, Pair(a = 2, b = "two")).b, "one", "closureLocals(false, other).b")
+}
+
+test "Box[Int].tupleSecond/tupleFirst: val (p, q): (T, T)" {
+  val b = Box(value = 1)
+  assertEqualInt(b.tupleSecond(2), 2, "tupleSecond(2)")
+  assertEqualInt(b.tupleFirst(2), 1, "tupleFirst(2)")
+}
+
+test "Box[String].tupleSecond/tupleFirst: val (p, q): (T, T)" {
+  val b = Box(value = "a")
+  assertEqual(b.tupleSecond("b"), "b", "tupleSecond(b)")
+  assertEqual(b.tupleFirst("b"), "a", "tupleFirst(b)")
+}
+
+test "Box[Pair].tupleSecond/tupleFirst: val (p, q): (T, T)" {
+  val b = Box(value = Pair(a = 1, b = "one"))
+  val other = Pair(a = 2, b = "two")
+  assertEqualInt(b.tupleSecond(other).a, 2, "tupleSecond(other).a")
+  assertEqual(b.tupleFirst(other).b, "one", "tupleFirst(other).b")
 }

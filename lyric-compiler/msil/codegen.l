@@ -11708,7 +11708,26 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // silent cross-package delegate corruption (#5363).  Mirrors the same
       // fix already applied to `lambdaExternDelegateParamTypes` for #5309.
       val lambdaKey = fctx.pkgName + "." + lname
-      cctx.lambdaGenerics.add(lambdaKey, fctx.generics)
+      // The lifted `__lambda_*` is a static method of the non-generic package
+      // class, so the enclosing generic type's own parameters
+      // (`fctx.reifiedGenerics`, `!0` in the enclosing method) have no VAR
+      // form there: a body annotation naming one erases to `object` like a
+      // generic function's own parameter does — the same erasure its captured
+      // values already get in the closure class (#7695, #7705).
+      val lambdaGenericNames: List[String] = newList()
+      var lgi = 0
+      while lgi < fctx.generics.count {
+        lambdaGenericNames.add(fctx.generics[lgi])
+        lgi = lgi + 1
+      }
+      lgi = 0
+      while lgi < fctx.reifiedGenerics.count {
+        if not nameListContains(lambdaGenericNames, fctx.reifiedGenerics[lgi]) {
+          lambdaGenericNames.add(fctx.reifiedGenerics[lgi])
+        }
+        lgi = lgi + 1
+      }
+      cctx.lambdaGenerics.add(lambdaKey, lambdaGenericNames)
       // Record the capture set so lowerFuncMsil's `__lambda_*` path prepends the
       // `object[] __caps` parameter and resolves captured reads (#1479).
       if caps.count > 0 {
@@ -32878,6 +32897,21 @@ func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, g
     // (which already special-cases an `MTypeVar` element, e.g. `!0[]` on the
     // stdlib `List<T>.ToArray()`).
     case TSlice(elem) -> MArray(elemTy = sliceElemMsilG(cctx, elem, pkgName, generics))
+    // A tuple is `object` in every signature, but its tracked element types
+    // decide the `castclass`/`unbox.any` each destructured element gets: an
+    // element naming the enclosing type's own parameter must be its `!n`, not
+    // the nonexistent in-package class the generics-blind resolution guesses
+    // (`val (p, q): (T, T)` in a `Box[T]` method read a boxed `Int` back as a
+    // raw pointer, #7705).
+    case TTuple(tupTypes) -> {
+      val tupElems: List[MsilType] = newList()
+      var tti = 0
+      while tti < tupTypes.count {
+        tupElems.add(typeExprToMsilG(cctx, tupTypes[tti], pkgName, generics))
+        tti = tti + 1
+      }
+      MTuple(elems = tupElems)
+    }
     case _ -> typeExprToMsilCtx(cctx, te, pkgName)
   }
 }
