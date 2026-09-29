@@ -42,7 +42,7 @@ func hasDiagCode(cr: in CheckResult, code: in String): Bool {
 }
 
 // #7545: true when some diagnostic's message contains `needle` — used to
-// assert on the slice/List conversion-hint suffix (`sliceListConversionHint`)
+// assert on the slice/List conversion-hint suffix (`typeMismatchHint`)
 // without pinning the whole message string.
 func diagMessagesContain(cr: in CheckResult, needle: in String): Bool {
   var i = 0
@@ -113,7 +113,14 @@ func parseCheckAliasResolved(src: in String): CheckResult {
 // (`[...]`) direct-List-typing arms, which switched to the identical
 // id-based resolution (see the "list literal ..." tests below).
 func stdCollectionsHostPackages(): List[ImportedPackage] {
-  val pkg = parse("package Std.CollectionsHost\nextern type List[T] = \"System.Collections.Generic.List`1\"\n")
+  // #7737: `Map` and the key/value collections too, so the index/iteration
+  // paths that recognise them by identity can be tested against the real
+  // declaring package.
+  val pkg = parse(
+    "package Std.CollectionsHost\nextern type List[T] = \"System.Collections.Generic.List`1\"\n" +
+      "extern type Map[K, V] = \"System.Collections.Generic.Dictionary`2\"\n" +
+      "extern type MapKeyCollection[K, V] = \"System.Collections.Generic.Dictionary`2+KeyCollection\"\n"
+  )
   val packages: List[ImportedPackage] = newList()
   packages.add(
     ImportedPackage(
@@ -2432,9 +2439,12 @@ test "index array element typed" {
 }
 
 // #2074: List[T] element inference returns T.
+// #7737: indexing types the element only for the stdlib `List` (by
+// identity), so the stdlib package is in scope here rather than a local
+// same-named extern.
 test "index list element typed" {
-  val src = "package P\nextern type List[T] = \"System.Collections.Generic.List`1\"\nfunc f(xs: in List[Long]): Int { xs[0] }\n"
-  val cr = parseCheck(src)
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(xs: in List[Long]): Int { xs[0] }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
   assertTrue(hasDiagCode(cr, "T0070"), "List[Long] element is Long, mismatches Int return")
 }
 
@@ -3041,10 +3051,15 @@ test "a slice VALUE is still rejected in an if return-position arm against a Lis
   assertTrue(hasDiagCode(cr, "T0070"), "a slice[Int] if-arm value does not satisfy a List[Int] return type")
 }
 
+// #7737: `.toList()` builds the stdlib `List`, so the hint is only offered
+// against that type (by identity); see the "user record named List" hint
+// tests further down for the shadowed case.
 test "slice/List mismatch diagnostics suggest the explicit conversion" {
-  val src = "package P\nrecord List[T] { }\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(xs: in slice[Int]): Int { g(xs) }\n"
-  val cr = parseCheck(src)
+  val src = "package P\nimport Std.CollectionsHost\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(xs: in slice[Int]): Int { g(xs) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "a slice[Int] value does not satisfy the stdlib List[Int]")
   assertTrue(diagMessagesContain(cr, ".toList()"), "the T0043 message suggests .toList()")
+  assertEqual(bareTypeOrigin(cr, "List"), "Std.CollectionsHost", "the parameter's List is the stdlib one")
 }
 
 // #7702: `.toList()`'s result type is the stdlib `Std.CollectionsHost.List`,
@@ -7259,4 +7274,256 @@ test "yield inside a defer block is T0142 (#7729)" {
 test "yield inside a try body with catch and finally is accepted (#7729)" {
   val src = "package P\nasync func g(): Int {\n  try {\n    yield 1\n    try {\n      yield 2\n    } finally {\n      println(\"x\")\n    }\n  } catch Bug as e {\n    println(\"caught\")\n  } finally {\n    println(\"done\")\n  }\n}\n"
   assertEqualInt(countDiagCode(parseCheck(src), "T0142"), 0, "no T0142 for yields in try bodies")
+}
+
+// #7737: every semantic "is this the stdlib collection / monad?" check keys on
+// the stdlib type's identity, never its bare name. A package's own `record
+// List[T]` used to be iterated, indexed and given `.count`/`.toArray()` as if
+// it were the stdlib `List` (compiling, then failing at runtime on both
+// backends), and a package's own `union Result`/`Option` typed
+// `Age.tryFrom(...)`/`s.indexOf(...)`, whose values are always the stdlib
+// unions. Each case below pairs the shadowed form with the genuine stdlib form
+// (`stdCollectionsHostPackages`/`stdCorePackages`), and the genuine form
+// proves its element/result type is real (a mismatching binding is rejected),
+// so neither side can pass vacuously through `TyError`.
+// ─────────────────────────────────────────────────────────────────────────────
+func stdCorePackages(): List[ImportedPackage] {
+  val core = parse(
+    "package Std.Core\npub union Option[T] {\n  case Some(value: T)\n  case None\n}\n" +
+      "pub union Result[T, E] {\n  case Ok(value: T)\n  case Err(error: E)\n}\n"
+  )
+  val str = parse("package Std.String\npub func strLen(s: in String): Int { 0 }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Std.Core",
+      items = core.file.items,
+      imports = collectImportNames(core.file.imports),
+      wholeImports = collectWholeImportNames(core.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "Std.String",
+      items = str.file.items,
+      imports = collectImportNames(str.file.imports),
+      wholeImports = collectWholeImportNames(str.file.imports)
+    )
+  )
+  packages
+}
+
+test "for over a user record named List is T0126, not stdlib iteration (#7737)" {
+  val src = "package P\nrecord List[T] {\n  items: slice[T]\n}\nfunc f(l: in List[Int]): Unit {\n  for x in l {\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0126"), 1, "a user record List is not iterable")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0126"), "only shares its name with the stdlib List"),
+    "T0126 says the List is not the stdlib one: " + diagMessageFor(cr, "T0126")
+  )
+}
+
+test "for over the stdlib List still binds its element type (#7737)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(xs: in List[Int]): Unit {\n  for x in xs {\n    val s: String = x\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0126"), 0, "the stdlib List is iterable")
+  assertEqualInt(countDiagCode(cr, "T0060"), 1, "the loop element is Int (a String binding of it is rejected)")
+  assertEqual(bareTypeOrigin(cr, "List"), "Std.CollectionsHost", "the iterated List is the stdlib one")
+}
+
+test "for over the stdlib MapKeyCollection binds the key type; a same-named record does not (#7737)" {
+  val ok = "package P\nimport Std.CollectionsHost\nfunc f(ks: in MapKeyCollection[String, Int]): Unit {\n  for k in ks {\n    val n: Int = k\n  }\n}\n"
+  val crOk = checkWithImportedPackages(parse(ok).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(crOk, "T0060"), 1, "the key element is String (an Int binding of it is rejected)")
+  val shadow = "package P\nrecord MapKeyCollection[K, V] {\n  k: K\n}\nfunc f(ks: in MapKeyCollection[String, Int]): Unit {\n  for k in ks {\n    val n: Int = k\n  }\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(shadow), "T0060"),
+    0,
+    "a same-named user record gets no key element type (it is not the stdlib collection)"
+  )
+}
+
+test "indexing a user record named List is T0143 (#7737)" {
+  val src = "package P\nrecord List[T] {\n  items: slice[T]\n}\nfunc f(l: in List[Int]): Int {\n  l[0]\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0143"), 1, "a user record List is not indexable")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0143"), "a record is not indexable"),
+    "T0143 names the receiver kind: " + diagMessageFor(cr, "T0143")
+  )
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0143"), "only shares its name with the stdlib List"),
+    "T0143 says the List is not the stdlib one"
+  )
+}
+
+test "indexing a Lyric-native union or enum is T0143 (#7737)" {
+  val src = "package P\nunion U {\n  case A\n  case B\n}\nenum E {\n  case X\n}\nfunc f(u: in U, e: in E): Unit {\n  val a = u[0]\n  val b = e[0]\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0143"), 2, "a union and an enum are not indexable")
+}
+
+test "indexing the stdlib List and Map types the element and value (#7737)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(xs: in List[Int], m: in Map[String, Int]): Unit {\n  val a: String = xs[0]\n  val b: String = m[\"k\"]\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0143"), 0, "the stdlib List and Map are indexable")
+  assertEqualInt(countDiagCode(cr, "T0060"), 2, "xs[0] and m[k] are Int (String bindings of them are rejected)")
+}
+
+test "indexing a slice, a String, and an extern type is not T0143 (#7737)" {
+  val src = "package P\nextern type Bag[T] = \"System.Collections.Generic.List`1\"\nfunc f(s: in slice[Int], t: in String, b: in Bag[Int]): Unit {\n  val a: Int = s[0]\n  val c: Char = t[0]\n  val d = b[0]\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0143"), 0, "slices, strings and extern receivers keep their indexing")
+  assertEqualInt(diagCount(cr), 0, "no other diagnostics")
+}
+
+test "count and toArray on a user record named List are unknown members (#7737)" {
+  val src = "package P\nrecord List[T] {\n  items: slice[T]\n}\nfunc f(l: in List[Int]): Unit {\n  val n: Int = l.count\n  val a: slice[Int] = l.toArray()\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0113"), 2, "neither count nor toArray exists on a user record List")
+  assertTrue(
+    diagMessagesContain(cr, "only shares its name with the stdlib List"),
+    "T0113 says the List is not the stdlib one"
+  )
+}
+
+test "count and toArray on the stdlib List are typed (#7737)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(xs: in List[Int]): Unit {\n  val n: String = xs.count\n  val a: slice[String] = xs.toArray()\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0113"), 0, "count and toArray exist on the stdlib List")
+  assertEqualInt(
+    countDiagCode(cr, "T0060"),
+    2,
+    "count is Int and toArray() is slice[Int] (mismatching bindings rejected)"
+  )
+}
+
+test "a slice passed to a user record named List gets no .toList() hint (#7737)" {
+  val src = "package P\nrecord List[T] { }\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(xs: in slice[Int]): Int { g(xs) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "a slice does not satisfy a user record List")
+  assertTrue(not diagMessagesContain(cr, "use .toList()"), ".toList() builds the stdlib List, so it is not suggested")
+  assertTrue(
+    diagMessagesContain(cr, "only shares its name with the stdlib List"),
+    "the message says this List is not the stdlib one: " + diagMessageFor(cr, "T0043")
+  )
+}
+
+test "a user record named List passed to a slice gets no .toArray() hint (#7737)" {
+  val src = "package P\nrecord List[T] { }\nfunc g(xs: in slice[Int]): Int { 0 }\nfunc f(xs: in List[Int]): Int { g(xs) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "a user record List does not satisfy a slice")
+  assertTrue(not diagMessagesContain(cr, ".toArray()"), "a user record List has no .toArray()")
+}
+
+test "the stdlib List passed to a slice still suggests .toArray() (#7737)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc g(xs: in slice[Int]): Int { 0 }\nfunc f(xs: in List[Int]): Int { g(xs) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "a List[Int] value does not satisfy slice[Int]")
+  assertTrue(diagMessagesContain(cr, "use .toArray()"), "the T0043 message suggests .toArray()")
+}
+
+test "a slice with the wrong element type gets no .toList() hint against the stdlib List (#7737)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc g(xs: in List[Int]): Int { 0 }\nfunc f(xs: in slice[String]): Int { g(xs) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "slice[String] does not satisfy List[Int]")
+  assertTrue(not diagMessagesContain(cr, "use .toList()"), ".toList() would give List[String], so it is not suggested")
+}
+
+test "a non-empty list literal for a user record named List has an accurate message (#7737)" {
+  val src = "package P\nrecord List[T] { }\nrecord R { items: List[Int] }\nfunc f(): R { R(items = [1, 2]) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0104"), 1, "the literal does not construct a user record List")
+  val msg = diagMessageFor(cr, "T0104")
+  assertTrue(Str.contains(msg, "has type slice[Int]"), "the literal's own type is named: " + msg)
+  assertTrue(not Str.contains(msg, "use .toList()"), "no .toList() advice for a literal: " + msg)
+  assertTrue(
+    Str.contains(msg, "a list literal or .toList() only builds the stdlib List"),
+    "the message explains the name clash: " + msg
+  )
+}
+
+test "an empty list literal for a user record named List reads as an empty literal (#7737)" {
+  val src = "package P\nrecord List[T] { }\nrecord R { items: List[Int] }\nfunc f(): R { R(items = []) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0104"), 1, "[] does not construct a user record List")
+  val msg = diagMessageFor(cr, "T0104")
+  assertTrue(
+    Str.startsWith(msg, "argument for field 'items' is an empty list literal but field expects List[Int]"),
+    "the empty literal is described as such: " + msg
+  )
+  assertTrue(not Str.contains(msg, "<error>"), "no <error> element type in the message: " + msg)
+  assertTrue(not Str.contains(msg, "use .toList()"), "no .toList() advice for a literal: " + msg)
+}
+
+test "an empty list literal for a non-List field, binding, argument and return reads as an empty literal (#7737)" {
+  val src = "package P\nrecord R { n: Int }\nfunc g(x: in Int): Int { x }\nfunc h(): Int {\n  return []\n}\nfunc f(): Unit {\n  val r = R(n = [])\n  val p = R([])\n  val v: Int = []\n  val c = g([])\n}\n"
+  val cr = parseCheck(src)
+  assertEqual(
+    diagMessageFor(cr, "T0104"),
+    "argument for field 'n' is an empty list literal but field expects Int",
+    "named ctor field"
+  )
+  assertTrue(
+    diagMessagesContain(cr, "positional argument 1 is an empty list literal but field 'n' expects Int"),
+    "positional ctor field"
+  )
+  assertEqual(
+    diagMessageFor(cr, "T0060"),
+    "val binding declared as Int but initialiser is an empty list literal",
+    "val initialiser"
+  )
+  assertEqual(
+    diagMessageFor(cr, "T0043"),
+    "argument (an empty list literal) does not match parameter type Int",
+    "call argument"
+  )
+  assertEqual(
+    diagMessageFor(cr, "T0065"),
+    "returned value (an empty list literal) does not match declared return type Int",
+    "return value"
+  )
+  assertTrue(not diagMessagesContain(cr, "<error>"), "no message renders the literal as slice[<error>]")
+}
+
+test "a non-empty list literal for a non-List field keeps its element type in the message (#7737)" {
+  val src = "package P\nrecord R { n: Int }\nfunc f(): R { R(n = [1, 2]) }\n"
+  assertEqual(
+    diagMessageFor(parseCheck(src), "T0104"),
+    "argument for field 'n' has type slice[Int] but field expects Int",
+    "a non-empty literal is described by its inferred slice type, with no conversion hint"
+  )
+}
+
+test "tryFrom on a range subtype returns the stdlib Result even with a local union Result (#7737)" {
+  val shadow = "package App\nunion Result[T, E] {\n  case Ok(value: T)\n  case Err(error: E)\n}\ntype Age = Int range 0 ..= 150\nfunc f(): Unit {\n  val r: Result[Age, String] = Age.tryFrom(5)\n}\n"
+  val crShadow = checkWithImportedPackages(parse(shadow).file, stdCorePackages())
+  assertEqualInt(countDiagCode(crShadow, "T0060"), 1, "the stdlib Result tryFrom returns is not the local union Result")
+  assertTrue(
+    Str.contains(
+      diagMessageFor(crShadow, "T0060"),
+      "these are two different types named 'Result': the value is Std.Core.Result, the target is App.Result"
+    ),
+    "the identically-rendered types are told apart by package: " + diagMessageFor(crShadow, "T0060")
+  )
+  val ok = "package App\ntype Age = Int range 0 ..= 150\nfunc f(): Unit {\n  val r: Result[Age, String] = Age.tryFrom(5)\n  val bad: Result[Int, String] = Age.tryFrom(5)\n}\n"
+  val cr = checkWithImportedPackages(parse(ok).file, stdCorePackages())
+  assertEqualInt(
+    countDiagCode(cr, "T0060"),
+    1,
+    "tryFrom is Result[Age, String]: only the Result[Int, String] binding fails"
+  )
+  assertEqual(bareTypeOrigin(cr, "Result"), "Std.Core", "the Result is Std.Core's")
+}
+
+test "String indexOf returns the stdlib Option even with a local union Option (#7737)" {
+  val shadow = "package App\nimport Std.String\nunion Option[T] {\n  case Some(value: T)\n  case None\n}\nfunc f(): Unit {\n  val r: Option[Int] = \"abc\".indexOf(\"b\")\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(shadow).file, stdCorePackages()), "T0060"),
+    1,
+    "the stdlib Option indexOf returns is not the local union Option"
+  )
+  val ok = "package App\nimport Std.String\nfunc f(): Unit {\n  val r: Option[Int] = \"abc\".indexOf(\"b\")\n  val bad: Option[String] = \"abc\".indexOf(\"b\")\n}\n"
+  val cr = checkWithImportedPackages(parse(ok).file, stdCorePackages())
+  assertEqualInt(countDiagCode(cr, "T0060"), 1, "indexOf is Option[Int]: only the Option[String] binding fails")
+  assertEqual(bareTypeOrigin(cr, "Option"), "Std.Core", "the Option is Std.Core's")
 }

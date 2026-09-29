@@ -1186,7 +1186,12 @@ func distinctFactoryType(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Option
             if mname == "from" {
               return Some(value = dty)
             }
-            match symTableTryFindOne(tbl, "Result") {
+            // #7737: the synthesised `tryFrom` returns the stdlib
+            // `Std.Core.Result` on both backends (MSIL seeds it from
+            // `Std.Core/Std.Core.Result`), so resolve that by owning package
+            // — a bare-name lookup picked up a package's own `union Result`,
+            // whose cases then never matched the value codegen built.
+            match symTableTryFindInPackage(tbl, "Std.Core", "Result") {
               case Some(rsym) -> match rsym.kind {
                 case DKUnion(rid, _) -> {
                   val rargs: List[Type] = newList()
@@ -1616,7 +1621,7 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Member access.
 // ─────────────────────────────────────────────────────────────────────────────
-func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
+func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Option[Type] {
   val recv = unrefine(recvRaw)
   match recv {
     case TySlice(elem) -> {
@@ -1675,12 +1680,15 @@ func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
       }
       None
     }
-    case TyUser(_, nm, targs) -> {
+    case TyUser(tid, _, targs) -> {
       // Generic collection methods that must carry their element type through so
       // downstream uses (notably `for x in xs.toArray()` + `match x`) see the
       // real element type rather than `TyError` — an unknown-typed match
-      // scrutinee silently degenerates to the first case (#2126).
-      if nm == "List" and targs.count == 1 {
+      // scrutinee silently degenerates to the first case (#2126).  Keyed on
+      // the stdlib `List`'s identity (#7737): a package's own `record
+      // List[T]` has no `toArray`/`count`, and typing them here hid the
+      // unknown-member diagnostic and reached codegen as invalid IL.
+      if targs.count == 1 and isStdCollectionsHostType(tbl, tid, "List") {
         if name == "toArray" {
           // A real `TyFunction` (zero params), not the bare result type:
           // `toArray` is always used call-style (`xs.toArray()`), and a bare
@@ -1932,25 +1940,50 @@ func isNonConvertiblePrimitive(t: in Type): Bool {
 }
 
 // TyError for unknown receivers is intentional: codegen owns exotic receiver behaviour.
-func indexElementType(recvRaw: in Type): Type {
+func indexElementType(tbl: in SymbolTable, recvRaw: in Type): Type {
   match unrefine(recvRaw) {
     case TySlice(elem) -> elem
     case TyArray(_, elem) -> elem
     case TyPrim(pt) -> match pt { case PtString -> TyPrim(pt = PtChar); case _ -> TyError }
-    case TyUser(_, nm, targs) -> {
-      // Matched by short name: `nm` is the unqualified name as registered by the
-      // stdlib kernel (`List`, `Map`).  User-defined types with those names and the
-      // matching arity would also match here — this is acceptable given that `List`
-      // and `Map` are effectively reserved stdlib names in the kernel convention.
-      if nm == "List" and targs.count == 1 {
+    case TyUser(tid, _, targs) -> {
+      // Keyed on the stdlib collections' identity, not their bare names
+      // (#7737): both backends lower an index on these receivers as the
+      // genuine `List<T>`/`ArrayList` `get_Item`/`get` or the
+      // `Dictionary`/`HashMap` lookup, so a package's own `record List[T]` or
+      // `record Map[K, V]` must not be typed as if it were one.
+      if targs.count == 1 and isStdCollectionsHostType(tbl, tid, "List") {
         targs[0]
-      } else if nm == "Map" and targs.count == 2 {
+      } else if targs.count == 2 and isStdCollectionsHostType(tbl, tid, "Map") {
         targs[1]
       } else {
         TyError
       }
     }
     case _ -> TyError
+  }
+}
+
+// #7737: a Lyric-native record, union or enum is never indexable — neither
+// backend has an indexer protocol for one (MSIL's `EIndex` lowering falls
+// back to a `System.Collections.IList` cast, the JVM's to an `ArrayList`
+// cast), so `r[i]` on one compiled and then failed at runtime with an
+// `InvalidCastException`/`ClassCastException`.  Extern, distinct, opaque,
+// protected and interface receivers keep the lenient `TyError` path: those
+// are the "exotic receiver behaviour" codegen owns.  Returns the kind word
+// phrase used in the diagnostic ("" when the receiver may be indexable).
+func nonIndexableNativeKind(tbl: in SymbolTable, recvRaw: in Type): String {
+  match unrefine(recvRaw) {
+    case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
+      case Some(sym) -> match sym.kind {
+        case DKRecord(_, _) -> "a record"
+        case DKExposedRec(_, _) -> "an exposed record"
+        case DKUnion(_, _) -> "a union"
+        case DKEnum(_, _) -> "an enum"
+        case _ -> ""
+      }
+      case None -> ""
+    }
+    case _ -> ""
   }
 }
 
@@ -2369,7 +2402,9 @@ func stringIndexOfMember(tbl: in SymbolTable, name: in String): Option[Type] {
   val ps: List[Type] = newList()
   ps.add(TyPrim(pt = PtString))
   if listContainsStr(tbl.scopeImports, "Std.String") {
-    match symTableTryFindOne(tbl, "Option") {
+    // #7737: the Std.String functions return `Std.Core.Option`; resolve it by
+    // owning package so a package's own `union Option` never types the call.
+    match symTableTryFindInPackage(tbl, "Std.Core", "Option") {
       case Some(sym) -> match symbolTypeIdOpt(sym) {
         case Some(tid) -> {
           val targs: List[Type] = newList()
@@ -2482,6 +2517,20 @@ func stdCollectionsListTypeId(tbl: in SymbolTable): Option[TypeId] {
   }
 }
 
+// #7737: is `tid` the stdlib `Std.CollectionsHost` type called `name`
+// (`List`, `Map`, `MapKeyCollection`, `MapValueCollection`)?  Every
+// semantic "is this the stdlib collection?" check goes through here rather
+// than comparing the `TyUser`'s bare name, for the reason
+// `stdCollectionsListTypeId` documents: codegen treats these receivers as the
+// genuine BCL/JDK collection, so a package's own same-named type must never
+// be classified as one.
+func isStdCollectionsHostType(tbl: in SymbolTable, tid: in TypeId, name: in String): Bool {
+  match symTableTryFindInPackage(tbl, "Std.CollectionsHost", name) {
+    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(sid) -> typeIdEq(sid, tid); case None -> false }
+    case None -> false
+  }
+}
+
 // Field / builtin member typing only — no method-space consultation and no
 // unknown-member diagnostics.  The `ECall` arm uses this directly for a
 // member callee (methods are resolved arity-aware there); the plain `EMember`
@@ -2501,7 +2550,7 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
       }
       // Builtin members on nominal receivers (`List.toArray`/`count`, #2126)
       // — consulted after fields so a same-named user field wins.
-      match builtinMember(recv, name) {
+      match builtinMember(tbl, recv, name) {
         case Some(t) -> t
         case None -> TyError
       }
@@ -2576,7 +2625,7 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
         }
         case _ -> ()
       }
-      match builtinMember(recv, name) {
+      match builtinMember(tbl, recv, name) {
         case Some(t) -> t
         case None -> TyError
       }
@@ -2934,8 +2983,8 @@ func checkRecordCopy(
               diag.add(
                 errorDiagnostic(
                   "T0104",
-                  "argument for field '" + nm + "' has type " + renderType(got) + " but field expects " + renderType(want) +
-                    sliceListConversionHint(want, got),
+                  "argument for field '" + nm + "' " + hasTypeOrEmptyLiteral(got, valE) + " but field expects " + renderType(want) +
+                    typeMismatchHint(tbl, want, got),
                   valE.span
                 )
               )
@@ -3053,7 +3102,7 @@ func maybeUnknownMemberDiag(
         }
         i = i + 1
       }
-      match builtinMember(recv, name) {
+      match builtinMember(tbl, recv, name) {
         case Some(_) -> {
           return
         }
@@ -3076,7 +3125,9 @@ func maybeUnknownMemberDiag(
         return
       }
       val what = if isCall { "no method '" } else { "no member '" }
-      diag.add(errorDiagnostic("T0113", what + name + "' on type '" + tname + "'", span))
+      diag.add(
+        errorDiagnostic("T0113", what + name + "' on type '" + tname + "'" + shadowedStdCollectionNote(tbl, recv), span)
+      )
     }
     case _ -> {
     }
@@ -4913,8 +4964,9 @@ func inferConstructionExpected(
               diag.add(
                 errorDiagnostic(
                   "T0104",
-                  "argument for field '" + nm + "' has type " + renderType(argTy) + " but field expects " + renderType(fieldTy) +
-                    sliceListConversionHint(fieldTy, argTy),
+                  "argument for field '" + nm + "' " + hasTypeOrEmptyLiteral(argTy, valE) + " but field expects " +
+                    renderType(fieldTy) +
+                    typeMismatchHint(tbl, fieldTy, argTy),
                   asp
                 )
               )
@@ -4937,11 +4989,11 @@ func inferConstructionExpected(
               diag.add(
                 errorDiagnostic(
                   "T0104",
-                  "positional argument " + toString(posIdx + 1) + " has type " + renderType(argTy) + " but field '" +
+                  "positional argument " + toString(posIdx + 1) + " " + hasTypeOrEmptyLiteral(argTy, ae) + " but field '" +
                     fields[posIdx].name +
                     "' expects " +
                     renderType(fieldTy) +
-                    sliceListConversionHint(fieldTy, argTy),
+                    typeMismatchHint(tbl, fieldTy, argTy),
                   ae.span
                 )
               )
@@ -4989,8 +5041,9 @@ func inferConstructionExpected(
             diag.add(
               errorDiagnostic(
                 "T0104",
-                "argument for field '" + nm + "' has type " + renderType(argTy) + " but field expects " + renderType(fieldTy) +
-                  sliceListConversionHint(fieldTy, argTy),
+                "argument for field '" + nm + "' " + hasTypeOrEmptyLiteral(argTy, valE) + " but field expects " +
+                  renderType(fieldTy) +
+                  typeMismatchHint(tbl, fieldTy, argTy),
                 asp
               )
             )
@@ -5013,11 +5066,11 @@ func inferConstructionExpected(
             diag.add(
               errorDiagnostic(
                 "T0104",
-                "positional argument " + toString(posIdx + 1) + " has type " + renderType(argTy) + " but field '" +
+                "positional argument " + toString(posIdx + 1) + " " + hasTypeOrEmptyLiteral(argTy, ae) + " but field '" +
                   fields[posIdx].name +
                   "' expects " +
                   renderType(fieldTy) +
-                  sliceListConversionHint(fieldTy, argTy),
+                  typeMismatchHint(tbl, fieldTy, argTy),
                 ae.span
               )
             )
@@ -7483,8 +7536,8 @@ func inferExprCore(
                             diag.add(
                               errorDiagnostic(
                                 "T0043",
-                                "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]) +
-                                  sliceListConversionHint(paramTypes[k], argTypes[k]),
+                                argTypeMismatchSubject(argTypes[k], args, k) + " does not match parameter type " + renderType(paramTypes[k]) +
+                                  typeMismatchHint(tbl, paramTypes[k], argTypes[k]),
                                 e.span
                               )
                             )
@@ -7675,7 +7728,19 @@ func inferExprCore(
         }
         ii = ii + 1
       }
-      indexElementType(rt)
+      val nonIndexable = nonIndexableNativeKind(tbl, rt)
+      if nonIndexable != "" {
+        diag.add(
+          errorDiagnostic(
+            "T0143",
+            "cannot index into '" + renderType(rt) + "': " + nonIndexable +
+              " is not indexable (only slices, arrays, String, and the stdlib List and Map support `[...]`)" +
+              shadowedStdCollectionNote(tbl, rt),
+            e.span
+          )
+        )
+      }
+      indexElementType(tbl, rt)
     }
     // ETypeApp: a type-application expression `foo[T]`.  Pass through to the
     // inner function so `ECall(ETypeApp(fn, targs), vargs)` finds the function
@@ -7811,8 +7876,9 @@ func inferExprCore(
         diag.add(
           errorDiagnostic(
             "T0063",
-            "assigned value of type " + renderType(valueType) + " does not match target of type " + renderType(targetType) +
-              sliceListConversionHint(targetType, valueType),
+            "assigned value " + ofTypeOrEmptyLiteral(valueType, value) + " does not match target of type " +
+              renderType(targetType) +
+              typeMismatchHint(tbl, targetType, valueType),
             e.span
           )
         )
@@ -8209,8 +8275,8 @@ func checkCallArgsAgainstSig(
           diag.add(
             errorDiagnostic(
               "T0043",
-              "argument type " + renderType(argTy) + " does not match parameter type " + renderOptTypeExpr(p.tyExpr, p.ty) +
-                sliceListConversionHint(p.ty, argTy),
+              argTypeMismatchSubject(argTy, args, ai) + " does not match parameter type " + renderOptTypeExpr(p.tyExpr, p.ty) +
+                typeMismatchHint(tbl, p.ty, argTy),
               span
             )
           )
@@ -8368,29 +8434,152 @@ func listLiteralArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: 
   }
 }
 
+// The suffix every type-mismatch diagnostic appends ("" when there is
+// nothing to add), so callers can always append the result to their message.
 // #7545: when a type mismatch is specifically a `slice[T]`/`List[T]`
 // mix-up, the diagnostic points at the explicit conversion (docs/01 §2.7)
-// rather than leaving the reader to guess. Returns "" for every other
-// mismatch, so callers can always append the result to their message.
-pub func sliceListConversionHint(expected: in Type, actual: in Type): String {
+// rather than leaving the reader to guess. #7737: when the two types merely
+// share a name, it says so (`sameNameTypesNote`).
+//
+// #7737: "List" here means the stdlib `Std.CollectionsHost.List`, by
+// identity. `.toList()` always builds that type and `.toArray()` exists only
+// on it, so suggesting either for a package's own same-named type was wrong
+// advice; the conversion is also only suggested when it would actually fix
+// the mismatch (the slice's element type fits the List's), so
+// `["a"]`-against-`List[Int]` is no longer told to call `.toList()`. When the
+// expected type merely shares the stdlib name, the hint says so instead — a
+// rendered `List[Int]` alone reads as the stdlib type.
+pub func typeMismatchHint(tbl: in SymbolTable, expected: in Type, actual: in Type): String {
+  val sameName = sameNameTypesNote(tbl, expected, actual)
+  if sameName != "" {
+    return sameName
+  }
   match unrefine(actual) {
-    case TySlice(_) -> match unrefine(expected) {
-      case TyUser(_, eName, eArgs) -> if eName == "List" and eArgs.count == 1 {
-        " (use .toList() to convert the slice to a List)"
+    case TySlice(sliceElem) -> match unrefine(expected) {
+      case TyUser(eid, eName, eArgs) -> if eArgs.count == 1 and isStdCollectionsHostType(tbl, eid, "List") {
+        if argSatisfiesParam(tbl, eArgs[0], sliceElem) {
+          " (use .toList() to convert the slice to a List)"
+        } else {
+          ""
+        }
       } else {
-        ""
+        val note = shadowedStdCollectionNote(tbl, expected)
+        if note != "" and eName == "List" {
+          " (this 'List' is a different type that only shares its name with the stdlib List; a list literal or .toList() " +
+            "only builds the stdlib List)"
+        } else {
+          note
+        }
       }
       case _ -> ""
     }
-    case TyUser(_, aName, aArgs) -> if aName == "List" and aArgs.count == 1 {
+    case TyUser(aid, _, aArgs) -> if aArgs.count == 1 and isStdCollectionsHostType(tbl, aid, "List") {
       match unrefine(expected) {
-        case TySlice(_) -> " (use .toArray() to convert the List to a slice)"
+        case TySlice(sliceElem) -> if argSatisfiesParam(tbl, sliceElem, aArgs[0]) {
+          " (use .toArray() to convert the List to a slice)"
+        } else {
+          ""
+        }
         case _ -> ""
       }
     } else {
       ""
     }
     case _ -> ""
+  }
+}
+
+// #7737: two distinct types with the same bare name render identically
+// ("argument type Result[Age, String] does not match parameter type
+// Result[Age, String]"), which reads as a checker bug. Name both declaring
+// packages instead. "" unless `expected` and `actual` are user types with the
+// same name and different identities.
+func sameNameTypesNote(tbl: in SymbolTable, expected: in Type, actual: in Type): String {
+  match unrefine(expected) {
+    case TyUser(eid, eName, _) -> match unrefine(actual) {
+      case TyUser(aid, aName, _) -> {
+        if eName != aName or typeIdEq(eid, aid) {
+          return ""
+        }
+        val ePkg = match symTableTypeSymbolOf(tbl, eid) { case Some(sym) -> sym.originPackage; case None -> "" }
+        val aPkg = match symTableTypeSymbolOf(tbl, aid) { case Some(sym) -> sym.originPackage; case None -> "" }
+        if ePkg != "" and aPkg != "" and ePkg != aPkg {
+          " (these are two different types named '" + eName + "': the value is " + aPkg + "." + aName + ", the target is " +
+            ePkg +
+            "." +
+            eName +
+            ")"
+        } else {
+          " (these are two different types named '" + eName + "')"
+        }
+      }
+      case _ -> ""
+    }
+    case _ -> ""
+  }
+}
+
+// #7737: when `t` is a type that merely shares a stdlib collection's bare
+// name (a package's own `record List[T]`, say), a note saying so — the
+// rendered type (`List[Int]`) is otherwise indistinguishable from the
+// stdlib one, which makes a bracket-literal or iteration diagnostic against
+// it read as self-contradictory. "" for every other type, including the
+// genuine stdlib collections. A diagnostic-text-only use of the bare name.
+pub func shadowedStdCollectionNote(tbl: in SymbolTable, t: in Type): String {
+  match unrefine(t) {
+    case TyUser(tid, name, _) -> {
+      val isStdName = name == "List" or name == "Map" or name == "Set" or name == "MapKeyCollection" or
+        name == "MapValueCollection"
+      if isStdName and not isStdCollectionsHostType(tbl, tid, name) {
+        " (this '" + name + "' is a different type that only shares its name with the stdlib " + name + ")"
+      } else {
+        ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
+// #7737: an empty bracket literal (`[]`) infers as `slice[<error>]` — there
+// is no element to type it from — and rendering that type in a mismatch
+// diagnostic ("has type slice[<error>]") reads like an internal failure. The
+// mismatch sites describe such an argument as "an empty list literal"
+// instead.
+pub func isEmptyListLiteral(e: in Expr): Bool {
+  match e.kind {
+    case EList(elems) -> elems.count == 0
+    case _ -> false
+  }
+}
+
+// The subject half of a "`<what>` has type T but ..." mismatch message:
+// `"has type T"`, or `"is an empty list literal"` for `[]` (#7737).
+pub func hasTypeOrEmptyLiteral(t: in Type, e: in Expr): String {
+  if isEmptyListLiteral(e) {
+    "is an empty list literal"
+  } else {
+    "has type " + renderType(t)
+  }
+}
+
+// The subject of a T0043 argument-mismatch message: `"argument type T"`, or
+// `"argument (an empty list literal)"` when the argument at `idx` is `[]`
+// (#7737).
+func argTypeMismatchSubject(t: in Type, args: in List[CallArg], idx: in Int): String {
+  if idx >= 0 and idx < args.count and isEmptyListLiteral(callArgExpr(args[idx])) {
+    "argument (an empty list literal)"
+  } else {
+    "argument type " + renderType(t)
+  }
+}
+
+// The `"of type T"` qualifier of a mismatch message, or
+// `"(an empty list literal)"` for `[]` (#7737).
+pub func ofTypeOrEmptyLiteral(t: in Type, e: in Expr): String {
+  if isEmptyListLiteral(e) {
+    "(an empty list literal)"
+  } else {
+    "of type " + renderType(t)
   }
 }
 
