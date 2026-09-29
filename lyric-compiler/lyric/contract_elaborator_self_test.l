@@ -1475,6 +1475,80 @@ test "Unit body ending in a loop left by break asserts ensures (#7747)" {
   assertTrue(isAssertCall(blk.statements[1]), "loop/break: trailing assert")
 }
 
+// `while true` is the documented unconditional loop (docs/01 §4); like `do`,
+// it never completes normally unless a `break` leaves it (#7759).
+test "Unit body ending in while true without break gets no fall-off assert (#7759)" {
+  val src = "package P\n" + "func f(x: inout Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "  while true {\n" +
+    "    x = x + 1\n" +
+    "    if x >= 100 { return }\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 1, "while true: nothing appended")
+}
+
+test "Unit body ending in while (true) left by break asserts ensures (#7759)" {
+  val src = "package P\n" + "func f(x: inout Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "  while (true) {\n" +
+    "    x = x + 1\n" +
+    "    if x > 5 { break }\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 2, "while true/break: loop then assert")
+  assertTrue(isAssertCall(blk.statements[1]), "while true/break: trailing assert")
+}
+
+test "a labelled break from an inner loop leaves the trailing while true (#7759)" {
+  val src = "package P\n" + "func f(x: inout Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "  outer: while true {\n" +
+    "    while x < 1000 {\n" +
+    "      if x > 5 { break outer }\n" +
+    "      x = x + 1\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 2, "break outer: loop then assert")
+  assertTrue(isAssertCall(blk.statements[1]), "break outer: trailing assert")
+}
+
+test "an unlabelled break in an inner loop does not leave the trailing while true (#7759)" {
+  val src = "package P\n" + "func f(x: inout Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "  while true {\n" +
+    "    while true {\n" +
+    "      break\n" +
+    "    }\n" +
+    "    x = x + 1\n" +
+    "    if x >= 100 { return }\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 1, "inner break: nothing appended")
+}
+
+test "while true with an invariant gets no exit check (#7759)" {
+  val src = "package P\n" + "func f(x: inout Int): Unit\n" + "  ensures: x == 100\n" + "{\n" + "  while true\n" +
+    "    invariant: x <= 100\n" +
+    "  {\n" +
+    "    x = x + 1\n" +
+    "    if x >= 100 { return }\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 1, "while true/invariant: no exit check, no fall-off assert")
+}
+
+test "a trailing if whose branches end in while true or return is not result-bound (#7759)" {
+  val src = "package P\n" + "func f(x: in Int): Int\n" + "  ensures: result > 0\n" + "{\n" + "  if x > 0 {\n" +
+    "    while true {\n" +
+    "      return x\n" +
+    "    }\n" +
+    "  } else {\n" +
+    "    return 1\n" +
+    "  }\n" +
+    "}\n"
+  val blk = bodyBlockOf(firstFunction(parseAndElaborate(src), "f"))
+  assertEqualInt(blk.statements.count, 1, "divergent trailing if: emitted as-is")
+}
+
 // #7747 x #7595: the fall-off postcondition obeys `contractsEnabled` like
 // every other ensures site — a disabled user `ensures:` adds no check after a
 // trailing assignment, while a protected-type invariant (system-level, never
