@@ -927,9 +927,6 @@ func hasSection(entries: in List[Entry], section: in String): Bool {
   false
 }
 
-// Check if a section header exists in the raw TOML text.
-// Scans for `[sectionName]` as a section header (on its own line after optional whitespace).
-// Handles internal whitespace in brackets (e.g., `[ contracts ]`), same as the TOML tokenizer.
 func assembleProject(entries: in List[Entry]): Option[ProjectSection] {
   if not hasSection(entries, "project") {
     return None
