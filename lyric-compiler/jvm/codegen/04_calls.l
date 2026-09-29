@@ -2149,7 +2149,7 @@ func lowerAutoFfiInstanceCall(
     // to that type here, so `emitFfiCoerce` boxes it as the slot's wrapper
     // (#7782).
     val slotTy = if i < slotTys.count { slotTys[i] } else { JVoid }
-    val aTy = if isJvmPrimitiveElemType(rawTy) and isJvmPrimitiveElemType(slotTy) {
+    val aTy = if isJvmPrimitiveElemType(rawTy) and isJvmPrimitiveElemType(slotTy) and canWidenPrimitiveJvm(rawTy, slotTy) {
       coerceArgTo(buf, rawTy, slotTy)
       slotTy
     } else {
@@ -2958,61 +2958,64 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
       // defaulted field can't shift a later supplied field's value into it
       // (#6146).
       val ordered = orderCtorArgsPadded(fields, args)
-      val paramPrims = genericCtorParamPrimitives(ctx, fields, ordered)
+      // A primitive value for a bare type-parameter field (`b: T`, erased to
+      // `Object`) is stored UNBOXED here (`rawTys[i]` is its type, `JVoid`
+      // for every other field) and boxed only when reloaded below, once every
+      // argument bound to the same type parameter has been lowered: each is
+      // then widened to the widest of their ACTUAL types and boxed as it
+      // (#7782), so `Two(a = aLong, b = 4)` and `Two(a = longCall(), b = 4)`
+      // both store two `java.lang.Long`s — the checker instantiates `T` at
+      // that widest type.  Deciding from the arguments' lowered types rather
+      // than a pre-lowering peek means an argument the peek cannot see
+      // through (a call, a binary operation) can never be narrowed (#7790).
+      // Boxing after `new; dup` is safe: widening and `valueOf` are
+      // straight-line.
+      val rawTys: List[JvmType] = newList()
       val argSlots: List[Int] = newList()
       var i = 0
       while i < fields.count {
         val fty = fields[i].ty
-        match ordered[i] {
-          case Some(arg) -> {
-            val aTy = lowerCallArg(ctx, insns, arg)
-            // A bare type-parameter field (`b: T`) whose parameter another
-            // argument pins to a wider primitive (`Two(a = aLong, b = 4)`)
-            // widens and boxes as that type (#7782).  Otherwise
-            // `coerceValueTo` (not bare `coerceArgTo`) so a raw JDK primitive
-            // array flowing into a declared `slice[T]` field boxes into the
-            // erased `[Ljava/lang/Object;` representation the field descriptor
-            // (and this arg slot's StackMapTable entry) declares (#5572).
-            val pPrim = if fields[i].paramIdx >= 0 {
-              match mapGet(paramPrims, fields[i].paramIdx) {
-                case Some(t) -> t
-                case None -> JVoid
-              }
+        val valueExpr: Option[Expr] = match ordered[i] {
+          case Some(arg) -> Some(value = callArgExpr(arg))
+          // Field omitted at the call site: use its declared default-value
+          // expression (#5908).  The JVM-zero-value fallback
+          // (`pushDefaultValue` below) is only correct for a field with no
+          // source-level default, which the type checker should never let
+          // through as omitted.  Evaluate the default expression exactly like
+          // a supplied argument (same reason as above: it can itself branch,
+          // so it must land in a local before `new`/`dup` put uninitialized-
+          // object slots on the stack).
+          case None -> fields[i].dflt
+        }
+        match valueExpr {
+          case Some(ve) -> {
+            val aTy = lowerExpr(ctx, insns, ve)
+            if fields[i].paramIdx >= 0 and isRefJvm(fty) and isJvmPrimitiveElemType(aTy) {
+              val rawSlot = allocSlot(ctx, "__ctor_raw_" + freshLabel(ctx), aTy)
+              emitStore(insns, rawSlot, aTy)
+              argSlots.add(rawSlot)
+              rawTys.add(aTy)
             } else {
-              JVoid
-            }
-            if isRefJvm(fty) and isJvmPrimitiveElemType(pPrim) and isJvmPrimitiveElemType(aTy) {
-              boxForErasedSlot(insns, aTy, pPrim)
-            } else {
+              // `coerceValueTo` (not bare `coerceArgTo`) so a raw JDK
+              // primitive array flowing into a declared `slice[T]` field
+              // boxes into the erased `[Ljava/lang/Object;` representation
+              // the field descriptor (and this arg slot's StackMapTable
+              // entry) declares (#5572).
               coerceValueTo(ctx, insns, aTy, fty)
+              val slot = allocSlot(ctx, "__ctor_arg_" + freshLabel(ctx), fty)
+              emitStore(insns, slot, fty)
+              argSlots.add(slot)
+              rawTys.add(JVoid)
             }
-            val slot = allocSlot(ctx, "__ctor_arg_" + freshLabel(ctx), fty)
-            emitStore(insns, slot, fty)
-            argSlots.add(slot)
           }
           case None -> {
-            // Field omitted at the call site: use its declared default-value
-            // expression (#5908).  The JVM-zero-value fallback
-            // (`pushDefaultValue` below) is only correct for a field with no
-            // source-level default, which the type checker should never let
-            // through as omitted.  Evaluate the default expression exactly like
-            // a supplied argument (same reason as above: it can itself branch,
-            // so it must land in a local before `new`/`dup` put uninitialized-
-            // object slots on the stack).
-            match fields[i].dflt {
-              case Some(defExpr) -> {
-                val aTy = lowerExpr(ctx, insns, defExpr)
-                coerceValueTo(ctx, insns, aTy, fty)
-                val slot = allocSlot(ctx, "__ctor_dflt_" + freshLabel(ctx), fty)
-                emitStore(insns, slot, fty)
-                argSlots.add(slot)
-              }
-              case None -> argSlots.add(-1)
-            }
+            argSlots.add(-1)
+            rawTys.add(JVoid)
           }
         }
         i = i + 1
       }
+      val paramPrims = ctorParamWidestLowered(fields, argSlots, rawTys)
       insns.add(LNew(className = className))
       insns.add(LDup)
       val paramTys: List[JvmType] = newList()
@@ -3020,10 +3023,14 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
       while j < fields.count {
         val fty = fields[j].ty
         paramTys.add(fty)
-        if argSlots[j] >= 0 {
-          emitLoad(insns, argSlots[j], fty)
-        } else {
+        if argSlots[j] < 0 {
           pushDefaultValue(insns, fty)
+        } else if isJvmPrimitiveElemType(rawTys[j]) {
+          emitLoad(insns, argSlots[j], rawTys[j])
+          val widest = match mapGet(paramPrims, fields[j].paramIdx) { case Some(t) -> t; case None -> JVoid }
+          boxForErasedSlot(insns, rawTys[j], widest)
+        } else {
+          emitLoad(insns, argSlots[j], fty)
         }
         j = j + 1
       }
@@ -3041,6 +3048,37 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
       JRef(className = className)
     }
   }
+}
+
+// For `lowerConstruction`: the widest of the lowered primitive types of the
+// values bound to each type parameter (keyed by `JvmCaseField.paramIdx`),
+// from `rawTys` (a value's lowered type when it was stored unboxed, `JVoid`
+// otherwise).  A parameter one of whose values was NOT stored as a primitive
+// (an already-boxed, erased value — its box type is unknown) maps to `JVoid`,
+// so each of its primitive values keeps its own box type rather than
+// guessing (#7790).
+func ctorParamWidestLowered(
+  fields: in List[JvmCaseField], argSlots: in List[Int], rawTys: in List[JvmType]
+): Map[Int, JvmType] {
+  val widest: Map[Int, JvmType] = newMap()
+  val unknown: Map[Int, Bool] = newMap()
+  var i = 0
+  while i < fields.count {
+    val pIdx = fields[i].paramIdx
+    if pIdx >= 0 and argSlots[i] >= 0 {
+      if isJvmPrimitiveElemType(rawTys[i]) {
+        val prev = match mapGet(widest, pIdx) { case Some(t) -> t; case None -> JVoid }
+        widest[pIdx] = widerPrimitiveJvm(prev, rawTys[i])
+      } else {
+        unknown[pIdx] = true
+      }
+    }
+    i = i + 1
+  }
+  for k in mapKeys(unknown) {
+    widest[k] = JVoid
+  }
+  widest
 }
 
 // The argument expression of a CallArg (positional or named).
@@ -3587,25 +3625,98 @@ pub func resolveGeneralFuncSig(
   }
 }
 
-// Coerce a lowered call argument (statically `aTy`) to its declared JVM
-// parameter type `paramTy`.  When the parameter is an erased type parameter
-// that `genericCallArgSlotTys` solved to a primitive (`genSlotTys[idx]`), a
-// primitive argument is widened to that type and boxed as it (#7782);
-// otherwise this is `coerceArgToCtx`.
-func coerceGenericCallArg(
+// A call to a generic function the monomorphizer left generic, with at
+// least one argument bound to a bare type parameter (`genericCallBareParamNames`,
+// e.g. `setAdd(s, 5)`'s `item: in T`).  Such an argument is boxed into an
+// erased `Object` parameter, and the callee reads it back as `T`'s
+// instantiation — which the checker takes as the widest type among the
+// arguments bound to `T` and any container argument's element type
+// (`s: Set[Long]`).  Every argument is lowered into a temp first, a
+// primitive one for a bare `T` unboxed, so each parameter's widest type is
+// taken from the arguments' ACTUAL lowered types (never a narrower guess,
+// #7790); each primitive is then widened to it and boxed as it on reload
+// (#7782).  A parameter with an argument that lowered to a reference (an
+// already-boxed value of unknown box type) and no container solution keeps
+// each primitive boxed as its own type.  Stashing first also keeps any
+// branching argument conversion (`emitBoxPrimitiveArray`) on an empty
+// operand stack, like `lowerGeneralStaticCall`'s slice-parameter path.
+func lowerGenericStaticCallBoxingByType(
   ctx: in FuncCtx,
   insns: in List[LInsn],
-  aTy: in JvmType,
-  paramTy: in JvmType,
-  genSlotTys: in List[JvmType],
-  idx: in Int,
-): Unit {
-  val slotTy = if idx < genSlotTys.count { genSlotTys[idx] } else { JVoid }
-  if isRefJvm(paramTy) and isJvmPrimitiveElemType(slotTy) and isJvmPrimitiveElemType(aTy) {
-    boxForErasedSlot(insns, aTy, slotTy)
-  } else {
-    coerceArgToCtx(ctx, insns, aTy, paramTy)
+  funcName: in String,
+  sig: in JvmFuncSig,
+  callArgs: in List[CallArg],
+  bareTps: in List[String],
+): JvmType {
+  val argSlots: List[Int] = newList()
+  val slotTys: List[JvmType] = newList()
+  val rawTys: List[JvmType] = newList()
+  var si = 0
+  while si < callArgs.count {
+    if si < sig.params.count {
+      pushCtorExpect(ctx, sig.params[si])
+    }
+    val aTy = lowerCallArg(ctx, insns, callArgs[si])
+    var stTy = aTy
+    var rawTy = JVoid
+    if si < sig.params.count {
+      popCtorExpect(ctx)
+      val tp = if si < bareTps.count { bareTps[si] } else { "" }
+      if tp != "" and isRefJvm(sig.params[si]) and isJvmPrimitiveElemType(aTy) {
+        rawTy = aTy
+      } else if isPrimitiveArrayToObjectArray(aTy, sig.params[si]) {
+        match aTy {
+          case JArray(fe) -> emitBoxPrimitiveArray(ctx, insns, fe)
+          case _ -> ()
+        }
+        stTy = sig.params[si]
+      } else {
+        coerceArgToCtx(ctx, insns, aTy, sig.params[si])
+        stTy = sig.params[si]
+      }
+    }
+    val slot = allocSlot(ctx, "__garg_" + freshLabel(ctx), stTy)
+    emitStore(insns, slot, stTy)
+    argSlots.add(slot)
+    slotTys.add(stTy)
+    rawTys.add(rawTy)
+    si = si + 1
   }
+  val widest = genericCallContainerPrimitives(ctx, sig, callArgs)
+  val containerSolved: Map[String, Bool] = newMap()
+  for tpC in mapKeys(widest) {
+    containerSolved[tpC] = true
+  }
+  val unknown: Map[String, Bool] = newMap()
+  var wi = 0
+  while wi < callArgs.count and wi < bareTps.count {
+    val tp = bareTps[wi]
+    if tp != "" {
+      if isJvmPrimitiveElemType(rawTys[wi]) {
+        val prev = match mapGet(widest, tp) { case Some(t) -> t; case None -> JVoid }
+        widest[tp] = widerPrimitiveJvm(prev, rawTys[wi])
+      } else if not containerSolved.containsKey(tp) {
+        unknown[tp] = true
+      }
+    }
+    wi = wi + 1
+  }
+  for tpU in mapKeys(unknown) {
+    widest[tpU] = JVoid
+  }
+  var li = 0
+  while li < argSlots.count {
+    if isJvmPrimitiveElemType(rawTys[li]) {
+      emitLoad(insns, argSlots[li], rawTys[li])
+      val target = match mapGet(widest, bareTps[li]) { case Some(t) -> t; case None -> JVoid }
+      boxForErasedSlot(insns, rawTys[li], target)
+    } else {
+      emitLoad(insns, argSlots[li], slotTys[li])
+    }
+    li = li + 1
+  }
+  insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
+  narrowStaticCallResult(ctx, insns, sig)
 }
 
 func lowerGeneralStaticCall(
@@ -3764,7 +3875,10 @@ func lowerGeneralStaticCall(
       if anyHolderMode(sig.paramModes) {
         return lowerStaticCallWithHolders(ctx, insns, funcName, sig, callArgs)
       }
-      val genSlotTys = genericCallArgSlotTys(ctx, sig, callArgs)
+      val bareTps = genericCallBareParamNames(sig, callArgs)
+      if listContainsNonEmptyStr(bareTps) {
+        return lowerGenericStaticCallBoxingByType(ctx, insns, funcName, sig, callArgs, bareTps)
+      }
       // A primitive array (e.g. a JDK `getBytes()` / `digest()` `byte[]`, or
       // any other primitive array) passed where a Lyric `slice[T]`
       // (`[Ljava/lang/Object;`) is declared is boxed element-by-element by
@@ -3788,7 +3902,7 @@ func lowerGeneralStaticCall(
                 case _ -> ()
               }
             } else {
-              coerceGenericCallArg(ctx, insns, aTy, sig.params[si], genSlotTys, si)
+              coerceArgToCtx(ctx, insns, aTy, sig.params[si])
             }
             slotTy = sig.params[si]
           }
@@ -3820,7 +3934,7 @@ func lowerGeneralStaticCall(
         val aTy = lowerCallArg(ctx, insns, callArgs[ai])
         if ai < sig.params.count {
           popCtorExpect(ctx)
-          coerceGenericCallArg(ctx, insns, aTy, sig.params[ai], genSlotTys, ai)
+          coerceArgToCtx(ctx, insns, aTy, sig.params[ai])
         }
         ai = ai + 1
       }
@@ -4010,11 +4124,65 @@ func coerceScalarToSliceElem(
   declaredElemTy: in JvmType,
   erasedElemTy: in JvmType,
 ): Unit {
-  if (not isRefJvm(argTy)) and isNumericJvm(declaredElemTy) {
+  // Only a genuine widening (`canWidenPrimitiveJvm`) converts: `coerceArgTo`
+  // has no narrowing arms, so a value wider than `declaredElemTy` (which an
+  // inferred slot type can undershoot, #7790) is boxed as its own type
+  // rather than left unconverted under the narrower box.
+  if (not isRefJvm(argTy)) and isNumericJvm(declaredElemTy) and canWidenPrimitiveJvm(argTy, declaredElemTy) {
     coerceArgTo(insns, argTy, declaredElemTy)
     boxIfNeeded(insns, declaredElemTy)
   } else {
     coerceArgTo(insns, argTy, erasedElemTy)
+  }
+}
+
+// Whether a value of primitive type `from` converts losslessly to `to` by a
+// conversion `coerceArgTo` emits (or needs none): identity, `Byte`/`Char`/
+// `Short` into `Int`, any integral type into `Long`, and any integral or
+// `Float` value into `Float`/`Double` (#7790).  Every other pair — a
+// narrowing, or a cross-kind pair `coerceArgTo` does not convert — is false.
+func canWidenPrimitiveJvm(from: in JvmType, to: in JvmType): Bool {
+  val intLike = match from {
+    case JByte -> true
+    case JChar -> true
+    case JShort -> true
+    case JInt -> true
+    case _ -> false
+  }
+  match to {
+    case JInt -> intLike or isJvmIntTy(from)
+    case JLong -> intLike or isJvmLongTy(from)
+    case JFloat -> intLike or isJvmLongTy(from) or isJvmFloatTy(from)
+    case JDouble -> intLike or isJvmLongTy(from) or isJvmFloatTy(from) or isJvmDoubleTy(from)
+    case _ -> jvmSimpleTypeEq(from, to)
+  }
+}
+
+func isJvmIntTy(t: in JvmType): Bool {
+  match t {
+    case JInt -> true
+    case _ -> false
+  }
+}
+
+func isJvmLongTy(t: in JvmType): Bool {
+  match t {
+    case JLong -> true
+    case _ -> false
+  }
+}
+
+func isJvmFloatTy(t: in JvmType): Bool {
+  match t {
+    case JFloat -> true
+    case _ -> false
+  }
+}
+
+func isJvmDoubleTy(t: in JvmType): Bool {
+  match t {
+    case JDouble -> true
+    case _ -> false
   }
 }
 

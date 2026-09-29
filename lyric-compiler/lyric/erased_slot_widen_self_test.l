@@ -74,6 +74,14 @@ func sevenInt(): Int {
   7
 }
 
+func longFromCall(): Long {
+  3000000000
+}
+
+pub record Holder {
+  n: Long
+}
+
 test "List[Long].add of an unsuffixed literal reads back as Long (#7782)" {
   val xs: List[Long] = newList()
   xs.add(5)
@@ -176,6 +184,41 @@ test "a generic function argument pinned to Long widens (#7782)" {
   assertEqualLong(orElse(none, 7) + 1, 8, "orElse default")
   val w: Long = id(5)
   assertEqualLong(w + 1, 6, "id")
+}
+
+test "a record's arguments of two widths widen whatever their shape (#7790)" {
+  val big: Long = 10
+  val h = Holder(n = 40)
+  // A call result after a narrower literal.
+  val t2 = Two(a = 4, b = longFromCall())
+  assertEqualLong(t2.a + t2.b, 3000000004, "literal, then call")
+  // A binary operation and a field read as the wider argument.
+  val t3 = Two(a = 5, b = big * 2)
+  assertEqualLong(t3.a + t3.b, 25, "binary operation")
+  val t4 = Two(a = h.n, b = 6)
+  assertEqualLong(t4.a + t4.b, 46, "field read, then literal")
+  // Both Int, one a call.
+  val t5 = Two(a = sevenInt(), b = 8)
+  assertEqualInt(t5.a + t5.b, 15, "Int call and literal")
+  // An argument whose type cannot be known before it is lowered (a generic
+  // call): the values are still stored widened, read through typed locals.
+  val t6 = Two(a = 9, b = pick(big, 1, true))
+  val a6: Long = t6.a
+  val b6: Long = t6.b
+  assertEqualLong(a6 + b6, 19, "generic call argument")
+}
+
+test "a generic call's arguments of two widths widen whatever their shape (#7790)" {
+  val big: Long = 10
+  val h = Holder(n = 40)
+  val p2: Long = pick(3, big * 2, false)
+  assertEqualLong(p2, 20, "literal, then binary operation")
+  val p3: Long = pick(h.n, 1, true)
+  assertEqualLong(p3, 40, "field read, then literal")
+  val p4: Long = pick(2, longFromCall(), false)
+  assertEqualLong(p4 + 1, 3000000001, "literal, then call")
+  val p5: Long = pick(2, longFromCall(), true)
+  assertEqualLong(p5 + 1, 3, "narrower argument chosen")
 }
 
 test "Map.remove yields whether the key was present (#7782)" {

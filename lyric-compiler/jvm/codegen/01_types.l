@@ -1348,6 +1348,16 @@ func listContainsStr(xs: in List[String], s: in String): Bool {
   false
 }
 
+// Whether any element of `xs` is non-empty.
+func listContainsNonEmptyStr(xs: in List[String]): Bool {
+  for x in xs {
+    if x != "" {
+      return true
+    }
+  }
+  false
+}
+
 // The index of `s` in `xs`, or -1.
 func indexOfStr(xs: in List[String], s: in String): Int {
   var i = 0
