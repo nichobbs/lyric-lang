@@ -83,30 +83,60 @@ is allowed whatever handlers the `try` has, so Lyric does not copy C#'s ban on
 `yield` inside a `try` that has a `catch`. The rule is in docs/01 §7.2, the
 book's §10.5 and its T-code table.
 
+The type checker checks this in both places a `try` is checked: a statement
+`try` and a `try` that is a block's last statement.
+
+## Early termination on the JVM
+
+The JVM generator suspends at a `yield` by blocking its producer thread on a
+rendezvous (#7720), so a `yield` inside a `try` already worked there. Stopping
+early did not match D142: the pending `finally`/`defer` blocks ran only when a
+GC-driven `Cleaner` noticed the abandoned iterator, and a typed `catch` in the
+body could intercept the interrupt that unwinds the producer. Now:
+
+- The generator's `<G>$Iter` implements `AutoCloseable`. Its `close()`
+  (`_close`) interrupts the producer parked at its `yield`, joins it, and
+  rethrows an exception a `finally`/`defer` block raised while unwinding.
+  `_fail` records that exception even after abandonment.
+- A `for` over an `Iterable` calls `close()` on an `AutoCloseable` iterator
+  when the loop ends (exhaustion or `break`), as the MSIL `for` calls
+  `DisposeAsync`.
+- Each typed `catch` handler in a generator body rethrows the interrupt while
+  the generator is abandoned. The check is at the handler entry, inside every
+  enclosing protected range, so the enclosing `finally`/`defer` blocks still
+  run.
+
 ## Tests
 
 - `lyric-compiler/lyric/generator_control_flow_self_test.l`, dual-target,
-  11 cases:
+  21 cases:
   - `match` over an `Option` and over a user union, with payload binds,
     nested constructor patterns and guards
-  - tuple and record patterns
+  - tuple patterns (with arithmetic on the binds, which #7741 fixed) and
+    record patterns
   - `match` as a value
   - `yield` inside `try`/`finally`, nested `try`/`finally`, a `try` in a
     loop, after a `defer`, and a `match` inside a `try`, each with its
     `finally` observed exactly once
+  - `try`/`catch` in the body, with `as e` and `as _`, with and without a
+    `yield` in the `try`, including the two cases of
+    `lyric-compiler/jvm/generator_body_try_catch_jvm_self_test.l` (#7720)
+    and the Long/Double wide-yield cases #7745 added to it, which moved here
+    and were deleted now that dotnet builds them (the Double case now yields
+    after the `try` rather than inside its `catch`, which D142 rejects with
+    T0142)
+  - a consumer `break` that runs pending nested `finally` and `defer` blocks
+    once, runs no `catch`, and surfaces an exception a `finally` raises
   - a record declared after every generator
 - `lyric-compiler/lyric/generator_control_flow_dotnet_self_test.l`,
-  dotnet-only, 9 cases. Each case is there because of a named JVM gap:
-  - `try`/`catch` in the body, with `as e` and `as _`, and a `yield` in a
-    `try` with `catch` and `finally` (JVM: #7720)
-  - a consumer `break` that runs pending nested `finally` and `defer` blocks
-    once (the JVM producer thread is abandoned, #3565)
-  - `for` over a `Set[Int]`, including a `break` inside it (JVM: #7312)
+  dotnet-only, 3 cases: `for` over a `Set[Int]` inside a generator, including
+  a `break` inside it. `Std.Set` is unusable on the JVM (#7312).
 - `typechecker_self_test.l` gains four T0142 cases.
 
-Before the fix, both new files failed to build on dotnet: the `match` and
+Before the fix, the dotnet build of both files failed: the `match` and
 `catch` generators panicked in Pass 1, and the `try`/`finally` generators
-failed at run time with `InvalidProgramException`. Both files pass after it.
-The dual-target file passes on `--target jvm`. It is wired into
+failed at run time with `InvalidProgramException`. On `--target jvm` the
+early-stop cases failed (no `finally` had run when the loop continued). Both
+files pass on their targets after it. The dual-target file is wired into
 `compiler-self-tests-batch.sh` and `jvm-generics-self-tests-batch.sh`, and
 the dotnet-only file into `compiler-self-tests-batch.sh`.

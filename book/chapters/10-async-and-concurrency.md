@@ -264,7 +264,7 @@ async func lines(path: in String): String {
 }
 ```
 
-A consumer that stops early (`break`) disposes the generator on .NET, and a generator suspended inside a `try` then runs its pending `finally` and `defer` blocks, innermost first. The JVM backend does not do this yet: the producer thread of an abandoned generator is simply left parked. A `yield` inside a `catch`, `finally`, or `defer` block is a compile error (`T0142`), because those blocks run while an exception or an exit is in flight and cannot be suspended.
+A consumer that stops early (`break`) disposes the generator, and a generator suspended inside a `try` then runs its pending `finally` and `defer` blocks, innermost first, before the loop moves on. No `catch` handler runs during this, and an exception a `finally` raises reaches the consumer. This works the same on both targets. A `yield` inside a `catch`, `finally`, or `defer` block is a compile error (`T0142`), because those blocks run while an exception or an exit is in flight and cannot be suspended.
 
 **Implementation.** Generators are **always lazy** — the compiler synthesises a single suspending state machine that produces one value per pull, so `for x in gen() { … }` streams and an unbounded `while true { yield … }` generator works without exhausting memory:
 

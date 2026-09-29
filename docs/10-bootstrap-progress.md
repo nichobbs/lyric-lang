@@ -110,8 +110,9 @@ deferred to Phase 3 by design.
   Gap-4a (await-in-generator) closed (D-progress-261); JVM async generator
   pipeline wired into self-hosted compiler (D-progress-262).  MSIL generator
   bodies accept `match`, `try`/`catch`/`finally` and `defer`, with `yield`
-  allowed inside a protected `try` body and pending `finally` blocks run on
-  early disposal (#7729, D142; `docs/progress/2026-09-29-generator-control-flow.md`).
+  allowed inside a protected `try` body; on both targets a consumer `break`
+  runs a suspended generator's pending `finally`/`defer` blocks (#7729, D142;
+  `docs/progress/2026-09-29-generator-control-flow.md`).
 
 ### Phase 5 — self-hosting
 
