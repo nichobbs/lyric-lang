@@ -264,6 +264,13 @@ pub record SymbolTable {
   /// the fields of a restored package's records, so `mapKeys(o.inner.m)`
   /// infers its type arguments from the checked type of `o.inner.m` (#7441).
   callResultTypes: Map[String, TypeExpr]
+  /// The checked function type of each unannotated `val`/`var`/`let` whose
+  /// initializer is a function value, keyed by `recordCopySiteKey` of the
+  /// initializer's span.  `Lyric.Mono.desugarCheckedFile` writes it onto the
+  /// binding as its annotation: a backend that erases function values to a
+  /// uniform boxed delegate must know a call's result type to unbox it, and
+  /// cannot infer it from a lambda body that reads captured locals (#7711).
+  localFuncTypeSites: Map[String, TypeExpr]
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
   /// opaque, protected or distinct type each field-access or method-call receiver
   /// has, keyed like
@@ -351,6 +358,7 @@ pub func newSymbolTable(): SymbolTable {
     funcRefCallees = newMap(),
     argConversionSites = newMap(),
     callResultTypes = newMap(),
+    localFuncTypeSites = newMap(),
     memberRecvClasses = newMap(),
     typeSymbolsById = newMap(),
     typeSymbolsIndexed = newList(),
