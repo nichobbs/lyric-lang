@@ -6910,3 +6910,31 @@ test "slice.toList() type-checks cleanly with no shadowing type in scope (#7665)
   val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
   assertEqualInt(diagCount(cr), 0, "no shadow, matching declared type: toList() must type-check clean")
 }
+
+// `&` (cloud-agents docs/lyric/gotchas.md "& is NOT bitwise-and"): neither
+// backend implements it (MSIL silently passed the operand through
+// unchanged, native panics with "function references (&f) are not yet
+// supported"), and it has no infix form — it's `PrefixExpr`-only
+// (`docs/grammar.ebnf`). Before this diagnostic, `x & y` parsed as `x`
+// (a complete expression, since `&` never continues a binary chain)
+// followed by a silently re-entered, silently accepted `&y` statement,
+// discarding `y` with no diagnostic anywhere. `&<expr>` is now rejected
+// unconditionally with T0141, turning that silent data loss into a
+// compile-time error at the `&` site itself.
+test "'&' prefix expression is T0141" {
+  val src = "package P\nfunc f(x: in Int, y: in Int): Unit {\n  val z = &y\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0141"), "bare '&y' is rejected")
+}
+
+test "'x & y' (the bitwise-and landmine) is now a compile error, not a silent no-op" {
+  // Before the fix this compiled clean: `val z = x` (a complete
+  // statement, since `&` isn't a recognized infix operator) followed by
+  // a silently re-entered `&y` expression statement that discarded `y`.
+  val src = "package P\nfunc f(x: in Int, y: in Int): Int {\n  val z = x & y\n  z\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0141"), "'x & y' now fails to compile instead of silently discarding y")
+}
+
+test "real bitwise methods are unaffected by the '&' rejection" {
+  val src = "package P\nfunc f(x: in Int, y: in Int): Int {\n  x.and(y)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0141"), ".and()/.or()/.xor()/.shl()/.shr() remain unaffected")
+}
