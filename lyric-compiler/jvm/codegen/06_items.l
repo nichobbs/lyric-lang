@@ -55,7 +55,7 @@ func makeFuncCtx(
   val labelTicker: List[Int] = newList()
   val loopBreak: List[String] = newList()
   val loopCont: List[String] = newList()
-  val deferStack: List[Block] = newList()
+  val deferStack: List[DeferEntryJvm] = newList()
   val loopDeferDepth: List[Int] = newList()
   val deferRanSlots: List[Int] = newList()
   FuncCtx(
@@ -191,7 +191,7 @@ func makeFuncCtxForGenerator(
   val labelTicker: List[Int] = newList()
   val loopBreak: List[String] = newList()
   val loopCont: List[String] = newList()
-  val deferStack: List[Block] = newList()
+  val deferStack: List[DeferEntryJvm] = newList()
   val loopDeferDepth: List[Int] = newList()
   val deferRanSlots: List[Int] = newList()
   FuncCtx(
@@ -277,7 +277,7 @@ func makeFuncCtxInstance(
   val labelTicker: List[Int] = newList()
   val loopBreak: List[String] = newList()
   val loopCont: List[String] = newList()
-  val deferStack: List[Block] = newList()
+  val deferStack: List[DeferEntryJvm] = newList()
   val loopDeferDepth: List[Int] = newList()
   val deferRanSlots: List[Int] = newList()
   FuncCtx(

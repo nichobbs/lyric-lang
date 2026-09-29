@@ -264,7 +264,18 @@ async func lines(path: in String): String {
 }
 ```
 
-A consumer that stops early (`break`) disposes the generator, and a generator suspended inside a `try` then runs its pending `finally` and `defer` blocks, innermost first, before the loop moves on. No `catch` handler runs during this, and an exception a `finally` raises reaches the consumer. This works the same on both targets. A `yield` inside a `catch`, `finally`, or `defer` block is a compile error (`T0142`), because those blocks run while an exception or an exit is in flight and cannot be suspended.
+A `for` loop disposes its generator however the loop ends: running to the end, `break`, `return`, a `?` that propagates an error, a labelled `break`/`continue` to an outer loop, or a panic. A generator suspended inside a `try` then runs its pending `finally` and `defer` blocks, innermost first, exactly once, before control leaves the loop (and before the consumer's own `defer` blocks):
+
+```lyric
+func firstLine(path: in String): String {
+  for line in lines(path) {
+    return line   // `f.close()` runs here, before firstLine returns
+  }
+  ""
+}
+```
+
+No `catch` handler in the generator runs during this. An exception a generator's `finally` raises reaches the consumer, unless the loop is already being left by an exception: the exception already in flight wins (on the JVM the cleanup's exception is attached to it as a suppressed exception; .NET has no such list and drops it). This works the same on both targets. A `yield` inside a `catch`, `finally`, or `defer` block is a compile error (`T0142`), because those blocks run while an exception or an exit is in flight and cannot be suspended.
 
 **Implementation.** Generators are **always lazy** — the compiler synthesises a single suspending state machine that produces one value per pull, so `for x in gen() { … }` streams and an unbounded `while true { yield … }` generator works without exhausting memory:
 

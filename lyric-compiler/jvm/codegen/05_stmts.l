@@ -1693,8 +1693,24 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               )
               val itorSlot = allocSlot(ctx, "__itor_" + freshLabel(ctx), objTy)
               emitStore(insns, itorSlot, objTy)
+              // The loop closes an `AutoCloseable` iterator on every exit
+              // (#7754, D143): exhaustion and `break` reach `endLB`, where the
+              // close runs once outside the protected range; `return` and a
+              // labelled `break`/`continue` to an enclosing loop replay the
+              // `DeferCloseIterJvm` entry pushed below; an exception unwinds
+              // through the catch-all handler after the loop.  A Lyric
+              // generator suspended inside a `try` runs its pending
+              // `finally`/`defer` blocks in that close (D142).
+              val closeRanSlot = allocSlot(ctx, "__itor_closed_" + freshLabel(ctx), JInt)
+              insns.add(LIconst(v = 0))
+              insns.add(LIstore(slot = closeRanSlot))
+              ctx.deferStack.add(DeferCloseIterJvm(itorSlot = itorSlot))
+              ctx.deferRanSlots.add(closeRanSlot)
+              val closeDepth = ctx.deferStack.count - 1
+              val startLB = freshLabel(ctx)
               val loopLB = freshLabel(ctx)
               val endLB = freshLabel(ctx)
+              insns.add(LLabel(name = startLB))
               insns.add(LLabel(name = loopLB))
               // hasNext()
               emitLoad(insns, itorSlot, objTy)
@@ -1733,6 +1749,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // #2854: `continue` targets the loop top (`loopLB`, which re-checks
               // hasNext()); `break` targets `endLB`.  `loopDeferDepth` captures the
               // entry depth so a body `defer` replays on both before the jump.
+              // It is taken after the close entry above, so this loop's own
+              // `break`/`continue` do not replay the close (`endLB` closes).
               ctx.loopBreak.add(endLB)
               ctx.loopCont.add(loopLB)
               ctx.loopDeferDepth.add(ctx.deferStack.count)
@@ -1741,22 +1759,15 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
               ctx.loopCont.removeAt(ctx.loopCont.count - 1)
               exitBlockScope(ctx, forScopeB)
+              ctx.deferStack.removeAt(closeDepth)
+              ctx.deferRanSlots.removeAt(closeDepth)
               insns.add(LGoto(label = loopLB))
               insns.add(LLabel(name = endLB))
-              // Close the iterator on exhaustion or `break`, as the MSIL `for`
-              // disposes its enumerator: a Lyric generator stopped while
-              // suspended inside a `try` runs its pending `finally`/`defer`
-              // blocks here and rethrows what they throw (#7729, D142).
-              val closeableClass = "java/lang/AutoCloseable"
-              val noCloseL = freshLabel(ctx)
-              emitLoad(insns, itorSlot, objTy)
-              insns.add(LInstanceof(className = closeableClass))
-              insns.add(LIfeq(label = noCloseL))
-              emitLoad(insns, itorSlot, objTy)
-              insns.add(LCheckcast(className = closeableClass))
-              val closePs: List[JvmType] = newList()
-              insns.add(LInvokeinterface(owner = closeableClass, name = "close", params = closePs, ret = JVoid, argCount = 1))
-              insns.add(LLabel(name = noCloseL))
+              emitCloseIfAutoCloseableJvm(ctx, insns, itorSlot)
+              val afterLB = freshLabel(ctx)
+              insns.add(LGoto(label = afterLB))
+              emitForCloseHandlerJvm(ctx, insns, startLB, endLB, itorSlot, closeRanSlot)
+              insns.add(LLabel(name = afterLB))
             }
           }
         }
@@ -2211,7 +2222,7 @@ func lowerTryCatchFinallyExpr(
   val ranSlot = allocSlot(ctx, "__tryf_ran_" + freshLabel(ctx), JInt)
   insns.add(LIconst(v = 0))
   insns.add(LIstore(slot = ranSlot))
-  ctx.deferStack.add(fb)
+  ctx.deferStack.add(DeferBlockJvm(block = fb))
   ctx.deferRanSlots.add(ranSlot)
   val savedDepth = ctx.deferStack.count - 1
 
@@ -2325,7 +2336,7 @@ func lowerTryCatch(
       ranSlot = allocSlot(ctx, "__finally_ran_" + freshLabel(ctx), JInt)
       insns.add(LIconst(v = 0))
       insns.add(LIstore(slot = ranSlot))
-      ctx.deferStack.add(fb0)
+      ctx.deferStack.add(DeferBlockJvm(block = fb0))
       ctx.deferRanSlots.add(ranSlot)
       pushedFinally = true
     }
@@ -2550,9 +2561,78 @@ func replayDefers(ctx: in FuncCtx, insns: in List[LInsn], downTo: in Int): Unit 
       insns.add(LIconst(v = 1))
       insns.add(LIstore(slot = ranSlot))
     }
-    lowerBlock(ctx, insns, ctx.deferStack[i])
+    match ctx.deferStack[i] {
+      case DeferBlockJvm(b) -> lowerBlock(ctx, insns, b)
+      case DeferCloseIterJvm(itorSlot) -> emitCloseIfAutoCloseableJvm(ctx, insns, itorSlot)
+    }
     i = i - 1
   }
+}
+
+// `close()` the iterator in `itorSlot` when it is `AutoCloseable` (#7729,
+// #7754): a Lyric generator's `<G>$Iter` unwinds a producer suspended at a
+// `yield`, running its pending `finally`/`defer` blocks, and rethrows what they
+// throw.
+func emitCloseIfAutoCloseableJvm(ctx: in FuncCtx, insns: in List[LInsn], itorSlot: in Int): Unit {
+  val objTy = JRef(className = "java/lang/Object")
+  val closeableClass = "java/lang/AutoCloseable"
+  val noCloseL = freshLabel(ctx)
+  emitLoad(insns, itorSlot, objTy)
+  insns.add(LInstanceof(className = closeableClass))
+  insns.add(LIfeq(label = noCloseL))
+  emitLoad(insns, itorSlot, objTy)
+  insns.add(LCheckcast(className = closeableClass))
+  val closePs: List[JvmType] = newList()
+  insns.add(LInvokeinterface(owner = closeableClass, name = "close", params = closePs, ret = JVoid, argCount = 1))
+  insns.add(LLabel(name = noCloseL))
+}
+
+// The exception path of a `for` loop over an `Iterable` (#7754, D143): a
+// catch-all over `[startL, endL)` closes the iterator and rethrows.  The
+// exception already propagating wins; one the close raises is attached to it
+// with `addSuppressed`, as `try`-with-resources does.  `ranSlot` is set when a
+// `return` or labelled jump already replayed the close inside the range, so a
+// close that throws there is not run a second time.
+func emitForCloseHandlerJvm(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  startL: in String,
+  endL: in String,
+  itorSlot: in Int,
+  ranSlot: in Int,
+): Unit {
+  val throwableTy = JRef(className = "java/lang/Throwable")
+  val handlerL = freshLabel(ctx)
+  val closeStartL = freshLabel(ctx)
+  val closeEndL = freshLabel(ctx)
+  val suppressL = freshLabel(ctx)
+  val rethrowL = freshLabel(ctx)
+  insns.add(LLabel(name = handlerL))
+  val exSlot = allocSlot(ctx, "__itor_ex_" + handlerL, throwableTy)
+  emitStore(insns, exSlot, throwableTy)
+  insns.add(LIload(slot = ranSlot))
+  insns.add(LIfne(label = rethrowL))
+  insns.add(LLabel(name = closeStartL))
+  emitCloseIfAutoCloseableJvm(ctx, insns, itorSlot)
+  insns.add(LLabel(name = closeEndL))
+  insns.add(LGoto(label = rethrowL))
+  insns.add(LLabel(name = suppressL))
+  val supSlot = allocSlot(ctx, "__itor_sup_" + suppressL, throwableTy)
+  emitStore(insns, supSlot, throwableTy)
+  // `addSuppressed` rejects the exception itself.
+  emitLoad(insns, exSlot, throwableTy)
+  emitLoad(insns, supSlot, throwableTy)
+  insns.add(LIfAcmpeq(label = rethrowL))
+  emitLoad(insns, exSlot, throwableTy)
+  emitLoad(insns, supSlot, throwableTy)
+  val supPs: List[JvmType] = newList()
+  supPs.add(throwableTy)
+  insns.add(LInvokevirtual(owner = "java/lang/Throwable", name = "addSuppressed", params = supPs, ret = JVoid))
+  insns.add(LLabel(name = rethrowL))
+  emitLoad(insns, exSlot, throwableTy)
+  insns.add(LAthrow)
+  insns.add(LTryCatch(startLabel = closeStartL, endLabel = closeEndL, handlerLabel = suppressL, catchClass = ""))
+  insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = handlerL, catchClass = ""))
 }
 
 // Lower `stmts[start..]`, honouring any `defer { … }` in that range.  The first
@@ -2630,7 +2710,7 @@ func lowerDeferRegion(
   insns.add(LLabel(name = startL))
   // Make the deferred block visible to `return` / `break` / `continue` inside
   // the protected region so they replay it before transferring control.
-  ctx.deferStack.add(deferBody)
+  ctx.deferStack.add(DeferBlockJvm(block = deferBody))
   ctx.deferRanSlots.add(ranSlot)
   val savedDepth = ctx.deferStack.count - 1
   lowerBlockStmtsFrom(ctx, insns, stmts, deferIdx + 1)
@@ -2971,7 +3051,7 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
   insns.add(LIconst(v = 0))
   insns.add(LIstore(slot = ranSlot))
   insns.add(LLabel(name = startL))
-  ctx.deferStack.add(deferBody)
+  ctx.deferStack.add(DeferBlockJvm(block = deferBody))
   ctx.deferRanSlots.add(ranSlot)
   val savedDepth = ctx.deferStack.count - 1
   // Recurse for the value-producing suffix (may contain further defers).

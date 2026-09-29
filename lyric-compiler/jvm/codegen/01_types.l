@@ -555,6 +555,16 @@ pub func jvmUnionBaseClass(cls: in String): String {
 // FuncCtx threads mutable state through expression and statement lowering.
 // `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
 // current next-slot / next-label integer; `.add` advances them.
+// One pending cleanup on `FuncCtx.deferStack`.
+pub union DeferEntryJvm {
+  // A `defer` or `finally` block, lowered again at each replay site.
+  case DeferBlockJvm(block: Block)
+  // `close()` the iterator held in local `itorSlot` when it is `AutoCloseable`:
+  // a `for` loop over an `Iterable` left by `return` or by a labelled
+  // `break`/`continue` to an enclosing loop (#7754, D143).
+  case DeferCloseIterJvm(itorSlot: Int)
+}
+
 pub record FuncCtx {
   pkgName: String            // JVM path, e.g. "com/example/Hello"
   className: String            // host class for static methods
@@ -621,14 +631,15 @@ pub record FuncCtx {
   // method descriptor (e.g. a plain Double literal narrows to Float).  JVoid
   // for void functions and hand-built / generator-internal contexts.
   retTy: JvmType
-  // Pending `defer { … }` blocks for the current lexical scope chain, innermost
-  // last.  A `defer` pushes its block here; the enclosing `lowerBlock` replays
-  // (and pops) the blocks it pushed on the normal fall-off path, and
-  // `return` / `break` / `continue` replay the still-pending blocks before
-  // transferring control so the deferred code runs on every non-exception
-  // exit.  The exception-unwind path is covered by a catch-all handler emitted
-  // around the deferred region (#1833, mirrors MSIL #1477).
-  deferStack: List[Block]
+  // Pending cleanups for the current lexical scope chain, innermost last: a
+  // `defer { … }` or `finally` block, or the iterator a `for` loop closes
+  // (#7754).  A `defer` pushes its block here; the enclosing `lowerBlock`
+  // replays (and pops) the blocks it pushed on the normal fall-off path, and
+  // `return` / `break` / `continue` replay the still-pending cleanups before
+  // transferring control so they run on every non-exception exit.  The
+  // exception-unwind path is covered by a catch-all handler emitted around the
+  // protected region (#1833, mirrors MSIL #1477).
+  deferStack: List[DeferEntryJvm]
   // `deferStack.count` captured at each enclosing loop's entry, innermost last.
   // `break` / `continue` replay the defers pushed inside the loop body (indices
   // >= this depth) before jumping, so a `defer` declared in a loop body runs on

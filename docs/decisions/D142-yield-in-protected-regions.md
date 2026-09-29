@@ -1,6 +1,6 @@
 # D142 — Where a generator may `yield` inside `try`/`defer` (docs/01 §7.2) (#7729)
 
-**Status:** accepted, implemented
+**Status:** accepted, implemented; rule 3 extended by D143 (disposal on every `for` exit, not only `break`)
 
 ## Context
 
@@ -29,7 +29,8 @@ lowering needs it.
    exception or an exit is in flight. The CLR cannot branch back into a
    handler, and a Lyric program that suspends mid-cleanup has no sensible
    resumption semantics on any target.
-3. When a consumer stops early (`break` out of its `for`), a generator
+3. When a consumer stops early (`break` out of its `for`; D143 extends this to
+   every exit — `return`, `?`, labelled jumps and exceptions), a generator
    suspended inside a `try` runs its pending `finally`/`defer` blocks,
    innermost first, before the consumer continues. No `catch` handler runs,
    and an exception a `finally`/`defer` block raises reaches the consumer.

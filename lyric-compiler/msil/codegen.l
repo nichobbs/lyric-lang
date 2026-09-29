@@ -5723,6 +5723,11 @@ pub record PhaseBCtx {
   promotedLocalSlots: List[Int]  // local-relative slot index (slot - paramCount)
   promotedLocalTypes: List[MsilType]
   // type of the promoted local (parallel)
+  // Per await index: the label the state dispatch enclosing the await branches
+  // to on resume — the resume label itself, or the entry of the outermost
+  // protected region (below that dispatch) the await sits in, such as a `for`
+  // loop's disposal region (#7754, see `genRegionDispatchMsil`).
+  dispatchTargets: List[Int]
 }
 
 pub record FuncCtx {
@@ -20823,11 +20828,11 @@ func forProtocolTempSlotsMsil(p: in ForProtocolMsil): Int {
     case ForIndexedMsil -> 4
     // ForIndexedMsil's four plus the typed-array fast-path slot (#7259)
     case ForIndexedArrayMsil -> 5
-    // enumerator, element, IDisposable probe
-    case ForIEnumerableMsil -> 3
-    // generator, CancellationToken, enumerator, MoveNextAsync ValueTask,
-    // element, DisposeAsync ValueTask
-    case ForAsyncEnumerableMsil -> 6
+    // enumerator, IDisposable probe, unwinding flag, element
+    case ForIEnumerableMsil -> 4
+    // generator, CancellationToken, enumerator, DisposeAsync ValueTask,
+    // unwinding flag, MoveNextAsync ValueTask, element
+    case ForAsyncEnumerableMsil -> 7
   }
 }
 
@@ -20971,12 +20976,219 @@ func emitCountingForMsil(
   checkForTempSlotsMsil(ForRangeMsil, temps)
 }
 
+// ── Enumerator disposal on every exit from a `for` loop (#7754, D143) ────────
+//
+// A `for` over an enumerator protocol disposes the enumerator however the loop
+// ends: exhaustion, `break`, `return` (including `?` propagation), a labelled
+// `break`/`continue` to an enclosing loop, or an exception.  For a Lyric
+// generator suspended inside a `try`, disposal runs its pending
+// `finally`/`defer` blocks (D142).  The loop is lowered as
+//
+//   unwinding = false
+//   .try {                                  // the disposal region
+//     .try {
+//       [resume dispatch, when the region contains a yield/await]
+//     loop: <MoveNext…>; brfalse done; <bind>; <body>
+//     cont: br loop
+//     done: leave after
+//     } fault { unwinding = true }
+//   } finally {
+//     [skipped while a generator/async state machine suspends through it]
+//     if unwinding { .try { <dispose> } catch Exception { } }
+//     else <dispose>
+//   }
+//   after:
+//
+// One `finally` is the single disposal point for every exit, so a `break`
+// never disposes twice.  An exception already propagating takes precedence
+// over one the disposal raises: .NET has no suppressed-exception list, so the
+// disposal's exception is dropped (the JVM attaches it with `addSuppressed`).
+// An exception from a disposal on a normal exit propagates.
+//
+// `break` targets `done`, inside the region, so this loop's own `break` and
+// `continue` are plain branches and `loopTryDepth` is the depth including the
+// region; a jump to an enclosing loop, and `return`, `leave` through it.
+union ForDisposeMsil {
+  // `IAsyncDisposable.DisposeAsync()` on the enumerator in `enumSlot`; the
+  // returned `ValueTask` is stored to `vtSlot` and discarded (a Lyric
+  // generator completes it synchronously).
+  case ForDisposeAsyncMsil(enumSlot: Int, tokDisposeAsync: Int, vtSlot: Int)
+  // `IDisposable.Dispose()` on the non-generic enumerator in `enumSlot` when it
+  // implements `IDisposable` (`System.Collections.IEnumerator` does not
+  // require it); `disposableSlot` holds the `isinst` probe.
+  case ForDisposeIfDisposableMsil(enumSlot: Int, disposableSlot: Int)
+}
+
+record ForDisposeRegionMsil {
+  tryStartL: Int
+  // `genRegionMarkMsil` on entry: the region's first yield/await index.
+  genMark: Int
+  // Where the region's resume dispatch is spliced (its first instruction).
+  bodyAt: Int
+  // Set by the fault handler: an exception is leaving the loop.
+  unwindingSlot: Int
+  // Inside the region: `leave`s to `afterL`.  The loop's `break` target.
+  doneL: Int
+  afterL: Int
+}
+
+// Open the disposal region.  Allocates the unwinding flag into `temps`.
+func beginForDisposeRegionMsil(fctx: in FuncCtx, insns: in List[MInsn], temps: in List[Int]): ForDisposeRegionMsil {
+  val unwindingSlot = allocForTempSlotMsil(fctx, temps, "__for_unwinding_" + toString(fctx.slotTicker.count), MBool)
+  insns.add(MLdcI4(v = 0))
+  emitStoreSlot(insns, unwindingSlot, fctx.paramCount)
+  val tryStartL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = tryStartL))
+  val genMark = genRegionMarkMsil(fctx)
+  val bodyAt = insns.count
+  fctx.tryRegionStack.add(0)
+  ForDisposeRegionMsil(
+    tryStartL = tryStartL,
+    genMark = genMark,
+    bodyAt = bodyAt,
+    unwindingSlot = unwindingSlot,
+    doneL = freshLabelMsil(fctx),
+    afterL = freshLabelMsil(fctx)
+  )
+}
+
+func emitForDisposeCallMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], d: in ForDisposeMsil): Unit {
+  match d {
+    case ForDisposeAsyncMsil(enumSlot, tokDisposeAsync, vtSlot) -> {
+      emitLoadSlot(insns, enumSlot, fctx.paramCount)
+      // The enumerator slot is `object`-typed; narrow it for the verifier.
+      insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIAsyncDisp))
+      insns.add(MCallvirt(methodToken = tokDisposeAsync))
+      emitStoreSlot(insns, vtSlot, fctx.paramCount)
+    }
+    case ForDisposeIfDisposableMsil(enumSlot, disposableSlot) -> {
+      val skipL = freshLabelMsil(fctx)
+      emitLoadSlot(insns, enumSlot, fctx.paramCount)
+      insns.add(MIsinst(typeToken = 0x01000000 + cctx.trIDisposable))
+      emitStoreSlot(insns, disposableSlot, fctx.paramCount)
+      emitLoadSlot(insns, disposableSlot, fctx.paramCount)
+      insns.add(MBrFalse(label = skipL))
+      emitLoadSlot(insns, disposableSlot, fctx.paramCount)
+      // `disposableSlot` is `MObject`-typed (it holds the `isinst` result), but
+      // `callvirt` needs a receiver assignable to `IDisposable` (#4772); the
+      // `isinst` + `brfalse` above make the `castclass` safe.
+      insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIDisposable))
+      insns.add(MCallvirt(methodToken = cctx.tokIDisposableDispose))
+      insns.add(MLabel(id = skipL))
+    }
+  }
+}
+
+// Close the disposal region after the loop body: emit `done` (the loop's exit),
+// the fault handler that flags an exception, and the `finally` that disposes.
+func endForDisposeRegionMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  r: in ForDisposeRegionMsil,
+  d: in ForDisposeMsil,
+): Unit {
+  insns.add(MLabel(id = r.doneL))
+  insns.add(MLeave(label = r.afterL))
+  fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+  genRegionDispatchMsil(fctx, insns, r.genMark, r.bodyAt, r.tryStartL)
+
+  val faultStartL = freshLabelMsil(fctx)
+  val faultEndL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = faultStartL))
+  insns.add(MLdcI4(v = 1))
+  emitStoreSlot(insns, r.unwindingSlot, fctx.paramCount)
+  insns.add(MEndfinally)  // `endfault` shares the opcode
+  insns.add(MLabel(id = faultEndL))
+  insns.add(
+    MEHClause(
+      flags = 4,
+      tryStart = r.tryStartL,
+      tryEnd = faultStartL,
+      handlerStart = faultStartL,
+      handlerEnd = faultEndL,
+      catchToken = 0
+    )
+  )
+
+  val finallyStartL = freshLabelMsil(fctx)
+  val finallyEndL = freshLabelMsil(fctx)
+  val suppressTryL = freshLabelMsil(fctx)
+  val suppressCatchL = freshLabelMsil(fctx)
+  val suppressEndL = freshLabelMsil(fctx)
+  val disposedL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = finallyStartL))
+  val guardSkipL = genFinallyGuardBeginMsil(fctx, insns, r.genMark)
+  emitLoadSlot(insns, r.unwindingSlot, fctx.paramCount)
+  insns.add(MBrTrue(label = suppressTryL))
+  emitForDisposeCallMsil(cctx, fctx, insns, d)
+  insns.add(MBr(label = disposedL))
+  insns.add(MLabel(id = suppressTryL))
+  emitForDisposeCallMsil(cctx, fctx, insns, d)
+  insns.add(MLeave(label = disposedL))
+  insns.add(MLabel(id = suppressCatchL))
+  insns.add(MPop)
+  insns.add(MLeave(label = disposedL))
+  insns.add(MLabel(id = suppressEndL))
+  insns.add(
+    MEHClause(
+      flags = 0,
+      tryStart = suppressTryL,
+      tryEnd = suppressCatchL,
+      handlerStart = suppressCatchL,
+      handlerEnd = suppressEndL,
+      catchToken = 0x01000000 + cctx.trException
+    )
+  )
+  insns.add(MLabel(id = disposedL))
+  genFinallyGuardEndMsil(insns, guardSkipL)
+  insns.add(MEndfinally)
+  insns.add(MLabel(id = finallyEndL))
+  insns.add(
+    MEHClause(
+      flags = 2,
+      tryStart = r.tryStartL,
+      tryEnd = finallyStartL,
+      handlerStart = finallyStartL,
+      handlerEnd = finallyEndL,
+      catchToken = 0
+    )
+  )
+  insns.add(MLabel(id = r.afterL))
+}
+
+// Lower a `for` loop's body inside a disposal region: bind the element in
+// `elemSlot` to `pat` and route `break`/`continue` (see above).
+func lowerForBodyInRegionMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  pat: in Pattern,
+  elemSlot: in Int,
+  elemTy: in MsilType,
+  body: in Block,
+  r: in ForDisposeRegionMsil,
+  contL: in Int,
+): Unit {
+  // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
+  // (#5191 follow-up).
+  val loopScope = enterBlockScopeMsil(fctx)
+  bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, elemTy)
+  fctx.loopBreak.add(r.doneL)
+  fctx.loopCont.add(contL)
+  fctx.loopTryDepth.add(fctx.tryRegionStack.count)
+  lowerBlockMsil(cctx, fctx, insns, body)
+  fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
+  fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
+  fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+  exitBlockScopeMsil(fctx, loopScope)
+}
+
 // IEnumerator protocol for extern types that implement IEnumerable but not
-// IList (e.g. MapKeyCollection, MapValueCollection, Set[T]).  Protocol:
-//   castclass IEnumerable
-//   GetEnumerator() → IEnumerator (non-generic)
-//   try { while MoveNext() { elem = get_Current(); body } }
-//   finally { if (enum is IDisposable) ((IDisposable)enum).Dispose(); }
+// IList (e.g. MapKeyCollection, MapValueCollection, Set[T]): `castclass
+// IEnumerable`, `GetEnumerator()` (non-generic), then the disposal region
+// above around `while MoveNext() { elem = get_Current(); body }`, disposing
+// when the enumerator is `IDisposable` (ECMA-334 §13.9.5, #4594).
 // Shared by the `MExternEnumerable` and `MSetOf` arms of the `for`-loop
 // dispatch in `emitCollectionForMsil` (#5711 factored this out of a single
 // `MExternEnumerable` arm so `Set[T]` iteration could reuse it verbatim).
@@ -20988,7 +21200,6 @@ func emitIEnumerableProtocolForMsil(
   body: in Block,
   eeElemTy: in MsilType,
 ): Unit {
-  // Cast the collection to System.Collections.IEnumerable and call GetEnumerator.
   insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIEnumerable))
   insns.add(MCallvirt(methodToken = cctx.tokIEnumerableGetEnumerator))
   // GetEnumerator() returns IEnumerator; the slot must be declared with that
@@ -20998,117 +21209,31 @@ func emitIEnumerableProtocolForMsil(
   val temps: List[Int] = newList()
   val eeEnumSlot = allocForTempSlotMsil(fctx, temps, "__ee_enum_" + toString(fctx.slotTicker.count), eeEnumTy)
   emitStoreSlot(insns, eeEnumSlot, fctx.paramCount)
-
-  // The loop body is wrapped in a try/finally so the enumerator is disposed
-  // (ECMA-334 §13.9.5) whether the loop runs to exhaustion or exits via
-  // `break` (#4594).  `eeAfterL` is the target for both — it sits outside
-  // the protected region, so `break` (via emitLoopJumpMsil) correctly emits
-  // `leave`, which runs the finally handler on its way out.  Not every
-  // non-generic IEnumerator implementation is disposable (the static
-  // System.Collections.IEnumerator type doesn't require it), so the finally
-  // handler does a runtime `isinst IDisposable` check before calling Dispose.
-  val eeAfterL = freshLabelMsil(fctx)
-  val eeTryStartL = freshLabelMsil(fctx)
-  insns.add(MLabel(id = eeTryStartL))
-  // Capture the try-nesting depth *before* this loop's own protected region
-  // is pushed below, matching every other loop construct's `loopTryDepth`
-  // convention (the ambient depth from the loop's enclosing scope, not
-  // including any region the loop sets up around its own body).  Using
-  // `fctx.tryRegionStack.count` *after* the push here would make a `break`
-  // emitted directly in the loop body compare equal to `loopTryDepth`
-  // (since both would already include this region), so `emitLoopJumpMsil`
-  // would wrongly emit `br` instead of `leave` to exit this try/finally —
-  // invalid MSIL (a branch out of a protected region) that fails
-  // verification at load time (#4769).
-  val eeOuterTryDepth = fctx.tryRegionStack.count
-  val eeGenMark = genRegionMarkMsil(fctx)
-  val eeBodyAt = insns.count
-  fctx.tryRegionStack.add(0)
-
-  val eeLoopL = freshLabelMsil(fctx)
-  val eeContL = freshLabelMsil(fctx)
-  val eeDoneL = freshLabelMsil(fctx)
-
-  insns.add(MLabel(id = eeLoopL))
-  // IEnumerator.MoveNext() → bool; false → exit loop (still inside the
-  // protected region; a plain conditional branch to a same-region label
-  // is legal, unlike a branch straight out of the region).
-  emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
-  insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorMoveNext))
-  insns.add(MBrFalse(label = eeDoneL))
-
-  // IEnumerator.get_Current() → object; cast to elemTy if concrete
-  emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
-  insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorGetCurrent))
-  castObjectToMsil(cctx, insns, eeElemTy)
-  val eeElemSlot = allocForTempSlotMsil(fctx, temps, "__ee_elem_" + toString(fctx.slotTicker.count), eeElemTy)
-  emitStoreSlot(insns, eeElemSlot, fctx.paramCount)
-  // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
-  // (#5191 follow-up).
-  val eeLoopScope = enterBlockScopeMsil(fctx)
-  bindForPatternMsil(cctx, fctx, insns, pat, eeElemSlot, eeElemTy)
-
-  fctx.loopBreak.add(eeAfterL)
-  fctx.loopCont.add(eeContL)
-  fctx.loopTryDepth.add(eeOuterTryDepth)
-  lowerBlockMsil(cctx, fctx, insns, body)
-  fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
-  fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
-  fctx.loopCont.removeAt(fctx.loopCont.count - 1)
-  exitBlockScopeMsil(fctx, eeLoopScope)
-
-  insns.add(MLabel(id = eeContL))
-  insns.add(MBr(label = eeLoopL))
-  insns.add(MLabel(id = eeDoneL))
-  insns.add(MLeave(label = eeAfterL))
-  fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
-  genRegionDispatchMsil(fctx, insns, eeGenMark, eeBodyAt, eeTryStartL)
-
-  val eeTryEndL = freshLabelMsil(fctx)
-  insns.add(MLabel(id = eeTryEndL))
-
-  val eeFinallyStartL = freshLabelMsil(fctx)
-  val eeFinallyEndL = freshLabelMsil(fctx)
-  val eeSkipDisposeL = freshLabelMsil(fctx)
-  insns.add(MLabel(id = eeFinallyStartL))
-  val eeGuardSkipL = genFinallyGuardBeginMsil(fctx, insns, eeGenMark)
-  emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
-  insns.add(MIsinst(typeToken = 0x01000000 + cctx.trIDisposable))
   val eeDisposableSlot = allocForTempSlotMsil(
     fctx,
     temps,
     "__ee_disposable_" + toString(fctx.slotTicker.count),
     MObject
   )
-  emitStoreSlot(insns, eeDisposableSlot, fctx.paramCount)
-  emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
-  insns.add(MBrFalse(label = eeSkipDisposeL))
-  emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
-  // `eeDisposableSlot` is `MObject`-typed (it holds the `isinst`
-  // result), but `callvirt` requires the stack value to be
-  // assignment-compatible with the declaring type of the called
-  // method — an `object` reference is not compatible with
-  // `IDisposable` (#4772).  `castclass` is safe here: `isinst` above
-  // already confirmed the runtime type implements `IDisposable`, and
-  // the `brfalse` just above confirmed it's non-null.
-  insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIDisposable))
-  insns.add(MCallvirt(methodToken = cctx.tokIDisposableDispose))
-  insns.add(MLabel(id = eeSkipDisposeL))
-  genFinallyGuardEndMsil(insns, eeGuardSkipL)
-  insns.add(MEndfinally)
-  insns.add(MLabel(id = eeFinallyEndL))
-  insns.add(
-    MEHClause(
-      flags = 2,
-      tryStart = eeTryStartL,
-      tryEnd = eeTryEndL,
-      handlerStart = eeFinallyStartL,
-      handlerEnd = eeFinallyEndL,
-      catchToken = 0
-    )
-  )
+  val dispose = ForDisposeIfDisposableMsil(enumSlot = eeEnumSlot, disposableSlot = eeDisposableSlot)
 
-  insns.add(MLabel(id = eeAfterL))
+  val region = beginForDisposeRegionMsil(fctx, insns, temps)
+  val eeLoopL = freshLabelMsil(fctx)
+  val eeContL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = eeLoopL))
+  emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
+  insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorMoveNext))
+  insns.add(MBrFalse(label = region.doneL))
+  // IEnumerator.get_Current() → object; cast to elemTy if concrete
+  emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
+  insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorGetCurrent))
+  castObjectToMsil(cctx, insns, eeElemTy)
+  val eeElemSlot = allocForTempSlotMsil(fctx, temps, "__ee_elem_" + toString(fctx.slotTicker.count), eeElemTy)
+  emitStoreSlot(insns, eeElemSlot, fctx.paramCount)
+  lowerForBodyInRegionMsil(cctx, fctx, insns, pat, eeElemSlot, eeElemTy, body, region, eeContL)
+  insns.add(MLabel(id = eeContL))
+  insns.add(MBr(label = eeLoopL))
+  endForDisposeRegionMsil(cctx, fctx, insns, region, dispose)
   checkForTempSlotsMsil(ForIEnumerableMsil, temps)
 }
 
@@ -21232,12 +21357,32 @@ func emitCollectionForMsil(
       insns.add(MInitobj(typeToken = 0x01000000 + cctx.trCancToken))
 
       // GetAsyncEnumerator(ct) → enumerator
+      // The generator and enumerator slots are `object`-typed (a generator
+      // hoists them to fields); each receiver is narrowed for the verifier.
       emitLoadSlot(insns, genSlot2, fctx.paramCount)
+      insns.add(MCastclass(typeToken = 0x1B000000 + tsIAERow2))
       insns.add(MLdloc(slot = ctSlot2 - fctx.paramCount))
       insns.add(MCallvirt(methodToken = tokGetEnum2))
       val enumSlot2 = allocForTempSlotMsil(fctx, temps, "__iae_enum_" + toString(fctx.slotTicker.count), MObject)
       emitStoreSlot(insns, enumSlot2, fctx.paramCount)
 
+      // DisposeAsync on the enumerator, on every exit from the loop (#7754,
+      // `endForDisposeRegionMsil`).  For a Lyric generator suspended inside a
+      // `try` this runs its pending `finally` blocks synchronously and
+      // rethrows what they throw (#7729, `synthesizeGeneratorMsil`); the
+      // returned ValueTask is already complete and is discarded.
+      val dispAsyncVtTy = MValueTypeRef(
+        typeRefCode = tdrTypeRef(cctx.trValueTask),
+        clrFqn = "System.Threading.Tasks.ValueTask"
+      )
+      val dispAsyncPs: List[MsilType] = newList()
+      val dispAsyncSig = buildInstanceMethodSig(dispAsyncPs, dispAsyncVtTy)
+      val tokDispAsync = 0x0A000000 +
+        ctxAddMemberRef(lctx, cctx.trIAsyncDisp, "DisposeAsync", "iasyncdisp_disposeasync", dispAsyncSig)
+      val dispVtSlot = allocForTempSlotMsil(fctx, temps, "__iae_disp_vt_" + toString(fctx.slotTicker.count), dispAsyncVtTy)
+      val dispose = ForDisposeAsyncMsil(enumSlot = enumSlot2, tokDisposeAsync = tokDispAsync, vtSlot = dispVtSlot)
+
+      val region = beginForDisposeRegionMsil(fctx, insns, temps)
       // Allocate ValueTask<bool> struct local for MoveNextAsync result
       val vtBoolLocalTy2Args: List[MsilType] = newList()
       vtBoolLocalTy2Args.add(MBool)
@@ -21250,61 +21395,32 @@ func emitCollectionForMsil(
 
       val loopL2 = freshLabelMsil(fctx)
       val contL2 = freshLabelMsil(fctx)
-      val afterL2 = freshLabelMsil(fctx)
 
       insns.add(MLabel(id = loopL2))
       // MoveNextAsync() → ValueTask<bool>; store struct; extract bool via get_Result
       emitLoadSlot(insns, enumSlot2, fctx.paramCount)
+      insns.add(MCastclass(typeToken = 0x1B000000 + tsIAETRow2))
       insns.add(MCallvirt(methodToken = tokMoveNext2))
       insns.add(MStloc(slot = vtSlot2 - fctx.paramCount))
       insns.add(MLdloca(slot = vtSlot2 - fctx.paramCount))
       insns.add(MCall(methodToken = tokVtRes2))
-      insns.add(MBrFalse(label = afterL2))
+      insns.add(MBrFalse(label = region.doneL))
 
       // get_Current() returns `object` (box-erased IAsyncEnumerator<object>).
       // Unbox/cast to the generator's declared element type so value-type
       // arithmetic and pattern-matching on the loop variable work correctly
       // (e.g. `total + x` where x comes from a genUpTo(5): Int generator).
       emitLoadSlot(insns, enumSlot2, fctx.paramCount)
+      insns.add(MCastclass(typeToken = 0x1B000000 + tsIAETRow2))
       insns.add(MCallvirt(methodToken = tokGetCurrent2))
       castObjectToMsil(cctx, insns, iaeElemTy)
       val elemSlot2 = allocForTempSlotMsil(fctx, temps, "__iae_elem_" + toString(fctx.slotTicker.count), iaeElemTy)
       emitStoreSlot(insns, elemSlot2, fctx.paramCount)
-      // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
-      // (#5191 follow-up).
-      val iaeLoopScope = enterBlockScopeMsil(fctx)
-      bindForPatternMsil(cctx, fctx, insns, pat, elemSlot2, iaeElemTy)
-
-      fctx.loopBreak.add(afterL2)
-      fctx.loopCont.add(contL2)
-      fctx.loopTryDepth.add(fctx.tryRegionStack.count)
-      lowerBlockMsil(cctx, fctx, insns, body)
-      fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
-      fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
-      fctx.loopCont.removeAt(fctx.loopCont.count - 1)
-      exitBlockScopeMsil(fctx, iaeLoopScope)
+      lowerForBodyInRegionMsil(cctx, fctx, insns, pat, elemSlot2, iaeElemTy, body, region, contL2)
 
       insns.add(MLabel(id = contL2))
       insns.add(MBr(label = loopL2))
-      insns.add(MLabel(id = afterL2))
-      // Call DisposeAsync on the enumerator when loop exits (either exhausted or
-      // via break) to satisfy the IAsyncEnumerator<T> consumption protocol.
-      // For a Lyric generator stopped by `break` while suspended inside a
-      // `try`, this runs its pending `finally` blocks synchronously and
-      // rethrows what they throw (#7729, `synthesizeGeneratorMsil`); the
-      // returned ValueTask is already complete and is discarded.
-      val dispAsyncVtTy = MValueTypeRef(
-        typeRefCode = tdrTypeRef(cctx.trValueTask),
-        clrFqn = "System.Threading.Tasks.ValueTask"
-      )
-      val dispAsyncPs: List[MsilType] = newList()
-      val dispAsyncSig = buildInstanceMethodSig(dispAsyncPs, dispAsyncVtTy)
-      val tokDispAsync = 0x0A000000 +
-        ctxAddMemberRef(lctx, cctx.trIAsyncDisp, "DisposeAsync", "iasyncdisp_disposeasync", dispAsyncSig)
-      val dispVtSlot = allocForTempSlotMsil(fctx, temps, "__iae_disp_vt_" + toString(fctx.slotTicker.count), dispAsyncVtTy)
-      emitLoadSlot(insns, enumSlot2, fctx.paramCount)
-      insns.add(MCallvirt(methodToken = tokDispAsync))
-      insns.add(MStloc(slot = dispVtSlot - fctx.paramCount))  // discard ValueTask by storing to unused local
+      endForDisposeRegionMsil(cctx, fctx, insns, region, dispose)
       checkForTempSlotsMsil(ForAsyncEnumerableMsil, temps)
     }
     case MExternEnumerable(eeElemTy) -> {
@@ -22604,18 +22720,57 @@ func emitLoopJumpMsil(fctx: in FuncCtx, insns: in List[MInsn], target: in Int, l
 //
 // A handler body (`catch`/`finally`) cannot be re-entered, so a `yield` there
 // is rejected by the type checker (T0142).
-// The yield index a protected region starts at, or -1 outside a generator.
+//
+// An `async func` state machine (Phase B) suspends at `await` the same way —
+// `leave` to the end of `MoveNext`, resume through a `switch` on `__state` — so
+// the region dispatch and the `finally` guard apply to its awaits too: an
+// `await` in the body of a `for` loop, which disposes its enumerator in a
+// `finally` (#7754), or after a `defer`.  A `try` written in an `async func`
+// cannot contain an `await` (V0012).
+//
+// The suspension-point index a protected region starts at (the next yield in
+// a generator, the next await in an async state machine), or -1 elsewhere.
 func genRegionMarkMsil(fctx: in FuncCtx): Int {
   if fctx.lazyGenCtx.count > 0 {
     fctx.lazyGenCtx[0].nextYieldIndex.count
+  } else if fctx.phaseBCtx.count > 0 {
+    fctx.phaseBCtx[0].nextAwaitIndex.count
   } else {
     -1
   }
 }
 
-// Whether a yield was lowered since `mark` (a `genRegionMarkMsil` result).
+// The state machine class that owns the suspension state field, and that
+// field's name.
+func genStateOwnerMsil(fctx: in FuncCtx): String {
+  if fctx.lazyGenCtx.count > 0 {
+    fctx.lazyGenCtx[0].genFqn
+  } else {
+    fctx.phaseBCtx[0].smFqn
+  }
+}
+
+func genStateFieldMsil(fctx: in FuncCtx): String {
+  if fctx.lazyGenCtx.count > 0 {
+    "_state"
+  } else {
+    "__state"
+  }
+}
+
+// Per suspension point, the label its enclosing dispatch branches to.
+func genDispatchTargetsMsil(fctx: in FuncCtx): List[Int] {
+  if fctx.lazyGenCtx.count > 0 {
+    fctx.lazyGenCtx[0].dispatchTargets
+  } else {
+    fctx.phaseBCtx[0].dispatchTargets
+  }
+}
+
+// Whether a suspension point was lowered since `mark` (a `genRegionMarkMsil`
+// result).
 func genRegionHasYieldMsil(fctx: in FuncCtx, mark: in Int): Bool {
-  mark >= 0 and fctx.lazyGenCtx[0].nextYieldIndex.count > mark
+  mark >= 0 and genRegionMarkMsil(fctx) > mark
 }
 
 // Insert `before` into `insns` at index `at`.
@@ -22653,19 +22808,21 @@ func genRegionDispatchMsil(
   if not genRegionHasYieldMsil(fctx, mark) {
     return
   }
-  val lg = fctx.lazyGenCtx[0]
+  val dispatchTargets = genDispatchTargetsMsil(fctx)
+  val markEnd = genRegionMarkMsil(fctx)
   val targets: List[Int] = newList()
   var k = mark
-  while k < lg.nextYieldIndex.count {
-    targets.add(lg.dispatchTargets[k])
-    lg.dispatchTargets[k] = tryStartL
+  while k < markEnd {
+    targets.add(dispatchTargets[k])
+    dispatchTargets[k] = tryStartL
     k = k + 1
   }
-  // `_state - mark` is negative (so unsigned-huge, falling through the
-  // switch) for a running generator and for yields outside this region.
+  // `state - mark` is negative (so unsigned-huge, falling through the
+  // switch) for a running state machine and for suspension points outside
+  // this region.
   val dispatch: List[MInsn] = newList()
   dispatch.add(MLdarg(slot = 0))
-  dispatch.add(MLdfldByName(ownerFqn = lg.genFqn, fieldName = "_state"))
+  dispatch.add(MLdfldByName(ownerFqn = genStateOwnerMsil(fctx), fieldName = genStateFieldMsil(fctx)))
   dispatch.add(MLdcI4(v = mark))
   dispatch.add(MSub)
   dispatch.add(MSwitch(labels = targets))
@@ -22681,7 +22838,7 @@ func genFinallyGuardBeginMsil(fctx: in FuncCtx, insns: in List[MInsn], mark: in 
   }
   val skipL = freshLabelMsil(fctx)
   insns.add(MLdarg(slot = 0))
-  insns.add(MLdfldByName(ownerFqn = fctx.lazyGenCtx[0].genFqn, fieldName = "_state"))
+  insns.add(MLdfldByName(ownerFqn = genStateOwnerMsil(fctx), fieldName = genStateFieldMsil(fctx)))
   insns.add(MLdcI4(v = 0))
   insns.add(MClt)
   insns.add(MBrFalse(label = skipL))
@@ -29172,6 +29329,7 @@ func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn
     )
   }
   val resumeL = pbc.resumeLabels[N]
+  pbc.dispatchTargets.add(resumeL)
   val awFldName = pbc.awaiterFieldNames[N]
 
   val resT = taskResultType(taskTy)
@@ -29864,7 +30022,8 @@ func synthesizeAsyncSmPhaseBMsil(
     smFields = smFields,
     promotedLocalNames = newList(),
     promotedLocalSlots = newList(),
-    promotedLocalTypes = newList()
+    promotedLocalTypes = newList(),
+    dispatchTargets = newList()
   )
   mnFctx.phaseBCtx.add(pbCtx)
 
@@ -29896,10 +30055,14 @@ func synthesizeAsyncSmPhaseBMsil(
   mnInsns.add(MLabel(id = tryStartL))
   mnFctx.tryRegionStack.add(0)
 
-  // State dispatch switch
+  // State dispatch switch: state N (suspended at await N) goes to that await's
+  // resume label, or to the entry of the outermost protected region enclosing
+  // it, which re-dispatches (#7754).  The targets are only known once the body
+  // is lowered, so the switch's label list is filled in below.
+  val outerAwaitTargets: List[Int] = newList()
   mnInsns.add(MLdarg(slot = 0))
   mnInsns.add(MLdfldByName(ownerFqn = smFqn, fieldName = "__state"))
-  mnInsns.add(MSwitch(labels = resumeLabels))
+  mnInsns.add(MSwitch(labels = outerAwaitTargets))
   mnInsns.add(MBr(label = bodyStartL))
 
   // Body start label
@@ -29977,6 +30140,15 @@ func synthesizeAsyncSmPhaseBMsil(
   while unusedRl < resumeLabels.count {
     mnInsns.add(MLabel(id = resumeLabels[unusedRl]))
     unusedRl = unusedRl + 1
+  }
+  var oat = 0
+  while oat < resumeLabels.count {
+    if oat < pbCtx.dispatchTargets.count {
+      outerAwaitTargets.add(pbCtx.dispatchTargets[oat])
+    } else {
+      outerAwaitTargets.add(resumeLabels[oat])
+    }
+    oat = oat + 1
   }
 
   // ── Normal completion epilogue ────────────────────────────────────────────
