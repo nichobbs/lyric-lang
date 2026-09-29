@@ -324,6 +324,36 @@ test "proof_required quantifier conjunct is dropped, plain conjunct kept" {
   }
 }
 
+// @proof_required modules retain contracts even when contractsEnabled = false
+// (#7732 / D-progress-994): proof obligations must not be user-disableable.
+test "proof_required with contractsEnabled = false keeps runtime checks" {
+  val src = "@proof_required\n" + "package P\n" + "import Std.Core\n" + "pub func f(x: in Bool): Bool\n" +
+    "  requires: x\n" +
+    "  ensures: result == true\n" +
+    "{\n" +
+    "  return true\n" +
+    "}\n"
+  val file = parseAndElaborateWithContracts(src, false)
+  val fn = firstFunction(file, "f")
+  match fn.body {
+    case None -> assertTrue(false, "proof_required with false: function body disappeared")
+    case Some(body) -> {
+      match body {
+        case FBBlock(blk) -> {
+          assertTrue(
+            blk.statements.count > 1,
+            "proof_required with false: contracts lowered into the body (not gated by contractsEnabled)"
+          )
+          assertTrue(isAssertCall(blk.statements[0]), "proof_required with false: stmt[0] is the requires assert")
+        }
+        case FBExpr(_) -> assertTrue(false, "proof_required with false: unexpected FBExpr body")
+      }
+    }
+  }
+  // The source clauses stay on the declaration for `lyric prove`.
+  assertEqualInt(fn.contracts.count, 2, "proof_required with false: both contracts preserved")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. @axiom functions are skipped (no body to elaborate).
 // ─────────────────────────────────────────────────────────────────────────────
