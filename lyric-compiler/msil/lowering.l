@@ -1155,6 +1155,9 @@ pub union ListOp {
   case LoRemoveAt  // callvirt RemoveAt(int32)
   case LoCastclass // castclass List`1<elemTy>
   case LoToArray   // callvirt ToArray() -> !0[]
+  case LoIndexOf     // callvirt IndexOf(!0) -> int32
+  case LoLastIndexOf // callvirt LastIndexOf(!0) -> int32
+  case LoRemove      // callvirt Remove(!0) -> bool
 }
 
 pub union DictOp {
@@ -2286,6 +2289,9 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         case LoRemoveAt -> emitCallvirt(mb, lt.removeAt)
         case LoCastclass -> emitCastclass(mb, lt.typeSpec)
         case LoToArray -> emitCallvirt(mb, lt.toArray)
+        case LoIndexOf -> emitCallvirt(mb, listElemMethodTokenForLowering(ctx, elemTy, lt, "IndexOf", MInt))
+        case LoLastIndexOf -> emitCallvirt(mb, listElemMethodTokenForLowering(ctx, elemTy, lt, "LastIndexOf", MInt))
+        case LoRemove -> emitCallvirt(mb, listElemMethodTokenForLowering(ctx, elemTy, lt, "Remove", MBool))
       }
     }
     case MDictOp(op, keyTy, valTy) -> {
@@ -4889,6 +4895,29 @@ pub func listTokensForLowering(ctx: in LoweringCtx, elemTy: in MsilType): ListTo
   )
   ctx.listTokenCache.add(key, t)
   t
+}
+
+// A `List`1<elemTy>` instance method taking one element (`!0`) — `IndexOf`,
+// `LastIndexOf`, `Remove` — as a MemberRef on the instantiation's cached
+// TypeSpec.  Interned on first use rather than in `listTokensForLowering`, so
+// a module that never calls one gets no MemberRef row for it.
+func listElemMethodTokenForLowering(
+  ctx: in LoweringCtx,
+  elemTy: in MsilType,
+  lt: in ListTokens,
+  name: in String,
+  retTy: in MsilType,
+): Int {
+  val ps: List[MsilType] = newList()
+  ps.add(MTypeVar(0))
+  0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      lt.typeSpec - 0x1B000000,
+      name,
+      "list_" + name + "_" + msilTypeKey(elemTy),
+      buildInstanceMethodSig(ps, retTy)
+    )
 }
 
 // Build (and cache) the concrete `Dictionary`2<keyTy,valTy>` operation tokens.

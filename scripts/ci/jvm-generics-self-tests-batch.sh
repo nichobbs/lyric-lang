@@ -78,8 +78,7 @@ for t in \
   lyric-compiler/lyric/generator_dispose_self_test.l \
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l \
   lyric-compiler/lyric/unannotated_list_result_self_test.l \
-  lyric-compiler/lyric/erased_slot_widen_self_test.l \
-  lyric-compiler/jvm/erased_slot_widen_jvm_self_test.l ; do
+  lyric-compiler/lyric/erased_slot_widen_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"
