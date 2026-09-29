@@ -4627,7 +4627,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           // body local) — see countGeneratorFieldsMsil's lockstep comment.
           // Record the prediction so synthesizeGeneratorMsil (Pass 2) can
           // cross-check it against the real hoisted field count.
-          val predictedGenFields = countGeneratorFieldsMsil(decl)
+          val predictedGenFields = countGeneratorFieldsMsil(cctx, pkgName, decl)
           fieldDefRow = fieldDefRow + predictedGenFields
           cctx.genFieldCountPredictions.add(predictedGenFields)
         }
@@ -28131,139 +28131,177 @@ func countSpillsStmt(stmt: in Statement): Int {
 // fields, not one shared field. `countGenLocalsBody` mirrors that by
 // counting every `let`/`var` declaration reachable from the body (no
 // dedup), recursing through the same statement/expression shapes that
-// `lowerBlockMsil`/`lowerExprMsil` recurse through.
+// `lowerBlockMsil`/`lowerExprMsil` recurse through.  A `var` captured by a
+// nested lambda is a heap cell occupying two slots (see the `LBVar` arm of
+// `countGenLocalsStmt`, #7715).
 //
 // Known scope boundary (mirrors the equivalent already-accepted gap in
 // `countSmFieldsMsil` / `countPromotedLocalsBlock`, which also does not
 // account for match-arm pattern binds): this does not additionally predict
-// fields for pattern-bound match-arm names, `for`-loop iterator temps, or
-// vars captured by a nested lambda (heap-cell machinery) — none of which
-// any current generator self-test exercises. If a future generator body
+// fields for pattern-bound match-arm names or `for`-loop iterator temps —
+// neither of which any current generator self-test exercises. If a future generator body
 // uses one of those forms, `synthesizeGeneratorMsil`'s post-hoisting
 // consistency check panics loudly rather than silently emitting wrong
 // FieldDef tokens for every type declared after it.
-func countGeneratorFieldsMsil(decl: in FunctionDecl): Int {
+func countGeneratorFieldsMsil(cctx: in CodegenCtx, pkgName: in String, decl: in FunctionDecl): Int {
   val base = 3 + 1 + decl.params.count  // +1 = __gen_ex, always hoisted
-  base + countGenLocalsBody(decl.body)
+  // Same name set `synthesizeGeneratorMsil`'s `runClosureCapturePrePassMsil`
+  // collects into `hoistedVarNames` (#7715).
+  val hoistedNms: List[String] = newList()
+  match decl.body {
+    case Some(FBBlock(blk)) -> collectInLambdaNamesBlock(blk, hoistedNms)
+    case Some(FBExpr(e)) -> collectInLambdaNamesExpr(e, hoistedNms)
+    case None -> ()
+  }
+  base + countGenLocalsBody(cctx, pkgName, hoistedNms, decl.body)
 }
 
-func countGenLocalsBody(bodyOpt: in Option[FunctionBody]): Int {
+func countGenLocalsBody(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  hoistedNms: in List[String],
+  bodyOpt: in Option[FunctionBody],
+): Int {
   match bodyOpt {
     case Some(body) -> {
       match body {
-        case FBBlock(blk) -> countGenLocalsBlock(blk)
-        case FBExpr(e) -> countGenLocalsExpr(e)
+        case FBBlock(blk) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, blk)
+        case FBExpr(e) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, e)
       }
     }
     case None -> 0
   }
 }
 
-func countGenLocalsBlock(blk: in Block): Int {
+func countGenLocalsBlock(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in List[String], blk: in Block): Int {
   var n = 0
   var i = 0
   while i < blk.statements.count {
-    n = n + countGenLocalsStmt(blk.statements[i])
+    n = n + countGenLocalsStmt(cctx, pkgName, hoistedNms, blk.statements[i])
     i = i + 1
   }
   n
 }
 
-func countGenLocalsStmt(stmt: in Statement): Int {
+func countGenLocalsStmt(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in List[String], stmt: in Statement): Int {
   match stmt.kind {
     case SLocal(binding) -> {
       match binding {
-        case LBLet(_, _, init) -> 1 + countGenLocalsExpr(init)
-        case LBVar(_, _, initOpt) -> {
-          1 + match initOpt { case Some(init) -> countGenLocalsExpr(init); case None -> 0 }
+        case LBLet(_, _, init) -> 1 + countGenLocalsExpr(cctx, pkgName, hoistedNms, init)
+        case LBVar(name, tyOpt, initOpt) -> {
+          // A closure-captured `var` is a heap cell (#7715): `finishHoistedCellMsil`
+          // allocates a `__cell_init_<n>` value slot plus the cell slot, both
+          // hoisted.  With no initializer and a `Unit` type the lowering takes
+          // the plain-slot path instead, exactly like an uncaptured `var`.
+          val isCell = nameListContains(hoistedNms, name) and
+            match initOpt {
+              case Some(_) -> true
+              case None -> match tyOpt {
+                case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName) != MVoid
+                case None -> true
+              }
+            }
+          val slots = if isCell { 2 } else { 1 }
+          slots + match initOpt { case Some(init) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, init); case None -> 0 }
         }
         // A plain `val x = ...` allocates a local slot exactly like `let`/`var`,
         // and generator synthesis hoists every body slot to a `__local_<slot>`
         // field by slot index (not binding form).  Omitting this `+ 1`
         // undercounted `val`-using generators, tripping the field-count
         // cross-check panic (#5582).
-        case LBVal(_, _, init) -> 1 + countGenLocalsExpr(init)
+        case LBVal(_, _, init) -> 1 + countGenLocalsExpr(cctx, pkgName, hoistedNms, init)
       }
     }
-    case SExpr(e) -> countGenLocalsExpr(e)
+    case SExpr(e) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, e)
     case SReturn(valOpt) -> {
       match valOpt {
-        case Some(e) -> countGenLocalsExpr(e)
+        case Some(e) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, e)
         case None -> 0
       }
     }
-    case SAssign(_, _, v) -> countGenLocalsExpr(v)
-    case SThrow(e) -> countGenLocalsExpr(e)
-    case SWhile(_, cond, body) -> countGenLocalsExpr(cond) + countGenLocalsBlock(body)
-    case SFor(_, _, iter, body) -> countGenLocalsExpr(iter) + countGenLocalsBlock(body)
-    case SLoop(_, body) -> countGenLocalsBlock(body)
-    case SScope(_, body) -> countGenLocalsBlock(body)
-    case SDefer(body) -> countGenLocalsBlock(body)
+    case SAssign(_, _, v) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, v)
+    case SThrow(e) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, e)
+    case SWhile(_, cond, body) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, cond) +
+      countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
+    case SFor(_, _, iter, body) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, iter) +
+      countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
+    case SLoop(_, body) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
+    case SScope(_, body) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
+    case SDefer(body) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
     case STry(body, catches, finally_) -> {
-      var n = countGenLocalsBlock(body)
+      var n = countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
       var ci = 0
       while ci < catches.count {
-        n = n + countGenLocalsBlock(catches[ci].body)
+        n = n + countGenLocalsBlock(cctx, pkgName, hoistedNms, catches[ci].body)
         ci = ci + 1
       }
-      n = n + match finally_ { case Some(fb) -> countGenLocalsBlock(fb); case None -> 0 }
+      n = n + match finally_ { case Some(fb) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, fb); case None -> 0 }
       n
     }
     case _ -> 0
   }
 }
 
-func countGenLocalsExpr(e: in Expr): Int {
+func countGenLocalsExpr(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in List[String], e: in Expr): Int {
   match e.kind {
-    case EBlock(b) -> countGenLocalsBlock(b)
-    case EUnsafe(b) -> countGenLocalsBlock(b)
-    case EParen(inner) -> countGenLocalsExpr(inner)
+    case EBlock(b) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, b)
+    case EUnsafe(b) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, b)
+    case EParen(inner) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
     case EIf(c, t, el, _) -> {
-      var n = countGenLocalsExpr(c)
-      n = n + match t { case EOBBlock(b) -> countGenLocalsBlock(b); case EOBExpr(e2) -> countGenLocalsExpr(e2) }
+      var n = countGenLocalsExpr(cctx, pkgName, hoistedNms, c)
+      n = n +
+        match t {
+          case EOBBlock(b) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, b)
+          case EOBExpr(e2) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, e2)
+        }
       n = n +
         match el {
           case Some(eb) -> match eb {
-            case EOBBlock(b) -> countGenLocalsBlock(b)
-            case EOBExpr(e2) -> countGenLocalsExpr(e2)
+            case EOBBlock(b) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, b)
+            case EOBExpr(e2) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, e2)
           }
           case None -> 0
         }
       n
     }
     case EMatch(scr, arms) -> {
-      var n = countGenLocalsExpr(scr)
+      var n = countGenLocalsExpr(cctx, pkgName, hoistedNms, scr)
       var ami = 0
       while ami < arms.count {
         n = n +
-          match arms[ami].body { case EOBBlock(b) -> countGenLocalsBlock(b); case EOBExpr(e2) -> countGenLocalsExpr(e2) }
+          match arms[ami].body {
+            case EOBBlock(b) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, b)
+            case EOBExpr(e2) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, e2)
+          }
         ami = ami + 1
       }
       n
     }
     case ECall(callee, args) -> {
-      var n = countGenLocalsExpr(callee)
+      var n = countGenLocalsExpr(cctx, pkgName, hoistedNms, callee)
       var ai = 0
       while ai < args.count {
         val argE = match args[ai] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
-        n = n + countGenLocalsExpr(argE)
+        n = n + countGenLocalsExpr(cctx, pkgName, hoistedNms, argE)
         ai = ai + 1
       }
       n
     }
-    case EBinop(_, l, r) -> countGenLocalsExpr(l) + countGenLocalsExpr(r)
-    case EPrefix(_, op) -> countGenLocalsExpr(op)
-    case EMember(recv, _) -> countGenLocalsExpr(recv)
-    case EAwait(inner) -> countGenLocalsExpr(inner)
-    case ESpawn(inner) -> countGenLocalsExpr(inner)
-    case ETry(inner) -> countGenLocalsExpr(inner)
-    case EPropagate(inner) -> countGenLocalsExpr(inner)
-    case EAssign(lhs, _, rhs) -> countGenLocalsExpr(lhs) + countGenLocalsExpr(rhs)
+    case EBinop(_, l, r) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, l) +
+      countGenLocalsExpr(cctx, pkgName, hoistedNms, r)
+    case EPrefix(_, op) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, op)
+    case EMember(recv, _) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, recv)
+    case EAwait(inner) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
+    case ESpawn(inner) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
+    case ETry(inner) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
+    case EPropagate(inner) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
+    case EAssign(lhs, _, rhs) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, lhs) +
+      countGenLocalsExpr(cctx, pkgName, hoistedNms, rhs)
     case ETuple(elems) -> {
       var n = 0
       var ti = 0
       while ti < elems.count {
-        n = n + countGenLocalsExpr(elems[ti])
+        n = n + countGenLocalsExpr(cctx, pkgName, hoistedNms, elems[ti])
         ti = ti + 1
       }
       n
@@ -28272,16 +28310,16 @@ func countGenLocalsExpr(e: in Expr): Int {
       var n = 0
       var li = 0
       while li < elems.count {
-        n = n + countGenLocalsExpr(elems[li])
+        n = n + countGenLocalsExpr(cctx, pkgName, hoistedNms, elems[li])
         li = li + 1
       }
       n
     }
     case EIndex(recv, indices) -> {
-      var n = countGenLocalsExpr(recv)
+      var n = countGenLocalsExpr(cctx, pkgName, hoistedNms, recv)
       var idi = 0
       while idi < indices.count {
-        n = n + countGenLocalsExpr(indices[idi])
+        n = n + countGenLocalsExpr(cctx, pkgName, hoistedNms, indices[idi])
         idi = idi + 1
       }
       n
@@ -28292,7 +28330,7 @@ func countGenLocalsExpr(e: in Expr): Int {
       while ipi < segs.count {
         match segs[ipi] {
           case ISExpr(ex) -> {
-            n = n + countGenLocalsExpr(ex)
+            n = n + countGenLocalsExpr(cctx, pkgName, hoistedNms, ex)
           }
           case ISText(_, _) -> ()
         }
@@ -28300,13 +28338,15 @@ func countGenLocalsExpr(e: in Expr): Int {
       }
       n
     }
-    case ETypeApp(inner, _) -> countGenLocalsExpr(inner)
+    case ETypeApp(inner, _) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
     case ERange(bound) -> {
       match bound {
-        case RBClosed(lo, hi) -> countGenLocalsExpr(lo) + countGenLocalsExpr(hi)
-        case RBHalfOpen(lo, hi, _) -> countGenLocalsExpr(lo) + countGenLocalsExpr(hi)
-        case RBLowerOpen(hi) -> countGenLocalsExpr(hi)
-        case RBUpperOpen(lo) -> countGenLocalsExpr(lo)
+        case RBClosed(lo, hi) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, lo) +
+          countGenLocalsExpr(cctx, pkgName, hoistedNms, hi)
+        case RBHalfOpen(lo, hi, _) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, lo) +
+          countGenLocalsExpr(cctx, pkgName, hoistedNms, hi)
+        case RBLowerOpen(hi) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, hi)
+        case RBUpperOpen(lo) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, lo)
       }
     }
     case ELambda(_, _) -> 0
@@ -29807,6 +29847,12 @@ func synthesizeGeneratorMsil(
   // returns unwrap synchronously (see FuncCtx.asyncFuncFlag).
   mnFctx.asyncFuncFlag.add(1)
   mnFctx.slotTicker.add(0)  // reserve slot 0 for 'this'
+  // #7715: see `runClosureCapturePrePassMsil` — `makeFuncCtxMsil` starts
+  // `hoistedVarNames` empty, so a generator-body `var` that a closure mutates
+  // hit the not-hoisted invariant panic.  The resulting cell local is an
+  // ordinary body local, so the yield save/restore below carries the cell
+  // reference (not its value) across resumptions.
+  runClosureCapturePrePassMsil(mnFctx, decl.body)
 
   // Pre-allocate labels.
   val tryStartL = freshLabelMsil(mnFctx)

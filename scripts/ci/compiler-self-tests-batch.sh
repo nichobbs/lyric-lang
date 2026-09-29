@@ -63,6 +63,7 @@ for t in \
   lyric-compiler/lyric/range_subtype_self_test.l \
   lyric-compiler/lyric/fmt_self_test.l \
   lyric-compiler/lyric/async_generator_self_test.l \
+  lyric-compiler/lyric/generator_closure_var_capture_self_test.l \
   lyric-compiler/lyric/class_encoding_self_test.l \
   lyric-compiler/lyric/hof_type_propagation_self_test.l \
   lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
