@@ -560,6 +560,52 @@ pub func createContainerBody(image: in String, env: in slice[String], binds: in 
   return createContainerBodyWithNetwork(image, env, binds, "")
 }
 
+/// `createContainerBodyWithNetwork`, additionally pinning an explicit DNS
+/// resolver list (`HostConfig.Dns`). `dns` is only emitted when non-empty, so
+/// a caller passing `[]` gets byte-identical output to
+/// `createContainerBodyWithNetwork` — no behavior change for existing
+/// callers.
+///
+/// This exists because the Docker default `bridge` network's DNS resolution
+/// depends on the DAEMON HOST's own `/etc/resolv.conf` at container-creation
+/// time, unlike a user-defined network (which gets Docker's embedded DNS
+/// server at 127.0.0.11 regardless of the host's resolver setup). A host
+/// whose resolver is a loopback stub — `systemd-resolved`'s 127.0.0.53 is the
+/// common case on modern Debian/Ubuntu — hands containers on the default
+/// bridge network a DNS server address that is only reachable from the HOST's
+/// own network namespace, not the container's, so outbound name resolution
+/// fails (intermittently or entirely) for any container that doesn't pin a
+/// named network of its own. Passing an explicit `dns` sidesteps the host's
+/// resolver setup entirely, at the cost of bypassing whatever internal
+/// service-name resolution a user-defined network's embedded DNS would
+/// otherwise provide — so a caller attaching to a named network for a reason
+/// (e.g. resolving another container's name on that network) should leave
+/// `dns` empty and let that network's own DNS story stand.
+/// Public so tests can exercise `jsonEscapeValue`'s control-character and
+/// named-escape branches without a live Docker daemon (#4535).
+pub func createContainerBodyWithNetworkAndDns(
+  image: in String,
+  env: in slice[String],
+  binds: in slice[String],
+  networkMode: in String,
+  dns: in slice[String],
+): String
+  requires: image.length > 0
+  requires: allEnvEntriesHaveEquals(env)
+  requires: allBindsValid(binds)
+{
+  var hostConfig = "\"Binds\":" + jsonStringArray(binds)
+  if networkMode.length > 0 {
+    hostConfig = hostConfig + ",\"NetworkMode\":\"" + jsonEscapeValue(networkMode) + "\""
+  }
+  if dns.length > 0 {
+    hostConfig = hostConfig + ",\"Dns\":" + jsonStringArray(dns)
+  }
+  return "{\"Image\":\"" + jsonEscapeValue(image) + "\",\"Env\":" + jsonStringArray(env) + ",\"HostConfig\":{" +
+    hostConfig +
+    "}}"
+}
+
 /// Parse a 4-character hexadecimal string into its integer value, or
 /// `None` if any character isn't a valid hex digit. Decodes a `\uXXXX`
 /// JSON escape's payload; Lyric's stdlib has no radix-aware integer
@@ -1131,6 +1177,40 @@ pub async func createContainerWithNetwork(
   val request = Std.Http.withJsonBody(
     Std.Http.request(Std.Http.POST, url),
     createContainerBodyWithNetwork(image, env, binds, networkMode)
+  )
+  match await sendAndReadBody(client, request, urlStr, "Create container failed") {
+    case Ok(body) -> {
+      val id = extractJsonField(body, "Id")
+      if id.length == 0 {
+        Err(error = DockerError(statusCode = None, message = "Create container returned no Id", details = body))
+      } else {
+        ContainerId.tryFrom(id)
+      }
+    }
+    case Err(e) -> Err(error = e)
+  }
+}
+
+/// `createContainerWithNetwork`, additionally pinning an explicit DNS
+/// resolver list (see `createContainerBodyWithNetworkAndDns` for why this
+/// exists — the default `bridge` network's DNS depends on the daemon host's
+/// own resolver setup, which a loopback-stub resolver like
+/// `systemd-resolved` makes unreachable from inside a container). An empty
+/// `dns` omits the field, identically to `createContainerWithNetwork`.
+/// Returns the new container's validated id.
+pub async func createContainerWithNetworkAndDns(
+  client: in DockerClient,
+  image: in String,
+  env: in slice[String],
+  binds: in slice[String],
+  networkMode: in String,
+  dns: in slice[String],
+): Result[ContainerId, DockerError] {
+  val urlStr = client.apiBase + "/containers/create"
+  val url = resolveDockerUrl(urlStr)?
+  val request = Std.Http.withJsonBody(
+    Std.Http.request(Std.Http.POST, url),
+    createContainerBodyWithNetworkAndDns(image, env, binds, networkMode, dns)
   )
   match await sendAndReadBody(client, request, urlStr, "Create container failed") {
     case Ok(body) -> {

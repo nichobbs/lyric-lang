@@ -178,6 +178,7 @@ source compatibility.
 - `listContainers(client)` — List all containers
 - `createContainer(client, image, env, binds)` — Create a container from an image with env vars and volume binds, using the Docker default network. Returns the new container's validated `ContainerId`.
 - `createContainerWithNetwork(client, image, env, binds, networkMode)` — Create a container, additionally pinning its NetworkMode (e.g. `"none"` for full isolation, or a named Docker network); an empty `networkMode` keeps the Docker default. Also validates `image`/`env`/`binds` up front (see "Container creation preconditions" below).
+- `createContainerWithNetworkAndDns(client, image, env, binds, networkMode, dns)` — `createContainerWithNetwork`, additionally pinning an explicit DNS resolver list (`HostConfig.Dns`); an empty `dns` omits the field, identically to `createContainerWithNetwork`. See "Explicit DNS on the default bridge network" below for why this exists.
 - `startContainer(client, containerId)` — Start a created container
 - `waitContainer(client, containerId, timeoutSec)` — Block until a container exits (or `timeoutSec` elapses); returns its exit code
 - `stopContainer(client, containerId, timeoutSec)` — Stop a running container, giving it up to `timeoutSec` seconds to exit gracefully before Docker sends SIGKILL
@@ -203,13 +204,43 @@ Both take `timeoutSec: in Int` with `requires: timeoutSec > 0`; `waitContainer` 
 #### Container creation preconditions
 
 `createContainerBodyWithNetwork` (and `createContainer`/
-`createContainerWithNetwork`, which call it) requires:
+`createContainerWithNetwork`, which call it — and
+`createContainerBodyWithNetworkAndDns`/`createContainerWithNetworkAndDns`,
+which share the same precondition set) requires:
 - `image` is non-empty;
 - every `env` entry contains `=` (`KEY=VALUE` shape);
 - every `binds` entry is shaped `src:dst` or `src:dst:mode`, with every
   colon-separated part non-empty.
 
 A violation panics rather than sending a malformed request body to Docker.
+
+#### Explicit DNS on the default bridge network
+
+An empty `networkMode` (the `createContainer`/`createContainerWithNetwork`
+default) puts the new container on Docker's default `bridge` network. Unlike
+a user-defined network — which gets Docker's embedded DNS server at
+`127.0.0.11` regardless of the host's own resolver setup — the default
+`bridge` network copies the **daemon host's** `/etc/resolv.conf` into the
+container at creation time. If the host's resolver is a loopback stub
+(`systemd-resolved`'s `127.0.0.53` is the common case on modern
+Debian/Ubuntu), that address is meaningless inside the container's own
+network namespace, and outbound DNS resolution for the container fails
+(intermittently or entirely) with no code-level indication of why.
+
+`createContainerWithNetworkAndDns`/`createContainerBodyWithNetworkAndDns`
+take an extra `dns: slice[String]` parameter that, when non-empty, sets
+`HostConfig.Dns` explicitly (e.g. `["1.1.1.1", "8.8.8.8"]`), sidestepping the
+host's resolver setup entirely for that container. An empty `dns` list omits
+the field and is byte-identical to the non-`Dns` builder — passing `[]` is a
+no-op, not a behavior change.
+
+This is a real tradeoff, not a strict improvement: setting an explicit `dns`
+overrides whatever DNS story a *named* network would otherwise provide,
+including that network's own embedded-DNS resolution of other containers'
+names on it. A caller pinning `networkMode` to a user-defined network for
+that reason should leave `dns` empty and rely on the network's own DNS.
+`dns` is most useful specifically for the empty-`networkMode` (default
+bridge) case, where there is no other DNS story to preserve.
 
 ### Image Operations
 
