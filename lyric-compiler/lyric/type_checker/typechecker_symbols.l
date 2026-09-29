@@ -271,6 +271,9 @@ pub record SymbolTable {
   /// uniform boxed delegate must know a call's result type to unbox it, and
   /// cannot infer it from a lambda body that reads captured locals (#7711).
   localFuncTypeSites: Map[String, TypeExpr]
+  /// Each call through a function value, keyed by `recordCopySiteKey` of the
+  /// call's span (see `Lyric.Parser.FuncValueCallSite`, #7716).
+  funcValueCallSites: Map[String, FuncValueCallSite]
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
   /// opaque, protected or distinct type each field-access or method-call receiver
   /// has, keyed like
@@ -359,6 +362,7 @@ pub func newSymbolTable(): SymbolTable {
     argConversionSites = newMap(),
     callResultTypes = newMap(),
     localFuncTypeSites = newMap(),
+    funcValueCallSites = newMap(),
     memberRecvClasses = newMap(),
     typeSymbolsById = newMap(),
     typeSymbolsIndexed = newList(),

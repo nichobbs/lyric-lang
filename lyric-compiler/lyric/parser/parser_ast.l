@@ -1208,6 +1208,22 @@ pub record ArgConversionSite {
   startOffset: Int
 }
 
+/// A call through a function value that the type checker typed: `calleeType`
+/// is the callee's checked function type spelled as source.  A backend that
+/// erases function values to a uniform boxed delegate must know a call's
+/// result type to unbox it, whatever bound the callee (a loop variable, a
+/// pattern, a list element), so `Lyric.Mono.desugarCheckedFile` binds the
+/// callee to a local annotated with this type and calls that (#7716).
+/// `rendered` identifies the type; two checked calls sharing one source
+/// position (synthesized code) with different types are `conflicting` and
+/// left as written.
+pub record FuncValueCallSite {
+  calleeType: TypeExpr
+  rendered: String
+  conflicting: Bool
+  startOffset: Int
+}
+
 /// The key of a record-copy call site: its span's start and end offsets.
 pub func recordCopySiteKey(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)

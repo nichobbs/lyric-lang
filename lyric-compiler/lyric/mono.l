@@ -277,6 +277,11 @@ record MonoState {
   /// of the initializer's span; `rewriteBinding` makes it the binding's
   /// annotation (#7711).
   localFuncTypeSites: Map[String, TypeExpr]
+  /// Each call through a function value the type checker typed
+  /// (`SymbolTable.funcValueCallSites`), keyed by `recordCopySiteKey` of the
+  /// call's span; `funcValueCallMono` calls it through a local annotated with
+  /// the callee's type (#7716).
+  funcValueCallSites: Map[String, FuncValueCallSite]
   /// Counter for the fresh locals a copy desugar binds (length = next id).
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
@@ -321,6 +326,7 @@ func newMonoState(
     lambdaTypes = newMap(),
     callResultTypes = newMap(),
     localFuncTypeSites = newMap(),
+    funcValueCallSites = newMap(),
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
@@ -4016,22 +4022,24 @@ func funcRefLambdaMono(site: in FuncRefSite, sp: in Span): Expr {
 /// could not lower.  Only items containing a site are rewritten, and no
 /// generic is registered, so nothing is specialised here.
 pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, RecordCopySite]): MonoResult {
-  desugarCheckedFile(file, sites, newMap(), newMap(), newMap())
+  desugarCheckedFile(file, sites, newMap(), newMap(), newMap(), newMap())
 }
 
 /// The post-type-check desugars: record `.copy(...)` calls (D-progress-948),
 /// cross-package function values (D-progress-963), widened function-value
-/// call arguments (D-progress-964) and the annotations of unannotated
-/// function-valued locals (#7711), each keyed by the type checker's span key.
+/// call arguments (D-progress-964), the annotations of unannotated
+/// function-valued locals (#7711) and the callee types of calls through
+/// function values (#7716), each keyed by the type checker's span key.
 pub func desugarCheckedFile(
   file: in SourceFile,
   sites: in Map[String, RecordCopySite],
   funcRefSites: in Map[String, FuncRefSite],
   argConversionSites: in Map[String, ArgConversionSite],
   localFuncTypeSites: in Map[String, TypeExpr],
+  funcValueCallSites: in Map[String, FuncValueCallSite],
 ): MonoResult {
   val noRewrites: Map[String, String] = newMap()
-  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localFuncTypeSites.count == 0 {
+  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localFuncTypeSites.count == 0 and funcValueCallSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
     return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags)
   }
@@ -4106,6 +4114,18 @@ pub func desugarCheckedFile(
       case None -> ()
     }
     li = li + 1
+  }
+  val callKeys = mapKeys(funcValueCallSites)
+  var vi = 0
+  while vi < callKeys.count {
+    match mapGet(funcValueCallSites, callKeys[vi]) {
+      case Some(site) -> if not site.conflicting {
+        state.funcValueCallSites.add(callKeys[vi], site)
+        offsets.add(site.startOffset)
+      }
+      case None -> ()
+    }
+    vi = vi + 1
   }
   val items: List[Item] = newList()
   var i = 0
@@ -4358,6 +4378,38 @@ func desugarRecordCopyMono(
   val ctorPath = ModulePath(segments = ctorSegs, span = sp)
   val ctor = Expr(kind = ECall(fn = Expr(kind = EPath(path = ctorPath), span = sp), args = ctorArgs), span = sp)
   stmts.add(Statement(kind = SExpr(expr = ctor), span = sp))
+  Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+}
+
+// A call through a function value, `callee(args)`, becomes
+//
+//   {
+//     val __lyric_fv_<n>: <callee's checked function type> = callee
+//     __lyric_fv_<n>(args)
+//   }
+//
+// so the call goes through a binding of known function type however the
+// callee was bound: a backend that invokes function values through a uniform
+// boxed delegate unboxes the result by that type (#7716).  The callee is
+// evaluated before the arguments, as written.
+func funcValueCallMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  callee: in Expr,
+  args: in List[CallArg],
+  site: in FuncValueCallSite,
+  sp: in Span,
+): Expr {
+  val id = state.copyTicker.count
+  state.copyTicker.add(0)
+  val name = "__lyric_fv_" + toString(id)
+  val stmts: List[Statement] = newList()
+  stmts.add(copyTypedValStmtMono(name, Some(value = site.calleeType), rewriteExpr(state, env, callee), sp))
+  val call = Expr(
+    kind = ECall(fn = singleSegPathExpr(name, callee.span), args = rewriteCallArgs(state, env, args)),
+    span = sp
+  )
+  stmts.add(Statement(kind = SExpr(expr = call), span = sp))
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
 }
 
@@ -5262,6 +5314,15 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
           kind = ECall(fn = Expr(kind = EMember(receiver = inner, memberName = conv.method), span = s), args = noArgs),
           span = s
         )
+      }
+      case None -> ()
+    }
+  }
+  if state.funcValueCallSites.count > 0 {
+    match mapGet(state.funcValueCallSites, recordCopySiteKey(s)) {
+      case Some(site) -> match expr.kind {
+        case ECall(callee, callArgs) -> return funcValueCallMono(state, env, callee, callArgs, site, s)
+        case _ -> ()
       }
       case None -> ()
     }
