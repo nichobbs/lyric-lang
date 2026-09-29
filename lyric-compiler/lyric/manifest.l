@@ -929,22 +929,30 @@ func hasSection(entries: in List[Entry], section: in String): Bool {
 
 // Check if a section header exists in the raw TOML text.
 // Scans for `[sectionName]` as a section header (on its own line after optional whitespace).
+// Handles internal whitespace in brackets (e.g., `[ contracts ]`), same as the TOML tokenizer.
 func hasSectionInText(text: in String, sectionName: in String): Bool {
   val lines = Str.split(text, "\n")
-  val sectionHeader = "[" + sectionName + "]"
-  val headerLen = Str.length(sectionHeader)
   var i = 0
   while i < lines.count {
     val line = Str.trimStart(lines[i])
-    if Str.startsWith(line, sectionHeader) {
-      // Verify it's actually a section header: the text after [sectionName] should be
-      // end-of-line, whitespace, or a comment (starting with #)
-      val afterHeader = if Str.length(line) > headerLen { Str.substring(line, headerLen) } else { "" }
-      if Str.isEmpty(afterHeader) {
-        return true
-      }
-      if Str.startsWith(afterHeader, "#") or Str.startsWith(afterHeader, " ") or Str.startsWith(afterHeader, "\t") or Str.startsWith(afterHeader, "\r") {
-        return true
+    if Str.startsWith(line, "[") {
+      match Str.indexOf(line, "]") {
+        case Some(closeIdx) -> {
+          if closeIdx > 1 {
+            // Extract section name between brackets and trim internal whitespace
+            val rawSection = Str.substring(line, 1, closeIdx - 1)
+            val trimmedSection = Str.trim(rawSection)
+            if trimmedSection == sectionName {
+              // Verify text after `]` is end-of-line, whitespace, or comment
+              val afterHeader = if Str.length(line) > closeIdx + 1 { Str.substring(line, closeIdx + 1) } else { "" }
+              if Str.isEmpty(afterHeader) or Str.startsWith(afterHeader, "#") or Str.startsWith(afterHeader, " ") or Str.startsWith(afterHeader, "\t") or Str.startsWith(afterHeader, "\r") {
+                return true
+              }
+            }
+          }
+        }
+        case None -> {
+        }
       }
     }
     i += 1
@@ -1042,7 +1050,10 @@ func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], Manife
 /// section header in raw text to handle empty sections correctly (since an entry-based
 /// parser only sees key-value pairs, not bare section headers).
 func assembleContracts(text: in String, entries: in List[Entry]): Result[Option[ContractsSection], ManifestError] {
-  if not hasSectionInText(text, "contracts") {
+  // Check for [contracts] section using both text scan and parsed entries.
+  // Text scan might fail on whitespace-padded headers like `[ contracts ]`, so also
+  // check the parsed entries which the TOML tokenizer has already normalized (#7739).
+  if not (hasSectionInText(text, "contracts") or hasSection(entries, "contracts")) {
     return Ok(value = None)
   }
   val enabled = findBool(entries, "contracts", "enabled", true)

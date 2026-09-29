@@ -1152,3 +1152,27 @@ test "[contracts] enabled defaults to true when field absent" {
     case None -> panic("[contracts] section should be present when it appears in TOML")
   }
 }
+
+test "[contracts] section with internal whitespace: simple case" {
+  val toml = "[package]\nname = \"test-pkg\"\nversion = \"1.0.0\"\n[ contracts ]\n"
+  val m = parseOk(toml)
+  match m.contracts {
+    case Some(cs) -> assertTrue(
+      cs.enabled,
+      "[contracts] with whitespace: section recognized and enabled defaults to true"
+    )
+    case None -> panic("[contracts] section with internal whitespace should be recognized (simple case)")
+  }
+}
+
+test "[contracts] section with internal whitespace in brackets" {
+  val toml = "[package]\nname = \"test-pkg\"\nversion = \"1.0.0\"\n[ contracts ]\nenabled = false\n"
+  val m = parseOk(toml)
+  match m.contracts {
+    case Some(cs) -> assertTrue(
+      not cs.enabled,
+      "[contracts] with whitespace: enabled = false is parsed correctly (#7739)"
+    )
+    case None -> panic("[contracts] section with internal whitespace should be recognized")
+  }
+}
