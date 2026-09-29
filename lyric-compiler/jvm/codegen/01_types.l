@@ -947,8 +947,9 @@ pub record FuncCtx {
   // functions, non-generic methods, generators, wire-binding inits) — same
   // "no reachable typeParams" default `aliasTargets` documents above.  No
   // default per the JVM-codegen no-defaulted-field rule; initialised
-  // `newList()` at every construction site except `lowerRecordMethod`'s,
-  // which passes its own `typeParams` argument through.
+  // `newList()` at every construction site except `lowerRecordMethod`'s and
+  // `lowerImplMethod`'s (an impl for a generic target, #7704), which pass
+  // their own type parameters through.
   typeParams: List[String]
 }
 

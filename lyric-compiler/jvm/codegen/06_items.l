@@ -109,6 +109,18 @@ func makeFuncCtx(
   )
 }
 
+// A closure body (a lambda's `invoke`, a spawned expression's `call`) is a
+// fresh `FuncCtx`, but a type annotation inside it still names the ENCLOSING
+// method's type parameters (`val z: T = …` in a lambda inside a `Box[T]`
+// method), which erase to `Object` there too (#7705).  Carry them over.
+func inheritTypeParams(bodyCtx: in FuncCtx, enclosing: in FuncCtx): Unit {
+  var i = 0
+  while i < enclosing.typeParams.count {
+    bodyCtx.typeParams.add(enclosing.typeParams[i])
+    i = i + 1
+  }
+}
+
 // Derive a wire-binding-init `FuncCtx` from a freshly-made one (#5013): every
 // field is carried through unchanged except `wireClassName`/`wireBindingTypes`,
 // so a bare-name reference anywhere inside the binding's init expression tree
@@ -1833,14 +1845,16 @@ func isSelfTypeExprJvm(te: in TypeExpr): Bool {
 //
 // For each parameter in `params` whose declared type is (or paren-wraps)
 // bare `Self`, this emits ONE entry-prologue `aload <slot>; checkcast
-// <selfTypeName>; astore <slot>` (via `emitStore`, which emits `LAstoreAs`
+// <selfTypeName>; astore <local>` (via `emitStore`, which emits `LAstoreAs`
 // for a `JRef` — the SAME instruction the if/match/try result-local and
 // pattern-bind cast sites already use so the StackMapTable frames the slot
-// with its real class rather than `Object`, #3307) — REUSING the parameter's
-// existing slot number so an `inout`-mode param's holder write-through
-// bookkeeping (`ctx.holderArraySlot`/`ctx.holderElemType`, keyed by slot
-// number) stays valid — then retypes `ctx.types[p.name]` to the concrete
-// `JRef(selfTypeName)` so every later read of the parameter (field access,
+// with its real class rather than `Object`, #3307).  A by-value parameter
+// is stored into a FRESH local the name is rebound to (the builder frames a
+// parameter's own slot from the descriptor); an `inout`-mode param's value
+// already lives in a non-parameter local, which is REUSED so its holder
+// write-through bookkeeping (`ctx.holderArraySlot`/`ctx.holderElemType`,
+// keyed by slot number) stays valid.  Either way `ctx.types[p.name]` becomes
+// the concrete `JRef(selfTypeName)` so every later read of the parameter (field access,
 // method-call receiver, byref reassignment) resolves through the existing
 // type-directed lookups instead of ever falling into the erased-`Object`
 // fallback (`02_exprs.l`'s `error[J007]` refusal).  Must run AFTER
@@ -1871,11 +1885,25 @@ func emitSelfParamChecksJvm(
     if isSelfTypeExprJvm(p.ty) {
       match lookupSlot(ctx, p.name) {
         case Some(slot) -> {
+          val selfTy = JRef(className = selfTypeName)
           insns.add(LAload(slot = slot))
           insns.add(LCheckcast(className = selfTypeName))
-          emitStore(insns, slot, JRef(className = selfTypeName))
-          ctx.types.remove(p.name)
-          ctx.types.add(p.name, JRef(className = selfTypeName))
+          if isHolderMode(p.mode) {
+            emitStore(insns, slot, selfTy)
+            ctx.types.remove(p.name)
+            ctx.types.add(p.name, selfTy)
+          } else {
+            // A by-value parameter's own slot is framed from the method
+            // descriptor (`Object`) by the StackMapTable builder, which honours
+            // an `LAstoreAs` only for a non-parameter local — so a store back
+            // into it left every later branch-target frame typing the value
+            // `Object`, and a field read after an `if` failed verification
+            // (#7755's `Self` regression case).  Bind the name to a fresh local
+            // of the concrete class instead, as MSIL's `narrowSelfParamsMsil`
+            // does.
+            val narrowed = allocSlot(ctx, p.name, selfTy)
+            emitStore(insns, narrowed, selfTy)
+          }
         }
         case None -> {
         }
@@ -1950,6 +1978,11 @@ func lowerImplMethod(
   usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
   isExternIface: in Bool,
+  // The impl's own type parameters for a generic target (`impl[T] I for
+  // Box[T]`, #7704): they erase to `Object` in the descriptor and in body
+  // annotations (`FuncCtx.typeParams`) exactly as in `lowerRecordMethod`.
+  // Empty for a non-generic target and an interface default method.
+  typeParams: in List[String],
 ): LFunc {
   val body = match fn.body {
     case Some(b) -> b
@@ -1968,7 +2001,7 @@ func lowerImplMethod(
       if isExternIface {
         implTypeExprToJvm(te, pkgName, externTypes)
       } else {
-        typeExprToJvmExtern(te, pkgName, externTypes)
+        typeExprToJvmErasedExtern(te, pkgName, typeParams, externTypes)
       }
     }
     case None -> JVoid
@@ -1988,10 +2021,9 @@ func lowerImplMethod(
     closureAcc,
     usedRuntimeHelpers,
     importsStdString,
-    newList()
+    typeParams
   )
   val insns: List[LInsn] = newList()
-  val noTpsImpl: List[String] = newList()
   // An explicit `self: in <Target>` receiver (D037) must not become a real
   // JVM parameter: slot 0 is already `this` (the body's `self` lowers via
   // `ESelf` → aload_0), and the registration side
@@ -2001,9 +2033,9 @@ func lowerImplMethod(
   val paramTypes = if isExternIface {
     implParamTypesToJvm(implRealParams, pkgName, externTypes)
   } else {
-    holderAwareParamTypes(implRealParams, pkgName, true, noTpsImpl, externTypes)
+    holderAwareParamTypes(implRealParams, pkgName, true, typeParams, externTypes)
   }
-  setupInstanceParamSlotsAndHolders(ctxSelf, insns, implRealParams, pkgName, noTpsImpl, externTypes)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, implRealParams, pkgName, typeParams, externTypes)
   // #6426: a non-receiver `Self`-typed parameter (`other: in Self`) is
   // guaranteed by the type checker (D-progress-751/#6417) to be exactly
   // `targetClass` — narrow it with a real `checkcast` so field/method access
@@ -3215,6 +3247,15 @@ func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
         segmentsToJvmPath(path.segments)
       }
     }
+    // `impl[T] I for Box[T]` (#7704): generics are erased, so the methods
+    // join `Box`'s one class.
+    case TGenericApp(head, _) -> {
+      if head.segments.count == 1 {
+        pkgName + "/" + head.segments[0]
+      } else {
+        segmentsToJvmPath(head.segments)
+      }
+    }
     case _ -> panic(
       "Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " +
         "unsupported TypeExpr shape; refusing to emit an unbindable JVM " +
@@ -4161,6 +4202,9 @@ pub func collectFileSigsSeeded(
           case Some(_) -> true
           case None -> false
         }
+        // An impl for a generic target erases its type parameters like the
+        // target's own methods do (#7704), matching `lowerImplMethod`.
+        val implTps = genericParamNames(decl.generics)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
@@ -4168,7 +4212,7 @@ pub func collectFileSigsSeeded(
               if isExternIfaceReg {
                 registerInstanceSigImplExtern(into, tgtClass, fn.name, fn.params, fn.ret, owner, externTypes)
               } else {
-                registerInstanceSig(into, tgtClass, fn.name, fn.params, fn.ret, owner, externTypes)
+                registerInstanceSigErased(into, tgtClass, fn.name, fn.params, fn.ret, owner, implTps, externTypes)
               }
             }
             case IMplAssoc(_) -> ()
@@ -7150,7 +7194,8 @@ pub func codegenPackageWithSigsSeeded(
                   closureAcc,
                   usedRuntimeHelpers,
                   importsStdString,
-                  isExternIfaceHere
+                  isExternIfaceHere,
+                  genericParamNames(decl.generics)
                 )
               )
             }
@@ -7559,7 +7604,8 @@ pub func codegenPackageWithSigsSeeded(
                   // A Lyric `interface`'s own default-method body is never an
                   // extern-interface impl (#5931's `implTypeExprToJvm`
                   // narrowing only applies to a real `impl <Extern> for X`).
-                  false
+                  false,
+                  newList()
                 )
               )
             }

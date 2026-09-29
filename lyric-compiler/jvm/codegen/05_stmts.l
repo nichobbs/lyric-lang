@@ -1954,7 +1954,11 @@ func lowerLocalPatBind(
         case Some(elemTypeExprs) -> {
           var pti = 0
           while pti < patterns.count {
-            val declaredElemTy = typeExprToJvmExtern(elemTypeExprs[pti], ctx.pkgName, ctx.externTypes)
+            // Resolved like a plain annotated binding (`localAnnotatedJvmType`),
+            // so an element typed by the enclosing method's own type parameter
+            // (`val (p, q): (T, T)` in a `Box[T]` method) erases to `Object`
+            // instead of naming a nonexistent `<pkg>/T` class (#7705).
+            val declaredElemTy = localAnnotatedJvmType(ctx, elemTypeExprs[pti])
             val objSlot = extractTupleElem(ctx, insns, tmpSlot, initTy, pti)
             val objTy = JRef(className = "java/lang/Object")
             emitLoad(insns, objSlot, objTy)

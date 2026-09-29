@@ -4869,6 +4869,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     ctx.importsStdString,
     ctx.aliasTargets
   )
+  inheritTypeParams(bodyCtx, ctx)
   // #7694: the lambda body is its own function scope, so a `var` it declares
   // and a closure nested inside it mutates must be hoisted to a heap cell just
   // like one in a top-level function body.  `makeFuncCtx` starts
@@ -5346,6 +5347,7 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
     ctx.importsStdString,
     ctx.aliasTargets
   )
+  inheritTypeParams(bodyCtx, ctx)
   // #7694: same as `lowerLambda` — a `var` declared inside the spawned
   // expression (e.g. a block operand) and mutated by a closure nested in it
   // must be hoisted in this fresh body ctx.

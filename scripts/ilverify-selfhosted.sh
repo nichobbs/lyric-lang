@@ -227,6 +227,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/generator_closure_var_capture_self_test.l
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l
   lyric-compiler/lyric/erased_receiver_narrowing_dotnet_self_test.l
+  lyric-compiler/lyric/impl_generic_target_self_test.l
 )
 st_errors=0
 st_failed=()

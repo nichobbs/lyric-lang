@@ -527,7 +527,16 @@ impl Repository[User, UserId] for PostgresUserRepository {
 **Impl-block generics and generic interface methods** are supported:
 
 - An impl block can carry its own type parameters with `impl[T] Iface for Target[T] { … }`.
-  The type parameters correspond to the target record's own class-level GTPBs.
+  The type parameters correspond to the target record's own class-level GTPBs:
+  the impl applies to every instantiation of `Target`, and inside its methods
+  `T` means exactly what it means in a method declared in `Target`'s own body —
+  in signatures, in body type annotations (including inside closures and
+  tuple patterns), and through `Self`, which is `Target[T]` (#7704). The
+  target's type arguments must therefore be the impl's own type parameters,
+  each named once, and every impl type parameter must appear among them
+  (`impl[K, V] I for Pair[V, K]` is fine); an impl for one instantiation
+  (`impl I for Box[Int]`), a repeated parameter (`impl[T] I for Two[T, T]`) or
+  an impl parameter the target never names is **T0145**.
 - An interface or impl method can be generic with the bare-bracket form
   `func name[U](x: in U): U`.  This makes the CLR method itself generic;
   call sites emit `MakeGenericMethod` with type arguments inferred from
