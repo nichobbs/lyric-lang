@@ -845,8 +845,9 @@ jobs:
   # background step inside compiler-self-tests-dotnet-a that took ~59 min of
   # that job's ~88 min wall time; sharded here so the files run in parallel
   # jobs (interleaved selection, see compiler-self-tests-batch.sh --shard).
-  # After the closure-scan speedup the 55 files take ~20-55 s each (~28 min
-  # sequential on a 4-vCPU machine), so two shards land near 15 min apiece.
+  # After the closure-scan speedup each file takes ~20-55 s (the corpus was
+  # ~28 min sequential on a 4-vCPU machine), so two shards land near 15 min
+  # apiece.
   compiler-self-tests-core:
     runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
@@ -978,7 +979,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/type_alias_resolve_self_test.l
 
-      # The 55-file `scripts/ci/compiler-self-tests-batch.sh` corpus runs in
+      # The `scripts/ci/compiler-self-tests-batch.sh` corpus runs in
       # its own sharded `compiler-self-tests-core` job (it was ~59 of this
       # job's ~88 min, run sequentially behind the batch-1 barrier).
       # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`.
