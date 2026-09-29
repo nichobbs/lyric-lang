@@ -881,7 +881,7 @@ func emitSingleFileOrProject(
     case _ -> ()
   }
 
-  val contractsEnabled = match lm.manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
+  val contractsEnabled = match lm.manifest.contracts { case Some(cs) -> cs.enabled; case None -> req.contractsEnabled }
   val projReq = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = req.assemblyName,
