@@ -66,7 +66,8 @@ for t in \
   lyric-compiler/lyric/generator_for_loop_self_test.l \
   lyric-compiler/lyric/tuple_pattern_binding_self_test.l \
   lyric-compiler/lyric/async_generator_self_test.l \
-  lyric-compiler/lyric/generator_control_flow_self_test.l ; do
+  lyric-compiler/lyric/generator_control_flow_self_test.l \
+  lyric-compiler/lyric/generator_dispose_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"

@@ -69,6 +69,7 @@ for t in \
   lyric-compiler/lyric/tuple_pattern_binding_self_test.l \
   lyric-compiler/lyric/generator_control_flow_self_test.l \
   lyric-compiler/lyric/generator_control_flow_dotnet_self_test.l \
+  lyric-compiler/lyric/generator_dispose_self_test.l \
   lyric-compiler/lyric/class_encoding_self_test.l \
   lyric-compiler/lyric/hof_type_propagation_self_test.l \
   lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \

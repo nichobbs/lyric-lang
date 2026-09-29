@@ -5839,7 +5839,7 @@ pub record LGenFunc {
 ///     the original exception on the consumer thread.  Later calls return
 ///     `false`.
 ///   * Early stop (#7729, D142): `<G>$Iter` is `AutoCloseable`, and a `for`
-///     loop over it calls `close()` when it ends.  `_close` sets `_abandoned`,
+///     loop over it calls `close()` however it ends (#7754, D143).  `_close` sets `_abandoned`,
 ///     interrupts the producer parked at its `yield` (in `_demand.take()`),
 ///     joins it, and rethrows an error the unwinding recorded unless it is the
 ///     interrupt itself — so the pending `finally`/`defer` blocks run before
@@ -5847,8 +5847,8 @@ pub record LGenFunc {
 ///     `catch` handler in the body rethrows that interrupt while `_abandoned`
 ///     is set (the check sits at the handler entry, inside every enclosing
 ///     protected range), so only the catch-all `finally`/`defer` handlers run.
-///   * Abandonment without `close()` (a `return` or throw out of the `for`, or
-///     an iterator dropped by hand): the consumer-facing `<G>$Iter` is
+///   * Abandonment without `close()` (an iterator dropped by hand, outside a
+///     `for`): the consumer-facing `<G>$Iter` is
 ///     registered with a per-generator-class `java.lang.ref.Cleaner` (whose own
 ///     thread is a virtual thread); once it becomes unreachable the cleaner
 ///     sets `_abandoned` and interrupts the producer the same way.  Every later
@@ -6338,7 +6338,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   abAttrs.add(assembleCode(abAsm, 2, 2))
   val abandonMethod = makeMethodInfo(ACC_PUBLIC, "_abandon", "()V", abAttrs)
 
-  // ── 9b. _close()V — the consumer stopped early (`break`) ──────────────────
+  // ── 9b. _close()V — the consumer stopped early (its `for` ended) ──────────
   // Deterministic counterpart of the cleaner (#7729, D142): unwind a producer
   // suspended at a `yield` now, so its pending `finally`/`defer` blocks run
   // before the consumer continues, and rethrow an exception one of them raised.
@@ -6508,7 +6508,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val iwRunAttrs: List[Attribute] = newList()
   iwRunAttrs.add(assembleCode(iwRunAsm, 1, 1))
 
-  // close() — the consumer's `for` calls it on `break` (#7729).
+  // close() — the consumer's `for` calls it on every exit (#7729, #7754).
   val iwClAsm = newAssembler(pool)
   emitAload(iwClAsm, 0)
   emitGetfield(iwClAsm, iwGenIdx)
