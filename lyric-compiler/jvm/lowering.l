@@ -5858,7 +5858,8 @@ pub record LGenFunc {
 ///     abandoned as above, and the consumer's interrupt status is restored.
 ///
 /// `<G>` fields:
-///   static _DONE_SENTINEL: Object     — end-of-sequence marker / demand token
+///   static _DONE_SENTINEL: Object     — end-of-sequence marker (on `_channel`)
+///   static _DEMAND_TOKEN: Object      — "produce one element" (on `_demand`)
 ///   static _CLEANER: Cleaner          — reclaims abandoned producers
 ///   _done, _hasPending: boolean       — consumer-side iteration state
 ///   _pending: Object                  — value received by the last pull
@@ -5899,6 +5900,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
 
   val fieldsOut: List[FieldInfo] = newList()
   fieldsOut.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC + ACC_FINAL, "_DONE_SENTINEL", objDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC + ACC_FINAL, "_DEMAND_TOKEN", objDesc, emptyAttrs))
   fieldsOut.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC + ACC_FINAL, "_CLEANER", cleanerDesc, emptyAttrs))
   fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_done", "Z", emptyAttrs))
   fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_hasPending", "Z", emptyAttrs))
@@ -5922,6 +5924,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val sqPutIdx = poolMethodref(pool, sqClass, "put", "(Ljava/lang/Object;)V")
   val sqTakeIdx = poolMethodref(pool, sqClass, "take", "()Ljava/lang/Object;")
   val sentinelIdx = poolFieldref(pool, genClass, "_DONE_SENTINEL", objDesc)
+  val demandTokenIdx = poolFieldref(pool, genClass, "_DEMAND_TOKEN", objDesc)
   val cleanerIdx = poolFieldref(pool, genClass, "_CLEANER", cleanerDesc)
   val doneIdx = poolFieldref(pool, genClass, "_done", "Z")
   val hasPendingIdx = poolFieldref(pool, genClass, "_hasPending", "Z")
@@ -5932,15 +5935,12 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val errorIdx = poolFieldref(pool, genClass, "_error", throwableDesc)
   val abandonedIdx = poolFieldref(pool, genClass, "_abandoned", "Z")
   val ieClassIdx = poolClass(pool, ieClass)
-  val yieldIdx = poolMethodref(pool, genClass, "_yield", "(Ljava/lang/Object;)V")
-  val finishIdx = poolMethodref(pool, genClass, "_finish", "()V")
-  val failIdx = poolMethodref(pool, genClass, "_fail", "(Ljava/lang/Throwable;)V")
   val pullHasNextIdx = poolMethodref(pool, genClass, "_pullHasNext", "()Z")
   val pullNextIdx = poolMethodref(pool, genClass, "_pullNext", "()Ljava/lang/Object;")
   val abandonIdx = poolMethodref(pool, genClass, "_abandon", "()V")
   val threadInterruptIdx = poolMethodref(pool, threadClass, "interrupt", "()V")
 
-  // ── 2. <clinit> — sentinel + cleaner ───────────────────────────────────────
+  // ── 2. <clinit> — sentinel, demand token + cleaner ─────────────────────────
   // _CLEANER = Cleaner.create(Thread.ofVirtual().factory()): the cleaner's own
   // thread is a virtual thread, so an idle cleaner costs no carrier thread.
   val clinitAsm = newAssembler(pool)
@@ -5948,6 +5948,10 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   emitDup(clinitAsm)
   emitInvokespecial(clinitAsm, objCtorIdx)
   emitPutstatic(clinitAsm, sentinelIdx)
+  emitNew(clinitAsm, poolClass(pool, objClass))
+  emitDup(clinitAsm)
+  emitInvokespecial(clinitAsm, objCtorIdx)
+  emitPutstatic(clinitAsm, demandTokenIdx)
   emitInvokestatic(clinitAsm, poolMethodref(pool, threadClass, "ofVirtual", "()Ljava/lang/Thread$Builder$OfVirtual;"))
   emitInvokeinterface(
     clinitAsm,
@@ -6004,12 +6008,21 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   // Seed handler-entry labels (#6551) so a `try`/`catch` inside the generator
   // body gets a correct `maxStack` inference, same as `lowerFuncImpl`.
   bodyAsm.handlerLabels = collectHandlerLabels(g.bodyInsns)
+  // Every stack-touching instruction `run()` adds around the body goes
+  // through `lowerInsn` (or pairs a raw emitter with the `trackStack` delta it
+  // implies), so `bodyAsm.peakStack` is the method's true peak and is used as
+  // `max_stack` verbatim (#7745).
+  val noArgs: List[JvmType] = newList()
+  val objArg: List[JvmType] = newList()
+  objArg.add(objType)
+  val throwableArg: List[JvmType] = newList()
+  throwableArg.add(JRef(className = throwableClass))
   emitLabel(bodyAsm, "run_try_start")
   // Wait for the first pull before running any body code.
-  emitAload(bodyAsm, 0)
-  emitGetfield(bodyAsm, demandIdx)
-  emitInvokevirtual(bodyAsm, sqTakeIdx)
-  emitPop(bodyAsm)
+  lowerInsn(LAload(slot = 0), bodyAsm)
+  lowerInsn(LGetfield(owner = genClass, name = "_demand", t = sqType), bodyAsm)
+  lowerInsn(LInvokevirtual(owner = sqClass, name = "take", params = noArgs, ret = objType), bodyAsm)
+  lowerInsn(LPop, bodyAsm)
   var bi = 0
   while bi < g.bodyInsns.count {
     val insn = g.bodyInsns[bi]
@@ -6027,9 +6040,12 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
           case JShort -> lowerInsn(LBoxShort, bodyAsm)
           case _ -> ()
         }
-        emitAload(bodyAsm, 0)
+        // [boxed] -> [boxed, this] -> [this, boxed] -> [].  The value is
+        // boxed first, so it is always one slot and `swap` is valid even for
+        // a Long/Double element; `swap` leaves the depth unchanged.
+        lowerInsn(LAload(slot = 0), bodyAsm)
         emitSwap(bodyAsm)
-        emitInvokevirtual(bodyAsm, yieldIdx)
+        lowerInsn(LInvokevirtual(owner = genClass, name = "_yield", params = objArg, ret = JVoid), bodyAsm)
       }
       // A bare `return` in the body ends the sequence: route it through the
       // normal completion path so the consumer receives the done sentinel.
@@ -6045,22 +6061,25 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     }
     bi = bi + 1
   }
-  emitLabel(bodyAsm, "run_body_end")
-  emitAload(bodyAsm, 0)
-  emitInvokevirtual(bodyAsm, finishIdx)
-  emitReturn(bodyAsm)
-  // Catch-all: the exception is on the stack; hand it to the consumer.
+  // Every edge into `run_body_end` (body fall-off, a bare `return`) carries an
+  // empty stack, so the ordinary-label reset applies.
+  lowerInsn(LLabel(name = "run_body_end"), bodyAsm)
+  lowerInsn(LAload(slot = 0), bodyAsm)
+  lowerInsn(LInvokevirtual(owner = genClass, name = "_finish", params = noArgs, ret = JVoid), bodyAsm)
+  lowerInsn(LReturn, bodyAsm)
+  // Catch-all: the JVM enters with the exception on an otherwise empty stack
+  // (depth 1); hand it to the consumer: [exc, this] -> [this, exc] -> [].
   emitLabel(bodyAsm, "run_catch_all")
-  emitAload(bodyAsm, 0)
+  resetStackToHandlerEntry(bodyAsm)
+  lowerInsn(LAload(slot = 0), bodyAsm)
   emitSwap(bodyAsm)
-  emitInvokevirtual(bodyAsm, failIdx)
-  emitReturn(bodyAsm)
+  lowerInsn(LInvokevirtual(owner = genClass, name = "_fail", params = throwableArg, ret = JVoid), bodyAsm)
+  lowerInsn(LReturn, bodyAsm)
   // Registered after the body's own handlers so a user `try`/`catch` in the
   // body takes precedence (the JVM picks the first matching table entry).
   addExceptionHandler(bodyAsm, "run_try_start", "run_body_end", "run_catch_all", 0)
-  val runMaxStack = if bodyAsm.peakStack + 1 > 2 then bodyAsm.peakStack + 1 else 2
   val runAttrs: List[Attribute] = newList()
-  runAttrs.add(assembleCode(bodyAsm, runMaxStack, runMaxLocals))
+  runAttrs.add(assembleCode(bodyAsm, bodyAsm.peakStack, runMaxLocals))
   val noPs: List[JvmType] = newList()
   val runMethod = makeMethodInfo(ACC_PUBLIC, "run", buildDescriptor(noPs, JVoid), runAttrs)
 
@@ -6173,10 +6192,10 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   )
   emitPutfield(hnAsm, threadIdx)
   emitLabel(hnAsm, "hn_pull")
-  // _demand.put(token); v = _channel.take()
+  // _demand.put(_DEMAND_TOKEN); v = _channel.take()
   emitAload(hnAsm, 0)
   emitGetfield(hnAsm, demandIdx)
-  emitGetstatic(hnAsm, sentinelIdx)
+  emitGetstatic(hnAsm, demandTokenIdx)
   emitInvokevirtual(hnAsm, sqPutIdx)
   emitAload(hnAsm, 0)
   emitGetfield(hnAsm, channelIdx)
@@ -6227,7 +6246,8 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   emitIreturn(hnAsm)
   addExceptionHandler(hnAsm, "hn_pull", "hn_pull_end", "hn_ie", ieClassIdx)
   val hnAttrs: List[Attribute] = newList()
-  hnAttrs.add(assembleCode(hnAsm, 4, 3))
+  // Peak 3: `this` + a new SynchronousQueue + its dup while creating a channel.
+  hnAttrs.add(assembleCode(hnAsm, 3, 3))
   val pullHasNextMethod = makeMethodInfo(ACC_PUBLIC, "_pullHasNext", "()Z", hnAttrs)
 
   // ── 8. _pullNext()Object ───────────────────────────────────────────────────
@@ -6454,7 +6474,9 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
       kpi = kpi + 1
     }
     // maxLocals = kslot = number of param slots (0 when no params; static, no `this`).
-    val kickCode = assembleCode(kickAsm, 4, kslot)
+    // maxStack: `new` + `dup` + every argument slot (a flat 4 under-counted a
+    // generator with more than one Long/Double parameter).
+    val kickCode = assembleCode(kickAsm, 2 + kslot, kslot)
     val kickAttrs: List[Attribute] = newList()
     kickAttrs.add(kickCode)
     val kickMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, g.methodName, buildDescriptor(kickPs, objType), kickAttrs)
