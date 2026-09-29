@@ -105,7 +105,7 @@ func parseCheckAliasResolved(src: in String): CheckResult {
 // `List<E>` regardless, so a `val` binding with an incompatible declared
 // type silently accepted it (via `typeEquiv`'s `TyError`-equals-anything
 // rule) instead of failing to compile, then crashed with
-// `InvalidCastException` at runtime.  `stdCollectionsListTypeId` fixes
+// `InvalidCastException` at runtime.  `isStdCollectionsHostType` fixes
 // this by resolving `List` through its owning package
 // (`Std.CollectionsHost`) rather than by name, mirroring
 // `isStdCoreMonadType`'s precedent for `Std.Core.Result`/`Option`. #7696
@@ -119,7 +119,8 @@ func stdCollectionsHostPackages(): List[ImportedPackage] {
   val pkg = parse(
     "package Std.CollectionsHost\nextern type List[T] = \"System.Collections.Generic.List`1\"\n" +
       "extern type Map[K, V] = \"System.Collections.Generic.Dictionary`2\"\n" +
-      "extern type MapKeyCollection[K, V] = \"System.Collections.Generic.Dictionary`2+KeyCollection\"\n"
+      "extern type MapKeyCollection[K, V] = \"System.Collections.Generic.Dictionary`2+KeyCollection\"\n" +
+      "extern type MapValueCollection[K, V] = \"System.Collections.Generic.Dictionary`2+ValueCollection\"\n"
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(
@@ -3023,7 +3024,7 @@ test "long in int ctor field rejected" {
 
 test "slice literal in list ctor field ok" {
   // #7696: the literal-typed-as-List rule now keys on `List`'s TypeId
-  // (`stdCollectionsListTypeId`), not its bare name — so this needs the
+  // (`isStdCollectionsHostType`), not its bare name — so this needs the
   // GENUINE `Std.CollectionsHost.List` in scope (`stdCollectionsHostPackages`)
   // rather than a locally-declared same-named record. See the "user record
   // named List" test below for what changed.
@@ -7628,6 +7629,49 @@ test "indexing the stdlib List and Map types the element and value (#7737)" {
   val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
   assertEqualInt(countDiagCode(cr, "T0143"), 0, "the stdlib List and Map are indexable")
   assertEqualInt(countDiagCode(cr, "T0060"), 2, "xs[0] and m[k] are Int (String bindings of them are rejected)")
+}
+
+// #7765: the stdlib collection checks resolve `Std.CollectionsHost` ids
+// through a per-table memo.  Each pair below puts a user type of the same
+// name in the SAME table as the stdlib one (the user type shadows the bare
+// name; the stdlib one is spelled qualified), so a memo that confused the two
+// -- or cached a lookup made before the stdlib package was registered --
+// would classify both the same way.
+test "for over the stdlib MapValueCollection binds the value type; a same-named record in the same table does not (#7765)" {
+  val src = "package P\nimport Std.CollectionsHost\nrecord MapValueCollection[K, V] {\n  v: V\n}\n" +
+    "func f(hosted: in Std.CollectionsHost.MapValueCollection[String, Int], mine: in MapValueCollection[String, Int]): Unit {\n" +
+    "  for a in hosted {\n    val s: String = a\n  }\n  for b in mine {\n    val t: String = b\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(
+    countDiagCode(cr, "T0060"),
+    1,
+    "only the stdlib collection's loop binds its Int value (a String binding of it is rejected)"
+  )
+}
+
+test "indexing a same-named MapValueCollection record is T0143; the stdlib one keeps its lenient indexing (#7765)" {
+  val src = "package P\nimport Std.CollectionsHost\nrecord MapValueCollection[K, V] {\n  v: V\n}\n" +
+    "func f(hosted: in Std.CollectionsHost.MapValueCollection[String, Int], mine: in MapValueCollection[String, Int]): Unit {\n" +
+    "  val a = hosted[0]\n  val b = mine[0]\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0143"), 1, "only the user record is rejected as not indexable")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0143"), "only shares its name with the stdlib MapValueCollection"),
+    "T0143 says the MapValueCollection is not the stdlib one: " + diagMessageFor(cr, "T0143")
+  )
+}
+
+test "indexing a same-named Map record is T0143; the stdlib Map types its value (#7765)" {
+  val src = "package P\nimport Std.CollectionsHost\nrecord Map[K, V] {\n  k: K\n}\n" +
+    "func f(hosted: in Std.CollectionsHost.Map[String, Int], mine: in Map[String, Int]): Unit {\n" +
+    "  val a: String = hosted[\"k\"]\n  val b = mine[\"k\"]\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0060"), 1, "hosted[k] is the stdlib Map's Int value")
+  assertEqualInt(countDiagCode(cr, "T0143"), 1, "only the user record Map is rejected as not indexable")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0143"), "only shares its name with the stdlib Map"),
+    "T0143 says the Map is not the stdlib one: " + diagMessageFor(cr, "T0143")
+  )
 }
 
 test "indexing a slice, a String, and an extern type is not T0143 (#7737)" {
