@@ -624,6 +624,44 @@ test "createContainerBodyWithNetwork accepts a 3-part bind (src:dst:mode)" {
   assertEqual(body, expected, "a valid 3-part bind is accepted unchanged")
 }
 
+// ─── NetworkMode + Dns Tests ────────────────────────────────────────────────
+// createContainerBodyWithNetworkAndDns backs createContainerWithNetworkAndDns:
+// a caller on the Docker default bridge network needs an explicit resolver
+// list, since that network's DNS otherwise depends on the daemon host's own
+// /etc/resolv.conf rather than Docker's embedded DNS.
+test "createContainerBodyWithNetworkAndDns with an empty dns matches createContainerBodyWithNetwork" {
+  val withDns = Lyric.Docker.createContainerBodyWithNetworkAndDns("alpine", [], [], "", [])
+  val without = Lyric.Docker.createContainerBodyWithNetwork("alpine", [], [], "")
+  assertEqual(withDns, without, "an empty dns list is byte-identical to the no-Dns body builder")
+  assertFalse(withDns.contains("Dns"), "No Dns field is emitted when dns is empty")
+}
+
+test "createContainerBodyWithNetworkAndDns emits Dns when set" {
+  val body = Lyric.Docker.createContainerBodyWithNetworkAndDns("alpine", [], [], "", ["1.1.1.1", "8.8.8.8"])
+  val expected = "{\"Image\":\"alpine\",\"Env\":[],\"HostConfig\":{\"Binds\":[],\"Dns\":[\"1.1.1.1\",\"8.8.8.8\"]}}"
+  assertEqual(body, expected, "Dns is embedded in HostConfig, ordered after Binds, when networkMode is empty")
+}
+
+test "createContainerBodyWithNetworkAndDns emits both NetworkMode and Dns together" {
+  val body = Lyric.Docker.createContainerBodyWithNetworkAndDns("alpine", [], [], "none", ["1.1.1.1"])
+  val expected = "{\"Image\":\"alpine\",\"Env\":[],\"HostConfig\":{\"Binds\":[],\"NetworkMode\":\"none\",\"Dns\":[\"1.1.1.1\"]}}"
+  assertEqual(body, expected, "NetworkMode precedes Dns in HostConfig when both are set")
+}
+
+test "createContainerBodyWithNetworkAndDns preserves Binds and Env alongside Dns" {
+  val body = Lyric.Docker.createContainerBodyWithNetworkAndDns("alpine", ["FOO=bar"], ["vol:/data"], "", ["1.1.1.1"])
+  val expected = "{\"Image\":\"alpine\",\"Env\":[\"FOO=bar\"],\"HostConfig\":{\"Binds\":[\"vol:/data\"],\"Dns\":[\"1.1.1.1\"]}}"
+  assertEqual(body, expected, "Env and Binds are unaffected by the added Dns field")
+}
+
+func createContainerBodyWithNetworkAndDnsEmptyImage(): Unit {
+  val body = Lyric.Docker.createContainerBodyWithNetworkAndDns("", [], [], "", ["1.1.1.1"])
+}
+
+test "createContainerBodyWithNetworkAndDns panics on an empty image" {
+  assertPanics("empty image", createContainerBodyWithNetworkAndDnsEmptyImage)
+}
+
 // ─── TCP Constructor Tests ──────────────────────────────────────────────────
 // makeDockerClientTcp (#5732) has no reachable-daemon test infrastructure in
 // CI, so DockerClient's opaque internals can't be asserted directly. Instead,
