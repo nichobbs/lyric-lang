@@ -1226,6 +1226,17 @@ func lowerBuiltinOrStaticCall(
     val nmPs: List[JvmType] = newList()
     insns.add(LInvokespecial(owner = "java/util/HashMap", name = "<init>", params = nmPs, ret = JVoid))
     JRef(className = "java/util/HashMap")
+  } else if (not hasOverride) and funcName == "newSet" {
+    // `Std.CollectionsHost.newSet[T]()` (`Set[T]` = `java.util.HashSet`) is
+    // a generic `@externTarget` constructor like `newList`/`newMap`, so it
+    // has no emitted method either; without this intrinsic the call linked
+    // against a nonexistent `Std/CollectionsHost.newSet()` and every
+    // `Set[T]` failed with `NoSuchMethodError` at runtime (#7782).
+    insns.add(LNew(className = "java/util/HashSet"))
+    insns.add(LDup)
+    val nsPs: List[JvmType] = newList()
+    insns.add(LInvokespecial(owner = "java/util/HashSet", name = "<init>", params = nsPs, ret = JVoid))
+    JRef(className = "java/util/HashSet")
   } else if (not hasOverride) and funcName == "newListWithCapacity" {
     // Generic `@externTarget` kernel funcs are not emitted as methods (they
     // are excluded from monomorphization and have no non-generic body), so
@@ -1264,7 +1275,7 @@ func lowerBuiltinOrStaticCall(
       val mSlot = allocSlot(ctx, "__mapget_m_" + freshLabel(ctx), JRef(className = "java/util/HashMap"))
       insns.add(LAstoreAs(slot = mSlot, className = "java/util/HashMap"))
       val kTy = lowerCallArg(ctx, insns, args[1])
-      boxIfNeeded(insns, kTy)
+      boxForErasedSlot(insns, kTy, erasedSlotJvmType(ctx, callArgExpr(args[0]), 2, 0))
       val kSlot = allocSlot(ctx, "__mapget_k_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
       insns.add(LAstore(slot = kSlot))
       val rSlot = allocSlot(ctx, "__mapget_r_" + freshLabel(ctx), JRef(className = "Std/Core/Option"))
@@ -2122,6 +2133,7 @@ func lowerAutoFfiInstanceCall(
   ci: in ClassInfo,
   methodName: in String,
   args: in List[CallArg],
+  slotTys: in List[JvmType],
 ): JvmType {
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
@@ -2131,7 +2143,18 @@ func lowerAutoFfiInstanceCall(
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
-    val aTy = lowerCallArg(ctx, buf, args[i])
+    val rawTy = lowerCallArg(ctx, buf, args[i])
+    // An argument bound for an erased element/key/value slot of a primitive
+    // declared type (`slotTys`, see `erasedCollectionArgSlotTys`) is converted
+    // to that type here, so `emitFfiCoerce` boxes it as the slot's wrapper
+    // (#7782).
+    val slotTy = if i < slotTys.count { slotTys[i] } else { JVoid }
+    val aTy = if isJvmPrimitiveElemType(rawTy) and isJvmPrimitiveElemType(slotTy) {
+      coerceArgTo(buf, rawTy, slotTy)
+      slotTy
+    } else {
+      rawTy
+    }
     argBufs.add(buf)
     val erasedDesc = jvmTypeToDescStr(aTy)
     argDescs.add(erasedDesc)
@@ -2240,6 +2263,62 @@ func lowerAutoFfiInstanceCall(
       retJvm
     }
   }
+}
+
+// Per-argument erased-slot types (`boxForErasedSlot`'s `slotTy`) for an
+// instance call on the JDK class backing a Lyric collection (#7782): each
+// argument that is an element, key, or value of `recv` maps to the JVM type
+// of the matching generic argument of `recv`'s recorded instantiation
+// (`erasedSlotJvmType`); every other position is `JVoid`.  An empty list
+// means no argument is an element slot, or `recv`'s instantiation is not
+// known.  `List[T]`'s `add(x)`/`add(i, x)`/`set(i, x)`/`contains`/`indexOf`/
+// `lastIndexOf`/`remove(x)`, `Set[T]`'s `add`/`contains`/`remove`, and
+// `Map[K, V]`'s `put`/`get`/`containsKey`/`containsValue`/`getOrDefault`/
+// `putIfAbsent` (the `Map` spellings the `HashMap` intrinsics in
+// `lowerMethodCall` do not already cover).
+func erasedCollectionArgSlotTys(
+  ctx: in FuncCtx, recv: in Expr, cls: in String, memberName: in String, argc: in Int
+): List[JvmType] {
+  val slotTys: List[JvmType] = newList()
+  val isList = cls == "java/util/ArrayList" or cls == "java/util/List"
+  val isSet = cls == "java/util/HashSet" or cls == "java/util/Set"
+  val isMap = cls == "java/util/HashMap" or cls == "java/util/Map"
+  if isList or isSet {
+    val elemAtArg = if argc == 1 and (memberName == "add" or memberName == "contains" or memberName == "remove") {
+      0
+    } else if isList and argc == 1 and (memberName == "indexOf" or memberName == "lastIndexOf") {
+      0
+    } else if isList and argc == 2 and (memberName == "add" or memberName == "set") {
+      1
+    } else {
+      -1
+    }
+    if elemAtArg < 0 {
+      return slotTys
+    }
+    val elemTy = erasedSlotJvmType(ctx, recv, 1, 0)
+    var i = 0
+    while i < argc {
+      if i == elemAtArg {
+        slotTys.add(elemTy)
+      } else {
+        slotTys.add(JVoid)
+      }
+      i = i + 1
+    }
+  } else if isMap {
+    val keyTy = erasedSlotJvmType(ctx, recv, 2, 0)
+    val valTy = erasedSlotJvmType(ctx, recv, 2, 1)
+    if argc == 1 and (memberName == "get" or memberName == "containsKey" or memberName == "remove") {
+      slotTys.add(keyTy)
+    } else if argc == 1 and memberName == "containsValue" {
+      slotTys.add(valTy)
+    } else if argc == 2 and (memberName == "put" or memberName == "getOrDefault" or memberName == "putIfAbsent") {
+      slotTys.add(keyTy)
+      slotTys.add(valTy)
+    }
+  }
+  slotTys
 }
 
 // Constructor call on a JDK class through auto-FFI.  `T.new(args)` maps to
@@ -2879,6 +2958,7 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
       // defaulted field can't shift a later supplied field's value into it
       // (#6146).
       val ordered = orderCtorArgsPadded(fields, args)
+      val paramPrims = genericCtorParamPrimitives(ctx, fields, ordered)
       val argSlots: List[Int] = newList()
       var i = 0
       while i < fields.count {
@@ -2886,11 +2966,26 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
         match ordered[i] {
           case Some(arg) -> {
             val aTy = lowerCallArg(ctx, insns, arg)
+            // A bare type-parameter field (`b: T`) whose parameter another
+            // argument pins to a wider primitive (`Two(a = aLong, b = 4)`)
+            // widens and boxes as that type (#7782).  Otherwise
             // `coerceValueTo` (not bare `coerceArgTo`) so a raw JDK primitive
             // array flowing into a declared `slice[T]` field boxes into the
             // erased `[Ljava/lang/Object;` representation the field descriptor
             // (and this arg slot's StackMapTable entry) declares (#5572).
-            coerceValueTo(ctx, insns, aTy, fty)
+            val pPrim = if fields[i].paramIdx >= 0 {
+              match mapGet(paramPrims, fields[i].paramIdx) {
+                case Some(t) -> t
+                case None -> JVoid
+              }
+            } else {
+              JVoid
+            }
+            if isRefJvm(fty) and isJvmPrimitiveElemType(pPrim) and isJvmPrimitiveElemType(aTy) {
+              boxForErasedSlot(insns, aTy, pPrim)
+            } else {
+              coerceValueTo(ctx, insns, aTy, fty)
+            }
             val slot = allocSlot(ctx, "__ctor_arg_" + freshLabel(ctx), fty)
             emitStore(insns, slot, fty)
             argSlots.add(slot)
@@ -3492,6 +3587,27 @@ pub func resolveGeneralFuncSig(
   }
 }
 
+// Coerce a lowered call argument (statically `aTy`) to its declared JVM
+// parameter type `paramTy`.  When the parameter is an erased type parameter
+// that `genericCallArgSlotTys` solved to a primitive (`genSlotTys[idx]`), a
+// primitive argument is widened to that type and boxed as it (#7782);
+// otherwise this is `coerceArgToCtx`.
+func coerceGenericCallArg(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  aTy: in JvmType,
+  paramTy: in JvmType,
+  genSlotTys: in List[JvmType],
+  idx: in Int,
+): Unit {
+  val slotTy = if idx < genSlotTys.count { genSlotTys[idx] } else { JVoid }
+  if isRefJvm(paramTy) and isJvmPrimitiveElemType(slotTy) and isJvmPrimitiveElemType(aTy) {
+    boxForErasedSlot(insns, aTy, slotTy)
+  } else {
+    coerceArgToCtx(ctx, insns, aTy, paramTy)
+  }
+}
+
 func lowerGeneralStaticCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -3648,6 +3764,7 @@ func lowerGeneralStaticCall(
       if anyHolderMode(sig.paramModes) {
         return lowerStaticCallWithHolders(ctx, insns, funcName, sig, callArgs)
       }
+      val genSlotTys = genericCallArgSlotTys(ctx, sig, callArgs)
       // A primitive array (e.g. a JDK `getBytes()` / `digest()` `byte[]`, or
       // any other primitive array) passed where a Lyric `slice[T]`
       // (`[Ljava/lang/Object;`) is declared is boxed element-by-element by
@@ -3671,7 +3788,7 @@ func lowerGeneralStaticCall(
                 case _ -> ()
               }
             } else {
-              coerceArgToCtx(ctx, insns, aTy, sig.params[si])
+              coerceGenericCallArg(ctx, insns, aTy, sig.params[si], genSlotTys, si)
             }
             slotTy = sig.params[si]
           }
@@ -3703,7 +3820,7 @@ func lowerGeneralStaticCall(
         val aTy = lowerCallArg(ctx, insns, callArgs[ai])
         if ai < sig.params.count {
           popCtorExpect(ctx)
-          coerceArgToCtx(ctx, insns, aTy, sig.params[ai])
+          coerceGenericCallArg(ctx, insns, aTy, sig.params[ai], genSlotTys, ai)
         }
         ai = ai + 1
       }
@@ -4716,25 +4833,34 @@ func lowerMethodCall(
       // stack fails verification ("Type integer ... not assignable to
       // 'java/lang/Object'").
       val kTy = lowerCallArg(ctx, insns, args[0])
-      boxIfNeeded(insns, kTy)
+      boxForErasedSlot(insns, kTy, erasedSlotJvmType(ctx, recv, 2, 0))
       val vTy = lowerCallArg(ctx, insns, args[1])
-      boxIfNeeded(insns, vTy)
+      boxForErasedSlot(insns, vTy, erasedSlotJvmType(ctx, recv, 2, 1))
       insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "put", params = kPs, ret = objTy))
       insns.add(LPop)
       return JVoid
     } else if memberName == "remove" and args.count == 1 {
+      // `Map[K, V].remove(key): Bool` is true iff the key was present (the
+      // checker's type, and MSIL's `Dictionary.Remove`).  `HashMap.remove`
+      // returns the previous VALUE, which cannot tell a present key mapped
+      // to null from an absent one; the key view's `Set.remove` answers
+      // exactly "was it present" and removes the entry in one lookup.  A
+      // statement-position call pops the boolean like any other value.
+      val ksPs: List[JvmType] = newList()
+      insns.add(
+        LInvokevirtual(owner = "java/util/HashMap", name = "keySet", params = ksPs, ret = JRef(className = "java/util/Set"))
+      )
+      val rkTy = lowerCallArg(ctx, insns, args[0])
+      boxForErasedSlot(insns, rkTy, erasedSlotJvmType(ctx, recv, 2, 0))
       val rPs: List[JvmType] = newList()
       rPs.add(objTy)
-      val rkTy = lowerCallArg(ctx, insns, args[0])
-      boxIfNeeded(insns, rkTy)
-      insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "remove", params = rPs, ret = objTy))
-      insns.add(LPop)
-      return JVoid
+      insns.add(LInvokeinterface(owner = "java/util/Set", name = "remove", params = rPs, ret = JBoolean, argCount = 2))
+      return JBoolean
     } else if memberName == "containsKey" and args.count == 1 {
       val ckPs: List[JvmType] = newList()
       ckPs.add(objTy)
       val ckTy = lowerCallArg(ctx, insns, args[0])
-      boxIfNeeded(insns, ckTy)
+      boxForErasedSlot(insns, ckTy, erasedSlotJvmType(ctx, recv, 2, 0))
       insns.add(LInvokevirtual(owner = "java/util/HashMap", name = "containsKey", params = ckPs, ret = JBoolean))
       return JBoolean
     }
@@ -4895,7 +5021,14 @@ func lowerMethodCall(
     case JRef(cls) -> {
       val fqn = cls.replace("/", ".")
       match loadClass(ctx.autoFfi, fqn) {
-        case Some(ci) -> return lowerAutoFfiInstanceCall(ctx, insns, ci, memberName, args)
+        case Some(ci) -> return lowerAutoFfiInstanceCall(
+          ctx,
+          insns,
+          ci,
+          memberName,
+          args,
+          erasedCollectionArgSlotTys(ctx, recv, cls, memberName, args.count)
+        )
         case None -> ()
       }
     }

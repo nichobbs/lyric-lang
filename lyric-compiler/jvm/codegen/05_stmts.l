@@ -550,7 +550,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 val mapSlot = allocSlot(ctx, "__idxasn_map_" + freshLabel(ctx), recvTy)
                 emitStore(insns, mapSlot, recvTy)
                 val kTy = lowerExpr(ctx, insns, indices[0])
-                boxIfNeeded(insns, kTy)
+                boxForErasedSlot(insns, kTy, erasedSlotJvmType(ctx, recv, 2, 0))
                 val keySlot = allocSlot(ctx, "__idxasn_k_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
                 emitStore(insns, keySlot, JRef(className = "java/lang/Object"))
                 val vTy = lowerExpr(ctx, insns, value)
@@ -577,7 +577,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 val mapSlot = allocSlot(ctx, "__idxasn_map_" + freshLabel(ctx), recvTy)
                 emitStore(insns, mapSlot, recvTy)
                 val kTy = lowerExpr(ctx, insns, indices[0])
-                boxIfNeeded(insns, kTy)
+                boxForErasedSlot(insns, kTy, erasedSlotJvmType(ctx, recv, 2, 0))
                 val keySlot = allocSlot(ctx, "__idxasn_k_" + freshLabel(ctx), JRef(className = "java/lang/Object"))
                 emitStore(insns, keySlot, JRef(className = "java/lang/Object"))
                 val vTy = lowerExpr(ctx, insns, value)
@@ -1208,6 +1208,49 @@ func unannotatedSliceLiteralBinding(
   }
 }
 
+// Lower a local binding's initialiser.  A list literal bound to a
+// `List[Elem]`/`slice[Elem]` annotation whose `Elem` is primitive boxes each
+// element as `Elem` (`lowerListLiteralJvm`), so an unsuffixed `Int` literal
+// in a `List[Long]` is stored as a `java.lang.Long` that the element reads
+// unbox (#7782); every other initialiser lowers as usual.
+func lowerBindingInit(ctx: in FuncCtx, insns: in List[LInsn], init: in Expr, tyOpt: in Option[TypeExpr]): JvmType {
+  match tyOpt {
+    case Some(te) -> {
+      match listLiteralElems(init) {
+        case Some(exprs) -> {
+          val elemTe = match sliceElemTypeExpr(te) {
+            case Some(e) -> Some(value = e)
+            case None -> {
+              val ga = annotationGenericArgs(te)
+              if ga.count == 1 {
+                Some(value = ga[0])
+              } else {
+                None
+              }
+            }
+          }
+          match elemTe {
+            case Some(e) -> return lowerListLiteralJvm(ctx, insns, exprs, primitiveSlotJvmType(ctx, e))
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+    case None -> ()
+  }
+  lowerExpr(ctx, insns, init)
+}
+
+// The elements of a (possibly parenthesised) list literal.
+func listLiteralElems(e: in Expr): Option[List[Expr]] {
+  match e.kind {
+    case EList(exprs) -> Some(value = exprs)
+    case EParen(inner) -> listLiteralElems(inner)
+    case _ -> None
+  }
+}
+
 func isListLiteralExpr(e: in Expr): Bool {
   match e.kind {
     case EList(_) -> true
@@ -1260,7 +1303,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             case None -> JVoid
           }
           pushCtorExpect(ctx, annEnumHintTy)
-          val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerExpr(ctx, insns, init), tyOpt)
+          val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerBindingInit(ctx, insns, init, tyOpt), tyOpt)
           popCtorExpect(ctx)
           lowerLocalPatBind(ctx, insns, pat, initTy, tyOpt)
           // A simple `val r = <expr>` records `r`'s generic args so a later
@@ -1295,7 +1338,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           } else {
             // #5995: see the matching LBVal comment above.
             pushCtorExpect(ctx, annTy)
-            val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerExpr(ctx, insns, init), tyOpt)
+            val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerBindingInit(ctx, insns, init, tyOpt), tyOpt)
             popCtorExpect(ctx)
             val ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
             // `coerceValueTo` boxes a primitive array into an annotated
@@ -1331,7 +1374,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               } else {
                 // #5995: see the matching LBVal comment above.
                 pushCtorExpect(ctx, annTy)
-                val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerExpr(ctx, insns, init), tyOpt)
+                val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerBindingInit(ctx, insns, init, tyOpt), tyOpt)
                 popCtorExpect(ctx)
                 ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
                 // `coerceValueTo` boxes a primitive array into an annotated

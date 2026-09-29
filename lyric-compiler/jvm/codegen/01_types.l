@@ -1348,6 +1348,18 @@ func listContainsStr(xs: in List[String], s: in String): Bool {
   false
 }
 
+// The index of `s` in `xs`, or -1.
+func indexOfStr(xs: in List[String], s: in String): Int {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == s {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
 // Like `typeExprToJvm`, but a bare `TRef` whose name is one of `typeParams`
 // erases to `java/lang/Object` (the JVM has no reified generics — see docs/44
 // M-1 / Q-J001).  Used when lowering a generic record/union's field types so a

@@ -299,6 +299,148 @@ func inferGenericReturnArgsFromCallArgs(ctx: in FuncCtx, sig: in JvmFuncSig, cal
   result
 }
 
+// The wider of two primitive JVM types along the lossless chains the checker
+// widens implicitly (`Byte < Int < Long`, `Float < Double`); `a` when they
+// are not comparable along one chain.  `JVoid` means "unknown" and yields
+// the other operand.
+func widerPrimitiveJvm(a: in JvmType, b: in JvmType): JvmType {
+  match a {
+    case JVoid -> b
+    case JByte -> match b { case JInt -> JInt; case JLong -> JLong; case _ -> a }
+    case JInt -> match b { case JLong -> JLong; case _ -> a }
+    case JFloat -> match b { case JDouble -> JDouble; case _ -> a }
+    case _ -> a
+  }
+}
+
+// The widest primitive each type parameter of a generic record/union case
+// is pinned to by a constructor call's arguments (`Two(a = aLong, b = 4)`
+// pins `T` to `Long`), keyed by `JvmCaseField.paramIdx` (#7782).  Only
+// fields declared as a bare type parameter contribute, each through its
+// argument's statically known primitive type; an unsigned argument is
+// skipped (`UInt`/`ULong` erase to the same JVM types as `Int`/`Long`).  A
+// narrower argument for the same parameter is then widened to this type
+// before it is boxed, matching the checker, which instantiates `T` at the
+// widest numeric type its arguments pin it to.
+func genericCtorParamPrimitives(
+  ctx: in FuncCtx, flds: in List[JvmCaseField], args: in List[Option[CallArg]]
+): Map[Int, JvmType] {
+  val solved: Map[Int, JvmType] = newMap()
+  var i = 0
+  while i < flds.count and i < args.count {
+    val pIdx = flds[i].paramIdx
+    if pIdx >= 0 {
+      match args[i] {
+        case Some(arg) -> {
+          val argExpr = callArgExpr(arg)
+          val argTy = listLiteralElemTypeJvm(ctx, argExpr)
+          if isJvmPrimitiveElemType(argTy) and not isUnsignedExpr(ctx, argExpr) {
+            val prev = match mapGet(solved, pIdx) { case Some(t) -> t; case None -> JVoid }
+            solved[pIdx] = widerPrimitiveJvm(prev, argTy)
+          }
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  solved
+}
+
+// The bare type-parameter name a declared parameter type is (`x: in T`), or
+// `None` for any other shape.
+func bareTypeParamName(te: in TypeExpr, ownTypeParams: in List[String]): Option[String] {
+  match te.kind {
+    case TParen(inner) -> bareTypeParamName(inner, ownTypeParams)
+    case TRef(p) -> {
+      if p.segments.count == 1 and listContainsStr(ownTypeParams, p.segments[0]) {
+        Some(value = p.segments[0])
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// Per-argument erased-slot types for a call to a generic function the
+// monomorphizer left generic (a cross-package `Std.Set.setAdd[T]`), aligned
+// with `callArgs` (#7782).  An argument passed to a bare type-parameter
+// parameter (`item: in T`) is boxed into an erased `Object` slot, and the
+// callee reads it back as `T`'s instantiation — which the checker takes as
+// the WIDEST numeric type any argument pins `T` to (`setAdd(s, 5)` with
+// `s: Set[Long]` is `T = Long`; `pick(aLong, 3)` too).  Solve each type
+// parameter the same way: container-shaped parameters contribute their
+// argument's recorded instantiation (`unifyDeclParamWithArg`), bare `T`
+// parameters their argument's statically known primitive type, and the
+// widest primitive wins.  A position whose parameter is not a bare type
+// parameter, or whose type parameter solves to no primitive, is `JVoid`.
+// Empty when the callee has no type parameters of its own.
+func genericCallArgSlotTys(ctx: in FuncCtx, sig: in JvmFuncSig, callArgs: in List[CallArg]): List[JvmType] {
+  val result: List[JvmType] = newList()
+  if sig.ownTypeParams.count == 0 or sig.declParamTypeExprs.count == 0 {
+    return result
+  }
+  val argsByName = buildArgsByParamName(callArgs, sig.paramNames)
+  val subst: Map[String, TypeExpr] = newMap()
+  val solved: Map[String, JvmType] = newMap()
+  var i = 0
+  while i < sig.declParamTypeExprs.count and i < sig.paramNames.count {
+    match mapGet(argsByName, sig.paramNames[i]) {
+      case Some(argExpr) -> {
+        match bareTypeParamName(sig.declParamTypeExprs[i], sig.ownTypeParams) {
+          case Some(tp) -> {
+            val argTy = listLiteralElemTypeJvm(ctx, argExpr)
+            if isJvmPrimitiveElemType(argTy) and not isUnsignedExpr(ctx, argExpr) {
+              val prev = match mapGet(solved, tp) { case Some(t) -> t; case None -> JVoid }
+              solved[tp] = widerPrimitiveJvm(prev, argTy)
+            }
+          }
+          case None -> unifyDeclParamWithArg(ctx, sig.declParamTypeExprs[i], argExpr, sig.ownTypeParams, subst)
+        }
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  for tp in sig.ownTypeParams {
+    match mapGet(subst, tp) {
+      case Some(te) -> {
+        val fromContainer = primitiveSlotJvmType(ctx, te)
+        if isJvmPrimitiveElemType(fromContainer) {
+          val prev = match mapGet(solved, tp) { case Some(t) -> t; case None -> JVoid }
+          solved[tp] = widerPrimitiveJvm(prev, fromContainer)
+        }
+      }
+      case None -> ()
+    }
+  }
+  var j = 0
+  while j < callArgs.count {
+    val paramIdx = match callArgs[j] {
+      case CAPositional(_) -> j
+      case CANamed(name, _, _) -> indexOfStr(sig.paramNames, name)
+    }
+    var slotTy = JVoid
+    if paramIdx >= 0 and paramIdx < sig.declParamTypeExprs.count {
+      match bareTypeParamName(sig.declParamTypeExprs[paramIdx], sig.ownTypeParams) {
+        case Some(tp) -> {
+          match mapGet(solved, tp) {
+            case Some(t) -> {
+              slotTy = t
+            }
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+    result.add(slotTy)
+    j = j + 1
+  }
+  result
+}
+
 // Recover the scrutinee's generic instantiation arguments so a constructor
 // destructure can unbox an erased type-parameter payload to its concrete
 // primitive (#4877).  Handles:
@@ -345,6 +487,50 @@ func genericRecordCtorArgs(ctx: in FuncCtx, name: in String, callArgs: in List[C
   }
   val byName = buildArgsByParamName(callArgs, names)
   val solved: Map[Int, TypeExpr] = newMap()
+  // A parameter several primitive arguments pin takes the widest of them,
+  // the type the constructor boxes every one of them as (#7782).
+  val orderedW = orderCtorArgsPadded(flds, callArgs)
+  var u = 0
+  while u < flds.count and u < orderedW.count {
+    if flds[u].paramIdx >= 0 {
+      match orderedW[u] {
+        case Some(argU) -> {
+          if isUnsignedExpr(ctx, callArgExpr(argU)) {
+            return newList()
+          }
+        }
+        case None -> ()
+      }
+    }
+    u = u + 1
+  }
+  val widest = genericCtorParamPrimitives(ctx, flds, orderedW)
+  var w = 0
+  while w < flds.count and w < orderedW.count {
+    val pIdxW = flds[w].paramIdx
+    if pIdxW >= 0 and not solved.containsKey(pIdxW) {
+      match mapGet(widest, pIdxW) {
+        case Some(tyW) -> {
+          match builtinTypeNameForJvmElem(tyW) {
+            case Some(nmW) -> {
+              match orderedW[w] {
+                case Some(argW) -> {
+                  val spW = callArgExpr(argW).span
+                  val segsW: List[String] = newList()
+                  segsW.add(nmW)
+                  solved.add(pIdxW, TypeExpr(kind = TRef(path = ModulePath(segments = segsW, span = spW)), span = spW))
+                }
+                case None -> ()
+              }
+            }
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+    w = w + 1
+  }
   var k = 0
   while k < flds.count {
     val pIdx = flds[k].paramIdx
