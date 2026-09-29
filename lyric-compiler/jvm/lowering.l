@@ -2099,13 +2099,15 @@ func simulateLabelStacks(
 }
 
 // ── Lowering ──────────────────────────────────────────────────────────────────
-// Infer the minimum maxLocals needed by scanning the instruction list for the
-// highest slot index used by any load/store instruction.
-func inferMaxLocals(f: in LFunc): Int {
+// One past the highest local-variable slot any load/store/iinc instruction in
+// `insns` touches (a Long/Double counts both of its slots).  Shared by
+// `inferMaxLocals` and `lowerAsyncGenerator`'s `run()` sizing so both see the
+// same instruction coverage.
+func maxSlotUsedByInsns(insns: in List[LInsn]): Int {
   var maxSlot = 0
   var i = 0
-  while i < f.insns.count {
-    match f.insns[i] {
+  while i < insns.count {
+    match insns[i] {
       case LIload(s) -> {
         if s + 1 > maxSlot {
           maxSlot = s + 1
@@ -2170,6 +2172,13 @@ func inferMaxLocals(f: in LFunc): Int {
     }
     i = i + 1
   }
+  maxSlot
+}
+
+// Infer the minimum maxLocals needed by scanning the instruction list for the
+// highest slot index used by any load/store instruction.
+func inferMaxLocals(f: in LFunc): Int {
+  var maxSlot = maxSlotUsedByInsns(f.insns)
   // Account for parameter slots (always allocated at 0..N-1).
   val paramSlots = slotSum(f.params)
   if paramSlots > maxSlot {
@@ -5761,7 +5770,16 @@ pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
   result
 }
 
-// ── B129: lowerAsyncGenerator (Iterable<Object>+Iterator<Object>, lazy) ───────
+// JVM local-variable slot width of a generator parameter (Long/Double take 2).
+func jvmSlotWidthForGen(t: in JvmType): Int {
+  match t {
+    case JLong -> 2
+    case JDouble -> 2
+    case _ -> 1
+  }
+}
+
+// ── B129: lowerAsyncGenerator (Iterable + rendezvous Iterator, lazy) ─────────
 pub record LGenParam {
   paramName: String
   paramType: JvmType
@@ -5780,67 +5798,116 @@ pub record LGenFunc {
   /// Parameters captured from the callsite into generator fields.
   params: List[LGenParam]
   /// Body instructions for the generator's `run()` (executed on the producer
-  /// virtual thread).
+  /// virtual thread).  Slot 0 is `this`; body locals start at slot 1.
   /// `LYield` is a meta-insn: the preceding instructions must have left one
-  /// value on the stack; lowerAsyncGenerator replaces it with a
-  /// `SynchronousQueue.put` handoff to the consumer (lazy, one value at a time).
+  /// value on the stack; lowerAsyncGenerator replaces it with a call to the
+  /// generator's `_yield` rendezvous (lazy, one value per consumer pull).
   bodyInsns: List[LInsn]
 }
 
-/// Lazy lowering of a Lyric `async func` with `yield`.
+/// Lazy (pull-driven) lowering of a Lyric `async func` with `yield` (#5102,
+/// #7720).
 ///
-/// Emits a generator class implementing `java.lang.Iterable<Object>`,
-/// `java.util.Iterator<Object>`, and `java.lang.Runnable`.  The body runs
-/// in a JDK-21+ virtual thread; each `yield` calls `SynchronousQueue.put`
-/// to hand the value to the consumer; `hasNext` calls `take` to receive the
-/// next value or the sentinel.  This gives truly lazy, on-demand evaluation:
-/// values are produced only when the consumer calls `hasNext`.
+/// Emits two classes:
 ///
-/// Class layout:
-///   static _DONE_SENTINEL: Object            — signals exhaustion
-///   _done: boolean                           — true after sentinel received
-///   _pending: Object                         — buffered value from last hasNext
-///   _channel: SynchronousQueue<Object>       — producer↔consumer handoff
-///   _param0 … _paramN: captured params
+///   * `<G>` — implements `java.lang.Iterable<Object>` and `java.lang.Runnable`.
+///     The kickoff/factory returns a `<G>` holding only the captured params.
+///     Each `iterator()` call clones it into a fresh *producer state* `<G>`
+///     (so a generator value can be iterated more than once, each iteration
+///     re-running the body from the start) and returns a `<G>$Iter` over it.
+///     `run()` is the body, executed on a JDK-21 virtual thread.
+///   * `<G>$Iter` — the consumer-facing `java.util.Iterator<Object>`; it holds
+///     the producer state and delegates `hasNext`/`next` to it.  It also
+///     implements `Runnable` so a second instance can serve as the `Cleaner`
+///     action (see "Abandonment" below) without referencing the consumer-facing
+///     instance itself.
 ///
-/// Methods:
-///   <clinit>:  new Object(); putstatic _DONE_SENTINEL
-///   <init>(params): super(); store params to fields
-///   run():     body with yield → channel.put(value); sentinel put at end;
-///              InterruptedException caught and silently swallows (consumer abandoned)
-///   iterator(): new SynchronousQueue; reset _done/_pending; startVirtualThread(this)
-///   hasNext(): if _done return false; take from channel; check sentinel; store pending
-///   next():    return _pending
+/// Semantics — a per-element rendezvous matching the MSIL state machine
+/// (`MoveNextAsync` drives the body one step per pull):
+///
+///   * No body code runs before the first pull: the producer thread is started
+///     by the first `hasNext()`, and its first action is to wait for demand.
+///   * Exactly one element per pull: `hasNext()` hands a demand token to the
+///     producer over `_demand` (a `SynchronousQueue`) and then takes the next
+///     value from `_channel`.  At each `yield` the producer puts the boxed value
+///     on `_channel` and then blocks on `_demand` again, so the body never runs
+///     ahead of the consumer.  `hasNext()` is idempotent (`_hasPending`); a
+///     `next()` without a preceding `hasNext()` pulls, and throws
+///     `NoSuchElementException` past the end.
+///   * Exceptions: a throw that escapes the body is stored in `_error` and the
+///     done sentinel is handed over; the `hasNext()` that receives it rethrows
+///     the original exception on the consumer thread.  Later calls return
+///     `false`.
+///   * Abandonment: when the consumer stops early (`break`, `return`, a
+///     throw) the producer is parked in `_demand.take()`.  The consumer-facing
+///     `<G>$Iter` is registered with a per-generator-class `java.lang.ref.Cleaner`
+///     (whose own thread is a virtual thread); once it becomes unreachable the
+///     cleaner sets `_abandoned` and interrupts the producer, whose pending
+///     `yield` throws `InterruptedException` and unwinds the body (running its
+///     `defer`s / `finally`-shaped handlers).  Every later `yield` rethrows
+///     immediately and `_finish`/`_fail` never block once abandoned, so the
+///     producer thread terminates instead of staying parked — the JDK tracks
+///     every started virtual thread (`jdk.trackAllThreads`), so a parked one is
+///     never reclaimed by GC alone.  A body that catches the interrupt with a
+///     catch-all (`catch Bug`) keeps running until its next `yield` (which
+///     throws again) or its end.  Reclamation is GC-driven, so it happens at
+///     the next collection that finds the iterator unreachable, not
+///     synchronously at the `break`.
+///   * Consumer interruption: if the consumer thread is interrupted while
+///     waiting in `hasNext()`, the iteration ends (`false`), the producer is
+///     abandoned as above, and the consumer's interrupt status is restored.
+///
+/// `<G>` fields:
+///   static _DONE_SENTINEL: Object     — end-of-sequence marker / demand token
+///   static _CLEANER: Cleaner          — reclaims abandoned producers
+///   _done, _hasPending: boolean       — consumer-side iteration state
+///   _pending: Object                  — value received by the last pull
+///   _channel, _demand: SynchronousQueue — producer→consumer / consumer→producer
+///   _thread: Thread (volatile)        — the producer, started on first pull
+///   _error: Throwable                 — exception escaping the body
+///   _abandoned: boolean (volatile)    — set by the cleaner
+///   <param fields>                    — captured params
 ///
 /// Uses class file version 49 (Java 5) so no StackMapTable is required for
-/// the branches in hasNext() and run().  Virtual threads and SynchronousQueue
-/// are JDK-21+ runtime APIs callable from any class file version.
+/// the branches and exception handlers.  Virtual threads, `SynchronousQueue`
+/// and `Cleaner` are JDK-21+ runtime APIs callable from any class file version.
 pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val result: List[ClassFile] = newList()
   val genClass = g.generatorClass
+  val iterWrapClass = genClass + "$Iter"
   val objClass = "java/lang/Object"
   val sqClass = "java/util/concurrent/SynchronousQueue"
   val iterClass = "java/util/Iterator"
   val iterableClass = "java/lang/Iterable"
   val runnableClass = "java/lang/Runnable"
   val threadClass = "java/lang/Thread"
+  val throwableClass = "java/lang/Throwable"
+  val cleanerClass = "java/lang/ref/Cleaner"
+  val ieClass = "java/lang/InterruptedException"
   val objType = JRef(className = objClass)
   val sqType = JRef(className = sqClass)
+  // JVMS §4.5: ACC_VOLATILE shares bit 0x0040 with the method flag ACC_BRIDGE.
+  val accVolatile = 0x0040
 
   // ── 1. Field declarations ──────────────────────────────────────────────────
   val emptyAttrs: List[Attribute] = newList()
-  val sentinelDesc = typeDescriptor(objType)
-  val doneDesc = "Z"
-  val pendingDesc = typeDescriptor(objType)
-  val channelDesc = typeDescriptor(sqType)
+  val objDesc = typeDescriptor(objType)
+  val sqDesc = typeDescriptor(sqType)
+  val threadDesc = "Ljava/lang/Thread;"
+  val throwableDesc = "Ljava/lang/Throwable;"
+  val cleanerDesc = "Ljava/lang/ref/Cleaner;"
 
   val fieldsOut: List[FieldInfo] = newList()
-  // Static sentinel signals exhaustion to the consumer.
-  fieldsOut.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC + ACC_FINAL, "_DONE_SENTINEL", sentinelDesc, emptyAttrs))
-  // Instance fields
-  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_done", doneDesc, emptyAttrs))
-  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_pending", pendingDesc, emptyAttrs))
-  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_channel", channelDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC + ACC_FINAL, "_DONE_SENTINEL", objDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC + ACC_FINAL, "_CLEANER", cleanerDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_done", "Z", emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_hasPending", "Z", emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_pending", objDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_channel", sqDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_demand", sqDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE + accVolatile, "_thread", threadDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_error", throwableDesc, emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE + accVolatile, "_abandoned", "Z", emptyAttrs))
   var pi = 0
   while pi < g.params.count {
     val p = g.params[pi]
@@ -5849,24 +5916,52 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     pi = pi + 1
   }
 
-  // Pre-compute constant pool refs used across multiple methods.
+  // Constant-pool refs shared across methods.
   val objCtorIdx = poolMethodref(pool, objClass, "<init>", "()V")
   val sqCtorIdx = poolMethodref(pool, sqClass, "<init>", "()V")
-  val sentinelIdx = poolFieldref(pool, genClass, "_DONE_SENTINEL", sentinelDesc)
-  val doneIdx = poolFieldref(pool, genClass, "_done", doneDesc)
-  val pendingIdx = poolFieldref(pool, genClass, "_pending", pendingDesc)
-  val channelIdx = poolFieldref(pool, genClass, "_channel", channelDesc)
+  val sqPutIdx = poolMethodref(pool, sqClass, "put", "(Ljava/lang/Object;)V")
+  val sqTakeIdx = poolMethodref(pool, sqClass, "take", "()Ljava/lang/Object;")
+  val sentinelIdx = poolFieldref(pool, genClass, "_DONE_SENTINEL", objDesc)
+  val cleanerIdx = poolFieldref(pool, genClass, "_CLEANER", cleanerDesc)
+  val doneIdx = poolFieldref(pool, genClass, "_done", "Z")
+  val hasPendingIdx = poolFieldref(pool, genClass, "_hasPending", "Z")
+  val pendingIdx = poolFieldref(pool, genClass, "_pending", objDesc)
+  val channelIdx = poolFieldref(pool, genClass, "_channel", sqDesc)
+  val demandIdx = poolFieldref(pool, genClass, "_demand", sqDesc)
+  val threadIdx = poolFieldref(pool, genClass, "_thread", threadDesc)
+  val errorIdx = poolFieldref(pool, genClass, "_error", throwableDesc)
+  val abandonedIdx = poolFieldref(pool, genClass, "_abandoned", "Z")
+  val ieClassIdx = poolClass(pool, ieClass)
+  val yieldIdx = poolMethodref(pool, genClass, "_yield", "(Ljava/lang/Object;)V")
+  val finishIdx = poolMethodref(pool, genClass, "_finish", "()V")
+  val failIdx = poolMethodref(pool, genClass, "_fail", "(Ljava/lang/Throwable;)V")
+  val pullHasNextIdx = poolMethodref(pool, genClass, "_pullHasNext", "()Z")
+  val pullNextIdx = poolMethodref(pool, genClass, "_pullNext", "()Ljava/lang/Object;")
+  val abandonIdx = poolMethodref(pool, genClass, "_abandon", "()V")
+  val threadInterruptIdx = poolMethodref(pool, threadClass, "interrupt", "()V")
 
-  // ── 2. <clinit> — initialize _DONE_SENTINEL ───────────────────────────────
+  // ── 2. <clinit> — sentinel + cleaner ───────────────────────────────────────
+  // _CLEANER = Cleaner.create(Thread.ofVirtual().factory()): the cleaner's own
+  // thread is a virtual thread, so an idle cleaner costs no carrier thread.
   val clinitAsm = newAssembler(pool)
   emitNew(clinitAsm, poolClass(pool, objClass))
   emitDup(clinitAsm)
   emitInvokespecial(clinitAsm, objCtorIdx)
   emitPutstatic(clinitAsm, sentinelIdx)
+  emitInvokestatic(clinitAsm, poolMethodref(pool, threadClass, "ofVirtual", "()Ljava/lang/Thread$Builder$OfVirtual;"))
+  emitInvokeinterface(
+    clinitAsm,
+    poolIfaceMethodref(pool, "java/lang/Thread$Builder", "factory", "()Ljava/util/concurrent/ThreadFactory;"),
+    1
+  )
+  emitInvokestatic(
+    clinitAsm,
+    poolMethodref(pool, cleanerClass, "create", "(Ljava/util/concurrent/ThreadFactory;)Ljava/lang/ref/Cleaner;")
+  )
+  emitPutstatic(clinitAsm, cleanerIdx)
   emitReturn(clinitAsm)
-  val clinitCode = assembleCode(clinitAsm, 2, 0)
   val clinitAttrs: List[Attribute] = newList()
-  clinitAttrs.add(clinitCode)
+  clinitAttrs.add(assembleCode(clinitAsm, 2, 0))
   val clinitMethod = makeMethodInfo(ACC_STATIC, "<clinit>", "()V", clinitAttrs)
 
   // ── 3. Constructor <init>(params...)V ──────────────────────────────────────
@@ -5881,110 +5976,46 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     emitAload(ctorAsm, 0)
     emitFieldLoad(p.paramType, slot, ctorAsm)
     emitPutfield(ctorAsm, fIdx)
-    match p.paramType {
-      case JLong -> {
-        slot = slot + 2
-      }
-      case JDouble -> {
-        slot = slot + 2
-      }
-      case _ -> {
-        slot = slot + 1
-      }
-    }
+    slot = slot + jvmSlotWidthForGen(p.paramType)
     qi = qi + 1
   }
   emitReturn(ctorAsm)
-  val ctorMaxLocals = slot
-  val ctorCode = assembleCode(ctorAsm, 2, ctorMaxLocals)
+  // `slot` = 1 (`this`) + the parameter slots; maxStack 3 covers
+  // `this` + a Long/Double parameter.
   val ctorAttrs: List[Attribute] = newList()
-  ctorAttrs.add(ctorCode)
+  ctorAttrs.add(assembleCode(ctorAsm, 3, slot))
   val ctorParamTypes: List[JvmType] = newList()
   var ri = 0
   while ri < g.params.count {
     ctorParamTypes.add(g.params[ri].paramType)
     ri = ri + 1
   }
-  val ctorMethod = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorParamTypes, JVoid), ctorAttrs)
+  val ctorDesc = buildDescriptor(ctorParamTypes, JVoid)
+  val ctorMethod = makeMethodInfo(ACC_PUBLIC, "<init>", ctorDesc, ctorAttrs)
 
-  // ── 4. run()V — executes the generator body in a virtual thread ───────────
-  // Body instructions with LYield replaced by SynchronousQueue.put(boxed_value).
-  // Slot 0 = `this`; yieldTempSlot (one past the highest body slot) holds the
-  // boxed value transiently.  Scan body insns first to find the max slot so
-  // yieldTempSlot doesn't collide with any existing local.
-  var bodyMaxSlot = 0
-  var bsi = 0
-  while bsi < g.bodyInsns.count {
-    match g.bodyInsns[bsi] {
-      case LIload(s) -> {
-        if s + 1 > bodyMaxSlot {
-          bodyMaxSlot = s + 1
-        }
-      }
-      case LLload(s) -> {
-        if s + 2 > bodyMaxSlot {
-          bodyMaxSlot = s + 2
-        }
-      }
-      case LFload(s) -> {
-        if s + 1 > bodyMaxSlot {
-          bodyMaxSlot = s + 1
-        }
-      }
-      case LDload(s) -> {
-        if s + 2 > bodyMaxSlot {
-          bodyMaxSlot = s + 2
-        }
-      }
-      case LAload(s) -> {
-        if s + 1 > bodyMaxSlot {
-          bodyMaxSlot = s + 1
-        }
-      }
-      case LIstore(s) -> {
-        if s + 1 > bodyMaxSlot {
-          bodyMaxSlot = s + 1
-        }
-      }
-      case LLstore(s) -> {
-        if s + 2 > bodyMaxSlot {
-          bodyMaxSlot = s + 2
-        }
-      }
-      case LFstore(s) -> {
-        if s + 1 > bodyMaxSlot {
-          bodyMaxSlot = s + 1
-        }
-      }
-      case LDstore(s) -> {
-        if s + 2 > bodyMaxSlot {
-          bodyMaxSlot = s + 2
-        }
-      }
-      case LAstore(s) -> {
-        if s + 1 > bodyMaxSlot {
-          bodyMaxSlot = s + 1
-        }
-      }
-      case _ -> ()
-    }
-    bsi = bsi + 1
-  }
-  val yieldTempSlot = bodyMaxSlot
-  val bodyMaxLocals = yieldTempSlot + 1
-
-  val sqPutIdx = poolMethodref(pool, sqClass, "put", "(Ljava/lang/Object;)V")
+  // ── 4. run()V — the body, on the producer virtual thread ──────────────────
+  // Slot 0 is `this` (the codegen reserves it and allocates body locals from
+  // slot 1); max_locals is 1 + whatever the body uses, and the yield / handler
+  // sequences need no local of their own (they pass values on the operand
+  // stack to `_yield` / `_fail`), so no scratch slot can alias `this` (#7720).
+  val bodySlots = maxSlotUsedByInsns(g.bodyInsns)
+  val runMaxLocals = if bodySlots > 1 then bodySlots else 1
   val bodyAsm = newAssembler(pool)
   // Seed handler-entry labels (#6551) so a `try`/`catch` inside the generator
   // body gets a correct `maxStack` inference, same as `lowerFuncImpl`.
   bodyAsm.handlerLabels = collectHandlerLabels(g.bodyInsns)
   emitLabel(bodyAsm, "run_try_start")
+  // Wait for the first pull before running any body code.
+  emitAload(bodyAsm, 0)
+  emitGetfield(bodyAsm, demandIdx)
+  emitInvokevirtual(bodyAsm, sqTakeIdx)
+  emitPop(bodyAsm)
   var bi = 0
   while bi < g.bodyInsns.count {
     val insn = g.bodyInsns[bi]
     match insn {
       case LYield -> {
-        // Box primitive; store to temp slot; load this._channel; reload value; put.
+        // Box the yielded value, then this._yield(value).
         match g.elemType {
           case JInt -> lowerInsn(LBoxInt, bodyAsm)
           case JLong -> lowerInsn(LBoxLong, bodyAsm)
@@ -5996,191 +6027,327 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
           case JShort -> lowerInsn(LBoxShort, bodyAsm)
           case _ -> ()
         }
-        emitAstore(bodyAsm, yieldTempSlot)
         emitAload(bodyAsm, 0)
-        emitGetfield(bodyAsm, channelIdx)
-        emitAload(bodyAsm, yieldTempSlot)
-        emitInvokevirtual(bodyAsm, sqPutIdx)
+        emitSwap(bodyAsm)
+        emitInvokevirtual(bodyAsm, yieldIdx)
+      }
+      // A bare `return` in the body ends the sequence: route it through the
+      // normal completion path so the consumer receives the done sentinel.
+      case LReturn -> emitGoto(bodyAsm, "run_body_end")
+      // `lowerInsn` treats `LTryCatch` as a no-op meta-insn (`lowerFunc`
+      // builds its exception table from a pre-pass); register the body's own
+      // handlers here, in body order, ahead of the catch-all below.
+      case LTryCatch(sl, el, hl, cc) -> {
+        val ct = if cc == "" then 0 else poolClass(pool, cc)
+        addExceptionHandler(bodyAsm, sl, el, hl, ct)
       }
       case _ -> lowerInsn(insn, bodyAsm)
     }
     bi = bi + 1
   }
-  // Normal-path sentinel put: body completed without throwing.
   emitLabel(bodyAsm, "run_body_end")
   emitAload(bodyAsm, 0)
-  emitGetfield(bodyAsm, channelIdx)
-  emitGetstatic(bodyAsm, sentinelIdx)
-  emitLabel(bodyAsm, "run_sentinel1_start")
-  emitInvokevirtual(bodyAsm, sqPutIdx)
-  emitLabel(bodyAsm, "run_sentinel1_end")
+  emitInvokevirtual(bodyAsm, finishIdx)
   emitReturn(bodyAsm)
-  // Catch-all handler: body (or a yield put) threw a non-IE exception.
-  // Save the exception, put the sentinel so the consumer unblocks, then
-  // rethrow.  The virtual thread's exception is discarded by the JVM (virtual
-  // threads do not propagate uncaught exceptions to their starter), but
-  // unblocking the consumer ensures hasNext() returns false rather than
-  // deadlocking indefinitely in take().
+  // Catch-all: the exception is on the stack; hand it to the consumer.
   emitLabel(bodyAsm, "run_catch_all")
-  emitAstore(bodyAsm, yieldTempSlot)
   emitAload(bodyAsm, 0)
-  emitGetfield(bodyAsm, channelIdx)
-  emitGetstatic(bodyAsm, sentinelIdx)
-  emitLabel(bodyAsm, "run_sentinel2_start")
-  emitInvokevirtual(bodyAsm, sqPutIdx)
-  emitLabel(bodyAsm, "run_sentinel2_end")
-  emitAload(bodyAsm, yieldTempSlot)
-  emitAthrow(bodyAsm)
-  // InterruptedException from either sentinel put: consumer abandoned iteration;
-  // swallow and exit.  The thread's interrupted status is cleared by catching
-  // IE, so a subsequent put (sentinel2 path) would not re-throw unless the
-  // thread is interrupted again externally, which is outside Lyric's control.
-  emitLabel(bodyAsm, "run_ie_handler")
-  emitPop(bodyAsm)
+  emitSwap(bodyAsm)
+  emitInvokevirtual(bodyAsm, failIdx)
   emitReturn(bodyAsm)
-  val ieClassIdx = poolClass(pool, "java/lang/InterruptedException")
-  // Handler 1: catch-all for the body (including yield puts) so the sentinel is
-  //            always put before the producer exits.
+  // Registered after the body's own handlers so a user `try`/`catch` in the
+  // body takes precedence (the JVM picks the first matching table entry).
   addExceptionHandler(bodyAsm, "run_try_start", "run_body_end", "run_catch_all", 0)
-  // Handler 2: InterruptedException from the normal-path sentinel put (consumer gone).
-  addExceptionHandler(bodyAsm, "run_sentinel1_start", "run_sentinel1_end", "run_ie_handler", ieClassIdx)
-  // Handler 3: InterruptedException from the exception-path sentinel put (consumer gone
-  //            while the producer was also handling another exception).
-  addExceptionHandler(bodyAsm, "run_sentinel2_start", "run_sentinel2_end", "run_ie_handler", ieClassIdx)
-  val runMaxStack = if bodyAsm.peakStack >= 3 then bodyAsm.peakStack else 3
-  val bodyCode = assembleCode(bodyAsm, runMaxStack, bodyMaxLocals)
-  val bodyAttrs: List[Attribute] = newList()
-  bodyAttrs.add(bodyCode)
-  val bodyPs: List[JvmType] = newList()
-  val runMethod = makeMethodInfo(ACC_PUBLIC, "run", buildDescriptor(bodyPs, JVoid), bodyAttrs)
+  val runMaxStack = if bodyAsm.peakStack + 1 > 2 then bodyAsm.peakStack + 1 else 2
+  val runAttrs: List[Attribute] = newList()
+  runAttrs.add(assembleCode(bodyAsm, runMaxStack, runMaxLocals))
+  val noPs: List[JvmType] = newList()
+  val runMethod = makeMethodInfo(ACC_PUBLIC, "run", buildDescriptor(noPs, JVoid), runAttrs)
 
-  // ── 5. iterator(): Iterator ────────────────────────────────────────────────
-  // Initialise the channel, reset state, start a virtual thread running `this`
-  // (which executes run()), and return this as Iterator.
-  //
-  // Resource-leak note (early-exit / re-entry):
-  //   If the consumer stops calling hasNext() before the generator is exhausted
-  //   (e.g. a `break` from a `for` loop), the producer virtual thread remains
-  //   parked in SynchronousQueue.put() indefinitely — it holds no OS thread
-  //   (virtual threads are cheap), but it IS a GC root until the generator object
-  //   itself is collected.  Callers that truncate iteration must be aware of this
-  //   cost; interrupt-on-abandon is a tracked follow-up (#3565).
-  //
-  //   Re-entry (calling iterator() while a prior iteration is in progress) replaces
-  //   the channel, orphaning the running virtual thread permanently in put() with no
-  //   recipient.  This constitutes a thread leak.  Callers must not re-enter
-  //   iterator() during an active iteration.
-  val iterAsm = newAssembler(pool)
-  val startVtRef = poolMethodref(pool, threadClass, "startVirtualThread", "(Ljava/lang/Runnable;)Ljava/lang/Thread;")
-  // _channel = new SynchronousQueue()
-  emitAload(iterAsm, 0)
-  emitNew(iterAsm, poolClass(pool, sqClass))
-  emitDup(iterAsm)
-  emitInvokespecial(iterAsm, sqCtorIdx)
-  emitPutfield(iterAsm, channelIdx)
-  // _done = false (0)
-  emitAload(iterAsm, 0)
-  emitIconst(iterAsm, 0)
-  emitPutfield(iterAsm, doneIdx)
-  // _pending = null
-  emitAload(iterAsm, 0)
-  emitAconstNull(iterAsm)
-  emitPutfield(iterAsm, pendingIdx)
-  // Thread.startVirtualThread(this) — discard the returned Thread
-  emitAload(iterAsm, 0)
-  emitInvokestatic(iterAsm, startVtRef)
-  emitPop(iterAsm)
-  // return this
-  emitAload(iterAsm, 0)
-  emitAreturn(iterAsm)
-  val iterPs: List[JvmType] = newList()
-  val iterRetType = JRef(className = iterClass)
-  // maxStack=3: new + dup before invokespecial SynchronousQueue.<init>
-  val iterCode = assembleCode(iterAsm, 3, 1)
-  val iterAttrs: List[Attribute] = newList()
-  iterAttrs.add(iterCode)
-  val iterMethod = makeMethodInfo(ACC_PUBLIC, "iterator", buildDescriptor(iterPs, iterRetType), iterAttrs)
+  // ── 5. _yield(Object)V — producer side of one rendezvous ──────────────────
+  // if (_abandoned) throw new InterruptedException();
+  // _channel.put(v); _demand.take();
+  val yAsm = newAssembler(pool)
+  emitAload(yAsm, 0)
+  emitGetfield(yAsm, abandonedIdx)
+  emitIfeq(yAsm, "y_put")
+  emitNew(yAsm, ieClassIdx)
+  emitDup(yAsm)
+  emitInvokespecial(yAsm, poolMethodref(pool, ieClass, "<init>", "()V"))
+  emitAthrow(yAsm)
+  emitLabel(yAsm, "y_put")
+  emitAload(yAsm, 0)
+  emitGetfield(yAsm, channelIdx)
+  emitAload(yAsm, 1)
+  emitInvokevirtual(yAsm, sqPutIdx)
+  emitAload(yAsm, 0)
+  emitGetfield(yAsm, demandIdx)
+  emitInvokevirtual(yAsm, sqTakeIdx)
+  emitPop(yAsm)
+  emitReturn(yAsm)
+  val yAttrs: List[Attribute] = newList()
+  yAttrs.add(assembleCode(yAsm, 2, 2))
+  val yieldMethod = makeMethodInfo(ACC_PUBLIC, "_yield", "(Ljava/lang/Object;)V", yAttrs)
 
-  // ── 6. hasNext(): boolean ──────────────────────────────────────────────────
-  // slot 0 = this, slot 1 = the value taken from the channel (v)
+  // ── 6. _finish()V / _fail(Throwable)V — producer completion ───────────────
+  // Hand the done sentinel to the consumer (after recording the error, for
+  // _fail) unless the iteration was abandoned — then nobody will ever take it.
+  // An interrupt while handing it over also means abandonment: just exit.
+  val finAsm = newAssembler(pool)
+  emitAload(finAsm, 0)
+  emitGetfield(finAsm, abandonedIdx)
+  emitIfne(finAsm, "fin_ret")
+  emitLabel(finAsm, "fin_try_start")
+  emitAload(finAsm, 0)
+  emitGetfield(finAsm, channelIdx)
+  emitGetstatic(finAsm, sentinelIdx)
+  emitInvokevirtual(finAsm, sqPutIdx)
+  emitLabel(finAsm, "fin_try_end")
+  emitReturn(finAsm)
+  emitLabel(finAsm, "fin_ie")
+  emitPop(finAsm)
+  emitLabel(finAsm, "fin_ret")
+  emitReturn(finAsm)
+  addExceptionHandler(finAsm, "fin_try_start", "fin_try_end", "fin_ie", ieClassIdx)
+  val finAttrs: List[Attribute] = newList()
+  finAttrs.add(assembleCode(finAsm, 2, 1))
+  val finishMethod = makeMethodInfo(ACC_PUBLIC, "_finish", "()V", finAttrs)
+
+  val failAsm = newAssembler(pool)
+  emitAload(failAsm, 0)
+  emitGetfield(failAsm, abandonedIdx)
+  emitIfne(failAsm, "fail_ret")
+  emitAload(failAsm, 0)
+  emitAload(failAsm, 1)
+  emitPutfield(failAsm, errorIdx)
+  emitLabel(failAsm, "fail_try_start")
+  emitAload(failAsm, 0)
+  emitGetfield(failAsm, channelIdx)
+  emitGetstatic(failAsm, sentinelIdx)
+  emitInvokevirtual(failAsm, sqPutIdx)
+  emitLabel(failAsm, "fail_try_end")
+  emitReturn(failAsm)
+  emitLabel(failAsm, "fail_ie")
+  emitPop(failAsm)
+  emitLabel(failAsm, "fail_ret")
+  emitReturn(failAsm)
+  addExceptionHandler(failAsm, "fail_try_start", "fail_try_end", "fail_ie", ieClassIdx)
+  val failAttrs: List[Attribute] = newList()
+  failAttrs.add(assembleCode(failAsm, 2, 2))
+  val failMethod = makeMethodInfo(ACC_PUBLIC, "_fail", "(Ljava/lang/Throwable;)V", failAttrs)
+
+  // ── 7. _pullHasNext()Z — consumer side of one rendezvous ──────────────────
+  // slot 1 = the value taken from _channel; slot 2 = the stored error.
   val hnAsm = newAssembler(pool)
-  val sqTakeIdx = poolMethodref(pool, sqClass, "take", "()Ljava/lang/Object;")
-  // if (_done) return false
   emitAload(hnAsm, 0)
   emitGetfield(hnAsm, doneIdx)
-  emitIfeq(hnAsm, "hn_try_start")
+  emitIfeq(hnAsm, "hn_not_done")
   emitIconst(hnAsm, 0)
   emitIreturn(hnAsm)
-  // try: v = _channel.take()
-  emitLabel(hnAsm, "hn_try_start")
+  emitLabel(hnAsm, "hn_not_done")
+  emitAload(hnAsm, 0)
+  emitGetfield(hnAsm, hasPendingIdx)
+  emitIfeq(hnAsm, "hn_need_pull")
+  emitIconst(hnAsm, 1)
+  emitIreturn(hnAsm)
+  emitLabel(hnAsm, "hn_need_pull")
+  // First pull: create the channels and start the producer.
+  emitAload(hnAsm, 0)
+  emitGetfield(hnAsm, threadIdx)
+  emitIfnonnull(hnAsm, "hn_pull")
+  emitAload(hnAsm, 0)
+  emitNew(hnAsm, poolClass(pool, sqClass))
+  emitDup(hnAsm)
+  emitInvokespecial(hnAsm, sqCtorIdx)
+  emitPutfield(hnAsm, channelIdx)
+  emitAload(hnAsm, 0)
+  emitNew(hnAsm, poolClass(pool, sqClass))
+  emitDup(hnAsm)
+  emitInvokespecial(hnAsm, sqCtorIdx)
+  emitPutfield(hnAsm, demandIdx)
+  emitAload(hnAsm, 0)
+  emitAload(hnAsm, 0)
+  emitInvokestatic(
+    hnAsm,
+    poolMethodref(pool, threadClass, "startVirtualThread", "(Ljava/lang/Runnable;)Ljava/lang/Thread;")
+  )
+  emitPutfield(hnAsm, threadIdx)
+  emitLabel(hnAsm, "hn_pull")
+  // _demand.put(token); v = _channel.take()
+  emitAload(hnAsm, 0)
+  emitGetfield(hnAsm, demandIdx)
+  emitGetstatic(hnAsm, sentinelIdx)
+  emitInvokevirtual(hnAsm, sqPutIdx)
   emitAload(hnAsm, 0)
   emitGetfield(hnAsm, channelIdx)
   emitInvokevirtual(hnAsm, sqTakeIdx)
   emitAstore(hnAsm, 1)
-  // if (v == _DONE_SENTINEL) { _done = true; return false; }
+  emitLabel(hnAsm, "hn_pull_end")
   emitAload(hnAsm, 1)
   emitGetstatic(hnAsm, sentinelIdx)
-  emitIfAcmpne(hnAsm, "hn_pending")
+  emitIfAcmpne(hnAsm, "hn_value")
+  // Done: rethrow a body exception once, then report exhaustion.
   emitAload(hnAsm, 0)
   emitIconst(hnAsm, 1)
   emitPutfield(hnAsm, doneIdx)
+  emitAload(hnAsm, 0)
+  emitGetfield(hnAsm, errorIdx)
+  emitAstore(hnAsm, 2)
+  emitAload(hnAsm, 2)
+  emitIfnull(hnAsm, "hn_exhausted")
+  emitAload(hnAsm, 0)
+  emitAconstNull(hnAsm)
+  emitPutfield(hnAsm, errorIdx)
+  emitAload(hnAsm, 2)
+  emitAthrow(hnAsm)
+  emitLabel(hnAsm, "hn_exhausted")
   emitIconst(hnAsm, 0)
   emitIreturn(hnAsm)
-  // _pending = v; return true
-  emitLabel(hnAsm, "hn_pending")
+  emitLabel(hnAsm, "hn_value")
   emitAload(hnAsm, 0)
   emitAload(hnAsm, 1)
   emitPutfield(hnAsm, pendingIdx)
+  emitAload(hnAsm, 0)
+  emitIconst(hnAsm, 1)
+  emitPutfield(hnAsm, hasPendingIdx)
   emitIconst(hnAsm, 1)
   emitIreturn(hnAsm)
-  // End of try range (never reached from the paths above; marks the handler end).
-  emitLabel(hnAsm, "hn_try_end")
-  // InterruptedException handler: _done = true; return false
-  emitLabel(hnAsm, "hn_ie_handler")
+  // Consumer interrupted while waiting: end the iteration, release the
+  // producer, and restore the interrupt status for the caller.
+  emitLabel(hnAsm, "hn_ie")
   emitPop(hnAsm)
   emitAload(hnAsm, 0)
   emitIconst(hnAsm, 1)
   emitPutfield(hnAsm, doneIdx)
+  emitAload(hnAsm, 0)
+  emitInvokevirtual(hnAsm, abandonIdx)
+  emitInvokestatic(hnAsm, poolMethodref(pool, threadClass, "currentThread", "()Ljava/lang/Thread;"))
+  emitInvokevirtual(hnAsm, threadInterruptIdx)
   emitIconst(hnAsm, 0)
   emitIreturn(hnAsm)
-  val hnPs: List[JvmType] = newList()
-  val hnCode = assembleCodeWith1Handler(hnAsm, 2, 2, "hn_try_start", "hn_try_end", "hn_ie_handler", ieClassIdx)
+  addExceptionHandler(hnAsm, "hn_pull", "hn_pull_end", "hn_ie", ieClassIdx)
   val hnAttrs: List[Attribute] = newList()
-  hnAttrs.add(hnCode)
-  val hasNextMethod = makeMethodInfo(ACC_PUBLIC, "hasNext", buildDescriptor(hnPs, JBoolean), hnAttrs)
+  hnAttrs.add(assembleCode(hnAsm, 4, 3))
+  val pullHasNextMethod = makeMethodInfo(ACC_PUBLIC, "_pullHasNext", "()Z", hnAttrs)
 
-  // ── 7. next(): Object ──────────────────────────────────────────────────────
-  val nextAsm = newAssembler(pool)
-  emitAload(nextAsm, 0)
-  emitGetfield(nextAsm, pendingIdx)
-  emitAreturn(nextAsm)
-  val nextPs: List[JvmType] = newList()
-  val nextCode = assembleCode(nextAsm, 1, 1)
-  val nextAttrs: List[Attribute] = newList()
-  nextAttrs.add(nextCode)
-  val nextMethod = makeMethodInfo(ACC_PUBLIC, "next", buildDescriptor(nextPs, objType), nextAttrs)
+  // ── 8. _pullNext()Object ───────────────────────────────────────────────────
+  val nxAsm = newAssembler(pool)
+  emitAload(nxAsm, 0)
+  emitGetfield(nxAsm, hasPendingIdx)
+  emitIfne(nxAsm, "nx_take")
+  emitAload(nxAsm, 0)
+  emitInvokevirtual(nxAsm, pullHasNextIdx)
+  emitIfne(nxAsm, "nx_take")
+  val nseClass = "java/util/NoSuchElementException"
+  emitNew(nxAsm, poolClass(pool, nseClass))
+  emitDup(nxAsm)
+  emitInvokespecial(nxAsm, poolMethodref(pool, nseClass, "<init>", "()V"))
+  emitAthrow(nxAsm)
+  emitLabel(nxAsm, "nx_take")
+  emitAload(nxAsm, 0)
+  emitIconst(nxAsm, 0)
+  emitPutfield(nxAsm, hasPendingIdx)
+  emitAload(nxAsm, 0)
+  emitGetfield(nxAsm, pendingIdx)
+  emitAstore(nxAsm, 1)
+  emitAload(nxAsm, 0)
+  emitAconstNull(nxAsm)
+  emitPutfield(nxAsm, pendingIdx)
+  emitAload(nxAsm, 1)
+  emitAreturn(nxAsm)
+  val nxAttrs: List[Attribute] = newList()
+  nxAttrs.add(assembleCode(nxAsm, 2, 2))
+  val pullNextMethod = makeMethodInfo(ACC_PUBLIC, "_pullNext", "()Ljava/lang/Object;", nxAttrs)
 
-  // ── 8. Assemble generator class ────────────────────────────────────────────
+  // ── 9. _abandon()V — release a producer nobody will pull from again ───────
+  // Set the flag before interrupting: the interrupt happens-before the
+  // producer observes it (JLS §17.4.4), so the producer sees `_abandoned`.
+  val abAsm = newAssembler(pool)
+  emitAload(abAsm, 0)
+  emitIconst(abAsm, 1)
+  emitPutfield(abAsm, abandonedIdx)
+  emitAload(abAsm, 0)
+  emitGetfield(abAsm, threadIdx)
+  emitAstore(abAsm, 1)
+  emitAload(abAsm, 1)
+  emitIfnull(abAsm, "ab_ret")
+  emitAload(abAsm, 1)
+  emitInvokevirtual(abAsm, threadInterruptIdx)
+  emitLabel(abAsm, "ab_ret")
+  emitReturn(abAsm)
+  val abAttrs: List[Attribute] = newList()
+  abAttrs.add(assembleCode(abAsm, 2, 2))
+  val abandonMethod = makeMethodInfo(ACC_PUBLIC, "_abandon", "()V", abAttrs)
+
+  // ── 10. iterator(): Iterator ───────────────────────────────────────────────
+  // state = new <G>(this.params...); it = new <G>$Iter(state);
+  // _CLEANER.register(it, new <G>$Iter(state)); return it
+  val iwCtorIdx = poolMethodref(pool, iterWrapClass, "<init>", "(L" + genClass + ";)V")
+  val iwClassIdx = poolClass(pool, iterWrapClass)
+  val itAsm = newAssembler(pool)
+  emitNew(itAsm, poolClass(pool, genClass))
+  emitDup(itAsm)
+  var paramWidth = 0
+  var ci = 0
+  while ci < g.params.count {
+    val p = g.params[ci]
+    emitAload(itAsm, 0)
+    emitGetfield(itAsm, poolFieldref(pool, genClass, p.paramName, typeDescriptor(p.paramType)))
+    paramWidth = paramWidth + jvmSlotWidthForGen(p.paramType)
+    ci = ci + 1
+  }
+  emitInvokespecial(itAsm, poolMethodref(pool, genClass, "<init>", ctorDesc))
+  emitAstore(itAsm, 1)
+  emitNew(itAsm, iwClassIdx)
+  emitDup(itAsm)
+  emitAload(itAsm, 1)
+  emitInvokespecial(itAsm, iwCtorIdx)
+  emitAstore(itAsm, 2)
+  emitGetstatic(itAsm, cleanerIdx)
+  emitAload(itAsm, 2)
+  emitNew(itAsm, iwClassIdx)
+  emitDup(itAsm)
+  emitAload(itAsm, 1)
+  emitInvokespecial(itAsm, iwCtorIdx)
+  emitInvokevirtual(
+    itAsm,
+    poolMethodref(
+      pool,
+      cleanerClass,
+      "register",
+      "(Ljava/lang/Object;Ljava/lang/Runnable;)Ljava/lang/ref/Cleaner$Cleanable;"
+    )
+  )
+  emitPop(itAsm)
+  emitAload(itAsm, 2)
+  emitAreturn(itAsm)
+  val itMaxStack = if paramWidth + 2 > 5 then paramWidth + 2 else 5
+  val itAttrs: List[Attribute] = newList()
+  itAttrs.add(assembleCode(itAsm, itMaxStack, 3))
+  val iterMethod = makeMethodInfo(ACC_PUBLIC, "iterator", buildDescriptor(noPs, JRef(className = iterClass)), itAttrs)
+
+  // ── 11. Assemble <G> ───────────────────────────────────────────────────────
   val genMethods: List[MethodInfo] = newList()
   genMethods.add(clinitMethod)
   genMethods.add(ctorMethod)
   genMethods.add(runMethod)
+  genMethods.add(yieldMethod)
+  genMethods.add(finishMethod)
+  genMethods.add(failMethod)
+  genMethods.add(pullHasNextMethod)
+  genMethods.add(pullNextMethod)
+  genMethods.add(abandonMethod)
   genMethods.add(iterMethod)
-  genMethods.add(hasNextMethod)
-  genMethods.add(nextMethod)
   val genIfaces: List[String] = newList()
   genIfaces.add(iterableClass)
-  genIfaces.add(iterClass)
   genIfaces.add(runnableClass)
-  // Use Java 5 (version 49) so the verifier does not require StackMapTable
-  // for hasNext()'s branches and run()'s exception handler.
   result.add(
     ClassFile(
       minorVersion = 0,
       majorVersion = 49,
       flags = ACC_PUBLIC + ACC_SUPER,
       thisClass = genClass,
-      superClass = "java/lang/Object",
+      superClass = objClass,
       interfaces = genIfaces,
       fields = fieldsOut,
       methods = genMethods,
@@ -6188,7 +6355,70 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     )
   )
 
-  // ── 9. Kickoff method on host class ────────────────────────────────────────
+  // ── 12. <G>$Iter — consumer-facing Iterator + cleaner action ──────────────
+  val genFieldDesc = "L" + genClass + ";"
+  val iwGenIdx = poolFieldref(pool, iterWrapClass, "gen", genFieldDesc)
+  val iwFields: List[FieldInfo] = newList()
+  iwFields.add(makeFieldInfo(ACC_PRIVATE + ACC_FINAL, "gen", genFieldDesc, emptyAttrs))
+
+  val iwCtorAsm = newAssembler(pool)
+  emitAload(iwCtorAsm, 0)
+  emitInvokespecial(iwCtorAsm, objCtorIdx)
+  emitAload(iwCtorAsm, 0)
+  emitAload(iwCtorAsm, 1)
+  emitPutfield(iwCtorAsm, iwGenIdx)
+  emitReturn(iwCtorAsm)
+  val iwCtorAttrs: List[Attribute] = newList()
+  iwCtorAttrs.add(assembleCode(iwCtorAsm, 2, 2))
+
+  val iwHnAsm = newAssembler(pool)
+  emitAload(iwHnAsm, 0)
+  emitGetfield(iwHnAsm, iwGenIdx)
+  emitInvokevirtual(iwHnAsm, pullHasNextIdx)
+  emitIreturn(iwHnAsm)
+  val iwHnAttrs: List[Attribute] = newList()
+  iwHnAttrs.add(assembleCode(iwHnAsm, 1, 1))
+
+  val iwNxAsm = newAssembler(pool)
+  emitAload(iwNxAsm, 0)
+  emitGetfield(iwNxAsm, iwGenIdx)
+  emitInvokevirtual(iwNxAsm, pullNextIdx)
+  emitAreturn(iwNxAsm)
+  val iwNxAttrs: List[Attribute] = newList()
+  iwNxAttrs.add(assembleCode(iwNxAsm, 1, 1))
+
+  // run() is only ever invoked on the cleaner-action instance.
+  val iwRunAsm = newAssembler(pool)
+  emitAload(iwRunAsm, 0)
+  emitGetfield(iwRunAsm, iwGenIdx)
+  emitInvokevirtual(iwRunAsm, abandonIdx)
+  emitReturn(iwRunAsm)
+  val iwRunAttrs: List[Attribute] = newList()
+  iwRunAttrs.add(assembleCode(iwRunAsm, 1, 1))
+
+  val iwMethods: List[MethodInfo] = newList()
+  iwMethods.add(makeMethodInfo(ACC_PUBLIC, "<init>", "(" + genFieldDesc + ")V", iwCtorAttrs))
+  iwMethods.add(makeMethodInfo(ACC_PUBLIC, "hasNext", "()Z", iwHnAttrs))
+  iwMethods.add(makeMethodInfo(ACC_PUBLIC, "next", "()Ljava/lang/Object;", iwNxAttrs))
+  iwMethods.add(makeMethodInfo(ACC_PUBLIC, "run", "()V", iwRunAttrs))
+  val iwIfaces: List[String] = newList()
+  iwIfaces.add(iterClass)
+  iwIfaces.add(runnableClass)
+  result.add(
+    ClassFile(
+      minorVersion = 0,
+      majorVersion = 49,
+      flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+      thisClass = iterWrapClass,
+      superClass = objClass,
+      interfaces = iwIfaces,
+      fields = iwFields,
+      methods = iwMethods,
+      attrs = newList()
+    )
+  )
+
+  // ── 13. Kickoff method on host class ────────────────────────────────────────
   // When hostClass is empty the caller (codegenPackage full pipeline) has
   // arranged for a factory LFunc in LPFuncs; skip the separate host class.
   if g.hostClass != "" {

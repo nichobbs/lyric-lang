@@ -15,6 +15,12 @@
 //! `for x in gen() { ... }`.  (The earlier eager "RunBody collects all yields"
 //! model is legacy/dead; see D119.)
 //!
+//! On `--target jvm` the body runs on a producer virtual thread with a
+//! per-element rendezvous (`Jvm.Lowering.lowerAsyncGenerator`, #7720): the
+//! thread starts on the first pull and parks after every `yield` until the
+//! next one, so both targets share the pull-driven semantics these tests pin.
+//! The JVM half runs in `scripts/ci/jvm-generics-self-tests-batch.sh`.
+//!
 //!   lyric test lyric-compiler/lyric/async_generator_self_test.l
 @test_module
 package Lyric.AsyncGeneratorSelfTest
@@ -322,4 +328,96 @@ test "#5102: early break stops the producer instead of draining a huge sequence"
   }
   assertEqualInt(count, 3, "consumer stops after observing 3 items")
   assertTrue(log.count <= 4, "producer ran at most 4 times before the break took effect")
+}
+
+// ── #7720: JVM generator slot numbering and pull-driven rendezvous ──────────
+// The JVM backend runs a generator body on a producer virtual thread.  Before
+// #7720 its `run()` sized `max_locals` from a body scan that started at 0, so a
+// generator with no params and no locals (the body touches no slot at all) got
+// its yield scratch slot at 0 and overwrote `this` — the first `yield` failed
+// verification.  The producer also ran one step ahead of the consumer, broke
+// the interleaving order below, and swallowed body exceptions.  These cases
+// run on both targets and pin the pull-driven model: no body code before the
+// first pull, one element per pull, early stop, exception propagation.
+async func genOneLong(): Long {
+  yield 7000000000
+}
+
+test "#7720: zero-param zero-local generator yielding a single Long" {
+  var total: Long = 0
+  var n = 0
+  for x in genOneLong() {
+    total = total + x
+    n = n + 1
+  }
+  assertEqualInt(n, 1, "genOneLong() yields exactly once")
+  assertEqualLong(total, 7000000000, "the yielded Long survives boxing")
+}
+
+async func genSteps(log: in List[String]): Int {
+  log.add("P0")
+  yield 0
+  log.add("P1")
+  yield 1
+  log.add("P2")
+  yield 2
+  log.add("P3")
+  yield 3
+  log.add("end")
+}
+
+test "#7720: straight-line yields interleave one producer step per pull" {
+  val log: List[String] = newList()
+  for x in genSteps(log) {
+    log.add("C${x}")
+  }
+  assertEqualInt(log.count, 9, "4 produce + 4 consume + end")
+  assertEqual(log[0], "P0", "first producer step runs on the first pull")
+  assertEqual(log[1], "C0", "consumer sees 0 before the producer resumes")
+  assertEqual(log[2], "P1", "producer resumes on the second pull")
+  assertEqual(log[3], "C1", "consumer sees 1")
+  assertEqual(log[4], "P2", "producer resumes on the third pull")
+  assertEqual(log[5], "C2", "consumer sees 2")
+  assertEqual(log[6], "P3", "producer resumes on the fourth pull")
+  assertEqual(log[7], "C3", "consumer sees 3")
+  assertEqual(log[8], "end", "the tail runs only on the pull that finds the end")
+}
+
+test "#7720: early break leaves the producer exactly at the last pulled yield" {
+  val log: List[String] = newList()
+  var n = 0
+  for x in genSteps(log) {
+    log.add("C${x}")
+    n = n + 1
+    if n >= 2 {
+      break
+    }
+  }
+  assertEqualInt(log.count, 4, "P0 C0 P1 C1 and nothing after the break")
+  assertEqual(log[2], "P1", "producer ran through the second yield")
+  assertEqual(log[3], "C1", "no producer step runs after the consumer stops")
+}
+
+async func genPanicsAfterTwo(log: in List[String]): Int {
+  log.add("P0")
+  yield 10
+  log.add("P1")
+  yield 20
+  log.add("P2")
+  panic("generator body failed after two yields")
+}
+
+func drainPanickingGenerator(log: in List[String]): Unit {
+  for x in genPanicsAfterTwo(log) {
+    log.add("C${x}")
+  }
+}
+
+test "#7720: a panic in the generator body propagates to the consumer" {
+  val log: List[String] = newList()
+  assertPanicsWith("panicking generator", "generator body failed after two yields", { -> drainPanickingGenerator(log) })
+  assertEqualInt(log.count, 5, "P0 C10 P1 C20 P2 before the panic surfaced")
+  assertEqual(log[1], "C10", "first value consumed before the panic")
+  assertEqual(log[3], "C20", "second value consumed before the panic")
+  assertEqual(log[4], "P2", "the panic surfaced on the third pull")
 }
