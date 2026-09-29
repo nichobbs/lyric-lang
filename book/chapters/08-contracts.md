@@ -90,6 +90,8 @@ func push(s: inout Stack[T], x: in T): Unit
 
 The snapshot is taken after the `requires:` clauses have been evaluated and before the function body runs. The runtime captures only the fields the contract actually reads — `old(s.depth)` costs one integer snapshot, not a deep copy of the stack.
 
+`old` belongs to postconditions only. Written anywhere else — a function body, a `requires:` clause, a `when:` barrier, a loop `invariant:`, a type `invariant:` — it is compile error `T0080`, and so is `old(old(x))` or an `old` whose operand mentions `result`. A loop invariant that needs a value from function entry reads a `val` bound before the loop instead.
+
 ### Contracts on methods and interfaces
 
 Methods take contracts exactly like free functions, whether they live in a `record` body or an `impl` block. An `interface` can also put contracts on its method signatures, and then every implementation is held to them:
