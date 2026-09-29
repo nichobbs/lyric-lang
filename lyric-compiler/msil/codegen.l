@@ -817,10 +817,11 @@ pub record CodegenCtx {
   // Pass 1's predicted generator FieldDef-row count, one entry per generator
   // in source order (#4259). `synthesizeGeneratorMsil` indexes this by its
   // own `tick` (= cctx.genTicker.count before incrementing, so both lists
-  // stay in lockstep) and panics if its real `genFields.count` disagrees,
-  // turning any prediction gap in `countGeneratorFieldsMsil` into a loud
-  // build failure instead of a silently-corrupted FieldDef token for every
-  // type declared after the generator.
+  // stay in lockstep). The prediction is an upper bound (#7718): a real
+  // `genFields.count` below it is padded with unused fields, and one above
+  // it panics, turning any prediction gap in `countGeneratorFieldsMsil` into
+  // a loud build failure instead of a silently-corrupted FieldDef token for
+  // every type declared after the generator.
   genFieldCountPredictions: List[Int]
   // #6515: Pass-1 SM FieldDef-row predictions keyed "pkg.func/arity".  The
   // async-SM counterpart of genFieldCountPredictions, with a different
@@ -20491,6 +20492,107 @@ func panicUnknownCollectionMethodMsil(memberName: in String, typeName: in String
 // Both forms route `break` / `continue` through the standard `fctx.loopBreak`
 // / `fctx.loopCont` label stacks; `continue` targets the increment step so the
 // counter still advances.
+// ── For-loop temporary-slot accounting (#7718) ───────────────────────────────
+//
+// Every `for` protocol below allocates a fixed number of hidden local slots of
+// its own (counter, bound, list / enumerator / element temporaries, ...),
+// separate from those of the iterable expression, the loop pattern, and the
+// body.  A generator hoists every body local to a field, and Pass 1's
+// `countGeneratorFieldsMsil` must know that number before any body is
+// lowered, so it is declared here once: each protocol allocates its
+// temporaries through `allocForTempSlotMsil` and closes with
+// `checkForTempSlotsMsil`, which fails the build the moment an allocation and
+// its declared count drift apart.
+union ForProtocolMsil {
+  case ForRangeMsil
+  case ForIndexedMsil
+  case ForIndexedArrayMsil
+  case ForIEnumerableMsil
+  case ForAsyncEnumerableMsil
+}
+
+func forProtocolTempSlotsMsil(p: in ForProtocolMsil): Int {
+  match p {
+    // counter, bound
+    case ForRangeMsil -> 2
+    // list, index, count, element
+    case ForIndexedMsil -> 4
+    // ForIndexedMsil's four plus the typed-array fast-path slot (#7259)
+    case ForIndexedArrayMsil -> 5
+    // enumerator, element, IDisposable probe
+    case ForIEnumerableMsil -> 3
+    // generator, CancellationToken, enumerator, MoveNextAsync ValueTask,
+    // element, DisposeAsync ValueTask
+    case ForAsyncEnumerableMsil -> 6
+  }
+}
+
+// The most temporaries any non-range `for` can allocate.  Which collection
+// protocol runs depends on the iterable's lowered type, which Pass 1 does not
+// have, so the generator field-count prediction takes this upper bound (and
+// `synthesizeGeneratorMsil` pads the class up to the prediction).
+func forCollectionTempSlotsUpperBoundMsil(): Int {
+  val protocols: List[ForProtocolMsil] = newList()
+  protocols.add(ForIndexedMsil)
+  protocols.add(ForIndexedArrayMsil)
+  protocols.add(ForIEnumerableMsil)
+  protocols.add(ForAsyncEnumerableMsil)
+  var most = 0
+  var i = 0
+  while i < protocols.count {
+    val n = forProtocolTempSlotsMsil(protocols[i])
+    if n > most {
+      most = n
+    }
+    i = i + 1
+  }
+  most
+}
+
+// The most local slots `bindForPatternMsil` can allocate for an (irrefutable)
+// `for` pattern: one per name, plus one element temporary per tuple position
+// (`lowerPatternBindMsil`'s `PTuple` arm).  A name that resolves to a nullary
+// union case, or re-binds a same-scope slot of the same type, allocates none,
+// so this is an upper bound.
+func forPatternSlotsUpperBoundMsil(pat: in Pattern): Int {
+  match pat.kind {
+    case PBinding(_, innerOpt) -> 1 +
+      match innerOpt {
+        case Some(inner) -> forPatternSlotsUpperBoundMsil(inner)
+        case None -> 0
+      }
+    case PTuple(subPats) -> {
+      var n = 0
+      var i = 0
+      while i < subPats.count {
+        n = n + 1 + forPatternSlotsUpperBoundMsil(subPats[i])
+        i = i + 1
+      }
+      n
+    }
+    case PParen(inner) -> forPatternSlotsUpperBoundMsil(inner)
+    case _ -> 0
+  }
+}
+
+func allocForTempSlotMsil(fctx: in FuncCtx, temps: in List[Int], name: in String, ty: in MsilType): Int {
+  val slot = allocSlotMsil(fctx, name, ty)
+  temps.add(slot)
+  slot
+}
+
+func checkForTempSlotsMsil(p: in ForProtocolMsil, temps: in List[Int]): Unit {
+  val declared = forProtocolTempSlotsMsil(p)
+  if temps.count != declared {
+    panic(
+      "Msil.Codegen: a `for` loop protocol allocated " + toString(temps.count) + " temporary slots but " +
+        "`forProtocolTempSlotsMsil` declares " +
+        toString(declared) +
+        " — update the declaration, which the generator field-count prediction relies on (#7718)"
+    )
+  }
+}
+
 // Bind a `for` loop variable from the value in `slot`.  A `for` binding is
 // `for` loop patterns must be irrefutable: only a name, `_`, or a tuple of
 // those is allowed.  Refutable forms emit F0021 so the user gets a span.
@@ -20535,13 +20637,14 @@ func emitCountingForMsil(
   inclusive: in Bool,
   body: in Block,
 ): Unit {
+  val temps: List[Int] = newList()
   // counter := lo
   val loTy = lowerExprMsil(cctx, fctx, insns, lo)
-  val iSlot = allocSlotMsil(fctx, "__for_i_" + toString(fctx.slotTicker.count), loTy)
+  val iSlot = allocForTempSlotMsil(fctx, temps, "__for_i_" + toString(fctx.slotTicker.count), loTy)
   emitStoreSlot(insns, iSlot, fctx.paramCount)
   // bound := hi (evaluated once so `for i in 0 .. f()` does not re-call f)
   val hiTy = lowerExprMsil(cctx, fctx, insns, hi)
-  val hiSlot = allocSlotMsil(fctx, "__for_hi_" + toString(fctx.slotTicker.count), hiTy)
+  val hiSlot = allocForTempSlotMsil(fctx, temps, "__for_hi_" + toString(fctx.slotTicker.count), hiTy)
   emitStoreSlot(insns, hiSlot, fctx.paramCount)
 
   val loopL = freshLabelMsil(fctx)
@@ -20587,6 +20690,7 @@ func emitCountingForMsil(
   emitStoreSlot(insns, iSlot, fctx.paramCount)
   insns.add(MBr(label = loopL))
   insns.add(MLabel(id = afterL))
+  checkForTempSlotsMsil(ForRangeMsil, temps)
 }
 
 // IEnumerator protocol for extern types that implement IEnumerable but not
@@ -20613,7 +20717,8 @@ func emitIEnumerableProtocolForMsil(
   // exact type (not MObject) so ILVerify's static stack tracking matches the
   // IEnumerator-typed callvirt receivers below (MoveNext/get_Current).
   val eeEnumTy = MClassRef(typeRefCode = tdrTypeRef(cctx.trIEnumerator), clrFqn = "System.Collections.IEnumerator")
-  val eeEnumSlot = allocSlotMsil(fctx, "__ee_enum_" + toString(fctx.slotTicker.count), eeEnumTy)
+  val temps: List[Int] = newList()
+  val eeEnumSlot = allocForTempSlotMsil(fctx, temps, "__ee_enum_" + toString(fctx.slotTicker.count), eeEnumTy)
   emitStoreSlot(insns, eeEnumSlot, fctx.paramCount)
 
   // The loop body is wrapped in a try/finally so the enumerator is disposed
@@ -20656,7 +20761,7 @@ func emitIEnumerableProtocolForMsil(
   emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
   insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorGetCurrent))
   castObjectToMsil(cctx, insns, eeElemTy)
-  val eeElemSlot = allocSlotMsil(fctx, "__ee_elem_" + toString(fctx.slotTicker.count), eeElemTy)
+  val eeElemSlot = allocForTempSlotMsil(fctx, temps, "__ee_elem_" + toString(fctx.slotTicker.count), eeElemTy)
   emitStoreSlot(insns, eeElemSlot, fctx.paramCount)
   // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
   // (#5191 follow-up).
@@ -20687,7 +20792,12 @@ func emitIEnumerableProtocolForMsil(
   insns.add(MLabel(id = eeFinallyStartL))
   emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
   insns.add(MIsinst(typeToken = 0x01000000 + cctx.trIDisposable))
-  val eeDisposableSlot = allocSlotMsil(fctx, "__ee_disposable_" + toString(fctx.slotTicker.count), MObject)
+  val eeDisposableSlot = allocForTempSlotMsil(
+    fctx,
+    temps,
+    "__ee_disposable_" + toString(fctx.slotTicker.count),
+    MObject
+  )
   emitStoreSlot(insns, eeDisposableSlot, fctx.paramCount)
   emitLoadSlot(insns, eeDisposableSlot, fctx.paramCount)
   insns.add(MBrFalse(label = eeSkipDisposeL))
@@ -20716,6 +20826,7 @@ func emitIEnumerableProtocolForMsil(
   )
 
   insns.add(MLabel(id = eeAfterL))
+  checkForTempSlotsMsil(ForIEnumerableMsil, temps)
 }
 
 // Emit an index-based loop for `for <pat> in <collection>`, modelling the
@@ -20736,6 +20847,7 @@ func emitCollectionForMsil(
   // `object` (#2126): a `for x in xs.toArray()` element bound as `MObject` made
   // `match x` / field access on `x` see an untyped scrutinee and misbehave.
   val iterTy = lowerExprMsil(cctx, fctx, insns, iter)
+  val temps: List[Int] = newList()
 
   // ── Async enumerator protocol for MIAsyncEnumerable (Phase 5, Epic #2070) ────
   // The synthesised generator class implements IAsyncEnumerable<object>.
@@ -20824,7 +20936,7 @@ func emitCollectionForMsil(
         )
 
       // Store the generator (already on stack) into a local
-      val genSlot2 = allocSlotMsil(fctx, "__iae_gen_" + toString(fctx.slotTicker.count), MObject)
+      val genSlot2 = allocForTempSlotMsil(fctx, temps, "__iae_gen_" + toString(fctx.slotTicker.count), MObject)
       emitStoreSlot(insns, genSlot2, fctx.paramCount)
 
       // Allocate CancellationToken local and zero-init it via initobj
@@ -20832,7 +20944,7 @@ func emitCollectionForMsil(
         typeRefCode = tdrTypeRef(cctx.trCancToken),
         clrFqn = "System.Threading.CancellationToken"
       )
-      val ctSlot2 = allocSlotMsil(fctx, "__iae_ct_" + toString(fctx.slotTicker.count), ctLocalTy2)
+      val ctSlot2 = allocForTempSlotMsil(fctx, temps, "__iae_ct_" + toString(fctx.slotTicker.count), ctLocalTy2)
       insns.add(MLdloca(slot = ctSlot2 - fctx.paramCount))
       insns.add(MInitobj(typeToken = 0x01000000 + cctx.trCancToken))
 
@@ -20840,7 +20952,7 @@ func emitCollectionForMsil(
       emitLoadSlot(insns, genSlot2, fctx.paramCount)
       insns.add(MLdloc(slot = ctSlot2 - fctx.paramCount))
       insns.add(MCallvirt(methodToken = tokGetEnum2))
-      val enumSlot2 = allocSlotMsil(fctx, "__iae_enum_" + toString(fctx.slotTicker.count), MObject)
+      val enumSlot2 = allocForTempSlotMsil(fctx, temps, "__iae_enum_" + toString(fctx.slotTicker.count), MObject)
       emitStoreSlot(insns, enumSlot2, fctx.paramCount)
 
       // Allocate ValueTask<bool> struct local for MoveNextAsync result
@@ -20851,7 +20963,7 @@ func emitCollectionForMsil(
         headFqn = "System.Threading.Tasks.ValueTask`1",
         typeArgs = vtBoolLocalTy2Args
       )
-      val vtSlot2 = allocSlotMsil(fctx, "__iae_vt_" + toString(fctx.slotTicker.count), vtBoolLocalTy2)
+      val vtSlot2 = allocForTempSlotMsil(fctx, temps, "__iae_vt_" + toString(fctx.slotTicker.count), vtBoolLocalTy2)
 
       val loopL2 = freshLabelMsil(fctx)
       val contL2 = freshLabelMsil(fctx)
@@ -20873,7 +20985,7 @@ func emitCollectionForMsil(
       emitLoadSlot(insns, enumSlot2, fctx.paramCount)
       insns.add(MCallvirt(methodToken = tokGetCurrent2))
       castObjectToMsil(cctx, insns, iaeElemTy)
-      val elemSlot2 = allocSlotMsil(fctx, "__iae_elem_" + toString(fctx.slotTicker.count), iaeElemTy)
+      val elemSlot2 = allocForTempSlotMsil(fctx, temps, "__iae_elem_" + toString(fctx.slotTicker.count), iaeElemTy)
       emitStoreSlot(insns, elemSlot2, fctx.paramCount)
       // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
       // (#5191 follow-up).
@@ -20906,10 +21018,11 @@ func emitCollectionForMsil(
       val dispAsyncSig = buildInstanceMethodSig(dispAsyncPs, dispAsyncVtTy)
       val tokDispAsync = 0x0A000000 +
         ctxAddMemberRef(lctx, cctx.trIAsyncDisp, "DisposeAsync", "iasyncdisp_disposeasync", dispAsyncSig)
-      val dispVtSlot = allocSlotMsil(fctx, "__iae_disp_vt_" + toString(fctx.slotTicker.count), dispAsyncVtTy)
+      val dispVtSlot = allocForTempSlotMsil(fctx, temps, "__iae_disp_vt_" + toString(fctx.slotTicker.count), dispAsyncVtTy)
       emitLoadSlot(insns, enumSlot2, fctx.paramCount)
       insns.add(MCallvirt(methodToken = tokDispAsync))
       insns.add(MStloc(slot = dispVtSlot - fctx.paramCount))  // discard ValueTask by storing to unused local
+      checkForTempSlotsMsil(ForAsyncEnumerableMsil, temps)
     }
     case MExternEnumerable(eeElemTy) -> {
       emitIEnumerableProtocolForMsil(cctx, fctx, insns, pat, body, eeElemTy)
@@ -20950,14 +21063,14 @@ func emitCollectionForMsil(
         case MArray(e) -> e
         case _ -> match forElemRaw { case MClass(_) -> forElemRaw; case _ -> MObject }
       }
-      val listSlot = allocSlotMsil(fctx, "__for_list_" + toString(fctx.slotTicker.count), MObject)
+      val listSlot = allocForTempSlotMsil(fctx, temps, "__for_list_" + toString(fctx.slotTicker.count), MObject)
       emitStoreSlot(insns, listSlot, fctx.paramCount)
       // i := 0
-      val iSlot = allocSlotMsil(fctx, "__for_ci_" + toString(fctx.slotTicker.count), MInt)
+      val iSlot = allocForTempSlotMsil(fctx, temps, "__for_ci_" + toString(fctx.slotTicker.count), MInt)
       insns.add(MLdcI4(v = 0))
       emitStoreSlot(insns, iSlot, fctx.paramCount)
       // count := list.Count
-      val cntSlot = allocSlotMsil(fctx, "__for_cnt_" + toString(fctx.slotTicker.count), MInt)
+      val cntSlot = allocForTempSlotMsil(fctx, temps, "__for_cnt_" + toString(fctx.slotTicker.count), MInt)
       emitLoadSlot(insns, listSlot, fctx.paramCount)
       emitListCastRecv(cctx, insns, iterTy)
       emitListGetCount(cctx, insns, iterTy)
@@ -20968,7 +21081,12 @@ func emitCollectionForMsil(
       val fastSpec = match iterTy { case MArray(e) -> sliceArraySpecTokenOpt(cctx, e); case _ -> None }
       val arrSlot = match fastSpec {
         case Some(specTok) -> {
-          val slot = allocSlotMsil(fctx, "__for_arr_" + toString(fctx.slotTicker.count), MArray(elemTy = forElemTy))
+          val slot = allocForTempSlotMsil(
+            fctx,
+            temps,
+            "__for_arr_" + toString(fctx.slotTicker.count),
+            MArray(elemTy = forElemTy)
+          )
           emitLoadSlot(insns, listSlot, fctx.paramCount)
           insns.add(MIsinst(typeToken = specTok))
           emitStoreSlot(insns, slot, fctx.paramCount)
@@ -20986,7 +21104,7 @@ func emitCollectionForMsil(
       emitLoadSlot(insns, cntSlot, fctx.paramCount)
       insns.add(MClt)
       insns.add(MBrFalse(label = afterL))
-      val elemSlot = allocSlotMsil(fctx, "__for_elem_" + toString(fctx.slotTicker.count), forElemTy)
+      val elemSlot = allocForTempSlotMsil(fctx, temps, "__for_elem_" + toString(fctx.slotTicker.count), forElemTy)
       val readSlowL = freshLabelMsil(fctx)
       val readDoneL = freshLabelMsil(fctx)
       if arrSlot >= 0 {
@@ -21034,6 +21152,7 @@ func emitCollectionForMsil(
       emitStoreSlot(insns, iSlot, fctx.paramCount)
       insns.add(MBr(label = loopL))
       insns.add(MLabel(id = afterL))
+      checkForTempSlotsMsil(if arrSlot >= 0 { ForIndexedArrayMsil } else { ForIndexedMsil }, temps)
     }
   }
 }
@@ -28113,15 +28232,15 @@ func countSpillsStmt(stmt: in Statement): Int {
   }
 }
 
-// Count the total number of FieldDef rows a generator class will emit for
-// `decl` (#4259).  MUST be kept in lockstep with `synthesizeGeneratorMsil`'s
-// `genFields` construction (~line 19161 below: 3 fixed fields — _state, _tcs,
-// __current — plus one `__pN` field per user param, plus one
-// `__local_<slot>` field per local-variable slot hoisted out of MoveNext,
-// INCLUDING the `__gen_ex` catch-handler local that every generator's
-// unconditional try/catch(Exception) wrapper allocates regardless of body
-// content — verified empirically: a zero-param, zero-local generator with
-// only bare `yield` statements still hoists exactly 1 local, `__gen_ex`).
+// Predict the number of FieldDef rows a generator class will emit for `decl`
+// (#4259) — an UPPER BOUND on `synthesizeGeneratorMsil`'s real `genFields`
+// count, which that function pads up to (see `genFieldCountPredictions`):
+// 3 fixed fields — _state, _tcs, __current — plus one `__pN` field per user
+// param, plus one `__local_<slot>` field per local-variable slot hoisted out
+// of MoveNext, INCLUDING the `__gen_ex` catch-handler local that every
+// generator's unconditional try/catch(Exception) wrapper allocates regardless
+// of body content (a zero-param, zero-local generator with only bare `yield`
+// statements still hoists exactly 1 local, `__gen_ex`).
 //
 // Unlike `countSmFieldsMsil`'s SM path (which promotes locals BY NAME, once
 // per distinct name, into a shared field), generator hoisting is a
@@ -28135,14 +28254,19 @@ func countSpillsStmt(stmt: in Statement): Int {
 // nested lambda is a heap cell occupying two slots (see the `LBVar` arm of
 // `countGenLocalsStmt`, #7715).
 //
+// A `for` loop contributes its protocol temporaries, declared once in
+// `forProtocolTempSlotsMsil` and checked against the real allocation on every
+// `for` the compiler lowers, plus `forPatternSlotsUpperBoundMsil` for its
+// pattern (#7718).  Constructs that allocate fewer slots than counted here (a
+// Unit-typed `val`, a `for` whose collection protocol needs fewer
+// temporaries than the largest one) are absorbed by the padding.
+//
 // Known scope boundary (mirrors the equivalent already-accepted gap in
-// `countSmFieldsMsil` / `countPromotedLocalsBlock`, which also does not
-// account for match-arm pattern binds): this does not additionally predict
-// fields for pattern-bound match-arm names or `for`-loop iterator temps —
-// neither of which any current generator self-test exercises. If a future generator body
-// uses one of those forms, `synthesizeGeneratorMsil`'s post-hoisting
-// consistency check panics loudly rather than silently emitting wrong
-// FieldDef tokens for every type declared after it.
+// `countSmFieldsMsil` / `countPromotedLocalsBlock`): match-arm pattern binds
+// and scrutinee temporaries are not counted.  A generator body that relies on
+// one makes the real count exceed the prediction, and
+// `synthesizeGeneratorMsil`'s post-hoisting check panics loudly rather than
+// silently emitting wrong FieldDef tokens for every type declared after it.
 func countGeneratorFieldsMsil(cctx: in CodegenCtx, pkgName: in String, decl: in FunctionDecl): Int {
   val base = 3 + 1 + decl.params.count  // +1 = __gen_ex, always hoisted
   // Same name set `synthesizeGeneratorMsil`'s `runClosureCapturePrePassMsil`
@@ -28223,8 +28347,18 @@ func countGenLocalsStmt(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in 
     case SThrow(e) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, e)
     case SWhile(_, cond, body) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, cond) +
       countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
-    case SFor(_, _, iter, body) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, iter) +
-      countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
+    // A `for` loop adds its protocol's own temporaries (the exact declared
+    // count for a range; the largest collection protocol's otherwise, since
+    // the protocol follows the iterable's lowered type) and its pattern's
+    // bindings to the iterable's and body's locals (#7718).
+    case SFor(_, pat, iter, body) -> {
+      val protocolSlots = match iter.kind {
+        case ERange(_) -> forProtocolTempSlotsMsil(ForRangeMsil)
+        case _ -> forCollectionTempSlotsUpperBoundMsil()
+      }
+      countGenLocalsExpr(cctx, pkgName, hoistedNms, iter) + protocolSlots + forPatternSlotsUpperBoundMsil(pat) +
+        countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
+    }
     case SLoop(_, body) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
     case SScope(_, body) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
     case SDefer(body) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
@@ -30014,10 +30148,10 @@ func synthesizeGeneratorMsil(
   // generator (the #4259/#4187 bug class).
   if tick < cctx.genFieldCountPredictions.count {
     val predictedGenFields = cctx.genFieldCountPredictions[tick]
-    if predictedGenFields != genFields.count {
+    if genFields.count > predictedGenFields {
       panic(
         "synthesizeGeneratorMsil: field-count prediction mismatch for '" + genFqn + "' — " +
-          "Pass 1 (countGeneratorFieldsMsil) predicted " +
+          "Pass 1 (countGeneratorFieldsMsil) predicted at most " +
           toString(predictedGenFields) +
           " FieldDef rows but real synthesis produced " +
           toString(genFields.count) +
@@ -30026,6 +30160,14 @@ func synthesizeGeneratorMsil(
           "scope boundary) — every FieldDef/MethodDef token predicted for any type " +
           "declared after this generator would otherwise be silently wrong (#4259)."
       )
+    }
+    // The prediction is an upper bound (a `for` loop's collection protocol is
+    // only known once its iterable is lowered, #7718): pad with unused fields
+    // so every later type's FieldDef tokens stay where Pass 1 put them.
+    var padIdx = 0
+    while genFields.count < predictedGenFields {
+      genFields.add(MField(flags = FDA_PUBLIC, name = "__pad_" + toString(padIdx), fieldType = MObject))
+      padIdx = padIdx + 1
     }
   }
   // Rebuild instruction list with save/restore inserted at each yield boundary.

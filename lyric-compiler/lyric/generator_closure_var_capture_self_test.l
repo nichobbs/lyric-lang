@@ -26,10 +26,10 @@
 //! The cases cover a mutation before the first yield, mutations between
 //! yields, a closure first called after a yield, a `var` declared inside a
 //! loop body (a fresh cell per iteration), a closure that reads back the
-//! value it wrote, and accumulation over a list.  The last case walks the
-//! list by index: a `for` loop inside a generator body is broken on both
-//! backends independently of closures (MSIL field-count mismatch, JVM
-//! `VerifyError`), which is a separate bug tracked in #7718.
+//! value it wrote, and accumulation over a list, both walking the list by
+//! index and with a `for` loop (the `for` form failed on both backends
+//! independently of closures until #7718; see
+//! `generator_for_loop_self_test.l`).
 //!
 //! Run via `lyric test`, compiled in-process on both targets:
 //!
@@ -106,6 +106,16 @@ async func genIndexedLoopCapture(items: in List[Int]): Int {
   yield total * 100
 }
 
+async func genForLoopCapture(items: in List[Int]): Int {
+  var total = 0
+  val add = { k: Int -> total = total + k }
+  for it in items {
+    add(it)
+    yield total
+  }
+  yield total * 100
+}
+
 func collect(xs: in List[Int]): String {
   var s = ""
   var i = 0
@@ -166,6 +176,18 @@ test "generator: closure accumulates a list across a loop with yields" {
   items.add(5)
   val got: List[Int] = newList()
   for x in genIndexedLoopCapture(items) {
+    got.add(x)
+  }
+  assertEqual(collect(got), "2,5,10,1000", "running total then total * 100")
+}
+
+test "generator: closure accumulates a list across a for loop with yields" {
+  val items: List[Int] = newList()
+  items.add(2)
+  items.add(3)
+  items.add(5)
+  val got: List[Int] = newList()
+  for x in genForLoopCapture(items) {
     got.add(x)
   }
   assertEqual(collect(got), "2,5,10,1000", "running total then total * 100")

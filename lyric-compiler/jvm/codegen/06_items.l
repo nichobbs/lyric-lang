@@ -68,6 +68,7 @@ func makeFuncCtx(
     loopBreak = loopBreak,
     loopCont = loopCont,
     genClass = None,
+    genElemTy = JVoid,
     funcSigs = funcSigs,
     caseFields = caseFields,
     ctors = ctors,
@@ -124,6 +125,7 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     loopBreak = ctx.loopBreak,
     loopCont = ctx.loopCont,
     genClass = ctx.genClass,
+    genElemTy = ctx.genElemTy,
     funcSigs = ctx.funcSigs,
     caseFields = ctx.caseFields,
     ctors = ctx.ctors,
@@ -169,6 +171,7 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
 func makeFuncCtxForGenerator(
   pkgName: in String,
   genClass: in String,
+  genElemTy: in JvmType,
   funcSigs: in Map[String, JvmFuncSig],
   caseFields: in Map[String, List[JvmCaseField]],
   ctors: in Map[String, String],
@@ -201,6 +204,7 @@ func makeFuncCtxForGenerator(
     loopBreak = loopBreak,
     loopCont = loopCont,
     genClass = Some(value = genClass),
+    genElemTy = genElemTy,
     funcSigs = funcSigs,
     caseFields = caseFields,
     ctors = ctors,
@@ -286,6 +290,7 @@ func makeFuncCtxInstance(
     loopBreak = loopBreak,
     loopCont = loopCont,
     genClass = None,
+    genElemTy = JVoid,
     funcSigs = funcSigs,
     caseFields = caseFields,
     ctors = ctors,
@@ -3005,6 +3010,16 @@ func funcBodyContainsYield(decl: in FunctionDecl): Bool {
 // Lower a generator function body to a flat list of LInsn.
 // Params are accessed as fields on `this` (slot 0); the preamble loads
 // each param field into a local slot so the body can use them normally.
+// The JVM type each value an async generator yields is boxed from — shared by
+// the generator body's `FuncCtx.genElemTy` (EYield coerces to it) and the
+// `LGenFunc.elemType` `lowerAsyncGenerator` boxes by, so the two can't drift.
+func generatorElemJvmType(decl: in FunctionDecl, pkgName: in String): JvmType {
+  match decl.ret {
+    case Some(te) -> typeExprToJvm(te, pkgName)
+    case None -> JRef(className = "java/lang/Object")
+  }
+}
+
 func lowerGeneratorBody(
   decl: in FunctionDecl,
   pkgName: in String,
@@ -3028,6 +3043,7 @@ func lowerGeneratorBody(
   val ctx = makeFuncCtxForGenerator(
     pkgName,
     genClass,
+    generatorElemJvmType(decl, pkgName),
     funcSigs,
     caseFields,
     ctors,
@@ -3074,6 +3090,19 @@ func lowerGeneratorBody(
     insns.add(LGetfield(owner = genClass, name = p.name, t = paramTy))
     emitStore(insns, slot, paramTy)
     pi = pi + 1
+  }
+  // Record each parameter's declared element / generic-instantiation /
+  // unsigned-ness metadata exactly as `lowerFuncScoped` does for an ordinary
+  // function (#7718).  Without it a `for x in items` over a `List[Int]`
+  // parameter bound `x` as erased `Object` — the loop's
+  // `indexedElemTypeOverride` narrowing had nothing to resolve against.
+  val genElemTps = genericParamNames(decl.generics)
+  var rdi = 0
+  while rdi < decl.params.count {
+    recordDeclaredElemType(ctx, decl.params[rdi].name, decl.params[rdi].ty, genElemTps)
+    recordParamGenericArgs(ctx, decl.params[rdi].name, decl.params[rdi].ty, genElemTps)
+    recordUnsignedVarTy(ctx, decl.params[rdi].name, decl.params[rdi].ty)
+    rdi = rdi + 1
   }
 
   // Lower the body.
@@ -7160,10 +7189,7 @@ pub func codegenPackageWithSigsSeeded(
             genParams.add(LGenParam(paramName = p.name, paramType = typeExprToJvmExtern(p.ty, pkgName, externTypes)))
             pi = pi + 1
           }
-          val elemTy = match decl.ret {
-            case Some(te) -> typeExprToJvm(te, pkgName)
-            case None -> JRef(className = "java/lang/Object")
-          }
+          val elemTy = generatorElemJvmType(decl, pkgName)
           val genFunc = LGenFunc(
             generatorClass = genClass,
             hostClass = "",

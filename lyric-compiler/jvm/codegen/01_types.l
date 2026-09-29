@@ -566,6 +566,12 @@ pub record FuncCtx {
   loopCont: List[String]      // stack of loop continue labels (innermost last)
   // Generator body context: when Some, EYield emits LYield; when None, EYield panics.
   genClass: Option[String]
+  // The generator's declared element type (`JVoid` outside a generator body).
+  // `lowerAsyncGenerator` boxes each yielded value by this type, so EYield
+  // coerces the yielded expression to it first — an erased `Object` operand
+  // (e.g. an element read from an un-narrowed collection) would otherwise be
+  // handed to a primitive box call (#7718).
+  genElemTy: JvmType
   // Cross-package free-function call resolution (see JvmFuncSig).  Keyed by
   // bare function name.  Empty for hand-built / generator-internal contexts.
   funcSigs: Map[String, JvmFuncSig]
