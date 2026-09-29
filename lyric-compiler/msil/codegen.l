@@ -5779,9 +5779,6 @@ pub record FuncCtx {
   var epilogueLabel: Int
   var retvalSlot: Int
   epilogueUsed: List[Int]
-  // EYield support: slot of the List<object> yield collector when inside a generator.
-  // Empty when the function is not a generator; singleton when it is.
-  yieldSlots: List[Int]
   // The function's declared return MsilType. Used by nullary union-case
   // construction (e.g. `return None`) to infer the concrete type argument T
   // when no arg is present (e.g. None in parseDigits(): Option[Long] → T=Long).
@@ -11220,11 +11217,9 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // TaskCompletionSource-based suspend protocol (D119): each `yield e`
     // stashes e in `__current`, records the resume state, and completes the
     // TCS so the caller's `await` unblocks — the generator body doesn't run
-    // ahead of consumption. Plain (non-async) generators (fctx.yieldSlots
-    // set) still use the simpler collect-all model: each `yield e` appends e
-    // to a per-function List<object> collector allocated at function entry.
-    // Returns MVoid so the statement wrapper pops nothing (void instructions
-    // push nothing).
+    // ahead of consumption.  Every generator is an `async func` (a `yield`
+    // anywhere else is T0094), so no other lowering exists.  Returns MVoid so
+    // the statement wrapper pops nothing (void instructions push nothing).
     case EYield(inner) -> {
       if fctx.lazyGenCtx.count > 0 {
         val lgctx = fctx.lazyGenCtx[0]
@@ -11281,16 +11276,6 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         insns.add(MBrFalse(label = runOnL))
         insns.add(MLeave(label = lgctx.disposeExitLabel))
         insns.add(MLabel(id = runOnL))
-      } else if fctx.yieldSlots.count > 0 {
-        val collSlot = fctx.yieldSlots[0]
-        insns.add(MLdloc(slot = collSlot - fctx.paramCount))
-        // The collector local is typed `object` (MObject) but `List<object>::Add`
-        // expects `this` to be `List<object>`.  Castclass narrows the stack type
-        // so the JIT verifier accepts the callvirt.
-        insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
-        val eTy = lowerExprMsil(cctx, fctx, insns, inner)
-        boxIfNeededMsil(cctx, insns, eTy)
-        insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
       } else {
         panic("Msil.Codegen: yield outside async generator — front-end should have rejected this")
       }
@@ -23549,7 +23534,6 @@ func makeFuncCtxMsil(
   val loopLabelIndex: Map[String, Int] = newMap()
   val tryRegionStack: List[Int] = newList()
   val epilogueUsed: List[Int] = newList()
-  val yieldSlots: List[Int] = newList()
   val contextHintTyArgs: List[MsilType] = newList()
   val collExpect: List[MsilType] = newList()
   val byrefSlotTypes: Map[Int, MsilType] = newMap()
@@ -23581,7 +23565,6 @@ func makeFuncCtxMsil(
     epilogueLabel = -1,
     retvalSlot = -1,
     epilogueUsed = epilogueUsed,
-    yieldSlots = yieldSlots,
     declaredRetTy = declaredRetTy,
     retHintFallbackOff = 0,
     contextHintTyArgs = contextHintTyArgs,
