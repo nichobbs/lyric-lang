@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Test that aspect-composed requires:/ensures: clauses are gated by [contracts] enabled = false"
 
 [project]
+name = "contracts_gating_test"
 output = "single"
 
 [project.packages]
