@@ -21057,11 +21057,19 @@ func emitCollectionForMsil(
       // castclass refs) below — without this an `Int[]` element read garbage and
       // a `String[]` element mis-dispatched (#2592, exposed once concrete
       // `List.toArray()` yields a real array).  Other legacy/erased iterables
-      // keep the existing behaviour: narrow only `MClass` refs.
+      // keep the existing behaviour: narrow only `MClass` refs.  A tuple
+      // element keeps its `MTuple` element types, which is what lets a
+      // `for (a, b) in pairs` pattern unbox each element to its own type
+      // instead of binding the boxed `object` reference (#7728); its runtime
+      // representation is `List<object>`, so it needs no narrowing cast.
       val forElemTy = match iterTy {
         case MConcreteList(e) -> e
         case MArray(e) -> e
-        case _ -> match forElemRaw { case MClass(_) -> forElemRaw; case _ -> MObject }
+        case _ -> match forElemRaw {
+          case MClass(_) -> forElemRaw
+          case MTuple(_) -> forElemRaw
+          case _ -> MObject
+        }
       }
       val listSlot = allocForTempSlotMsil(fctx, temps, "__for_list_" + toString(fctx.slotTicker.count), MObject)
       emitStoreSlot(insns, listSlot, fctx.paramCount)

@@ -284,8 +284,10 @@ pub func pipeCheckAndMono(
   // Record `.copy(...)` → constructor call, a cross-package function value →
   // its forwarding lambda, a widened function-value call argument → its
   // explicit conversion, an unannotated function-valued local → its checked
-  // type as the annotation (#7711), and a call through a function value → a
-  // call through a local of the callee's checked type (#7716), while the type checker's span keys still
+  // type as the annotation (#7711), a call through a function value → a
+  // call through a local of the callee's checked type (#7716), and a name a
+  // tuple pattern binds → a local annotated with its element type (#7728),
+  // while the type checker's span keys still
   // identify exactly one expression each (D-progress-948, 962, 963).
   val valueSites = funcValueSites(tcRes.symbols)
   val copyRes = desugarCheckedFile(
@@ -294,7 +296,8 @@ pub func pipeCheckAndMono(
     valueSites,
     tcRes.symbols.argConversionSites,
     tcRes.symbols.localFuncTypeSites,
-    tcRes.symbols.funcValueCallSites
+    tcRes.symbols.funcValueCallSites,
+    tcRes.symbols.tuplePatternBindingSites
   )
   if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
     return None

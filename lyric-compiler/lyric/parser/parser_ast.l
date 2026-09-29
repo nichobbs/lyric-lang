@@ -1224,6 +1224,23 @@ pub record FuncValueCallSite {
   startOffset: Int
 }
 
+/// A name a tuple pattern binds, with the element type the type checker gave
+/// it spelled as source.  Both backends represent a tuple as a list of boxed
+/// elements, so an element read back through a pattern is an erased object
+/// unless the backend can see the tuple's element types at that point (a
+/// `for` over a list, a tuple parameter, a nested tuple); `Lyric.Mono.
+/// desugarCheckedFile` binds the pattern position to a fresh name and the
+/// source name to a local annotated with this type (#7728, #7730).
+/// `rendered` identifies the type; two checked patterns sharing one source
+/// position (synthesized code) with different types are `conflicting` and
+/// left as written.
+pub record TuplePatternBindingSite {
+  bindingType: TypeExpr
+  rendered: String
+  conflicting: Bool
+  startOffset: Int
+}
+
 /// The key of a record-copy call site: its span's start and end offsets.
 pub func recordCopySiteKey(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)

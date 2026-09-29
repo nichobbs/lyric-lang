@@ -282,6 +282,11 @@ record MonoState {
   /// call's span; `funcValueCallMono` calls it through a local annotated with
   /// the callee's type (#7716).
   funcValueCallSites: Map[String, FuncValueCallSite]
+  /// Each name a tuple pattern binds that the type checker typed
+  /// (`SymbolTable.tuplePatternBindingSites`), keyed by `recordCopySiteKey` of
+  /// the binding's span; `renameTuplePatternBindingsMono` binds it through a
+  /// local annotated with the element type (#7728).
+  tuplePatternBindingSites: Map[String, TuplePatternBindingSite]
   /// Counter for the fresh locals a copy desugar binds (length = next id).
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
@@ -327,6 +332,7 @@ func newMonoState(
     callResultTypes = newMap(),
     localFuncTypeSites = newMap(),
     funcValueCallSites = newMap(),
+    tuplePatternBindingSites = newMap(),
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
@@ -4022,14 +4028,15 @@ func funcRefLambdaMono(site: in FuncRefSite, sp: in Span): Expr {
 /// could not lower.  Only items containing a site are rewritten, and no
 /// generic is registered, so nothing is specialised here.
 pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, RecordCopySite]): MonoResult {
-  desugarCheckedFile(file, sites, newMap(), newMap(), newMap(), newMap())
+  desugarCheckedFile(file, sites, newMap(), newMap(), newMap(), newMap(), newMap())
 }
 
 /// The post-type-check desugars: record `.copy(...)` calls (D-progress-948),
 /// cross-package function values (D-progress-963), widened function-value
 /// call arguments (D-progress-964), the annotations of unannotated
-/// function-valued locals (#7711) and the callee types of calls through
-/// function values (#7716), each keyed by the type checker's span key.
+/// function-valued locals (#7711), the callee types of calls through
+/// function values (#7716) and the element types of the names tuple patterns
+/// bind (#7728), each keyed by the type checker's span key.
 pub func desugarCheckedFile(
   file: in SourceFile,
   sites: in Map[String, RecordCopySite],
@@ -4037,9 +4044,10 @@ pub func desugarCheckedFile(
   argConversionSites: in Map[String, ArgConversionSite],
   localFuncTypeSites: in Map[String, TypeExpr],
   funcValueCallSites: in Map[String, FuncValueCallSite],
+  tuplePatternBindingSites: in Map[String, TuplePatternBindingSite],
 ): MonoResult {
   val noRewrites: Map[String, String] = newMap()
-  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localFuncTypeSites.count == 0 and funcValueCallSites.count == 0 {
+  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localFuncTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
     return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags)
   }
@@ -4126,6 +4134,18 @@ pub func desugarCheckedFile(
       case None -> ()
     }
     vi = vi + 1
+  }
+  val tupleKeys = mapKeys(tuplePatternBindingSites)
+  var ti = 0
+  while ti < tupleKeys.count {
+    match mapGet(tuplePatternBindingSites, tupleKeys[ti]) {
+      case Some(site) -> if not site.conflicting {
+        state.tuplePatternBindingSites.add(tupleKeys[ti], site)
+        offsets.add(site.startOffset)
+      }
+      case None -> ()
+    }
+    ti = ti + 1
   }
   val items: List[Item] = newList()
   var i = 0
@@ -4428,6 +4448,82 @@ func copyFieldTypeMono(site: in RecordCopySite, name: in String): Option[TypeExp
 func copyTypedValStmtMono(name: in String, ty: in Option[TypeExpr], init: in Expr, sp: in Span): Statement {
   val pat = Pattern(kind = PBinding(name = name, inner = None), span = sp)
   Statement(kind = SLocal(binding = LBVal(pat = pat, ty = ty, init = init)), span = sp)
+}
+
+// `pat` with each name it binds to a tuple element renamed to a fresh
+// `__lyric_tp_<n>`, adding
+//
+//   val <name>: <element type> = __lyric_tp_<n>
+//
+// to `binds` for each, so the source name is bound at the element type the
+// type checker gave it: a backend that reads a tuple element back as an
+// erased object narrows it through the annotation (#7728, #7730).  Only the
+// shapes `recordTuplePatternBindings` records are entered (a name, its
+// as-pattern, a tuple, parentheses), so an or-pattern's alternatives keep
+// the names they share.
+func renameTuplePatternBindingsMono(state: in MonoState, pat: in Pattern, binds: in List[Statement]): Pattern {
+  match pat.kind {
+    case PBinding(name, innerOpt) -> {
+      val newInner: Option[Pattern] = match innerOpt {
+        case Some(inner) -> Some(
+          value = renameTuplePatternBindingsMono(state, inner, binds)
+        )
+        case None -> None
+      }
+      match mapGet(state.tuplePatternBindingSites, recordCopySiteKey(pat.span)) {
+        case Some(site) -> {
+          val id = state.copyTicker.count
+          state.copyTicker.add(0)
+          val fresh = "__lyric_tp_" + toString(id)
+          binds.add(copyTypedValStmtMono(name, Some(value = site.bindingType), singleSegPathExpr(fresh, pat.span), pat.span))
+          Pattern(kind = PBinding(name = fresh, inner = newInner), span = pat.span)
+        }
+        case None -> Pattern(kind = PBinding(name = name, inner = newInner), span = pat.span)
+      }
+    }
+    case PTuple(patterns) -> {
+      val ps: List[Pattern] = newList()
+      var i = 0
+      while i < patterns.count {
+        ps.add(renameTuplePatternBindingsMono(state, patterns[i], binds))
+        i = i + 1
+      }
+      Pattern(kind = PTuple(patterns = ps), span = pat.span)
+    }
+    case PParen(inner) -> Pattern(
+      kind = PParen(inner = renameTuplePatternBindingsMono(state, inner, binds)),
+      span = pat.span
+    )
+    case _ -> pat
+  }
+}
+
+// `binds` followed by the statements of `blk`.
+func prependStmtsMono(binds: in List[Statement], blk: in Block): Block {
+  val stmts: List[Statement] = newList()
+  var i = 0
+  while i < binds.count {
+    stmts.add(binds[i])
+    i = i + 1
+  }
+  var j = 0
+  while j < blk.statements.count {
+    stmts.add(blk.statements[j])
+    j = j + 1
+  }
+  Block(statements = stmts, span = blk.span)
+}
+
+// `binds` followed by `e` as the block's value.
+func bindsThenExprMono(binds: in List[Statement], e: in Expr): Block {
+  val stmts: List[Statement] = newList()
+  var i = 0
+  while i < binds.count {
+    stmts.add(binds[i])
+    i = i + 1
+  }
+  stmts.add(Statement(kind = SExpr(expr = e), span = e.span))
+  Block(statements = stmts, span = e.span)
 }
 
 // ─── Expected types (D-progress-947) ───────────────────────────────────────
@@ -5123,6 +5219,34 @@ func bindPatternEnvMono(
   }
 }
 
+// `arm` with the names its pattern binds to tuple elements bound through
+// annotated locals (`renameTuplePatternBindingsMono`) at the start of its
+// guard and of its body.
+func tuplePatternArmMono(state: in MonoState, arm: in MatchArm): MatchArm {
+  if state.tuplePatternBindingSites.count == 0 {
+    return arm
+  }
+  val binds: List[Statement] = newList()
+  val pat = renameTuplePatternBindingsMono(state, arm.pattern, binds)
+  if binds.count == 0 {
+    return arm
+  }
+  val guard: Option[Expr] = match arm.guard {
+    case Some(g) -> Some(
+      value = Expr(
+        kind = EBlock(block = bindsThenExprMono(binds, g)),
+        span = g.span
+      )
+    )
+    case None -> None
+  }
+  val body = match arm.body {
+    case EOBExpr(e) -> EOBBlock(block = bindsThenExprMono(binds, e))
+    case EOBBlock(b) -> EOBBlock(block = prependStmtsMono(binds, b))
+  }
+  MatchArm(pattern = pat, guard = guard, body = body, span = arm.span)
+}
+
 func rewriteMatchArms(
   state: in MonoState,
   env: in Map[String, TypeExpr],
@@ -5132,7 +5256,7 @@ func rewriteMatchArms(
   val buf: List[MatchArm] = newList()
   var i = 0
   while i < arms.count {
-    val arm = arms[i]
+    val arm = tuplePatternArmMono(state, arms[i])
     // #6121: each arm is its own nested scope, same as an `if`/`match`
     // branch body — `bindPatternEnvMono`'s destructured names (#5422/#5423)
     // must not leak into a SIBLING arm or survive past this whole `match`
@@ -6072,7 +6196,39 @@ func rewriteBlock(state: in MonoState, env: in Map[String, TypeExpr], blk: in Bl
   val newStmts: List[Statement] = newList()
   var i = 0
   while i < blk.statements.count {
-    newStmts.add(rewriteStmt(state, env, blk.statements[i]))
+    val stmt = blk.statements[i]
+    val binds: List[Statement] = newList()
+    // A destructuring `val` binds the names its tuple pattern binds through
+    // annotated locals right after it (`renameTuplePatternBindingsMono`).
+    val renamed: Option[Statement] = if state.tuplePatternBindingSites.count == 0 {
+      None
+    } else {
+      match stmt.kind {
+        case SLocal(binding) -> match binding {
+          case LBVal(pat, tyOpt, init) -> {
+            val newPat = renameTuplePatternBindingsMono(state, pat, binds)
+            if binds.count == 0 {
+              None
+            } else {
+              Some(value = Statement(kind = SLocal(binding = LBVal(pat = newPat, ty = tyOpt, init = init)), span = stmt.span))
+            }
+          }
+          case _ -> None
+        }
+        case _ -> None
+      }
+    }
+    match renamed {
+      case Some(valStmt) -> {
+        newStmts.add(rewriteStmt(state, env, valStmt))
+        var bi = 0
+        while bi < binds.count {
+          newStmts.add(rewriteStmt(state, env, binds[bi]))
+          bi = bi + 1
+        }
+      }
+      case None -> newStmts.add(rewriteStmt(state, env, stmt))
+    }
     i = i + 1
   }
   Block(statements = newStmts, span = blk.span)
@@ -6142,7 +6298,16 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
       span = s
     )
 
-    case SFor(lbl, pat, iter, body) -> {
+    case SFor(lbl, origPat, iter, origBody) -> {
+      // The names a tuple pattern binds are bound through annotated locals at
+      // the start of the body (`renameTuplePatternBindingsMono`).
+      val tupleBinds: List[Statement] = newList()
+      val pat = if state.tuplePatternBindingSites.count == 0 {
+        origPat
+      } else {
+        renameTuplePatternBindingsMono(state, origPat, tupleBinds)
+      }
+      val body = if tupleBinds.count == 0 { origBody } else { prependStmtsMono(tupleBinds, origBody) }
       // #6666: a `for` loop's pattern variable shadowing an outer binding of
       // the same name must be tracked into `env` (typed from the iterable's
       // own element type, mirroring `EMatch`'s scrutinee-type inference)

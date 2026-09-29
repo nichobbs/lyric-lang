@@ -239,6 +239,7 @@ pub func checkStatement(
           val initType = inferExpr(sc, tbl, sigs, diag, init)
           recordLocalFuncType(tbl, init, initType)
           bindPattern(sc, pat, initType)
+          recordTuplePatternBindings(tbl, pat, initType, false)
         }
         case Some(te) -> {
           val ctx = newGenericContext()
@@ -259,6 +260,7 @@ pub func checkStatement(
           }
           checkRefinedLiteralBound(declT, init, diag)
           bindPattern(sc, pat, declT)
+          recordTuplePatternBindings(tbl, pat, declT, false)
         }
       }
       case LBVar(name, tyOpt, initOpt) -> match tyOpt {
@@ -545,6 +547,11 @@ pub func checkStatement(
                 TyError
               }
             }
+            // An `async func g(): (A, B)` generator types its call as its
+            // element type, and a tuple is not otherwise iterable, so a
+            // tuple-typed generator call iterates tuples of that type.  Typing
+            // them gives the loop's tuple pattern typed names (#7730).
+            case TyTuple(_) -> if forIterIsGeneratorCall(sigs, iter) { iterType } else { TyError }
             case TyPrim(iterPt) -> {
               match iterPt {
                 case PtString -> if forIterIsGeneratorCall(sigs, iter) {
@@ -595,6 +602,7 @@ pub func checkStatement(
       // but not `isNumericType`, so binding it raw would trip false T0030s on
       // arithmetic the where-bounds make valid.
       bindPattern(sc, pat, eraseTyVars(elemType))
+      recordTuplePatternBindings(tbl, pat, eraseTyVars(elemType), false)
       val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
       scopePop(sc)
     }
