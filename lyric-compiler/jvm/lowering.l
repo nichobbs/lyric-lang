@@ -6072,13 +6072,21 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
         match mapGet(bodyAsm.handlerLabels, n) {
           case Some(cc) -> {
             if cc != "" {
+              // Raw emitters, so the depth is tracked by hand to keep
+              // `run()`'s max_stack exactly the body's peak (#7745): the
+              // sequence peaks one above the handler-entry depth and leaves
+              // the exception reference as it found it at `handlerBodyL`.
               val handlerBodyL = n + "_gen_catch"
               emitDup(bodyAsm)
+              trackStack(bodyAsm, 1)
               emitInstanceof(bodyAsm, ieClassIdx)
               emitIfeq(bodyAsm, handlerBodyL)
+              trackStack(bodyAsm, -1)
               emitAload(bodyAsm, 0)
+              trackStack(bodyAsm, 1)
               emitGetfield(bodyAsm, abandonedIdx)
               emitIfeq(bodyAsm, handlerBodyL)
+              trackStack(bodyAsm, -1)
               emitAthrow(bodyAsm)
               emitLabel(bodyAsm, handlerBodyL)
             }
