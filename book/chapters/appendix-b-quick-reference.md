@@ -1319,7 +1319,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0064` | `return` without value in non-Unit function |
 | `T0065` | Returned type does not match declared return type |
 | `T0066` | `if` condition, `while` condition, or `match`-arm guard is not `Bool` |
-| `T0067` | Incompatible `if`/`match` branch types (or value-position `try` handler type incompatible with the `try` body) — branch unification is position-aware: a `Unit`-vs-value branch mismatch is lenient in statement position but rejected in value position |
+| `T0067` | Incompatible `if`/`match` branch types (or value-position `try` handler type incompatible with the `try` body) — branch unification is position-aware: a `Unit`-vs-value branch mismatch is lenient in statement position but rejected in value position; where the position has a declared type (return, annotated binding, parameter, field) each branch is checked against it instead, so branches of different types that each fit it are accepted |
 | `T0068` | A const pattern (`case @NAME ->`) names a constant whose type does not match the scrutinee's type |
 | `T0069` | A const pattern (`case @NAME ->`) names a `val` that is not initialized with a literal, so it is not a compile-time constant |
 | `T0070` | Function body type does not match declared return type |

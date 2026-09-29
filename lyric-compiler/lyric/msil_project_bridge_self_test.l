@@ -1227,7 +1227,7 @@ test "qualified record construction survives a local shadowing only the package'
 // later qualified construction's type are the SAME record, exactly like
 // #6838's `Result[Unit, CloudAgents.Sqlite.DbError]` around a `?`-chained
 // `CloudAgents.Sqlite.query(...)`), THEN constructs that record fully
-// qualified inside `Err(value = ...)` when a business-logic condition on the
+// qualified inside `Err(error = ...)` when a business-logic condition on the
 // propagated value fails — all while a local shadows the package's first
 // segment for the whole function. Exercises the shadow-defeat fix through a
 // real `?`-propagation site immediately preceding the qualified
@@ -1252,7 +1252,7 @@ test "qualified record construction survives shadowing through a ?-propagated ca
         "  val QualErrProp = 0\n" +
         "  val row = QualErrProp.Sub.query(n)?\n" +
         "  if row == 0 {\n" +
-        "    return Err(value = QualErrProp.Sub.DbError(message = \"not found\"))\n" +
+        "    return Err(error = QualErrProp.Sub.DbError(message = \"not found\"))\n" +
         "  }\n" +
         "  Ok(value = ())\n" +
         "}\n" +

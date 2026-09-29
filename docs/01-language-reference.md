@@ -800,6 +800,43 @@ position), even when the else-less `if` itself sits in value position.
 val x = if cond then a else b
 ```
 
+When an `if`/`else` or `match` sits in a position with a **known expected
+type** — a function body's trailing value or expression body (the declared
+return type), a `return`, an annotated `val`/`var`/`let` initialiser, an
+assignment, a call argument (the selected parameter's type), or a record
+constructor field — each branch is **checked against that type** instead of
+the branches being unified with each other. The construct then has the
+expected type as long as every branch that produces a value satisfies it
+(diverging branches are ignored as above). So branches of *different*
+concrete types are accepted whenever each one fits the position:
+```
+func pick(lang: in String): Greeter {
+  if lang == "en" { English(name = "x") } else { French(name = "x") }
+}
+
+func make(lang: in String): Result[Greeter, String] {
+  if lang == "en" { Ok(value = English(name = "x")) }
+  else if lang == "fr" { Ok(value = French(name = "x")) }
+  else { Err(error = "unknown language: " + lang) }
+}
+```
+Here `English` and `French` share no type of their own, but each implements
+`Greeter`. Only when some branch does *not* satisfy the expected type (or
+there is no expected type, e.g. an unannotated `val`, or it is still generic,
+e.g. a `T` return) are the branches unified bottom-up as described above,
+with **T0067** for genuinely incompatible branches.
+
+Likewise, a union-case construction checked against an expected
+instantiation of its own union takes that instantiation:
+`Ok(value = English(name = "x"))` where a `Result[Greeter, String]` is
+expected *is* a `Result[Greeter, String]` (so it is accepted by an annotated
+binding or a call argument, not just a return), rather than a
+`Result[English, E]` with its error type left open. Each type argument must
+either already match or be a non-generic interface the argument implements;
+a *value* of type `Result[English, String]` is never implicitly a
+`Result[Greeter, String]`. A named argument to a union-case constructor
+must name one of the case's fields, like a record constructor's (**T0101**).
+
 A brace-terminated `if` or `match` written in **statement position** (not as the
 right-hand side of a binding or another expression) is a *complete statement*: a
 binary operator after the closing `}` (whether on the same line or the next)

@@ -628,12 +628,22 @@ func recordVarGenericArgs(
   // union-case CONSTRUCTOR-call case (#5045): `Box`/`Pair` etc. are never a
   // registered `JvmFuncSig`, so `scrutineeGenericArgs` has nothing to recover
   // there, and the annotation is the only available source.
+  // #7752: the annotation fallback is pre-resolved exactly like a
+  // parameter's (`recordParamGenericArgs`) — un-pre-resolved, a bare
+  // INTERFACE name (`val o: Option[Greeter] = Some(value = g)`) is not
+  // resolvable by `resolveConcreteTypeExpr` at the match site (the #3613 gap
+  // described above), so the payload stayed erased `Object` and a method
+  // call on it failed auto-FFI resolution.
   val fromInit = scrutineeGenericArgs(ctx, init)
   val args = if fromInit.count > 0 {
     fromInit
   } else {
     match tyOpt {
-      case Some(te) -> annotationGenericArgsFiltered(te, typeParams)
+      case Some(te) -> eagerlyResolveGenericArgs(
+        annotationGenericArgsFiltered(te, typeParams),
+        ctx.pkgName,
+        ctx.externTypes
+      )
       case None -> newList()
     }
   }
@@ -773,6 +783,10 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
   // first arm reveals the value type; `-1` until then / for Unit-typed matches.
   val rslotName = "__match_r_" + afterL
   var rslot = -1
+  // #7752: `insns` indices of every store into `rslot`, so a later arm of a
+  // different concrete class can widen the already-framed local
+  // (`joinBranchResultType`/`retypeResultStores`).
+  val rslotStoreIdxs: List[Int] = newList()
   // Whether ANY arm can fall through to the `afterL` join.  When every arm
   // terminates (each ends in `return` / `throw`), no `goto afterL` is emitted,
   // the join is unreachable, and landing the `afterL` label would leave an
@@ -855,6 +869,15 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
           if rslot < 0 {
             rslot = allocSlot(ctx, rslotName, resultTy)
           }
+          // #7752: an arm of a different concrete class than the one the
+          // result local was fixed at widens it rather than being cast to it.
+          val widened = joinBranchResultType(resultTy, armTy)
+          if widened != resultTy {
+            resultTy = widened
+            retypeResultStores(insns, rslotStoreIdxs, rslot, resultTy)
+            ctx.types.remove(rslotName)
+            ctx.types.add(rslotName, resultTy)
+          }
           match armTy {
             case JVoid -> {
               // This arm produced no value but the match is value-typed:
@@ -864,6 +887,7 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
             }
             case _ -> coerceArgTo(insns, armTy, resultTy)
           }
+          rslotStoreIdxs.add(insns.count)
           emitStore(insns, rslot, resultTy)
         }
       }

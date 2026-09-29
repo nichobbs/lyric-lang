@@ -264,8 +264,9 @@ test-typechecker: ## Run the type-checker self-test
 #   - pre-existing, CI-unwired, currently broken on this grammar/type-checker
 #     version (parse or type errors, unrelated to this Makefile fix, predate
 #     every change in this PR — confirmed via `git log` on each file):
-#     byte_arithmetic_self_test.l, option_match_self_test.l,
-#     compiler_bugs_3502_3505_3547_self_test.l.
+#     byte_arithmetic_self_test.l, option_match_self_test.l.
+#     (compiler_bugs_3502_3505_3547_self_test.l was listed here too until
+#     #7752 fixed the type checker's bottom-up branch join it tripped.)
 # Running any of the above through this loop produces a failure unrelated
 # to what you're actually testing.
 TEST_EMITTER_FILES := \
@@ -293,6 +294,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/cli_workspace_builder_self_test.l \
 	lyric-compiler/lyric/closure_correctness_self_test.l \
 	lyric-compiler/lyric/closure_zero_overhead_self_test.l \
+	lyric-compiler/lyric/compiler_bugs_3502_3505_3547_self_test.l \
 	lyric-compiler/lyric/config_closure_self_test.l \
 	lyric-compiler/lyric/config_templates_self_test.l \
 	lyric-compiler/lyric/const_pattern_self_test.l \

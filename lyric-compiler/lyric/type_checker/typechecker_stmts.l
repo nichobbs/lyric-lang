@@ -1015,13 +1015,15 @@ func checkTryHandlerType(
 // #7696: `tailExpected` is a SEPARATE signal from `returnTy` — `returnTy` is
 // always the enclosing function's declared return type (used for every
 // nested `return`'s T0065 check, regardless of nesting), while
-// `tailExpected` is the type to check a LITERAL trailing value against, and
-// is `TyError` ("no expectation") unless this block's own trailing value is
-// genuinely, structurally the enclosing function's return value (reached via
+// `tailExpected` is the type to check this block's trailing value against,
+// and is `TyError` ("no expectation") unless that value is genuinely,
+// structurally the enclosing function's return value (reached via
 // `checkFunctionBody`'s own top-level call, or a same-chain continuation:
-// a nested `{ }`/`unsafe { }`/`try`/`if`/`match` in tail position). A block
-// reached any other way (a loop/catch/finally body, an ordinary `{ }`
-// subexpression inside a binding initialiser, …) passes `TyError` so a
+// a nested `{ }`/`unsafe { }`/`try`/`if`/`match` in tail position), or the
+// value of a position with its own declared type (#7752: a block/`if`/`match`
+// reached through `inferExprExpected` — an annotated binding, a `return`, a
+// call argument, …). A block reached any other way (a loop/catch/finally
+// body, an unannotated binding initialiser, …) passes `TyError` so a
 // literal keeps inferring as `slice[T]` there, exactly as before — using the
 // caller's unrelated `returnTy` for this would let the checker accept a
 // literal's representation based on a type the codegen call site cannot see

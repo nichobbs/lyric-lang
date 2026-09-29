@@ -6,7 +6,8 @@
 # tests whose dotnet half runs in `compiler-self-tests-batch.sh` (e.g.
 # closure_var_capture_self_test.l, #7460; the protected-type interface impl
 # tests, #7457; bare_func_ref_self_test.l, #7586; async_generator_self_test.l,
-# #7720), through one `lyric test`
+# #7720; compiler_bugs_3502_3505_3547_self_test.l, #7752), through one
+# `lyric test`
 # invocation per file.
 #
 #   bash scripts/ci/jvm-generics-self-tests-batch.sh
@@ -58,6 +59,7 @@ for t in \
   lyric-compiler/lyric/contract_generic_call_self_test.l \
   lyric-compiler/lyric/contract_fall_off_ensures_self_test.l \
   lyric-compiler/lyric/return_list_literal_self_test.l \
+  lyric-compiler/lyric/compiler_bugs_3502_3505_3547_self_test.l \
   lyric-compiler/jvm/static_type_recovery_jvm_self_test.l \
   lyric-compiler/jvm/propagate_dot_named_bind_jvm_self_test.l \
   lyric-compiler/lyric/inbundle_generic_method_typevar_default_self_test.l \

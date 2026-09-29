@@ -168,7 +168,7 @@ func makeGreeter(lang: in String, name: in String): Result[Greeter, String] {
     val g: Greeter = FrenchGreeter(name = name)
     Ok(value = g)
   } else {
-    Err(err = "unknown language: " + lang)
+    Err(error = "unknown language: " + lang)
   }
 }
 
@@ -204,7 +204,7 @@ func makeGreeterDirect(lang: in String, name: in String): Result[Greeter, String
   } else if lang == "fr" {
     Ok(value = FrenchGreeter(name = name))
   } else {
-    Err(err = "unknown language: " + lang)
+    Err(error = "unknown language: " + lang)
   }
 }
 
@@ -221,4 +221,76 @@ test "#3502: isErr returns false for Ok(directly-constructed interface value)" {
 test "#3502: isErr returns true for Err from makeGreeterDirect" {
   val r = makeGreeterDirect("zz", "World")
   assertTrue(isErr(r), "Err(unknown language) should be Err")
+}
+
+// #7752: `makeGreeterDirect`'s branches build `Ok` over two DIFFERENT
+// concrete records; the type checker checks each branch against the declared
+// `Result[Greeter, String]` (it used to join them bottom-up and reject the
+// function with T0067), and each backend must build the value at that
+// declared instantiation.  Assert the payloads themselves, not just the case:
+// the interface dispatch reaches the right record, and the `Err` payload
+// survives (the JVM backend used to store `null` for a misnamed `Err` field).
+func describe(r: in Result[Greeter, String]): String {
+  match r {
+    case Ok(g) -> g.greet()
+    case Err(e) -> "error: " + e
+  }
+}
+
+test "#7752: Ok(EnglishGreeter) branch dispatches through Greeter" {
+  assertEqual(describe(makeGreeterDirect("en", "World")), "Hello, World", "English branch")
+}
+
+test "#7752: Ok(FrenchGreeter) branch dispatches through Greeter" {
+  assertEqual(describe(makeGreeterDirect("fr", "Monde")), "Bonjour, Monde", "French branch")
+}
+
+test "#7752: Err branch keeps its payload" {
+  assertEqual(describe(makeGreeterDirect("zz", "World")), "error: unknown language: zz", "Err branch")
+}
+
+// #7752: the same shape as a `match`, and with the interface itself (not a
+// `Result` over it) as the expected type.
+func makeGreeterMatch(n: in Int, name: in String): Result[Greeter, String] {
+  match n {
+    case 0 -> Ok(value = EnglishGreeter(name = name))
+    case 1 -> Ok(value = FrenchGreeter(name = name))
+    case _ -> Err(error = "no greeter " + toString(n))
+  }
+}
+
+func pickGreeter(lang: in String, name: in String): Greeter {
+  if lang == "en" {
+    EnglishGreeter(name = name)
+  } else {
+    FrenchGreeter(name = name)
+  }
+}
+
+test "#7752: match arms over different records against Result[Greeter, String]" {
+  assertEqual(describe(makeGreeterMatch(0, "A")), "Hello, A", "match arm 0")
+  assertEqual(describe(makeGreeterMatch(1, "B")), "Bonjour, B", "match arm 1")
+  assertEqual(describe(makeGreeterMatch(2, "C")), "error: no greeter 2", "match arm _")
+}
+
+test "#7752: if over different records against Greeter" {
+  assertEqual(pickGreeter("en", "E").greet(), "Hello, E", "if then-branch")
+  assertEqual(pickGreeter("fr", "F").greet(), "Bonjour, F", "if else-branch")
+}
+
+test "#7752: annotated binding and call argument positions" {
+  val lang = "fr"
+  val r: Result[Greeter, String] = if lang == "en" {
+    Ok(value = EnglishGreeter(name = "V"))
+  } else {
+    Ok(value = FrenchGreeter(name = "V"))
+  }
+  assertEqual(describe(r), "Bonjour, V", "annotated val")
+  val arg = describe(
+    if lang == "en" { Ok(value = EnglishGreeter(name = "A")) } else { Ok(value = FrenchGreeter(name = "A")) }
+  )
+  assertEqual(arg, "Bonjour, A", "call argument")
+  val direct: Option[Greeter] = Some(value = EnglishGreeter(name = "O"))
+  val viaOpt = match direct { case Some(g) -> g.greet(); case None -> "none" }
+  assertEqual(viaOpt, "Hello, O", "annotated Option[Greeter] binding")
 }
