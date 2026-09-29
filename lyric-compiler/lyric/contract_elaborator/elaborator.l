@@ -31,7 +31,9 @@
 //!     trailing `SExpr` (implicit fall-off at the outermost level) is also
 //!     rewritten.  Nested trailing expressions inside blocks are NOT
 //!     rewritten — they are the value of the block expression, not a
-//!     function return.
+//!     function return.  A `Unit` body that falls off after any other
+//!     statement (or is empty) gets the asserts appended after its last
+//!     statement (#7747).
 //!
 //!   * `@axiom` functions — skipped (axiom decls have no body, so there
 //!     is nothing to elaborate).
@@ -1540,13 +1542,44 @@ func blockAlwaysExits(blk: in Block): Bool {
   if blk.statements.count == 0 {
     return false
   }
-  val last = blk.statements[blk.statements.count - 1]
-  match last.kind {
+  stmtAlwaysExits(blk.statements[blk.statements.count - 1])
+}
+
+// True iff `s` never completes normally: it returns or throws on every path,
+// or is a `do` loop that no `break` leaves.
+func stmtAlwaysExits(s: in Statement): Bool {
+  match s.kind {
     case SReturn(_) -> true
     case SThrow(_) -> true
     case SExpr(inner) -> exprAlwaysExits(inner)
+    case SLoop(label, body) -> not loopHasBreak(label, body)
+    case SScope(_, body) -> blockAlwaysExits(body)
+    case STry(body, catches, finally_) -> {
+      val finallyExits = match finally_ { case Some(fb) -> blockAlwaysExits(fb); case None -> false }
+      if finallyExits {
+        return true
+      }
+      if not blockAlwaysExits(body) {
+        return false
+      }
+      var i = 0
+      while i < catches.count {
+        if not blockAlwaysExits(catches[i].body) {
+          return false
+        }
+        i = i + 1
+      }
+      true
+    }
     case _ -> false
   }
+}
+
+// Whether some `break` leaves the `do` loop labelled `label` with body `body`.
+func loopHasBreak(label: in Option[String], body: in Block): Bool {
+  val scan = BreakScan(found = false)
+  val _ = markBreaksBlock(body, label, "__lyric_break_probe", false, scan)
+  scan.found
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2367,7 +2400,32 @@ func elaborateFunctionBody(
     si = si + 1
   }
 
+  // (5) A Unit body whose last statement is not an expression (an
+  //     assignment, a loop, `defer`, `scope`, `try`, a local binding, ...)
+  //     or that is empty still falls off its end; (4) only covers a trailing
+  //     `SExpr`, so the postcondition goes after the last statement here
+  //     (#7747).  A body whose last statement never completes normally needs
+  //     no check (and must not get one: it would be unreachable code).
+  if isVoidReturn and rewrittenEnsures.count > 0 and fallsOffWithoutEnsures(body) {
+    appendEnsuresAssertsNoResult(outs, rewrittenEnsures, body.span)
+  }
+
   Block(statements = outs, span = body.span)
+}
+
+// Whether the end of the Unit body `blk` is reachable without passing a
+// checked exit: `elaborateTopLevelStmt` already checks the postcondition for
+// a trailing `SExpr` and a `return`, so only other statement kinds count.
+func fallsOffWithoutEnsures(blk: in Block): Bool {
+  if blk.statements.count == 0 {
+    return true
+  }
+  val last = blk.statements[blk.statements.count - 1]
+  match last.kind {
+    case SExpr(_) -> false
+    case SReturn(_) -> false
+    case _ -> not stmtAlwaysExits(last)
+  }
 }
 
 // Wrap an `FBExpr(e)` into a block so the same elaboration pipeline can
