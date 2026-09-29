@@ -17682,6 +17682,14 @@ func widenIntToLongMsil(insns: in List[MInsn], fromTy: in MsilType, toTy: in Msi
   }
 }
 
+// The type `widenIntToLongMsil(insns, fromTy, toTy)` leaves on the stack.
+func widenedIntToLongTyMsil(fromTy: in MsilType, toTy: in MsilType): MsilType {
+  match toTy {
+    case MLong -> match fromTy { case MInt | MByte | MChar -> MLong; case _ -> fromTy }
+    case _ -> fromTy
+  }
+}
+
 // The rank of a primitive numeric type in the order a value may be widened
 // along without loss (`Byte < Int < Long < Double`; `widenPrimToSlotMsil` is
 // the conversion); -1 for any other type.
@@ -18701,7 +18709,9 @@ func lowerBuiltinOrStaticCallMsil(
             castObjectToDelegateMsil(cctx, insns, loweredC, innerHint)
             narrowObjectToDeclaredTypeMsil(cctx, insns, loweredC, innerHint)
             widenIntToLongMsil(insns, loweredC, innerHint)
-            loweredC
+            // Report the widened type, so `widenGenericCtorArgsMsil` does not
+            // convert the argument a second time.
+            widenedIntToLongTyMsil(loweredC, innerHint)
           }
           argTypes.add(at)
           argEnds.add(insns.count)
