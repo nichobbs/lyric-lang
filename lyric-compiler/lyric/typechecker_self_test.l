@@ -3937,6 +3937,82 @@ test "for over a String-yielding async generator does not emit T0126" {
   assertTrue(not hasDiagCode(parseCheck(src), "T0126"), "generator call iterates its yields, not a String")
 }
 
+// #7771: whether a `for` iterates a generator call is decided by the
+// signature the call binds to, not the callee's bare name + arity.  Every
+// case below pairs a generator `each` with a non-generator reached under the
+// same name and arity; the loop variable must take the type of whichever the
+// call actually calls.  `diagCodesOf` names the codes in each failure message.
+func diagCodesOf(cr: in CheckResult): String {
+  var acc = ""
+  var i = 0
+  while i < cr.diagnostics.count {
+    acc = acc + cr.diagnostics[i].code + ": " + cr.diagnostics[i].message + "; "
+    i = i + 1
+  }
+  acc
+}
+
+func genEachPackage(src: in String, name: in String): List[ImportedPackage] {
+  val pkg = parse(src)
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = name,
+      items = pkg.file.items,
+      imports = collectImportNames(pkg.file.imports),
+      wholeImports = collectWholeImportNames(pkg.file.imports)
+    )
+  )
+  packages
+}
+
+test "for over a package-local non-generator sharing an imported generator's name and arity" {
+  val gen = genEachPackage(
+    "package Gen\npub async func each(xs: in slice[Int]): Int {\n  for x in xs {\n    yield x\n  }\n}\n",
+    "Gen"
+  )
+  val src = "package App\nimport Gen\nfunc each(xs: in slice[Int]): slice[Int] { xs }\n" +
+    "func f(xs: in slice[Int]): Int {\n  var s = 0\n  for v in each(xs) {\n    val y: Int = v\n    s = s + y\n  }\n  s\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, gen)
+  assertEqualInt(diagCount(cr), 0, "local non-generator each: loop variable is Int; " + diagCodesOf(cr))
+}
+
+test "for over a qualified non-generator sharing a local generator's name and arity" {
+  val lists = genEachPackage("package Lists\npub func each(xs: in slice[Int]): slice[Int] { xs }\n", "Lists")
+  val src = "package App\nimport Lists\n" +
+    "async func each(xs: in slice[Int]): Int {\n  for x in xs {\n    yield x\n  }\n}\n" +
+    "func f(xs: in slice[Int]): Int {\n  var s = 0\n  for v in Lists.each(xs) {\n    s = s + v\n  }\n  for g in each(xs) {\n" +
+    "    s = s + g\n  }\n  s\n}\n"
+  val cr = checkWithImportedPackages(rewriteFile(parse(src).file), lists)
+  assertEqualInt(diagCount(cr), 0, "Lists.each(xs) iterates its slice[Int]; " + diagCodesOf(cr))
+}
+
+test "for over a method named like a generator types the loop variable from the method" {
+  val src = "package P\nasync func each(n: in Int): Int {\n  yield n\n}\n" +
+    "interface Scaler {\n  func each(n: in Int): slice[Int]\n}\nrecord Scale { ks: slice[Int] }\n" +
+    "impl Scaler for Scale {\n  func each(n: in Int): slice[Int] { self.ks }\n}\n" +
+    "record Bag { items: slice[Int] }\nfunc Bag.each(self: in Bag, n: in Int): slice[Int] { self.items }\n" +
+    "func f(sc: in Scale, b: in Bag): Int {\n  var s = 0\n  for v in sc.each(2) {\n    s = s + v\n  }\n" +
+    "  for w in b.each(3) {\n    s = s + w\n  }\n  s\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "impl method / type-associated each iterate their slice[Int]; " + diagCodesOf(cr))
+}
+
+test "for over a local function value shadowing a generator types the loop variable from the value" {
+  val src = "package P\nasync func each(n: in Int): Int {\n  yield n\n}\n" +
+    "func f(xs: in slice[Int]): Int {\n  val each = { (n: Int) -> xs }\n" +
+    "  var s = 0\n  for v in each(3) {\n    s = s + v\n  }\n  s\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "the shadowing lambda's slice[Int] is iterated; " + diagCodesOf(cr))
+}
+
+test "for over a type-associated generator types the loop variable as its element" {
+  val src = "package P\nrecord Bag { n: Int }\nasync func Bag.values(self: in Bag): Int {\n  yield self.n\n}\n" +
+    "func f(b: in Bag): Unit {\n  for v in b.values() {\n    val t: String = v\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0060"), "b.values() yields Int, so binding it as String is rejected; " + diagCodesOf(cr))
+}
+
 test "s.codeUnitAt types as Int and checks its argument" {
   val ok = "package P\nfunc f(s: in String): Int {\n  s.codeUnitAt(0) + 1\n}\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0043"), "codeUnitAt(Int): Int")

@@ -2783,6 +2783,23 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
   }
 }
 
+// #7771: note whether the call at `span` binds to a generator (a yield-bearing
+// `async func`).  The `ECall` arm clears the entry, then sets it from the
+// signature it actually binds -- the direct signature or the method pick --
+// so a call that binds to neither (a function value, a constructor, an
+// unresolved callee) is never a generator call, and a re-inference of the
+// same call (the deferred-argument pass) leaves the last resolution's answer.
+func recordGeneratorCallSite(tbl: in SymbolTable, span: in Span, isGen: in Bool): Unit {
+  val key = recordCopySiteKey(span)
+  if isGen {
+    if not tbl.generatorCallSites.containsKey(key) {
+      tbl.generatorCallSites.add(key, true)
+    }
+  } else if tbl.generatorCallSites.containsKey(key) {
+    tbl.generatorCallSites.remove(key)
+  }
+}
+
 // Method names that resolve on essentially any receiver at codegen time
 // even though no source-level signature exists at type-check time:
 // `toString` is a codegen intrinsic on every receiver, and the rest are
@@ -7696,8 +7713,10 @@ func inferExprCore(
           di = di + 1
         }
       }
+      recordGeneratorCallSite(tbl, e.span, false)
       match directSig {
         case Some(sig) -> {
+          recordGeneratorCallSite(tbl, e.span, sig.isGenerator)
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
@@ -7735,6 +7754,7 @@ func inferExprCore(
               }
               case None -> match methodPick {
                 case Some(mp) -> {
+                  recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
                   checkContractCallPure(sc, diag, mp.sig, fn, e.span)
                   checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
                   checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)

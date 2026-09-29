@@ -282,6 +282,13 @@ pub record SymbolTable {
   /// desugaring synthesized, keyed by its name; `annotateModuleVals` writes
   /// it onto the declaration (#7763).
   moduleValTypes: Map[String, TypeExpr]
+  /// Span keys (`recordCopySiteKey`) of the calls whose resolved callee is a
+  /// generator (a yield-bearing `async func`), written by the `ECall` arm
+  /// from the signature the call actually binds to.  A `for` over a call
+  /// consults it to decide whether the call's type is the loop's element
+  /// type (#7771): a same-named method, type-associated function or local
+  /// function value never counts.
+  generatorCallSites: Map[String, Bool]
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
   /// opaque, protected or distinct type each field-access or method-call receiver
   /// has, keyed like
@@ -375,6 +382,7 @@ pub func newSymbolTable(): SymbolTable {
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),
     moduleValTypes = newMap(),
+    generatorCallSites = newMap(),
     memberRecvClasses = newMap(),
     typeSymbolsById = newMap(),
     typeSymbolsIndexed = newList(),

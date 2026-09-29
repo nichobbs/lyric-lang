@@ -497,98 +497,102 @@ pub func checkStatement(
         // type `E`, so iterating the call iterates values of type `E`
         // whatever `E` is -- a record, a union, a tuple, or a collection or
         // monad such as `List[Int]` / `Option[Int]`, which must not be read
-        // as the thing being iterated (#7750).
-        case _ -> if forIterIsGeneratorCall(sigs, iter) {
-          inferExpr(sc, tbl, sigs, diag, iter)
-        } else {
+        // as the thing being iterated (#7750).  Whether the call is a
+        // generator call is read off the signature the call itself bound to
+        // while it was inferred, never its bare name (#7771).
+        case _ -> {
           val iterType = inferExpr(sc, tbl, sigs, diag, iter)
-          match iterType {
-            case TySlice(e) -> e
-            case TyArray(_, e) -> e
-            case TyUser(iterId, _, iterArgs) -> {
-              // List[T] iterates over T; MapKeyCollection[K,V] over K;
-              // MapValueCollection[K,V] over V.  A bare `Map[K,V]` iterator has
-              // no runtime lowering on either backend (iteration goes through
-              // `.keys()` / `.values()`), so it stays `TyError` — codegen owns
-              // that rejection.  All three are recognised by the stdlib type's
-              // identity, not its bare name (#7737): both backends iterate
-              // them as the genuine BCL/JDK collection, so a package's own
-              // `record List[T]` used to type-check here and then fail at
-              // runtime (`InvalidCastException` on dotnet,
-              // `IncompatibleClassChangeError` on the JVM).  Such a type now
-              // falls through to the T0126 branch below like any other
-              // Lyric-native single-parameter generic.
-              if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
-                iterArgs[0]
-              } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapKeyCollection") {
-                iterArgs[0]
-              } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapValueCollection") {
-                iterArgs[1]
-              } else if iterArgs.count == 1 and symTableIsExternTypeId(tbl, iterId) {
-                // Any other single-type-parameter EXTERN generic collection
-                // follows the same List[T] convention: the sole type
-                // parameter IS the element type.  This covers extern generic
-                // collections (e.g.
-                // `extern type JHttpStringCollection[T] = "java.util.Collection"`,
-                // the phantom-type-param idiom `Web.Kernel.Runtime`'s
-                // `headerNamesOf` uses to expose a JDK `Collection<HttpString>`)
-                // as well as Lyric's own extern-backed `Set[T]` — before this
-                // arm, only the literal name `List` got a typed element and
-                // everything else fell through to `TyError`, silently
-                // erasing the loop variable to `Object` and breaking any
-                // extension-method call chained on it downstream (JVM
-                // auto-FFI resolving against `java.lang.Object` instead of
-                // the real element type, #6565).  Scoped to extern types
-                // only (#6720): a Lyric-native single-param generic that
-                // happens not to be `List` (e.g. `Option[T]`) is not a
-                // collection at all, and used to reach this arm with no
-                // diagnostic — see the T0126 branch below.
-                iterArgs[0]
-              } else if iterArgs.count == 1 {
-                // #6720: a Lyric-native single-param generic that isn't
-                // `List` (the case above already claimed extern generics via
-                // the phantom-type-param idiom, e.g. `Set[T]`) is never
-                // actually iterable — `Option[T]` is the concrete repro.
-                // Reject at type-check time instead of silently typing the
-                // loop element and letting codegen's index-loop protocol
-                // (`emitCollectionForMsil`'s `case _` fallback, which assumes
-                // `.Count`/`get_Item`) fail at runtime with a cast/member
-                // exception.
-                diag.add(
-                  errorDiagnostic(
-                    "T0126",
-                    "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type" +
-                      shadowedStdCollectionNote(tbl, iterType),
-                    iter.span
-                  )
-                )
-                TyError
-              } else {
-                TyError
-              }
-            }
-            case TyPrim(iterPt) -> {
-              match iterPt {
-                case PtString -> {
-                  // D-progress-1006: a `String` is not iterable.  Its elements
-                  // would have to be UTF-16 code units, and a surrogate half is
-                  // not a `Char` (docs/01 §2.1) -- so name the two explicit
-                  // views instead of letting codegen fail at runtime.
+          if forIterIsGeneratorCall(tbl, iter) {
+            iterType
+          } else {
+            match iterType {
+              case TySlice(e) -> e
+              case TyArray(_, e) -> e
+              case TyUser(iterId, _, iterArgs) -> {
+                // List[T] iterates over T; MapKeyCollection[K,V] over K;
+                // MapValueCollection[K,V] over V.  A bare `Map[K,V]` iterator has
+                // no runtime lowering on either backend (iteration goes through
+                // `.keys()` / `.values()`), so it stays `TyError` — codegen owns
+                // that rejection.  All three are recognised by the stdlib type's
+                // identity, not its bare name (#7737): both backends iterate
+                // them as the genuine BCL/JDK collection, so a package's own
+                // `record List[T]` used to type-check here and then fail at
+                // runtime (`InvalidCastException` on dotnet,
+                // `IncompatibleClassChangeError` on the JVM).  Such a type now
+                // falls through to the T0126 branch below like any other
+                // Lyric-native single-parameter generic.
+                if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
+                  iterArgs[0]
+                } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapKeyCollection") {
+                  iterArgs[0]
+                } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapValueCollection") {
+                  iterArgs[1]
+                } else if iterArgs.count == 1 and symTableIsExternTypeId(tbl, iterId) {
+                  // Any other single-type-parameter EXTERN generic collection
+                  // follows the same List[T] convention: the sole type
+                  // parameter IS the element type.  This covers extern generic
+                  // collections (e.g.
+                  // `extern type JHttpStringCollection[T] = "java.util.Collection"`,
+                  // the phantom-type-param idiom `Web.Kernel.Runtime`'s
+                  // `headerNamesOf` uses to expose a JDK `Collection<HttpString>`)
+                  // as well as Lyric's own extern-backed `Set[T]` — before this
+                  // arm, only the literal name `List` got a typed element and
+                  // everything else fell through to `TyError`, silently
+                  // erasing the loop variable to `Object` and breaking any
+                  // extension-method call chained on it downstream (JVM
+                  // auto-FFI resolving against `java.lang.Object` instead of
+                  // the real element type, #6565).  Scoped to extern types
+                  // only (#6720): a Lyric-native single-param generic that
+                  // happens not to be `List` (e.g. `Option[T]`) is not a
+                  // collection at all, and used to reach this arm with no
+                  // diagnostic — see the T0126 branch below.
+                  iterArgs[0]
+                } else if iterArgs.count == 1 {
+                  // #6720: a Lyric-native single-param generic that isn't
+                  // `List` (the case above already claimed extern generics via
+                  // the phantom-type-param idiom, e.g. `Set[T]`) is never
+                  // actually iterable — `Option[T]` is the concrete repro.
+                  // Reject at type-check time instead of silently typing the
+                  // loop element and letting codegen's index-loop protocol
+                  // (`emitCollectionForMsil`'s `case _` fallback, which assumes
+                  // `.Count`/`get_Item`) fail at runtime with a cast/member
+                  // exception.
                   diag.add(
                     errorDiagnostic(
                       "T0126",
-                      "cannot iterate over 'String' directly: iterate its Unicode scalar values with " +
-                        "`for cp in Std.String.codePoints(s)` (each an `Int`), or index code units with " +
-                        "`s.codeUnitAt(i)` for `i` in `0 ..< s.length`",
+                      "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type" +
+                        shadowedStdCollectionNote(tbl, iterType),
                       iter.span
                     )
                   )
                   TyError
+                } else {
+                  TyError
                 }
-                case _ -> TyError
               }
+              case TyPrim(iterPt) -> {
+                match iterPt {
+                  case PtString -> {
+                    // D-progress-1006: a `String` is not iterable.  Its elements
+                    // would have to be UTF-16 code units, and a surrogate half is
+                    // not a `Char` (docs/01 §2.1) -- so name the two explicit
+                    // views instead of letting codegen fail at runtime.
+                    diag.add(
+                      errorDiagnostic(
+                        "T0126",
+                        "cannot iterate over 'String' directly: iterate its Unicode scalar values with " +
+                          "`for cp in Std.String.codePoints(s)` (each an `Int`), or index code units with " +
+                          "`s.codeUnitAt(i)` for `i` in `0 ..< s.length`",
+                        iter.span
+                      )
+                    )
+                    TyError
+                  }
+                  case _ -> TyError
+                }
+              }
+              case _ -> TyError
             }
-            case _ -> TyError
           }
         }
       }
@@ -616,7 +620,7 @@ pub func checkStatement(
       // (`java.util.Iterator.next()` on the JVM), so the loop variable itself
       // is recorded like a tuple element: `Lyric.Mono` binds it through a
       // local annotated with the generator's element type (#7750).
-      recordTuplePatternBindings(tbl, pat, eraseTyVars(elemType), forIterIsGeneratorCall(sigs, iter))
+      recordTuplePatternBindings(tbl, pat, eraseTyVars(elemType), forIterIsGeneratorCall(tbl, iter))
       val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
       scopePop(sc)
     }
@@ -1724,23 +1728,14 @@ pub func checkFunctionBody(
 // True when a `for` iterates a call to a yield-bearing `async func` (a
 // generator): its call types as the declared element type, so a `String`
 // generator's call looks like a `String` here (D-progress-1006's T0126 must
-// not fire on it).
-func forIterIsGeneratorCall(sigs: in Map[String, ResolvedSignature], iter: in Expr): Bool {
+// not fire on it).  Decided by the signature the `ECall` arm bound the call
+// to (`SymbolTable.generatorCallSites`), so it must be asked after `iter` is
+// inferred.  A bare-name + arity lookup misread any same-named non-generator
+// -- a method, a type-associated function, a shadowing local function value,
+// another package's function -- as the generator (#7771).
+func forIterIsGeneratorCall(tbl: in SymbolTable, iter: in Expr): Bool {
   match iter.kind {
-    case ECall(fn, args) -> {
-      val name = match fn.kind {
-        case EPath(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }
-        case EMember(_, m) -> m
-        case _ -> ""
-      }
-      if name.length == 0 {
-        return false
-      }
-      match mapGet(sigs, name + "/" + toString(args.count)) {
-        case Some(s) -> s.isGenerator
-        case None -> match mapGet(sigs, name) { case Some(s2) -> s2.isGenerator; case None -> false }
-      }
-    }
+    case ECall(_, _) -> tbl.generatorCallSites.containsKey(recordCopySiteKey(iter.span))
     case _ -> false
   }
 }
