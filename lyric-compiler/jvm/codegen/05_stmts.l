@@ -1743,6 +1743,20 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               exitBlockScope(ctx, forScopeB)
               insns.add(LGoto(label = loopLB))
               insns.add(LLabel(name = endLB))
+              // Close the iterator on exhaustion or `break`, as the MSIL `for`
+              // disposes its enumerator: a Lyric generator stopped while
+              // suspended inside a `try` runs its pending `finally`/`defer`
+              // blocks here and rethrows what they throw (#7729, D142).
+              val closeableClass = "java/lang/AutoCloseable"
+              val noCloseL = freshLabel(ctx)
+              emitLoad(insns, itorSlot, objTy)
+              insns.add(LInstanceof(className = closeableClass))
+              insns.add(LIfeq(label = noCloseL))
+              emitLoad(insns, itorSlot, objTy)
+              insns.add(LCheckcast(className = closeableClass))
+              val closePs: List[JvmType] = newList()
+              insns.add(LInvokeinterface(owner = closeableClass, name = "close", params = closePs, ret = JVoid, argCount = 1))
+              insns.add(LLabel(name = noCloseL))
             }
           }
         }

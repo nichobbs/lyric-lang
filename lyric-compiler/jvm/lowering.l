@@ -5838,21 +5838,25 @@ pub record LGenFunc {
 ///     done sentinel is handed over; the `hasNext()` that receives it rethrows
 ///     the original exception on the consumer thread.  Later calls return
 ///     `false`.
-///   * Abandonment: when the consumer stops early (`break`, `return`, a
-///     throw) the producer is parked in `_demand.take()`.  The consumer-facing
-///     `<G>$Iter` is registered with a per-generator-class `java.lang.ref.Cleaner`
-///     (whose own thread is a virtual thread); once it becomes unreachable the
-///     cleaner sets `_abandoned` and interrupts the producer, whose pending
-///     `yield` throws `InterruptedException` and unwinds the body (running its
-///     `defer`s / `finally`-shaped handlers).  Every later `yield` rethrows
-///     immediately and `_finish`/`_fail` never block once abandoned, so the
-///     producer thread terminates instead of staying parked — the JDK tracks
-///     every started virtual thread (`jdk.trackAllThreads`), so a parked one is
-///     never reclaimed by GC alone.  A body that catches the interrupt with a
-///     catch-all (`catch Bug`) keeps running until its next `yield` (which
-///     throws again) or its end.  Reclamation is GC-driven, so it happens at
-///     the next collection that finds the iterator unreachable, not
-///     synchronously at the `break`.
+///   * Early stop (#7729, D142): `<G>$Iter` is `AutoCloseable`, and a `for`
+///     loop over it calls `close()` when it ends.  `_close` sets `_abandoned`,
+///     interrupts the producer parked at its `yield` (in `_demand.take()`),
+///     joins it, and rethrows an error the unwinding recorded unless it is the
+///     interrupt itself — so the pending `finally`/`defer` blocks run before
+///     the consumer continues, and one that throws surfaces there.  Each typed
+///     `catch` handler in the body rethrows that interrupt while `_abandoned`
+///     is set (the check sits at the handler entry, inside every enclosing
+///     protected range), so only the catch-all `finally`/`defer` handlers run.
+///   * Abandonment without `close()` (a `return` or throw out of the `for`, or
+///     an iterator dropped by hand): the consumer-facing `<G>$Iter` is
+///     registered with a per-generator-class `java.lang.ref.Cleaner` (whose own
+///     thread is a virtual thread); once it becomes unreachable the cleaner
+///     sets `_abandoned` and interrupts the producer the same way.  Every later
+///     `yield` rethrows immediately and `_finish`/`_fail` never block once
+///     abandoned, so the producer thread terminates instead of staying parked —
+///     the JDK tracks every started virtual thread (`jdk.trackAllThreads`), so
+///     a parked one is never reclaimed by GC alone.  This reclamation is
+///     GC-driven, not synchronous.
 ///   * Consumer interruption: if the consumer thread is interrupted while
 ///     waiting in `hasNext()`, the iteration ends (`false`), the producer is
 ///     abandoned as above, and the consumer's interrupt status is restored.
@@ -6057,6 +6061,39 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
         val ct = if cc == "" then 0 else poolClass(pool, cc)
         addExceptionHandler(bodyAsm, sl, el, hl, ct)
       }
+      // A typed `catch` does not intercept the interrupt that unwinds an
+      // abandoned or closed generator (#7729, D142): stopping the consumer
+      // runs the pending `finally`/`defer` blocks (catch-all entries), not
+      // the body's own handlers.  The check sits at the handler entry, which
+      // lies inside every enclosing protected range, so the rethrow still
+      // reaches the enclosing `finally` blocks.
+      case LLabel(n) -> {
+        lowerInsn(insn, bodyAsm)
+        match mapGet(bodyAsm.handlerLabels, n) {
+          case Some(cc) -> {
+            if cc != "" {
+              // Raw emitters, so the depth is tracked by hand to keep
+              // `run()`'s max_stack exactly the body's peak (#7745): the
+              // sequence peaks one above the handler-entry depth and leaves
+              // the exception reference as it found it at `handlerBodyL`.
+              val handlerBodyL = n + "_gen_catch"
+              emitDup(bodyAsm)
+              trackStack(bodyAsm, 1)
+              emitInstanceof(bodyAsm, ieClassIdx)
+              emitIfeq(bodyAsm, handlerBodyL)
+              trackStack(bodyAsm, -1)
+              emitAload(bodyAsm, 0)
+              trackStack(bodyAsm, 1)
+              emitGetfield(bodyAsm, abandonedIdx)
+              emitIfeq(bodyAsm, handlerBodyL)
+              trackStack(bodyAsm, -1)
+              emitAthrow(bodyAsm)
+              emitLabel(bodyAsm, handlerBodyL)
+            }
+          }
+          case None -> ()
+        }
+      }
       case _ -> lowerInsn(insn, bodyAsm)
     }
     bi = bi + 1
@@ -6132,13 +6169,15 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   finAttrs.add(assembleCode(finAsm, 2, 1))
   val finishMethod = makeMethodInfo(ACC_PUBLIC, "_finish", "()V", finAttrs)
 
+  // The error is recorded even when abandoned: `_close` rethrows one that a
+  // `finally`/`defer` block raised while unwinding (#7729).
   val failAsm = newAssembler(pool)
-  emitAload(failAsm, 0)
-  emitGetfield(failAsm, abandonedIdx)
-  emitIfne(failAsm, "fail_ret")
   emitAload(failAsm, 0)
   emitAload(failAsm, 1)
   emitPutfield(failAsm, errorIdx)
+  emitAload(failAsm, 0)
+  emitGetfield(failAsm, abandonedIdx)
+  emitIfne(failAsm, "fail_ret")
   emitLabel(failAsm, "fail_try_start")
   emitAload(failAsm, 0)
   emitGetfield(failAsm, channelIdx)
@@ -6299,6 +6338,58 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   abAttrs.add(assembleCode(abAsm, 2, 2))
   val abandonMethod = makeMethodInfo(ACC_PUBLIC, "_abandon", "()V", abAttrs)
 
+  // ── 9b. _close()V — the consumer stopped early (`break`) ──────────────────
+  // Deterministic counterpart of the cleaner (#7729, D142): unwind a producer
+  // suspended at a `yield` now, so its pending `finally`/`defer` blocks run
+  // before the consumer continues, and rethrow an exception one of them raised.
+  //   if (_done) return; _done = true; t = _thread; if (t == null) return;
+  //   _abandon(); t.join();
+  //   e = _error; _error = null;
+  //   if (e != null && !(e instanceof InterruptedException)) throw e;
+  // An interrupt of the consumer while joining ends the wait and restores the
+  // consumer's interrupt status; the producer is still released.
+  val clAsm = newAssembler(pool)
+  emitAload(clAsm, 0)
+  emitGetfield(clAsm, doneIdx)
+  emitIfne(clAsm, "cl_ret")
+  emitAload(clAsm, 0)
+  emitIconst(clAsm, 1)
+  emitPutfield(clAsm, doneIdx)
+  emitAload(clAsm, 0)
+  emitGetfield(clAsm, threadIdx)
+  emitAstore(clAsm, 1)
+  emitAload(clAsm, 1)
+  emitIfnull(clAsm, "cl_ret")
+  emitAload(clAsm, 0)
+  emitInvokevirtual(clAsm, abandonIdx)
+  emitLabel(clAsm, "cl_join_start")
+  emitAload(clAsm, 1)
+  emitInvokevirtual(clAsm, poolMethodref(pool, threadClass, "join", "()V"))
+  emitLabel(clAsm, "cl_join_end")
+  emitAload(clAsm, 0)
+  emitGetfield(clAsm, errorIdx)
+  emitAstore(clAsm, 2)
+  emitAload(clAsm, 0)
+  emitAconstNull(clAsm)
+  emitPutfield(clAsm, errorIdx)
+  emitAload(clAsm, 2)
+  emitIfnull(clAsm, "cl_ret")
+  emitAload(clAsm, 2)
+  emitInstanceof(clAsm, ieClassIdx)
+  emitIfne(clAsm, "cl_ret")
+  emitAload(clAsm, 2)
+  emitAthrow(clAsm)
+  emitLabel(clAsm, "cl_join_ie")
+  emitPop(clAsm)
+  emitInvokestatic(clAsm, poolMethodref(pool, threadClass, "currentThread", "()Ljava/lang/Thread;"))
+  emitInvokevirtual(clAsm, threadInterruptIdx)
+  emitLabel(clAsm, "cl_ret")
+  emitReturn(clAsm)
+  addExceptionHandler(clAsm, "cl_join_start", "cl_join_end", "cl_join_ie", ieClassIdx)
+  val clAttrs: List[Attribute] = newList()
+  clAttrs.add(assembleCode(clAsm, 2, 3))
+  val closeMethod = makeMethodInfo(ACC_PUBLIC, "_close", "()V", clAttrs)
+
   // ── 10. iterator(): Iterator ───────────────────────────────────────────────
   // state = new <G>(this.params...); it = new <G>$Iter(state);
   // _CLEANER.register(it, new <G>$Iter(state)); return it
@@ -6357,6 +6448,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   genMethods.add(pullHasNextMethod)
   genMethods.add(pullNextMethod)
   genMethods.add(abandonMethod)
+  genMethods.add(closeMethod)
   genMethods.add(iterMethod)
   val genIfaces: List[String] = newList()
   genIfaces.add(iterableClass)
@@ -6416,14 +6508,25 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val iwRunAttrs: List[Attribute] = newList()
   iwRunAttrs.add(assembleCode(iwRunAsm, 1, 1))
 
+  // close() — the consumer's `for` calls it on `break` (#7729).
+  val iwClAsm = newAssembler(pool)
+  emitAload(iwClAsm, 0)
+  emitGetfield(iwClAsm, iwGenIdx)
+  emitInvokevirtual(iwClAsm, poolMethodref(pool, genClass, "_close", "()V"))
+  emitReturn(iwClAsm)
+  val iwClAttrs: List[Attribute] = newList()
+  iwClAttrs.add(assembleCode(iwClAsm, 1, 1))
+
   val iwMethods: List[MethodInfo] = newList()
   iwMethods.add(makeMethodInfo(ACC_PUBLIC, "<init>", "(" + genFieldDesc + ")V", iwCtorAttrs))
+  iwMethods.add(makeMethodInfo(ACC_PUBLIC, "close", "()V", iwClAttrs))
   iwMethods.add(makeMethodInfo(ACC_PUBLIC, "hasNext", "()Z", iwHnAttrs))
   iwMethods.add(makeMethodInfo(ACC_PUBLIC, "next", "()Ljava/lang/Object;", iwNxAttrs))
   iwMethods.add(makeMethodInfo(ACC_PUBLIC, "run", "()V", iwRunAttrs))
   val iwIfaces: List[String] = newList()
   iwIfaces.add(iterClass)
   iwIfaces.add(runnableClass)
+  iwIfaces.add("java/lang/AutoCloseable")
   result.add(
     ClassFile(
       minorVersion = 0,

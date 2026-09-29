@@ -5678,6 +5678,26 @@ pub record LazyGenCtx {
   tokTcsSetResult: Int  // 0x0A000000 | MemberRef row for TCS<bool>::SetResult(bool)
   tokTcsSetException: Int  // 0x0A000000 | MemberRef row for TCS<bool>::SetException(Exception)
   tcsTypeSpecToken: Int  // 0x1B000000 | TypeSpec row for TCS<bool> (for castclass)
+  // Per yield index: the label a dispatcher enclosing the yield branches to on
+  // resume — the resume label itself, or the entry of the outermost protected
+  // region (below that dispatcher) the yield sits in (#7729, see
+  // `genRegionDispatchMsil`).
+  dispatchTargets: List[Int]
+  // Where a generator resumed by `DisposeAsync` goes: the normal-completion
+  // epilogue, reached with `leave` so every enclosing `finally` runs.
+  disposeExitLabel: Int
+  // Non-empty while a `catch`/`finally` handler body is lowered: the CLR cannot
+  // branch into a handler, so a `yield` there has no resume point (T0142).
+  handlerDepth: List[Int]
+  // Each lowered statement's slot range, for naming the construct Pass 1
+  // under-predicted when the field-count check fails.
+  stmtSlotRanges: List[GenStmtSlotRangeMsil]
+}
+
+pub record GenStmtSlotRangeMsil {
+  stmt: Statement
+  slotStart: Int
+  slotEnd: Int
 }
 
 // Phase B.1 async state machine context.
@@ -11098,9 +11118,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     case EYield(inner) -> {
       if fctx.lazyGenCtx.count > 0 {
         val lgctx = fctx.lazyGenCtx[0]
+        if lgctx.handlerDepth.count > 0 {
+          panic(
+            "Msil.Codegen: `yield` inside a catch/finally/defer handler of generator " + lgctx.genFqn +
+              " (compiler bug: T0142 should have rejected it)"
+          )
+        }
         val idx = lgctx.nextYieldIndex.count
         lgctx.nextYieldIndex.add(0)
         val resumeLabel = lgctx.resumeLabels[idx]
+        lgctx.dispatchTargets.add(resumeLabel)
         // this.__current = box(inner)
         insns.add(MLdarg(slot = 0))
         val eTy = lowerExprMsil(cctx, fctx, insns, inner)
@@ -11120,6 +11147,19 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         insns.add(MLeave(label = lgctx.leaveLabel))
         // Resume label: next MoveNextAsync call dispatches here via state switch
         insns.add(MLabel(id = resumeLabel))
+        // Running again: a protected region entered from here on must fall
+        // through its entry dispatch, and its `finally` must run (#7729).
+        insns.add(MLdarg(slot = 0))
+        insns.add(MLdcI4(v = -1))
+        insns.add(MStfldByName(ownerFqn = lgctx.genFqn, fieldName = "_state"))
+        // `DisposeAsync` resumes a suspended generator in dispose mode: leave to
+        // the completion epilogue, running every enclosing `finally` on the way.
+        val runOnL = freshLabelMsil(fctx)
+        insns.add(MLdarg(slot = 0))
+        insns.add(MLdfldByName(ownerFqn = lgctx.genFqn, fieldName = "_disposeMode"))
+        insns.add(MBrFalse(label = runOnL))
+        insns.add(MLeave(label = lgctx.disposeExitLabel))
+        insns.add(MLabel(id = runOnL))
       } else if fctx.yieldSlots.count > 0 {
         val collSlot = fctx.yieldSlots[0]
         insns.add(MLdloc(slot = collSlot - fctx.paramCount))
@@ -11861,6 +11901,25 @@ func widenArithOperandsMsil(
     return MLong
   }
   underTy
+}
+
+// The most hidden temporaries `lowerBinopMsil` allocates for one operator,
+// besides its operands' own (#7729): `+` on Strings stashes both operands for
+// `String.Concat` (`__sadd_`, `__sadd_r_`), otherwise it may widen an operand
+// (`__arithw_`); `-`/`*`/`/`/`%` may widen (`__arithw_`); `==`/`!=` spill a
+// value-type Object.Equals operand (`__beq_r_`/`__bneq_r_`) or widen
+// (`__cmpw_`), never both; an ordering compare unboxes an erased left operand
+// (`__blt_lhu_`, ...) or widens, never both.  Pass 1's generator field-count
+// prediction sums these.  (An `await` spill temporary is allocated only inside
+// an async state machine, never inside a generator body.)
+func binopTempSlotsUpperBoundMsil(op: in BinOp): Int {
+  match op {
+    case BAdd -> 2
+    case BSub | BMul | BDiv | BMod -> 1
+    case BEq | BNeq -> 1
+    case BLt | BLte | BGt | BGte -> 1
+    case _ -> 0
+  }
 }
 
 func lowerBinopMsil(
@@ -12954,6 +13013,8 @@ func lowerStmtsExprFromMsil(
   val tryStartL = freshLabelMsil(fctx)
   val afterL = freshLabelMsil(fctx)
   insns.add(MLabel(id = tryStartL))
+  val genMark = genRegionMarkMsil(fctx)
+  val bodyAt = insns.count
   fctx.tryRegionStack.add(0)
   val valTy = lowerStmtsExprFromMsil(cctx, fctx, insns, stmts, deferIdx + 1)
   var tmpSlot = -1
@@ -12966,6 +13027,7 @@ func lowerStmtsExprFromMsil(
     }
   }
   fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+  genRegionDispatchMsil(fctx, insns, genMark, bodyAt, tryStartL)
   insns.add(MLeave(label = afterL))
   // NOTE: this finally region is emitted manually (rather than via
   // lowerTryCatchMsil, which the void/statement path uses) because the block
@@ -12975,7 +13037,11 @@ func lowerStmtsExprFromMsil(
   val finallyStartL = freshLabelMsil(fctx)
   val finallyEndL = freshLabelMsil(fctx)
   insns.add(MLabel(id = finallyStartL))
+  val guardSkipL = genFinallyGuardBeginMsil(fctx, insns, genMark)
+  genEnterHandlerMsil(fctx)
   lowerBlockMsil(cctx, fctx, insns, deferBody)
+  genExitHandlerMsil(fctx)
+  genFinallyGuardEndMsil(insns, guardSkipL)
   insns.add(MEndfinally)
   insns.add(MLabel(id = finallyEndL))
   insns.add(
@@ -14091,6 +14157,8 @@ func lowerMatchExprMsil(
   // regressed other parser sites — #3920).
   val hasEntryHint: Bool = fctx.contextHintTyArgs.count > 0
   val scrutTy = lowerExprMsil(cctx, fctx, insns, scrutinee)
+  // One fresh slot, as `matchScrutineeTempSlotsMsil` declares (the name is
+  // unique, so `allocSlotMsil` never reuses a slot here).
   val scrutSlot = allocSlotMsil(fctx, "__scrut_" + toString(fctx.slotTicker.count), scrutTy)
   emitStoreSlot(insns, scrutSlot, fctx.paramCount)
   // #5995: this scrutinee's declared enum type name (if recognisable), so a
@@ -14171,8 +14239,10 @@ func lowerMatchExprMsil(
     // restored per arm.  `POr` alternatives re-bind the same names INSIDE this
     // one scope, so they intentionally share slots.
     val armScope = enterBlockScopeMsil(fctx)
+    val armSlotsBefore = fctx.slotTicker.count
     lowerPatternTestMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy, nextArmL, scrutEnumHint)
     lowerPatternBindMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy)
+    checkPatternSlotsMsil(fctx, "match arm", arm.pattern, armSlotsBefore, matchArmPatternSlotsUpperBoundMsil(arm.pattern))
     match arm.guard {
       case Some(g) -> {
         lowerBoolOperandMsil(cctx, fctx, armInsns, g)
@@ -14754,6 +14824,240 @@ func testCaseFieldMsil(
     // pre-existing bare-name lookup for a nested field scrutinee, same as
     // before this fix.
     lowerPatternTestMsil(cctx, fctx, insns, fieldPat, fldSlot, fieldTy, failLabel, "")
+  }
+}
+
+// ── Pattern slot accounting (#7729) ──────────────────────────────────────────
+//
+// `lowerPatternTestMsil` and `lowerPatternBindMsil` allocate hidden local slots
+// (cast targets, extracted fields, tuple elements) as well as one slot per
+// bound name.  A generator hoists every local of its body to a field, and Pass
+// 1's `countGeneratorFieldsMsil` must know that number before any body is
+// lowered, so the most each pattern shape can allocate is declared here, next
+// to the lowering, as a function of the pattern alone.  Every `match` arm and
+// destructuring `val` checks its real allocation against the declaration
+// (`checkPatternSlotsMsil`), so a lowering change that allocates more fails
+// the build at once, on any function, instead of drifting from the prediction.
+//
+// The declarations are upper bounds: which names are nullary cases (they bind
+// nothing), which constructor fields are refutable (only those are tested),
+// and whether a same-typed same-scope slot is reused are only known during
+// lowering.  The generator class is padded up to the prediction.
+// Whether `pat` may need a runtime test.  Conservative version of
+// `patternIsRefutableMsil`: a bare name may be a nullary case, which only the
+// symbol tables available during lowering can tell apart from a binding.
+func patternMayBeRefutableMsil(pat: in Pattern): Bool {
+  match pat.kind {
+    case PWildcard -> false
+    case PBinding(_, innerOpt) -> match innerOpt {
+      case Some(inner) -> patternMayBeRefutableMsil(inner)
+      case None -> true
+    }
+    case PParen(inner) -> patternMayBeRefutableMsil(inner)
+    case PTuple(elems) -> {
+      var i = 0
+      while i < elems.count {
+        if patternMayBeRefutableMsil(elems[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, subPat, _) -> {
+            if patternMayBeRefutableMsil(subPat) {
+              return true
+            }
+          }
+          case RPFShort(_, _) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case PError -> false
+    case _ -> true
+  }
+}
+
+// The most slots `lowerPatternTestMsil` allocates for `pat`.
+func patternTestSlotsUpperBoundMsil(pat: in Pattern): Int {
+  match pat.kind {
+    case PBinding(_, innerOpt) -> match innerOpt {
+      case Some(inner) -> patternTestSlotsUpperBoundMsil(inner)
+      case None -> 0
+    }
+    case PParen(inner) -> patternTestSlotsUpperBoundMsil(inner)
+    // The `__casttest_` case-class slot, then an `__ftest_` slot per refutable
+    // field plus that field's own test.
+    case PConstructor(_, args) -> {
+      var n = 0
+      var i = 0
+      while i < args.count {
+        if patternMayBeRefutableMsil(args[i]) {
+          n = n + 1 + patternTestSlotsUpperBoundMsil(args[i])
+        }
+        i = i + 1
+      }
+      if n > 0 {
+        1 + n
+      } else {
+        0
+      }
+    }
+    // One `__tuptest_` element slot per position.
+    case PTuple(elems) -> {
+      var n = 0
+      var i = 0
+      while i < elems.count {
+        n = n + 1 + patternTestSlotsUpperBoundMsil(elems[i])
+        i = i + 1
+      }
+      n
+    }
+    // One `__rtest_` slot per named field.
+    case PRecord(_, fields, _) -> {
+      var n = 0
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, subPat, _) -> {
+            n = n + 1 + patternTestSlotsUpperBoundMsil(subPat)
+          }
+          case RPFShort(_, _) -> ()
+        }
+        i = i + 1
+      }
+      n
+    }
+    // Each alternative is tested, then binds its own names on its success path.
+    case POr(alts) -> {
+      var n = 0
+      var i = 0
+      while i < alts.count {
+        n = n + patternTestSlotsUpperBoundMsil(alts[i]) + patternBindSlotsUpperBoundMsil(alts[i])
+        i = i + 1
+      }
+      n
+    }
+    case _ -> 0
+  }
+}
+
+// The most slots `lowerPatternBindMsil` allocates for `pat`.
+func patternBindSlotsUpperBoundMsil(pat: in Pattern): Int {
+  match pat.kind {
+    case PBinding(_, innerOpt) -> 1 +
+      match innerOpt {
+        case Some(inner) -> patternBindSlotsUpperBoundMsil(inner)
+        case None -> 0
+      }
+    case PParen(inner) -> patternBindSlotsUpperBoundMsil(inner)
+    // The `__cast_` case-class slot, then per field: a bound name (plus its
+    // inner pattern), or a positional `__tup_fld_`/`__nested_`/`__rec_fld_`
+    // slot plus the nested pattern's binds.  The erased-scrutinee paths
+    // allocate no more than this.
+    case PConstructor(_, fields) -> {
+      var n = 1
+      var i = 0
+      while i < fields.count {
+        n = n +
+          match fields[i].kind {
+            case PBinding(_, innerOpt) -> 1 +
+              match innerOpt {
+                case Some(inner) -> patternBindSlotsUpperBoundMsil(inner)
+                case None -> 0
+              }
+            case PTuple(_) -> 1 + patternBindSlotsUpperBoundMsil(fields[i])
+            case PConstructor(_, _) -> 1 + patternBindSlotsUpperBoundMsil(fields[i])
+            case PRecord(_, _, _) -> 1 + patternBindSlotsUpperBoundMsil(fields[i])
+            case _ -> 0
+          }
+        i = i + 1
+      }
+      n
+    }
+    // One `__tup_` element slot per position.
+    case PTuple(elems) -> {
+      var n = 0
+      var i = 0
+      while i < elems.count {
+        n = n + 1 + patternBindSlotsUpperBoundMsil(elems[i])
+        i = i + 1
+      }
+      n
+    }
+    // The narrowed `__typetest_` slot.
+    case PTypeTest(inner, _) -> 1 + patternBindSlotsUpperBoundMsil(inner)
+    // The `__reccast_` slot, then per field a bound name, or an `__rfld_` slot
+    // plus the sub-pattern's binds.
+    case PRecord(_, fields, _) -> {
+      var n = 1
+      var i = 0
+      while i < fields.count {
+        n = n +
+          match fields[i] {
+            case RPFNamed(_, subPat, _) -> match subPat.kind {
+              case PBinding(_, _) -> 1
+              case _ -> 1 + patternBindSlotsUpperBoundMsil(subPat)
+            }
+            case RPFShort(_, _) -> 1
+          }
+        i = i + 1
+      }
+      n
+    }
+    // An or-pattern binds per alternative during its test.
+    case _ -> 0
+  }
+}
+
+// The hidden `__scrut_` slot `lowerMatchExprMsil` stores the scrutinee in.
+func matchScrutineeTempSlotsMsil(): Int {
+  1
+}
+
+// The most slots one `match` arm's pattern test and bind allocate.
+func matchArmPatternSlotsUpperBoundMsil(pat: in Pattern): Int {
+  patternTestSlotsUpperBoundMsil(pat) + patternBindSlotsUpperBoundMsil(pat)
+}
+
+// The most slots `lowerLocalPatBindMsil` allocates for a `val` pattern: a
+// name takes one slot (its inner pattern is not destructured), `_` none, and
+// any other shape an `__tmp_` slot plus its binds.
+func localPatternSlotsUpperBoundMsil(pat: in Pattern): Int {
+  match pat.kind {
+    case PBinding(_, _) -> 1
+    case PWildcard -> 0
+    case _ -> 1 + patternBindSlotsUpperBoundMsil(pat)
+  }
+}
+
+// Fail the build when a pattern's lowering allocated more slots (counted from
+// `slotsBefore`, the `slotTicker` count on entry) than its declaration allows.
+func checkPatternSlotsMsil(
+  fctx: in FuncCtx,
+  construct: in String,
+  pat: in Pattern,
+  slotsBefore: in Int,
+  declared: in Int,
+): Unit {
+  val used = fctx.slotTicker.count - slotsBefore
+  if used > declared {
+    panic(
+      "Msil.Codegen: a " + construct + " pattern at " + toString(pat.span.startPos.line) + ":" +
+        toString(pat.span.startPos.column) +
+        " allocated " +
+        toString(used) +
+        " local slots but its declared upper bound is " +
+        toString(declared) +
+        " — update `patternTestSlotsUpperBoundMsil`/`patternBindSlotsUpperBoundMsil`, which the generator " +
+        "field-count prediction relies on (#7729)"
+    )
   }
 }
 
@@ -20549,32 +20853,6 @@ func forCollectionTempSlotsUpperBoundMsil(): Int {
   most
 }
 
-// The most local slots `bindForPatternMsil` can allocate for an (irrefutable)
-// `for` pattern: one per name, plus one element temporary per tuple position
-// (`lowerPatternBindMsil`'s `PTuple` arm).  A name that resolves to a nullary
-// union case, or re-binds a same-scope slot of the same type, allocates none,
-// so this is an upper bound.
-func forPatternSlotsUpperBoundMsil(pat: in Pattern): Int {
-  match pat.kind {
-    case PBinding(_, innerOpt) -> 1 +
-      match innerOpt {
-        case Some(inner) -> forPatternSlotsUpperBoundMsil(inner)
-        case None -> 0
-      }
-    case PTuple(subPats) -> {
-      var n = 0
-      var i = 0
-      while i < subPats.count {
-        n = n + 1 + forPatternSlotsUpperBoundMsil(subPats[i])
-        i = i + 1
-      }
-      n
-    }
-    case PParen(inner) -> forPatternSlotsUpperBoundMsil(inner)
-    case _ -> 0
-  }
-}
-
 func allocForTempSlotMsil(fctx: in FuncCtx, temps: in List[Int], name: in String, ty: in MsilType): Int {
   val slot = allocSlotMsil(fctx, name, ty)
   temps.add(slot)
@@ -20743,6 +21021,8 @@ func emitIEnumerableProtocolForMsil(
   // invalid MSIL (a branch out of a protected region) that fails
   // verification at load time (#4769).
   val eeOuterTryDepth = fctx.tryRegionStack.count
+  val eeGenMark = genRegionMarkMsil(fctx)
+  val eeBodyAt = insns.count
   fctx.tryRegionStack.add(0)
 
   val eeLoopL = freshLabelMsil(fctx)
@@ -20782,6 +21062,7 @@ func emitIEnumerableProtocolForMsil(
   insns.add(MLabel(id = eeDoneL))
   insns.add(MLeave(label = eeAfterL))
   fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+  genRegionDispatchMsil(fctx, insns, eeGenMark, eeBodyAt, eeTryStartL)
 
   val eeTryEndL = freshLabelMsil(fctx)
   insns.add(MLabel(id = eeTryEndL))
@@ -20790,6 +21071,7 @@ func emitIEnumerableProtocolForMsil(
   val eeFinallyEndL = freshLabelMsil(fctx)
   val eeSkipDisposeL = freshLabelMsil(fctx)
   insns.add(MLabel(id = eeFinallyStartL))
+  val eeGuardSkipL = genFinallyGuardBeginMsil(fctx, insns, eeGenMark)
   emitLoadSlot(insns, eeEnumSlot, fctx.paramCount)
   insns.add(MIsinst(typeToken = 0x01000000 + cctx.trIDisposable))
   val eeDisposableSlot = allocForTempSlotMsil(
@@ -20812,6 +21094,7 @@ func emitIEnumerableProtocolForMsil(
   insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIDisposable))
   insns.add(MCallvirt(methodToken = cctx.tokIDisposableDispose))
   insns.add(MLabel(id = eeSkipDisposeL))
+  genFinallyGuardEndMsil(insns, eeGuardSkipL)
   insns.add(MEndfinally)
   insns.add(MLabel(id = eeFinallyEndL))
   insns.add(
@@ -21006,10 +21289,10 @@ func emitCollectionForMsil(
       insns.add(MLabel(id = afterL2))
       // Call DisposeAsync on the enumerator when loop exits (either exhausted or
       // via break) to satisfy the IAsyncEnumerator<T> consumption protocol.
-      // Currently a no-op (returns default(ValueTask)) — the lazy TCS-based
-      // generator's DisposeAsync stub (D119) doesn't implement real
-      // cancellation/cleanup yet.  Discard the returned ValueTask (the loop
-      // result is not async here).
+      // For a Lyric generator stopped by `break` while suspended inside a
+      // `try`, this runs its pending `finally` blocks synchronously and
+      // rethrows what they throw (#7729, `synthesizeGeneratorMsil`); the
+      // returned ValueTask is already complete and is discarded.
       val dispAsyncVtTy = MValueTypeRef(
         typeRefCode = tdrTypeRef(cctx.trValueTask),
         clrFqn = "System.Threading.Tasks.ValueTask"
@@ -21600,6 +21883,20 @@ func registerLocalLambdaLiteralFnTypesMsil(
 }
 
 pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], stmt: in Statement): Unit {
+  if fctx.lazyGenCtx.count > 0 {
+    // Inside a generator, remember which slots each statement allocated so a
+    // field-count overflow can name the construct Pass 1 under-predicted.
+    val slotStart = fctx.slotTicker.count
+    lowerStmtKindMsil(cctx, fctx, insns, stmt)
+    fctx.lazyGenCtx[0].stmtSlotRanges.add(
+      GenStmtSlotRangeMsil(stmt = stmt, slotStart = slotStart, slotEnd = fctx.slotTicker.count)
+    )
+  } else {
+    lowerStmtKindMsil(cctx, fctx, insns, stmt)
+  }
+}
+
+func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], stmt: in Statement): Unit {
   match stmt.kind {
 
     // ── Local bindings ────────────────────────────────────────────────────────
@@ -22209,9 +22506,11 @@ func lowerLocalPatBindMsil(
       }
     }
     case _ -> {
+      val slotsBefore = fctx.slotTicker.count
       val tmpSlot = allocSlotMsil(fctx, "__tmp_" + toString(fctx.slotTicker.count), initTy)
       emitStoreSlot(insns, tmpSlot, fctx.paramCount)
       lowerPatternBindMsil(cctx, fctx, insns, pat, tmpSlot, initTy)
+      checkPatternSlotsMsil(fctx, "destructuring `val`", pat, slotsBefore, localPatternSlotsUpperBoundMsil(pat))
     }
   }
 }
@@ -22282,6 +22581,167 @@ func emitLoopJumpMsil(fctx: in FuncCtx, insns: in List[MInsn], target: in Int, l
   }
 }
 
+// ── Generator suspension inside protected regions (#7729) ────────────────────
+//
+// A generator suspends at `yield` by `leave`-ing its `MoveNext` and resumes
+// through a `switch` on `_state` at the top of the body.  The CLR forbids a
+// branch into a protected region anywhere but its first instruction, so a
+// `yield` inside a `try` (a user `try`/`defer`, or a `for` protocol's
+// disposal `try`/`finally`) needs the lowering C# uses for iterators:
+//
+//   * the top-level switch sends every state suspended inside a region to the
+//     region's first instruction, where a second switch re-dispatches to the
+//     resume label (or to the next nested region's entry) — see
+//     `genRegionDispatchMsil`;
+//   * a resumed generator sets `_state` back to -1, so that switch falls
+//     through whenever the region is entered normally;
+//   * a `finally` whose region contains a `yield` runs only while `_state` is
+//     negative — the suspending `leave` passes through it with `_state` at the
+//     yield's index — see `genFinallyGuardBeginMsil`;
+//   * `DisposeAsync` on a suspended generator resumes it in dispose mode, which
+//     leaves straight to the completion epilogue so the pending `finally`
+//     blocks run exactly once.
+//
+// A handler body (`catch`/`finally`) cannot be re-entered, so a `yield` there
+// is rejected by the type checker (T0142).
+// The yield index a protected region starts at, or -1 outside a generator.
+func genRegionMarkMsil(fctx: in FuncCtx): Int {
+  if fctx.lazyGenCtx.count > 0 {
+    fctx.lazyGenCtx[0].nextYieldIndex.count
+  } else {
+    -1
+  }
+}
+
+// Whether a yield was lowered since `mark` (a `genRegionMarkMsil` result).
+func genRegionHasYieldMsil(fctx: in FuncCtx, mark: in Int): Bool {
+  mark >= 0 and fctx.lazyGenCtx[0].nextYieldIndex.count > mark
+}
+
+// Insert `before` into `insns` at index `at`.
+func spliceInsnsMsil(insns: in List[MInsn], at: in Int, before: in List[MInsn]): Unit {
+  val tail: List[MInsn] = newList()
+  var i = at
+  while i < insns.count {
+    tail.add(insns[i])
+    i = i + 1
+  }
+  while insns.count > at {
+    insns.removeAt(insns.count - 1)
+  }
+  var j = 0
+  while j < before.count {
+    insns.add(before[j])
+    j = j + 1
+  }
+  var k = 0
+  while k < tail.count {
+    insns.add(tail[k])
+    k = k + 1
+  }
+}
+
+// Close a protected region whose try body has been lowered: when it contains
+// yields (`mark` from `genRegionMarkMsil` on entry), insert the region's
+// resume dispatch at `bodyAt` — the index just after `MLabel(tryStartL)`, so
+// the dispatch is the region's first instruction — and redirect the enclosing
+// dispatchers for those yields to `tryStartL`.  Yield indices are allocated
+// in lowering order, so a region's yields are exactly `[mark, count)`.
+func genRegionDispatchMsil(
+  fctx: in FuncCtx, insns: in List[MInsn], mark: in Int, bodyAt: in Int, tryStartL: in Int
+): Unit {
+  if not genRegionHasYieldMsil(fctx, mark) {
+    return
+  }
+  val lg = fctx.lazyGenCtx[0]
+  val targets: List[Int] = newList()
+  var k = mark
+  while k < lg.nextYieldIndex.count {
+    targets.add(lg.dispatchTargets[k])
+    lg.dispatchTargets[k] = tryStartL
+    k = k + 1
+  }
+  // `_state - mark` is negative (so unsigned-huge, falling through the
+  // switch) for a running generator and for yields outside this region.
+  val dispatch: List[MInsn] = newList()
+  dispatch.add(MLdarg(slot = 0))
+  dispatch.add(MLdfldByName(ownerFqn = lg.genFqn, fieldName = "_state"))
+  dispatch.add(MLdcI4(v = mark))
+  dispatch.add(MSub)
+  dispatch.add(MSwitch(labels = targets))
+  spliceInsnsMsil(insns, bodyAt, dispatch)
+}
+
+// Open a `finally` handler for a region: when the region contains a yield,
+// skip the handler body while the generator is suspending (`_state >= 0`).
+// Returns the skip label for `genFinallyGuardEndMsil`, or -1 when unguarded.
+func genFinallyGuardBeginMsil(fctx: in FuncCtx, insns: in List[MInsn], mark: in Int): Int {
+  if not genRegionHasYieldMsil(fctx, mark) {
+    return -1
+  }
+  val skipL = freshLabelMsil(fctx)
+  insns.add(MLdarg(slot = 0))
+  insns.add(MLdfldByName(ownerFqn = fctx.lazyGenCtx[0].genFqn, fieldName = "_state"))
+  insns.add(MLdcI4(v = 0))
+  insns.add(MClt)
+  insns.add(MBrFalse(label = skipL))
+  skipL
+}
+
+func genFinallyGuardEndMsil(insns: in List[MInsn], skipL: in Int): Unit {
+  if skipL >= 0 {
+    insns.add(MLabel(id = skipL))
+  }
+}
+
+// Bracket a handler body (`catch`/`finally`) so a `yield` in it is caught
+// before it produces an unreachable resume label.
+func genEnterHandlerMsil(fctx: in FuncCtx): Unit {
+  if fctx.lazyGenCtx.count > 0 {
+    fctx.lazyGenCtx[0].handlerDepth.add(0)
+  }
+}
+
+func genExitHandlerMsil(fctx: in FuncCtx): Unit {
+  if fctx.lazyGenCtx.count > 0 {
+    val hd = fctx.lazyGenCtx[0].handlerDepth
+    hd.removeAt(hd.count - 1)
+  }
+}
+
+// Local slots the try/catch lowering allocates besides its blocks' own: one
+// per catch clause that binds the exception, and — for a `try` or a
+// `defer`-carrying block used as a value — one result temporary
+// (`__tryval_`/`__deferval_`).  Pass 1's generator field-count prediction
+// sums these (#7729).
+func catchBindingSlotsMsil(c: in CatchClause): Int {
+  match c.bindName {
+    case Some(_) -> 1
+    case None -> 0
+  }
+}
+
+func valueRegionResultTempSlotsMsil(): Int {
+  1
+}
+
+// Fail the build when a catch clause's exception binding allocated more slots
+// than `catchBindingSlotsMsil` declares.
+func checkCatchBindingSlotsMsil(fctx: in FuncCtx, c: in CatchClause, slotsBefore: in Int): Unit {
+  val used = fctx.slotTicker.count - slotsBefore
+  val declared = catchBindingSlotsMsil(c)
+  if used > declared {
+    panic(
+      "Msil.Codegen: a catch clause at " + toString(c.span.startPos.line) + ":" + toString(c.span.startPos.column) +
+        " allocated " +
+        toString(used) +
+        " slots for its exception binding but `catchBindingSlotsMsil` declares " +
+        toString(declared) +
+        " — update the declaration, which the generator field-count prediction relies on (#7729)"
+    )
+  }
+}
+
 func lowerTryCatchMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -22296,11 +22756,14 @@ func lowerTryCatchMsil(
   val afterL = freshLabelMsil(fctx)
 
   insns.add(MLabel(id = tryStartL))
+  val genMark = genRegionMarkMsil(fctx)
+  val bodyAt = insns.count
   // The try body is a protected region: a break/continue out of it to an outer
   // loop must `leave` (tracked via tryRegionStack; see emitLoopJumpMsil).
   fctx.tryRegionStack.add(0)
   lowerBlockMsil(cctx, fctx, insns, body)
   fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+  genRegionDispatchMsil(fctx, insns, genMark, bodyAt, tryStartL)
   if hasCatch or hasFinally {
     // `leave` is required (not `br`) when exiting a CLR protected region.
     insns.add(MLeave(label = afterL))
@@ -22326,6 +22789,7 @@ func lowerTryCatchMsil(
     // handler body so a shadow gets a fresh slot and the outer mapping is
     // restored on handler exit.
     val handlerScope = enterBlockScopeMsil(fctx)
+    val bindSlotsBefore = fctx.slotTicker.count
     match c.bindName {
       case Some(bname) -> {
         val exSlot = allocSlotMsil(fctx, bname, MObject)
@@ -22335,10 +22799,13 @@ func lowerTryCatchMsil(
         insns.add(MPop)
       }
     }
+    checkCatchBindingSlotsMsil(fctx, c, bindSlotsBefore)
     // A catch handler is itself a protected-region context: a break/continue
     // out of it to an outer loop must also `leave`.
     fctx.tryRegionStack.add(0)
+    genEnterHandlerMsil(fctx)
     lowerBlockMsil(cctx, fctx, insns, c.body)
+    genExitHandlerMsil(fctx)
     fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
     exitBlockScopeMsil(fctx, handlerScope)
     insns.add(MLeave(label = afterL))
@@ -22369,7 +22836,11 @@ func lowerTryCatchMsil(
       val finallyStartL = freshLabelMsil(fctx)
       val finallyEndL = freshLabelMsil(fctx)
       insns.add(MLabel(id = finallyStartL))
+      val guardSkipL = genFinallyGuardBeginMsil(fctx, insns, genMark)
+      genEnterHandlerMsil(fctx)
       lowerBlockMsil(cctx, fctx, insns, fb)
+      genExitHandlerMsil(fctx)
+      genFinallyGuardEndMsil(insns, guardSkipL)
       insns.add(MEndfinally)
       insns.add(MLabel(id = finallyEndL))
       insns.add(
@@ -22410,6 +22881,8 @@ func lowerTryCatchExprMsil(
   val afterL = freshLabelMsil(fctx)
 
   insns.add(MLabel(id = tryStartL))
+  val genMark = genRegionMarkMsil(fctx)
+  val bodyAt = insns.count
   fctx.tryRegionStack.add(0)
   val tryTy = lowerBlockExprMsil(cctx, fctx, insns, body)
   var resultTy = tryTy
@@ -22423,6 +22896,7 @@ func lowerTryCatchExprMsil(
     }
   }
   fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+  genRegionDispatchMsil(fctx, insns, genMark, bodyAt, tryStartL)
   // `leave` is only valid inside a protected region; mirror the statement-path
   // guard in `lowerTryCatchMsil` so a bare `try { … }` (no catch / no finally)
   // never emits an unverifiable `leave` if the parser is ever relaxed.
@@ -22441,6 +22915,7 @@ func lowerTryCatchExprMsil(
     // Bracket bind + handler body as its own lexical scope, exactly like the
     // statement-form `lowerTryCatchMsil` above (#5522 / #5191 / #5515).
     val handlerScope = enterBlockScopeMsil(fctx)
+    val bindSlotsBefore = fctx.slotTicker.count
     match c.bindName {
       case Some(bname) -> {
         val exSlot = allocSlotMsil(fctx, bname, MObject)
@@ -22450,8 +22925,11 @@ func lowerTryCatchExprMsil(
         insns.add(MPop)
       }
     }
+    checkCatchBindingSlotsMsil(fctx, c, bindSlotsBefore)
     fctx.tryRegionStack.add(0)
+    genEnterHandlerMsil(fctx)
     val catchTy = lowerBlockExprMsil(cctx, fctx, insns, c.body)
+    genExitHandlerMsil(fctx)
     match catchTy {
       case MVoid -> {
         // A prior branch (the try body, or an earlier catch arm) already
@@ -22515,7 +22993,11 @@ func lowerTryCatchExprMsil(
       val finallyStartL = freshLabelMsil(fctx)
       val finallyEndL = freshLabelMsil(fctx)
       insns.add(MLabel(id = finallyStartL))
+      val guardSkipL = genFinallyGuardBeginMsil(fctx, insns, genMark)
+      genEnterHandlerMsil(fctx)
       lowerBlockMsil(cctx, fctx, insns, fb)
+      genExitHandlerMsil(fctx)
+      genFinallyGuardEndMsil(insns, guardSkipL)
       insns.add(MEndfinally)
       insns.add(MLabel(id = finallyEndL))
       insns.add(
@@ -28243,7 +28725,7 @@ func countSpillsStmt(stmt: in Statement): Int {
 // Predict the number of FieldDef rows a generator class will emit for `decl`
 // (#4259) — an UPPER BOUND on `synthesizeGeneratorMsil`'s real `genFields`
 // count, which that function pads up to (see `genFieldCountPredictions`):
-// 3 fixed fields — _state, _tcs, __current — plus one `__pN` field per user
+// 4 fixed fields — _state, _tcs, __current, _disposeMode — plus one `__pN` field per user
 // param, plus one `__local_<slot>` field per local-variable slot hoisted out
 // of MoveNext, INCLUDING the `__gen_ex` catch-handler local that every
 // generator's unconditional try/catch(Exception) wrapper allocates regardless
@@ -28262,21 +28744,24 @@ func countSpillsStmt(stmt: in Statement): Int {
 // nested lambda is a heap cell occupying two slots (see the `LBVar` arm of
 // `countGenLocalsStmt`, #7715).
 //
-// A `for` loop contributes its protocol temporaries, declared once in
-// `forProtocolTempSlotsMsil` and checked against the real allocation on every
-// `for` the compiler lowers, plus `forPatternSlotsUpperBoundMsil` for its
-// pattern (#7718).  Constructs that allocate fewer slots than counted here (a
-// Unit-typed `val`, a `for` whose collection protocol needs fewer
-// temporaries than the largest one) are absorbed by the padding.
-//
-// Known scope boundary (mirrors the equivalent already-accepted gap in
-// `countSmFieldsMsil` / `countPromotedLocalsBlock`): match-arm pattern binds
-// and scrutinee temporaries are not counted.  A generator body that relies on
-// one makes the real count exceed the prediction, and
-// `synthesizeGeneratorMsil`'s post-hoisting check panics loudly rather than
-// silently emitting wrong FieldDef tokens for every type declared after it.
+// Hidden temporaries are declared next to the lowering that allocates them and
+// checked against the real allocation wherever that lowering runs, so the
+// prediction cannot silently drift: a `for` loop's protocol temporaries
+// (`forProtocolTempSlotsMsil`, #7718), a pattern's cast/field/element slots
+// and bound names (`patternTestSlotsUpperBoundMsil`/
+// `patternBindSlotsUpperBoundMsil`, used for `match` arms, `for` patterns and
+// destructuring `val`s), a `match` scrutinee (`matchScrutineeTempSlotsMsil`),
+// and a `try`'s catch bindings and value temporaries
+// (`catchBindingSlotsMsil`/`valueRegionResultTempSlotsMsil`, #7729).
+// Constructs that allocate fewer slots than counted here (a Unit-typed `val`,
+// a `for` whose collection protocol needs fewer temporaries than the largest
+// one, a name that turns out to be a nullary case) are absorbed by the
+// padding.  A construct this traversal does not model makes the real count
+// exceed the prediction; `synthesizeGeneratorMsil` then fails the build and
+// names the innermost statement whose locals were under-predicted
+// (`describeGenFieldOverflowMsil`).
 func countGeneratorFieldsMsil(cctx: in CodegenCtx, pkgName: in String, decl: in FunctionDecl): Int {
-  val base = 3 + 1 + decl.params.count  // +1 = __gen_ex, always hoisted
+  val base = 4 + 1 + decl.params.count  // +1 = __gen_ex, always hoisted
   // Same name set `synthesizeGeneratorMsil`'s `runClosureCapturePrePassMsil`
   // collects into `hoistedVarNames` (#7715).
   val hoistedNms: List[String] = newList()
@@ -28341,7 +28826,8 @@ func countGenLocalsStmt(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in 
         // field by slot index (not binding form).  Omitting this `+ 1`
         // undercounted `val`-using generators, tripping the field-count
         // cross-check panic (#5582).
-        case LBVal(_, _, init) -> 1 + countGenLocalsExpr(cctx, pkgName, hoistedNms, init)
+        case LBVal(pat, _, init) -> localPatternSlotsUpperBoundMsil(pat) +
+          countGenLocalsExpr(cctx, pkgName, hoistedNms, init)
       }
     }
     case SExpr(e) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, e)
@@ -28364,17 +28850,19 @@ func countGenLocalsStmt(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in 
         case ERange(_) -> forProtocolTempSlotsMsil(ForRangeMsil)
         case _ -> forCollectionTempSlotsUpperBoundMsil()
       }
-      countGenLocalsExpr(cctx, pkgName, hoistedNms, iter) + protocolSlots + forPatternSlotsUpperBoundMsil(pat) +
+      countGenLocalsExpr(cctx, pkgName, hoistedNms, iter) + protocolSlots + patternBindSlotsUpperBoundMsil(pat) +
         countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
     }
     case SLoop(_, body) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
     case SScope(_, body) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
-    case SDefer(body) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
+    // A `defer` in a value-producing block also stashes the block's value.
+    case SDefer(body) -> valueRegionResultTempSlotsMsil() + countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
+    // A `try` used as a value also stashes its result.
     case STry(body, catches, finally_) -> {
-      var n = countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
+      var n = valueRegionResultTempSlotsMsil() + countGenLocalsBlock(cctx, pkgName, hoistedNms, body)
       var ci = 0
       while ci < catches.count {
-        n = n + countGenLocalsBlock(cctx, pkgName, hoistedNms, catches[ci].body)
+        n = n + catchBindingSlotsMsil(catches[ci]) + countGenLocalsBlock(cctx, pkgName, hoistedNms, catches[ci].body)
         ci = ci + 1
       }
       n = n + match finally_ { case Some(fb) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, fb); case None -> 0 }
@@ -28407,9 +28895,11 @@ func countGenLocalsExpr(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in 
       n
     }
     case EMatch(scr, arms) -> {
-      var n = countGenLocalsExpr(cctx, pkgName, hoistedNms, scr)
+      var n = matchScrutineeTempSlotsMsil() + countGenLocalsExpr(cctx, pkgName, hoistedNms, scr)
       var ami = 0
       while ami < arms.count {
+        n = n + matchArmPatternSlotsUpperBoundMsil(arms[ami].pattern)
+        n = n + match arms[ami].guard { case Some(g) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, g); case None -> 0 }
         n = n +
           match arms[ami].body {
             case EOBBlock(b) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, b)
@@ -28429,11 +28919,12 @@ func countGenLocalsExpr(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in 
       }
       n
     }
-    case EBinop(_, l, r) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, l) +
+    case EBinop(bop, l, r) -> binopTempSlotsUpperBoundMsil(bop) + countGenLocalsExpr(cctx, pkgName, hoistedNms, l) +
       countGenLocalsExpr(cctx, pkgName, hoistedNms, r)
     case EPrefix(_, op) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, op)
     case EMember(recv, _) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, recv)
     case EAwait(inner) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
+    case EYield(inner) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
     case ESpawn(inner) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
     case ETry(inner) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
     case EPropagate(inner) -> countGenLocalsExpr(cctx, pkgName, hoistedNms, inner)
@@ -29783,6 +30274,82 @@ func synthesizeAsyncSmPhaseBMsil(
 //   MoveNextAsync()                     — creates TCS, drives MoveNext, returns ValueTask<bool>
 //   get_Current                         — returns __current
 //   DisposeAsync()                      — no-op, returns default(ValueTask)
+// Name the construct behind a generator field-count overflow: the innermost
+// lowered statement whose hoisted locals exceed what `countGenLocalsStmt`
+// predicts for it.
+func describeGenFieldOverflowMsil(
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  decl: in FunctionDecl,
+  lg: in LazyGenCtx,
+  hoisted: in Map[Int, Bool],
+): String {
+  val hoistedNms: List[String] = newList()
+  match decl.body {
+    case Some(FBBlock(blk)) -> collectInLambdaNamesBlock(blk, hoistedNms)
+    case Some(FBExpr(e)) -> collectInLambdaNamesExpr(e, hoistedNms)
+    case None -> ()
+  }
+  var best = -1
+  var bestWidth = 0
+  var bestUsed = 0
+  var bestPredicted = 0
+  var i = 0
+  while i < lg.stmtSlotRanges.count {
+    val r = lg.stmtSlotRanges[i]
+    var used = 0
+    var slot = r.slotStart
+    while slot < r.slotEnd {
+      if hoisted.containsKey(slot) {
+        used = used + 1
+      }
+      slot = slot + 1
+    }
+    val predicted = countGenLocalsStmt(cctx, pkgName, hoistedNms, r.stmt)
+    val width = r.slotEnd - r.slotStart
+    if used > predicted and (best < 0 or width < bestWidth) {
+      best = i
+      bestWidth = width
+      bestUsed = used
+      bestPredicted = predicted
+    }
+    i = i + 1
+  }
+  if best < 0 {
+    return "countGeneratorFieldsMsil's traversal missed a local-allocating construct in this generator's body."
+  }
+  val st = lg.stmtSlotRanges[best].stmt
+  "The " + genStmtKindNameMsil(st) + " at " + toString(st.span.startPos.line) + ":" + toString(st.span.startPos.column) +
+    " hoists " +
+    toString(bestUsed) +
+    " locals but countGenLocalsStmt predicts at most " +
+    toString(bestPredicted) +
+    " — declare the slots its lowering allocates next to that lowering and count them there."
+}
+
+func genStmtKindNameMsil(st: in Statement): String {
+  match st.kind {
+    case SLocal(_) -> "local binding"
+    case SAssign(_, _, _) -> "assignment"
+    case SReturn(_) -> "`return`"
+    case SThrow(_) -> "`throw`"
+    case SWhile(_, _, _) -> "`while` loop"
+    case SFor(_, _, _, _) -> "`for` loop"
+    case SLoop(_, _) -> "`loop`"
+    case SScope(_, _) -> "`scope` block"
+    case SDefer(_) -> "`defer`"
+    case STry(_, _, _) -> "`try`"
+    case SExpr(e) -> match e.kind {
+      case EMatch(_, _) -> "`match` expression"
+      case EIf(_, _, _, _) -> "`if` expression"
+      case ECall(_, _) -> "call"
+      case EYield(_) -> "`yield`"
+      case _ -> "expression statement"
+    }
+    case _ -> "statement"
+  }
+}
+
 func synthesizeGeneratorMsil(
   cctx: in CodegenCtx,
   decl: in FunctionDecl,
@@ -29970,6 +30537,9 @@ func synthesizeGeneratorMsil(
   genFields.add(MField(flags = FDA_PUBLIC, name = "_state", fieldType = MInt))
   genFields.add(MField(flags = FDA_PUBLIC, name = "_tcs", fieldType = MObject))
   genFields.add(MField(flags = FDA_PUBLIC, name = "__current", fieldType = MObject))
+  // Non-zero while `DisposeAsync` drives a suspended generator to completion
+  // so its pending `finally` blocks run (#7729).
+  genFields.add(MField(flags = FDA_PUBLIC, name = "_disposeMode", fieldType = MInt))
   var gfi = 0
   while gfi < decl.params.count {
     val p = decl.params[gfi]
@@ -30025,7 +30595,11 @@ func synthesizeGeneratorMsil(
     leaveLabel = afterTryL,
     tokTcsSetResult = tokTcsSetResult,
     tokTcsSetException = tokTcsSetException,
-    tcsTypeSpecToken = tsTcsBoolToken
+    tcsTypeSpecToken = tsTcsBoolToken,
+    dispatchTargets = newList(),
+    disposeExitLabel = normalDoneL,
+    handlerDepth = newList(),
+    stmtSlotRanges = newList()
   )
   mnFctx.lazyGenCtx.add(lgCtx)
 
@@ -30045,11 +30619,21 @@ func synthesizeGeneratorMsil(
   mnInsns.add(MLabel(id = tryStartL))
   mnFctx.tryRegionStack.add(0)
 
-  // State dispatch: switch(resumeLabels) dispatches state 0→labels[0], etc.
-  // state -1 (initial) and -2 (done) are negative → switch falls through → br bodyStartL.
+  // A finished generator (-2) stays finished: straight to the completion
+  // epilogue, which reports end-of-sequence again.
   mnInsns.add(MLdarg(slot = 0))
   mnInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_state"))
-  mnInsns.add(MSwitch(labels = resumeLabels))
+  mnInsns.add(MLdcI4(v = -2))
+  mnInsns.add(MBrEq(label = normalDoneL))
+  // State dispatch: state N (suspended at yield N) goes to that yield's resume
+  // label, or to the entry of the outermost protected region enclosing it,
+  // which re-dispatches (#7729).  The targets are only known once the body is
+  // lowered, so the switch's label list is filled in below.  State -1
+  // (initial) is negative → the switch falls through → br bodyStartL.
+  val outerDispatchTargets: List[Int] = newList()
+  mnInsns.add(MLdarg(slot = 0))
+  mnInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_state"))
+  mnInsns.add(MSwitch(labels = outerDispatchTargets))
   mnInsns.add(MBr(label = bodyStartL))
   mnInsns.add(MLabel(id = bodyStartL))
 
@@ -30068,6 +30652,19 @@ func synthesizeGeneratorMsil(
     }
     case None -> {
     }
+  }
+
+  if lgCtx.dispatchTargets.count != yieldCount {
+    panic(
+      "synthesizeGeneratorMsil: '" + genFqn + "' lowered " + toString(lgCtx.dispatchTargets.count) +
+        " yields but countYieldsInFuncBody counted " +
+        toString(yieldCount)
+    )
+  }
+  var odi = 0
+  while odi < lgCtx.dispatchTargets.count {
+    outerDispatchTargets.add(lgCtx.dispatchTargets[odi])
+    odi = odi + 1
   }
 
   // Normal-completion epilogue (also reached by patched returns if any).
@@ -30163,10 +30760,10 @@ func synthesizeGeneratorMsil(
           toString(predictedGenFields) +
           " FieldDef rows but real synthesis produced " +
           toString(genFields.count) +
-          ". countGeneratorFieldsMsil's static traversal missed a local-allocating " +
-          "construct in this generator's body (see its doc comment for the known " +
-          "scope boundary) — every FieldDef/MethodDef token predicted for any type " +
-          "declared after this generator would otherwise be silently wrong (#4259)."
+          ". " +
+          describeGenFieldOverflowMsil(cctx, pkgName, decl, lgCtx, hoistSeen) +
+          " Every FieldDef/MethodDef token predicted for any type declared after this generator " +
+          "would otherwise be silently wrong (#4259)."
       )
     }
     // The prediction is an upper bound (a `for` loop's collection protocol is
@@ -30255,6 +30852,9 @@ func synthesizeGeneratorMsil(
   gaeInsns.add(MLdcI4(v = -1))
   gaeInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_state"))
   gaeInsns.add(MLdarg(slot = 0))
+  gaeInsns.add(MLdcI4(v = 0))
+  gaeInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_disposeMode"))
+  gaeInsns.add(MLdarg(slot = 0))
   gaeInsns.add(MRet)
   val gaeParams: List[MsilType] = newList()
   gaeParams.add(ctTy)
@@ -30331,11 +30931,47 @@ func synthesizeGeneratorMsil(
   )
 
   // ── DisposeAsync() → ValueTask ────────────────────────────────────────────
+  // A generator suspended at a yield (`_state >= 0`) may sit inside `try`
+  // blocks whose `finally` has not run (a consumer that `break`s out of its
+  // `for`).  Resume it once in dispose mode: the resume path leaves to the
+  // completion epilogue, running those `finally` blocks, and an exception one
+  // of them throws is rethrown here (#7729).  Otherwise there is nothing to
+  // release.  The generator never suspends inside `MoveNext` itself (an
+  // `await` in its body blocks), so the dispose step completes synchronously.
   val daFctx = makeFuncCtxMsil(pkgName, genFqn, "DisposeAsync", 1, MVoid)
   daFctx.slotTicker.add(0)
   val daVtTy = MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trValueTask), clrFqn = "System.Threading.Tasks.ValueTask")
   val daVtSlot = allocSlotMsil(daFctx, "__gen_da_vt", daVtTy)
   val daInsns: List[MInsn] = newList()
+  val daDoneL = freshLabelMsil(daFctx)
+  daInsns.add(MLdarg(slot = 0))
+  daInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_state"))
+  daInsns.add(MLdcI4(v = 0))
+  daInsns.add(MBrLt(label = daDoneL))
+  daInsns.add(MLdarg(slot = 0))
+  daInsns.add(MLdcI4(v = 1))
+  daInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_disposeMode"))
+  daInsns.add(MLdarg(slot = 0))
+  daInsns.add(MNewobj(ctorToken = tokTcsCtor))
+  daInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_tcs"))
+  daInsns.add(MLdarg(slot = 0))
+  daInsns.add(MCallByName(className = genFqn, methodName = "MoveNext"))
+  daInsns.add(MLdarg(slot = 0))
+  daInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_tcs"))
+  daInsns.add(MCastclass(typeToken = tsTcsBoolToken))
+  daInsns.add(MCallvirt(methodToken = tokTcsGetTask))
+  val daTaskArgs: List[MsilType] = newList()
+  daTaskArgs.add(MBool)
+  val daTaskTy = MGenericInst(
+    typeRefCode = tdrTypeRef(cctx.trTask1),
+    headFqn = "System.Threading.Tasks.Task`1",
+    typeArgs = daTaskArgs
+  )
+  val daResTy = emitBlockingAwait(cctx, daFctx, daInsns, daTaskTy)
+  if daResTy != MVoid {
+    daInsns.add(MPop)
+  }
+  daInsns.add(MLabel(id = daDoneL))
   daInsns.add(MLdloca(slot = daVtSlot - 1))
   daInsns.add(MInitobj(typeToken = 0x01000000 + cctx.trValueTask))
   daInsns.add(MLdloc(slot = daVtSlot - 1))
@@ -30347,7 +30983,7 @@ func synthesizeGeneratorMsil(
     params = newList(),
     ret = daRetTy,
     insns = daInsns,
-    maxStack = 2,
+    maxStack = computeMaxStackMsil(daInsns),
     locals = daFctx.locals
   )
 
