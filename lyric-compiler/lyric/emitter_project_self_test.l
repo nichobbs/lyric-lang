@@ -1191,7 +1191,8 @@ test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResu
     target = Emitter.Native,
     packageVersion = "",
     defines = noDefines,
-    path = ""
+    path = "",
+    contractsEnabled = true
   )
   var threw = false
   val result = try {
