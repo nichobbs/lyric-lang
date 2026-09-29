@@ -928,11 +928,27 @@ func hasSection(entries: in List[Entry], section: in String): Bool {
 }
 
 // Check if a section header exists in the raw TOML text.
-// Simple approach: look for [sectionName] in the text.
+// Scans for `[sectionName]` as a section header (on its own line after optional whitespace).
 func hasSectionInText(text: in String, sectionName: in String): Bool {
-  val needle = "[" + sectionName + "]"
-  // Always look for the section in text
-  Str.contains(text, needle)
+  val lines = Str.split(text, "\n")
+  val sectionHeader = "[" + sectionName + "]"
+  var i = 0
+  while i < lines.count {
+    val line = Str.trimStart(lines[i])
+    if Str.startsWith(line, sectionHeader) {
+      // Verify it's actually a section header: the text after [sectionName] should be
+      // end-of-line, whitespace, or a comment (starting with #)
+      val afterHeader = Str.dropPrefix(line, Str.count(sectionHeader))
+      if Str.isEmpty(afterHeader) {
+        return true
+      }
+      if Str.startsWith(afterHeader, "#") or Str.startsWith(afterHeader, " ") or Str.startsWith(afterHeader, "\t") or Str.startsWith(afterHeader, "\r") {
+        return true
+      }
+    }
+    i += 1
+  }
+  false
 }
 
 func assembleProject(entries: in List[Entry]): Option[ProjectSection] {
@@ -1020,24 +1036,16 @@ func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], Manife
 }
 
 /// Assemble the `[contracts]` table.
+/// Per docs/01-language-reference.md §3.7, a `[contracts]` table with no keys
+/// is treated as absent (equivalent to the default). This function detects the
+/// section header in raw text to handle empty sections correctly (since an entry-based
+/// parser only sees key-value pairs, not bare section headers).
 func assembleContracts(text: in String, entries: in List[Entry]): Result[Option[ContractsSection], ManifestError] {
-  // Check if [contracts] section exists in the raw TOML, even if it has no key-value pairs
-  val needle = "[contracts]"
-  val found = Str.contains(text, needle)
-
-  // DEBUG: If [contracts] appears in text, always treat as present
-  if found {
-    val enabled = findBool(entries, "contracts", "enabled", true)
-    return Ok(value = Some(value = ContractsSection(enabled = enabled)))
+  if not hasSectionInText(text, "contracts") {
+    return Ok(value = None)
   }
-
-  // Also check hasSection as fallback (for backward compat)
-  if hasSection(entries, "contracts") {
-    val enabled = findBool(entries, "contracts", "enabled", true)
-    return Ok(value = Some(value = ContractsSection(enabled = enabled)))
-  }
-
-  Ok(value = None)
+  val enabled = findBool(entries, "contracts", "enabled", true)
+  Ok(value = Some(value = ContractsSection(enabled = enabled)))
 }
 
 /// `[build] kind` — what the artifact *is*. `"aot"` is rejected outright

@@ -3299,6 +3299,20 @@ pub func elaborateFile(file: in SourceFile): SourceFile {
   elaborateFileWithInterfaces(file, newList(), true)
 }
 
+// Check if a file has the @proof_required annotation.
+func isProofRequired(fileAnnotations: in List[Annotation]): Bool {
+  var i = 0
+  while i < fileAnnotations.count {
+    val a = fileAnnotations[i]
+    val aSegs = a.name.segments
+    if aSegs.count == 1 and aSegs[0] == "proof_required" {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
 /// `elaborateFile`, additionally resolving `impl` blocks against interfaces
 /// declared in other packages (`importedIfaces`) so their method contracts
 /// are enforced on the implementation (#7223).
@@ -3310,15 +3324,16 @@ pub func elaborateFileWithInterfaces(
   val canonFile = canonicalizeFileUnitAliases(file)
   val ifaces = interfaceTable(canonFile, importedIfaces)
   val newItems: List[Item] = newList()
-  // `@proof_required` files are elaborated like any other: `lyric build`
-  // does not run the prover, so an obligation it has not discharged keeps
-  // its runtime check (#7227).  `lyric prove` reads the source clauses, which
-  // `fn.contracts` still carries.
-  // #7457: impl methods for a protected type become its locked entries.
+  // `@proof_required` files always have contracts enabled: their obligations
+  // must not be user-disableable via [contracts] enabled = false, per D-progress-994 (#7227).
+  // `lyric build` elaborates like any other (keeping runtime checks when not discharged
+  // by the prover), while `lyric prove` reads the source clauses which `fn.contracts`
+  // still carries. #7457: impl methods for a protected type become its locked entries.
+  val effectiveContractsEnabled = if isProofRequired(canonFile.fileAnnotations) { true } else { contractsEnabled }
   val items = mergeProtectedImpls(canonFile.items, ifaces)
   var i = 0
   while i < items.count {
-    newItems.add(elaborateItem(items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path), contractsEnabled))
+    newItems.add(elaborateItem(items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path), effectiveContractsEnabled))
     i = i + 1
   }
   SourceFile(
