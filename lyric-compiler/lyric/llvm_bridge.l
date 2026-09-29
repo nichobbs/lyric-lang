@@ -365,7 +365,7 @@ pub func compileToNative(
 ): Bool {
   val noFlags: List[String] = newList()
   val noDefines: List[String] = newList()
-  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags, noDefines, "")
+  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags, noDefines, "", true)
 }
 
 /// `compileToNative` with extra clang driver flags (e.g.
@@ -385,6 +385,7 @@ pub func compileToNativeWithFlags(
   extraClangFlags: in List[String],
   defines: in List[String],
   path: in String,
+  contractsEnabled: in Bool = true,
 ): Bool {
   // Parse + `@cfg` erasure with the `target.native` pseudo-feature
   // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
@@ -476,6 +477,7 @@ pub func compileToNativeWithFlags(
     pkgLabel = path,
     lineOrigins = noSingleFileOrigins,
     awaitInTryIsHazard = true,
+    contractsEnabled = contractsEnabled,
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = optsRecvOut
   )
@@ -502,9 +504,11 @@ pub func compileToNativeWithFlags(
       seen.add(pkg, true)
       match mapGet(stdlibByPkg, pkg) {
         case Some(f) -> {
-          // Contracts in bundled packages lower to runtime asserts the
-          // same way the user file's do.
-          val stdElaborated = elaborateFile(f)
+          // Stdlib contracts are always enabled regardless of the consumer's
+          // [contracts] enabled setting (docs/63 Q-BP-011); stdlib authors'
+          // contracts run in all cases. User package contracts are governed
+          // by the manifest setting above (via MiddleEndOptions).
+          val stdElaborated = elaborateFileWithInterfaces(f, newList(), true)
           // `?`-propagation (#6954): a bundled Std.* package's own body can
           // use `?` just like the user file's, and `Lyric.LlvmCodegen`
           // cannot lower an un-rewritten `EPropagate` node — mirrors
@@ -710,6 +714,7 @@ pub func compileProjectToNativeWithFlags(
   // valid; missing entries resolve to no translation, matching the JVM
   // bridge's own out-of-range fallback.
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  contractsEnabled: in Bool = true,
 ): Bool {
   if packages.count == 0 {
     Console.error("error[N0005]: native project build received no packages")
@@ -864,6 +869,7 @@ pub func compileProjectToNativeWithFlags(
       pkgLabel = nativePkgLabelAt(packages, mei),
       lineOrigins = nativePkgOriginsAt(originsByPkg, mei),
       awaitInTryIsHazard = true,
+      contractsEnabled = contractsEnabled,
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut
     )
@@ -901,7 +907,8 @@ pub func compileProjectToNativeWithFlags(
           // same desugar pass the own-project packages above already get.
           // `awaitInTryIsHazard = true`: native, like MSIL, keeps F0045's
           // guard enabled (#7198; see the `MiddleEndOptions` sites above).
-          val stdElaborated = elaborateFile(f)
+          // Stdlib contracts are always enabled (#7748 / docs/63 Q-BP-011).
+          val stdElaborated = elaborateFileWithInterfaces(f, newList(), true)
           val stdProp = lowerPropagateFile(stdElaborated, true)
           if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {
             return false

@@ -104,7 +104,8 @@ func buildDll(tmpDir: in String, pkgName: in String, source: in String, asmName:
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -140,7 +141,8 @@ func buildAndRunConsumer(
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {

@@ -63,7 +63,8 @@ func runBenchOnSource(
         target = benchTarget,
         packageVersion = "",
         defines = newList(),
-        path = sourcePath
+        path = sourcePath,
+        contractsEnabled = true
       )
       val result = Emitter.emit(req)
       var hadError = false

@@ -1370,7 +1370,14 @@ func collectEnsures(contracts: in List[ContractClause], owner: in String): List[
 // No `sp` parameter: this used to take the enclosing `return` statement's
 // span and stamp it on every assert, so a failing `ensures:` reported the
 // return site rather than the clause (docs/63 band B1).
+//
+// User-level ensures: clauses are filtered out at collection time when
+// contractsEnabled is false (docs/63 Q-BP-009, #7649); system-level
+// checks (return-range, protected-type invariants) always appear here.
 func appendEnsuresAsserts(acc: in List[Statement], ensuresExprs: in List[SpannedExpr], resultName: in String): Unit {
+  if ensuresExprs.count == 0 {
+    return
+  }
   var i = 0
   while i < ensuresExprs.count {
     val ec = ensuresExprs[i]
@@ -1390,6 +1397,10 @@ func appendEnsuresAsserts(acc: in List[Statement], ensuresExprs: in List[Spanned
 // synthetic `__lyric_result_unit` binding, which genuinely belongs to the
 // return site rather than to any one clause.  The asserts themselves are
 // anchored per clause.
+//
+// User-level ensures: clauses are filtered out at collection time when
+// contractsEnabled is false (docs/63 Q-BP-009, #7649); system-level
+// checks (return-range, protected-type invariants) always appear here.
 func appendEnsuresAssertsNoResult(acc: in List[Statement], ensuresExprs: in List[SpannedExpr], sp: in Span): Unit {
   if ensuresExprs.count == 0 {
     return
@@ -1734,9 +1745,11 @@ func elaborateStmtDeep(
         s.span
       )
     )
-    case SInvariant(inv) -> acc.add(
-      mkAssertCall(inv, "LoopInvariantViolated: invariant " + Fmt.exprInline(0, inv), s.span)
-    )
+    case SInvariant(inv) -> {
+      // Loop invariants are NEVER gated by contractsEnabled (#7645 over-gating fix).
+      // They enforce loop integrity, like range checks on protected types.
+      acc.add(mkAssertCall(inv, "LoopInvariantViolated: invariant " + Fmt.exprInline(0, inv), s.span))
+    }
     // Loop `invariant:` (docs/41 §9 Band 4).  We lower to a runtime
     // `assert(inv)` so the check fires at the top of every iteration:
     // the first iteration checks the entry state, and every subsequent
@@ -1840,6 +1853,8 @@ func appendLoopWithExitCheck(
   acc: in List[Statement],
 ): Unit {
   val checks: List[Statement] = newList()
+  // Loop invariants are NEVER gated by contractsEnabled (#7645 over-gating fix).
+  // They enforce loop integrity, like range checks on protected types.
   var i = 0
   while i < invs.count {
     checks.add(mkAssertCall(invs[i], "LoopInvariantViolated: invariant " + Fmt.exprInline(0, invs[i]), sp))
@@ -1864,22 +1879,24 @@ func appendLoopWithExitCheck(
   )
   acc.add(loop)
   val notBroke = mkExpr(EPrefix(op = PreNot, operand = mkPath(flag, sp)), sp)
-  acc.add(
-    mkStmt(
-      SExpr(
-        expr = mkExpr(
-          EIf(
-            cond = notBroke,
-            thenBranch = EOBBlock(block = Block(statements = checks, span = sp)),
-            elseBranch = None,
-            thenForm = false
-          ),
-          sp
-        )
-      ),
-      sp
+  if checks.count > 0 {
+    acc.add(
+      mkStmt(
+        SExpr(
+          expr = mkExpr(
+            EIf(
+              cond = notBroke,
+              thenBranch = EOBBlock(block = Block(statements = checks, span = sp)),
+              elseBranch = None,
+              thenForm = false
+            ),
+            sp
+          )
+        ),
+        sp
+      )
     )
-  )
+  }
 }
 
 // Whether `markBreaksBlock` rewrote at least one `break`.
@@ -2240,6 +2257,7 @@ func elaborateFunctionBody(
   body0: in Block,
   counter: inout RenameCounter,
   isVoidReturn: in Bool,
+  contractsEnabled: in Bool = true,
 ): Block {
   // Inline range refinements (#7226): refined parameters are checked first,
   // before any `requires:` that may rely on them; a refined return type is
@@ -2247,24 +2265,36 @@ func elaborateFunctionBody(
   // place.
   counter.resultTy = resultBindingType(ret)
   val body = insertRangeChecks(body0, params, owner)
-  val requiresExprs = paramRangeChecks(params, owner)
+
+  // Separate system-level checks (#7645: fix over-gating of range checks and
+  // protected-type invariants). Only user-level requires:/ensures: are gated
+  // by contractsEnabled; system checks (ranges, type invariants) always run.
+  val paramRanges = paramRangeChecks(params, owner)
   val declaredRequires = collectRequires(contracts, owner)
-  var dri = 0
-  while dri < declaredRequires.count {
-    requiresExprs.add(declaredRequires[dri])
-    dri = dri + 1
+  val retRanges = returnRangeChecks(ret, owner)
+  val declaredEnsures = collectEnsures(contracts, owner)
+
+  // Build combined ensures lists for the old() rewrite pass, separating
+  // system-level checks (always run) from user-level clauses (gated by contractsEnabled).
+  // Preserve main's assertion order: user-level ensures first (#7708), then system checks.
+  val allEnsures: List[SpannedExpr] = newList()
+  // Only include user-level ensures when contractsEnabled is true (#7649).
+  if contractsEnabled {
+    var dei = 0
+    while dei < declaredEnsures.count {
+      allEnsures.add(declaredEnsures[dei])
+      dei = dei + 1
+    }
   }
-  val ensuresExprs = collectEnsures(contracts, owner)
-  val retChecks = returnRangeChecks(ret, owner)
-  var rci = 0
-  while rci < retChecks.count {
-    ensuresExprs.add(retChecks[rci])
-    rci = rci + 1
+  var rri = 0
+  while rri < retRanges.count {
+    allEnsures.add(retRanges[rri])
+    rri = rri + 1
   }
   var ti = 0
   while ti < typeInvariants.count {
     val inv = typeInvariants[ti]
-    ensuresExprs.add(
+    allEnsures.add(
       SpannedExpr(
         expr = inv.expr,
         span = inv.span,
@@ -2284,11 +2314,11 @@ func elaborateFunctionBody(
   //     genuine pre-state even when a requires assertion fires first.
   val oldInners: List[Expr] = newList()
   var oei = 0
-  while oei < ensuresExprs.count {
-    collectOldExpr(ensuresExprs[oei].expr, oldInners)
+  while oei < allEnsures.count {
+    collectOldExpr(allEnsures[oei].expr, oldInners)
     oei = oei + 1
   }
-  var rewrittenEnsures = ensuresExprs
+  var rewrittenEnsures = allEnsures
   if oldInners.count > 0 {
     var oi = 0
     while oi < oldInners.count {
@@ -2298,24 +2328,35 @@ func elaborateFunctionBody(
     val replCounter = newRenameCounter()
     val rewritten: List[SpannedExpr] = newList()
     var rei = 0
-    while rei < ensuresExprs.count {
+    while rei < allEnsures.count {
       // `replaceOldExpr` rewrites `EOld` leaves inside the clause expression;
       // the clause's own span is a separate field and passes through unchanged.
-      val ec = ensuresExprs[rei]
+      val ec = allEnsures[rei]
       rewritten.add(SpannedExpr(expr = replaceOldExpr(ec.expr, replCounter), span = ec.span, message = ec.message))
       rei = rei + 1
     }
     rewrittenEnsures = rewritten
   }
 
-  // (1) Prepend requires asserts, each at its own clause's span rather than
+  // (1a) Always add parameter range checks (never gated).
+  var prc = 0
+  while prc < paramRanges.count {
+    val rc = paramRanges[prc]
+    outs.add(mkAssertCall(rc.expr, rc.message, rc.span))
+    prc = prc + 1
+  }
+
+  // (1b) Prepend user-level requires asserts, each at its own clause's span rather than
   //     at the body's — a failing `requires:` should report the line the user
   //     wrote it on, not the function's opening brace (docs/63 band B1).
-  var ri = 0
-  while ri < requiresExprs.count {
-    val rc = requiresExprs[ri]
-    outs.add(mkAssertCall(rc.expr, rc.message, rc.span))
-    ri = ri + 1
+  //     Skipped when contractsEnabled is false (docs/63 Q-BP-009).
+  if contractsEnabled {
+    var ri = 0
+    while ri < declaredRequires.count {
+      val rc = declaredRequires[ri]
+      outs.add(mkAssertCall(rc.expr, rc.message, rc.span))
+      ri = ri + 1
+    }
   }
 
   // (2) / (3) / (4): walk top-level statements.
@@ -2664,12 +2705,12 @@ func isVoidReturnOpt(ret: in Option[TypeExpr]): Bool {
 }
 
 pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
-  elaborateFunctionOwned(fn, fn.name)
+  elaborateFunctionOwned(fn, fn.name, true)
 }
 
 /// `elaborateFunction`, naming the function `owner` in contract-violation
 /// messages (e.g. `Std.String.repeat`, `Box.scaled`).
-pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): FunctionDecl {
+pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String, contractsEnabled: in Bool = true): FunctionDecl {
   // @axiom functions have no body — nothing to elaborate.
   if functionIsAxiom(fn) {
     return fn
@@ -2712,7 +2753,8 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
           owner,
           blk,
           counter,
-          isVoid
+          isVoid,
+          contractsEnabled
         )
       )
       case FBExpr(e) -> FBBlock(
@@ -2724,7 +2766,8 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String): Function
           owner,
           wrapExprBody(e),
           counter,
-          isVoid
+          isVoid,
+          contractsEnabled
         )
       )
     }
@@ -2889,7 +2932,10 @@ func barrierWrappedBody(contracts: in List[ContractClause], body: in FunctionBod
 }
 
 func elaborateProtectedMember(
-  m: in ProtectedMember, invariants: in List[InvariantClause], typeName: in String
+  m: in ProtectedMember,
+  invariants: in List[InvariantClause],
+  typeName: in String,
+  contractsEnabled: in Bool = true,
 ): ProtectedMember {
   match m {
     case PMEntry(ed) -> {
@@ -2916,7 +2962,8 @@ func elaborateProtectedMember(
               owner,
               blk,
               counter,
-              isVoid
+              isVoid,
+              contractsEnabled
             )
           )
           case FBExpr(e) -> FBBlock(
@@ -2928,7 +2975,8 @@ func elaborateProtectedMember(
               owner,
               wrapExprBody(e),
               counter,
-              isVoid
+              isVoid,
+              contractsEnabled
             )
           )
         }
@@ -2947,7 +2995,7 @@ func elaborateProtectedMember(
         )
       }
     }
-    case PMFunc(fn) -> PMFunc(fn = elaborateFunctionOwned(fn, typeName + "." + fn.name))
+    case PMFunc(fn) -> PMFunc(fn = elaborateFunctionOwned(fn, typeName + "." + fn.name, contractsEnabled))
     case other -> other
   }
 }
@@ -3069,9 +3117,14 @@ func sameSpan(a: in Span, b: in Span): Bool {
 // Elaborate `fn` with `extra` clauses prepended to its own, then restore the
 // source-level clause list so contract metadata and the verifier see only
 // what the author wrote on this declaration.
-func elaborateFunctionWith(fn: in FunctionDecl, extra: in List[ContractClause], owner: in String): FunctionDecl {
+func elaborateFunctionWith(
+  fn: in FunctionDecl,
+  extra: in List[ContractClause],
+  owner: in String,
+  contractsEnabled: in Bool = true,
+): FunctionDecl {
   if extra.count == 0 {
-    return elaborateFunctionOwned(fn, owner)
+    return elaborateFunctionOwned(fn, owner, contractsEnabled)
   }
   val merged: List[ContractClause] = newList()
   var i = 0
@@ -3084,7 +3137,7 @@ func elaborateFunctionWith(fn: in FunctionDecl, extra: in List[ContractClause], 
     merged.add(fn.contracts[j])
     j = j + 1
   }
-  val acc = elaborateFunctionOwned(withContracts(fn, merged), owner)
+  val acc = elaborateFunctionOwned(withContracts(fn, merged), owner, contractsEnabled)
   withContracts(acc, fn.contracts)
 }
 
@@ -3114,12 +3167,16 @@ func qualify(pkg: in String, name: in String): String {
   }
 }
 
-func elaborateRecordDecl(decl: in RecordDecl, pkg: in String): RecordDecl {
+func elaborateRecordDecl(decl: in RecordDecl, pkg: in String, contractsEnabled: in Bool = true): RecordDecl {
   val members: List[RecordMember] = newList()
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
-      case RMFunc(fn) -> members.add(RMFunc(fn = elaborateFunctionOwned(fn, qualify(pkg, decl.name + "." + fn.name))))
+      case RMFunc(fn) -> members.add(
+        RMFunc(
+          fn = elaborateFunctionOwned(fn, qualify(pkg, decl.name + "." + fn.name), contractsEnabled)
+        )
+      )
       case other -> members.add(other)
     }
     i = i + 1
@@ -3133,7 +3190,12 @@ func elaborateRecordDecl(decl: in RecordDecl, pkg: in String): RecordDecl {
   )
 }
 
-func elaborateImplDecl(decl: in ImplDecl, ifaces: in Map[String, InterfaceDecl], pkg: in String): ImplDecl {
+func elaborateImplDecl(
+  decl: in ImplDecl,
+  ifaces: in Map[String, InterfaceDecl],
+  pkg: in String,
+  contractsEnabled: in Bool = true,
+): ImplDecl {
   val segs = decl.iface.head.segments
   val ifaceOpt: Option[InterfaceDecl] = if segs.count == 0 { None } else { mapGet(ifaces, segs[segs.count - 1]) }
   val members: List[ImplMember] = newList()
@@ -3148,7 +3210,11 @@ func elaborateImplDecl(decl: in ImplDecl, ifaces: in Map[String, InterfaceDecl],
           }
           case None -> newList()
         }
-        members.add(IMplFunc(fn = elaborateFunctionWith(fn, extra, qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name))))
+        members.add(
+          IMplFunc(
+            fn = elaborateFunctionWith(fn, extra, qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name), contractsEnabled)
+          )
+        )
       }
       case other -> members.add(other)
     }
@@ -3174,16 +3240,18 @@ func withKind(it: in Item, kind: in ItemKind): Item {
   )
 }
 
-func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in String): Item {
+func elaborateItem(
+  it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in String, contractsEnabled: in Bool = true
+): Item {
   match it.kind {
-    case IRecord(decl) -> withKind(it, IRecord(decl = elaborateRecordDecl(decl, pkg)))
-    case IExposedRec(decl) -> withKind(it, IExposedRec(decl = elaborateRecordDecl(decl, pkg)))
-    case IImpl(decl) -> withKind(it, IImpl(decl = elaborateImplDecl(decl, ifaces, pkg)))
+    case IRecord(decl) -> withKind(it, IRecord(decl = elaborateRecordDecl(decl, pkg, contractsEnabled)))
+    case IExposedRec(decl) -> withKind(it, IExposedRec(decl = elaborateRecordDecl(decl, pkg, contractsEnabled)))
+    case IImpl(decl) -> withKind(it, IImpl(decl = elaborateImplDecl(decl, ifaces, pkg, contractsEnabled)))
     case IFunc(fn) -> Item(
       docComments = it.docComments,
       annotations = it.annotations,
       visibility = it.visibility,
-      kind = IFunc(decl = elaborateFunctionOwned(fn, qualify(pkg, fn.name))),
+      kind = IFunc(decl = elaborateFunctionOwned(fn, qualify(pkg, fn.name), contractsEnabled)),
       span = it.span
     )
     case IProtected(decl) -> {
@@ -3202,7 +3270,7 @@ func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in S
       mi = 0
       while mi < decl.members.count {
         val withBarriers = applyBarrierProtocol(decl.members[mi], anyBarrier)
-        newMembers.add(elaborateProtectedMember(withBarriers, invariants, qualify(pkg, decl.name)))
+        newMembers.add(elaborateProtectedMember(withBarriers, invariants, qualify(pkg, decl.name), contractsEnabled))
         mi = mi + 1
       }
       Item(
@@ -3226,25 +3294,44 @@ func elaborateItem(it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in S
 }
 
 pub func elaborateFile(file: in SourceFile): SourceFile {
-  elaborateFileWithInterfaces(file, newList())
+  elaborateFileWithInterfaces(file, newList(), true)
+}
+
+// Check if a file has the @proof_required annotation.
+pub func isProofRequired(fileAnnotations: in List[Annotation]): Bool {
+  var i = 0
+  while i < fileAnnotations.count {
+    val a = fileAnnotations[i]
+    val aSegs = a.name.segments
+    if aSegs.count == 1 and aSegs[0] == "proof_required" {
+      return true
+    }
+    i += 1
+  }
+  false
 }
 
 /// `elaborateFile`, additionally resolving `impl` blocks against interfaces
 /// declared in other packages (`importedIfaces`) so their method contracts
 /// are enforced on the implementation (#7223).
-pub func elaborateFileWithInterfaces(file: in SourceFile, importedIfaces: in List[InterfaceDecl]): SourceFile {
+pub func elaborateFileWithInterfaces(
+  file: in SourceFile,
+  importedIfaces: in List[InterfaceDecl],
+  contractsEnabled: in Bool = true,
+): SourceFile {
   val canonFile = canonicalizeFileUnitAliases(file)
   val ifaces = interfaceTable(canonFile, importedIfaces)
   val newItems: List[Item] = newList()
-  // `@proof_required` files are elaborated like any other: `lyric build`
-  // does not run the prover, so an obligation it has not discharged keeps
-  // its runtime check (#7227).  `lyric prove` reads the source clauses, which
-  // `fn.contracts` still carries.
-  // #7457: impl methods for a protected type become its locked entries.
+  // `@proof_required` files always have contracts enabled: their obligations
+  // must not be user-disableable via [contracts] enabled = false, per D-progress-994 (#7227).
+  // `lyric build` elaborates like any other (keeping runtime checks when not discharged
+  // by the prover), while `lyric prove` reads the source clauses which `fn.contracts`
+  // still carries. #7457: impl methods for a protected type become its locked entries.
+  val effectiveContractsEnabled = if isProofRequired(canonFile.fileAnnotations) { true } else { contractsEnabled }
   val items = mergeProtectedImpls(canonFile.items, ifaces)
   var i = 0
   while i < items.count {
-    newItems.add(elaborateItem(items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path)))
+    newItems.add(elaborateItem(items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path), effectiveContractsEnabled))
     i = i + 1
   }
   SourceFile(

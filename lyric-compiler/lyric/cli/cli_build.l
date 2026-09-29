@@ -69,6 +69,22 @@ func readBuildProfileFromManifest(manifestOpt: in Option[String]): BuildProfile 
   readBuildProfileFromSection(readBuildSection(manifestOpt))
 }
 
+func readContractsEnabledFromManifest(manifestOpt: in Option[String], sourcePath: in String): Bool {
+  val absent = true
+  val mfPath = match manifestOpt {
+    case Some(p) -> p
+    case None -> match discoverManifestForSourceFile(sourcePath) {
+      case None -> return absent
+      case Some(discovered) -> discovered
+    }
+  }
+  val mfText = match File.readText(mfPath) { case Err(_) -> return absent; case Ok(t) -> t }
+  match Mf.parseManifest(mfText, mfPath) {
+    case Err(_) -> absent
+    case Ok(mf) -> match mf.contracts { case Some(cs) -> cs.enabled; case None -> true }
+  }
+}
+
 // Manifest-value variants of the two helpers above: same default-on-absence
 // behavior, but read the `[build]` section straight out of an already-parsed
 // manifest instead of re-reading/re-parsing the file. Lets a caller who
@@ -85,6 +101,15 @@ func readBuildProfileFromSection(section: in Option[Mf.BuildSection]): BuildProf
   match section {
     case None -> ProfDebug
     case Some(s) -> match parseProfileName(s.profile) { case Some(p) -> p; case None -> ProfDebug }
+  }
+}
+
+// Extract contractsEnabled from a parsed manifest's [contracts] section, or fall back
+// to the provided default value (docs/63 Q-BP-009, #7649).
+func getContractsEnabled(contractsSection: in Option[Mf.ContractsSection], defaultValue: in Bool): Bool {
+  match contractsSection {
+    case Some(cs) -> cs.enabled
+    case None -> defaultValue
   }
 }
 
@@ -812,7 +837,20 @@ func emitSingleFileOrProject(
     jvmNeedsMaven
 
   if not hasContribution {
-    return noContributionOutcome(req)
+    // #7650: if the manifest has a [contracts] table, use that value even though
+    // we're taking the no-contribution path.
+    val contractsEnabled = getContractsEnabled(lm.manifest.contracts, req.contractsEnabled)
+    val reqWithContracts = Emitter.EmitRequest(
+      source = req.source,
+      assemblyName = req.assemblyName,
+      outputPath = req.outputPath,
+      target = req.target,
+      packageVersion = req.packageVersion,
+      defines = req.defines,
+      path = req.path,
+      contractsEnabled = contractsEnabled
+    )
+    return noContributionOutcome(reqWithContracts)
   }
 
   // docs/60 (#5852 phase C): this single-file build routed to the project path
@@ -852,6 +890,7 @@ func emitSingleFileOrProject(
     case _ -> ()
   }
 
+  val contractsEnabled = getContractsEnabled(lm.manifest.contracts, req.contractsEnabled)
   val projReq = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = req.assemblyName,
@@ -864,7 +903,8 @@ func emitSingleFileOrProject(
     depTemplateSrcs = resolvedDeps.depTemplateSrcs,
     nugetAssemblyPaths = resolvedDeps.nugetThirdPartyPaths,
     defines = req.defines,
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = contractsEnabled
   )
 
   var mavenSaved: Option[String] = None
@@ -958,7 +998,8 @@ func emitSingleFileWithWorkspaceMembers(req: in Emitter.EmitRequest, sourcePath:
     depTemplateSrcs = wsDeps.depTemplateSrcs,
     nugetAssemblyPaths = noNuget,
     defines = req.defines,
-    packageFeatures = wsDeps.depPackageFeatures
+    packageFeatures = wsDeps.depPackageFeatures,
+    contractsEnabled = req.contractsEnabled
   )
   val emitResult = Emitter.emitProject(projReq)
   NonNativeEmitOutcome(
@@ -1054,6 +1095,7 @@ pub func buildOneNativeWithFeatures(
 
   val outBase = Path.basename(outPath)
   val asmName = stemOf(outBase, 4)  // strip ".dll"
+  val contractsEnabled = readContractsEnabledFromManifest(manifestPath, sourcePath)
   val req = Emitter.EmitRequest(
     source = source,
     assemblyName = asmName,
@@ -1061,7 +1103,8 @@ pub func buildOneNativeWithFeatures(
     target = target,
     packageVersion = "",
     defines = cliDefines,
-    path = sourcePath
+    path = sourcePath,
+    contractsEnabled = contractsEnabled
   )
 
   // var-mutation shape (stage-0 value-position-match lowering gap,
@@ -2124,7 +2167,8 @@ func buildReleaseProject(
   // Build to a staging directory so the production `bin/` output is untouched
   // by the intermediate managed artifact (a `.dll` for .NET AOT, a bundled
   // `.jar` for GraalVM native-image).
-  val artifactBase = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + outputExt(target, "lib") }
+  val ext = outputExt(target, "lib")
+  val artifactBase = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
   val stagingDir = Path.join(mfDir, ".lyric-release")
   val stagingArtifact = Path.join(stagingDir, artifactBase)
 
@@ -2691,6 +2735,7 @@ pub func buildProjectFromManifest(
   }
 
   val asmName = stemOf(Path.basename(outPath), 4)
+  val contractsEnabled = match manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
   val projReq = Emitter.EmitProjectRequest(
     packages = pkgs,
     assemblyName = asmName,
@@ -2709,7 +2754,8 @@ pub func buildProjectFromManifest(
     // CLI wins over a manifest define of the same key, both over the well-known
     // `version` fallback the bridges prepend (decodeDefines is last-wins).
     defines = BD.withManifestDefines(Mf.getManifestBuildDefines(manifest), cliDefines),
-    packageFeatures = resolved.depPackageFeatures
+    packageFeatures = resolved.depPackageFeatures,
+    contractsEnabled = contractsEnabled
   )
 
   // For JVM builds, inject Maven classpath into LYRIC_FFI_JARS so the JVM
@@ -2785,7 +2831,8 @@ pub func buildProjectFromManifest(
       projReq.defines,
       activeFeatures,
       mfDeclared,
-      projReq.packageVersion
+      projReq.packageVersion,
+      projReq.contractsEnabled
     )
   } else {
     Emitter.emitProject(projReq)

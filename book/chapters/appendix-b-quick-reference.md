@@ -1032,6 +1032,15 @@ lyric build --all-features             # transitive closure of every declared fe
                                        # default feature (dotnet/jvm/native) is swapped
                                        # to match --target (docs/24 s2.3)
 
+# Runtime contract control (manifest [contracts])
+#   [contracts]
+#   enabled = true              # toggle for user-level contract checks (requires:, ensures:)
+#   # Default: true (all contracts checked at runtime). When false, user-written
+#   # requires: and ensures: assertions are gated out (but system-level invariants,
+#   # range checks, and @proof_required modules remain active). Useful for
+#   # production deployments where contract overhead matters. See language reference
+#   # §3.7 and §6.4, and chapter 8 for @proof_required exemption details.
+
 # Run
 lyric run <file.l>                     # compile and immediately execute
 lyric run <file.l> -- arg1 arg2        # pass arguments to the program

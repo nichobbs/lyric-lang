@@ -101,6 +101,10 @@ pub record MiddleEndOptions {
   pkgLabel: String
   lineOrigins: List[DiagUtil.MergedLineOrigin]
   awaitInTryIsHazard: Bool
+  /// Whether runtime contract checks (`requires:`, `ensures:`, etc.) should
+  /// be emitted in the compiled output. Default is true (contract checks
+  /// enabled). Controlled by the `[contracts]` table in lyric.toml (docs/63).
+  contractsEnabled: Bool
   /// Receives the file as type-checked with its record `.copy(...)` calls
   /// desugared (`Lyric.Mono.desugarRecordCopiesFile`).  Contract metadata
   /// must take generic function bodies from this file, not the parsed one,
@@ -353,7 +357,7 @@ pub func pipeCheckAndMono(
   if not vlIsProofRequired(mcRes.level) {
     val _ = gate(opts.pkgLabel, opts.lineOrigins, runtimeQuantifierWarnings(checked))
   }
-  val elaborated = elaborateFileWithInterfaces(checked, monoIfaceDecls)
+  val elaborated = elaborateFileWithInterfaces(checked, monoIfaceDecls, opts.contractsEnabled)
 
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).
   // Runs after the elaborator so a propagated Err/None short-circuit is not
@@ -460,8 +464,15 @@ pub func pipeWeave(
   pkgLabel: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
   extraRecordDecls: in List[RecordDecl],
+  contractsEnabled: in Bool = true,
 ): Option[SourceFile] {
-  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates, typeIndex)
+  // @proof_required modules always enable contracts: proof obligations must not be user-disableable (#7732)
+  val effectiveContractsEnabled = if ContractElaborator.isProofRequired(file.fileAnnotations) {
+    true
+  } else {
+    contractsEnabled
+  }
+  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates, typeIndex, effectiveContractsEnabled)
   if gate(pkgLabel, origins, weaveRes.diagnostics) {
     return None
   }
@@ -504,7 +515,8 @@ pub func pipeMiddleEnd(
       match typeIndex { case Some(ix) -> ix; case None -> pipeTypeOwnerIndex(importedPkgs) },
       opts.pkgLabel,
       opts.lineOrigins,
-      monoRecordDecls
+      monoRecordDecls,
+      opts.contractsEnabled
     )
     case None -> None
   }

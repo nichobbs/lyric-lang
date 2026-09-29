@@ -261,7 +261,8 @@ pub func main(argv: in slice[String]): Int {
           depTemplateSrcs = newList(),
           nugetAssemblyPaths = nugetAssemblyPaths,
           defines = newList(),
-          packageFeatures = Emitter.noPackageFeatures()
+          packageFeatures = Emitter.noPackageFeatures(),
+          contractsEnabled = true
         )
 
         val result = Emitter.emitProject(req)

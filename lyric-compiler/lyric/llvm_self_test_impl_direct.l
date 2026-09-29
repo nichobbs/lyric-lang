@@ -167,7 +167,7 @@ func compileAndRunProject(packages: in List[NativeSourcePackage]): RunOutcome {
   val noFlags: List[String] = newList()
   val noFeatures: List[String] = newList()
   val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
-  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", noFlags, newList(), noFeatures, noFeatures, "", noOriginsByPkg) {
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", noFlags, newList(), noFeatures, noFeatures, "", noOriginsByPkg, true) {
     panic("native project compilation failed")
   }
   val noArgs: List[String] = newList()

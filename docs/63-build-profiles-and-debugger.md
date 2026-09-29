@@ -1098,6 +1098,7 @@ their update when the user-visible behaviour arrives with `SourceFile`.
   `[build] profile` key?
 - **Q-BP-009:** Does the `debug` profile disable the contract-elision modes, or
   are `[contracts]` flags fully independent of profile?
+  **RESOLVED (D-progress-1017):** `[contracts] enabled` gates only user-level `requires:`/`ensures:` clauses and is fully independent of the build profile; system-level checks (range/invariant) always run.
 - **Q-BP-010:** Should `LyricSourceMap` be a single cross-target format, or
   three target-idiomatic encodings behind one reader interface?
 - **Q-BP-011:** Does `lyric debug` need a `--attach <pid>` mode in S1, or is

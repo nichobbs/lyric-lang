@@ -131,7 +131,8 @@ func buildDll(tmpDir: in String, pkgName: in String, source: in String, asmName:
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -186,7 +187,8 @@ func buildAndRunConsumer(
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -576,7 +578,8 @@ func buildAndRunConsumerWithStdlib(
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   val result = Emitter.emitProject(req)
   match result.outputPath {
@@ -747,7 +750,8 @@ func buildDllPkgs(tmpDir: in String, pkgs: in List[Emitter.ProjectPackage], asmN
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   match Emitter.emitProject(req).outputPath {
     case None -> panic("buildDllPkgs(" + asmName + "): compilation failed")
@@ -812,7 +816,8 @@ test "cross-package generic calling a sibling package by name inside a closure (
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   match Emitter.emitProject(req).outputPath {
     case None -> panic("cpgen_sibling_qualified: consumer compilation failed")
@@ -935,7 +940,8 @@ test "an annotated local in a specialised generic keeps its type across packages
     depTemplateSrcs = newList(),
     nugetAssemblyPaths = newList(),
     defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures()
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
   )
   match Emitter.emitProject(req).outputPath {
     case None -> panic("cpgen_annotated_local: consumer compilation failed")

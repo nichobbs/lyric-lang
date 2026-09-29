@@ -335,6 +335,6 @@ test "Self nested inside a generic type argument fails the full native build cle
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val noStdlib: List[String] = newList()
   val noFlags: List[String] = newList()
-  val ok = compileToNativeWithFlags(nestedSelfSrc, stem, noStdlib, "", "0", noFlags, newList(), "")
+  val ok = compileToNativeWithFlags(nestedSelfSrc, stem, noStdlib, "", "0", noFlags, newList(), "", true)
   assertTrue(not ok, "the build fails (Bool false), not an unhandled exception")
 }

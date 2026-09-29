@@ -90,7 +90,7 @@ func resolveTypeAliasesMsil(file: in SourceFile): SourceFile {
 /// `package` declaration in the source.
 pub func compileToMsil(source: in String, outputPath: in String, stdlibSources: in List[String]): Bool {
   val noDefines: List[String] = newList()
-  compileToMsilWithVersion(source, outputPath, stdlibSources, "", noDefines, "")
+  compileToMsilWithVersion(source, outputPath, stdlibSources, "", noDefines, "", true)
 }
 
 // Seed lctx.stdCoreResultOk2Row / stdCoreResultErr2Row / stdCoreResultRow from
@@ -166,6 +166,7 @@ pub func compileToMsilWithVersion(
   packageVersion: in String,
   defines: in List[String],
   path: in String,
+  contractsEnabled: in Bool = true,
 ): Bool {
   // Parse + `@cfg` erasure with an empty active set (plus the
   // `target.dotnet` pseudo-feature, D-N-013) — the same semantics a
@@ -288,6 +289,7 @@ pub func compileToMsilWithVersion(
     pkgLabel = path,
     lineOrigins = noSingleFileOrigins,
     awaitInTryIsHazard = true,
+    contractsEnabled = contractsEnabled,
     checkedSourceOut = singleFileOptsCheckedOut,
     memberRecvClassesOut = singleFileOptsRecvOut
   )
@@ -372,7 +374,7 @@ pub func compileToMsilWithVersion(
   // #7496: the A0047 row-type check resolves type names against the same
   // stdlib packages the type checker saw.
   val weaveTypeIndex = pipeTypeOwnerIndex(importedPkgs)
-  val weavedFile = match pipeWeave(file, singleFileTemplates, weaveTypeIndex, path, noWeaveOrigins, stdlibRecs) {
+  val weavedFile = match pipeWeave(file, singleFileTemplates, weaveTypeIndex, path, noWeaveOrigins, stdlibRecs, singleFileOpts.contractsEnabled) {
     case Some(f) -> f
     case None -> return false
   }
@@ -596,6 +598,7 @@ pub func compileProjectToMsilWithFeaturesDiag(
     noDefines,
     noSourcePaths,
     noOriginsByPkg,
+    true,
     outDiagnostics
   )
 }
@@ -631,7 +634,8 @@ pub func compileProjectToMsilWithRestored(
     noDepTemplatePkgs,
     newList(),
     noSourcePaths,
-    noOriginsByPkg
+    noOriginsByPkg,
+    true
   )
 }
 
@@ -664,6 +668,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   defines: in List[String],
   paths: in List[String],
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  contractsEnabled: in Bool = true,
 ): Bool {
   val noDiagOut: List[Diagnostic] = newList()
   compileProjectToMsilWithRestoredAndVersionDiag(
@@ -680,6 +685,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     defines,
     paths,
     originsByPkg,
+    contractsEnabled,
     noDiagOut
   )
 }
@@ -720,6 +726,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // inner list) means no translation for that package — the pre-#6282
   // behaviour (`paths[i]` labels every diagnostic verbatim).
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  contractsEnabled: in Bool = true,
   outDiagnostics: in List[Diagnostic],
 ): Bool {
   if packages.count == 0 {
@@ -1069,6 +1076,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       pkgLabel = pp.label,
       lineOrigins = pp.origins,
       awaitInTryIsHazard = true,
+      contractsEnabled = contractsEnabled,
       checkedSourceOut = projOptsCheckedOut,
       memberRecvClassesOut = projOptsRecvOut
     )
@@ -1292,7 +1300,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // so a bundle package's `impl` block targeting a record declared in a
     // DIFFERENT package resolves its target's own fields in the
     // await-hoist.
-    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].origins, allImportedRecordDecls) {
+    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].origins, allImportedRecordDecls, contractsEnabled) {
       case Some(f) -> f
       case None -> return false
     }
@@ -1526,7 +1534,8 @@ pub func compileProjectToMsilWithRestoredEncoded(
     noDepTemplatePkgsEncoded,
     newList(),
     noSourcePathsEncoded,
-    noOriginsByPkgEncoded
+    noOriginsByPkgEncoded,
+    true
   )
 }
 

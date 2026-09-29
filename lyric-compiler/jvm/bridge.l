@@ -391,6 +391,7 @@ pub func compileToJar(
     pkgLabel = "",
     lineOrigins = noOrigins,
     awaitInTryIsHazard = false,
+    contractsEnabled = true,
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = recvClasses
   )
@@ -529,6 +530,7 @@ func runMiddleEnd(
   checkedOut: in List[SourceFile],
   recvClassesOut: in Map[String, String],
   typeIndex: in Option[Weaver.TypeOwnerIndex],
+  contractsEnabled: in Bool = true,
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   // #7198: see the other `MiddleEndOptions` construction site in this file.
@@ -538,6 +540,7 @@ func runMiddleEnd(
     pkgLabel = pkgLabel,
     lineOrigins = lineOrigins,
     awaitInTryIsHazard = false,
+    contractsEnabled = contractsEnabled,
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut
   )
@@ -1875,7 +1878,8 @@ pub func compileToJarBundled(
     noDepTemplateSrcs,
     noDefines,
     packageVersion,
-    ""
+    "",
+    true
   )
 }
 
@@ -1900,6 +1904,7 @@ pub func compileToJarBundledWithFeatures(
   defines: in List[String],
   packageVersion: in String,
   path: in String,
+  contractsEnabled: in Bool = true,
 ): Bool {
   val noRestored: List[SynthesisedArtifact] = newList()
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
@@ -1915,7 +1920,8 @@ pub func compileToJarBundledWithFeatures(
     packageVersion,
     noRestored,
     path,
-    noOrigins
+    noOrigins,
+    contractsEnabled
   )
 }
 
@@ -1946,6 +1952,7 @@ pub func compileToJarBundledWithRestored(
   // `source` (#6282); empty when `source` is a single file (or its
   // provenance is unknown).
   origins: in List[DiagUtil.MergedLineOrigin],
+  contractsEnabled: in Bool = true,
 ): Bool {
   val one: List[String] = newList()
   one.add(source)
@@ -1966,7 +1973,8 @@ pub func compileToJarBundledWithRestored(
     restoredArtifacts,
     onePaths,
     oneOrigins,
-    noPackageFeatureSets()
+    noPackageFeatureSets(),
+    contractsEnabled
   )
 }
 
@@ -2062,7 +2070,8 @@ pub func compileProjectToJarBundledWithFeatures(
     noRestored,
     pkgPaths,
     noOriginsByPkg,
-    noPackageFeatureSets()
+    noPackageFeatureSets(),
+    true
   )
 }
 
@@ -2117,6 +2126,7 @@ pub func compileProjectToJarBundledWithRestored(
   // by index; a package past the end uses `activeFeatures` /
   // `declaredFeatures` (see `PackageFeatureSet`).
   pkgFeatures: in List[PackageFeatureSet],
+  contractsEnabled: in Bool = true,
 ): Bool {
   if pkgSrcs.count == 0 {
     Console.error("error[J001]: JVM project build received no packages")
@@ -3120,7 +3130,7 @@ pub func compileProjectToJarBundledWithRestored(
   // generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val userChecked: List[SourceFile] = newList()
   val userRecvClasses: Map[String, String] = newMap()
-  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses, Some(value = weaveTypeIndex)) {
+  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses, Some(value = weaveTypeIndex), contractsEnabled) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -3266,7 +3276,11 @@ pub func compileProjectToJarBundledWithRestored(
     val ok = try {
       val siblingChecked: List[SourceFile] = newList()
       val siblingRecvClasses: Map[String, String] = newMap()
-      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, Some(value = weaveTypeIndex)) {
+      // Stdlib contracts are always enabled (#7748 / docs/63 Q-BP-011);
+      // stdlib authors' contracts run in all cases. Project packages respect
+      // the manifest [contracts] enabled setting.
+      val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
+      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, Some(value = weaveTypeIndex), pkgContractsEnabled) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.

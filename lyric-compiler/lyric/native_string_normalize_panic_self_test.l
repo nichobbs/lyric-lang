@@ -62,7 +62,7 @@ func attemptCompile(source: in String, stem: in String): CompileOutcome {
   var panicked = false
   var panicMsg = ""
   try {
-    val _ = compileToNativeWithFlags(source, stem, stdlib, "", "0", noFlags, newList(), "")
+    val _ = compileToNativeWithFlags(source, stem, stdlib, "", "0", noFlags, newList(), "", true)
   } catch Bug as b {
     panicked = true
     panicMsg = b.message
