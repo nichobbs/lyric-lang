@@ -14,6 +14,9 @@ pub record LocalBinding {
   name: String
   ty: Type
   isMutable: Bool
+  /// The `SymbolTable.openBindingSites` key of an open binding (#7788), ""
+  /// for every other binding.
+  openSite: String = ""
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Scope — stack of lexical frames (flat list + watermark indices).
   // ─────────────────────────────────────────────────────────────────────────────

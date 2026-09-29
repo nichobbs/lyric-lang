@@ -264,13 +264,21 @@ pub record SymbolTable {
   /// the fields of a restored package's records, so `mapKeys(o.inner.m)`
   /// infers its type arguments from the checked type of `o.inner.m` (#7441).
   callResultTypes: Map[String, TypeExpr]
-  /// The checked function type of each unannotated `val`/`var`/`let` whose
-  /// initializer is a function value, keyed by `recordCopySiteKey` of the
-  /// initializer's span.  `Lyric.Mono.desugarCheckedFile` writes it onto the
-  /// binding as its annotation: a backend that erases function values to a
-  /// uniform boxed delegate must know a call's result type to unbox it, and
-  /// cannot infer it from a lambda body that reads captured locals (#7711).
-  localFuncTypeSites: Map[String, TypeExpr]
+  /// The checked type of an unannotated `val`/`var`/`let`, keyed by
+  /// `recordCopySiteKey` of the initializer's span, where a backend needs it
+  /// spelled out.  `Lyric.Mono.desugarCheckedFile` writes it onto the binding
+  /// as its annotation.  Two kinds of binding are recorded:
+  ///   * one whose initializer is a function value: a backend that erases
+  ///     function values to a uniform boxed delegate must know a call's
+  ///     result type to unbox it, and cannot infer it from a lambda body that
+  ///     reads captured locals (#7711);
+  ///   * an open binding (`openBindingSites`) whose later uses fixed its type
+  ///     arguments: a backend with reified generics (MSIL) must build
+  ///     `List<Seed>`, not `List<object>`, where it is constructed (#7788).
+  localBindingTypeSites: Map[String, TypeExpr]
+  /// Each open binding, keyed by `recordCopySiteKey` of its initializer's
+  /// span (see `OpenBindingSite`, #7788).
+  openBindingSites: Map[String, OpenBindingSite]
   /// Each call through a function value, keyed by `recordCopySiteKey` of the
   /// call's span (see `Lyric.Parser.FuncValueCallSite`, #7716).
   funcValueCallSites: Map[String, FuncValueCallSite]
@@ -340,6 +348,34 @@ pub record SymbolTable {
   importAliases: Map[String, String]
 }
 
+/// An unannotated local binding whose initializer builds an empty
+/// collection or `None` (`newList()`, `newListWithCapacity(n)`, `newMap()`,
+/// `None`, #7788).  Nothing at the initializer fixes its type arguments, so
+/// it types as `List[<error>]` / `Option[<error>]` and every later use is
+/// accepted leniently.  Its uses do fix them, and are recorded here: a sink is
+/// a position with a declared type the binding flows into (a call argument, a
+/// returned or trailing value, a typed binding's initializer, a constructor
+/// field, an assignment's value); a store is a value put into it
+/// (`xs.add(x)`, `xs.add(i, x)`, `m.add(k, v)`, `xs[i] = x`, `o = Some(x)`).
+/// `resolveOpenBindingSites` turns them into the binding's annotation.  Each
+/// `List` field is a mutable 0/1-element box.
+pub record OpenBindingSite {
+  /// The initializer's span; the resolved annotation carries it, so
+  /// `Lyric.Mono.desugarCheckedFile` finds the binding it belongs to.
+  initSpan: Span
+  /// The type the initializer inferred: the constructor, with holes.
+  initTy: Type
+  /// The first sink's type, and its source spelling.
+  sinkTy: List[Type]
+  sinkTe: List[TypeExpr]
+  /// The type the first store fixes, and its source spelling.
+  storeTy: List[Type]
+  storeTe: List[TypeExpr]
+  /// Non-empty once two sinks, or two stores, disagree.
+  sinkConflict: List[Bool]
+  storeConflict: List[Bool]
+}
+
 pub record ImplPair {
   target: TypeId
   iface: TypeId
@@ -388,7 +424,8 @@ pub func newSymbolTable(): SymbolTable {
     funcRefCallees = newMap(),
     argConversionSites = newMap(),
     callResultTypes = newMap(),
-    localFuncTypeSites = newMap(),
+    localBindingTypeSites = newMap(),
+    openBindingSites = newMap(),
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),
     moduleValTypes = newMap(),

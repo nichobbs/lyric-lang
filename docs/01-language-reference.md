@@ -856,6 +856,34 @@ a *value* of type `Result[English, String]` is never implicitly a
 `Result[Greeter, String]`. A named argument to a union-case constructor
 must name one of the case's fields, like a record constructor's (**T0101**).
 
+An unannotated local whose initializer is an empty construction that fixes
+no type arguments — `newList()`, `newListWithCapacity(n)`, `newMap()` or
+`None`, bare or qualified — takes them from its uses in the same function
+(#7788):
+```
+func decode(): Result[List[Field], String] {
+  val fields = newList()          // a List[Field]
+  fields.add(nextField())
+  Ok(value = fields)
+}
+```
+The type of the first position the binding flows into decides: a call
+argument, a returned or trailing value, a typed binding's initializer, a
+constructor field (also inside a nested construction, as in
+`Ok(value = Some(value = xs))`), or an assignment's value. When no such
+position has a closed type (it is still generic, say `List[T]`), the values
+stored into the binding decide instead, if they all agree: `xs.add(x)`,
+`xs.add(i, x)`, `m.add(k, v)`, `xs[i] = x`, `m[k] = v`, `o = Some(x)`. In a
+generic function a store may fix a type argument to one of the function's own
+type parameters (`xs.add(x)` with `x: T` makes `xs` a `List[T]`), which each
+specialisation then instantiates. A position's type never does this, because
+a generic callee's `List[T]` names the callee's `T`. A store that only has to
+fit, such as an `Int` added to a list returned as a `List[Long]`, is
+widened. When the uses disagree, or none fixes the type, the
+binding keeps its open type. Every use accepts that type, and a backend with
+reified generics (`--target dotnet`) builds the value with `object`
+elements. Annotate such a binding (`val xs: List[Field] = newList()`).
+
 A brace-terminated `if` or `match` written in **statement position** (not as the
 right-hand side of a binding or another expression) is a *complete statement*: a
 binary operator after the closing `}` (whether on the same line or the next)

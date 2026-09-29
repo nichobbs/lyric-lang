@@ -272,11 +272,12 @@ record MonoState {
   /// fallback when `inferCallReturnTE` cannot see the callee's signature
   /// (another package's non-generic function).
   callResultTypes: Map[String, TypeExpr]
-  /// The checked function type of each unannotated function-valued local
-  /// binding (`SymbolTable.localFuncTypeSites`), keyed by `recordCopySiteKey`
-  /// of the initializer's span; `rewriteBinding` makes it the binding's
-  /// annotation (#7711).
-  localFuncTypeSites: Map[String, TypeExpr]
+  /// The checked type of each unannotated local binding the type checker
+  /// needs spelled out (`SymbolTable.localBindingTypeSites`): a function-valued
+  /// one (#7711) or an open one whose uses fixed its type arguments (#7788).
+  /// Keyed by `recordCopySiteKey` of the initializer's span; `rewriteBinding`
+  /// makes it the binding's annotation.
+  localBindingTypeSites: Map[String, TypeExpr]
   /// Each call through a function value the type checker typed
   /// (`SymbolTable.funcValueCallSites`), keyed by `recordCopySiteKey` of the
   /// call's span; `funcValueCallMono` calls it through a local annotated with
@@ -330,7 +331,7 @@ func newMonoState(
     argConversionSites = newMap(),
     lambdaTypes = newMap(),
     callResultTypes = newMap(),
-    localFuncTypeSites = newMap(),
+    localBindingTypeSites = newMap(),
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),
     copyTicker = newList(),
@@ -4034,7 +4035,7 @@ pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, Reco
 /// The post-type-check desugars: record `.copy(...)` calls (D-progress-948),
 /// cross-package function values (D-progress-963), widened function-value
 /// call arguments (D-progress-964), the annotations of unannotated
-/// function-valued locals (#7711), the callee types of calls through
+/// function-valued (#7711) and open (#7788) locals, the callee types of calls through
 /// function values (#7716) and the element types of the names tuple patterns
 /// bind (#7728), each keyed by the type checker's span key.
 pub func desugarCheckedFile(
@@ -4042,12 +4043,12 @@ pub func desugarCheckedFile(
   sites: in Map[String, RecordCopySite],
   funcRefSites: in Map[String, FuncRefSite],
   argConversionSites: in Map[String, ArgConversionSite],
-  localFuncTypeSites: in Map[String, TypeExpr],
+  localBindingTypeSites: in Map[String, TypeExpr],
   funcValueCallSites: in Map[String, FuncValueCallSite],
   tuplePatternBindingSites: in Map[String, TuplePatternBindingSite],
 ): MonoResult {
   val noRewrites: Map[String, String] = newMap()
-  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localFuncTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 {
+  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
     return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags)
   }
@@ -4110,13 +4111,14 @@ pub func desugarCheckedFile(
     }
     cj = cj + 1
   }
-  // Each recorded type carries its initializer's span (`recordLocalFuncType`).
-  val localKeys = mapKeys(localFuncTypeSites)
+  // Each recorded type carries its initializer's span (`recordLocalFuncType`,
+  // `resolveOpenBindingSites`).
+  val localKeys = mapKeys(localBindingTypeSites)
   var li = 0
   while li < localKeys.count {
-    match mapGet(localFuncTypeSites, localKeys[li]) {
+    match mapGet(localBindingTypeSites, localKeys[li]) {
       case Some(te) -> {
-        state.localFuncTypeSites.add(localKeys[li], te)
+        state.localBindingTypeSites.add(localKeys[li], te)
         offsets.add(te.span.startPos.offset)
       }
       case None -> ()
@@ -4470,7 +4472,12 @@ func renameTuplePatternBindingsMono(state: in MonoState, pat: in Pattern, binds:
         )
         case None -> None
       }
-      match mapGet(state.tuplePatternBindingSites, recordCopySiteKey(pat.span)) {
+      val tupleSite: Option[TuplePatternBindingSite] = if checkerSitesApplyMono(state) {
+        mapGet(state.tuplePatternBindingSites, recordCopySiteKey(pat.span))
+      } else {
+        None
+      }
+      match tupleSite {
         case Some(site) -> {
           val id = state.copyTicker.count
           state.copyTicker.add(0)
@@ -4534,6 +4541,17 @@ func spanKeyMono(state: in MonoState, sp: in Span): String {
     return ""
   }
   state.originScope[state.originScope.count - 1] + "@" + toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
+}
+
+// Whether the type checker's span-keyed sites (`copySites`, `funcRefSites`,
+// `argConversionSites`, `funcValueCallSites`, `localBindingTypeSites`,
+// `tuplePatternBindingSites`) may apply to the body being rewritten.  Their
+// keys are offsets into this file's source; a specialised copy of another
+// package's generic carries offsets into that package's source, which can
+// equal a key here.  The same guard `callResultTypes` and `lambdaTypes`
+// take.
+func checkerSitesApplyMono(state: in MonoState): Bool {
+  state.originScope[state.originScope.count - 1] == ""
 }
 
 func singletonStrMono(v: in String): List[String] {
@@ -5421,13 +5439,14 @@ func genDeclResolvesForCallSite(
 
 func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
   val s = expr.span
-  if state.funcRefSites.count > 0 {
+  val ownSites = checkerSitesApplyMono(state)
+  if ownSites and state.funcRefSites.count > 0 {
     match mapGet(state.funcRefSites, recordCopySiteKey(s)) {
       case Some(site) -> return funcRefLambdaMono(site, s)
       case None -> ()
     }
   }
-  if state.argConversionSites.count > 0 {
+  if ownSites and state.argConversionSites.count > 0 {
     val convKey = recordCopySiteKey(s)
     match mapGet(state.argConversionSites, convKey) {
       case Some(conv) -> {
@@ -5442,7 +5461,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       case None -> ()
     }
   }
-  if state.funcValueCallSites.count > 0 {
+  if ownSites and state.funcValueCallSites.count > 0 {
     match mapGet(state.funcValueCallSites, recordCopySiteKey(s)) {
       case Some(site) -> match expr.kind {
         case ECall(callee, callArgs) -> return funcValueCallMono(state, env, callee, callArgs, site, s)
@@ -5471,7 +5490,8 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     case ECall(fn, args) -> {
       match fn.kind {
         case EMember(copyRecv, copyName) -> if copyName == "copy" {
-          match mapGet(state.copySites, recordCopySiteKey(s)) {
+          val ownCopySite: Option[RecordCopySite] = if ownSites { mapGet(state.copySites, recordCopySiteKey(s)) } else { None }
+          match ownCopySite {
             case Some(site) -> if site.conflicting {
               state.diags.add(
                 errorDiagnostic(
@@ -6591,15 +6611,15 @@ func genericRecordCtorWithLambdaArgMono(state: in MonoState, init: in Expr): Boo
   }
 }
 
-// `binding` with its checked function type as the annotation, when it has
-// none and the type checker recorded one for its initializer (#7711).
-func checkedLocalFuncTypeMono(state: in MonoState, binding: in LocalBinding): Option[LocalBinding] {
+// `binding` with its checked type as the annotation, when it has none and the
+// type checker recorded one for its initializer (#7711, #7788).
+func checkedLocalBindingTypeMono(state: in MonoState, binding: in LocalBinding): Option[LocalBinding] {
   match binding {
-    case LBVal(pat, None, init) -> match mapGet(state.localFuncTypeSites, recordCopySiteKey(init.span)) {
+    case LBVal(pat, None, init) -> match mapGet(state.localBindingTypeSites, recordCopySiteKey(init.span)) {
       case Some(te) -> Some(value = LBVal(pat = pat, ty = Some(value = te), init = init))
       case None -> None
     }
-    case LBVar(name, None, Some(init)) -> match mapGet(state.localFuncTypeSites, recordCopySiteKey(init.span)) {
+    case LBVar(name, None, Some(init)) -> match mapGet(state.localBindingTypeSites, recordCopySiteKey(init.span)) {
       case Some(te) -> Some(
         value = LBVar(
           name = name,
@@ -6609,7 +6629,7 @@ func checkedLocalFuncTypeMono(state: in MonoState, binding: in LocalBinding): Op
       )
       case None -> None
     }
-    case LBLet(name, None, init) -> match mapGet(state.localFuncTypeSites, recordCopySiteKey(init.span)) {
+    case LBLet(name, None, init) -> match mapGet(state.localBindingTypeSites, recordCopySiteKey(init.span)) {
       case Some(te) -> Some(
         value = LBLet(name = name, ty = Some(value = te), init = init)
       )
@@ -6635,8 +6655,8 @@ func checkedLocalFuncTypeMono(state: in MonoState, binding: in LocalBinding): Op
 // an unannotated binding infers from the original `init` first and falls back
 // to the rewritten one.
 func rewriteBinding(state: in MonoState, env: in Map[String, TypeExpr], binding: in LocalBinding): LocalBinding {
-  if state.localFuncTypeSites.count > 0 {
-    match checkedLocalFuncTypeMono(state, binding) {
+  if state.localBindingTypeSites.count > 0 and checkerSitesApplyMono(state) {
+    match checkedLocalBindingTypeMono(state, binding) {
       case Some(annotated) -> return rewriteBinding(state, env, annotated)
       case None -> ()
     }
