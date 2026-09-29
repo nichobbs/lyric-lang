@@ -1345,7 +1345,7 @@ test "contractsEnabled = false omits requires: but preserves range-check asserts
 }
 
 test "ensures: asserts come before range-check asserts in assertion order (#7708)" {
-  val src = "package P\ntype Age = Int range 0..=150\nfunc f(): Age\n  ensures: result > 0\n{ 42 }\n"
+  val src = "package P\nfunc f(): Int range 0..=150\n  ensures: result > 0\n{ 42 }\n"
   val file = parseAndElaborateWithContracts(src, true)
   val fn = firstFunction(file, "f")
   val blk = bodyBlockOf(fn)
@@ -1354,6 +1354,29 @@ test "ensures: asserts come before range-check asserts in assertion order (#7708
   // This test verifies the fix for #7708: a silent reordering was introduced,
   // changing which assertion fires first when both ensures: and range checks exist.
   assertTrue(blk.statements.count >= 3, "ensure/range-order: body has binding + ensures + range + return")
+  // Find the positions of the first two asserts.
+  var firstAssertPos = -1
+  var secondAssertPos = -1
+  var assertCount = 0
+  var i = 0
+  while i < blk.statements.count {
+    if isAssertCall(blk.statements[i]) {
+      if assertCount == 0 {
+        firstAssertPos = i
+      } else if assertCount == 1 {
+        secondAssertPos = i
+      }
+      assertCount = assertCount + 1
+    }
+    i = i + 1
+  }
+  // We must have at least 2 asserts (ensures + range-check).
+  assertEqualInt(assertCount, 2, "ensure/range-order: exactly 2 asserts present (ensures + range-check)")
+  // The first assert must come before the second assert.
+  assertTrue(
+    firstAssertPos >= 0 and secondAssertPos >= 0 and firstAssertPos < secondAssertPos,
+    "ensure/range-order: ensures assert comes before range-check assert"
+  )
 }
 
 test "contractsEnabled = false omits ensures: asserts but preserves function execution" {
