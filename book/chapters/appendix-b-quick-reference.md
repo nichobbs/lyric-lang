@@ -1280,7 +1280,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 
 | Code | Meaning |
 |---|---|
-| `T0001` | Package-level error (e.g. duplicate declaration) |
+| `T0001` | Duplicate declaration: two top-level items in the same package share a name |
 | `T0010` | Unknown type name |
 | `T0012` | Primitive type does not take type arguments |
 | `T0013` | Name is not a type |
@@ -1294,7 +1294,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0032` | Equality operands have mismatched types |
 | `T0033` | Comparison operands must be matching ordered types |
 | `T0034` | Logical operator applied to non-Bool operand |
-| `T0035` | `??` operand type mismatch |
+| `T0035` | `??` misuse: the left operand is not a nullable type, or the right operand does not match the nullable's inner type |
 | `T0036` | Unary minus on non-numeric type |
 | `T0037` | `not` applied to non-Bool operand |
 | `T0041` | List literal elements have mismatched types |
@@ -1309,34 +1309,49 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0063` | Assignment type does not match target type |
 | `T0064` | `return` without value in non-Unit function |
 | `T0065` | Returned type does not match declared return type |
-| `T0066` | `while` condition is not Bool |
-| `T0067` | `if`/`match` guard or condition type error; incompatible `if`/`match` branch types (or value-position `try` handler type incompatible with the `try` body) — branch unification is position-aware: a `Unit`-vs-value branch mismatch is lenient in statement position but rejected in value position |
+| `T0066` | `if` condition, `while` condition, or `match`-arm guard is not `Bool` |
+| `T0067` | Incompatible `if`/`match` branch types (or value-position `try` handler type incompatible with the `try` body) — branch unification is position-aware: a `Unit`-vs-value branch mismatch is lenient in statement position but rejected in value position |
+| `T0068` | A const pattern (`case @NAME ->`) names a constant whose type does not match the scrutinee's type |
+| `T0069` | A const pattern (`case @NAME ->`) names a `val` that is not initialized with a literal, so it is not a compile-time constant |
 | `T0070` | Function body type does not match declared return type |
+| `T0071` | A const pattern (`case @NAME ->`) names a constant of generic type; const patterns must be monomorphic |
+| `T0072` | A const pattern (`case @NAME ->`) names something that is not defined, or is not a `val`/`const` |
 | `T0073` | `null` used in pattern position — Lyric has no null literal or null pattern; `case null -> ...` parses as an ordinary catch-all binding named `null`, not a null test |
-| `T0080` | `old(…)` used outside an `ensures` clause |
 | `T0085` | `out`/`inout` argument (value-type) must be a mutable l-value |
 | `T0086` | `out` parameter is never assigned before the function returns |
 | `T0087` | Reassigning an immutable binding (`val`/`let` or an `in` parameter) |
 | `T0090` | Range bounds are inverted or produce an empty range |
 | `T0091` | `range` applied to a non-numeric underlying type |
 | `T0093` | Range bound expression cannot be evaluated at compile time |
+| `T0094` | `yield` used in a function that is not `async` (generators must be `async`) |
+| `T0095` | A `yield` value's type does not match the generator's declared element type |
+| `T0096` | `@hot` on an `async` generator has no effect and is ignored (warning) |
 | `T0097` | Package-private symbol referenced from another package, including a package-private type used as a `Type.method(...)` receiver, a type-position reference (`val w: Pkg.Widget`), a private union/enum's case in a pattern head, or a private record in a record-pattern head — qualified or bare — whether or not the declaring package is imported (mark it `pub` or `internal`) |
 | `T0098` | `impl` is missing an abstract interface method |
 | `T0099` | `impl` method parameter arity does not match the interface declaration |
 | `T0100` | Opaque type constructed outside its declaring package |
 | `T0101` | Constructor names a field the type does not have |
 | `T0102` | Pattern-matching an opaque type's representation outside its declaring package |
+| `T0103` | A numeric/character conversion method (`.toInt()`, `.toLong()`, `.toByte()`, `.toChar()`, `.toDouble()`, `.toNat()`, ...) is called on a receiver type it does not apply to, such as `String`, `Bool` or `Unit` |
+| `T0104` | Constructor argument does not fit the constructed type: a named or positional argument's type does not match the field's type (including a record `.copy(field = value)` argument), or more positional arguments are supplied than the type has fields |
 | `T0105` | Constructor call (record, opaque, generic or non-generic, or a named-field union case) omits a required field with no default, in an all-named-args construction |
+| `T0106` | An `impl` method's parameter type does not match the interface method's declared parameter type |
+| `T0107` | An `impl` method's return type does not match the interface method's declared return type |
+| `T0108` | A generic type argument does not satisfy a `where`-clause constraint on its type parameter |
 | `T0109` | Value expression used where a type argument is required |
 | `T0110` | Generic constructor's type parameter(s) cannot be inferred from the arguments (add explicit type arguments) |
 | `T0111` | Unknown constraint name in a `where` clause (warning) |
 | `T0112` | Refutable pattern in a `for` loop binding (only names, `_`, parentheses, and tuples of those) |
+| `T0113` | Unknown member: `x.name` or `x.name(...)` names no field, method, or impl method of the receiver's user-defined type, or of a distinct type (a distinct type does not expose its underlying type's members; read them through `.value`) |
+| `T0114` | A function declares a non-`Unit` return type but has no body that produces a value (only `@axiom` functions, externs, and interface method signatures may omit the body) |
 | `T0115` | A qualified reference (`Pkg.name`) does not resolve to anything the compiler can verify — most commonly a `pub val` in a workspace/restored dependency whose initializer isn't a literal (only literal-foldable `pub val`/`pub const` values round-trip across a restored-dependency boundary today, docs/45); the fix is to wrap the value in a `pub func` in the producing package and call that instead. Raised at MSIL codegen time (`Msil.Codegen`), not by the type checker proper — the check catches the reference just before it would otherwise fall through to a silent `null`/uninitialized read. |
 | `T0116` | Field-style access (`x.name`, no call parens) to a name that exists only as a D037 dot-named (UFCS) function, never as a real field — e.g. `e.message` where `message` is declared as `pub func IOError.message(e: in IOError): String`. Call it instead (`e.message()`). Fires for both locally-declared and imported/cross-package receiver types, since dot-named function signatures are known globally. |
 | `T0117` | Diamond conflict: two (or more) same-file interfaces each provide a default method with the same name for the same impl target, and no impl block overrides it. Resolve by overriding the method explicitly in an impl block — the override claims the name for the whole target and no default copy is synthesized. |
 | `T0118` | A default-method body references a non-member through a `Self`-typed value (`self.<field>`, or `<param>.<field>` where the parameter is typed `Self`) — including through a chain of calls to other `Self`-returning interface members (`self.withX().field`) and through a parenthesized receiver (`(other).field`). A default method's `Self` is the interface itself, which owns no fields — the body may only reference interface members (`self.<member>()` or bare `<member>()`). A body that needs a field must be overridden in the implementing `impl` block, where `Self` narrows to the concrete target type. A local binding that shadows a `Self`-typed parameter name inside a nested block is exempt for the extent of that block (block-scoped shadowing). |
 | `T0119` | `Alias.member` on an extern type does not resolve to a static property getter, a literal constant, a static field, or a zero-argument static method in .NET reference-assembly metadata (`Alias` names an `extern type`) — most often a typo, or a member the auto-FFI static-access probes don't cover (an argument-bearing method, an overload). Check the name for a typo, or declare an `@externTarget` wrapper for a custom binding. Raised at MSIL codegen time (`Msil.Codegen`) with the access expression's source span; `Lyric.Emitter`'s bridge boundary catches it, prints it as a normal diagnostic, and carries it in `EmitResult.diagnostics` instead of letting it reach the CLI as an uncaught exception (#6449). |
 | `T0120` | Generic fallback for an MSIL codegen failure that panicked without its own `error[T0NNN]:`-prefixed diagnostic — `Lyric.Emitter`'s bridge boundary catches every MSIL codegen panic (the same layer as the JVM target's `J008` catch-all; `Msil.Bridge` itself deliberately lets the panic escape as its library contract) so a build always ends in a printed diagnostic plus an `EmitResult.diagnostics` entry, never a raw uncaught exception with a .NET stack trace. The wrapped message names the underlying failure; treat it as a compiler-internal-error report (file an issue) unless the wrapped text itself points at a source-level mistake. |
+| `T0121` | A member access could not be resolved because the receiver's static type was erased to `object` before codegen, so the compiler cannot verify the member exists. Annotate the receiver with an explicit type (`val x: Pkg.Type = ...`) or check the member name for a typo. Raised at MSIL codegen time (`Msil.Codegen`), with the receiver's source position, like `T0119`. |
+| `T0122` | A qualified union- or enum-case pattern (`case Pkg.Kind.A -> ...`) names a qualifier that does not match the scrutinee's own union or enum |
 | `T0123` | A bare (unqualified) name — a function, `val`/`const`, or union/enum case constructor — is declared by two or more packages imported at the same use site; referencing it unqualified is an error naming every declaring package, rather than silently resolving to whichever package happened to register the name last. Two packages reached only transitively (through the whole imports of different imported packages) that both declare the name collide the same way. Fix by qualifying the reference (`Pkg.name`). Not flagged: a local declaration that shadows the ambiguous import, a name reachable through only one of the imports (no actual collision), a name reachable only transitively through another package's own whole imports when a direct import also declares it (the direct one wins), or a pattern match against a scrutinee of statically known type (which resolves the case against the scrutinee's own union/enum directly, without needing qualification). Also raised when a function reference used as a value, bare or qualified, names a package function that has overloads: a value reference cannot pick an overload, so wrap the call in a lambda with typed parameters. |
 | `T0124` | A receiver structurally matches `Std.Core.Result[T, E]` / `Option[T]`'s reserved shape (bare name + matching arity) but is a *different* type declared outside `Std.Core`, and one of the six reserved accessor names (`.isOk`/`.isErr`/`.value`/`.error`/`.isSome`/`.isNone`) was accessed on it with no real matching member of its own. `Result`/`Option`'s accessor sugar is resolved by type identity, not by name, so a same-named foreign union never receives it (#6630); define your own member under that name, or call it through `Std.Core.Result`/`Option` if that was the intent. |
 | `T0125` | A call's callee names a `union` or `enum` **type** itself (`DbError(message = …)` where `DbError` is a union), not one of its cases. A union/enum has no constructor of its own — a value is built through a case (`OpenFailed(message = …)`), so the message names the constructible cases. Fix by naming the intended case. Reported at type-check time rather than degrading to an unresolved-callee failure at code generation (#6838, D-progress-875). Not flagged: constructing an actual case, or a record/opaque type by its name (those have real constructors). |

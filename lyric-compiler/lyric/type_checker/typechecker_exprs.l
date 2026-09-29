@@ -8351,11 +8351,20 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   // directly to a `List[T]`-expected binding is typed as `List[T]` up front
   // by `inferExprExpected`'s own `EList` arm, so it never reaches this
   // fallback either).
+  //
+  // #7702: the parameter must be the stdlib `List` by TypeId
+  // (`stdCollectionsListTypeId`), not any type named `List`, for the same
+  // reason as #7696's literal arms: codegen builds the genuine stdlib
+  // collection for `[]`, so a package's own `record List[T]` must not
+  // accept it.
   match argTy {
     case TySlice(elemTy) -> match unrefine(elemTy) {
-      case TyError -> match paramTy {
-        case TyUser(_, pName, pArgs) -> if pName == "List" and pArgs.count == 1 {
-          return true
+      case TyError -> match unrefine(paramTy) {
+        case TyUser(pid, _, pArgs) -> {
+          val isStdList = match stdCollectionsListTypeId(tbl) { case Some(sid) -> typeIdEq(sid, pid); case None -> false }
+          if isStdList and pArgs.count == 1 {
+            return true
+          }
         }
         case _ -> {
         }
