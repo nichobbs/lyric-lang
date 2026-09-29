@@ -109,7 +109,7 @@ body could intercept the interrupt that unwinds the producer. Now:
 ## Tests
 
 - `lyric-compiler/lyric/generator_control_flow_self_test.l`, dual-target,
-  21 cases:
+  23 cases:
   - `match` over an `Option` and over a user union, with payload binds,
     nested constructor patterns and guards
   - tuple patterns (with arithmetic on the binds, which #7741 fixed) and
