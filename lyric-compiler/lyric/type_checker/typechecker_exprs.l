@@ -2646,37 +2646,23 @@ func stringHostMethodType(name: in String): Option[Type] {
   None
 }
 
-// The canonical stdlib `List[T]`'s `TypeId`, resolved by owning package
-// rather than by its (shadowable) bare name — the same precedent
-// `isStdCoreMonadType` above sets for `Std.Core.Result`/`Option` ("a
-// same-simple-name Result/Option union declared OUTSIDE Std.Core must
-// never satisfy this check").  `extern type List[T]` is declared in
-// `Std.CollectionsHost` on BOTH targets (`lyric-stdlib/std/_kernel/
-// collections_host.l` for dotnet, the `_kernel_jvm` twin for JVM) and
-// `Std.Collections` re-exports it, so this is stable regardless of which
-// target compiled it. `symTableTryFindInPackage` scans by `originPackage`
-// directly, independent of the current file's own imports or any
-// same-named local shadow (#7665) — unlike a bare `symTableTryFindOne(tbl,
-// "List")`, which prefers a package-local type of the same name over the
-// stdlib one, per the shadowing rule documented at `typechecker_checker.l`'s
-// symbol-registration site.
-func stdCollectionsListTypeId(tbl: in SymbolTable): Option[TypeId] {
-  match symTableTryFindInPackage(tbl, "Std.CollectionsHost", "List") {
-    case Some(sym) -> symbolTypeIdOpt(sym)
-    case None -> None
-  }
-}
-
 // #7737: is `tid` the stdlib `Std.CollectionsHost` type called `name`
 // (`List`, `Map`, `MapKeyCollection`, `MapValueCollection`)?  Every
 // semantic "is this the stdlib collection?" check goes through here rather
-// than comparing the `TyUser`'s bare name, for the reason
-// `stdCollectionsListTypeId` documents: codegen treats these receivers as the
-// genuine BCL/JDK collection, so a package's own same-named type must never
-// be classified as one.
+// than comparing the `TyUser`'s bare name: codegen treats these receivers as
+// the genuine BCL/JDK collection, so a package's own same-named type must
+// never be classified as one.  The type is resolved by its owning package,
+// never its (shadowable) bare name -- the precedent `isStdCoreMonadType` sets
+// for `Std.Core.Result`/`Option` (#7665).  `extern type List[T]` and its
+// siblings are declared in `Std.CollectionsHost` on BOTH targets
+// (`lyric-stdlib/std/_kernel/collections_host.l` for dotnet, the
+// `_kernel_jvm` twin for the JVM) and `Std.Collections` re-exports them, so
+// the resolution is independent of the current file's own imports or any
+// same-named local type.  The ids are memoised per symbol table
+// (`symTableStdCollectionsHostTypeId`, #7765).
 func isStdCollectionsHostType(tbl: in SymbolTable, tid: in TypeId, name: in String): Bool {
-  match symTableTryFindInPackage(tbl, "Std.CollectionsHost", name) {
-    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(sid) -> typeIdEq(sid, tid); case None -> false }
+  match symTableStdCollectionsHostTypeId(tbl, name) {
+    case Some(sid) -> typeIdEq(sid, tid)
     case None -> false
   }
 }
@@ -2726,7 +2712,7 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
       // treats `TyError` as equal to anything, so a `val` binding with any
       // declared type would silently accept it and crash with
       // `InvalidCastException` at runtime instead of failing to compile.
-      // `stdCollectionsListTypeId` fixes both problems the same way
+      // `isStdCollectionsHostType` fixes both problems the same way
       // `isStdCoreMonadType` above does for `Std.Core.Result`/`Option`:
       // resolve the STDLIB's List by its OWN owning package
       // (`Std.CollectionsHost`), never by a bare, shadowable name, so
@@ -2737,7 +2723,7 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
       match recv {
         case TySlice(elem) -> {
           if name == "toList" {
-            match stdCollectionsListTypeId(tbl) {
+            match symTableStdCollectionsHostTypeId(tbl, "List") {
               case Some(tid) -> {
                 val noParams: List[Type] = newList()
                 val targs: List[Type] = newList()
@@ -2780,6 +2766,23 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
         case None -> TyError
       }
     }
+  }
+}
+
+// #7771: note whether the call at `span` binds to a generator (a yield-bearing
+// `async func`).  The `ECall` arm clears the entry, then sets it from the
+// signature it actually binds -- the direct signature or the method pick --
+// so a call that binds to neither (a function value, a constructor, an
+// unresolved callee) is never a generator call, and a re-inference of the
+// same call (the deferred-argument pass) leaves the last resolution's answer.
+func recordGeneratorCallSite(tbl: in SymbolTable, span: in Span, isGen: in Bool): Unit {
+  val key = recordCopySiteKey(span)
+  if isGen {
+    if not tbl.generatorCallSites.containsKey(key) {
+      tbl.generatorCallSites.add(key, true)
+    }
+  } else if tbl.generatorCallSites.containsKey(key) {
+    tbl.generatorCallSites.remove(key)
   }
 }
 
@@ -7696,8 +7699,10 @@ func inferExprCore(
           di = di + 1
         }
       }
+      recordGeneratorCallSite(tbl, e.span, false)
       match directSig {
         case Some(sig) -> {
+          recordGeneratorCallSite(tbl, e.span, sig.isGenerator)
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
@@ -7735,6 +7740,7 @@ func inferExprCore(
               }
               case None -> match methodPick {
                 case Some(mp) -> {
+                  recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
                   checkContractCallPure(sc, diag, mp.sig, fn, e.span)
                   checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
                   checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
@@ -8472,7 +8478,7 @@ pub func inferExprExpected(
     case EList(elems) -> match unrefine(expected) {
       case TyUser(eid, ename, eargs) -> {
         // #7696: id-based, matching `.toList()`'s own resolution
-        // (`stdCollectionsListTypeId`, #7665) rather than the bare name —
+        // (`isStdCollectionsHostType`, #7665) rather than the bare name —
         // an EARLIER revision of this arm matched any type named "List" by
         // NAME alone, which meant a package's own unrelated `record List[T]`
         // (not the stdlib collection) also intercepted a bracket literal
@@ -8484,7 +8490,7 @@ pub func inferExprExpected(
         // (unlike `.toList()`) there is no cross-package identity to
         // preserve; it just must always be the REAL `Std.CollectionsHost.List`
         // codegen actually constructs, never a same-named local shadow.
-        val isStdList = match stdCollectionsListTypeId(tbl) { case Some(sid) -> typeIdEq(sid, eid); case None -> false }
+        val isStdList = isStdCollectionsHostType(tbl, eid, "List")
         if isStdList and eargs.count == 1 {
           val elemTy = eargs[0]
           var li = 0
@@ -8786,7 +8792,7 @@ func listLiteralArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: 
     return false
   }
   match argTy {
-    // #7696: id-based (`stdCollectionsListTypeId`), matching the
+    // #7696: id-based (`isStdCollectionsHostType`), matching the
     // `inferExprExpected` `EList` arm above — see its header comment. A
     // package's own unrelated `record List[T]` field must NOT accept a
     // bracket literal here either, for the same reason: this codepath
@@ -8795,7 +8801,7 @@ func listLiteralArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: 
     // same-named local type happens to resolve to.
     case TySlice(elemTy) -> match unrefine(fieldTy) {
       case TyUser(pid, _, pArgs) -> {
-        val isStdList = match stdCollectionsListTypeId(tbl) { case Some(sid) -> typeIdEq(sid, pid); case None -> false }
+        val isStdList = isStdCollectionsHostType(tbl, pid, "List")
         if isStdList and pArgs.count == 1 {
           match unrefine(elemTy) {
             case TyError -> true
@@ -8999,7 +9005,7 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   // fallback either).
   //
   // #7702: the parameter must be the stdlib `List` by TypeId
-  // (`stdCollectionsListTypeId`), not any type named `List`, for the same
+  // (`isStdCollectionsHostType`), not any type named `List`, for the same
   // reason as #7696's literal arms: codegen builds the genuine stdlib
   // collection for `[]`, so a package's own `record List[T]` must not
   // accept it.
@@ -9007,7 +9013,7 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
     case TySlice(elemTy) -> match unrefine(elemTy) {
       case TyError -> match unrefine(paramTy) {
         case TyUser(pid, _, pArgs) -> {
-          val isStdList = match stdCollectionsListTypeId(tbl) { case Some(sid) -> typeIdEq(sid, pid); case None -> false }
+          val isStdList = isStdCollectionsHostType(tbl, pid, "List")
           if isStdList and pArgs.count == 1 {
             return true
           }

@@ -282,6 +282,13 @@ pub record SymbolTable {
   /// desugaring synthesized, keyed by its name; `annotateModuleVals` writes
   /// it onto the declaration (#7763).
   moduleValTypes: Map[String, TypeExpr]
+  /// Span keys (`recordCopySiteKey`) of the calls whose resolved callee is a
+  /// generator (a yield-bearing `async func`), written by the `ECall` arm
+  /// from the signature the call actually binds to.  A `for` over a call
+  /// consults it to decide whether the call's type is the loop's element
+  /// type (#7771): a same-named method, type-associated function or local
+  /// function value never counts.
+  generatorCallSites: Map[String, Bool]
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
   /// opaque, protected or distinct type each field-access or method-call receiver
   /// has, keyed like
@@ -298,6 +305,14 @@ pub record SymbolTable {
   /// One entry per symbol already folded into `typeSymbolsById` (its count is
   /// the index cursor, the `TypeIdCounter` idiom).
   typeSymbolsIndexed: List[Int]
+  /// The `TypeId` of each type `Std.CollectionsHost` declares (`List`, `Map`,
+  /// `MapKeyCollection`, `MapValueCollection`, ...), keyed by name, filled
+  /// lazily by `symTableStdCollectionsHostTypeId` as symbols are appended
+  /// (#7765).
+  stdCollectionsHostTypeIds: Map[String, TypeId]
+  /// A one-element cursor: how many of `symbols` have been folded into
+  /// `stdCollectionsHostTypeIds`.
+  stdCollectionsHostIndexed: List[Int]
   /// Every operator applied to distinct-typed operands, keyed by
   /// `recordCopySiteKey` of the binop's span: `arith:<T>.from` for derived
   /// arithmetic (`a + b` via `derives Add`), `cmp` for `==`/`!=` and the
@@ -347,6 +362,8 @@ pub record MethodEntry {
 }
 
 pub func newSymbolTable(): SymbolTable {
+  val stdCollectionsHostIndexed: List[Int] = newList()
+  stdCollectionsHostIndexed.add(0)
   SymbolTable(
     symbols = newList(),
     scopePkg = newList(),
@@ -375,9 +392,12 @@ pub func newSymbolTable(): SymbolTable {
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),
     moduleValTypes = newMap(),
+    generatorCallSites = newMap(),
     memberRecvClasses = newMap(),
     typeSymbolsById = newMap(),
     typeSymbolsIndexed = newList(),
+    stdCollectionsHostTypeIds = newMap(),
+    stdCollectionsHostIndexed = stdCollectionsHostIndexed,
     distinctOpSites = newMap(),
     distinctCompoundSites = newMap(),
     importRulePkg = newList(),
@@ -405,6 +425,34 @@ pub func symTableTypeSymbolOf(tbl: in SymbolTable, tid: in TypeId): Option[Symbo
     tbl.typeSymbolsIndexed.add(0)
   }
   mapGet(tbl.typeSymbolsById, toString(tid.id))
+}
+
+/// The `TypeId` of the type named `name` that the stdlib's
+/// `Std.CollectionsHost` package declares, or `None` when no such type is
+/// registered.  Equivalent to `symTableTryFindInPackage(tbl,
+/// "Std.CollectionsHost", name)` followed by `symbolTypeIdOpt` -- the most
+/// recently registered symbol wins -- but each symbol is examined once per
+/// table instead of once per query: the stdlib-collection checks
+/// (`isStdCollectionsHostType`) run on every iterated, indexed or
+/// bracket-literal-typed collection, and a linear scan of the whole table at
+/// each of them dominated large files (#7765).
+pub func symTableStdCollectionsHostTypeId(tbl: in SymbolTable, name: in String): Option[TypeId] {
+  var cursor = tbl.stdCollectionsHostIndexed[0]
+  while cursor < tbl.symbols.count {
+    val sym = tbl.symbols[cursor]
+    if sym.originPackage == "Std.CollectionsHost" {
+      if tbl.stdCollectionsHostTypeIds.containsKey(sym.name) {
+        tbl.stdCollectionsHostTypeIds.remove(sym.name)
+      }
+      match symbolTypeIdOpt(sym) {
+        case Some(tid) -> tbl.stdCollectionsHostTypeIds.add(sym.name, tid)
+        case None -> ()
+      }
+    }
+    cursor = cursor + 1
+  }
+  tbl.stdCollectionsHostIndexed[0] = cursor
+  mapGet(tbl.stdCollectionsHostTypeIds, name)
 }
 
 // #6689: record `pkg`'s own declared import list, so a later cross-package
