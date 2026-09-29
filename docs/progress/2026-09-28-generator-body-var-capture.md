@@ -62,4 +62,4 @@ on the JVM with the pre-mutation value, and the dotnet build panicked.
 Separate bug, not fixed here: a `for` loop inside a generator body fails on
 both targets, closure or not. On MSIL the Pass-1 predictor does not count
 the `for`-loop iterator temps, so the build panics. On the JVM the build
-throws `VerifyError: Expecting to find integer on stack`.
+throws `VerifyError: Expecting to find integer on stack`. Tracked in #7718.

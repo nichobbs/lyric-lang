@@ -29,7 +29,7 @@
 //! value it wrote, and accumulation over a list.  The last case walks the
 //! list by index: a `for` loop inside a generator body is broken on both
 //! backends independently of closures (MSIL field-count mismatch, JVM
-//! `VerifyError`), which is a separate bug.
+//! `VerifyError`), which is a separate bug tracked in #7718.
 //!
 //! Run via `lyric test`, compiled in-process on both targets:
 //!
