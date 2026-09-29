@@ -1374,11 +1374,7 @@ func collectEnsures(contracts: in List[ContractClause], owner: in String): List[
 // User-level ensures: clauses are filtered out at collection time when
 // contractsEnabled is false (docs/63 Q-BP-009, #7649); system-level
 // checks (return-range, protected-type invariants) always appear here.
-func appendEnsuresAsserts(
-  acc: in List[Statement],
-  ensuresExprs: in List[SpannedExpr],
-  resultName: in String,
-): Unit {
+func appendEnsuresAsserts(acc: in List[Statement], ensuresExprs: in List[SpannedExpr], resultName: in String): Unit {
   if ensuresExprs.count == 0 {
     return
   }
@@ -1405,11 +1401,7 @@ func appendEnsuresAsserts(
 // User-level ensures: clauses are filtered out at collection time when
 // contractsEnabled is false (docs/63 Q-BP-009, #7649); system-level
 // checks (return-range, protected-type invariants) always appear here.
-func appendEnsuresAssertsNoResult(
-  acc: in List[Statement],
-  ensuresExprs: in List[SpannedExpr],
-  sp: in Span,
-): Unit {
+func appendEnsuresAssertsNoResult(acc: in List[Statement], ensuresExprs: in List[SpannedExpr], sp: in Span): Unit {
   if ensuresExprs.count == 0 {
     return
   }
@@ -1568,9 +1560,7 @@ func blockAlwaysExits(blk: in Block): Bool {
 //  side-effects or the value of the block expression).
 // ─────────────────────────────────────────────────────────────────────────────
 func elaborateExprOrBlockDeep(
-  eob: in ExprOrBlock,
-  ensuresExprs: in List[SpannedExpr],
-  counter: inout RenameCounter,
+  eob: in ExprOrBlock, ensuresExprs: in List[SpannedExpr], counter: inout RenameCounter
 ): ExprOrBlock {
   match eob {
     case EOBBlock(body) -> EOBBlock(block = elaborateBlockDeep(body, ensuresExprs, counter))
@@ -1578,21 +1568,13 @@ func elaborateExprOrBlockDeep(
   }
 }
 
-func elaborateExprDeep(
-  e: in Expr,
-  ensuresExprs: in List[SpannedExpr],
-  counter: inout RenameCounter,
-): Expr {
+func elaborateExprDeep(e: in Expr, ensuresExprs: in List[SpannedExpr], counter: inout RenameCounter): Expr {
   match e.kind {
     case EIf(cond, thenBranch, elseBranch, thenForm) -> {
       val newThen = elaborateExprOrBlockDeep(thenBranch, ensuresExprs, counter)
       val newElse: Option[ExprOrBlock] = match elseBranch {
         case Some(eob) -> Some(
-          value = elaborateExprOrBlockDeep(
-            eob,
-            ensuresExprs,
-            counter
-          )
+          value = elaborateExprOrBlockDeep(eob, ensuresExprs, counter)
         )
         case None -> None
       }
@@ -1619,14 +1601,8 @@ func elaborateExprDeep(
     // the enclosing function (#7224).  Lambdas are deliberately not entered:
     // a `return` there leaves the lambda, not the function.
     case EBlock(blk) -> mkExpr(EBlock(block = elaborateBlockDeep(blk, ensuresExprs, counter)), e.span)
-    case EUnsafe(blk) -> mkExpr(
-      EUnsafe(block = elaborateBlockDeep(blk, ensuresExprs, counter)),
-      e.span
-    )
-    case EParen(inner) -> mkExpr(
-      EParen(inner = elaborateExprDeep(inner, ensuresExprs, counter)),
-      e.span
-    )
+    case EUnsafe(blk) -> mkExpr(EUnsafe(block = elaborateBlockDeep(blk, ensuresExprs, counter)), e.span)
+    case EParen(inner) -> mkExpr(EParen(inner = elaborateExprDeep(inner, ensuresExprs, counter)), e.span)
     case _ -> e
   }
 }
@@ -1635,26 +1611,14 @@ func elaborateExprDeep(
 // expression (`val v = match o { case None -> return 0; ... }`); rewrite it
 // so the early return also runs the postconditions (#7224).
 func elaborateBindingDeep(
-  b: in LocalBinding,
-  ensuresExprs: in List[SpannedExpr],
-  counter: inout RenameCounter,
+  b: in LocalBinding, ensuresExprs: in List[SpannedExpr], counter: inout RenameCounter
 ): LocalBinding {
   match b {
-    case LBVal(pat, ty, init) -> LBVal(
-      pat = pat,
-      ty = ty,
-      init = elaborateExprDeep(init, ensuresExprs, counter)
-    )
-    case LBLet(n, ty, init) -> LBLet(
-      name = n,
-      ty = ty,
-      init = elaborateExprDeep(init, ensuresExprs, counter)
-    )
+    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = elaborateExprDeep(init, ensuresExprs, counter))
+    case LBLet(n, ty, init) -> LBLet(name = n, ty = ty, init = elaborateExprDeep(init, ensuresExprs, counter))
     case LBVar(n, ty, initOpt) -> {
       val newInit: Option[Expr] = match initOpt {
-        case Some(x) -> Some(
-          value = elaborateExprDeep(x, ensuresExprs, counter)
-        )
+        case Some(x) -> Some(value = elaborateExprDeep(x, ensuresExprs, counter))
         case None -> None
       }
       LBVar(name = n, ty = ty, init = newInit)
@@ -1662,11 +1626,7 @@ func elaborateBindingDeep(
   }
 }
 
-func elaborateBlockDeep(
-  block: in Block,
-  ensuresExprs: in List[SpannedExpr],
-  counter: inout RenameCounter,
-): Block {
+func elaborateBlockDeep(block: in Block, ensuresExprs: in List[SpannedExpr], counter: inout RenameCounter): Block {
   val outs: List[Statement] = newList()
   var i = 0
   while i < block.statements.count {
@@ -1753,10 +1713,7 @@ func elaborateStmtDeep(
     }
     case SLoop(label, body) -> acc.add(
       mkStmt(
-        SLoop(
-          label = label,
-          body = elaborateBlockDeep(body, ensuresExprs, counter)
-        ),
+        SLoop(label = label, body = elaborateBlockDeep(body, ensuresExprs, counter)),
         s.span
       )
     )
@@ -1784,10 +1741,7 @@ func elaborateStmtDeep(
     }
     case SScope(label, body) -> acc.add(
       mkStmt(
-        SScope(
-          binding = label,
-          body = elaborateBlockDeep(body, ensuresExprs, counter)
-        ),
+        SScope(binding = label, body = elaborateBlockDeep(body, ensuresExprs, counter)),
         s.span
       )
     )
