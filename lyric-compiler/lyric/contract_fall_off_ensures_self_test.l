@@ -169,6 +169,108 @@ test "trailing loop left by break checks ensures (#7747)" {
   assertPanicsWith("loop/break", "PostconditionViolated", { -> var b = 0; loopBreak(b, 4) })
 }
 
+// `while true` never completes normally unless a `break` leaves it, so a
+// function ending in one is checked at its `return`s (and at the fall-off
+// only when a `break` can reach it) with no unreachable check after the loop
+// (#7759).
+func whileTrueReturn(x: inout Int, v: in Int): Unit
+  ensures: x == 100
+{
+  while true {
+    x = x + 1
+    if x >= v {
+      return
+    }
+  }
+}
+
+func whileTrueBreak(x: inout Int, v: in Int): Unit
+  ensures: x == 100
+{
+  while true {
+    x = x + 1
+    if x >= v {
+      break
+    }
+  }
+}
+
+func whileTrueLabelledBreak(x: inout Int, v: in Int): Unit
+  ensures: x == 100
+{
+  outer: while true {
+    while true {
+      if x >= v {
+        break outer
+      }
+      x = x + 1
+    }
+  }
+}
+
+func whileTrueInvariant(x: inout Int, v: in Int): Unit
+  ensures: x == 100
+{
+  while true
+    invariant: x < v
+  {
+    x = x + 1
+    if x >= v {
+      return
+    }
+  }
+}
+
+func whileTrueValue(x: in Int, v: in Int): Int
+  ensures: result == 100
+{
+  var i = x
+  if i < v {
+    while true {
+      i = i + 1
+      if i >= v {
+        return i
+      }
+    }
+  } else {
+    return i
+  }
+}
+
+test "trailing while true left by return checks ensures there (#7759)" {
+  var a = 0
+  whileTrueReturn(a, 100)
+  assertEqualInt(a, 100, "while true/return")
+  assertPanicsWith("while true/return", "PostconditionViolated", { -> var b = 0; whileTrueReturn(b, 4) })
+}
+
+test "trailing while true left by break checks ensures (#7759)" {
+  var a = 0
+  whileTrueBreak(a, 100)
+  assertEqualInt(a, 100, "while true/break")
+  assertPanicsWith("while true/break", "PostconditionViolated", { -> var b = 0; whileTrueBreak(b, 4) })
+}
+
+test "trailing while true left by a labelled inner break checks ensures (#7759)" {
+  var a = 0
+  whileTrueLabelledBreak(a, 100)
+  assertEqualInt(a, 100, "while true/break outer")
+  assertPanicsWith("while true/break outer", "PostconditionViolated", { -> var b = 0; whileTrueLabelledBreak(b, 4) })
+}
+
+test "trailing while true with an invariant checks ensures at return (#7759)" {
+  var a = 0
+  whileTrueInvariant(a, 100)
+  assertEqualInt(a, 100, "while true/invariant")
+  assertPanicsWith("while true/invariant", "PostconditionViolated", { -> var b = 0; whileTrueInvariant(b, 4) })
+}
+
+test "trailing if whose branch ends in while true checks ensures at return (#7759)" {
+  assertEqualInt(whileTrueValue(0, 100), 100, "while true in a value branch")
+  assertEqualInt(whileTrueValue(100, 100), 100, "else branch")
+  assertPanicsWith("while true in a value branch", "PostconditionViolated", { -> val _ = whileTrueValue(0, 4) })
+}
+
 // ─── Trailing conditionals and matches with statement bodies ────────────────
 func ifNoElse(x: inout Int, v: in Int): Unit
   ensures: x == 100

@@ -1546,13 +1546,16 @@ func blockAlwaysExits(blk: in Block): Bool {
 }
 
 // True iff `s` never completes normally: it returns or throws on every path,
-// or is a `do` loop that no `break` leaves.
+// or is an unconditional loop (`do`, or `while true`, the documented idiom
+// for one) that no `break` leaves.  A `for` always ends when its iterator
+// runs out.
 func stmtAlwaysExits(s: in Statement): Bool {
   match s.kind {
     case SReturn(_) -> true
     case SThrow(_) -> true
     case SExpr(inner) -> exprAlwaysExits(inner)
     case SLoop(label, body) -> not loopHasBreak(label, body)
+    case SWhile(label, cond, body) -> isLiteralTrue(cond) and not loopHasBreak(label, body)
     case SScope(_, body) -> blockAlwaysExits(body)
     case STry(body, catches, finally_) -> {
       val finallyExits = match finally_ { case Some(fb) -> blockAlwaysExits(fb); case None -> false }
@@ -1575,7 +1578,17 @@ func stmtAlwaysExits(s: in Statement): Bool {
   }
 }
 
-// Whether some `break` leaves the `do` loop labelled `label` with body `body`.
+// Whether `e` is the literal `true`, possibly parenthesised: the condition of
+// a `while` that only a `break` (or `return`/`throw`) can leave.
+func isLiteralTrue(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LBool(v) -> v; case _ -> false }
+    case EParen(inner) -> isLiteralTrue(inner)
+    case _ -> false
+  }
+}
+
+// Whether some `break` leaves the loop labelled `label` with body `body`.
 func loopHasBreak(label: in Option[String], body: in Block): Bool {
   val scan = BreakScan(found = false)
   val _ = markBreaksBlock(body, label, "__lyric_break_probe", false, scan)
@@ -1728,7 +1741,10 @@ func elaborateStmtDeep(
     case SWhile(label, cond, body) -> {
       val loopInvs = loopInvariantsOf(body)
       val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
-      if loopInvs.count == 0 {
+      // `while true` never ends because its condition went false, so its
+      // invariant carries no exit obligation (only `break` leaves it, which
+      // is exempt); a check after it would be unreachable (#7759).
+      if loopInvs.count == 0 or isLiteralTrue(cond) {
         acc.add(mkStmt(SWhile(label = label, cond = cond, body = newBody), s.span))
       } else {
         val flag = freshLoopBrokeName(counter)
