@@ -6702,6 +6702,7 @@ func inferMatchExpr(
     scopePush(sc)
     bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
     checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
+    recordTuplePatternBindings(tbl, arms[ai].pattern, st, false)
     match arms[ai].guard {
       case Some(g) -> {
         val guardT = inferExpr(sc, tbl, sigs, diag, g)
@@ -6873,6 +6874,85 @@ func recordFuncValueCall(
       }
     }
     case _ -> ()
+  }
+}
+
+// Record the names a tuple pattern binds (see
+// `SymbolTable.tuplePatternBindingSites`).  `pat` is matched against a value
+// of type `ty`; `inTuple` is whether `pat` is an element of an enclosing tuple
+// pattern.  Only a name bound to a tuple element is recorded: any other name
+// is bound to a value whose type the backend already sees.  An or-pattern is
+// not entered, because every alternative must bind the same names, and a
+// nullary union-case name is a test rather than a binding.
+func recordTuplePatternBindings(tbl: in SymbolTable, pat: in Pattern, ty: in Type, inTuple: in Bool): Unit {
+  match pat.kind {
+    case PBinding(name, innerOpt) -> {
+      if inTuple and name != "_" and not isConstructorPatternName(tbl, name) and not scrutineeHasCaseNamed(tbl, ty, name) {
+        recordTuplePatternBinding(tbl, pat.span, ty)
+      }
+      match innerOpt {
+        case Some(inner) -> recordTuplePatternBindings(tbl, inner, ty, false)
+        case None -> ()
+      }
+    }
+    case PTuple(patterns) -> match unrefine(ty) {
+      case TyTuple(elems) -> if elems.count == patterns.count {
+        var i = 0
+        while i < patterns.count {
+          recordTuplePatternBindings(tbl, patterns[i], elems[i], true)
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case PParen(inner) -> recordTuplePatternBindings(tbl, inner, ty, inTuple)
+    case _ -> ()
+  }
+}
+
+// Record one tuple-element binding at `sp` with checked type `ty`.  A type
+// with no value (`Unit`, `Never`) or no source spelling (a type parameter, an
+// element the checker could not type) is left as written.
+func recordTuplePatternBinding(tbl: in SymbolTable, sp: in Span, ty: in Type): Unit {
+  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return
+  }
+  val noValue = match unrefine(ty) {
+    case TyPrim(pt) -> match pt { case PtUnit -> true; case PtNever -> true; case _ -> false }
+    case _ -> false
+  }
+  if noValue {
+    return
+  }
+  match typeExprForRef(tbl, ty, sp) {
+    case Some(te) -> {
+      val key = recordCopySiteKey(sp)
+      val rendered = renderType(ty)
+      match mapGet(tbl.tuplePatternBindingSites, key) {
+        case Some(prev) -> if prev.rendered != rendered and not prev.conflicting {
+          tbl.tuplePatternBindingSites.remove(key)
+          tbl.tuplePatternBindingSites.add(
+            key,
+            TuplePatternBindingSite(
+              bindingType = prev.bindingType,
+              rendered = prev.rendered,
+              conflicting = true,
+              startOffset = prev.startOffset
+            )
+          )
+        }
+        case None -> tbl.tuplePatternBindingSites.add(
+          key,
+          TuplePatternBindingSite(
+            bindingType = te,
+            rendered = rendered,
+            conflicting = false,
+            startOffset = sp.startPos.offset
+          )
+        )
+      }
+    }
+    case None -> ()
   }
 }
 
