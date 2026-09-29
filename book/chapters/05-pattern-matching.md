@@ -21,7 +21,7 @@ A few properties to notice immediately.
 
 Every arm has the form `case Pattern -> expression`. The `->` separates the pattern from what the arm produces. There is no `break` needed; arms do not fall through.
 
-All arms must produce the same type. If one arm produces a `String` and another produces an `Int`, the compiler rejects the match.
+All arms must produce compatible types. If one arm produces a `String` and another produces an `Int`, the compiler rejects the match. When the match sits somewhere with a declared type — a function's return value, an annotated `val`, a parameter — each arm is instead checked against that type, so arms of different types are fine as long as each fits: a `match` returning `Greeter` can produce an `English` in one arm and a `French` in another when both implement `Greeter` (the same holds for `if`/`else`).
 
 The compiler enforces exhaustiveness. If you write the `Circle` arm but forget `Rectangle`, the build fails with an error naming the missing case. There is no way to leave a union variant silently unhandled.
 

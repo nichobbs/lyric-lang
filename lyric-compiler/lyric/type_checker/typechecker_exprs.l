@@ -2147,15 +2147,21 @@ func isNeverType(t: in Type): Bool {
 // `isValuePosition` instead of a hardcoded `true`; the `EOBExpr` arm needs
 // the same forwarding since `inferExpr`'s own generic `EIf`/`EMatch` cases
 // hardcode `true` for use OUTSIDE this chaining context.
-// #7696: `tailExpected` is the enclosing FUNCTION's declared return type when
-// this `if`/`match` arm is genuinely part of the function's return-value
-// chain (threaded from `checkFunctionBody`/`checkBlock`'s own trailing-
-// statement dispatch), or `TyError` ("no expectation") for every other use of
-// an `if`/`match` as an ordinary subexpression (a binding initialiser, a call
-// argument, …) — those must keep inferring a bracket-literal arm as `slice[T]`
-// exactly as before, since typing it against an unrelated caller's return
-// type would silently disagree with codegen (which has no such caller
-// context to consult for an unannotated position).  See the matching
+// #7696: `tailExpected` is the type the value of this `if`/`match` arm is
+// expected to have: the enclosing FUNCTION's declared return type when the arm
+// is genuinely part of the function's return-value chain (threaded from
+// `checkFunctionBody`/`checkBlock`'s own trailing-statement dispatch), or —
+// #7752 — the declared type of the position an `if`/`match`/block sits in when
+// it is reached through `inferExprExpected` (a `return`, an annotated
+// binding, an assignment, a call argument, a record field).  It is `TyError`
+// ("no expectation") for an `if`/`match` used as an UNANNOTATED
+// subexpression (`val x = if …`), which must keep inferring a bracket-literal
+// arm as `slice[T]` exactly as before: typing it against an unrelated
+// caller's return type would silently disagree with codegen, which only ever
+// consults the position's OWN declared type (`collExpectTop`, the
+// annotation/parameter/field construction hints).  The arm's value is typed
+// against it (`inferExprExpected`), and the arms are then checked against it
+// (`branchesAgainstExpected`) rather than joined bottom-up.  See the matching
 // `inferIfExpr`/`inferMatchExpr`/`checkBlock` comments for the full chain.
 pub func inferExprOrBlock(
   sc: in Scope,
@@ -2309,6 +2315,150 @@ func mergeIntWiden(a: in Type, b: in Type): Option[Type] {
       case _ -> None
     }
     case _ -> None
+  }
+}
+
+// #7752: true when `t` mentions no wildcard — no `TyVar`, `TyError` or
+// `TySelf` anywhere inside it.  `typeEquiv` treats every one of those as
+// equivalent to anything, so checking branches against a NON-closed expected
+// type (a generic function's `T`, an unresolved annotation) would accept
+// `if c { 1 } else { "s" }`; only a closed expectation may drive
+// `branchesAgainstExpected`/`adoptUnionCaseExpected`.
+func typeIsClosed(t: in Type): Bool {
+  match t {
+    case TyVar(_) -> false
+    case TyError -> false
+    case TySelf -> false
+    case TyUser(_, _, args) -> typesAreClosed(args)
+    case TySlice(e) -> typeIsClosed(e)
+    case TyArray(_, e) -> typeIsClosed(e)
+    case TyNullable(inner) -> typeIsClosed(inner)
+    case TyTuple(elems) -> typesAreClosed(elems)
+    case TyFunction(ps, ret, _) -> typesAreClosed(ps) and typeIsClosed(ret)
+    case TyRefined(u, _, _, _) -> typeIsClosed(u)
+    case _ -> true
+  }
+}
+
+func typesAreClosed(ts: in List[Type]): Bool {
+  var i = 0
+  while i < ts.count {
+    if not typeIsClosed(ts[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// #7752: check an `if`/`match`'s branch types against the type its position
+// expects (a declared return type, an annotated binding, a parameter, …)
+// instead of joining them bottom-up.  When every branch that yields a value
+// satisfies `expected` — `Never` (diverging) and `TyError` (already
+// diagnosed) branches are absorbed, exactly as in `unifyBranchTypes` — the
+// construct has type `expected`: `if c { English(…) } else { French(…) }`
+// is a `Greeter` wherever a `Greeter` is expected, even though the two
+// branches have no common type of their own.  Returns `None` (the caller
+// then falls back to the bottom-up `unifyBranchTypes` join, with its usual
+// T0067 for genuinely incompatible branches) when there is no closed
+// expectation, when every branch diverges, or when any branch does not
+// satisfy the expectation — so this only ever ACCEPTS more programs whose
+// every branch already fits the consumer, never changes a diagnostic.
+//
+// The relation is `argSatisfiesParam` (exact match, numeric widening,
+// interface subsumption, the empty-literal sentinel), deliberately NOT the
+// generic-covariant `typeAssignable`: a `Result[English, E]` VALUE is a
+// different runtime instantiation from `Result[Greeter, E]` on the CLR
+// (generics are invariant), so it must not silently become one here.  A
+// union-case CONSTRUCTION in a branch (`Ok(value = English(…))`) is instead
+// typed at the expected instantiation up front by `adoptUnionCaseExpected`,
+// matching how codegen builds it (`buildGenericCaseCtorTok`'s context type
+// arguments), and so satisfies this check by plain equivalence.
+func branchesAgainstExpected(tbl: in SymbolTable, branchTypes: in List[Type], expected: in Type): Option[Type] {
+  if not typeIsClosed(expected) {
+    return None
+  }
+  var anyValue = false
+  var i = 0
+  while i < branchTypes.count {
+    val bt = branchTypes[i]
+    if not isNeverType(bt) {
+      val isErr = match bt { case TyError -> true; case _ -> false }
+      if not isErr and not argSatisfiesParam(tbl, expected, bt) {
+        return None
+      }
+      anyValue = true
+    }
+    i = i + 1
+  }
+  if anyValue {
+    Some(value = expected)
+  } else {
+    None
+  }
+}
+
+// #7752: may a union-case construction whose inferred type arguments are
+// `actualArgs` be typed at the expected instantiation `expectedArgs`?  Each
+// slot must either already agree (`typeEquiv`, which also fills an
+// unconstrained `TyError` slot such as `Ok`'s `E`) or be a NON-generic
+// interface the inferred argument implements.  This mirrors exactly which
+// instantiation both backends build: MSIL's `buildGenericCaseCtorTok`
+// constructs the case at the CONTEXT's type argument unless that argument is
+// itself a generic instantiation (then it keeps the argument's own type), so
+// `Ok(value = English(…))` against `Result[Greeter, String]` really is an
+// `Ok<Greeter, String>`, while `Ok(value = someList)` against
+// `Result[List[Greeter], E]` is not and must not be typed as if it were.  JVM
+// generics are erased, so any instantiation the MSIL rule accepts is sound
+// there too.
+func unionCaseArgsAdoptable(tbl: in SymbolTable, expectedArgs: in List[Type], actualArgs: in List[Type]): Bool {
+  if expectedArgs.count != actualArgs.count {
+    return false
+  }
+  var i = 0
+  while i < expectedArgs.count {
+    if not typeEquiv(expectedArgs[i], actualArgs[i]) {
+      val ok = match unrefine(expectedArgs[i]) {
+        case TyUser(eid, _, eargs) -> if eargs.count == 0 {
+          match unrefine(actualArgs[i]) {
+            case TyUser(aid, _, _) -> symTableTypeImplements(tbl, aid, eid)
+            case _ -> false
+          }
+        } else {
+          false
+        }
+        case _ -> false
+      }
+      if not ok {
+        return false
+      }
+    }
+    i = i + 1
+  }
+  true
+}
+
+// #7752: type a union-case construction (`isCaseCtor`) at the expected
+// instantiation of its own union when `unionCaseArgsAdoptable` allows it, so
+// `Ok(value = English(…))` checked against `Result[Greeter, String]` is a
+// `Result[Greeter, String]` — not `Result[English, <error>]`, whose
+// unconstrained `E` would otherwise stay a wildcard and whose `T` would never
+// satisfy a binding/argument position's (non-covariant) check.  Anything else
+// keeps its inferred type.
+func adoptUnionCaseExpected(tbl: in SymbolTable, isCaseCtor: in Bool, actual: in Type, expected: in Type): Type {
+  if not isCaseCtor or not typeIsClosed(expected) {
+    return actual
+  }
+  match unrefine(expected) {
+    case TyUser(eid, _, eargs) -> match unrefine(actual) {
+      case TyUser(aid, _, aargs) -> if typeIdEq(eid, aid) and unionCaseArgsAdoptable(tbl, eargs, aargs) {
+        expected
+      } else {
+        actual
+      }
+      case _ -> actual
+    }
+    case _ -> actual
   }
 }
 
@@ -5930,6 +6080,23 @@ func inferUnionCaseConstruction(
           if reportMissingCtorFields(prelimFields, args, caseSym, span, diag) {
             return TyError
           }
+          // #7752: a named argument must name one of the case's fields, as
+          // for a record constructor (T0101).  `reportMissingCtorFields`
+          // deliberately defers an unknown name to this per-argument check,
+          // which union cases never had: `Err(err = "x")` (the field is
+          // `error`) type-checked cleanly, the MSIL backend then built the
+          // case positionally while the JVM backend matched the name and
+          // silently stored `null`.
+          var ni = 0
+          while ni < args.count {
+            match args[ni] {
+              case CANamed(nm, _, asp) -> if not fieldHasName(prelimFields, nm) {
+                diag.add(errorDiagnostic("T0101", "'" + caseSym.name + "' has no field '" + nm + "'", asp))
+              }
+              case CAPositional(_) -> ()
+            }
+            ni = ni + 1
+          }
         }
         val gnames = unionDeclGenericNames(decl)
         val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames, caseSym.originPackage)
@@ -6733,6 +6900,18 @@ func inferIfExpr(
     case None -> TyPrim(pt = PtUnit)
     case Some(eb) -> {
       val et = inferExprOrBlock(sc, tbl, sigs, diag, eb, isValuePosition, tailExpected)
+      // #7752: a consumed `if` in a position with a known expected type is
+      // checked against that type branch by branch; only without one (or
+      // when a branch does not fit it) do the branches join bottom-up.
+      if isValuePosition {
+        val bts: List[Type] = newList()
+        bts.add(tt)
+        bts.add(et)
+        match branchesAgainstExpected(tbl, bts, tailExpected) {
+          case Some(t) -> return t
+          case None -> ()
+        }
+      }
       unifyBranchTypes(tt, et, e.span, diag, isValuePosition)
     }
   }
@@ -6764,7 +6943,12 @@ func inferMatchExpr(
   // Unit absorbed only in statement position, #3362; T0067 on a genuine
   // value mismatch).  Guards are inferred for diagnostics but do not
   // contribute to the branch type.
-  var acc: Type = TyError
+  // #7752: every arm's type is collected first so a consumed `match` in a
+  // position with a known expected type can be checked against it arm by
+  // arm (`branchesAgainstExpected`) before falling back to the bottom-up
+  // join below.
+  val armTypes: List[Type] = newList()
+  val armSpans: List[Span] = newList()
   var ai = 0
   while ai < arms.count {
     scopePush(sc)
@@ -6801,8 +6985,21 @@ func inferMatchExpr(
     val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body, isValuePosition, tailExpected)
     val armSpan = match arms[ai].body { case EOBExpr(ae) -> ae.span; case EOBBlock(ab) -> ab.span }
     scopePop(sc)
-    acc = unifyBranchTypes(acc, bt, armSpan, diag, isValuePosition)
+    armTypes.add(bt)
+    armSpans.add(armSpan)
     ai = ai + 1
+  }
+  if isValuePosition {
+    match branchesAgainstExpected(tbl, armTypes, tailExpected) {
+      case Some(t) -> return t
+      case None -> ()
+    }
+  }
+  var acc: Type = TyError
+  var ui = 0
+  while ui < armTypes.count {
+    acc = unifyBranchTypes(acc, armTypes[ui], armSpans[ui], diag, isValuePosition)
+    ui = ui + 1
   }
   acc
 }
@@ -7433,17 +7630,29 @@ func inferExprCore(
       // callee's parameter type as the expectation.  When no usable
       // expectation exists the second pass is identical to the historical
       // single pass, so nothing previously accepted is newly rejected.
+      //
+      // #7752: an `if`/`match`/block argument is deferred the same way, so
+      // its branches are checked against the selected parameter type
+      // (`branchesAgainstExpected`) instead of joined bottom-up, and a
+      // union-case-constructor argument (`Ok(value = English(…))`) adopts
+      // the parameter's instantiation (`adoptUnionCaseExpected`) once the
+      // signature is known — neither needs, nor gets, a second pass
+      // otherwise.
       val argTypes: List[Type] = newList()
       var anyDeferredLambda = false
+      var anyCaseCtorArg = false
       var i = 0
       while i < args.count {
         val ae = callArgExpr(args[i])
-        if lambdaHasUnannotatedParam(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) {
+        if lambdaHasUnannotatedParam(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) or argIsBranchingExpr(ae) {
           val scratch: List[Diagnostic] = newList()
           argTypes.add(inferExpr(sc, tbl, sigs, scratch, ae))
           anyDeferredLambda = true
         } else {
           argTypes.add(inferExpr(sc, tbl, sigs, diag, ae))
+          if argIsCaseCtorCall(tbl, ae) {
+            anyCaseCtorArg = true
+          }
         }
         i = i + 1
       }
@@ -7470,17 +7679,19 @@ func inferExprCore(
           }
         }
       }
-      if anyDeferredLambda {
+      if anyDeferredLambda or anyCaseCtorArg {
         val lambdaSig = match directSig {
           case Some(_) -> directSig
           case None -> match methodPick { case Some(mp0) -> Some(value = mp0.sig); case None -> None }
         }
-        val expectedArgTys = expectedCallArgTypes(tbl, args, argTypes, lambdaSig, fnT)
+        val expectedArgTys = expectedCallArgTypes(tbl, fn, args, argTypes, lambdaSig, fnT)
         var di = 0
         while di < args.count {
           val dae = callArgExpr(args[di])
-          if lambdaHasUnannotatedParam(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) {
+          if lambdaHasUnannotatedParam(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) or argIsBranchingExpr(dae) {
             argTypes[di] = inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
+          } else if argIsCaseCtorCall(tbl, dae) {
+            argTypes[di] = adoptUnionCaseExpected(tbl, true, argTypes[di], expectedArgTys[di])
           }
           di = di + 1
         }
@@ -8025,6 +8236,32 @@ func lambdaHasUnannotatedParam(e: in Expr): Bool {
   }
 }
 
+// #7752: true for a call-argument expression (possibly parenthesised) whose
+// type depends on the expected type it is checked against — an `if` with an
+// `else`, a `match`, or a brace / `unsafe` block — so the `ECall` arm defers
+// it to the second, expectation-aware pass alongside lambda literals.
+func argIsBranchingExpr(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsBranchingExpr(inner)
+    case EIf(_, _, elseBranch, _) -> match elseBranch { case Some(_) -> true; case None -> false }
+    case EMatch(_, _) -> true
+    case EBlock(_) -> true
+    case EUnsafe(_) -> true
+    case _ -> false
+  }
+}
+
+// #7752: true for a call-argument expression (possibly parenthesised) that is
+// a union-case-constructor call, whose type the `ECall` arm lets adopt the
+// selected parameter's instantiation (`adoptUnionCaseExpected`).
+func argIsCaseCtorCall(tbl: in SymbolTable, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsCaseCtorCall(tbl, inner)
+    case ECall(fn, _) -> match unionCaseSymbolOf(tbl, fn) { case Some(_) -> true; case None -> false }
+    case _ -> false
+  }
+}
+
 // #6814: true for a call-argument expression that is itself a bare
 // union-case-constructor call whose callee name is ambiguous across 2+
 // imported packages (every `symTableTryFindAll` candidate is a
@@ -8089,11 +8326,14 @@ func expectsGenericRecordCtor(tbl: in SymbolTable, fn: in Expr, expected: in Typ
   }
 }
 
-// A2: infer `e` under a contextual expected type.  Only lambda literals
-// consume the expectation (their unannotated params adopt the expected
-// function type's parameter types); every other expression shape — and any
-// non-function or arity-mismatched expectation — defers to plain `inferExpr`,
-// so this never rejects anything the bare path accepts.
+// A2: infer `e` under a contextual expected type.  The expectation is
+// consumed only by the shapes that need it — a lambda literal (its
+// unannotated params adopt the expected function type's parameter types), an
+// ambiguous or generic constructor call, a union-case construction
+// (`adoptUnionCaseExpected`, #7752), a bracket literal against `List[T]`
+// (#7545), and an `if`/`match`/block whose branches are checked against it
+// (#7752); every other expression shape — and any unusable expectation —
+// defers to plain `inferExpr`.
 pub func inferExprExpected(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -8150,15 +8390,69 @@ pub func inferExprExpected(
               cargTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(cargs[ci2])))
               ci2 = ci2 + 1
             }
-            inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, e.span, true)
+            // #7752: typed at the expected instantiation when it fits.
+            adoptUnionCaseExpected(
+              tbl,
+              true,
+              inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, e.span, true),
+              expected
+            )
           }
           case None -> if diag.count > diagCountBefore { TyError } else { inferExpr(sc, tbl, sigs, diag, e) }
         }
       } else {
-        inferExpr(sc, tbl, sigs, diag, e)
+        // #7752: a qualified case constructor (`Result.Ok(...)`,
+        // `Pkg.Shape.Circle(...)`) adopts the expected instantiation too.
+        val isCaseCtor = match unionCaseSymbolOf(tbl, fn) { case Some(_) -> true; case None -> false }
+        adoptUnionCaseExpected(tbl, isCaseCtor, inferExpr(sc, tbl, sigs, diag, e), expected)
       }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }
+    // #7752: an `if`/`match`/brace block in a position with a known expected
+    // type (a `return`, an annotated binding, an assignment, a call argument
+    // — every caller of this function) checks each branch, and a block's
+    // trailing value, against that type rather than joining branch types
+    // bottom-up (`branchesAgainstExpected`), threading it as the same
+    // `tailExpected` a function body's own tail chain already carries
+    // (#7696).  With no expectation (`TyError`) this is exactly the plain
+    // `inferExpr` dispatch.
+    case EIf(cond, thenBranch, elseBranch, _) -> inferIfExpr(
+      sc,
+      tbl,
+      sigs,
+      diag,
+      e,
+      cond,
+      thenBranch,
+      elseBranch,
+      true,
+      expected
+    )
+    case EMatch(scrutinee, arms) -> inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, true, expected)
+    case EBlock(blk) -> checkBlock(
+      sc,
+      tbl,
+      sigs,
+      sc.genericNames,
+      sc.returnTy,
+      sc.returnTyExpr,
+      diag,
+      blk,
+      true,
+      expected
+    )
+    case EUnsafe(blk) -> checkBlock(
+      sc,
+      tbl,
+      sigs,
+      sc.genericNames,
+      sc.returnTy,
+      sc.returnTyExpr,
+      diag,
+      blk,
+      true,
+      expected
+    )
     // #7545: a bracket literal (`[...]`) always type-checks as `slice[T]`
     // (docs/01 §2.7) when inferred on its own, but the two collection kinds
     // have distinct runtime representations (`T[]`/array vs `List<T>` on
@@ -8341,6 +8635,7 @@ func checkCallArgsAgainstSig(
 
 func expectedCallArgTypes(
   tbl: in SymbolTable,
+  fn: in Expr,
   args: in List[CallArg],
   argTypes: in List[Type],
   directSig: in Option[ResolvedSignature],
@@ -8396,19 +8691,62 @@ func expectedCallArgTypes(
         }
       }
     }
-    case None -> match unrefine(fnT) {
-      case TyFunction(pps, _, _) -> if pps.count == args.count {
-        var k3 = 0
-        while k3 < pps.count {
-          expected[k3] = pps[k3]
-          k3 = k3 + 1
+    // #7752: a non-generic record constructor's arguments are expected to
+    // have their fields' declared types (named args matched by field name,
+    // positional ones filling the remaining slots, as `inferConstruction`
+    // itself pairs them), so an `if`/`match` or union-case-constructor field
+    // initialiser is checked against its field's type too.
+    case None -> match nonGenericRecordCtorOf(tbl, fn) {
+      case Some(ctorSym) -> {
+        val fields: List[CtorField] = newList()
+        if collectCtorFields(tbl, ctorSym, fields) {
+          val fieldNames: List[String] = newList()
+          var fn4 = 0
+          while fn4 < fields.count {
+            fieldNames.add(fields[fn4].name)
+            fn4 = fn4 + 1
+          }
+          val fieldSrcIdx = argIndicesInParamOrder(args, fieldNames)
+          var k4 = 0
+          while k4 < fields.count {
+            val ai4 = fieldSrcIdx[k4]
+            if ai4 >= 0 and ai4 < expected.count {
+              expected[ai4] = fields[k4].ty
+            }
+            k4 = k4 + 1
+          }
         }
       }
-      case _ -> {
+      case None -> match unrefine(fnT) {
+        case TyFunction(pps, _, _) -> if pps.count == args.count {
+          var k3 = 0
+          while k3 < pps.count {
+            expected[k3] = pps[k3]
+            k3 = k3 + 1
+          }
+        }
+        case _ -> {
+        }
       }
     }
   }
   expected
+}
+
+// #7752: the constructor symbol `fn` names when it is a NON-generic record
+// (or exposed record / opaque type) constructor rather than a union case —
+// the same `unionCaseSymbolOf`-before-`constructorSymbolOf` precedence the
+// `ECall` arm dispatches with.  A generic record's field types mention its
+// type parameters, so they are never a closed expectation.
+func nonGenericRecordCtorOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
+  match unionCaseSymbolOf(tbl, fn) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  match constructorSymbolOf(tbl, fn) {
+    case Some(ctorSym) -> if ctorIsGeneric(ctorSym) { None } else { Some(value = ctorSym) }
+    case None -> None
+  }
 }
 
 func paramsMatchArgs(tbl: in SymbolTable, params: in List[ResolvedParam], argTypes: in List[Type]): Bool {

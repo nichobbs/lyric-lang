@@ -3198,12 +3198,24 @@ func lowerIfExpr(
             // fails verification ("Inconsistent stackmap frames at branch target").
             // Storing into a local in each arm and reloading after the join keeps
             // the stack empty at the merge point.
-            val rslot = allocSlot(ctx, "__if_r_" + afterL, thenTy)
+            val rslotName = "__if_r_" + afterL
+            val rslot = allocSlot(ctx, rslotName, thenTy)
+            val thenStoreIdxs: List[Int] = newList()
+            thenStoreIdxs.add(insns.count)
             emitStore(insns, rslot, thenTy)
             insns.add(LGoto(label = afterL))
             insns.add(LLabel(name = elseL))
             val elseTy = lowerExprOrBlock(ctx, insns, elseBranch)
             val elseTerminated = endsWithReturn(insns)
+            // #7752: the else-arm may be a different concrete class than the
+            // then-arm (both satisfying the checker's expected type) — widen
+            // the result local instead of casting one class to the other.
+            val joinTy = if elseTerminated { thenTy } else { joinBranchResultType(thenTy, elseTy) }
+            if joinTy != thenTy {
+              retypeResultStores(insns, thenStoreIdxs, rslot, joinTy)
+              ctx.types.remove(rslotName)
+              ctx.types.add(rslotName, joinTy)
+            }
             // Mixed-arm if: the then-arm yields a value but the else-arm is
             // void (e.g. `if a { xs.add(true) } else if b { xs.add(false) }` —
             // the trailing else-if has no else, so it lowers as JVoid and
@@ -3216,8 +3228,8 @@ func lowerIfExpr(
             val elseVoidMixed = match elseTy { case JVoid -> not elseTerminated; case _ -> false }
             if not elseTerminated {
               if not elseVoidMixed {
-                coerceArgTo(insns, elseTy, thenTy)
-                emitStore(insns, rslot, thenTy)
+                coerceArgTo(insns, elseTy, joinTy)
+                emitStore(insns, rslot, joinTy)
               }
             }
             // Land the join unconditionally: the then-arm here did NOT
@@ -3225,12 +3237,12 @@ func lowerIfExpr(
             // even when the else-arm itself terminated.
             insns.add(LLabel(name = afterL))
             if not elseVoidMixed {
-              emitResultLoad(insns, rslot, thenTy)
+              emitResultLoad(insns, rslot, joinTy)
             }
             if elseVoidMixed {
               JVoid
             } else {
-              thenTy
+              joinTy
             }
           }
         }

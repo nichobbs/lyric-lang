@@ -2075,6 +2075,61 @@ pub func emitResultLoad(insns: in List[LInsn], slot: in Int, ty: in JvmType): Un
   }
 }
 
+// #7752: the type an `if`/`match` result local must have once a branch whose
+// value has type `b` joins one already stored at `a`.  The type checker now
+// accepts branches of DIFFERENT concrete classes wherever the construct's
+// position expects a common supertype (`if c { English(…) } else {
+// French(…) }` where a `Greeter` is expected — `branchesAgainstExpected`), so
+// the result local can no longer just take the first branch's class: casting
+// a `French` to `English` throws `ClassCastException` (and a local framed as
+// `English` fails verification on the `French` path).  Two distinct concrete
+// reference classes therefore widen to `java/lang/Object` — every position
+// that admits such an `if`/`match` (a return, an annotated binding, a call
+// argument, a record field) coerces the value to its own declared type — except
+// that a union CASE class joined with its own parent (`Shape$Circle` with
+// `Shape`) or a sibling case (`Shape$Square`) yields the parent.  Anything else keeps `a`, including an erased
+// `Object` branch beside a concrete one (the pre-existing "checkcast the
+// erased payload to its sibling's class" behaviour).
+pub func joinBranchResultType(a: in JvmType, b: in JvmType): JvmType {
+  match a {
+    case JRef(ac) -> match b {
+      case JRef(bc) -> if ac == bc or ac == "java/lang/Object" or bc == "java/lang/Object" {
+        a
+      } else if bc.startsWith(ac + "$") {
+        a
+      } else if ac.startsWith(bc + "$") {
+        b
+      } else {
+        val ad = String.lastIndexOfRaw(ac, "$")
+        if ad > 0 and ad == String.lastIndexOfRaw(bc, "$") and ac.substring(0, ad) == bc.substring(0, ad) {
+          JRef(className = ac.substring(0, ad))
+        } else {
+          JRef(className = "java/lang/Object")
+        }
+      }
+      case _ -> a
+    }
+    case _ -> a
+  }
+}
+
+// #7752: re-frame an `if`/`match` result local already stored at an earlier
+// branch's class after `joinBranchResultType` widened it: the StackMapTable
+// takes a local's verifier type from its FIRST `LAstoreAs`, so each recorded
+// store (by index into `insns`) is rewritten to the widened class.
+pub func retypeResultStores(insns: in List[LInsn], storeIdxs: in List[Int], slot: in Int, ty: in JvmType): Unit {
+  match ty {
+    case JRef(cls) -> {
+      var i = 0
+      while i < storeIdxs.count {
+        insns[storeIdxs[i]] = LAstoreAs(slot = slot, className = cls)
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
 pub func emitStore(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
   match ty {
     case JLong -> insns.add(LLstore(slot = slot))

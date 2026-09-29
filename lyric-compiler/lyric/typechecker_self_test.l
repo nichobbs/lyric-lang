@@ -364,6 +364,114 @@ test "unrelated return still mismatches" {
   assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "no-impl: Other does not implement Conn → T0070")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// #7752: an `if`/`match` in a position with a known expected type is checked
+// branch by branch against that type instead of joining its branch types
+// bottom-up, and a union-case construction adopts the expected instantiation
+// (so `Ok(value = English(…))` is a `Result[Greeter, String]`, not a
+// `Result[English, <error>]` whose `E` degraded to a wildcard).
+// ─────────────────────────────────────────────────────────────────────────────
+func expectedBranchPrelude(): String {
+  "package P\npub interface Greeter {\n  func greet(): Int\n}\nrecord En {\n  n: Int\n}\nrecord Fr {\n  n: Int\n}\nrecord Other {\n  n: Int\n}\nimpl Greeter for En {\n  func greet(): Int { return self.n }\n}\nimpl Greeter for Fr {\n  func greet(): Int { return self.n }\n}\nunion Res[T, E] {\n  case Ok2(value: T)\n  case Err2(err: E)\n}\nunion Opt[T] {\n  case Some2(value: T)\n  case None2\n}\nrecord Box[T] {\n  v: T\n}\nfunc useRes(r: in Res[Greeter, String]): Int {\n  match r {\n    case Ok2(g) -> g.greet()\n    case Err2(_) -> 0\n  }\n}\nfunc useG(g: in Greeter): Int { g.greet() }\n"
+}
+
+test "expected type: if branches over different records in tail position (#7752)" {
+  val src = expectedBranchPrelude() +
+    "func mk(c: in Bool, d: in Bool): Res[Greeter, String] {\n  if c {\n    Ok2(value = En(n = 1))\n  } else if d {\n    Ok2(value = Fr(n = 2))\n  } else {\n    Err2(err = \"x\")\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "tail if: Ok2(En)/Ok2(Fr)/Err2 checked against Res[Greeter, String]")
+}
+
+test "expected type: match arms over different records in tail position (#7752)" {
+  val src = expectedBranchPrelude() +
+    "func mk(n: in Int): Res[Greeter, String] {\n  match n {\n    case 0 -> Ok2(value = En(n = 1))\n    case 1 -> Ok2(value = Fr(n = 2))\n    case _ -> Err2(err = \"x\")\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "tail match: arms checked against Res[Greeter, String]")
+}
+
+test "expected type: return, annotated bindings, assignment, argument and field positions (#7752)" {
+  val ret = expectedBranchPrelude() +
+    "func mk(c: in Bool): Res[Greeter, String] {\n  return if c { Ok2(value = En(n = 1)) } else { Ok2(value = Fr(n = 2)) }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ret)), 0, "return if")
+  val binding = expectedBranchPrelude() +
+    "func f(c: in Bool): Int {\n  val r: Res[Greeter, String] = if c { Ok2(value = En(n = 1)) } else { Ok2(value = Fr(n = 2)) }\n  var g: Greeter = match c {\n    case true -> En(n = 3)\n    case false -> Fr(n = 4)\n  }\n  g = if c { Fr(n = 5) } else { En(n = 6) }\n  useRes(r) + g.greet()\n}\n"
+  assertEqualInt(diagCount(parseCheck(binding)), 0, "annotated val/var and assignment")
+  val arg = expectedBranchPrelude() +
+    "func f(c: in Bool): Int {\n  useRes(if c { Ok2(value = En(n = 1)) } else { Ok2(value = Fr(n = 2)) }) + useG(match c {\n    case true -> En(n = 3)\n    case false -> Fr(n = 4)\n  })\n}\n"
+  assertEqualInt(diagCount(parseCheck(arg)), 0, "call arguments")
+  val field = expectedBranchPrelude() +
+    "record Holder {\n  r: Res[Greeter, String]\n  g: Greeter\n}\nfunc f(c: in Bool): Holder {\n  Holder(r = if c { Ok2(value = En(n = 1)) } else { Ok2(value = Fr(n = 2)) }, g = if c { En(n = 3) } else { Fr(n = 4) })\n}\n"
+  assertEqualInt(diagCount(parseCheck(field)), 0, "record constructor fields")
+  val opt = expectedBranchPrelude() +
+    "func f(c: in Bool, d: in Bool): Opt[Greeter] {\n  if c { Some2(value = En(n = 1)) } else if d { Some2(value = Fr(n = 2)) } else { None2 }\n}\n"
+  assertEqualInt(diagCount(parseCheck(opt)), 0, "Opt[Greeter] from Some2/None2 branches")
+  val plain = expectedBranchPrelude() + "func f(c: in Bool): Greeter {\n  if c { En(n = 1) } else { Fr(n = 2) }\n}\n"
+  assertEqualInt(diagCount(parseCheck(plain)), 0, "plain interface from record branches")
+}
+
+test "expected type: union-case construction adopts the expected instantiation (#7752)" {
+  // Before #7752 both were rejected: the construction typed as
+  // `Res[En, <error>]`, which a binding's / argument's (non-covariant)
+  // check does not accept for `Res[Greeter, String]`.
+  val binding = expectedBranchPrelude() +
+    "func f(): Int {\n  val r: Res[Greeter, String] = Ok2(value = En(n = 1))\n  useRes(r)\n}\n"
+  assertEqualInt(diagCount(parseCheck(binding)), 0, "annotated val adopts Res[Greeter, String]")
+  val arg = expectedBranchPrelude() + "func f(): Int {\n  useRes(Ok2(value = Fr(n = 2)))\n}\n"
+  assertEqualInt(diagCount(parseCheck(arg)), 0, "call argument adopts Res[Greeter, String]")
+}
+
+test "expected type: a branch that does not fit is still rejected (#7752)" {
+  val tail = expectedBranchPrelude() +
+    "func f(c: in Bool): Res[Greeter, String] {\n  if c { Ok2(value = En(n = 1)) } else { Ok2(value = Other(n = 2)) }\n}\n"
+  val tailCr = parseCheck(tail)
+  assertTrue(hasDiagCode(tailCr, "T0067"), "Other does not implement Greeter: T0067")
+  assertEqualInt(countDiagCode(tailCr, "T0067"), 1, "exactly one T0067")
+  assertTrue(not hasDiagCode(tailCr, "T0070"), "no redundant T0070")
+  val plain = expectedBranchPrelude() + "func f(c: in Bool): Greeter {\n  if c { En(n = 1) } else { Other(n = 2) }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(plain), "T0067"), "plain interface: Other branch rejected")
+  val binding = expectedBranchPrelude() +
+    "func f(c: in Bool): Int {\n  val g: Greeter = match c {\n    case true -> En(n = 1)\n    case false -> Other(n = 2)\n  }\n  g.greet()\n}\n"
+  assertTrue(hasDiagCode(parseCheck(binding), "T0067"), "annotated val: Other arm rejected")
+  val arg = expectedBranchPrelude() + "func f(c: in Bool): Int {\n  useG(if c { En(n = 1) } else { Other(n = 2) })\n}\n"
+  assertTrue(hasDiagCode(parseCheck(arg), "T0067"), "call argument: Other branch rejected")
+  // All branches agreeing on a type the position does not accept falls back
+  // to the consumer's own diagnostic, exactly as before.
+  val same = expectedBranchPrelude() +
+    "func f(c: in Bool): Greeter {\n  if c { Other(n = 1) } else { Other(n = 2) }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(same), "T0070"), "both branches Other: T0070 against Greeter")
+}
+
+test "expected type: no closed expectation keeps the bottom-up join (#7752)" {
+  // A generic `T` is a wildcard to `typeEquiv`; checking branches against it
+  // would accept anything, so the ordinary join (and its T0067) applies.
+  val gen = expectedBranchPrelude() + "func f[T](c: in Bool, t: in T): T {\n  if c { 1 } else { \"s\" }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(gen), "T0067"), "generic T expectation: Int vs String still T0067")
+  val unann = expectedBranchPrelude() +
+    "func f(c: in Bool): Int {\n  val g = if c { En(n = 1) } else { Fr(n = 2) }\n  0\n}\n"
+  assertTrue(hasDiagCode(parseCheck(unann), "T0067"), "unannotated val: no expectation, En vs Fr T0067")
+}
+
+test "expected type: adoption never widens a value or a nested generic argument (#7752)" {
+  // A `Res[En, String]` VALUE is a different runtime instantiation from
+  // `Res[Greeter, String]` (CLR generics are invariant) — only a
+  // construction is typed at the expected instantiation.
+  val value = expectedBranchPrelude() +
+    "func f(a: in Res[En, String]): Int {\n  val r: Res[Greeter, String] = a\n  useRes(r)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(value), "T0060"), "value of Res[En, String] still not a Res[Greeter, String]")
+  // A generic type argument (`Box[Greeter]`) is built from the argument's own
+  // instantiation by codegen, so it is not adopted either.
+  val nested = expectedBranchPrelude() +
+    "func f(): Int {\n  val r: Res[Box[Greeter], String] = Ok2(value = Box(v = En(n = 1)))\n  0\n}\n"
+  assertTrue(hasDiagCode(parseCheck(nested), "T0060"), "Ok2(Box[En]) is not a Res[Box[Greeter], String]")
+}
+
+test "union case with an unknown named field is rejected (#7752)" {
+  val src = expectedBranchPrelude() + "func f(): Res[Int, String] {\n  Err2(error = \"x\")\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0101"), "Err2 has no field 'error' (its field is 'err'): T0101")
+  assertTrue(diagMessagesContain(cr, "'Err2' has no field 'error'"), "T0101 names the case and the field")
+  val ok = expectedBranchPrelude() + "func f(): Res[Int, String] {\n  Err2(err = \"x\")\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "correctly named case field")
+}
+
 // #1488: a range subtype (`Int range 0 ..= 150`) is numeric and ordered when
 // its underlying representation is, so arithmetic and comparison on a
 // range-typed value type-check cleanly.  Before `isNumericType`/`isOrderedType`

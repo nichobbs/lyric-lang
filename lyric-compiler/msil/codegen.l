@@ -6580,9 +6580,10 @@ func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy
 }
 
 // Coerce the trailing value already on the stack (typed `valTy`) to a function's
-// declared return type `retTy` before `ret`.  Only acts when the declared return
+// declared return type `retTy` before `ret`.  Acts when the declared return
 // is a reference type (`object`) but the produced value is a value type (box it)
-// or absent (`MVoid` → push `null`).  This is what makes a lifted lambda whose
+// or absent (`MVoid` → push `null`), and when a Lyric class/interface return
+// receives a value typed `object` (downcast it, #7752).  This is what makes a lifted lambda whose
 // body yields an `Int`/`Bool`/etc. return a valid boxed `object` to its `Func`
 // delegate, and a void-bodied lambda return `null` (#1877).  Concrete value-type
 // or reference returns are left untouched (the body already produced a matching
@@ -6612,6 +6613,15 @@ func coerceTrailingToRetMsil(
       case MString -> {
       }
       case _ -> if isValueType(valTy) { boxIfNeededMsil(cctx, insns, valTy) }
+    }
+    // #7752: a value the verifier only knows as `object` — an `if`/`match`
+    // whose branches are different concrete classes, joined to `MObject` by
+    // `joinBranchTypeMsil` — returned where a Lyric class/interface is
+    // declared must be downcast (`downcastObjectToLyricClassMsil`);
+    // returning it uncast is unverifiable IL.
+    case MClass(_) -> match valTy {
+      case MVoid -> pushDefaultValueMsil(cctx, fctx, insns, retTy)
+      case _ -> downcastObjectToLyricClassMsil(cctx, insns, valTy, retTy)
     }
     case _ -> match valTy { case MVoid -> pushDefaultValueMsil(cctx, fctx, insns, retTy); case _ -> {  } }
   }
@@ -12735,6 +12745,49 @@ func lowerBoolOperandMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
   }
 }
 
+// #7752: true when `caseName` is a case class of the union `unionName`.
+func isCaseOfUnionMsil(cctx: in CodegenCtx, caseName: in String, unionName: in String): Bool {
+  match mapGet(cctx.caseParentUnion, caseName) {
+    case Some(parent) -> parent == unionName
+    case None -> false
+  }
+}
+
+// #7752: the type an `if`/`match` produces at its join when two
+// fall-through branches produce `a` and `b`.  The type checker now accepts
+// branches of DIFFERENT concrete classes wherever the construct's position
+// expects a common supertype (`if c { English(…) } else { French(…) }` where a
+// `Greeter` is expected — `branchesAgainstExpected`).  The CLR verifier merges
+// two distinct classes at the join to their common base class, which (as it
+// ignores interfaces) is `object`; reporting the first branch's class instead
+// (the old behaviour) told the consumer no `castclass` was needed and left the
+// IL unverifiable (`StackUnexpected: found object, expected Greeter`).  So two
+// distinct classes join to `MObject`, whose consumers — every position that
+// admits such an `if`/`match` has a declared type — already cast; a union
+// case class joined with its own parent union, or with a sibling case of it,
+// yields the parent (every case class derives from it).  Everything else
+// keeps `a`, unchanged.
+func joinBranchTypeMsil(cctx: in CodegenCtx, a: in MsilType, b: in MsilType): MsilType {
+  match a {
+    case MClass(an) -> match b {
+      case MClass(bn) -> if an == bn {
+        a
+      } else if isCaseOfUnionMsil(cctx, bn, an) {
+        a
+      } else if isCaseOfUnionMsil(cctx, an, bn) {
+        b
+      } else {
+        match mapGet(cctx.caseParentUnion, an) {
+          case Some(pa) -> if isCaseOfUnionMsil(cctx, bn, pa) { MClass(className = pa) } else { MObject }
+          case None -> MObject
+        }
+      }
+      case _ -> a
+    }
+    case _ -> a
+  }
+}
+
 func lowerIfExprMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -12894,7 +12947,7 @@ func lowerIfExprMsil(
       } else if thenTy == MVoid or elseTy == MVoid {
         MVoid
       } else {
-        thenTy
+        joinBranchTypeMsil(cctx, thenTy, elseTy)
       }
     }
     case None -> {
@@ -13195,9 +13248,11 @@ func lowerAssignExprMsil(
                   // contextHintTyArgs (#3943, lockfile flushBlock).
                   val savedH = pushAnnoHintTyArgs(fctx, elemTy)
                   pushCollExpect(fctx, elemTy)
-                  lowerExprMsil(cctx, fctx, insns, value)
+                  val byrefValTy = lowerExprMsil(cctx, fctx, insns, value)
                   popCollExpect(fctx)
                   restoreHintTyArgs(fctx, savedH)
+                  // #7752: see `downcastObjectToLyricClassMsil`.
+                  downcastObjectToLyricClassMsil(cctx, insns, byrefValTy, elemTy)
                 }
                 case Some(arith) -> {
                   insns.add(MDup)
@@ -13226,9 +13281,13 @@ func lowerAssignExprMsil(
               // closed `Option_None<T>` rather than erasing to object (#3943).
               val savedH = pushAnnoHintTyArgs(fctx, ty)
               pushCollExpect(fctx, ty)
-              lowerExprMsil(cctx, fctx, insns, value)
+              val assignValTy = lowerExprMsil(cctx, fctx, insns, value)
               popCollExpect(fctx)
               restoreHintTyArgs(fctx, savedH)
+              // #7752: an `if`/`match` over different concrete classes yields a
+              // verifier-`object` value; narrow it to the local's declared
+              // class/interface (`downcastObjectToLyricClassMsil`).
+              downcastObjectToLyricClassMsil(cctx, insns, assignValTy, ty)
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
               if fctx.phaseBCtx.count > 0 {
@@ -13283,8 +13342,10 @@ func lowerAssignExprMsil(
               case AssEq -> {
                 insns.add(MLdarg(slot = 0))
                 pushCollExpect(fctx, fldTy)
-                val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                val selfFldValTy = lowerExprMsil(cctx, fctx, insns, value)
                 popCollExpect(fctx)
+                // #7752: see `downcastObjectToLyricClassMsil`.
+                downcastObjectToLyricClassMsil(cctx, insns, selfFldValTy, fldTy)
                 insns.add(MStfld(fieldToken = fldTok))
               }
               case _ -> {
@@ -13318,8 +13379,10 @@ func lowerAssignExprMsil(
           match op {
             case AssEq -> {
               pushCollExpect(fctx, ty)
-              lowerExprMsil(cctx, fctx, insns, value)
+              val resultValTy = lowerExprMsil(cctx, fctx, insns, value)
               popCollExpect(fctx)
+              // #7752: see `downcastObjectToLyricClassMsil`.
+              downcastObjectToLyricClassMsil(cctx, insns, resultValTy, ty)
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
@@ -13383,8 +13446,10 @@ func lowerAssignExprMsil(
                   // `state.pendingTrivia = newList()` for a `List[Trivia]` field).
                   val fldTyA = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
                   pushCollExpect(fctx, fldTyA)
-                  val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                  val fldValTy = lowerExprMsil(cctx, fctx, insns, value)
                   popCollExpect(fctx)
+                  // #7752: see `downcastObjectToLyricClassMsil`.
+                  downcastObjectToLyricClassMsil(cctx, insns, fldValTy, fldTyA)
                   insns.add(MStfld(fieldToken = tok))
                 }
                 case _ -> {
@@ -14333,14 +14398,20 @@ func lowerMatchExprMsil(
   // value-producing fall-through arms must discard their result to agree.
   var anyVoid = false
   var firstFallTy: MsilType = MVoid
+  // #7752: the fall-through arms' join type (`joinBranchTypeMsil`) — arms of
+  // distinct concrete classes that the type checker accepted against a
+  // common expected supertype join to `MObject`.
+  var fallJoinTy: MsilType = MVoid
   var sawFall = false
   var av = 0
   while av < armTys.count {
     if not armRets[av] {
       if not sawFall {
         firstFallTy = armTys[av]
+        fallJoinTy = armTys[av]
         sawFall = true
       } else if armTys[av] != MVoid and firstFallTy != MVoid {
+        fallJoinTy = joinBranchTypeMsil(cctx, fallJoinTy, armTys[av])
         // Internal-invariant check: the type checker should ensure all non-void
         // fall-through arms have the same type.  If this fires, a type-checker
         // regression reached codegen.
@@ -14365,7 +14436,11 @@ func lowerMatchExprMsil(
         val k2w = msilTypeKey(armTys[av])
         val erased1w = k1w == "O" or contains(k1w, "<O,") or contains(k1w, "[O]")
         val erased2w = k2w == "O" or contains(k2w, "<O,") or contains(k2w, "[O]")
-        if k1w != k2w and not erased1w and not erased2w {
+        val classJoin = match firstFallTy {
+          case MClass(_) -> match armTys[av] { case MClass(_) -> true; case _ -> false }
+          case _ -> false
+        }
+        if k1w != k2w and not erased1w and not erased2w and not classJoin {
           println(
             "warning[W0004]: Msil.Codegen: lowerMatchExprMsil fall-through arm type mismatch: first arm " + k1w +
               " vs later arm " +
@@ -14380,7 +14455,7 @@ func lowerMatchExprMsil(
     }
     av = av + 1
   }
-  val resultTy: MsilType = if not sawFall { MVoid } else if anyVoid { MVoid } else { firstFallTy }
+  val resultTy: MsilType = if not sawFall { MVoid } else if anyVoid { MVoid } else { fallJoinTy }
 
   // Pass 2: splice each arm's buffer in order, normalising the stack depth.
   var k = 0
@@ -17383,6 +17458,41 @@ func castObjectToDelegateMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy
   }
 }
 
+// #7752: true when `fqn` is a type declared in Lyric source — a record,
+// union, interface, distinct, protected or projectable-view type registered
+// by `registerTypeFqnCandidate` — as opposed to a host class reached through
+// FFI (`System.Action`, an extern delegate, …) whose runtime value need not
+// be an instance of that class under the uniform lambda ABI.
+func isLyricDeclaredClassMsil(cctx: in CodegenCtx, fqn: in String): Bool {
+  val dot = String.lastIndexOfRaw(fqn, ".")
+  val simple = if dot >= 0 { fqn.substring(dot + 1, fqn.length - dot - 1) } else { fqn }
+  match mapGet(cctx.typeFqnCandidates, simple) {
+    case Some(lst) -> lst.contains(fqn)
+    case None -> false
+  }
+}
+
+// #7752: narrow a value the verifier only knows as `object` to the
+// Lyric-declared class/interface its consumer declares (`castclass`).  Such a
+// value comes from an `if`/`match` whose branches are different concrete
+// classes (`joinBranchTypeMsil` joins them to `MObject`), checked by the type
+// checker against that consumer's declared supertype; storing it uncast into
+// a `Greeter`-typed return, parameter, local or field is unverifiable IL.  For
+// a well-typed program the cast always succeeds.
+func downcastObjectToLyricClassMsil(
+  cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType
+): Unit {
+  match fromTy {
+    case MObject -> match toTy {
+      case MClass(fqn) -> if isLyricDeclaredClassMsil(cctx, fqn) {
+        insns.add(MCastclassByName(className = fqn))
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
 func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
   val fromObj = match fromTy { case MObject -> true; case _ -> false }
   val toObj = match toTy { case MObject -> true; case _ -> false }
@@ -17401,6 +17511,7 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       // generic instantiations), so no 0x01000000 tag is added here.
       case MValueTypeRef(_, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
       case MValueTypeGenericInst(_, _, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
+      case MClass(_) -> downcastObjectToLyricClassMsil(cctx, insns, fromTy, toTy)
       case _ -> castObjectToDelegateMsil(cctx, insns, fromTy, toTy)
     }
   } else {
@@ -18295,6 +18406,7 @@ func lowerBuiltinOrStaticCallMsil(
             seedLambdaLiteralVoidRetMsil(cctx, fctx, callArgExpr(ctorArgs[ci]), innerHint)
             val lowered = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
             castObjectToDelegateMsil(cctx, insns, lowered, innerHint)
+            downcastObjectToLyricClassMsil(cctx, insns, lowered, innerHint)
             while fctx.contextHintTyArgs.count > 0 {
               fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
             }
@@ -18313,6 +18425,7 @@ func lowerBuiltinOrStaticCallMsil(
             val loweredC = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
             popCollExpect(fctx)
             castObjectToDelegateMsil(cctx, insns, loweredC, innerHint)
+            downcastObjectToLyricClassMsil(cctx, insns, loweredC, innerHint)
             loweredC
           }
           argTypes.add(at)
