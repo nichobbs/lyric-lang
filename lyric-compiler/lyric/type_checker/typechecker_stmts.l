@@ -252,8 +252,9 @@ pub func checkStatement(
             diag.add(
               errorDiagnostic(
                 "T0060",
-                "val binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType) +
-                  sliceListConversionHint(declT, initType),
+                "val binding declared as " + renderTypeExpr(te, declT) + " but initialiser " +
+                  hasTypeOrEmptyLiteral(initType, init) +
+                  typeMismatchHint(tbl, declT, initType),
                 stmt.span
               )
             )
@@ -288,8 +289,9 @@ pub func checkStatement(
                 diag.add(
                   errorDiagnostic(
                     "T0061",
-                    "var binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType) +
-                      sliceListConversionHint(declT, initType),
+                    "var binding declared as " + renderTypeExpr(te, declT) + " but initialiser " +
+                      hasTypeOrEmptyLiteral(initType, initE) +
+                      typeMismatchHint(tbl, declT, initType),
                     stmt.span
                   )
                 )
@@ -319,8 +321,9 @@ pub func checkStatement(
             diag.add(
               errorDiagnostic(
                 "T0062",
-                "let binding declared as " + renderTypeExpr(te, declT) + " but initialiser has type " + renderType(initType) +
-                  sliceListConversionHint(declT, initType),
+                "let binding declared as " + renderTypeExpr(te, declT) + " but initialiser " +
+                  hasTypeOrEmptyLiteral(initType, init) +
+                  typeMismatchHint(tbl, declT, initType),
                 stmt.span
               )
             )
@@ -376,8 +379,9 @@ pub func checkStatement(
         diag.add(
           errorDiagnostic(
             "T0063",
-            "assigned value of type " + renderType(valueType) + " does not match target of type " + renderType(targetType) +
-              sliceListConversionHint(targetType, valueType),
+            "assigned value " + ofTypeOrEmptyLiteral(valueType, value) + " does not match target of type " +
+              renderType(targetType) +
+              typeMismatchHint(tbl, targetType, valueType),
             stmt.span
           )
         )
@@ -423,9 +427,9 @@ pub func checkStatement(
           diag.add(
             errorDiagnostic(
               "T0065",
-              "returned value of type " + renderType(t) + " does not match declared return type " +
+              "returned value " + ofTypeOrEmptyLiteral(t, e) + " does not match declared return type " +
                 renderOptTypeExpr(returnTyExpr, returnTy) +
-                sliceListConversionHint(returnTy, t),
+                typeMismatchHint(tbl, returnTy, t),
               stmt.span
             )
           )
@@ -494,17 +498,24 @@ pub func checkStatement(
           match iterType {
             case TySlice(e) -> e
             case TyArray(_, e) -> e
-            case TyUser(iterId, iterName, iterArgs) -> {
+            case TyUser(iterId, _, iterArgs) -> {
               // List[T] iterates over T; MapKeyCollection[K,V] over K;
               // MapValueCollection[K,V] over V.  A bare `Map[K,V]` iterator has
               // no runtime lowering on either backend (iteration goes through
               // `.keys()` / `.values()`), so it stays `TyError` — codegen owns
-              // that rejection.
-              if iterName == "List" and iterArgs.count == 1 {
+              // that rejection.  All three are recognised by the stdlib type's
+              // identity, not its bare name (#7737): both backends iterate
+              // them as the genuine BCL/JDK collection, so a package's own
+              // `record List[T]` used to type-check here and then fail at
+              // runtime (`InvalidCastException` on dotnet,
+              // `IncompatibleClassChangeError` on the JVM).  Such a type now
+              // falls through to the T0126 branch below like any other
+              // Lyric-native single-parameter generic.
+              if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
                 iterArgs[0]
-              } else if iterName == "MapKeyCollection" and iterArgs.count == 2 {
+              } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapKeyCollection") {
                 iterArgs[0]
-              } else if iterName == "MapValueCollection" and iterArgs.count == 2 {
+              } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapValueCollection") {
                 iterArgs[1]
               } else if iterArgs.count == 1 and symTableIsExternTypeId(tbl, iterId) {
                 // Any other single-type-parameter EXTERN generic collection
@@ -539,7 +550,8 @@ pub func checkStatement(
                 diag.add(
                   errorDiagnostic(
                     "T0126",
-                    "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type",
+                    "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type" +
+                      shadowedStdCollectionNote(tbl, iterType),
                     iter.span
                   )
                 )
@@ -1642,8 +1654,8 @@ pub func checkFunctionBody(
           diag.add(
             errorDiagnostic(
               "T0070",
-              "function body has type " + renderType(bodyType) + " but declared return type is " + declaredReturnTyStr +
-                sliceListConversionHint(sig.returnTy, bodyType),
+              "function body " + hasTypeOrEmptyLiteral(bodyType, e) + " but declared return type is " + declaredReturnTyStr +
+                typeMismatchHint(tbl, sig.returnTy, bodyType),
               fn.span
             )
           )
@@ -1695,7 +1707,7 @@ pub func checkFunctionBody(
               "T0070",
               "function body trailing expression has type " + renderType(bodyType) + " but declared return type is " +
                 declaredReturnTyStr +
-                sliceListConversionHint(sig.returnTy, bodyType),
+                typeMismatchHint(tbl, sig.returnTy, bodyType),
               fn.span
             )
           )
