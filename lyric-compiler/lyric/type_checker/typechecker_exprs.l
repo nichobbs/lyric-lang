@@ -6785,6 +6785,125 @@ func recordLocalFuncType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit {
   }
 }
 
+// Record a call through a function value (see `SymbolTable.funcValueCallSites`).
+// Only a callee that is certainly a value is recorded: a local binding, a
+// record field, or any other value-producing expression (a call, an index, a
+// block) — never a function or builtin name, which the call reaches by name.
+// A call whose function is async, returns `Unit` (the result is discarded,
+// and a `() -> Unit` binding is a real `Action` the erased value is not) or
+// never returns, or whose type has no source spelling (a type parameter), is
+// left as written.
+func recordFuncValueCall(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  memberRecvTy: in Option[Type],
+  memberName: in String,
+  fnT: in Type,
+  argCount: in Int,
+  sp: in Span,
+): Unit {
+  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return
+  }
+  match unrefine(fnT) {
+    case TyFunction(ps, ret, isAsync) -> {
+      val noValue = match unrefine(ret) {
+        case TyPrim(pt) -> match pt { case PtUnit -> true; case PtNever -> true; case _ -> false }
+        case _ -> false
+      }
+      if isAsync or noValue or ps.count != argCount {
+        return
+      }
+      if not calleeIsFuncValue(sc, tbl, fn, memberRecvTy, memberName) {
+        return
+      }
+      match typeExprForRef(tbl, unrefine(fnT), fn.span) {
+        case Some(te) -> {
+          val key = recordCopySiteKey(sp)
+          val rendered = renderType(fnT)
+          match mapGet(tbl.funcValueCallSites, key) {
+            case Some(prev) -> if prev.rendered != rendered and not prev.conflicting {
+              tbl.funcValueCallSites.remove(key)
+              tbl.funcValueCallSites.add(
+                key,
+                FuncValueCallSite(
+                  calleeType = prev.calleeType,
+                  rendered = prev.rendered,
+                  conflicting = true,
+                  startOffset = prev.startOffset
+                )
+              )
+            }
+            case None -> tbl.funcValueCallSites.add(
+              key,
+              FuncValueCallSite(
+                calleeType = te,
+                rendered = rendered,
+                conflicting = false,
+                startOffset = sp.startPos.offset
+              )
+            )
+          }
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Whether a call's callee `fn` evaluates to a function value (see
+// `recordFuncValueCall`).  A member callee is one only when the receiver's
+// record declares a field of that name (a builtin or method is called by
+// name); a bare name only when it is a local binding in scope.
+func calleeIsFuncValue(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  memberRecvTy: in Option[Type],
+  memberName: in String,
+): Bool {
+  match fn.kind {
+    case EPath(p) -> isLocalNameTc(sc, p)
+    case EMember(_, _) -> match memberRecvTy {
+      case Some(rt) -> match unrefine(rt) {
+        case TyUser(tid, _, targs) -> {
+          val fs = fieldsOfRecordInstantiated(tbl, tid, targs)
+          var i = 0
+          while i < fs.count {
+            if fs[i].name == memberName {
+              return true
+            }
+            i = i + 1
+          }
+          false
+        }
+        case _ -> false
+      }
+      case None -> false
+    }
+    case EParen(inner) -> calleeIsFuncValue(sc, tbl, inner, None, "")
+    // `f[T](x)` applies type arguments to a named function; an index into a
+    // local's value (`fs[0](x)`) or any other expression's is a value.
+    case EIndex(recv, _) -> match recv.kind { case EPath(rp) -> isLocalNameTc(sc, rp); case _ -> true }
+    case ETypeApp(_, _) -> false
+    case _ -> true
+  }
+}
+
+// Whether `p` is a bare name bound in scope (a local, parameter or pattern
+// binding) rather than a function or package path.
+func isLocalNameTc(sc: in Scope, p: in ModulePath): Bool {
+  if p.segments.count != 1 {
+    return false
+  }
+  match scopeTryFind(sc, p.segments[0]) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
 // A non-call member read on a distinct type (docs/01 §2.3).  A distinct type
 // is nominal and does not expose its underlying type's members: `x.value`
 // reads the underlying value, and any other member is T0113, pointing at
@@ -7282,6 +7401,7 @@ func inferExprCore(
                           }
                           k = k + 1
                         }
+                        recordFuncValueCall(sc, tbl, fn, memberRecvTy, memberName, fnT, args.count, e.span)
                       }
                       ret
                     }
