@@ -1951,7 +1951,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   case JByte -> maskByteUnsigned(insns)
                   case _ -> ()
                 }
-                fty
+                narrowGenericFieldRead(ctx, insns, recv, cls, memberName, fty)
               }
               case None -> {
                 // Erased-Object receiver fallback (#3044): a match binding on a
@@ -2159,30 +2159,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     }
 
     // ── List literal ──────────────────────────────────────────────────────
-    case EList(exprs) -> {
-      // Emit ArrayList construction and populate it.
-      insns.add(LNew(className = "java/util/ArrayList"))
-      insns.add(LDup)
-      val alInitPs: List[JvmType] = newList()
-      insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = alInitPs, ret = JVoid))
-      val listSlot = allocSlot(ctx, "__list_" + freshLabel(ctx), JRef(className = "java/util/ArrayList"))
-      // Same #6346 rationale as the tuple slot above.
-      insns.add(LAstoreAs(slot = listSlot, className = "java/util/ArrayList"))
-      var i = 0
-      while i < exprs.count {
-        insns.add(LAload(slot = listSlot))
-        val elemTy = lowerExpr(ctx, insns, exprs[i])
-        // Box primitives before adding to Object-typed list.
-        boxIfNeeded(insns, elemTy)
-        val addPs: List[JvmType] = newList()
-        addPs.add(JRef(className = "java/lang/Object"))
-        insns.add(LInvokevirtual(owner = "java/util/ArrayList", name = "add", params = addPs, ret = JBoolean))
-        insns.add(LPop)
-        i = i + 1
-      }
-      insns.add(LAload(slot = listSlot))
-      JRef(className = "java/util/ArrayList")
-    }
+    case EList(exprs) -> lowerListLiteralJvm(ctx, insns, exprs, JVoid)
 
     // ── Await ─────────────────────────────────────────────────────────────
     // Structured concurrency (D119 S4 / D120): awaiting a `spawn` handle (a
@@ -2432,7 +2409,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // unrelated `Map[String, Long]` elsewhere in the same bundle
               // happens to look like.
               val kTy = lowerExpr(ctx, insns, indices[0])
-              boxIfNeeded(insns, kTy)
+              boxForErasedSlot(insns, kTy, erasedSlotJvmType(ctx, recv, 2, 0))
               emitMapGet(insns)
               applyIndexedElemOverrideNormalizingSlice(ctx, insns, recv, elemOverride)
             } else {
@@ -3987,6 +3964,159 @@ func boxIfNeeded(insns: in List[LInsn], ty: in JvmType): Unit {
     case JChar -> insns.add(LBoxChar)
     case JShort -> insns.add(LBoxShort)
     case _ -> insns.add(LNop)
+  }
+}
+
+// A list literal as a fresh `java/util/ArrayList`, each element boxed for an
+// element slot of type `elemSlotTy` (`boxForErasedSlot`; `JVoid` when the
+// element type is not known from context, boxing each element as its own
+// type).  `lowerBindingInit` passes the annotated element type, so
+// `val xs: List[Long] = [1, 2]` stores `java.lang.Long`s (#7782).
+func lowerListLiteralJvm(ctx: in FuncCtx, insns: in List[LInsn], exprs: in List[Expr], elemSlotTy: in JvmType): JvmType {
+  insns.add(LNew(className = "java/util/ArrayList"))
+  insns.add(LDup)
+  val alInitPs: List[JvmType] = newList()
+  insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = alInitPs, ret = JVoid))
+  val listSlot = allocSlot(ctx, "__list_" + freshLabel(ctx), JRef(className = "java/util/ArrayList"))
+  // Same #6346 rationale as the tuple slot in `lowerExpr`'s `ETuple` arm.
+  insns.add(LAstoreAs(slot = listSlot, className = "java/util/ArrayList"))
+  var i = 0
+  while i < exprs.count {
+    insns.add(LAload(slot = listSlot))
+    val elemTy = lowerExpr(ctx, insns, exprs[i])
+    boxForErasedSlot(insns, elemTy, elemSlotTy)
+    val addPs: List[JvmType] = newList()
+    addPs.add(JRef(className = "java/lang/Object"))
+    insns.add(LInvokevirtual(owner = "java/util/ArrayList", name = "add", params = addPs, ret = JBoolean))
+    insns.add(LPop)
+    i = i + 1
+  }
+  insns.add(LAload(slot = listSlot))
+  JRef(className = "java/util/ArrayList")
+}
+
+// A read of a generic record field declared as a bare type parameter
+// (`b: T`) yields the erased `Object`.  When the receiver's recorded
+// instantiation (`scrutineeGenericArgs`: a local's annotation or its
+// constructor call's arguments, a parameter's declared type) makes that
+// parameter a primitive, unbox the value to it (#7782), so `t.b + 1` on a
+// `Two[Long]` is a `Long` addition instead of an unbox guessed from the
+// other operand.  The unbox goes through `java.lang.Number` because a value
+// stored before its parameter's widest instantiation was known may be boxed
+// as a narrower wrapper; the numeric value is the same either way.  Returns
+// the value's type on the stack.
+func narrowGenericFieldRead(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  recv: in Expr,
+  cls: in String,
+  fieldName: in String,
+  fty: in JvmType,
+): JvmType {
+  if not isErasedObject(fty) {
+    return fty
+  }
+  val pIdx = match mapGet(ctx.caseFields, cls) {
+    case Some(flds) -> caseFieldParamIdx(flds, fieldName)
+    case None -> -1
+  }
+  if pIdx < 0 {
+    return fty
+  }
+  val args = scrutineeGenericArgs(ctx, recv)
+  if pIdx >= args.count {
+    return fty
+  }
+  val prim = primitiveSlotJvmType(ctx, args[pIdx])
+  if isJvmPrimitiveElemType(prim) {
+    unboxNumericAs(insns, prim)
+    prim
+  } else {
+    fty
+  }
+}
+
+// The `paramIdx` of the case field named `name`, or -1.
+func caseFieldParamIdx(flds: in List[JvmCaseField], name: in String): Int {
+  var i = 0
+  while i < flds.count {
+    if flds[i].name == name {
+      return flds[i].paramIdx
+    }
+    i = i + 1
+  }
+  -1
+}
+
+// Unbox the boxed value on top of the stack (statically `Object`) to the
+// primitive `prim`.  A numeric target reads through `java.lang.Number`, so
+// any numeric wrapper converts; a `Byte` target re-masks to the canonical
+// unsigned form.  `Bool`/`Char` unbox from their own wrappers.
+func unboxNumericAs(insns: in List[LInsn], prim: in JvmType): Unit {
+  val accessor = match prim {
+    case JInt -> "intValue"
+    case JLong -> "longValue"
+    case JDouble -> "doubleValue"
+    case JFloat -> "floatValue"
+    case JShort -> "shortValue"
+    case JByte -> "intValue"
+    case _ -> ""
+  }
+  if accessor == "" {
+    coerceArgTo(insns, JRef(className = "java/lang/Object"), prim)
+    return ()
+  }
+  insns.add(LCheckcast(className = "java/lang/Number"))
+  val ps: List[JvmType] = newList()
+  val accRet = match prim { case JByte -> JInt; case t -> t }
+  insns.add(LInvokevirtual(owner = "java/lang/Number", name = accessor, params = ps, ret = accRet))
+  match prim {
+    case JByte -> maskByteUnsigned(insns)
+    case _ -> ()
+  }
+}
+
+// Box the value on top of the stack (statically `fromTy`) for an erased
+// `Object` slot whose declared Lyric type lowers to `slotTy` (#7782): a
+// collection element or key, a generic record field, a generic parameter.
+// The checker lets a narrower primitive flow into a wider slot (`Int` into
+// `Long`, `Byte` into `Int`), and every read of the slot unboxes it as
+// `slotTy` (`checkcast java/lang/Long` for a `Long`), so boxing by the
+// value's OWN type stored a `java.lang.Integer` that failed that read with
+// `ClassCastException` — and, as a set element or map key, never equalled
+// the same number boxed as `java.lang.Long`, so lookups silently missed.
+// A primitive value headed for a different primitive slot is converted to
+// the slot's type first (`coerceArgTo`'s widening arms) and boxed as it.
+// `slotTy` is `JVoid` when the slot's type is unknown or erased (a type
+// parameter), which leaves the value boxed as its own type, as is any
+// reference value (already boxed, nothing to convert).
+func boxForErasedSlot(insns: in List[LInsn], fromTy: in JvmType, slotTy: in JvmType): Unit {
+  coerceScalarToSliceElem(insns, fromTy, slotTy, JRef(className = "java/lang/Object"))
+}
+
+// The JVM type of `recv`'s `idx`-th generic argument, when `recv` is a
+// collection whose recorded instantiation (`scrutineeGenericArgs`: a local's
+// annotation, a field's declared type, a call's declared return) has exactly
+// `arity` arguments and that argument names a primitive type (`Long` of a
+// `List[Long]`, the `V` of a `Map[K, V]` at `idx` 1).  `JVoid` otherwise,
+// which `boxForErasedSlot` treats as "box as the value's own type" — the
+// only choice when the slot is itself an erased type parameter.
+func erasedSlotJvmType(ctx: in FuncCtx, recv: in Expr, arity: in Int, idx: in Int): JvmType {
+  val args = scrutineeGenericArgs(ctx, recv)
+  if args.count != arity or idx >= arity {
+    return JVoid
+  }
+  primitiveSlotJvmType(ctx, args[idx])
+}
+
+// The primitive JVM type `te` lowers to, or `JVoid` when it is not a
+// primitive (a reference type, or an unresolved type parameter).
+func primitiveSlotJvmType(ctx: in FuncCtx, te: in TypeExpr): JvmType {
+  val resolved = resolveConcreteTypeExpr(ctx, te)
+  if isJvmPrimitiveElemType(resolved) {
+    resolved
+  } else {
+    JVoid
   }
 }
 
