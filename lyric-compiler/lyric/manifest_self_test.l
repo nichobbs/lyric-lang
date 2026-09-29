@@ -1141,27 +1141,25 @@ test "[contracts] enabled = true when explicitly set" {
   }
 }
 
-test "[contracts] enabled defaults to true when field absent" {
+test "[contracts] section with no keys is treated as absent" {
   val toml = "[package]\nname = \"test-pkg\"\nversion = \"1.0.0\"\n[contracts]\n"
   val m = parseOk(toml)
   match m.contracts {
-    case Some(cs) -> assertTrue(
-      cs.enabled,
-      "[contracts] enabled defaults to true when [contracts] section present but enabled field absent"
-    )
-    case None -> panic("[contracts] section should be present when it appears in TOML")
+    case Some(_) -> panic("[contracts] section with no keys should be treated as absent per docs/01 §3.7")
+    case None -> {
+      // A [contracts] header with zero key-value pairs is correctly treated as absent
+    }
   }
 }
 
-test "[contracts] section with internal whitespace: simple case" {
+test "[contracts] section with internal whitespace: empty section is absent" {
   val toml = "[package]\nname = \"test-pkg\"\nversion = \"1.0.0\"\n[ contracts ]\n"
   val m = parseOk(toml)
   match m.contracts {
-    case Some(cs) -> assertTrue(
-      cs.enabled,
-      "[contracts] with whitespace: section recognized and enabled defaults to true"
-    )
-    case None -> panic("[contracts] section with internal whitespace should be recognized (simple case)")
+    case Some(_) -> panic("[contracts] section with no keys should be treated as absent per docs/01 §3.7")
+    case None -> {
+      // An empty [contracts] header with zero key-value pairs is correctly treated as absent
+    }
   }
 }
 

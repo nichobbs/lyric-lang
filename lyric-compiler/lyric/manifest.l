@@ -1046,14 +1046,13 @@ func assembleBuild(entries: in List[Entry]): Result[Option[BuildSection], Manife
 
 /// Assemble the `[contracts]` table.
 /// Per docs/01-language-reference.md §3.7, a `[contracts]` table with no keys
-/// is treated as absent (equivalent to the default). This function detects the
-/// section header in raw text to handle empty sections correctly (since an entry-based
-/// parser only sees key-value pairs, not bare section headers).
+/// is treated as absent (equivalent to the default).
+/// Only return `Some` if at least one key-value pair exists in the section.
+/// An empty `[contracts]` header with no entries returns `None`.
 func assembleContracts(text: in String, entries: in List[Entry]): Result[Option[ContractsSection], ManifestError] {
-  // Check for [contracts] section using both text scan and parsed entries.
-  // Text scan might fail on whitespace-padded headers like `[ contracts ]`, so also
-  // check the parsed entries which the TOML tokenizer has already normalized (#7739).
-  if not (hasSectionInText(text, "contracts") or hasSection(entries, "contracts")) {
+  // Per docs/01-language-reference.md §3.7: a [contracts] table with no keys
+  // is treated as absent. Only return Some if at least one key-value pair exists.
+  if not hasSection(entries, "contracts") {
     return Ok(value = None)
   }
   val enabled = findBool(entries, "contracts", "enabled", true)
