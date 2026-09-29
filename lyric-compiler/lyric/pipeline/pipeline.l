@@ -451,7 +451,13 @@ pub func pipeWeave(
   extraRecordDecls: in List[RecordDecl],
   contractsEnabled: in Bool = true,
 ): Option[SourceFile] {
-  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates, typeIndex, contractsEnabled)
+  // @proof_required modules always enable contracts: proof obligations must not be user-disableable (#7732)
+  val effectiveContractsEnabled = if ContractElaborator.isProofRequired(file.fileAnnotations) {
+    true
+  } else {
+    contractsEnabled
+  }
+  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates, typeIndex, effectiveContractsEnabled)
   if gate(pkgLabel, origins, weaveRes.diagnostics) {
     return None
   }

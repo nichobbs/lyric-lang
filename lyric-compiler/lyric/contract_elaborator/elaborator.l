@@ -3300,7 +3300,7 @@ pub func elaborateFile(file: in SourceFile): SourceFile {
 }
 
 // Check if a file has the @proof_required annotation.
-func isProofRequired(fileAnnotations: in List[Annotation]): Bool {
+pub func isProofRequired(fileAnnotations: in List[Annotation]): Bool {
   var i = 0
   while i < fileAnnotations.count {
     val a = fileAnnotations[i]
