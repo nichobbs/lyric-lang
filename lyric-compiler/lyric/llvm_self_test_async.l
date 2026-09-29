@@ -156,7 +156,7 @@ func compileAndRunBundledWith(source: in String, sanitize: in Bool): RunOutcome 
   if sanitize {
     flags.add("-fsanitize=address")
   }
-  if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags, newList(), "") {
+  if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags, newList(), "", true) {
     panic("native compilation failed for an async self-test program")
   }
   val noArgs: List[String] = newList()
@@ -510,7 +510,7 @@ test "F0045 (#7198): a direct async call's ? inside try/catch of an async func i
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val noFlags: List[String] = newList()
   val noDefines: List[String] = newList()
-  val ok = compileToNativeWithFlags(src, stem, stdlib, "", "0", noFlags, noDefines, "")
+  val ok = compileToNativeWithFlags(src, stem, stdlib, "", "0", noFlags, noDefines, "", true)
   assertFalse(ok, "F0045 correctly rejects the same protected-region hazard on native as it does on dotnet")
 }
 

@@ -71,7 +71,7 @@ func compileAndRunProject(packages: in List[NativeSourcePackage]): RunOutcome {
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
   val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
-  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", noOriginsByPkg) {
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", noOriginsByPkg, true) {
     panic("native project compilation failed")
   }
   val noArgs: List[String] = newList()
@@ -100,7 +100,7 @@ func compileAndRunProjectWithFeatures(
   flags.add("-fsanitize=address")
   val noDeclared: List[String] = newList()
   val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
-  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), activeFeatures, noDeclared, "", noOriginsByPkg) {
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), activeFeatures, noDeclared, "", noOriginsByPkg, true) {
     return None
   }
   val noArgs: List[String] = newList()
@@ -431,7 +431,8 @@ test "project build injects the manifest's [package].version as the well-known v
     noFeatures,
     noFeatures,
     "1.2.3",
-    noOriginsByPkg
+    noOriginsByPkg,
+    true
   )
   if not ok {
     panic("native project compilation failed")
@@ -565,7 +566,8 @@ test "project build with no packages fails loudly rather than compiling an empty
     noFeatures,
     noFeatures,
     "",
-    noOriginsByPkg
+    noOriginsByPkg,
+    true
   )
   assertFalse(ok, "an empty package list must fail rather than silently produce an empty binary")
 }
@@ -620,7 +622,7 @@ test "native project build: `?` used inside a bundled STDLIB-CLOSURE package (no
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
   val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
-  if not compileProjectToNativeWithFlags(pkgs, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", noOriginsByPkg) {
+  if not compileProjectToNativeWithFlags(pkgs, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", noOriginsByPkg, true) {
     panic("native project compilation failed")
   }
   val noArgs: List[String] = newList()

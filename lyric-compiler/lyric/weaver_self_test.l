@@ -1499,7 +1499,7 @@ func makeTemplates(src: in String, pkgName: in String): Map[String, CollectedTem
 
 func weaveWithTemplates(consumeSrc: in String, templates: in Map[String, CollectedTemplate]): WeaveFileResult {
   val pr = parse(consumeSrc)
-  weaveFileWithDiagsAndTemplates(pr.file, templates, fixtureTypeIndex())
+  weaveFileWithDiagsAndTemplates(pr.file, templates, fixtureTypeIndex(), true)
 }
 
 // The type-owner index the A0047 row-type check resolves names against
