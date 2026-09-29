@@ -2995,7 +2995,7 @@ func stmtContainsYield(stmt: in Statement): Bool {
   }
 }
 
-func funcBodyContainsYield(decl: in FunctionDecl): Bool {
+pub func funcBodyContainsYield(decl: in FunctionDecl): Bool {
   match decl.body {
     case Some(body) -> {
       match body {
@@ -3778,8 +3778,16 @@ pub func collectFileSigsSeeded(
           paramDefaults = paramDefaults,
           paramModes = paramModes,
           isIface = false,
+          // An async generator's call is the generated `Iterable`, whose one
+          // type argument is the declared element type -- not the element
+          // type's own arguments, which would narrow each `Option[Int]` a
+          // `for` reads to `Integer` (#7750).
           retGenericArgs = eagerlyResolveGenericArgs(
-            returnTypeGenericArgsFiltered(decl.ret, sigTps),
+            if decl.isAsync and funcBodyContainsYield(decl) {
+              generatorIterableGenericArgs(decl.ret, sigTps)
+            } else {
+              returnTypeGenericArgsFiltered(decl.ret, sigTps)
+            },
             owner,
             fnExternTypes
           ),

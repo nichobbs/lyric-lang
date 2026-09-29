@@ -338,6 +338,21 @@ pub func returnTypeGenericArgsFiltered(retOpt: in Option[TypeExpr], typeParams: 
   raw
 }
 
+// The generic arguments of an async generator's call, which is the
+// generated `Iterable` of its declared element type `E`: `[E]`, the shape a
+// `List[E]` result has, so `for x in gen()` narrows each element to `E`
+// through `indexedElemTypeOverride` like a loop over a list (#7750).  Empty
+// when `E` mentions one of the function's own type parameters, as
+// `returnTypeGenericArgsFiltered` bails.
+pub func generatorIterableGenericArgs(retOpt: in Option[TypeExpr], typeParams: in List[String]): List[TypeExpr] {
+  val args: List[TypeExpr] = newList()
+  match retOpt {
+    case Some(te) -> if not containsTypeParam(te, typeParams) { args.add(te) }
+    case None -> ()
+  }
+  args
+}
+
 // Recursive tree-walk companion to `returnTypeGenericArgsFiltered`'s bail
 // guard: a bare `TRef` at the top level isn't the only shape a function's own
 // type parameter can hide behind — `Option[List[T]]` nests `T` inside a

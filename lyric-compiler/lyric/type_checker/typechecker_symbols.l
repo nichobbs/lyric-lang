@@ -274,8 +274,9 @@ pub record SymbolTable {
   /// Each call through a function value, keyed by `recordCopySiteKey` of the
   /// call's span (see `Lyric.Parser.FuncValueCallSite`, #7716).
   funcValueCallSites: Map[String, FuncValueCallSite]
-  /// Each name a tuple pattern binds, keyed by `recordCopySiteKey` of the
-  /// binding's span (see `Lyric.Parser.TuplePatternBindingSite`, #7728).
+  /// Each name a tuple pattern binds, and the name a `for` over a generator
+  /// binds, keyed by `recordCopySiteKey` of the binding's span (see
+  /// `Lyric.Parser.TuplePatternBindingSite`, #7728, #7750).
   tuplePatternBindingSites: Map[String, TuplePatternBindingSite]
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
   /// opaque, protected or distinct type each field-access or method-call receiver

@@ -1794,7 +1794,24 @@ func collectMonoSpecializedSigs(
             paramModes.add(decl.params[pi].mode)
             pi = pi + 1
           }
-          val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, fnExternTypes); case None -> JVoid }
+          // A specialised async generator's factory returns the synthesised
+          // generator object, not its declared element type, exactly as
+          // `collectFileSigsSeeded` registers an unspecialised one: the call
+          // site's descriptor must name `Object`, or it links against a
+          // method that does not exist (`NoSuchMethodError`, #7750).  Its
+          // result's generic arguments are the element type (see
+          // `generatorIterableGenericArgs`), and nothing element-derived
+          // (closure, record, unsigned or head recovery) applies to it.
+          val isGenerator = decl.isAsync and funcBodyContainsYield(decl)
+          val ret = if isGenerator {
+            JRef(className = "java/lang/Object")
+          } else {
+            match decl.ret {
+              case Some(te) -> typeExprToJvmExtern(te, owner, fnExternTypes)
+              case None -> JVoid
+            }
+          }
+          val noRetHead: List[String] = newList()
           val sig = JvmFuncSig(
             owner = owner,
             params = params,
@@ -1803,8 +1820,16 @@ func collectMonoSpecializedSigs(
             paramDefaults = newList(),
             paramModes = paramModes,
             isIface = false,
-            retGenericArgs = returnTypeGenericArgs(decl.ret),
-            closureRetTy = closureRetTypeOf(decl.ret, owner, newList(), fnExternTypes),
+            retGenericArgs = if isGenerator {
+              generatorIterableGenericArgs(decl.ret, newList())
+            } else {
+              returnTypeGenericArgs(decl.ret)
+            },
+            closureRetTy = if isGenerator {
+              None
+            } else {
+              closureRetTypeOf(decl.ret, owner, newList(), fnExternTypes)
+            },
             // #6929: no same-FILE record scan is available here (unlike
             // `collectFileSigsSeeded`'s `localRecordNames` pre-scan), but the
             // bundle-wide `ctorReg` fallback resolves a cross-package record
@@ -1813,7 +1838,11 @@ func collectMonoSpecializedSigs(
             // is exactly as concrete as its declared type expr says (no
             // generic params left to erase), so the same
             // `recordRetClassOfBundle` lookup applies unchanged.
-            recordRetClass = recordRetClassOfBundle(decl.ret, owner, ctorReg, fnExternTypes),
+            recordRetClass = if isGenerator {
+              None
+            } else {
+              recordRetClassOfBundle(decl.ret, owner, ctorReg, fnExternTypes)
+            },
             // Mono-specialised functions are free functions (monomorphized
             // from a generic `func`), never impl/record methods — no `Self`
             // return possible.
@@ -1821,11 +1850,18 @@ func collectMonoSpecializedSigs(
             // #6754 (finding 1.2a): a bare key IS registered below
             // (specialised copies are called by bare name) — computed from
             // the specialised function's own declared return.
-            retIsUnsigned = match decl.ret { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
+            retIsUnsigned = if isGenerator {
+              false
+            } else {
+              match decl.ret {
+                case Some(te) -> isUnsignedTypeExpr(te)
+                case None -> false
+              }
+            },
             // The specialised copy of an imported generic returns the declaring
             // package's generic record; the call site resolves its class through
             // the complete constructor registry (`narrowStaticCallResult`).
-            recordRetHead = recordRetHeadOf(decl.ret),
+            recordRetHead = if isGenerator { noRetHead } else { recordRetHeadOf(decl.ret) },
             ownTypeParams = newList(),
             declParamTypeExprs = newList(),
             declRetTypeExprRaw = None,

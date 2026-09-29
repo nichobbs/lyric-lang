@@ -493,7 +493,14 @@ pub func checkStatement(
       // checks them — before this they were never visited by the checker.
       val elemType = match iter.kind {
         case ERange(bound) -> forRangeElemType(sc, tbl, sigs, diag, bound)
-        case _ -> {
+        // An `async func g(): E` generator types its call as its element
+        // type `E`, so iterating the call iterates values of type `E`
+        // whatever `E` is -- a record, a union, a tuple, or a collection or
+        // monad such as `List[Int]` / `Option[Int]`, which must not be read
+        // as the thing being iterated (#7750).
+        case _ -> if forIterIsGeneratorCall(sigs, iter) {
+          inferExpr(sc, tbl, sigs, diag, iter)
+        } else {
           val iterType = inferExpr(sc, tbl, sigs, diag, iter)
           match iterType {
             case TySlice(e) -> e
@@ -560,19 +567,9 @@ pub func checkStatement(
                 TyError
               }
             }
-            // An `async func g(): (A, B)` generator types its call as its
-            // element type, and a tuple is not otherwise iterable, so a
-            // tuple-typed generator call iterates tuples of that type.  Typing
-            // them gives the loop's tuple pattern typed names (#7730).
-            case TyTuple(_) -> if forIterIsGeneratorCall(sigs, iter) { iterType } else { TyError }
             case TyPrim(iterPt) -> {
               match iterPt {
-                case PtString -> if forIterIsGeneratorCall(sigs, iter) {
-                  // An `async func g(): String` generator types its call as its
-                  // element type; iterating it is iterating the generator, which
-                  // keeps the lenient element type every generator gets here.
-                  TyError
-                } else {
+                case PtString -> {
                   // D-progress-1006: a `String` is not iterable.  Its elements
                   // would have to be UTF-16 code units, and a surrogate half is
                   // not a `Char` (docs/01 §2.1) -- so name the two explicit
@@ -615,7 +612,11 @@ pub func checkStatement(
       // but not `isNumericType`, so binding it raw would trip false T0030s on
       // arithmetic the where-bounds make valid.
       bindPattern(sc, pat, eraseTyVars(elemType))
-      recordTuplePatternBindings(tbl, pat, eraseTyVars(elemType), false)
+      // A generator's elements reach the loop through an erased iterator
+      // (`java.util.Iterator.next()` on the JVM), so the loop variable itself
+      // is recorded like a tuple element: `Lyric.Mono` binds it through a
+      // local annotated with the generator's element type (#7750).
+      recordTuplePatternBindings(tbl, pat, eraseTyVars(elemType), forIterIsGeneratorCall(sigs, iter))
       val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
       scopePop(sc)
     }

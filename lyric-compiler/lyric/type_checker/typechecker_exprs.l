@@ -6933,8 +6933,10 @@ func recordFuncValueCall(
 // Record the names a tuple pattern binds (see
 // `SymbolTable.tuplePatternBindingSites`).  `pat` is matched against a value
 // of type `ty`; `inTuple` is whether `pat` is an element of an enclosing tuple
-// pattern.  Only a name bound to a tuple element is recorded: any other name
-// is bound to a value whose type the backend already sees.  An or-pattern is
+// pattern, or the loop pattern of a `for` over a generator, whose elements
+// arrive just as erased (#7750).  Only a name bound to such an element is
+// recorded: any other name is bound to a value whose type the backend already
+// sees.  An or-pattern is
 // not entered, because every alternative must bind the same names, and a
 // nullary union-case name is a test rather than a binding.
 func recordTuplePatternBindings(tbl: in SymbolTable, pat: in Pattern, ty: in Type, inTuple: in Bool): Unit {

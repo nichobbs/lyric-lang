@@ -67,6 +67,7 @@ for t in \
   lyric-compiler/lyric/generator_closure_var_capture_self_test.l \
   lyric-compiler/lyric/generator_for_loop_self_test.l \
   lyric-compiler/lyric/tuple_pattern_binding_self_test.l \
+  lyric-compiler/lyric/generator_element_type_self_test.l \
   lyric-compiler/lyric/generator_control_flow_self_test.l \
   lyric-compiler/lyric/generator_control_flow_dotnet_self_test.l \
   lyric-compiler/lyric/generator_dispose_self_test.l \

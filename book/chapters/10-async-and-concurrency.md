@@ -223,6 +223,8 @@ func main(): Unit {
 }
 ```
 
+The declared return type (`Int` above) is the element type `T`, and the loop variable has exactly that type. That holds for any `T`: a generator declared `: Pt` yields records you can read fields from, and one declared `: Option[Int]` yields options you can `match` on. The loop does not iterate the option itself.
+
 The compiler infers the public signature of a generator function as `IAsyncEnumerable[T]`. `for x in seq { … }` lowers to `await foreach` using the `IAsyncEnumerable<T>` / `IAsyncEnumerator<T>` interfaces on .NET, or `Iterable<T>` / `Iterator<T>` on the JVM.
 
 **Generators with `await`.** An async generator may also use `await` inside its body. The two operations compose naturally — `yield` suspends and hands a value to the consumer; `await` suspends and waits for a task to complete. You can freely mix them:
