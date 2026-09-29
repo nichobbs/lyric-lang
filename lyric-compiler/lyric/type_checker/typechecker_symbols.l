@@ -284,7 +284,9 @@ pub record SymbolTable {
   /// `recordCopySites` by the receiver's span.  The JVM backend erases
   /// generics, so a receiver read out of a generic container or a generic
   /// call is statically `Object` there; this is the type it narrows to
-  /// (#7378).
+  /// (#7378).  Also keyed by the span of each union-case pattern (never an
+  /// expression's span): the union the pattern matches, which the JVM
+  /// resolves the case name in before the enclosing package's unions (#7761).
   memberRecvClasses: Map[String, String]
   /// The first symbol declaring each type id, keyed by the id, filled lazily
   /// by `symTableTypeSymbolOf` as symbols are appended.

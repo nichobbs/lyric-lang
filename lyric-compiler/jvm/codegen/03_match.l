@@ -1020,6 +1020,23 @@ func resolveBareCaseClassJvm(ctx: in FuncCtx, name: in String, scrutTy: in JvmTy
   }
 }
 
+// The type to resolve case pattern `pat`'s case name against: the union the
+// type checker matched the pattern to (`SymbolTable.memberRecvClasses`, keyed
+// by the pattern's span and seeded into `ctx.externTypes` as `~recv~<key>` by
+// `Jvm.Bridge.withRecvClasses`), else `scrutTy`.  A generic scrutinee
+// (`Option[Int]`, `Result[T, E]`) is erased to `Object` here, and resolving a
+// bare `Some`/`Ok` by name alone takes the enclosing package's same-named
+// case first -- so a package declaring its own `union Option` tested a
+// genuine `Std.Core.Option` against the local case class and no arm matched
+// (#7761).  This is the rule the checker and MSIL apply: the scrutinee's own
+// union first, the package's unions only when the scrutinee type is unknown.
+func casePatternScrutTyJvm(ctx: in FuncCtx, pat: in Pattern, scrutTy: in JvmType): JvmType {
+  match mapGet(ctx.externTypes, "~recv~" + recordCopySiteKey(pat.span)) {
+    case Some(cls) -> JRef(className = cls)
+    case None -> scrutTy
+  }
+}
+
 func resolveCaseClassJvm(ctx: in FuncCtx, head: in ModulePath, scrutTy: in JvmType): String {
   val caseName = lastSegment(head)
   match scrutTy {
@@ -1364,7 +1381,7 @@ func lowerPatternTest(
           match scrutEnum {
             case Some(ecls) -> emitEnumCaseTest(insns, scrutSlot, scrutTy, ecls, name, failLabel)
             case None -> {
-              val unionCase: Option[String] = match resolveBareCaseClassJvm(ctx, name, scrutTy) {
+              val unionCase: Option[String] = match resolveBareCaseClassJvm(ctx, name, casePatternScrutTyJvm(ctx, pat, scrutTy)) {
                 case Some(cls) -> if jvmClassIsUnionCase(cls) { Some(value = cls) } else { None }
                 case None -> None
               }
@@ -1625,7 +1642,7 @@ func lowerPatternTest(
       }
       // isinst test against the case class; fail if the scrutinee is not that
       // case.  (Unlike a checkcast this never throws on a non-matching arm.)
-      val caseClass = resolveCaseClassJvm(ctx, head, scrutTy)
+      val caseClass = resolveCaseClassJvm(ctx, head, casePatternScrutTyJvm(ctx, pat, scrutTy))
       if caseClass.length > 0 {
         emitLoad(insns, scrutSlot, scrutTy)
         insns.add(LInstanceof(className = caseClass))
@@ -2255,8 +2272,18 @@ func lowerPatternBind(
           // A single-segment `case Foo ->` that names a known union case — or a
           // registered enum variant of the scrutinee's enum (docs/59 §4.4) —
           // binds nothing (mirrors the test side); otherwise it is a variable
-          // bind.
-          val isCase = match ctorClassFor(ctx, name) { case Some(cls) -> jvmClassIsUnionCase(cls); case None -> false }
+          // bind.  A name the type checker matched as a case of the
+          // scrutinee's union (`casePatternScrutTyJvm`) is one even when no
+          // constructor of that name is in scope here.
+          val isCheckedCase = ctx.externTypes.containsKey("~recv~" + recordCopySiteKey(pat.span))
+          val isCase = if isCheckedCase {
+            true
+          } else {
+            match ctorClassFor(ctx, name) {
+              case Some(cls) -> jvmClassIsUnionCase(cls)
+              case None -> false
+            }
+          }
           val isEnumCase = match enumPatternClass(ctx, scrutTy, name) { case Some(_) -> true; case None -> false }
           if not isCase and not isEnumCase {
             emitLoad(insns, scrutSlot, scrutTy)
@@ -2333,7 +2360,7 @@ func lowerPatternBind(
           }
         }
       }
-      val caseClass = resolveCaseClassJvm(ctx, head, scrutTy)
+      val caseClass = resolveCaseClassJvm(ctx, head, casePatternScrutTyJvm(ctx, pat, scrutTy))
       if caseClass.length > 0 {
         val castSlot = allocSlot(
           ctx,
