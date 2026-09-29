@@ -20529,7 +20529,12 @@ func lowerMethodCallMsil(
     }
   }
   if memberName == "add" {
-    // List<object>::Add(object): void  OR  Dict::Add(key,value): void
+    // `List[T].add(item)` -> `List`1::Add(!0)`, `List[T].add(index, item)` ->
+    // `List`1::Insert(int32, !0)` (the JVM's `ArrayList.add(int, E)`, #7797),
+    // `Map[K, V].add(key, value)` -> `Dictionary`2::Add(!0, !1)`.  The
+    // two-argument form is told apart by the receiver, never by the arity:
+    // only a receiver not known to be a list is a map.
+    val isListInsert = args.count == 2 and isListRecvMsil(recvTy)
     //
     // Propagate the receiver's element generic-type args as a construction
     // hint so a bare `xs.add(None)` on a `List[Option[String]]` builds
@@ -20666,8 +20671,8 @@ func lowerMethodCallMsil(
     // representation.  Only applies to the single-value list-add shape
     // (`args.count == 1`); a two-arg `Dict.add(key, value)` call already has
     // its own key/value generic-arg hint above and is left untouched.
-    emitErasedCollRecvCastMsil(cctx, insns, recvTy, args.count >= 2)
-    val addElemTy = if args.count == 1 {
+    emitErasedCollRecvCastMsil(cctx, insns, recvTy, args.count >= 2 and not isListInsert)
+    val addElemTy = if args.count == 1 or isListInsert {
       match recvTy {
         case MConcreteList(e) -> Some(value = e)
         case _ -> None
@@ -20675,18 +20680,28 @@ func lowerMethodCallMsil(
     } else {
       None
     }
+    // The argument that is stored as an element: the only one of `add(item)`,
+    // the second of `add(index, item)`.
+    val elemArgIdx = if isListInsert { 1 } else { 0 }
     var i = 0
     while i < args.count {
-      match addElemTy {
+      if isListInsert and i == 0 {
+        val idxTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+        coerceCallArgMsil(cctx, insns, idxTy, MInt)
+        i = i + 1
+        continue
+      }
+      val elemAddTy = if i == elemArgIdx { addElemTy } else { None }
+      match elemAddTy {
         case Some(e) -> pushCollExpect(fctx, e)
         case None -> ()
       }
       // #7520: a lambda literal stored into a `List[() -> Unit]` /
       // `Map[K, () -> Unit]` slot must be the slot's real `Action`, or the
       // typed backing array rejects it (`ArrayTypeMismatchException`).
-      val addSlotTy = match addElemTy {
+      val addSlotTy = match elemAddTy {
         case Some(e) -> e
-        case None -> if i == 1 {
+        case None -> if i == 1 and not isListInsert {
           match recvTy {
             case MConcreteMap(_, v) -> v
             case _ -> MObject
@@ -20697,7 +20712,7 @@ func lowerMethodCallMsil(
       }
       seedLambdaLiteralVoidRetMsil(cctx, fctx, callArgExpr(args[i]), addSlotTy)
       val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
-      match addElemTy {
+      match elemAddTy {
         case Some(_) -> popCollExpect(fctx)
         case None -> ()
       }
@@ -20705,12 +20720,16 @@ func lowerMethodCallMsil(
       // the closed generic `!0` MemberRef; only the legacy `List<object>` boxes.
       // Either way the value is first widened to the element/key/value type
       // it is stored as (#7785).
-      val addArgSlotTy = if args.count >= 2 and i == 1 { collValueSlotTyMsil(recvTy) } else { collElemSlotTyMsil(recvTy) }
+      val addArgSlotTy = if args.count >= 2 and i == 1 and not isListInsert {
+        collValueSlotTyMsil(recvTy)
+      } else {
+        collElemSlotTyMsil(recvTy)
+      }
       collSlotArgMsil(cctx, insns, aTy, addArgSlotTy, recvTy)
       // An `object`-typed argument (an element read off an erased slice, a
       // closure result) added to a concrete `List<Foo>` is narrowed to the
       // element type the closed `Add(!0)` expects (#7755).
-      match addElemTy {
+      match elemAddTy {
         case Some(e) -> narrowObjectToDeclaredTypeMsil(cctx, insns, aTy, e)
         case None -> ()
       }
@@ -20721,7 +20740,10 @@ func lowerMethodCallMsil(
         fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
       }
     }
-    if args.count >= 2 {
+    if isListInsert {
+      val insElemTy = match recvTy { case MConcreteList(e) -> e; case _ -> MObject }
+      insns.add(MListOp(op = LoInsert, elemTy = insElemTy))
+    } else if args.count >= 2 {
       emitDictAdd(cctx, insns, recvTy)
     } else {
       emitListAdd(cctx, insns, recvTy)
