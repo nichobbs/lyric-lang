@@ -28,25 +28,42 @@ pub func checkOldPlacement(diag: in List[Diagnostic], file: in SourceFile): Unit
 
 func oldItem(diag: in List[Diagnostic], it: in Item): Unit {
   match it.kind {
-    case IConst(decl) -> oldExpr(diag, "a `const` initializer", false, decl.init)
-    case IVal(decl) -> oldExpr(diag, "a module-level `val` initializer", false, decl.init)
+    case IConst(decl) -> {
+      oldType(diag, decl.ty)
+      oldExpr(diag, "a `const` initializer", false, decl.init)
+    }
+    case IVal(decl) -> {
+      oldTypeOpt(diag, decl.ty)
+      oldExpr(diag, "a module-level `val` initializer", false, decl.init)
+    }
     case IFunc(decl) -> oldFunction(diag, decl)
     case IDistinctType(decl) -> oldDistinct(diag, decl)
+    case ITypeAlias(decl) -> oldTypeAlias(diag, decl)
     case IRecord(decl) -> oldRecord(diag, decl)
     case IExposedRec(decl) -> oldRecord(diag, decl)
+    case IUnion(decl) -> oldUnion(diag, decl)
+    case IEnum(_) -> ()
     case IOpaque(decl) -> oldOpaque(diag, decl)
     case IProtected(decl) -> {
+      oldGenerics(diag, decl.generics, decl.whereClause)
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
           case PMField(pf) -> match pf {
-            case PFVar(_, _, init, _, _, _) -> oldExprOpt(diag, "a protected field initializer", init)
-            case PFLet(_, _, init, _, _, _) -> oldExprOpt(diag, "a protected field initializer", init)
+            case PFVar(_, ty, init, _, _, _) -> {
+              oldType(diag, ty)
+              oldExprOpt(diag, "a protected field initializer", init)
+            }
+            case PFLet(_, ty, init, _, _, _) -> {
+              oldType(diag, ty)
+              oldExprOpt(diag, "a protected field initializer", init)
+            }
             case PFImmutable(fd) -> oldField(diag, fd)
           }
           case PMInvariant(inv) -> oldExpr(diag, "a type `invariant:`", false, inv.expr)
           case PMEntry(ed) -> {
             oldParams(diag, ed.params)
+            oldTypeOpt(diag, ed.ret)
             oldContracts(diag, ed.contracts)
             oldBody(diag, "an entry body", ed.body)
           }
@@ -56,25 +73,25 @@ func oldItem(diag: in List[Diagnostic], it: in Item): Unit {
       }
     }
     case IInterface(decl) -> {
+      oldGenerics(diag, decl.generics, decl.whereClause)
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
-          case IMSig(sig) -> {
-            oldParams(diag, sig.params)
-            oldContracts(diag, sig.contracts)
-          }
+          case IMSig(sig) -> oldSig(diag, sig)
           case IMFunc(fn) -> oldFunction(diag, fn)
-          case IMAssoc(_) -> ()
+          case IMAssoc(assoc) -> oldTypeOpt(diag, assoc.dflt)
         }
         i = i + 1
       }
     }
     case IImpl(decl) -> {
+      oldGenerics(diag, decl.generics, decl.whereClause)
+      oldType(diag, decl.target)
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
           case IMplFunc(fn) -> oldFunction(diag, fn)
-          case IMplAssoc(_) -> ()
+          case IMplAssoc(assoc) -> oldTypeOpt(diag, assoc.dflt)
         }
         i = i + 1
       }
@@ -84,14 +101,29 @@ func oldItem(diag: in List[Diagnostic], it: in Item): Unit {
       var i = 0
       while i < decl.members.count {
         match decl.members[i] {
-          case WMSingleton(_, _, init, _) -> oldExpr(diag, "a wire binding", false, init)
-          case WMScoped(_, _, _, init, _) -> oldExpr(diag, "a wire binding", false, init)
-          case WMBind(_, provider, _) -> oldExpr(diag, "a wire binding", false, provider)
-          case WMLocal(_, _, init, _) -> oldExpr(diag, "a wire binding", false, init)
-          case WMContributes(_, _, init, _, _, _) -> oldExpr(diag, "a wire binding", false, init)
+          case WMProvided(_, ty, _) -> oldType(diag, ty)
+          case WMSingleton(_, ty, init, _) -> {
+            oldType(diag, ty)
+            oldExpr(diag, "a wire binding", false, init)
+          }
+          case WMScoped(_, _, ty, init, _) -> {
+            oldType(diag, ty)
+            oldExpr(diag, "a wire binding", false, init)
+          }
+          case WMBind(iface, provider, _) -> {
+            oldType(diag, iface)
+            oldExpr(diag, "a wire binding", false, provider)
+          }
+          case WMLocal(_, ty, init, _) -> {
+            oldTypeOpt(diag, ty)
+            oldExpr(diag, "a wire binding", false, init)
+          }
+          case WMContributes(iface, _, init, _, _, _) -> {
+            oldType(diag, iface)
+            oldExpr(diag, "a wire binding", false, init)
+          }
           case WMConfigInst(cd, _) -> oldConfig(diag, cd)
           case WMInclude(_, _, adjustments, _, _) -> oldIncludeAdjustments(diag, adjustments)
-          case WMProvided(_, _, _) -> ()
           case WMExpose(_, _) -> ()
           case WMOverridable(_, _) -> ()
         }
@@ -102,48 +134,62 @@ func oldItem(diag: in List[Diagnostic], it: in Item): Unit {
       var i = 0
       while i < decl.members.count {
         match decl.members[i].kind {
-          case EMSig(sig) -> {
-            oldParams(diag, sig.params)
-            oldContracts(diag, sig.contracts)
-          }
+          case EMSig(sig) -> oldSig(diag, sig)
           case EMRecord(rd) -> oldRecord(diag, rd)
           case EMExposedRec(rd) -> oldRecord(diag, rd)
           case EMOpaque(od) -> oldOpaque(diag, od)
           case EMDistinctType(dd) -> oldDistinct(diag, dd)
-          case EMUnion(_) -> ()
+          case EMUnion(ud) -> oldUnion(diag, ud)
+          case EMTypeAlias(ad) -> oldTypeAlias(diag, ad)
           case EMEnum(_) -> ()
-          case EMTypeAlias(_) -> ()
         }
         i = i + 1
       }
     }
+    case IExternFunc(decl) -> {
+      oldParams(diag, decl.params)
+      oldTypeOpt(diag, decl.ret)
+    }
+    case IExternType(decl) -> oldGenerics(diag, decl.generics, None)
     case ITest(decl) -> oldBlock(diag, "a test body", false, decl.body)
     case IProperty(decl) -> {
+      oldBinders(diag, decl.forAll)
       oldExprOpt(diag, "a property guard", decl.guardExpr)
       oldBlock(diag, "a property body", false, decl.body)
     }
-    case IFixture(decl) -> oldExpr(diag, "a fixture initializer", false, decl.init)
+    case IFixture(decl) -> {
+      oldTypeOpt(diag, decl.ty)
+      oldExpr(diag, "a fixture initializer", false, decl.init)
+    }
     case IConfig(decl) -> oldConfig(diag, decl)
     case IAspect(decl) -> {
+      oldConfigFields(diag, decl.config)
       oldContracts(diag, decl.contracts)
       match decl.around {
-        case Some(ar) -> oldBlock(diag, "an aspect's `around` body", false, ar.body)
+        case Some(ar) -> {
+          match ar.argsRow {
+            case Some(fields) -> {
+              var i = 0
+              while i < fields.count {
+                oldType(diag, fields[i].ty)
+                i = i + 1
+              }
+            }
+            case None -> ()
+          }
+          oldBlock(diag, "an aspect's `around` body", false, ar.body)
+        }
         case None -> ()
       }
     }
-    case IExternFunc(decl) -> oldParams(diag, decl.params)
-    // No expression positions: union/enum cases and field types, type
-    // aliases, extern types and scope kinds carry only types and names.
-    case ITypeAlias(_) -> ()
-    case IUnion(_) -> ()
-    case IEnum(_) -> ()
+    // A scope kind declares only a name.
     case IScopeKind(_) -> ()
-    case IExternType(_) -> ()
     case IError -> ()
   }
 }
 
 func oldOpaque(diag: in List[Diagnostic], decl: in OpaqueTypeDecl): Unit {
+  oldGenerics(diag, decl.generics, decl.whereClause)
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
@@ -155,9 +201,32 @@ func oldOpaque(diag: in List[Diagnostic], decl: in OpaqueTypeDecl): Unit {
 }
 
 func oldDistinct(diag: in List[Diagnostic], decl: in DistinctTypeDecl): Unit {
+  oldGenerics(diag, decl.generics, None)
+  oldType(diag, decl.underlying)
   match decl.rangeClause {
     case Some(rb) -> oldRange(diag, "a range subtype's bounds", false, rb)
     case None -> ()
+  }
+}
+
+func oldTypeAlias(diag: in List[Diagnostic], decl: in TypeAliasDecl): Unit {
+  oldGenerics(diag, decl.generics, None)
+  oldType(diag, decl.rhs)
+}
+
+func oldUnion(diag: in List[Diagnostic], decl: in UnionDecl): Unit {
+  oldGenerics(diag, decl.generics, decl.whereClause)
+  var i = 0
+  while i < decl.cases.count {
+    var j = 0
+    while j < decl.cases[i].fields.count {
+      match decl.cases[i].fields[j] {
+        case UFNamed(_, ty, _) -> oldType(diag, ty)
+        case UFPos(ty, _) -> oldType(diag, ty)
+      }
+      j = j + 1
+    }
+    i = i + 1
   }
 }
 
@@ -182,6 +251,7 @@ func oldIncludeAdjustments(diag: in List[Diagnostic], adjs: in List[IncludeAdjus
 }
 
 func oldRecord(diag: in List[Diagnostic], decl: in RecordDecl): Unit {
+  oldGenerics(diag, decl.generics, decl.whereClause)
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
@@ -194,24 +264,42 @@ func oldRecord(diag: in List[Diagnostic], decl: in RecordDecl): Unit {
 }
 
 func oldField(diag: in List[Diagnostic], fd: in FieldDecl): Unit {
+  oldType(diag, fd.ty)
   oldExprOpt(diag, "a field default", fd.dflt)
 }
 
 func oldConfig(diag: in List[Diagnostic], decl: in ConfigDecl): Unit {
+  oldConfigFields(diag, decl.fields)
+}
+
+// Shared by module-level `config { }` blocks, config-template instances in a
+// wire, and an aspect's inline `config { }` block, whose defaults the weaver
+// splices verbatim into every woven function.
+func oldConfigFields(diag: in List[Diagnostic], fields: in List[ConfigField]): Unit {
   var i = 0
-  while i < decl.fields.count {
-    oldExprOpt(diag, "a config field default", decl.fields[i].default)
+  while i < fields.count {
+    oldType(diag, fields[i].ty)
+    oldExprOpt(diag, "a config field default", fields[i].default)
     i = i + 1
   }
 }
 
 func oldFunction(diag: in List[Diagnostic], fn: in FunctionDecl): Unit {
+  oldGenerics(diag, fn.generics, fn.whereClause)
   oldParams(diag, fn.params)
+  oldTypeOpt(diag, fn.ret)
   oldContracts(diag, fn.contracts)
   match fn.body {
     case Some(b) -> oldBody(diag, "a function body", b)
     case None -> ()
   }
+}
+
+func oldSig(diag: in List[Diagnostic], sig: in FunctionSig): Unit {
+  oldGenerics(diag, sig.generics, sig.whereClause)
+  oldParams(diag, sig.params)
+  oldTypeOpt(diag, sig.ret)
+  oldContracts(diag, sig.contracts)
 }
 
 func oldBody(diag: in List[Diagnostic], pos: in String, b: in FunctionBody): Unit {
@@ -224,6 +312,7 @@ func oldBody(diag: in List[Diagnostic], pos: in String, b: in FunctionBody): Uni
 func oldParams(diag: in List[Diagnostic], ps: in List[Param]): Unit {
   var i = 0
   while i < ps.count {
+    oldType(diag, ps[i].ty)
     oldExprOpt(diag, "a parameter default", ps[i].dflt)
     i = i + 1
   }
@@ -263,7 +352,8 @@ func oldStmt(diag: in List[Diagnostic], pos: in String, inOld: in Bool, stmt: in
     case SBreak(_) -> ()
     case SContinue(_) -> ()
     case SLoop(_, body) -> oldBlock(diag, pos, inOld, body)
-    case SFor(_, _, iter, body) -> {
+    case SFor(_, pat, iter, body) -> {
+      oldPattern(diag, pat)
       oldExpr(diag, pos, inOld, iter)
       oldBlock(diag, pos, inOld, body)
     }
@@ -274,9 +364,6 @@ func oldStmt(diag: in List[Diagnostic], pos: in String, inOld: in Bool, stmt: in
     case SExpr(e) -> oldExpr(diag, pos, inOld, e)
     case SThrow(e) -> oldExpr(diag, pos, inOld, e)
     case SReturn(v) -> match v { case Some(e) -> oldExpr(diag, pos, inOld, e); case None -> () }
-    // A loop invariant describes every iteration's head state, not the
-    // function's entry state; a value it needs from entry is a `val` bound
-    // before the loop.
     // A loop invariant describes each iteration's head state, never the
     // function's entry state, so it rejects `old` even when the loop sits in
     // a lambda inside an `ensures:` clause.
@@ -287,11 +374,21 @@ func oldStmt(diag: in List[Diagnostic], pos: in String, inOld: in Bool, stmt: in
       oldExpr(diag, pos, inOld, v)
     }
     case SLocal(binding) -> match binding {
-      case LBVal(_, _, e) -> oldExpr(diag, pos, inOld, e)
-      case LBLet(_, _, e) -> oldExpr(diag, pos, inOld, e)
-      case LBVar(_, _, init) -> match init {
-        case Some(e) -> oldExpr(diag, pos, inOld, e)
-        case None -> ()
+      case LBVal(pat, ty, e) -> {
+        oldPattern(diag, pat)
+        oldTypeOpt(diag, ty)
+        oldExpr(diag, pos, inOld, e)
+      }
+      case LBLet(_, ty, e) -> {
+        oldTypeOpt(diag, ty)
+        oldExpr(diag, pos, inOld, e)
+      }
+      case LBVar(_, ty, init) -> {
+        oldTypeOpt(diag, ty)
+        match init {
+          case Some(e) -> oldExpr(diag, pos, inOld, e)
+          case None -> ()
+        }
       }
     }
     case STry(body, catches, finally_) -> {
@@ -380,7 +477,14 @@ func oldExpr(diag: in List[Diagnostic], pos: in String, inOld: in Bool, e: in Ex
         )
       }
     }
-    case ELambda(_, body) -> oldBlock(diag, pos, inOld, body)
+    case ELambda(params, body) -> {
+      var i = 0
+      while i < params.count {
+        oldTypeOpt(diag, params[i].ty)
+        i = i + 1
+      }
+      oldBlock(diag, pos, inOld, body)
+    }
     case ELiteral(_) -> ()
     case EPath(_) -> ()
     case ESelf -> ()
@@ -413,7 +517,10 @@ func oldExpr(diag: in List[Diagnostic], pos: in String, inOld: in Bool, e: in Ex
       oldExpr(diag, pos, inOld, v)
     }
     case EMember(recv, _) -> oldExpr(diag, pos, inOld, recv)
-    case ETypeApp(f, _) -> oldExpr(diag, pos, inOld, f)
+    case ETypeApp(f, targs) -> {
+      oldExpr(diag, pos, inOld, f)
+      oldTypeArgs(diag, targs)
+    }
     case EIndex(recv, idxs) -> {
       oldExpr(diag, pos, inOld, recv)
       oldExprs(diag, pos, inOld, idxs)
@@ -442,6 +549,7 @@ func oldExpr(diag: in List[Diagnostic], pos: in String, inOld: in Bool, e: in Ex
       oldExpr(diag, pos, inOld, subj)
       var i = 0
       while i < arms.count {
+        oldPattern(diag, arms[i].pattern)
         match arms[i].guard {
           case Some(g) -> oldExpr(diag, pos, inOld, g)
           case None -> ()
@@ -452,19 +560,163 @@ func oldExpr(diag: in List[Diagnostic], pos: in String, inOld: in Bool, e: in Ex
     }
     case EBlock(blk) -> oldBlock(diag, pos, inOld, blk)
     case EUnsafe(blk) -> oldBlock(diag, pos, inOld, blk)
-    case EForall(_, w, body) -> {
+    case EForall(binders, w, body) -> {
+      oldBinders(diag, binders)
       match w {
         case Some(we) -> oldExpr(diag, pos, inOld, we)
         case None -> ()
       }
       oldExpr(diag, pos, inOld, body)
     }
-    case EExists(_, w, body) -> {
+    case EExists(binders, w, body) -> {
+      oldBinders(diag, binders)
       match w {
         case Some(we) -> oldExpr(diag, pos, inOld, we)
         case None -> ()
       }
       oldExpr(diag, pos, inOld, body)
     }
+  }
+}
+
+// Types and patterns never admit `old`, even inside an `ensures:` clause: a
+// range bound in a type (`Int range 0 ..= n`) or a range pattern is evaluated
+// where the type or pattern is used, and the contract elaborator snapshots
+// only `old` operands of the clause's own expression tree.
+val oldTypePosition = "a type annotation"
+
+val oldPatternPosition = "a pattern"
+
+func oldTypeOpt(diag: in List[Diagnostic], t: in Option[TypeExpr]): Unit {
+  match t {
+    case Some(ty) -> oldType(diag, ty)
+    case None -> ()
+  }
+}
+
+func oldType(diag: in List[Diagnostic], t: in TypeExpr): Unit {
+  match t.kind {
+    case TRefined(_, rb) -> oldRange(diag, oldTypePosition, false, rb)
+    case TGenericApp(_, args) -> oldTypeArgs(diag, args)
+    case TArray(size, element) -> {
+      oldTypeArg(diag, size)
+      oldType(diag, element)
+    }
+    case TSlice(element) -> oldType(diag, element)
+    case TTuple(types) -> {
+      var i = 0
+      while i < types.count {
+        oldType(diag, types[i])
+        i = i + 1
+      }
+    }
+    case TNullable(inner) -> oldType(diag, inner)
+    case TFunction(ps, r) -> {
+      var i = 0
+      while i < ps.count {
+        oldType(diag, ps[i])
+        i = i + 1
+      }
+      oldType(diag, r)
+    }
+    case TParen(inner) -> oldType(diag, inner)
+    case TRef(_) -> ()
+    case TUnit -> ()
+    case TSelf -> ()
+    case TNever -> ()
+    case TError -> ()
+  }
+}
+
+func oldTypeArg(diag: in List[Diagnostic], a: in TypeArg): Unit {
+  match a {
+    case TAType(ty) -> oldType(diag, ty)
+    case TAValue(e) -> oldExpr(diag, oldTypePosition, false, e)
+  }
+}
+
+func oldTypeArgs(diag: in List[Diagnostic], args: in List[TypeArg]): Unit {
+  var i = 0
+  while i < args.count {
+    oldTypeArg(diag, args[i])
+    i = i + 1
+  }
+}
+
+func oldGenerics(diag: in List[Diagnostic], gps: in Option[GenericParams], wc: in Option[WhereClause]): Unit {
+  match gps {
+    case Some(g) -> {
+      var i = 0
+      while i < g.params.count {
+        match g.params[i] {
+          case GPValue(_, constraint, _) -> oldType(diag, constraint)
+          case GPType(_, _) -> ()
+        }
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+  match wc {
+    case Some(w) -> {
+      var i = 0
+      while i < w.bounds.count {
+        var j = 0
+        while j < w.bounds[i].constraints.count {
+          oldTypeArgs(diag, w.bounds[i].constraints[j].args)
+          j = j + 1
+        }
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+}
+
+func oldBinders(diag: in List[Diagnostic], bs: in List[PropertyBinder]): Unit {
+  var i = 0
+  while i < bs.count {
+    oldType(diag, bs[i].ty)
+    i = i + 1
+  }
+}
+
+func oldPattern(diag: in List[Diagnostic], p: in Pattern): Unit {
+  match p.kind {
+    case PRange(lo, _, hi, _) -> {
+      oldExpr(diag, oldPatternPosition, false, lo)
+      oldExpr(diag, oldPatternPosition, false, hi)
+    }
+    case PBinding(_, inner) -> match inner { case Some(ip) -> oldPattern(diag, ip); case None -> () }
+    case PConstructor(_, args) -> oldPatterns(diag, args)
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, fp, _) -> oldPattern(diag, fp)
+          case RPFShort(_, _) -> ()
+        }
+        i = i + 1
+      }
+    }
+    case PTuple(ps) -> oldPatterns(diag, ps)
+    case PParen(inner) -> oldPattern(diag, inner)
+    case PTypeTest(inner, ty) -> {
+      oldPattern(diag, inner)
+      oldType(diag, ty)
+    }
+    case POr(ps) -> oldPatterns(diag, ps)
+    case PWildcard -> ()
+    case PLiteral(_) -> ()
+    case PConstRef(_) -> ()
+    case PError -> ()
+  }
+}
+
+func oldPatterns(diag: in List[Diagnostic], ps: in List[Pattern]): Unit {
+  var i = 0
+  while i < ps.count {
+    oldPattern(diag, ps[i])
+    i = i + 1
   }
 }

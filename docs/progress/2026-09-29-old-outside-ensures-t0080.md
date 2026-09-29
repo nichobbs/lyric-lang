@@ -55,3 +55,14 @@ interface-impl, protected-entry and aspect `ensures:` clauses builds and runs
 on `--target dotnet` and `--target jvm`. A violated `old` postcondition raises
 `PostconditionViolated` on dotnet, JVM and native. The misuse program is
 rejected with `T0080` on all three targets.
+
+Review follow-up (#7751, #7753): the pass matches every item, extern-member
+and wire-member kind with no wildcard arm, so `old` is also rejected in
+`extern func` parameter defaults, extern opaque field defaults and
+invariants, extern distinct range bounds, wire `include` adjustments, and an
+aspect's inline `config` defaults (which the weaver splices into every woven
+function). Type annotations and patterns never admit `old`, even inside an
+`ensures:` clause: a range refinement's bounds and a range pattern's bounds
+are evaluated where the type or pattern is used, and the elaborator snapshots
+only the clause's own expression tree. A loop `invariant:` rejects `old`
+even inside a lambda within `ensures:`.

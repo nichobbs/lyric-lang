@@ -6542,6 +6542,37 @@ test "old() in a loop invariant inside an ensures lambda is T0080" {
   assertTrue(hasDiagCode(parseCheck(src), "T0080"), "a loop invariant never admits old(), even inside ensures")
 }
 
+// #7749 second review: aspect config blocks, type annotations and patterns.
+test "old() in an aspect config default is T0080" {
+  val src = "package P\n\naspect Tap {\n  config {\n    timeoutMs: Int = old(5000)\n  }\n  matches: name like \"run*\"\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0080"), "aspect config default")
+  assertTrue(diagMessagesContain(cr, "config field default"), "names the config default")
+}
+
+test "old() in a range refinement of a parameter type is T0080" {
+  val src = "package P\nfunc f(a: in Int range 0 ..= old(150)): Int {\n  a\n}\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0080"), "refinement bound in a parameter type")
+  assertTrue(diagMessagesContain(cr, "type annotation"), "names the type annotation")
+}
+
+test "old() in a range pattern is T0080" {
+  val src = "package P\nfunc f(n: in Int): Int {\n  match n {\n    case 0 ..= old(10) -> 1\n    case _ -> 0\n  }\n}\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0080"), "range pattern bound")
+  assertTrue(diagMessagesContain(cr, "a pattern"), "names the pattern")
+}
+
+test "old() in a quantifier binder's refinement inside ensures is T0080" {
+  val src = "package P\nfunc f(xs: inout List[Int]): Unit\n  ensures: forall (i: Int range 0 ..= old(3)) { i >= 0 }\n{\n  xs.add(0)\n}\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  assertTrue(hasDiagCode(parseCheck(src), "T0080"), "types never admit old(), even in ensures")
+}
+
 // A contract clause or loop invariant may call only @pure functions (T0133,
 // #7228, language reference §6.3).
 test "a clause calling a non-@pure function is T0133" {
