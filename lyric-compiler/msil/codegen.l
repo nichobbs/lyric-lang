@@ -11881,10 +11881,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       case Some(s) -> {
                         emitLoadVarMsil(fctx, insns, s)
                         val capLocalTy = match mapGet(fctx.types, capName) { case Some(t) -> t; case None -> MObject }
-                        match capLocalTy {
-                          case MTypeVar(_) -> boxIfNeededMsil(cctx, insns, capLocalTy)
-                          case _ -> {
-                          }
+                        // Also a type that mentions one (#7704): a value-type
+                        // instantiation needs the box; a reference type has
+                        // none to add.
+                        if msilTypeHasDanglingTypeVarMsil(capLocalTy) {
+                          boxIfNeededMsil(cctx, insns, capLocalTy)
                         }
                       }
                       case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
@@ -31897,7 +31898,10 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
       // `fctx.hoistedCellType`/`fctx.types` (read at the capture-STORE call
       // site, which runs in the enclosing method's real generic scope) keep
       // the real `MTypeVar` unchanged — only this LAMBDA-local copy erases.
-      val capTy = match rawCapTy { case MTypeVar(_) -> MObject; case _ -> rawCapTy }
+      // The same holds for any type that MENTIONS a type parameter, such as
+      // the open instantiation `Box`1<!0>` a captured `Self` parameter of an
+      // impl for a generic type is tracked as (#7704).
+      val capTy = if msilTypeHasDanglingTypeVarMsil(rawCapTy) { MObject } else { rawCapTy }
       fctx.captureNameToType.add(lambdaCaps[cni], capTy)
       // A by-reference capture: `__caps[cni]` or `__caps.__fi` holds the hoisted `var`'s cell.
       if nameListContains(capCells, lambdaCaps[cni]) {
@@ -32349,6 +32353,21 @@ func registerParamsMsil(
   }
 }
 
+// The open self-instantiation of a generic type (`Box`1<!0>`, #6442), or None
+// for a non-generic type or a method with no type-parameter context of its
+// own (`fctx.reifiedGenerics` is set by `bindGenericSelfMsil`).
+func openSelfInstMsil(cctx: in CodegenCtx, fctx: in FuncCtx, selfTypeName: in String): Option[MsilType] {
+  val plain = stripGenericArity(selfTypeName)
+  match mapGet(cctx.genericTypeArity, plain) {
+    case Some(arity) -> if arity > 0 and fctx.reifiedGenerics.count == arity {
+      Some(value = openInstOfMsil(plain, arity))
+    } else {
+      None
+    }
+    case None -> None
+  }
+}
+
 // `<plainFqn>`<arity><!0, …, !(arity-1)>`: a generic type instantiated with its
 // own type parameters.
 func openInstOfMsil(plainFqn: in String, arity: in Int): MsilType {
@@ -32404,8 +32423,12 @@ func bindGenericSelfMsil(fctx: in FuncCtx, targetTypeName: in String, generics: 
 // `castclass` into a class-typed local and bind the name to that local; the
 // cast never fails because the type checker guarantees the argument IS the
 // target type (see `registerParamsMsil`).  A generic target's bare TypeDef is
-// its open definition, not a cast target, and a byref (`inout`/`out`)
-// parameter must keep aliasing the caller's storage, so both are left as is.
+// its open definition, not a cast target: its `Self` is the open
+// self-instantiation (`Box`1<!0>`), cast to through that TypeSpec, and the
+// parameter is tracked as that instantiation so `other.value` reads the `!0`
+// field through the instantiation like `self.value` does (#7704).  A generic
+// target without a type-parameter context is left as is, and so is a byref
+// (`inout`/`out`) parameter, which must keep aliasing the caller's storage.
 // Runs after every parameter slot is assigned, so the new locals follow them.
 func narrowSelfParamsMsil(
   cctx: in CodegenCtx,
@@ -32414,7 +32437,12 @@ func narrowSelfParamsMsil(
   params: in List[Param],
   selfTypeName: in String,
 ): Unit {
-  if selfTypeName.length == 0 or cctx.genericTypeArity.containsKey(stripGenericArity(selfTypeName)) {
+  if selfTypeName.length == 0 {
+    return ()
+  }
+  val isGeneric = cctx.genericTypeArity.containsKey(stripGenericArity(selfTypeName))
+  val openSelf = openSelfInstMsil(cctx, fctx, selfTypeName)
+  if isGeneric and openSelf.isNone {
     return ()
   }
   var pi = 0
@@ -32423,13 +32451,18 @@ func narrowSelfParamsMsil(
     if isSelfTypeExprMsil(p.ty) and not isByrefMode(p.mode) {
       match mapGet(fctx.slots, p.name) {
         case Some(argSlot) -> {
-          val selfTy = MClass(className = selfTypeName)
+          val selfTy = match openSelf { case Some(t) -> t; case None -> MClass(className = selfTypeName) }
           val localSlot = allocSlotMsil(fctx, "__self_param_" + p.name, selfTy)
           emitLoadSlot(insns, argSlot, fctx.paramCount)
-          insns.add(MCastclassByName(className = selfTypeName))
+          match selfTy {
+            case MGenericInstByName(headFqn, typeArgs) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = typeArgs))
+            case _ -> insns.add(MCastclassByName(className = selfTypeName))
+          }
           emitStoreSlot(insns, localSlot, fctx.paramCount)
           fctx.slots.remove(p.name)
           fctx.slots.add(p.name, localSlot)
+          fctx.types.remove(p.name)
+          fctx.types.add(p.name, selfTy)
         }
         case None -> ()
       }
@@ -33318,24 +33351,28 @@ func synthesizeClosureClassMsil(
       cellArrayTyMsil(if fi < capTypes.count { capTypes[fi] } else { MObject })
     } else {
       val rawTy = if fi < capTypes.count { capTypes[fi] } else { MObject }
-      match rawTy {
-        // #7695: a BY-VALUE capture of a real (open) generic type parameter
-        // (e.g. a `T`-typed param captured immutably by a closure inside a
-        // generic record method) cannot keep its bare `MTypeVar` as the
-        // field's declared type: `__Closure_<i>` is not itself a generic
-        // TypeDef, so a field typed `!0` there names a generic parameter
-        // with no enclosing scope — `TypeLoadException: has a field of an
-        // illegal type`. Erase to `MObject` instead, boxing at the
-        // capture-STORE site (`MNewobjByName`/`MStfldByName`, which runs in
-        // the enclosing method's real generic scope, where `!0` is valid).
-        // No unbox is needed on the read side: the LAMBDA's own copy of the
-        // capture's logical type (`captureNameToType`, populated in
-        // `lowerFuncMsilScoped`) is erased to `MObject` the same way, so the
-        // `EPath` capture-read arm never sees a bare `MTypeVar` to narrow —
-        // see that erasure's own comment for why the lambda body can never
-        // use `!0` at all (it has no enclosing generic TypeDef).
-        case MTypeVar(_) -> MObject
-        case _ -> rawTy
+      // #7695: a BY-VALUE capture of a real (open) generic type parameter
+      // (e.g. a `T`-typed param captured immutably by a closure inside a
+      // generic record method) cannot keep its bare `MTypeVar` as the
+      // field's declared type: `__Closure_<i>` is not itself a generic
+      // TypeDef, so a field typed `!0` there names a generic parameter
+      // with no enclosing scope — `TypeLoadException: has a field of an
+      // illegal type`. Erase to `MObject` instead, boxing at the
+      // capture-STORE site (`MNewobjByName`/`MStfldByName`, which runs in
+      // the enclosing method's real generic scope, where `!0` is valid).
+      // No unbox is needed on the read side: the LAMBDA's own copy of the
+      // capture's logical type (`captureNameToType`, populated in
+      // `lowerFuncMsilScoped`) is erased to `MObject` the same way, so the
+      // `EPath` capture-read arm never sees a bare `MTypeVar` to narrow —
+      // see that erasure's own comment for why the lambda body can never
+      // use `!0` at all (it has no enclosing generic TypeDef).  A type that
+      // merely MENTIONS a type parameter (`Box`1<!0>`, a captured `Self`
+      // parameter of an impl for a generic type, #7704) is just as
+      // unrepresentable here, so it erases too.
+      if msilTypeHasDanglingTypeVarMsil(rawTy) {
+        MObject
+      } else {
+        rawTy
       }
     }
     fields.add(MField(flags = 0x0006, name = fieldName, fieldType = fieldType))

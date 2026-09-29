@@ -1593,6 +1593,30 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
 // ─────────────────────────────────────────────────────────────────────────────
 // Replace every `TySelf` occurrence in `t` with `selfTy`, used when matching
 // interface parameter/return types against a concrete impl.
+// `Self` is the owning type inside a record's or impl's method bodies — for
+// its parameters as for its return — so a `Self` parameter passes where that
+// type is expected, e.g. as the argument of a bare sibling call, whose
+// signature is registered with `Self` already substituted (#7704).
+func substitutesSelfParams(params: in List[ResolvedParam], selfTy: in Type): List[ResolvedParam] {
+  val substituted: List[ResolvedParam] = newList()
+  var i = 0
+  while i < params.count {
+    val rp = params[i]
+    substituted.add(
+      ResolvedParam(
+        name = rp.name,
+        ty = substitutesSelf(rp.ty, selfTy),
+        mode = rp.mode,
+        hasDefault = rp.hasDefault,
+        span = rp.span,
+        tyExpr = rp.tyExpr
+      )
+    )
+    i = i + 1
+  }
+  substituted
+}
+
 func substitutesSelf(t: in Type, selfTy: in Type): Type {
   match t {
     case TySelf -> selfTy
@@ -2851,7 +2875,7 @@ func checkRecordMemberBodies(
         val sig = ResolvedSignature(
           generics = combinedGenerics,
           bounds = sig0.bounds,
-          params = sig0.params,
+          params = substitutesSelfParams(sig0.params, selfTy),
           returnTy = substitutesSelf(sig0.returnTy, selfTy),
           isAsync = sig0.isAsync,
           isHot = sig0.isHot,
@@ -3396,7 +3420,7 @@ func checkImplMemberBodies(
         val sig = ResolvedSignature(
           generics = combinedGenerics,
           bounds = sig0.bounds,
-          params = sig0.params,
+          params = substitutesSelfParams(sig0.params, selfTy),
           returnTy = substitutesSelf(sig0.returnTy, selfTy),
           isAsync = sig0.isAsync,
           isHot = sig0.isHot,
