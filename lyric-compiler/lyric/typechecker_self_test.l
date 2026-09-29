@@ -3092,10 +3092,30 @@ test "a list literal in a List[T]-annotated val binding still type-checks" {
   assertEqualInt(diagCount(cr), 0, "a bracket literal binding initialiser types directly as List[Int]")
 }
 
+// #7702: this case used to run under the bare `parseCheck` harness with a
+// local `record List[T]`, and passed only because `argSatisfiesParam`'s
+// empty-literal exemption matched any type NAMED `List`. That accepted `[]`
+// for a user's own record while codegen built a stdlib collection there
+// instead. The exemption is now id-based, so with the stdlib `List` in scope
+// this passes only when `[]` is accepted as the genuine
+// `Std.CollectionsHost.List`, and the local-record form below is rejected.
 test "an empty list literal still satisfies a List[T] ctor field" {
+  val src = "package P\nimport Std.CollectionsHost\nrecord R { items: List[Int] }\nfunc f(): R { R(items = []) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "[] still satisfies a List[Int] ctor field")
+  assertEqual(bareTypeOrigin(cr, "List"), "Std.CollectionsHost", "the field's List is the stdlib one")
+}
+
+test "an empty list literal does not satisfy a user record named List (#7702)" {
   val src = "package P\nrecord List[T] { }\nrecord R { items: List[Int] }\nfunc f(): R { R(items = []) }\n"
   val cr = parseCheck(src)
-  assertEqualInt(diagCount(cr), 0, "[] still satisfies a List[Int] ctor field")
+  assertEqualInt(countDiagCode(cr, "T0104"), 1, "[] is not a same-named user record List[Int]")
+}
+
+test "a list literal with the wrong element type is rejected by a List[Int] ctor field (#7702)" {
+  val src = "package P\nimport Std.CollectionsHost\nrecord R { items: List[Int] }\nfunc f(): R { R(items = [\"a\", \"b\"]) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0104"), 1, "a slice[String] literal does not satisfy a List[Int] ctor field")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

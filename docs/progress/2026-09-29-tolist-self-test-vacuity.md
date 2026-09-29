@@ -1,4 +1,4 @@
-# `.toList()` type-checker self-tests assert the resolved stdlib `List` (#7702)
+# `.toList()` and empty-literal self-tests assert the stdlib `List`; `[]` no longer satisfies a user `record List` (#7702)
 
 The `typechecker_self_test.l` case ".toList() bridges a slice value into a
 List[T] parameter" ran under the bare `parseCheck` harness with a local
@@ -26,9 +26,35 @@ assertion held whether or not `.toList()` resolved at all.
   count. It now also asserts the recorded `List[Int]` type and its
   `Std.CollectionsHost` origin. The file has no `.toArray()` cases.
 
+## Empty list literal
+
+"an empty list literal still satisfies a List[T] ctor field" had the same
+problem, and it exposed a real checker bug. It ran under `parseCheck` with a
+local `record List[T] { }`. `[]` infers as `slice[<error>]` with no element
+to type it, and `argSatisfiesParam`'s empty-literal exemption accepted that
+for any parameter type NAMED `List`. So the test passed without the stdlib
+`List` in play, and a real program putting `[]` into a field of its own
+`record List[Int]` compiled and then failed at runtime
+(`Msil.Codegen: unimplemented List member access: tag`), because codegen
+builds a stdlib collection for the literal. This is the same name-vs-id split
+#7696 fixed for non-empty literals.
+
+- `argSatisfiesParam` (`typechecker_exprs.l`) now matches the stdlib `List` by
+  TypeId (`stdCollectionsListTypeId`) instead of by name. That program is now
+  a compile-time `T0104`.
+- The positive case runs with `stdCollectionsHostPackages()` and no local
+  record, and asserts that the bare `List` is `Std.CollectionsHost`'s. Both
+  acceptance paths for a ctor-field `[]` (`argSatisfiesParam` and
+  `listLiteralArgSatisfiesParam`) are now id-based. Literals record no type in
+  `callResultTypes`, so the id-based acceptance is what pins the type.
+- New negative cases: `[]` into a user `record List[Int]` field is exactly one
+  `T0104`. `["a", "b"]` into a stdlib `List[Int]` field is exactly one
+  `T0104` (a ctor-field argument is inferred without an expected type, so the
+  literal is `slice[String]`).
+
 ## Verification
 
-`lyric test lyric-compiler/lyric/typechecker_self_test.l`: 612 ok, 0 not ok.
+`lyric test lyric-compiler/lyric/typechecker_self_test.l`: 614 ok, 0 not ok.
 The new assertions were checked for vacuity in two ways. First, all three cases
 were temporarily reverted to the old harness (bare `parseCheck` plus a local
 `record List[T]`). Each old zero-diagnostic or diagnostic-count assertion still
@@ -36,3 +62,8 @@ passed or failed as before, and each new recorded-type assertion failed with an
 empty recorded type. The negative case's `T0043` count was 0. Second, the
 expected types were temporarily changed to `List[Long]`, and each case failed
 and reported the real `List[Int]` or `List[String]`.
+
+For the empty-literal case: with the previous compiler, the new user-record
+negative case failed (0 diagnostics; `[]` was accepted). With the fix,
+reverting the positive case to the old harness (`parseCheck` plus a local
+`record List[T]`) makes it fail with one diagnostic instead of passing.
