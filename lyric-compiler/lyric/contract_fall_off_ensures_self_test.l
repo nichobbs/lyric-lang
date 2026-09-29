@@ -271,6 +271,144 @@ test "trailing if whose branch ends in while true checks ensures at return (#775
   assertPanicsWith("while true in a value branch", "PostconditionViolated", { -> val _ = whileTrueValue(0, 4) })
 }
 
+// A `while` whose condition is a compile-time `true` spelled other than the
+// literal — a module constant, a constant comparison, a negated `false` — is
+// the same unconditional loop as `while true`: checked at its `return`s, with
+// no unreachable check after it (#7764).  A local `var` shadowing such a
+// constant is a real condition, so that loop's fall-off is still checked.
+val ALWAYS: Bool = true
+
+val ONE = 1
+
+func whileConstVal(x: inout Int, v: in Int): Unit
+  ensures: x == 100
+{
+  while ALWAYS {
+    x = x + 1
+    if x >= v {
+      return
+    }
+  }
+}
+
+func whileConstCompare(x: inout Int, v: in Int): Unit
+  ensures: x == 100
+{
+  while ONE == 1 {
+    x = x + 1
+    if x >= v {
+      return
+    }
+  }
+}
+
+func whileNotFalse(x: inout Int, v: in Int): Unit
+  ensures: x == 100
+{
+  while not false
+    invariant: x < v
+  {
+    x = x + 1
+    if x >= v {
+      return
+    }
+  }
+}
+
+func whileShadowedConst(x: inout Int, v: in Int): Unit
+  ensures: x == 100
+{
+  var ALWAYS = true
+  while ALWAYS {
+    x = x + 1
+    if x >= v {
+      ALWAYS = false
+    }
+  }
+}
+
+test "trailing while over a constant val checks ensures at return (#7764)" {
+  var a = 0
+  whileConstVal(a, 100)
+  assertEqualInt(a, 100, "while ALWAYS")
+  assertPanicsWith("while ALWAYS", "PostconditionViolated", { -> var b = 0; whileConstVal(b, 4) })
+}
+
+test "trailing while over a constant comparison checks ensures at return (#7764)" {
+  var a = 0
+  whileConstCompare(a, 100)
+  assertEqualInt(a, 100, "while ONE == 1")
+  assertPanicsWith("while ONE == 1", "PostconditionViolated", { -> var b = 0; whileConstCompare(b, 4) })
+}
+
+test "trailing while not false with an invariant checks ensures at return (#7764)" {
+  var a = 0
+  whileNotFalse(a, 100)
+  assertEqualInt(a, 100, "while not false")
+  assertPanicsWith("while not false", "PostconditionViolated", { -> var b = 0; whileNotFalse(b, 4) })
+}
+
+test "a var shadowing a constant val keeps the fall-off check (#7764)" {
+  var a = 0
+  whileShadowedConst(a, 100)
+  assertEqualInt(a, 100, "shadowed ALWAYS")
+  assertPanicsWith("shadowed ALWAYS", "PostconditionViolated", { -> var b = 0; whileShadowedConst(b, 4) })
+}
+
+// A trailing `if`/`match` whose every branch returns never falls off: each
+// return checks the postcondition and nothing is appended after it (#7764).
+func ifAllReturn(x: inout Int, v: in Int): Unit
+  ensures: x == 100
+{
+  x = v
+  if v > 50 {
+    return
+  } else {
+    x = x + 50
+    return
+  }
+}
+
+func matchAllExit(x: inout Int, v: in Int): Unit
+  ensures: x == 100
+{
+  match v {
+    case 0 -> {
+      x = 100
+      return
+    }
+    case _ -> {
+      while true {
+        x = x + 1
+        if x >= v {
+          return
+        }
+      }
+    }
+  }
+}
+
+test "trailing if whose branches all return checks ensures at each return (#7764)" {
+  var a = 0
+  ifAllReturn(a, 100)
+  assertEqualInt(a, 100, "if/return")
+  var c = 0
+  ifAllReturn(c, 50)
+  assertEqualInt(c, 100, "else/return")
+  assertPanicsWith("if/return", "PostconditionViolated", { -> var b = 0; ifAllReturn(b, 60) })
+  assertPanicsWith("else/return", "PostconditionViolated", { -> var b = 0; ifAllReturn(b, 3) })
+}
+
+test "trailing match whose arms return or loop forever checks ensures at each return (#7764)" {
+  var a = 0
+  matchAllExit(a, 0)
+  assertEqualInt(a, 100, "case 0")
+  var c = 0
+  matchAllExit(c, 100)
+  assertEqualInt(c, 100, "while true arm")
+  assertPanicsWith("while true arm", "PostconditionViolated", { -> var b = 0; matchAllExit(b, 7) })
+}
+
 // ─── Trailing conditionals and matches with statement bodies ────────────────
 func ifNoElse(x: inout Int, v: in Int): Unit
   ensures: x == 100

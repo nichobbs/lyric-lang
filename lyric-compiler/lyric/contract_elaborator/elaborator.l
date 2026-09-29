@@ -1472,11 +1472,16 @@ func rewriteTrailingSExpr(
   // cannot stloc (nothing on the stack) → InvalidProgramException (#3505).
   // Emit the expression as a plain statement and check ensures without result
   // substitution.  Protected-type invariant ensures are the typical case here:
-  // they reference field names, never `result`.
+  // they reference field names, never `result`.  A trailing `if`/`match`
+  // whose every branch returns (or ends in a loop nothing leaves) never
+  // falls off, so a check after it would be unreachable (#7764); its
+  // returns were already rewritten to check the postcondition.
   if isVoidReturn {
     val newE = elaborateExprDeep(e, ensuresExprs, counter)
     acc.add(mkStmt(SExpr(expr = newE), sp))
-    appendEnsuresAssertsNoResult(acc, ensuresExprs, sp)
+    if not exprAlwaysExits(newE) {
+      appendEnsuresAssertsNoResult(acc, ensuresExprs, sp)
+    }
     return
   }
   // The trailing expression may itself be an EMatch / EIf whose arms exit
@@ -1579,7 +1584,9 @@ func stmtAlwaysExits(s: in Statement): Bool {
 }
 
 // Whether `e` is the literal `true`, possibly parenthesised: the condition of
-// a `while` that only a `break` (or `return`/`throw`) can leave.
+// a `while` that only a `break` (or `return`/`throw`) can leave.  Any other
+// compile-time-true condition has already been folded to the literal by
+// `canonicalizeConstantLoopConds` (#7764).
 func isLiteralTrue(e: in Expr): Bool {
   match e.kind {
     case ELiteral(lit) -> match lit { case LBool(v) -> v; case _ -> false }
@@ -3393,7 +3400,10 @@ pub func elaborateFileWithInterfaces(
   importedIfaces: in List[InterfaceDecl],
   contractsEnabled: in Bool = true,
 ): SourceFile {
-  val canonFile = canonicalizeFileUnitAliases(file)
+  // A `while` whose condition is a compile-time `true` spelled other than
+  // the literal is folded to it first, so the loop is classified exactly
+  // like `while true` (#7764).
+  val canonFile = canonicalizeConstantLoopConds(canonicalizeFileUnitAliases(file))
   val ifaces = interfaceTable(canonFile, importedIfaces)
   val newItems: List[Item] = newList()
   // `@proof_required` files always have contracts enabled: their obligations
