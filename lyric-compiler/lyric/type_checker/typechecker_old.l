@@ -33,6 +33,7 @@ func oldItem(diag: in List[Diagnostic], it: in Item): Unit {
       oldExpr(diag, "a `const` initializer", false, decl.init)
     }
     case IVal(decl) -> {
+      oldPattern(diag, decl.pattern)
       oldTypeOpt(diag, decl.ty)
       oldExpr(diag, "a module-level `val` initializer", false, decl.init)
     }
@@ -326,7 +327,13 @@ func oldContracts(diag: in List[Diagnostic], cs: in List[ContractClause]): Unit 
       case CCRequires(e, _) -> oldExpr(diag, "a `requires:` clause", false, e)
       case CCWhen(e, _) -> oldExpr(diag, "a `when:` barrier", false, e)
       case CCDecreases(e, _) -> oldExpr(diag, "a `decreases:` measure", false, e)
-      case CCRaises(_, _) -> ()
+      case CCRaises(types, _) -> {
+        var j = 0
+        while j < types.count {
+          oldType(diag, types[j])
+          j = j + 1
+        }
+      }
     }
     i = i + 1
   }

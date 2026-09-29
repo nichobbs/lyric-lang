@@ -6588,6 +6588,83 @@ test "old() in a quantifier binder's refinement inside ensures is T0080" {
   assertTrue(hasDiagCode(parseCheck(src), "T0080"), "types never admit old(), even in ensures")
 }
 
+// #7756: a module-level `val`'s pattern is an expression position too, like
+// a local `val`'s.
+test "old() in a module val tuple pattern's range bound is T0080 (#7756)" {
+  val src = "package P\nval (a, 0 ..= old(9)) = (1, 2)\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0080"), 1, "range pattern bound in a module val")
+  assertTrue(diagMessagesContain(cr, "a pattern"), "names the pattern")
+}
+
+test "old() in a module val type-test pattern's refinement is T0080 (#7756)" {
+  val src = "package P\nval n is Int range 0 ..= old(9) = 3\n"
+  assertEqualInt(parse(src).diagnostics.count, 0, "parses cleanly")
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0080"), 1, "refinement bound in a module val pattern")
+  assertTrue(diagMessagesContain(cr, "type annotation"), "names the type annotation")
+}
+
+// #7756: the types of a `raises:` clause are type positions.  The parser
+// never produces `CCRaises` (D007 dropped `raises:`; the grammar keeps it
+// reserved), so the clause is built directly on a parsed function.
+test "old() in a raises: clause type is T0080 (#7756)" {
+  val tySrc = "package P\nval v: Int range 0 ..= old(9) = 0\n"
+  val raisedTy = match parse(tySrc).file.items[0].kind { case IVal(vd) -> vd.ty; case _ -> None }
+  val fnSrc = "package P\nfunc f(): Unit {\n}\n"
+  val pf = parse(fnSrc).file
+  assertEqualInt(countDiagCode(check(pf), "T0080"), 0, "control: no raises clause")
+  val it = pf.items[0]
+  match it.kind {
+    case IFunc(fn) -> match raisedTy {
+      case Some(te) -> {
+        val types: List[TypeExpr] = newList()
+        types.add(te)
+        val cs: List[ContractClause] = newList()
+        cs.add(CCRaises(types = types, span = fn.span))
+        val withRaises = FunctionDecl(
+          docComments = fn.docComments,
+          annotations = fn.annotations,
+          visibility = fn.visibility,
+          isAsync = fn.isAsync,
+          name = fn.name,
+          generics = fn.generics,
+          params = fn.params,
+          ret = fn.ret,
+          whereClause = fn.whereClause,
+          contracts = cs,
+          body = fn.body,
+          span = fn.span
+        )
+        val items: List[Item] = newList()
+        items.add(
+          Item(
+            docComments = it.docComments,
+            annotations = it.annotations,
+            visibility = it.visibility,
+            kind = IFunc(decl = withRaises),
+            span = it.span
+          )
+        )
+        val file = SourceFile(
+          moduleDoc = pf.moduleDoc,
+          fileAnnotations = pf.fileAnnotations,
+          packageDecl = pf.packageDecl,
+          imports = pf.imports,
+          items = items,
+          span = pf.span
+        )
+        val cr = check(file)
+        assertEqualInt(countDiagCode(cr, "T0080"), 1, "refinement bound in a raises: type")
+        assertTrue(diagMessagesContain(cr, "type annotation"), "names the type annotation")
+      }
+      case None -> assertTrue(false, "the val's type annotation parsed")
+    }
+    case _ -> assertTrue(false, "the function parsed")
+  }
+}
+
 // A contract clause or loop invariant may call only @pure functions (T0133,
 // #7228, language reference §6.3).
 test "a clause calling a non-@pure function is T0133" {
