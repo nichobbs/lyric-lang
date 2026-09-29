@@ -13,6 +13,10 @@
 # release path as `ilc CodeGenerationFailedException` / runtime
 # `InvalidProgramException`.  See #3943.
 #
+# A second phase (#7755) compiles a set of consumer-side self-tests
+# (generators, legacy erased collections, ...) with `lyric test --target
+# dotnet` and verifies each emitted test DLL; see step 4 below.
+#
 # Usage:
 #   scripts/ilverify-selfhosted.sh [lyric-bin]
 #
@@ -193,11 +197,84 @@ if [[ "$res_errors" -gt 0 ]]; then
   for fd in "${res_failed_dlls[@]}"; do echo "[ilverify]   - $fd"; done
 fi
 
+closure_ok=1
 if [[ "$il_errors" -eq 0 ]]; then
   echo "[ilverify] OK: self-hosted-emitted IL is verifiable ($emitted DLLs, 0 IL-validity errors)"
+else
+  closure_ok=0
+  echo "[ilverify] FAIL: $il_errors IL-validity error(s) across ${#il_failed_dlls[@]} DLL(s):" >&2
+  for fd in "${il_failed_dlls[@]}"; do echo "  - $fd" >&2; done
+  echo "[ilverify] These are self-hosted MSIL emitter bugs (see #3943)." >&2
+fi
+
+# 4. Verify the compiled output of consumer-side self-tests (#7755).
+#
+# The closure above is compiler/stdlib code; it never exercises user-program
+# shapes such as a `for` over a generator, a legacy erased `List`/`Set`/`Map`
+# receiver, or a `Self`-returning interface call — the consumer code where
+# `object`-erased values met typed call slots without a `castclass`.  Compile
+# each self-test below with `lyric test --target dotnet` (which runs it, so a
+# runtime failure fails the gate too) and verify the test DLL it emits into
+# `<dir>/.lyric-test/<stem>.dll`, referencing the stdlib DLLs staged beside it.
+# Every ilverify error is gate-blocking here, resolution errors included: the
+# test DLLs reference only the stdlib and the shared framework, all present.
+SELF_TESTS=(
+  lyric-compiler/lyric/generator_for_loop_self_test.l
+  lyric-compiler/lyric/async_generator_self_test.l
+  lyric-compiler/lyric/generator_control_flow_self_test.l
+  lyric-compiler/lyric/generator_control_flow_dotnet_self_test.l
+  lyric-compiler/lyric/generator_dispose_self_test.l
+  lyric-compiler/lyric/generator_closure_var_capture_self_test.l
+  lyric-compiler/lyric/erased_receiver_narrowing_self_test.l
+  lyric-compiler/lyric/erased_receiver_narrowing_dotnet_self_test.l
+)
+st_errors=0
+st_failed=()
+for t in "${SELF_TESTS[@]}"; do
+  src="$REPO_ROOT/$t"
+  stem="$(basename "$t" .l)"
+  tdir="$(dirname "$src")/.lyric-test"
+  rm -f "$tdir/$stem.dll"
+  if ! "$LYRIC_BIN" test --target dotnet "$src" >"$BUILD_DIR/ilverify-$stem.log" 2>&1; then
+    echo "::group::$stem — lyric test failed"
+    cat "$BUILD_DIR/ilverify-$stem.log"
+    echo "::endgroup::"
+    st_failed+=( "$stem:test-failed" )
+    continue
+  fi
+  if [[ ! -f "$tdir/$stem.dll" ]]; then
+    st_failed+=( "$stem:no-dll" )
+    continue
+  fi
+  st_refs=()
+  for d in "$tdir"/*.dll; do
+    [[ "$d" == "$tdir/$stem.dll" ]] || st_refs+=( -r "$d" )
+  done
+  for d in "$SYSDIR"/*.dll; do st_refs+=( -r "$d" ); done
+  out="$("$ILVERIFY" "$tdir/$stem.dll" "${st_refs[@]}" 2>&1 || true)"
+  errlines="$(printf '%s\n' "$out" | grep '\[IL\]: Error' || true)"
+  n="$(printf '%s\n' "$errlines" | grep -c '\[IL\]: Error' || true)"
+  if [[ "$n" -gt 0 ]]; then
+    echo "::group::$stem — $n ilverify error(s)"
+    printf '%s\n' "$errlines" | sed 's/^/  /'
+    echo "::endgroup::"
+    st_errors=$((st_errors + n)); st_failed+=( "$stem:$n" )
+  else
+    echo "[ilverify] self-test $stem: OK"
+  fi
+done
+
+echo ""
+echo "[ilverify] ==== summary (consumer self-test DLLs) ===="
+echo "[ilverify] self-tests verified          : ${#SELF_TESTS[@]}"
+echo "[ilverify] ilverify errors (gate)       : $st_errors"
+
+if [[ "$closure_ok" -eq 1 && "${#st_failed[@]}" -eq 0 ]]; then
   exit 0
 fi
-echo "[ilverify] FAIL: $il_errors IL-validity error(s) across ${#il_failed_dlls[@]} DLL(s):" >&2
-for fd in "${il_failed_dlls[@]}"; do echo "  - $fd" >&2; done
-echo "[ilverify] These are self-hosted MSIL emitter bugs (see #3943)." >&2
+if [[ "${#st_failed[@]}" -gt 0 ]]; then
+  echo "[ilverify] FAIL: self-test DLL verification failed:" >&2
+  for fd in "${st_failed[@]}"; do echo "  - $fd" >&2; done
+  echo "[ilverify] These are self-hosted MSIL emitter bugs in consumer code (see #7755)." >&2
+fi
 exit 1

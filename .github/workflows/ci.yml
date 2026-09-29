@@ -679,7 +679,8 @@ jobs:
   # build cannot (union match-arm type tracking, value-erased-to-object, list
   # element-type confusion).  Zero IL-validity errors reached at #3943; this
   # job now gates auto-merge so the emitter cannot regress silently.  Developers
-  # run the same check locally via `make ilverify`.
+  # run the same check locally via `make ilverify`.  The script also verifies
+  # the DLLs of consumer-side self-tests (generators, erased collections; #7755).
   #
   # NOTE (#4370): job id renamed from `ilverify-informational` to
   # `ilverify-required` — the old name implied a non-blocking/advisory check,

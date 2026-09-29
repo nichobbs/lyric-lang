@@ -73,7 +73,8 @@ for t in \
   lyric-compiler/lyric/local_union_case_shadow_self_test.l \
   lyric-compiler/lyric/async_generator_self_test.l \
   lyric-compiler/lyric/generator_control_flow_self_test.l \
-  lyric-compiler/lyric/generator_dispose_self_test.l ; do
+  lyric-compiler/lyric/generator_dispose_self_test.l \
+  lyric-compiler/lyric/erased_receiver_narrowing_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"
