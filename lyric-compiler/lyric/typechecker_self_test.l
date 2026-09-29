@@ -6942,6 +6942,27 @@ test "an impl for a generic protected type is T0136 (#7457)" {
   assertTrue(hasDiagCode(parseCheck(src), "T0136"), "generic protected target")
 }
 
+test "an impl for a generic record has its type parameters in scope (#7704)" {
+  val src = "package P\ninterface Counted {\n  func countWith(extra: in Int): Int\n}\ninterface Pick {\n  func pick(other: in Self): Self\n  func twice(other: in Self): Self\n}\nrecord Box[T] {\n  value: T\n}\nimpl[T] Counted for Box[T] {\n  func countWith(extra: in Int): Int {\n    val y: T = self.value\n    var z: T = y\n    z = value\n    extra\n  }\n}\nimpl[T] Pick for Box[T] {\n  func pick(other: in Self): Self {\n    val v: T = other.value\n    Box(value = v)\n  }\n  func twice(other: in Self): Self {\n    pick(other)\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0010"), "T resolves in the impl target and bodies")
+  assertTrue(not hasDiagCode(cr, "T0145"), "impl[T] ... for Box[T] is well-formed")
+  assertTrue(not hasDiagCode(cr, "T0106"), "Self parameter conforms")
+  assertTrue(not hasDiagCode(cr, "T0107"), "Self return conforms")
+}
+
+test "an impl whose target arguments are not its own type parameters is T0145 (#7704)" {
+  val iface = "package P\ninterface Counted {\n  func size(): Int\n}\nrecord Box[T] {\n  value: T\n}\nrecord Two[A, B] {\n  a: A\n  b: B\n}\n"
+  val concrete = iface + "impl Counted for Box[Int] {\n  func size(): Int = 1\n}\n"
+  assertTrue(hasDiagCode(parseCheck(concrete), "T0145"), "a concrete instantiation")
+  val repeated = iface + "impl[T] Counted for Two[T, T] {\n  func size(): Int = 2\n}\n"
+  assertTrue(hasDiagCode(parseCheck(repeated), "T0145"), "a parameter named twice")
+  val unused = iface + "impl[T, U] Counted for Box[T] {\n  func size(): Int = 1\n}\n"
+  assertTrue(hasDiagCode(parseCheck(unused), "T0145"), "an impl parameter the target never names")
+  val swapped = iface + "impl[A, B] Counted for Two[B, A] {\n  func size(): Int = 2\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(swapped), "T0145"), "parameters in any order")
+}
+
 test "an async impl method on a protected type is T0135 (#7457)" {
   val src = "package P\ninterface Store {\n  async func size(): Int\n}\nprotected type C {\n  var n: Int = 0\n}\nimpl Store for C {\n  async func size(): Int {\n    n\n  }\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0135"), "async impl method runs under the lock")

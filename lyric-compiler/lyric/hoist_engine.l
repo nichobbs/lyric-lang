@@ -1969,16 +1969,13 @@ func hzBuildTypeFieldIndex(file: in SourceFile, extraRecords: in List[RecordDecl
 // comment.
 func hzImplTargetFieldNames(typeFieldIndex: in Map[String, Map[String, Bool]], target: in TypeExpr): Map[String, Bool] {
   val noNames: Map[String, Bool] = newMap()
-  val targetName = match target.kind {
-    case TRef(path) -> {
-      if path.segments.count == 0 {
-        ""
-      } else {
-        path.segments[path.segments.count - 1]
-      }
-    }
-    case _ -> ""
+  val targetSegs: List[String] = match target.kind {
+    case TRef(path) -> path.segments
+    // `impl[T] I for Box[T]` (#7704): the fields are `Box`'s.
+    case TGenericApp(head, _) -> head.segments
+    case _ -> newList()
   }
+  val targetName = if targetSegs.count == 0 { "" } else { targetSegs[targetSegs.count - 1] }
   if targetName == "" {
     return noNames
   }

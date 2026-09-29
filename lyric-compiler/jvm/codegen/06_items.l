@@ -1950,6 +1950,11 @@ func lowerImplMethod(
   usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
   isExternIface: in Bool,
+  // The impl's own type parameters for a generic target (`impl[T] I for
+  // Box[T]`, #7704): they erase to `Object` in the descriptor and in body
+  // annotations (`FuncCtx.typeParams`) exactly as in `lowerRecordMethod`.
+  // Empty for a non-generic target and an interface default method.
+  typeParams: in List[String],
 ): LFunc {
   val body = match fn.body {
     case Some(b) -> b
@@ -1968,7 +1973,7 @@ func lowerImplMethod(
       if isExternIface {
         implTypeExprToJvm(te, pkgName, externTypes)
       } else {
-        typeExprToJvmExtern(te, pkgName, externTypes)
+        typeExprToJvmErasedExtern(te, pkgName, typeParams, externTypes)
       }
     }
     case None -> JVoid
@@ -1988,10 +1993,9 @@ func lowerImplMethod(
     closureAcc,
     usedRuntimeHelpers,
     importsStdString,
-    newList()
+    typeParams
   )
   val insns: List[LInsn] = newList()
-  val noTpsImpl: List[String] = newList()
   // An explicit `self: in <Target>` receiver (D037) must not become a real
   // JVM parameter: slot 0 is already `this` (the body's `self` lowers via
   // `ESelf` → aload_0), and the registration side
@@ -2001,9 +2005,9 @@ func lowerImplMethod(
   val paramTypes = if isExternIface {
     implParamTypesToJvm(implRealParams, pkgName, externTypes)
   } else {
-    holderAwareParamTypes(implRealParams, pkgName, true, noTpsImpl, externTypes)
+    holderAwareParamTypes(implRealParams, pkgName, true, typeParams, externTypes)
   }
-  setupInstanceParamSlotsAndHolders(ctxSelf, insns, implRealParams, pkgName, noTpsImpl, externTypes)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, implRealParams, pkgName, typeParams, externTypes)
   // #6426: a non-receiver `Self`-typed parameter (`other: in Self`) is
   // guaranteed by the type checker (D-progress-751/#6417) to be exactly
   // `targetClass` — narrow it with a real `checkcast` so field/method access
@@ -3215,6 +3219,15 @@ func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
         segmentsToJvmPath(path.segments)
       }
     }
+    // `impl[T] I for Box[T]` (#7704): generics are erased, so the methods
+    // join `Box`'s one class.
+    case TGenericApp(head, _) -> {
+      if head.segments.count == 1 {
+        pkgName + "/" + head.segments[0]
+      } else {
+        segmentsToJvmPath(head.segments)
+      }
+    }
     case _ -> panic(
       "Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " +
         "unsupported TypeExpr shape; refusing to emit an unbindable JVM " +
@@ -4161,6 +4174,9 @@ pub func collectFileSigsSeeded(
           case Some(_) -> true
           case None -> false
         }
+        // An impl for a generic target erases its type parameters like the
+        // target's own methods do (#7704), matching `lowerImplMethod`.
+        val implTps = genericParamNames(decl.generics)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
@@ -4168,7 +4184,7 @@ pub func collectFileSigsSeeded(
               if isExternIfaceReg {
                 registerInstanceSigImplExtern(into, tgtClass, fn.name, fn.params, fn.ret, owner, externTypes)
               } else {
-                registerInstanceSig(into, tgtClass, fn.name, fn.params, fn.ret, owner, externTypes)
+                registerInstanceSigErased(into, tgtClass, fn.name, fn.params, fn.ret, owner, implTps, externTypes)
               }
             }
             case IMplAssoc(_) -> ()
@@ -7150,7 +7166,8 @@ pub func codegenPackageWithSigsSeeded(
                   closureAcc,
                   usedRuntimeHelpers,
                   importsStdString,
-                  isExternIfaceHere
+                  isExternIfaceHere,
+                  genericParamNames(decl.generics)
                 )
               )
             }
@@ -7559,7 +7576,8 @@ pub func codegenPackageWithSigsSeeded(
                   // A Lyric `interface`'s own default-method body is never an
                   // extern-interface impl (#5931's `implTypeExprToJvm`
                   // narrowing only applies to a real `impl <Extern> for X`).
-                  false
+                  false,
+                  newList()
                 )
               )
             }

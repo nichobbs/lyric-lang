@@ -418,7 +418,7 @@ func registerImplsFromItems(
     match items[i].kind {
       case IImpl(decl) -> {
         val ifaceTy = resolveType(tbl, ctx, diag, mkTypeRef(decl.iface.head, decl.span))
-        val targetTy = resolveType(tbl, ctx, diag, decl.target)
+        val targetTy = resolveType(tbl, declGenericContext(decl.generics), diag, decl.target)
         match typeIdOfType(ifaceTy) {
           case Some(ifaceId) -> match typeIdOfType(targetTy) {
             case Some(targetId) -> symTableAddImpl(tbl, targetId, ifaceId)
@@ -1710,6 +1710,62 @@ func listTake(xs: in List[String], n: in Int): List[String] {
   taken
 }
 
+// T0145 (#7704): an impl for a generic type applies to every instantiation of
+// it — both backends attach the methods to the type's single generic class, so
+// its target's type arguments must be the impl's own type parameters, each
+// named once (`impl[T] I for Box[T]`, `impl[K, V] I for Pair[V, K]`), and every
+// impl type parameter must appear among them.  A concrete argument
+// (`impl I for Box[Int]`) would need a separate class per instantiation, and an
+// impl type parameter the target never names has no instantiation to take its
+// type from.
+func checkImplGenericTarget(diag: in List[Diagnostic], decl: in ImplDecl): Unit {
+  val implGenerics = extractGenericNames(decl.generics)
+  val named: List[String] = newList()
+  match decl.target.kind {
+    case TGenericApp(_, args) -> {
+      var i = 0
+      while i < args.count {
+        val argName = match args[i] {
+          case TAType(ty) -> match ty.kind {
+            case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+            case _ -> ""
+          }
+          case TAValue(_) -> ""
+        }
+        if argName == "" or not listContainsStr(implGenerics, argName) or listContainsStr(named, argName) {
+          diag.add(
+            errorDiagnostic(
+              "T0145",
+              "an impl for a generic type must pass the impl's own type parameters, each once, as the type's arguments " +
+                "(e.g. `impl[T] I for Box[T]`); an impl for a single instantiation is not supported",
+              decl.span
+            )
+          )
+          return
+        }
+        named.add(argName)
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+  var g = 0
+  while g < implGenerics.count {
+    if not listContainsStr(named, implGenerics[g]) {
+      diag.add(
+        errorDiagnostic(
+          "T0145",
+          "impl type parameter '" + implGenerics[g] + "' is not an argument of the impl's target type " +
+            "(e.g. `impl[T] I for Box[T]`)",
+          decl.span
+        )
+      )
+      return
+    }
+    g = g + 1
+  }
+}
+
 func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in ImplDecl): Unit {
   val segs = decl.iface.head.segments
   if segs.count == 0 {
@@ -1735,7 +1791,9 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
     case None -> {
     }
     case Some(ifaceDecl) -> {
-      val ctx = newGenericContext()
+      // The impl's own type parameters (`impl[T] I for Box[T]`) are in scope
+      // for its target and for its methods' signatures (#7704).
+      val ctx = declGenericContext(decl.generics)
       val selfTy = resolveType(tbl, ctx, diag, decl.target)
       var i = 0
       while i < ifaceDecl.members.count {
@@ -1766,7 +1824,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   var pi = 0
                   while pi < sig.params.count {
                     val ifacePTy = substitutesSelf(resolveIfaceType(tbl, ifaceSym, ictx, diag, sig.params[pi].ty), selfTy)
-                    val implPTy = substitutesSelf(resolveType(tbl, ictx, diag, fn.params[pi].ty), selfTy)
+                    val implPTy = substitutesSelf(resolveType(tbl, ctx, diag, fn.params[pi].ty), selfTy)
                     if not argSatisfiesParam(tbl, ifacePTy, implPTy) {
                       diag.add(
                         errorDiagnostic(
@@ -1790,7 +1848,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                     selfTy
                   )
                   val implRetTy = substitutesSelf(
-                    match fn.ret { case None -> TyPrim(pt = PtUnit); case Some(te) -> resolveType(tbl, ictx, diag, te) },
+                    match fn.ret { case None -> TyPrim(pt = PtUnit); case Some(te) -> resolveType(tbl, ctx, diag, te) },
                     selfTy
                   )
                   if not argSatisfiesParam(tbl, ifaceRetTy, implRetTy) {
@@ -4035,6 +4093,7 @@ func checkWithImportedPackagesCore(
         }
       }
       case IImpl(decl) -> {
+        checkImplGenericTarget(diag, decl)
         checkImplConformance(tbl, diag, decl)
         checkImplOnProtected(tbl, diag, decl, file.items)
         checkImplMethodNameConflicts(tbl, diag, decl, file.items)

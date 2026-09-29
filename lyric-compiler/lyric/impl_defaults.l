@@ -110,19 +110,20 @@ func findLocalInterface(items: in List[Item], name: in String): Option[Interface
 
 // Last segment of the impl's TARGET type reference — the bare target name,
 // used to key the target-level method namespace for diamond-conflict
-// detection (#6447).  A non-`TRef` target (unusual) yields "" and opts out
-// of conflict tracking (nothing is synthesized for it anyway unless its
-// interface resolves).
+// detection (#6447); a generic target (`impl[T] I for Box[T]`, #7704) keys
+// by its head, since every instantiation shares the one set of methods.  Any
+// other target shape yields "" and opts out of conflict tracking (nothing is
+// synthesized for it anyway unless its interface resolves).
 func implTargetName(decl: in ImplDecl): String {
-  match decl.target.kind {
-    case TRef(path) -> {
-      if path.segments.count == 0 {
-        ""
-      } else {
-        path.segments[path.segments.count - 1]
-      }
-    }
-    case _ -> ""
+  val segs: List[String] = match decl.target.kind {
+    case TRef(path) -> path.segments
+    case TGenericApp(head, _) -> head.segments
+    case _ -> newList()
+  }
+  if segs.count == 0 {
+    ""
+  } else {
+    segs[segs.count - 1]
   }
 }
 
