@@ -2158,18 +2158,9 @@ func buildReleaseProject(
   // Build to a staging directory so the production `bin/` output is untouched
   // by the intermediate managed artifact (a `.dll` for .NET AOT, a bundled
   // `.jar` for GraalVM native-image).
-  val ext = outputExt(target, "lib")
   val artifactBase = match proj.outputAssembly {
-    case Some(s) -> {
-      // If output_assembly ends with .dll or .jar, use it as-is (backward compat).
-      // Otherwise, it's a base name and we apply the target-specific extension.
-      if Str.endsWith(s, ".dll") or Str.endsWith(s, ".jar") {
-        s
-      } else {
-        s + ext
-      }
-    }
-    case None -> proj.name + ext
+    case Some(s) -> applyOutputExtension(s, target, "lib")
+    case None -> proj.name + outputExt(target, "lib")
   }
   val stagingDir = Path.join(mfDir, ".lyric-release")
   val stagingArtifact = Path.join(stagingDir, artifactBase)
@@ -2634,18 +2625,9 @@ pub func buildProjectFromManifest(
   val outPath = match explicitOut {
     case Some(o) -> o
     case None -> {
-      val ext = outputExt(target, buildKind)
       val stem = match proj.outputAssembly {
-        case Some(s) -> {
-          // If output_assembly ends with .dll or .jar, use it as-is (backward compat).
-          // Otherwise, it's a base name and we apply the target-specific extension.
-          if Str.endsWith(s, ".dll") or Str.endsWith(s, ".jar") {
-            s
-          } else {
-            s + ext
-          }
-        }
-        case None -> proj.name + ext
+        case Some(s) -> applyOutputExtension(s, target, buildKind)
+        case None -> proj.name + outputExt(target, buildKind)
       }
       Path.join(Path.join(mfDir, "bin"), stem)
     }
@@ -2927,18 +2909,9 @@ func projectBinOutputPath(
   target: in Emitter.CompileTarget,
   buildKind: in String,
 ): String {
-  val ext = outputExt(target, buildKind)
   val stem = match proj.outputAssembly {
-    case Some(s) -> {
-      // If output_assembly ends with .dll or .jar, use it as-is (backward compat).
-      // Otherwise, it's a base name and we apply the target-specific extension.
-      if Str.endsWith(s, ".dll") or Str.endsWith(s, ".jar") {
-        s
-      } else {
-        s + ext
-      }
-    }
-    case None -> proj.name + ext
+    case Some(s) -> applyOutputExtension(s, target, buildKind)
+    case None -> proj.name + outputExt(target, buildKind)
   }
   Path.join(Path.join(mfDir, "bin"), stem)
 }
