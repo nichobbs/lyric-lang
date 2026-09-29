@@ -421,3 +421,67 @@ test "#7720: a panic in the generator body propagates to the consumer" {
   assertEqual(log[3], "C20", "second value consumed before the panic")
   assertEqual(log[4], "P2", "the panic surfaced on the third pull")
 }
+
+// ── #7745: wide (Long / Double) yields ───────────────────────────────────────
+// On the JVM a Long/Double yield value occupies two operand-stack slots until
+// it is boxed for the `_yield` rendezvous, and `run()`'s `max_stack` is taken
+// verbatim from the tracked peak with no slack.  These generators push the
+// deepest two-slot sequences a yield produces — a computed Long expression
+// with three live two-slot operands, and Double yields nested in `if`/`while`
+// with a call in the yielded expression — so an under-counted peak fails
+// verification when the generator class loads.
+async func genLongAffine(a: in Long, b: in Long, c: in Long, n: in Int): Long {
+  var i = 0
+  var k: Long = a
+  while i < n {
+    yield k * b + c
+    yield c + k * b
+    k = k + a
+    i = i + 1
+  }
+}
+
+test "#7745: computed Long yields keep their full 64-bit values" {
+  val seen: List[Long] = newList()
+  for x in genLongAffine(3000000000, 3, 7, 3) {
+    seen.add(x)
+  }
+  assertEqualInt(seen.count, 6, "two yields per iteration, three iterations")
+  assertEqualLong(seen[0], 9000000007, "3e9 * 3 + 7")
+  assertEqualLong(seen[1], 9000000007, "7 + 3e9 * 3")
+  assertEqualLong(seen[2], 18000000007, "6e9 * 3 + 7")
+  assertEqualLong(seen[5], 27000000007, "7 + 9e9 * 3")
+}
+
+func halveDouble(x: in Double): Double {
+  x / 2.0
+}
+
+async func genDoubleNested(n: in Int, base: in Double): Double {
+  var i = 0
+  var x = 1.0
+  while i < n {
+    if i % 2 == 0 {
+      yield base + (x * 0.5) * (x + 1.0)
+    } else {
+      yield base - halveDouble(x + x * 3.0)
+    }
+    x = x + 1.0
+    i = i + 1
+  }
+}
+
+test "#7745: Double yields nested in if/while with a call in the value" {
+  val seen: List[Double] = newList()
+  var total = 0.0
+  for d in genDoubleNested(4, 10.0) {
+    seen.add(d)
+    total = total + d
+  }
+  assertEqualInt(seen.count, 4, "one yield per iteration")
+  assertTrue(seen[0] == 11.0, "10 + (1 * 0.5) * (1 + 1) = 11")
+  assertTrue(seen[1] == 6.0, "10 - halve(2 + 2 * 3) = 6")
+  assertTrue(seen[2] == 16.0, "10 + (3 * 0.5) * (3 + 1) = 16")
+  assertTrue(seen[3] == 2.0, "10 - halve(4 + 4 * 3) = 2")
+  assertTrue(total == 35.0, "the four values sum to 35")
+}
