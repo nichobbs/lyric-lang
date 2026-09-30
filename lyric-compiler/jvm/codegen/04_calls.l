@@ -1018,7 +1018,10 @@ func lowerBuiltinOrStaticCall(
       // SIGNED decimal, same class of bug `coerceToStringForConcat`'s
       // `isUnsigned` parameter fixes for interpolation/`+`/`.toString()`
       // (this builtin never routed through that helper at all).
-      val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(callArgExpr(args[0])))
+      val unsignedTy = normalizeBytePrintArg(
+        insns,
+        normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(callArgExpr(args[0])))
+      )
       // #4688: PrintStream.println(double) would hand off to Java's
       // Double.toString directly ("1500.0" for a whole value) — normalize
       // to a String first so println matches the interpolation/toString()
@@ -1047,7 +1050,10 @@ func lowerBuiltinOrStaticCall(
         isUnsignedExpr(callArgExpr(args[0]))
       )
       // #6754 (finding 1.1): same unsigned normalization as println above.
-      val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(callArgExpr(args[0])))
+      val unsignedTy = normalizeBytePrintArg(
+        insns,
+        normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(callArgExpr(args[0])))
+      )
       // #4688: same Double normalization as println above.
       val argTy = normalizeDoublePrintArg(ctx, insns, unsignedTy)
       val aSlot = allocSlot(ctx, "__print_a_" + freshLabel(ctx), argTy)
@@ -1091,6 +1097,11 @@ func lowerBuiltinOrStaticCall(
       } else {
         match argTy {
           case JRef(_) -> coerceToStringForConcat(ctx, insns, argTy, false)
+          // A `Byte` renders unsigned (0..255): boxing reconstructs the signed
+          // `java.lang.Byte` (`LBoxByte`'s `i2b`), whose `toString()` printed
+          // 128..255 as negatives (#7852).  `coerceToStringForConcat` re-masks
+          // and uses `String.valueOf(int)`.
+          case JByte -> coerceToStringForConcat(ctx, insns, argTy, false)
           case _ -> {
             boxIfNeeded(insns, argTy)
             val tsPs2: List[JvmType] = newList()
@@ -4675,6 +4686,12 @@ func lowerMethodCall(
       )
       return JRef(className = "java/lang/String")
     }
+    // A `Byte` receiver renders unsigned: re-mask a non-canonical signed byte
+    // before the int `valueOf` overload (#7852; see maskByteUnsigned).
+    match recvTy {
+      case JByte -> maskByteUnsigned(insns)
+      case _ -> ()
+    }
     // String.valueOf(<primitive>) — no boxing, unlike Object.toString on a
     // boxed wrapper (keeps the closure zero-overhead boxing gate flat).
     val prTsPs: List[JvmType] = newList()
@@ -5401,6 +5418,20 @@ func normalizeUnsignedPrintArg(insns: in List[LInsn], rawTy: in JvmType, isUnsig
     JRef(className = "java/lang/String")
   } else {
     rawTy
+  }
+}
+
+// `println`/`print`'s already-lowered argument, on the stack as `rawTy`. A
+// `Byte` prints unsigned through `PrintStream.println(int)`: re-mask a
+// non-canonical signed byte first so 128..255 never print negative (#7852;
+// see maskByteUnsigned). Any other argument passes through unchanged.
+func normalizeBytePrintArg(insns: in List[LInsn], rawTy: in JvmType): JvmType {
+  match rawTy {
+    case JByte -> {
+      maskByteUnsigned(insns)
+      JInt
+    }
+    case _ -> rawTy
   }
 }
 

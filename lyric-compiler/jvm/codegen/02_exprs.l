@@ -1736,7 +1736,17 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
 
     // ── Function calls ────────────────────────────────────────────────────
     case ECall(fn, args) -> {
-      lowerCall(ctx, insns, fn, args)
+      val callTy = lowerCall(ctx, insns, fn, args)
+      // A Lyric function returning `Byte` has descriptor return type `B`, and
+      // `ireturn` narrows its result as if by `i2b` (JVMS §6.5), so the caller
+      // receives the SIGNED byte.  Re-mask to the canonical unsigned form here,
+      // the one place every call expression's value passes through (#7852;
+      // see maskByteUnsigned in 04_calls.l).
+      match callTy {
+        case JByte -> maskByteUnsigned(insns)
+        case _ -> ()
+      }
+      callTy
     }
 
     // ── Member access ─────────────────────────────────────────────────────

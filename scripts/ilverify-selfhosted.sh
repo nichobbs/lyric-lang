@@ -257,6 +257,8 @@ SELF_TESTS=(
   lyric-compiler/lyric/bare_func_ref_self_test.l
   lyric-compiler/lyric/inout_self_param_self_test.l
   lyric-compiler/lyric/impl_method_self_test.l
+  lyric-compiler/lyric/byte_stringify_self_test.l
+  lyric-compiler/lyric/byte_stringify_dotnet_self_test.l
 )
 st_errors=0
 st_failed=()

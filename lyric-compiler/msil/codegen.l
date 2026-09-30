@@ -18204,6 +18204,12 @@ func lowerBuiltinOrStaticCallMsil(
             insns.add(MCall(methodToken = cctx.tokWriteLineLong))
           }
         }
+        // A `Byte` is an unsigned `uint8` that every load (`ldloc`/`ldfld`/
+        // `ldelem.u1`/`conv.u1`/call return) zero-extends to an int32 stack
+        // value in 0..255, so the int32 overload prints it unsigned. Falling
+        // through to `WriteLine(string)` passed an int32 where a string
+        // reference was expected: InvalidProgramException (#7852).
+        case MByte -> insns.add(MCall(methodToken = cctx.tokWriteLineInt))
         case MDouble -> insns.add(MCall(methodToken = cctx.tokWriteLineDbl))
         case MBool -> {
           // Lowercase "true"/"false", not BCL Console.WriteLine(bool)'s
