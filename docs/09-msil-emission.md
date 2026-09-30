@@ -619,6 +619,19 @@ The compiler emits `[IsReadOnly]` on `in` parameters whose underlying
 type is a struct ≥ a threshold (the same 16-byte threshold as §5).
 Smaller structs pass by value to avoid the indirect-load cost.
 
+An `out`/`inout Self` parameter of an interface method keeps the interface
+slot's erased signature, `object&`, in every implementation. The
+implementation body narrows each value it loads through the pointer to its
+own target class. Managed pointers are invariant (ECMA-335 III.1.8.1.2.2), so
+a caller cannot pass the address of its `Acc`-typed variable where `object&`
+is declared. The caller copies the value into a temp of the parameter's
+type, passes the temp's address, and stores the temp back into the variable
+after the call (with a `castclass` to the class). The variable can be a
+local, a record field, or a forwarded `inout` parameter. This is the
+copy-in/copy-out the JVM backend uses for every `out`/`inout` argument, so
+the two targets observe the argument the same way, including when the
+callee panics before returning (#7783).
+
 ### 11.3 Definite-assignment for `out`
 
 The compiler enforces `out` definite-assignment per §5.2 of the

@@ -5811,6 +5811,12 @@ pub record FuncCtx {
   // (`ldarg; <value>; stind`), and the slot is never touched by `emitStoreSlot`
   // (the assignment path handles byref targets before reaching it).  See #1761.
   byrefSlotTypes: Map[Int, MsilType]
+  // Byref slots whose SIGNATURE pointee is the erased `object` while
+  // `byrefSlotTypes` records the impl target's class — an `inout`/`out Self`
+  // parameter of an impl/record method, which keeps the interface slot's
+  // `object&` ABI (`registerParamsMsil`).  A load through such a pointer
+  // yields an `object` and is narrowed to the class (#7783).
+  erasedByrefSlots: Map[Int, Bool]
   // Declared return MsilType of function-typed locals/params (a `(A,...) -> R`
   // value), keyed by name.  `MVoid` means a void-returning delegate (the result
   // of `Func::Invoke` is discarded); a non-void entry materialises the boxed
@@ -6948,8 +6954,212 @@ func emitLoadVarMsil(fctx: in FuncCtx, insns: in List[MInsn], slot: in Int): Uni
     case Some(elemTy) -> {
       insns.add(MLdarg(slot = slot))
       insns.add(MLdind(ty = elemTy))
+      // An `inout Self` pointer is `object&` in the signature: narrow the
+      // loaded `object` to the target class the body tracks it as.  The
+      // cast cannot fail — the checker only lets the target type in (#6417).
+      if fctx.erasedByrefSlots.containsKey(slot) {
+        match elemTy {
+          case MClass(cn) -> insns.add(MCastclassByName(className = cn))
+          case MGenericInstByName(headFqn, typeArgs) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = typeArgs))
+          case _ -> ()
+        }
+      }
     }
     case None -> emitLoadSlot(insns, slot, fctx.paramCount)
+  }
+}
+
+// A pending copy-back for an `out`/`inout` argument passed through a temp
+// (`emitByrefArgCheckedMsil`): after the call, `tempSlot`'s value — narrowed to
+// `argElem` when that is a class — is stored back to the argument's own
+// location.  `kind` 0 = a local/by-value-param slot, 1 = a forwarded byref
+// slot (store through its pointer), 2 = a field of the receiver saved in
+// `recvSlot`.
+record ByrefWriteBackMsil {
+  kind: Int
+  slot: Int
+  tempSlot: Int
+  argElem: MsilType
+  recvSlot: Int
+  fieldTok: Int
+}
+
+// The physical pointee type of an `out`/`inout` argument's storage, when it
+// is a local, parameter or field this function can name; None otherwise.
+func byrefArgStorageTyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, argExpr: in Expr): Option[MsilType] {
+  match argExpr.kind {
+    case EPath(path) -> match mapGet(fctx.slots, lastSegmentMsil(path)) {
+      case Some(slot) -> match mapGet(fctx.byrefSlotTypes, slot) {
+        case Some(bt) -> if fctx.erasedByrefSlots.containsKey(slot) {
+          Some(value = MObject)
+        } else {
+          Some(value = bt)
+        }
+        case None -> mapGet(fctx.types, lastSegmentMsil(path))
+      }
+      case None -> None
+    }
+    case _ -> None
+  }
+}
+
+// True when an argument stored as `argElem` must reach a byref parameter of
+// pointee `paramElem` through a temp: two different reference types, one of
+// them the erased `object` (an `inout Self` parameter keeps the interface
+// slot's `object&`, while the caller's variable is the concrete class, or
+// the other way round when an `inout Self` parameter is forwarded).
+// Managed pointers are invariant (ECMA-335 III.1.8.1.2.2), so passing the
+// variable's own address is unverifiable.
+func byrefArgNeedsTempMsil(argElem: in MsilType, paramElem: in MsilType): Bool {
+  val argObj = match argElem { case MObject -> true; case _ -> false }
+  val paramObj = match paramElem { case MObject -> true; case _ -> false }
+  val argRef = not isValueType(argElem) and not argObj
+  val paramRef = not isValueType(paramElem) and not paramObj;
+  (argObj and paramRef) or (paramObj and argRef)
+}
+
+func narrowToClassMsil(insns: in List[MInsn], t: in MsilType): Unit {
+  match t {
+    case MClass(cn) -> insns.add(MCastclassByName(className = cn))
+    case MGenericInstByName(headFqn, typeArgs) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = typeArgs))
+    case MString -> insns.add(MCastclassByName(className = "System.String"))
+    case _ -> ()
+  }
+}
+
+// Push the pointer for an `out`/`inout` argument whose callee parameter
+// pointee is `paramElem` (#7783).  When the argument's own storage has the
+// same type this is `emitByrefArgMsil`.  When they differ in the way
+// `byrefArgNeedsTempMsil` describes, the value is copied into a temp of the
+// parameter's type, the temp's address is passed, and the returned
+// write-back stores the temp back into the argument after the call — the
+// same copy-in/copy-out the JVM's holder protocol performs for every
+// `out`/`inout` argument (`writeBackHolderArg`), so both targets observe the
+// argument identically.  `pending` collects the write-backs; the call site
+// runs them with `emitByrefWriteBacksMsil` once the call returns.
+func emitByrefArgCheckedMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  argExpr: in Expr,
+  paramTy: in Option[MsilType],
+  pending: in List[ByrefWriteBackMsil],
+): Unit {
+  val paramElem = match paramTy {
+    case Some(pt) -> match pt { case MByRef(inner) -> Some(value = inner); case _ -> Some(value = pt) }
+    case None -> None
+  }
+  // A field argument: lower the receiver once, then pass the field's own
+  // address or, on a type mismatch, a temp copied back through the saved
+  // receiver.
+  match argExpr.kind {
+    case EMember(recv, memberName) -> match paramElem {
+      case Some(pe) -> {
+        val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+        match recvTy {
+          case MClass(cls) -> {
+            val key = cls + "/" + memberName
+            val tok = match mapGet(cctx.fieldTokens, key) {
+              case Some(t) -> t
+              case None -> panic(
+                "Msil.Codegen: out/inout field argument '" + memberName +
+                  "' not found in fieldTokens for class '" +
+                  cls +
+                  "'"
+              )
+            }
+            val fldTy = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> pe }
+            if byrefArgNeedsTempMsil(fldTy, pe) {
+              val recvSlot = allocSlotMsil(fctx, "__byref_recv_" + toString(fctx.slotTicker.count), recvTy)
+              emitStoreSlot(insns, recvSlot, fctx.paramCount)
+              val tempSlot = allocSlotMsil(fctx, "__byref_tmp_" + toString(fctx.slotTicker.count), pe)
+              emitLoadSlot(insns, recvSlot, fctx.paramCount)
+              insns.add(MLdfld(fieldToken = tok))
+              narrowToClassMsil(insns, pe)
+              emitStoreSlot(insns, tempSlot, fctx.paramCount)
+              insns.add(MLdloca(slot = tempSlot - fctx.paramCount))
+              pending.add(
+                ByrefWriteBackMsil(kind = 2, slot = -1, tempSlot = tempSlot, argElem = fldTy, recvSlot = recvSlot, fieldTok = tok)
+              )
+            } else {
+              insns.add(MLdflda(fieldToken = tok))
+            }
+            return ()
+          }
+          case _ -> panic(
+            "Msil.Codegen: out/inout field argument receiver must be a class type (value-type structs are not yet supported as inout receiver types)"
+          )
+        }
+      }
+      case None -> {
+        emitByrefArgMsil(cctx, fctx, insns, argExpr)
+        return ()
+      }
+    }
+    case _ -> ()
+  }
+  val storage = byrefArgStorageTyMsil(cctx, fctx, argExpr)
+  val needTemp = match paramElem {
+    case Some(pe) -> match storage { case Some(st) -> byrefArgNeedsTempMsil(st, pe); case None -> false }
+    case None -> false
+  }
+  if not needTemp {
+    emitByrefArgMsil(cctx, fctx, insns, argExpr)
+    return ()
+  }
+  val pe = match paramElem { case Some(v) -> v; case None -> MObject }
+  val st = match storage { case Some(v) -> v; case None -> MObject }
+  match argExpr.kind {
+    case EPath(path) -> {
+      val slot = match mapGet(fctx.slots, lastSegmentMsil(path)) { case Some(sl) -> sl; case None -> -1 }
+      val tempSlot = allocSlotMsil(fctx, "__byref_tmp_" + toString(fctx.slotTicker.count), pe)
+      val isFwd = fctx.byrefSlotTypes.containsKey(slot)
+      if isFwd {
+        insns.add(MLdarg(slot = slot))
+        insns.add(MLdind(ty = st))
+      } else {
+        emitLoadSlot(insns, slot, fctx.paramCount)
+      }
+      narrowToClassMsil(insns, pe)
+      emitStoreSlot(insns, tempSlot, fctx.paramCount)
+      insns.add(MLdloca(slot = tempSlot - fctx.paramCount))
+      pending.add(
+        ByrefWriteBackMsil(
+          kind = if isFwd { 1 } else { 0 },
+          slot = slot,
+          tempSlot = tempSlot,
+          argElem = st,
+          recvSlot = -1,
+          fieldTok = 0
+        )
+      )
+    }
+    case _ -> emitByrefArgMsil(cctx, fctx, insns, argExpr)
+  }
+}
+
+// Store each pending temp back into its argument (`emitByrefArgCheckedMsil`).
+// Stack-neutral, so it runs after the call with the result still on the stack.
+func emitByrefWriteBacksMsil(fctx: in FuncCtx, insns: in List[MInsn], pending: in List[ByrefWriteBackMsil]): Unit {
+  var i = 0
+  while i < pending.count {
+    val wb = pending[i]
+    if wb.kind == 2 {
+      emitLoadSlot(insns, wb.recvSlot, fctx.paramCount)
+      emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
+      narrowToClassMsil(insns, wb.argElem)
+      insns.add(MStfld(fieldToken = wb.fieldTok))
+    } else if wb.kind == 1 {
+      insns.add(MLdarg(slot = wb.slot))
+      emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
+      narrowToClassMsil(insns, wb.argElem)
+      insns.add(MStind(ty = wb.argElem))
+    } else {
+      emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
+      narrowToClassMsil(insns, wb.argElem)
+      emitStoreSlot(insns, wb.slot, fctx.paramCount)
+    }
+    i = i + 1
   }
 }
 
@@ -18969,6 +19179,7 @@ func lowerBuiltinOrStaticCallMsil(
                   val callParamModes = match mapGet(cctx.funcParamModes, tokKey) { case Some(ms) -> ms; case None -> newList() }
                   val reorderedArgs = reorderFuncNamedArgs(cctx, tokKey, args)
                   val callArgs = fillPositionalFuncDefaults(cctx, tokKey, reorderedArgs)
+                  val byrefPending: List[ByrefWriteBackMsil] = newList()
                   var i = 0
                   while i < callArgs.count {
                     // #1939: a lambda passed *directly* to a function-typed
@@ -19119,7 +19330,14 @@ func lowerBuiltinOrStaticCallMsil(
                     // managed pointer) rather than its value.  See #1761.
                     val isByrefArg = if i < callParamModes.count { isByrefMode(callParamModes[i]) } else { false }
                     if isByrefArg {
-                      emitByrefArgMsil(cctx, fctx, insns, callArgExpr(callArgs[i]))
+                      // Only an in-bundle MethodDef's recorded parameter types
+                      // are its physical signature (see the #6127 gate below).
+                      val byrefParamTy: Option[MsilType] = if tok / 0x01000000 == 0x06 and i < callParamTys.count {
+                        Some(value = callParamTys[i])
+                      } else {
+                        None
+                      }
+                      emitByrefArgCheckedMsil(cctx, fctx, insns, callArgExpr(callArgs[i]), byrefParamTy, byrefPending)
                       i = i + 1
                     } else {
                       // Thread a generic parameter's type args as the construction
@@ -19280,6 +19498,7 @@ func lowerBuiltinOrStaticCallMsil(
                     }
                   }
                   insns.add(MCall(methodToken = tok))
+                  emitByrefWriteBacksMsil(fctx, insns, byrefPending)
                   match mapGet(cctx.funcRetTypes, tokKey) {
                     case Some(rt) -> rt
                     case None -> MObject
@@ -19311,11 +19530,19 @@ func lowerBuiltinOrStaticCallMsil(
               }
               insns.add(MLdarg(slot = 0))
               val sibModes = match mapGet(cctx.methodParamModes, sibKey) { case Some(ms) -> ms; case None -> newList() }
+              val sibByrefPending: List[ByrefWriteBackMsil] = newList()
               var si = 0
               while si < args.count {
                 val sibByref = if si < sibModes.count { isByrefMode(sibModes[si]) } else { false }
                 if sibByref {
-                  emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[si]))
+                  emitByrefArgCheckedMsil(
+                    cctx,
+                    fctx,
+                    insns,
+                    callArgExpr(args[si]),
+                    mapGet(cctx.methodParamTypes, sibKey + "#" + toString(si)),
+                    sibByrefPending
+                  )
                 } else {
                   val aTy = lowerCallArgMsil(cctx, fctx, insns, args[si])
                   // Mirror the MClass dispatch arm: box only when the declared
@@ -19332,6 +19559,7 @@ func lowerBuiltinOrStaticCallMsil(
                 si = si + 1
               }
               insns.add(MCallvirt(methodToken = sibTok))
+              emitByrefWriteBacksMsil(fctx, insns, sibByrefPending)
               // A bare sibling call to a `Self`-returning method narrows
               // against the enclosing method's own class (#6434/#6435,
               // mirroring JVM's #6431/#6437 bare-sibling narrowing) — for a
@@ -20345,6 +20573,7 @@ func lowerMethodCallMsil(
       match mapGet(cctx.methodTokens, dispatchKey) {
         case Some(tok) -> {
           val methodModes = match mapGet(cctx.methodParamModes, dispatchKey) { case Some(ms) -> ms; case None -> newList() }
+          val byrefPending: List[ByrefWriteBackMsil] = newList()
           var i = 0
           while i < args.count {
             // `out`/`inout` argument: load the argument's address (a managed
@@ -20353,7 +20582,14 @@ func lowerMethodCallMsil(
             // mismatches the `int32&` parameter the interface slot declares.
             val isByrefArg = if i < methodModes.count { isByrefMode(methodModes[i]) } else { false }
             if isByrefArg {
-              emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[i]))
+              emitByrefArgCheckedMsil(
+                cctx,
+                fctx,
+                insns,
+                callArgExpr(args[i]),
+                mapGet(cctx.methodParamTypes, dispatchKey + "#" + toString(i)),
+                byrefPending
+              )
             } else {
               // Thread parameter types into contextHintTyArgs/collExpect so a bare
               // `newMap()` argument builds the concrete instance the callee's
@@ -20424,6 +20660,7 @@ func lowerMethodCallMsil(
             i = i + 1
           }
           insns.add(MCallvirt(methodToken = tok))
+          emitByrefWriteBacksMsil(fctx, insns, byrefPending)
           // Report the method's real declared return type so callers — most
           // importantly a `match` scrutinee — track the actual union/record
           // type rather than `object`.  Tracking `object` made union pattern
@@ -20488,6 +20725,7 @@ func lowerMethodCallMsil(
         val openRetTy = match mapGet(cctx.methodRetTypes, gDispatchKey) { case Some(t) -> t; case None -> MObject }
         val openParamTypes: List[MsilType] = newList()
         val methodModesG = match mapGet(cctx.methodParamModes, gDispatchKey) { case Some(ms) -> ms; case None -> newList() }
+        val byrefPendingG: List[ByrefWriteBackMsil] = newList()
         var gi = 0
         while gi < args.count {
           val openParamTy = match mapGet(cctx.methodParamTypes, gDispatchKey + "#" + toString(gi)) {
@@ -20497,7 +20735,7 @@ func lowerMethodCallMsil(
           openParamTypes.add(openParamTy)
           val isByrefArgG = if gi < methodModesG.count { isByrefMode(methodModesG[gi]) } else { false }
           if isByrefArgG {
-            emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[gi]))
+            emitByrefArgCheckedMsil(cctx, fctx, insns, callArgExpr(args[gi]), Some(value = openParamTy), byrefPendingG)
           } else {
             pushCollExpect(fctx, openParamTy)
             val aTyG = lowerCallArgMsil(cctx, fctx, insns, args[gi])
@@ -20523,6 +20761,7 @@ func lowerMethodCallMsil(
             retType = openRetTy
           )
         )
+        emitByrefWriteBacksMsil(fctx, insns, byrefPendingG)
         // A `Self`-declared return narrows to the receiver's own CLOSED
         // instantiation (#6443 review): `func withV(self: in Box[T], v: T):
         // Self` called on a `Box[Int]` yields a `Box[Int]` — the generic
@@ -23788,6 +24027,7 @@ func makeFuncCtxMsil(
     contextHintTyArgs = contextHintTyArgs,
     collExpect = collExpect,
     byrefSlotTypes = byrefSlotTypes,
+    erasedByrefSlots = newMap(),
     funcValRetTypes = funcValRetTypes,
     funcValParamTypes = funcValParamTypes,
     boxedParamTypes = boxedParamTypes,
@@ -32903,6 +33143,9 @@ func registerParamsMsil(
     markUnsignedSlotMsil(fctx, slot, isUnsignedTypeExprMsil(p.ty))
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
+      if msilTypeKeyStr(paramTy) != msilTypeKeyStr(erasedParamTy) {
+        fctx.erasedByrefSlots.add(slot, true)
+      }
     }
     // #5995: record this param's declared enum type (if any) so a bare
     // `match p { case Http11 -> }` scrutinee scopes its case lookup instead
