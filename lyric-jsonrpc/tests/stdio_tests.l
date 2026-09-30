@@ -18,7 +18,7 @@ import Std.Encoding
 import Std.Errors
 import Std.Testing
 import Std.Time
-import JsonRpc.Json
+import Std.JsonValue
 import JsonRpc
 import JsonRpc.Stdio
 

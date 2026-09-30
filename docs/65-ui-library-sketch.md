@@ -875,10 +875,11 @@ was in the JVM backend or the build tooling, and each was fixed there
 - **F-11: `lyric-ws` runs its own listener** and `lyric-web` has no upgrade
   hook (#7831), so the web host serves HTTP on `port` and the session WebSocket on
   `wsPort`. The shell derives the socket URL from the `Host` header.
-- **F-12: the only cross-target JSON value model is `JsonRpc.Json`** (#7832)
-  (`Std.Json` is a read-only, .NET-only cursor). `Ui.Protocol` depends on
-  `lyric-jsonrpc` for it; a writer-capable `Std.Json` value model belongs in
-  the stdlib.
+- **F-12: the only cross-target JSON value model was `JsonRpc.Json`** (#7832)
+  (`Std.Json` is a read-only, .NET-only cursor), so `Ui.Protocol` depended
+  on `lyric-jsonrpc` for it. Resolved in D145: the model moved into the
+  stdlib as `Std.JsonValue`, and `Ui.Protocol` no longer depends on
+  `lyric-jsonrpc`.
 - **F-13: native cannot consume `lyric-ui` yet** (#7833). Native project builds do
   not resolve `[dependencies]` (#6815 item 1(b)), so a native application
   cannot depend on `lyric-ui` or `lyric-forms`, which blocks the priority

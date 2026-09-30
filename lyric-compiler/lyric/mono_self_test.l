@@ -724,6 +724,54 @@ test "ambiguous cross-package function name with an unresolvable call site still
   assertFalse(hasFunc(res.file, "mapLike2__String__String"), "must never guess either overload's return type")
 }
 
+// Two imported packages declare `get` with the same parameters, so argument
+// types cannot tell them apart; the caller imports only one of them.  The type
+// checker resolves the call through the imports (docs/01 §9.2), and Mono must
+// pick the same declaration instead of defaulting `idOf`'s `T` to `Object`
+// (`Std.Yaml.getField` vs `Std.JsonValue.getField` in the stdlib bundle).
+func tiedGetFeed(): List[FunctionDecl] {
+  val feed: List[FunctionDecl] = newList()
+  val libPr = parse("package Lib\n" + "pub func idOf[T](x: in T): T { x }\n")
+  val libAPr = parse("package LibA\n" + "pub func get(k: in String): Int { 1 }\n")
+  val libBPr = parse("package LibB\n" + "pub func get(k: in String): Char { 'c' }\n")
+  for item in libPr.file.items {
+    match item.kind {
+      case IFunc(decl) -> feed.add(withOriginPkgMono(decl, "Lib"))
+      case _ -> ()
+    }
+  }
+  for item in libAPr.file.items {
+    match item.kind {
+      case IFunc(decl) -> feed.add(withOriginPkgMono(decl, "LibA"))
+      case _ -> ()
+    }
+  }
+  for item in libBPr.file.items {
+    match item.kind {
+      case IFunc(decl) -> feed.add(withOriginPkgMono(decl, "LibB"))
+      case _ -> ()
+    }
+  }
+  feed
+}
+
+test "a tie between same-named imports resolves to the package the caller imports" {
+  val callerPr = parse(
+    "package Caller\n" + "import Lib\n" + "import LibB\n" +
+      "func caller(): Unit { val r = idOf(get(\"k\")) }\n"
+  )
+  val res = monoFileWithImports(callerPr.file, tiedGetFeed())
+  assertTrue(hasFunc(res.file, "idOf__Char"), "the imported LibB.get fixes T = Char")
+  assertFalse(hasFunc(res.file, "idOf__Int"), "the unimported LibA.get is never chosen")
+}
+
+test "a tie between same-named imports neither of which the caller imports is not guessed" {
+  val callerPr = parse("package Caller\n" + "import Lib\n" + "func caller(): Unit { val r = idOf(get(\"k\")) }\n")
+  val res = monoFileWithImports(callerPr.file, tiedGetFeed())
+  assertFalse(hasFunc(res.file, "idOf__Char"), "no guess for LibB")
+  assertFalse(hasFunc(res.file, "idOf__Int"), "no guess for LibA")
+}
+
 // Regression pin for the real-world shape that motivated superseding blunt
 // eviction with call-site overload resolution: `lyric-storage`'s
 // `isOk(delete(bucket, key))` crashed at runtime because `delete` was

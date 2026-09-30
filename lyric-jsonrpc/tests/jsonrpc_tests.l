@@ -18,7 +18,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.Time
-import JsonRpc.Json
+import Std.JsonValue
 import JsonRpc
 
 // ── In-memory RpcTransport test double ──────────────────────────────────────

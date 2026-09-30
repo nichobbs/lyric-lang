@@ -1823,7 +1823,7 @@ func collectInBundleNonGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[Fu
   val nonGenFuncs: List[FunctionDecl] = newList()
   var pi = 0
   while pi < parsedPkgs.count {
-    pipeAddNonGenericFuncs(parsedPkgs[pi].file.items, nonGenFuncs)
+    pipeAddNonGenericFuncs(parsedPkgs[pi].file.items, parsedPkgs[pi].name, nonGenFuncs)
     pi = pi + 1
   }
   nonGenFuncs
@@ -1842,7 +1842,7 @@ pub func collectStdlibNonGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDe
   var pi = 0
   while pi < pkgs.count {
     val pkg: StdlibPkg = pkgs[pi]
-    pipeAddNonGenericFuncs(pkg.items, nonGenFuncs)
+    pipeAddNonGenericFuncs(pkg.items, pkg.name, nonGenFuncs)
     pi = pi + 1
   }
   nonGenFuncs

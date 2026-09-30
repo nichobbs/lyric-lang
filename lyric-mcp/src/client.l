@@ -29,7 +29,7 @@ package Mcp.Client
 
 import Std.Core
 import Std.Collections
-import JsonRpc.Json
+import Std.JsonValue
 import JsonRpc
 import Mcp
 import Mcp.Stdio

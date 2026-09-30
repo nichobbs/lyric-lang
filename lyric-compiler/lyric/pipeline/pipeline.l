@@ -1129,8 +1129,10 @@ func pipeInferenceOnlyFuncDecl(decl: in FunctionDecl): FunctionDecl {
 /// through a cross-package return can specialise (#3705, #5196).
 /// Expression-bodied wrappers (`= ()` extern stubs) are excluded — they are
 /// BCL boundary stubs whose return types may not be representable in the
-/// Lyric AST type system.
-pub func pipeAddNonGenericFuncs(items: in List[Item], dest: in List[FunctionDecl]): Unit {
+/// Lyric AST type system.  Each is tagged with its package (`pkgName`, the
+/// same origin annotation `pipeAddGenericFuncs` applies) so Mono can tell
+/// two same-named imports apart by which package the caller imports.
+pub func pipeAddNonGenericFuncs(items: in List[Item], pkgName: in String, dest: in List[FunctionDecl]): Unit {
   var i = 0
   while i < items.count {
     match items[i].kind {
@@ -1142,7 +1144,7 @@ pub func pipeAddNonGenericFuncs(items: in List[Item], dest: in List[FunctionDecl
           case None -> false
         }
         if isPub and not isGeneric and hasBlockBody and not pipeAnnsBlockSpecialization(decl.annotations) {
-          dest.add(decl)
+          dest.add(withOriginPkgMono(decl, pkgName))
         }
       }
       case _ -> ()

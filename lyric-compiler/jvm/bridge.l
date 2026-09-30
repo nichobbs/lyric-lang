@@ -692,12 +692,27 @@ func collectStdlibInferenceOnlyGenericFuncsJvm(files: in List[SourceFile]): List
 // `Lyric.Mono` safety check; `Std.Parse`/`Std.Uuid`'s JVM test suites are
 // the regression coverage (`lyric build --target jvm` on
 // `lyric-stdlib/tests/{parse,uuid}_tests.l`).
+// `file`'s dotted package name ("" without a package declaration).
+func pkgPathName(file: in SourceFile): String {
+  val segs = file.packageDecl.path.segments
+  var acc = ""
+  var k = 0
+  while k < segs.count {
+    if k > 0 {
+      acc = acc + "."
+    }
+    acc = acc + segs[k]
+    k = k + 1
+  }
+  acc
+}
+
 func collectStdlibNonGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl] {
   val nonGenFuncs: List[FunctionDecl] = newList()
   var fi = 0
   while fi < files.count {
     val f = files[fi]
-    pipeAddNonGenericFuncs(f.items, nonGenFuncs)
+    pipeAddNonGenericFuncs(f.items, pkgPathName(f), nonGenFuncs)
     fi = fi + 1
   }
   nonGenFuncs

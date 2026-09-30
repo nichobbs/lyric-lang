@@ -1,4 +1,4 @@
-//! tests/json_tests.l — test suite for JsonRpc.Json.
+//! tests/json_value_tests.l — test suite for Std.JsonValue.
 //! Covers: round-trips for every JsonValue case, string escaping both
 //! directions (\uXXXX, surrogate pairs, control characters), strict-number
 //! parsing (leading zeros, bare '.'/'e' rejected), depth-limit enforcement,
@@ -6,18 +6,14 @@
 //! exactness, and malformed-input rejection (truncated, trailing garbage,
 //! bad escapes, lone surrogates).
 @test_module
-package JsonRpc.Json.JsonTests
+package Std.JsonValue.Tests
 
 import Std.Core
 import Std.Testing
-import JsonRpc.Json
+import Std.JsonValue
 
-// `Option[T] == Option[T]` does not compare structurally on the current
-// self-hosted MSIL backend (reproduced in isolation: two `Some(value = 1)`
-// Option[Int] values built independently compare `false` with `==`) — so
-// every `Option`-valued assertion below goes through `match` instead of
-// `== Some(...)`. Filed upstream; see the README's "Known upstream issues"
-// section.
+// Every `Option`-valued assertion goes through `match` rather than
+// `== Some(...)`, so a failure names what was missing.
 func assertSomeLong(o: in Option[Long], expected: in Long, label: in String): Unit {
   match o {
     case Some(n) -> assertTrue(n == expected, label)
@@ -32,19 +28,7 @@ func assertSomeBool(o: in Option[Bool], expected: in Bool, label: in String): Un
   }
 }
 
-// Concrete (non-generic) per-type helpers, deliberately NOT a single
-// `assertIsSome[T]`/`assertIsNone[T]` generic pair: an earlier version of
-// this file used generics here and hit the same class of bug from a
-// different angle — calling one generic helper with several different
-// concrete `Option[T]` instantiations across this file intermittently
-// produced "match not exhaustive" at *runtime* on a call that had compiled
-// and passed moments earlier in a previous `lyric test` invocation (the
-// monomorphizer's specialization appears to collide non-deterministically
-// across instantiations sharing one compilation unit — same underlying
-// class of bug as the `isSome`/`isNone` note above, but reproducing on
-// *both* backends here, and only sometimes). Fully concrete, single-use
-// helpers have no shared generic specialization to collide over. Filed
-// upstream; see the README's "Known upstream issues" section.
+// Concrete per-type helpers for the `Option` results the accessors return.
 func assertIsNoneString(o: in Option[String], label: in String): Unit {
   match o {
     case None -> ()
@@ -623,4 +607,32 @@ test "getField / getString / getInt / getBool / getFloat return None for a missi
 test "getField on a non-object value returns None" {
   val r: Option[JsonValue] = getField(JInt(value = 1i64), "a")
   assertIsNoneValue(r, "getField on a JInt")
+}
+
+test "indented writer: nested values, one member per line" {
+  val fields: List[JsonField] = newList()
+  val tags: List[JsonValue] = newList()
+  tags.add(JString(value = "a"))
+  tags.add(JInt(value = 2))
+  fields.add(JsonField(name = "name", value = JString(value = "Acme")))
+  fields.add(JsonField(name = "tags", value = JArray(items = tags)))
+  fields.add(JsonField(name = "none", value = JNull))
+  val doc = JObject(fields = fields)
+  val expected = "{\n  \"name\": \"Acme\",\n  \"tags\": [\n    \"a\",\n    2\n  ],\n  \"none\": null\n}"
+  assertEqual(writeValueIndented(doc, 2), expected, "two-space indentation")
+  match parseValue(writeValueIndented(doc, 4)) {
+    case Ok(back) -> assertEqual(writeValue(back), writeValue(doc), "indented text parses back to the same value")
+    case Err(e) -> assertTrue(false, "indented text parses: " + JsonParseError.message(e))
+  }
+}
+
+test "indented writer: empty containers and scalars stay on one line" {
+  val none: List[JsonValue] = newList()
+  val noFields: List[JsonField] = newList()
+  assertEqual(writeValueIndented(JArray(items = none), 2), "[]", "empty array")
+  assertEqual(writeValueIndented(JObject(fields = noFields), 2), "{}", "empty object")
+  assertEqual(writeValueIndented(JString(value = "x\ny"), 2), "\"x\\ny\"", "a scalar is written as by writeValue")
+  val one: List[JsonValue] = newList()
+  one.add(JBool(value = true))
+  assertEqual(writeValueIndented(JArray(items = one), 0), "[\ntrue\n]", "width 0 still breaks lines")
 }

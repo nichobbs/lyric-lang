@@ -43,7 +43,6 @@ output_assembly = "UiCustomers.dll"
 [dependencies]
 "Lyric.Forms"   = { path = "../../lyric-forms" }
 "Lyric.Ui"      = { path = "../../lyric-ui" }
-"Lyric.JsonRpc" = { path = "../../lyric-jsonrpc" }
 "Lyric.Web"     = { path = "../../lyric-web" }
 "Lyric.Ws"      = { path = "../../lyric-ws" }
 "Lyric.Auth"    = { path = "../../lyric-auth" }

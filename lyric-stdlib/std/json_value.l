@@ -1,37 +1,33 @@
-//! src/json.l — JsonRpc.Json: strict RFC 8259 JSON value model.
+//! std/json_value.l — Std.JsonValue: a strict RFC 8259 JSON value model
+//! with a parser and a writer, pure Lyric and identical on dotnet and the
+//! JVM (D145, #7832).  `--target native` awaits a native `Std.Parse`
+//! kernel (#7856).
 //!
-//! A cross-target JSON tree with both a parser and a writer. Neither
-//! existing stdlib option fits the JSON-RPC framing use case:
-//!   - `Std.Json` is a read-only cursor over the BCL `JsonDocument` —
-//!     .NET-only, and cannot construct or serialize a document.
-//!   - `Std.Yaml.parseJson` is cross-target but deliberately lenient
-//!     (YAML 1.2 is a JSON superset): a malformed-JSON frame that
-//!     happens to be valid YAML would parse instead of producing the
-//!     JSON-RPC `-32700` parse error a conforming peer must return.
-//!     It also has no writer, and rejects duplicate object keys where
-//!     this module must preserve them (last-wins).
+//! `Std.Json` reads a document through the .NET `JsonDocument` cursor: it is
+//! dotnet-only and cannot build or serialise one.  `Std.Yaml.parseJson` is
+//! cross-target but lenient (YAML 1.2 is a JSON superset), so malformed JSON
+//! that happens to be valid YAML parses, and it has no writer.  This module
+//! is the JSON tree for code that builds, reads and writes JSON on any
+//! target (JSON-RPC and MCP framing, the UI protocol).
 //!
-//! So this module ships its own strict RFC 8259 parser and writer, pure
-//! Lyric, identical on both targets. See docs/62-jsonrpc-mcp.md §2.
-//!
-//! Strictness relative to `Std.Yaml.parseJson`:
-//!   - Only the four RFC 8259 insignificant-whitespace characters
-//!     (space, tab, LF, CR) are skipped — not general Unicode
-//!     whitespace.
+//! Strictness, relative to `Std.Yaml.parseJson`:
+//!   - Only the four RFC 8259 whitespace characters (space, tab, LF, CR)
+//!     are skipped.
 //!   - Numbers follow the RFC 8259 grammar exactly: no leading zeros
-//!     (`01` is rejected), a `.` must be followed by at least one
-//!     digit, an exponent must be followed by at least one digit.
-//!   - Strings reject raw (unescaped) control characters (`< 0x20`)
-//!     and lone UTF-16 surrogates in `\uXXXX` escapes (a high
-//!     surrogate not immediately followed by a matching low surrogate
-//!     escape, or a low surrogate with no preceding high surrogate).
-//!   - Object keys must be double-quoted strings; no unquoted or
-//!     single-quoted forms.
-//!   - Duplicate object keys are preserved in parse order (not
-//!     rejected) — `getField` and friends resolve them last-wins,
-//!     matching the common `JSON.parse` convention.
+//!     (`01` is rejected), a `.` must be followed by at least one digit,
+//!     and so must an exponent.
+//!   - Strings reject raw control characters (`< 0x20`) and lone UTF-16
+//!     surrogates in `\uXXXX` escapes.
+//!   - Object keys must be double-quoted strings.
+//!   - Duplicate object keys are preserved in parse order; `getField` and
+//!     the other accessors resolve them last-wins, as `JSON.parse` does.
+//!
+//! Numbers: an integral literal in the i64 range is `JInt`; anything else
+//! (a fraction, an exponent, or an integer outside i64) is `JFloat`, the
+//! same classification as `Std.Yaml`.  Parsing is depth-limited (default
+//! 128) so a hostile document cannot exhaust the stack.
 @runtime_checked
-package JsonRpc.Json
+package Std.JsonValue
 
 import Std.Core
 import Std.Collections
@@ -158,7 +154,7 @@ func hex4(n: in Int): String {
   var shift = 12
   while shift >= 0 {
     val d = n.shr(shift).and(15)
-    result = result + "" + Str.charAtOrReplacement(hexDigits, d)
+    result = result + Str.charAtOrReplacement(hexDigits, d).toString()
     shift = shift - 4
   }
   result
@@ -565,7 +561,7 @@ func writeJsonString(s: in String): String {
 func writeDouble(f: in Double): String {
   if isNaN(f) or isInfinity(f) {
     panic(
-      "JsonRpc.Json.writeValue: cannot represent a NaN or Infinity Double as a JSON number (RFC 8259 has no such literal)"
+      "Std.JsonValue.writeValue: cannot represent a NaN or Infinity Double as a JSON number (RFC 8259 has no such literal)"
     )
   }
   f.toString()
@@ -611,6 +607,66 @@ pub func writeValue(v: in JsonValue): String {
     case JArray(items) -> writeArrayItems(items)
     case JObject(fields) -> writeObjectFields(fields)
   }
+}
+
+// ── Indented writer ─────────────────────────────────────────────────────────
+func indentOf(width: in Int, depth: in Int): String {
+  var result = ""
+  var i = 0
+  while i < width * depth {
+    result = result + " "
+    i = i + 1
+  }
+  result
+}
+
+func writeIndented(v: in JsonValue, width: in Int, depth: in Int): String {
+  match v {
+    case JArray(items) -> {
+      if items.count == 0 {
+        return "[]"
+      }
+      var result = "[\n"
+      var i = 0
+      while i < items.count {
+        if i > 0 {
+          result = result + ",\n"
+        }
+        result = result + indentOf(width, depth + 1) + writeIndented(items[i], width, depth + 1)
+        i = i + 1
+      }
+      result + "\n" + indentOf(width, depth) + "]"
+    }
+    case JObject(fields) -> {
+      if fields.count == 0 {
+        return "{}"
+      }
+      var result = "{\n"
+      var i = 0
+      while i < fields.count {
+        if i > 0 {
+          result = result + ",\n"
+        }
+        result = result + indentOf(width, depth + 1) + writeJsonString(fields[i].name) + ": " +
+          writeIndented(fields[i].value, width, depth + 1)
+        i = i + 1
+      }
+      result + "\n" + indentOf(width, depth) + "}"
+    }
+    case _ -> writeValue(v)
+  }
+}
+
+/// Serialize a `JsonValue` to indented JSON text: one array element or
+/// object field per line, nested `width` spaces deeper than its container,
+/// `": "` after each field name, and no trailing newline.  An empty array
+/// or object is written `[]` / `{}`.  Field order is preserved, and the
+/// text parses back to an equal value.
+@stable(since = "0.1")
+pub func writeValueIndented(v: in JsonValue, width: in Int): String
+  requires: width >= 0 and width <= 16
+{
+  writeIndented(v, width, 0)
 }
 
 // ── Query helpers ───────────────────────────────────────────────────────────

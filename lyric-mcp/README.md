@@ -251,7 +251,7 @@ hardcoded per bug #2.
 ```lyric
 import Std.Core
 import Std.Collections
-import JsonRpc.Json
+import Std.JsonValue
 import Mcp
 import Mcp.Server
 
@@ -350,7 +350,7 @@ empty or longer than `maxRequestStateLength`.
 ```lyric
 import Std.Core
 import Std.Collections
-import JsonRpc.Json
+import Std.JsonValue
 import Mcp.Client
 
 func main(): Unit {

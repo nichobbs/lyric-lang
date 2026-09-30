@@ -208,6 +208,14 @@ record MonoState {
   /// genuinely irresolvable (e.g. an untyped argument).  See
   /// `resolveAmbiguousOverload`.
   ambiguousFuncOverloads: Map[String, List[FunctionDecl]]
+  /// The root file's direct imports, for breaking a tie in
+  /// `resolveAmbiguousOverload`: a whole import `P` is keyed `P`, a
+  /// selective `P.{f}` is keyed `P#f`.  Two imported functions can share a
+  /// bare name when only one of their packages is imported by the file
+  /// (the other reaches Mono through the stdlib bundle or a transitive
+  /// dependency); the type checker resolves the call to the imported one
+  /// (docs/01 §9.2), so Mono prefers it too.
+  rootImports: Map[String, Bool]
   /// Every union-case (and generic-record) inference-only constructor synth
   /// visible to the file, keyed by bare case name, WITHOUT the first-wins
   /// collapse `funcDecls` applies (#6669). `funcDecls`/`genDecls` only ever
@@ -335,6 +343,7 @@ func newMonoState(
     externTypeDecls = externTypeDecls,
     droppedLocalGenerics = droppedLocalGenerics,
     ambiguousFuncOverloads = ambiguousFuncOverloads,
+    rootImports = newMap(),
     ctorCandidates = ctorCandidates,
     qualifiedGenNames = qualifiedGenNames,
     expectedAt = newMap(),
@@ -2913,12 +2922,77 @@ func resolveAmbiguousOverload(
         }
         if compatible.count == 1 {
           Some(value = compatible[0])
+        } else if bodyOrigin.length == 0 {
+          uniqueRootImported(state, if compatible.count == 0 { arityMatched } else { compatible })
         } else {
           None
         }
       }
     }
   }
+}
+
+// The single candidate whose package the root file imports (whole, or
+// selectively by this name), if exactly one qualifies.
+func uniqueRootImported(state: in MonoState, cands: in List[FunctionDecl]): Option[FunctionDecl] {
+  var found: Option[FunctionDecl] = None
+  var hits = 0
+  var i = 0
+  while i < cands.count {
+    val pkg = originPkgOf(cands[i].annotations)
+    if pkg.length > 0 and (state.rootImports.containsKey(pkg) or state.rootImports.containsKey(pkg + "#" + cands[i].name)) {
+      found = Some(value = cands[i])
+      hits = hits + 1
+    }
+    i = i + 1
+  }
+  if hits == 1 {
+    found
+  } else {
+    None
+  }
+}
+
+// Record `file`'s direct imports into `state.rootImports`.
+func seedRootImports(state: in MonoState, file: in SourceFile): Unit {
+  var i = 0
+  while i < file.imports.count {
+    val imp = file.imports[i]
+    if not imp.isExtern {
+      val pkg = joinSegmentsMono(imp.path.segments)
+      match imp.selector {
+        case None -> {
+          state.rootImports[pkg] = true
+        }
+        case Some(sel) -> match sel {
+          case ISSingle(item) -> {
+            state.rootImports[pkg + "#" + item.name] = true
+          }
+          case ISGroup(items) -> {
+            var k = 0
+            while k < items.count {
+              state.rootImports[pkg + "#" + items[k].name] = true
+              k = k + 1
+            }
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+
+func joinSegmentsMono(segs: in List[String]): String {
+  var acc = ""
+  var i = 0
+  while i < segs.count {
+    if i > 0 {
+      acc = acc + "."
+    }
+    acc = acc + segs[i]
+    i = i + 1
+  }
+  acc
 }
 
 // Look up `fname` in funcDecls and return its return TypeExpr after
@@ -7713,6 +7787,7 @@ pub func monoFileWithLambdaTypes(
     qualifiedGenNames,
     newMap()
   )
+  seedRootImports(state, file)
   val ltKeys = mapKeys(lambdaTypes)
   var lti = 0
   while lti < ltKeys.count {

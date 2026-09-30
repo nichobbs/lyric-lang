@@ -4551,6 +4551,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.Tls test ran: tls_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/tls_tests.l"
+      - name: Std.JsonValue test coverage on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"Std.JsonValue test ran: json_value_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/json_value_tests.l"
 
       # Std.Tls TlsServerConfig test coverage on JVM — the JVM half of the
       # dotnet-job step of the same name (stdlib-builds). Now runs on both
@@ -7028,6 +7033,13 @@ jobs:
       - name: Std.Tls test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/tls_tests.l
+
+      # Std.JsonValue (D145, #7832): the strict cross-target JSON value
+      # model, formerly lyric-jsonrpc's JsonRpc.Json.  Its JVM half runs in
+      # the JVM batch job below.
+      - name: Std.JsonValue test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/json_value_tests.l
 
       # TlsServerConfig test coverage — runs on both targets now that its
       # only target-specific case (default-field-omission construction,

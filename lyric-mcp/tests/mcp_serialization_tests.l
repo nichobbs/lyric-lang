@@ -4,7 +4,7 @@
 //! hand-written fixture — not just "it round-trips" — per
 //! docs/62-jsonrpc-mcp.md §5, docs/64-mcp-2026-stateless-migration.md §3,
 //! and the MCP 2026-07-28 schema. No transport, no process, no peer: pure
-//! `Mcp` encode/decode functions over `JsonRpc.Json` values, so this suite
+//! `Mcp` encode/decode functions over `Std.JsonValue` values, so this suite
 //! is expected to pass identically on both targets.
 //!
 //! NOTE: assertions compare `Option[T]` via `match`, never `==` — see
@@ -17,7 +17,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.String
-import JsonRpc.Json
+import Std.JsonValue
 import Mcp
 
 // Decode a `tools/call` result the test expects to be well formed.

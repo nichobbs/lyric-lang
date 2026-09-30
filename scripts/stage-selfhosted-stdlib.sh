@@ -39,7 +39,7 @@ fi
 # resource check so a package silently dropped from lyric.full.toml (e.g. by
 # an accidental deletion or a TOML parse error that skips a row) fails here
 # instead of surfacing later as a runtime TypeLoadException in a consumer.
-for pkg in Std.Sort Std.Xml Std.Yaml Std.Collections Std.Json; do
+for pkg in Std.Sort Std.Xml Std.Yaml Std.JsonValue Std.Collections Std.Json; do
   # `grep -c` (not `grep -q`) reads all of `strings`' output: `grep -q` exits
   # on the first match and SIGPIPEs `strings`, which under `set -o pipefail`
   # fails the pipeline even though the resource is present.

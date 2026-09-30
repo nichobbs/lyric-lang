@@ -43,7 +43,7 @@ import Std.Encoding
 import Std.Hash
 import Std.Parse
 import Std.String
-import JsonRpc.Json
+import Std.JsonValue
 
 // ── Protocol version ────────────────────────────────────────────────────────
 /// This library's primary protocol revision.

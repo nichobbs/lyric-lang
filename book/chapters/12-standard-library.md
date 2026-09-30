@@ -43,6 +43,7 @@ Here is the full module inventory:
 | `Std.Uuid` | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Time` | `Instant`, `Duration`, `now`, ISO 8601 parsing |
 | `Std.Json` | `toJson`, `fromJson` for `@generate(Json)` types |
+| `Std.JsonValue` | A JSON tree you can build, read and write on dotnet and the JVM: `JsonValue`, `parseValue`, `writeValue`, `writeValueIndented`, `getField`, `getString` |
 | `Std.Http` | HTTP client and server primitives |
 | `Std.Rest` | Typed REST client built on `Std.Http` (`RestClient`, `RestAuth`, `RestError`) |
 | `Std.Testing` | `expect`, `expectEq`, `expectErr`, `fail` |
@@ -358,6 +359,42 @@ match Order.fromJsonElement(getProperty(rootElement(doc), "order")) {
 If you write `fromJson` yourself, the generated `fromJsonElement` hands the element's text to your `fromJson`, so records that nest your type still use your decoder.
 
 If you need to serialise an opaque type across a boundary, the idiomatic pattern is to project it to an `exposed record` first, then derive JSON on the exposed form. Example 5 in `docs/02-worked-examples.md` shows this pattern with `RawConfig` and `AppConfig`.
+
+### A JSON tree: `Std.JsonValue`
+
+`@generate(Json)` maps JSON to and from your own types. When the shape is
+not fixed, or you are building a message field by field, use the value
+model in `Std.JsonValue`. It works the same on dotnet and the JVM (native
+is tracked in #7856), and it
+parses strictly: RFC 8259 only, with no comments, leading zeros or bare
+control characters, and a nesting limit of 128 by default.
+
+```lyric
+import Std.Core
+import Std.Collections
+import Std.JsonValue
+
+func main(): Unit {
+  val fields: List[JsonField] = newList()
+  fields.add(JsonField(name = "id", value = JString(value = "ord-1")))
+  fields.add(JsonField(name = "total", value = JInt(value = 1500)))
+  val order = JObject(fields = fields)
+  println(writeValue(order))            // {"id":"ord-1","total":1500}
+  println(writeValueIndented(order, 2)) // one field per line
+
+  match parseValue("{\"id\": \"ord-2\", \"total\": 99}") {
+    case Ok(v) -> match getString(v, "id") {
+      case Some(id) -> println("id: " + id)
+      case None -> println("no id")
+    }
+    case Err(e) -> println("bad JSON: " + JsonParseError.message(e))
+  }
+}
+```
+
+An integral number in the `Long` range is `JInt`; a fraction, an exponent
+or a larger integer is `JFloat`. Object fields keep their order, and a
+duplicate key is kept, with the accessors reading the last one.
 
 `@generate` is not limited to built-in generators. Chapter 30 covers how to write and publish your own source generator package so that consumers can annotate their types with `@generate(YourPkg.Name)` and receive whatever code your generator emits.
 

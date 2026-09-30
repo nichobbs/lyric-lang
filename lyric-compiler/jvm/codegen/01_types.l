@@ -2125,6 +2125,18 @@ pub func ctorClassFor(ctx: in FuncCtx, name: in String): Option[String] {
     case Some(cls) -> return Some(value = cls)
     case None -> ()
   }
+  bundleCtorFallback(ctx, name)
+}
+
+// The bundle-global first-wins bare entry, the last resort once the current
+// package and its imports declare nothing called `name`.  A name the file
+// binds to an extern type is never a constructor from a package it does not
+// import: `extern type JObject = "java.lang.Object"` must not resolve to
+// `Std.JsonValue`'s `JObject` case just because the stdlib bundle holds it.
+func bundleCtorFallback(ctx: in FuncCtx, name: in String): Option[String] {
+  if ctx.externTypes.containsKey(name) {
+    return None
+  }
   mapGet(ctx.ctors, name)
 }
 
@@ -2287,7 +2299,7 @@ pub func ctorClassForExpecting(ctx: in FuncCtx, name: in String): Option[String]
     case Some(cls3) -> return Some(value = cls3)
     case None -> ()
   }
-  mapGet(ctx.ctors, name)
+  bundleCtorFallback(ctx, name)
 }
 
 // Cross-package enum case-name collision fix (#5995), extended for the

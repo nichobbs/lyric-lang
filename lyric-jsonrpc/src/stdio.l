@@ -4,7 +4,7 @@
 //!
 //!   - `NdjsonTransport`        — one JSON message per `\n`-terminated line
 //!     (the MCP stdio transport). `writeValue` is always compact (see
-//!     `JsonRpc.Json`), so an outbound message never contains an embedded
+//!     `Std.JsonValue`), so an outbound message never contains an embedded
 //!     newline that would corrupt the framing.
 //!   - `ContentLengthTransport` — `Content-Length: N\r\n\r\n` + N bytes (the
 //!     LSP framing), byte-accurate on UTF-8.

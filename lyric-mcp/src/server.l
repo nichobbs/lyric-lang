@@ -25,7 +25,7 @@ package Mcp.Server
 import Std.Core
 import Std.Collections
 import Std.Char as Ch
-import JsonRpc.Json
+import Std.JsonValue
 import JsonRpc
 import JsonRpc.Stdio
 import Mcp
