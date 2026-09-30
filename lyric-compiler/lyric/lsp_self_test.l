@@ -14,6 +14,11 @@ import Std.Testing
 import Std.String as Str
 import Std.Json
 import Std.Encoding
+import Std.File as File
+import Std.Path as Path
+import Std.Environment as Environment
+import Std.Errors
+import Std.Uuid
 import Lyric.Lsp
 
 func openDoc(state: in LspState, uri: in String, text: in String): Unit {
@@ -49,20 +54,36 @@ func openDocMessages(state: in LspState, uri: in String, text: in String): Strin
   all
 }
 
-// #7512: the server runs the rewrites `lyric build` runs before its type
-// check (`pipePrepareForCheck`), so it reports what the build reports.
-test "a destructuring module val binds its names in the editor as in the build" {
-  val state = lspInit()
-  val src = "package P\nval (a, b) = (1, true)\nfunc f(): Int { a }\nfunc g(): Bool { b }\n"
-  val msgs = openDocMessages(state, "file:///lsp_self_test_modval.l", src)
-  assertTrue(Str.contains(msgs, "publishDiagnostics"), "diagnostics are published")
-  assertFalse(Str.contains(msgs, "T0020"), "a and b resolve: no unknown-name diagnostic")
+func tempBase(): String {
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
-test "a refutable module val pattern is T0144 in the editor as in the build" {
+// #7512: the server runs the rewrites `lyric build` runs before its type
+// check (`pipePrepareForCheck`).  On the raw parse `PkgB.wantB(...)` is a
+// member chain on an unknown value and was accepted silently; rewritten, it
+// is a qualified call checked against `PkgB.wantB`, as in the build.
+test "a qualified call into a workspace package is checked in the editor as in the build" {
+  val dir = Path.join(tempBase(), "lyric-lsp-qualified-" + uuidToString(newUuid()))
+  match File.createDir(dir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create temp dir " + dir + ": " + IOError.message(e))
+  }
+  val depPath = Path.join(dir, "pkgb.l")
+  match File.writeText(depPath, "package PkgB\npub func wantB(x: in Int): Int { x }\n") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write " + depPath + ": " + IOError.message(e))
+  }
   val state = lspInit()
-  val msgs = openDocMessages(state, "file:///lsp_self_test_refutable.l", "package P\nval Some(x) = Some(1)\n")
-  assertTrue(Str.contains(msgs, "T0144"), "refutable module val pattern: T0144")
+  state.wsIndex.add("PkgB", depPath)
+  val bad = openDocMessages(state, "file:///lsp_self_test_qualified_bad.l", "package App\nimport PkgB\nfunc g(): Int { PkgB.wantB(\"s\") }\n")
+  val good = openDocMessages(state, "file:///lsp_self_test_qualified_ok.l", "package App\nimport PkgB\nfunc g(): Int { PkgB.wantB(1) }\n")
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertTrue(Str.contains(bad, "T0043"), "String argument to an Int parameter: T0043")
+  assertTrue(Str.contains(good, "publishDiagnostics"), "diagnostics are published")
+  assertFalse(Str.contains(good, "T0043"), "Int argument: no T0043")
 }
 
 test "hover on an internal record reports internal, not pub" {

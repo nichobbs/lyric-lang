@@ -692,8 +692,10 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   val parsed = parse(text)
   val parsedFile = parsed.file
   // The same rewrites `lyric build` runs before its type check, so the
-  // editor reports what the build reports (#7512).
-  val prep = pipePrepareForCheck(parsedFile, true)
+  // editor reports what the build reports (#7512).  No `@stubbable`
+  // synthesis: its stubs need `Std.Testing.Mocking`, which the server does
+  // not load, so they would only add unknown-name reports.
+  val prep = pipePrepareForCheck(parsedFile, false)
   val importedItems = buildImportedItems(state, prep.file)
   val cr = checkWithImports(prep.file, importedItems)
 
