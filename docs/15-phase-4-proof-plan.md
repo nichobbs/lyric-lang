@@ -158,6 +158,7 @@ does not check the call-graph rule.
 | `V0012` | _(planned code, **repurposed**)_ The mode checker now uses `V0012` for `await` inside a `try`/`catch`/`finally` block in an async function (a CLR IL constraint, #2985/#3113), not for the broad "async in proof-required" rejection planned here.  The actual verifier-side rejection of contracts on async/generator functions ships as `V0032` (below, #3298). | — | — |
 | `V0031` | **Retired** in #336.  The self-hosted aspect weaver (`Lyric.Weaver.weaveFile`, ported from `bootstrap/src/Lyric.Emitter/Weaver.fs`) now runs in the verifier driver before VC generation, so proofs discharge against the woven wrapper's composed contracts — not the bare body.  The same-package limitation that previously made the warning incomplete is gone; cross-package aspect detection is still future work (imported aspect annotations don't fire weaving today, mirroring the original `V0031` cross-package gap). | — | — |
 | `V0032` | A `@proof_required` `async func` or `yield`-bearing generator carries a contract clause (`requires:`/`ensures:`).  The WP/SP calculus has no model for suspend/resume control flow — `await`/`yield` has no Term translation and would be coerced to an opaque symbol, so the contract would be checked against an unmodelled body.  `goalsForFunction` rejects such functions before VC generation and emits no goals (rather than vacuous/opaque ones).  A non-contract async function is unaffected.  Effect-aware VC generation is future work (#3298). | error | move the contract to a synchronous core, or mark `@runtime_checked` |
+| `V0033` | A proof obligation cannot be translated into the proof logic faithfully: an integer/bitvector sort mix with no implicit conversion (a `UInt` operand beside an `Int` variable, a negative constant or a constant too wide for an unsigned type, the negation of an unsigned value), or a declared result range whose bound is not an integer literal that fits its base.  The verifier reports the construct (or the goal it reaches after substitution) instead of reasoning about a term that means something else, and neither the trivial discharger nor the solver sees that goal (#7848). | error | add an explicit conversion, or state the bound as a literal of the base type |
 
 `V0007` defaults to *error* because allowing `unknown` to slide is
 how every academic verifier's user community ends up tolerating
@@ -266,7 +267,7 @@ Lyric.Verifier/
 | `Bool`                    | `Bool`                                       | trivial |
 | `Int`, `Long`, `Nat`      | `Int` (mathematical integer)                 | overflow handled separately, see §5.4 |
 | range subtype `T range a ..= b` | `Int` with implicit `a ≤ x ≤ b` axiom on every binder | preserves identity loss is fine in proof; CLR identity matters only for emission |
-| `UInt`, `ULong`, `Byte`   | `(_ BitVec n)`                               | bitvector arithmetic, slow but decidable |
+| `UInt`, `ULong`, `Byte`   | `(_ BitVec n)`                               | bitvector arithmetic, slow but decidable. A `u8`/`u16`/`u32`/`u64` literal is a `(_ bvN n)` constant of its width (a `u64` literal from 2^63 up is its unsigned value, #7839); an unsuffixed literal next to an unsigned operand takes that operand's width. Ordering, `/` and `%` use the unsigned `bvult`/`bvule`/`bvugt`/`bvuge`/`bvudiv`/`bvurem`; `+`, `-`, `*` are `bvadd`/`bvsub`/`bvmul`. A narrower unsigned operand zero-extends along `Byte < UInt < ULong`, and a `Byte` enters the signed chain through `bv2nat`. A range subtype over an unsigned base folds its bounds unsigned. Any other mix of the two sorts (a `UInt` beside an `Int` variable, a negative constant as an unsigned value, an unsigned negation, a bound that does not fit its base) fails closed with `V0033` (#7848) |
 | `Float`, `Double`         | SMT `Real` (mathematical reals)              | sound approximation: avoids IEEE 754 FP theory and its rounding-mode complexity; linear arithmetic over reals is decidable and fast; division emits `/` (Real div) not `div` (integer) |
 | `String`                  | uninterpreted sort with `length: String -> Int`, `==` | content reasoning out of scope |
 | record                    | SMT-LIB datatype                             | one constructor, fields as selectors |
@@ -321,7 +322,16 @@ modes:
 - **`@proof_required(checked_arithmetic)`**: every arithmetic
   operation generates an additional VC `result ∈ [Int.min, Int.max]`.
   Slow but sound. Recommended for safety-critical code (the original
-  Phase 0 audience, `00-overview.md`).
+  Phase 0 audience, `00-overview.md`). On a `UInt`/`ULong`/`Byte`
+  bitvector the VC is that the operation does not wrap: `x <= x + y`
+  for `+`, `y <= x` for `-`, and `y == 0 or (x * y) / y == x` for `*`,
+  all ordered unsigned (#7848).
+
+A negated integer literal is one signed constant, as
+`foldNegatedIntLiteral` makes it for the backends: `-9223372036854775808`,
+`-0x8000_0000_0000_0000`, `-2147483648i32` and `-128i8` are their minimum
+values, never the negation of a magnitude whose pattern is already
+negative (#7853). A range bound is folded the same way.
 
 Mode is fixed per package, like the other proof-required modifiers.
 

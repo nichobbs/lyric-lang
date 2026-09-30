@@ -204,14 +204,56 @@ func smtRenderLit(lit: in Lit): String {
     case VLBool(false) -> "false"
     case VLInt(n) -> {
       if n < 0i64 {
-        "(- " + longToString(-n) + ")"
+        "(- " + longMagnitudeToString(n) + ")"
       } else {
         longToString(n)
       }
     }
+    case VLBitVec(bits, w) -> "(_ bv" + unsignedLongToString(bits) + " " + intToString(w) + ")"
     case VLFloat(f) -> smtRenderFloat(f)
     case VLString(s) -> "\"" + s.replace("\"", "\"\"") + "\""
     case VLUnit -> "unit"
+  }
+}
+
+// The SMT-LIB operator for an arithmetic or ordering builtin over
+// `(_ BitVec n)` operands (#7848).  `UInt`/`ULong`/`Byte` are unsigned, so
+// ordering, division and remainder use the unsigned bitvector forms; `+`,
+// `-`, `*` and negation are the modular `bvadd`/`bvsub`/`bvmul`/`bvneg`.
+// `None` for a builtin whose spelling is the same for every sort.
+func bitVecOpName(op: in Builtin): Option[String] {
+  match op {
+    case BOpAdd -> Some(value = "bvadd")
+    case BOpSub -> Some(value = "bvsub")
+    case BOpMul -> Some(value = "bvmul")
+    case BOpDiv -> Some(value = "bvudiv")
+    case BOpMod -> Some(value = "bvurem")
+    case BOpNeg -> Some(value = "bvneg")
+    case BOpLt -> Some(value = "bvult")
+    case BOpLte -> Some(value = "bvule")
+    case BOpGt -> Some(value = "bvugt")
+    case BOpGte -> Some(value = "bvuge")
+    case _ -> None
+  }
+}
+
+func isBitVecSort(s: in Sort): Bool {
+  match s {
+    case SBitVec(_) -> true
+    case _ -> false
+  }
+}
+
+// The operator a builtin renders as: its bitvector form when its first
+// operand is a bitvector, otherwise its display name.
+func smtOpName(op: in Builtin, args: in List[Term]): String {
+  if args.count > 0 and isBitVecSort(sortOf(args[0])) {
+    match bitVecOpName(op) {
+      case Some(name) -> name
+      case None -> builtinDisplay(op)
+    }
+  } else {
+    builtinDisplay(op)
   }
 }
 
@@ -219,15 +261,22 @@ pub func smtRenderTerm(t: in Term): String {
   match t {
     case TVar(name, _) -> smtSanitize(name)
     case TLit(lit, _) -> smtRenderLit(lit)
+    case TBuiltin(BOpZeroExtend(bits), args) -> {
+      if args.count == 1 {
+        "((_ zero_extend " + intToString(bits) + ") " + smtRenderTerm(args[0]) + ")"
+      } else {
+        "(zero_extend)"
+      }
+    }
     case TBuiltin(op, args) -> {
       if (builtinEq(op, BOpNot) or builtinEq(op, BOpNeg)) and args.count == 1 {
-        "(" + builtinDisplay(op) + " " + smtRenderTerm(args[0]) + ")"
+        "(" + smtOpName(op, args) + " " + smtRenderTerm(args[0]) + ")"
       } else if builtinEq(op, BOpSliceLength) and args.count == 1 {
         "(slice.length " + smtRenderTerm(args[0]) + ")"
       } else if builtinEq(op, BOpSliceIndex) and args.count == 2 {
         "(select " + smtRenderTerm(args[0]) + " " + smtRenderTerm(args[1]) + ")"
       } else {
-        var output = "(" + builtinDisplay(op)
+        var output = "(" + smtOpName(op, args)
         var i = 0
         while i < args.count {
           output = output + " " + smtRenderTerm(args[i])
