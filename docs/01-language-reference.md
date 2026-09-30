@@ -1004,11 +1004,13 @@ val Point { x, y } = p              // a record pattern on a Point
 val Only(v) = box                   // the sole case of a single-case union
 ```
 A tuple pattern needs a tuple of the same arity, at every level; a constructor
-pattern needs the only case of a single-case union; a record pattern's field
+pattern needs the only case of a single-case union; a record pattern must name
+the initializer's own record and only that record's fields, and its field
 patterns are held to the same rule. A pattern that can fail — `val (a, b) = 5`,
-a tuple pattern of the wrong arity, `val Some(x) = opt` (one case of two), or a
-literal, range, type-test, alternative or const pattern anywhere in it — is a
-compile error (**T0146**, #7778); destructure such a value with a `match`, and
+a tuple pattern of the wrong arity, `val Some(x) = opt` (one case of two),
+`val Point { x, y } = n` for an `Int` `n`, a record pattern naming a field the
+record lacks, or a literal, range, type-test, alternative or const pattern
+anywhere in it — is a compile error (**T0146**, #7778, #7808); destructure such a value with a `match`, and
 state a type with `val x: T = ...`, not `val x is T = ...`. A module-level `val`
 follows the stricter rule of the next paragraphs (**T0144**).
 

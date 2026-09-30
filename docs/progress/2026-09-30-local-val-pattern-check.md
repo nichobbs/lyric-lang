@@ -35,6 +35,21 @@ record pattern) run 27/27 on `--target dotnet` and `--target jvm`. docs/01
 §4.4, the grammar's `LocalBinding` note and the book's T0146 row describe the
 rule.
 
+Review follow-up (#7808): the record-pattern arm checked only named field
+patterns. It never compared the head with the initializer's type and skipped
+shorthand fields, so `val Point { x, y } = n` with `n: Int` still compiled and
+threw `InvalidCastException` (codegen casts to the head's record). A record
+pattern now needs a head naming the initializer's own record (declared or
+exposed) and only that record's fields, shorthand ones included; a constructor
+pattern over a type with no cases (an `Int`, a record) is rejected too. Once a
+pattern is accepted, `checkLocalValRecordHeads` gives each record head the
+qualifier, privacy and reachability diagnostics a `match` arm gets (T0137,
+T0097, T0020). `Self` joins the unresolved types that rule out no shape. Six
+more `typechecker_self_test.l` cases (a shorthand-only record pattern over an
+`Int`, a head naming another record, a missing field, a nested record pattern
+over the wrong element, a constructor over an `Int`, and an accepted
+named-plus-shorthand record pattern that types its names): 719/719.
+
 Not changed here: a local `val name @ (a, b) = ...` passes the checker but
 fails in codegen on both targets (the backends' local-binding lowering drops
 the inner pattern of an `@` binding); it is tracked separately.

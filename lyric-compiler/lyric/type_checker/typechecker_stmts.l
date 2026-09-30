@@ -1663,7 +1663,9 @@ pub func checkFunctionBody(
 // module-level T0144, #7763).  Returns what makes `pat` fail to, or "" when
 // it always matches: a tuple pattern needs a tuple type of its arity, a
 // constructor pattern the sole case of a single-case union, and a record
-// pattern only irrefutable field patterns; a literal, range, type-test,
+// pattern a head naming the initializer's own record, only that record's
+// fields and only irrefutable field patterns -- codegen casts to the head's
+// record and reads each field unconditionally (#7808); a literal, range, type-test,
 // alternative or const pattern can always fail.  A type the checker could
 // not resolve (`TyError`, a type parameter, `Never`) cannot rule a shape out,
 // so only the pattern's own refutable forms count under it.
@@ -1687,23 +1689,22 @@ func localValPatternProblem(tbl: in SymbolTable, pat: in Pattern, ty: in Type): 
         case _ -> "a " + toString(ps.count) + "-element tuple pattern is bound to a value of type " + renderType(ty)
       }
     }
-    case PRecord(_, fields, _) -> {
-      val recFields: List[FieldEntry] = match unrefine(ty) {
-        case TyUser(tid, _, targs) -> fieldsOfRecordInstantiated(tbl, tid, targs)
-        case _ -> newList()
+    case PRecord(head, fields, _) -> {
+      val t = unrefine(ty)
+      if localValShapeUnknown(t) {
+        return localValRecordFieldsProblem(tbl, fields, newList(), false, ty)
       }
-      for f in fields {
-        match f {
-          case RPFNamed(fname, fp, _) -> {
-            val problem = localValPatternProblem(tbl, fp, fieldEntryType(recFields, fname))
-            if problem.length > 0 {
-              return problem
-            }
+      val headName = if head.segments.count > 0 { head.segments[head.segments.count - 1] } else { "" }
+      match t {
+        case TyUser(tid, _, targs) -> {
+          if localValRecordHeadNames(tbl, headName, tid) {
+            localValRecordFieldsProblem(tbl, fields, fieldsOfRecordInstantiated(tbl, tid, targs), true, ty)
+          } else {
+            "a record pattern (`" + headName + " { ... }`) is bound to a value of type " + renderType(ty)
           }
-          case RPFShort(_, _) -> ()
         }
+        case _ -> "a record pattern (`" + headName + " { ... }`) is bound to a value of type " + renderType(ty)
       }
-      ""
     }
     case PConstructor(head, args) -> {
       val t = unrefine(ty)
@@ -1724,7 +1725,8 @@ func localValPatternProblem(tbl: in SymbolTable, pat: in Pattern, ty: in Type): 
           }
           localValElemsProblem(tbl, args, fieldTys)
         }
-        case None -> localValElemsProblem(tbl, args, newList())
+        case None -> "a constructor pattern (`" + caseName + "`) is bound to a value of type " + renderType(ty) +
+          ", which has no cases"
       }
     }
     case _ -> refutablePatternForm(pat) + ", which can fail to match" + localValRefutableHint(pat)
@@ -1755,10 +1757,118 @@ func localValElemsProblem(tbl: in SymbolTable, ps: in List[Pattern], tys: in Lis
   ""
 }
 
+// True when a record pattern's head `headName` names the record `tid` itself
+// (its declared or exposed record symbol); the head's qualifier, privacy and
+// reachability are `checkLocalValRecordHeads`'s to report once the pattern's
+// shape is known to fit.
+func localValRecordHeadNames(tbl: in SymbolTable, headName: in String, tid: in TypeId): Bool {
+  for cand in symTableTryFindAll(tbl, headName) {
+    val hit = match cand.kind {
+      case DKRecord(did, _) -> typeIdEq(did, tid)
+      case DKExposedRec(did, _) -> typeIdEq(did, tid)
+      case _ -> false
+    }
+    if hit {
+      return true
+    }
+  }
+  false
+}
+
+// The first problem among a record pattern's fields.  When the record is
+// known (`known`), every named and shorthand field must be one of its fields;
+// codegen reads each unconditionally.
+func localValRecordFieldsProblem(
+  tbl: in SymbolTable,
+  fields: in List[RecordPatternField],
+  recFields: in List[FieldEntry],
+  known: in Bool,
+  ty: in Type,
+): String {
+  for f in fields {
+    val fname = match f { case RPFNamed(n, _, _) -> n; case RPFShort(n, _) -> n }
+    if known and not localValRecordHasField(recFields, fname) {
+      return "the record pattern names field `" + fname + "`, which " + renderType(ty) + " does not have"
+    }
+    match f {
+      case RPFNamed(_, fp, _) -> {
+        val problem = localValPatternProblem(tbl, fp, fieldEntryType(recFields, fname))
+        if problem.length > 0 {
+          return problem
+        }
+      }
+      case RPFShort(_, _) -> ()
+    }
+  }
+  ""
+}
+
+func localValRecordHasField(recFields: in List[FieldEntry], name: in String): Bool {
+  for fe in recFields {
+    if fe.name == name {
+      return true
+    }
+  }
+  false
+}
+
+// The record-pattern head diagnostics a `match` arm gets from
+// `bindPatternTyped` (T0137 qualifier, T0097 privacy, T0020 reachability),
+// for a local `val` pattern `localValPatternProblem` accepted.
+func checkLocalValRecordHeads(tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
+  match pat.kind {
+    case PBinding(_, inner) -> match inner {
+      case Some(ip) -> checkLocalValRecordHeads(tbl, diag, ip, ty)
+      case None -> ()
+    }
+    case PParen(ip) -> checkLocalValRecordHeads(tbl, diag, ip, ty)
+    case PTuple(ps) -> {
+      val elems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
+      var i = 0
+      while i < ps.count {
+        checkLocalValRecordHeads(tbl, diag, ps[i], if i < elems.count { elems[i] } else { TyError })
+        i = i + 1
+      }
+    }
+    case PRecord(head, fields, _) -> {
+      checkRecordPatternHead(tbl, diag, head, pat.span, ty)
+      val recFields: List[FieldEntry] = match unrefine(ty) {
+        case TyUser(tid, _, targs) -> fieldsOfRecordInstantiated(tbl, tid, targs)
+        case _ -> newList()
+      }
+      for f in fields {
+        match f {
+          case RPFNamed(fname, fp, _) -> checkLocalValRecordHeads(tbl, diag, fp, fieldEntryType(recFields, fname))
+          case RPFShort(_, _) -> ()
+        }
+      }
+    }
+    case PConstructor(head, args) -> {
+      val t = unrefine(ty)
+      val scratch: List[Diagnostic] = newList()
+      val fieldTys: List[Type] = if localValShapeUnknown(t) {
+        newList()
+      } else {
+        match unionCaseSymbolForScrutinee(tbl, scratch, pat2fnExpr(head, pat.span), t) {
+          case Some(caseSym) -> caseFieldTypesInstantiated(tbl, scratch, caseSym, t)
+          case None -> newList()
+        }
+      }
+      var i = 0
+      while i < args.count {
+        checkLocalValRecordHeads(tbl, diag, args[i], if i < fieldTys.count { fieldTys[i] } else { TyError })
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
 func localValShapeUnknown(t: in Type): Bool {
   match t {
     case TyError -> true
     case TyVar(_) -> true
+    case TySelf -> true
     case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
     case _ -> false
   }
@@ -1774,6 +1884,7 @@ func checkLocalValPattern(tbl: in SymbolTable, diag: in List[Diagnostic], pat: i
   }
   val problem = localValPatternProblem(tbl, pat, ty)
   if problem.length == 0 {
+    checkLocalValRecordHeads(tbl, diag, pat, ty)
     return false
   }
   diag.add(

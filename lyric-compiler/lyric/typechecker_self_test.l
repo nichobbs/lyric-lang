@@ -8166,6 +8166,52 @@ test "a literal inside a local tuple pattern is T0146 (#7778)" {
   assertEqualInt(countDiagCode(parseCheck(src), "T0146"), 1, "a literal pattern can fail")
 }
 
+// #7808: codegen casts a local record pattern's initializer to the head's
+// record and reads every field, shorthand ones included, unconditionally.
+test "a record pattern over a non-record is T0146 (#7808)" {
+  val src = "package P\nrecord Pt {\n  x: Int\n  y: Int\n}\nfunc f(n: in Int): Unit {\n  val Pt { x, y } = n\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0146"), 1, "a shorthand-only record pattern over an Int")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0146"), "record pattern (`Pt { ... }`) is bound to a value of type Int"),
+    "T0146 names the head and the type: " + diagMessageFor(cr, "T0146")
+  )
+}
+
+test "a record pattern naming another record is T0146 (#7808)" {
+  val src = "package P\nrecord Pt {\n  x: Int\n}\nrecord Qt {\n  x: Int\n}\n" +
+    "func f(q: in Qt): Unit {\n  val Pt { x } = q\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0146"), 1, "Pt is not the initializer's record")
+}
+
+test "a record pattern naming a missing field is T0146 (#7808)" {
+  val src = "package P\nrecord Pt {\n  x: Int\n}\nfunc f(p: in Pt): Unit {\n  val Pt { x, z } = p\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0146"), 1, "Pt has no field z")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0146"), "field `z`"),
+    "T0146 names the field: " + diagMessageFor(cr, "T0146")
+  )
+}
+
+test "a nested record pattern over the wrong type is T0146 (#7808)" {
+  val src = "package P\nrecord Pt {\n  x: Int\n}\nfunc f(p: in Pt): Unit {\n  val (Pt { x }, b) = (1, p)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0146"), 1, "the first element is an Int")
+}
+
+test "a constructor pattern over a non-union is T0146 (#7808)" {
+  val src = "package P\nunion Boxed {\n  case Box(value: Int)\n}\nfunc f(n: in Int): Unit {\n  val Box(v) = n\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0146"), 1, "an Int has no cases")
+}
+
+test "a record pattern with a named field pattern is irrefutable locally (#7808)" {
+  val src = "package P\nrecord Pt {\n  x: Int\n  y: Int\n}\nfunc f(p: in Pt): Unit {\n  val Pt { x = a, y } = p\n" +
+    "  val n: Int = a + y\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0146"), 0, "the head names the record and both fields exist")
+  assertEqualInt(countDiagCode(cr, "T0060"), 0, "a and y are Ints")
+}
+
 test "a sole-case constructor, a record pattern and @ are irrefutable locally (#7778)" {
   val src = "package P\nunion Boxed {\n  case Box(value: Int)\n}\nrecord Pt {\n  x: Int\n  y: Int\n}\n" +
     "func f(b: in Boxed, p: in Pt): Unit {\n  val Box(v) = b\n  val Pt { x, y } = p\n  val whole @ (l, r) = (1, 2)\n" +
