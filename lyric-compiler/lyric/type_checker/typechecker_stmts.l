@@ -248,12 +248,13 @@ pub func checkStatement(
             case _ -> ""
           }
           val openKey = if openName != "" { registerOpenBindingSite(tbl, init, initType) } else { "" }
+          val bindTy = if checkLocalValPattern(tbl, diag, pat, initType) { TyError } else { initType }
           if openKey != "" {
             scopeAdd(sc, LocalBinding(name = openName, ty = initType, isMutable = false, openSite = openKey))
           } else {
-            bindPattern(sc, pat, initType)
+            bindPattern(sc, pat, bindTy)
           }
-          recordTuplePatternBindings(tbl, pat, initType, false)
+          recordTuplePatternBindings(tbl, pat, bindTy, false)
         }
         case Some(te) -> {
           val ctx = newGenericContext()
@@ -274,8 +275,9 @@ pub func checkStatement(
             )
           }
           checkRefinedLiteralBound(declT, init, diag)
-          bindPattern(sc, pat, declT)
-          recordTuplePatternBindings(tbl, pat, declT, false)
+          val bindTy = if checkLocalValPattern(tbl, diag, pat, declT) { TyError } else { declT }
+          bindPattern(sc, pat, bindTy)
+          recordTuplePatternBindings(tbl, pat, bindTy, false)
         }
       }
       case LBVar(name, tyOpt, initOpt) -> match tyOpt {
@@ -522,94 +524,7 @@ pub func checkStatement(
           if forIterIsGeneratorCall(tbl, iter) {
             iterType
           } else {
-            match iterType {
-              case TySlice(e) -> e
-              case TyArray(_, e) -> e
-              case TyUser(iterId, _, iterArgs) -> {
-                // List[T] iterates over T; MapKeyCollection[K,V] over K;
-                // MapValueCollection[K,V] over V.  A bare `Map[K,V]` iterator has
-                // no runtime lowering on either backend (iteration goes through
-                // `.keys()` / `.values()`), so it stays `TyError` — codegen owns
-                // that rejection.  All three are recognised by the stdlib type's
-                // identity, not its bare name (#7737): both backends iterate
-                // them as the genuine BCL/JDK collection, so a package's own
-                // `record List[T]` used to type-check here and then fail at
-                // runtime (`InvalidCastException` on dotnet,
-                // `IncompatibleClassChangeError` on the JVM).  Such a type now
-                // falls through to the T0126 branch below like any other
-                // Lyric-native single-parameter generic.
-                if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
-                  iterArgs[0]
-                } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapKeyCollection") {
-                  iterArgs[0]
-                } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapValueCollection") {
-                  iterArgs[1]
-                } else if iterArgs.count == 1 and symTableIsExternTypeId(tbl, iterId) {
-                  // Any other single-type-parameter EXTERN generic collection
-                  // follows the same List[T] convention: the sole type
-                  // parameter IS the element type.  This covers extern generic
-                  // collections (e.g.
-                  // `extern type JHttpStringCollection[T] = "java.util.Collection"`,
-                  // the phantom-type-param idiom `Web.Kernel.Runtime`'s
-                  // `headerNamesOf` uses to expose a JDK `Collection<HttpString>`)
-                  // as well as Lyric's own extern-backed `Set[T]` — before this
-                  // arm, only the literal name `List` got a typed element and
-                  // everything else fell through to `TyError`, silently
-                  // erasing the loop variable to `Object` and breaking any
-                  // extension-method call chained on it downstream (JVM
-                  // auto-FFI resolving against `java.lang.Object` instead of
-                  // the real element type, #6565).  Scoped to extern types
-                  // only (#6720): a Lyric-native single-param generic that
-                  // happens not to be `List` (e.g. `Option[T]`) is not a
-                  // collection at all, and used to reach this arm with no
-                  // diagnostic — see the T0126 branch below.
-                  iterArgs[0]
-                } else if iterArgs.count == 1 {
-                  // #6720: a Lyric-native single-param generic that isn't
-                  // `List` (the case above already claimed extern generics via
-                  // the phantom-type-param idiom, e.g. `Set[T]`) is never
-                  // actually iterable — `Option[T]` is the concrete repro.
-                  // Reject at type-check time instead of silently typing the
-                  // loop element and letting codegen's index-loop protocol
-                  // (`emitCollectionForMsil`'s `case _` fallback, which assumes
-                  // `.Count`/`get_Item`) fail at runtime with a cast/member
-                  // exception.
-                  diag.add(
-                    errorDiagnostic(
-                      "T0126",
-                      "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type" +
-                        shadowedStdCollectionNote(tbl, iterType),
-                      iter.span
-                    )
-                  )
-                  TyError
-                } else {
-                  TyError
-                }
-              }
-              case TyPrim(iterPt) -> {
-                match iterPt {
-                  case PtString -> {
-                    // D-progress-1006: a `String` is not iterable.  Its elements
-                    // would have to be UTF-16 code units, and a surrogate half is
-                    // not a `Char` (docs/01 §2.1) -- so name the two explicit
-                    // views instead of letting codegen fail at runtime.
-                    diag.add(
-                      errorDiagnostic(
-                        "T0126",
-                        "cannot iterate over 'String' directly: iterate its Unicode scalar values with " +
-                          "`for cp in Std.String.codePoints(s)` (each an `Int`), or index code units with " +
-                          "`s.codeUnitAt(i)` for `i` in `0 ..< s.length`",
-                        iter.span
-                      )
-                    )
-                    TyError
-                  }
-                  case _ -> TyError
-                }
-              }
-              case _ -> TyError
-            }
+            forIterElemType(tbl, diag, iter, iterType)
           }
         }
       }
@@ -1740,6 +1655,346 @@ pub func checkFunctionBody(
     }
   }
   checkOutDefiniteAssignment(diag, fn, sig)
+}
+
+// #7778: a local `val` binds its pattern with no failure path -- codegen
+// destructures the initializer unconditionally -- so the pattern must match
+// every value of the initializer's type (the local counterpart of the
+// module-level T0144, #7763).  Returns what makes `pat` fail to, or "" when
+// it always matches: a tuple pattern needs a tuple type of its arity, a
+// constructor pattern the sole case of a single-case union, and a record
+// pattern a head naming the initializer's own record, only that record's
+// fields and only irrefutable field patterns -- codegen casts to the head's
+// record and reads each field unconditionally (#7808); a literal, range, type-test,
+// alternative or const pattern can always fail.  A type the checker could
+// not resolve (`TyError`, a type parameter, `Never`) cannot rule a shape out,
+// so only the pattern's own refutable forms count under it.
+func localValPatternProblem(tbl: in SymbolTable, pat: in Pattern, ty: in Type): String {
+  match pat.kind {
+    case PWildcard -> ""
+    case PError -> ""
+    case PBinding(_, inner) -> match inner { case Some(ip) -> localValPatternProblem(tbl, ip, ty); case None -> "" }
+    case PParen(ip) -> localValPatternProblem(tbl, ip, ty)
+    case PTuple(ps) -> {
+      val t = unrefine(ty)
+      if localValShapeUnknown(t) {
+        return localValElemsProblem(tbl, ps, newList())
+      }
+      match t {
+        case TyTuple(elems) -> if elems.count == ps.count {
+          localValElemsProblem(tbl, ps, elems)
+        } else {
+          "a " + toString(ps.count) + "-element tuple pattern is bound to a value of type " + renderType(ty)
+        }
+        case _ -> "a " + toString(ps.count) + "-element tuple pattern is bound to a value of type " + renderType(ty)
+      }
+    }
+    case PRecord(head, fields, _) -> {
+      val t = unrefine(ty)
+      if localValShapeUnknown(t) {
+        return localValRecordFieldsProblem(tbl, fields, newList(), false, ty)
+      }
+      val headName = if head.segments.count > 0 { head.segments[head.segments.count - 1] } else { "" }
+      match t {
+        case TyUser(tid, _, targs) -> {
+          if localValRecordHeadNames(tbl, headName, tid) {
+            localValRecordFieldsProblem(tbl, fields, fieldsOfRecordInstantiated(tbl, tid, targs), true, ty)
+          } else {
+            "a record pattern (`" + headName + " { ... }`) is bound to a value of type " + renderType(ty)
+          }
+        }
+        case _ -> "a record pattern (`" + headName + " { ... }`) is bound to a value of type " + renderType(ty)
+      }
+    }
+    case PConstructor(head, args) -> {
+      val t = unrefine(ty)
+      if localValShapeUnknown(t) {
+        return localValElemsProblem(tbl, args, newList())
+      }
+      val caseName = if head.segments.count > 0 { head.segments[head.segments.count - 1] } else { "" }
+      match finiteCaseNames(tbl, t) {
+        case Some(names) -> {
+          if names.count != 1 or names[0] != caseName {
+            return "a constructor pattern (`" + caseName + "`), which matches only one case of " + renderType(ty) +
+              "; destructure it with a `match` instead"
+          }
+          val scratch: List[Diagnostic] = newList()
+          val fieldTys: List[Type] = match unionCaseSymbolForScrutinee(tbl, scratch, pat2fnExpr(head, pat.span), t) {
+            case Some(caseSym) -> caseFieldTypesInstantiated(tbl, scratch, caseSym, t)
+            case None -> newList()
+          }
+          localValElemsProblem(tbl, args, fieldTys)
+        }
+        case None -> "a constructor pattern (`" + caseName + "`) is bound to a value of type " + renderType(ty) +
+          ", which has no cases"
+      }
+    }
+    case _ -> refutablePatternForm(pat) + ", which can fail to match" + localValRefutableHint(pat)
+  }
+}
+
+func localValRefutableHint(p: in Pattern): String {
+  match p.kind {
+    case PTypeTest(inner, _) -> match inner.kind {
+      case PBinding(_, None) -> "; declare the type with `val <name>: <Type> = ...` instead"
+      case _ -> "; destructure it with a `match` instead"
+    }
+    case _ -> "; destructure it with a `match` instead"
+  }
+}
+
+// The first problem among `ps` bound to `tys` element-wise (an element with
+// no type is checked against `TyError`), or "".
+func localValElemsProblem(tbl: in SymbolTable, ps: in List[Pattern], tys: in List[Type]): String {
+  var i = 0
+  while i < ps.count {
+    val problem = localValPatternProblem(tbl, ps[i], if i < tys.count { tys[i] } else { TyError })
+    if problem.length > 0 {
+      return problem
+    }
+    i = i + 1
+  }
+  ""
+}
+
+// True when a record pattern's head `headName` names the record `tid` itself
+// (its declared or exposed record symbol); the head's qualifier, privacy and
+// reachability are `checkLocalValRecordHeads`'s to report once the pattern's
+// shape is known to fit.
+func localValRecordHeadNames(tbl: in SymbolTable, headName: in String, tid: in TypeId): Bool {
+  for cand in symTableTryFindAll(tbl, headName) {
+    val hit = match cand.kind {
+      case DKRecord(did, _) -> typeIdEq(did, tid)
+      case DKExposedRec(did, _) -> typeIdEq(did, tid)
+      case _ -> false
+    }
+    if hit {
+      return true
+    }
+  }
+  false
+}
+
+// The first problem among a record pattern's fields.  When the record is
+// known (`known`), every named and shorthand field must be one of its fields;
+// codegen reads each unconditionally.
+func localValRecordFieldsProblem(
+  tbl: in SymbolTable,
+  fields: in List[RecordPatternField],
+  recFields: in List[FieldEntry],
+  known: in Bool,
+  ty: in Type,
+): String {
+  for f in fields {
+    val fname = match f { case RPFNamed(n, _, _) -> n; case RPFShort(n, _) -> n }
+    if known and not localValRecordHasField(recFields, fname) {
+      return "the record pattern names field `" + fname + "`, which " + renderType(ty) + " does not have"
+    }
+    match f {
+      case RPFNamed(_, fp, _) -> {
+        val problem = localValPatternProblem(tbl, fp, fieldEntryType(recFields, fname))
+        if problem.length > 0 {
+          return problem
+        }
+      }
+      case RPFShort(_, _) -> ()
+    }
+  }
+  ""
+}
+
+func localValRecordHasField(recFields: in List[FieldEntry], name: in String): Bool {
+  for fe in recFields {
+    if fe.name == name {
+      return true
+    }
+  }
+  false
+}
+
+// The record-pattern head diagnostics a `match` arm gets from
+// `bindPatternTyped` (T0137 qualifier, T0097 privacy, T0020 reachability),
+// for a local `val` pattern `localValPatternProblem` accepted.
+func checkLocalValRecordHeads(tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
+  match pat.kind {
+    case PBinding(_, inner) -> match inner {
+      case Some(ip) -> checkLocalValRecordHeads(tbl, diag, ip, ty)
+      case None -> ()
+    }
+    case PParen(ip) -> checkLocalValRecordHeads(tbl, diag, ip, ty)
+    case PTuple(ps) -> {
+      val elems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
+      var i = 0
+      while i < ps.count {
+        checkLocalValRecordHeads(tbl, diag, ps[i], if i < elems.count { elems[i] } else { TyError })
+        i = i + 1
+      }
+    }
+    case PRecord(head, fields, _) -> {
+      checkRecordPatternHead(tbl, diag, head, pat.span, ty)
+      val recFields: List[FieldEntry] = match unrefine(ty) {
+        case TyUser(tid, _, targs) -> fieldsOfRecordInstantiated(tbl, tid, targs)
+        case _ -> newList()
+      }
+      for f in fields {
+        match f {
+          case RPFNamed(fname, fp, _) -> checkLocalValRecordHeads(tbl, diag, fp, fieldEntryType(recFields, fname))
+          case RPFShort(_, _) -> ()
+        }
+      }
+    }
+    case PConstructor(head, args) -> {
+      val t = unrefine(ty)
+      val scratch: List[Diagnostic] = newList()
+      val fieldTys: List[Type] = if localValShapeUnknown(t) {
+        newList()
+      } else {
+        match unionCaseSymbolForScrutinee(tbl, scratch, pat2fnExpr(head, pat.span), t) {
+          case Some(caseSym) -> caseFieldTypesInstantiated(tbl, scratch, caseSym, t)
+          case None -> newList()
+        }
+      }
+      var i = 0
+      while i < args.count {
+        checkLocalValRecordHeads(tbl, diag, args[i], if i < fieldTys.count { fieldTys[i] } else { TyError })
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func localValShapeUnknown(t: in Type): Bool {
+  match t {
+    case TyError -> true
+    case TyVar(_) -> true
+    case TySelf -> true
+    case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// Reports T0146 when a local `val`'s pattern cannot match every value of
+// `ty`; true when it did, so the caller binds the pattern's names leniently
+// instead of against a type they do not have.
+func checkLocalValPattern(tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Bool {
+  match pat.kind {
+    case PBinding(_, None) -> return false
+    case _ -> ()
+  }
+  val problem = localValPatternProblem(tbl, pat, ty)
+  if problem.length == 0 {
+    checkLocalValRecordHeads(tbl, diag, pat, ty)
+    return false
+  }
+  diag.add(
+    errorDiagnostic(
+      "T0146",
+      "a local `val` pattern must match every value of its initializer (a `val` has no failure path), but " + problem,
+      pat.span
+    )
+  )
+  true
+}
+
+// The element type a `for` binds when it iterates a value of `iterType` (a
+// range or a generator call is typed by the caller), or `TyError` after
+// reporting T0126 when the value is not iterable (#7781).  The iterable types
+// are the ones both backends lower: a slice or array, the stdlib `List[T]`
+// and `Map[K, V]`'s key/value collections -- recognised by identity, never
+// by their bare names (#7737) -- and extern types, whose iteration the host
+// collection protocol (`IEnumerable` / `java.lang.Iterable`) decides at
+// codegen; a single-type-parameter extern type iterates its type argument
+// (the phantom-type-param idiom, e.g.
+// `extern type JHttpStringCollection[T] = "java.util.Collection"`, #6565).
+// Every other type -- a record, union, enum, opaque, protected, distinct or
+// interface type of any arity, a primitive, a tuple, a function, a nullable
+// value, the stdlib `Map` itself -- has no iteration lowering: codegen's
+// fallback index-loop protocol casts it to a list and fails at runtime.
+// Only a single-parameter one was rejected before (#6720); the others typed
+// the loop variable `TyError`, which silenced every diagnostic involving it
+// in the loop body.  An iterator whose own inference already failed
+// (`TyError`), a type parameter and `Self` stay lenient: whether they are
+// iterable is not decidable here.
+func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Expr, iterType: in Type): Type {
+  match unrefine(iterType) {
+    case TyError -> TyError
+    case TyVar(_) -> TyError
+    case TySelf -> TyError
+    case TySlice(e) -> e
+    case TyArray(_, e) -> e
+    case TyUser(iterId, _, iterArgs) -> {
+      if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
+        iterArgs[0]
+      } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapKeyCollection") {
+        iterArgs[0]
+      } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapValueCollection") {
+        iterArgs[1]
+      } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "Map") {
+        reportNotIterable(
+          diag,
+          iter,
+          "cannot iterate over '" + renderType(iterType) + "' directly: iterate `mapKeys(m)`, `mapValues(m)` or " +
+            "`mapEntries(m)` from Std.Collections"
+        )
+      } else if symTableIsExternTypeId(tbl, iterId) {
+        if iterArgs.count == 1 {
+          iterArgs[0]
+        } else {
+          TyError
+        }
+      } else {
+        reportNotIterable(
+          diag,
+          iter,
+          "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type" +
+            shadowedStdCollectionNote(tbl, iterType) +
+            distinctIterNote(tbl, iterId)
+        )
+      }
+    }
+    case TyPrim(pt) -> match pt {
+      case PtNever -> TyError
+      // D-progress-1006: a `String`'s elements would have to be UTF-16 code
+      // units, and a surrogate half is not a `Char` (docs/01 §2.1), so name
+      // the two explicit views instead.
+      case PtString -> reportNotIterable(
+        diag,
+        iter,
+        "cannot iterate over 'String' directly: iterate its Unicode scalar values with " +
+          "`for cp in Std.String.codePoints(s)` (each an `Int`), or index code units with " +
+          "`s.codeUnitAt(i)` for `i` in `0 ..< s.length`"
+      )
+      case _ -> reportNotIterable(
+        diag,
+        iter,
+        "cannot iterate over '" + renderType(iterType) +
+          "': not a recognized iterable type"
+      )
+    }
+    case _ -> reportNotIterable(
+      diag,
+      iter,
+      "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type"
+    )
+  }
+}
+
+func reportNotIterable(diag: in List[Diagnostic], iter: in Expr, message: in String): Type {
+  diag.add(errorDiagnostic("T0126", message, iter.span))
+  TyError
+}
+
+// A note for T0126 on a distinct type: its value is a wrapper, not the
+// underlying collection, so the loop has to name the underlying value.
+func distinctIterNote(tbl: in SymbolTable, tid: in TypeId): String {
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(sym) -> match sym.kind {
+      case DKDistinctType(_, _) -> " (a distinct type is not its underlying type: iterate its `.value`)"
+      case _ -> ""
+    }
+    case None -> ""
+  }
 }
 
 // True when a `for` iterates a call to a yield-bearing `async func` (a

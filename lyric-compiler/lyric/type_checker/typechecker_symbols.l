@@ -297,6 +297,13 @@ pub record SymbolTable {
   /// type (#7771): a same-named method, type-associated function or local
   /// function value never counts.
   generatorCallSites: Map[String, Bool]
+  /// Span keys (`recordCopySiteKey`) of the calls whose resolved callee is
+  /// one of the stdlib's evidence-free collection constructors
+  /// (`Std.CollectionsHost.newList` / `newListWithCapacity` / `newMap`),
+  /// written by the `ECall` arm from the signature the call binds to.  An
+  /// unannotated binding initialized by one is open (#7788); a same-named
+  /// function of another package never is (#7801).
+  emptyCollectionCtorSites: Map[String, Bool]
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
   /// opaque, protected or distinct type each field-access or method-call receiver
   /// has, keyed like
@@ -430,6 +437,7 @@ pub func newSymbolTable(): SymbolTable {
     tuplePatternBindingSites = newMap(),
     moduleValTypes = newMap(),
     generatorCallSites = newMap(),
+    emptyCollectionCtorSites = newMap(),
     memberRecvClasses = newMap(),
     typeSymbolsById = newMap(),
     typeSymbolsIndexed = newList(),

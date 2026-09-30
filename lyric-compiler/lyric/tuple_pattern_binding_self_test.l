@@ -104,6 +104,46 @@ func destructureNestedVal(v: in ((Int, Int), String)): String {
   s + toString(a + b)
 }
 
+// #7778: the local destructuring forms the checker accepts -- a pattern
+// that matches every value of its initializer's type.
+func destructureWildcardVal(triple: in (Int, String, Int)): Int {
+  val (a, _, c) = triple
+  a * 10 + c
+}
+
+func destructureAnnotatedNestedVal(): String {
+  val (n, (s, d)): (Int, (String, Double)) = (7, ("x", 0.5))
+  if d * 4.0 == 2.0 {
+    s + toString(n * 2)
+  } else {
+    "wrong double"
+  }
+}
+
+func destructureParenVal(pair: in (Int, Int)): Int {
+  val ((a), (b)) = pair
+  a - b
+}
+
+union SoleBox {
+  case Only(left: Int, right: String)
+}
+
+record Span2 {
+  lo: Int
+  hi: Int
+}
+
+func destructureSoleCaseVal(b: in SoleBox): String {
+  val Only(n, s) = b
+  s + toString(n + 1)
+}
+
+func destructureRecordVal(sp: in Span2): Int {
+  val Span2 { lo, hi } = sp
+  hi - lo
+}
+
 func matchPair(pair: in (Int, Int)): Int {
   match pair {
     case (0, b) -> b + 1000
@@ -250,6 +290,26 @@ test "val (l, d) = (Long, Double)" {
 
 test "val ((a, b), s): nested tuple pattern" {
   assertEqual(destructureNestedVal(((20, 22), "n")), "n42", "nested Int sum")
+}
+
+test "val (a, _, c): wildcard element (#7778)" {
+  assertEqualInt(destructureWildcardVal((4, "skip", 2)), 42, "4 * 10 + 2")
+}
+
+test "val (n, (s, d)) with a nested tuple annotation (#7778)" {
+  assertEqual(destructureAnnotatedNestedVal(), "x14", "each name typed by the annotation")
+}
+
+test "val ((a), (b)): parenthesised elements (#7778)" {
+  assertEqualInt(destructureParenVal((50, 8)), 42, "50 - 8")
+}
+
+test "val Only(n, s): the sole case of a union (#7778)" {
+  assertEqual(destructureSoleCaseVal(Only(left = 41, right = "n")), "n42", "payload fields bound")
+}
+
+test "val Span2 { lo, hi }: a record pattern (#7778)" {
+  assertEqualInt(destructureRecordVal(Span2(lo = 8, hi = 50)), 42, "50 - 8")
 }
 
 test "match tuple pattern on (Int, Int)" {

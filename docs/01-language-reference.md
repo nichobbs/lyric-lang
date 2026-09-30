@@ -857,9 +857,11 @@ a *value* of type `Result[English, String]` is never implicitly a
 must name one of the case's fields, like a record constructor's (**T0101**).
 
 An unannotated local whose initializer is an empty construction that fixes
-no type arguments — `newList()`, `newListWithCapacity(n)`, `newMap()` or
-`None`, bare or qualified — takes them from its uses in the same function
-(#7788):
+no type arguments — the stdlib's `newList()`, `newListWithCapacity(n)`,
+`newMap()` or `Option`'s `None`, bare or qualified — takes them from its uses
+in the same function (#7788). The initializer is recognised by what it
+resolves to, not its spelling: a package's own function named `newList`, or
+its own union's `None` case, is an ordinary initializer (#7801):
 ```
 func decode(): Result[List[Field], String] {
   val fields = newList()          // a List[Field]
@@ -916,20 +918,23 @@ element. Destructure refutable shapes with a `match` inside the loop body
 instead.
 
 The iterated expression's type must be recognized as iterable: `slice[T]`,
-`array[N, T]`, `List[T]`, `Map[K, V]`'s key/value collections, a range, or a
-single-type-parameter `extern type` (the phantom-type-param idiom for a
-foreign collection, e.g. `extern type JHttpStringCollection[T] = "java.util.Collection"`).
-Iterating over a Lyric-native single-type-parameter generic that merely
-happens to have one type parameter but isn't a collection, such as
-`Option[T]`, is a compile error (**T0126**), not a silent runtime failure
-(#6720). A `String` is not iterable either (**T0126**, D-progress-1006): its
-elements would have to be UTF-16 code units, and a surrogate half is not a
-`Char` (§2.1). Iterate `Std.String.codePoints(s)` (Unicode scalar values as
-`Int`) or loop over indices with `s.codeUnitAt(i)` (§12.1). Other
-unrecognized shapes (a non-generic type, or a generic with zero or
-two-or-more type parameters that isn't `Map[K, V]`'s key/value collections)
-are not yet covered by a dedicated diagnostic and remain tracked
-separately.
+`array[N, T]`, `List[T]`, `Map[K, V]`'s key/value collections, a range, a
+generator call (an async generator, §7.2), or an `extern type`, whose iteration the host
+collection protocol decides — a single-type-parameter one iterates its type
+argument (the phantom-type-param idiom for a foreign collection, e.g.
+`extern type JHttpStringCollection[T] = "java.util.Collection"`). Iterating
+any other type is a compile error (**T0126**), not a silent runtime failure:
+a record, union, enum, opaque, protected, distinct or interface type of any
+arity (`Option[T]`, #6720; `record Pair[A, B]`, #7781), a primitive, a tuple,
+a function value, or the stdlib `Map[K, V]` itself (iterate
+`mapKeys(m)`, `mapValues(m)` or `mapEntries(m)`). A distinct type is not its
+underlying collection — iterate its `.value`. A `String` is not iterable
+either (D-progress-1006): its elements would have to be UTF-16 code units,
+and a surrogate half is not a `Char` (§2.1). Iterate `Std.String.codePoints(s)`
+(Unicode scalar values as `Int`) or loop over indices with `s.codeUnitAt(i)`
+(§12.1). The check applies to the type the iterator resolved to: a type
+parameter or `Self` is not rejected, and an iterator that is itself an error
+(an unknown name, say) is reported once, not again as T0126.
 
 `do ... while` does not exist. Use `while true { ... if cond { break } }`.
 
@@ -988,6 +993,26 @@ val x = 42                  // immutable
 var y: Long = 100           // mutable
 let z: Int = expensive()    // lazy, evaluated on first use
 ```
+
+A local `val` takes a pattern (grammar `LocalBinding`), which destructures the
+initializer with no failure path, so the pattern must match **every** value of
+the initializer's type (of the annotation, when there is one):
+```
+val (lo, hi) = bounds()             // a 2-tuple
+val (n, (s, _)) = (1, ("a", 2.5))   // nested, with a wildcard
+val Point { x, y } = p              // a record pattern on a Point
+val Only(v) = box                   // the sole case of a single-case union
+```
+A tuple pattern needs a tuple of the same arity, at every level; a constructor
+pattern needs the only case of a single-case union; a record pattern must name
+the initializer's own record and only that record's fields, and its field
+patterns are held to the same rule. A pattern that can fail — `val (a, b) = 5`,
+a tuple pattern of the wrong arity, `val Some(x) = opt` (one case of two),
+`val Point { x, y } = n` for an `Int` `n`, a record pattern naming a field the
+record lacks, or a literal, range, type-test, alternative or const pattern
+anywhere in it — is a compile error (**T0146**, #7778, #7808); destructure such a value with a `match`, and
+state a type with `val x: T = ...`, not `val x is T = ...`. A module-level `val`
+follows the stricter rule of the next paragraphs (**T0144**).
 
 `val` is the default; mutability requires explicit `var`. Lazy bindings (`let`) are thread-safe — the standard library uses .NET's `Lazy<T>` semantics.
 

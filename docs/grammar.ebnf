@@ -801,7 +801,7 @@ Statement =
     | ExprStmt ;
 
 LocalBinding =
-      'val' Pattern [ ':' Type ] '=' Expr
+      'val' Pattern [ ':' Type ] '=' Expr        (* pattern must match every value of its type: T0146 *)
     | 'var' IDENT  [ ':' Type ] [ '=' Expr ]
     | 'let' IDENT  [ ':' Type ] '=' Expr ;    (* lazy, thread-safe *)
 
