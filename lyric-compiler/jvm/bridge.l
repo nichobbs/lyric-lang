@@ -3460,7 +3460,7 @@ pub func compileProjectToJarBundledWithRestored(
     val ok = try {
       val siblingChecked: List[SourceFile] = newList()
       val siblingRecvClasses: Map[String, String] = newMap()
-      // Stdlib contracts are always enabled (#7748 / docs/63 Q-BP-011);
+      // Stdlib contracts are always enabled (#7748);
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
