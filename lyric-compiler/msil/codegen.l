@@ -6984,6 +6984,42 @@ record ByrefWriteBackMsil {
   fieldTok: Int
 }
 
+// The receiver of an `out`/`inout` field argument (`obj.field`), lowered onto
+// the stack, with the field's FieldDef token and its `fieldTokens` key.
+record ByrefFieldMsil {
+  recvTy: MsilType
+  key: String
+  tok: Int
+}
+
+func lowerByrefFieldReceiverMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  recv: in Expr,
+  memberName: in String,
+): ByrefFieldMsil {
+  val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+  match recvTy {
+    case MClass(cls) -> {
+      val key = cls + "/" + memberName
+      match mapGet(cctx.fieldTokens, key) {
+        case Some(tok) -> ByrefFieldMsil(recvTy = recvTy, key = key, tok = tok)
+        case None -> panic(
+          "Msil.Codegen: out/inout field argument '" + memberName + "' not found in fieldTokens for class '" +
+            cls +
+            "'"
+        )
+      }
+    }
+    // Lyric records are always emitted as MSIL reference types (MClass); a
+    // value-type receiver (e.g. a future Lyric struct) is not yet possible here.
+    case _ -> panic(
+      "Msil.Codegen: out/inout field argument receiver must be a class type (value-type structs are not yet supported as inout receiver types)"
+    )
+  }
+}
+
 // The physical pointee type of an `out`/`inout` argument's storage, when it
 // is a local, parameter or field this function can name; None otherwise.
 func byrefArgStorageTyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, argExpr: in Expr): Option[MsilType] {
@@ -7055,41 +7091,31 @@ func emitByrefArgCheckedMsil(
   match argExpr.kind {
     case EMember(recv, memberName) -> match paramElem {
       case Some(pe) -> {
-        val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
-        match recvTy {
-          case MClass(cls) -> {
-            val key = cls + "/" + memberName
-            val tok = match mapGet(cctx.fieldTokens, key) {
-              case Some(t) -> t
-              case None -> panic(
-                "Msil.Codegen: out/inout field argument '" + memberName +
-                  "' not found in fieldTokens for class '" +
-                  cls +
-                  "'"
-              )
-            }
-            val fldTy = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> pe }
-            if byrefArgNeedsTempMsil(fldTy, pe) {
-              val recvSlot = allocSlotMsil(fctx, "__byref_recv_" + toString(fctx.slotTicker.count), recvTy)
-              emitStoreSlot(insns, recvSlot, fctx.paramCount)
-              val tempSlot = allocSlotMsil(fctx, "__byref_tmp_" + toString(fctx.slotTicker.count), pe)
-              emitLoadSlot(insns, recvSlot, fctx.paramCount)
-              insns.add(MLdfld(fieldToken = tok))
-              narrowToClassMsil(insns, pe)
-              emitStoreSlot(insns, tempSlot, fctx.paramCount)
-              insns.add(MLdloca(slot = tempSlot - fctx.paramCount))
-              pending.add(
-                ByrefWriteBackMsil(kind = 2, slot = -1, tempSlot = tempSlot, argElem = fldTy, recvSlot = recvSlot, fieldTok = tok)
-              )
-            } else {
-              insns.add(MLdflda(fieldToken = tok))
-            }
-            return ()
-          }
-          case _ -> panic(
-            "Msil.Codegen: out/inout field argument receiver must be a class type (value-type structs are not yet supported as inout receiver types)"
+        val fld = lowerByrefFieldReceiverMsil(cctx, fctx, insns, recv, memberName)
+        val fldTy = match mapGet(cctx.fieldMsilTypes, fld.key) { case Some(t) -> t; case None -> pe }
+        if byrefArgNeedsTempMsil(fldTy, pe) {
+          val recvSlot = allocSlotMsil(fctx, "__byref_recv_" + toString(fctx.slotTicker.count), fld.recvTy)
+          emitStoreSlot(insns, recvSlot, fctx.paramCount)
+          val tempSlot = allocSlotMsil(fctx, "__byref_tmp_" + toString(fctx.slotTicker.count), pe)
+          emitLoadSlot(insns, recvSlot, fctx.paramCount)
+          insns.add(MLdfld(fieldToken = fld.tok))
+          narrowToClassMsil(insns, pe)
+          emitStoreSlot(insns, tempSlot, fctx.paramCount)
+          insns.add(MLdloca(slot = tempSlot - fctx.paramCount))
+          pending.add(
+            ByrefWriteBackMsil(
+              kind = 2,
+              slot = -1,
+              tempSlot = tempSlot,
+              argElem = fldTy,
+              recvSlot = recvSlot,
+              fieldTok = fld.tok
+            )
           )
+        } else {
+          insns.add(MLdflda(fieldToken = fld.tok))
         }
+        return ()
       }
       case None -> {
         emitByrefArgMsil(cctx, fctx, insns, argExpr)
@@ -7195,25 +7221,8 @@ func emitByrefArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIns
     case EMember(recv, memberName) -> {
       // out/inout argument is a field access (e.g. `self.field`).  Load the
       // receiver address then use ldflda to get a managed pointer to the field.
-      val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
-      match recvTy {
-        case MClass(cls) -> {
-          val key = cls + "/" + memberName
-          match mapGet(cctx.fieldTokens, key) {
-            case Some(tok) -> insns.add(MLdflda(fieldToken = tok))
-            case None -> panic(
-              "Msil.Codegen: out/inout field argument '" + memberName + "' not found in fieldTokens for class '" +
-                cls +
-                "'"
-            )
-          }
-        }
-        // Lyric records are always emitted as MSIL reference types (MClass); a
-        // value-type receiver (e.g. a future Lyric struct) is not yet possible here.
-        case _ -> panic(
-          "Msil.Codegen: out/inout field argument receiver must be a class type (value-type structs are not yet supported as inout receiver types)"
-        )
-      }
+      val fld = lowerByrefFieldReceiverMsil(cctx, fctx, insns, recv, memberName)
+      insns.add(MLdflda(fieldToken = fld.tok))
     }
     case _ -> panic("Msil.Codegen: out/inout argument must be an assignable variable (path or field access)")
   }
@@ -7963,8 +7972,14 @@ func isUnsignedExprMsil(fctx: in FuncCtx, e: in Expr): Bool {
       }
     }
     case EParen(inner) -> isUnsignedExprMsil(fctx, inner)
+    case ECall(fn, cargs) -> isToULongCallMsil(fn, cargs)
     case _ -> false
   }
+}
+
+// `x.toULong()`: always a `ULong`, whatever `x` lowers to (#7805).
+func isToULongCallMsil(fn: in Expr, cargs: in List[CallArg]): Bool {
+  cargs.count == 0 and (match fn.kind { case EMember(_, name) -> name == "toULong"; case _ -> false })
 }
 
 pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in TypeExpr): MsilType {
@@ -21435,6 +21450,16 @@ func lowerMethodCallMsil(
       insns.add(MShr)
     }
     recvTy
+  } else if memberName == "toULong" and args.count == 0 and isNumericMsil(recvTy) {
+    // The zero-extending widening of the unsigned chain (#7805): the type
+    // checker offers it only on a `Byte`/`UInt`/`ULong` receiver, and
+    // inserts it wherever such a value widens to `ULong` implicitly.  A
+    // `UInt` shares `int32` with `Int`, so `conv.i8` would sign-extend it.
+    match recvTy {
+      case MLong -> ()
+      case _ -> insns.add(MConvU8)
+    }
+    MLong
   } else if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble" or memberName == "toNat") and args.count == 0 and isNumericMsil(recvTy) {
     // Numeric / character primitive conversion intrinsics (#1901, toNat added
     // for #2050/Band 4's Int/Long/Byte/Char/Double -> Nat direction).  The

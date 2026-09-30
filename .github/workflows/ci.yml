@@ -3282,11 +3282,13 @@ jobs:
           bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/mixed_width_arith_self_test.l
           bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/conversion_name_resolution_self_test.l
           bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/long_store_widen_self_test.l
-      - name: Mixed-width unsigned arithmetic self-test (native lyric test)
+      - name: Mixed-width unsigned arithmetic and unsigned widening self-tests (native lyric test)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/mixed_width_unsigned_self_test.l
+        run: |
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/mixed_width_unsigned_self_test.l
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/unsigned_widen_self_test.l
       - name: Contract quantifier self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true
@@ -5432,11 +5434,13 @@ jobs:
           bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/mixed_width_arith_self_test.l
           bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/conversion_name_resolution_self_test.l
           bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/long_store_widen_self_test.l
-      - name: Mixed-width unsigned arithmetic self-test on JVM (native lyric test --target jvm)
+      - name: Mixed-width unsigned arithmetic and unsigned widening self-tests on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/mixed_width_unsigned_self_test.l
+        run: |
+          bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/mixed_width_unsigned_self_test.l
+          bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/unsigned_widen_self_test.l
       - name: Contract quantifier self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true

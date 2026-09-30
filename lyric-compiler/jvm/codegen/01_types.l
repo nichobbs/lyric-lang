@@ -2016,6 +2016,8 @@ pub func isUnsignedExpr(ctx: in FuncCtx, e: in Expr): Bool {
     case EParen(inner) -> isUnsignedExpr(ctx, inner)
     case ECall(callee, callArgs) -> {
       match callee.kind {
+        // `x.toULong()` is a `ULong` whatever `x` lowers to (#7805).
+        case EMember(_, mname) -> mname == "toULong" and callArgs.count == 0
         case EPath(p) -> {
           if p.segments.count == 1 {
             val name = p.segments[0]

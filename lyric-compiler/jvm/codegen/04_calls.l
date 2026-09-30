@@ -4625,6 +4625,25 @@ func lowerMethodCall(
   // no-op from an int-like source; `toByte` / `toChar` first normalise to int,
   // then narrow.  `toFloat` is intentionally absent (parity with the type
   // checker, which does not offer it).
+  // The zero-extending widening of the unsigned chain (#7805): the type
+  // checker offers `.toULong()` only on a `Byte`/`UInt`/`ULong` receiver and
+  // inserts it wherever such a value widens to `ULong` implicitly.  A `UInt`
+  // shares the JVM `int` with `Int`, so `i2l` would sign-extend it.
+  if memberName == "toULong" and args.count == 0 and isNumericJvm(recvTy) {
+    match recvTy {
+      case JLong -> ()
+      case JByte -> {
+        maskByteUnsigned(insns)
+        insns.add(LI2l)
+      }
+      case _ -> {
+        val zxPs: List[JvmType] = newList()
+        zxPs.add(JInt)
+        insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toUnsignedLong", params = zxPs, ret = JLong))
+      }
+    }
+    return JLong
+  }
   if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble") and args.count == 0 and isNumericJvm(recvTy) {
     if memberName == "toLong" {
       emitToLongJvm(insns, recvTy)
