@@ -38,7 +38,7 @@ fi
 # same way it does everywhere else without an explicit restore
 # first, so give it the same treatment as the "Test multi-package
 # examples" / dedicated "Run tests (grpc)" steps.
-libs=(lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-web lyric-health lyric-grpc)
+libs=(lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-ws lyric-web lyric-health lyric-grpc)
 for lib in "${libs[@]}"; do
   if [ "$lib" = "lyric-grpc" ]; then
     echo "=== restore dependency $lib ==="

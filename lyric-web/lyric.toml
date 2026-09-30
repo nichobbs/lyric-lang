@@ -73,10 +73,13 @@ output_assembly = "Web.dll"
 "Web.WebTlsConfigTests" = "tests/webtls_config_tests.l"
 "Web.ServeCrashIsolationTests" = "tests/serve_crash_isolation_tests.l"
 "Web.WorkerDispatchTests" = "tests/worker_dispatch_tests.l"
+"Web.WebSocketTests"   = "tests/web_socket_tests.l"
 
 [dependencies]
 "Lyric.Auth"         = { workspace = true }
 "Lyric.Resilience"   = { workspace = true }
+# WebSocket endpoints on the router's own port (`Web.addWebSocket`, #7831).
+"Lyric.Ws"           = { workspace = true }
 
 [nuget]
 # The dotnet HTTP server (Std.HttpServer, System.Net.HttpListener) is part

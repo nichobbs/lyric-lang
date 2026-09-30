@@ -639,18 +639,80 @@ func handleConnection(
 ): Unit {
   match performHandshake(conn, expectedPath, allowedOrigins, sameHostPorts) {
     case Err(_) -> hostClose(conn)
-    case Ok(hsResult) -> {
-      val connId = uuidToString(newUuid())
-      match registerConnection(handle, connId, conn) {
-        case Err(_) -> hostClose(conn)
-        case Ok(state) -> {
-          val remoteAddress = hostRemoteAddress(conn)
-          invokeOnOpen(handle, connId, hsResult.request.path, hsResult.request.query, remoteAddress, hsResult.request.headers)
-          if pingIntervalMs > 0 {
-            val _ = taskRun({ -> runPingLoop(state, conn, pingIntervalMs) })
-          }
-          val outcome = runReadLoop(handle, connId, state, conn, maxMessageSizeBytes, hsResult.leftover)
-          finishConnection(handle, connId, state, conn, outcome.code, outcome.reason)
+    case Ok(hsResult) -> serveUpgraded(
+      handle,
+      conn,
+      hsResult.request,
+      hsResult.leftover,
+      maxMessageSizeBytes,
+      pingIntervalMs
+    )
+  }
+}
+
+// Run an upgraded connection (the `101` already written) until it closes.
+func serveUpgraded(
+  handle: in Int,
+  conn: in Conn,
+  request: in HandshakeRequest,
+  leftover: in slice[Byte],
+  maxMessageSizeBytes: in Int,
+  pingIntervalMs: in Int,
+): Unit {
+  val connId = uuidToString(newUuid())
+  match registerConnection(handle, connId, conn) {
+    case Err(_) -> hostClose(conn)
+    case Ok(state) -> {
+      val remoteAddress = hostRemoteAddress(conn)
+      invokeOnOpen(handle, connId, request.path, request.query, remoteAddress, request.headers)
+      if pingIntervalMs > 0 {
+        val _ = taskRun({ -> runPingLoop(state, conn, pingIntervalMs) })
+      }
+      val outcome = runReadLoop(handle, connId, state, conn, maxMessageSizeBytes, leftover)
+      finishConnection(handle, connId, state, conn, outcome.code, outcome.reason)
+    }
+  }
+}
+
+// Validate an upgrade request another server parsed and, if it passes,
+// answer `101` and serve the connection; otherwise answer the matching
+// rejection status. Always leaves `conn` closed or owned by the read loop.
+func adoptUpgrade(
+  handle: in Int,
+  conn: in Conn,
+  target: in String,
+  headers: in Map[String, String],
+  expectedPath: in String,
+  allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
+): Unit {
+  // The HTTP server bounded reads by its idle timeout; a WebSocket is
+  // long-lived and relies on ping keepalive instead, as with `startServer`.
+  hostSetIoTimeout(conn, 0)
+  var meta: RegistryMeta = default()
+  if not cdTryGetValue(registryMap, handle, meta) {
+    val _ = hostWrite(conn, buildRejectResponse(503, "Service Unavailable"))
+    hostClose(conn)
+    return
+  }
+  match validateUpgradeRequest(target, headers) {
+    case Err(_) -> {
+      val _ = hostWrite(conn, buildRejectResponse(400, "Bad Request"))
+      hostClose(conn)
+    }
+    case Ok(request) -> {
+      if request.path != expectedPath {
+        val _ = hostWrite(conn, buildRejectResponse(404, "Not Found"))
+        hostClose(conn)
+      } else if not requestOriginAllowedFor(request, allowedOrigins, sameHostPorts) {
+        // Cross-site WebSocket hijacking defence (#7243), as in
+        // `performHandshake`.
+        val _ = hostWrite(conn, buildRejectResponse(403, "Forbidden"))
+        hostClose(conn)
+      } else {
+        match hostWrite(conn, buildAcceptResponse(request.secWebSocketKey)) {
+          case Err(_) -> hostClose(conn)
+          case Ok(_) -> serveUpgraded(handle, conn, request, emptyBytesVal(), meta.maxMessageSizeBytes, meta.pingIntervalMs)
         }
       }
     }
@@ -742,6 +804,68 @@ pub func startServer(
       Ok(value = handle)
     }
   }
+}
+
+/// Create a WebSocket endpoint with no listener of its own: connections
+/// reach it through `adoptConnection`, called by an HTTP server that
+/// received the upgrade request on its own port. Returns a registry handle
+/// usable with `send`/`broadcast`/`close`/`connectionCount`/`isConnected`,
+/// exactly like `startServer`'s. The callbacks are those of `startServer`.
+@stable(since = "0.3")
+pub func createEndpoint(
+  maxMessageSizeBytes: in Int,
+  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
+  onMessage: in (String, String, String) -> Unit,
+  onClose: in (String, Int, String) -> Unit,
+  onError: in (String, String) -> Unit,
+): Result[Int, String]
+  requires: maxMessageSizeBytes >= 1024
+{
+  monitorEnter(handleCounter)
+  handleCounter.next = handleCounter.next + 1
+  val handle: Int = handleCounter.next
+  monitorExit(handleCounter)
+  val noListener: Option[Listener] = None
+  val meta = RegistryMeta(
+    maxMessageSizeBytes = maxMessageSizeBytes,
+    pingIntervalMs = resolvePingIntervalMs(),
+    openCount = 0,
+    onOpen = Some(onOpen),
+    onMessage = Some(onMessage),
+    onClose = Some(onClose),
+    onError = Some(onError),
+    listener = noListener
+  )
+  if not cdTryAdd(registryMap, handle, meta) {
+    return Err(error = "registry handle collision (unreachable)")
+  }
+  Ok(value = handle)
+}
+
+/// Hand an HTTP/1.1 connection carrying a WebSocket upgrade request to the
+/// endpoint `registryHandle` (from `createEndpoint`). The caller has read the
+/// request (`GET` over HTTP/1.1, no bytes after it) but written nothing;
+/// `target` is its raw request target and `headers` its header fields.
+/// Returns at once: validation, the `101` (or a `400`/`403`/`404`
+/// rejection) and the connection's read loop run on a background task,
+/// which owns and eventually closes `conn`. `expectedPath`,
+/// `allowedOrigins` and `sameHostPorts` apply as in `startServer`.
+@stable(since = "0.3")
+pub func adoptConnection(
+  registryHandle: in Int,
+  // Qualified so the restored-package contract of `Ws.dll` resolves it
+  // (a bare stdlib name outside `Std.Core` does not survive synthesis).
+  conn: in Std.TcpHost.Conn,
+  target: in String,
+  headers: in Map[String, String],
+  expectedPath: in String,
+  allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
+): Unit {
+  val _ = taskRun(
+    { -> adoptUpgrade(registryHandle, conn, target, headers, expectedPath, allowedOrigins, sameHostPorts) }
+  );
+  ()
 }
 
 /// Stop a server started by `startServer`. In-flight connections finish

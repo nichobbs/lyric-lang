@@ -1275,6 +1275,24 @@ func availableBytes(state: in Connection): Int {
   state.buf.length - state.pos
 }
 
+/// True if `conn` holds input past the last completed request: unconsumed
+/// buffered bytes, or a partially parsed next request. A driver that hands
+/// the transport to another protocol after a request (an HTTP/1.1
+/// `Upgrade`, RFC 9110 §7.8) uses this to refuse a client that sent more
+/// bytes before seeing the response, since those bytes would be lost with
+/// the engine.
+@pure
+@experimental
+pub func hasBufferedInput(conn: in Connection): Bool {
+  if availableBytes(conn) > 0 {
+    return true
+  }
+  match conn.phase {
+    case PhRequestLine -> false
+    case _ -> true
+  }
+}
+
 func enterHeaderPhase(state: in Connection, parsed: in ParsedRequestLine): Connection {
   var newState = state
   newState.phase = PhHeaders(

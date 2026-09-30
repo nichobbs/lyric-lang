@@ -6594,9 +6594,9 @@ jobs:
           - id: search
             deps: "resilience"
           - id: lambda
-            deps: "auth resilience web"
+            deps: "auth resilience ws web"
           - id: web
-            deps: "auth resilience"
+            deps: "auth resilience ws"
           - id: ws
             deps: "auth"
           - id: forms

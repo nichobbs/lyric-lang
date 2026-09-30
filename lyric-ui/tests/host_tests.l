@@ -132,34 +132,28 @@ test "static pages render their message" {
 }
 
 test "shell helpers" {
-  assertEqual(Web.hostnameOf("example.com:8080"), "example.com", "strip port")
-  assertEqual(Web.hostnameOf("example.com"), "example.com", "no port")
-  assertEqual(Web.hostnameOf("[::1]:8080"), "[::1]", "ipv6")
   assertEqual(Web.escapeHtml("<a href=\"x\">&'"), "&lt;a href=&quot;x&quot;&gt;&amp;&#39;", "escape")
-  val html = Web.shellHtml("Cust <omers>", "ws://h:8081/_ui")
+  val html = Web.shellHtml("Cust <omers>", "ws://h:8080/_ui")
   assertTrue(contains(html, "<title>Cust &lt;omers&gt;</title>"), "escaped title")
-  assertTrue(contains(html, "data-ws=\"ws://h:8081/_ui\""), "socket url")
+  assertTrue(contains(html, "data-ws=\"ws://h:8080/_ui\""), "socket url")
 }
 
-test "session socket url follows the page scheme" {
-  assertEqual(Web.sessionSocketUrl("", None, "h:8080", 8081, "/_ui"), "ws://h:8081/_ui", "plain http")
+test "session socket url follows the page scheme and host" {
+  assertEqual(Web.sessionSocketUrl("", None, "h:8080", "/_ui"), "ws://h:8080/_ui", "plain http")
+  assertEqual(Web.sessionSocketUrl("", None, "[::1]:8080", "/_ui"), "ws://[::1]:8080/_ui", "ipv6 host")
+  assertEqual(Web.sessionSocketUrl("", Some(value = "https"), "h", "/_ui"), "wss://h/_ui", "behind tls proxy")
   assertEqual(
-    Web.sessionSocketUrl("", Some(value = "https"), "h", 8081, "/_ui"),
-    "wss://h:8081/_ui",
-    "behind tls proxy"
-  )
-  assertEqual(
-    Web.sessionSocketUrl("", Some(value = " HTTPS , http"), "h", 8081, "/_ui"),
-    "wss://h:8081/_ui",
+    Web.sessionSocketUrl("", Some(value = " HTTPS , http"), "h", "/_ui"),
+    "wss://h/_ui",
     "first of several proxies"
   )
   assertEqual(
-    Web.sessionSocketUrl("", Some(value = "http, https"), "h", 8081, "/_ui"),
-    "ws://h:8081/_ui",
+    Web.sessionSocketUrl("", Some(value = "http, https"), "h:8443", "/_ui"),
+    "ws://h:8443/_ui",
     "client-facing hop was http"
   )
   assertEqual(
-    Web.sessionSocketUrl("wss://app.example.com/_ui", Some(value = "http"), "h", 8081, "/_ui"),
+    Web.sessionSocketUrl("wss://app.example.com/_ui", Some(value = "http"), "h", "/_ui"),
     "wss://app.example.com/_ui",
     "configured url wins"
   )

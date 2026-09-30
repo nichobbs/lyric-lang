@@ -74,6 +74,7 @@ import Std.Tls
 import Std.File
 import Std.Encoding as Enc
 import Web.Kernel.Runtime as HttpKernel
+import Ws
 import Web.OpenApi
 import Std.Iter
 
@@ -510,16 +511,17 @@ pub record WorkerRegistration {
   handler: Worker
 }
 
-/// A collection of routes, background workers, and middleware.
-/// Build one with create() then addGet/addPost/etc., addWorker(),
-/// withMiddleware(), and withStaticFiles().  Compose multiple routers
-/// with merge() and scope them with prefix().
+/// A collection of routes, background workers, middleware, and WebSocket
+/// endpoints.  Build one with create() then addGet/addPost/etc.,
+/// addWorker(), withMiddleware(), withStaticFiles(), and addWebSocket().
+/// Compose multiple routers with merge() and scope them with prefix().
 @stable(since = "0.2")
 pub record Router {
   routes: slice[Route]
   workers: slice[WorkerRegistration]
   middlewares: slice[Middleware]
   pathPrefix: String
+  webSockets: slice[Ws.WsEndpoint]
 }
 
 /// Empty router.
@@ -528,7 +530,14 @@ pub func create(): Router {
   val noRoutes: slice[Route] = []
   val noWorkers: slice[WorkerRegistration] = []
   val noMiddleware: slice[Middleware] = []
-  return Router(routes = noRoutes, workers = noWorkers, middlewares = noMiddleware, pathPrefix = "")
+  val noWebSockets: slice[Ws.WsEndpoint] = []
+  return Router(
+    routes = noRoutes,
+    workers = noWorkers,
+    middlewares = noMiddleware,
+    pathPrefix = "",
+    webSockets = noWebSockets
+  )
 }
 
 // Private route-insertion helper.
@@ -539,7 +548,8 @@ func addRoute(router: in Router, method: in String, pattern: in String, handler:
     routes = concat(router.routes, [route]),
     workers = router.workers,
     middlewares = router.middlewares,
-    pathPrefix = router.pathPrefix
+    pathPrefix = router.pathPrefix,
+    webSockets = router.webSockets
   )
 }
 
@@ -595,7 +605,8 @@ pub func addWorker(router: in Router, name: in String, intervalMs: in Int, handl
     routes = router.routes,
     workers = concat(router.workers, [w]),
     middlewares = router.middlewares,
-    pathPrefix = router.pathPrefix
+    pathPrefix = router.pathPrefix,
+    webSockets = router.webSockets
   )
 }
 
@@ -608,7 +619,8 @@ pub func withMiddleware(router: in Router, mw: in Middleware): Router {
     routes = router.routes,
     workers = router.workers,
     middlewares = concat(router.middlewares, [mw]),
-    pathPrefix = router.pathPrefix
+    pathPrefix = router.pathPrefix,
+    webSockets = router.webSockets
   )
 }
 
@@ -620,7 +632,8 @@ pub func prefix(router: in Router, pathPrefix: in String): Router {
     routes = router.routes,
     workers = router.workers,
     middlewares = router.middlewares,
-    pathPrefix = pathPrefix
+    pathPrefix = pathPrefix,
+    webSockets = router.webSockets
   )
 }
 
@@ -632,8 +645,44 @@ pub func merge(a: in Router, b: in Router): Router {
     routes = concat(a.routes, b.routes),
     workers = concat(a.workers, b.workers),
     middlewares = concat(a.middlewares, b.middlewares),
-    pathPrefix = ""
+    pathPrefix = "",
+    webSockets = concat(a.webSockets, b.webSockets)
   )
+}
+
+/// Serve the WebSocket endpoint `endpoint` (from `Ws.createEndpoint`) on this
+/// router's port, at exactly `endpoint.path`, so a page and its socket share
+/// one origin.  A `GET` to that path is handed to the endpoint before route
+/// dispatch and middleware: a valid upgrade is answered `101` and served by
+/// the endpoint's `WsHandler` (authorise a socket in `onOpen`), and anything
+/// else gets the endpoint's `400`/`403` rejection.  The path is not affected
+/// by `prefix`, since the endpoint's path is fixed when it is created.
+///
+/// dotnet: the connection leaves the HTTP server (`Std.HttpServer.
+/// takeConnection`) and no longer counts against its connection cap.  An
+/// upgrade over HTTP/2, over HTTP/1.0, or with bytes pipelined after it is
+/// answered `400`.  jvm: the endpoint is mounted on the Undertow listener.
+@stable(since = "0.4")
+pub func addWebSocket(router: in Router, endpoint: in Ws.WsEndpoint): Router
+  requires: endpoint.path.startsWith("/")
+{
+  return Router(
+    routes = router.routes,
+    workers = router.workers,
+    middlewares = router.middlewares,
+    pathPrefix = router.pathPrefix,
+    webSockets = concat(router.webSockets, [endpoint])
+  )
+}
+
+// The WebSocket endpoint mounted at `path`, if any.
+func webSocketAt(router: in Router, path: in String): Option[Ws.WsEndpoint] {
+  for ep in router.webSockets {
+    if ep.path == path {
+      return Some(value = ep)
+    }
+  }
+  None
 }
 
 // ─── Live OpenAPI spec + Swagger UI serving (#5360) ────────────────────────────
@@ -1657,6 +1706,26 @@ func buildRequest(ctx: in HttpContext): Request {
   )
 }
 
+// A `GET` to a mounted WebSocket endpoint's path goes to that endpoint
+// (`addWebSocket`), before middleware and route dispatch. Returns whether the
+// request was taken.
+@cfg(feature = "dotnet")
+func serveWebSocketUpgrade(router: in Router, ctx: in HttpContext): Bool {
+  if router.webSockets.length == 0 {
+    return false
+  }
+  if requestMethod(ctx).toUpper() != "GET" {
+    return false
+  }
+  match webSocketAt(router, requestPath(ctx)) {
+    case Some(ep) -> {
+      HttpKernel.upgradeWebSocket(ep, ctx)
+      true
+    }
+    case None -> false
+  }
+}
+
 @cfg(feature = "dotnet")
 func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
   val contentType = if resp.contentType.length == 0 { "text/plain" } else { resp.contentType }
@@ -1852,9 +1921,11 @@ pub func serveTls(
   while true {
     try {
       val ctx = nextContext(listener)
-      val req = buildRequest(ctx)
-      val resp = dispatch(router, req)
-      writeResponse(ctx, resp)
+      if not serveWebSocketUpgrade(router, ctx) {
+        val req = buildRequest(ctx)
+        val resp = dispatch(router, req)
+        writeResponse(ctx, resp)
+      }
     } catch Bug as e {
       // A caught Bug means the request loop can no longer make progress; surface
       // it loudly and stop rather than exiting 0 as if shut down cleanly (mirror
@@ -1970,16 +2041,18 @@ pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: 
     try {
       val ctx = nextContext(listener)
       try {
-        val req = buildRequest(ctx)
-        val inner: Handler = StreamingAwareDispatchHandler(
-          routes = router.routes,
-          streamingRoutes = streaming.routes,
-          ctx = ctx
-        )
-        val chain: Handler = MiddlewareChain(mws = router.middlewares, idx = 0, inner = inner)
-        val resp = chain.handle(req)
-        if not isStreamedResponse(resp) {
-          writeResponse(ctx, resp)
+        if not serveWebSocketUpgrade(router, ctx) {
+          val req = buildRequest(ctx)
+          val inner: Handler = StreamingAwareDispatchHandler(
+            routes = router.routes,
+            streamingRoutes = streaming.routes,
+            ctx = ctx
+          )
+          val chain: Handler = MiddlewareChain(mws = router.middlewares, idx = 0, inner = inner)
+          val resp = chain.handle(req)
+          if not isStreamedResponse(resp) {
+            writeResponse(ctx, resp)
+          }
         }
       } catch Bug as e {
         Console.error("[lyric-web] request handling failed on " + prefixStr + ": " + e.message)

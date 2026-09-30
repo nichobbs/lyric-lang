@@ -395,6 +395,91 @@ func drainConcQueue(results: in ConcQueue[String]): String {
   acc
 }
 
+// Puller for the `takeConnection` tests: takes over the first request's
+// connection and speaks a line protocol on it ("hello" out, then answers
+// "ping" with "pong"), or, when the handover is refused, answers 400 with
+// the reason. Records the outcome for the test to assert.
+func serveTakeover(l: in HttpListener, outcomes: in ConcQueue[String]): Unit {
+  val ctx = nextContext(l)
+  match takeConnection(ctx) {
+    case Ok(conn) -> {
+      concEnqueue(outcomes, "taken")
+      val _ = hostWrite(
+        conn,
+        encodeUtf8("HTTP/1.1 101 Switching Protocols\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\nhello\n")
+      )
+      val acc: List[String] = newList()
+      if readInto(conn, acc, "ping") {
+        val _ = hostWrite(conn, encodeUtf8("pong\n"));
+        ()
+      }
+      hostClose(conn)
+    }
+    case Err(reason) -> {
+      concEnqueue(outcomes, "refused")
+      respondText(ctx, 400, "refused: " + reason)
+    }
+  }
+}
+
+func upgradeRequest(path: in String, version: in String): String {
+  "GET " + path + " " + version + "\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n"
+}
+
+test "takeConnection hands an HTTP/1.1 connection to the caller, unclosed" {
+  val listener = startListener("http://127.0.0.1:19470/")
+  val outcomes: ConcQueue[String] = newConcQueue()
+  val server = taskRun({ -> serveTakeover(listener, outcomes) })
+  threadSleep(100)
+  val conn = dial("127.0.0.1", 19470)
+  val _ = hostWrite(conn, encodeUtf8(upgradeRequest("/switch", "HTTP/1.1")))
+  val acc: List[String] = newList()
+  val gotHello = readInto(conn, acc, "hello")
+  val _ = hostWrite(conn, encodeUtf8("ping\n"))
+  val gotPong = readInto(conn, acc, "pong")
+  hostClose(conn)
+  taskWait(server)
+  // The listener still serves new connections after a handover.
+  val server2 = taskRun({ -> serveN(listener, 1) })
+  val after = rawRequest(
+    "127.0.0.1",
+    19470,
+    "GET /after HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    "path=/after"
+  )
+  taskWait(server2)
+  stopListener(listener)
+  assertEqual(drainConcQueue(outcomes), "taken;", "handover accepted")
+  assertTrue(gotHello, "the new owner writes on the connection: " + joined(acc))
+  assertTrue(gotPong, "the connection stays open and is no longer parsed as HTTP: " + joined(acc))
+  assertTrue(after.contains("path=/after"), "the listener keeps serving: " + after)
+}
+
+test "takeConnection refuses an HTTP/1.0 request" {
+  val listener = startListener("http://127.0.0.1:19471/")
+  val outcomes: ConcQueue[String] = newConcQueue()
+  val server = taskRun({ -> serveTakeover(listener, outcomes) })
+  threadSleep(100)
+  val body = rawRequest("127.0.0.1", 19471, upgradeRequest("/switch", "HTTP/1.0"), "refused")
+  taskWait(server)
+  stopListener(listener)
+  assertEqual(drainConcQueue(outcomes), "refused;", "handover refused")
+  assertTrue(body.contains("400"), "answered 400: " + body)
+  assertTrue(body.contains("only an HTTP/1.1 connection"), "reason given: " + body)
+}
+
+test "takeConnection refuses a request with bytes pipelined after it" {
+  val listener = startListener("http://127.0.0.1:19472/")
+  val outcomes: ConcQueue[String] = newConcQueue()
+  val server = taskRun({ -> serveTakeover(listener, outcomes) })
+  threadSleep(100)
+  val body = rawRequest("127.0.0.1", 19472, upgradeRequest("/switch", "HTTP/1.1") + "early-bytes", "refused")
+  taskWait(server)
+  stopListener(listener)
+  assertEqual(drainConcQueue(outcomes), "refused;", "handover refused")
+  assertTrue(body.contains("sent data after the request"), "reason given: " + body)
+}
+
 test "plaintext GET round trip via the Lyric HTTP client" {
   val listener = startListener("http://127.0.0.1:19401/")
   val server = taskRun({ -> serveN(listener, 1) })
