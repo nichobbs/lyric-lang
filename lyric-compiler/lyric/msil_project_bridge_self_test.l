@@ -2947,3 +2947,29 @@ test "another package's parameter and field defaults zero-extend a UInt (#7811)"
   assertEqualInt(result.exitCode, 0, "cross_package_default_widening: exit 0 expected (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "4000000000\n4000000000", "both defaults zero-extend")
 }
+
+// #7777: an importer reads another package's unannotated `pub val` at the
+// type the declaring package checked, without re-checking its initialiser
+// from the importer's side (where the private helper it calls is invisible,
+// which was T0097 at every use).
+test "an unannotated pub val over a private helper is readable from another package (#7777)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PkgVal7777",
+      "package PkgVal7777\n" + "\n" + "func helper(): Int {\n" + "  41\n" + "}\n" + "\n" +
+        "pub val answer = helper() + 1\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Main7777",
+      "package Main7777\n" + "\n" + "import PkgVal7777\n" + "\n" + "func main(): Unit {\n" + "  println(answer)\n" +
+        "  println(answer + 1)\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("unannotated-pub-val-private-helper-7777", packages, "UnannotatedPubVal7777")
+  assertEqualInt(result.exitCode, 0, "unannotated_pub_val: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42\n43", "read at the declaring package's checked type")
+}

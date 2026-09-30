@@ -4175,11 +4175,16 @@ func resolveExprPath(
           return t
         }
         case DKVal(vd) -> {
+          // The declaration itself reports its type's and its initialiser's
+          // errors, once (`checkItemDeclaredInits`, #7777); a read reports
+          // none of them again, and an importer never re-reports what the
+          // declaring package's own check found.
           val saved = enterDeclaringScopeIfForeign(tbl, sym)
+          val readDiag: List[Diagnostic] = newList()
           val t = match vd.ty {
             case Some(te) -> {
               val ctx = newGenericContext()
-              resolveType(tbl, ctx, diag, te)
+              resolveType(tbl, ctx, readDiag, te)
             }
             case None -> {
               // Infer against an empty scope to avoid the caller's local bindings
@@ -4187,7 +4192,7 @@ func resolveExprPath(
               val noRte: Option[TypeExpr] = None
               val noSelfFields: Map[String, Type] = newMap()
               val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
-              inferExpr(emptyScope, tbl, sigs, diag, vd.init)
+              inferExpr(emptyScope, tbl, sigs, readDiag, vd.init)
             }
           }
           restoreScope(tbl, saved)
@@ -6751,7 +6756,9 @@ func checkConstRefPattern(
                     val noRte: Option[TypeExpr] = None
                     val noSelfFields: Map[String, Type] = newMap()
                     val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
-                    inferExpr(emptyScope, tbl, sigs, diag, vd.init)
+                    // Its errors are the declaration's to report (#7777).
+                    val readDiag: List[Diagnostic] = newList()
+                    inferExpr(emptyScope, tbl, sigs, readDiag, vd.init)
                   }
                 }
                 match valTy {
@@ -8331,6 +8338,7 @@ func inferExprCore(
               )
               return TyError
             }
+            case TyError -> return TyError
             case _ -> ()
           }
           cachedRecvType = Some(value = urt)

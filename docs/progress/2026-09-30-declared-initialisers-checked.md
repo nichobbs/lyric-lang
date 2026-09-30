@@ -1,4 +1,4 @@
-# Module values, field defaults and parameter defaults are type-checked (#7811)
+# Module values, field defaults and parameter defaults are type-checked (#7811, #7777)
 
 An annotated module-level `val`'s initialiser, a record, exposed-record or
 opaque field's default, a protected type's field initialiser, and a
@@ -57,6 +57,18 @@ a default is checked and desugared up front (`Lyric.Pipeline.
 pipeCheckedDefaults`) so a call from another package splices the converted
 default too. The MSIL bridge already generated code from middle-ended files.
 
+Module value reads no longer re-check the initialiser into the caller's
+diagnostics (#7777). An unannotated module `val`'s initialiser is inferred
+once at its declaration too, so `val y = nope` is T0020 once whether `y` is
+read twice or never, where before it was reported at every read and not at
+all when unused. A read (in the declaring package or an importer) infers the
+type into a scratch list, under the declaring package's scope, so an
+importer of `pub val answer = helper() + 1` over a package-private `helper`
+reads it at the declaring package's type instead of reporting T0097 at each
+use. On the JVM such a read still needs the `pub val` to be annotated
+(`J008`): the JVM bundle resolves an imported module value's field type from
+the declaring package's source before that package is checked.
+
 Two places the new check had to learn about:
 
 - `@asyncLocal val slot: AsyncLocal[T] = ()` (`Std.Task`'s ambient
@@ -81,10 +93,13 @@ in CI) now checks module values, field defaults (record, exposed record,
 protected), parameter defaults and a record method's binding at runtime with
 values of at least 2^31, plus the signed chain.
 `msil_project_bridge_self_test.l` and `jvm_cross_package_collision_self_test.l`
-check a parameter default and a field default used from another package.
+check a parameter default and a field default used from another package;
+the MSIL one also reads an unannotated `pub val` over a private helper from
+another package.
 
-Follow-up: calling a record in-body method or an `impl` method with a
-defaulted argument omitted (`a.add()` for `func add(self: in Acc, x: in Int
-= 5)`) fails at run time on dotnet (`InvalidProgramException`) and at compile
-time on the JVM (`J008` stackmap underflow), independently of this change;
-the runtime test therefore covers defaults on free functions only.
+Follow-ups: the JVM `J008` requirement above; and calling a record in-body
+method or an `impl` method with a defaulted argument omitted (`a.add()` for
+`func add(self: in Acc, x: in Int = 5)`) fails at run time on dotnet
+(`InvalidProgramException`) and at compile time on the JVM (`J008` stackmap
+underflow), independently of this change, so the runtime test covers
+defaults on free functions only.

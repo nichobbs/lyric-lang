@@ -3777,11 +3777,24 @@ func checkItemDeclaredInits(
     // An `@asyncLocal` value's initialiser is a `()` placeholder: the
     // backend constructs the `AsyncLocal` slot itself, as it supplies an
     // `@externTarget` function's body.
+    // An unannotated value's initialiser is inferred once here too, so its
+    // errors are reported at the declaration, used or not (#7777).  A name a
+    // destructuring `val` projects out of its synthesized temporary is
+    // skipped: the temporary carries the user's initialiser, and a shape
+    // mismatch is T0144 (`recordModuleValTypes`).
     case IVal(decl) -> match decl.ty {
       case Some(te) -> if not annotationsHave(item.annotations, "asyncLocal") {
         checkDeclaredInit(tbl, sigs, diag, noGenerics, te, decl.init, "val binding", "initialiser", decl.span)
       }
-      case None -> ()
+      case None -> match projectedTemp(decl.init) {
+        case Some(_) -> ()
+        case None -> {
+          val noRte: Option[TypeExpr] = None
+          val noSelfFields: Map[String, Type] = newMap()
+          val sc = newScopeForFunction(TyError, noGenerics, noRte, noSelfFields, false, TyError)
+          val _ = inferExpr(sc, tbl, sigs, diag, decl.init)
+        }
+      }
     }
     case IFunc(decl) -> checkParamDefaults(tbl, sigs, diag, extractGenericNames(decl.generics), decl.name, decl.params)
     case IRecord(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)

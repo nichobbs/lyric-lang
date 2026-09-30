@@ -8293,3 +8293,18 @@ test "a declared initialiser that widens records its conversion (#7811)" {
   assertEqualInt(diagCount(ok), 0, "lossless widenings are accepted")
   assertEqualInt(ok.symbols.argConversionSites.count, 3, "each UInt to ULong widening is a conversion site")
 }
+
+// #7777: a module value's initialiser is checked once, at its declaration,
+// whether the value is used or not; a read never re-reports its errors.
+test "a module val initialiser's errors are reported once, at the declaration (#7777)" {
+  val unused = parseCheck("package P\nval x: Int = \"s\"\n")
+  assertEqualInt(countDiagCode(unused, "T0060"), 1, "unused annotated val")
+  val used = parseCheck("package P\nval x: Int = \"s\"\nfunc f(): Int { x }\nfunc g(): Int { x + x }\n")
+  assertEqualInt(countDiagCode(used, "T0060"), 1, "used annotated val, still once")
+  val unusedBare = parseCheck("package P\nval y = nope\n")
+  assertEqualInt(countDiagCode(unusedBare, "T0020"), 1, "unused unannotated val")
+  val usedBare = parseCheck("package P\nval y = nope\nfunc f(): Unit {\n  val a = y\n  val b = y\n}\n")
+  assertEqualInt(countDiagCode(usedBare, "T0020"), 1, "used unannotated val, still once")
+  val destructured = parseCheck("package P\nfunc pair(): (Int, String) { (1, \"x\") }\nval (n, s) = pair()\n")
+  assertEqualInt(diagCount(destructured), 0, "a destructuring val checks its initialiser once, cleanly")
+}
