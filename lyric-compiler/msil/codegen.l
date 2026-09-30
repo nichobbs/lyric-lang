@@ -5567,7 +5567,8 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
     }
     // A literal takes the concrete-array path only with the element type the
     // checker would infer for it (`typeOfLiteral`), so the built array matches
-    // the literal's `slice[e]` type.  `i8`/`u8` are `Byte` (not `Int`, #5703);
+    // the literal's `slice[e]` type.  `u8` is `Byte` (not `Int`, #5703), and
+    // `i8` is `Int` (#7847);
     // `i64`/`u64` are `Long`; `u16`/`u32` are `Int` (`UInt` erases to the same
     // 32-bit slot a signed `Int` uses, #6756/#6782 — mirroring the JVM
     // backend's identical fix, #6631/#6741), matching what `lowerExprMsil`'s
@@ -5576,7 +5577,7 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
     // `Long` or stay erased) and falls back to the legacy `List<object>` path.
     case ELiteral(lit) -> match lit {
       case LInt(v, suffix, _) -> match suffix {
-        case I8 -> MByte
+        case I8 -> MInt
         case U8 -> MByte
         case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 {
           MInt

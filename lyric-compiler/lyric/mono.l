@@ -1728,8 +1728,8 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
       // "Short"/"UShort" (#6661 residual, D-progress-840): the suffix only
       // constrains the literal's VALUE range at parse time — the
       // type-checker's own literal typing (`typechecker_exprs.l`'s `LInt`
-      // arm) widens every sub-32-bit suffix to its 32-bit primitive
-      // (`I16 -> PtInt`, `U16 -> PtUInt`), because `Short`/`UShort` are not
+      // arm) widens every signed sub-32-bit suffix to `Int` (`I8`/`I16 ->
+      // PtInt`, #7847) and `U16` to `PtUInt`, because `Short`/`UShort` are not
       // Lyric surface types at all (no `PrimType` case; excluded from
       // docs/01 §2.1's primitive table). This inference helper must mirror
       // that widening exactly — before this fix it invented a phantom
@@ -1738,7 +1738,7 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
       // overload disambiguation, generic-arg specialization) for any
       // `i16`/`u16`-suffixed literal argument.
       val name = match suffix {
-        case I8 -> "Byte"
+        case I8 -> "Int"
         case I16 -> "Int"
         case I32 -> "Int"
         case I64 -> "Long"

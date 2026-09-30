@@ -101,7 +101,12 @@ All seven deliverables landed (see `CLAUDE.md` table).  Q011 / Q012
 deferred to Phase 3 by design.
 
 ### Phase 1 — bootstrap compiler MVP
-- M1.1 lexer + parser — shipped.
+- M1.1 lexer + parser — shipped.  A `u64` literal spans the whole unsigned
+  64-bit range, and `u8`/`u16`/`u32` literals are bounded by their type
+  (#7839; `docs/progress/2026-09-30-u64-literal-full-range.md`).  Signed
+  suffixes are bounded by their signed range, with the minimum written as a
+  unary minus, and `i8` is an `Int` literal (#7847;
+  `docs/progress/2026-09-30-signed-literal-suffix-range.md`).
 - M1.2 type checker — shipped.
 - M1.3 MSIL emitter — shipped.
 - M1.4 contracts / async / FFI / generics — shipped.  Real async state

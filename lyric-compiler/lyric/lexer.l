@@ -323,11 +323,11 @@ pub union Punct {
   case Dot
 }
 
-/// A token produced by the lexer.  `intValue` is unsigned in spirit
-/// (the parser reattaches a leading `-`), but we represent it as `Long`
-/// because Lyric does not yet have a `ULong` literal form in this
-/// module's surface area; values that overflow `Long.MaxValue` are
-/// reported via L0010 and replaced with 0.
+/// A token produced by the lexer.  An integer literal's value is its
+/// magnitude (the parser reattaches a leading `-`), carried as a `Long`.
+/// A `u64` literal from 2^63 to 2^64-1 is carried as the same 64-bit
+/// two's-complement pattern, which is what both backends load.  A value
+/// outside its suffix's range is reported via L0010 and replaced with 0.
 @stable(since = "0.1")
 pub union Token {
   case TKeyword(kw: Keyword)
@@ -1379,69 +1379,189 @@ func splitFloatSuffix(raw: in String): FloatSuffixSplit {
   }
 }
 
-/// Predicate companion to `parseDigits`: true iff `(body, base)`
-/// is the special case `9223372036854775808` in decimal — the
-/// absolute value of `Long.MinValue`.  Used by the decimal lex path
-/// to fire L0010 against the bare literal (and by the parser's
-/// `PreNeg + literal` arm to cancel it).
-@pure
-func isMinValueAbsOverflow(body: in String, base: in Int): Bool {
-  base == 10 and body == "9223372036854775808"
-}
-
-/// Parse a digit string in the given base into a `Long`.  Returns
-/// `None` on overflow, on empty input, or when a character outside
-/// the base's digit set appears (matches the F# lexer's behaviour of
-/// surfacing L0010 in those cases).
+/// Parse a digit string in the given base as an unsigned 64-bit
+/// magnitude (the `u64` suffix, #7839).  A value from 2^63 to 2^64-1 is
+/// returned as its 64-bit two's-complement pattern, so
+/// `18446744073709551615u64` yields -1.  Returns `None` above 2^64-1, on
+/// empty input, or on a character outside the base's digit set.
 ///
-/// Special case (#425 item 5): the decimal literal exactly equal to
-/// `Long.MaxValue + 1` (= 2^63) is the canonical absolute value of
-/// `Long.MinValue`.  We store it as `Long.MinValue` (the two's-
-/// complement bit pattern), letting the constant folder recognise
-/// `-9223372036854775808` as the user's spelling of `Long.MinValue`.
-/// The caller emits L0010 against the bare literal — see
-/// `isMinValueAbsOverflow`; the parser's `PreNeg + literal` arm
-/// cancels that diagnostic when the wrapper makes the value
-/// well-formed.
+/// The magnitude is accumulated as two 32-bit limbs held in `Long`s so no
+/// intermediate product can overflow (every limb stays below 2^32 and
+/// `base` is at most 16).
 @pure
-func parseDigits(body: in String, base: in Int): Option[Long] {
+func parseDigitsU64(body: in String, base: in Int): Option[Long] {
   if body.length == 0 {
     return None
   }
   val baseL = base.toLong()
-  var value: Long = 0i64
-  var overflowed = false
+  val two32: Long = 4294967296i64
+  var hi: Long = 0i64
+  var lo: Long = 0i64
+  var bad = false
   var i = 0
-  // The largest value that, when multiplied by `base`, still fits in
-  // a positive Long.  Used as an early-exit overflow guard so the
-  // intermediate `value * base` cannot trap.
-  val limit: Long = 9223372036854775807i64
-  while i < body.length and not overflowed {
+  while i < body.length and not bad {
     val d = digitValue(body[i])
     if d < 0 or d >= base {
-      overflowed = true
+      bad = true
     } else {
-      val dL = d.toLong()
-      val maxBefore = (limit - dL) / baseL
-      if value > maxBefore {
-        overflowed = true
-      } else {
-        value = value * baseL + dL
+      val t = lo * baseL + d.toLong()
+      lo = t % two32
+      hi = hi * baseL + t / two32
+      if hi >= two32 {
+        bad = true
       }
     }
     i = i + 1
   }
-  if overflowed {
-    // #425 item 5: the exact decimal abs-value of Long.MinValue is
-    // accepted as the bit pattern of Long.MinValue itself, so
-    // `-9223372036854775808` folds to Long.MinValue downstream.
-    if base == 10 and body == "9223372036854775808" {
-      Some(value = -9223372036854775808i64)
-    } else {
-      None
-    }
+  if bad {
+    None
+  } else if hi >= 2147483648i64 {
+    Some(value = (hi - two32) * two32 + lo)
   } else {
-    Some(value = value)
+    Some(value = hi * two32 + lo)
+  }
+}
+
+/// The largest magnitude a narrow unsigned suffix admits, or `None` for
+/// every other suffix.  `u64` is range-checked by `parseDigitsU64`.
+@pure
+func unsignedSuffixMax(suffix: in IntSuffix): Option[Long] {
+  match suffix {
+    case U8 -> Some(value = 255i64)
+    case U16 -> Some(value = 65535i64)
+    case U32 -> Some(value = 4294967295i64)
+    case _ -> None
+  }
+}
+
+/// The largest value a signed suffix (or an unsuffixed literal, whose
+/// widest type is `Long`) admits, or `None` for an unsigned suffix.
+@pure
+func signedSuffixMax(suffix: in IntSuffix): Option[Long] {
+  match suffix {
+    case I8 -> Some(value = 127i64)
+    case I16 -> Some(value = 32767i64)
+    case I32 -> Some(value = 2147483647i64)
+    case I64 -> Some(value = 9223372036854775807i64)
+    case NoIntSuffix -> Some(value = 9223372036854775807i64)
+    case _ -> None
+  }
+}
+
+/// The decimal spelling of a signed suffix's minimum, for diagnostics.
+/// `Long.MinValue`'s magnitude is not a `Long`, so the text is spelled out.
+@pure
+func signedSuffixMinText(suffix: in IntSuffix): String {
+  match suffix {
+    case I8 -> "-128"
+    case I16 -> "-32768"
+    case I32 -> "-2147483648"
+    case _ -> "-9223372036854775808"
+  }
+}
+
+/// The source spelling of an integer suffix, for diagnostics.
+@pure
+func intSuffixSpelling(suffix: in IntSuffix): String {
+  match suffix {
+    case I8 -> "i8"
+    case I16 -> "i16"
+    case I32 -> "i32"
+    case I64 -> "i64"
+    case U8 -> "u8"
+    case U16 -> "u16"
+    case U32 -> "u32"
+    case U64 -> "u64"
+    case NoIntSuffix -> ""
+  }
+}
+
+/// Outcome of parsing an integer literal's digits against its suffix.
+union IntLiteralValue {
+  case IntLitOk(value: Long)
+  /// The magnitude is one past a signed type's maximum: the absolute
+  /// value of its minimum (`128i8`, `2147483648i32`,
+  /// `9223372036854775808`).  It is well-formed only as the direct operand
+  /// of a unary minus, so the lexer reports L0010 (`message`) and the
+  /// parser cancels it when it builds that negation (#425, #7847).
+  /// `value` is the magnitude, carried as `Long.MinValue`'s pattern for
+  /// `i64` and unsuffixed literals.
+  case IntLitMinMagnitude(value: Long, message: String)
+  /// The digits do not form a value that fits the suffix's type.
+  /// `message` is the L0010 text.
+  case IntLitOutOfRange(message: String)
+}
+
+/// Parse an integer literal body (underscores already stripped) in
+/// `base` against `suffix`.  The body is a magnitude in every base, never
+/// a bit pattern: `0xFFi8` is 255, out of `i8`'s range.
+///
+/// - `u64` takes the full unsigned 64-bit range, carrying a value from
+///   2^63 to 2^64-1 as its two's-complement pattern (#7839).
+/// - `u8`/`u16`/`u32` are bounded by their type's maximum.
+/// - `i8`/`i16`/`i32`/`i64` are bounded by their signed maximum, and an
+///   unsuffixed literal by `Long`'s (#7847).  The magnitude one past that
+///   maximum is `IntLitMinMagnitude`: legal only under a unary minus.
+@pure
+func parseIntLiteralValue(body: in String, base: in Int, suffix: in IntSuffix): IntLiteralValue {
+  match signedSuffixMax(suffix) {
+    case Some(maxV) -> {
+      val minText = signedSuffixMinText(suffix)
+      val rangeText = minText + " ..= " + toString(maxV)
+      val typeText = match suffix { case NoIntSuffix -> "`Long`"; case _ -> "`" + intSuffixSpelling(suffix) + "`" }
+      val outOfRange = IntLitOutOfRange(message = "integer literal out of range for " + typeText + " (" + rangeText + ")")
+      // The minimum's magnitude; `Long.MinValue`'s is its own pattern.
+      val minMagnitude = if maxV == 9223372036854775807i64 { -9223372036854775808i64 } else { maxV + 1i64 }
+      match parseDigitsU64(body, base) {
+        case None -> outOfRange
+        // A `Long` pattern below zero is a magnitude above Long.MaxValue.
+        case Some(v) -> if v >= 0i64 and v <= maxV {
+          IntLitOk(value = v)
+        } else if v == minMagnitude {
+          IntLitMinMagnitude(
+            value = v,
+            message = "integer literal out of range for " + typeText + " (" + rangeText +
+              "); its magnitude is well-formed only as the operand of a unary minus, as in `" +
+              minText +
+              intSuffixSpelling(suffix) +
+              "`"
+          )
+        } else {
+          outOfRange
+        }
+      }
+    }
+    case None -> match parseDigitsU64(body, base) {
+      case None -> IntLitOutOfRange(
+        message = "integer literal out of range for `" + intSuffixSpelling(suffix) +
+          "` (0 ..= " +
+          unsignedMaxText(suffix) +
+          ")"
+      )
+      case Some(v) -> match unsignedSuffixMax(suffix) {
+        case None -> IntLitOk(value = v)
+        case Some(maxV) -> {
+          // A `Long` pattern below zero is a magnitude above 2^63-1, which
+          // is above every narrow unsigned maximum.
+          if v < 0i64 or v > maxV {
+            IntLitOutOfRange(
+              message = "integer literal out of range for `" + intSuffixSpelling(suffix) + "` (0 ..= " + toString(maxV) + ")"
+            )
+          } else {
+            IntLitOk(value = v)
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The decimal spelling of an unsigned suffix's maximum, for diagnostics.
+@pure
+func unsignedMaxText(suffix: in IntSuffix): String {
+  match unsignedSuffixMax(suffix) {
+    case Some(maxV) -> toString(maxV)
+    case None -> "18446744073709551615"
   }
 }
 
@@ -1475,14 +1595,18 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
     raw = raw + split.body
   }
   val body = stripUnderscores(raw)
-  match parseDigits(body, base) {
-    case Some(v) -> emit(
+  match parseIntLiteralValue(body, base, split.suffix) {
+    case IntLitOk(v) -> emit(
       state,
       TInt(value = v, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)),
       startP
     )
-    case None -> {
-      recordError(state, "L0010", "integer literal out of range", makeSpan(startP, currentPosition(state)))
+    case IntLitMinMagnitude(v, msg) -> {
+      recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
+      emit(state, TInt(value = v, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+    }
+    case IntLitOutOfRange(msg) -> {
+      recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
       emit(state, TInt(value = 0i64, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
     }
   }
@@ -1615,27 +1739,21 @@ func lexDecimalNumber(state: inout LexerState): Unit {
         makeSpan(startP, currentPosition(state))
       )
     }
-    match parseDigits(stripped, 10) {
-      case Some(v) -> {
-        // #425 item 5: when `parseDigits` accepts `9223372036854775808`
-        // it stores the bit pattern of Long.MinValue.  That value is
-        // ONLY well-formed when the literal is the operand of a unary
-        // minus (the const folder collapses `PreNeg + LInt(MinValue)`
-        // back to Long.MinValue).  Fire L0010 here so a bare literal
-        // is flagged; the parser cancels the diagnostic when it
-        // builds the PreNeg + literal pair (#1174 review finding).
-        if isMinValueAbsOverflow(stripped, 10) {
-          recordError(
-            state,
-            "L0010",
-            "decimal literal '9223372036854775808' exceeds Long range; only the spelling `-9223372036854775808` is well-formed (Long.MinValue)",
-            makeSpan(startP, currentPosition(state))
-          )
-        }
+    match parseIntLiteralValue(stripped, 10, isplit.suffix) {
+      case IntLitOk(v) -> emit(
+        state,
+        TInt(value = v, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)),
+        startP
+      )
+      // The minimum's magnitude (`9223372036854775808`, `128i8`) is only
+      // well-formed under a unary minus; the parser cancels this L0010 when
+      // it builds that negation (#425 item 5, #1174, #7847).
+      case IntLitMinMagnitude(v, msg) -> {
+        recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
         emit(state, TInt(value = v, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
-      case None -> {
-        recordError(state, "L0010", "integer literal out of range", makeSpan(startP, currentPosition(state)))
+      case IntLitOutOfRange(msg) -> {
+        recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
         emit(state, TInt(value = 0i64, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
     }
@@ -1837,7 +1955,7 @@ func lexUnicodeEscapeValue(state: inout LexerState, startP: in Position): Option
     )
     return None
   }
-  match parseDigits(hexBody, 16) {
+  match parseDigitsU64(hexBody, 16) {
     case Some(v) -> {
       if v < 0i64 or v > 1114111i64 {
         recordError(

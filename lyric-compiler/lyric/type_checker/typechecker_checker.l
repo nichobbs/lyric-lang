@@ -517,6 +517,7 @@ func checkClosed(
   inclusive: in Bool,
   sym: in String,
   span: in Span,
+  isULong: in Bool,
 ): Unit {
   match foldOrErr(tbl, diag, name, lo) {
     case None -> {
@@ -525,14 +526,26 @@ func checkClosed(
       case None -> {
       }
       case Some(hiV) -> {
-        val invalid = if inclusive { loV > hiV } else { loV >= hiV }
+        // A `ULong` bound above Long.MaxValue is a negative pattern
+        // (#7839), so the bounds order unsigned.
+        val invalid = if isULong {
+          if inclusive {
+            ulongLessThan(hiV, loV)
+          } else {
+            not ulongLessThan(loV, hiV)
+          }
+        } else {
+          if inclusive {
+            loV > hiV
+          } else {
+            loV >= hiV
+          }
+        }
         if invalid {
+          val loS = if isULong { ulongPatternToString(loV) } else { toString(loV) }
+          val hiS = if isULong { ulongPatternToString(hiV) } else { toString(hiV) }
           diag.add(
-            errorDiagnostic(
-              "T0090",
-              "range subtype '" + name + "' has empty bounds: " + toString(loV) + " " + sym + " " + toString(hiV),
-              span
-            )
+            errorDiagnostic("T0090", "range subtype '" + name + "' has empty bounds: " + loS + " " + sym + " " + hiS, span)
           )
         }
       }
@@ -626,6 +639,7 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
     }
     case Some(_) -> {
       var isFloatBase = false
+      var isULongBase = false
       match dt.underlying.kind {
         case TRef(path) -> {
           if path.segments.count == 1 {
@@ -640,6 +654,7 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
               )
             }
             isFloatBase = uname == "Float" or uname == "Double"
+            isULongBase = uname == "ULong"
           }
         }
         case _ -> {
@@ -653,7 +668,7 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
             if isFloatBase {
               checkClosedFloat(diag, dt.name, lo, hi, true, "..=", dt.span)
             } else {
-              checkClosed(tbl, diag, dt.name, lo, hi, true, "..=", dt.span)
+              checkClosed(tbl, diag, dt.name, lo, hi, true, "..=", dt.span, isULongBase)
             }
           }
           case RBHalfOpen(lo, hi, bareDotDot) -> {
@@ -661,7 +676,7 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
             if isFloatBase {
               checkClosedFloat(diag, dt.name, lo, hi, false, opStr, dt.span)
             } else {
-              checkClosed(tbl, diag, dt.name, lo, hi, false, opStr, dt.span)
+              checkClosed(tbl, diag, dt.name, lo, hi, false, opStr, dt.span, isULongBase)
             }
           }
           case _ -> {

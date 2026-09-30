@@ -153,12 +153,32 @@ func checkRefinedLiteralBound(declT: in Type, init: in Expr, diag: in List[Diagn
       case None -> {
       }
       case Some(v) -> {
-        val belowLo = match lo { case None -> false; case Some(l) -> v < l }
-        val aboveHi = match hi { case None -> false; case Some(h) -> if inc { v > h } else { v >= h } }
+        // A `ULong` bound or literal above Long.MaxValue is a negative
+        // pattern (#7839), so it orders unsigned.
+        val isULong = match unrefine(declT) {
+          case TyPrim(pt) -> match pt { case PtULong -> true; case _ -> false }
+          case _ -> false
+        }
+        val belowLo = match lo { case None -> false; case Some(l) -> if isULong { ulongLessThan(v, l) } else { v < l } }
+        val aboveHi = match hi {
+          case None -> false
+          case Some(h) -> if isULong {
+            if inc {
+              ulongLessThan(h, v)
+            } else {
+              not ulongLessThan(v, h)
+            }
+          } else {
+            if inc {
+              v > h
+            } else {
+              v >= h
+            }
+          }
+        }
         if belowLo or aboveHi {
-          diag.add(
-            errorDiagnostic("T0015", "literal " + toString(v) + " is out of range for type " + renderType(declT), init.span)
-          )
+          val shown = if isULong { ulongPatternToString(v) } else { toString(v) }
+          diag.add(errorDiagnostic("T0015", "literal " + shown + " is out of range for type " + renderType(declT), init.span))
         }
       }
     }

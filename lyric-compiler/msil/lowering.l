@@ -3799,9 +3799,25 @@ func distinctBoxToken(d: in MDistinctType, ctx: in LoweringCtx): Int {
 }
 
 // Human-readable range description for the bounds-violation message.
+// A `ULong` bound from 2^63 to 2^64-1 (`18446744073709551615u64`, #7839) is
+// folded into `minI`/`maxI` as its negative two's-complement pattern; render
+// it as the unsigned value it stands for.  A `UInt` bound is folded from its
+// magnitude and is never negative.  Mirrors `Jvm.Lowering.jvmDistinctBoundText`.
+func distinctBoundText(d: in MDistinctType, v: in Long): String {
+  if not d.isUnsigned or v >= 0i64 {
+    return v.toString()
+  }
+  // v + 2^64 = h + 2^63 with h = v + 2^63 in [0, 2^63); 2^63 is
+  // 922337203685477580 * 10 + 8.
+  val h = v + 9223372036854775807i64 + 1i64
+  val lowSum = h % 10i64 + 8i64
+  val q = h / 10i64 + 922337203685477580i64 + lowSum / 10i64
+  q.toString() + (lowSum % 10i64).toString()
+}
+
 func distinctRangeDesc(d: in MDistinctType): String {
-  val lo = if d.rangeIsFloat { d.minF.toString() } else { d.minI.toString() }
-  val hi = if d.rangeIsFloat { d.maxF.toString() } else { d.maxI.toString() }
+  val lo = if d.rangeIsFloat { d.minF.toString() } else { distinctBoundText(d, d.minI) }
+  val hi = if d.rangeIsFloat { d.maxF.toString() } else { distinctBoundText(d, d.maxI) }
   val close = if d.upperExclusive { ")" } else { "]" }
   "[" + lo + ", " + hi + close
 }

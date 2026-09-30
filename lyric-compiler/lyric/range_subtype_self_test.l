@@ -381,10 +381,8 @@ test "UInt-backed range subtype: toInt() projection round-trips for a small valu
   assertEqualInt(populationValue(Population.tryFrom(5000u32)), 5000, "tryFrom(5000).toInt() round-trips")
 }
 
-// `ULong` (64-bit unsigned) — a bound exercising the sign bit would need to
-// exceed `Long.MAX_VALUE` (9223372036854775807), which the shared Int64-based
-// range-literal fold (`foldRangeBound`) cannot represent — same pre-existing
-// limitation the `Cents` case above lives with, orthogonal to #6756.
+// `ULong` (64-bit unsigned).  Bounds above `Long.MAX_VALUE` (written as `u64`
+// literals, #7839) are covered by `unsigned_literal_max_self_test.l`.
 type BigId = ULong range 0 ..= 9000000000000000000
 
 func bigIdIsOk(r: in Result[BigId, String]): Bool {

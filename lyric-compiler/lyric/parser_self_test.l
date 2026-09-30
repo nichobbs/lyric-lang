@@ -998,6 +998,75 @@ test "bare min value abs keeps diagnostic" {
   assertTrue(sawL0010, "bare 9223372036854775808: L0010 preserved (no PreNeg wrapper)")
 }
 
+// #7847: every signed suffix's minimum is written as a unary minus applied
+// to the magnitude one past its maximum.  That magnitude is L0010 from the
+// lexer and is cancelled only when it is the direct operand of `-`, in any
+// base; parenthesising it or using it bare keeps the diagnostic.
+func l0010Count(src: in String): Int {
+  val pr = parse(src)
+  var n = 0
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == "L0010" {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+test "negation cancels each signed suffix minimum diagnostic" {
+  assertEqualInt(l0010Count("package P\nfunc f(): Byte { -128i8 }\n"), 0, "-128i8: clean")
+  assertEqualInt(l0010Count("package P\nfunc f(): Int { -32768i16 }\n"), 0, "-32768i16: clean")
+  assertEqualInt(l0010Count("package P\nfunc f(): Int { -2147483648i32 }\n"), 0, "-2147483648i32: clean")
+  assertEqualInt(
+    l0010Count("package P\nfunc f(): Long { -9223372036854775808i64 }\n"),
+    0,
+    "-9223372036854775808i64: clean"
+  )
+  assertEqualInt(l0010Count("package P\nfunc f(): Byte { -0x80i8 }\n"), 0, "-0x80i8: clean")
+  assertEqualInt(
+    l0010Count("package P\nfunc f(): Int { -0b1000_0000_0000_0000i16 }\n"),
+    0,
+    "-0b1000000000000000i16: clean"
+  )
+  assertEqualInt(l0010Count("package P\nfunc f(): Int { -0x8000_0000i32 }\n"), 0, "-0x80000000i32: clean")
+  assertEqualInt(
+    l0010Count("package P\nfunc f(): Long { -0x8000_0000_0000_0000i64 }\n"),
+    0,
+    "-0x8000000000000000i64: clean"
+  )
+  assertEqualInt(
+    l0010Count("package P\nfunc f(): Long { -0x8000_0000_0000_0000 }\n"),
+    0,
+    "unsuffixed -0x8000000000000000: clean"
+  )
+}
+
+test "bare signed suffix minimum magnitude keeps diagnostic" {
+  assertEqualInt(l0010Count("package P\nfunc f(): Byte { 128i8 }\n"), 1, "bare 128i8: L0010")
+  assertEqualInt(l0010Count("package P\nfunc f(): Int { 32768i16 }\n"), 1, "bare 32768i16: L0010")
+  assertEqualInt(l0010Count("package P\nfunc f(): Int { 2147483648i32 }\n"), 1, "bare 2147483648i32: L0010")
+  assertEqualInt(
+    l0010Count("package P\nfunc f(): Long { 9223372036854775808i64 }\n"),
+    1,
+    "bare 9223372036854775808i64: L0010"
+  )
+  assertEqualInt(l0010Count("package P\nfunc f(): Int { 0x8000_0000i32 }\n"), 1, "bare 0x80000000i32: L0010")
+  assertEqualInt(l0010Count("package P\nfunc f(): Byte { -(128i8) }\n"), 1, "-(128i8): parenthesised, L0010")
+  assertEqualInt(
+    l0010Count("package P\nfunc f(): Int { 0 - 2147483648i32 }\n"),
+    1,
+    "0 - 2147483648i32: binary minus, L0010"
+  )
+  assertEqualInt(l0010Count("package P\nfunc f(): Byte { -129i8 }\n"), 1, "-129i8: below the minimum, L0010")
+  assertEqualInt(
+    l0010Count("package P\nfunc f(): Int { -2147483649i32 }\n"),
+    1,
+    "-2147483649i32: below the minimum, L0010"
+  )
+}
+
 // `///` (item/outer doc) before `package` is left in the stream by
 // `parseModuleDocComments` (which only harvests `//!`) — `parsePackageDecl`
 // then surfaces a targeted P0020 pointing at `//!` instead of the bare

@@ -80,6 +80,29 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
 // ─────────────────────────────────────────────────────────────────────────────
 // §1a. Range-bound extraction (for inline refined types `T range lo .. hi`).
 // ─────────────────────────────────────────────────────────────────────────────
+// A `ULong` value from 2^63 to 2^64-1 (`18446744073709551615u64`, #7839)
+// is carried in a `Long` as its two's-complement pattern.  These helpers
+// order and render such a pattern as the unsigned value it stands for.
+pub func ulongLessThan(a: in Long, b: in Long): Bool {
+  if (a < 0i64) == (b < 0i64) {
+    a < b
+  } else {
+    b < 0i64
+  }
+}
+
+pub func ulongPatternToString(v: in Long): String {
+  if v >= 0i64 {
+    return toString(v)
+  }
+  // v + 2^64 = h + 2^63 with h = v + 2^63 in [0, 2^63); 2^63 is
+  // 922337203685477580 * 10 + 8.
+  val h = v + 9223372036854775807i64 + 1i64
+  val lowSum = h % 10i64 + 8i64
+  val q = h / 10i64 + 922337203685477580i64 + lowSum / 10i64
+  toString(q) + toString(lowSum % 10i64)
+}
+
 // Extract a compile-time integer value from a bound expression, peeling a
 // unary minus and parentheses.  Returns `None` for any non-integer-literal
 // endpoint (those are out of scope for the inline range check; named

@@ -1578,8 +1578,23 @@ func basicDecl(kind: in String, name: in String, repr: in String, vis: in Option
 // carry it.
 func isIntLiteralExpr(e: in Expr): Bool {
   match intLiteralValue(e) {
-    case Some(v) -> fitsInt32(v)
+    case Some(v) -> fitsInt32(v) and not isWideULongLiteral(e)
     case None -> false
+  }
+}
+
+// A `u64` literal from 2^63 to 2^64-1 is carried as its negative 64-bit
+// pattern (#7839); `18446744073709551615u64` holds -1, which `fitsInt32`
+// would otherwise admit and a consumer would inline as the `Int` -1.
+func isWideULongLiteral(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(v, sfx, _) -> match sfx { case U64 -> v < 0i64; case _ -> false }
+      case _ -> false
+    }
+    case EParen(inner) -> isWideULongLiteral(inner)
+    case EPrefix(op, operand) -> match op { case PreNeg -> isWideULongLiteral(operand); case _ -> false }
+    case _ -> false
   }
 }
 
@@ -1776,7 +1791,10 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         // consumer compiled separately (per-package emit) needs the value
         // from the producer's contract; carry it here.
         case IConst(c) -> {
-          val inlinable = match intLiteralValue(c.init) { case Some(v) -> fitsInt32(v); case None -> true }
+          val inlinable = match intLiteralValue(c.init) {
+            case Some(v) -> fitsInt32(v) and not isWideULongLiteral(c.init)
+            case None -> true
+          }
           if inlinable {
             decls.add(basicDecl("const", c.name, reprForConst(c), it.visibility))
           }

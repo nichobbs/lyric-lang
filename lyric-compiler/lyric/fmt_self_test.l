@@ -366,6 +366,18 @@ test "numeric literal spelling round trips" {
   assertTrue(not Str.contains(acc, "255"), "numeric: hex not canonicalised")
 }
 
+// #7839: a `u64` literal above Long.MaxValue is carried as a negative
+// pattern; the formatter must reprint its source spelling, not that value.
+test "u64 literal above Long max round trips" {
+  val src = "package P\n\nval a: ULong = 18446744073709551615u64\n\nval b: ULong = 0xFFFF_FFFF_FFFF_FFFFu64\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "u64 literals: round-trip")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "= 18446744073709551615u64"), "u64: decimal spelling preserved")
+  assertTrue(Str.contains(acc, "= 0xFFFF_FFFF_FFFF_FFFFu64"), "u64: hex spelling preserved")
+  assertTrue(not Str.contains(acc, "-1"), "u64: pattern value not printed")
+}
+
 test "format module doc" {
   val src = "//! Module-level doc.\npackage P\n"
   val pr = parse(src)
