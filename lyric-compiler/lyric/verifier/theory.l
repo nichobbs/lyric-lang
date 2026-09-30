@@ -310,7 +310,7 @@ pub func foldIntLiteral(e: in Expr): Option[FoldedIntLit] {
     case ELiteral(lit) -> {
       match lit {
         case LInt(v, sfx, _) -> {
-          val wide = isUnsignedIntSuffix(sfx) and v < 0i64
+          val wide = isSome(unsignedSuffixWidth(sfx)) and v < 0i64
           Some(value = FoldedIntLit(value = v, negative = false, wideUnsigned = wide))
         }
         case LChar(cp) -> Some(value = FoldedIntLit(value = cp.toLong(), negative = false, wideUnsigned = false))
@@ -322,7 +322,7 @@ pub func foldIntLiteral(e: in Expr): Option[FoldedIntLit] {
         case PreNeg -> {
           match unparenthesizedExpr(inner).kind {
             case ELiteral(LInt(v, sfx, _)) -> {
-              if isUnsignedIntSuffix(sfx) {
+              if isSome(unsignedSuffixWidth(sfx)) {
                 None
               } else {
                 val minLong: Long = -9223372036854775807i64 - 1i64
@@ -340,13 +340,15 @@ pub func foldIntLiteral(e: in Expr): Option[FoldedIntLit] {
   }
 }
 
-pub func isUnsignedIntSuffix(sfx: in IntSuffix): Bool {
-  match sfx {
-    case U8 -> true
-    case U16 -> true
-    case U32 -> true
-    case U64 -> true
-    case _ -> false
+// The bit width of an unsigned integer suffix's type; `None` for a signed
+// suffix or none.
+func unsignedSuffixWidth(suffix: in IntSuffix): Option[Int] {
+  match suffix {
+    case U8 -> Some(value = 8)
+    case U16 -> Some(value = 16)
+    case U32 -> Some(value = 32)
+    case U64 -> Some(value = 64)
+    case _ -> None
   }
 }
 

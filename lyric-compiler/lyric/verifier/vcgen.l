@@ -301,16 +301,6 @@ func translateLit(lit: in Literal): Term {
   }
 }
 
-func unsignedSuffixWidth(suffix: in IntSuffix): Option[Int] {
-  match suffix {
-    case U8 -> Some(value = 8)
-    case U16 -> Some(value = 16)
-    case U32 -> Some(value = 32)
-    case U64 -> Some(value = 64)
-    case _ -> None
-  }
-}
-
 // V0033: a construct the verifier cannot translate faithfully.  The proof
 // fails closed on it rather than reasoning about a term that means
 // something other than the source (#7848).

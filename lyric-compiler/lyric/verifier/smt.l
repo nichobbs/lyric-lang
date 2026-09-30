@@ -237,23 +237,53 @@ func bitVecOpName(op: in Builtin): Option[String] {
   }
 }
 
-func isBitVecSort(s: in Sort): Bool {
-  match s {
-    case SBitVec(_) -> true
-    case _ -> false
+// Lyric's signed `/` and `%` truncate toward zero on every target (`-7 / 2
+// == -3`, `-7 % 2 == -1`), but SMT-LIB's `div`/`mod` are Euclidean (`(div
+// (- 7) 2)` is `-4`), so signed integer division renders through these
+// preamble definitions instead (#7870).  The names contain `!`, which
+// `smtSanitize` never emits, so no user symbol can collide with them.
+val smtTruncDivName: String = "lyric!tdiv"
+
+val smtTruncRemName: String = "lyric!trem"
+
+// A zero divisor delegates to the solver's own `div`/`mod`, which SMT-LIB
+// leaves unspecified per dividend, so division by zero stays as
+// unconstrained as it was under the plain `div`/`mod` rendering.
+func smtTruncDivDefinitions(): String {
+  val absQuot = "(div (abs a) (abs b))"
+  val tdiv = "(ite (= b 0) (div a 0) (ite (= (>= a 0) (>= b 0)) " + absQuot + " (- " + absQuot + ")))"
+  val trem = "(ite (= b 0) (mod a 0) (- a (* b (" + smtTruncDivName + " a b))))"
+  smtDefineIntBinary(smtTruncDivName, tdiv) + smtDefineIntBinary(smtTruncRemName, trem)
+}
+
+func smtDefineIntBinary(name: in String, body: in String): String {
+  "(define-fun " + name + " ((a Int) (b Int)) Int " + body + ")\n"
+}
+
+func signedIntOpName(op: in Builtin): Option[String] {
+  match op {
+    case BOpDiv -> Some(value = smtTruncDivName)
+    case BOpMod -> Some(value = smtTruncRemName)
+    case _ -> None
   }
 }
 
-// The operator a builtin renders as: its bitvector form when its first
-// operand is a bitvector, otherwise its display name.
+// The operator a builtin renders as, chosen by its first operand's sort:
+// the bitvector form over a bitvector, the truncating definitions for
+// signed integer `/` and `%`, otherwise its display name.
 func smtOpName(op: in Builtin, args: in List[Term]): String {
-  if args.count > 0 and isBitVecSort(sortOf(args[0])) {
-    match bitVecOpName(op) {
-      case Some(name) -> name
-      case None -> builtinDisplay(op)
-    }
+  val special: Option[String] = if args.count == 0 {
+    None
   } else {
-    builtinDisplay(op)
+    match sortOf(args[0]) {
+      case SBitVec(_) -> bitVecOpName(op)
+      case SInt -> signedIntOpName(op)
+      case _ -> None
+    }
+  }
+  match special {
+    case Some(name) -> name
+    case None -> builtinDisplay(op)
   }
 }
 
@@ -500,7 +530,8 @@ func smtRenderSymbol(sym: in SymbolDecl): String {
 // §5. Goal rendering (standalone file).
 // ─────────────────────────────────────────────────────────────────────────────
 pub func smtRenderPreamble(): String {
-  "(set-logic ALL)\n(set-option :produce-models true)\n(declare-datatypes ((Unit 0)) (((unit))))\n"
+  "(set-logic ALL)\n(set-option :produce-models true)\n(declare-datatypes ((Unit 0)) (((unit))))\n" +
+    smtTruncDivDefinitions()
 }
 
 // True for sort names that are already declared by the SMT-LIB theory or by
