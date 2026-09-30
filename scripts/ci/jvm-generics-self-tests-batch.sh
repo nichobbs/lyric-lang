@@ -8,7 +8,7 @@
 # tests, #7457; bare_func_ref_self_test.l, #7586; async_generator_self_test.l,
 # #7720; compiler_bugs_3502_3505_3547_self_test.l, #7752;
 # erased_slot_widen_self_test.l, #7782; list_insert_self_test.l, #7797;
-# list_literal_join_self_test.l, #7818),
+# list_literal_join_self_test.l, #7818; await_hoist_typed_self_test.l, #7823),
 # through one
 # `lyric test`
 # invocation per file.
@@ -87,7 +87,8 @@ for t in \
   lyric-compiler/lyric/unannotated_list_result_self_test.l \
   lyric-compiler/lyric/erased_slot_widen_self_test.l \
   lyric-compiler/lyric/list_insert_self_test.l \
-  lyric-compiler/lyric/list_literal_join_self_test.l ; do
+  lyric-compiler/lyric/list_literal_join_self_test.l \
+  lyric-compiler/lyric/await_hoist_typed_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"

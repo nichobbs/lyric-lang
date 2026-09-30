@@ -358,6 +358,7 @@ pub func checkStatement(
     case SAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExprExpected(sc, tbl, sigs, diag, value, targetType)
+      recordHoistedAssignValue(sc, tbl, target, value, valueType, targetType)
       noteOpenBindingAssign(sc, tbl, sigs, target, valueType)
       // `s += <rhs>` onto a String plain-variable target accepts any RHS type
       // (mirroring binary `+`); field/indexed String targets stay strict.  See

@@ -6,6 +6,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.HoistEngine as HoistEngine
 
 // `s += <rhs>` onto a String target accepts any RHS type, mirroring binary
 // `+`'s "any operand + String = String" inference (#5657).  Scoped to `+=`
@@ -7660,6 +7661,25 @@ func noteCtorArgFlows(sc: in Scope, tbl: in SymbolTable, fn: in Expr, cargs: in 
   if not anyCarried {
     return
   }
+  match ctorArgExpectedTypes(tbl, fn, cargs, ctorTy) {
+    case Some(expected) -> {
+      var k = 0
+      while k < cargs.count {
+        noteExpectedFlow(sc, tbl, callArgExpr(cargs[k]), expected[k])
+        k = k + 1
+      }
+    }
+    case None -> ()
+  }
+}
+
+// The type each argument of the construction `fn(cargs)` of `ctorTy` is
+// expected to have: its field's declared type instantiated at `ctorTy`'s type
+// arguments, or `TyError` for an argument that fills no field.  `None` when
+// `fn` is not a union-case or record constructor of `ctorTy`'s type.
+func ctorArgExpectedTypes(
+  tbl: in SymbolTable, fn: in Expr, cargs: in List[CallArg], ctorTy: in Type
+): Option[List[Type]] {
   match unrefine(ctorTy) {
     case TyUser(tid, _, targs) -> {
       match unionCaseSymbolOf(tbl, fn) {
@@ -7679,41 +7699,45 @@ func noteCtorArgFlows(sc: in Scope, tbl: in SymbolTable, fn: in Expr, cargs: in 
                   }
                   fi = fi + 1
                 }
-                noteArgsAgainstFields(sc, tbl, cargs, fnames, ftypes, gnames, targs)
+                Some(value = argTypesAgainstFields(cargs, fnames, ftypes, gnames, targs))
               }
-              case None -> ()
+              case None -> None
             }
+          } else {
+            None
           }
-          case _ -> ()
+          case _ -> None
         }
         case None -> match constructorSymbolOf(tbl, fn) {
           case Some(sym) -> match symbolTypeIdOpt(sym) {
             case Some(sid) -> if typeIdEq(sid, tid) {
               val gnames: List[String] = if ctorIsGeneric(sym) { ctorGenericNames(sym) } else { newList() }
-              noteArgsAgainstFields(sc, tbl, cargs, ctorFieldNames(sym), ctorFieldTypes(tbl, sym, gnames), gnames, targs)
+              Some(value = argTypesAgainstFields(cargs, ctorFieldNames(sym), ctorFieldTypes(tbl, sym, gnames), gnames, targs))
+            } else {
+              None
             }
-            case None -> ()
+            case None -> None
           }
-          case None -> ()
+          case None -> None
         }
       }
     }
-    case _ -> ()
+    case _ -> None
   }
 }
 
 // Each constructor argument flows into its field: a named argument into the
 // field it names, a positional one into the first field no argument names,
-// left to right (`argTypesInFieldOrder`'s pairing).
-func noteArgsAgainstFields(
-  sc: in Scope,
-  tbl: in SymbolTable,
+// left to right (`argTypesInFieldOrder`'s pairing).  The result holds, per
+// argument, its field's type with `gnames` bound to `targs` (`TyError` when
+// the argument fills no field).
+func argTypesAgainstFields(
   cargs: in List[CallArg],
   fnames: in List[String],
   ftypes: in List[Type],
   gnames: in List[String],
   targs: in List[Type],
-): Unit {
+): List[Type] {
   val occupied: List[Bool] = newList()
   var oi = 0
   while oi < fnames.count {
@@ -7761,14 +7785,18 @@ func noteArgsAgainstFields(
     }
     pi = pi + 1
   }
+  val expected: List[Type] = newList()
   var k = 0
   while k < cargs.count {
     val slot = slots[k]
     if slot >= 0 and slot < ftypes.count {
-      noteExpectedFlow(sc, tbl, callArgExpr(cargs[k]), substituteTyVars(ftypes[slot], gnames, targs))
+      expected.add(substituteTyVars(ftypes[slot], gnames, targs))
+    } else {
+      expected.add(TyError)
     }
     k = k + 1
   }
+  expected
 }
 
 // `recv.add(...)` stores into the open binding `recv` names: `add(x)` and
@@ -8074,6 +8102,15 @@ func joinOpenTypes(a: in Type, b: in Type): Type {
       case _ -> a
     }
     case TySlice(ae) -> match b { case TySlice(be) -> TySlice(element = joinOpenTypes(ae, be)); case _ -> a }
+    // Arrays of different sizes are different types: only same-sized ones join.
+    case TyArray(asz, ae) -> match b {
+      case TyArray(bsz, be) -> if optIntEq(asz, bsz) {
+        TyArray(size = asz, element = joinOpenTypes(ae, be))
+      } else {
+        a
+      }
+      case _ -> a
+    }
     case TyNullable(ai) -> match b { case TyNullable(bi) -> TyNullable(inner = joinOpenTypes(ai, bi)); case _ -> a }
     case TyTuple(aes) -> match b {
       case TyTuple(bes) -> if aes.count == bes.count {
@@ -8167,6 +8204,333 @@ func markListLiteralConflicting(
     key,
     ListLiteralTypeSite(literalType = te, rendered = rendered, conflicting = true, startOffset = startOffset)
   )
+}
+
+// ── Operands the await / `?` hoist binds (#7823) ─────────────────────────────
+//
+// `Lyric.AwaitHoist` and `Lyric.Propagate`'s hoist bind every operand
+// evaluated before an `await` or a `?` in the same expression to a fresh
+// local.  The local had no annotation, so a backend with reified generics
+// typed it from the value alone: `add(None, await f())` built the `None` as
+// an `Option<object>` and passed it where an `Option<int>` was expected.  The
+// operand's type here is its own type with each hole (`None`'s `T`, `Ok`'s
+// `E`) filled from the type its position expects; `Lyric.Mono` binds the
+// operand to a local of that type, and the hoist keeps the annotation.
+// Record the operands of `es` evaluated before the last one containing an
+// `await` or a `?`: operand `i` has its own type `owns[i]` and sits where
+// `expected[i]` is expected (`TyError` when nothing is).  A tuple literal
+// holding the hazard is walked the same way, since the hoist binds its
+// earlier elements one by one.
+func recordHoistedOperands(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  es: in List[Expr],
+  owns: in List[Type],
+  expected: in List[Type],
+): Unit {
+  var last = -1
+  var i = 0
+  while i < es.count {
+    if HoistEngine.exprHasHoistHazard(es[i]) {
+      last = i
+    }
+    i = i + 1
+  }
+  if last < 0 {
+    return
+  }
+  var k = 0
+  while k < last {
+    recordHoistOperandType(sc, tbl, es[k], hoistTypeAt(owns, k), hoistTypeAt(expected, k))
+    k = k + 1
+  }
+  recordHoistedComposite(sc, tbl, es[last], hoistTypeAt(owns, last), hoistTypeAt(expected, last))
+}
+
+// The operand `e` that holds the hazard.  The hoist binds an `if`, `match`
+// or block whose arms hold it, and a short-circuit operator, as a whole, so
+// such an `e` is recorded itself; a tuple literal's elements are hoisted one
+// by one, so they are recorded instead.
+func recordHoistedComposite(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: in Type, expected: in Type): Unit {
+  match e.kind {
+    case EParen(inner) -> recordHoistedComposite(sc, tbl, inner, own, expected)
+    case ETuple(_) -> recordHoistedTupleElems(sc, tbl, e, own, expected)
+    case EIf(_, _, _, _) -> recordHoistOperandType(sc, tbl, e, own, expected)
+    case EMatch(_, _) -> recordHoistOperandType(sc, tbl, e, own, expected)
+    case EBlock(_) -> recordHoistOperandType(sc, tbl, e, own, expected)
+    case EUnsafe(_) -> recordHoistOperandType(sc, tbl, e, own, expected)
+    case EBinop(op, _, _) -> if binopShortCircuits(op) { recordHoistOperandType(sc, tbl, e, own, expected) }
+    case _ -> ()
+  }
+}
+
+// An assignment to a field or an element (`b.o = <value>`) reads its target
+// before its value, so the hoist binds a value holding an `await` or a `?` as
+// a whole; it has the target's type.
+func recordHoistedAssignValue(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  target: in Expr,
+  value: in Expr,
+  valueType: in Type,
+  targetType: in Type,
+): Unit {
+  val stacks = match target.kind {
+    case EMember(_, _) -> true
+    case EIndex(_, _) -> true
+    case EParen(_) -> true
+    case _ -> false
+  }
+  if stacks and HoistEngine.exprHasHoistHazard(value) {
+    recordHoistOperandType(sc, tbl, value, valueType, targetType)
+  }
+}
+
+func hoistTypeAt(ts: in List[Type], i: in Int): Type {
+  if i < ts.count {
+    ts[i]
+  } else {
+    TyError
+  }
+}
+
+func recordHoistedTupleElems(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: in Type, expected: in Type): Unit {
+  match e.kind {
+    case EParen(inner) -> recordHoistedTupleElems(sc, tbl, inner, own, expected)
+    case ETuple(elems) -> recordHoistedOperands(
+      sc,
+      tbl,
+      elems,
+      hoistTupleElemTypes(own, elems.count),
+      hoistTupleElemTypes(unrefine(expected), elems.count)
+    )
+    case _ -> ()
+  }
+}
+
+func hoistTupleElemTypes(t: in Type, n: in Int): List[Type] {
+  match t {
+    case TyTuple(elems) -> {
+      if elems.count == n {
+        return elems
+      }
+    }
+    case _ -> ()
+  }
+  val holes: List[Type] = newList()
+  var i = 0
+  while i < n {
+    holes.add(TyError)
+    i = i + 1
+  }
+  holes
+}
+
+// Record the type of one hoisted operand `e`: `own` with its holes filled
+// from `expected`, when that is a closed generic instantiation.  A literal is
+// never bound, and a local is bound at its declared type already.
+func recordHoistOperandType(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: in Type, expected: in Type): Unit {
+  val sp = e.span
+  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return
+  }
+  match e.kind {
+    case ELiteral(_) -> {
+      return
+    }
+    case ELambda(_, _) -> {
+      return
+    }
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        val isLocal = match scopeTryFind(sc, p.segments[0]) { case Some(_) -> true; case None -> false }
+        if isLocal {
+          return
+        }
+      }
+    }
+    case _ -> ()
+  }
+  val t = joinOpenTypes(own, unrefine(expected))
+  if not typeMentionsGenericInst(t) or not typeIsClosedOver(t, sc.genericNames) {
+    return
+  }
+  match typeExprForOpenBinding(tbl, t, sp, sc.genericNames) {
+    case Some(te) -> {
+      val key = recordCopySiteKey(sp)
+      val rendered = renderType(t)
+      match mapGet(tbl.hoistOperandTypeSites, key) {
+        case Some(prev) -> if prev.rendered != rendered and not prev.conflicting {
+          tbl.hoistOperandTypeSites.remove(key)
+          tbl.hoistOperandTypeSites.add(
+            key,
+            HoistOperandTypeSite(
+              operandType = prev.operandType,
+              rendered = prev.rendered,
+              conflicting = true,
+              startOffset = prev.startOffset
+            )
+          )
+        }
+        case None -> tbl.hoistOperandTypeSites.add(
+          key,
+          HoistOperandTypeSite(
+            operandType = te,
+            rendered = rendered,
+            conflicting = false,
+            startOffset = sp.startPos.offset
+          )
+        )
+      }
+    }
+    case None -> ()
+  }
+}
+
+// Whether `op` evaluates its right operand only on some left values; the
+// hoist binds such an operator's whole expression, not its left operand.
+func binopShortCircuits(op: in BinOp): Bool {
+  match op {
+    case BAnd -> true
+    case BOr -> true
+    case BCoalesce -> true
+    case BImplies -> true
+    case _ -> false
+  }
+}
+
+// Whether any argument of a call contains an `await` or a `?`.
+func callArgsHaveHoistHazard(args: in List[CallArg]): Bool {
+  var i = 0
+  while i < args.count {
+    if HoistEngine.exprHasHoistHazard(callArgExpr(args[i])) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func recordHoistedCallArgs(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  expected: in List[Type],
+): Unit {
+  val es: List[Expr] = newList()
+  var i = 0
+  while i < args.count {
+    es.add(callArgExpr(args[i]))
+    i = i + 1
+  }
+  recordHoistedOperands(sc, tbl, es, argTypes, expected)
+}
+
+// `inferGenericArgsDeep`, except that an argument leaving a type parameter
+// open (`None` for an `Option[T]` parameter) does not hide what a later
+// argument fixes: `f(None, 5)` with `f[T](a: Option[T], b: T)` binds `T` to
+// `Int`, not to the hole.
+func inferGenericArgsJoined(names: in List[String], paramTys: in List[Type], argTys: in List[Type]): List[Type] {
+  val base = inferGenericArgsDeep(names, paramTys, argTys)
+  val result: List[Type] = newList()
+  var g = 0
+  while g < names.count {
+    var b = base[g]
+    var i = 0
+    while i < paramTys.count and i < argTys.count {
+      match findGenericInPair(names[g], paramTys[i], argTys[i]) {
+        case Some(v) -> {
+          if typeEquiv(b, v) {
+            b = joinOpenTypes(b, v)
+          }
+        }
+        case None -> ()
+      }
+      i = i + 1
+    }
+    result.add(b)
+    g = g + 1
+  }
+  result
+}
+
+// The construction `fn(args)` of `ctorTy`: each argument is expected to have
+// its field's type.
+func recordHoistedCtorArgs(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  ctorTy: in Type,
+): Unit {
+  if not callArgsHaveHoistHazard(args) {
+    return
+  }
+  match ctorArgExpectedTypes(tbl, fn, args, ctorTy) {
+    case Some(expected) -> recordHoistedCallArgs(sc, tbl, args, argTypes, expected)
+    case None -> ()
+  }
+}
+
+// The type each argument of a call to `sig` is expected to have, in argument
+// order: its parameter's type with `sig`'s generic parameters bound from the
+// call (`recvTy` fills a method's leading receiver parameter), or `TyError`
+// for an argument no parameter takes.
+func sigExpectedArgTypes(
+  sig: in ResolvedSignature,
+  recvTy: in Option[Type],
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): List[Type] {
+  val expected: List[Type] = newList()
+  var ei = 0
+  while ei < args.count {
+    expected.add(TyError)
+    ei = ei + 1
+  }
+  val offset = match recvTy { case Some(_) -> 1; case None -> 0 }
+  if sig.params.count < offset or args.count > sig.params.count - offset {
+    return expected
+  }
+  val paramNames: List[String] = newList()
+  var pi = offset
+  while pi < sig.params.count {
+    paramNames.add(sig.params[pi].name)
+    pi = pi + 1
+  }
+  val srcIdx = argIndicesInParamOrder(args, paramNames)
+  var targs: List[Type] = newList()
+  if sig.generics.count > 0 {
+    val paramTys: List[Type] = newList()
+    val slotTys: List[Type] = newList()
+    match recvTy {
+      case Some(rt) -> {
+        paramTys.add(sig.params[0].ty)
+        slotTys.add(rt)
+      }
+      case None -> ()
+    }
+    var k = 0
+    while k < srcIdx.count {
+      paramTys.add(sig.params[k + offset].ty)
+      val ai = srcIdx[k]
+      slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
+      k = k + 1
+    }
+    targs = inferGenericArgsJoined(sig.generics, paramTys, slotTys)
+  }
+  var j = 0
+  while j < srcIdx.count {
+    val ai = srcIdx[j]
+    if ai >= 0 and ai < expected.count {
+      val pty = sig.params[j + offset].ty
+      expected[ai] = if sig.generics.count > 0 { substituteTyVars(pty, sig.generics, targs) } else { pty }
+    }
+    j = j + 1
+  }
+  expected
 }
 
 // Whether `t` is or contains an instantiation of a generic type.
@@ -8371,6 +8735,7 @@ func inferExprCore(
         ts.add(inferExpr(sc, tbl, sigs, diag, elems[i]))
         i = i + 1
       }
+      recordHoistedOperands(sc, tbl, elems, ts, hoistTupleElemTypes(TyError, elems.count))
       TyTuple(elems = ts)
     }
 
@@ -8406,6 +8771,13 @@ func inferExprCore(
         k = k + 1
       }
       recordListLiteralType(sc, tbl, e, TySlice(element = joined))
+      val joinedAt: List[Type] = newList()
+      var ji = 0
+      while ji < elems.count {
+        joinedAt.add(joined)
+        ji = ji + 1
+      }
+      recordHoistedOperands(sc, tbl, elems, elemTs, joinedAt)
       TySlice(element = joined)
     }
 
@@ -8441,6 +8813,12 @@ func inferExprCore(
           recordUnsignedWidening(tbl, wt, rt, r)
         }
         case None -> ()
+      }
+      // The hoist binds the left operand of an eagerly evaluated operator
+      // whose right one awaits (#7823); its type is the right one's.
+      if not binopShortCircuits(op) and HoistEngine.exprHasHoistHazard(r) {
+        recordHoistOperandType(sc, tbl, l, lt, rt)
+        recordHoistedComposite(sc, tbl, r, rt, lt)
       }
       inferBinop(tbl, diag, op, lt, rt, e.span)
     }
@@ -8713,6 +9091,23 @@ func inferExprCore(
           di = di + 1
         }
       }
+      // A receiver evaluated before an argument holding an `await` or a `?`
+      // is hoisted too (#7850).
+      if isMemberCallee and callArgsHaveHoistHazard(args) {
+        match fn.kind {
+          case EMember(hoistRecv, _) -> match memberRecvTy {
+            case Some(hoistRecvTy) -> recordHoistOperandType(
+              sc,
+              tbl,
+              hoistRecv,
+              hoistRecvTy,
+              TyError
+            )
+            case None -> ()
+          }
+          case _ -> ()
+        }
+      }
       // `xs.add(x)` on an open binding fixes its element type (#7788).
       if isMemberCallee and memberName == "add" {
         match fn.kind {
@@ -8732,6 +9127,9 @@ func inferExprCore(
           recordGeneratorCallSite(tbl, e.span, sig.isGenerator)
           recordAsyncCallSite(tbl, e.span, sig.isAsync and not sig.isGenerator)
           recordEmptyCollectionCtorSite(tbl, e.span, isStdEmptyCollectionCtor(sig, fn))
+          if callArgsHaveHoistHazard(args) {
+            recordHoistedCallArgs(sc, tbl, args, argTypes, sigExpectedArgTypes(sig, None, args, argTypes))
+          }
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
           recordGenericArgWidenings(tbl, sig, None, args, argTypes)
@@ -8748,12 +9146,14 @@ func inferExprCore(
           case Some(caseSym) -> {
             val caseTy = inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
             noteCtorArgFlows(sc, tbl, fn, args, caseTy)
+            recordHoistedCtorArgs(sc, tbl, fn, args, argTypes, caseTy)
             caseTy
           }
           case None -> match constructorSymbolOf(tbl, fn) {
             case Some(ctorSym) -> {
               val ctorTy = inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
               noteCtorArgFlows(sc, tbl, fn, args, ctorTy)
+              recordHoistedCtorArgs(sc, tbl, fn, args, argTypes, ctorTy)
               ctorTy
             }
             // #6838: the callee names a union/enum TYPE itself, not one of its
@@ -8782,6 +9182,16 @@ func inferExprCore(
                   recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
                   checkContractCallPure(sc, diag, mp.sig, fn, e.span)
                   checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
+                  if callArgsHaveHoistHazard(args) {
+                    val mpExpected = match mp.fullSig {
+                      case Some(fullS) -> match memberRecvTy {
+                        case Some(_) -> sigExpectedArgTypes(fullS, memberRecvTy, args, argTypes)
+                        case None -> sigExpectedArgTypes(mp.sig, None, args, argTypes)
+                      }
+                      case None -> sigExpectedArgTypes(mp.sig, None, args, argTypes)
+                    }
+                    recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
+                  }
                   checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
                   match mp.fullSig {
                     case Some(fullS) -> match memberRecvTy {
@@ -8864,6 +9274,9 @@ func inferExprCore(
                           k = k + 1
                         }
                         recordFuncValueCall(sc, tbl, fn, memberRecvTy, memberName, fnT, args.count, e.span)
+                        if callArgsHaveHoistHazard(args) {
+                          recordHoistedCallArgs(sc, tbl, args, argTypes, paramTypes)
+                        }
                       }
                       ret
                     }
@@ -9007,6 +9420,17 @@ func inferExprCore(
     // TyError for unknown receivers is intentional: codegen owns exotic receiver behaviour.
     case EIndex(recvE, indices) -> {
       val rt = inferExpr(sc, tbl, sigs, diag, recvE)
+      // The receiver of an index holding an `await` or a `?` is hoisted
+      // (#7850).
+      var hoistIdx = 0
+      while hoistIdx < indices.count {
+        if HoistEngine.exprHasHoistHazard(indices[hoistIdx]) {
+          recordHoistOperandType(sc, tbl, recvE, rt, TyError)
+          hoistIdx = indices.count
+        } else {
+          hoistIdx = hoistIdx + 1
+        }
+      }
       var ii = 0
       while ii < indices.count {
         // A bare primitive TYPE name as an index is the surface explicit
@@ -9177,6 +9601,7 @@ func inferExprCore(
     case EAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExprExpected(sc, tbl, sigs, diag, value, targetType)
+      recordHoistedAssignValue(sc, tbl, target, value, valueType, targetType)
       noteOpenBindingAssign(sc, tbl, sigs, target, valueType)
       val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
       if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
@@ -9438,7 +9863,11 @@ pub func inferExprExpected(
           cri = cri + 1
         }
         match constructorSymbolOf(tbl, fn) {
-          case Some(ctorSym) -> inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
+          case Some(ctorSym) -> {
+            val ctorTy = inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
+            recordHoistedCtorArgs(sc, tbl, fn, cargs, cargTypes, ctorTy)
+            ctorTy
+          }
           case None -> inferExpr(sc, tbl, sigs, diag, e)
         }
       } else if p.segments.count == 1 {
@@ -9452,12 +9881,14 @@ pub func inferExprExpected(
               ci2 = ci2 + 1
             }
             // #7752: typed at the expected instantiation when it fits.
-            adoptUnionCaseExpected(
+            val caseTy = adoptUnionCaseExpected(
               tbl,
               true,
               inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, e.span, true),
               expected
             )
+            recordHoistedCtorArgs(sc, tbl, fn, cargs, cargTypes, caseTy)
+            caseTy
           }
           case None -> if diag.count > diagCountBefore { TyError } else { inferExpr(sc, tbl, sigs, diag, e) }
         }
@@ -9530,6 +9961,24 @@ pub func inferExprExpected(
     // explicit `.toList()`, while a genuine `slice[T]`-typed VALUE (a
     // variable, a call result, …) is no longer silently accepted where a
     // `List[T]` is expected (see `argSatisfiesParam`).
+    // A tuple literal where a tuple type is expected: each element is checked
+    // against its element type, and the elements the hoist binds are recorded
+    // at it (#7850).
+    case ETuple(elems) -> match unrefine(expected) {
+      case TyTuple(ets) -> if ets.count == elems.count {
+        val ts: List[Type] = newList()
+        var ti = 0
+        while ti < elems.count {
+          ts.add(joinOpenTypes(inferExprExpected(sc, tbl, sigs, diag, elems[ti], ets[ti]), unrefine(ets[ti])))
+          ti = ti + 1
+        }
+        recordHoistedOperands(sc, tbl, elems, ts, ets)
+        TyTuple(elems = ts)
+      } else {
+        inferExpr(sc, tbl, sigs, diag, e)
+      }
+      case _ -> inferExpr(sc, tbl, sigs, diag, e)
+    }
     case EList(elems) -> match unrefine(expected) {
       case TyUser(eid, ename, eargs) -> {
         // #7696: id-based, matching `.toList()`'s own resolution
@@ -9549,9 +9998,13 @@ pub func inferExprExpected(
         if isStdList and eargs.count == 1 {
           noteListLiteralInListContext(tbl, e)
           val elemTy = eargs[0]
+          val elemOwn: List[Type] = newList()
+          val elemAt: List[Type] = newList()
           var li = 0
           while li < elems.count {
             val et = inferExprExpected(sc, tbl, sigs, diag, elems[li], elemTy)
+            elemOwn.add(et)
+            elemAt.add(elemTy)
             recordWideningSite(tbl, elemTy, et, elems[li], false)
             if not argSatisfiesParam(tbl, elemTy, et) {
               diag.add(
@@ -9565,6 +10018,7 @@ pub func inferExprExpected(
             }
             li = li + 1
           }
+          recordHoistedOperands(sc, tbl, elems, elemOwn, elemAt)
           TyUser(id = eid, name = ename, args = eargs)
         } else {
           inferExpr(sc, tbl, sigs, diag, e)
