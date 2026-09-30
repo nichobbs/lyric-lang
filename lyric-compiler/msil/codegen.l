@@ -10427,7 +10427,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       match mapGet(cctx.funcTokens, fnRefThunkKey) {
                         case Some(thunkTok) -> {
                           val nparams = match mapGet(cctx.funcParamTypes, fnRefThunkKey) { case Some(pts) -> pts.count; case None -> 0 }
-                          val ctorTok = buildFuncNCtorTok(cctx, nparams)
+                          // A `Unit` target's thunk is `void` and becomes an
+                          // `Action`, like a `Unit` lambda literal (#7783).
+                          val ctorTok = if lambdaReturnsVoidMsil(cctx, fnRefThunkKey) {
+                            if nparams == 0 {
+                              cctx.tokActionCtor
+                            } else {
+                              buildActionNCtorTok(cctx, nparams)
+                            }
+                          } else {
+                            buildFuncNCtorTok(cctx, nparams)
+                          }
                           insns.add(MLdNull)
                           insns.add(MLdftn(methodToken = thunkTok))
                           insns.add(MNewobj(ctorToken = ctorTok))
@@ -37611,6 +37621,18 @@ func collectRefNamesFuncBodyMsil(bodyOpt: in Option[FunctionBody], acc: in List[
   }
 }
 
+// True when `f` returns `Unit`: no declared return type, `()`, or `Unit`.
+func funcDeclReturnsUnitMsil(f: in FunctionDecl): Bool {
+  match f.ret {
+    case None -> true
+    case Some(te) -> match te.kind {
+      case TUnit -> true
+      case TRef(p) -> p.segments.count == 1 and p.segments[0] == "Unit"
+      case _ -> false
+    }
+  }
+}
+
 // Build the synthetic forwarding-thunk `Item` for target function `f` —
 // shaped exactly like the hand-written closure literal `{ p0, p1, ... ->
 // f(p0, p1, ...) }` (params/body), named `__lambda_fnref_<f.name>` so
@@ -37639,14 +37661,19 @@ func buildBareFuncRefThunkItemMsil(f: in FunctionDecl): Item {
     paramNames.add(op.name)
     pi = pi + 1
   }
+  // A `Unit`-returning target gets a `Unit` (`void`) thunk, which the
+  // construction site wraps in a `System.Action`/`Action`N` exactly as it
+  // does a `Unit` lambda literal (`lambdaReturnsVoidMsil`): a `(...) -> Unit`
+  // slot is always an `Action` (`typeExprToMsilCtx`), so an `object`-returning
+  // thunk's `Func<..., object>` there was unverifiable, and a `List<Action>`
+  // rejected it at run time with `ArrayTypeMismatchException` (#7783).
   val retSeg: List[String] = newList()
   retSeg.add("Object")
-  val retTy: Option[TypeExpr] = Some(
-    TypeExpr(
-      kind = TRef(path = ModulePath(segments = retSeg, span = syntheticSpan())),
-      span = syntheticSpan()
-    )
-  )
+  val retTy: Option[TypeExpr] = if funcDeclReturnsUnitMsil(f) {
+    Some(TypeExpr(kind = TUnit, span = syntheticSpan()))
+  } else {
+    Some(TypeExpr(kind = TRef(path = ModulePath(segments = retSeg, span = syntheticSpan())), span = syntheticSpan()))
+  }
   val stmts: List[Statement] = newList()
   stmts.add(Statement(kind = SExpr(expr = proceedSubstitutionMsil(f.name, paramNames)), span = syntheticSpan()))
   val block = Block(statements = stmts, span = syntheticSpan())

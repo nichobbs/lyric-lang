@@ -113,6 +113,7 @@ for t in \
   lyric-compiler/lyric/func_val_local_rettype_self_test.l \
   lyric-compiler/lyric/extern_delegate_value_dotnet_self_test.l \
   lyric-compiler/lyric/bare_func_ref_self_test.l \
+  lyric-compiler/lyric/unit_func_ref_action_self_test.l \
   lyric-compiler/lyric/qualified_enum_case_self_test.l \
   lyric-compiler/lyric/qualified_union_case_self_test.l \
   lyric-compiler/lyric/slice_append_widening_self_test.l \
