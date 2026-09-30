@@ -584,8 +584,11 @@ pub func symTableMethodSigs(tbl: in SymbolTable, owner: in TypeId, name: in Stri
   acc
 }
 
-// True when unknown-member diagnostics may fire for the type `tid` — it is
-// declared in the file being checked and its member surface is fully known.
+// True when unknown-member diagnostics may fire for the type `tid`: a record,
+// exposed record or interface, whose member surface is fully known whether it
+// is declared in the file being checked or imported.  Imported types were once
+// exempt because contract reprs dropped record-body methods; the repr carries
+// them since #6440, so the exemption only hid typos (#7575).
 pub func symTableIsMemberComplete(tbl: in SymbolTable, tid: in TypeId): Bool {
   tbl.memberCompleteTypes.containsKey(toString(tid.id))
 }
@@ -629,27 +632,21 @@ pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
       }
     }
     case DKRecord(rid, _) -> {
-      if not sym.isImported {
-        val key = toString(rid.id)
-        if not tbl.memberCompleteTypes.containsKey(key) {
-          tbl.memberCompleteTypes.add(key, true)
-        }
+      val key = toString(rid.id)
+      if not tbl.memberCompleteTypes.containsKey(key) {
+        tbl.memberCompleteTypes.add(key, true)
       }
     }
     case DKExposedRec(xid, _) -> {
-      if not sym.isImported {
-        val key = toString(xid.id)
-        if not tbl.memberCompleteTypes.containsKey(key) {
-          tbl.memberCompleteTypes.add(key, true)
-        }
+      val key = toString(xid.id)
+      if not tbl.memberCompleteTypes.containsKey(key) {
+        tbl.memberCompleteTypes.add(key, true)
       }
     }
     case DKInterface(iid, _) -> {
-      if not sym.isImported {
-        val key = toString(iid.id)
-        if not tbl.memberCompleteTypes.containsKey(key) {
-          tbl.memberCompleteTypes.add(key, true)
-        }
+      val key = toString(iid.id)
+      if not tbl.memberCompleteTypes.containsKey(key) {
+        tbl.memberCompleteTypes.add(key, true)
       }
     }
     case DKUnion(uid, decl) -> {

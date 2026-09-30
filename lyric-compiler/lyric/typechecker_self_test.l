@@ -1110,6 +1110,43 @@ test "interface subtyping cross package sound" {
   )
 }
 
+// #7512: the same mismatch written as a package-qualified call is reported
+// too, against the named package's signature.
+test "qualified call: impl of another package's same-named interface is T0043" {
+  val pkgA = parse("package PkgA\npub interface Greeter {\n  func greet(): String\n}\n")
+  val pkgB = parse(
+    "package PkgB\npub interface Greeter {\n  func greet(): String\n}\npub func wantB(g: in Greeter): String { \"\" }\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "PkgB",
+      items = pkgB.file.items,
+      imports = collectImportNames(pkgB.file.imports),
+      wholeImports = collectWholeImportNames(pkgB.file.imports)
+    )
+  )
+  val bad = "package App\nimport PkgA\nimport PkgB\nrecord Hello { x: Int }\nimpl PkgA.Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = PkgB.wantB(Hello(x = 1))\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(parse(bad).file, packages), "T0043"),
+    "qualified call: impl of PkgA.Greeter does not satisfy a PkgB.Greeter parameter"
+  )
+  val ok = "package App\nimport PkgA\nimport PkgB\nrecord Hello { x: Int }\nimpl PkgB.Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = PkgB.wantB(Hello(x = 1))\n}\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(ok).file, packages), "T0043"),
+    0,
+    "qualified call: impl of PkgB.Greeter satisfies the PkgB.Greeter parameter"
+  )
+}
+
 // #6287: a PACKAGE-QUALIFIED union-case constructor honours its qualifier.
 // PkgA and PkgB both export `union Signal` with a colliding case name `Ping`
 // (different field shapes).  Before the fix, `PkgA.Ping(...)` resolved the
@@ -4418,11 +4455,34 @@ test "unknown member on a union receiver stays lenient" {
   assertTrue(not hasDiagCode(parseCheck(src), "T0113"), "unions are not member-complete: no T0113")
 }
 
-test "unknown member on an imported record stays lenient" {
+// #7575: an imported record's member surface is known too (its contract repr
+// carries body methods since #6440), so an unknown field read on it is T0113
+// instead of an unreported `TyError` that reached codegen as invalid IL.
+test "unknown field on an imported record is T0113" {
+  val importedItems = importedItemsOf("package Dep\npub record Widget {\n  w: Int\n}\n")
+  val src = "package App\nimport Dep\nfunc consume(x: in Widget): Int { x.mystery }\n"
+  val cr = checkWithImports(parse(src).file, importedItems)
+  assertTrue(hasDiagCode(cr, "T0113"), "unknown field on imported record: T0113")
+  assertTrue(diagMessageFor(cr, "T0113").contains("Widget"), "T0113 names the imported receiver type")
+}
+
+test "unknown method on an imported record is T0113" {
   val importedItems = importedItemsOf("package Dep\npub record Widget {\n  w: Int\n}\n")
   val src = "package App\nimport Dep\nfunc consume(x: in Widget): Int { x.mystery() }\n"
-  val cr = checkWithImports(parse(src).file, importedItems)
-  assertTrue(not hasDiagCode(cr, "T0113"), "imported records may come from method-dropping contract reprs: no T0113")
+  assertTrue(hasDiagCode(checkWithImports(parse(src).file, importedItems), "T0113"), "unknown method on imported record: T0113")
+}
+
+test "imported record members resolve without T0113" {
+  val dep = "package Dep\npub record Widget {\n  w: Int\n  func twice(self: in Widget): Int { self.w * 2 }\n}\npub func Widget.half(x: in Widget): Int { x.w / 2 }\npub interface Sized {\n  func size(): Int\n}\nimpl Sized for Widget {\n  func size(): Int { 1 }\n}\n"
+  val src = "package App\nimport Dep\nfunc consume(x: in Widget): Int { x.w + x.twice() + x.half() + x.size() }\n"
+  val cr = checkWithImports(parse(src).file, importedItemsOf(dep))
+  assertEqualInt(countDiagCode(cr, "T0113"), 0, "field, body method, dot-named function and impl method all resolve")
+}
+
+test "unknown method on an imported interface is T0113" {
+  val importedItems = importedItemsOf("package Dep\npub interface Sized {\n  func size(): Int\n}\n")
+  val src = "package App\nimport Dep\nfunc consume(x: in Sized): Int { x.width() }\n"
+  assertTrue(hasDiagCode(checkWithImports(parse(src).file, importedItems), "T0113"), "unknown method on imported interface: T0113")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

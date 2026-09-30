@@ -3268,10 +3268,9 @@ func stringListContains(xs: in List[String], x: in String): Bool {
 }
 
 // A5 (docs/59 §5.1): report an unknown member/method on a receiver whose
-// member surface is fully known — a record, exposed record, or interface
-// DECLARED IN THE FILE BEING CHECKED (`symTableIsMemberComplete`; imported
-// types may originate from restored contract metadata, whose record reprs
-// drop methods, so they stay lenient).  Emits nothing when the name exists
+// member surface is fully known — a record, exposed record, or interface,
+// local or imported (`symTableIsMemberComplete`; a restored contract's record
+// repr carries its body methods since #6440, #7575).  Emits nothing when the name exists
 // anywhere in the member/method space, is a universal codegen intrinsic /
 // derive-synthesised name, or has a dot-named type-associated signature.
 func maybeUnknownMemberDiag(
@@ -3437,10 +3436,9 @@ func inferMember(
       // syntax (`e.message()`).  `sigs` carries dot-named signatures for
       // every type name regardless of which package declares the receiver
       // (unlike `memberCompleteTypes`, which — by design, docs/59 A5 —
-      // only covers record/interface FIELD enumeration for types declared
-      // in the file being checked), so this check also catches cross-package
-      // receivers like the stdlib's `IOError` union that `maybeUnknownMemberDiag`
-      // stays lenient about. Checked ahead of that lenient A5 path so a
+      // only covers record/interface FIELD enumeration), so this check also
+      // catches receivers like the stdlib's `IOError` union that
+      // `maybeUnknownMemberDiag` stays lenient about. Checked ahead of that lenient A5 path so a
       // real UFCS function's existence is never silently misread as "valid
       // field access" the way it was before this fix (the bug produced a
       // `TyError` with no diagnostic, which reached codegen as invalid IL).
