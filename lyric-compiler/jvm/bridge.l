@@ -1101,6 +1101,142 @@ func rollbackNewKeys[V](m: in Map[String, V], before: in Map[String, Bool]): Uni
   }
 }
 
+// A package's function signatures and record fields enter the bundle-wide
+// registries from its raw parsed file, before its middle end runs (see
+// `resolveTypeAliases`).  The middle end rewrites declared defaults: a
+// widening a parameter or field default needs becomes an explicit conversion
+// there (`Lyric.Mono.desugarCheckedFile`, #7811).  A call or construction that
+// omits the argument lowers the REGISTERED default, so point the package's own
+// entries at the middle-ended defaults before its code is generated.  The
+// registered lists are shared by every key a declaration is registered under,
+// so updating them in place updates each key.
+func refreshOwnDefaultsJvm(
+  file: in SourceFile,
+  registry: in Map[String, JvmFuncSig],
+  caseReg: in Map[String, List[JvmCaseField]],
+): Unit {
+  val owner = pkgJvmOwner(file.packageDecl.path)
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> match mapGet(registry, owner + "::" + decl.name + "@" + toString(decl.params.count)) {
+        case Some(sig) -> if sig.owner == owner and sameParamNamesJvm(sig.paramNames, decl.params) and sig.paramDefaults.count == decl.params.count {
+          var pi = 0
+          while pi < decl.params.count {
+            sig.paramDefaults[pi] = decl.params[pi].dflt
+            pi = pi + 1
+          }
+        }
+        case None -> ()
+      }
+      case IRecord(decl) -> refreshRecordFieldDefaultsJvm(caseReg, owner + "/" + decl.name, decl.members)
+      case IExposedRec(decl) -> refreshRecordFieldDefaultsJvm(caseReg, owner + "/" + decl.name, decl.members)
+      case IOpaque(decl) -> {
+        val names: List[String] = newList()
+        val defaults: List[Option[Expr]] = newList()
+        for m in decl.members {
+          match m {
+            case OMField(fd) -> {
+              names.add(fd.name)
+              defaults.add(fd.dflt)
+            }
+            case OMInvariant(_) -> ()
+          }
+        }
+        refreshCaseFieldDefaultsJvm(caseReg, owner + "/" + decl.name, names, defaults)
+      }
+      case IProtected(decl) -> {
+        val names: List[String] = newList()
+        val defaults: List[Option[Expr]] = newList()
+        for m in decl.members {
+          match m {
+            case PMField(pf) -> match pf {
+              case PFVar(nm, _, init, _, _, _) -> {
+                names.add(nm)
+                defaults.add(init)
+              }
+              case PFLet(nm, _, init, _, _, _) -> {
+                names.add(nm)
+                defaults.add(init)
+              }
+              case PFImmutable(fd) -> {
+                names.add(fd.name)
+                defaults.add(fd.dflt)
+              }
+            }
+            case _ -> ()
+          }
+        }
+        refreshCaseFieldDefaultsJvm(caseReg, owner + "/" + decl.name, names, defaults)
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func sameParamNamesJvm(names: in List[String], params: in List[Param]): Bool {
+  if names.count != params.count {
+    return false
+  }
+  var i = 0
+  while i < params.count {
+    if names[i] != params[i].name {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func refreshRecordFieldDefaultsJvm(
+  caseReg: in Map[String, List[JvmCaseField]],
+  cls: in String,
+  members: in List[RecordMember],
+): Unit {
+  val names: List[String] = newList()
+  val defaults: List[Option[Expr]] = newList()
+  for m in members {
+    match m {
+      case RMField(fd) -> {
+        names.add(fd.name)
+        defaults.add(fd.dflt)
+      }
+      case _ -> ()
+    }
+  }
+  refreshCaseFieldDefaultsJvm(caseReg, cls, names, defaults)
+}
+
+func refreshCaseFieldDefaultsJvm(
+  caseReg: in Map[String, List[JvmCaseField]],
+  cls: in String,
+  names: in List[String],
+  defaults: in List[Option[Expr]],
+): Unit {
+  match mapGet(caseReg, cls) {
+    case Some(flds) -> {
+      var i = 0
+      while i < flds.count {
+        val f = flds[i]
+        var j = 0
+        while j < names.count {
+          if names[j] == f.name {
+            flds[i] = JvmCaseField(
+              name = f.name,
+              ty = f.ty,
+              paramIdx = f.paramIdx,
+              dflt = defaults[j],
+              genericArgs = f.genericArgs
+            )
+          }
+          j = j + 1
+        }
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+}
+
 // Codegen one (already middle-ended) file against `registry` and append its
 // class files to `out`.  Uses an isolated constant pool per package.
 //
@@ -1135,6 +1271,7 @@ func codegenPackageInto(
   // `file` here already has its `alias X = ...` references resolved — see
   // `runMiddleEnd`'s #6404 comment; every caller of `codegenPackageInto`
   // passes `runMiddleEnd`'s result straight through.
+  refreshOwnDefaultsJvm(file, registry, caseReg)
   val pkg = codegenPackageWithSigsSeeded(
     file,
     importAwareRegistry(file, registry, externSeed),
@@ -3145,6 +3282,17 @@ pub func compileProjectToJarBundledWithRestored(
     // `typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)` call.
     Weaver.typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)
     dti = dti + 1
+  }
+
+  // The entry package's code is generated before any bundled package's middle
+  // end runs, so the defaults it splices from a bundled package's functions
+  // and records would still be the raw ones, without the conversions the
+  // middle end adds (#7811).  Check and desugar each bundled package that
+  // declares defaults now, and register the result.
+  for bf in toBundle {
+    if pipeFileDeclaresDefaults(bf) {
+      refreshOwnDefaultsJvm(pipeCheckedDefaults(bf, importedPkgs), registry, caseReg)
+    }
   }
 
   // User package first (its codegen failing is always fatal).  Its type-check

@@ -8242,3 +8242,69 @@ test "a sole-case constructor, a record pattern and @ are irrefutable locally (#
     "  val (_, q) = (p, b)\n}\n"
   assertEqualInt(countDiagCode(parseCheck(src), "T0146"), 0, "every pattern matches every value of its type")
 }
+
+// #7811: a module-level `val`'s initialiser, a field's default and a
+// parameter's default are checked against the declared type like a local
+// binding's initialiser, in the declaring package, once each.
+test "a module val initialiser that mismatches its declared type is T0060 (#7811)" {
+  val cr = parseCheck("package P\nval g: Long = \"str\"\nfunc f(): Long { g + g }\n")
+  assertEqualInt(countDiagCode(cr, "T0060"), 1, "reported once, not again at each read")
+  assertTrue(diagMessagesContain(cr, "val binding declared as Long but initialiser has type String"), "message")
+  val oor = parseCheck("package P\nval g: Int = 3000000000\n")
+  assertEqualInt(countDiagCode(oor, "T0015"), 1, "an out-of-range literal is T0015")
+  assertEqualInt(countDiagCode(oor, "T0060"), 0, "and not T0060 as well")
+  val unknown = parseCheck("package P\nval g: Int = nope\n")
+  assertTrue(hasDiagCode(unknown, "T0020"), "an unknown name in the initialiser is reported")
+}
+
+test "a field default that mismatches its field type is T0060 (#7811)" {
+  val rec = parseCheck("package P\nrecord R {\n  v: Long = \"str\"\n}\n")
+  assertEqualInt(countDiagCode(rec, "T0060"), 1, "record field")
+  assertTrue(diagMessagesContain(rec, "field 'R.v' declared as Long but its default has type String"), "message")
+  val exposedRec = parseCheck("package P\nexposed record E {\n  w: Int = \"s\"\n}\n")
+  assertEqualInt(countDiagCode(exposedRec, "T0060"), 1, "exposed record field")
+  val opaqueTy = parseCheck("package P\nopaque type O {\n  w: Int = true\n}\n")
+  assertEqualInt(countDiagCode(opaqueTy, "T0060"), 1, "opaque field")
+  val prot = parseCheck("package P\nprotected type C {\n  var n: Long = \"s\"\n  func get(): Long { n }\n}\n")
+  assertEqualInt(countDiagCode(prot, "T0060"), 1, "protected field")
+}
+
+test "a parameter default that mismatches its parameter type is T0060 (#7811)" {
+  val fn = parseCheck("package P\nfunc d(x: in Long = \"s\"): Long { x }\n")
+  assertEqualInt(countDiagCode(fn, "T0060"), 1, "function parameter")
+  assertTrue(
+    diagMessagesContain(fn, "parameter 'x' of 'd' declared as Long but its default has type String"),
+    "message"
+  )
+  val method = parseCheck("package P\nrecord R {\n  n: Int\n  func m(self: in R, x: in Int = \"s\"): Int { x }\n}\n")
+  assertEqualInt(countDiagCode(method, "T0060"), 1, "record method parameter")
+  val iface = parseCheck("package P\ninterface I {\n  func m(x: in Long = \"s\"): Unit\n}\n")
+  assertEqualInt(countDiagCode(iface, "T0060"), 1, "interface member parameter")
+  val implM = parseCheck(
+    "package P\ninterface I {\n  func m(x: in Long): Long\n}\nrecord R {\n  n: Int\n}\nimpl I for R {\n  func m(self: in R, x: in Long = false): Long { x }\n}\n"
+  )
+  assertEqualInt(countDiagCode(implM, "T0060"), 1, "impl method parameter")
+}
+
+test "a declared initialiser that widens records its conversion (#7811)" {
+  val ok = parseCheck(
+    "package P\nval u: UInt = 4000000000u32\nval g: ULong = u\nval i: Int = 1\nval l: Long = i\nrecord R {\n  v: ULong = u\n}\nfunc d(x: in ULong = u): ULong { x }\n"
+  )
+  assertEqualInt(diagCount(ok), 0, "lossless widenings are accepted")
+  assertEqualInt(ok.symbols.argConversionSites.count, 3, "each UInt to ULong widening is a conversion site")
+}
+
+// #7777: a module value's initialiser is checked once, at its declaration,
+// whether the value is used or not; a read never re-reports its errors.
+test "a module val initialiser's errors are reported once, at the declaration (#7777)" {
+  val unused = parseCheck("package P\nval x: Int = \"s\"\n")
+  assertEqualInt(countDiagCode(unused, "T0060"), 1, "unused annotated val")
+  val used = parseCheck("package P\nval x: Int = \"s\"\nfunc f(): Int { x }\nfunc g(): Int { x + x }\n")
+  assertEqualInt(countDiagCode(used, "T0060"), 1, "used annotated val, still once")
+  val unusedBare = parseCheck("package P\nval y = nope\n")
+  assertEqualInt(countDiagCode(unusedBare, "T0020"), 1, "unused unannotated val")
+  val usedBare = parseCheck("package P\nval y = nope\nfunc f(): Unit {\n  val a = y\n  val b = y\n}\n")
+  assertEqualInt(countDiagCode(usedBare, "T0020"), 1, "used unannotated val, still once")
+  val destructured = parseCheck("package P\nfunc pair(): (Int, String) { (1, \"x\") }\nval (n, s) = pair()\n")
+  assertEqualInt(diagCount(destructured), 0, "a destructuring val checks its initialiser once, cleanly")
+}

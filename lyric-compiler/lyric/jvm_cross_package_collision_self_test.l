@@ -675,3 +675,31 @@ test "qualified call to another package's function is not hijacked by the caller
     "qualified_call_not_hijacked: resolves the qualified XScoped.Other.helper, not the caller's own local -999"
   )
 }
+
+// #7811: a default declared in one package and used by a call or
+// construction in another widens like the declaring package's own uses.  The
+// entry package's code is generated before the declaring package's middle
+// end runs, so its registered defaults must already carry the conversion.
+test "another package's parameter and field defaults zero-extend a UInt (JVM, #7811)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(
+    "package XDefault.Lib\n" + "\n" + "pub val gu: UInt = 4000000000u32\n" + "\n" + "pub record Cfg {\n" + "  n: Int\n" +
+      "  u: ULong = gu\n" +
+      "}\n" +
+      "\n" +
+      "pub func widened(x: in ULong = gu): ULong {\n" +
+      "  x\n" +
+      "}\n"
+  )
+  pkgSrcs.add(
+    "package XDefault.App\n" + "\n" + "import XDefault.Lib\n" + "\n" + "func main(): Int {\n" +
+      "  println(toString(widened()))\n" +
+      "  val c = Cfg(n = 1)\n" +
+      "  println(toString(c.u))\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("cross-package-default-widening-7811", pkgSrcs, "XDefault.App")
+  assertEqualInt(result.exitCode, 0, "cross_package_default_widening: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "4000000000\n4000000000", "both defaults zero-extend")
+}

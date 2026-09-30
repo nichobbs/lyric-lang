@@ -1312,7 +1312,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0044` | Called value is not a function |
 | `T0050` | Unknown type parameter in where clause |
 | `T0051` | Unknown constraint marker in where clause |
-| `T0060` | `val` binding type annotation does not match initialiser |
+| `T0060` | `val` binding (local or module-level), field default or parameter default does not match its declared type |
 | `T0061` | `var` binding type annotation does not match initialiser |
 | `T0062` | `let` binding type annotation does not match initialiser |
 | `T0063` | Assignment type does not match target type |

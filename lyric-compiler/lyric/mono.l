@@ -4266,12 +4266,123 @@ func desugarCopiesInFunc(state: in MonoState, env: in Map[String, TypeExpr], fn:
     isAsync = fn.isAsync,
     name = fn.name,
     generics = fn.generics,
-    params = fn.params,
+    params = desugarParamDefaults(state, fn.params),
     ret = fn.ret,
     whereClause = fn.whereClause,
     contracts = fn.contracts,
     body = rewriteFuncBodyWithRet(state, env, fn.body, fn.ret),
     span = fn.span
+  )
+}
+
+// A parameter's default and a field's default are checked in the declaring
+// package like an annotated binding's initialiser, so their widenings are
+// conversion sites too (#7811).  A backend splices a default into each call
+// that omits the argument, so converting it here converts every such use.
+// Neither sees locals: they are rewritten against an empty environment.
+func desugarParamDefaults(state: in MonoState, params: in List[Param]): List[Param] {
+  val rewritten: List[Param] = newList()
+  for p in params {
+    match p.dflt {
+      case Some(d) -> {
+        val env: Map[String, TypeExpr] = newMap()
+        rewritten.add(
+          Param(
+            mode = p.mode,
+            modeExplicit = p.modeExplicit,
+            name = p.name,
+            ty = p.ty,
+            dflt = Some(value = rewriteExpr(state, env, d)),
+            annotations = p.annotations,
+            span = p.span
+          )
+        )
+      }
+      case None -> rewritten.add(p)
+    }
+  }
+  rewritten
+}
+
+func desugarOptDefault(state: in MonoState, dflt: in Option[Expr]): Option[Expr] {
+  match dflt {
+    case Some(d) -> {
+      val env: Map[String, TypeExpr] = newMap()
+      Some(value = rewriteExpr(state, env, d))
+    }
+    case None -> None
+  }
+}
+
+func desugarFieldDefault(state: in MonoState, fd: in FieldDecl): FieldDecl {
+  FieldDecl(
+    docComments = fd.docComments,
+    annotations = fd.annotations,
+    visibility = fd.visibility,
+    isMutable = fd.isMutable,
+    name = fd.name,
+    ty = fd.ty,
+    dflt = desugarOptDefault(state, fd.dflt),
+    span = fd.span,
+    trailingAnnotationCount = fd.trailingAnnotationCount
+  )
+}
+
+func desugarFunctionSig(state: in MonoState, sig: in FunctionSig): FunctionSig {
+  FunctionSig(
+    docComments = sig.docComments,
+    isAsync = sig.isAsync,
+    name = sig.name,
+    generics = sig.generics,
+    params = desugarParamDefaults(state, sig.params),
+    ret = sig.ret,
+    whereClause = sig.whereClause,
+    contracts = sig.contracts,
+    span = sig.span
+  )
+}
+
+// The type `self` has in a record's in-body method: the record applied to
+// its own type parameters.
+func recordSelfTEMono(decl: in RecordDecl, sp: in Span): TypeExpr {
+  match decl.generics {
+    case None -> TypeExpr(kind = TRef(path = singleSegPath(decl.name)), span = sp)
+    case Some(gps) -> {
+      val args: List[TypeArg] = newList()
+      for gp in gps.params {
+        match gp {
+          case GPType(nm, _) -> args.add(TAType(ty = TypeExpr(kind = TRef(path = singleSegPath(nm)), span = sp)))
+          case GPValue(nm, _, _) -> args.add(TAValue(expr = singleSegPathExpr(nm, sp)))
+        }
+      }
+      TypeExpr(kind = TGenericApp(head = singleSegPath(decl.name), args = args), span = sp)
+    }
+  }
+}
+
+// A record's field defaults and its in-body methods (parameter defaults and
+// bodies, `self` typed as the record).
+func desugarCopiesInRecord(state: in MonoState, decl: in RecordDecl): RecordDecl {
+  val members: List[RecordMember] = newList()
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> members.add(RMField(field = desugarFieldDefault(state, fd)))
+      case RMFunc(fn) -> {
+        val env = seedEnvFromParams(fn.params)
+        if not env.containsKey("self") {
+          env.add("self", recordSelfTEMono(decl, fn.span))
+        }
+        members.add(RMFunc(fn = desugarCopiesInFunc(state, env, fn)))
+      }
+      case RMInvariant(_) -> members.add(m)
+    }
+  }
+  RecordDecl(
+    name = decl.name,
+    generics = decl.generics,
+    whereClause = decl.whereClause,
+    members = members,
+    span = decl.span
   )
 }
 
@@ -4312,7 +4423,7 @@ func desugarCopiesInItemKind(state: in MonoState, kind: in ItemKind): ItemKind {
       while mi < decl.members.count {
         match decl.members[mi] {
           case IMFunc(fn) -> members.add(IMFunc(fn = desugarCopiesInFunc(state, seedEnvFromParams(fn.params), fn)))
-          case IMSig(sig) -> members.add(IMSig(sig = sig))
+          case IMSig(sig) -> members.add(IMSig(sig = desugarFunctionSig(state, sig)))
           case IMAssoc(a) -> members.add(IMAssoc(assoc = a))
         }
         mi = mi + 1
@@ -4331,6 +4442,103 @@ func desugarCopiesInItemKind(state: in MonoState, kind: in ItemKind): ItemKind {
       val env: Map[String, TypeExpr] = newMap()
       IVal(
         decl = ValDecl(pattern = decl.pattern, ty = decl.ty, init = rewriteExpr(state, env, decl.init), span = decl.span)
+      )
+    }
+    case IRecord(decl) -> IRecord(decl = desugarCopiesInRecord(state, decl))
+    case IExposedRec(decl) -> IExposedRec(decl = desugarCopiesInRecord(state, decl))
+    case IOpaque(decl) -> {
+      val members: List[OpaqueMember] = newList()
+      for m in decl.members {
+        match m {
+          case OMField(fd) -> members.add(OMField(field = desugarFieldDefault(state, fd)))
+          case OMInvariant(_) -> members.add(m)
+        }
+      }
+      IOpaque(
+        decl = OpaqueTypeDecl(
+          name = decl.name,
+          generics = decl.generics,
+          whereClause = decl.whereClause,
+          annotations = decl.annotations,
+          members = members,
+          hasBody = decl.hasBody,
+          span = decl.span
+        )
+      )
+    }
+    case IProtected(decl) -> {
+      val members: List[ProtectedMember] = newList()
+      for m in decl.members {
+        match m {
+          case PMField(pf) -> match pf {
+            case PFVar(nm, ty, init, docs, anns, sp) -> members.add(
+              PMField(
+                field = PFVar(
+                  name = nm,
+                  ty = ty,
+                  init = desugarOptDefault(
+                    state,
+                    init
+                  ),
+                  docComments = docs,
+                  annotations = anns,
+                  span = sp
+                )
+              )
+            )
+            case PFLet(nm, ty, init, docs, anns, sp) -> members.add(
+              PMField(
+                field = PFLet(
+                  name = nm,
+                  ty = ty,
+                  init = desugarOptDefault(
+                    state,
+                    init
+                  ),
+                  docComments = docs,
+                  annotations = anns,
+                  span = sp
+                )
+              )
+            )
+            case PFImmutable(fd) -> members.add(
+              PMField(field = PFImmutable(field = desugarFieldDefault(state, fd)))
+            )
+          }
+          case PMEntry(ed) -> {
+            val env = protectedMemberEnvMono(decl, ed.params)
+            val newBody = match rewriteFuncBodyWithRet(state, env, Some(value = ed.body), ed.ret) {
+              case Some(b) -> b
+              case None -> ed.body
+            }
+            members.add(
+              PMEntry(
+                entryDecl = EntryDecl(
+                  docComments = ed.docComments,
+                  annotations = ed.annotations,
+                  visibility = ed.visibility,
+                  name = ed.name,
+                  params = desugarParamDefaults(state, ed.params),
+                  ret = ed.ret,
+                  contracts = ed.contracts,
+                  body = newBody,
+                  span = ed.span
+                )
+              )
+            )
+          }
+          case PMFunc(fn) -> members.add(PMFunc(fn = desugarCopiesInFunc(state, protectedMemberEnvMono(decl, fn.params), fn)))
+          case PMInvariant(_) -> members.add(m)
+        }
+      }
+      IProtected(
+        decl = ProtectedTypeDecl(
+          name = decl.name,
+          generics = decl.generics,
+          whereClause = decl.whereClause,
+          members = members,
+          span = decl.span
+        )
       )
     }
     case _ -> kind
