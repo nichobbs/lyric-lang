@@ -857,9 +857,11 @@ a *value* of type `Result[English, String]` is never implicitly a
 must name one of the case's fields, like a record constructor's (**T0101**).
 
 An unannotated local whose initializer is an empty construction that fixes
-no type arguments — `newList()`, `newListWithCapacity(n)`, `newMap()` or
-`None`, bare or qualified — takes them from its uses in the same function
-(#7788):
+no type arguments — the stdlib's `newList()`, `newListWithCapacity(n)`,
+`newMap()` or `Option`'s `None`, bare or qualified — takes them from its uses
+in the same function (#7788). The initializer is recognised by what it
+resolves to, not its spelling: a package's own function named `newList`, or
+its own union's `None` case, is an ordinary initializer (#7801):
 ```
 func decode(): Result[List[Field], String] {
   val fields = newList()          // a List[Field]

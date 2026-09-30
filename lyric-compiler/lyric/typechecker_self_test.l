@@ -8051,3 +8051,60 @@ test "each projected module val is recorded with its checked type (#7763)" {
     case None -> assertTrue(false, "s has no recorded type")
   }
 }
+
+// #7801: an unannotated binding is open (#7788) only when its initializer
+// resolved to one of the stdlib's evidence-free constructors -- a
+// `Std.CollectionsHost` `newList`/`newListWithCapacity`/`newMap`, or the
+// stdlib `Option`'s `None` -- never because the callee or case is spelled
+// that way.
+func openSiteCount(cr: in CheckResult): Int {
+  cr.symbols.openBindingSites.count
+}
+
+func stdCtorPackages(): List[ImportedPackage] {
+  val host = parse(
+    "package Std.CollectionsHost\nextern type List[T] = \"System.Collections.Generic.List`1\"\n" +
+      "extern type Map[K, V] = \"System.Collections.Generic.Dictionary`2\"\n" +
+      "pub func newList[T](): List[T] = ()\npub func newListWithCapacity[T](capacity: in Int): List[T] = ()\n" +
+      "pub func newMap[K, V](): Map[K, V] = ()\n"
+  )
+  val core = parse("package Std.Core\npub union Option[T] {\n  case Some(value: T)\n  case None\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Std.CollectionsHost",
+      items = host.file.items,
+      imports = collectImportNames(host.file.imports),
+      wholeImports = collectWholeImportNames(host.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "Std.Core",
+      items = core.file.items,
+      imports = collectImportNames(core.file.imports),
+      wholeImports = collectWholeImportNames(core.file.imports)
+    )
+  )
+  packages
+}
+
+test "a package's own newList is not an open binding (#7801)" {
+  val src = "package P\nrecord MyBag[T] {\n  items: slice[T]\n}\nfunc newList[T](): MyBag[T] {\n  MyBag(items = [])\n}\n" +
+    "func f(): Unit {\n  val b = newList()\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "the user newList checks cleanly")
+  assertEqualInt(openSiteCount(cr), 0, "a user newList builds no open binding")
+}
+
+test "a local union's None case is not an open binding (#7801)" {
+  val src = "package P\nunion Maybe[T] {\n  case Just(value: T)\n  case None\n}\nfunc f(): Unit {\n  val m = None\n}\n"
+  assertEqualInt(openSiteCount(parseCheck(src)), 0, "a local None builds no open binding")
+}
+
+test "the stdlib newList, newListWithCapacity, newMap and None are open bindings (#7801)" {
+  val src = "package P\nimport Std.CollectionsHost\nimport Std.Core\nfunc f(): Unit {\n  val xs = newList()\n" +
+    "  val ys = newListWithCapacity(4)\n  val m = newMap()\n  val o = None\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCtorPackages())
+  assertEqualInt(openSiteCount(cr), 4, "each stdlib evidence-free initializer is open")
+}

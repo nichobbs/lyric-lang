@@ -2786,6 +2786,34 @@ func recordGeneratorCallSite(tbl: in SymbolTable, span: in Span, isGen: in Bool)
   }
 }
 
+// #7801: note whether the call at `span` binds to one of the stdlib's
+// evidence-free collection constructors (see
+// `SymbolTable.emptyCollectionCtorSites`).  Cleared and set by the `ECall`
+// arm exactly like `recordGeneratorCallSite`, so a re-inference of the same
+// call leaves the last resolution's answer.
+func recordEmptyCollectionCtorSite(tbl: in SymbolTable, span: in Span, isCtor: in Bool): Unit {
+  val key = recordCopySiteKey(span)
+  if isCtor {
+    if not tbl.emptyCollectionCtorSites.containsKey(key) {
+      tbl.emptyCollectionCtorSites.add(key, true)
+    }
+  } else if tbl.emptyCollectionCtorSites.containsKey(key) {
+    tbl.emptyCollectionCtorSites.remove(key)
+  }
+}
+
+// Is `sig`, the signature a call through callee `fn` bound to, one of
+// `Std.CollectionsHost`'s `newList` / `newListWithCapacity` / `newMap`?  The
+// declaring package comes from the resolved signature; the callee's spelling
+// only names which of that package's functions it is.
+func isStdEmptyCollectionCtor(sig: in ResolvedSignature, fn: in Expr): Bool {
+  if sig.originPackage != "Std.CollectionsHost" {
+    return false
+  }
+  val name = lastNameOfPathExpr(fn)
+  name == "newList" or name == "newListWithCapacity" or name == "newMap"
+}
+
 // Method names that resolve on essentially any receiver at codegen time
 // even though no source-level signature exists at type-check time:
 // `toString` is a codegen intrinsic on every receiver, and the rest are
@@ -7097,12 +7125,16 @@ pub func registerOpenBindingSite(tbl: in SymbolTable, init: in Expr, initTy: in 
   if isNoSourceSpan(init.span) or init.span.endPos.offset <= init.span.startPos.offset {
     return ""
   }
-  // Bare or qualified (`Coll.newList()`, `Std.Core.None`): the inferred
-  // type, not the spelling, decides below whether anything is left open.
+  // Bare or qualified (`Coll.newList()`, `Std.Core.None`), recognised by
+  // what the initializer resolved to, never its spelling (#7801): a call the
+  // `ECall` arm bound to a stdlib collection constructor, or a `None` whose
+  // type is the stdlib `Option`.  A package's own `newList` or its own
+  // union's `None` case is an ordinary initializer.  The inferred type then
+  // decides below whether anything is left open.
   val evidenceFree = match init.kind {
-    case ECall(fn, _) -> isEmptyCollectionCtorName(lastNameOfPathExpr(fn))
-    case EPath(_) -> lastNameOfPathExpr(init) == "None"
-    case EMember(_, _) -> lastNameOfPathExpr(init) == "None"
+    case ECall(_, _) -> tbl.emptyCollectionCtorSites.containsKey(recordCopySiteKey(init.span))
+    case EPath(_) -> isStdOptionNone(tbl, init, initTy)
+    case EMember(_, _) -> isStdOptionNone(tbl, init, initTy)
     case _ -> false
   }
   if not evidenceFree {
@@ -7134,8 +7166,16 @@ pub func registerOpenBindingSite(tbl: in SymbolTable, init: in Expr, initTy: in 
   key
 }
 
-func isEmptyCollectionCtorName(name: in String): Bool {
-  name == "newList" or name == "newListWithCapacity" or name == "newMap"
+// Is `e`, of type `t`, the stdlib `Option`'s `None` case?  The name says
+// which case; the type's identity says whose.
+func isStdOptionNone(tbl: in SymbolTable, e: in Expr, t: in Type): Bool {
+  if lastNameOfPathExpr(e) != "None" {
+    return false
+  }
+  match unrefine(t) {
+    case TyUser(tid, _, _) -> isStdCoreMonadType(tbl, tid, "Option")
+    case _ -> false
+  }
 }
 
 // The last name of a (possibly qualified) name expression: `f` for `f`,
@@ -8223,9 +8263,11 @@ func inferExprCore(
         }
       }
       recordGeneratorCallSite(tbl, e.span, false)
+      recordEmptyCollectionCtorSite(tbl, e.span, false)
       match directSig {
         case Some(sig) -> {
           recordGeneratorCallSite(tbl, e.span, sig.isGenerator)
+          recordEmptyCollectionCtorSite(tbl, e.span, isStdEmptyCollectionCtor(sig, fn))
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
