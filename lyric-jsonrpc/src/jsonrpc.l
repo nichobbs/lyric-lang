@@ -29,7 +29,7 @@ package JsonRpc
 import Std.Core
 import Std.Collections
 import Std.Time
-import JsonRpc.Json
+import Std.JsonValue
 
 // ── Envelope types ─────────────────────────────────────────────────────────
 @stable(since = "0.1")

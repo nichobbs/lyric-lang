@@ -53,6 +53,9 @@ artifact `Lyric.Ws`): source packages are `JsonRpc`, `JsonRpc.Json`,
 
 ## 2. `JsonRpc.Json` — the value model
 
+_Moved to the stdlib as `Std.JsonValue` (D145, #7832); the section below is
+the original design, which the stdlib module keeps unchanged._
+
 JSON-RPC needs a cross-target JSON tree with both a parser and a
 writer. Neither existing stdlib option fits:
 
@@ -417,6 +420,8 @@ PR-4 (when the MCP surface is real).
 ## 9. Open questions
 
 - Q-RPC-001: migrate `JsonRpc.Json` into a cross-target `Std.Json` v2?
+  _Resolved in D145: it moved into the stdlib as `Std.JsonValue`, beside
+  the unchanged `Std.Json` cursor._
 - Q-RPC-002: migrate `lsp.l` onto `JsonRpc` + `ContentLengthFraming`?
 - Q-MCP-001: sampling/elicitation (server→client requests) — needs
   interleaved dispatch beyond the v1 single-threaded loop. _Superseded

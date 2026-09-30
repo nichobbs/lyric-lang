@@ -875,7 +875,9 @@ was in the JVM backend or the build tooling, and each was fixed there
 - **F-11: `lyric-ws` runs its own listener** and `lyric-web` has no upgrade
   hook (#7831), so the web host serves HTTP on `port` and the session WebSocket on
   `wsPort`. The shell derives the socket URL from the `Host` header.
-- **F-12: the only cross-target JSON value model is `JsonRpc.Json`** (#7832)
+- **F-12: the only cross-target JSON value model is `JsonRpc.Json`** (#7832;
+  resolved in D145: the model moved into the stdlib as `Std.JsonValue`, and
+  `Ui.Protocol` no longer depends on `lyric-jsonrpc`)
   (`Std.Json` is a read-only, .NET-only cursor). `Ui.Protocol` depends on
   `lyric-jsonrpc` for it; a writer-capable `Std.Json` value model belongs in
   the stdlib.

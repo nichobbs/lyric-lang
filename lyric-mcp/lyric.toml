@@ -17,7 +17,7 @@
 #   - Mcp.Stdio  — client-side piped-child-process NDJSON transport
 #                  (Std.Process.PipedProcess wrapped as a JsonRpc.RpcTransport).
 #
-# Built on lyric-jsonrpc (JsonRpc.Json / JsonRpc / JsonRpc.Stdio) — see
+# Built on lyric-jsonrpc (JsonRpc / JsonRpc.Stdio) and Std.JsonValue — see
 # docs/62-jsonrpc-mcp.md §5 for the agreed build spec this library
 # implements, and docs/64-mcp-2026-stateless-migration.md for the
 # 2026-07-28 migration. First consumer: nichobbs/cloud-agents' in-container

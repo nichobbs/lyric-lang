@@ -26,12 +26,12 @@
 //!
 //! Patch operations and wire nodes are documented on `encodePatch` and
 //! `encodeNode`.  JSON is produced and parsed with the cross-target
-//! `JsonRpc.Json` value model, so the protocol is identical on every target.
+//! `Std.JsonValue` value model, so the protocol is identical on every target.
 @runtime_checked
 package Ui.Protocol
 
 import Std.Core
-import JsonRpc.Json.{JsonValue, JsonField, JNull, JBool, JInt, JString, JArray, JObject, parseValue, writeValue, getString, getInt, getArray, asInt, asString, JsonParseError}
+import Std.JsonValue.{JsonValue, JsonField, JNull, JBool, JInt, JString, JArray, JObject, parseValue, writeValue, getString, getInt, getArray, asInt, asString, JsonParseError}
 import Ui.Core.{Prop}
 import Ui.Diff.{WireNode, WElement, WText, WEmpty, Patch, Replace, Insert, Remove, Move, SetProp, RemoveProp, SetText, SetEvents}
 import Std.Collections

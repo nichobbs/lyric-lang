@@ -1,16 +1,17 @@
 # lyric-jsonrpc
 
-JSON-RPC 2.0 peer for Lyric: a strict RFC 8259 JSON value model
-(`JsonRpc.Json`), a transport-agnostic envelope + peer (`JsonRpc`), and
-NDJSON / Content-Length stdio framings (`JsonRpc.Stdio`). Pure Lyric,
-identical on both targets except where noted below.
+JSON-RPC 2.0 peer for Lyric: a transport-agnostic envelope + peer
+(`JsonRpc`) and NDJSON / Content-Length stdio framings (`JsonRpc.Stdio`),
+over the stdlib's strict RFC 8259 JSON value model, `Std.JsonValue` (which
+began in this library as `JsonRpc.Json`; D145). Pure Lyric, identical on
+both targets except where noted below.
 
 First consumer: `nichobbs/cloud-agents`' in-container permission-callback
 MCP server. See `docs/62-jsonrpc-mcp.md` §§1-4 for the agreed build spec
 this library implements; `lyric-mcp` (a follow-on track) builds the Model
 Context Protocol client/server on top of this library.
 
-> **Status**: `@experimental`. All three packages compile and have full
+> **Status**: `@experimental`. Both packages compile and have full
 > test coverage, green on both `.NET` and the JVM (CI runs the suites on
 > both targets).
 
@@ -18,7 +19,6 @@ Context Protocol client/server on top of this library.
 
 | Package | `.NET` | JVM |
 |---|---|---|
-| `JsonRpc.Json` (parser, writer, accessors) | 48/48 tests | 48/48 tests |
 | `JsonRpc` (envelope, `RpcPeer`, call deadlines) | 31/31 tests | 31/31 tests |
 | `JsonRpc.Stdio` (NDJSON, Content-Length, byte-level framing) | 30/30 tests | 30/30 tests |
 
@@ -188,7 +188,6 @@ re-deriving them.
 
 | Package | Purpose |
 |---|---|
-| `JsonRpc.Json` | Strict RFC 8259 JSON value model: `JsonValue` union, `parseValue`/`writeValue`, accessor helpers (`getField`, `asString`, ...) |
 | `JsonRpc` | JSON-RPC 2.0 envelope types, standard error codes, `RpcHandler`/`RpcTransport` interfaces, `RpcPeer` (`runLoop`/`call`/`callWithin`/`notify`) |
 | `JsonRpc.Stdio` | NDJSON and Content-Length stdio framings over stdin/stdout, byte-level, with bounded receives |
 
@@ -205,7 +204,7 @@ re-deriving them.
 
 ```lyric
 import Std.Core
-import JsonRpc.Json
+import Std.JsonValue
 import JsonRpc
 import JsonRpc.Stdio
 
@@ -259,7 +258,7 @@ notify(peer, "notifications/progress", Some(value = progressPayload))
 ### Working with the JSON value model directly
 
 ```lyric
-import JsonRpc.Json
+import Std.JsonValue
 
 match parseValue("{\"name\":\"lyric\",\"tags\":[\"fast\",\"safe\"]}") {
   case Ok(doc) -> {
@@ -274,46 +273,12 @@ val payload = writeValue(JObject(fields = [
 ]))
 ```
 
-## `JsonRpc.Json` — the value model
+## The value model
 
-```lyric
-pub union JsonValue {
-  case JNull
-  case JBool(value: Bool)
-  case JInt(value: Long)      // integral numbers, i64 range
-  case JFloat(value: Double)  // non-integral, out-of-i64-range, or written with an exponent
-  case JString(value: String)
-  case JArray(items: List[JsonValue])
-  case JObject(fields: List[JsonField])  // insertion-ordered; duplicates preserved
-}
-pub record JsonField { name: String, value: JsonValue }
-
-pub func parseValue(src: in String): Result[JsonValue, JsonParseError]
-pub func parseValueWithDepthLimit(src: in String, maxDepth: in Int): Result[JsonValue, JsonParseError]
-pub func writeValue(v: in JsonValue): String   // compact, no trailing newline
-```
-
-Strictness relative to `Std.Yaml.parseJson` (the closest existing
-cross-target parser in this repo, deliberately lenient since YAML 1.2 is a
-JSON superset):
-
-- Only the four RFC 8259 insignificant-whitespace characters are skipped.
-- Numbers follow the RFC 8259 grammar exactly: no leading zeros, a `.`
-  must be followed by a digit, an exponent must be followed by a digit.
-- Strings reject raw (unescaped) control characters and lone UTF-16
-  surrogates in `\uXXXX` escapes (a high surrogate not immediately
-  followed by a matching low surrogate escape, or vice versa).
-- Object keys must be double-quoted strings.
-- Duplicate object keys are preserved on parse (not rejected); `getField`
-  and friends resolve them last-wins, matching `JSON.parse`'s convention.
-- The default recursion depth limit is 128 (`defaultMaxDepth`) nested
-  arrays/objects, configurable via `parseValueWithDepthLimit` to any value
-  in 1..1024. Each container counts once: a document exactly `maxDepth`
-  containers deep parses, one more is `DepthExceeded`.
-
-`i64` integers round-trip exactly; an integer literal beyond `Long` range
-(or written with a fractional part or an exponent) is classified `JFloat`
-instead of silently wrapping.
+Messages are `Std.JsonValue` values (`JsonValue`, `JsonField`,
+`parseValue`, `writeValue`, `getField`, ...). The model, its strictness and
+its depth limit are documented in `lyric-stdlib/std/json_value.l` and the
+book's standard-library chapter.
 
 ## `JsonRpc` — envelope and peer
 
@@ -493,11 +458,9 @@ lyric-jsonrpc/
   lyric.toml                package manifest
   README.md                 this file
   src/
-    json.l                  JsonRpc.Json  (value model, parser, writer)
     jsonrpc.l                JsonRpc       (envelope, RpcPeer)
     stdio.l                  JsonRpc.Stdio (NDJSON + Content-Length framing)
   tests/
-    json_tests.l             JsonRpc.Json.JsonTests
     jsonrpc_tests.l          JsonRpc.JsonRpcTests
     stdio_tests.l            JsonRpc.Stdio.StdioTests
 ```
@@ -507,5 +470,5 @@ lyric-jsonrpc/
 - `docs/62-jsonrpc-mcp.md` — the agreed build spec (§§1-4 cover this
   library; §5 specs the follow-on `lyric-mcp` track)
 - [JSON-RPC 2.0 Specification](https://www.jsonrpc.org/specification) (external reference)
-- [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) — the JSON grammar `JsonRpc.Json` implements strictly
+- [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) — the JSON grammar `Std.JsonValue` implements strictly
 - `lyric-compiler/lyric/lsp.l` — the LSP server this library's Content-Length framing is modeled on, and (per Q-RPC-002) a future migration target

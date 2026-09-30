@@ -12,7 +12,6 @@ output_assembly = "Ui.dll"
 
 [dependencies]
 "Lyric.Forms"   = { workspace = true }
-"Lyric.JsonRpc" = { workspace = true }
 "Lyric.Web"     = { workspace = true }
 "Lyric.Ws"      = { workspace = true }
 

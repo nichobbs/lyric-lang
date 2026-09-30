@@ -17,7 +17,7 @@
 //! peer whenever its own inbound queue was empty, giving `JsonRpc.call()`
 //! a live server to talk to synchronously) and hit a real, reproducible
 //! `.NET` runtime crash: `System.NullReferenceException` deep inside
-//! `JsonRpc.Json.writeValue`'s recursive object writer, isolated (in a
+//! `Std.JsonValue.writeValue`'s recursive object writer, isolated (in a
 //! from-scratch two-file minimal repro outside this library, mirroring
 //! `lyric-jsonrpc/README.md`'s own isolation method) to the *combination*
 //! of a nested nested-JSON-object result value (`McpServer`'s
@@ -77,7 +77,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.Time
-import JsonRpc.Json
+import Std.JsonValue
 import JsonRpc
 import Mcp
 import Mcp.Server

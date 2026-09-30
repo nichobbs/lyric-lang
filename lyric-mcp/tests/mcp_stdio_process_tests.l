@@ -25,7 +25,7 @@ import Std.Collections
 import Std.Testing
 import Std.Process
 import JsonRpc
-import JsonRpc.Json
+import Std.JsonValue
 import Mcp
 import Mcp.Stdio
 import Mcp.Client
