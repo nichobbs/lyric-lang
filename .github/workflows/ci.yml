@@ -1424,6 +1424,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"tuple-none-typearg self-test ran: tuple_none_typearg_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/tuple_none_typearg_self_test.l"
 
+      # Wide local-slot address self-test (#7822, MSIL-only — ldloca.s /
+      # ldarga.s / starg.s were emitted for slots >= 256, wrapping the index
+      # to slot & 0xFF; see wide_local_slot_self_test.l).
+      - name: wide local-slot address self-test (native lyric test, dotnet)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"wide-local-slot self-test ran: wide_local_slot_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/wide_local_slot_self_test.l"
+
       # Multi-impl-block interface self-test (#5133, defensive regression —
       # the suspected "predicted row" MethodDef/FieldDef bookkeeping drift
       # scaling with impl-block count could not be reproduced in this

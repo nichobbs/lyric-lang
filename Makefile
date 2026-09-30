@@ -412,6 +412,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/verifier_records_self_test.l \
 	lyric-compiler/lyric/verifier_self_test.l \
 	lyric-compiler/lyric/weaver_self_test.l \
+	lyric-compiler/lyric/wide_local_slot_self_test.l \
 	lyric-compiler/lyric/wire_di_self_test.l \
 	lyric-compiler/lyric/wire_expand_self_test.l \
 	lyric-compiler/lyric/wire_templates_self_test.l \

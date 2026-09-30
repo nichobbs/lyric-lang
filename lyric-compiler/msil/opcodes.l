@@ -782,6 +782,8 @@ pub func iLdarg(n: in Int): Insn = VarF(op = OP2_LDARG, index = n)
 
 pub func iLdarga(n: in Int): Insn = VarF(op = OP2_LDARGA, index = n)
 
+pub func iStarg(n: in Int): Insn = VarF(op = OP2_STARG, index = n)
+
 pub func iLdloc(n: in Int): Insn = VarF(op = OP2_LDLOC, index = n)
 
 pub func iLdloca(n: in Int): Insn = VarF(op = OP2_LDLOCA, index = n)
@@ -1224,7 +1226,25 @@ pub func emitLdarg(b: in MethodBody, n: in Int): Unit {
   }
 }
 
-pub func emitLdarga(b: in MethodBody, n: in Int): Unit = mbEmit(b, iLdarga(n))
+// Width-aware: the `_S` short form carries a 1-byte slot index, so any slot
+// >= 256 must use the 2-byte-index long form (lyric-lang#7822 — emitting the
+// short form unconditionally wrapped the index to `slot & 0xFF` and silently
+// addressed an unrelated local/argument).
+pub func emitLdarga(b: in MethodBody, n: in Int): Unit {
+  if n < 256 {
+    mbEmit(b, iLdarga_S(n))
+  } else {
+    mbEmit(b, iLdarga(n))
+  }
+}
+
+pub func emitStarg(b: in MethodBody, n: in Int): Unit {
+  if n < 256 {
+    mbEmit(b, iStarg_S(n))
+  } else {
+    mbEmit(b, iStarg(n))
+  }
+}
 
 pub func emitLdloc(b: in MethodBody, n: in Int): Unit {
   if n == 0 {
@@ -1242,7 +1262,14 @@ pub func emitLdloc(b: in MethodBody, n: in Int): Unit {
   }
 }
 
-pub func emitLdloca(b: in MethodBody, n: in Int): Unit = mbEmit(b, iLdloca(n))
+// Width-aware for the same reason as emitLdarga above (lyric-lang#7822).
+pub func emitLdloca(b: in MethodBody, n: in Int): Unit {
+  if n < 256 {
+    mbEmit(b, iLdloca_S(n))
+  } else {
+    mbEmit(b, iLdloca(n))
+  }
+}
 
 pub func emitStloc(b: in MethodBody, n: in Int): Unit {
   if n == 0 {
@@ -1457,6 +1484,12 @@ pub func serializeMethodBody(b: in MethodBody, w: in ByteWriter): Unit {
         pc = pc + 6
       }
       case VarS(op, n) -> {
+        // A short-form index is one byte; anything wider would silently wrap
+        // to `n & 0xFF` and address a different slot (lyric-lang#7822).
+        // Callers must go through the width-aware emitters instead.
+        if n < 0 or n > 255 {
+          panic("Msil.Opcodes: short-form (VarS) opcode " + toString(op) + " given out-of-range slot index " + toString(n) + "; use the width-aware emitter")
+        }
         bufU1(w, op)
         bufU1(w, n)
         pc = pc + 2
