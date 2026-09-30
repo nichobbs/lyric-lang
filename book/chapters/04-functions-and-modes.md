@@ -154,6 +154,35 @@ println("avg: ${toString(s.sum / s.count)}")
 
 The choice between `out` parameters and tuple returns is mostly stylistic. The idiomatic Lyric style is to return tuples for simple multi-value functions and records when the values have distinct names or when the function is `pub`. `out` parameters are appropriate when the function has a primary return value and a secondary output — like a parser that returns a parsed value *and* an updated position.
 
+## Default and named arguments
+
+A parameter can declare a default, and a call may then leave that argument out. Arguments can also be passed by name, in any order:
+
+```lyric
+func connect(host: in String, port: in Int = 5432, retries: in Int = 3): String {
+  host + ":" + toString(port) + " x" + toString(retries)
+}
+
+record Pool {
+  size: Int
+
+  func grow(self: in Pool, step: in Int = 1): Pool {
+    Pool(size = self.size + step)
+  }
+}
+
+func demo(): Unit {
+  println(connect("db"))                  // db:5432 x3
+  println(connect("db", retries = 5))     // db:5432 x5
+  println(connect(port = 1, host = "db")) // db:1 x3
+  println(toString(Pool(size = 2).grow().size)) // 3
+}
+```
+
+The rule is the same for every kind of call — free functions, record and `impl` methods, interface members, protected-type entries: named arguments go to the parameters they name, positional arguments fill the rest in order, and anything still missing takes its default. Leaving out a parameter that has no default, or naming a parameter that does not exist, is a compile-time error (`T0042`).
+
+A default belongs to the declaration the call resolves through. Calling a method on an interface-typed value uses the interface's defaults; calling it on the concrete type uses the `impl` method's. Declare the same default in both places if the two calls should behave alike.
+
 ## Closures and lambdas
 
 Closures are written with `{ params -> body }`:

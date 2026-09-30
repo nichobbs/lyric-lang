@@ -1126,6 +1126,29 @@ declared locally or imported from another package (a restored package's
 contract carries its records' body methods and its `impl` blocks, so the
 member surface is known either way). Unions stay lenient.
 
+**Default arguments.** A parameter declared with a default (`x: in Int = 5`)
+may be left out of a call. Arguments pair with parameters the same way for
+every callee — a free function, a record, exposed-record or protected-type
+member, an `impl` method, an interface member (abstract or default), or a
+D037 dot-named function, whether called as `x.m(args)`, `T.m(x, args)` or as a
+bare call to a sibling method inside a method body: each named argument goes
+to the parameter it names, then the positional arguments fill the remaining
+parameters left to right, and every parameter still without an argument
+takes its declared default, evaluated at the call. A named argument that
+names no parameter, or a parameter with no default left without an argument
+(`f(b = 1)` for `f(a: Int, b: Int = 0)`), is **T0042**. A default is the
+converted value §4.1 describes (a `UInt` default for a `ULong` parameter
+zero-extends), whichever package makes the call (#7811, #7820).
+
+The default comes from the declaration the call **statically** resolves
+through. A call on an interface-typed value (`sh.area()` where `sh: Shape`)
+takes the interface member's defaults and dispatches to the implementation
+with them; a call on the concrete type (`sq.area()` where `sq: Square`)
+takes the `impl` method's own defaults. The two may differ, and neither is
+inherited by the other: an `impl` method that omits a default the interface
+member declares requires the argument on a concrete-typed call. Declaring
+the same default in both places keeps the two call forms equivalent.
+
 Field-style access `x.name` (no call parens) to a name that exists **only**
 as a D037 dot-named (UFCS) function — never as a real record/union field — is
 a compile error (**T0116**), naming the receiver type and the call-syntax

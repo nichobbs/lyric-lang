@@ -1264,3 +1264,101 @@ pub record ListLiteralTypeSite {
 pub func recordCopySiteKey(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
 }
+
+/// A call's arguments in the callee's parameter order with every omitted
+/// defaulted parameter filled from its declared default: the argument list
+/// every backend lowers, whatever the callee is (a free function, a record,
+/// `impl` or interface method, a dot-named or protected-type member, #1503,
+/// #7820).  `paramNames` and `defaults` describe the callee's parameters
+/// after the first `skip` (a method's receiver, when the parameter lists
+/// include it; the receiver itself is never among `args`).  Arguments pair
+/// with parameters as the type checker pairs them: each named argument goes
+/// to its parameter, then the positional ones fill the free parameters left
+/// to right.  None when the arguments cannot be paired (a repeated or
+/// unknown name, too many arguments) or a parameter with no default is
+/// left unsupplied; the type checker has reported that call already.
+pub func argsWithDefaults(
+  paramNames: in List[String],
+  defaults: in List[Option[Expr]],
+  skip: in Int,
+  args: in List[CallArg],
+): Option[List[CallArg]] {
+  val total = paramNames.count - skip
+  if total < 0 or defaults.count != paramNames.count or args.count > total {
+    return None
+  }
+  val slots: List[Int] = newList()
+  var s = 0
+  while s < total {
+    slots.add(-1)
+    s = s + 1
+  }
+  var ai = 0
+  while ai < args.count {
+    match args[ai] {
+      case CANamed(nm, _, _) -> {
+        var found = -1
+        var pi = 0
+        while pi < total and found < 0 {
+          if paramNames[skip + pi] == nm {
+            found = pi
+          }
+          pi = pi + 1
+        }
+        if found < 0 or slots[found] >= 0 {
+          return None
+        }
+        slots[found] = ai
+      }
+      case CAPositional(_) -> ()
+    }
+    ai = ai + 1
+  }
+  var next = 0
+  ai = 0
+  while ai < args.count {
+    match args[ai] {
+      case CAPositional(_) -> {
+        while next < total and slots[next] >= 0 {
+          next = next + 1
+        }
+        if next >= total {
+          return None
+        }
+        slots[next] = ai
+        next = next + 1
+      }
+      case CANamed(_, _, _) -> ()
+    }
+    ai = ai + 1
+  }
+  val filled: List[CallArg] = newList()
+  var k = 0
+  while k < total {
+    if slots[k] >= 0 {
+      filled.add(args[slots[k]])
+    } else {
+      match defaults[skip + k] {
+        case Some(d) -> filled.add(CAPositional(expr = d))
+        case None -> return None
+      }
+    }
+    k = k + 1
+  }
+  Some(value = filled)
+}
+
+/// `argsWithDefaults` over declared parameters, or `args` unchanged when
+/// they cannot be paired.
+pub func argsWithParamDefaults(params: in List[Param], skip: in Int, args: in List[CallArg]): List[CallArg] {
+  val names: List[String] = newList()
+  val defaults: List[Option[Expr]] = newList()
+  for p in params {
+    names.add(p.name)
+    defaults.add(p.dflt)
+  }
+  match argsWithDefaults(names, defaults, skip, args) {
+    case Some(filled) -> filled
+    case None -> args
+  }
+}

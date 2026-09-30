@@ -2881,10 +2881,25 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
   )
 }
 
+// True when one of a type's own methods `own` implements the interface
+// member `member`: same name (the caller's lookup key) and parameter count.
+func methodImplementedBy(own: in List[MethodEntry], member: in MethodEntry): Bool {
+  for e in own {
+    if e.sig.params.count == member.sig.params.count {
+      return true
+    }
+  }
+  false
+}
+
 // Every method signature reachable on a value of type `recv` (an unrefined
 // `TyUser`) under `name`: the type's own record-body/impl methods, plus the
-// members of every interface it implements (covers interface default methods
-// on a concrete receiver).  Receiver-substituted and call-facing.
+// members of every interface it implements that the type does not implement
+// itself (covers an interface default method a cross-package `impl`
+// inherits).  An interface member the type implements is not a candidate: a
+// call on the concrete type resolves through the implementing method, whose
+// parameters (and defaults) are the ones the call gets (#7820).
+// Receiver-substituted and call-facing.
 func methodCandidatesFor(tbl: in SymbolTable, recv: in Type, name: in String): List[ResolvedSignature] {
   val acc: List[ResolvedSignature] = newList()
   match recv {
@@ -2902,7 +2917,9 @@ func methodCandidatesFor(tbl: in SymbolTable, recv: in Type, name: in String): L
           val ientries = symTableMethodSigs(tbl, tbl.impls[pi].iface, name)
           var q = 0
           while q < ientries.count {
-            acc.add(substituteMethodSig(ientries[q], recv, noTargs))
+            if not methodImplementedBy(entries, ientries[q]) {
+              acc.add(substituteMethodSig(ientries[q], recv, noTargs))
+            }
             q = q + 1
           }
         }
@@ -9611,6 +9628,39 @@ func checkContractCallPure(
   )
 }
 
+// A call's arguments pair with its parameters by name, then positionally
+// (`argIndicesInParamOrder`); the count check alone cannot see a named
+// argument naming no parameter (it would be dropped) or a parameter with no
+// default left without an argument by a named or mixed call (`f(b = 1)` for
+// `f(a: Int, b: Int = 0)`).  Both are T0042: no backend can fill a
+// parameter that has no default (#7820).
+func reportUnpairedCallArgs(
+  diag: in List[Diagnostic],
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  paramNames: in List[String],
+  srcIdx: in List[Int],
+  span: in Span,
+): Unit {
+  for a in args {
+    match a {
+      case CANamed(nm, _, asp) -> if not paramNames.contains(nm) {
+        diag.add(errorDiagnostic("T0042", "no parameter named '" + nm + "'", asp))
+      }
+      case CAPositional(_) -> ()
+    }
+  }
+  var k = 0
+  while k < sig.params.count {
+    if srcIdx[k] < 0 and not sig.params[k].hasDefault {
+      diag.add(
+        errorDiagnostic("T0042", "missing argument for parameter '" + sig.params[k].name + "', which has no default", span)
+      )
+    }
+    k = k + 1
+  }
+}
+
 func checkCallArgsAgainstSig(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -9650,6 +9700,7 @@ func checkCallArgsAgainstSig(
       pni = pni + 1
     }
     val srcIdx = argIndicesInParamOrder(args, paramNames)
+    reportUnpairedCallArgs(diag, sig, args, paramNames, srcIdx, span)
     var k = 0
     while k < sig.params.count {
       val p = sig.params[k]

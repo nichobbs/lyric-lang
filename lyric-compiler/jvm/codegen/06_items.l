@@ -4884,6 +4884,94 @@ func fieldElemRecordClass(
   }
 }
 
+/// Point the `<class>#<method>` signatures `file`'s own record, exposed
+/// record, protected type, `impl` and interface methods registered (from the
+/// raw parsed file, `collectFileSigsSeeded`) at `file`'s parameter defaults:
+/// the middle end rewrites a default that widens into an explicit conversion
+/// (#7811), and a call omitting the argument lowers the registered default
+/// (#7820).  A signature is refreshed only when it is the one registered for
+/// this declaration (same owner and parameter names).
+pub func refreshMethodDefaultsJvm(file: in SourceFile, registry: in Map[String, JvmFuncSig]): Unit {
+  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  for it in file.items {
+    match it.kind {
+      case IRecord(decl) -> {
+        for m in decl.members {
+          match m {
+            case RMFunc(fn) -> refreshOneMethodDefaultsJvm(registry, owner + "/" + decl.name, fn.name, fn.params)
+            case _ -> ()
+          }
+        }
+      }
+      case IExposedRec(decl) -> {
+        for m in decl.members {
+          match m {
+            case RMFunc(fn) -> refreshOneMethodDefaultsJvm(registry, owner + "/" + decl.name, fn.name, fn.params)
+            case _ -> ()
+          }
+        }
+      }
+      case IProtected(decl) -> {
+        for m in decl.members {
+          match m {
+            case PMEntry(ed) -> refreshOneMethodDefaultsJvm(registry, owner + "/" + decl.name, ed.name, ed.params)
+            case PMFunc(fn) -> refreshOneMethodDefaultsJvm(registry, owner + "/" + decl.name, fn.name, fn.params)
+            case _ -> ()
+          }
+        }
+      }
+      case IImpl(decl) -> {
+        val tgtClass = typeExprToJvmClass(decl.target, owner)
+        for m in decl.members {
+          match m {
+            case IMplFunc(fn) -> refreshOneMethodDefaultsJvm(registry, tgtClass, fn.name, fn.params)
+            case IMplAssoc(_) -> ()
+          }
+        }
+      }
+      case IInterface(decl) -> {
+        for m in decl.members {
+          match m {
+            case IMSig(sig) -> refreshOneMethodDefaultsJvm(registry, owner + "/" + decl.name, sig.name, sig.params)
+            case IMFunc(fn) -> refreshOneMethodDefaultsJvm(registry, owner + "/" + decl.name, fn.name, fn.params)
+            case IMAssoc(_) -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func refreshOneMethodDefaultsJvm(
+  registry: in Map[String, JvmFuncSig],
+  cls: in String,
+  methodName: in String,
+  params: in List[Param],
+): Unit {
+  val real = stripLeadingSelfParam(params)
+  match mapGet(registry, cls + "#" + methodName) {
+    case Some(sig) -> {
+      if sig.owner != cls or sig.paramNames.count != real.count or sig.paramDefaults.count != real.count {
+        return
+      }
+      var i = 0
+      while i < real.count {
+        if sig.paramNames[i] != real[i].name {
+          return
+        }
+        i = i + 1
+      }
+      var k = 0
+      while k < real.count {
+        sig.paramDefaults[k] = real[k].dflt
+        k = k + 1
+      }
+    }
+    case None -> ()
+  }
+}
+
 // Register one interface member under `<ifaceClass>#<method>` with
 // `isIface = true` (#3687).  Params and return mirror the abstract-method
 // emission in the `IInterface` arm of `codegenPackageWithSigs` exactly —

@@ -8376,3 +8376,32 @@ test "a module val initialiser's errors are reported once, at the declaration (#
   val destructured = parseCheck("package P\nfunc pair(): (Int, String) { (1, \"x\") }\nval (n, s) = pair()\n")
   assertEqualInt(diagCount(destructured), 0, "a destructuring val checks its initialiser once, cleanly")
 }
+
+// #7820: arguments pair with parameters by name, then in order; a named
+// argument naming no parameter, or a parameter with no default left without
+// an argument, is T0042 for a function and a method alike.
+test "an unpaired call argument or unsupplied required parameter is T0042 (#7820)" {
+  val fnSrc = "package P\nfunc f(a: in Int, b: in Int = 0): Int { a + b }\n"
+  val missing = parseCheck(fnSrc + "func g(): Int { f(b = 2) }\n")
+  assertEqualInt(countDiagCode(missing, "T0042"), 1, "f(b = 2) leaves `a` without an argument")
+  assertTrue(diagMessagesContain(missing, "missing argument for parameter 'a', which has no default"), "message")
+  val unknown = parseCheck(fnSrc + "func g(): Int { f(1, q = 2) }\n")
+  assertEqualInt(countDiagCode(unknown, "T0042"), 1, "f(1, q = 2) names no parameter")
+  assertTrue(diagMessagesContain(unknown, "no parameter named 'q'"), "message")
+  val fine = parseCheck(fnSrc + "func g(): Int { f(1) + f(b = 2, a = 1) + f(1, b = 2) }\n")
+  assertEqualInt(countDiagCode(fine, "T0042"), 0, "defaulted and named forms are accepted")
+  val recSrc = "package P\nrecord A {\n  n: Int\n  func m(self: in A, a: in Int, b: in Int = 1): Int { a + b }\n}\n"
+  val mMissing = parseCheck(recSrc + "func g(x: in A): Int { x.m(b = 2) }\n")
+  assertEqualInt(countDiagCode(mMissing, "T0042"), 1, "a method call leaving `a` without an argument")
+  val mFine = parseCheck(recSrc + "func g(x: in A): Int { x.m(1) + x.m(b = 2, a = 1) }\n")
+  assertEqualInt(countDiagCode(mFine, "T0042"), 0, "a method's defaulted and named forms are accepted")
+}
+
+test "a concrete-typed call resolves through the impl method's own parameters (#7820)" {
+  val src = "package P\ninterface S {\n  func area(self: in Self, k: in Int = 2): Int\n}\nrecord Q {\n  s: Int\n}\n" +
+    "impl S for Q {\n  func area(self: in Q, k: in Int): Int { self.s * k }\n}\n"
+  val concrete = parseCheck(src + "func g(q: in Q): Int { q.area() }\n")
+  assertEqualInt(countDiagCode(concrete, "T0042"), 1, "the impl method declares no default for `k`")
+  val viaIface = parseCheck(src + "func g(s: in S): Int { s.area() }\n")
+  assertEqualInt(countDiagCode(viaIface, "T0042"), 0, "the interface member's default applies through the interface")
+}

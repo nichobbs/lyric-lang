@@ -703,3 +703,51 @@ test "another package's parameter and field defaults zero-extend a UInt (JVM, #7
   assertEqualInt(result.exitCode, 0, "cross_package_default_widening: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "4000000000\n4000000000", "both defaults zero-extend")
 }
+
+// #7820: a call from another package that omits a method's defaulted
+// argument splices the default the method declares, with its conversion.
+test "another package's method defaults are spliced into a call (JVM, #7820)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(
+    "package XMethodDefault.Lib\n" + "\n" + "pub val gu: UInt = 4000000000u32\n" + "\n" + "pub record Acc {\n" +
+      "  n: Int\n" +
+      "  func add(self: in Acc, x: in Int = 5): Int {\n" +
+      "    self.n + x\n" +
+      "  }\n" +
+      "  func wide(self: in Acc, x: in ULong = gu): ULong {\n" +
+      "    x\n" +
+      "  }\n" +
+      "}\n" +
+      "\n" +
+      "pub interface Shape {\n" +
+      "  func area(self: in Self, scale: in Int = 2): Int\n" +
+      "}\n" +
+      "\n" +
+      "pub record Sq {\n" +
+      "  s: Int\n" +
+      "}\n" +
+      "\n" +
+      "impl Shape for Sq {\n" +
+      "  func area(self: in Sq, scale: in Int = 3): Int {\n" +
+      "    self.s * scale\n" +
+      "  }\n" +
+      "}\n"
+  )
+  pkgSrcs.add(
+    "package XMethodDefault.App\n" + "\n" + "import XMethodDefault.Lib\n" + "\n" + "func areaOf(sh: in Shape): Int {\n" +
+      "  sh.area()\n" +
+      "}\n" +
+      "\n" +
+      "func main(): Int {\n" +
+      "  val a = Acc(n = 1)\n" +
+      "  println(toString(a.add()))\n" +
+      "  println(toString(a.wide()))\n" +
+      "  println(toString(Sq(s = 4).area()))\n" +
+      "  println(toString(areaOf(Sq(s = 4))))\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("cross-package-method-default-7820", pkgSrcs, "XMethodDefault.App")
+  assertEqualInt(result.exitCode, 0, "cross_package_method_default: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "6\n4000000000\n12\n8", "each call takes the default it resolves through")
+}

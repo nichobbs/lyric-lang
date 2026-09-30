@@ -922,85 +922,25 @@ func lowerCallArg(ctx: in FuncCtx, insns: in List[LInsn], arg: in CallArg): JvmT
   }
 }
 
-// Reorder a function call's arguments to parameter-declaration order and fill
-// missing defaulted parameters (#1503).  Uses `sig.paramNames` and
-// `sig.paramDefaults` when present.  Returns `args` unchanged when: any arg
-// is positional but count equals sig.params.count (already in order), no
-// param names are registered, or a required param is missing.
+// A call's arguments in `sig`'s parameter order with its omitted defaulted
+// parameters filled (#1503, #7820): `Lyric.Parser.argsWithDefaults` over the
+// registered parameter names and defaults.  `args` unchanged when `sig`
+// registers no parameter names or the call cannot be paired.
 func reorderAndFillJvmArgs(sig: in JvmFuncSig, args: in List[CallArg]): List[CallArg] {
-  if args.count == 0 and sig.params.count == 0 {
+  jvmArgsWithDefaults(sig, 0, args)
+}
+
+// As `reorderAndFillJvmArgs`, skipping `skip` leading parameters: the
+// receiver of a method-style call to a free function whose first parameter
+// is `self` (`r.m(args)` resolved to `func T.m(self, ...)`).
+func jvmArgsWithDefaults(sig: in JvmFuncSig, skip: in Int, args: in List[CallArg]): List[CallArg] {
+  if sig.paramNames.count == 0 {
     return args
   }
-  if sig.paramNames.count == 0 {
-    return args  // no name info available
+  match argsWithDefaults(sig.paramNames, sig.paramDefaults, skip, args) {
+    case Some(filled) -> filled
+    case None -> args
   }
-  // Check if any arg is named.
-  var anyNamed = false
-  var i = 0
-  while i < args.count {
-    match args[i] {
-      case CANamed(_, _, _) -> {
-        anyNamed = true
-      }
-      case CAPositional(_) -> ()
-    }
-    i = i + 1
-  }
-  if not anyNamed {
-    // Positional call: only append defaults for trailing missing params.
-    if args.count >= sig.paramNames.count {
-      return args
-    }
-    val filled: List[CallArg] = newList()
-    var j = 0
-    while j < args.count {
-      filled.add(args[j])
-      j = j + 1
-    }
-    var k = args.count
-    while k < sig.paramNames.count {
-      match sig.paramDefaults[k] {
-        case Some(dflt) -> filled.add(CAPositional(expr = dflt))
-        case None -> return args  // required param missing — bail
-      }
-      k = k + 1
-    }
-    return filled
-  }
-  // Named call: build name → arg map, then reassemble in declaration order.
-  val byName: Map[String, CallArg] = newMap()
-  var ni = 0
-  while ni < args.count {
-    match args[ni] {
-      case CANamed(nm, _, _) -> {
-        if not byName.containsKey(nm) {
-          byName.add(nm, args[ni])
-        }
-      }
-      case CAPositional(_) -> return args  // mixed call — already in order
-    }
-    ni = ni + 1
-  }
-  val ordered: List[CallArg] = newList()
-  var pi = 0
-  while pi < sig.paramNames.count {
-    val pname = sig.paramNames[pi]
-    match mapGet(byName, pname) {
-      case Some(a) -> ordered.add(a)
-      case None -> {
-        if pi < sig.paramDefaults.count {
-          match sig.paramDefaults[pi] {
-            case Some(dflt) -> ordered.add(CAPositional(expr = dflt))
-            case None -> return args  // required param missing — bail
-          }
-        } else {
-          return args
-        }
-      }
-    }
-    pi = pi + 1
-  }
-  ordered
 }
 
 // The reserved language built-ins (T0140: not redeclarable outside
@@ -4393,9 +4333,10 @@ func lowerDotNamedStaticCall(
   jvmName: in String,
   args: in List[CallArg],
 ): JvmType {
+  val callArgs = reorderAndFillJvmArgs(sig, args)
   var wi = 0
-  while wi < args.count {
-    val aTy = lowerCallArg(ctx, insns, args[wi])
+  while wi < callArgs.count {
+    val aTy = lowerCallArg(ctx, insns, callArgs[wi])
     if wi < sig.params.count {
       coerceArgToCtx(ctx, insns, aTy, sig.params[wi])
     }
@@ -5233,12 +5174,13 @@ func lowerMethodCall(
     case JRef(cls) -> {
       match mapGet(ctx.funcSigs, cls + "#" + memberName) {
         case Some(sig) -> {
+          val margs = reorderAndFillJvmArgs(sig, args)
           if anyHolderMode(sig.paramModes) {
-            return lowerVirtualCallWithHolders(ctx, insns, cls, memberName, sig, args)
+            return lowerVirtualCallWithHolders(ctx, insns, cls, memberName, sig, margs)
           }
           var ai = 0
-          while ai < args.count {
-            val aTy = lowerCallArg(ctx, insns, args[ai])
+          while ai < margs.count {
+            val aTy = lowerCallArg(ctx, insns, margs[ai])
             if ai < sig.params.count {
               coerceArgToCtx(ctx, insns, aTy, sig.params[ai])
             }
@@ -5286,9 +5228,10 @@ func lowerMethodCall(
       // the same package host class) — never recomputed or guessed here.
       match mapGet(ctx.funcSigs, cls + "." + memberName) {
         case Some(sig) -> {
+          val dargs = jvmArgsWithDefaults(sig, 1, args)
           var ai = 0
-          while ai < args.count {
-            val aTy = lowerCallArg(ctx, insns, args[ai])
+          while ai < dargs.count {
+            val aTy = lowerCallArg(ctx, insns, dargs[ai])
             if (ai + 1) < sig.params.count {
               coerceArgToCtx(ctx, insns, aTy, sig.params[ai + 1])
             }
