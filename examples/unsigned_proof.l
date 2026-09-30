@@ -1,0 +1,54 @@
+@proof_required(checked_arithmetic)
+package UnsignedProof
+
+// Demonstrates how the verifier models unsigned integers and the signed
+// minimum literals.  Run with:
+//
+//     lyric prove examples/unsigned_proof.l --verbose
+//
+// `UInt`, `ULong` and `Byte` are bitvectors of their width: a literal next to
+// one becomes a bitvector constant, ordering, division and remainder are
+// unsigned, and `checked_arithmetic` proves that no `+`, `-` or `*` wraps.
+// Every obligation needs an SMT solver (z3 or cvc5).
+// Unsigned ordering: 3000000000 and 2147483648 are above Int's sign bit.
+pub func high(x: UInt): UInt
+  requires: x > 3000000000
+  ensures: result >= 2147483648
+  = x
+
+// A range over the upper half of ULong; its bounds are unsigned.
+pub func upper(x: ULong range 9223372036854775808u64 ..= 18446744073709551615u64): ULong
+  ensures: result > 9223372036854775807u64
+  = x
+
+// Unsigned division and remainder of the largest UInt.
+pub func halfMax(x: UInt): UInt
+  requires: x == 4294967295
+  ensures: result == 2147483647
+  = x / 2
+
+pub func lastDigit(x: UInt): UInt
+  requires: x == 4294967295
+  ensures: result == 5
+  = x % 10
+
+// UInt widens to ULong by zero-extension, so the sum does not wrap.
+pub func widened(a: UInt, b: ULong): ULong
+  requires: a == 4294967295 and b == 1
+  ensures: result == 4294967296
+  = a + b
+
+// Checked arithmetic: the precondition rules out the wrap.
+pub func increment(x: UInt): UInt
+  requires: x < 4294967295
+  ensures: result > x
+  = x + 1
+
+// The signed minimum literals are one negative constant.
+pub func longMin(): Long
+  ensures: result < 0
+  = -9223372036854775808
+
+pub func intMin(): Int
+  ensures: result == 0 - 2147483647 - 1
+  = -2147483648i32

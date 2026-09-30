@@ -243,11 +243,29 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
         )
       )
     }
-    val outcome = discharge(g)
-    results.add(ProofResult(goal = g, outcome = outcome))
-    match outcomeToDiag(g, outcome, allowUnverified) {
-      case Some(d) -> resultDiags.add(d)
-      case None -> {
+    // Bring every integer/bitvector operand to one sort before discharge
+    // (#7848).  A goal that cannot be reconciled means something other than
+    // the source, so it fails closed as V0033 — neither the trivial
+    // discharger nor the solver sees it.
+    match reconcileGoalSorts(g) {
+      case Ok(rg) -> {
+        val outcome = discharge(rg)
+        results.add(ProofResult(goal = rg, outcome = outcome))
+        match outcomeToDiag(rg, outcome, allowUnverified) {
+          case Some(d) -> resultDiags.add(d)
+          case None -> {
+          }
+        }
+      }
+      case Err(reason) -> {
+        results.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason)))
+        resultDiags.add(
+          errorDiagnostic(
+            "V0033",
+            goalKindDisplay(g.kind) + " — cannot translate the obligation into the proof logic faithfully: " + reason,
+            g.origin
+          )
+        )
       }
     }
     i = i + 1
@@ -258,6 +276,33 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
   appendDiags(finalDiags, vcDiags)
   appendDiags(finalDiags, resultDiags)
   ProofSummary(level = level, diagnostics = finalDiags, results = results)
+}
+
+// Reconcile the integer/bitvector sorts of every hypothesis and the
+// conclusion of `g` (`reconcileTermSorts`).
+pub func reconcileGoalSorts(g: in Goal): Result[Goal, String] {
+  val hyps: List[Term] = newList()
+  var i = 0
+  while i < g.hypotheses.count {
+    match reconcileTermSorts(g.hypotheses[i]) {
+      case Ok(h) -> hyps.add(h)
+      case Err(r) -> return Err(error = r)
+    }
+    i = i + 1
+  }
+  match reconcileTermSorts(g.conclusion) {
+    case Ok(c) -> Ok(
+      value = Goal(
+        hypotheses = hyps,
+        conclusion = c,
+        symbols = g.symbols,
+        origin = g.origin,
+        kind = g.kind,
+        label = g.label
+      )
+    )
+    case Err(r) -> Err(error = r)
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -314,7 +359,8 @@ func termHasNonFiniteFloat(t: in Term): Bool {
       }
       termHasNonFiniteFloat(body)
     }
-    case TIte(cond, thenT, elseT) -> termHasNonFiniteFloat(cond) or termHasNonFiniteFloat(thenT) or termHasNonFiniteFloat(elseT)
+    case TIte(cond, thenT, elseT) -> termHasNonFiniteFloat(cond) or termHasNonFiniteFloat(thenT) or
+      termHasNonFiniteFloat(elseT)
     case TForall(_, triggers, body) -> {
       var i = 0
       while i < triggers.count {

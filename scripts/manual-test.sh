@@ -337,6 +337,7 @@ stage_ecosystem_tests() {
 EXAMPLE_VERIFIER_ONLY=(
   examples/prove_demo.l
   examples/token_bucket_proof.l
+  examples/unsigned_proof.l
 )
 
 is_verifier_only() {
@@ -442,6 +443,7 @@ stage_lint() {
 PROVE_TARGETS=(
   examples/prove_demo.l
   examples/token_bucket_proof.l
+  examples/unsigned_proof.l
 )
 
 stage_prove() {

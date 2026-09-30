@@ -99,6 +99,12 @@ pub union Builtin {
   case BOpSliceIndex
   // If-then-else
   case BOpIte
+  // Bitvector widening along the lossless unsigned chain `Byte < UInt <
+  // ULong` (docs/01 §2.3): `((_ zero_extend bits) x)`.
+  case BOpZeroExtend(bits: Int)
+  // The non-negative integer value of a bitvector, `(bv2nat x)`: a `Byte`
+  // operand widened into the signed chain `Byte < Int < Long`.
+  case BOpBvToNat
 }
 
 pub func builtinDisplay(b: in Builtin): String {
@@ -125,6 +131,8 @@ pub func builtinDisplay(b: in Builtin): String {
     case BOpSliceLength -> "slice.length"
     case BOpSliceIndex -> "slice.select"
     case BOpIte -> "ite"
+    case BOpZeroExtend(bits) -> "zero_extend[" + intToString(bits) + "]"
+    case BOpBvToNat -> "bv2nat"
   }
 }
 
@@ -133,7 +141,14 @@ pub func builtinDisplay(b: in Builtin): String {
 // ─────────────────────────────────────────────────────────────────────────────
 pub union Lit {
   case VLBool(b: Bool)
+  // A mathematical integer.  `n` is the value itself, so the full `Long`
+  // range (`Long.MinValue` included) is representable.
   case VLInt(n: Long)
+  // A `(_ BitVec width)` constant.  `bits` holds the value's bit pattern:
+  // the unsigned value itself for `width < 64`, and the two's-complement
+  // pattern for `width == 64` (a `ULong` from 2^63 up is a negative `Long`,
+  // as the lexer carries a wide `u64` literal, #7839).
+  case VLBitVec(bits: Long, width: Int)
   case VLFloat(f: Double)
   case VLString(s: String)
   case VLUnit
@@ -283,6 +298,17 @@ func builtinResultSort(b: in Builtin, args: in List[Term]): Sort {
       }
     }
     case BOpSliceLength -> SInt
+    case BOpZeroExtend(bits) -> {
+      if args.count > 0 {
+        match sortOf(args[0]) {
+          case SBitVec(w) -> SBitVec(width = w + bits)
+          case other -> other
+        }
+      } else {
+        SInt
+      }
+    }
+    case BOpBvToNat -> SInt
     case BOpSliceIndex -> {
       if args.count > 0 {
         match sortOf(args[0]) {
@@ -431,6 +457,12 @@ func litEq(a: in Lit, b: in Lit): Bool {
         case _ -> false
       }
     }
+    case VLBitVec(x, w1) -> {
+      match b {
+        case VLBitVec(y, w2) -> x == y and w1 == w2
+        case _ -> false
+      }
+    }
   }
 }
 
@@ -565,6 +597,18 @@ func builtinEq(a: in Builtin, b: in Builtin): Bool {
     case BOpIte -> {
       match b {
         case BOpIte -> true
+        case _ -> false
+      }
+    }
+    case BOpZeroExtend(x) -> {
+      match b {
+        case BOpZeroExtend(y) -> x == y
+        case _ -> false
+      }
+    }
+    case BOpBvToNat -> {
+      match b {
+        case BOpBvToNat -> true
         case _ -> false
       }
     }
@@ -876,7 +920,11 @@ pub func substTerm(env: in Map[String, Term], envNames: in List[String], t: in T
       }
       TLet(bindings = newBs, body = substTerm(rename, renameNames, body))
     }
-    case TIte(c, a, b) -> TIte(cond = substTerm(env, envNames, c), thenT = substTerm(env, envNames, a), elseT = substTerm(env, envNames, b))
+    case TIte(c, a, b) -> TIte(
+      cond = substTerm(env, envNames, c),
+      thenT = substTerm(env, envNames, a),
+      elseT = substTerm(env, envNames, b)
+    )
     case TForall(binders, triggers, body) -> {
       val envNames2: List[String] = filterNamesByBinders(envNames, binders)
       val env2: Map[String, Term] = copyMap(env, envNames2)
@@ -1035,11 +1083,12 @@ func renderTerm(prec: in Int, t: in Term): String {
     case TLit(VLBool(false), _) -> "false"
     case TLit(VLInt(n), _) -> {
       if n < 0i64 {
-        "(-" + longToString(-n) + ")"
+        "(-" + longMagnitudeToString(n) + ")"
       } else {
         longToString(n)
       }
     }
+    case TLit(VLBitVec(bits, w), _) -> unsignedLongToString(bits) + "u" + intToString(w)
     case TLit(VLFloat(f), _) -> doubleToString(f)
     case TLit(VLString(s), _) -> "\"" + s + "\""
     case TLit(VLUnit, _) -> "()"
@@ -1277,6 +1326,61 @@ pub func intToString(n: in Int): String {
 
 pub func longToString(n: in Long): String {
   n.toString()
+}
+
+// The decimal magnitude of a negative `Long`, `Long.MinValue` included:
+// `-n` would overflow for `Long.MinValue` and leave it negative (#7853).
+pub func longMagnitudeToString(n: in Long): String {
+  if n == -9223372036854775807i64 - 1i64 {
+    "9223372036854775808"
+  } else {
+    longToString(-n)
+  }
+}
+
+// The decimal value of a 64-bit pattern read as unsigned: a negative `Long`
+// is its value plus 2^64.  The pattern is split into two 32-bit limbs so no
+// intermediate result leaves the `Long` range.
+pub func unsignedLongToString(n: in Long): String {
+  if n >= 0i64 {
+    return longToString(n)
+  }
+  val two32: Long = 4294967296i64
+  var q = n / two32
+  var r = n % two32
+  if r < 0i64 {
+    r = r + two32
+    q = q - 1i64
+  }
+  var hi = q + two32
+  var lo = r
+  var digits = ""
+  while hi > 0i64 or lo > 0i64 {
+    val hiRem = hi % 10i64
+    hi = hi / 10i64
+    val cur = hiRem * two32 + lo
+    digits = longToString(cur % 10i64) + digits
+    lo = cur / 10i64
+  }
+  digits
+}
+
+// True when `n`, read as a `width`-bit unsigned value, is representable
+// in `width` bits (every pattern is, at width 64).
+pub func fitsUnsignedWidth(n: in Long, width: in Int): Bool {
+  if width >= 64 {
+    true
+  } else if n < 0i64 {
+    false
+  } else {
+    var max: Long = 1i64
+    var i = 0
+    while i < width {
+      max = max * 2i64
+      i = i + 1
+    }
+    n < max
+  }
 }
 
 pub func doubleToString(f: in Double): String {

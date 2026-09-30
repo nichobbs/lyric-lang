@@ -61,7 +61,22 @@ func resolveDistinct(distincts: in Map[String, TypeExpr], te: in TypeExpr): Type
 // `distincts` map carries the file-level `pub type X = Y` aliases registered
 // in `goalsForFile`.
 pub func sortOfTypeExprE(env: in VEnv, te: in TypeExpr): SortInfo {
-  sortOfTypeExpr(resolveDistinct(env.distincts, te))
+  val resolved = resolveDistinct(env.distincts, te)
+  match resolved.kind {
+    // A range over a distinct alias (`Cents range 0 ..= 100` with `type
+    // Cents = ULong`) takes the alias's underlying sort, so its bounds fold
+    // signed or unsigned as that sort requires (#7848).
+    case TRefined(underlying, range) -> {
+      if underlying.segments.count == 1 and env.distincts.containsKey(underlying.segments[0]) {
+        val baseTe = TypeExpr(kind = TRef(path = underlying), span = resolved.span)
+        val base = sortOfTypeExpr(resolveDistinct(env.distincts, baseTe))
+        refinedSortInfo(base.sort, range)
+      } else {
+        sortOfTypeExpr(resolved)
+      }
+    }
+    case _ -> sortOfTypeExpr(resolved)
+  }
 }
 
 func copyVarMap(m: in Map[String, Term], names: in List[String]): Map[String, Term] {
@@ -263,21 +278,14 @@ func translateLit(lit: in Literal): Term {
   match lit {
     case LBool(v) -> TLit(value = VLBool(b = v), sort = SBool)
     case LInt(v, suffix, _) -> {
-      // A `u64` literal from 2^63 to 2^64-1 is carried as its negative
-      // two's-complement pattern (#7839); its integer value is v + 2^64,
-      // spelled as v + 2^62 * 4 since 2^64 is not a Long.
-      val isU64 = match suffix { case U64 -> true; case _ -> false }
-      if isU64 and v < 0i64 {
-        val twoPow64 = TBuiltin(
-          op = BOpMul,
-          args = termList2(
-            TLit(value = VLInt(n = 4611686018427387904i64), sort = SInt),
-            TLit(value = VLInt(n = 4i64), sort = SInt)
-          )
-        )
-        TBuiltin(op = BOpAdd, args = termList2(TLit(value = VLInt(n = v), sort = SInt), twoPow64))
-      } else {
-        TLit(value = VLInt(n = v), sort = SInt)
+      // An unsigned-suffixed literal is a bitvector constant of its type's
+      // width; a wide `u64` literal (2^63 and up) already holds its
+      // two's-complement pattern (#7839), which is exactly its bitvector
+      // (#7848).  A signed or unsuffixed literal is an integer; one with no
+      // suffix takes an unsigned operand's sort later (`coerceToSort`).
+      match unsignedSuffixWidth(suffix) {
+        case Some(w) -> TLit(value = VLBitVec(bits = v, width = w), sort = SBitVec(width = w))
+        case None -> TLit(value = VLInt(n = v), sort = SInt)
       }
     }
     case LFloat(v, _, _) -> TLit(value = VLFloat(f = v), sort = SFloat64)
@@ -291,6 +299,81 @@ func translateLit(lit: in Literal): Term {
       TLit(value = VLUnit, sort = unitDt)
     }
   }
+}
+
+func unsignedSuffixWidth(suffix: in IntSuffix): Option[Int] {
+  match suffix {
+    case U8 -> Some(value = 8)
+    case U16 -> Some(value = 16)
+    case U32 -> Some(value = 32)
+    case U64 -> Some(value = 64)
+    case _ -> None
+  }
+}
+
+// V0033: a construct the verifier cannot translate faithfully.  The proof
+// fails closed on it rather than reasoning about a term that means
+// something other than the source (#7848).
+func untranslatableDiag(reason: in String, sp: in Span): Diagnostic {
+  errorDiagnostic("V0033", "cannot translate this into the proof logic faithfully: " + reason, sp)
+}
+
+// Convert a translated value to the sort it is bound, passed or returned
+// at (a literal taking an unsigned declared type, a lossless widening).  On
+// failure the term is kept and a V0033 error is recorded.
+func coerceTermAt(t: in Term, target: in Sort, sp: in Span, diagsOut: in List[Diagnostic]): Term {
+  match coerceToSort(t, target) {
+    case Ok(c) -> c
+    case Err(reason) -> {
+      diagsOut.add(untranslatableDiag(reason, sp))
+      t
+    }
+  }
+}
+
+// The sort of the record field a constructor argument initialises: by name
+// for a named argument (selectors are registered as `<Record>__<field>`),
+// by position otherwise.
+func recordArgFieldSort(
+  recName: in String, fields: in List[DatatypeField], argName: in String, pos: in Int
+): Option[Sort] {
+  if argName.length > 0 {
+    val prefixed = recName + "__" + argName
+    var j = 0
+    while j < fields.count {
+      if fields[j].name == prefixed {
+        return Some(value = fields[j].sort)
+      }
+      j = j + 1
+    }
+    None
+  } else if pos < fields.count {
+    Some(value = fields[pos].sort)
+  } else {
+    None
+  }
+}
+
+// @proof_required(checked_arithmetic) on an unsigned `+`, `-` or `*`: the
+// modular bitvector result must equal the mathematical one (#7848).  `x +
+// y` does not wrap iff `x <= x + y`, `x - y` iff `y <= x`, and `x * y` iff
+// `y == 0` or `(x * y) / y == x` — all ordered unsigned.
+func unsignedOverflowSideConds(op: in Builtin, x: in Term, y: in Term, product: in Term, w: in Int): List[Term] {
+  val sc: List[Term] = newList()
+  match op {
+    case BOpAdd -> sc.add(TBuiltin(op = BOpLte, args = termList2(x, product)))
+    case BOpSub -> sc.add(TBuiltin(op = BOpLte, args = termList2(y, x)))
+    case BOpMul -> {
+      val zero = TLit(value = VLBitVec(bits = 0i64, width = w), sort = SBitVec(width = w))
+      val parts: List[Term] = newList()
+      parts.add(TBuiltin(op = BOpEq, args = termList2(y, zero)))
+      parts.add(TBuiltin(op = BOpEq, args = termList2(TBuiltin(op = BOpDiv, args = termList2(product, y)), x)))
+      sc.add(mkOr(parts))
+    }
+    case _ -> {
+    }
+  }
+  sc
 }
 
 func unitTerm(): Term {
@@ -425,7 +508,14 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
         }
       }
 
-      val term = TIte(cond = condR.term, thenT = thenR.term, elseT = elseR.term)
+      val branchDiags: List[Diagnostic] = newList()
+      val term = match unifyOperands(thenR.term, elseR.term) {
+        case Ok(pair) -> TIte(cond = condR.term, thenT = pair.lhs, elseT = pair.rhs)
+        case Err(reason) -> {
+          branchDiags.add(untranslatableDiag(reason, e.span))
+          TIte(cond = condR.term, thenT = thenR.term, elseT = elseR.term)
+        }
+      }
       val sc: List[Term] = newList()
       appendTermList(sc, condR.sideConds)
       appendTermList(sc, thenR.sideConds)
@@ -438,15 +528,40 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       appendTermList2(allDiags, condDiags)
       appendTermList2(allDiags, thenDiags)
       appendTermList2(allDiags, elseDiags)
+      appendTermList2(allDiags, branchDiags)
       val ifTR = TranslateResult(term = term, sideConds = sc, assumed = asList)
       val ifPair: (TranslateResult, List[Diagnostic]) = (ifTR, allDiags)
       ifPair
     }
 
     case EPrefix(op, operand) -> {
+      // A minus applied directly to a signed or unsuffixed literal is one
+      // signed constant (#7853), so `-9223372036854775808` is Long.MinValue
+      // rather than the negation of its magnitude's pattern.
+      match op {
+        case PreNeg -> match foldIntLiteral(e) {
+          case Some(folded) -> {
+            val negDiags: List[Diagnostic] = newList()
+            val negPair: (TranslateResult, List[Diagnostic]) = (
+              singleTR(TLit(value = VLInt(n = folded.value), sort = SInt)),
+              negDiags
+            )
+            return negPair
+          }
+          case None -> ()
+        }
+        case _ -> ()
+      }
       val (xR, xDiags) = translateExpr(env, operand)
       match builtinOfPrefix(op) {
         case Some(b) -> {
+          match b {
+            case BOpNeg -> match sortOf(xR.term) {
+              case SBitVec(_) -> xDiags.add(untranslatableDiag("an unsigned value is negated", e.span))
+              case _ -> ()
+            }
+            case _ -> ()
+          }
           val sc: List[Term] = newList()
           appendTermList(sc, xR.sideConds)
           val asList: List[Term] = newList()
@@ -483,14 +598,25 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
             }
             case _ -> rawB
           }
-          val args = termList2(lR.term, rR.term)
+          val sortDiags: List[Diagnostic] = newList()
+          val args = if isSortUnifyingBuiltin(b) {
+            match unifyOperands(lR.term, rR.term) {
+              case Ok(pair) -> termList2(pair.lhs, pair.rhs)
+              case Err(reason) -> {
+                sortDiags.add(untranslatableDiag(reason, e.span))
+                termList2(lR.term, rR.term)
+              }
+            }
+          } else {
+            termList2(lR.term, rR.term)
+          }
           val term = TBuiltin(op = b, args = args)
           val sc: List[Term] = newList()
           appendTermList(sc, lR.sideConds)
           appendTermList(sc, rR.sideConds)
           // @proof_required(checked_arithmetic): overflow side conditions.
           if env.checkedArithmetic {
-            match sortOf(lR.term) {
+            match sortOf(args[0]) {
               case SInt -> {
                 match b {
                   case BOpAdd | BOpSub | BOpMul -> {
@@ -503,6 +629,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                   }
                 }
               }
+              case SBitVec(w) -> appendTermList(sc, unsignedOverflowSideConds(b, args[0], args[1], term, w))
               case _ -> {
               }
             }
@@ -513,6 +640,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           val allDiags: List[Diagnostic] = newList()
           appendTermList2(allDiags, lDiags)
           appendTermList2(allDiags, rDiags)
+          appendTermList2(allDiags, sortDiags)
           val binopTR = TranslateResult(term = term, sideConds = sc, assumed = asList)
           val binopPairResult: (TranslateResult, List[Diagnostic]) = (binopTR, allDiags)
           binopPairResult
@@ -532,7 +660,9 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
 
     case ECall(fn, args) -> {
       // Translate all arguments first.
-      val argTerms: List[Term] = newList()
+      val rawArgTerms: List[Term] = newList()
+      val argSpans: List[Span] = newList()
+      val argNames: List[String] = newList()
       val argSides: List[Term] = newList()
       val argAssumed: List[Term] = newList()
       val allArgDiags: List[Diagnostic] = newList()
@@ -540,7 +670,9 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       while i < args.count {
         val argExpr = match args[i] { case CANamed(_, v, _) -> v; case CAPositional(v) -> v }
         val (ar, ad) = translateExpr(env, argExpr)
-        argTerms.add(ar.term)
+        rawArgTerms.add(ar.term)
+        argSpans.add(argExpr.span)
+        argNames.add(match args[i] { case CANamed(n, _, _) -> n; case CAPositional(_) -> "" })
         appendTermList(argSides, ar.sideConds)
         appendTermList(argAssumed, ar.assumed)
         appendTermList2(allArgDiags, ad)
@@ -569,7 +701,16 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           // SDatatype — the SMT renderer recognises the symbol as the
           // declared datatype's constructor and z3 typechecks the call.
           match findRecordFields(env, name) {
-            case Some(_) -> {
+            case Some(recFields) -> {
+              val argTerms: List[Term] = newList()
+              var ai = 0
+              while ai < rawArgTerms.count {
+                match recordArgFieldSort(name, recFields, argNames[ai], ai) {
+                  case Some(fs) -> argTerms.add(coerceTermAt(rawArgTerms[ai], fs, argSpans[ai], allArgDiags))
+                  case None -> argTerms.add(rawArgTerms[ai])
+                }
+                ai = ai + 1
+              }
               val emptyArgs: List[Sort] = newList()
               val recRetSort: Sort = SDatatype(name = name, args = emptyArgs)
               val recCallTerm = TApp(name = name, args = argTerms, retSort = recRetSort)
@@ -599,6 +740,19 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 pi = pi + 1
               }
               env.symbols.add(DeclUserFun(name = name, paramSorts = paramSorts, resultSort = resultSort))
+              // Each argument takes its parameter's sort (#7848), so a literal
+              // passed to a `UInt` parameter is a bitvector in the call and in
+              // the callee contract it is substituted into.
+              val argTerms: List[Term] = newList()
+              var ai = 0
+              while ai < rawArgTerms.count {
+                if ai < paramSorts.count {
+                  argTerms.add(coerceTermAt(rawArgTerms[ai], paramSorts[ai], argSpans[ai], allArgDiags))
+                } else {
+                  argTerms.add(rawArgTerms[ai])
+                }
+                ai = ai + 1
+              }
               val callTerm = TApp(name = name, args = argTerms, retSort = resultSort)
 
               // Build param substitution map: param[i].name → argTerms[i].
@@ -735,14 +889,14 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               // the unknown-callee branch below emits a TApp with sort
               // SUninterp("call.UserId") which z3 then refuses to use in
               // arithmetic (#3853).
-              if env.distincts.containsKey(name) and argTerms.count == 1 {
-                val distinctTR = TranslateResult(term = argTerms[0], sideConds = argSides, assumed = argAssumed)
+              if env.distincts.containsKey(name) and rawArgTerms.count == 1 {
+                val distinctTR = TranslateResult(term = rawArgTerms[0], sideConds = argSides, assumed = argAssumed)
                 val distinctPair: (TranslateResult, List[Diagnostic]) = (distinctTR, allArgDiags)
                 return distinctPair
               }
               // Unknown callee — emit TApp with uninterpreted sort.
               val callNameSort = SUninterp(name = "call." + name)
-              val t = TApp(name = name, args = argTerms, retSort = callNameSort)
+              val t = TApp(name = name, args = rawArgTerms, retSort = callNameSort)
               val sc: List[Term] = newList()
               appendTermList(sc, argSides)
               val asList: List[Term] = newList()
@@ -1182,9 +1336,9 @@ func mergeWpResults(a: in WpResult, b: in WpResult, wp: in Term): WpResult {
 // WP over a single expression (for FBExpr).
 func wpExpr(env: in VEnv, resultSort: in SortInfo, postcond: in Term, e: in Expr): WpResult {
   val (r, diags) = translateExpr(env, e)
-  // Substitute result into postcond.
+  // Substitute result into postcond, at the declared result sort (#7848).
   val substMap: Map[String, Term] = newMap()
-  substMap.add("result", r.term)
+  substMap.add("result", coerceTermAt(r.term, resultSort.sort, e.span, diags))
   val substMapNames: List[String] = newList()
   substMapNames.add("result")
   val wp = substTerm(substMap, substMapNames, postcond)
@@ -1497,7 +1651,11 @@ func wpLocal(
         case Some(t) -> sortOfTypeExprE(env, t)
         case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone)
       }
-      val env2 = envBindTerm(name, initR.term, info, env)
+      val boundTerm = match ty {
+        case Some(_) -> coerceTermAt(initR.term, info.sort, init.span, initDiags)
+        case None -> initR.term
+      }
+      val env2 = envBindTerm(name, boundTerm, info, env)
       val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
       val asList: List[Term] = newList()
       appendTermList(asList, initR.assumed)
@@ -1516,7 +1674,11 @@ func wpLocal(
         case Some(t) -> sortOfTypeExprE(env, t)
         case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone)
       }
-      val env2 = envBindTerm(name, initR.term, info, env)
+      val boundTerm = match ty {
+        case Some(_) -> coerceTermAt(initR.term, info.sort, init.span, initDiags)
+        case None -> initR.term
+      }
+      val env2 = envBindTerm(name, boundTerm, info, env)
       val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
       val asList: List[Term] = newList()
       appendTermList(asList, initR.assumed)
@@ -1535,7 +1697,11 @@ func wpLocal(
         case Some(t) -> sortOfTypeExprE(env, t)
         case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone)
       }
-      val env2 = envBindTerm(name, initR.term, info, env)
+      val boundTerm = match ty {
+        case Some(_) -> coerceTermAt(initR.term, info.sort, init.span, initDiags)
+        case None -> initR.term
+      }
+      val env2 = envBindTerm(name, boundTerm, info, env)
       val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
       val asList: List[Term] = newList()
       appendTermList(asList, initR.assumed)
@@ -1546,9 +1712,13 @@ func wpLocal(
       appendTermList2(di, inner.diags)
       WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = di)
     }
-    case LBVar(name, _, None) -> {
-      // Uninitialized var — bind to fresh symbolic value.
-      val info = SortInfo(sort = SInt, range = RBKNone)
+    case LBVar(name, ty, None) -> {
+      // Uninitialized var — bind to a fresh symbolic value of its declared
+      // sort (an unannotated one is an integer, as before).
+      val info = match ty {
+        case Some(t) -> SortInfo(sort = sortOfTypeExprE(env, t).sort, range = RBKNone)
+        case None -> SortInfo(sort = SInt, range = RBKNone)
+      }
       val env2 = envBind(name, info, env)
       wpWalk(env2, resultSort, postcond, stmts, idx + 1)
     }
@@ -1571,7 +1741,7 @@ func wpAssign(
       if path.segments.count == 1 {
         val name = path.segments[0]
         val (rhsR, rhsDiags) = translateExpr(env, value)
-        val combined = match op {
+        val rawCombined = match op {
           case AssEq -> rhsR.term
           case _ -> {
             val existing = match envLookup(name, env) { case Some(t) -> t; case None -> TVar(name = name, sort = SInt) }
@@ -1583,8 +1753,19 @@ func wpAssign(
               case AssPercent -> BOpMod
               case _ -> BOpAdd
             }
-            TBuiltin(op = bin, args = termList2(existing, rhsR.term))
+            match unifyOperands(existing, rhsR.term) {
+              case Ok(pair) -> TBuiltin(op = bin, args = termList2(pair.lhs, pair.rhs))
+              case Err(reason) -> {
+                rhsDiags.add(untranslatableDiag(reason, sp))
+                TBuiltin(op = bin, args = termList2(existing, rhsR.term))
+              }
+            }
           }
+        }
+        // The assigned value takes the variable's sort (#7848).
+        val combined = match envLookupSort(name, env) {
+          case Some(si) -> coerceTermAt(rawCombined, si.sort, value.span, rhsDiags)
+          case None -> rawCombined
         }
         val info = match envLookupSort(name, env) {
           case Some(si) -> si
@@ -2090,23 +2271,16 @@ pub func goalsForFunctionWithExtraHyps(
 
   // Build postcondition term with result variable (will be substituted by WP).
   val resultVar = TVar(name = "result", sort = resultSort.sort)
-  val rangeTerms: List[Term] = newList()
-  match resultSort.range {
-    case RBKNone -> {
-    }
-    case RBKClosed(lo, hi) -> {
-      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), resultVar)))
-      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(resultVar, TLit(value = VLInt(n = hi), sort = SInt))))
-    }
-    case RBKHalfOpen(lo, hi) -> {
-      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), resultVar)))
-      rangeTerms.add(TBuiltin(op = BOpLt, args = termList2(resultVar, TLit(value = VLInt(n = hi), sort = SInt))))
-    }
-    case RBKUpperBound(hi) -> {
-      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(resultVar, TLit(value = VLInt(n = hi), sort = SInt))))
-    }
-    case RBKLowerBound(lo) -> {
-      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), resultVar)))
+  // A declared result range whose bound cannot be translated fails closed
+  // (V0033) rather than dropping the obligation (#7848).
+  val rangeDiags: List[Diagnostic] = newList()
+  val rangeTerms: List[Term] = match rangeObligationsForTerm(resultVar, resultSort) {
+    case Ok(ts) -> ts
+    case Err(reason) -> {
+      val retSpan = match decl.ret { case Some(te) -> te.span; case None -> decl.span }
+      rangeDiags.add(untranslatableDiag("the result's declared range: " + reason, retSpan))
+      val none: List[Term] = newList()
+      none
     }
   }
   val allPostParts: List[Term] = newList()
@@ -2174,6 +2348,7 @@ pub func goalsForFunctionWithExtraHyps(
   val allDiags: List[Diagnostic] = newList()
   appendTermList2(allDiags, preDiags)
   appendTermList2(allDiags, postDiags)
+  appendTermList2(allDiags, rangeDiags)
   appendTermList2(allDiags, wpRes.diags)
   val goalPair: (List[Goal], List[Diagnostic]) = (goals, allDiags)
   goalPair

@@ -941,3 +941,244 @@ test "a proof through a loop break is rejected, not discharged (#7396)" {
   }
   assertTrue(sawV0026, "the error is V0026")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unsigned literals, ranges and operators (#7848); signed minimum literals
+// (#7853).  The prove-level cases need a real solver (z3 on CI), like the
+// protected-entry range goal above.
+// ─────────────────────────────────────────────────────────────────────────────
+func provePkg(body: in String): ProofSummary {
+  prove("@proof_required\npackage U\n" + body)
+}
+
+func assertDischarged(body: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryTotalCount(s) > 0, label + ": goals generated")
+  assertTrue(not summaryHasErrorDiag(s), label + ": no error diagnostics")
+  assertTrue(not summaryHasFailure(s), label + ": every goal discharged")
+}
+
+func assertRefuted(body: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryHasCounterexample(s), label + ": the solver finds a counterexample")
+  assertTrue(not summaryHasDiagCode(s, "V0033"), label + ": the obligation is translatable")
+}
+
+func assertUntranslatable(body: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryHasDiagCode(s, "V0033"), label + ": V0033 reported")
+  assertTrue(summaryHasErrorDiag(s), label + ": the proof fails closed")
+}
+
+func bvVar(name: in String, w: in Int): Term {
+  TVar(name = name, sort = SBitVec(width = w))
+}
+
+test "smt renders unsigned constants as bitvectors of their width (#7848)" {
+  val max64 = TLit(value = VLBitVec(bits = -1i64, width = 64), sort = SBitVec(width = 64))
+  assertEqual(smtRenderTerm(max64), "(_ bv18446744073709551615 64)", "u64 max is its unsigned value")
+  val signBit64 = TLit(value = VLBitVec(bits = -9223372036854775807i64 - 1i64, width = 64), sort = SBitVec(width = 64))
+  assertEqual(smtRenderTerm(signBit64), "(_ bv9223372036854775808 64)", "u64 sign bit")
+  val max32 = TLit(value = VLBitVec(bits = 4294967295i64, width = 32), sort = SBitVec(width = 32))
+  assertEqual(smtRenderTerm(max32), "(_ bv4294967295 32)", "u32 max")
+  assertEqual(unsignedLongToString(-2i64), "18446744073709551614", "unsigned decimal of -2")
+  assertEqual(unsignedLongToString(0i64), "0", "unsigned decimal of 0")
+}
+
+test "smt renders unsigned ordering, division and remainder with the unsigned bitvector operators (#7848)" {
+  val x = bvVar("x", 32)
+  val y = bvVar("y", 32)
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpLt, args = termList2(x, y))), "(bvult x y)", "<")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpLte, args = termList2(x, y))), "(bvule x y)", "<=")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpGt, args = termList2(x, y))), "(bvugt x y)", ">")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpGte, args = termList2(x, y))), "(bvuge x y)", ">=")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpDiv, args = termList2(x, y))), "(bvudiv x y)", "/")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpMod, args = termList2(x, y))), "(bvurem x y)", "%")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpAdd, args = termList2(x, y))), "(bvadd x y)", "+")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpSub, args = termList2(x, y))), "(bvsub x y)", "-")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpMul, args = termList2(x, y))), "(bvmul x y)", "*")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpEq, args = termList2(x, y))), "(= x y)", "==")
+}
+
+test "an integer constant next to an unsigned operand becomes a bitvector; a signed variable does not (#7848)" {
+  val x = bvVar("x", 32)
+  match unifyOperands(x, TLit(value = VLInt(n = 3000000000i64), sort = SInt)) {
+    case Ok(p) -> assertEqual(smtRenderTerm(p.rhs), "(_ bv3000000000 32)", "literal takes the operand's width")
+    case Err(r) -> assertTrue(false, "unify literal: " + r)
+  }
+  match unifyOperands(x, TLit(value = VLInt(n = -1i64), sort = SInt)) {
+    case Ok(_) -> assertTrue(false, "a negative constant is not a UInt")
+    case Err(_) -> ()
+  }
+  match unifyOperands(x, TLit(value = VLInt(n = 4294967296i64), sort = SInt)) {
+    case Ok(_) -> assertTrue(false, "2^32 does not fit a UInt")
+    case Err(_) -> ()
+  }
+  match unifyOperands(x, TVar(name = "i", sort = SInt)) {
+    case Ok(_) -> assertTrue(false, "a UInt and an Int variable have no common sort")
+    case Err(_) -> ()
+  }
+  match unifyOperands(x, bvVar("u", 64)) {
+    case Ok(p) -> assertEqual(smtRenderTerm(p.lhs), "((_ zero_extend 32) x)", "UInt widens to ULong by zero-extension")
+    case Err(r) -> assertTrue(false, "widen: " + r)
+  }
+  match unifyOperands(bvVar("b", 8), TVar(name = "i", sort = SInt)) {
+    case Ok(p) -> assertEqual(smtRenderTerm(p.lhs), "(bv2nat b)", "Byte widens into the signed chain by value")
+    case Err(r) -> assertTrue(false, "byte widen: " + r)
+  }
+}
+
+test "a UInt literal above the sign bit is ordered unsigned (#7848)" {
+  assertDischarged(
+    "func f(x: in UInt): UInt\n  requires: x > 3000000000\n  ensures: result >= 2147483648\n{\n  x\n}\n",
+    "u32-order-discharge"
+  )
+  assertRefuted(
+    "func f(x: in UInt): UInt\n  requires: x > 3000000000\n  ensures: result < 2147483648\n{\n  x\n}\n",
+    "u32-order-refute"
+  )
+}
+
+test "a ULong literal above the sign bit is its unsigned value (#7848)" {
+  assertDischarged(
+    "func g(x: in ULong): ULong\n  requires: x >= 18446744073709551615u64\n  ensures: result == 18446744073709551615u64\n{\n  x\n}\n",
+    "u64-max-discharge"
+  )
+  assertDischarged(
+    "func g(x: in ULong): ULong\n  requires: x > 9223372036854775807\n  ensures: result >= 0x8000_0000_0000_0000u64\n{\n  x\n}\n",
+    "u64-sign-bit-discharge"
+  )
+  assertRefuted(
+    "func g(x: in ULong): ULong\n  requires: x > 9223372036854775807\n  ensures: result < 9223372036854775807\n{\n  x\n}\n",
+    "u64-sign-bit-refute"
+  )
+}
+
+test "an unsigned range subtype's bounds are folded unsigned (#7848)" {
+  val big = "ULong range 9223372036854775808u64 ..= 18446744073709551615u64"
+  assertDischarged(
+    "func h(x: in " + big + "): ULong\n  ensures: result > 9223372036854775807u64\n{\n  x\n}\n",
+    "u64-range-discharge"
+  )
+  assertRefuted(
+    "func h(x: in " + big + "): ULong\n  ensures: result < 18446744073709551615u64\n{\n  x\n}\n",
+    "u64-range-refute"
+  )
+  val small = "UInt range 0 ..= 100"
+  assertDischarged("func c(x: in UInt): " + small + "\n  requires: x <= 100\n{\n  x\n}\n", "u32-range-result-discharge")
+  assertRefuted("func c(x: in UInt): " + small + "\n  requires: x <= 101\n{\n  x\n}\n", "u32-range-result-refute")
+  assertUntranslatable("func c(x: in UInt): UInt range -1 ..= 5\n{\n  x\n}\n", "negative-unsigned-bound")
+  assertUntranslatable("func c(x: in UInt): UInt range 0 ..= 4294967296\n{\n  x\n}\n", "over-wide-unsigned-bound")
+}
+
+test "a counterexample over a bitvector sort keeps the whole sort (#7848)" {
+  val model = "sat\n(\n  (define-fun x () (_ BitVec 32)\n    #x00000000)\n)\n"
+  val bindings = parseModel(model)
+  assertEqualInt(bindings.count, 1, "one binding")
+  assertEqual(bindings[0].sort, "(_ BitVec 32)", "the sort is the full bitvector sort")
+  assertEqual(bindings[0].value, "#x00000000", "the value")
+}
+
+test "unsigned division and remainder are unsigned (#7848)" {
+  assertDischarged(
+    "func half(x: in UInt): UInt\n  requires: x == 4294967295\n  ensures: result == 2147483647\n{\n  x / 2\n}\n",
+    "udiv-discharge"
+  )
+  assertRefuted(
+    "func half(x: in UInt): UInt\n  requires: x == 4294967295\n  ensures: result == 0\n{\n  x / 2\n}\n",
+    "udiv-refute-signed-reading"
+  )
+  assertDischarged(
+    "func rem(x: in UInt): UInt\n  requires: x == 4294967295\n  ensures: result == 5\n{\n  x % 10\n}\n",
+    "urem-discharge"
+  )
+  assertDischarged("func half2(x: in UInt): UInt\n  ensures: result <= x\n{\n  x / 2\n}\n", "udiv-bound")
+}
+
+test "unsigned widening zero-extends and wraps are modelled (#7848)" {
+  assertDischarged(
+    "func w(a: in UInt, b: in ULong): ULong\n  requires: a == 4294967295 and b == 1\n  ensures: result == 4294967296\n{\n  a + b\n}\n",
+    "zero-extend-discharge"
+  )
+  assertRefuted(
+    "func w(a: in UInt, b: in ULong): ULong\n  requires: a == 4294967295 and b == 1\n  ensures: result == 0\n{\n  a + b\n}\n",
+    "zero-extend-refute"
+  )
+  assertDischarged(
+    "func bytes(b: in Byte): Byte\n  requires: b >= 200\n  ensures: result > 199\n{\n  b\n}\n",
+    "byte-literal-discharge"
+  )
+}
+
+test "checked arithmetic proves unsigned operations do not wrap (#7848)" {
+  val checked = "@proof_required(checked_arithmetic)\npackage C\n"
+  val bad = prove(checked + "func inc(x: in UInt): UInt\n{\n  x + 1\n}\n")
+  assertTrue(summaryHasCounterexample(bad), "x + 1 can wrap")
+  val good = prove(checked + "func inc(x: in UInt): UInt\n  requires: x < 4294967295\n{\n  x + 1\n}\n")
+  assertTrue(not summaryHasFailure(good) and not summaryHasErrorDiag(good), "x + 1 cannot wrap below the maximum")
+  val sub = prove(checked + "func dec(x: in UInt): UInt\n{\n  x - 1\n}\n")
+  assertTrue(summaryHasCounterexample(sub), "x - 1 can wrap below zero")
+  val mul = prove(checked + "func dbl(x: in UInt): UInt\n  requires: x <= 2147483647\n{\n  x * 2\n}\n")
+  assertTrue(not summaryHasFailure(mul) and not summaryHasErrorDiag(mul), "x * 2 cannot wrap below 2^31")
+}
+
+test "an obligation that mixes unsigned and signed operands fails closed (#7848)" {
+  assertUntranslatable("func m(a: in UInt, i: in Int): Bool\n  ensures: result\n{\n  a < i\n}\n", "uint-vs-int")
+  assertUntranslatable("func n(): UInt\n  ensures: result == 1\n{\n  -1\n}\n", "negative-literal-as-uint")
+  assertUntranslatable("func neg(x: in UInt): UInt\n  ensures: result == 0\n{\n  -x\n}\n", "unsigned-negation")
+}
+
+test "Long.MinValue is negative, however it is spelled (#7853)" {
+  assertDischarged("func mn(): Long\n  ensures: result < 0\n{\n  -9223372036854775808\n}\n", "long-min-discharge")
+  assertRefuted("func mn(): Long\n  ensures: result > 0\n{\n  -9223372036854775808\n}\n", "long-min-refute")
+  assertDischarged(
+    "func mh(): Long\n  ensures: result == 0 - 9223372036854775807 - 1\n{\n  -0x8000_0000_0000_0000\n}\n",
+    "long-min-hex-discharge"
+  )
+  assertRefuted("func mh(): Long\n  ensures: result >= 0\n{\n  -0x8000_0000_0000_0000\n}\n", "long-min-hex-refute")
+  val s = provePkg("func mn(): Long\n  ensures: result < 0\n{\n  -9223372036854775808\n}\n")
+  assertTrue(s.results.count > 0, "long-min: a goal")
+  val smt = smtRenderGoal(s.results[0].goal)
+  assertTrue(smt.contains("(- 9223372036854775808)"), "long-min is one negative SMT constant")
+  assertTrue(not smt.contains("-9223372036854775808"), "no bare negative numeral")
+}
+
+test "a signed suffix's minimum is one negative constant (#7853)" {
+  assertDischarged(
+    "func mi(): Int\n  ensures: result == 0 - 2147483647 - 1\n{\n  -2147483648i32\n}\n",
+    "i32-min-discharge"
+  )
+  assertRefuted("func mi(): Int\n  ensures: result > 0\n{\n  -2147483648i32\n}\n", "i32-min-refute")
+  assertDischarged("func mb(): Int\n  ensures: result == 0 - 128\n{\n  -128i8\n}\n", "i8-min-discharge")
+  assertRefuted("func mb(): Int\n  ensures: result == 128\n{\n  -128i8\n}\n", "i8-min-refute")
+  assertDischarged("func ml(): Long\n  ensures: result < 0\n{\n  -9223372036854775808i64\n}\n", "i64-min-discharge")
+}
+
+test "a range bound at Long.MinValue is folded signed (#7853)" {
+  val neg = "Long range -9223372036854775808 ..= -1"
+  assertDischarged("func k(x: in " + neg + "): Long\n  ensures: result < 0\n{\n  x\n}\n", "min-bound-discharge")
+  assertRefuted(
+    "func k(x: in " + neg + "): Long\n  ensures: result > -9223372036854775808\n{\n  x\n}\n",
+    "min-bound-refute"
+  )
+}
+
+test "a literal bound, assigned or passed at an unsigned type takes that type (#7848)" {
+  assertDischarged(
+    "func v(): UInt\n  ensures: result == 2147483647\n{\n  val y: UInt = 4294967295\n  y / 2\n}\n",
+    "val-binding"
+  )
+  assertDischarged(
+    "func a(): UInt\n  ensures: result == 5\n{\n  var z: UInt = 1\n  z = 4294967295\n  z % 10\n}\n",
+    "var-assignment"
+  )
+  assertDischarged(
+    "func callee(x: in UInt): UInt\n  requires: x > 2147483648\n  ensures: result == x\n{\n  x\n}\n" +
+      "func caller(): UInt\n  ensures: result > 2147483648\n{\n  callee(4294967295)\n}\n",
+    "call-argument"
+  )
+  assertRefuted(
+    "func v(): UInt\n  ensures: result == 0\n{\n  val y: UInt = 4294967295\n  y / 2\n}\n",
+    "val-binding-refute"
+  )
+}

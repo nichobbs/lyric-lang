@@ -296,7 +296,7 @@ jobs:
             echo "::warning::AOT binary not found; skipping example proves"
             exit 0
           fi
-          for ex in pagination prove_demo token_bucket_proof; do
+          for ex in pagination prove_demo token_bucket_proof unsigned_proof; do
             echo "=== prove examples/$ex.l ==="
             "$lyric_bin" prove "examples/$ex.l" > /tmp/"$ex".prove.log 2>&1 \
               && echo "PASS" || { echo "FAIL"; tail -20 /tmp/"$ex".prove.log; exit 1; }

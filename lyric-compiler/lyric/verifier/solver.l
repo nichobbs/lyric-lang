@@ -69,7 +69,9 @@ pub func parseModel(modelText: in String): List[CounterexampleBinding] {
       val parts = splitSpaces(header, 4)
       if parts.count >= 3 and parts[1] == "()" {
         val bindName = parts[0]
-        val bindSort = parts[2]
+        // A parenthesised sort such as `(_ BitVec 32)` spans several
+        // whitespace-separated parts (#7848).
+        val bindSort = if parts.count > 3 { leadingSortText(parts[2] + " " + parts[3]) } else { parts[2] }
         // Collect value using paren-depth counting.  depth=1 because we
         // are inside the (define-fun ...) block.  When depth reaches 0
         // we have consumed the closing ) that ends define-fun; the value
@@ -128,6 +130,35 @@ pub func parseModel(modelText: in String): List[CounterexampleBinding] {
     }
   }
   result
+}
+
+// The sort at the start of `text`: one token, or a balanced parenthesised
+// expression such as `(_ BitVec 64)`.
+func leadingSortText(text: in String): String {
+  val t = text.trim()
+  if not t.startsWith("(") {
+    return splitSpaces(t, 2)[0]
+  }
+  var depth = 0
+  var i = 0
+  while i < t.length {
+    match charAt(t, i) {
+      case Some(c) -> {
+        if c == '(' {
+          depth = depth + 1
+        } else if c == ')' {
+          depth = depth - 1
+          if depth == 0 {
+            return t.substring(0, i + 1)
+          }
+        }
+      }
+      case None -> {
+      }
+    }
+    i = i + 1
+  }
+  t
 }
 
 pub func renderCounterexample(bindings: in List[CounterexampleBinding]): String {
