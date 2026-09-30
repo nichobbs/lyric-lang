@@ -772,7 +772,7 @@ output_assembly = "myapp.dll"
 | `Std.Log` | Structured logging | `LogLevel` enum, `Logger` interface, `LogField`, `log`, `debug`, `info`, `warn`, `error`, `field` |
 | `Std.Path` | Pure path manipulation | `join`, `extension`, `basename`, `dirname`, `isAbsolute`, `isRelative` |
 | `Std.BuildInfo` | Build metadata (docs/60) | `BuildInfo` record; the compiler synthesizes `buildInfo(): BuildInfo` into any file that imports it |
-| `Std.Task` | Async task primitives, cancellation tokens, structured concurrency (`Scope`) | `Task`, `CancellationToken`, `makeCancelSource`, `delay`, `delayWithCancel`, `makeScope`, `scopeSpawn` (starts the closure at once: thread pool on dotnet, virtual thread on the JVM), `awaitAll` (joins what the scope started), `runWithin[T](timeoutMs, f): Option[T]` — run an arbitrary `() -> T` closure with a real preemptive bound on both `--target dotnet` (`Task.Wait`) and `--target jvm` (`Thread.join`), `None` on timeout, panics from `f` propagate |
+| `Std.Task` | Async task primitives, cancellation tokens, structured concurrency (`Scope`) | `Task`, `CancellationToken`, `makeCancelSource`, `delay`, `delayWithCancel`, `makeScope`, `scopeSpawn` (starts the closure at once: thread pool on dotnet, virtual thread on the JVM), `awaitAll` (joins what the scope started), `scopePendingCount` (children still tracked: a scope drops finished children when it next spawns), `runWithin[T](timeoutMs, f): Option[T]` — run an arbitrary `() -> T` closure with a real preemptive bound on both `--target dotnet` (`Task.Wait`) and `--target jvm` (`Thread.join`), `None` on timeout, panics from `f` propagate |
 
 **External libraries** (separate packages; add to `[dependencies]` in `lyric.toml`):
 

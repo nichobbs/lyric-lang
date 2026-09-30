@@ -63,6 +63,15 @@ threw `ClassCastException`; that gap is closed (the lyric-ui host passes
 closures across the package boundary on the JVM). `task_tests.l` gains
 `testScopeSpawnStartsBeforeAwaitAll`, run on both targets.
 
+The instance's scope lives as long as the session and is never joined, so
+both kernels only appending to their child list kept one task or thread per
+effect ever run (#7876). A scope now drops its finished children when it
+next spawns: on dotnet it keeps the first child that did not succeed, so
+`awaitAll` still rethrows its failure; on the JVM the failure is recorded
+separately and finished threads are dropped. `scopePendingCount` reports
+what is still tracked (`testScopeDropsFinishedChildren`,
+`testScopeKeepsFailureAcrossPruning`).
+
 ## Compiler fix found on the way
 
 The new host tests constructed a `Ui.Core.Screen` with
