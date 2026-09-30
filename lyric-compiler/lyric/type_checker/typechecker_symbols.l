@@ -398,6 +398,34 @@ pub record OpenBindingSite {
   /// Non-empty once two sinks, or two stores, disagree.
   sinkConflict: List[Bool]
   storeConflict: List[Bool]
+  /// A tuple literal's site (#7855): `(None, 5)`, `(newList(), (None, 1))`.
+  /// Each element whose type is open is itself an open site: an element
+  /// the site owns (an evidence-free construction), or an open local the
+  /// literal holds.  `childKeys[i]` is that site's key and `childPaths[i]`
+  /// its position, the element index at each nesting level (`[1, 0]`).  A type recorded
+  /// for the tuple is recorded for each child at its position, a name a
+  /// tuple pattern binds to a child's position is bound open to the child,
+  /// and the tuple's annotation is its own type with each child's resolved
+  /// type in place.  Empty for any other site.
+  childKeys: List[String]
+  childPaths: List[List[Int]]
+  /// The tuple site owning this element's site, or "".  Only the tuple's
+  /// annotation is written; an element has no binding of its own.
+  parentKey: String
+  /// The elements of the tuple the await / `?` hoist binds one by one, with
+  /// their positions, and the enclosing function's type parameters: the
+  /// resolved annotation records each one's type at its position in
+  /// `SymbolTable.hoistOperandTypeSites`, which the checker could not do
+  /// while nothing fixed it (#7823).
+  hoistExprs: List[Expr]
+  hoistPaths: List[List[Int]]
+  typeParams: List[String]
+  /// Each name a tuple pattern binds at a child's position (its pattern's
+  /// span, and the position): once the tuple is typed, the name is recorded
+  /// in `SymbolTable.tuplePatternBindingSites` at its element's type (#7728),
+  /// so a backend that erases the element (the JVM) reads it at that type.
+  patSpans: List[Span]
+  patPaths: List[List[Int]]
 }
 
 pub record ImplPair {

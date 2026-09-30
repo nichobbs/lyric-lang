@@ -892,6 +892,30 @@ binding keeps its open type. Every use accepts that type, and a backend with
 reified generics (`--target dotnet`) builds the value with `object`
 elements. Annotate such a binding (`val xs: List[Field] = newList()`).
 
+The same holds for a construction of the stdlib `Option` or `Result` that
+fixes only some of its type arguments: `Ok(2)` fixes `T` but not `E`,
+`Err("e")` fixes `E` but not `T` (#7855). And it holds for a tuple literal
+whose elements leave type arguments open, each of them such a construction,
+an open local, or a nested tuple of these (#7855):
+```
+func pick(): Int {
+  val t = (None, 5)               // an (Option[Int], Int)
+  val (o, n) = t
+  addOpt(o, n)                    // addOpt(a: in Option[Int], b: in Int)
+}
+```
+A use of the whole tuple (a call argument, a return, an assignment into it,
+and so on) fixes each open element at its position, and so does a use of a
+name a tuple pattern binds at that position, in a destructuring `val` of the
+tuple or its literal or a `match` arm on it. The tuple is typed once every
+open element is.
+
+The value of an assignment to a field or an element (`cell.o = v`,
+`xs[i] = v`, `m[k] = v`) is built at the target's type, like a typed
+binding's initializer: a `None`, `Ok(...)`, `Err(...)`, `newList()` or
+`newMap()` in it, or in an arm of an `if`, `match` or block it is, takes the
+type arguments of the field or element (#7855).
+
 A list literal's element type is the join of its elements' types: a type
 argument one element leaves open is taken from another element, so
 `[Some(1), None, Some(3)]` is a `slice[Option[Int]]`, `[None, Some(5)]` is

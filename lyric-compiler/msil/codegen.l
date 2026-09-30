@@ -13506,11 +13506,7 @@ func emitCellAssignMsil(
       insns.add(MLdcI4(v = 0))
       // Same construction hints a plain-slot assignment pushes, so a bare
       // `None` / `newList()` assigned to the cell builds the element type.
-      val savedH = pushAnnoHintTyArgs(fctx, elemTy)
-      pushCollExpect(fctx, elemTy)
-      val vTy = lowerExprMsil(cctx, fctx, insns, value)
-      popCollExpect(fctx)
-      restoreHintTyArgs(fctx, savedH)
+      val vTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, elemTy)
       if elemTy != MObject and vTy == MObject {
         coerceCallArgMsil(cctx, insns, vTy, elemTy)
       }
@@ -13536,6 +13532,28 @@ func emitCellAssignMsil(
 // ─────────────────────────────────────────────────────────────────────────────
 // §5d. Assignment expression lowering.
 // ─────────────────────────────────────────────────────────────────────────────
+// Lower the value of a plain (`=`) assignment to a target of type `targetTy`
+// with that type as its construction context, the way an annotated `val`
+// initialiser is lowered: a bare `None`, `Ok(...)`, `Err(...)`, `newList()`
+// or `newMap()` in the value, or in any arm of an `if`/`match`/block the value
+// is, builds the target's instantiation (#7855).  Without it
+// `cell.o = if c { None } else { Some(5) }` built an `Option_None<object>`
+// the field's `Option<int>` readers never recognise.
+func lowerAssignValueAtMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  value: in Expr,
+  targetTy: in MsilType,
+): MsilType {
+  val savedH = pushAnnoHintTyArgs(fctx, targetTy)
+  pushCollExpect(fctx, targetTy)
+  val vTy = lowerExprMsil(cctx, fctx, insns, value)
+  popCollExpect(fctx)
+  restoreHintTyArgs(fctx, savedH)
+  vTy
+}
+
 func lowerAssignExprMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -13612,11 +13630,7 @@ func lowerAssignExprMsil(
               // Likewise push the local's generic args as a construction hint so a
               // bare `x = None` / `x = Some(v)` to an `Option[T]` local builds the
               // closed `Option_None<T>` rather than erasing to object (#3943).
-              val savedH = pushAnnoHintTyArgs(fctx, ty)
-              pushCollExpect(fctx, ty)
-              val assignValTy = lowerExprMsil(cctx, fctx, insns, value)
-              popCollExpect(fctx)
-              restoreHintTyArgs(fctx, savedH)
+              val assignValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, ty)
               // #7752: an `if`/`match` over different concrete classes yields a
               // verifier-`object` value; narrow it to the local's declared
               // class/interface (`narrowObjectToDeclaredTypeMsil`).
@@ -13679,9 +13693,7 @@ func lowerAssignExprMsil(
             match op {
               case AssEq -> {
                 insns.add(MLdarg(slot = 0))
-                pushCollExpect(fctx, fldTy)
-                val selfFldValTy = lowerExprMsil(cctx, fctx, insns, value)
-                popCollExpect(fctx)
+                val selfFldValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, fldTy)
                 // #7752: see `narrowObjectToDeclaredTypeMsil`.
                 narrowObjectToDeclaredTypeMsil(cctx, insns, selfFldValTy, fldTy)
                 widenIntToLongMsil(insns, selfFldValTy, fldTy)
@@ -13717,9 +13729,7 @@ func lowerAssignExprMsil(
           val ty = match mapGet(fctx.types, "result") { case Some(t) -> t; case None -> MObject }
           match op {
             case AssEq -> {
-              pushCollExpect(fctx, ty)
-              val resultValTy = lowerExprMsil(cctx, fctx, insns, value)
-              popCollExpect(fctx)
+              val resultValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, ty)
               // #7752: see `narrowObjectToDeclaredTypeMsil`.
               narrowObjectToDeclaredTypeMsil(cctx, insns, resultValTy, ty)
               widenIntToLongMsil(insns, resultValTy, ty)
@@ -13785,9 +13795,7 @@ func lowerAssignExprMsil(
                   // instance the field's tracked type expects (e.g.
                   // `state.pendingTrivia = newList()` for a `List[Trivia]` field).
                   val fldTyA = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
-                  pushCollExpect(fctx, fldTyA)
-                  val fldValTy = lowerExprMsil(cctx, fctx, insns, value)
-                  popCollExpect(fctx)
+                  val fldValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, fldTyA)
                   // #7752: see `narrowObjectToDeclaredTypeMsil`.
                   narrowObjectToDeclaredTypeMsil(cctx, insns, fldValTy, fldTyA)
                   widenIntToLongMsil(insns, fldValTy, fldTyA)
@@ -13864,9 +13872,7 @@ func lowerAssignExprMsil(
             insns.add(MCastclassGeneric(className = headFqn, typeArgs = typeArgs))
             match op {
               case AssEq -> {
-                pushCollExpect(fctx, concreteTy)
-                val genFldValTy = lowerExprMsil(cctx, fctx, insns, value)
-                popCollExpect(fctx)
+                val genFldValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, concreteTy)
                 widenIntToLongMsil(insns, genFldValTy, concreteTy)
                 insns.add(MStfldGeneric(baseClassName = headFqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
               }
@@ -13911,9 +13917,7 @@ func lowerAssignExprMsil(
             insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
             match op {
               case AssEq -> {
-                pushCollExpect(fctx, concreteTy)
-                val genFldValTy = lowerExprMsil(cctx, fctx, insns, value)
-                popCollExpect(fctx)
+                val genFldValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, concreteTy)
                 widenIntToLongMsil(insns, genFldValTy, concreteTy)
                 insns.add(MStfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
               }
@@ -13964,7 +13968,7 @@ func lowerAssignExprMsil(
                 insns.add(MCastclass(typeToken = cctx.tokDictObjTypeSpec))
                 val kTy = lowerExprMsil(cctx, fctx, insns, indices[0])
                 collSlotArgMsil(cctx, insns, kTy, collElemSlotTyMsil(recvTy), recvTy)
-                val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                val vTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, collValueSlotTyMsil(recvTy))
                 collSlotArgMsil(cctx, insns, vTy, collValueSlotTyMsil(recvTy), recvTy)
                 insns.add(MCallvirt(methodToken = cctx.tokDictObjSetItem))
               }
@@ -13977,7 +13981,7 @@ func lowerAssignExprMsil(
                 val kTy = widenPrimToSlotMsil(insns, lowerExprMsil(cctx, fctx, insns, indices[0]), mk)
                 coerceCallArgMsil(cctx, insns, kTy, mk)
                 collBoxIfNeeded(cctx, insns, kTy, recvTy)
-                val vTy = widenPrimToSlotMsil(insns, lowerExprMsil(cctx, fctx, insns, value), mv)
+                val vTy = widenPrimToSlotMsil(insns, lowerAssignValueAtMsil(cctx, fctx, insns, value, mv), mv)
                 coerceCallArgMsil(cctx, insns, vTy, mv)
                 collBoxIfNeeded(cctx, insns, vTy, recvTy)
                 emitDictSetItem(cctx, insns, recvTy)
@@ -13988,7 +13992,7 @@ func lowerAssignExprMsil(
                 // on a `List[Long]`, #7343).
                 emitListCastRecv(cctx, insns, recvTy)
                 lowerExprMsil(cctx, fctx, insns, indices[0])
-                val vTy = widenPrimToSlotMsil(insns, lowerExprMsil(cctx, fctx, insns, value), le)
+                val vTy = widenPrimToSlotMsil(insns, lowerAssignValueAtMsil(cctx, fctx, insns, value, le), le)
                 coerceCallArgMsil(cctx, insns, vTy, le)
                 collBoxIfNeeded(cctx, insns, vTy, recvTy)
                 emitListSetItem(cctx, insns, recvTy)
@@ -14011,7 +14015,7 @@ func lowerAssignExprMsil(
                     lowerExprMsil(cctx, fctx, insns, indices[0])
                     val idxSlot = allocSlotMsil(fctx, "__sliceset_i_" + toString(fctx.slotTicker.count), MInt)
                     emitStoreSlot(insns, idxSlot, fctx.paramCount)
-                    val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                    val vTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, elem)
                     // M6 numeric widening (`xs[i] = 4` on a `slice[Long]`,
                     // #5254): convert to the element width before the value
                     // is stored in its element-typed temporary, so both paths
@@ -14047,7 +14051,7 @@ func lowerAssignExprMsil(
                   case None -> {
                     emitListCastRecv(cctx, insns, recvTy)
                     lowerExprMsil(cctx, fctx, insns, indices[0])
-                    val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                    val vTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, elem)
                     collBoxIfNeeded(cctx, insns, vTy, recvTy)
                     emitListSetItem(cctx, insns, recvTy)
                   }
@@ -14057,7 +14061,11 @@ func lowerAssignExprMsil(
                 // Stack for callvirt set_Item: this(List<object>), int32 index, !0 value.
                 insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
                 lowerExprMsil(cctx, fctx, insns, indices[0])
-                val vTy = widenPrimToSlotMsil(insns, lowerExprMsil(cctx, fctx, insns, value), collElemSlotTyMsil(recvTy))
+                val vTy = widenPrimToSlotMsil(
+                  insns,
+                  lowerAssignValueAtMsil(cctx, fctx, insns, value, collElemSlotTyMsil(recvTy)),
+                  collElemSlotTyMsil(recvTy)
+                )
                 boxIfNeededMsil(cctx, insns, vTy)
                 insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
               }

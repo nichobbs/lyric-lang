@@ -8,7 +8,8 @@
 # tests, #7457; bare_func_ref_self_test.l, #7586; async_generator_self_test.l,
 # #7720; compiler_bugs_3502_3505_3547_self_test.l, #7752;
 # erased_slot_widen_self_test.l, #7782; list_insert_self_test.l, #7797;
-# list_literal_join_self_test.l, #7818; await_hoist_typed_self_test.l, #7823),
+# list_literal_join_self_test.l, #7818; await_hoist_typed_self_test.l, #7823;
+# expected_type_propagation_self_test.l, #7855),
 # through one
 # `lyric test`
 # invocation per file.
@@ -89,6 +90,7 @@ for t in \
   lyric-compiler/lyric/list_insert_self_test.l \
   lyric-compiler/lyric/list_literal_join_self_test.l \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
+  lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/unsigned_typed_ops_self_test.l \
   lyric-compiler/lyric/unsigned_literal_max_self_test.l \
   lyric-compiler/lyric/signed_literal_suffix_range_self_test.l ; do
