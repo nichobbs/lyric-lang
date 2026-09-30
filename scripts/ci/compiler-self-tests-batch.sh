@@ -144,7 +144,8 @@ for t in \
   lyric-compiler/lyric/generic_method_body_typevar_self_test.l \
   lyric-compiler/lyric/impl_generic_target_self_test.l \
   lyric-compiler/lyric/unsigned_typed_ops_self_test.l \
-  lyric-compiler/lyric/unsigned_literal_max_self_test.l ; do
+  lyric-compiler/lyric/unsigned_literal_max_self_test.l \
+  lyric-compiler/lyric/signed_literal_suffix_range_self_test.l ; do
   idx=$((idx + 1))
   if (( (idx - 1) % SHARD_N != SHARD_K - 1 )); then
     continue

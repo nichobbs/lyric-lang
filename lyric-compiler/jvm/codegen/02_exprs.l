@@ -485,7 +485,7 @@ func listLiteralElemTypeJvm(ctx: in FuncCtx, e: in Expr): JvmType {
       match lit {
         case LInt(v, suffix, _) -> {
           // Mirror `Lyric.TypeChecker`'s literal-suffix table
-          // (typechecker_exprs.l: `NoIntSuffix|I16|I32 -> Int`, `I8|U8 ->
+          // (typechecker_exprs.l: `NoIntSuffix|I8|I16|I32 -> Int`, `U8 ->
           // Byte`, `I64 -> Long`, `U16|U32 -> UInt`, `U64 -> ULong`) and
           // `typeExprToJvm`'s erasure of `UInt -> JInt` / `ULong -> JLong`
           // (#6661): `U16`/`U32` erase to the identical `int` `I16`/`I32`
@@ -495,7 +495,7 @@ func listLiteralElemTypeJvm(ctx: in FuncCtx, e: in Expr): JvmType {
           // every `u16`/`u32`/`u64`-suffixed list-literal element (#6741
           // SUGGESTION).
           match suffix {
-            case I8 -> JByte
+            case I8 -> JInt
             case U8 -> JByte
             case NoIntSuffix -> if v >= -2147483648i64 and v <= 2147483647i64 {
               JInt

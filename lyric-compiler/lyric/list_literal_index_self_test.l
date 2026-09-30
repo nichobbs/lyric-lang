@@ -97,10 +97,10 @@ func litLongs(): Bool {
 }
 
 func litBytes(): Bool {
-  // `i8`-suffixed literals are `Byte`, so this must build `Byte[]`, not
+  // `u8`-suffixed literals are `Byte`, so this must build `Byte[]`, not
   // `Int32[]` (#5703).
-  val xs = [1i8, 2i8, 3i8]
-  xs[0] + xs[1] + xs[2] == 6i8
+  val xs = [1u8, 2u8, 3u8]
+  xs[0] + xs[1] + xs[2] == 6u8
 }
 
 // Element type recovered from a bare local variable, not a syntactic literal

@@ -461,32 +461,30 @@ pub func pipeCheckAndMono(
   Some(value = mapExprsInFile(monoRes.file, foldNegatedIntLiteral))
 }
 
-// `-<unsuffixed integer literal>` becomes one negative literal (#7346).
-// The type checker types `-2147483648` as `Int`, but its operand alone is
-// too large for `Int`, and every backend sized the negation by the operand:
-// the JVM pushed a long into an int slot (VerifyError) and MSIL emitted a
-// long.  A single literal lets each backend size the constant by its real
-// value.  Runs after elaboration and mono, so contract asserts and
-// specialised bodies are covered.
+// `-<unsuffixed or signed-suffixed integer literal>` becomes one negative
+// literal (#7346, #7847).  The type checker types `-2147483648` as `Int`,
+// but its operand alone is too large for `Int`, and every backend sized the
+// negation by the operand: the JVM pushed a long into an int slot
+// (VerifyError) and MSIL emitted a long.  A signed suffix's minimum
+// (`-2147483648i32`, `-128i8`) is the same shape.  A single literal lets
+// each backend size the constant by its real value.  `Long.MinValue`'s
+// magnitude is carried as its own pattern, so it negates to itself.  Runs
+// after elaboration and mono, so contract asserts and specialised bodies are
+// covered.
 func foldNegatedIntLiteral(e: in Expr): Expr {
   match e.kind {
     case EPrefix(op, operand) -> match op {
       case PreNeg -> match unparenthesized(operand).kind {
         case ELiteral(lit) -> match lit {
-          case LInt(v, sfx, raw) -> match sfx {
-            case NoIntSuffix -> Expr(
+          case LInt(v, sfx, raw) -> if isSignedIntSuffix(sfx) {
+            Expr(
               kind = ELiteral(
-                lit = LInt(
-                  value = 0i64 -
-                    v,
-                  suffix = sfx,
-                  raw = "-" +
-                    raw
-                )
+                lit = LInt(value = if v == -9223372036854775808i64 { v } else { 0i64 - v }, suffix = sfx, raw = "-" + raw)
               ),
               span = e.span
             )
-            case _ -> e
+          } else {
+            e
           }
           case _ -> e
         }
@@ -495,6 +493,19 @@ func foldNegatedIntLiteral(e: in Expr): Expr {
       case _ -> e
     }
     case _ -> e
+  }
+}
+
+// An unsuffixed literal or one of the signed suffixes; unsigned literals
+// are never folded under a negation.
+func isSignedIntSuffix(sfx: in IntSuffix): Bool {
+  match sfx {
+    case NoIntSuffix -> true
+    case I8 -> true
+    case I16 -> true
+    case I32 -> true
+    case I64 -> true
+    case _ -> false
   }
 }
 

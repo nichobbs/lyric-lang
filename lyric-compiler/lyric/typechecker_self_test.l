@@ -1663,6 +1663,23 @@ test "ulong inline refined literal above Long max is ordered unsigned" {
   assertEqualInt(diagCount(plain), 0, "ULong max literal: clean")
 }
 
+// #7847: a signed suffix's minimum is written as a unary minus on the
+// magnitude one past its maximum; the pair has the suffix's type.  `i8` is
+// an `Int` literal: `Byte` is unsigned and cannot hold -128.
+test "signed suffix minimums type as their suffix's type" {
+  val src = "package P\nfunc f(): Unit {\n  val a: Int = -128i8\n  val b: Int = -32768i16\n  val c: Int = -2147483648i32\n  val d: Long = -9223372036854775808i64\n  val e: Int = -0x8000_0000i32\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "signed minimums: clean")
+}
+
+test "i8 literals are Int not Byte" {
+  val asInt = parseCheck("package P\nfunc f(): Int {\n  127i8\n}\n")
+  assertEqualInt(diagCount(asInt), 0, "127i8 returned as Int: clean")
+  val asByte = parseCheck("package P\nfunc f(): Unit {\n  val b: Byte = 1i8\n}\n")
+  assertTrue(diagCount(asByte) > 0, "1i8 bound to Byte: rejected (no implicit narrowing)")
+  val u8Byte = parseCheck("package P\nfunc f(): Unit {\n  val b: Byte = 255u8\n}\n")
+  assertEqualInt(diagCount(u8Byte), 0, "255u8 bound to Byte: clean")
+}
+
 // #7346: an unsuffixed literal outside Int's range is not an Int.
 test "int literal out of range for Int is T0015" {
   val cr = parseCheck("package P\nfunc f(): Unit {\n  val x: Int = 2147483648\n}\n")

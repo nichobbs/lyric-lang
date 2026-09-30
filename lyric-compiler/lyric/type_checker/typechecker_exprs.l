@@ -44,7 +44,9 @@ pub func typeOfLiteral(lit: in Literal): Type {
       // a larger one is a `Long` (never a wrapped `Int`, #7346).  The one
       // exception, `-2147483648`, is handled by `inferExpr`'s negation arm.
       case NoIntSuffix -> if longFitsInt(v) { TyPrim(pt = PtInt) } else { TyPrim(pt = PtLong) }
-      case I8 -> TyPrim(pt = PtByte)
+      // `Byte` is unsigned, so the signed `i8` range (-128 ..= 127) is an
+      // `Int`, as `i16`'s is (#7847); `u8` is the `Byte` suffix.
+      case I8 -> TyPrim(pt = PtInt)
       case I16 -> TyPrim(pt = PtInt)
       case I32 -> TyPrim(pt = PtInt)
       case I64 -> TyPrim(pt = PtLong)
