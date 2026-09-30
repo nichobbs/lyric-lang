@@ -61,6 +61,30 @@ grep -q "F0015" "$work/build.out" || {
   echo "::error::build failed but did not report F0015"; exit 1; }
 echo "F0015 signature-mismatch negative test passed (rc=$rc)"
 
+# F0015 (#7783): a generic BCL method whose `T[]` position the wrapper
+# declares as `slice[Int]` must be instantiated at `int32`, but `T` also sits
+# inside `IEnumerable<T>`, an extern alias always instantiated at `object`.
+# No single MethodSpec satisfies both, so the build must fail rather than
+# hand back an `object[]` typed as `int32[]`.
+cat > "$work/f0015_generic_array.l" <<'LYR'
+package F0015GenericArrayConflict
+extern type IEnumerableOfT[T] = "System.Collections.Generic.IEnumerable`1"
+@externStatic
+@externTarget("System.Linq.Enumerable.ToArray")
+func toInts(xs: in IEnumerableOfT[Int]): slice[Int] = ()
+func main(): Int { 0 }
+LYR
+rc=0
+( cd "$work" && "$bin_abs" build f0015_generic_array.l ) > "$work/generic_array.out" 2>&1 || rc=$?
+echo "--- generic T[] conflict fixture (rc=$rc) ---"; cat "$work/generic_array.out"
+if [ "$rc" -eq 0 ]; then
+  echo "::error::expected non-zero exit for a generic extern whose T[] and IEnumerable<T> uses conflict"
+  exit 1
+fi
+grep -q "F0015" "$work/generic_array.out" || {
+  echo "::error::generic T[] conflict build failed but did not report F0015"; exit 1; }
+echo "F0015 generic T[] instantiation-conflict negative test passed (rc=$rc)"
+
 # F0027 (#5704, D-progress-981): a hint-less @externTarget whose
 # calling convention can't be metadata-verified must FAIL the build, and
 # an explicit @externStatic/@externInstance must silence it entirely.

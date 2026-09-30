@@ -103,6 +103,33 @@ test "Array.Empty<T>() alongside Enumerable.Empty<T>() does not collide (#6987)"
   assertEqualInt(arr.count, 0, "Array.Empty<Int>() returns a genuinely zero-length array")
 }
 
+// ── A `T[]` return instantiates `T` at the slice's element type (#7783) ──
+//
+// A Lyric `slice[Int]` is a real `int32[]`, so a BCL generic method returning
+// `T[]` must be instantiated at `int32`, not at the `object` witness used for
+// every other generic position: `GC.AllocateArray<object>(3)` handed back an
+// `object[]` typed as the wrapper's `int32[]`, so the element stores and
+// loads below ran `stelem.i4`/`ldelem.i4` against an `object[]`.
+@externTarget("System.GC.AllocateArray")
+func allocInts(length: in Int, pinned: in Bool): slice[Int] = ()
+
+@externTarget("System.GC.AllocateArray")
+func allocLongs(length: in Int, pinned: in Bool): slice[Long] = ()
+
+test "GC.AllocateArray<T> returning a slice[Int]/slice[Long] builds the typed array (#7783)" {
+  val xs = allocInts(3, false)
+  assertEqualInt(xs.count, 3, "three elements")
+  assertEqualInt(xs[1], 0, "zero-initialised")
+  xs[0] = -7
+  xs[2] = 3000000
+  assertEqualInt(xs[0] + xs[2], 2999993, "int32 element stores round-trip")
+  val ls = allocLongs(2, false)
+  ls[1] = 5000000000i64
+  assertEqualLong(ls[1] + ls[0], 5000000000i64, "int64 element stores round-trip")
+  val empty = emptyIntArr[Int]()
+  assertEqualInt(empty.count, 0, "Array.Empty<Int>() is a zero-length int32[]")
+}
+
 // ── Gap 2 review follow-up (#6989): box a value-type argument, and unbox a ─
 // value-type return, at a method-own-generic (witnessed-as-Object) position.
 //

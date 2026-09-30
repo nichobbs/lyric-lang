@@ -1943,6 +1943,25 @@ diagnostic; when the jmods directory is absent (no JDK found), the auto-FFI
 falls back to the legacy object-typed binding and a `NoClassDefFoundError` at
 class-load time is possible.
 
+**Generic BCL methods.** On `--target dotnet`, an `@externTarget` naming a
+method with its own generic parameters (`Enumerable.First<TSource>`,
+`Array.Empty<T>`) is called through a MethodSpec that instantiates each
+parameter with `System.Object`: Lyric's generic collections store boxed
+elements, so `IEnumerable[Int]` is an `IEnumerable<object>` at run time, and
+a bare `T` argument or return the wrapper declares as a value type is boxed
+or unboxed at the call. A `T[]` position is the exception, because a
+`slice[Int]` is a real `int32[]`. When the wrapper declares that position
+as `slice[E]`, `T` is instantiated with `E` (`func allocInts(n: in Int,
+pinned: in Bool): slice[Int]` over `GC.AllocateArray<T>` builds an
+`int32[]`). Every other use of that `T` must then also be declared `E`. A
+use that cannot be, such as `T` inside an `IEnumerable[T]` alias beside a
+`slice[Int]` return, is a build error (**F0015**). An extern-type alias
+argument or receiver, which the wrapper's own signature carries as `object`,
+is cast to the type the BCL method declares for it (`System.Array`,
+`List<SslApplicationProtocol>`, `IEnumerable<object>`). A value that is not
+of that type fails with `InvalidCastException` at the call boundary instead
+of inside the method (#7783).
+
 **Function-typed parameters (typed delegate binding, D122).** On
 `--target dotnet`, a lambda passed directly to an `@externTarget`
 function's own `TFunction`-typed parameter binds to a real closed
