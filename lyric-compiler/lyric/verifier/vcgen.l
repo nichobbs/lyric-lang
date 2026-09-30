@@ -262,7 +262,24 @@ func findRecordFieldSort(env: in VEnv, recName: in String, fieldName: in String)
 func translateLit(lit: in Literal): Term {
   match lit {
     case LBool(v) -> TLit(value = VLBool(b = v), sort = SBool)
-    case LInt(v, _, _) -> TLit(value = VLInt(n = v), sort = SInt)
+    case LInt(v, suffix, _) -> {
+      // A `u64` literal from 2^63 to 2^64-1 is carried as its negative
+      // two's-complement pattern (#7839); its integer value is v + 2^64,
+      // spelled as v + 2^62 * 4 since 2^64 is not a Long.
+      val isU64 = match suffix { case U64 -> true; case _ -> false }
+      if isU64 and v < 0i64 {
+        val twoPow64 = TBuiltin(
+          op = BOpMul,
+          args = termList2(
+            TLit(value = VLInt(n = 4611686018427387904i64), sort = SInt),
+            TLit(value = VLInt(n = 4i64), sort = SInt)
+          )
+        )
+        TBuiltin(op = BOpAdd, args = termList2(TLit(value = VLInt(n = v), sort = SInt), twoPow64))
+      } else {
+        TLit(value = VLInt(n = v), sort = SInt)
+      }
+    }
     case LFloat(v, _, _) -> TLit(value = VLFloat(f = v), sort = SFloat64)
     case LString(s) -> TLit(value = VLString(s = s), sort = SString)
     case LTripleString(s) -> TLit(value = VLString(s = s), sort = SString)

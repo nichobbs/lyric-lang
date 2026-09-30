@@ -1628,6 +1628,41 @@ test "inline refined half open excludes hi" {
   assertTrue(hasDiagCode(cr, "T0015"), "inline-range half-open excludes hi: T0015")
 }
 
+// #7839: a `ULong` bound or literal above Long.MaxValue is carried as a
+// negative 64-bit pattern, so range checks on a `ULong` base order unsigned.
+test "ulong range subtype bounds above Long max are ordered unsigned" {
+  val ok = parseCheck("package P\ntype Big = ULong range 9223372036854775808u64 ..= 18446744073709551615u64\n")
+  assertTrue(not hasDiagCode(ok, "T0090"), "ULong range above Long.Max: no T0090")
+  val low = parseCheck("package P\ntype Wide = ULong range 0u64 ..= 18446744073709551615u64\n")
+  assertTrue(not hasDiagCode(low, "T0090"), "ULong full range: no T0090")
+  val bad = parseCheck("package P\ntype Bad = ULong range 18446744073709551615u64 ..= 9223372036854775808u64\n")
+  assertTrue(hasDiagCode(bad, "T0090"), "ULong reversed range: T0090")
+  assertTrue(
+    diagMessagesContain(bad, "18446744073709551615 ..= 9223372036854775808"),
+    "ULong reversed range: bounds shown unsigned"
+  )
+  val halfOpen = parseCheck("package P\ntype H = ULong range 18446744073709551615u64 ..< 18446744073709551615u64\n")
+  assertTrue(hasDiagCode(halfOpen, "T0090"), "ULong empty half-open range: T0090")
+}
+
+test "ulong inline refined literal above Long max is ordered unsigned" {
+  val inRange = parseCheck(
+    "package P\nfunc f(): Unit {\n  val x: ULong range 0u64 ..= 18446744073709551615u64 = 18446744073709551614u64\n}\n"
+  )
+  assertTrue(not hasDiagCode(inRange, "T0015"), "ULong inline range: 2^64-2 in bounds")
+  val above = parseCheck(
+    "package P\nfunc f(): Unit {\n  val x: ULong range 0u64 ..= 10u64 = 18446744073709551615u64\n}\n"
+  )
+  assertTrue(hasDiagCode(above, "T0015"), "ULong inline range: 2^64-1 above 10")
+  assertTrue(diagMessagesContain(above, "literal 18446744073709551615 "), "ULong inline range: literal shown unsigned")
+  val below = parseCheck(
+    "package P\nfunc f(): Unit {\n  val x: ULong range 9223372036854775808u64 ..= 18446744073709551615u64 = 5u64\n}\n"
+  )
+  assertTrue(hasDiagCode(below, "T0015"), "ULong inline range: 5 below 2^63")
+  val plain = parseCheck("package P\nfunc f(): Unit {\n  val x: ULong = 18446744073709551615u64\n}\n")
+  assertEqualInt(diagCount(plain), 0, "ULong max literal: clean")
+}
+
 // #7346: an unsuffixed literal outside Int's range is not an Int.
 test "int literal out of range for Int is T0015" {
   val cr = parseCheck("package P\nfunc f(): Unit {\n  val x: Int = 2147483648\n}\n")

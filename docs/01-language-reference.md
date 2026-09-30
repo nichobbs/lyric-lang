@@ -80,6 +80,8 @@ The compiler enforces one direction: a non-experimental `pub` function may not c
 
 An unsuffixed integer literal is an `Int` when its value fits `Int` (`-2147483648 ..= 2147483647`) and a `Long` otherwise; it is never a wrapped `Int` (#7346).  `-2147483648` is an `Int`.  Next to an operand of another integer type the literal takes that type when its value fits it (`b == 200` with `b: Byte`).  An unsuffixed literal outside the range of the plain integer type a binding declares is `T0015` (`val x: Int = 3000000000`); as a call argument it is an ordinary type mismatch.
 
+A literal's magnitude must fit its suffix's type, or the lexer reports `L0010`.  A `u64` literal takes the whole unsigned 64-bit range in every base (`18446744073709551615u64`, `0xFFFF_FFFF_FFFF_FFFFu64`), and `u8`/`u16`/`u32` literals are bounded by `255`/`65535`/`4294967295` (`4294967296u32` is `L0010`).  An unsuffixed or signed-suffixed literal's magnitude is bounded by `Long.MaxValue`, except that `9223372036854775808` is accepted as the operand of a unary minus (`-9223372036854775808` is `Long.MinValue`) (#7839).
+
 C-style leading-zero octal (`0755`) is rejected by the lexer.
 
 An unrecognised suffix on a numeric literal (e.g. `100xyz`) is a lexer error (`L0015`). A based literal with no valid digits after the prefix (e.g. bare `0x`, `0b___` with only underscores) is also a lexer error (`L0016`).

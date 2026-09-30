@@ -323,11 +323,11 @@ pub union Punct {
   case Dot
 }
 
-/// A token produced by the lexer.  `intValue` is unsigned in spirit
-/// (the parser reattaches a leading `-`), but we represent it as `Long`
-/// because Lyric does not yet have a `ULong` literal form in this
-/// module's surface area; values that overflow `Long.MaxValue` are
-/// reported via L0010 and replaced with 0.
+/// A token produced by the lexer.  An integer literal's value is its
+/// magnitude (the parser reattaches a leading `-`), carried as a `Long`.
+/// A `u64` literal from 2^63 to 2^64-1 is carried as the same 64-bit
+/// two's-complement pattern, which is what both backends load.  A value
+/// outside its suffix's range is reported via L0010 and replaced with 0.
 @stable(since = "0.1")
 pub union Token {
   case TKeyword(kw: Keyword)
@@ -1445,6 +1445,120 @@ func parseDigits(body: in String, base: in Int): Option[Long] {
   }
 }
 
+/// Parse a digit string in the given base as an unsigned 64-bit
+/// magnitude (the `u64` suffix, #7839).  A value from 2^63 to 2^64-1 is
+/// returned as its 64-bit two's-complement pattern, so
+/// `18446744073709551615u64` yields -1.  Returns `None` above 2^64-1, on
+/// empty input, or on a character outside the base's digit set.
+///
+/// The magnitude is accumulated as two 32-bit limbs held in `Long`s so no
+/// intermediate product can overflow (every limb stays below 2^32 and
+/// `base` is at most 16).
+@pure
+func parseDigitsU64(body: in String, base: in Int): Option[Long] {
+  if body.length == 0 {
+    return None
+  }
+  val baseL = base.toLong()
+  val two32: Long = 4294967296i64
+  var hi: Long = 0i64
+  var lo: Long = 0i64
+  var bad = false
+  var i = 0
+  while i < body.length and not bad {
+    val d = digitValue(body[i])
+    if d < 0 or d >= base {
+      bad = true
+    } else {
+      val t = lo * baseL + d.toLong()
+      lo = t % two32
+      hi = hi * baseL + t / two32
+      if hi >= two32 {
+        bad = true
+      }
+    }
+    i = i + 1
+  }
+  if bad {
+    None
+  } else if hi >= 2147483648i64 {
+    Some(value = (hi - two32) * two32 + lo)
+  } else {
+    Some(value = hi * two32 + lo)
+  }
+}
+
+/// The largest magnitude a narrow unsigned suffix admits, or `None` for
+/// every other suffix.  `u64` is range-checked by `parseDigitsU64`.
+@pure
+func unsignedSuffixMax(suffix: in IntSuffix): Option[Long] {
+  match suffix {
+    case U8 -> Some(value = 255i64)
+    case U16 -> Some(value = 65535i64)
+    case U32 -> Some(value = 4294967295i64)
+    case _ -> None
+  }
+}
+
+/// The source spelling of an integer suffix, for diagnostics.
+@pure
+func intSuffixSpelling(suffix: in IntSuffix): String {
+  match suffix {
+    case I8 -> "i8"
+    case I16 -> "i16"
+    case I32 -> "i32"
+    case I64 -> "i64"
+    case U8 -> "u8"
+    case U16 -> "u16"
+    case U32 -> "u32"
+    case U64 -> "u64"
+    case NoIntSuffix -> ""
+  }
+}
+
+/// Outcome of parsing an integer literal's digits against its suffix.
+union IntLiteralValue {
+  case IntLitOk(value: Long)
+  /// The digits do not form a value that fits the suffix's type.
+  /// `message` is the L0010 text.
+  case IntLitOutOfRange(message: String)
+}
+
+/// Parse an integer literal body (underscores already stripped) in
+/// `base` against `suffix`.  `u64` takes the full unsigned 64-bit range;
+/// `u8`/`u16`/`u32` are bounded by their type's maximum; every other
+/// suffix takes the signed 64-bit range via `parseDigits` (a narrower
+/// type's bound is the type checker's job, since a signed literal's
+/// magnitude may be negated).
+@pure
+func parseIntLiteralValue(body: in String, base: in Int, suffix: in IntSuffix): IntLiteralValue {
+  match suffix {
+    case U64 -> match parseDigitsU64(body, base) {
+      case Some(v) -> IntLitOk(value = v)
+      case None -> IntLitOutOfRange(
+        message = "integer literal out of range for `u64` (0 ..= 18446744073709551615)"
+      )
+    }
+    case _ -> match parseDigits(body, base) {
+      case None -> IntLitOutOfRange(message = "integer literal out of range")
+      case Some(v) -> match unsignedSuffixMax(suffix) {
+        case None -> IntLitOk(value = v)
+        case Some(maxV) -> {
+          // `parseDigits` hands back 2^63 as Long.MinValue's pattern;
+          // that magnitude is above every narrow unsigned maximum.
+          if v < 0i64 or v > maxV {
+            IntLitOutOfRange(
+              message = "integer literal out of range for `" + intSuffixSpelling(suffix) + "` (0 ..= " + toString(maxV) + ")"
+            )
+          } else {
+            IntLitOk(value = v)
+          }
+        }
+      }
+    }
+  }
+}
+
 func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Unit {
   // Already at the leading `0`; consume it plus the base char.
   advance(state)        // '0'
@@ -1475,14 +1589,14 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
     raw = raw + split.body
   }
   val body = stripUnderscores(raw)
-  match parseDigits(body, base) {
-    case Some(v) -> emit(
+  match parseIntLiteralValue(body, base, split.suffix) {
+    case IntLitOk(v) -> emit(
       state,
       TInt(value = v, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)),
       startP
     )
-    case None -> {
-      recordError(state, "L0010", "integer literal out of range", makeSpan(startP, currentPosition(state)))
+    case IntLitOutOfRange(msg) -> {
+      recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
       emit(state, TInt(value = 0i64, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
     }
   }
@@ -1615,8 +1729,8 @@ func lexDecimalNumber(state: inout LexerState): Unit {
         makeSpan(startP, currentPosition(state))
       )
     }
-    match parseDigits(stripped, 10) {
-      case Some(v) -> {
+    match parseIntLiteralValue(stripped, 10, isplit.suffix) {
+      case IntLitOk(v) -> {
         // #425 item 5: when `parseDigits` accepts `9223372036854775808`
         // it stores the bit pattern of Long.MinValue.  That value is
         // ONLY well-formed when the literal is the operand of a unary
@@ -1624,7 +1738,9 @@ func lexDecimalNumber(state: inout LexerState): Unit {
         // back to Long.MinValue).  Fire L0010 here so a bare literal
         // is flagged; the parser cancels the diagnostic when it
         // builds the PreNeg + literal pair (#1174 review finding).
-        if isMinValueAbsOverflow(stripped, 10) {
+        // A `u64` literal of 2^63 is an ordinary ULong value (#7839).
+        val isU64 = match isplit.suffix { case U64 -> true; case _ -> false }
+        if isMinValueAbsOverflow(stripped, 10) and not isU64 {
           recordError(
             state,
             "L0010",
@@ -1634,8 +1750,8 @@ func lexDecimalNumber(state: inout LexerState): Unit {
         }
         emit(state, TInt(value = v, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
-      case None -> {
-        recordError(state, "L0010", "integer literal out of range", makeSpan(startP, currentPosition(state)))
+      case IntLitOutOfRange(msg) -> {
+        recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
         emit(state, TInt(value = 0i64, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
     }

@@ -89,7 +89,8 @@ for t in \
   lyric-compiler/lyric/list_insert_self_test.l \
   lyric-compiler/lyric/list_literal_join_self_test.l \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
-  lyric-compiler/lyric/unsigned_typed_ops_self_test.l ; do
+  lyric-compiler/lyric/unsigned_typed_ops_self_test.l \
+  lyric-compiler/lyric/unsigned_literal_max_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"

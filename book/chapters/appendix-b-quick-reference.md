@@ -20,6 +20,7 @@
 0b1010        // binary
 1_000_000     // underscore separators
 100u32        // integer type suffix: u8 u16 u32 u64 i8 i16 i32 i64
+18446744073709551615u64  // a u64 literal spans the full unsigned range
 3.14          // float
 2.5e10        // float with exponent
 3.14f32       // float type suffix: f32 f64

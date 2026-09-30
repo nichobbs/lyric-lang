@@ -553,6 +553,115 @@ test "truly overflowing literal still fires l0010" {
   assertTrue(intValueAt(r, 3) == 0i64, "regular overflow: value substituted with 0")
 }
 
+// #7839: a `u64` literal takes the full unsigned 64-bit range; a value
+// from 2^63 to 2^64-1 is carried as its two's-complement pattern.
+func sawDiag(r: in LexResult, code: in String): Bool {
+  var i = 0
+  while i < r.diagnostics.count {
+    if r.diagnostics[i].code == code {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func suffixAt(lr: in LexResult, i: in Int): String {
+  match tokenAt(lr, i).token {
+    case TInt(_, sfx, _) -> match sfx {
+      case U32 -> "u32"
+      case U64 -> "u64"
+      case I64 -> "i64"
+      case NoIntSuffix -> ""
+      case _ -> "other"
+    }
+    case _ -> "not-int"
+  }
+}
+
+test "u64 literals span the full unsigned range" {
+  val zero = lex("0u64")
+  assertEqualInt(diagCount(zero), 0, "0u64: no diagnostics")
+  assertTrue(intValueAt(zero, 0) == 0i64, "0u64: value 0")
+  assertEqual(suffixAt(zero, 0), "u64", "0u64: suffix")
+
+  val maxSigned = lex("9223372036854775807u64")
+  assertEqualInt(diagCount(maxSigned), 0, "2^63-1 u64: no diagnostics")
+  assertTrue(intValueAt(maxSigned, 0) == 9223372036854775807i64, "2^63-1 u64: value")
+
+  val half = lex("9223372036854775808u64")
+  assertEqualInt(diagCount(half), 0, "2^63 u64: no L0010")
+  assertTrue(intValueAt(half, 0) == -9223372036854775808i64, "2^63 u64: pattern is Long.MinValue")
+
+  val max = lex("18446744073709551615u64")
+  assertEqualInt(diagCount(max), 0, "2^64-1 u64: no L0010")
+  assertTrue(intValueAt(max, 0) == -1i64, "2^64-1 u64: pattern is -1")
+
+  val underscored = lex("18_446_744_073_709_551_614u64")
+  assertEqualInt(diagCount(underscored), 0, "2^64-2 u64 with underscores: no L0010")
+  assertTrue(intValueAt(underscored, 0) == -2i64, "2^64-2 u64: pattern is -2")
+}
+
+test "u64 hex binary and octal literals span the full unsigned range" {
+  val hex = lex("0xFFFF_FFFF_FFFF_FFFFu64")
+  assertEqualInt(diagCount(hex), 0, "0xFFFFFFFFFFFFFFFFu64: no L0010")
+  assertTrue(intValueAt(hex, 0) == -1i64, "0xFFFFFFFFFFFFFFFFu64: pattern is -1")
+  assertEqual(suffixAt(hex, 0), "u64", "0xFFFFFFFFFFFFFFFFu64: suffix")
+
+  val hexHalf = lex("0x8000000000000000u64")
+  assertEqualInt(diagCount(hexHalf), 0, "0x8000000000000000u64: no L0010")
+  assertTrue(intValueAt(hexHalf, 0) == -9223372036854775808i64, "0x8000000000000000u64: Long.MinValue pattern")
+
+  val oct = lex("0o1777777777777777777777u64")
+  assertEqualInt(diagCount(oct), 0, "octal 2^64-1 u64: no L0010")
+  assertTrue(intValueAt(oct, 0) == -1i64, "octal 2^64-1 u64: pattern is -1")
+
+  val bin = lex("0b1000000000000000000000000000000000000000000000000000000000000001u64")
+  assertEqualInt(diagCount(bin), 0, "binary 2^63+1 u64: no L0010")
+  assertTrue(intValueAt(bin, 0) == -9223372036854775807i64, "binary 2^63+1 u64: pattern")
+}
+
+test "u64 literals above 2^64-1 fire l0010" {
+  val over = lex("18446744073709551616u64")
+  assertTrue(sawDiag(over, "L0010"), "2^64 u64: L0010")
+  assertTrue(intValueAt(over, 0) == 0i64, "2^64 u64: value substituted with 0")
+
+  val hexOver = lex("0x1_0000_0000_0000_0000u64")
+  assertTrue(sawDiag(hexOver, "L0010"), "0x10000000000000000u64: L0010")
+
+  val far = lex("99999999999999999999999u64")
+  assertTrue(sawDiag(far, "L0010"), "far past 2^64 u64: L0010")
+}
+
+test "signed and unsuffixed literals keep the signed 64-bit range" {
+  val hex = lex("0xFFFFFFFFFFFFFFFF")
+  assertTrue(sawDiag(hex, "L0010"), "unsuffixed 0xFFFFFFFFFFFFFFFF: L0010")
+  val i64Over = lex("18446744073709551615i64")
+  assertTrue(sawDiag(i64Over, "L0010"), "2^64-1 i64: L0010")
+  val bareHalf = lex("9223372036854775808i64")
+  assertTrue(sawDiag(bareHalf, "L0010"), "bare 2^63 i64: L0010")
+}
+
+test "narrow unsigned literals are bounded by their type" {
+  val u32Max = lex("4294967295u32")
+  assertEqualInt(diagCount(u32Max), 0, "4294967295u32: no diagnostics")
+  assertTrue(intValueAt(u32Max, 0) == 4294967295i64, "4294967295u32: value")
+  val u32Hex = lex("0xFFFF_FFFFu32")
+  assertEqualInt(diagCount(u32Hex), 0, "0xFFFFFFFFu32: no diagnostics")
+  assertTrue(intValueAt(u32Hex, 0) == 4294967295i64, "0xFFFFFFFFu32: value")
+  val u32Over = lex("4294967296u32")
+  assertTrue(sawDiag(u32Over, "L0010"), "4294967296u32: L0010")
+  assertTrue(intValueAt(u32Over, 0) == 0i64, "4294967296u32: value substituted with 0")
+  val u16Over = lex("65536u16")
+  assertTrue(sawDiag(u16Over, "L0010"), "65536u16: L0010")
+  val u16Max = lex("65535u16")
+  assertEqualInt(diagCount(u16Max), 0, "65535u16: no diagnostics")
+  val u8Over = lex("0x100u8")
+  assertTrue(sawDiag(u8Over, "L0010"), "0x100u8: L0010")
+  val u8Max = lex("255u8")
+  assertEqualInt(diagCount(u8Max), 0, "255u8: no diagnostics")
+}
+
 // #425 item 2: a `// /*` sequence inside a line comment must NOT
 // open a block comment.  The line-comment scanner is checked before
 // the block-comment scanner (`skipTrivia` dispatch order), so a
