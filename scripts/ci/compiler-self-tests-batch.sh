@@ -126,6 +126,9 @@ for t in \
   lyric-compiler/lyric/list_literal_join_self_test.l \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
+  lyric-compiler/lyric/byte_stringify_self_test.l \
+  lyric-compiler/lyric/byte_stringify_dotnet_self_test.l \
+  lyric-compiler/lyric/byte_erased_positions_self_test.l \
   lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
   lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \
@@ -191,6 +194,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/derive-json-cross-package-jvm-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/derive-json-cross-package-jvm-e2e.sh
   ran="$ran derive-json-cross-package-jvm-e2e"
+fi
+# #7852: the text `println(<Byte>)` writes, both targets (this job has Java
+# 21, same precedent as the e2e scripts above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/byte-println-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/byte-println-e2e.sh
+  ran="$ran byte-println-e2e"
 fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2

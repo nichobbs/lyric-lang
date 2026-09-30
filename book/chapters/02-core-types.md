@@ -145,7 +145,7 @@ Per decision log D011, TypeScript's "branded type" pattern (`type UserId = Long 
 -42i64          // explicit i64 (Long)
 ```
 
-The suffix names map to Lyric types: `u8` → `Byte`, `u32` → `UInt`, `u64` → `ULong`, `i32` → `Int`, `i64` → `Long`.
+The suffix names map to Lyric types: `u8` → `Byte`, `u16` and `u32` → `UInt`, `u64` → `ULong`, `i8`, `i16` and `i32` → `Int`, `i64` → `Long`. Lyric has no 8- or 16-bit signed type, so `i8` and `i16` only bound the literal's value; an `i8` literal is an `Int`, not a `Byte` (write `u8` for a `Byte`). Every suffix bounds its literal by its own range, so `300i8` and `4294967296u32` are compile errors.
 
 **Float literals** similarly accept a suffix:
 

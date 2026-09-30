@@ -964,9 +964,19 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             case U32 -> true
             case _ -> false
           }
+          val isByte = match suffix { case U8 -> true; case _ -> false }
           if isLong {
             insns.add(LLconst(v = v))
             JLong
+          } else if isByte {
+            // A `u8` literal is a `Byte`, already in the canonical unsigned
+            // 0..255 form (the lexer bounds it).  Typed `JInt`, it boxed as
+            // `java.lang.Integer` into an erased position (`Some(200u8)`, a
+            // generic field, a list element), which the reader's `Byte`
+            // checkcast rejected, and `Byte op u8` arithmetic did not wrap
+            // (#7852; mirrors the MSIL backend's `MByte` literal).
+            insns.add(LIconst(v = v.toInt()))
+            JByte
           } else if isExplicit32OrNarrower {
             insns.add(LIconst(v = v.toInt()))
             JInt
@@ -1484,7 +1494,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               } else {
                 coerceArgTo(insns, rTy, JInt)
                 insns.add(LIadd)
-                JInt
+                wrapByteArithJvm(insns, lhsTy, rTy)
               }
             }
           }
@@ -1508,7 +1518,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             }
             case _ -> {
               insns.add(LIsub)
-              JInt
+              wrapByteArithJvm(insns, rawLhsTy, rhsTy)
             }
           }
         }
@@ -1531,7 +1541,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             }
             case _ -> {
               insns.add(LImul)
-              JInt
+              wrapByteArithJvm(insns, rawLhsTy, rhsTy)
             }
           }
         }
@@ -1736,7 +1746,17 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
 
     // ── Function calls ────────────────────────────────────────────────────
     case ECall(fn, args) -> {
-      lowerCall(ctx, insns, fn, args)
+      val callTy = lowerCall(ctx, insns, fn, args)
+      // A Lyric function returning `Byte` has descriptor return type `B`, and
+      // `ireturn` narrows its result as if by `i2b` (JVMS §6.5), so the caller
+      // receives the SIGNED byte.  Re-mask to the canonical unsigned form here,
+      // the one place every call expression's value passes through (#7852;
+      // see maskByteUnsigned in 04_calls.l).
+      match callTy {
+        case JByte -> maskByteUnsigned(insns)
+        case _ -> ()
+      }
+      callTy
     }
 
     // ── Member access ─────────────────────────────────────────────────────
@@ -2631,6 +2651,24 @@ func isFloatJvm(ty: in JvmType): Bool {
   }
 }
 
+// The type of an `iadd`/`isub`/`imul` result already on the stack.  A
+// `Byte op Byte` result is a `Byte`: re-mask it to the canonical unsigned
+// 0..255 form (wrapping modulo 256, as every `Byte` store already does, see
+// maskByteUnsigned in 04_calls.l) and keep it `JByte`, matching the MSIL
+// backend's `conv.u1` (`wrapByteArithMsil`).  Typed `JInt`, it kept an
+// out-of-range value (`toString(200u8 + 100u8)` was "300", #7852).  A mixed
+// pair widens to `Int` (docs/01 §4.3's `Byte < Int` chain) and stays `JInt`.
+func wrapByteArithJvm(insns: in List[LInsn], lhsTy: in JvmType, rhsTy: in JvmType): JvmType {
+  val bothByte = (match lhsTy { case JByte -> true; case _ -> false }) and
+    (match rhsTy { case JByte -> true; case _ -> false })
+  if bothByte {
+    maskByteUnsigned(insns)
+    JByte
+  } else {
+    JInt
+  }
+}
+
 // Reconcile arithmetic operands (`lhs` below `rhs` on the stack) to the type
 // the checker gives the result (#7350).
 func reconcileArithOperands(
@@ -3358,6 +3396,22 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
   JRef(className = "java/lang/String")
 }
 
+// Stringify the erased `Object` on the stack through the package's
+// `__lyricErasedToString` helper.
+func emitErasedToStringJvm(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/Object"))
+  insns.add(
+    LInvokestatic(
+      owner = ctx.pkgName,
+      name = "__lyricErasedToString",
+      params = ps,
+      ret = JRef(className = "java/lang/String")
+    )
+  )
+  markRuntimeHelper(ctx, "__lyricErasedToString")
+}
+
 // Stringify the top-of-stack value for a StringBuilder `append(String)` call:
 // a String is left as-is; any other reference (an erased `Object` slice
 // element, an extern value) calls `Object.toString`; a primitive goes through
@@ -3380,7 +3434,11 @@ func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmT
         }
         case None -> ()
       }
-      if not (c == "java/lang/String") {
+      if c == "java/lang/Object" {
+        // An erased value may be a boxed `Byte`, which renders unsigned
+        // (#7852; see makeErasedToStringHelperFunc in 06_items.l).
+        emitErasedToStringJvm(ctx, insns)
+      } else if not (c == "java/lang/String") {
         val tsPs: List[JvmType] = newList()
         insns.add(
           LInvokevirtual(

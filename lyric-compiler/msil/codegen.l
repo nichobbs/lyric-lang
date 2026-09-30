@@ -457,6 +457,11 @@ pub record CodegenCtx {
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues: Map[String, Int]  // constName → inlined Int value
+  // The MSIL type of each inlined `constValues` entry, under the same keys,
+  // when it is not `MInt`: a literal `Bool`/`Char`/`Byte` const is inlined
+  // as an `ldc.i4` too, and a read typed `MInt` boxed it as `System.Int32`
+  // wherever it met an erased position (#7852).  Absent means `MInt`.
+  constValueTypes: Map[String, MsilType]
   // Bare const/val names claimed by an earlier package's literal const
   // registration — the addPackageTokens pre-pass mirror of the emission
   // side's first-wins bare-name `constValues` adds (#2628).  The pre-pass
@@ -2185,6 +2190,7 @@ pub func newCodegenCtx(
     lambdaClosureEmittedCount = newList(),
     lambdaClosureCtorTokens = newMap(),
     constValues = newMap(),
+    constValueTypes = newMap(),
     constBareClaimed = newMap(),
     enumTypeNames = newMap(),
     aliasTargets = newMap(),
@@ -5222,25 +5228,40 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
 func registerLiteralConstMsil(cctx: in CodegenCtx, pkgName: in String, name: in String, init: in Expr): Unit {
   val fctx = makeFuncCtxMsil(pkgName, pkgName, "__const_prescan", 0, MVoid)
   val insns: List[MInsn] = newList()
-  lowerExprMsil(cctx, fctx, insns, init)
+  val litTy = lowerExprMsil(cctx, fctx, insns, init)
   if insns.count != 1 {
     return
   }
   match insns[0] {
     case MLdcI4(v) -> {
-      val slashKey = pkgName + "/" + name
-      if not cctx.constValues.containsKey(slashKey) {
-        cctx.constValues.add(slashKey, v)
-      }
-      val dotKey = pkgName + "." + name
-      if not cctx.constValues.containsKey(dotKey) {
-        cctx.constValues.add(dotKey, v)
-      }
-      if ownsBareConstMsil(cctx, pkgName, name) and not cctx.constValues.containsKey(name) {
-        cctx.constValues.add(name, v)
+      addConstValueMsil(cctx, pkgName + "/" + name, v, litTy)
+      addConstValueMsil(cctx, pkgName + "." + name, v, litTy)
+      if ownsBareConstMsil(cctx, pkgName, name) {
+        addConstValueMsil(cctx, name, v, litTy)
       }
     }
     case _ -> ()
+  }
+}
+
+// Register an inlined literal const under `key` (first wins), with the MSIL
+// type its `ldc.i4` stands for.
+func addConstValueMsil(cctx: in CodegenCtx, key: in String, v: in Int, ty: in MsilType): Unit {
+  if not cctx.constValues.containsKey(key) {
+    cctx.constValues.add(key, v)
+    match ty {
+      case MInt -> ()
+      case _ -> cctx.constValueTypes.add(key, ty)
+    }
+  }
+}
+
+// The MSIL type an inlined const read under `key` pushes (see
+// `CodegenCtx.constValueTypes`).
+func constValueTypeMsil(cctx: in CodegenCtx, key: in String): MsilType {
+  match mapGet(cctx.constValueTypes, key) {
+    case Some(t) -> t
+    case None -> MInt
   }
 }
 
@@ -5353,6 +5374,8 @@ func inferUntypedStaticValMsilType(
         // matching what `lowerExprMsil`'s real ELiteral lowering now
         // produces regardless of the literal's unsigned magnitude.
         case U32 -> MInt
+        // `u8` is a `Byte` (#7852), as `lowerExprMsil` types it.
+        case U8 -> MByte
         case _ -> if v >= -2147483648i64 and v <= 2147483647i64 {
           MInt
         } else {
@@ -5418,6 +5441,8 @@ func inferUntypedStaticValMsilType(
             case MString -> MString
             case MLong -> MLong
             case MDouble -> MDouble
+            // `Byte op Byte` stays `Byte` (`wrapByteArithMsil`).
+            case MByte -> if isByteMsil(inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)) { MByte } else { MInt }
             case _ -> MInt
           }
         }
@@ -5425,6 +5450,7 @@ func inferUntypedStaticValMsilType(
           match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MLong -> MLong
             case MDouble -> MDouble
+            case MByte -> if isByteMsil(inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)) { MByte } else { MInt }
             case _ -> MInt
           }
         }
@@ -10209,7 +10235,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
   if qConstName.length > 0 {
     val qConstVal = match mapGet(cctx.constValues, qConstName) { case Some(v) -> v; case None -> 0 }
     insns.add(MLdcI4(v = qConstVal))
-    return MInt
+    return constValueTypeMsil(cctx, qConstName)
   }
   // A config-block field reached through a FULL package-qualified spelling
   // (`Pkg.BlockName.field`, examples/jobqueue's `JobQueue.Worker.Worker.pollIntervalMs`
@@ -10255,6 +10281,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case U32 -> {
               insns.add(MLdcI4(v = int32BitsOfUnsignedMsil(v)))
               MInt
+            }
+            // A `u8` literal is a `Byte` (#5703): type it `MByte`, as every
+            // other `Byte` value is.  Typed `MInt`, it boxed as `System.Int32`
+            // wherever it met an erased position (a lambda's result or
+            // argument under the `Func<object,…>` ABI, a generic function
+            // value), and the reader's `unbox.any System.Byte` threw
+            // InvalidCastException (#7852).  The lexer bounds it to 0..255.
+            case U8 -> {
+              insns.add(MLdcI4(v = v.toInt()))
+              MByte
             }
             case _ -> {
               if v >= -2147483648i64 and v <= 2147483647i64 {
@@ -10413,14 +10449,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // constant always wins, so a same-named, different-valued const in
           // another package can never silently inline the wrong value here.
           // The bare-name key remains the cross-package fallback (first-wins).
-          val constHit = match mapGet(cctx.constValues, fctx.pkgName + "/" + name) {
-            case Some(qv) -> Some(value = qv)
-            case None -> mapGet(cctx.constValues, name)
-          }
-          match constHit {
+          val constQualKey = fctx.pkgName + "/" + name
+          val constHitKey = if cctx.constValues.containsKey(constQualKey) { constQualKey } else { name }
+          match mapGet(cctx.constValues, constHitKey) {
             case Some(v) -> {
               insns.add(MLdcI4(v = v))
-              MInt
+              constValueTypeMsil(cctx, constHitKey)
             }
             case None -> {
               // Enum case reference (`val l = Debug`): emit the ordinal
@@ -12309,6 +12343,30 @@ func binopTempSlotsUpperBoundMsil(op: in BinOp): Int {
   }
 }
 
+// The type of an int32 `add`/`sub`/`mul` result already on the stack.  A
+// `Byte op Byte` result is a `Byte`: it narrows with `conv.u1` (wrapping
+// modulo 256, as every `Byte` store and every other integer width already
+// does) and stays `MByte`.  Typed `MInt`, it kept an out-of-range value
+// (`toString(200u8 + 100u8)` was "300"), and an erased position (a lambda's
+// result under the `Func<object,…>` ABI) boxed it as `System.Int32`, which
+// the reader's `unbox.any System.Byte` rejected (#7852).  A mixed pair
+// widens to `Int` (docs/01 §4.3's `Byte < Int` chain) and stays `MInt`.
+func wrapByteArithMsil(insns: in List[MInsn], lhsTy: in MsilType, rhsTy: in MsilType): MsilType {
+  if isByteMsil(lhsTy) and isByteMsil(rhsTy) {
+    insns.add(MConvU1)
+    MByte
+  } else {
+    MInt
+  }
+}
+
+func isByteMsil(ty: in MsilType): Bool {
+  match ty {
+    case MByte -> true
+    case _ -> false
+  }
+}
+
 func lowerBinopMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -12742,7 +12800,7 @@ func lowerBinopMsil(
           insns.add(MAdd)
           match baddIWide {
             case MLong -> MLong
-            case _ -> MInt
+            case _ -> wrapByteArithMsil(insns, lhsTy, baddIRhsTy)
           }
         }
       }
@@ -12782,7 +12840,7 @@ func lowerBinopMsil(
         }
         case _ -> {
           insns.add(MSub)
-          MInt
+          wrapByteArithMsil(insns, bsubLhsTy, bsubRhsTy)
         }
       }
     }
@@ -12815,7 +12873,7 @@ func lowerBinopMsil(
         }
         case _ -> {
           insns.add(MMul)
-          MInt
+          wrapByteArithMsil(insns, bmulLhsTy, bmulRhsTy)
         }
       }
     }
@@ -18204,6 +18262,12 @@ func lowerBuiltinOrStaticCallMsil(
             insns.add(MCall(methodToken = cctx.tokWriteLineLong))
           }
         }
+        // A `Byte` is an unsigned `uint8` that every load (`ldloc`/`ldfld`/
+        // `ldelem.u1`/`conv.u1`/call return) zero-extends to an int32 stack
+        // value in 0..255, so the int32 overload prints it unsigned. Falling
+        // through to `WriteLine(string)` passed an int32 where a string
+        // reference was expected: InvalidProgramException (#7852).
+        case MByte -> insns.add(MCall(methodToken = cctx.tokWriteLineInt))
         case MDouble -> insns.add(MCall(methodToken = cctx.tokWriteLineDbl))
         case MBool -> {
           // Lowercase "true"/"false", not BCL Console.WriteLine(bool)'s
@@ -22679,6 +22743,16 @@ func lambdaBodyTrailingValueMsil(blk: in Block): Option[Expr] {
   }
 }
 
+// The result type of `Byte op <rhs>` for `inferLambdaBodyExprMsilType`:
+// `Byte` for a `Byte` rhs, unknown for an unresolved one, `Int` otherwise.
+func byteArithRhsMsilType(rhsTy: in MsilType): MsilType {
+  match rhsTy {
+    case MByte -> MByte
+    case MObject -> MObject
+    case _ -> MInt
+  }
+}
+
 // Infers a lambda-literal body's trailing-value type, for the
 // `registerFieldFuncValTypesMsil` `ELambda` arm below. Mirrors
 // `inferUntypedStaticValMsilType`'s dispatch (and delegates to it directly
@@ -22714,12 +22788,30 @@ func inferLambdaBodyExprMsilType(
         case MLong -> MLong
         case MDouble -> MDouble
         case MObject -> MObject
+        // `Byte op Byte` stays `Byte` (`wrapByteArithMsil`); an unresolved rhs
+        // propagates as unknown.
+        case MByte -> byteArithRhsMsilType(
+          inferLambdaBodyExprMsilType(
+            rhs,
+            paramEnv,
+            cctx,
+            pkgName
+          )
+        )
         case _ -> MInt
       }
       case BSub | BMul -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
         case MLong -> MLong
         case MDouble -> MDouble
         case MObject -> MObject
+        case MByte -> byteArithRhsMsilType(
+          inferLambdaBodyExprMsilType(
+            rhs,
+            paramEnv,
+            cctx,
+            pkgName
+          )
+        )
         case _ -> MInt
       }
       case BDiv -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
@@ -42076,7 +42168,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         // constant; other types (Float, String, etc.) use FDA_INIT_ONLY with
         // .cctor initialisation — same observable semantics, simpler blob format.
         val initInsns: List[MInsn] = newList()
-        lowerExprMsil(cctx, cctorInitFctx, initInsns, decl.init)
+        val constLitTy = lowerExprMsil(cctx, cctorInitFctx, initInsns, decl.init)
         val fieldTy = typeExprToMsilCtx(cctx, decl.ty, pkgName)
         if isLiteralI4ExprMsil(decl.init) {
           val constVal = match initInsns.count {
@@ -42096,13 +42188,8 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           // Register inlined value so EPath emits ldc.i4 directly.  The
           // package-qualified key makes same-package reads exact (#2627);
           // the bare name stays as the cross-package fallback (first-wins).
-          val qualConstKey = pkgName + "/" + decl.name
-          if not cctx.constValues.containsKey(qualConstKey) {
-            cctx.constValues.add(qualConstKey, constVal)
-          }
-          if not cctx.constValues.containsKey(decl.name) {
-            cctx.constValues.add(decl.name, constVal)
-          }
+          addConstValueMsil(cctx, pkgName + "/" + decl.name, constVal, constLitTy)
+          addConstValueMsil(cctx, decl.name, constVal, constLitTy)
           // Dot-qualified key (`Pkg.name`) so an explicitly QUALIFIED reference
           // to this in-bundle literal const resolves — including a
           // self-qualified read from inside `pkgName` itself (#6296).
@@ -42112,10 +42199,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           // unqualified bare key were registered before, so `Pkg.name` fell
           // through to the generic fallback and silently read 0. Mirrors the
           // restored-artifact dot-key convention (#6133) below.
-          val dotConstKey = pkgName + "." + decl.name
-          if not cctx.constValues.containsKey(dotConstKey) {
-            cctx.constValues.add(dotConstKey, constVal)
-          }
+          addConstValueMsil(cctx, pkgName + "." + decl.name, constVal, constLitTy)
         } else {
           // Non-Int constant (Float, String, …): initialise in .cctor.
           staticFields.add(
@@ -42199,14 +42283,9 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               // value; if the name is already taken, keep initInsns so the field
               // receives its proper runtime initialization.  The package-
               // qualified key makes same-package reads exact (#2627).
-              val qualValKey = pkgName + "/" + fieldName
-              if not cctx.constValues.containsKey(qualValKey) {
-                cctx.constValues.add(qualValKey, v)
-              }
+              addConstValueMsil(cctx, pkgName + "/" + fieldName, v, valTy)
               if ownsBareConstMsil(cctx, pkgName, fieldName) {
-                if not cctx.constValues.containsKey(fieldName) {
-                  cctx.constValues.add(fieldName, v)
-                }
+                addConstValueMsil(cctx, fieldName, v, valTy)
                 sfInitInsns = newList()
               }
               // Dot-qualified key (`Pkg.name`) — see the matching IConst
@@ -42217,10 +42296,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               // 0/null read (before the T0115 fail-loud guard existed) or a
               // T0115 compile-time abort (after it), instead of the correct
               // inlined value.
-              val dotValKey = pkgName + "." + fieldName
-              if not cctx.constValues.containsKey(dotValKey) {
-                cctx.constValues.add(dotValKey, v)
-              }
+              addConstValueMsil(cctx, pkgName + "." + fieldName, v, valTy)
             }
             case MLdNull -> {
               // Unit literal `()` → MLdNull: null is the .NET default for reference
