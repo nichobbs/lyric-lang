@@ -9982,6 +9982,31 @@ func lowerNullaryCaseValueMsil(
   }
 }
 
+// Lower one element of a collection literal whose element type is `e`: the
+// element type is the construction hint for a nested literal (`collExpect`)
+// and supplies the type arguments a generic case construction leaves open,
+// so `None` in a `List[Option[Int]]` literal is an `Option<int>`, never an
+// `Option<object>` or an instantiation borrowed from the enclosing binding's
+// `List<Option<int>>` annotation (#7818).  An erased element type leaves the
+// surrounding hints as they are.
+func lowerCollElemMsil(
+  cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], elem: in Expr, e: in MsilType
+): MsilType {
+  val erased = match e { case MObject -> true; case _ -> false }
+  if erased {
+    pushCollExpect(fctx, e)
+    val t = lowerExprMsil(cctx, fctx, insns, elem)
+    popCollExpect(fctx)
+    return t
+  }
+  val saved = pushAnnoHintTyArgs(fctx, e)
+  pushCollExpect(fctx, e)
+  val t = lowerExprMsil(cctx, fctx, insns, elem)
+  popCollExpect(fctx)
+  restoreHintTyArgs(fctx, saved)
+  t
+}
+
 // The union's bare FQN (no arity suffix) that a receiver's already-lowered
 // `MsilType` denotes, or "" when the shape carries no class identity at all.
 // Mirrors `derivedEqualsTokenMsil`'s `MClass`/`MGenericInst` match but also
@@ -11369,9 +11394,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           var celi = 0
           while celi < exprs.count {
             insns.add(MDup)
-            pushCollExpect(fctx, e)
-            val ceTy = lowerExprMsil(cctx, fctx, insns, exprs[celi])
-            popCollExpect(fctx)
+            val ceTy = lowerCollElemMsil(cctx, fctx, insns, exprs[celi], e)
             collSlotArgMsil(cctx, insns, ceTy, e, MConcreteList(elemTy = e))
             insns.add(MListOp(op = LoAdd, elemTy = e))
             celi = celi + 1
@@ -11394,9 +11417,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               while ali < exprs.count {
                 insns.add(MDup)
                 insns.add(MLdcI4(v = ali))
-                pushCollExpect(fctx, e)
-                val aeTy = lowerExprMsil(cctx, fctx, insns, exprs[ali])
-                popCollExpect(fctx)
+                val aeTy = lowerCollElemMsil(cctx, fctx, insns, exprs[ali], e)
                 // An `object[]` stores boxed value elements; a typed array
                 // (`Int[]`, `String[]`, …) stores them unboxed via `stelem <T>`.
                 match e {
@@ -11408,12 +11429,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               }
               MArray(elemTy = e)
             }
+            // An element type with no array token (a class, a closed generic
+            // such as `Option<int>`) keeps the erased `List<object>`
+            // representation, but each element is still built at `e`, so a
+            // `None` beside `Some(1)` is the `Option<int>` its readers cast
+            // to (#7818).
             case None -> {
               insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
               var eli2 = 0
               while eli2 < exprs.count {
                 insns.add(MDup)
-                val eTy2 = lowerExprMsil(cctx, fctx, insns, exprs[eli2])
+                val eTy2 = lowerCollElemMsil(cctx, fctx, insns, exprs[eli2], e)
                 boxIfNeededMsil(cctx, insns, eTy2)
                 insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
                 eli2 = eli2 + 1
@@ -11760,13 +11786,18 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               lowerExprMsil(cctx, fctx, insns, indices[0])
             }
             insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
-            if isValueType(elem) {
+            val closedStdlibGeneric = match elem { case MGenericInst(_, _, _) -> true; case _ -> false }
+            if isValueType(elem) or closedStdlibGeneric {
+              // A closed stdlib generic element (`Option<int>`) is cast as the
+              // `for` loop over the same slice casts it (`emitCollectionForMsil`),
+              // so an indexed read and an iterated one agree (#7818).
               castObjectToMsil(cctx, insns, elem)
             } else {
               // `get_Item` returns `object`; narrow it to the element type the
               // read is tracked as when that type has a single runtime
-              // representation (`narrowObjectToDeclaredTypeMsil`).  A generic,
-              // collection or array element stays `object` (#7755).
+              // representation (`narrowObjectToDeclaredTypeMsil`).  An
+              // in-bundle generic, collection or array element stays `object`
+              // (#7755).
               narrowObjectToDeclaredTypeMsil(cctx, insns, MObject, elem)
             }
             elem

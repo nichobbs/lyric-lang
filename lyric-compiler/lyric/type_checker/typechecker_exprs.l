@@ -8021,6 +8021,146 @@ func recordTuplePatternBinding(tbl: in SymbolTable, sp: in Span, ty: in Type): U
   }
 }
 
+// The join of two element types `typeEquiv` already accepted as one: each
+// hole (`TyError`, an argument a construction left unconstrained, such as
+// `None`'s `T` or `Ok`'s `E`) takes what the other type has in that position.
+// `a` wins wherever neither is a hole.
+func joinOpenTypes(a: in Type, b: in Type): Type {
+  match a {
+    case TyError -> return b
+    case _ -> ()
+  }
+  match b {
+    case TyError -> return a
+    case _ -> ()
+  }
+  match a {
+    case TyUser(aid, an, aargs) -> match b {
+      case TyUser(bid, _, bargs) -> if typeIdEq(aid, bid) and aargs.count == bargs.count {
+        TyUser(id = aid, name = an, args = joinOpenTypeLists(aargs, bargs))
+      } else {
+        a
+      }
+      case _ -> a
+    }
+    case TySlice(ae) -> match b { case TySlice(be) -> TySlice(element = joinOpenTypes(ae, be)); case _ -> a }
+    case TyNullable(ai) -> match b { case TyNullable(bi) -> TyNullable(inner = joinOpenTypes(ai, bi)); case _ -> a }
+    case TyTuple(aes) -> match b {
+      case TyTuple(bes) -> if aes.count == bes.count {
+        TyTuple(elems = joinOpenTypeLists(aes, bes))
+      } else {
+        a
+      }
+      case _ -> a
+    }
+    case _ -> a
+  }
+}
+
+func joinOpenTypeLists(xs: in List[Type], ys: in List[Type]): List[Type] {
+  val acc: List[Type] = newList()
+  var i = 0
+  while i < xs.count {
+    acc.add(joinOpenTypes(xs[i], ys[i]))
+    i = i + 1
+  }
+  acc
+}
+
+// Record the checked type `t` of a list literal typed with no collection type
+// expected of it (see `SymbolTable.listLiteralTypeSites`).  Only a literal
+// whose element type is or contains a generic instantiation is recorded: a
+// backend builds any other element type's literal from the elements alone.
+// `t` may name the enclosing function's type parameters, which `Lyric.Mono`
+// substitutes when it specialises the body; a type the join leaves open
+// (`[None, None]`) is left as written.
+func recordListLiteralType(sc: in Scope, tbl: in SymbolTable, lit: in Expr, t: in Type): Unit {
+  val sp = lit.span
+  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return
+  }
+  if not typeMentionsGenericInst(t) or not typeIsClosedOver(t, sc.genericNames) {
+    return
+  }
+  match typeExprForOpenBinding(tbl, t, sp, sc.genericNames) {
+    case Some(te) -> {
+      val key = recordCopySiteKey(sp)
+      val rendered = renderType(t)
+      match mapGet(tbl.listLiteralTypeSites, key) {
+        case Some(prev) -> if prev.rendered != rendered and not prev.conflicting {
+          markListLiteralConflicting(tbl, key, prev.literalType, prev.rendered, prev.startOffset)
+        }
+        case None -> tbl.listLiteralTypeSites.add(
+          key,
+          ListLiteralTypeSite(
+            literalType = te,
+            rendered = rendered,
+            conflicting = false,
+            startOffset = sp.startPos.offset
+          )
+        )
+      }
+    }
+    case None -> ()
+  }
+}
+
+// A list literal checked where a `List` is expected (an annotated binding, a
+// `List` parameter or field) is built as that `List`, so it is never
+// recorded in `SymbolTable.listLiteralTypeSites`, even when another pass
+// typed it with nothing expected (#7818).
+func noteListLiteralInListContext(tbl: in SymbolTable, lit: in Expr): Unit {
+  val sp = lit.span
+  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return
+  }
+  val key = recordCopySiteKey(sp)
+  match mapGet(tbl.listLiteralTypeSites, key) {
+    case Some(prev) -> if not prev.conflicting {
+      markListLiteralConflicting(tbl, key, prev.literalType, prev.rendered, prev.startOffset)
+    }
+    case None -> markListLiteralConflicting(tbl, key, TypeExpr(kind = TUnit, span = sp), "", sp.startPos.offset)
+  }
+}
+
+func markListLiteralConflicting(
+  tbl: in SymbolTable,
+  key: in String,
+  te: in TypeExpr,
+  rendered: in String,
+  startOffset: in Int,
+): Unit {
+  if tbl.listLiteralTypeSites.containsKey(key) {
+    tbl.listLiteralTypeSites.remove(key)
+  }
+  tbl.listLiteralTypeSites.add(
+    key,
+    ListLiteralTypeSite(literalType = te, rendered = rendered, conflicting = true, startOffset = startOffset)
+  )
+}
+
+// Whether `t` is or contains an instantiation of a generic type.
+func typeMentionsGenericInst(t: in Type): Bool {
+  match t {
+    case TyUser(_, _, args) -> args.count > 0
+    case TySlice(e) -> typeMentionsGenericInst(e)
+    case TyArray(_, e) -> typeMentionsGenericInst(e)
+    case TyNullable(inner) -> typeMentionsGenericInst(inner)
+    case TyTuple(elems) -> {
+      var i = 0
+      while i < elems.count {
+        if typeMentionsGenericInst(elems[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TyRefined(u, _, _, _) -> typeMentionsGenericInst(u)
+    case _ -> false
+  }
+}
+
 // Whether a call's callee `fn` evaluates to a function value (see
 // `recordFuncValueCall`).  A member callee is one only when the receiver's
 // record declares a field of that name (a builtin or method is called by
@@ -8225,8 +8365,18 @@ func inferExprCore(
       }
       if not allSame {
         diag.add(errorDiagnostic("T0041", "list literal elements must share a type", e.span))
+        return TySlice(element = first)
       }
-      TySlice(element = first)
+      // `[Some(1), None]`: each element leaves open what only another fixes,
+      // so the literal's element type is their join (#7818).
+      var joined = first
+      var k = 1
+      while k < elemTs.count {
+        joined = joinOpenTypes(joined, elemTs[k])
+        k = k + 1
+      }
+      recordListLiteralType(sc, tbl, e, TySlice(element = joined))
+      TySlice(element = joined)
     }
 
     case EPrefix(op, inner) -> {
@@ -9363,6 +9513,7 @@ pub func inferExprExpected(
         // codegen actually constructs, never a same-named local shadow.
         val isStdList = isStdCollectionsHostType(tbl, eid, "List")
         if isStdList and eargs.count == 1 {
+          noteListLiteralInListContext(tbl, e)
           val elemTy = eargs[0]
           var li = 0
           while li < elems.count {
@@ -9704,6 +9855,7 @@ func listLiteralArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: 
       case TyUser(pid, _, pArgs) -> {
         val isStdList = isStdCollectionsHostType(tbl, pid, "List")
         if isStdList and pArgs.count == 1 {
+          noteListLiteralInListContext(tbl, argExpr)
           match unrefine(elemTy) {
             case TyError -> true
             case _ -> argSatisfiesParam(tbl, pArgs[0], elemTy)

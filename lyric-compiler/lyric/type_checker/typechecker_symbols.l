@@ -286,6 +286,10 @@ pub record SymbolTable {
   /// binds, keyed by `recordCopySiteKey` of the binding's span (see
   /// `Lyric.Parser.TuplePatternBindingSite`, #7728, #7750).
   tuplePatternBindingSites: Map[String, TuplePatternBindingSite]
+  /// Each list literal checked with no collection type expected of it,
+  /// keyed by `recordCopySiteKey` of the literal's span (see
+  /// `Lyric.Parser.ListLiteralTypeSite`, #7818).
+  listLiteralTypeSites: Map[String, ListLiteralTypeSite]
   /// The checked type of each unannotated module `val` the destructuring
   /// desugaring synthesized, keyed by its name; `annotateModuleVals` writes
   /// it onto the declaration (#7763).
@@ -435,6 +439,7 @@ pub func newSymbolTable(): SymbolTable {
     openBindingSites = newMap(),
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),
+    listLiteralTypeSites = newMap(),
     moduleValTypes = newMap(),
     generatorCallSites = newMap(),
     emptyCollectionCtorSites = newMap(),

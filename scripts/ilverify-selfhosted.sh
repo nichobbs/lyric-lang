@@ -232,6 +232,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/impl_generic_target_self_test.l
   lyric-compiler/lyric/erased_slot_widen_self_test.l
   lyric-compiler/lyric/list_insert_self_test.l
+  lyric-compiler/lyric/list_literal_join_self_test.l
   lyric-compiler/lyric/unannotated_list_result_self_test.l
   lyric-compiler/lyric/long_store_widen_self_test.l
   lyric-compiler/lyric/mixed_width_arith_self_test.l

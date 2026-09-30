@@ -477,6 +477,7 @@ pub func compileToNativeWithFlags(
     pkgLabel = path,
     lineOrigins = noSingleFileOrigins,
     awaitInTryIsHazard = true,
+    bindListLiteralTypes = true,
     contractsEnabled = contractsEnabled,
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = optsRecvOut
@@ -869,6 +870,7 @@ pub func compileProjectToNativeWithFlags(
       pkgLabel = nativePkgLabelAt(packages, mei),
       lineOrigins = nativePkgOriginsAt(originsByPkg, mei),
       awaitInTryIsHazard = true,
+      bindListLiteralTypes = true,
       contractsEnabled = contractsEnabled,
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut

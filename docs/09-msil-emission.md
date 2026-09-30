@@ -488,6 +488,19 @@ CLR generics are reified, so `Result<UserId, OrderError>` and
 `Result<OrderId, OrderError>` are distinct CLR types (good — preserves
 distinct-type identity per principle §1.2).
 
+Because the instantiations are distinct, a case construction must be built
+at the instantiation its readers test for: a bare `None` built as
+`Option_None<object>` is not an `Option<int>`, and a `match` on
+`Option[Int]` does not recognise it. Every construction therefore takes its
+type arguments from the type its position expects. For a list literal, each
+element is built at the literal's element type. A literal with no collection
+type expected of it (`for o in [Some(1), None]`) is first bound by the middle
+end to a local annotated with its checked type, `slice[<joined element
+type>]`, so its elements are built at that type as well
+(`Lyric.Mono.desugarCheckedFile`, #7818). A `slice` of a class type keeps the
+erased `List<object>` representation, and both reads of an element, `for`
+and indexing, cast it back to the closed element type.
+
 ### 8.4 Adding a variant is a breaking change
 
 The compiler emits the variant set into the contract metadata; adding

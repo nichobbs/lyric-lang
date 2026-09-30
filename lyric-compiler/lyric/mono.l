@@ -288,6 +288,11 @@ record MonoState {
   /// the binding's span; `renameTuplePatternBindingsMono` binds it through a
   /// local annotated with the element type (#7728).
   tuplePatternBindingSites: Map[String, TuplePatternBindingSite]
+  /// Each list literal the type checker typed with no collection type
+  /// expected of it (`SymbolTable.listLiteralTypeSites`), keyed by
+  /// `recordCopySiteKey` of the literal's span; `listLiteralTypedMono` binds
+  /// it through a local annotated with its checked type (#7818).
+  listLiteralTypeSites: Map[String, ListLiteralTypeSite]
   /// Counter for the fresh locals a copy desugar binds (length = next id).
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
@@ -334,6 +339,7 @@ func newMonoState(
     localBindingTypeSites = newMap(),
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),
+    listLiteralTypeSites = newMap(),
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
@@ -1858,6 +1864,41 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       mapGet(state.lambdaTypes, recordCopySiteKey(expr.span))
     } else {
       None
+    }
+    case EBlock(blk) -> typedLocalBlockTE(blk)
+    case _ -> None
+  }
+}
+
+// The annotation of a block `{ val n: T = e; n }`, the shape
+// `listLiteralTypedMono` produces, so a generic call taking such a block as
+// an argument still infers its type arguments (#7818).  `None` for any other
+// block.
+func typedLocalBlockTE(blk: in Block): Option[TypeExpr] {
+  if blk.statements.count != 2 {
+    return None
+  }
+  val tailName = match blk.statements[1].kind {
+    case SExpr(tail) -> match tail.kind {
+      case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+      case _ -> ""
+    }
+    case _ -> ""
+  }
+  if tailName == "" {
+    return None
+  }
+  match blk.statements[0].kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(pat, Some(ty), _) -> match pat.kind {
+        case PBinding(name, None) -> if name == tailName {
+          Some(value = ty)
+        } else {
+          None
+        }
+        case _ -> None
+      }
+      case _ -> None
     }
     case _ -> None
   }
@@ -4029,7 +4070,7 @@ func funcRefLambdaMono(site: in FuncRefSite, sp: in Span): Expr {
 /// could not lower.  Only items containing a site are rewritten, and no
 /// generic is registered, so nothing is specialised here.
 pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, RecordCopySite]): MonoResult {
-  desugarCheckedFile(file, sites, newMap(), newMap(), newMap(), newMap(), newMap())
+  desugarCheckedFile(file, sites, newMap(), newMap(), newMap(), newMap(), newMap(), newMap())
 }
 
 /// The post-type-check desugars: record `.copy(...)` calls (D-progress-948),
@@ -4037,7 +4078,8 @@ pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, Reco
 /// call arguments (D-progress-964), the annotations of unannotated
 /// function-valued (#7711) and open (#7788) locals, the callee types of calls through
 /// function values (#7716) and the element types of the names tuple patterns
-/// bind (#7728), each keyed by the type checker's span key.
+/// bind (#7728), and the checked types of list literals no collection type
+/// was expected of (#7818), each keyed by the type checker's span key.
 pub func desugarCheckedFile(
   file: in SourceFile,
   sites: in Map[String, RecordCopySite],
@@ -4046,9 +4088,10 @@ pub func desugarCheckedFile(
   localBindingTypeSites: in Map[String, TypeExpr],
   funcValueCallSites: in Map[String, FuncValueCallSite],
   tuplePatternBindingSites: in Map[String, TuplePatternBindingSite],
+  listLiteralTypeSites: in Map[String, ListLiteralTypeSite],
 ): MonoResult {
   val noRewrites: Map[String, String] = newMap()
-  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 {
+  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 and listLiteralTypeSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
     return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags)
   }
@@ -4148,6 +4191,18 @@ pub func desugarCheckedFile(
       case None -> ()
     }
     ti = ti + 1
+  }
+  val litKeys = mapKeys(listLiteralTypeSites)
+  var ei = 0
+  while ei < litKeys.count {
+    match mapGet(listLiteralTypeSites, litKeys[ei]) {
+      case Some(site) -> if not site.conflicting {
+        state.listLiteralTypeSites.add(litKeys[ei], site)
+        offsets.add(site.startOffset)
+      }
+      case None -> ()
+    }
+    ei = ei + 1
   }
   val items: List[Item] = newList()
   var i = 0
@@ -4641,6 +4696,45 @@ func funcValueCallMono(
   )
   stmts.add(Statement(kind = SExpr(expr = call), span = sp))
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+}
+
+// A list literal the type checker typed with no collection type expected of
+// it (#7818) becomes
+//
+//   {
+//     val __lyric_ll_<n>: <its checked slice type> = [elements]
+//     __lyric_ll_<n>
+//   }
+//
+// so a backend with reified generics builds every element at the literal's
+// joined element type (`None` beside `Some(1)` is the same `Option<int>`) and
+// reads the value back at that type.
+func listLiteralTypedMono(state: in MonoState, env: in Map[String, TypeExpr], lit: in Expr, elems: in List[Expr]): Expr {
+  val sp = lit.span
+  val newEs: List[Expr] = newList()
+  var i = 0
+  while i < elems.count {
+    newEs.add(rewriteExpr(state, env, elems[i]))
+    i = i + 1
+  }
+  val rebuilt = Expr(kind = EList(exprs = newEs), span = sp)
+  val site: Option[ListLiteralTypeSite] = if state.listLiteralTypeSites.count > 0 and checkerSitesApplyMono(state) {
+    mapGet(state.listLiteralTypeSites, recordCopySiteKey(sp))
+  } else {
+    None
+  }
+  match site {
+    case Some(st) -> {
+      val id = state.copyTicker.count
+      state.copyTicker.add(0)
+      val name = "__lyric_ll_" + toString(id)
+      val stmts: List[Statement] = newList()
+      stmts.add(copyTypedValStmtMono(name, Some(value = st.literalType), rebuilt, sp))
+      stmts.add(Statement(kind = SExpr(expr = singleSegPathExpr(name, sp)), span = sp))
+      Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+    }
+    case None -> rebuilt
+  }
 }
 
 // The type of field `name` recorded on a copy site, when it has one.
@@ -6269,15 +6363,7 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       Expr(kind = ETuple(exprs = newEs), span = s)
     }
 
-    case EList(es) -> {
-      val newEs: List[Expr] = newList()
-      var i = 0
-      while i < es.count {
-        newEs.add(rewriteExpr(state, env, es[i]))
-        i = i + 1
-      }
-      Expr(kind = EList(exprs = newEs), span = s)
-    }
+    case EList(es) -> listLiteralTypedMono(state, env, expr, es)
 
     case EAssign(target, op, value) -> Expr(
       kind = EAssign(
