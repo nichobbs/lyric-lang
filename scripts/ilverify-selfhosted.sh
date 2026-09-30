@@ -235,6 +235,9 @@ SELF_TESTS=(
   lyric-compiler/lyric/mixed_width_arith_self_test.l
   lyric-compiler/lyric/generic_record_var_field_self_test.l
   lyric-compiler/lyric/range_subtype_self_test.l
+  lyric-compiler/lyric/slice_array_abi_self_test.l
+  lyric-compiler/lyric/slice_fastpath_self_test.l
+  lyric-compiler/lyric/list_literal_index_self_test.l
 )
 st_errors=0
 st_failed=()

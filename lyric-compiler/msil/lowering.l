@@ -804,6 +804,12 @@ pub union MInsn {
   // type and ILVerify rejects the I4 operand (`StackUnexpected [found
   // Char]`, #5563 item 1).  Mirrors the existing `MLdelemU2` char-array read.
   case MStelemI2                       // stelem.i2 — uint16 array element (char[])
+  // stelem.i1 — store into an int8 (bool[]) array element.  The `Bool` twin of
+  // `MStelemI2`: a `Bool` pushes as an I4 (`ldc.i4`, `ceq`, ...), which
+  // `stelem.i1` accepts for a `bool[]`, whereas ILVerify rejects it for the
+  // generic `stelem <System.Boolean>` form (`StackUnexpected [found
+  // Boolean]`, #7783).
+  case MStelemI1                       // stelem.i1 — int8 array element (bool[])
 
   // Misc
   case MDup
@@ -2678,6 +2684,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MStelemRef -> emitStelem_Ref(mb)
     case MStelem(tok) -> emitStelem(mb, tok)
     case MStelemI2 -> emitStelem_I2(mb)
+    case MStelemI1 -> emitStelem_I1(mb)
     case MDup -> emitDup(mb)
     case MPop -> emitPop(mb)
     case MThrow -> emitThrow(mb)

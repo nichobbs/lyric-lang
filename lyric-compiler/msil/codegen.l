@@ -6696,6 +6696,21 @@ func pushDefaultValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
   }
 }
 
+// Store the value on the stack into a typed array element (`arr, idx, value`
+// on the stack), with the opcode ILVerify accepts for that element type.  A
+// `Char` or `Bool` value is pushed as an I4 (`ldc.i4`, `ceq`, `ldelem.u2`),
+// which the generic `stelem <System.Char>` / `stelem <System.Boolean>` forms
+// reject (`StackUnexpected [found Char]` #5563 item 1, `[found Boolean]`
+// #7783); the token-less `stelem.i2` / `stelem.i1` take the I4 directly.
+// Every other element type uses `stelem <elemTok>`.
+func emitArrayElemStoreMsil(insns: in List[MInsn], elem: in MsilType, elemTok: in Int): Unit {
+  match elem {
+    case MChar -> insns.add(MStelemI2)
+    case MBool -> insns.add(MStelemI1)
+    case _ -> insns.add(MStelem(typeToken = elemTok))
+  }
+}
+
 // Apply a compound-assignment operator to a current value already on the stack
 // (typed `curTy`), consuming the right-hand `value` expression and leaving the
 // combined result on the stack.  `+=` on a String performs `String.Concat`
@@ -6894,11 +6909,7 @@ func emitSliceCompoundAssignMsil(
   emitLoadSlot(insns, idxSlot, fctx.paramCount)
   emitTypedLdelemMsil(insns, elem)
   emitCompoundCombineSlotMsil(cctx, fctx, insns, op, elem, rTy, rSlot, unsignedRhs)
-  if elem == MChar {
-    insns.add(MStelemI2)
-  } else {
-    insns.add(MStelem(typeToken = elemTok))
-  }
+  emitArrayElemStoreMsil(insns, elem, elemTok)
   insns.add(MBr(label = doneL))
   // List-backed slice: IList get_Item / set_Item on boxed elements.
   insns.add(MLabel(id = slowL))
@@ -8748,14 +8759,13 @@ func emitCellElemStoreMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: i
   if storageTy != elemTy {
     boxIfNeededMsil(cctx, insns, elemTy)
   }
-  // #5563 item 1: `stelem.i2` (token-less) matches a `Char`'s `ldc.i4`-pushed
-  // I4 verification type; the generic `stelem <System.Char>` form fails strict
-  // ILVerify (`StackUnexpected [found Char]`).
+  // `stelem.i2`/`stelem.i1` for a `Char`/`Bool` cell — see
+  // `emitArrayElemStoreMsil`.
   if storageTy == MChar {
     insns.add(MStelemI2)
   } else {
     match arrayElemTokenOpt(cctx, storageTy) {
-      case Some(tok) -> insns.add(MStelem(typeToken = tok))
+      case Some(tok) -> emitArrayElemStoreMsil(insns, storageTy, tok)
       case None -> panic("Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)")
     }
   }
@@ -11158,13 +11168,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   case MObject -> boxIfNeededMsil(cctx, insns, aeTy)
                   case _ -> ()
                 }
-                // #5563 item 1: `stelem.i2` for a `Char` element — see the
-                // `finishHoistedCellMsil` comment above.
-                if e == MChar {
-                  insns.add(MStelemI2)
-                } else {
-                  insns.add(MStelem(typeToken = elemTok))
-                }
+                emitArrayElemStoreMsil(insns, e, elemTok)
                 ali = ali + 1
               }
               MArray(elemTy = e)
@@ -11211,13 +11215,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     val aeTy4 = lowerExprMsil(cctx, fctx, insns, exprs[ali4])
                     popCollExpect(fctx)
                     // e is a simple type (never MObject) so `stelem <T>` stores
-                    // the element unboxed — no box needed.  #5563 item 1:
-                    // `stelem.i2` for a `Char` element.
-                    if e == MChar {
-                      insns.add(MStelemI2)
-                    } else {
-                      insns.add(MStelem(typeToken = elemTok))
-                    }
+                    // the element unboxed — no box needed.
+                    emitArrayElemStoreMsil(insns, e, elemTok)
                     ali4 = ali4 + 1
                   }
                   MArray(elemTy = e)
@@ -13858,7 +13857,7 @@ func lowerAssignExprMsil(
                     emitLoadSlot(insns, idxSlot, fctx.paramCount)
                     emitLoadSlot(insns, valSlot, fctx.paramCount)
                     match arrayElemTokenOpt(cctx, elem) {
-                      case Some(tok) -> if elem == MChar { insns.add(MStelemI2) } else { insns.add(MStelem(typeToken = tok)) }
+                      case Some(tok) -> emitArrayElemStoreMsil(insns, elem, tok)
                       case None -> panic("Msil.Codegen: slice store fast path has no element token (invariant violation)")
                     }
                     insns.add(MBr(label = doneL))
@@ -19472,12 +19471,7 @@ func emitSliceCopyLoopMsil(
       insns.add(MAdd)
       emitListGetItem(cctx, insns, srcTy)
       castObjectToMsil(cctx, insns, dstElem)
-      // #5563 item 1: `stelem.i2` for a `Char` destination element.
-      if dstElem == MChar {
-        insns.add(MStelemI2)
-      } else {
-        insns.add(MStelem(typeToken = tok))
-      }
+      emitArrayElemStoreMsil(insns, dstElem, tok)
     }
     case None -> {
       emitLoadSlot(insns, dstSlot, fctx.paramCount)
@@ -19570,12 +19564,7 @@ func lowerSliceAppendMsil(
         // (#5254).
         coerceCallArgMsil(cctx, insns, argTy, e)
       }
-      // #5563 item 1: `stelem.i2` for a `Char` element.
-      if e == MChar {
-        insns.add(MStelemI2)
-      } else {
-        insns.add(MStelem(typeToken = tok))
-      }
+      emitArrayElemStoreMsil(insns, e, tok)
       emitLoadSlot(insns, newSlot, fctx.paramCount)
       MArray(elemTy = e)
     }
@@ -23980,6 +23969,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MStelemRef -> -3
     case MStelem(_) -> -3
     case MStelemI2 -> -3
+    case MStelemI1 -> -3
     case MDup -> 1
     case MPop -> -1
     case MThrow -> 0
