@@ -3281,6 +3281,7 @@ jobs:
         run: |
           bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/mixed_width_arith_self_test.l
           bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/conversion_name_resolution_self_test.l
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/long_store_widen_self_test.l
       - name: Mixed-width unsigned arithmetic self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true
@@ -5430,6 +5431,7 @@ jobs:
         run: |
           bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/mixed_width_arith_self_test.l
           bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/conversion_name_resolution_self_test.l
+          bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/long_store_widen_self_test.l
       - name: Mixed-width unsigned arithmetic self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true

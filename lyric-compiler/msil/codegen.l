@@ -6739,7 +6739,14 @@ func emitCompoundCombineMsil(
     }
     insns.add(MCall(methodToken = cctx.tokConcat2))
   } else {
-    lowerExprMsil(cctx, fctx, insns, value)
+    val rTy = lowerExprMsil(cctx, fctx, insns, value)
+    // M6 numeric widening: `l += i` on a `Long` target type-checks with an
+    // `Int` rhs, and CIL binary arithmetic requires both operands to share a
+    // stack type (ECMA-335 III.1.5), so widen the rhs to the target width
+    // before the op — the plain-slot twin of #7343's
+    // `emitCompoundCombineSlotMsil` widening (#7783).  An erased `object`
+    // rhs unboxes to the target type.
+    coerceCallArgMsil(cctx, insns, rTy, curTy)
     match assignOpArithInsnMsil(op) {
       case Some(arith) -> {
         val concreteArith = match arith {
@@ -13334,6 +13341,7 @@ func emitCellAssignMsil(
       if elemTy != MObject and vTy == MObject {
         coerceCallArgMsil(cctx, insns, vTy, elemTy)
       }
+      widenIntToLongMsil(insns, vTy, elemTy)
       emitCellElemStoreMsil(cctx, insns, elemTy)
     }
     case _ -> {
@@ -13403,11 +13411,13 @@ func lowerAssignExprMsil(
                   restoreHintTyArgs(fctx, savedH)
                   // #7752: see `narrowObjectToDeclaredTypeMsil`.
                   narrowObjectToDeclaredTypeMsil(cctx, insns, byrefValTy, elemTy)
+                  widenIntToLongMsil(insns, byrefValTy, elemTy)
                 }
                 case Some(arith) -> {
                   insns.add(MDup)
                   insns.add(MLdind(ty = elemTy))
-                  lowerExprMsil(cctx, fctx, insns, value)
+                  val byrefRhsTy = lowerExprMsil(cctx, fctx, insns, value)
+                  widenIntToLongMsil(insns, byrefRhsTy, elemTy)
                   val concreteArith = match arith {
                     case MDiv -> match elemTy { case MByte -> MDivUn; case _ -> MDiv }
                     case MRem -> match elemTy { case MByte -> MRemUn; case _ -> MRem }
@@ -13438,6 +13448,7 @@ func lowerAssignExprMsil(
               // verifier-`object` value; narrow it to the local's declared
               // class/interface (`narrowObjectToDeclaredTypeMsil`).
               narrowObjectToDeclaredTypeMsil(cctx, insns, assignValTy, ty)
+              widenIntToLongMsil(insns, assignValTy, ty)
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
               if fctx.phaseBCtx.count > 0 {
@@ -13500,6 +13511,7 @@ func lowerAssignExprMsil(
                 popCollExpect(fctx)
                 // #7752: see `narrowObjectToDeclaredTypeMsil`.
                 narrowObjectToDeclaredTypeMsil(cctx, insns, selfFldValTy, fldTy)
+                widenIntToLongMsil(insns, selfFldValTy, fldTy)
                 insns.add(MStfld(fieldToken = fldTok))
               }
               case _ -> {
@@ -13537,6 +13549,7 @@ func lowerAssignExprMsil(
               popCollExpect(fctx)
               // #7752: see `narrowObjectToDeclaredTypeMsil`.
               narrowObjectToDeclaredTypeMsil(cctx, insns, resultValTy, ty)
+              widenIntToLongMsil(insns, resultValTy, ty)
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
@@ -13604,6 +13617,7 @@ func lowerAssignExprMsil(
                   popCollExpect(fctx)
                   // #7752: see `narrowObjectToDeclaredTypeMsil`.
                   narrowObjectToDeclaredTypeMsil(cctx, insns, fldValTy, fldTyA)
+                  widenIntToLongMsil(insns, fldValTy, fldTyA)
                   insns.add(MStfld(fieldToken = tok))
                 }
                 case _ -> {
@@ -13678,8 +13692,9 @@ func lowerAssignExprMsil(
             match op {
               case AssEq -> {
                 pushCollExpect(fctx, concreteTy)
-                val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                val genFldValTy = lowerExprMsil(cctx, fctx, insns, value)
                 popCollExpect(fctx)
+                widenIntToLongMsil(insns, genFldValTy, concreteTy)
                 insns.add(MStfldGeneric(baseClassName = headFqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
               }
               case _ -> {
@@ -13724,8 +13739,9 @@ func lowerAssignExprMsil(
             match op {
               case AssEq -> {
                 pushCollExpect(fctx, concreteTy)
-                val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                val genFldValTy = lowerExprMsil(cctx, fctx, insns, value)
                 popCollExpect(fctx)
+                widenIntToLongMsil(insns, genFldValTy, concreteTy)
                 insns.add(MStfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
               }
               case _ -> {

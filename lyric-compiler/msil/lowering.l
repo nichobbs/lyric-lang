@@ -3690,6 +3690,26 @@ pub func int32BitsOfUnsignedMsil(v: in Long): Int {
   signed.toInt()
 }
 
+// Push one integer range bound of `d` at the evaluation-stack width of its
+// underlying value, so the following `clt`/`cgt` compares like-typed
+// operands (ECMA-335 III.1.5).  `Int`/`UInt`, `Byte` and `Char` all live on
+// the stack as int32, so their bounds load with `ldc.i4` (a `Byte`/`Char`
+// bound is at most 65535, so `toInt` is exact); only `Long`/`ULong` take
+// `ldc.i8` (#7783: a `Byte range 10 ..= 250` factory compared its byte
+// argument against an int64 bound).
+func emitDistinctIntBound(mb: in MethodBody, d: in MDistinctType, bound: in Long): Unit {
+  match d.inner {
+    case MInt -> if d.isUnsigned {
+      emitLdc_I4(mb, int32BitsOfUnsignedMsil(bound))
+    } else {
+      emitLdc_I4(mb, bound.toInt())
+    }
+    case MByte -> emitLdc_I4(mb, bound.toInt())
+    case MChar -> emitLdc_I4(mb, bound.toInt())
+    case _ -> emitLdc_I8(mb, bound)
+  }
+}
+
 // Emit the range bounds test for a distinct type into `mb`, branching to
 // `failLabel` on any violation (value below min, or above/at max).  Operates on
 // the value in arg 0 (the static `from`/`tryFrom` factories take the underlying
@@ -3716,14 +3736,7 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
   if d.rangeIsFloat {
     emitLdc_R8(mb, d.minF)
   } else {
-    match d.inner {
-      case MInt -> if d.isUnsigned {
-        emitLdc_I4(mb, int32BitsOfUnsignedMsil(d.minI))
-      } else {
-        emitLdc_I4(mb, d.minI.toInt())
-      }
-      case _ -> emitLdc_I8(mb, d.minI)
-    }
+    emitDistinctIntBound(mb, d, d.minI)
   }
   // A float range admits no NaN: on doubles `clt.un` is "less than or
   // unordered", so NaN fails here (#7240).
@@ -3740,14 +3753,7 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
   if d.rangeIsFloat {
     emitLdc_R8(mb, d.maxF)
   } else {
-    match d.inner {
-      case MInt -> if d.isUnsigned {
-        emitLdc_I4(mb, int32BitsOfUnsignedMsil(d.maxI))
-      } else {
-        emitLdc_I4(mb, d.maxI.toInt())
-      }
-      case _ -> emitLdc_I8(mb, d.maxI)
-    }
+    emitDistinctIntBound(mb, d, d.maxI)
   }
   if d.upperExclusive {
     if d.isUnsigned {
@@ -6088,6 +6094,8 @@ func emitConfigRangeCheckMsil(
 func pushConfigBoundMsil(insns: in List[MInsn], ty: in MsilType, i: in Long, d: in Double): Unit {
   match ty {
     case MInt -> insns.add(MLdcI4(v = i.toInt()))
+    case MByte -> insns.add(MLdcI4(v = i.toInt()))
+    case MChar -> insns.add(MLdcI4(v = i.toInt()))
     case MLong -> insns.add(MLdcI8(v = i))
     case _ -> insns.add(MLdcR8(v = d))
   }
