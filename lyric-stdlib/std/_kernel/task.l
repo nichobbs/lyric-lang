@@ -282,9 +282,30 @@ func taskWhenAll(tasks: in slice[Task]): Task = ()
 pub protected type Scope {
   var source: CancellationTokenSource = makeCancelSource()
   var tasks: List[Task] = newList()
+  // Drops the children that have finished before adding `t`, so a
+  // long-lived scope that spawns without joining (a UI session running its
+  // effects) holds only its running children.  The first child that did
+  // not succeed is kept, so `awaitAll` still rethrows its failure.
   entry addChild(t: in Task): Unit {
-
+    var keptFailure = false
+    var i = 0
+    while i < tasks.count {
+      val c = tasks[i]
+      if taskFinished(c) {
+        if taskSucceeded(c) or keptFailure {
+          tasks.removeAt(i)
+        } else {
+          keptFailure = true
+          i = i + 1
+        }
+      } else {
+        i = i + 1
+      }
+    }
     tasks.add(t)
+  }
+  func pendingCount(): Int {
+    return tasks.count
   }
   func token(): CancellationToken {
     return sourceToken(source)
@@ -331,6 +352,21 @@ pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
   val tok = s.token()
   val t = taskRunWithCancel(action, tok)
   s.addChild(t)
+}
+
+/// The number of children the scope still tracks: those still running,
+/// plus the first that failed.  A child that finished successfully is
+/// dropped the next time the scope spawns.
+pub func scopePendingCount(s: in Scope): Int {
+  return s.pendingCount()
+}
+
+func taskFinished(t: in Task): Bool {
+  t.IsCompleted
+}
+
+func taskSucceeded(t: in Task): Bool {
+  t.IsCompletedSuccessfully
 }
 
 /// Wait for every registered child to complete.  When any child

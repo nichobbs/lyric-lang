@@ -344,7 +344,33 @@ pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
   defer {
     scopeUnlock(s.guard)
   }
+  // Drop the threads that have finished, so a long-lived scope that spawns
+  // without joining (a UI session running its effects) holds only its
+  // running children.  A failure is already recorded in `firstFault`.
+  var i = 0
+  while i < s.threads.count {
+    if scopeThreadAlive(s.threads[i]) {
+      i = i + 1
+    } else {
+      s.threads.removeAt(i)
+    }
+  }
   s.threads.add(t)
+}
+
+func scopeThreadAlive(t: in JThread): Bool {
+  t.isAlive()
+}
+
+/// The number of children the scope still tracks: those still running.  A
+/// child that finished is dropped the next time the scope spawns; a failure
+/// stays recorded for `awaitAll`.
+pub func scopePendingCount(s: in Scope): Int {
+  scopeLock(s.guard)
+  defer {
+    scopeUnlock(s.guard)
+  }
+  s.threads.count
 }
 
 // Run `action`; on a caught exception, record the first failure's
