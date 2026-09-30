@@ -87,6 +87,58 @@ func applyU(f: in (ULong) -> ULong, u: in UInt): ULong {
   f(u)
 }
 
+// Module-level values, field defaults and parameter defaults initialise a
+// slot of their declared type too (#7811).
+val modU: UInt = 4000000000u32
+
+val modUL: ULong = modU
+
+val modCall: ULong = big()
+
+val modI: Int = -2000000000
+
+val modL: Long = modI
+
+record Defaults {
+  n: Int
+  u: ULong = modU
+  c: ULong = big()
+  l: Long = modI
+}
+
+exposed record ExposedDefaults {
+  n: Int
+  u: ULong = modU
+}
+
+protected type Tally {
+  var total: ULong = modU
+  func get(): ULong {
+    total
+  }
+}
+
+func defU(x: in ULong = modU): ULong {
+  x
+}
+
+func defCall(x: in ULong = big()): ULong {
+  x
+}
+
+func defL(x: in Long = modI): Long {
+  x
+}
+
+record Widener {
+  n: Int
+
+  func widen(self: in Widener, u: in UInt): ULong {
+    val x: ULong = u
+    x
+  }
+}
+
 func knownOf(s: in Size): ULong {
   match s {
     case Known(n) -> n
@@ -208,4 +260,33 @@ test "toULong spells the widening out" {
   assertEqual(toString(u.toULong()), "4000000000", "UInt receiver")
   assertEqual(toString(b.toULong()), "255", "Byte receiver")
   assertEqual(toString(5u64.toULong()), "5", "ULong receiver")
+}
+
+test "a module-level val zero-extends a UInt (#7811)" {
+  assertEqual(toString(modUL), "4000000000", "from another module val")
+  assertEqual(toString(modCall), "4000000000", "from a call")
+  assertEqual(toString(modL), "-2000000000", "the signed chain")
+}
+
+test "a field default zero-extends a UInt (#7811)" {
+  val d = Defaults(n = 1)
+  assertEqual(toString(d.u), "4000000000", "record field default from a module val")
+  assertEqual(toString(d.c), "4000000000", "record field default from a call")
+  assertEqual(toString(d.l), "-2000000000", "signed record field default")
+  val e = ExposedDefaults(n = 1)
+  assertEqual(toString(e.u), "4000000000", "exposed record field default")
+  val t = Tally()
+  assertEqual(toString(t.get()), "4000000000", "protected field initialiser")
+}
+
+test "a parameter default zero-extends a UInt (#7811)" {
+  assertEqual(toString(defU()), "4000000000", "default from a module val")
+  assertEqual(toString(defCall()), "4000000000", "default from a call")
+  assertEqual(toString(defL()), "-2000000000", "signed default")
+  assertEqual(toString(defU(7u64)), "7", "an explicit argument still wins")
+}
+
+test "a binding in a record's own method zero-extends a UInt (#7811)" {
+  val w = Widener(n = 1)
+  assertEqual(toString(w.widen(4000000000u32)), "4000000000", "record method binding")
 }

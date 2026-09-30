@@ -3640,6 +3640,250 @@ func checkConfigBlock(diag: in List[Diagnostic], cd: in ConfigDecl): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §8c. Declared initialisers (#7811).
+// ─────────────────────────────────────────────────────────────────────────────
+// An annotated module-level `val`'s initialiser, a field's default and a
+// parameter's default each initialise a slot of their declared type, so they
+// are checked exactly like an annotated local binding's initialiser: inferred
+// against the declared type (T0060 on a mismatch, T0015 for an integer
+// literal out of range) and any implicit widening recorded as a conversion
+// site, which `Lyric.Mono.desugarCheckedFile` makes explicit.  They are
+// checked once, here, in the declaring package: a module `val` read only
+// resolves its declared type, and a default is spliced into each call that
+// omits the argument after desugaring.
+//
+// The initialiser sees the module's names only (no locals; a default does
+// not see the other parameters).  The declared type was already resolved,
+// with any error reported, by the declaration's own type-reference check,
+// so it is resolved here into a scratch list.
+func checkDeclaredInit(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  genericNames: in List[String],
+  te: in TypeExpr,
+  init: in Expr,
+  subject: in String,
+  initNoun: in String,
+  sp: in Span,
+): Unit {
+  val ctx = newGenericContext()
+  if genericNames.count > 0 {
+    gctxPush(ctx, genericNames)
+  }
+  val scratch: List[Diagnostic] = newList()
+  val declT = resolveType(tbl, ctx, scratch, te)
+  val noRte: Option[TypeExpr] = None
+  val noSelfFields: Map[String, Type] = newMap()
+  val sc = newScopeForFunction(TyError, genericNames, noRte, noSelfFields, false, TyError)
+  val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
+  val literalOutOfRange = reportIntLiteralOutOfRange(declT, init, diag)
+  if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
+    diag.add(
+      errorDiagnostic(
+        "T0060",
+        subject + " declared as " + renderTypeExpr(te, declT) + " but " + initNoun + " " +
+          hasTypeOrEmptyLiteral(initType, init) +
+          typeMismatchHint(tbl, declT, initType),
+        sp
+      )
+    )
+  }
+  recordUnsignedWidening(tbl, declT, initType, init)
+  checkRefinedLiteralBound(declT, init, diag)
+}
+
+func annotationsHave(anns: in List[Annotation], name: in String): Bool {
+  for ann in anns {
+    if ann.name.segments.count == 1 and ann.name.segments[0] == name {
+      return true
+    }
+  }
+  false
+}
+
+func concatGenericNames(outer: in List[String], own: in Option[GenericParams]): List[String] {
+  val names: List[String] = newList()
+  for n in outer {
+    names.add(n)
+  }
+  for n in extractGenericNames(own) {
+    names.add(n)
+  }
+  names
+}
+
+func checkParamDefaults(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  genericNames: in List[String],
+  fnName: in String,
+  params: in List[Param],
+): Unit {
+  for p in params {
+    match p.dflt {
+      case Some(d) -> checkDeclaredInit(
+        tbl,
+        sigs,
+        diag,
+        genericNames,
+        p.ty,
+        d,
+        "parameter '" + p.name + "' of '" + fnName + "'",
+        "its default",
+        d.span
+      )
+      case None -> ()
+    }
+  }
+}
+
+func checkFieldDefault(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  genericNames: in List[String],
+  typeName: in String,
+  fieldName: in String,
+  ty: in TypeExpr,
+  dflt: in Option[Expr],
+): Unit {
+  match dflt {
+    case Some(d) -> checkDeclaredInit(
+      tbl,
+      sigs,
+      diag,
+      genericNames,
+      ty,
+      d,
+      "field '" + typeName + "." + fieldName + "'",
+      "its default",
+      d.span
+    )
+    case None -> ()
+  }
+}
+
+// Every declared initialiser `item` carries, checked by `checkDeclaredInit`.
+func checkItemDeclaredInits(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  item: in Item,
+): Unit {
+  val noGenerics: List[String] = newList()
+  match item.kind {
+    // An `@asyncLocal` value's initialiser is a `()` placeholder: the
+    // backend constructs the `AsyncLocal` slot itself, as it supplies an
+    // `@externTarget` function's body.
+    case IVal(decl) -> match decl.ty {
+      case Some(te) -> if not annotationsHave(item.annotations, "asyncLocal") {
+        checkDeclaredInit(tbl, sigs, diag, noGenerics, te, decl.init, "val binding", "initialiser", decl.span)
+      }
+      case None -> ()
+    }
+    case IFunc(decl) -> checkParamDefaults(tbl, sigs, diag, extractGenericNames(decl.generics), decl.name, decl.params)
+    case IRecord(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)
+    case IExposedRec(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)
+    case IOpaque(decl) -> {
+      val owner = extractGenericNames(decl.generics)
+      for m in decl.members {
+        match m {
+          case OMField(fd) -> checkFieldDefault(tbl, sigs, diag, owner, decl.name, fd.name, fd.ty, fd.dflt)
+          case OMInvariant(_) -> ()
+        }
+      }
+    }
+    case IProtected(decl) -> {
+      val owner = extractGenericNames(decl.generics)
+      for m in decl.members {
+        match m {
+          case PMField(pf) -> match pf {
+            case PFVar(name, ty, init, _, _, _) -> checkFieldDefault(
+              tbl,
+              sigs,
+              diag,
+              owner,
+              decl.name,
+              name,
+              ty,
+              init
+            )
+            case PFLet(name, ty, init, _, _, _) -> checkFieldDefault(
+              tbl,
+              sigs,
+              diag,
+              owner,
+              decl.name,
+              name,
+              ty,
+              init
+            )
+            case PFImmutable(fd) -> checkFieldDefault(
+              tbl,
+              sigs,
+              diag,
+              owner,
+              decl.name,
+              fd.name,
+              fd.ty,
+              fd.dflt
+            )
+          }
+          case PMEntry(ed) -> checkParamDefaults(tbl, sigs, diag, owner, ed.name, ed.params)
+          case PMFunc(fn) -> checkParamDefaults(tbl, sigs, diag, concatGenericNames(owner, fn.generics), fn.name, fn.params)
+          case PMInvariant(_) -> ()
+        }
+      }
+    }
+    case IInterface(decl) -> {
+      val owner = extractGenericNames(decl.generics)
+      for m in decl.members {
+        match m {
+          case IMSig(sig) -> checkParamDefaults(
+            tbl,
+            sigs,
+            diag,
+            concatGenericNames(owner, sig.generics),
+            sig.name,
+            sig.params
+          )
+          case IMFunc(fn) -> checkParamDefaults(tbl, sigs, diag, concatGenericNames(owner, fn.generics), fn.name, fn.params)
+          case IMAssoc(_) -> ()
+        }
+      }
+    }
+    case IImpl(decl) -> {
+      val owner = extractGenericNames(decl.generics)
+      for m in decl.members {
+        match m {
+          case IMplFunc(fn) -> checkParamDefaults(tbl, sigs, diag, concatGenericNames(owner, fn.generics), fn.name, fn.params)
+          case IMplAssoc(_) -> ()
+        }
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func checkRecordDeclaredInits(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in RecordDecl,
+): Unit {
+  val owner = recordDeclGenericNames(decl)
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> checkFieldDefault(tbl, sigs, diag, owner, decl.name, fd.name, fd.ty, fd.dflt)
+      case RMFunc(fn) -> checkParamDefaults(tbl, sigs, diag, concatGenericNames(owner, fn.generics), fn.name, fn.params)
+      case RMInvariant(_) -> ()
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §9. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 // Imported items tagged with their declaring package, so each package's
@@ -4130,6 +4374,11 @@ func checkWithImportedPackagesCore(
       case IAspect(decl) -> checkAspectConfigRanges(diag, decl)
       case _ -> {
       }
+    }
+    // A contract surface re-checks another package's signatures without that
+    // package's imports; its initialisers were checked when it was built.
+    if validateDecls {
+      checkItemDeclaredInits(tbl, sigs, diag, file.items[m])
     }
     m = m + 1
   }
