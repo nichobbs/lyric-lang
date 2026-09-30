@@ -888,6 +888,16 @@ binding keeps its open type. Every use accepts that type, and a backend with
 reified generics (`--target dotnet`) builds the value with `object`
 elements. Annotate such a binding (`val xs: List[Field] = newList()`).
 
+A list literal's element type is the join of its elements' types: a type
+argument one element leaves open is taken from another element, so
+`[Some(1), None, Some(3)]` is a `slice[Option[Int]]`, `[None, Some(5)]` is
+too, and `[Ok(1), Err("e")]` is a `slice[Result[Int, String]]` (#7818).
+Every element is built at the joined type on every target, whether the
+literal is iterated, indexed, bound, passed or returned. A literal whose
+elements fix nothing (`[None, None]`) keeps its open type; annotate it
+(`val xs: slice[Option[Int]] = [None, None]`). Elements whose types disagree
+after the join are **T0041**.
+
 A brace-terminated `if` or `match` written in **statement position** (not as the
 right-hand side of a binding or another expression) is a *complete statement*: a
 binary operator after the closing `}` (whether on the same line or the next)

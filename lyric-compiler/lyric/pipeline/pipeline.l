@@ -101,6 +101,15 @@ pub record MiddleEndOptions {
   pkgLabel: String
   lineOrigins: List[DiagUtil.MergedLineOrigin]
   awaitInTryIsHazard: Bool
+  /// Whether a list literal no collection type is expected of is bound to a
+  /// local of its checked type (`SymbolTable.listLiteralTypeSites`, #7818).
+  /// A backend whose generic instantiations are distinct runtime types (MSIL,
+  /// native) needs it to build `None` beside `Some(1)` at one closed
+  /// instantiation and to read the elements back at it.  The JVM erases
+  /// generics: its literal is an `ArrayList` of erased elements whatever
+  /// their instantiation, and the element types it needs it recovers from the
+  /// literal itself.
+  bindListLiteralTypes: Bool
   /// Whether runtime contract checks (`requires:`, `ensures:`, etc.) should
   /// be emitted in the compiled output. Default is true (contract checks
   /// enabled). Controlled by the `[contracts]` table in lyric.toml (docs/63).
@@ -320,11 +329,18 @@ pub func pipeCheckAndMono(
   // call through a local of the callee's checked type (#7716), and a name a
   // tuple pattern binds → a local annotated with its element type (#7728),
   // a value a destructuring module `val` binds → its checked type as the
-  // annotation (#7763),
+  // annotation (#7763), a list literal no collection type is expected of → a
+  // local annotated with its checked slice type (#7818),
   // while the type checker's span keys still
   // identify exactly one expression each (D-progress-948, 962, 963).
   val valueSites = funcValueSites(tcRes.symbols)
-  val copyRes = pipeDesugarChecked(file0, tcRes, valueSites)
+  val noListLiteralSites: Map[String, ListLiteralTypeSite] = newMap()
+  val copyRes = pipeDesugarChecked(
+    file0,
+    tcRes,
+    valueSites,
+    if opts.bindListLiteralTypes { tcRes.symbols.listLiteralTypeSites } else { noListLiteralSites }
+  )
   if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
     return None
   }
@@ -490,7 +506,10 @@ pub func pipeWeave(
 /// (`Lyric.Mono.desugarCheckedFile`): the first step after the check in
 /// `pipeCheckAndMono`.
 pub func pipeDesugarChecked(
-  file0: in SourceFile, tcRes: in CheckResult, valueSites: in Map[String, FuncRefSite]
+  file0: in SourceFile,
+  tcRes: in CheckResult,
+  valueSites: in Map[String, FuncRefSite],
+  listLiteralSites: in Map[String, ListLiteralTypeSite],
 ): MonoResult {
   desugarCheckedFile(
     annotateModuleVals(file0, tcRes.symbols.moduleValTypes),
@@ -499,7 +518,8 @@ pub func pipeDesugarChecked(
     tcRes.symbols.argConversionSites,
     tcRes.symbols.localBindingTypeSites,
     tcRes.symbols.funcValueCallSites,
-    tcRes.symbols.tuplePatternBindingSites
+    tcRes.symbols.tuplePatternBindingSites,
+    listLiteralSites
   )
 }
 
@@ -511,7 +531,10 @@ pub func pipeDesugarChecked(
 /// dropped: the package's real middle end reports them.
 pub func pipeCheckedDefaults(file0: in SourceFile, importedPkgs: in List[ImportedPackage]): SourceFile {
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
-  pipeDesugarChecked(file0, tcRes, funcValueSites(tcRes.symbols)).file
+  // Only the JVM bundle calls this, and the JVM never binds list literals
+  // to their checked type (`MiddleEndOptions.bindListLiteralTypes`).
+  val noListLiteralSites: Map[String, ListLiteralTypeSite] = newMap()
+  pipeDesugarChecked(file0, tcRes, funcValueSites(tcRes.symbols), noListLiteralSites).file
 }
 
 /// True when `file` declares a parameter or field default anywhere.

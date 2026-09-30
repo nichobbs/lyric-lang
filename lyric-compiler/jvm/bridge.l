@@ -391,6 +391,7 @@ pub func compileToJar(
     pkgLabel = "",
     lineOrigins = noOrigins,
     awaitInTryIsHazard = false,
+    bindListLiteralTypes = false,
     contractsEnabled = true,
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = recvClasses
@@ -540,6 +541,7 @@ func runMiddleEnd(
     pkgLabel = pkgLabel,
     lineOrigins = lineOrigins,
     awaitInTryIsHazard = false,
+    bindListLiteralTypes = false,
     contractsEnabled = contractsEnabled,
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut

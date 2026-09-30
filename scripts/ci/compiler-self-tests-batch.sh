@@ -122,6 +122,7 @@ for t in \
   lyric-compiler/lyric/slice_append_widening_self_test.l \
   lyric-compiler/lyric/erased_slot_widen_self_test.l \
   lyric-compiler/lyric/list_insert_self_test.l \
+  lyric-compiler/lyric/list_literal_join_self_test.l \
   lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
   lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \

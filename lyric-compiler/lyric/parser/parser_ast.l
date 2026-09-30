@@ -1243,6 +1243,23 @@ pub record TuplePatternBindingSite {
   startOffset: Int
 }
 
+/// A list literal the type checker typed with no collection type expected
+/// of it, with its checked type (`slice[<joined element type>]`) spelled as
+/// source.  A backend with reified generics (MSIL) has no type to build such
+/// a literal at, so it built `[Some(1), None]` as a `List<object>` of an
+/// `Option<int>` and an `Option<object>`, and read its elements back as
+/// `object`; `Lyric.Mono.desugarCheckedFile` binds the literal to a local
+/// annotated with this type (#7818).  `rendered` identifies the type; a
+/// literal also checked where a `List` is expected, or two checked literals
+/// sharing one source position (synthesized code) with different types, are
+/// `conflicting` and left as written.
+pub record ListLiteralTypeSite {
+  literalType: TypeExpr
+  rendered: String
+  conflicting: Bool
+  startOffset: Int
+}
+
 /// The key of a record-copy call site: its span's start and end offsets.
 pub func recordCopySiteKey(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
