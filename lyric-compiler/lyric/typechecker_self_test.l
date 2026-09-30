@@ -1111,7 +1111,9 @@ test "interface subtyping cross package sound" {
 }
 
 // #7512: the same mismatch written as a package-qualified call is reported
-// too, against the named package's signature.
+// too, against the named package's signature.  The checker sees the file
+// after the build's pre-check rewrites (`pipePrepareForCheck`), where the
+// alias rewriter has turned `PkgB.wantB` into a qualified call.
 test "qualified call: impl of another package's same-named interface is T0043" {
   val pkgA = parse("package PkgA\npub interface Greeter {\n  func greet(): String\n}\n")
   val pkgB = parse(
@@ -1136,12 +1138,12 @@ test "qualified call: impl of another package's same-named interface is T0043" {
   )
   val bad = "package App\nimport PkgA\nimport PkgB\nrecord Hello { x: Int }\nimpl PkgA.Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = PkgB.wantB(Hello(x = 1))\n}\n"
   assertTrue(
-    hasDiagCode(checkWithImportedPackages(parse(bad).file, packages), "T0043"),
+    hasDiagCode(checkWithImportedPackages(pipePrepareForCheck(parse(bad).file, false).file, packages), "T0043"),
     "qualified call: impl of PkgA.Greeter does not satisfy a PkgB.Greeter parameter"
   )
   val ok = "package App\nimport PkgA\nimport PkgB\nrecord Hello { x: Int }\nimpl PkgB.Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = PkgB.wantB(Hello(x = 1))\n}\n"
   assertEqualInt(
-    countDiagCode(checkWithImportedPackages(parse(ok).file, packages), "T0043"),
+    countDiagCode(checkWithImportedPackages(pipePrepareForCheck(parse(ok).file, false).file, packages), "T0043"),
     0,
     "qualified call: impl of PkgB.Greeter satisfies the PkgB.Greeter parameter"
   )

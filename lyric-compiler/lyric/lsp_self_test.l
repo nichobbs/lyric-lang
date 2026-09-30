@@ -36,6 +36,35 @@ func hoverAt(state: in LspState, uri: in String, line: in Int, character: in Int
   }
 }
 
+func openDocMessages(state: in LspState, uri: in String, text: in String): String {
+  val params = "{\"textDocument\":{\"uri\":" + encodeString(uri) + ",\"text\":" + encodeString(text) + "}}"
+  val req = "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":" + params + "}"
+  val msgs = lspHandle(state, req)
+  var all = ""
+  var i = 0
+  while i < msgs.count {
+    all = all + msgs[i]
+    i = i + 1
+  }
+  all
+}
+
+// #7512: the server runs the rewrites `lyric build` runs before its type
+// check (`pipePrepareForCheck`), so it reports what the build reports.
+test "a destructuring module val binds its names in the editor as in the build" {
+  val state = lspInit()
+  val src = "package P\nval (a, b) = (1, true)\nfunc f(): Int { a }\nfunc g(): Bool { b }\n"
+  val msgs = openDocMessages(state, "file:///lsp_self_test_modval.l", src)
+  assertTrue(Str.contains(msgs, "publishDiagnostics"), "diagnostics are published")
+  assertFalse(Str.contains(msgs, "T0020"), "a and b resolve: no unknown-name diagnostic")
+}
+
+test "a refutable module val pattern is T0144 in the editor as in the build" {
+  val state = lspInit()
+  val msgs = openDocMessages(state, "file:///lsp_self_test_refutable.l", "package P\nval Some(x) = Some(1)\n")
+  assertTrue(Str.contains(msgs, "T0144"), "refutable module val pattern: T0144")
+}
+
 test "hover on an internal record reports internal, not pub" {
   val state = lspInit()
   val uri = "file:///lsp_self_test_internal.l"

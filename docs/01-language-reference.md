@@ -1110,10 +1110,11 @@ any other call: the checker resolves the method through the type's declared
 members (record-body methods, `impl`-block methods, interface members, and
 D037 dot-named functions), validates arity and argument types (**T0042** /
 **T0043**), and gives the call its real declared return type. A member or
-method name that does not exist on a locally-declared record, exposed
-record, or interface is a compile error (**T0113**) naming the receiver
-type; types imported from other packages are currently checked leniently
-(their contract metadata does not yet carry method signatures).
+method name that does not exist on a record, exposed record, or interface
+is a compile error (**T0113**) naming the receiver type, whether the type is
+declared locally or imported from another package (a restored package's
+contract carries its records' body methods and its `impl` blocks, so the
+member surface is known either way). Unions stay lenient.
 
 Field-style access `x.name` (no call parens) to a name that exists **only**
 as a D037 dot-named (UFCS) function — never as a real record/union field — is

@@ -33,6 +33,7 @@ import Std.FileHost
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
+import Lyric.Pipeline
 import Lyric.ModeChecker
 import Lyric.Verifier
 import Lyric.Version as Ver
@@ -675,12 +676,26 @@ func addRevDep(state: in LspState, importedUri: in String, consumerUri: in Strin
   }
 }
 
+func prepHasError(prep: in CheckReadyFile): Bool {
+  var i = 0
+  while i < prep.diagnostics.count {
+    if prep.diagnostics[i].severity == DiagError {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[String] {
   val acc: List[String] = newList()
   val parsed = parse(text)
   val parsedFile = parsed.file
-  val importedItems = buildImportedItems(state, parsedFile)
-  val cr = checkWithImports(parsedFile, importedItems)
+  // The same rewrites `lyric build` runs before its type check, so the
+  // editor reports what the build reports (#7512).
+  val prep = pipePrepareForCheck(parsedFile, true)
+  val importedItems = buildImportedItems(state, prep.file)
+  val cr = checkWithImports(prep.file, importedItems)
 
   // Update rev-deps: for each import in this file, register uri as a consumer.
   val parsedImports = parsedFile.imports
@@ -710,7 +725,12 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
 
   val allDiags: List[Diagnostic] = newList()
   collectDiags(parsed.diagnostics, allDiags)
-  collectDiags(cr.diagnostics, allDiags)
+  collectDiags(prep.diagnostics, allDiags)
+  // After a failed rewrite the build stops before type checking; so does
+  // the report here (the check still runs, for hover and navigation).
+  if not prepHasError(prep) {
+    collectDiags(cr.diagnostics, allDiags)
+  }
 
   // Run verifier (allow-unverified so unknowns become warnings, not errors).
   val proofResult = proveSourceWithOptions(text, true)
