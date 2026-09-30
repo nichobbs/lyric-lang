@@ -107,25 +107,14 @@ pub record JvmFuncSig {
   // codegen. No default, same "no defaulted record field survives the F#
   // stage-0 seed" constraint `isIface`/`recordRetClass` document above.
   retIsSelf: Bool
-  // #6754 (finding 1.2a): true when the DECLARED return type is `UInt`/
-  // `ULong` (`isUnsignedTypeExpr`) — consulted by `isUnsignedExpr`'s `ECall`
-  // arm so a call to a `UInt`/`ULong`-returning function gets the same
-  // unsigned-aware comparison/division/stringification a bare `UInt`/`ULong`
-  // LOCAL already gets (`ctx.unsignedVars`), instead of silently reverting to
-  // signed codegen for the call's result. Only computed correctly at the
-  // registration sites reachable through a bare, single-segment `ECall(EPath,
-  // …)` — the shape `isUnsignedExpr`'s `ECall` arm actually resolves (mirrors
-  // `closureInvokeRetType`'s `<name>@<arity>`-then-bare-name lookup): the
-  // plain free-function registration (`collectFileSigsSeeded`'s `IFunc` arm)
-  // and the derive/aspect-woven/mono-specialised free-function registrations
-  // (`bridge.l`), which all keep a BARE key reachable that way. Every
-  // `<class>#<method>` / `<class>.<method>` / `elem:`/`field:`/`val:`/`enum:`-
-  // keyed registration (instance methods, interface methods, wire accessors,
-  // module vals, enum cases, container element types) is reachable only
-  // through `EMember`/`EIndex` call shapes `isUnsignedExpr`'s `ECall` arm
-  // never matches, so those sites pass `false` unconditionally — correct
-  // (never consulted) rather than merely unused. No default per the
-  // JVM-codegen no-defaulted-field rule (see `isIface`/`retIsSelf` above).
+  // True when the DECLARED return type is `UInt`/`ULong`
+  // (`isUnsignedTypeExpr`).  Consulted where the result is stringified by the
+  // backend itself rather than at a source operand position: a distinct or
+  // range subtype's `$value` accessor (`coerceToStringForConcat`).  A source
+  // call's result is recognised as unsigned from the type checker's operand
+  // sites instead (#7812, `isUnsignedExpr`).  Registrations that never reach
+  // such an accessor pass `false`.  No default per the JVM-codegen
+  // no-defaulted-field rule (see `isIface`/`retIsSelf` above).
   retIsUnsigned: Bool
   // The head path of the DECLARED return type when it is a generic
   // instantiation (`Box[Int]` -> `["Box"]`, `Pkg.Box[Int]` ->
@@ -753,15 +742,13 @@ pub record FuncCtx {
   // no-defaulted-field rule (see `JvmFuncSig.retGenericArgs`, D-progress-554);
   // initialised `newMap()` at every `FuncCtx` construction site.
   //
-  // #6759 CLOSED the same scope-leak gap `unsignedVars`' own doc used to
-  // flag (#6754): every mutation site now runs `recordVarGenericArgsUndo`
+  // Scoped (#6759): every mutation site runs `recordVarGenericArgsUndo`
   // first, and `exitBlockScope` replays `varGenericArgsUndo` back to the
   // entering block's mark — see `varGenericArgsUndo` below.
   varGenericArgs: Map[String, List[TypeExpr]]
-  // #6759: per-function scope undo log for `varGenericArgs`, mirroring
-  // `unsignedUndo`'s shape exactly (own record, own log, own
-  // `BlockScope.varGenericArgsUndoMark`) rather than `unsignedUndo` itself
-  // or `ScopeUndo`: `varGenericArgs` stores a `List[TypeExpr]` VALUE (not a
+  // #6759: per-function scope undo log for `varGenericArgs`, its own record,
+  // log and `BlockScope.varGenericArgsUndoMark` rather than `ScopeUndo`:
+  // `varGenericArgs` stores a `List[TypeExpr]` VALUE (not a
   // presence bit), so its undo entry carries the prior `Option[List
   // [TypeExpr]]` rather than a `Bool`; a shared log format across
   // differently-shaped values would need a variant type per entry for no
@@ -891,49 +878,6 @@ pub record FuncCtx {
   // shared cross-package context exists here, unlike MSIL's `CodegenCtx`)
   // — see `Lyric.BareFuncRef`'s module doc and D-progress-752.
   aliasTargets: Map[String, TypeExpr]
-  // #6748: names (locals AND parameters) whose DECLARED Lyric type is
-  // `UInt`/`ULong`, recorded by `recordUnsignedVar`/`recordUnsignedVarTy` at
-  // every `val`/`var`/`let` binding and parameter registration site (mirrors
-  // `varGenericArgs`'s declared-type tracking, just for the one bit codegen
-  // needs here). The JVM has no unsigned integer primitive — `UInt` erases to
-  // the same two's-complement `int` an `Int` uses, `ULong` to the same `long`
-  // a `Long` uses (`typeExprToJvm`) — so relational comparison (`<`/`<=`/`>`/
-  // `>=`), `/`, `%`, and stringification (`.toString()`, interpolation, `+`
-  // concatenation) all need to know a value came from a `UInt`/`ULong`
-  // binding to dispatch to `Integer`/`Long`'s `*Unsigned` static methods
-  // instead of the native signed opcodes those erase to by default — the same
-  // problem `Jvm.Lowering.LDistinctType.isUnsigned` already solves for a
-  // range subtype's `from`/`tryFrom` bounds check. `isUnsignedExpr` consults
-  // this map for a bare-name operand; a `u32`/`u64`-suffixed literal is
-  // detected directly from its `IntSuffix`, no lookup needed. Not threaded
-  // through `ScopeUndo` (like `varGenericArgs`/`funcValRetTypes`, which
-  // share the same limitation): a shadowed name's stale entry can leak into
-  // an enclosing scope after the shadowing block exits, tracked as a
-  // pre-existing acknowledged gap, not one this fix introduces. No default
-  // per the JVM-codegen no-defaulted-field rule; initialised `newMap()` at
-  // every construction site.
-  //
-  // #6754 CLOSED the gap the paragraph above describes: `recordUnsignedVarTy`
-  // now pushes an `UnsignedScopeUndo` entry (via `recordUnsignedScopeUndo`)
-  // onto `unsignedUndo` BEFORE every mutation, and `exitBlockScope` replays
-  // it back to the entering block's mark, same as `scopeUndo` does for
-  // `slots`/`types` — see `unsignedUndo` below.
-  unsignedVars: Map[String, Bool]
-  // #6754: per-function scope undo log for `unsignedVars`, mirroring
-  // `scopeUndo`'s shape (`ScopeUndo`/`recordScopeUndo`/`exitBlockScope`) but
-  // kept as its OWN log rather than folded into `ScopeUndo`: `unsignedVars`
-  // mutates at a different call site (`recordUnsignedVarTy`, once the
-  // binding's declared type is known) than `slots`/`types` (`allocSlot`, from
-  // the initialiser alone) — sharing one entry format would mean whichever of
-  // the two calls ran second overwrites the OTHER's restore action (a
-  // `priorSlot = None` entry pushed only to carry `priorUnsigned` would
-  // replay as "this name had no slot before", wiping out the real slot/type
-  // restore `allocSlot`'s own entry already recorded for the same name).
-  // Populated by `recordUnsignedScopeUndo`; replayed by `exitBlockScope`
-  // back to `BlockScope.unsignedUndoMark`. No default per the JVM-codegen
-  // no-defaulted-field rule; initialised `newList()` at every construction
-  // site.
-  unsignedUndo: List[UnsignedScopeUndo]
   // #7695: the ENCLOSING generic type's own type-parameter names (a generic
   // record/union method's `Box[T]` -> `["T"]`), consulted by
   // `localAnnotatedJvmType` (`05_stmts.l`) so a BODY-local `val`/`var`/`let`
@@ -974,19 +918,11 @@ pub record ScopeUndo {
   priorType: Option[JvmType]
 }
 
-// #6754: `unsignedVars`' own change-log entry — see `FuncCtx.unsignedUndo`
-// for why this is a separate log rather than a new `ScopeUndo` field.
-pub record UnsignedScopeUndo {
-  name: String
-  wasPresent: Bool
-}
-
 // #6759: `varGenericArgs`' own change-log entry — see
-// `FuncCtx.varGenericArgsUndo` for why this is a separate log. Unlike
-// `UnsignedScopeUndo`'s `wasPresent` bit, `varGenericArgs` stores a real
-// VALUE per name, so the prior state is the full `Option[List[TypeExpr]]`
-// (`None` = absent, `Some(args)` = present with that value), not just a
-// presence flag.
+// `FuncCtx.varGenericArgsUndo` for why this is a separate log.
+// `varGenericArgs` stores a real VALUE per name, so the prior state is the
+// full `Option[List[TypeExpr]]` (`None` = absent, `Some(args)` = present with
+// that value).
 pub record VarGenericArgsUndo {
   name: String
   priorArgs: Option[List[TypeExpr]]
@@ -995,11 +931,8 @@ pub record VarGenericArgsUndo {
 pub record BlockScope {
   prevBase: Int
   undoMark: Int
-  // #6754: `ctx.unsignedUndo.count` captured at scope entry, mirroring
-  // `undoMark`.
-  unsignedUndoMark: Int
   // #6759: `ctx.varGenericArgsUndo.count` captured at scope entry, mirroring
-  // `unsignedUndoMark`.
+  // `undoMark`.
   varGenericArgsUndoMark: Int
 }
 
@@ -1008,30 +941,19 @@ pub func enterBlockScope(ctx: in FuncCtx): BlockScope {
   val bs = BlockScope(
     prevBase = ctx.scopeBase,
     undoMark = ctx.scopeUndo.count,
-    unsignedUndoMark = ctx.unsignedUndo.count,
     varGenericArgsUndoMark = ctx.varGenericArgsUndo.count
   )
   ctx.scopeBase = ctx.slotTicker.count
   bs
 }
 
-// #6754: record `name`'s current PRESENCE in `ctx.unsignedVars` BEFORE
-// `recordUnsignedVarTy` mutates it, so `exitBlockScope` can restore (or drop)
-// it exactly like `recordScopeUndo` does for `slots`/`types` — see
-// `FuncCtx.unsignedUndo`.
-pub func recordUnsignedScopeUndo(ctx: in FuncCtx, name: in String): Unit {
-  val wasPresent = ctx.unsignedVars.containsKey(name)
-  ctx.unsignedUndo.add(UnsignedScopeUndo(name = name, wasPresent = wasPresent))
-}
-
 // #6759: record `name`'s current VALUE in `ctx.varGenericArgs` BEFORE a
 // mutation site rebinds it, so `exitBlockScope` can restore the enclosing
-// scope's entry (or drop it) exactly like `recordUnsignedScopeUndo` does for
-// `unsignedVars` — see `FuncCtx.varGenericArgsUndo`. Called at every
+// scope's entry (or drop it) exactly like `recordScopeUndo` does for
+// `slots`/`types` — see `FuncCtx.varGenericArgsUndo`. Called at every
 // `varGenericArgs`-mutating site (`recordVarGenericArgs`,
 // `recordParamGenericArgs`, `recordDeclaredElemType`, and the two
-// match-arm field-binding sites in `lowerPatternBind`), mirroring
-// `recordUnsignedScopeUndo`'s call-site discipline.
+// match-arm field-binding sites in `lowerPatternBind`).
 pub func recordVarGenericArgsScopeUndo(ctx: in FuncCtx, name: in String): Unit {
   val prior = mapGet(ctx.varGenericArgs, name)
   ctx.varGenericArgsUndo.add(VarGenericArgsUndo(name = name, priorArgs = prior))
@@ -1065,19 +987,6 @@ pub func exitBlockScope(ctx: in FuncCtx, bs: in BlockScope): Unit {
     match u.priorType {
       case Some(t) -> ctx.types.add(u.name, t)
       case None -> ()
-    }
-  }
-  // #6754: replay `unsignedUndo` back to this block's mark too, restoring
-  // (or dropping) an enclosing `unsignedVars` binding the block shadowed —
-  // see `FuncCtx.unsignedUndo`.
-  while ctx.unsignedUndo.count > bs.unsignedUndoMark {
-    val uu = ctx.unsignedUndo[ctx.unsignedUndo.count - 1]
-    ctx.unsignedUndo.removeAt(ctx.unsignedUndo.count - 1)
-    if ctx.unsignedVars.containsKey(uu.name) {
-      ctx.unsignedVars.remove(uu.name)
-    }
-    if uu.wasPresent {
-      ctx.unsignedVars.add(uu.name, true)
     }
   }
   // #6759: replay `varGenericArgsUndo` back to this block's mark too,
@@ -1937,128 +1846,33 @@ pub func isUnsignedTypeExpr(te: in TypeExpr): Bool {
   }
 }
 
-// Record `name` in `ctx.unsignedVars` when its declared type is `UInt`/
-// `ULong` — called at every `val`/`var`/`let` binding and parameter
-// registration site (mirrors `recordDeclaredElemType`'s call sites).
-// `recordUnsignedScopeUndo` runs FIRST so `exitBlockScope` can restore an
-// enclosing binding this rebind shadows (#6754). A non-unsigned declared
-// type EVICTS any stale entry left by an outer `UInt`/`ULong` binding of the
-// SAME name — otherwise a `val x: Int = …` shadowing an outer `val x: UInt =
-// …` would silently keep the outer binding's unsigned codegen for the
-// shadow's own (signed) value. Absence from the map means "not unsigned"
-// (same "absence means no" shape `varGenericArgs` uses).
-pub func recordUnsignedVarTy(ctx: in FuncCtx, name: in String, ty: in TypeExpr): Unit {
-  recordUnsignedScopeUndo(ctx, name)
-  if isUnsignedTypeExpr(ty) {
-    if ctx.unsignedVars.containsKey(name) {
-      ctx.unsignedVars.remove(name)
-    }
-    ctx.unsignedVars.add(name, true)
-  } else if ctx.unsignedVars.containsKey(name) {
-    ctx.unsignedVars.remove(name)
-  }
-}
-
-// `Option[TypeExpr]` convenience for the local-binding call sites
-// (`LBVal`/`LBLet`/`LBVar` in `05_stmts.l`), whose annotation is optional.
-pub func recordUnsignedVar(ctx: in FuncCtx, name: in String, tyOpt: in Option[TypeExpr]): Unit {
-  match tyOpt {
-    case Some(te) -> recordUnsignedVarTy(ctx, name, te)
-    case None -> ()
-  }
-}
-
-// True when `e` statically denotes a `UInt`/`ULong` value: a bare name
-// previously recorded by `recordUnsignedVar`/`recordUnsignedVarTy`, a
-// `u32`/`u64`-suffixed integer literal (`3_000_000_000u32` — the suffix
-// alone decides for a literal, independent of any variable it might later be
-// assigned to), a call to a function whose DECLARED return type is `UInt`/
-// `ULong` (#6754 finding 1.2a — bare single-segment `ECall(EPath, …)` only,
-// see `JvmFuncSig.retIsUnsigned`'s doc for exactly which registrations this
-// reaches, mirroring `closureInvokeRetType`'s `<name>@<arity>`-then-bare-name
-// lookup), or an index/subscript read off a bare-name `slice[UInt]`/
-// `List[UInt]`/`Map[K, UInt]` (or `ULong`) receiver (#6754 finding 1.2c,
-// reusing `ctx.varGenericArgs` — the SAME declared-element-type registry
-// `indexedElemTypeOverride` consults, keyed the same "last element is the
-// narrowed one" way `recordDeclaredElemType` documents).
-//
-// A record/opaque FIELD read (`EMember`) is intentionally NOT covered
-// (finding 1.2b, out of scope): the field's owning class is only knowable by
-// fully LOWERING the receiver expression first (`lowerExpr`'s `EMember` arm
-// emits bytecode to discover it) — `isUnsignedExpr` is called from many
-// pure, non-lowering call sites (as a side channel alongside a SEPARATE
-// `lowerExpr` call on the same sub-expression) and must never itself emit
-// instructions, so there is no side-effect-free way to resolve a field
-// receiver's concrete class here without either duplicating `EMember`
-// lowering or threading a real static-type-inference pass through every
-// `isUnsignedExpr` call site. Tracked as a follow-up, not silently dropped.
-//
-// Anything else (an unsuffixed literal, an arithmetic expression) still
-// conservatively reports `false`: comparison/division/stringification work
-// correctly for every value that FITS the signed range either way, so
-// understating "unsigned" only matters for the sign-bit-set values this
-// ticket exists to fix.
-pub func isUnsignedExpr(ctx: in FuncCtx, e: in Expr): Bool {
+// True when `e` is a `UInt`/`ULong` value whose lowering must be unsigned
+// (comparison, division, remainder, stringification).  The type checker
+// decides it (#7812): at every such operand position it records an operand
+// whose checked type is `UInt`/`ULong`, and `Lyric.Mono.desugarCheckedFile`
+// spells it as the identity `.toUInt()` / `.toULong()` call recognised here,
+// whatever the operand's shape (a field read, an element, a call result, a
+// match binding).  A `u32`/`u64`-suffixed literal is unsigned by its suffix.
+// A monomorphised generic body, which the checker typed only over its type
+// parameters, is spelled the same way by `Lyric.Mono` from the
+// specialisation's declared types.  Anything else is not unsigned: the
+// backend never guesses from an operand's shape.
+pub func isUnsignedExpr(e: in Expr): Bool {
   match e.kind {
-    case EPath(path) -> {
-      if path.segments.count == 1 {
-        ctx.unsignedVars.containsKey(path.segments[0])
-      } else {
-        false
-      }
-    }
     case ELiteral(lit) -> {
       match lit {
         case LInt(_, suffix, _) -> match suffix { case U32 -> true; case U64 -> true; case _ -> false }
         case _ -> false
       }
     }
-    case EParen(inner) -> isUnsignedExpr(ctx, inner)
-    case ECall(callee, callArgs) -> {
-      match callee.kind {
-        // `x.toULong()` is a `ULong` whatever `x` lowers to (#7805).
-        case EMember(_, mname) -> mname == "toULong" and callArgs.count == 0
-        case EPath(p) -> {
-          if p.segments.count == 1 {
-            val name = p.segments[0]
-            val arityKey = name + "@" + toString(callArgs.count)
-            match mapGet(ctx.funcSigs, arityKey) {
-              case Some(sig) -> sig.retIsUnsigned
-              case None -> {
-                match mapGet(ctx.funcSigs, name) {
-                  case Some(sig2) -> sig2.retIsUnsigned
-                  case None -> false
-                }
-              }
-            }
-          } else {
-            false
-          }
+    case EParen(inner) -> isUnsignedExpr(inner)
+    case ECall(callee, callArgs) -> callArgs.count == 0 and
+      (
+        match callee.kind {
+          case EMember(_, mname) -> mname == "toUInt" or mname == "toULong"
+          case _ -> false
         }
-        case _ -> false
-      }
-    }
-    case EIndex(recv, _) -> {
-      match recv.kind {
-        case EPath(rp) -> {
-          if rp.segments.count == 1 {
-            match mapGet(ctx.varGenericArgs, rp.segments[0]) {
-              case Some(elems) -> {
-                if elems.count > 0 {
-                  isUnsignedTypeExpr(elems[elems.count - 1])
-                } else {
-                  false
-                }
-              }
-              case None -> false
-            }
-          } else {
-            false
-          }
-        }
-        case _ -> false
-      }
-    }
+      )
     case _ -> false
   }
 }

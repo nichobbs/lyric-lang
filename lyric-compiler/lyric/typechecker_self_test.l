@@ -801,6 +801,31 @@ test "toULong applies only to the unsigned chain" {
   assertTrue(hasDiagCode(parseCheck(bad), "T0103"), "toULong: Int receiver rejected with T0103")
 }
 
+test "toUInt applies only to Byte and UInt (#7812)" {
+  val ok = "package P\nfunc f(u: in UInt, b: in Byte): UInt { u.toUInt() + b.toUInt() }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "toUInt: UInt and Byte receivers")
+  val badI = "package P\nfunc f(i: in Int): UInt { i.toUInt() }\n"
+  assertTrue(hasDiagCode(parseCheck(badI), "T0103"), "toUInt: Int receiver rejected with T0103")
+  val badL = "package P\nfunc f(l: in ULong): UInt { l.toUInt() }\n"
+  assertTrue(hasDiagCode(parseCheck(badL), "T0103"), "toUInt: ULong receiver (a narrowing) rejected with T0103")
+}
+
+// #7812: an operand whose checked type is `UInt`/`ULong`, at a position whose
+// lowering depends on signedness, is a conversion site (the identity
+// `.toUInt()`/`.toULong()`); a suffixed literal already says so, and a signed
+// operand or a sign-independent position records nothing.
+test "unsigned operands at signedness-sensitive positions are conversion sites (#7812)" {
+  val src = "package P\nrecord H {\n  v: ULong\n  u: UInt\n}\nfunc f(h: in H): Bool {\n  println(h.v)\n  println(\"\${h.u}\")\n  h.v > 1u64 and h.u / 2u32 == 1u32\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "unsigned operands type-check")
+  assertEqualInt(cr.symbols.argConversionSites.count, 4, "println arg, interpolated segment, > operand and / operand")
+  val signed = parseCheck(
+    "package P\nrecord H {\n  v: Long\n  u: ULong\n}\nfunc f(h: in H): Bool {\n  println(h.v)\n  h.v > 1 and h.u == 2u64 and h.u + h.u == 4u64\n}\n"
+  )
+  assertEqualInt(diagCount(signed), 0, "signed and sign-independent operands type-check")
+  assertEqualInt(signed.symbols.argConversionSites.count, 0, "no site for a signed operand, ==, or +")
+}
+
 test "index byte with conversion accepted" {
   val src = "package P\nfunc f(a: in slice[Byte]): Int { a[0].toInt() }\n"
   val cr = parseCheck(src)
@@ -6546,12 +6571,12 @@ test "qualified function value prefers the imported package among same-suffix pa
 }
 
 // A call through a function value converts only the widenings it has a
-// conversion for; `Byte` to `UInt` has none (#2050), so it is rejected rather
-// than passed boxed as a `Byte` (D-progress-964).  A widening to `ULong`
-// converts with `.toULong()` (#7805).
-test "function-value call rejects a Byte argument for a UInt parameter" {
-  val bad = "package P\npub func g(f: (UInt) -> UInt, b: in Byte): UInt {\n  f(b)\n}\n"
-  assertTrue(hasDiagCode(parseCheck(bad), "T0043"), "Byte into a (UInt) -> UInt value is T0043")
+// conversion for; a `Float` has none (#2050), so it is rejected rather than
+// passed boxed as a `Float` (D-progress-964).  A widening to `ULong` converts
+// with `.toULong()` (#7805), one to `UInt` with `.toUInt()` (#7812).
+test "function-value call converts unsigned widenings and rejects a Float argument" {
+  val okU = "package P\npub func g(f: (UInt) -> UInt, b: in Byte): UInt {\n  f(b)\n}\n"
+  assertEqualInt(diagCount(parseCheck(okU)), 0, "Byte into a (UInt) -> UInt value widens")
   val okL = "package P\npub func g(f: (ULong) -> ULong, b: in Byte, u: in UInt): ULong {\n  f(b) + f(u)\n}\n"
   assertEqualInt(diagCount(parseCheck(okL)), 0, "Byte and UInt into a (ULong) -> ULong value widen")
   val badF = "package P\npub func g(f: (Double) -> Double, x: in Float): Double {\n  f(x)\n}\n"

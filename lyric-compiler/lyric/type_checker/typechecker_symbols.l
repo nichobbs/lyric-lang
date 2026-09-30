@@ -255,8 +255,10 @@ pub record SymbolTable {
   /// Span keys of call callees, whose function reference is a call rather
   /// than a value and is never desugared.
   funcRefCallees: Map[String, Bool]
-  /// Widened arguments of function-value calls, keyed like
-  /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`).
+  /// Implicit conversions made explicit after the check, keyed like
+  /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
+  /// the backends cannot see, and unsigned operands whose lowering depends
+  /// on signedness (#7812).
   argConversionSites: Map[String, ArgConversionSite]
   /// Result types of qualified and method calls and of field reads, keyed
   /// like `recordCopySites`: evidence for `Lyric.Mono`, which cannot see the

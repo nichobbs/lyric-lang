@@ -3763,10 +3763,13 @@ func wideningMethod(paramTy: in Type, argTy: in Type): Option[String] {
     case Some(wt) -> if not typeEquiv(wt, paramTy) { return None }
     case None -> return None
   }
-  // A widening to `ULong` zero-extends (`Byte`/`UInt` are unsigned), which
-  // `.toULong()` spells out (#7805).
+  // A widening to `UInt` or `ULong` zero-extends (`Byte`/`UInt` are
+  // unsigned), which `.toUInt()` / `.toULong()` spells out (#7805, #7812).
   if isPrimOf(paramTy, PtULong) {
     return Some(value = "toULong")
+  }
+  if isPrimOf(paramTy, PtUInt) {
+    return Some(value = "toUInt")
   }
   // The other conversion methods exist only on these receivers (not `Float`,
   // `UInt`, `ULong`, `Nat`: #2050); any other widening is left unconvertible.
@@ -3839,9 +3842,93 @@ func recordUnsignedWidening(tbl: in SymbolTable, target: in Type, src: in Type, 
   recordWideningSite(tbl, target, src, e, true)
 }
 
+// The identity conversion that names `t` when `t` is `UInt` or `ULong`.
+func unsignedIdentityMethod(t: in Type): Option[String] {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt {
+      case PtUInt -> Some(value = "toUInt")
+      case PtULong -> Some(value = "toULong")
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+// True when `e` already says it is unsigned: a `u32`/`u64` literal or a
+// `.toUInt()`/`.toULong()` call.
+func spellsUnsigned(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(_, suffix, _) -> match suffix {
+        case U32 -> true
+        case U64 -> true
+        case _ -> false
+      }
+      case _ -> false
+    }
+    case ECall(fn, cargs) -> cargs.count == 0 and
+      (match fn.kind { case EMember(_, m) -> m == "toUInt" or m == "toULong"; case _ -> false })
+    case _ -> false
+  }
+}
+
+// Record `e`, an operand of type `t` at a position whose lowering depends on
+// signedness, as a conversion site when `t` is `UInt` or `ULong` (#7812).
+// `UInt` and `ULong` share their machine representation with `Int` and
+// `Long` on every backend, so a backend can only choose unsigned
+// stringification, comparison, division or remainder when the operand says it
+// is unsigned.  `Lyric.Mono.desugarCheckedFile` rewrites the site to the
+// identity `e.toUInt()` / `e.toULong()`, which the backends recognise.  The
+// positions are: a stringified value (`println`/`print`/`toString`/
+// `format1`–`format4` arguments, a `.toString()` receiver, an interpolated
+// segment, the right operand of a `String` `+` or `+=`), an operand of `<`,
+// `<=`, `>`, `>=`, `/` or `%`, and the value of a `/=` or `%=`.  A widening
+// already recorded at `e` is kept: it converts to `ULong`, which is unsigned
+// too.
+func recordUnsignedOperand(tbl: in SymbolTable, t: in Type, e: in Expr): Unit {
+  match unsignedIdentityMethod(t) {
+    case Some(m) -> {
+      if spellsUnsigned(e) {
+        return
+      }
+      val key = recordCopySiteKey(e.span)
+      if not tbl.argConversionSites.containsKey(key) {
+        tbl.argConversionSites.add(key, ArgConversionSite(method = m, startOffset = e.span.startPos.offset))
+      }
+    }
+    case None -> ()
+  }
+}
+
+// `recordUnsignedOperand` for the value of a compound assignment `target op=
+// value`: the value of a `/=` or `%=` on an unsigned target, or the value
+// appended by a `String` `+=`.
+func recordUnsignedCompoundValue(
+  tbl: in SymbolTable,
+  op: in AssignOp,
+  targetType: in Type,
+  valueType: in Type,
+  value: in Expr,
+  stringPlus: in Bool,
+): Unit {
+  match op {
+    case AssSlash -> recordUnsignedOperand(tbl, targetType, value)
+    case AssPercent -> recordUnsignedOperand(tbl, targetType, value)
+    case AssPlus -> if stringPlus { recordUnsignedOperand(tbl, valueType, value) }
+    case _ -> ()
+  }
+}
+
+// True for the builtins that stringify their arguments.
+func isStringifyingBuiltin(name: in String): Bool {
+  name == "println" or name == "print" or name == "toString" or name == "format1" or name == "format2" or
+    name == "format3" or
+    name == "format4"
+}
+
 // True when `argTy` satisfies `paramTy` only by a numeric widening that a call
-// through a function value cannot convert (`Byte` to `UInt`, or a
-// `Float` argument: those conversions do not exist yet, #2050). The erased
+// through a function value cannot convert (a `Float` argument: that
+// conversion does not exist yet, #2050). The erased
 // call would pass the argument boxed
 // at its own type, so such a call is rejected rather than failing at run time.
 func unconvertibleWidening(paramTy: in Type, argTy: in Type): Bool {
@@ -8820,7 +8907,26 @@ func inferExprCore(
         recordHoistOperandType(sc, tbl, l, lt, rt)
         recordHoistedComposite(sc, tbl, r, rt, lt)
       }
-      inferBinop(tbl, diag, op, lt, rt, e.span)
+      val binT = inferBinop(tbl, diag, op, lt, rt, e.span)
+      val signSensitive = match op {
+        case BLt -> true
+        case BLte -> true
+        case BGt -> true
+        case BGte -> true
+        case BDiv -> true
+        case BMod -> true
+        case _ -> false
+      }
+      if signSensitive {
+        recordUnsignedOperand(tbl, lt, l)
+        recordUnsignedOperand(tbl, rt, r)
+      } else {
+        match op {
+          case BAdd -> if isPrimOf(binT, PtString) { recordUnsignedOperand(tbl, rt, r) }
+          case _ -> ()
+        }
+      }
+      binT
     }
 
     case ECall(fn, args) -> {
@@ -8874,23 +8980,32 @@ func inferExprCore(
       // once here and reused below to avoid emitting diagnostics twice when a
       // user-type receiver falls through to the general EMember path (#2700).
       var cachedRecvType: Option[Type] = None
-      // `.toULong()` is the lossless zero-extending widening of the unsigned
-      // chain (`Byte < UInt < ULong`, #7805), so only an unsigned receiver has
-      // it; conversions between the signed and unsigned chains are not
+      // `.toUInt()` and `.toULong()` are the lossless zero-extending
+      // widenings of the unsigned chain (`Byte < UInt < ULong`, #7805,
+      // #7812), so only a receiver below the target on that chain has them;
+      // conversions between the signed and unsigned chains are not
       // implemented (docs/01 §4.1).
       match fn.kind {
-        case EMember(recvE, mname) -> if mname == "toULong" and args.count == 0 {
+        case EMember(recvE, mname) -> if (mname == "toULong" or mname == "toUInt") and args.count == 0 {
           val urt = inferExpr(sc, tbl, sigs, diag, recvE)
-          if isUnsignedConvReceiver(urt) {
+          val toUInt = mname == "toUInt"
+          if isUnsignedConvReceiver(urt) and not (toUInt and isPrimOf(urt, PtULong)) {
+            if toUInt {
+              return TyPrim(pt = PtUInt)
+            }
             return TyPrim(pt = PtULong)
           }
           match unrefine(urt) {
             case TyPrim(_) -> {
+              val convHint = if toUInt {
+                " (only Byte and UInt widen to UInt)"
+              } else {
+                " (only Byte, UInt and ULong widen to ULong)"
+              }
               diag.add(
                 errorDiagnostic(
                   "T0103",
-                  "conversion method 'toULong' is not applicable to " + renderType(urt) +
-                    " (only Byte, UInt and ULong widen to ULong)",
+                  "conversion method '" + mname + "' is not applicable to " + renderType(urt) + convHint,
                   recvE.span
                 )
               )
@@ -9107,6 +9222,23 @@ func inferExprCore(
           }
           case _ -> ()
         }
+      }
+      // A stringified unsigned value says it is unsigned (#7812).
+      match fn.kind {
+        case EPath(sp) -> if sp.segments.count == 1 and isStringifyingBuiltin(sp.segments[0]) {
+          var si = 0
+          while si < args.count {
+            recordUnsignedOperand(tbl, argTypes[si], callArgExpr(args[si]))
+            si = si + 1
+          }
+        }
+        case EMember(tsRecv, _) -> if memberName == "toString" and args.count == 0 {
+          match memberRecvTy {
+            case Some(tsRecvTy) -> recordUnsignedOperand(tbl, tsRecvTy, tsRecv)
+            case None -> ()
+          }
+        }
+        case _ -> ()
       }
       // `xs.add(x)` on an open binding fixes its element type (#7788).
       if isMemberCallee and memberName == "add" {
@@ -9618,6 +9750,7 @@ func inferExprCore(
       if not stringPlusAssign {
         recordUnsignedWidening(tbl, targetType, valueType, value)
       }
+      recordUnsignedCompoundValue(tbl, op, targetType, valueType, value, stringPlusAssign)
       match target.kind {
         case EPath(p) -> if p.segments.count == 1 {
           match scopeTryFind(sc, p.segments[0]) {
@@ -9632,7 +9765,15 @@ func inferExprCore(
       TyPrim(pt = PtUnit)
     }
     case ERange(_) -> TyError
-    case EInterpolated(_) -> TyPrim(pt = PtString)
+    case EInterpolated(segs) -> {
+      for seg in segs {
+        match seg {
+          case ISExpr(se) -> recordUnsignedOperand(tbl, inferExpr(sc, tbl, sigs, diag, se), se)
+          case ISText(_, _) -> ()
+        }
+      }
+      TyPrim(pt = PtString)
+    }
     case EError -> TyError
   }
 }

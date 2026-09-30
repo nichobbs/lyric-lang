@@ -302,6 +302,10 @@ record MonoState {
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
   allSpecs: List[SpecRequest]
+  /// One entry per specialised body being rewritten: true when its type
+  /// arguments mention `UInt`/`ULong`, so its unsigned operands must be
+  /// spelled out (`spellUnsignedSitesMono`, #7812).
+  spellUnsigned: List[Bool]
   diags: List[Diagnostic]
 }
 
@@ -349,6 +353,7 @@ func newMonoState(
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
+    spellUnsigned = newList(),
     diags = newList()
   )
 }
@@ -2075,6 +2080,12 @@ func inferCallReturnTE(
     // infer its argument type, so the generic `isOk` stayed type-erased and
     // failed at runtime (#3813, same failure mode as #3705).
     case EMember(recv, methodName) -> {
+      // The unsigned-chain conversions the type checker spells out at
+      // widening and signedness-sensitive operand sites (#7805, #7812).
+      if args.count == 0 and (methodName == "toUInt" or methodName == "toULong") {
+        val convName = if methodName == "toUInt" { "UInt" } else { "ULong" }
+        return Some(value = TypeExpr(kind = TRef(path = singleSegPath(convName)), span = fn.span))
+      }
       // Distinct/range-subtype static factories (#1501) dispatch directly on
       // the type NAME (`Age.tryFrom(x)`), not through normal method
       // resolution — `recv` is a bare type reference that never resolves to
@@ -5782,6 +5793,14 @@ func genDeclResolvesForCallSite(
 }
 
 func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
+  val rewritten = rewriteExprInner(state, env, expr)
+  if state.spellUnsigned.count > 0 and state.spellUnsigned[state.spellUnsigned.count - 1] {
+    return spellUnsignedSitesMono(state, env, rewritten)
+  }
+  rewritten
+}
+
+func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
   val s = expr.span
   val ownSites = checkerSitesApplyMono(state)
   if ownSites and state.funcRefSites.count > 0 {
@@ -6626,10 +6645,14 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
         }
         case _ -> ()
       }
-      Statement(
-        kind = SAssign(target = rewriteExpr(state, env, target), op = op, value = rewriteExpr(state, env, value)),
-        span = s
-      )
+      val newTarget = rewriteExpr(state, env, target)
+      val newValue = rewriteExpr(state, env, value)
+      val spelledValue = if state.spellUnsigned.count > 0 and state.spellUnsigned[state.spellUnsigned.count - 1] {
+        spellUnsignedCompoundValueMono(state, env, op, newTarget, newValue)
+      } else {
+        newValue
+      }
+      Statement(kind = SAssign(target = newTarget, op = op, value = spelledValue), span = s)
     }
 
     case SReturn(opt) -> {
@@ -7982,7 +8005,9 @@ pub func monoFileWithLambdaTypes(
     val substitutedBody = substValueInBody(req.valueSubst, req.baseDecl.body)
     val env = seedEnvFromParams(req.baseDecl.params)
     state.originScope.add(originPkgOf(req.baseDecl.annotations))
+    state.spellUnsigned.add(substMentionsUnsignedMono(req.subst))
     val newBody = rewriteFuncBodyWithRet(state, env, substitutedBody, req.baseDecl.ret)
+    state.spellUnsigned.removeAt(state.spellUnsigned.count - 1)
     state.originScope.removeAt(state.originScope.count - 1)
     val finalDecl = FunctionDecl(
       docComments = req.baseDecl.docComments,
@@ -8070,4 +8095,276 @@ func extractBaseName(specName: in String): String {
     i = i + 1
   }
   specName
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unsigned operands of specialised bodies (#7812)
+// ─────────────────────────────────────────────────────────────────────────────
+// The type checker spells every `UInt`/`ULong` operand whose lowering depends
+// on signedness as the identity `.toUInt()`/`.toULong()` (see
+// `recordUnsignedOperand` in `Lyric.TypeChecker`).  A generic body is checked
+// once, over its type parameters, so an operand typed `T` is spelled only
+// here, in a specialisation that binds `T` to `UInt`/`ULong`, from the types
+// the specialisation's parameters and locals now declare.
+// True when a type argument of `subst` mentions `UInt` or `ULong`.
+func substMentionsUnsignedMono(subst: in Map[String, TypeExpr]): Bool {
+  for k in mapKeys(subst) {
+    match mapGet(subst, k) {
+      case Some(te) -> if teMentionsUnsignedMono(te) { return true }
+      case None -> ()
+    }
+  }
+  false
+}
+
+func teMentionsUnsignedMono(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(p) -> isUnsignedPathMono(p)
+    case TRefined(p, _) -> isUnsignedPathMono(p)
+    case TParen(inner) -> teMentionsUnsignedMono(inner)
+    case TGenericApp(head, args) -> {
+      if isUnsignedPathMono(head) {
+        return true
+      }
+      for a in args {
+        match a {
+          case TAType(ate) -> if teMentionsUnsignedMono(ate) { return true }
+          case TAValue(_) -> ()
+        }
+      }
+      false
+    }
+    case TTuple(elems) -> {
+      for el in elems {
+        if teMentionsUnsignedMono(el) {
+          return true
+        }
+      }
+      false
+    }
+    case TSlice(elem) -> teMentionsUnsignedMono(elem)
+    case TArray(_, elem) -> teMentionsUnsignedMono(elem)
+    case TFunction(ps, r) -> {
+      for pte in ps {
+        if teMentionsUnsignedMono(pte) {
+          return true
+        }
+      }
+      teMentionsUnsignedMono(r)
+    }
+    case _ -> false
+  }
+}
+
+func isUnsignedPathMono(p: in ModulePath): Bool {
+  if p.segments.count == 0 {
+    return false
+  }
+  val last = p.segments[p.segments.count - 1]
+  last == "UInt" or last == "ULong"
+}
+
+// `e.toUInt()` / `e.toULong()` when `e` is a `UInt` / `ULong` that does not
+// already say so; `e` otherwise.
+func spellUnsignedOperandMono(state: in MonoState, env: in Map[String, TypeExpr], e: in Expr): Expr {
+  if spelledUnsignedMono(e) {
+    return e
+  }
+  match inferExprTE(state, env, e) {
+    case Some(te) -> {
+      val method = unsignedIdentityMethodMono(te)
+      if method.length == 0 {
+        return e
+      }
+      val noArgs: List[CallArg] = newList()
+      Expr(
+        kind = ECall(fn = Expr(kind = EMember(receiver = e, memberName = method), span = e.span), args = noArgs),
+        span = e.span
+      )
+    }
+    case None -> e
+  }
+}
+
+func unsignedIdentityMethodMono(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(p) -> unsignedMethodForPathMono(p)
+    case TRefined(p, _) -> unsignedMethodForPathMono(p)
+    case TParen(inner) -> unsignedIdentityMethodMono(inner)
+    case _ -> ""
+  }
+}
+
+func unsignedMethodForPathMono(p: in ModulePath): String {
+  if p.segments.count != 1 {
+    return ""
+  }
+  if p.segments[0] == "UInt" {
+    "toUInt"
+  } else if p.segments[0] == "ULong" {
+    "toULong"
+  } else {
+    ""
+  }
+}
+
+func spelledUnsignedMono(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(_, suffix, _) -> match suffix {
+        case U32 -> true
+        case U64 -> true
+        case _ -> false
+      }
+      case _ -> false
+    }
+    case ECall(fn, cargs) -> cargs.count == 0 and
+      (match fn.kind { case EMember(_, m) -> m == "toUInt" or m == "toULong"; case _ -> false })
+    case _ -> false
+  }
+}
+
+func isStringTEMono(te: in Option[TypeExpr]): Bool {
+  match te {
+    case Some(t) -> match t.kind {
+      case TRef(p) -> p.segments.count == 1 and p.segments[0] == "String"
+      case _ -> false
+    }
+    case None -> false
+  }
+}
+
+// The operand positions `recordUnsignedOperand` covers, on an already
+// rewritten expression.
+func spellUnsignedSitesMono(state: in MonoState, env: in Map[String, TypeExpr], e: in Expr): Expr {
+  val s = e.span
+  match e.kind {
+    case EBinop(op, lhs, rhs) -> {
+      val signSensitive = match op {
+        case BLt -> true
+        case BLte -> true
+        case BGt -> true
+        case BGte -> true
+        case BDiv -> true
+        case BMod -> true
+        case _ -> false
+      }
+      if signSensitive {
+        return Expr(
+          kind = EBinop(
+            op = op,
+            lhs = spellUnsignedOperandMono(state, env, lhs),
+            rhs = spellUnsignedOperandMono(state, env, rhs)
+          ),
+          span = s
+        )
+      }
+      match op {
+        case BAdd -> if isStringTEMono(inferExprTE(state, env, lhs)) {
+          return Expr(kind = EBinop(op = op, lhs = lhs, rhs = spellUnsignedOperandMono(state, env, rhs)), span = s)
+        }
+        case _ -> ()
+      }
+      e
+    }
+    case EInterpolated(segs) -> {
+      val spelled: List[InterpolatedSegment] = newList()
+      for seg in segs {
+        match seg {
+          case ISText(t, sp) -> spelled.add(ISText(text = t, span = sp))
+          case ISExpr(se) -> spelled.add(ISExpr(expr = spellUnsignedOperandMono(state, env, se)))
+        }
+      }
+      Expr(kind = EInterpolated(segments = spelled), span = s)
+    }
+    case ECall(fn, args) -> match fn.kind {
+      case EPath(p) -> if p.segments.count == 1 and isStringifyingBuiltinMono(p.segments[0]) {
+        val spelled: List[CallArg] = newList()
+        for a in args {
+          match a {
+            case CAPositional(ae) -> spelled.add(CAPositional(expr = spellUnsignedOperandMono(state, env, ae)))
+            case CANamed(n, ae, nsp) -> spelled.add(
+              CANamed(name = n, value = spellUnsignedOperandMono(state, env, ae), span = nsp)
+            )
+          }
+        }
+        Expr(kind = ECall(fn = fn, args = spelled), span = s)
+      } else {
+        e
+      }
+      case EMember(recv, m) -> if m == "toString" and args.count == 0 {
+        Expr(
+          kind = ECall(
+            fn = Expr(
+              kind = EMember(receiver = spellUnsignedOperandMono(state, env, recv), memberName = m),
+              span = fn.span
+            ),
+            args = args
+          ),
+          span = s
+        )
+      } else {
+        e
+      }
+      case _ -> e
+    }
+    case EAssign(target, op, value) -> Expr(
+      kind = EAssign(
+        target = target,
+        op = op,
+        value = spellUnsignedCompoundValueMono(state, env, op, target, value)
+      ),
+      span = s
+    )
+    case _ -> e
+  }
+}
+
+// The value of `target op= value`, spelled unsigned for a `/=` or `%=` on a
+// `UInt`/`ULong` target and for the value a `String` `+=` appends.
+func spellUnsignedCompoundValueMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  op: in AssignOp,
+  target: in Expr,
+  value: in Expr,
+): Expr {
+  match op {
+    case AssSlash -> spellUnsignedByTargetMono(state, env, target, value)
+    case AssPercent -> spellUnsignedByTargetMono(state, env, target, value)
+    case AssPlus -> if isStringTEMono(inferExprTE(state, env, target)) {
+      spellUnsignedOperandMono(state, env, value)
+    } else {
+      value
+    }
+    case _ -> value
+  }
+}
+
+func spellUnsignedByTargetMono(
+  state: in MonoState, env: in Map[String, TypeExpr], target: in Expr, value: in Expr
+): Expr {
+  if spelledUnsignedMono(value) {
+    return value
+  }
+  match inferExprTE(state, env, target) {
+    case Some(te) -> {
+      val method = unsignedIdentityMethodMono(te)
+      if method.length == 0 {
+        return value
+      }
+      val noArgs: List[CallArg] = newList()
+      Expr(
+        kind = ECall(fn = Expr(kind = EMember(receiver = value, memberName = method), span = value.span), args = noArgs),
+        span = value.span
+      )
+    }
+    case None -> value
+  }
+}
+
+func isStringifyingBuiltinMono(name: in String): Bool {
+  name == "println" or name == "print" or name == "toString" or name == "format1" or name == "format2" or
+    name == "format3" or
+    name == "format4"
 }

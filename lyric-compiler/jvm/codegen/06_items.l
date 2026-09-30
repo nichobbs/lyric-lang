@@ -102,8 +102,6 @@ func makeFuncCtx(
     ctorExpectStack = newList(),
     ctorExpectClassStack = newList(),
     aliasTargets = aliasTargets,
-    unsignedVars = newMap(),
-    unsignedUndo = newList(),
     varGenericArgsUndo = newList(),
     typeParams = newList()
   )
@@ -171,8 +169,6 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     ctorExpectStack = ctx.ctorExpectStack,
     ctorExpectClassStack = ctx.ctorExpectClassStack,
     aliasTargets = ctx.aliasTargets,
-    unsignedVars = ctx.unsignedVars,
-    unsignedUndo = ctx.unsignedUndo,
     varGenericArgsUndo = ctx.varGenericArgsUndo,
     typeParams = ctx.typeParams
   )
@@ -252,8 +248,6 @@ func makeFuncCtxForGenerator(
     // #6393: a generator body has no reachable file-scoped alias table at
     // this call site — out of scope for now (see `FuncCtx.aliasTargets`).
     aliasTargets = newMap(),
-    unsignedVars = newMap(),
-    unsignedUndo = newList(),
     varGenericArgsUndo = newList(),
     typeParams = newList()
   )
@@ -339,8 +333,6 @@ func makeFuncCtxInstance(
     // impl method) has no reachable file-scoped alias table at this call
     // site — out of scope for now (see `FuncCtx.aliasTargets`).
     aliasTargets = newMap(),
-    unsignedVars = newMap(),
-    unsignedUndo = newList(),
     varGenericArgsUndo = newList(),
     typeParams = typeParams
   )
@@ -777,9 +769,6 @@ pub func setupInstanceParamSlotsAndHolders(
     // threaded through so `recordParamGenericArgs` can bail on an arg that
     // names an unresolved type parameter instead of guessing a phantom class.
     recordParamGenericArgs(ctx, params[rdi].name, params[rdi].ty, typeParams)
-    // #6748: a `UInt`/`ULong`-typed parameter needs unsigned-aware
-    // comparison/division/stringification inside the method body.
-    recordUnsignedVarTy(ctx, params[rdi].name, params[rdi].ty)
     rdi = rdi + 1
   }
 }
@@ -1095,8 +1084,6 @@ func lowerFuncScoped(
     // String]` on `func foo[T](...)`) bails instead of registering a
     // phantom `<pkgName>/T` class.
     recordParamGenericArgs(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty, fnElemTps)
-    // #6748: see `setupInstanceParamSlotsAndHolders`'s matching call.
-    recordUnsignedVarTy(ctx, resolvedParams[rdi].name, resolvedParams[rdi].ty)
     rdi = rdi + 1
   }
 
@@ -3134,7 +3121,6 @@ func lowerGeneratorBody(
   while rdi < decl.params.count {
     recordDeclaredElemType(ctx, decl.params[rdi].name, decl.params[rdi].ty, genElemTps)
     recordParamGenericArgs(ctx, decl.params[rdi].name, decl.params[rdi].ty, genElemTps)
-    recordUnsignedVarTy(ctx, decl.params[rdi].name, decl.params[rdi].ty)
     rdi = rdi + 1
   }
 
@@ -4127,8 +4113,6 @@ pub func collectFileSigsSeeded(
           closureRetTy = None,
           recordRetClass = None,
           retIsSelf = false,
-          // `Type.from(x)` is `ECall(EMember(…), …)` — never matches
-          // `isUnsignedExpr`'s `ECall(EPath, …)`-only arm.
           retIsUnsigned = false,
           recordRetHead = newList(),
           ownTypeParams = newList(),
@@ -4283,8 +4267,6 @@ pub func collectFileSigsSeeded(
                       recordRetClass = None,
                       // An opaque field accessor's declared type is never `Self`.
                       retIsSelf = false,
-                      // Field read is `EMember`, not `ECall` — out of scope
-                      // for `isUnsignedExpr` (finding 1.2b, see its doc).
                       retIsUnsigned = false,
                       recordRetHead = newList(),
                       ownTypeParams = newList(),
@@ -4381,9 +4363,6 @@ pub func collectFileSigsSeeded(
                   recordRetClass = None,
                   // A module-level `val`'s type is never `Self`.
                   retIsSelf = false,
-                  // Keyed `val:`-prefixed, never a bare name — unreachable
-                  // from `isUnsignedExpr`'s `ECall` arm, and a val read is
-                  // `EMember` anyway, never `ECall`.
                   retIsUnsigned = false,
                   recordRetHead = newList(),
                   ownTypeParams = newList(),
@@ -4642,10 +4621,8 @@ func registerInstanceSigErased(
         closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
         recordRetClass = None,
         retIsSelf = retIsSelf,
-        // Keyed `<class>#<method>`, so `isUnsignedExpr`'s bare-key `ECall`
-        // arm never reads it; a distinct type's `$value` accessor carries it
-        // so stringification formats a `UInt`/`ULong` underlying value
-        // unsigned (D-progress-968).
+        // A distinct type's `$value` accessor carries it so stringification
+        // formats a `UInt`/`ULong` underlying value unsigned (D-progress-968).
         retIsUnsigned = match retOpt { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
         recordRetHead = newList(),
         ownTypeParams = newList(),
@@ -4837,10 +4814,6 @@ func registerFieldElemSig(
       recordRetClass = None,
       // A field's declared element type is never `Self`.
       retIsSelf = false,
-      // Keyed `elem:<class>#<field>`, consulted only by
-      // `indexedElemTypeOverride`'s field-receiver arm — not the bare-name
-      // `varGenericArgs` path `isUnsignedExpr`'s `EIndex` arm consults
-      // (finding 1.2c is scoped to a bare-name receiver; see its doc).
       retIsUnsigned = false,
       recordRetHead = newList(),
       ownTypeParams = newList(),
