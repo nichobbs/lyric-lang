@@ -428,16 +428,18 @@ func hzIsNameLikeSafe(st: in HoistState, e: in Expr): Bool {
 // (and index operands) on MSIL BEFORE the value evaluates — the target's
 // codegen pushes them with no spill-and-reload — so a top-level hazard in
 // the value is a stacking risk even when nothing about the value's own
-// shape would otherwise qualify it. A bare-name target is a plain local
-// store with nothing stacked. (JVM is unaffected: its member/index
-// assignment lowering already spills receiver/index/value to locals,
-// #5936.)
-func hzAssignTargetStacks(target: in Expr): Bool {
+// shape would otherwise qualify it. A plain `=` to a bare name is a local
+// store with nothing stacked, but a compound one (`t += v`) loads the
+// target's current value before the value evaluates, so it stacks too
+// (#7816: `t += await f()` was invalid IL). (JVM is unaffected: its
+// member/index assignment lowering already spills receiver/index/value to
+// locals, #5936.)
+func hzAssignTargetStacks(target: in Expr, op: in AssignOp): Bool {
   match target.kind {
-    case EParen(inner) -> hzAssignTargetStacks(inner)
+    case EParen(inner) -> hzAssignTargetStacks(inner, op)
     case EMember(_, _) -> true
     case EIndex(_, _) -> true
-    case _ -> false
+    case _ -> match op { case AssEq -> false; case _ -> true }
   }
 }
 
@@ -768,8 +770,8 @@ func hzNeedsHoist(cfg: in HoistConfig, e: in Expr): Bool {
     case EMember(receiver, _) -> hzNeedsHoist(cfg, receiver)
     case EYield(inner) -> hzNeedsHoist(cfg, inner)
     case ETypeApp(fn, _) -> hzNeedsHoist(cfg, fn)
-    case EAssign(target, _, value) -> hzNeedsHoist(cfg, target) or hzNeedsHoist(cfg, value) or
-      (hzAssignTargetStacks(target) and hzHasHazard(cfg, value))
+    case EAssign(target, op, value) -> hzNeedsHoist(cfg, target) or hzNeedsHoist(cfg, value) or
+      (hzAssignTargetStacks(target, op) and hzHasHazard(cfg, value))
     case EIf(cond, thenB, elseO, _) -> {
       if hzNeedsHoist(cfg, cond) or hzNeedsHoistEob(cfg, thenB) {
         true
@@ -863,8 +865,8 @@ func hzNeedsHoistStmt(cfg: in HoistConfig, s: in Statement): Bool {
         }
       }
     }
-    case SAssign(target, _, value) -> hzNeedsHoist(cfg, target) or hzNeedsHoist(cfg, value) or
-      (hzAssignTargetStacks(target) and hzHasHazard(cfg, value))
+    case SAssign(target, op, value) -> hzNeedsHoist(cfg, target) or hzNeedsHoist(cfg, value) or
+      (hzAssignTargetStacks(target, op) and hzHasHazard(cfg, value))
     case SReturn(valOpt) -> {
       match valOpt {
         case Some(e) -> hzNeedsHoist(cfg, e)
@@ -1100,7 +1102,7 @@ func hzHoistSpine(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: 
       // evaluation order) and the whole value bound out, so the hazard's
       // control-flow effect never fires with the receiver/index already
       // stacked.
-      if hzAssignTargetStacks(target) and hzHasHazard(cfg, value) {
+      if hzAssignTargetStacks(target, op) and hzHasHazard(cfg, value) {
         val target2 = hzBindAssignTarget(cfg, target, acc, st)
         val value2 = hzBind(cfg, hzHoistTop(cfg, value, acc, st), acc, st)
         mkExpr(EAssign(target = target2, op = op, value = value2), e.span)
@@ -1339,7 +1341,7 @@ func hzStmt(cfg: in HoistConfig, s: in Statement, dest: in List[Statement], st: 
       // same object; rebinding also preserves the original read-before-
       // value order if the value expression mutates a `var` the target
       // reads.
-      val stacked = hzAssignTargetStacks(target) and hzHasHazard(cfg, value)
+      val stacked = hzAssignTargetStacks(target, op) and hzHasHazard(cfg, value)
       val targetNeedsHoist = hzNeedsHoist(cfg, target)
       val valueNeedsHoist = hzNeedsHoist(cfg, value)
       if stacked {

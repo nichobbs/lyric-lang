@@ -844,7 +844,7 @@ loop) its upper bound does — also keeps its protocol's hidden temporaries
 and its pattern's bindings in fields (#7766): the counter and bound of a
 range, the list, index and count (plus the typed-array fast-path slot) of
 an indexed loop, and the enumerator of an `IEnumerable` or generator loop.
-They are keyed by IL slot (`__local___for_<slot>`), not by name, so two
+They are keyed by IL slot (`__local___slot_<slot>`), not by name, so two
 loops binding `x` at different types get distinct fields.  Temporaries
 that are written and consumed with no `await` in between (the element,
 the `MoveNextAsync`/`DisposeAsync` value tasks, the `IDisposable` probe,
@@ -856,6 +856,24 @@ registrations, a collection loop reserves the largest protocol's count
 have), and the class is padded up to the prediction.  An `await` after a
 `defer` resumes inside the `defer`'s protected region through the region
 dispatch of D142/D143, and the deferred block runs once.
+
+A `match` arm whose guard or body can suspend keeps its pattern's
+bindings in fields the same way, keyed by slot (#7816): they are written
+by the pattern bind before the guard and body run.  The scrutinee's hidden
+temporary is kept too when any arm's guard can suspend, because a later
+arm's pattern test reads it after an earlier guard resumed and failed.  A
+pattern's destructuring temporaries are consumed before the guard runs and
+stay IL locals.  Pass 1 reserves one field per name each suspending arm's
+pattern binds (or-pattern alternatives included) plus the scrutinee's,
+from the same predicates the lowering applies.  An `await` in a guard is an
+`await` in the function like any other, so it makes the function suspend.
+
+A compound assignment whose value contains an `await` (`t += await f()`)
+would load the target's current value onto the evaluation stack before the
+suspension, which the CLR does not preserve.  `Lyric.AwaitHoist` binds the
+value to a fresh local first, as it already did for a field or index
+target (#7816), so the target is read after the value is evaluated on
+every backend.
 
 The M1.4 blocking shim (`.GetAwaiter().GetResult()` synchronously) is
 retained as a fallback for ineligible shapes — awaits in expression

@@ -119,7 +119,10 @@ deferred to Phase 3 by design.
   loop in an MSIL `async func` keeps its hidden temporaries and pattern
   bindings across a real suspension, and the loop waits for an
   enumerator's `DisposeAsync` to complete (#7766, #7767;
-  `docs/progress/2026-09-30-async-for-loop-suspension.md`).
+  `docs/progress/2026-09-30-async-for-loop-suspension.md`).  A `match` arm
+  whose guard or body suspends keeps its pattern bindings (and, for a
+  suspending guard, the scrutinee), and `t += await f()` is valid IL (#7816;
+  `docs/progress/2026-09-30-async-match-suspension.md`).
 
 ### Phase 5 — self-hosting
 
