@@ -578,7 +578,8 @@ pub func pipeCheckedDefaults(file0: in SourceFile, importedPkgs: in List[Importe
   pipeDesugarChecked(file0, tcRes, funcValueSites(tcRes.symbols), noListLiteralSites).file
 }
 
-/// True when `file` declares a parameter or field default anywhere.
+/// True when `file` declares a parameter or field default anywhere: on a
+/// function, a field, or a record, protected, `impl` or interface member.
 pub func pipeFileDeclaresDefaults(file: in SourceFile): Bool {
   for it in file.items {
     val found = match it.kind {
@@ -604,7 +605,30 @@ pub func pipeFileDeclaresDefaults(file: in SourceFile): Bool {
               case PFLet(_, _, init, _, _, _) -> if optExprPresent(init) { any = true }
               case PFImmutable(fd) -> if optExprPresent(fd.dflt) { any = true }
             }
-            case _ -> ()
+            case PMEntry(ed) -> if paramsHaveDefault(ed.params) { any = true }
+            case PMFunc(fn) -> if paramsHaveDefault(fn.params) { any = true }
+            case PMInvariant(_) -> ()
+          }
+        }
+        any
+      }
+      case IImpl(decl) -> {
+        var any = false
+        for m in decl.members {
+          match m {
+            case IMplFunc(fn) -> if paramsHaveDefault(fn.params) { any = true }
+            case IMplAssoc(_) -> ()
+          }
+        }
+        any
+      }
+      case IInterface(decl) -> {
+        var any = false
+        for m in decl.members {
+          match m {
+            case IMSig(sig) -> if paramsHaveDefault(sig.params) { any = true }
+            case IMFunc(fn) -> if paramsHaveDefault(fn.params) { any = true }
+            case IMAssoc(_) -> ()
           }
         }
         any
@@ -638,7 +662,8 @@ func recordMembersHaveDefault(members: in List[RecordMember]): Bool {
   for m in members {
     match m {
       case RMField(fd) -> if optExprPresent(fd.dflt) { return true }
-      case _ -> ()
+      case RMFunc(fn) -> if paramsHaveDefault(fn.params) { return true }
+      case RMInvariant(_) -> ()
     }
   }
   false

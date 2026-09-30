@@ -122,7 +122,11 @@ deferred to Phase 3 by design.
   `docs/progress/2026-09-30-async-for-loop-suspension.md`).  A `match` arm
   whose guard or body suspends keeps its pattern bindings (and, for a
   suspending guard, the scrutinee), and `t += await f()` is valid IL (#7816;
-  `docs/progress/2026-09-30-async-match-suspension.md`).
+  `docs/progress/2026-09-30-async-match-suspension.md`).  A call to a
+  record, `impl`, interface, protected or dot-named method that omits a
+  defaulted argument splices the default on both targets, with arguments
+  paired as the type checker pairs them (#7820;
+  `docs/progress/2026-09-30-method-default-args.md`).
 
 ### Phase 5 — self-hosting
 

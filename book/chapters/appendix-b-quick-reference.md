@@ -1307,7 +1307,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0036` | Unary minus on non-numeric type |
 | `T0037` | `not` applied to non-Bool operand |
 | `T0041` | List literal elements have mismatched types |
-| `T0042` | Wrong number of arguments to function call |
+| `T0042` | Wrong number of arguments to a function or method call, a named argument naming no parameter, or a parameter with no default left without an argument |
 | `T0043` | Argument type does not match parameter type |
 | `T0044` | Called value is not a function |
 | `T0050` | Unknown type parameter in where clause |

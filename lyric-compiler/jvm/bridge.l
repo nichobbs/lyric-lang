@@ -1111,7 +1111,8 @@ func rollbackNewKeys[V](m: in Map[String, V], before: in Map[String, Bool]): Uni
 // omits the argument lowers the REGISTERED default, so point the package's own
 // entries at the middle-ended defaults before its code is generated.  The
 // registered lists are shared by every key a declaration is registered under,
-// so updating them in place updates each key.
+// so updating them in place updates each key.  Methods' `<class>#<method>`
+// signatures are refreshed the same way (`refreshMethodDefaultsJvm`, #7820).
 func refreshOwnDefaultsJvm(
   file: in SourceFile,
   registry: in Map[String, JvmFuncSig],
@@ -1173,6 +1174,7 @@ func refreshOwnDefaultsJvm(
       case _ -> ()
     }
   }
+  refreshMethodDefaultsJvm(file, registry)
 }
 
 func sameParamNamesJvm(names: in List[String], params: in List[Param]): Bool {

@@ -362,8 +362,8 @@ pub record CodegenCtx {
   funcParamNames: Map[String, String]
   // Default value expressions for function parameters with `= expr` defaults.
   // Keyed `<fqn>/param<i>` and `<arityKey>/param<i>` (same key space as
-  // funcParamNames).  Populated by addPackageTokens.  Lets reorderFuncNamedArgs
-  // fill a missing named-arg slot from the declared default (#1503).
+  // funcParamNames).  Populated by addPackageTokens.  Lets funcArgsWithDefaultsMsil
+  // fill an omitted defaulted argument from the declared default (#1503).
   funcDefaultExprs: Map[String, Expr]
   // Inner parameter MsilTypes of a function-typed parameter (`(A,B) -> R` ⇒
   // [MsilType(A), MsilType(B)]), keyed `"<fqn>#<paramIdx>"` (both the
@@ -601,6 +601,10 @@ pub record CodegenCtx {
   // by-value load — without it interface calls with byref params bound to
   // signatures missing the `&` qualifier (#1955).
   methodParamModes: Map[String, List[ParamMode]]
+  // Each method's declared receiver-less parameters, under the same keys as
+  // `methodParamModes`: a call omitting a defaulted argument splices its
+  // default (`methodArgsWithDefaultsMsil`, #7820).
+  methodParamDecls: Map[String, List[Param]]
   // Pending interface implementations discovered by the IImpl pre-pass.  Each
   // entry maps an implementing record's FQ name to its impl block(s); used to
   // (a) inject impl methods into the target MRecord, and (b) emit MPImpl items
@@ -2234,6 +2238,7 @@ pub func newCodegenCtx(
     methodRetIsSelf = newMap(),
     methodParamTypes = newMap(),
     methodParamModes = newMap(),
+    methodParamDecls = newMap(),
     implEntries = newList(),
     nextMethodDefRow = newList(),
     nextFieldDefRow = newList(),
@@ -2384,6 +2389,9 @@ func registerMethodParamTypes(cctx: in CodegenCtx, keyBase: in String, params: i
 func registerMethodParamModes(cctx: in CodegenCtx, key: in String, params: in List[Param]): Unit {
   if not cctx.methodParamModes.containsKey(key) {
     cctx.methodParamModes.add(key, paramModesOf(params))
+  }
+  if not cctx.methodParamDecls.containsKey(key) {
+    cctx.methodParamDecls.add(key, params)
   }
 }
 
@@ -17344,101 +17352,49 @@ func fillCtorDefaultArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List[
   ordered
 }
 
-// Reorder a static/method function call's arguments to parameter-declaration
-// order (#1503).  Mirrors fillCtorDefaultArgs but uses `funcParamNames` (the
-// declared parameter-name list keyed by `tokKey`) instead of `fieldDeclaredNames`.
-// Returns `args` unchanged when: any arg is positional, the name map is absent
-// for this function (e.g. a cross-package restored function), or a named arg
-// doesn't match any declared parameter name.
-func reorderFuncNamedArgs(cctx: in CodegenCtx, tokKey: in String, args: in List[CallArg]): List[CallArg] {
-  if args.count == 0 {
-    return args
-  }
-  // Build name → arg from the call site; bail if any arg is positional
-  // (mixed positional/named calls are already in declaration order).
-  val nameToArg: Map[String, CallArg] = newMap()
-  var i = 0
-  while i < args.count {
-    match args[i] {
-      case CANamed(nm, _, _) -> {
-        if nameToArg.containsKey(nm) {
-          return args
-        }
-        nameToArg.add(nm, args[i])
-      }
-      case CAPositional(_) -> {
-        return args
-      }
-    }
-    i = i + 1
-  }
-  // Count total declared params by probing the flat map until a key is absent.
-  var totalParams = 0
-  while cctx.funcParamNames.containsKey(tokKey + "/param" + toString(totalParams)) {
-    totalParams = totalParams + 1
-  }
-  if totalParams == 0 {
-    return args  // no param-order info — preserve current behaviour
-  }
-  val ordered: List[CallArg] = newList()
+// A free or dot-named function call's arguments in parameter order with its
+// omitted defaulted parameters filled (#1503, #7820): `Lyric.Parser.
+// argsWithDefaults` over the names and defaults registered for `tokKey` by
+// addPackageTokens.  `skip` leading parameters are the receiver of a
+// method-style call (`r.m(args)` resolved to `func T.m(self, ...)`).  `args`
+// unchanged when no parameters are registered or the call cannot be paired.
+func funcArgsWithDefaultsMsil(
+  cctx: in CodegenCtx, tokKey: in String, skip: in Int, args: in List[CallArg]
+): List[CallArg] {
+  val names: List[String] = newList()
+  val defaults: List[Option[Expr]] = newList()
   var pi = 0
-  while pi < totalParams {
+  var more = true
+  while more {
     val pnKey = tokKey + "/param" + toString(pi)
     match mapGet(cctx.funcParamNames, pnKey) {
-      case None -> return args  // defensive
-      case Some(pname) -> match mapGet(nameToArg, pname) {
-        case Some(a) -> ordered.add(a)
-        case None -> match mapGet(cctx.funcDefaultExprs, pnKey) {
-          case Some(dflt) -> ordered.add(CAPositional(expr = dflt))
-          case None -> return args  // required param missing — bail
-        }
+      case Some(nm) -> {
+        names.add(nm)
+        defaults.add(mapGet(cctx.funcDefaultExprs, pnKey))
+        pi = pi + 1
+      }
+      case None -> {
+        more = false
       }
     }
-    pi = pi + 1
   }
-  ordered
-}
-
-// Fill in trailing default arguments for a positional call site that provides
-// fewer arguments than the declared parameter count (#1503).  Returns `args`
-// unchanged when: all args are positional but count already matches declared
-// params, no param-name info is available for this function, or a missing
-// trailing param has no registered default.
-func fillPositionalFuncDefaults(cctx: in CodegenCtx, tokKey: in String, args: in List[CallArg]): List[CallArg] {
-  // Only applies when args.count < declared param count.
-  var totalParams = 0
-  while cctx.funcParamNames.containsKey(tokKey + "/param" + toString(totalParams)) {
-    totalParams = totalParams + 1
-  }
-  if totalParams <= args.count {
+  if names.count == 0 {
     return args
   }
-  // Verify all provided args are positional (mixed calls are already in order).
-  var i = 0
-  while i < args.count {
-    match args[i] {
-      case CAPositional(_) -> ()
-      case CANamed(_, _, _) -> return args  // named args handled by reorderFuncNamedArgs
-    }
-    i = i + 1
+  match argsWithDefaults(names, defaults, skip, args) {
+    case Some(filled) -> filled
+    case None -> args
   }
-  // Copy existing positional args then append defaults for trailing params.
-  val filled: List[CallArg] = newList()
-  var j = 0
-  while j < args.count {
-    filled.add(args[j])
-    j = j + 1
+}
+
+// A method call's arguments in parameter order with its omitted defaulted
+// parameters filled (#7820): the method's receiver-less declared parameters
+// are registered under its dispatch key (`registerMethodParamModes`).
+func methodArgsWithDefaultsMsil(cctx: in CodegenCtx, dispatchKey: in String, args: in List[CallArg]): List[CallArg] {
+  match mapGet(cctx.methodParamDecls, dispatchKey) {
+    case Some(params) -> argsWithParamDefaults(params, 0, args)
+    case None -> args
   }
-  var k = args.count
-  while k < totalParams {
-    val pnKey = tokKey + "/param" + toString(k)
-    match mapGet(cctx.funcDefaultExprs, pnKey) {
-      case Some(dflt) -> filled.add(CAPositional(expr = dflt))
-      case None -> return args  // required param with no default — bail
-    }
-    k = k + 1
-  }
-  filled
 }
 
 // Lower a function call expression.
@@ -19297,8 +19253,7 @@ func lowerBuiltinOrStaticCallMsil(
                     case None -> newList()
                   }
                   val callParamModes = match mapGet(cctx.funcParamModes, tokKey) { case Some(ms) -> ms; case None -> newList() }
-                  val reorderedArgs = reorderFuncNamedArgs(cctx, tokKey, args)
-                  val callArgs = fillPositionalFuncDefaults(cctx, tokKey, reorderedArgs)
+                  val callArgs = funcArgsWithDefaultsMsil(cctx, tokKey, 0, args)
                   val byrefPending: List[ByrefWriteBackMsil] = newList()
                   var i = 0
                   while i < callArgs.count {
@@ -19649,22 +19604,23 @@ func lowerBuiltinOrStaticCallMsil(
                 case None -> panic("Msil.Codegen: sibling method token vanished after containsKey for " + sibKey)
               }
               insns.add(MLdarg(slot = 0))
+              val sargs = methodArgsWithDefaultsMsil(cctx, sibKey, args)
               val sibModes = match mapGet(cctx.methodParamModes, sibKey) { case Some(ms) -> ms; case None -> newList() }
               val sibByrefPending: List[ByrefWriteBackMsil] = newList()
               var si = 0
-              while si < args.count {
+              while si < sargs.count {
                 val sibByref = if si < sibModes.count { isByrefMode(sibModes[si]) } else { false }
                 if sibByref {
                   emitByrefArgCheckedMsil(
                     cctx,
                     fctx,
                     insns,
-                    callArgExpr(args[si]),
+                    callArgExpr(sargs[si]),
                     mapGet(cctx.methodParamTypes, sibKey + "#" + toString(si)),
                     sibByrefPending
                   )
                 } else {
-                  val aTy = lowerCallArgMsil(cctx, fctx, insns, args[si])
+                  val aTy = lowerCallArgMsil(cctx, fctx, insns, sargs[si])
                   // Mirror the MClass dispatch arm: box only when the declared
                   // parameter is a reference/object type — boxing an Int arg
                   // for an `int32` parameter is invalid IL (#1723 / #1784).
@@ -20692,10 +20648,11 @@ func lowerMethodCallMsil(
       }
       match mapGet(cctx.methodTokens, dispatchKey) {
         case Some(tok) -> {
+          val margs = methodArgsWithDefaultsMsil(cctx, dispatchKey, args)
           val methodModes = match mapGet(cctx.methodParamModes, dispatchKey) { case Some(ms) -> ms; case None -> newList() }
           val byrefPending: List[ByrefWriteBackMsil] = newList()
           var i = 0
-          while i < args.count {
+          while i < margs.count {
             // `out`/`inout` argument: load the argument's address (a managed
             // pointer) rather than its value so the impl method can write
             // back through it (#1955).  Without this the by-value load
@@ -20706,7 +20663,7 @@ func lowerMethodCallMsil(
                 cctx,
                 fctx,
                 insns,
-                callArgExpr(args[i]),
+                callArgExpr(margs[i]),
                 mapGet(cctx.methodParamTypes, dispatchKey + "#" + toString(i)),
                 byrefPending
               )
@@ -20732,7 +20689,7 @@ func lowerMethodCallMsil(
                   fctx.contextHintTyArgs.add(keyTy)
                   fctx.contextHintTyArgs.add(valTy)
                   pushCollExpect(fctx, paramTy)
-                  val result = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                  val result = lowerCallArgMsil(cctx, fctx, insns, margs[i])
                   popCollExpect(fctx)
                   while fctx.contextHintTyArgs.count > 0 {
                     fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
@@ -20760,7 +20717,7 @@ func lowerMethodCallMsil(
                   // `lowerBuiltinOrStaticCallMsil` already does exactly this;
                   // the instance/interface dispatch path was the gap.
                   pushCollExpect(fctx, paramTy)
-                  val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                  val argTy = lowerCallArgMsil(cctx, fctx, insns, margs[i])
                   popCollExpect(fctx)
                   argTy
                 }
@@ -20804,11 +20761,12 @@ func lowerMethodCallMsil(
                 case Some(pts) -> pts
                 case None -> newList()
               }
+              val dargs = funcArgsWithDefaultsMsil(cctx, cls + "." + memberName, 1, args)
               var i = 0
-              while i < args.count {
+              while i < dargs.count {
                 // Free-function param 0 is `self` (already on the stack); arg i maps to param i+1.
                 val paramIsValue = if (i + 1) < funcParamList.count { isValueType(funcParamList[i + 1]) } else { false }
-                val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                val aTy = lowerCallArgMsil(cctx, fctx, insns, dargs[i])
                 if not paramIsValue {
                   boxIfNeededMsil(cctx, insns, aTy)
                 }
@@ -20842,12 +20800,13 @@ func lowerMethodCallMsil(
       val gbareKey = plainFqn + "/" + memberName
       val gDispatchKey = if cctx.methodRetTypes.containsKey(garityKey) { garityKey } else { gbareKey }
       if cctx.methodRetTypes.containsKey(gDispatchKey) {
+        val gargs = methodArgsWithDefaultsMsil(cctx, gDispatchKey, args)
         val openRetTy = match mapGet(cctx.methodRetTypes, gDispatchKey) { case Some(t) -> t; case None -> MObject }
         val openParamTypes: List[MsilType] = newList()
         val methodModesG = match mapGet(cctx.methodParamModes, gDispatchKey) { case Some(ms) -> ms; case None -> newList() }
         val byrefPendingG: List[ByrefWriteBackMsil] = newList()
         var gi = 0
-        while gi < args.count {
+        while gi < gargs.count {
           val openParamTy = match mapGet(cctx.methodParamTypes, gDispatchKey + "#" + toString(gi)) {
             case Some(pt) -> pt
             case None -> MObject
@@ -20855,10 +20814,10 @@ func lowerMethodCallMsil(
           openParamTypes.add(openParamTy)
           val isByrefArgG = if gi < methodModesG.count { isByrefMode(methodModesG[gi]) } else { false }
           if isByrefArgG {
-            emitByrefArgCheckedMsil(cctx, fctx, insns, callArgExpr(args[gi]), Some(value = openParamTy), byrefPendingG)
+            emitByrefArgCheckedMsil(cctx, fctx, insns, callArgExpr(gargs[gi]), Some(value = openParamTy), byrefPendingG)
           } else {
             pushCollExpect(fctx, openParamTy)
-            val aTyG = lowerCallArgMsil(cctx, fctx, insns, args[gi])
+            val aTyG = lowerCallArgMsil(cctx, fctx, insns, gargs[gi])
             popCollExpect(fctx)
             // A VAR-form parameter's runtime representation (boxed vs.
             // unboxed) depends entirely on THIS call's instantiation, exactly

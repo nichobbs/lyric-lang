@@ -2973,3 +2973,59 @@ test "an unannotated pub val over a private helper is readable from another pack
   assertEqualInt(result.exitCode, 0, "unannotated_pub_val: exit 0 expected (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "42\n43", "read at the declaring package's checked type")
 }
+
+// #7820: a call from another package that omits a method's defaulted
+// argument splices the default the method declares, with its conversion,
+// for a record method and an interface member reached through the interface
+// or the concrete type (the JVM twin lives in
+// `jvm_cross_package_collision_self_test.l`).
+test "another package's method defaults are spliced into a call (#7820)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PkgMethodDefault7820",
+      "package PkgMethodDefault7820\n" + "\n" + "pub val gu: UInt = 4000000000u32\n" + "\n" + "pub record Acc {\n" +
+        "  n: Int\n" +
+        "  func add(self: in Acc, x: in Int = 5): Int {\n" +
+        "    self.n + x\n" +
+        "  }\n" +
+        "  func wide(self: in Acc, x: in ULong = gu): ULong {\n" +
+        "    x\n" +
+        "  }\n" +
+        "}\n" +
+        "\n" +
+        "pub interface Shape {\n" +
+        "  func area(self: in Self, scale: in Int = 2): Int\n" +
+        "}\n" +
+        "\n" +
+        "pub record Sq {\n" +
+        "  s: Int\n" +
+        "}\n" +
+        "\n" +
+        "impl Shape for Sq {\n" +
+        "  func area(self: in Sq, scale: in Int = 3): Int {\n" +
+        "    self.s * scale\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "Main7820",
+      "package Main7820\n" + "\n" + "import PkgMethodDefault7820\n" + "\n" + "func areaOf(sh: in Shape): Int {\n" +
+        "  sh.area()\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  val a = Acc(n = 1)\n" +
+        "  println(toString(a.add()))\n" +
+        "  println(toString(a.wide()))\n" +
+        "  println(toString(Sq(s = 4).area()))\n" +
+        "  println(toString(areaOf(Sq(s = 4))))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("cross-package-method-default-7820", packages, "CrossPackageMethodDefault7820")
+  assertEqualInt(result.exitCode, 0, "cross_package_method_default: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "6\n4000000000\n12\n8", "each call takes the default it resolves through")
+}
