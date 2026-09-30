@@ -206,6 +206,62 @@ async func breakOutOfGuardedGenerator(log: in List[String]): Int {
   t
 }
 
+// A panic after a real resume leaves the loop by an exception: the disposal
+// fault handler marks the loop as unwinding and still disposes the generator.
+async func panicAfterResumeInGenerator(log: in List[String]): Int {
+  var t = 0
+  for x in genGuarded(log) {
+    await pause()
+    log.add("got ${x}")
+    if x == 2 {
+      panic("boom at 2")
+    }
+    t = t + x
+  }
+  t
+}
+
+async func panicAfterResumeInList(log: in List[String]): Int {
+  var t = 0
+  for x in [1, 2, 3] {
+    await pause()
+    log.add("got ${x}")
+    if x == 2 {
+      panic("boom at 2")
+    }
+    t = t + x
+  }
+  t
+}
+
+// `try` cannot contain an `await` in an `async func` (V0012), so the catching
+// frame is an ordinary function, whose `await` blocks until the task settles.
+func catchGeneratorLoopPanic(log: in List[String]): String {
+  try {
+    val _ = await panicAfterResumeInGenerator(log)
+    "no panic"
+  } catch Bug as e {
+    if e.message.contains("boom at 2") {
+      "caught"
+    } else {
+      "wrong message: " + e.message
+    }
+  }
+}
+
+func catchListLoopPanic(log: in List[String]): String {
+  try {
+    val _ = await panicAfterResumeInList(log)
+    "no panic"
+  } catch Bug as e {
+    if e.message.contains("boom at 2") {
+      "caught"
+    } else {
+      "wrong message: " + e.message
+    }
+  }
+}
+
 // ── `defer` followed by `await` (#7754) ──────────────────────────────────────
 // The resume point sits inside the `defer`'s protected region; the region
 // dispatch re-enters it, and the deferred block runs once, after the body.
@@ -338,6 +394,18 @@ test "break out of a generator loop after a real suspension disposes the generat
   val got = await breakOutOfGuardedGenerator(log)
   assertEqualInt(got, 3, "1 + 2")
   assertEqual(joinLog(log), "got 1,got 2,gen finally,after loop", "finally runs once, before the loop is left")
+}
+
+test "a panic after a real resume in a generator loop disposes the generator (#7766)" {
+  val log: List[String] = newList()
+  assertEqual(catchGeneratorLoopPanic(log), "caught", "the panic reaches the caller")
+  assertEqual(joinLog(log), "got 1,got 2,gen finally", "the generator's finally ran once, after the panic")
+}
+
+test "a panic after a real resume in a list loop propagates" {
+  val log: List[String] = newList()
+  assertEqual(catchListLoopPanic(log), "caught", "the panic reaches the caller")
+  assertEqual(joinLog(log), "got 1,got 2", "the loop stopped at the panic")
 }
 
 test "defer followed by a real await runs the deferred block once, after the body (#7754)" {

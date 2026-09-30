@@ -60,7 +60,7 @@ followed by an `await`.  All already pass through #7754's region dispatch.
 
 **JVM.**  `--target jvm` lowers an `async func` synchronously: an `await`
 blocks the calling virtual thread.  Loop state therefore lives in ordinary
-locals, and the same 17 cases pass there unchanged.
+locals, and the same 19 cases pass there unchanged.
 
 ## #7767 — `DisposeAsync`'s `ValueTask` discarded
 
@@ -101,13 +101,17 @@ disposal) and verified by ilverify phase 4.
 
 ## Tests
 
-`lyric-compiler/lyric/async_for_loop_suspend_self_test.l` has 17 cases.
-Every one suspends for real through `Std.Task.delay`.  The last case checks
+`lyric-compiler/lyric/async_for_loop_suspend_self_test.l` has 19 cases.
+Every one suspends for real through `Std.Task.delay`.  Two of them panic in
+the loop body after a resume, over a generator and over a list, and catch
+the panic in the calling function: the generator's `finally` runs exactly
+once, through the disposal fault handler that marks the loop as unwinding.  The last case checks
 that a record declared after every `async func` reads back correctly, which
 holds only if each state machine's field prediction held.  The test runs in
 the compiler and JVM-generics batches and in `scripts/ilverify-selfhosted.sh`
 phase 4.
 
-**Known gap, unchanged by this fix.**  A `match` arm's pattern bindings are
-not promoted either.  `match o { case Some(v) -> { await delay(5); v * 2 } }`
-returns 0 on `--target dotnet`.
+**Follow-up.**  A `match` arm's pattern bindings were not promoted either:
+`match o { case Some(v) -> { await delay(5); v * 2 } }` returned 0 on
+`--target dotnet`.  #7816 fixes it with the same slot-keyed mechanism
+(`docs/progress/2026-09-30-async-match-suspension.md`).

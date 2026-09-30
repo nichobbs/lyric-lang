@@ -14625,6 +14625,57 @@ func fillTupleHolesMsil(
   }
 }
 
+// ── `match` state across an `await` (#7816) ─────────────────────────────────
+//
+// In an `async func` state machine every IL local reverts to its default when
+// `MoveNext` is re-entered after a real suspension (see #7766's `for` loop
+// counterpart above).  A `match` arm's pattern bindings are IL locals written
+// before the arm's guard and body run, so an arm whose guard or body can
+// suspend keeps them in state-machine fields keyed by slot
+// (`keepPatternBindsAcrossAwaitMsil`).  The scrutinee temporary is read again
+// by every later arm's pattern test, which runs after an earlier arm's guard
+// failed — so it is kept too when any guard can suspend.  An arm body never
+// returns to the scrutinee (the arms join after it), and a pattern's
+// destructuring temporaries are consumed before the guard runs, so neither
+// needs a field otherwise.  Pass 1's `countPromotedLocalsExpr` reserves the
+// fields with the same predicates, applied to the same syntax.
+func matchArmCanSuspendMsil(arm: in MatchArm): Bool {
+  matchArmGuardCanSuspendMsil(arm) or
+    match arm.body { case EOBBlock(b) -> blockContainsAwaitMsil(b); case EOBExpr(e) -> exprContainsAwaitMsil(e) }
+}
+
+func matchArmGuardCanSuspendMsil(arm: in MatchArm): Bool {
+  match arm.guard {
+    case Some(g) -> exprContainsAwaitMsil(g)
+    case None -> false
+  }
+}
+
+func matchGuardsCanSuspendMsil(arms: in List[MatchArm]): Bool {
+  var i = 0
+  while i < arms.count {
+    if matchArmGuardCanSuspendMsil(arms[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// The state-machine fields a `match` keeps across an `await`: the scrutinee
+// when a guard can suspend, and each suspending arm's pattern bindings.
+func matchAwaitFieldsUpperBoundMsil(arms: in List[MatchArm]): Int {
+  var n = if matchGuardsCanSuspendMsil(arms) { matchScrutineeTempSlotsMsil() } else { 0 }
+  var i = 0
+  while i < arms.count {
+    if matchArmCanSuspendMsil(arms[i]) {
+      n = n + patternAwaitFieldsUpperBoundMsil(arms[i].pattern)
+    }
+    i = i + 1
+  }
+  n
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5e. Match expression lowering.
 //      Bootstrap-grade: literal, binding, constructor, and wildcard patterns.
@@ -14649,6 +14700,18 @@ func lowerMatchExprMsil(
   // unique, so `allocSlotMsil` never reuses a slot here).
   val scrutSlot = allocSlotMsil(fctx, "__scrut_" + toString(fctx.slotTicker.count), scrutTy)
   emitStoreSlot(insns, scrutSlot, fctx.paramCount)
+  // A later arm's pattern test reads the scrutinee after an earlier arm's
+  // guard may have suspended (#7816).
+  val inStateMachine = fctx.phaseBCtx.count > 0
+  val scrutKept: List[Int] = newList()
+  keepForTempAcrossAwaitMsil(
+    fctx,
+    insns,
+    inStateMachine and matchGuardsCanSuspendMsil(arms),
+    scrutKept,
+    scrutSlot,
+    scrutTy
+  )
   // #5995: this scrutinee's declared enum type name (if recognisable), so a
   // bare-case arm (`case Http11 ->`) resolves against it instead of
   // colliding with another in-bundle enum's same-named case.
@@ -14731,6 +14794,7 @@ func lowerMatchExprMsil(
     lowerPatternTestMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy, nextArmL, scrutEnumHint)
     lowerPatternBindMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy)
     checkPatternSlotsMsil(fctx, "match arm", arm.pattern, armSlotsBefore, matchArmPatternSlotsUpperBoundMsil(arm.pattern))
+    keepPatternBindsAcrossAwaitMsil(fctx, armInsns, inStateMachine and matchArmCanSuspendMsil(arm), arm.pattern)
     match arm.guard {
       case Some(g) -> {
         lowerBoolOperandMsil(cctx, fctx, armInsns, g)
@@ -21684,8 +21748,12 @@ func forCollectionKeepsStateAcrossAwaitMsil(fctx: in FuncCtx, body: in Block): B
   fctx.phaseBCtx.count > 0 and blockContainsAwaitMsil(body)
 }
 
-func forAwaitFieldKeyMsil(localIdx: in Int): String {
-  "__for_" + toString(localIdx)
+// The promoted-local key of a codegen temporary or pattern binding kept in a
+// state-machine field by IL slot rather than by name (`for` loops, #7766;
+// `match` arms, #7816): each such binding has a slot of its own, so two
+// bindings of one name at different types get distinct fields.
+func slotAwaitFieldKeyMsil(localIdx: in Int): String {
+  "__slot_" + toString(localIdx)
 }
 
 // Promote the temporary in `slot` (already stored) to a state-machine field
@@ -21700,7 +21768,7 @@ func keepForTempAcrossAwaitMsil(
 ): Unit {
   if keep {
     val localIdx = slot - fctx.paramCount
-    phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, forAwaitFieldKeyMsil(localIdx), ty, localIdx)
+    phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, slotAwaitFieldKeyMsil(localIdx), ty, localIdx)
     kept.add(slot)
   }
 }
@@ -21709,14 +21777,15 @@ func keepForTempAcrossAwaitMsil(
 func syncForTempAcrossAwaitMsil(fctx: in FuncCtx, insns: in List[MInsn], keep: in Bool, slot: in Int): Unit {
   if keep {
     val localIdx = slot - fctx.paramCount
-    phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, forAwaitFieldKeyMsil(localIdx), localIdx)
+    phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, slotAwaitFieldKeyMsil(localIdx), localIdx)
   }
 }
 
-// Promote every name the loop pattern just bound (a fresh slot per loop, so
-// the field key is the slot rather than the name — two loops binding `x` at
-// different types get distinct fields).
-func keepForPatternAcrossAwaitMsil(fctx: in FuncCtx, insns: in List[MInsn], keep: in Bool, pat: in Pattern): Unit {
+// Promote every name a `for` loop's or `match` arm's pattern just bound (a
+// fresh slot per loop or arm, so the field key is the slot rather than the
+// name — two loops or arms binding `x` at different types get distinct
+// fields).
+func keepPatternBindsAcrossAwaitMsil(fctx: in FuncCtx, insns: in List[MInsn], keep: in Bool, pat: in Pattern): Unit {
   if keep {
     val names: List[String] = newList()
     countPatBindNamesMsil(pat, names)
@@ -21726,7 +21795,7 @@ func keepForPatternAcrossAwaitMsil(fctx: in FuncCtx, insns: in List[MInsn], keep
         case Some(slot) -> {
           val ty = match mapGet(fctx.types, names[i]) { case Some(t) -> t; case None -> MObject }
           val localIdx = slot - fctx.paramCount
-          phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, forAwaitFieldKeyMsil(localIdx), ty, localIdx)
+          phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, slotAwaitFieldKeyMsil(localIdx), ty, localIdx)
         }
         case None -> ()
       }
@@ -21735,8 +21804,8 @@ func keepForPatternAcrossAwaitMsil(fctx: in FuncCtx, insns: in List[MInsn], keep
   }
 }
 
-// Bound on the fields `keepForPatternAcrossAwaitMsil` registers for `pat`.
-func forPatternAwaitFieldsUpperBoundMsil(pat: in Pattern): Int {
+// Bound on the fields `keepPatternBindsAcrossAwaitMsil` registers for `pat`.
+func patternAwaitFieldsUpperBoundMsil(pat: in Pattern): Int {
   val names: List[String] = newList()
   countPatBindNamesMsil(pat, names)
   names.count
@@ -21874,7 +21943,7 @@ func emitCountingForMsil(
   // `lowerBlockMsil`'s bracket (which only covers the body block).
   val loopScope = enterBlockScopeMsil(fctx)
   bindForPatternMsil(cctx, fctx, insns, pat, iSlot, loTy)
-  keepForPatternAcrossAwaitMsil(fctx, insns, keep, pat)
+  keepPatternBindsAcrossAwaitMsil(fctx, insns, keep, pat)
 
   fctx.loopBreak.add(afterL)
   fctx.loopCont.add(contL)
@@ -22115,7 +22184,7 @@ func lowerForBodyInRegionMsil(
   // (#5191 follow-up).
   val loopScope = enterBlockScopeMsil(fctx)
   bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, elemTy)
-  keepForPatternAcrossAwaitMsil(fctx, insns, keep, pat)
+  keepPatternBindsAcrossAwaitMsil(fctx, insns, keep, pat)
   fctx.loopBreak.add(r.doneL)
   fctx.loopCont.add(contL)
   fctx.loopTryDepth.add(fctx.tryRegionStack.count)
@@ -22514,7 +22583,7 @@ func emitCollectionForMsil(
       // (#5191 follow-up).
       val listLoopScope = enterBlockScopeMsil(fctx)
       bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, forElemTy)
-      keepForPatternAcrossAwaitMsil(fctx, insns, keep, pat)
+      keepPatternBindsAcrossAwaitMsil(fctx, insns, keep, pat)
 
       fctx.loopBreak.add(afterL)
       fctx.loopCont.add(contL)
@@ -28294,10 +28363,10 @@ func exprContainsAwaitMsil(e: in Expr): Bool {
       }
       var ai = 0
       while ai < arms.count {
-        val res = match arms[ai].body {
-          case EOBExpr(ex) -> exprContainsAwaitMsil(ex)
-          case EOBBlock(blk) -> blockContainsAwaitMsil(blk)
-        }
+        // An arm guard is lowered inside the state machine like the body
+        // (`collectAwaitTypesExprPB` walks it too), so an `await` in it makes
+        // the function suspend (#7816).
+        val res = matchArmCanSuspendMsil(arms[ai])
         if res {
           return true
         }
@@ -29821,8 +29890,21 @@ func countPromotedLocalsExpr(
     }
     case EMatch(scr, arms) -> {
       countPromotedLocalsExpr(cctx, pkgName, hoistedNms, scr, seen)
+      // A `match` that can suspend keeps its scrutinee and its suspending
+      // arms' pattern bindings in fields keyed by slot (#7816), reserved under
+      // placeholders no identifier can collide with.
+      var maf = 0
+      val matchFields = matchAwaitFieldsUpperBoundMsil(arms)
+      while maf < matchFields {
+        seen.add("#match-await-field " + toString(seen.count))
+        maf = maf + 1
+      }
       var ami = 0
       while ami < arms.count {
+        match arms[ami].guard {
+          case Some(g) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, g, seen)
+          case None -> ()
+        }
         match arms[ami].body {
           case EOBBlock(b) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, b, seen)
           case EOBExpr(e2) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e2, seen)
@@ -29962,6 +30044,15 @@ func countPatBindNamesMsil(pat: in Pattern, seen: in List[String]): Unit {
         i = i + 1
       }
     }
+    // An or-pattern binds its alternatives' names during its test (#7816);
+    // the name set is deduplicated, so a name every alternative binds counts once.
+    case POr(alts) -> {
+      var i = 0
+      while i < alts.count {
+        countPatBindNamesMsil(alts[i], seen)
+        i = i + 1
+      }
+    }
     case _ -> ()
   }
 }
@@ -30048,7 +30139,7 @@ func countPromotedLocalsStmt(
           }
           match afterFirstTemp {
             case Some(hi) -> if forCanSuspendMsil(hi, body) {
-              forProtocolAwaitFieldsMsil(ForRangeMsil) + forPatternAwaitFieldsUpperBoundMsil(pat)
+              forProtocolAwaitFieldsMsil(ForRangeMsil) + patternAwaitFieldsUpperBoundMsil(pat)
             } else {
               0
             }
@@ -30056,7 +30147,7 @@ func countPromotedLocalsStmt(
           }
         }
         case _ -> if blockContainsAwaitMsil(body) {
-          forCollectionAwaitFieldsUpperBoundMsil() + forPatternAwaitFieldsUpperBoundMsil(pat)
+          forCollectionAwaitFieldsUpperBoundMsil() + patternAwaitFieldsUpperBoundMsil(pat)
         } else {
           0
         }
@@ -30119,6 +30210,7 @@ func countSpillsExpr(e: in Expr): Int {
       var n = countSpillsExpr(scr)
       var ami = 0
       while ami < arms.count {
+        n = n + match arms[ami].guard { case Some(g) -> countSpillsExpr(g); case None -> 0 }
         n = n + match arms[ami].body { case EOBBlock(b) -> countSpillsBlock(b); case EOBExpr(e2) -> countSpillsExpr(e2) }
         ami = ami + 1
       }

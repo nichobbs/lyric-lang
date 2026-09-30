@@ -225,6 +225,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/generator_control_flow_dotnet_self_test.l
   lyric-compiler/lyric/generator_dispose_self_test.l
   lyric-compiler/lyric/async_for_loop_suspend_self_test.l
+  lyric-compiler/lyric/async_match_suspend_self_test.l
   lyric-compiler/lyric/generator_closure_var_capture_self_test.l
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l
   lyric-compiler/lyric/erased_receiver_narrowing_dotnet_self_test.l
