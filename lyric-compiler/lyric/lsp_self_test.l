@@ -75,8 +75,16 @@ test "a qualified call into a workspace package is checked in the editor as in t
   }
   val state = lspInit()
   state.wsIndex.add("PkgB", depPath)
-  val bad = openDocMessages(state, "file:///lsp_self_test_qualified_bad.l", "package App\nimport PkgB\nfunc g(): Int { PkgB.wantB(\"s\") }\n")
-  val good = openDocMessages(state, "file:///lsp_self_test_qualified_ok.l", "package App\nimport PkgB\nfunc g(): Int { PkgB.wantB(1) }\n")
+  val bad = openDocMessages(
+    state,
+    "file:///lsp_self_test_qualified_bad.l",
+    "package App\nimport PkgB\nfunc g(): Int { PkgB.wantB(\"s\") }\n"
+  )
+  val good = openDocMessages(
+    state,
+    "file:///lsp_self_test_qualified_ok.l",
+    "package App\nimport PkgB\nfunc g(): Int { PkgB.wantB(1) }\n"
+  )
   match File.deleteDirRecursive(dir) {
     case Ok(_) -> ()
     case Err(_) -> ()

@@ -4471,7 +4471,10 @@ test "unknown field on an imported record is T0113" {
 test "unknown method on an imported record is T0113" {
   val importedItems = importedItemsOf("package Dep\npub record Widget {\n  w: Int\n}\n")
   val src = "package App\nimport Dep\nfunc consume(x: in Widget): Int { x.mystery() }\n"
-  assertTrue(hasDiagCode(checkWithImports(parse(src).file, importedItems), "T0113"), "unknown method on imported record: T0113")
+  assertTrue(
+    hasDiagCode(checkWithImports(parse(src).file, importedItems), "T0113"),
+    "unknown method on imported record: T0113"
+  )
 }
 
 test "imported record members resolve without T0113" {
@@ -4484,7 +4487,10 @@ test "imported record members resolve without T0113" {
 test "unknown method on an imported interface is T0113" {
   val importedItems = importedItemsOf("package Dep\npub interface Sized {\n  func size(): Int\n}\n")
   val src = "package App\nimport Dep\nfunc consume(x: in Sized): Int { x.width() }\n"
-  assertTrue(hasDiagCode(checkWithImports(parse(src).file, importedItems), "T0113"), "unknown method on imported interface: T0113")
+  assertTrue(
+    hasDiagCode(checkWithImports(parse(src).file, importedItems), "T0113"),
+    "unknown method on imported interface: T0113"
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
