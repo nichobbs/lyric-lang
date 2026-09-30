@@ -1913,6 +1913,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"async-spawn self-test ran: async_spawn_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/async_spawn_self_test.l"
 
+      # Implicit await (#7838): a direct call to an `async func` awaits in
+      # place with or without `await` (docs/01 §7.1).  On dotnet the call used
+      # to leave the raw Task in a lambda body, `val`, match scrutinee, operand
+      # or argument; `Lyric.Propagate` now makes the await explicit.  Imports
+      # only `Std.*`.
+      - name: Implicit await self-test (native lyric test, --target dotnet)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"implicit-await self-test ran: async_implicit_await_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/async_implicit_await_self_test.l"
+
       # stdlib-generic-iface self-test (#3502).  Pins the fix for
       # `isOk`/`isErr` / `match` on `Result[InterfaceType, E]` and
       # `Option[InterfaceType]` — the self-hosted MSIL codegen was building the
@@ -4514,6 +4525,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"async-spawn self-test ran: async_spawn_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/async_spawn_self_test.l"
 
+      # Implicit await (#7838) on JVM, whose synchronous `async func` lowering
+      # already awaited a direct call in place; the file pins parity.
+      - name: Implicit await self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"implicit-await self-test ran: async_implicit_await_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/async_implicit_await_self_test.l"
+
       # Std.Http async client surface on JVM (#5564) — the JVM half of the
       # dotnet-job step of the same name.  Deterministic error-path dispatch,
       # no live listener needed.
@@ -6914,6 +6933,8 @@ jobs:
           "$LYRIC_CLI_PATH" build --manifest lyric-ui/lyric.toml
           "$LYRIC_CLI_PATH" test --manifest lyric-ui/lyric.toml
           "$LYRIC_CLI_PATH" test --manifest examples/ui-customers/lyric.toml
+          # The example driven in headless Chromium (#7836).
+          bash scripts/ci/ui-browser-e2e.sh --target dotnet
 
       - name: Run tests (testing)
         if: matrix.id == 'testing'

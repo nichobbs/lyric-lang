@@ -174,6 +174,12 @@ record PropState {
   // `lowerPropagateFile`'s doc. Constant for the whole file's rewrite, so
   // every state-scoping helper below just threads it through unchanged.
   awaitInTryIsHazard: Bool
+  // #7838: span keys (`recordCopySiteKey`) of the calls the type checker
+  // bound to an `async func` (`SymbolTable.asyncCallSites`).  Each such call
+  // not already the operand of `await` or `spawn` is wrapped in an explicit
+  // `EAwait`, so it awaits in place (docs/01 §7.1).  Empty on a target whose
+  // lowering already awaits a direct call itself; constant for the file.
+  asyncCallSites: Map[String, Bool]
 }
 
 func newPropState(
@@ -181,6 +187,7 @@ func newPropState(
   aliases: in Map[String, TypeExpr],
   syncFuncNames: in Map[String, Bool],
   awaitInTryIsHazard: Bool,
+  asyncCallSites: in Map[String, Bool],
 ): PropState {
   val noSiblings: Map[String, Bool] = newMap()
   val noSyncSiblings: Map[String, Bool] = newMap()
@@ -196,7 +203,8 @@ func newPropState(
     curFnName = "",
     curFnAsync = false,
     inTry = false,
-    awaitInTryIsHazard = awaitInTryIsHazard
+    awaitInTryIsHazard = awaitInTryIsHazard,
+    asyncCallSites = asyncCallSites
   )
 }
 
@@ -235,7 +243,8 @@ func stateForFn(st: in PropState, name: in String, isAsync: Bool, params: in Lis
     curFnName = name,
     curFnAsync = isAsync,
     inTry = false,
-    awaitInTryIsHazard = st.awaitInTryIsHazard
+    awaitInTryIsHazard = st.awaitInTryIsHazard,
+    asyncCallSites = st.asyncCallSites
   )
 }
 
@@ -261,7 +270,8 @@ func stateForContainerMembers(
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
     inTry = st.inTry,
-    awaitInTryIsHazard = st.awaitInTryIsHazard
+    awaitInTryIsHazard = st.awaitInTryIsHazard,
+    asyncCallSites = st.asyncCallSites
   )
 }
 
@@ -281,7 +291,8 @@ func stateInTry(st: in PropState): PropState {
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
     inTry = true,
-    awaitInTryIsHazard = st.awaitInTryIsHazard
+    awaitInTryIsHazard = st.awaitInTryIsHazard,
+    asyncCallSites = st.asyncCallSites
   )
 }
 
@@ -313,7 +324,8 @@ func stateForLambda(st: in PropState): PropState {
     curFnName = st.curFnName,
     curFnAsync = st.curFnAsync,
     inTry = false,
-    awaitInTryIsHazard = st.awaitInTryIsHazard
+    awaitInTryIsHazard = st.awaitInTryIsHazard,
+    asyncCallSites = st.asyncCallSites
   )
 }
 
@@ -741,6 +753,53 @@ func rewriteEob(eob: in ExprOrBlock, kind: in PropKind, st: in PropState): ExprO
   }
 }
 
+func rewriteCallParts(fn: in Expr, args: in List[CallArg], sp: in Span, kind: in PropKind, st: in PropState): Expr {
+  val newArgs: List[CallArg] = newList()
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CAPositional(v) -> newArgs.add(CAPositional(expr = rewriteExpr(v, kind, st)))
+      case CANamed(n, v, asp) -> newArgs.add(CANamed(name = n, value = rewriteExpr(v, kind, st), span = asp))
+    }
+    i = i + 1
+  }
+  mkExpr(ECall(fn = rewriteExpr(fn, kind, st), args = newArgs), sp)
+}
+
+// The operand of `await` or `spawn`: rewritten like any expression, except
+// that a direct call there (possibly parenthesised) is not wrapped in an
+// implicit await of its own.
+func rewriteOperandCall(e: in Expr, kind: in PropKind, st: in PropState): Expr {
+  match e.kind {
+    case ECall(fn, args) -> rewriteCallParts(fn, args, e.span, kind, st)
+    case EParen(inner) -> mkExpr(EParen(inner = rewriteOperandCall(inner, kind, st)), e.span)
+    case _ -> rewriteExpr(e, kind, st)
+  }
+}
+
+// #7838: a direct call to an `async func` awaits in place (docs/01 §7.1).
+// On a target that needs it spelt out, the call becomes `await call`, which
+// every backend already lowers (a suspend point inside an async function, a
+// blocking wait elsewhere).  Inside an async function's try/catch/finally
+// that await would be a suspend point in a protected region, which the
+// target cannot lower (the reason for V0012 and F0045), so it is reported
+// instead.
+func implicitAwaitCall(call: in Expr, st: in PropState): Expr {
+  if st.awaitInTryIsHazard and st.curFnAsync and st.inTry {
+    st.diagnostics.add(
+      errorDiagnostic(
+        "F0046",
+        "this call to an async function awaits in place inside a try/catch/finally in async function '" + st.curFnName +
+          "', which this target cannot lower (a suspend point inside a protected region); await the call explicitly " +
+          "before or after the try block and use the result inside it",
+        call.span
+      )
+    )
+    return call
+  }
+  mkExpr(EAwait(inner = call), call.span)
+}
+
 func rewriteExprList(es: in List[Expr], kind: in PropKind, st: in PropState): List[Expr] {
   val acc: List[Expr] = newList()
   var i = 0
@@ -754,7 +813,8 @@ func rewriteExprList(es: in List[Expr], kind: in PropKind, st: in PropState): Li
 func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
   match e.kind {
     case EPropagate(inner) -> {
-      val inner2 = rewriteExpr(inner, kind, st)
+      // `?` awaits a direct async-call operand itself (`implicitAwaitScrutinee`).
+      val inner2 = rewriteOperandCall(inner, kind, st)
       match kind {
         case PropResult -> buildResultMatch(inner2, e.span, st)
         case PropOption -> buildOptionMatch(inner2, e.span, st)
@@ -829,9 +889,11 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
       mkExpr(EMatch(scrutinee = newScrutinee, arms = newArms), e.span)
     }
 
-    case EAwait(inner) -> mkExpr(EAwait(inner = rewriteExpr(inner, kind, st)), e.span)
+    // The operand of `await` / `spawn` is consumed by it, so a direct async
+    // call there is not awaited again (#7838).
+    case EAwait(inner) -> mkExpr(EAwait(inner = rewriteOperandCall(inner, kind, st)), e.span)
     case EYield(inner) -> mkExpr(EYield(inner = rewriteExpr(inner, kind, st)), e.span)
-    case ESpawn(inner) -> mkExpr(ESpawn(inner = rewriteExpr(inner, kind, st)), e.span)
+    case ESpawn(inner) -> mkExpr(ESpawn(inner = rewriteOperandCall(inner, kind, st)), e.span)
     case ETry(inner) -> mkExpr(ETry(inner = rewriteExpr(inner, kind, st)), e.span)
     case EOld(inner) -> mkExpr(EOld(inner = rewriteExpr(inner, kind, st)), e.span)
 
@@ -861,16 +923,12 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
     )
 
     case ECall(fn, args) -> {
-      val newArgs: List[CallArg] = newList()
-      var i = 0
-      while i < args.count {
-        match args[i] {
-          case CAPositional(v) -> newArgs.add(CAPositional(expr = rewriteExpr(v, kind, st)))
-          case CANamed(n, v, asp) -> newArgs.add(CANamed(name = n, value = rewriteExpr(v, kind, st), span = asp))
-        }
-        i = i + 1
+      val call = rewriteCallParts(fn, args, e.span, kind, st)
+      if st.asyncCallSites.containsKey(recordCopySiteKey(e.span)) {
+        implicitAwaitCall(call, st)
+      } else {
+        call
       }
-      mkExpr(ECall(fn = rewriteExpr(fn, kind, st), args = newArgs), e.span)
     }
 
     case ETypeApp(fn, args) -> mkExpr(ETypeApp(fn = rewriteExpr(fn, kind, st), args = args), e.span)
@@ -1380,7 +1438,25 @@ pub func lowerPropagateFile(file: in SourceFile, awaitInTryIsHazard: Bool): Prop
 // outside `file`, mirroring `Lyric.AwaitHoist.hoistAwaitsFile`'s
 // `extraRecords` (#6702). `pipeCheckAndMono` passes its own `monoRecordDecls`
 // parameter here.
-pub func lowerPropagateFileWithExtraRecords(file: in SourceFile, extraRecords: in List[RecordDecl], awaitInTryIsHazard: Bool): PropagateResult {
+pub func lowerPropagateFileWithExtraRecords(
+  file: in SourceFile,
+  extraRecords: in List[RecordDecl],
+  awaitInTryIsHazard: Bool,
+): PropagateResult {
+  val noAsyncCalls: Map[String, Bool] = newMap()
+  lowerPropagateFileWithAsyncCalls(file, extraRecords, awaitInTryIsHazard, noAsyncCalls)
+}
+
+// As `lowerPropagateFileWithExtraRecords`, also making the implicit await of
+// each direct async call explicit (#7838): `asyncCallSites` is the type
+// checker's `SymbolTable.asyncCallSites` for `file`, or empty on a target
+// whose lowering awaits a direct call itself.
+pub func lowerPropagateFileWithAsyncCalls(
+  file: in SourceFile,
+  extraRecords: in List[RecordDecl],
+  awaitInTryIsHazard: Bool,
+  asyncCallSites: in Map[String, Bool],
+): PropagateResult {
   // #6448: hoist every qualifying `?` (operand-position, stacked-context)
   // into fresh `val` bindings FIRST, before the `?` -> match rewrite below —
   // see §2b's module doc.  Every hoisted `?` lands as a statement-level
@@ -1409,7 +1485,7 @@ pub func lowerPropagateFileWithExtraRecords(file: in SourceFile, extraRecords: i
     }
     ai = ai + 1
   }
-  val st = newPropState(diags, aliases, syncFuncNames, awaitInTryIsHazard)
+  val st = newPropState(diags, aliases, syncFuncNames, awaitInTryIsHazard, asyncCallSites)
   val newItems: List[Item] = newList()
   var i = 0
   while i < hoisted.items.count {

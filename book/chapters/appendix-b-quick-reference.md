@@ -1436,6 +1436,7 @@ profile/shape codes); see those docs for their own F-series ranges.
 | `F0024` | External-interface `impl` block: the `extern type` FQN does not resolve to any type in an indexed reference-pack or restored-dependency assembly (typically a typo); silently skipped only when the metadata index itself could not be populated (an SDK-less build). |
 | `F0025` | `try`/`catch` used as an expression, where a catch arm yields `Unit` while the try body (or an earlier catch arm) already established a value-producing result type — the MSIL backend cannot route an absent value through the shared result slot (type-checker gap #2042; the JVM backend rejects the same shape at check time with `J004`). |
 | `F0034` | External-interface `impl` block: the target resolves through `extern type` / `import extern`, but its .NET metadata is not an interface (e.g. `impl Math for Foo` against the class `System.Math`). Numbered `F0034`, not `F0020`, to avoid colliding with `propagate.l`'s pre-existing `F0020` (`?` used in a function returning neither `Result` nor `Option`) — see issue #6648. |
+| `F0046` | A direct call to an `async func` inside a `try`/`catch`/`finally` of another `async func`, on `--target dotnet`: the call awaits in place, and a suspend point inside a protected region cannot be lowered. Await the call explicitly before or after the `try` block (#7838). |
 
 ### Native codegen / build diagnostics (N-series)
 

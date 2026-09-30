@@ -1110,6 +1110,54 @@ test "interface subtyping cross package sound" {
   )
 }
 
+// A qualified call reaches a generic function of the named package.  The
+// arity-keyed overload slots hold non-generic signatures only, so
+// `Ui.Testing.findAll(...)` used to bind to another package's non-generic
+// `findAll` of the same arity (found by the browser test for #7836).
+test "qualified call binds to the named package's generic function" {
+  val xml = parse(
+    "package Xml\npub record Node { n: Int }\npub func findAll(node: in Node, name: in String): Node { node }\n"
+  )
+  val ui = parse(
+    "package Ui.Testing\npub record Box[T] { v: T }\npub func findAll[M](v: in Box[M], k: in Int): Box[M] { v }\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Xml",
+      items = xml.file.items,
+      imports = collectImportNames(xml.file.imports),
+      wholeImports = collectWholeImportNames(xml.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "Ui.Testing",
+      items = ui.file.items,
+      imports = collectImportNames(ui.file.imports),
+      wholeImports = collectWholeImportNames(ui.file.imports)
+    )
+  )
+  val srcs: List[String] = newList()
+  srcs.add(
+    "package App\nimport Xml\nimport Ui.Testing as UiTest\nimport Ui.Testing.{Box}\nfunc f(b: in Box[Int]): Int {\n  val x: Box[Int] = UiTest.findAll(b, 1)\n  x.v\n}\n"
+  )
+  srcs.add(
+    "package App\nimport Xml\nimport Ui.Testing\nfunc f(b: in Box[Int]): Int {\n  val x: Box[Int] = Ui.Testing.findAll(b, 1)\n  x.v\n}\n"
+  )
+  for src in srcs {
+    val cr = checkWithImportedPackages(pipePrepareForCheck(parse(src).file, false).file, packages)
+    assertEqualInt(diagCount(cr), 0, "the generic Ui.Testing.findAll, not Xml.findAll")
+  }
+  val bad = "package App\nimport Xml\nimport Ui.Testing as UiTest\nimport Ui.Testing.{Box}\nfunc f(b: in Box[Int]): Int {\n  val x: Box[Int] = UiTest.findAll(b, \"one\")\n  x.v\n}\n"
+  val badCr = checkWithImportedPackages(pipePrepareForCheck(parse(bad).file, false).file, packages)
+  assertTrue(hasDiagCode(badCr, "T0043"), "a wrong argument is reported against Ui.Testing.findAll")
+  assertTrue(
+    diagMessageFor(badCr, "T0043").contains("parameter type Int"),
+    "checked against the Int parameter, not Xml's"
+  )
+}
+
 // #7512: the same mismatch written as a package-qualified call is reported
 // too, against the named package's signature.  The checker sees the file
 // after the build's pre-check rewrites (`pipePrepareForCheck`), where the

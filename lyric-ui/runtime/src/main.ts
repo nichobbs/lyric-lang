@@ -12,6 +12,7 @@
 
 import { Tree, eventPathOf, type MNode, type Patch } from "./tree.js";
 import { DomRenderer } from "./render.js";
+import { stashToasts, takeStashedToasts, type CarriedToast } from "./toasts.js";
 
 export const PROTOCOL_VERSION = 2;
 
@@ -88,9 +89,11 @@ export class Host {
         }
         return;
       case "navigate":
+        stashToasts(sessionStorage, liveToasts);
         location.assign(msg.url);
         return;
       case "back":
+        stashToasts(sessionStorage, liveToasts);
         history.back();
         return;
       case "toast":
@@ -144,6 +147,9 @@ export class Host {
   }
 }
 
+// The toasts on screen, in the order shown: what a navigation carries over.
+const liveToasts: CarriedToast[] = [];
+
 function showToast(message: string, level: string): void {
   let region = document.querySelector<HTMLElement>(".lui-toasts");
   if (!region) {
@@ -157,7 +163,19 @@ function showToast(message: string, level: string): void {
   toast.dataset.tone = level;
   toast.textContent = message;
   region.append(toast);
-  setTimeout(() => toast.remove(), 4000);
+  const carried: CarriedToast = { m: message, level };
+  liveToasts.push(carried);
+  setTimeout(() => {
+    toast.remove();
+    const i = liveToasts.indexOf(carried);
+    if (i >= 0) {
+      liveToasts.splice(i, 1);
+    }
+  }, 4000);
+}
+
+for (const t of takeStashedToasts(sessionStorage)) {
+  showToast(t.m, t.level);
 }
 
 const mount = document.getElementById("lyric-ui");

@@ -308,6 +308,12 @@ pub record SymbolTable {
   /// unannotated binding initialized by one is open (#7788); a same-named
   /// function of another package never is (#7801).
   emptyCollectionCtorSites: Map[String, Bool]
+  /// Span keys (`recordCopySiteKey`) of the calls whose resolved callee is an
+  /// `async func` (not a generator), written by the `ECall` arm from the
+  /// signature the call binds to.  A direct call to an async function awaits
+  /// in place (docs/01 §7.1); `Lyric.Propagate` makes that await explicit on
+  /// targets whose lowering needs it (#7838).
+  asyncCallSites: Map[String, Bool]
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
   /// opaque, protected or distinct type each field-access or method-call receiver
   /// has, keyed like
@@ -443,6 +449,7 @@ pub func newSymbolTable(): SymbolTable {
     moduleValTypes = newMap(),
     generatorCallSites = newMap(),
     emptyCollectionCtorSites = newMap(),
+    asyncCallSites = newMap(),
     memberRecvClasses = newMap(),
     typeSymbolsById = newMap(),
     typeSymbolsIndexed = newList(),

@@ -676,17 +676,6 @@ func addRevDep(state: in LspState, importedUri: in String, consumerUri: in Strin
   }
 }
 
-func prepHasError(prep: in CheckReadyFile): Bool {
-  var i = 0
-  while i < prep.diagnostics.count {
-    if prep.diagnostics[i].severity == DiagError {
-      return true
-    }
-    i = i + 1
-  }
-  false
-}
-
 func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[String] {
   val acc: List[String] = newList()
   val parsed = parse(text)
@@ -730,7 +719,7 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   collectDiags(prep.diagnostics, allDiags)
   // After a failed rewrite the build stops before type checking; so does
   // the report here (the check still runs, for hover and navigation).
-  if not prepHasError(prep) {
+  if not hasErrorDiagnostic(prep.diagnostics) {
     collectDiags(cr.diagnostics, allDiags)
   }
 

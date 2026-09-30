@@ -64,6 +64,7 @@
 package Ws.Kernel.Jvm
 
 import Std.Core
+import Std.Console
 import Resilience
 import Std.Collections
 import Ws.Frame
@@ -215,7 +216,15 @@ func invokeOnOpen(
     return
   }
   match state.onOpen {
-    case Some(cb) -> cb(connId, path, query, remoteAddress, headers)
+    case Some(cb) -> {
+      try {
+        cb(connId, path, query, remoteAddress, headers);
+        ()
+      } catch Exception as e {
+        reportHandlerFailure(handle, connId, "onOpen", e.message);
+        ()
+      }
+    }
     case None -> ()
   }
 }
@@ -226,7 +235,15 @@ func invokeOnMessage(handle: in Int, connId: in String, msgType: in String, data
     return
   }
   match state.onMessage {
-    case Some(cb) -> cb(connId, msgType, data)
+    case Some(cb) -> {
+      try {
+        cb(connId, msgType, data);
+        ()
+      } catch Exception as e {
+        reportHandlerFailure(handle, connId, "onMessage", e.message);
+        ()
+      }
+    }
     case None -> ()
   }
 }
@@ -237,8 +254,31 @@ func invokeOnClose(handle: in Int, connId: in String, code: in Int, reason: in S
     return
   }
   match state.onClose {
-    case Some(cb) -> cb(connId, code, reason)
+    case Some(cb) -> {
+      try {
+        cb(connId, code, reason);
+        ()
+      } catch Exception as e {
+        reportHandlerFailure(handle, connId, "onClose", e.message);
+        ()
+      }
+    }
     case None -> ()
+  }
+}
+
+// A handler callback that throws must not end the connection's read loop
+// unobserved: the failure is reported through `onError` and the connection
+// carries on.  An `onError` that throws as well is written to stderr, the
+// only place left to report it.
+func reportHandlerFailure(handle: in Int, connId: in String, stage: in String, message: in String): Unit {
+  val text = "the " + stage + " handler failed: " + message
+  try {
+    invokeOnError(handle, connId, text);
+    ()
+  } catch Exception as e {
+    Console.error("lyric-ws: connection " + connId + ": " + text + "; the onError handler also failed: " + e.message);
+    ()
   }
 }
 
@@ -365,7 +405,41 @@ func bytesToBase64(bytes: in slice[Byte]): String {
   enc.encodeToString(bytes)
 }
 
-func dispatchFrame(handle: in Int, connId: in String, frame: in JWsStreamSourceFrameChannel): Unit {
+// Undertow's low-level `receive()` API leaves the reply to a peer's close
+// frame to the application (only `AbstractReceiveListener` sends it), and an
+// unanswered close leaves the peer waiting until it times out (RFC 6455
+// 5.5.1).  Echo the peer's status code, or an empty close when it sent none,
+// as the dotnet kernel does; a code that may not be sent back is answered
+// with 1002 (protocol error).
+func answerPeerClose(channel: in JWsChannel, payload: in slice[Byte]): Unit {
+  val sent = if payload.length < 2 {
+    try {
+      val empty: JByteBuffer = JByteBuffer.allocate(0)
+      JWebSockets.sendCloseBlocking(empty, channel)
+      Ok(())
+    } catch Exception as e {
+      Err(e.message)
+    }
+  } else {
+    val code = payload[0].toInt().and(255).shl(8).or(payload[1].toInt().and(255))
+    val reason = bytesToUtf8Lenient(payload.slice(2, payload.length))
+    if isSendableCloseCode(code) {
+      sendCloseFrame(channel, code, reason)
+    } else {
+      sendCloseFrame(channel, 1002, "")
+    }
+  }
+  // A send that fails means the peer is already gone; the close listener
+  // reports the closed connection either way.
+  match sent {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}
+
+func dispatchFrame(
+  handle: in Int, connId: in String, channel: in JWsChannel, frame: in JWsStreamSourceFrameChannel
+): Unit {
   val frameType = frame.getType().toString()
   val bytes = readFramePayload(frame)
   if frameType == "TEXT" {
@@ -376,8 +450,12 @@ func dispatchFrame(handle: in Int, connId: in String, frame: in JWsStreamSourceF
     invokeOnMessage(handle, connId, "ping", "")
   } else if frameType == "PONG" {
     invokeOnMessage(handle, connId, "pong", "")
+  } else if frameType == "CLOSE" {
+    // The close listener reports the closed connection once Undertow has
+    // both sent and received a close.
+    answerPeerClose(channel, bytes)
   } else {
-    // CLOSE is handled by the close listener; CONTINUATION (fragmented
+    // CONTINUATION (fragmented
     // messages) and UNKOWN are a documented gap (see file header) — the
     // bytes above are already drained so the channel does not stall.
     ()
@@ -391,7 +469,7 @@ func pumpFrames(handle: in Int, connId: in String, channel: in JWsChannel): Unit
     if JObjects.isNull(frame) {
       more = false
     } else {
-      dispatchFrame(handle, connId, frame)
+      dispatchFrame(handle, connId, channel, frame)
       frame.close()
     }
   }
@@ -503,6 +581,7 @@ func handshakeHeaders(exchange: in JWsHttpExchange): Map[String, String] {
 
 record WsOriginGuard {
   allowedOrigins: slice[String]
+  sameHostPorts: slice[Int]
   next: JWsHandshakeHandler
 }
 
@@ -513,7 +592,7 @@ impl JHttpHandler for WsOriginGuard {
     val hostRaw = headers.getFirst("Host")
     val origin = originRaw ?? ""
     val host = hostRaw ?? ""
-    if originAllowed(origin, host, self.allowedOrigins) {
+    if originAllowedFor(origin, host, self.allowedOrigins, self.sameHostPorts) {
       self.next.handleRequest(exchange)
     } else {
       exchange.setStatusCode(403)
@@ -569,6 +648,7 @@ pub func startServer(
   path: in String,
   maxMessageSizeBytes: in Int,
   allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
   onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
@@ -597,7 +677,11 @@ pub func startServer(
   try {
     val callback = WsConnectCallback(registryHandle = handle)
     val handshakeHandler: JWsHandshakeHandler = JWsHandshakeHandler.new(callback)
-    val guarded: JHttpHandler = WsOriginGuard(allowedOrigins = allowedOrigins, next = handshakeHandler)
+    val guarded: JHttpHandler = WsOriginGuard(
+      allowedOrigins = allowedOrigins,
+      sameHostPorts = sameHostPorts,
+      next = handshakeHandler
+    )
     val pathHandler: JPathHandler = JHandlers.path()
     val routedHandler: JPathHandler = pathHandler.addExactPath(path, guarded)
     var builder: JUndertowBuilder = JUndertow.builder()

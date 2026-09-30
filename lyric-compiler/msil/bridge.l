@@ -290,6 +290,7 @@ pub func compileToMsilWithVersion(
     lineOrigins = noSingleFileOrigins,
     awaitInTryIsHazard = true,
     bindListLiteralTypes = true,
+    awaitAsyncCalls = true,
     contractsEnabled = contractsEnabled,
     checkedSourceOut = singleFileOptsCheckedOut,
     memberRecvClassesOut = singleFileOptsRecvOut
@@ -1078,6 +1079,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       lineOrigins = pp.origins,
       awaitInTryIsHazard = true,
       bindListLiteralTypes = true,
+      awaitAsyncCalls = true,
       contractsEnabled = contractsEnabled,
       checkedSourceOut = projOptsCheckedOut,
       memberRecvClassesOut = projOptsRecvOut

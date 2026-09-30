@@ -246,3 +246,29 @@ test "originAllowed: same origin, explicit list, opt-out, and no Origin" {
   assertFalse(originAllowed("https://evil.example", "api.example.com", ["https://app.example.com"]), "unlisted origin")
   assertTrue(originAllowed("https://evil.example", "api.example.com", ["*"]), "explicit opt-out")
 }
+
+test "originAllowedFor: a sibling port on the same host" {
+  val none: slice[String] = []
+  val http: slice[Int] = [8080]
+  assertTrue(originAllowedFor("http://127.0.0.1:8080", "127.0.0.1:8081", none, http), "the page's own port")
+  assertTrue(
+    originAllowedFor("http://LOCALHOST:8080", "localhost:8081", none, http),
+    "hosts compare case-insensitively"
+  )
+  assertTrue(originAllowedFor("http://[::1]:8080", "[::1]:8081", none, http), "an IPv6 literal")
+  assertTrue(originAllowedFor("http://example.com", "example.com:8081", none, [80]), "the scheme's default port")
+  assertTrue(originAllowedFor("https://example.com", "example.com:8081", none, [443]), "https defaults to 443")
+  assertTrue(originAllowedFor("http://127.0.0.1:8081", "127.0.0.1:8081", none, http), "same origin still allowed")
+  assertFalse(originAllowedFor("http://127.0.0.1:9090", "127.0.0.1:8081", none, http), "an unlisted port")
+  assertFalse(
+    originAllowedFor("http://evil.example:8080", "127.0.0.1:8081", none, http),
+    "another host on a listed port"
+  )
+  assertFalse(
+    originAllowedFor("http://127.0.0.1:8080", "127.0.0.1:8081", none, []),
+    "no sibling ports: same origin only"
+  )
+  assertFalse(originAllowedFor("null", "127.0.0.1:8081", none, http), "an opaque origin")
+  assertFalse(originAllowedFor("http://127.0.0.1:x", "127.0.0.1:8081", none, http), "a malformed port")
+  assertFalse(originAllowedFor("http://127.0.0.1:8080", "", none, http), "no Host to compare against")
+}

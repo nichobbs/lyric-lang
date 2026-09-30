@@ -89,7 +89,10 @@ pub func serve(cfg: in HostConfig, route: in (String) -> Option[Instance]): Resu
     graceMs = cfg.reconnectGraceMs,
     maxSessions = cfg.maxSessions
   )
-  val registry = match Ws.startServer(cfg.host, cfg.wsPort, cfg.wsPath, socket) {
+  // The page is served from `port`, so a browser's handshake carries that
+  // origin; accept it (and only it) from the same host (#7836).
+  val wsOptions = Ws.WsServerOptions(sameHostPorts = [cfg.port])
+  val registry = match Ws.startServerWithOptions(cfg.host, cfg.wsPort, cfg.wsPath, wsOptions, socket) {
     case Ok(r) -> r
     case Err(e) -> return Err(error = "WebSocket listener on port " + cfg.wsPort.toString() + ": " + e.message)
   }
@@ -116,6 +119,11 @@ pub func router(cfg: in HostConfig): Web.Router {
     r,
     "/_ui/runtime/render.js",
     Asset(body = Assets.runtimeRenderJs, contentType = "text/javascript; charset=utf-8")
+  )
+  r = Web.addGet(
+    r,
+    "/_ui/runtime/toasts.js",
+    Asset(body = Assets.runtimeToastsJs, contentType = "text/javascript; charset=utf-8")
   )
   r = Web.addGet(r, "/_ui/theme.css", Asset(body = Assets.themeCss, contentType = "text/css; charset=utf-8"))
   val shell = Shell(title = cfg.title, wsPort = cfg.wsPort, wsPath = cfg.wsPath, publicWsUrl = cfg.publicWsUrl)

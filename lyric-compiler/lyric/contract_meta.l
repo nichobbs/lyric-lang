@@ -1321,6 +1321,11 @@ func strListContains(list: in List[String], s: in String): Bool {
 // Build the `pub interface Name { ... }` repr with each abstract
 // method signature.  Default-method bodies and associated types are
 // elided (their full form requires walking ImplMember).
+// A default method (`IMFunc`) is carried with its body, in the same inline
+// form generic function bodies use, so it re-parses as a default rather
+// than an abstract member: a consumer's `impl` may still omit it, and a
+// call through the interface resolves (T0113 no longer exempts imported
+// interfaces, #7575).
 func reprForInterface(decl: in InterfaceDecl): String {
   var members = ""
   var i = 0
@@ -1331,6 +1336,15 @@ func reprForInterface(decl: in InterfaceDecl): String {
           members = members + "; "
         }
         members = members + reprForFunctionSig(sig)
+      }
+      case IMFunc(fn) -> match funcBodyText(fn) {
+        case Some(body) -> {
+          if Str.isNotEmpty(members) {
+            members = members + "; "
+          }
+          members = members + reprForRecordMethod(fn) + " " + body
+        }
+        case None -> ()
       }
       case _ -> ()
     }

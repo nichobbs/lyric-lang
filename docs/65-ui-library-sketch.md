@@ -319,7 +319,10 @@ case CancelClicked ->
 
 `UiEffect[Msg]` (in `Ui.Core`) carries `Navigate`, `Back`, `Confirm`,
 `Toast`. The runtime renders the dialog and feeds the answer back as a
-message. Logic tests assert on the `Confirm` value directly.
+message. Logic tests assert on the `Confirm` value directly. A toast shown
+in the same step as a navigation ("Customer saved", then the list page)
+survives it: the web runtime carries the toasts on screen across the page
+change in session storage and shows them again once the next page loads.
 
 ### 6.4 Shared state and cross-screen events
 
@@ -766,7 +769,7 @@ custom properties (design tokens) with light and dark sets.
 | Phase | Scope | Status |
 |---|---|---|
 | U1 | `lyric-forms`; `lyric-ui` pure core (`Ui.Core`, `Ui.Widgets`, `Ui.Diff`, `Ui.Protocol`, `Ui.Session`, `Ui.Testing`); example logic, view and tests | Implemented (MSIL, JVM) |
-| U2 | Server-driven web host (`Ui.Host`) + TS runtime; example runs in a browser | Implemented (MSIL, JVM); host and runtime covered by `lyric test` and `node --test`, no browser end-to-end test yet |
+| U2 | Server-driven web host (`Ui.Host`) + TS runtime; example runs in a browser | Implemented (MSIL, JVM); host and runtime covered by `lyric test` and `node --test`, and the example by a Playwright browser test on both targets (#7836) |
 | U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Planned |
 | U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Planned |
 | U5 | Desktop webview host (native + MSIL) | Planned |
@@ -864,30 +867,66 @@ was in the JVM backend or the build tooling, and each was fixed there
 - **F-9: reserved words.** `out`, `old`, `result`, `when`, `record` and
   `end` are keywords; names a UI library naturally reaches for. Not a bug,
   but worth a naming note in the style guide.
-- **F-10: no generic protected types** (on any backend), so a session is
+- **F-10: no generic protected types** (on any backend; #7830), so a session is
   held in a single-owner one-slot `List` cell rather than a protected cell.
 
 ### Libraries and targets
 
 - **F-11: `lyric-ws` runs its own listener** and `lyric-web` has no upgrade
-  hook, so the web host serves HTTP on `port` and the session WebSocket on
+  hook (#7831), so the web host serves HTTP on `port` and the session WebSocket on
   `wsPort`. The shell derives the socket URL from the `Host` header.
-- **F-12: the only cross-target JSON value model is `JsonRpc.Json`**
+- **F-12: the only cross-target JSON value model is `JsonRpc.Json`** (#7832)
   (`Std.Json` is a read-only, .NET-only cursor). `Ui.Protocol` depends on
   `lyric-jsonrpc` for it; a writer-capable `Std.Json` value model belongs in
   the stdlib.
-- **F-13: native cannot consume `lyric-ui` yet.** Native project builds do
+- **F-13: native cannot consume `lyric-ui` yet** (#7833). Native project builds do
   not resolve `[dependencies]` (#6815 item 1(b)), so a native application
   cannot depend on `lyric-ui` or `lyric-forms`, which blocks the priority
   target. Generic protected types are also unsupported on native.
-- **F-14: `@generate` custom generators are not usable end to end.** The
+- **F-14: `@generate` custom generators are not usable end to end** (#7834). The
   compiler side exists, but a generator DLL must be staged by hand under
   `.lyric/packages/`, and nothing in CI runs a real generator. Phase U4
   depends on fixing this.
-- **F-15: effects run one at a time per session.** `Ui.Host` runs each
+- **F-15: effects run one at a time per session** (#7835). `Ui.Host` runs each
   step's effects sequentially on the connection's thread (the busy state is
   sent first). Concurrent effects need a per-session queue with a lock or
   actor, which wants a generic protected type (F-10).
+
+### Found by the browser end-to-end test (#7836)
+
+The first test that drives the example in a real browser found two defects
+that the separate host and runtime suites could not see:
+
+- **F-16: every browser handshake was refused.** The Origin check `lyric-ws`
+  gained in #7243 accepts only same-origin handshakes by default, and the
+  page is served from `port` while the socket listens on `wsPort`, so the
+  browser's `Origin` never matched and the socket got `403`. `lyric-ws` now
+  has `WsServerOptions.sameHostPorts` (an origin on the socket's own host and
+  a listed port), and `Ui.Host` lists its HTTP port. #7831 removes the second
+  port altogether.
+- **F-17: on dotnet the effect interpreter's reply was a raw task.** The
+  example interprets effects with `{ e -> Effects.run(e, repo) }`, where
+  `Effects.run` is `async`. A direct call to an `async func` awaits in place
+  (docs/01 §7.1), but the MSIL backend only awaited an explicit `await` or
+  `?`, so the lambda returned the `Task`, the host's dispatch failed, and the
+  page stayed on its loading spinner. Fixed in the compiler (#7838).
+- **F-18: the failure was invisible.** The exception escaped the WebSocket
+  kernel's message callback and ended the connection's read task without a
+  trace. Both `lyric-ws` kernels now report a throwing `onOpen`/`onMessage`/
+  `onClose` handler through `onError` (which `Ui.Host` logs) and keep the
+  connection.
+- **F-19: save and cancel led nowhere.** The edit screen returns to
+  `/customers`, which the example did not serve, and the toast shown with
+  that navigation was lost when the page changed. The example now has the
+  list screen (`Customers.List.*`), and the runtime carries the toast over
+  (§6.3).
+- **F-20: on the JVM a dropped socket never reconnected.** The JVM
+  `lyric-ws` kernel reads frames through Undertow's low-level `receive()`,
+  which leaves answering a peer's close frame to the application, and the
+  kernel only drained it. A browser that closed its socket waited for a
+  reply that never came, so the runtime never reconnected. The kernel now
+  echoes the close (the peer's code, or an empty close), as the dotnet
+  kernel does.
 
 ### Consequence for the plan
 

@@ -79,12 +79,24 @@ func kernelStartServer(
   path: in String,
   maxMessageSizeBytes: in Int,
   allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
   onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
   onError: in (String, String) -> Unit,
 ): Result[Int, String] {
-  WsKernelNet.startServer(host, port, path, maxMessageSizeBytes, allowedOrigins, onOpen, onMessage, onClose, onError)
+  WsKernelNet.startServer(
+    host,
+    port,
+    path,
+    maxMessageSizeBytes,
+    allowedOrigins,
+    sameHostPorts,
+    onOpen,
+    onMessage,
+    onClose,
+    onError
+  )
 }
 
 @cfg(feature = "jvm")
@@ -94,12 +106,24 @@ func kernelStartServer(
   path: in String,
   maxMessageSizeBytes: in Int,
   allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
   onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
   onError: in (String, String) -> Unit,
 ): Result[Int, String] {
-  WsKernelJvm.startServer(host, port, path, maxMessageSizeBytes, allowedOrigins, onOpen, onMessage, onClose, onError)
+  WsKernelJvm.startServer(
+    host,
+    port,
+    path,
+    maxMessageSizeBytes,
+    allowedOrigins,
+    sameHostPorts,
+    onOpen,
+    onMessage,
+    onClose,
+    onError
+  )
 }
 
 /// Per-key token-bucket rate check (`Resilience.takeToken`) shared by `Ws.Aspects.WsRateLimit`,
@@ -363,12 +387,16 @@ pub func createRegistry(): Result[NativeRegistry, WsError] {
 /// - its `Origin` host and port equal its `Host` header (same origin, the
 ///   default with an empty list);
 /// - its `Origin` equals an entry of `allowedOrigins`, such as
-///   `"https://app.example.com"`, ignoring ASCII case; or
+///   `"https://app.example.com"`, ignoring ASCII case;
+/// - its `Origin` host equals the `Host` header's host and its port is one
+///   of `sameHostPorts`: a page the same application serves on a sibling
+///   port, such as an HTTP listener next to this WebSocket listener; or
 /// - `allowedOrigins` contains `"*"`, which disables the check.
 @stable(since = "0.2")
 pub record WsServerOptions {
   maxMessageSizeBytes: Int = 65536
   allowedOrigins: slice[String] = []
+  sameHostPorts: slice[Int] = []
   invariant: maxMessageSizeBytes >= 1024 and maxMessageSizeBytes <= 67108864
 }
 
@@ -452,7 +480,7 @@ pub func startServerWithOptions(
     val ctx = WsContext(connectionId = connId, path = path, query = "", remoteAddress = "", headers = newMap())
     handler.onError(ctx, WsError(message = message, code = "TRANSPORT_ERROR", connectionId = connId))
   }
-  match kernelStartServer(host, port, path, options.maxMessageSizeBytes, options.allowedOrigins, onOpenFn, onMessageFn, onCloseFn, onErrorFn) {
+  match kernelStartServer(host, port, path, options.maxMessageSizeBytes, options.allowedOrigins, options.sameHostPorts, onOpenFn, onMessageFn, onCloseFn, onErrorFn) {
     case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
     case Err(err) -> Err(WsError(message = err, code = "SERVER_START_FAILED", connectionId = ""))
   }

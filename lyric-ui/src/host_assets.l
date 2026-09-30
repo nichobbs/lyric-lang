@@ -8,7 +8,7 @@
 package Ui.Host.Assets
 
 /// Content digest of the embedded assets, used as a cache-busting version.
-pub val assetVersion: String = "402b9182b737cb47"
+pub val assetVersion: String = "2d79c12e3f853c4b"
 
 /// dist/main.js
 pub val runtimeMainJs: String = r#####"// Lyric UI host runtime: connection to the session (docs/65 §9.3, §10.1).
@@ -24,6 +24,7 @@ pub val runtimeMainJs: String = r#####"// Lyric UI host runtime: connection to t
 // page starts a fresh session.
 import { Tree, eventPathOf } from "./tree.js";
 import { DomRenderer } from "./render.js";
+import { stashToasts, takeStashedToasts } from "./toasts.js";
 export const PROTOCOL_VERSION = 2;
 export class Host {
     mount;
@@ -88,9 +89,11 @@ export class Host {
                 }
                 return;
             case "navigate":
+                stashToasts(sessionStorage, liveToasts);
                 location.assign(msg.url);
                 return;
             case "back":
+                stashToasts(sessionStorage, liveToasts);
                 history.back();
                 return;
             case "toast":
@@ -139,6 +142,8 @@ export class Host {
         }
     }
 }
+// The toasts on screen, in the order shown: what a navigation carries over.
+const liveToasts = [];
 function showToast(message, level) {
     let region = document.querySelector(".lui-toasts");
     if (!region) {
@@ -152,7 +157,18 @@ function showToast(message, level) {
     toast.dataset.tone = level;
     toast.textContent = message;
     region.append(toast);
-    setTimeout(() => toast.remove(), 4000);
+    const carried = { m: message, level };
+    liveToasts.push(carried);
+    setTimeout(() => {
+        toast.remove();
+        const i = liveToasts.indexOf(carried);
+        if (i >= 0) {
+            liveToasts.splice(i, 1);
+        }
+    }, 4000);
+}
+for (const t of takeStashedToasts(sessionStorage)) {
+    showToast(t.m, t.level);
 }
 const mount = document.getElementById("lyric-ui");
 if (mount && mount.dataset.ws) {
@@ -678,6 +694,53 @@ export class DomRenderer {
             control.removeAttribute("aria-invalid");
         }
     }
+}
+"#####
+
+/// dist/toasts.js
+pub val runtimeToastsJs: String = r#####"// Toasts carried across a navigation the session asks for (docs/65 §6.3).
+//
+// A screen commonly notifies and then navigates in one step ("Customer
+// saved", then the list page). The navigation replaces the page, so the
+// toasts still on screen are stashed in session storage and shown again once
+// the next page loads. The store is a parameter so the logic runs under node.
+const KEY = "lyric-ui:toasts";
+// Storage can be unavailable (a private window, blocked site data); a lost
+// toast is then the only consequence, never a failed navigation.
+export function stashToasts(store, toasts) {
+    if (toasts.length === 0) {
+        return;
+    }
+    try {
+        store.setItem(KEY, JSON.stringify(toasts));
+    }
+    catch {
+        // Nothing to carry them in.
+    }
+}
+export function takeStashedToasts(store) {
+    let raw;
+    try {
+        raw = store.getItem(KEY);
+        store.removeItem(KEY);
+    }
+    catch {
+        return [];
+    }
+    if (raw === null) {
+        return [];
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        return [];
+    }
+    if (!Array.isArray(parsed)) {
+        return [];
+    }
+    return parsed.filter((t) => typeof t === "object" && t !== null && typeof t.m === "string" && typeof t.level === "string");
 }
 "#####
 
