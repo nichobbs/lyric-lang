@@ -174,15 +174,17 @@ func testScopeSpawnStartsBeforeAwaitAll(): Unit {
 func testScopeDropsFinishedChildren(): Unit {
   val sc = makeScope()
   val ran: List[Int] = newList()
+  // One action at a time, each waited for, so the list is never written
+  // from two threads at once.
   var k = 0
-  while k < 20 {
+  var waited = 0
+  while k < 20 and waited < 10000 {
     scopeSpawn(sc, { -> ran.add(1) })
     k = k + 1
-  }
-  var waited = 0
-  while ran.count < 20 and waited < 10000 {
-    sleepMillis(10)
-    waited = waited + 10
+    while ran.count < k and waited < 10000 {
+      sleepMillis(5)
+      waited = waited + 5
+    }
   }
   assertEqualInt(ran.count, 20, "all twenty actions ran")
   // Each spawn prunes the children finished by then; keep spawning no-ops

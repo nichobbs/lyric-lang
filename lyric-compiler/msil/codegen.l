@@ -4416,6 +4416,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                     cctx.fieldTokens.add(fKey, fieldTok)
                     cctx.fieldMsilTypes.add(fKey, typeExprToMsilG(cctx, fty, pkgName, protGenerics))
                   }
+                  // A lambda written for a function-typed field returns the
+                  // field's declared result type (`seedLambdaLiteralFieldRetMsil`).
+                  registerCaseFieldFuncRetMsil(cctx, fKey, fty, pkgName, protGenerics)
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + fname) {
                     cctx.fieldTokensByName.add(pkgName + "/" + fname, fieldTok)
                     cctx.fieldDeclaringClassByName.add(pkgName + "/" + fname, className)
@@ -4438,6 +4441,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                     cctx.fieldTokens.add(fKey, fieldTok)
                     cctx.fieldMsilTypes.add(fKey, typeExprToMsilG(cctx, fty, pkgName, protGenerics))
                   }
+                  // A lambda written for a function-typed field returns the
+                  // field's declared result type (`seedLambdaLiteralFieldRetMsil`).
+                  registerCaseFieldFuncRetMsil(cctx, fKey, fty, pkgName, protGenerics)
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + fname) {
                     cctx.fieldTokensByName.add(pkgName + "/" + fname, fieldTok)
                     cctx.fieldDeclaringClassByName.add(pkgName + "/" + fname, className)

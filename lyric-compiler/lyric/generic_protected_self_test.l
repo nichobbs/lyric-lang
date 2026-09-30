@@ -193,3 +193,38 @@ test "a None assigned to an Option field reads as None" {
   val _ = s.take()
   assertFalse(s.isFull(), "generic protected field cleared")
 }
+
+protected type Chooser {
+  var pick: (Int) -> Option[String]
+  func choose(n: in Int): String {
+    match pick(n) {
+      case Some(s) -> s
+      case None -> "none"
+    }
+  }
+}
+
+protected type GenChooser[T] {
+  var pick: (Int) -> Option[T]
+  func choose(n: in Int, fallback: in T): T {
+    match pick(n) {
+      case Some(v) -> v
+      case None -> fallback
+    }
+  }
+}
+
+// A lambda passed for a protected type's function-typed field returns the
+// field's declared result type (MSIL built `Option_None<object>`), and a bare
+// call to the field inside a generic protected type's member reaches it (the
+// JVM resolved it as a static call, J008).
+test "a function-typed field of a protected type, set by a lambda and called bare" {
+  val c = Chooser(pick = { _: Int -> None })
+  assertEqual(c.choose(1), "none", "None through a protected field")
+  val some = Chooser(pick = { n: Int -> if n > 0 { Some(value = "pos") } else { None } })
+  assertEqual(some.choose(3), "pos", "Some through a protected field")
+  val g: GenChooser[String] = GenChooser(pick = { _: Int -> None })
+  assertEqual(g.choose(1, "dflt"), "dflt", "None through a generic protected field")
+  val gi: GenChooser[Int] = GenChooser(pick = { n: Int -> Some(value = n * 2) })
+  assertEqual(toString(gi.choose(21, 0)), "42", "Some through a generic protected field")
+}
