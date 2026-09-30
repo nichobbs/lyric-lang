@@ -267,12 +267,19 @@ pub func checkStatement(
             }
             case _ -> ""
           }
-          val openKey = if openName != "" { registerOpenBindingSite(tbl, init, initType) } else { "" }
+          val openKey = if openName != "" { registerOpenBindingSite(sc, tbl, init, initType) } else { "" }
           val bindTy = if checkLocalValPattern(tbl, diag, pat, initType) { TyError } else { initType }
           if openKey != "" {
             scopeAdd(sc, LocalBinding(name = openName, ty = initType, isMutable = false, openSite = openKey))
           } else {
             bindPattern(sc, pat, bindTy)
+            // A destructuring of an open tuple, a literal or a local, binds
+            // each name at an open element open to it (#7855).
+            if openName == "" {
+              val localKey = openSiteOfExpr(sc, init)
+              val tupleKey = if localKey != "" { localKey } else { registerOpenBindingSite(sc, tbl, init, initType) }
+              bindOpenTuplePattern(sc, tbl, pat, tupleKey)
+            }
           }
           recordTuplePatternBindings(tbl, pat, bindTy, false)
         }
@@ -311,7 +318,7 @@ pub func checkStatement(
               t
             }
           }
-          val openKey = match initOpt { case Some(e) -> registerOpenBindingSite(tbl, e, initType); case None -> "" }
+          val openKey = match initOpt { case Some(e) -> registerOpenBindingSite(sc, tbl, e, initType); case None -> "" }
           scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = true, openSite = openKey))
         }
         case Some(te) -> {
@@ -347,7 +354,7 @@ pub func checkStatement(
         case None -> {
           val initType = inferExpr(sc, tbl, sigs, diag, init)
           recordLocalFuncType(tbl, init, initType)
-          val openKey = registerOpenBindingSite(tbl, init, initType)
+          val openKey = registerOpenBindingSite(sc, tbl, init, initType)
           scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = false, openSite = openKey))
         }
         case Some(te) -> {
