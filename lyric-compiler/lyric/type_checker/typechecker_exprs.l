@@ -1926,6 +1926,22 @@ func isNumericOrCharType(t: in Type): Bool {
   }
 }
 
+// True when `t` is a numeric primitive (not a refinement of one).
+func isNumericPrimType(t: in Type): Bool {
+  match t {
+    case TyPrim(_) -> isNumericType(t)
+    case _ -> false
+  }
+}
+
+// A receiver of `.toULong()`: a primitive of the unsigned widening chain.
+func isUnsignedConvReceiver(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt { case PtByte -> true; case PtUInt -> true; case PtULong -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
 // A well-typed primitive that is *definitively* not a numeric conversion
 // receiver and cannot carry a user-defined method either (`String`, `Bool`,
 // `Unit`) — so a `.toInt()`-style call on it is unambiguously a mistake worth a
@@ -3160,6 +3176,7 @@ func checkRecordCopy(
             found = true
             val want = fields[fi].ty
             val got = inferExprExpected(sc, tbl, sigs, diag, valE, want)
+            recordUnsignedWidening(tbl, want, got, valE)
             if not argSatisfiesParam(tbl, want, got) {
               diag.add(
                 errorDiagnostic(
@@ -3715,8 +3732,13 @@ func wideningMethod(paramTy: in Type, argTy: in Type): Option[String] {
     case Some(wt) -> if not typeEquiv(wt, paramTy) { return None }
     case None -> return None
   }
-  // The conversion methods exist only on these receivers (not `Float`, `UInt`,
-  // `ULong`, `Nat`: #2050); any other widening is left unconvertible.
+  // A widening to `ULong` zero-extends (`Byte`/`UInt` are unsigned), which
+  // `.toULong()` spells out (#7805).
+  if isPrimOf(paramTy, PtULong) {
+    return Some(value = "toULong")
+  }
+  // The other conversion methods exist only on these receivers (not `Float`,
+  // `UInt`, `ULong`, `Nat`: #2050); any other widening is left unconvertible.
   if not isNumericOrCharType(argTy) {
     return None
   }
@@ -3731,8 +3753,63 @@ func wideningMethod(paramTy: in Type, argTy: in Type): Option[String] {
   }
 }
 
+// True when `t` unrefines to the primitive `pt`.
+func isPrimOf(t: in Type, pt: in PrimType): Bool {
+  match unrefine(t) {
+    case TyPrim(p) -> primEq(p, pt)
+    case _ -> false
+  }
+}
+
+// True when a value of type `src` reaches a `target` slot only by an implicit
+// lossless widening along `Byte < Int < Long`, `Byte < UInt < ULong` or
+// `Float < Double` (docs/01 §4.1).
+func numericWidensTo(target: in Type, src: in Type): Bool {
+  if typeEquiv(target, src) {
+    return false
+  }
+  match widenArithmetic(target, src) {
+    case Some(wt) -> typeEquiv(wt, target)
+    case None -> false
+  }
+}
+
+// Record `e`, a value of type `src` implicitly widened to `target`, as a
+// conversion site, so `Lyric.Mono.desugarCheckedFile` rewrites it to
+// `e.<method>()` before any backend sees it.  With `unsignedOnly`, only a
+// widening to `ULong` is recorded: every backend widens the signed chain
+// correctly at a binding, argument, assignment or operand from the operand
+// types alone, but a `UInt` there lowers to the same 32-bit representation
+// as an `Int` and would be sign-extended (#7805).  Positions no backend
+// widens at (a `return`, a function body's value, a slice literal element)
+// record every widening that has a conversion method.
+func recordWideningSite(tbl: in SymbolTable, target: in Type, src: in Type, e: in Expr, unsignedOnly: in Bool): Unit {
+  if not numericWidensTo(target, src) {
+    return
+  }
+  match wideningMethod(target, src) {
+    case Some(m) -> {
+      if unsignedOnly and m != "toULong" {
+        return
+      }
+      val key = recordCopySiteKey(e.span)
+      if tbl.argConversionSites.containsKey(key) {
+        tbl.argConversionSites.remove(key)
+      }
+      tbl.argConversionSites.add(key, ArgConversionSite(method = m, startOffset = e.span.startPos.offset))
+    }
+    case None -> ()
+  }
+}
+
+// `recordWideningSite` for an implicit widening at a position every backend
+// already widens signed values at.
+func recordUnsignedWidening(tbl: in SymbolTable, target: in Type, src: in Type, e: in Expr): Unit {
+  recordWideningSite(tbl, target, src, e, true)
+}
+
 // True when `argTy` satisfies `paramTy` only by a numeric widening that a call
-// through a function value cannot convert (`Byte` to `UInt`/`ULong`, or a
+// through a function value cannot convert (`Byte` to `UInt`, or a
 // `Float` argument: those conversions do not exist yet, #2050). The erased
 // call would pass the argument boxed
 // at its own type, so such a call is rejected rather than failing at run time.
@@ -5141,6 +5218,7 @@ func inferConstructionExpected(
             diag.add(errorDiagnostic("T0101", "'" + sym.name + "' has no field '" + nm + "'", asp))
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, nm, fieldTypeByName(fields, nm))
+            recordUnsignedWidening(tbl, fieldTy, argTy, valE)
             if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
               diag.add(
                 errorDiagnostic(
@@ -5166,6 +5244,7 @@ func inferConstructionExpected(
             )
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, fields[posIdx].name, fields[posIdx].ty)
+            recordUnsignedWidening(tbl, fieldTy, argTy, ae)
             if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
               diag.add(
                 errorDiagnostic(
@@ -5218,6 +5297,7 @@ func inferConstructionExpected(
           diag.add(errorDiagnostic("T0101", "'" + sym.name + "' has no field '" + nm + "'", asp))
         } else {
           val fieldTy = fieldTypeByName(fields, nm)
+          recordUnsignedWidening(tbl, fieldTy, argTy, valE)
           if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
             diag.add(
               errorDiagnostic(
@@ -5243,6 +5323,7 @@ func inferConstructionExpected(
           )
         } else {
           val fieldTy = fields[posIdx].ty
+          recordUnsignedWidening(tbl, fieldTy, argTy, ae)
           if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
             diag.add(
               errorDiagnostic(
@@ -6055,6 +6136,91 @@ func inferGenericArgs(genericNames: in List[String], fieldTypes: in List[Type], 
   result
 }
 
+// A union-case argument initialises its field, so it widens to the field's
+// type like any initialiser (#7805).
+func recordCaseFieldWidenings(
+  tbl: in SymbolTable,
+  uc: in UnionCase,
+  ftypes: in List[Type],
+  gnames: in List[String],
+  targs: in List[Type],
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Unit {
+  val names: List[String] = newList()
+  var i = 0
+  while i < uc.fields.count {
+    match uc.fields[i] {
+      case UFNamed(nm, _, _) -> names.add(nm)
+      case UFPos(_, _) -> names.add("")
+    }
+    i = i + 1
+  }
+  val srcIdx = argIndicesInParamOrder(args, names)
+  var k = 0
+  while k < srcIdx.count and k < ftypes.count {
+    val ai = srcIdx[k]
+    if ai >= 0 and ai < argTypes.count {
+      recordUnsignedWidening(tbl, substituteTyVars(ftypes[k], gnames, targs), argTypes[ai], callArgExpr(args[ai]))
+    }
+    k = k + 1
+  }
+}
+
+// The parameter types of `sig` with its generic parameters bound from the
+// call: `recvTy` fills the leading receiver parameter of a method call's full
+// signature, `args` the rest.  Used to find the implicit widenings of a
+// generic call's arguments (`xs.add(u)` with `xs: List[ULong]`, #7805).
+func recordGenericArgWidenings(
+  tbl: in SymbolTable,
+  sig: in ResolvedSignature,
+  recvTy: in Option[Type],
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Unit {
+  if sig.generics.count == 0 {
+    return
+  }
+  val offset = match recvTy { case Some(_) -> 1; case None -> 0 }
+  if sig.params.count < offset or args.count > sig.params.count - offset {
+    return
+  }
+  val paramNames: List[String] = newList()
+  var pi = offset
+  while pi < sig.params.count {
+    paramNames.add(sig.params[pi].name)
+    pi = pi + 1
+  }
+  val srcIdx = argIndicesInParamOrder(args, paramNames)
+  val paramTys: List[Type] = newList()
+  val slotTys: List[Type] = newList()
+  match recvTy {
+    case Some(rt) -> {
+      paramTys.add(sig.params[0].ty)
+      slotTys.add(rt)
+    }
+    case None -> ()
+  }
+  var k = 0
+  while k < srcIdx.count {
+    paramTys.add(sig.params[k + offset].ty)
+    val ai = srcIdx[k]
+    slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
+    k = k + 1
+  }
+  val targs = inferGenericArgsDeep(sig.generics, paramTys, slotTys)
+  var j = 0
+  while j < srcIdx.count {
+    val ai = srcIdx[j]
+    val p = sig.params[j + offset]
+    val isIn = match p.mode { case PMIn -> true; case _ -> false }
+    if ai >= 0 and ai < argTypes.count and isIn {
+      recordUnsignedWidening(tbl, substituteTyVars(p.ty, sig.generics, targs), argTypes[ai], callArgExpr(args[ai]))
+    }
+    j = j + 1
+  }
+}
+
 // #7119: named-field constructor fields of a union case, for the shared
 // `reportMissingCtorFields` missing-required-field check (mirrors
 // `collectCtorFieldsFromRecord`/`collectCtorFieldsFromOpaque`). A union case
@@ -6132,6 +6298,7 @@ func inferUnionCaseConstruction(
         val gnames = unionDeclGenericNames(decl)
         val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames, caseSym.originPackage)
         val targs = inferGenericArgs(gnames, ftypes, argTypes)
+        recordCaseFieldWidenings(tbl, uc, ftypes, gnames, targs, args, argTypes)
         TyUser(id = parentId, name = decl.name, args = targs)
       }
       case None -> TyError
@@ -6939,12 +7106,46 @@ func inferIfExpr(
         bts.add(tt)
         bts.add(et)
         match branchesAgainstExpected(tbl, bts, tailExpected) {
-          case Some(t) -> return t
+          case Some(t) -> {
+            recordBranchWidening(tbl, t, tt, thenBranch)
+            recordBranchWidening(tbl, t, et, eb)
+            return t
+          }
           case None -> ()
         }
       }
       unifyBranchTypes(tt, et, e.span, diag, isValuePosition)
     }
+  }
+}
+
+// The expression a branch or block produces its value from: the branch
+// expression itself, or a block's trailing expression statement.
+pub func blockValueExpr(blk: in Block): Option[Expr] {
+  if blk.statements.count == 0 {
+    return None
+  }
+  match blk.statements[blk.statements.count - 1].kind {
+    case SExpr(e) -> Some(value = e)
+    case _ -> None
+  }
+}
+
+func branchValueExpr(b: in ExprOrBlock): Option[Expr] {
+  match b {
+    case EOBExpr(e) -> Some(value = e)
+    case EOBBlock(blk) -> blockValueExpr(blk)
+  }
+}
+
+// A branch of type `bt` accepted where the `if`/`match` expects `target`
+// (`branchesAgainstExpected`) is widened at its value expression: the
+// branches of one construct otherwise leave values of different widths
+// (#7805).
+func recordBranchWidening(tbl: in SymbolTable, target: in Type, bt: in Type, b: in ExprOrBlock): Unit {
+  match branchValueExpr(b) {
+    case Some(ve) -> recordWideningSite(tbl, target, bt, ve, false)
+    case None -> ()
   }
 }
 
@@ -7022,7 +7223,14 @@ func inferMatchExpr(
   }
   if isValuePosition {
     match branchesAgainstExpected(tbl, armTypes, tailExpected) {
-      case Some(t) -> return t
+      case Some(t) -> {
+        var wi = 0
+        while wi < arms.count and wi < armTypes.count {
+          recordBranchWidening(tbl, t, armTypes[wi], arms[wi].body)
+          wi = wi + 1
+        }
+        return t
+      }
       case None -> ()
     }
   }
@@ -7557,6 +7765,30 @@ pub func noteOpenBindingAdd(sc: in Scope, tbl: in SymbolTable, recv: in Expr, ar
   }
 }
 
+// `xs.add(x)` / `xs.add(i, x)` on a `List[T]` and `m.add(k, v)` on a
+// `Map[K, V]`: the stdlib collections are host types whose methods the
+// checker types leniently, so an argument that widens to the element, key
+// or value type is recorded here (#7805).
+func recordCollectionAddWidenings(
+  tbl: in SymbolTable, recvTy: in Type, args: in List[CallArg], argTypes: in List[Type]
+): Unit {
+  if args.count != argTypes.count {
+    return
+  }
+  match unrefine(recvTy) {
+    case TyUser(id, _, targs) -> {
+      if targs.count == 1 and isStdCollectionsHostType(tbl, id, "List") and (args.count == 1 or args.count == 2) {
+        val last = args.count - 1
+        recordUnsignedWidening(tbl, targs[0], argTypes[last], callArgExpr(args[last]))
+      } else if targs.count == 2 and isStdCollectionsHostType(tbl, id, "Map") and args.count == 2 {
+        recordUnsignedWidening(tbl, targs[0], argTypes[0], callArgExpr(args[0]))
+        recordUnsignedWidening(tbl, targs[1], argTypes[1], callArgExpr(args[1]))
+      }
+    }
+    case _ -> ()
+  }
+}
+
 // An assignment `target = value` with `value` of type `valueTy`: `o = v`
 // stores into the open binding `o`, `xs[i] = v` into the element of the open
 // list `xs`, and `m[k] = v` into the key and value of the open map `m`.
@@ -8013,6 +8245,16 @@ func inferExprCore(
       // / `someLong + 1` type-check without a `0i64` suffix (#2514).
       val lt = adoptIntLiteralType(l, lt0, rt0)
       val rt = adoptIntLiteralType(r, rt0, lt0)
+      // A `UInt` operand beside a `ULong` one zero-extends (#7350, #7382);
+      // spelling it `.toULong()` keeps every backend from having to recover
+      // the operand's signedness from its shape (#7805).
+      match widenArithmetic(lt, rt) {
+        case Some(wt) -> {
+          recordUnsignedWidening(tbl, wt, lt, l)
+          recordUnsignedWidening(tbl, wt, rt, r)
+        }
+        case None -> ()
+      }
       inferBinop(tbl, diag, op, lt, rt, e.span)
     }
 
@@ -8067,6 +8309,34 @@ func inferExprCore(
       // once here and reused below to avoid emitting diagnostics twice when a
       // user-type receiver falls through to the general EMember path (#2700).
       var cachedRecvType: Option[Type] = None
+      // `.toULong()` is the lossless zero-extending widening of the unsigned
+      // chain (`Byte < UInt < ULong`, #7805), so only an unsigned receiver has
+      // it; conversions between the signed and unsigned chains are not
+      // implemented (docs/01 §4.1).
+      match fn.kind {
+        case EMember(recvE, mname) -> if mname == "toULong" and args.count == 0 {
+          val urt = inferExpr(sc, tbl, sigs, diag, recvE)
+          if isUnsignedConvReceiver(urt) {
+            return TyPrim(pt = PtULong)
+          }
+          match unrefine(urt) {
+            case TyPrim(_) -> {
+              diag.add(
+                errorDiagnostic(
+                  "T0103",
+                  "conversion method 'toULong' is not applicable to " + renderType(urt) +
+                    " (only Byte, UInt and ULong widen to ULong)",
+                  recvE.span
+                )
+              )
+              return TyError
+            }
+            case _ -> ()
+          }
+          cachedRecvType = Some(value = urt)
+        }
+        case _ -> ()
+      }
       match fn.kind {
         case EMember(recvE, mname) -> match numericConvTarget(mname) {
           case Some(target) -> if args.count == 0 {
@@ -8261,6 +8531,10 @@ func inferExprCore(
           case EMember(addRecv, _) -> noteOpenBindingAdd(sc, tbl, addRecv, argTypes)
           case _ -> ()
         }
+        match memberRecvTy {
+          case Some(addRecvTy) -> recordCollectionAddWidenings(tbl, addRecvTy, args, argTypes)
+          case None -> ()
+        }
       }
       recordGeneratorCallSite(tbl, e.span, false)
       recordEmptyCollectionCtorSite(tbl, e.span, false)
@@ -8270,6 +8544,7 @@ func inferExprCore(
           recordEmptyCollectionCtorSite(tbl, e.span, isStdEmptyCollectionCtor(sig, fn))
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
+          recordGenericArgWidenings(tbl, sig, None, args, argTypes)
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
             recordSigArgConversions(tbl, sig, args, argTypes)
           }
@@ -8317,6 +8592,13 @@ func inferExprCore(
                   checkContractCallPure(sc, diag, mp.sig, fn, e.span)
                   checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
                   checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
+                  match mp.fullSig {
+                    case Some(fullS) -> match memberRecvTy {
+                      case Some(_) -> recordGenericArgWidenings(tbl, fullS, memberRecvTy, args, argTypes)
+                      case None -> ()
+                    }
+                    case None -> recordGenericArgWidenings(tbl, mp.sig, None, args, argTypes)
+                  }
                   match mp.fullSig {
                     case Some(fullS) -> {
                       val extArgs: List[Type] = newList()
@@ -8716,6 +8998,9 @@ func inferExprCore(
           )
         )
       }
+      if not stringPlusAssign {
+        recordUnsignedWidening(tbl, targetType, valueType, value)
+      }
       match target.kind {
         case EPath(p) -> if p.segments.count == 1 {
           match scopeTryFind(sc, p.segments[0]) {
@@ -9074,6 +9359,7 @@ pub func inferExprExpected(
           var li = 0
           while li < elems.count {
             val et = inferExprExpected(sc, tbl, sigs, diag, elems[li], elemTy)
+            recordWideningSite(tbl, elemTy, et, elems[li], false)
             if not argSatisfiesParam(tbl, elemTy, et) {
               diag.add(
                 errorDiagnostic(
@@ -9090,6 +9376,31 @@ pub func inferExprExpected(
         } else {
           inferExpr(sc, tbl, sigs, diag, e)
         }
+      }
+      // A bracket literal where a numeric `slice[T]` is expected: each
+      // element initialises a `T`, so it widens like an initialiser (docs/01
+      // §4.1, #7805) instead of fixing the literal's element type to the
+      // first element's own type.
+      case TySlice(elemTy) -> if isNumericPrimType(elemTy) and elems.count > 0 {
+        var si = 0
+        while si < elems.count {
+          val et = inferExprExpected(sc, tbl, sigs, diag, elems[si], elemTy)
+          recordWideningSite(tbl, elemTy, et, elems[si], false)
+          if not argSatisfiesParam(tbl, elemTy, et) {
+            diag.add(
+              errorDiagnostic(
+                "T0041",
+                "slice literal element has type " + renderType(et) + " but slice[" + renderType(elemTy) + "] expects " +
+                  renderType(elemTy),
+                elems[si].span
+              )
+            )
+          }
+          si = si + 1
+        }
+        TySlice(element = elemTy)
+      } else {
+        inferExpr(sc, tbl, sigs, diag, e)
       }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }
@@ -9189,6 +9500,9 @@ func checkCallArgsAgainstSig(
       if ai >= 0 {
         val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
         noteExpectedFlow(sc, tbl, callArgExpr(args[ai]), p.ty)
+        if (match p.mode { case PMIn -> true; case _ -> false }) {
+          recordUnsignedWidening(tbl, p.ty, argTy, callArgExpr(args[ai]))
+        }
         if not argSatisfiesParam(tbl, p.ty, argTy) and not listLiteralArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
           diag.add(
             errorDiagnostic(

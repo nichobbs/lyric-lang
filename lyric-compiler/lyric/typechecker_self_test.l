@@ -770,12 +770,35 @@ test "conv method on non numeric rejected" {
 
 // #1901 part B: an index expression `recv[i]` carries the receiver's element
 // type, not the universal `TyError`.  Distinguishing case: a `slice[Byte]`
-// element returned where `Int` is expected MUST mismatch (T0070) — `Byte != Int`
-// (no implicit widening) — whereas `TyError` would have unified silently.
+// element returned where `Char` is expected MUST mismatch (T0070) — `Byte`
+// does not widen to `Char` — whereas `TyError` would have unified silently.
 test "index byte element typed" {
-  val src = "package P\nfunc f(a: in slice[Byte]): Int { a[0] }\n"
+  val src = "package P\nfunc f(a: in slice[Byte]): Char { a[0] }\n"
   val cr = parseCheck(src)
-  assertTrue(hasDiagCode(cr, "T0070"), "index-byte: slice[Byte] element is Byte, mismatches Int return")
+  assertTrue(hasDiagCode(cr, "T0070"), "index-byte: slice[Byte] element is Byte, mismatches Char return")
+}
+
+// A returned value initialises the result, so it widens along the lossless
+// chains like any initialiser (docs/01 §4.1, #7805).
+test "return widens along the lossless chains" {
+  val ok = "package P\nfunc f(u: in UInt): ULong { return u }\nfunc g(u: in UInt): ULong { u }\nfunc h(b: in Byte): Int = b\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "return-widen: UInt/Byte widen at return and body value")
+  val cross = "package P\nfunc f(i: in Int): ULong { return i }\n"
+  assertTrue(hasDiagCode(parseCheck(cross), "T0065"), "return-widen: Int does not widen to ULong")
+}
+
+test "slice literal elements widen to the expected element type" {
+  val ok = "package P\nfunc f(u: in UInt): slice[ULong] { val xs: slice[ULong] = [u, 1u64]\n xs }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "slice-widen: UInt element in a slice[ULong] literal")
+  val bad = "package P\nfunc f(i: in Int): slice[ULong] { val xs: slice[ULong] = [i]\n xs }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0041"), "slice-widen: Int element rejected in a slice[ULong] literal")
+}
+
+test "toULong applies only to the unsigned chain" {
+  val ok = "package P\nfunc f(u: in UInt, b: in Byte): ULong { u.toULong() + b.toULong() }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "toULong: UInt and Byte receivers")
+  val bad = "package P\nfunc f(i: in Int): ULong { i.toULong() }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0103"), "toULong: Int receiver rejected with T0103")
 }
 
 test "index byte with conversion accepted" {
@@ -2637,10 +2660,10 @@ test "visibility multi segment private type rejected" {
 
 // #2239: slice[T] parameter — findGenericInPair handles TySlice.
 test "generic return slice param instantiated" {
-  val src = "package P\ngeneric[T] func head(xs: in slice[T]): T { xs[0] }\nfunc f(bs: in slice[Byte]): Int { head(bs) }\n"
+  val src = "package P\ngeneric[T] func head(xs: in slice[T]): T { xs[0] }\nfunc f(bs: in slice[Byte]): Char { head(bs) }\n"
   assertTrue(
     hasDiagCode(parseCheck(src), "T0070"),
-    "generic slice param: head(slice[Byte]) returns Byte, mismatches Int"
+    "generic slice param: head(slice[Byte]) returns Byte, mismatches Char"
   )
 }
 
@@ -6408,12 +6431,13 @@ test "qualified function value prefers the imported package among same-suffix pa
 
 // A call through a function value converts only the widenings it has a
 // conversion for; `Byte` to `UInt` has none (#2050), so it is rejected rather
-// than passed boxed as a `Byte` (D-progress-964).
+// than passed boxed as a `Byte` (D-progress-964).  A widening to `ULong`
+// converts with `.toULong()` (#7805).
 test "function-value call rejects a Byte argument for a UInt parameter" {
   val bad = "package P\npub func g(f: (UInt) -> UInt, b: in Byte): UInt {\n  f(b)\n}\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0043"), "Byte into a (UInt) -> UInt value is T0043")
-  val badL = "package P\npub func g(f: (ULong) -> ULong, b: in Byte): ULong {\n  f(b)\n}\n"
-  assertTrue(hasDiagCode(parseCheck(badL), "T0043"), "Byte into a (ULong) -> ULong value is T0043")
+  val okL = "package P\npub func g(f: (ULong) -> ULong, b: in Byte, u: in UInt): ULong {\n  f(b) + f(u)\n}\n"
+  assertEqualInt(diagCount(parseCheck(okL)), 0, "Byte and UInt into a (ULong) -> ULong value widen")
   val badF = "package P\npub func g(f: (Double) -> Double, x: in Float): Double {\n  f(x)\n}\n"
   assertTrue(hasDiagCode(parseCheck(badF), "T0043"), "Float into a (Double) -> Double value is T0043")
   val ok = "package P\npub func g(f: (Long) -> Long, i: in Int): Long {\n  f(i)\n}\n"

@@ -274,6 +274,7 @@ pub func checkStatement(
               )
             )
           }
+          recordUnsignedWidening(tbl, declT, initType, init)
           checkRefinedLiteralBound(declT, init, diag)
           val bindTy = if checkLocalValPattern(tbl, diag, pat, declT) { TyError } else { declT }
           bindPattern(sc, pat, bindTy)
@@ -313,6 +314,7 @@ pub func checkStatement(
                   )
                 )
               }
+              recordUnsignedWidening(tbl, declT, initType, initE)
               checkRefinedLiteralBound(declT, initE, diag)
             }
             case None -> {
@@ -346,6 +348,7 @@ pub func checkStatement(
               )
             )
           }
+          recordUnsignedWidening(tbl, declT, initType, init)
           checkRefinedLiteralBound(declT, init, diag)
           scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = false))
         }
@@ -405,6 +408,9 @@ pub func checkStatement(
           )
         )
       }
+      if not stringPlusAssign {
+        recordUnsignedWidening(tbl, targetType, valueType, value)
+      }
       // #1487 (§5.2): an `in` parameter — like a `val`/`let` binding — is
       // immutable and cannot be reassigned.  The checker records this as
       // `isMutable = false` (in-params and val/let), so a simple-path
@@ -442,7 +448,10 @@ pub func checkStatement(
         // D-progress-1026-return-position-list-literals.md).
         val t = inferExprExpected(sc, tbl, sigs, diag, e, returnTy)
         val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
-        if not isNever and not typeAssignable(tbl, returnTy, t) {
+        // A returned value initialises the result, so it widens like an
+        // initialiser (docs/01 §4.1, #7805).
+        recordWideningSite(tbl, returnTy, t, e, false)
+        if not isNever and not typeAssignable(tbl, returnTy, t) and not numericWidensTo(returnTy, t) {
           diag.add(
             errorDiagnostic(
               "T0065",
@@ -1589,7 +1598,10 @@ pub func checkFunctionBody(
         // #6641 fallout: see the matching FBBlock-case comment below — a
         // generator's declared return type is its yielded element type,
         // not what its body's own control flow must produce.
-        if not isNever and not sig.isGenerator and not typeAssignable(tbl, sig.returnTy, bodyType) {
+        if not sig.isGenerator {
+          recordWideningSite(tbl, sig.returnTy, bodyType, e, false)
+        }
+        if not isNever and not sig.isGenerator and not typeAssignable(tbl, sig.returnTy, bodyType) and not numericWidensTo(sig.returnTy, bodyType) {
           diag.add(
             errorDiagnostic(
               "T0070",
@@ -1640,7 +1652,13 @@ pub func checkFunctionBody(
         // reopened this as a false-positive T0070 on every generator whose
         // body's own control-flow type isn't the element type — check
         // `sig.isGenerator` explicitly instead of relying on that accident.
-        if not isNever and not sig.isGenerator and not typeAssignable(tbl, sig.returnTy, bodyType) {
+        if not sig.isGenerator {
+          match blockValueExpr(blk) {
+            case Some(tailE) -> recordWideningSite(tbl, sig.returnTy, bodyType, tailE, false)
+            case None -> ()
+          }
+        }
+        if not isNever and not sig.isGenerator and not typeAssignable(tbl, sig.returnTy, bodyType) and not numericWidensTo(sig.returnTy, bodyType) {
           diag.add(
             errorDiagnostic(
               "T0070",

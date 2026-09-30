@@ -233,6 +233,8 @@ SELF_TESTS=(
   lyric-compiler/lyric/unannotated_list_result_self_test.l
   lyric-compiler/lyric/long_store_widen_self_test.l
   lyric-compiler/lyric/mixed_width_arith_self_test.l
+  lyric-compiler/lyric/mixed_width_unsigned_self_test.l
+  lyric-compiler/lyric/unsigned_widen_self_test.l
   lyric-compiler/lyric/generic_record_var_field_self_test.l
   lyric-compiler/lyric/range_subtype_self_test.l
   lyric-compiler/lyric/slice_array_abi_self_test.l

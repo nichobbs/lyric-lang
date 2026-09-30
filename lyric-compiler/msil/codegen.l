@@ -7963,8 +7963,14 @@ func isUnsignedExprMsil(fctx: in FuncCtx, e: in Expr): Bool {
       }
     }
     case EParen(inner) -> isUnsignedExprMsil(fctx, inner)
+    case ECall(fn, cargs) -> isToULongCallMsil(fn, cargs)
     case _ -> false
   }
+}
+
+// `x.toULong()`: always a `ULong`, whatever `x` lowers to (#7805).
+func isToULongCallMsil(fn: in Expr, cargs: in List[CallArg]): Bool {
+  cargs.count == 0 and (match fn.kind { case EMember(_, name) -> name == "toULong"; case _ -> false })
 }
 
 pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in TypeExpr): MsilType {
@@ -21435,6 +21441,16 @@ func lowerMethodCallMsil(
       insns.add(MShr)
     }
     recvTy
+  } else if memberName == "toULong" and args.count == 0 and isNumericMsil(recvTy) {
+    // The zero-extending widening of the unsigned chain (#7805): the type
+    // checker offers it only on a `Byte`/`UInt`/`ULong` receiver, and
+    // inserts it wherever such a value widens to `ULong` implicitly.  A
+    // `UInt` shares `int32` with `Int`, so `conv.i8` would sign-extend it.
+    match recvTy {
+      case MLong -> ()
+      case _ -> insns.add(MConvU8)
+    }
+    MLong
   } else if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble" or memberName == "toNat") and args.count == 0 and isNumericMsil(recvTy) {
     // Numeric / character primitive conversion intrinsics (#1901, toNat added
     // for #2050/Band 4's Int/Long/Byte/Char/Double -> Nat direction).  The
