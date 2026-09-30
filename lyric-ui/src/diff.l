@@ -12,6 +12,7 @@
 //! Children are reconciled by key when every child in both lists has a
 //! non-empty, unique key; otherwise by position.
 @runtime_checked
+@pure
 package Ui.Diff
 
 import Std.Core

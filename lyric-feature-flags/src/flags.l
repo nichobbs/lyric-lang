@@ -25,6 +25,7 @@
 //!
 //! See docs/03-decision-log.md and lyric-feature-flags/README.md.
 @runtime_checked
+@io
 package Flags
 
 import Std.Core

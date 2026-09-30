@@ -27,6 +27,7 @@
 //!
 //! See docs/03-decision-log.md and lyric-i18n/README.md.
 @runtime_checked
+@io
 package I18n
 
 import Std.Core

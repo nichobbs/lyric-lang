@@ -42,6 +42,7 @@
 //! the same cooperative-cancellation contract `_kernel_jvm/task.l`
 //! documents for this target.
 @axiom("java.net.http.HttpClient and javax.net.ssl / java.security TLS configuration operations conform to their documented JVM contracts")
+@io
 package Std.HttpHost
 
 import Std.Core

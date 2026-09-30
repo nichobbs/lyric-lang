@@ -8,6 +8,7 @@
 //! describes.  Screens can use the result as-is (scaffolding) or replace
 //! individual fields with hand-written views.
 @runtime_checked
+@pure
 package Ui.Forms
 
 import Std.Core

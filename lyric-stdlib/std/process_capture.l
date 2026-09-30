@@ -4,6 +4,7 @@
 //! verifier to invoke z3/cvc5 interactively and by the source-generator
 //! runtime to invoke generator DLLs.
 @runtime_checked
+@io
 package Std.ProcessCapture
 
 import Std.Core

@@ -25,6 +25,7 @@
 //! that would otherwise call BCL-only `ConcurrentDictionary` externs, on a
 //! `--target jvm` build.
 @cfg(feature = "dotnet")
+@io
 package Jobs.Kernel.Net
 
 import Std.Core

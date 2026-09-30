@@ -9,6 +9,7 @@
 //! managed twins' handle-level functions (`hostSpawn`, `hostWait`, ...) are
 //! not part of the native surface; nothing compiled for native calls them.
 @axiom("fork/execvp inherited-stdio process execution via lyric-rt conforms to its documented contract")
+@io
 package Std.ProcessHost
 
 import Std.Core

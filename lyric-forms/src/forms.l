@@ -11,6 +11,7 @@
 //! Nothing here depends on a UI library, so domain packages may import it
 //! (docs/65 §5.2: `lyric-forms` is `pure`).
 @runtime_checked
+@pure
 package Forms
 
 import Std.Core

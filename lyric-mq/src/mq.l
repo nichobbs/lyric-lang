@@ -44,6 +44,7 @@
 //!
 //! See docs/03-decision-log.md D056 and lyric-mq/README.md.
 @runtime_checked
+@io
 package Mq
 
 import Std.Core

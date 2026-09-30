@@ -15,6 +15,7 @@
 //! true and exit code -2 — unless the reap shows the child had already
 //! exited normally (#5107).
 @axiom("fork/execvp piped process capture via lyric-rt conforms to its documented contract")
+@io
 package Std.ProcessCaptureHost
 
 import Std.Core

@@ -35,6 +35,7 @@
 //! `stringField(n, b)` and `embeddedField(n, b)` are both just
 //! `BytesField(number = n, data = b)` under the hood; `enumField`/
 //! `boolField` are just `VarField` with an ordinal or 0/1.
+@io
 package OTel.Otlp.Codec
 
 import Std.Core

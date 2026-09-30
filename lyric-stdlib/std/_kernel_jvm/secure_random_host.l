@@ -15,6 +15,7 @@
 //!
 //! Internal: only Std.SecureRandom should import this.
 @axiom("java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output")
+@io
 package Std.SecureRandomHost
 
 import Std.Core

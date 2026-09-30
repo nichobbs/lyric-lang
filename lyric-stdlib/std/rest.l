@@ -5,6 +5,7 @@
 //! caller's expected response type.  JSON bodies are read via Std.Json;
 //! non-JSON response bodies surface as RestError.Deserialize.
 @runtime_checked
+@io
 package Std.Rest
 
 import Std.Core

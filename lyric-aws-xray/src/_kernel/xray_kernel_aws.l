@@ -35,6 +35,7 @@
 //! Enabled only when the "aws" feature flag is active.
 //! See docs/35-lambda-library.md §13.3.
 @cfg(feature = "aws")
+@io
 package AwsXRay.Kernel.Net
 
 import AwsXRay

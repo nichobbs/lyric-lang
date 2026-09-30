@@ -27,6 +27,7 @@
 //! `toSearchError`, `sendRequest`, `readJsonBody`, `jsonScalarToString`,
 //! `HttpConfig`, ...) are defined there and used here without an import.
 @cfg(feature = "elasticsearch")
+@io
 package Search
 
 import Std.Core

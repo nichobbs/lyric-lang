@@ -16,6 +16,7 @@
 //!   }
 //!
 //! See docs/26-aspects.md §18 and docs/27-aspect-libraries.md.
+@io
 package OTel
 
 import OTel.Types

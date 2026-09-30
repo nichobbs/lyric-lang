@@ -215,6 +215,7 @@
 //! scheme/host/port (absolute-path form only — no `../`-relative
 //! resolution, not needed for any tested case).
 @axiom("lyric_sock_*/lyric_tls_* (lyric-rt/src/lyric_tls.c) conform to their documented contracts")
+@io
 package Std.HttpHost
 
 import Std.Core

@@ -14,6 +14,7 @@
 //!
 //! See docs/26-aspects.md, docs/27-aspect-libraries.md, and docs/56.
 @runtime_checked
+@io
 package Auth.Aspects
 
 import Std.Core

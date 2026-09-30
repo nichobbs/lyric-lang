@@ -59,6 +59,7 @@
 //! submission on `--target jvm` (issue #7578, `Web.Kernel.Runtime`'s
 //! `startWorkerLoop`/`WorkerLoopRunnable`).
 @runtime_checked
+@io
 package Web
 
 import Std.Core

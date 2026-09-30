@@ -26,6 +26,7 @@
 //!
 //! Internal: only Std.Encoding should import this.
 @axiom("native List[Byte].toArray() produces a properly typed byte array and lyric_string_utf8_bytes conforms to its lyric_rt.h contract; pure-Lyric accumulators are safe on native")
+@pure
 package Std.EncodingHost
 
 import Std.Core

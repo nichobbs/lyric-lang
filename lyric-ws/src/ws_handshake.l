@@ -14,6 +14,7 @@
 //! it back to the raw 20-byte digest before Base64-encoding — SHA-1's own
 //! weaknesses don't matter here (see `Std.Hash.sha1OfBytes`'s doc comment).
 @runtime_checked
+@pure
 package Ws.Handshake
 
 import Std.Core

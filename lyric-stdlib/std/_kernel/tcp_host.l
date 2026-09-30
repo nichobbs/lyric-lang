@@ -59,6 +59,7 @@
 //! representation is never cracked from outside its own package, exactly as
 //! the client-side `_kernel/http_host.l` does.
 @axiom("System.Net.Sockets and System.Net.Security operations conform to their documented .NET contracts")
+@io
 package Std.TcpHost
 
 import Std.Core

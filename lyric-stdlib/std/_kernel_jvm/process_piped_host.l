@@ -74,6 +74,7 @@
 //!
 //! Internal: only Std.Process should import this.
 @axiom("java.lang.ProcessBuilder + java.lang.Process piped stdin/stdout conform to their documented JVM contracts")
+@io
 package Std.ProcessPipedHost
 
 import Std.Core

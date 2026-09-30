@@ -17,6 +17,7 @@
 //! JVM targets; the only kernel-backed call is `Std.Encoding.codepointToString`
 //! for `\uXXXX` escapes.
 @runtime_checked
+@pure
 package Std.Yaml
 
 import Std.Core

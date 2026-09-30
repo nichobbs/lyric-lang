@@ -20,6 +20,7 @@
 //! `addTool`/`addResumableTool`/`addResource`/`addPrompt` before
 //! `serveStdio` starts the loop.
 @runtime_checked
+@io
 package Mcp.Server
 
 import Std.Core

@@ -6,6 +6,7 @@
 //! mismatch with Std.Format which already uses InvariantCulture).
 //! Internal: only `Std.Parse` should import this.
 @axiom("System.Double/Boolean.TryParse conform to their documented .NET contracts")
+@pure
 package Std.ParseHost
 
 extern type CultureInfo = "System.Globalization.CultureInfo"

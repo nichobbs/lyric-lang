@@ -144,6 +144,22 @@ pub func symTableIsExternTypeId(tbl: in SymbolTable, id: in TypeId): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. SymbolTable — package-level symbol store (bootstrap: linear scan).
 // ─────────────────────────────────────────────────────────────────────────────
+/// A call to an `@io` function (`isEntry` false) or to a protected type's
+/// `entry` (`isEntry` true), for the layer rules (D149).
+pub record EffectCallSite {
+  span: Span
+  callee: String
+  isEntry: Bool
+}
+
+/// A module-level `val` holding shared mutable state; `what` names its kind
+/// for the diagnostic ("a List", "an instance of protected type Cell").
+pub record MutableModuleVal {
+  name: String
+  span: Span
+  what: String
+}
+
 @stable(since = "0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
@@ -334,6 +350,15 @@ pub record SymbolTable {
   /// in place (docs/01 §7.1); `Lyric.Propagate` makes that await explicit on
   /// targets whose lowering needs it (#7838).
   asyncCallSites: Map[String, Bool]
+  /// The calls whose resolved callee is an `@io` function or a protected
+  /// type's `entry`, keyed like `asyncCallSites` and written by the same
+  /// arm (D149).  `Lyric.Pipeline` reports them in a package that may not
+  /// do I/O (Y0003, Y0008).
+  effectCallSites: Map[String, EffectCallSite]
+  /// Module-level values that are shared mutable state (D149): a collection
+  /// or other extern host object, or a protected-type instance.
+  /// `Lyric.Pipeline` reports them in a package that may not do I/O (Y0007).
+  mutableModuleVals: List[MutableModuleVal]
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
   /// opaque, protected or distinct type each field-access or method-call receiver
   /// has, keyed like
@@ -504,6 +529,8 @@ pub func newSymbolTable(): SymbolTable {
     generatorCallSites = newMap(),
     emptyCollectionCtorSites = newMap(),
     asyncCallSites = newMap(),
+    effectCallSites = newMap(),
+    mutableModuleVals = newList(),
     memberRecvClasses = newMap(),
     typeSymbolsById = newMap(),
     typeSymbolsIndexed = newList(),

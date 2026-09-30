@@ -34,6 +34,7 @@
 //! Native is exactly that case, so this is a faithful implementation of
 //! an already-specified contract, not an ad hoc shortcut.
 @axiom("POSIX environment calls via lyric-rt conform to their documented contracts")
+@io
 package Std.EnvironmentHost
 
 import Std.Core

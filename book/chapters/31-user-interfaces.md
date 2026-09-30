@@ -7,9 +7,9 @@ that is the same whether the screen is served to a browser or, later,
 shown in a desktop window. This chapter builds the edit-customer screen
 from `examples/ui-customers/`, then tests it and serves it.
 
-The libraries are `@experimental`. The pure core, the forms helpers and
-the server-driven web host are implemented; the desktop and WebAssembly
-hosts, the `[layers]` checker and the form generator are designed but not
+The libraries are `@experimental`. The pure core, the forms helpers, the
+server-driven web host and the `[layers]` checker are implemented; the
+desktop and WebAssembly hosts and the form generator are designed but not
 built yet (`docs/65-ui-library-sketch.md` §14).
 
 ## Adding the dependencies
@@ -432,8 +432,39 @@ The example splits one screen across five packages, one per layer:
 
 Only the composition root (`Customers`) sees every layer. Keeping I/O in
 the effects layer is what makes the logic and view testable without mocks.
-A later release enforces these rules with a `[layers]` table in
-`lyric.toml` (`docs/65` §5).
+
+The compiler enforces the split. The example's `lyric.toml` names the `ui`
+preset and places each package:
+
+```toml
+[layers]
+preset = "ui"
+
+[layers.packages]
+"Customers.Domain"    = "domain"
+"Customers.Ports"     = "ports"
+"Customers.*.Logic"   = "logic"
+"Customers.*.Effects" = "effects"
+"Customers.*.View"    = "view"
+```
+
+A logic package that imports `Std.File`, or a view that imports the ports,
+now fails the build:
+
+```
+src/edit_logic.l: error[Y0001] 11:1: package Customers.Edit.Logic in layer 'logic' may not import Std.File (@io)
+src/list_view.l: error[Y0001] 9:1: package Customers.List.View in layer 'view' may not import Customers.Ports (layer 'ports')
+```
+
+Imports are judged by the imported package's layer, or by its class:
+every stdlib and library package is marked `@pure` or `@io` on its
+`package` line. Logic and view layers may not do I/O at all, so calling
+`Time.now()` (an `@io` function in the otherwise pure `Std.Time`) from
+`update` is also an error (`Y0003`), as is keeping a `List` or a protected
+object in a module-level `val` (`Y0007`); the current time reaches logic
+as a message instead. The store adapter and the entry point stay outside
+any layer, where every layer meets. The full rules and diagnostics are in
+the language reference §9.4.
 
 ## Platform support
 

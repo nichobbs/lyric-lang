@@ -1068,7 +1068,9 @@ func resolveFunctionSig(
     isGenerator = fn.isAsync and isGen,
     originPackage = pkgName,
     span = fn.span,
-    isPure = fnHasAnnotation(fn, "pure")
+    isPure = fnHasAnnotation(fn, "pure"),
+    isIo = fnHasAnnotation(fn, "io"),
+    isEntry = false
   )
 }
 
@@ -1314,6 +1316,8 @@ func resolveMethodSigParts(
   fnRet: in Option[TypeExpr],
   fnIsAsync: in Bool,
   fnIsPure: in Bool,
+  fnIsIo: in Bool,
+  fnIsEntry: in Bool,
   span: in Span,
 ): ResolvedSignature {
   val genericNames = extractGenericNames(fnGenerics)
@@ -1355,7 +1359,9 @@ func resolveMethodSigParts(
     isGenerator = false,
     originPackage = pkgName,
     span = span,
-    isPure = fnIsPure
+    isPure = fnIsPure,
+    isIo = fnIsIo,
+    isEntry = fnIsEntry
   )
 }
 
@@ -1391,6 +1397,8 @@ func addRecordMethodSigs(tbl: in SymbolTable, pkgName: in String, decl: in Recor
                   fn.ret,
                   fn.isAsync,
                   fnHasAnnotation(fn, "pure"),
+                  fnHasAnnotation(fn, "io"),
+                  false,
                   fn.span
                 )
               )
@@ -1449,6 +1457,8 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                       fn.ret,
                       fn.isAsync,
                       fnHasAnnotation(fn, "pure"),
+                      fnHasAnnotation(fn, "io"),
+                      false,
                       fn.span
                     )
                   )
@@ -1487,6 +1497,8 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                         sig.ret,
                         sig.isAsync,
                         false,
+                        false,
+                        false,
                         sig.span
                       )
                     )
@@ -1507,6 +1519,8 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                         fn.ret,
                         fn.isAsync,
                         fnHasAnnotation(fn, "pure"),
+                        fnHasAnnotation(fn, "io"),
+                        false,
                         fn.span
                       )
                     )
@@ -1559,6 +1573,8 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                         ed.ret,
                         false,
                         false,
+                        false,
+                        true,
                         ed.span
                       )
                     )
@@ -1579,6 +1595,8 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                         fn.ret,
                         fn.isAsync,
                         fnHasAnnotation(fn, "pure"),
+                        fnHasAnnotation(fn, "io"),
+                        false,
                         fn.span
                       )
                     )
@@ -2701,6 +2719,8 @@ func checkProtectedMemberBodies(
           entryDecl.ret,
           false,
           false,
+          false,
+          true,
           entryDecl.span
         )
         val sig = ResolvedSignature(
@@ -2713,7 +2733,9 @@ func checkProtectedMemberBodies(
           isGenerator = sig0.isGenerator,
           originPackage = sig0.originPackage,
           span = sig0.span,
-          isPure = false
+          isPure = false,
+          isIo = sig0.isIo,
+          isEntry = sig0.isEntry
         )
         val syntheticBody: Option[FunctionBody] = Some(value = entryDecl.body)
         val fn = FunctionDecl(
@@ -2754,6 +2776,8 @@ func checkProtectedMemberBodies(
           fn.ret,
           fn.isAsync,
           fnHasAnnotation(fn, "pure"),
+          fnHasAnnotation(fn, "io"),
+          false,
           fn.span
         )
         val sig = ResolvedSignature(
@@ -2766,7 +2790,9 @@ func checkProtectedMemberBodies(
           isGenerator = sig0.isGenerator,
           originPackage = sig0.originPackage,
           span = sig0.span,
-          isPure = fnHasAnnotation(fn, "pure")
+          isPure = fnHasAnnotation(fn, "pure"),
+          isIo = sig0.isIo,
+          isEntry = sig0.isEntry
         )
         checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
       }
@@ -2885,6 +2911,8 @@ func checkRecordMemberBodies(
           fn.ret,
           fn.isAsync,
           fnHasAnnotation(fn, "pure"),
+          fnHasAnnotation(fn, "io"),
+          false,
           fn.span
         )
         val sig = ResolvedSignature(
@@ -2897,7 +2925,9 @@ func checkRecordMemberBodies(
           isGenerator = sig0.isGenerator,
           originPackage = sig0.originPackage,
           span = sig0.span,
-          isPure = fnHasAnnotation(fn, "pure")
+          isPure = fnHasAnnotation(fn, "pure"),
+          isIo = sig0.isIo,
+          isEntry = sig0.isEntry
         )
         // #6173: a bare field reference/assignment inside a record in-body
         // method (no `self.` prefix) IS a valid, shipped spelling —
@@ -3430,6 +3460,8 @@ func checkImplMemberBodies(
           fn.ret,
           fn.isAsync,
           fnHasAnnotation(fn, "pure"),
+          fnHasAnnotation(fn, "io"),
+          false,
           fn.span
         )
         val sig = ResolvedSignature(
@@ -3442,7 +3474,9 @@ func checkImplMemberBodies(
           isGenerator = sig0.isGenerator,
           originPackage = sig0.originPackage,
           span = sig0.span,
-          isPure = fnHasAnnotation(fn, "pure")
+          isPure = fnHasAnnotation(fn, "pure"),
+          isIo = sig0.isIo,
+          isEntry = sig0.isEntry
         )
         checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
       }
@@ -4423,6 +4457,7 @@ func checkWithImportedPackagesCore(
   // T7: `old(...)` only inside `ensures:` (T0080, #7731).
   checkOldPlacement(diag, file)
   recordModuleValTypes(tbl, sigs, diag, file.items)
+  recordMutableModuleVals(tbl, sigs, file.items)
   // The uses of each open local binding fix its annotation (#7788).
   resolveOpenBindingSites(tbl)
 

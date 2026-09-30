@@ -14,6 +14,7 @@
 //! Enabled only when the "aws" feature flag is active.
 //! See docs/35-lambda-library.md §Kernel, docs/14-native-stdlib-plan.md.
 @cfg(feature = "aws")
+@io
 package Lambda.Kernel.Runtime
 
 import Lambda

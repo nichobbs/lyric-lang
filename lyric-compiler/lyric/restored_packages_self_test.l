@@ -80,6 +80,7 @@ func mkContract(name: in String, decls: in List[Meta.ContractDecl]): Meta.Contra
     packageName = name,
     version = "1.0.0",
     level = "runtime_checked",
+    purity = "",
     formatVersion = 2,
     decls = decls,
     dependencies = newList(),
@@ -138,6 +139,7 @@ func mkContractWithImports(name: in String, whole: in List[String], selected: in
     packageName = c.packageName,
     version = c.version,
     level = c.level,
+    purity = c.purity,
     formatVersion = c.formatVersion,
     decls = c.decls,
     dependencies = c.dependencies,
@@ -820,4 +822,36 @@ func testSynthesiseArtifactGenericBodyUsesImportedNames(): Unit {
 
 test "synthesise artifact: generic body using imported names validates its surface only (D-progress-953)" {
   testSynthesiseArtifactGenericBodyUsesImportedNames()
+}
+
+// A package rebuilt from metadata keeps its `[layers]` class (docs/65 §5,
+// D149): the synthesised source carries `@pure` / `@io` on its package line.
+test "synthesised source carries the package class" {
+  val c = mkContract("App.Model", emptyDecls())
+  val pure = Meta.Contract(
+    packageName = c.packageName,
+    version = c.version,
+    level = c.level,
+    purity = "pure",
+    formatVersion = c.formatVersion,
+    decls = c.decls,
+    dependencies = c.dependencies,
+    imports = c.imports,
+    wholeImports = c.wholeImports,
+    selectedImports = c.selectedImports,
+    contractHash = c.contractHash
+  )
+  val pr = parse(synthesiseSourceWithImports(pure, emptyDecls()))
+  assertEqualInt(pr.diagnostics.count, 0, "synthesised source parses")
+  var found = false
+  for a in pr.file.fileAnnotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == "pure" {
+      found = true
+    }
+  }
+  assertTrue(found, "@pure on the package line")
+  assertFalse(
+    Str.contains(synthesiseSourceWithImports(c, emptyDecls()), "@pure"),
+    "no class annotation when unclassified"
+  )
 }

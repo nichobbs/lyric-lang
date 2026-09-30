@@ -15,6 +15,7 @@
 //! `java.net.http.HttpClient` (JDK 11+, already used by
 //! `_kernel_jvm/http_host.l`'s `lyric.stdlib.jvm.HttpClientHost`).
 @cfg(feature = "jvm")
+@io
 package OTel.Kernel.Jvm.Otlp
 
 import Std.Core

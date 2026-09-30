@@ -101,6 +101,7 @@
 //! variants, so this file is unaffected either way.
 //!
 //! See docs/35-lambda-library.md, decision log D062/D064/D099.
+@io
 package Lambda.Dispatch
 
 import Std.Core

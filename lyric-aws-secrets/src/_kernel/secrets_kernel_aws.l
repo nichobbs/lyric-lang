@@ -106,6 +106,7 @@
 //! See docs/35-lambda-library.md §6, issue #6864 (this file), issue #5411
 //! (the parent investigation), docs/03-decision-log.md D-progress-877.
 @cfg(feature = "aws")
+@io
 package AwsSecrets.Kernel.Net
 
 import Std.Core

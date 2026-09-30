@@ -11,6 +11,7 @@
 //!
 //! Internal: only Std.Uuid should import this.
 @axiom("lyric_uuid_v4 conforms to RFC 4122 section 4.4 as documented in lyric_rt.h")
+@io
 package Std.UuidHost
 
 import Std.Core

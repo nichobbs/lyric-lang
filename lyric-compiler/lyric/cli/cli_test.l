@@ -1657,6 +1657,19 @@ func cmdTestManifest(
   // for the template-scan use below: `Weaver.collectAspectTemplates` /
   // `WireExpand.collectWireTemplates` simply re-scan the same source a
   // second time.
+  // `[layers]` (docs/65 §5, D149), checked on the project's own packages
+  // before the JVM path below folds dependency sources into `libPkgs`.
+  val layered = match checkProjectLayers(manifest, mfPath, libPkgs, depTemplatePkgsList, restoredDlls, testTarget, activeFeatures, mfDeclared) {
+    case Some(l) -> l
+    case None -> return 1
+  }
+  while libPkgs.count > 0 {
+    libPkgs.removeAt(libPkgs.count - 1)
+  }
+  for lp in layered {
+    libPkgs.add(lp)
+  }
+
   if targetJvm {
     collectTransitiveDepSources(
       manifest,

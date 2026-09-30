@@ -36,6 +36,19 @@ output_assembly = "UiCustomers.dll"
 "Customers.Store"        = "src/store.l"
 "Customers"              = "src/main.l"
 
+# The docs/65 §5 layer rules, enforced at build time (D149).  The in-memory
+# `Customers.Store` adapter and the `Customers` entry point stay unlayered:
+# they are the application, where every layer meets.
+[layers]
+preset = "ui"
+
+[layers.packages]
+"Customers.Domain"    = "domain"
+"Customers.Ports"     = "ports"
+"Customers.*.Logic"   = "logic"
+"Customers.*.Effects" = "effects"
+"Customers.*.View"    = "view"
+
 [project.tests]
 "Customers.EditTests" = "tests/edit_tests.l"
 "Customers.ListTests" = "tests/list_tests.l"

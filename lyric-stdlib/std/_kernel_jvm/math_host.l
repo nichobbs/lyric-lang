@@ -20,6 +20,7 @@
 //!
 //! Internal: only Std.Math should import this.
 @axiom("java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts")
+@pure
 package Std.MathHost
 
 // =====================================================================

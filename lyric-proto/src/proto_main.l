@@ -5,6 +5,7 @@
 //! Cross-package union/enum access and TypeId alignment across intra-artifact
 //! packages are not supported by the bootstrap emitter; everything must be in
 //! one package.
+@pure
 package Proto
 
 import Std.Core

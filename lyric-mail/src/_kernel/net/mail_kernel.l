@@ -10,6 +10,7 @@
 //! infrastructure lands (#780 follow-up).
 //!
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+@io
 package Mail.Kernel.Net
 
 import Std.Core

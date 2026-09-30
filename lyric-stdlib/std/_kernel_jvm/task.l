@@ -73,6 +73,7 @@
 //!     canonical usage pattern below already does this).
 //!
 @runtime_checked
+@io
 package Std.Task
 
 import Std.Core

@@ -17,6 +17,7 @@
 //!
 //! Internal: only `Std.Hash` should import this.
 @axiom("java.security.MessageDigest.getInstance(\"SHA-1\") and getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-1/SHA-256/SHA-512 semantics and are pure functions of their input bytes; update() over java.io.FileInputStream.readNBytes chunks digests the file's current contents")
+@pure
 package Std.HashHost
 
 extern type JMessageDigest = "java.security.MessageDigest"

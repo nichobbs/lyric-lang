@@ -47,6 +47,7 @@
 //! that case is ambiguous there); `Std.Tls`'s self-test and doc comments
 //! describe the asymmetry rather than assuming parity.
 @axiom("java.security.cert / java.security.KeyFactory / java.security.Signature operations conform to their documented JVM contracts")
+@io
 package Std.TlsHost
 
 import Std.Core
@@ -159,7 +160,9 @@ pub func hostCertFromPemBytes(bytes: in slice[Byte]): Result[CertHandle, HostLoa
 
 /// Combine a certificate and private key from raw PEM bytes, verifying the
 /// pairing via `keysMatch` (module header).
-pub func hostIdentityFromPemBytes(certBytes: in slice[Byte], keyBytes: in slice[Byte]): Result[CertHandle, HostLoadError] {
+pub func hostIdentityFromPemBytes(
+  certBytes: in slice[Byte], keyBytes: in slice[Byte]
+): Result[CertHandle, HostLoadError] {
   try {
     val cert = parseCert(certBytes)
     val keyPem = match tryDecodeUtf8(keyBytes) {

@@ -21,6 +21,7 @@
 //! ("{0x..,0x..,..,{0x..,..}}") is intentionally not part of the
 //! cross-target surface.
 @runtime_checked
+@pure
 package Std.Uuid
 
 import Std.Core
@@ -33,6 +34,7 @@ import Std.UuidHost
 /// Generate a new random (version 4) UUID using a cryptographic RNG.
 /// Each call returns a distinct value with overwhelming probability.
 @stable(since = "1.0")
+@io
 pub func newUuid(): Uuid {
   hostNewGuid()
 }

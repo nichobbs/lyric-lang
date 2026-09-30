@@ -151,6 +151,7 @@
 //!     and one that was opened, closed, and later reclaimed by
 //!     `pruneClosedStreams`. See `streamState`'s own doc comment and #6572.
 @runtime_checked
+@pure
 package Std.HttpEngine.H2Conn
 
 import Std.Core

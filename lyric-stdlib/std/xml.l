@@ -11,6 +11,7 @@
 //! Cross-platform: no BCL/JVM externs. Works on both MSIL and JVM
 //! targets without any kernel bridge.
 @runtime_checked
+@pure
 package Std.Xml
 
 import Std.Core

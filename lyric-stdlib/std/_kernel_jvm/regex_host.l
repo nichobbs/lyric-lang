@@ -43,6 +43,7 @@
 //! The public Lyric API lives in std/regex.l (Std.Regex).  Import
 //! Std.RegexHost only in stdlib internals that need the raw JVM types.
 @axiom("java.util.regex.Pattern and java.util.regex.Matcher conform to their documented JVM contracts")
+@pure
 package Std.RegexHost
 
 import Std.Core

@@ -39,6 +39,7 @@
 //!
 //! Internal: only Std.ProcessCapture should import this.
 @axiom("java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics")
+@io
 package Std.ProcessCaptureHost
 
 import Std.Core

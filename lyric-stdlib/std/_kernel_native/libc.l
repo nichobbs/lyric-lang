@@ -8,6 +8,7 @@
 //! construction; they are only legal inside `_kernel_native/` packages
 //! (mode-checker rule N0100, docs/01 FFI section).
 @axiom("POSIX / C99 libc functions conform to their documented contracts")
+@io
 package Std.LibcHost
 
 extern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = "write"

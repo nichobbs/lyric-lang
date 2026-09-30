@@ -21,6 +21,7 @@
 //! Internal: only Lyric.Lexer should import this; per the kernel cap rule,
 //! every extern here counts toward the kernel budget.
 @axiom("java.lang.Character.getType conforms to its documented JVM contract; jvmCategoryToNetConvention correctly cross-references it to the .NET UnicodeCategory convention via Unicode General_Category")
+@pure
 package Std.UnicodeHost
 
 extern type JCharacter = "java.lang.Character"

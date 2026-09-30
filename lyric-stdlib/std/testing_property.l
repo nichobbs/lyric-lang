@@ -17,6 +17,7 @@
 //! All randomness is caller-supplied via a `Random` value from `Std.Random`
 //! so tests can be seeded for determinism.
 @runtime_checked
+@io
 package Std.Testing.Property
 
 import Std.Core

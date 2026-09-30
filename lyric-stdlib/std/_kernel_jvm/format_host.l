@@ -39,6 +39,7 @@
 //!
 //! Internal: only Std.Format should import this.
 @axiom("java.math.BigDecimal, java.lang.Integer, and java.util.Locale conform to their documented JVM contracts")
+@pure
 package Std.FormatHost
 
 import Std.String as Str

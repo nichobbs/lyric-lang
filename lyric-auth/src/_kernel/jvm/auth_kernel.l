@@ -38,6 +38,7 @@
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 @axiom("javax.crypto.Mac with algorithm \"HmacSHA256\" conforms to documented JDK HMAC-SHA256 semantics; it is a pure function of (key, message)")
 @cfg(feature = "jvm")
+@io
 package Auth.Kernel.Jvm
 
 import Std.Core

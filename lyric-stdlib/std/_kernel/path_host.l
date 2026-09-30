@@ -4,6 +4,7 @@
 //!
 //! Internal: only Std.Path should import this.
 @axiom("System.IO.Path operations conform to their documented .NET contracts")
+@pure
 package Std.PathHost
 
 extern type NetPath = "System.IO.Path"

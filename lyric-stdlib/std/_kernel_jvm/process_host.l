@@ -26,6 +26,7 @@
 //!
 //! Internal: only Std.Process should import this.
 @axiom("java.lang.Process and java.lang.ProcessBuilder conform to their documented JVM contracts")
+@io
 package Std.ProcessHost
 
 import Std.Core

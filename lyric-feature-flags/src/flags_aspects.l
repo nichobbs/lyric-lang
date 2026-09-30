@@ -23,6 +23,7 @@
 //!
 //! See docs/26-aspects.md §18 and lyric-feature-flags/README.md.
 @runtime_checked
+@io
 package Flags.Aspects
 
 import Std.Core

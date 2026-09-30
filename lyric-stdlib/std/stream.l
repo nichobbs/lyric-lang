@@ -4,6 +4,7 @@
 //! sizes explicitly, every operation is Result-returning, and close is
 //! visible so resource cleanup can be paired with defer.
 @runtime_checked
+@io
 package Std.Stream
 
 import Std.Core

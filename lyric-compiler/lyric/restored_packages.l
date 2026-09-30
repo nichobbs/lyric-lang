@@ -355,7 +355,10 @@ func synthesiseSourceFull(
   // are post-`Lyric.Mono` and may contain block expressions, which the parser
   // reads back as `EBlock` only in such a file (`ParseState.blockBraces`,
   // #7755).
-  var sb = "@" + contractSourceAnnotationName() + "\npackage " + contract.packageName + "\n\n"
+  // The package class rides along as its source annotation, so a package
+  // rebuilt from metadata classifies for `[layers]` like its source would.
+  val classLine = if contract.purity == "" { "" } else { "@" + contract.purity + "\n" }
+  var sb = "@" + contractSourceAnnotationName() + "\n" + classLine + "package " + contract.packageName + "\n\n"
   if withImports {
     sb = sb + renderContractImports(contract)
   }

@@ -15,6 +15,7 @@
 //! }
 //! ```
 @runtime_checked
+@io
 package Lyric.Docker
 
 import Lyric.Docker.Sockets

@@ -27,6 +27,7 @@
 //! Enabled only when the "local" feature flag is active.
 //! See docs/35-lambda-library.md §Local development.
 @cfg(feature = "local")
+@io
 package Lambda.Kernel.Runtime
 
 import Lambda

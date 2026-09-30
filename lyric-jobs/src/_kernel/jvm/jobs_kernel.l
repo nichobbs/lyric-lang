@@ -70,6 +70,7 @@
 //! Only active when compiled with feature = "jvm" (Phase 6).
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 @cfg(feature = "jvm")
+@io
 package Jobs.Kernel.Jvm
 
 import Std.Core

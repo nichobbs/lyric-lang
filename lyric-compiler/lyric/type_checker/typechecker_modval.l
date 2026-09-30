@@ -440,6 +440,47 @@ pub func recordModuleValTypes(
   }
 }
 
+/// Records, in `tbl.mutableModuleVals`, every module-level `val` whose value
+/// is shared mutable state: an extern (host) object, which includes the
+/// stdlib's `List`, `Map` and `Set`, or a protected-type instance (D149).
+pub func recordMutableModuleVals(
+  tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], items: in List[Item]
+): Unit {
+  for it in items {
+    match it.kind {
+      case IVal(decl) -> match decl.pattern.kind {
+        case PBinding(name, _) -> {
+          val scratch: List[Diagnostic] = newList()
+          val ty = match decl.ty {
+            case Some(te) -> resolveType(tbl, newGenericContext(), scratch, te)
+            case None -> inferModuleValInit(tbl, sigs, decl.init)
+          }
+          val what = mutableStateKind(tbl, ty)
+          if what != "" {
+            tbl.mutableModuleVals.add(MutableModuleVal(name = name, span = decl.span, what = what))
+          }
+        }
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func mutableStateKind(tbl: in SymbolTable, ty: in Type): String {
+  match unrefine(ty) {
+    case TyUser(id, name, _) -> match symTableTypeSymbolOf(tbl, id) {
+      case Some(sym) -> match sym.kind {
+        case DKProtected(_, _) -> "an instance of protected type " + name
+        case DKExternType(_, _) -> "a " + name
+        case _ -> ""
+      }
+      case None -> ""
+    }
+    case _ -> ""
+  }
+}
+
 /// `file` with each value `recordModuleValTypes` typed annotated with it.
 pub func annotateModuleVals(file: in SourceFile, types: in Map[String, TypeExpr]): SourceFile {
   if types.count == 0 {

@@ -34,6 +34,7 @@
 //!
 //! `jvm`: every `configureOtlp*` function returns `Err` — OTLP/HTTP
 //! export is dotnet-only today (see `_kernel/jvm/otlp_kernel.l`).
+@io
 package OTel.Otlp
 
 import OTel.Types
@@ -146,7 +147,9 @@ pub func configureOtlpTraces(cfg: OtlpExporterConfig): Result[Unit, String] {
     return Err(error = otlpTransportNotImplementedError())
   }
   match cfg.protocol {
-    case OtlpProtocol.Grpc -> Err(error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)")
+    case OtlpProtocol.Grpc -> Err(
+      error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)"
+    )
     case OtlpProtocol.HttpProtobuf -> {
       exporterState.setTraces(cfg)
       Ok(value = ())
@@ -163,7 +166,9 @@ pub func configureOtlpMetrics(cfg: OtlpExporterConfig): Result[Unit, String] {
     return Err(error = otlpTransportNotImplementedError())
   }
   match cfg.protocol {
-    case OtlpProtocol.Grpc -> Err(error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)")
+    case OtlpProtocol.Grpc -> Err(
+      error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)"
+    )
     case OtlpProtocol.HttpProtobuf -> {
       exporterState.setMetrics(cfg)
       Ok(value = ())

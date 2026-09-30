@@ -17,6 +17,7 @@
 //! follow-up — once the verifier's structural-induction support
 //! matures past the bootstrap-grade primitives shipped in M4.2 core.
 @proof_required
+@pure
 package Std.Core.Proof
 
 // =====================================================================

@@ -15,6 +15,7 @@
 //! function built this way stays deterministic and free of side effects
 //! visible to its caller.
 @runtime_checked
+@pure
 package Forms.Parse
 
 import Std.Core

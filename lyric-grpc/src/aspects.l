@@ -42,6 +42,7 @@
 //!
 //! See docs/37-grpc-proto-sketch.md §6.2.
 @runtime_checked
+@io
 package Grpc.Aspects
 
 import Std.Core

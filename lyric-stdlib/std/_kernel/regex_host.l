@@ -15,6 +15,7 @@
 //! `std/regex.l` (Std.Regex); import that module in application code.
 //! Import Std.RegexHost only in stdlib internals that need the raw BCL types.
 @axiom("System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts")
+@pure
 package Std.RegexHost
 
 import Std.Core

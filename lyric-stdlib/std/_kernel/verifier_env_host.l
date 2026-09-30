@@ -6,6 +6,7 @@
 //! `Lyric.Emitter.VerifierEnv` shim.  An unset variable (and any host
 //! failure) converts to "".
 //! Only Std.VerifierEnvHost and, transitively, Lyric.Verifier should import this.
+@io
 package Std.VerifierEnvHost
 
 import Std.Core

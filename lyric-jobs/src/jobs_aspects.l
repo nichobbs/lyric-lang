@@ -29,6 +29,7 @@
 //!
 //! See docs/26-aspects.md §18, docs/27-aspect-libraries.md, and lyric-jobs/README.md.
 @runtime_checked
+@io
 package Jobs.Aspects
 
 import Std.Core

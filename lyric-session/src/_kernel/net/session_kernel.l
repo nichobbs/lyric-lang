@@ -41,6 +41,7 @@
 //! Only active when compiled with `feature = "dotnet"`.
 @axiom("StackExchange.Redis.ConnectionMultiplexer / IDatabase conform to StackExchange.Redis 2.x documented contracts")
 @cfg(feature = "dotnet")
+@io
 package Session.Kernel.Net
 
 import Std.Core

@@ -60,6 +60,7 @@
 //! for callers that need explicit control, and the decoder accepts every
 //! representation regardless of which encoder produced it.
 @runtime_checked
+@pure
 package Std.HttpEngine.Hpack
 
 import Std.Core

@@ -45,6 +45,7 @@
 //! a stored closure). Filed upstream; see the README's "Known upstream
 //! issues" section.
 @runtime_checked
+@io
 package JsonRpc.Stdio
 
 import Std.Core

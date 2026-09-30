@@ -16,6 +16,7 @@
 //!     `tryParseXxx` and panics with the `ParseError`'s message on
 //!     failure.
 @runtime_checked
+@pure
 package Std.Parse
 
 import Std.Core

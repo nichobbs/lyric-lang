@@ -30,6 +30,7 @@
 //!
 //! See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 @runtime_checked
+@pure
 package Validation.Aspects
 
 import Std.Core

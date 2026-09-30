@@ -73,6 +73,7 @@
 //!
 //! See docs/35-lambda-library.md §Kernel, decision log D062.
 @cfg(feature = "web")
+@io
 package Lambda.Kernel.WebBridge
 
 import Std.Core

@@ -25,6 +25,7 @@
 //! resolved `RandomGenerator` default method (auto-FFI walks the JDK
 //! interface chain to find it; see `Jvm.AutoFfi.findBestInstanceMethod`).
 @axiom("java.util.Random conforms to its documented JDK contracts")
+@io
 package Std.RandomHost
 
 extern type Random = "java.util.Random"

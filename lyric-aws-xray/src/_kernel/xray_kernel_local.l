@@ -12,6 +12,7 @@
 //! Enabled only when the "local" feature flag is active.
 //! See docs/35-lambda-library.md §13.2.
 @cfg(feature = "local")
+@io
 package AwsXRay.Kernel.Net
 
 import AwsXRay

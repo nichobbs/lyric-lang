@@ -3,6 +3,7 @@
 //! Writes Std.Log messages to stderr in the format "[LEVEL] message",
 //! composing the pure-Lyric console stderr path (no F# shim — #1493).
 //! Internal: only Std.Log should import this.
+@io
 package Std.LogHost
 
 import Std.String as Str

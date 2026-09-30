@@ -37,6 +37,7 @@
 //!
 //! See docs/35-lambda-library.md §5 (Authorizers), D063.
 @runtime_checked
+@io
 package Lambda.Authorizer
 
 import Std.Core

@@ -59,6 +59,7 @@
 //!
 //! See docs/03-decision-log.md D057 and D099, and lyric-health/README.md.
 @runtime_checked
+@io
 package Health
 
 import Std.Core

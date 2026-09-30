@@ -26,6 +26,7 @@
 //!
 //! Internal: only Std.Path should import this.
 @axiom("java.io.File.separatorChar and java.io.File.getParent conform to their documented JVM contracts")
+@pure
 package Std.PathHost
 
 import Std.String as Str

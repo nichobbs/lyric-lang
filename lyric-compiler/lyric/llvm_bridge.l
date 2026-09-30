@@ -618,6 +618,9 @@ pub record NativeSourcePackage {
   name: String
   source: String
   path: String
+  /// `Lyric.Pipeline.MiddleEndOptions.ioForbiddenReason` for the package
+  /// (`[layers]`, D149); "" when it may do I/O.
+  ioForbiddenReason: String = ""
 }
 
 /// True when `file` declares a top-level `func main` — the project entry
@@ -875,7 +878,8 @@ pub func compileProjectToNativeWithFlags(
       awaitAsyncCalls = false,
       contractsEnabled = contractsEnabled,
       checkedSourceOut = optsCheckedOut,
-      memberRecvClassesOut = optsRecvOut
+      memberRecvClassesOut = optsRecvOut,
+      ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" }
     )
     val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
       case Some(f) -> f

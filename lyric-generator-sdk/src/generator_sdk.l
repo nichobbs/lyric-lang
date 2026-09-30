@@ -7,6 +7,7 @@
 //!
 //! The Lyric compiler discovers that entry point by name and invokes it
 //! once per annotated type per generator.  See docs/40-source-generators.md.
+@io
 package Lyric.GeneratorSdk
 
 import Std.Char as Ch

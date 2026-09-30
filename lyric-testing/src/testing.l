@@ -30,6 +30,7 @@
 //!
 //! See lyric-testing/README.md.
 @runtime_checked
+@io
 package Testing
 
 import Std.Core

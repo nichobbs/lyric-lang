@@ -132,6 +132,13 @@ pub record MiddleEndOptions {
   /// receiver it sees as `Object` with it (#7378).  Backends that keep
   /// generic types pass a map and ignore it.
   memberRecvClassesOut: Map[String, String]
+  /// Why this package may not do I/O, from the manifest's `[layers]`
+  /// (docs/65 §5, D149): "layer 'logic'" for a package in a layer whose
+  /// rule does not allow `io`, "" otherwise.  A package-level `@pure` has
+  /// the same effect without it.  Such a package may not call an `@io`
+  /// function (Y0003) or a protected type's `entry` (Y0008), nor hold
+  /// shared mutable state in a module-level `val` (Y0007).
+  ioForbiddenReason: String = ""
 }
 
 // Report `diags` (package-labelled when `pkgLabel` is non-empty, further
@@ -392,6 +399,9 @@ pub func pipeCheckAndMono(
     if opts.bindListLiteralTypes { tcRes.symbols.listLiteralTypeSites } else { noListLiteralSites }
   )
   if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
+    return None
+  }
+  if gate(opts.pkgLabel, opts.lineOrigins, effectDiagnostics(file0, tcRes.symbols, opts.ioForbiddenReason)) {
     return None
   }
   opts.checkedSourceOut.add(copyRes.file)
@@ -1203,4 +1213,127 @@ pub func pipeRecordDecls(items: in List[Item]): List[RecordDecl] {
 /// Join a ModulePath's segments with "." (the Lyric package-name spelling).
 pub func pipeDottedPath(path: in ModulePath): String {
   modulePathJoin(path.segments)
+}
+
+func hasFileAnnotation(file: in SourceFile, name: in String): Bool {
+  for a in file.fileAnnotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == name {
+      return true
+    }
+  }
+  false
+}
+
+func hasAnnotationNamed(anns: in List[Annotation], name: in String): Bool {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == name {
+      return true
+    }
+  }
+  false
+}
+
+// The spans of the functions and methods `file` marks `@io`: in a `@pure`
+// package these are the places allowed to do I/O.
+func ioFunctionSpans(file: in SourceFile): List[Span] {
+  val spans: List[Span] = newList()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fn) -> {
+        if hasAnnotationNamed(fn.annotations, "io") {
+          spans.add(fn.span)
+        }
+      }
+      case IRecord(decl) -> {
+        for m in decl.members {
+          match m {
+            case RMFunc(fn) -> {
+              if hasAnnotationNamed(fn.annotations, "io") {
+                spans.add(fn.span)
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case IImpl(decl) -> {
+        for m in decl.members {
+          match m {
+            case IMplFunc(fn) -> {
+              if hasAnnotationNamed(fn.annotations, "io") {
+                spans.add(fn.span)
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  spans
+}
+
+func spanWithin(inner: in Span, outer: in Span): Bool {
+  inner.startPos.offset >= outer.startPos.offset and inner.endPos.offset <= outer.endPos.offset
+}
+
+/// The layer diagnostics (D149) for a package that may not do I/O: a
+/// package-level `@pure`, or a `[layers]` layer whose rule does not allow
+/// `io` (`layerReason`, "" when none).  In a `@pure` package the functions
+/// it marks `@io` are exempt from Y0003 and Y0008: they are the package's
+/// declared I/O surface.  Y0007 applies to the whole package either way.
+pub func effectDiagnostics(file: in SourceFile, symbols: in SymbolTable, layerReason: in String): List[Diagnostic] {
+  val diags: List[Diagnostic] = newList()
+  val isPure = hasFileAnnotation(file, "pure")
+  if layerReason == "" and not isPure {
+    return diags
+  }
+  val pkg = modulePathJoin(file.packageDecl.path.segments)
+  val reason = if layerReason != "" { layerReason + " does not allow io" } else { "it is @pure" }
+  val exempt: List[Span] = if layerReason == "" { ioFunctionSpans(file) } else { newList() }
+  for key in mapKeys(symbols.effectCallSites) {
+    match mapGet(symbols.effectCallSites, key) {
+      case Some(site) -> {
+        var allowed = false
+        for sp in exempt {
+          if spanWithin(site.span, sp) {
+            allowed = true
+          }
+        }
+        if not allowed {
+          if site.isEntry {
+            diags.add(
+              errorDiagnostic(
+                "Y0008",
+                "package " + pkg + " calls protected entry " + site.callee + ", but " + reason +
+                  "; move the shared state behind an effect",
+                site.span
+              )
+            )
+          } else {
+            diags.add(
+              errorDiagnostic(
+                "Y0003",
+                "package " + pkg + " calls @io function " + site.callee + ", but " + reason +
+                  "; pass the value in, or perform the call in an effect",
+                site.span
+              )
+            )
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+  for v in symbols.mutableModuleVals {
+    diags.add(
+      errorDiagnostic(
+        "Y0007",
+        "module-level val " + v.name + " in package " + pkg + " holds " + v.what + ", shared mutable state, but " + reason,
+        v.span
+      )
+    )
+  }
+  diags
 }

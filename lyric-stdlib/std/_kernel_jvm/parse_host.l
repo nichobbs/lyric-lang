@@ -20,6 +20,7 @@
 //!
 //! Internal: only Std.Parse should import this.
 @axiom("java.lang.Double.parseDouble conforms to its documented JVM contract")
+@pure
 package Std.ParseHost
 
 import Std.Core

@@ -27,6 +27,7 @@
 //! (this package's JVM counterpart) is the one gated with
 //! `@cfg(feature = "jvm")`.
 @cfg(target = "dotnet")
+@io
 package Mq.Kernel.Net
 
 import Std.Core

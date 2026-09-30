@@ -20,6 +20,7 @@
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "jvm")
+@io
 package Db.Kernel.Jvm
 
 import Std.Core

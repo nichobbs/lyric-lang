@@ -101,6 +101,7 @@
 //! incremental (non-buffered) h2 chunked streaming are tracked as a follow-up
 //! (#6107), not implemented here.
 @axiom("System.Threading.Tasks.Task.Run, System.Collections.Concurrent.ConcurrentQueue, and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts")
+@io
 package Std.HttpServer
 
 import Std.Core

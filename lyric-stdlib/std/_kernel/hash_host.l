@@ -12,6 +12,7 @@
 //! Composed by `Std.Hash.sha1OfBytes`, `sha256OfBytes`, and `sha512OfBytes`
 //! into public helpers. Internal: only `Std.Hash` should import this.
 @axiom("System.Security.Cryptography.SHA1.HashData + System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics and are pure functions of their input; SHA512.HashData(Stream) over System.IO.File.OpenRead digests the file's current contents")
+@pure
 package Std.HashHost
 
 extern type NetSha1 = "System.Security.Cryptography.SHA1"

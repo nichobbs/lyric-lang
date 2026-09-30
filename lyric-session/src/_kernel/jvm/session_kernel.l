@@ -26,6 +26,7 @@
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 @axiom("io.lettuce.core.RedisClient / StatefulRedisConnection / RedisCommands (io.lettuce:lettuce-core 6.8.x) conform to their documented Maven contracts")
 @cfg(feature = "jvm")
+@io
 package Session.Kernel.Jvm
 
 import Std.Core

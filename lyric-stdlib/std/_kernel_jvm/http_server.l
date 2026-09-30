@@ -104,6 +104,7 @@
 //! correctly-typed, `X509ExtendedKeyManager`-compliant `KeyManager[]` and
 //! never asks Lyric to implement the interface itself.
 @axiom("com.sun.net.httpserver.HttpServer / javax.net.ssl / java.security / java.lang.reflect operations conform to their documented JVM contracts")
+@io
 package Std.HttpServer
 
 import Std.Core

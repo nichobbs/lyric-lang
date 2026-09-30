@@ -6,6 +6,7 @@
 //!
 //! Internal: only Std.Random should import this.
 @axiom("System.Random conforms to its documented .NET contracts; the Shared property returns a thread-safe shared instance (documented since .NET 6)")
+@io
 package Std.RandomHost
 
 extern type Random = "System.Random"

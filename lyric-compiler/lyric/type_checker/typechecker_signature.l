@@ -56,4 +56,10 @@ pub record ResolvedSignature {
   span: Span
   /// Declared `@pure` (#7228): a contract clause may call only these.
   isPure: Bool
+  /// Declared `@io` (docs/65 §5.3, D149): a package that may not do I/O
+  /// may not call it (Y0003).
+  isIo: Bool
+  /// A protected type's `entry` (D149): a package that may not do I/O
+  /// may not call it (Y0008).
+  isEntry: Bool
 }

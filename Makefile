@@ -333,6 +333,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/jvm_impl_extern_class_self_test.l \
 	lyric-compiler/lyric/jvm_sourcefile_attr_self_test.l \
 	lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l \
+	lyric-compiler/lyric/layers_self_test.l \
 	lyric-compiler/lyric/lexer_self_test.l \
 	lyric-compiler/lyric/list_value_compare_self_test.l \
 	lyric-compiler/lyric/llvm_ir_self_test.l \

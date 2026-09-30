@@ -13,6 +13,7 @@
 //! therefore compile-time-unreachable on native until then (tracked in the
 //! docs/10 native milestone notes).
 @axiom("POSIX write(2) via lyric-rt conforms to its documented contract")
+@io
 package Std.ConsoleHost
 
 extern func consoleWriteFd(fd: Int, s: String): Unit = "lyric_console_write"

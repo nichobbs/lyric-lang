@@ -285,6 +285,7 @@
 //! `ReqOutcome` in a new `ReadOutcome` record; see that record's own doc
 //! comment for the full reasoning.
 @axiom("lyric_mutex_*/lyric_sem_* (lyric-rt/src/lyric_posix.c), pthread_create/pthread_join, and malloc/free conform to their documented POSIX/C99 contracts")
+@io
 package Std.HttpServer
 
 import Std.Core

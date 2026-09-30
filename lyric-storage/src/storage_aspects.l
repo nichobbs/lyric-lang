@@ -27,6 +27,7 @@
 //!
 //! See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 @runtime_checked
+@io
 package Storage.Aspects
 
 import Std.Core

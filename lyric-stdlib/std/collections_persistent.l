@@ -79,6 +79,7 @@
 //! `PersistentMap` is now verified on both targets, same as
 //! `PersistentList[T]` above.
 @runtime_checked
+@pure
 package Std.Collections.Persistent
 
 import Std.Core

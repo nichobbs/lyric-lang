@@ -9,6 +9,7 @@
 //!
 //! Internal: only Std.Encoding should import this.
 @axiom(".NET Encoding.GetBytes and Convert.FromBase64String conform to their documented .NET contracts and return genuine byte[] arrays")
+@pure
 package Std.EncodingHost
 
 import Std.Char

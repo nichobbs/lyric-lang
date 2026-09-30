@@ -31,6 +31,7 @@
 //! `try`/`catch` — D-N-003 has no unwinding on this target), mirroring
 //! `hostReadTextResult`'s own precedent.
 @axiom("POSIX file-system calls via lyric-rt conform to their documented contracts")
+@io
 package Std.FileHost
 
 import Std.Core

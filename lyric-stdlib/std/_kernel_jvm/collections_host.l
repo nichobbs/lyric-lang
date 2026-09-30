@@ -12,6 +12,7 @@
 //!
 //! Internal: only Std.Collections should import this.
 @axiom("java.util.ArrayList / HashMap conform to their documented JVM contracts")
+@pure
 package Std.CollectionsHost
 
 import Std.Core

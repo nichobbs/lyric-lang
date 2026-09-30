@@ -6,6 +6,7 @@
 //! returns a `View[Msg]`; properties are formatted to strings here so the
 //! diff and the protocol stay generic.
 @runtime_checked
+@pure
 package Ui.Widgets
 
 import Std.Core

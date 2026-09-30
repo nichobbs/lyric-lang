@@ -40,6 +40,7 @@
 //!   LYRIC_CONFIG_SESSION_REDISSESSION_URL      — Redis connection URL (dotnet/jvm feature)
 //!   LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX — key namespace prefix (default: session:)
 @runtime_checked
+@io
 package Session
 
 import Std.Core

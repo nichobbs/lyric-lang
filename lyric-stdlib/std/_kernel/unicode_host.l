@@ -16,6 +16,7 @@
 //! per `compiler/lyric/std/_kernel/README.md` the kernel is the
 //! audited extern boundary, not a general-purpose API.
 @axiom("System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32")
+@pure
 package Std.UnicodeHost
 
 extern type UnicodeChar = "System.Char"

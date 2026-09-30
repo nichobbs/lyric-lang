@@ -9,6 +9,7 @@
 //! plain-stderr behavior rather than introducing JUL's independent level
 //! filtering/handler configuration, which would make Std.Log behave
 //! differently per target.
+@io
 package Std.LogHost
 
 import Std.String as Str

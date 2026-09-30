@@ -34,6 +34,7 @@
 //!
 //! See docs/37-grpc-proto-sketch.md.
 @runtime_checked
+@io
 package Grpc
 
 import Grpc.Types
