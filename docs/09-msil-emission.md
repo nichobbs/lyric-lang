@@ -896,7 +896,11 @@ f())` built the `None` as an `Option_None<object>`, which a `match` on
 `List<object>`.  The checker records the position's type for every operand
 evaluated before an `await` or a `?` in the same expression
 (`SymbolTable.hoistOperandTypeSites`: a call or constructor argument, a
-list or tuple element, the left operand of an eager binary operator);
+method or index receiver, a list element, a tuple element wherever a tuple
+type is expected, the left operand of an eager binary operator), and for the
+operands the hoist binds whole: an `if`, `match` or block whose arms hold
+the `await`, a short-circuit operator, and the value of a field or element
+assignment (#7850);
 `Lyric.Mono.desugarCheckedFile` binds each such operand to a local of that
 type, which a generic body's specialisation substitutes like any other
 annotation; and `Lyric.HoistEngine.hzBind` keeps the annotation on the

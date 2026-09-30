@@ -80,3 +80,42 @@ It is added to `scripts/ci/compiler-self-tests-batch.sh`,
 `scripts/ci/jvm-generics-self-tests-batch.sh` and phase 4 of
 `scripts/ilverify-selfhosted.sh`. The rule is documented in docs/01 §7
 (`await` in operand position) and docs/09 §14.5.
+
+## Follow-up: standalone tuples and composites the hoist binds whole (#7850)
+
+Review of #7849 found that a tuple literal was covered only as a call or
+constructor argument. `val t: (Option[Int], Int) = (None, await five())`, a
+function returning `(None, await five())`, and an assignment of one still
+hoisted the `None` to an untyped local. The checker's `inferExprExpected`
+now has an `ETuple` arm: each element is checked against its expected
+element type, and the elements the hoist binds are recorded at it (nested
+tuples included); `inferExprCore`'s `ETuple` arm records closed element
+types too.
+
+An audit of what else the hoist binds found three more gaps, now recorded:
+
+- an `if`, `match` or block operand whose arms hold the `await`
+  (`addOpt(if c { None } else { Some(await f()) }, 1)`), and a short-circuit
+  operator, which the hoist binds as a whole at the operand's type;
+- the value of a field or element assignment holding an `await`
+  (`cell.o = if c { None } else { Some(await f()) }`), bound whole at the
+  target's type;
+- a method-call or index receiver evaluated before an awaiting argument or
+  index, at its own type when that is closed.
+
+Interpolation segments are stringified, so their instantiation is not
+observable, and range bounds are integers.
+
+Seven cases were added to `await_hoist_typed_self_test.l` (14 tests):
+annotated `val` tuple, tuple as a function's value, `return`ed tuple,
+assigned tuple, two nested tuples, `if`/`match` operands whose arm awaits,
+and a field assignment whose value awaits.
+
+- dotnet before: 11/14 (the three new tests failed with
+  `InvalidCastException` / "match not exhaustive"); after: 14/14.
+- jvm: 14/14 before and after.
+
+Not covered, and independent of the hoist (both fail on dotnet without any
+`await`): an unannotated `val t = (None, 5)` whose later use fixes the
+element type, and `cell.o = if c { None } else { Some(5) }` in synchronous
+code.

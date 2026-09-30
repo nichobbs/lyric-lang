@@ -8229,7 +8229,46 @@ func recordHoistedOperands(
     recordHoistOperandType(sc, tbl, es[k], hoistTypeAt(owns, k), hoistTypeAt(expected, k))
     k = k + 1
   }
-  recordHoistedTupleElems(sc, tbl, es[last], hoistTypeAt(owns, last), hoistTypeAt(expected, last))
+  recordHoistedComposite(sc, tbl, es[last], hoistTypeAt(owns, last), hoistTypeAt(expected, last))
+}
+
+// The operand `e` that holds the hazard.  The hoist binds an `if`, `match`
+// or block whose arms hold it, and a short-circuit operator, as a whole, so
+// such an `e` is recorded itself; a tuple literal's elements are hoisted one
+// by one, so they are recorded instead.
+func recordHoistedComposite(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: in Type, expected: in Type): Unit {
+  match e.kind {
+    case EParen(inner) -> recordHoistedComposite(sc, tbl, inner, own, expected)
+    case ETuple(_) -> recordHoistedTupleElems(sc, tbl, e, own, expected)
+    case EIf(_, _, _, _) -> recordHoistOperandType(sc, tbl, e, own, expected)
+    case EMatch(_, _) -> recordHoistOperandType(sc, tbl, e, own, expected)
+    case EBlock(_) -> recordHoistOperandType(sc, tbl, e, own, expected)
+    case EUnsafe(_) -> recordHoistOperandType(sc, tbl, e, own, expected)
+    case EBinop(op, _, _) -> if binopShortCircuits(op) { recordHoistOperandType(sc, tbl, e, own, expected) }
+    case _ -> ()
+  }
+}
+
+// An assignment to a field or an element (`b.o = <value>`) reads its target
+// before its value, so the hoist binds a value holding an `await` or a `?` as
+// a whole; it has the target's type.
+func recordHoistedAssignValue(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  target: in Expr,
+  value: in Expr,
+  valueType: in Type,
+  targetType: in Type,
+): Unit {
+  val stacks = match target.kind {
+    case EMember(_, _) -> true
+    case EIndex(_, _) -> true
+    case EParen(_) -> true
+    case _ -> false
+  }
+  if stacks and HoistEngine.exprHasHoistHazard(value) {
+    recordHoistOperandType(sc, tbl, value, valueType, targetType)
+  }
 }
 
 func hoistTypeAt(ts: in List[Type], i: in Int): Type {
@@ -8681,6 +8720,7 @@ func inferExprCore(
         ts.add(inferExpr(sc, tbl, sigs, diag, elems[i]))
         i = i + 1
       }
+      recordHoistedOperands(sc, tbl, elems, ts, hoistTupleElemTypes(TyError, elems.count))
       TyTuple(elems = ts)
     }
 
@@ -8763,6 +8803,7 @@ func inferExprCore(
       // whose right one awaits (#7823); its type is the right one's.
       if not binopShortCircuits(op) and HoistEngine.exprHasHoistHazard(r) {
         recordHoistOperandType(sc, tbl, l, lt, rt)
+        recordHoistedComposite(sc, tbl, r, rt, lt)
       }
       inferBinop(tbl, diag, op, lt, rt, e.span)
     }
@@ -9033,6 +9074,23 @@ func inferExprCore(
             argTypes[di] = adoptUnionCaseExpected(tbl, true, argTypes[di], expectedArgTys[di])
           }
           di = di + 1
+        }
+      }
+      // A receiver evaluated before an argument holding an `await` or a `?`
+      // is hoisted too (#7850).
+      if isMemberCallee and callArgsHaveHoistHazard(args) {
+        match fn.kind {
+          case EMember(hoistRecv, _) -> match memberRecvTy {
+            case Some(hoistRecvTy) -> recordHoistOperandType(
+              sc,
+              tbl,
+              hoistRecv,
+              hoistRecvTy,
+              TyError
+            )
+            case None -> ()
+          }
+          case _ -> ()
         }
       }
       // `xs.add(x)` on an open binding fixes its element type (#7788).
@@ -9343,6 +9401,17 @@ func inferExprCore(
     // TyError for unknown receivers is intentional: codegen owns exotic receiver behaviour.
     case EIndex(recvE, indices) -> {
       val rt = inferExpr(sc, tbl, sigs, diag, recvE)
+      // The receiver of an index holding an `await` or a `?` is hoisted
+      // (#7850).
+      var hoistIdx = 0
+      while hoistIdx < indices.count {
+        if HoistEngine.exprHasHoistHazard(indices[hoistIdx]) {
+          recordHoistOperandType(sc, tbl, recvE, rt, TyError)
+          hoistIdx = indices.count
+        } else {
+          hoistIdx = hoistIdx + 1
+        }
+      }
       var ii = 0
       while ii < indices.count {
         // A bare primitive TYPE name as an index is the surface explicit
@@ -9513,6 +9582,7 @@ func inferExprCore(
     case EAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExprExpected(sc, tbl, sigs, diag, value, targetType)
+      recordHoistedAssignValue(sc, tbl, target, value, valueType, targetType)
       noteOpenBindingAssign(sc, tbl, sigs, target, valueType)
       val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
       if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
@@ -9872,6 +9942,24 @@ pub func inferExprExpected(
     // explicit `.toList()`, while a genuine `slice[T]`-typed VALUE (a
     // variable, a call result, …) is no longer silently accepted where a
     // `List[T]` is expected (see `argSatisfiesParam`).
+    // A tuple literal where a tuple type is expected: each element is checked
+    // against its element type, and the elements the hoist binds are recorded
+    // at it (#7850).
+    case ETuple(elems) -> match unrefine(expected) {
+      case TyTuple(ets) -> if ets.count == elems.count {
+        val ts: List[Type] = newList()
+        var ti = 0
+        while ti < elems.count {
+          ts.add(joinOpenTypes(inferExprExpected(sc, tbl, sigs, diag, elems[ti], ets[ti]), unrefine(ets[ti])))
+          ti = ti + 1
+        }
+        recordHoistedOperands(sc, tbl, elems, ts, ets)
+        TyTuple(elems = ts)
+      } else {
+        inferExpr(sc, tbl, sigs, diag, e)
+      }
+      case _ -> inferExpr(sc, tbl, sigs, diag, e)
+    }
     case EList(elems) -> match unrefine(expected) {
       case TyUser(eid, ename, eargs) -> {
         // #7696: id-based, matching `.toList()`'s own resolution

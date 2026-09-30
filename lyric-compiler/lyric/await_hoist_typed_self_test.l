@@ -126,6 +126,10 @@ record OptPair {
   }
 }
 
+record OptCell {
+  var o: Option[Int]
+}
+
 record Holder[T] {
   value: Option[T]
   fallback: T
@@ -251,6 +255,51 @@ async func tupleElement(): Int {
   pairValue((None, await five()))
 }
 
+async func valTuple(): Int {
+  val t: (Option[Int], Int) = (None, await five())
+  pairValue(t)
+}
+
+async func tailTuple(): (Option[Int], Int) {
+  (None, await five())
+}
+
+async func returnTuple(): (Option[Int], Int) {
+  return (None, await five())
+}
+
+async func assignTuple(): Int {
+  var t: (Option[Int], Int) = (Some(1), 0)
+  t = (None, await five())
+  pairValue(t)
+}
+
+async func nestedTuple(): Int {
+  val t: ((Option[Int], Int), Int) = ((None, 1), await five())
+  val (inner, n) = t
+  pairValue(inner) + n
+}
+
+async func nestedHazardTuple(): Int {
+  val t: ((Option[Int], Int), Int) = ((None, await five()), 2)
+  val (inner, n) = t
+  pairValue(inner) + n
+}
+
+async func ifArmOperand(c: in Bool): Int {
+  pairValue((if c { None } else { Some(await five()) }, 1))
+}
+
+async func matchArmOperand(k: in Int): Int {
+  optValue(match k { case 0 -> None; case _ -> Some(await five()) }) + optValue(None)
+}
+
+async func fieldAssign(c: in Bool): Int {
+  val cell = OptCell(o = Some(1))
+  cell.o = if c { None } else { Some(await five()) }
+  optValue(cell.o)
+}
+
 async func propagateOperand(): Result[Int, String] {
   Ok(addRes(Err("abc"), (await okFive())?))
 }
@@ -305,6 +354,27 @@ test "method receivers and arguments before an awaited argument" {
 
 test "a tuple element before an awaited one" {
   assertEqualInt(await tupleElement(), 1005, "tuple element")
+}
+
+test "tuple literals holding None before an awaited element" {
+  assertEqualInt(await valTuple(), 1005, "val initializer")
+  assertEqualInt(pairValue(await tailTuple()), 1005, "function value")
+  assertEqualInt(pairValue(await returnTuple()), 1005, "return")
+  assertEqualInt(await assignTuple(), 1005, "assignment")
+  assertEqualInt(await nestedTuple(), 1006, "nested, None beside the await")
+  assertEqualInt(await nestedHazardTuple(), 1007, "nested, None in the awaiting tuple")
+}
+
+test "an if or match operand whose arm awaits" {
+  assertEqualInt(await ifArmOperand(true), 1001, "if, None arm")
+  assertEqualInt(await ifArmOperand(false), 6, "if, awaiting arm")
+  assertEqualInt(await matchArmOperand(0), 2000, "match, None arm")
+  assertEqualInt(await matchArmOperand(1), 1005, "match, awaiting arm")
+}
+
+test "a field assignment whose value awaits" {
+  assertEqualInt(await fieldAssign(true), 1000, "None arm")
+  assertEqualInt(await fieldAssign(false), 5, "awaiting arm")
 }
 
 test "an operand before an awaited, propagated one" {
