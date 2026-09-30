@@ -46,6 +46,32 @@ widening inside a record's own method (`val x: ULong = u` in `func
 widen(self: in W, u: in UInt)`) was recorded but never rewritten, so it still
 sign-extended.
 
+On the JVM the bundle registers each package's function signatures and
+record fields from its raw parsed file, before that package's middle end
+runs, and a call or construction that omits a defaulted argument lowers the
+registered default. Codegen now points a package's own registered defaults
+at its middle-ended declarations before generating its code
+(`refreshOwnDefaultsJvm`), and because the entry package's code is generated
+before any bundled package's middle end, each bundled package that declares
+a default is checked and desugared up front (`Lyric.Pipeline.
+pipeCheckedDefaults`) so a call from another package splices the converted
+default too. The MSIL bridge already generated code from middle-ended files.
+
+Two places the new check had to learn about:
+
+- `@asyncLocal val slot: AsyncLocal[T] = ()` (`Std.Task`'s ambient
+  cancellation slot): the `()` is a placeholder the backend replaces with a
+  constructed `AsyncLocal`, as it supplies an `@externTarget` function's
+  body, so an `@asyncLocal` value's initialiser is not checked.
+- A restored package's synthesised contract surface is re-checked without
+  that package's imports (`checkContractSurface`), so a default such as
+  `= None` did not resolve there; the surface's initialisers were checked
+  when the package was built, so the contract-surface check skips them, as
+  it already skips declaration-position type validation.
+
+No existing stdlib, compiler or ecosystem declaration had a mismatched
+initialiser.
+
 Coverage: `typechecker_self_test.l` pins T0060 at each position (module
 `val`, record / exposed-record / opaque / protected fields, function, record
 method, interface and `impl` parameters), the single report per declaration,
@@ -54,6 +80,8 @@ widening initialisers. `unsigned_widen_self_test.l` (dotnet and JVM, already
 in CI) now checks module values, field defaults (record, exposed record,
 protected), parameter defaults and a record method's binding at runtime with
 values of at least 2^31, plus the signed chain.
+`msil_project_bridge_self_test.l` and `jvm_cross_package_collision_self_test.l`
+check a parameter default and a field default used from another package.
 
 Follow-up: calling a record in-body method or an `impl` method with a
 defaulted argument omitted (`a.add()` for `func add(self: in Acc, x: in Int

@@ -324,15 +324,7 @@ pub func pipeCheckAndMono(
   // while the type checker's span keys still
   // identify exactly one expression each (D-progress-948, 962, 963).
   val valueSites = funcValueSites(tcRes.symbols)
-  val copyRes = desugarCheckedFile(
-    annotateModuleVals(file0, tcRes.symbols.moduleValTypes),
-    tcRes.symbols.recordCopySites,
-    valueSites,
-    tcRes.symbols.argConversionSites,
-    tcRes.symbols.localBindingTypeSites,
-    tcRes.symbols.funcValueCallSites,
-    tcRes.symbols.tuplePatternBindingSites
-  )
+  val copyRes = pipeDesugarChecked(file0, tcRes, valueSites)
   if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
     return None
   }
@@ -492,6 +484,100 @@ pub func pipeWeave(
     return None
   }
   Some(value = AwaitHoist.hoistAwaitsFile(weaveRes.file, extraRecordDecls))
+}
+
+/// `file0` with the rewrites its type check recorded made explicit
+/// (`Lyric.Mono.desugarCheckedFile`): the first step after the check in
+/// `pipeCheckAndMono`.
+pub func pipeDesugarChecked(
+  file0: in SourceFile, tcRes: in CheckResult, valueSites: in Map[String, FuncRefSite]
+): MonoResult {
+  desugarCheckedFile(
+    annotateModuleVals(file0, tcRes.symbols.moduleValTypes),
+    tcRes.symbols.recordCopySites,
+    valueSites,
+    tcRes.symbols.argConversionSites,
+    tcRes.symbols.localBindingTypeSites,
+    tcRes.symbols.funcValueCallSites,
+    tcRes.symbols.tuplePatternBindingSites
+  )
+}
+
+/// `file0`'s declarations with their defaults as the middle end will leave
+/// them: a parameter or field default that widens gets its explicit
+/// conversion (#7811).  For a backend that must know another package's
+/// defaults before that package's own middle end has run (the JVM bundle
+/// generates the entry package's code first).  The check's diagnostics are
+/// dropped: the package's real middle end reports them.
+pub func pipeCheckedDefaults(file0: in SourceFile, importedPkgs: in List[ImportedPackage]): SourceFile {
+  val tcRes = checkWithImportedPackages(file0, importedPkgs)
+  pipeDesugarChecked(file0, tcRes, funcValueSites(tcRes.symbols)).file
+}
+
+/// True when `file` declares a parameter or field default anywhere.
+pub func pipeFileDeclaresDefaults(file: in SourceFile): Bool {
+  for it in file.items {
+    val found = match it.kind {
+      case IFunc(decl) -> paramsHaveDefault(decl.params)
+      case IRecord(decl) -> recordMembersHaveDefault(decl.members)
+      case IExposedRec(decl) -> recordMembersHaveDefault(decl.members)
+      case IOpaque(decl) -> {
+        var any = false
+        for m in decl.members {
+          match m {
+            case OMField(fd) -> if optExprPresent(fd.dflt) { any = true }
+            case OMInvariant(_) -> ()
+          }
+        }
+        any
+      }
+      case IProtected(decl) -> {
+        var any = false
+        for m in decl.members {
+          match m {
+            case PMField(pf) -> match pf {
+              case PFVar(_, _, init, _, _, _) -> if optExprPresent(init) { any = true }
+              case PFLet(_, _, init, _, _, _) -> if optExprPresent(init) { any = true }
+              case PFImmutable(fd) -> if optExprPresent(fd.dflt) { any = true }
+            }
+            case _ -> ()
+          }
+        }
+        any
+      }
+      case _ -> false
+    }
+    if found {
+      return true
+    }
+  }
+  false
+}
+
+func optExprPresent(e: in Option[Expr]): Bool {
+  match e {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func paramsHaveDefault(params: in List[Param]): Bool {
+  for p in params {
+    if optExprPresent(p.dflt) {
+      return true
+    }
+  }
+  false
+}
+
+func recordMembersHaveDefault(members: in List[RecordMember]): Bool {
+  for m in members {
+    match m {
+      case RMField(fd) -> if optExprPresent(fd.dflt) { return true }
+      case _ -> ()
+    }
+  }
+  false
 }
 
 /// The full per-file middle end: `pipeCheckAndMono` then `pipeWeave`.

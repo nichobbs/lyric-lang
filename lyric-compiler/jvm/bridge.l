@@ -3284,6 +3284,17 @@ pub func compileProjectToJarBundledWithRestored(
     dti = dti + 1
   }
 
+  // The entry package's code is generated before any bundled package's middle
+  // end runs, so the defaults it splices from a bundled package's functions
+  // and records would still be the raw ones, without the conversions the
+  // middle end adds (#7811).  Check and desugar each bundled package that
+  // declares defaults now, and register the result.
+  for bf in toBundle {
+    if pipeFileDeclaresDefaults(bf) {
+      refreshOwnDefaultsJvm(pipeCheckedDefaults(bf, importedPkgs), registry, caseReg)
+    }
+  }
+
   // User package first (its codegen failing is always fatal).  Its type-check
   // errors gate fatally (they are about the program the user actually wrote).
   // #6678: label the gate with the real on-disk path when known (the SAME
