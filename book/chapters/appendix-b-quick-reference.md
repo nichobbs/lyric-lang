@@ -249,6 +249,7 @@ protected type BoundedQueue[T] {
 ```
 
 `entry` operations are exclusive and may have a `when:` barrier (caller blocks until condition is true). The invariant is checked after every `entry`/`func` returns.
+A protected type may be generic (`BoundedQueue[T]`): construction infers the type arguments like a record's (`Cell(value = 1)` is a `Cell[Int]`). Supported on `--target dotnet` and `--target jvm`; `--target native` rejects it (#7864).
 
 ### Config blocks (runtime env-var-backed config)
 

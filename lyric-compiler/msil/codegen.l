@@ -3256,7 +3256,7 @@ pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, p
         registerTypeFqnCandidate(cctx, decl.name + "View", pkgName + "." + decl.name + "View")
       }
       case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
-      case IProtected(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
+      case IProtected(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
       case _ -> ()
     }
     i = i + 1
@@ -4394,6 +4394,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         // in the bundle resolves `Counter()` to this ctor (`resolveTypeFqn`)
         // instead of reporting an unresolved call.
         registerTypeFqnCandidate(cctx, decl.name, className)
+        // A generic protected type (#7830) is a reified generic class exactly
+        // like a generic record: arity first (a field of the type's own type
+        // resolves through it), then VAR-form field and member signatures.
+        val protGenerics = genericNamesOf(decl.generics)
+        if protGenerics.count > 0 and not cctx.genericTypeArity.containsKey(className) {
+          cctx.genericTypeArity.add(className, protGenerics.count)
+        }
+        val protCtorParams: List[MsilType] = newList()
         var fi = 0
         var fpos = 0
         while fi < decl.members.count {
@@ -4406,7 +4414,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   val fKey = className + "/" + fname
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
-                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilCtx(cctx, fty, pkgName))
+                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilG(cctx, fty, pkgName, protGenerics))
                   }
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + fname) {
                     cctx.fieldTokensByName.add(pkgName + "/" + fname, fieldTok)
@@ -4428,7 +4436,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   val fKey = className + "/" + fname
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
-                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilCtx(cctx, fty, pkgName))
+                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilG(cctx, fty, pkgName, protGenerics))
                   }
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + fname) {
                     cctx.fieldTokensByName.add(pkgName + "/" + fname, fieldTok)
@@ -4450,7 +4458,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   val fKey = className + "/" + f.name
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
-                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilCtx(cctx, f.ty, pkgName))
+                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilG(cctx, f.ty, pkgName, protGenerics))
                   }
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + f.name) {
                     cctx.fieldTokensByName.add(pkgName + "/" + f.name, fieldTok)
@@ -4461,6 +4469,30 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   }
                 }
               }
+              val pfTy = match pf {
+                case PFVar(_, t, _, _, _, _) -> t
+                case PFLet(_, t, _, _, _, _) -> t
+                case PFImmutable(f) -> f.ty
+              }
+              val pfName = match pf {
+                case PFVar(n, _, _, _, _, _) -> n
+                case PFLet(n, _, _, _, _, _) -> n
+                case PFImmutable(f) -> f.name
+              }
+              val pfTyG = typeExprToMsilG(cctx, pfTy, pkgName, protGenerics)
+              protCtorParams.add(pfTyG)
+              if protGenerics.count > 0 {
+                // Field reads and writes through a closed instantiation go
+                // through a TypeSpec-parented MemberRef whose signature is the
+                // FIELD's own: VAR(n) for a type-parameter field (as for a
+                // generic record's fields).
+                val gIdx = match pfTyG { case MTypeVar(ix) -> ix; case _ -> -1 }
+                val fSig = if gIdx >= 0 { buildGenericParamFieldSig(gIdx) } else { buildFieldSig(pfTyG) }
+                cctx.fieldVarIndices.add(className + "/" + pfName, gIdx)
+                cctx.fieldSigBytes.add(className + "/" + pfName, fSig)
+                cctx.fieldVarIndices.add(byPosKey, gIdx)
+                cctx.fieldSigBytes.add(byPosKey, fSig)
+              }
               fpos = fpos + 1
               fieldDefRow = fieldDefRow + 1
             }
@@ -4468,6 +4500,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             }
           }
           fi = fi + 1
+        }
+        if protGenerics.count > 0 and not cctx.genericCtorParams.containsKey(className) {
+          cctx.genericCtorParams.add(className, protCtorParams)
         }
         cctx.recordCtorTokens.add(className, 0x06000000 + methodDefRow)
         methodDefRow = methodDefRow + 1
@@ -4478,13 +4513,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val pmKey = className + "/" + ed.name
               if not cctx.methodTokens.containsKey(pmKey) {
                 cctx.methodTokens.add(pmKey, 0x06000000 + methodDefRow)
-                registerMethodRetTy(cctx, pmKey, ed.ret, pkgName)
+                registerMethodRetTyG(cctx, pmKey, ed.ret, pkgName, protGenerics)
                 // Strip an explicit `self` receiver param (D037 spelling) so the
                 // registered call-site descriptor matches what `lowerProtectedMsil`
                 // actually emits — self maps to the implicit `this`, not a real
                 // parameter slot (#6407).
                 val edRealParams = stripExplicitSelfParamMsil(ed.params)
-                registerMethodParamTypes(cctx, pmKey, edRealParams, pkgName)
+                registerMethodParamTypesG(cctx, pmKey, edRealParams, pkgName, protGenerics)
                 registerMethodParamModes(cctx, pmKey, edRealParams)
               }
               methodDefRow = methodDefRow + 1
@@ -4493,11 +4528,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val pmKey = className + "/" + fn.name
               if not cctx.methodTokens.containsKey(pmKey) {
                 cctx.methodTokens.add(pmKey, 0x06000000 + methodDefRow)
-                registerMethodRetTy(cctx, pmKey, fn.ret, pkgName)
+                registerMethodRetTyG(cctx, pmKey, fn.ret, pkgName, protGenerics)
                 // Same strip as PMEntry above — PMFunc lowers via
                 // `lowerImplMethodMsil`, which already strips a leading `self`.
                 val fnRealParams = stripExplicitSelfParamMsil(fn.params)
-                registerMethodParamTypes(cctx, pmKey, fnRealParams, pkgName)
+                registerMethodParamTypesG(cctx, pmKey, fnRealParams, pkgName, protGenerics)
                 registerMethodParamModes(cctx, pmKey, fnRealParams)
               }
               methodDefRow = methodDefRow + 1
@@ -35857,6 +35892,10 @@ func lowerProtectedMsil(
   fns: in List[MFunc],
 ): Unit {
   val typeFqn = pkgName + "." + decl.name
+  // A generic protected type (#7830) is a reified generic class: `T` in its
+  // fields and member signatures is the class's `!n`, and `self` is the open
+  // self-instantiation, as for a generic record (`lowerRecordMsil`).
+  val generics = genericNamesOf(decl.generics)
 
   // Build Monitor.Enter(object) and Monitor.Exit(object) MemberRef tokens.
   // These are registered lazily here so they appear in the MemberRef table only
@@ -35890,16 +35929,24 @@ func lowerProtectedMsil(
       case PMField(pf) -> {
         match pf {
           case PFVar(name, ty, _, _, _, _) -> {
-            recFields.add(MField(flags = FDA_PUBLIC, name = name, fieldType = typeExprToMsilCtx(cctx, ty, pkgName)))
+            recFields.add(MField(flags = FDA_PUBLIC, name = name, fieldType = recordFieldMsilType(cctx, ty, pkgName, generics)))
           }
           case PFLet(name, ty, _, _, _, _) -> {
             recFields.add(
-              MField(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = name, fieldType = typeExprToMsilCtx(cctx, ty, pkgName))
+              MField(
+                flags = FDA_PUBLIC + FDA_INIT_ONLY,
+                name = name,
+                fieldType = recordFieldMsilType(cctx, ty, pkgName, generics)
+              )
             )
           }
           case PFImmutable(f) -> {
             recFields.add(
-              MField(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = f.name, fieldType = typeExprToMsilCtx(cctx, f.ty, pkgName))
+              MField(
+                flags = FDA_PUBLIC + FDA_INIT_ONLY,
+                name = f.name,
+                fieldType = recordFieldMsilType(cctx, f.ty, pkgName, generics)
+              )
             )
           }
         }
@@ -35919,14 +35966,15 @@ func lowerProtectedMsil(
         val pTypes: List[MsilType] = newList()
         var pi = 0
         while pi < edParams.count {
-          pTypes.add(typeExprToMsilCtx(cctx, edParams[pi].ty, pkgName))
+          pTypes.add(memberTypeExprToMsil(cctx, edParams[pi].ty, pkgName, generics))
           pi = pi + 1
         }
-        val retTy = match ed.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
+        val retTy = match ed.ret { case Some(te) -> memberTypeExprToMsil(cctx, te, pkgName, generics); case None -> MVoid }
         // paramCount = 1 (this) + declared params, matching lowerImplMethodMsil.
         val entryFctx = makeFuncCtxMsil(pkgName, typeFqn, ed.name, 1 + edParams.count, retTy)
         // Reserve slot 0 for the implicit `this` receiver (no name binding).
         entryFctx.slotTicker.add(0)
+        bindGenericSelfMsil(entryFctx, typeFqn, generics)
         // #7550: route through the shared `registerParamsMsil` helper — the
         // same one `lowerImplMethodMsil`/`lowerRecordMethodMsil` use — so a
         // non-receiver `other: in Self` parameter gets its CODEGEN-INTERNAL
@@ -35938,8 +35986,7 @@ func lowerProtectedMsil(
         // (#6421's class of bug).  The emitted SIGNATURE (`pTypes` above)
         // is unaffected — this only changes which field/method lookup table
         // a later use of the parameter consults.
-        val noGenericsEntry: List[String] = newList()
-        registerParamsMsil(cctx, entryFctx, edParams, pkgName, typeFqn, noGenericsEntry)
+        registerParamsMsil(cctx, entryFctx, edParams, pkgName, typeFqn, generics)
         // Desugar bare field references in the body to EMember(ESelf, fieldName)
         // so lowerExprMsil/lowerStmtMsil can emit ldarg.0 + ldfld/stfld.
         val desugaredEntryBody = desugarProtectedFuncBody(fieldNames, ed.body)
@@ -36114,7 +36161,7 @@ func lowerProtectedMsil(
         // instance method (lowerImplMethodMsil sets paramCount = 1 + params,
         // reserves slot 0 for `this`, and handles ESelf/EMember correctly).
         val desugaredFn = desugarProtectedFuncDecl(fieldNames, fn)
-        val mf = lowerImplMethodMsil(cctx, desugaredFn, pkgName, typeFqn, newList())
+        val mf = lowerImplMethodMsil(cctx, desugaredFn, pkgName, typeFqn, generics)
         recMethods.add(
           MFunc(
             flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
@@ -36142,7 +36189,7 @@ func lowerProtectedMsil(
         fields = recFields,
         methods = recMethods,
         useDefaultCtor = false,
-        generics = newList()
+        generics = generics
       )
     )
   )

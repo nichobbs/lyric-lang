@@ -871,6 +871,8 @@ was in the JVM backend or the build tooling, and each was fixed there
   but worth a naming note in the style guide.
 - **F-10: no generic protected types** (on any backend; #7830), so a session is
   held in a single-owner one-slot `List` cell rather than a protected cell.
+  Resolved in D147: generic protected types ship on `--target dotnet` and
+  `--target jvm` (native is #7864).
 
 ### Libraries and targets
 

@@ -247,3 +247,50 @@ test "an interface method that opens a barrier wakes the waiter (#7457)" {
   taskWait(w)
   assertTrue(s.hitCount() == 0, "no bumps")
 }
+
+// A generic protected type (#7830) keeps the same exclusion and barrier
+// semantics: `Chan[T]` is a one-place channel over any element type.
+protected type Chan[T] {
+  var item: Option[T] = None
+  entry put(x: in T): Unit
+    when: item.isNone
+  {
+    item = Some(value = x)
+  }
+  entry take(): T
+    when: item.isSome
+  {
+    val v = match item { case Some(x) -> x; case None -> panic("unreachable: the take barrier requires an item") }
+    item = None
+    v
+  }
+}
+
+func produceStrings(c: in Chan[String]): Unit {
+  var i = 1
+  while i <= 100 {
+    c.put(toString(i))
+    i = i + 1
+  }
+}
+
+func consumeStrings(c: in Chan[String], sums: in Chan[Int]): Unit {
+  var total = 0
+  var i = 0
+  while i < 100 {
+    total = total + c.take().length
+    i = i + 1
+  }
+  sums.put(total)
+}
+
+test "a generic protected type's barriers hand values between tasks (#7830)" {
+  val c: Chan[String] = Chan()
+  val sums: Chan[Int] = Chan()
+  val consumer = taskRun({ -> consumeStrings(c, sums) })
+  val producer = taskRun({ -> produceStrings(c) })
+  taskWait(producer)
+  taskWait(consumer)
+  // "1".."100" carry 9 x 1 + 90 x 2 + 1 x 3 = 192 characters.
+  assertTrue(sums.take() == 192, "every String item delivered exactly once")
+}

@@ -4671,8 +4671,12 @@ func registerHeapTypes(
       val pd = u.protecteds[pdi]
       match pd.generics {
         case Some(_) -> {
-          // Generic protected types are deferred (N3.4 first slice); a
-          // use panics with the normal type-resolution message.
+          // Generic protected types (#7830) are monomorphised on MSIL/JVM
+          // only; per-instantiation native layouts are #7864 (D-N-017).
+          panic(
+            "Lyric.LlvmCodegen: generic protected type '" + pd.name +
+              "' is not yet supported for --target native (#7864); declare it without type parameters or build for --target dotnet / jvm"
+          )
         }
         case None -> {
           val emptyNames: List[String] = newList()
