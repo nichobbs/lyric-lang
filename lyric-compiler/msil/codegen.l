@@ -14704,14 +14704,9 @@ func lowerMatchExprMsil(
   // guard may have suspended (#7816).
   val inStateMachine = fctx.phaseBCtx.count > 0
   val scrutKept: List[Int] = newList()
-  keepForTempAcrossAwaitMsil(
-    fctx,
-    insns,
-    inStateMachine and matchGuardsCanSuspendMsil(arms),
-    scrutKept,
-    scrutSlot,
-    scrutTy
-  )
+  val keepScrut = inStateMachine and matchGuardsCanSuspendMsil(arms)
+  keepForTempAcrossAwaitMsil(fctx, insns, keepScrut, scrutKept, scrutSlot, scrutTy)
+  checkMatchScrutAwaitFieldsMsil(keepScrut, scrutKept)
   // #5995: this scrutinee's declared enum type name (if recognisable), so a
   // bare-case arm (`case Http11 ->`) resolves against it instead of
   // colliding with another in-bundle enum's same-named case.
@@ -15581,6 +15576,21 @@ func patternBindSlotsUpperBoundMsil(pat: in Pattern): Int {
 // The hidden `__scrut_` slot `lowerMatchExprMsil` stores the scrutinee in.
 func matchScrutineeTempSlotsMsil(): Int {
   1
+}
+
+// The state-machine field count `matchAwaitFieldsUpperBoundMsil` predicts for
+// the scrutinee is `matchScrutineeTempSlotsMsil`; a `match` that keeps a
+// different number would leave the async state machine's field-count
+// prediction short (#7816, #7819 review).
+func checkMatchScrutAwaitFieldsMsil(keep: in Bool, kept: in List[Int]): Unit {
+  if keep and kept.count != matchScrutineeTempSlotsMsil() {
+    panic(
+      "Msil.Codegen: a `match` kept " + toString(kept.count) + " scrutinee temporaries in state-machine fields " +
+        "but `matchScrutineeTempSlotsMsil` declares " +
+        toString(matchScrutineeTempSlotsMsil()) +
+        " — update the declaration, which the async state machine's field-count prediction relies on (#7816)"
+    )
+  }
 }
 
 // The most slots one `match` arm's pattern test and bind allocate.
