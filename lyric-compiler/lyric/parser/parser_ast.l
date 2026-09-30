@@ -1199,10 +1199,12 @@ pub record FuncRefSite {
   startOffset: Int
 }
 
-/// An argument of a call through a function VALUE that the type checker
-/// accepted by numeric widening (`Int` for a `Long` parameter): a function
-/// value's call is erased, so `Lyric.Mono.desugarCheckedFile` makes the
-/// widening explicit as `arg.<method>()` (D-progress-964).
+/// An expression the type checker converted implicitly, made explicit as
+/// `expr.<method>()` by `Lyric.Mono.desugarCheckedFile`: a numeric widening
+/// the backends cannot see (`Int` for a `Long` parameter of a call through a
+/// function value, D-progress-964; a widening to `ULong`, #7805), or the
+/// identity `.toUInt()`/`.toULong()` on a `UInt`/`ULong` operand whose
+/// lowering depends on signedness (#7812).
 pub record ArgConversionSite {
   method: String
   startOffset: Int

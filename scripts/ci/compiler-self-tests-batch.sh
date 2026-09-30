@@ -142,7 +142,8 @@ for t in \
   lyric-compiler/lyric/doc_self_test.l \
   lyric-compiler/lyric/inbundle_generic_method_typevar_default_self_test.l \
   lyric-compiler/lyric/generic_method_body_typevar_self_test.l \
-  lyric-compiler/lyric/impl_generic_target_self_test.l ; do
+  lyric-compiler/lyric/impl_generic_target_self_test.l \
+  lyric-compiler/lyric/unsigned_typed_ops_self_test.l ; do
   idx=$((idx + 1))
   if (( (idx - 1) % SHARD_N != SHARD_K - 1 )); then
     continue

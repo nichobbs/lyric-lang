@@ -170,6 +170,18 @@ follows:
 | `Unit`   | `Ljava/lang/Void;` for return values; absent otherwise | — | see §4.5 |
 | `Never`  | (no JVM type)             | —                        | functions returning `Never` emit `void` plus a final `athrow` |
 
+`UInt`/`ULong` erase to `int`/`long` (#6661), so their unsigned operations
+are selected per operand (#7812).  These are stringification
+(`Integer`/`Long.toUnsignedString`), `<`/`<=`/`>`/`>=`
+(`Integer`/`Long.compareUnsigned`), and `/`/`%`/`/=`/`%=`
+(`divideUnsigned`/`remainderUnsigned`).  The type checker records every
+operand whose checked type is `UInt`/`ULong` at those positions, and
+`Lyric.Mono` spells it as the identity `.toUInt()`/`.toULong()`, including
+in specialised generic bodies.  `isUnsignedExpr` recognises only that call
+and a `u32`/`u64` literal.  A `.toUInt()`/`.toULong()` on a boxed receiver (an
+erased generic payload, element or function-value result) unboxes its
+`Long`, `Byte` or `Integer` box and zero-extends.
+
 ### 4.1 Overflow semantics
 
 Reference §2.1 mandates:

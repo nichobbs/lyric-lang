@@ -1010,7 +1010,7 @@ func lowerBuiltinOrStaticCall(
         ctx,
         insns,
         lowerCallArg(ctx, insns, args[0]),
-        isUnsignedExpr(ctx, callArgExpr(args[0]))
+        isUnsignedExpr(callArgExpr(args[0]))
       )
       // #6754 (finding 1.1): a `UInt`/`ULong` argument, stringified via
       // `Integer`/`Long.toUnsignedString` BEFORE the double-normalization
@@ -1018,7 +1018,7 @@ func lowerBuiltinOrStaticCall(
       // SIGNED decimal, same class of bug `coerceToStringForConcat`'s
       // `isUnsigned` parameter fixes for interpolation/`+`/`.toString()`
       // (this builtin never routed through that helper at all).
-      val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(ctx, callArgExpr(args[0])))
+      val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(callArgExpr(args[0])))
       // #4688: PrintStream.println(double) would hand off to Java's
       // Double.toString directly ("1500.0" for a whole value) — normalize
       // to a String first so println matches the interpolation/toString()
@@ -1044,10 +1044,10 @@ func lowerBuiltinOrStaticCall(
         ctx,
         insns,
         lowerCallArg(ctx, insns, args[0]),
-        isUnsignedExpr(ctx, callArgExpr(args[0]))
+        isUnsignedExpr(callArgExpr(args[0]))
       )
       // #6754 (finding 1.1): same unsigned normalization as println above.
-      val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(ctx, callArgExpr(args[0])))
+      val unsignedTy = normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(callArgExpr(args[0])))
       // #4688: same Double normalization as println above.
       val argTy = normalizeDoublePrintArg(ctx, insns, unsignedTy)
       val aSlot = allocSlot(ctx, "__print_a_" + freshLabel(ctx), argTy)
@@ -1079,7 +1079,7 @@ func lowerBuiltinOrStaticCall(
       // path below) would dispatch to `Integer`/`Long`'s own SIGNED
       // `toString()` — go straight to the unsigned static method on the
       // still-unboxed primitive instead.
-      val isUnsignedArg = isUnsignedExpr(ctx, callArgExpr(args[0])) and
+      val isUnsignedArg = isUnsignedExpr(callArgExpr(args[0])) and
         (match argTy { case JInt -> true; case JLong -> true; case _ -> false })
       if isUnsignedArg {
         val uPs: List[JvmType] = newList()
@@ -4570,6 +4570,12 @@ func lowerMethodCall(
   // checker offers `.toULong()` only on a `Byte`/`UInt`/`ULong` receiver and
   // inserts it wherever such a value widens to `ULong` implicitly.  A `UInt`
   // shares the JVM `int` with `Int`, so `i2l` would sign-extend it.
+  // An erased receiver (a generic payload, a boxed element, a function
+  // value's result) is the boxed `Byte`, `UInt` (`Integer`) or `ULong`
+  // (`Long`) the checker typed it as.
+  if (memberName == "toULong" or memberName == "toUInt") and args.count == 0 and isErasedNumberRecvJvm(recvTy) {
+    return emitErasedUnsignedJvm(ctx, insns, memberName == "toULong")
+  }
   if memberName == "toULong" and args.count == 0 and isNumericJvm(recvTy) {
     match recvTy {
       case JLong -> ()
@@ -4584,6 +4590,18 @@ func lowerMethodCall(
       }
     }
     return JLong
+  }
+  // The unsigned chain's `Byte < UInt` widening (#7812), and the identity the
+  // type checker spells out on a `UInt` operand whose lowering depends on
+  // signedness.  A `long`-lowered receiver is an unsuffixed literal that
+  // adopted `UInt`, whose low 32 bits are the value.
+  if memberName == "toUInt" and args.count == 0 and isNumericJvm(recvTy) {
+    match recvTy {
+      case JLong -> insns.add(LL2i)
+      case JByte -> maskByteUnsigned(insns)
+      case _ -> ()
+    }
+    return JInt
   }
   if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble") and args.count == 0 and isNumericJvm(recvTy) {
     if memberName == "toLong" {
@@ -4646,7 +4664,7 @@ func lowerMethodCall(
     // #6748: a `UInt`/`ULong` receiver — `String.valueOf(int/long)` below
     // would render a sign-bit-set value as negative; go through
     // `Integer`/`Long.toUnsignedString` instead.
-    val isUnsignedRecv = isUnsignedExpr(ctx, recv) and
+    val isUnsignedRecv = isUnsignedExpr(recv) and
       (match recvTy { case JInt -> true; case JLong -> true; case _ -> false })
     if isUnsignedRecv {
       val uPs: List[JvmType] = newList()
@@ -5452,4 +5470,66 @@ func printArgType(ty: in JvmType): JvmType {
     }
     case _ -> JRef(className = "java/lang/String")
   }
+}
+
+// True for a boxed receiver that a `.toUInt()`/`.toULong()` unboxes: `Object`
+// or one of the boxes `Byte`/`Integer`/`Long` erase to.
+func isErasedNumberRecvJvm(t: in JvmType): Bool {
+  match t {
+    case JRef(c) -> c == "java/lang/Object" or c == "java/lang/Number" or c == "java/lang/Integer" or
+      c == "java/lang/Long" or
+      c == "java/lang/Byte"
+    case _ -> false
+  }
+}
+
+// Unbox the boxed unsigned value on the stack as a `ULong` (`toULong`) or a
+// `UInt`, zero-extending: a `java/lang/Long` is taken as is, a
+// `java/lang/Byte` is masked to 0..255, anything else is an `Integer`.
+func emitErasedUnsignedJvm(ctx: in FuncCtx, insns: in List[LInsn], toULong: in Bool): JvmType {
+  val lbl = freshLabel(ctx)
+  val resTy = if toULong { JLong } else { JInt }
+  val objSlot = allocSlot(ctx, "__uns_obj_" + lbl, JRef(className = "java/lang/Object"))
+  val resSlot = allocSlot(ctx, "__uns_res_" + lbl, resTy)
+  emitStore(insns, objSlot, JRef(className = "java/lang/Object"))
+  val notLongL = freshLabel(ctx)
+  val notByteL = freshLabel(ctx)
+  val doneL = freshLabel(ctx)
+  emitLoad(insns, objSlot, JRef(className = "java/lang/Object"))
+  insns.add(LInstanceof(className = "java/lang/Long"))
+  insns.add(LIfeq(label = notLongL))
+  emitLoad(insns, objSlot, JRef(className = "java/lang/Object"))
+  insns.add(LCheckcast(className = "java/lang/Long"))
+  insns.add(LInvokevirtual(owner = "java/lang/Long", name = "longValue", params = newList(), ret = JLong))
+  if not toULong {
+    insns.add(LL2i)
+  }
+  emitStore(insns, resSlot, resTy)
+  insns.add(LGoto(label = doneL))
+  insns.add(LLabel(name = notLongL))
+  emitLoad(insns, objSlot, JRef(className = "java/lang/Object"))
+  insns.add(LInstanceof(className = "java/lang/Byte"))
+  insns.add(LIfeq(label = notByteL))
+  emitLoad(insns, objSlot, JRef(className = "java/lang/Object"))
+  insns.add(LCheckcast(className = "java/lang/Byte"))
+  insns.add(LInvokevirtual(owner = "java/lang/Byte", name = "byteValue", params = newList(), ret = JByte))
+  maskByteUnsigned(insns)
+  if toULong {
+    insns.add(LI2l)
+  }
+  emitStore(insns, resSlot, resTy)
+  insns.add(LGoto(label = doneL))
+  insns.add(LLabel(name = notByteL))
+  emitLoad(insns, objSlot, JRef(className = "java/lang/Object"))
+  insns.add(LCheckcast(className = "java/lang/Integer"))
+  insns.add(LInvokevirtual(owner = "java/lang/Integer", name = "intValue", params = newList(), ret = JInt))
+  if toULong {
+    val zxPs: List[JvmType] = newList()
+    zxPs.add(JInt)
+    insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toUnsignedLong", params = zxPs, ret = JLong))
+  }
+  emitStore(insns, resSlot, resTy)
+  insns.add(LLabel(name = doneL))
+  emitLoad(insns, resSlot, resTy)
+  resTy
 }

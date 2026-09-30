@@ -158,6 +158,21 @@ The Lyric primitives map directly to .NET BCL primitives:
 | `Unit`   | `System.ValueTuple`  | the zero-arity tuple `()`            |
 | `Never`  | (no CLR type)        | uninhabited; functions returning `Never` are emitted with return type `void` and a final `throw`/`unreachable` |
 
+The self-hosted emitter stores `UInt` and `ULong` in the same `int32` and
+`int64` slots, fields and signatures as `Int` and `Long` (#6756).  Where a
+`UInt`/`ULong` value's lowering differs from a signed one's, the operand says
+so explicitly (#7812).  This covers stringification (`println` picks
+`Console.WriteLine(uint32/uint64)`, and boxing for `ToString` targets
+`System.UInt32`/`System.UInt64`), `<`/`<=`/`>`/`>=` (`clt.un`/`cgt.un`),
+`/`/`%` and `/=`/`%=` (`div.un`/`rem.un`).  The type checker records every
+operand whose checked type is `UInt`/`ULong` at those positions, and
+`Lyric.Mono` spells it as the identity `.toUInt()`/`.toULong()`.  For a
+specialised generic body, `Lyric.Mono` does this from the specialisation's
+declared types.  `isUnsignedExprMsil` recognises only that call and a
+`u32`/`u64` literal; it never infers signedness from an operand's shape.
+`.toULong()` from an `int32` value is `conv.u8`; `.toUInt()` from a `Byte`
+is a no-op.
+
 ### 4.1 Overflow semantics
 
 Reference §2.1 mandates:

@@ -226,7 +226,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   insns.add(LIconst(v = 0))
                   emitArrayLoad(insns, cellElemTy)
                   val cvTy = lowerExpr(ctx, insns, value)
-                  emitCompoundCombineJvm(ctx, insns, op, cellElemTy, cvTy, isUnsignedExpr(ctx, value))
+                  emitCompoundCombineJvm(ctx, insns, op, cellElemTy, cvTy, isUnsignedExpr(value))
                   val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
                   emitStore(insns, resultSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
@@ -265,7 +265,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   // erased-RHS coercion — see the helper's doc).
                   emitLoad(insns, slot, ty)
                   val cvTy = lowerExpr(ctx, insns, value)
-                  emitCompoundCombineJvm(ctx, insns, op, ty, cvTy, isUnsignedExpr(ctx, value))
+                  emitCompoundCombineJvm(ctx, insns, op, ty, cvTy, isUnsignedExpr(value))
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)
                 }
               }
@@ -318,7 +318,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   emitStore(insns, vSlot, vTy)
                   emitLoad(insns, curSlot, fty)
                   emitLoad(insns, vSlot, vTy)
-                  emitCompoundCombineJvm(ctx, insns, op, fty, vTy, isUnsignedExpr(ctx, value))
+                  emitCompoundCombineJvm(ctx, insns, op, fty, vTy, isUnsignedExpr(value))
                   val combSlot = allocSlot(ctx, "__sfassign_comb_" + freshLabel(ctx), fty)
                   emitStore(insns, combSlot, fty)
                   insns.add(LAload(slot = 0))
@@ -413,7 +413,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitStore(insns, vSlot, vTy)
               emitLoad(insns, curSlot, combTy)
               emitLoad(insns, vSlot, vTy)
-              emitCompoundCombineJvm(ctx, insns, op, combTy, vTy, isUnsignedExpr(ctx, value))
+              emitCompoundCombineJvm(ctx, insns, op, combTy, vTy, isUnsignedExpr(value))
               val combSlot = allocSlot(ctx, "__fassign_comb_" + freshLabel(ctx), combTy)
               emitStore(insns, combSlot, combTy)
               emitLoad(insns, recvSlot, recvTy)
@@ -527,7 +527,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
               }
               emitLoad(insns, rhsSlot, vTy)
-              emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(ctx, value))
+              emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(value))
               if elemTy != elem {
                 boxIfNeeded(insns, elemTy)
               }
@@ -602,7 +602,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
                 }
                 emitLoad(insns, rhsSlot, vTy)
-                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(ctx, value))
+                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(value))
                 boxIfNeeded(insns, elemTy)
                 emitMapPut(insns)
               }
@@ -663,7 +663,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
                 }
                 emitLoad(insns, rhsSlot, vTy)
-                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(ctx, value))
+                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(value))
                 boxIfNeeded(insns, elemTy)
                 emitListSet(insns)
               }
@@ -910,14 +910,19 @@ func emitCompoundCombineJvm(
       // literal against a Long/Double/Float target) so the arithmetic opcode
       // sees two like-typed operands.
       coerceArgTo(insns, vTy, targetTy)
-      emitCompoundArith(ctx, insns, op, targetTy)
+      emitCompoundArith(ctx, insns, op, targetTy, isUnsignedRhs)
     }
   }
 }
 
 // Combine the current target value (already on the stack) with the RHS using
 // the compound-assignment operator, for primitive numeric target type `ty`.
-func emitCompoundArith(ctx: in FuncCtx, insns: in List[LInsn], op: in AssignOp, ty: in JvmType): Unit {
+// `isUnsignedRhs`: the type checker spells the value of a `/=` / `%=` on a
+// `UInt`/`ULong` target unsigned (#7812), so the quotient and remainder go
+// through `Integer`/`Long.divideUnsigned`/`remainderUnsigned`.
+func emitCompoundArith(
+  ctx: in FuncCtx, insns: in List[LInsn], op: in AssignOp, ty: in JvmType, isUnsignedRhs: in Bool
+): Unit {
   // A JByte result re-masks to the canonical unsigned 0..255 form (unsigned
   // wrap, matching MSIL `conv.u1` — `b *= 2` on 200 is 144, not 400; see
   // maskByteUnsigned in 04_calls.l).  The JByte div/rem arms below mask their
@@ -955,7 +960,11 @@ func emitCompoundArith(ctx: in FuncCtx, insns: in List[LInsn], op: in AssignOp, 
       case _ -> insns.add(LImul)
     }
     case AssSlash -> match ty {
-      case JLong -> insns.add(LLdiv)
+      case JLong -> if isUnsignedRhs {
+        emitUnsignedDivRemJvm(insns, "java/lang/Long", "divideUnsigned", JLong)
+      } else {
+        insns.add(LLdiv)
+      }
       case JFloat -> insns.add(LFdiv)
       case JDouble -> insns.add(LDdiv)
       case JByte -> {
@@ -968,10 +977,18 @@ func emitCompoundArith(ctx: in FuncCtx, insns: in List[LInsn], op: in AssignOp, 
         insns.add(LIand)
         insns.add(LIdiv)
       }
-      case _ -> insns.add(LIdiv)
+      case _ -> if isUnsignedRhs {
+        emitUnsignedDivRemJvm(insns, "java/lang/Integer", "divideUnsigned", JInt)
+      } else {
+        insns.add(LIdiv)
+      }
     }
     case AssPercent -> match ty {
-      case JLong -> insns.add(LLrem)
+      case JLong -> if isUnsignedRhs {
+        emitUnsignedDivRemJvm(insns, "java/lang/Long", "remainderUnsigned", JLong)
+      } else {
+        insns.add(LLrem)
+      }
       case JFloat -> insns.add(LFrem)
       case JDouble -> insns.add(LDrem)
       case JByte -> {
@@ -984,10 +1001,22 @@ func emitCompoundArith(ctx: in FuncCtx, insns: in List[LInsn], op: in AssignOp, 
         insns.add(LIand)
         insns.add(LIrem)
       }
-      case _ -> insns.add(LIrem)
+      case _ -> if isUnsignedRhs {
+        emitUnsignedDivRemJvm(insns, "java/lang/Integer", "remainderUnsigned", JInt)
+      } else {
+        insns.add(LIrem)
+      }
     }
     case AssEq -> ()
   }
+}
+
+// `owner.name(ty, ty): ty` on the two operands already on the stack.
+func emitUnsignedDivRemJvm(insns: in List[LInsn], owner: in String, name: in String, ty: in JvmType): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(ty)
+  ps.add(ty)
+  insns.add(LInvokestatic(owner = owner, name = name, params = ps, ret = ty))
 }
 
 // Emit a counted `for` loop for a range-driven `for <pat> in lo ..< hi` (half-
@@ -1321,9 +1350,6 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 case Some(te) -> recordDeclaredElemType(ctx, nm, te, ctx.typeParams)
                 case None -> ()
               }
-              // #6748: a `val x: UInt/ULong = …` binding needs unsigned-aware
-              // comparison/division/stringification downstream.
-              recordUnsignedVar(ctx, nm, tyOpt)
             }
             case _ -> ()
           }
@@ -1354,8 +1380,6 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               case Some(te) -> recordDeclaredElemType(ctx, name, te, ctx.typeParams)
               case None -> ()
             }
-            // #6748: see the matching `LBVal` note above.
-            recordUnsignedVar(ctx, name, tyOpt)
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
@@ -1418,8 +1442,6 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 case Some(te) -> recordDeclaredElemType(ctx, name, te, ctx.typeParams)
                 case None -> ()
               }
-              // #6748: see the matching `LBVal` note above.
-              recordUnsignedVar(ctx, name, tyOpt)
             }
             case None -> {
               // No initialiser: an annotation is required to know the slot type;
@@ -1431,8 +1453,6 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 case Some(te2) -> recordDeclaredElemType(ctx, name, te2, ctx.typeParams)
                 case None -> ()
               }
-              // #6748: see the matching `LBVal` note above.
-              recordUnsignedVar(ctx, name, tyOpt)
               if isHoisted {
                 // Create an empty cell for the hoisted var
                 val cellType = JArray(elem = ty)

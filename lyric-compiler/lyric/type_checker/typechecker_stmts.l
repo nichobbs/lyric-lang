@@ -412,6 +412,7 @@ pub func checkStatement(
       if not stringPlusAssign {
         recordUnsignedWidening(tbl, targetType, valueType, value)
       }
+      recordUnsignedCompoundValue(tbl, op, targetType, valueType, value, stringPlusAssign)
       // #1487 (§5.2): an `in` parameter — like a `val`/`let` binding — is
       // immutable and cannot be reassigned.  The checker records this as
       // `isMutable = false` (in-params and val/let), so a simple-path

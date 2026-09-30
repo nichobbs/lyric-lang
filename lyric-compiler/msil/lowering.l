@@ -674,7 +674,7 @@ pub union MInsn {
   case MCgt                        // compare greater than (push 0/1, signed)
   // #6913: unsigned comparison counterparts, selected by `lowerBinopMsil`'s
   // `BLt`/`BGt`/`BLte`/`BGte` arms when an operand is `UInt`/`ULong`-flagged
-  // (`fctx.unsignedSlots` / `isUnsignedExprMsil`). `emitClt_Un`/`emitCgt_Un`
+  // (`isUnsignedExprMsil`). `emitClt_Un`/`emitCgt_Un`
   // already existed for the `MDistinctType.isUnsigned` bounds-check path
   // (#6756) but weren't wired into this general `MInsn` union until now —
   // mirrors how `MDivUn`/`MRemUn` already sit alongside `MDiv`/`MRem`.
