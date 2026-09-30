@@ -39,7 +39,9 @@ Three tracks, layered:
 
 1. **lyric-jsonrpc** (`lyric-jsonrpc/`, package head `JsonRpc`,
    artifact `Lyric.JsonRpc`) — transport-agnostic JSON-RPC 2.0 peer +
-   a strict cross-target JSON value model + stdio framing.
+   stdio framing. The strict cross-target JSON value model it first
+   shipped (`JsonRpc.Json`) has since moved to the stdlib as
+   `Std.JsonValue` (D145).
 2. **lyric-mcp** (`lyric-mcp/`, package head `Mcp`, artifact
    `Lyric.Mcp`) — MCP client and server on top of `JsonRpc`.
 3. **lyric-ws dotnet completion** (#778) — not on the MCP critical
@@ -48,8 +50,8 @@ Three tracks, layered:
    `NOT_IMPLEMENTED` on `--target dotnet`.
 
 Naming follows the ecosystem convention (`lyric-ws` → package `Ws`,
-artifact `Lyric.Ws`): source packages are `JsonRpc`, `JsonRpc.Json`,
-`JsonRpc.Stdio`, `Mcp`, `Mcp.Stdio`, `Mcp.Http`.
+artifact `Lyric.Ws`): source packages are `JsonRpc`, `JsonRpc.Stdio`,
+`Mcp`, `Mcp.Stdio`, `Mcp.Http` (`JsonRpc.Json` was one until D145).
 
 ## 2. `JsonRpc.Json` — the value model
 

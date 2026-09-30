@@ -25,3 +25,22 @@ library just to produce JSON (docs/65 §15, F-12; docs/62 Q-RPC-001).
 `lyric-jsonrpc/tests/json_tests.l` plus the indented writer: 51 tests, run
 in CI on dotnet and on the JVM. `--target native` does not compile it yet:
 `Std.Parse` has no native kernel (#7856).
+
+Adding the module to the bundle exposed two compiler bugs, both of which
+ignored the calling file's imports when two bundled packages share a name
+(`Std.Yaml.getField` / `Std.JsonValue.getField`, and the union case
+`JsonValue.JObject`). Both are fixed here:
+
+- `Lyric.Mono`: when same-named imported functions tie on arity and
+  argument types, `resolveAmbiguousOverload` now picks the one whose
+  package the root file imports (docs/01 §9.2), instead of giving up and
+  raising M0004 or defaulting a type argument to `Object`
+  (`yaml_tests.l`'s `isNone(getField(v, "y"))`). Imported non-generic
+  functions now carry their origin package, as generic ones already did
+  (`pipeAddNonGenericFuncs`). Covered by two new `mono_self_test.l` cases.
+- JVM codegen: a name the file binds to an extern type no longer resolves
+  to a bundle-global union case or record of the same name from a package
+  it does not import (`bundleCtorFallback`). `extern type JObject =
+  "java.lang.Object"` in `auto_ffi_jvm_self_test.l` had been resolved to
+  `JsonValue$JObject`.
+
