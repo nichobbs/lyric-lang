@@ -505,7 +505,7 @@ pub func compileToNativeWithFlags(
       match mapGet(stdlibByPkg, pkg) {
         case Some(f) -> {
           // Stdlib contracts are always enabled regardless of the consumer's
-          // [contracts] enabled setting (docs/63 Q-BP-011); stdlib authors'
+          // [contracts] enabled setting (#7748); stdlib authors'
           // contracts run in all cases. User package contracts are governed
           // by the manifest setting above (via MiddleEndOptions).
           val stdElaborated = elaborateFileWithInterfaces(f, newList(), true)
@@ -907,7 +907,7 @@ pub func compileProjectToNativeWithFlags(
           // same desugar pass the own-project packages above already get.
           // `awaitInTryIsHazard = true`: native, like MSIL, keeps F0045's
           // guard enabled (#7198; see the `MiddleEndOptions` sites above).
-          // Stdlib contracts are always enabled (#7748 / docs/63 Q-BP-011).
+          // Stdlib contracts are always enabled (#7748).
           val stdElaborated = elaborateFileWithInterfaces(f, newList(), true)
           val stdProp = lowerPropagateFile(stdElaborated, true)
           if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {

@@ -314,11 +314,11 @@ jobs:
           echo "=== build examples/contracts-gating-test --target dotnet ==="
           "$lyric_bin" build --manifest "examples/contracts-gating-test/lyric.toml" --target dotnet > /tmp/contracts-gating-test.log 2>&1 \
             && { echo "PASS: contracts disabled, function with contract-violating behavior compiles"; dotnet "examples/contracts-gating-test/bin/contracts-gating-test.dll" > /tmp/contracts-gating-test.run.log 2>&1 && echo "PASS: function executes without assertion failure"; } \
-            || { echo "FAIL"; cat /tmp/contracts-gating-test.log; exit 1; }
+            || { echo "FAIL"; cat /tmp/contracts-gating-test.log; cat /tmp/contracts-gating-test.run.log 2>/dev/null; exit 1; }
           echo "=== build examples/contracts-gating-test --target jvm ==="
           "$lyric_bin" build --manifest "examples/contracts-gating-test/lyric.toml" --target jvm > /tmp/contracts-gating-test-jvm.log 2>&1 \
             && { echo "PASS: contracts disabled (JVM), function with contract-violating behavior compiles"; java -jar "examples/contracts-gating-test/bin/contracts-gating-test.jar" > /tmp/contracts-gating-test-jvm.run.log 2>&1 && echo "PASS: function executes without assertion failure (JVM)"; } \
-            || { echo "FAIL"; cat /tmp/contracts-gating-test-jvm.log; exit 1; }
+            || { echo "FAIL"; cat /tmp/contracts-gating-test-jvm.log; cat /tmp/contracts-gating-test-jvm.run.log 2>/dev/null; exit 1; }
 
       # BuildInfo well-known `version` auto-injection (docs/60 §9.2, #5852): a
       # project build with `[package].version` in lyric.toml populates

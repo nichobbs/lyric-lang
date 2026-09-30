@@ -57,4 +57,4 @@ Closes issue #7640.
 - The language reference (§3.7) and book document the table and gating behavior.
 - The self-hosted elaborator (`contract_elaborator/elaborator.l`) gates only user-level `requires:` and `ensures:` clauses.
 - System-level structural checks (parameter/return range checks, protected-type invariants) are never gated and always run.
-- All build paths (single-file and project-based, MSIL/JVM/native) respect the manifest `[contracts] enabled` setting.
+- All build paths (single-file and project-based, MSIL/JVM/native) respect the manifest `[contracts] enabled` setting for the consuming project's own package(s). The standard library's and dependencies' own declared contracts are unaffected on every target (#7748).
