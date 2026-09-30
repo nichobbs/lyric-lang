@@ -1182,3 +1182,95 @@ test "a literal bound, assigned or passed at an unsigned type takes that type (#
     "val-binding-refute"
   )
 }
+
+test "a signed variable passed at an unsigned parameter fails closed (#7848)" {
+  val callee = "func callee(x: in UInt): UInt\n  requires: x > 2147483648\n  ensures: result == x\n{\n  x\n}\n"
+  assertUntranslatable(
+    callee +
+      "func caller(i: in Int): UInt\n  requires: i > 2147483648\n  ensures: result > 2147483648\n{\n  callee(i)\n}\n",
+    "signed-variable-argument"
+  )
+  assertUntranslatable(
+    callee +
+      "func caller(i: in Int): UInt\n  requires: i > 0\n  ensures: result > 2147483648\n{\n  callee(i + 2147483648)\n}\n",
+    "signed-expression-argument"
+  )
+}
+
+func intVar(name: in String): Term {
+  TVar(name = name, sort = SInt)
+}
+
+test "smt renders signed / and % through the truncating definitions (#7870)" {
+  val a = intVar("a")
+  val b = intVar("b")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpDiv, args = termList2(a, b))), "(lyric!tdiv a b)", "signed /")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpMod, args = termList2(a, b))), "(lyric!trem a b)", "signed %")
+  val r = TVar(name = "r", sort = SFloat64)
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpRealDiv, args = termList2(r, r))), "(/ r r)", "real / is unchanged")
+  val preamble = smtRenderPreamble()
+  assertTrue(
+    preamble.contains(
+      "(define-fun lyric!tdiv ((a Int) (b Int)) Int (ite (= b 0) (div a 0) (ite (= (>= a 0) (>= b 0)) (div (abs a) (abs b)) (- (div (abs a) (abs b))))))"
+    ),
+    "tdiv is defined in the preamble"
+  )
+  assertTrue(
+    preamble.contains(
+      "(define-fun lyric!trem ((a Int) (b Int)) Int (ite (= b 0) (mod a 0) (- a (* b (lyric!tdiv a b)))))"
+    ),
+    "trem is defined in the preamble"
+  )
+  val s = provePkg("func q(a: in Int, b: in Int): Int\n  requires: b != 0\n  ensures: result == a / b\n{\n  a / b\n}\n")
+  assertTrue(s.results.count > 0, "q: a goal")
+  val smt = smtRenderGoal(s.results[0].goal)
+  assertTrue(smt.contains("(lyric!tdiv a b)"), "a goal divides through tdiv")
+  assertTrue(not smt.contains("(div a b)"), "no Euclidean div of the operands")
+}
+
+func divBody(op: in String, a: in String, b: in String, post: in String): String {
+  "func f(a: in Int, b: in Int): Int\n  requires: a == " + a + " and b == " + b + "\n  ensures: " + post + "\n{\n  a " +
+    op +
+    " b\n}\n"
+}
+
+test "signed / truncates toward zero (#7870)" {
+  assertDischarged(divBody("/", "-7", "2", "result == -3"), "neg-by-pos-discharge")
+  assertRefuted(divBody("/", "-7", "2", "result == -4"), "neg-by-pos-euclidean-refute")
+  assertDischarged(divBody("/", "7", "-2", "result == -3"), "pos-by-neg-discharge")
+  assertRefuted(divBody("/", "7", "-2", "result == -4"), "pos-by-neg-floor-refute")
+  assertDischarged(divBody("/", "-7", "-2", "result == 3"), "neg-by-neg-discharge")
+  assertRefuted(divBody("/", "-7", "-2", "result == 4"), "neg-by-neg-euclidean-refute")
+}
+
+test "signed % takes the dividend's sign (#7870)" {
+  assertDischarged(divBody("%", "-7", "2", "result == -1"), "neg-by-pos-discharge")
+  assertRefuted(divBody("%", "-7", "2", "result == 1"), "neg-by-pos-euclidean-refute")
+  assertDischarged(divBody("%", "7", "-2", "result == 1"), "pos-by-neg-discharge")
+  assertRefuted(divBody("%", "7", "-2", "result == -1"), "pos-by-neg-floor-refute")
+  assertDischarged(divBody("%", "-7", "-2", "result == -1"), "neg-by-neg-discharge")
+  assertRefuted(divBody("%", "-7", "-2", "result == 1"), "neg-by-neg-euclidean-refute")
+}
+
+test "truncating division satisfies its identities symbolically (#7870)" {
+  assertDischarged(
+    "func r(a: in Int, b: in Int): Int\n  requires: a < 0 and b != 0\n  ensures: result <= 0\n{\n  a % b\n}\n",
+    "negative-dividend-remainder-is-non-positive"
+  )
+  assertRefuted(
+    "func r(a: in Int, b: in Int): Int\n  requires: a < 0 and b != 0\n  ensures: result < 0\n{\n  a % b\n}\n",
+    "remainder-can-be-zero"
+  )
+  assertDischarged(
+    "func q(a: in Long, b: in Long): Long\n  requires: b != 0\n  ensures: result == a - b * (a / b)\n{\n  a % b\n}\n",
+    "division-identity"
+  )
+  assertDischarged(
+    "func n(a: in Long, b: in Long): Long\n  requires: b != 0\n  ensures: result == 0 - (0 - a) / b\n{\n  a / b\n}\n",
+    "negating-the-dividend-negates-the-quotient"
+  )
+  assertDischarged(
+    "func c(x: in Int): Int\n  requires: x == -9\n  ensures: result == -2\n{\n  var y = x\n  y /= 4\n  y\n}\n",
+    "compound-assignment"
+  )
+}

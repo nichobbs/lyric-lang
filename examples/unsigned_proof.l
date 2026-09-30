@@ -1,14 +1,15 @@
 @proof_required(checked_arithmetic)
 package UnsignedProof
 
-// Demonstrates how the verifier models unsigned integers and the signed
-// minimum literals.  Run with:
+// Demonstrates how the verifier models unsigned integers, the signed
+// minimum literals and signed division.  Run with:
 //
 //     lyric prove examples/unsigned_proof.l --verbose
 //
 // `UInt`, `ULong` and `Byte` are bitvectors of their width: a literal next to
 // one becomes a bitvector constant, ordering, division and remainder are
 // unsigned, and `checked_arithmetic` proves that no `+`, `-` or `*` wraps.
+// Signed `/` and `%` truncate toward zero, as they do at runtime.
 // Every obligation needs an SMT solver (z3 or cvc5).
 // Unsigned ordering: 3000000000 and 2147483648 are above Int's sign bit.
 pub func high(x: UInt): UInt
@@ -52,3 +53,16 @@ pub func longMin(): Long
 pub func intMin(): Int
   ensures: result == 0 - 2147483647 - 1
   = -2147483648i32
+
+// Signed division truncates toward zero and the remainder takes the
+// dividend's sign, as at runtime: -7 / 2 is -3 and -7 % 2 is -1, not the
+// Euclidean -4 and 1.
+pub func halveNegative(x: Int): Int
+  requires: x == -7
+  ensures: result == -3
+  = x / 2
+
+pub func negativeRemainder(x: Long, d: Long): Long
+  requires: x < 0 and d != 0
+  ensures: result <= 0
+  = x % d

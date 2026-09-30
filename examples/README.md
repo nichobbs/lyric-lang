@@ -17,7 +17,7 @@ $ lyric build examples/primes.l && dotnet exec examples/primes.dll
 | `ffi_bcl.l`      | `@externTarget` calls into BCL static methods + property getters (no `extern type` needed for primitive returns) |
 | `ffi_datetime.l` | `extern type Foo = "System.Foo"` opaque-handle declarations + overload disambiguation by param type (`DateTime - DateTime` vs `DateTime - TimeSpan`) |
 | `prove_demo.l`   | M4.1 verifier (`lyric prove`).  `@proof_required` package: identity, tautology, bumped-by-1, cross-function call-rule, inline-range arithmetic, `assert` side-goals, `match` over literal + binding patterns — eight obligations, all discharge.  Run with `lyric prove examples/prove_demo.l --verbose` (this file has no `main` and is verifier-only). |
-| `unsigned_proof.l` | Verifier (`lyric prove`) over unsigned integers under `@proof_required(checked_arithmetic)`: `UInt`/`ULong` literals above the sign bit, an unsigned `ULong` range subtype, unsigned division and remainder, `UInt`-to-`ULong` zero-extension, a wrap ruled out by a precondition, and the `Long`/`Int` minimum literals — every obligation discharges with z3 or cvc5.  Verifier-only (no `main`). |
+| `unsigned_proof.l` | Verifier (`lyric prove`) over unsigned integers under `@proof_required(checked_arithmetic)`: `UInt`/`ULong` literals above the sign bit, an unsigned `ULong` range subtype, unsigned division and remainder, `UInt`-to-`ULong` zero-extension, a wrap ruled out by a precondition, the `Long`/`Int` minimum literals, and signed `/` and `%` truncating toward zero with negative operands — every obligation discharges with z3 or cvc5.  Verifier-only (no `main`). |
 
 Each program exists to surface gaps in the language surface — when
 something doesn't compile, that's a real issue worth a PR rather
