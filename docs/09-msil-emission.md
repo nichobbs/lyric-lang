@@ -888,6 +888,21 @@ value to a fresh local first, as it already did for a field or index
 target (#7816), so the target is read after the value is evaluated on
 every backend.
 
+Each hoisted local is annotated with the type the type checker gave its
+operand's position (#7823).  Without it the local was typed from the
+value alone, and CLR generics are reified (§8.3): `addOpt(None, await
+f())` built the `None` as an `Option_None<object>`, which a `match` on
+`Option[Int]` does not recognise, and `newList()` became a
+`List<object>`.  The checker records the position's type for every operand
+evaluated before an `await` or a `?` in the same expression
+(`SymbolTable.hoistOperandTypeSites`: a call or constructor argument, a
+list or tuple element, the left operand of an eager binary operator);
+`Lyric.Mono.desugarCheckedFile` binds each such operand to a local of that
+type, which a generic body's specialisation substitutes like any other
+annotation; and `Lyric.HoistEngine.hzBind` keeps the annotation on the
+fresh local it binds the operand to.  The same holds for `Lyric.Propagate`'s
+`?` hoist, which shares the engine.
+
 The M1.4 blocking shim (`.GetAwaiter().GetResult()` synchronously) is
 retained as a fallback for ineligible shapes — awaits in expression
 positions where stack-spilling has not been applied, or inside lambda

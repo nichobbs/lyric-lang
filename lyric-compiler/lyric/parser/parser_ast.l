@@ -1260,6 +1260,23 @@ pub record ListLiteralTypeSite {
   startOffset: Int
 }
 
+/// An operand evaluated before an `await` or a `?` in the same expression,
+/// with the type the type checker gave its position spelled as source.
+/// `Lyric.AwaitHoist` and `Lyric.Propagate`'s hoist bind such an operand to a
+/// fresh local, which had no annotation, so a backend with reified generics
+/// built a hoisted `None`, `Ok(2)` or `newList()` from the value alone
+/// (`Option<object>` for a `None` passed as an `Option[Int]`).
+/// `Lyric.Mono.desugarCheckedFile` binds the operand to a local annotated
+/// with this type, which the hoist keeps on its fresh local (#7823).  Two
+/// checks of one source position with different types (synthesized code)
+/// are `conflicting` and left as written.
+pub record HoistOperandTypeSite {
+  operandType: TypeExpr
+  rendered: String
+  conflicting: Bool
+  startOffset: Int
+}
+
 /// The key of a record-copy call site: its span's start and end offsets.
 pub func recordCopySiteKey(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)

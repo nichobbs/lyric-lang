@@ -293,6 +293,11 @@ record MonoState {
   /// `recordCopySiteKey` of the literal's span; `listLiteralTypedMono` binds
   /// it through a local annotated with its checked type (#7818).
   listLiteralTypeSites: Map[String, ListLiteralTypeSite]
+  /// Each operand evaluated before an `await` or a `?` whose type the type
+  /// checker recorded (`SymbolTable.hoistOperandTypeSites`), keyed by
+  /// `recordCopySiteKey` of the operand's span; `hoistOperandTypedMono`
+  /// binds it through a local annotated with that type (#7823).
+  hoistOperandTypeSites: Map[String, HoistOperandTypeSite]
   /// Counter for the fresh locals a copy desugar binds (length = next id).
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
@@ -340,6 +345,7 @@ func newMonoState(
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),
     listLiteralTypeSites = newMap(),
+    hoistOperandTypeSites = newMap(),
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
@@ -4070,7 +4076,7 @@ func funcRefLambdaMono(site: in FuncRefSite, sp: in Span): Expr {
 /// could not lower.  Only items containing a site are rewritten, and no
 /// generic is registered, so nothing is specialised here.
 pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, RecordCopySite]): MonoResult {
-  desugarCheckedFile(file, sites, newMap(), newMap(), newMap(), newMap(), newMap(), newMap())
+  desugarCheckedFile(file, sites, newMap(), newMap(), newMap(), newMap(), newMap(), newMap(), newMap())
 }
 
 /// The post-type-check desugars: record `.copy(...)` calls (D-progress-948),
@@ -4078,8 +4084,9 @@ pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, Reco
 /// call arguments (D-progress-964), the annotations of unannotated
 /// function-valued (#7711) and open (#7788) locals, the callee types of calls through
 /// function values (#7716) and the element types of the names tuple patterns
-/// bind (#7728), and the checked types of list literals no collection type
-/// was expected of (#7818), each keyed by the type checker's span key.
+/// bind (#7728), the checked types of list literals no collection type
+/// was expected of (#7818) and the types of the operands the await and `?`
+/// hoists bind (#7823), each keyed by the type checker's span key.
 pub func desugarCheckedFile(
   file: in SourceFile,
   sites: in Map[String, RecordCopySite],
@@ -4089,9 +4096,10 @@ pub func desugarCheckedFile(
   funcValueCallSites: in Map[String, FuncValueCallSite],
   tuplePatternBindingSites: in Map[String, TuplePatternBindingSite],
   listLiteralTypeSites: in Map[String, ListLiteralTypeSite],
+  hoistOperandTypeSites: in Map[String, HoistOperandTypeSite],
 ): MonoResult {
   val noRewrites: Map[String, String] = newMap()
-  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 and listLiteralTypeSites.count == 0 {
+  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 and listLiteralTypeSites.count == 0 and hoistOperandTypeSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
     return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags)
   }
@@ -4203,6 +4211,18 @@ pub func desugarCheckedFile(
       case None -> ()
     }
     ei = ei + 1
+  }
+  val hoistKeys = mapKeys(hoistOperandTypeSites)
+  var hi = 0
+  while hi < hoistKeys.count {
+    match mapGet(hoistOperandTypeSites, hoistKeys[hi]) {
+      case Some(site) -> if not site.conflicting {
+        state.hoistOperandTypeSites.add(hoistKeys[hi], site)
+        offsets.add(site.startOffset)
+      }
+      case None -> ()
+    }
+    hi = hi + 1
   }
   val items: List[Item] = newList()
   var i = 0
@@ -4735,6 +4755,28 @@ func listLiteralTypedMono(state: in MonoState, env: in Map[String, TypeExpr], li
     }
     case None -> rebuilt
   }
+}
+
+// An operand evaluated before an `await` or a `?` in the same expression
+// (#7823), already rewritten to `e`, becomes
+//
+//   {
+//     val __lyric_ho_<n>: <the type the checker gave its position> = e
+//     __lyric_ho_<n>
+//   }
+//
+// which `Lyric.HoistEngine.hzBind` binds as `val <fresh>: T = e`.  Without
+// the annotation the hoisted local of a `None`, `Ok(2)` or `newList()` was
+// typed from the value alone, which a backend with reified generics builds
+// at an open instantiation (`Option<object>`).
+func hoistOperandTypedMono(state: in MonoState, site: in HoistOperandTypeSite, e: in Expr, sp: in Span): Expr {
+  val id = state.copyTicker.count
+  state.copyTicker.add(0)
+  val name = "__lyric_ho_" + toString(id)
+  val stmts: List[Statement] = newList()
+  stmts.add(copyTypedValStmtMono(name, Some(value = site.operandType), e, sp))
+  stmts.add(Statement(kind = SExpr(expr = singleSegPathExpr(name, sp)), span = sp))
+  Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
 }
 
 // The type of field `name` recorded on a copy site, when it has one.
@@ -5759,6 +5801,16 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
           kind = ECall(fn = Expr(kind = EMember(receiver = inner, memberName = conv.method), span = s), args = noArgs),
           span = s
         )
+      }
+      case None -> ()
+    }
+  }
+  if ownSites and state.hoistOperandTypeSites.count > 0 {
+    val hoistKey = recordCopySiteKey(s)
+    match mapGet(state.hoistOperandTypeSites, hoistKey) {
+      case Some(site) -> {
+        state.hoistOperandTypeSites.remove(hoistKey)
+        return hoistOperandTypedMono(state, site, rewriteExpr(state, env, expr), s)
       }
       case None -> ()
     }

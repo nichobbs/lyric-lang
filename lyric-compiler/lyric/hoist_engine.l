@@ -273,18 +273,99 @@ func hzPath(name: in String, sp: in Span): Expr {
 // Bind `e` to a fresh `val` appended to `acc` and return a path expression
 // reading it. Literals are returned unchanged — re-evaluating a literal
 // after the hoisted hazards is identical and binding it is pure noise.
+//
+// An operand that ends in a typed local (`{ …; val n: T = init; n }`, the
+// shape `Lyric.Mono.desugarCheckedFile` gives an operand the type checker
+// recorded in `SymbolTable.hoistOperandTypeSites`) is bound at `T`, and a
+// bare `{ val n: T = init; n }` is bound as `val <fresh>: T = init`.  The
+// fresh local otherwise has no annotation, and a backend with reified
+// generics would type a hoisted `None`, `Ok(2)` or `newList()` from the
+// value alone, not at the type its position expects (#7823).
 func hzBind(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: in HoistState): Expr {
   match e.kind {
     case ELiteral(_) -> e
     case _ -> {
       val name = hzFresh(cfg, st)
-      val noTy: Option[TypeExpr] = None
       val noInner: Option[Pattern] = None
       val pat = mkPat(PBinding(name = name, inner = noInner), e.span)
-      acc.add(mkStmt(SLocal(binding = LBVal(pat = pat, ty = noTy, init = e)), e.span))
+      val binding = match hzTypedTailLocal(e) {
+        case Some(tail) -> if tail.bare {
+          LBVal(pat = pat, ty = Some(value = tail.ty), init = tail.init)
+        } else {
+          LBVal(pat = pat, ty = Some(value = tail.ty), init = e)
+        }
+        case None -> {
+          val noTy: Option[TypeExpr] = None
+          LBVal(pat = pat, ty = noTy, init = e)
+        }
+      }
+      acc.add(mkStmt(SLocal(binding = binding), e.span))
       hzPath(name, e.span)
     }
   }
+}
+
+// A block whose value is a local it annotates: `ty` is that annotation,
+// `init` the local's initializer, and `bare` whether the block is nothing
+// but that local and its read.
+record HzTypedTail {
+  ty: TypeExpr
+  init: Expr
+  bare: Bool
+}
+
+func hzTypedTailLocal(e: in Expr): Option[HzTypedTail] {
+  val blk = match e.kind { case EBlock(b) -> b; case _ -> return None }
+  val n = blk.statements.count
+  if n < 2 {
+    return None
+  }
+  val tailName = match blk.statements[n - 1].kind {
+    case SExpr(tail) -> match tail.kind {
+      case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+      case _ -> ""
+    }
+    case _ -> ""
+  }
+  if tailName == "" {
+    return None
+  }
+  match blk.statements[n - 2].kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(pat, tyOpt, init) -> match tyOpt {
+        case Some(ty) -> match pat.kind {
+          case PBinding(bn, None) -> if bn == tailName {
+            Some(value = HzTypedTail(ty = ty, init = init, bare = n == 2))
+          } else {
+            None
+          }
+          case _ -> None
+        }
+        case None -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+/// Whether `e` contains an `await` or a `?` outside a lambda or `spawn`
+/// body: an operand evaluated before such an `e` is bound to a fresh local
+/// by `Lyric.AwaitHoist` or `Lyric.Propagate`'s hoist.  The type checker
+/// records the types of those operands with it (#7823).
+pub func exprHasHoistHazard(e: in Expr): Bool {
+  hzHasHazard(hzProbeConfig(HKAwait), e) or hzHasHazard(hzProbeConfig(HKPropagate), e)
+}
+
+func hzProbeConfig(kind: in HoistKind): HoistConfig {
+  HoistConfig(
+    kind = kind,
+    freshPrefix = "",
+    unconditionalTryHazard = match kind { case HKPropagate -> true; case HKAwait -> false },
+    binopRhsHazardUnconditional = false,
+    nestedTargetAlsoQualifies = false,
+    asyncGated = false
+  )
 }
 
 func hzArgExpr(a: in CallArg): Expr {

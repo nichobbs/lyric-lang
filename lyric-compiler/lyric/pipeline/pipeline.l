@@ -371,7 +371,9 @@ pub func pipeCheckAndMono(
   // tuple pattern binds → a local annotated with its element type (#7728),
   // a value a destructuring module `val` binds → its checked type as the
   // annotation (#7763), a list literal no collection type is expected of → a
-  // local annotated with its checked slice type (#7818),
+  // local annotated with its checked slice type (#7818), an operand the
+  // await or `?` hoist will bind → a local annotated with its position's
+  // type, which the hoist keeps (#7823),
   // while the type checker's span keys still
   // identify exactly one expression each (D-progress-948, 962, 963).
   val valueSites = funcValueSites(tcRes.symbols)
@@ -560,7 +562,8 @@ pub func pipeDesugarChecked(
     tcRes.symbols.localBindingTypeSites,
     tcRes.symbols.funcValueCallSites,
     tcRes.symbols.tuplePatternBindingSites,
-    listLiteralSites
+    listLiteralSites,
+    tcRes.symbols.hoistOperandTypeSites
   )
 }
 
