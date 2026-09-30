@@ -1279,6 +1279,36 @@ pub record HoistOperandTypeSite {
   startOffset: Int
 }
 
+/// The type arguments the type checker resolved for a call to a generic
+/// function, spelled as source, in the order of the callee's `typeParams`.
+/// `Lyric.Mono` infers a call's type arguments from its argument
+/// expressions, which it cannot always type (a lambda whose body reads an
+/// unannotated module `val`, or ends in an `if` or a block); it falls back to
+/// these, so such a call specialises instead of failing with `M0002` (#7865).
+/// Two checks of one call at different type arguments are `conflicting` and
+/// never used.
+pub record GenericCallTypeArgsSite {
+  typeParams: List[String]
+  typeArgs: List[TypeExpr]
+  rendered: String
+  conflicting: Bool
+}
+
+/// The types a lambda's unannotated parameters took from the function type
+/// the type checker checked the lambda against, spelled as source, in
+/// parameter order; `known[i]` is false for a parameter that is annotated or
+/// whose type is not closed.  A backend that types an unannotated parameter
+/// from the lambda alone erases it (the JVM's `Object`), so a method call or a
+/// widening on it fails there; `Lyric.Mono` writes each known type onto its
+/// parameter as the annotation (#7865).  Two checks of one lambda that type a
+/// parameter differently are `conflicting` and left as written.
+pub record LambdaParamTypesSite {
+  paramTypes: List[TypeExpr]
+  known: List[Bool]
+  rendered: String
+  conflicting: Bool
+}
+
 /// The key of a record-copy call site: its span's start and end offsets.
 pub func recordCopySiteKey(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)

@@ -64,7 +64,10 @@
 //!     type-class targeting layer still fall through to un-specialised
 //!     — those call sites stay generic in the emitted IL, which is
 //!     correct only for imported generics (which use real CLR
-//!     generics).
+//!     generics).  A call site whose type arguments this inference leaves
+//!     unbound takes them from the type checker's resolved type arguments
+//!     for the call (`SymbolTable.genericCallTypeArgSites`, #7865) when the
+//!     checker recorded closed ones, before any Object default or `M0002`.
 //!   • Constraint dispatch (re-routing a `T.compare(x)` call inside a
 //!     specialised body to the concrete type's compare implementation) is
 //!     not yet implemented — it relies on cross-package symbol resolution
@@ -306,6 +309,17 @@ record MonoState {
   /// `recordCopySiteKey` of the operand's span; `hoistOperandTypedMono`
   /// binds it through a local annotated with that type (#7823).
   hoistOperandTypeSites: Map[String, HoistOperandTypeSite]
+  /// The type arguments the type checker resolved for each call to a generic
+  /// function (`SymbolTable.genericCallTypeArgSites`), keyed by
+  /// `recordCopySiteKey` of the callee's span.  A call whose type arguments
+  /// this pass cannot infer from its argument expressions takes the unbound
+  /// ones from here (`fillCheckedTypeArgsMono`, #7865).
+  genericCallTypeArgSites: Map[String, GenericCallTypeArgsSite]
+  /// The types the type checker gave each lambda's unannotated parameters
+  /// (`SymbolTable.lambdaParamTypeSites`), keyed by `recordCopySiteKey` of the
+  /// lambda's span; the `ELambda` rewrite writes each onto its parameter as
+  /// the annotation (#7865).
+  lambdaParamTypeSites: Map[String, LambdaParamTypesSite]
   /// Counter for the fresh locals a copy desugar binds (length = next id).
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
@@ -359,6 +373,8 @@ func newMonoState(
     tuplePatternBindingSites = newMap(),
     listLiteralTypeSites = newMap(),
     hoistOperandTypeSites = newMap(),
+    genericCallTypeArgSites = newMap(),
+    lambdaParamTypeSites = newMap(),
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
@@ -2022,7 +2038,7 @@ func inferQualifiedFuncByTailNameTE(
       if state.genDecls.containsKey(methodName) {
         None
       } else if funcDeclArityMatches(state, methodName, args.count) {
-        inferReturnFromName(state, env, methodName, args, None)
+        inferReturnFromName(state, env, methodName, args, None, span)
       } else {
         None
       }
@@ -2049,7 +2065,7 @@ func inferCallReturnTE(
         }
         match inferRecordCtorTE(state, name, None, fn.span) {
           case Some(te) -> Some(value = te)
-          case None -> inferReturnFromName(state, env, name, args, None)
+          case None -> inferReturnFromName(state, env, name, args, None, fn.span)
         }
       } else {
         // A qualified call surviving to a multi-segment `EPath` at this
@@ -2072,7 +2088,7 @@ func inferCallReturnTE(
             val name = p.segments[0]
             match inferRecordCtorTE(state, name, Some(value = targs), fn.span) {
               case Some(te) -> Some(value = te)
-              case None -> inferReturnFromName(state, env, name, args, Some(value = targs))
+              case None -> inferReturnFromName(state, env, name, args, Some(value = targs), fn.span)
             }
           } else {
             None
@@ -2347,7 +2363,7 @@ func inferTypeAppValueTE(
   match fn.kind {
     case EPath(p) -> {
       if p.segments.count == 1 {
-        inferReturnFromName(state, env, p.segments[0], newList(), Some(value = targs))
+        inferReturnFromName(state, env, p.segments[0], newList(), Some(value = targs), fn.span)
       } else {
         None
       }
@@ -3013,6 +3029,7 @@ func inferReturnFromName(
   fname: in String,
   args: in List[CallArg],
   explicitArgs: in Option[List[TypeArg]],
+  calleeSpan: in Span,
 ): Option[TypeExpr] {
   val declOpt: Option[FunctionDecl] = if state.ambiguousFuncOverloads.containsKey(fname) {
     resolveAmbiguousOverload(state, env, fname, args)
@@ -3168,6 +3185,9 @@ func inferReturnFromName(
       //     concrete and Object slots` in mono_self_test.l).
       // Same-package generics stay all-or-nothing: their uninferable call
       // sites raise M0002 at the rewriter, never a defaulted specialisation.
+      if typeParams.count > 0 and not substIsComplete(typeParams, subst) {
+        fillCheckedTypeArgsMono(state, typeParams, subst, calleeSpan)
+      }
       val importedFill = (not state.droppedLocalGenerics.containsKey(fname)) and not annsHaveAxiomMono(decl.annotations)
       val ctorFill = annsInferenceOnlyMono(decl.annotations)
       if typeParams.count > 0 and ctorFill {
@@ -4983,6 +5003,76 @@ func checkerSitesApplyMono(state: in MonoState): Bool {
   state.originScope[state.originScope.count - 1] == ""
 }
 
+// `lparams`, the parameters of the lambda at `sp`, with each unannotated one
+// annotated with the type the type checker gave it (see
+// `MonoState.lambdaParamTypeSites`, #7865).
+func annotateLambdaParamsMono(state: in MonoState, lparams: in List[LambdaParam], sp: in Span): List[LambdaParam] {
+  match mapGet(state.lambdaParamTypeSites, recordCopySiteKey(sp)) {
+    case Some(site) -> {
+      if site.paramTypes.count != lparams.count {
+        return lparams
+      }
+      val annotated: List[LambdaParam] = newList()
+      var i = 0
+      while i < lparams.count {
+        val lp = lparams[i]
+        match lp.ty {
+          case None -> if site.known[i] {
+            annotated.add(
+              LambdaParam(name = lp.name, ty = Some(value = site.paramTypes[i]), span = lp.span, parenthesized = lp.parenthesized)
+            )
+          } else {
+            annotated.add(lp)
+          }
+          case Some(_) -> annotated.add(lp)
+        }
+        i = i + 1
+      }
+      annotated
+    }
+    case None -> lparams
+  }
+}
+
+// Bind each of `typeParams` that `subst` leaves unbound to the type argument
+// the type checker resolved for the call whose callee is at `calleeSpan`
+// (see `MonoState.genericCallTypeArgSites`, #7865).  The checker typed every
+// argument, including a lambda whose body this pass cannot type (one reading
+// an unannotated module `val`, or ending in an `if`, a `match` or a block).
+// A binding this pass inferred itself is kept.
+func fillCheckedTypeArgsMono(
+  state: in MonoState,
+  typeParams: in List[String],
+  subst: in Map[String, TypeExpr],
+  calleeSpan: in Span,
+): Unit {
+  if state.genericCallTypeArgSites.count == 0 or not checkerSitesApplyMono(state) {
+    return
+  }
+  match mapGet(state.genericCallTypeArgSites, recordCopySiteKey(calleeSpan)) {
+    case Some(site) -> {
+      if site.conflicting or site.typeParams.count != typeParams.count {
+        return
+      }
+      var i = 0
+      while i < typeParams.count {
+        if site.typeParams[i] != typeParams[i] {
+          return
+        }
+        i = i + 1
+      }
+      var j = 0
+      while j < typeParams.count {
+        if not subst.containsKey(typeParams[j]) {
+          subst.add(typeParams[j], site.typeArgs[j])
+        }
+        j = j + 1
+      }
+    }
+    case None -> ()
+  }
+}
+
 func singletonStrMono(v: in String): List[String] {
   val xs: List[String] = newList()
   xs.add(v)
@@ -6207,6 +6297,11 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                         case None -> ()
                       }
                     }
+                    // The type checker's resolved type arguments fill what the
+                    // arguments and the context leave unbound (#7865).
+                    if not substIsComplete(typeParams, subst) {
+                      fillCheckedTypeArgsMono(state, typeParams, subst, fn.span)
+                    }
                     var unsafeImportedFallback = false
                     if not substIsComplete(typeParams, subst) {
                       if not state.droppedLocalGenerics.containsKey(fname) and not annsHaveAxiomMono(baseDecl.annotations) {
@@ -6521,7 +6616,14 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
 
     case EInterpolated(segs) -> Expr(kind = EInterpolated(segments = rewriteInterpolSegs(state, env, segs)), span = s)
 
-    case ELambda(lparams, body) -> {
+    case ELambda(lparams0, body) -> {
+      // #7865: an unannotated parameter takes the type the type checker gave
+      // it from the function type expected of the lambda.
+      val lparams = if ownSites and state.lambdaParamTypeSites.count > 0 {
+        annotateLambdaParamsMono(state, lparams0, s)
+      } else {
+        lparams0
+      }
       // #6666: an explicitly-typed lambda parameter shadowing an outer
       // binding of the same name must be tracked into `env` for the
       // duration of the lambda body — otherwise a generic call inside the
@@ -6531,18 +6633,11 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
       // correctly evicted (or the outer binding restored) once the lambda
       // body ends.
       //
-      // An UNTYPED param (`ty = None`) has nothing positive to record — this
-      // compiler stage has no access to the type-checker's own bidirectional
-      // inference (the expected function type a lambda literal is checked
-      // against at its call site), and recovering it here would mean either
-      // widening `rewriteExpr`'s signature to thread an "expected type"
-      // through every one of its hundreds of call sites, or re-deriving the
-      // callee's resolved overload ahead of `rewriteCallArgs` (duplicating,
-      // and risking disagreeing with, the ambiguous-overload resolution the
-      // call-rewrite logic below already performs) — both a materially
-      // larger, riskier change than this fix's scope.  So the type genuinely
-      // stays unrecovered here: any generic call inside the body that
-      // references an untyped param by name stays unspecialised/erased,
+      // An UNTYPED param (`ty = None`) left after the annotation above is one
+      // the type checker could not type either (no function type was expected
+      // of the lambda, or the expected parameter type names an unbound type
+      // parameter), so there is nothing positive to record: any generic call
+      // inside the body that references it by name stays unspecialised/erased,
       // same as an unannotated `val` with no inferrable initializer.
       //
       // What MUST still happen even without a positive type, though: if the
@@ -7476,7 +7571,16 @@ pub func monoFileWithImportsAndTypeDecls(
   importedIfaceDecls: in List[InterfaceDecl],
   importedRecordDecls: in List[RecordDecl],
 ): MonoResult {
-  monoFileWithLambdaTypes(file, importedGenDecls, importedIfaceDecls, importedRecordDecls, newMap(), newMap())
+  monoFileWithLambdaTypes(
+    file,
+    importedGenDecls,
+    importedIfaceDecls,
+    importedRecordDecls,
+    newMap(),
+    newMap(),
+    newMap(),
+    newMap()
+  )
 }
 
 /// `monoFileWithImportsAndTypeDecls`, with the function type of each
@@ -7489,6 +7593,8 @@ pub func monoFileWithLambdaTypes(
   importedRecordDecls: in List[RecordDecl],
   lambdaTypes: in Map[String, TypeExpr],
   callResultTypes: in Map[String, TypeExpr],
+  genericCallTypeArgSites: in Map[String, GenericCallTypeArgsSite],
+  lambdaParamTypeSites: in Map[String, LambdaParamTypesSite],
 ): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   // #349: also collect every IFunc (generic + non-generic) and every
@@ -7805,6 +7911,24 @@ pub func monoFileWithLambdaTypes(
       case None -> ()
     }
     cri = cri + 1
+  }
+  val gcKeys = mapKeys(genericCallTypeArgSites)
+  var gci = 0
+  while gci < gcKeys.count {
+    match mapGet(genericCallTypeArgSites, gcKeys[gci]) {
+      case Some(gs) -> state.genericCallTypeArgSites.add(gcKeys[gci], gs)
+      case None -> ()
+    }
+    gci = gci + 1
+  }
+  val lpKeys = mapKeys(lambdaParamTypeSites)
+  var lpi = 0
+  while lpi < lpKeys.count {
+    match mapGet(lambdaParamTypeSites, lpKeys[lpi]) {
+      case Some(lps) -> if not lps.conflicting { state.lambdaParamTypeSites.add(lpKeys[lpi], lps) }
+      case None -> ()
+    }
+    lpi = lpi + 1
   }
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────

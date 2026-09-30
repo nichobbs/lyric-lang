@@ -95,7 +95,8 @@ for t in \
   lyric-compiler/lyric/unsigned_literal_max_self_test.l \
   lyric-compiler/lyric/signed_literal_suffix_range_self_test.l \
   lyric-compiler/lyric/byte_stringify_self_test.l \
-  lyric-compiler/lyric/byte_erased_positions_self_test.l ; do
+  lyric-compiler/lyric/byte_erased_positions_self_test.l \
+  lyric-compiler/lyric/function_value_typing_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"

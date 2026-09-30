@@ -297,6 +297,14 @@ pub record SymbolTable {
   /// `recordCopySiteKey` of the operand's span (see
   /// `Lyric.Parser.HoistOperandTypeSite`, #7823).
   hoistOperandTypeSites: Map[String, HoistOperandTypeSite]
+  /// The type arguments of each call to a generic function whose type
+  /// arguments are all closed, keyed by `recordCopySiteKey` of the callee's span
+  /// (see `Lyric.Parser.GenericCallTypeArgsSite`, #7865).
+  genericCallTypeArgSites: Map[String, GenericCallTypeArgsSite]
+  /// The types each lambda's unannotated parameters took from the function
+  /// type it was checked against, keyed by `recordCopySiteKey` of the lambda's
+  /// span (see `Lyric.Parser.LambdaParamTypesSite`, #7865).
+  lambdaParamTypeSites: Map[String, LambdaParamTypesSite]
   /// The checked type of each unannotated module `val` the destructuring
   /// desugaring synthesized, keyed by its name; `annotateModuleVals` writes
   /// it onto the declaration (#7763).
@@ -482,6 +490,8 @@ pub func newSymbolTable(): SymbolTable {
     tuplePatternBindingSites = newMap(),
     listLiteralTypeSites = newMap(),
     hoistOperandTypeSites = newMap(),
+    genericCallTypeArgSites = newMap(),
+    lambdaParamTypeSites = newMap(),
     moduleValTypes = newMap(),
     generatorCallSites = newMap(),
     emptyCollectionCtorSites = newMap(),
