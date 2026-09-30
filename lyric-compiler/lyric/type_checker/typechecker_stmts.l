@@ -522,94 +522,7 @@ pub func checkStatement(
           if forIterIsGeneratorCall(tbl, iter) {
             iterType
           } else {
-            match iterType {
-              case TySlice(e) -> e
-              case TyArray(_, e) -> e
-              case TyUser(iterId, _, iterArgs) -> {
-                // List[T] iterates over T; MapKeyCollection[K,V] over K;
-                // MapValueCollection[K,V] over V.  A bare `Map[K,V]` iterator has
-                // no runtime lowering on either backend (iteration goes through
-                // `.keys()` / `.values()`), so it stays `TyError` — codegen owns
-                // that rejection.  All three are recognised by the stdlib type's
-                // identity, not its bare name (#7737): both backends iterate
-                // them as the genuine BCL/JDK collection, so a package's own
-                // `record List[T]` used to type-check here and then fail at
-                // runtime (`InvalidCastException` on dotnet,
-                // `IncompatibleClassChangeError` on the JVM).  Such a type now
-                // falls through to the T0126 branch below like any other
-                // Lyric-native single-parameter generic.
-                if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
-                  iterArgs[0]
-                } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapKeyCollection") {
-                  iterArgs[0]
-                } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapValueCollection") {
-                  iterArgs[1]
-                } else if iterArgs.count == 1 and symTableIsExternTypeId(tbl, iterId) {
-                  // Any other single-type-parameter EXTERN generic collection
-                  // follows the same List[T] convention: the sole type
-                  // parameter IS the element type.  This covers extern generic
-                  // collections (e.g.
-                  // `extern type JHttpStringCollection[T] = "java.util.Collection"`,
-                  // the phantom-type-param idiom `Web.Kernel.Runtime`'s
-                  // `headerNamesOf` uses to expose a JDK `Collection<HttpString>`)
-                  // as well as Lyric's own extern-backed `Set[T]` — before this
-                  // arm, only the literal name `List` got a typed element and
-                  // everything else fell through to `TyError`, silently
-                  // erasing the loop variable to `Object` and breaking any
-                  // extension-method call chained on it downstream (JVM
-                  // auto-FFI resolving against `java.lang.Object` instead of
-                  // the real element type, #6565).  Scoped to extern types
-                  // only (#6720): a Lyric-native single-param generic that
-                  // happens not to be `List` (e.g. `Option[T]`) is not a
-                  // collection at all, and used to reach this arm with no
-                  // diagnostic — see the T0126 branch below.
-                  iterArgs[0]
-                } else if iterArgs.count == 1 {
-                  // #6720: a Lyric-native single-param generic that isn't
-                  // `List` (the case above already claimed extern generics via
-                  // the phantom-type-param idiom, e.g. `Set[T]`) is never
-                  // actually iterable — `Option[T]` is the concrete repro.
-                  // Reject at type-check time instead of silently typing the
-                  // loop element and letting codegen's index-loop protocol
-                  // (`emitCollectionForMsil`'s `case _` fallback, which assumes
-                  // `.Count`/`get_Item`) fail at runtime with a cast/member
-                  // exception.
-                  diag.add(
-                    errorDiagnostic(
-                      "T0126",
-                      "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type" +
-                        shadowedStdCollectionNote(tbl, iterType),
-                      iter.span
-                    )
-                  )
-                  TyError
-                } else {
-                  TyError
-                }
-              }
-              case TyPrim(iterPt) -> {
-                match iterPt {
-                  case PtString -> {
-                    // D-progress-1006: a `String` is not iterable.  Its elements
-                    // would have to be UTF-16 code units, and a surrogate half is
-                    // not a `Char` (docs/01 §2.1) -- so name the two explicit
-                    // views instead of letting codegen fail at runtime.
-                    diag.add(
-                      errorDiagnostic(
-                        "T0126",
-                        "cannot iterate over 'String' directly: iterate its Unicode scalar values with " +
-                          "`for cp in Std.String.codePoints(s)` (each an `Int`), or index code units with " +
-                          "`s.codeUnitAt(i)` for `i` in `0 ..< s.length`",
-                        iter.span
-                      )
-                    )
-                    TyError
-                  }
-                  case _ -> TyError
-                }
-              }
-              case _ -> TyError
-            }
+            forIterElemType(tbl, diag, iter, iterType)
           }
         }
       }
@@ -1740,6 +1653,106 @@ pub func checkFunctionBody(
     }
   }
   checkOutDefiniteAssignment(diag, fn, sig)
+}
+
+// The element type a `for` binds when it iterates a value of `iterType` (a
+// range or a generator call is typed by the caller), or `TyError` after
+// reporting T0126 when the value is not iterable (#7781).  The iterable types
+// are the ones both backends lower: a slice or array, the stdlib `List[T]`
+// and `Map[K, V]`'s key/value collections -- recognised by identity, never
+// by their bare names (#7737) -- and extern types, whose iteration the host
+// collection protocol (`IEnumerable` / `java.lang.Iterable`) decides at
+// codegen; a single-type-parameter extern type iterates its type argument
+// (the phantom-type-param idiom, e.g.
+// `extern type JHttpStringCollection[T] = "java.util.Collection"`, #6565).
+// Every other type -- a record, union, enum, opaque, protected, distinct or
+// interface type of any arity, a primitive, a tuple, a function, a nullable
+// value, the stdlib `Map` itself -- has no iteration lowering: codegen's
+// fallback index-loop protocol casts it to a list and fails at runtime.
+// Only a single-parameter one was rejected before (#6720); the others typed
+// the loop variable `TyError`, which silenced every diagnostic involving it
+// in the loop body.  An iterator whose own inference already failed
+// (`TyError`), a type parameter and `Self` stay lenient: whether they are
+// iterable is not decidable here.
+func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Expr, iterType: in Type): Type {
+  match unrefine(iterType) {
+    case TyError -> TyError
+    case TyVar(_) -> TyError
+    case TySelf -> TyError
+    case TySlice(e) -> e
+    case TyArray(_, e) -> e
+    case TyUser(iterId, _, iterArgs) -> {
+      if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
+        iterArgs[0]
+      } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapKeyCollection") {
+        iterArgs[0]
+      } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapValueCollection") {
+        iterArgs[1]
+      } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "Map") {
+        reportNotIterable(
+          diag,
+          iter,
+          "cannot iterate over '" + renderType(iterType) + "' directly: iterate `mapKeys(m)`, `mapValues(m)` or " +
+            "`mapEntries(m)` from Std.Collections"
+        )
+      } else if symTableIsExternTypeId(tbl, iterId) {
+        if iterArgs.count == 1 {
+          iterArgs[0]
+        } else {
+          TyError
+        }
+      } else {
+        reportNotIterable(
+          diag,
+          iter,
+          "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type" +
+            shadowedStdCollectionNote(tbl, iterType) +
+            distinctIterNote(tbl, iterId)
+        )
+      }
+    }
+    case TyPrim(pt) -> match pt {
+      case PtNever -> TyError
+      // D-progress-1006: a `String`'s elements would have to be UTF-16 code
+      // units, and a surrogate half is not a `Char` (docs/01 §2.1), so name
+      // the two explicit views instead.
+      case PtString -> reportNotIterable(
+        diag,
+        iter,
+        "cannot iterate over 'String' directly: iterate its Unicode scalar values with " +
+          "`for cp in Std.String.codePoints(s)` (each an `Int`), or index code units with " +
+          "`s.codeUnitAt(i)` for `i` in `0 ..< s.length`"
+      )
+      case _ -> reportNotIterable(
+        diag,
+        iter,
+        "cannot iterate over '" + renderType(iterType) +
+          "': not a recognized iterable type"
+      )
+    }
+    case _ -> reportNotIterable(
+      diag,
+      iter,
+      "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type"
+    )
+  }
+}
+
+func reportNotIterable(diag: in List[Diagnostic], iter: in Expr, message: in String): Type {
+  diag.add(errorDiagnostic("T0126", message, iter.span))
+  TyError
+}
+
+// A note for T0126 on a distinct type: its value is a wrapper, not the
+// underlying collection, so the loop has to name the underlying value.
+func distinctIterNote(tbl: in SymbolTable, tid: in TypeId): String {
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(sym) -> match sym.kind {
+      case DKDistinctType(_, _) -> " (a distinct type is not its underlying type: iterate its `.value`)"
+      case _ -> ""
+    }
+    case None -> ""
+  }
 }
 
 // True when a `for` iterates a call to a yield-bearing `async func` (a

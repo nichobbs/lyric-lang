@@ -916,20 +916,23 @@ element. Destructure refutable shapes with a `match` inside the loop body
 instead.
 
 The iterated expression's type must be recognized as iterable: `slice[T]`,
-`array[N, T]`, `List[T]`, `Map[K, V]`'s key/value collections, a range, or a
-single-type-parameter `extern type` (the phantom-type-param idiom for a
-foreign collection, e.g. `extern type JHttpStringCollection[T] = "java.util.Collection"`).
-Iterating over a Lyric-native single-type-parameter generic that merely
-happens to have one type parameter but isn't a collection, such as
-`Option[T]`, is a compile error (**T0126**), not a silent runtime failure
-(#6720). A `String` is not iterable either (**T0126**, D-progress-1006): its
-elements would have to be UTF-16 code units, and a surrogate half is not a
-`Char` (§2.1). Iterate `Std.String.codePoints(s)` (Unicode scalar values as
-`Int`) or loop over indices with `s.codeUnitAt(i)` (§12.1). Other
-unrecognized shapes (a non-generic type, or a generic with zero or
-two-or-more type parameters that isn't `Map[K, V]`'s key/value collections)
-are not yet covered by a dedicated diagnostic and remain tracked
-separately.
+`array[N, T]`, `List[T]`, `Map[K, V]`'s key/value collections, a range, a
+generator call (an async generator, §7.2), or an `extern type`, whose iteration the host
+collection protocol decides — a single-type-parameter one iterates its type
+argument (the phantom-type-param idiom for a foreign collection, e.g.
+`extern type JHttpStringCollection[T] = "java.util.Collection"`). Iterating
+any other type is a compile error (**T0126**), not a silent runtime failure:
+a record, union, enum, opaque, protected, distinct or interface type of any
+arity (`Option[T]`, #6720; `record Pair[A, B]`, #7781), a primitive, a tuple,
+a function value, or the stdlib `Map[K, V]` itself (iterate
+`mapKeys(m)`, `mapValues(m)` or `mapEntries(m)`). A distinct type is not its
+underlying collection — iterate its `.value`. A `String` is not iterable
+either (D-progress-1006): its elements would have to be UTF-16 code units,
+and a surrogate half is not a `Char` (§2.1). Iterate `Std.String.codePoints(s)`
+(Unicode scalar values as `Int`) or loop over indices with `s.codeUnitAt(i)`
+(§12.1). The check applies to the type the iterator resolved to: a type
+parameter or `Self` is not rejected, and an iterator that is itself an error
+(an unknown name, say) is reported once, not again as T0126.
 
 `do ... while` does not exist. Use `while true { ... if cond { break } }`.
 

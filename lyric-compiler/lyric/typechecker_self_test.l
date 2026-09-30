@@ -3938,6 +3938,90 @@ test "for over a String-yielding async generator does not emit T0126" {
   assertTrue(not hasDiagCode(parseCheck(src), "T0126"), "generator call iterates its yields, not a String")
 }
 
+// #7781: only single-type-parameter Lyric-native generics were T0126; a
+// record/union/enum of any other arity fell through to a silent `TyError`
+// loop element, which then masked every diagnostic about the loop variable
+// in the body.  Each non-iterable type is now exactly one T0126, whatever its
+// arity, and a valid iteration still types its element.
+test "for over a two-param user record is exactly one T0126 (#7781)" {
+  val src = "package P\nrecord Pair[A, B] {\n  a: A\n  b: B\n}\nfunc f(p: in Pair[Int, String]): Unit {\n  for x in p {\n    val s: String = x\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0126"), 1, "a two-param record is not iterable")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0126"), "Pair[Int, String]"),
+    "T0126 names the iterated type: " + diagMessageFor(cr, "T0126")
+  )
+}
+
+test "for over a three-param user record is exactly one T0126 (#7781)" {
+  val src = "package P\nrecord Triple[A, B, C] {\n  a: A\n  b: B\n  c: C\n}\nfunc f(t: in Triple[Int, Int, Int]): Unit {\n  for x in t {\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0126"), 1, "a three-param record is not iterable")
+}
+
+test "for over a user MapValueCollection[K, V] record is exactly one T0126 (#7781)" {
+  val src = "package P\nrecord MapValueCollection[K, V] {\n  v: V\n}\nfunc f(vs: in MapValueCollection[String, Int]): Unit {\n  for v in vs {\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0126"), 1, "a user MapValueCollection is not the stdlib one")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0126"), "only shares its name with the stdlib MapValueCollection"),
+    "T0126 says the collection is not the stdlib one: " + diagMessageFor(cr, "T0126")
+  )
+}
+
+test "for over a non-generic record is exactly one T0126 (#7781)" {
+  val src = "package P\nrecord Point {\n  x: Int\n}\nfunc f(p: in Point): Unit {\n  for x in p {\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0126"), 1, "a non-generic record is not iterable")
+}
+
+test "for over a two-param union is exactly one T0126 (#7781)" {
+  val src = "package P\nunion Either[L, R] {\n  case Left(l: L)\n  case Right(r: R)\n}\nfunc f(e: in Either[Int, String]): Unit {\n  for x in e {\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0126"), 1, "a two-param union is not iterable")
+}
+
+test "for over an enum is exactly one T0126 (#7781)" {
+  val src = "package P\nenum Color {\n  case Red\n  case Green\n}\nfunc f(c: in Color): Unit {\n  for x in c {\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0126"), 1, "an enum is not iterable")
+}
+
+test "for over a distinct type is T0126 naming its value (#7781)" {
+  val src = "package P\ntype Ids = slice[Int]\nfunc f(ids: in Ids): Unit {\n  for x in ids {\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0126"), 1, "a distinct type is not iterable")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0126"), "`.value`"),
+    "T0126 points at `.value`: " + diagMessageFor(cr, "T0126")
+  )
+}
+
+test "for over an Int or a tuple is exactly one T0126 (#7781)" {
+  val src = "package P\nfunc f(n: in Int, t: in (Int, Int)): Unit {\n  for x in n {\n  }\n  for y in t {\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0126"), 2, "an Int and a tuple are not iterable")
+}
+
+test "for over the stdlib Map is T0126 naming mapKeys (#7781)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(m: in Map[String, Int]): Unit {\n  for k in m {\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(cr, "T0126"), 1, "a bare Map has no iteration lowering")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0126"), "mapKeys"),
+    "T0126 names mapKeys: " + diagMessageFor(cr, "T0126")
+  )
+}
+
+test "a non-iterable for whose iterator already failed adds no T0126 (#7781)" {
+  val src = "package P\nfunc f(): Unit {\n  for x in missing {\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0020"), "the unknown iterator is reported")
+  assertEqualInt(countDiagCode(cr, "T0126"), 0, "an already-failed iterator is not also T0126")
+}
+
+test "a valid for still reports a mistyped use of its element (#7781)" {
+  val src = "package P\nfunc f(xs: in slice[Int]): Unit {\n  for x in xs {\n    val s: String = x\n  }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0126"), 0, "a slice is iterable")
+  assertEqualInt(countDiagCode(cr, "T0060"), 1, "the element is Int, so a String binding of it is rejected")
+}
+
 // #7771: whether a `for` iterates a generator call is decided by the
 // signature the call binds to, not the callee's bare name + arity.  Every
 // case below pairs a generator `each` with a non-generator reached under the
@@ -7624,6 +7708,7 @@ test "for over the stdlib MapKeyCollection binds the key type; a same-named reco
     0,
     "a same-named user record gets no key element type (it is not the stdlib collection)"
   )
+  assertEqualInt(countDiagCode(parseCheck(shadow), "T0126"), 1, "a same-named user record is not iterable (#7781)")
 }
 
 test "indexing a user record named List is T0143 (#7737)" {
