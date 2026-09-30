@@ -8405,3 +8405,15 @@ test "a concrete-typed call resolves through the impl method's own parameters (#
   val viaIface = parseCheck(src + "func g(s: in S): Int { s.area() }\n")
   assertEqualInt(countDiagCode(viaIface, "T0042"), 0, "the interface member's default applies through the interface")
 }
+
+// #7829 review: a list literal's element type is the join of its elements'
+// types for fixed-size arrays too.  An `array[2, Opt[T]]` element whose `T`
+// nothing fixes takes `Int` from a sibling `array[2, Opt[Int]]` (#7818's join
+// had no `TyArray` arm, so the literal kept the first element's open type).
+// The checked type does not carry the size (`array[?, ...]`).
+test "list literal joins array element types" {
+  val src = "package P\nunion Opt[T] {\n  case Yes(v: T)\n  case No\n}\nfunc holes[T](): array[2, Opt[T]] {\n  var a: array[2, Opt[T]]\n  a\n}\nfunc f(a: in array[2, Opt[Int]]): Int {\n  [holes(), a]\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0070"), "the literal is not an Int")
+  assertTrue(diagMessagesContain(cr, "slice[array[?, Opt[Int]]]"), "joined element type Opt[Int]")
+}

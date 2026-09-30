@@ -8087,6 +8087,15 @@ func joinOpenTypes(a: in Type, b: in Type): Type {
       case _ -> a
     }
     case TySlice(ae) -> match b { case TySlice(be) -> TySlice(element = joinOpenTypes(ae, be)); case _ -> a }
+    // Arrays of different sizes are different types: only same-sized ones join.
+    case TyArray(asz, ae) -> match b {
+      case TyArray(bsz, be) -> if optIntEq(asz, bsz) {
+        TyArray(size = asz, element = joinOpenTypes(ae, be))
+      } else {
+        a
+      }
+      case _ -> a
+    }
     case TyNullable(ai) -> match b { case TyNullable(bi) -> TyNullable(inner = joinOpenTypes(ai, bi)); case _ -> a }
     case TyTuple(aes) -> match b {
       case TyTuple(bes) -> if aes.count == bes.count {
