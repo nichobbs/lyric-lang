@@ -900,6 +900,13 @@ was in the JVM backend or the build tooling, and each was fixed there
   step's effects sequentially on the connection's thread (the busy state is
   sent first). Concurrent effects need a per-session queue with a lock or
   actor, which wants a generic protected type (F-10).
+  Resolved in D148: each effect runs on the instance's `Std.Task` scope
+  outside the instance lock, and its result is applied under the lock as a
+  step of its own, in completion order. `Instance.close` (on eviction or
+  expiry) cancels the scope, and later results are dropped. No generic
+  protected type was needed: the instance's generic body is compiled into
+  each consumer package, where a protected type's members are not callable,
+  so the state stays in cells guarded by the non-generic `InstanceLock`.
 
 ### Found by the browser end-to-end test (#7836)
 

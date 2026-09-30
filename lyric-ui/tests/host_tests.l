@@ -4,8 +4,10 @@
 package Ui.HostTests
 
 import Std.Core
+import Std.Collections
 import Std.String
 import Std.Testing
+import Std.Time as Time
 import Ui.Core.{View, Step, UiEffect, Notify, ToastLevel, stay, step1}
 import Ui.Widgets.{button, column, paragraph}
 import Ui.Protocol.{decodeClient, ClientMessage}
@@ -73,6 +75,17 @@ func program(): Program[Model, Msg, Effect] {
   )
 }
 
+// Effects complete on other threads (#7835): wait, bounded, until `rec`
+// holds at least `n` messages.
+func waitForCount(rec: in Recorder, n: in Int): List[String] {
+  var waited = 0
+  while rec.all().count < n and waited < 10000 {
+    Time.sleepMillis(20)
+    waited = waited + 20
+  }
+  return rec.all()
+}
+
 func msg(text: in String): ClientMessage {
   return match decodeClient(text) { case Ok(m) -> m; case Err(e) -> panic("test message did not decode: " + e) }
 }
@@ -98,7 +111,7 @@ test "a click sends the busy state before the effect result" {
   inst.start(outbox)
   // Root column[app, overlay]; app column[paragraph, button].
   inst.receive(msg("{\"t\":\"event\",\"v\":1,\"p\":[0,1],\"e\":\"click\"}"), outbox)
-  val sent = rec.all()
+  val sent = waitForCount(rec, 4)
   assertEqualInt(sent.count, 4, "render, saving patch, saved patch, toast")
   assertTrue(contains(sent[1], "\"v\":\"saving\""), sent[1])
   assertTrue(contains(sent[2], "\"v\":\"saved\""), sent[2])
@@ -264,4 +277,93 @@ test "a full registry of connected sessions admits no more" {
   assertTrue(reg.admit("b", dummy(), "cb", 0, 10_000, 10), "admitted b")
   assertFalse(reg.admit("c", dummy(), "cc", 10, 10_000, 2), "every session is connected")
   assertEqualInt(reg.liveCount(), 2, "nothing evicted or added")
+}
+
+// ─── Concurrent effects (#7835) ───────────────────────────────────────────────
+record Trace {
+  log: List[String]
+}
+
+union TMsg {
+  case Done(label: String)
+}
+
+union TEffect {
+  case Wait(label: String, ms: Int)
+}
+
+func traceUpdate(m: in Trace, msg: in TMsg): Step[Trace, TEffect] {
+  return match msg { case Done(label) -> { m.log.add(label); stay[Trace, TEffect](m) } }
+}
+
+func traceView(m: in Trace): View[TMsg] {
+  val cs: List[View[TMsg]] = newList()
+  cs.add(paragraph[TMsg]("done:" + joinWith(m.log, ",")))
+  return column[TMsg](cs)
+}
+
+func joinWith(xs: in List[String], sep: in String): String {
+  var acc = ""
+  var i = 0
+  while i < xs.count {
+    if i > 0 {
+      acc = acc + sep
+    }
+    acc = acc + xs[i]
+    i = i + 1
+  }
+  return acc
+}
+
+func traceProgram(): Program[Trace, TMsg, TEffect] {
+  return Program(update = traceUpdate, view = traceView, uiEffect = { _: TEffect -> None })
+}
+
+func runWait(e: in TEffect): Option[TMsg] {
+  return match e { case Wait(label, ms) -> { Time.sleepMillis(ms); Some(value = Done(label = label)) } }
+}
+
+func traceStart(effects: in List[TEffect]): Instance {
+  val empty: List[String] = newList()
+  return Host.instance(traceProgram(), Step(model = Trace(log = empty), effects = effects), runWait)
+}
+
+test "a step's effects run concurrently and their results apply in completion order" {
+  val effects: List[TEffect] = newList()
+  effects.add(Wait(label = "slow", ms = 600))
+  effects.add(Wait(label = "fast", ms = 50))
+  val rec = Recorder()
+  val inst = traceStart(effects)
+  inst.start(RecordingOutbox(rec = rec))
+  val sent = waitForCount(rec, 3)
+  assertEqualInt(sent.count, 3, "render, then one patch per result")
+  assertTrue(contains(sent[1], "done:fast"), "the fast effect's result applies first: " + sent[1])
+  assertTrue(contains(sent[2], "done:fast,slow"), "then the slow one's: " + sent[2])
+}
+
+test "input is handled while an effect is still running" {
+  val effects: List[TEffect] = newList()
+  effects.add(Wait(label = "slow", ms = 1500))
+  val rec = Recorder()
+  val outbox = RecordingOutbox(rec = rec)
+  val inst = traceStart(effects)
+  inst.start(outbox)
+  val before = Time.nowEpochMillis()
+  inst.receive(msg("{\"t\":\"sync\"}"), outbox)
+  val took = Time.nowEpochMillis() - before
+  assertTrue(took < 1000i64, "sync does not wait for the effect (took " + took.toString() + " ms)")
+  assertEqualInt(rec.all().count, 2, "render + resync before the effect's result")
+  val sent = waitForCount(rec, 3)
+  assertTrue(contains(sent[2], "done:slow"), "the effect's result still arrives: " + sent[2])
+}
+
+test "a closed instance drops the results of its running effects" {
+  val effects: List[TEffect] = newList()
+  effects.add(Wait(label = "late", ms = 300))
+  val rec = Recorder()
+  val inst = traceStart(effects)
+  inst.start(RecordingOutbox(rec = rec))
+  inst.close()
+  Time.sleepMillis(800)
+  assertEqualInt(rec.all().count, 1, "only the initial render")
 }

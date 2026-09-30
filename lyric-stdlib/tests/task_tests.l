@@ -23,6 +23,7 @@
 package Std.Task.Tests
 
 import Std.Core
+import Std.Collections
 import Std.Task
 import Std.Testing
 import Std.Time
@@ -146,6 +147,26 @@ func testScopeWithNoChildrenCompletesImmediately(): Unit {
   disposeScope(sc)
 }
 
+// `scopeSpawn` starts the action at once on both targets (the thread pool
+// on dotnet, a virtual thread on the JVM), not when `awaitAll` is called:
+// a caller that never joins, such as a UI host running a session's
+// effects, still gets its actions run.  The JVM kernel used to hold every
+// action until `awaitAll`.
+func testScopeSpawnStartsBeforeAwaitAll(): Unit {
+  val sc = makeScope()
+  val ran: List[Int] = newList()
+  scopeSpawn(sc, { -> ran.add(1) })
+  var waited = 0
+  while ran.count == 0 and waited < 10000 {
+    sleepMillis(10)
+    waited = waited + 10
+  }
+  assertEqualInt(ran.count, 1, "the action ran without awaitAll")
+  val r = await awaitAll(sc)
+  cancelScope(sc)
+  disposeScope(sc)
+}
+
 // ─── runWithin (#7461, D-progress-1021) ────────────────────────────────────────
 // A real, preemptive per-target bound: `Task.Run`/`Task.Wait(int)` on
 // `--target dotnet`, a daemon `Thread` joined with `Thread.join(long)` on
@@ -229,6 +250,7 @@ func main(): Int {
   testMakeCancelSourceTimeoutEventuallyCancels()
   testScopeNormalCompletionRunsEveryChild()
   testScopeWithNoChildrenCompletesImmediately()
+  testScopeSpawnStartsBeforeAwaitAll()
   testRunWithinCompletesWithinBudget()
   testRunWithinReturnsStringResult()
   testRunWithinReturnsRecordResult()

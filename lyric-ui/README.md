@@ -69,6 +69,10 @@ The page, its assets and the session WebSocket (at `wsPath`, default
 returns the same thing as a `lyric-web` router, to merge into an
 application's own routes (merge it last: its shell matches every path).
 
+The effects of a step run concurrently, each on its own task, and their
+result messages are applied one at a time in the order they finish, so a
+slow effect does not hold up the others or the user's input (#7835).
+
 A session survives a dropped connection: the browser reconnects with the
 session id it was given and resumes where it left off, within
 `reconnectGraceMs` (default two minutes). A disconnected session keeps only

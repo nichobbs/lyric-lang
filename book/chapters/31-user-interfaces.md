@@ -166,6 +166,12 @@ pub async func run(e: in Effect, repo: in CustomerRepository): Option[Msg] {
 implementation at its composition root, so tests and the demo can use an
 in-memory store.
 
+The host runs the effects of a step concurrently, each on its own task,
+and applies their messages one at a time in the order they finish. A slow
+effect therefore holds up neither the others nor the user's input. `update`
+never runs concurrently with itself, so it needs no locking. When a session
+ends, effects still running are cancelled and their results are dropped.
+
 ## View
 
 `view` builds a `View[Msg]`: a tree of semantic widgets, not HTML. Each

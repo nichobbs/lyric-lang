@@ -9,22 +9,30 @@
 //! an `Outbox`, and then run the step's effects.
 //!
 //! Ordering: an instance processes one host message at a time and sends the
-//! patches of each step *before* running that step's effects, so a busy
-//! state ("Saving...") is visible while the effect runs.  Effects of a step
-//! run one after another on the calling thread, each result dispatched as
-//! it arrives (docs/65 §15, finding F-15: concurrent effects are future work).
+//! patches of each step *before* its effects run, so a busy state
+//! ("Saving...") is visible while they run.  The effects of a step run
+//! concurrently, each on the instance's task scope (`Std.Task`), outside the
+//! instance lock; their results are applied one at a time, in the order they
+//! complete, each as a step of its own whose effects are started the same way
+//! (docs/65 §15, F-15; #7835).  A slow effect therefore holds up neither the
+//! other effects nor the session's input.
 //!
-//! Every operation on an instance (start, a host message with the effects
-//! it leads to, detach, resume) holds the instance's lock for its whole
-//! duration.  A host may run each connection on its own thread, and a
-//! reconnecting browser can resume a session while the old connection is
-//! still running one of its effects; the lock makes the resume wait for that
-//! step to finish instead of racing it (D138, Q-UI-007).
+//! Every step (start, a host message, an effect result, detach, resume)
+//! holds the instance's lock while it updates the session and sends its
+//! output.  A host may run each connection on its own thread, and a
+//! reconnecting browser can resume a session while an effect is still
+//! running; the lock orders the resume and the effect's result instead of
+//! racing them (D138, Q-UI-007).  A result arriving while the session is
+//! detached updates the model only (a detached session keeps no tree).
+//! `close` (called when the session is evicted or expires) cancels the
+//! scope, and any effect result that arrives afterwards is dropped.
 @runtime_checked
 package Ui.Host
 
 import Std.Core
 import Std.Collections
+import Std.Console as Console
+import Std.Task as Tasks
 import Ui.Core.{View, Step, UiEffect, stay}
 import Ui.Diff.{Patch}
 import Ui.Protocol.{ClientMessage, Hello, EventMsg, Sync, ValueEcho, encodePatches, encodeNavigate, encodeBack, encodeToast}
@@ -88,6 +96,10 @@ pub protected type SessionRegistry {
       }
       if oldest.length == 0 {
         return false
+      }
+      match mapGet(byId, oldest) {
+        case Some(e) -> e.instance.close()
+        case None -> ()
       }
       byId.remove(oldest)
     }
@@ -170,6 +182,10 @@ pub protected type SessionRegistry {
       }
     }
     for id in expired {
+      match mapGet(byId, id) {
+        case Some(e) -> e.instance.close()
+        case None -> ()
+      }
       byId.remove(id)
     }
   }
@@ -186,11 +202,15 @@ pub protected type SessionRegistry {
 ///   the instance lock is held: a reconnect may have resumed the session
 ///   between the disconnect and the call.
 /// - `resume` renders the whole tree again for a reconnected host.
+/// - `close` stops the instance for good: effects still running are
+///   cancelled (cooperatively) and their results dropped.  It never waits
+///   for a running step, so it is safe to call while holding another lock.
 pub record Instance {
   start: (Outbox) -> Unit
   receive: (ClientMessage, Outbox) -> Unit
   detach: (() -> Bool) -> Unit
   resume: (Outbox) -> Unit
+  close: () -> Unit
 }
 
 /// Serialises the operations of one instance: each runs entirely inside
@@ -224,9 +244,15 @@ pub func withLock(lock: in InstanceLock, f: in () -> Unit): Unit {
 /// awaits in place).
 pub func instance[M, Msg, E](p: in Program[M, Msg, E], init: in Step[M, E], run: in (E) -> Option[Msg]): Instance {
   // The session is owned by this instance and only touched while holding
-  // `lock`, so a one-slot list is a sufficient cell.
+  // `lock`, so a one-slot list is a sufficient cell; so is `detached`.
   val cell: List[Session[M, Msg]] = newList()
+  val detached: List[Bool] = newList()
+  detached.add(false)
   val lock = newInstanceLock()
+  // Effects run on this scope; cancelling it is how `close` marks the
+  // instance closed, readable from any thread without taking `lock`.
+  val tasks = Tasks.makeScope()
+  val env = EffectEnv(lock = lock, tasks = tasks, detached = detached)
   val start = { outbox: Outbox ->
     withLock(
       lock,
@@ -234,7 +260,8 @@ pub func instance[M, Msg, E](p: in Program[M, Msg, E], init: in Step[M, E], run:
         val o: Output[M, Msg, E] = Session.start(p, init)
         val s: Session[M, Msg] = o.session
         store(cell, s)
-        drive(p, run, cell, o, outbox)
+        emit(o, outbox)
+        startEffects(p, run, cell, env, o.effects, outbox)
       }
     )
   }
@@ -250,7 +277,8 @@ pub func instance[M, Msg, E](p: in Program[M, Msg, E], init: in Step[M, E], run:
               if not o.dropped {
                 val s: Session[M, Msg] = o.session
                 store(cell, s)
-                drive(p, run, cell, o, outbox)
+                emit(o, outbox)
+                startEffects(p, run, cell, env, o.effects, outbox)
               }
             }
             case Sync -> {
@@ -273,6 +301,7 @@ pub func instance[M, Msg, E](p: in Program[M, Msg, E], init: in Step[M, E], run:
           val current: Session[M, Msg] = cell[0]
           val s: Session[M, Msg] = Session.detach(current)
           store(cell, s)
+          detached[0] = true
         }
       }
     )
@@ -286,12 +315,22 @@ pub func instance[M, Msg, E](p: in Program[M, Msg, E], init: in Step[M, E], run:
           val o: Output[M, Msg, E] = Session.resume(p, current)
           val s: Session[M, Msg] = o.session
           store(cell, s)
+          detached[0] = false
           emit(o, outbox)
         }
       }
     )
   }
-  return Instance(start = start, receive = receive, detach = detach, resume = resume)
+  val close = { -> Tasks.cancelScope(tasks) }
+  return Instance(start = start, receive = receive, detach = detach, resume = resume, close = close)
+}
+
+/// What an instance's effect tasks share: its lock, its task scope, and
+/// whether its session is detached (read and written under `lock`).
+pub record EffectEnv {
+  lock: InstanceLock
+  tasks: Tasks.Scope
+  detached: List[Bool]
 }
 
 pub func store[M, Msg](cell: in List[Session[M, Msg]], s: in Session[M, Msg]): Unit {
@@ -301,42 +340,81 @@ pub func store[M, Msg](cell: in List[Session[M, Msg]], s: in Session[M, Msg]): U
   cell.add(s)
 }
 
-// Sends `first`, then runs its effects (and those of the steps they lead to)
-// in order.
-pub func drive[M, Msg, E](
+/// Starts each of `effects` on the instance's scope.  Each runs outside the
+/// instance lock; its result, if any, is applied as a step of its own
+/// (`applyResult`), in completion order.
+pub func startEffects[M, Msg, E](
   p: in Program[M, Msg, E],
   run: in (E) -> Option[Msg],
   cell: in List[Session[M, Msg]],
-  first: in Output[M, Msg, E],
+  env: in EffectEnv,
+  effects: in List[E],
   outbox: in Outbox,
 ): Unit {
-  emit(first, outbox)
-  val queue: List[E] = newList()
-  val firstEffects: List[E] = first.effects
-  for e in firstEffects {
-    queue.add(e)
+  for e in effects {
+    val effect: E = e
+    Tasks.scopeSpawn(env.tasks, { -> runEffect(p, run, cell, env, effect, outbox) })
   }
-  var i = 0
-  while i < queue.count {
-    val effect: E = queue[i]
-    val reply: Option[Msg] = run(effect)
-    match reply {
-      case Some(msg) -> {
-        val m: Msg = msg
-        val current: Session[M, Msg] = cell[0]
-        val o: Output[M, Msg, E] = Session.dispatch(p, current, m)
-        val s: Session[M, Msg] = o.session
-        store(cell, s)
-        emit(o, outbox)
-        val more: List[E] = o.effects
-        for e in more {
-          queue.add(e)
-        }
-      }
-      case None -> ()
+}
+
+// Runs one effect and applies its result.  An effect that fails is reported
+// and produces no result: nothing awaits these tasks, so a failure would
+// otherwise vanish.
+pub func runEffect[M, Msg, E](
+  p: in Program[M, Msg, E],
+  run: in (E) -> Option[Msg],
+  cell: in List[Session[M, Msg]],
+  env: in EffectEnv,
+  effect: in E,
+  outbox: in Outbox,
+): Unit {
+  if isClosed(env) {
+    return
+  }
+  var reply: Option[Msg] = None
+  try {
+    reply = run(effect)
+  } catch Bug as b {
+    Console.error("lyric-ui: an effect failed: " + b.message)
+  }
+  match reply {
+    case Some(msg) -> {
+      val m: Msg = msg
+      withLock(env.lock, { -> applyResult(p, run, cell, env, m, outbox) })
     }
-    i = i + 1
+    case None -> ()
   }
+}
+
+// Applies an effect's result message under the instance lock.  A closed
+// instance drops it; a detached session updates its model only.
+pub func applyResult[M, Msg, E](
+  p: in Program[M, Msg, E],
+  run: in (E) -> Option[Msg],
+  cell: in List[Session[M, Msg]],
+  env: in EffectEnv,
+  m: in Msg,
+  outbox: in Outbox,
+): Unit {
+  if isClosed(env) or cell.count == 0 {
+    return
+  }
+  val current: Session[M, Msg] = cell[0]
+  val o: Output[M, Msg, E] = Session.dispatch(p, current, m)
+  if env.detached[0] {
+    val s: Session[M, Msg] = Session.detach(o.session)
+    store(cell, s)
+  } else {
+    val s: Session[M, Msg] = o.session
+    store(cell, s)
+    emit(o, outbox)
+  }
+  startEffects(p, run, cell, env, o.effects, outbox)
+}
+
+/// Whether the instance owning `env` has been closed.
+pub func isClosed(env: in EffectEnv): Bool {
+  Tasks.isCancelled(Tasks.scopeToken(env.tasks))
 }
 
 pub func emit[M, Msg, E](o: in Output[M, Msg, E], outbox: in Outbox): Unit {

@@ -19004,6 +19004,7 @@ func lowerBuiltinOrStaticCallMsil(
               ihi = ihi + 1
             }
             seedLambdaLiteralVoidRetMsil(cctx, fctx, callArgExpr(ctorArgs[ci]), innerHint)
+            seedLambdaLiteralFieldRetMsil(cctx, fctx, callArgExpr(ctorArgs[ci]), ctorKey, fldKeyH, outerCtxTyArgs)
             val lowered = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
             castObjectToDelegateMsil(cctx, insns, lowered, innerHint)
             narrowObjectToDeclaredTypeMsil(cctx, insns, lowered, innerHint)
@@ -19022,6 +19023,7 @@ func lowerBuiltinOrStaticCallMsil(
             // concrete instance the field's signature requires.
             pushCollExpect(fctx, innerHint)
             seedLambdaLiteralVoidRetMsil(cctx, fctx, callArgExpr(ctorArgs[ci]), innerHint)
+            seedLambdaLiteralFieldRetMsil(cctx, fctx, callArgExpr(ctorArgs[ci]), ctorKey, fldKeyH, outerCtxTyArgs)
             val loweredC = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
             popCollExpect(fctx)
             castObjectToDelegateMsil(cctx, insns, loweredC, innerHint)
@@ -32870,6 +32872,53 @@ func seedLambdaLiteralVoidRetMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: i
   }
 }
 
+// A lambda literal initialising a function-typed record field returns that
+// field's declared result type, so a bare `None` / `Some(v)` it returns builds
+// the field's closed case class instead of `Option_None<object>`, which the
+// caller's `Option[U]` then fails to cast.  A generic record's field result
+// is taken through the instantiation (`ctxTyArgs`) when it is known.  Seeds
+// the NEXT lambda, like `seedLambdaLiteralVoidRetMsil`, and never overrides a
+// seed another site already chose.
+func seedLambdaLiteralFieldRetMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  expr: in Expr,
+  ctorKey: in String,
+  fldPosKey: in String,
+  ctxTyArgs: in List[MsilType],
+): Unit {
+  match unwrapParenExpr(expr).kind {
+    case ELambda(_, _) -> ()
+    case _ -> return
+  }
+  val fname = match mapGet(cctx.fieldDeclaredNames, fldPosKey) { case Some(n) -> n; case None -> return }
+  val key = ctorKey + "/" + fname
+  val retOpt: Option[MsilType] = match mapGet(cctx.fieldFuncRetTypesOpen, key) {
+    case Some(openRet) -> if ctxTyArgs.count > 0 {
+      Some(value = substituteTypeVarsMsil(openRet, ctxTyArgs))
+    } else {
+      mapGet(cctx.fieldFuncRetTypes, key)
+    }
+    case None -> mapGet(cctx.fieldFuncRetTypes, key)
+  }
+  match retOpt {
+    case Some(retTy) -> {
+      val usable = match retTy {
+        case MObject -> false
+        case MVoid -> false
+        case _ -> not msilTypeHasDanglingTypeVarMsil(retTy)
+      }
+      if usable {
+        val predName = fctx.pkgName + ".__lambda_" + toString(cctx.lambdaTicker.count)
+        if not cctx.lambdaRetTypes.containsKey(predName) {
+          cctx.lambdaRetTypes.add(predName, retTy)
+        }
+      }
+    }
+    case None -> ()
+  }
+}
+
 // The implicit-return tail expression of `block` (its last statement, when
 // that is a bare expression statement).
 func blockTailExprMsil(block: in Block): Option[Expr] {
@@ -45373,6 +45422,10 @@ func registerStdlibRecordLikeType(
               cctx.fieldVarIndices.add(key, ftyVarIdx)
             }
           }
+          // A function-typed field's result type, so a lambda literal
+          // passed for it at construction returns the right closed type
+          // (`seedLambdaLiteralFieldRetMsil`).
+          registerCaseFieldFuncRetMsil(cctx, key, f.ty, packageName, genericNamesOf(decl.generics))
           val byPosKey = typeFqn + "/field" + toString(fpos)
           if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
             cctx.fieldDeclaredNames.add(byPosKey, f.name)
