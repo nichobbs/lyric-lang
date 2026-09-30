@@ -14,6 +14,11 @@ import Std.Testing
 import Std.String as Str
 import Std.Json
 import Std.Encoding
+import Std.File as File
+import Std.Path as Path
+import Std.Environment as Environment
+import Std.Errors
+import Std.Uuid
 import Lyric.Lsp
 
 func openDoc(state: in LspState, uri: in String, text: in String): Unit {
@@ -34,6 +39,59 @@ func hoverAt(state: in LspState, uri: in String, line: in Int, character: in Int
   } else {
     msgs[0]
   }
+}
+
+func openDocMessages(state: in LspState, uri: in String, text: in String): String {
+  val params = "{\"textDocument\":{\"uri\":" + encodeString(uri) + ",\"text\":" + encodeString(text) + "}}"
+  val req = "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":" + params + "}"
+  val msgs = lspHandle(state, req)
+  var all = ""
+  var i = 0
+  while i < msgs.count {
+    all = all + msgs[i]
+    i = i + 1
+  }
+  all
+}
+
+func tempBase(): String {
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
+}
+
+// #7512: the server runs the rewrites `lyric build` runs before its type
+// check (`pipePrepareForCheck`).  On the raw parse `PkgB.wantB(...)` is a
+// member chain on an unknown value and was accepted silently; rewritten, it
+// is a qualified call checked against `PkgB.wantB`, as in the build.
+test "a qualified call into a workspace package is checked in the editor as in the build" {
+  val dir = Path.join(tempBase(), "lyric-lsp-qualified-" + uuidToString(newUuid()))
+  match File.createDir(dir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create temp dir " + dir + ": " + IOError.message(e))
+  }
+  val depPath = Path.join(dir, "pkgb.l")
+  match File.writeText(depPath, "package PkgB\npub func wantB(x: in Int): Int { x }\n") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write " + depPath + ": " + IOError.message(e))
+  }
+  val state = lspInit()
+  state.wsIndex.add("PkgB", depPath)
+  val bad = openDocMessages(
+    state,
+    "file:///lsp_self_test_qualified_bad.l",
+    "package App\nimport PkgB\nfunc g(): Int { PkgB.wantB(\"s\") }\n"
+  )
+  val good = openDocMessages(
+    state,
+    "file:///lsp_self_test_qualified_ok.l",
+    "package App\nimport PkgB\nfunc g(): Int { PkgB.wantB(1) }\n"
+  )
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertTrue(Str.contains(bad, "T0043"), "String argument to an Int parameter: T0043")
+  assertTrue(Str.contains(good, "publishDiagnostics"), "diagnostics are published")
+  assertFalse(Str.contains(good, "T0043"), "Int argument: no T0043")
 }
 
 test "hover on an internal record reports internal, not pub" {

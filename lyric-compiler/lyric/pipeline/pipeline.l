@@ -245,32 +245,73 @@ pub func pipeExpandAndRewrite(
     }
     f = weRes.file
   }
-  // A destructuring module-level `val` becomes one `val` per bound name
-  // (#7763) before any pass indexes module values, so every backend and the
-  // checker see the same single-name items; a refutable pattern (T0144)
-  // gates here, whether or not the type check that follows is fatal.
-  val mvRes = desugarModuleValPatterns(f)
-  if gate(label, origins, mvRes.diagnostics) {
+  val prep = pipePrepareForCheck(f, runStubbable)
+  if gate(label, origins, prep.diagnostics) {
     return None
   }
-  f = mvRes.file
-  f = Aliases.rewriteFile(f)
-  if runStubbable {
-    f = Stubbable.stubbableRewriteFile(f)
-  }
-  val idRes = ImplDefaults.inheritDefaultsFile(f)
-  if gate(label, origins, idRes.diagnostics) {
-    return None
-  }
-  f = idRes.file
-  // Record/opaque `invariant:` construction checkers (#7222): synthesized
-  // before type checking so they are checked, and exported, like any
-  // function of the declaring package.
-  f = synthesizeInvariantCheckers(f)
+  f = prep.file
   if injectWeave {
     f = Weaver.injectWeaveImports(f)
   }
   Some(value = f)
+}
+
+/// A file after the rewrites that run between parse and type check, and
+/// the diagnostics they reported.  `file` is meaningful only when
+/// `diagnostics` holds no error.
+pub record CheckReadyFile {
+  file: SourceFile
+  diagnostics: List[Diagnostic]
+}
+
+func hasErrorDiagnostic(diags: in List[Diagnostic]): Bool {
+  var i = 0
+  while i < diags.count {
+    if diags[i].severity == DiagError {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// The source rewrites the type checker expects to have run: the build
+/// (`pipeExpandAndRewrite`) and the language server both call this, so the
+/// editor reports what `lyric build` reports (#7512: the server checked the
+/// raw parse, where `Pkg.f(...)` is still a member chain rather than a
+/// qualified call).  Stops at the first pass that reports an error.
+pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckReadyFile {
+  // A destructuring module-level `val` becomes one `val` per bound name
+  // (#7763) before any pass indexes module values, so every backend and the
+  // checker see the same single-name items; a refutable pattern (T0144)
+  // stops here, whether or not the type check that follows is fatal.
+  val mvRes = desugarModuleValPatterns(file)
+  val diags: List[Diagnostic] = newList()
+  var i = 0
+  while i < mvRes.diagnostics.count {
+    diags.add(mvRes.diagnostics[i])
+    i = i + 1
+  }
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = file, diagnostics = diags)
+  }
+  var f = Aliases.rewriteFile(mvRes.file)
+  if runStubbable {
+    f = Stubbable.stubbableRewriteFile(f)
+  }
+  val idRes = ImplDefaults.inheritDefaultsFile(f)
+  var j = 0
+  while j < idRes.diagnostics.count {
+    diags.add(idRes.diagnostics[j])
+    j = j + 1
+  }
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = f, diagnostics = diags)
+  }
+  // Record/opaque `invariant:` construction checkers (#7222): synthesized
+  // before type checking so they are checked, and exported, like any
+  // function of the declaring package.
+  CheckReadyFile(file = synthesizeInvariantCheckers(idRes.file), diagnostics = diags)
 }
 
 /// The check-through-mono half of the middle end on one (already rewritten)
