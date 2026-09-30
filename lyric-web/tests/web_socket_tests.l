@@ -9,11 +9,12 @@
 //! `101` and serves frames on it.  Ordinary routes keep working on the same
 //! port, including on a keep-alive connection that later upgrades.
 //!
-//! dotnet-only (the client dials `Std.TcpHost`, which has no JVM kernel); CI
-//! runs this manifest's tests with the default dotnet feature set.  The JVM
-//! mount is covered by the browser end-to-end test of `examples/
-//! ui-customers` (`scripts/ci/ui-browser-e2e.sh`), whose page and socket
-//! share one port.
+//! dotnet-only (the client dials `Std.TcpHost`, which has no JVM kernel), so
+//! the module is gated on the `dotnet` feature and a `--target jvm` run of
+//! this manifest skips it.  The JVM mount is covered by the browser
+//! end-to-end test of `examples/ui-customers` (`scripts/ci/ui-browser-e2e.sh`),
+//! whose page and socket share one port.
+@cfg(feature = "dotnet")
 @test_module
 package Web.WebSocketTests
 
