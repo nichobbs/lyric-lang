@@ -392,6 +392,7 @@ pub func compileToJar(
     lineOrigins = noOrigins,
     awaitInTryIsHazard = false,
     bindListLiteralTypes = false,
+    awaitAsyncCalls = false,
     contractsEnabled = true,
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = recvClasses
@@ -542,6 +543,7 @@ func runMiddleEnd(
     lineOrigins = lineOrigins,
     awaitInTryIsHazard = false,
     bindListLiteralTypes = false,
+    awaitAsyncCalls = false,
     contractsEnabled = contractsEnabled,
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut

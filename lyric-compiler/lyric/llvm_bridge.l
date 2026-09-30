@@ -478,6 +478,7 @@ pub func compileToNativeWithFlags(
     lineOrigins = noSingleFileOrigins,
     awaitInTryIsHazard = true,
     bindListLiteralTypes = true,
+    awaitAsyncCalls = false,
     contractsEnabled = contractsEnabled,
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = optsRecvOut
@@ -871,6 +872,7 @@ pub func compileProjectToNativeWithFlags(
       lineOrigins = nativePkgOriginsAt(originsByPkg, mei),
       awaitInTryIsHazard = true,
       bindListLiteralTypes = true,
+      awaitAsyncCalls = false,
       contractsEnabled = contractsEnabled,
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut

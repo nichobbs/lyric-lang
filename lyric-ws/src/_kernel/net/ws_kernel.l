@@ -45,6 +45,7 @@
 package Ws.Kernel.Net
 
 import Std.Core
+import Std.Console
 import Resilience
 import Std.Collections
 import Std.Encoding
@@ -283,7 +284,15 @@ func invokeOnOpen(
     return
   }
   match meta.onOpen {
-    case Some(cb) -> cb(connId, path, query, remoteAddress, headers)
+    case Some(cb) -> {
+      try {
+        cb(connId, path, query, remoteAddress, headers);
+        ()
+      } catch Exception as e {
+        reportHandlerFailure(handle, connId, "onOpen", e.message);
+        ()
+      }
+    }
     case None -> ()
   }
 }
@@ -294,7 +303,15 @@ func invokeOnMessage(handle: in Int, connId: in String, msgType: in String, data
     return
   }
   match meta.onMessage {
-    case Some(cb) -> cb(connId, msgType, data)
+    case Some(cb) -> {
+      try {
+        cb(connId, msgType, data);
+        ()
+      } catch Exception as e {
+        reportHandlerFailure(handle, connId, "onMessage", e.message);
+        ()
+      }
+    }
     case None -> ()
   }
 }
@@ -305,8 +322,31 @@ func invokeOnClose(handle: in Int, connId: in String, code: in Int, reason: in S
     return
   }
   match meta.onClose {
-    case Some(cb) -> cb(connId, code, reason)
+    case Some(cb) -> {
+      try {
+        cb(connId, code, reason);
+        ()
+      } catch Exception as e {
+        reportHandlerFailure(handle, connId, "onClose", e.message);
+        ()
+      }
+    }
     case None -> ()
+  }
+}
+
+// A handler callback that throws must not end the connection's read loop
+// unobserved: the failure is reported through `onError` and the connection
+// carries on.  An `onError` that throws as well is written to stderr, the
+// only place left to report it.
+func reportHandlerFailure(handle: in Int, connId: in String, stage: in String, message: in String): Unit {
+  val text = "the " + stage + " handler failed: " + message
+  try {
+    invokeOnError(handle, connId, text);
+    ()
+  } catch Exception as e {
+    Console.error("lyric-ws: connection " + connId + ": " + text + "; the onError handler also failed: " + e.message);
+    ()
   }
 }
 
@@ -401,7 +441,10 @@ func writeMessage(state: in ConnState, conn: in Conn, messageType: in String, da
 val maxHandshakeBytes: Int = 16384
 
 func performHandshake(
-  conn: in Conn, expectedPath: in String, allowedOrigins: in slice[String]
+  conn: in Conn,
+  expectedPath: in String,
+  allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
 ): Result[HandshakeResult, String] {
   val acc: List[Byte] = newList()
   var found = false
@@ -439,7 +482,7 @@ func performHandshake(
       if result.request.path != expectedPath {
         val _ = hostWrite(conn, buildRejectResponse(404, "Not Found"))
         Err(error = "path mismatch: expected '" + expectedPath + "', got '" + result.request.path + "'")
-      } else if not requestOriginAllowed(result.request, allowedOrigins) {
+      } else if not requestOriginAllowedFor(result.request, allowedOrigins, sameHostPorts) {
         // Cross-site WebSocket hijacking defence (#7243): refused before the
         // upgrade, so the page's cookies never reach an open socket.
         val _ = hostWrite(conn, buildRejectResponse(403, "Forbidden"))
@@ -592,8 +635,9 @@ func handleConnection(
   maxMessageSizeBytes: in Int,
   pingIntervalMs: in Int,
   allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
 ): Unit {
-  match performHandshake(conn, expectedPath, allowedOrigins) {
+  match performHandshake(conn, expectedPath, allowedOrigins, sameHostPorts) {
     case Err(_) -> hostClose(conn)
     case Ok(hsResult) -> {
       val connId = uuidToString(newUuid())
@@ -620,12 +664,17 @@ func wsAcceptLoop(
   maxMessageSizeBytes: in Int,
   pingIntervalMs: in Int,
   allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
 ): Unit {
   var running = true
   while running {
     match hostAccept(transport) {
       case Ok(conn) -> {
-        val _ = taskRun({ -> handleConnection(handle, conn, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins) })
+        val _ = taskRun(
+          { ->
+            handleConnection(handle, conn, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins, sameHostPorts)
+          }
+        )
       }
       case Err(e) -> match e {
         case AcceptFailed(_) -> {
@@ -652,6 +701,7 @@ pub func startServer(
   path: in String,
   maxMessageSizeBytes: in Int,
   allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
   onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
@@ -684,7 +734,11 @@ pub func startServer(
         hostStopListener(transport)
         return Err(error = "registry handle collision (unreachable)")
       }
-      val _ = taskRun({ -> wsAcceptLoop(handle, transport, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins) })
+      val _ = taskRun(
+        { ->
+          wsAcceptLoop(handle, transport, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins, sameHostPorts)
+        }
+      )
       Ok(value = handle)
     }
   }

@@ -2,7 +2,8 @@
 # ---------------------------------------------------------------------------
 # ui-jvm-suites.sh — the UI library on JVM (#7378, D139): the erased-receiver
 # JVM self-test that pins the backend fixes it needed, then the lyric-forms,
-# lyric-ui and examples/ui-customers suites on --target jvm.  lyric-ui's web
+# lyric-ui and examples/ui-customers suites on --target jvm, then the
+# browser end-to-end test against the JVM host.  lyric-ui's web
 # host reaches Undertow only through lyric-web and lyric-ws, so the restore
 # here also exercises transitive [maven] propagation (docs/38 §4).
 # ---------------------------------------------------------------------------
@@ -28,3 +29,5 @@ export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
 for manifest in lyric-forms lyric-ui examples/ui-customers; do
   "$lyric_bin" test --manifest "$manifest/lyric.toml" --target jvm
 done
+# The example driven in headless Chromium against the JVM host (#7836).
+LYRIC_CLI_PATH="$lyric_bin" bash scripts/ci/ui-browser-e2e.sh --target jvm

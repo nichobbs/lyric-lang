@@ -688,6 +688,41 @@ func testBuildGenericInterface(): Unit {
   assertTrue(Str.contains(d.repr, "func get()"), "interface: method get() present")
 }
 
+// An interface's default method rides in the repr with its body, so it
+// re-parses as a default (`IMFunc`), not an abstract member (#7575 review).
+func testBuildInterfaceDefaultMethod(): Unit {
+  val src = "package P\n\npub interface Sized {\n  func size(): Int\n  func isEmpty(): Bool {\n    self.size() == 0\n  }\n  func twice(): Int = self.size() * 2\n}\n"
+  val c = buildContractFromFile(parse(src).file, "1.0.0")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "interface", "Sized"),
+    "buildContractFromFile: interface Sized missing"
+  )
+  val rt = parse("package P\n\n" + d.repr + "\n")
+  assertEqualInt(rt.diagnostics.count, 0, "interface default: repr re-parses (got " + d.repr + ")")
+  var sigs = 0
+  var defaults = 0
+  for it in rt.file.items {
+    match it.kind {
+      case IInterface(ix) -> {
+        for m in ix.members {
+          match m {
+            case IMSig(_) -> {
+              sigs = sigs + 1
+            }
+            case IMFunc(_) -> {
+              defaults = defaults + 1
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  assertEqualInt(sigs, 1, "interface default: one abstract member (got " + d.repr + ")")
+  assertEqualInt(defaults, 2, "interface default: both defaults kept as defaults (got " + d.repr + ")")
+}
+
 // `buildContractFromFile` covers unions with mixed positional + named
 // payloads — UFPos via the bare-type form (`Circle(Int)`) and UFNamed
 // via the labelled form (`Square(side: Int)`).  Both branches of
@@ -1126,6 +1161,10 @@ test "buildContractFromFile protected" {
 
 test "buildContractFromFile generic interface" {
   testBuildGenericInterface()
+}
+
+test "buildContractFromFile interface default methods" {
+  testBuildInterfaceDefaultMethod()
 }
 
 test "buildContractFromFile union mixed fields" {

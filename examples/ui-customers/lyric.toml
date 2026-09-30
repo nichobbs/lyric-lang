@@ -6,10 +6,11 @@
 #   logic    Customers.Edit.Logic    Model / Msg / Effect / update (pure)
 #   effects  Customers.Edit.Effects  Effect -> async Msg (the only I/O)
 #   view     Customers.Edit.View     Model -> View[Msg]
+#   (the list screen has its own logic, effects and view: Customers.List.*)
 #
 # Test:  lyric test --manifest examples/ui-customers/lyric.toml
 # Run:   lyric run  --manifest examples/ui-customers/lyric.toml
-#        then open http://localhost:8080/customers/1
+#        then open http://localhost:8080/customers
 
 [package]
 name        = "Lyric.Examples.UiCustomers"
@@ -29,11 +30,15 @@ output_assembly = "UiCustomers.dll"
 "Customers.Edit.Logic"   = "src/edit_logic.l"
 "Customers.Edit.Effects" = "src/edit_effects.l"
 "Customers.Edit.View"    = "src/edit_view.l"
+"Customers.List.Logic"   = "src/list_logic.l"
+"Customers.List.Effects" = "src/list_effects.l"
+"Customers.List.View"    = "src/list_view.l"
 "Customers.Store"        = "src/store.l"
 "Customers"              = "src/main.l"
 
 [project.tests]
 "Customers.EditTests" = "tests/edit_tests.l"
+"Customers.ListTests" = "tests/list_tests.l"
 
 [dependencies]
 "Lyric.Forms"   = { path = "../../lyric-forms" }

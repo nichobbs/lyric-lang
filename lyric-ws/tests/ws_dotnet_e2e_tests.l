@@ -528,3 +528,69 @@ test "loopback: an empty peer close is answered with an empty close, never code 
   hostClose(conn)
   val _ = stopServer(started.registry)
 }
+
+// A handler that throws must not end the connection unobserved: the kernel
+// reports it through `onError` and keeps reading (docs/65 §15, F-17, where
+// a failing UI dispatch left the page waiting with nothing logged).
+record FailureLog {
+  var registry: Option[NativeRegistry] = None
+  var errors: List[String] = newList()
+}
+
+record PanickyHandler {
+  log: FailureLog
+}
+
+impl WsHandler for PanickyHandler {
+  func onOpen(ctx: in WsContext): Result[Unit, WsError] {
+    Ok(())
+  }
+
+  func onMessage(ctx: in WsContext, msg: in WsMessage): Result[Unit, WsError] {
+    match msg {
+      case Text(text) -> {
+        if text == "boom" {
+          panic("handler exploded")
+        }
+        match self.log.registry {
+          case Some(registry) -> {
+            val _ = registry.send(ctx.connectionId, Text(text = "echo:" + text))
+            Ok(())
+          }
+          case None -> Ok(())
+        }
+      }
+      case _ -> Ok(())
+    }
+  }
+
+  func onClose(ctx: in WsContext, code: in WsCloseCode): Unit {
+    ()
+  }
+
+  func onError(ctx: in WsContext, error: in WsError): Unit {
+    self.log.errors.add(error.message)
+  }
+}
+
+test "loopback: a handler that throws is reported to onError and the connection keeps working" {
+  val log = FailureLog()
+  val registry = match startServer("127.0.0.1", 19508, "/ws", PanickyHandler(log = log)) {
+    case Ok(r) -> r
+    case Err(e) -> panic("startServer failed: " + e.message)
+  }
+  log.registry = Some(registry)
+  threadSleep(100)
+  val conn = dial("127.0.0.1", 19508)
+  val _ = clientHandshake(conn, "/ws")
+  val reader = ClientReader()
+  clientSendMasked(conn, 1, true, encodeUtf8("boom"))
+  clientSendMasked(conn, 1, true, encodeUtf8("still here"))
+  val echoed = clientReadFrame(conn, reader)
+  assertEqual(payloadText(echoed), "echo:still here", "the next message is still handled")
+  assertEqualInt(log.errors.count, 1, "the failure reached onError once")
+  assertTrue(contains(log.errors[0], "handler exploded"), "onError carries the failure: " + log.errors[0])
+  assertTrue(contains(log.errors[0], "onMessage"), "and names the callback that failed")
+  hostClose(conn)
+  val _ = stopServer(registry)
+}

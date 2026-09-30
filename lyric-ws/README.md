@@ -148,6 +148,7 @@ Ws.startServerWithOptions(host, port, path, options: WsServerOptions, handler)
 pub record WsServerOptions {
   maxMessageSizeBytes: Int = 65536        // 1024 to 67108864
   allowedOrigins: slice[String] = []
+  sameHostPorts: slice[Int] = []
 }
 ```
 
@@ -162,9 +163,21 @@ holds:
 - its `Origin` host and port equal its `Host` header (same origin; this
   is the default when `allowedOrigins` is empty);
 - its `Origin` equals an entry of `allowedOrigins`, ignoring ASCII case;
+- its `Origin` host equals the `Host` header's host and its port is one of
+  `sameHostPorts` (a page the same application serves on a sibling port,
+  such as an HTTP listener next to this WebSocket listener; a missing port
+  means the scheme's default);
 - `allowedOrigins` contains `"*"`, which disables the check.
 
-The policy is `Ws.Handshake.originAllowed` and is the same on both targets.
+The policy is `Ws.Handshake.originAllowedFor` and is the same on both
+targets.
+
+**Handler failures.** If `onOpen`, `onMessage` or `onClose` throws (a
+`panic`, a failed contract, a host exception), the kernel reports it to the
+handler's `onError` as "the onMessage handler failed: ..." and keeps the
+connection open; the next message is handled normally. An `onError` that
+throws as well is written to stderr. The behaviour is the same on both
+targets.
 
 ### Sending and closing
 

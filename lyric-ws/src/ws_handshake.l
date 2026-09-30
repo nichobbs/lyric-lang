@@ -21,6 +21,7 @@ import Std.Collections
 import Std.String
 import Std.Encoding
 import Std.Hash
+import Std.Parse
 
 // The RFC 6455 §1.3 magic GUID appended to the client's Sec-WebSocket-Key
 // before hashing.
@@ -266,6 +267,21 @@ pub func parseHandshakeRequest(bytes: in slice[Byte]): Result[HandshakeResult, S
 ///   the same-origin default.
 @stable(since = "0.2")
 pub func originAllowed(origin: in String, host: in String, allowedOrigins: in slice[String]): Bool {
+  originAllowedFor(origin, host, allowedOrigins, [])
+}
+
+/// `originAllowed`, also allowing an origin on the same host as the `Host`
+/// header whose port is one of `sameHostPorts`: a page served by the same
+/// application on a sibling port, such as an HTTP listener next to a
+/// separate WebSocket listener.  The host must still match exactly, so a
+/// page on another site is refused as before.
+@stable(since = "0.2")
+pub func originAllowedFor(
+  origin: in String,
+  host: in String,
+  allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
+): Bool {
   if origin.length == 0 {
     return true
   }
@@ -278,7 +294,62 @@ pub func originAllowed(origin: in String, host: in String, allowedOrigins: in sl
   if host.length == 0 {
     return false
   }
-  toLower(originAuthority(origin)) == toLower(host)
+  val authority = toLower(originAuthority(origin))
+  if authority == toLower(host) {
+    return true
+  }
+  if sameHostPorts.length == 0 or authority.length == 0 {
+    return false
+  }
+  if authorityHost(authority) != authorityHost(toLower(host)) {
+    return false
+  }
+  val port = authorityPort(authority, originScheme(lowered))
+  for p in sameHostPorts {
+    if p == port {
+      return true
+    }
+  }
+  false
+}
+
+// The scheme of a serialized origin (`http` in `http://host:8080`).
+func originScheme(origin: in String): String {
+  match indexOf(origin, "://") {
+    case Some(i) -> substring(origin, 0, i)
+    case None -> ""
+  }
+}
+
+// The host of a `host[:port]` authority, including the brackets of an IPv6
+// literal (`[::1]:8080` -> `[::1]`).
+func authorityHost(authority: in String): String {
+  if startsWith(authority, "[") {
+    return match indexOf(authority, "]") {
+      case Some(close) -> substring(authority, 0, close + 1)
+      case None -> authority
+    }
+  }
+  match indexOf(authority, ":") {
+    case Some(colon) -> substring(authority, 0, colon)
+    case None -> authority
+  }
+}
+
+// The port of a `host[:port]` authority; the scheme's default when absent,
+// and -1 when it is not a number.
+func authorityPort(authority: in String, scheme: in String): Int {
+  val afterHost = substring(authority, authorityHost(authority).length)
+  if afterHost.length == 0 {
+    return if scheme == "https" { 443 } else { 80 }
+  }
+  if not startsWith(afterHost, ":") {
+    return -1
+  }
+  match parseOptInt(substring(afterHost, 1)) {
+    case Some(n) -> n
+    case None -> -1
+  }
 }
 
 // The `host[:port]` part of a serialized origin (`scheme://host[:port]`), or
@@ -300,7 +371,17 @@ func originAuthority(origin: in String): String {
 /// `originAllowed` applied to a parsed request's `Origin` and `Host` headers.
 @stable(since = "0.2")
 pub func requestOriginAllowed(request: in HandshakeRequest, allowedOrigins: in slice[String]): Bool {
+  requestOriginAllowedFor(request, allowedOrigins, [])
+}
+
+/// `originAllowedFor` applied to a parsed request's `Origin` and `Host` headers.
+@stable(since = "0.2")
+pub func requestOriginAllowedFor(
+  request: in HandshakeRequest,
+  allowedOrigins: in slice[String],
+  sameHostPorts: in slice[Int],
+): Bool {
   val origin = match mapGet(request.headers, "origin") { case Some(o) -> o; case None -> "" }
   val host = match mapGet(request.headers, "host") { case Some(h) -> h; case None -> "" }
-  originAllowed(origin, host, allowedOrigins)
+  originAllowedFor(origin, host, allowedOrigins, sameHostPorts)
 }

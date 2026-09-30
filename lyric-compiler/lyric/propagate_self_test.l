@@ -21,6 +21,7 @@ import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Propagate
+import Lyric.TypeChecker
 
 // A Result-producing helper whose Err carries a distinguishing label, so the
 // tests can prove WHICH `?` short-circuited (i.e. evaluation order).
@@ -713,3 +714,43 @@ test "cyclic alias classifies as PropOther without looping (#1814)" {
 // involved (and module-level generic alias parameters fail T0010 in the
 // self-hosted type checker).  Tracked in #3267; the alias classification
 // itself is fully covered by the AST-level tests above.
+// ── F0046: a direct async call inside try/catch/finally in an async func
+//    (#7838) ─────────────────────────────────────────────────────────────────
+// On a target that spells out the implicit await of a direct async call, the
+// await inside an async function's protected region would be a suspend point
+// there.  The call sites come from the type checker, as in the pipeline.
+func propagateWithAsyncCalls(src: in String): PropagateResult {
+  val file = parse(src).file
+  val sites = check(file).symbols.asyncCallSites
+  val noRecords: List[RecordDecl] = newList()
+  lowerPropagateFileWithAsyncCalls(file, noRecords, true, sites)
+}
+
+val asyncTwiceSrc = "async func twice(n: in Int): Int {\n  n * 2\n}\n"
+
+test "F0046: a direct async call in a try body of an async function" {
+  val src = "package P\n" + asyncTwiceSrc +
+    "async func f(n: in Int): Int {\n  try {\n    val x = twice(n)\n    x\n  } catch Bug as b {\n    0\n  }\n}\n"
+  val result = propagateWithAsyncCalls(src)
+  assertTrue(propHasDiag(result.diagnostics, "F0046"), "F0046 for the call inside the try body")
+  assertFalse(propHasDiag(result.diagnostics, "F0045"), "not the ? diagnostic")
+}
+
+test "F0046: not for an explicit await before the try, nor in a synchronous function" {
+  val before = "package P\n" + asyncTwiceSrc +
+    "async func f(n: in Int): Int {\n  val x = await twice(n)\n  try {\n    x\n  } catch Bug as b {\n    0\n  }\n}\n"
+  assertFalse(propHasDiag(propagateWithAsyncCalls(before).diagnostics, "F0046"), "awaited before the try")
+  val sync = "package P\n" + asyncTwiceSrc +
+    "func f(n: in Int): Int {\n  try {\n    twice(n)\n  } catch Bug as b {\n    0\n  }\n}\n"
+  assertFalse(
+    propHasDiag(propagateWithAsyncCalls(sync).diagnostics, "F0046"),
+    "a blocking wait in a synchronous function"
+  )
+}
+
+test "F0046: not on a target that awaits direct calls itself" {
+  val src = "package P\n" + asyncTwiceSrc +
+    "async func f(n: in Int): Int {\n  try {\n    twice(n)\n  } catch Bug as b {\n    0\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file, true)
+  assertFalse(propHasDiag(result.diagnostics, "F0046"), "no call sites, no implicit await")
+}

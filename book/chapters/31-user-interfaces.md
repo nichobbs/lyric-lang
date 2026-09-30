@@ -100,7 +100,7 @@ runtime, which interprets it itself:
 | `Navigate(url)` | moves to another screen |
 | `Back` | returns to the previous screen |
 | `Confirm(question, onYes)` | shows a yes/no dialog; `onYes` is dispatched on yes |
-| `Notify(message, level)` | shows a toast (`Info`, `Success`, `Warning`, `Error`) |
+| `Notify(message, level)` | shows a toast (`Info`, `Success`, `Warning`, `Error`); a toast shown with a navigation stays up on the next page |
 
 A screen wraps them in one case of its own `Effect` (here `Ui`) and tells
 the runtime how to find them:
@@ -361,12 +361,22 @@ func main(): Unit {
 ```
 
 `route` maps the URL a browser opened to a screen instance, or `None` for
-"not found". Run the example and open the printed address:
+"not found". The example serves two screens: the customer list at
+`/customers` and the editor at `/customers/{id}`, which returns to the
+list after a save or a cancel. Run it and open the printed address:
 
 ```sh
 lyric run --manifest examples/ui-customers/lyric.toml
-# Customers: http://localhost:8080/customers/1
+# Customers: http://localhost:8080/customers
 ```
+
+`scripts/ci/ui-browser-e2e.sh` drives the same example in headless
+Chromium with Playwright: it edits, saves, checks the toast on the list
+page, and drops the socket to check that the session resumes.
+
+An async effect runner is called directly: `Effects.run(e, repo)` is an
+`async func`, and a direct call to one waits for its result wherever it
+appears, including a lambda body like this one.
 
 ### Host configuration
 

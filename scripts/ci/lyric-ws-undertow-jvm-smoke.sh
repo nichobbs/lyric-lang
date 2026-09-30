@@ -72,6 +72,23 @@ n = rest[1] & 0x7F
 while len(rest) < 2 + n:
     rest += s.recv(4096)
 print(rest[2:2 + n].decode())
+rest = rest[2 + n:]
+# A client-initiated close is answered with a close frame carrying the same
+# status code (RFC 6455 5.5.1): Undertow's receive() API leaves that to us.
+close = (1000).to_bytes(2, "big") + b"bye"
+mask = os.urandom(4)
+s.sendall(bytes([0x88, 0x80 | len(close)]) + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(close)))
+while len(rest) < 2:
+    chunk = s.recv(4096)
+    if not chunk:
+        raise SystemExit("connection closed without a close frame")
+    rest += chunk
+n = rest[1] & 0x7F
+while len(rest) < 2 + n:
+    rest += s.recv(4096)
+if rest[0] & 0x0F != 8:
+    raise SystemExit("expected a close frame, got opcode %d" % (rest[0] & 0x0F))
+print("close:%d" % int.from_bytes(rest[2:4], "big"))
 PY
 )"
 sleep 0.5
@@ -83,7 +100,8 @@ fail=0
 [ "$unlisted" = "403" ] || { echo "::error::unlisted origin returned HTTP $unlisted, expected 403"; fail=1; }
 grep -q "OPEN user-agent=ws-smoke-agent" /tmp/ws_jvm_origin_smoke.run.log ||
   { echo "::error::handshake headers did not reach onOpen"; fail=1; }
-[ "$echo" = "echo:hello" ] || { echo "::error::text round trip returned '$echo', expected 'echo:hello'"; fail=1; }
+expected_echo="$(printf 'echo:hello\nclose:1000')"
+[ "$echo" = "$expected_echo" ] || { echo "::error::text round trip and close returned '$echo', expected 'echo:hello' then 'close:1000'"; fail=1; }
 if grep -q "AbstractMethodError\|NoClassDefFoundError" /tmp/ws_jvm_origin_smoke.run.log; then
   echo "::error::the server logged a linkage error"
   fail=1
@@ -92,4 +110,4 @@ if [ "$fail" != 0 ]; then
   tail -40 /tmp/ws_jvm_origin_smoke.run.log
   exit 1
 fi
-echo "lyric-ws Undertow JVM smoke passed (Origin policy 5/5, onOpen headers, text round trip)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+echo "lyric-ws Undertow JVM smoke passed (Origin policy 5/5, onOpen headers, text round trip, close answered)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

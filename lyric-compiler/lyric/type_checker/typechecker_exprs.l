@@ -2802,6 +2802,21 @@ func recordGeneratorCallSite(tbl: in SymbolTable, span: in Span, isGen: in Bool)
   }
 }
 
+// #7838: note whether the call at `span` binds to an `async func` that is not
+// a generator.  Cleared and set by the `ECall` arm exactly like
+// `recordGeneratorCallSite`, so a re-inference of the same call leaves the
+// last resolution's answer.
+func recordAsyncCallSite(tbl: in SymbolTable, span: in Span, isAsyncCall: in Bool): Unit {
+  val key = recordCopySiteKey(span)
+  if isAsyncCall {
+    if not tbl.asyncCallSites.containsKey(key) {
+      tbl.asyncCallSites.add(key, true)
+    }
+  } else if tbl.asyncCallSites.containsKey(key) {
+    tbl.asyncCallSites.remove(key)
+  }
+}
+
 // #7801: note whether the call at `span` binds to one of the stdlib's
 // evidence-free collection constructors (see
 // `SymbolTable.emptyCollectionCtorSites`).  Cleared and set by the `ECall`
@@ -8711,9 +8726,11 @@ func inferExprCore(
       }
       recordGeneratorCallSite(tbl, e.span, false)
       recordEmptyCollectionCtorSite(tbl, e.span, false)
+      recordAsyncCallSite(tbl, e.span, false)
       match directSig {
         case Some(sig) -> {
           recordGeneratorCallSite(tbl, e.span, sig.isGenerator)
+          recordAsyncCallSite(tbl, e.span, sig.isAsync and not sig.isGenerator)
           recordEmptyCollectionCtorSite(tbl, e.span, isStdEmptyCollectionCtor(sig, fn))
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
@@ -8762,6 +8779,7 @@ func inferExprCore(
               case None -> match methodPick {
                 case Some(mp) -> {
                   recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
+                  recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
                   checkContractCallPure(sc, diag, mp.sig, fn, e.span)
                   checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
                   checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
@@ -8802,7 +8820,8 @@ func inferExprCore(
                     }
                   }
                   match fnT {
-                    case TyFunction(paramTypes, ret, _) -> {
+                    case TyFunction(paramTypes, ret, fnIsAsync) -> {
+                      recordAsyncCallSite(tbl, e.span, fnIsAsync)
                       val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
                       if argTypes.count > paramTypes.count or argTypes.count < minArgs {
                         val expectedMsg = if minArgs == paramTypes.count {
@@ -10240,6 +10259,31 @@ func pkgMatchesQualifier(pkg: in String, qualifier: in String): Bool {
   pkg.length > 0 and (pkg == qualifier or pkg.endsWith("." + qualifier))
 }
 
+// Every function named `name` with `arity` parameters, from every package:
+// the non-generic ones first, then the generic ones.  A qualified call picks
+// among them by package.  The indexed `arityKey@i` slots hold non-generic
+// signatures only (a generic's type variables match any argument, so there
+// it would shadow a concrete overload), which left a generic function of the
+// named package unreachable and bound `Pkg.f(...)` to another package's
+// same-named function.
+func qualifiedCallCandidates(
+  sigs: in Map[String, ResolvedSignature], name: in String, arity: in Int
+): List[ResolvedSignature] {
+  val all = gatherOverloadCandidates(sigs, byNameSigKey(name))
+  val acc: List[ResolvedSignature] = newList()
+  for c in all {
+    if c.params.count == arity and c.generics.count == 0 {
+      acc.add(c)
+    }
+  }
+  for c in all {
+    if c.params.count == arity and c.generics.count > 0 {
+      acc.add(c)
+    }
+  }
+  acc
+}
+
 func findDirectSig(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -10293,7 +10337,7 @@ func findDirectSig(
           pi = pi + 1
         }
         val wantPkg = modulePathJoin(prefix)
-        val qcands = gatherOverloadCandidates(sigs, arityKey)
+        val qcands = qualifiedCallCandidates(sigs, name, arity)
         // A qualifier names a package by its full path or, for an
         // `import A.B` in scope, by its last segment (`B.f(...)`).  Once any
         // candidate comes from the named package the call binds to that

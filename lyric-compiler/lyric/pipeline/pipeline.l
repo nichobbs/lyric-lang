@@ -110,6 +110,12 @@ pub record MiddleEndOptions {
   /// their instantiation, and the element types it needs it recovers from the
   /// literal itself.
   bindListLiteralTypes: Bool
+  /// Whether a direct call to an `async func` must be turned into an
+  /// explicit `await` before lowering (#7838): true for MSIL, whose `async
+  /// func` returns its task and awaits only where an `await` is written;
+  /// false for JVM (synchronous lowering) and native (hot tasks awaited at
+  /// the call), which already await a direct call in place.
+  awaitAsyncCalls: Bool
   /// Whether runtime contract checks (`requires:`, `ensures:`, etc.) should
   /// be emitted in the compiled output. Default is true (contract checks
   /// enabled). Controlled by the `[contracts]` table in lyric.toml (docs/63).
@@ -264,7 +270,8 @@ pub record CheckReadyFile {
   diagnostics: List[Diagnostic]
 }
 
-func hasErrorDiagnostic(diags: in List[Diagnostic]): Bool {
+/// Whether any of `diags` is an error.
+pub func hasErrorDiagnostic(diags: in List[Diagnostic]): Bool {
   var i = 0
   while i < diags.count {
     if diags[i].severity == DiagError {
@@ -430,7 +437,8 @@ pub func pipeCheckAndMono(
   // the `?`-hoist's `impl`-target field resolution see cross-file/
   // cross-package records, not just same-file ones. `opts.awaitInTryIsHazard`
   // (#7198) gates whether F0045's guard fires on this target.
-  val propRes = lowerPropagateFileWithExtraRecords(elaborated, monoRecordDecls, opts.awaitInTryIsHazard)
+  val asyncCalls: Map[String, Bool] = if opts.awaitAsyncCalls { tcRes.symbols.asyncCallSites } else { newMap() }
+  val propRes = lowerPropagateFileWithAsyncCalls(elaborated, monoRecordDecls, opts.awaitInTryIsHazard, asyncCalls)
   if gate(opts.pkgLabel, opts.lineOrigins, propRes.diagnostics) {
     return None
   }
