@@ -832,9 +832,30 @@ result = awaiter.GetResult();    // only reached when complete
 ```
 
 Locals whose lifetimes span a suspend point are promoted to fields on
-the state-machine struct (Phase B+ and later).  Awaits in `while`/`loop`
-bodies, `defer` blocks, `try`/`catch` arms, and `for` loop bodies are
-each handled by the Phase B+/B++/B+++ extensions in `AsyncStateMachine.fs`.
+the state-machine class (Phase B+ and later): each is stored to its
+`__local_<key>` field after every write and reloaded at every resume
+label.  Awaits in `while`/`loop` bodies, after a `defer`, and in `for`
+loop bodies are handled by the self-hosted `synthesizeAsyncSmPhaseBMsil`
+(`lyric-compiler/msil/codegen.l`); a `try` written in an `async func`
+cannot contain an `await` (V0012).
+
+A `for` loop that can suspend — its body contains an `await`, or (a range
+loop) its upper bound does — also keeps its protocol's hidden temporaries
+and its pattern's bindings in fields (#7766): the counter and bound of a
+range, the list, index and count (plus the typed-array fast-path slot) of
+an indexed loop, and the enumerator of an `IEnumerable` or generator loop.
+They are keyed by IL slot (`__local___for_<slot>`), not by name, so two
+loops binding `x` at different types get distinct fields.  Temporaries
+that are written and consumed with no `await` in between (the element,
+the `MoveNextAsync`/`DisposeAsync` value tasks, the `IDisposable` probe,
+the unwinding flag) stay IL locals.  Pass 1 reserves the fields before the
+body is lowered (`countSmFieldsMsil`): the count per protocol is declared
+once in `forProtocolAwaitFieldsMsil` and checked against the real
+registrations, a collection loop reserves the largest protocol's count
+(its protocol follows the iterable's lowered type, which Pass 1 does not
+have), and the class is padded up to the prediction.  An `await` after a
+`defer` resumes inside the `defer`'s protected region through the region
+dispatch of D142/D143, and the deferred block runs once.
 
 The M1.4 blocking shim (`.GetAwaiter().GetResult()` synchronously) is
 retained as a fallback for ineligible shapes — awaits in expression
@@ -934,9 +955,17 @@ protocol). The JVM counterpart (`lowerAsyncGenerator` in
 `lyric-compiler/jvm/lowering.l`) is a virtual-thread + `SynchronousQueue`
 producer — also lazy, but without the `await`-in-body support.
 
-`for x in gen() { … }` lowers to a standard `await foreach` —
-`GetAsyncEnumerator`, loop on `MoveNextAsync`, `Current` access,
-`DisposeAsync` in a `finally` block.
+`for x in gen() { … }` lowers to `GetAsyncEnumerator`, a loop on
+`MoveNextAsync` (its `ValueTask<bool>` read with `get_Result`, which
+blocks until the step completes), `Current` access, and `DisposeAsync`
+in a `finally` block on every exit (D143).  The disposal's `ValueTask` is
+waited on to completion with `AsTask().GetAwaiter().GetResult()` (#7767),
+so an enumerator whose disposal finishes asynchronously has finished, and
+any exception it faulted with has been rethrown, before control leaves
+the loop — subject to D143's precedence: while an exception is already
+leaving the loop, the disposal's is dropped.  This holds in an
+`async func` too, where the loop consumes `MoveNextAsync` the same
+blocking way; awaiting both through the state machine is a follow-up.
 
 The JVM-target equivalent uses `java.lang.Iterable` + `java.util.Iterator`
 with the same eager `runBody()` pattern (B129, `lyric-compiler/jvm/lowering.l`).

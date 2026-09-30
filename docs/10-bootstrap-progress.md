@@ -115,7 +115,11 @@ deferred to Phase 3 by design.
   runs a suspended generator's pending `finally`/`defer` blocks exactly once
   (#7729, D142; #7754, D143;
   `docs/progress/2026-09-29-generator-control-flow.md`,
-  `docs/progress/2026-09-29-for-loop-disposal-on-every-exit.md`).
+  `docs/progress/2026-09-29-for-loop-disposal-on-every-exit.md`).  A `for`
+  loop in an MSIL `async func` keeps its hidden temporaries and pattern
+  bindings across a real suspension, and the loop waits for an
+  enumerator's `DisposeAsync` to complete (#7766, #7767;
+  `docs/progress/2026-09-30-async-for-loop-suspension.md`).
 
 ### Phase 5 — self-hosting
 

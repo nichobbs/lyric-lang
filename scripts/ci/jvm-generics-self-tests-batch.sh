@@ -79,6 +79,7 @@ for t in \
   lyric-compiler/lyric/async_generator_self_test.l \
   lyric-compiler/lyric/generator_control_flow_self_test.l \
   lyric-compiler/lyric/generator_dispose_self_test.l \
+  lyric-compiler/lyric/async_for_loop_suspend_self_test.l \
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l \
   lyric-compiler/lyric/unannotated_list_result_self_test.l \
   lyric-compiler/lyric/erased_slot_widen_self_test.l \

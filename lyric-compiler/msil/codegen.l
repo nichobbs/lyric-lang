@@ -21607,9 +21607,149 @@ func forProtocolTempSlotsMsil(p: in ForProtocolMsil): Int {
     case ForIndexedArrayMsil -> 5
     // enumerator, IDisposable probe, unwinding flag, element
     case ForIEnumerableMsil -> 4
-    // generator, CancellationToken, enumerator, DisposeAsync ValueTask,
-    // unwinding flag, MoveNextAsync ValueTask, element
-    case ForAsyncEnumerableMsil -> 7
+    // generator, CancellationToken, enumerator, DisposeAsync ValueTask, its
+    // TaskAwaiter, unwinding flag, MoveNextAsync ValueTask, element
+    case ForAsyncEnumerableMsil -> 8
+  }
+}
+
+// ── For-loop temporaries across an `await` (#7766) ───────────────────────────
+//
+// In an `async func` state machine (Phase B) every IL local reverts to its
+// default when `MoveNext` is re-entered after a real suspension, so a `for`
+// loop whose body contains an `await` keeps the temporaries it reads after the
+// body — and the loop pattern's bindings, which the body reads after its own
+// awaits — in state-machine fields: each is registered as a promoted local
+// under a per-slot key (`phaseBRegisterAndSyncLocal`), stored back after every
+// write, and reloaded at each resume label.  The other temporaries are written
+// and consumed without an intervening `await` (the element, the disposal and
+// `MoveNextAsync` value tasks, the `IDisposable` probe) or are only read in the
+// disposal handlers (the unwinding flag, which is `false` whenever the body
+// runs), so they stay IL locals.  Pass 1's `countSmFieldsMsil` reserves these
+// fields before the body is lowered, so the count per protocol is declared here
+// and checked against the real registrations by `checkForAwaitFieldsMsil`.
+func forProtocolAwaitFieldsMsil(p: in ForProtocolMsil): Int {
+  match p {
+    // counter, bound
+    case ForRangeMsil -> 2
+    // list, index, count
+    case ForIndexedMsil -> 3
+    // ForIndexedMsil's three plus the typed-array fast-path slot
+    case ForIndexedArrayMsil -> 4
+    // enumerator
+    case ForIEnumerableMsil -> 1
+    // enumerator
+    case ForAsyncEnumerableMsil -> 1
+  }
+}
+
+// The most state-machine fields any non-range `for` keeps across an `await`
+// (the collection protocol follows the iterable's lowered type, which Pass 1
+// does not have; the state machine is padded up to the prediction).
+func forCollectionAwaitFieldsUpperBoundMsil(): Int {
+  val protocols: List[ForProtocolMsil] = newList()
+  protocols.add(ForIndexedMsil)
+  protocols.add(ForIndexedArrayMsil)
+  protocols.add(ForIEnumerableMsil)
+  protocols.add(ForAsyncEnumerableMsil)
+  var most = 0
+  var i = 0
+  while i < protocols.count {
+    val n = forProtocolAwaitFieldsMsil(protocols[i])
+    if n > most {
+      most = n
+    }
+    i = i + 1
+  }
+  most
+}
+
+// Whether this `for` loop's temporaries and pattern bindings must live in
+// state-machine fields: the loop is lowered inside an `async func` state
+// machine and can suspend after its first temporary is written — in its body,
+// or (a range loop) in its upper bound.  `countSmFieldsMsil` applies the same
+// test (`forCanSuspendMsil`) to the same syntax, so the prediction and the
+// lowering cannot disagree.
+func forKeepsStateAcrossAwaitMsil(fctx: in FuncCtx, afterFirstTemp: in Expr, body: in Block): Bool {
+  fctx.phaseBCtx.count > 0 and forCanSuspendMsil(afterFirstTemp, body)
+}
+
+func forCanSuspendMsil(afterFirstTemp: in Expr, body: in Block): Bool {
+  exprContainsAwaitMsil(afterFirstTemp) or blockContainsAwaitMsil(body)
+}
+
+// The collection protocols evaluate the iterable before their first
+// temporary, so only the body can suspend with one live.
+func forCollectionKeepsStateAcrossAwaitMsil(fctx: in FuncCtx, body: in Block): Bool {
+  fctx.phaseBCtx.count > 0 and blockContainsAwaitMsil(body)
+}
+
+func forAwaitFieldKeyMsil(localIdx: in Int): String {
+  "__for_" + toString(localIdx)
+}
+
+// Promote the temporary in `slot` (already stored) to a state-machine field
+// when `keep` holds, recording it in `kept`.
+func keepForTempAcrossAwaitMsil(
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  keep: in Bool,
+  kept: in List[Int],
+  slot: in Int,
+  ty: in MsilType,
+): Unit {
+  if keep {
+    val localIdx = slot - fctx.paramCount
+    phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, forAwaitFieldKeyMsil(localIdx), ty, localIdx)
+    kept.add(slot)
+  }
+}
+
+// Store a kept temporary's slot back to its field after a later write.
+func syncForTempAcrossAwaitMsil(fctx: in FuncCtx, insns: in List[MInsn], keep: in Bool, slot: in Int): Unit {
+  if keep {
+    val localIdx = slot - fctx.paramCount
+    phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, forAwaitFieldKeyMsil(localIdx), localIdx)
+  }
+}
+
+// Promote every name the loop pattern just bound (a fresh slot per loop, so
+// the field key is the slot rather than the name — two loops binding `x` at
+// different types get distinct fields).
+func keepForPatternAcrossAwaitMsil(fctx: in FuncCtx, insns: in List[MInsn], keep: in Bool, pat: in Pattern): Unit {
+  if keep {
+    val names: List[String] = newList()
+    countPatBindNamesMsil(pat, names)
+    var i = 0
+    while i < names.count {
+      match mapGet(fctx.slots, names[i]) {
+        case Some(slot) -> {
+          val ty = match mapGet(fctx.types, names[i]) { case Some(t) -> t; case None -> MObject }
+          val localIdx = slot - fctx.paramCount
+          phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, forAwaitFieldKeyMsil(localIdx), ty, localIdx)
+        }
+        case None -> ()
+      }
+      i = i + 1
+    }
+  }
+}
+
+// Bound on the fields `keepForPatternAcrossAwaitMsil` registers for `pat`.
+func forPatternAwaitFieldsUpperBoundMsil(pat: in Pattern): Int {
+  val names: List[String] = newList()
+  countPatBindNamesMsil(pat, names)
+  names.count
+}
+
+func checkForAwaitFieldsMsil(p: in ForProtocolMsil, keep: in Bool, kept: in List[Int]): Unit {
+  if keep and kept.count != forProtocolAwaitFieldsMsil(p) {
+    panic(
+      "Msil.Codegen: a `for` loop protocol kept " + toString(kept.count) + " temporaries in state-machine fields " +
+        "but `forProtocolAwaitFieldsMsil` declares " +
+        toString(forProtocolAwaitFieldsMsil(p)) +
+        " — update the declaration, which the async state machine's field-count prediction relies on (#7766)"
+    )
   }
 }
 
@@ -21698,14 +21838,19 @@ func emitCountingForMsil(
   body: in Block,
 ): Unit {
   val temps: List[Int] = newList()
+  // An `await` in `hi` suspends while the counter already holds `lo`.
+  val keep = forKeepsStateAcrossAwaitMsil(fctx, hi, body)
+  val kept: List[Int] = newList()
   // counter := lo
   val loTy = lowerExprMsil(cctx, fctx, insns, lo)
   val iSlot = allocForTempSlotMsil(fctx, temps, "__for_i_" + toString(fctx.slotTicker.count), loTy)
   emitStoreSlot(insns, iSlot, fctx.paramCount)
+  keepForTempAcrossAwaitMsil(fctx, insns, keep, kept, iSlot, loTy)
   // bound := hi (evaluated once so `for i in 0 .. f()` does not re-call f)
   val hiTy = lowerExprMsil(cctx, fctx, insns, hi)
   val hiSlot = allocForTempSlotMsil(fctx, temps, "__for_hi_" + toString(fctx.slotTicker.count), hiTy)
   emitStoreSlot(insns, hiSlot, fctx.paramCount)
+  keepForTempAcrossAwaitMsil(fctx, insns, keep, kept, hiSlot, hiTy)
 
   val loopL = freshLabelMsil(fctx)
   val contL = freshLabelMsil(fctx)
@@ -21729,6 +21874,7 @@ func emitCountingForMsil(
   // `lowerBlockMsil`'s bracket (which only covers the body block).
   val loopScope = enterBlockScopeMsil(fctx)
   bindForPatternMsil(cctx, fctx, insns, pat, iSlot, loTy)
+  keepForPatternAcrossAwaitMsil(fctx, insns, keep, pat)
 
   fctx.loopBreak.add(afterL)
   fctx.loopCont.add(contL)
@@ -21748,9 +21894,11 @@ func emitCountingForMsil(
   }
   insns.add(MAdd)
   emitStoreSlot(insns, iSlot, fctx.paramCount)
+  syncForTempAcrossAwaitMsil(fctx, insns, keep, iSlot)
   insns.add(MBr(label = loopL))
   insns.add(MLabel(id = afterL))
   checkForTempSlotsMsil(ForRangeMsil, temps)
+  checkForAwaitFieldsMsil(ForRangeMsil, keep, kept)
 }
 
 // ── Enumerator disposal on every exit from a `for` loop (#7754, D143) ────────
@@ -21786,10 +21934,14 @@ func emitCountingForMsil(
 // `continue` are plain branches and `loopTryDepth` is the depth including the
 // region; a jump to an enclosing loop, and `return`, `leave` through it.
 union ForDisposeMsil {
-  // `IAsyncDisposable.DisposeAsync()` on the enumerator in `enumSlot`; the
-  // returned `ValueTask` is stored to `vtSlot` and discarded (a Lyric
-  // generator completes it synchronously).
-  case ForDisposeAsyncMsil(enumSlot: Int, tokDisposeAsync: Int, vtSlot: Int)
+  // `IAsyncDisposable.DisposeAsync()` on the enumerator in `enumSlot`,
+  // waited on to completion (#7767): the returned `ValueTask` is stored to
+  // `vtSlot` and converted with `AsTask()`, whose awaiter (in `awSlot`, of
+  // type `awTy`) `GetResult()` blocks until the disposal finishes and rethrows
+  // what it faulted with.  The loop consumes `MoveNextAsync` the same blocking
+  // way, so the disposal completes before the loop is left, in a synchronous
+  // function and in an `async func` alike.
+  case ForDisposeAsyncMsil(enumSlot: Int, tokDisposeAsync: Int, vtSlot: Int, tokAsTask: Int, awSlot: Int, awTy: MsilType)
   // `IDisposable.Dispose()` on the non-generic enumerator in `enumSlot` when it
   // implements `IDisposable` (`System.Collections.IEnumerator` does not
   // require it); `disposableSlot` holds the `isinst` probe.
@@ -21829,14 +21981,25 @@ func beginForDisposeRegionMsil(fctx: in FuncCtx, insns: in List[MInsn], temps: i
   )
 }
 
+// `System.Threading.Tasks.Task`, what `ValueTask.AsTask()` returns.
+func forDisposeTaskTyMsil(cctx: in CodegenCtx): MsilType {
+  MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
+}
+
 func emitForDisposeCallMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], d: in ForDisposeMsil): Unit {
   match d {
-    case ForDisposeAsyncMsil(enumSlot, tokDisposeAsync, vtSlot) -> {
+    case ForDisposeAsyncMsil(enumSlot, tokDisposeAsync, vtSlot, tokAsTask, awSlot, awTy) -> {
       emitLoadSlot(insns, enumSlot, fctx.paramCount)
       // The enumerator slot is `object`-typed; narrow it for the verifier.
       insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIAsyncDisp))
       insns.add(MCallvirt(methodToken = tokDisposeAsync))
       emitStoreSlot(insns, vtSlot, fctx.paramCount)
+      insns.add(MLdloca(slot = vtSlot - fctx.paramCount))
+      insns.add(MCall(methodToken = tokAsTask))
+      emitGetAwaiterCallPB(cctx, insns, forDisposeTaskTyMsil(cctx))
+      emitStoreSlot(insns, awSlot, fctx.paramCount)
+      insns.add(MLdloca(slot = awSlot - fctx.paramCount))
+      val _ = emitGetResultCallPB(cctx, insns, awTy)
     }
     case ForDisposeIfDisposableMsil(enumSlot, disposableSlot) -> {
       val skipL = freshLabelMsil(fctx)
@@ -21946,11 +22109,13 @@ func lowerForBodyInRegionMsil(
   body: in Block,
   r: in ForDisposeRegionMsil,
   contL: in Int,
+  keep: in Bool,
 ): Unit {
   // Per-loop lexical scope for the loop variable — see `emitCountingForMsil`
   // (#5191 follow-up).
   val loopScope = enterBlockScopeMsil(fctx)
   bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, elemTy)
+  keepForPatternAcrossAwaitMsil(fctx, insns, keep, pat)
   fctx.loopBreak.add(r.doneL)
   fctx.loopCont.add(contL)
   fctx.loopTryDepth.add(fctx.tryRegionStack.count)
@@ -21984,8 +22149,11 @@ func emitIEnumerableProtocolForMsil(
   // IEnumerator-typed callvirt receivers below (MoveNext/get_Current).
   val eeEnumTy = MClassRef(typeRefCode = tdrTypeRef(cctx.trIEnumerator), clrFqn = "System.Collections.IEnumerator")
   val temps: List[Int] = newList()
+  val keep = forCollectionKeepsStateAcrossAwaitMsil(fctx, body)
+  val kept: List[Int] = newList()
   val eeEnumSlot = allocForTempSlotMsil(fctx, temps, "__ee_enum_" + toString(fctx.slotTicker.count), eeEnumTy)
   emitStoreSlot(insns, eeEnumSlot, fctx.paramCount)
+  keepForTempAcrossAwaitMsil(fctx, insns, keep, kept, eeEnumSlot, eeEnumTy)
   val eeDisposableSlot = allocForTempSlotMsil(
     fctx,
     temps,
@@ -22007,11 +22175,12 @@ func emitIEnumerableProtocolForMsil(
   castObjectToMsil(cctx, insns, eeElemTy)
   val eeElemSlot = allocForTempSlotMsil(fctx, temps, "__ee_elem_" + toString(fctx.slotTicker.count), eeElemTy)
   emitStoreSlot(insns, eeElemSlot, fctx.paramCount)
-  lowerForBodyInRegionMsil(cctx, fctx, insns, pat, eeElemSlot, eeElemTy, body, region, eeContL)
+  lowerForBodyInRegionMsil(cctx, fctx, insns, pat, eeElemSlot, eeElemTy, body, region, eeContL, keep)
   insns.add(MLabel(id = eeContL))
   insns.add(MBr(label = eeLoopL))
   endForDisposeRegionMsil(cctx, fctx, insns, region, dispose)
   checkForTempSlotsMsil(ForIEnumerableMsil, temps)
+  checkForAwaitFieldsMsil(ForIEnumerableMsil, keep, kept)
 }
 
 // Emit an index-based loop for `for <pat> in <collection>`, modelling the
@@ -22033,6 +22202,8 @@ func emitCollectionForMsil(
   // `match x` / field access on `x` see an untyped scrutinee and misbehave.
   val iterTy = lowerExprMsil(cctx, fctx, insns, iter)
   val temps: List[Int] = newList()
+  val keep = forCollectionKeepsStateAcrossAwaitMsil(fctx, body)
+  val kept: List[Int] = newList()
 
   // ── Async enumerator protocol for MIAsyncEnumerable (Phase 5, Epic #2070) ────
   // The synthesised generator class implements IAsyncEnumerable<object>.
@@ -22142,12 +22313,13 @@ func emitCollectionForMsil(
       insns.add(MCallvirt(methodToken = tokGetEnum2))
       val enumSlot2 = allocForTempSlotMsil(fctx, temps, "__iae_enum_" + toString(fctx.slotTicker.count), MObject)
       emitStoreSlot(insns, enumSlot2, fctx.paramCount)
+      keepForTempAcrossAwaitMsil(fctx, insns, keep, kept, enumSlot2, MObject)
 
       // DisposeAsync on the enumerator, on every exit from the loop (#7754,
-      // `endForDisposeRegionMsil`).  For a Lyric generator suspended inside a
-      // `try` this runs its pending `finally` blocks synchronously and
-      // rethrows what they throw (#7729, `synthesizeGeneratorMsil`); the
-      // returned ValueTask is already complete and is discarded.
+      // `endForDisposeRegionMsil`), waited on to completion (#7767).  For a
+      // Lyric generator suspended inside a `try` this runs its pending
+      // `finally` blocks synchronously and rethrows what they throw (#7729,
+      // `synthesizeGeneratorMsil`), returning an already-completed ValueTask.
       val dispAsyncVtTy = MValueTypeRef(
         typeRefCode = tdrTypeRef(cctx.trValueTask),
         clrFqn = "System.Threading.Tasks.ValueTask"
@@ -22157,7 +22329,25 @@ func emitCollectionForMsil(
       val tokDispAsync = 0x0A000000 +
         ctxAddMemberRef(lctx, cctx.trIAsyncDisp, "DisposeAsync", "iasyncdisp_disposeasync", dispAsyncSig)
       val dispVtSlot = allocForTempSlotMsil(fctx, temps, "__iae_disp_vt_" + toString(fctx.slotTicker.count), dispAsyncVtTy)
-      val dispose = ForDisposeAsyncMsil(enumSlot = enumSlot2, tokDisposeAsync = tokDispAsync, vtSlot = dispVtSlot)
+      val asTaskPs: List[MsilType] = newList()
+      val tokAsTask = 0x0A000000 +
+        ctxAddMemberRef(
+          lctx,
+          cctx.trValueTask,
+          "AsTask",
+          "valuetask_astask",
+          buildInstanceMethodSig(asTaskPs, forDisposeTaskTyMsil(cctx))
+        )
+      val dispAwTy = taskTypeToAwaiterMsilType(cctx, forDisposeTaskTyMsil(cctx))
+      val dispAwSlot = allocForTempSlotMsil(fctx, temps, "__iae_disp_aw_" + toString(fctx.slotTicker.count), dispAwTy)
+      val dispose = ForDisposeAsyncMsil(
+        enumSlot = enumSlot2,
+        tokDisposeAsync = tokDispAsync,
+        vtSlot = dispVtSlot,
+        tokAsTask = tokAsTask,
+        awSlot = dispAwSlot,
+        awTy = dispAwTy
+      )
 
       val region = beginForDisposeRegionMsil(fctx, insns, temps)
       // Allocate ValueTask<bool> struct local for MoveNextAsync result
@@ -22193,12 +22383,13 @@ func emitCollectionForMsil(
       castObjectToMsil(cctx, insns, iaeElemTy)
       val elemSlot2 = allocForTempSlotMsil(fctx, temps, "__iae_elem_" + toString(fctx.slotTicker.count), iaeElemTy)
       emitStoreSlot(insns, elemSlot2, fctx.paramCount)
-      lowerForBodyInRegionMsil(cctx, fctx, insns, pat, elemSlot2, iaeElemTy, body, region, contL2)
+      lowerForBodyInRegionMsil(cctx, fctx, insns, pat, elemSlot2, iaeElemTy, body, region, contL2, keep)
 
       insns.add(MLabel(id = contL2))
       insns.add(MBr(label = loopL2))
       endForDisposeRegionMsil(cctx, fctx, insns, region, dispose)
       checkForTempSlotsMsil(ForAsyncEnumerableMsil, temps)
+      checkForAwaitFieldsMsil(ForAsyncEnumerableMsil, keep, kept)
     }
     case MExternEnumerable(eeElemTy) -> {
       emitIEnumerableProtocolForMsil(cctx, fctx, insns, pat, body, eeElemTy)
@@ -22249,16 +22440,19 @@ func emitCollectionForMsil(
       }
       val listSlot = allocForTempSlotMsil(fctx, temps, "__for_list_" + toString(fctx.slotTicker.count), MObject)
       emitStoreSlot(insns, listSlot, fctx.paramCount)
+      keepForTempAcrossAwaitMsil(fctx, insns, keep, kept, listSlot, MObject)
       // i := 0
       val iSlot = allocForTempSlotMsil(fctx, temps, "__for_ci_" + toString(fctx.slotTicker.count), MInt)
       insns.add(MLdcI4(v = 0))
       emitStoreSlot(insns, iSlot, fctx.paramCount)
+      keepForTempAcrossAwaitMsil(fctx, insns, keep, kept, iSlot, MInt)
       // count := list.Count
       val cntSlot = allocForTempSlotMsil(fctx, temps, "__for_cnt_" + toString(fctx.slotTicker.count), MInt)
       emitLoadSlot(insns, listSlot, fctx.paramCount)
       emitListCastRecv(cctx, insns, iterTy)
       emitListGetCount(cctx, insns, iterTy)
       emitStoreSlot(insns, cntSlot, fctx.paramCount)
+      keepForTempAcrossAwaitMsil(fctx, insns, keep, kept, cntSlot, MInt)
       // #7259: test the slice's runtime representation once, before the loop; a
       // genuine `e[]` is then read with `ldelem` on every iteration instead of a
       // boxing `IList.get_Item`.
@@ -22274,6 +22468,7 @@ func emitCollectionForMsil(
           emitLoadSlot(insns, listSlot, fctx.paramCount)
           insns.add(MIsinst(typeToken = specTok))
           emitStoreSlot(insns, slot, fctx.paramCount)
+          keepForTempAcrossAwaitMsil(fctx, insns, keep, kept, slot, MArray(elemTy = forElemTy))
           slot
         }
         case None -> 0 - 1
@@ -22319,6 +22514,7 @@ func emitCollectionForMsil(
       // (#5191 follow-up).
       val listLoopScope = enterBlockScopeMsil(fctx)
       bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, forElemTy)
+      keepForPatternAcrossAwaitMsil(fctx, insns, keep, pat)
 
       fctx.loopBreak.add(afterL)
       fctx.loopCont.add(contL)
@@ -22334,9 +22530,12 @@ func emitCollectionForMsil(
       insns.add(MLdcI4(v = 1))
       insns.add(MAdd)
       emitStoreSlot(insns, iSlot, fctx.paramCount)
+      syncForTempAcrossAwaitMsil(fctx, insns, keep, iSlot)
       insns.add(MBr(label = loopL))
       insns.add(MLabel(id = afterL))
-      checkForTempSlotsMsil(if arrSlot >= 0 { ForIndexedArrayMsil } else { ForIndexedMsil }, temps)
+      val indexedProtocol = if arrSlot >= 0 { ForIndexedArrayMsil } else { ForIndexedMsil }
+      checkForTempSlotsMsil(indexedProtocol, temps)
+      checkForAwaitFieldsMsil(indexedProtocol, keep, kept)
     }
   }
 }
@@ -29833,8 +30032,40 @@ func countPromotedLocalsStmt(
       countPromotedLocalsExpr(cctx, pkgName, hoistedNms, cond, seen)
       countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
     }
-    case SFor(_, _, iter, body) -> {
+    case SFor(_, pat, iter, body) -> {
       countPromotedLocalsExpr(cctx, pkgName, hoistedNms, iter, seen)
+      // A `for` that can suspend keeps its protocol's live temporaries and its
+      // pattern's bindings in fields keyed by slot (#7766), one set per loop
+      // rather than one per name, so each is reserved under a placeholder no
+      // identifier can collide with.  The protocol follows the iterable's
+      // lowered type, so a collection loop reserves the largest protocol's.
+      val loopFields = match iter.kind {
+        case ERange(bound) -> {
+          val afterFirstTemp = match bound {
+            case RBClosed(_, hi) -> Some(hi)
+            case RBHalfOpen(_, hi, _) -> Some(hi)
+            case _ -> None
+          }
+          match afterFirstTemp {
+            case Some(hi) -> if forCanSuspendMsil(hi, body) {
+              forProtocolAwaitFieldsMsil(ForRangeMsil) + forPatternAwaitFieldsUpperBoundMsil(pat)
+            } else {
+              0
+            }
+            case None -> 0
+          }
+        }
+        case _ -> if blockContainsAwaitMsil(body) {
+          forCollectionAwaitFieldsUpperBoundMsil() + forPatternAwaitFieldsUpperBoundMsil(pat)
+        } else {
+          0
+        }
+      }
+      var lfi = 0
+      while lfi < loopFields {
+        seen.add("#for-await-field " + toString(seen.count))
+        lfi = lfi + 1
+      }
       countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
     }
     case SLoop(_, body) -> countPromotedLocalsBlock(cctx, pkgName, hoistedNms, body, seen)
