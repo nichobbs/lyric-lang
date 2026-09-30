@@ -128,6 +128,7 @@ for t in \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/byte_stringify_self_test.l \
   lyric-compiler/lyric/byte_stringify_dotnet_self_test.l \
+  lyric-compiler/lyric/byte_erased_positions_self_test.l \
   lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
   lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \

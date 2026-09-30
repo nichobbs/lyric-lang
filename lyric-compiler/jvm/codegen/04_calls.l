@@ -1019,6 +1019,7 @@ func lowerBuiltinOrStaticCall(
       // `isUnsigned` parameter fixes for interpolation/`+`/`.toString()`
       // (this builtin never routed through that helper at all).
       val unsignedTy = normalizeBytePrintArg(
+        ctx,
         insns,
         normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(callArgExpr(args[0])))
       )
@@ -1051,6 +1052,7 @@ func lowerBuiltinOrStaticCall(
       )
       // #6754 (finding 1.1): same unsigned normalization as println above.
       val unsignedTy = normalizeBytePrintArg(
+        ctx,
         insns,
         normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(callArgExpr(args[0])))
       )
@@ -4723,6 +4725,12 @@ func lowerMethodCall(
           coerceToStringForConcat(ctx, insns, recvTy, false)
           return JRef(className = "java/lang/String")
         }
+        // An erased receiver may be a boxed `Byte`, which renders unsigned
+        // (#7852; see makeErasedToStringHelperFunc in 06_items.l).
+        if dc == "java/lang/Object" {
+          emitErasedToStringJvm(ctx, insns)
+          return JRef(className = "java/lang/String")
+        }
       }
       case _ -> ()
     }
@@ -5423,13 +5431,22 @@ func normalizeUnsignedPrintArg(insns: in List[LInsn], rawTy: in JvmType, isUnsig
 
 // `println`/`print`'s already-lowered argument, on the stack as `rawTy`. A
 // `Byte` prints unsigned through `PrintStream.println(int)`: re-mask a
-// non-canonical signed byte first so 128..255 never print negative (#7852;
-// see maskByteUnsigned). Any other argument passes through unchanged.
-func normalizeBytePrintArg(insns: in List[LInsn], rawTy: in JvmType): JvmType {
+// non-canonical signed byte first so 128..255 never print negative, and an
+// erased `Object` (which may be a boxed `Byte`) is stringified through
+// `__lyricErasedToString` rather than `println(Object)`'s signed
+// `Byte.toString()` (#7852; see maskByteUnsigned). Any other argument passes
+// through unchanged.
+func normalizeBytePrintArg(ctx: in FuncCtx, insns: in List[LInsn], rawTy: in JvmType): JvmType {
   match rawTy {
     case JByte -> {
       maskByteUnsigned(insns)
       JInt
+    }
+    case JRef(c) -> if c == "java/lang/Object" {
+      emitErasedToStringJvm(ctx, insns)
+      JRef(className = "java/lang/String")
+    } else {
+      rawTy
     }
     case _ -> rawTy
   }

@@ -113,6 +113,23 @@ test "generic Box[Byte] field" {
   assertEqual(toString(small.value), "127", "127")
 }
 
+// #7860 review: a `Byte` read back out of an erased position (a generic
+// payload, a list element, a function-value result) is a boxed
+// `java.lang.Byte` on the JVM; widening it with `.toUInt()`/`.toULong()`
+// must unbox and mask it, so 200 stays 200 rather than -56.
+test "a Byte from an erased position widens unsigned" {
+  val bx = Box(value = 200u8)
+  val xs: List[Byte] = newList()
+  xs.add(255u8)
+  val f: () -> Byte = { -> 128u8 }
+  assertEqual(toString(bx.value.toUInt()), "200", "generic payload to UInt")
+  assertEqual(toString(bx.value.toULong()), "200", "generic payload to ULong")
+  assertEqual(toString(xs[0].toUInt()), "255", "list element to UInt")
+  assertEqual(toString(f().toUInt()), "128", "function-value result to UInt")
+  assertTrue(bx.value.toUInt() > 127u32, "compares unsigned")
+  assertEqual(toString(xs[0].toULong() / 5u64), "51", "divides unsigned")
+}
+
 test "println of a Byte" {
   val a: Byte = 0u8
   val d: Byte = 255u8

@@ -6587,6 +6587,47 @@ func makeToCharHelperFunc(): LFunc {
   LFunc(flags = 0x0009, name = "__lyricToChar", params = ps, ret = JChar, insns = insns, maxStack = 4, maxLocals = 2)
 }
 
+// `static String __lyricErasedToString(Object o)`: stringify a value whose
+// static type is erased to `Object` (a generic payload, a lambda parameter
+// typed by a type argument).  A boxed `java.lang.Byte` is always a Lyric
+// `Byte`, which is unsigned: render its 0..255 value, not `Byte.toString()`'s
+// signed one (#7852).  Anything else goes through `String.valueOf(Object)`
+// (`Object.toString()`, or "null" for a null reference, as
+// `PrintStream.println(Object)` renders it).
+func makeErasedToStringHelperFunc(): LFunc {
+  val strTy = JRef(className = "java/lang/String")
+  val insns: List[LInsn] = newList()
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = "java/lang/Byte"))
+  insns.add(LIfeq(label = "__ets_obj"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = "java/lang/Byte"))
+  insns.add(LInvokevirtual(owner = "java/lang/Byte", name = "byteValue", params = newList(), ret = JByte))
+  insns.add(LIconst(v = 255))
+  insns.add(LIand)
+  val ips: List[JvmType] = newList()
+  ips.add(JInt)
+  insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toString", params = ips, ret = strTy))
+  insns.add(LAreturn)
+  insns.add(LLabel(name = "__ets_obj"))
+  insns.add(LAload(slot = 0))
+  val ops: List[JvmType] = newList()
+  ops.add(JRef(className = "java/lang/Object"))
+  insns.add(LInvokestatic(owner = "java/lang/String", name = "valueOf", params = ops, ret = strTy))
+  insns.add(LAreturn)
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/Object"))
+  LFunc(
+    flags = 0x0009,
+    name = "__lyricErasedToString",
+    params = ps,
+    ret = strTy,
+    insns = insns,
+    maxStack = 2,
+    maxLocals = 1
+  )
+}
+
 // `static char __lyricToCharD(double d)`: `.toChar()` from a `Double` —
 // truncate toward zero, then the `__lyricToChar` check.  The range test runs
 // on the double first so NaN and values beyond `long` fail rather than
@@ -7991,6 +8032,9 @@ pub func codegenPackageWithSigsSeeded(
   }
   if runtimeHelperUsed(usedRuntimeHelpers, "__lyricToCharD") {
     fns.add(makeToCharDoubleHelperFunc(funcsClass))
+  }
+  if runtimeHelperUsed(usedRuntimeHelpers, "__lyricErasedToString") {
+    fns.add(makeErasedToStringHelperFunc())
   }
 
   // `__lyricUnwrapOr(Object, Object)Object` — Std.Core's generic
