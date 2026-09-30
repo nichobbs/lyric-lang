@@ -312,10 +312,6 @@ async func manyLocalsThenAwait(seed: in String, sink: in Box): Unit {
   sink.v = b.v + ":" + l0 + ":" + l269
 }
 
-@externInstance
-@externTarget("System.Threading.Tasks.Task.Wait")
-func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
-
 func bump(x: inout Int): Unit {
   x = x + 1
 }
@@ -600,9 +596,7 @@ func manyLocalsThenInout(seed: in String): String {
 
 test "an await after more than 256 locals reads its own awaiter, not an unrelated local" {
   val cell = Box(v = "")
-  val t = manyLocalsThenAwait("s", cell)
-  val done = taskWaitMs(t, 10000)
-  assertTrue(done, "the async func completed")
+  await manyLocalsThenAwait("s", cell)
   assertEqual(cell.v, "hello:s0:s269", "the awaited result and the surrounding locals survived")
 }
 
