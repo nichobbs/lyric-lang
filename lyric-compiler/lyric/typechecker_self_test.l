@@ -8108,3 +8108,67 @@ test "the stdlib newList, newListWithCapacity, newMap and None are open bindings
   val cr = checkWithImportedPackages(parse(src).file, stdCtorPackages())
   assertEqualInt(openSiteCount(cr), 4, "each stdlib evidence-free initializer is open")
 }
+
+// #7778: a local `val` destructures its initializer with no failure path, so
+// a pattern that cannot match every value of the initializer's type is T0146
+// (the local counterpart of the module-level T0144, #7763).
+test "val (a, b) = 5 is T0146 (#7778)" {
+  val src = "package P\nfunc f(): Unit {\n  val (a, b) = 5\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0146"), 1, "a tuple pattern over an Int")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0146"), "2-element tuple pattern is bound to a value of type Int"),
+    "T0146 names the arity and the type: " + diagMessageFor(cr, "T0146")
+  )
+}
+
+test "a tuple pattern of the wrong arity is T0146 (#7778)" {
+  val src = "package P\nfunc f(): Unit {\n  val (a, b) = (1, 2, 3)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0146"), 1, "a 2-element pattern over a 3-tuple")
+}
+
+test "a nested tuple pattern of the wrong arity is T0146 (#7778)" {
+  val src = "package P\nfunc f(): Unit {\n  val (a, (b, c)) = (1, (2, 3, 4))\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0146"), 1, "the inner pattern is a 2-element one over a 3-tuple")
+}
+
+test "an annotated tuple pattern checks against the annotation (#7778)" {
+  val src = "package P\nfunc f(): Unit {\n  val (a, b): Int = 5\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0146"), 1, "a tuple pattern declared Int")
+}
+
+test "a rejected local pattern does not cascade (#7778)" {
+  val src = "package P\nfunc f(): Unit {\n  val (a, b) = 5\n  val s: String = a\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0146"), 1, "the pattern is reported")
+  assertEqualInt(countDiagCode(cr, "T0060"), 0, "its names are not typed against a shape they do not have")
+}
+
+test "a correct nested tuple pattern types its names (#7778)" {
+  val src = "package P\nfunc f(): Unit {\n  val (a, (b, _)) = (1, (\"x\", 2.5))\n  val n: Int = b\n  val m: Int = a\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0146"), 0, "the shapes agree")
+  assertEqualInt(countDiagCode(cr, "T0060"), 1, "b is a String, so an Int binding of it is rejected; a is an Int")
+}
+
+test "a constructor pattern over a two-case union is T0146 (#7778)" {
+  val src = "package P\nunion Maybe {\n  case Just(value: Int)\n  case Nothing\n}\nfunc f(m: in Maybe): Unit {\n  val Just(v) = m\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0146"), 1, "Just matches only one case")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0146"), "`match`"),
+    "T0146 suggests a match: " + diagMessageFor(cr, "T0146")
+  )
+}
+
+test "a literal inside a local tuple pattern is T0146 (#7778)" {
+  val src = "package P\nfunc f(): Unit {\n  val (1, b) = (1, 2)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0146"), 1, "a literal pattern can fail")
+}
+
+test "a sole-case constructor, a record pattern and @ are irrefutable locally (#7778)" {
+  val src = "package P\nunion Boxed {\n  case Box(value: Int)\n}\nrecord Pt {\n  x: Int\n  y: Int\n}\n" +
+    "func f(b: in Boxed, p: in Pt): Unit {\n  val Box(v) = b\n  val Pt { x, y } = p\n  val whole @ (l, r) = (1, 2)\n" +
+    "  val (_, q) = (p, b)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0146"), 0, "every pattern matches every value of its type")
+}

@@ -248,12 +248,13 @@ pub func checkStatement(
             case _ -> ""
           }
           val openKey = if openName != "" { registerOpenBindingSite(tbl, init, initType) } else { "" }
+          val bindTy = if checkLocalValPattern(tbl, diag, pat, initType) { TyError } else { initType }
           if openKey != "" {
             scopeAdd(sc, LocalBinding(name = openName, ty = initType, isMutable = false, openSite = openKey))
           } else {
-            bindPattern(sc, pat, initType)
+            bindPattern(sc, pat, bindTy)
           }
-          recordTuplePatternBindings(tbl, pat, initType, false)
+          recordTuplePatternBindings(tbl, pat, bindTy, false)
         }
         case Some(te) -> {
           val ctx = newGenericContext()
@@ -274,8 +275,9 @@ pub func checkStatement(
             )
           }
           checkRefinedLiteralBound(declT, init, diag)
-          bindPattern(sc, pat, declT)
-          recordTuplePatternBindings(tbl, pat, declT, false)
+          val bindTy = if checkLocalValPattern(tbl, diag, pat, declT) { TyError } else { declT }
+          bindPattern(sc, pat, bindTy)
+          recordTuplePatternBindings(tbl, pat, bindTy, false)
         }
       }
       case LBVar(name, tyOpt, initOpt) -> match tyOpt {
@@ -1653,6 +1655,135 @@ pub func checkFunctionBody(
     }
   }
   checkOutDefiniteAssignment(diag, fn, sig)
+}
+
+// #7778: a local `val` binds its pattern with no failure path -- codegen
+// destructures the initializer unconditionally -- so the pattern must match
+// every value of the initializer's type (the local counterpart of the
+// module-level T0144, #7763).  Returns what makes `pat` fail to, or "" when
+// it always matches: a tuple pattern needs a tuple type of its arity, a
+// constructor pattern the sole case of a single-case union, and a record
+// pattern only irrefutable field patterns; a literal, range, type-test,
+// alternative or const pattern can always fail.  A type the checker could
+// not resolve (`TyError`, a type parameter, `Never`) cannot rule a shape out,
+// so only the pattern's own refutable forms count under it.
+func localValPatternProblem(tbl: in SymbolTable, pat: in Pattern, ty: in Type): String {
+  match pat.kind {
+    case PWildcard -> ""
+    case PError -> ""
+    case PBinding(_, inner) -> match inner { case Some(ip) -> localValPatternProblem(tbl, ip, ty); case None -> "" }
+    case PParen(ip) -> localValPatternProblem(tbl, ip, ty)
+    case PTuple(ps) -> {
+      val t = unrefine(ty)
+      if localValShapeUnknown(t) {
+        return localValElemsProblem(tbl, ps, newList())
+      }
+      match t {
+        case TyTuple(elems) -> if elems.count == ps.count {
+          localValElemsProblem(tbl, ps, elems)
+        } else {
+          "a " + toString(ps.count) + "-element tuple pattern is bound to a value of type " + renderType(ty)
+        }
+        case _ -> "a " + toString(ps.count) + "-element tuple pattern is bound to a value of type " + renderType(ty)
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      val recFields: List[FieldEntry] = match unrefine(ty) {
+        case TyUser(tid, _, targs) -> fieldsOfRecordInstantiated(tbl, tid, targs)
+        case _ -> newList()
+      }
+      for f in fields {
+        match f {
+          case RPFNamed(fname, fp, _) -> {
+            val problem = localValPatternProblem(tbl, fp, fieldEntryType(recFields, fname))
+            if problem.length > 0 {
+              return problem
+            }
+          }
+          case RPFShort(_, _) -> ()
+        }
+      }
+      ""
+    }
+    case PConstructor(head, args) -> {
+      val t = unrefine(ty)
+      if localValShapeUnknown(t) {
+        return localValElemsProblem(tbl, args, newList())
+      }
+      val caseName = if head.segments.count > 0 { head.segments[head.segments.count - 1] } else { "" }
+      match finiteCaseNames(tbl, t) {
+        case Some(names) -> {
+          if names.count != 1 or names[0] != caseName {
+            return "a constructor pattern (`" + caseName + "`), which matches only one case of " + renderType(ty) +
+              "; destructure it with a `match` instead"
+          }
+          val scratch: List[Diagnostic] = newList()
+          val fieldTys: List[Type] = match unionCaseSymbolForScrutinee(tbl, scratch, pat2fnExpr(head, pat.span), t) {
+            case Some(caseSym) -> caseFieldTypesInstantiated(tbl, scratch, caseSym, t)
+            case None -> newList()
+          }
+          localValElemsProblem(tbl, args, fieldTys)
+        }
+        case None -> localValElemsProblem(tbl, args, newList())
+      }
+    }
+    case _ -> refutablePatternForm(pat) + ", which can fail to match" + localValRefutableHint(pat)
+  }
+}
+
+func localValRefutableHint(p: in Pattern): String {
+  match p.kind {
+    case PTypeTest(inner, _) -> match inner.kind {
+      case PBinding(_, None) -> "; declare the type with `val <name>: <Type> = ...` instead"
+      case _ -> "; destructure it with a `match` instead"
+    }
+    case _ -> "; destructure it with a `match` instead"
+  }
+}
+
+// The first problem among `ps` bound to `tys` element-wise (an element with
+// no type is checked against `TyError`), or "".
+func localValElemsProblem(tbl: in SymbolTable, ps: in List[Pattern], tys: in List[Type]): String {
+  var i = 0
+  while i < ps.count {
+    val problem = localValPatternProblem(tbl, ps[i], if i < tys.count { tys[i] } else { TyError })
+    if problem.length > 0 {
+      return problem
+    }
+    i = i + 1
+  }
+  ""
+}
+
+func localValShapeUnknown(t: in Type): Bool {
+  match t {
+    case TyError -> true
+    case TyVar(_) -> true
+    case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// Reports T0146 when a local `val`'s pattern cannot match every value of
+// `ty`; true when it did, so the caller binds the pattern's names leniently
+// instead of against a type they do not have.
+func checkLocalValPattern(tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Bool {
+  match pat.kind {
+    case PBinding(_, None) -> return false
+    case _ -> ()
+  }
+  val problem = localValPatternProblem(tbl, pat, ty)
+  if problem.length == 0 {
+    return false
+  }
+  diag.add(
+    errorDiagnostic(
+      "T0146",
+      "a local `val` pattern must match every value of its initializer (a `val` has no failure path), but " + problem,
+      pat.span
+    )
+  )
+  true
 }
 
 // The element type a `for` binds when it iterates a value of `iterType` (a

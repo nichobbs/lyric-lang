@@ -994,6 +994,24 @@ var y: Long = 100           // mutable
 let z: Int = expensive()    // lazy, evaluated on first use
 ```
 
+A local `val` takes a pattern (grammar `LocalBinding`), which destructures the
+initializer with no failure path, so the pattern must match **every** value of
+the initializer's type (of the annotation, when there is one):
+```
+val (lo, hi) = bounds()             // a 2-tuple
+val (n, (s, _)) = (1, ("a", 2.5))   // nested, with a wildcard
+val Point { x, y } = p              // a record pattern on a Point
+val Only(v) = box                   // the sole case of a single-case union
+```
+A tuple pattern needs a tuple of the same arity, at every level; a constructor
+pattern needs the only case of a single-case union; a record pattern's field
+patterns are held to the same rule. A pattern that can fail — `val (a, b) = 5`,
+a tuple pattern of the wrong arity, `val Some(x) = opt` (one case of two), or a
+literal, range, type-test, alternative or const pattern anywhere in it — is a
+compile error (**T0146**, #7778); destructure such a value with a `match`, and
+state a type with `val x: T = ...`, not `val x is T = ...`. A module-level `val`
+follows the stricter rule of the next paragraphs (**T0144**).
+
 `val` is the default; mutability requires explicit `var`. Lazy bindings (`let`) are thread-safe — the standard library uses .NET's `Lazy<T>` semantics.
 
 A **module-level** `val` takes a pattern like a local one (grammar `ValDecl`), and every name the pattern binds is a module value of the package, with the declaration's visibility, doc comments and annotations:
