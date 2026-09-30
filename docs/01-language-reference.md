@@ -377,6 +377,8 @@ val sub = xs.slice(start, end)       // new slice, the half-open sub-range [star
 
 The same identity rule holds for every other place the checker treats a type as a stdlib collection or monad (#7737): iterating (`for x in xs`), indexing (`xs[i]`, `m[k]`), the built-in `List` members `.count`/`.toArray()`, the `.toList()`/`.toArray()` conversion hints, and the `Result` a range or distinct type's `tryFrom` returns / the `Option` `Std.String`'s method-spelling `.indexOf` returns. A package's own `record List[T]` (or `Map`, `Result`, `Option`, …) is never treated as the stdlib type because it shares its name: iterating it is **T0126**, `.count`/`.toArray()` on it is **T0113** unless it declares them, and a mismatch diagnostic involving it says it only shares the stdlib type's name. Indexing any Lyric-native record, union or enum — the stdlib `List`/`Map`, slices, arrays and `String` are the indexable types, plus extern types, whose indexing the backend resolves — is **T0143**. A mismatch diagnostic describes an empty bracket literal `[]` as "an empty list literal" rather than by its element-less inferred type, and suggests `.toList()`/`.toArray()` only when the conversion would actually produce the expected type.
 
+`List[T]` is mutated in place. `xs.add(item)` appends `item`; `xs.add(index, item)` inserts it before position `index`, moving the element at `index` and every later one up by one place, so `xs.add(0, item)` prepends and `xs.add(xs.count, item)` appends. An `index` outside `0 ..= xs.count` raises at run time (`ArgumentOutOfRangeException` on `--target dotnet`, `IndexOutOfBoundsException` on `--target jvm`) and leaves the list unchanged. The inserted element is widened to `T` like any other numeric argument (`List[Long].add(0, 5)`). Which form a two-argument `add` is follows the receiver, never the arity: on a `Map[K, V]`, `m.add(key, value)` adds an entry (#7797). `--target native` does not lower the two-argument list form yet and rejects it at build time (**N0007**).
+
 ### 2.8 Opaque types
 
 ```
@@ -853,6 +855,34 @@ either already match or be a non-generic interface the argument implements;
 a *value* of type `Result[English, String]` is never implicitly a
 `Result[Greeter, String]`. A named argument to a union-case constructor
 must name one of the case's fields, like a record constructor's (**T0101**).
+
+An unannotated local whose initializer is an empty construction that fixes
+no type arguments — `newList()`, `newListWithCapacity(n)`, `newMap()` or
+`None`, bare or qualified — takes them from its uses in the same function
+(#7788):
+```
+func decode(): Result[List[Field], String] {
+  val fields = newList()          // a List[Field]
+  fields.add(nextField())
+  Ok(value = fields)
+}
+```
+The type of the first position the binding flows into decides: a call
+argument, a returned or trailing value, a typed binding's initializer, a
+constructor field (also inside a nested construction, as in
+`Ok(value = Some(value = xs))`), or an assignment's value. When no such
+position has a closed type (it is still generic, say `List[T]`), the values
+stored into the binding decide instead, if they all agree: `xs.add(x)`,
+`xs.add(i, x)`, `m.add(k, v)`, `xs[i] = x`, `m[k] = v`, `o = Some(x)`. In a
+generic function a store may fix a type argument to one of the function's own
+type parameters (`xs.add(x)` with `x: T` makes `xs` a `List[T]`), which each
+specialisation then instantiates. A position's type never does this, because
+a generic callee's `List[T]` names the callee's `T`. A store that only has to
+fit, such as an `Int` added to a list returned as a `List[Long]`, is
+widened. When the uses disagree, or none fixes the type, the
+binding keeps its open type. Every use accepts that type, and a backend with
+reified generics (`--target dotnet`) builds the value with `object`
+elements. Annotate such a binding (`val xs: List[Field] = newList()`).
 
 A brace-terminated `if` or `match` written in **statement position** (not as the
 right-hand side of a binding or another expression) is a *complete statement*: a

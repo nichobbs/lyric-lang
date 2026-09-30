@@ -188,6 +188,8 @@ val exists = m.containsKey("age")           // Bool
 
 `List[T]` is a growable list backed by .NET's `List<T>`. `Map[K, V]` is a hash map backed by `Dictionary<K, V>`. Both support `for x in collection` iteration.
 
+You can leave a local built by `newList()` or `newMap()` unannotated. Its element types then come from how the function uses it. The first typed position it reaches decides: a parameter, the return type (`Ok(value = xs)` in a function returning `Result[List[Item], String]`), or a record field. When nothing like that is typed, the elements it is given decide (`xs.add(item)`, `m.add(key, value)`). If its uses disagree, or say nothing, annotate it: `val xs: List[Item] = newList()`. An unannotated `val o = None` works the same way (language reference §4.3).
+
 `m.get(key)` returns `Option[Int]`, not a nullable value and not a thrown exception. You pattern-match on it:
 
 ```lyric

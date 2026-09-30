@@ -4146,6 +4146,8 @@ func checkWithImportedPackagesCore(
   // T7: `old(...)` only inside `ensures:` (T0080, #7731).
   checkOldPlacement(diag, file)
   recordModuleValTypes(tbl, sigs, diag, file.items)
+  // The uses of each open local binding fix its annotation (#7788).
+  resolveOpenBindingSites(tbl)
 
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
 }

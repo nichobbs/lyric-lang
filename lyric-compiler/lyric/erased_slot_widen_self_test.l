@@ -86,10 +86,6 @@ func sevenInt(): Int {
   7
 }
 
-func intFromCall(): Int {
-  7
-}
-
 func longFromCall(): Long {
   3000000000
 }
@@ -228,8 +224,9 @@ pub record LongBox {
   v: Long
 }
 
-func bigLong(): Long {
-  3000000000
+test "a narrower literal for a record annotated with its wider instantiation" {
+  val t: Two[Long] = Two(a = 4, b = longFromCall())
+  assertEqualLong(t.a + t.b, 3000000004, "literal, then call")
 }
 
 test "a record's wider call argument before a narrower literal (#7790, #7794)" {
@@ -242,16 +239,16 @@ test "a record's wider call argument before a narrower literal (#7790, #7794)" {
 test "a record's Long argument keeps its value next to a narrower one, in either order (#7794)" {
   val big: Long = 1000000000
   val n: Int = 5
-  val h = LongBox(v = bigLong())
+  val h = LongBox(v = longFromCall())
   // A call result, either side of an Int literal or an Int expression.
-  val c1 = Two(a = bigLong(), b = 4)
+  val c1 = Two(a = longFromCall(), b = 4)
   assertEqualLong(c1.a, 3000000000, "call, then literal: a")
   assertEqualLong(c1.b, 4, "call, then literal: b")
-  val c2 = Two(a = 4, b = bigLong())
+  val c2 = Two(a = 4, b = longFromCall())
   assertEqualLong(c2.a + c2.b, 3000000004, "literal, then call")
-  val c3 = Two(a = bigLong(), b = n)
+  val c3 = Two(a = longFromCall(), b = n)
   assertEqualLong(c3.a + c3.b, 3000000005, "call, then Int expression")
-  val c4 = Two(a = n, b = bigLong())
+  val c4 = Two(a = n, b = longFromCall())
   assertEqualLong(c4.a + c4.b, 3000000005, "Int expression, then call")
   // A binary operation.
   val o1 = Two(a = big * 3, b = 4)
@@ -270,16 +267,16 @@ test "a record's Long argument keeps its value next to a narrower one, in either
   val f4 = Two(a = n, b = h.v)
   assertEqualLong(f4.a + f4.b, 3000000005, "Int expression, then field read")
   // A negative value must stay negative (sign-extended, not truncated).
-  val neg = Two(a = 0 - bigLong(), b = 1)
+  val neg = Two(a = 0 - longFromCall(), b = 1)
   assertEqualLong(neg.a + neg.b, -2999999999, "negative wider argument")
 }
 
 test "a generic call's Long argument keeps its value next to a narrower one, in either order (#7794)" {
   val big: Long = 1000000000
   val n: Int = 5
-  val h = LongBox(v = bigLong())
-  assertEqualLong(pick(bigLong(), 4, true), 3000000000, "call, then literal")
-  assertEqualLong(pick(4, bigLong(), false), 3000000000, "literal, then call")
+  val h = LongBox(v = longFromCall())
+  assertEqualLong(pick(longFromCall(), 4, true), 3000000000, "call, then literal")
+  assertEqualLong(pick(4, longFromCall(), false), 3000000000, "literal, then call")
   assertEqualLong(pick(big * 3, n, true), 3000000000, "binary operation, then Int expression")
   assertEqualLong(pick(n, big * 3, false), 3000000000, "Int expression, then binary operation")
   assertEqualLong(pick(h.v, 4, true), 3000000000, "field read, then literal")
@@ -336,10 +333,10 @@ test "Set[Long] elements from calls, operations and field reads (#7790)" {
   val s: Set[Long] = newSet()
   setAdd(s, longFromCall())
   setAdd(s, h.n + 1)
-  setAdd(s, intFromCall())
+  setAdd(s, sevenInt())
   assertTrue(setContains(s, big * 300000000), "call")
   assertTrue(setContains(s, 41), "field read plus literal")
-  assertTrue(setContains(s, intFromCall()), "Int call")
+  assertTrue(setContains(s, sevenInt()), "Int call")
   assertEqualInt(setSize(s), 3, "size")
 }
 

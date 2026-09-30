@@ -238,7 +238,21 @@ pub func checkStatement(
         case None -> {
           val initType = inferExpr(sc, tbl, sigs, diag, init)
           recordLocalFuncType(tbl, init, initType)
-          bindPattern(sc, pat, initType)
+          // A plain name bound to an evidence-free construction is open: its
+          // uses fix its type (#7788).
+          val openName = match pat.kind {
+            case PBinding(nm, innerPat) -> match innerPat {
+              case None -> if nm != "_" { nm } else { "" }
+              case Some(_) -> ""
+            }
+            case _ -> ""
+          }
+          val openKey = if openName != "" { registerOpenBindingSite(tbl, init, initType) } else { "" }
+          if openKey != "" {
+            scopeAdd(sc, LocalBinding(name = openName, ty = initType, isMutable = false, openSite = openKey))
+          } else {
+            bindPattern(sc, pat, initType)
+          }
           recordTuplePatternBindings(tbl, pat, initType, false)
         }
         case Some(te) -> {
@@ -274,7 +288,8 @@ pub func checkStatement(
               t
             }
           }
-          scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = true))
+          val openKey = match initOpt { case Some(e) -> registerOpenBindingSite(tbl, e, initType); case None -> "" }
+          scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = true, openSite = openKey))
         }
         case Some(te) -> {
           val ctx = newGenericContext()
@@ -308,7 +323,8 @@ pub func checkStatement(
         case None -> {
           val initType = inferExpr(sc, tbl, sigs, diag, init)
           recordLocalFuncType(tbl, init, initType)
-          scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = false))
+          val openKey = registerOpenBindingSite(tbl, init, initType)
+          scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = false, openSite = openKey))
         }
         case Some(te) -> {
           val ctx = newGenericContext()
@@ -337,6 +353,7 @@ pub func checkStatement(
     case SAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExprExpected(sc, tbl, sigs, diag, value, targetType)
+      noteOpenBindingAssign(sc, tbl, sigs, target, valueType)
       // `s += <rhs>` onto a String plain-variable target accepts any RHS type
       // (mirroring binary `+`); field/indexed String targets stay strict.  See
       // `isStringPlusVarAssign` (typechecker_exprs.l) for the full rationale

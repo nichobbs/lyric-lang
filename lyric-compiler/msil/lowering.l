@@ -1158,6 +1158,7 @@ pub union ListOp {
   case LoIndexOf     // callvirt IndexOf(!0) -> int32
   case LoLastIndexOf // callvirt LastIndexOf(!0) -> int32
   case LoRemove      // callvirt Remove(!0) -> bool
+  case LoInsert      // callvirt Insert(int32, !0)
 }
 
 pub union DictOp {
@@ -2292,6 +2293,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         case LoIndexOf -> emitCallvirt(mb, listElemMethodTokenForLowering(ctx, elemTy, lt, "IndexOf", MInt))
         case LoLastIndexOf -> emitCallvirt(mb, listElemMethodTokenForLowering(ctx, elemTy, lt, "LastIndexOf", MInt))
         case LoRemove -> emitCallvirt(mb, listElemMethodTokenForLowering(ctx, elemTy, lt, "Remove", MBool))
+        case LoInsert -> emitCallvirt(mb, listInsertTokenForLowering(ctx, elemTy, lt))
       }
     }
     case MDictOp(op, keyTy, valTy) -> {
@@ -4917,6 +4919,21 @@ func listElemMethodTokenForLowering(
       name,
       "list_" + name + "_" + msilTypeKey(elemTy),
       buildInstanceMethodSig(ps, retTy)
+    )
+}
+
+// `List`1<elemTy>::Insert(int32, !0): void`.
+func listInsertTokenForLowering(ctx: in LoweringCtx, elemTy: in MsilType, lt: in ListTokens): Int {
+  val ps: List[MsilType] = newList()
+  ps.add(MInt)
+  ps.add(MTypeVar(0))
+  0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      lt.typeSpec - 0x1B000000,
+      "Insert",
+      "list_Insert_" + msilTypeKey(elemTy),
+      buildInstanceMethodSig(ps, MVoid)
     )
 }
 

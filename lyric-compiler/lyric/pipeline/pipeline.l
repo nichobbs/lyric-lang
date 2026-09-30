@@ -314,7 +314,9 @@ pub func pipeCheckAndMono(
   // Record `.copy(...)` → constructor call, a cross-package function value →
   // its forwarding lambda, a widened function-value call argument → its
   // explicit conversion, an unannotated function-valued local → its checked
-  // type as the annotation (#7711), a call through a function value → a
+  // type as the annotation (#7711), an unannotated `newList()`/`newMap()`/
+  // `None` local → the type its uses fix as the annotation (#7788), a call
+  // through a function value → a
   // call through a local of the callee's checked type (#7716), and a name a
   // tuple pattern binds → a local annotated with its element type (#7728),
   // a value a destructuring module `val` binds → its checked type as the
@@ -327,7 +329,7 @@ pub func pipeCheckAndMono(
     tcRes.symbols.recordCopySites,
     valueSites,
     tcRes.symbols.argConversionSites,
-    tcRes.symbols.localFuncTypeSites,
+    tcRes.symbols.localBindingTypeSites,
     tcRes.symbols.funcValueCallSites,
     tcRes.symbols.tuplePatternBindingSites
   )

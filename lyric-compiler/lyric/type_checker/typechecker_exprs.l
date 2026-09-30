@@ -7048,7 +7048,7 @@ func recordResultTypeAt(tbl: in SymbolTable, t: in Type, sp: in Span): Unit {
 }
 
 // Record the checked type of an unannotated local binding's function-valued
-// initializer (see `SymbolTable.localFuncTypeSites`).  An async function, one
+// initializer (see `SymbolTable.localBindingTypeSites`).  An async function, one
 // that never returns, and a type with no source spelling (a type parameter,
 // an error) stay unrecorded: the binding keeps its inferred-only form.
 func recordLocalFuncType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit {
@@ -7065,15 +7065,531 @@ func recordLocalFuncType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit {
         return
       }
       val key = recordCopySiteKey(init.span)
-      if tbl.localFuncTypeSites.containsKey(key) {
+      if tbl.localBindingTypeSites.containsKey(key) {
         return
       }
       match typeExprForRef(tbl, t, init.span) {
-        case Some(te) -> tbl.localFuncTypeSites.add(key, te)
+        case Some(te) -> tbl.localBindingTypeSites.add(key, te)
         case None -> ()
       }
     }
     case _ -> ()
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Open bindings (#7788).
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `val xs = newList()` fixes nothing about the list's element type, so the
+// binding types as `List[<error>]`, which every later use accepts.  A backend
+// that erases generics (the JVM) is indifferent; one that reifies them (MSIL)
+// has to choose the element type where the list is constructed, and without
+// one builds `List<object>`: stored where a `List<Seed>` is declared, that is
+// unverifiable IL, and a consumer's typed read of it throws.  The binding's
+// uses are recorded as it is checked (`SymbolTable.openBindingSites`), and
+// `resolveOpenBindingSites` makes the type they agree on its annotation.
+// The `SymbolTable.openBindingSites` key for an unannotated binding
+// initialized by `init` of type `initTy`, registering the site, or "" when the
+// binding is not open: its initializer is not an evidence-free construction,
+// or its type is already closed.
+pub func registerOpenBindingSite(tbl: in SymbolTable, init: in Expr, initTy: in Type): String {
+  if isNoSourceSpan(init.span) or init.span.endPos.offset <= init.span.startPos.offset {
+    return ""
+  }
+  // Bare or qualified (`Coll.newList()`, `Std.Core.None`): the inferred
+  // type, not the spelling, decides below whether anything is left open.
+  val evidenceFree = match init.kind {
+    case ECall(fn, _) -> isEmptyCollectionCtorName(lastNameOfPathExpr(fn))
+    case EPath(_) -> lastNameOfPathExpr(init) == "None"
+    case EMember(_, _) -> lastNameOfPathExpr(init) == "None"
+    case _ -> false
+  }
+  if not evidenceFree {
+    return ""
+  }
+  val open = match unrefine(initTy) {
+    case TyUser(_, _, args) -> args.count > 0 and not typesAreClosed(args)
+    case _ -> false
+  }
+  if not open {
+    return ""
+  }
+  val key = recordCopySiteKey(init.span)
+  if not tbl.openBindingSites.containsKey(key) {
+    tbl.openBindingSites.add(
+      key,
+      OpenBindingSite(
+        initSpan = init.span,
+        initTy = unrefine(initTy),
+        sinkTy = newList(),
+        sinkTe = newList(),
+        storeTy = newList(),
+        storeTe = newList(),
+        sinkConflict = newList(),
+        storeConflict = newList()
+      )
+    )
+  }
+  key
+}
+
+func isEmptyCollectionCtorName(name: in String): Bool {
+  name == "newList" or name == "newListWithCapacity" or name == "newMap"
+}
+
+// The last name of a (possibly qualified) name expression: `f` for `f`,
+// `Pkg.f` and `Pkg.Sub.f`; "" for any other expression.
+func lastNameOfPathExpr(e: in Expr): String {
+  match e.kind {
+    case EPath(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }
+    case EMember(recv, name) -> if lastNameOfPathExpr(recv) != "" { name } else { "" }
+    case _ -> ""
+  }
+}
+
+// The open-site key of the local `e` names, or "" when `e` is not a bare
+// name bound to an open binding.
+func openSiteOfExpr(sc: in Scope, e: in Expr): String {
+  match e.kind {
+    case EParen(inner) -> openSiteOfExpr(sc, inner)
+    case EPath(p) -> if p.segments.count == 1 {
+      match scopeTryFind(sc, p.segments[0]) {
+        case Some(b) -> b.openSite
+        case None -> ""
+      }
+    } else {
+      ""
+    }
+    case _ -> ""
+  }
+}
+
+// Record `t` as a sink (`isSink`) or store type of the open binding `key`.
+// Only a closed type of the binding's own constructor counts: an `Iterable`
+// parameter or an interface-typed field says nothing about the element type
+// the list is built with.  A store's type may also mention `typeParams`, the
+// enclosing function's type parameters: it is the type of an expression in
+// that function, so its `T` is the function's own, which `Lyric.Mono`
+// substitutes when it specialises the body.  A sink's never may: a generic
+// callee's parameter `List[T]` names the callee's `T`.  The first sink and
+// the first store win; a later one that disagrees marks the kind
+// conflicting, and a conflicting kind is not used.
+func noteOpenBindingType(
+  tbl: in SymbolTable, key: in String, t: in Type, isSink: in Bool, typeParams: in List[String]
+): Unit {
+  match mapGet(tbl.openBindingSites, key) {
+    case None -> ()
+    case Some(site) -> {
+      val ut = unrefine(t)
+      val noParams: List[String] = newList()
+      val allowed = if isSink { noParams } else { typeParams }
+      if not typeIsClosedOver(ut, allowed) {
+        return
+      }
+      val sameCtor = match site.initTy {
+        case TyUser(iid, _, iargs) -> match ut {
+          case TyUser(tid, _, targs) -> typeIdEq(iid, tid) and
+            iargs.count == targs.count
+          case _ -> false
+        }
+        case _ -> false
+      }
+      if not sameCtor {
+        return
+      }
+      val tys = if isSink { site.sinkTy } else { site.storeTy }
+      if tys.count > 0 {
+        if not typeEquiv(tys[0], ut) {
+          val conflict = if isSink { site.sinkConflict } else { site.storeConflict }
+          if conflict.count == 0 {
+            conflict.add(true)
+          }
+        }
+        return
+      }
+      match typeExprForOpenBinding(tbl, ut, site.initSpan, allowed) {
+        case Some(te) -> {
+          tys.add(ut)
+          if isSink {
+            site.sinkTe.add(te)
+          } else {
+            site.storeTe.add(te)
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+}
+
+// `typeIsClosed`, except that a type variable named in `typeParams` counts
+// as closed.
+func typeIsClosedOver(t: in Type, typeParams: in List[String]): Bool {
+  match t {
+    case TyVar(n) -> typeParams.contains(n)
+    case TyError -> false
+    case TySelf -> false
+    case TyUser(_, _, args) -> typesAreClosedOver(args, typeParams)
+    case TySlice(e) -> typeIsClosedOver(e, typeParams)
+    case TyArray(_, e) -> typeIsClosedOver(e, typeParams)
+    case TyNullable(inner) -> typeIsClosedOver(inner, typeParams)
+    case TyTuple(elems) -> typesAreClosedOver(elems, typeParams)
+    case TyFunction(ps, ret, _) -> typesAreClosedOver(ps, typeParams) and typeIsClosedOver(ret, typeParams)
+    case TyRefined(u, _, _, _) -> typeIsClosedOver(u, typeParams)
+    case _ -> true
+  }
+}
+
+func typesAreClosedOver(ts: in List[Type], typeParams: in List[String]): Bool {
+  var i = 0
+  while i < ts.count {
+    if not typeIsClosedOver(ts[i], typeParams) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// The source spelling of an open binding's type (`typeExprForRef`), in which
+// a type variable named in `typeParams` is spelled by its name.
+func typeExprForOpenBinding(tbl: in SymbolTable, t: in Type, sp: in Span, typeParams: in List[String]): Option[TypeExpr] {
+  if typeIsClosed(t) {
+    return typeExprForRef(tbl, t, sp)
+  }
+  match t {
+    case TyVar(n) -> if typeParams.contains(n) {
+      val segs: List[String] = newList()
+      segs.add(n)
+      Some(value = TypeExpr(kind = TRef(path = refTypePath(segs, sp)), span = sp))
+    } else {
+      None
+    }
+    case TyRefined(u, _, _, _) -> typeExprForOpenBinding(tbl, u, sp, typeParams)
+    case TySlice(e) -> match typeExprForOpenBinding(tbl, e, sp, typeParams) {
+      case Some(te) -> Some(value = TypeExpr(kind = TSlice(element = te), span = sp))
+      case None -> None
+    }
+    case TyNullable(inner) -> match typeExprForOpenBinding(tbl, inner, sp, typeParams) {
+      case Some(te) -> Some(value = TypeExpr(kind = TNullable(inner = te), span = sp))
+      case None -> None
+    }
+    case TyTuple(elems) -> {
+      val tes: List[TypeExpr] = newList()
+      var i = 0
+      while i < elems.count {
+        match typeExprForOpenBinding(tbl, elems[i], sp, typeParams) {
+          case Some(te) -> tes.add(te)
+          case None -> return None
+        }
+        i = i + 1
+      }
+      Some(value = TypeExpr(kind = TTuple(types = tes), span = sp))
+    }
+    case TyUser(tid, nm, args) -> {
+      val noArgs: List[Type] = newList()
+      match typeExprForRef(tbl, TyUser(id = tid, name = nm, args = noArgs), sp) {
+        case Some(headTe) -> match headTe.kind {
+          case TRef(head) -> {
+            val targs: List[TypeArg] = newList()
+            var i = 0
+            while i < args.count {
+              match typeExprForOpenBinding(tbl, args[i], sp, typeParams) {
+                case Some(te) -> targs.add(TAType(ty = te))
+                case None -> return None
+              }
+              i = i + 1
+            }
+            Some(value = TypeExpr(kind = TGenericApp(head = head, args = targs), span = sp))
+          }
+          case _ -> None
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// Whether `e` can carry an open binding to a sink: the binding itself, or a
+// constructor call one of whose arguments can.
+func exprMayCarryOpenBinding(sc: in Scope, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> exprMayCarryOpenBinding(sc, inner)
+    case EPath(_) -> openSiteOfExpr(sc, e) != ""
+    case ECall(_, cargs) -> {
+      var i = 0
+      while i < cargs.count {
+        if exprMayCarryOpenBinding(sc, callArgExpr(cargs[i])) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+// `e` flows into a position whose declared type is `expected`: record the
+// sink of each open binding it carries — `e` itself, or an argument of a
+// union-case or record construction of `expected`'s type
+// (`Ok(value = xs)` against `Result[List[Seed], String]`).  Branches of an
+// `if`/`match`/block are checked against the same expected type through
+// `inferExprExpected`, which calls this for each of them.
+pub func noteExpectedFlow(sc: in Scope, tbl: in SymbolTable, e: in Expr, expected: in Type): Unit {
+  if tbl.openBindingSites.count == 0 or not typeIsClosed(expected) {
+    return
+  }
+  if not exprMayCarryOpenBinding(sc, e) {
+    return
+  }
+  match e.kind {
+    case EParen(inner) -> noteExpectedFlow(sc, tbl, inner, expected)
+    case EPath(_) -> {
+      val noParams: List[String] = newList()
+      noteOpenBindingType(tbl, openSiteOfExpr(sc, e), expected, true, noParams)
+    }
+    case ECall(fn, cargs) -> noteCtorArgFlows(sc, tbl, fn, cargs, expected)
+    case _ -> ()
+  }
+}
+
+// `fn(cargs)` constructs a value of type `ctorTy`: each argument flows into
+// its field, whose type is the declared field type instantiated at
+// `ctorTy`'s type arguments.  Nothing is recorded when `fn` is not a
+// union-case or record constructor of `ctorTy`'s type.
+func noteCtorArgFlows(sc: in Scope, tbl: in SymbolTable, fn: in Expr, cargs: in List[CallArg], ctorTy: in Type): Unit {
+  if tbl.openBindingSites.count == 0 {
+    return
+  }
+  var anyCarried = false
+  var ci = 0
+  while ci < cargs.count {
+    if exprMayCarryOpenBinding(sc, callArgExpr(cargs[ci])) {
+      anyCarried = true
+    }
+    ci = ci + 1
+  }
+  if not anyCarried {
+    return
+  }
+  match unrefine(ctorTy) {
+    case TyUser(tid, _, targs) -> {
+      match unionCaseSymbolOf(tbl, fn) {
+        case Some(caseSym) -> match caseSym.kind {
+          case DKUnionCase(parentId, uc) -> if typeIdEq(parentId, tid) {
+            match parentUnionDeclOf(tbl, parentId) {
+              case Some(decl) -> {
+                val gnames = unionDeclGenericNames(decl)
+                val scratch: List[Diagnostic] = newList()
+                val ftypes = unionCaseFieldTypes(tbl, scratch, uc, gnames, caseSym.originPackage)
+                val fnames: List[String] = newList()
+                var fi = 0
+                while fi < uc.fields.count {
+                  match uc.fields[fi] {
+                    case UFNamed(nm, _, _) -> fnames.add(nm)
+                    case UFPos(_, _) -> fnames.add("")
+                  }
+                  fi = fi + 1
+                }
+                noteArgsAgainstFields(sc, tbl, cargs, fnames, ftypes, gnames, targs)
+              }
+              case None -> ()
+            }
+          }
+          case _ -> ()
+        }
+        case None -> match constructorSymbolOf(tbl, fn) {
+          case Some(sym) -> match symbolTypeIdOpt(sym) {
+            case Some(sid) -> if typeIdEq(sid, tid) {
+              val gnames: List[String] = if ctorIsGeneric(sym) { ctorGenericNames(sym) } else { newList() }
+              noteArgsAgainstFields(sc, tbl, cargs, ctorFieldNames(sym), ctorFieldTypes(tbl, sym, gnames), gnames, targs)
+            }
+            case None -> ()
+          }
+          case None -> ()
+        }
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Each constructor argument flows into its field: a named argument into the
+// field it names, a positional one into the first field no argument names,
+// left to right (`argTypesInFieldOrder`'s pairing).
+func noteArgsAgainstFields(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  cargs: in List[CallArg],
+  fnames: in List[String],
+  ftypes: in List[Type],
+  gnames: in List[String],
+  targs: in List[Type],
+): Unit {
+  val occupied: List[Bool] = newList()
+  var oi = 0
+  while oi < fnames.count {
+    occupied.add(false)
+    oi = oi + 1
+  }
+  val slots: List[Int] = newList()
+  var ai = 0
+  while ai < cargs.count {
+    var slot = -1
+    match cargs[ai] {
+      case CANamed(nm, _, _) -> {
+        var j = 0
+        while j < fnames.count {
+          if fnames[j] == nm and nm != "" {
+            slot = j
+            occupied[j] = true
+            j = fnames.count
+          } else {
+            j = j + 1
+          }
+        }
+      }
+      case CAPositional(_) -> ()
+    }
+    slots.add(slot)
+    ai = ai + 1
+  }
+  var pi = 0
+  while pi < cargs.count {
+    match cargs[pi] {
+      case CAPositional(_) -> {
+        var j = 0
+        while j < fnames.count {
+          if not occupied[j] {
+            slots[pi] = j
+            occupied[j] = true
+            j = fnames.count
+          } else {
+            j = j + 1
+          }
+        }
+      }
+      case CANamed(_, _, _) -> ()
+    }
+    pi = pi + 1
+  }
+  var k = 0
+  while k < cargs.count {
+    val slot = slots[k]
+    if slot >= 0 and slot < ftypes.count {
+      noteExpectedFlow(sc, tbl, callArgExpr(cargs[k]), substituteTyVars(ftypes[slot], gnames, targs))
+    }
+    k = k + 1
+  }
+}
+
+// `recv.add(...)` stores into the open binding `recv` names: `add(x)` and
+// `add(i, x)` on a one-parameter collection fix its element to `x`'s type,
+// `add(k, v)` on a two-parameter one its key and value.
+pub func noteOpenBindingAdd(sc: in Scope, tbl: in SymbolTable, recv: in Expr, argTypes: in List[Type]): Unit {
+  if tbl.openBindingSites.count == 0 {
+    return
+  }
+  val key = openSiteOfExpr(sc, recv)
+  if key == "" {
+    return
+  }
+  match mapGet(tbl.openBindingSites, key) {
+    case Some(site) -> match site.initTy {
+      case TyUser(id, nm, iargs) -> {
+        val filled: List[Type] = newList()
+        if iargs.count == 1 and (argTypes.count == 1 or argTypes.count == 2) {
+          filled.add(argTypes[argTypes.count - 1])
+        } else if iargs.count == 2 and argTypes.count == 2 {
+          filled.add(argTypes[0])
+          filled.add(argTypes[1])
+        }
+        if filled.count == iargs.count {
+          noteOpenBindingType(tbl, key, TyUser(id = id, name = nm, args = filled), false, sc.genericNames)
+        }
+      }
+      case _ -> ()
+    }
+    case None -> ()
+  }
+}
+
+// An assignment `target = value` with `value` of type `valueTy`: `o = v`
+// stores into the open binding `o`, `xs[i] = v` into the element of the open
+// list `xs`, and `m[k] = v` into the key and value of the open map `m`.
+pub func noteOpenBindingAssign(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  target: in Expr,
+  valueTy: in Type,
+): Unit {
+  if tbl.openBindingSites.count == 0 {
+    return
+  }
+  match target.kind {
+    case EPath(_) -> {
+      val key = openSiteOfExpr(sc, target)
+      if key != "" {
+        noteOpenBindingType(tbl, key, valueTy, false, sc.genericNames)
+      }
+    }
+    case EIndex(recv, idxs) -> if idxs.count == 1 and openSiteOfExpr(sc, recv) != "" {
+      val scratch: List[Diagnostic] = newList()
+      val argTys: List[Type] = newList()
+      if openBindingInitArity(tbl, openSiteOfExpr(sc, recv)) == 2 {
+        argTys.add(inferExpr(sc, tbl, sigs, scratch, idxs[0]))
+      }
+      argTys.add(valueTy)
+      noteOpenBindingAdd(sc, tbl, recv, argTys)
+    }
+    case _ -> ()
+  }
+}
+
+// How many type arguments the open binding `key`'s type has.
+func openBindingInitArity(tbl: in SymbolTable, key: in String): Int {
+  match mapGet(tbl.openBindingSites, key) {
+    case Some(site) -> match site.initTy { case TyUser(_, _, a) -> a.count; case _ -> 0 }
+    case None -> 0
+  }
+}
+
+// Each open binding whose uses agree on its type gets that type as its
+// annotation (`SymbolTable.localBindingTypeSites`).  A sink is exact — it is
+// the type the value must have where it is used — so the first one wins; a
+// store only says what was put in (an `Int` added to what a `List[Long]`
+// parameter receives), so the stores decide only when nothing sinks the
+// binding.  Disagreeing sinks, or disagreeing stores with no sink, leave the
+// binding as it was.
+pub func resolveOpenBindingSites(tbl: in SymbolTable): Unit {
+  val keys = mapKeys(tbl.openBindingSites)
+  var i = 0
+  while i < keys.count {
+    match mapGet(tbl.openBindingSites, keys[i]) {
+      case Some(site) -> {
+        val te: Option[TypeExpr] = if site.sinkTe.count > 0 {
+          if site.sinkConflict.count == 0 {
+            Some(value = site.sinkTe[0])
+          } else {
+            None
+          }
+        } else if site.storeTe.count > 0 and site.storeConflict.count == 0 {
+          Some(value = site.storeTe[0])
+        } else {
+          None
+        }
+        match te {
+          case Some(t) -> if not tbl.localBindingTypeSites.containsKey(keys[i]) { tbl.localBindingTypeSites.add(keys[i], t) }
+          case None -> ()
+        }
+      }
+      case None -> ()
+    }
+    i = i + 1
   }
 }
 
@@ -7699,6 +8215,13 @@ func inferExprCore(
           di = di + 1
         }
       }
+      // `xs.add(x)` on an open binding fixes its element type (#7788).
+      if isMemberCallee and memberName == "add" {
+        match fn.kind {
+          case EMember(addRecv, _) -> noteOpenBindingAdd(sc, tbl, addRecv, argTypes)
+          case _ -> ()
+        }
+      }
       recordGeneratorCallSite(tbl, e.span, false)
       match directSig {
         case Some(sig) -> {
@@ -7715,9 +8238,17 @@ func inferExprCore(
           instantiateReturnType(sig, argTypes)
         }
         case None -> match unionCaseSymbolOf(tbl, fn) {
-          case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
+          case Some(caseSym) -> {
+            val caseTy = inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
+            noteCtorArgFlows(sc, tbl, fn, args, caseTy)
+            caseTy
+          }
           case None -> match constructorSymbolOf(tbl, fn) {
-            case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
+            case Some(ctorSym) -> {
+              val ctorTy = inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
+              noteCtorArgFlows(sc, tbl, fn, args, ctorTy)
+              ctorTy
+            }
             // #6838: the callee names a union/enum TYPE itself, not one of its
             // cases (`Pkg.DbError(message = "…")`). No such constructor exists,
             // so it never resolves to a function token. Diagnose it here
@@ -7786,6 +8317,9 @@ func inferExprCore(
                       } else {
                         var k = 0
                         while k < argTypes.count {
+                          if k < args.count {
+                            noteExpectedFlow(sc, tbl, callArgExpr(args[k]), paramTypes[k])
+                          }
                           val kLiteralOk = k < args.count and
                             listLiteralArgSatisfiesParam(tbl, paramTypes[k], argTypes[k], callArgExpr(args[k]))
                           if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) and not kLiteralOk {
@@ -8127,6 +8661,7 @@ func inferExprCore(
     case EAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       val valueType = inferExprExpected(sc, tbl, sigs, diag, value, targetType)
+      noteOpenBindingAssign(sc, tbl, sigs, target, valueType)
       val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
       if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
@@ -8348,6 +8883,7 @@ pub func inferExprExpected(
   e: in Expr,
   expected: in Type,
 ): Type {
+  noteExpectedFlow(sc, tbl, e, expected)
   match e.kind {
     case EParen(inner) -> inferExprExpected(sc, tbl, sigs, diag, inner, expected)
     case ELambda(ps, body) -> match unrefine(expected) {
@@ -8610,6 +9146,7 @@ func checkCallArgsAgainstSig(
       val ai = srcIdx[k]
       if ai >= 0 {
         val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
+        noteExpectedFlow(sc, tbl, callArgExpr(args[ai]), p.ty)
         if not argSatisfiesParam(tbl, p.ty, argTy) and not listLiteralArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
           diag.add(
             errorDiagnostic(
