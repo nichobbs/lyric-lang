@@ -231,6 +231,21 @@ SELF_TESTS=(
   lyric-compiler/lyric/erased_slot_widen_self_test.l
   lyric-compiler/lyric/list_insert_self_test.l
   lyric-compiler/lyric/unannotated_list_result_self_test.l
+  lyric-compiler/lyric/long_store_widen_self_test.l
+  lyric-compiler/lyric/mixed_width_arith_self_test.l
+  lyric-compiler/lyric/generic_record_var_field_self_test.l
+  lyric-compiler/lyric/range_subtype_self_test.l
+  lyric-compiler/lyric/slice_array_abi_self_test.l
+  lyric-compiler/lyric/slice_fastpath_self_test.l
+  lyric-compiler/lyric/list_literal_index_self_test.l
+  lyric-compiler/lyric/generic_extern_methodspec_self_test.l
+  lyric-compiler/lyric/generic_extern_param_self_test.l
+  lyric-compiler/lyric/unit_func_ref_action_self_test.l
+  lyric-compiler/lyric/contract_generic_call_self_test.l
+  lyric-compiler/lyric/conversion_name_resolution_self_test.l
+  lyric-compiler/lyric/bare_func_ref_self_test.l
+  lyric-compiler/lyric/inout_self_param_self_test.l
+  lyric-compiler/lyric/impl_method_self_test.l
 )
 st_errors=0
 st_failed=()

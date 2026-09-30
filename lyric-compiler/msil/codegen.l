@@ -5811,6 +5811,12 @@ pub record FuncCtx {
   // (`ldarg; <value>; stind`), and the slot is never touched by `emitStoreSlot`
   // (the assignment path handles byref targets before reaching it).  See #1761.
   byrefSlotTypes: Map[Int, MsilType]
+  // Byref slots whose SIGNATURE pointee is the erased `object` while
+  // `byrefSlotTypes` records the impl target's class — an `inout`/`out Self`
+  // parameter of an impl/record method, which keeps the interface slot's
+  // `object&` ABI (`registerParamsMsil`).  A load through such a pointer
+  // yields an `object` and is narrowed to the class (#7783).
+  erasedByrefSlots: Map[Int, Bool]
   // Declared return MsilType of function-typed locals/params (a `(A,...) -> R`
   // value), keyed by name.  `MVoid` means a void-returning delegate (the result
   // of `Func::Invoke` is discarded); a non-void entry materialises the boxed
@@ -6696,6 +6702,21 @@ func pushDefaultValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
   }
 }
 
+// Store the value on the stack into a typed array element (`arr, idx, value`
+// on the stack), with the opcode ILVerify accepts for that element type.  A
+// `Char` or `Bool` value is pushed as an I4 (`ldc.i4`, `ceq`, `ldelem.u2`),
+// which the generic `stelem <System.Char>` / `stelem <System.Boolean>` forms
+// reject (`StackUnexpected [found Char]` #5563 item 1, `[found Boolean]`
+// #7783); the token-less `stelem.i2` / `stelem.i1` take the I4 directly.
+// Every other element type uses `stelem <elemTok>`.
+func emitArrayElemStoreMsil(insns: in List[MInsn], elem: in MsilType, elemTok: in Int): Unit {
+  match elem {
+    case MChar -> insns.add(MStelemI2)
+    case MBool -> insns.add(MStelemI1)
+    case _ -> insns.add(MStelem(typeToken = elemTok))
+  }
+}
+
 // Apply a compound-assignment operator to a current value already on the stack
 // (typed `curTy`), consuming the right-hand `value` expression and leaving the
 // combined result on the stack.  `+=` on a String performs `String.Concat`
@@ -6739,7 +6760,14 @@ func emitCompoundCombineMsil(
     }
     insns.add(MCall(methodToken = cctx.tokConcat2))
   } else {
-    lowerExprMsil(cctx, fctx, insns, value)
+    val rTy = lowerExprMsil(cctx, fctx, insns, value)
+    // M6 numeric widening: `l += i` on a `Long` target type-checks with an
+    // `Int` rhs, and CIL binary arithmetic requires both operands to share a
+    // stack type (ECMA-335 III.1.5), so widen the rhs to the target width
+    // before the op — the plain-slot twin of #7343's
+    // `emitCompoundCombineSlotMsil` widening (#7783).  An erased `object`
+    // rhs unboxes to the target type.
+    coerceCallArgMsil(cctx, insns, rTy, curTy)
     match assignOpArithInsnMsil(op) {
       case Some(arith) -> {
         val concreteArith = match arith {
@@ -6887,11 +6915,7 @@ func emitSliceCompoundAssignMsil(
   emitLoadSlot(insns, idxSlot, fctx.paramCount)
   emitTypedLdelemMsil(insns, elem)
   emitCompoundCombineSlotMsil(cctx, fctx, insns, op, elem, rTy, rSlot, unsignedRhs)
-  if elem == MChar {
-    insns.add(MStelemI2)
-  } else {
-    insns.add(MStelem(typeToken = elemTok))
-  }
+  emitArrayElemStoreMsil(insns, elem, elemTok)
   insns.add(MBr(label = doneL))
   // List-backed slice: IList get_Item / set_Item on boxed elements.
   insns.add(MLabel(id = slowL))
@@ -6930,8 +6954,212 @@ func emitLoadVarMsil(fctx: in FuncCtx, insns: in List[MInsn], slot: in Int): Uni
     case Some(elemTy) -> {
       insns.add(MLdarg(slot = slot))
       insns.add(MLdind(ty = elemTy))
+      // An `inout Self` pointer is `object&` in the signature: narrow the
+      // loaded `object` to the target class the body tracks it as.  The
+      // cast cannot fail — the checker only lets the target type in (#6417).
+      if fctx.erasedByrefSlots.containsKey(slot) {
+        match elemTy {
+          case MClass(cn) -> insns.add(MCastclassByName(className = cn))
+          case MGenericInstByName(headFqn, typeArgs) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = typeArgs))
+          case _ -> ()
+        }
+      }
     }
     case None -> emitLoadSlot(insns, slot, fctx.paramCount)
+  }
+}
+
+// A pending copy-back for an `out`/`inout` argument passed through a temp
+// (`emitByrefArgCheckedMsil`): after the call, `tempSlot`'s value — narrowed to
+// `argElem` when that is a class — is stored back to the argument's own
+// location.  `kind` 0 = a local/by-value-param slot, 1 = a forwarded byref
+// slot (store through its pointer), 2 = a field of the receiver saved in
+// `recvSlot`.
+record ByrefWriteBackMsil {
+  kind: Int
+  slot: Int
+  tempSlot: Int
+  argElem: MsilType
+  recvSlot: Int
+  fieldTok: Int
+}
+
+// The physical pointee type of an `out`/`inout` argument's storage, when it
+// is a local, parameter or field this function can name; None otherwise.
+func byrefArgStorageTyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, argExpr: in Expr): Option[MsilType] {
+  match argExpr.kind {
+    case EPath(path) -> match mapGet(fctx.slots, lastSegmentMsil(path)) {
+      case Some(slot) -> match mapGet(fctx.byrefSlotTypes, slot) {
+        case Some(bt) -> if fctx.erasedByrefSlots.containsKey(slot) {
+          Some(value = MObject)
+        } else {
+          Some(value = bt)
+        }
+        case None -> mapGet(fctx.types, lastSegmentMsil(path))
+      }
+      case None -> None
+    }
+    case _ -> None
+  }
+}
+
+// True when an argument stored as `argElem` must reach a byref parameter of
+// pointee `paramElem` through a temp: two different reference types, one of
+// them the erased `object` (an `inout Self` parameter keeps the interface
+// slot's `object&`, while the caller's variable is the concrete class, or
+// the other way round when an `inout Self` parameter is forwarded).
+// Managed pointers are invariant (ECMA-335 III.1.8.1.2.2), so passing the
+// variable's own address is unverifiable.
+func byrefArgNeedsTempMsil(argElem: in MsilType, paramElem: in MsilType): Bool {
+  val argObj = match argElem { case MObject -> true; case _ -> false }
+  val paramObj = match paramElem { case MObject -> true; case _ -> false }
+  val argRef = not isValueType(argElem) and not argObj
+  val paramRef = not isValueType(paramElem) and not paramObj;
+  (argObj and paramRef) or (paramObj and argRef)
+}
+
+func narrowToClassMsil(insns: in List[MInsn], t: in MsilType): Unit {
+  match t {
+    case MClass(cn) -> insns.add(MCastclassByName(className = cn))
+    case MGenericInstByName(headFqn, typeArgs) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = typeArgs))
+    case MString -> insns.add(MCastclassByName(className = "System.String"))
+    case _ -> ()
+  }
+}
+
+// Push the pointer for an `out`/`inout` argument whose callee parameter
+// pointee is `paramElem` (#7783).  When the argument's own storage has the
+// same type this is `emitByrefArgMsil`.  When they differ in the way
+// `byrefArgNeedsTempMsil` describes, the value is copied into a temp of the
+// parameter's type, the temp's address is passed, and the returned
+// write-back stores the temp back into the argument after the call — the
+// same copy-in/copy-out the JVM's holder protocol performs for every
+// `out`/`inout` argument (`writeBackHolderArg`), so both targets observe the
+// argument identically.  `pending` collects the write-backs; the call site
+// runs them with `emitByrefWriteBacksMsil` once the call returns.
+func emitByrefArgCheckedMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  argExpr: in Expr,
+  paramTy: in Option[MsilType],
+  pending: in List[ByrefWriteBackMsil],
+): Unit {
+  val paramElem = match paramTy {
+    case Some(pt) -> match pt { case MByRef(inner) -> Some(value = inner); case _ -> Some(value = pt) }
+    case None -> None
+  }
+  // A field argument: lower the receiver once, then pass the field's own
+  // address or, on a type mismatch, a temp copied back through the saved
+  // receiver.
+  match argExpr.kind {
+    case EMember(recv, memberName) -> match paramElem {
+      case Some(pe) -> {
+        val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+        match recvTy {
+          case MClass(cls) -> {
+            val key = cls + "/" + memberName
+            val tok = match mapGet(cctx.fieldTokens, key) {
+              case Some(t) -> t
+              case None -> panic(
+                "Msil.Codegen: out/inout field argument '" + memberName +
+                  "' not found in fieldTokens for class '" +
+                  cls +
+                  "'"
+              )
+            }
+            val fldTy = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> pe }
+            if byrefArgNeedsTempMsil(fldTy, pe) {
+              val recvSlot = allocSlotMsil(fctx, "__byref_recv_" + toString(fctx.slotTicker.count), recvTy)
+              emitStoreSlot(insns, recvSlot, fctx.paramCount)
+              val tempSlot = allocSlotMsil(fctx, "__byref_tmp_" + toString(fctx.slotTicker.count), pe)
+              emitLoadSlot(insns, recvSlot, fctx.paramCount)
+              insns.add(MLdfld(fieldToken = tok))
+              narrowToClassMsil(insns, pe)
+              emitStoreSlot(insns, tempSlot, fctx.paramCount)
+              insns.add(MLdloca(slot = tempSlot - fctx.paramCount))
+              pending.add(
+                ByrefWriteBackMsil(kind = 2, slot = -1, tempSlot = tempSlot, argElem = fldTy, recvSlot = recvSlot, fieldTok = tok)
+              )
+            } else {
+              insns.add(MLdflda(fieldToken = tok))
+            }
+            return ()
+          }
+          case _ -> panic(
+            "Msil.Codegen: out/inout field argument receiver must be a class type (value-type structs are not yet supported as inout receiver types)"
+          )
+        }
+      }
+      case None -> {
+        emitByrefArgMsil(cctx, fctx, insns, argExpr)
+        return ()
+      }
+    }
+    case _ -> ()
+  }
+  val storage = byrefArgStorageTyMsil(cctx, fctx, argExpr)
+  val needTemp = match paramElem {
+    case Some(pe) -> match storage { case Some(st) -> byrefArgNeedsTempMsil(st, pe); case None -> false }
+    case None -> false
+  }
+  if not needTemp {
+    emitByrefArgMsil(cctx, fctx, insns, argExpr)
+    return ()
+  }
+  val pe = match paramElem { case Some(v) -> v; case None -> MObject }
+  val st = match storage { case Some(v) -> v; case None -> MObject }
+  match argExpr.kind {
+    case EPath(path) -> {
+      val slot = match mapGet(fctx.slots, lastSegmentMsil(path)) { case Some(sl) -> sl; case None -> -1 }
+      val tempSlot = allocSlotMsil(fctx, "__byref_tmp_" + toString(fctx.slotTicker.count), pe)
+      val isFwd = fctx.byrefSlotTypes.containsKey(slot)
+      if isFwd {
+        insns.add(MLdarg(slot = slot))
+        insns.add(MLdind(ty = st))
+      } else {
+        emitLoadSlot(insns, slot, fctx.paramCount)
+      }
+      narrowToClassMsil(insns, pe)
+      emitStoreSlot(insns, tempSlot, fctx.paramCount)
+      insns.add(MLdloca(slot = tempSlot - fctx.paramCount))
+      pending.add(
+        ByrefWriteBackMsil(
+          kind = if isFwd { 1 } else { 0 },
+          slot = slot,
+          tempSlot = tempSlot,
+          argElem = st,
+          recvSlot = -1,
+          fieldTok = 0
+        )
+      )
+    }
+    case _ -> emitByrefArgMsil(cctx, fctx, insns, argExpr)
+  }
+}
+
+// Store each pending temp back into its argument (`emitByrefArgCheckedMsil`).
+// Stack-neutral, so it runs after the call with the result still on the stack.
+func emitByrefWriteBacksMsil(fctx: in FuncCtx, insns: in List[MInsn], pending: in List[ByrefWriteBackMsil]): Unit {
+  var i = 0
+  while i < pending.count {
+    val wb = pending[i]
+    if wb.kind == 2 {
+      emitLoadSlot(insns, wb.recvSlot, fctx.paramCount)
+      emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
+      narrowToClassMsil(insns, wb.argElem)
+      insns.add(MStfld(fieldToken = wb.fieldTok))
+    } else if wb.kind == 1 {
+      insns.add(MLdarg(slot = wb.slot))
+      emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
+      narrowToClassMsil(insns, wb.argElem)
+      insns.add(MStind(ty = wb.argElem))
+    } else {
+      emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
+      narrowToClassMsil(insns, wb.argElem)
+      emitStoreSlot(insns, wb.slot, fctx.paramCount)
+    }
+    i = i + 1
   }
 }
 
@@ -8741,14 +8969,13 @@ func emitCellElemStoreMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: i
   if storageTy != elemTy {
     boxIfNeededMsil(cctx, insns, elemTy)
   }
-  // #5563 item 1: `stelem.i2` (token-less) matches a `Char`'s `ldc.i4`-pushed
-  // I4 verification type; the generic `stelem <System.Char>` form fails strict
-  // ILVerify (`StackUnexpected [found Char]`).
+  // `stelem.i2`/`stelem.i1` for a `Char`/`Bool` cell — see
+  // `emitArrayElemStoreMsil`.
   if storageTy == MChar {
     insns.add(MStelemI2)
   } else {
     match arrayElemTokenOpt(cctx, storageTy) {
-      case Some(tok) -> insns.add(MStelem(typeToken = tok))
+      case Some(tok) -> emitArrayElemStoreMsil(insns, storageTy, tok)
       case None -> panic("Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)")
     }
   }
@@ -10410,7 +10637,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       match mapGet(cctx.funcTokens, fnRefThunkKey) {
                         case Some(thunkTok) -> {
                           val nparams = match mapGet(cctx.funcParamTypes, fnRefThunkKey) { case Some(pts) -> pts.count; case None -> 0 }
-                          val ctorTok = buildFuncNCtorTok(cctx, nparams)
+                          // A `Unit` target's thunk is `void` and becomes an
+                          // `Action`, like a `Unit` lambda literal (#7783).
+                          val ctorTok = if lambdaReturnsVoidMsil(cctx, fnRefThunkKey) {
+                            if nparams == 0 {
+                              cctx.tokActionCtor
+                            } else {
+                              buildActionNCtorTok(cctx, nparams)
+                            }
+                          } else {
+                            buildFuncNCtorTok(cctx, nparams)
+                          }
                           insns.add(MLdNull)
                           insns.add(MLdftn(methodToken = thunkTok))
                           insns.add(MNewobj(ctorToken = ctorTok))
@@ -11151,13 +11388,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   case MObject -> boxIfNeededMsil(cctx, insns, aeTy)
                   case _ -> ()
                 }
-                // #5563 item 1: `stelem.i2` for a `Char` element — see the
-                // `finishHoistedCellMsil` comment above.
-                if e == MChar {
-                  insns.add(MStelemI2)
-                } else {
-                  insns.add(MStelem(typeToken = elemTok))
-                }
+                emitArrayElemStoreMsil(insns, e, elemTok)
                 ali = ali + 1
               }
               MArray(elemTy = e)
@@ -11204,13 +11435,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     val aeTy4 = lowerExprMsil(cctx, fctx, insns, exprs[ali4])
                     popCollExpect(fctx)
                     // e is a simple type (never MObject) so `stelem <T>` stores
-                    // the element unboxed — no box needed.  #5563 item 1:
-                    // `stelem.i2` for a `Char` element.
-                    if e == MChar {
-                      insns.add(MStelemI2)
-                    } else {
-                      insns.add(MStelem(typeToken = elemTok))
-                    }
+                    // the element unboxed — no box needed.
+                    emitArrayElemStoreMsil(insns, e, elemTok)
                     ali4 = ali4 + 1
                   }
                   MArray(elemTy = e)
@@ -13334,6 +13560,7 @@ func emitCellAssignMsil(
       if elemTy != MObject and vTy == MObject {
         coerceCallArgMsil(cctx, insns, vTy, elemTy)
       }
+      widenIntToLongMsil(insns, vTy, elemTy)
       emitCellElemStoreMsil(cctx, insns, elemTy)
     }
     case _ -> {
@@ -13403,11 +13630,13 @@ func lowerAssignExprMsil(
                   restoreHintTyArgs(fctx, savedH)
                   // #7752: see `narrowObjectToDeclaredTypeMsil`.
                   narrowObjectToDeclaredTypeMsil(cctx, insns, byrefValTy, elemTy)
+                  widenIntToLongMsil(insns, byrefValTy, elemTy)
                 }
                 case Some(arith) -> {
                   insns.add(MDup)
                   insns.add(MLdind(ty = elemTy))
-                  lowerExprMsil(cctx, fctx, insns, value)
+                  val byrefRhsTy = lowerExprMsil(cctx, fctx, insns, value)
+                  widenIntToLongMsil(insns, byrefRhsTy, elemTy)
                   val concreteArith = match arith {
                     case MDiv -> match elemTy { case MByte -> MDivUn; case _ -> MDiv }
                     case MRem -> match elemTy { case MByte -> MRemUn; case _ -> MRem }
@@ -13438,6 +13667,7 @@ func lowerAssignExprMsil(
               // verifier-`object` value; narrow it to the local's declared
               // class/interface (`narrowObjectToDeclaredTypeMsil`).
               narrowObjectToDeclaredTypeMsil(cctx, insns, assignValTy, ty)
+              widenIntToLongMsil(insns, assignValTy, ty)
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
               if fctx.phaseBCtx.count > 0 {
@@ -13500,6 +13730,7 @@ func lowerAssignExprMsil(
                 popCollExpect(fctx)
                 // #7752: see `narrowObjectToDeclaredTypeMsil`.
                 narrowObjectToDeclaredTypeMsil(cctx, insns, selfFldValTy, fldTy)
+                widenIntToLongMsil(insns, selfFldValTy, fldTy)
                 insns.add(MStfld(fieldToken = fldTok))
               }
               case _ -> {
@@ -13537,6 +13768,7 @@ func lowerAssignExprMsil(
               popCollExpect(fctx)
               // #7752: see `narrowObjectToDeclaredTypeMsil`.
               narrowObjectToDeclaredTypeMsil(cctx, insns, resultValTy, ty)
+              widenIntToLongMsil(insns, resultValTy, ty)
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
@@ -13604,6 +13836,7 @@ func lowerAssignExprMsil(
                   popCollExpect(fctx)
                   // #7752: see `narrowObjectToDeclaredTypeMsil`.
                   narrowObjectToDeclaredTypeMsil(cctx, insns, fldValTy, fldTyA)
+                  widenIntToLongMsil(insns, fldValTy, fldTyA)
                   insns.add(MStfld(fieldToken = tok))
                 }
                 case _ -> {
@@ -13678,8 +13911,9 @@ func lowerAssignExprMsil(
             match op {
               case AssEq -> {
                 pushCollExpect(fctx, concreteTy)
-                val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                val genFldValTy = lowerExprMsil(cctx, fctx, insns, value)
                 popCollExpect(fctx)
+                widenIntToLongMsil(insns, genFldValTy, concreteTy)
                 insns.add(MStfldGeneric(baseClassName = headFqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
               }
               case _ -> {
@@ -13724,8 +13958,9 @@ func lowerAssignExprMsil(
             match op {
               case AssEq -> {
                 pushCollExpect(fctx, concreteTy)
-                val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                val genFldValTy = lowerExprMsil(cctx, fctx, insns, value)
                 popCollExpect(fctx)
+                widenIntToLongMsil(insns, genFldValTy, concreteTy)
                 insns.add(MStfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
               }
               case _ -> {
@@ -13842,7 +14077,7 @@ func lowerAssignExprMsil(
                     emitLoadSlot(insns, idxSlot, fctx.paramCount)
                     emitLoadSlot(insns, valSlot, fctx.paramCount)
                     match arrayElemTokenOpt(cctx, elem) {
-                      case Some(tok) -> if elem == MChar { insns.add(MStelemI2) } else { insns.add(MStelem(typeToken = tok)) }
+                      case Some(tok) -> emitArrayElemStoreMsil(insns, elem, tok)
                       case None -> panic("Msil.Codegen: slice store fast path has no element token (invariant violation)")
                     }
                     insns.add(MBr(label = doneL))
@@ -18944,6 +19179,7 @@ func lowerBuiltinOrStaticCallMsil(
                   val callParamModes = match mapGet(cctx.funcParamModes, tokKey) { case Some(ms) -> ms; case None -> newList() }
                   val reorderedArgs = reorderFuncNamedArgs(cctx, tokKey, args)
                   val callArgs = fillPositionalFuncDefaults(cctx, tokKey, reorderedArgs)
+                  val byrefPending: List[ByrefWriteBackMsil] = newList()
                   var i = 0
                   while i < callArgs.count {
                     // #1939: a lambda passed *directly* to a function-typed
@@ -19094,7 +19330,14 @@ func lowerBuiltinOrStaticCallMsil(
                     // managed pointer) rather than its value.  See #1761.
                     val isByrefArg = if i < callParamModes.count { isByrefMode(callParamModes[i]) } else { false }
                     if isByrefArg {
-                      emitByrefArgMsil(cctx, fctx, insns, callArgExpr(callArgs[i]))
+                      // Only an in-bundle MethodDef's recorded parameter types
+                      // are its physical signature (see the #6127 gate below).
+                      val byrefParamTy: Option[MsilType] = if tok / 0x01000000 == 0x06 and i < callParamTys.count {
+                        Some(value = callParamTys[i])
+                      } else {
+                        None
+                      }
+                      emitByrefArgCheckedMsil(cctx, fctx, insns, callArgExpr(callArgs[i]), byrefParamTy, byrefPending)
                       i = i + 1
                     } else {
                       // Thread a generic parameter's type args as the construction
@@ -19255,6 +19498,7 @@ func lowerBuiltinOrStaticCallMsil(
                     }
                   }
                   insns.add(MCall(methodToken = tok))
+                  emitByrefWriteBacksMsil(fctx, insns, byrefPending)
                   match mapGet(cctx.funcRetTypes, tokKey) {
                     case Some(rt) -> rt
                     case None -> MObject
@@ -19286,11 +19530,19 @@ func lowerBuiltinOrStaticCallMsil(
               }
               insns.add(MLdarg(slot = 0))
               val sibModes = match mapGet(cctx.methodParamModes, sibKey) { case Some(ms) -> ms; case None -> newList() }
+              val sibByrefPending: List[ByrefWriteBackMsil] = newList()
               var si = 0
               while si < args.count {
                 val sibByref = if si < sibModes.count { isByrefMode(sibModes[si]) } else { false }
                 if sibByref {
-                  emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[si]))
+                  emitByrefArgCheckedMsil(
+                    cctx,
+                    fctx,
+                    insns,
+                    callArgExpr(args[si]),
+                    mapGet(cctx.methodParamTypes, sibKey + "#" + toString(si)),
+                    sibByrefPending
+                  )
                 } else {
                   val aTy = lowerCallArgMsil(cctx, fctx, insns, args[si])
                   // Mirror the MClass dispatch arm: box only when the declared
@@ -19307,6 +19559,7 @@ func lowerBuiltinOrStaticCallMsil(
                 si = si + 1
               }
               insns.add(MCallvirt(methodToken = sibTok))
+              emitByrefWriteBacksMsil(fctx, insns, sibByrefPending)
               // A bare sibling call to a `Self`-returning method narrows
               // against the enclosing method's own class (#6434/#6435,
               // mirroring JVM's #6431/#6437 bare-sibling narrowing) — for a
@@ -19456,12 +19709,7 @@ func emitSliceCopyLoopMsil(
       insns.add(MAdd)
       emitListGetItem(cctx, insns, srcTy)
       castObjectToMsil(cctx, insns, dstElem)
-      // #5563 item 1: `stelem.i2` for a `Char` destination element.
-      if dstElem == MChar {
-        insns.add(MStelemI2)
-      } else {
-        insns.add(MStelem(typeToken = tok))
-      }
+      emitArrayElemStoreMsil(insns, dstElem, tok)
     }
     case None -> {
       emitLoadSlot(insns, dstSlot, fctx.paramCount)
@@ -19554,12 +19802,7 @@ func lowerSliceAppendMsil(
         // (#5254).
         coerceCallArgMsil(cctx, insns, argTy, e)
       }
-      // #5563 item 1: `stelem.i2` for a `Char` element.
-      if e == MChar {
-        insns.add(MStelemI2)
-      } else {
-        insns.add(MStelem(typeToken = tok))
-      }
+      emitArrayElemStoreMsil(insns, e, tok)
       emitLoadSlot(insns, newSlot, fctx.paramCount)
       MArray(elemTy = e)
     }
@@ -20330,6 +20573,7 @@ func lowerMethodCallMsil(
       match mapGet(cctx.methodTokens, dispatchKey) {
         case Some(tok) -> {
           val methodModes = match mapGet(cctx.methodParamModes, dispatchKey) { case Some(ms) -> ms; case None -> newList() }
+          val byrefPending: List[ByrefWriteBackMsil] = newList()
           var i = 0
           while i < args.count {
             // `out`/`inout` argument: load the argument's address (a managed
@@ -20338,7 +20582,14 @@ func lowerMethodCallMsil(
             // mismatches the `int32&` parameter the interface slot declares.
             val isByrefArg = if i < methodModes.count { isByrefMode(methodModes[i]) } else { false }
             if isByrefArg {
-              emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[i]))
+              emitByrefArgCheckedMsil(
+                cctx,
+                fctx,
+                insns,
+                callArgExpr(args[i]),
+                mapGet(cctx.methodParamTypes, dispatchKey + "#" + toString(i)),
+                byrefPending
+              )
             } else {
               // Thread parameter types into contextHintTyArgs/collExpect so a bare
               // `newMap()` argument builds the concrete instance the callee's
@@ -20409,6 +20660,7 @@ func lowerMethodCallMsil(
             i = i + 1
           }
           insns.add(MCallvirt(methodToken = tok))
+          emitByrefWriteBacksMsil(fctx, insns, byrefPending)
           // Report the method's real declared return type so callers — most
           // importantly a `match` scrutinee — track the actual union/record
           // type rather than `object`.  Tracking `object` made union pattern
@@ -20473,6 +20725,7 @@ func lowerMethodCallMsil(
         val openRetTy = match mapGet(cctx.methodRetTypes, gDispatchKey) { case Some(t) -> t; case None -> MObject }
         val openParamTypes: List[MsilType] = newList()
         val methodModesG = match mapGet(cctx.methodParamModes, gDispatchKey) { case Some(ms) -> ms; case None -> newList() }
+        val byrefPendingG: List[ByrefWriteBackMsil] = newList()
         var gi = 0
         while gi < args.count {
           val openParamTy = match mapGet(cctx.methodParamTypes, gDispatchKey + "#" + toString(gi)) {
@@ -20482,7 +20735,7 @@ func lowerMethodCallMsil(
           openParamTypes.add(openParamTy)
           val isByrefArgG = if gi < methodModesG.count { isByrefMode(methodModesG[gi]) } else { false }
           if isByrefArgG {
-            emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[gi]))
+            emitByrefArgCheckedMsil(cctx, fctx, insns, callArgExpr(args[gi]), Some(value = openParamTy), byrefPendingG)
           } else {
             pushCollExpect(fctx, openParamTy)
             val aTyG = lowerCallArgMsil(cctx, fctx, insns, args[gi])
@@ -20508,6 +20761,7 @@ func lowerMethodCallMsil(
             retType = openRetTy
           )
         )
+        emitByrefWriteBacksMsil(fctx, insns, byrefPendingG)
         // A `Self`-declared return narrows to the receiver's own CLOSED
         // instantiation (#6443 review): `func withV(self: in Box[T], v: T):
         // Self` called on a `Box[Int]` yields a `Box[Int]` — the generic
@@ -23773,6 +24027,7 @@ func makeFuncCtxMsil(
     contextHintTyArgs = contextHintTyArgs,
     collExpect = collExpect,
     byrefSlotTypes = byrefSlotTypes,
+    erasedByrefSlots = newMap(),
     funcValRetTypes = funcValRetTypes,
     funcValParamTypes = funcValParamTypes,
     boxedParamTypes = boxedParamTypes,
@@ -23964,6 +24219,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MStelemRef -> -3
     case MStelem(_) -> -3
     case MStelemI2 -> -3
+    case MStelemI1 -> -3
     case MDup -> 1
     case MPop -> -1
     case MThrow -> 0
@@ -25911,6 +26167,284 @@ func typeExprToMsilGenBodyOrCtx(
   }
 }
 
+// The metadata token of a TypeDefOrRef coded index (`MClassRef`'s
+// `typeRefCode`, ECMA-335 §II.24.2.6): tag 0 TypeDef, 1 TypeRef, 2 TypeSpec.
+func tdrCodeToTokenMsil(code: in Int): Int {
+  val row = code / 4
+  match code % 4 {
+    case 0 -> 0x02000000 + row
+    case 1 -> 0x01000000 + row
+    case _ -> 0x1B000000 + row
+  }
+}
+
+// Narrow an `@externTarget` wrapper's `object`-erased argument (or receiver)
+// to the reference type the BCL member's signature declares for that slot
+// (#7783).  An extern-type alias (`IEnumerableOfT[Int]`, a bracket-suffixed
+// `List`1[...]`, an array alias `System.String[]`) erases to `object` in the
+// wrapper's own MethodDef, while the MemberRef/MethodSpec it forwards to
+// encodes the real type (`IEnumerable<object>`, `List<SslApplicationProtocol>`,
+// `System.Array`) — passing the `object` through unconverted is unverifiable
+// IL.  The cast cannot reject a value the call could have used: the callee
+// can only reach its argument through that declared type, so an argument
+// that is not one already faulted inside the call (an interface dispatch or
+// member access on the wrong type), and now fails at the boundary instead.
+// `defTy` is the wrapper's MethodDef slot type, `bclTy` the callee's; only
+// an `object` -> concrete-reference pair emits anything.  Delegate slots are
+// left to `castObjectToDelegateMsil`.
+func castErasedExternArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], defTy: in MsilType, bclTy: in MsilType): Unit {
+  val defIsObject = match defTy { case MObject -> true; case _ -> false }
+  if not defIsObject {
+    return
+  }
+  match bclTy {
+    case MString -> insns.add(MCastclassByName(className = "System.String"))
+    case MClassRef(code, fqn) -> if fqn != "System.Object" and not fqn.startsWith("System.Func`") and not fqn.startsWith("System.Action") and fqn != "System.Delegate" and fqn != "System.MulticastDelegate" {
+      insns.add(MCastclass(typeToken = tdrCodeToTokenMsil(code)))
+    }
+    case MGenericInst(code, head, tas) -> if not head.startsWith("System.Func") and not head.startsWith("System.Action") and not msilTypeHasMethodTypeVar(bclTy) {
+      val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, "ts_ffiarg_" + msilTypeKeyStr(bclTy), code, tas, false)
+      insns.add(MCastclass(typeToken = 0x1B000000 + tsRow))
+    }
+    case MArray(e) -> match sliceArraySpecTokenOpt(cctx, e) {
+      case Some(tok) -> insns.add(MCastclass(typeToken = tok))
+      case None -> ()
+    }
+    case _ -> ()
+  }
+}
+
+// True when `t` mentions any method-level type variable (`!!n`).
+func msilTypeHasMethodTypeVar(t: in MsilType): Bool {
+  match t {
+    case MMethodTypeVar(_) -> true
+    case MArray(e) -> msilTypeHasMethodTypeVar(e)
+    case MByRef(inner) -> msilTypeHasMethodTypeVar(inner)
+    case MGenericInst(_, _, tas) -> msilTypeListHasMethodTypeVar(tas)
+    case MValueTypeGenericInst(_, _, tas) -> msilTypeListHasMethodTypeVar(tas)
+    case MGenericInstByName(_, tas) -> msilTypeListHasMethodTypeVar(tas)
+    case _ -> false
+  }
+}
+
+func msilTypeListHasMethodTypeVar(tys: in List[MsilType]): Bool {
+  var i = 0
+  while i < tys.count {
+    if msilTypeHasMethodTypeVar(tys[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Replace every `MMethodTypeVar(k)` in `t` with `witness[k]` — the closed
+// type the MethodSpec instantiates the BCL method's own generic parameters
+// with (`MObject` unless `inferGenericExternWitnessesMsil` found a concrete
+// array element type).
+func substMethodTypeVarsMsil(t: in MsilType, witness: in List[MsilType]): MsilType {
+  match t {
+    case MMethodTypeVar(k) -> if k < witness.count { witness[k] } else { MObject }
+    case MArray(elem) -> MArray(elemTy = substMethodTypeVarsMsil(elem, witness))
+    case MByRef(inner) -> MByRef(inner = substMethodTypeVarsMsil(inner, witness))
+    case MGenericInst(trc, fqn, tas) -> MGenericInst(
+      typeRefCode = trc,
+      headFqn = fqn,
+      typeArgs = substMethodTypeVarListMsil(tas, witness)
+    )
+    case MValueTypeGenericInst(trc, fqn, tas) -> MValueTypeGenericInst(
+      typeRefCode = trc,
+      headFqn = fqn,
+      typeArgs = substMethodTypeVarListMsil(tas, witness)
+    )
+    case MGenericInstByName(fqn, tas) -> MGenericInstByName(
+      headFqn = fqn,
+      typeArgs = substMethodTypeVarListMsil(tas, witness)
+    )
+    case _ -> t
+  }
+}
+
+func substMethodTypeVarListMsil(tys: in List[MsilType], witness: in List[MsilType]): List[MsilType] {
+  val result: List[MsilType] = newList()
+  var i = 0
+  while i < tys.count {
+    result.add(substMethodTypeVarsMsil(tys[i], witness))
+    i = i + 1
+  }
+  result
+}
+
+// The closed type each of a generic BCL method's own type parameters is
+// instantiated with at an `@externTarget` call (#7783).  The convention is
+// `System.Object` (Lyric's generic collections store boxed elements, #4601),
+// which is exact wherever the parameter sits inside a generic instantiation
+// (`IEnumerable<!!0>`) or bare.  A `T[]` position is different: a Lyric
+// `slice[Int]` is a real `int32[]`, and `Array.Empty<object>()` handed back
+// as a wrapper's `slice[Int]` returns an `object[]` typed `int32[]`.  So a
+// type parameter used at a `!!k[]` position whose wrapper type is a concrete
+// array `e[]` is instantiated with `e`, provided every other use of `!!k`
+// agrees (another `!!k[]` at `e[]`, or a bare `!!k` the wrapper declares as
+// `e`).  Any other use (`IEnumerable<!!k>` beside `slice[Int]`) cannot be
+// satisfied by one instantiation: that is reported as F0015 and `!!k` keeps
+// the `object` witness.  `opens`/`lyrics` pair each BCL signature position
+// (params, then the return) with the wrapper's declared type there.
+func inferGenericExternWitnessesMsil(
+  cctx: in CodegenCtx,
+  genParamCount: in Int,
+  opens: in List[MsilType],
+  lyrics: in List[MsilType],
+  target: in String,
+  declName: in String,
+  span: in Span,
+): List[MsilType] {
+  val witness: List[MsilType] = newList()
+  var k = 0
+  while k < genParamCount {
+    var cand: MsilType = MObject
+    var haveCand = false
+    var conflict = false
+    var pi = 0
+    while pi < opens.count {
+      match opens[pi] {
+        case MArray(ov) -> match ov {
+          case MMethodTypeVar(ok) -> if ok == k {
+            match lyrics[pi] {
+              case MArray(le) -> {
+                val concrete = match le { case MObject -> false; case _ -> not msilTypeHasMethodTypeVar(le) }
+                if concrete {
+                  if not haveCand {
+                    cand = le
+                    haveCand = true
+                  } else if msilTypeKeyStr(cand) != msilTypeKeyStr(le) {
+                    conflict = true
+                  }
+                }
+              }
+              case _ -> ()
+            }
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
+      pi = pi + 1
+    }
+    if haveCand and not conflict {
+      // Every other use of `!!k` must agree with `cand`.
+      var qi = 0
+      while qi < opens.count {
+        val o = opens[qi]
+        val isArrPos = match o {
+          case MArray(ov) -> match ov { case MMethodTypeVar(ok) -> ok == k; case _ -> false }
+          case _ -> false
+        }
+        val isBarePos = match o { case MMethodTypeVar(ok) -> ok == k; case _ -> false }
+        if isArrPos {
+          val agrees = match lyrics[qi] { case MArray(le) -> msilTypeKeyStr(le) == msilTypeKeyStr(cand); case _ -> false }
+          if not agrees {
+            conflict = true
+          }
+        } else if isBarePos {
+          if msilTypeKeyStr(lyrics[qi]) != msilTypeKeyStr(cand) {
+            conflict = true
+          }
+        } else if msilTypeMentionsMethodVarMsil(o, k) {
+          conflict = true
+        }
+        qi = qi + 1
+      }
+    }
+    if haveCand and conflict {
+      val elemName = genericExternElemNameMsil(cand)
+      cctx.diagnostics.add(
+        errorDiagnostic(
+          "F0015",
+          "@externTarget '" + target + "' on '" + declName + "': the wrapper declares 'slice[" + elemName +
+            "]' where the method has 'T[]' (its generic parameter #" +
+            toString(k) +
+            "), which requires instantiating T as " +
+            elemName +
+            ", but another position using T is not declared as " +
+            elemName +
+            " (an extern-type alias such as IEnumerable[T] is always instantiated with object). " +
+            "Declare every position that uses T with the element type " +
+            elemName +
+            ", or wrap a method that does not mix the two.",
+          span
+        )
+      )
+    }
+    witness.add(if haveCand and not conflict { cand } else { MObject })
+    k = k + 1
+  }
+  witness
+}
+
+// The Lyric spelling of a slice element type named in a generic-extern
+// diagnostic.
+func genericExternElemNameMsil(t: in MsilType): String {
+  match t {
+    case MInt -> "Int"
+    case MLong -> "Long"
+    case MDouble -> "Double"
+    case MBool -> "Bool"
+    case MChar -> "Char"
+    case MByte -> "Byte"
+    case MString -> "String"
+    case MClass(fqn) -> fqn
+    case MClassRef(_, fqn) -> fqn
+    case _ -> msilTypeKeyStr(t)
+  }
+}
+
+// True when `t` mentions the method-level type variable `!!k`.
+func msilTypeMentionsMethodVarMsil(t: in MsilType, k: in Int): Bool {
+  match t {
+    case MMethodTypeVar(i) -> i == k
+    case MArray(e) -> msilTypeMentionsMethodVarMsil(e, k)
+    case MByRef(inner) -> msilTypeMentionsMethodVarMsil(inner, k)
+    case MGenericInst(_, _, tas) -> msilTypeListMentionsMethodVarMsil(tas, k)
+    case MValueTypeGenericInst(_, _, tas) -> msilTypeListMentionsMethodVarMsil(tas, k)
+    case MGenericInstByName(_, tas) -> msilTypeListMentionsMethodVarMsil(tas, k)
+    case _ -> false
+  }
+}
+
+func msilTypeListMentionsMethodVarMsil(tys: in List[MsilType], k: in Int): Bool {
+  var i = 0
+  while i < tys.count {
+    if msilTypeMentionsMethodVarMsil(tys[i], k) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// The type an `@externTarget` wrapper's own MethodDef declares for parameter
+// `pi` — the general signature mapping, under which an extern-type alias
+// erases to `object` (unlike `emitExternTargetBody`'s `paramTypes`, which
+// recover a bracket alias's real GENERICINST for the MemberRef).  A
+// `TFunction` parameter reports `MVoid` so `castErasedExternArgMsil` leaves
+// delegates alone.
+func externWrapperDefParamTyMsil(
+  cctx: in CodegenCtx,
+  decl: in FunctionDecl,
+  pi: in Int,
+  pkgName: in String,
+  declGenerics: in List[String],
+): MsilType {
+  match decl.params[pi].ty.kind {
+    case TFunction(_, _) -> MVoid
+    case _ -> if isByrefMode(decl.params[pi].mode) {
+      MVoid
+    } else {
+      typeExprToMsilGenBodyOrCtx(cctx, decl.params[pi].ty, pkgName, declGenerics)
+    }
+  }
+}
+
 // Emit a call to a BCL method that is itself declared with method-level
 // generics (e.g. `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`) — a
 // non-generic-declaring-type member whose signature nonetheless can't be
@@ -26025,20 +26559,58 @@ func emitGenericMethodExternCall(
     "_ret_" +
     msilTypeKeyStr(mRet)
   val mrRow = ctxAddMemberRef(cctx.lctx, parentRow, emitMember, openKey, openSig)
-  // MethodSpec witnessing every one of the method's own generic parameters
-  // with `System.Object` (the erasure convention documented above).
-  val specArgs: List[MsilType] = newList()
-  var wi = 0
-  while wi < msig.genParamCount {
-    specArgs.add(MObject)
-    wi = wi + 1
+  // MethodSpec witnessing the method's own generic parameters: `System.Object`
+  // (the erasure convention documented above), except where a `T[]` position
+  // pins `T` to the wrapper's concrete array element type
+  // (`inferGenericExternWitnessesMsil`).
+  val witnessOpens: List[MsilType] = newList()
+  val witnessLyrics: List[MsilType] = newList()
+  var wpi = 0
+  while wpi < mParams.count {
+    val lpi = if isInstance { wpi + 1 } else { wpi }
+    witnessOpens.add(mParams[wpi])
+    witnessLyrics.add(paramTypes[lpi])
+    wpi = wpi + 1
+  }
+  witnessOpens.add(mRet)
+  witnessLyrics.add(lyricRetTy)
+  val specArgs = inferGenericExternWitnessesMsil(
+    cctx,
+    msig.genParamCount,
+    witnessOpens,
+    witnessLyrics,
+    externTargetStringMsil(decl.annotations),
+    decl.name,
+    decl.span
+  )
+  var specKey = openKey + "_spec"
+  var ski = 0
+  while ski < specArgs.count {
+    specKey = specKey + "_" + msilTypeKeyStr(specArgs[ski])
+    ski = ski + 1
   }
   val specBlob = buildMethodSpecBlob(specArgs)
-  val specRow = ctxAddMethodSpec(cctx.lctx, mdorMemberRef(mrRow), openKey + "_spec", specBlob)
+  val specRow = ctxAddMethodSpec(cctx.lctx, mdorMemberRef(mrRow), specKey, specBlob)
   val tok = 0x2B000000 + specRow
+  val pkgNameG = fctx.pkgName
+  val declGenericsG = genericNamesOf(decl.generics)
   var li = 0
   while li < decl.params.count {
     insns.add(MLdarg(slot = li))
+    // The wrapper's `object`-erased extern-alias argument narrowed to the
+    // instantiated BCL parameter type (the receiver to the declaring type).
+    val defArgTy = externWrapperDefParamTyMsil(cctx, decl, li, pkgNameG, declGenericsG)
+    if isInstance and li == 0 {
+      // A generic declaring type's open TypeRef is no cast target.
+      if not contains(r.typeName, "`") {
+        castErasedExternArgMsil(cctx, insns, defArgTy, MClassRef(typeRefCode = tdrTypeRef(parentRow), clrFqn = r.typeName))
+      }
+    } else {
+      val bpi = if isInstance { li - 1 } else { li }
+      if bpi >= 0 and bpi < mParams.count {
+        castErasedExternArgMsil(cctx, insns, defArgTy, substMethodTypeVarsMsil(mParams[bpi], specArgs))
+      }
+    }
     // A method-own-generic parameter position (`mParams[pj] ==
     // MMethodTypeVar`) is ALWAYS witnessed as `System.Object` by the
     // MethodSpec above (the erasure convention), regardless of the Lyric
@@ -26054,8 +26626,14 @@ func emitGenericMethodExternCall(
     // parallel box-erased-slot logic.
     val mpIdx = if isInstance { li - 1 } else { li }
     if mpIdx >= 0 and mpIdx < mParams.count {
-      val isMethodVarPos = match mParams[mpIdx] { case MMethodTypeVar(_) -> true; case _ -> false }
-      if isMethodVarPos and isValueType(paramTypes[li]) {
+      val isObjectWitnessedVarPos = match mParams[mpIdx] {
+        case MMethodTypeVar(k) -> match substMethodTypeVarsMsil(MMethodTypeVar(index = k), specArgs) {
+          case MObject -> true
+          case _ -> false
+        }
+        case _ -> false
+      }
+      if isObjectWitnessedVarPos and isValueType(paramTypes[li]) {
         boxIfNeededMsil(cctx, insns, paramTypes[li])
       }
     }
@@ -26075,7 +26653,15 @@ func emitGenericMethodExternCall(
   // the stack. Null-guarded the same way: a witnessed-Object generic method
   // can legitimately return a null reference for what would be `default(T)`
   // on the real (unerased) instantiation.
-  val retIsMethodVar = match mRet { case MMethodTypeVar(_) -> true; case _ -> false }
+  // Only an `object`-witnessed return needs it: a concretely witnessed `!!k`
+  // already returns the wrapper's declared type.
+  val retIsMethodVar = match mRet {
+    case MMethodTypeVar(k) -> match substMethodTypeVarsMsil(MMethodTypeVar(index = k), specArgs) {
+      case MObject -> true
+      case _ -> false
+    }
+    case _ -> false
+  }
   if retIsMethodVar and isValueType(lyricRetTy) {
     val haveLabel = freshLabelMsil(fctx)
     val endLabel = freshLabelMsil(fctx)
@@ -27009,6 +27595,31 @@ func emitExternTargetBody(
           insns.add(MLdarga(slot = li))
         } else {
           insns.add(MLdarg(slot = li))
+          // An extern-alias argument (or receiver) the wrapper's MethodDef
+          // erases to `object`, narrowed to the MemberRef's declared type.
+          val defArgTy = externWrapperDefParamTyMsil(cctx, decl, li, pkgName, declGenerics)
+          if r.isCtor {
+            val ctorPs = match resolvedMethodParams { case Some(mp) -> mp; case None -> paramTypes }
+            if li < ctorPs.count {
+              castErasedExternArgMsil(cctx, insns, defArgTy, ctorPs[li])
+            }
+          } else if emitIsStatic {
+            if li < sigParams.count {
+              castErasedExternArgMsil(cctx, insns, defArgTy, sigParams[li])
+            }
+          } else if li == 0 {
+            // A generic declaring type's open TypeRef is no cast target.
+            if not contains(resolvedFqn, "`") {
+              castErasedExternArgMsil(
+                cctx,
+                insns,
+                defArgTy,
+                MClassRef(typeRefCode = tdrTypeRef(memberParentRow), clrFqn = resolvedFqn)
+              )
+            }
+          } else if li - 1 < sigParams.count {
+            castErasedExternArgMsil(cctx, insns, defArgTy, sigParams[li - 1])
+          }
         }
         li = li + 1
       }
@@ -27039,6 +27650,14 @@ func emitExternTargetBody(
         insns.add(MCall(methodToken = tok))
       } else {
         insns.add(MCallvirt(methodToken = tok))
+      }
+      // A BCL `object` return (`Array.GetValue`) the wrapper declares as a
+      // `String` or Lyric class is narrowed to that type (#7783).
+      if not r.isCtor and not decl.isAsync and not optCoerces {
+        match sigRet {
+          case MObject -> narrowObjectToDeclaredTypeMsil(cctx, insns, MObject, retTy)
+          case _ -> ()
+        }
       }
       // For `@externTarget async func`, the BCL method returns Task / Task<T>.
       // Synchronously unwrap to T so the Lyric caller sees the declared return
@@ -32524,6 +33143,9 @@ func registerParamsMsil(
     markUnsignedSlotMsil(fctx, slot, isUnsignedTypeExprMsil(p.ty))
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
+      if msilTypeKeyStr(paramTy) != msilTypeKeyStr(erasedParamTy) {
+        fctx.erasedByrefSlots.add(slot, true)
+      }
     }
     // #5995: record this param's declared enum type (if any) so a bare
     // `match p { case Http11 -> }` scrutinee scopes its case lookup instead
@@ -37242,6 +37864,18 @@ func collectRefNamesFuncBodyMsil(bodyOpt: in Option[FunctionBody], acc: in List[
   }
 }
 
+// True when `f` returns `Unit`: no declared return type, `()`, or `Unit`.
+func funcDeclReturnsUnitMsil(f: in FunctionDecl): Bool {
+  match f.ret {
+    case None -> true
+    case Some(te) -> match te.kind {
+      case TUnit -> true
+      case TRef(p) -> p.segments.count == 1 and p.segments[0] == "Unit"
+      case _ -> false
+    }
+  }
+}
+
 // Build the synthetic forwarding-thunk `Item` for target function `f` —
 // shaped exactly like the hand-written closure literal `{ p0, p1, ... ->
 // f(p0, p1, ...) }` (params/body), named `__lambda_fnref_<f.name>` so
@@ -37270,14 +37904,19 @@ func buildBareFuncRefThunkItemMsil(f: in FunctionDecl): Item {
     paramNames.add(op.name)
     pi = pi + 1
   }
+  // A `Unit`-returning target gets a `Unit` (`void`) thunk, which the
+  // construction site wraps in a `System.Action`/`Action`N` exactly as it
+  // does a `Unit` lambda literal (`lambdaReturnsVoidMsil`): a `(...) -> Unit`
+  // slot is always an `Action` (`typeExprToMsilCtx`), so an `object`-returning
+  // thunk's `Func<..., object>` there was unverifiable, and a `List<Action>`
+  // rejected it at run time with `ArrayTypeMismatchException` (#7783).
   val retSeg: List[String] = newList()
   retSeg.add("Object")
-  val retTy: Option[TypeExpr] = Some(
-    TypeExpr(
-      kind = TRef(path = ModulePath(segments = retSeg, span = syntheticSpan())),
-      span = syntheticSpan()
-    )
-  )
+  val retTy: Option[TypeExpr] = if funcDeclReturnsUnitMsil(f) {
+    Some(TypeExpr(kind = TUnit, span = syntheticSpan()))
+  } else {
+    Some(TypeExpr(kind = TRef(path = ModulePath(segments = retSeg, span = syntheticSpan())), span = syntheticSpan()))
+  }
   val stmts: List[Statement] = newList()
   stmts.add(Statement(kind = SExpr(expr = proceedSubstitutionMsil(f.name, paramNames)), span = syntheticSpan()))
   val block = Block(statements = stmts, span = syntheticSpan())
