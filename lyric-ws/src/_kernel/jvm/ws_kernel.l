@@ -675,13 +675,7 @@ pub func startServer(
   registryMap.put(handle.toString(), state)
 
   try {
-    val callback = WsConnectCallback(registryHandle = handle)
-    val handshakeHandler: JWsHandshakeHandler = JWsHandshakeHandler.new(callback)
-    val guarded: JHttpHandler = WsOriginGuard(
-      allowedOrigins = allowedOrigins,
-      sameHostPorts = sameHostPorts,
-      next = handshakeHandler
-    )
+    val guarded: JHttpHandler = endpointHandler(handle, allowedOrigins, sameHostPorts)
     val pathHandler: JPathHandler = JHandlers.path()
     val routedHandler: JPathHandler = pathHandler.addExactPath(path, guarded)
     var builder: JUndertowBuilder = JUndertow.builder()
@@ -695,6 +689,56 @@ pub func startServer(
     registryMap.remove(handle.toString())
     Err(e.message)
   }
+}
+
+/// Create a WebSocket endpoint with no listener of its own: an HTTP server
+/// mounts `endpointHandler(handle, ...)` at the endpoint's path on its own
+/// Undertow listener.  Returns a registry handle usable with
+/// `send`/`broadcast`/`close`/`connectionCount`/`isConnected`, exactly like
+/// `startServer`'s.  The callbacks are those of `startServer`.
+@stable(since = "0.3")
+pub func createEndpoint(
+  maxMessageSizeBytes: in Int,
+  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
+  onMessage: in (String, String, String) -> Unit,
+  onClose: in (String, Int, String) -> Unit,
+  onError: in (String, String) -> Unit,
+): Result[Int, String]
+  requires: maxMessageSizeBytes >= 1024
+{
+  val handle = nextHandle()
+  val state = RegistryState(
+    handle = handle,
+    maxMessageSizeBytes = maxMessageSizeBytes,
+    openCount = 0,
+    connMap = JConcurrentHashMap.new(),
+    onOpen = Some(onOpen),
+    onMessage = Some(onMessage),
+    onClose = Some(onClose),
+    onError = Some(onError),
+    server = None,
+    lock = JReentrantLock.new()
+  )
+  registryMap.put(handle.toString(), state)
+  Ok(handle)
+}
+
+/// The Undertow handler that upgrades a request to the endpoint
+/// `registryHandle` (from `createEndpoint` or `startServer`), behind the same
+/// cross-site WebSocket hijacking defence `startServer` installs.  The caller
+/// routes only the endpoint's exact path to it.
+@stable(since = "0.3")
+pub func endpointHandler(
+  registryHandle: in Int, allowedOrigins: in slice[String], sameHostPorts: in slice[Int]
+): JHttpHandler {
+  val callback = WsConnectCallback(registryHandle = registryHandle)
+  val handshakeHandler: JWsHandshakeHandler = JWsHandshakeHandler.new(callback)
+  val guarded: JHttpHandler = WsOriginGuard(
+    allowedOrigins = allowedOrigins,
+    sameHostPorts = sameHostPorts,
+    next = handshakeHandler
+  )
+  guarded
 }
 
 /// Stop a server started by `startServer`.

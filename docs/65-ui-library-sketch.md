@@ -515,8 +515,10 @@ browser refuses a plain socket from an HTTPS page (§10.1).
 ### 10.1 Server-driven web (first host)
 
 `Ui.Host.Web` mounts on `lyric-web`: it serves the HTML shell and the
-runtime script, and accepts the WebSocket on `wsPath` (default `/_ui`) of
-`wsPort` through `lyric-ws`. One session per page load; a session outlives
+runtime script, and accepts the session WebSocket on `wsPath` (default
+`/_ui`) of the same `port`, through a `lyric-ws` endpoint mounted on the
+`lyric-web` router (`Ws.createEndpoint` + `Web.addWebSocket`, D146). One
+session per page load; a session outlives
 its socket for `HostConfig.reconnectGraceMs` (default two minutes, §9.5).
 
 Costs: a connected session holds its model and last `View` tree on the
@@ -531,7 +533,7 @@ longest-disconnected one, which is linear in `maxSessions` but only runs
 when the limit is reached.
 
 The shell tells the browser which socket to open. By default that is
-`wsPort`/`wsPath` on the page's host, with scheme `wss` when a
+`wsPath` on the page's own host and port (the `Host` header), with scheme `wss` when a
 TLS-terminating proxy reports `X-Forwarded-Proto: https` (first value when
 several proxies append to it) and `ws` otherwise;
 `HostConfig.publicWsUrl` overrides it for a proxy that routes the socket
@@ -875,6 +877,10 @@ was in the JVM backend or the build tooling, and each was fixed there
 - **F-11: `lyric-ws` runs its own listener** and `lyric-web` has no upgrade
   hook (#7831), so the web host serves HTTP on `port` and the session WebSocket on
   `wsPort`. The shell derives the socket URL from the `Host` header.
+  Resolved in D146: `Ws.createEndpoint` makes a listener-less endpoint and
+  `Web.addWebSocket` serves it on the router's port (dotnet hands the
+  connection over with `Std.HttpServer.takeConnection`; JVM mounts it on the
+  Undertow listener), so `HostConfig.wsPort` is gone.
 - **F-12: the only cross-target JSON value model was `JsonRpc.Json`** (#7832)
   (`Std.Json` is a read-only, .NET-only cursor), so `Ui.Protocol` depended
   on `lyric-jsonrpc` for it. Resolved in D145: the model moved into the
@@ -903,8 +909,9 @@ that the separate host and runtime suites could not see:
   page is served from `port` while the socket listens on `wsPort`, so the
   browser's `Origin` never matched and the socket got `403`. `lyric-ws` now
   has `WsServerOptions.sameHostPorts` (an origin on the socket's own host and
-  a listed port), and `Ui.Host` lists its HTTP port. #7831 removes the second
-  port altogether.
+  a listed port), and `Ui.Host` listed its HTTP port. #7831 (D146) then
+  removed the second port, so page and socket are same-origin and
+  `Ui.Host` no longer needs `sameHostPorts`.
 - **F-17: on dotnet the effect interpreter's reply was a raw task.** The
   example interprets effects with `{ e -> Effects.run(e, repo) }`, where
   `Effects.run` is `async`. A direct call to an `async func` awaits in place

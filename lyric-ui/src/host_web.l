@@ -12,9 +12,10 @@
 //!     }
 //!   }
 //!
-//! `lyric-ws` runs its own listener, so the WebSocket endpoint is on
-//! `wsPort`, next to the HTTP `port` (docs/65 §15, finding F-11).  The shell
-//! page derives the socket URL from the request's `Host` header.
+//! The session WebSocket is served on the same port as the page, at
+//! `wsPath` (`Web.addWebSocket`, #7831), so page and socket share one
+//! origin.  The shell page derives the socket URL from the request's `Host`
+//! header.
 //!
 //! Sessions outlive their connection (D138, Q-UI-007).  Each session gets an
 //! unguessable id, sent to the browser when it starts; a browser that
@@ -43,8 +44,8 @@ import Ui.Protocol.{ClientMessage, Hello, EventMsg, Sync, decodeClient, encodeSe
 import Ui.Host.{Instance, Outbox, SessionRegistry, ResumedSession, Unknown, staticPage}
 import Ui.Host.Assets
 
-/// Where and how to serve.  `wsPath` is the WebSocket path on `wsPort`.
-/// `publicWsUrl`, when not empty, is the socket URL browsers are told to
+/// Where and how to serve.  `wsPath` is the session WebSocket's path on
+/// `port`.  `publicWsUrl`, when not empty, is the socket URL browsers are told to
 /// open, for a deployment whose proxy routes the socket elsewhere; when
 /// empty it is derived from the request (see `sessionSocketUrl`).
 /// `reconnectGraceMs` is how long a disconnected session can be resumed;
@@ -53,21 +54,20 @@ pub record HostConfig {
   title: String
   host: String
   port: Int
-  wsPort: Int
   wsPath: String
   publicWsUrl: String
   reconnectGraceMs: Long
   maxSessions: Int
 }
 
-/// Serve on all interfaces, HTTP on 8080 and WebSocket on 8081; resume a
-/// disconnected session for two minutes; hold at most 10000 sessions.
+/// Serve on all interfaces on port 8080, with the session socket at
+/// `/_ui`; resume a disconnected session for two minutes; hold at most
+/// 10000 sessions.
 pub func defaultConfig(title: in String): HostConfig {
   return HostConfig(
     title = title,
     host = "0.0.0.0",
     port = 8080,
-    wsPort = 8081,
     wsPath = "/_ui",
     publicWsUrl = "",
     reconnectGraceMs = 120_000,
@@ -75,11 +75,24 @@ pub func defaultConfig(title: in String): HostConfig {
   )
 }
 
-/// Starts the WebSocket listener, then serves HTTP until the process ends.
-/// `route` maps the page URL (path and query) a browser opened to the
-/// screen instance for it, or `None` for "not found".
+/// Serves the pages and their session WebSocket on `cfg.port` until the
+/// process ends.  `route` maps the page URL (path and query) a browser
+/// opened to the screen instance for it, or `None` for "not found".
 pub func serve(cfg: in HostConfig, route: in (String) -> Option[Instance]): Result[Unit, String]
   requires: cfg.reconnectGraceMs >= 0 and cfg.maxSessions > 0
+{
+  val r = router(cfg, route)?
+  Web.serve(r, cfg.host, cfg.port)
+  return Ok(value = ())
+}
+
+/// The complete host as a router: the session WebSocket at `cfg.wsPath`,
+/// the runtime assets and theme, and the shell for every other path.
+/// Exposed so an application can merge it into its own router (routes are
+/// matched in order, so merge this one last) and serve that.
+pub func router(cfg: in HostConfig, route: in (String) -> Option[Instance]): Result[Web.Router, String]
+  requires: cfg.reconnectGraceMs >= 0 and cfg.maxSessions > 0
+  requires: startsWith(cfg.wsPath, "/")
 {
   val regs = RegistryCell()
   val socket = UiSocket(
@@ -89,22 +102,14 @@ pub func serve(cfg: in HostConfig, route: in (String) -> Option[Instance]): Resu
     graceMs = cfg.reconnectGraceMs,
     maxSessions = cfg.maxSessions
   )
-  // The page is served from `port`, so a browser's handshake carries that
-  // origin; accept it (and only it) from the same host (#7836).
-  val wsOptions = Ws.WsServerOptions(sameHostPorts = [cfg.port])
-  val registry = match Ws.startServerWithOptions(cfg.host, cfg.wsPort, cfg.wsPath, wsOptions, socket) {
-    case Ok(r) -> r
-    case Err(e) -> return Err(error = "WebSocket listener on port " + cfg.wsPort.toString() + ": " + e.message)
+  // Page and socket share one origin, so the default same-origin handshake
+  // check admits the page and refuses every other site (#7243).
+  val endpoint = match Ws.createEndpoint(cfg.wsPath, Ws.WsServerOptions(), socket) {
+    case Ok(ep) -> ep
+    case Err(e) -> return Err(error = "session WebSocket endpoint " + cfg.wsPath + ": " + e.message)
   }
-  regs.set(registry.registryHandle)
-  Web.serve(router(cfg), cfg.host, cfg.port)
-  return Ok(value = ())
-}
-
-/// The HTTP routes: runtime assets, theme, and the shell for every other
-/// path.  Exposed so an application can merge them into its own router.
-pub func router(cfg: in HostConfig): Web.Router {
-  var r = Web.create()
+  regs.set(endpoint.registry.registryHandle)
+  var r = Web.addWebSocket(Web.create(), endpoint)
   r = Web.addGet(
     r,
     "/_ui/runtime/main.js",
@@ -126,10 +131,10 @@ pub func router(cfg: in HostConfig): Web.Router {
     Asset(body = Assets.runtimeToastsJs, contentType = "text/javascript; charset=utf-8")
   )
   r = Web.addGet(r, "/_ui/theme.css", Asset(body = Assets.themeCss, contentType = "text/css; charset=utf-8"))
-  val shell = Shell(title = cfg.title, wsPort = cfg.wsPort, wsPath = cfg.wsPath, publicWsUrl = cfg.publicWsUrl)
+  val shell = Shell(title = cfg.title, wsPath = cfg.wsPath, publicWsUrl = cfg.publicWsUrl)
   r = Web.addGet(r, "/", shell)
   r = Web.addGet(r, "/{*path}", shell)
-  return r
+  return Ok(value = r)
 }
 
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
@@ -147,7 +152,6 @@ impl Handler for Asset {
 
 record Shell {
   title: String
-  wsPort: Int
   wsPath: String
   publicWsUrl: String
 }
@@ -155,13 +159,7 @@ record Shell {
 impl Handler for Shell {
   func handle(req: in Request): Response {
     val hostHeader = match Web.header(req, "host") { case Some(h) -> h; case None -> "localhost" }
-    val wsUrl = sessionSocketUrl(
-      self.publicWsUrl,
-      Web.header(req, "x-forwarded-proto"),
-      hostHeader,
-      self.wsPort,
-      self.wsPath
-    )
+    val wsUrl = sessionSocketUrl(self.publicWsUrl, Web.header(req, "x-forwarded-proto"), hostHeader, self.wsPath)
     return Web.html(200, shellHtml(self.title, wsUrl))
   }
 }
@@ -187,7 +185,8 @@ pub func shellHtml(title: in String, wsUrl: in String): String {
 }
 
 /// The session socket URL for a page requested with `hostHeader`:
-/// `publicWsUrl` when set, otherwise `wsPort`/`wsPath` on the page's host.
+/// `publicWsUrl` when set, otherwise `wsPath` on the page's own host and
+/// port.
 /// The scheme is `wss` when the page was served over HTTPS by a
 /// TLS-terminating proxy (`X-Forwarded-Proto: https`, first value when the
 /// header lists several proxies), because a browser refuses a plain `ws`
@@ -196,7 +195,6 @@ pub func sessionSocketUrl(
   publicWsUrl: in String,
   forwardedProto: in Option[String],
   hostHeader: in String,
-  wsPort: in Int,
   wsPath: in String,
 ): String {
   if publicWsUrl.length > 0 {
@@ -210,16 +208,7 @@ pub func sessionSocketUrl(
     case None -> false
   }
   val scheme = if secure { "wss" } else { "ws" }
-  return scheme + "://" + hostnameOf(hostHeader) + ":" + wsPort.toString() + wsPath
-}
-
-/// `host` without its port (`example.com:8080` -> `example.com`), keeping a
-/// bracketed IPv6 literal intact.
-pub func hostnameOf(host: in String): String {
-  if startsWith(host, "[") {
-    return match indexOf(host, "]") { case Some(close) -> substring(host, 0, close + 1); case None -> host }
-  }
-  return match indexOf(host, ":") { case Some(colon) -> substring(host, 0, colon); case None -> host }
+  return scheme + "://" + hostHeader + wsPath
 }
 
 /// `s` safe for HTML text and double-quoted attribute values.

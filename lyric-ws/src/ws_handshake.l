@@ -254,6 +254,37 @@ pub func parseHandshakeRequest(bytes: in slice[Byte]): Result[HandshakeResult, S
   )
 }
 
+/// Validate a WebSocket upgrade request that another HTTP server has
+/// already parsed: its request `target` (path plus optional `?query`) and
+/// its headers under any letter case, a repeated header's values already
+/// joined. Applies the same checks as `parseHandshakeRequest` after its
+/// request line (`Upgrade`, `Connection`, `Sec-WebSocket-Version: 13`, and
+/// the `Sec-WebSocket-Key` shape); the caller has already established that
+/// the request is `GET` over HTTP/1.1. The returned request's `headers` are
+/// keyed by lower-cased name, so a name that differs only in case is joined
+/// with ", ".
+@stable(since = "0.3")
+pub func validateUpgradeRequest(target: in String, headers: in Map[String, String]): Result[HandshakeRequest, String] {
+  val lowered: Map[String, String] = newMap()
+  for name in mapKeys(headers) {
+    match mapGet(headers, name) {
+      case Some(value) -> {
+        val key = toLower(name)
+        match mapGet(lowered, key) {
+          case Some(prev) -> {
+            lowered[key] = prev + ", " + value
+          }
+          case None -> lowered.add(key, value)
+        }
+      }
+      case None -> ()
+    }
+  }
+  val key = validateWebSocketHeaders(lowered)?
+  val pathQuery = splitTargetPathQuery(target)
+  Ok(value = HandshakeRequest(path = pathQuery.path, query = pathQuery.query, secWebSocketKey = key, headers = lowered))
+}
+
 /// Whether a browser upgrade request from `origin` may proceed, per the
 /// cross-site WebSocket hijacking defence (#7243).  Browsers attach cookies
 /// to a cross-site WebSocket handshake and the same-origin policy does not

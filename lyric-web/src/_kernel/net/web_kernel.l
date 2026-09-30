@@ -29,7 +29,10 @@ import Std.Console
 import Std.Core
 import Resilience
 import Std.Time
+import Std.HttpServer
 import Web
+import Ws
+import Ws.Kernel.Net as WsNet
 
 extern type ConcurrentDict[K, V] = "System.Collections.Concurrent.ConcurrentDictionary`2"
 
@@ -156,4 +159,27 @@ pub func startWorkerLoop(intervalMs: in Int, worker: in Web.Worker): Unit {
       }
     }
   )
+}
+
+// ─── WebSocket upgrade (`Web.addWebSocket`, #7831) ───────────────────────────
+/// Hand the upgrade request `ctx` to `endpoint`: the connection leaves the
+/// HTTP server (`Std.HttpServer.takeConnection`) and the endpoint answers
+/// `101` (or its `400`/`403` rejection) and serves it on a background task.
+/// A request the HTTP server cannot hand over (HTTP/2, HTTP/1.0, or bytes
+/// pipelined after it) is answered `400` here.
+internal func upgradeWebSocket(endpoint: in Ws.WsEndpoint, ctx: in HttpContext): Unit {
+  val headers = requestHeaders(ctx)
+  val target = ctx.target
+  match takeConnection(ctx) {
+    case Ok(conn) -> WsNet.adoptConnection(
+      endpoint.registry.registryHandle,
+      conn,
+      target,
+      headers,
+      endpoint.path,
+      endpoint.allowedOrigins,
+      endpoint.sameHostPorts
+    )
+    case Err(reason) -> respondText(ctx, 400, "WebSocket upgrade refused: " + reason)
+  }
 }

@@ -33,9 +33,10 @@
 //! chunked-streaming helpers (`beginChunkedResponse` / `streamWriteChunk` /
 //! `endChunkedResponse`) are unchanged in name and semantics, so `lyric-web`
 //! and every other consumer keeps working without a source edit
-//! (`startListenerWithLimits` / `startListenerTlsWithLimits` are additive — the
-//! only new public functions — for callers that need to raise the engine's
-//! request-size caps). `HttpContext`
+//! (`startListenerWithLimits` / `startListenerTlsWithLimits` are additive, for
+//! callers that need to raise the engine's request-size caps, and so is
+//! `takeConnection`, which hands an HTTP/1.1 connection to another protocol
+//! after an `Upgrade` request, D146). `HttpContext`
 //! and `HttpListener`, formerly extern aliases for BCL types, are now Lyric
 //! records — they are returned/held by consumers but never named as extern
 //! types, so the shape change is source-compatible. The chunked-stream handle
@@ -348,6 +349,21 @@ pub record HttpContext {
   // task. `None` for HTTP/1.1, where `respond*` writes the wire response
   // directly. See the module header's h2 section.
   h2: Option[H2Exchange]
+  // Shared with the connection task that produced this context; set by
+  // `takeConnection` so that task stops serving the connection without
+  // closing it.
+  handoff: ConnHandoff
+  // True when the client sent bytes past this request before any response
+  // (pipelining). `takeConnection` refuses such a request: the engine has
+  // already consumed those bytes, so they could not reach the new owner.
+  trailingInput: Bool
+}
+
+// Per-connection ownership flag. `taken` flips once, on the puller thread,
+// before it releases the context's `done` semaphore; the connection task reads
+// it after `semWait(done)`, so the semaphore orders the write before the read.
+record ConnHandoff {
+  var taken: Bool = false
 }
 
 // The response mailbox for one HTTP/2 request stream. The puller thread fills
@@ -593,7 +609,7 @@ func reasonForStatus(status: in Int): String {
 // bundle-global codegen name table (#5903).
 union ReqOutcome {
   case RoClose
-  case RoRequest(method: String, target: String, version: HttpVersion, headers: List[HeaderField], body: slice[Byte], keepAlive: Bool)
+  case RoRequest(method: String, target: String, version: HttpVersion, headers: List[HeaderField], body: slice[Byte], keepAlive: Bool, trailingInput: Bool)
   case RoProtocolFail(status: Int)
 }
 
@@ -675,7 +691,8 @@ func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
             version = version,
             headers = headers,
             body = body.toArray(),
-            keepAlive = not shouldClose(engineConn)
+            keepAlive = not shouldClose(engineConn),
+            trailingInput = i + 1 < events.count or hasBufferedInput(engineConn)
           )
         }
         case ProtocolError(kind, _) -> return RoProtocolFail(status = protocolErrorStatus(kind))
@@ -712,8 +729,14 @@ func processConnection(
   // socket can throw from readOneRequest/writeErrorResponse. Because this
   // runs via fire-and-forget `taskRun`, a leaked permit is never recovered
   // and would eventually wedge the accept loop on `semWait(connLimit)` (#6221).
+  // After `takeConnection` the socket belongs to the caller, so it is not
+  // closed here; the permit is still released, since the connection no
+  // longer counts against the HTTP server's cap.
+  val handoff = ConnHandoff()
   defer {
-    hostClose(conn)
+    if not handoff.taken {
+      hostClose(conn)
+    }
     val _ = semRelease(connLimit)
   }
   var engineConn = newConnection(limits)
@@ -728,7 +751,7 @@ func processConnection(
         writeErrorResponse(conn, status)
         open = false
       }
-      case RoRequest(method, target, version, headers, body, keepAlive) -> {
+      case RoRequest(method, target, version, headers, body, keepAlive, trailingInput) -> {
         val done: Semaphore = newSemaphore(0)
         val noH2: Option[H2Exchange] = None
         val ctx = HttpContext(
@@ -740,7 +763,9 @@ func processConnection(
           body = body,
           keepAlive = keepAlive,
           done = done,
-          h2 = noH2
+          h2 = noH2,
+          handoff = handoff,
+          trailingInput = trailingInput
         )
         cqEnqueue(queue, ctx)
         val _ = semRelease(available)
@@ -749,7 +774,7 @@ func processConnection(
         // signalled here — the next `readOneRequest` hits the broken socket and
         // returns `RoClose`, closing the connection one iteration later.
         semWait(done)
-        if not keepAlive {
+        if not keepAlive or handoff.taken {
           open = false
         }
       }
@@ -1281,7 +1306,9 @@ func dispatchH2Stream(state: in H2ConnState, streamId: in Int, work: in List[H2.
         body = accum.body.toArray(),
         keepAlive = true,
         done = done,
-        h2 = someH2
+        h2 = someH2,
+        handoff = ConnHandoff(),
+        trailingInput = false
       )
       cqEnqueue(state.queue, ctx)
       val _ = semRelease(state.available)
@@ -1892,6 +1919,39 @@ pub func respondBytesWithHeaders(
   headers: in Map[String, String],
 ): Unit {
   respondBytesWith(c, status, contentType, body, headers)
+}
+
+/// Take ownership of the transport connection under `c`, for a protocol
+/// switch such as a WebSocket upgrade (RFC 9110 §7.8). Completes the
+/// exchange in place of a `respond*` call: the connection task stops reading
+/// HTTP requests from the connection and leaves it open, and the caller then
+/// owns it, including writing any `101 Switching Protocols` response and
+/// eventually calling `hostClose`. The connection no longer counts against
+/// the listener's concurrent-connection cap.
+///
+/// Returns `Err` without touching the exchange when the request cannot be
+/// handed over: an HTTP/2 stream (which shares its connection with other
+/// streams), a request that is not HTTP/1.1, or a client that sent more
+/// bytes after the request before any response. The caller then answers the
+/// request with a `respond*` helper as usual.
+///
+/// Call at most once per context, and never after a `respond*` or
+/// chunked-response helper has completed the exchange.
+pub func takeConnection(c: in HttpContext): Result[Conn, String] {
+  match c.h2 {
+    case Some(_) -> return Err(error = "an HTTP/2 stream cannot take over its connection")
+    case None -> ()
+  }
+  match c.version {
+    case HttpVersion.Http1_1 -> ()
+    case HttpVersion.Http1_0 -> return Err(error = "only an HTTP/1.1 connection can switch protocols")
+  }
+  if c.trailingInput {
+    return Err(error = "the client sent data after the request before any response")
+  }
+  c.handoff.taken = true
+  signalDone(c)
+  Ok(value = c.conn)
 }
 
 // =====================================================================

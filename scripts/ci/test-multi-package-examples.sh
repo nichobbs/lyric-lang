@@ -22,7 +22,7 @@ fi
 # throws the same "cannot be resolved to any indexed reference
 # assembly" FFI exception without restore first (#6582).
 nuget_libs="lyric-db lyric-grpc"
-libs="lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-web lyric-health lyric-grpc"
+libs="lyric-logging lyric-auth lyric-resilience lyric-otel lyric-db lyric-ws lyric-web lyric-health lyric-grpc"
 for lib in $libs; do
   case " $nuget_libs " in
     *" $lib "*)

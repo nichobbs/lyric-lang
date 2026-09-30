@@ -126,6 +126,28 @@ func kernelStartServer(
   )
 }
 
+@cfg(feature = "dotnet")
+func kernelCreateEndpoint(
+  maxMessageSizeBytes: in Int,
+  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
+  onMessage: in (String, String, String) -> Unit,
+  onClose: in (String, Int, String) -> Unit,
+  onError: in (String, String) -> Unit,
+): Result[Int, String] {
+  WsKernelNet.createEndpoint(maxMessageSizeBytes, onOpen, onMessage, onClose, onError)
+}
+
+@cfg(feature = "jvm")
+func kernelCreateEndpoint(
+  maxMessageSizeBytes: in Int,
+  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
+  onMessage: in (String, String, String) -> Unit,
+  onClose: in (String, Int, String) -> Unit,
+  onError: in (String, String) -> Unit,
+): Result[Int, String] {
+  WsKernelJvm.createEndpoint(maxMessageSizeBytes, onOpen, onMessage, onClose, onError)
+}
+
 /// Per-key token-bucket rate check (`Resilience.takeToken`) shared by `Ws.Aspects.WsRateLimit`,
 /// dispatched to the active kernel so the aspect works on both targets.
 @stable(since = "0.2")
@@ -451,6 +473,24 @@ pub func startServerWithOptions(
   requires: port >= 1 and port <= 65535
   requires: path.startsWith("/")
 {
+  val cbs = kernelCallbacks(path, handler)
+  match kernelStartServer(host, port, path, options.maxMessageSizeBytes, options.allowedOrigins, options.sameHostPorts, cbs.onOpen, cbs.onMessage, cbs.onClose, cbs.onError) {
+    case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
+    case Err(err) -> Err(WsError(message = err, code = "SERVER_START_FAILED", connectionId = ""))
+  }
+}
+
+// The primitive callbacks the kernels take, adapting `handler`: the kernels
+// exchange only strings and ints with this package (see the kernel-dispatch
+// note above).
+record KernelCallbacks {
+  onOpen: (String, String, String, String, Map[String, String]) -> Unit
+  onMessage: (String, String, String) -> Unit
+  onClose: (String, Int, String) -> Unit
+  onError: (String, String) -> Unit
+}
+
+func kernelCallbacks(path: in String, handler: in WsHandler): KernelCallbacks {
   val onOpenFn = { (connId: String, reqPath: String, reqQuery: String, remoteAddress: String, headers: Map[String, String]) ->
     val ctx = WsContext(
       connectionId = connId,
@@ -480,9 +520,44 @@ pub func startServerWithOptions(
     val ctx = WsContext(connectionId = connId, path = path, query = "", remoteAddress = "", headers = newMap())
     handler.onError(ctx, WsError(message = message, code = "TRANSPORT_ERROR", connectionId = connId))
   }
-  match kernelStartServer(host, port, path, options.maxMessageSizeBytes, options.allowedOrigins, options.sameHostPorts, onOpenFn, onMessageFn, onCloseFn, onErrorFn) {
-    case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
-    case Err(err) -> Err(WsError(message = err, code = "SERVER_START_FAILED", connectionId = ""))
+  KernelCallbacks(onOpen = onOpenFn, onMessage = onMessageFn, onClose = onCloseFn, onError = onErrorFn)
+}
+
+/// A WebSocket endpoint served on another HTTP server's port, from
+/// `createEndpoint`.  Mount it on a `lyric-web` router with
+/// `Web.addWebSocket`; push messages through `registry` exactly as with a
+/// `startServer` registry.
+@stable(since = "0.3")
+pub record WsEndpoint {
+  path: String
+  registry: NativeRegistry
+  allowedOrigins: slice[String]
+  sameHostPorts: slice[Int]
+}
+
+/// Create a WebSocket endpoint for `path` with no listener of its own, to be
+/// served on an HTTP server's port (`Web.addWebSocket`), so a page and its
+/// socket share one origin.  `options` apply as in `startServerWithOptions`:
+/// with a shared port the page and socket are same-origin, so the default
+/// empty `allowedOrigins` already admits the page.  The endpoint accepts
+/// connections once the HTTP server that mounts it is serving.
+@stable(since = "0.3")
+pub func createEndpoint(
+  path: in String, options: in WsServerOptions, handler: in WsHandler
+): Result[WsEndpoint, WsError]
+  requires: path.startsWith("/")
+{
+  val cbs = kernelCallbacks(path, handler)
+  match kernelCreateEndpoint(options.maxMessageSizeBytes, cbs.onOpen, cbs.onMessage, cbs.onClose, cbs.onError) {
+    case Ok(handle) -> Ok(
+      WsEndpoint(
+        path = path,
+        registry = NativeRegistry(registryHandle = handle),
+        allowedOrigins = options.allowedOrigins,
+        sameHostPorts = options.sameHostPorts
+      )
+    )
+    case Err(err) -> Err(WsError(message = err, code = "ENDPOINT_INIT_FAILED", connectionId = ""))
   }
 }
 

@@ -60,6 +60,22 @@ until that gap is fixed.
 | `Ws.Handshake` | Pure-Lyric HTTP/1.1 upgrade-handshake parser + `Sec-WebSocket-Accept` derivation (target-independent) |
 | `Ws.Aspects` | Reusable aspect templates: `WsAuth` and `WsRateLimit` |
 
+## Serving on an HTTP server's port
+
+`Ws.startServer*` binds a listener of its own. To serve a socket on the same
+port as a `lyric-web` router (one origin for the page and its socket), create
+a listener-less endpoint and mount it:
+
+```lyric
+val endpoint = Ws.createEndpoint("/live", Ws.WsServerOptions(), MyHandler())?
+val router = Web.addWebSocket(Web.create(), endpoint)
+```
+
+`endpoint.registry` is a `NativeRegistry` like `startServer`'s. On dotnet
+the HTTP server hands the connection to `Ws.Kernel.Net.adoptConnection`; on
+the JVM `Ws.Kernel.Jvm.endpointHandler` is mounted on the Undertow listener.
+Both apply the same `WsServerOptions` Origin check as `startServer`.
+
 ## Quick start
 
 ```lyric

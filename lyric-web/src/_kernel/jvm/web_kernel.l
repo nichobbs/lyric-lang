@@ -43,6 +43,7 @@ import Std.Tls
 import Std.HttpServer
 import Std.HttpEngine
 import Web
+import Ws.Kernel.Jvm as WsJvm
 
 // ─── Undertow HTTP server ───────────────────────────────────────────────────
 extern type JUndertow = "io.undertow.Undertow"
@@ -50,6 +51,12 @@ extern type JUndertow = "io.undertow.Undertow"
 extern type JUndertowBuilder = "io.undertow.Undertow$Builder"
 
 extern type JHttpHandler = "io.undertow.server.HttpHandler"
+
+// Mounts each router WebSocket endpoint (`Web.addWebSocket`) at its exact
+// path in front of the Lyric dispatch handler.
+extern type JHandlers = "io.undertow.Handlers"
+
+extern type JPathHandler = "io.undertow.server.handlers.PathHandler"
 
 // TLS listener wiring (docs/61 §5.2 / §6.3, phase 2.2 of epic #5874, issue
 // #5881).  `addHttpsListener(port, host, SSLContext)` terminates TLS on the
@@ -265,6 +272,23 @@ impl JHttpHandler for LyricUndertowHandler {
   }
 }
 
+// Install the root handler: `LyricUndertowHandler`, behind a path handler
+// that routes each WebSocket endpoint's exact path to its handshake handler
+// (`Ws.Kernel.Jvm.endpointHandler`) when the router mounts any.
+func setRootHandler(builder: in JUndertowBuilder, router: in Web.Router): Unit {
+  val lyricHandler: JHttpHandler = LyricUndertowHandler(router = router)
+  if router.webSockets.length == 0 {
+    val _ = builder.setHandler(lyricHandler)
+    return
+  }
+  var paths: JPathHandler = JHandlers.path(lyricHandler)
+  for ep in router.webSockets {
+    val wsHandler: JHttpHandler = WsJvm.endpointHandler(ep.registry.registryHandle, ep.allowedOrigins, ep.sameHostPorts)
+    paths = paths.addExactPath(ep.path, wsHandler)
+  }
+  val _ = builder.setHandler(paths)
+}
+
 // ─── Worker loop (issue #5359's JVM twin, issue #7578) ──────────────────────
 // `_kernel/net/web_kernel.l`'s `startWorkerLoop` runs each registered
 // `Worker` forever on a fire-and-forget `Task.Run`; this mirrors it with a
@@ -346,8 +370,10 @@ pub func serve(host: in String, port: in Int, router: in Web.Router): Unit
   requires: port >= 1
   requires: port <= 65535
 {
-  val handler: JHttpHandler = LyricUndertowHandler(router = router)
-  val server: JUndertow = JUndertow.builder().addHttpListener(port, host).setHandler(handler).build()
+  val builder = JUndertow.builder()
+  val _listener = builder.addHttpListener(port, host)
+  setRootHandler(builder, router)
+  val server: JUndertow = builder.build()
   server.start()
   startJvmWorkers(router)
   val latch = JCountDownLatch.new(1)
@@ -398,7 +424,6 @@ pub func serveTls(host: in String, port: in Int, tls: in TlsServerConfig, router
     case Some(ca) -> serverSslContextFromConfigMtls(tls.identity, tls.minVersion, ca).rawContext()
     case None -> serverSslContextFromConfig(tls.identity, tls.minVersion).rawContext()
   }
-  val handler: JHttpHandler = LyricUndertowHandler(router = router)
   val builder = JUndertow.builder()
   val _listener = builder.addHttpsListener(port, host, sslContext)
   val _http2 = builder.setServerOption(JUndertowOptions.ENABLE_HTTP2, JBoolean.TRUE)
@@ -413,7 +438,7 @@ pub func serveTls(host: in String, port: in Int, tls: in TlsServerConfig, router
     }
     case None -> ()
   }
-  val _handler = builder.setHandler(handler)
+  setRootHandler(builder, router)
   val server: JUndertow = builder.build()
   server.start()
   startJvmWorkers(router)

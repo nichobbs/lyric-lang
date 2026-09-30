@@ -46,14 +46,12 @@ PLAYWRIGHT_VERSION="1.56.1"
   fi
 )
 
+# The host serves the page and its session WebSocket on this one port (#7831).
 port=8080
-ws_port=8081
-for p in "$port" "$ws_port"; do
-  if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then
-    echo "::error::port $p is already in use; the example host needs it" >&2
-    exit 1
-  fi
-done
+if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+  echo "::error::port $port is already in use; the example host needs it" >&2
+  exit 1
+fi
 
 manifest="examples/ui-customers/lyric.toml"
 "$lyric_bin" build --manifest "$manifest" --target "$target"

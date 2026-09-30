@@ -385,9 +385,8 @@ change any of them with `.copy`:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `port` | 8080 | HTTP port for the page and assets |
-| `wsPort` | 8081 | WebSocket port for sessions |
-| `wsPath` | `/_ui` | WebSocket path |
+| `port` | 8080 | port for the page, its assets and the session WebSocket |
+| `wsPath` | `/_ui` | session WebSocket path |
 | `publicWsUrl` | `""` | socket URL for browsers, when a proxy routes it elsewhere |
 | `reconnectGraceMs` | 120000 | how long a disconnected session can be resumed |
 | `maxSessions` | 10000 | sessions held in memory |

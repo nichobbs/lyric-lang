@@ -243,6 +243,32 @@ func main(): Unit {
 
 ---
 
+## WebSockets on the router's port
+
+A `lyric-ws` endpoint can be served on the same port as the router, so a page and its socket share one origin (the WebSocket handshake's same-origin check then admits the page with no configuration):
+
+```lyric
+import Web
+import Ws
+
+val endpoint = match Ws.createEndpoint("/live", Ws.WsServerOptions(), LiveHandler()) {
+  case Ok(ep) -> ep
+  case Err(e) -> panic(e.message)
+}
+var router = Web.addWebSocket(Web.create(), endpoint)
+router = Web.addGet(router, "/", PageHandler())
+Web.serve(router, "0.0.0.0", 8080)
+// push to connected clients with Ws.sendText(endpoint.registry, connId, text)
+```
+
+- The endpoint is served at exactly `endpoint.path`; `prefix` does not move it.
+- A `GET` to that path goes to the endpoint **before** middleware and route dispatch. Authorise a socket in the handler's `onOpen` (or with the `Ws.Aspects.WsAuth` aspect), not with router middleware.
+- A valid upgrade gets `101`; a malformed one `400`, a cross-site one `403`.
+- dotnet: the connection is handed over with `Std.HttpServer.takeConnection` and stops counting against the HTTP server's connection cap. An upgrade over HTTP/2, over HTTP/1.0, or with bytes pipelined after it is answered `400` (browsers open WebSockets over HTTP/1.1).
+- jvm: the endpoint is mounted on the Undertow listener at its path.
+
+---
+
 ## Composing static files + middleware with wire templates
 
 Beyond direct `withStaticFiles`/`withMiddleware` calls, `Web.StaticFiles` (a `pub config` template) and `Web.Middleware` (an ordinary interface) compose with [config templates, `contributes[T]`, and wire templates](../docs/58-wire-templates-sketch.md) (D121) — a library or application can declare a reusable, overridable bundle of static mounts and middleware:

@@ -64,8 +64,10 @@ func main(): Unit {
 }
 ```
 
-HTTP is served on `port` (default 8080) and the session WebSocket on
-`wsPort` (default 8081), because `lyric-ws` runs its own listener.
+The page, its assets and the session WebSocket (at `wsPath`, default
+`/_ui`) are all served on `port` (default 8080). `WebHost.router(cfg, route)`
+returns the same thing as a `lyric-web` router, to merge into an
+application's own routes (merge it last: its shell matches every path).
 
 A session survives a dropped connection: the browser reconnects with the
 session id it was given and resumes where it left off, within
@@ -79,7 +81,7 @@ the session within the grace period. Serve the page and socket over TLS in
 production. The host itself speaks plain HTTP and `ws`, so put a
 TLS-terminating proxy in front of it; when the proxy sends
 `X-Forwarded-Proto: https` the page opens a `wss` socket on the same host
-and `wsPort`. If the proxy exposes the socket somewhere else (for example
+and port. If the proxy exposes the socket somewhere else (for example
 on port 443 under `/_ui`), set `publicWsUrl` to that URL:
 
 ```lyric
