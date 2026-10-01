@@ -1450,6 +1450,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/qualified_ctor_self_test.l
 
+      # Renamed selective imports (#7564, D156): `import P.{f as g}` for a
+      # function, a record constructor and a union, with lexical shadowing.
+      - name: Import-rename self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/import_rename_self_test.l
+
       # Std.String StringBuilder / join / indexOfFrom (#7257, #7258).  Each is
       # backed by a different kernel per target; the JVM job and the native
       # smoke test run the same file.
@@ -4175,6 +4183,13 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/qualified_ctor_self_test.l
+
+      # JVM half of the import-rename self-test (D156).
+      - name: Import-rename self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/import_rename_self_test.l
 
       # JVM half of the String-builder self-test (#7257, #7258).
       - name: String-builder self-test on JVM (native lyric test --target jvm)

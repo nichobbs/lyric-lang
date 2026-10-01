@@ -1,37 +1,27 @@
-//! lyric/alias_rewriter.l — AST-level rewriter for `import X as A`
-//! package aliases (#1378 follow-up).
+//! lyric/alias_rewriter.l — AST-level rewriter for import aliases and
+//! renamed selective imports (#1378 follow-up, #7564).
 //!
-//! Bootstrap-grade alias semantics (matching D-progress-018):
+//! `import X as A` makes `A.f` a qualified reference to `X.f`:
 //!
 //!   import Auth.Kernel.Net as AuthKernelNet
 //!   val r = AuthKernelNet.verifyJwtImpl(token, secret)
 //!
-//! is treated as syntactic sugar for
+//! is rewritten to `Auth.Kernel.Net.verifyJwtImpl(token, secret)`, so later
+//! passes see the declaring package.  `import P.{f as g}` (D156) makes `g` a
+//! bare name for `P.f`: each use of `g` in a value, call, constructor
+//! (D155), type reference or pattern head becomes `P.f`.
 //!
-//!   import Auth.Kernel.Net
-//!   val r = verifyJwtImpl(token, secret)
+//! The rewriter runs after parsing and before type-check (from
+//! `Lyric.Pipeline.pipePrepareForCheck`, so every backend and the LSP see
+//! the same tree), walking every `Expr`, `TypeExpr`, `Pattern`, and
+//! `ConstraintRef` in the user's source file.
 //!
-//! The rewriter runs after parsing and before type-check, walking
-//! every `Expr`, `TypeExpr`, `Pattern`, and `ConstraintRef` in the
-//! user's source file.  Selector-level aliases
-//! (`import X.{foo as bar}`) are NOT handled here — they're cloned
-//! into the imported-items list by the emitter so the original symbol
-//! is registered under both names.
-//!
-//! Mirrors `bootstrap/src/Lyric.Parser/AliasRewriter.fs` so the
-//! self-hosted pipeline gets the same alias-collapsing behaviour the
-//! F# emitter relies on.  Wired into the self-hosted MSIL bridge via
-//! `Msil.Bridge.compileToMsil*` between parse and typecheck (#1378's
-//! `AuthKernelNet` symptom).
-//!
-//! Out-of-scope (bootstrap):
-//!   - The rewriter is scope-blind.  A local variable named `Coll`
-//!     after `import X as Coll` would collide; users should pick
-//!     alias names that don't shadow locals.
-//!   - Aliases on non-builtin user packages aren't yet wired through
-//!     the emitter's package resolver for stdlib-call codegen, so
-//!     this only meaningfully fires for intra-project aliases and
-//!     stdlib imports today.
+//! Scoping.  A rename is a bare name and follows lexical scoping exactly: a
+//! parameter, local, lambda parameter, pattern binding, `for` or `catch`
+//! binding named `g` hides the rename for its own scope only.  A package
+//! alias is hidden for a whole function by any binding of its first segment
+//! anywhere in that function (#6311-#6313), which can only suppress a
+//! rewrite, never misdirect one.
 package Lyric.AliasRewriter
 
 import Std.Core
@@ -189,6 +179,125 @@ func aliasPkgSegs(aliases: in List[String], name: in String): List[String] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §1b. Renamed selective imports (#7564).
+// ─────────────────────────────────────────────────────────────────────────────
+// `import P.{f as g}` makes `g` a bare name for `P.f`.  Each rename is an
+// entry `^g=P.f` in the same list as the package aliases; the `^` keeps it
+// out of every alias lookup (`aliasContains` matches `g=`).  `rewritePath`
+// replaces a leading `g` with `P.f` wherever a path appears: values,
+// calls, constructors (qualified constructors are D155), type references
+// and pattern heads.  A rename is a bare name, so a parameter, local or
+// pattern binding named `g` hides it for exactly its own scope
+// (`dropRenamesNamed` at each binding site).
+func collectRenames(imports: in List[ImportDecl]): List[String] {
+  val entries: List[String] = newList()
+  for imp in imports {
+    if not imp.isExtern {
+      match imp.selector {
+        case Some(sel) -> {
+          val items: List[ImportItem] = match sel {
+            case ISGroup(group) -> group
+            case ISSingle(one) -> {
+              val single: List[ImportItem] = newList()
+              single.add(one)
+              single
+            }
+          }
+          for item in items {
+            match item.asAlias {
+              case Some(local) -> entries.add("^" + local + "=" + modulePathJoin(imp.path.segments) + "." + item.name)
+              case None -> ()
+            }
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  entries
+}
+
+func isRenameEntry(entry: in String): Bool {
+  Str.startsWith(entry, "^")
+}
+
+// The target segments of rename `name` (`P.f` split), or None.
+func renameTarget(aliases: in List[String], name: in String): Option[List[String]] {
+  val pfx = "^" + name + "="
+  for entry in aliases {
+    if Str.startsWith(entry, pfx) {
+      val segs = Str.split(entry.substring(pfx.length), ".")
+      val acc: List[String] = newList()
+      var k = 0
+      while k < segs.length {
+        acc.add(segs[k])
+        k = k + 1
+      }
+      return Some(value = acc)
+    }
+  }
+  None
+}
+
+func hasRenames(aliases: in List[String]): Bool {
+  for entry in aliases {
+    if isRenameEntry(entry) {
+      return true
+    }
+  }
+  false
+}
+
+// `aliases` without the renames that `names` (bindings coming into scope)
+// hide.
+func dropRenamesNamed(aliases: in List[String], names: in List[String]): List[String] {
+  if names.count == 0 or not hasRenames(aliases) {
+    return aliases
+  }
+  val kept: List[String] = newList()
+  for entry in aliases {
+    if isRenameEntry(entry) and listHas(names, aliasKeyFirstSegment(entry)) {
+      continue
+    }
+    kept.add(entry)
+  }
+  kept
+}
+
+func listHas(xs: in List[String], x: in String): Bool {
+  for y in xs {
+    if y == x {
+      return true
+    }
+  }
+  false
+}
+
+// The names a pattern binds.
+func patternNames(p: in Pattern): List[String] {
+  val acc: List[String] = newList()
+  collectPatternLocalNames(p, acc)
+  acc
+}
+
+// The names a local binding statement brings into scope.
+func localBindingNames(lb: in LocalBinding): List[String] {
+  val acc: List[String] = newList()
+  match lb {
+    case LBVal(pat, _, _) -> collectPatternLocalNames(pat, acc)
+    case LBVar(name, _, _) -> acc.add(name)
+    case LBLet(name, _, _) -> acc.add(name)
+  }
+  acc
+}
+
+func paramNamesOf(params: in List[Param]): List[String] {
+  val acc: List[String] = newList()
+  collectParamNames(params, acc)
+  acc
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §2. ModulePath rewriting.
 // ─────────────────────────────────────────────────────────────────────────────
 // `Rx.tryCompile` (segments = ["Rx", "tryCompile"]) where `Rx` aliases
@@ -198,6 +307,19 @@ func aliasPkgSegs(aliases: in List[String], name: in String): List[String] {
 // (#1488 regex_safe).  Single-segment paths and paths whose head isn't an alias
 // pass through unchanged.
 func rewritePath(aliases: in List[String], p: in ModulePath): ModulePath {
+  if p.segments.count >= 1 {
+    match renameTarget(aliases, p.segments[0]) {
+      case Some(target) -> {
+        var i = 1
+        while i < p.segments.count {
+          target.add(p.segments[i])
+          i = i + 1
+        }
+        return ModulePath(segments = target, span = p.span)
+      }
+      case None -> ()
+    }
+  }
   if p.segments.count < 2 {
     return p
   }
@@ -589,12 +711,14 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
     case ETry(inner) -> return Expr(kind = ETry(inner = rewriteExpr(aliases, inner)), span = e.span)
     case EOld(inner) -> return Expr(kind = EOld(inner = rewriteExpr(aliases, inner)), span = e.span)
     case EForall(binders, whereExpr, body) -> {
-      val w = match whereExpr { case Some(x) -> Some(value = rewriteExpr(aliases, x)); case None -> whereExpr }
-      return Expr(kind = EForall(binders = binders, whereExpr = w, body = rewriteExpr(aliases, body)), span = e.span)
+      val inner = dropRenamesNamed(aliases, binderNames(binders))
+      val w = match whereExpr { case Some(x) -> Some(value = rewriteExpr(inner, x)); case None -> whereExpr }
+      return Expr(kind = EForall(binders = binders, whereExpr = w, body = rewriteExpr(inner, body)), span = e.span)
     }
     case EExists(binders, whereExpr, body) -> {
-      val w = match whereExpr { case Some(x) -> Some(value = rewriteExpr(aliases, x)); case None -> whereExpr }
-      return Expr(kind = EExists(binders = binders, whereExpr = w, body = rewriteExpr(aliases, body)), span = e.span)
+      val inner = dropRenamesNamed(aliases, binderNames(binders))
+      val w = match whereExpr { case Some(x) -> Some(value = rewriteExpr(inner, x)); case None -> whereExpr }
+      return Expr(kind = EExists(binders = binders, whereExpr = w, body = rewriteExpr(inner, body)), span = e.span)
     }
     case ELambda(lambdaParams, body) -> {
       val params2: List[LambdaParam] = newList()
@@ -606,7 +730,14 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
         )
         li = li + 1
       }
-      return Expr(kind = ELambda(lambdaParams = params2, body = rewriteBlock(aliases, body)), span = e.span)
+      val lambdaNames: List[String] = newList()
+      for lp in lambdaParams {
+        lambdaNames.add(lp.name)
+      }
+      return Expr(
+        kind = ELambda(lambdaParams = params2, body = rewriteBlock(dropRenamesNamed(aliases, lambdaNames), body)),
+        span = e.span
+      )
     }
     case ECall(fn, args) -> {
       val args2: List[CallArg] = newList()
@@ -681,6 +812,14 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
   return e
 }
 
+func binderNames(binders: in List[PropertyBinder]): List[String] {
+  val acc: List[String] = newList()
+  for b in binders {
+    acc.add(b.name)
+  }
+  acc
+}
+
 func rewriteCallArg(aliases: in List[String], a: in CallArg): CallArg {
   match a {
     case CANamed(name, value, span) -> CANamed(name = name, value = rewriteExpr(aliases, value), span = span)
@@ -696,11 +835,12 @@ func rewriteExprOrBlock(aliases: in List[String], eob: in ExprOrBlock): ExprOrBl
 }
 
 func rewriteMatchArm(aliases: in List[String], arm: in MatchArm): MatchArm {
-  val g = match arm.guard { case Some(x) -> Some(value = rewriteExpr(aliases, x)); case None -> arm.guard }
+  val armAliases = dropRenamesNamed(aliases, patternNames(arm.pattern))
+  val g = match arm.guard { case Some(x) -> Some(value = rewriteExpr(armAliases, x)); case None -> arm.guard }
   MatchArm(
     pattern = rewritePattern(aliases, arm.pattern),
     guard = g,
-    body = rewriteExprOrBlock(aliases, arm.body),
+    body = rewriteExprOrBlock(armAliases, arm.body),
     span = arm.span
   )
 }
@@ -788,9 +928,19 @@ func rewritePattern(aliases: in List[String], p: in Pattern): Pattern {
 // ─────────────────────────────────────────────────────────────────────────────
 func rewriteBlock(aliases: in List[String], b: in Block): Block {
   val ss: List[Statement] = newList()
+  // A local binding hides a same-named rename for the rest of the block;
+  // its own initializer still sees the outer scope.
+  var cur = aliases
   var i = 0
   while i < b.statements.count {
-    ss.add(rewriteStatement(aliases, b.statements[i]))
+    val st = b.statements[i]
+    ss.add(rewriteStatement(cur, st))
+    match st.kind {
+      case SLocal(binding) -> {
+        cur = dropRenamesNamed(cur, localBindingNames(binding))
+      }
+      case _ -> ()
+    }
     i = i + 1
   }
   Block(statements = ss, span = b.span)
@@ -827,13 +977,23 @@ func rewriteStatement(aliases: in List[String], s: in Statement): Statement {
       return Statement(kind = STry(body = rewriteBlock(aliases, body), catches = cs, finally_ = fn), span = s.span)
     }
     case SDefer(body) -> return Statement(kind = SDefer(body = rewriteBlock(aliases, body)), span = s.span)
-    case SScope(binding, body) -> return Statement(kind = SScope(binding = binding, body = rewriteBlock(aliases, body)), span = s.span)
+    case SScope(binding, body) -> {
+      val scopeNames: List[String] = newList()
+      match binding {
+        case Some(n) -> scopeNames.add(n)
+        case None -> ()
+      }
+      return Statement(
+        kind = SScope(binding = binding, body = rewriteBlock(dropRenamesNamed(aliases, scopeNames), body)),
+        span = s.span
+      )
+    }
     case SFor(label, pat, iter, body) -> return Statement(
       kind = SFor(
         label = label,
         pat = rewritePattern(aliases, pat),
         iter = rewriteExpr(aliases, iter),
-        body = rewriteBlock(aliases, body)
+        body = rewriteBlock(dropRenamesNamed(aliases, patternNames(pat)), body)
       ),
       span = s.span
     )
@@ -851,7 +1011,17 @@ func rewriteStatement(aliases: in List[String], s: in Statement): Statement {
 }
 
 func rewriteCatch(aliases: in List[String], c: in CatchClause): CatchClause {
-  CatchClause(typeName = c.typeName, bindName = c.bindName, body = rewriteBlock(aliases, c.body), span = c.span)
+  val bound: List[String] = newList()
+  match c.bindName {
+    case Some(n) -> bound.add(n)
+    case None -> ()
+  }
+  CatchClause(
+    typeName = c.typeName,
+    bindName = c.bindName,
+    body = rewriteBlock(dropRenamesNamed(aliases, bound), c.body),
+    span = c.span
+  )
 }
 
 func rewriteLocalBinding(aliases: in List[String], lb: in LocalBinding): LocalBinding {
@@ -1216,12 +1386,16 @@ func collectFunctionBodyLocalNames(body: in FunctionBody, acc: List[String]): Un
 
 func aliasKeyFirstSegment(entry: in String): String {
   val kv = Str.split(entry, "=")
-  val segs = Str.split(kv[0], ".")
+  val key = if Str.startsWith(kv[0], "^") then kv[0].substring(1) else kv[0]
+  val segs = Str.split(key, ".")
   segs[0]
 }
 
 // Remove every alias entry whose key's first dot-segment collides with a
 // name in `locals` — see the section header above for why this is sound.
+// Rename entries (`^g=P.f`, #7564) are kept: a rename is a bare name, so
+// it follows lexical scoping exactly (`dropRenamesNamed` at each binding
+// site), never this function-wide approximation.
 func filterAliasesExcludingLocals(aliases: in List[String], locals: in List[String]): List[String] {
   if locals.count == 0 {
     return aliases
@@ -1229,6 +1403,11 @@ func filterAliasesExcludingLocals(aliases: in List[String], locals: in List[Stri
   val kept: List[String] = newList()
   var i = 0
   while i < aliases.count {
+    if isRenameEntry(aliases[i]) {
+      kept.add(aliases[i])
+      i = i + 1
+      continue
+    }
     val head = aliasKeyFirstSegment(aliases[i])
     var shadowed = false
     var j = 0
@@ -1350,7 +1529,7 @@ func rewriteFunctionDecl(aliases: in List[String], fn: in FunctionDecl): Functio
     case Some(b) -> collectFunctionBodyLocalNames(b, locals)
     case None -> ()
   }
-  val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
+  val bodyAliases = dropRenamesNamed(filterAliasesExcludingLocals(aliases, locals), paramNamesOf(fn.params))
   val body = match fn.body { case Some(b) -> Some(value = rewriteFunctionBody(bodyAliases, b)); case None -> fn.body }
   FunctionDecl(
     docComments = fn.docComments,
@@ -1566,7 +1745,7 @@ func rewriteFunctionSig(aliases: in List[String], sig: in FunctionSig): Function
   // `bodyAliases`, just param-only since there's no body to collect from.
   val locals: List[String] = newList()
   collectParamNames(sig.params, locals)
-  val sigAliases = filterAliasesExcludingLocals(aliases, locals)
+  val sigAliases = dropRenamesNamed(filterAliasesExcludingLocals(aliases, locals), locals)
   FunctionSig(
     docComments = sig.docComments,
     isAsync = sig.isAsync,
@@ -1595,7 +1774,7 @@ func rewriteEntryDecl(aliases: in List[String], ed: in EntryDecl): EntryDecl {
   val locals: List[String] = newList()
   collectParamNames(ed.params, locals)
   collectFunctionBodyLocalNames(ed.body, locals)
-  val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
+  val bodyAliases = dropRenamesNamed(filterAliasesExcludingLocals(aliases, locals), paramNamesOf(ed.params))
   EntryDecl(
     docComments = ed.docComments,
     annotations = ed.annotations,
@@ -1703,7 +1882,11 @@ func rewriteOpaqueMember(aliases: in List[String], m: in OpaqueMember): OpaqueMe
     case OMField(field) -> return OMField(field = rewriteFieldDecl(aliases, field))
     // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment.
     case OMInvariant(inv) -> return OMInvariant(
-      inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span, message = inv.message)
+      inv = InvariantClause(
+        expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr),
+        span = inv.span,
+        message = inv.message
+      )
     )
   }
   return m
@@ -1766,7 +1949,11 @@ func rewriteProtectedMember(aliases: in List[String], m: in ProtectedMember): Pr
     case PMField(field) -> return PMField(field = rewriteProtectedField(aliases, field))
     // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment.
     case PMInvariant(inv) -> return PMInvariant(
-      inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span, message = inv.message)
+      inv = InvariantClause(
+        expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr),
+        span = inv.span,
+        message = inv.message
+      )
     )
     case PMEntry(entryDecl) -> return PMEntry(entryDecl = rewriteEntryDecl(aliases, entryDecl))
     case PMFunc(fn) -> return PMFunc(fn = rewriteFunctionDecl(aliases, fn))
@@ -1928,7 +2115,7 @@ func rewriteWireDecl(aliases: in List[String], d: in WireDecl): WireDecl {
     }
     k = k + 1
   }
-  val memberAliases = filterAliasesExcludingLocals(aliases, locals)
+  val memberAliases = dropRenamesNamed(filterAliasesExcludingLocals(aliases, locals), locals)
   val ms: List[WireMember] = newList()
   var j = 0
   while j < d.members.count {
@@ -1990,7 +2177,7 @@ func rewritePropertyDecl(aliases: in List[String], d: in PropertyDecl): Property
     case None -> ()
   }
   collectBlockLocalNames(d.body, locals)
-  val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
+  val bodyAliases = dropRenamesNamed(filterAliasesExcludingLocals(aliases, locals), binderNames(d.forAll))
   PropertyDecl(
     title = d.title,
     forAll = bs,
@@ -2086,8 +2273,14 @@ func rewriteAspectDecl(aliases: in List[String], d: in AspectDecl): AspectDecl {
         case Some(n) -> locals.add(n)
         case None -> ()
       }
+      val aroundNames: List[String] = newList()
+      aroundNames.add(a.argsName)
+      match a.retName {
+        case Some(n) -> aroundNames.add(n)
+        case None -> ()
+      }
       collectBlockLocalNames(a.body, locals)
-      val bodyAliases = filterAliasesExcludingLocals(aliases, locals)
+      val bodyAliases = dropRenamesNamed(filterAliasesExcludingLocals(aliases, locals), aroundNames)
       contractAliases = bodyAliases
       someAspectAround(
         AspectAround(
@@ -2220,6 +2413,9 @@ func rewriteItem(aliases: in List[String], it: in Item): Item {
 /// the file has no `import X as Y` declarations.
 pub func rewriteFile(file: in SourceFile): SourceFile {
   val aliases = collectAliases(file.imports)
+  for r in collectRenames(file.imports) {
+    aliases.add(r)
+  }
   if aliases.count == 0 {
     return file
   }
@@ -2228,7 +2424,7 @@ pub func rewriteFile(file: in SourceFile): SourceFile {
   // the per-function locals #6311 already guards against.
   val moduleLocals: List[String] = newList()
   collectModuleLevelValueNames(file, moduleLocals)
-  val fileAliases = filterAliasesExcludingLocals(aliases, moduleLocals)
+  val fileAliases = dropRenamesNamed(filterAliasesExcludingLocals(aliases, moduleLocals), moduleLocals)
   val items: List[Item] = newList()
   var i = 0
   while i < file.items.count {
