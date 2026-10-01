@@ -8734,3 +8734,71 @@ test "a lambda's unannotated parameter types are recorded (#7865)" {
     "a parameter typed by a type parameter is not recorded"
   )
 }
+
+// #7854: unary minus on an unsigned operand (`Byte`, `UInt`, `ULong`) is
+// T0147.  It used to type as the unsigned type and wrap at runtime
+// (`-(5u8)` was the Byte 251).
+func negSrc(body: in String): String {
+  "package P\n" + body
+}
+
+func assertNegRejected(src: in String, label: in String): Unit {
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0147"), 1, label + ": T0147 (" + diagCodesOf(cr) + ")")
+  assertEqualInt(diagCount(cr), 1, label + ": no other diagnostic (" + diagCodesOf(cr) + ")")
+}
+
+test "unary minus on a Byte is T0147 (#7854)" {
+  assertNegRejected(negSrc("func f(b: in Byte): Byte {\n  -b\n}\n"), "-b")
+  assertNegRejected(negSrc("func f(): Byte {\n  -(5u8)\n}\n"), "-(5u8)")
+  assertNegRejected(negSrc("func f(): Byte {\n  -5u8\n}\n"), "-5u8")
+  assertNegRejected(negSrc("func f(b: in Byte): Byte {\n  -((b))\n}\n"), "-((b))")
+  val cr = parseCheck(negSrc("func f(b: in Byte): Byte {\n  -b\n}\n"))
+  val msg = diagMessageFor(cr, "T0147")
+  assertTrue(Str.contains(msg, "Byte"), "the message names the operand type: " + msg)
+  assertTrue(Str.contains(msg, "-(x.toInt())"), "the message suggests a signed conversion: " + msg)
+}
+
+test "unary minus on a UInt is T0147 (#7854)" {
+  assertNegRejected(negSrc("func f(u: in UInt): UInt {\n  -u\n}\n"), "-u")
+  assertNegRejected(negSrc("func f(): UInt {\n  -(7u32)\n}\n"), "-(7u32)")
+  assertNegRejected(negSrc("func f(): UInt {\n  -(7u16)\n}\n"), "-(7u16)")
+  assertNegRejected(negSrc("func f(u: in UInt): UInt {\n  -(u + 1u32)\n}\n"), "-(u + 1u32)")
+}
+
+test "unary minus on a ULong is T0147 (#7854)" {
+  assertNegRejected(negSrc("func f(u: in ULong): ULong {\n  -u\n}\n"), "-u")
+  assertNegRejected(negSrc("func f(): ULong {\n  -(18446744073709551615u64)\n}\n"), "-(2^64-1 u64)")
+  val cr = parseCheck(negSrc("func f(u: in ULong): ULong {\n  -u\n}\n"))
+  assertTrue(Str.contains(diagMessageFor(cr, "T0147"), "ULong"), "the message names ULong")
+}
+
+test "unary minus on an unsigned range or distinct type is rejected (#7854)" {
+  assertNegRejected(negSrc("func f(u: in UInt range 0 ..= 10): UInt range 0 ..= 10 {\n  -u\n}\n"), "inline UInt range")
+  assertNegRejected(negSrc("func f(b: in Byte range 1 ..= 9): Int {\n  val n = -b\n  0\n}\n"), "inline Byte range")
+  // A distinct type has no unary minus whatever its base (docs/01 §2.3).
+  val cr = parseCheck(negSrc("type Port = UInt range 0 ..= 65535\nfunc f(p: in Port): Port {\n  -p\n}\n"))
+  assertEqualInt(countDiagCode(cr, "T0036"), 1, "distinct Port: T0036 (" + diagCodesOf(cr) + ")")
+  assertEqualInt(diagCount(cr), 1, "distinct Port: one diagnostic (" + diagCodesOf(cr) + ")")
+}
+
+test "a negated unsigned constant is not folded (#7854)" {
+  assertNegRejected(negSrc("val K = -(5u8)\n"), "module val -(5u8)")
+  assertNegRejected(negSrc("val B: Byte = 5u8\nval K = -B\n"), "module val -B")
+  assertNegRejected(negSrc("type Small = Int range -(1u8) ..= 5\n"), "range bound -(1u8)")
+  assertNegRejected(negSrc("val B: Byte = 5u8\ntype Small = Int range -B ..= 5\n"), "range bound -B")
+  assertNegRejected(negSrc("val B = 5u32\ntype Small = Long range -(B * 2u32) ..= 5\n"), "range bound -(B * 2u32)")
+  assertNegRejected(negSrc("func f(): Unit {\n  val n: Int range -(2u8) ..= 5 = 3\n}\n"), "inline local range bound")
+  assertNegRejected(negSrc("func f(x: in Int range 0 ..= -(2u16)): Unit {\n}\n"), "inline parameter range bound")
+  // Through a constant, the negation is reported once, at the constant.
+  val viaConst = parseCheck(negSrc("val K = -(5u8)\ntype Small = Int range K ..= 5\n"))
+  assertEqualInt(countDiagCode(viaConst, "T0147"), 1, "via a constant: one T0147 (" + diagCodesOf(viaConst) + ")")
+}
+
+test "unary minus on a signed operand stays clean (#7854)" {
+  val src = negSrc(
+    "val M = -(5i8)\ntype Small = Int range -(5) ..= 5\nfunc f(b: in Byte, i: in Int, l: in Long, d: in Double): Long {\n  val x = -(b.toInt())\n  val y = -(b.toLong()) + -l\n  val z = -d\n  val w = -i + x + -2147483648\n  y + w.toLong()\n}\n"
+  )
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "signed negation: clean (" + diagCodesOf(cr) + ")")
+}

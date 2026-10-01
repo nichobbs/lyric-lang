@@ -1580,11 +1580,27 @@ func inferBinop(
   }
 }
 
+// T0147's text.  Only `Byte` has a conversion to a signed type, so only its
+// hint can name one; `UInt`/`ULong` have none yet (docs/01 §4.1).
+func unsignedNegationMessage(typeText: in String, isByte: in Bool): String {
+  val hint = if isByte {
+    "convert it to a signed type first, e.g. `-(x.toInt())`"
+  } else {
+    "an unsigned type has no conversion to a signed type yet, so give a value that can be negative a signed type such as `Long`"
+  }
+  "unary minus cannot be applied to an unsigned operand (got " + typeText +
+    "): a non-zero unsigned value has no negation of its own type; " +
+    hint
+}
+
 func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, span: in Span): Type {
   match op {
     case PreNeg -> {
       if not isNumericType(inner) {
         diag.add(errorDiagnostic("T0036", "unary minus requires a numeric operand (got " + renderType(inner) + ")", span))
+      } else if isUnsignedConvReceiver(inner) {
+        diag.add(errorDiagnostic("T0147", unsignedNegationMessage(renderType(inner), isPrimOf(inner, PtByte)), span))
+        return TyError
       }
       inner
     }

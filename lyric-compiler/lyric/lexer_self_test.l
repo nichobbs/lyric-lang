@@ -1068,3 +1068,94 @@ test "a stray emoji is one unexpected character" {
   assertEqual(r.diagnostics[0].message, "unexpected character '😀'", "emoji-stray: whole character reported")
   assertEqual(identNameAt(r, 1), "y", "emoji-stray: lexing resumes")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7854: an unrecognised numeric suffix is L0015, naming the suffix and
+// listing the valid ones.  The whole letter-led run after the digits is the
+// suffix, so a bad suffix is one diagnostic on one literal token.
+// ─────────────────────────────────────────────────────────────────────────────
+func checkBadSuffix(src: in String, suffix: in String, label: in String): Unit {
+  val r = lex(src)
+  assertEqualInt(diagCount(r), 1, label + ": one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0015", label + ": L0015")
+  assertTrue(Str.contains(r.diagnostics[0].message, "`" + suffix + "`"), label + ": the message names the suffix")
+  assertEqual(tokenKindAt(r, 1), "eof", label + ": the suffix is part of the one literal token")
+}
+
+test "an unrecognised decimal suffix is l0015" {
+  checkBadSuffix("100xyz", "xyz", "100xyz")
+  checkBadSuffix("1u7", "u7", "1u7")
+  checkBadSuffix("2i128", "i128", "2i128")
+  checkBadSuffix("5u", "u", "5u")
+  checkBadSuffix("5U8", "U8", "5U8")
+  checkBadSuffix("1u8_x", "u8_x", "1u8_x")
+  checkBadSuffix("1xi32", "xi32", "1xi32")
+  val r = lex("100xyz")
+  assertTrue(intValueAt(r, 0) == 100i64, "100xyz: the digits keep their value")
+  assertTrue(
+    Str.contains(r.diagnostics[0].message, "`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32` and `f64`"),
+    "100xyz: the message lists the valid suffixes"
+  )
+  assertEqualInt(r.diagnostics[0].span.startPos.offset, 3, "100xyz: the span starts at the suffix")
+}
+
+test "an unrecognised suffix on a based literal is l0015" {
+  checkBadSuffix("0xFFg", "g", "0xFFg")
+  checkBadSuffix("0b101z", "z", "0b101z")
+  checkBadSuffix("0o17q", "q", "0o17q")
+  checkBadSuffix("0b1f32", "f32", "0b1f32 (a float suffix on a based literal)")
+  val r = lex("0xFFg")
+  assertTrue(Str.contains(r.diagnostics[0].message, "hexadecimal"), "0xFFg: the message names the base")
+  assertTrue(not Str.contains(r.diagnostics[0].message, "f32"), "0xFFg: no float suffix is offered")
+}
+
+test "an unrecognised suffix on a float literal is l0015" {
+  checkBadSuffix("1.5xyz", "xyz", "1.5xyz")
+  checkBadSuffix("1.5i32", "i32", "1.5i32 (an integer suffix on a float literal)")
+  checkBadSuffix("1e5u8", "u8", "1e5u8")
+  val r = lex("1.5xyz")
+  assertEqual(tokenKindAt(r, 0), "float", "1.5xyz: still a float token")
+  assertTrue(floatValueAt(r, 0) > 1.49 and floatValueAt(r, 0) < 1.51, "1.5xyz: value kept")
+}
+
+test "an exponent with no digits stays one l0011" {
+  val r = lex("2em")
+  assertEqualInt(diagCount(r), 1, "2em: one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0011", "2em: L0011")
+  val bare = lex("1e")
+  assertEqualInt(diagCount(bare), 1, "1e: one diagnostic")
+  assertEqual(bare.diagnostics[0].code, "L0011", "1e: L0011")
+}
+
+test "every valid numeric suffix still lexes cleanly" {
+  val r = lex(
+    "1i8 2i16 3i32 4i64 5u8 6u16 7u32 8u64 9f32 10f64 1.5f32 2.5f64 0xFFu8 0x7Fi8 0b101u16 0o17i32 1_000_u32 1e10 2.5e-3f64"
+  )
+  assertEqualInt(diagCount(r), 0, "valid suffixes: no diagnostics")
+  assertEqualInt(r.tokens.count, 20, "valid suffixes: one token per literal")
+  assertTrue(intValueAt(r, 4) == 5i64, "5u8 value")
+  assertEqual(tokenKindAt(r, 8), "float", "9f32 is a float")
+  assertTrue(intValueAt(r, 12) == 255i64, "0xFFu8 value")
+  assertTrue(intValueAt(r, 16) == 1000i64, "1_000_u32 value")
+  assertEqual(tokenKindAt(r, 17), "float", "1e10 is a float")
+}
+
+test "range and member syntax after a literal is not a suffix" {
+  val range = lex("1..5")
+  assertEqualInt(diagCount(range), 0, "1..5: no diagnostics")
+  assertTrue(intValueAt(range, 0) == 1i64, "1..5: 1")
+  assertEqual(punctNameAt(range, 1), "..", "1..5: ..")
+  assertTrue(intValueAt(range, 2) == 5i64, "1..5: 5")
+  val incl = lex("0u8..=9u8")
+  assertEqualInt(diagCount(incl), 0, "0u8..=9u8: no diagnostics")
+  assertEqual(punctNameAt(incl, 1), "..=", "0u8..=9u8: ..=")
+  val member = lex("1.toString()")
+  assertEqualInt(diagCount(member), 0, "1.toString(): no diagnostics")
+  assertEqual(tokenKindAt(member, 0), "int", "1.toString(): int receiver")
+  assertEqual(punctNameAt(member, 1), ".", "1.toString(): dot")
+  assertEqual(identNameAt(member, 2), "toString", "1.toString(): method name")
+  val suffixed = lex("5u8.toInt()")
+  assertEqualInt(diagCount(suffixed), 0, "5u8.toInt(): no diagnostics")
+  assertEqual(suffixAt(suffixed, 0), "other", "5u8.toInt(): u8 suffix kept")
+  assertEqual(identNameAt(suffixed, 2), "toInt", "5u8.toInt(): method name")
+}
