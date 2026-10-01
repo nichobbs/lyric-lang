@@ -1,141 +1,254 @@
-# 35 — JS Ecosystem Integration via WASM Component Model (sketch)
+# 35 — WebAssembly Target and JS Ecosystem Integration (sketch)
 
-**Status:** Unbacked sketch. Design tensions are unresolved; see §11 for the
-open questions that must be settled before implementation begins.
-**Builds on:** `docs/14-native-stdlib-plan.md` (extern kernel pattern),
-`docs/21-nuget-linking.md` (dependency table and shim model),
-`docs/09-msil-emission.md` (target model), `docs/18-jvm-emission.md`
-(multi-target precedent).
-**Decision-log entry:** to follow once §11 tensions are resolved.
-**Goal:** Allow (A) JS-first teams to consume Lyric libraries as ordinary
-NPM modules and (B) Lyric programs to call NPM packages via declared
-host imports — without sacrificing Lyric's safety properties inside the
-WASM boundary.
+**Status:** Specced in D-progress-1028; sketch rewritten 2026-10-01 around the native (LLVM)
+backend. The original revision assumed a .NET AOT `wasi-wasm` route; that
+premise is withdrawn (§3). Open questions that still block implementation are
+in §13. Backed by D-progress-1028 (route, phase order (§12) and the resolved
+questions (§13.1)).
+**Builds on:** `native/plan/` (LLVM backend, D-N-001..D-N-017),
+`docs/14-native-stdlib-plan.md` (extern kernel pattern),
+`docs/63-build-profiles-and-debugger.md` (profile and shape axes),
+`docs/65-ui-library-sketch.md` §13.1 (client WASM host),
+`docs/67-native-graphics-plan.md` (WebGPU, `Float`/by-value record changes),
+`docs/21-nuget-linking.md` (dependency table and shim model).
+**Decision-log entry:** D-progress-1028.
+**Goal:** Compile Lyric to WebAssembly so that (A) Lyric programs and UI hosts
+run in the browser and in any WASI runtime, (B) JS-first teams consume Lyric
+libraries as ordinary NPM modules, and (C) Lyric programs call NPM packages
+via declared host imports, without sacrificing Lyric's safety properties inside
+the WASM boundary.
 
 ---
 
 ## 1. Motivation
 
-Lyric's primary deployment targets are .NET and JVM. For the language to
-expand its community it needs to be accessible to JS-first engineering
-teams in two directions:
+Three consumers drive this target:
 
-**Direction A — Lyric as a library for JS.** A team using Node, Deno, or
-Bun should be able to `npm install @myorg/mypackage` and call Lyric-authored
-code from TypeScript without knowing Lyric exists, without a .NET or JVM
-runtime on the server, and without giving up Lyric's safety properties inside
-the library.
+- **Browser UI.** `docs/65` §13.1 and `docs/67` both assume a client-side
+  host: the model-view-update loop runs in the browser and drives WebGPU and
+  the DOM through a thin import surface.
+- **Portable libraries.** A Lyric library should be usable from Node, Deno,
+  Bun and server-side WASI runtimes (wasmtime and similar) with typed bindings.
+- **JS ecosystem access.** Lyric programs on this target need to call NPM
+  packages in the same way .NET programs call NuGet packages.
 
-**Direction B — NPM packages from Lyric.** A Lyric author should be able to
-reach the NPM ecosystem — `node-fetch`, `@aws-sdk/client-s3`, database
-drivers — without waiting for a Lyric-native or .NET equivalent to exist.
-
-Transpilation to TypeScript was considered and rejected as the primary
-mechanism. The safety properties that differentiate Lyric — opaque type
-boundaries, range subtypes, verified contracts — dissolve in TS output
-where the type system is structural and reflection is pervasive. The TS
-output would market the Lyric safety story while silently not delivering it.
-
-The WASM Component Model (`wasm32-wasi` + WIT) is the correct abstraction:
-
-- WASM enforces the encapsulation boundary structurally. JS callers cannot
-  inspect a WASM module's internal memory; opaque types are genuinely opaque.
-- WIT (WebAssembly Interface Types) has a type vocabulary — `record`,
-  `variant`, `option<T>`, `result<T, E>`, `list<T>`, `future<T>` — that maps
-  cleanly to Lyric's `exposed record`, union types, `Option`, `Result`,
-  `List`, and `Async`.
-- The `jco` toolchain generates TS/JS bindings from WIT automatically.
-  JS consumers get a typed NPM module; Lyric's implementation is invisible.
-- .NET already has experimental WASI support
-  (`dotnet publish -r wasi-wasm`), giving the Foundation a plausible path
-  that does not require writing a new backend from scratch in Phase 1.
-
-This document is not a commitment to a WASM target in any specific phase. It
-is a pressure-test sketch to surface tensions before anyone starts coding.
+The WebAssembly Component Model (WIT) is the right interface abstraction for
+the second consumer; a plain core module with JS imports is the right
+abstraction for the first. The design therefore supports both **output
+shapes** (§4) from a single code generator.
 
 ---
 
 ## 2. Scope of this sketch
 
 In scope:
-- WIT generation from Lyric's `exposed` type surface (§4).
-- CLI and `lyric.toml` extensions for the WASM component target (§5).
-- The `[npm]` dependency table and NPM extern shim model (§6, §7).
-- The degraded-semantics policy for Lyric features without WASM equivalents
-  (§8).
-- Async lowering for the WASM target (§9).
-- Open questions that block implementation (§11).
+- The route to WASM: the native backend retargeted to `wasm32` (§3, §4, §5).
+- Native-backend prerequisites surfaced by the 2026-10 wasm32 audit (§6).
+- WIT generation from Lyric's `exposed` type surface (§7).
+- CLI and `lyric.toml` extensions (§8).
+- The `[npm]` dependency table and NPM extern shim model (§9).
+- The degraded-semantics policy (§10) and async lowering (§11).
+- Phases (§12) and open questions (§13).
 
-Out of scope:
-- Browser packaging, bundlers, or JS tree-shaking (different use case;
-  see §10).
-- A full WASM emitter replacing the .NET AOT WASM approach (could be a
-  later Phase 6 follow-on; §10).
-- Hot reload, REPL, or debugger integration in WASM.
-- WasmGC — the newer W3C proposal for GC-typed references in WASM. This
-  is the right long-term backend for a standalone WASM emitter, but the
-  tooling is immature. Defer to a separate sketch when WasmGC stabilises.
+Out of scope: see §14.
 
 ---
 
-## 3. Why not transpile to TypeScript?
+## 3. Route: native backend to wasm32, not .NET WASI, not TypeScript
 
-A TS transpilation target is simpler to build and has been requested. It
-is not the primary mechanism for two structural reasons:
+### 3.1 Why LLVM `wasm32`
+
+- **No runtime to ship.** The native backend uses ARC and has no garbage
+  collector. A .NET-based browser build carries the .NET runtime and GC
+  (several MB, as recorded in `docs/65` §13.1).
+- **One GPU story.** `docs/67` binds WebGPU through `webgpu.h`. The same
+  binding carries over to the browser with a JS-side implementation of the
+  imports; a .NET-wasm route would need a second binding.
+- **Mature toolchain.** LLVM's `wasm32` backend, `wasm-ld` and wasi-sdk are
+  stable. `dotnet publish -r wasi-wasm` is experimental, and it was never
+  verified that the self-hosted MSIL emitter's output survives the WASI
+  runtime pack.
+- **Async already lowers.** The native backend lowers `async` through LLVM
+  coroutines (`native/plan/06-async-design.md`), which is a plain state
+  machine on wasm32 and needs no host stack switching.
+- **Parity.** `wasm32` is a new target triple on an existing backend, not a
+  fourth backend. The MSIL/JVM/native parity rule is satisfied by the existing
+  native parity work plus the gaps tracked in §6.
+
+### 3.2 Why not transpile to TypeScript
+
+A TS transpilation target is simpler to build and has been requested. It is
+not the primary mechanism for two structural reasons:
 
 1. **Safety properties dissolve.** TypeScript's type system is structural.
    `opaque type UserId` becomes a branded string; any TS cast defeats it.
    `protected type` semantics have no JS equivalent. Range subtypes become
    runtime checks with no type-level enforcement. Contracts survive as
    runtime asserts but the `@proof_required` story is meaningless.
+2. **Semantic confusion.** Developers who meet Lyric-as-TS and then the
+   native or .NET version will find different semantics at the boundary.
 
-2. **Semantic confusion.** Developers who encounter Lyric-as-TS and then
-   encounter the .NET version will find different semantics at the boundary.
-   That undermines trust in the language and confuses the community story.
+A TS target could be justified as an explicitly degraded "scripting/tooling"
+output; that is a separate, narrower use case for a distinct sketch.
 
-A TS transpilation target could be justified as an explicitly-degraded
-"scripting/tooling" output (e.g., building Lyric-authored CLI tools that
-ship as JS without a WASM runtime). That is a separate, narrower use case
-and should be tracked as a distinct sketch if appetite exists.
+### 3.3 .NET WASI is not pursued
+
+The `dotnet publish -r wasi-wasm` route from the earlier revision is dropped:
+size, an experimental runtime pack, an unverified interaction with the
+self-hosted MSIL emitter, and no WebGPU path. It may be revisited only if the
+native route proves unworkable.
 
 ---
 
-## 4. WIT generation from Lyric types
+## 4. Targets and output shapes
 
-WIT is the interface language for the WASM Component Model. `lyric build
---target wasm-component` generates a `.wit` file alongside the `.wasm`
-binary. The WIT surface is derived from the package's `pub` declarations
-whose types are entirely in the `exposed` tier.
+The triple selects the platform; the **shape** selects the artifact. Both are
+independent of the build profile, following `docs/63`.
 
-### 4.1 Type mapping
+| Triple | Use |
+|---|---|
+| `wasm32-wasi` | WASI runtimes (wasmtime, node `node:wasi`), component shape |
+| `wasm32-unknown-unknown` | Browser core module with explicit JS imports |
+
+| Shape | Artifact | Interface | Typical consumer |
+|---|---|---|---|
+| `module` | Core `.wasm` plus generated JS glue | `extern` imports and exports (DOM, WebGPU, timers, `abort`) | Browser UI, `lyric-ui` client host |
+| `component` | WASI Component `.wasm` plus `.wit` | Typed WIT exports/imports via the canonical ABI | Node/Deno/Bun via `jco`, wasmtime, other languages |
+
+Both shapes share all code generation. They differ only in boundary code:
+the `module` shape exports plain functions and imports host functions by
+name; the `component` shape adds the canonical-ABI lift/lower wrappers,
+`cabi_realloc`, and componentisation (`wasm-tools component new`).
+
+Delivery order is `module` first, then `component` (§12). `module` unblocks
+`docs/65` U7 and the browser half of `docs/67`; `component` follows once the
+canonical-ABI layer exists.
+
+---
+
+## 5. Toolchain and runtime
+
+### 5.1 Toolchain
+
+- **wasi-sdk**, pinned in CI in the same way clang-18 is pinned today. It
+  provides clang, `wasm-ld`, `llvm-ar` and wasi-libc. A hand-built sysroot is
+  not used.
+- `lyric_rt` is built per triple (`lyric_rt-wasm32-wasi.a`); the Makefile
+  gains cross-compile variables (`CC`, `AR`, `--target`, `--sysroot`), no
+  `-fPIC`, no `-ldl`/`-lpthread`, and `-Werror` becomes conditional on the
+  stubbed sources. `findLyricRtArchive` becomes triple-aware.
+- The native bridge's link step stops hard-coding `-lpthread -ldl` and a
+  host `clang` invocation; it selects a link recipe per triple (`wasm-ld`
+  flags, exports, stack size, `.wasm` suffix).
+- CPU features are set explicitly (`+bulk-memory`, `+nontrapping-fptoint`,
+  and later `+atomics` for threads).
+
+### 5.2 Single-threaded v1
+
+The v1 profile is **single-threaded** (Q-JS-001 resolved, §13.1):
+
+- `lyric_mutex_*` and `lyric_sem_*` become re-entrancy counters in a wasm
+  runtime variant of `lyric_posix.c`. `lyric_mutex_size()` still answers so
+  codegen's size query is unchanged.
+- `scope`/`spawn` run cooperatively on the coroutine scheduler. A blocking
+  acquire on a held lock panics, since no other thread could release it.
+- A `wasm32-wasi-threads` profile (shared memory, `+atomics`) is a later
+  extension.
+
+### 5.3 Capability matrix
+
+| Area | `wasm32-wasi` | Browser `module` |
+|---|---|---|
+| Console, strings, collections, ARC, weak refs, time, uuid | works | works (console, `abort` via imports) |
+| Files, directories, env, args | works with preopened dirs and `__wasi_args_get`; `/proc/self/exe` path replaced | unavailable; clean error |
+| Async scheduler | works; sleeps through `clock_nanosleep` | timers through a host import, never a blocking sleep |
+| Process spawn (`lyric_process.c`) | unavailable; stubbed to a clean spawn error | unavailable |
+| Sockets, TLS, HTTP server | unavailable; stubbed | unavailable; HTTP client later through a `fetch` host import |
+| Threads | single-threaded stub | single-threaded stub |
+
+Unavailable capabilities fail with a defined error value, never an undefined
+symbol at link time: the unavailable kernels (`process_*_host.l`,
+`tcp_host.l`, `tls_host.l`, `http_server.l`) get wasm twins under
+`_kernel_native/` following the existing loader-based selection (D-N-014).
+
+### 5.4 Testing
+
+- `lyric_rt` C unit tests run the portable subset under wasmtime or node with
+  `#ifndef __wasi__` guards around the fork, pthread, process and TLS tests.
+- The `llvm_*_self_test.l` suites gain a wasm lane that compiles with the
+  `wasm32-wasi` triple and runs under wasmtime. ASan does not apply; the ARC
+  leak/UAF checks rely on the runtime's own live-object counters instead.
+- `lyric test --target native --triple wasm32-wasi` is the user-facing entry
+  (Q-JS-005, §13.1).
+
+---
+
+## 6. Native-backend prerequisites (wasm32 audit, 2026-10)
+
+The audit found a toolchain, runtime and ABI-layout job, not a codegen
+rewrite. Triple plumbing (`--triple`, `[native] triple`, `NPackage.triple`)
+exists end to end, struct access uses field-index GEPs, and emitted IR has no
+varargs, exceptions, tail calls or atomics. The findings:
+
+| # | Area | Finding | Size |
+|---|---|---|---|
+| 1 | ARC header | The C header is `{rc, weak, dtor}` while codegen models `{i32, ptr}` and relies on `weak` hiding in LP64 padding (`lyric_rt.h`, `llvm_codegen.l`). On wasm32 the header is 12 bytes and offsets diverge; the `2*sizeof(void*)` assert fails. Fix: an explicit three-field header on all targets (LP64 stays 16 bytes). | blocker |
+| 2 | Size tables | `sizeOfN`/`alignOfN`/`structSize`/`recAllocSize` hard-code 8-byte pointers. Replace with target-derived sizes (`getelementptr null, 1`). | blocker |
+| 3 | Coroutines | Audit flagged `llvm.coro.size.i64`; on inspection the width is only the intrinsic's result type and `lyric_alloc` takes `i64` on every target, so no change is needed (W0). | resolved |
+| 4 | Pointer-as-`Long` | Of the 107 `_kernel_native` externs mentioning `Long` or `NativePtr`, the wasm-relevant kernels are already width-stable. The `Long`-as-pointer-handle idiom is confined to the TCP/TLS, HTTP server and piped-process kernels, which are unavailable on WASI and get wasm twins in W2. `libc.l`'s `size_t`/`ssize_t`/variadic externs move to fixed-width `lyric-rt` wrappers (W0). | W0 |
+| 5 | Link step | A single hard-coded host `clang ... -lpthread -ldl` invocation. | blocker |
+| 6 | Runtime archive | Single-triple `lyric_rt.a`; no CPU-feature flags. | blocker |
+| 7 | `fptosi` | Non-saturating conversion traps on NaN/out-of-range on wasm. Use the saturating form or `+nontrapping-fptoint`. | major |
+| 8 | Datalayout | `datalayoutForTriple` returns "" for non-x86/ARM triples. | major |
+| 9 | Threads, process, TLS, sockets | See §5.2 and §5.3. | major |
+| 10 | Async scheduler | `nanosleep` blocks; the browser needs a timer import. | major |
+| 11 | Misc | `/proc/self/exe`, `getrandom` guard, `Float` width (below). | minor |
+
+**Typed-pointer syntax is not a risk.** The emitter renders `i8*`-style
+types and builds with clang-18 in CI today; wasm32 uses the same clang.
+
+**`Float` width.** `Float` currently lowers to `double` on every backend.
+The WIT `f32` mapping (§7) and WebGPU interop (`docs/67`) require a true
+32-bit `Float`. That work is `docs/67` G1 (G0, the decision entry, is done as D155) and is owned by a
+separate work stream; this plan depends on it landing before the `component`
+shape's type mapping is final (§12, W1).
+
+---
+
+## 7. WIT generation from Lyric types
+
+WIT is the interface language for the Component Model. In the `component`
+shape, `lyric build` generates a `.wit` file alongside the `.wasm` binary.
+The WIT surface is derived from the package's `pub` declarations whose types
+are entirely in the `exposed` tier.
+
+### 7.1 Type mapping
 
 | Lyric type | WIT type | Notes |
 |---|---|---|
 | `Bool` | `bool` | |
 | `Int` | `s32` | |
 | `Long` | `s64` | |
-| `Float` | `f32` | |
+| `Float` | `f32` | requires the 32-bit `Float` change (§6) |
 | `Double` | `f64` | |
-| `String` | `string` | |
-| `Unit` | (no return type) | WIT functions with no output |
-| `Option[T]` | `option<T>` | direct |
-| `Result[T, E]` | `result<T, E>` | direct |
+| `String` | `string` | UTF-8 in the canonical ABI |
+| `Unit` | (no return type) | |
+| `Option[T]` | `option<T>` | |
+| `Result[T, E]` | `result<T, E>` | |
 | `List[T]` | `list<T>` | |
 | `exposed record Foo` | `record foo { ... }` | fields mapped recursively |
-| Union type (sum) | `variant` | each constructor becomes a case |
-| `Async[T]` | `future<T>` | see §9 |
-| `opaque type T` | — | not exported; only the `@projectable` exposed twin appears |
-| `protected type T` | — | not exported; see §8.1 |
-| Range subtype (e.g., `Int range 0..=150`) | underlying type (`s32`) with contract guard | see §8.2 |
-| Generic `T` | `T` (WIT type parameter) | only on WIT-exportable functions |
+| Union type | `variant` | each constructor becomes a case |
+| `Async[T]` | `future<T>` | see §11 |
+| `opaque type T` | not exported | only the `@projectable` exposed twin appears |
+| `protected type T` | not exported | see §10.1 |
+| Range subtype | underlying type with contract guard | see §10.2 |
+| Generic `T` | not directly exportable | only instantiated forms are exported |
 
-Types that do not appear in the table (function types, first-class module
-references, `inout` parameters in complex positions) are not WIT-exportable.
-The compiler emits a diagnostic for each `pub func` whose signature cannot
-be lowered to WIT and excludes that function from the generated `.wit` file.
-This is informational (`W0040`), not an error.
+Types not in the table (function types, first-class module references,
+`inout` parameters in complex positions) are not WIT-exportable. The compiler
+emits an informational diagnostic (`W0040`) per excluded `pub func`.
 
-### 4.2 Example
+### 7.2 Example
 
 ```lyric
 // billing.l
@@ -150,7 +263,7 @@ pub exposed record Invoice {
 pub func create(in customer_id: String, in cents: Long): Result[Invoice, String] = ...
 ```
 
-Generates:
+generates
 
 ```wit
 package lyric:billing@1.0.0;
@@ -171,106 +284,109 @@ world billing-world {
 }
 ```
 
-WIT naming follows kebab-case per the Component Model convention.
-Lyric's snake_case identifiers map to kebab-case automatically.
-PascalCase type names map to kebab-case (`InvoiceId` → `invoice-id`).
+Lyric snake_case and PascalCase identifiers map to kebab-case automatically.
 
-### 4.3 Generated JS bindings
+### 7.3 Canonical ABI layer
 
-Running `jco transpile billing.wasm --wit billing.wit` produces a TypeScript
-module:
+The native backend emits ordinary C-ABI functions. For the `component` shape
+the compiler additionally emits, per exported function, a lift/lower wrapper:
+strings and lists are copied between linear memory and the caller through
+`cabi_realloc`, records are flattened or spilled according to the canonical
+ABI's rules, and `variant`/`option`/`result` use the discriminant-plus-payload
+layout. Ownership at the boundary is by copy; ARC objects never cross it
+(Lyric `exposed` records are value-copied into the canonical layout).
+
+### 7.4 Generated JS bindings
+
+`jco transpile billing.wasm` produces a TypeScript module:
 
 ```typescript
 export interface Invoice { id: bigint, amountCents: bigint }
 export function create(customerId: string, cents: bigint): Invoice | string;
 ```
 
-JS consumers see idiomatic TypeScript. The Lyric + WASM implementation is
-invisible to them.
-
 ---
 
-## 5. CLI and `lyric.toml` extensions
+## 8. CLI and `lyric.toml` extensions
 
-### 5.1 CLI
+### 8.1 CLI
 
 ```
-lyric build --target wasm-component [--wit-out <path>] [--js-bindings]
+lyric build --target native --triple wasm32-wasi --shape component [--wit-out <path>] [--js-bindings]
+lyric build --target native --triple wasm32-unknown-unknown --shape module
 ```
+
+`--shape module|component` are additional, triple-gated values on the
+`docs/63` shape axis. Today `--target native` fixes the shape at `aot`
+(`docs/63` "Settled"); for `wasm32` triples `module`/`component` replace that
+rule, and `portable`/`standalone`/`aot` become a diagnostic there. Convenience aliases `--target wasm` (module) and
+`--target wasm-component` (component) are sugar over the above.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--target wasm-component` | — | Emit a WASM component + WIT instead of a .NET DLL |
-| `--wit-out <path>` | `target/wasm/<pkg>.wit` | Where to write the generated WIT file |
-| `--js-bindings` | off | Also invoke `jco transpile` to produce TS/JS bindings alongside the `.wasm` |
+| `--wit-out <path>` | `target/wasm/<pkg>.wit` | Where to write the generated WIT file (component shape) |
+| `--js-bindings` | off | Also run `jco transpile` (component) or emit the JS glue module (module) |
 
-`lyric publish --target wasm-component` bundles the `.wasm` + WIT + generated
-bindings as an NPM-compatible package tarball, analogous to how `lyric
-publish` produces a NuGet-style DLL bundle.
+`lyric publish` for a wasm shape bundles the `.wasm`, WIT and generated
+bindings as an NPM-compatible tarball.
 
-### 5.2 `lyric.toml` extensions
+### 8.2 `lyric.toml`
 
 ```toml
-[wasm-component]
-world   = "billing-world"        # WIT world name; defaults to "<package-name>-world"
-exports = ["billing", "users"]   # which interface sections to include; default: all eligible pub interfaces
+[wasm]
+shape   = "component"            # "module" or "component"
+world   = "billing-world"        # component shape; defaults to "<package-name>-world"
+exports = ["billing", "users"]   # interfaces to export; default: all eligible pub interfaces
+stack   = "1MiB"                 # linear-memory stack size (wasm-ld -z stack-size)
 
 [npm]
-"node-fetch"            = "^3"
-"@aws-sdk/client-s3"   = "^3.600"
+"node-fetch"           = "^3"
+"@aws-sdk/client-s3"  = "^3.600"
 ```
 
-| Field | Default | Meaning |
-|---|---|---|
-| `[wasm-component]` | empty | Present only if the project targets WASM component output |
-| `world` | `<package>-world` | WIT world identifier |
-| `exports` | all eligible | Subset of interfaces to export if not everything should be public |
-| `[npm]` | empty | NPM package dependencies for Direction B (§6) |
+`[wasm]` follows the `[native]` table's precedence rules (CLI over manifest).
 
 ---
 
-## 6. Direction B: NPM dependency table (`[npm]`)
+## 9. NPM dependencies (`[npm]`) and extern shims
 
-`[npm]` in `lyric.toml` declares NPM package dependencies, analogous to
-`[nuget]` for .NET packages. The model parallels §§3–4 of
-`docs/21-nuget-linking.md` with adaptations for the JS toolchain.
+### 9.1 `[npm]` table
+
+`[npm]` declares NPM package dependencies, analogous to `[nuget]`. The model
+parallels `docs/21-nuget-linking.md` §§3-4.
 
 ```toml
 [npm]
 "node-fetch"          = "^3"
-"@aws-sdk/client-s3" = "^3.600"
 "zod"                 = "^3.22"
 
 [npm.options]
 registry = "https://registry.npmjs.org/"   # default
 ```
 
-`lyric restore` invokes `npm install` (or the user-configured package
-manager: `pnpm`, `yarn`) into a `target/npm/node_modules/` directory and
-generates extern shim files (§7) for each declared package.
+`lyric restore` invokes `npm install` (or the configured `pnpm`/`yarn`) into
+`target/npm/node_modules/` and generates extern shim files for each declared
+package.
 
----
+### 9.2 Boundary lowering
 
-## 7. NPM extern shim files
+NPM calls cross the same boundary in both shapes, lowered differently:
 
-For each `[npm]` entry, `lyric restore` generates a
-`_extern_npm/<pkg>.l` file declaring the NPM package's callable surface
-in Lyric types. These files are:
+- `module` shape: each shim symbol becomes a named wasm import
+  (`env`/package-qualified), satisfied by the generated JS glue.
+- `component` shape: each shim becomes a WIT `import` in the package's world;
+  the host (via `jco`) satisfies it with the JS package.
 
-- **Committed to the source tree** — reviewers see the imported surface in
-  diffs when a dep is added or upgraded. Same policy as NuGet shims.
-- **Marked `@axiom`** — NPM packages are unverified host code. The
-  `@axiom` annotation places them in the same trust tier as
-  `_kernel/*.l` files. Contract reasoning takes their declared behaviour
-  on faith.
-- **Manually authored in v1** — unlike NuGet shims (which can be
-  auto-generated by reflecting on .NET DLLs), NPM packages have no
-  machine-readable type signatures beyond TypeScript `.d.ts` files.
-  In v1, maintainers author extern declarations by reading the `.d.ts`.
-  A future `lyric restore --generate-npm-shims` could automate this
-  by translating `.d.ts` to Lyric extern declarations.
+### 9.3 Shim files
 
-### 7.1 Example shim
+For each `[npm]` entry `lyric restore` generates `_extern_npm/<pkg>.l`:
+
+- **Committed to the source tree**, so reviewers see the imported surface in
+  diffs. Same policy as NuGet shims.
+- **Marked `@axiom`**, placing them in the same trust tier as `_kernel/*.l`.
+- **Manually authored in v1.** NPM packages have no machine-readable type
+  signatures beyond `.d.ts`; a future `lyric restore --generate-npm-shims`
+  could translate `.d.ts` to Lyric extern declarations.
 
 ```lyric
 @axiom("from npm node-fetch ^3")
@@ -289,224 +405,163 @@ pub exposed record FetchError {
 }
 ```
 
-Consumers write:
+NPM package names map to Lyric package identifiers by stripping `@`,
+replacing `/` with `.`, and PascalCasing each `-`/`_`-separated segment
+(`node-fetch` to `NodeFetch`, `@aws-sdk/client-s3` to `AwsSdk.ClientS3`).
 
-```lyric
-import NodeFetch.{fetch, Response}
-
-async func loadUser(in id: String): Result[Response, FetchError] =
-    fetch("https://api.example.com/users/" + id) await
-```
-
-### 7.2 Naming convention
-
-NPM package names map to Lyric package identifiers as follows:
-
-| NPM name | Lyric package name |
-|---|---|
-| `node-fetch` | `NodeFetch` |
-| `zod` | `Zod` |
-| `@aws-sdk/client-s3` | `AwsSdk.ClientS3` |
-| `@types/node` | `Types.Node` |
-
-Rules: strip `@`; replace `/` with `.`; convert each segment to PascalCase
-(split on `-`, `_`). The mapping is deterministic and documented in each
-shim's header comment.
-
-### 7.3 Diagnostic codes
+### 9.4 Diagnostic codes
 
 | Code | Meaning |
 |---|---|
 | `B0040` | NPM package failed to install (`npm install` non-zero exit) |
-| `B0041` | NPM package declared in `[npm]` but no shim file found in `_extern_npm/`; run `lyric restore` |
-| `B0042` | Shim file references a symbol not present in the installed package version |
-| `B0043` | `@axiom`-annotated shim was hand-edited to remove the annotation; restore refused |
+| `B0041` | Package declared in `[npm]` but no shim in `_extern_npm/`; run `lyric restore` |
+| `B0042` | Shim references a symbol not present in the installed package version |
+| `B0043` | `@axiom` shim was hand-edited to remove the annotation; restore refused |
 
 ---
 
-## 8. Degraded-semantics policy
+## 10. Degraded-semantics policy
 
-Several Lyric features have no direct WASM or JS equivalent. This section
-defines the policy for each. The policy options are:
+Each Lyric feature without a direct WASM equivalent is either **(A)** a compile
+error or **(B)** a documented runtime approximation. Silent stripping is never
+correct.
 
-- **(A) Compile error** — reject the construct on the WASM target explicitly.
-- **(B) Runtime approximation** — emit a best-effort equivalent with a
-  documented caveat.
-- **(C) Silent strip** — emit nothing; the feature disappears silently.
+### 10.1 `protected type`
 
-Silent stripping (C) is never correct. Every case is either a compile error
-or a documented approximation.
+**Policy:** (A) at the export surface, (B) internally.
 
-### 8.1 `protected type`
-
-**Policy: (A) Compile error.**
-
-`protected type` is Lyric's structural mutual-exclusion primitive. Its
-semantics depend on OS threads or async tasks competing for shared state.
-WASM's default execution model is single-threaded (one linear memory, one
-call stack); WASM threads via `SharedArrayBuffer` exist but are a separate,
-opt-in capability with significant restrictions.
-
-Exporting a `protected type` as part of a WASM component's interface is
-rejected with a clear error:
+At the export surface it is rejected:
 
 ```
-E0050: `protected type Ledger` cannot appear in a wasm-component export
-       surface. Protected types require OS thread semantics unavailable
-       in single-threaded WASM. Consider exposing a non-protected facade
-       record with explicit locking at the host boundary.
+E0050: `protected type Ledger` cannot appear in a wasm export surface.
+       Expose a non-protected facade record instead.
 ```
 
-Internal use of `protected type` within a WASM module (not at the export
-surface) is an open question (Q-JS-001, §11).
+Internally it is allowed in the single-threaded v1 profile (§5.2): mutual
+exclusion is trivially satisfied by the single thread and the lock is a
+nesting-depth counter (a nested acquire by the current holder increments it;
+it exists for correct release bookkeeping, not to permit concurrent access). A blocking acquire on an already-held lock panics. This
+matches the entry-barrier semantics when no other thread can release.
 
-### 8.2 Range subtypes
+### 10.2 Range subtypes
 
-**Policy: (B) Runtime approximation, documented.**
+**Policy:** (B). They map to their underlying WIT primitive. The range
+invariant is checked at the export boundary: entering with an out-of-range
+value triggers a contract failure (as a `requires:` violation in
+`@runtime_checked` mode). Generated TS bindings carry a JSDoc range note.
 
-Range subtypes (`type Age = Int range 0..=150`) have no WIT type-level
-representation. They map to their underlying WIT primitive (`s32`). The
-range invariant is checked at the WASM export boundary: entering the
-component with a value outside the declared range triggers a contract
-failure (same as a `requires:` violation in `@runtime_checked` mode).
+### 10.3 `@proof_required`
 
-The WIT-generated TS binding adds a JSDoc comment noting the valid range.
-No type-level enforcement exists on the JS side.
+**Policy:** (B), silently downgraded to `@runtime_checked` for wasm builds
+unless `[wasm] strict = true` (Q-JS-003 resolved to opt-in strict; see §13.1),
+which makes it a compile error. SMT verification is a compile-time property
+and does not change the emitted binary.
 
-### 8.3 `@proof_required`
+### 10.4 Opaque types and the no-reflection guarantee
 
-**Policy: (B) Runtime approximation — silently downgraded to
-`@runtime_checked` for WASM target builds.**
+**Preserved.** Opaque types do not appear in the WIT surface; JS callers see
+only `@projectable` exposed twins. The sandbox enforces that structurally.
+Boundary records cross into JS as ordinary inspectable objects, which is
+documented and expected.
 
-SMT verification is a compile-time property of the .NET or JVM build. It
-does not affect the emitted WASM binary. On the WASM target, all modules
-are treated as `@runtime_checked`; contracts are emitted as runtime asserts.
+### 10.5 Unavailable platform capabilities
 
-A `--strict` flag (Q-JS-003, §11) could optionally make this a compile
-error if the team wants a hard guarantee that `@proof_required` code never
-ships to an unverified target.
-
-### 8.4 Opaque types at the WASM boundary
-
-**Preserved.** Opaque types do not appear in the WIT surface. JS callers
-interact only with their `@projectable` exposed twins. The internal
-representation is inaccessible to JS — the WASM sandbox enforces this
-structurally, not by convention. This is the primary advantage of WASM over
-transpile-to-TS.
-
-### 8.5 No-reflection guarantee
-
-**Preserved** for the Lyric implementation inside the WASM sandbox. JS
-callers outside the sandbox are subject to JS semantics (they can reflect
-on JS values). The WIT boundary types (records, variants) cross into JS as
-plain JS objects and are fully inspectable by JS code. This is documented
-and expected: the boundary types are `exposed` record twins, not opaque
-types.
+Process spawn, sockets, TLS and the HTTP server are unavailable on wasm
+(§5.3). They return a defined error value rather than failing to link.
 
 ---
 
-## 9. Async lowering for the WASM target
+## 11. Async lowering
 
-Today the MSIL and JVM targets share a real `IAsyncStateMachine`-style
-lowering (D-progress-033..076 chain) — the D035-era blocking shim
-(`.GetAwaiter().GetResult()`) has been retired.
+The native backend lowers `async func` through LLVM coroutines onto the
+runtime's single-threaded ready-queue scheduler. On wasm32 that is unchanged
+except at the host edge:
 
-On the WASM target, `async func` lowers differently because blocking
-the host event loop is forbidden or harmful:
+- **`module` shape:** the scheduler is driven by the host event loop. Sleeps
+  and timers become host timer imports; an exported `lyric_poll`/callback
+  re-enters the scheduler when a host promise resolves. Blocking is never
+  used.
+- **`component` shape:** `Async[T]` maps to WIT `future<T>` once the
+  Component Model async ABI is stable (Q-JS-006). Until then `async func`
+  exports use a callback-style or synchronous-subset lowering with a warning.
 
-- Lyric `Async[T]` → WIT `future<T>`.
-- `jco` generates a JS async function returning `Promise<T>` from the
-  WIT `future`.
-- Internal `await` inside Lyric WASM code → WASM async lift/lower
-  primitives per the Component Model async proposal.
-
-The MSIL/JVM SM lowering is not directly reusable for the WASM
-target's async ABI — WASM async needs its own backend pass that maps
-Lyric's `Async[T]` to `future<T>` / `stream<T>` and emits the
-Component Model async lift/lower intrinsics.  Designed alongside the
-WASM component emitter when the target lands.
+No separate backend pass is needed (the earlier revision's claim that the
+MSIL/JVM state-machine lowering needed an unrelated WASM pass no longer
+applies, because the native lowering is coroutine-based).
 
 ---
 
-## 10. Out of scope
+## 12. Phases
 
-- **Browser packaging.** `lyric build --target wasm-component` emits a
-  WASM component; bundling for the browser (webpack, Vite, Rollup) is the
-  JS developer's concern. We provide the `.wasm` + WIT + optional TS
-  bindings; we do not own the bundler integration.
-- **WasmGC backend.** WasmGC (W3C proposal for GC-typed references in WASM)
-  is the correct long-term path for a standalone WASM emitter that does not
-  depend on .NET AOT WASM. It requires a new backend. Defer to a separate
-  sketch when the WasmGC toolchain matures (currently landing in V8/SpiderMonkey
-  but tooling support for .NET is minimal).
-- **TS transpilation target.** Addressed in §3. Not the primary mechanism.
-  If a TS transpilation use case is compelling for scripting/tooling, it
-  deserves its own sketch with an explicit degraded-semantics section.
-- **Deno and Bun specifics.** Both support WASM components. Platform-specific
-  packaging (Deno modules, Bun-native modules) is deferred; the WASM
-  component artefact works on all three today.
-- **NPM shim auto-generation from `.d.ts`.** Manually authored in v1. A
-  `lyric restore --generate-npm-shims` that translates TypeScript `.d.ts`
-  files to Lyric extern declarations is a valuable v2 investment; the
-  mapping is nontrivial (TS's structural types, `any`, overloads).
-- **Transitive NPM dependencies.** NPM transitive deps are installed (via
-  `npm install`) but do not receive auto-generated shims. Users declare
-  only what their Lyric code directly imports, matching the NuGet policy
-  in `docs/21-nuget-linking.md` §11.
+| Phase | Scope | Notes |
+|---|---|---|
+| W0 | Layout hardening, target-neutral: three-field ARC header, target-derived size tables, width-aware coroutine size intrinsic, `Long`-as-pointer audit of `_kernel_native` externs | Separate PR ahead of any wasm work; benefits existing targets; testable with the current ASan suites |
+| W1 | 32-bit `Float` | Owned by a separate work stream (`docs/67` G1); this plan blocks the `component` type mapping on it |
+| W2 | `wasm32-wasi` build: wasi-sdk pinned, per-triple `lyric_rt`, `wasm32` datalayout, link recipe, single-threaded runtime, unavailable-kernel twins, wasmtime test lane | Shape-agnostic bring-up: a plain core module that runs under WASI with no JS glue or WIT. It is the shared codegen base that W3 (`module`) and W4 (`component`) build their boundary code on, so it is not itself either published shape |
+| W3 | Browser `module` shape: JS imports (console, timers, `abort`), glue generator, `docs/65` U7 hook | |
+| W4 | `component` shape: canonical ABI wrappers, WIT generation, `jco` integration, publish bundle | |
+| W5 | `[npm]` table, `lyric restore`, extern shims, `B004x` diagnostics | |
+
+Each phase also updates `docs/01`, the book (toolchain table and CLI
+appendix), `docs/10-bootstrap-progress.md`, and adds a `docs/progress/`
+entry, per repository policy.
 
 ---
 
-## 11. Open questions (for the decision log)
+## 13. Open questions
 
-These must be resolved before implementation begins. Each will become a
-decision-log entry.
+### 13.1 Resolved in review (2026-10-01)
 
-**Q-JS-001 — `protected type` internal use in WASM.**
-The §8.1 policy rejects `protected type` at the WASM export surface.
-Should `protected type` also be rejected for *internal* use within a WASM
-component? WASM threads (shared memory + Atomics) exist but require
-`crossOriginIsolation` headers and opt-in; relying on them by default is
-hostile to the common single-threaded WASM deployment. Options: (a) reject
-entirely on WASM target, (b) allow with a warning if WASM thread support is
-detected, (c) allow but emit a degraded spinlock approximation.
-Recommendation pending discussion.
+- **Route.** Native backend to `wasm32`; the .NET WASI route is dropped (§3).
+- **Q-JS-001** (`protected type` internal use): allowed in the
+  single-threaded v1 profile as a re-entrancy-counter lock; export-surface use
+  stays an error (§5.2, §10.1).
+- **Q-JS-003** (`@proof_required`): downgraded by default, with
+  `[wasm] strict = true` making it a compile error (§10.3).
+- **Q-JS-005** (`lyric test`): tests run on the wasm artifact under wasmtime
+  or node via the native test lane (§5.4); a native-host run remains the
+  default for ordinary development.
+- **Ordering with `docs/67` G1:** wasm32 waits for, or includes, the 32-bit
+  `Float` change (W1).
 
-**Q-JS-002 — NPM shim ownership: stdlib tree vs. community registry.**
-Should the curated NPM shim files (e.g., for `node-fetch`, major AWS SDK
-packages) live in `stdlib/npm/` within this repo, in a separate
-community-maintained repo (like DefinitelyTyped), or be generated entirely
-by `lyric restore` from `.d.ts`? The stdlib-tree model is the simplest to
-start; it becomes a maintenance burden as the package count grows. A
-community-registry model scales better but requires infrastructure.
-Recommendation: start in `stdlib/npm/` for a small curated set; design
-the registry model before adding the 20th package.
+### 13.2 Still open
 
-**Q-JS-003 — Hard error for `@proof_required` on WASM target.**
-§8.3 silently downgrades `@proof_required` to `@runtime_checked` on the
-WASM target. Should a `--strict` flag (or a `[wasm-component] strict =
-true` config) make this a compile error? Teams that rely on formal
-verification may want a guarantee that verified code never ships to an
-unverified target. Cost: more friction for the common case; benefit:
-clear audit trail. Recommendation pending discussion.
+**Q-JS-002 — NPM shim ownership.** Curated shims in-tree (`stdlib/npm/`),
+in a community registry, or generated from `.d.ts`. Start in-tree for a small
+set; decide the registry model before the 20th package.
 
-**Q-JS-004 — Scoped NPM package naming with collisions.**
-The naming convention in §7.2 maps `@aws-sdk/client-s3` →
-`AwsSdk.ClientS3`. If two scoped packages from the same org happen to
-produce the same Lyric name, one import wins and the other is silently
-shadowed. Is a suffix-disambiguator the right solution? Should collisions
-be a hard `lyric restore` error?
+**Q-JS-004 — Scoped NPM name collisions.** `@a/b-c` and `@a/b` plus `-c` can
+map to the same Lyric name. Suffix disambiguator, or hard `lyric restore`
+error?
 
-**Q-JS-005 — `lyric test` on WASM component targets.**
-How does `lyric test` work when the build target is `wasm-component`?
-Options: (a) run the test suite on the .NET target and only emit WASM for
-`lyric build`, (b) run tests inside a WASM runtime (wasmtime, node) using
-the WASM binary, (c) both with an opt-in flag. Option (a) is the simplest
-and avoids the problem that WASM-target tests may observe different
-degraded-semantics behaviour.
+**Q-JS-006 — WIT async stability.** Gate the `component` async export on the
+Component Model async ABI stabilising, or ship the callback/synchronous
+subset first with a warning?
 
-**Q-JS-006 — WIT async proposal stability.**
-The Component Model's async proposal (`future<T>`, `stream<T>`) is not yet
-stable as of this writing. Should the Lyric WASM target gate on WIT async
-stabilising, or use the synchronous subset only and emit a warning for
-`async func` exports? Gating is safer; the synchronous subset is usable
-now but forces blocking designs on the JS consumer.
+**Q-JS-007 — Linear-memory limits.** Default stack size and maximum heap for
+the `module` shape; whether `lyric_alloc` failure traps or returns an error.
+
+**Q-JS-008 — Browser I/O.** Whether `Std.Http` gets a `fetch`-backed browser
+twin kernel in W3 or later, and how `Std.File` behaves with no preopened
+filesystem.
+
+**Q-JS-009 — Threads profile.** Whether `wasm32-wasi-threads` (shared memory,
+`+atomics`, cross-origin isolation) is ever supported, and what it would do to
+the single-threaded `protected type` semantics.
+
+---
+
+## 14. Out of scope
+
+- **Browser packaging.** Bundling (webpack, Vite, Rollup) is the JS
+  developer's concern; we provide the `.wasm`, glue, WIT and optional TS
+  bindings.
+- **WasmGC backend.** A standalone WasmGC emitter would be a new backend and
+  is deferred until the toolchain matures.
+- **TypeScript transpilation target.** See §3.2.
+- **.NET WASI.** See §3.3.
+- **Deno and Bun specifics.** The component artefact works on both; platform
+  packaging is deferred.
+- **NPM shim auto-generation from `.d.ts`.** Manual in v1.
+- **Transitive NPM dependencies.** Installed but not shimmed, matching the
+  NuGet policy in `docs/21-nuget-linking.md` §11.
