@@ -496,7 +496,7 @@ applies, because the native lowering is coroutine-based).
 
 | Phase | Scope | Notes |
 |---|---|---|
-| W0 | Layout hardening, target-neutral: three-field ARC header, target-derived size tables, width-aware coroutine size intrinsic, `Long`-as-pointer audit of `_kernel_native` externs | Separate PR ahead of any wasm work; benefits existing targets; testable with the current ASan suites |
+| W0 | **Shipped (#7960).** Layout hardening, target-neutral: three-field ARC header, allocation sizes from LLVM (`NSizeOf`) instead of 64-bit size tables, pinned wasm32 datalayout, fixed-width `lyric-rt` wrappers for the `size_t`/variadic libc externs. The coroutine size intrinsic needed no change, and the `Long`-as-pointer audit found only `libc.l` exposed on the wasm-relevant kernels | Landed ahead of any wasm work; benefits existing targets; verified by every native self-test suite plus a wasm32 lowering smoke test that compiles with clang's WebAssembly backend |
 | W1 | 32-bit `Float` | Owned by a separate work stream (`docs/67` G1); this plan blocks the `component` type mapping on it |
 | W2 | `wasm32-wasi` build: wasi-sdk pinned, per-triple `lyric_rt`, `wasm32` datalayout, link recipe, single-threaded runtime, unavailable-kernel twins, wasmtime test lane | Shape-agnostic bring-up: a plain core module that runs under WASI with no JS glue or WIT. It is the shared codegen base that W3 (`module`) and W4 (`component`) build their boundary code on, so it is not itself either published shape |
 | W3 | Browser `module` shape: JS imports (console, timers, `abort`), glue generator, `docs/65` U7 hook | |
