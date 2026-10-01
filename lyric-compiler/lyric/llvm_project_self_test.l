@@ -613,16 +613,20 @@ test "native project build: `?` used inside a bundled STDLIB-CLOSURE package (no
     panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
   }
   stdlib.add(
-    "package Fake.Native6954\n" + "import Std.Core\n" + "func inner(ok: Bool): Result[Int, String] {\n" + "  if ok {\n" +
-      "    Ok(value = 7)\n" +
-      "  } else {\n" +
-      "    Err(error = \"nope\")\n" +
-      "  }\n" +
-      "}\n" +
-      "pub func outer(ok: Bool): Result[Int, String] {\n" +
-      "  val v = inner(ok)?\n" +
-      "  Ok(value = v + 1)\n" +
-      "}\n"
+    NativeStdlibFile(
+      path = "fake/native6954.l",
+      source = "package Fake.Native6954\n" + "import Std.Core\n" + "func inner(ok: Bool): Result[Int, String] {\n" +
+        "  if ok {\n" +
+        "    Ok(value = 7)\n" +
+        "  } else {\n" +
+        "    Err(error = \"nope\")\n" +
+        "  }\n" +
+        "}\n" +
+        "pub func outer(ok: Bool): Result[Int, String] {\n" +
+        "  val v = inner(ok)?\n" +
+        "  Ok(value = v + 1)\n" +
+        "}\n"
+    )
   )
   val dir = Path.join(tempBase(), "lyric-llvm-project-selftest")
   val _ = File.createDir(dir)

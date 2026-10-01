@@ -197,7 +197,7 @@ test "a generic protected type fails the native build cleanly, before codegen" {
   val dir = Path.join(tempBase(), "lyric-n34-generic-protected")
   val _ = File.createDir(dir)
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
-  val noStdlib: List[String] = newList()
+  val noStdlib: List[NativeStdlibFile] = newList()
   val noFlags: List[String] = newList()
   val ok = compileToNativeWithFlags(genericProtectedSrc, stem, noStdlib, "", "0", noFlags, newList(), "", true)
   assertTrue(not ok, "the build fails (Bool false), not an unhandled exception")
