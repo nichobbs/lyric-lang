@@ -355,7 +355,7 @@ func bytesOf(vals: in slice[Int]): List[Int] {
   val l: List[Int] = newList()
   var i = 0
   while i < vals.length {
-    l.add(vals[i].toByte())
+    l.add(vals[i])
     i = i + 1
   }
   l
