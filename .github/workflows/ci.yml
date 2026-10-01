@@ -3291,6 +3291,12 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/distinct_ops_self_test.l
+      # Records without var fields are values; records with var fields are shared (D157).
+      - name: Record semantics self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/record_semantics_self_test.l
       - name: Distinct-type collection self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true
@@ -5456,6 +5462,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/distinct_ops_self_test.l
+      - name: Record semantics self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/record_semantics_self_test.l
       - name: Distinct-type collection self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
