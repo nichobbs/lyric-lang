@@ -79,7 +79,6 @@ pub record CodegenCtx {
   tokWriteLineStr: Int  // Console.WriteLine(string)
   tokWriteLineInt: Int  // Console.WriteLine(int32)
   tokWriteLineLong: Int  // Console.WriteLine(int64)
-  tokWriteLineDbl: Int  // Console.WriteLine(double)
   tokWriteLineChar: Int  // Console.WriteLine(char)
   // #6913: unsigned-aware `println` counterparts, consulted at the
   // `println` call site via `spellsUnsigned`.
@@ -967,11 +966,12 @@ pub func newCodegenCtx(
   val tokWLLong = 0x0A000000 +
     ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_long", buildStaticMethodSig(wlLongPs, MVoid))
 
-  // 4. Console.WriteLine(double): void  → 0x0A000004
+  // 4. Console.WriteLine(double): void  → 0x0A000004. Row kept so later
+  // MemberRef rows don't shift; println(Double) prints the invariant-culture
+  // `toString` instead (#7858), so nothing reads this token.
   val wlDblPs: List[MsilType] = newList()
   wlDblPs.add(MDouble)
-  val tokWLDbl = 0x0A000000 +
-    ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_dbl", buildStaticMethodSig(wlDblPs, MVoid))
+  val _ = ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_dbl", buildStaticMethodSig(wlDblPs, MVoid))
 
   // 5. Console.WriteLine(bool): void  → 0x0A000005. Row kept (not skipped)
   // to avoid shifting every subsequent MemberRef's row number; #5552/#5666
@@ -2091,7 +2091,6 @@ pub func newCodegenCtx(
     tokWriteLineStr = tokWLStr,
     tokWriteLineInt = tokWLInt,
     tokWriteLineLong = tokWLLong,
-    tokWriteLineDbl = tokWLDbl,
     tokWriteLineChar = tokWLChar,
     tokWriteLineUInt = tokWLUInt,
     tokWriteLineULong = tokWLULong,
@@ -18213,6 +18212,68 @@ func lowerProtectedIntrinsicMsil(cctx: in CodegenCtx, insns: in List[MInsn], nam
   MVoid
 }
 
+// Convert the value on the stack, typed `argTy`, to the `String` that
+// `toString(x)` returns. `println`/`print` route every value they have no
+// dedicated `Console` overload for through here, so printing a value and
+// printing its `toString` agree. `isUnsigned` selects the unsigned rendering
+// of a `UInt`/`ULong` operand (#6913).
+func emitStackValueToStringMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  argTy: in MsilType,
+  isUnsigned: in Bool,
+): Unit {
+  match argTy {
+    case MString -> {
+    }
+    case MVoid -> {
+      val emptyTok = ctxInternUs(cctx.lctx, "")
+      insns.add(MLdStr(token = emptyTok))
+    }
+    case MDouble -> {
+      // Locale-invariant: Double.ToString(CultureInfo.InvariantCulture) (#2462).
+      // Object.ToString() is locale-sensitive; German/French locales render "3,14".
+      // Double is a struct — take its address via ldloca for the HASTHIS call.
+      val dblSlot = allocSlotMsil(fctx, "__inv_dbl_" + toString(fctx.slotTicker.count), MDouble)
+      emitStoreSlot(insns, dblSlot, fctx.paramCount)
+      insns.add(MLdloca(slot = dblSlot - fctx.paramCount))
+      insns.add(MCall(methodToken = cctx.tokInvariantCulture))
+      insns.add(MCall(methodToken = cctx.tokDoubleToStringInv))
+    }
+    case MBool -> {
+      // Lowercase "true"/"false", not BCL Boolean.ToString()'s "True"/"False" (#5552).
+      emitBoolToStringMsil(cctx, fctx, insns)
+    }
+    // An open generic parameter may be instantiated with a value type, so it
+    // is boxed through its VAR TypeSpec (`isValueType` cannot answer for it).
+    case MTypeVar(_) -> {
+      boxIfNeededMsil(cctx, insns, argTy)
+      insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+    }
+    case _ -> {
+      if isClrDateTimeMsil(argTy) {
+        // ISO-8601 round-trip format via DateTime.ToString("o") (#2184).
+        // The DateTime is an unboxed value type on the stack; stash it in
+        // a value-type local so we can take its address for the instance
+        // call, then push the "o" format-specifier string.
+        // Produces "1970-01-01T00:00:00.0000000Z" for UTC DateTimes,
+        // matching the F# bootstrap emitter's DateTime.ToString("o") path.
+        val dtSlot = allocSlotMsil(fctx, "__o_dt_" + toString(fctx.slotTicker.count), argTy)
+        emitStoreSlot(insns, dtSlot, fctx.paramCount)
+        insns.add(MLdloca(slot = dtSlot - fctx.paramCount))
+        insns.add(MLdStr(token = cctx.usDateTimeFormatO))
+        insns.add(MCall(methodToken = cctx.tokDateTimeToStringO))
+      } else {
+        // #6913: an unsigned-flagged box target for a bare `UInt`/
+        // `ULong` operand — see `spellsUnsigned`.
+        boxIfNeededUnsignedMsil(cctx, insns, argTy, isUnsigned)
+        insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+      }
+    }
+  }
+}
+
 // Lower a builtin or intra-package static call.
 func lowerBuiltinOrStaticCallMsil(
   cctx: in CodegenCtx,
@@ -18255,7 +18316,6 @@ func lowerBuiltinOrStaticCallMsil(
         // through to `WriteLine(string)` passed an int32 where a string
         // reference was expected: InvalidProgramException (#7852).
         case MByte -> insns.add(MCall(methodToken = cctx.tokWriteLineInt))
-        case MDouble -> insns.add(MCall(methodToken = cctx.tokWriteLineDbl))
         case MBool -> {
           // Lowercase "true"/"false", not BCL Console.WriteLine(bool)'s
           // "True"/"False" (#5552/#5666): route through the same
@@ -18269,12 +18329,22 @@ func lowerBuiltinOrStaticCallMsil(
         // Console.WriteLine(char) prints the glyph (JVM parity, docs/59 §3 F5);
         // the WriteLine(int32) overload printed the char's integer code.
         case MChar -> insns.add(MCall(methodToken = cctx.tokWriteLineChar))
+        case MString -> insns.add(MCall(methodToken = cctx.tokWriteLineStr))
         case MVoid -> {
           val emptyTok = ctxInternUs(cctx.lctx, "")
           insns.add(MLdStr(token = emptyTok))
           insns.add(MCall(methodToken = cctx.tokWriteLineStr))
         }
-        case _ -> insns.add(MCall(methodToken = cctx.tokWriteLineStr))
+        // Every other value (a `Double`, an extern struct such as
+        // `System.TimeSpan`, a `System.Single`, a record, a list) prints
+        // exactly what `toString(x)` returns. Handing it to
+        // `WriteLine(string)` unconverted was invalid IL:
+        // InvalidProgramException for a value type, and a reference type
+        // read as if it were a string (an access violation) (#7858).
+        case _ -> {
+          emitStackValueToStringMsil(cctx, fctx, insns, argTy, printlnIsUnsigned)
+          insns.add(MCall(methodToken = cctx.tokWriteLineStr))
+        }
       }
     } else {
       val emptyTok = ctxInternUs(cctx.lctx, "")
@@ -18306,11 +18376,7 @@ func lowerBuiltinOrStaticCallMsil(
           insns.add(MCall(methodToken = cctx.tokWriteStr))
         }
         case _ -> {
-          // Box value type and call ToString, then Write(string). #6913:
-          // an unsigned-flagged box target for a bare `UInt`/`ULong`
-          // operand — see `spellsUnsigned`.
-          boxIfNeededUnsignedMsil(cctx, insns, argTy, printIsUnsigned)
-          insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+          emitStackValueToStringMsil(cctx, fctx, insns, argTy, printIsUnsigned)
           insns.add(MCall(methodToken = cctx.tokWriteStr))
         }
       }
@@ -18358,48 +18424,7 @@ func lowerBuiltinOrStaticCallMsil(
       val tsRaw = lowerCallArgMsil(cctx, fctx, insns, args[0])
       val tsIsUnsigned = spellsUnsigned(callArgExpr(args[0])) or distinctUnsignedMsil(cctx, tsRaw)
       val argTy = unwrapDistinctForStringMsil(cctx, insns, tsRaw)
-      match argTy {
-        case MString -> {
-        }
-        case MVoid -> {
-          val emptyTok = ctxInternUs(cctx.lctx, "")
-          insns.add(MLdStr(token = emptyTok))
-        }
-        case MDouble -> {
-          // Locale-invariant: Double.ToString(CultureInfo.InvariantCulture) (#2462).
-          // Object.ToString() is locale-sensitive; German/French locales render "3,14".
-          // Double is a struct — take its address via ldloca for the HASTHIS call.
-          val dblSlot = allocSlotMsil(fctx, "__inv_dbl_" + toString(fctx.slotTicker.count), MDouble)
-          emitStoreSlot(insns, dblSlot, fctx.paramCount)
-          insns.add(MLdloca(slot = dblSlot - fctx.paramCount))
-          insns.add(MCall(methodToken = cctx.tokInvariantCulture))
-          insns.add(MCall(methodToken = cctx.tokDoubleToStringInv))
-        }
-        case MBool -> {
-          // Lowercase "true"/"false", not BCL Boolean.ToString()'s "True"/"False" (#5552).
-          emitBoolToStringMsil(cctx, fctx, insns)
-        }
-        case _ -> {
-          if isClrDateTimeMsil(argTy) {
-            // ISO-8601 round-trip format via DateTime.ToString("o") (#2184).
-            // The DateTime is an unboxed value type on the stack; stash it in
-            // a value-type local so we can take its address for the instance
-            // call, then push the "o" format-specifier string.
-            // Produces "1970-01-01T00:00:00.0000000Z" for UTC DateTimes,
-            // matching the F# bootstrap emitter's DateTime.ToString("o") path.
-            val dtSlot = allocSlotMsil(fctx, "__o_dt_" + toString(fctx.slotTicker.count), argTy)
-            emitStoreSlot(insns, dtSlot, fctx.paramCount)
-            insns.add(MLdloca(slot = dtSlot - fctx.paramCount))
-            insns.add(MLdStr(token = cctx.usDateTimeFormatO))
-            insns.add(MCall(methodToken = cctx.tokDateTimeToStringO))
-          } else {
-            // #6913: an unsigned-flagged box target for a bare `UInt`/
-            // `ULong` operand — see `spellsUnsigned`.
-            boxIfNeededUnsignedMsil(cctx, insns, argTy, tsIsUnsigned)
-            insns.add(MCallvirt(methodToken = cctx.tokObjToString))
-          }
-        }
-      }
+      emitStackValueToStringMsil(cctx, fctx, insns, argTy, tsIsUnsigned)
     } else {
       val emptyTok = ctxInternUs(cctx.lctx, "")
       insns.add(MLdStr(token = emptyTok))

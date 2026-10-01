@@ -3,7 +3,7 @@
 # byte-println-e2e.sh — check the text `println(<Byte>)` writes, on both
 # targets (#7852).
 #
-#   BUILD_CONFIG=Release bash scripts/ci/byte-println-e2e.sh
+#   BUILD_CONFIG=Release bash scripts/ci/byte-println-e2e.sh [target...]
 #
 # `lyric-compiler/lyric/byte_stringify_self_test.l` asserts every in-process
 # `Byte` stringification (toString, `.toString()`, interpolation, `String +`),
@@ -12,8 +12,11 @@
 # and `--target jvm` and compares the six lines it prints just before its
 # `byte-println-end` marker against the unsigned values it prints: a local,
 # a local, a record field, a slice element, a call result and a generic
-# `Box[Byte]` field.  Invoked from `compiler-self-tests-batch.sh` (whose CI
-# job already has Java 21), so it needs no ci.yml step of its own.
+# `Box[Byte]` field.  With no arguments it checks dotnet and jvm, and is
+# invoked that way from `compiler-self-tests-batch.sh` (whose CI job already
+# has Java 21).  `native` runs `byte_native_self_test.l` instead, whose println
+# test prints the same six values; `native-backend-self-tests.sh` invokes it
+# that way (#7858).
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -32,10 +35,18 @@ trap 'rm -rf "$work"' EXIT
 
 expected=$'0\n255\n128\n127\n200\n200'
 fail=0
-for target in dotnet jvm; do
+targets=("$@")
+if [[ ${#targets[@]} -eq 0 ]]; then
+  targets=(dotnet jvm)
+fi
+for target in "${targets[@]}"; do
   log="$work/$target.log"
-  if ! "$lyric_bin" test --target "$target" lyric-compiler/lyric/byte_stringify_self_test.l >"$log" 2>&1; then
-    echo "::error::byte_stringify_self_test.l failed on --target $target" >&2
+  test_file=lyric-compiler/lyric/byte_stringify_self_test.l
+  if [[ "$target" == native ]]; then
+    test_file=lyric-compiler/lyric/byte_native_self_test.l
+  fi
+  if ! "$lyric_bin" test --target "$target" "$test_file" >"$log" 2>&1; then
+    echo "::error::$(basename "$test_file") failed on --target $target" >&2
     cat "$log" >&2
     fail=1
     continue

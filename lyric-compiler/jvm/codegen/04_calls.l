@@ -1070,7 +1070,7 @@ func lowerBuiltinOrStaticCall(
       // SIGNED decimal, same class of bug `coerceToStringForConcat`'s
       // `isUnsigned` parameter fixes for interpolation/`+`/`.toString()`
       // (this builtin never routed through that helper at all).
-      val unsignedTy = normalizeBytePrintArg(
+      val unsignedTy = normalizeByteAndRefPrintArg(
         ctx,
         insns,
         normalizeUnsignedPrintArg(insns, rawTy, spellsUnsigned(callArgExpr(args[0])))
@@ -1103,7 +1103,7 @@ func lowerBuiltinOrStaticCall(
         spellsUnsigned(callArgExpr(args[0]))
       )
       // #6754 (finding 1.1): same unsigned normalization as println above.
-      val unsignedTy = normalizeBytePrintArg(
+      val unsignedTy = normalizeByteAndRefPrintArg(
         ctx,
         insns,
         normalizeUnsignedPrintArg(insns, rawTy, spellsUnsigned(callArgExpr(args[0])))
@@ -5483,22 +5483,28 @@ func normalizeUnsignedPrintArg(insns: in List[LInsn], rawTy: in JvmType, isUnsig
 
 // `println`/`print`'s already-lowered argument, on the stack as `rawTy`. A
 // `Byte` prints unsigned through `PrintStream.println(int)`: re-mask a
-// non-canonical signed byte first so 128..255 never print negative, and an
-// erased `Object` (which may be a boxed `Byte`) is stringified through
-// `__lyricErasedToString` rather than `println(Object)`'s signed
-// `Byte.toString()` (#7852; see maskByteUnsigned). Any other argument passes
-// through unchanged.
-func normalizeBytePrintArg(ctx: in FuncCtx, insns: in List[LInsn], rawTy: in JvmType): JvmType {
+// non-canonical signed byte first so 128..255 never print negative (#7852;
+// see maskByteUnsigned). Every reference other than a `String` (an erased
+// `Object` that may be a boxed `Byte`, a record, a list, an array, an extern
+// object such as `java.time.Duration`) is stringified exactly as
+// `toString(x)` does it, so printing a value and printing its `toString`
+// agree; passing it to `println(String)` unconverted failed verification
+// (#7858). Any other argument passes through unchanged.
+func normalizeByteAndRefPrintArg(ctx: in FuncCtx, insns: in List[LInsn], rawTy: in JvmType): JvmType {
   match rawTy {
     case JByte -> {
       maskByteUnsigned(insns)
       JInt
     }
-    case JRef(c) -> if c == "java/lang/Object" {
-      emitErasedToStringJvm(ctx, insns)
-      JRef(className = "java/lang/String")
-    } else {
+    case JRef(c) -> if c == "java/lang/String" {
       rawTy
+    } else {
+      coerceToStringForConcat(ctx, insns, rawTy, false)
+      JRef(className = "java/lang/String")
+    }
+    case JArray(_) -> {
+      coerceToStringForConcat(ctx, insns, rawTy, false)
+      JRef(className = "java/lang/String")
     }
     case _ -> rawTy
   }
@@ -5551,23 +5557,6 @@ func printArgType(ty: in JvmType): JvmType {
     case JShort -> JInt
     case JFloat -> JFloat
     case JVoid -> JRef(className = "java/lang/String")
-    case JRef(cls) -> {
-      // The Object-invoke convention (`lowerLambdaInvoke` / `lowerCallOnExprResult`,
-      // #5796 / #6392) tracks any lambda-invoke or chained-call result as raw
-      // `java/lang/Object`, whatever its real static Lyric type — there is no
-      // compile-time String-ness to checkcast against for `println(reader())`.
-      // Dispatch those through `PrintStream.println(Object)` (which itself
-      // calls `String.valueOf`, matching any actual runtime type — String,
-      // boxed Integer, etc.) instead of guessing `println(String)`, which
-      // fails bytecode verification whenever the erased value isn't actually
-      // a String (#6394). Genuinely-tracked reference types (e.g. String)
-      // still route through `println(String)`.
-      if cls == "java/lang/Object" {
-        JRef(className = "java/lang/Object")
-      } else {
-        JRef(className = "java/lang/String")
-      }
-    }
     case _ -> JRef(className = "java/lang/String")
   }
 }
