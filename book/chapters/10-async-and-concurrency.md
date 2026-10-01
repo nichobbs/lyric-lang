@@ -153,6 +153,26 @@ The key rules:
 - The `invariant:` is checked after every `entry` returns. If your operation leaves the state in an invariant-violating condition, the program terminates. This is intentional: an invariant violation in a protected type is an unrecoverable bug, not a recoverable error.
 - The state inside the protected type is inaccessible from outside. There is no field access, no reflection, no way to reach around the interface.
 
+A protected type can be generic, as `BoundedQueue[T]` is. One declaration serves every element type, and construction infers the type argument the way a record's does:
+
+```lyric
+protected type Cell[T] {
+  var value: T
+
+  func get(): T = value
+
+  entry set(v: in T): Unit {
+    value = v
+  }
+}
+
+val count = Cell(value = 0)             // Cell[Int]
+val name: Cell[String] = Cell(value = "")
+count.set(1)
+```
+
+Generic protected types work on `--target dotnet` and `--target jvm`; `--target native` rejects them at build time for now (#7864).
+
 A protected type can implement an interface. The methods of an `impl` for a protected type become locked members of the type, so they run one at a time with every other member, see the fields directly, and wake barrier waiters:
 
 ```lyric

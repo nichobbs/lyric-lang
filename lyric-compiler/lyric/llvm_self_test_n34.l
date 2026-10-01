@@ -26,6 +26,7 @@ import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
+import Lyric.LlvmBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness (mirrors llvm_self_test_n3.l): compile source to a native binary
@@ -162,4 +163,42 @@ test "protected type ARC: ref field + mutex buffer are torn down cleanly under A
     "}\n"
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 0, "30 constructions leak-free; sum 0..29 == 435")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic protected types (#7864): a named diagnostic at the declaration.
+// ─────────────────────────────────────────────────────────────────────────────
+val genericProtectedSrc: String = "package T\n" + "protected type Cell[V] {\n" + "  var value: V\n" + "  func get(): V {\n" + "    value\n" + "  }\n" + "}\n" + "func main(): Int { 0 }\n"
+
+test "a generic protected type reports N0008 at its declaration" {
+  val pr = parse(genericProtectedSrc)
+  assertTrue(pr.diagnostics.count == 0, "source parses cleanly")
+  val units: List[CodegenUnit] = newList()
+  units.add(unitOfFile("T", pr.file))
+  val diags = nativeGenericProtectedDiagnostics(units)
+  assertTrue(diags.count == 1, "one diagnostic for the one generic protected type")
+  val d = diags[0]
+  assertEqual(d.code, "N0008", "the diagnostic carries the N0008 code")
+  assertEqualInt(d.span.startPos.line, 2, "the diagnostic points at the declaration")
+  assertTrue(Str.contains(d.message, "T.Cell"), "the diagnostic names the type")
+  assertTrue(Str.contains(d.message, "#7864"), "the diagnostic names the tracking issue")
+}
+
+test "a non-generic protected type reports no N0008" {
+  val pr = parse(
+    "package T\nprotected type Tally {\n  var n: Int\n  entry bump() {\n    n = n + 1\n  }\n}\nfunc main(): Int { 0 }\n"
+  )
+  val units: List[CodegenUnit] = newList()
+  units.add(unitOfFile("T", pr.file))
+  assertEqualInt(nativeGenericProtectedDiagnostics(units).count, 0, "no diagnostic")
+}
+
+test "a generic protected type fails the native build cleanly, before codegen" {
+  val dir = Path.join(tempBase(), "lyric-n34-generic-protected")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
+  val noStdlib: List[String] = newList()
+  val noFlags: List[String] = newList()
+  val ok = compileToNativeWithFlags(genericProtectedSrc, stem, noStdlib, "", "0", noFlags, newList(), "", true)
+  assertTrue(not ok, "the build fails (Bool false), not an unhandled exception")
 }

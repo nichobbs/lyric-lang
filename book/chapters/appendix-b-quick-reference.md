@@ -249,6 +249,7 @@ protected type BoundedQueue[T] {
 ```
 
 `entry` operations are exclusive and may have a `when:` barrier (caller blocks until condition is true). The invariant is checked after every `entry`/`func` returns.
+A protected type may be generic (`BoundedQueue[T]`): construction infers the type arguments like a record's (`Cell(value = 1)` is a `Cell[Int]`). Supported on `--target dotnet` and `--target jvm`; `--target native` rejects it (#7864).
 
 ### Config blocks (runtime env-var-backed config)
 
@@ -771,7 +772,7 @@ output_assembly = "myapp.dll"
 | `Std.Log` | Structured logging | `LogLevel` enum, `Logger` interface, `LogField`, `log`, `debug`, `info`, `warn`, `error`, `field` |
 | `Std.Path` | Pure path manipulation | `join`, `extension`, `basename`, `dirname`, `isAbsolute`, `isRelative` |
 | `Std.BuildInfo` | Build metadata (docs/60) | `BuildInfo` record; the compiler synthesizes `buildInfo(): BuildInfo` into any file that imports it |
-| `Std.Task` | Async task primitives, cancellation tokens, structured concurrency (`Scope`) | `Task`, `CancellationToken`, `makeCancelSource`, `delay`, `delayWithCancel`, `makeScope`, `scopeSpawn`, `awaitAll`, `runWithin[T](timeoutMs, f): Option[T]` — run an arbitrary `() -> T` closure with a real preemptive bound on both `--target dotnet` (`Task.Wait`) and `--target jvm` (`Thread.join`), `None` on timeout, panics from `f` propagate |
+| `Std.Task` | Async task primitives, cancellation tokens, structured concurrency (`Scope`) | `Task`, `CancellationToken`, `makeCancelSource`, `delay`, `delayWithCancel`, `makeScope`, `scopeSpawn` (starts the closure at once: thread pool on dotnet, virtual thread on the JVM), `awaitAll` (joins what the scope started), `scopePendingCount` (children still tracked: a scope drops finished children when it next spawns), `runWithin[T](timeoutMs, f): Option[T]` — run an arbitrary `() -> T` closure with a real preemptive bound on both `--target dotnet` (`Task.Wait`) and `--target jvm` (`Thread.join`), `None` on timeout, panics from `f` propagate |
 
 **External libraries** (separate packages; add to `[dependencies]` in `lyric.toml`):
 
@@ -1452,7 +1453,8 @@ is omitted for these; they print as a bare `error[N0XXX]: message` line
 instead, mirroring the `B0001` project-build-failure line), reported by
 `Lyric.LlvmBridge` (`llvm_bridge.l`). `N0006` is a real source diagnostic
 with a span, reported by a pre-pass over the file's interface
-declarations that runs BEFORE codegen. `N0007` (#7452) is a codegen-time
+declarations that runs BEFORE codegen; `N0008` is reported the same way, by a
+pre-pass over protected type declarations. `N0007` (#7452) is a codegen-time
 type-mismatch `Bug` raised by `Lyric.LlvmCodegen`'s `coerceTo`
 (`llvm_codegen.l`) and CONTAINED — never thrown to the CLI — by
 `Lyric.Emitter`'s `emitNativeInProcess`/`emitNativeProject`
@@ -1474,6 +1476,7 @@ span, exactly like `T0120`/`J008`.
 | `N0005` | A native project build received no packages to compile. |
 | `N0006` | An interface method's parameter or return type mentions `Self` NESTED inside a generic type argument (e.g. `List[Self]`, `Option[Self]`) — accepted on `--target dotnet`/`--target jvm`, but native's generic types monomorphize per concrete type argument and there is no call site to infer one from at an interface declaration. A BARE `Self` (a parameter, a return, or the implicit receiver's own type) is accepted on native too, since #7585 — only the nested shape is `N0006`. |
 | `N0007` | A value flows into a codegen slot whose type it cannot be coerced to — most commonly a call argument against an extern generic collection method (`List[T].add`/`Map[K, V].add`, …) that the type checker admits with NO argument validation at all (an unresolved generic parameter is satisfied by any argument type on every target), so a genuinely incompatible argument (not a numeric narrowing — `coerceTo` narrows a wider `Int`/`Long` argument to a declared-narrower `Byte`/`Int` slot on its own, matching MSIL's implicit `List<byte>.Add` narrowing and JVM's `i2b`) reaches native codegen with no LLVM-IR-level conversion available. |
+| `N0008` | A `protected type` declares type parameters. Generic protected types build on `--target dotnet` and `--target jvm`; native has no per-instantiation protected-type layout yet (#7864). Reported at the declaration before codegen. |
 
 ### Stability (S-series)
 

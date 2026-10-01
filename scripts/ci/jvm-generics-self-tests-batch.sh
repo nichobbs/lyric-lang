@@ -50,6 +50,7 @@ for t in \
   lyric-compiler/jvm/dot_named_mangle_owner_match_jvm_self_test.l \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \
   lyric-compiler/lyric/closure_unannotated_result_self_test.l \
+  lyric-compiler/lyric/lambda_field_ctor_arg_self_test.l \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
   lyric-compiler/lyric/method_closure_var_capture_self_test.l \
   lyric-compiler/lyric/nested_lambda_var_capture_self_test.l \
@@ -58,6 +59,7 @@ for t in \
   lyric-compiler/lyric/unit_func_ref_action_self_test.l \
   lyric-compiler/lyric/inout_self_param_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
+  lyric-compiler/lyric/generic_protected_self_test.l \
   lyric-compiler/lyric/config_block_no_env_import_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_contracts_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \

@@ -302,3 +302,58 @@ test "an interface method that opens a barrier wakes the waiter (#7457)" {
   val r = await ifaceGateRun()
   assertTrue(r == 0, "the waiting entry ran once the impl method opened the gate (got " + toString(r) + ")")
 }
+
+// A generic protected type (#7830) keeps the same exclusion and barrier
+// semantics: `Chan[T]` is a one-place channel over any element type.
+protected type Chan[T] {
+  var item: Option[T] = None
+  entry put(x: in T): Unit
+    when: item.isNone
+  {
+    item = Some(value = x)
+  }
+  entry take(): T
+    when: item.isSome
+  {
+    val v = match item { case Some(x) -> x; case None -> panic("unreachable: the take barrier requires an item") }
+    item = None
+    v
+  }
+}
+
+async func stringProducer(c: in Chan[String]): Int {
+  var i = 1
+  while i <= 100 {
+    c.put(toString(i))
+    i = i + 1
+  }
+  0
+}
+
+async func stringConsumer(c: in Chan[String]): Int {
+  var total = 0
+  var i = 0
+  while i < 100 {
+    total = total + c.take().length
+    i = i + 1
+  }
+  total
+}
+
+async func stringPipeline(): Int {
+  val c: Chan[String] = Chan()
+  var total = 0
+  scope {
+    val consumed = spawn stringConsumer(c)
+    val produced = spawn stringProducer(c)
+    val _ = await produced
+    total = await consumed
+  }
+  total
+}
+
+test "a generic protected type's barriers hand values between tasks (#7830)" {
+  // "1".."100" carry 9 x 1 + 90 x 2 + 1 x 3 = 192 characters.
+  val total = await stringPipeline()
+  assertTrue(total == 192, "every String item delivered exactly once (got " + toString(total) + ")")
+}

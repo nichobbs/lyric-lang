@@ -4545,6 +4545,7 @@ func ctorIsGeneric(sym: in Symbol): Bool {
     case DKRecord(_, rd) -> match rd.generics { case Some(_) -> true; case None -> false }
     case DKExposedRec(_, rd) -> match rd.generics { case Some(_) -> true; case None -> false }
     case DKOpaque(_, od) -> match od.generics { case Some(_) -> true; case None -> false }
+    case DKProtected(_, pd) -> match pd.generics { case Some(_) -> true; case None -> false }
     case _ -> false
   }
 }
@@ -4564,6 +4565,7 @@ func ctorGenericNames(sym: in Symbol): List[String] {
     case DKRecord(_, rd) -> rd.generics
     case DKExposedRec(_, rd) -> rd.generics
     case DKOpaque(_, od) -> od.generics
+    case DKProtected(_, pd) -> pd.generics
     case _ -> None
   }
   match gOpt {
@@ -4587,6 +4589,37 @@ func ctorGenericNames(sym: in Symbol): List[String] {
 // opaque) in declaration order; empty for any other symbol kind.  Centralises
 // the DKRecord/DKExposedRec/DKOpaque member iteration so the helpers below
 // stay in sync when a constructor-like symbol kind is added (#3159).
+// A protected type's data field as the `FieldDecl` a record field would be,
+// so construction of a protected type is checked like a record's (#7830):
+// field names, field types, defaults, and generic inference.
+func protectedFieldAsFieldDecl(pf: in ProtectedField): FieldDecl {
+  match pf {
+    case PFImmutable(f) -> f
+    case PFVar(name, ty, init, docs, anns, sp) -> FieldDecl(
+      docComments = docs,
+      annotations = anns,
+      visibility = None,
+      isMutable = true,
+      name = name,
+      ty = ty,
+      dflt = init,
+      span = sp,
+      trailingAnnotationCount = 0
+    )
+    case PFLet(name, ty, init, docs, anns, sp) -> FieldDecl(
+      docComments = docs,
+      annotations = anns,
+      visibility = None,
+      isMutable = false,
+      name = name,
+      ty = ty,
+      dflt = init,
+      span = sp,
+      trailingAnnotationCount = 0
+    )
+  }
+}
+
 func ctorAllFields(sym: in Symbol): List[FieldDecl] {
   val result: List[FieldDecl] = newList()
   match sym.kind {
@@ -4621,6 +4654,14 @@ func ctorAllFields(sym: in Symbol): List[FieldDecl] {
           }
         }
         i = i + 1
+      }
+    }
+    case DKProtected(_, pd) -> {
+      for m in pd.members {
+        match m {
+          case PMField(pf) -> result.add(protectedFieldAsFieldDecl(pf))
+          case _ -> ()
+        }
       }
     }
     case _ -> {
@@ -5007,6 +5048,13 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
     }
     case DKOpaque(_, od) -> {
       collectCtorFieldsFromOpaque(tbl, ctx, scratch, od.members, acc)
+      true
+    }
+    case DKProtected(_, _) -> {
+      for fd in ctorAllFields(sym) {
+        val hasDef = match fd.dflt { case Some(_) -> true; case None -> false }
+        acc.add(CtorField(name = fd.name, ty = resolveType(tbl, ctx, scratch, fd.ty), hasDefault = hasDef))
+      }
       true
     }
     case _ -> false
@@ -5516,6 +5564,7 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
         case DKRecord(_, _) -> return Some(value = pkgSym)
         case DKExposedRec(_, _) -> return Some(value = pkgSym)
         case DKOpaque(_, _) -> return Some(value = pkgSym)
+        case DKProtected(_, _) -> return Some(value = pkgSym)
         case _ -> ()
       }
       case None -> ()
@@ -5529,6 +5578,7 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
       case DKRecord(_, _) -> Some(value = sym)
       case DKExposedRec(_, _) -> Some(value = sym)
       case DKOpaque(_, _) -> Some(value = sym)
+      case DKProtected(_, _) -> Some(value = sym)
       case _ -> None
     }
     case None -> None

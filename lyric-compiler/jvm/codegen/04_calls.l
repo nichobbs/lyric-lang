@@ -650,6 +650,8 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
         lowerCloseExecutorIntrinsic(ctx, insns, args)
       } else if path.segments.count == 1 and isLambdaLocal(ctx, funcName) {
         lowerLambdaInvoke(ctx, insns, funcName, args)
+      } else if path.segments.count == 1 and isLambdaSelfField(ctx, funcName) {
+        lowerSelfFieldLambdaInvoke(ctx, insns, funcName, args)
       } else {
         lowerBuiltinOrStaticCall(ctx, insns, funcName, path, args)
       }
@@ -874,6 +876,56 @@ func isLambdaLocal(ctx: in FuncCtx, name: in String): Bool {
     }
     case None -> false
   }
+}
+
+// A bare call to a function-typed field of the enclosing instance (a
+// protected type's `var pick: (Int) -> Option[T]` called as `pick(n)`), when
+// no local and no sibling method has that name.  The type checker rewrites
+// such a call through a typed local when the field's type has a source
+// spelling; inside a generic type it names a type parameter and is left as
+// written, so the backend loads the field from `this` itself.
+func isLambdaSelfField(ctx: in FuncCtx, name: in String): Bool {
+  // A field beats a same-named top-level function: a bare name in a member
+  // body resolves against the enclosing type's fields unless it is a local
+  // or parameter (§2.4, #6173), as the type checker resolves it.
+  match lookupSlot(ctx, name) {
+    case Some(_) -> return false
+    case None -> ()
+  }
+  match ctx.selfClass {
+    case Some(cls) -> {
+      if ctx.funcSigs.containsKey(cls + "#" + name) {
+        return false
+      }
+    }
+    case None -> return false
+  }
+  // The type checker has already established that the callee is a function
+  // value, so a field of the receiver named in call position is one; its
+  // erased JVM type need not name the lambda interface (a field whose type
+  // mentions a type parameter erases to `Object`), and
+  // `lowerLambdaInvokeTail` checkcasts to it.
+  match selfFieldType(ctx, name) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func lowerSelfFieldLambdaInvoke(
+  ctx: in FuncCtx, insns: in List[LInsn], name: in String, args: in List[CallArg]
+): JvmType {
+  val owner = match ctx.selfClass {
+    case Some(cls) -> cls
+    case None -> panic("lowerSelfFieldLambdaInvoke: no enclosing instance for '" + name + "'")
+  }
+  val fty = match selfFieldType(ctx, name) {
+    case Some(t) -> t
+    case None -> panic("lowerSelfFieldLambdaInvoke: '" + name + "' is not a field of " + owner)
+  }
+  insns.add(LAload(slot = 0))
+  insns.add(LGetfield(owner = owner, name = name, t = fty))
+  val noRet: Option[JvmType] = None
+  lowerLambdaInvokeTail(ctx, insns, args, noRet)
 }
 
 // JVM operand slots occupied by a parameter list: long/double take two,

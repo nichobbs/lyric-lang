@@ -1671,8 +1671,14 @@ func lowerProtectedMethod(
   closureAcc: in List[LClosure],
   usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
+  typeParams: in List[String],
 ): LFunc {
-  val retTy = match retOpt { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
+  // A generic protected type's parameters erase to `Object` in descriptors,
+  // as a generic record's do (`lowerRecordMethod`, #7830).
+  val retTy = match retOpt {
+    case Some(te) -> typeExprToJvmErasedExtern(te, pkgName, typeParams, externTypes)
+    case None -> JVoid
+  }
   // Lambdas inside a protected-type entry/helper register their synthesised
   // closure inner class into the package-shared accumulator (#2864), so an
   // `ELambda` here emits `<pkg>$Lambda$<n>` into the package output and works
@@ -1692,10 +1698,9 @@ func lowerProtectedMethod(
     closureAcc,
     usedRuntimeHelpers,
     importsStdString,
-    newList()
+    typeParams
   )
   val insns: List[LInsn] = newList()
-  val noTps: List[String] = newList()
   // An explicit `self: in <ProtectedType>` receiver param (D037 spelling)
   // maps to the implicit `this` at slot 0 — it must not consume a real JVM
   // parameter slot or appear in the method descriptor, mirroring
@@ -1704,8 +1709,8 @@ func lowerProtectedMethod(
   // already strips) diverges from the emitted method's descriptor, and the
   // JVM rejects the call with `NoSuchMethodError` (#6407).
   val realParams = stripLeadingSelfParam(params)
-  val paramTypes = holderAwareParamTypes(realParams, pkgName, true, noTps, externTypes)
-  setupInstanceParamSlotsAndHolders(ctxSelf, insns, realParams, pkgName, noTps, externTypes)
+  val paramTypes = holderAwareParamTypes(realParams, pkgName, true, typeParams, externTypes)
+  setupInstanceParamSlotsAndHolders(ctxSelf, insns, realParams, pkgName, typeParams, externTypes)
   // #7550: a non-receiver `other: in Self` parameter of a moved impl method
   // (now one of `className`'s own entries) refers to `className` itself —
   // narrow it with a real `checkcast` so field/method access through it
@@ -2062,6 +2067,7 @@ func buildProtected(
   implementsIfaces: in List[String],
 ): LPackageItem {
   val className = pkgName + "/" + decl.name
+  val typeParams = genericParamNames(decl.generics)
   val fields: List[LField] = newList()
   val methods: List[LFunc] = newList()
   var mi = 0
@@ -2073,21 +2079,21 @@ func buildProtected(
             LField(
               flags = 0x0001,
               name = name,
-              fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)
+              fieldType = typeExprToJvmErasedExtern(ty, pkgName, typeParams, externTypes)
             )
           )
           case PFLet(name, ty, _, _, _, _) -> fields.add(
             LField(
               flags = 0x0001,
               name = name,
-              fieldType = typeExprToJvmExtern(ty, pkgName, externTypes)
+              fieldType = typeExprToJvmErasedExtern(ty, pkgName, typeParams, externTypes)
             )
           )
           case PFImmutable(f) -> fields.add(
             LField(
               flags = 0x0001,
               name = f.name,
-              fieldType = typeExprToJvmExtern(f.ty, pkgName, externTypes)
+              fieldType = typeExprToJvmErasedExtern(f.ty, pkgName, typeParams, externTypes)
             )
           )
         }
@@ -2116,7 +2122,8 @@ func buildProtected(
             opaqueTypes,
             closureAcc,
             usedRuntimeHelpers,
-            importsStdString
+            importsStdString,
+            typeParams
           )
         )
       }
@@ -2142,7 +2149,8 @@ func buildProtected(
                 opaqueTypes,
                 closureAcc,
                 usedRuntimeHelpers,
-                importsStdString
+                importsStdString,
+                typeParams
               )
             )
           }
@@ -3937,10 +3945,10 @@ pub func collectFileSigsSeeded(
         while mi < decl.members.count {
           match decl.members[mi] {
             case PMEntry(ed) -> {
-              registerInstanceSig(into, protClass, ed.name, ed.params, ed.ret, owner, externTypes)
+              registerInstanceSigErased(into, protClass, ed.name, ed.params, ed.ret, owner, protTps, externTypes)
             }
             case PMFunc(fn) -> {
-              registerInstanceSig(into, protClass, fn.name, fn.params, fn.ret, owner, externTypes)
+              registerInstanceSigErased(into, protClass, fn.name, fn.params, fn.ret, owner, protTps, externTypes)
             }
             case PMField(pf) -> {
               match pf {
@@ -5288,11 +5296,9 @@ pub func collectFileCasesExtern(
         // otherwise `TokenBucket(...)` construction and bare field reads inside
         // entries can't resolve the field descriptors.
         val protClass = owner + "/" + decl.name
-        // #7176: same own-type-param filter as records/unions above, in case
-        // a protected type is ever declared generic (`ProtectedTypeDecl.
-        // generics`) — `ty`'s own erasure above doesn't erase a bare type
-        // param at all yet (a pre-existing gap, out of scope here), but
-        // `genericArgs` must not leak an unresolved param name regardless.
+        // A generic protected type's fields erase like a generic record's
+        // (#7830): a bare type parameter is `Object` with its index recorded
+        // so a read through an instantiation checkcasts to the real type.
         val protTps = genericParamNames(decl.generics)
         if not into.containsKey(protClass) {
           val flds: List[JvmCaseField] = newList()
@@ -5304,8 +5310,8 @@ pub func collectFileCasesExtern(
                   case PFVar(name, ty, init, _, _, _) -> flds.add(
                     JvmCaseField(
                       name = name,
-                      ty = typeExprToJvmExtern(ty, owner, externTypes),
-                      paramIdx = -1,
+                      ty = typeExprToJvmErasedExtern(ty, owner, protTps, externTypes),
+                      paramIdx = typeParamIndexOf(ty, protTps),
                       dflt = init,
                       genericArgs = eagerlyResolveGenericArgs(
                         returnTypeGenericArgsFiltered(Some(value = ty), protTps),
@@ -5317,8 +5323,8 @@ pub func collectFileCasesExtern(
                   case PFLet(name, ty, init, _, _, _) -> flds.add(
                     JvmCaseField(
                       name = name,
-                      ty = typeExprToJvmExtern(ty, owner, externTypes),
-                      paramIdx = -1,
+                      ty = typeExprToJvmErasedExtern(ty, owner, protTps, externTypes),
+                      paramIdx = typeParamIndexOf(ty, protTps),
                       dflt = init,
                       genericArgs = eagerlyResolveGenericArgs(
                         returnTypeGenericArgsFiltered(Some(value = ty), protTps),
@@ -5330,8 +5336,8 @@ pub func collectFileCasesExtern(
                   case PFImmutable(f) -> flds.add(
                     JvmCaseField(
                       name = f.name,
-                      ty = typeExprToJvmExtern(f.ty, owner, externTypes),
-                      paramIdx = -1,
+                      ty = typeExprToJvmErasedExtern(f.ty, owner, protTps, externTypes),
+                      paramIdx = typeParamIndexOf(f.ty, protTps),
                       dflt = f.dflt,
                       genericArgs = eagerlyResolveGenericArgs(
                         returnTypeGenericArgsFiltered(Some(value = f.ty), protTps),

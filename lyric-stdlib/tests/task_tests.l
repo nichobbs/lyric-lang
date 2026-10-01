@@ -23,6 +23,8 @@
 package Std.Task.Tests
 
 import Std.Core
+import Std.Collections
+import Std.String as Str
 import Std.Task
 import Std.Testing
 import Std.Time
@@ -146,6 +148,82 @@ func testScopeWithNoChildrenCompletesImmediately(): Unit {
   disposeScope(sc)
 }
 
+// `scopeSpawn` starts the action at once on both targets (the thread pool
+// on dotnet, a virtual thread on the JVM), not when `awaitAll` is called:
+// a caller that never joins, such as a UI host running a session's
+// effects, still gets its actions run.  The JVM kernel used to hold every
+// action until `awaitAll`.
+func testScopeSpawnStartsBeforeAwaitAll(): Unit {
+  val sc = makeScope()
+  val ran: List[Int] = newList()
+  scopeSpawn(sc, { -> ran.add(1) })
+  var waited = 0
+  while ran.count == 0 and waited < 10000 {
+    sleepMillis(10)
+    waited = waited + 10
+  }
+  assertEqualInt(ran.count, 1, "the action ran without awaitAll")
+  val r = await awaitAll(sc)
+  cancelScope(sc)
+  disposeScope(sc)
+}
+
+// A scope drops its finished children when it next spawns, so a long-lived
+// scope that never joins (a UI session running its effects) does not keep
+// one task or thread per action it has ever run (#7876).
+func testScopeDropsFinishedChildren(): Unit {
+  val sc = makeScope()
+  val ran: List[Int] = newList()
+  // One action at a time, each waited for, so the list is never written
+  // from two threads at once.
+  var k = 0
+  var waited = 0
+  while k < 20 and waited < 10000 {
+    scopeSpawn(sc, { -> ran.add(1) })
+    k = k + 1
+    while ran.count < k and waited < 10000 {
+      sleepMillis(5)
+      waited = waited + 5
+    }
+  }
+  assertEqualInt(ran.count, 20, "all twenty actions ran")
+  // Each spawn prunes the children finished by then; keep spawning no-ops
+  // until the earlier twenty have been dropped.
+  var tries = 0
+  while scopePendingCount(sc) > 1 and tries < 200 {
+    sleepMillis(10)
+    scopeSpawn(sc, { -> () })
+    tries = tries + 1
+  }
+  assertTrue(scopePendingCount(sc) <= 1, "finished children are dropped")
+  val r = await awaitAll(sc)
+  cancelScope(sc)
+  disposeScope(sc)
+}
+
+// Pruning finished children keeps the first failure: `awaitAll` still
+// reports a child that failed before later spawns dropped the others.
+func testScopeKeepsFailureAcrossPruning(): Unit {
+  val sc = makeScope()
+  scopeSpawn(sc, { -> panic("first child failed") })
+  sleepMillis(50)
+  var k = 0
+  while k < 5 {
+    scopeSpawn(sc, { -> () })
+    sleepMillis(10)
+    k = k + 1
+  }
+  var reported = ""
+  try {
+    val r = await awaitAll(sc)
+  } catch Bug as b {
+    reported = b.message
+  }
+  cancelScope(sc)
+  disposeScope(sc)
+  assertTrue(Str.contains(reported, "first child failed"), "awaitAll reports the failure, got: " + reported)
+}
+
 // ─── runWithin (#7461, D-progress-1021) ────────────────────────────────────────
 // A real, preemptive per-target bound: `Task.Run`/`Task.Wait(int)` on
 // `--target dotnet`, a daemon `Thread` joined with `Thread.join(long)` on
@@ -229,6 +307,9 @@ func main(): Int {
   testMakeCancelSourceTimeoutEventuallyCancels()
   testScopeNormalCompletionRunsEveryChild()
   testScopeWithNoChildrenCompletesImmediately()
+  testScopeSpawnStartsBeforeAwaitAll()
+  testScopeDropsFinishedChildren()
+  testScopeKeepsFailureAcrossPruning()
   testRunWithinCompletesWithinBudget()
   testRunWithinReturnsStringResult()
   testRunWithinReturnsRecordResult()

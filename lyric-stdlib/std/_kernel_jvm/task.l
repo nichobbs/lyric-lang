@@ -25,29 +25,18 @@
 //!      still uses only *concrete* JDK classes
 //!      (`java.util.concurrent.atomic.AtomicBoolean` / `AtomicReference`,
 //!      `java.lang.Thread`, `java.lang.System`).
-//!   2. Lyric closures have no bridge to arbitrary JDK functional
-//!      interfaces (`Runnable`/`Callable`/`Supplier`) — that adaptation
-//!      exists only inside the compiler's own `spawn`/`scope { }` keyword
-//!      codegen (a package-private synthesized `Callable`), not as
-//!      something a plain `.l` source file can invoke for a library API.
-//!      So the *only* way to get genuine concurrent execution of an
-//!      arbitrary `() -> Unit` value from pure Lyric here is the
-//!      `spawn`/`scope`/`await` language keywords themselves.
+//!   2. A Lyric closure is not itself a JDK functional interface
+//!      (`Runnable`/`Callable`/`Supplier`).  A plain record holding the
+//!      closure can implement `java.lang.Runnable` through an
+//!      `impl JRunnable for ...` block (docs/51), and that record is what
+//!      `scopeSpawn` and `runActionWithin` hand to `java.lang.Thread`.
 //!
 //! Consequences of (1) + (2) for this module's design:
 //!
-//!   - `Scope.scopeSpawn` defers each action into a plain `List[() ->
-//!     Unit]` rather than launching it immediately (unlike .NET's
-//!     `Task.Run`, there is no interface-free way to hand a closure to a
-//!     background executor outside `awaitAll`).  `awaitAll` is where the
-//!     actions actually run: it opens one `scope { }` and `spawn`s each
-//!     pending action (JDK 21 virtual threads under the hood), so
-//!     independently-`scopeSpawn`ed children genuinely run concurrently —
-//!     but only for a same-package consumer; see the KNOWN GAP below for
-//!     the cross-package `ClassCastException` this does NOT cover.
-//!     A caller cannot observe "did this start yet" without `awaitAll`,
-//!     but the documented contract — spawn children, then `await
-//!     awaitAll(scope)` to join them — is unaffected.
+//!   - `Scope.scopeSpawn` starts each action at once on a virtual thread
+//!     (`Thread.startVirtualThread`), as `_kernel/task.l` starts it at once
+//!     on the thread pool (`Task.Run`); `awaitAll` joins every thread
+//!     started so far.
 //!   - Each spawned action is wrapped so a fault sets the scope's shared
 //!     `AtomicBoolean` cancellation flag and records the first failure's
 //!     message (via `AtomicReference.compareAndSet`, so only the first
@@ -83,25 +72,6 @@
 //!     thread; pass the token explicitly to spawned children (the
 //!     canonical usage pattern below already does this).
 //!
-//! KNOWN GAP found while verifying this rewrite end-to-end (not introduced
-//! by it — reproduced with a standalone two-package repro carrying no
-//! dependency on this file): a closure literal passed as a `() -> Unit`
-//! argument into a function declared in ANOTHER package, stored, and later
-//! invoked via `spawn` from inside that other package's own body throws
-//! `ClassCastException` — the closure implements the calling package's own
-//! synthesized `<callerPkg>/Lyric$Lambda` interface, but the callee
-//! checkcasts to `<calleePkg>/Lyric$Lambda` before invoking it (every
-//! lambda-related check in `lyric-compiler/jvm/codegen/*.l` keys off
-//! `ctx.pkgName`, the package currently being lowered, with no cross-
-//! package interface adaptation).  A same-package consumer of `Scope`
-//! (verified working) or a direct, non-deferred `spawn action()` cross-
-//! package call (also verified working — the mismatch is specific to the
-//! store-then-spawn-via-a-different-function shape `scopeSpawn`/`awaitAll`
-//! split into) are unaffected.  This is a pre-existing, general JVM-backend
-//! gap — not specific to `Std.Task` — and out of scope to fix here; a
-//! dedicated follow-up is needed before `Scope` is reliable for genuine
-//! cross-package consumers on this target.  `task_tests.l` documents the
-//! same finding against the real package boundary.
 @runtime_checked
 package Std.Task
 
@@ -117,6 +87,10 @@ extern type JThread = "java.lang.Thread"
 extern type JSystem = "java.lang.System"
 
 extern type JThreadLocal = "java.lang.ThreadLocal"
+
+extern type JRunnable = "java.lang.Runnable"
+
+extern type JReentrantLock = "java.util.concurrent.locks.ReentrantLock"
 
 // =====================================================================
 // Cancellation tokens.  `CancellationTokenSource`/`CancellationToken`
@@ -266,15 +240,18 @@ pub record Task {
 }
 
 // =====================================================================
-// Structured concurrency.  `Scope` defers `scopeSpawn`ed actions into a
-// plain list; `awaitAll` is where they actually run — concurrently, via
-// the `spawn`/`scope { }` language keywords (the only closure-to-
-// concurrent-execution bridge reachable from pure Lyric on this target;
-// see the module header).  Sibling-cancel-on-first-fault mirrors
-// `_kernel/task.l`'s `runGuardedNet`: each spawned action is wrapped so a
-// fault sets the shared cancellation flag and (first-fault-wins, via
-// `AtomicReference.compareAndSet`) records the failure message; awaitAll
-// re-panics with it once every action has joined.
+// Structured concurrency.  `scopeSpawn` starts each action at once on a
+// virtual thread (`Thread.startVirtualThread` over a `Runnable` record),
+// as `_kernel/task.l` starts it at once with `Task.Run`.  The scope keeps
+// the started threads in a list guarded by a `ReentrantLock`, since
+// actions may spawn further actions from their own threads, and
+// `awaitAll` joins every thread started so far.
+//
+// Sibling-cancel-on-first-fault mirrors `_kernel/task.l`'s `runGuardedNet`:
+// each action is wrapped so a fault sets the shared cancellation flag and
+// (first-fault-wins, via `AtomicBoolean.compareAndSet`) records the
+// failure message; awaitAll re-panics with it once every action has
+// joined.
 //
 // The canonical usage pattern is unchanged from `_kernel/task.l`:
 //
@@ -295,14 +272,23 @@ pub record Task {
 //     }
 // =====================================================================
 pub record Scope {
-  actions: List[() -> Unit]
+  threads: List[JThread]
+  guard: JReentrantLock
   flag: JAtomicBoolean
+  hasFault: JAtomicBoolean
+  firstFault: JAtomicReference
 }
 
-/// Construct a fresh scope.  Register children via `scopeSpawn`, then
-/// `await awaitAll(scope)` to run and join them.
+/// Construct a fresh scope.  Start children with `scopeSpawn`, then
+/// `await awaitAll(scope)` to join them.
 pub func makeScope(): Scope {
-  Scope(actions = newList(), flag = JAtomicBoolean.new(false))
+  Scope(
+    threads = newList(),
+    guard = JReentrantLock.new(),
+    flag = JAtomicBoolean.new(false),
+    hasFault = JAtomicBoolean.new(false),
+    firstFault = JAtomicReference.new("")
+  )
 }
 
 /// Project the scope's cancellation token.  Pass to child actions so
@@ -320,16 +306,71 @@ pub func scopeAdd(s: in Scope, child: in Task): Unit {
   ()
 }
 
-/// Register a zero-arg closure to run when the scope is joined via
-/// `awaitAll`.  Unlike .NET's `Task.Run`-backed `scopeSpawn`, the
-/// action does not start immediately (module header); `awaitAll` runs
-/// every registered action concurrently and joins them all.
+// One `scopeSpawn`ed action, run on its own virtual thread.
+record ScopeJob {
+  action: () -> Unit
+  owner: Scope
+}
+
+impl JRunnable for ScopeJob {
+  func run(): Unit {
+    runGuardedJvm(self.action, self.owner.flag, self.owner.hasFault, self.owner.firstFault)
+  }
+}
+
+// Tail-position forms: a discarded auto-FFI instance call whose receiver
+// is a parameter emits no invoke on this backend (#5379).
+func scopeLock(g: in JReentrantLock): Unit {
+  g.lock()
+}
+
+func scopeUnlock(g: in JReentrantLock): Unit {
+  g.unlock()
+}
+
+func scopeThreadJoin(t: in JThread): Unit {
+  t.join()
+}
+
+/// Start a zero-arg closure on a virtual thread, scoped to `s`.  It can
+/// poll `isCancelled(scopeToken(s))` to honour cancellation.
 ///
 /// Named `scopeSpawn` rather than the more idiomatic `spawn` because
 /// `spawn` is a soft keyword reserved for the `spawn expr` syntactic
 /// form (`ESpawn` in the parser AST).
 pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
-  s.actions.add(action)
+  val t: JThread = JThread.startVirtualThread(ScopeJob(action = action, owner = s))
+  scopeLock(s.guard)
+  defer {
+    scopeUnlock(s.guard)
+  }
+  // Drop the threads that have finished, so a long-lived scope that spawns
+  // without joining (a UI session running its effects) holds only its
+  // running children.  A failure is already recorded in `firstFault`.
+  var i = 0
+  while i < s.threads.count {
+    if scopeThreadAlive(s.threads[i]) {
+      i = i + 1
+    } else {
+      s.threads.removeAt(i)
+    }
+  }
+  s.threads.add(t)
+}
+
+func scopeThreadAlive(t: in JThread): Bool {
+  t.isAlive()
+}
+
+/// The number of children the scope still tracks: those still running.  A
+/// child that finished is dropped the next time the scope spawns; a failure
+/// stays recorded for `awaitAll`.
+pub func scopePendingCount(s: in Scope): Int {
+  scopeLock(s.guard)
+  defer {
+    scopeUnlock(s.guard)
+  }
+  s.threads.count
 }
 
 // Run `action`; on a caught exception, record the first failure's
@@ -337,10 +378,8 @@ pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
 // empty-string sentinel on `firstFault` — a sibling panicking with an
 // empty message must still be treated as a real fault, #5327) and set
 // the scope's cancellation flag so cooperative siblings still running
-// observe it.  Swallows the exception rather than rethrowing: `awaitAll`
-// inspects `firstFault`/`hasFault` itself after every spawned action has
-// joined, rather than relying on the joined `Future`'s own (unreachable
-// via plain auto-FFI; see the module header) exception surface.
+// observe it.  Swallows the exception: `awaitAll` inspects
+// `firstFault`/`hasFault` itself after every action has joined.
 func runGuardedJvm(
   action: in () -> Unit,
   flag: in JAtomicBoolean,
@@ -357,27 +396,32 @@ func runGuardedJvm(
   }
 }
 
-/// Run every action registered via `scopeSpawn` concurrently (real
-/// virtual threads, via the `spawn`/`scope { }` keywords) and join all
-/// of them.  When any faults, `flag` is cancelled for cooperative
-/// siblings and the first failure's message is re-panicked once every
-/// action has completed — matching `_kernel/task.l`'s "rethrows the
-/// underlying exception" contract.
-pub func awaitAll(s: in Scope): Task {
-  val hasFault: JAtomicBoolean = JAtomicBoolean.new(false)
-  val firstFault: JAtomicReference = JAtomicReference.new("")
-  scope {
-    var i = 0
-    while i < s.actions.count {
-      val act = s.actions[i]
-      spawn runGuardedJvm(act, s.flag, hasFault, firstFault)
-      i = i + 1
-    }
+// The threads started so far, copied under the scope's lock.
+func scopeThreads(s: in Scope): List[JThread] {
+  val copy: List[JThread] = newList()
+  scopeLock(s.guard)
+  defer {
+    scopeUnlock(s.guard)
   }
-  if not hasFault.get() {
+  for t in s.threads {
+    copy.add(t)
+  }
+  copy
+}
+
+/// Join every action started by `scopeSpawn` so far.  When any faulted,
+/// `flag` has been cancelled for cooperative siblings and the first
+/// failure's message is re-panicked once every action has completed —
+/// matching `_kernel/task.l`'s "rethrows the underlying exception"
+/// contract.
+pub func awaitAll(s: in Scope): Task {
+  for t in scopeThreads(s) {
+    scopeThreadJoin(t)
+  }
+  if not s.hasFault.get() {
     Task(done = true)
   } else {
-    val msg: String = firstFault.get()
+    val msg: String = s.firstFault.get()
     panic(msg)
   }
 }
@@ -473,8 +517,6 @@ pub func hasAmbient(): Bool {
 // message) into a captured `List` used as a one-slot cell, so the
 // `Runnable` implementation itself stays untyped in `T`.
 // =====================================================================
-extern type JRunnable = "java.lang.Runnable"
-
 // One `action` run on a daemon thread; `done` flips only after `action`
 // (and therefore any `add` into its captured result `List`) has
 // returned, so a caller that observes `done == true` sees a fully
