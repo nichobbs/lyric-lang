@@ -98,6 +98,14 @@
 //!     the type-scoped key when known, fall back to the ambiguous bare
 //!     key otherwise) instead of dropping enum-case pattern support for
 //!     those shapes.
+//!   - item J (#7933, fixed): a union case qualified by its PACKAGE alone
+//!     (`Tcp.TlsTrustSystemDefault` under `import Std.TcpHost as Tcp`, which
+//!     the alias rewrite makes `Std.TcpHost.TlsTrustSystemDefault`) — the
+//!     spelling the type checker requires for a case of an aliased import.
+//!     `ctx.caseRefs` indexed a case as `Case`, `Union.Case` and
+//!     `pkg.Union.Case` but not `pkg.Case`, so the value form failed with
+//!     "qualified value reference ... is not yet supported".  Covers the
+//!     nullary value, the payload constructor and both pattern forms.
 //!
 //! Items A-D and F's `match` arms use the fully-qualified `EnumType.Case`
 //! pattern form deliberately, to isolate the value-position fix from the
@@ -552,4 +560,33 @@ test "a bare pattern-position case name against a call-result ENUM scrutinee (no
     42,
     "a hint-less call-result enum scrutinee still falls back to the bundle-wide enum-case check (#6976)"
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item J (#7933): a union case qualified by its package alone, through an
+// aliased import of a bundled stdlib package.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a package-qualified union case through an aliased import resolves in value and pattern position (#7933)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.TcpHost as Tcp\n" +
+    "func code(t: in Tcp.TlsClientTrust): Int {\n" +
+    "  match t {\n" +
+    "    case Tcp.TlsTrustSystemDefault -> 1\n" +
+    "    case Tcp.TlsTrustInsecure -> 2\n" +
+    "    case Tcp.TlsTrustExclusive(pem) -> pem.length\n" +
+    "    case Tcp.TlsTrustAdditive(_) -> 4\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a = code(Tcp.TlsTrustSystemDefault)\n" +
+    "  val b = code(Tcp.TlsTrustInsecure)\n" +
+    "  val c = code(Tcp.TlsTrustExclusive(caPem = \"pem\"))\n" +
+    "  val d = code(Tcp.TlsTrustAdditive(caPem = \"x\"))\n" +
+    "  if a == 1 and b == 2 and c == 3 and d == 4 {\n" +
+    "    42\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 42, "package-qualified union case through an aliased import (#7933)")
 }

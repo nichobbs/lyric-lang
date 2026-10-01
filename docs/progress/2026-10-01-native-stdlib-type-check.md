@@ -29,7 +29,12 @@ stdlib parse (`parseNativeStdlib`).
 
 - `_kernel_native/http_host.l`: bare `TlsTrustSystemDefault`/`TlsTrustInsecure`
   (and the `Exclusive`/`Additive` cases) while importing `Std.TcpHost as Tcp`;
-  now `Tcp.`-qualified.
+  now `Tcp.`-qualified. That spelling did not lower on native:
+  `Lyric.LlvmCodegen` indexed a union case as `Case`, `Union.Case` and
+  `pkg.Union.Case` but not `pkg.Case`, which is what the alias rewrite turns
+  `Tcp.TlsTrustSystemDefault` into, so the value form failed with "qualified
+  value reference ... is not yet supported". `registerUnionLayout` now adds the
+  `pkg.Case` key too (item J of `llvm_enum_case_resolve_self_test.l`).
 - `std/http_hpack.l`: a bare `toInt(c)` through the aliased `import Std.Char as
   Char`; now `Char.toInt(c)`.
 - `Std.Console`, `Std.Environment`, `Std.ProcessCapture` and `Std.Directory`

@@ -5181,6 +5181,12 @@ func registerUnionLayout(
     if not ctx.caseRefs.containsKey(pkg + "." + ud.name + "." + bare) {
       ctx.caseRefs.add(pkg + "." + ud.name + "." + bare, cref)
     }
+    // A case qualified by its package alone (`Tcp.TlsTrustInsecure` under
+    // `import Std.TcpHost as Tcp`, which the alias rewrite makes
+    // `Std.TcpHost.TlsTrustInsecure`), as the type checker resolves it.
+    if not ctx.caseRefs.containsKey(pkg + "." + bare) {
+      ctx.caseRefs.add(pkg + "." + bare, cref)
+    }
     ci2 = ci2 + 1
   }
   if unionHasRefFields(ui) {
