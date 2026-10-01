@@ -918,14 +918,14 @@ func defaultClientHandle(trust: in Tcp.TlsClientTrust): HttpClientHandle {
 }
 
 pub func hostDefaultClient(): HttpClientHandle {
-  defaultClientHandle(TlsTrustSystemDefault)
+  defaultClientHandle(Tcp.TlsTrustSystemDefault)
 }
 
 pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle {
   HttpClientHandle(
     followRedirects = maxRedirects > 0,
     maxRedirects = maxRedirects,
-    trust = TlsTrustSystemDefault,
+    trust = Tcp.TlsTrustSystemDefault,
     clientIdentity = None,
     minVersion = Tls.TlsVersion.Tls12
   )
@@ -935,7 +935,7 @@ pub func hostClientNoRedirects(): HttpClientHandle {
   HttpClientHandle(
     followRedirects = false,
     maxRedirects = 0,
-    trust = TlsTrustSystemDefault,
+    trust = Tcp.TlsTrustSystemDefault,
     clientIdentity = None,
     minVersion = Tls.TlsVersion.Tls12
   )
@@ -1011,7 +1011,7 @@ func resolveTrust(
   insecureSkipVerify: in Bool,
 ): Tcp.TlsClientTrust {
   if insecureSkipVerify {
-    TlsTrustInsecure
+    Tcp.TlsTrustInsecure
   } else {
     match exclusiveCaCertificate {
       // Explicit static-call form (`Tls.Certificate.rawHandle(cert)`), not
@@ -1019,10 +1019,10 @@ func resolveTrust(
       // `buildServerCtx` for the direct-repro writeup of why the UFCS
       // spelling does not resolve an `internal` cross-package function in
       // native's bundled import closure.
-      case Some(cert) -> TlsTrustExclusive(caPem = Tls.Certificate.rawHandle(cert).certPem)
+      case Some(cert) -> Tcp.TlsTrustExclusive(caPem = Tls.Certificate.rawHandle(cert).certPem)
       case None -> match caCertificate {
-        case Some(cert2) -> TlsTrustAdditive(caPem = Tls.Certificate.rawHandle(cert2).certPem)
-        case None -> TlsTrustSystemDefault
+        case Some(cert2) -> Tcp.TlsTrustAdditive(caPem = Tls.Certificate.rawHandle(cert2).certPem)
+        case None -> Tcp.TlsTrustSystemDefault
       }
     }
   }

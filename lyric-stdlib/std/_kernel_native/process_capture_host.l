@@ -6,7 +6,9 @@
 //! list-argv Result seam (issue #4752) that `Std.Process` delegates to,
 //! over lyric-rt's `lyric_process_run` (fork + execvp, never a shell —
 //! the argv list is passed through verbatim with no quoting or word
-//! splitting).
+//! splitting), and the string-argv `hostRunCapture`/`hostRunCaptureTimeout`
+//! entry points `Std.ProcessCapture` calls, which decode their argument
+//! string with `Std.ProcessArgs.argvSplit` and run through the same seam.
 //!
 //! Both seams honor the full managed contract (issue #4752, runCapture
 //! half): `stdinContent` is written to an always-piped child stdin
@@ -22,6 +24,7 @@ import Std.Core
 import Std.Collections
 import Std.Time
 import Std.Encoding
+import Std.ProcessArgs
 
 // ── Public result record ───────────────────────────────────────────────────
 pub record ProcessCaptureResult {
@@ -115,6 +118,32 @@ pub func hostRunCaptureList(
     )
   } else {
     Err(error = "failed to spawn process: " + executable)
+  }
+}
+
+// ── String-argv entry points (Std.ProcessCapture) ──────────────────────────
+// `arguments` is the CommandLineToArgvW-convention string
+// `Std.ProcessCapture.buildArgString` produces; `argvSplit` decodes it back
+// to the exact argv list, which execs as-is.  As on the managed twins, a
+// spawn failure is absorbed into an empty result with exit code -1, and the
+// default wall-clock cap is 10 seconds.
+pub func hostRunCapture(executable: in String, arguments: in String, stdinContent: in String): ProcessCaptureResult {
+  hostRunCaptureTimeout(executable, arguments, stdinContent, 10000)
+}
+
+pub func hostRunCaptureTimeout(
+  executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
+): ProcessCaptureResult {
+  match hostRunCaptureList(executable, argvSplit(arguments), stdinContent, timeoutMs) {
+    case Ok(r) -> r
+    case Err(_) -> ProcessCaptureResult(
+      stdout = "",
+      stderr = "",
+      stdoutBytes = [],
+      stderrBytes = [],
+      exitCode = 0 - 1,
+      timedOut = false
+    )
   }
 }
 

@@ -1015,6 +1015,87 @@ static void test_read_bytes(void) {
     lyric_release(missing);
 }
 
+/* Points fd 0 at a fresh pipe and returns the saved original stdin. */
+static int stdin_from_pipe(int* write_end) {
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    int saved = dup(STDIN_FILENO);
+    CHECK(saved >= 0);
+    CHECK(dup2(fds[0], STDIN_FILENO) == STDIN_FILENO);
+    close(fds[0]);
+    *write_end = fds[1];
+    return saved;
+}
+
+static int string_is(LyricString* s, const char* want) {
+    size_t n = strlen(want);
+    return lyric_string_len(s) == (int64_t)n && memcmp(LYRIC_STRING_DATA(s), want, n) == 0;
+}
+
+static void test_stdin_lines_and_bytes(void) {
+    int w = -1;
+    int saved = stdin_from_pipe(&w);
+    const char* input = "ab\r\ncd\ref\ngh";
+    CHECK(write(w, input, strlen(input)) == (ssize_t)strlen(input));
+    close(w);
+
+    CHECK(lyric_stdin_wait(0) == 1);
+    LyricString* line = NULL;
+    CHECK(lyric_stdin_read_line(&line) == 1);
+    CHECK(string_is(line, "ab"));
+    lyric_release(line);
+    /* A lone '\r' ends the line; the byte after it is kept for the next read. */
+    CHECK(lyric_stdin_read_line(&line) == 1);
+    CHECK(string_is(line, "cd"));
+    lyric_release(line);
+    CHECK(lyric_stdin_wait(0) == 1);
+    int32_t ok = 0;
+    LyricList* bytes = lyric_stdin_read(16, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(bytes) == 1);
+    CHECK(lyric_list_get(bytes, 0) == 'e');
+    lyric_release(bytes);
+    CHECK(lyric_stdin_read_line(&line) == 1);
+    CHECK(string_is(line, "f"));
+    lyric_release(line);
+    /* A final line with no terminator is still a line. */
+    CHECK(lyric_stdin_read_line(&line) == 1);
+    CHECK(string_is(line, "gh"));
+    lyric_release(line);
+    CHECK(lyric_stdin_read_line(&line) == 0);
+    /* End of stream: ready at once, and an empty read. */
+    CHECK(lyric_stdin_wait(1000) == 1);
+    ok = 0;
+    bytes = lyric_stdin_read(16, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(bytes) == 0);
+    lyric_release(bytes);
+
+    CHECK(dup2(saved, STDIN_FILENO) == STDIN_FILENO);
+    close(saved);
+}
+
+static void test_stdin_wait_times_out(void) {
+    int w = -1;
+    int saved = stdin_from_pipe(&w);
+    int64_t start = lyric_monotonic_nanos();
+    CHECK(lyric_stdin_wait(60) == 0);
+    int64_t waited_ms = (lyric_monotonic_nanos() - start) / 1000000;
+    CHECK(waited_ms >= 50);
+    /* Bytes that arrive after a timeout are read in full by the next read. */
+    CHECK(write(w, "late", 4) == 4);
+    CHECK(lyric_stdin_wait(1000) == 1);
+    int32_t ok = 0;
+    LyricList* bytes = lyric_stdin_read(16, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(bytes) == 4);
+    CHECK(lyric_list_get(bytes, 3) == 'e');
+    lyric_release(bytes);
+    close(w);
+    CHECK(dup2(saved, STDIN_FILENO) == STDIN_FILENO);
+    close(saved);
+}
+
 static void test_write_bytes(void) {
     char tmpl[] = "/tmp/lyric_rt_wbytes_XXXXXX";
     int fd = mkstemp(tmpl);
@@ -2991,6 +3072,8 @@ int main(void) {
     test_string_char_at_non_bmp_aborts();
     test_read_bytes();
     test_write_bytes();
+    test_stdin_lines_and_bytes();
+    test_stdin_wait_times_out();
     test_dir_list2();
     test_dir_list_typed();
     test_is_dir_nofollow();

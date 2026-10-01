@@ -3,7 +3,7 @@
 # console-stdin-test.sh — run lyric-stdlib/tests/console_stdin_tests.l with a
 # controlled stdin (#7451).
 #
-# Usage: console-stdin-test.sh <lyric-binary> [--target jvm]
+# Usage: console-stdin-test.sh <lyric-binary> [--target jvm|native]
 #
 # The program's first bounded stdin read must time out, so nothing may reach
 # its stdin until it says so: it creates the marker file named by
@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-LYRIC_BIN="${1:?usage: console-stdin-test.sh <lyric-binary> [--target jvm]}"
+LYRIC_BIN="${1:?usage: console-stdin-test.sh <lyric-binary> [--target jvm|native]}"
 shift
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

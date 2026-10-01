@@ -314,6 +314,26 @@ void lyric_console_write_line(int32_t fd, LyricString* s);
  * no-op. Best-effort, like the rest of this console boundary. */
 void lyric_console_write_bytes(int32_t fd, LyricList* data);
 
+/* Console input from fd 0 (Std.Console's stdin reader and readLine).
+ * Reads are unbuffered: nothing past what a call returns is consumed,
+ * except the one byte a line read looks ahead after a bare '\r', which
+ * the next read of either kind returns first.
+ *
+ * lyric_stdin_wait: 1 when a read would not block (bytes, end of stream,
+ * or an error to report), 0 after `timeout_ms` with nothing to read, -1
+ * on a poll failure.  A negative `timeout_ms` waits without a bound.
+ *
+ * lyric_stdin_read: one read(2) of up to `max` bytes (blocking); an empty
+ * list is end of stream.  *ok is 0 on a read failure.
+ *
+ * lyric_stdin_read_line: the next line without its terminator ("\n",
+ * "\r\n" or a lone '\r') in *out, returning 1; 0 at end of stream with
+ * no bytes read; -1 on a read failure.  A final line with no terminator
+ * is returned as a line. */
+int32_t     lyric_stdin_wait(int32_t timeout_ms);
+LyricList*  lyric_stdin_read(int32_t max, int32_t* ok);
+int32_t     lyric_stdin_read_line(LyricString** out);
+
 /* ── Platform helpers (lyric_posix.c) ──────────────────────────────── */
 
 /* open(2) flag values differ across platforms (O_CREAT is 0x40 on Linux,

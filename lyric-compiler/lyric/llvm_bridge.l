@@ -348,24 +348,150 @@ func detectHostTriple(): String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §2.9. The bundled stdlib.  Native compiles the `Std.*` packages from source
+// into every binary (there is no precompiled stdlib to link against), so each
+// build parses them, and type-checks the ones its import closure reaches.
+// ─────────────────────────────────────────────────────────────────────────────
+/// One stdlib source file of a native build (`Lyric.Emitter.findStdlibSourcesNative`):
+/// its text, and the path a diagnostic in it names.
+pub record NativeStdlibFile {
+  path: String
+  source: String
+}
+
+/// The parsed stdlib: every package's cross-package surface for the type
+/// check, and each package's whole file and source path for bundling.
+record NativeStdlib {
+  importedPkgs: List[ImportedPackage]
+  byPkg: Map[String, SourceFile]
+  pathByPkg: Map[String, String]
+}
+
+func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile]): NativeStdlib {
+  val noFeatures: List[String] = newList()
+  val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
+  val importedPkgs: List[ImportedPackage] = newList()
+  val byPkg: Map[String, SourceFile] = newMap()
+  val pathByPkg: Map[String, String] = newMap()
+  for sf in stdlibFiles {
+    val pr = parse(sf.source)
+    // Stdlib parse diagnostics are advisory (self-hosted parser gaps
+    // vs. the stdlib tree must not block user builds — see the
+    // matching note in Jvm.Bridge).
+    val stdCfg = Cfg.applyCfgErasure(nativeFeatures, noFeatures, pr.file)
+    // Invariant construction checkers (#7222), as the other bridges add them.
+    val stdFile = synthesizeInvariantCheckers(Aliases.rewriteFile(stdCfg.file))
+    val pkgItems: List[Item] = newList()
+    for it in stdFile.items {
+      if pipeIsCrossPackageItem(it) {
+        pkgItems.add(it)
+      }
+    }
+    val pn = dottedPath(stdFile.packageDecl.path)
+    importedPkgs.add(
+      ImportedPackage(
+        name = pn,
+        items = pkgItems,
+        imports = collectImportNames(stdFile.imports),
+        wholeImports = collectWholeImportNames(stdFile.imports)
+      )
+    )
+    if pn.length > 0 and not byPkg.containsKey(pn) {
+      byPkg.add(pn, stdFile)
+      pathByPkg.add(pn, sf.path)
+    }
+  }
+  NativeStdlib(importedPkgs = importedPkgs, byPkg = byPkg, pathByPkg = pathByPkg)
+}
+
+/// Type-check bundled stdlib package `pkg` (#7933), the counterpart of the
+/// user package's fatal check (#7910): the native binary is built from this
+/// source, so an ill-typed kernel or stdlib body must stop the build like
+/// an ill-typed package of the program does.  Only error-severity
+/// diagnostics are reported, labelled with the stdlib file's path; a
+/// stdlib warning is not the user's to act on.  The package is checked
+/// against the packages its own import closure reaches rather than the
+/// whole stdlib, which bounds the signature resolution each check repeats.
+/// Returns false after reporting an error.
+func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in NativeStdlib): Bool {
+  val visible = stdlibImportClosure(pkg, stdlib)
+  val tcRes = checkWithImportedPackagesForNative(file, visible)
+  val errors: List[Diagnostic] = newList()
+  for d in tcRes.diagnostics {
+    if d.severity == DiagError {
+      errors.add(d)
+    }
+  }
+  if errors.count == 0 {
+    return true
+  }
+  val label = match mapGet(stdlib.pathByPkg, pkg) {
+    case Some(p) -> if p.length > 0 { p } else { pkg }
+    case None -> pkg
+  }
+  DiagUtil.diagReportAndAbortInPkg(label, errors)
+  false
+}
+
+/// The stdlib packages `pkg` reaches through its imports, transitively,
+/// itself excluded: the scope a check of `pkg`'s own source needs.  Kept in
+/// stdlib load order, which the checker's last-registered-wins lookup
+/// depends on (kernels before the public files that re-export them; see
+/// `Lyric.Emitter.findStdlibSources`).
+func stdlibImportClosure(pkg: in String, stdlib: in NativeStdlib): List[ImportedPackage] {
+  val importsOf: Map[String, List[String]] = newMap()
+  for ip in stdlib.importedPkgs {
+    if not importsOf.containsKey(ip.name) {
+      importsOf.add(ip.name, ip.imports)
+    }
+  }
+  val reached: Map[String, Bool] = newMap()
+  val worklist: List[String] = newList()
+  worklist.add(pkg)
+  var wi = 0
+  while wi < worklist.count {
+    val n = worklist[wi]
+    wi = wi + 1
+    if not reached.containsKey(n) {
+      reached.add(n, true)
+      match mapGet(importsOf, n) {
+        case Some(ns) -> {
+          for m in ns {
+            worklist.add(m)
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  val visible: List[ImportedPackage] = newList()
+  for ip in stdlib.importedPkgs {
+    if ip.name != pkg and reached.containsKey(ip.name) {
+      visible.add(ip)
+    }
+  }
+  visible
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §3. Public entry point.
 // ─────────────────────────────────────────────────────────────────────────────
 /// Compile `source` to a native executable at `outputPath`.
 ///
-/// `stdlibSources` are the pre-read stdlib `.l` texts (native-kernel
-/// variant — see `Lyric.Emitter.findStdlibSourcesNative`).  `triple` ""
+/// `stdlibFiles` are the stdlib source files (native-kernel variant — see
+/// `Lyric.Emitter.findStdlibSourcesNative`).  `triple` ""
 /// means "the host triple per clang"; `optLevel` "" defaults to "2".
 /// Returns true when the binary was produced.
 pub func compileToNative(
   source: in String,
   outputPath: in String,
-  stdlibSources: in List[String],
+  stdlibFiles: in List[NativeStdlibFile],
   triple: in String,
   optLevel: in String,
 ): Bool {
   val noFlags: List[String] = newList()
   val noDefines: List[String] = newList()
-  compileToNativeWithFlags(source, outputPath, stdlibSources, triple, optLevel, noFlags, noDefines, "", true)
+  compileToNativeWithFlags(source, outputPath, stdlibFiles, triple, optLevel, noFlags, noDefines, "", true)
 }
 
 /// `compileToNative` with extra clang driver flags (e.g.
@@ -379,7 +505,7 @@ pub func compileToNative(
 pub func compileToNativeWithFlags(
   source: in String,
   outputPath: in String,
-  stdlibSources: in List[String],
+  stdlibFiles: in List[NativeStdlibFile],
   triple: in String,
   optLevel: in String,
   extraClangFlags: in List[String],
@@ -391,7 +517,6 @@ pub func compileToNativeWithFlags(
   // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
   // after parse, before anything indexes the items).
   val noFeatures: List[String] = newList()
-  val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
   val nativeDefines = BD.decodeDefines(defines)
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures, nativeDefines, path, noOrigins) {
@@ -412,39 +537,9 @@ pub func compileToNativeWithFlags(
 
   // Parse the stdlib once: type items for the typecheck,
   // whole files (cfg-erased, alias-rewritten) for bundling.
-  val importedPkgs: List[ImportedPackage] = newList()
-  val stdlibByPkg: Map[String, SourceFile] = newMap()
-  var si = 0
-  while si < stdlibSources.count {
-    val pr = parse(stdlibSources[si])
-    // Stdlib parse diagnostics are advisory (self-hosted parser gaps
-    // vs. the stdlib tree must not block user builds — see the
-    // matching note in Jvm.Bridge).
-    val stdCfg = Cfg.applyCfgErasure(nativeFeatures, noFeatures, pr.file)
-    // Invariant construction checkers (#7222), as the other bridges add them.
-    val stdFile = synthesizeInvariantCheckers(Aliases.rewriteFile(stdCfg.file))
-    val pkgItems: List[Item] = newList()
-    var ii = 0
-    while ii < stdFile.items.count {
-      if pipeIsCrossPackageItem(stdFile.items[ii]) {
-        pkgItems.add(stdFile.items[ii])
-      }
-      ii = ii + 1
-    }
-    val pn = dottedPath(stdFile.packageDecl.path)
-    importedPkgs.add(
-      ImportedPackage(
-        name = pn,
-        items = pkgItems,
-        imports = collectImportNames(stdFile.imports),
-        wholeImports = collectWholeImportNames(stdFile.imports)
-      )
-    )
-    if pn.length > 0 and not stdlibByPkg.containsKey(pn) {
-      stdlibByPkg.add(pn, stdFile)
-    }
-    si = si + 1
-  }
+  val stdlib = parseNativeStdlib(stdlibFiles)
+  val importedPkgs = stdlib.importedPkgs
+  val stdlibByPkg = stdlib.byPkg
 
   // Middle end (`Lyric.Pipeline` owns the order).  An error from any pass,
   // the type check included, fails the build before codegen, as on the
@@ -510,6 +605,9 @@ pub func compileToNativeWithFlags(
           // [contracts] enabled setting (#7748); stdlib authors'
           // contracts run in all cases. User package contracts are governed
           // by the manifest setting above (via MiddleEndOptions).
+          if not checkBundledStdlibPackage(pkg, f, stdlib) {
+            return false
+          }
           val stdElaborated = elaborateFileWithInterfaces(f, newList(), true)
           // `?`-propagation (#6954): a bundled Std.* package's own body can
           // use `?` just like the user file's, and `Lyric.LlvmCodegen`
@@ -697,7 +795,7 @@ func nativePkgOriginsAt(originsByPkg: in List[DiagUtil.PackageLineOrigins], i: i
 pub func compileProjectToNativeWithFlags(
   packages: in List[NativeSourcePackage],
   outputPath: in String,
-  stdlibSources: in List[String],
+  stdlibFiles: in List[NativeStdlibFile],
   triple: in String,
   optLevel: in String,
   extraClangFlags: in List[String],
@@ -726,7 +824,6 @@ pub func compileProjectToNativeWithFlags(
   }
 
   val noFeatures: List[String] = newList()
-  val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
   // Layer the manifest's `[package].version` in as the well-known `version`
   // define's fallback (#6821), matching
   // `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`'s identical
@@ -783,36 +880,12 @@ pub func compileProjectToNativeWithFlags(
   }
 
   // Parse the stdlib once (identical to the single-source path).
+  val stdlib = parseNativeStdlib(stdlibFiles)
   val importedPkgs: List[ImportedPackage] = newList()
-  val stdlibByPkg: Map[String, SourceFile] = newMap()
-  var si = 0
-  while si < stdlibSources.count {
-    val pr = parse(stdlibSources[si])
-    val stdCfg = Cfg.applyCfgErasure(nativeFeatures, noFeatures, pr.file)
-    // Invariant construction checkers (#7222), as the other bridges add them.
-    val stdFile = synthesizeInvariantCheckers(Aliases.rewriteFile(stdCfg.file))
-    val pkgItems: List[Item] = newList()
-    var ii = 0
-    while ii < stdFile.items.count {
-      if pipeIsCrossPackageItem(stdFile.items[ii]) {
-        pkgItems.add(stdFile.items[ii])
-      }
-      ii = ii + 1
-    }
-    val pn = dottedPath(stdFile.packageDecl.path)
-    importedPkgs.add(
-      ImportedPackage(
-        name = pn,
-        items = pkgItems,
-        imports = collectImportNames(stdFile.imports),
-        wholeImports = collectWholeImportNames(stdFile.imports)
-      )
-    )
-    if pn.length > 0 and not stdlibByPkg.containsKey(pn) {
-      stdlibByPkg.add(pn, stdFile)
-    }
-    si = si + 1
+  for ip in stdlib.importedPkgs {
+    importedPkgs.add(ip)
   }
+  val stdlibByPkg = stdlib.byPkg
 
   // Every own package also contributes its cross-package items to the SAME
   // `importedPkgs` pool every OTHER own package (and itself) type-checks
@@ -918,6 +991,9 @@ pub func compileProjectToNativeWithFlags(
           // `awaitInTryIsHazard = true`: native, like MSIL, keeps F0045's
           // guard enabled (#7198; see the `MiddleEndOptions` sites above).
           // Stdlib contracts are always enabled (#7748).
+          if not checkBundledStdlibPackage(pkg, f, stdlib) {
+            return false
+          }
           val stdElaborated = elaborateFileWithInterfaces(f, newList(), true)
           val stdProp = lowerPropagateFile(stdElaborated, true)
           if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {

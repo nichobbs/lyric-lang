@@ -9,7 +9,9 @@
 //! Scope: the text- and bytes-mode Result seams, existence probes,
 //! create/delete (files and recursive directory deletion), and
 //! directory enumeration (D-N-015: slices share the RC'd list repr, so
-//! the byte and path collections ride the ordinary list kernels).
+//! the byte and path collections ride the ordinary list kernels), plus
+//! the panicking directory entry points `Std.Directory` calls (end of
+//! file), built on those seams.
 //!
 //! `hostReadAllBytes` and `hostReadAllText` (D-progress-910 /
 //! issue #6961, #4752's residual-seam audit) back
@@ -398,5 +400,55 @@ pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
     Ok(value = ())
   } else {
     Err(error = IoError(path = path, message = "the directory could not be deleted"))
+  }
+}
+
+// ── Panicking directory entry points (Std.Directory) ────────────────────────
+// The managed twins' throwing `hostCreateDirectory`/`hostEnumerate*`/
+// `hostDeleteDirectory*`, which `Std.Directory` calls inside `try`/`catch`.
+// Here a failure panics with the Result seam's message instead: this target
+// has no unwinding (D-N-003), so those `Std.Directory` bodies do not lower on
+// native yet, and the panic is what an uncaught throw would do (#7933).
+// Enumeration yields `dir + "/" + name`, as `hostListFilesResult` does.
+func orPanic[T](r: in Result[T, IOError]): T {
+  match r {
+    case Ok(v) -> v
+    case Err(e) -> panic(IOError.message(e))
+  }
+}
+
+pub func hostCreateDirectory(path: in String): Unit {
+  orPanic(hostCreateDirResult(path))
+}
+
+pub func hostEnumerateFiles(path: in String): slice[String] {
+  orPanic(hostListFilesResult(path)).toArray()
+}
+
+pub func hostEnumerateDirectories(path: in String): slice[String] {
+  orPanic(hostListDirsResult(path)).toArray()
+}
+
+pub func hostEnumerateFileSystemEntries(path: in String): slice[String] {
+  val acc: List[String] = newList()
+  for n in orPanic(listEntryNamesNative(path)) {
+    acc.add(path + "/" + n)
+  }
+  acc.toArray()
+}
+
+// Non-recursive: rmdir(2) fails on a non-empty directory, as the managed
+// twins' `Directory.Delete(path)` / `File.delete()` do.
+pub func hostDeleteDirectory(path: in String): Unit {
+  if not removeDirOne(path) {
+    panic("the directory could not be deleted (it may not be empty): " + path)
+  }
+}
+
+pub func hostDeleteDirectoryRecursive(path: in String, recursive: in Bool): Unit {
+  if recursive {
+    orPanic(hostDeleteDirRecursiveResult(path))
+  } else {
+    hostDeleteDirectory(path)
   }
 }
