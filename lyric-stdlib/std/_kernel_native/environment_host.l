@@ -9,12 +9,13 @@
 //! Scope: variable get/set, the current working directory, the
 //! command-line arguments (`slice[String]` rides the shared list repr,
 //! D-N-015), the app base directory, and the two runtime-identity
-//! probes (below). Still missing (issue #4752's residual-seam audit,
-//! D-progress-910): `hostExit` (`extern func` with a `Never` return
-//! type has no native codegen lowering at all —
-//! `Lyric.LlvmCodegen: this type form is not yet supported for
-//! --target native (Phase N1)`, confirmed by direct repro; a compiler
-//! gap this kernel cannot work around, filed as issue #6901).
+//! probes (below), and `hostExit` over libc `exit(3)`.  `hostExit`'s
+//! `Never` result has no native codegen lowering yet (issue #6901: any
+//! function returning `Never` fails `Lyric.LlvmCodegen` with "this type
+//! form is not yet supported"), so `Std.Environment.exitCode` stays
+//! compile-time-unreachable on this target until that lands; the twin is
+//! declared with the managed twins' exact signature so `Std.Environment`
+//! type-checks in the native bundle (#7933).
 //!
 //! `hostAppBaseDirectory` (issue #6937) resolves `/proc/self/exe` via
 //! `lyric_env_app_base_directory_ok` — Linux only (this project's only
@@ -57,6 +58,10 @@ extern func rtEnvAppBaseDirectoryOk(outp: NativePtr[String]): Int = "lyric_env_a
 // main (lyric_args_set); the shared list repr IS the slice repr on
 // this target (D-N-015).
 extern func rtArgsGet(): slice[String] = "lyric_args_get"
+
+// Console output is unbuffered on this target (`lyric_console_write*` write
+// straight to the fd), so `exit(3)` loses no pending output.
+extern func rtExit(code: Int): Unit = "exit"
 
 @unsafe_ffi
 pub func hostGetVarOpt(key: in String): Option[String] {
@@ -102,6 +107,13 @@ pub func hostCurrentDirectory(): String {
 
 pub func hostGetCommandLineArgs(): slice[String] {
   rtArgsGet()
+}
+
+// Terminates the process.  `exit(3)` does not return; the panic only
+// gives the body its `Never` type.
+pub func hostExit(code: in Int): Never {
+  rtExit(code)
+  panic("Std.Environment.exitCode: exit(3) returned")
 }
 
 /// Directory containing the running executable (issue #6937), matching

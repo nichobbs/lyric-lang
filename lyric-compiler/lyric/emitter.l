@@ -656,8 +656,10 @@ pub func stdlibSourcesFromCompiledBundleJvm(): List[String] {
 // and the JVM-only kernels (`_kernel_jvm/`, `_kernel/jvm*.l`) are
 // dropped entirely.  The public surface loads unconditionally; items
 // gated to other targets erase via `@cfg(target = ...)` in the bridge.
-pub func findStdlibSourcesNative(): List[String] {
-  val sources: List[String] = newList()
+// Each file keeps its path: the bridge type-checks the bundled packages,
+// and an error in one names the file (#7933).
+pub func findStdlibSourcesNative(): List[LlvmBridge.NativeStdlibFile] {
+  val files: List[LlvmBridge.NativeStdlibFile] = newList()
   var stdlibDir = ""
   val envOverride = Environment.getVarOrDefault("LYRIC_STD_PATH", "")
   if envOverride.length > 0 and File.dirExists(envOverride) {
@@ -670,22 +672,26 @@ pub func findStdlibSourcesNative(): List[String] {
     stdlibDir = walkUpForStdlib(Environment.currentDirectory())
   }
   if stdlibDir.length == 0 {
-    return sources
+    return files
   }
-  val nativeKernel = Path.join(stdlibDir, "_kernel_native")
-  val nativeBasenames = appendLyricFilesCollect(sources, nativeKernel, false)
-  // `_kernel/` fallback: skip the files `_kernel_native/` supersedes AND
-  // the JVM-only jvm*.l files.
   val texts: List[String] = newList()
   val paths: List[String] = newList()
-  collectLyricFileTexts(Path.join(stdlibDir, "_kernel"), nativeBasenames, true, texts, paths)
-  var ki = 0
-  while ki < texts.count {
-    sources.add(texts[ki])
-    ki = ki + 1
+  val noExclude: List[String] = newList()
+  collectLyricFileTexts(Path.join(stdlibDir, "_kernel_native"), noExclude, false, texts, paths)
+  val nativeBasenames: List[String] = newList()
+  for p in paths {
+    nativeBasenames.add(Path.basename(p))
   }
-  appendLyricFiles(sources, stdlibDir, false)
-  sources
+  // `_kernel/` fallback: skip the files `_kernel_native/` supersedes AND
+  // the JVM-only jvm*.l files.
+  collectLyricFileTexts(Path.join(stdlibDir, "_kernel"), nativeBasenames, true, texts, paths)
+  collectLyricFileTexts(stdlibDir, noExclude, false, texts, paths)
+  var i = 0
+  while i < texts.count {
+    files.add(LlvmBridge.NativeStdlibFile(path = paths[i], source = texts[i]))
+    i = i + 1
+  }
+  files
 }
 
 // Read every `*.l` file in `dir` (non-recursive), sort the matches by
@@ -3157,7 +3163,7 @@ pub func emitNative(req: in EmitRequest, triple: in String, optLevel: in String,
 func emitNativeInProcess(
   req: in EmitRequest, triple: in String, optLevel: in String, extraLibs: in List[String]
 ): EmitResult {
-  val stdlibSources = findStdlibSourcesNative()
+  val stdlibFiles = findStdlibSourcesNative()
   // `[native].extra_libs` (N6.4) become `-l<name>` clang flags, threaded
   // through the existing extra-clang-flags slot on compileToNativeWithFlags.
   val clangFlags: List[String] = newList()
@@ -3177,7 +3183,7 @@ func emitNativeInProcess(
     LlvmBridge.compileToNativeWithFlags(
       req.source,
       req.outputPath,
-      stdlibSources,
+      stdlibFiles,
       triple,
       optLevel,
       clangFlags,
@@ -3282,7 +3288,7 @@ pub func emitNativeProject(
     }
     pi = pi + 1
   }
-  val stdlibSources = findStdlibSourcesNative()
+  val stdlibFiles = findStdlibSourcesNative()
   val clangFlags: List[String] = newList()
   for lib in extraLibs {
     clangFlags.add("-l" + lib)
@@ -3293,7 +3299,7 @@ pub func emitNativeProject(
     LlvmBridge.compileProjectToNativeWithFlags(
       nativePkgs,
       outputPath,
-      stdlibSources,
+      stdlibFiles,
       triple,
       optLevel,
       clangFlags,

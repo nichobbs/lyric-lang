@@ -124,6 +124,19 @@ echo "Native console-stdout-bytes-test (--target native) passed"
 # project builds, with no binary written (#7910).
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-type-error-gate.sh
 echo "Native type-error gate (--target native) passed"
+
+# The bundled stdlib packages are type-checked too: every _kernel_native/ and
+# public Std package checks clean, and an ill-typed kernel stops the build
+# with a diagnostic naming its file (#7933).
+LYRIC_BIN="$lyric_bin" bash scripts/ci/native-stdlib-type-check-gate.sh
+
+# The native kernel twins that gate added (#7933): Std.ProcessCapture's
+# string-argv capture, the Std.Directory host entry points, and the stdin
+# reader, the last with the same controlled-stdin harness as dotnet and JVM.
+"$lyric_bin" test lyric-stdlib/tests/native_kernel_twins_tests.l --target native
+echo "Native native_kernel_twins_tests.l (--target native) passed"
+bash scripts/ci/console-stdin-test.sh "$lyric_bin" --target native
+echo "Native console-stdin-test (--target native) passed"
 # lyric-stdlib/tests/hash_tests.l does not run here yet: Std.Hash has no
 # native kernel and sha512OfFile's try/catch cannot lower on native
 # (D-N-003). Tracked in #7684, which adds it to this script.

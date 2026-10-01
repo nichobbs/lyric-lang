@@ -66,12 +66,6 @@ package Std.HttpEngine.Hpack
 import Std.Core
 import Std.Collections
 import Std.String
-// Aliased `as Char` for readability at call sites that spell it out
-// (`Char.fromInt`, mentioned in `octetsToString`'s doc comment below), but
-// still load-bearing for the bare `toInt(c)` call in `stringToOctets` —
-// removing this import breaks that unqualified resolution (confirmed by
-// trying it: T0123 at codegen, `toInt` legitimately type-checks but has no
-// resolvable call target once the import is gone).
 import Std.Char as Char
 import Std.Encoding
 import Std.HttpEngine
@@ -447,7 +441,7 @@ pub func stringToOctets(s: in String): Result[slice[Byte], HpackError] {
     match charAt(s, i) {
       case None -> return Err(error = NonOctetValue(codepoint = -1))
       case Some(c) -> {
-        val cp = toInt(c)
+        val cp = Char.toInt(c)
         if cp > 255 or cp < 0 {
           return Err(error = NonOctetValue(codepoint = cp))
         }

@@ -12,6 +12,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +90,127 @@ void lyric_console_write_line(int32_t fd, LyricString* s) {
     } else if (n == len) {
         write_all(fd, &nl, 1);
     }
+}
+
+/* ── Console input ───────────────────────────────────────────────────
+ * Every read goes straight to fd 0 with no user-space buffer, so a line
+ * read consumes nothing past its terminator and the raw-byte reader never
+ * misses bytes a line read could have buffered.  The one exception is the
+ * byte after a bare '\r': a line ending is "\n", "\r\n" or a lone '\r', so
+ * the line reader must look one byte ahead, and keeps that byte here for
+ * the next read of either kind.  Std.Console allows one stdin reader per
+ * process, so this state is not locked. */
+static int32_t stdin_pending = -1;
+
+/* One read(2) of up to `cap` bytes, retried on EINTR: >0 bytes, 0 at end
+ * of stream, -1 on error. */
+static ssize_t stdin_read_raw(uint8_t* buf, size_t cap) {
+    for (;;) {
+        ssize_t n = read(STDIN_FILENO, buf, cap);
+        if (n >= 0) return n;
+        if (errno != EINTR) return -1;
+    }
+}
+
+int32_t lyric_stdin_wait(int32_t timeout_ms) {
+    if (stdin_pending >= 0) return 1;
+    int64_t deadline = timeout_ms >= 0
+        ? lyric_monotonic_nanos() + (int64_t)timeout_ms * 1000000
+        : 0;
+    for (;;) {
+        int wait_ms = -1;
+        if (timeout_ms >= 0) {
+            int64_t left = deadline - lyric_monotonic_nanos();
+            wait_ms = left <= 0 ? 0 : (int)((left + 999999) / 1000000);
+        }
+        struct pollfd pfd;
+        pfd.fd = STDIN_FILENO;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        int rc = poll(&pfd, 1, wait_ms);
+        if (rc > 0) {
+            /* End of stream (POLLHUP) and a pending error both make the
+             * next read return at once, so they count as ready. */
+            return 1;
+        }
+        if (rc == 0) return 0;
+        if (errno != EINTR) return -1;
+    }
+}
+
+LyricList* lyric_stdin_read(int32_t max, int32_t* ok) {
+    if (max <= 0) {
+        *ok = 1;
+        return lyric_list_from_bytes(NULL, 0);
+    }
+    uint8_t* buf = (uint8_t*)malloc((size_t)max);
+    if (!buf) lyric_panic_msg("out of memory reading stdin", "lyric_posix.c", __LINE__);
+    int64_t n = 0;
+    if (stdin_pending >= 0) {
+        buf[n++] = (uint8_t)stdin_pending;
+        stdin_pending = -1;
+    } else {
+        ssize_t got = stdin_read_raw(buf, (size_t)max);
+        if (got < 0) {
+            free(buf);
+            *ok = 0;
+            return lyric_list_from_bytes(NULL, 0);
+        }
+        n = (int64_t)got;
+    }
+    LyricList* list = lyric_list_from_bytes(buf, n);
+    free(buf);
+    *ok = 1;
+    return list;
+}
+
+int32_t lyric_stdin_read_line(LyricString** out) {
+    int64_t cap = 128;
+    int64_t len = 0;
+    uint8_t* buf = (uint8_t*)malloc((size_t)cap);
+    if (!buf) lyric_panic_msg("out of memory reading stdin", "lyric_posix.c", __LINE__);
+    int32_t result = 1;
+    for (;;) {
+        uint8_t b;
+        if (stdin_pending >= 0) {
+            b = (uint8_t)stdin_pending;
+            stdin_pending = -1;
+        } else {
+            ssize_t got = stdin_read_raw(&b, 1);
+            if (got < 0) {
+                result = -1;
+                break;
+            }
+            if (got == 0) {
+                if (len == 0) result = 0;
+                break;
+            }
+        }
+        if (b == '\n') break;
+        if (b == '\r') {
+            uint8_t next;
+            ssize_t got = stdin_read_raw(&next, 1);
+            if (got < 0) {
+                result = -1;
+                break;
+            }
+            if (got == 1 && next != '\n') stdin_pending = next;
+            break;
+        }
+        if (len == cap) {
+            cap *= 2;
+            uint8_t* grown = (uint8_t*)realloc(buf, (size_t)cap);
+            if (!grown) {
+                free(buf);
+                lyric_panic_msg("out of memory reading stdin", "lyric_posix.c", __LINE__);
+            }
+            buf = grown;
+        }
+        buf[len++] = b;
+    }
+    if (result == 1) *out = lyric_string_from_literal(buf, len);
+    free(buf);
+    return result;
 }
 
 int32_t lyric_o_rdonly(void) { return O_RDONLY; }

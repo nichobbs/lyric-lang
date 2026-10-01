@@ -7,14 +7,20 @@
 //! which loop on EINTR/partial writes (`println` is one `writev`);
 //! console output stays a best-effort effect per Std.Console's contract.
 //!
-//! Console INPUT (`hostConsoleRead` / `hostConsoleReadLine` / `hostReadLineOpt`,
-//! #4816) is not yet available on the native target: `String?` nullable
-//! returns need the Phase N2 heap-type lowering.  `Std.Console.readLine` is
-//! therefore compile-time-unreachable on native until then (tracked in the
-//! docs/10 native milestone notes).
-@axiom("POSIX write(2) via lyric-rt conforms to its documented contract")
+//! Console input reads fd 0 through `lyric_stdin_*` (#7933): the line seam
+//! `hostReadLineOpt` and the raw-byte reader (`hostOpenStdin` /
+//! `hostStdinReadResult` / `hostStdinReadWithinResult`, #7451) behind
+//! `Std.Console.openStdinReader`/`readStdin`/`readStdinWithin`.  A bounded
+//! read polls for readiness first, so a read that times out consumes
+//! nothing and the bytes that arrive later go to the next read, as the
+//! managed twins' outstanding background read delivers them.
+//! `Std.Console.readLine` itself still does not lower here: its body
+//! catches a host `Bug`, and this target has no unwinding (D-N-003).
+@axiom("POSIX read(2), write(2) and poll(2) via lyric-rt conform to their documented contracts")
 @io
 package Std.ConsoleHost
+
+import Std.Core
 
 extern func consoleWriteFd(fd: Int, s: String): Unit = "lyric_console_write"
 
@@ -46,4 +52,70 @@ pub func hostConsoleErrorWrite(text: in String): Unit {
 
 pub func hostConsoleErrorWriteLine(text: in String): Unit {
   consoleWriteLineFd(2, text)
+}
+
+extern func rtStdinWait(timeoutMs: Int): Int = "lyric_stdin_wait"
+
+extern func rtStdinRead(max: Int, okOut: NativePtr[Int]): slice[Byte] = "lyric_stdin_read"
+
+extern func rtStdinReadLine(outp: NativePtr[String]): Int = "lyric_stdin_read_line"
+
+@unsafe_ffi
+pub func hostReadLineOpt(): Option[String] {
+  var line: String = ""
+  val rc = rtStdinReadLine(nativeAddrOf(line))
+  if rc == 1 {
+    Some(value = line)
+  } else if rc == 0 {
+    None
+  } else {
+    panic("Std.Console.readLine: stdin could not be read")
+  }
+}
+
+/// Raw-byte reader over this process's standard input.
+pub record StdinHandle {
+  bufferSize: Int
+}
+
+/// Outcome of one stdin read.
+pub union HostStdinRead {
+  case HostStdinBytes(bytes: slice[Byte])
+  case HostStdinEof
+  case HostStdinTimedOut
+}
+
+pub func hostOpenStdin(): StdinHandle {
+  StdinHandle(bufferSize = 65536)
+}
+
+@unsafe_ffi
+func readStdinChunk(h: in StdinHandle): Result[HostStdinRead, String] {
+  var ok: Int = 0
+  val bytes = rtStdinRead(h.bufferSize, nativeAddrOf(ok))
+  if ok != 1 {
+    Err(error = "stdin could not be read")
+  } else if bytes.length == 0 {
+    Ok(value = HostStdinEof)
+  } else {
+    Ok(value = HostStdinBytes(bytes = bytes))
+  }
+}
+
+/// Block until stdin yields at least one byte or reaches end of stream.
+/// Never `HostStdinTimedOut`.
+pub func hostStdinReadResult(h: in StdinHandle): Result[HostStdinRead, String] {
+  readStdinChunk(h)
+}
+
+/// Like `hostStdinReadResult`, but waits at most `timeoutMs` milliseconds.
+pub func hostStdinReadWithinResult(h: in StdinHandle, timeoutMs: in Int): Result[HostStdinRead, String] {
+  val ready = rtStdinWait(timeoutMs)
+  if ready == 0 {
+    Ok(value = HostStdinTimedOut)
+  } else if ready < 0 {
+    Err(error = "stdin could not be polled")
+  } else {
+    readStdinChunk(h)
+  }
 }

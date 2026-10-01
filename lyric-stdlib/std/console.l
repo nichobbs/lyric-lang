@@ -106,8 +106,9 @@ pub func readAll(): Result[String, IOError] {
 /// without a bound waiting for a peer. It reads stdin directly: do not mix it
 /// with `readLine`/`readAll`, and open at most one per process.
 ///
-/// Available on `--target dotnet` and `--target jvm`. Native console input
-/// is not available yet (see `_kernel_native/console_host.l`).
+/// Available on every target; on `--target native` a bounded read polls
+/// standard input instead of leaving a background read outstanding, with
+/// the same result (see `_kernel_native/console_host.l`).
 @stable(since = "1.2")
 pub record StdinReader {
   handle: StdinHandle

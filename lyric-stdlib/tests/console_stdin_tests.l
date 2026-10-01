@@ -11,6 +11,9 @@
 //!   2. the bytes that arrive afterwards are returned by the next read — the
 //!      timed-out read is resumed, not lost;
 //!   3. end of stream is reported as such, by both read forms.
+//!
+//! Runs on every target; `--target native` omits only the negative-timeout
+//! check (see `checkNegativeTimeoutRejected`).
 package Std.Console.StdinTests
 
 import Std.Core
@@ -20,6 +23,23 @@ import Std.Environment
 import Std.File
 import Std.Testing
 import Std.Time
+
+// `readStdinWithin`'s `requires: timeoutMs >= 0` panics on a negative
+// timeout.  Observing that needs a caught panic, which `--target native`
+// cannot lower (D-N-003: no unwinding), so the native build leaves it out.
+@cfg(target = "dotnet")
+func checkNegativeTimeoutRejected(r: in StdinReader): Unit {
+  assertPanics("readStdinWithin with a negative timeout", { -> val _ = readStdinWithin(r, -1) })
+}
+
+@cfg(target = "jvm")
+func checkNegativeTimeoutRejected(r: in StdinReader): Unit {
+  assertPanics("readStdinWithin with a negative timeout", { -> val _ = readStdinWithin(r, -1) })
+}
+
+@cfg(target = "native")
+func checkNegativeTimeoutRejected(r: in StdinReader): Unit {
+}
 
 func main(): Int {
   val marker = match getVar("LYRIC_STDIN_TEST_MARKER") {
@@ -40,7 +60,7 @@ func main(): Int {
   val waitedMs = (monotonicNanos() - start) / 1000000i64
   assertTrue(waitedMs >= 250i64, "the bounded read waited for its deadline")
   assertTrue(waitedMs < 10000i64, "the bounded read returned promptly after its deadline")
-  assertPanics("readStdinWithin with a negative timeout", { -> val _ = readStdinWithin(r, -1) })
+  checkNegativeTimeoutRejected(r)
 
   match writeText(marker, "ready") {
     case Ok(_) -> ()
