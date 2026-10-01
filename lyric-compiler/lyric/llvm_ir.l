@@ -183,6 +183,10 @@ pub func datalayoutForTriple(triple: in String): String {
     } else {
       "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
     }
+  } else if Str.startsWith(triple, "wasm32") {
+    // Pinned (rather than left to clang) so the 4-byte-pointer assumption
+    // behind `ptrBytesForTriple` is explicit; matches clang 18's wasm32 layout.
+    "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"
   } else {
     // Unknown triple: emit no datalayout line and let clang derive it
     // from the triple.  Signalled by the empty string.

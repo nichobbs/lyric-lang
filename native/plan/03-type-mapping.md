@@ -48,10 +48,11 @@ at offset 8 on both).  Fields declared after the header start at GEP index 3.
 ```llvm
 %LyricString = type { i32, i32, i8*, i64, i64 }
 ; [0] i32  rc
-; [1] i8*  dtor (always @lyric_string_dtor)
-; [2] i64  len  (byte count, not character count)
-; [3] i64  cap  (allocated bytes for data, excludes header)
-; [4..] UTF-8 data follows inline (allocated as one contiguous block)
+; [1] i32  weak
+; [2] i8*  dtor (always @lyric_string_dtor)
+; [3] i64  len  (byte count, not character count)
+; [4] i64  cap  (allocated bytes for data, excludes header)
+; [5..] UTF-8 data follows inline (allocated as one contiguous block)
 ```
 
 Lyric values of type `String` are `%LyricString*` — a pointer to this struct.
@@ -201,8 +202,9 @@ carry an ARC header:
 ```llvm
 %Lyric.MyString = type { i32, i32, i8*, i8* }
 ; [0] i32  rc
-; [1] i8*  dtor
-; [2] i8*  value (the wrapped %LyricString*)
+; [1] i32  weak
+; [2] i8*  dtor
+; [3] i8*  value (the wrapped %LyricString*)
 ```
 
 ---
@@ -240,9 +242,10 @@ closure type `func(Int): String` that captures `prefix: String`:
 
 %Lyric.Closure_0 = type { i32, i32, i8*, i8*, %LyricString* }
 ; [0] i32           rc
-; [1] i8*           dtor
-; [2] i8*           fn_ptr  (points to @closure_body_0(i8* env, i32 arg): i8*)
-; [3] %LyricString* prefix (retained on creation, released in dtor)
+; [1] i32           weak
+; [2] i8*           dtor
+; [3] i8*           fn_ptr  (points to @closure_body_0(i8* env, i32 arg): i8*)
+; [4] %LyricString* prefix (retained on creation, released in dtor)
 ```
 
 All closures share the same calling convention: **the first argument is always
@@ -255,17 +258,18 @@ wrapper closure allocated on the heap.
 ```llvm
 %LyricFn_Int_String = type { i32, i32, i8*, i8*, i8* }
 ; [0] i32  rc
-; [1] i8*  dtor
-; [2] i8*  fn_ptr (void (*)(i8* env, <args>))
-; [3] i8*  env_ptr (the captured environment struct, or null for plain fn refs)
+; [1] i32  weak
+; [2] i8*  dtor
+; [3] i8*  fn_ptr (void (*)(i8* env, <args>))
+; [4] i8*  env_ptr (the captured environment struct, or null for plain fn refs)
 ```
 
 At a call site `f(42)`:
 
 ```llvm
-%fn_ptr_loc = getelementptr inbounds %LyricFn_Int_String, ..., 0, 2
+%fn_ptr_loc = getelementptr inbounds %LyricFn_Int_String, ..., 0, 3
 %fn_ptr     = load i8*, i8** %fn_ptr_loc
-%env_ptr_loc = getelementptr ..., 0, 3
+%env_ptr_loc = getelementptr ..., 0, 4
 %env_ptr    = load i8*, i8** %env_ptr_loc
 %typed_fn   = bitcast i8* %fn_ptr to i8* (i8*, i32)*
 %result     = call i8* %typed_fn(i8* %env_ptr, i32 42)
@@ -380,9 +384,10 @@ from field types):
 ```llvm
 %Lyric.Tuple2_Int_String = type { i32, i32, i8*, i32, %LyricString* }
 ; [0] i32           rc
-; [1] i8*           dtor
-; [2] i32           _0 (first element)
-; [3] %LyricString* _1 (second element, retained in constructor)
+; [1] i32           weak
+; [2] i8*           dtor
+; [3] i32           _0 (first element)
+; [4] %LyricString* _1 (second element, retained in constructor)
 ```
 
 ---
@@ -404,10 +409,11 @@ from field types):
 ; List[Int] (RC heap, mutable):
 %Lyric.List__Int = type { i32, i32, i8*, i32*, i64, i64 }
 ; [0] i32   rc
-; [1] i8*   dtor
-; [2] i32*  data (heap-allocated array of Int)
-; [3] i64   len
-; [4] i64   cap
+; [1] i32   weak
+; [2] i8*   dtor
+; [3] i32*  data (heap-allocated array of Int)
+; [4] i64   len
+; [5] i64   cap
 ```
 
 `List[T]` where T is a reference type (e.g., `List[String]`):
@@ -433,9 +439,10 @@ The dtor iterates all `len` elements and releases each.
 ```llvm
 %Lyric.Counter = type { i32, i32, i8*, [40 x i8], i32 }
 ; [0] i32        rc
-; [1] i8*        dtor
-; [2] [40 x i8]  mutex (pthread_mutex_t, 40 bytes on Linux x86-64)
-; [3] i32        val
+; [1] i32        weak
+; [2] i8*        dtor
+; [3] [40 x i8]  mutex (pthread_mutex_t, 40 bytes on Linux x86-64)
+; [4] i32        val
 ```
 
 The mutex is embedded inline. `lyric-rt` provides `lyric_mutex_init`,
