@@ -11,6 +11,7 @@
 package Customers.Domain
 
 import Std.Core
+import Std.Collections
 
 pub type CustomerId = Long range 1 ..= 9_999_999
 
@@ -50,4 +51,19 @@ pub record Customer {
 /// to check it.
 pub func keyAccountLimitOk(tier: in Tier, limit: in CreditLimit): Bool {
   return match tier { case Key -> limit.toLong() >= 10_000; case _ -> true }
+}
+
+/// The orders a customer listing can be sorted in.
+pub enum CustomerOrder {
+  case ById
+  case ByName
+  case ByEmail
+  case ByTier
+}
+
+/// A page of a customer listing: `customers` from some offset, out of
+/// `total` customers in the whole listing.
+pub record CustomerPage {
+  total: Int
+  customers: List[Customer]
 }

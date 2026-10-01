@@ -27,7 +27,7 @@
 package Ui.Session
 
 import Std.Core
-import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, Prop, WidgetKind, Step, UiEffect, Navigate, Back, Confirm, Notify, toastLevelName, eventName, fire, mapView, childrenOf, viewOf}
+import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, Prop, WidgetKind, Step, UiEffect, Navigate, Back, Confirm, Notify, toastLevelName, eventName, fire, accepts, mapView, childrenOf, viewOf}
 import Ui.Diff.{Patch, SetProp, diff, replaceAll, keyOf, resolveLazy}
 import Ui.Protocol.{Event, NodeRef, At, Keyed, ValueEcho, refsKey, pathKey}
 import Std.Collections
@@ -127,6 +127,9 @@ pub func handleEvent[M, Msg, E](p: in Program[M, Msg, E], s: in Session[M, Msg],
   val current: View[SessionMsg[Msg]] = s.tree
   val found: Option[Handler[SessionMsg[Msg]]] = handlerAt(current, ev.path, ev.name)
   val handler: Handler[SessionMsg[Msg]] = match found { case Some(h) -> h; case None -> return unchanged(p, s, true) }
+  if not accepts(handler, ev.data) {
+    return unchanged(p, s, true)
+  }
   val ivs = if ev.inputVersion > 0 then recordInputVersion(s.inputVersions, ev.path, ev.inputVersion) else s.inputVersions
   val s1: Session[M, Msg] = withInputVersions(s, ivs)
   val fired: SessionMsg[Msg] = fire(handler, ev.data)

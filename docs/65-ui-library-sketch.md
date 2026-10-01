@@ -3,8 +3,8 @@
 **Status:** Specced in D137. Phases U1 (pure core, `lyric-forms`, example),
 U2 (server-driven web host and TypeScript runtime), U3 (enforced
 `[layers]`, D149) and U4 (`Forms.Derive` and `Ui.Routes`, D151) are
-implemented, as are U6's prerendered first paint (D152) and `Lazy`
-subtrees (D153); see
+implemented, as is U6 (prerendered first paint, D152; `Lazy` subtrees,
+D153; the data grid, D154); see
 §14 for the phase plan and §15 for what the first implementation surfaced
 and how each finding was resolved. The open questions Q-UI-001 to Q-UI-011
 are resolved (§16): Q-UI-011 by the compiler fixes of §15, the others by
@@ -201,9 +201,9 @@ logic = { may_import = ["domain", "logic", "pure"], async = false }
 |---|---|---|
 | `domain` | `domain`, `pure` | everything else |
 | `ports` | `domain`, `pure` | `Ui.*`, `effects`, `view` |
-| `logic` | `domain`, `logic`, `pure`, `Ui.Core` | `Ui` widgets, `ports`, `effects`, `io`; no `async func` |
-| `effects` | `domain`, `logic`, `ports`, `pure`, `io`, `Ui.Core` | `Ui` widgets, `view` |
-| `view` | `domain`, `logic`, `view`, `pure`, `Ui.Core`, `Ui.Widgets`, `Ui.Forms` | `ports`, `effects`, `io`; no `async func` |
+| `logic` | `domain`, `logic`, `pure`, `Ui.Core`, `Ui.Routing`, `Ui.Grid` | `Ui` widgets, `ports`, `effects`, `io`; no `async func` |
+| `effects` | `domain`, `logic`, `ports`, `pure`, `io`, `Ui.Core`, `Ui.Routing`, `Ui.Grid` | `Ui` widgets, `view` |
+| `view` | `domain`, `logic`, `view`, `pure`, `Ui.Core`, `Ui.Widgets`, `Ui.Forms`, `Ui.Routing`, `Ui.Grid` | `ports`, `effects`, `io`; no `async func` |
 | unlayered (`app`) | anything | nothing |
 
 `Ui.Core` holds only data types (`View`, `Step`, `UiEffect`, `Event`); it is
@@ -848,6 +848,21 @@ A host widget with its own sub-protocol: the host reports the visible row
 window; the grid issues `FetchRows(range, sort, filter)` effects; results are
 patched in. This is the single largest component for line-of-business use.
 
+**Implemented (D154)** over ordinary events, with no new protocol
+messages:
+
+- **Widget.** `Widgets.dataGrid(spec, rows, onViewport, onSort)` renders
+  `spec.total` rows, of which only `rows` (from `spec.first`) exist; the
+  rest are padding, so the scrollbar spans them all.
+- **Events.** The host reports `viewport` (`"first,count"`) when the rows
+  it shows are not all rendered, and `sort` (the column id) for a click on
+  a sortable header. Malformed viewport data is dropped.
+- **State.** `Ui.Grid` (logic layer) turns events into `RowQuery`s, which
+  the screen runs as its own fetch effect, and applies only the page
+  answering the latest query.
+- **Accessibility.** ARIA grid roles, row and column counts, `aria-sort`;
+  arrow keys move between rows.
+
 ### 13.7 Offline and optimistic updates
 
 Not planned for the server-driven host. The WASM host makes offline use
@@ -874,7 +889,7 @@ custom properties (design tokens) with light and dark sets.
 | U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Implemented (D149, every target); `examples/ui-customers` builds under the `ui` preset |
 | U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Implemented (D151); request schema 2; the example derives its form and routes on both targets |
 | U5 | Desktop webview host (native + MSIL) | Planned |
-| U6 | Data grid, `Lazy`, SSR first paint | SSR first paint (D152) and `Lazy` (D153) implemented on both targets; the data grid planned |
+| U6 | Data grid, `Lazy`, SSR first paint | Implemented on both targets: SSR first paint (D152), `Lazy` (D153), the data grid (D154) |
 | U7 | Client WASM host | Depends on `docs/35` |
 
 ---

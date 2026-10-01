@@ -184,6 +184,44 @@ test "cross-package generic record Box[Int] construct and read (jvm)" {
   assertEqual(Str.trim(captured.stdout), "42", "cpgen_box_int_jvm: stdout = 42")
 }
 
+// A consumer record's field typed as a restored generic record, read into a
+// local, then the record's own `List[T]` field indexed: the field is stored
+// as `Object`, so the read narrows to the record's class and the element to
+// `Int` (#7918; it failed J008 on `n * n`).
+test "a field typed as a restored generic record narrows its elements (jvm)" {
+  val tmpDir = freshTempDir("cpgen-field-rec")
+  val producerSrc = "package CpGenJvm.RowsLib\n" + "\n" + "import Std.Collections\n" + "\n" +
+    "pub record Rows[T] { items: List[T] }\n"
+  val producerJar = buildJar(tmpDir, "CpGenJvm.RowsLib", producerSrc, "CpGenJvm.RowsLib")
+  val consumerSrc = "package CpGenJvm.RowsApp\n" + "\n" + "import Std.Collections\n" + "import CpGenJvm.RowsLib\n" +
+    "\n" +
+    "record Model { rows: Rows[Int] }\n" +
+    "\n" +
+    "func square(m: in Model): Int {\n" +
+    "  val r = m.rows\n" +
+    "  val n = r.items[1]\n" +
+    "  return n * n\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val xs: List[Int] = newList()\n" +
+    "  xs.add(6)\n" +
+    "  xs.add(7)\n" +
+    "  println(square(Model(rows = Rows(items = xs))))\n" +
+    "}\n"
+  val captured = buildAndRunConsumer(
+    tmpDir,
+    "CpGenJvm.RowsApp",
+    consumerSrc,
+    "CpGenJvm.RowsApp",
+    "CpGenJvm.RowsLib",
+    producerJar
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_field_rec_jvm: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "49", "cpgen_field_rec_jvm: stdout = 49")
+}
+
 // Generic RECORD: Box[String] with a reference-typed field.
 test "cross-package generic record Box[String] construct and read (jvm)" {
   val tmpDir = freshTempDir("cpgen-box-str")

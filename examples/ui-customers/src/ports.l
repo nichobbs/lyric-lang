@@ -6,11 +6,12 @@
 package Customers.Ports
 
 import Std.Core
-import Customers.Domain.{Customer, CustomerId}
+import Customers.Domain.{Customer, CustomerId, CustomerOrder, CustomerPage}
 import Std.Collections
 
 pub interface CustomerRepository {
   async func find(id: in CustomerId): Result[Customer, String]
   async func save(c: in Customer): Result[Customer, String]
-  async func all(): Result[List[Customer], String]
+  /// `count` customers from index `first` of the listing in `order`.
+  async func page(first: in Int, count: in Int, order: in CustomerOrder, ascending: in Bool): Result[CustomerPage, String]
 }

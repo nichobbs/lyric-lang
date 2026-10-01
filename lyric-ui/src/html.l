@@ -13,8 +13,10 @@ package Ui.Html
 import Std.Core
 import Std.Collections
 import Std.String
+import Std.Parse.{parseOptInt}
 import Ui.Core.{Prop}
 import Ui.Diff.{WireNode, WElement, WText, WEmpty}
+import Std.JsonValue.{JsonValue, JArray, parseValue, getString}
 
 /// `n` as HTML.  Element ids (`lui-s1`, `lui-s2`, ...) are numbered in
 /// document order, so the same tree always renders the same text.
@@ -248,6 +250,15 @@ func element(
   if kind == "tableCell" {
     return wrap(if flag(props, "header") then "th" else "td", "lui-table-cell", props, "", children, ids)
   }
+  if kind == "dataGrid" {
+    return dataGrid(props, children, ids)
+  }
+  if kind == "gridRow" {
+    return gridRow(props, children, ids, 0)
+  }
+  if kind == "gridCell" {
+    return wrap("div", "lui-grid-cell", props, attr("role", "gridcell"), children, ids)
+  }
   if kind == "form" {
     return wrap("form", "lui-form", props, " novalidate", children, ids)
   }
@@ -354,4 +365,121 @@ func field(props: in List[Prop], children: in List[WireNode], ids: in IdCounter)
     ">" +
     body +
     "</div></div>"
+}
+
+// A column of a data grid, as its `columns` property describes it.
+record HeaderCell {
+  id: String
+  title: String
+  sort: String
+}
+
+// The grid's columns; an unreadable property gives none.
+func gridColumns(props: in List[Prop]): List[HeaderCell] {
+  val acc: List[HeaderCell] = newList()
+  val items = match parseValue(text(props, "columns")) {
+    case Ok(v) -> match v { case JArray(xs) -> xs; case _ -> return acc }
+    case Err(_) -> return acc
+  }
+  for item in items {
+    val id = match getString(item, "id") { case Some(v) -> v; case None -> "" }
+    val title = match getString(item, "title") { case Some(v) -> v; case None -> "" }
+    val sort = match getString(item, "sort") { case Some(v) -> v; case None -> "" }
+    acc.add(HeaderCell(id = id, title = title, sort = sort))
+  }
+  return acc
+}
+
+// A non-negative integer property, or `fallback`.
+func intProp(props: in List[Prop], name: in String, fallback: in Int): Int {
+  return match prop(props, name) {
+    case Some(v) -> match parseOptInt(v) {
+      case Some(n) -> if n >= 0 then n else fallback
+      case None -> fallback
+    }
+    case None -> fallback
+  }
+}
+
+// A data grid, laid out as the runtime's renderer lays it out: a header row,
+// then a scrolling body whose padding stands in for the rows not rendered,
+// so the scrollbar spans all `rowCount` rows.
+func dataGrid(props: in List[Prop], children: in List[WireNode], ids: in IdCounter): String {
+  val cols = gridColumns(props)
+  val total = intProp(props, "rowCount", 0)
+  val first = intProp(props, "firstRow", 0)
+  val rowHeight = intProp(props, "rowHeight", 36)
+  val visible = intProp(props, "visibleRows", 10)
+  val rest = total - first - children.count
+  val after = if rest > 0 then rest else 0
+  var header = ""
+  for c in cols {
+    if c.sort.length > 0 {
+      header = header + "<div" + attr("class", "lui-grid-colheader") + attr("role", "columnheader") +
+        attr("aria-sort", c.sort) +
+        "><button" +
+        attr("class", "lui-grid-sort") +
+        attr("type", "button") +
+        ">" +
+        escapeHtml(c.title) +
+        "</button></div>"
+    } else {
+      header = header + "<div" + attr("class", "lui-grid-colheader") + attr("role", "columnheader") + ">" +
+        escapeHtml(c.title) +
+        "</div>"
+    }
+  }
+  var rows = ""
+  var i = 0
+  while i < children.count {
+    rows = rows + gridRowNode(children[i], ids, first + i + 2)
+    i += 1
+  }
+  return "<div" + classes("lui-grid", props) + dataAttrs(props) + attr("role", "grid") +
+    optAttr(props, "label", "aria-label") +
+    attr("aria-rowcount", (total + 1).toString()) +
+    attr("aria-colcount", cols.count.toString()) +
+    attr(
+      "style",
+      "--lui-grid-cols:" + cols.count.toString() + ";--lui-grid-row-height:" + rowHeight.toString() + "px"
+    ) +
+    "><div" +
+    attr("class", "lui-grid-header") +
+    attr("role", "rowgroup") +
+    "><div" +
+    attr("class", "lui-grid-row") +
+    attr("role", "row") +
+    attr("aria-rowindex", "1") +
+    ">" +
+    header +
+    "</div></div><div" +
+    attr("class", "lui-grid-body") +
+    attr("tabindex", "0") +
+    attr("style", "height:" + (visible * rowHeight).toString() + "px") +
+    "><div" +
+    attr("class", "lui-grid-rows") +
+    attr("role", "rowgroup") +
+    attr(
+      "style",
+      "padding-top:" + (first * rowHeight).toString() + "px;padding-bottom:" + (after * rowHeight).toString() +
+        "px"
+    ) +
+    ">" +
+    rows +
+    "</div></div></div>"
+}
+
+// A child of a data grid: a row numbered `rowIndex` (1 is the header), or
+// any other node as it renders anywhere.
+func gridRowNode(n: in WireNode, ids: in IdCounter, rowIndex: in Int): String {
+  return match n {
+    case WElement(kind, _, props, _, children) -> if kind == "gridRow" then gridRow(props, children, ids, rowIndex) else node(n, ids, "", "")
+    case _ -> node(n, ids, "", "")
+  }
+}
+
+// A data grid row; `rowIndex` 0 when it is not inside a grid.
+func gridRow(props: in List[Prop], children: in List[WireNode], ids: in IdCounter, rowIndex: in Int): String {
+  val index = if rowIndex > 0 then attr("aria-rowindex", rowIndex.toString()) else ""
+  return wrap("div", "lui-grid-row", props, attr("role", "row") + attr("tabindex", "-1") + index, children, ids)
 }

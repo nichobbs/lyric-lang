@@ -1971,7 +1971,21 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   case JByte -> maskByteUnsigned(insns)
                   case _ -> ()
                 }
-                narrowGenericFieldRead(ctx, insns, recv, cls, memberName, fty)
+                val read = narrowGenericFieldRead(ctx, insns, recv, cls, memberName, fty)
+                if isErasedObject(read) {
+                  // A field declared as a generic record from another
+                  // package is stored as `Object`; its class is registered
+                  // (#7918).
+                  match fieldRecordClass(ctx, cls, memberName) {
+                    case Some(rc) -> {
+                      insns.add(LCheckcast(className = rc))
+                      JRef(className = rc)
+                    }
+                    case None -> read
+                  }
+                } else {
+                  read
+                }
               }
               case None -> {
                 // Erased-Object receiver fallback (#3044): a match binding on a

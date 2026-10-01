@@ -9,7 +9,7 @@
 package Ui.Host.Assets
 
 /// Content digest of the embedded assets, used as a cache-busting version.
-pub val assetVersion: String = "03f5a73385ba6495"
+pub val assetVersion: String = "b2e4bc7366f8b959"
 
 /// dist/main.js
 pub val runtimeMainJs: String = r#####"// Lyric UI host runtime: connection to the session (docs/65 §9.3, §10.1).
@@ -539,6 +539,36 @@ export class DomRenderer {
             }
             case "tableCell":
                 return plain(el(node.props.header === "true" ? "th" : "td", "lui-table-cell"));
+            case "dataGrid":
+                return this.dataGrid(node);
+            case "gridRow": {
+                const root = el("div", "lui-grid-row");
+                root.setAttribute("role", "row");
+                root.tabIndex = -1;
+                root.addEventListener("click", () => this.fire(node, "click", "", 0));
+                root.addEventListener("keydown", (ev) => {
+                    if (ev.target !== root) {
+                        return;
+                    }
+                    if (ev.key === "Enter" || ev.key === " ") {
+                        ev.preventDefault();
+                        this.fire(node, "click", "", 0);
+                    }
+                    else if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+                        ev.preventDefault();
+                        const next = ev.key === "ArrowDown" ? root.nextElementSibling : root.previousElementSibling;
+                        if (next instanceof HTMLElement) {
+                            next.focus();
+                        }
+                    }
+                });
+                return plain(root);
+            }
+            case "gridCell": {
+                const root = el("div", "lui-grid-cell");
+                root.setAttribute("role", "gridcell");
+                return plain(root);
+            }
             case "form": {
                 const root = el("form", "lui-form");
                 root.noValidate = true;
@@ -562,6 +592,130 @@ export class DomRenderer {
                 return plain(root, null);
             }
         }
+    }
+    // A data grid: a header row, then a scrolling body whose padding stands in
+    // for the rows not rendered, so the scrollbar spans every row. Rows are
+    // the children, placed in `rows`; `layoutGrid` keeps the rest in step
+    // with the props. Ui.Html renders the same structure for the first paint.
+    dataGrid(node) {
+        const root = el("div", "lui-grid");
+        root.setAttribute("role", "grid");
+        const header = el("div", "lui-grid-header");
+        header.setAttribute("role", "rowgroup");
+        const headerRow = el("div", "lui-grid-row");
+        headerRow.setAttribute("role", "row");
+        headerRow.setAttribute("aria-rowindex", "1");
+        header.append(headerRow);
+        const body = el("div", "lui-grid-body");
+        body.tabIndex = 0;
+        const rows = el("div", "lui-grid-rows");
+        rows.setAttribute("role", "rowgroup");
+        body.append(rows);
+        root.append(header, body);
+        body.addEventListener("scroll", () => this.scheduleViewport(node));
+        body.addEventListener("keydown", (ev) => {
+            if (ev.target === body && ev.key === "ArrowDown") {
+                const first = rows.firstElementChild;
+                if (first instanceof HTMLElement) {
+                    ev.preventDefault();
+                    first.focus();
+                }
+            }
+        });
+        return { root, container: rows, localVersion: 0 };
+    }
+    // Checks the grid's viewport on the next frame: after a scroll, and after
+    // its rows change, since the new rows may not cover what is in view (an
+    // answer to a sort made while scrolled elsewhere).
+    scheduleViewport(node) {
+        const h = hostOf(node);
+        if (h.viewportPending) {
+            return;
+        }
+        h.viewportPending = true;
+        requestAnimationFrame(() => {
+            h.viewportPending = false;
+            if (h.root.isConnected) {
+                this.reportViewport(node);
+            }
+        });
+    }
+    // Reports the rows the grid's viewport shows when they are not all
+    // rendered, so the session can fetch them.
+    reportViewport(node) {
+        const h = hostOf(node);
+        const body = h.root.querySelector(".lui-grid-body");
+        const rowHeight = gridNumber(node, "rowHeight", 36) || 36;
+        const total = gridNumber(node, "rowCount", 0);
+        const first = Math.floor(body.scrollTop / rowHeight);
+        const count = Math.min(1000, Math.ceil(body.clientHeight / rowHeight) + 1);
+        const end = Math.min(first + count, total);
+        if (end <= first) {
+            return;
+        }
+        const loaded = gridNumber(node, "firstRow", 0);
+        if (first >= loaded && end <= loaded + node.children.length) {
+            return;
+        }
+        const data = `${first},${count}`;
+        if (h.lastViewport === data) {
+            return;
+        }
+        h.lastViewport = data;
+        this.fire(node, "viewport", data, 0);
+    }
+    // The header cells, from the `columns` property.
+    gridHeader(node) {
+        const root = hostOf(node).root;
+        const headerRow = root.querySelector(".lui-grid-header .lui-grid-row");
+        let columns = [];
+        try {
+            const parsed = JSON.parse(node.props.columns ?? "[]");
+            columns = Array.isArray(parsed) ? parsed : [];
+        }
+        catch {
+            columns = [];
+        }
+        headerRow.replaceChildren(...columns.map((c) => {
+            const cell = el("div", "lui-grid-colheader");
+            cell.setAttribute("role", "columnheader");
+            const title = typeof c.title === "string" ? c.title : "";
+            if (typeof c.sort === "string") {
+                cell.setAttribute("aria-sort", c.sort);
+                const button = el("button", "lui-grid-sort");
+                button.type = "button";
+                button.textContent = title;
+                const id = typeof c.id === "string" ? c.id : "";
+                button.addEventListener("click", () => this.fire(node, "sort", id, 0));
+                cell.append(button);
+            }
+            else {
+                cell.textContent = title;
+            }
+            return cell;
+        }));
+        root.setAttribute("aria-colcount", String(columns.length));
+        root.style.setProperty("--lui-grid-cols", String(columns.length));
+    }
+    // Sizes, padding and row numbers, from the props and the rendered rows.
+    layoutGrid(node) {
+        const root = hostOf(node).root;
+        const body = root.querySelector(".lui-grid-body");
+        const rows = root.querySelector(".lui-grid-rows");
+        const rowHeight = gridNumber(node, "rowHeight", 36) || 36;
+        const total = gridNumber(node, "rowCount", 0);
+        const first = gridNumber(node, "firstRow", 0);
+        const after = Math.max(0, total - first - node.children.length);
+        root.setAttribute("aria-rowcount", String(total + 1));
+        root.style.setProperty("--lui-grid-row-height", `${rowHeight}px`);
+        body.style.height = `${gridNumber(node, "visibleRows", 10) * rowHeight}px`;
+        rows.style.paddingTop = `${first * rowHeight}px`;
+        rows.style.paddingBottom = `${after * rowHeight}px`;
+        node.children.forEach((c, i) => {
+            if (c.widget === "gridRow" && c.host) {
+                hostOf(c).root.setAttribute("aria-rowindex", String(first + i + 2));
+            }
+        });
     }
     input(node, input) {
         input.id = `lui-${nextId++}`;
@@ -611,8 +765,23 @@ export class DomRenderer {
                 else if (node.widget === "checkbox") {
                     root.querySelector("span").textContent = value ?? "";
                 }
-                else if (node.widget === "spinner") {
+                else if (node.widget === "spinner" || node.widget === "dataGrid") {
                     root.setAttribute("aria-label", value ?? "");
+                }
+                return;
+            case "columns":
+                if (node.widget === "dataGrid") {
+                    this.gridHeader(node);
+                }
+                return;
+            case "rowCount":
+            case "firstRow":
+            case "rowHeight":
+            case "visibleRows":
+                if (node.widget === "dataGrid") {
+                    hostOf(node).lastViewport = undefined;
+                    this.layoutGrid(node);
+                    this.scheduleViewport(node);
                 }
                 return;
             case "title":
@@ -677,6 +846,12 @@ export class DomRenderer {
     }
     // Keeps a field's label and error messages associated with its input.
     afterChildrenChanged(node) {
+        if (node.widget === "dataGrid" && node.host) {
+            hostOf(node).lastViewport = undefined;
+            this.layoutGrid(node);
+            this.scheduleViewport(node);
+            return;
+        }
         if (node.widget !== "field" || !node.host) {
             return;
         }
@@ -701,6 +876,11 @@ export class DomRenderer {
             control.removeAttribute("aria-invalid");
         }
     }
+}
+// A non-negative integer property of a grid, or `fallback`.
+function gridNumber(node, name, fallback) {
+    const n = Number(node.props[name]);
+    return Number.isInteger(n) && n >= 0 ? n : fallback;
 }
 "#####
 
@@ -834,6 +1014,18 @@ body { margin: 0; background: var(--lui-bg); color: var(--lui-text); font: 15px/
 .lui-table { border-collapse: collapse; width: 100%; background: var(--lui-surface); }
 .lui-table-cell { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lui-border); }
 .lui-table-row:hover { background: color-mix(in srgb, var(--lui-accent) 8%, transparent); }
+
+.lui-grid { border: 1px solid var(--lui-border); border-radius: var(--lui-radius); background: var(--lui-surface); overflow: hidden; }
+.lui-grid-row { display: grid; grid-template-columns: repeat(var(--lui-grid-cols, 1), minmax(0, 1fr)); align-items: center; height: var(--lui-grid-row-height, 36px); box-sizing: border-box; border-bottom: 1px solid var(--lui-border); }
+.lui-grid-header .lui-grid-row { font-weight: 600; }
+.lui-grid-colheader, .lui-grid-cell { padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lui-grid-sort { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.lui-grid-colheader[aria-sort="ascending"] .lui-grid-sort::after { content: " \25B2"; }
+.lui-grid-colheader[aria-sort="descending"] .lui-grid-sort::after { content: " \25BC"; }
+.lui-grid-body { overflow-y: auto; }
+.lui-grid-rows { box-sizing: border-box; }
+.lui-grid-rows .lui-grid-row:hover { background: color-mix(in srgb, var(--lui-accent) 8%, transparent); }
+.lui-grid-rows .lui-grid-row:focus { outline: 2px solid var(--lui-accent); outline-offset: -2px; }
 
 .lui-dialog-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / 0.4); display: grid; place-items: center; padding: 16px; }
 .lui-dialog { background: var(--lui-surface); border-radius: var(--lui-radius); padding: 20px; max-width: 420px; width: 100%; display: flex; flex-direction: column; gap: 16px; }

@@ -7,11 +7,12 @@ package Customers.List.View
 
 import Std.Core
 import Std.Collections
-import Ui.Core.{View}
+import Ui.Core.{View, RowRange}
 import Ui.Widgets
+import Ui.Widgets.{GridColumn}
 import Customers.Domain.{Customer, tierLabel}
 import Customers.Routes.{EditCustomer, routeUrl}
-import Customers.List.Logic.{Model, Msg, Status, Loading, Loaded, LoadFailed, RetryClicked}
+import Customers.List.Logic.{Model, Msg, Status, Loading, Ready, LoadFailed, RetryClicked, Scrolled, Sorted}
 
 pub func view(m: in Model): View[Msg] {
   return match m.status {
@@ -22,25 +23,34 @@ pub func view(m: in Model): View[Msg] {
       cs.add(Widgets.button("Retry", RetryClicked))
       Widgets.column(cs)
     }
-    case Loaded(customers) -> listing(customers)
+    case Ready -> listing(m)
   }
 }
 
-func listing(customers: in List[Customer]): View[Msg] {
-  val headers: List[String] = newList()
-  headers.add("Name")
-  headers.add("Email")
-  headers.add("Tier")
+func columns(): List[GridColumn] {
+  val cs: List[GridColumn] = newList()
+  cs.add(GridColumn(id = "name", title = "Name", sortable = true))
+  cs.add(GridColumn(id = "email", title = "Email", sortable = true))
+  cs.add(GridColumn(id = "tier", title = "Tier", sortable = true))
+  return cs
+}
+
+func listing(m: in Model): View[Msg] {
+  val g = m.grid
   val rows: List[View[Msg]] = newList()
-  for c in customers {
+  for c in g.rows {
     val cells: List[View[Msg]] = newList()
     cells.add(Widgets.link(c.name, routeUrl(EditCustomer(id = c.id))))
     cells.add(Widgets.text(c.email))
     cells.add(Widgets.text(tierLabel(c.tier)))
-    rows.add(Widgets.keyed(c.id.toString(), Widgets.tableRow(cells, None)))
+    rows.add(Widgets.keyed(c.id.toString(), Widgets.gridRow(cells, None)))
   }
+  val spec = Widgets.gridSpec("Customers", columns(), g.total, g.first).copy(
+    sortColumn = g.sortColumn,
+    ascending = g.ascending
+  )
   val page: List[View[Msg]] = newList()
   page.add(Widgets.heading(1, "Customers"))
-  page.add(Widgets.table(headers, rows))
+  page.add(Widgets.dataGrid(spec, rows, { r: RowRange -> Scrolled(range = r) }, { c: String -> Sorted(column = c) }))
   return Widgets.column(page)
 }

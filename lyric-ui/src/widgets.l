@@ -10,7 +10,8 @@
 package Ui.Widgets
 
 import Std.Core
-import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, OnInput, OnChange, OnSubmit, Prop, WidgetKind, Lazy}
+import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, OnInput, OnChange, OnSubmit, OnViewport, OnSort, RowRange, Prop, WidgetKind, Lazy}
+import Std.JsonValue.{JsonValue, JsonField, JString, JArray, JObject, writeValue}
 import Std.Collections
 
 // ─── Low-level constructors ───────────────────────────────────────────────────
@@ -418,4 +419,104 @@ pub func tableRow[Msg](cells: in List[View[Msg]], onClick: in Option[Msg]): View
     case None -> ()
   }
   return element(WidgetKind.TableRow, noProps(), hs, cs)
+}
+
+// ─── Data grids ───────────────────────────────────────────────────────────────
+/// A column of a data grid.  `id` names it in sort events.
+pub record GridColumn {
+  id: String
+  title: String
+  sortable: Bool
+}
+
+/// What a data grid shows (docs/65 §13.6, D154): `total` rows in all, of
+/// which the rows passed to `dataGrid` start at index `first`; the sort
+/// column (empty for none) and direction; `rowHeight` pixels per row and
+/// `visibleRows` rows of scrolling viewport.
+pub record GridSpec {
+  label: String
+  columns: List[GridColumn]
+  sortColumn: String
+  ascending: Bool
+  total: Int
+  first: Int
+  rowHeight: Int
+  visibleRows: Int
+}
+
+/// A grid spec, unsorted, with 36-pixel rows and a ten-row viewport.
+pub func gridSpec(label: in String, columns: in List[GridColumn], total: in Int, first: in Int): GridSpec {
+  return GridSpec(
+    label = label,
+    columns = columns,
+    sortColumn = "",
+    ascending = true,
+    total = total,
+    first = first,
+    rowHeight = 36,
+    visibleRows = 10
+  )
+}
+
+/// The `columns` property of a data grid: a JSON array of
+/// `{"id","title","sort"}` objects, where `sort` is `ascending`,
+/// `descending` or `none` for a sortable column and absent otherwise.
+pub func gridColumnsJson(spec: in GridSpec): String {
+  val items: List[JsonValue] = newList()
+  for c in spec.columns {
+    val fields: List[JsonField] = newList()
+    fields.add(JsonField(name = "id", value = JString(value = c.id)))
+    fields.add(JsonField(name = "title", value = JString(value = c.title)))
+    if c.sortable {
+      val dir = if c.id != spec.sortColumn then "none" else if spec.ascending then "ascending" else "descending"
+      fields.add(JsonField(name = "sort", value = JString(value = dir)))
+    }
+    items.add(JObject(fields = fields))
+  }
+  return writeValue(JArray(items = items))
+}
+
+/// A data grid: a scrolling window onto `spec.total` rows, of which only
+/// `rows` (from index `spec.first`) are rendered.  The host reports the
+/// rows it shows with `onViewport` whenever they are not all in `rows`, and
+/// a click on a sortable column's header with `onSort(column id)`.
+/// `Ui.Grid` keeps the matching state.  Each row should be a keyed
+/// `gridRow`.
+pub func dataGrid[Msg](
+  spec: in GridSpec,
+  rows: in List[View[Msg]],
+  onViewport: in (RowRange) -> Msg,
+  onSort: in (String) -> Msg,
+): View[Msg]
+  requires: spec.total >= 0 and spec.first >= 0 and spec.rowHeight > 0 and spec.visibleRows > 0
+{
+  val ps = noProps()
+  ps.add(prop("label", spec.label))
+  ps.add(prop("columns", gridColumnsJson(spec)))
+  ps.add(prop("rowCount", spec.total.toString()))
+  ps.add(prop("firstRow", spec.first.toString()))
+  ps.add(prop("rowHeight", spec.rowHeight.toString()))
+  ps.add(prop("visibleRows", spec.visibleRows.toString()))
+  val hs: List[Handler[Msg]] = newList()
+  hs.add(OnViewport(toMsg = onViewport))
+  hs.add(OnSort(toMsg = onSort))
+  return element(WidgetKind.DataGrid, ps, hs, rows)
+}
+
+/// A data grid row: one cell per column.  `onClick`, when present, makes
+/// the row activatable (pointer, and Enter or Space on the focused row).
+pub func gridRow[Msg](cells: in List[View[Msg]], onClick: in Option[Msg]): View[Msg] {
+  val noHs: List[Handler[Msg]] = newList()
+  val cs: List[View[Msg]] = newList()
+  for c in cells {
+    val cellKids: List[View[Msg]] = textChild(c)
+    val cell: View[Msg] = element(WidgetKind.GridCell, noProps(), noHs, cellKids)
+    cs.add(cell)
+  }
+  val hs: List[Handler[Msg]] = newList()
+  match onClick {
+    case Some(m) -> hs.add(OnClick(msg = m))
+    case None -> ()
+  }
+  return element(WidgetKind.GridRow, noProps(), hs, cs)
 }

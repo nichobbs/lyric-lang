@@ -4743,6 +4743,7 @@ func registerFieldElemSig(
   ctorReg: in Map[String, String],
   localRecordNames: in Map[String, Bool],
 ): Unit {
+  registerFieldRecordClass(into, className, fieldName, fty, owner, externTypes, ctorReg, localRecordNames)
   val elems: List[TypeExpr] = newList()
   match fty.kind {
     case TSlice(elem) -> elems.add(elem)
@@ -4798,7 +4799,56 @@ func registerFieldElemSig(
   if not usable {
     return
   }
-  val key = "elem:" + className + "#" + fieldName
+  addFieldPseudoSig(into, "elem:" + className + "#" + fieldName, className, fieldName, elemJvm)
+}
+
+// Register a field whose declared type is a generic record (`grid:
+// Grid[Customer]`) under `fieldcls:<class>#<field>` with the record's class
+// (#7918).  Such a field's JVM type is the erased `Object` when the record
+// is declared in another package, so a read of it narrows to this class
+// (`lowerExpr`'s record-field arm, `fieldClassOf`), and a field read or
+// indexed element read on the value then resolves against the record.  The
+// class is resolved against the DECLARING file, like `elem:` entries.
+func registerFieldRecordClass(
+  into: in Map[String, JvmFuncSig],
+  className: in String,
+  fieldName: in String,
+  fty: in TypeExpr,
+  owner: in String,
+  externTypes: in Map[String, String],
+  ctorReg: in Map[String, String],
+  localRecordNames: in Map[String, Bool],
+): Unit {
+  match fty.kind {
+    case TGenericApp(head, _) -> {
+      val last = lastSegment(head)
+      if head.segments.count == 1 and (last == "List" or last == "Map" or last == "Option" or last == "Result") {
+        return
+      }
+    }
+    case _ -> return
+  }
+  match fieldElemRecordClass(fty, owner, ctorReg, externTypes, localRecordNames) {
+    case Some(cls) -> addFieldPseudoSig(
+      into,
+      "fieldcls:" + className + "#" + fieldName,
+      className,
+      fieldName,
+      JRef(className = cls)
+    )
+    case None -> ()
+  }
+}
+
+// A field pseudo-key entry (`elem:`/`fieldcls:`), consulted only for its
+// `.ret`; the first registration of a key wins.
+func addFieldPseudoSig(
+  into: in Map[String, JvmFuncSig],
+  key: in String,
+  className: in String,
+  fieldName: in String,
+  ret: in JvmType,
+): Unit {
   if into.containsKey(key) {
     return
   }
@@ -4812,7 +4862,7 @@ func registerFieldElemSig(
     JvmFuncSig(
       owner = className,
       params = noPs,
-      ret = elemJvm,
+      ret = ret,
       paramNames = noNames,
       paramDefaults = noDefs,
       paramModes = noModes,
@@ -5147,6 +5197,8 @@ pub func collectFileCasesExtern(
                       localTypeNames
                     ),
                     paramIdx = typeParamIndexOf(ty, tps),
+                    argParamIdx = fieldArgParamIdx(Some(value = ty), tps),
+                    declTy = Some(value = ty),
                     dflt = None,
                     // #7176: FILTERED against the union's own generic type
                     // params (`tps`), never the unfiltered form — a bare
@@ -5184,6 +5236,8 @@ pub func collectFileCasesExtern(
                       localTypeNames
                     ),
                     paramIdx = typeParamIndexOf(ty, tps),
+                    argParamIdx = fieldArgParamIdx(Some(value = ty), tps),
+                    declTy = Some(value = ty),
                     dflt = None,
                     // #7176: see the UFNamed arm's comment above.
                     genericArgs = eagerlyResolveGenericArgs(
@@ -5223,6 +5277,8 @@ pub func collectFileCasesExtern(
                     localTypeNames
                   ),
                   paramIdx = typeParamIndexOf(f.ty, tps),
+                  argParamIdx = fieldArgParamIdx(Some(value = f.ty), tps),
+                  declTy = Some(value = f.ty),
                   dflt = f.dflt,
                   // #7176: see the union arms' comment above — filtered
                   // against the record's own generic type params.
@@ -5269,6 +5325,8 @@ pub func collectFileCasesExtern(
                     localTypeNames
                   ),
                   paramIdx = typeParamIndexOf(f.ty, tps),
+                  argParamIdx = fieldArgParamIdx(Some(value = f.ty), tps),
+                  declTy = Some(value = f.ty),
                   dflt = f.dflt,
                   // #7176: see the union arms' comment above — filtered
                   // against the exposed record's own generic type params.
@@ -5312,6 +5370,8 @@ pub func collectFileCasesExtern(
                       name = name,
                       ty = typeExprToJvmErasedExtern(ty, owner, protTps, externTypes),
                       paramIdx = typeParamIndexOf(ty, protTps),
+                      argParamIdx = fieldArgParamIdx(Some(value = ty), protTps),
+                      declTy = Some(value = ty),
                       dflt = init,
                       genericArgs = eagerlyResolveGenericArgs(
                         returnTypeGenericArgsFiltered(Some(value = ty), protTps),
@@ -5325,6 +5385,8 @@ pub func collectFileCasesExtern(
                       name = name,
                       ty = typeExprToJvmErasedExtern(ty, owner, protTps, externTypes),
                       paramIdx = typeParamIndexOf(ty, protTps),
+                      argParamIdx = fieldArgParamIdx(Some(value = ty), protTps),
+                      declTy = Some(value = ty),
                       dflt = init,
                       genericArgs = eagerlyResolveGenericArgs(
                         returnTypeGenericArgsFiltered(Some(value = ty), protTps),
@@ -5338,6 +5400,8 @@ pub func collectFileCasesExtern(
                       name = f.name,
                       ty = typeExprToJvmErasedExtern(f.ty, owner, protTps, externTypes),
                       paramIdx = typeParamIndexOf(f.ty, protTps),
+                      argParamIdx = fieldArgParamIdx(Some(value = f.ty), protTps),
+                      declTy = Some(value = f.ty),
                       dflt = f.dflt,
                       genericArgs = eagerlyResolveGenericArgs(
                         returnTypeGenericArgsFiltered(Some(value = f.ty), protTps),
@@ -5377,6 +5441,8 @@ pub func collectFileCasesExtern(
                     name = f.name,
                     ty = typeExprToJvmErasedExtern(f.ty, owner, genericParamNames(decl.generics), externTypes),
                     paramIdx = -1,
+                    argParamIdx = newList(),
+                    declTy = None,
                     dflt = f.dflt,
                     // #7176: see the union/record arms' comment above —
                     // filtered against the opaque type's own generic type
@@ -6332,6 +6398,8 @@ pub func registerProjectableViews(
                     name = infos[fi].name,
                     ty = projViewFieldType(infos[fi]),
                     paramIdx = -1,
+                    argParamIdx = newList(),
+                    declTy = None,
                     dflt = None,
                     genericArgs = newList()
                   )

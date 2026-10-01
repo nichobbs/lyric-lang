@@ -1746,7 +1746,7 @@ core = { may_import = ["core", "pure", "Acme.Util"], may_not_import = ["Acme.**"
 
 A rule's `may_import` lists layer names, the classes `pure` and `io`, and package patterns (an entry starting with an upper-case letter); `may_not_import` lists package patterns; `async` (default `true`) says whether the layer may declare `async func`. A rule may also be written as a `[layers.rules.<name>]` sub-table; naming a rule twice is an error, as is any unknown key in a `[layers]` table. In a pattern, `*` matches one dotted segment and a final `**` matches one or more. When several `[layers.packages]` entries match a package, the most specific wins (more literal segments; an exact name beats any pattern); equally specific entries naming different layers, and an entry matching no project package, are **Y0009**. A package may instead declare its layer in source, `@layer("logic")` before `package`; a layer the manifest also assigns must agree (**Y0005**).
 
-The only preset is `ui` (docs/65 §5.2): layers `domain`, `ports`, `logic`, `effects`, `view`, each closed to the `Ui` packages except `Ui.Core` and `Ui.Routing` (logic, effects, view) and `Ui.Widgets`/`Ui.Forms` (view); `logic` and `view` may not import `io` or declare `async func`; a view may import another view.
+The only preset is `ui` (docs/65 §5.2): layers `domain`, `ports`, `logic`, `effects`, `view`, each closed to the `Ui` packages except `Ui.Core`, `Ui.Routing` and `Ui.Grid` (logic, effects, view) and `Ui.Widgets`/`Ui.Forms` (view); `logic` and `view` may not import `io` or declare `async func`; a view may import another view.
 
 **Rules.** The build checks every project package in a layer, on every target, before code generation:
 

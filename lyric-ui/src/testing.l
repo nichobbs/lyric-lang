@@ -18,7 +18,7 @@ package Ui.Testing
 
 import Std.Core
 import Std.String
-import Ui.Core.{View, Element, Text, Empty, Handler, WidgetKind, kindName, eventName, fire, lookupProp, viewOf}
+import Ui.Core.{View, Element, Text, Empty, Handler, WidgetKind, kindName, eventName, fire, lookupProp, viewOf, accepts}
 
 /// All text in `v`, depth first, joined by single spaces.
 pub func textOf[Msg](v: in View[Msg]): String {
@@ -149,7 +149,7 @@ pub func fireOn[Msg](v: in View[Msg], name: in String, data: in String): Option[
       var acc: Option[Msg] = None
       for h in handlers {
         val hv: Handler[Msg] = h
-        if eventName(hv) == name {
+        if eventName(hv) == name and accepts(hv, data) {
           val m: Msg = fire(hv, data)
           acc = Some(value = m)
         }

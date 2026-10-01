@@ -92,6 +92,44 @@ test(`${target}: the list opens a customer`, async () => {
   await page.close();
 });
 
+test(`${target}: the list is a data grid that loads rows as it scrolls, and sorts`, async () => {
+  const page = await browser.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(new URL("/customers", pageUrl).href);
+  await page.locator("#lyric-ui:not([aria-busy])").waitFor({ timeout });
+  const grid = page.getByRole("grid", { name: "Customers" });
+  await grid.waitFor({ timeout });
+  assert.equal(await grid.getAttribute("aria-rowcount"), "201");
+  const body = page.locator(".lui-grid-body");
+
+  // Only the first page is rendered; scrolling to the end fetches the last.
+  assert.equal(await page.getByRole("link", { name: "Customer 200" }).count(), 0);
+  await body.evaluate((b) => {
+    b.scrollTop = b.scrollHeight;
+  });
+  await page.getByRole("link", { name: "Customer 200" }).waitFor({ timeout });
+  const last = page.locator(".lui-grid-rows [role=row]").last();
+  assert.equal(await last.getAttribute("aria-rowindex"), "201");
+
+  // Back at the top, sort by name twice: descending puts the last name first.
+  await body.evaluate((b) => {
+    b.scrollTop = 0;
+  });
+  // (Row 2 is customer 1, whose name the save test above changes.)
+  await page.locator(".lui-grid-rows [role=row][aria-rowindex='2']").waitFor({ timeout });
+  const byName = page.getByRole("button", { name: "Name" });
+  await byName.click();
+  await page.locator("[role=columnheader][aria-sort=ascending]", { hasText: "Name" }).waitFor({ timeout });
+  await byName.click();
+  await page.locator("[role=columnheader][aria-sort=descending]", { hasText: "Name" }).waitFor({ timeout });
+  await page
+    .locator(".lui-grid-rows [role=row][aria-rowindex='2']", { hasText: "Customer 200" })
+    .waitFor({ timeout });
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
 test(`${target}: a dropped connection resumes the same session`, async () => {
   const page = await browser.newPage();
   const errors = [];
