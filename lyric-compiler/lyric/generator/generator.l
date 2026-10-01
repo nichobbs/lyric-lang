@@ -26,68 +26,42 @@ import Std.Path as Path
 import Std.ProcessCapture as ProcessCapture
 import Std.JsonValue as Jv
 import Lyric.Manifest as Manifest
-import Lyric.Parser as Parser
+import Lyric.Lexer
+import Lyric.Parser
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §1. Lightweight source scanner
+// §1. Directives
 // ─────────────────────────────────────────────────────────────────────────────
-// A detected @generate(X.Y) annotation with the type that follows it.
-// `pub`: this record appears in a `pub` return type; a non-`pub` type in a
-// `pub` signature is invisible to external consumers and fails the contract
-// round-trip.
+/// A custom `@generate(X.Y)` annotation found in a source file.
+/// `requestJson` is the generator request's type descriptor (schema 2),
+/// built from the parsed declaration; it is empty when the annotation is not
+/// on a record, exposed record, opaque type, union, enum or interface
+/// (`typeName` is then empty too, and X0001 is reported).
 pub record GenerateDirective {
   generatorArg: String
-  // e.g. "Proto.Derive"
   typeName: String
-  // e.g. "Order"
   typeKind: String
-  // "record" | "exposed record" | "union" | "interface"
-  rawFields: String
-  // raw field block text (empty for unions/interfaces)
   packageName: String
-  // package header of the source file
   line: Int
   column: Int
-  // 1-based position of the `@` of `@generate`
+  descriptorJson: String
+  /// The same-file enum, distinct and alias declarations the annotated
+  /// type's source names, as request JSON (schema 2).
+  declarationsJson: String = "[]"
 }
 
 func charIsIdent(c: in Char): Bool {
   (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_'
 }
 
-func charIsIdentStart(c: in Char): Bool {
-  (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_'
-}
-
-func charToString(c: in Char): String {
-  "" + c
-}
-
-// Skip whitespace (spaces and tabs only — not newlines).
+// Skip spaces and tabs.
 func skipWs(src: in String, pos: inout Int): Unit {
   while pos < src.length and (Str.charAtOrReplacement(src, pos) == ' ' or Str.charAtOrReplacement(src, pos) == '\t') {
     pos += 1
   }
 }
 
-// Skip whitespace including newlines.
-func skipWsAll(src: in String, pos: inout Int): Unit {
-  while pos < src.length and (Str.charAtOrReplacement(src, pos) == ' ' or Str.charAtOrReplacement(src, pos) == '\t' or Str.charAtOrReplacement(src, pos) == '\n' or Str.charAtOrReplacement(src, pos) == '\r') {
-    pos += 1
-  }
-}
-
-// Read an identifier (letters, digits, underscores) starting at `pos`.
-func readIdent(src: in String, pos: inout Int): String {
-  var id = ""
-  while pos < src.length and charIsIdent(Str.charAtOrReplacement(src, pos)) {
-    id = id + Str.substring(src, pos, 1)
-    pos += 1
-  }
-  id
-}
-
-// Read a dotted identifier (e.g. "Proto.Derive", "MyOrg.MyPkg.Generator").
+// Read a dotted identifier (e.g. "Proto.Derive") starting at `pos`.
 func readDottedIdent(src: in String, pos: inout Int): String {
   var result = ""
   while pos < src.length and (charIsIdent(Str.charAtOrReplacement(src, pos)) or Str.charAtOrReplacement(src, pos) == '.') {
@@ -97,7 +71,7 @@ func readDottedIdent(src: in String, pos: inout Int): String {
   result
 }
 
-// Check that `src` contains `needle` starting at `pos` (case-sensitive).
+// True when `src` contains `needle` at `pos`.
 func matchAt(src: in String, pos: in Int, needle: in String): Bool {
   if src.length - pos < needle.length {
     return false
@@ -112,314 +86,79 @@ func matchAt(src: in String, pos: in Int, needle: in String): Bool {
   true
 }
 
-// Extract the `package X.Y` declaration from a source file.
-func extractPackageName(src: in String): String {
-  var i = 0
-  while i < src.length {
-    if matchAt(src, i, "package") {
-      val afterKw = i + 7
-      if afterKw < src.length and (Str.charAtOrReplacement(src, afterKw) == ' ' or Str.charAtOrReplacement(src, afterKw) == '\t') {
-        var pos = afterKw
-        skipWs(src, pos)
-        return readDottedIdent(src, pos)
-      }
-    }
-    // Skip to next line
-    while i < src.length and Str.charAtOrReplacement(src, i) != '\n' {
-      i += 1
-    }
-    i += 1
+// The source text a span covers.
+func spanText(src: in String, sp: in Span): String {
+  val start = sp.startPos.offset
+  val stop = sp.endPos.offset
+  if start < 0 or stop > src.length or stop < start {
+    return ""
   }
-  ""
+  Str.substring(src, start, stop - start)
 }
 
-// Skip a block comment `/* ... */` starting at `pos` (positioned at `/*`).
-func skipBlockComment(src: in String, pos: inout Int): Unit {
-  pos += 2
-  // skip /*
-  while pos + 1 < src.length {
-    if Str.charAtOrReplacement(src, pos) == '*' and Str.charAtOrReplacement(src, pos + 1) == '/' {
-      pos += 2
-      return ()
-    }
-    pos += 1
+// The custom generator an annotation names, when it is `@generate(X.Y)`.
+func customGeneratorOf(ann: in Annotation): Option[String] {
+  if modulePathJoin(ann.name.segments) != "generate" or ann.args.count != 1 {
+    return None
+  }
+  match ann.args[0] {
+    case ABare(name, _) -> if Str.contains(name, ".") { Some(value = name) } else { None }
+    case _ -> None
   }
 }
 
-// Skip a line comment `// ...` up to but not including the newline.
-func skipLineComment(src: in String, pos: inout Int): Unit {
-  while pos < src.length and Str.charAtOrReplacement(src, pos) != '\n' {
-    pos += 1
-  }
-}
-
-// Read the content of a `{ ... }` block (balanced braces), returning the
-// inner text.  `pos` must be positioned at the opening `{`.
-// Returns the inner text (excluding the outermost braces).
-func readBracedBlock(src: in String, pos: inout Int): String {
-  pos += 1
-  // skip {
-  var depth = 1
-  var content = ""
-  while pos < src.length and depth > 0 {
-    val c = Str.charAtOrReplacement(src, pos)
-    if c == '{' {
-      depth += 1
-      content = content + charToString(c)
-      pos += 1
-    } else if c == '}' {
-      depth -= 1
-      if depth > 0 {
-        content = content + charToString(c)
-      }
-      pos += 1
-    } else if c == '/' and pos + 1 < src.length and Str.charAtOrReplacement(src, pos + 1) == '*' {
-      val start = pos
-      skipBlockComment(src, pos)
-      // preserve comment text in content
-      var ci = start
-      while ci < pos {
-        content = content + Str.substring(src, ci, 1)
-        ci += 1
-      }
-    } else if c == '/' and pos + 1 < src.length and Str.charAtOrReplacement(src, pos + 1) == '/' {
-      val start = pos
-      skipLineComment(src, pos)
-      var ci = start
-      while ci < pos {
-        content = content + Str.substring(src, ci, 1)
-        ci += 1
-      }
-    } else {
-      // The raw code unit: `c` is U+FFFD for a surrogate half.
-      content = content + Str.substring(src, pos, 1)
-      pos += 1
-    }
-  }
-  content
-}
-
-// The 1-based line and column of offset `at` in `src`.
-func lineAndColumn(src: in String, at: in Int): (Int, Int) {
-  var line = 1
-  var lineStart = 0
-  var i = 0
-  while i < at {
-    if Str.charAtOrReplacement(src, i) == '\n' {
-      line += 1
-      lineStart = i + 1
-    }
-    i += 1
-  };
-  (line, at - lineStart + 1)
-}
-
-// Scan `src` for all @generate(X.Y) directives where the argument contains a dot
-// (custom generator).  Returns a list of GenerateDirective values.
-//
-// Comments AND double-quoted string literals are skipped so a `@generate(X.Y)`
-// embedded in a string (e.g. a help-text constant or a documentation example)
-// does not trigger a spurious generator invocation (#702).
+/// The custom `@generate(X.Y)` directives in `src`, each with its type
+/// descriptor.  Comments and string literals never produce a directive: the
+/// file is parsed, not scanned.  A bare built-in name such as
+/// `@generate(Json)` is `Lyric.Derives`'s, not a custom generator's.
 pub func scanDirectives(src: in String, packageName: in String): List[GenerateDirective] {
+  directivesIn(src, packageName, parse(src).file)
+}
+
+// The custom directives of `file`, parsed from `src`.
+func directivesIn(src: in String, packageName: in String, file: in SourceFile): List[GenerateDirective] {
   val results: List[GenerateDirective] = newList()
-  var i = 0
-  while i < src.length {
-    // Skip line comments
-    if Str.charAtOrReplacement(src, i) == '/' and i + 1 < src.length and Str.charAtOrReplacement(src, i + 1) == '/' {
-      skipLineComment(src, i)
-    } else if Str.charAtOrReplacement(src, i) == '/' and i + 1 < src.length and Str.charAtOrReplacement(src, i + 1) == '*' {
-      // Skip block comments
-      skipBlockComment(src, i)
-    } else if Str.charAtOrReplacement(src, i) == '"' {
-      // Skip double-quoted string literals (including \" escapes).  Triple-
-      // quoted (`"""..."""`) and raw (`r"..."`) string literals are NOT
-      // skipped today — a `@generate(X.Y)` embedded in either form would
-      // still trigger a directive.  These forms are uncommon in
-      // source-generator-decorated files; extending the scanner to honour
-      // them requires either re-using the full lexer or maintaining a
-      // shadow state machine here.  See PR #830 review #840 for the
-      // status; once `scanDirectives` consumers complain (or a fuzz pass
-      // surfaces a real false positive) the scanner gains a triple-quoted
-      // arm and the same `\\` escape treatment.
-      i = i + 1
-      while i < src.length and Str.charAtOrReplacement(src, i) != '"' {
-        // Skip escaped character (\", \\, etc.) so a closing-`"`
-        // is not consumed inside the escape pair.
-        if Str.charAtOrReplacement(src, i) == '\\' and i + 1 < src.length {
-          i = i + 2
-        } else {
-          i = i + 1
-        }
-      }
-      if i < src.length {
-        i = i + 1
-      }
-      // consume closing `"`
-    } else if Str.charAtOrReplacement(src, i) == '@' and matchAt(src, i + 1, "generate(") {
-      // Look for @generate(
-      val (atLine, atColumn) = lineAndColumn(src, i)
-      var pos = i + 10
-      // past "@generate("
-      val arg = readDottedIdent(src, pos)
-      // Skip closing ) if present
-      if pos < src.length and Str.charAtOrReplacement(src, pos) == ')' {
-        pos += 1
-      }
-      // Only custom generators (dotted names) go through this pipeline
-      if Str.contains(arg, ".") {
-        // Skip whitespace and look for the type declaration
-        skipWsAll(src, pos)
-        // Optional extra annotations between @generate(...) and the type decl
-        while pos < src.length and Str.charAtOrReplacement(src, pos) == '@' {
-          pos += 1
-          while pos < src.length and charIsIdent(Str.charAtOrReplacement(src, pos)) {
-            pos += 1
-          }
-          if pos < src.length and Str.charAtOrReplacement(src, pos) == '(' {
-            var depth = 1
-            pos += 1
-            while pos < src.length and depth > 0 {
-              if Str.charAtOrReplacement(src, pos) == '(' {
-                depth += 1
-              } else if Str.charAtOrReplacement(src, pos) == ')' {
-                depth -= 1
-              }
-              pos += 1
-            }
-          }
-          skipWsAll(src, pos)
-        }
-        // Visibility keywords
-        if matchAt(src, pos, "pub") {
-          pos += 3
-          skipWs(src, pos)
-        }
-        // Type kind
-        var typeKind = ""
-        var typeName = ""
-        var rawFields = ""
-        if matchAt(src, pos, "exposed record") {
-          typeKind = "exposed record"
-          pos += 14
-          skipWs(src, pos)
-          typeName = readIdent(src, pos)
-        } else if matchAt(src, pos, "record") {
-          typeKind = "record"
-          pos += 6
-          skipWs(src, pos)
-          typeName = readIdent(src, pos)
-        } else if matchAt(src, pos, "union") {
-          typeKind = "union"
-          pos += 5
-          skipWs(src, pos)
-          typeName = readIdent(src, pos)
-        } else if matchAt(src, pos, "interface") {
-          typeKind = "interface"
-          pos += 9
-          skipWs(src, pos)
-          typeName = readIdent(src, pos)
-        }
-        // A directive that annotates no type is kept with an empty
-        // `typeName`, so the caller reports it (X0001).
-        if typeName == "" {
-          results.add(
-            GenerateDirective(
-              generatorArg = arg,
-              typeName = "",
-              typeKind = "",
-              rawFields = "",
-              packageName = packageName,
-              line = atLine,
-              column = atColumn
-            )
-          )
-        } else {
-          // Skip to opening brace
-          while pos < src.length and Str.charAtOrReplacement(src, pos) != '{' and Str.charAtOrReplacement(src, pos) != '\n' {
-            pos += 1
-          }
-          if pos < src.length and Str.charAtOrReplacement(src, pos) == '{' {
-            rawFields = readBracedBlock(src, pos)
-          }
+  for item in file.items {
+    for ann in item.annotations {
+      match customGeneratorOf(ann) {
+        case None -> ()
+        case Some(arg) -> {
+          val (typeName, typeKind, descriptor) = describeItem(src, packageName, item)
           results.add(
             GenerateDirective(
               generatorArg = arg,
               typeName = typeName,
               typeKind = typeKind,
-              rawFields = rawFields,
               packageName = packageName,
-              line = atLine,
-              column = atColumn
+              line = ann.span.startPos.line,
+              column = ann.span.startPos.column,
+              descriptorJson = descriptor,
+              declarationsJson = declarationsFor(src, file, item)
             )
           )
         }
       }
-      i = pos
-    } else {
-      i += 1
     }
   }
   results
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §2. Field parser (lightweight)
+// §2. Type descriptors (generator request schema 2, D151)
 // ─────────────────────────────────────────────────────────────────────────────
-// Parse the field block content (everything inside `{ }` of a record).
-// Returns a list of (name, typeText) pairs for public fields.
-func parseFields(block: in String): List[StringPair] {
-  val fields: List[StringPair] = newList()
-  var i = 0
-  while i < block.length {
-    skipWsAll(block, i)
-    if i >= block.length {
-      return fields
-    }
-    // Skip comments
-    if Str.charAtOrReplacement(block, i) == '/' and i + 1 < block.length and Str.charAtOrReplacement(block, i + 1) == '/' {
-      skipLineComment(block, i)
-    } else if Str.charAtOrReplacement(block, i) == '/' and i + 1 < block.length and Str.charAtOrReplacement(block, i + 1) == '*' {
-      skipBlockComment(block, i)
-    } else if charIsIdentStart(Str.charAtOrReplacement(block, i)) {
-      // Read field name
-      val name = readIdent(block, i)
-      skipWs(block, i)
-      if i < block.length and Str.charAtOrReplacement(block, i) == ':' {
-        i += 1
-        skipWs(block, i)
-        // Read type text up to newline, comma, or closing brace
-        var typeText = ""
-        while i < block.length and Str.charAtOrReplacement(block, i) != '\n' and Str.charAtOrReplacement(block, i) != ',' and Str.charAtOrReplacement(block, i) != '}' {
-          typeText = typeText + Str.substring(block, i, 1)
-          i += 1
-        }
-        fields.add(StringPair(first = name, second = Str.trim(typeText)))
-      } else {
-        // Not a field — skip to next line
-        while i < block.length and Str.charAtOrReplacement(block, i) != '\n' {
-          i += 1
-        }
-      }
-    } else {
-      i += 1
-    }
-  }
-  fields
-}
-
-/// A pair of strings: a field's name and type text, or a type's kind and
-/// type-argument text.
+/// A pair of strings: a type's kind and its type-argument text.
 pub record StringPair {
   first: String
   second: String
-  // Classify a type text string into FieldTypeKind + inner args.
-  // The `second` field carries the inner type-args text (everything
-  // between the outer brackets) so callers can re-split as needed —
-  // `Result[Order, String]` returns `("ResultType", "Order, String")`,
-  // and `Map[K, V]` returns `("Generic", "K, V")`.
 }
 
+// Classify a type's source text into a FieldTypeKind name and the text of
+// its type arguments: `Result[Order, String]` is ("ResultType",
+// "Order, String"); `T?` is ("OptionType", "T").
 func classifyType(typeText: in String): StringPair {
+  if Str.endsWith(typeText, "?") {
+    return StringPair(first = "OptionType", second = Str.trim(typeText.substring(0, typeText.length - 1)))
+  }
   // slice[String] literal — use .length, not .count
   val primitives: slice[String] = ["Bool", "Int", "Long", "UInt", "ULong", "Float", "Double", "Char", "String"]
   var pi = 0
@@ -460,13 +199,15 @@ func classifyType(typeText: in String): StringPair {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §3. JSON serialisation for GeneratorRequest
+// §3. JSON
 // ─────────────────────────────────────────────────────────────────────────────
+// Escape a string for a JSON string literal (RFC 8259 §7).
 func jsonEscape(s: in String): String {
   var buf = ""
   var i = 0
   while i < s.length {
     val c = Str.charAtOrReplacement(s, i)
+    val code = Str.codeUnitAt(s, i)
     if c == '"' {
       buf = buf + "\\\""
     } else if c == '\\' {
@@ -477,12 +218,36 @@ func jsonEscape(s: in String): String {
       buf = buf + "\\r"
     } else if c == '\t' {
       buf = buf + "\\t"
+    } else if code < 32 {
+      buf = buf + "\\u00" + hexByte(code)
     } else {
       buf = buf + Str.substring(s, i, 1)
     }
     i += 1
   }
   buf
+}
+
+func hexByte(n: in Int): String {
+  val digits = "0123456789abcdef"
+  Str.substring(digits, n / 16, 1) + Str.substring(digits, n % 16, 1)
+}
+
+func jsonStr(s: in String): String {
+  "\"" + jsonEscape(s) + "\""
+}
+
+func jsonArray(items: in List[String]): String {
+  var acc = "["
+  var i = 0
+  while i < items.count {
+    if i > 0 {
+      acc = acc + ","
+    }
+    acc = acc + items[i]
+    i += 1
+  }
+  acc + "]"
 }
 
 // Split a comma-separated type-args text at the top level (i.e. ignoring
@@ -511,79 +276,310 @@ func splitTopLevelTypeArgs(s: in String): List[String] {
   parts
 }
 
-func buildRequestJson(dir: in GenerateDirective, sourceFile: in String): String {
-  val itemKindStr = if dir.typeKind == "exposed record" {
-    "ExposedRecord"
-  } else if dir.typeKind == "union" {
-    "Union"
-  } else if dir.typeKind == "interface" {
-    "Interface"
-  } else {
-    "Record"
-  }
-
-  val fields = parseFields(dir.rawFields)
-  var fieldsJson = "["
-  var fi = 0
-  while fi < fields.count {
-    val f = fields[fi]
-    if fi > 0 {
-      fieldsJson = fieldsJson + ","
+func fieldTypeJson(src: in String, ty: in TypeExpr): String {
+  val text = spanText(src, ty.span)
+  val classified = classifyType(text)
+  val args: List[String] = newList()
+  if classified.second != "" {
+    for a in splitTopLevelTypeArgs(classified.second) {
+      args.add(jsonStr(a))
     }
-    val classified = classifyType(f.second)
-    // Split the inner type-args text on top-level commas so that
-    // `Result[Order, String]` produces ["Order","String"] rather
-    // than a single combined element (#703).
-    var typeArgsJson = "[]"
-    if classified.second != "" {
-      val args = splitTopLevelTypeArgs(classified.second)
-      var ta = "["
-      var ai = 0
-      while ai < args.count {
-        if ai > 0 {
-          ta = ta + ","
+  }
+  "{\"kind\":\"" + classified.first + "\",\"name\":" + jsonStr(text) + ",\"typeArgs\":" + jsonArray(args) + "}"
+}
+
+// An annotation as {name, args}: each argument as its source text.
+func annotationJson(src: in String, ann: in Annotation): String {
+  val args: List[String] = newList()
+  for arg in ann.args {
+    val sp = match arg { case AAName(_, _, s) -> s; case ABare(_, s) -> s; case ALiteral(_, s) -> s }
+    args.add(jsonStr(spanText(src, sp)))
+  }
+  "{\"name\":" + jsonStr(modulePathJoin(ann.name.segments)) + ",\"args\":" + jsonArray(args) + "}"
+}
+
+func annotationsJson(src: in String, anns: in List[Annotation]): String {
+  val acc: List[String] = newList()
+  for a in anns {
+    acc.add(annotationJson(src, a))
+  }
+  jsonArray(acc)
+}
+
+func fieldJson(src: in String, f: in FieldDecl, isPublic: in Bool): String {
+  val dflt = match f.dflt { case Some(e) -> ",\"default\":" + jsonStr(spanText(src, e.span)); case None -> "" }
+  "{\"name\":" + jsonStr(f.name) + ",\"fieldType\":" + fieldTypeJson(src, f.ty) + ",\"isPublic\":" +
+    (if isPublic { "true" } else { "false" }) +
+    ",\"annotations\":" +
+    annotationsJson(src, f.annotations) +
+    dflt +
+    "}"
+}
+
+func invariantJson(src: in String, inv: in InvariantClause): String {
+  val msg = match inv.message { case Some(m) -> jsonStr(m); case None -> "null" }
+  "{\"source\":" + jsonStr(spanText(src, inv.expr.span)) + ",\"message\":" + msg + ",\"line\":" +
+    Str.fromInt(inv.span.startPos.line) +
+    ",\"column\":" +
+    Str.fromInt(inv.span.startPos.column) +
+    "}"
+}
+
+func typeParamsJson(generics: in Option[GenericParams]): String {
+  val acc: List[String] = newList()
+  match generics {
+    case Some(gp) -> {
+      for p in gp.params {
+        match p {
+          case GPType(n, _) -> acc.add(jsonStr(n))
+          case GPValue(n, _, _) -> acc.add(jsonStr(n))
         }
-        ta = ta + "\"" + jsonEscape(args[ai]) + "\""
-        ai = ai + 1
       }
-      ta = ta + "]"
-      typeArgsJson = ta
     }
-    fieldsJson = fieldsJson + "{\"name\":\"" + jsonEscape(f.first) + "\"" + ",\"fieldType\":{" + "\"kind\":\"" +
-      classified.first +
-      "\"" +
-      ",\"name\":\"" +
-      jsonEscape(f.second) +
-      "\"" +
-      ",\"typeArgs\":" +
-      typeArgsJson +
-      "}" +
-      ",\"isPublic\":true" +
-      ",\"annotations\":[]}"
-    fi += 1
+    case None -> ()
   }
-  fieldsJson = fieldsJson + "]"
+  jsonArray(acc)
+}
 
-  "{\"schemaVersion\":\"1\"" + ",\"generatorArg\":\"" + jsonEscape(dir.generatorArg) + "\"" + ",\"packageName\":\"" +
-    jsonEscape(dir.packageName) +
-    "\"" +
-    ",\"sourceFile\":\"" +
-    jsonEscape(sourceFile) +
-    "\"" +
-    ",\"typeDescriptor\":{" +
-    "\"kind\":\"" +
-    itemKindStr +
-    "\"" +
-    ",\"name\":\"" +
-    jsonEscape(dir.typeName) +
-    "\"" +
-    ",\"packageName\":\"" +
-    jsonEscape(dir.packageName) +
-    "\"" +
-    ",\"typeParams\":[]" +
+func isPubField(f: in FieldDecl): Bool {
+  match f.visibility {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// The type descriptor of `item`: its name, kind label and request JSON.
+// `("", "", "")` for an item that is not a type a generator can describe.
+func describeItem(src: in String, packageName: in String, item: in Item): (String, String, String) {
+  val fields: List[String] = newList()
+  val cases: List[String] = newList()
+  val invariants: List[String] = newList()
+  val anns: List[Annotation] = newList()
+  for a in item.annotations {
+    anns.add(a)
+  }
+  var name = ""
+  var kind = ""
+  var label = ""
+  var typeParams = "[]"
+  match item.kind {
+    case IRecord(d) -> {
+      name = d.name
+      kind = "Record"
+      label = "record"
+      typeParams = typeParamsJson(d.generics)
+      for m in d.members {
+        match m {
+          case RMField(f) -> fields.add(fieldJson(src, f, true))
+          case RMInvariant(inv) -> invariants.add(invariantJson(src, inv))
+          case RMFunc(_) -> ()
+        }
+      }
+    }
+    case IExposedRec(d) -> {
+      name = d.name
+      kind = "ExposedRecord"
+      label = "exposed record"
+      typeParams = typeParamsJson(d.generics)
+      for m in d.members {
+        match m {
+          case RMField(f) -> fields.add(fieldJson(src, f, true))
+          case RMInvariant(inv) -> invariants.add(invariantJson(src, inv))
+          case RMFunc(_) -> ()
+        }
+      }
+    }
+    case IOpaque(d) -> {
+      name = d.name
+      kind = "Opaque"
+      label = "opaque type"
+      typeParams = typeParamsJson(d.generics)
+      for a in d.annotations {
+        anns.add(a)
+      }
+      for m in d.members {
+        match m {
+          case OMField(f) -> fields.add(fieldJson(src, f, isPubField(f)))
+          case OMInvariant(inv) -> invariants.add(invariantJson(src, inv))
+          case _ -> ()
+        }
+      }
+    }
+    case IUnion(d) -> {
+      name = d.name
+      kind = "Union"
+      label = "union"
+      typeParams = typeParamsJson(d.generics)
+      for c in d.cases {
+        val cfields: List[String] = newList()
+        for uf in c.fields {
+          match uf {
+            case UFNamed(n, ty, _) -> cfields.add(
+              "{\"name\":" + jsonStr(n) + ",\"fieldType\":" + fieldTypeJson(src, ty) +
+                ",\"isPublic\":true,\"annotations\":[]}"
+            )
+            case UFPos(ty, _) -> cfields.add(
+              "{\"name\":\"\",\"fieldType\":" + fieldTypeJson(src, ty) +
+                ",\"isPublic\":true,\"annotations\":[]}"
+            )
+          }
+        }
+        cases.add(
+          "{\"name\":" + jsonStr(c.name) + ",\"annotations\":" + annotationsJson(src, c.annotations) + ",\"fields\":" +
+            jsonArray(cfields) +
+            "}"
+        )
+      }
+    }
+    case IEnum(d) -> {
+      name = d.name
+      kind = "Enum"
+      label = "enum"
+      for c in d.cases {
+        cases.add(
+          "{\"name\":" + jsonStr(c.name) + ",\"annotations\":" + annotationsJson(src, c.annotations) + ",\"fields\":[]}"
+        )
+      }
+    }
+    case IInterface(d) -> {
+      name = d.name
+      kind = "Interface"
+      label = "interface"
+      typeParams = typeParamsJson(d.generics)
+    }
+    case _ -> return ("", "", "")
+  }
+  val descriptor = "{\"kind\":\"" + kind + "\",\"name\":" + jsonStr(name) + ",\"packageName\":" + jsonStr(packageName) +
+    ",\"typeParams\":" +
+    typeParams +
     ",\"fields\":" +
-    fieldsJson +
-    ",\"annotations\":[]}}"
+    jsonArray(fields) +
+    ",\"annotations\":" +
+    annotationsJson(src, anns) +
+    ",\"cases\":" +
+    jsonArray(cases) +
+    ",\"invariants\":" +
+    jsonArray(invariants) +
+    "}";
+  (name, label, descriptor)
+}
+
+// The identifiers in `text`, each once.
+func identifiersIn(text: in String): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < text.length {
+    val c = Str.charAtOrReplacement(text, i)
+    if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' {
+      var j = i + 1
+      while j < text.length and charIsIdent(Str.charAtOrReplacement(text, j)) {
+        j += 1
+      }
+      val word = text.substring(i, j - i)
+      if not acc.contains(word) {
+        acc.add(word)
+      }
+      i = j
+    } else {
+      i += 1
+    }
+  }
+  acc
+}
+
+func optionalTextJson(e: in Option[Expr], src: in String): String {
+  match e {
+    case Some(x) -> jsonStr(spanText(src, x.span))
+    case None -> "null"
+  }
+}
+
+// A distinct type's range as {min, max, maxInclusive}, each bound as source
+// text or null when the range is open on that side.
+func rangeJson(src: in String, rb: in RangeBound): String {
+  val inclusive = match rb { case RBHalfOpen(_, _, _) -> false; case _ -> true }
+  "{\"min\":" + optionalTextJson(rangeLowerExpr(rb), src) + ",\"max\":" + optionalTextJson(rangeUpperExpr(rb), src) +
+    ",\"maxInclusive\":" +
+    (if inclusive { "true" } else { "false" }) +
+    "}"
+}
+
+// `item` as a declaration descriptor, when it is an enum, distinct type or
+// alias.
+func declarationJson(src: in String, item: in Item): Option[String] {
+  match item.kind {
+    case IEnum(d) -> {
+      val cases: List[String] = newList()
+      for c in d.cases {
+        cases.add(
+          "{\"name\":" + jsonStr(c.name) + ",\"annotations\":" + annotationsJson(src, c.annotations) + ",\"fields\":[]}"
+        )
+      }
+      Some(
+        value = "{\"name\":" + jsonStr(d.name) + ",\"kind\":\"Enum\",\"underlying\":null,\"range\":null,\"cases\":" +
+          jsonArray(cases) +
+          "}"
+      )
+    }
+    case IDistinctType(d) -> {
+      val range = match d.rangeClause { case Some(rb) -> rangeJson(src, rb); case None -> "null" }
+      Some(
+        value = "{\"name\":" + jsonStr(d.name) + ",\"kind\":\"Distinct\",\"underlying\":" +
+          jsonStr(spanText(src, d.underlying.span)) +
+          ",\"range\":" +
+          range +
+          ",\"cases\":[]}"
+      )
+    }
+    case ITypeAlias(d) -> Some(
+      value = "{\"name\":" + jsonStr(d.name) + ",\"kind\":\"Alias\",\"underlying\":" +
+        jsonStr(spanText(src, d.rhs.span)) +
+        ",\"range\":null,\"cases\":[]}"
+    )
+    case _ -> None
+  }
+}
+
+// The name an enum, distinct type or alias declares, or "" for any other
+// item.
+func declaredName(item: in Item): String {
+  match item.kind {
+    case IEnum(d) -> d.name
+    case IDistinctType(d) -> d.name
+    case ITypeAlias(d) -> d.name
+    case _ -> ""
+  }
+}
+
+// The enum, distinct and alias declarations in `file` whose names appear in
+// the source of `annotated`, so a generator can tell an enum field's cases or
+// a range type's bounds without seeing the rest of the file (D151).
+func declarationsFor(src: in String, file: in SourceFile, annotated: in Item): String {
+  val names = identifiersIn(spanText(src, annotated.span))
+  val acc: List[String] = newList()
+  for item in file.items {
+    val n = declaredName(item)
+    if n != "" and names.contains(n) {
+      match declarationJson(src, item) {
+        case Some(j) -> acc.add(j)
+        case None -> ()
+      }
+    }
+  }
+  jsonArray(acc)
+}
+
+// The generator request (schema 2) for `dir`.
+func buildRequestJson(dir: in GenerateDirective, sourceFile: in String): String {
+  "{\"schemaVersion\":\"2\",\"generatorArg\":" + jsonStr(dir.generatorArg) + ",\"packageName\":" +
+    jsonStr(dir.packageName) +
+    ",\"sourceFile\":" +
+    jsonStr(sourceFile) +
+    ",\"typeDescriptor\":" +
+    dir.descriptorJson +
+    ",\"declarations\":" +
+    dir.declarationsJson +
+    "}"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -824,7 +820,7 @@ func fragmentParseErrors(pkgName: in String, imports: in List[String], fragment:
     header = header + imp + "\n"
   }
   val headerLines = Str.split(header, "\n").length - 1
-  val pr = Parser.parse(header + fragment)
+  val pr = parse(header + fragment)
   var text = ""
   var n = 0
   for d in pr.diagnostics {
@@ -849,8 +845,8 @@ func fragmentParseErrors(pkgName: in String, imports: in List[String], fragment:
 /// `Lyric.Cli`), and `sourceFilePath` the file, for diagnostics.
 ///
 /// Errors are reported together, one per line in the CLI's diagnostic
-/// shape: X0001 (an annotation on something that is not a record, union or
-/// interface), X0002, X0003, X0004 (generated code that does not parse),
+/// shape: X0001 (an annotation on something that is not a type a generator
+/// can describe), X0002, X0003, X0004 (generated code that does not parse),
 /// X0005 (an error the generator reported), X0006 (an `import` of a
 /// generator package), X0008 and X0009 (a generator that could not be built
 /// or run).
@@ -860,8 +856,11 @@ pub func preprocess(
   sourceFilePath: in String,
   gens: in GeneratorSet,
 ): Result[PreprocessOutput, String] {
-  val pkgName = extractPackageName(source)
-  val directives = scanDirectives(source, pkgName)
+  // A file without `@generate(` has no directive; it is not parsed here.
+  val pr = if Str.contains(source, "@generate(") { Some(value = parse(source)) } else { None }
+  val pkgName = match pr { case Some(p) -> modulePathJoin(p.file.packageDecl.path.segments); case None -> "" }
+  val pkgEnd = match pr { case Some(p) -> p.file.packageDecl.span.endPos.offset; case None -> 0 }
+  val directives = match pr { case Some(p) -> directivesIn(source, pkgName, p.file); case None -> newList() }
   val warnings: List[String] = newList()
   val errors: List[String] = newList()
 
@@ -919,7 +918,7 @@ pub func preprocess(
           "X0001",
           dir.line,
           dir.column,
-          here + " must annotate a record, exposed record, union or interface"
+          here + " must annotate a record, exposed record, opaque type, union, enum or interface"
         )
       )
       continue
@@ -1023,32 +1022,20 @@ pub func preprocess(
   if errors.count > 0 {
     return Err(error = Str.joinList("\n", errors))
   }
-  Ok(value = PreprocessOutput(source = insertImports(augmented, pkgName, extraImports), warnings = warnings))
+  Ok(value = PreprocessOutput(source = spliceGeneratedImports(augmented, pkgEnd, extraImports), warnings = warnings))
 }
 
-// `source` with `imports` placed after its `package` line.
-func insertImports(source: in String, pkgName: in String, imports: in List[String]): String {
+// `source` with `imports` appended to its `package` declaration, which ends
+// at offset `pkgEnd`, as `; import A; import B`.  Keeping them on that line
+// leaves every line of the consumer's own code where it was, so a
+// diagnostic in it still names the line the author wrote.
+pub func spliceGeneratedImports(source: in String, pkgEnd: in Int, imports: in List[String]): String {
   if imports.count == 0 {
     return source
   }
   var importText = ""
   for imp in imports {
-    importText = importText + imp + "\n"
+    importText = importText + "; " + imp
   }
-  val pkgLine = "package " + pkgName
-  var i = 0
-  while i < source.length {
-    if matchAt(source, i, pkgLine) {
-      var lineEnd = i + pkgLine.length
-      while lineEnd < source.length and Str.charAtOrReplacement(source, lineEnd) != '\n' {
-        lineEnd += 1
-      }
-      if lineEnd < source.length {
-        lineEnd += 1
-      }
-      return source.substring(0, lineEnd) + importText + source.substring(lineEnd, source.length - lineEnd)
-    }
-    i += 1
-  }
-  source
+  source.substring(0, pkgEnd) + importText + source.substring(pkgEnd, source.length - pkgEnd)
 }

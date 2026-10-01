@@ -446,7 +446,7 @@ exposed record TransferRequest @generate(Json) {
 
 `exposed` types are flat, host-visible, and may be inspected by reflection. They compile to plain .NET `record class` types. They cannot have invariants beyond what the type system enforces structurally (no `invariant:` clause). They are intended for wire-level shapes — DTOs, log payloads, config records.
 
-`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` invoke built-in source generators that emit serializers at compile time — `@generate(Json)` synthesises `toJson(self): String`, `fromJson(json: String): Result[TypeName, String]`, and `fromJsonElement(elem: JsonElement): Result[TypeName, String]`. `fromJson` parses its argument once and decodes through `fromJsonElement`; nested `@generate(Json)` records and slice elements are decoded from their child elements, so one `fromJson` call parses the body exactly once. A hand-written `fromJson` or `fromJsonElement` replaces the synthesised one, and a hand-written `fromJson` alone gets a synthesised `fromJsonElement` that forwards to it. No runtime serialization library is needed. Third-party generators are invoked with dotted names (`@generate(Pkg.Name)`): the generator is a `path = "..."` or `{ workspace = true }` dependency whose manifest declares `kind = "source-generator"`, which the compiler builds for dotnet and runs (`dotnet exec`) over each annotated type while compiling, on every target; it is never linked or imported. Its diagnostics are the X-series (X0001–X0009, appendix B); see `docs/40-source-generators.md`, D075 and D150.
+`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` invoke built-in source generators that emit serializers at compile time — `@generate(Json)` synthesises `toJson(self): String`, `fromJson(json: String): Result[TypeName, String]`, and `fromJsonElement(elem: JsonElement): Result[TypeName, String]`. `fromJson` parses its argument once and decodes through `fromJsonElement`; nested `@generate(Json)` records and slice elements are decoded from their child elements, so one `fromJson` call parses the body exactly once. A hand-written `fromJson` or `fromJsonElement` replaces the synthesised one, and a hand-written `fromJson` alone gets a synthesised `fromJsonElement` that forwards to it. No runtime serialization library is needed. Third-party generators are invoked with dotted names (`@generate(Pkg.Name)`): the generator is a `path = "..."` or `{ workspace = true }` dependency whose manifest declares `kind = "source-generator"`, which the compiler builds for dotnet and runs (`dotnet exec`) over each annotated type while compiling, on every target; it is never linked or imported. Its diagnostics are the X-series (X0001–X0009, appendix B); see `docs/40-source-generators.md`, D075 and D150. The request a generator receives (schema 2, D151) describes the annotated type's fields, cases, annotations (with each argument's source text), invariants (as source text, with their `@message`) and the same-file enum, distinct and alias declarations it names. A generator's own imports are appended to the `package` line, so the file's own line numbers are unchanged.
 
 An `opaque` type cannot have an `exposed` field. An `exposed` type may hold an opaque field, but only as an opaque handle — the inner representation remains hidden.
 
@@ -1351,6 +1351,14 @@ Invariants must hold:
 
 Internal mutations may temporarily violate the invariant; the invariant is checked when control returns to a public boundary.
 
+An invariant may carry a message for the user, written after its expression on the same line:
+
+```
+invariant: keyAccountLimitOk(tier, creditLimit) @message("Key accounts need a credit limit of at least 10000")
+```
+
+`@message` takes one string literal; any other annotation after an invariant, a second `@message`, or a non-string argument is **P0345**. The message does not change the runtime check (its failure still reports the clause as written). It is carried to source generators, so `@generate(Forms.Derive)` reports a violated invariant as a form-level error with this text (D151, docs/65 §11.4).
+
 **Current enforcement (all targets).** Every construction of a record or opaque type that declares invariants is checked: a constructor call anywhere (including in another package of the same build, and inside generic functions), and every `.copy(...)`. A violation raises `InvariantViolated: <Pkg.Type> invariant <clause>`, one clause at a time in declaration order. The check is a compiler-synthesized function `__lyric_checked_<Type>` in the declaring package, with the type's own visibility. Invariant clauses are evaluated in the declaring package, so they may call that package's private helpers. Not yet enforced (#7222):
 
 - re-checking after in-place mutation of a `var` field or an `inout` parameter;
@@ -1738,7 +1746,7 @@ core = { may_import = ["core", "pure", "Acme.Util"], may_not_import = ["Acme.**"
 
 A rule's `may_import` lists layer names, the classes `pure` and `io`, and package patterns (an entry starting with an upper-case letter); `may_not_import` lists package patterns; `async` (default `true`) says whether the layer may declare `async func`. A rule may also be written as a `[layers.rules.<name>]` sub-table; naming a rule twice is an error, as is any unknown key in a `[layers]` table. In a pattern, `*` matches one dotted segment and a final `**` matches one or more. When several `[layers.packages]` entries match a package, the most specific wins (more literal segments; an exact name beats any pattern); equally specific entries naming different layers, and an entry matching no project package, are **Y0009**. A package may instead declare its layer in source, `@layer("logic")` before `package`; a layer the manifest also assigns must agree (**Y0005**).
 
-The only preset is `ui` (docs/65 §5.2): layers `domain`, `ports`, `logic`, `effects`, `view`, each closed to the `Ui` packages except `Ui.Core` (logic, effects, view) and `Ui.Widgets`/`Ui.Forms` (view); `logic` and `view` may not import `io` or declare `async func`; a view may import another view.
+The only preset is `ui` (docs/65 §5.2): layers `domain`, `ports`, `logic`, `effects`, `view`, each closed to the `Ui` packages except `Ui.Core` and `Ui.Routing` (logic, effects, view) and `Ui.Widgets`/`Ui.Forms` (view); `logic` and `view` may not import `io` or declare `async func`; a view may import another view.
 
 **Rules.** The build checks every project package in a layer, on every target, before code generation:
 

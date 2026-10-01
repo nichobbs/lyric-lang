@@ -10,13 +10,12 @@ package Customers
 
 import Std.Core
 import Std.Console
-import Std.String
-import Std.Parse
 import Ui.Host.{Instance, instance}
 import Ui.Host.Web as WebHost
 import Ui.Session.{Program}
 import Customers.Domain.{CustomerId}
 import Customers.Ports.{CustomerRepository}
+import Customers.Routes.{Route, CustomerList, EditCustomer, parseRoute}
 import Customers.Store
 import Customers.Edit.Logic
 import Customers.Edit.Effects
@@ -27,20 +26,12 @@ import Customers.List.View as ListView
 
 /// The screen instance for `url`, or `None` for an unknown page.
 pub func route(repo: in CustomerRepository, url: in String): Option[Instance] {
-  if url == "/customers" or url == "/customers/" {
-    return Some(value = listScreen(repo))
-  }
-  val prefix = "/customers/"
-  if startsWith(url, prefix) {
-    return match parseOptLong(substring(url, prefix.length)) {
-      case Some(n) -> match CustomerId.tryFrom(n) {
-        case Ok(id) -> Some(value = editScreen(repo, id))
-        case Err(_) -> None
-      }
-      case None -> None
-    }
-  }
-  return None
+  return match parseRoute(url) { case Some(r) -> Some(value = screenFor(repo, r)); case None -> None }
+}
+
+// Exhaustive over `Route`, so a page without a screen does not compile.
+func screenFor(repo: in CustomerRepository, r: in Route): Instance {
+  return match r { case CustomerList -> listScreen(repo); case EditCustomer(id) -> editScreen(repo, id) }
 }
 
 func listScreen(repo: in CustomerRepository): Instance {

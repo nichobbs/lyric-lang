@@ -1,0 +1,38 @@
+# Ui.Routes — the route generator of docs/65 §6.1 (D151).
+#
+# A consumer depends on it as a local generator and annotates a union whose
+# cases carry `@path("...")`:
+#
+#   [dependencies]
+#   "Lyric.Ui"  = { path = "../lyric-ui" }
+#   "Ui.Routes" = { path = "../lyric-ui/routes" }
+#
+#   @generate(Ui.Routes)
+#   pub union Route {
+#     @path("/customers") case CustomerList
+#     @path("/customers/{id}") case EditCustomer(id: CustomerId)
+#   }
+#
+# The generated code imports `Ui.Routing`, so the consumer also depends on
+# `Lyric.Ui`.
+
+[package]
+name        = "Ui.Routes"
+version     = "0.1.0"
+kind        = "source-generator"
+authors     = ["Lyric Contributors"]
+license     = "MIT"
+description = "Source generator deriving parseRoute and routeUrl from a route union (docs/65 §6.1)."
+
+[project]
+name            = "Ui.Routes"
+output_assembly = "Ui.Routes.dll"
+
+[project.packages]
+"Ui.Routes" = "src/routes.l"
+
+[project.tests]
+"Ui.RoutesTests" = "tests/routes_tests.l"
+
+[dependencies]
+"Lyric.GeneratorSdk" = { path = "../../lyric-generator-sdk" }

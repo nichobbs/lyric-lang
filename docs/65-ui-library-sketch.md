@@ -1,8 +1,9 @@
 # 65 - UI library: one app model for desktop and web (sketch)
 
 **Status:** Specced in D137. Phases U1 (pure core, `lyric-forms`, example),
-U2 (server-driven web host and TypeScript runtime) and U3 (enforced
-`[layers]`, D149) are implemented; see
+U2 (server-driven web host and TypeScript runtime), U3 (enforced
+`[layers]`, D149) and U4 (`Forms.Derive` and `Ui.Routes`, D151) are
+implemented; see
 §14 for the phase plan and §15 for what the first implementation surfaced
 and how each finding was resolved. The open questions Q-UI-001 to Q-UI-011
 are resolved (§16): Q-UI-011 by the compiler fixes of §15, the others by
@@ -296,12 +297,27 @@ a union, so links are typed:
 ```lyric
 @generate(Ui.Routes)
 pub union Route {
-  @path("/customers")        case CustomerList
-  @path("/customers/{id}")   case EditCustomer(id: CustomerId)
+  @path("/customers")             case CustomerList
+  @path("/customers/{id:Long}")   case EditCustomer(id: CustomerId)
 }
 // generated: parseRoute(url): Route?, routeUrl(r): String
-// view: link("Edit", EditCustomer(c.id))   -- no hand-written URLs
+// view: link("Edit", routeUrl(EditCustomer(id = c.id)))   -- no hand-written URLs
 ```
+
+As implemented (D151), `Ui.Routes` lives in `lyric-ui/routes/`:
+
+- **Matching:** `parseRoute` tries the cases in declaration order and
+  ignores the query and fragment. Each `{field}` segment binds one case
+  field, and every field appears once.
+- **Field types:** a field is a `String`, `Int` or `Long`, or a same-file
+  enum, distinct or range type. `{field:Long}` (or `:Int`, `:String`) names
+  the segment's type for a distinct type declared elsewhere; a value outside
+  a range type does not match.
+- **Encoding:** segments are percent-decoded, and `routeUrl` encodes field
+  values through the pure `Ui.Routing` package. The `ui` layer preset lets
+  logic, effects and views import it.
+- **Diagnostics:** `RT001`–`RT006`, including RT005 for two cases with the
+  same path shape.
 
 The application maps each `Route` case to a `Screen` with an exhaustive
 `match`, so a route without a screen is a compile error.
@@ -643,13 +659,13 @@ single `FieldEdited(field, value)` case.
 |---|---|---|---|
 | `String` | `String` | `TextInput` | required unless optional |
 | `Int`/`Long range a ..= b` | `String` | `NumberInput` with min/max | parse, then range -> `OutOfRange` |
-| `Bool` | `Bool` | `Checkbox` | none |
+| `Bool` | `String` (`"true"`/`"false"`) | `Checkbox` | none |
 | `enum` | `String` | `Select` | case-name lookup |
 | `T?` | as `T` | as `T` | empty text means `None` |
-| `Instant`, date | `String` | `DateInput` | ISO-8601 parse |
-| opaque `T` | `String` | `TextInput` | `T.parse(s): Result[T, String]` or `@form_parse(fn)` |
-| nested derived record | nested draft | `Section` | recursive, dotted field paths |
-| `List[T]` | `DraftRows[TDraft]` | repeater | rows keyed by stable row id (§11.7); derivation with Q-UI-004 |
+| `Instant`, date | `String` | `DateInput` | ISO-8601 parse; tracked in #7907 (use `@form_parse`/`@form_format` until then) |
+| any other `T` | `String` | `TextInput` | `@form_parse(f)` with `f(s): Result[T, String]`, and `@form_format(g)` with `g(v): String` |
+| nested derived record | nested draft | `Section` | recursive, dotted field paths; tracked in #7907 |
+| `List[T]` | `DraftRows[TDraft]` | repeater | rows keyed by stable row id (§11.7); derivation tracked in #7907 |
 
 ### 11.4 Invariants become messages
 
@@ -657,15 +673,16 @@ The generator copies each `invariant:` expression into `validate` as a
 boolean check evaluated **before** construction, mapping a failure to
 `FieldError.CrossField(message)`. Construction then cannot fail at runtime.
 In `@proof_required` domains, `validate` returning `Ok` implies the invariant
-holds, which the verifier can discharge. The `@generate` request does not
-yet carry invariants or annotations (it sends `"annotations":[]`); D138
-(Q-UI-004) specifies request schema version 2: type and field annotations
-(name plus raw argument text), type parameters, and each invariant as source
-text with its span and optional `@message`. Source text rather than
-structured AST keeps the generator SDK independent of the compiler's AST;
-the copied expression resolves because `validate` binds each parsed field
-to a local of the same name. Version 1 generators keep receiving the
-version 1 shape.
+holds, which the verifier can discharge.
+
+The `@generate` request schema 2 (D138 Q-UI-004, implemented in D151)
+carries each invariant as source text, with its span and optional
+`@message`. It also carries type and field annotations (name plus raw
+argument text) and type parameters.
+
+Source text rather than structured AST keeps the generator SDK independent
+of the compiler's AST. The copied expression resolves because `validate`
+binds each parsed field to a local of the same name.
 
 ### 11.5 Client-side and asynchronous validation
 
@@ -673,12 +690,45 @@ Bounds and `required` flags travel to the host as props for instant
 feedback; server-side `validate` is authoritative. Asynchronous rules
 ("email already in use") are effects whose results merge into `errors`.
 
-### 11.6 Until the generator ships
+### 11.6 The generator as implemented
 
-Phase U1 ships `lyric-forms` as a hand-usable library: the example writes
-the draft, field enum, schema and `validate` by hand using `Forms.Parse`
-helpers. That code is exactly what the generator will emit, so it also
-serves as the generator's golden output (§14).
+`Forms.Derive` (D151) lives in `lyric-forms/derive/`. A consumer declares it
+as a local generator dependency (D150) beside `Lyric.Forms`.
+
+**What it supports:**
+
+- a non-generic record or opaque type;
+- `String`, `Bool`, `Int` and `Long` fields, and `Option` of each;
+- same-file enum, distinct and range types;
+- any other type, given `@form_parse(f)` and `@form_format(g)`.
+
+**What it emits:** the table in §11.2, plus:
+
+- `customerFieldName`/`customerFieldNamed`, which map a field to its schema
+  name and back;
+- `customerDraftValue`, which reads one field of a draft.
+
+**Field annotations:**
+
+- `@readonly`: the field is not edited, and `validate` takes it as a
+  parameter;
+- `@label("...")`, which defaults to the humanised field name;
+- `@multiline`;
+- `@email`;
+- `@maxLength(n)`.
+
+An enum case takes `@label` for its choice label, and its case name is the
+choice value. A field-enum case whose name would collide with a type the
+form names takes a `Field` suffix (`creditLimit: CreditLimit` becomes
+`CreditLimitField`).
+
+**`validate`:** it parses every field and reports every error together.
+It then checks each invariant and reports every failure, then constructs.
+An invariant without `@message` reports its source text.
+
+**Not yet derived** (FD002, tracked in #7907): nested records, `List`
+fields and dates. `examples/ui-customers` derives its form with it. Phase
+U1's hand-written form code, which served as the golden output, is gone.
 
 ### 11.7 Field paths and list rows
 
@@ -790,7 +840,7 @@ custom properties (design tokens) with light and dark sets.
 | U1 | `lyric-forms`; `lyric-ui` pure core (`Ui.Core`, `Ui.Widgets`, `Ui.Diff`, `Ui.Protocol`, `Ui.Session`, `Ui.Testing`); example logic, view and tests | Implemented (MSIL, JVM) |
 | U2 | Server-driven web host (`Ui.Host`) + TS runtime; example runs in a browser | Implemented (MSIL, JVM); host and runtime covered by `lyric test` and `node --test`, and the example by a Playwright browser test on both targets (#7836) |
 | U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Implemented (D149, every target); `examples/ui-customers` builds under the `ui` preset |
-| U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Planned |
+| U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Implemented (D151); request schema 2; the example derives its form and routes on both targets |
 | U5 | Desktop webview host (native + MSIL) | Planned |
 | U6 | Data grid, `Lazy`, SSR first paint | Planned |
 | U7 | Client WASM host | Depends on `docs/35` |
@@ -990,8 +1040,9 @@ are designs recorded for the phase that needs them.
 - **Q-UI-002** *Resolved (design):* `Ctx[A] = { ui: UiCtx, app: A }` (§6.4).
 - **Q-UI-003** *Resolved (implemented, D149):* package-level purity rules
   `Y0007`/`Y0008` in the `[layers]` feature (§5.5).
-- **Q-UI-004** *Resolved (design, U4):* `@generate` request schema version 2
-  with annotations, type parameters and invariants as source text (§11.4).
+- **Q-UI-004** *Resolved (implemented, D151):* `@generate` request schema
+  version 2 with annotations, type parameters, cases, invariants as source
+  text and same-file declarations (§11.4).
 - **Q-UI-005** *Resolved (implemented):* event paths name keyed nodes by key;
   ambiguous or unknown keys drop the event (§7.2, §9.3).
 - **Q-UI-006** *Resolved (design):* `raw` is gated by `@cfg(feature =

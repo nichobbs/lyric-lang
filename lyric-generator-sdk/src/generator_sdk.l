@@ -17,6 +17,7 @@ import Std.Collections
 import Std.Console as Console
 import Std.File as File
 import Std.String as Str
+import Std.JsonValue as Jv
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Descriptor types (compiler → generator)
@@ -50,6 +51,25 @@ pub record FieldDescriptor {
   fieldType: FieldType
   isPublic: Bool
   annotations: slice[AnnotationDescriptor]
+  defaultSource: Option[String] = None  // the default value's source text, if any (schema 2)
+}
+
+// One case of an annotated union or enum (schema 2).  A positional union
+// field has an empty name.
+pub record CaseDescriptor {
+  name: String
+  annotations: slice[AnnotationDescriptor]
+  fields: slice[FieldDescriptor]
+}
+
+// One `invariant:` of the annotated type, as source text (schema 2): the
+// generator can copy it into code that binds each field to a local of the
+// same name.  `message` is the invariant's `@message("...")`, if any.
+pub record InvariantDescriptor {
+  source: String
+  message: Option[String]
+  line: Int
+  column: Int
 }
 
 // The kind of the annotated item.
@@ -58,6 +78,8 @@ pub enum ItemKind {
   case ExposedRecord
   case Union
   case Interface
+  case Opaque
+  case Enum
 }
 
 // Full descriptor for the type that carries the @generate annotation.
@@ -66,9 +88,38 @@ pub record TypeDescriptor {
   name: String                    // unqualified name, e.g. "Order"
   packageName: String             // fully qualified package, e.g. "MyApp.Models"
   typeParams: slice[String]       // ["T", "E"] for generic types
-  fields: slice[FieldDescriptor]  // empty for unions and interfaces
+  fields: slice[FieldDescriptor]  // empty for unions, enums and interfaces
   annotations: slice[AnnotationDescriptor]
+  cases: slice[CaseDescriptor] = []          // a union's or enum's cases (schema 2)
+  invariants: slice[InvariantDescriptor] = []  // the type's invariants (schema 2)
   invariant: name.length > 0
+}
+
+// What a same-file declaration named by the annotated type declares
+// (schema 2).
+pub enum DeclarationKind {
+  case DeclaredEnum      // enum E { case A ... }
+  case DeclaredDistinct  // type T = U, optionally with a range
+  case DeclaredAlias     // alias T = U
+}
+
+// A distinct type's range: each bound as source text, `None` when the range
+// is open on that side.  `maxInclusive` is false for `lo ..< hi`.
+pub record RangeDescriptor {
+  min: Option[String]
+  max: Option[String]
+  maxInclusive: Bool
+}
+
+// An enum, distinct type or alias declared in the same file as the
+// annotated type and named in its source (schema 2), so a generator can
+// see an enum field's cases or a range type's bounds.
+pub record DeclarationDescriptor {
+  name: String
+  kind: DeclarationKind
+  underlying: Option[String]      // a distinct type's or alias's right-hand side
+  range: Option[RangeDescriptor]  // a range type's bounds
+  cases: slice[CaseDescriptor]    // an enum's cases
 }
 
 // The full request handed to the generator entry point.
@@ -77,6 +128,19 @@ pub record GeneratorRequest {
   typeDescriptor: TypeDescriptor
   packageName: String           // package currently being compiled
   sourceFile: String            // source file path (for diagnostic spans)
+  declarations: slice[DeclarationDescriptor] = []  // same-file declarations (schema 2)
+}
+
+/// The same-file declaration of `name` the request carries, if any.
+pub func declarationNamed(req: in GeneratorRequest, name: in String): Option[DeclarationDescriptor] {
+  var i = 0
+  while i < req.declarations.length {
+    if req.declarations[i].name == name {
+      return Some(value = req.declarations[i])
+    }
+    i += 1
+  }
+  None
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -326,20 +390,31 @@ func serializeAnnotations(anns: in slice[AnnotationDescriptor]): String {
   acc + "]"
 }
 
-// Serialize a GeneratorRequest to JSON for the subprocess.
-// This is a hand-rolled serialiser — no Std.Json dependency required at
-// generator compile time, keeping the SDK lightweight.
-pub func serializeRequest(req: in GeneratorRequest): String {
-  val td = req.typeDescriptor
+// A JSON string literal for `s`.
+func jsonStr(s: in String): String {
+  "\"" + jsonEscape(s) + "\""
+}
 
-  // Serialize fields slice
-  val fieldsArr = td.fields.toArray()
-  var fieldsJson = "["
+func jsonStrs(xs: in slice[String]): String {
+  var acc = "["
+  var i = 0
+  while i < xs.length {
+    if i > 0 {
+      acc = acc + ","
+    }
+    acc = acc + jsonStr(xs[i])
+    i += 1
+  }
+  acc + "]"
+}
+
+func serializeFields(fields: in slice[FieldDescriptor]): String {
+  var acc = "["
   var fi = 0
-  while fi < fieldsArr.count {
-    val fd = fieldsArr[fi]
+  while fi < fields.length {
+    val fd = fields[fi]
     if fi > 0 {
-      fieldsJson = fieldsJson + ","
+      acc = acc + ","
     }
     val ftKind = match fd.fieldType.kind {
       case Primitive -> "Primitive"
@@ -349,70 +424,129 @@ pub func serializeRequest(req: in GeneratorRequest): String {
       case Named -> "Named"
       case Generic -> "Generic"
     }
-    var ftJson = "{\"kind\":\"" + ftKind + "\""
-    ftJson = ftJson + ",\"name\":\"" + jsonEscape(fd.fieldType.name) + "\""
-    ftJson = ftJson + ",\"typeArgs\":["
-    val taArr = fd.fieldType.typeArgs.toArray()
-    var tai = 0
-    while tai < taArr.count {
-      if tai > 0 {
-        ftJson = ftJson + ","
-      }
-      ftJson = ftJson + "\"" + jsonEscape(taArr[tai]) + "\""
-      tai += 1
-    }
-    ftJson = ftJson + "]}"
-    fieldsJson = fieldsJson + "{\"name\":\"" + jsonEscape(fd.name) + "\""
-    fieldsJson = fieldsJson + ",\"fieldType\":" + ftJson
-    fieldsJson = fieldsJson + ",\"isPublic\":" + (if fd.isPublic { "true" } else { "false" })
-    fieldsJson = fieldsJson + ",\"annotations\":" + serializeAnnotations(fd.annotations) + "}"
+    val dflt = match fd.defaultSource { case Some(d) -> ",\"default\":" + jsonStr(d); case None -> "" }
+    acc = acc + "{\"name\":" + jsonStr(fd.name) + ",\"fieldType\":{\"kind\":\"" + ftKind + "\",\"name\":" +
+      jsonStr(fd.fieldType.name) +
+      ",\"typeArgs\":" +
+      jsonStrs(fd.fieldType.typeArgs) +
+      "},\"isPublic\":" +
+      (if fd.isPublic { "true" } else { "false" }) +
+      ",\"annotations\":" +
+      serializeAnnotations(fd.annotations) +
+      dflt +
+      "}"
     fi += 1
   }
-  fieldsJson = fieldsJson + "]"
+  acc + "]"
+}
 
-  // Serialize typeParams
-  val tpArr = td.typeParams.toArray()
-  var tpJson = "["
-  var tpi = 0
-  while tpi < tpArr.count {
-    if tpi > 0 {
-      tpJson = tpJson + ","
+func serializeCases(cases: in slice[CaseDescriptor]): String {
+  var acc = "["
+  var i = 0
+  while i < cases.length {
+    val c = cases[i]
+    if i > 0 {
+      acc = acc + ","
     }
-    tpJson = tpJson + "\"" + jsonEscape(tpArr[tpi]) + "\""
-    tpi += 1
+    acc = acc + "{\"name\":" + jsonStr(c.name) + ",\"annotations\":" + serializeAnnotations(c.annotations) +
+      ",\"fields\":" +
+      serializeFields(c.fields) +
+      "}"
+    i += 1
   }
-  tpJson = tpJson + "]"
+  acc + "]"
+}
 
+func serializeInvariants(invs: in slice[InvariantDescriptor]): String {
+  var acc = "["
+  var i = 0
+  while i < invs.length {
+    val inv = invs[i]
+    if i > 0 {
+      acc = acc + ","
+    }
+    val msg = match inv.message { case Some(m) -> jsonStr(m); case None -> "null" }
+    acc = acc + "{\"source\":" + jsonStr(inv.source) + ",\"message\":" + msg + ",\"line\":" + Str.fromInt(inv.line) +
+      ",\"column\":" +
+      Str.fromInt(inv.column) +
+      "}"
+    i += 1
+  }
+  acc + "]"
+}
+
+/// Encode a request as the compiler sends it (schema 2).  The inverse of
+/// `parseRequest`; generator tests use it to build a request by hand.
+pub func serializeRequest(req: in GeneratorRequest): String {
+  val td = req.typeDescriptor
   val itemKindStr = match td.kind {
     case Record -> "Record"
     case ExposedRecord -> "ExposedRecord"
     case Union -> "Union"
     case Interface -> "Interface"
+    case Opaque -> "Opaque"
+    case Enum -> "Enum"
   }
-
-  "{\"schemaVersion\":\"1\"" + ",\"generatorArg\":\"" + jsonEscape(req.generatorArg) + "\"" + ",\"packageName\":\"" +
-    jsonEscape(req.packageName) +
-    "\"" +
-    ",\"sourceFile\":\"" +
-    jsonEscape(req.sourceFile) +
-    "\"" +
-    ",\"typeDescriptor\":{" +
-    "\"kind\":\"" +
+  "{\"schemaVersion\":\"2\",\"generatorArg\":" + jsonStr(req.generatorArg) + ",\"packageName\":" +
+    jsonStr(req.packageName) +
+    ",\"sourceFile\":" +
+    jsonStr(req.sourceFile) +
+    ",\"typeDescriptor\":{\"kind\":\"" +
     itemKindStr +
-    "\"" +
-    ",\"name\":\"" +
-    jsonEscape(td.name) +
-    "\"" +
-    ",\"packageName\":\"" +
-    jsonEscape(td.packageName) +
-    "\"" +
+    "\",\"name\":" +
+    jsonStr(td.name) +
+    ",\"packageName\":" +
+    jsonStr(td.packageName) +
     ",\"typeParams\":" +
-    tpJson +
+    jsonStrs(td.typeParams) +
     ",\"fields\":" +
-    fieldsJson +
+    serializeFields(td.fields) +
     ",\"annotations\":" +
     serializeAnnotations(td.annotations) +
-    "}}"
+    ",\"cases\":" +
+    serializeCases(td.cases) +
+    ",\"invariants\":" +
+    serializeInvariants(td.invariants) +
+    "},\"declarations\":" +
+    serializeDeclarations(req.declarations) +
+    "}"
+}
+
+func optJsonStr(o: in Option[String]): String {
+  match o {
+    case Some(v) -> jsonStr(v)
+    case None -> "null"
+  }
+}
+
+func serializeDeclarations(decls: in slice[DeclarationDescriptor]): String {
+  var acc = "["
+  var i = 0
+  while i < decls.length {
+    val d = decls[i]
+    if i > 0 {
+      acc = acc + ","
+    }
+    val kind = match d.kind {
+      case DeclaredEnum -> "Enum"
+      case DeclaredDistinct -> "Distinct"
+      case DeclaredAlias -> "Alias"
+    }
+    val range = match d.range {
+      case Some(r) -> "{\"min\":" + optJsonStr(r.min) + ",\"max\":" + optJsonStr(r.max) + ",\"maxInclusive\":" +
+        (if r.maxInclusive { "true" } else { "false" }) +
+        "}"
+      case None -> "null"
+    }
+    acc = acc + "{\"name\":" + jsonStr(d.name) + ",\"kind\":\"" + kind + "\",\"underlying\":" + optJsonStr(d.underlying) +
+      ",\"range\":" +
+      range +
+      ",\"cases\":" +
+      serializeCases(d.cases) +
+      "}"
+    i += 1
+  }
+  acc + "]"
 }
 
 // True when every character of `s` is valid in a Lyric identifier at
@@ -651,68 +785,6 @@ func jsonFindBlock(json: in String, key: in String): Int {
   -1
 }
 
-// Parse a slice of FieldDescriptor from the inner content of the fields JSON
-// array (i.e. the text between `[` and `]`).
-func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
-  val result: List[FieldDescriptor] = newList()
-  var pos = 0
-  skipJsonWhitespace(fieldsContent, pos)
-  while pos < fieldsContent.length {
-    if Str.charAtOrReplacement(fieldsContent, pos) == '{' {
-      val objContent = extractJsonBlock(fieldsContent, pos)
-      val fName = unwrapOr(jsonGetString(objContent, "name"), "")
-      // Parse the nested fieldType object
-      val ftPos = jsonFindBlock(objContent, "fieldType")
-      var ftKind: FieldTypeKind = Named
-      var ftName = ""
-      var ftTypeArgs: slice[String] = []
-      if ftPos >= 0 {
-        var mFtPos = ftPos
-        val ftContent = extractJsonBlock(objContent, mFtPos)
-        val ftKindStr = unwrapOr(jsonGetString(ftContent, "kind"), "Named")
-        ftName = unwrapOr(jsonGetString(ftContent, "name"), "")
-        ftKind = if ftKindStr == "Primitive" {
-          Primitive
-        } else if ftKindStr == "Slice" {
-          Slice
-        } else if ftKindStr == "OptionType" {
-          OptionType
-        } else if ftKindStr == "ResultType" {
-          ResultType
-        } else if ftKindStr == "Generic" {
-          Generic
-        } else {
-          Named
-        }
-        val taPos = jsonFindBlock(ftContent, "typeArgs")
-        if taPos >= 0 {
-          var mTaPos = taPos
-          val taList = parseJsonStringArray(ftContent, mTaPos)
-          ftTypeArgs = taList.toArray()
-        }
-      }
-      if fName != "" {
-        result.add(
-          FieldDescriptor(
-            name = fName,
-            fieldType = FieldType(kind = ftKind, name = ftName, typeArgs = ftTypeArgs),
-            isPublic = true,
-            annotations = []
-          )
-        )
-      }
-    } else {
-      pos += 1
-    }
-    skipJsonWhitespace(fieldsContent, pos)
-    if pos < fieldsContent.length and Str.charAtOrReplacement(fieldsContent, pos) == ',' {
-      pos += 1
-    }
-    skipJsonWhitespace(fieldsContent, pos)
-  }
-  result.toArray()
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Entry-point wiring — reads stdin, calls `generate`, writes stdout
 // ─────────────────────────────────────────────────────────────────────────────
@@ -727,90 +799,210 @@ func parseFieldDescriptors(fieldsContent: in String): slice[FieldDescriptor] {
 // to stdout.  Exit code 0 = success; 1 = parse failure (message on stderr).
 /// Decode the compiler's request JSON (the inverse of `serializeRequest`).
 /// `runGenerator` reads it from stdin; exposed so generators and tests can
-/// decode a request without a subprocess round trip.
+/// decode a request without a subprocess round trip.  Schema 1 and schema 2
+/// requests are accepted: 2 adds cases, invariants, annotations, type
+/// parameters and field defaults, which are empty in a schema 1 request.
 pub func parseRequest(json: in String): Result[GeneratorRequest, String] {
-  val version = match jsonGetString(json, "schemaVersion") {
+  val root = match Jv.parseValue(json) {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = "malformed request: " + e.message())
+  }
+  val version = match Jv.getString(root, "schemaVersion") {
     case None -> return Err(error = "missing schemaVersion in request")
     case Some(v) -> v
   }
-  if version != "1" {
+  if version != "1" and version != "2" {
     return Err(error = "unsupported schemaVersion " + version)
   }
-
-  val generatorArg = unwrapOr(jsonGetString(json, "generatorArg"), "")
-  val pkgName = unwrapOr(jsonGetString(json, "packageName"), "")
-  val srcFile = unwrapOr(jsonGetString(json, "sourceFile"), "")
-
-  // Extract the typeDescriptor sub-object and deserialize it fully.
-  var tdKind: ItemKind = Record
-  var tdName = ""
-  var tdPkg = ""
-  var tdTypeParams: slice[String] = []
-  var tdFields: slice[FieldDescriptor] = []
-
-  val tdBlockPos = jsonFindBlock(json, "typeDescriptor")
-  if tdBlockPos >= 0 {
-    var mTdPos = tdBlockPos
-    val tdContent = extractJsonBlock(json, mTdPos)
-
-    val kindStr = unwrapOr(jsonGetString(tdContent, "kind"), "Record")
-    tdKind = if kindStr == "ExposedRecord" {
-      ExposedRecord
-    } else if kindStr == "Union" {
-      Union
-    } else if kindStr == "Interface" {
-      Interface
-    } else {
-      Record
-    }
-    tdName = unwrapOr(jsonGetString(tdContent, "name"), "")
-    tdPkg = unwrapOr(jsonGetString(tdContent, "packageName"), "")
-
-    // typeParams
-    val tpPos = jsonFindBlock(tdContent, "typeParams")
-    if tpPos >= 0 {
-      var mTpPos = tpPos
-      val tpList = parseJsonStringArray(tdContent, mTpPos)
-      tdTypeParams = tpList.toArray()
-    }
-
-    // fields
-    val fPos = jsonFindBlock(tdContent, "fields")
-    if fPos >= 0 {
-      var mFPos = fPos
-      val fContent = extractJsonBlock(tdContent, mFPos)
-      tdFields = parseFieldDescriptors(fContent)
-    }
+  val td = match Jv.getField(root, "typeDescriptor") {
+    case Some(v) -> v
+    case None -> return Err(error = "malformed request: missing typeDescriptor")
   }
-
-  // `TypeDescriptor.name` carries an `invariant: name.length > 0` — but a
-  // missing `typeDescriptor` block or an unrecognized `kind` used to
-  // silently fall through to an empty-named `Record` here rather than
-  // failing the build with a message naming the actual problem. Check
-  // explicitly (rather than letting the invariant panic escape as an
-  // uncaught `Bug`) so the failure is a clean `Err` naming the problem,
-  // matching every other malformed-request check above.
+  val tdName = textOf(td, "name")
   if tdName.length == 0 {
     return Err(error = "malformed request: missing or empty typeDescriptor.name")
   }
-
-  val td = TypeDescriptor(
-    kind = tdKind,
-    name = tdName,
-    packageName = tdPkg,
-    typeParams = tdTypeParams,
-    fields = tdFields,
-    annotations = []
-  )
-
+  val kind = match itemKindOf(textOf(td, "kind")) {
+    case Some(k) -> k
+    case None -> return Err(error = "malformed request: unknown typeDescriptor.kind " + textOf(td, "kind"))
+  }
   Ok(
     value = GeneratorRequest(
-      generatorArg = generatorArg,
-      typeDescriptor = td,
-      packageName = pkgName,
-      sourceFile = srcFile
+      generatorArg = textOf(root, "generatorArg"),
+      typeDescriptor = TypeDescriptor(
+        kind = kind,
+        name = tdName,
+        packageName = textOf(td, "packageName"),
+        typeParams = stringsOf(td, "typeParams"),
+        fields = fieldsOf(td, "fields"),
+        annotations = annotationsOf(td),
+        cases = casesOf(td),
+        invariants = invariantsOf(td)
+      ),
+      packageName = textOf(root, "packageName"),
+      sourceFile = textOf(root, "sourceFile"),
+      declarations = declarationsOf(root)
     )
   )
+}
+
+func declarationKindOf(s: in String): Option[DeclarationKind] {
+  if s == "Enum" {
+    Some(value = DeclaredEnum)
+  } else if s == "Distinct" {
+    Some(value = DeclaredDistinct)
+  } else if s == "Alias" {
+    Some(value = DeclaredAlias)
+  } else {
+    None
+  }
+}
+
+// A declaration of a kind this SDK does not know is skipped rather than
+// failing the request, so a newer compiler can describe more kinds.
+func declarationsOf(root: in Jv.JsonValue): slice[DeclarationDescriptor] {
+  val acc: List[DeclarationDescriptor] = newList()
+  for d in itemsOf(root, "declarations") {
+    match declarationKindOf(textOf(d, "kind")) {
+      case None -> ()
+      case Some(k) -> {
+        val range = match Jv.getField(d, "range") {
+          case Some(r) -> match Jv.getBool(r, "maxInclusive") {
+            case Some(incl) -> Some(
+              value = RangeDescriptor(
+                min = Jv.getString(r, "min"),
+                max = Jv.getString(r, "max"),
+                maxInclusive = incl
+              )
+            )
+            case None -> None
+          }
+          case None -> None
+        }
+        acc.add(
+          DeclarationDescriptor(
+            name = textOf(d, "name"),
+            kind = k,
+            underlying = Jv.getString(d, "underlying"),
+            range = range,
+            cases = casesOf(d)
+          )
+        )
+      }
+    }
+  }
+  acc.toArray()
+}
+
+func textOf(v: in Jv.JsonValue, key: in String): String {
+  unwrapOr(Jv.getString(v, key), "")
+}
+
+func itemsOf(v: in Jv.JsonValue, key: in String): List[Jv.JsonValue] {
+  match Jv.getArray(v, key) {
+    case Some(items) -> items
+    case None -> newList()
+  }
+}
+
+func stringsOf(v: in Jv.JsonValue, key: in String): slice[String] {
+  val acc: List[String] = newList()
+  for item in itemsOf(v, key) {
+    match Jv.asString(item) {
+      case Some(s) -> acc.add(s)
+      case None -> ()
+    }
+  }
+  acc.toArray()
+}
+
+func itemKindOf(s: in String): Option[ItemKind] {
+  if s == "Record" {
+    Some(value = Record)
+  } else if s == "ExposedRecord" {
+    Some(value = ExposedRecord)
+  } else if s == "Union" {
+    Some(value = Union)
+  } else if s == "Interface" {
+    Some(value = Interface)
+  } else if s == "Opaque" {
+    Some(value = Opaque)
+  } else if s == "Enum" {
+    Some(value = Enum)
+  } else {
+    None
+  }
+}
+
+func fieldTypeKindOf(s: in String): FieldTypeKind {
+  if s == "Primitive" {
+    Primitive
+  } else if s == "Slice" {
+    Slice
+  } else if s == "OptionType" {
+    OptionType
+  } else if s == "ResultType" {
+    ResultType
+  } else if s == "Generic" {
+    Generic
+  } else {
+    Named
+  }
+}
+
+func annotationsOf(v: in Jv.JsonValue): slice[AnnotationDescriptor] {
+  val acc: List[AnnotationDescriptor] = newList()
+  for a in itemsOf(v, "annotations") {
+    acc.add(AnnotationDescriptor(name = textOf(a, "name"), args = stringsOf(a, "args")))
+  }
+  acc.toArray()
+}
+
+func fieldsOf(v: in Jv.JsonValue, key: in String): slice[FieldDescriptor] {
+  val acc: List[FieldDescriptor] = newList()
+  for f in itemsOf(v, key) {
+    val ft = match Jv.getField(f, "fieldType") {
+      case Some(t) -> FieldType(
+        kind = fieldTypeKindOf(textOf(t, "kind")),
+        name = textOf(t, "name"),
+        typeArgs = stringsOf(t, "typeArgs")
+      )
+      case None -> FieldType(kind = Named, name = "", typeArgs = [])
+    }
+    acc.add(
+      FieldDescriptor(
+        name = textOf(f, "name"),
+        fieldType = ft,
+        isPublic = unwrapOr(Jv.getBool(f, "isPublic"), true),
+        annotations = annotationsOf(f),
+        defaultSource = Jv.getString(f, "default")
+      )
+    )
+  }
+  acc.toArray()
+}
+
+func casesOf(v: in Jv.JsonValue): slice[CaseDescriptor] {
+  val acc: List[CaseDescriptor] = newList()
+  for c in itemsOf(v, "cases") {
+    acc.add(CaseDescriptor(name = textOf(c, "name"), annotations = annotationsOf(c), fields = fieldsOf(c, "fields")))
+  }
+  acc.toArray()
+}
+
+func invariantsOf(v: in Jv.JsonValue): slice[InvariantDescriptor] {
+  val acc: List[InvariantDescriptor] = newList()
+  for i in itemsOf(v, "invariants") {
+    acc.add(
+      InvariantDescriptor(
+        source = textOf(i, "source"),
+        message = Jv.getString(i, "message"),
+        line = unwrapOr(Jv.getInt(i, "line"), 0).toInt(),
+        column = unwrapOr(Jv.getInt(i, "column"), 0).toInt()
+      )
+    )
+  }
+  acc.toArray()
 }
 
 pub func runGenerator(generate: (GeneratorRequest) -> GeneratorResponse): Int {

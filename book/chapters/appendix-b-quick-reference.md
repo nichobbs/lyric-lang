@@ -1508,7 +1508,7 @@ annotations in a file are reported together.
 
 | Code | Meaning |
 |---|---|
-| `X0001` | `@generate(Pkg.Name)` on something that is not a record, exposed record, union or interface. |
+| `X0001` | `@generate(Pkg.Name)` on something that is not a record, exposed record, opaque type, union, enum or interface. |
 | `X0002` | The named dependency's manifest does not declare `kind = "source-generator"`. |
 | `X0003` | The generator declares no `generate` entry point, or no `main` that calls `runGenerator(generate)`. |
 | `X0004` | The generator returned code that does not parse; the message gives the line within the generated code. |
@@ -1516,6 +1516,23 @@ annotations in a file are reported together.
 | `X0006` | A source-generator package is imported; it can only be used through `@generate`. |
 | `X0008` | The generator is not declared in `[dependencies]`. |
 | `X0009` | The generator could not be built or run: its build failed, it exited non-zero, wrote no or malformed JSON, ran longer than 60 seconds, or is a registry or git dependency (only `path` and `workspace = true` generators are supported). |
+
+The first-party UI generators (D151) report their own codes under `X0005`:
+
+| Code | Meaning |
+|---|---|
+| `FD001` | `@generate(Forms.Derive)` on something that is not a record or opaque type. |
+| `FD002` | A field type a form cannot edit (a nested record, `List`, or a type declared in another file); annotate it `@form_parse(f)` and `@form_format(g)`. Also an optional `Bool`. |
+| `FD003` | `@form_parse` without `@form_format`, or the reverse. |
+| `FD004` | A generic type. |
+| `FD005` | `@maxLength` on a field that is not text, or without its one argument. |
+| `FD006` | No field the form can edit. |
+| `RT001` | `@generate(Ui.Routes)` on something that is not a union, or on a union with no cases. |
+| `RT002` | A case without `@path("/...")`, a path with a query or fragment, a literal segment outside letters, digits and `-._~`, or a `{field:Type}` whose type is not `String`, `Int` or `Long`. |
+| `RT003` | A positional case field, a `{name}` that is no field of the case, or a field that is not in its path exactly once. |
+| `RT004` | A field type a path segment cannot hold; name the segment's type, as in `{id:Long}`. |
+| `RT005` | Two cases with the same path shape. |
+| `RT006` | A generic union. |
 
 ### Stability (S-series)
 

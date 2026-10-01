@@ -28,6 +28,15 @@ pub func collect[T](errs: in List[FieldError], r: in Result[T, FieldError], fall
   return match r { case Ok(v) -> v; case Err(e) -> { errs.add(e); fallback } }
 }
 
+/// Appends `r`'s error to `errs` when it is one.  A generated validate
+/// function notes every field's result before reading any of them.
+pub func noteError[T](errs: in List[FieldError], r: in Result[T, FieldError]): Unit {
+  match r {
+    case Err(e) -> errs.add(e)
+    case Ok(_) -> ()
+  }
+}
+
 /// `raw` with surrounding whitespace removed; `Required` when that is empty.
 pub func requiredText(field: in FieldPath, raw: in String): Result[String, FieldError] {
   val t = trim(raw)
@@ -54,6 +63,53 @@ pub func withinLength(field: in FieldPath, text: in String, max: in Int): Result
     return Err(error = TooLong(field = field, max = max))
   }
   return Ok(value = text)
+}
+
+/// `raw` trimmed, required, and at most `max` characters long.
+pub func requiredTextUpTo(field: in FieldPath, raw: in String, max: in Int): Result[String, FieldError]
+  requires: max > 0
+{
+  return match requiredText(field, raw) { case Ok(t) -> withinLength(field, t, max); case Err(e) -> Err(error = e) }
+}
+
+/// `raw` trimmed, or `None` when that is empty; `TooLong` past `max`
+/// characters.
+pub func optionalTextUpTo(field: in FieldPath, raw: in String, max: in Int): Result[Option[String], FieldError]
+  requires: max > 0
+{
+  return match optionalText(raw) {
+    case None -> Ok(value = None)
+    case Some(t) -> match withinLength(field, t, max) {
+      case Ok(v) -> Ok(value = Some(value = v))
+      case Err(e) -> Err(error = e)
+    }
+  }
+}
+
+/// A checkbox draft's value: `"true"` is checked, anything else is not.
+pub func flag(raw: in String): Bool {
+  return trim(raw) == "true"
+}
+
+/// `raw` parsed as a whole number.  Empty input is `Required`; anything
+/// that is not a whole number `Long` holds is `Invalid`.
+pub func wholeNumber(field: in FieldPath, raw: in String): Result[Long, FieldError] {
+  val t = trim(raw)
+  if t.length == 0 {
+    return Err(error = Required(field = field))
+  }
+  return match P.parseOptLong(t) {
+    case None -> Err(error = Invalid(field = field, reason = "must be a whole number"))
+    case Some(v) -> Ok(value = v)
+  }
+}
+
+/// Like `wholeNumber`, but empty input is `Ok(None)`.
+pub func optionalWholeNumber(field: in FieldPath, raw: in String): Result[Option[Long], FieldError] {
+  if trim(raw).length == 0 {
+    return Ok(value = None)
+  }
+  return match wholeNumber(field, raw) { case Ok(v) -> Ok(value = Some(value = v)); case Err(e) -> Err(error = e) }
 }
 
 /// `raw` parsed as a whole number in `min ..= max`.  Empty input is
@@ -123,4 +179,12 @@ pub func email(field: in FieldPath, raw: in String): Result[String, FieldError] 
       }
     }
   }
+}
+
+/// Like `email`, but empty input is `Ok(None)`.
+pub func optionalEmail(field: in FieldPath, raw: in String): Result[Option[String], FieldError] {
+  if trim(raw).length == 0 {
+    return Ok(value = None)
+  }
+  return match email(field, raw) { case Ok(v) -> Ok(value = Some(value = v)); case Err(e) -> Err(error = e) }
 }

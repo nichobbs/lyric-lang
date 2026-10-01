@@ -36,7 +36,7 @@ After synthesis, the type gains `toJson`, `fromJson` (from the built-in), and `t
 
 ### §30.1.1 Where `@generate` is permitted
 
-`@generate` may appear on `record`, `exposed record`, `union`, and `interface`. It is not permitted on functions, `wire` blocks, or `config` blocks — those are not structural types and generators cannot meaningfully inspect their shape (diagnostic X0001).
+`@generate` may appear on `record`, `exposed record`, `opaque type`, `union`, `enum` and `interface`. It is not permitted on functions, `wire` blocks, or `config` blocks — those are not structural types and generators cannot meaningfully inspect their shape (diagnostic X0001).
 
 ### §30.1.2 Built-in generators
 
@@ -143,22 +143,26 @@ type GeneratorRequest = record {
   typeDescriptor: TypeDescriptor // the annotated type
   packageName:    String         // package being compiled, e.g. "Sales.Reports"
   sourceFile:     String         // source file path, for diagnostic messages
+  declarations:   slice[DeclarationDescriptor]  // same-file types it names
 }
 
 type TypeDescriptor = record {
-  kind:        ItemKind                 // Record | ExposedRecord | Union | Interface
+  kind:        ItemKind                 // Record | ExposedRecord | Opaque | Union | Enum | Interface
   name:        String                   // unqualified name, e.g. "SalesRow"
   packageName: String                   // fully qualified package
   typeParams:  slice[String]            // type parameters, e.g. ["T", "E"]
   fields:      slice[FieldDescriptor]
   annotations: slice[AnnotationDescriptor]
+  cases:       slice[CaseDescriptor]    // a union's or enum's cases
+  invariants:  slice[InvariantDescriptor]  // each as {source, message, line, column}
 }
 
 type FieldDescriptor = record {
   name:      String
   fieldType: FieldType
   isPublic:  Bool
-  annotations: slice[AnnotationDescriptor]
+  annotations: slice[AnnotationDescriptor]  // each argument as its source text
+  defaultSource: Option[String]             // the field default, as source text
 }
 
 type FieldType = record {
@@ -310,7 +314,7 @@ The full set:
 
 | Code | Meaning |
 |---|---|
-| X0001 | `@generate(Pkg.Name)` on something that is not a record, exposed record, union or interface. |
+| X0001 | `@generate(Pkg.Name)` on something that is not a record, exposed record, opaque type, union, enum or interface. |
 | X0002 | The named dependency's manifest does not declare `kind = "source-generator"`. |
 | X0003 | The generator declares no `generate` entry point, or no `main` that calls `runGenerator(generate)`. |
 | X0004 | The generator returned code that does not parse; the message gives the line within the generated code. |
@@ -391,12 +395,13 @@ Consuming a published generator from the registry is not supported yet: the comp
 ## §30.8 What generators can and cannot see
 
 **Can see:**
-- The annotated type's name, kind, fields, field types, and annotations
+- The annotated type's name, kind, fields, field types, defaults, cases, invariants (as source text, with their `@message`), and annotations (each argument as source text)
+- The enum, distinct and alias declarations in the same file that the annotated type names (`req.declarations`; `declarationNamed(req, name)` finds one), so an enum field's cases and a range type's bounds are visible
 - The annotation argument (`req.generatorArg`)
 - The source file path and package name (for error messages)
 
 **Cannot see:**
-- Other types in the same file or package
+- Any other type: records, unions and interfaces, and every declaration in another file
 - The full file AST
 - The compiler's internal representation
 - Other generators' output
