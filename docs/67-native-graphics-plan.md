@@ -70,21 +70,21 @@ hardware intrinsics or inline assembly (still rejected, §4.6).
 
 ---
 
-## 3. Current state (audited 2026-10-01)
+## 3. Current state (audited 2026-10-01, `main` at 6c8bc68)
 
 Each item was checked against the code, not only the plan documents.
 
 | Area | State | Where |
 |---|---|---|
-| `Float` | Lowered to `double` on native (`typeExprToNType` maps `Float` and `Double` to `NDouble`) and on MSIL (`Float` maps to `MDouble`). The reference says 32-bit IEEE 754; `.toFloat()` is documented as "reserved pending backend support". The lexer already accepts an `f32` suffix. About 38 uses in stdlib and ecosystem sources. | `lyric-compiler/lyric/llvm_codegen.l:566`, `lyric-compiler/msil/codegen.l:7666`, `docs/01` §2.1 |
+| `Float` | Lowered to `double` on native (`typeExprToNType` maps `Float` and `Double` to `NDouble`) and on MSIL (`Float` maps to `MDouble`). The reference says 32-bit IEEE 754; `.toFloat()` is documented as "reserved pending backend support". The lexer already accepts an `f32` suffix. About 38 uses in stdlib and ecosystem sources. | `lyric-compiler/lyric/llvm_codegen.l:610`, `lyric-compiler/msil/codegen.l:8047`, `docs/01` §2.1 |
 | Records | Always heap-allocated with an ARC header on native. The IR layer has no by-value aggregate ABI (D-N-016 note). On MSIL only all-primitive records become `readonly struct`. | `native/plan/03-type-mapping.md` "Record types" |
 | Unions, `Option` | Heap-allocated with an ARC header on native, so an `Option[Vec3]` per frame is a `malloc`. | `native/plan/03-type-mapping.md` "Union types" |
 | `List[T]` / `slice[T]` | Shared `LyricList` representation with uniform 8-byte `int64_t` cells: no packed `Float` or record storage, so data cannot be handed to a GPU or C API without a copy and repack. `slice[T]` has no in-place mutation. | `lyric-rt/include/lyric_rt.h:233-241`, D-N-015, `docs/01` §2.7 |
-| `array[N, T]` | Parsed (`TArray`) and specified with range-subtype bounds-check elision; not lowered on native. | `parser/parser_ast.l:122`, `docs/01` §2.7 |
+| `array[N, T]` | Parsed (`TArray`) and specified with range-subtype bounds-check elision; not lowered on native. | `parser/parser_ast.l:261`, `docs/01` §2.7 |
 | FFI | `extern func` with scalars, `String` and `NativePtr[T]`. Structs only by pointer, and there is no way to declare a C-layout struct. Callback trampolines require the userdata pointer to be the **last** parameter. | `docs/01` §11.6, `native/plan/05-ffi-design.md` |
 | Platforms | Linux x86-64 and AArch64, macOS AArch64. No Windows. | `docs/01` §13.1 (`--target native`) |
 | Concurrency | Cooperative, single-threaded scheduler. No safe multi-threading. | `native/plan/06-async-design.md` |
-| Dependencies | A project's cross-project `[dependencies]` are not compiled into a native build, so an application cannot consume a `lyric-gpu` library package yet. | #6815 item 1(b) |
+| Dependencies | Path and workspace `[dependencies]` compile from source into a native build (#7833, closing #6815). No library package carries its own `extern func` kernel yet, so a dependency that binds C symbols, and the propagation of its link flags to the application, are untested. | `docs/01` §13.1, `cli/workspace_builder.l` |
 | Release codegen | Overflow checks are not gated on the build profile. | #6263 |
 | Positioning | `docs/00` lists "game developers needing hot-path optimization" as not the audience and describes the memory model as host GC only; `docs/04` rejects SIMD intrinsics and operator overloading beyond numeric distinct types. | `docs/00`, `docs/04` |
 
@@ -410,10 +410,12 @@ them:
 
 ## 6. Toolchain and distribution
 
-- **Cross-project dependencies on native** (#6815 item 1(b)): compile a
-  dependency's Lyric sources and its `_kernel_native/` files into the
-  application's native bundle. Without this the libraries above cannot be
-  consumed. Prerequisite for G4.
+- **Library packages that bind C.** Path and workspace dependencies
+  already compile from source into a native build (#7833). The libraries
+  above are the first dependencies that declare `extern func` kernels and
+  link C libraries, so G3 verifies that a dependency's kernel files are
+  loaded and its link requirements reach the application's link step, with
+  a test project that consumes such a library.
 - **Native library resolution.** The `[native]` table gains `libs`
   entries naming a library, its version, and where it comes from: a
   system `pkg-config` lookup, or a prebuilt archive per target triple
@@ -466,7 +468,7 @@ XL (a quarter or more of focused work).
 | **G0** | Decision-log entry for §4; revisions to `docs/00` and `docs/04`; Q-GFX-001 to Q-GFX-004 resolved. | none | Decision accepted; reference updated with the new types as "specified". | S |
 | **G1** | `Float` as f32 on all three backends with migration of existing uses (§4.1); by-value records and small unions on native, with the C ABI for by-value structs (§4.2); `array[N, T]` on native (§4.3) with MSIL and JVM parity issues filed; profile-gated overflow checks on native (#6263); range-subtype bounds-check elision on native. | G0 | Self-tests on every backend; ASan clean; a bench showing `Vec3` arithmetic does not allocate. | L |
 | **G2** | `Plain` marker (§4.5); `buffer[T]` with copy-on-write on native, and the shared-mark lowering on MSIL and JVM (§4.4); verifier array model; `withPointer` and `withMutPointer` under the `N0100` rules. | G1 | Self-tests on all backends prove aliasing is never observable; the COW check costs at most a small, fixed per-write overhead in `lyric bench`. | L |
-| **G3** | `foreign record` (§4.7); `@userdata` callbacks (§4.8); `lyric bindgen` (§5.3); cross-project native dependencies (#6815 1(b)); `[native]` library resolution, restore with checksums, and bundling (§6). | G1, G2 | A test library binds a small C API end to end through generated bindings and is consumed by a separate application project. | XL |
+| **G3** | `foreign record` (§4.7); `@userdata` callbacks (§4.8); `lyric bindgen` (§5.3); C-binding library dependencies with link-requirement propagation (§6); `[native]` library resolution, restore with checksums, and bundling (§6). | G1, G2 | A test library binds a small C API end to end through generated bindings and is consumed by a separate application project. | XL |
 | **G4** | `lyric-window` on SDL3 and an example that opens a window, handles input, and plays a sound. | G3 | Example runs on Linux and macOS; event handling tested headless with the offscreen driver. | M |
 | **G5** | `lyric-gpu` on wgpu-native; examples: triangle, textured quad, compute (a GPU prefix sum). Golden-image CI on lavapipe. | G4 | All three examples pass golden-image tests in CI. | L |
 | **G6** | `Std.Math` vectors and matrices (§4.6), `lyric-text`, `lyric-draw`. | G5 | A text-heavy stress scene renders within its frame budget on lavapipe and on real hardware; golden images for shaping (Latin, Arabic, CJK). | XL |
