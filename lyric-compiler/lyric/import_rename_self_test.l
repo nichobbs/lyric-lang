@@ -18,6 +18,7 @@ import Std.Collections
 import Std.Testing
 import Std.String.{trim as strip, toUpper as shout}
 import Std.JsonValue.{JsonField as Field, JsonValue as Json, writeValue as toJson}
+import Std.Core.{Option as Maybe}
 
 // The same simple name as Std.JsonValue's record: `Field` (the rename)
 // must still build Std.JsonValue's.
@@ -47,6 +48,18 @@ test "a renamed union names its type, its cases and its pattern heads" {
   val v: Json = Json.JString(value = "x")
   assertEqual(describe(v), "string x", "constructed and matched through the rename")
   assertEqual(describe(Json.JNull), "null", "nullary case through the rename")
+}
+
+func firstOr(xs: in List[Int], fallback: in Int): Int {
+  val head: Maybe[Int] = if xs.count > 0 { Maybe.Some(value = xs[0]) } else { Maybe.None }
+  return match head { case Maybe.Some(v) -> v; case Maybe.None -> fallback }
+}
+
+test "a renamed generic type takes type arguments under its new name" {
+  val xs: List[Int] = newList()
+  assertEqualInt(firstOr(xs, 7), 7, "empty list: None")
+  xs.add(3)
+  assertEqualInt(firstOr(xs, 7), 3, "non-empty list: Some")
 }
 
 func shadowedByParameter(strip: in Int): Int {

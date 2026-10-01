@@ -4158,7 +4158,8 @@ record RenamedImport {
 }
 
 // T0148: a renamed import's bare name must not also be a declaration (or
-// a union or enum case) of this package, another import's bare name, a public name (or union or
+// a union or enum case) of this package, another import's bare name (a
+// listed union's or enum's cases included), a public name (or union or
 // enum case) of a package imported whole, a package alias, or the head of
 // an imported package's path; otherwise one spelling would mean two
 // things (#7564).  The alias and path-head checks matter because the
@@ -4213,6 +4214,26 @@ func checkRenamedImports(
       val bar = indexOfRaw(sel, "|")
       if bar > 0 and sel.substring(bar + 1) == ren.local and clash.length == 0 {
         clash = "'" + ren.local + "' is also imported from " + sel.substring(0, bar)
+      }
+      // A listed union or enum brings its cases into bare scope too
+      // (`import P.{Shape}` makes `Circle` bare, #7967).
+      if bar > 0 and clash.length == 0 {
+        val selPkg = sel.substring(0, bar)
+        val selName = sel.substring(bar + 1)
+        for ip in importedPackages {
+          if ip.name == selPkg {
+            for it in ip.items {
+              val named = match topLevelItemName(it) { case Some(n) -> n == selName; case None -> false }
+              if named and clash.length == 0 {
+                for cn in caseNamesOf(it) {
+                  if cn == ren.local and clash.length == 0 {
+                    clash = "'" + ren.local + "' is also a case of " + selPkg + "." + selName + ", imported from " + selPkg
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
     var o = 0

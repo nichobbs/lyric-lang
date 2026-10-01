@@ -5901,6 +5901,15 @@ test "a rename that is a case of this package's union is T0148 (#7929)" {
   assertTrue(diagMessageFor(cr, "T0148").contains("declares the case 'Circle'"), diagMessageFor(cr, "T0148"))
 }
 
+test "a rename that is a case of a selectively imported union is T0148 (#7967)" {
+  val packages = importRulePackages()
+  packages.add(rulePkg("PkgU", "package PkgU\npub union Shape {\n  case Dot\n  case Box(w: Int)\n}\n"))
+  val src = "package App\nimport PkgU.{Shape}\nimport PkgY.{fromY as Box}\nfunc f(): Int { 1 }\n"
+  val cr = checkWithImportedPackages(Lyric.AliasRewriter.rewriteFile(parse(src).file), packages)
+  assertEqualInt(countDiagCode(cr, "T0148"), 1, "Box is also a case of the listed PkgU.Shape")
+  assertTrue(diagMessageFor(cr, "T0148").contains("a case of PkgU.Shape"), diagMessageFor(cr, "T0148"))
+}
+
 test "a rename that is a case of a whole-imported union is T0148 (#7928)" {
   val packages = importRulePackages()
   packages.add(rulePkg("PkgU", "package PkgU\npub union Shape {\n  case Dot\n  case Box(w: Int)\n}\n"))
