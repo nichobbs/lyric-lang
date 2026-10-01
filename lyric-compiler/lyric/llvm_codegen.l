@@ -2335,7 +2335,14 @@ func lowerLiteral(ctx: in Ctx, insns: in List[NInsn], lit: in Literal): NVal {
   match lit {
     case LInt(v, suffix, _) -> {
       val isLong = match suffix { case I64 -> true; case U64 -> true; case _ -> v < -2147483648i64 or v > 2147483647i64 }
-      if isLong {
+      // A `u8` literal is a `Byte` wherever no expected type narrows it: an
+      // `Int` here made `val b = 200u8` an Int binding, so `b + 100u8` was
+      // 300 rather than wrapping to 44, and `Box(value = 255u8)` was
+      // instantiated as `Box[Int]` (#7858).
+      val isByte = match suffix { case U8 -> true; case _ -> false }
+      if isByte {
+        NVal(ty = NI8, value = NLitInt(v = v, ty = NI8))
+      } else if isLong {
         NVal(ty = NI64, value = NLitInt(v = v, ty = NI64))
       } else {
         NVal(ty = NI32, value = NLitInt(v = v, ty = NI32))
@@ -2538,6 +2545,17 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
       if not isStringNType(b.ty) and exprIsCharTyped(ctx, rhs) {
         b2 = callRuntime(ctx, insns, "lyric_string_from_char", lyricStringNType(), arg1(NI32, b.value))
       }
+      // `String + <scalar>` renders the scalar as its `toString` does, as on
+      // MSIL and JVM (#7858); a `Byte` zero-extends, so 128..255 stay
+      // unsigned. An `NI32` operand is left to `lowerStringBinop`'s
+      // rejection: it may be a `Char` the best-effort tracking above did not
+      // recognise, which would print its code point instead of the glyph.
+      if isConcatStringifiableNType(a2.ty) {
+        a2 = emitToString(ctx, insns, a2)
+      }
+      if isConcatStringifiableNType(b2.ty) {
+        b2 = emitToString(ctx, insns, b2)
+      }
     }
     return lowerStringBinop(ctx, insns, op, a2, b2)
   }
@@ -2573,6 +2591,18 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
   match w.ty {
     case NDouble -> binFloatOp(ctx, insns, op, w.a.value, w.b.value)
     case ty -> binIntOp(ctx, insns, op, ty, w.a.value, w.b.value, line)
+  }
+}
+
+/// The scalar operand types `String + x` stringifies on this backend: every
+/// scalar except `NI32`, which `Int` and `Char` share (see `Ctx.varIsChar`).
+func isConcatStringifiableNType(t: in NType): Bool {
+  match t {
+    case NI8 -> true
+    case NI64 -> true
+    case NI1 -> true
+    case NDouble -> true
+    case _ -> false
   }
 }
 
@@ -3684,6 +3714,50 @@ func hasFuncOverrideNative(ctx: in Ctx, funcName: in String, argc: in Int): Bool
   }
 }
 
+/// Prelude `println(x)`: a codegen builtin taking any value, as on the MSIL
+/// and JVM backends. A program need not import `Std.Console` to use it, so it
+/// lowers straight to the runtime's line write (#7413). It is intercepted
+/// before name resolution because `Std.Console.println` takes only a
+/// `String`: resolving a `println(<Byte>)` against it, whenever `Std.Console`
+/// is in the import closure, rejected the call (#7858). A scalar prints what
+/// its `toString` returns.
+func lowerPreludePrintln(ctx: in Ctx, insns: in List[NInsn], args: in List[CallArg], line: in Int): NVal {
+  if args.count == 0 {
+    val empty = emitStringLiteral(ctx, insns, "")
+    return callRuntime(
+      ctx,
+      insns,
+      "lyric_console_write_line",
+      NVoid,
+      arg2(NI64, NLitInt(v = 1i64, ty = NI64), empty.ty, empty.value)
+    )
+  }
+  val pv = lowerPositionalArg(ctx, insns, args, 0)
+  val text = if isStringNType(pv.ty) {
+    pv
+  } else {
+    val noMethodArgs: List[CallArg] = newList()
+    val pExpr: Option[Expr] = match args[0] {
+      case CAPositional(ex) -> Some(value = ex)
+      case CANamed(_, value, _) -> Some(value = value)
+    }
+    match lowerScalarMethodCall(ctx, insns, pv, "toString", noMethodArgs, line, pExpr) {
+      case Some(sv) -> sv
+      case None -> panic(
+        "Lyric.LlvmCodegen: println(x) on a value of this type is not yet supported for --target native; " +
+          "pass a String or a scalar"
+      )
+    }
+  }
+  callRuntime(
+    ctx,
+    insns,
+    "lyric_console_write_line",
+    NVoid,
+    arg2(NI64, NLitInt(v = 1i64, ty = NI64), text.ty, text.value)
+  )
+}
+
 func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in List[CallArg], line: in Int): NVal {
   lowerCallEx(ctx, insns, fnExpr, args, line, false)
 }
@@ -3721,6 +3795,9 @@ func lowerCallEx(
           insns.add(NUnreachable)
           insns.add(NLabel(name = freshLabel(ctx, "dead")))
           return NVal(ty = NVoid, value = NUndef(ty = NVoid))
+        }
+        if n == "println" and args.count <= 1 and not hasFuncOverrideNative(ctx, n, args.count) {
+          return lowerPreludePrintln(ctx, insns, args, line)
         }
         if n == "nativeNullPtr" and args.count == 0 {
           // The C NULL pointer as a NativePtr[Byte] (N4.5) — e.g. the
@@ -4136,36 +4213,6 @@ func lowerConstructCall(
           "Lyric.LlvmCodegen: toString(x) on this type is not yet supported for --target native (Phase N1)"
         )
       }
-    }
-    // Prelude `println(x)` (a codegen builtin taking any value, as on the
-    // MSIL and JVM backends): a program need not import `Std.Console` to
-    // use it, so it lowers straight to the runtime's line write rather
-    // than resolving through a bundled package (#7413).
-    if name == "println" and args.count == 1 {
-      val pv = lowerPositionalArg(ctx, insns, args, 0)
-      val text = if isStringNType(pv.ty) {
-        pv
-      } else {
-        val noMethodArgs: List[CallArg] = newList()
-        val pExpr: Option[Expr] = match args[0] {
-          case CAPositional(ex) -> Some(value = ex)
-          case CANamed(_, value, _) -> Some(value = value)
-        }
-        match lowerScalarMethodCall(ctx, insns, pv, "toString", noMethodArgs, line, pExpr) {
-          case Some(sv) -> sv
-          case None -> panic(
-            "Lyric.LlvmCodegen: println(x) on a value of this type is not yet supported for --target native; " +
-              "pass a String or a scalar"
-          )
-        }
-      }
-      return callRuntime(
-        ctx,
-        insns,
-        "lyric_console_write_line",
-        NVoid,
-        arg2(NI64, NLitInt(v = 1i64, ty = NI64), text.ty, text.value)
-      )
     }
     if name == "NativeWeak" and args.count == 1 {
       val target = lowerPositionalArg(ctx, insns, args, 0)

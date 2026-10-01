@@ -133,6 +133,8 @@ for t in \
   lyric-compiler/lyric/byte_stringify_dotnet_self_test.l \
   lyric-compiler/lyric/byte_erased_positions_self_test.l \
   lyric-compiler/lyric/function_value_typing_self_test.l \
+  lyric-compiler/lyric/println_stringify_self_test.l \
+  lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l \
   lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
   lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \
@@ -206,6 +208,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/byte-println-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/byte-println-e2e.sh
   ran="$ran byte-println-e2e"
+fi
+# #7858: `println(x)` writes what `toString(x)` returns for records, lists,
+# extern structs and extern objects, on both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/println-stringify-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/println-stringify-e2e.sh
+  ran="$ran println-stringify-e2e"
 fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2
