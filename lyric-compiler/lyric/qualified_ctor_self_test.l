@@ -1,11 +1,11 @@
-//! qualified_ctor_self_test.l — qualified constructor calls (D155).
+//! qualified_ctor_self_test.l — qualified constructor calls (D159).
 //!
 //! A constructor may be written qualified by its package's path or alias
 //! (`Std.JsonValue.JsonField(...)`, `J.JsonField(...)`) and a union case by
 //! its union (`J.JsonValue.JString(...)`, `Token.JNull`).  The written
 //! qualifier decides: this package declares a record and union cases with
 //! the same simple names as `Std.JsonValue`'s, and a qualified call must
-//! still build the qualifier's type.  Before D155 the MSIL backend built
+//! still build the qualifier's type.  Before D159 the MSIL backend built
 //! the local same-named record instead, which failed at run time with
 //! `InvalidProgramException`.
 //!

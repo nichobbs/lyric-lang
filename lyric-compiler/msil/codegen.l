@@ -10828,7 +10828,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
           } else if not fctx.slots.containsKey(recvPath.segments[0]) and not fctx.hoistedCellSlot.containsKey(recvPath.segments[0]) and not fctx.captureNameToIndex.containsKey(recvPath.segments[0]) {
             // A package-qualified union (`Pkg.Shape.Empty`, an alias already
-            // rewritten to its package) names its case by the qualifier (D155).
+            // rewritten to its package) names its case by the qualifier (D159).
             val caseSegs: List[String] = newList()
             for seg in recvPath.segments {
               caseSegs.add(seg)
@@ -15154,7 +15154,7 @@ func caseSimpleNameMsil(caseFqn: in String, unionName: in String): String {
 // The dotted qualifier of a qualified path (every segment but the last), or
 // "" for a bare name.
 // A qualified constructor path names its constructor by its written
-// qualifier (D155): `Pkg.Point(...)` (an alias is rewritten to its package
+// qualifier (D159): `Pkg.Point(...)` (an alias is rewritten to its package
 // before codegen) builds `Pkg`'s record even when the current package
 // declares its own `Point`.  The record key, or "" for an unqualified path
 // or one whose qualifier designates no record.
@@ -15168,7 +15168,7 @@ func qualifiedRecordCtorKeyMsil(cctx: in CodegenCtx, segments: in List[String]):
 
 // The union case a qualified path (`Shape.Circle`, `Pkg.Shape.Circle`)
 // designates by its qualifier, so a same-named case of the current
-// package does not capture it (D155).  "" when the path is unqualified or
+// package does not capture it (D159).  "" when the path is unqualified or
 // no candidate's union matches the qualifier.
 func qualifiedCaseCtorKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, segments: in List[String]): String {
   if segments.count < 2 {

@@ -1,4 +1,4 @@
-# Qualified constructor calls (D155)
+# Qualified constructor calls (D159)
 
 The first half of #7564 (renaming a selectively imported name): every
 kind of item now has a qualified form that the rename can lower to.

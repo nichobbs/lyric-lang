@@ -7,9 +7,9 @@
 //!   val r = AuthKernelNet.verifyJwtImpl(token, secret)
 //!
 //! is rewritten to `Auth.Kernel.Net.verifyJwtImpl(token, secret)`, so later
-//! passes see the declaring package.  `import P.{f as g}` (D156) makes `g` a
+//! passes see the declaring package.  `import P.{f as g}` (D160) makes `g` a
 //! bare name for `P.f`: each use of `g` in a value, call, constructor
-//! (D155), type reference or pattern head becomes `P.f`.
+//! (D159), type reference or pattern head becomes `P.f`.
 //!
 //! The rewriter runs after parsing and before type-check (from
 //! `Lyric.Pipeline.pipePrepareForCheck`, so every backend and the LSP see
@@ -185,7 +185,7 @@ func aliasPkgSegs(aliases: in List[String], name: in String): List[String] {
 // entry `^g=P.f` in the same list as the package aliases; the `^` keeps it
 // out of every alias lookup (`aliasContains` matches `g=`).  `rewritePath`
 // replaces a leading `g` with `P.f` wherever a path appears: values,
-// calls, constructors (qualified constructors are D155), type references
+// calls, constructors (qualified constructors are D159), type references
 // and pattern heads.  A rename is a bare name, so a parameter, local or
 // pattern binding named `g` hides it for exactly its own scope
 // (`dropRenamesNamed` at each binding site).
