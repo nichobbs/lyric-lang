@@ -243,7 +243,7 @@ func refusePage(req: in Request, token: in String): Option[Response] {
           }
         }
       }
-      val redirect = Web.withResponseHeader(Web.text(303, ""), "Location", pageUrl(req.path, rest))
+      val redirect = Web.withResponseHeader(Web.text(303, ""), "Location", pageUrl(localPath(req.path), rest))
       return Some(
         value = Web.withResponseHeader(
           redirect,
@@ -255,6 +255,16 @@ func refusePage(req: in Request, token: in String): Option[Response] {
     case None -> ()
   }
   return Some(value = Web.text(403, "Forbidden"))
+}
+
+/// `path` when it is a path on this host, otherwise `/`.  A redirect's
+/// `Location` is built from the request path, and one starting `//` or `/\`
+/// is a protocol-relative URL a browser resolves against another host.
+pub func localPath(path: in String): String {
+  if startsWith(path, "/") and not startsWith(path, "//") and not startsWith(path, "/\\") {
+    return path
+  }
+  return "/"
 }
 
 /// Whether a `Cookie` header value carries `token` in the access cookie.

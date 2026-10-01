@@ -104,6 +104,13 @@ test "the token in the query is traded for a cookie and a clean redirect" {
   assertTrue(contains(cookie, "SameSite=Lax"), "SameSite")
 }
 
+test "the redirect never leaves the host" {
+  assertEqual(WebHost.localPath("/orders"), "/orders", "a local path is kept")
+  assertEqual(WebHost.localPath("//evil.example/x"), "/", "protocol-relative")
+  assertEqual(WebHost.localPath("/\\evil.example/x"), "/", "backslash form")
+  assertEqual(WebHost.localPath("evil"), "/", "not a path")
+}
+
 test "the cookie admits the page" {
   val h: Map[String, String] = newMap()
   h.add("cookie", "theme=dark; " + WebHost.accessCookieName + "=" + token + "; other=1")
