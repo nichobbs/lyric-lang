@@ -16,6 +16,8 @@ package Ui.Core
 
 import Std.Core
 import Std.Collections
+import Std.String
+import Std.Parse.{parseOptInt}
 
 // ─── Widgets ──────────────────────────────────────────────────────────────────
 /// The closed set of semantic widgets every host implements (docs/65 §7.1).
@@ -44,6 +46,9 @@ pub enum WidgetKind {
   case Table
   case TableRow
   case TableCell
+  case DataGrid
+  case GridRow
+  case GridCell
   case Form
   case Field
   case Dialog
@@ -77,6 +82,9 @@ pub func kindName(k: in WidgetKind): String {
     case Table -> "table"
     case TableRow -> "tableRow"
     case TableCell -> "tableCell"
+    case DataGrid -> "dataGrid"
+    case GridRow -> "gridRow"
+    case GridCell -> "gridCell"
     case Form -> "form"
     case Field -> "field"
     case Dialog -> "dialog"
@@ -100,6 +108,35 @@ pub union Handler[Msg] {
   case OnInput(toMsg: (String) -> Msg)
   case OnChange(toMsg: (String) -> Msg)
   case OnSubmit(msg: Msg)
+  case OnViewport(toMsg: (RowRange) -> Msg)
+  case OnSort(toMsg: (String) -> Msg)
+}
+
+/// A window of rows: `count` rows from index `first`.  A data grid reports
+/// the rows it shows as one (docs/65 §13.6).
+pub record RowRange {
+  first: Int
+  count: Int
+}
+
+/// The most rows a host may report in one viewport event.  Larger reports
+/// are dropped, so a host cannot make a screen fetch an unbounded window.
+pub val maxViewportRows: Int = 1000
+
+/// The row range a viewport event's data (`"first,count"`) names: both
+/// non-negative decimal integers, with `count` at most `maxViewportRows`.
+@pure
+pub func parseRowRange(data: in String): Option[RowRange] {
+  val parts = split(data, ",")
+  if parts.length != 2 {
+    return None
+  }
+  val first = match parseOptInt(parts[0]) { case Some(n) -> n; case None -> return None }
+  val count = match parseOptInt(parts[1]) { case Some(n) -> n; case None -> return None }
+  if first < 0 or count < 0 or count > maxViewportRows {
+    return None
+  }
+  return Some(value = RowRange(first = first, count = count))
 }
 
 /// The protocol event name a handler answers to.
@@ -109,16 +146,37 @@ pub func eventName[Msg](h: in Handler[Msg]): String {
     case OnInput(_) -> "input"
     case OnChange(_) -> "change"
     case OnSubmit(_) -> "submit"
+    case OnViewport(_) -> "viewport"
+    case OnSort(_) -> "sort"
   }
 }
 
-/// The message `h` produces for an event carrying `data`.
-pub func fire[Msg](h: in Handler[Msg], data: in String): Msg {
+/// Whether `h` takes an event carrying `data`.  A viewport event must
+/// name a valid row range (`parseRowRange`); every other event takes any
+/// data.  Sessions drop events their handler does not accept.
+@pure
+pub func accepts[Msg](h: in Handler[Msg], data: in String): Bool {
+  return match h {
+    case OnViewport(_) -> match parseRowRange(data) { case Some(_) -> true; case None -> false }
+    case _ -> true
+  }
+}
+
+/// The message `h` produces for an event carrying `data`, which `h` must
+/// accept (`accepts`).
+pub func fire[Msg](h: in Handler[Msg], data: in String): Msg
+  requires: accepts(h, data)
+{
   return match h {
     case OnClick(m) -> m
     case OnInput(f) -> f(data)
     case OnChange(f) -> f(data)
     case OnSubmit(m) -> m
+    case OnViewport(f) -> {
+      val r = match parseRowRange(data) { case Some(v) -> v; case None -> RowRange(first = 0, count = 0) }
+      f(r)
+    }
+    case OnSort(f) -> f(data)
   }
 }
 
@@ -218,6 +276,8 @@ pub func mapHandler[A, B](h: in Handler[A], f: in (A) -> B): Handler[B] {
       val wrapped: B = f(m)
       OnSubmit(msg = wrapped)
     }
+    case OnViewport(g) -> OnViewport(toMsg = { r: RowRange -> f(g(r)) })
+    case OnSort(g) -> OnSort(toMsg = compose(g, f))
   }
 }
 

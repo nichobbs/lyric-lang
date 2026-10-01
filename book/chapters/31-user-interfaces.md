@@ -202,7 +202,7 @@ it natively:
 | Feedback | `banner`, `spinner` |
 | Actions | `button`, `primaryButton`, `buttonWith`, `link` |
 | Forms | `form`, `field`, `textInput`, `textArea`, `numberInput`, `checkbox`, `select` |
-| Data | `table`, `tableRow` |
+| Data | `table`, `tableRow`, `dataGrid`, `gridRow` |
 
 Input widgets take a function from the typed text to a message, for
 example `Widgets.textInput("text", m.name, { v: String -> NameEdited(value = v) }, Widgets.inputOpts())`.
@@ -235,7 +235,8 @@ Widgets.lazyView("orders", m.ordersVersion.toString(), { -> ordersTable(m.orders
 
 The session renders the subtree once per fingerprint. While the
 fingerprint is unchanged it keeps the subtree it rendered last and does
-not compare it, so updates elsewhere on the screen cost nothing there.
+not compare it, so updates elsewhere on the screen do not render or diff it
+(the session still walks it once per update).
 The fingerprint must change whenever anything the subtree shows changes:
 a version counter bumped by `update`, or an id plus an edit count. A
 stale fingerprint shows stale content. Each `lazyView` key must be unique
@@ -243,6 +244,40 @@ within the view.
 
 Events, keys and `Ui.Testing` see through a lazy subtree, so tests and
 handlers work as they do without it.
+
+### Large lists: the data grid
+
+A `table` renders every row it is given. For a result too large to hold,
+use `dataGrid`: it renders a window of rows inside a scrolling body sized
+for all of them, and asks the screen for more as the user scrolls. The
+customer list in the example is one:
+
+```lyric
+val spec = Widgets.gridSpec("Customers", columns(), g.total, g.first).copy(
+  sortColumn = g.sortColumn,
+  ascending = g.ascending
+)
+page.add(Widgets.dataGrid(spec, rows, { r: RowRange -> Scrolled(range = r) }, { c: String -> Sorted(column = c) }))
+```
+
+The grid's state lives in the model as a `Ui.Grid.Grid[Customer]`, and
+`Ui.Grid` turns its events into queries:
+
+```lyric
+case Scrolled(r) -> withQuery(m.status, Grid.viewport(m.grid, r))
+case Sorted(column) -> withQuery(m.status, Grid.sortBy(m.grid, column))
+```
+
+Each step carries an optional `RowQuery` (rows, sort, filter and a
+sequence number). `withQuery` returns it as the screen's own
+`FetchRows` effect, and the effect's result comes back as a message that
+`Grid.loaded` applies. Scrolling within the loaded rows asks for nothing.
+A response to anything but the latest query is ignored, so a slow page
+never replaces a newer one.
+
+Rows are `gridRow`s keyed by the record's id, one cell per column. The
+grid is a WAI-ARIA grid: the arrow keys move between rows, and a row with
+an `onClick` message is activated with Enter or Space.
 
 ### Typed routes
 

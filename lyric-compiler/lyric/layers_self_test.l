@@ -73,6 +73,7 @@ func stdClasses(): Map[String, String] {
   m["Ui.Core"] = "pure"
   m["Ui.Widgets"] = "pure"
   m["Ui.Routing"] = "pure"
+  m["Ui.Grid"] = "pure"
   m["Ui.Host"] = "io"
   m
 }
@@ -191,6 +192,18 @@ test "logic, effects and views may build URLs with Ui.Routing, the domain may no
   )
   assertEqualInt(ok.count, 0, "no diagnostics, got:\n" + codesText(ok))
   onlyCode(check([src("domain.l", "package Shop.Domain\nimport Ui.Routing\n")]), "Y0001", "domain imports Ui.Routing")
+}
+
+test "logic, effects and views may keep data-grid state with Ui.Grid, the domain may not" {
+  val ok = check(
+    [
+      src("logic.l", "package Shop.Screens.Edit.Logic\nimport Ui.Grid\n"),
+      src("effects.l", "package Shop.Screens.Edit.Effects\nimport Ui.Grid\n"),
+      src("view.l", "package Shop.Screens.Edit.View\nimport Ui.Grid\n")
+    ]
+  )
+  assertEqualInt(ok.count, 0, "no diagnostics, got:\n" + codesText(ok))
+  onlyCode(check([src("domain.l", "package Shop.Domain\nimport Ui.Grid\n")]), "Y0001", "domain imports Ui.Grid")
 }
 
 test "a view may not import ports (Y0001)" {

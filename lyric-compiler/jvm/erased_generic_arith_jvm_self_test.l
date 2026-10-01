@@ -23,6 +23,7 @@ package Jvm.ErasedGenericArithJvmSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 // A generic union of our own so the payload erasure and the fix are exercised
 // independently of the stdlib `Result`/`Option` shapes too.
@@ -418,4 +419,54 @@ func hoistedCellSliceAssign(): Int {
 
 test "match-bound [B assigned to a lambda-captured hoisted var (#5609)" {
   assertEqualInt(hoistedCellSliceAssign(), 13, "hoisted-cell length 3 + 10")
+}
+
+// A generic record whose fields are instantiated over its own type
+// parameters (#7918).
+record Window[T] {
+  rows: List[T]
+  cells: slice[T]
+  byName: Map[String, T]
+}
+
+func window(): Window[Int] {
+  val rows: List[Int] = newList()
+  rows.add(6)
+  rows.add(7)
+  val byName: Map[String, Int] = newMap()
+  byName["seven"] = 7
+  return Window(rows = rows, cells = [3, 4], byName = byName)
+}
+
+test "a List[T] field's element on an instantiated receiver reads as T (#7918)" {
+  val w: Window[Int] = window()
+  val n = w.rows[1]
+  assertEqualInt(n * n, 49, "Int multiplication")
+  assertEqualInt(w.rows[0] + w.rows[1], 13, "Int addition across reads")
+}
+
+test "slice[T] and Map[String, T] fields narrow the same way (#7918)" {
+  val w: Window[Int] = window()
+  assertEqualInt(w.cells[0] * w.cells[1], 12, "slice element")
+  val v = w.byName["seven"]
+  assertEqualInt(v * 2, 14, "map value")
+}
+
+func sumRows(w: in Window[Long]): Long {
+  var total: Long = 0
+  var i = 0
+  while i < w.rows.count {
+    total = total + w.rows[i] * 2
+    i += 1
+  }
+  return total
+}
+
+test "a parameter's declared instantiation narrows its field's elements (#7918)" {
+  val rows: List[Long] = newList()
+  rows.add(5000000000)
+  rows.add(1)
+  val noCells: slice[Long] = []
+  val w: Window[Long] = Window(rows = rows, cells = noCells, byName = newMap())
+  assertTrue(sumRows(w) == 10000000002, "Long arithmetic")
 }

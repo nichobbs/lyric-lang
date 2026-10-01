@@ -100,13 +100,25 @@ func receiverClassOf(ctx: in FuncCtx, recv: in Expr): Option[String] {
 // field like `dynamodb: DynamoDbStreamRecordDetail`), so no extra resolution
 // is needed here — just read it back. `None` for an erased (`paramIdx >= 0`)
 // field, an unknown field, or an unknown class (#7337).
+// The record class of a field declared as a generic record whose JVM type
+// is the erased `Object` (`fieldcls:`, #7918).
+func fieldRecordClass(ctx: in FuncCtx, cls: in String, fieldName: in String): Option[String] {
+  return match mapGet(ctx.funcSigs, "fieldcls:" + cls + "#" + fieldName) {
+    case Some(sig) -> match sig.ret { case JRef(c) -> Some(value = c); case _ -> None }
+    case None -> None
+  }
+}
+
 func fieldClassOf(ctx: in FuncCtx, cls: in String, fieldName: in String): Option[String] {
   match mapGet(ctx.caseFields, cls) {
     case Some(flds) -> {
       var i = 0
       while i < flds.count {
         if flds[i].name == fieldName {
-          return match flds[i].ty { case JRef(c) -> Some(value = c); case _ -> None }
+          return match flds[i].ty {
+            case JRef(c) -> if c == "java/lang/Object" then fieldRecordClass(ctx, cls, fieldName) else Some(value = c)
+            case _ -> None
+          }
         }
         i = i + 1
       }
@@ -140,6 +152,16 @@ func fieldGenericArgsOf(ctx: in FuncCtx, recv: in Expr, fieldName: in String): L
           var i = 0
           while i < flds.count {
             if flds[i].name == fieldName {
+              // A field whose instantiation names the record's own type
+              // parameters (`xs: List[T]`) takes them from the receiver's
+              // instantiation (#7918).
+              if flds[i].argParamIdx.count > 0 {
+                return substituteFieldArgs(
+                  flds[i].argParamIdx,
+                  returnTypeGenericArgs(flds[i].declTy),
+                  scrutineeGenericArgs(ctx, recv)
+                )
+              }
               return flds[i].genericArgs
             }
             i = i + 1

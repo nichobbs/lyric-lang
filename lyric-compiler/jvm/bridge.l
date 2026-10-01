@@ -1247,6 +1247,8 @@ func refreshCaseFieldDefaultsJvm(
               name = f.name,
               ty = f.ty,
               paramIdx = f.paramIdx,
+              argParamIdx = f.argParamIdx,
+              declTy = f.declTy,
               dflt = defaults[j],
               genericArgs = f.genericArgs
             )

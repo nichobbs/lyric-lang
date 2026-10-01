@@ -208,6 +208,19 @@ pub record JvmCaseField {
   // codegen: record 'JvmCaseField' missing field 'paramIdx'`.  Same constraint
   // the sibling `JvmFuncSig.retGenericArgs`/`isIface` fields observe.
   paramIdx: Int
+  // For each argument of this field's OWN declared instantiation (`xs:
+  // List[T]` → `[T]`): the index of the enclosing type's type parameter it
+  // names, `-1` for an argument that mentions none, `-2` for one that
+  // mentions a type parameter other than as a bare name (`List[Box[T]]`).
+  // Empty when no argument mentions a type parameter (`genericArgs` below
+  // then carries the instantiation itself).  `declTy` is the field's
+  // declared type, whose arguments these index.  Together they let a field
+  // read on an
+  // instantiated receiver (`b.xs` with `b: Box[Int]`) substitute the
+  // receiver's own arguments, so `b.xs[0]` reads an `Int` (#7918).  No
+  // default, as for `paramIdx`.
+  argParamIdx: List[Int]
+  declTy: Option[TypeExpr]
   // This field's declared default-value expression (`name: Type = expr`),
   // when the source `FieldDecl` carries one.  `None` for union-case fields
   // (no default syntax), protected-type fields, and synthesised
@@ -300,6 +313,65 @@ pub func returnTypeGenericArgs(retOpt: in Option[TypeExpr]): List[TypeExpr] {
     }
     case None -> newList()
   }
+}
+
+// `JvmCaseField.argParamIdx` for a field declared as `ty` in a type with
+// type parameters `tps`: empty unless some argument of `ty`'s own
+// instantiation mentions one of them.
+pub func fieldArgParamIdx(ty: in Option[TypeExpr], tps: in List[String]): List[Int] {
+  val acc: List[Int] = newList()
+  if tps.count == 0 {
+    return acc
+  }
+  val raw = returnTypeGenericArgs(ty)
+  var mentions = false
+  var i = 0
+  while i < raw.count {
+    val idx = typeParamIndexOf(raw[i], tps)
+    if idx >= 0 {
+      acc.add(idx)
+      mentions = true
+    } else if containsTypeParam(raw[i], tps) {
+      acc.add(-2)
+      mentions = true
+    } else {
+      acc.add(-1)
+    }
+    i = i + 1
+  }
+  if not mentions {
+    val none: List[Int] = newList()
+    return none
+  }
+  acc
+}
+
+// A field's declared instantiation arguments (`rawArgs`, from its
+// `declTy`) with each bare type parameter replaced by the receiver's
+// argument for it (`argParamIdx` against `receiverArgs`).  Empty when any argument cannot be resolved: a
+// non-bare use of a type parameter, or a receiver whose instantiation is
+// unknown (#7918).
+pub func substituteFieldArgs(
+  argParamIdx: in List[Int], rawArgs: in List[TypeExpr], receiverArgs: in List[TypeExpr]
+): List[TypeExpr] {
+  val acc: List[TypeExpr] = newList()
+  if argParamIdx.count != rawArgs.count {
+    return acc
+  }
+  var i = 0
+  while i < argParamIdx.count {
+    val idx = argParamIdx[i]
+    if idx == -1 {
+      acc.add(rawArgs[i])
+    } else if idx >= 0 and idx < receiverArgs.count {
+      acc.add(receiverArgs[idx])
+    } else {
+      val none: List[TypeExpr] = newList()
+      return none
+    }
+    i = i + 1
+  }
+  acc
 }
 
 // Filters `returnTypeGenericArgs`'s result against a function's OWN generic

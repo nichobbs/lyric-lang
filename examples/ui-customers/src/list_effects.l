@@ -7,8 +7,14 @@ package Customers.List.Effects
 
 import Std.Core
 import Customers.Ports.{CustomerRepository}
-import Customers.List.Logic.{Effect, Msg, LoadCustomers, Ui, CustomersLoaded}
+import Customers.List.Logic.{Effect, Msg, FetchRows, Ui, RowsLoaded, orderFor}
 
 pub async func run(e: in Effect, repo: in CustomerRepository): Option[Msg] {
-  return match e { case LoadCustomers -> Some(value = CustomersLoaded(outcome = await repo.all())); case Ui(_) -> None }
+  return match e {
+    case FetchRows(q) -> {
+      val outcome = await repo.page(q.first, q.count, orderFor(q.sortColumn), q.ascending)
+      Some(value = RowsLoaded(seq = q.seq, first = q.first, outcome = outcome))
+    }
+    case Ui(_) -> None
+  }
 }
