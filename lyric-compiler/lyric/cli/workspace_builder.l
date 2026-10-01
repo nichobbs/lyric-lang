@@ -465,6 +465,11 @@ func warnNativeIgnoresHostTables(mf: in Mf.Manifest): Unit {
 func nativeUnsupportedDeps(mf: in Mf.Manifest): Bool {
   var any = false
   for dep in mf.deps {
+    // `Std` is the standard library, which a native build always compiles
+    // from its own sources; a manifest may still declare it.
+    if dep.name == "Std" or Str.startsWith(dep.name, "Std.") {
+      continue
+    }
     match dep.source {
       case Mf.DepSource.Registry(_) -> {
         printErr(nativeUnsupportedDepMessage(dep.name, "registry"))

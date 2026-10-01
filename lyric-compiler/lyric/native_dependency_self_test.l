@@ -175,6 +175,30 @@ test "a native project build refuses a registry dependency" {
   assertTrue(buildNative(mfPath, Path.join(appDir, "app-native")) != 0, "the native build fails")
 }
 
+test "a native project build accepts a declared Std dependency" {
+  // The standard library is compiled from source on native; declaring it is
+  // not a registry dependency.
+  val root = freshTempDir("std")
+  defer {
+    cleanup(root)
+  }
+  val appDir = mkProject(
+    root,
+    "App",
+    "Fixture.NStdApp",
+    "\n[dependencies]\nStd = \"*\"\n",
+    "package Fixture.NStdApp\n\nfunc main(): Int {\n  0\n}\n"
+  )
+  val mfPath = Path.join(appDir, "lyric.toml")
+  val manifest = match Mf.parseManifest(unwrapText(mfPath), mfPath) {
+    case Ok(m) -> m
+    case Err(e) -> panic("fixture manifest does not parse: " + Mf.ManifestError.message(e))
+  }
+  val noFeatures: List[String] = newList()
+  val resolved = Cli.resolveManifestDependencies(manifest, mfPath, Emitter.Native, noFeatures, false)
+  assertFalse(resolved.hadUnsupportedDep, "a Std dependency is not refused")
+}
+
 test "a native project build refuses a registry dependency of a path dependency" {
   val root = freshTempDir("transitive-registry")
   defer {

@@ -209,12 +209,8 @@ pub func noPackageFeatures(): List[Pipe.PackageFeatureSet] {
   none
 }
 
-/// The feature set package `name` is erased with in `req`.
-func depPackageFeaturesFor(
-  // The features recorded for dependency package `name`, if it is one.
-  sets: in List[Pipe.PackageFeatureSet],
-  name: in String,
-): Option[Pipe.PackageFeatureSet] {
+/// The features recorded for dependency package `name`, if it is one.
+func depPackageFeaturesFor(sets: in List[Pipe.PackageFeatureSet], name: in String): Option[Pipe.PackageFeatureSet] {
   for pf in sets {
     if pf.packageName == name {
       return Some(value = pf)
@@ -223,6 +219,7 @@ func depPackageFeaturesFor(
   None
 }
 
+/// The feature set package `name` is erased with in `req`.
 func featuresForPackage(req: in EmitProjectRequest, name: in String): Pipe.PackageFeatureSet {
   for pf in req.packageFeatures {
     if pf.packageName == name {
