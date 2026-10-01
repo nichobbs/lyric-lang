@@ -120,7 +120,8 @@ func stdCollectionsHostPackages(): List[ImportedPackage] {
     "package Std.CollectionsHost\nextern type List[T] = \"System.Collections.Generic.List`1\"\n" +
       "extern type Map[K, V] = \"System.Collections.Generic.Dictionary`2\"\n" +
       "extern type MapKeyCollection[K, V] = \"System.Collections.Generic.Dictionary`2+KeyCollection\"\n" +
-      "extern type MapValueCollection[K, V] = \"System.Collections.Generic.Dictionary`2+ValueCollection\"\n"
+      "extern type MapValueCollection[K, V] = \"System.Collections.Generic.Dictionary`2+ValueCollection\"\n" +
+      "extern type Set[T] = \"System.Collections.Generic.HashSet`1\"\n"
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(
@@ -9041,4 +9042,175 @@ test "an extern NativePtr[Byte] parameter rejects a non-pointer, non-closure val
   assertEqualInt(countDiagCode(intArg, "T0043"), 1, "Int as NativePtr[Byte]: T0043 (" + diagCodesOf(intArg) + ")")
   val strArg = checkExternCallback(w + "  startThread(w, \"s\")\n")
   assertEqualInt(countDiagCode(strArg, "T0043"), 1, "String as NativePtr[Byte]: T0043 (" + diagCodesOf(strArg) + ")")
+}
+
+// #7969: an element-taking member of the stdlib `List`, `Map` or `Set` checks
+// its argument against the receiver's element, key or value type, under the
+// rules of an ordinary call argument.
+func checkCollectionCall(params: in String, body: in String): CheckResult {
+  val src = "package P\nimport Std.CollectionsHost\n" + "record Item { n: Int }\n" + "record Box[T] { v: T }\n" +
+    "interface Shape { func area(): Int }\n" +
+    "record Square { side: Int }\n" +
+    "impl Shape for Square { func area(): Int = self.side }\n" +
+    "func f(" +
+    params +
+    "): Unit {\n  " +
+    body +
+    "\n}\n"
+  checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+}
+
+func assertCollectionCallClean(params: in String, body: in String, what: in String): Unit {
+  val cr = checkCollectionCall(params, body)
+  assertEqualInt(diagCount(cr), 0, what + ": clean (" + diagCodesOf(cr) + ")")
+}
+
+func assertCollectionCallMismatch(params: in String, body: in String, needle: in String, what: in String): Unit {
+  val cr = checkCollectionCall(params, body)
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, what + ": one T0043 (" + diagCodesOf(cr) + ")")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0043"), needle),
+    what + ": names '" + needle + "': " + diagMessageFor(cr, "T0043")
+  )
+}
+
+test "List.add checks its argument against the element type (#7969)" {
+  assertCollectionCallClean("xs: in List[Item], it: in Item", "xs.add(it)", "List[Item].add(Item)")
+  assertCollectionCallMismatch(
+    "xs: in List[Item], s: in String",
+    "xs.add(s)",
+    "does not match List[Item]'s element type Item",
+    "List[Item].add(String)"
+  )
+  assertCollectionCallClean("xs: in List[Long], i: in Int", "xs.add(i)", "List[Long].add(Int) widens")
+  assertCollectionCallMismatch(
+    "xs: in List[Int], l: in Long",
+    "xs.add(l)",
+    "element type Int",
+    "List[Int].add(Long) narrows"
+  )
+  assertCollectionCallMismatch(
+    "xs: in List[Double], i: in Int",
+    "xs.add(i)",
+    "element type Double",
+    "List[Double].add(Int) crosses the widening chains"
+  )
+  assertCollectionCallMismatch("xs: in List[Byte]", "xs.add(0)", "element type Byte", "List[Byte].add(an Int literal)")
+  assertCollectionCallClean("xs: in List[Byte]", "xs.add(0u8)", "List[Byte].add(a Byte literal)")
+  assertCollectionCallClean("xs: in List[Shape], sq: in Square", "xs.add(sq)", "List[Shape].add(an implementor)")
+  assertCollectionCallClean("xs: in List[List[Int]]", "xs.add([1, 2])", "List[List[Int]].add(a bracket literal)")
+}
+
+test "two-argument List.add checks the index and the element (#7969)" {
+  assertCollectionCallClean("xs: in List[Item], it: in Item", "xs.add(0, it)", "List[Item].add(Int, Item)")
+  assertCollectionCallClean("xs: in List[Long]", "xs.add(0, 5)", "List[Long].add(0, 5) widens the element")
+  assertCollectionCallMismatch(
+    "xs: in List[Item], s: in String",
+    "xs.add(0, s)",
+    "element type Item",
+    "List[Item].add(Int, String)"
+  )
+  assertCollectionCallMismatch(
+    "xs: in List[Item], it: in Item",
+    "xs.add(\"0\", it)",
+    "the index type Int",
+    "List[Item].add(String, Item)"
+  )
+}
+
+test "List element lookups check their argument against the element type (#7969)" {
+  val members = ["contains", "indexOf", "lastIndexOf", "remove"]
+  for m in members {
+    assertCollectionCallClean("xs: in List[Item], it: in Item", "val _ = xs." + m + "(it)", "List[Item]." + m + "(Item)")
+    assertCollectionCallClean(
+      "xs: in List[Long], i: in Int",
+      "val _ = xs." + m + "(i)",
+      "List[Long]." + m + "(Int) widens"
+    )
+    assertCollectionCallMismatch(
+      "xs: in List[Item], s: in String",
+      "val _ = xs." + m + "(s)",
+      "'." + m + "' does not match List[Item]'s element type Item",
+      "List[Item]." + m + "(String)"
+    )
+  }
+  assertCollectionCallClean("xs: in List[Item], i: in Int", "xs.removeAt(i)", "List.removeAt(Int)")
+  assertCollectionCallMismatch(
+    "xs: in List[Item], it: in Item",
+    "xs.removeAt(it)",
+    "the index type Int",
+    "List.removeAt(Item)"
+  )
+}
+
+test "Map members check keys and values against the receiver's type arguments (#7969)" {
+  assertCollectionCallClean(
+    "m: in Map[String, Item], it: in Item",
+    "m.add(\"k\", it)",
+    "Map[String, Item].add(String, Item)"
+  )
+  assertCollectionCallClean("m: in Map[Long, Long], i: in Int", "m.add(i, i)", "Map[Long, Long].add(Int, Int) widens")
+  assertCollectionCallMismatch(
+    "m: in Map[String, Item]",
+    "m.add(\"k\", \"v\")",
+    "does not match Map[String, Item]'s value type Item",
+    "Map[String, Item].add(String, String)"
+  )
+  assertCollectionCallMismatch(
+    "m: in Map[String, Item], it: in Item",
+    "m.add(1, it)",
+    "does not match Map[String, Item]'s key type String",
+    "Map[String, Item].add(Int, Item)"
+  )
+  for m in ["containsKey", "remove"] {
+    assertCollectionCallClean("m: in Map[String, Item]", "val _ = m." + m + "(\"k\")", "Map." + m + "(String)")
+    assertCollectionCallMismatch(
+      "m: in Map[String, Item], it: in Item",
+      "val _ = m." + m + "(it)",
+      "key type String",
+      "Map." + m + "(Item)"
+    )
+  }
+}
+
+test "Set members check their argument against the element type (#7969)" {
+  for m in ["add", "contains", "remove"] {
+    assertCollectionCallClean("s: in Set[Item], it: in Item", "val _ = s." + m + "(it)", "Set[Item]." + m + "(Item)")
+    assertCollectionCallMismatch(
+      "s: in Set[Item], x: in String",
+      "val _ = s." + m + "(x)",
+      "does not match Set[Item]'s element type Item",
+      "Set[Item]." + m + "(String)"
+    )
+  }
+}
+
+test "a collection member call in a generic body checks against the type parameter (#7969)" {
+  val ok = "package P\nimport Std.CollectionsHost\nrecord Box[T] { v: T }\n" +
+    "func f[T](xs: in List[T], x: in T, bs: in List[Box[T]]): Unit {\n  xs.add(x)\n  bs.add(Box(v = x))\n  val _ = xs.contains(x)\n}\n"
+  val okCr = checkWithImportedPackages(parse(ok).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(okCr), 0, "List[T] and List[Box[T]] take T and Box[T]: clean (" + diagCodesOf(okCr) + ")")
+  val bad = "package P\nimport Std.CollectionsHost\nrecord Box[T] { v: T }\n" +
+    "func f[T](bs: in List[Box[T]], s: in String): Unit {\n  bs.add(s)\n}\n"
+  val badCr = checkWithImportedPackages(parse(bad).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(badCr, "T0043"), 1, "List[Box[T]].add(String): one T0043 (" + diagCodesOf(badCr) + ")")
+  assertTrue(
+    Str.contains(diagMessageFor(badCr, "T0043"), "element type Box[T]"),
+    "the T0043 names Box[T]: " + diagMessageFor(badCr, "T0043")
+  )
+}
+
+test "a lambda added to a list of functions is typed by the element type (#7969)" {
+  assertCollectionCallClean("fs: in List[(Int) -> Int]", "fs.add({ n -> n + 1 })", "an (Int) -> Int lambda")
+  assertCollectionCallMismatch(
+    "fs: in List[(Int) -> Int]",
+    "fs.add({ n -> n == 1 })",
+    "element type (Int) -> Int",
+    "an (Int) -> Bool lambda"
+  )
+}
+
+test "a same-named local List is not checked as the stdlib collection (#7969)" {
+  val src = "package P\nrecord List[T] { }\nfunc f(xs: in List[Int], s: in String): Unit {\n  xs.add(s)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0043"), 0, "a local record List's add is not the stdlib member")
 }

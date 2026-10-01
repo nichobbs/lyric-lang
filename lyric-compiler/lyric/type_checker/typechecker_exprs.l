@@ -8602,27 +8602,127 @@ pub func noteOpenBindingAdd(sc: in Scope, tbl: in SymbolTable, recv: in Expr, ar
   }
 }
 
-// `xs.add(x)` / `xs.add(i, x)` on a `List[T]` and `m.add(k, v)` on a
-// `Map[K, V]`: the stdlib collections are host types whose methods the
-// checker types leniently, so an argument that widens to the element, key
-// or value type is recorded here (#7805).
-func recordCollectionAddWidenings(
-  tbl: in SymbolTable, recvTy: in Type, args: in List[CallArg], argTypes: in List[Type]
+// One parameter of an element-taking member of the stdlib `List`, `Map` or
+// `Set` (#7969): its type, and what it is for the receiver -- "element",
+// "key", "value" or "index" -- so a mismatch names the slot it misses.
+record CollMemberParam {
+  ty: Type
+  role: String
+}
+
+func collParam(ty: in Type, role: in String): CollMemberParam {
+  CollMemberParam(ty = ty, role = role)
+}
+
+// The parameters of `recv.<name>(...)` with `argCount` arguments when `recv`
+// is the stdlib `List[T]`, `Map[K, V]` or `Set[T]` and `name` is one of the
+// members that take an element, key, value or index; `None` otherwise.  These
+// collections are extern types whose methods the backends resolve, so their
+// signatures are not in the checker's signature tables (#7969).  Which form a
+// two-argument `add` is follows the receiver (#7797).
+func stdCollectionMemberParams(
+  tbl: in SymbolTable, recvTy: in Type, name: in String, argCount: in Int
+): Option[List[CollMemberParam]] {
+  val ps: List[CollMemberParam] = newList()
+  match unrefine(recvTy) {
+    case TyUser(id, _, targs) -> {
+      if targs.count == 1 and isStdCollectionsHostType(tbl, id, "List") {
+        val elem = targs[0]
+        if name == "add" and argCount == 2 {
+          ps.add(collParam(TyPrim(pt = PtInt), "index"))
+          ps.add(collParam(elem, "element"))
+        } else if argCount == 1 {
+          if name == "add" or name == "contains" or name == "indexOf" or name == "lastIndexOf" or name == "remove" {
+            ps.add(collParam(elem, "element"))
+          } else if name == "removeAt" {
+            ps.add(collParam(TyPrim(pt = PtInt), "index"))
+          }
+        }
+      } else if targs.count == 2 and isStdCollectionsHostType(tbl, id, "Map") {
+        if name == "add" and argCount == 2 {
+          ps.add(collParam(targs[0], "key"))
+          ps.add(collParam(targs[1], "value"))
+        } else if argCount == 1 and (name == "containsKey" or name == "remove") {
+          ps.add(collParam(targs[0], "key"))
+        }
+      } else if targs.count == 1 and isStdCollectionsHostType(tbl, id, "Set") {
+        if argCount == 1 and (name == "add" or name == "contains" or name == "remove") {
+          ps.add(collParam(targs[0], "element"))
+        }
+      }
+    }
+    case _ -> ()
+  }
+  if ps.count == 0 {
+    None
+  } else {
+    Some(value = ps)
+  }
+}
+
+// The parameter types of `stdCollectionMemberParams`'s result, in order.
+func collMemberParamTypes(ps: in List[CollMemberParam]): List[Type] {
+  val tys: List[Type] = newList()
+  var i = 0
+  while i < ps.count {
+    tys.add(ps[i].ty)
+    i = i + 1
+  }
+  tys
+}
+
+// Check each argument of an element-taking stdlib collection member call
+// against the receiver's element, key or value type (#7969) under the rules
+// of an ordinary call argument: numeric widening, interface conformance and a
+// bracket literal where a `List` is expected are accepted.
+func checkStdCollectionMemberArgs(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  recvTy: in Type,
+  name: in String,
+  ps: in List[CollMemberParam],
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  span: in Span,
+): Unit {
+  var k = 0
+  while k < ps.count and k < args.count and k < argTypes.count {
+    val p = ps[k]
+    if not argSatisfiesParam(tbl, p.ty, argTypes[k]) and not listLiteralArgSatisfiesParam(tbl, p.ty, argTypes[k], callArgExpr(args[k])) {
+      val slot = if p.role == "index" {
+        "the index type " + renderType(p.ty)
+      } else {
+        renderType(recvTy) + "'s " + p.role + " type " + renderType(p.ty)
+      }
+      diag.add(
+        errorDiagnostic(
+          "T0043",
+          argTypeMismatchSubject(argTypes[k], args, k) + " of '." + name + "' does not match " + slot +
+            typeMismatchHint(tbl, p.ty, argTypes[k]),
+          span
+        )
+      )
+    }
+    k = k + 1
+  }
+}
+
+// An argument of an element-taking stdlib collection member call that widens
+// to the element, key or value type is recorded (#7805): the collections are
+// extern types, so no signature tells a backend to convert it.
+func recordCollectionArgWidenings(
+  tbl: in SymbolTable,
+  ps: in List[CollMemberParam],
+  args: in List[CallArg],
+  argTypes: in List[Type],
 ): Unit {
   if args.count != argTypes.count {
     return
   }
-  match unrefine(recvTy) {
-    case TyUser(id, _, targs) -> {
-      if targs.count == 1 and isStdCollectionsHostType(tbl, id, "List") and (args.count == 1 or args.count == 2) {
-        val last = args.count - 1
-        recordUnsignedWidening(tbl, targs[0], argTypes[last], callArgExpr(args[last]))
-      } else if targs.count == 2 and isStdCollectionsHostType(tbl, id, "Map") and args.count == 2 {
-        recordUnsignedWidening(tbl, targs[0], argTypes[0], callArgExpr(args[0]))
-        recordUnsignedWidening(tbl, targs[1], argTypes[1], callArgExpr(args[1]))
-      }
-    }
-    case _ -> ()
+  var k = 0
+  while k < ps.count and k < args.count {
+    recordUnsignedWidening(tbl, ps[k].ty, argTypes[k], callArgExpr(args[k]))
+    k = k + 1
   }
 }
 
@@ -10064,12 +10164,35 @@ func inferExprCore(
           }
         }
       }
+      // An element-taking member of the stdlib `List`/`Map`/`Set` that no
+      // signature or field resolved is checked against the receiver's type
+      // arguments (#7969).
+      val collMemberParams: Option[List[CollMemberParam]] = match directSig {
+        case Some(_) -> None
+        case None -> match methodPick {
+          case Some(_) -> None
+          case None -> match fnT {
+            case TyError -> match memberRecvTy {
+              case Some(crt) -> if isMemberCallee {
+                stdCollectionMemberParams(tbl, crt, memberName, args.count)
+              } else {
+                None
+              }
+              case None -> None
+            }
+            case _ -> None
+          }
+        }
+      }
       if anyDeferredLambda or anyCaseCtorArg {
         val lambdaSig = match directSig {
           case Some(_) -> directSig
           case None -> match methodPick { case Some(mp0) -> Some(value = mp0.sig); case None -> None }
         }
-        val expectedArgTys = expectedCallArgTypes(tbl, fn, args, argTypes, lambdaSig, fnT)
+        val expectedArgTys = match collMemberParams {
+          case Some(cps) -> collMemberParamTypes(cps)
+          case None -> expectedCallArgTypes(tbl, fn, args, argTypes, lambdaSig, fnT)
+        }
         var di = 0
         while di < args.count {
           val dae = callArgExpr(args[di])
@@ -10121,10 +10244,10 @@ func inferExprCore(
           case EMember(addRecv, _) -> noteOpenBindingAdd(sc, tbl, addRecv, argTypes)
           case _ -> ()
         }
-        match memberRecvTy {
-          case Some(addRecvTy) -> recordCollectionAddWidenings(tbl, addRecvTy, args, argTypes)
-          case None -> ()
-        }
+      }
+      match collMemberParams {
+        case Some(cps) -> recordCollectionArgWidenings(tbl, cps, args, argTypes)
+        case None -> ()
       }
       recordGeneratorCallSite(tbl, e.span, false)
       recordEmptyCollectionCtorSite(tbl, e.span, false)
@@ -10248,6 +10371,22 @@ func inferExprCore(
                       case _ -> {
                       }
                     }
+                  }
+                  match collMemberParams {
+                    case Some(cps) -> match memberRecvTy {
+                      case Some(crt2) -> checkStdCollectionMemberArgs(
+                        tbl,
+                        diag,
+                        crt2,
+                        memberName,
+                        cps,
+                        args,
+                        argTypes,
+                        e.span
+                      )
+                      case None -> ()
+                    }
+                    case None -> ()
                   }
                   match fnT {
                     case TyFunction(paramTypes, ret, fnIsAsync) -> {

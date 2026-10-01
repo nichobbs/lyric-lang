@@ -1166,21 +1166,24 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
 // unhandled `System.Exception` with a full host stack trace, not a
 // contained `EmitResult` failure.
 //
-// The type checker treats an unresolved generic parameter as satisfied by
-// ANY argument type (`typeEquiv` on a bare `TyVar`, `typechecker_exprs.l`'s
-// `maybeUnknownMemberDiag` also declines to diagnose an extern-type member
-// call since `List[T]` is never "member complete"), so `xs.add("hello")`
-// against a `List[Int]` type-checks on every target with ZERO argument
-// validation at all — a genuinely incompatible (non-numeric) mismatch that
-// `coerceTo`'s new `#7452` narrowing cannot rescue, so it is the
-// constructible "genuinely mismatched call" this pins: a real `N0007`
-// codegen error, not a numeric-narrowing false positive.
+// The type checker treats a type parameter inside a generic body as
+// satisfied by ANY argument type (`typeEquiv` on a bare `TyVar`), so `put`'s
+// `xs.add(x)` with `x: T` type-checks against the `List[Int]`, and
+// `put(xs, "hello")` instantiates it with a `String`.  `xs.add("hello")`
+// itself is a T0043 since #7969.  The monomorphized body is a genuinely
+// incompatible (non-numeric) mismatch that `coerceTo`'s `#7452` narrowing
+// cannot rescue, so it is the constructible "genuinely mismatched call" this
+// pins: a real `N0007` codegen error, not a numeric-narrowing false positive.
 test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResult failure, not a thrown exception (#7452)" {
   val dir = freshTempDir("native-contain-n0007")
   val source = "package ContainN0007.App\n" + "\n" + "import Std.Core\n" + "import Std.Collections\n" + "\n" +
+    "func put[T](xs: in List[Int], x: in T): Unit {\n" +
+    "  xs.add(x)\n" +
+    "}\n" +
+    "\n" +
     "func main(): Int {\n" +
     "  val xs: List[Int] = newList()\n" +
-    "  xs.add(\"hello\")\n" +
+    "  put(xs, \"hello\")\n" +
     "  0\n" +
     "}\n"
   val noDefines: List[String] = newList()
@@ -1221,8 +1224,8 @@ test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResu
     Str.contains(diagText, "N0007"),
     "the contained refusal carries its N0007 code in EmitResult.diagnostics (got: " + diagText + ")"
   )
-  // The span points at the mismatched argument itself (the `"hello"`
-  // literal on line 8, column 10), not a synthetic file-start point span —
+  // The span points at the mismatched argument itself (`put`'s `x` on line
+  // 7, column 10), not a synthetic file-start point span —
   // `coerceTo`'s `atSpan` threads the real `Expr.span` through
   // `lowerExprExpecting`/`coerceUnlessDiverged`.
   var n0007Idx = -1
@@ -1238,7 +1241,7 @@ test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResu
     val sp = result.diagnostics[n0007Idx].span
     assertEqualInt(
       sp.startPos.line,
-      8,
+      7,
       "N0007 span points at the real source line (got: " + toString(sp.startPos.line) + ")"
     )
     assertEqualInt(

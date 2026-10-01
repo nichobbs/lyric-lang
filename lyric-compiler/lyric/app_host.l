@@ -140,11 +140,11 @@ pub func bindAppHost(templateBytes: in slice[Byte], appRelDllPath: in String): R
     outBytes.add(pathBytes[p])
     p += 1
   }
-  outBytes.add(0)
+  outBytes.add(0u8)
   // Zero-fill the remainder of the reserved region.
   var z = pathBytes.length + 1
   while z < RESERVED_BYTES {
-    outBytes.add(0)
+    outBytes.add(0u8)
     z += 1
   }
   // Bytes after the reserved region, verbatim.

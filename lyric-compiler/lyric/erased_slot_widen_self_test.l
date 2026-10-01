@@ -15,11 +15,10 @@
 //!
 //! On `--target dotnet` generics are reified, but a `Set[T]` is an erased
 //! `HashSet<object>`, and the concrete `List<T>`/`Dictionary<K, V>` methods
-//! take the element type unboxed: an `Int` argument for a `Long` (or
-//! `Double`) element was boxed as `Int32` (a `Set[Long]` lookup by a `Long`
-//! missed, iterating it into a `Long` threw `InvalidCastException`) or
-//! pushed as an `int32` where the method takes an `int64`/`float64`
-//! (`InvalidProgramException`); `List.indexOf`/`lastIndexOf`/`remove(x)` were
+//! take the element type unboxed: an `Int` argument for a `Long` element was
+//! boxed as `Int32` (a `Set[Long]` lookup by a `Long` missed, iterating it
+//! into a `Long` threw `InvalidCastException`) or pushed as an `int32` where
+//! the method takes an `int64` (`InvalidProgramException`); `List.indexOf`/`lastIndexOf`/`remove(x)` were
 //! not lowered at all.  Every element, key and value argument is now widened
 //! to the slot's declared type before it is passed or boxed (#7785).  A
 //! generic record's instantiation is inferred from its widest argument and
@@ -387,16 +386,17 @@ test "List[Long] lookups by an Int argument (#7782)" {
   assertEqualInt(xs.indexOf(n), 0, "indexOf Int expression")
 }
 
-test "List[Double] and Map[K, Double] store an Int argument as Double (#7782)" {
+// `Int` to `Double` crosses the widening chains, so it is explicit (#7969).
+test "List[Double] and Map[K, Double] store an Int converted to Double (#7782)" {
   val xs: List[Double] = newList()
-  xs.add(1)
+  xs.add(1.0)
   val n: Int = 2
-  xs.add(n)
+  xs.add(n.toDouble())
   val d: Double = xs[0] + xs[1]
   assertTrue(d == 3.0, "list sum is 3.0")
   val m: Map[String, Double] = newMap()
   m["a"] = 4.0
-  m.add("b", n)
+  m.add("b", n.toDouble())
   assertTrue(m["a"] + m["b"] == 6.0, "map sum is 6.0")
 }
 
@@ -450,4 +450,26 @@ test "Map[Long, V] reads, removes and probes with an Int key (#7785)" {
   }
   assertTrue(m.remove(n), "remove Int key")
   assertFalse(m.containsKey(k3), "removed")
+}
+
+// A `UInt` argument of a lookup zero-extends to the `ULong` slot, as `add`'s
+// does (#7805): the checker records the conversion for every element-taking
+// collection member, not only `add` (#7969).
+test "a UInt argument of a ULong collection lookup zero-extends (#7969)" {
+  val big: UInt = 4000000000u32
+  val xs: List[ULong] = newList()
+  xs.add(big)
+  assertTrue(xs.contains(big), "List contains")
+  assertEqualInt(xs.indexOf(big), 0, "List indexOf")
+  assertEqualInt(xs.lastIndexOf(big), 0, "List lastIndexOf")
+  assertTrue(xs.remove(big), "List remove")
+  assertEqualInt(xs.count, 0, "List emptied")
+  val m: Map[ULong, Int] = newMap()
+  m.add(big, 1)
+  assertTrue(m.containsKey(big), "Map containsKey")
+  assertTrue(m.remove(big), "Map remove")
+  val s: Set[ULong] = newSet()
+  s.add(big)
+  assertTrue(s.contains(big), "Set contains")
+  assertTrue(s.remove(big), "Set remove")
 }

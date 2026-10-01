@@ -425,12 +425,17 @@ func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in N
   if errors.count == 0 {
     return true
   }
-  val label = match mapGet(stdlib.pathByPkg, pkg) {
+  DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), errors)
+  false
+}
+
+/// The label a diagnostic in bundled stdlib package `pkg` is reported
+/// under: its source file's path, or the package name when it has none.
+func stdlibDiagLabel(pkg: in String, stdlib: in NativeStdlib): String {
+  match mapGet(stdlib.pathByPkg, pkg) {
     case Some(p) -> if p.length > 0 { p } else { pkg }
     case None -> pkg
   }
-  DiagUtil.diagReportAndAbortInPkg(label, errors)
-  false
 }
 
 /// The stdlib packages `pkg` reaches through its imports, transitively,
@@ -439,10 +444,22 @@ func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in N
 /// depends on (kernels before the public files that re-export them; see
 /// `Lyric.Emitter.findStdlibSources`).
 func stdlibImportClosure(pkg: in String, stdlib: in NativeStdlib): List[ImportedPackage] {
+  // A package split across several files reaches the union of their imports.
   val importsOf: Map[String, List[String]] = newMap()
   for ip in stdlib.importedPkgs {
-    if not importsOf.containsKey(ip.name) {
-      importsOf.add(ip.name, ip.imports)
+    match mapGet(importsOf, ip.name) {
+      case Some(known) -> {
+        for m in ip.imports {
+          known.add(m)
+        }
+      }
+      case None -> {
+        val own: List[String] = newList()
+        for m in ip.imports {
+          own.add(m)
+        }
+        importsOf.add(ip.name, own)
+      }
     }
   }
   val reached: Map[String, Bool] = newMap()
@@ -614,7 +631,7 @@ pub func compileToNativeWithFlags(
           // cannot lower an un-rewritten `EPropagate` node — mirrors
           // `pipeCheckAndMono`'s propagate step for the entry file.
           val stdProp = lowerPropagateFile(stdElaborated, opts.awaitInTryIsHazard)
-          if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {
+          if DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), stdProp.diagnostics) {
             return false
           }
           toBundle.add(stdProp.file)
@@ -996,7 +1013,7 @@ pub func compileProjectToNativeWithFlags(
           }
           val stdElaborated = elaborateFileWithInterfaces(f, newList(), true)
           val stdProp = lowerPropagateFile(stdElaborated, true)
-          if DiagUtil.diagReportAndAbortInPkg(pkg, stdProp.diagnostics) {
+          if DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), stdProp.diagnostics) {
             return false
           }
           toBundle.add(stdProp.file)

@@ -142,8 +142,8 @@ test "slice operations on an un-annotated list literal (#7524)" {
 
 test "an un-annotated List.toArray() binding keeps its element type (#7362)" {
   val bl: List[Byte] = newList()
-  bl.add(7)
-  bl.add(9)
+  bl.add(7u8)
+  bl.add(9u8)
   val bs = bl.toArray()
   assertEqualInt(bs[0].toInt() + bs[1].toInt(), 16, "byte elements")
   val sl: List[String] = newList()

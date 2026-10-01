@@ -44,9 +44,9 @@ test "writeBytes/readBytes round-trips raw bytes" {
   val _ = createDir(dir)
   val path = dir + "/data.bin"
   val bytes: List[Byte] = newList()
-  bytes.add(0)
-  bytes.add(1)
-  bytes.add(255)
+  bytes.add(0u8)
+  bytes.add(1u8)
+  bytes.add(255u8)
   match writeBytes(path, bytes.toArray()) {
     case Ok(_) -> ()
     case Err(e) -> panic("writeBytes failed: " + IOError.message(e))

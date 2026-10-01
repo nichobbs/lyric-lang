@@ -70,10 +70,10 @@ func shr8(v: in Int): Int {
 }
 
 // Append the low 8 bits of `v`, matching the former host's `byte v`
-// (= `v & 0xFF`).  `v % 256` follows Lyric's sign-of-dividend remainder rule
-// (`-1 % 256 == -1`), so normalise to `[0, 255]` for the correct unsigned byte.
+// (= `v & 0xFF`): `.toByte()` reduces modulo 256 to the unsigned `[0, 255]`, so
+// a negative `v` writes its two's-complement low byte.
 pub func bufU1(w: in ByteWriter, v: in Int): Unit {
-  w.data.add(((v % 256) + 256) % 256)
+  w.data.add(v.toByte())
 }
 
 // 16-bit little-endian.  Peels the two low bytes via `bufU1` (which masks) and

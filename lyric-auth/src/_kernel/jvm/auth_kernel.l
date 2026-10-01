@@ -191,7 +191,7 @@ pub func tryFromBase64Url(seg: in String, result: out slice[Byte]): Bool {
         result = []
         return false
       }
-      acc.add(c0 * 4 + c1 / 16)
+      acc.add((c0 * 4 + c1 / 16).toByte())
     } else {
       val c2 = base64Val(ch2)
       if c2 < 0 {
@@ -203,17 +203,17 @@ pub func tryFromBase64Url(seg: in String, result: out slice[Byte]): Bool {
           result = []
           return false
         }
-        acc.add(c0 * 4 + c1 / 16)
-        acc.add(c1 % 16 * 16 + c2 / 4)
+        acc.add((c0 * 4 + c1 / 16).toByte())
+        acc.add((c1 % 16 * 16 + c2 / 4).toByte())
       } else {
         val c3 = base64Val(ch3)
         if c3 < 0 {
           result = []
           return false
         }
-        acc.add(c0 * 4 + c1 / 16)
-        acc.add(c1 % 16 * 16 + c2 / 4)
-        acc.add(c2 % 4 * 64 + c3)
+        acc.add((c0 * 4 + c1 / 16).toByte())
+        acc.add((c1 % 16 * 16 + c2 / 4).toByte())
+        acc.add((c2 % 4 * 64 + c3).toByte())
       }
     }
     i += 4
