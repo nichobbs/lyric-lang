@@ -28,7 +28,8 @@ library on `--target dotnet` and `--target jvm`, as well as native.
   `@library`), T0151 (a type that cannot cross the call).
 - **CI.** Every JVM job runs on JDK 22, which the FFM API needs. Class
   files stay at Java 21's major version 65.
-- **Tests.** `extern_cbinding_self_test.l` calls libc on dotnet and the
-  JVM; `typechecker_self_test.l` covers T0149–T0151.
+- **Tests.** `extern_cbinding_self_test.l` calls libc (and `libm.so.6` by
+  file name) on dotnet, the JVM and native, the native run in the
+  native-backend lane; `typechecker_self_test.l` covers T0149–T0151.
 
 Follow-up: #7930 (`"c"` on Windows .NET).

@@ -280,7 +280,7 @@ jobs:
       # BuildInfo well-known `version` auto-injection (docs/60 §9.2, #5852): a
       # project build with `[package].version` in lyric.toml populates
       # `BuildInfo.version` with NO `--define`. Non-background (this job has
-      # Java 21 + project-build infra); asserted end-to-end on dotnet and jvm.
+      # Java 22 + project-build infra); asserted end-to-end on dotnet and jvm.
       - name: BuildInfo project version + --define (docs/60 §9.2, #5852)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
@@ -1082,7 +1082,7 @@ jobs:
       # `buildinfo_self_test.l` covers only the default-fallback path (`lyric
       # test` threads no `--define`); this closes the gap for the supplied path
       # on dotnet. The JVM twin of this step lives in the `compiler-self-tests-jvm`
-      # job (which has Java 21); the native twin is the "Native --define build"
+      # job (which has Java 22); the native twin is the "Native --define build"
       # step in `native-backend-self-tests` (#5977 closed).
       #
       # The fixture deliberately imports ONLY `Std.BuildInfo` (+ `Std.Console`
@@ -1458,7 +1458,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/import_rename_self_test.l
 
-      # C bindings (D157): `@library("c") extern func` called through
+      # C bindings (D158): `@library("c") extern func` called through
       # P/Invoke, with Int, Long and NativePtr arguments and results.
       - name: C-binding self-test (native lyric test)
         if: ${{ !cancelled() }}
@@ -1826,7 +1826,7 @@ jobs:
       # runtime value.  Pins the #3402 fixes so aspect weaving can never again
       # silently regress to InvalidProgramException.  This (`dotnet`) job runs
       # the MSIL half via in-process `Msil.Bridge`; the `--target jvm` half runs
-      # in the `compiler-self-tests-jvm` job below (which has JDK 21).  Imports
+      # in the `compiler-self-tests-jvm` job below (which has JDK 22).  Imports
       # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       - name: Aspect-weave self-test (native lyric test, --target dotnet)
         if: ${{ !cancelled() }}
@@ -2022,7 +2022,7 @@ jobs:
       # `ERange not supported in JVM codegen`; `emitCountingForJvm` brought it to
       # MSIL parity.  Int + Long, half-open + closed, empty, break/continue, and
       # nesting.  Imports only `Std.*`.  The `--target jvm` run lives in the
-      # `compiler-self-tests-jvm` job (which configures Java 21 — this job does not,
+      # `compiler-self-tests-jvm` job (which configures Java 22 — this job does not,
       # so a JVM-class-version-21 run would `UnsupportedClassVersionError` here).
       - name: Range-for self-test (native lyric test, dotnet)
         if: ${{ !cancelled() }}
@@ -2035,7 +2035,7 @@ jobs:
       # so arithmetic on a `match`/`?`-bound payload was always correct there),
       # but running on dotnet too locks in the cross-target parity the fix
       # restores.  The `--target jvm` run lives in the `compiler-self-tests-jvm`
-      # job (Java 21).  Imports only `Std.*`.
+      # job (Java 22).  Imports only `Std.*`.
       - name: Erased-generic-arith self-test (native lyric test, dotnet)
         if: ${{ !cancelled() }}
         background: true
@@ -2047,7 +2047,7 @@ jobs:
       # (`compileToJarBundled` bundles the user package + its stdlib import
       # closure into one runnable JAR), then runs it under `java`.  This is the
       # first self-hosted-only language feature executed end-to-end on the JVM
-      # target with no new F#.  Java 21 is configured above; FSharp.Core (needed
+      # target with no new F#.  Java 22 is configured above; FSharp.Core (needed
       # by the JVM kernel's F# host shim) is staged into .bootstrap/stage1 by
       # bootstrap.sh and referenced by the AOT csproj.
       - name: Conversion-method self-test (native lyric test, dotnet)
@@ -2360,7 +2360,7 @@ jobs:
       # of the legacy `([Object…])Object` guess.  Run via native
       # `lyric test --target jvm`, which compiles the @test_module in-process
       # through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs it
-      # under `java` (Java 21 is configured above).  No new F#; imports only
+      # under `java` (Java 22 is configured above).  No new F#; imports only
       # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
       # Concurrency cap: this second parallel group was 16 background steps and
       # also intermittently misreported a passing step as failed (Defer, etc.).
@@ -3107,7 +3107,7 @@ jobs:
       # (`Ok(mapGet(...))`) used to `VerifyError` ("Inconsistent stackmap
       # frames") — `lowerConstruction` now evaluates every argument into a
       # local before `new; dup`.  JVM half runs in `compiler-self-tests-jvm`
-      # (needs JDK 21, unlike this dotnet-only job).
+      # (needs JDK 22, unlike this dotnet-only job).
       - name: Map-option self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true
@@ -3460,7 +3460,7 @@ jobs:
       # and `jvm_cross_package_collision_self_test.l`, so it rides the same
       # non-background placement.  The #6650 case additionally links the REAL
       # compiled stdlib (`Emitter.findStdlibSources()`), needing the same
-      # `dotnet`/Java 21 toolchain this job already sets up.
+      # `dotnet`/Java 22 toolchain this job already sets up.
       - name: Enum case-name collision self-test (native lyric test)
         if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
@@ -4205,7 +4205,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/import_rename_self_test.l
 
-      # JVM half of the C-binding self-test (D157): the same libc calls
+      # JVM half of the C-binding self-test (D158): the same libc calls
       # through the Foreign Function & Memory API (JDK 22).
       - name: C-binding self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
@@ -4528,7 +4528,7 @@ jobs:
       # `ExecutorService` codegen (`scope { }` open/close, `spawn` -> `Callable`
       # submit -> `Future`, `await` -> `__lyric_await` join + unbox).  Compiles
       # the @test_module in-process through `Jvm.Bridge` `compileToJarBundled`
-      # and runs it under `java` (JDK 21).  Imports only `Std.*`.
+      # and runs it under `java` (JDK 22).  Imports only `Std.*`.
       - name: Async spawn/scope/await self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -4780,7 +4780,7 @@ jobs:
       # fix: nesting a branching call (`mapGet`) directly as a constructor
       # argument (`Ok(mapGet(...))`) used to `VerifyError` ("Inconsistent
       # stackmap frames") because `new; dup` ran before the argument's own
-      # internal branches lowered.  Needs JDK 21 (this job), unlike the
+      # internal branches lowered.  Needs JDK 22 (this job), unlike the
       # dotnet job.
       - name: Map-option self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
@@ -4796,7 +4796,7 @@ jobs:
       # load with ClassFormatError (#5022, `inferMaxLocals` never accounted
       # for the parameter frame when the body touches none of its params).
       # `--target dotnet` runs in the .NET job (the #5021 MSIL wire ABI
-      # shipped with D121). Needs JDK 21 (this job).
+      # shipped with D121). Needs JDK 22 (this job).
       - name: Wire-DI self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -4806,7 +4806,7 @@ jobs:
       # Aspect-weave self-test on JVM (#3402) — the JVM half of the dotnet-job
       # step above.  Pins the JVM woven-call resolution fix (`collectAspectWovenSigs`
       # registering the post-weave `__aspect_*` sigs) so a woven `proceed` no
-      # longer hits the `(…)Object` guess / NoSuchMethodError.  Needs JDK 21
+      # longer hits the `(…)Object` guess / NoSuchMethodError.  Needs JDK 22
       # (this job), unlike the dotnet job.  Imports only `Std.*`.
       - name: Aspect-weave self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
@@ -4819,7 +4819,7 @@ jobs:
       # `.error`/`.isSome`/`.isNone` lowering (`lyric-compiler/jvm/codegen/02_exprs.l`),
       # which previously hit the loud `error[J009]` unknown-member guard
       # rather than MSIL's silent stack corruption, but was equally
-      # unsupported.  Needs JDK 21 (this job).  Imports only `Std.*`.
+      # unsupported.  Needs JDK 22 (this job).  Imports only `Std.*`.
       - name: Result/Option accessor self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -4896,7 +4896,7 @@ jobs:
       # emitted.  Also pins `bindCaseField` threading a nested generic
       # instantiation (`Result[Option[Shape], String]`) to the bound name's
       # own `varGenericArgs`, so a match-of-a-match recovers its inner arg.
-      # Needs JDK 21 (this job), unlike the dotnet job.
+      # Needs JDK 22 (this job), unlike the dotnet job.
       - name: Stdlib-generic-interface self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -5190,8 +5190,8 @@ jobs:
       # (`for i in lo ..< hi` / `lo ..= hi`) reached MSIL parity via
       # `emitCountingForJvm` (previously `ERange not supported in JVM codegen`).
       # Runs here — NOT in `compiler-self-tests-dotnet-a` alongside the dotnet run —
-      # because this job configures Java 21; the emitted class targets version 21,
-      # so a job without the Java-21 setup fails with `UnsupportedClassVersionError`.
+      # because this job configures Java 22; the emitted classes target Java 21
+      # (major 65), so a job without a JDK setup fails with `UnsupportedClassVersionError`.
       # Int + Long, half-open + closed, empty, break/continue, nesting.  Imports
       # only `Std.*`.
       - name: Range-for self-test on JVM (native lyric test --target jvm)
@@ -7354,7 +7354,7 @@ jobs:
       # Std.Process on JVM: capture, exit codes, stdin, timeouts, and `run`
       # (inherited stdio). The suite could not compile on JVM while it
       # declared its own .NET-only `@externTarget` platform check; it now
-      # uses `Std.Environment.isWindows()`. Shares the Java 21 setup step above.
+      # uses `Std.Environment.isWindows()`. Shares the Java 22 setup step above.
       - name: Std.Process suite on JVM (process_tests.l)
         working-directory: ${{ github.workspace }}
         run: |
@@ -7376,7 +7376,7 @@ jobs:
 
       # Std.Hash on JVM (#7245): SHA-256 digests and HMAC-SHA-256 back the
       # lyric-mcp sealed requestState, so the RFC 4231 vectors run on both
-      # targets. Shares the Java 21 setup step above.
+      # targets. Shares the Java 22 setup step above.
       - name: Std.Hash suite on JVM (hash_tests.l)
         working-directory: ${{ github.workspace }}
         run: |
@@ -7391,7 +7391,7 @@ jobs:
       # `@generate(Json)` nested-record decoding on JVM (#7501, #7502):
       # two records' derived `fromJson`/`fromJsonElement` on one package
       # class, and a call to another package's derive-synthesised function.
-      # Shares the Java 21 setup step above; logic lives in the script
+      # Shares the Java 22 setup step above; logic lives in the script
       # (ci.yml is near its size ceiling, scripts/ci/check-workflow-size.sh).
       - name: Std.Json @generate nested-record suite on JVM (json_generate_tests.l)
         working-directory: ${{ github.workspace }}
@@ -7409,7 +7409,7 @@ jobs:
       # wired for `dotnet` above (D-progress-670); this is the JVM
       # counterpart the issue's acceptance criteria calls for. Not folded
       # into the dotnet loop above because it is the only suite in that
-      # list that needs `--target jvm`. Shares the Java 21 setup step above.
+      # list that needs `--target jvm`. Shares the Java 22 setup step above.
       - name: Std.RegexSafe cross-package collision on JVM (regex_safe_tests.l, #5976)
         working-directory: ${{ github.workspace }}
         run: |

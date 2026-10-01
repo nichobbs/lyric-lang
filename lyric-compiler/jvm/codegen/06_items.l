@@ -3195,11 +3195,12 @@ func cBindingLayout(t: in JvmType, isPtr: in Bool): String {
     case JInt -> "JAVA_INT|java/lang/foreign/ValueLayout$OfInt"
     case JLong -> "JAVA_LONG|java/lang/foreign/ValueLayout$OfLong"
     case JByte -> "JAVA_BYTE|java/lang/foreign/ValueLayout$OfByte"
+    // Unreachable until #7966 admits Float; the JVM layout is already right.
     case JFloat -> "JAVA_FLOAT|java/lang/foreign/ValueLayout$OfFloat"
     case JDouble -> "JAVA_DOUBLE|java/lang/foreign/ValueLayout$OfDouble"
     case _ -> panic(
       "C binding: no FFM layout for a " + typeDescriptor(t) +
-        " value; the type checker admits only Int, Long, Byte, Float, Double and NativePtr[T] (T0151)"
+        " value; the type checker admits only Int, Long, Byte, Double and NativePtr[T] (T0151)"
     )
   }
 }
