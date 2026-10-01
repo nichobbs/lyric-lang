@@ -285,6 +285,7 @@ deferred to Phase 3 by design.
 | Prerendered first paint: the web host starts the page's session as it serves the shell, renders its first view with `Ui.Html` (markup identical to the runtime's renderer) and embeds the session id, which the runtime's `hello` resumes; `HostConfig.prerender`, `Instance.snapshot` (docs/65 §13.4, U6) | **Shipped** | D152 |
 | `Lazy` subtrees: `Widgets.lazyView(key, fingerprint, render)` is rendered once per fingerprint; the session keeps the result as a `Memo` that diffing skips while the fingerprint is unchanged; transparent to events, keys, the wire tree, `Ui.Html` and `Ui.Testing` (docs/65 §13.5, U6) | **Shipped** | D153 |
 | Data grid: `Widgets.dataGrid` renders a window of rows in a body sized for all of them and reports `viewport`/`sort` events (no new protocol messages); pure `Ui.Grid` turns them into sequence-numbered `RowQuery`s the screen fetches, applying only the latest answer; `ui` layer preset admits `Ui.Grid`; JVM reads a generic record's `List[T]` field element as `T` (#7918) (docs/65 §13.6, U6) | **Shipped** | D154 |
+| Native builds stop on type errors: `--target native` gates on type-check errors like dotnet and JVM (single-file and project `build`, `run`, `test`, `--define`, path dependencies), with no binary written; the type checker types the native FFI intrinsics (`NativePtr[T]`, `NativeWeak[T]`, `nativeAddrOf`, `nativeNullPtr`, `upgrade`) on a native check only | **Shipped** | #7910 |
 
 ### Phase 2 — type system completion (complete)
 

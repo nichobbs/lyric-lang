@@ -27,9 +27,12 @@
 //! Where the targets genuinely differ, the difference is an explicit
 //! parameter, never a fork:
 //!
-//!   * `MiddleEndOptions.tcFatal` — type-check diagnostics gate the build on
-//!     MSIL but are advisory on the JVM and native targets (the self-hosted
-//!     checker lacks full builtin coverage there);
+//!   * `MiddleEndOptions.tcFatal` — type-check diagnostics gate the build
+//!     for the user's own packages on every target, but are advisory for
+//!     the stdlib packages the JVM bundle compiles from source (the
+//!     self-hosted checker lacks full builtin coverage there);
+//!   * `MiddleEndOptions.nativeIntrinsics` — only a native check knows the
+//!     native FFI intrinsics (`NativePtr[T]`, `NativeWeak[T]`, ...);
 //!   * `MiddleEndOptions.tcReport` — bundled stdlib packages on the JVM
 //!     suppress the advisory noise on successful builds;
 //!   * `pipeExpandAndRewrite`'s `injectWeave` — the JVM bundler walks
@@ -68,7 +71,8 @@ import Lyric.Weaver as Weaver
 import Lyric.DiagnosticUtil as DiagUtil
 
 /// Per-file middle-end knobs.  `tcFatal` gates the build on type-check
-/// diagnostics (MSIL); when false, `tcReport` controls whether the advisory
+/// diagnostics (every target's own packages, and the native target's path
+/// dependencies, #7910); when false, `tcReport` controls whether the advisory
 /// diagnostics are echoed at all (JVM bundled stdlib packages pass false);
 /// a reported advisory check still gates on T0080 (misplaced `old(...)`).
 /// `pkgLabel` prefixes every gating diagnostic with the owning package name
@@ -139,6 +143,11 @@ pub record MiddleEndOptions {
   /// function (Y0003) or a protected type's `entry` (Y0008), nor hold
   /// shared mutable state in a module-level `val` (Y0007).
   ioForbiddenReason: String = ""
+  /// Whether the file is checked for `--target native`, the one target
+  /// that lowers the FFI intrinsics of docs/01 §11.6 (`NativePtr[T]`,
+  /// `NativeWeak[T]`, `nativeAddrOf`, `nativeNullPtr`); elsewhere they are
+  /// unknown names.
+  nativeIntrinsics: Bool = false
 }
 
 // Report `diags` (package-labelled when `pkgLabel` is non-empty, further
@@ -349,7 +358,11 @@ pub func pipeCheckAndMono(
   monoRecordDecls: in List[RecordDecl],
   opts: in MiddleEndOptions,
 ): Option[SourceFile] {
-  val tcRes = checkWithImportedPackages(file0, importedPkgs)
+  val tcRes = if opts.nativeIntrinsics {
+    checkWithImportedPackagesForNative(file0, importedPkgs)
+  } else {
+    checkWithImportedPackages(file0, importedPkgs)
+  }
   if opts.tcFatal {
     if gate(opts.pkgLabel, opts.lineOrigins, tcRes.diagnostics) {
       return None

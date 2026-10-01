@@ -408,6 +408,11 @@ pub record SymbolTable {
   importVisibleNames: Map[String, Bool]
   /// `<package>` -> the alias an `import P as Q` gives it.
   importAliases: Map[String, String]
+  /// The native target's FFI intrinsic types (`NativePtr`, `NativeWeak`,
+  /// docs/01 §11.6), by name, when the file is checked for `--target
+  /// native`; empty for every other target, which has no representation for
+  /// them.
+  nativeIntrinsicTypes: Map[String, TypeId]
 }
 
 /// An unannotated local binding whose initializer builds an empty
@@ -541,7 +546,8 @@ pub func newSymbolTable(): SymbolTable {
     importRulePkg = newList(),
     importVisiblePkgs = newMap(),
     importVisibleNames = newMap(),
-    importAliases = newMap()
+    importAliases = newMap(),
+    nativeIntrinsicTypes = newMap()
   )
 }
 
