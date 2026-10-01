@@ -1,17 +1,17 @@
 # 35 - WebAssembly Target and JS Ecosystem Integration (sketch)
 
-**Status:** Unbacked sketch, rewritten 2026-10-01 around the native (LLVM)
+**Status:** Specced in D-progress-1028; sketch rewritten 2026-10-01 around the native (LLVM)
 backend. The original revision assumed a .NET AOT `wasi-wasm` route; that
 premise is withdrawn (§3). Open questions that still block implementation are
-in §13. A decision-log entry codifying the route, the phase order (§12) and
-the resolved questions (§13.1) is still to follow.
+in §13. Backed by D-progress-1028 (route, phase order (§12) and the resolved
+questions (§13.1)).
 **Builds on:** `native/plan/` (LLVM backend, D-N-001..D-N-017),
 `docs/14-native-stdlib-plan.md` (extern kernel pattern),
 `docs/63-build-profiles-and-debugger.md` (profile and shape axes),
 `docs/65-ui-library-sketch.md` §13.1 (client WASM host),
 `docs/67-native-graphics-plan.md` (WebGPU, `Float`/by-value record changes),
 `docs/21-nuget-linking.md` (dependency table and shim model).
-**Decision-log entry:** to follow.
+**Decision-log entry:** D-progress-1028.
 **Goal:** Compile Lyric to WebAssembly so that (A) Lyric programs and UI hosts
 run in the browser and in any WASI runtime, (B) JS-first teams consume Lyric
 libraries as ordinary NPM modules, and (C) Lyric programs call NPM packages
