@@ -42,6 +42,7 @@ let src = `//! Ui.Host.Assets — the browser host runtime and default theme, em
 //! and lyric-ui/runtime/ui.css — do not edit.  Regenerate with
 //! \`npm run build && node embed.mjs\` in lyric-ui/runtime/.
 @runtime_checked
+@pure
 package Ui.Host.Assets
 
 /// Content digest of the embedded assets, used as a cache-busting version.
