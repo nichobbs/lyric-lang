@@ -1310,6 +1310,20 @@ static void test_posix(void) {
     CHECK(lyric_o_rdonly() == 0);
     CHECK(lyric_mutex_size() > 0);
 
+    CHECK(lyric_cstr_len("lyric") == 5);
+    void* raw = lyric_malloc_raw(16);
+    CHECK(raw != NULL);
+    free(raw);
+    int32_t fd = lyric_open_fd("/dev/null", lyric_o_wronly(), 0);
+    CHECK(fd >= 0);
+    CHECK(lyric_write_fd(fd, "abc", 3) == 3);
+    close(fd);
+    fd = lyric_open_fd("/dev/null", lyric_o_rdonly(), 0);
+    CHECK(fd >= 0);
+    char sink[4];
+    CHECK(lyric_read_fd(fd, sink, 4) == 0);
+    close(fd);
+
     char mutex_buf[128];
     CHECK(lyric_mutex_size() <= (int32_t)sizeof(mutex_buf));
     lyric_mutex_init(mutex_buf);

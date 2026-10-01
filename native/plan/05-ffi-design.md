@@ -301,7 +301,7 @@ define ccc void @__lyric_cb_tramp_0(i8* %userdata) {
 entry:
   %closure = bitcast i8* %userdata to %Lyric.Closure_0*
   ; Call the closure's fn_ptr with env_ptr = closure:
-  %fn_slot  = getelementptr inbounds %Lyric.Closure_0, %Lyric.Closure_0* %closure, i32 0, i32 2
+  %fn_slot  = getelementptr inbounds %Lyric.Closure_0, %Lyric.Closure_0* %closure, i32 0, i32 3
   %fn_ptr   = load i8*, i8** %fn_slot
   %typed_fn = bitcast i8* %fn_ptr to void (i8*)*
   call void %typed_fn(i8* %userdata)

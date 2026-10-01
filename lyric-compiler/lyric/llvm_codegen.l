@@ -28,7 +28,7 @@
 //! Phase N2 (records, unions, enums, distinct types, pattern matching,
 //! ARC insertion) lowers here too:
 //!
-//!   * Records: `{ i32 rc, i8* dtor, fields... }` heap structs with
+//!   * Records: `{ i32 rc, i32 weak, i8* dtor, fields... }` heap structs with
 //!     synthesised destructors (Rule 7) and inline construction
 //!     (Rules 1/2).  Methods in record bodies lower as package
 //!     functions with the explicit `self` receiver (D037), resolved
@@ -290,6 +290,8 @@ record NBindingUndo {
 /// shared with `Jvm.Codegen.FuncCtx`.
 record Ctx {
   mainPkg: String
+  // Target pointer width in bytes (ptrBytesForTriple).
+  ptrBytes: Int
   tmpTicker: List[Int]
   labelTicker: List[Int]
   strTicker: List[Int]
@@ -478,10 +480,38 @@ func freshLabel(ctx: in Ctx, stem: in String): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Type mapping (03-type-mapping.md).
 // ─────────────────────────────────────────────────────────────────────────────
-pub func lyricStringNType(): NType {
-  val fields: List[NType] = newList()
+/// Every heap object starts with the ARC header `{ i32 rc, i32 weak, i8* dtor }`,
+/// mirroring the C `LyricObjectHeader`.  The three fields are named in the LLVM
+/// struct (rather than leaving `weak` in LP64 alignment padding) so the layout
+/// is identical on every target pointer width, including wasm32 where there is
+/// no padding.  A field declared after the header is at GEP index
+/// `arcHeaderSlots + k`.
+val arcRcSlot: Long = 0i64
+
+val arcDtorSlot: Long = 2i64
+
+val arcHeaderSlots: Int = 3
+
+func addArcHeader(fields: in List[NType]) {
+  fields.add(NI32)
   fields.add(NI32)
   fields.add(NPtr(pointee = NI8))
+}
+
+/// GEP index of the closure's function-pointer slot (the first field after
+/// the header) and of its first capture.
+val closureFnSlot: Long = 3i64
+
+val closureCaptureBase: Int = 4
+
+/// GEP indices of a union's discriminant and its payload word array.
+val unionDiscSlot: Long = 3i64
+
+val unionPayloadSlot: Long = 5i64
+
+pub func lyricStringNType(): NType {
+  val fields: List[NType] = newList()
+  addArcHeader(fields)
   fields.add(NI64)
   fields.add(NI64)
   NPtr(pointee = NStruct(name = "LyricString", fields = fields))
@@ -973,12 +1003,11 @@ func retTypeToN(ctx: in Ctx, ret: in Option[TypeExpr]): NType {
 }
 
 /// The pointer type for a registered record.  The struct body carries
-/// the ARC header (rc, dtor) followed by the fields, so GEP field
-/// indices are `2 + declIndex`.
+/// the ARC header (rc, weak, dtor) followed by the fields, so GEP field
+/// indices are `arcHeaderSlots + declIndex`.
 func recPtrType(ri: in NRecInfo): NType {
   val fields: List[NType] = newList()
-  fields.add(NI32)
-  fields.add(NPtr(pointee = NI8))
+  addArcHeader(fields)
   var i = 0
   while i < ri.fieldTys.count {
     fields.add(ri.fieldTys[i])
@@ -988,32 +1017,42 @@ func recPtrType(ri: in NRecInfo): NType {
 }
 
 /// The pointer type for a registered union: header, i32 discriminant,
-/// i32 pad (so the payload is 8-aligned), then the payload words.
+/// i32 pad (so the payload is 8-aligned on LP64), then the payload words.
 func unionPtrType(ui: in NUnionInfo): NType {
   NPtr(pointee = NStruct(name = ui.irName, fields = unionBodyFields(ui.payloadWords)))
 }
 
 func unionBodyFields(payloadWords: in Int): List[NType] {
   val fields: List[NType] = newList()
-  fields.add(NI32)
-  fields.add(NPtr(pointee = NI8))
+  addArcHeader(fields)
   fields.add(NI32)
   fields.add(NI32)
   fields.add(NArray(elem = NI64, size = payloadWords))
   fields
 }
 
-/// x86-64 / AArch64 System V sizes for the types that can appear in
-/// heap-struct fields (aggregates are always behind pointers).
-func sizeOfN(t: in NType): Int {
+/// Pointer width in bytes for a target triple.  Only used to size union payload
+/// word arrays at type-definition time; allocation sizes come from LLVM
+/// (`NSizeOf`).  wasm32 is the one 32-bit target the backend supports.
+func ptrBytesForTriple(triple: in String): Int {
+  if Str.startsWith(triple, "wasm32") {
+    return 4
+  }
+  8
+}
+
+/// Natural-alignment sizes (x86-64 / AArch64 System V, wasm32) for the types
+/// that can appear in heap-struct fields (aggregates are always behind
+/// pointers).
+func sizeOfN(ctx: in Ctx, t: in NType): Int {
   match t {
     case NI1 -> 1
     case NI8 -> 1
     case NI32 -> 4
     case NI64 -> 8
     case NDouble -> 8
-    case NPtr(_) -> 8
-    case NArray(elem, size) -> sizeOfN(elem) * size
+    case NPtr(_) -> ctx.ptrBytes
+    case NArray(elem, size) -> sizeOfN(ctx, elem) * size
     // A Unit field (e.g. `Result[Unit, E]`'s Ok payload) occupies one
     // undef byte — see layoutFieldTys.
     case NVoid -> 1
@@ -1046,10 +1085,10 @@ func isVoidNType(t: in NType): Bool {
   }
 }
 
-func alignOfN(t: in NType): Int {
+func alignOfN(ctx: in Ctx, t: in NType): Int {
   match t {
-    case NArray(elem, _) -> alignOfN(elem)
-    case _ -> sizeOfN(t)
+    case NArray(elem, _) -> alignOfN(ctx, elem)
+    case _ -> sizeOfN(ctx, t)
   }
 }
 
@@ -1065,37 +1104,20 @@ func roundUpTo(off: in Int, a: in Int): Int {
 
 /// Struct layout size (C rules): field offsets aligned per field, total
 /// rounded up to the max field alignment.
-func structSize(fields: in List[NType]): Int {
+func structSize(ctx: in Ctx, fields: in List[NType]): Int {
   var off = 0
   var maxA = 1
   var i = 0
   while i < fields.count {
-    val a = alignOfN(fields[i])
+    val a = alignOfN(ctx, fields[i])
     if a > maxA {
       maxA = a
     }
     off = roundUpTo(off, a)
-    off = off + sizeOfN(fields[i])
+    off = off + sizeOfN(ctx, fields[i])
     i = i + 1
   }
   roundUpTo(off, maxA)
-}
-
-/// Allocation size of a record: ARC header + fields.
-func recAllocSize(ri: in NRecInfo): Int {
-  val fields: List[NType] = newList()
-  fields.add(NI32)
-  fields.add(NPtr(pointee = NI8))
-  var i = 0
-  while i < ri.fieldTys.count {
-    fields.add(ri.fieldTys[i])
-    i = i + 1
-  }
-  structSize(fields)
-}
-
-func unionAllocSize(ui: in NUnionInfo): Int {
-  structSize(unionBodyFields(ui.payloadWords))
 }
 
 /// A `NativeWeak[T]` value — a pointer to the synthesised empty `__weak<…>`
@@ -1629,8 +1651,8 @@ func emitStringLiteral(ctx: in Ctx, insns: in List[NInsn], text: in String): NVa
   val gname = ".strobj." + idx.toString()
   // Data carries a trailing NUL (len excludes it) so debuggers and
   // lyric_string_to_cstring fast paths see C-friendly bytes.
-  val tyStr = "{ i32, i8*, i64, i64, [" + (n + 1).toString() + " x i8] }"
-  val initStr = "{ i32 2147483647, i8* null, i64 " + n.toString() + ", i64 " + (n + 1).toString() + ", [" +
+  val tyStr = "{ i32, i32, i8*, i64, i64, [" + (n + 1).toString() + " x i8] }"
+  val initStr = "{ i32 2147483647, i32 0, i8* null, i64 " + n.toString() + ", i64 " + (n + 1).toString() + ", [" +
     (n + 1).toString() +
     " x i8] c\"" +
     escapeIrBytes(bytes) +
@@ -1642,8 +1664,7 @@ func emitStringLiteral(ctx: in Ctx, insns: in List[NInsn], text: in String): NVa
   // The global's own type is the anonymous literal struct (header +
   // inline data array); bitcast to %LyricString* for uniform call sites.
   val litFields: List[NType] = newList()
-  litFields.add(NI32)
-  litFields.add(NPtr(pointee = NI8))
+  addArcHeader(litFields)
   litFields.add(NI64)
   litFields.add(NI64)
   litFields.add(NArray(elem = NI8, size = n + 1))
@@ -2785,7 +2806,7 @@ func lowerRecordFieldLoad(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, v
   val fieldPtr = freshTmp(ctx)
   val fArgs: List[NArg] = newList()
   fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  fArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + idx).toLong(), ty = NI32)))
+  fArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + idx).toLong(), ty = NI32)))
   insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = v.value, indices = fArgs))
   val dest = freshTmp(ctx)
   insns.add(NLoad(dest = dest, ty = ri.fieldTys[idx], ptr = NLocal(name = fieldPtr)))
@@ -3498,7 +3519,7 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
       val fieldPtr = freshTmp(ctx)
       val fArgs: List[NArg] = newList()
       fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      fArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + idx).toLong(), ty = NI32)))
+      fArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + idx).toLong(), ty = NI32)))
       insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = obj.value, indices = fArgs))
       NVal(ty = NPtr(pointee = fieldTy), value = NLocal(name = fieldPtr))
     }
@@ -5055,8 +5076,7 @@ func registerRecordLayout(
   replaceRecKey(ctx, pkg + "." + rd.name, ri)
   replaceRecKey(ctx, rd.name, ri)
   val defnFields: List[NType] = newList()
-  defnFields.add(NI32)
-  defnFields.add(NPtr(pointee = NI8))
+  addArcHeader(defnFields)
   val layoutTys = layoutFieldTys(tys)
   var fi = 0
   while fi < layoutTys.count {
@@ -5129,7 +5149,7 @@ func registerUnionLayout(
       }
       fi = fi + 1
     }
-    val sz = structSize(tys)
+    val sz = structSize(ctx, tys)
     if sz > maxBytes {
       maxBytes = sz
     }
@@ -5284,8 +5304,7 @@ func closureNType(ctx: in Ctx, paramTys: in List[NType], retTy: in NType): NType
 
 func closureHeaderFields(): List[NType] {
   val fields: List[NType] = newList()
-  fields.add(NI32)
-  fields.add(NPtr(pointee = NI8))
+  addArcHeader(fields)
   fields.add(NPtr(pointee = NI8))
   fields
 }
@@ -5416,7 +5435,7 @@ func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
       body.add(NBitcast(dest = "hdr", fromTy = NPtr(pointee = NI8), value = NLocal(name = "ud"), toTy = closTy))
       val gArgs: List[NArg] = newList()
       gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      gArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = closureFnSlot, ty = NI32)))
       body.add(NGEP(dest = "slot", ty = closStruct, ptr = NLocal(name = "hdr"), indices = gArgs))
       body.add(NLoad(dest = "fnraw", ty = NPtr(pointee = NI8), ptr = NLocal(name = "slot")))
       val lyricParams: List[NType] = newList()
@@ -5538,8 +5557,7 @@ func listHeaderFields(): List[NType] {
   // mirror the one C layout and all access goes through runtime calls —
   // the emitted struct definitions are never GEPed.
   val fields: List[NType] = newList()
-  fields.add(NI32)
-  fields.add(NPtr(pointee = NI8))
+  addArcHeader(fields)
   fields.add(NPtr(pointee = NI64))
   fields.add(NI64)
   fields.add(NI64)
@@ -5560,8 +5578,7 @@ func listNType(ctx: in Ctx, elem: in NType): NType {
 // The C LyricMap is opaque; only the ARC header prefix is declared.
 func mapHeaderFields(): List[NType] {
   val fields: List[NType] = newList()
-  fields.add(NI32)
-  fields.add(NPtr(pointee = NI8))
+  addArcHeader(fields)
   fields
 }
 
@@ -5869,7 +5886,7 @@ func emitAsyncRunCapture(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, c
   val discPtr = freshTmp(ctx)
   val dArgs: List[NArg] = newList()
   dArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  dArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  dArgs.add(NArg(ty = NI32, value = NLitInt(v = unionDiscSlot, ty = NI32)))
   insns.add(NGEP(dest = discPtr, ty = structTy, ptr = raw.value, indices = dArgs))
   val disc = freshTmp(ctx)
   insns.add(NLoad(dest = disc, ty = NI32, ptr = NLocal(name = discPtr)))
@@ -6812,8 +6829,7 @@ func tupleRecInfo(ctx: in Ctx, elemTys: in List[NType]): NRecInfo {
   val ri = NRecInfo(irName = nm, fieldNames = names, fieldTys = elemTys, fieldDefaults = dflts)
   ctx.recordDefs.add(nm, ri)
   val defnFields: List[NType] = newList()
-  defnFields.add(NI32)
-  defnFields.add(NPtr(pointee = NI8))
+  addArcHeader(defnFields)
   val layoutTys = layoutFieldTys(elemTys)
   var di = 0
   while di < layoutTys.count {
@@ -7060,7 +7076,7 @@ func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NT
       }
       fi = fi + 1
     }
-    val sz = structSize(tys)
+    val sz = structSize(ctx, tys)
     if sz > maxBytes {
       maxBytes = sz
     }
@@ -7134,8 +7150,7 @@ func instantiateGenericRecordOpt(ctx: in Ctx, gkey: in String, argTys: in List[N
   ctx.recordDefs.add(instName, ri)
   ctx.instMeta.add(instName, NInstInfo(gkey = gkey, argTys = argTys))
   val defnFields: List[NType] = newList()
-  defnFields.add(NI32)
-  defnFields.add(NPtr(pointee = NI8))
+  addArcHeader(defnFields)
   val layoutTys = layoutFieldTys(tys)
   var fi = 0
   while fi < layoutTys.count {
@@ -8139,8 +8154,7 @@ func lowerLambda(
   val lamId = ctx.moduleFns.count.toString() + "." + ctx.moduleTypeDefs.count.toString()
   val implName = "__closureimpl." + lamId
   val implFields: List[NType] = newList()
-  implFields.add(NI32)
-  implFields.add(NPtr(pointee = NI8))
+  addArcHeader(implFields)
   implFields.add(NPtr(pointee = NI8))
   var ti = 0
   while ti < capTys.count {
@@ -8167,7 +8181,7 @@ func lowerLambda(
     ctx.moduleFns.add(synthClosureDtor(ctx, dtorName, implName, implFields, capTys))
   }
   // Construct.
-  val obj = emitHeapAlloc(ctx, insns, implTy, structSize(implFields), dtorName)
+  val obj = emitHeapAlloc(ctx, insns, implTy, dtorName)
   val structTy = NStruct(name = implName, fields = implFields)
   val fnParamTys: List[NType] = newList()
   fnParamTys.add(NPtr(pointee = NI8))
@@ -8188,7 +8202,7 @@ func lowerLambda(
   val fnSlot = freshTmp(ctx)
   val fArgs: List[NArg] = newList()
   fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  fArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  fArgs.add(NArg(ty = NI32, value = NLitInt(v = closureFnSlot, ty = NI32)))
   insns.add(NGEP(dest = fnSlot, ty = structTy, ptr = NLocal(name = obj), indices = fArgs))
   insns.add(NStore(ty = NPtr(pointee = NI8), value = NLocal(name = fnPtrCast), ptr = NLocal(name = fnSlot)))
   var si = 0
@@ -8200,7 +8214,7 @@ func lowerLambda(
     val capSlot = freshTmp(ctx)
     val cArgs: List[NArg] = newList()
     cArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    cArgs.add(NArg(ty = NI32, value = NLitInt(v = (3 + si).toLong(), ty = NI32)))
+    cArgs.add(NArg(ty = NI32, value = NLitInt(v = (closureCaptureBase + si).toLong(), ty = NI32)))
     insns.add(NGEP(dest = capSlot, ty = structTy, ptr = NLocal(name = obj), indices = cArgs))
     insns.add(NStore(ty = capTys[si], value = capVal.value, ptr = NLocal(name = capSlot)))
     si = si + 1
@@ -8243,7 +8257,7 @@ func synthLambdaBody(
     val capPtr = freshTmp(ctx)
     val gArgs: List[NArg] = newList()
     gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    gArgs.add(NArg(ty = NI32, value = NLitInt(v = (3 + ci).toLong(), ty = NI32)))
+    gArgs.add(NArg(ty = NI32, value = NLitInt(v = (closureCaptureBase + ci).toLong(), ty = NI32)))
     bodyInsns.add(NGEP(dest = capPtr, ty = structTy, ptr = NLocal(name = "self.env"), indices = gArgs))
     val capVal = freshTmp(ctx)
     bodyInsns.add(NLoad(dest = capVal, ty = capTys[ci], ptr = NLocal(name = capPtr)))
@@ -8335,7 +8349,7 @@ func synthClosureDtor(
       val fieldPtr = freshTmp(ctx)
       val gArgs: List[NArg] = newList()
       gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      gArgs.add(NArg(ty = NI32, value = NLitInt(v = (3 + i).toLong(), ty = NI32)))
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = (closureCaptureBase + i).toLong(), ty = NI32)))
       body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = gArgs))
       val fieldVal = freshTmp(ctx)
       body.add(NLoad(dest = fieldVal, ty = capTys[i], ptr = NLocal(name = fieldPtr)))
@@ -8464,7 +8478,7 @@ func lowerClosureCall(
   val fnSlot = freshTmp(ctx)
   val gArgs: List[NArg] = newList()
   gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  gArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = closureFnSlot, ty = NI32)))
   insns.add(NGEP(dest = fnSlot, ty = structTy, ptr = clos.value, indices = gArgs))
   val fnRaw = freshTmp(ctx)
   insns.add(NLoad(dest = fnRaw, ty = NPtr(pointee = NI8), ptr = NLocal(name = fnSlot)))
@@ -8680,7 +8694,7 @@ func synthRecordDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
       val fieldPtr = freshTmp(ctx)
       val idxArgs: List[NArg] = newList()
       idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      idxArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + i).toLong(), ty = NI32)))
+      idxArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + i).toLong(), ty = NI32)))
       body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = idxArgs))
       val fieldVal = freshTmp(ctx)
       body.add(NLoad(dest = fieldVal, ty = ri.fieldTys[i], ptr = NLocal(name = fieldPtr)))
@@ -8716,7 +8730,7 @@ func synthUnionDtor(ctx: in Ctx, ui: in NUnionInfo): NFunc {
   val discPtr = freshTmp(ctx)
   val discArgs: List[NArg] = newList()
   discArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  discArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  discArgs.add(NArg(ty = NI32, value = NLitInt(v = unionDiscSlot, ty = NI32)))
   body.add(NGEP(dest = discPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = discArgs))
   val disc = freshTmp(ctx)
   body.add(NLoad(dest = disc, ty = NI32, ptr = NLocal(name = discPtr)))
@@ -8750,7 +8764,7 @@ func synthUnionDtor(ctx: in Ctx, ui: in NUnionInfo): NFunc {
       val payloadPtr = freshTmp(ctx)
       val pArgs: List[NArg] = newList()
       pArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      pArgs.add(NArg(ty = NI32, value = NLitInt(v = 4i64, ty = NI32)))
+      pArgs.add(NArg(ty = NI32, value = NLitInt(v = unionPayloadSlot, ty = NI32)))
       body.add(NGEP(dest = payloadPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = pArgs))
       val caseTy = casePayloadStructType(ui, ui.cases[ci2])
       val casePtr = freshTmp(ctx)
@@ -8801,14 +8815,17 @@ func synthUnionDtor(ctx: in Ctx, ui: in NUnionInfo): NFunc {
 // ── Construction ─────────────────────────────────────────────────────────────
 /// Allocate a heap object and initialise its ARC header (rc = 1 per
 /// Rule 1; dtor null when the type owns no refs).
-func emitHeapAlloc(ctx: in Ctx, insns: in List[NInsn], objTy: in NType, size: in Int, dtorName: in String): String {
+func emitHeapAlloc(ctx: in Ctx, insns: in List[NInsn], objTy: in NType, dtorName: in String): String {
+  val allocStructTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val size = freshTmp(ctx)
+  insns.add(NSizeOf(dest = size, ty = allocStructTy))
   val raw = freshTmp(ctx)
   insns.add(
     NCall(
       dest = raw,
       retTy = NPtr(pointee = NI8),
       fn = NGlobal(name = "lyric_alloc"),
-      args = arg1(NI64, NLitInt(v = size.toLong(), ty = NI64))
+      args = arg1(NI64, NLocal(name = size))
     )
   )
   val obj = freshTmp(ctx)
@@ -8817,13 +8834,13 @@ func emitHeapAlloc(ctx: in Ctx, insns: in List[NInsn], objTy: in NType, size: in
   val rcPtr = freshTmp(ctx)
   val rcArgs: List[NArg] = newList()
   rcArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  rcArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  rcArgs.add(NArg(ty = NI32, value = NLitInt(v = arcRcSlot, ty = NI32)))
   insns.add(NGEP(dest = rcPtr, ty = structTy, ptr = NLocal(name = obj), indices = rcArgs))
   insns.add(NStore(ty = NI32, value = NLitInt(v = 1i64, ty = NI32), ptr = NLocal(name = rcPtr)))
   val dtorPtr = freshTmp(ctx)
   val dtorArgs: List[NArg] = newList()
   dtorArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  dtorArgs.add(NArg(ty = NI32, value = NLitInt(v = 1i64, ty = NI32)))
+  dtorArgs.add(NArg(ty = NI32, value = NLitInt(v = arcDtorSlot, ty = NI32)))
   insns.add(NGEP(dest = dtorPtr, ty = structTy, ptr = NLocal(name = obj), indices = dtorArgs))
   if dtorName.length == 0 {
     insns.add(NStore(ty = NPtr(pointee = NI8), value = NLitNull(ty = NPtr(pointee = NI8)), ptr = NLocal(name = dtorPtr)))
@@ -8842,9 +8859,8 @@ func emitHeapAlloc(ctx: in Ctx, insns: in List[NInsn], objTy: in NType, size: in
     insns.add(NStore(ty = NPtr(pointee = NI8), value = NLocal(name = cast), ptr = NLocal(name = dtorPtr)))
   }
   // Seed the weak count to 1 (the implicit weak held while strong refs live).
-  // The weak field sits in the header's alignment padding, which this LLVM
-  // struct type does not name, so it is set through a C helper rather than a
-  // GEP + store (#5504).
+  // Set through the runtime helper so the weak-count protocol (#5504) stays
+  // defined in one place, lyric_weak.c.
   insns.add(NCallVoid(fn = NGlobal(name = "lyric_weak_init"), args = arg1(NPtr(pointee = NI8), NLocal(name = raw))))
   obj
 }
@@ -8925,7 +8941,7 @@ func lowerRecordConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInf
   val objTy = recPtrType(ri)
   val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
   val dtorName = if recHasRefFields(ri) { recDtorName(ri) } else { "" }
-  val obj = emitHeapAlloc(ctx, insns, objTy, recAllocSize(ri), dtorName)
+  val obj = emitHeapAlloc(ctx, insns, objTy, dtorName)
   var fi = 0
   while fi < vals.count {
     // A Unit field's placeholder byte stays undef (layoutFieldTys).
@@ -8940,7 +8956,7 @@ func lowerRecordConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInf
     val fieldPtr = freshTmp(ctx)
     val fArgs: List[NArg] = newList()
     fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    fArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + fi).toLong(), ty = NI32)))
+    fArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + fi).toLong(), ty = NI32)))
     insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = obj), indices = fArgs))
     insns.add(NStore(ty = ri.fieldTys[fi], value = vals[fi].value, ptr = NLocal(name = fieldPtr)))
     fi = fi + 1
@@ -8995,11 +9011,11 @@ func lowerUnionConstructVals(
   val objTy = unionPtrType(ui)
   val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
   val dtorName = if unionHasRefFields(ui) { unionDtorName(ui) } else { "" }
-  val obj = emitHeapAlloc(ctx, insns, objTy, unionAllocSize(ui), dtorName)
+  val obj = emitHeapAlloc(ctx, insns, objTy, dtorName)
   val discPtr = freshTmp(ctx)
   val dArgs: List[NArg] = newList()
   dArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  dArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  dArgs.add(NArg(ty = NI32, value = NLitInt(v = unionDiscSlot, ty = NI32)))
   insns.add(NGEP(dest = discPtr, ty = structTy, ptr = NLocal(name = obj), indices = dArgs))
   insns.add(NStore(ty = NI32, value = NLitInt(v = caseIdx.toLong(), ty = NI32), ptr = NLocal(name = discPtr)))
   if vals.count > 0 {
@@ -9042,7 +9058,7 @@ func emitCasePayloadPtr(
   val payloadPtr = freshTmp(ctx)
   val pArgs: List[NArg] = newList()
   pArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  pArgs.add(NArg(ty = NI32, value = NLitInt(v = 4i64, ty = NI32)))
+  pArgs.add(NArg(ty = NI32, value = NLitInt(v = unionPayloadSlot, ty = NI32)))
   insns.add(NGEP(dest = payloadPtr, ty = structTy, ptr = NLocal(name = obj), indices = pArgs))
   val caseTy = casePayloadStructType(ui, ui.cases[caseIdx])
   val casePtr = freshTmp(ctx)
@@ -9498,7 +9514,7 @@ func emitConstructorTest(
   val discPtr = freshTmp(ctx)
   val dArgs: List[NArg] = newList()
   dArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  dArgs.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  dArgs.add(NArg(ty = NI32, value = NLitInt(v = unionDiscSlot, ty = NI32)))
   insns.add(NGEP(dest = discPtr, ty = structTy, ptr = sv.value, indices = dArgs))
   val disc = freshTmp(ctx)
   insns.add(NLoad(dest = disc, ty = NI32, ptr = NLocal(name = discPtr)))
@@ -10358,7 +10374,7 @@ func lowerFieldAssign(
   val fieldPtr = freshTmp(ctx)
   val fArgs: List[NArg] = newList()
   fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  fArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + idx).toLong(), ty = NI32)))
+  fArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + idx).toLong(), ty = NI32)))
   insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = obj.value, indices = fArgs))
   val newVal = match op {
     case AssEq -> lowerExprExpecting(ctx, insns, value, fieldTy)
@@ -10479,6 +10495,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     mainPkg = mod.mainPkg,
     tmpTicker = mod.tmpTicker,
     labelTicker = mod.labelTicker,
+    ptrBytes = mod.ptrBytes,
     strTicker = mod.strTicker,
     varSlots = slots,
     varTypes = types,
@@ -11378,6 +11395,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     mainPkg = mainPkg,
     tmpTicker = newList(),
     labelTicker = newList(),
+    ptrBytes = ptrBytesForTriple(triple),
     strTicker = newList(),
     varSlots = emptySlots,
     varTypes = emptyTypes,
@@ -11438,8 +11456,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   val fns = ctx.moduleFns
   val types = ctx.moduleTypeDefs
   val sFields: List[NType] = newList()
-  sFields.add(NI32)
-  sFields.add(NPtr(pointee = NI8))
+  addArcHeader(sFields)
   sFields.add(NI64)
   sFields.add(NI64)
   types.add(NTypeDefn(name = "LyricString", fields = sFields))
@@ -12025,7 +12042,7 @@ func substSelfInFn(fn: in FunctionDecl, recordName: in String): FunctionDecl {
 // §N3.4  Protected types.
 //
 // A protected type lowers to the same record-shaped heap object as a plain
-// record (`{ i32 rc, i8* dtor, ...user fields }`), plus one trailing
+// record (`{ i32 rc, i32 weak, i8* dtor, ...user fields }`), plus one trailing
 // `__mutex: i8*` field: a pointer to a separately lyric_alloc'd buffer sized
 // at runtime via `lyric_mutex_size()` (LLVM structs are fixed-size, and the
 // self-hosted compiler runs on .NET so it cannot call the target runtime's
@@ -12524,8 +12541,7 @@ func registerProtectedLayout(
     ctx.protectedRecNames.add(ri.irName, true)
   }
   val defnFields: List[NType] = newList()
-  defnFields.add(NI32)
-  defnFields.add(NPtr(pointee = NI8))
+  addArcHeader(defnFields)
   val layoutTys = layoutFieldTys(tys)
   var fi = 0
   while fi < layoutTys.count {
@@ -12556,7 +12572,7 @@ func synthProtectedDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
       val fieldPtr = freshTmp(ctx)
       val idxArgs: List[NArg] = newList()
       idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-      idxArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + i).toLong(), ty = NI32)))
+      idxArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + i).toLong(), ty = NI32)))
       body.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = idxArgs))
       val fieldVal = freshTmp(ctx)
       body.add(NLoad(dest = fieldVal, ty = ri.fieldTys[i], ptr = NLocal(name = fieldPtr)))
@@ -12569,7 +12585,7 @@ func synthProtectedDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
   val mutexFieldPtr = freshTmp(ctx)
   val mIdxArgs: List[NArg] = newList()
   mIdxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  mIdxArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + mutexIdx).toLong(), ty = NI32)))
+  mIdxArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + mutexIdx).toLong(), ty = NI32)))
   body.add(NGEP(dest = mutexFieldPtr, ty = structTy, ptr = NLocal(name = "obj"), indices = mIdxArgs))
   val mutexVal = freshTmp(ctx)
   body.add(NLoad(dest = mutexVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = mutexFieldPtr)))
@@ -12652,7 +12668,7 @@ func lowerProtectedConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRec
   }
   val objTy = recPtrType(ri)
   val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
-  val obj = emitHeapAlloc(ctx, insns, objTy, recAllocSize(ri), recDtorName(ri))
+  val obj = emitHeapAlloc(ctx, insns, objTy, recDtorName(ri))
   var fi = 0
   while fi < vals.count {
     if isVoidNType(ri.fieldTys[fi]) {
@@ -12665,7 +12681,7 @@ func lowerProtectedConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRec
     val fieldPtr = freshTmp(ctx)
     val fArgs: List[NArg] = newList()
     fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    fArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + fi).toLong(), ty = NI32)))
+    fArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + fi).toLong(), ty = NI32)))
     insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = NLocal(name = obj), indices = fArgs))
     insns.add(NStore(ty = ri.fieldTys[fi], value = vals[fi].value, ptr = NLocal(name = fieldPtr)))
     fi = fi + 1
@@ -12845,7 +12861,7 @@ func synthProtectedWrapper(
   val mutexFieldPtr = freshTmp(ctx)
   val idxArgs: List[NArg] = newList()
   idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = (2 + mutexIdx).toLong(), ty = NI32)))
+  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + mutexIdx).toLong(), ty = NI32)))
   body.add(NGEP(dest = mutexFieldPtr, ty = structTy, ptr = NLocal(name = "self"), indices = idxArgs))
   val mutexVal = freshTmp(ctx)
   body.add(NLoad(dest = mutexVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = mutexFieldPtr)))
@@ -12900,7 +12916,7 @@ func synthProtectedWrapper(
 //
 // An interface value lowers to a heap-boxed fat pointer (uniform with the
 // record/closure representation, since the IR layer has no by-value
-// aggregate ABI): `__iface.<m>` = `{ i32 rc, i8* dtor, i8* obj, vtable* }`.
+// aggregate ABI): `__iface.<m>` = `{ i32 rc, i32 weak, i8* dtor, i8* obj, vtable* }`.
 // The `obj` slot holds the (type-erased) implementing object; a per-interface
 // dtor releases it, so standard ARC on the box gives Rule-8 semantics for
 // free.  Each interface has a vtable struct of one `i8*` slot per method; each
@@ -13038,18 +13054,17 @@ func ifaceVtStructType(ii: in NIfaceInfo): NType {
 }
 
 /// GEP field indices into the interface box struct
-/// `{ i32 rc, i8* dtor, i8* obj, vtable* }` (fields 0 and 1 are the shared
+/// `{ i32 rc, i32 weak, i8* dtor, i8* obj, vtable* }` (fields 0-2 are the shared
 /// ARC header, so only the obj/vtable slots need names here).
-val ifaceBoxObjSlot: Long = 2i64
+val ifaceBoxObjSlot: Long = 3i64
 
-val ifaceBoxVtblSlot: Long = 3i64
+val ifaceBoxVtblSlot: Long = 4i64
 
 /// The heap-boxed fat-pointer type for an interface value:
-/// `{ i32 rc, i8* dtor, i8* obj, vtable* }`.
+/// `{ i32 rc, i32 weak, i8* dtor, i8* obj, vtable* }`.
 func ifaceBoxStructType(ii: in NIfaceInfo): NType {
   val fields: List[NType] = newList()
-  fields.add(NI32)
-  fields.add(NPtr(pointee = NI8))
+  addArcHeader(fields)
   fields.add(NPtr(pointee = NI8))
   fields.add(NPtr(pointee = ifaceVtStructType(ii)))
   NStruct(name = ii.irName, fields = fields)
@@ -13369,8 +13384,7 @@ func registerInterfaceTypes(
           }
           types.add(NTypeDefn(name = info.vtName, fields = vtFields))
           val boxFields: List[NType] = newList()
-          boxFields.add(NI32)
-          boxFields.add(NPtr(pointee = NI8))
+          addArcHeader(boxFields)
           boxFields.add(NPtr(pointee = NI8))
           boxFields.add(NPtr(pointee = ifaceVtStructType(info)))
           types.add(NTypeDefn(name = info.irName, fields = boxFields))
@@ -13556,9 +13570,8 @@ func registerImplDirectMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
 func buildIfaceBox(ctx: in Ctx, insns: in List[NInsn], v: in NVal, ii: in NIfaceInfo, vtGlobal: in String): NVal {
   val boxTy = ifaceBoxPtrType(ii)
   val structTy = ifaceBoxStructType(ii)
-  val size = structSize(match structTy { case NStruct(_, f) -> f; case _ -> newList() })
-  val box = emitHeapAlloc(ctx, insns, boxTy, size, ifaceBoxDtorName(ii))
-  // obj slot (index 2): retain then store the erased object pointer.
+  val box = emitHeapAlloc(ctx, insns, boxTy, ifaceBoxDtorName(ii))
+  // obj slot (ifaceBoxObjSlot): retain then store the erased object pointer.
   val objI8 = freshTmp(ctx)
   insns.add(NBitcast(dest = objI8, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
   insns.add(NCallVoid(fn = NGlobal(name = "lyric_retain"), args = arg1(NPtr(pointee = NI8), NLocal(name = objI8))))
@@ -13603,8 +13616,7 @@ func buildIfaceBox(ctx: in Ctx, insns: in List[NInsn], v: in NVal, ii: in NIface
 func reboxErasedSelfResult(ctx: in Ctx, insns: in List[NInsn], ii: in NIfaceInfo, objI8: in NVal, vtbl: in NVal): NVal {
   val boxTy = ifaceBoxPtrType(ii)
   val structTy = ifaceBoxStructType(ii)
-  val size = structSize(match structTy { case NStruct(_, f) -> f; case _ -> newList() })
-  val box = emitHeapAlloc(ctx, insns, boxTy, size, ifaceBoxDtorName(ii))
+  val box = emitHeapAlloc(ctx, insns, boxTy, ifaceBoxDtorName(ii))
   val objSlot = freshTmp(ctx)
   val objArgs: List[NArg] = newList()
   objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))

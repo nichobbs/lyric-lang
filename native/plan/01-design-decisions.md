@@ -57,6 +57,7 @@ succeeds; the user can feed it to clang manually.
 // Union Option[Int] → after monomorphization:
 %Lyric.Option_Int = type {
   i32,      ; ARC rc (in LyricObjectHeader)
+  i32,      ; weak count (in LyricObjectHeader)
   i8*,      ; destructor pointer (in LyricObjectHeader)
   i32,      ; discriminant: 0=None, 1=Some
   [4 x i8]  ; payload: max(sizeof(None payload=0), sizeof(Some payload=Int=4)) = 4
@@ -183,7 +184,7 @@ typedef struct {
 
 ```llvm
 ; LLVM IR type:
-%LyricString = type { i32, i8*, i64, i64 }
+%LyricString = type { i32, i32, i8*, i64, i64 }
 ; (data follows immediately after this struct in the allocation)
 ```
 

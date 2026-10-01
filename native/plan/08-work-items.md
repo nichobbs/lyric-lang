@@ -97,7 +97,7 @@ pub func emitModule(pkg: NPackage): String
 // type definitions, global constants, extern declarations, and function definitions.
 
 pub func emitTypeDefn(name: String, fields: List[NType]): String
-// Emits: %Name = type { i32, i8*, i64 }
+// Emits: %Name = type { i32, i32, i8*, i64 }
 
 pub func emitGlobal(g: NGlobal): String
 // Emits: @name = <linkage> <addr_space> constant <ty> <init>, align N
@@ -393,7 +393,7 @@ For each `IRecord` in the source:
 
 For each `IUnion`:
 1. Compute `max_payload_bytes = max(sizeof(caseN_payload))`.
-2. Define the LLVM struct: `{ i32, i8*, i32, [max_payload x i8] }`.
+2. Define the LLVM struct: `{ i32, i32, i8*, i32, [max_payload x i8] }`.
 3. For each case: define a payload struct type with the case's fields.
 4. Synthesise the union destructor: load discriminant, switch, release any
    reference-typed fields in the active case.
@@ -458,7 +458,7 @@ Emit `From(x)` (with optional range check) and `.value` accessor.
 **What to implement:**
 
 - For each closure literal in the AST, synthesise a closure struct type:
-  `{ i32, i8*, i8*, capture0_type, capture1_type, ... }`.
+  `{ i32, i32, i8*, i8*, capture0_type, capture1_type, ... }`.
 - Synthesise the closure body function: `define ccc <retTy> @closure_N(i8* %env, <args>)`.
   Inside: bitcast `%env` to the concrete closure type, load captures.
 - Emit the constructor: alloc the closure struct, set rc=1, set dtor, set fn_ptr,
@@ -510,7 +510,7 @@ already-monomorphized AST.
 Record`, implicit upcast at argument/return/binding positions, and vtable
 dispatch on interface-typed receivers, verified ASan-clean by
 `llvm_self_test_n3.l`. The shipped representation is a **heap-boxed** fat
-pointer `{ i32 rc, i8* dtor, i8* obj, vtable* }` (not the by-value pair below)
+pointer `{ i32 rc, i32 weak, i8* dtor, i8* obj, vtable* }` (not the by-value pair below)
 because the IR layer has no by-value-aggregate ABI — see D-N-016; ARC then
 falls out of the existing owned-temp/destructor machinery. Vtable slots hold
 the concrete method pointer directly (bitcast to `i8*` and back at the call

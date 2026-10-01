@@ -57,6 +57,10 @@ pub union NInsn {
   case NLoad(dest: String, ty: NType, ptr: NValue)
   case NStore(ty: NType, value: NValue, ptr: NValue)
   case NGEP(dest: String, ty: NType, ptr: NValue, indices: List[NArg])
+  /// `%dest = sizeof(ty)` as an `i64`, computed by LLVM from the target
+  /// datalayout (`ptrtoint (T* getelementptr (T, T* null, i32 1) to i64)`),
+  /// so allocation sizes follow the target's pointer width and alignment.
+  case NSizeOf(dest: String, ty: NType)
 
   // Integer arithmetic
   case NAdd(dest: String, ty: NType, a: NValue, b: NValue)
@@ -179,6 +183,10 @@ pub func datalayoutForTriple(triple: in String): String {
     } else {
       "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
     }
+  } else if Str.startsWith(triple, "wasm32") {
+    // Pinned (rather than left to clang) so the 4-byte-pointer assumption
+    // behind `ptrBytesForTriple` is explicit; matches clang 18's wasm32 layout.
+    "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"
   } else {
     // Unknown triple: emit no datalayout line and let clang derive it
     // from the triple.  Signalled by the empty string.
@@ -302,6 +310,11 @@ pub func emitInsn(i: in NInsn): String {
         nValueOperandString(ptr) +
         ", " +
         renderArgs(indices)
+    }
+    case NSizeOf(dest, ty) -> {
+      "  %" + quoteIrIdent(dest) + " = ptrtoint " + nTypeToIrString(ty) + "* getelementptr (" + nTypeToIrString(ty) + ", " +
+        nTypeToIrString(ty) +
+        "* null, i32 1) to i64"
     }
     case NAdd(dest, ty, a, b) -> renderBin("add", dest, ty, a, b)
     case NSub(dest, ty, a, b) -> renderBin("sub", dest, ty, a, b)

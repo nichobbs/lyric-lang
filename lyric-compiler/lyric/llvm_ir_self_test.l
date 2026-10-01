@@ -137,6 +137,22 @@ test "memory ops render" {
   )
 }
 
+test "wasm32 triples get the pinned 32-bit-pointer datalayout" {
+  val dl = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"
+  assertEqual(datalayoutForTriple("wasm32-unknown-unknown"), dl, "wasm32-unknown-unknown")
+  assertEqual(datalayoutForTriple("wasm32-wasi"), dl, "wasm32-wasi")
+}
+
+test "sizeof renders as a target-sized constant expression" {
+  val fields: List[NType] = newList()
+  fields.add(NI32)
+  assertEqual(
+    emitInsn(NSizeOf(dest = "sz", ty = NStruct(name = "T", fields = fields))),
+    "  %sz = ptrtoint %T* getelementptr (%T, %T* null, i32 1) to i64",
+    "sizeof"
+  )
+}
+
 test "conversions render" {
   assertEqual(
     emitInsn(NSExt(dest = "l", fromTy = NI32, value = NLocal(name = "i"), toTy = NI64)),

@@ -9,19 +9,20 @@ policy.
 
 ## Object header
 
-Every heap-allocated Lyric value begins with a two-word header:
+Every heap-allocated Lyric value begins with a three-field header:
 
 ```c
 // lyric-rt/include/lyric_rt.h
 typedef struct {
-    _Atomic int rc;        // reference count; 1 = one owner; 0 = dead
+    _Atomic int32_t rc;    // reference count; 1 = one owner; 0 = dead
+    _Atomic int32_t weak;  // weak-ref count, plus 1 while any strong ref lives
     void (*dtor)(void*);   // destructor; called when rc reaches 0; may be null
 } LyricObjectHeader;
 ```
 
 ```llvm
 ; LLVM IR:
-; The header is embedded as the first two fields of every heap-struct type.
+; The header is embedded as the first three fields (i32, i32, i8*) of every heap-struct type.
 ; No separate allocation — one contiguous block per object.
 ; Header offset = 0, so (void*)obj == (LyricObjectHeader*)obj.
 ```
@@ -217,7 +218,7 @@ The synthesised destructor for a record/union/closure:
 
 > **Superseded by D-N-016 (shipped, D-progress-568):** the value-type fat
 > pointer described here was **not** implemented. The shipped interface value
-> is a **heap-boxed** fat pointer `{ i32 rc, i8* dtor, i8* obj, vtable* }` — an
+> is a **heap-boxed** fat pointer `{ i32 rc, i32 weak, i8* dtor, i8* obj, vtable* }` — an
 > ordinary RC-managed object with an ARC header. Its retain/release accounting
 > is therefore the standard heap-object rules (Rule 1–7), not the special
 > value-type protocol below; the box's bespoke destructor releases the embedded
