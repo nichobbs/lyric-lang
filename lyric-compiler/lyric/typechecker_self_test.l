@@ -5838,16 +5838,85 @@ test "a bare call reports a mismatch against the direct import, not a transitive
   assertEqualInt(diagCount(checkWithImportedPackages(parse(okSrc).file, packages)), 0, "parse(\"5\") is PkgPd's")
 }
 
-// #7557: `import P.{f as g}` is not supported; it is T0138 rather than a
-// name that silently fails to resolve.
-test "renaming a selectively imported name is T0138" {
-  val src = "package App\nimport PkgY.{fromY as g}\nfunc f(): Int { 1 }\n"
-  val cr = checkWithImportedPackages(parse(src).file, importRulePackages())
-  assertEqualInt(countDiagCode(cr, "T0138"), 1, "fromY as g: T0138")
-  assertTrue(
-    diagMessageFor(cr, "T0138").contains("import PkgY.{fromY}"),
-    "the message says how to import it: " + diagMessageFor(cr, "T0138")
+// #7564: `import P.{f as g}` makes `g` a bare name for `P.f`.  The
+// pipeline runs `Lyric.AliasRewriter` before checking, which rewrites each
+// use of `g` that no local hides to `P.f`; these tests do the same.
+func checkRenamed(src: in String): CheckResult {
+  checkWithImportedPackages(Lyric.AliasRewriter.rewriteFile(parse(src).file), importRulePackages())
+}
+
+test "a renamed selective import is usable under its new name only (#7564)" {
+  assertEqualInt(
+    diagCount(checkRenamed("package App\nimport PkgY.{fromY as g}\nfunc f(): Int { g() + 1 }\n")),
+    0,
+    "g() is PkgY.fromY()"
   )
+  val cr = checkRenamed("package App\nimport PkgY.{fromY as g}\nfunc f(): Int { fromY() }\n")
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "the original name is not visible bare")
+}
+
+test "a parameter or a later local named like the rename hides it only in its scope (#7564)" {
+  val param = checkRenamed("package App\nimport PkgY.{fromY as g}\nfunc f(g: in Int): Int { g + 1 }\n")
+  assertEqualInt(diagCount(param), 0, "the parameter g is an Int")
+  val later = checkRenamed(
+    "package App\nimport PkgY.{fromY as g}\nfunc f(): Int {\n  val a = g()\n  val g = 5\n  a + g\n}\n"
+  )
+  assertEqualInt(diagCount(later), 0, "g() before the local is the import; g after it is the local")
+  val lambda = checkRenamed(
+    "package App\nimport PkgY.{fromY as g}\nfunc f(): Int {\n  val h = { g: Int -> g * 2 }\n  h(g())\n}\n"
+  )
+  assertEqualInt(diagCount(lambda), 0, "the lambda's g is its parameter; the argument's g() is the import")
+}
+
+test "a renamed import that collides with another name is T0148 (#7564)" {
+  val own = checkRenamed("package App\nimport PkgY.{fromY as g}\nfunc g(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(own, "T0148"), 1, "this package declares g")
+  val twice = checkRenamed("package App\nimport PkgY.{fromY as otherY, otherY}\nfunc f(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(twice, "T0148"), 1, "otherY is also imported as itself")
+  assertTrue(diagMessageFor(twice, "T0148").contains("choose another name"), diagMessageFor(twice, "T0148"))
+}
+
+// #7928: the alias rewriter reads `g.member` as a use of the rename `g`,
+// so a rename sharing a package alias or a package path's head must be
+// reported, never silently resolved to the renamed item.
+test "a rename that is also a package alias or path head is T0148 (#7928)" {
+  val alias = checkRenamed("package App\nimport PkgX as g\nimport PkgY.{fromY as g}\nfunc f(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(alias, "T0148"), 1, "g is also PkgX's alias")
+  assertTrue(diagMessageFor(alias, "T0148").contains("alias of PkgX"), diagMessageFor(alias, "T0148"))
+  val head = checkRenamed("package App\nimport PkgX\nimport PkgY.{fromY as PkgX}\nfunc f(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(head, "T0148"), 1, "PkgX also begins an imported package's path")
+}
+
+test "two renames to one name are both T0148 (#7928)" {
+  val cr = checkRenamed("package App\nimport PkgY.{fromY as g, otherY as g}\nfunc f(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(cr, "T0148"), 2, "each rename is reported")
+}
+
+// #7929: the rewriter would send every bare `Circle` (constructions and
+// pattern heads) to the renamed import, so a rename sharing this
+// package's own case name is reported.
+test "a rename that is a case of this package's union is T0148 (#7929)" {
+  val src = "package App\nimport PkgY.{fromY as Circle}\nunion Shape {\n  case Circle(r: Int)\n  case Dot\n}\nfunc f(): Int { 1 }\n"
+  val cr = checkRenamed(src)
+  assertEqualInt(countDiagCode(cr, "T0148"), 1, "Circle is also Shape's case")
+  assertTrue(diagMessageFor(cr, "T0148").contains("declares the case 'Circle'"), diagMessageFor(cr, "T0148"))
+}
+
+test "a rename that is a case of a selectively imported union is T0148 (#7967)" {
+  val packages = importRulePackages()
+  packages.add(rulePkg("PkgU", "package PkgU\npub union Shape {\n  case Dot\n  case Box(w: Int)\n}\n"))
+  val src = "package App\nimport PkgU.{Shape}\nimport PkgY.{fromY as Box}\nfunc f(): Int { 1 }\n"
+  val cr = checkWithImportedPackages(Lyric.AliasRewriter.rewriteFile(parse(src).file), packages)
+  assertEqualInt(countDiagCode(cr, "T0148"), 1, "Box is also a case of the listed PkgU.Shape")
+  assertTrue(diagMessageFor(cr, "T0148").contains("a case of PkgU.Shape"), diagMessageFor(cr, "T0148"))
+}
+
+test "a rename that is a case of a whole-imported union is T0148 (#7928)" {
+  val packages = importRulePackages()
+  packages.add(rulePkg("PkgU", "package PkgU\npub union Shape {\n  case Dot\n  case Box(w: Int)\n}\n"))
+  val src = "package App\nimport PkgU\nimport PkgY.{fromY as Dot}\nfunc f(): Int { 1 }\n"
+  val cr = checkWithImportedPackages(Lyric.AliasRewriter.rewriteFile(parse(src).file), packages)
+  assertEqualInt(countDiagCode(cr, "T0148"), 1, "Dot is also PkgU.Shape's case")
 }
 
 // #7552: the `sigs` slots keep one function per name, first registered; when

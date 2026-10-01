@@ -4111,10 +4111,12 @@ func installImportRule(
   userPkg: in String,
   imports: in List[ImportDecl],
   importedPackages: in List[ImportedPackage],
+  fileItems: in List[Item],
 ): Unit {
   val whole: List[String] = newList()
   val seen: Map[String, Bool] = newMap()
   val names: List[String] = newList()
+  val renames: List[RenamedImport] = newList()
   val aliasPkgs: List[String] = newList()
   val aliasNames: List[String] = newList()
   var i = 0
@@ -4134,28 +4136,15 @@ func installImportRule(
           }
           var k = 0
           while k < items.count {
-            names.add(pkg + "|" + items[k].name)
             match items[k].asAlias {
-              case Some(renamed) -> diag.add(
-                errorDiagnostic(
-                  "T0138",
-                  "renaming a selectively imported name is not supported: '" + items[k].name + " as " +
-                    renamed +
-                    "'; write 'import " +
-                    pkg +
-                    ".{" +
-                    items[k].name +
-                    "}' and use '" +
-                    items[k].name +
-                    "', or 'import " +
-                    pkg +
-                    " as Q' and write 'Q." +
-                    items[k].name +
-                    "'",
-                  items[k].span
-                )
+              // A renamed item (`P.{f as g}`, #7564) makes `g`, not `f`,
+              // visible bare; `Lyric.AliasRewriter` has already rewritten
+              // each use of `g` to `P.f`.  `g` is checked for collisions
+              // below.
+              case Some(renamed) -> renames.add(
+                RenamedImport(local = renamed, pkg = pkg, name = items[k].name, span = items[k].span)
               )
-              case None -> ()
+              case None -> names.add(pkg + "|" + items[k].name)
             }
             k = k + 1
           }
@@ -4195,7 +4184,194 @@ func installImportRule(
     }
     w = w + 1
   }
+  checkRenamedImports(diag, renames, names, whole, aliasPkgs, aliasNames, importedPackages, fileItems)
   symTableSetImportRule(tbl, userPkg, whole, names, aliasPkgs, aliasNames)
+}
+
+// A renamed selective import: `local` is the bare name for `pkg.name`.
+record RenamedImport {
+  local: String
+  pkg: String
+  name: String
+  span: Span
+}
+
+// T0148: a renamed import's bare name must not also be a declaration (or
+// a union or enum case) of this package, another import's bare name (a
+// listed union's or enum's cases included), a public name (or union or
+// enum case) of a package imported whole, a package alias, or the head of
+// an imported package's path; otherwise one spelling would mean two
+// things (#7564).  The alias and path-head checks matter because the
+// alias rewriter treats `g.member` as a use of the rename `g`, so an
+// unreported collision would silently send `g.member` to the renamed item
+// (#7928).
+func checkRenamedImports(
+  diag: in List[Diagnostic],
+  renames: in List[RenamedImport],
+  selected: in List[String],
+  whole: in List[String],
+  aliasPkgs: in List[String],
+  aliasNames: in List[String],
+  importedPackages: in List[ImportedPackage],
+  fileItems: in List[Item],
+): Unit {
+  val heads: List[String] = newList()
+  for wp in whole {
+    heads.add(pathHead(wp))
+  }
+  for ap in aliasPkgs {
+    heads.add(pathHead(ap))
+  }
+  for sel in selected {
+    val bar = indexOfRaw(sel, "|")
+    if bar > 0 {
+      heads.add(pathHead(sel.substring(0, bar)))
+    }
+  }
+  for rn in renames {
+    heads.add(pathHead(rn.pkg))
+  }
+  var r = 0
+  while r < renames.count {
+    val ren = renames[r]
+    val target = ren.pkg + "." + ren.name
+    var clash = ""
+    for it in fileItems {
+      match topLevelItemName(it) {
+        case Some(n) -> if n == ren.local and clash.length == 0 {
+          clash = "this package declares its own '" + ren.local + "'"
+        }
+        case None -> ()
+      }
+      for cn in caseNamesOf(it) {
+        if cn == ren.local and clash.length == 0 {
+          clash = "this package declares the case '" + ren.local + "'"
+        }
+      }
+    }
+    for sel in selected {
+      val bar = indexOfRaw(sel, "|")
+      if bar > 0 and sel.substring(bar + 1) == ren.local and clash.length == 0 {
+        clash = "'" + ren.local + "' is also imported from " + sel.substring(0, bar)
+      }
+      // A listed union or enum brings its cases into bare scope too
+      // (`import P.{Shape}` makes `Circle` bare, #7967).
+      if bar > 0 and clash.length == 0 {
+        val selPkg = sel.substring(0, bar)
+        val selName = sel.substring(bar + 1)
+        for ip in importedPackages {
+          if ip.name == selPkg {
+            for it in ip.items {
+              val named = match topLevelItemName(it) { case Some(n) -> n == selName; case None -> false }
+              if named and clash.length == 0 {
+                for cn in caseNamesOf(it) {
+                  if cn == ren.local and clash.length == 0 {
+                    clash = "'" + ren.local + "' is also a case of " + selPkg + "." + selName + ", imported from " + selPkg
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    var o = 0
+    while o < renames.count {
+      if o != r and renames[o].local == ren.local and clash.length == 0 {
+        clash = "'" + ren.local + "' also renames " + renames[o].pkg + "." + renames[o].name
+      }
+      o = o + 1
+    }
+    var a = 0
+    while a < aliasNames.count {
+      if aliasNames[a] == ren.local and clash.length == 0 {
+        clash = "'" + ren.local + "' is also the alias of " + aliasPkgs[a]
+      }
+      a = a + 1
+    }
+    for h in heads {
+      if h == ren.local and clash.length == 0 {
+        clash = "'" + ren.local + "' also begins an imported package's path"
+      }
+    }
+    for wp in whole {
+      for ip in importedPackages {
+        if ip.name == wp and clash.length == 0 {
+          for it in ip.items {
+            val isPub = match it.visibility { case Some(_) -> true; case None -> false }
+            match topLevelItemName(it) {
+              case Some(n) -> if isPub and n == ren.local and clash.length == 0 {
+                clash = wp + ", imported whole, also declares '" + ren.local + "'"
+              }
+              case None -> ()
+            }
+            if isPub and clash.length == 0 {
+              for cn in caseNamesOf(it) {
+                if cn == ren.local and clash.length == 0 {
+                  clash = wp + ", imported whole, also has the case '" + ren.local + "'"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if clash.length > 0 {
+      diag.add(
+        errorDiagnostic(
+          "T0148",
+          "the renamed import '" + ren.local + "' (for " + target + ") is ambiguous: " + clash + "; choose another name",
+          ren.span
+        )
+      )
+    }
+    r = r + 1
+  }
+}
+
+// The first segment of a dotted package path.
+func pathHead(path: in String): String {
+  val dot = indexOfRaw(path, ".")
+  return if dot > 0 { path.substring(0, dot) } else { path }
+}
+
+// The case names a union or enum item makes visible bare, for the rename
+// collision check.
+func caseNamesOf(it: in Item): List[String] {
+  val acc: List[String] = newList()
+  match it.kind {
+    case IUnion(ud) -> {
+      for c in ud.cases {
+        acc.add(c.name)
+      }
+    }
+    case IEnum(ed) -> {
+      for c in ed.cases {
+        acc.add(c.name)
+      }
+    }
+    case _ -> ()
+  }
+  return acc
+}
+
+// The name a top-level item declares, for the rename collision check.
+func topLevelItemName(it: in Item): Option[String] {
+  return match it.kind {
+    case IFunc(fd) -> Some(value = fd.name)
+    case IRecord(rd) -> Some(value = rd.name)
+    case IExposedRec(rd) -> Some(value = rd.name)
+    case IUnion(ud) -> Some(value = ud.name)
+    case IEnum(ed) -> Some(value = ed.name)
+    case IOpaque(od) -> Some(value = od.name)
+    case IProtected(pd) -> Some(value = pd.name)
+    case IInterface(idl) -> Some(value = idl.name)
+    case IConst(cd) -> Some(value = cd.name)
+    case ITypeAlias(ta) -> Some(value = ta.name)
+    case IDistinctType(dt) -> Some(value = dt.name)
+    case IExternType(et) -> Some(value = et.name)
+    case _ -> None
+  }
 }
 
 // Register external types from `import extern` declarations (D105, Phase 2a).
@@ -4479,7 +4655,7 @@ func checkWithImportedPackagesCore(
   // its bare names under the file's import rule.
   symTableSetScope(tbl, userPkg, userImports)
   symTableRegisterPackageImports(tbl, userPkg, userImports)
-  installImportRule(tbl, diag, userPkg, file.imports, importedPackages)
+  installImportRule(tbl, diag, userPkg, file.imports, importedPackages, file.items)
   addSigsFromItems(tbl, diag, sigs, file.items, false, userPkg)
   registerImplsFromItems(tbl, newGenericContext(), implDiag, file.items)
   addMethodSigsFromItems(tbl, file.items, userPkg)

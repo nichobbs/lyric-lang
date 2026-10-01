@@ -1941,7 +1941,14 @@ func contractSelectedImportsOf(file: in SourceFile): List[String] {
             }
           }
           for item in items {
-            acc.add(joinDots(imp.path.segments) + "::" + item.name)
+            // A renamed item (`P.{f as g}`) exposes no name of `P` bare; the
+            // rewritten bodies the contract carries already spell it `P.f`,
+            // as they do for an aliased import, so it is not recorded
+            // (#7564).
+            match item.asAlias {
+              case Some(_) -> ()
+              case None -> acc.add(joinDots(imp.path.segments) + "::" + item.name)
+            }
           }
         }
         case None -> ()

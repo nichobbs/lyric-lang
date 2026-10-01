@@ -5571,11 +5571,11 @@ func inferUntypedStaticValMsilType(
       case EPath(path) -> {
         val funcName = lastSegmentMsil(path)
         val localCtorKey = pkgName + "." + funcName
-        val fullQualifiedCtorKey = if path.segments.count >= 2 { modulePathJoin(path.segments) } else { "" }
-        val ctorKeyOpt = if cctx.recordCtorTokens.containsKey(localCtorKey) {
-          Some(value = localCtorKey)
-        } else if fullQualifiedCtorKey.length > 0 and cctx.recordCtorTokens.containsKey(fullQualifiedCtorKey) {
+        val fullQualifiedCtorKey = qualifiedRecordCtorKeyMsil(cctx, path.segments)
+        val ctorKeyOpt = if fullQualifiedCtorKey.length > 0 {
           Some(value = fullQualifiedCtorKey)
+        } else if cctx.recordCtorTokens.containsKey(localCtorKey) {
+          Some(value = localCtorKey)
         } else {
           // #6966: an unqualified reference to a record declared in a
           // DIFFERENT, imported package (`import Other.Cache; val g =
@@ -10575,7 +10575,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // so same-named cases across two unions disambiguate (#3349).
               val pathQualifier = qualifierOfPathMsil(path.segments)
               val localCtorKey = fctx.pkgName + "." + name
-              val ctorKey = if cctx.recordCtorTokens.containsKey(localCtorKey) {
+              val qualifiedCaseKey = qualifiedCaseCtorKeyMsil(cctx, fctx, path.segments)
+              val ctorKey = if qualifiedCaseKey.length > 0 {
+                qualifiedCaseKey
+              } else if cctx.recordCtorTokens.containsKey(localCtorKey) {
                 localCtorKey
               } else {
                 match mapGet(cctx.unionCaseCtorByName, name) {
@@ -10819,6 +10822,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             } else {
               ""
             }
+          } else if not fctx.slots.containsKey(recvPath.segments[0]) and not fctx.hoistedCellSlot.containsKey(recvPath.segments[0]) and not fctx.captureNameToIndex.containsKey(recvPath.segments[0]) {
+            // A package-qualified union (`Pkg.Shape.Empty`, an alias already
+            // rewritten to its package) names its case by the qualifier (D155).
+            val caseSegs: List[String] = newList()
+            for seg in recvPath.segments {
+              caseSegs.add(seg)
+            }
+            caseSegs.add(memberName)
+            qualifiedCaseCtorKeyMsil(cctx, fctx, caseSegs)
           } else {
             ""
           }
@@ -14330,7 +14342,10 @@ func genericNullaryCaseParentMsil(cctx: in CodegenCtx, fctx: in FuncCtx, e: in E
       }
       val qualifier = qualifierOfPathMsil(path.segments)
       val localKey = fctx.pkgName + "." + name
-      val ctorKey = if cctx.recordCtorTokens.containsKey(localKey) {
+      val qualifiedCaseKey = qualifiedCaseCtorKeyMsil(cctx, fctx, path.segments)
+      val ctorKey = if qualifiedCaseKey.length > 0 {
+        qualifiedCaseKey
+      } else if cctx.recordCtorTokens.containsKey(localKey) {
         localKey
       } else {
         match mapGet(cctx.unionCaseCtorByName, name) {
@@ -15134,6 +15149,40 @@ func caseSimpleNameMsil(caseFqn: in String, unionName: in String): String {
 
 // The dotted qualifier of a qualified path (every segment but the last), or
 // "" for a bare name.
+// A qualified constructor path names its constructor by its written
+// qualifier (D155): `Pkg.Point(...)` (an alias is rewritten to its package
+// before codegen) builds `Pkg`'s record even when the current package
+// declares its own `Point`.  The record key, or "" for an unqualified path
+// or one whose qualifier designates no record.
+func qualifiedRecordCtorKeyMsil(cctx: in CodegenCtx, segments: in List[String]): String {
+  if segments.count < 2 {
+    return ""
+  }
+  val full = modulePathJoin(segments)
+  return if cctx.recordCtorTokens.containsKey(full) then full else ""
+}
+
+// The union case a qualified path (`Shape.Circle`, `Pkg.Shape.Circle`)
+// designates by its qualifier, so a same-named case of the current
+// package does not capture it (D155).  "" when the path is unqualified or
+// no candidate's union matches the qualifier.
+func qualifiedCaseCtorKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, segments: in List[String]): String {
+  if segments.count < 2 {
+    return ""
+  }
+  val qualifier = qualifierOfPathMsil(segments)
+  return match mapGet(cctx.unionCaseCtorByName, segments[segments.count - 1]) {
+    case Some(candidates) -> {
+      val pick = pickCaseFqnByQualifier(cctx, fctx, candidates, qualifier)
+      match mapGet(cctx.caseParentUnion, pick) {
+        case Some(parent) -> if parent == qualifier or String.endsWith(parent, "." + qualifier) then pick else ""
+        case None -> ""
+      }
+    }
+    case None -> ""
+  }
+}
+
 func qualifierOfPathMsil(segments: in List[String]): String {
   if segments.count < 2 {
     return ""
@@ -18868,11 +18917,14 @@ func lowerBuiltinOrStaticCallMsil(
     // under the guessed key) surfacing as a spurious T0123 "unresolved call"
     // panic even though the callee legitimately type-checked (T0123
     // cross-package qualified-constructor regression).
-    val fullQualifiedCtorKey = modulePathJoin(path.segments)
-    val ctorKey = if cctx.recordCtorTokens.containsKey(localCtorKey) {
-      localCtorKey
-    } else if path.segments.count >= 2 and cctx.recordCtorTokens.containsKey(fullQualifiedCtorKey) {
+    val fullQualifiedCtorKey = qualifiedRecordCtorKeyMsil(cctx, path.segments)
+    val qualifiedCaseKey = qualifiedCaseCtorKeyMsil(cctx, fctx, path.segments)
+    val ctorKey = if fullQualifiedCtorKey.length > 0 {
       fullQualifiedCtorKey
+    } else if qualifiedCaseKey.length > 0 {
+      qualifiedCaseKey
+    } else if cctx.recordCtorTokens.containsKey(localCtorKey) {
+      localCtorKey
     } else {
       match mapGet(cctx.unionCaseCtorByName, funcName) {
         // A qualified call (`Color.CaseName(...)`, `Pkg.CaseName(...)`)
