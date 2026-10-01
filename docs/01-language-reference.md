@@ -2259,12 +2259,14 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
   `pub func` wrappers are the supported surface), and inside functions
   annotated `@unsafe_ffi`.  The mode checker enforces this boundary as
   diagnostic `N0100`: outside those contexts any `NativePtr[T]` type,
-  `nativeAddrOf(var)` address-of, or `nativeNullPtr()` use is an error;
+  `nativeAddrOf(var)` address-of, `nativeNullPtr()`, or
+  `nativeLoadByte`/`nativeStoreByte` (§11.7) use is an error;
   within them, `nativeAddrOf` operands must be local `var`s and the
   resulting pointer must not escape the frame (no returns, no heap
   stores).  See `native/plan/05-ffi-design.md`.
-- `NativePtr[T]` and `nativeNullPtr()` (a `NativePtr[Byte]`) type on
-  every target, since a C binding (§11.7) passes pointers on all three.
+- `NativePtr[T]`, `nativeNullPtr()` (a `NativePtr[Byte]`) and the byte
+  intrinsics `nativeLoadByte`/`nativeStoreByte` (§11.7) type on every
+  target, since a C binding (§11.7) passes pointers on all three.
   The rest are native-only: the type checker knows them only when it
   checks for `--target native`, where `nativeAddrOf(x)` for a local
   `x: T` is a `NativePtr[T]`, `NativeWeak(x)` for an `x: T` is a
@@ -2385,7 +2387,7 @@ extern func labs(x: Long): Long = "labs"
   `Float` included until the boundary converts C `float` on every target
   (#7966; docs/67 G1 makes `Float` 32-bit on MSIL and native).  Strings,
   records and callbacks do not cross a C binding on the managed targets;
-  pass a pointer to memory the C side owns.  On `--target native` a
+  pass a pointer to C memory instead (below).  On `--target native` a
   `@library` binding keeps the full §11.6 surface, so T0151 is never
   reported there.  A `NativePtr[T]` is a 64-bit address in Lyric code on the JVM
   and a native-sized integer on .NET; it is opaque in Lyric either way.
@@ -2396,6 +2398,33 @@ extern func labs(x: Long): Long = "labs"
 - **Safety.** The `N0100` boundary of §11.6 applies unchanged: pointer
   values are confined to `@unsafe_ffi` functions, and the `extern func`
   signature itself is the audited boundary.
+- **C memory and strings (D161).**  Two intrinsics read and write one
+  byte of C memory on every target:
+  `nativeLoadByte(p: NativePtr[Byte], offset: Long): Byte` and
+  `nativeStoreByte(p: NativePtr[Byte], offset: Long, value: Byte): Unit`
+  address `p + offset` (an `Int` offset widens; a wrong argument count is
+  `T0042`, a wrong argument type `T0043`).  They are raw memory access with
+  no bounds check, confined by `N0100` like `nativeNullPtr()`.
+  `Std.Ffi` builds on them, every function `@unsafe_ffi`:
+  `allocate(size: Long): NativePtr[Byte]` and `release(p)` take and return
+  C heap memory (`malloc`/`free`; `allocate` panics when the heap is
+  exhausted); `toCString(s): NativePtr[Byte]` copies `s` as NUL-terminated
+  UTF-8 into a new buffer the caller releases; and
+  `tryFromCString(p): Option[String]` copies the NUL-terminated UTF-8
+  string at `p`, returning `None` for the null pointer or invalid UTF-8:
+
+  ```
+  @library("webview")
+  extern func webviewSetTitle(w: NativePtr[Byte], title: NativePtr[Byte]): Int = "webview_set_title"
+
+  @unsafe_ffi
+  func setTitle(w: in NativePtr[Byte], title: in String): Int {
+    val c = Ffi.toCString(title)
+    val rc = webviewSetTitle(w, c)
+    Ffi.release(c)
+    rc
+  }
+  ```
 
 ## 12. Standard library
 

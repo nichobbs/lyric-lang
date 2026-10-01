@@ -5,7 +5,8 @@
 //! Memory API on the JVM, and through a direct call linked with
 //! `-l<name>` on native.  These tests call the C library itself, so they
 //! need nothing installed beyond the runtime.  A `NativePtr[T]` crosses
-//! the call as a pointer in both directions.
+//! the call as a pointer in both directions, and `Std.Ffi` moves bytes
+//! and strings through C memory (D161).
 //!
 //! Run on every target:
 //!   lyric test lyric-compiler/lyric/extern_cbinding_self_test.l
@@ -15,6 +16,7 @@
 package Lyric.ExternCBindingSelfTest
 
 import Std.Core
+import Std.Ffi
 import Std.Testing
 
 @library("c")
@@ -44,6 +46,9 @@ extern func cMemset(p: NativePtr[Byte], value: Int, size: Long): NativePtr[Byte]
 
 @library("c")
 extern func cFree(p: NativePtr[Byte]): Unit = "free"
+
+@library("c")
+extern func cStrlen(p: NativePtr[Byte]): Long = "strlen"
 
 func absOf(x: in Int): Int {
   cAbs(x)
@@ -89,4 +94,72 @@ func pointerRoundTrip(size: in Long): Int {
 
 test "a pointer crosses the call in both directions" {
   assertEqualInt(pointerRoundTrip(64), 1, "malloc, memset and free round-tripped the pointer")
+}
+
+@unsafe_ffi
+func byteRoundTrip(): Int {
+  val p = allocate(4)
+  nativeStoreByte(p, 0, 7u8)
+  nativeStoreByte(p, 1, 255u8)
+  nativeStoreByte(p, 3i64, 128u8)
+  val sum = nativeLoadByte(p, 0).toInt() + nativeLoadByte(p, 1).toInt() + nativeLoadByte(p, 3).toInt()
+  release(p)
+  sum
+}
+
+test "bytes stored in C memory load back unchanged" {
+  assertEqualInt(byteRoundTrip(), 390, "7 + 255 + 128 read back from a C buffer")
+}
+
+@unsafe_ffi
+func cStringLength(s: in String): Long {
+  val p = toCString(s)
+  val n = cStrlen(p)
+  release(p)
+  n
+}
+
+@unsafe_ffi
+func cStringRoundTrip(s: in String): Option[String] {
+  val p = toCString(s)
+  val back = tryFromCString(p)
+  release(p)
+  back
+}
+
+@unsafe_ffi
+func nullCString(): Option[String] {
+  tryFromCString(nativeNullPtr())
+}
+
+@unsafe_ffi
+func invalidUtf8CString(): Option[String] {
+  val p = allocate(2)
+  nativeStoreByte(p, 0, 255u8)
+  nativeStoreByte(p, 1, 0u8)
+  val r = tryFromCString(p)
+  release(p)
+  r
+}
+
+test "a C string is NUL-terminated UTF-8" {
+  assertTrue(cStringLength("hello") == 5, "strlen of an ASCII string")
+  assertTrue(cStringLength("") == 0, "strlen of the empty string")
+  assertTrue(cStringLength("hé") == 3, "the accented letter takes two UTF-8 bytes")
+}
+
+test "a string survives the round trip through C memory" {
+  match cStringRoundTrip("café 中") {
+    case Some(s) -> assertTrue(s == "café 中", "the round-tripped string")
+    case None -> assertTrue(false, "the round trip lost the string")
+  }
+  match cStringRoundTrip("") {
+    case Some(s) -> assertTrue(s == "", "the empty string round-trips")
+    case None -> assertTrue(false, "the empty round trip lost the string")
+  }
+}
+
+test "a null pointer or invalid UTF-8 reads as None" {
+  assertTrue(nullCString().isNone(), "the null pointer")
+  assertTrue(invalidUtf8CString().isNone(), "a lone 0xFF byte")
 }

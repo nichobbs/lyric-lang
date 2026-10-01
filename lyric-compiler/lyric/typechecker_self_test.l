@@ -8983,6 +8983,34 @@ test "a native intrinsic's type is checked like any other (#7910)" {
   assertEqualInt(countDiagCode(cr, "T0042"), 1, "nativeNullPtr takes no argument: T0042 (" + diagCodesOf(cr) + ")")
 }
 
+test "the byte intrinsics check clean on every target (D161)" {
+  val src = "package T\n@unsafe_ffi\nfunc f(p: NativePtr[Byte]): Byte {\n" + "  nativeStoreByte(p, 0, 7u8)\n" +
+    "  nativeStoreByte(p, 1i64, nativeLoadByte(p, 0))\n" +
+    "  nativeLoadByte(p, 1)\n" +
+    "}\n"
+  val managed = checkWithImportedPackages(parse(src).file, stdCoreOptionPackages())
+  assertEqualInt(diagCount(managed), 0, "managed: clean (" + diagCodesOf(managed) + ")")
+  val native = checkWithImportedPackagesForNative(parse(src).file, stdCoreOptionPackages())
+  assertEqualInt(diagCount(native), 0, "native: clean (" + diagCodesOf(native) + ")")
+}
+
+test "the byte intrinsics check their arguments (D161)" {
+  val src = "package T\n@unsafe_ffi\nfunc f(p: NativePtr[Byte], q: NativePtr[Long]): Unit {\n" +
+    "  val a = nativeLoadByte(p)\n" +
+    "  nativeStoreByte(p, 0)\n" +
+    "  val b = nativeLoadByte(q, 0)\n" +
+    "  val c = nativeLoadByte(p, \"x\")\n" +
+    "  nativeStoreByte(p, 0, 300)\n" +
+    "}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCoreOptionPackages())
+  assertEqualInt(countDiagCode(cr, "T0042"), 2, "load and store arity: T0042 (" + diagCodesOf(cr) + ")")
+  assertEqualInt(
+    countDiagCode(cr, "T0043"),
+    3,
+    "a NativePtr[Long], a String offset and an Int value: T0043 (" + diagCodesOf(cr) + ")"
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Calls to an `extern func` (#7921) are checked against its declared
 // signature, exactly like a call to a Lyric function.  `@library` makes the

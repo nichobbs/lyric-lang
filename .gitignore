@@ -116,4 +116,4 @@ lyric-rt/build/
 *.dll
 *.runtimeconfig.json
 worktrees/
-.worktrees/
+.worktrees/.lyric.seed.toml

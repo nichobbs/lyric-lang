@@ -12463,7 +12463,8 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = beqSpillIdx))
       }
       match beqLhsTy {
-        case MInt | MBool | MChar | MLong | MDouble | MByte -> {
+        // `MNativeInt` is a `NativePtr[T]`: pointers compare by address.
+        case MInt | MBool | MChar | MLong | MDouble | MByte | MNativeInt -> {
           normalizeIntCmpWidthMsil(cctx, fctx, insns, beqLhsTy, beqRhsTy)
           insns.add(MCeq)
           MBool
@@ -12506,7 +12507,7 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = bneqSpillIdx))
       }
       match bneqLhsTy {
-        case MInt | MBool | MChar | MLong | MDouble | MByte -> {
+        case MInt | MBool | MChar | MLong | MDouble | MByte | MNativeInt -> {
           normalizeIntCmpWidthMsil(cctx, fctx, insns, bneqLhsTy, bneqRhsTy)
           insns.add(MCeq)
           insns.add(MLdcI4(v = 1))
@@ -17843,6 +17844,14 @@ func invokeLoadedFuncValueMsil(
   lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType)
 }
 
+// Push `p + offset` as a `native int` for `nativeLoadByte`/`nativeStoreByte`.
+func nativeByteAddressMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], args: in List[CallArg]): Unit {
+  lowerExprMsil(cctx, fctx, insns, callArgExpr(args[0]))
+  lowerExprMsil(cctx, fctx, insns, callArgExpr(args[1]))
+  insns.add(MConvI)
+  insns.add(MAdd)
+}
+
 pub func lowerCallMsil(
   cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], fn: in Expr, args: in List[CallArg]
 ): MsilType {
@@ -17854,6 +17863,19 @@ pub func lowerCallMsil(
         insns.add(MLdcI4(v = 0))
         insns.add(MConvI)
         return MNativeInt
+      }
+      // C memory access (D161): the byte at `p + offset`, through a
+      // `native int` address (`ldind.u1` keeps Byte unsigned).
+      if funcName == "nativeLoadByte" and path.segments.count == 1 and args.count == 2 {
+        nativeByteAddressMsil(cctx, fctx, insns, args)
+        insns.add(MLdind(ty = MByte))
+        return MByte
+      }
+      if funcName == "nativeStoreByte" and path.segments.count == 1 and args.count == 3 {
+        nativeByteAddressMsil(cctx, fctx, insns, args)
+        lowerExprMsil(cctx, fctx, insns, callArgExpr(args[2]))
+        insns.add(MStind(ty = MByte))
+        return MVoid
       }
       lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, funcName, path, args)
     }
@@ -20665,6 +20687,15 @@ func lowerMethodCallMsil(
     }
   }
   val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+  // `o.isNone()` is `isNone(o)`, a generic Std.Core function that is never
+  // emitted as a method: lower it to the same case test as the field form
+  // `o.isNone`.
+  if args.count == 0 and (memberName == "isSome" or memberName == "isNone" or memberName == "isOk" or memberName == "isErr") {
+    match lowerBuiltinMonadAccessorMsil(cctx, insns, recvTy, memberName) {
+      case Some(t) -> return t
+      case None -> ()
+    }
+  }
   // Auto-FFI instance dispatch: an extern class-ref receiver (e.g. the result
   // of a class-returning static like `Type.GetType(...)`) dispatches its
   // instance methods via `callvirt` against the real CLR method, resolved from

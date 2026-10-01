@@ -322,7 +322,26 @@ func scratch(): Unit {
 }
 ```
 
-Strings, records and callbacks do not cross a C binding on .NET or the JVM. Keep the C surface small, give it pointer-and-integer signatures, and wrap it in a safe Lyric function, as §13.4 does for BCL calls. On `--target dotnet` and `--target jvm` an `extern func` with no `@library` is error T0149.
+Records and callbacks do not cross a C binding on .NET or the JVM. Keep the C surface small, give it pointer-and-integer signatures, and wrap it in a safe Lyric function, as §13.4 does for BCL calls. On `--target dotnet` and `--target jvm` an `extern func` with no `@library` is error T0149.
+
+A C function that takes `const char*` wants a NUL-terminated UTF-8 buffer in C memory, not a Lyric `String`. `Std.Ffi` makes one on every target: `toCString(s)` copies the string into a new buffer on the C heap, and `release(p)` frees it. Going the other way, `tryFromCString(p)` copies a C string back, returning `None` for the null pointer or bytes that are not UTF-8. Release a buffer exactly once, after the C side is done with it:
+
+```lyric
+import Std.Ffi as Ffi
+
+@library("webview")
+extern func webviewSetTitle(w: NativePtr[Byte], title: NativePtr[Byte]): Int = "webview_set_title"
+
+@unsafe_ffi
+func setTitle(w: in NativePtr[Byte], title: in String): Int {
+  val c = Ffi.toCString(title)
+  val rc = webviewSetTitle(w, c)
+  Ffi.release(c)
+  rc
+}
+```
+
+`Std.Ffi` is built from two intrinsics you can use directly for other C data: `nativeLoadByte(p, offset)` reads the byte at `p + offset` and `nativeStoreByte(p, offset, value)` writes one, on all three targets. `Ffi.allocate(size)` gives you C heap memory to use them on. There is no bounds check, which is why they, like every function in `Std.Ffi`, are allowed only in `@unsafe_ffi` code.
 
 ## Exercises
 

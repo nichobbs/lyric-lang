@@ -231,3 +231,29 @@ test "#6120: Some holding an independently-constructed record payload compares s
   assertTrue(not (a == c), "Some(EqPair(3,4)) == Some(EqPair(3,9)) is false")
   assertTrue(a != c, "Some(EqPair(3,4)) != Some(EqPair(3,9)) is true")
 }
+
+func someName(): Option[String] {
+  Some(value = "ada")
+}
+
+func noName(): Option[String] {
+  None
+}
+
+func okCount(): Result[Int, String] {
+  Ok(value = 3)
+}
+
+// `o.isNone()` is the generic Std.Core function `isNone(o)`.  On the JVM the
+// method form used to call an instance method on the `Option` interface
+// (`IncompatibleClassChangeError`), while the function form and the field
+// form `o.isNone` already lowered to `instanceof`.
+test "the method forms of isSome, isNone, isOk and isErr test the case" {
+  assertTrue(someName().isSome(), "someName().isSome()")
+  assertTrue(noName().isNone(), "noName().isNone()")
+  val s = someName()
+  assertTrue(not s.isNone(), "a Some local is not None")
+  val r = okCount()
+  assertTrue(r.isOk(), "an Ok local isOk()")
+  assertTrue(not r.isErr(), "an Ok local is not isErr()")
+}

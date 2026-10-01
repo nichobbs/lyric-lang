@@ -1042,6 +1042,55 @@ func hasFuncOverrideJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePat
 }
 
 // Lower a builtin or static function call.
+// The one-byte `MemorySegment` at `p + offset` for `nativeLoadByte` /
+// `nativeStoreByte` (D161).  The pointer and offset are evaluated into
+// locals first, so a branchy argument never leaves values on the operand
+// stack; the segment goes to the returned local, not the stack.
+func nativeByteSegmentJvm(ctx: in FuncCtx, insns: in List[LInsn], args: in List[CallArg]): Int {
+  val pTy = lowerCallArg(ctx, insns, args[0])
+  val pSlot = allocSlot(ctx, "__native_p_" + freshLabel(ctx), pTy)
+  emitStore(insns, pSlot, pTy)
+  val offTy = lowerCallArg(ctx, insns, args[1])
+  match offTy {
+    case JLong -> ()
+    case _ -> insns.add(LI2l)
+  }
+  val offSlot = allocSlot(ctx, "__native_off_" + freshLabel(ctx), JLong)
+  emitStore(insns, offSlot, JLong)
+  emitLoad(insns, pSlot, JLong)
+  emitLoad(insns, offSlot, JLong)
+  insns.add(LLadd)
+  val addrPs: List[JvmType] = newList()
+  addrPs.add(JLong)
+  val segTy = JRef(className = "java/lang/foreign/MemorySegment")
+  insns.add(
+    LInvokestaticIface(owner = "java/lang/foreign/MemorySegment", name = "ofAddress", params = addrPs, ret = segTy)
+  )
+  insns.add(LLconst(v = 1i64))
+  insns.add(
+    LInvokeinterface(
+      owner = "java/lang/foreign/MemorySegment",
+      name = "reinterpret",
+      params = addrPs,
+      ret = segTy,
+      argCount = 3
+    )
+  )
+  val segSlot = allocSlot(ctx, "__native_seg_" + freshLabel(ctx), segTy)
+  emitStore(insns, segSlot, segTy)
+  segSlot
+}
+
+func pushJavaByteLayout(insns: in List[LInsn]): Unit {
+  insns.add(
+    LGetstatic(
+      owner = "java/lang/foreign/ValueLayout",
+      name = "JAVA_BYTE",
+      t = JRef(className = "java/lang/foreign/ValueLayout$OfByte")
+    )
+  )
+}
+
 func lowerBuiltinOrStaticCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -1127,6 +1176,36 @@ func lowerBuiltinOrStaticCall(
     // A `NativePtr[T]` is a `long` address on the JVM (D158).
     insns.add(LLconst(v = 0i64))
     JLong
+  } else if (not hasOverride) and funcName == "nativeLoadByte" and args.count == 2 {
+    // C memory access (D161): a one-byte `MemorySegment` at `p + offset`.
+    val segSlot = nativeByteSegmentJvm(ctx, insns, args)
+    emitLoad(insns, segSlot, JRef(className = "java/lang/foreign/MemorySegment"))
+    pushJavaByteLayout(insns)
+    insns.add(LLconst(v = 0i64))
+    val getPs: List[JvmType] = newList()
+    getPs.add(JRef(className = "java/lang/foreign/ValueLayout$OfByte"))
+    getPs.add(JLong)
+    insns.add(
+      LInvokeinterface(owner = "java/lang/foreign/MemorySegment", name = "get", params = getPs, ret = JByte, argCount = 4)
+    )
+    JByte
+  } else if (not hasOverride) and funcName == "nativeStoreByte" and args.count == 3 {
+    val segSlot = nativeByteSegmentJvm(ctx, insns, args)
+    val vTy = lowerCallArg(ctx, insns, args[2])
+    val vSlot = allocSlot(ctx, "__native_store_v_" + freshLabel(ctx), vTy)
+    emitStore(insns, vSlot, vTy)
+    emitLoad(insns, segSlot, JRef(className = "java/lang/foreign/MemorySegment"))
+    pushJavaByteLayout(insns)
+    insns.add(LLconst(v = 0i64))
+    emitLoad(insns, vSlot, vTy)
+    val setPs: List[JvmType] = newList()
+    setPs.add(JRef(className = "java/lang/foreign/ValueLayout$OfByte"))
+    setPs.add(JLong)
+    setPs.add(JByte)
+    insns.add(
+      LInvokeinterface(owner = "java/lang/foreign/MemorySegment", name = "set", params = setPs, ret = JVoid, argCount = 5)
+    )
+    JVoid
   } else if (not hasOverride) and funcName == "panic" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
@@ -4599,6 +4678,19 @@ func lowerMethodCall(
   // method, extension and function-field resolution below sees the real
   // record instead of `Object` (#7378).
   val recvTy = narrowErasedReceiverJvm(ctx, insns, recv, lowerExpr(ctx, insns, recv))
+  // `o.isNone()` is `isNone(o)`, a generic Std.Core function with no JVM
+  // method of its own: lower it to the same `instanceof` as the function
+  // form and the field form `o.isNone`, never an instance call on the
+  // `Option`/`Result` interface.
+  if args.count == 0 and (memberName == "isSome" or memberName == "isNone" or memberName == "isOk" or memberName == "isErr") {
+    match recvTy {
+      case JRef(cls) -> match lowerBuiltinMonadAccessorJvm(ctx, insns, cls, memberName) {
+        case Some(t) -> return t
+        case None -> ()
+      }
+      case _ -> ()
+    }
+  }
   // `shr` is arithmetic (ISHR/LSHR — sign-replicating); Lyric's Int/Long/
   // Byte are signed and the JVM backend has no unsigned integer type, so the
   // logical-shift opcodes (IUSHR/LUSHR) are not reachable here.  Byte uses

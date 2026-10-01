@@ -141,3 +141,12 @@ output_assembly = "Lyric.Stdlib.dll"
 # Tier 9 — cross-target JSON value model (D145, #7832), formerly
 # lyric-jsonrpc's JsonRpc.Json.  Appended last for the same reason as Tier 8.
 "Std.JsonValue" = "std/json_value.l"
+
+# Tier 10 — C memory and C strings for `@library` bindings (D161).  Appended
+# last for the same reason as Tier 8.  `@library` (D158) and the byte
+# intrinsics postdate the v0.7.5 release, so the stage-0 seed cannot compile
+# these: `scripts/bootstrap.sh` leaves lines marked `seed: current` out of the
+# seed-built stage-1 bundle, which only has to run the compiler, and the full
+# bundle is rebuilt by the compiler stage 1 produces.
+"Std.FfiHost"   = "std/_kernel/ffi_host.l"  # seed: current
+"Std.Ffi"       = "std/ffi.l"               # seed: current
