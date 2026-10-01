@@ -388,7 +388,8 @@ pub func compileToMsilWithVersion(
 
   // Lambda-lifting: extract ELambda nodes into synthetic __lambda_<i> IFunc items
   // so that addPackageTokens assigns them stable MethodDef tokens before codegen.
-  val liftedFile = liftLambdasMsil(fnRefFile)
+  // `@library` extern funcs become P/Invoke methods (D158).
+  val liftedFile = pipeCBindingsToFuncs(liftLambdasMsil(fnRefFile))
 
   // Pre-scan the AST to assign deterministic MethodDef / FieldDef tokens for
   // same-package types and functions.
@@ -1329,7 +1330,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     }
     // #5362: see the matching single-file comment above.
     val fnRefPkgFile = synthesizeBareFuncRefThunksMsil(weaved)
-    val lifted = liftLambdasMsil(fnRefPkgFile)
+    val lifted = pipeCBindingsToFuncs(liftLambdasMsil(fnRefPkgFile))
     // #6547: key every token this pre-scan registers by the package's OWN
     // `package X` declaration, not `perPkgNames[li]` (the caller-supplied
     // `ProjectPackagePayload.name`/label).  `codegenMPackage` independently

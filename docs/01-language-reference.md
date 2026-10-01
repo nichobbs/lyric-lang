@@ -2263,14 +2263,15 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
   within them, `nativeAddrOf` operands must be local `var`s and the
   resulting pointer must not escape the frame (no returns, no heap
   stores).  See `native/plan/05-ffi-design.md`.
-- The type checker knows these intrinsics only when it checks for
-  `--target native`: `nativeNullPtr()` is a `NativePtr[Byte]`,
-  `nativeAddrOf(x)` for a local `x: T` is a `NativePtr[T]`,
-  `NativeWeak(x)` for an `x: T` is a `NativeWeak[T]`, and `w.upgrade()`
-  on a `NativeWeak[T]` is an `Option[T]`.  On the managed targets
-  `NativePtr` and `NativeWeak` are unknown type names (`T0010`) and the
-  three functions unknown names (`T0020`), since neither backend can
-  lower them (#7910).
+- `NativePtr[T]` and `nativeNullPtr()` (a `NativePtr[Byte]`) type on
+  every target, since a C binding (§11.7) passes pointers on all three.
+  The rest are native-only: the type checker knows them only when it
+  checks for `--target native`, where `nativeAddrOf(x)` for a local
+  `x: T` is a `NativePtr[T]`, `NativeWeak(x)` for an `x: T` is a
+  `NativeWeak[T]`, and `w.upgrade()` on a `NativeWeak[T]` is an
+  `Option[T]`.  On the managed targets `NativeWeak` is an unknown type
+  name (`T0010`) and `nativeAddrOf`/`NativeWeak` unknown names
+  (`T0020`), since neither backend can lower them (#7910).
 - A call to an `extern func` is type-checked against its declared
   signature exactly like a call to a Lyric function: the argument count
   (`T0042`), each argument's type (`T0043`) and named arguments are
@@ -2289,12 +2290,11 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
   Any other value meets a `NativePtr[Byte]` parameter only if it is one;
   a collection the C side reads is declared with its Lyric type
   (`List[String]` for a `LyricList*`).
-- `extern func` items exist only on the native target, and
-  `_kernel_native/` packages are loaded only by native builds.  The
-  MSIL and JVM backends reject an `extern func` item with a diagnostic
-  that names the managed-target binding form to use instead
-  (`@externTarget` in a `_kernel/` package on .NET, `extern type`
-  auto-FFI in a `_kernel_jvm/` package on the JVM).
+- On the managed targets an `extern func` must name its library with
+  `@library` (§11.7); one without it is `T0149`.  The callback and
+  closure adaptations above are native-only: a C binding on `--target
+  dotnet` or `--target jvm` takes only the scalar and pointer types §11.7
+  lists.  `_kernel_native/` packages are loaded only by native builds.
 
 **C structs, callbacks and buffers (D155; not yet implemented, docs/67 phase G3).**
 
@@ -2343,6 +2343,59 @@ currently iterating over on the native target.
 `--target native` the map's open-addressing table shrinks once its live
 entries fall below 1/8 of capacity, so capacity stays proportional to the
 current length rather than the map's high-water mark (#4795, #7282).
+
+### 11.7 C bindings on every target: `@library`
+
+An `extern func` annotated `@library("name")` binds a C symbol from the
+named shared library on all three targets (D158):
+
+```
+@library("webview")
+extern func webviewCreate(debug: Int, window: NativePtr[Byte]): NativePtr[Byte] = "webview_create"
+
+@library("c")
+extern func labs(x: Long): Long = "labs"
+```
+
+- **Library.** The argument is normally the library's base name, with
+  no `lib` prefix or file extension; each runtime applies its platform's
+  naming (`libwebview.so`, `libwebview.dylib`, `webview.dll`) and search
+  path.  `"c"` names the platform C library.  A name containing `.` or
+  `/` is a file name or path and is passed to the dynamic loader as
+  written (`"libm.so.6"`, `"./native/libwebview.so"`); use it for a
+  system library whose unversioned `.so` is only a development-package
+  link or linker script, as `libm.so` is on glibc.  On `--target native` a
+  file name links as `-l:<name>` and a path as an input file.
+- **Lowering.** On `--target dotnet` the declaration is a P/Invoke
+  method (a `pinvokeimpl` MethodDef with an `ImplMap` row naming the
+  library's `ModuleRef`; `"c"` is written as `libc`, which the runtime
+  maps to the real C library).  On `--target jvm` it is a static method
+  that calls the symbol through the Foreign Function & Memory API: the
+  downcall handle is looked up on the first call and cached, so a missing
+  library or symbol fails at that call, not when the package loads.  The
+  JVM target therefore needs **JDK 22 or later** at run time for programs
+  that use a C binding; the JAR manifest carries
+  `Enable-Native-Access: ALL-UNNAMED`.  On `--target native` the symbol is
+  declared and called directly, and the library is linked as `-l<name>`
+  (`"c"` adds nothing).
+- **Types.** On `--target dotnet` and `--target jvm` a parameter is
+  `Int` (C `int32_t`), `Long` (`int64_t`),
+  `Byte` (`uint8_t`), `Double` (`double`) or `NativePtr[T]` (a pointer);
+  the result may also be `Unit` (`void`).  Any other type is `T0151`,
+  `Float` included until the boundary converts C `float` on every target
+  (#7966; docs/67 G1 makes `Float` 32-bit on MSIL and native).  Strings,
+  records and callbacks do not cross a C binding on the managed targets;
+  pass a pointer to memory the C side owns.  On `--target native` a
+  `@library` binding keeps the full §11.6 surface, so T0151 is never
+  reported there.  A `NativePtr[T]` is a 64-bit address in Lyric code on the JVM
+  and a native-sized integer on .NET; it is opaque in Lyric either way.
+- **Diagnostics.** `T0149`: an `extern func` without `@library` on a
+  managed target.  `T0150`: an `@library` whose argument is not one
+  non-empty string, or more than one `@library` on a declaration.
+  `T0151`: a parameter or result type that cannot cross a C binding.
+- **Safety.** The `N0100` boundary of §11.6 applies unchanged: pointer
+  values are confined to `@unsafe_ffi` functions, and the `extern func`
+  signature itself is the audited boundary.
 
 ## 12. Standard library
 

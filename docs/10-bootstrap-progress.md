@@ -288,6 +288,7 @@ deferred to Phase 3 by design.
 | Native builds stop on type errors: `--target native` gates on type-check errors like dotnet and JVM (single-file and project `build`, `run`, `test`, `--define`, path dependencies), with no binary written; the type checker types the native FFI intrinsics (`NativePtr[T]`, `NativeWeak[T]`, `nativeAddrOf`, `nativeNullPtr`, `upgrade`) on a native check only | **Shipped** | #7910 |
 | Qualified constructor calls: a record constructor qualified by package path or alias and a case qualified by its union build the qualifier's type even when the current package declares the same name; MSIL resolves the written qualifier first (docs/01 §2) | **Shipped** | D155 |
 | Renamed selective imports `import P.{f as g}`: `g` names `P.f` in every bare-name position (calls, values, constructors, types, pattern heads), lowered by `Lyric.AliasRewriter` to the qualified form with lexical shadowing; collisions are T0148; T0138 retired (#7564) | **Shipped** | D156 |
+| C bindings on every target: `@library("name") extern func` lowers to P/Invoke on MSIL, a Foreign Function & Memory downcall on the JVM (JDK 22), and a `-l` link flag on native; `NativePtr[T]`/`nativeNullPtr()` type everywhere; T0149–T0151 | **Shipped** | D158 |
 
 ### Phase 2 — type system completion (complete)
 

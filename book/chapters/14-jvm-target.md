@@ -1,6 +1,6 @@
 # Chapter 14: The JVM Target
 
-Lyric defaults to .NET, but it also targets the JVM. `lyric build --target jvm` compiles your package to a standard `.jar` file. When fully shipped, that JAR will run on any Java 21-compatible runtime, publish to Maven Central, and be depended on by plain Java, Kotlin, or Scala projects without any adapter. Conversely, Lyric code running on the JVM will be able to depend on Maven packages through the `[maven]` table in `lyric.toml`.
+Lyric defaults to .NET, but it also targets the JVM. `lyric build --target jvm` compiles your package to a standard `.jar` file. When fully shipped, that JAR will run on any Java 21-compatible runtime (Java 22 or later when it calls a C library through `@library`, §13.10), publish to Maven Central, and be depended on by plain Java, Kotlin, or Scala projects without any adapter. Conversely, Lyric code running on the JVM will be able to depend on Maven packages through the `[maven]` table in `lyric.toml`.
 
 The two targets share the same language, the same type system, the same contracts, and the same standard library surface. What differs is the output format and the platform-specific kernel that implements I/O and other runtime services. Switching targets is a compiler flag, not a code change — unless your code imports platform-specific `extern` packages.
 

@@ -1935,6 +1935,8 @@ func cmdTestManifest(
       // the manifest's `[project.tests]` key).
       val jvmArgs: List[String] = newList()
       if mavenJarColonSep.length > 0 {
+        // `-cp` bypasses the JAR manifest's Enable-Native-Access (D158).
+        jvmArgs.add("--enable-native-access=ALL-UNNAMED")
         jvmArgs.add("-cp")
         jvmArgs.add(mavenJarColonSep + ":" + outPath)
         jvmArgs.add(testEntry.name)

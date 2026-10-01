@@ -398,7 +398,7 @@ pub func compileToJar(
     memberRecvClassesOut = recvClasses
   )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts, None) {
-    case Some(f) -> f
+    case Some(f) -> pipeCBindingsToFuncs(f)
     case None -> return false
   }
 
@@ -550,17 +550,11 @@ func runMiddleEnd(
     memberRecvClassesOut = recvClassesOut,
     ioForbiddenReason = ioForbiddenReason
   )
-  pipeMiddleEnd(
-    file0,
-    importedPkgs,
-    importedItems,
-    stdlibGenFuncs,
-    pipeInterfaceDecls(importedItems),
-    pipeRecordDecls(importedItems),
-    templates,
-    opts,
-    typeIndex
-  )
+  // `@library` extern funcs become foreign-function downcall methods (D158).
+  match pipeMiddleEnd(file0, importedPkgs, importedItems, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), templates, opts, typeIndex) {
+    case Some(f) -> Some(value = pipeCBindingsToFuncs(f))
+    case None -> None
+  }
 }
 
 // #6404: resolve `alias X = ...` references in `file` to their underlying

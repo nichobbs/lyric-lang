@@ -81,6 +81,9 @@ pub record CodegenUnit {
   pkgName: String
   fns: List[FunctionDecl]
   externs: List[ExternFuncDecl]
+  // Libraries the reachable externs name with `@library("name")` (D158),
+  // linked as `-l<name>`; "c" is the C library the link already has.
+  nativeLibs: List[String]
   // Type declarations register unfiltered (layouts are cheap and other
   // packages' signatures may reference them); generic declarations are
   // skipped at registration and panic only when actually used.
@@ -11539,6 +11542,13 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     fns.add(coroWrapperDefine("lyric_coro_destroy", "llvm.coro.destroy"))
   }
   val libs: List[String] = newList()
+  for u in units {
+    for lib in u.nativeLibs {
+      if not listContains(libs, lib) {
+        libs.add(lib)
+      }
+    }
+  }
   NPackage(
     name = mainPkg,
     triple = triple,
@@ -11675,6 +11685,7 @@ pub func fileImportsStdString(file: in SourceFile): Bool {
 pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val fns: List[FunctionDecl] = newList()
   val externs: List[ExternFuncDecl] = newList()
+  val nativeLibs: List[String] = newList()
   val records: List[RecordDecl] = newList()
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
@@ -11687,7 +11698,10 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(decl) -> fns.add(decl)
-      case IExternFunc(decl) -> externs.add(decl)
+      case IExternFunc(decl) -> {
+        externs.add(decl)
+        addExternLibrary(nativeLibs, file.items[i].annotations)
+      }
       // Module-level `val`/`const` (#5977 part 2): collect for use-site
       // inlining. A `val` with a non-binding (destructuring) pattern is not a
       // named module binding, so it is skipped here — consistent with the
@@ -11742,6 +11756,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     pkgName = pkgName,
     fns = fns,
     externs = externs,
+    nativeLibs = nativeLibs,
     records = records,
     unions = unions,
     enums = enums,
@@ -11752,6 +11767,24 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     moduleVals = moduleVals,
     importsStdString = fileImportsStdString(file)
   )
+}
+
+/// Record the library an extern func's `@library("name")` names (D158),
+/// once, leaving out "c", which every native link already includes.
+pub func addExternLibrary(libs: in List[String], anns: in List[Annotation]): Unit {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == "library" and a.args.count == 1 {
+      match a.args[0] {
+        case ALiteral(value, _) -> match value {
+          case AVString(lib, _) -> if lib != "c" and not listContains(libs, lib) {
+            libs.add(lib)
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
+    }
+  }
 }
 
 /// Methods declared inside a record body desugar to package functions

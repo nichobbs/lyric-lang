@@ -406,6 +406,32 @@ pub record MethodSpecRow {
   instantiation: Int  // #Blob: MethodSpec signature
 }
 
+// ModuleRef (Table 0x1A) — ECMA-335 §II.22.31.  An unmanaged module (a C
+// library) that a P/Invoke `ImplMap` row binds into (D158).
+pub record ModuleRefRow {
+  name: Int  // #Strings
+}
+
+// ImplMap (Table 0x1C) — ECMA-335 §II.22.22.  Binds a `PinvokeImpl`
+// MethodDef to an export of a ModuleRef: the `extern func` C bindings of
+// D158.  Rows must be sorted by `memberForwarded`; they are added as the
+// MethodDefs are emitted, in increasing row order.
+pub record ImplMapRow {
+  mappingFlags: Int  // PInvokeAttributes
+  memberForwarded: Int  // coded: MemberForwarded (Field, MethodDef)
+  importName: Int  // #Strings: the exported symbol
+  importScope: Int  // ModuleRef row
+}
+
+// MemberForwarded coded index (1 tag bit): Field = 0, MethodDef = 1.
+pub func mfMethodDef(row: in Int): Int = (row * 2) + 1
+
+// PInvokeAttributes (ECMA-335 §II.23.1.8): bind the symbol exactly as named
+// (no A/W suffix probing) with the platform's default C calling convention.
+pub val PINVOKE_NO_MANGLE: Int = 0x0001
+
+pub val PINVOKE_CALL_CONV_PLATFORM: Int = 0x0100
+
 // GenericParam (Table 0x2A) — ECMA-335 §II.22.20.
 // One row per generic type parameter owned by a generic TypeDef or MethodDef.
 // `number` is the 0-based ordinal of the parameter within its owner; `flags`
@@ -463,6 +489,8 @@ pub record MetadataTables {
   manifestResources: List[ManifestResourceRow]
   genericParams: List[GenericParamRow]
   methodSpecs: List[MethodSpecRow]
+  moduleRefs: List[ModuleRefRow]
+  implMaps: List[ImplMapRow]
 }
 
 pub func newMetadataTables(): MetadataTables {
@@ -484,8 +512,19 @@ pub func newMetadataTables(): MetadataTables {
     assemblyRefs = newList(),
     manifestResources = newList(),
     genericParams = newList(),
-    methodSpecs = newList()
+    methodSpecs = newList(),
+    moduleRefs = newList(),
+    implMaps = newList()
   )
+}
+
+pub func addModuleRef(t: in MetadataTables, r: in ModuleRefRow): Int {
+  t.moduleRefs.add(r)
+  t.moduleRefs.count
+}
+
+pub func addImplMap(t: in MetadataTables, r: in ImplMapRow): Unit {
+  t.implMaps.add(r)
 }
 
 // ── Row-index allocators ──────────────────────────────────────────────────────
@@ -604,8 +643,8 @@ pub func standaloneToken(row: in Int): Int {
 // Row wire format uses 2-byte heap refs (heapSizes=0) and 2-byte simple
 // table indices.  All multi-byte fields are little-endian.
 //
-// This serializer writes rows for tables 0x00..0x0C, 0x11, 0x1B, 0x20, and
-// 0x23.  Tables not in that set are omitted from the valid bitmask.
+// This serializer writes rows for tables 0x00..0x0C, 0x11, 0x19..0x1C,
+// 0x20, 0x23, 0x2A and 0x2B.  Tables not in that set are omitted from the valid bitmask.
 // Table presence bitmask bits (one bit per table ID 0x00..0x3F).
 val TABLE_BIT_MODULE: Long = 1i64
 
@@ -643,9 +682,15 @@ val TABLE_BIT_STAND_ALONE_SIG: Long = 131072i64
 val TABLE_BIT_METHOD_IMPL: Long = 33554432i64
 
 // table 0x19, bit 25 (2^25)
+val TABLE_BIT_MODULE_REF: Long = 67108864i64
+
+// table 0x1A, bit 26 (2^26)
 val TABLE_BIT_TYPE_SPEC: Long = 134217728i64
 
 // table 0x1B, bit 27 (2^27)
+val TABLE_BIT_IMPL_MAP: Long = 268435456i64
+
+// table 0x1C, bit 28 (2^28)
 val TABLE_BIT_ASSEMBLY: Long = 4294967296i64
 
 // table 0x20, bit 32 (2^32)
@@ -792,15 +837,15 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   // Coded indices, by tag family (ECMA-335 §II.24.2.6 tag tables):
   // DRIFT GUARD (#6390): every `0` below stands for a tag-family member
   // table that MetadataTables does not carry today (DeclSecurity,
-  // Property, Event, ModuleRef, File, ExportedType,
-  // GenericParamConstraint, ...).  If such a table is ever ADDED to
+  // Property, Event, File, ExportedType, GenericParamConstraint, ...).
+  // ModuleRef is carried since D158 and counted in its three families.  If such a table is ever ADDED to
   // MetadataTables and populated, its row count MUST replace the `0` in
   // every family list that includes it, and the reader's matching family
   // list (Msil.MetadataReader.computeLayout) must stay byte-for-byte in
   // agreement — a one-sided edit reintroduces the silent
   // zero-resources-read failure this pass exists to prevent.
-  val rsW = codedIdxWidth(maxOfCounts([t.modules.count, 0, t.assemblyRefs.count, t.typeRefs.count]), 2)
-  // ResolutionScope: Module, ModuleRef(unused), AssemblyRef, TypeRef
+  val rsW = codedIdxWidth(maxOfCounts([t.modules.count, t.moduleRefs.count, t.assemblyRefs.count, t.typeRefs.count]), 2)
+  // ResolutionScope: Module, ModuleRef, AssemblyRef, TypeRef
   val tdrW = codedIdxWidth(maxOfCounts([t.typeDefs.count, t.typeRefs.count, t.typeSpecs.count]), 2)
   // TypeDefOrRef: TypeDef, TypeRef, TypeSpec
   val hasConstW = codedIdxWidth(maxOfCounts([t.fields.count, t.params_.count, 0]), 2)
@@ -822,20 +867,29 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
         t.assemblyRefs.count,
         t.manifestResources.count,
         t.genericParams.count,
-        t.methodSpecs.count
+        t.methodSpecs.count,
+        t.moduleRefs.count
       ]
     ),
     5
   )
   // HasCustomAttribute: every table that can carry an attribute (the
-  // remaining family members — DeclSecurity/Property/Event/ModuleRef/File/
+  // remaining family members — DeclSecurity/Property/Event/File/
   // ExportedType/GenericParamConstraint — are never populated by this
   // writer, so they contribute 0 and are omitted).
   val memberRefParentW = codedIdxWidth(
-    maxOfCounts([t.typeDefs.count, t.typeRefs.count, 0, t.methodDefs.count, t.typeSpecs.count]),
+    maxOfCounts(
+      [
+        t.typeDefs.count,
+        t.typeRefs.count,
+        t.moduleRefs.count,
+        t.methodDefs.count,
+        t.typeSpecs.count
+      ]
+    ),
     3
   )
-  // MemberRefParent: TypeDef, TypeRef, ModuleRef(unused), MethodDef, TypeSpec
+  // MemberRefParent: TypeDef, TypeRef, ModuleRef, MethodDef, TypeSpec
   val custAttrTypeW = codedIdxWidth(maxOfCounts([t.methodDefs.count, t.memberRefs.count]), 3)
   // CustomAttributeType: MethodDef, MemberRef
   val implementationW = codedIdxWidth(maxOfCounts([0, t.assemblyRefs.count, 0]), 2)
@@ -844,6 +898,9 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   // MethodDefOrRef: MethodDef, MemberRef
   val typeOrMethodDefW = codedIdxWidth(maxOfCounts([t.typeDefs.count, t.methodDefs.count]), 1)
   // TypeOrMethodDef: TypeDef, MethodDef
+  val memberForwardedW = codedIdxWidth(maxOfCounts([t.fields.count, t.methodDefs.count]), 1)
+  // MemberForwarded: Field, MethodDef
+  val moduleRefIdxW = simpleIdxWidth(t.moduleRefs.count)
 
   // Valid bitmask
   var valid: Long = 0i64
@@ -883,8 +940,14 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.methodImpls.count > 0 {
     valid = valid + TABLE_BIT_METHOD_IMPL
   }
+  if t.moduleRefs.count > 0 {
+    valid = valid + TABLE_BIT_MODULE_REF
+  }
   if t.typeSpecs.count > 0 {
     valid = valid + TABLE_BIT_TYPE_SPEC
+  }
+  if t.implMaps.count > 0 {
+    valid = valid + TABLE_BIT_IMPL_MAP
   }
   if t.assemblies.count > 0 {
     valid = valid + TABLE_BIT_ASSEMBLY
@@ -915,6 +978,9 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   }
   if t.interfaceImpls.count > 0 {
     sorted = sorted + TABLE_BIT_INTERFACE_IMPL
+  }
+  if t.implMaps.count > 0 {
+    sorted = sorted + TABLE_BIT_IMPL_MAP
   }
   w8(buf, sorted)
 
@@ -955,8 +1021,14 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.methodImpls.count > 0 {
     w4(buf, t.methodImpls.count)
   }
+  if t.moduleRefs.count > 0 {
+    w4(buf, t.moduleRefs.count)
+  }
   if t.typeSpecs.count > 0 {
     w4(buf, t.typeSpecs.count)
+  }
+  if t.implMaps.count > 0 {
+    w4(buf, t.implMaps.count)
   }
   if t.assemblies.count > 0 {
     w4(buf, t.assemblies.count)
@@ -1126,12 +1198,30 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     impi = impi + 1
   }
 
+  // ModuleRef rows (table 0x1A)
+  var mri = 0
+  while mri < t.moduleRefs.count {
+    wHeap(buf, t.moduleRefs[mri].name, wideStr)
+    mri = mri + 1
+  }
+
   // TypeSpec rows (table 0x1B)
   var tsi = 0
   while tsi < t.typeSpecs.count {
     val r = t.typeSpecs[tsi]
     wHeap(buf, r.signature, wideBlob)
     tsi = tsi + 1
+  }
+
+  // ImplMap rows (table 0x1C)
+  var imi = 0
+  while imi < t.implMaps.count {
+    val r = t.implMaps[imi]
+    w2(buf, r.mappingFlags)
+    wIdx(buf, r.memberForwarded, memberForwardedW)
+    wHeap(buf, r.importName, wideStr)
+    wIdx(buf, r.importScope, moduleRefIdxW)
+    imi = imi + 1
   }
 
   // Assembly rows (table 0x20)

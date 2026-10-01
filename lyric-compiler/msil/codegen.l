@@ -8132,6 +8132,10 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
     }
     case TGenericApp(head, args) -> {
       val headSeg = lastSegmentMsil(head)
+      // A C pointer (D158) is a `native int` on .NET, whatever it points at.
+      if headSeg == "NativePtr" and args.count == 1 {
+        return MNativeInt
+      }
       // Special case: List[T] — carry the element type so EIndex can
       // narrow each element to T.  For a user-defined `MClass` element this
       // enables castclass + ldfld on list-element field access (#1442); for a
@@ -17845,6 +17849,12 @@ pub func lowerCallMsil(
   match fn.kind {
     case EPath(path) -> {
       val funcName = lastSegmentMsil(path)
+      // The C NULL pointer (D158): `native int` zero.
+      if funcName == "nativeNullPtr" and path.segments.count == 1 and args.count == 0 {
+        insns.add(MLdcI4(v = 0))
+        insns.add(MConvI)
+        return MNativeInt
+      }
       lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, funcName, path, args)
     }
     case ETypeApp(innerFn, _) -> {
@@ -24593,6 +24603,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MConvU1 -> 0
     case MConvU2 -> 0
     case MConvU8 -> 0
+    case MConvI -> 0
     case MNewobj(_) -> 1
     case MLdfld(_) -> 0
     case MLdflda(_) -> 0
@@ -33031,6 +33042,69 @@ func lambdaReturnsVoidMsil(cctx: in CodegenCtx, lambdaKey: in String): Bool {
       }
     }
   }
+}
+
+// ── C bindings (P/Invoke, D158) ───────────────────────────────────────────────
+// `Lyric.Pipeline.pipeCBindingsToFuncs` turns each `@library` extern func into
+// a body-less IFunc marked `@__cbinding("lib", "symbol")` before codegen, so
+// token pre-allocation, typing and call lowering treat it like any other
+// package function; only its emission differs (`pinvokeFuncMsil`).
+func isPinvokeFuncMsil(decl: in FunctionDecl): Bool {
+  for a in decl.annotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == "__cbinding" {
+      return true
+    }
+  }
+  false
+}
+
+// The P/Invoke method for a `@__cbinding` IFunc: public, static, no body,
+// with its library and symbol recorded for the ImplMap row.
+func pinvokeFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): MFunc {
+  var lib = ""
+  var sym = ""
+  for a in decl.annotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == "__cbinding" and a.args.count == 2 {
+      match a.args[0] {
+        case ALiteral(v, _) -> match v { case AVString(x, _) -> { lib = x }; case _ -> () }
+        case _ -> ()
+      }
+      match a.args[1] {
+        case ALiteral(v, _) -> match v { case AVString(x, _) -> { sym = x }; case _ -> () }
+        case _ -> ()
+      }
+    }
+  }
+  val ps: List[MsilType] = newList()
+  for p in decl.params {
+    ps.add(typeExprToMsilCtx(cctx, p.ty, pkgName))
+  }
+  val ret = match decl.ret {
+    case Some(te) -> {
+      val r = typeExprToMsilCtx(cctx, te, pkgName)
+      if elementTypeByte(r) == 0 {
+        MVoid
+      } else {
+        r
+      }
+    }
+    case None -> MVoid
+  }
+  val key = pkgName + "::" + decl.name + "/" + toString(decl.params.count)
+  if not cctx.lctx.pinvokeTargets.containsKey(key) {
+    cctx.lctx.pinvokeTargets.add(key, lib + "\t" + sym)
+  }
+  val noInsns: List[MInsn] = newList()
+  val noLocals: List[MsilType] = newList()
+  MFunc(
+    flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG + MDA_PINVOKE_IMPL,
+    name = decl.name,
+    params = ps,
+    ret = ret,
+    insns = noInsns,
+    maxStack = 0,
+    locals = noLocals
+  )
 }
 
 pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): MFunc {
@@ -42327,6 +42401,8 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           }
         } else if isGenerator {
           synthesizeGeneratorMsil(cctx, decl, pkgName, items, fns)
+        } else if isPinvokeFuncMsil(decl) {
+          fns.add(pinvokeFuncMsil(cctx, decl, pkgName))
         } else {
           fns.add(lowerFuncMsil(cctx, decl, pkgName))
         }
@@ -42622,13 +42698,12 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       case IExternType(_) -> {
       }
       case IExternFunc(decl) -> {
-        // A C-ABI `extern func` (D-N-007) only exists on the native target;
-        // reaching the MSIL backend means the source is being compiled for
-        // the wrong target — reject loudly instead of emitting a call to a
-        // function that was silently dropped (#4630).
+        // `Lyric.Pipeline.pipeCBindingsToFuncs` turned every `@library` extern func into
+        // a P/Invoke IFunc before codegen (D158); one without a library has
+        // no C module to bind on .NET.  The type checker reports it as
+        // T0149 first; this is the backstop for a caller that skipped it.
         panic(
-          "extern func '" + decl.name +
-            "' is only supported with --target native; on .NET declare the binding via @externTarget in a _kernel/ package instead"
+          "extern func '" + decl.name + "' names no C library; add @library(\"name\") to bind it on --target dotnet (T0149)"
         )
       }
       case ITest(_) -> {

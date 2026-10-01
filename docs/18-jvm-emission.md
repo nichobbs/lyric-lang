@@ -58,7 +58,11 @@ re-evaluated against the JVM's capabilities and constraints:
    (JEP 395), pattern switch (JEP 441), virtual threads (JEP 444), and
    structured concurrency (JEP 462, preview-then-stable) all matter.
    We do not support targeting JDK 17 or earlier; the lowering of
-   sum types alone would degrade unacceptably.
+   sum types alone would degrade unacceptably.  Class files stay at major
+   version 65 (Java 21).  A program that calls a C library through
+   `@library` (D158, docs/01 §11.7) uses the Foreign Function & Memory
+   API, final in JDK 22, so it needs a JDK 22 or later runtime; CI runs
+   every JVM job on JDK 22.
 
 5. **Boring lowering for everything else.**  Pattern match → sealed
    interface + `switch`.  Async → virtual thread for the default

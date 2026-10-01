@@ -688,6 +688,7 @@ pub union MInsn {
   case MConvU1
   case MConvU2
   case MConvU8
+  case MConvI      // conv.i: to native int (a C pointer, D158)
 
   // Object model
   case MNewobj(ctorToken: Int)         // new T; call .ctor
@@ -1334,6 +1335,11 @@ pub record LoweringCtx {
   allProjFqns: Map[String, Bool]
   allProjFqnKeys: List[String]
   resolvedAssemblyVersions: Map[String, Mdr.AssemblyVersion]
+  // P/Invoke bindings (D158): `<hostClass>::<name>/<arity>` of each
+  // `extern func` the codegen lowered to a `PinvokeImpl` method, mapped to
+  // `<library>\t<symbol>`, and each library's ModuleRef row once added.
+  pinvokeTargets: Map[String, String]
+  moduleRefRows: Map[String, Int]
 }
 
 // Build and intern the Microsoft framework public key token blob.
@@ -1493,7 +1499,9 @@ pub func newLoweringCtxWithVersions(
     stdCoreResultRow = newList(),
     allProjFqns = newMap(),
     allProjFqnKeys = newList(),
-    resolvedAssemblyVersions = resolvedAssemblyVersions
+    resolvedAssemblyVersions = resolvedAssemblyVersions,
+    pinvokeTargets = newMap(),
+    moduleRefRows = newMap()
   )
 }
 
@@ -2275,6 +2283,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MConvU1 -> emitConv_U1(mb)
     case MConvU2 -> emitConv_U2(mb)
     case MConvU8 -> emitConv_U8(mb)
+    case MConvI -> emitConv_I(mb)
     case MNewobj(tok) -> emitNewobj(mb, tok)
     case MLdfld(tok) -> emitLdfld(mb, tok)
     case MLdflda(tok) -> emitLdflda(mb, tok)
@@ -5801,6 +5810,45 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
 // ── Top-level static functions lowering ───────────────────────────────────────
 // Lower a list of top-level static MFuncs (and optional static fields) into a
 // single host class named `hostClass`. staticFields holds IConst/IVal items.
+// Whether `flags` (MethodAttributes) mark a P/Invoke method.
+pub func isPinvokeFlags(flags: in Int): Bool {
+  (flags / MDA_PINVOKE_IMPL) % 2 == 1
+}
+
+// The ImplMap row binding P/Invoke method `f` (MethodDef `methodRow`) to its
+// C symbol, adding the library's ModuleRef on first use (D158).
+func addPinvokeImplMap(ctx: in LoweringCtx, hostClass: in String, f: in MFunc, methodRow: in Int): Unit {
+  val key = hostClass + "::" + f.name + "/" + toString(f.params.count)
+  val target = match mapGet(ctx.pinvokeTargets, key) {
+    case Some(v) -> v
+    case None -> panic("Msil.Lowering: no P/Invoke target recorded for " + key)
+  }
+  val tab = Str.indexOfRaw(target, "\t")
+  val library = target.substring(0, tab)
+  val symbol = target.substring(tab + 1, target.length - tab - 1)
+  val moduleRow = match mapGet(ctx.moduleRefRows, library) {
+    case Some(r) -> r
+    case None -> {
+      // "c" names the platform C library; the runtime maps the module
+      // name "libc" to the real C library on Linux (where libc.so is a
+      // linker script, not a loadable object) and macOS.
+      val moduleName = if library == "c" { "libc" } else { library }
+      val r = addModuleRef(ctx.tables, ModuleRefRow(name = internString(ctx.strings, moduleName)))
+      ctx.moduleRefRows.add(library, r)
+      r
+    }
+  }
+  addImplMap(
+    ctx.tables,
+    ImplMapRow(
+      mappingFlags = PINVOKE_NO_MANGLE + PINVOKE_CALL_CONV_PLATFORM,
+      memberForwarded = mfMethodDef(methodRow),
+      importName = internString(ctx.strings, symbol),
+      importScope = moduleRow
+    )
+  )
+}
+
 pub func lowerMFuncsToHostClass(
   hostClass: in String,
   funcs: in List[MFunc],
@@ -5926,16 +5974,37 @@ pub func lowerMFuncsToHostClass(
   var fi = 0
   while fi < funcs.count {
     val f = funcs[fi]
-    val mb = lowerMFunc(f, ctx)
-    ctx.bodies.add(mb)
-    val rvas = methodBodyRvas(ctx.bodies)
-    val fRva = rvas[ctx.bodies.count - 1]
     val sN = internString(sh, f.name)
     val mSig = buildStaticMethodSigWithCtx(f.params, f.ret, ctx)
     // Arity-qualify the intern key (#1536) so same-name overloads don't collide and inherit the wrong signature blob.
     val bSig = internBlob(bh, "sfunc_" + hostClass + "_" + f.name + "/" + toString(f.params.count), mSig)
     val fp = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    if isPinvokeFlags(f.flags) {
+      // A C binding (D158): no body; the runtime resolves the symbol from
+      // the ImplMap row, and PreserveSig passes the C return value through.
+      val pRow = addMethodDef(
+        t,
+        MethodDefRow(
+          rva = 0,
+          implFlags = MIA_PRESERVE_SIG,
+          flags = f.flags,
+          name = sN,
+          signature = bSig,
+          paramList = fp
+        )
+      )
+      if ctx.discovering.count == 0 {
+        addPinvokeImplMap(ctx, hostClass, f, pRow)
+      }
+      recordPredictedMethodRow(ctx, joinTypeFqn(hostClass, "Program"), f.name, f.params.count, pRow)
+      fi = fi + 1
+      continue
+    }
+    val mb = lowerMFunc(f, ctx)
+    ctx.bodies.add(mb)
+    val rvas = methodBodyRvas(ctx.bodies)
+    val fRva = rvas[ctx.bodies.count - 1]
     val mRow = addMethodDef(
       t,
       MethodDefRow(rva = fRva, implFlags = 0, flags = f.flags, name = sN, signature = bSig, paramList = fp)

@@ -1427,7 +1427,7 @@ func linkAndEmitNative(
   clangArgs.add("-ldl")
   var li = 0
   while li < npkg.nativeLibs.count {
-    clangArgs.add("-l" + npkg.nativeLibs[li])
+    clangArgs.add(nativeLinkArg(npkg.nativeLibs[li]))
     li = li + 1
   }
   clangArgs.add("-o")
@@ -1563,6 +1563,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
   val pkg = dottedPath(f.packageDecl.path)
   val fns: List[FunctionDecl] = newList()
   val externs: List[ExternFuncDecl] = newList()
+  val nativeLibs: List[String] = newList()
   val records: List[RecordDecl] = newList()
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
@@ -1594,6 +1595,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
         val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
         if lowerAll or reachable.containsKey(id) {
           externs.add(decl)
+          addExternLibrary(nativeLibs, f.items[i].annotations)
         }
       }
       case IRecord(decl) -> {
@@ -1650,6 +1652,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
     pkgName = pkg,
     fns = fns,
     externs = externs,
+    nativeLibs = nativeLibs,
     records = records,
     unions = unions,
     enums = enums,
@@ -1660,4 +1663,17 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
     moduleVals = moduleVals,
     importsStdString = fileImportsStdString(f)
   )
+}
+
+/// The clang argument that links library `lib` (D158): a path is an input
+/// file, a file name (`libm.so.6`) is `-l:<name>`, and a base name
+/// (`webview`) is `-l<name>`.
+func nativeLinkArg(lib: in String): String {
+  if Str.contains(lib, "/") {
+    lib
+  } else if Str.contains(lib, ".") {
+    "-l:" + lib
+  } else {
+    "-l" + lib
+  }
 }

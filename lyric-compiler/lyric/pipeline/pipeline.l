@@ -286,6 +286,105 @@ pub record CheckReadyFile {
   diagnostics: List[Diagnostic]
 }
 
+/// C bindings (D158): each `@library("lib") extern func f(...): R =
+/// "symbol"` becomes a body-less IFunc marked `@__cbinding("lib", "symbol")`,
+/// so a managed backend's token allocation, typing and call lowering treat
+/// it like any other package function and only its emission differs: a
+/// P/Invoke method on MSIL, a foreign-function downcall on the JVM.  An
+/// extern func without `@library` is left alone (the type checker reports
+/// it, T0149, on every target but native).
+pub func pipeCBindingsToFuncs(file: in SourceFile): SourceFile {
+  val items: List[Item] = newList()
+  var changed = false
+  for it in file.items {
+    match it.kind {
+      case IExternFunc(decl) -> match cBindingLibrary(it.annotations) {
+        case Some(lib) -> {
+          changed = true
+          items.add(cBindingFuncItem(it, decl, lib))
+        }
+        case None -> items.add(it)
+      }
+      case _ -> items.add(it)
+    }
+  }
+  if not changed {
+    return file
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
+}
+
+/// The library an `@library("name")` annotation among `anns` names.
+pub func cBindingLibrary(anns: in List[Annotation]): Option[String] {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == "library" and a.args.count == 1 {
+      match a.args[0] {
+        case ALiteral(value, _) -> match value { case AVString(v, _) -> return Some(value = v); case _ -> () }
+        case _ -> ()
+      }
+    }
+  }
+  None
+}
+
+/// The `(library, symbol)` of a `@__cbinding` IFunc, if it is one.
+pub func cBindingTarget(decl: in FunctionDecl): Option[CBinding] {
+  for a in decl.annotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == "__cbinding" and a.args.count == 2 {
+      val lib = match a.args[0] { case ALiteral(v, _) -> match v { case AVString(x, _) -> x; case _ -> "" }; case _ -> "" }
+      val sym = match a.args[1] { case ALiteral(v, _) -> match v { case AVString(x, _) -> x; case _ -> "" }; case _ -> "" }
+      return Some(value = CBinding(library = lib, symbol = sym))
+    }
+  }
+  None
+}
+
+/// A C binding's library and exported symbol.
+pub record CBinding {
+  library: String
+  symbol: String
+}
+
+func cBindingFuncItem(it: in Item, decl: in ExternFuncDecl, lib: in String): Item {
+  val args: List[AnnotationArg] = newList()
+  args.add(ALiteral(value = AVString(value = lib, span = decl.span), span = decl.span))
+  args.add(ALiteral(value = AVString(value = decl.symbol, span = decl.span), span = decl.span))
+  val segs: List[String] = newList()
+  segs.add("__cbinding")
+  val anns: List[Annotation] = newList()
+  anns.add(Annotation(name = ModulePath(segments = segs, span = decl.span), args = args, span = decl.span))
+  val noDocs: List[DocComment] = newList()
+  val noContracts: List[ContractClause] = newList()
+  val fn = FunctionDecl(
+    docComments = noDocs,
+    annotations = anns,
+    visibility = it.visibility,
+    isAsync = false,
+    name = decl.name,
+    generics = None,
+    params = decl.params,
+    ret = decl.ret,
+    whereClause = None,
+    contracts = noContracts,
+    body = None,
+    span = decl.span
+  )
+  Item(
+    docComments = it.docComments,
+    annotations = it.annotations,
+    visibility = it.visibility,
+    kind = IFunc(decl = fn),
+    span = it.span
+  )
+}
+
 /// Whether any of `diags` is an error.
 pub func hasErrorDiagnostic(diags: in List[Diagnostic]): Bool {
   var i = 0

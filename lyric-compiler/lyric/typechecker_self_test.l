@@ -26,8 +26,16 @@ func diagCount(cr: in CheckResult): Int {
   cr.diagnostics.count
 }
 
+// The symbols the checked source declares: the FFI intrinsic types the
+// checker registers itself (`NativePtr`, D158) are not counted.
 func symCount(cr: in CheckResult): Int {
-  cr.symbols.symbols.count
+  var n = 0
+  for sym in cr.symbols.symbols {
+    if not cr.symbols.nativeIntrinsicTypes.containsKey(sym.name) {
+      n = n + 1
+    }
+  }
+  n
 }
 
 func hasDiagCode(cr: in CheckResult, code: in String): Bool {
@@ -8912,10 +8920,52 @@ test "the native FFI intrinsics type in a native check (#7910)" {
   )
 }
 
-test "the native FFI intrinsics are unknown to a managed-target check (#7910)" {
+test "the native-only intrinsics are unknown to a managed-target check (#7910)" {
   val cr = checkWithImportedPackages(parse(nativeIntrinsicsSrc).file, stdCoreOptionPackages())
-  assertTrue(hasDiagCode(cr, "T0010"), "NativePtr / NativeWeak: T0010 (" + diagCodesOf(cr) + ")")
-  assertTrue(hasDiagCode(cr, "T0020"), "nativeAddrOf / nativeNullPtr: T0020 (" + diagCodesOf(cr) + ")")
+  assertTrue(hasDiagCode(cr, "T0010"), "NativeWeak: T0010 (" + diagCodesOf(cr) + ")")
+  assertTrue(hasDiagCode(cr, "T0020"), "nativeAddrOf: T0020 (" + diagCodesOf(cr) + ")")
+}
+
+// D157: C bindings run on every target, so NativePtr and nativeNullPtr
+// type everywhere; an extern func needs @library off native.
+val cBindingSrc: String = "package T\n@library(\"c\")\nextern func cMalloc(n: Long): NativePtr[Byte] = \"malloc\"\n" + "@library(\"c\")\nextern func cFree(p: NativePtr[Byte]): Unit = \"free\"\n" + "@unsafe_ffi\nfunc f(): Int {\n  val p: NativePtr[Byte] = cMalloc(8)\n  cFree(p)\n  cFree(nativeNullPtr())\n  0\n}\n"
+
+test "a C binding with NativePtr checks clean on a managed target (D158)" {
+  val cr = checkWithImportedPackages(parse(cBindingSrc).file, stdCoreOptionPackages())
+  assertEqualInt(diagCount(cr), 0, "managed check: clean (" + diagCodesOf(cr) + ")")
+}
+
+test "an extern func without @library is T0149 off native only (D158)" {
+  val src = "package T\nextern func f(x: Int): Int = \"f\"\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, stdCoreOptionPackages()), "T0149"),
+    1,
+    "managed: T0149"
+  )
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackagesForNative(parse(src).file, stdCoreOptionPackages()), "T0149"),
+    0,
+    "native links the symbol itself"
+  )
+}
+
+test "a malformed or repeated @library is T0150 (D158)" {
+  val empty = "package T\n@library(\"\")\nextern func f(x: Int): Int = \"f\"\n"
+  assertEqualInt(countDiagCode(parseCheck(empty), "T0150"), 1, "empty library name")
+  val twice = "package T\n@library(\"a\")\n@library(\"b\")\nextern func f(x: Int): Int = \"f\"\n"
+  assertEqualInt(countDiagCode(parseCheck(twice), "T0150"), 1, "two libraries")
+}
+
+test "a type that cannot cross a C binding is T0151 (D158)" {
+  val src = "package T\n@library(\"c\")\nextern func f(s: String, b: Bool): Unit = \"f\"\n" +
+    "@library(\"c\")\nextern func g(x: Int): Unit = \"g\"\n" +
+    "@library(\"c\")\nextern func h(x: Int): Double = \"h\"\n" +
+    "@library(\"c\")\nextern func k(x: Float): Float = \"k\"\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(src), "T0151"),
+    4,
+    "String, Bool and Float parameters and a Float result; Unit and Double results are fine"
+  )
 }
 
 test "a native intrinsic's type is checked like any other (#7910)" {
@@ -8935,10 +8985,11 @@ test "a native intrinsic's type is checked like any other (#7910)" {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Calls to an `extern func` (#7921) are checked against its declared
-// signature, exactly like a call to a Lyric function.
+// signature, exactly like a call to a Lyric function.  `@library` makes the
+// binding valid on the managed target these tests check for (D158, T0149).
 // ─────────────────────────────────────────────────────────────────────────────
 func externAbsSrc(body: in String): String {
-  "package T\n" + "extern func cAbs(x: Int): Int = \"abs\"\n" + "func f(): Int {\n" + body + "}\n"
+  "package T\n" + "@library(\"c\")\nextern func cAbs(x: Int): Int = \"abs\"\n" + "func f(): Int {\n" + body + "}\n"
 }
 
 test "a correct extern func call is clean and its result type flows on (#7921)" {

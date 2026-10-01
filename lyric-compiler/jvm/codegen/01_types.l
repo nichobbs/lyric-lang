@@ -1874,6 +1874,10 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
         JRef(className = "java/util/ArrayList")
       } else if isBare and seg == "Map" {
         JRef(className = "java/util/HashMap")
+      } else if isBare and seg == "NativePtr" {
+        // A C pointer crosses the foreign-function boundary as its address
+        // (D158); `MemorySegment` conversion happens only at the downcall.
+        JLong
       } else {
         JRef(className = "java/lang/Object")
       }

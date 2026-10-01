@@ -11,6 +11,7 @@ import Std.String
 import Lyric.Parser
 import Lyric.BareFuncRef as BareFuncRef
 import Lyric.ModeChecker
+import Lyric.Pipeline
 import Lyric.Lexer as Lex
 import Jvm.Classfile
 import Jvm.Lowering
@@ -3153,6 +3154,245 @@ func lowerGeneratorBody(
 // Synthesise the static factory LFunc that constructs a generator instance.
 // `public static Object name(params...) { return new GenClass(params...); }`
 // This is added to LPFuncs so it lands in the same class file as main().
+// ── C bindings (D158) ─────────────────────────────────────────────────────────
+// A `@library("lib") extern func f(...): R = "symbol"` is a static method
+// that calls the C symbol through the Foreign Function & Memory API
+// (JDK 22).  The downcall handle is looked up on the first call and cached
+// in a private static field, so a missing library or symbol fails at the
+// call with the JDK's own error, never when the package's host class
+// loads.  A `NativePtr[T]` is a `long` address in Lyric code and an
+// `ADDRESS`-layout `MemorySegment` only across the downcall itself:
+//
+//   getstatic H.__ffi$f$n ; ifnonnull bound
+//   Linker.nativeLinker() ; <lookup>.find("symbol").orElseThrow()
+//   FunctionDescriptor.of(<ret layout>, <param layouts>)
+//   linker.downcallHandle(segment, descriptor) ; putstatic H.__ffi$f$n
+//   bound: getstatic H.__ffi$f$n ; <args> ; invokeExact ; <return>
+//
+// `<lookup>` is the linker's default lookup for the C library ("c") and
+// `SymbolLookup.libraryLookup(System.mapLibraryName(lib), Arena.global())`
+// for any other library, so `@library("webview")` finds `libwebview.so`,
+// `libwebview.dylib` or `webview.dll` on the library path.  A library
+// written as a file name or path (`"libm.so.6"`) skips `mapLibraryName`.
+pub func cBindingCacheField(decl: in FunctionDecl): String {
+  "__ffi$" + decl.name + "$" + toString(decl.params.count)
+}
+
+func isNativePtrTe(te: in TypeExpr): Bool {
+  match te.kind {
+    case TGenericApp(head, _) -> head.segments.count == 1 and head.segments[0] == "NativePtr"
+    case TParen(inner) -> isNativePtrTe(inner)
+    case _ -> false
+  }
+}
+
+// The `ValueLayout` constant for a C-binding value, as "FIELD|class".
+func cBindingLayout(t: in JvmType, isPtr: in Bool): String {
+  if isPtr {
+    return "ADDRESS|java/lang/foreign/AddressLayout"
+  }
+  match t {
+    case JInt -> "JAVA_INT|java/lang/foreign/ValueLayout$OfInt"
+    case JLong -> "JAVA_LONG|java/lang/foreign/ValueLayout$OfLong"
+    case JByte -> "JAVA_BYTE|java/lang/foreign/ValueLayout$OfByte"
+    case JFloat -> "JAVA_FLOAT|java/lang/foreign/ValueLayout$OfFloat"
+    case JDouble -> "JAVA_DOUBLE|java/lang/foreign/ValueLayout$OfDouble"
+    case _ -> panic(
+      "C binding: no FFM layout for a " + typeDescriptor(t) +
+        " value; the type checker admits only Int, Long, Byte, Float, Double and NativePtr[T] (T0151)"
+    )
+  }
+}
+
+func pushCBindingLayout(insns: in List[LInsn], t: in JvmType, isPtr: in Bool): Unit {
+  val layout = cBindingLayout(t, isPtr)
+  val bar = indexOfRaw(layout, "|")
+  insns.add(
+    LGetstatic(
+      owner = "java/lang/foreign/ValueLayout",
+      name = layout.substring(0, bar),
+      t = JRef(className = layout.substring(bar + 1))
+    )
+  )
+}
+
+pub func makeCBindingDowncall(
+  decl: in FunctionDecl,
+  binding: in CBinding,
+  funcsClass: in String,
+  pkgName: in String,
+  externTypes: in Map[String, String],
+): LFunc {
+  val mh = JRef(className = "java/lang/invoke/MethodHandle")
+  val linkerTy = JRef(className = "java/lang/foreign/Linker")
+  val lookupTy = JRef(className = "java/lang/foreign/SymbolLookup")
+  val segTy = JRef(className = "java/lang/foreign/MemorySegment")
+  val layoutTy = JRef(className = "java/lang/foreign/MemoryLayout")
+  val fdTy = JRef(className = "java/lang/foreign/FunctionDescriptor")
+  val cacheField = cBindingCacheField(decl)
+  val params: List[JvmType] = newList()
+  val ptrs: List[Bool] = newList()
+  for p in decl.params {
+    params.add(typeExprToJvmExtern(p.ty, pkgName, externTypes))
+    ptrs.add(isNativePtrTe(p.ty))
+  }
+  val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
+  val retPtr = match decl.ret { case Some(te) -> isNativePtrTe(te); case None -> false }
+  val none: List[JvmType] = newList()
+  val insns: List[LInsn] = newList()
+  insns.add(LGetstatic(owner = funcsClass, name = cacheField, t = mh))
+  insns.add(LIfnonnull(label = "ffi_bound"))
+  insns.add(
+    LInvokestaticIface(owner = "java/lang/foreign/Linker", name = "nativeLinker", params = none, ret = linkerTy)
+  )
+  if binding.library == "c" {
+    insns.add(LDup)
+    insns.add(
+      LInvokeinterface(
+        owner = "java/lang/foreign/Linker",
+        name = "defaultLookup",
+        params = none,
+        ret = lookupTy,
+        argCount = 1
+      )
+    )
+  } else {
+    insns.add(LPushString(s = binding.library))
+    // A base name gets the platform's file naming; a file name or path
+    // (`libm.so.6`) goes to the dynamic loader as written.
+    if indexOfRaw(binding.library, ".") < 0 and indexOfRaw(binding.library, "/") < 0 {
+      val strPs: List[JvmType] = newList()
+      strPs.add(JRef(className = "java/lang/String"))
+      insns.add(
+        LInvokestatic(
+          owner = "java/lang/System",
+          name = "mapLibraryName",
+          params = strPs,
+          ret = JRef(className = "java/lang/String")
+        )
+      )
+    }
+    val arenaTy = JRef(className = "java/lang/foreign/Arena")
+    insns.add(LInvokestaticIface(owner = "java/lang/foreign/Arena", name = "global", params = none, ret = arenaTy))
+    val libPs: List[JvmType] = newList()
+    libPs.add(JRef(className = "java/lang/String"))
+    libPs.add(arenaTy)
+    insns.add(
+      LInvokestaticIface(owner = "java/lang/foreign/SymbolLookup", name = "libraryLookup", params = libPs, ret = lookupTy)
+    )
+  }
+  insns.add(LPushString(s = binding.symbol))
+  val findPs: List[JvmType] = newList()
+  findPs.add(JRef(className = "java/lang/String"))
+  val optTy = JRef(className = "java/util/Optional")
+  insns.add(
+    LInvokeinterface(
+      owner = "java/lang/foreign/SymbolLookup",
+      name = "find",
+      params = findPs,
+      ret = optTy,
+      argCount = 2
+    )
+  )
+  insns.add(
+    LInvokevirtual(
+      owner = "java/util/Optional",
+      name = "orElseThrow",
+      params = none,
+      ret = JRef(className = "java/lang/Object")
+    )
+  )
+  insns.add(LCheckcast(className = "java/lang/foreign/MemorySegment"))
+  val layoutArr = JArray(elem = layoutTy)
+  match ret {
+    case JVoid -> ()
+    case _ -> pushCBindingLayout(insns, ret, retPtr)
+  }
+  insns.add(LIconst(v = params.count))
+  insns.add(LAnewarray(className = "java/lang/foreign/MemoryLayout"))
+  var i = 0
+  while i < params.count {
+    insns.add(LDup)
+    insns.add(LIconst(v = i))
+    pushCBindingLayout(insns, params[i], ptrs[i])
+    insns.add(LAastore)
+    i = i + 1
+  }
+  val fdPs: List[JvmType] = newList()
+  match ret {
+    case JVoid -> {
+      fdPs.add(layoutArr)
+      insns.add(
+        LInvokestaticIface(owner = "java/lang/foreign/FunctionDescriptor", name = "ofVoid", params = fdPs, ret = fdTy)
+      )
+    }
+    case _ -> {
+      fdPs.add(layoutTy)
+      fdPs.add(layoutArr)
+      insns.add(LInvokestaticIface(owner = "java/lang/foreign/FunctionDescriptor", name = "of", params = fdPs, ret = fdTy))
+    }
+  }
+  insns.add(LIconst(v = 0))
+  insns.add(LAnewarray(className = "java/lang/foreign/Linker$Option"))
+  val dcPs: List[JvmType] = newList()
+  dcPs.add(segTy)
+  dcPs.add(fdTy)
+  dcPs.add(JArray(elem = JRef(className = "java/lang/foreign/Linker$Option")))
+  insns.add(
+    LInvokeinterface(owner = "java/lang/foreign/Linker", name = "downcallHandle", params = dcPs, ret = mh, argCount = 4)
+  )
+  insns.add(LPutstatic(owner = funcsClass, name = cacheField, t = mh))
+  insns.add(LLabel(name = "ffi_bound"))
+  insns.add(LGetstatic(owner = funcsClass, name = cacheField, t = mh))
+  val exactPs: List[JvmType] = newList()
+  var slot = 0
+  i = 0
+  while i < params.count {
+    val pt = params[i]
+    match pt {
+      case JLong -> insns.add(LLload(slot = slot))
+      case JDouble -> insns.add(LDload(slot = slot))
+      case JFloat -> insns.add(LFload(slot = slot))
+      case _ -> insns.add(LIload(slot = slot))
+    }
+    slot = slot + fieldSlotSize(pt)
+    if ptrs[i] {
+      val addrPs: List[JvmType] = newList()
+      addrPs.add(JLong)
+      insns.add(
+        LInvokestaticIface(owner = "java/lang/foreign/MemorySegment", name = "ofAddress", params = addrPs, ret = segTy)
+      )
+      exactPs.add(segTy)
+    } else {
+      exactPs.add(pt)
+    }
+    i = i + 1
+  }
+  val exactRet = if retPtr { segTy } else { ret }
+  insns.add(
+    LInvokevirtual(owner = "java/lang/invoke/MethodHandle", name = "invokeExact", params = exactPs, ret = exactRet)
+  )
+  if retPtr {
+    insns.add(
+      LInvokeinterface(
+        owner = "java/lang/foreign/MemorySegment",
+        name = "address",
+        params = none,
+        ret = JLong,
+        argCount = 1
+      )
+    )
+  }
+  match ret {
+    case JVoid -> insns.add(LReturn)
+    case JLong -> insns.add(LLreturn)
+    case JDouble -> insns.add(LDreturn)
+    case JFloat -> insns.add(LFreturn)
+    case _ -> insns.add(LIreturn)
+  }
+  LFunc(flags = 0x0009, name = decl.name, params = params, ret = ret, insns = insns, maxStack = 0, maxLocals = 0)
+}
+
 func makeGeneratorFactory(
   decl: in FunctionDecl,
   genClass: in String,
@@ -3646,7 +3886,7 @@ func fnFieldRetTe(te: in TypeExpr): Option[TypeExpr] {
 }
 
 pub func collectFileSigsSeeded(
-  file: in SourceFile,
+  file0: in SourceFile,
   into: in Map[String, JvmFuncSig],
   externSeed: in Map[String, String],
   // #6929: bundle-wide ctor registry, fully populated across every file in
@@ -3660,6 +3900,9 @@ pub func collectFileSigsSeeded(
   // pre-existing same-file-only behavior when given an empty map.
   ctorReg: in Map[String, String],
 ): Unit {
+  // A `@library` extern func registers like the body-less function it is
+  // lowered to (D158), so calls to it resolve before codegen converts it.
+  val file = pipeCBindingsToFuncs(file0)
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
   // Resolve `extern type` parameter/return descriptors to the real JVM class
   // (e.g. `JBAOS` -> `java/io/ByteArrayOutputStream`), not `<pkg>/<Alias>`
@@ -7393,7 +7636,21 @@ pub func codegenPackageWithSigsSeeded(
     val item = file.items[i]
     match item.kind {
       case IFunc(decl) -> {
-        if decl.isAsync and funcBodyContainsYield(decl) {
+        val cbinding = cBindingTarget(decl)
+        val isCBinding = match cbinding { case Some(_) -> true; case None -> false }
+        if isCBinding {
+          val cb = match cbinding { case Some(b) -> b; case None -> CBinding(library = "", symbol = "") }
+          fns.add(makeCBindingDowncall(decl, cb, funcsClass, pkgName, externTypes))
+          val noInit: List[LInsn] = newList()
+          staticVals.add(
+            LStaticVal(
+              name = cBindingCacheField(decl),
+              valType = JRef(className = "java/lang/invoke/MethodHandle"),
+              initInsns = noInit,
+              cache = true
+            )
+          )
+        } else if decl.isAsync and funcBodyContainsYield(decl) {
           // Async generator: synthesise Iterable+Iterator class via lowerAsyncGenerator.
           val genClass = pkgName + "$" + decl.name + "$Gen"
           val bodyInsns = lowerGeneratorBody(
@@ -7594,7 +7851,7 @@ pub func codegenPackageWithSigsSeeded(
             // carries for bare-reference `getstatic`.  The cache is always
             // populated for the PBinding form (same scan as here).
             match findLoweredModuleVal(loweredVals, name) {
-              case Some(lv) -> staticVals.add(LStaticVal(name = name, valType = lv.field, initInsns = lv.insns))
+              case Some(lv) -> staticVals.add(LStaticVal(name = name, valType = lv.field, initInsns = lv.insns, cache = false))
               case None -> ()
             }
           }
@@ -7831,13 +8088,12 @@ pub func codegenPackageWithSigsSeeded(
       case IExternType(_) -> {
       }
       case IExternFunc(decl) -> {
-        // A C-ABI `extern func` (D-N-007) only exists on the native target;
-        // reaching the JVM backend means the source is being compiled for
-        // the wrong target — reject loudly instead of emitting a call to a
-        // function that was silently dropped (#4630).
+        // A `@library` extern func was lowered to a downcall method before
+        // codegen (D158); one without a library is T0149 off native, so
+        // reaching here means the checker was bypassed.
         panic(
-          "extern func '" + decl.name +
-            "' is only supported with --target native; on the JVM declare the binding via extern type auto-FFI in a _kernel_jvm/ package instead"
+          "extern func '" + decl.name + "' names no @library, so the JVM has no library to bind \"" + decl.symbol +
+            "\" from (T0149)"
         )
       }
       case ITest(_) -> {

@@ -290,6 +290,40 @@ Because `import extern` and `extern type` resolve against real metadata, they ca
 Calling `System.Type.GetType` yourself through an `import extern` is a direct, statically-emitted `MemberRef` call — not runtime reflection, and fully AOT-compatible. This is distinct from §13.6, which is about the *compiler* never needing reflection to marshal Lyric's own opaque types.
 :::
 
+## §13.10 Calling C libraries with `@library`
+
+Some libraries exist only as C: a native GUI toolkit, a codec, a system API. An `extern func` with `@library` calls one directly, on every target:
+
+```lyric
+@library("c")
+extern func labs(x: Long): Long = "labs"
+
+@library("webview")
+extern func webviewCreate(debug: Int, window: NativePtr[Byte]): NativePtr[Byte] = "webview_create"
+```
+
+The string after `=` is the C symbol. The `@library` argument is the library's base name: write `"webview"`, and each runtime looks for `libwebview.so`, `libwebview.dylib` or `webview.dll` on its own library path. `"c"` is the C library itself. For a system library whose unversioned name exists only in development packages, give the versioned file name instead (`@library("libm.so.6")`); a name containing `.` or `/` is passed to the loader as written.
+
+Each target calls the symbol its own way. On .NET the declaration becomes a P/Invoke method. On the JVM it becomes a call through the Foreign Function & Memory API, which needs **JDK 22 or later** to run; the handle is looked up on the first call, so a missing library fails at that call rather than when your program starts. On `--target native` the symbol is called directly and the library is linked in.
+
+Only simple values cross the call: `Int`, `Long`, `Byte`, `Double` and `NativePtr[T]`, with `Unit` allowed as a result (error T0151 otherwise; `Float` is not supported yet). A `NativePtr[T]` is an opaque address. Code that holds one must be an `@unsafe_ffi` function (N0100), the same rule as on the native target:
+
+```lyric
+@library("c")
+extern func malloc(size: Long): NativePtr[Byte] = "malloc"
+
+@library("c")
+extern func free(p: NativePtr[Byte]): Unit = "free"
+
+@unsafe_ffi
+func scratch(): Unit {
+  val p: NativePtr[Byte] = malloc(64)
+  free(p)
+}
+```
+
+Strings, records and callbacks do not cross a C binding on .NET or the JVM. Keep the C surface small, give it pointer-and-integer signatures, and wrap it in a safe Lyric function, as §13.4 does for BCL calls. On `--target dotnet` and `--target jvm` an `extern func` with no `@library` is error T0149.
+
 ## Exercises
 
 1. Write an `extern package System.Console` that wraps `Console.ReadLine()` and `Console.WriteLine(string)`. Provide `requires:` and `ensures:` clauses that reflect what the BCL actually guarantees. Then write a Lyric `Console` package that wraps it, returning `Option[String]` from `readLine()` — `Some(line)` when a line is read, `None` when EOF is reached.
