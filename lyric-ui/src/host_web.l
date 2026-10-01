@@ -26,6 +26,14 @@
 //! disconnected sessions are evicted, and if every session is connected the
 //! new browser gets a "server busy" page instead.  Expired sessions are
 //! removed whenever a session is created or resumed.
+//!
+//! First paint does not wait for the socket (D152, docs/65 §13.4).  With
+//! `prerender` on, a page request starts the session for its URL there and
+//! then: the shell carries the first view as HTML (`Ui.Html`) and the new
+//! session's id, and the runtime's `hello` resumes that session, so `init`
+//! and its effects run once.  An unclaimed prerendered session expires
+//! after `reconnectGraceMs` like any disconnected one.  The page is inert
+//! until the socket connects.
 @runtime_checked
 @io
 package Ui.Host.Web
@@ -44,13 +52,15 @@ import Ws.{WsHandler, WsContext, WsMessage, WsError, WsCloseCode, NativeRegistry
 import Ui.Protocol.{ClientMessage, Hello, EventMsg, Sync, decodeClient, encodeSession, protocolVersion}
 import Ui.Host.{Instance, Outbox, SessionRegistry, ResumedSession, Unknown, staticPage}
 import Ui.Host.Assets
+import Ui.Routing
 
 /// Where and how to serve.  `wsPath` is the session WebSocket's path on
 /// `port`.  `publicWsUrl`, when not empty, is the socket URL browsers are told to
 /// open, for a deployment whose proxy routes the socket elsewhere; when
 /// empty it is derived from the request (see `sessionSocketUrl`).
 /// `reconnectGraceMs` is how long a disconnected session can be resumed;
-/// `maxSessions` bounds the sessions held in memory.
+/// `maxSessions` bounds the sessions held in memory.  `prerender` renders
+/// each page's first view into the shell (D152).
 pub record HostConfig {
   title: String
   host: String
@@ -59,11 +69,12 @@ pub record HostConfig {
   publicWsUrl: String
   reconnectGraceMs: Long
   maxSessions: Int
+  prerender: Bool = true
 }
 
 /// Serve on all interfaces on port 8080, with the session socket at
 /// `/_ui`; resume a disconnected session for two minutes; hold at most
-/// 10000 sessions.
+/// 10000 sessions; prerender each page's first view.
 pub func defaultConfig(title: in String): HostConfig {
   return HostConfig(
     title = title,
@@ -72,7 +83,8 @@ pub func defaultConfig(title: in String): HostConfig {
     wsPath = "/_ui",
     publicWsUrl = "",
     reconnectGraceMs = 120_000,
-    maxSessions = 10_000
+    maxSessions = 10_000,
+    prerender = true
   )
 }
 
@@ -132,7 +144,13 @@ pub func router(cfg: in HostConfig, route: in (String) -> Option[Instance]): Res
     Asset(body = Assets.runtimeToastsJs, contentType = "text/javascript; charset=utf-8")
   )
   r = Web.addGet(r, "/_ui/theme.css", Asset(body = Assets.themeCss, contentType = "text/css; charset=utf-8"))
-  val shell = Shell(title = cfg.title, wsPath = cfg.wsPath, publicWsUrl = cfg.publicWsUrl)
+  val shell = Shell(
+    title = cfg.title,
+    wsPath = cfg.wsPath,
+    publicWsUrl = cfg.publicWsUrl,
+    socket = socket,
+    prerender = cfg.prerender
+  )
   r = Web.addGet(r, "/", shell)
   r = Web.addGet(r, "/{*path}", shell)
   return Ok(value = r)
@@ -155,18 +173,77 @@ record Shell {
   title: String
   wsPath: String
   publicWsUrl: String
+  socket: UiSocket
+  prerender: Bool
 }
 
 impl Handler for Shell {
   func handle(req: in Request): Response {
     val hostHeader = match Web.header(req, "host") { case Some(h) -> h; case None -> "localhost" }
     val wsUrl = sessionSocketUrl(self.publicWsUrl, Web.header(req, "x-forwarded-proto"), hostHeader, self.wsPath)
-    return Web.html(200, shellHtml(self.title, wsUrl))
+    if not self.prerender {
+      return Web.html(200, shellHtml(self.title, wsUrl, "", ""))
+    }
+    val first = prerenderPage(self.socket, requestUrl(req))
+    // The page names a session and shows its state: it must not be cached
+    // or shared.
+    return Web.withResponseHeader(
+      Web.html(200, shellHtml(self.title, wsUrl, first.sessionId, first.html)),
+      "Cache-Control",
+      "no-store"
+    )
   }
 }
 
-/// The page shell: mount point, theme and runtime module.
-pub func shellHtml(title: in String, wsUrl: in String): String {
+/// A prerendered first view and the session it belongs to; both empty when
+/// no session could be started (the server is at capacity).
+pub record FirstView {
+  sessionId: String
+  html: String
+}
+
+// Starts a disconnected session for `url` and renders its first view.  The
+// session's output goes to whichever connection resumes it; until then
+// there is none, and effect results update the model only once the session
+// is detached.
+func prerenderPage(s: in UiSocket, url: in String): FirstView {
+  val inst = match s.route(url) {
+    case Some(i) -> i
+    case None -> staticPage("Not found", "There is no page at " + url + ".")
+  }
+  val id = newSessionId()
+  if not s.sessions.admit(id, inst, "", Time.nowEpochMillis(), s.graceMs, s.maxSessions) {
+    return FirstView(sessionId = "", html = "")
+  }
+  inst.start(SessionOutbox(registry = s.registry, sessions = s.sessions, sessionId = id))
+  val html = inst.snapshot()
+  val sessions = s.sessions
+  inst.detach({ -> sessions.isDetached(id) })
+  return FirstView(sessionId = id, html = html)
+}
+
+/// The page URL a request names: its path and, when it has one, its query,
+/// as the runtime reports it in `hello`.  The query is rebuilt from the
+/// parsed parameters, so its order and encoding may differ from the
+/// original.
+pub func requestUrl(req: in Request): String {
+  var query = ""
+  for k in mapKeys(req.queryParams) {
+    match mapGet(req.queryParams, k) {
+      case Some(v) -> {
+        query = query + (if query.length == 0 { "?" } else { "&" }) + Routing.encodeSegment(k) + "=" +
+          Routing.encodeSegment(v)
+      }
+      case None -> ()
+    }
+  }
+  return req.path + query
+}
+
+/// The page shell: mount point, theme and runtime module.  `sessionId` and
+/// `firstView`, when not empty, are a prerendered session and its first view
+/// as HTML (D152): the runtime resumes that session when it connects.
+pub func shellHtml(title: in String, wsUrl: in String, sessionId: in String, firstView: in String): String {
   return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n" +
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
     "<title>" +
@@ -178,7 +255,11 @@ pub func shellHtml(title: in String, wsUrl: in String): String {
     "</head>\n<body>\n" +
     "<div id=\"lyric-ui\" aria-busy=\"true\" data-ws=\"" +
     escapeHtml(wsUrl) +
-    "\"></div>\n" +
+    "\"" +
+    (if sessionId.length > 0 { " data-sid=\"" + escapeHtml(sessionId) + "\"" } else { "" }) +
+    ">" +
+    firstView +
+    "</div>\n" +
     "<script type=\"module\" src=\"/_ui/runtime/main.js?v=" +
     Assets.assetVersion +
     "\"></script>\n" +

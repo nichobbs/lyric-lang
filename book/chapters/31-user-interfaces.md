@@ -505,10 +505,31 @@ change any of them with `.copy`:
 | `publicWsUrl` | `""` | socket URL for browsers, when a proxy routes it elsewhere |
 | `reconnectGraceMs` | 120000 | how long a disconnected session can be resumed |
 | `maxSessions` | 10000 | sessions held in memory |
+| `prerender` | `true` | render each page's first view into the HTML |
+
+### First paint
+
+With `prerender` on, the page does not wait for the WebSocket to show
+something. The host starts the session as it serves the page. It renders
+that session's first view into the HTML and puts the session's id in the
+page; the runtime resumes that session when its socket connects. So
+`init` and its effects run once, and the live view replaces the
+prerendered markup without a visible change.
+
+Until the socket connects, the page is inert: it has no event handlers,
+and the mount point carries `aria-busy="true"`. The runtime clears it once
+the live view is applied, so a test waits for `#lyric-ui:not([aria-busy])`.
+
+Each prerendered page names a session, so the host serves it with
+`Cache-Control: no-store`. A session that no browser claims expires after
+`reconnectGraceMs`, like a disconnected one. The first view is whatever
+`init` and the view produce before its effects finish, typically a
+loading state.
 
 ### Sessions and reconnection
 
-Every page load gets a session with an unguessable 128-bit id. If the
+Every page load gets a session with an unguessable 128-bit id (with
+`prerender` on, it is created as the page is served). If the
 connection drops (a laptop sleeps, a network changes), the browser
 reconnects with that id and continues where it left off, as long as it
 returns within `reconnectGraceMs`. A disconnected session keeps only its

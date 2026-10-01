@@ -35,7 +35,8 @@ import Std.Collections
 import Std.Console as Console
 import Std.Task as Tasks
 import Ui.Core.{View, Step, UiEffect, stay}
-import Ui.Diff.{Patch}
+import Ui.Diff.{Patch, toWire}
+import Ui.Html.{renderHtml}
 import Ui.Protocol.{ClientMessage, Hello, EventMsg, Sync, ValueEcho, encodePatches, encodeNavigate, encodeBack, encodeToast}
 import Ui.Session
 import Ui.Session.{Program, Session, Output, HostCommand, NavigateTo, GoBack, ShowToast}
@@ -105,7 +106,12 @@ pub protected type SessionRegistry {
       byId.remove(oldest)
     }
     byId.add(id, SessionEntry(instance = inst, connectionId = connectionId, since = now))
-    bindConnection(connectionId, id)
+    // An empty connection id admits the session disconnected: a page
+    // prerendered before its socket connects (D152).  It expires like any
+    // disconnected session unless a connection attaches within `graceMs`.
+    if connectionId.length > 0 {
+      bindConnection(connectionId, id)
+    }
     return true
   }
   /// Attaches session `id` to `connectionId` when it exists and has not
@@ -203,6 +209,8 @@ pub protected type SessionRegistry {
 ///   the instance lock is held: a reconnect may have resumed the session
 ///   between the disconnect and the call.
 /// - `resume` renders the whole tree again for a reconnected host.
+/// - `snapshot` is the current tree as HTML (`Ui.Html`), or empty before
+///   `start`.  Take it before `detach`, which drops the tree.
 /// - `close` stops the instance for good: effects still running are
 ///   cancelled (cooperatively) and their results dropped.  It never waits
 ///   for a running step, so it is safe to call while holding another lock.
@@ -211,6 +219,7 @@ pub record Instance {
   receive: (ClientMessage, Outbox) -> Unit
   detach: (() -> Bool) -> Unit
   resume: (Outbox) -> Unit
+  snapshot: () -> String
   close: () -> Unit
 }
 
@@ -322,8 +331,27 @@ pub func instance[M, Msg, E](p: in Program[M, Msg, E], init: in Step[M, E], run:
       }
     )
   }
+  val snapshot = { ->
+    val html: List[String] = newList()
+    withLock(
+      lock,
+      { -> if cell.count > 0 { val current: Session[M, Msg] = cell[0]; html.add(renderHtml(toWire(current.tree))) } }
+    )
+    if html.count > 0 {
+      html[0]
+    } else {
+      ""
+    }
+  }
   val close = { -> Tasks.cancelScope(tasks) }
-  return Instance(start = start, receive = receive, detach = detach, resume = resume, close = close)
+  return Instance(
+    start = start,
+    receive = receive,
+    detach = detach,
+    resume = resume,
+    snapshot = snapshot,
+    close = close
+  )
 }
 
 /// What an instance's effect tasks share: its lock, its task scope, and

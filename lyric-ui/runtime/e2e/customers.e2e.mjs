@@ -31,9 +31,25 @@ async function openEditor() {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.goto(pageUrl);
+  // The prerendered page is inert; wait for the live tree to replace it.
+  await page.locator("#lyric-ui:not([aria-busy])").waitFor({ timeout });
   await page.getByRole("heading", { level: 1, name: "Customer 1" }).waitFor({ timeout });
   return { page, errors };
 }
+
+test(`${target}: the page arrives prerendered, then the session takes over`, async () => {
+  const response = await fetch(pageUrl);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const html = await response.text();
+  assert.match(html, /<div id="lyric-ui" aria-busy="true" data-ws="[^"]+" data-sid="[0-9A-Fa-f]{32}">/);
+  // The edit screen starts by loading the customer: its first view is the
+  // loading spinner, or the editor if the load already finished.
+  assert.ok(html.includes("lui-spinner") || html.includes("Customer 1"), html);
+  const { page, errors } = await openEditor();
+  assert.equal(await page.getByLabel("Name").inputValue(), "Acme Pty Ltd");
+  assert.deepEqual(errors, []);
+  await page.close();
+});
 
 test(`${target}: the editor renders the stored customer`, async () => {
   const { page, errors } = await openEditor();

@@ -1,7 +1,7 @@
 // Lyric UI host runtime: connection to the session (docs/65 §9.3, §10.1).
 //
 // The page shell (served by `Ui.Host.Web`) contains
-//   <div id="lyric-ui" data-ws="ws://host:port/_ui"></div>
+//   <div id="lyric-ui" data-ws="ws://host:port/_ui" data-sid="...">first view</div>
 //   <script type="module" src="/_ui/runtime/main.js"></script>
 // This module connects, says hello with the current URL, applies patch
 // messages to the mirror tree (which drives the DOM), and reports events.
@@ -38,7 +38,11 @@ export class Host {
   private pendingInputs = new Map<MNode, PendingInput>();
   private flushScheduled = false;
 
-  constructor(private readonly mount: HTMLElement, private readonly url: string) {
+  // `sessionId` is the session the server prerendered this page from, if
+  // any (D152): the first hello resumes it, so its view replaces the
+  // prerendered markup without running the screen's init again.
+  constructor(private readonly mount: HTMLElement, private readonly url: string, sessionId = "") {
+    this.sessionId = sessionId;
     this.tree = new Tree(new DomRenderer(mount, (node, event, data, iv) => this.onEvent(node, event, data, iv)));
   }
 
@@ -47,7 +51,6 @@ export class Host {
     this.socket = ws;
     ws.addEventListener("open", () => {
       this.retryMs = 500;
-      this.mount.removeAttribute("aria-busy");
       const hello: Record<string, unknown> = { t: "hello", pv: PROTOCOL_VERSION, url: location.pathname + location.search };
       if (this.sessionId !== "") {
         hello.sid = this.sessionId;
@@ -81,6 +84,9 @@ export class Host {
             this.tree.apply(op);
           }
           this.version = msg.v;
+          // The page is live once the session's tree is applied: until
+          // then it shows prerendered markup with no handlers (D152).
+          this.mount.removeAttribute("aria-busy");
         } catch (e) {
           // A patch that does not apply means the host and session disagree;
           // a full re-render restores agreement.
@@ -180,5 +186,5 @@ for (const t of takeStashedToasts(sessionStorage)) {
 
 const mount = document.getElementById("lyric-ui");
 if (mount && mount.dataset.ws) {
-  new Host(mount, mount.dataset.ws).connect();
+  new Host(mount, mount.dataset.ws, mount.dataset.sid ?? "").connect();
 }
