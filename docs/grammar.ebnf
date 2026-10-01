@@ -138,7 +138,8 @@ SoftKeyword = 'range'    | 'derives' | 'forall'     | 'exists'
             | 'implies'  | 'scope_kind'
             | 'from'                              (* aspect instantiation clause *)
             | 'defer'                             (* defer-statement keyword *)
-            | 'config'   ;                        (* config-block keyword *)
+            | 'config'                            (* config-block keyword *)
+            | 'foreign'  ;                        (* before 'record' only; D155 *)
 
 (* §1.6.1 Reserved-but-unused keywords
  *

@@ -3,7 +3,7 @@
 **Status:** Specced in D155 (phase G0): Q-GFX-001 to Q-GFX-004 are
 resolved, `docs/01` specifies the §4 language features as not yet
 implemented, and `docs/00` / `docs/04` carry the §4.9 revisions. Phases G1
-to G10 are open; Q-GFX-005 to Q-GFX-010 remain open (§10).
+to G10 are open. D156 resolves Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),
 `docs/65-ui-library-sketch.md` §13.3 (non-HTML hosts), `docs/63-build-profiles-and-debugger.md`
@@ -87,7 +87,7 @@ Each item was checked against the code, not only the plan documents.
 | Concurrency | Cooperative, single-threaded scheduler. No safe multi-threading. | `native/plan/06-async-design.md` |
 | Dependencies | Path and workspace `[dependencies]` compile from source into a native build (#7833, closing #6815). No library package carries its own `extern func` kernel yet, so a dependency that binds C symbols, and the propagation of its link flags to the application, are untested. | `docs/01` §13.1, `cli/workspace_builder.l` |
 | Release codegen | Overflow checks are not gated on the build profile. | #6263 |
-| Positioning | `docs/00` lists "game developers needing hot-path optimization" as not the audience and describes the memory model as host GC only; `docs/04` rejects SIMD intrinsics and operator overloading beyond numeric distinct types. | `docs/00`, `docs/04` |
+| Positioning | Before D155, `docs/00` listed "game developers needing hot-path optimization" as not the audience and described the memory model as host GC only, and `docs/04` rejected operator overloading beyond numeric distinct types. D155 revised both (§4.9); `docs/04` still rejects SIMD intrinsics. | `docs/00`, `docs/04` |
 
 ---
 
@@ -479,10 +479,10 @@ XL (a quarter or more of focused work).
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
-G5.
+G5. G8 and G9 can run in parallel once their dependencies land.
 
 **Tracking:** epic #7939; G1 #7940, G2 #7941, G3 #7942, G4 #7943, G5 #7944,
-G6 #7945, G7 #7946, G8 #7947, G9 #7948, G10 #7949. G8 and G9 can run in parallel once their dependencies land.
+G6 #7945, G7 #7946, G8 #7947, G9 #7948, G10 #7949.
 
 **Later (not planned here):** a Lyric shader subset compiled to WGSL,
 sharing `Std.Math` types between CPU and GPU code; `wasm32` with browser
@@ -520,9 +520,9 @@ the GPU.
 | Q-GFX-002 | Make `Float` 32-bit on every backend now, with migration? | **Resolved (D155):** yes. |
 | Q-GFX-003 | GPU API: `webgpu.h` (wgpu-native / Dawn) or SDL3's own GPU API? SDL_GPU means one dependency, but per-backend shader formats (SPIR-V, MSL, DXIL) and an offline shader toolchain; `webgpu.h` uses WGSL everywhere and maps to the browser. | **Resolved (D155):** `webgpu.h` via wgpu-native. |
 | Q-GFX-004 | Extend `derives Add, Sub` to homogeneous numeric records (§4.6)? | **Resolved (D155):** yes. |
-| Q-GFX-005 | Name and exact rules of the `Plain` marker; whether enums with explicit ordinals qualify. | As §4.5. |
-| Q-GFX-006 | `lyric bindgen` input: clang JSON AST only, or also `webgpu.yml`? | Both; `webgpu.yml` is the more stable source for WebGPU. |
-| Q-GFX-007 | Native libraries: prebuilt archives by default, or system packages? | Prebuilt by default, `pkg-config` opt-in. |
-| Q-GFX-008 | Are by-value record semantics (`var` field mutation through a copy) currently consistent across backends? | Audit in G1; treat divergence as a bug. |
-| Q-GFX-009 | Priority of the Windows port (G9) against G6 and G7. | Start G9 in parallel once G3 lands. |
-| Q-GFX-010 | Should `lyric-game` include an entity-component system? | No; keep it a frame loop and asset layer, revisit after the sample game. |
+| Q-GFX-005 | Name and exact rules of the `Plain` marker; whether enums with explicit ordinals qualify. | **Resolved (D156):** `Plain`, as §4.5; Lyric enums have no explicit ordinals. |
+| Q-GFX-006 | `lyric bindgen` input: clang JSON AST only, or also `webgpu.yml`? | **Resolved (D156):** both; `webgpu.yml` drives WebGPU. |
+| Q-GFX-007 | Native libraries: prebuilt archives by default, or system packages? | **Resolved (D156):** prebuilt by default, `pkg-config` opt-in. |
+| Q-GFX-008 | Are by-value record semantics (`var` field mutation through a copy) currently consistent across backends? | **Resolved (D156):** records have value semantics on every backend; G1 audits and fixes divergences. |
+| Q-GFX-009 | Priority of the Windows port (G9) against G6 and G7. | **Resolved (D156):** start G9 in parallel once G3 lands. |
+| Q-GFX-010 | Should `lyric-game` include an entity-component system? | **Resolved (D156):** no; a separate library may follow the sample game. |
