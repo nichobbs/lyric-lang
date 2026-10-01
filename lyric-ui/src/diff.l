@@ -133,12 +133,40 @@ pub func diffShown[Msg](before: in View[Msg], after: in View[Msg], path: in List
 /// `tree` with every `Lazy` resolved to a `Memo`: one whose key and
 /// fingerprint match a `Memo` in `previous` reuses that memo's subtree
 /// without rendering; any other is rendered now.  Lazy keys are unique
-/// within a view; a key that occurs twice is rendered every time.
+/// within a view; a key that occurs twice, in `previous` or in `tree`, is
+/// rendered every time.  A reused subtree is not rendered or diffed, but
+/// each call still walks `previous` to find its memos.
 pub func resolveLazy[Msg](tree: in View[Msg], previous: in View[Msg]): View[Msg] {
   val memos: Map[String, View[Msg]] = newMap()
   val repeated: List[String] = newList()
   collectMemos(previous, memos, repeated)
-  return resolveWith(tree, memos, repeated)
+  val seen: List[String] = newList()
+  collectLazyKeys(tree, seen, repeated)
+  val used: List[String] = newList()
+  return resolveWith(tree, memos, repeated, used)
+}
+
+/// Records each `Lazy` key in `v` outside any `Lazy` (whose subtree is not
+/// rendered yet) in `seen`; a key seen twice goes to `repeated`.
+pub func collectLazyKeys[Msg](v: in View[Msg], seen: in List[String], repeated: in List[String]): Unit {
+  match v {
+    case Lazy(key, _, _) -> {
+      if containsString(seen, key) {
+        if not containsString(repeated, key) {
+          repeated.add(key)
+        }
+      } else {
+        seen.add(key)
+      }
+    }
+    case Memo(_, _, c) -> collectLazyKeys(c, seen, repeated)
+    case Element(_, _, _, _, cs) -> {
+      for c in cs {
+        collectLazyKeys(c, seen, repeated)
+      }
+    }
+    case _ -> ()
+  }
 }
 
 /// Records each `Memo` in `v` by key; a key seen twice goes to `repeated`.
@@ -161,28 +189,42 @@ pub func collectMemos[Msg](v: in View[Msg], memos: in Map[String, View[Msg]], re
   }
 }
 
-/// `resolveLazy`'s walk, against memos already collected.
-pub func resolveWith[Msg](v: in View[Msg], memos: in Map[String, View[Msg]], repeated: in List[String]): View[Msg] {
+/// `resolveLazy`'s walk, against memos already collected.  `used` holds the
+/// keys resolved so far in this render; a key met again (one that only a
+/// freshly rendered subtree reveals) joins `repeated`.
+pub func resolveWith[Msg](
+  v: in View[Msg],
+  memos: in Map[String, View[Msg]],
+  repeated: in List[String],
+  used: in List[String],
+): View[Msg] {
   return match v {
     case Lazy(key, fingerprint, r) -> {
+      if containsString(used, key) {
+        if not containsString(repeated, key) {
+          repeated.add(key)
+        }
+      } else {
+        used.add(key)
+      }
       val reused: Option[View[Msg]] = if containsString(repeated, key) then None else reusable(memos, key, fingerprint)
       match reused {
         case Some(m) -> m
         case None -> {
           val rendered: View[Msg] = r()
-          Memo(key = key, fingerprint = fingerprint, child = resolveWith(rendered, memos, repeated))
+          Memo(key = key, fingerprint = fingerprint, child = resolveWith(rendered, memos, repeated, used))
         }
       }
     }
     case Memo(key, fingerprint, c) -> Memo(
       key = key,
       fingerprint = fingerprint,
-      child = resolveWith(c, memos, repeated)
+      child = resolveWith(c, memos, repeated, used)
     )
     case Element(kind, key, props, handlers, children) -> {
       val cs: List[View[Msg]] = newList()
       for c in children {
-        cs.add(resolveWith(c, memos, repeated))
+        cs.add(resolveWith(c, memos, repeated, used))
       }
       Element(kind = kind, key = key, props = props, handlers = handlers, children = cs)
     }

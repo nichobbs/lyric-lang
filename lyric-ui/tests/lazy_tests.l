@@ -138,3 +138,18 @@ test "lazy and memo nodes are transparent on the wire and to Ui.Testing" {
   assertEqualInt(diff(resolved, resolveLazy(v, resolved)).count, 0, "same fingerprint: no patches")
   assertEqualInt(renders.count, 1, "rendered once across both resolutions")
 }
+
+test "a key duplicated for the first time in a render is rendered at each position" {
+  val renders: List[Int] = newList()
+  val nothing: View[Msg] = Empty
+  val once: List[View[Msg]] = newList()
+  once.add(lazyView[Msg]("dup", "1", { -> listView(1, renders) }))
+  val first = resolveLazy(column[Msg](once), nothing)
+  assertEqualInt(renders.count, 1, "rendered once")
+  val twice: List[View[Msg]] = newList()
+  twice.add(lazyView[Msg]("dup", "1", { -> listView(1, renders) }))
+  twice.add(lazyView[Msg]("dup", "1", { -> listView(2, renders) }))
+  val second = resolveLazy(column[Msg](twice), first)
+  assertEqualInt(renders.count, 3, "both positions rendered, neither reused")
+  assertTrue(UiTest.hasText(second, "Item 1"), "the second position shows its own rows")
+}

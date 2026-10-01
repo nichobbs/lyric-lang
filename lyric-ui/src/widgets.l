@@ -48,7 +48,8 @@ pub func keyed[Msg](key: in String, v: in View[Msg]): View[Msg] {
 /// A subtree that is rendered again only when `fingerprint` changes
 /// (docs/65 §13.5, D153).  While it is unchanged, the session keeps the
 /// subtree it rendered last and skips diffing it, so an expensive or large
-/// subtree costs nothing on updates that do not touch it.  `key` names the
+/// subtree is neither rendered nor compared on updates that do not touch it
+/// (the session still walks it once per update).  `key` names the
 /// subtree and must be unique within the view; `fingerprint` must change
 /// whenever anything `render` reads changes (a version counter or a
 /// digest of the inputs).

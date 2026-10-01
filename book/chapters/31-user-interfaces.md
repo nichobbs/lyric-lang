@@ -235,7 +235,8 @@ Widgets.lazyView("orders", m.ordersVersion.toString(), { -> ordersTable(m.orders
 
 The session renders the subtree once per fingerprint. While the
 fingerprint is unchanged it keeps the subtree it rendered last and does
-not compare it, so updates elsewhere on the screen cost nothing there.
+not compare it, so updates elsewhere on the screen do not render or diff it
+(the session still walks it once per update).
 The fingerprint must change whenever anything the subtree shows changes:
 a version counter bumped by `update`, or an id plus an edit count. A
 stale fingerprint shows stale content. Each `lazyView` key must be unique

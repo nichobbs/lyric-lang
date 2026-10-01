@@ -71,3 +71,17 @@ effects.
 - `examples/ui-customers` lists its 200 demo customers in a grid, sorted
   by the repository (`CustomerRepository.page`). The browser test sorts
   and scrolls it on both targets.
+
+## Also in this change: D153 follow-ups
+
+From the review of D153 (`Lazy` subtrees):
+
+- **Duplicate keys in the current render.** A `Lazy` key duplicated for
+  the first time in the current render was looked up against the single
+  previous memo at both positions. The session now also collects the
+  current tree's `Lazy` keys (`collectLazyKeys`) and the keys met while
+  resolving, so a key repeated in either tree is rendered at every
+  position, as D153 item 4 states.
+- **Wording.** The docs no longer say an unchanged lazy subtree "costs
+  nothing": it is neither rendered nor diffed, but the session still
+  walks it once per update to find its memos.
