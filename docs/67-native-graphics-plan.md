@@ -479,7 +479,10 @@ XL (a quarter or more of focused work).
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
-G5. G8 and G9 can run in parallel once their dependencies land.
+G5.
+
+**Tracking:** epic #7939; G1 #7940, G2 #7941, G3 #7942, G4 #7943, G5 #7944,
+G6 #7945, G7 #7946, G8 #7947, G9 #7948, G10 #7949. G8 and G9 can run in parallel once their dependencies land.
 
 **Later (not planned here):** a Lyric shader subset compiled to WGSL,
 sharing `Std.Math` types between CPU and GPU code; `wasm32` with browser
