@@ -42,6 +42,7 @@ pub union MsilType {
   case MInt        // System.Int32   (ELEMENT_TYPE_I4  = 0x08)
   case MLong       // System.Int64   (ELEMENT_TYPE_I8  = 0x0A)
   case MDouble     // System.Double  (ELEMENT_TYPE_R8  = 0x0D)
+  case MFloat      // System.Single  (ELEMENT_TYPE_R4  = 0x0C), Lyric `Float` (D155)
   case MBool       // System.Boolean (ELEMENT_TYPE_BOOLEAN = 0x02)
   case MChar       // System.Char    (ELEMENT_TYPE_CHAR = 0x03)
   case MString     // System.String  (ELEMENT_TYPE_STRING = 0x0E)
@@ -202,6 +203,7 @@ pub func msilArrayElemHasRealToken(e: in MsilType): Bool {
     case MInt -> true
     case MLong -> true
     case MDouble -> true
+    case MFloat -> true
     case MBool -> true
     case MChar -> true
     case MByte -> true
@@ -283,6 +285,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MInt -> 0x08
     case MLong -> 0x0A
     case MDouble -> 0x0D
+    case MFloat -> 0x0C
     case MString -> 0x0E
     case MObject -> 0x1C
     case MClass(_) -> 0x12
@@ -317,6 +320,7 @@ func emitLdindForType(mb: in MethodBody, ty: in MsilType): Unit {
     case MInt -> emitLdind_I4(mb)
     case MLong -> emitLdind_I8(mb)
     case MDouble -> emitLdind_R8(mb)
+    case MFloat -> emitLdind_R4(mb)
     case MBool -> emitLdind_I1(mb)
     case MChar -> emitLdind_U2(mb)
     // Byte is unsigned (0..255): `ldind.i1` sign-extends, turning 0xFF into
@@ -335,6 +339,7 @@ func emitStindForType(mb: in MethodBody, ty: in MsilType): Unit {
     case MInt -> emitStind_I4(mb)
     case MLong -> emitStind_I8(mb)
     case MDouble -> emitStind_R8(mb)
+    case MFloat -> emitStind_R4(mb)
     case MBool -> emitStind_I1(mb)
     case MChar -> emitStind_I2(mb)
     case MByte -> emitStind_I1(mb)
@@ -641,6 +646,9 @@ pub union MInsn {
   case MLdcI4(v: Int)
   case MLdcI8(v: Long)
   case MLdcR8(v: Double)
+  // `ldc.r4`: `v` must hold a binary32 value exactly (a `Float` literal's
+  // value, D155), so the narrowing the encoder performs is exact.
+  case MLdcR4(v: Double)
   case MLdStr(token: Int)          // ldstr — token = 0x70000000 | US heap offset
 
   // Argument and local load/store
@@ -685,6 +693,7 @@ pub union MInsn {
   case MConvI4
   case MConvI8
   case MConvR8
+  case MConvR4
   case MConvU1
   case MConvU2
   case MConvU8
@@ -823,6 +832,7 @@ pub union MInsn {
   case MLdelemI4                       // ldelem.i4  — int32 array element (int[])
   case MLdelemI8                       // ldelem.i8  — int64 array element (long[])
   case MLdelemR8                       // ldelem.r8  — float64 array element (double[])
+  case MLdelemR4                       // ldelem.r4  — float32 array element (float[])
   case MLdftn(methodToken: Int)        // ldftn — load function pointer (ELEMENT_TYPE_I on stack)
 
   // Exception-handling instructions and meta-instruction
@@ -986,6 +996,7 @@ pub record ConfigTokens {
   tokBoolParse: Int      // Boolean.Parse(string): bool  (static)
   tokInt64Parse: Int     // Int64.Parse(string): int64  (static)
   tokDoubleParse: Int    // Double.Parse(string, IFormatProvider): float64  (static)
+  tokSingleParse: Int    // Single.Parse(string, IFormatProvider): float32  (static)
   tokInvariantCulture: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  (static)
 }
 
@@ -1098,6 +1109,11 @@ pub record MDistinctType {
   maxI: Long
   minF: Double
   maxF: Double
+  // The bounds rounded to binary32 (D155), held exactly: a range over `Float`
+  // checks against these, while `minF`/`maxF` (as written) name the range in
+  // the violation message.
+  minF32: Double = 0.0
+  maxF32: Double = 0.0
   upperExclusive: Bool
   // #6756: true when the DECLARED underlying type is `UInt`/`ULong` (which
   // erase to the SAME `MInt`/`MLong` a signed `Int`/`Long` underlying type
@@ -1905,6 +1921,7 @@ pub func msilTypeKey(t: in MsilType): String {
     case MInt -> "I"
     case MLong -> "J"
     case MDouble -> "D"
+    case MFloat -> "F"
     case MString -> "S"
     case MObject -> "O"
     case MNativeInt -> "N"
@@ -2248,6 +2265,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdcI4(v) -> emitLdc_I4(mb, v)
     case MLdcI8(v) -> emitLdc_I8(mb, v)
     case MLdcR8(v) -> emitLdc_R8(mb, v)
+    case MLdcR4(v) -> emitLdc_R4(mb, v)
     case MLdStr(token) -> emitLdstr(mb, token)
     case MLdarg(slot) -> emitLdarg(mb, slot)
     case MStarg(slot) -> emitStarg(mb, slot)
@@ -2280,6 +2298,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MConvI4 -> emitConv_I4(mb)
     case MConvI8 -> emitConv_I8(mb)
     case MConvR8 -> emitConv_R8(mb)
+    case MConvR4 -> emitConv_R4(mb)
     case MConvU1 -> emitConv_U1(mb)
     case MConvU2 -> emitConv_U2(mb)
     case MConvU8 -> emitConv_U8(mb)
@@ -2704,6 +2723,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdelemI4 -> emitLdelem_I4(mb)
     case MLdelemI8 -> emitLdelem_I8(mb)
     case MLdelemR8 -> emitLdelem_R8(mb)
+    case MLdelemR4 -> emitLdelem_R4(mb)
     case MLdftn(tok) -> emitLdftn(mb, tok)
     case MLeave(lbl) -> emitLeave(mb, lbl)
     case MEndfinally -> emitEndfinally(mb)
@@ -3653,6 +3673,7 @@ pub func distinctConvName(inner: in MsilType): String {
     case MInt -> "toInt"
     case MLong -> "toLong"
     case MDouble -> "toDouble"
+    case MFloat -> "toFloat"
     case MByte -> "toByte"
     case _ -> ""
   }
@@ -3743,6 +3764,22 @@ func emitDistinctIntBound(mb: in MethodBody, d: in MDistinctType, bound: in Long
 // signed comparison misreads any in-range value at or above 2^31 (`UInt`)
 // or 2^63 (`ULong`) as negative, silently failing bounds checks for
 // legitimate values whose sign bit happens to be set.
+// The floating-point bounds a range check compares against: binary32-rounded
+// for a `Float` range (D155), as written for a `Double` one.
+func distinctCheckMinF(d: in MDistinctType): Double {
+  match d.inner {
+    case MFloat -> d.minF32
+    case _ -> d.minF
+  }
+}
+
+func distinctCheckMaxF(d: in MDistinctType): Double {
+  match d.inner {
+    case MFloat -> d.maxF32
+    case _ -> d.maxF
+  }
+}
+
 func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel: in Int): Unit {
   if not d.hasRange {
     return
@@ -3750,7 +3787,7 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
   // min check: fail if value < min.
   emitLdarg_0(mb)
   if d.rangeIsFloat {
-    emitLdc_R8(mb, d.minF)
+    emitLdc_R8(mb, distinctCheckMinF(d))
   } else {
     emitDistinctIntBound(mb, d, d.minI)
   }
@@ -3767,7 +3804,7 @@ func emitDistinctBoundsToFail(mb: in MethodBody, d: in MDistinctType, failLabel:
   // (`clt` is false for it); the closed form needs `cgt.un` on doubles.
   emitLdarg_0(mb)
   if d.rangeIsFloat {
-    emitLdc_R8(mb, d.maxF)
+    emitLdc_R8(mb, distinctCheckMaxF(d))
   } else {
     emitDistinctIntBound(mb, d, d.maxI)
   }
@@ -3796,6 +3833,7 @@ func distinctBoxToken(d: in MDistinctType, ctx: in LoweringCtx): Int {
     case MInt -> if d.isUnsigned { "UInt32" } else { "Int32" }
     case MLong -> if d.isUnsigned { "UInt64" } else { "Int64" }
     case MDouble -> "Double"
+    case MFloat -> "Single"
     case MBool -> "Boolean"
     case MChar -> "Char"
     case MByte -> "Byte"
@@ -6147,7 +6185,7 @@ func emitConfigRangeCheckMsil(
   okLabel: in Int,
   configToks: in ConfigTokens,
 ): Unit {
-  val isFloat = match f.fieldType { case MDouble -> true; case _ -> false }
+  val isFloat = match f.fieldType { case MDouble -> true; case MFloat -> true; case _ -> false }
   if f.hasMin {
     insns.add(MLdsfld(fieldToken = fieldTok))
     pushConfigBoundMsil(insns, f.fieldType, f.minI, f.minF)
@@ -6272,6 +6310,10 @@ func lowerMConfig(
           // under e.g. de-DE).
           cctorInsns.add(MCall(methodToken = configToks.tokInvariantCulture))
           cctorInsns.add(MCall(methodToken = configToks.tokDoubleParse))
+        }
+        case MFloat -> {
+          cctorInsns.add(MCall(methodToken = configToks.tokInvariantCulture))
+          cctorInsns.add(MCall(methodToken = configToks.tokSingleParse))
         }
         case MBool -> cctorInsns.add(MCall(methodToken = configToks.tokBoolParse))
         case MString -> {

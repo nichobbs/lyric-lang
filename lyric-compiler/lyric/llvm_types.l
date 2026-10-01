@@ -22,6 +22,8 @@ pub union NType {
   case NI32
   case NI64
   case NDouble
+  /// IEEE 754 binary32, Lyric `Float` (D155).
+  case NFloat
   case NPtr(pointee: NType)
   case NStruct(name: String, fields: List[NType])
   /// Anonymous (literal) struct type — renders as `{ i32, i8* }` inline.
@@ -40,7 +42,10 @@ pub union NValue {
   case NLocal(name: String)
   case NGlobal(name: String)
   case NLitInt(v: Long, ty: NType)
-  case NLitFloat(v: Double)
+  /// A floating-point constant of type `ty` (`NDouble` or `NFloat`).  An
+  /// `NFloat` constant's value is binary32-exact, which LLVM requires of the
+  /// hexadecimal spelling `floatToIrString` produces.
+  case NLitFloat(v: Double, ty: NType)
   case NLitNull(ty: NType)
   case NUndef(ty: NType)
   /// The literal `none` token operand (`llvm.coro.suspend(token none, ...)`).
@@ -85,6 +90,7 @@ pub func nTypeToIrString(t: in NType): String {
     case NI32 -> "i32"
     case NI64 -> "i64"
     case NDouble -> "double"
+    case NFloat -> "float"
     case NPtr(pointee) -> nTypeToIrString(pointee) + "*"
     case NStruct(name, _) -> "%" + quoteIrIdent(name)
     case NLitStruct(fields) -> nStructBodyString(fields)
@@ -196,7 +202,7 @@ pub func nValueOperandString(v: in NValue): String {
     case NLocal(name) -> "%" + quoteIrIdent(name)
     case NGlobal(name) -> "@" + quoteIrIdent(name)
     case NLitInt(value, _) -> value.toString()
-    case NLitFloat(value) -> floatToIrString(value)
+    case NLitFloat(value, _) -> floatToIrString(value)
     case NLitNull(_) -> "null"
     case NUndef(_) -> "undef"
     case NLitTokenNone -> "none"
@@ -210,7 +216,7 @@ pub func nValueType(v: in NValue): Option[NType] {
     case NLocal(_) -> None
     case NGlobal(_) -> None
     case NLitInt(_, ty) -> Some(value = ty)
-    case NLitFloat(_) -> Some(value = NDouble)
+    case NLitFloat(_, ty) -> Some(value = ty)
     case NLitNull(ty) -> Some(value = ty)
     case NUndef(ty) -> Some(value = ty)
     case NLitTokenNone -> Some(value = NToken)

@@ -88,25 +88,119 @@ LyricString* lyric_string_from_int(int64_t v) {
     return lyric_string_from_literal((const uint8_t*)buf, (int64_t)n);
 }
 
-LyricString* lyric_string_from_float(double v) {
-    /* Canonical non-finite spellings, matching the managed targets
-     * (platform printf casing varies: nan/NAN, inf/INF). */
+/* Whether the decimal m * 10^e10 parses back to v at the target width. */
+static int round_trips(unsigned long long m, int e10, double v, int is_single) {
+    char buf[40];
+    snprintf(buf, sizeof buf, "%llue%d", m, e10);
+    double back = is_single ? (double)strtof(buf, NULL) : strtod(buf, NULL);
+    return back == v;
+}
+
+/* .NET's default floating-point rendering, shared by Double and Float so the
+ * native target prints the same text as --target dotnet: the shortest
+ * decimal that parses back to the value (the nearer of two at that length,
+ * the even one on an exact tie), in fixed notation when its decimal exponent
+ * e (d.ddd x 10^e) satisfies -5 < e < max_digits and in scientific notation
+ * ("1.5E+20", "1E-05": a sign and at least two exponent digits) otherwise.
+ * max_digits is 17 for binary64 and 9 for binary32, matching
+ * Double.ToString() / Single.ToString().  Checked against .NET 10 on 200,000
+ * random bit patterns of each width and on every power of two; the only
+ * differences are a few Double powers of two (2^-25 among them) for which
+ * .NET's own output does not parse back to the value. */
+static LyricString* format_shortest(double v, int is_single) {
     if (isnan(v)) return lyric_string_from_literal((const uint8_t*)"NaN", 3);
     if (isinf(v)) {
         if (v > 0) return lyric_string_from_literal((const uint8_t*)"Infinity", 8);
         return lyric_string_from_literal((const uint8_t*)"-Infinity", 9);
     }
-    /* %.17g round-trips every IEEE 754 double; trim to the shortest
-     * representation that still round-trips so output reads naturally. */
-    char buf[40];
-    int n = snprintf(buf, sizeof buf, "%.15g", v);
-    double back = strtod(buf, NULL);
-    if (back != v) {
-        n = snprintf(buf, sizeof buf, "%.17g", v);
+    char out[64];
+    int o = 0;
+    if (signbit(v)) {
+        out[o++] = '-';
+        v = -v;
     }
-    if (n < 0) n = 0;
-    if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
-    return lyric_string_from_literal((const uint8_t*)buf, (int64_t)n);
+    if (v == 0.0) {
+        out[o++] = '0';
+        return lyric_string_from_literal((const uint8_t*)out, (int64_t)o);
+    }
+    int max_digits = is_single ? 9 : 17;
+    char digits[24];
+    int nd = 0;
+    int e = 0;
+    for (int p = 1; p <= max_digits; p++) {
+        /* r: the nearest p-digit decimal (printf rounds an exact tie to
+         * even), as m * 10^e10. */
+        char sci[40];
+        snprintf(sci, sizeof sci, "%.*e", p - 1, v);
+        unsigned long long m = 0;
+        const char* c = sci;
+        while (*c && *c != 'e') {
+            if (*c >= '0' && *c <= '9') m = m * 10 + (unsigned long long)(*c - '0');
+            c++;
+        }
+        int e10 = atoi(c + 1) - (p - 1);
+        if (!round_trips(m, e10, v, is_single)) {
+            /* Next to a power of two the rounding interval is lopsided, so r
+             * can fall outside it while its neighbour on the far side of v
+             * (one unit in the p-th digit) is inside.  No other p-digit
+             * decimal can be: the interval is convex and contains v.  r's
+             * parsed value lies on r's side of v, since parsing rounds
+             * monotonically. */
+            char rb[40];
+            snprintf(rb, sizeof rb, "%llue%d", m, e10);
+            double rback = is_single ? (double)strtof(rb, NULL) : strtod(rb, NULL);
+            unsigned long long n = rback < v ? m + 1 : m - 1;
+            if (n == 0 || !round_trips(n, e10, v, is_single)) {
+                if (p < max_digits) continue;
+            } else {
+                m = n;
+            }
+        }
+        char mb[24];
+        int mlen = snprintf(mb, sizeof mb, "%llu", m);
+        /* A carry (9.99 + 1 unit) or borrow (1.00 - 1 unit) changes the
+         * digit count; the decimal exponent moves with it. */
+        e = e10 + mlen - 1;
+        nd = mlen;
+        memcpy(digits, mb, (size_t)mlen);
+        break;
+    }
+    while (nd > 1 && digits[nd - 1] == '0') nd--;
+    if (e > -5 && e < max_digits) {
+        if (e >= 0) {
+            for (int i = 0; i <= e; i++) out[o++] = i < nd ? digits[i] : '0';
+            if (nd > e + 1) {
+                out[o++] = '.';
+                for (int i = e + 1; i < nd; i++) out[o++] = digits[i];
+            }
+        } else {
+            out[o++] = '0';
+            out[o++] = '.';
+            for (int i = 0; i < -e - 1; i++) out[o++] = '0';
+            for (int i = 0; i < nd; i++) out[o++] = digits[i];
+        }
+    } else {
+        out[o++] = digits[0];
+        if (nd > 1) {
+            out[o++] = '.';
+            for (int i = 1; i < nd; i++) out[o++] = digits[i];
+        }
+        out[o++] = 'E';
+        out[o++] = e < 0 ? '-' : '+';
+        int ae = e < 0 ? -e : e;
+        char eb[8];
+        int en = snprintf(eb, sizeof eb, "%02d", ae);
+        for (int i = 0; i < en; i++) out[o++] = eb[i];
+    }
+    return lyric_string_from_literal((const uint8_t*)out, (int64_t)o);
+}
+
+LyricString* lyric_string_from_float(double v) {
+    return format_shortest(v, 0);
+}
+
+LyricString* lyric_string_from_float32(float v) {
+    return format_shortest((double)v, 1);
 }
 
 LyricString* lyric_string_from_bool(int32_t v) {

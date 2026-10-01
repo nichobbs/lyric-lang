@@ -73,12 +73,13 @@ pub union NInsn {
   case NURem(dest: String, ty: NType, a: NValue, b: NValue)
 
   // Float arithmetic
-  case NFAdd(dest: String, a: NValue, b: NValue)
-  case NFSub(dest: String, a: NValue, b: NValue)
-  case NFMul(dest: String, a: NValue, b: NValue)
-  case NFDiv(dest: String, a: NValue, b: NValue)
-  case NFRem(dest: String, a: NValue, b: NValue)
-  case NFNeg(dest: String, a: NValue)
+  // Floating-point operations on `ty`, `NDouble` or `NFloat` (D155).
+  case NFAdd(dest: String, ty: NType, a: NValue, b: NValue)
+  case NFSub(dest: String, ty: NType, a: NValue, b: NValue)
+  case NFMul(dest: String, ty: NType, a: NValue, b: NValue)
+  case NFDiv(dest: String, ty: NType, a: NValue, b: NValue)
+  case NFRem(dest: String, ty: NType, a: NValue, b: NValue)
+  case NFNeg(dest: String, ty: NType, a: NValue)
 
   // Bitwise
   case NShl(dest: String, ty: NType, a: NValue, b: NValue)
@@ -91,7 +92,7 @@ pub union NInsn {
 
   // Comparison
   case NICmp(dest: String, pred: ICmpPred, ty: NType, a: NValue, b: NValue)
-  case NFCmp(dest: String, pred: FCmpPred, a: NValue, b: NValue)
+  case NFCmp(dest: String, pred: FCmpPred, ty: NType, a: NValue, b: NValue)
 
   // Conversion
   case NSExt(dest: String, fromTy: NType, value: NValue, toTy: NType)
@@ -100,6 +101,9 @@ pub union NInsn {
   case NBitcast(dest: String, fromTy: NType, value: NValue, toTy: NType)
   case NSIToFP(dest: String, fromTy: NType, value: NValue, toTy: NType)
   case NFPToSI(dest: String, fromTy: NType, value: NValue, toTy: NType)
+  // `float` -> `double` (exact) and `double` -> `float` (round to nearest even).
+  case NFPExt(dest: String, value: NValue)
+  case NFPTrunc(dest: String, value: NValue)
   case NPtrToInt(dest: String, fromTy: NType, value: NValue, toTy: NType)
   case NIntToPtr(dest: String, fromTy: NType, value: NValue, toTy: NType)
 
@@ -266,8 +270,9 @@ func renderBin(op: in String, dest: in String, ty: in NType, a: in NValue, b: in
     nValueOperandString(b)
 }
 
-func renderFBin(op: in String, dest: in String, a: in NValue, b: in NValue): String {
-  "  %" + quoteIrIdent(dest) + " = " + op + " double " + nValueOperandString(a) + ", " + nValueOperandString(b)
+func renderFBin(op: in String, dest: in String, ty: in NType, a: in NValue, b: in NValue): String {
+  "  %" + quoteIrIdent(dest) + " = " + op + " " + nTypeToIrString(ty) + " " + nValueOperandString(a) + ", " +
+    nValueOperandString(b)
 }
 
 func renderConv(op: in String, dest: in String, fromTy: in NType, value: in NValue, toTy: in NType): String {
@@ -323,12 +328,13 @@ pub func emitInsn(i: in NInsn): String {
     case NSRem(dest, ty, a, b) -> renderBin("srem", dest, ty, a, b)
     case NUDiv(dest, ty, a, b) -> renderBin("udiv", dest, ty, a, b)
     case NURem(dest, ty, a, b) -> renderBin("urem", dest, ty, a, b)
-    case NFAdd(dest, a, b) -> renderFBin("fadd", dest, a, b)
-    case NFSub(dest, a, b) -> renderFBin("fsub", dest, a, b)
-    case NFMul(dest, a, b) -> renderFBin("fmul", dest, a, b)
-    case NFDiv(dest, a, b) -> renderFBin("fdiv", dest, a, b)
-    case NFRem(dest, a, b) -> renderFBin("frem", dest, a, b)
-    case NFNeg(dest, a) -> "  %" + quoteIrIdent(dest) + " = fneg double " + nValueOperandString(a)
+    case NFAdd(dest, ty, a, b) -> renderFBin("fadd", dest, ty, a, b)
+    case NFSub(dest, ty, a, b) -> renderFBin("fsub", dest, ty, a, b)
+    case NFMul(dest, ty, a, b) -> renderFBin("fmul", dest, ty, a, b)
+    case NFDiv(dest, ty, a, b) -> renderFBin("fdiv", dest, ty, a, b)
+    case NFRem(dest, ty, a, b) -> renderFBin("frem", dest, ty, a, b)
+    case NFNeg(dest, ty, a) -> "  %" + quoteIrIdent(dest) + " = fneg " + nTypeToIrString(ty) + " " +
+      nValueOperandString(a)
     case NShl(dest, ty, a, b) -> renderBin("shl", dest, ty, a, b)
     case NAShr(dest, ty, a, b) -> renderBin("ashr", dest, ty, a, b)
     case NLShr(dest, ty, a, b) -> renderBin("lshr", dest, ty, a, b)
@@ -336,13 +342,15 @@ pub func emitInsn(i: in NInsn): String {
     case NOr(dest, ty, a, b) -> renderBin("or", dest, ty, a, b)
     case NXor(dest, ty, a, b) -> renderBin("xor", dest, ty, a, b)
     case NICmp(dest, pred, ty, a, b) -> renderBin("icmp " + icmpPredString(pred), dest, ty, a, b)
-    case NFCmp(dest, pred, a, b) -> renderFBin("fcmp " + fcmpPredString(pred), dest, a, b)
+    case NFCmp(dest, pred, ty, a, b) -> renderFBin("fcmp " + fcmpPredString(pred), dest, ty, a, b)
     case NSExt(dest, fromTy, value, toTy) -> renderConv("sext", dest, fromTy, value, toTy)
     case NZExt(dest, fromTy, value, toTy) -> renderConv("zext", dest, fromTy, value, toTy)
     case NTrunc(dest, fromTy, value, toTy) -> renderConv("trunc", dest, fromTy, value, toTy)
     case NBitcast(dest, fromTy, value, toTy) -> renderConv("bitcast", dest, fromTy, value, toTy)
     case NSIToFP(dest, fromTy, value, toTy) -> renderConv("sitofp", dest, fromTy, value, toTy)
     case NFPToSI(dest, fromTy, value, toTy) -> renderConv("fptosi", dest, fromTy, value, toTy)
+    case NFPExt(dest, value) -> renderConv("fpext", dest, NFloat, value, NDouble)
+    case NFPTrunc(dest, value) -> renderConv("fptrunc", dest, NDouble, value, NFloat)
     case NPtrToInt(dest, fromTy, value, toTy) -> renderConv("ptrtoint", dest, fromTy, value, toTy)
     case NIntToPtr(dest, fromTy, value, toTy) -> renderConv("inttoptr", dest, fromTy, value, toTy)
     case NCall(dest, retTy, fn, args) -> {

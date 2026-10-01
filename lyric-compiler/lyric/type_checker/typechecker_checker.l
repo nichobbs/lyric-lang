@@ -4253,15 +4253,15 @@ func checkExternFuncBindings(diag: in List[Diagnostic], items: in List[Item], na
 }
 
 // T0151 unless `te` is a type a C binding passes the same way on every
-// target: `Int` (int32), `Long` (int64), `Byte` (uint8), `Double`
-// (double), a `NativePtr[T]` (a pointer), or, as a result, `Unit` (void).
-// `Float` is excluded: MSIL and native carry it as a 64-bit double, so a C
-// `float` would receive the wrong bits (#7966).
+// target: `Int` (int32), `Long` (int64), `Byte` (uint8), `Float` (float,
+// binary32 on every backend since D155, #7966), `Double` (double), a
+// `NativePtr[T]` (a pointer), or, as a result, `Unit` (void).
 func checkCBindingType(diag: in List[Diagnostic], fname: in String, te: in TypeExpr, isResult: in Bool): Unit {
   val ok = match te.kind {
     case TRef(path) -> {
       val n = path.segments[path.segments.count - 1]
-      path.segments.count == 1 and (n == "Int" or n == "Long" or n == "Byte" or n == "Double" or (isResult and n == "Unit"))
+      path.segments.count == 1 and
+        (n == "Int" or n == "Long" or n == "Byte" or n == "Float" or n == "Double" or (isResult and n == "Unit"))
     }
     case TGenericApp(head, _) -> head.segments.count == 1 and head.segments[0] == "NativePtr"
     case TUnit -> isResult
@@ -4275,7 +4275,8 @@ func checkCBindingType(diag: in List[Diagnostic], fname: in String, te: in TypeE
     diag.add(
       errorDiagnostic(
         "T0151",
-        "extern func '" + fname + "': this type cannot cross a C binding; use Int, Long, Byte, Double or NativePtr[T]" +
+        "extern func '" + fname +
+          "': this type cannot cross a C binding; use Int, Long, Byte, Float, Double or NativePtr[T]" +
           (if isResult { ", or Unit for no result" } else { "" }),
         te.span
       )

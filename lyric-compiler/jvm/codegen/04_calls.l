@@ -1255,6 +1255,7 @@ func lowerBuiltinOrStaticCall(
             // does — normalize identically.
             match argTy {
               case JDouble -> emitNormalizeDoubleString(ctx, insns)
+              case JFloat -> emitNormalizeFloatString(ctx, insns)
               case _ -> ()
             }
           }
@@ -4128,6 +4129,21 @@ func emitToLongJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   }   // int-like → long
 }
 
+// `toFloat` (D155): `d2f`/`l2f`/`i2f` round to nearest even.
+func emitToFloatJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
+  match srcTy {
+    case JFloat -> {
+    }            // already float
+    case JDouble -> insns.add(LD2f)
+    case JLong -> insns.add(LL2f)
+    case JByte -> {
+      maskByteUnsigned(insns)
+      insns.add(LI2f)
+    }
+    case _ -> insns.add(LI2f)
+  }   // int-like → float
+}
+
 func emitToDoubleJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   match srcTy {
     case JDouble -> {
@@ -4764,7 +4780,11 @@ func lowerMethodCall(
     }
     return JInt
   }
-  if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble") and args.count == 0 and isNumericJvm(recvTy) {
+  if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble" or memberName == "toFloat") and args.count == 0 and isNumericJvm(recvTy) {
+    if memberName == "toFloat" {
+      emitToFloatJvm(insns, recvTy)
+      return JFloat
+    }
     if memberName == "toLong" {
       emitToLongJvm(insns, recvTy)
       return JLong
@@ -4784,8 +4804,13 @@ func lowerMethodCall(
     } else if memberName == "toChar" {
       // Checked narrowing (D-progress-1006): an `Int`/`Long`/`Double` must be
       // a BMP scalar value; a `Byte`/`Char` always is.
+      // A `Float` is range-checked as the `Double` it widens to exactly.
       match recvTy {
-        case JDouble -> {
+        case JFloat -> insns.add(LF2d)
+        case _ -> ()
+      }
+      match recvTy {
+        case JDouble | JFloat -> {
           val tcdPs: List[JvmType] = newList()
           tcdPs.add(JDouble)
           insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricToCharD", params = tcdPs, ret = JChar))
@@ -4858,6 +4883,7 @@ func lowerMethodCall(
     // established "1500" (no trailing ".0") instead of Java's "1500.0".
     match recvTy {
       case JDouble -> emitNormalizeDoubleString(ctx, insns)
+      case JFloat -> emitNormalizeFloatString(ctx, insns)
       case _ -> ()
     }
     return JRef(className = "java/lang/String")
@@ -5627,6 +5653,20 @@ func normalizeDoublePrintArg(ctx: in FuncCtx, insns: in List[LInsn], rawTy: in J
         )
       )
       emitNormalizeDoubleString(ctx, insns)
+      JRef(className = "java/lang/String")
+    }
+    case JFloat -> {
+      val vfPs: List[JvmType] = newList()
+      vfPs.add(JFloat)
+      insns.add(
+        LInvokestatic(
+          owner = "java/lang/String",
+          name = "valueOf",
+          params = vfPs,
+          ret = JRef(className = "java/lang/String")
+        )
+      )
+      emitNormalizeFloatString(ctx, insns)
       JRef(className = "java/lang/String")
     }
     case _ -> rawTy

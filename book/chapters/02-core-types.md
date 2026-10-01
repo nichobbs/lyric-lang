@@ -156,6 +156,17 @@ The suffix names map to Lyric types: `u8` → `Byte`, `u16` and `u32` → `UInt`
 1_000.5f64      // Double (explicit)
 ```
 
+`Float` is 32-bit and `Double` 64-bit on every target. An unsuffixed literal becomes a `Float` wherever a `Float` is required, so you rarely need the suffix:
+
+```lyric
+val speed: Float = 0.1             // the Float nearest 0.1
+val half = speed * 0.5             // Float: the other operand is a Float
+val v = Vec2(x = 1.5, y = 2.0)     // Float fields of record Vec2 { x: Float; y: Float }
+val wide: Double = speed           // Float widens to Double exactly
+```
+
+A `Float` prints the way .NET's `Single.ToString()` does, the shortest text that reads back as the same value: `(0.1f32 + 0.2f32).toString()` is `"0.3"`, while the same sum in `Double` prints `"0.30000000000000004"`. Use `Float` for graphics, audio and other bulk numeric data where half the memory matters; use `Double` otherwise.
+
 **String interpolation** uses `${expr}` inside double-quoted strings. Any expression is valid inside the braces:
 
 ```lyric
@@ -191,6 +202,7 @@ val sql = """
 val i: Int  = 42
 val l: Long = i.toLong()
 val d: Double = i.toDouble()
+val f: Float = d.toFloat()  // rounds to the nearest Float
 val n: Nat = i.toNat()     // panics if i < 0; use tryToNat() for a Result
 ```
 

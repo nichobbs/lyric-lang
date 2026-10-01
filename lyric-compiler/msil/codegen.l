@@ -60,6 +60,7 @@ pub record CodegenCtx {
   trInt32: Int  // System.Int32
   trInt64: Int  // System.Int64
   trDouble: Int  // System.Double
+  trSingle: Int  // System.Single (Lyric `Float`, D155)
   trBoolean: Int  // System.Boolean
   trChar: Int  // System.Char
   trByte: Int  // System.Byte
@@ -160,6 +161,7 @@ pub record CodegenCtx {
   tokDateTimeToStringO: Int    // DateTime.ToString(string): string  instance HASTHIS
   usDateTimeFormatO: Int       // ldstr token (0x70000000 | US heap offset) for the "o" format specifier
   tokDoubleToStringInv: Int    // Double.ToString(IFormatProvider): string  instance HASTHIS (#2462)
+  tokSingleToStringInv: Int    // Single.ToString(IFormatProvider): string  instance HASTHIS (D155)
   trIFormattable: Int          // System.IFormattable (#7902)
   tokIFormattableToString: Int // IFormattable.ToString(string, IFormatProvider): string  instance HASTHIS (#7902)
   // Reverse lookup: simple field name → FieldDef token.  Populated by
@@ -791,6 +793,7 @@ pub record CodegenCtx {
   tokCfgBoolParse: Int      // Boolean.Parse(string): bool  (static)
   tokCfgInt64Parse: Int     // Int64.Parse(string): int64  (static)
   tokCfgDoubleParse: Int    // Double.Parse(string, IFormatProvider): float64  (static)
+  tokCfgSingleParse: Int    // Single.Parse(string, IFormatProvider): float32  (static, D155)
   // Async SM synthesis (Phase B, Epic #2070).
   // TypeRef rows for System.Runtime.CompilerServices types.
   trAtmb: Int  // AsyncTaskMethodBuilder (void variant, row)
@@ -946,6 +949,7 @@ pub func newCodegenCtx(
   // field doc comments above for why these TypeRefs are needed.
   val trUInt32 = ctxAddTypeRef(lctx, "System", "UInt32", lctx.arRuntime)
   val trUInt64 = ctxAddTypeRef(lctx, "System", "UInt64", lctx.arRuntime)
+  val trSingle = ctxAddTypeRef(lctx, "System", "Single", lctx.arRuntime)
   val trException = ctxAddTypeRef(lctx, "System", "Exception", lctx.arRuntime)
   val trInvalidOpException = ctxAddTypeRef(lctx, "System", "InvalidOperationException", lctx.arRuntime)
 
@@ -1853,6 +1857,14 @@ pub func newCodegenCtx(
       "dbl_tostring_inv",
       buildInstanceMethodSig(dblToStrPs, MString)
     )
+  val tokSingleToStringInv = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trSingle,
+      "ToString",
+      "sgl_tostring_inv",
+      buildInstanceMethodSig(dblToStrPs, MString)
+    )
 
   // IFormattable.ToString(string, IFormatProvider): string — called with a
   // null format and InvariantCulture, so `toString` of an extern value type
@@ -2055,6 +2067,14 @@ pub func newCodegenCtx(
       "cfg_double_parse",
       buildStaticMethodSig(cfgDoubleParsePs, MDouble)
     )
+  val tokCfgSingleParse = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trSingle,
+      "Parse",
+      "cfg_single_parse",
+      buildStaticMethodSig(cfgDoubleParsePs, MFloat)
+    )
 
   // Console.WriteLine(uint32): void / Console.WriteLine(uint64): void
   // (#6913) — the unsigned-aware `println` counterparts to `tokWLInt`/
@@ -2100,6 +2120,7 @@ pub func newCodegenCtx(
     trInt32 = trInt32,
     trInt64 = trInt64,
     trDouble = trDouble,
+    trSingle = trSingle,
     trBoolean = trBoolean,
     trChar = trChar,
     trByte = trByte,
@@ -2128,6 +2149,7 @@ pub func newCodegenCtx(
     tokDateTimeToStringO = tokDateTimeToStringO,
     usDateTimeFormatO = usDateTimeFormatO,
     tokDoubleToStringInv = tokDoubleToStringInv,
+    tokSingleToStringInv = tokSingleToStringInv,
     trIFormattable = trIFormattable,
     tokIFormattableToString = tokIFormattableToString,
     tokListObjCtor = tokListObjCtor,
@@ -2331,7 +2353,8 @@ pub func newCodegenCtx(
     tokCfgInt32Parse = tokCfgInt32Parse,
     tokCfgBoolParse = tokCfgBoolParse,
     tokCfgInt64Parse = tokCfgInt64Parse,
-    tokCfgDoubleParse = tokCfgDoubleParse
+    tokCfgDoubleParse = tokCfgDoubleParse,
+    tokCfgSingleParse = tokCfgSingleParse
   )
   // Seed `ffiTypeRefs`' cache with the `ValueTask`1` TypeRef already
   // registered above (`trValueTask1`) so every `internFfiTypeRef` caller —
@@ -5427,7 +5450,7 @@ func inferUntypedStaticValMsilType(
       case LString(_) -> MString
       case LTripleString(_) -> MString
       case LRawString(_) -> MString
-      case LFloat(_, _, _) -> MDouble
+      case LFloat(_, sfx, _) -> match sfx { case F32 -> MFloat; case _ -> MDouble }
       case LInt(v, suffix, _) -> match suffix {
         case I64 | U64 -> MLong
         // `u32` (#6756) is always `MInt` (the wrapped 32-bit pattern),
@@ -5501,6 +5524,7 @@ func inferUntypedStaticValMsilType(
             case MString -> MString
             case MLong -> MLong
             case MDouble -> MDouble
+            case MFloat -> MFloat
             // `Byte op Byte` stays `Byte` (`wrapByteArithMsil`).
             case MByte -> if isByteMsil(inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)) { MByte } else { MInt }
             case _ -> MInt
@@ -5510,6 +5534,7 @@ func inferUntypedStaticValMsilType(
           match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MLong -> MLong
             case MDouble -> MDouble
+            case MFloat -> MFloat
             case MByte -> if isByteMsil(inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)) { MByte } else { MInt }
             case _ -> MInt
           }
@@ -5518,6 +5543,7 @@ func inferUntypedStaticValMsilType(
           match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MLong -> MLong
             case MDouble -> MDouble
+            case MFloat -> MFloat
             case MByte -> MByte
             case _ -> MInt
           }
@@ -5532,6 +5558,7 @@ func inferUntypedStaticValMsilType(
           match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
             case MLong -> MLong
             case MDouble -> MDouble
+            case MFloat -> MFloat
             case MByte -> MByte
             case _ -> MInt
           }
@@ -5625,6 +5652,7 @@ func msilSimpleTypeEq(a: in MsilType, b: in MsilType): Bool {
     case MInt -> match b { case MInt -> true; case _ -> false }
     case MLong -> match b { case MLong -> true; case _ -> false }
     case MDouble -> match b { case MDouble -> true; case _ -> false }
+    case MFloat -> match b { case MFloat -> true; case _ -> false }
     case MBool -> match b { case MBool -> true; case _ -> false }
     case MChar -> match b { case MChar -> true; case _ -> false }
     case MByte -> match b { case MByte -> true; case _ -> false }
@@ -5694,7 +5722,7 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
       case LFloat(_, floatSuffix, _) -> match floatSuffix {
         case NoFloatSuffix -> MDouble
         case F64 -> MDouble
-        case _ -> MObject
+        case F32 -> MFloat
       }
       case LString(_) -> MString
       case LTripleString(_) -> MString
@@ -5718,6 +5746,7 @@ func isSimpleListElemMsil(t: in MsilType): Bool {
     case MInt -> true
     case MLong -> true
     case MDouble -> true
+    case MFloat -> true
     case MBool -> true
     case MChar -> true
     case MByte -> true
@@ -6245,6 +6274,7 @@ func msilTypeIdentical(a: in MsilType, b: in MsilType): Bool {
     case MInt -> match b { case MInt -> true; case other -> false }
     case MLong -> match b { case MLong -> true; case other -> false }
     case MDouble -> match b { case MDouble -> true; case other -> false }
+    case MFloat -> match b { case MFloat -> true; case other -> false }
     case MBool -> match b { case MBool -> true; case other -> false }
     case MChar -> match b { case MChar -> true; case other -> false }
     case MString -> match b { case MString -> true; case other -> false }
@@ -6681,6 +6711,7 @@ func pushDefaultValueMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
     case MInt -> insns.add(MLdcI4(v = 0))
     case MLong -> insns.add(MLdcI8(v = 0i64))
     case MDouble -> insns.add(MLdcR8(v = 0.0))
+    case MFloat -> insns.add(MLdcR4(v = 0.0))
     case MValueTypeRef(_, clrFqn) -> {
       val refRow = internFfiTypeRefNested(cctx, clrFqn)
       val slot = allocSlotMsil(fctx, "__never_default_" + toString(fctx.slotTicker.count), retTy)
@@ -8045,7 +8076,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
       } else if seg == "Double" {
         MDouble
       } else if seg == "Float" {
-        MDouble
+        MFloat
       } else if seg == "Bool" {
         MBool
       } else if seg == "String" {
@@ -8363,6 +8394,7 @@ func isValueType(ty: in MsilType): Bool {
     case MInt -> true
     case MLong -> true
     case MDouble -> true
+    case MFloat -> true
     case MBool -> true
     case MChar -> true
     case MByte -> true
@@ -8404,11 +8436,21 @@ func isValueTypeReceiverMsil(ty: in MsilType): Bool {
 // Numeric / character primitives that the conversion-method intrinsics
 // (`.toInt()`/`.toLong()`/`.toByte()`/`.toChar()`/`.toDouble()`, #1901) accept
 // as a receiver.  `Bool` is deliberately excluded — it is not a numeric type.
+// True for the binary floating-point types, `Double` and `Float`.
+func isFloatingMsil(ty: in MsilType): Bool {
+  match ty {
+    case MDouble -> true
+    case MFloat -> true
+    case _ -> false
+  }
+}
+
 func isNumericMsil(ty: in MsilType): Bool {
   match ty {
     case MInt -> true
     case MLong -> true
     case MDouble -> true
+    case MFloat -> true
     case MChar -> true
     case MByte -> true
     case _ -> false
@@ -8694,6 +8736,7 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
     case MInt -> 0x01000000 + cctx.trInt32
     case MLong -> 0x01000000 + cctx.trInt64
     case MDouble -> 0x01000000 + cctx.trDouble
+    case MFloat -> 0x01000000 + cctx.trSingle
     case MBool -> 0x01000000 + cctx.trBoolean
     case MChar -> 0x01000000 + cctx.trChar
     case MByte -> 0x01000000 + cctx.trByte
@@ -8872,6 +8915,7 @@ func arrayElemTokenOpt(cctx: in CodegenCtx, e: in MsilType): Option[Int] {
     case MInt -> Some(value = 0x01000000 + cctx.trInt32)
     case MLong -> Some(value = 0x01000000 + cctx.trInt64)
     case MDouble -> Some(value = 0x01000000 + cctx.trDouble)
+    case MFloat -> Some(value = 0x01000000 + cctx.trSingle)
     case MBool -> Some(value = 0x01000000 + cctx.trBoolean)
     case MChar -> Some(value = 0x01000000 + cctx.trChar)
     case MByte -> Some(value = 0x01000000 + cctx.trByte)
@@ -8891,6 +8935,7 @@ func sliceArraySpecTokenOpt(cctx: in CodegenCtx, e: in MsilType): Option[Int] {
     case MInt -> "i4"
     case MLong -> "i8"
     case MDouble -> "r8"
+    case MFloat -> "r4"
     case MBool -> "bool"
     case MChar -> "char"
     case MByte -> "u1"
@@ -8911,6 +8956,7 @@ func emitTypedLdelemMsil(insns: in List[MInsn], e: in MsilType): Unit {
     case MInt -> insns.add(MLdelemI4)
     case MLong -> insns.add(MLdelemI8)
     case MDouble -> insns.add(MLdelemR8)
+    case MFloat -> insns.add(MLdelemR4)
     case MBool -> insns.add(MLdelemU1)
     case MChar -> insns.add(MLdelemU2)
     case MByte -> insns.add(MLdelemU1)
@@ -8924,6 +8970,7 @@ func canUseTypedArrayLoad(ty: in MsilType): Bool {
     case MInt -> true        // Use MLdelemI4
     case MLong -> true       // Use MLdelemI8
     case MDouble -> true     // Use MLdelemR8
+    case MFloat -> true      // Use MLdelemR4
     case MBool -> true       // Use MLdelemU1
     case MChar -> true       // Use MLdelemU2
     case MByte -> true       // Use MLdelemU1
@@ -9072,6 +9119,7 @@ func collElemConcrete(t: in MsilType): Bool {
     case MInt -> true
     case MLong -> true
     case MDouble -> true
+    case MFloat -> true
     case MBool -> true
     case MChar -> true
     case MByte -> true
@@ -10334,9 +10382,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             }
           }
         }
-        case LFloat(v, _, _) -> {
-          insns.add(MLdcR8(v = v))
-          MDouble
+        case LFloat(v, sfx, _) -> match sfx {
+          // A `Float` literal's value is binary32-exact (D155).
+          case F32 -> {
+            insns.add(MLdcR4(v = v))
+            MFloat
+          }
+          case _ -> {
+            insns.add(MLdcR8(v = v))
+            MDouble
+          }
         }
         case LString(s) -> {
           val token = ctxInternUs(cctx.lctx, s)
@@ -12316,6 +12371,23 @@ func normalizeIntCmpWidthMsil(
   lhsTy: in MsilType,
   rhsTy: in MsilType,
 ): Unit {
+  // A `Float` compared with a `Double` compares as the `Double` it widens
+  // to exactly (D155).
+  val lR4 = match lhsTy { case MFloat -> true; case _ -> false }
+  val rR4 = match rhsTy { case MFloat -> true; case _ -> false }
+  val lR8 = match lhsTy { case MDouble -> true; case _ -> false }
+  val rR8 = match rhsTy { case MDouble -> true; case _ -> false }
+  if lR8 and rR4 {
+    insns.add(MConvR8)
+    return ()
+  }
+  if lR4 and rR8 {
+    val ftmp = allocSlotMsil(fctx, "__cmpw_" + toString(fctx.slotTicker.count), MDouble)
+    emitStoreSlot(insns, ftmp, fctx.paramCount)
+    insns.add(MConvR8)
+    emitLoadSlot(insns, ftmp, fctx.paramCount)
+    return ()
+  }
   val lI8 = match lhsTy { case MLong -> true; case _ -> false }
   val rI8 = match rhsTy { case MLong -> true; case _ -> false }
   val lI4 = match lhsTy { case MInt -> true; case MByte -> true; case MChar -> true; case _ -> false }
@@ -12346,6 +12418,29 @@ func widenArithOperandsMsil(
   underUnsigned: in Bool,
   topUnsigned: in Bool,
 ): MsilType {
+  // `Float < Double` (D155): a mixed pair computes in binary64, so the
+  // `Float` operand widens with `conv.r8`.
+  val uR4 = match underTy { case MFloat -> true; case _ -> false }
+  val tR4 = match topTy { case MFloat -> true; case _ -> false }
+  val uR8 = match underTy { case MDouble -> true; case _ -> false }
+  val tR8 = match topTy { case MDouble -> true; case _ -> false }
+  if uR8 and tR4 {
+    insns.add(MConvR8)
+    return MDouble
+  }
+  if uR4 and tR8 {
+    val ftmp = allocSlotMsil(fctx, "__arithw_" + toString(fctx.slotTicker.count), MDouble)
+    emitStoreSlot(insns, ftmp, fctx.paramCount)
+    insns.add(MConvR8)
+    emitLoadSlot(insns, ftmp, fctx.paramCount)
+    return MDouble
+  }
+  if uR8 or tR8 {
+    return MDouble
+  }
+  if uR4 or tR4 {
+    return MFloat
+  }
   val uI8 = match underTy { case MLong -> true; case _ -> false }
   val tI8 = match topTy { case MLong -> true; case _ -> false }
   val uI4 = match underTy { case MInt -> true; case MByte -> true; case MChar -> true; case _ -> false }
@@ -12464,7 +12559,7 @@ func lowerBinopMsil(
       }
       match beqLhsTy {
         // `MNativeInt` is a `NativePtr[T]`: pointers compare by address.
-        case MInt | MBool | MChar | MLong | MDouble | MByte | MNativeInt -> {
+        case MInt | MBool | MChar | MLong | MDouble | MFloat | MByte | MNativeInt -> {
           normalizeIntCmpWidthMsil(cctx, fctx, insns, beqLhsTy, beqRhsTy)
           insns.add(MCeq)
           MBool
@@ -12507,7 +12602,7 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = bneqSpillIdx))
       }
       match bneqLhsTy {
-        case MInt | MBool | MChar | MLong | MDouble | MByte | MNativeInt -> {
+        case MInt | MBool | MChar | MLong | MDouble | MFloat | MByte | MNativeInt -> {
           normalizeIntCmpWidthMsil(cctx, fctx, insns, bneqLhsTy, bneqRhsTy)
           insns.add(MCeq)
           insns.add(MLdcI4(v = 1))
@@ -12684,7 +12779,7 @@ func lowerBinopMsil(
         // side is NaN, as IEEE 754 requires; plain `cgt` made `NaN <= x`
         // true (#7240).
         case _ -> {
-          if spellsUnsigned(lhs) or spellsUnsigned(rhs) or blteLhsTy == MDouble or blteRhsTy == MDouble {
+          if spellsUnsigned(lhs) or spellsUnsigned(rhs) or isFloatingMsil(blteLhsTy) or isFloatingMsil(blteRhsTy) {
             insns.add(MCgt_Un)
           } else {
             insns.add(MCgt)
@@ -12739,7 +12834,7 @@ func lowerBinopMsil(
         // "less than or unordered", so `!(a <_un b)` is false when either
         // side is NaN (see `BLte`, #7240).
         case _ -> {
-          if spellsUnsigned(lhs) or spellsUnsigned(rhs) or bgteLhsTy == MDouble or bgteRhsTy == MDouble {
+          if spellsUnsigned(lhs) or spellsUnsigned(rhs) or isFloatingMsil(bgteLhsTy) or isFloatingMsil(bgteRhsTy) {
             insns.add(MClt_Un)
           } else {
             insns.add(MClt)
@@ -12813,18 +12908,27 @@ func lowerBinopMsil(
           insns.add(MAdd)
           MLong
         }
-        case MDouble -> {
+        case MDouble | MFloat -> {
           val baddDSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
-            phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, MDouble)
+            phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, lhsTy)
           } else {
             -1
           }
-          lowerExprMsil(cctx, fctx, insns, rhs)
-          if baddDSpillIdx >= 0 {
+          val baddDRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+          val baddDWide = if baddDSpillIdx >= 0 {
             insns.add(MLdloc(slot = baddDSpillIdx))
+            widenArithOperandsMsil(fctx, insns, baddDRhsTy, lhsTy, false, false)
+          } else {
+            widenArithOperandsMsil(fctx, insns, lhsTy, baddDRhsTy, false, false)
           }
           insns.add(MAdd)
-          MDouble
+          match baddDWide {
+            case MFloat -> {
+              insns.add(MConvR4)
+              MFloat
+            }
+            case _ -> MDouble
+          }
         }
         case _ -> {
           val baddISpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
@@ -12865,7 +12969,12 @@ func lowerBinopMsil(
         insns.add(MLdloc(slot = rS - fctx.paramCount))
       }
       val bsubWide = widenArithOperandsMsil(fctx, insns, bsubLhsTy, bsubRhsTy, spellsUnsigned(lhs), spellsUnsigned(rhs))
-      val bsubWideEff = match bsubWide { case MLong -> MLong; case _ -> bsubLhsTy }
+      val bsubWideEff = match bsubWide {
+        case MLong -> MLong
+        case MDouble -> MDouble
+        case MFloat -> MFloat
+        case _ -> bsubLhsTy
+      }
       match bsubWideEff {
         case MLong -> {
           insns.add(MSub)
@@ -12874,6 +12983,11 @@ func lowerBinopMsil(
         case MDouble -> {
           insns.add(MSub)
           MDouble
+        }
+        case MFloat -> {
+          insns.add(MSub)
+          insns.add(MConvR4)
+          MFloat
         }
         case _ -> {
           insns.add(MSub)
@@ -12898,7 +13012,12 @@ func lowerBinopMsil(
       } else {
         widenArithOperandsMsil(fctx, insns, bmulLhsTy, bmulRhsTy, bmulLhsUn, bmulRhsUn)
       }
-      val bmulWideEff = match bmulWide { case MLong -> MLong; case _ -> bmulLhsTy }
+      val bmulWideEff = match bmulWide {
+        case MLong -> MLong
+        case MDouble -> MDouble
+        case MFloat -> MFloat
+        case _ -> bmulLhsTy
+      }
       match bmulWideEff {
         case MLong -> {
           insns.add(MMul)
@@ -12907,6 +13026,11 @@ func lowerBinopMsil(
         case MDouble -> {
           insns.add(MMul)
           MDouble
+        }
+        case MFloat -> {
+          insns.add(MMul)
+          insns.add(MConvR4)
+          MFloat
         }
         case _ -> {
           insns.add(MMul)
@@ -12936,7 +13060,12 @@ func lowerBinopMsil(
       // flag) and `MDouble` has no unsigned form.
       val bdivIsUnsigned = spellsUnsigned(lhs) or spellsUnsigned(rhs)
       val bdivWide = widenArithOperandsMsil(fctx, insns, bdivLhsTy, bdivRhsTy, spellsUnsigned(lhs), spellsUnsigned(rhs))
-      val bdivWideEff = match bdivWide { case MLong -> MLong; case _ -> bdivLhsTy }
+      val bdivWideEff = match bdivWide {
+        case MLong -> MLong
+        case MDouble -> MDouble
+        case MFloat -> MFloat
+        case _ -> bdivLhsTy
+      }
       match bdivWideEff {
         case MLong -> {
           if bdivIsUnsigned {
@@ -12949,6 +13078,11 @@ func lowerBinopMsil(
         case MDouble -> {
           insns.add(MDiv)
           MDouble
+        }
+        case MFloat -> {
+          insns.add(MDiv)
+          insns.add(MConvR4)
+          MFloat
         }
         case MByte -> {
           insns.add(MDivUn)
@@ -12984,7 +13118,12 @@ func lowerBinopMsil(
       // comment above.
       val bmodIsUnsigned = spellsUnsigned(lhs) or spellsUnsigned(rhs)
       val bmodWide = widenArithOperandsMsil(fctx, insns, bmodLhsTy, bmodRhsTy, spellsUnsigned(lhs), spellsUnsigned(rhs))
-      val bmodWideEff = match bmodWide { case MLong -> MLong; case _ -> bmodLhsTy }
+      val bmodWideEff = match bmodWide {
+        case MLong -> MLong
+        case MDouble -> MDouble
+        case MFloat -> MFloat
+        case _ -> bmodLhsTy
+      }
       match bmodWideEff {
         case MLong -> {
           if bmodIsUnsigned {
@@ -13007,6 +13146,11 @@ func lowerBinopMsil(
         case MDouble -> {
           insns.add(MRem)
           MDouble
+        }
+        case MFloat -> {
+          insns.add(MRem)
+          insns.add(MConvR4)
+          MFloat
         }
         case MByte -> {
           insns.add(MRemUn)
@@ -15888,15 +16032,22 @@ func lowerPatternTestMsil(
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
         }
-        case LFloat(v, _, _) -> {
+        case LFloat(v, fsfx, fraw) -> {
+          // A literal pattern on a `Float` scrutinee is the `Float` nearest
+          // the literal (D155), so `case 0.1` matches `0.1f32`.
+          val patIsFloat = match scrutTy { case MFloat -> true; case _ -> match fsfx { case F32 -> true; case _ -> false } }
           if scrutBoxed {
-            insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MDouble)))
+            insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, if patIsFloat { MFloat } else { MDouble })))
           }
-          // A `Float` scrutinee is an r8 on the stack; compare with `ceq`
+          // A floating-point scrutinee is on the stack; compare with `ceq`
           // against the pattern's value.  Previously this fell to the `_`
           // wildcard arm below and `pop`ped the scrutinee, making every
           // Float literal pattern match unconditionally (#1481 item 1).
-          insns.add(MLdcR8(v = v))
+          if patIsFloat {
+            insns.add(MLdcR4(v = floatPatternValueMsil(v, fsfx, fraw)))
+          } else {
+            insns.add(MLdcR8(v = v))
+          }
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
         }
@@ -16268,8 +16419,8 @@ func lowerPatternTestMsil(
       }
       // A NaN scrutinee lies in no range: on doubles the `.un` compares are
       // "or unordered", so NaN takes both fail branches (#7240).
-      val rangeIsDouble = rangeNumTy == MDouble
-      lowerExprMsil(cctx, fctx, insns, lo)
+      val rangeIsDouble = isFloatingMsil(rangeNumTy)
+      lowerRangeBoundMsil(cctx, fctx, insns, lo, rangeNumTy)
       insns.add(if rangeIsDouble { MClt_Un } else { MClt })
       insns.add(MBrTrue(label = failLabel))   // scrut < lo
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
@@ -16277,7 +16428,7 @@ func lowerPatternTestMsil(
         case MObject -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, rangeNumTy)))
         case _ -> ()
       }
-      lowerExprMsil(cctx, fctx, insns, hi)
+      lowerRangeBoundMsil(cctx, fctx, insns, hi, rangeNumTy)
       if inclusive {
         insns.add(if rangeIsDouble { MCgt_Un } else { MCgt })
         insns.add(MBrTrue(label = failLabel))  // scrut > hi
@@ -18047,7 +18198,8 @@ func primWidenRankMsil(t: in MsilType): Int {
     case MByte -> 0
     case MInt -> 1
     case MLong -> 2
-    case MDouble -> 3
+    case MFloat -> 3
+    case MDouble -> 4
     case _ -> -1
   }
 }
@@ -18071,7 +18223,13 @@ func isWiderPrimMsil(prev: in MsilType, cand: in MsilType): Bool {
 func widenPrimToSlotMsil(insns: in List[MInsn], fromTy: in MsilType, slotTy: in MsilType): MsilType {
   match slotTy {
     case MLong -> match fromTy { case MInt | MByte | MChar -> { insns.add(MConvI8); MLong }; case _ -> fromTy }
-    case MDouble -> match fromTy { case MInt | MByte | MLong -> { insns.add(MConvR8); MDouble }; case _ -> fromTy }
+    case MDouble -> match fromTy {
+      case MInt | MByte | MLong | MFloat -> {
+        insns.add(MConvR8)
+        MDouble
+      }
+      case _ -> fromTy
+    }
     case MInt -> match fromTy { case MByte -> MInt; case _ -> fromTy }
     case _ -> fromTy
   }
@@ -18123,6 +18281,7 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       case MInt -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MInt)))
       case MLong -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MLong)))
       case MDouble -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MDouble)))
+      case MFloat -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MFloat)))
       case MBool -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MBool)))
       case MChar -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MChar)))
       case MByte -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MByte)))
@@ -18183,12 +18342,70 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
 // The numeric width an integer/float literal denotes — used to unbox an erased
 // (boxed) `PRange` scrutinee to the right value type rather than a hard-coded
 // int.  `clt`/`cgt` then compare at that width (they work for i4/i8/r8 alike).
+// The value a float literal pattern denotes against a `Float` scrutinee: the
+// literal rounded to binary32 (D155).  An `f32` literal is already rounded.
+func floatPatternValueMsil(v: in Double, sfx: in FloatSuffix, raw: in String): Double {
+  match sfx {
+    case F32 -> v
+    case _ -> float32LiteralValue(raw, v)
+  }
+}
+
+// One bound of a range pattern.  Against a `Float` scrutinee a float literal
+// bound denotes the nearest `Float` (D155), as a literal pattern does.
+func lowerRangeBoundMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  bound: in Expr,
+  rangeNumTy: in MsilType,
+): Unit {
+  match rangeNumTy {
+    case MFloat -> match floatLiteralOfBoundMsil(bound) {
+      case Some(fv) -> {
+        insns.add(MLdcR4(v = fv))
+        return ()
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+  // Range-pattern bounds are not type-checked against the scrutinee, so an
+  // integer bound (`case 0 ..= 1` on a `Float`) is converted to the
+  // scrutinee's floating width here, as the JVM backend does.
+  val boundTy = lowerExprMsil(cctx, fctx, insns, bound)
+  match rangeNumTy {
+    case MFloat -> match boundTy { case MFloat -> (); case _ -> insns.add(MConvR4) }
+    case MDouble -> match boundTy { case MDouble -> (); case _ -> insns.add(MConvR8) }
+    case _ -> ()
+  }
+}
+
+// A float literal bound (possibly negated or parenthesised) as its binary32 value.
+func floatLiteralOfBoundMsil(e: in Expr): Option[Double] {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LFloat(v, sfx, raw) -> Some(value = floatPatternValueMsil(v, sfx, raw))
+      case _ -> None
+    }
+    case EParen(inner) -> floatLiteralOfBoundMsil(inner)
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> match floatLiteralOfBoundMsil(inner) {
+        case Some(fv) -> Some(value = 0.0 - fv)
+        case None -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
 func rangeBoundTypeMsil(e: in Expr): MsilType {
   match e.kind {
     case ELiteral(lit) -> {
       match lit {
         case LInt(_, suffix, _) -> match suffix { case I64 -> MLong; case U64 -> MLong; case _ -> MInt }
-        case LFloat(_, _, _) -> MDouble
+        case LFloat(_, sfx, _) -> match sfx { case F32 -> MFloat; case _ -> MDouble }
         case _ -> MInt
       }
     }
@@ -18326,6 +18543,15 @@ func emitStackValueToStringMsil(
       insns.add(MLdloca(slot = dblSlot - fctx.paramCount))
       insns.add(MCall(methodToken = cctx.tokInvariantCulture))
       insns.add(MCall(methodToken = cctx.tokDoubleToStringInv))
+    }
+    // Single.ToString(InvariantCulture): the shortest digits that round-trip
+    // the binary32 value, the same text on every backend (D155).
+    case MFloat -> {
+      val sglSlot = allocSlotMsil(fctx, "__inv_sgl_" + toString(fctx.slotTicker.count), MFloat)
+      emitStoreSlot(insns, sglSlot, fctx.paramCount)
+      insns.add(MLdloca(slot = sglSlot - fctx.paramCount))
+      insns.add(MCall(methodToken = cctx.tokInvariantCulture))
+      insns.add(MCall(methodToken = cctx.tokSingleToStringInv))
     }
     case MBool -> {
       // Lowercase "true"/"false", not BCL Boolean.ToString()'s "True"/"False" (#5552).
@@ -18562,6 +18788,10 @@ func lowerBuiltinOrStaticCallMsil(
       case MDouble -> {
         insns.add(MLdcR8(v = 0.0))
         MDouble
+      }
+      case MFloat -> {
+        insns.add(MLdcR4(v = 0.0))
+        MFloat
       }
       case MInt -> {
         insns.add(MLdcI4(v = 0))
@@ -21660,7 +21890,7 @@ func lowerMethodCallMsil(
       case _ -> ()
     }
     MInt
-  } else if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble" or memberName == "toNat") and args.count == 0 and isNumericMsil(recvTy) {
+  } else if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble" or memberName == "toFloat" or memberName == "toNat") and args.count == 0 and isNumericMsil(recvTy) {
     // Numeric / character primitive conversion intrinsics (#1901, toNat added
     // for #2050/Band 4's Int/Long/Byte/Char/Double -> Nat direction).  The
     // receiver value is already on the stack; emit the CLI `conv.*` opcode for
@@ -21668,11 +21898,22 @@ func lowerMethodCallMsil(
     // Lyric's numeric primitives (e.g. `slice[Byte]` element -> `Int` for
     // arithmetic), replacing the legacy free-function forms
     // (`intToLong`/`longToInt`).
+    // The checked conversions range-check a `Float` receiver as the
+    // `Double` it widens to exactly.
+    val checkedRecvTy = match recvTy {
+      case MFloat -> if memberName == "toChar" or memberName == "toNat" {
+        insns.add(MConvR8)
+        MDouble
+      } else {
+        MFloat
+      }
+      case _ -> recvTy
+    }
     if memberName == "toByte" {
       insns.add(MConvU1)
       MByte
     } else if memberName == "toChar" {
-      emitCheckedToCharMsil(cctx, fctx, insns, recvTy)
+      emitCheckedToCharMsil(cctx, fctx, insns, checkedRecvTy)
       MChar
     } else if memberName == "toLong" {
       insns.add(MConvI8)
@@ -21680,6 +21921,9 @@ func lowerMethodCallMsil(
     } else if memberName == "toDouble" {
       insns.add(MConvR8)
       MDouble
+    } else if memberName == "toFloat" {
+      insns.add(MConvR4)
+      MFloat
     } else if memberName == "toNat" {
       // `Nat` erases to the same `int64` as `Long` (see typeExprToMsilCtx's
       // "Nat" arm), so this widens/truncates exactly like `.toLong()` — but
@@ -21688,7 +21932,7 @@ func lowerMethodCallMsil(
       // silently producing an out-of-invariant Nat. Byte and Char receivers
       // can never be negative (Byte is unsigned 0..255; Char is a BMP scalar
       // 0..65535) so they skip the check.
-      emitCheckedToNatMsil(cctx, fctx, insns, recvTy)
+      emitCheckedToNatMsil(cctx, fctx, insns, checkedRecvTy)
       MLong
     } else {
       insns.add(MConvI4)
@@ -22940,6 +23184,7 @@ func inferLambdaBodyExprMsilType(
         case MString -> MString
         case MLong -> MLong
         case MDouble -> MDouble
+        case MFloat -> MFloat
         case MObject -> MObject
         // `Byte op Byte` stays `Byte` (`wrapByteArithMsil`); an unresolved rhs
         // propagates as unknown.
@@ -22956,6 +23201,7 @@ func inferLambdaBodyExprMsilType(
       case BSub | BMul -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
         case MLong -> MLong
         case MDouble -> MDouble
+        case MFloat -> MFloat
         case MObject -> MObject
         case MByte -> byteArithRhsMsilType(
           inferLambdaBodyExprMsilType(
@@ -22970,6 +23216,7 @@ func inferLambdaBodyExprMsilType(
       case BDiv -> match inferLambdaBodyExprMsilType(lhs, paramEnv, cctx, pkgName) {
         case MLong -> MLong
         case MDouble -> MDouble
+        case MFloat -> MFloat
         case MByte -> MByte
         case MObject -> MObject
         case _ -> MInt
@@ -24601,6 +24848,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MLdcI4(_) -> 1
     case MLdcI8(_) -> 1
     case MLdcR8(_) -> 1
+    case MLdcR4(_) -> 1
     case MLdStr(_) -> 1
     case MLdarg(_) -> 1
     case MStarg(_) -> -1
@@ -24631,6 +24879,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MConvI4 -> 0
     case MConvI8 -> 0
     case MConvR8 -> 0
+    case MConvR4 -> 0
     case MConvU1 -> 0
     case MConvU2 -> 0
     case MConvU8 -> 0
@@ -24673,6 +24922,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MLdelemI4 -> -1
     case MLdelemI8 -> -1
     case MLdelemR8 -> -1
+    case MLdelemR4 -> -1
     case MLdftn(_) -> 1
     case MLeave(_) -> 0
     case MEndfinally -> 0
@@ -25353,6 +25603,7 @@ func msilTypeKeyStr(t: in MsilType): String {
     case MInt -> "i4"
     case MLong -> "i8"
     case MDouble -> "r8"
+    case MFloat -> "r4"
     case MBool -> "bool"
     case MChar -> "char"
     case MString -> "str"
@@ -25722,6 +25973,8 @@ func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
     MLong
   } else if fqn == "System.Double" {
     MDouble
+  } else if fqn == "System.Single" {
+    MFloat
   } else if fqn == "System.Boolean" {
     MBool
   } else if fqn == "System.Char" {
@@ -26448,6 +26701,7 @@ func emitExternOptionalDefault(
     case MInt -> insns.add(MLdcI4(v = 0))
     case MLong -> insns.add(MLdcI8(v = 0i64))
     case MDouble -> insns.add(MLdcR8(v = 0.0))
+    case MFloat -> insns.add(MLdcR4(v = 0.0))
     case MString -> insns.add(MLdNull)
     case MObject -> insns.add(MLdNull)
     case MClass(_) -> insns.add(MLdNull)
@@ -26526,11 +26780,14 @@ func emitExternTargetConstMsil(
   span: in Span,
 ): Unit {
   val retIsDouble = match retTy { case MDouble -> true; case _ -> false }
+  val retIsFloat = match retTy { case MFloat -> true; case _ -> false }
   val retIsLong = match retTy { case MLong -> true; case _ -> false }
   match cv {
     case Mdr.ECVInt(v) -> {
       if retIsDouble {
         insns.add(MLdcR8(v = v.toDouble()))
+      } else if retIsFloat {
+        insns.add(MLdcR4(v = v.toDouble()))
       } else if retIsLong {
         insns.add(MLdcI8(v = v.toLong()))
       } else {
@@ -26540,6 +26797,8 @@ func emitExternTargetConstMsil(
     case Mdr.ECVLong(v) -> {
       if retIsDouble {
         insns.add(MLdcR8(v = v.toDouble()))
+      } else if retIsFloat {
+        insns.add(MLdcR4(v = v.toDouble()))
       } else if retIsLong {
         insns.add(MLdcI8(v = v))
       } else {
@@ -26568,13 +26827,15 @@ func emitExternTargetConstMsil(
     case Mdr.ECVR4Bits(bits) -> {
       if retIsDouble {
         insns.add(MLdcR8(v = int32BitsToDouble(bits)))
+      } else if retIsFloat {
+        insns.add(MLdcR4(v = int32BitsToDouble(bits)))
       } else {
         cctx.diagnostics.add(
           errorDiagnostic(
             "F0015",
             "@externTarget '" + target + "' on '" + declName +
-              "' names a floating-point literal constant but declares a non-Double return type; " +
-              "declare the wrapper's return as Double.",
+              "' names a single-precision literal constant but declares a return type that is neither Float nor Double; " +
+              "declare the wrapper's return as Float.",
             span
           )
         )
@@ -26831,6 +27092,7 @@ func genericExternElemNameMsil(t: in MsilType): String {
     case MInt -> "Int"
     case MLong -> "Long"
     case MDouble -> "Double"
+    case MFloat -> "Float"
     case MBool -> "Bool"
     case MChar -> "Char"
     case MByte -> "Byte"
@@ -39114,6 +39376,7 @@ func msilToElemByte(t: in MsilType): Int {
     case MInt -> 0x08
     case MLong -> 0x0A
     case MDouble -> 0x0D
+    case MFloat -> 0x0C
     case MString -> 0x0E
     case MObject -> 0x1C
     case _ -> -1
@@ -39134,6 +39397,8 @@ func elemByteToMsil(b: in Int): Option[MsilType] {
     Some(value = MInt)
   } else if b == 0x0A {
     Some(value = MLong)
+  } else if b == 0x0C {
+    Some(value = MFloat)
   } else if b == 0x0D {
     Some(value = MDouble)
   } else if b == 0x0E {
@@ -39873,6 +40138,7 @@ func autoFfiDefaultLoadable(pm: in MsilType, dflt: in Mdr.ExternParamDefault, ha
       case MInt -> true
       case MLong -> true
       case MDouble -> true
+      case MFloat -> true
       case MString -> true
       case MObject -> true
       case MClass(_) -> true
@@ -39896,6 +40162,7 @@ func autoFfiDefaultLoadable(pm: in MsilType, dflt: in Mdr.ExternParamDefault, ha
         case MInt -> true
         case MLong -> true
         case MDouble -> true
+        case MFloat -> true
         case MValueTypeRef(_, _) -> true
         case _ -> false
       }
@@ -39905,7 +40172,11 @@ func autoFfiDefaultLoadable(pm: in MsilType, dflt: in Mdr.ExternParamDefault, ha
         case MValueTypeRef(_, _) -> true
         case _ -> false
       }
-      case Mdr.ECVR4Bits(_) -> match pm { case MDouble -> true; case _ -> false }
+      case Mdr.ECVR4Bits(_) -> match pm {
+        case MDouble -> true
+        case MFloat -> true
+        case _ -> false
+      }
       case Mdr.ECVR8Bits(_) -> match pm { case MDouble -> true; case _ -> false }
     }
   }
@@ -39931,6 +40202,7 @@ func emitAutoFfiDefaultLoad(
       case MInt -> insns.add(MLdcI4(v = 0))
       case MLong -> insns.add(MLdcI8(v = 0i64))
       case MDouble -> insns.add(MLdcR8(v = 0.0))
+      case MFloat -> insns.add(MLdcR4(v = 0.0))
       // A `= default` struct is its zero bit pattern: scratch local,
       // `initobj`, load — the same idiom as `emitExternOptionalDefault`.
       case MValueTypeRef(_, clrFqn) -> match fctxOpt {
@@ -39963,18 +40235,25 @@ func emitAutoFfiDefaultLoad(
     case Mdr.EPDConst(cv) -> {
       val pmIsLong = match pm { case MLong -> true; case _ -> false }
       val pmIsDouble = match pm { case MDouble -> true; case _ -> false }
+      val pmIsFloat = match pm { case MFloat -> true; case _ -> false }
       match cv {
         case Mdr.ECVInt(v) -> {
           if pmIsLong {
             insns.add(MLdcI8(v = v.toLong()))
           } else if pmIsDouble {
             insns.add(MLdcR8(v = v.toDouble()))
+          } else if pmIsFloat {
+            insns.add(MLdcR4(v = v.toDouble()))
           } else {
             insns.add(MLdcI4(v = v))
           }
         }
         case Mdr.ECVLong(v) -> if pmIsDouble { insns.add(MLdcR8(v = v.toDouble())) } else { insns.add(MLdcI8(v = v)) }
-        case Mdr.ECVR4Bits(bits) -> insns.add(MLdcR8(v = int32BitsToDouble(bits)))
+        case Mdr.ECVR4Bits(bits) -> if pmIsFloat {
+          insns.add(MLdcR4(v = int32BitsToDouble(bits)))
+        } else {
+          insns.add(MLdcR8(v = int32BitsToDouble(bits)))
+        }
         case Mdr.ECVR8Bits(bits) -> insns.add(MLdcR8(v = int64BitsToDouble(bits)))
       }
     }
@@ -40242,9 +40521,11 @@ func emitExternConstMsil(
         MLong
       }
     }
+    // A `System.Single` constant (`MathF.PI`, `Single.MaxValue`) is a `Float`
+    // (D155).
     case Mdr.ECVR4Bits(bits) -> {
-      insns.add(MLdcR8(v = int32BitsToDouble(bits)))
-      MDouble
+      insns.add(MLdcR4(v = int32BitsToDouble(bits)))
+      MFloat
     }
     case Mdr.ECVR8Bits(bits) -> {
       insns.add(MLdcR8(v = int64BitsToDouble(bits)))
@@ -41129,6 +41410,8 @@ func sigTypeToMsilForIface(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[Msi
         Some(value = MByte)
       } else if fqn == "System.Double" {
         Some(value = MDouble)
+      } else if fqn == "System.Single" {
+        Some(value = MFloat)
       } else if fqn == "System.String" {
         Some(value = MString)
       } else if fqn == "System.Object" {
@@ -41722,6 +42005,7 @@ func msilTypeToSigForIface(t: in MsilType): Option[Mdr.SigType] {
     case MInt -> Some(value = Mdr.mkPrimSig(0x08))
     case MLong -> Some(value = Mdr.mkPrimSig(0x0A))
     case MDouble -> Some(value = Mdr.mkPrimSig(0x0D))
+    case MFloat -> Some(value = Mdr.mkPrimSig(0x0C))
     case MString -> Some(value = Mdr.mkPrimSig(0x0E))
     case MObject -> Some(value = Mdr.mkPrimSig(0x1C))
     case MVoid -> Some(value = Mdr.mkPrimSig(0x01))
@@ -42266,13 +42550,22 @@ func emitConfigDefaultLiteralMsil(
           insns.add(MLdcR8(v = v.toDouble()))
           true
         }
+        case MFloat -> {
+          insns.add(MLdcR4(v = float32LiteralValue(toString(v), v.toDouble())))
+          true
+        }
         case _ -> false
       }
     }
-    case LFloat(f0, _, _) -> {
+    case LFloat(f0, fsfx, fraw) -> {
       match fieldTy {
         case MDouble -> {
           insns.add(MLdcR8(v = if neg { 0.0 - f0 } else { f0 }))
+          true
+        }
+        case MFloat -> {
+          val f32 = floatPatternValueMsil(f0, fsfx, fraw)
+          insns.add(MLdcR4(v = if neg { 0.0 - f32 } else { f32 }))
           true
         }
         case _ -> false
@@ -42841,6 +43134,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
                 tokBoolParse = cctx.tokCfgBoolParse,
                 tokInt64Parse = cctx.tokCfgInt64Parse,
                 tokDoubleParse = cctx.tokCfgDoubleParse,
+                tokSingleParse = cctx.tokCfgSingleParse,
                 tokInvariantCulture = cctx.tokInvariantCulture
               )
             )
@@ -43554,6 +43848,7 @@ func collHintParamType(t: in MsilType): MsilType {
     case MInt -> MObject
     case MLong -> MObject
     case MDouble -> MObject
+    case MFloat -> MObject
     case MBool -> MObject
     case MChar -> MObject
     case MByte -> MObject
@@ -44249,6 +44544,8 @@ record RangeBoundVal {
   isFloat: Bool
   l: Long
   d: Double
+  // The bound rounded to binary32, for a range over `Float` (D155).
+  f32: Double = 0.0
 }
 
 // The folded bounds of a range-refined config field (#7229).  Both flags are
@@ -44285,8 +44582,9 @@ func configFieldRange(te: in TypeExpr): ConfigFieldRange {
     desc = ""
   )
   match te.kind {
-    case TRefined(_, rb) -> {
+    case TRefined(rbase, rb) -> {
       val zero = RangeBoundVal(ok = true, isFloat = false, l = 0i64, d = 0.0)
+      val baseIsSingle = rbase.segments.count > 0 and rbase.segments[rbase.segments.count - 1] == "Float"
       val (lo, hi, hasMin, hasMax, excl) = match rb {
         case RBClosed(loE, hiE) -> (
           foldRangeBound(loE),
@@ -44321,8 +44619,8 @@ func configFieldRange(te: in TypeExpr): ConfigFieldRange {
         upperExclusive = excl,
         minI = lo.l,
         maxI = hi.l,
-        minF = if lo.isFloat { lo.d } else { lo.l.toDouble() },
-        maxF = if hi.isFloat { hi.d } else { hi.l.toDouble() },
+        minF = if baseIsSingle { lo.f32 } else if lo.isFloat { lo.d } else { lo.l.toDouble() },
+        maxF = if baseIsSingle { hi.f32 } else if hi.isFloat { hi.d } else { hi.l.toDouble() },
         desc = desc
       )
     }
@@ -44335,8 +44633,20 @@ func foldRangeBound(e: in Expr): RangeBoundVal {
   match e.kind {
     case ELiteral(lit) -> {
       match lit {
-        case LInt(v, _, _) -> RangeBoundVal(ok = true, isFloat = false, l = v, d = 0.0)
-        case LFloat(v, _, _) -> RangeBoundVal(ok = true, isFloat = true, l = 0i64, d = v)
+        case LInt(v, _, _) -> RangeBoundVal(
+          ok = true,
+          isFloat = false,
+          l = v,
+          d = 0.0,
+          f32 = float32LiteralValue(toString(v), v.toDouble())
+        )
+        case LFloat(v, sfx, raw) -> RangeBoundVal(
+          ok = true,
+          isFloat = true,
+          l = 0i64,
+          d = v,
+          f32 = match sfx { case F32 -> v; case _ -> float32LiteralValue(raw, v) }
+        )
         case _ -> failVal
       }
     }
@@ -44345,7 +44655,7 @@ func foldRangeBound(e: in Expr): RangeBoundVal {
         case PreNeg -> {
           val inner = foldRangeBound(operand)
           if inner.ok {
-            RangeBoundVal(ok = true, isFloat = inner.isFloat, l = 0i64 - inner.l, d = 0.0 - inner.d)
+            RangeBoundVal(ok = true, isFloat = inner.isFloat, l = 0i64 - inner.l, d = 0.0 - inner.d, f32 = 0.0 - inner.f32)
           } else {
             failVal
           }
@@ -44368,7 +44678,7 @@ func mkDistinctRanged(
 ): MDistinctType {
   val lo = foldRangeBound(loE)
   val hi = foldRangeBound(hiE)
-  val isFloatInner = match inner { case MDouble -> true; case _ -> false }
+  val isFloatInner = isFloatingMsil(inner)
   if lo.ok and hi.ok {
     val loF = if lo.isFloat { lo.d } else { lo.l.toDouble() }
     val hiF = if hi.isFloat { hi.d } else { hi.l.toDouble() }
@@ -44382,6 +44692,8 @@ func mkDistinctRanged(
       maxI = hi.l,
       minF = loF,
       maxF = hiF,
+      minF32 = lo.f32,
+      maxF32 = hi.f32,
       upperExclusive = upperExcl,
       isUnsigned = isUnsigned
     )

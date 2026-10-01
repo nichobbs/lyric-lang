@@ -88,8 +88,8 @@ pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
 
 /// Record one histogram observation.
 @stable(since = "0.2")
-pub func recordHistogram(name: String, value: Float, unit: String): Unit {
-  globalMetricsBuffer.recordHistogram(name, value.toDouble(), unit)
+pub func recordHistogram(name: String, value: Double, unit: String): Unit {
+  globalMetricsBuffer.recordHistogram(name, value, unit)
 }
 
 // ─── Aspect templates ────────────────────────────────────────────────────────

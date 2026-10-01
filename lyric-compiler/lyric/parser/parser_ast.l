@@ -98,14 +98,32 @@ pub record LiteralBound {
   pub isFloat: Bool
   pub l: Long
   pub d: Double
+  // The bound as a `Float`: the literal rounded to binary32 (D155), held
+  // exactly.  A range over `Float` checks against this value.
+  pub f32: Double = 0.0
 }
 
 pub func foldLiteralBound(e: in Expr): LiteralBound {
   val none = LiteralBound(ok = false, isFloat = false, l = 0i64, d = 0.0)
   match e.kind {
     case ELiteral(lit) -> match lit {
-      case LInt(v, _, _) -> LiteralBound(ok = true, isFloat = false, l = v, d = v.toDouble())
-      case LFloat(v, _, _) -> LiteralBound(ok = true, isFloat = true, l = 0i64, d = v)
+      case LInt(v, _, _) -> LiteralBound(
+        ok = true,
+        isFloat = false,
+        l = v,
+        d = v.toDouble(),
+        f32 = float32LiteralValue(toString(v), v.toDouble())
+      )
+      case LFloat(v, sfx, raw) -> LiteralBound(
+        ok = true,
+        isFloat = true,
+        l = 0i64,
+        d = v,
+        f32 = match sfx {
+          case F32 -> v
+          case _ -> float32LiteralValue(raw, v)
+        }
+      )
       case _ -> none
     }
     case EPrefix(op, inner) -> match op {
@@ -115,7 +133,7 @@ pub func foldLiteralBound(e: in Expr): LiteralBound {
           // The lexer accepts `9223372036854775808` only under a unary minus
           // and carries it as Long.MinValue; the wrapping negation below maps
           // that back to Long.MinValue, which is the value the user wrote.
-          LiteralBound(ok = true, isFloat = b.isFloat, l = 0i64 - b.l, d = 0.0 - b.d)
+          LiteralBound(ok = true, isFloat = b.isFloat, l = 0i64 - b.l, d = 0.0 - b.d, f32 = 0.0 - b.f32)
         } else {
           none
         }
@@ -1213,6 +1231,11 @@ pub record ArgConversionSite {
   method: String
   startOffset: Int
 }
+
+/// The `ArgConversionSite.method` marking an unsuffixed float literal that
+/// adopts `Float` from its context (D155): it is rewritten to its `f32` form
+/// rather than wrapped in a conversion call.
+pub func floatLiteralSiteMethod(): String = "__f32_literal"
 
 /// A call through a function value that the type checker typed: `calleeType`
 /// is the callee's checked function type spelled as source.  A backend that

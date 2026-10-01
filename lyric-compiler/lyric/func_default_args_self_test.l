@@ -18,6 +18,10 @@ func greetFull(first: in String, last: in String, suffix: in String = "!"): Stri
   first + " " + last + suffix
 }
 
+func scaleF(v: in Float, k: in Float = 2.5): Float {
+  v * k
+}
+
 func tri(x: in Int, y: in Int = 2, z: in Int = 3): Int {
   x + y + z
 }
@@ -52,4 +56,8 @@ test "three-param function: first two provided, last default filled" {
 
 test "three-param function: all named args, out-of-order" {
   assertEqualInt(tri(z = 10, x = 1, y = 5), 16, "1+5+10=16 out-of-order named")
+}
+
+test "an unsuffixed Float default is the nearest Float" {
+  assertTrue(scaleF(0.1f32) == 0.1f32 * 2.5f32, "default filled as a Float literal")
 }

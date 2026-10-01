@@ -3,7 +3,8 @@
 **Status:** Specced in D155 (phase G0): Q-GFX-001 to Q-GFX-004 are
 resolved, `docs/01` specifies the §4 language features as not yet
 implemented, and `docs/00` / `docs/04` carry the §4.9 revisions. Phases G1
-to G10 are open. D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
+to G10 are open; G1's 32-bit `Float` (§4.1) has shipped on every backend.
+D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),
 `docs/65-ui-library-sketch.md` §13.3 (non-HTML hosts), `docs/63-build-profiles-and-debugger.md`
@@ -112,6 +113,17 @@ for every buffer.
 This is a behaviour change for existing code, but it moves the
 implementation onto the specification rather than changing the
 specification.
+
+**Shipped (G1).** All three backends lower `Float` to binary32. The
+literal rule is wider than the second bullet above: an unsuffixed literal
+also becomes a `Float` where a `Float` is required (a binding, argument,
+default value, field, return value, list element, range bound or pattern),
+and it denotes the binary32 value nearest its decimal text, rounded once.
+`Float` renders with .NET's `Single.ToString()` rules on every target.
+The audit found no stdlib `Float` that meant 64-bit; in the ecosystem,
+`OTel.recordHistogram` moved to `Double` and `lyric-proto` dropped its
+`Double`-to-`Single` narrowing workaround. Pinned by
+`lyric-compiler/lyric/float32_self_test.l` on all three targets.
 
 ### 4.2 By-value records and small unions
 
