@@ -621,7 +621,7 @@ func buildAndRunConsumerWithStdlib(
 // restored-dependency plumbing at all (single in-bundle file, no import).
 // The direct-argument detection above (`cctx.lambdaParamTypes`/
 // `lambdaRetTypes`, #1939/#6511) only fires when
-// `unwrapParenExpr(callArgExpr(...)).kind` is literally `ELambda` at the
+// `stripExprParens(callArgExpr(...)).kind` is literally `ELambda` at the
 // call site; a call argument that's an `EPath` reference to a previously-
 // bound closure never reaches it, restored callee or not. Covered by the
 // `cpgen_val_bound_closure_*` tests below (in-bundle, no restored package

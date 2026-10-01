@@ -14,30 +14,28 @@
 //! through the native SIGNED `if_icmpxx`/`lcmp`/`idiv`/`ldiv`/`irem`/`lrem`/
 //! `String.valueOf` those types erase to — silently WRONG whenever the value
 //! has its sign bit set (`UInt` >= 2^31, `ULong` >= 2^63), since the JVM has
-//! no unsigned integer primitive at all. This file pins the fix: `Jvm.Codegen`
-//! now tracks which locals/parameters/literals are statically `UInt`/`ULong`
-//! (`FuncCtx.unsignedVars`, `isUnsignedExpr`) and dispatches relational
-//! comparison, `/`, `%`, and stringification through `Integer`/
-//! `Long.compareUnsigned`/`divideUnsigned`/`remainderUnsigned`/
-//! `toUnsignedString` for exactly those operands, leaving plain `Int`/`Long`
-//! on the native signed opcodes.
+//! no unsigned integer primitive at all. This file pins the fix: relational
+//! comparison, `/`, `%`, and stringification of a `UInt`/`ULong` operand go
+//! through `Integer`/`Long.compareUnsigned`/`divideUnsigned`/
+//! `remainderUnsigned`/`toUnsignedString`, leaving plain `Int`/`Long` on the
+//! native signed opcodes. The first fix tracked statically-unsigned locals in
+//! `Jvm.Codegen` (`FuncCtx.unsignedVars`); since #7812 the type checker spells
+//! every such operand as the identity `.toUInt()`/`.toULong()` and the backend
+//! recognises it through the shared `Lyric.Parser.spellsUnsigned`.
 //!
-//! JVM-only: MSIL now has a real `UInt`/`ULong` representation (erasure to
-//! `MInt`/`MLong`, #6756), but this file's own defect class — bare-scalar
-//! comparison/division/remainder/stringification bypassing an unsigned-aware
-//! opcode path outside the range-subtype bounds check — has no MSIL
-//! counterpart yet (no `fctx.unsignedVars`-style side channel exists on
-//! MSIL), tracked separately as #6913.
+//! JVM-only because the `println` cases capture `System.out` through
+//! `java.io.PrintStream`. The dotnet counterpart (#6913) is the both-target
+//! bare `UInt`/`ULong` section of `range_subtype_self_test.l`.
 //!
 //!   lyric test --target jvm lyric-compiler/jvm/unsigned_int_ops_jvm_self_test.l
 //!
 //! Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
 //!
 //! #6754 (review findings on #6748/#6631) extended this file with three
-//! more cases: `println`/`print` never consulted `isUnsignedExpr` at all
+//! more cases: `println`/`print` never consulted the unsigned tracking at all
 //! (they always pushed the raw signed `int`/`long` into
 //! `PrintStream.println`/`.print`, unlike every OTHER stringification site
-//! this file already covers); `isUnsignedExpr` was purely syntactic, missing
+//! this file already covers); the tracking was purely syntactic, missing
 //! a `UInt`/`ULong`-returning function CALL and an indexed read off a
 //! declared `slice[UInt]`/`slice[ULong]`; and `ctx.unsignedVars` was never
 //! scope-restored, so a `UInt` shadowed by a same-named `Int` inside a
@@ -177,7 +175,7 @@ test "ULong string interpolation renders the unsigned decimal value (#6748)" {
 
 // ── println/print builtin (#6754 finding 1.1) ─────────────────────────────────
 //
-// `println`/`print` never consulted `isUnsignedExpr` at all — they always
+// `println`/`print` never consulted the unsigned tracking at all — they always
 // pushed the raw (possibly sign-bit-set) `int`/`long` straight into
 // `PrintStream.println(int)`/`.print(long)`, which always renders the
 // SIGNED decimal (`println(3_000_000_000u32)` printed `"-1294967296"`).
@@ -231,25 +229,26 @@ test "println renders the unsigned decimal value for a ULong above 2^63 (#6754 f
   assertEqual(content, "9223372036854775811\n", "println(ULong) must render the unsigned decimal; got: " + content)
 }
 
-// ── isUnsignedExpr widening (#6754 finding 1.2) ────────────────────────────────
+// ── unsigned operands beyond names and literals (#6754 finding 1.2) ────────────
 //
-// `isUnsignedExpr` was purely syntactic: only a bare name previously
-// recorded in `unsignedVars`, or a `u32`/`u64`-suffixed literal, reported
-// `true`. A `UInt`/`ULong`-returning function CALL, or an indexed read off
+// The original tracking was purely syntactic: only a bare name previously
+// recorded in `unsignedVars`, or a `u32`/`u64`-suffixed literal, counted as
+// unsigned. A `UInt`/`ULong`-returning function CALL, or an indexed read off
 // a declared `slice[UInt]`/`slice[ULong]`, silently reverted to signed
-// codegen for that one expression.
+// codegen for that one expression. The type checker now spells each of them
+// by its type (#7812).
 func bigUIntValue(): UInt {
   3000000000u32
 }
 
-test "isUnsignedExpr recognizes a UInt-returning function call (#6754 finding 1.2a)" {
+test "a UInt-returning function call is an unsigned operand (#6754 finding 1.2a)" {
   val threshold: UInt = 1000000000u32
   assertTrue(bigUIntValue() > threshold, "bigUIntValue() > threshold must be unsigned-compared")
   assertFalse(bigUIntValue() < threshold, "bigUIntValue() < threshold must be false (unsigned)")
   assertEqual(bigUIntValue().toString(), "3000000000", "toString() on a UInt-returning call result is unsigned")
 }
 
-test "isUnsignedExpr recognizes an indexed read from a declared slice[UInt] (#6754 finding 1.2c)" {
+test "an indexed read from a declared slice[UInt] is an unsigned operand (#6754 finding 1.2c)" {
   val xs: slice[UInt] = [3000000000u32, 1000000000u32]
   val threshold: UInt = 1000000000u32
   assertTrue(xs[0] > threshold, "xs[0] > threshold must be unsigned-compared")
@@ -267,7 +266,9 @@ test "isUnsignedExpr recognizes an indexed read from a declared slice[UInt] (#67
 // value — and a naive fix that only added eviction, without also
 // scope-restoring, would then leak the eviction past the block, losing the
 // OUTER `UInt` binding's own unsigned tracking once the block exits. This
-// case exercises both directions in one A/B-verified test.
+// case exercises both directions in one A/B-verified test. `unsignedVars`
+// is gone since #7812, whose operand spelling follows each binding's own
+// type; the case still pins the behaviour.
 test "unsignedVars scope-undo: nested Int shadow is signed, outer UInt survives the block (#6754 finding 2)" {
   val x: UInt = 3000000000u32
   val threshold: UInt = 1000000000u32
