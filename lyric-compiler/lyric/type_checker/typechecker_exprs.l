@@ -1162,6 +1162,85 @@ func checkQualifiedMemberRef(
   }
 }
 
+// `NativePtr[arg]` or `NativeWeak[arg]` in a `--target native` check (see
+// `SymbolTable.nativeIntrinsicTypes`); None for any other target.
+func nativeIntrinsicType(tbl: in SymbolTable, name: in String, arg: in Type): Option[Type] {
+  match mapGet(tbl.nativeIntrinsicTypes, name) {
+    case Some(tid) -> {
+      val targs: List[Type] = newList()
+      targs.add(arg)
+      Some(value = TyUser(id = tid, name = name, args = targs))
+    }
+    case None -> None
+  }
+}
+
+// The type of a call to a native FFI intrinsic function (docs/01 §11.6) in a
+// `--target native` check; None when `fn` names none or the target is another.
+// `Lyric.LlvmCodegen` intercepts these names before any name resolution:
+// `nativeNullPtr()` is the C NULL pointer as a `NativePtr[Byte]`,
+// `nativeAddrOf(x)` the address of the local `x: T` as a `NativePtr[T]`, and
+// `NativeWeak(x)` a weak reference to `x: T`.  Where they may appear is the
+// mode checker's N0100.
+func nativeIntrinsicCallType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  args: in List[CallArg],
+  span: in Span,
+): Option[Type] {
+  if tbl.nativeIntrinsicTypes.count == 0 {
+    return None
+  }
+  val name = match fn.kind {
+    case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+    case _ -> ""
+  }
+  if name != "nativeNullPtr" and name != "nativeAddrOf" and name != "NativeWeak" {
+    return None
+  }
+  val argTypes: List[Type] = newList()
+  for a in args {
+    argTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(a)))
+  }
+  val arity = if name == "nativeNullPtr" { 0 } else { 1 }
+  if args.count != arity {
+    diag.add(errorDiagnostic("T0042", "expected " + toString(arity) + " argument(s), got " + toString(args.count), span))
+    return Some(value = TyError)
+  }
+  if name == "nativeNullPtr" {
+    return nativeIntrinsicType(tbl, "NativePtr", TyPrim(pt = PtByte))
+  }
+  if name == "nativeAddrOf" {
+    return nativeIntrinsicType(tbl, "NativePtr", argTypes[0])
+  }
+  nativeIntrinsicType(tbl, "NativeWeak", argTypes[0])
+}
+
+// `w.upgrade()` on a `w: NativeWeak[T]`: `Option[T]`, `Some` while the
+// target is still alive.  None for any other receiver.
+func nativeWeakUpgradeType(tbl: in SymbolTable, recvTy: in Type): Option[Type] {
+  match mapGet(tbl.nativeIntrinsicTypes, "NativeWeak") {
+    case Some(weakId) -> match unrefine(recvTy) {
+      case TyUser(tid, _, targs) -> if typeIdEq(tid, weakId) and targs.count == 1 {
+        match symTableTryFindInPackage(tbl, "Std.Core", "Option") {
+          case Some(sym) -> match symbolTypeIdOpt(sym) {
+            case Some(optId) -> Some(value = TyUser(id = optId, name = "Option", args = targs))
+            case None -> Some(value = TyError)
+          }
+          case None -> Some(value = TyError)
+        }
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
 // The result type of `T.from` / `T.tryFrom` when `fn` names one on a
 // distinct type `T` that no local shadows.
 func distinctFactoryType(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Option[Type] {
@@ -9748,6 +9827,10 @@ func inferExprCore(
         }
         case None -> ()
       }
+      match nativeIntrinsicCallType(sc, tbl, sigs, diag, fn, args, e.span) {
+        case Some(nt) -> return nt
+        case None -> ()
+      }
       // Numeric / character conversion-method intrinsics (#1901): `x.toInt()`,
       // `b.toLong()`, etc.  Recognised only on a numeric/char receiver so a
       // user-defined method of the same name on some other type still falls
@@ -9829,6 +9912,18 @@ func inferExprCore(
             case Some(copyTid) -> return checkRecordCopy(sc, tbl, sigs, diag, e, copyTid, copyRecvTy, args)
             case None -> {
               cachedRecvType = Some(value = copyRecvTy)
+            }
+          }
+        }
+        case _ -> ()
+      }
+      match fn.kind {
+        case EMember(weakRecv, weakName) -> if weakName == "upgrade" and args.count == 0 and tbl.nativeIntrinsicTypes.count > 0 {
+          val weakRecvTy = match cachedRecvType { case Some(t) -> t; case None -> inferExpr(sc, tbl, sigs, diag, weakRecv) }
+          match nativeWeakUpgradeType(tbl, weakRecvTy) {
+            case Some(ut) -> return ut
+            case None -> {
+              cachedRecvType = Some(value = weakRecvTy)
             }
           }
         }

@@ -74,6 +74,7 @@ import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
 import Lyric.LlvmBridge
 import Lyric.ContractElaborator
+import Lyric.Emitter
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness (mirrors llvm_heap_self_test.l's ASan-capable variant).
@@ -297,15 +298,10 @@ test "protected: Self through the interface is ASan-clean" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Nested `Self` (`List[Self]`): a named diagnostic, not an untyped panic.
 // ─────────────────────────────────────────────────────────────────────────────
-// `List[Self]` and `newList()` here are unimported builtins from this
-// program's own point of view (no `import Std.Collections`, deliberately
-// — see below) — the middle end's typecheck is advisory-only on the
-// native target (real T0010/T0020 diagnostics from it are printed but do
-// NOT gate the build; only mode-check/propagate/mono/weave and, since
-// #7585, this N0006 pre-pass gate), so this still exercises exactly what
-// this test is about without needing to plumb real bundled stdlib
-// sources through `compileToNativeWithFlags`'s `stdlibSources` parameter.
-val nestedSelfSrc: String = "package T\n" + "interface Snapshot {\n" + "  func snapshot(): List[Self]\n" + "}\n" + "record Ledger {\n" + "  n: Int\n" + "}\n" + "impl Snapshot for Ledger {\n" + "  func snapshot(): List[Self] {\n" + "    newList()\n" + "  }\n" + "}\n" + "func main(): Int { 0 }\n"
+// The full-build case below bundles the real native stdlib, since a native
+// build fails at the type check on an unresolved `List` or `newList` (#7910)
+// and would never reach the N0006 pre-pass this test is about.
+val nestedSelfSrc: String = "package T\n" + "import Std.Collections\n" + "interface Snapshot {\n" + "  func snapshot(): List[Self]\n" + "}\n" + "record Ledger {\n" + "  n: Int\n" + "}\n" + "impl Snapshot for Ledger {\n" + "  func snapshot(): List[Self] {\n" + "    newList()\n" + "  }\n" + "}\n" + "func main(): Int { 0 }\n"
 
 test "Self nested inside a generic type argument reports a structured N0006 diagnostic, not a panic" {
   // Exercises the PRIMARY path (#7585 review): `nativeSelfShapeDiagnostics`
@@ -333,8 +329,11 @@ test "Self nested inside a generic type argument fails the full native build cle
   val dir = Path.join(tempBase(), "lyric-self-iface-nested-diag-selftest")
   val _ = File.createDir(dir)
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
-  val noStdlib: List[String] = newList()
+  val stdlib = findStdlibSourcesNative()
+  if stdlib.count == 0 {
+    panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
+  }
   val noFlags: List[String] = newList()
-  val ok = compileToNativeWithFlags(nestedSelfSrc, stem, noStdlib, "", "0", noFlags, newList(), "", true)
+  val ok = compileToNativeWithFlags(nestedSelfSrc, stem, stdlib, "", "0", noFlags, newList(), "", true)
   assertTrue(not ok, "the build fails (Bool false), not an unhandled exception")
 }

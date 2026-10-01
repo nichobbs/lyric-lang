@@ -8812,3 +8812,53 @@ test "unary minus on a signed operand stays clean (#7854)" {
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "signed negation: clean (" + diagCodesOf(cr) + ")")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Native FFI intrinsics (#7910): typed only by a `--target native` check.
+// ─────────────────────────────────────────────────────────────────────────────
+func stdCoreOptionPackages(): List[ImportedPackage] {
+  val pkg = parse("package Std.Core\npub union Option[T] {\n  case Some(value: T)\n  case None\n}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Std.Core",
+      items = pkg.file.items,
+      imports = collectImportNames(pkg.file.imports),
+      wholeImports = collectWholeImportNames(pkg.file.imports)
+    )
+  )
+  packages
+}
+
+val nativeIntrinsicsSrc: String = "package T\n" + "record Node {\n  n: Int\n}\n" + "@unsafe_ffi\n" + "func addr(): Int {\n" + "  var x: Long = 0\n" + "  val p: NativePtr[Long] = nativeAddrOf(x)\n" + "  var q: NativePtr[Byte] = nativeNullPtr()\n" + "  val pq: NativePtr[NativePtr[Byte]] = nativeAddrOf(q)\n" + "  0\n" + "}\n" + "func weakN(node: in Node): Int {\n" + "  val w: NativeWeak[Node] = NativeWeak(node)\n" + "  match w.upgrade() {\n" + "    case Some(strong) -> strong.n\n" + "    case None -> 0\n" + "  }\n" + "}\n"
+
+test "the native FFI intrinsics type in a native check (#7910)" {
+  val cr = checkWithImportedPackagesForNative(parse(nativeIntrinsicsSrc).file, stdCoreOptionPackages())
+  assertEqualInt(diagCount(cr), 0, "native check: clean (" + diagCodesOf(cr) + ")")
+  assertEqual(
+    recordedCallType(cr, nativeIntrinsicsSrc, "w.upgrade()"),
+    "Option[Node]",
+    "upgrade() on a NativeWeak[Node] is an Option[Node]"
+  )
+}
+
+test "the native FFI intrinsics are unknown to a managed-target check (#7910)" {
+  val cr = checkWithImportedPackages(parse(nativeIntrinsicsSrc).file, stdCoreOptionPackages())
+  assertTrue(hasDiagCode(cr, "T0010"), "NativePtr / NativeWeak: T0010 (" + diagCodesOf(cr) + ")")
+  assertTrue(hasDiagCode(cr, "T0020"), "nativeAddrOf / nativeNullPtr: T0020 (" + diagCodesOf(cr) + ")")
+}
+
+test "a native intrinsic's type is checked like any other (#7910)" {
+  val src = "package T\n" + "@unsafe_ffi\n" + "func f(): Int {\n" + "  var x: Long = 0\n" +
+    "  val p: NativePtr[Byte] = nativeAddrOf(x)\n" +
+    "  val q: NativePtr[Byte] = nativeNullPtr(x)\n" +
+    "  0\n" +
+    "}\n"
+  val cr = checkWithImportedPackagesForNative(parse(src).file, stdCoreOptionPackages())
+  assertEqualInt(
+    countDiagCode(cr, "T0060"),
+    1,
+    "NativePtr[Long] bound as NativePtr[Byte]: T0060 (" + diagCodesOf(cr) + ")"
+  )
+  assertEqualInt(countDiagCode(cr, "T0042"), 1, "nativeNullPtr takes no argument: T0042 (" + diagCodesOf(cr) + ")")
+}

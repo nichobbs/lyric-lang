@@ -2,7 +2,7 @@
 //!
 //! Public entry point that chains the self-hosted front/middle end to a
 //! runnable native binary: parse → cfg erasure (target.native) → alias
-//! rewrite → typecheck (advisory) → modecheck → contract elaboration →
+//! rewrite → typecheck → modecheck → contract elaboration →
 //! `?`-propagation → derives → mono → weave → reachability over the
 //! bundled stdlib → `Lyric.LlvmCodegen.codegenNativeBundle` →
 //! `Lyric.LlvmLowering.lowerNativePackage` → write `.ll` → clang (D-N-001).
@@ -410,7 +410,7 @@ pub func compileToNativeWithFlags(
     case None -> return false
   }
 
-  // Parse the stdlib once: type items for the advisory typecheck,
+  // Parse the stdlib once: type items for the typecheck,
   // whole files (cfg-erased, alias-rewritten) for bundling.
   val importedPkgs: List[ImportedPackage] = newList()
   val stdlibByPkg: Map[String, SourceFile] = newMap()
@@ -446,12 +446,11 @@ pub func compileToNativeWithFlags(
     si = si + 1
   }
 
-  // Middle end (`Lyric.Pipeline` owns the order).  The typecheck is
-  // advisory on the native target (the self-hosted checker lacks full
-  // builtin coverage); the mode check, `?`-propagation, mono, and weave
-  // gate.  Mono is fed the stdlib's interface and record decls so
-  // method-call returns and field projections on imported types drive
-  // same-package call-site inference (#3813).  Imported GENERIC decls
+  // Middle end (`Lyric.Pipeline` owns the order).  An error from any pass,
+  // the type check included, fails the build before codegen, as on the
+  // managed targets (#7910).  Mono is fed the stdlib's interface and
+  // record decls so method-call returns and field projections on imported
+  // types drive same-package call-site inference (#3813).  Imported GENERIC decls
   // are deliberately NOT fed: unlike MSIL/JVM codegen, the native
   // backend performs its own whole-bundle generic instantiation at
   // lowering time (`Lyric.LlvmCodegen.genericFnDefs`, N3.1) over the
@@ -472,8 +471,8 @@ pub func compileToNativeWithFlags(
   val optsCheckedOut: List[SourceFile] = newList()
   val optsRecvOut: Map[String, String] = newMap()
   val opts = MiddleEndOptions(
-    tcFatal = false,
-    tcReport = true,
+    tcFatal = true,
+    tcReport = false,
     pkgLabel = path,
     lineOrigins = noSingleFileOrigins,
     awaitInTryIsHazard = true,
@@ -481,7 +480,8 @@ pub func compileToNativeWithFlags(
     awaitAsyncCalls = false,
     contractsEnabled = contractsEnabled,
     checkedSourceOut = optsCheckedOut,
-    memberRecvClassesOut = optsRecvOut
+    memberRecvClassesOut = optsRecvOut,
+    nativeIntrinsics = true
   )
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
     case Some(f) -> f
@@ -870,8 +870,8 @@ pub func compileProjectToNativeWithFlags(
     val optsCheckedOut: List[SourceFile] = newList()
     val optsRecvOut: Map[String, String] = newMap()
     val opts = MiddleEndOptions(
-      tcFatal = false,
-      tcReport = true,
+      tcFatal = true,
+      tcReport = false,
       pkgLabel = nativePkgLabelAt(packages, mei),
       lineOrigins = nativePkgOriginsAt(originsByPkg, mei),
       awaitInTryIsHazard = true,
@@ -880,7 +880,8 @@ pub func compileProjectToNativeWithFlags(
       contractsEnabled = contractsEnabled,
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut,
-      ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" }
+      ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
+      nativeIntrinsics = true
     )
     val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
       case Some(f) -> f

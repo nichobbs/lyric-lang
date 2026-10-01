@@ -235,17 +235,14 @@ test "project build honors [features]/@cfg(feature = ...) gating on a sibling pa
       source = "package Proj4.App\n" + "import Proj4.Extra\n" + "func main(): Int {\n" + "  value()\n" + "}\n"
     )
   )
-  // Native codegen's own resolution failures (as opposed to the explicit,
-  // cleanly-`false`-returning validation checks like "no packages")
-  // surface as a hard `panic`, not a graceful `Bool` result — matching the
-  // single-source native path's identical pre-existing behavior. Assert
-  // the panic directly rather than expecting a clean `None`.
+  // With "extra" inactive, `value` is erased, so the call to it is an
+  // unknown name (T0020) and the build fails at the type check, before
+  // codegen (#7910).
   val noFeatures: List[String] = newList()
-  assertPanicsWith(
-    "@cfg(feature = \"extra\")-gated call must fail to compile when \"extra\" is inactive",
-    "cannot resolve call target",
-    { -> val _ = compileAndRunProjectWithFeatures(pkgs, noFeatures) }
-  )
+  match compileAndRunProjectWithFeatures(pkgs, noFeatures) {
+    case Some(_) -> panic("an @cfg(feature = \"extra\")-gated call must fail to compile when \"extra\" is inactive")
+    case None -> ()
+  }
   val extraOnly: List[String] = newList()
   extraOnly.add("extra")
   val withFeature = compileAndRunProjectWithFeatures(pkgs, extraOnly)

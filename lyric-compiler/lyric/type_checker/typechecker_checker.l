@@ -4282,7 +4282,41 @@ pub func flattenImportedItems(pkgs: in List[ImportedPackage]): List[Item] {
 // last-registered symbol of a given simple name wins every reference —
 // including references inside other packages' signatures.
 pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in List[ImportedPackage]): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true)
+  checkWithImportedPackagesCore(file, importedPackages, true, false)
+}
+
+/// `checkWithImportedPackages` for a `--target native` build: the file may
+/// also use the native FFI intrinsics (docs/01 §11.6) — the `NativePtr[T]`
+/// and `NativeWeak[T]` types and the `nativeAddrOf`, `nativeNullPtr`,
+/// `NativeWeak` and `upgrade` calls — which no other target can lower.
+pub func checkWithImportedPackagesForNative(
+  file: in SourceFile, importedPackages: in List[ImportedPackage]
+): CheckResult {
+  checkWithImportedPackagesCore(file, importedPackages, true, true)
+}
+
+// The native FFI intrinsic types.  `Lyric.LlvmCodegen` lowers both by name,
+// so they are declared here only to give their uses a type; the `clrName`s
+// name no CLR or JVM class and are never resolved.
+val nativeIntrinsicTypesSource: String = "package Lyric.NativeIntrinsics\n" + "extern type NativePtr[T] = \"lyric.native.NativePtr\"\n" + "extern type NativeWeak[T] = \"lyric.native.NativeWeak\"\n"
+
+// Register the native intrinsic types with no declaring package, so every
+// file sees them bare with no import, as codegen does.  They are registered
+// before any other package, so a type of the same name declared anywhere
+// else shadows them.
+func registerNativeIntrinsicTypes(tbl: in SymbolTable, ctr: in TypeIdCounter): Unit {
+  val pr = parse(nativeIntrinsicTypesSource)
+  val scratch: List[Diagnostic] = newList()
+  for it in pr.file.items {
+    registerItem(tbl, ctr, scratch, true, "", it)
+    match it.kind {
+      case IExternType(decl) -> match symbolTypeIdOpt(tbl.symbols[tbl.symbols.count - 1]) {
+        case Some(tid) -> tbl.nativeIntrinsicTypes.add(decl.name, tid)
+        case None -> ()
+      }
+      case _ -> ()
+    }
+  }
 }
 
 // Contract-surface variant used when re-type-checking a *synthesised*
@@ -4296,17 +4330,21 @@ pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in Lis
 // this entry point skips the T4 decl pass while keeping every other check.
 pub func checkContractSurface(file: in SourceFile): CheckResult {
   val empty: List[ImportedPackage] = newList()
-  checkWithImportedPackagesCore(file, empty, false)
+  checkWithImportedPackagesCore(file, empty, false, false)
 }
 
 func checkWithImportedPackagesCore(
   file0: in SourceFile,
   importedPackages: in List[ImportedPackage],
   validateDecls: in Bool,
+  nativeIntrinsics: in Bool,
 ): CheckResult {
   val diag: List[Diagnostic] = newList()
   val tbl = newSymbolTable()
   val ctr = newTypeIdCounter()
+  if nativeIntrinsics {
+    registerNativeIntrinsicTypes(tbl, ctr)
+  }
 
   // A destructuring module-level `val` binds each of its names (#7763).  The
   // compile pipeline has already desugared the file it passes here (so its

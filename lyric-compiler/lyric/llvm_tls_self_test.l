@@ -422,7 +422,8 @@ test "Std.TcpHost native plain round-trip: listen/connect/accept/read/write/clos
   // the module header for why (`Std.TcpHost.hostAcceptTls`'s
   // `TlsServerConfig.identity: Identity` is unavoidably `Std.Tls`'s opaque
   // type, blocked on #6234).
-  val src = "package T\n" + "import Std.Core\n" + "import Std.TcpHost\n" + "func main(): Int {\n" +
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
+    "func main(): Int {\n" +
     "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
     "    case Ok(l) -> l\n" +
     "    case Err(_) -> return 1\n" +
