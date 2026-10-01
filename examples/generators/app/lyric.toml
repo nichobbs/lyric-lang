@@ -1,0 +1,22 @@
+# A consumer of the Acme.Describe source generator (../describe).
+#
+#   lyric build --manifest examples/generators/app/lyric.toml
+#   lyric build --manifest examples/generators/app/lyric.toml --target jvm
+#
+# The generator is an ordinary dependency; `kind = "source-generator"` in its
+# own manifest is what makes the compiler build and run it instead of linking
+# it.
+
+[package]
+name    = "Acme.App"
+version = "0.1.0"
+
+[project]
+name            = "Acme.App"
+output_assembly = "Acme.App.dll"
+
+[project.packages]
+"Acme.App" = "src/app.l"
+
+[dependencies]
+"Acme.Describe" = { path = "../describe" }

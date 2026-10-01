@@ -36,12 +36,12 @@ pub func main(): Int {
 }
 ```
 
-Build with `lyric build` to produce a binary, e.g., `my-generator.exe`.
+The consumer declares the generator as a `path` or `workspace = true` dependency; the compiler builds it and runs it with `dotnet exec` (docs/40 §4.2, D150).
 
 ### Usage in Lyric Code
 
 ```lyric
-@generate("my-generator")
+@generate(MyOrg.MyGenerator)
 pub record Order {
   id: Int
   items: slice[String]
@@ -294,7 +294,7 @@ pub func runGenerator(generate: (GeneratorRequest) -> GeneratorResponse): Int
 ### Compiler Side
 
 ```lyric
-@generate("proto-generator")
+@generate(MyOrg.ProtoGen)
 pub record Message {
   id: Int
   text: String

@@ -508,7 +508,22 @@ func parseAnnotationArg(st: inout ParseState): AnnotationArg {
         }
         AAName(name = name, value = value, span = joinSpans(nameTok.span, endSp))
       } else {
-        ABare(name = name, span = startSp)
+        // A bare argument may be a qualified name: a custom generator is
+        // named by its package, `@generate(Acme.Describe)` (docs/40 §2.1).
+        var qualified = name
+        var endSp = nameTok.span
+        while isPunct(peekToken(st), Dot) and (match peekAt(st, 1).token { case TIdent(_) -> true; case _ -> false }) {
+          val _ = advance(st)
+          val segTok = advance(st)
+          match segTok.token {
+            case TIdent(seg) -> {
+              qualified = qualified + "." + seg
+            }
+            case _ -> ()
+          }
+          endSp = segTok.span
+        }
+        ABare(name = qualified, span = joinSpans(nameTok.span, endSp))
       }
     }
     case TInt(v, _, _) -> {

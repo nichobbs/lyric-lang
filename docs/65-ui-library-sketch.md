@@ -917,6 +917,9 @@ was in the JVM backend or the build tooling, and each was fixed there
   compiler side exists, but a generator DLL must be staged by hand under
   `.lyric/packages/`, and nothing in CI runs a real generator. Phase U4
   depends on fixing this.
+  Resolved in D150: a `path` or `workspace = true` generator dependency is
+  built and run while compiling its consumer, and `examples/generators/` runs
+  a real one in CI on dotnet and JVM.
 - **F-15: effects run one at a time per session** (#7835). `Ui.Host` runs each
   step's effects sequentially on the connection's thread (the busy state is
   sent first). Concurrent effects need a per-session queue with a lock or
@@ -972,7 +975,7 @@ The compiler work came first (Q-UI-011 is resolved in favour of fixing the
 compiler, not reshaping the library). F-9 is a naming note. F-10, F-11,
 F-12 and F-15 are resolved (D145 to D148). F-13's dependency half is
 resolved; native generic protected types (#7864) still bound U5 on native.
-F-14 blocks U4.
+F-14 is resolved (D150), which unblocks U4.
 
 ---
 

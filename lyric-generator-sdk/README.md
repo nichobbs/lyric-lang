@@ -344,8 +344,8 @@ pub record Order {
 The compiler:
 
 1. Parses the file and finds `@generate(MyOrg.JsonGen)`
-2. Resolves `MyOrg.JsonGen` to your generator package (must be declared as a `kind = "source-generator"` dependency)
-3. Calls `MyOrg.JsonGen.generate(req)` with the `TypeDescriptor` for `Order`
+2. Resolves `MyOrg.JsonGen` to your generator package (a `path` or `workspace = true` dependency whose manifest declares `kind = "source-generator"`) and builds it
+3. Runs it as `dotnet exec`, sending the request for `Order` on stdin; your `main` calls `runGenerator(generate)`
 4. Injects the returned source into the file
 5. Re-parses and type-checks the file (now including generated code)
 
@@ -418,7 +418,7 @@ GeneratorDiagnostic(
 )
 ```
 
-Parse errors in generated source are fatal (compiler diagnostic G0004 points at your generator package).
+Parse errors in generated source are fatal (compiler diagnostic X0004 points at your generator package).
 
 ### 5. Keep generators pure
 
@@ -433,9 +433,9 @@ The compiler locates your generator by:
 
 1. **Package name**: resolving `@generate(MyOrg.Proto.Derive)` to a dependency
 2. **Kind**: verifying the dependency has `kind = "source-generator"`
-3. **Entry point**: looking for `pub func generate(req: GeneratorRequest): GeneratorResponse`
+3. **Entry point**: looking for `pub func generate(req: GeneratorRequest): GeneratorResponse` and a `main` that calls `runGenerator(generate)`
 
-If the entry point is missing or mismatched, diagnostic **G0003** is reported at build time.
+If the entry point is missing or mismatched, diagnostic **X0003** is reported at build time.
 
 ## Package layout
 

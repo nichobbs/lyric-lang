@@ -1184,6 +1184,11 @@ func cmdTestManifest(
   // unconditionally reported as gated regardless of the actual `--target`.
   val cfgActiveWithTarget = Cfg.withTargetFeature(activeFeatures, targetFeatureName(testTarget))
 
+  // The manifest's source generators, built before any source is read; each
+  // file's @generate directives run as it is read, as in `lyric build`.
+  val gens = resolveGenerators(manifest, mfPath)
+  val genMf: Option[Mf.Manifest] = Some(value = manifest)
+
   // Build ProjectPackage entries from [project.packages], matching buildProject.
   val libPkgs: List[Emitter.ProjectPackage] = newList()
   var hadFatal = false
@@ -1210,7 +1215,13 @@ func cmdTestManifest(
           Path.join(mfDir, pkgEntry.paths[fi])
         }
         match File.readText(absFile) {
-          case Ok(t) -> fileEntries.add(CfgGate.CfgGateFile(path = absFile, contents = t))
+          case Ok(raw) -> match runSourceGenerators(raw, absFile, genMf, gens) {
+            case Some(t) -> fileEntries.add(CfgGate.CfgGateFile(path = absFile, contents = t))
+            case None -> {
+              hadFatal = true
+              readFailed = true
+            }
+          }
           case Err(e) -> {
             printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
             hadFatal = true
@@ -1232,7 +1243,8 @@ func cmdTestManifest(
       if File.fileExists(abs) {
         singleFilePkgPath = abs
         match File.readText(abs) {
-          case Ok(t) -> {
+          case Ok(raw) -> {
+            val t = match runSourceGenerators(raw, abs, genMf, gens) { case Some(g) -> g; case None -> { hadFatal = true; raw } }
             if CfgGate.isCfgGatedOut(t, activeFeatures) {
               // Package is gated by an inactive feature: substitute an empty stub
               // so that imports of this package from sibling packages resolve, while
@@ -1276,7 +1288,13 @@ func cmdTestManifest(
           var readFailed = false
           for f in sorted {
             match File.readText(f) {
-              case Ok(t) -> fileEntries.add(CfgGate.CfgGateFile(path = f, contents = t))
+              case Ok(raw) -> match runSourceGenerators(raw, f, genMf, gens) {
+                case Some(t) -> fileEntries.add(CfgGate.CfgGateFile(path = f, contents = t))
+                case None -> {
+                  hadFatal = true
+                  readFailed = true
+                }
+              }
               case Err(e) -> {
                 printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
                 hadFatal = true
@@ -1778,7 +1796,14 @@ func cmdTestManifest(
     Console.println("== " + testEntry.name + " (" + testEntry.path + ")")
 
     val testSource = match File.readText(abs) {
-      case Ok(t) -> t
+      case Ok(raw) -> match runSourceGenerators(raw, abs, genMf, gens) {
+        case Some(t) -> t
+        case None -> {
+          totalFailed += 1
+          ti += 1
+          continue
+        }
+      }
       case Err(e) -> {
         printErr("test: " + IOError.message(e))
         totalFailed += 1

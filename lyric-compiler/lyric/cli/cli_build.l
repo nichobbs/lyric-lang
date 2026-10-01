@@ -670,6 +670,9 @@ func collectImportedOwnPackages(
   included.add(ownPkgName)
   val result: List[Emitter.ProjectPackage] = newList()
   var hadFatal = false
+  // The sibling packages' own @generate directives run like a project
+  // build's.
+  val (genMf, gens) = generatorContext(Some(value = mfPath))
   var changed = true
   while changed and not hadFatal {
     changed = false
@@ -677,7 +680,7 @@ func collectImportedOwnPackages(
     while pi < proj.packages.count {
       val pkgEntry = proj.packages[pi]
       if stringListContains(needed, pkgEntry.name) and not stringListContains(included, pkgEntry.name) and not isReservedHeadPackage(pkgEntry.name) {
-        match readProjectPackageSources(pkgEntry, mfDir, mfPath) {
+        match readProjectPackageSources(pkgEntry, mfDir, mfPath, genMf, gens) {
           case Some(pkgRead) -> {
             val pkgSources = pkgRead.sources
             included.add(pkgEntry.name)
@@ -1055,6 +1058,44 @@ pub func buildOneNative(
   )
 }
 
+/// The manifest at `manifestPath`, if any, and the source generators it
+/// declares, built and ready to run (`resolveGenerators`, D150).
+pub func generatorContext(manifestPath: in Option[String]): (Option[Mf.Manifest], Generator.GeneratorSet) {
+  match manifestPath {
+    case None -> (None, Generator.emptyGeneratorSet())
+    case Some(p) -> match File.readText(p) {
+      case Err(_) -> (None, Generator.emptyGeneratorSet())
+      case Ok(text) -> match Mf.parseManifest(text, p) {
+        case Err(_) -> (None, Generator.emptyGeneratorSet())
+        case Ok(m) -> (Some(value = m), resolveGenerators(m, p))
+      }
+    }
+  }
+}
+
+/// Runs the custom generators `source` names (docs/40 §4.2) and returns the
+/// augmented text, printing each generator warning; None, with every error
+/// printed, when one failed.
+pub func runSourceGenerators(
+  source: in String,
+  sourcePath: in String,
+  manifest: in Option[Mf.Manifest],
+  gens: in Generator.GeneratorSet,
+): Option[String] {
+  match Generator.preprocess(source, manifest, sourcePath, gens) {
+    case Ok(res) -> {
+      for w in res.warnings {
+        printErr(w)
+      }
+      Some(value = res.source)
+    }
+    case Err(errors) -> {
+      printErr(errors)
+      None
+    }
+  }
+}
+
 pub func buildOneNativeWithFeatures(
   sourcePath: in String,
   outPath: in String,
@@ -1076,15 +1117,12 @@ pub func buildOneNativeWithFeatures(
     }
   }
 
-  // Run custom @generate(X.Y) pre-processing before handing source to the
-  // emitter.  Built-in generators (@generate(Json) etc.) are handled later
-  // inside the F# bootstrap's Generate.synthesizeItems pass.
-  source = match Generator.preprocess(source, match manifestPath { case Some(p) -> p; case None -> "" }, sourcePath) {
-    case Ok(augmented) -> augmented
-    case Err(msg) -> {
-      printErr("build: generator error: " + msg)
-      return 1
-    }
+  // Custom @generate(X.Y) generators run before the source is parsed; the
+  // built-in ones (@generate(Json)) are `Lyric.Derives`'s.
+  val (genMf, gens) = generatorContext(manifestPath)
+  source = match runSourceGenerators(source, sourcePath, genMf, gens) {
+    case Some(augmented) -> augmented
+    case None -> return 1
   }
 
   val outDir = Path.dirname(outPath)
@@ -2351,7 +2389,13 @@ pub record PkgSourceRead {
 // entry was read from, so a single-file package (`sources.count == 1`, the
 // common case per docs/63 §9.7) keeps a real path for diagnostics / JVM
 // `SourceFile` attribution all the way to the backends.
-func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, mfPath: in String): Option[PkgSourceRead] {
+func readProjectPackageSources(
+  pkgEntry: in Mf.PackageEntry,
+  mfDir: in String,
+  mfPath: in String,
+  genMf: in Option[Mf.Manifest],
+  gens: in Generator.GeneratorSet,
+): Option[PkgSourceRead] {
   val pkgSources: List[String] = newList()
   val pkgPaths: List[String] = newList()
   var hadFatal = false
@@ -2366,13 +2410,12 @@ func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, m
       }
       match File.readText(absFile) {
         case Ok(raw) -> {
-          match Generator.preprocess(raw, mfPath, absFile) {
-            case Ok(t) -> {
+          match runSourceGenerators(raw, absFile, genMf, gens) {
+            case Some(t) -> {
               pkgSources.add(t)
               pkgPaths.add(absFile)
             }
-            case Err(e) -> {
-              printErr("build: package '" + pkgEntry.name + "': generator error in " + absFile + ": " + e)
+            case None -> {
               hadFatal = true
             }
           }
@@ -2390,13 +2433,12 @@ func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, m
       // Single .l file: read it directly, then run custom generators.
       match File.readText(abs) {
         case Ok(raw) -> {
-          match Generator.preprocess(raw, mfPath, abs) {
-            case Ok(t) -> {
+          match runSourceGenerators(raw, abs, genMf, gens) {
+            case Some(t) -> {
               pkgSources.add(t)
               pkgPaths.add(abs)
             }
-            case Err(e) -> {
-              printErr("build: package '" + pkgEntry.name + "': generator error in " + abs + ": " + e)
+            case None -> {
               hadFatal = true
             }
           }
@@ -2430,13 +2472,12 @@ func readProjectPackageSources(pkgEntry: in Mf.PackageEntry, mfDir: in String, m
         for f in sorted {
           match File.readText(f) {
             case Ok(raw) -> {
-              match Generator.preprocess(raw, mfPath, f) {
-                case Ok(t) -> {
+              match runSourceGenerators(raw, f, genMf, gens) {
+                case Some(t) -> {
                   pkgSources.add(t)
                   pkgPaths.add(f)
                 }
-                case Err(e) -> {
-                  printErr("build: package '" + pkgEntry.name + "': generator error in " + f + ": " + e)
+                case None -> {
                   hadFatal = true
                 }
               }
@@ -2665,11 +2706,14 @@ pub func buildProjectFromManifest(
   // manifest-local single-file build without ever reaching this bundle.
   val pkgs: List[Emitter.ProjectPackage] = newList()
   var hadFatal = false
+  // Build the manifest's source generators before any source is read: each
+  // file's @generate directives run as it is read (docs/40 §4.2, D150).
+  val gens = resolveGenerators(manifest, mfPath)
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     if not pkgEntry.testOnly {
-      match readProjectPackageSources(pkgEntry, mfDir, mfPath) {
+      match readProjectPackageSources(pkgEntry, mfDir, mfPath, Some(value = manifest), gens) {
         case Some(pkgRead) -> {
           if pkgRead.sources.count > 0 {
             pkgs.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgRead.sources, paths = pkgRead.paths))
