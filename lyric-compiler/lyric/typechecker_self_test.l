@@ -177,6 +177,18 @@ func typeExprText(te: in TypeExpr): String {
       s + "]"
     }
     case TSlice(element) -> "slice[" + typeExprText(element) + "]"
+    case TTuple(types) -> {
+      var s = "("
+      var i = 0
+      while i < types.count {
+        if i > 0 {
+          s = s + ", "
+        }
+        s = s + typeExprText(types[i])
+        i = i + 1
+      }
+      s + ")"
+    }
     case _ -> "?"
   }
 }
@@ -8324,6 +8336,86 @@ test "the stdlib newList, newListWithCapacity, newMap and None are open bindings
     "  val ys = newListWithCapacity(4)\n  val m = newMap()\n  val o = None\n}\n"
   val cr = checkWithImportedPackages(parse(src).file, stdCtorPackages())
   assertEqualInt(openSiteCount(cr), 4, "each stdlib evidence-free initializer is open")
+}
+
+// #7863: the open-tuple inference (#7855) reaches a name bound to a nested
+// sub-tuple, a type parameter fixed through a pattern-bound name, and a
+// tuple literal matched directly.
+func localBindingTypesText(cr: in CheckResult): String {
+  val keys = mapKeys(cr.symbols.localBindingTypeSites)
+  var acc = ""
+  var i = 0
+  while i < keys.count {
+    match mapGet(cr.symbols.localBindingTypeSites, keys[i]) {
+      case Some(te) -> {
+        acc = acc + typeExprText(te) + "; "
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  acc
+}
+
+func localBindingTypeRecorded(cr: in CheckResult, text: in String): Bool {
+  val keys = mapKeys(cr.symbols.localBindingTypeSites)
+  var i = 0
+  while i < keys.count {
+    match mapGet(cr.symbols.localBindingTypeSites, keys[i]) {
+      case Some(te) -> if typeExprText(te) == text { return true }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+func tuplePatternBindingRecorded(cr: in CheckResult, text: in String): Bool {
+  val keys = mapKeys(cr.symbols.tuplePatternBindingSites)
+  var i = 0
+  while i < keys.count {
+    match mapGet(cr.symbols.tuplePatternBindingSites, keys[i]) {
+      case Some(site) -> if typeExprText(site.bindingType) == text { return true }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+test "a name bound to a nested sub-tuple fixes its open elements (#7863)" {
+  val src = "package P\nimport Std.CollectionsHost\nimport Std.Core\n" +
+    "func take(p: in (Option[Int], Int)): Int {\n  0\n}\n" +
+    "func f(): Int {\n  val t = ((None, 1), 2)\n  val (inner, n) = t\n  take(inner)\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCtorPackages())
+  assertEqualInt(diagCount(cr), 0, "checks cleanly")
+  assertTrue(
+    localBindingTypeRecorded(cr, "((Option[Int], Int), Int)"),
+    "the tuple is typed from the use of inner: " + localBindingTypesText(cr)
+  )
+  assertTrue(tuplePatternBindingRecorded(cr, "(Option[Int], Int)"), "inner is recorded at its element type")
+}
+
+test "a type parameter fixed through a pattern-bound name is spelled (#7863)" {
+  val src = "package P\nimport Std.CollectionsHost\nimport Std.Core\n" +
+    "func f[T](x: in T): Unit {\n  val t = (newList(), 1)\n  val (xs, n) = t\n  xs.add(x)\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCtorPackages())
+  assertEqualInt(diagCount(cr), 0, "checks cleanly")
+  assertTrue(localBindingTypeRecorded(cr, "(List[T], Int)"), "the tuple is typed over T")
+  assertTrue(tuplePatternBindingRecorded(cr, "List[T]"), "xs is recorded as a List[T]")
+}
+
+test "a tuple literal matched directly is typed from its arms (#7863)" {
+  val src = "package P\nimport Std.CollectionsHost\nimport Std.Core\n" +
+    "func take(o: in Option[Int], n: in Int): Int {\n  n\n}\n" +
+    "func f(): Int {\n  match (None, 5) {\n    case (o, n) -> take(o, n)\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCtorPackages())
+  assertEqualInt(diagCount(cr), 0, "checks cleanly")
+  assertTrue(
+    localBindingTypeRecorded(cr, "(Option[Int], Int)"),
+    "the scrutinee is typed from o's use: " + localBindingTypesText(cr)
+  )
+  assertTrue(tuplePatternBindingRecorded(cr, "Option[Int]"), "o is recorded at its element type")
 }
 
 // #7778: a local `val` destructures its initializer with no failure path, so

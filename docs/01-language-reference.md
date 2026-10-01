@@ -907,8 +907,25 @@ func pick(): Int {
 A use of the whole tuple (a call argument, a return, an assignment into it,
 and so on) fixes each open element at its position, and so does a use of a
 name a tuple pattern binds at that position, in a destructuring `val` of the
-tuple or its literal or a `match` arm on it. The tuple is typed once every
-open element is.
+tuple or its literal or a `match` arm on it. A name bound to a nested tuple
+holding open elements, or to the whole tuple in a `match` arm, is a use of
+each of them: in `val (inner, n) = ((None, 1), 2)`, passing `inner` where an
+`(Option[Int], Int)` is expected fixes the `None` (#7863). The tuple is typed
+once every open element is.
+
+An element fixed by a value of the enclosing generic function's type
+parameter (`xs.add(x)` with `x: T`) is typed over that parameter, and so is
+each name a tuple pattern binds from it; each specialization of the function
+substitutes the parameter (#7863).
+
+A tuple literal matched directly is typed the same way, from the names its
+arms bind (#7863):
+```
+match (None, 5) {
+  case (Some(x), n) -> x + n
+  case (o, n) -> addOpt(o, n)     // fixes the None: an (Option[Int], Int)
+}
+```
 
 The value of an assignment to a field or an element (`cell.o = v`,
 `xs[i] = v`, `m[k] = v`) is built at the target's type, like a typed
@@ -1257,7 +1274,7 @@ val doubled = numbers.map { x -> x * 2 }
 
 Closures capture values by reference for `var` bindings, by value for `val` bindings (this matters across thread boundaries; capturing `var` across an `async` boundary requires explicit `mut` synchronization — see `docs/09-msil-emission.md` §11.5).
 
-A lambda whose body diverges (every path panics, throws, or `return`s) and that no function type is expected of types as `() -> Never`. Because `Never` is the bottom type, such a function value satisfies a function-typed parameter with **any** declared return type, provided the parameter lists match — `assertPanics("boom", { -> panic("x") })` passes a `() -> Never` lambda where `() -> Unit` is expected. The parameter types themselves are matched invariantly (the call ABI must agree).
+A lambda whose body diverges (every path panics, throws, or `return`s) types as `() -> Never` when no function type is expected of it. Because `Never` is the bottom type, such a function value satisfies a function-typed parameter with **any** declared return type, provided the parameter lists match — `assertPanics("boom", { -> panic("x") })` passes a `() -> Never` lambda where `() -> Unit` is expected. The parameter types themselves are matched invariantly (the call ABI must agree).
 
 A parenthesised parameter list followed by `->` is also accepted directly in expression position, without the `{ ... }` wrapper, when every parameter is a bare identifier — most useful as a call argument:
 
