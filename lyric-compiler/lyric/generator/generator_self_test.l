@@ -31,18 +31,6 @@ func consumerNoDeps(): String {
   "[package]\nname = \"Consumer\"\nversion = \"0.1.0\"\n"
 }
 
-func depGenerator(): String {
-  "[package]\nname = \"Foo.Bar\"\nversion = \"0.1.0\"\nkind = \"source-generator\"\n"
-}
-
-func depWrongKind(): String {
-  "[package]\nname = \"Foo.Bar\"\nversion = \"0.1.0\"\nkind = \"library\"\n"
-}
-
-func depNoKind(): String {
-  "[package]\nname = \"Foo.Bar\"\nversion = \"0.1.0\"\n"
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // X0008 — generator package not in [dependencies]
 // ─────────────────────────────────────────────────────────────────────────────
@@ -62,40 +50,6 @@ func testX0008_DepDeclared(): Unit {
   match checkGeneratorDeclaredIn(consumer, "Foo.Bar") {
     case Ok(d) -> assertEqual(d.name, "Foo.Bar", "X0008: returns matched dep entry")
     case Err(e) -> assertTrue(false, "X0008: unexpected Err: " + e)
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// X0002 — kind enforcement
-// ─────────────────────────────────────────────────────────────────────────────
-func testX0002_KindMatches(): Unit {
-  val depMf = parseOk(depGenerator(), "/test/foo-bar/lyric.toml")
-  match checkGeneratorKind("Foo.Bar", "/test/foo-bar/lyric.toml", depMf) {
-    case Ok(s) -> assertEqual(s, "", "X0002 happy path: Ok value is empty string sentinel")
-    case Err(e) -> assertTrue(false, "X0002 happy path: unexpected Err: " + e)
-  }
-}
-
-func testX0002_KindWrong(): Unit {
-  val depMf = parseOk(depWrongKind(), "/test/foo-bar/lyric.toml")
-  match checkGeneratorKind("Foo.Bar", "/test/foo-bar/lyric.toml", depMf) {
-    case Ok(_) -> assertTrue(false, "X0002: expected Err for kind=\"library\"")
-    case Err(e) -> {
-      assertTrue(e.contains("X0002"), "X0002: diagnostic code present")
-      assertTrue(e.contains("library"), "X0002: reports observed kind")
-      assertTrue(e.contains("source-generator"), "X0002: mentions expected kind")
-    }
-  }
-}
-
-func testX0002_KindMissing(): Unit {
-  val depMf = parseOk(depNoKind(), "/test/foo-bar/lyric.toml")
-  match checkGeneratorKind("Foo.Bar", "/test/foo-bar/lyric.toml", depMf) {
-    case Ok(_) -> assertTrue(false, "X0002: expected Err for missing kind")
-    case Err(e) -> {
-      assertTrue(e.contains("X0002"), "X0002: diagnostic code present")
-      assertTrue(e.contains("declares no"), "X0002: says no kind is declared")
-    }
   }
 }
 
@@ -181,18 +135,6 @@ test "X0008 dep not declared" {
 
 test "X0008 dep declared" {
   testX0008_DepDeclared()
-}
-
-test "X0002 kind matches" {
-  testX0002_KindMatches()
-}
-
-test "X0002 kind wrong" {
-  testX0002_KindWrong()
-}
-
-test "X0002 kind missing" {
-  testX0002_KindMissing()
 }
 
 test "scan directives dot in arg" {

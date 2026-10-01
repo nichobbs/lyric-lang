@@ -758,22 +758,6 @@ pub func checkGeneratorDeclaredIn(
   )
 }
 
-/// The X0002 check: a package named by `@generate` must declare
-/// `[package].kind = "source-generator"` in its manifest at `depMfPath`.
-/// Ok("") when it does.
-pub func checkGeneratorKind(
-  generatorArg: in String, depMfPath: in String, depMf: in Manifest.Manifest
-): Result[String, String] {
-  match depMf.packageSection.kind {
-    case Some(k) -> if k == "source-generator" {
-      Ok(value = "")
-    } else {
-      Err(error = notAGeneratorMessage(generatorArg, k, depMfPath))
-    }
-    case None -> Err(error = notAGeneratorMessage(generatorArg, "", depMfPath))
-  }
-}
-
 pub func notAGeneratorMessage(generatorArg: in String, kind: in String, depMfPath: in String): String {
   val declared = if kind == "" { "declares no [package].kind" } else { "declares [package].kind = \"" + kind + "\"" }
   "X0002: @generate(" + generatorArg + ") names a package that is not a source generator: " + depMfPath + " " + declared +
