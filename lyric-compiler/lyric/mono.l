@@ -287,7 +287,9 @@ record MonoState {
   /// needs spelled out (`SymbolTable.localBindingTypeSites`): a function-valued
   /// one (#7711) or an open one whose uses fixed its type arguments (#7788).
   /// Keyed by `recordCopySiteKey` of the initializer's span; `rewriteBinding`
-  /// makes it the binding's annotation.
+  /// makes it the binding's annotation.  A tuple literal matched directly is
+  /// keyed the same way; `tupleScrutineeTypedMono` binds it through a local
+  /// annotated with the type (#7863).
   localBindingTypeSites: Map[String, TypeExpr]
   /// Each call through a function value the type checker typed
   /// (`SymbolTable.funcValueCallSites`), keyed by `recordCopySiteKey` of the
@@ -4862,6 +4864,45 @@ func listLiteralTypedMono(state: in MonoState, env: in Map[String, TypeExpr], li
   }
 }
 
+// A tuple literal matched directly whose open elements the arms' bindings
+// typed (`localBindingTypeSites`, keyed by the literal's span, #7863)
+// becomes
+//
+//   {
+//     val __lyric_ts_<n>: <its resolved tuple type> = (elements)
+//     __lyric_ts_<n>
+//   }
+//
+// so a backend with reified generics builds `(None, 5)` at the type the
+// arms read it at, as it does a tuple local's initializer.  Any other
+// scrutinee is returned as written, for the caller to rewrite.
+func tupleScrutineeTypedMono(state: in MonoState, scrut: in Expr): Expr {
+  if state.localBindingTypeSites.count == 0 or not checkerSitesApplyMono(state) {
+    return scrut
+  }
+  val isTuple = match scrut.kind {
+    case ETuple(_) -> true
+    case EParen(inner) -> match inner.kind { case ETuple(_) -> true; case _ -> false }
+    case _ -> false
+  }
+  if not isTuple {
+    return scrut
+  }
+  match mapGet(state.localBindingTypeSites, recordCopySiteKey(scrut.span)) {
+    case Some(te) -> {
+      val sp = scrut.span
+      val id = state.copyTicker.count
+      state.copyTicker.add(0)
+      val name = "__lyric_ts_" + toString(id)
+      val stmts: List[Statement] = newList()
+      stmts.add(copyTypedValStmtMono(name, Some(value = te), scrut, sp))
+      stmts.add(Statement(kind = SExpr(expr = singleSegPathExpr(name, sp)), span = sp))
+      Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+    }
+    case None -> scrut
+  }
+}
+
 // An operand evaluated before an `await` or a `?` in the same expression
 // (#7823), already rewritten to `e`, becomes
 //
@@ -6570,9 +6611,10 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
       // and either fails to specialise or (for an imported generic whose erased
       // call MUST specialise, see the "default unbound params to Object" fallback
       // below) silently specialises against the wrong, Object-erased instantiation.
-      val scrutTe = inferExprTE(state, env, scrut)
+      val typedScrut = tupleScrutineeTypedMono(state, scrut)
+      val scrutTe = inferExprTE(state, env, typedScrut)
       Expr(
-        kind = EMatch(scrutinee = rewriteExpr(state, env, scrut), arms = rewriteMatchArms(state, env, arms, scrutTe)),
+        kind = EMatch(scrutinee = rewriteExpr(state, env, typedScrut), arms = rewriteMatchArms(state, env, arms, scrutTe)),
         span = s
       )
     }

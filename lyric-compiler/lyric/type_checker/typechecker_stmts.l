@@ -281,7 +281,7 @@ pub func checkStatement(
               bindOpenTuplePattern(sc, tbl, pat, tupleKey)
             }
           }
-          recordTuplePatternBindings(tbl, pat, bindTy, false)
+          recordTuplePatternBindings(tbl, pat, bindTy, false, sc.genericNames)
         }
         case Some(te) -> {
           val ctx = newGenericContext()
@@ -305,7 +305,7 @@ pub func checkStatement(
           checkRefinedLiteralBound(declT, init, diag)
           val bindTy = if checkLocalValPattern(tbl, diag, pat, declT) { TyError } else { declT }
           bindPattern(sc, pat, bindTy)
-          recordTuplePatternBindings(tbl, pat, bindTy, false)
+          recordTuplePatternBindings(tbl, pat, bindTy, false, sc.genericNames)
         }
       }
       case LBVar(name, tyOpt, initOpt) -> match tyOpt {
@@ -590,7 +590,7 @@ pub func checkStatement(
       // (`java.util.Iterator.next()` on the JVM), so the loop variable itself
       // is recorded like a tuple element: `Lyric.Mono` binds it through a
       // local annotated with the generator's element type (#7750).
-      recordTuplePatternBindings(tbl, pat, eraseTyVars(elemType), forIterIsGeneratorCall(tbl, iter))
+      recordTuplePatternBindings(tbl, pat, eraseTyVars(elemType), forIterIsGeneratorCall(tbl, iter), sc.genericNames)
       val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
       scopePop(sc)
     }

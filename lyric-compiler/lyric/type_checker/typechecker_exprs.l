@@ -7306,15 +7306,21 @@ func inferMatchExpr(
   // position with a known expected type can be checked against it arm by
   // arm (`branchesAgainstExpected`) before falling back to the bottom-up
   // join below.
+  // A tuple literal matched directly is an open site as a binding's
+  // initializer is (#7863): the names the arms bind from it fix its open
+  // elements, and `Lyric.Mono` binds the literal to a local annotated with
+  // the resolved type.
+  val scrutLocalKey = openSiteOfExpr(sc, scrutinee)
+  val scrutKey = if scrutLocalKey != "" { scrutLocalKey } else { registerOpenTupleSite(sc, tbl, scrutinee, st) }
   val armTypes: List[Type] = newList()
   val armSpans: List[Span] = newList()
   var ai = 0
   while ai < arms.count {
     scopePush(sc)
     bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
-    bindOpenTuplePattern(sc, tbl, arms[ai].pattern, openSiteOfExpr(sc, scrutinee))
+    bindOpenTuplePattern(sc, tbl, arms[ai].pattern, scrutKey)
     checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
-    recordTuplePatternBindings(tbl, arms[ai].pattern, st, false)
+    recordTuplePatternBindings(tbl, arms[ai].pattern, st, false, sc.genericNames)
     match arms[ai].guard {
       case Some(g) -> {
         val guardT = inferExpr(sc, tbl, sigs, diag, g)
@@ -7575,7 +7581,9 @@ func registerOpenTupleSite(sc: in Scope, tbl: in SymbolTable, init: in Expr, ini
   match stripExprParens(init).kind {
     case ETuple(elems) -> match t {
       case TyTuple(ets) -> {
-        if ets.count != elems.count or not openTupleElemsQualify(sc, tbl, elems, ets) {
+        val noPath: List[Int] = newList()
+        val cands = OpenTupleChildren(exprs = newList(), tys = newList(), paths = newList(), localKeys = newList())
+        if ets.count != elems.count or not collectOpenTupleChildren(sc, tbl, elems, ets, noPath, cands) {
           return ""
         }
         val key = recordCopySiteKey(init.span)
@@ -7583,9 +7591,18 @@ func registerOpenTupleSite(sc: in Scope, tbl: in SymbolTable, init: in Expr, ini
           return key
         }
         val childKeys: List[String] = newList()
-        val childPaths: List[List[Int]] = newList()
-        val noPath: List[Int] = newList()
-        collectOpenTupleChildren(sc, tbl, elems, ets, noPath, key, childKeys, childPaths)
+        var ci = 0
+        while ci < cands.exprs.count {
+          childKeys.add(
+            if cands.localKeys[ci] != "" {
+              cands.localKeys[ci]
+            } else {
+              addOpenBindingSite(tbl, cands.exprs[ci], cands.tys[ci], key)
+            }
+          )
+          ci = ci + 1
+        }
+        val childPaths = cands.paths
         val hoistExprs: List[Expr] = newList()
         val hoistPaths: List[List[Int]] = newList()
         collectHoistedTupleOperands(sc, elems, noPath, hoistExprs, hoistPaths)
@@ -7624,21 +7641,52 @@ func registerOpenTupleSite(sc: in Scope, tbl: in SymbolTable, init: in Expr, ini
   }
 }
 
-// Whether each open element of a tuple literal can be a child: an
-// evidence-free construction, an open local, or a tuple literal of such.
-func openTupleElemsQualify(sc: in Scope, tbl: in SymbolTable, elems: in List[Expr], ets: in List[Type]): Bool {
+// The open elements of a tuple literal, each at its position: the element,
+// its type, and, for an open local, that local's own site key ("" for an
+// evidence-free construction, whose site the tuple registers).
+record OpenTupleChildren {
+  exprs: List[Expr]
+  tys: List[Type]
+  paths: List[List[Int]]
+  localKeys: List[String]
+}
+
+// Collect into `acc` each open element of the tuple literal `elems` (at
+// `path`), descending into nested tuple literals.  False, with `acc`
+// partially filled, when an open element is none of an evidence-free
+// construction, an open local, or a tuple literal of such.
+func collectOpenTupleChildren(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  elems: in List[Expr],
+  ets: in List[Type],
+  path: in List[Int],
+  acc: in OpenTupleChildren,
+): Bool {
   var i = 0
   while i < elems.count {
     val et = unrefine(ets[i])
     if not typeIsClosed(et) {
       val el = stripExprParens(elems[i])
+      val here = pathAppend(path, i)
       val ok = match el.kind {
         case ETuple(sub) -> match et {
           case TyTuple(subEts) -> subEts.count == sub.count and
-            openTupleElemsQualify(sc, tbl, sub, subEts)
+            collectOpenTupleChildren(sc, tbl, sub, subEts, here, acc)
           case _ -> false
         }
-        case _ -> openSiteOfExpr(sc, el) != "" or isEvidenceFreeOpenInit(tbl, el, et)
+        case _ -> {
+          val localKey = openSiteOfExpr(sc, el)
+          if localKey != "" or isEvidenceFreeOpenInit(tbl, el, et) {
+            acc.exprs.add(el)
+            acc.tys.add(et)
+            acc.paths.add(here)
+            acc.localKeys.add(localKey)
+            true
+          } else {
+            false
+          }
+        }
       }
       if not ok {
         return false
@@ -7647,50 +7695,6 @@ func openTupleElemsQualify(sc: in Scope, tbl: in SymbolTable, elems: in List[Exp
     i = i + 1
   }
   true
-}
-
-// The children of a tuple literal that `openTupleElemsQualify` accepted,
-// each at its position under `path`: an open local's own site, or a site
-// registered here for an evidence-free element and owned by `parentKey`.
-func collectOpenTupleChildren(
-  sc: in Scope,
-  tbl: in SymbolTable,
-  elems: in List[Expr],
-  ets: in List[Type],
-  path: in List[Int],
-  parentKey: in String,
-  childKeys: in List[String],
-  childPaths: in List[List[Int]],
-): Unit {
-  var i = 0
-  while i < elems.count {
-    val et = unrefine(ets[i])
-    if not typeIsClosed(et) {
-      val el = stripExprParens(elems[i])
-      val here = pathAppend(path, i)
-      match el.kind {
-        case ETuple(sub) -> match et {
-          case TyTuple(subEts) -> collectOpenTupleChildren(
-            sc,
-            tbl,
-            sub,
-            subEts,
-            here,
-            parentKey,
-            childKeys,
-            childPaths
-          )
-          case _ -> ()
-        }
-        case _ -> {
-          val localKey = openSiteOfExpr(sc, el)
-          childKeys.add(if localKey != "" { localKey } else { addOpenBindingSite(tbl, el, et, parentKey) })
-          childPaths.add(here)
-        }
-      }
-    }
-    i = i + 1
-  }
 }
 
 func pathAppend(path: in List[Int], i: in Int): List[Int] {
@@ -7806,30 +7810,37 @@ func collectHoistedTupleOperands(
 }
 
 // Whether the hoist binds the operand `e` to a local whose type needs
-// recording: `recordHoistOperandType`'s test, which skips a literal, a
-// lambda and a local.
+// recording: `recordHoistOperandType`'s test.
 func hoistBindsOperand(sc: in Scope, e: in Expr): Bool {
   val sp = e.span
   if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
     return false
   }
+  not exprIsHoistExempt(sc, e)
+}
+
+// Whether a hoisted operand `e` needs no recorded type: a literal and a
+// lambda are never bound, and a local is bound at its declared type already.
+func exprIsHoistExempt(sc: in Scope, e: in Expr): Bool {
   match e.kind {
-    case ELiteral(_) -> false
-    case ELambda(_, _) -> false
+    case ELiteral(_) -> true
+    case ELambda(_, _) -> true
     case EPath(p) -> if p.segments.count == 1 {
       match scopeTryFind(sc, p.segments[0]) {
-        case Some(_) -> false
-        case None -> true
+        case Some(_) -> true
+        case None -> false
       }
     } else {
-      true
+      false
     }
-    case _ -> true
+    case _ -> false
   }
 }
 
 // `pat` binds the value of the open site `key`: each name it binds at the
-// position of one of the site's children is open to that child (#7855).
+// position of one of the site's children is open to that child (#7855), and
+// each name it binds to a tuple holding children (the whole value, or a
+// nested sub-tuple) is open to a site of its own over those children (#7863).
 pub func bindOpenTuplePattern(sc: in Scope, tbl: in SymbolTable, pat: in Pattern, key: in String): Unit {
   if key == "" {
     return
@@ -7837,7 +7848,7 @@ pub func bindOpenTuplePattern(sc: in Scope, tbl: in SymbolTable, pat: in Pattern
   match mapGet(tbl.openBindingSites, key) {
     case Some(site) -> if site.childKeys.count > 0 {
       val noPath: List[Int] = newList()
-      bindOpenTuplePatternAt(sc, tbl, site, pat, noPath)
+      bindOpenTuplePatternAt(sc, tbl, key, site, pat, noPath)
     }
     case None -> ()
   }
@@ -7846,38 +7857,122 @@ pub func bindOpenTuplePattern(sc: in Scope, tbl: in SymbolTable, pat: in Pattern
 func bindOpenTuplePatternAt(
   sc: in Scope,
   tbl: in SymbolTable,
+  key: in String,
   site: in OpenBindingSite,
   pat: in Pattern,
   path: in List[Int],
 ): Unit {
   match pat.kind {
-    case PParen(inner) -> bindOpenTuplePatternAt(sc, tbl, site, inner, path)
+    case PParen(inner) -> bindOpenTuplePatternAt(sc, tbl, key, site, inner, path)
     case PTuple(ps) -> {
       var i = 0
       while i < ps.count {
-        bindOpenTuplePatternAt(sc, tbl, site, ps[i], pathAppend(path, i))
+        bindOpenTuplePatternAt(sc, tbl, key, site, ps[i], pathAppend(path, i))
         i = i + 1
       }
     }
     case PBinding(name, None) -> if name != "_" and not isConstructorPatternName(tbl, name) {
-      var ci = 0
-      while ci < site.childKeys.count {
-        if pathsEqual(site.childPaths[ci], path) {
-          match scopeTryFind(sc, name) {
-            case Some(b) -> {
-              scopeAdd(sc, LocalBinding(name = name, ty = b.ty, isMutable = b.isMutable, openSite = site.childKeys[ci]))
-              site.patSpans.add(pat.span)
-              site.patPaths.add(path)
-            }
-            case None -> ()
+      val nameKey = if path.count == 0 { key } else { openSiteAtPath(tbl, key, site, pat.span, path) }
+      if nameKey == "" {
+        return
+      }
+      match scopeTryFind(sc, name) {
+        case Some(b) -> {
+          scopeAdd(sc, LocalBinding(name = name, ty = b.ty, isMutable = b.isMutable, openSite = nameKey))
+          if path.count > 0 {
+            site.patSpans.add(pat.span)
+            site.patPaths.add(path)
           }
-          return
         }
-        ci = ci + 1
+        case None -> ()
       }
     }
     case _ -> ()
   }
+}
+
+// The open site a name bound at `path` in the value of the tuple site `site`
+// (keyed `key`) is open to: the child at `path`, or, when `path` holds
+// children deeper down, a site over them keyed by the binding's span `sp`,
+// owned by `key` and with each child at its position below `path`.  "" when
+// nothing open is at or under `path`.
+func openSiteAtPath(
+  tbl: in SymbolTable, key: in String, site: in OpenBindingSite, sp: in Span, path: in List[Int]
+): String {
+  val subKeys: List[String] = newList()
+  val subPaths: List[List[Int]] = newList()
+  var ci = 0
+  while ci < site.childKeys.count {
+    val cp = site.childPaths[ci]
+    if pathsEqual(cp, path) {
+      return site.childKeys[ci]
+    }
+    if cp.count > path.count and pathIsPrefix(path, cp) {
+      subKeys.add(site.childKeys[ci])
+      subPaths.add(pathSuffix(cp, path.count))
+    }
+    ci = ci + 1
+  }
+  if subKeys.count == 0 or isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return ""
+  }
+  val subKey = recordCopySiteKey(sp)
+  if tbl.openBindingSites.containsKey(subKey) {
+    return subKey
+  }
+  match tupleTypeAt(site.initTy, path) {
+    case Some(subTy) -> {
+      tbl.openBindingSites.add(
+        subKey,
+        OpenBindingSite(
+          initSpan = sp,
+          initTy = unrefine(subTy),
+          sinkTy = newList(),
+          sinkTe = newList(),
+          storeTy = newList(),
+          storeTe = newList(),
+          sinkConflict = newList(),
+          storeConflict = newList(),
+          childKeys = subKeys,
+          childPaths = subPaths,
+          parentKey = key,
+          hoistExprs = newList(),
+          hoistPaths = newList(),
+          typeParams = site.typeParams,
+          patSpans = newList(),
+          patPaths = newList()
+        )
+      )
+      subKey
+    }
+    case None -> ""
+  }
+}
+
+// Whether `prefix` is a prefix of `path`.
+func pathIsPrefix(prefix: in List[Int], path: in List[Int]): Bool {
+  if prefix.count > path.count {
+    return false
+  }
+  var i = 0
+  while i < prefix.count {
+    if prefix[i] != path[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// `path` without its first `n` positions.
+func pathSuffix(path: in List[Int], n: in Int): List[Int] {
+  val acc: List[Int] = newList()
+  var k = n
+  while k < path.count {
+    acc.add(path[k])
+    k = k + 1
+  }
+  acc
 }
 
 // Is `e`, of type `t`, the stdlib `Option`'s `None` case?  The name says
@@ -8401,13 +8496,19 @@ func openBindingInitArity(tbl: in SymbolTable, key: in String): Int {
 // store only says what was put in (an `Int` added to what a `List[Long]`
 // parameter receives), so the stores decide only when nothing sinks the
 // binding.  Disagreeing sinks, or disagreeing stores with no sink, leave the
-// binding as it was.
+// binding as it was.  A name bound to a sub-tuple has no annotation of its
+// own (its tuple's carries its type); only the names patterns bind from it
+// are recorded.
 pub func resolveOpenBindingSites(tbl: in SymbolTable): Unit {
   val keys = mapKeys(tbl.openBindingSites)
   var i = 0
   while i < keys.count {
     match mapGet(tbl.openBindingSites, keys[i]) {
-      case Some(site) -> if site.parentKey == "" {
+      case Some(site) -> if site.parentKey != "" {
+        if site.childKeys.count > 0 {
+          val _ = resolveOpenTupleSite(tbl, site)
+        }
+      } else {
         val te: Option[TypeExpr] = if site.childKeys.count > 0 {
           resolveOpenTupleSite(tbl, site)
         } else {
@@ -8503,7 +8604,7 @@ func resolveOpenTupleSite(tbl: in SymbolTable, site: in OpenBindingSite): Option
       var pi = 0
       while pi < site.patSpans.count {
         match tupleTypeAt(t, site.patPaths[pi]) {
-          case Some(et) -> recordTuplePatternBinding(tbl, site.patSpans[pi], et)
+          case Some(et) -> recordTuplePatternBinding(tbl, site.patSpans[pi], et, site.typeParams)
           case None -> ()
         }
         pi = pi + 1
@@ -8584,21 +8685,28 @@ func recordFuncValueCall(
 
 // Record the names a tuple pattern binds (see
 // `SymbolTable.tuplePatternBindingSites`).  `pat` is matched against a value
-// of type `ty`; `inTuple` is whether `pat` is an element of an enclosing tuple
-// pattern, or the loop pattern of a `for` over a generator, whose elements
-// arrive just as erased (#7750).  Only a name bound to such an element is
+// of type `ty`, which may name `typeParams`, the enclosing function's type
+// parameters (#7863); `inTuple` is whether `pat` is an element of an
+// enclosing tuple pattern, or the loop pattern of a `for` over a generator,
+// whose elements arrive just as erased (#7750).  Only a name bound to such an element is
 // recorded: any other name is bound to a value whose type the backend already
 // sees.  An or-pattern is
 // not entered, because every alternative must bind the same names, and a
 // nullary union-case name is a test rather than a binding.
-func recordTuplePatternBindings(tbl: in SymbolTable, pat: in Pattern, ty: in Type, inTuple: in Bool): Unit {
+func recordTuplePatternBindings(
+  tbl: in SymbolTable,
+  pat: in Pattern,
+  ty: in Type,
+  inTuple: in Bool,
+  typeParams: in List[String],
+): Unit {
   match pat.kind {
     case PBinding(name, innerOpt) -> {
       if inTuple and name != "_" and not isConstructorPatternName(tbl, name) and not scrutineeHasCaseNamed(tbl, ty, name) {
-        recordTuplePatternBinding(tbl, pat.span, ty)
+        recordTuplePatternBinding(tbl, pat.span, ty, typeParams)
       }
       match innerOpt {
-        case Some(inner) -> recordTuplePatternBindings(tbl, inner, ty, false)
+        case Some(inner) -> recordTuplePatternBindings(tbl, inner, ty, false, typeParams)
         case None -> ()
       }
     }
@@ -8606,21 +8714,24 @@ func recordTuplePatternBindings(tbl: in SymbolTable, pat: in Pattern, ty: in Typ
       case TyTuple(elems) -> if elems.count == patterns.count {
         var i = 0
         while i < patterns.count {
-          recordTuplePatternBindings(tbl, patterns[i], elems[i], true)
+          recordTuplePatternBindings(tbl, patterns[i], elems[i], true, typeParams)
           i = i + 1
         }
       }
       case _ -> ()
     }
-    case PParen(inner) -> recordTuplePatternBindings(tbl, inner, ty, inTuple)
+    case PParen(inner) -> recordTuplePatternBindings(tbl, inner, ty, inTuple, typeParams)
     case _ -> ()
   }
 }
 
 // Record one tuple-element binding at `sp` with checked type `ty`.  A type
-// with no value (`Unit`, `Never`) or no source spelling (a type parameter, an
-// element the checker could not type) is left as written.
-func recordTuplePatternBinding(tbl: in SymbolTable, sp: in Span, ty: in Type): Unit {
+// with no value (`Unit`, `Never`) or no source spelling (an element the
+// checker could not type, a type variable other than one of `typeParams`) is
+// left as written.  One of `typeParams` is spelled by its name: `Lyric.Mono`
+// substitutes it where it specialises the body, as it does the function's
+// own annotations (#7863).
+func recordTuplePatternBinding(tbl: in SymbolTable, sp: in Span, ty: in Type, typeParams: in List[String]): Unit {
   if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
     return
   }
@@ -8631,7 +8742,7 @@ func recordTuplePatternBinding(tbl: in SymbolTable, sp: in Span, ty: in Type): U
   if noValue {
     return
   }
-  match typeExprForRef(tbl, ty, sp) {
+  match typeExprForOpenBinding(tbl, ty, sp, typeParams) {
     case Some(te) -> {
       val key = recordCopySiteKey(sp)
       val rendered = renderType(ty)
@@ -8911,31 +9022,11 @@ func hoistTupleElemTypes(t: in Type, n: in Int): List[Type] {
 }
 
 // Record the type of one hoisted operand `e`: `own` with its holes filled
-// from `expected`, when that is a closed generic instantiation.  A literal is
-// never bound, and a local is bound at its declared type already.
+// from `expected`, when that is a closed generic instantiation.
 func recordHoistOperandType(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: in Type, expected: in Type): Unit {
-  val sp = e.span
-  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
-    return
+  if hoistBindsOperand(sc, e) {
+    recordHoistOperandTypeOver(tbl, sc.genericNames, e, own, expected)
   }
-  match e.kind {
-    case ELiteral(_) -> {
-      return
-    }
-    case ELambda(_, _) -> {
-      return
-    }
-    case EPath(p) -> {
-      if p.segments.count == 1 {
-        val isLocal = match scopeTryFind(sc, p.segments[0]) { case Some(_) -> true; case None -> false }
-        if isLocal {
-          return
-        }
-      }
-    }
-    case _ -> ()
-  }
-  recordHoistOperandTypeOver(tbl, sc.genericNames, e, own, expected)
 }
 
 // `recordHoistOperandType` once `e` is known to be bound by the hoist; `t`

@@ -277,9 +277,14 @@ pub record SymbolTable {
   ///   * an open binding (`openBindingSites`) whose later uses fixed its type
   ///     arguments: a backend with reified generics (MSIL) must build
   ///     `List<Seed>`, not `List<object>`, where it is constructed (#7788).
+  /// A tuple literal matched directly is recorded as an open binding's
+  /// initializer is, keyed by the literal's span; Mono binds it to an
+  /// annotated local (#7863).
   localBindingTypeSites: Map[String, TypeExpr]
   /// Each open binding, keyed by `recordCopySiteKey` of its initializer's
-  /// span (see `OpenBindingSite`, #7788).
+  /// span (see `OpenBindingSite`, #7788); a tuple literal matched directly,
+  /// by its own span; a name a pattern binds to a sub-tuple holding open
+  /// elements, by the name's span (#7863).
   openBindingSites: Map[String, OpenBindingSite]
   /// Each call through a function value, keyed by `recordCopySiteKey` of the
   /// call's span (see `Lyric.Parser.FuncValueCallSite`, #7716).
@@ -418,7 +423,10 @@ pub record OpenBindingSite {
   childKeys: List[String]
   childPaths: List[List[Int]]
   /// The tuple site owning this element's site, or "".  Only the tuple's
-  /// annotation is written; an element has no binding of its own.
+  /// annotation is written; an element has no binding of its own.  A site
+  /// for a name bound to a sub-tuple (`inner` in `val (inner, n) = t`) is
+  /// owned by the site it was bound from, and its children are that site's
+  /// children under the name's position (#7863).
   parentKey: String
   /// The elements of the tuple the await / `?` hoist binds one by one, with
   /// their positions, and the enclosing function's type parameters: the
