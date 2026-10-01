@@ -8862,3 +8862,183 @@ test "a native intrinsic's type is checked like any other (#7910)" {
   )
   assertEqualInt(countDiagCode(cr, "T0042"), 1, "nativeNullPtr takes no argument: T0042 (" + diagCodesOf(cr) + ")")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Calls to an `extern func` (#7921) are checked against its declared
+// signature, exactly like a call to a Lyric function.
+// ─────────────────────────────────────────────────────────────────────────────
+func externAbsSrc(body: in String): String {
+  "package T\n" + "extern func cAbs(x: Int): Int = \"abs\"\n" + "func f(): Int {\n" + body + "}\n"
+}
+
+test "a correct extern func call is clean and its result type flows on (#7921)" {
+  val src = externAbsSrc("  val y = cAbs(-3)\n  val z: Int = cAbs(x = y)\n  y + z + 1\n")
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "correct extern call: clean (" + diagCodesOf(cr) + ")")
+  val typed = parseCheck(externAbsSrc("  val b: Bool = cAbs(-3)\n  0\n"))
+  assertTrue(
+    Str.contains(diagMessageFor(typed, "T0060"), "initialiser has type Int"),
+    "cAbs(-3) types as the declared Int (" + diagMessageFor(typed, "T0060") + ")"
+  )
+}
+
+test "an extern func argument of the wrong type is T0043 (#7921)" {
+  val cr = parseCheck(externAbsSrc("  cAbs(\"hi\")\n"))
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "String passed for Int: T0043 (" + diagCodesOf(cr) + ")")
+}
+
+test "an extern func call with the wrong number of arguments is T0042 (#7921)" {
+  val cr = parseCheck(externAbsSrc("  cAbs(1, 2)\n"))
+  assertEqualInt(countDiagCode(cr, "T0042"), 1, "two arguments for one parameter: T0042 (" + diagCodesOf(cr) + ")")
+  val none = parseCheck(externAbsSrc("  cAbs()\n"))
+  assertEqualInt(countDiagCode(none, "T0042"), 1, "no arguments for one parameter: T0042 (" + diagCodesOf(none) + ")")
+}
+
+test "an extern func call with an unknown named argument is rejected (#7921)" {
+  val cr = parseCheck(externAbsSrc("  cAbs(y = 1)\n"))
+  assertTrue(diagCount(cr) > 0, "unknown named argument: rejected")
+}
+
+test "an extern func result flows into a binding and a later expression (#7921)" {
+  val bound = parseCheck(externAbsSrc("  val s: String = cAbs(3)\n  0\n"))
+  assertEqualInt(countDiagCode(bound, "T0060"), 1, "Int bound as String: T0060 (" + diagCodesOf(bound) + ")")
+  val later = parseCheck(externAbsSrc("  val y = cAbs(3)\n  val s: String = y\n  0\n"))
+  assertEqualInt(
+    countDiagCode(later, "T0060"),
+    1,
+    "inferred Int later bound as String: T0060 (" + diagCodesOf(later) + ")"
+  )
+  val returned = parseCheck(
+    "package T\n" + "extern func cAbs(x: Int): Int = \"abs\"\n" + "func f(): String {\n" + "  cAbs(3)\n" +
+      "}\n"
+  )
+  assertTrue(diagCount(returned) > 0, "Int returned as String: rejected")
+}
+
+test "an extern func parameter default is checked against its type (#7921)" {
+  val cr = parseCheck("package P\nextern func f(x: Int = \"s\"): Int = \"f\"\n")
+  assertEqualInt(countDiagCode(cr, "T0060"), 1, "String default for an Int parameter: T0060 (" + diagCodesOf(cr) + ")")
+}
+
+val externPtrSrc: String = "package T\n" + "extern func strlen(s: NativePtr[Byte]): Long = \"strlen\"\n" + "@unsafe_ffi\n" + "func ok(): Long {\n" + "  strlen(nativeNullPtr())\n" + "}\n" + "@unsafe_ffi\n" + "func bad(): Long {\n" + "  var x: Long = 0\n" + "  strlen(nativeAddrOf(x))\n" + "}\n"
+
+test "an extern func with a NativePtr parameter is checked in a native check (#7921)" {
+  val cr = checkWithImportedPackagesForNative(parse(externPtrSrc).file, stdCoreOptionPackages())
+  assertEqualInt(diagCount(cr), 1, "one mismatch only (" + diagCodesOf(cr) + ")")
+  assertEqualInt(
+    countDiagCode(cr, "T0043"),
+    1,
+    "NativePtr[Long] passed for NativePtr[Byte]: T0043 (" + diagCodesOf(cr) + ")"
+  )
+  val typedSrc = "package T\n" + "extern func strlen(s: NativePtr[Byte]): Long = \"strlen\"\n" + "@unsafe_ffi\n" +
+    "func f(): Int {\n" +
+    "  val b: Bool = strlen(nativeNullPtr())\n" +
+    "  0\n" +
+    "}\n"
+  val typed = checkWithImportedPackagesForNative(parse(typedSrc).file, stdCoreOptionPackages())
+  assertTrue(
+    Str.contains(diagMessageFor(typed, "T0060"), "initialiser has type Long"),
+    "strlen types as the declared Long (" + diagMessageFor(typed, "T0060") + ")"
+  )
+}
+
+func externKernelPackages(): List[ImportedPackage] {
+  val kernel = parse("package K\npub extern func cAbs(x: Int): Int = \"abs\"\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "K",
+      items = kernel.file.items,
+      imports = collectImportNames(kernel.file.imports),
+      wholeImports = collectWholeImportNames(kernel.file.imports)
+    )
+  )
+  packages
+}
+
+// Qualified calls go through `rewriteFile` first, as in the real pipeline.
+test "a call to an imported package's extern func is checked (#7921)" {
+  val good = "package T\nimport K\nfunc f(): Int {\n  val y = K.cAbs(-3)\n  y + 1\n}\n"
+  val goodCr = checkWithImportedPackages(rewriteFile(parse(good).file), externKernelPackages())
+  assertEqualInt(diagCount(goodCr), 0, "imported extern call: clean (" + diagCodesOf(goodCr) + ")")
+  val typed = "package T\nimport K\nfunc f(): Int {\n  val b: Bool = K.cAbs(-3)\n  0\n}\n"
+  val typedCr = checkWithImportedPackages(rewriteFile(parse(typed).file), externKernelPackages())
+  assertTrue(
+    Str.contains(diagMessageFor(typedCr, "T0060"), "initialiser has type Int"),
+    "K.cAbs(-3) types as the declared Int (" + diagMessageFor(typedCr, "T0060") + ")"
+  )
+  val bad = "package T\nimport K\nfunc f(): Int {\n  K.cAbs(\"hi\")\n}\n"
+  val badCr = checkWithImportedPackages(rewriteFile(parse(bad).file), externKernelPackages())
+  assertEqualInt(
+    countDiagCode(badCr, "T0043"),
+    1,
+    "imported extern, String for Int: T0043 (" + diagCodesOf(badCr) + ")"
+  )
+  val arity = "package T\nimport K\nfunc f(): Int {\n  K.cAbs(1, 2)\n}\n"
+  val arityCr = checkWithImportedPackages(rewriteFile(parse(arity).file), externKernelPackages())
+  assertEqualInt(
+    countDiagCode(arityCr, "T0042"),
+    1,
+    "imported extern, wrong arity: T0042 (" + diagCodesOf(arityCr) + ")"
+  )
+}
+
+func externTargetSrc(body: in String): String {
+  "package T\n" + "@externTarget(\"System.Math.Abs\")\n" + "func mAbs(x: in Int): Int\n" + "func f(): Int {\n" + body +
+    "}\n"
+}
+
+test "an @externTarget function call is checked against its declared signature (#7921)" {
+  val good = externTargetSrc("  val y = mAbs(-3)\n  y + 1\n")
+  val goodCr = parseCheck(good)
+  assertEqualInt(diagCount(goodCr), 0, "correct @externTarget call: clean (" + diagCodesOf(goodCr) + ")")
+  val ty = parseCheck(externTargetSrc("  mAbs(\"hi\")\n"))
+  assertEqualInt(countDiagCode(ty, "T0043"), 1, "String passed for Int: T0043 (" + diagCodesOf(ty) + ")")
+  val arity = parseCheck(externTargetSrc("  mAbs(1, 2)\n"))
+  assertEqualInt(countDiagCode(arity, "T0042"), 1, "wrong arity: T0042 (" + diagCodesOf(arity) + ")")
+  val bound = parseCheck(externTargetSrc("  val s: String = mAbs(3)\n  0\n"))
+  assertEqualInt(countDiagCode(bound, "T0060"), 1, "Int bound as String: T0060 (" + diagCodesOf(bound) + ")")
+}
+
+// The native extern-call adaptation (docs/01 §11.6, N4.5): a callback
+// parameter takes the closure of its signature without the trailing
+// userdata slot, and that closure also passes as the `NativePtr[Byte]`
+// userdata itself.
+func externCallbackSrc(body: in String): String {
+  "package T\n" +
+    "extern func startThread(start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"start_thread\"\n" +
+    "@unsafe_ffi\n" +
+    "func f(): Int {\n" +
+    body +
+    "}\n"
+}
+
+func checkExternCallback(body: in String): CheckResult {
+  checkWithImportedPackagesForNative(parse(externCallbackSrc(body)).file, stdCoreOptionPackages())
+}
+
+test "an extern callback parameter takes the closure without its userdata slot (#7921)" {
+  val bound = checkExternCallback("  val w: () -> NativePtr[Byte] = { -> nativeNullPtr() }\n  startThread(w, w)\n")
+  assertEqualInt(diagCount(bound), 0, "bound closure as callback and userdata: clean (" + diagCodesOf(bound) + ")")
+  val literal = checkExternCallback("  startThread({ -> nativeNullPtr() }, nativeNullPtr())\n")
+  assertEqualInt(diagCount(literal), 0, "closure literal as callback: clean (" + diagCodesOf(literal) + ")")
+}
+
+test "an extern callback parameter rejects a closure of the full C signature (#7921)" {
+  val cr = checkExternCallback(
+    "  val w: (NativePtr[Byte]) -> NativePtr[Byte] = { p: NativePtr[Byte] -> p }\n  startThread(w, nativeNullPtr())\n"
+  )
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "full-arity closure as callback: T0043 (" + diagCodesOf(cr) + ")")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0043"), "takes a closure of type () -> NativePtr[Byte]"),
+    "the T0043 names the closure type: " + diagMessageFor(cr, "T0043")
+  )
+}
+
+test "an extern NativePtr[Byte] parameter rejects a non-pointer, non-closure value (#7921)" {
+  val w = "  val w: () -> NativePtr[Byte] = { -> nativeNullPtr() }\n"
+  val intArg = checkExternCallback(w + "  startThread(w, 7)\n")
+  assertEqualInt(countDiagCode(intArg, "T0043"), 1, "Int as NativePtr[Byte]: T0043 (" + diagCodesOf(intArg) + ")")
+  val strArg = checkExternCallback(w + "  startThread(w, \"s\")\n")
+  assertEqualInt(countDiagCode(strArg, "T0043"), 1, "String as NativePtr[Byte]: T0043 (" + diagCodesOf(strArg) + ")")
+}

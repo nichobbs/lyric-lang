@@ -74,10 +74,9 @@ extern func toC(s: String): NativePtr[Byte] = "lyric_string_to_cstring"
 
 extern func freeC(p: NativePtr[Byte]): Unit = "lyric_cstring_free"
 
-// `args` is the raw kernel handle of a Std.Collections `List[String]`
-// (LyricList*): collection values ride extern `NativePtr[Byte]`
-// parameters as their kernel pointers (N4.5 argument adaptation).
-extern func rtProcessRun(path: NativePtr[Byte], args: NativePtr[Byte], stdinContent: String, timeoutMs: Int, outCode: NativePtr[Int], outStdout: NativePtr[String], outStderr: NativePtr[String], outTimedOut: NativePtr[Int]): Int = "lyric_process_run"
+// `args` is a Std.Collections `List[String]`, the `LyricList*` the C side
+// reads (borrowed for the call).
+extern func rtProcessRun(path: NativePtr[Byte], args: List[String], stdinContent: String, timeoutMs: Int, outCode: NativePtr[Int], outStdout: NativePtr[String], outStderr: NativePtr[String], outTimedOut: NativePtr[Int]): Int = "lyric_process_run"
 
 @unsafe_ffi
 pub func hostRunCaptureList(
@@ -122,7 +121,7 @@ pub func hostRunCaptureList(
 // ── Async seam (the async process leaf, D-N-023) ─────────────────────────────
 // Nonblocking capture op over lyric-rt (see lyric_process.c): start ->
 // pump until done -> accessors -> free.
-extern func rtProcessStart(path: NativePtr[Byte], args: NativePtr[Byte], stdinContent: String): NativePtr[Byte] = "lyric_process_start"
+extern func rtProcessStart(path: NativePtr[Byte], args: List[String], stdinContent: String): NativePtr[Byte] = "lyric_process_start"
 
 extern func rtProcessSpawnFailed(op: NativePtr[Byte]): Int = "lyric_process_spawn_failed"
 

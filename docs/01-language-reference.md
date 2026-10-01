@@ -2267,10 +2267,28 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
   `NativePtr` and `NativeWeak` are unknown type names (`T0010`) and the
   three functions unknown names (`T0020`), since neither backend can
   lower them (#7910).
-- On the managed targets an `extern func` item is inert: it
-  type-checks like a body-less function and the MSIL/JVM backends emit
-  nothing for it (`_kernel_native/` packages are only loaded by native
-  builds).
+- A call to an `extern func` is type-checked against its declared
+  signature exactly like a call to a Lyric function: the argument count
+  (`T0042`), each argument's type (`T0043`) and named arguments are
+  checked, as is the type of a parameter default, and the call has the
+  declared return type (#7921).
+  Two argument adaptations apply at an `extern func` call and nowhere
+  else.  A parameter of function type `(P1, …, Pk, NativePtr[Byte]) -> R`
+  is a C callback whose last parameter is the userdata slot: it takes a
+  Lyric closure of type `(P1, …, Pk) -> R`, which the native backend wraps
+  in a C-ABI trampoline, and a closure of the full C signature is
+  rejected.  A closure value is also accepted for a `NativePtr[Byte]`
+  parameter, where it passes as the closure pointer itself, so the same
+  closure can be handed to a C API as both the callback and its userdata.
+  Any other value meets a `NativePtr[Byte]` parameter only if it is one;
+  a collection the C side reads is declared with its Lyric type
+  (`List[String]` for a `LyricList*`).
+- `extern func` items exist only on the native target, and
+  `_kernel_native/` packages are loaded only by native builds.  The
+  MSIL and JVM backends reject an `extern func` item with a diagnostic
+  that names the managed-target binding form to use instead
+  (`@externTarget` in a `_kernel/` package on .NET, `extern type`
+  auto-FFI in a `_kernel_jvm/` package on the JVM).
 
 **C structs, callbacks and buffers (D155; not yet implemented, docs/67 phase G3).**
 

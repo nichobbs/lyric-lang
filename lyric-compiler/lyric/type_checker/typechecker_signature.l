@@ -62,4 +62,7 @@ pub record ResolvedSignature {
   /// A protected type's `entry` (D149): a package that may not do I/O
   /// may not call it (Y0008).
   isEntry: Bool
+  /// Declared by an `extern func` (D-N-007, #7921): its arguments follow the
+  /// native extern-call adaptation rules (`argSatisfiesExternParam`).
+  isExternFunc: Bool
 }

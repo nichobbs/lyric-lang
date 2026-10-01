@@ -323,29 +323,7 @@ func registerItem(
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFunc(decl = decl), vis, span)
     }
     case IExternFunc(decl) -> {
-      // An `extern func` (D-N-007) type-checks at call sites exactly like a
-      // body-less Lyric function with the declared signature; the native
-      // backend resolves the C symbol, other backends never see one (they
-      // only appear in `_kernel_native/` packages, loaded for `--target
-      // native` alone).
-      val emptyDocs: List[DocComment] = newList()
-      val emptyAnns: List[Annotation] = newList()
-      val emptyContracts: List[ContractClause] = newList()
-      val fnDecl = FunctionDecl(
-        docComments = emptyDocs,
-        annotations = emptyAnns,
-        visibility = None,
-        isAsync = false,
-        name = decl.name,
-        generics = None,
-        params = decl.params,
-        ret = decl.ret,
-        whereClause = None,
-        contracts = emptyContracts,
-        body = None,
-        span = decl.span
-      )
-      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFunc(decl = fnDecl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFunc(decl = externFuncAsFunctionDecl(decl)), vis, span)
     }
     case IConst(decl) -> {
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKConst(decl = decl), vis, span)
@@ -1089,7 +1067,8 @@ func resolveFunctionSig(
     span = fn.span,
     isPure = fnHasAnnotation(fn, "pure"),
     isIo = fnHasAnnotation(fn, "io"),
-    isEntry = false
+    isEntry = false,
+    isExternFunc = false
   )
 }
 
@@ -1147,6 +1126,49 @@ pub func gatherOverloadCandidates(sigs: in Map[String, ResolvedSignature], arity
   acc
 }
 
+// An `extern func` (D-N-007) type-checks at call sites exactly like a
+// body-less Lyric function with the declared signature: the symbol table and
+// the `sigs` map both see it through this view.  The native backend resolves
+// the C symbol; the managed backends reject the item, and the
+// `_kernel_native/` packages that declare them load for `--target native` only.
+pub func externFuncAsFunctionDecl(decl: in ExternFuncDecl): FunctionDecl {
+  val emptyDocs: List[DocComment] = newList()
+  val emptyAnns: List[Annotation] = newList()
+  val emptyContracts: List[ContractClause] = newList()
+  FunctionDecl(
+    docComments = emptyDocs,
+    annotations = emptyAnns,
+    visibility = None,
+    isAsync = false,
+    name = decl.name,
+    generics = None,
+    params = decl.params,
+    ret = decl.ret,
+    whereClause = None,
+    contracts = emptyContracts,
+    body = None,
+    span = decl.span
+  )
+}
+
+func asExternFuncSig(sg: in ResolvedSignature): ResolvedSignature {
+  ResolvedSignature(
+    generics = sg.generics,
+    bounds = sg.bounds,
+    params = sg.params,
+    returnTy = sg.returnTy,
+    isAsync = sg.isAsync,
+    isHot = sg.isHot,
+    isGenerator = sg.isGenerator,
+    originPackage = sg.originPackage,
+    span = sg.span,
+    isPure = sg.isPure,
+    isIo = sg.isIo,
+    isEntry = sg.isEntry,
+    isExternFunc = true
+  )
+}
+
 func addSigsFromItems(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -1158,81 +1180,92 @@ func addSigsFromItems(
   var i = 0
   while i < items.count {
     match items[i].kind {
-      case IFunc(decl) -> {
-        // Imported stdlib functions don't get to shadow the codegen builtins.
-        // `println`, `toString`, `panic`, `assert`, `expect`, `default`,
-        // `format1`, `format2` are wired in `codegenBuiltinType` with
-        // intentionally polymorphic `TyError` parameter types so that
-        // ergonomic forms like `println(11)` typecheck.  The stdlib's
-        // concrete `pub func println(s: in String): Unit` would, once it's
-        // in the `sigs` map, win the `findDirectSig` lookup and reject the
-        // Int argument with T0043.  Skipping these names for imports
-        // preserves the historical advisory semantics; user code that
-        // explicitly defines its own `println` still wins via the user
-        // pass that follows.
-        if isImported and isCodegenBuiltinName(decl.name) {
-          i = i + 1
-          continue
-        }
-        val sg = resolveFunctionSig(tbl, diag, pkgName, decl)
-        val arityKey = decl.name + "/" + toString(decl.params.count)
-        // Sig-map insertion policy.  Imported items use first-in-wins
-        // because bare-name collisions across stdlib files (e.g.
-        // `toString`, `tryGet` defined in multiple modules) would
-        // otherwise crash via `Dictionary.Add`'s duplicate-key throw.
-        // User items run after imports and unconditionally overwrite —
-        // a user-defined `pub func foo` in the same file MUST win over
-        // any imported `foo` so the user's intent shadows the dep,
-        // matching the standard import-shadowing semantics every other
-        // language's typechecker gives.  Once #1378's stdlib-IFunc
-        // collection follow-up lands, this lets user code safely
-        // redefine names that happen to overlap with the stdlib
-        // (#1383).
-        if isImported {
-          if not sigs.containsKey(decl.name) {
-            sigs.add(decl.name, sg)
-          }
-          if not sigs.containsKey(arityKey) {
-            sigs.add(arityKey, sg)
-          }
-        } else {
-          if sigs.containsKey(decl.name) {
-            sigs.remove(decl.name)
-          }
-          sigs.add(decl.name, sg)
-          if sigs.containsKey(arityKey) {
-            sigs.remove(arityKey)
-          }
-          sigs.add(arityKey, sg)
-        }
-        // Overload candidates (#1488 category C): same-name/same-arity functions
-        // that differ only in parameter types (e.g. `Std.Char.toUpper(Char)` vs
-        // `Std.String.toUpper(String)`) collide on `arityKey` under first-in-
-        // wins, so a `toUpper("s")` call could be checked against the `Char`
-        // overload and wrongly rejected (T0043).  Register every non-generic sig
-        // under an indexed `arityKey@i` key so the call site can gather the full
-        // candidate set and pick the overload whose params match the argument
-        // types via `typeEquiv` (which honours `TyError`/`TyVar` wildcards, so an
-        // empty-literal `slice[<error>]` arg still selects the `slice[String]`
-        // overload).  Indexing auto-continues across the imported-then-user
-        // registration passes (we probe for the next free slot).  Generic sigs
-        // are skipped: their `TyVar` params match any argument under `typeEquiv`
-        // and would shadow a concrete overload — they keep the arity-key path.
-        if sg.generics.count == 0 {
-          registerOverloadCandidate(sigs, arityKey, sg)
-        }
-        // Every function of this name, generic or not, whichever package
-        // declares it: the `name` and `arityKey` slots keep only one, which
-        // the file's import rule may hide (docs/01 §9.2), so a bare
-        // reference picks its visible declaration from here
-        // (`visibleBareFuncSigs`).
-        registerOverloadCandidate(sigs, byNameSigKey(decl.name), sg)
-      }
+      case IFunc(decl) -> addFuncSig(tbl, diag, sigs, decl, false, isImported, pkgName)
+      case IExternFunc(decl) -> addFuncSig(tbl, diag, sigs, externFuncAsFunctionDecl(decl), true, isImported, pkgName)
       case _ -> {
       }
     }
     i = i + 1
   }
+}
+
+func addFuncSig(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sigs: in Map[String, ResolvedSignature],
+  decl: in FunctionDecl,
+  isExternFunc: in Bool,
+  isImported: in Bool,
+  pkgName: in String,
+): Unit {
+  // Imported stdlib functions don't get to shadow the codegen builtins.
+  // `println`, `toString`, `panic`, `assert`, `expect`, `default`,
+  // `format1`, `format2` are wired in `codegenBuiltinType` with
+  // intentionally polymorphic `TyError` parameter types so that
+  // ergonomic forms like `println(11)` typecheck.  The stdlib's
+  // concrete `pub func println(s: in String): Unit` would, once it's
+  // in the `sigs` map, win the `findDirectSig` lookup and reject the
+  // Int argument with T0043.  Skipping these names for imports
+  // preserves the historical advisory semantics; user code that
+  // explicitly defines its own `println` still wins via the user
+  // pass that follows.
+  if isImported and isCodegenBuiltinName(decl.name) {
+    return
+  }
+  val sg0 = resolveFunctionSig(tbl, diag, pkgName, decl)
+  val sg = if isExternFunc { asExternFuncSig(sg0) } else { sg0 }
+  val arityKey = decl.name + "/" + toString(decl.params.count)
+  // Sig-map insertion policy.  Imported items use first-in-wins
+  // because bare-name collisions across stdlib files (e.g.
+  // `toString`, `tryGet` defined in multiple modules) would
+  // otherwise crash via `Dictionary.Add`'s duplicate-key throw.
+  // User items run after imports and unconditionally overwrite —
+  // a user-defined `pub func foo` in the same file MUST win over
+  // any imported `foo` so the user's intent shadows the dep,
+  // matching the standard import-shadowing semantics every other
+  // language's typechecker gives.  Once #1378's stdlib-IFunc
+  // collection follow-up lands, this lets user code safely
+  // redefine names that happen to overlap with the stdlib
+  // (#1383).
+  if isImported {
+    if not sigs.containsKey(decl.name) {
+      sigs.add(decl.name, sg)
+    }
+    if not sigs.containsKey(arityKey) {
+      sigs.add(arityKey, sg)
+    }
+  } else {
+    if sigs.containsKey(decl.name) {
+      sigs.remove(decl.name)
+    }
+    sigs.add(decl.name, sg)
+    if sigs.containsKey(arityKey) {
+      sigs.remove(arityKey)
+    }
+    sigs.add(arityKey, sg)
+  }
+  // Overload candidates (#1488 category C): same-name/same-arity functions
+  // that differ only in parameter types (e.g. `Std.Char.toUpper(Char)` vs
+  // `Std.String.toUpper(String)`) collide on `arityKey` under first-in-
+  // wins, so a `toUpper("s")` call could be checked against the `Char`
+  // overload and wrongly rejected (T0043).  Register every non-generic sig
+  // under an indexed `arityKey@i` key so the call site can gather the full
+  // candidate set and pick the overload whose params match the argument
+  // types via `typeEquiv` (which honours `TyError`/`TyVar` wildcards, so an
+  // empty-literal `slice[<error>]` arg still selects the `slice[String]`
+  // overload).  Indexing auto-continues across the imported-then-user
+  // registration passes (we probe for the next free slot).  Generic sigs
+  // are skipped: their `TyVar` params match any argument under `typeEquiv`
+  // and would shadow a concrete overload — they keep the arity-key path.
+  if sg.generics.count == 0 {
+    registerOverloadCandidate(sigs, arityKey, sg)
+  }
+  // Every function of this name, generic or not, whichever package
+  // declares it: the `name` and `arityKey` slots keep only one, which
+  // the file's import rule may hide (docs/01 §9.2), so a bare
+  // reference picks its visible declaration from here
+  // (`visibleBareFuncSigs`).
+  registerOverloadCandidate(sigs, byNameSigKey(decl.name), sg)
 }
 
 // Names whose typecheck behaviour is owned by `codegenBuiltinType` (see
@@ -1380,7 +1413,8 @@ func resolveMethodSigParts(
     span = span,
     isPure = fnIsPure,
     isIo = fnIsIo,
-    isEntry = fnIsEntry
+    isEntry = fnIsEntry,
+    isExternFunc = false
   )
 }
 
@@ -2754,7 +2788,8 @@ func checkProtectedMemberBodies(
           span = sig0.span,
           isPure = false,
           isIo = sig0.isIo,
-          isEntry = sig0.isEntry
+          isEntry = sig0.isEntry,
+          isExternFunc = sig0.isExternFunc
         )
         val syntheticBody: Option[FunctionBody] = Some(value = entryDecl.body)
         val fn = FunctionDecl(
@@ -2811,7 +2846,8 @@ func checkProtectedMemberBodies(
           span = sig0.span,
           isPure = fnHasAnnotation(fn, "pure"),
           isIo = sig0.isIo,
-          isEntry = sig0.isEntry
+          isEntry = sig0.isEntry,
+          isExternFunc = sig0.isExternFunc
         )
         checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
       }
@@ -2946,7 +2982,8 @@ func checkRecordMemberBodies(
           span = sig0.span,
           isPure = fnHasAnnotation(fn, "pure"),
           isIo = sig0.isIo,
-          isEntry = sig0.isEntry
+          isEntry = sig0.isEntry,
+          isExternFunc = sig0.isExternFunc
         )
         // #6173: a bare field reference/assignment inside a record in-body
         // method (no `self.` prefix) IS a valid, shipped spelling —
@@ -3495,7 +3532,8 @@ func checkImplMemberBodies(
           span = sig0.span,
           isPure = fnHasAnnotation(fn, "pure"),
           isIo = sig0.isIo,
-          isEntry = sig0.isEntry
+          isEntry = sig0.isEntry,
+          isExternFunc = sig0.isExternFunc
         )
         checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
       }
@@ -3865,6 +3903,7 @@ func checkItemDeclaredInits(
       }
     }
     case IFunc(decl) -> checkParamDefaults(tbl, sigs, diag, extractGenericNames(decl.generics), decl.name, decl.params)
+    case IExternFunc(decl) -> checkParamDefaults(tbl, sigs, diag, noGenerics, decl.name, decl.params)
     case IRecord(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)
     case IExposedRec(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)
     case IOpaque(decl) -> {
